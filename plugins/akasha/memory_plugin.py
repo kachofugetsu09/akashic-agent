@@ -45,6 +45,7 @@ class MemoryPlugin:
         deps: MemoryPluginBuildDeps,
     ) -> MemoryPluginRuntime:
         # 1. Akasha 是独立 memory engine，不继承 default_memory 的 store/retriever。
+        _ = ensure_akasha_config_file()
         akasha_config = load_akasha_config()
         engine = AkashaMemoryEngine(
             config=deps.config,

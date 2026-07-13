@@ -733,6 +733,12 @@ async def test_default_memory_engine_remember_uses_memorizer():
     assert result.item_id == "memu-1"
     assert result.status == "new"
     memorizer.save_item_with_supersede.assert_awaited_once()
+    assert memorizer.save_item_with_supersede.await_args.kwargs["extra"] == {
+        "tool_requirement": None,
+        "steps": [],
+        "scope_channel": "cli",
+        "scope_chat_id": "1",
+    }
 
 
 async def test_default_memory_engine_remember_merged_keeps_target_id_alive():

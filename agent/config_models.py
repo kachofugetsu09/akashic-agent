@@ -41,7 +41,7 @@ class ChannelsConfig:
     telegram: TelegramChannelConfig | None = None
     qq: QQChannelConfig | None = None
     chat: WebChatConfig = field(default_factory=WebChatConfig)
-    socket: str = "/tmp/akashic.sock"
+    socket: str = ""
     cli_session_key: str = ""
 
 

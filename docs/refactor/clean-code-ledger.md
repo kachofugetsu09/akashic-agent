@@ -1443,3 +1443,30 @@
 - 测试删除及原因：无。
 - 验证结果：`.venv/bin/pytest -q -W error tests/` 为 `1914 passed in 26.30s`；生产与测试 Pyright 均为 `0 errors, 0 warnings`；`git diff --check` 通过。前端在本检查点前已完成 `npm run typecheck`、`npm run lint` 和 `npm run build`，本批未修改前端文件。
 - 残余风险：peer agent 测试仍有集中式 fake 转换，这是测试替身与具体实现类型之间的明确边界；后续若生产改为 Protocol，可自然删除这些转换，本批不为测试便利扩大生产抽象。
+
+### PR 检查点：初始化矩阵、资源所有权与真实插件验收
+
+- 范围：fresh init、memory engine 与 proactive 组合、IPC 端点、主任务取消、内置 memory 配置所有权、插件 doctor、CLI help/inspect，以及 Fitbit、飞书外部插件的运行缓存。
+- 原问题：主任务被取消时会再次取消子任务并打断其 `finally`；默认 `/tmp/akashic.sock` 会让多 workspace 争用；内置 memory 配置写在源码目录；`--help` 会误启动服务；`--inspect-modules` 漏关 memory runtime；干净环境缺 `networkx`；Akasha 首次导入会暴露 `jieba` 的第三方弃用告警；doctor 会把未选中的 default-memory drift skill 误判为缺失。
+- 为什么这样修改：由 workspace 稳定派生 IPC；由 AppRuntime、inspect 命令和各插件分别关闭自己创建的资源；内置插件配置迁移到 `~/.akashic-plugin/data/*-builtin`；只隔离第三方库的精确已知告警，导入错误仍直接失败；doctor 根据真实 memory 配置判断链接是否应存在。
+- 不变量与拥有层：Config 负责结构化配置，workspace 负责实例级 IPC，memory 插件数据目录负责可写配置，runtime owner 负责关闭连接和任务；测试 fake 必须补齐 schema 已保证的 `channels.socket`，生产路径不增加 `getattr` 或默认值兜底。
+- 能力变化：不同 workspace 可并行启动；SIGTERM 会等待插件任务完成收尾；源码目录只读安装可正常创建 memory 配置；CLI help 不再产生服务副作用；inspect 不再泄漏 SQLite；合法 memory/proactive 组合行为不变。
+- 性能变化：正常请求、召回和主动判断热路径没有新增 I/O 或模型调用；仅取消和关闭路径增加必要等待，不声明端到端提速。
+- 外部插件：Fitbit `57ae832` 删除无引用且无法解析的 `monitor/fitbit-swagger.json`，canonical 仓库已推送并重装；飞书 `d66c0e0`、`a2701ea` 修正 SDK loop 停止、主动关闭噪声和未取 task 异常，已推送并重装。旧 Fitbit workspace 文件删除前备份到 `~/.akashic/workspace/backups/fitbit-corrupt-swagger-20260713/`。
+- 测试新增：3 种 memory 状态乘 3 种 proactive 状态的 9 组 core 矩阵，以及 default/Akasha 乘 3 种 proactive 状态的 6 组完整 start/stop 矩阵；另覆盖 workspace IPC、help 无副作用、取消收尾、配置迁移、doctor active policy 和 inspect 清理。测试删除及原因：无。
+- 真实验收：用户配置下 24 个插件加载，Calendar、Feed、Fitbit、Steam 四个 MCP 完成连接，wake source 实际读到 `alerts/content/context`，全部 channel 启动；SIGTERM 后 MCP、Fitbit monitor、飞书线程和 IPC 全部退出。隔离 HOME 下真实执行 `main.py init`，仅两个内置 memory 插件启动并干净退出。
+- 验证结果：主仓库 `.venv/bin/pytest tests/ -q -W error` 为 `1936 passed in 28.99s`；`pip check` 无损坏依赖；修改范围 pyright 为 `0 errors`，其中 doctor/main 为 `0 errors, 0 warnings`。全量修改文件仍显示 308 条历史动态配置与 runtime unknown-type warning，本批不以 `Any` 或 ignore 掩盖。
+- 残余风险：daynight_gate 是用户显式 disabled，doctor 的 degraded 属预期策略状态；动态配置解析和 AppRuntime 若要清零历史 pyright warning，需要单独收窄边界，不能在本次启动修复中扩大为全文件类型重写。
+
+### PR 检查点：默认记忆、Akasha、Wake 与外置 MCP 行为契约
+
+- 范围：默认记忆显式写入作用域、上下文探针失败判定、default/Wake 主动沙盒、Akasha 真实多轮召回，以及 Feed、Calendar、Fitbit 的主仓库 MCP client 协议。
+- 原问题：显式 `memorize` 没有持久化 channel/chat scope，导致同作用域的 answer/interest 查询看不到刚写入的记忆；上下文探针会把通用错误回复记成成功；主动沙盒硬编码 `default` lifecycle，不能证明 Wake 真正工作；Feed 首次后台刷新会阻塞已有缓存读取。
+- 为什么这样修改：作用域由 memory engine 写入 owner 一次持久化；探针识别主流程的明确失败回复并 fail-loud；沙盒显式选择 lifecycle，并以真实 Feed MCP、WebFetch、消息编排和 ACK 验收；Feed 刷新继续后台执行，缓存读取不等待整轮网络轮询。
+- 不变量与拥有层：MemoryScope 由 memory engine 转换为持久化字段；Context Probe 只判断运行失败，不替代语义评分；Wake reservoir 拥有消费状态，Feed 只把明确反馈写入 `interest_ok`；MCP client 继续拥有 structured content 协议校验。
+- 能力变化：显式偏好可被同会话 answer 查询立即召回；运行时错误不再形成假绿报告；Wake 的 `scratchpad → 正文抓取 → share_content → message_push → ACK` 可重复验收；Feed 刷新期间仍可读取旧缓存。
+- 性能变化：Feed MCP 启动不再把缓存读取阻塞到所有订阅轮询完成；默认记忆仅增加两个已有 scope 字段的持久化，无额外模型调用。
+- 外部插件：Feed canonical 仓库提交 `5c86997`，已推送、重装，并确认运行缓存 commit 与 canonical 一致。
+- 真实验收：默认主动链完成 content、Drift 与兴趣反馈；Wake 完成正文抓取、主动发送、session 持久化和消费 ACK，且 `interest_ok` 保持 `NULL`；Akasha 全新 workspace 两轮会话从“喝茶不加糖”准确召回“不加糖”，生成 2 个节点、2 条边、3 条 query log 和 1 条 activation event；Feed、Calendar、Fitbit 均通过主仓库 MCP client 调用真实插件进程，Fitbit sleep context 返回 12 字段对象。
+- 测试新增：Context Probe 失败回复、默认记忆 scope、fresh init memory/proactive 矩阵和稳定场景文件。测试删除及原因：无。
+- 验证结果：主仓库 `.venv/bin/pytest -q -W error tests/` 为 `1938 passed in 29.21s`；default 与 Wake Docker 主动行为沙盒均通过；修改后的 default memory engine Pyright 为 `0 errors`。

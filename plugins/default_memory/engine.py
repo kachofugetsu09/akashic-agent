@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
@@ -45,7 +45,7 @@ from memory2.procedure_tagger import ProcedureTagger
 from memory2.query_builder import build_procedure_queries
 from memory2.retriever import Retriever
 from memory2.rule_schema import build_procedure_rule_schema
-from memory2.store import VEC_DIM, MemoryStore2
+from memory2.store import VEC_DIM, MemoryHit, MemoryStore2
 from plugins.default_memory.config import DefaultMemoryConfig, resolve_memory_db_path
 
 if TYPE_CHECKING:
@@ -872,10 +872,11 @@ class DefaultMemoryEngine:
 
     # 显式记忆写入入口，供 memorize 工具和内部迁移代码复用。
     async def _remember(self, request: MemoryMutation) -> MemoryMutationResult:
-        # 1. procedure 必须有执行条件，否则降级为 preference。
+        # 1. 归一化记忆类型和会话作用域
         if self._memorizer is None:
             raise RuntimeError("memorizer unavailable")
 
+        scope = resolve_memory_scope(request.scope)
         raw_steps = request.metadata.get("steps")
         steps = (
             [str(step) for step in cast(list[object], raw_steps)]
@@ -890,6 +891,8 @@ class DefaultMemoryEngine:
         extra: dict[str, object] = {
             "tool_requirement": request.metadata.get("tool_requirement"),
             "steps": list(steps or []),
+            "scope_channel": scope.channel,
+            "scope_chat_id": scope.chat_id,
         }
         if memory_type == "procedure":
             extra["rule_schema"] = build_procedure_rule_schema(
@@ -899,7 +902,7 @@ class DefaultMemoryEngine:
             )
             await self._attach_trigger_tags(extra=extra, summary=request.summary)
 
-        # 2. 写入时顺带执行相似记忆 supersede，避免同类偏好堆积。
+        # 2. 写入并合并同作用域内的相似记忆
         result = await self._memorizer.save_item_with_supersede(
             summary=request.summary,
             memory_type=memory_type,
@@ -1052,12 +1055,15 @@ class DefaultMemoryEngine:
         score_threshold: float = 0.0,
         include_superseded: bool = False,
     ) -> list[dict[str, object]]:
-        return self._require_v2_store().find_similar_items_for_dashboard(
-            item_id,
-            top_k=top_k,
-            memory_type=memory_type,
-            score_threshold=score_threshold,
-            include_superseded=include_superseded,
+        return cast(
+            list[dict[str, object]],
+            self._require_v2_store().find_similar_items_for_dashboard(
+                item_id,
+                top_k=top_k,
+                memory_type=memory_type,
+                score_threshold=score_threshold,
+                include_superseded=include_superseded,
+            ),
         )
 
     async def _save_from_consolidation(
@@ -1190,7 +1196,7 @@ class DefaultMemoryEngine:
         )
         sliced = list(hits)[: request.limit]
         return MemoryQueryResult(
-            records=[self._build_record(item) for item in sliced if isinstance(item, dict)],
+            records=[self._build_record(item) for item in sliced],
             trace={
                 "source": self.DESCRIPTOR.name,
                 "intent": request.intent,
@@ -1242,7 +1248,7 @@ class DefaultMemoryEngine:
             scope_chat_id=scope.chat_id or None,
             require_scope_match=should_require_scope_match(request, scope),
         )
-        records = [self._build_record(item) for item in hits if isinstance(item, dict)]
+        records = [self._build_record(item) for item in hits]
         texts = [record.summary for record in records]
         return MemoryQueryResult(
             text_block="\n---\n".join(texts),
@@ -1269,10 +1275,10 @@ class DefaultMemoryEngine:
         time_start: datetime | None = None,
         time_end: datetime | None = None,
         keyword_enabled: bool = True,
-    ) -> list[dict[str, object]]:
+    ) -> list[MemoryHit]:
         retriever = self._require_retriever()
         return cast(
-            list[dict[str, object]],
+            list[MemoryHit],
             await retriever.retrieve(
                 query,
                 memory_types=memory_types,
@@ -1347,7 +1353,7 @@ class DefaultMemoryEngine:
     @classmethod
     def _build_record(
         cls,
-        item: dict[str, object],
+        item: Mapping[str, object],
         *,
         injected_ids: list[str] | None = None,
     ) -> MemoryRecord:

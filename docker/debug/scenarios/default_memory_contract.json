@@ -1,0 +1,20 @@
+{
+  "name": "default_memory_contract",
+  "turns": [
+    {
+      "role": "user",
+      "content": "请记住这条测试偏好：我喝茶时不加糖。只需简短确认。"
+    },
+    {
+      "action": "consolidate",
+      "label": "after_preference",
+      "force": true,
+      "archive_all": false
+    },
+    {
+      "role": "user",
+      "content": "我喝茶时有什么偏好？",
+      "final": true
+    }
+  ]
+}

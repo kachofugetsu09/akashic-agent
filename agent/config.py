@@ -36,8 +36,8 @@ _PRESETS: dict[str, str] = {
 }
 _DEFAULT_TOOLSETS = ("meta_common", "spawn", "schedule", "mcp")
 
-# CLI channel 默认 Unix socket 路径
-DEFAULT_SOCKET = "127.0.0.1:8765" if os.name == "nt" else "/tmp/akashic.sock"
+# 空值表示由 workspace 派生 IPC 端点，避免多个实例争用全局路径。
+DEFAULT_SOCKET = ""
 
 
 def _normalize_cli_socket_endpoint(value: str | None) -> str:
@@ -55,6 +55,21 @@ def _normalize_cli_socket_endpoint(value: str | None) -> str:
             pass
     port_seed = zlib.crc32(text.encode("utf-8")) % 20000
     return f"127.0.0.1:{20000 + port_seed}"
+
+
+def resolve_cli_socket_endpoint(value: str, workspace: Path) -> str:
+    """解析当前 workspace 独占的 IPC 端点。"""
+
+    # 1. 显式配置保持原样
+    if value:
+        return value
+
+    # 2. 缺省配置按 workspace 稳定派生
+    if os.name != "nt":
+        return str(workspace / "akashic.sock")
+    port_seed = zlib.crc32(str(workspace).encode("utf-8")) % 20000
+    return f"127.0.0.1:{20000 + port_seed}"
+
 
 def _validated_timezone(tz_name: str, *, enabled: bool) -> str:
     """仅当 anyaction_enabled=True 时校验时区合法性，无效则启动时 fail-fast。"""
@@ -396,6 +411,7 @@ __all__ = [
     "ChannelsConfig",
     "Config",
     "DEFAULT_SOCKET",
+    "resolve_cli_socket_endpoint",
     "MemoryConfig",
     "MemoryEmbeddingConfig",
     "QQChannelConfig",

@@ -19,6 +19,7 @@ from session.manager import SessionManager
 async def start_channels(
     config: Config,
     *,
+    socket_endpoint: str,
     bus: MessageBus,
     session_manager: SessionManager,
     push_tool: MessagePushTool,
@@ -32,12 +33,12 @@ async def start_channels(
 
     ipc = IPCServerChannel(
         bus,
-        config.channels.socket,
+        socket_endpoint,
         default_session_key=config.channels.cli_session_key,
     )
     try:
         await ipc.start()
-        print(f"Agent 已启动  |  CLI 连接地址: {config.channels.socket}")
+        print(f"Agent 已启动  |  CLI 连接地址: {socket_endpoint}")
 
         attachment_store = AttachmentStore()
 

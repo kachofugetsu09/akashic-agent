@@ -15,6 +15,15 @@ def manifest_path(plugins_home: Path | None = None) -> Path:
     return plugins_root(plugins_home) / "manifest.toml"
 
 
+def builtin_plugin_data_dir(
+    plugin_name: str,
+    plugins_home: Path | None = None,
+) -> Path:
+    """返回内置插件的用户数据目录。"""
+
+    return plugins_root(plugins_home) / "data" / f"{plugin_name}-builtin"
+
+
 def load_plugin_manifest(
     plugins_home: Path | None = None,
 ) -> dict[str, bool]:

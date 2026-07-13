@@ -6,6 +6,9 @@ from math import isfinite
 from pathlib import Path
 from typing import cast
 
+from agent.plugins.manifest import builtin_plugin_data_dir
+from infra.persistence.json_store import atomic_write_text
+
 
 @dataclass(frozen=True)
 class RetrievalThresholdsConfig:
@@ -46,7 +49,7 @@ def load_default_memory_config(
     *,
     plugin_dir: Path | None = None,
 ) -> DefaultMemoryConfig:
-    root = plugin_dir or Path(__file__).resolve().parent
+    root = plugin_dir or builtin_plugin_data_dir("default_memory")
     payload = _read_toml(root / "config.local.toml")
     return _build_config(payload)
 
@@ -80,10 +83,23 @@ def render_default_memory_config(config: DefaultMemoryConfig | None = None) -> s
 
 
 def ensure_default_memory_config_file(*, plugin_dir: Path | None = None) -> Path:
-    root = plugin_dir or Path(__file__).resolve().parent
+    """迁移或创建 default memory 的用户配置。"""
+
+    # 1. 已有用户配置直接复用
+    root = plugin_dir or builtin_plugin_data_dir("default_memory")
     path = root / "config.local.toml"
-    if not path.exists():
-        path.write_text(render_default_memory_config(), encoding="utf-8")
+    if path.exists():
+        return path
+
+    # 2. 首次迁移保留旧目录配置，否则写入默认配置
+    root.mkdir(parents=True, exist_ok=True)
+    legacy_path = Path(__file__).resolve().parent / "config.local.toml"
+    content = (
+        legacy_path.read_text(encoding="utf-8")
+        if legacy_path.exists()
+        else render_default_memory_config()
+    )
+    atomic_write_text(path, content, domain="default_memory.config")
     return path
 
 

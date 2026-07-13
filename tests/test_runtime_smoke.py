@@ -1,5 +1,6 @@
 import asyncio
 import json
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -20,6 +21,7 @@ from agent.config import (
     TelegramChannelConfig,
     _validated_timezone,
     load_config,
+    resolve_cli_socket_endpoint,
 )
 from agent.memory import DEFAULT_SELF_MD
 from bus.event_bus import EventBus
@@ -147,6 +149,63 @@ system_prompt = "test"
 
     assert cfg.memory_window == 40
     assert cfg.memory_optimizer_interval_seconds == 64800
+
+
+def test_default_socket_is_derived_from_workspace(tmp_path: Path) -> None:
+    endpoint = resolve_cli_socket_endpoint(DEFAULT_SOCKET, tmp_path)
+
+    if sys.platform == "win32":
+        assert endpoint.startswith("127.0.0.1:")
+    else:
+        assert endpoint == str(tmp_path / "akashic.sock")
+
+
+def test_main_help_does_not_start_runtime() -> None:
+    result = subprocess.run(
+        [sys.executable, "main.py", "--help"],
+        cwd=Path(__file__).parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "用法: python main.py" in result.stdout
+    assert "Agent 已启动" not in result.stdout
+
+
+@pytest.mark.asyncio
+async def test_inspect_modules_closes_all_owned_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[str] = []
+
+    class _MemoryRuntime:
+        async def aclose(self) -> None:
+            closed.append("memory")
+
+    class _Runtime:
+        memory_runtime = _MemoryRuntime()
+
+        async def inspect_modules(self) -> str:
+            return "graph"
+
+        async def stop(self) -> None:
+            closed.append("core")
+
+    class _Resources:
+        async def aclose(self) -> None:
+            closed.append("http")
+
+    monkeypatch.setattr(main.Config, "load", lambda _path: object())
+    monkeypatch.setattr(main, "SharedHttpResources", _Resources)
+    monkeypatch.setattr(
+        "bootstrap.tools.build_core_runtime",
+        lambda *_args: _Runtime(),
+    )
+
+    await main.inspect_modules()
+
+    assert closed == ["core", "memory", "http"]
 
 
 @pytest.mark.parametrize(
@@ -498,6 +557,28 @@ async def test_app_runtime_run_rethrows_external_cancellation_after_shutdown(tmp
 
 
 @pytest.mark.asyncio
+async def test_primary_task_cancellation_waits_for_async_finally() -> None:
+    cleanup_finished = asyncio.Event()
+
+    async def _primary() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            cleanup_finished.set()
+
+    child = asyncio.create_task(_primary())
+    supervisor = asyncio.create_task(bootstrap_app._run_primary_tasks([child]))
+    await asyncio.sleep(0)
+    supervisor.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await supervisor
+
+    assert cleanup_finished.is_set()
+
+
+@pytest.mark.asyncio
 async def test_app_runtime_task_cleanup_exposes_non_cancel_failure(tmp_path):
     runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
 
@@ -818,6 +899,7 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
         plugin_channel = _QQBotChannel(event_bus=event_bus)
         ipc, host = await start_channels(
             config,
+            socket_endpoint=config.channels.socket,
             bus=cast(Any, object()),
             session_manager=cast(Any, object()),
             push_tool=cast(Any, _PushTool()),
@@ -898,6 +980,7 @@ async def test_start_channels_skips_unfilled_optional_channels(monkeypatch, tmp_
     try:
         ipc, host = await start_channels(
             config,
+            socket_endpoint=config.channels.socket,
             bus=cast(Any, object()),
             session_manager=cast(Any, object()),
             push_tool=cast(Any, _PushTool()),
@@ -948,6 +1031,7 @@ async def test_start_channels_preserves_construction_error_when_ipc_cleanup_fail
         with pytest.raises(RuntimeError, match="channel construction failed") as caught:
             await start_channels(
                 config,
+                socket_endpoint=config.channels.socket,
                 bus=cast(Any, object()),
                 session_manager=cast(Any, object()),
                 push_tool=cast(Any, object()),

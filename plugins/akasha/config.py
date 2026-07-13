@@ -6,6 +6,9 @@ from math import isfinite
 from pathlib import Path
 from typing import cast
 
+from agent.plugins.manifest import builtin_plugin_data_dir
+from infra.persistence.json_store import atomic_write_text
+
 
 @dataclass(frozen=True)
 class AkashaConfig:
@@ -27,7 +30,7 @@ def load_akasha_config(
     plugin_dir: Path | None = None,
 ) -> AkashaConfig:
     # 1. 读取插件目录下的本地配置。
-    root = plugin_dir or Path(__file__).resolve().parent
+    root = plugin_dir or builtin_plugin_data_dir("akasha")
     payload = _read_toml(root / "config.local.toml")
 
     # 2. 把 TOML 字段收敛成强类型配置。
@@ -64,13 +67,24 @@ def render_akasha_config(config: AkashaConfig | None = None) -> str:
     ])
 
 
-# 确保 Akasha 本地配置文件存在。
 def ensure_akasha_config_file(*, plugin_dir: Path | None = None) -> Path:
-    # 1. 缺省时只写入默认配置，不覆盖用户已有配置。
-    root = plugin_dir or Path(__file__).resolve().parent
+    """迁移或创建 Akasha 的用户配置。"""
+
+    # 1. 已有用户配置直接复用
+    root = plugin_dir or builtin_plugin_data_dir("akasha")
     path = root / "config.local.toml"
-    if not path.exists():
-        _ = path.write_text(render_akasha_config(), encoding="utf-8")
+    if path.exists():
+        return path
+
+    # 2. 首次迁移保留旧目录配置，否则写入默认配置
+    root.mkdir(parents=True, exist_ok=True)
+    legacy_path = Path(__file__).resolve().parent / "config.local.toml"
+    content = (
+        legacy_path.read_text(encoding="utf-8")
+        if legacy_path.exists()
+        else render_akasha_config()
+    )
+    atomic_write_text(path, content, domain="akasha.config")
     return path
 
 

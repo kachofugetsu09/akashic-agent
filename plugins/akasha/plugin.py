@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from pathlib import Path
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -64,7 +63,7 @@ class AkashaPlugin(Plugin):
         store = AkashaStore(
             resolve_akasha_db_path(
                 workspace=workspace,
-                akasha_config=load_akasha_config(plugin_dir=Path(__file__).resolve().parent),
+                akasha_config=load_akasha_config(),
             )
         )
         try:

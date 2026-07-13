@@ -22,7 +22,12 @@ from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryQuery, MemoryQueryIntent, MemoryScope
 from agent.plugins.context import PluginContext, PluginKVStore
 from agent.config_models import Config, MemoryConfig, MemoryEmbeddingConfig
-from plugins.akasha.config import AkashaConfig, load_akasha_config, render_akasha_config
+from plugins.akasha.config import (
+    AkashaConfig,
+    ensure_akasha_config_file,
+    load_akasha_config,
+    render_akasha_config,
+)
 import plugins.akasha.dashboard as akasha_dashboard
 from plugins.akasha.dashboard import (
     AkashaGraphReader,
@@ -94,6 +99,22 @@ def test_akasha_config_uses_defaults_only_for_missing_fields(tmp_path: Path) -> 
     assert config.assistant_preview_chars == AkashaConfig().assistant_preview_chars
 
 
+def test_akasha_config_migrates_to_user_data_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "data" / "akasha-builtin"
+    monkeypatch.setattr(
+        "plugins.akasha.config.builtin_plugin_data_dir",
+        lambda _name: target,
+    )
+
+    path = ensure_akasha_config_file()
+
+    assert path == target / "config.local.toml"
+    assert load_akasha_config() == AkashaConfig()
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -120,7 +141,14 @@ def test_akasha_config_rejects_invalid_present_fields(
         load_akasha_config(plugin_dir=tmp_path)
 
 
-def test_akasha_dashboard_exposes_invalid_plugin_config(tmp_path: Path) -> None:
+def test_akasha_dashboard_exposes_invalid_plugin_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "plugins.akasha.config.builtin_plugin_data_dir",
+        lambda _name: tmp_path,
+    )
     (tmp_path / "config.local.toml").write_text("db_path = [", encoding="utf-8")
 
     with pytest.raises(tomllib.TOMLDecodeError):

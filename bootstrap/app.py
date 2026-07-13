@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+from agent.config import resolve_cli_socket_endpoint
 from agent.config_models import Config
 from bootstrap.channel_host import ChannelHost
 from bootstrap.channels import start_channels
@@ -80,9 +81,15 @@ async def _run_primary_tasks(tasks: list[asyncio.Future[Any]]) -> None:
 
     try:
         _ = await asyncio.gather(*tasks)
-    except (asyncio.CancelledError, Exception):
+    except asyncio.CancelledError:
+        # gather 已把取消传播给子任务；再次 cancel 会打断子任务的 finally。
+        if tasks:
+            _ = await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+    except Exception:
         for task in tasks:
-            _ = task.cancel()
+            if not task.done():
+                _ = task.cancel()
         if tasks:
             _ = await asyncio.gather(*tasks, return_exceptions=True)
         raise
@@ -236,6 +243,10 @@ class AppRuntime:
                 plugin_channels.append(self.web_chat_channel)
             self.ipc, self.channel_host = await start_channels(
                 self.config,
+                socket_endpoint=resolve_cli_socket_endpoint(
+                    self.config.channels.socket,
+                    self.workspace,
+                ),
                 bus=self.bus,
                 session_manager=self.session_manager,
                 push_tool=self.push_tool,

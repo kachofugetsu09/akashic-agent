@@ -6,6 +6,7 @@ import pytest
 
 from plugins.default_memory.config import (
     DefaultMemoryConfig,
+    ensure_default_memory_config_file,
     load_default_memory_config,
     resolve_memory_db_path,
 )
@@ -17,6 +18,22 @@ def test_default_memory_config_reads_example_defaults() -> None:
     assert cfg.retrieval.top_k_history == 8
     assert cfg.retrieval.thresholds.procedure == 0.66
     assert cfg.retrieval.inject.max_chars == 6000
+
+
+def test_default_memory_config_migrates_to_user_data_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "data" / "default_memory-builtin"
+    monkeypatch.setattr(
+        "plugins.default_memory.config.builtin_plugin_data_dir",
+        lambda _name: target,
+    )
+
+    path = ensure_default_memory_config_file()
+
+    assert path == target / "config.local.toml"
+    assert load_default_memory_config().retrieval.top_k_history == 8
 
 
 def test_default_memory_config_local_overrides(tmp_path: Path) -> None:
