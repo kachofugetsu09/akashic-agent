@@ -842,11 +842,18 @@ def test_hazard_threshold_is_capped_for_leaky_integrator(tmp_path, request):
         FakeOrchestrator(),
         _source("content"),
     )
-    scope.rng = SimpleNamespace(gammavariate=lambda *_: 99.0)
+    samples = []
+
+    def sample_threshold(shape, scale):
+        samples.append((shape, scale))
+        return 99.0
+
+    scope.rng = SimpleNamespace(gammavariate=sample_threshold)
     runtime = WakeRuntime(scope, clock=FixedClock(datetime(2026, 7, 12, tzinfo=UTC)))
     request.addfinalizer(runtime.close)
 
-    assert runtime._sample_threshold("telegram:1", datetime(2026, 7, 12, tzinfo=UTC)) == 2.0
+    assert runtime._sample_threshold("telegram:1", datetime(2026, 7, 12, tzinfo=UTC)) == 1.0
+    assert samples == [(3.0, 0.25)]
 
 
 def test_replay_last_user_time_cannot_see_future_message(tmp_path, request):
