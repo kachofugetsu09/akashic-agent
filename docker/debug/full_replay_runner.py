@@ -13,6 +13,7 @@ import sys
 import time
 import tomllib
 from collections import defaultdict
+from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -22,7 +23,11 @@ import toml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from agent.plugins.manifest import load_plugin_manifest, write_plugin_manifest
+from agent.plugins.manifest import (
+    load_plugin_manifest,
+    write_package_manifest,
+    write_plugin_manifest,
+)
 from core.clock import ReplayClock
 from docker.debug.replay_controller import ReplayLayout, append_event, initialize
 
@@ -107,6 +112,81 @@ def load_feed_union(paths: list[Path], end_at: datetime) -> list[FeedItem]:
     return sorted(latest.values(), key=lambda item: (item.first_seen_at, item.event_id))
 
 
+def load_wake_reservoir(
+    paths: list[Path],
+    end_at: datetime,
+) -> tuple[
+    list[FeedItem],
+    dict[str, tuple[float, dict[str, Any], dict[str, Any]]],
+]:
+    """从真实 Wake reservoir 读取内容和已持久化的预处理分数。"""
+
+    # 1. 只读加载本地已接收内容
+    latest: dict[str, FeedItem] = {}
+    scores: dict[str, tuple[float, dict[str, Any], dict[str, Any]]] = {}
+    for path in paths:
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        with closing(_open_readonly(path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT source_event_id, original_source_id, published_at,
+                       first_seen_at, preprocess_score, payload_json
+                FROM reservoir_events
+                WHERE kind = 'content' AND julianday(first_seen_at) <= julianday(?)
+                ORDER BY julianday(first_seen_at), item_id
+                """,
+                (end_at.isoformat(),),
+            )
+            for row in rows:
+                payload = cast(dict[str, Any], json.loads(str(row["payload_json"])))
+                event_id = str(row["source_event_id"])
+                first_seen_at = _parse_time(row["first_seen_at"])
+                raw_published_at = str(row["published_at"] or "")
+                published_at = _parse_time(raw_published_at) if raw_published_at else None
+                latest[event_id] = FeedItem(
+                    event_id=event_id,
+                    source_id=str(row["original_source_id"]),
+                    source_name=str(
+                        payload.get("source_name") or row["original_source_id"]
+                    ),
+                    source_type=str(payload.get("source_type") or "wake"),
+                    title=str(payload.get("title") or ""),
+                    content=str(payload.get("content") or ""),
+                    url=str(payload.get("url") or ""),
+                    author=str(payload.get("author") or ""),
+                    published_at=published_at,
+                    first_seen_at=first_seen_at,
+                    last_seen_at=_parse_time(
+                        payload.get("last_seen_at") or first_seen_at
+                    ),
+                    content_hash=str(payload.get("content_hash") or ""),
+                )
+                features = payload.get("preprocess_features")
+                typed_features = (
+                    cast(dict[str, Any], features)
+                    if isinstance(features, dict)
+                    else {}
+                )
+                scores[event_id] = (
+                    float(row["preprocess_score"]),
+                    typed_features,
+                    {
+                        "published_at": published_at.isoformat()
+                        if published_at is not None
+                        else None,
+                        "wake_eligible": bool(payload.get("wake_eligible", True)),
+                    },
+                )
+
+    # 2. 返回可直接交给现有回放管线的数据
+    items = sorted(
+        latest.values(),
+        key=lambda item: (item.first_seen_at, item.event_id),
+    )
+    return items, scores
+
+
 def _feed_item(row: tuple[Any, ...]) -> FeedItem:
     first_seen_at = _parse_time(row[9])
     raw_published_at = _parse_time(row[8]) if row[8] else None
@@ -145,6 +225,9 @@ def _event_identity(item: FeedItem) -> str:
 
 
 def occupied_hour_steps(items: list[FeedItem], end_at: datetime) -> list[tuple[datetime, int]]:
+    """按可见小时推进回放，并保留结束时刻所在的部分小时。"""
+
+    # 1. 统计每个自然小时内首次出现的事件
     counts: dict[datetime, int] = defaultdict(int)
     for item in items:
         hour = item.first_seen_at.replace(minute=0, second=0, microsecond=0)
@@ -156,6 +239,10 @@ def occupied_hour_steps(items: list[FeedItem], end_at: datetime) -> list[tuple[d
     while target <= end_at:
         steps.append((target, counts[target - timedelta(hours=1)]))
         target += timedelta(hours=1)
+    # 2. 非整点结束时，补进当前尚未结算的部分小时
+    end_hour = end_at.replace(minute=0, second=0, microsecond=0)
+    if end_at > end_hour:
+        steps.append((end_at, counts[end_hour]))
     return steps
 
 
@@ -199,6 +286,10 @@ def prepare_profile(
         isolated,
         plugins_home=layout.profile_root / "home" / ".akashic-plugin",
     )
+    _ = write_package_manifest(
+        {"wake-proactive": True},
+        plugins_home=layout.profile_root / "home" / ".akashic-plugin",
+    )
     _patch_config(layout.profile_root / "config.toml")
 
 
@@ -224,6 +315,7 @@ def copy_context_snapshot(
 
 def _patch_config(path: Path) -> None:
     config = cast(dict[str, Any], tomllib.loads(path.read_text(encoding="utf-8")))
+    config.pop("integrations", None)
     channels = config.setdefault("channels", {})
     for value in channels.values():
         if isinstance(value, dict) and "enabled" in value:
@@ -469,7 +561,12 @@ def wait_until_stable(
     expected_events: int,
     timeout: float,
     quiet_seconds: float,
+    minimum_wait_seconds: float = 0.0,
 ) -> dict[str, Any]:
+    """等待当前模拟时刻完成处理并进入稳定状态。"""
+
+    # 1. 为无事件时刻保留至少一个 runtime tick 的处理窗口
+    started = time.monotonic()
     deadline = time.monotonic() + timeout
     stable_since: float | None = None
     previous_signature: str | None = None
@@ -489,11 +586,15 @@ def wait_until_stable(
             raise RuntimeError(
                 f"同一模拟时刻已有 {incomplete_at_target} 个未终止 wake: {target.isoformat()}"
             )
+        target_processed = (
+            target.isoformat() in latest["processed_times"]
+            or time.monotonic() - started >= minimum_wait_seconds
+        )
         ready = (
             latest["reservoir_total"] >= expected_events
             and latest["unfinished_ticks"] == 0
             and not latest["active_incomplete_wake_times"]
-            and target.isoformat() in latest["processed_times"]
+            and target_processed
         )
         signature = json.dumps(latest["stable_state"], ensure_ascii=False, sort_keys=True)
         now = time.monotonic()
@@ -663,12 +764,15 @@ def _read_jsonl(path: Path) -> Iterable[dict[str, Any]]:
 def run(args: argparse.Namespace) -> dict[str, Any]:
     end_at = _parse_time(args.end_at)
     layout = ReplayLayout.for_profile(args.profile)
-    items = load_feed_union(args.feed_db, end_at)
+    items = load_feed_union(args.feed_db or [], end_at)
+    wake_items, wake_scores = load_wake_reservoir(args.wake_db or [], end_at)
+    items.extend(wake_items)
+    items.sort(key=lambda item: (item.first_seen_at, item.event_id))
     if args.start_at:
         start_at = _parse_time(args.start_at)
         items = [item for item in items if item.first_seen_at >= start_at]
     source_event_count = len(items)
-    score_map = load_score_map(args.score_map)
+    score_map = {**wake_scores, **load_score_map(args.score_map)}
     items = admit_replay_items(items, score_map)
     if not items:
         raise ValueError("指定时间范围内没有通过衰减准入的 Feed items")
@@ -722,6 +826,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 expected_events=cumulative,
                 timeout=args.step_timeout,
                 quiet_seconds=args.quiet_seconds,
+                minimum_wait_seconds=3.0 if event_count == 0 else 0.0,
             )
             record: dict[str, Any] = {
                 "step": index,
@@ -783,7 +888,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Feed 全量快照的真实 Runtime 小时回放")
     _ = parser.add_argument("--profile", default="wake-full-replay")
     _ = parser.add_argument("--template-profile", default="wake-history-replay")
-    _ = parser.add_argument("--feed-db", type=Path, action="append", required=True)
+    _ = parser.add_argument("--feed-db", type=Path, action="append")
+    _ = parser.add_argument("--wake-db", type=Path, action="append")
     _ = parser.add_argument("--start-at")
     _ = parser.add_argument("--end-at", required=True)
     _ = parser.add_argument("--score-map", type=Path)

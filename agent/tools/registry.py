@@ -120,13 +120,18 @@ class ToolDocument:
 class ToolRegistry:
     """管理所有可用工具"""
 
-    def __init__(self, backend: SearchBackend | None = None) -> None:
+    def __init__(
+        self,
+        backend: SearchBackend | None = None,
+        *,
+        follow_runtime_snapshot: bool = True,
+    ) -> None:
         self._tools: dict[str, Tool] = {}
         self._metadata: dict[str, ToolMeta] = {}
         self._documents: dict[str, ToolDocument] = {}
         self._context: dict[str, str] = {}
         self._backend: SearchBackend = backend or KeywordSearchBackend()
-        self._snapshot_view = False
+        self._snapshot_view = not follow_runtime_snapshot
 
     def fork(
         self,

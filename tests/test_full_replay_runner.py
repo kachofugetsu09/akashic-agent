@@ -14,6 +14,7 @@ from docker.debug.full_replay_runner import (
     copy_context_snapshot,
     load_feed_union,
     load_score_map,
+    load_wake_reservoir,
     occupied_hour_steps,
     refresh_replay_eligibility,
     wait_until_stable,
@@ -108,6 +109,48 @@ def test_feed_union_uses_latest_snapshot_but_first_seen_for_availability(tmp_pat
     assert items[0].first_seen_at == datetime(2026, 7, 11, 3, 12, tzinfo=UTC)
 
 
+def test_wake_reservoir_supplies_real_events_and_scores(tmp_path) -> None:
+    path = tmp_path / "wake.db"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        """
+        CREATE TABLE reservoir_events(
+            item_id TEXT PRIMARY KEY, kind TEXT, source_id TEXT,
+            original_source_id TEXT, ack_source_id TEXT, source_event_id TEXT,
+            published_at TEXT, first_seen_at TEXT, preprocess_score REAL,
+            payload_json TEXT, embedding_json TEXT, status TEXT, consumed_at TEXT
+        )
+        """
+    )
+    connection.execute(
+        "INSERT INTO reservoir_events VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "feed:event-1", "content", "feed", "source", "feed", "event-1",
+            "2026-07-12T00:00:00+00:00", "2026-07-12T01:00:00+00:00",
+            0.4,
+            json.dumps(
+                {
+                    "title": "真实池内容",
+                    "source_name": "Source",
+                    "preprocess_features": {"interest": 0.7},
+                },
+                ensure_ascii=False,
+            ),
+            None, "unread", None,
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    items, scores = load_wake_reservoir(
+        [path], datetime(2026, 7, 13, tzinfo=UTC)
+    )
+
+    assert [item.title for item in items] == ["真实池内容"]
+    assert scores["event-1"][0] == 0.4
+    assert scores["event-1"][1]["interest"] == 0.7
+
+
 def test_occupied_hour_steps_groups_by_first_seen_hour(tmp_path) -> None:
     feed = tmp_path / "feed.db"
     _feed_db(
@@ -132,6 +175,21 @@ def test_occupied_hour_steps_groups_by_first_seen_hour(tmp_path) -> None:
         (datetime(2026, 7, 11, 5, tzinfo=UTC), 0),
         (datetime(2026, 7, 11, 6, tzinfo=UTC), 1),
     ]
+
+
+def test_occupied_hour_steps_includes_partial_final_hour(tmp_path) -> None:
+    item = FeedItem(
+        event_id="last", source_id="source", source_name="Feed",
+        source_type="rss", title="last", content="body", url="", author="",
+        published_at=datetime(2026, 7, 13, 13, 5, tzinfo=UTC),
+        first_seen_at=datetime(2026, 7, 13, 13, 10, tzinfo=UTC),
+        last_seen_at=datetime(2026, 7, 13, 13, 10, tzinfo=UTC),
+        content_hash="last",
+    )
+
+    assert occupied_hour_steps(
+        [item], datetime(2026, 7, 13, 13, 30, tzinfo=UTC)
+    ) == [(datetime(2026, 7, 13, 13, 30, tzinfo=UTC), 1)]
 
 
 def test_feed_union_keeps_item_without_published_at(tmp_path) -> None:
@@ -201,6 +259,10 @@ def test_patch_config_preserves_history_target_and_disables_external_channel(tmp
         [proactive.target]
         channel = "telegram"
         chat_id = "7674283004"
+        [integrations]
+        [[integrations.peer_agents]]
+        name = "host-only"
+        cwd = "/host/path"
         """,
         encoding="utf-8",
     )
@@ -212,6 +274,7 @@ def test_patch_config_preserves_history_target_and_disables_external_channel(tmp
         "channel": "telegram", "chat_id": "7674283004"
     }
     assert config["channels"]["telegram"]["enabled"] is False
+    assert "integrations" not in config
     assert _target_channel(path) == "telegram"
 
 
@@ -413,6 +476,27 @@ def test_wait_does_not_advance_while_wake_is_incomplete(tmp_path) -> None:
             timeout=0.05,
             quiet_seconds=0,
         )
+
+
+def test_wait_accepts_noop_target_after_minimum_wait(tmp_path) -> None:
+    replay_root = tmp_path / "workspace" / "replay"
+    layout = ReplayLayout(
+        tmp_path, replay_root, replay_root / "clock.json",
+        replay_root / "events.jsonl", replay_root / "outbox.jsonl",
+    )
+    target = datetime(2026, 7, 12, tzinfo=UTC)
+    _ = initialize(layout, target)
+
+    snapshot = wait_until_stable(
+        layout,
+        target=target,
+        expected_events=0,
+        timeout=1,
+        quiet_seconds=0,
+        minimum_wait_seconds=0.01,
+    )
+
+    assert target.isoformat() not in snapshot["processed_times"]
 
 
 def test_wait_accepts_stale_incomplete_attempt_after_later_success(tmp_path) -> None:

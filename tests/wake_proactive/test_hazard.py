@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from plugins.wake_proactive.hazard import advance_hazard, rank_events
 
 
-def test_hazard_uses_semantic_interest_without_changing_title_order():
+def test_new_content_event_can_trigger_from_semantic_interest() -> None:
     now = datetime(2026, 7, 12, tzinfo=UTC)
     result = advance_hazard(
         [
@@ -15,62 +15,91 @@ def test_hazard_uses_semantic_interest_without_changing_title_order():
             }
         ],
         now=now,
-        hazard=0.0,
-        threshold=0.8,
-        updated_at=None,
+        new_item_ids={"feed:1"},
+        random_draw=0.1,
         last_wake_at=None,
     )
 
-    assert result.evidence > 2.0
+    assert result.should_wake is True
+    assert result.rate > 0.1
     assert result.driver_item_id == "feed:1"
 
 
-def test_hazard_continuously_downweights_stale_missing_and_ineligible_backfill():
+def test_content_trigger_uses_every_active_source() -> None:
     now = datetime(2026, 7, 12, tzinfo=UTC)
+    events = [
+        {
+            "id": f"feed:{index}",
+            "source_id": f"source:{index}",
+            "published_at": now.isoformat(),
+            "preprocess_score": 0.4,
+        }
+        for index in range(12)
+    ]
     result = advance_hazard(
-        [
-            {"id": "missing", "preprocess_score": 0.99},
-            {
-                "id": "stale",
-                "published_at": (now - timedelta(days=10)).isoformat(),
-                "preprocess_score": 0.99,
-            },
-            {
-                "id": "backfill",
-                "published_at": now.isoformat(),
-                "preprocess_score": 0.99,
-                "wake_eligible": False,
-            },
-        ],
+        events,
         now=now,
-        hazard=0.3,
-        threshold=0.4,
-        updated_at=now - timedelta(hours=5),
+        new_item_ids={"feed:11"},
+        random_draw=1.0,
+        last_wake_at=None,
+    )
+    first_eight = advance_hazard(
+        events[:8],
+        now=now,
+        new_item_ids={"feed:7"},
+        random_draw=1.0,
         last_wake_at=None,
     )
 
-    fresh = advance_hazard(
+    assert result.evidence > first_eight.evidence
+
+
+def test_old_pool_never_triggers_without_a_new_event() -> None:
+    now = datetime(2026, 7, 12, tzinfo=UTC)
+    result = advance_hazard(
         [
             {
-                "id": "fresh",
+                "id": "old",
                 "published_at": now.isoformat(),
                 "preprocess_score": 0.99,
             }
         ],
         now=now,
-        hazard=0.3,
-        threshold=10.0,
-        updated_at=now - timedelta(hours=5),
+        new_item_ids=set(),
+        random_draw=0.0,
         last_wake_at=None,
     )
 
     assert result.should_wake is False
-    assert result.evidence > 0
-    assert result.evidence < fresh.evidence * 0.05
-    assert result.hazard_after < 0.3
+    assert result.rate == 0.0
 
 
-def test_ranking_uses_source_diversity_decay_instead_of_source_quota():
+def test_recent_judgement_softly_reduces_event_probability() -> None:
+    now = datetime(2026, 7, 12, tzinfo=UTC)
+    event = {
+        "id": "new",
+        "published_at": now.isoformat(),
+        "preprocess_score": 0.9,
+    }
+    recent = advance_hazard(
+        [event],
+        now=now,
+        new_item_ids={"new"},
+        random_draw=1.0,
+        last_wake_at=now - timedelta(minutes=5),
+    )
+    rested = advance_hazard(
+        [event],
+        now=now,
+        new_item_ids={"new"},
+        random_draw=1.0,
+        last_wake_at=now - timedelta(hours=8),
+    )
+
+    assert 0.0 < recent.rate < rested.rate
+
+
+def test_ranking_geometrically_saturates_each_source() -> None:
     now = datetime(2026, 7, 12, tzinfo=UTC)
     ranked = rank_events(
         [
@@ -97,69 +126,4 @@ def test_ranking_uses_source_diversity_decay_instead_of_source_quota():
     )
 
     assert [event["id"] for event in ranked] == ["a1", "b1", "a2"]
-    assert ranked[2]["_wake_rank_features"]["source_diversity"] < 1.0
-
-
-def test_weak_stale_signal_reaches_low_steady_state_instead_of_waiting_out_gate():
-    now = datetime(2026, 7, 12, tzinfo=UTC)
-    event = {
-        "id": "weak",
-        "published_at": (now - timedelta(days=5)).isoformat(),
-        "preprocess_score": 0.1,
-    }
-    hazard = 0.0
-    for hour in range(48):
-        result = advance_hazard(
-            [event],
-            now=now + timedelta(hours=hour),
-            hazard=hazard,
-            threshold=1.0,
-            updated_at=now + timedelta(hours=hour - 1),
-            last_wake_at=None,
-        )
-        hazard = result.hazard_after
-
-    assert result.should_wake is False
-    assert hazard < 0.2
-
-
-def test_time_causal_interest_continuously_increases_wake_pressure():
-    now = datetime(2026, 7, 12, tzinfo=UTC)
-    result = advance_hazard(
-        [
-            {
-                "id": "gpt-sol-release",
-                "published_at": now.isoformat(),
-                "preprocess_score": 0.5,
-                "_wake_semantic_interest": 0.9,
-                "_wake_interest_score": 0.95,
-            }
-        ],
-        now=now,
-        hazard=0.0,
-        threshold=0.8,
-        updated_at=now - timedelta(minutes=5),
-        last_wake_at=None,
-    )
-
-    assert result.hazard_after < result.threshold
-    assert result.should_wake is True
-
-    unrelated = advance_hazard(
-        [
-            {
-                "id": "generic-release",
-                "published_at": now.isoformat(),
-                "preprocess_score": 0.5,
-                "_wake_semantic_interest": 0.1,
-                "_wake_interest_score": 0.55,
-            }
-        ],
-        now=now,
-        hazard=0.0,
-        threshold=1.0,
-        updated_at=now - timedelta(minutes=5),
-        last_wake_at=None,
-    )
-
-    assert unrelated.should_wake is False
+    assert ranked[2]["_wake_rank_features"]["source_diversity"] == 0.5

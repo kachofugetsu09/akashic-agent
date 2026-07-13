@@ -9,12 +9,12 @@ from typing import Any
 _FRESHNESS_HALF_LIFE_HOURS = 36.0
 _MISSING_PUBLICATION_CONFIDENCE = 0.03
 _INELIGIBLE_CONFIDENCE_MULTIPLIER = 0.01
-_EVIDENCE_RANK_DECAY = 0.7
-_EVIDENCE_LIMIT = 8
 _SOURCE_DIVERSITY_DECAY = 0.5
-_SOURCE_DIVERSITY_FLOOR = 0.05
-_HAZARD_HALF_LIFE_HOURS = 6.0
 WAKE_ADMISSION_FLOOR = 0.02
+_NEW_MASS_SCALE = 0.35
+_POOL_MASS_SCALE = 1.5
+_CONTENT_TRIGGER_GAIN = 3.0
+_REFRACTORY_HOURS = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,19 +44,23 @@ def advance_hazard(
     events: list[dict[str, Any]],
     *,
     now: datetime,
-    hazard: float,
-    threshold: float,
-    updated_at: datetime | None,
+    new_item_ids: set[str],
+    random_draw: float,
     last_wake_at: datetime | None,
-    lambda_max: float = 0.790506,
 ) -> HazardResult:
-    if not events:
-        return HazardResult(False, hazard, hazard, threshold, 0.0, 0.0, 0.0, 0.0, "")
+    """用新事件推动全池概率抽签，并返回可审计的触发结果。"""
+
+    # 1. 计算所有存活内容的压力和本轮新增质量
+    if not events or not new_item_ids:
+        return HazardResult(
+            False, 0.0, 0.0, random_draw, 0.0, 0.0, 0.0, 0.0, ""
+        )
 
     ranked = rank_events(events, now=now)
     contributions: list[tuple[str, float]] = []
     preference_pressure = 0.0
-    for position, event in enumerate(ranked[:_EVIDENCE_LIMIT]):
+    new_mass = 0.0
+    for event in ranked:
         features = event["_wake_rank_features"]
         probability = float(features["interest"])
         semantic_interest = float(features["semantic_interest"])
@@ -66,41 +70,46 @@ def advance_hazard(
             preference_pressure,
             semantic_interest * probability * freshness * confidence,
         )
-        contribution = float(event["_wake_rank_score"]) * (
-            _EVIDENCE_RANK_DECAY ** position
+        item_id = str(event.get("id") or "")
+        contribution = max(
+            0.0,
+            float(event["_wake_rank_score"]) - WAKE_ADMISSION_FLOOR,
         )
-        contributions.append((str(event.get("id") or ""), contribution))
+        contributions.append((item_id, contribution))
+        if item_id in new_item_ids:
+            new_mass += contribution
 
     if not contributions:
-        return HazardResult(False, hazard, hazard, threshold, 0.0, 0.0, 0.0, 0.0, "")
+        return HazardResult(
+            False, 0.0, 0.0, random_draw, 0.0, 0.0, 0.0, 0.0, ""
+        )
 
+    # 2. 新事件提供 kick，旧池只放大本次抽签
     evidence = sum(value for _, value in contributions)
     refractory = (
-        math.exp(-max(0.0, (now - last_wake_at).total_seconds()) / (2 * 3600))
+        1.0
+        - math.exp(
+            -max(0.0, (now - last_wake_at).total_seconds())
+            / (_REFRACTORY_HOURS * 3600)
+        )
         if last_wake_at is not None
-        else 0.0
+        else 1.0
     )
-    advantage = evidence - 2.0 - refractory
-    scaled = max(-60.0, min(60.0, advantage / 0.5))
-    rate = lambda_max / (1 + math.exp(-scaled))
-    elapsed_hours = (
-        max(0.0, (now - updated_at).total_seconds() / 3600)
-        if updated_at is not None
-        else 5 / 60
-    )
-    before = hazard
-    time_constant = _HAZARD_HALF_LIFE_HOURS / math.log(2.0)
-    retention = math.exp(-elapsed_hours / time_constant)
-    after = hazard * retention + rate * time_constant * (1.0 - retention)
+    new_signal = 1.0 - math.exp(-new_mass / _NEW_MASS_SCALE)
+    pool_signal = 1.0 - math.exp(-evidence / _POOL_MASS_SCALE)
+    event_drive = new_signal * (0.25 + 0.75 * pool_signal) * refractory
+    probability = 1.0 - math.exp(-_CONTENT_TRIGGER_GAIN * event_drive)
     driver = max(contributions, key=lambda pair: pair[1])[0]
+
+    # 3. 概率抽签只在新事件到达时发生
     return HazardResult(
-        should_wake=after + preference_pressure >= threshold,
-        hazard_before=before,
-        hazard_after=after,
-        threshold=threshold,
+        should_wake=random_draw < probability,
+        hazard_before=new_mass,
+        hazard_after=probability,
+        threshold=random_draw,
         evidence=evidence,
         refractory=refractory,
-        rate=rate,
+        rate=probability,
         preference_pressure=preference_pressure,
         driver_item_id=driver,
     )
@@ -166,11 +175,7 @@ def rank_events(
             or "unknown"
         )
         position = source_counts.get(source_id, 0)
-        multiplier = (
-            (1.0 - _SOURCE_DIVERSITY_FLOOR)
-            * (_SOURCE_DIVERSITY_DECAY ** position)
-            + _SOURCE_DIVERSITY_FLOOR
-        )
+        multiplier = _SOURCE_DIVERSITY_DECAY ** position
         source_counts[source_id] = position + 1
         event["_wake_rank_score"] = float(event["_wake_rank_score"]) * multiplier
         event["_wake_rank_features"]["source_diversity"] = multiplier
