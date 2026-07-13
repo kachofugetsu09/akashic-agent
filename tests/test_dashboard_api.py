@@ -871,6 +871,12 @@ def test_proactive_reader_rejects_corrupt_json() -> None:
     with pytest.raises(ValueError, match="JSON 列表损坏"):
         dashboard_api.ProactiveDashboardReader._decode_json_list("{")
 
+    with pytest.raises(ValueError, match="列表元素类型错误"):
+        dashboard_api.ProactiveDashboardReader._decode_json_list('["ok", 1]')
+
+    with pytest.raises(ValueError, match="存储类型错误"):
+        dashboard_api.ProactiveDashboardReader._decode_json_object(b"{}")
+
 
 def test_wake_package_owns_dashboard_visibility(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(

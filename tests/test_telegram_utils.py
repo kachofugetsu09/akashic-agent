@@ -209,6 +209,11 @@ async def test_plain_text_fallback_respects_utf16_message_limit(monkeypatch):
     )
 
 
+def test_plain_text_split_rejects_character_larger_than_limit() -> None:
+    with pytest.raises(ValueError, match="单个字符超过"):
+        telegram_utils_module._split_text("😀", 1)
+
+
 def test_render_telegram_preview_html_renders_markdown():
     html = render_telegram_preview_html("### 标题\n\n**重点**\n\n- 一\n- 二")
     assert "<b>标题</b>" in html

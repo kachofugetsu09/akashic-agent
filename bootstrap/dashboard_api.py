@@ -410,8 +410,8 @@ class ProactiveDashboardReader:
         return {key: row[key] for key in row.keys()}
 
     @staticmethod
-    def _decode_json_list(raw: Any) -> list[str]:
-        text = str(raw or "").strip()
+    def _decode_json_list(raw: object) -> list[str]:
+        text = ProactiveDashboardReader._json_text(raw, "列表")
         if not text:
             return []
         try:
@@ -420,7 +420,9 @@ class ProactiveDashboardReader:
             raise ValueError("proactive dashboard JSON 列表损坏") from exc
         if not isinstance(value, list):
             raise ValueError("proactive dashboard JSON 列表类型错误")
-        return [str(item) for item in value]
+        if not all(isinstance(item, str) for item in value):
+            raise ValueError("proactive dashboard JSON 列表元素类型错误")
+        return value
 
     def _row_to_tick_log(self, row: sqlite3.Row) -> dict[str, Any]:
         payload = self._row_to_dict(row)
@@ -436,8 +438,8 @@ class ProactiveDashboardReader:
         return payload
 
     @staticmethod
-    def _decode_json_object_list(raw: Any) -> list[dict[str, Any]]:
-        text = str(raw or "").strip()
+    def _decode_json_object_list(raw: object) -> list[dict[str, Any]]:
+        text = ProactiveDashboardReader._json_text(raw, "对象列表")
         if not text:
             return []
         try:
@@ -467,8 +469,8 @@ class ProactiveDashboardReader:
         return payload
 
     @staticmethod
-    def _decode_json_object(raw: Any) -> dict[str, Any]:
-        text = str(raw or "").strip()
+    def _decode_json_object(raw: object) -> dict[str, Any]:
+        text = ProactiveDashboardReader._json_text(raw, "对象")
         if not text:
             return {}
         try:
@@ -478,6 +480,14 @@ class ProactiveDashboardReader:
         if not isinstance(value, dict):
             raise ValueError("proactive dashboard JSON 对象类型错误")
         return value
+
+    @staticmethod
+    def _json_text(raw: object, label: str) -> str:
+        if raw is None:
+            return ""
+        if not isinstance(raw, str):
+            raise ValueError(f"proactive dashboard JSON {label}存储类型错误")
+        return raw.strip()
 
 
 _pending_plugins: set[tuple[Path, Path]] = set()
@@ -787,7 +797,8 @@ def create_dashboard_app(
                 media_type="text/plain; charset=utf-8",
                 status_code=503,
             )
-        return FileResponse(index_file, media_type="text/html")
+        html = index_file.read_text(encoding="utf-8")
+        return Response(content=html, media_type="text/html")
 
     @app.get("/api/dashboard/plugins")
     def list_dashboard_plugins() -> list[dict[str, Any]]:

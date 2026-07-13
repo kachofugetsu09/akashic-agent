@@ -360,7 +360,7 @@ async def send_markdown(
 
 
 def _split_text(text: str, limit: int) -> list[str]:
-    """按行切分文本，每段不超过 limit 个 UTF-16 code unit。"""
+    """按行切分文本，每段不超过 limit 个 UTF-16 码元。"""
     if limit <= 0:
         raise ValueError("文本分段上限必须大于 0")
     chunks: list[str] = []
@@ -380,7 +380,7 @@ def _split_text(text: str, limit: int) -> list[str]:
                     chunks.append("".join(current))
                     current, current_len = [], 0
                     continue
-                cut = 1
+                raise ValueError("单个字符超过文本分段上限")
             current.append(line[:cut])
             chunks.append("".join(current))
             current, current_len = [], 0
@@ -503,7 +503,7 @@ def _utf16_prefix(text: str, limit: int) -> str:
 
 
 def _ring_tail(text: str, cap: int) -> str:
-    """保留文本尾部，结果不超过 cap 个 UTF-16 code unit。"""
+    """保留文本尾部，结果不超过 cap 个 UTF-16 码元。"""
     if cap <= 0:
         return ""
     if len(text.encode("utf-16-le")) // 2 <= cap:
