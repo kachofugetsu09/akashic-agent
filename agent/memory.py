@@ -290,18 +290,15 @@ class MemoryStore:
     def _tail_contains_marker(path: Path, marker: str) -> bool:
         if not path.exists():
             return False
-        try:
-            with open(path, "rb") as f:
-                f.seek(0, 2)
-                size = f.tell()
-                take = min(size, _CONSOLIDATION_TAIL_BYTES)
-                if take <= 0:
-                    return False
-                f.seek(size - take)
-                tail = f.read(take).decode("utf-8", errors="ignore")
-                return marker in tail
-        except Exception:
-            return False
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            take = min(size, _CONSOLIDATION_TAIL_BYTES)
+            if take <= 0:
+                return False
+            f.seek(size - take)
+            tail = f.read(take).decode("utf-8", errors="ignore")
+            return marker in tail
 
     @staticmethod
     def _file_contains_marker(path: Path, marker: str) -> bool:
@@ -311,16 +308,13 @@ class MemoryStore:
         if not needle:
             return False
         carry = b""
-        try:
-            with open(path, "rb") as f:
-                for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                    data = carry + chunk
-                    if needle in data:
-                        return True
-                    if len(needle) > 1:
-                        carry = data[-(len(needle) - 1) :]
-                    else:
-                        carry = b""
-        except Exception:
-            return False
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                data = carry + chunk
+                if needle in data:
+                    return True
+                if len(needle) > 1:
+                    carry = data[-(len(needle) - 1) :]
+                else:
+                    carry = b""
         return False

@@ -1,5 +1,9 @@
 """Tests for current MemoryStore behavior."""
 
+import builtins
+
+import pytest
+
 from agent.memory import MemoryStore
 
 
@@ -88,3 +92,21 @@ def test_append_pending_once_repairs_file_when_db_ahead(tmp_path):
     assert "- pref A" in pending
     assert "ignored" not in pending
     assert "<!-- consolidation:session@1-10:user_facts -->" in raw
+
+
+@pytest.mark.parametrize(
+    "reader_name",
+    ["_tail_contains_marker", "_file_contains_marker"],
+)
+def test_marker_reader_exposes_file_read_failure(tmp_path, monkeypatch, reader_name):
+    marker_file = tmp_path / "PENDING.md"
+    marker_file.write_text("existing", encoding="utf-8")
+
+    def deny_read(*args, **kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(builtins, "open", deny_read)
+
+    reader = getattr(MemoryStore, reader_name)
+    with pytest.raises(PermissionError, match="denied"):
+        reader(marker_file, "marker")
