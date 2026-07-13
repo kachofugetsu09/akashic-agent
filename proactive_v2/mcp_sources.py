@@ -63,7 +63,7 @@ async def fetch_sources_async(
     sources: list[RegisteredProactiveSource],
 ) -> dict[str, list[dict[str, Any]]]:
     results = await asyncio.gather(
-        *(_fetch_source_async(pool, source) for source in sources),
+        *(fetch_source_strict_async(pool, source) for source in sources),
         return_exceptions=True,
     )
     channels: dict[str, list[dict[str, Any]]] = {
@@ -87,10 +87,12 @@ async def fetch_sources_async(
     return channels
 
 
-async def _fetch_source_async(
+async def fetch_source_strict_async(
     pool: McpGateway,
     source: RegisteredProactiveSource,
 ) -> dict[str, list[dict[str, Any]]]:
+    """拉取并严格校验单个 source，保留原始失败。"""
+
     spec = source.spec
     key = source_key(source)
     result: dict[str, list[dict[str, Any]]] = {
