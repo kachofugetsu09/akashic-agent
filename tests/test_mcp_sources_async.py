@@ -184,7 +184,7 @@ async def test_fetch_source_rejects_corrupt_event_items(
     item = source("feed", "content", ("content",), "feed", "events")
 
     with pytest.raises(RuntimeError, match=error):
-        await mcp_sources._fetch_source_async(cast(Any, pool), item)
+        await mcp_sources.fetch_source_strict_async(cast(Any, pool), item)
 
 
 @pytest.mark.asyncio
