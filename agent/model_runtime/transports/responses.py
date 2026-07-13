@@ -19,10 +19,10 @@ from agent.model_runtime.errors import (
     ContextWindowError,
     QuotaError,
     RateLimitError,
+    RetryableTransportError,
     TransportError,
 )
 from agent.model_runtime.types import (
-    ContinuationState,
     LLMResponse,
     ModelRequest,
     ModelUsage,
@@ -40,10 +40,7 @@ class CodexResponsesTransport:
         *,
         runtime_id: str,
         base_url: str = CODEX_API_BASE,
-        connect_timeout_s: float = 30,
         read_timeout_s: float = 120,
-        write_timeout_s: float = 30,
-        pool_timeout_s: float = 30,
         use_responses_lite: bool = False,
         supports_parallel_tool_calls: bool = True,
         reasoning_summary: str = "none",
@@ -59,10 +56,10 @@ class CodexResponsesTransport:
         self.thread_id = str(uuid.uuid4())
         self.window_id = str(uuid.uuid4())
         self.network_timeout = httpx.Timeout(
-            connect=connect_timeout_s,
+            connect=30,
             read=read_timeout_s,
-            write=write_timeout_s,
-            pool=pool_timeout_s,
+            write=30,
+            pool=30,
         )
 
     async def send(self, request: ModelRequest) -> LLMResponse:
@@ -115,7 +112,7 @@ class CodexResponsesTransport:
                 raise ContextWindowError("Codex 请求超过上下文窗口") from exc
             raise
         except (openai.APIConnectionError, openai.APITimeoutError) as exc:
-            raise TransportError("Codex Responses 连接失败") from exc
+            raise RetryableTransportError("Codex Responses 连接失败") from exc
         finally:
             await client.close()
 
@@ -239,23 +236,23 @@ class CodexResponsesTransport:
                 error = _field(response, "error") or _field(response, "incomplete_details")
                 _raise_stream_error(error)
         if not completed:
-            raise TransportError("Codex Responses 在 completed 事件前断流")
+            raise RetryableTransportError("Codex Responses 在 completed 事件前断流")
         calls = [_tool_call(value) for value in tool_args.values() if value.get("name")]
-        continuation = ContinuationState(
-            runtime_id=self.runtime_id,
-            transport="responses",
-            model=request.model,
-            items=tuple(output_items),
-        )
+        model_state = {
+            "schema_version": 1,
+            "runtime_id": self.runtime_id,
+            "transport": "responses",
+            "model": request.model,
+            "items": output_items,
+        }
         return LLMResponse(
             content="".join(content).strip() or None,
             tool_calls=calls,
             thinking="".join(thinking).strip() or None,
-            provider_fields={"model_state": continuation.to_dict()},
+            provider_fields={"model_state": model_state},
             cache_prompt_tokens=usage.input_tokens if usage else None,
             cache_hit_tokens=usage.cached_input_tokens if usage else None,
             usage=usage,
-            continuation=continuation,
         )
 
 
@@ -437,7 +434,7 @@ def _raise_stream_error(error: Any) -> None:
         raise RateLimitError(f"Codex 请求受限: {message}")
     if code in {"invalid_prompt", "bio_policy", "cyber_policy", "policy_violation"}:
         raise TransportError(f"Codex Responses 请求被拒绝 code={code}: {message}")
-    raise TransportError(
+    raise RetryableTransportError(
         f"Codex Responses 暂时失败 code={code or '-'}: {message}"
     )
 
@@ -489,7 +486,6 @@ def _parse_usage(raw: Any) -> ModelUsage | None:
             if input_tokens is not None or output_tokens is not None
             else UsageCoverage.UNAVAILABLE
         ),
-        raw_usage=_dump(raw),
     )
 
 

@@ -41,6 +41,7 @@ starlette>=0.52.0
 telegramify-markdown
 textual>=8.0.0
 toml>=0.10.0
+tomlkit>=0.13.0,<1
 tzlocal>=5.3.0
 uvicorn>=0.41.0
 websockets>=15.0,<16

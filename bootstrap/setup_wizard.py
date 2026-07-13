@@ -40,7 +40,6 @@ class WizardAnswers:
     auth_id: str = ""
     reasoning_effort: str = ""
     context_window: int = 0
-    max_context_window: int = 0
     effective_context_percent: float = 0.9
     max_output_tokens: int = 8192
     memory_window: int = 40
@@ -312,25 +311,28 @@ def _phase_main_llm(
 def _phase_api_key_llm(a: WizardAnswers) -> None:
     """收集 OpenAI-compatible API Key 模型配置。"""
 
+    a.provider = click.prompt(
+        "服务商",
+        type=click.Choice(["deepseek", "qwen", "openai"], case_sensitive=False),
+        default="deepseek",
+    ).lower()
     a.model = click.prompt("模型名")
     a.base_url = click.prompt("base_url（OpenAI 兼容格式）")
     a.api_key = _secret_prompt("API key")
     a.auth_id = "main_default"
-    a.provider = "openai"
     a.enable_thinking = click.confirm("开启 thinking 模式？", default=False)
     a.reasoning_effort = (
         click.prompt("推理强度", default="medium") if a.enable_thinking else ""
     )
     a.context_window = click.prompt("上下文大小（tokens）", type=int, default=64000)
-    a.max_context_window = a.context_window
     if a.context_window <= 0:
         raise click.BadParameter("上下文大小必须大于 0")
-    from agent.model_runtime.context_policy import recommended_output_reserve
+    from agent.model_runtime.context_policy import recommended_context_settings
 
     a.max_output_tokens = click.prompt(
         "最大输出 tokens",
         type=click.IntRange(min=1),
-        default=recommended_output_reserve(a.context_window),
+        default=recommended_context_settings(a.context_window).output_reserve,
     )
     if a.max_output_tokens <= 0:
         raise click.BadParameter("最大输出 tokens 必须大于 0")
@@ -341,8 +343,10 @@ def _phase_codex_llm(
     a: WizardAnswers, *, reuse_existing_auth: bool = False
 ) -> None:
     """完成 Codex 登录并从目录选择模型能力。"""
-    from agent.model_runtime.auth import CodexAuthDriver, CredentialStore
-    from agent.model_runtime.catalog import CodexModelCatalog
+    from agent.model_runtime.context_policy import recommended_context_settings
+    from agent.model_runtime.auth.codex import CodexAuthDriver
+    from agent.model_runtime.auth.store import CredentialStore
+    from agent.model_runtime.catalog.codex import CodexModelCatalog
     from agent.model_runtime.errors import AuthenticationError, TransportError
     import httpx
 
@@ -393,16 +397,13 @@ def _phase_codex_llm(
         type=click.IntRange(min=1, max=max_context_window),
         default=capabilities.context_window,
     )
-    a.max_context_window = max_context_window
     a.effective_context_percent = capabilities.effective_context_percent
-    from agent.model_runtime.context_policy import recommended_output_reserve
-
     a.max_output_tokens = min(
         capabilities.max_output_tokens,
-        recommended_output_reserve(
+        recommended_context_settings(
             a.context_window,
             a.effective_context_percent,
-        ),
+        ).output_reserve,
     )
     detected_image = "image" in capabilities.input_modalities
     if not selected.input_modalities_known:
@@ -419,7 +420,6 @@ def _phase_codex_manual(a: WizardAnswers) -> None:
     a.reasoning_effort = click.prompt("推理强度", default="medium")
     a.reasoning_summary = "auto"
     a.context_window = click.prompt("上下文大小（tokens）", type=int)
-    a.max_context_window = a.context_window
     a.max_output_tokens = click.prompt("最大输出 tokens", type=int, default=8192)
     a.multimodal = click.confirm("主模型支持图片输入？", default=False)
 
@@ -428,20 +428,7 @@ def _phase_vl_model(a: WizardAnswers) -> None:
     if not click.confirm("配置独立视觉模型？", default=False):
         return
     a.vl_model = click.prompt("视觉模型名")
-    if a.provider == "codex":
-        a.vl_base_url = click.prompt("OpenAI-compatible base_url")
-        a.vl_api_key = _secret_prompt("API key")
-    else:
-        a.vl_base_url = click.prompt(
-            "base_url（回车 = 复用主模型 base_url）",
-            default="",
-            show_default=False,
-        ) or a.base_url
-        a.vl_api_key = _secret_prompt(
-            "API key（回车 = 复用主模型 key）",
-            default="",
-            show_default=False,
-        ) or a.api_key
+    a.vl_provider, a.vl_base_url, a.vl_api_key = _phase_role_endpoint(a)
     a.vl_auth_id = "vl_default"
     a.vl_context_window = click.prompt(
         "视觉模型上下文大小（tokens）",
@@ -463,20 +450,7 @@ def _phase_fast_model(a: WizardAnswers) -> None:
         return
 
     a.fast_model = click.prompt("模型名")
-    if a.provider == "codex":
-        a.fast_base_url = click.prompt("OpenAI-compatible base_url")
-        a.fast_api_key = _secret_prompt("API key")
-    else:
-        a.fast_base_url = click.prompt(
-            "base_url（回车 = 复用主模型 base_url）",
-            default="",
-            show_default=False,
-        ) or a.base_url
-        a.fast_api_key = _secret_prompt(
-            "API key（回车 = 复用主模型 key）",
-            default="",
-            show_default=False,
-        ) or a.api_key
+    a.fast_provider, a.fast_base_url, a.fast_api_key = _phase_role_endpoint(a)
     a.fast_auth_id = "fast_default"
     a.fast_context_window = click.prompt(
         "轻量模型上下文大小（tokens）",
@@ -488,6 +462,28 @@ def _phase_fast_model(a: WizardAnswers) -> None:
         type=click.IntRange(min=1),
         default=min(a.max_output_tokens, 4096),
     )
+
+
+def _phase_role_endpoint(a: WizardAnswers) -> tuple[str, str, str]:
+    """收集独立角色的兼容端点；API-key 主模型默认复用连接。"""
+    if a.provider == "codex":
+        provider = click.prompt(
+            "服务商",
+            type=click.Choice(["deepseek", "qwen", "openai"], case_sensitive=False),
+            default="openai",
+        ).lower()
+        return provider, click.prompt("OpenAI-compatible base_url"), _secret_prompt("API key")
+    base_url = click.prompt(
+        "base_url（回车 = 复用主模型 base_url）",
+        default="",
+        show_default=False,
+    ) or a.base_url
+    api_key = _secret_prompt(
+        "API key（回车 = 复用主模型 key）",
+        default="",
+        show_default=False,
+    ) or a.api_key
+    return a.provider, base_url, api_key
 
 
 def _phase_telegram(a: WizardAnswers) -> None:
@@ -866,7 +862,6 @@ def _render_llm(a: WizardAnswers) -> str:
         lines.append(f'reasoning_summary = "{a.reasoning_summary}"')
     lines.extend([
         f"context_window = {a.context_window}",
-        f"max_context_window = {a.max_context_window or a.context_window}",
         f"max_output_tokens = {a.max_output_tokens}",
         f"input_modalities = {main_modalities}",
         "",
@@ -881,7 +876,6 @@ def _render_llm(a: WizardAnswers) -> str:
             f'model = "{a.fast_model}"',
             f'base_url = "{a.fast_base_url}"',
             f"context_window = {a.fast_context_window or a.context_window}",
-            f"max_context_window = {a.fast_context_window or a.context_window}",
             f"max_output_tokens = {a.fast_max_output_tokens or a.max_output_tokens}",
             'input_modalities = ["text"]',
             "",
@@ -895,7 +889,6 @@ def _render_llm(a: WizardAnswers) -> str:
             f'model = "{a.vl_model}"',
             f'base_url = "{a.vl_base_url}"',
             f"context_window = {a.vl_context_window or a.context_window}",
-            f"max_context_window = {a.vl_context_window or a.context_window}",
             f"max_output_tokens = {a.vl_max_output_tokens or a.max_output_tokens}",
             'input_modalities = ["text", "image"]',
             "",
@@ -949,7 +942,7 @@ def _atomic_write_with_backup(
 def _persist_answer_credentials(a: WizardAnswers) -> None:
     """问答全部完成后一次性持久化向导收集的 API key。"""
     from datetime import datetime, timezone
-    from agent.model_runtime.auth import Credential, CredentialStore
+    from agent.model_runtime.auth.store import Credential, CredentialStore
 
     raw = {
         a.auth_id: a.api_key if a.provider != "codex" else "",

@@ -29,9 +29,8 @@ from agent.config_models import (
 )
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.config_loader import ProactiveConfigError, load_proactive_config
-from agent.model_runtime.auth import ApiKeyAuthDriver, CredentialStore
-from agent.model_runtime.context_policy import recommended_memory_window
-from agent.model_runtime.registry import SUPPORTED_PROVIDER_PRESETS
+from agent.model_runtime.auth.store import CredentialStore
+from agent.model_runtime.context_policy import recommended_context_settings
 
 _PRESETS: dict[str, str] = {
     "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -103,7 +102,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
     agent_maintenance = _as_dict(
         agent_cfg.get("maintenance"), field="agent.maintenance"
     )
-    provider = str(llm_main.get("provider") or llm.get("provider") or data.get("provider") or "")
+    provider = str(llm_main.get("provider") or llm.get("provider") or data.get("provider") or "").lower()
     if not provider:
         raise ValueError("必须配置 llm provider")
     channels = _load_channels_config(data)
@@ -137,12 +136,8 @@ def load_config(path: str | Path = "config.toml") -> Config:
             agent_cfg.get("max_iterations", data.get("max_iterations", 10))
         ),
         memory_window=_load_memory_window(data, agent_context, llm_main),
-        base_url=str(
-            llm_main.get("base_url")
-            or data.get("base_url")
-            or ("https://chatgpt.com/backend-api/codex" if provider == "codex" else "")
-            or _PRESETS.get(provider)
-            or ""
+        base_url=_model_base_url(
+            provider, llm_main.get("base_url") or data.get("base_url")
         ),
         extra_body=_load_extra_body(data, llm_main),
         channels=channels,
@@ -436,13 +431,7 @@ def _load_llm_runtimes(
         modalities = item.get("input_modalities", ["text"])
         if not isinstance(modalities, list) or not all(isinstance(v, str) for v in modalities):
             raise ValueError(f"llm.runtimes.{runtime_id}.input_modalities 必须是字符串数组")
-        provider = str(item.get("provider") or "")
-        if provider.lower() not in SUPPORTED_PROVIDER_PRESETS:
-            supported = ", ".join(sorted(SUPPORTED_PROVIDER_PRESETS))
-            raise ValueError(
-                f"llm.runtimes.{runtime_id}.provider 不受支持: {provider!r}; "
-                f"可选值: {supported}"
-            )
+        provider = str(item.get("provider") or "").lower()
         auth_id = str(item.get("auth") or "")
         parsed[runtime_id] = ModelRuntimeConfig(
             runtime_id=runtime_id,
@@ -457,14 +446,9 @@ def _load_llm_runtimes(
                     inline_value=str(item.get("api_key") or ""),
                 )
             ),
-            base_url=str(item.get("base_url") or ""),
+            base_url=_model_base_url(provider, item.get("base_url")),
             reasoning_effort=str(item.get("reasoning_effort") or ""),
             context_window=int(item.get("context_window") or 0),
-            max_context_window=(
-                int(item["max_context_window"])
-                if item.get("max_context_window") is not None
-                else None
-            ),
             max_output_tokens=int(item.get("max_output_tokens") or 8192),
             input_modalities=tuple(modalities),
             effective_context_percent=float(item.get("effective_context_percent", 0.9)),
@@ -500,7 +484,7 @@ def _load_memory_window(data: dict, agent_context: dict, llm_main: dict) -> int:
     if context_window <= 0:
         return 40
     effective_percent = float(llm_main.get("effective_context_percent", 0.9))
-    return recommended_memory_window(context_window, effective_percent)
+    return recommended_context_settings(context_window, effective_percent).memory_window
 
 
 def _load_multimodal(llm_main: dict) -> bool:
@@ -550,8 +534,17 @@ def _resolve(value: str) -> str:
 
 def _load_api_key(*, auth_id: str, inline_value: str) -> str:
     if auth_id:
-        return ApiKeyAuthDriver(CredentialStore(), auth_id).api_key()
+        return CredentialStore().api_key(auth_id)
     return _resolve(inline_value)
+
+
+def _model_base_url(provider: str, configured: object) -> str:
+    return str(
+        configured
+        or ("https://chatgpt.com/backend-api/codex" if provider == "codex" else "")
+        or _PRESETS.get(provider)
+        or ""
+    )
 
 
 def _as_bool(value: object, *, field: str) -> bool:

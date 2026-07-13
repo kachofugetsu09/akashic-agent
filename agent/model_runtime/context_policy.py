@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import json
 import math
 from dataclasses import dataclass
-
-from .types import ModelCapabilities
 
 
 _REFERENCE_CONTEXT_WINDOW = 1_000_000
@@ -42,7 +39,7 @@ def recommended_context_settings(
     scaled_memory = round(
         effective_context * _REFERENCE_MEMORY_WINDOW / reference_effective_context
     )
-    memory_window = max(_MIN_MEMORY_WINDOW, _align_nearest(scaled_memory, 4))
+    memory_window = max(_MIN_MEMORY_WINDOW, ((scaled_memory + 2) // 4) * 4)
 
     # 3. 输出预留按 1024 tokens 向下对齐，且不超过 1M 基准值。
     scaled_output = int(
@@ -50,37 +47,9 @@ def recommended_context_settings(
     )
     output_reserve = max(
         _MIN_OUTPUT_RESERVE,
-        min(_REFERENCE_OUTPUT_RESERVE, _align_down(scaled_output, 1024)),
+        min(_REFERENCE_OUTPUT_RESERVE, scaled_output // 1024 * 1024),
     )
     return ContextWindowSettings(memory_window, output_reserve)
-
-
-def recommended_memory_window(
-    context_window: int,
-    effective_context_percent: float = _REFERENCE_EFFECTIVE_CONTEXT_PERCENT,
-) -> int:
-    """根据模型上下文返回历史消息建议值。"""
-    return recommended_context_settings(
-        context_window, effective_context_percent
-    ).memory_window
-
-
-def recommended_output_reserve(
-    context_window: int,
-    effective_context_percent: float = _REFERENCE_EFFECTIVE_CONTEXT_PERCENT,
-) -> int:
-    """根据模型上下文返回本地输出预留建议值。"""
-    return recommended_context_settings(
-        context_window, effective_context_percent
-    ).output_reserve
-
-
-def _align_nearest(value: int, step: int) -> int:
-    return ((value + step // 2) // step) * step
-
-
-def _align_down(value: int, step: int) -> int:
-    return value // step * step
 
 
 @dataclass(frozen=True)
@@ -88,24 +57,6 @@ class ContextBudget:
     effective_context: int
     input_budget: int
     reserved_output: int
-
-
-class ApproximateTokenEstimator:
-    quality = "approximate"
-
-    def estimate_messages(self, messages: list[dict]) -> int:
-        payload = json.dumps(messages, ensure_ascii=False, separators=(",", ":"))
-        return max(1, len(payload) // 3)
-
-
-def build_context_budget(capabilities: ModelCapabilities, max_output_tokens: int) -> ContextBudget:
-    """预留输出容量并计算本次请求的输入预算。"""
-    output = min(max_output_tokens, capabilities.max_output_tokens)
-    return build_runtime_context_budget(
-        capabilities.context_window,
-        capabilities.effective_context_percent,
-        output,
-    )
 
 
 def build_runtime_context_budget(

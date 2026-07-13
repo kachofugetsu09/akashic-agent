@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent.config_models import Config, ModelRuntimeConfig
+from agent.config_models import Config
 from agent.model_runtime.fallback import ResilientLightProvider
 from infra.providers.llm_provider import LLMProvider
 
@@ -16,21 +16,32 @@ def build_providers(
         base_url=config.base_url,
         extra_body=config.extra_body,
     )
-    provider = LLMProvider(
-        api_key=config.api_key,
-        base_url=config.base_url,
-        system_prompt=config.system_prompt,
-        extra_body=main_extra,
-        read_timeout_s=_MAIN_NETWORK_READ_TIMEOUT_S,
-        provider_name=config.provider,
-        auth_id=config.auth_id,
-        runtime_id=config.runtime_id,
-        context_window=config.context_window,
-        effective_context_percent=config.effective_context_percent,
-        use_responses_lite=config.use_responses_lite,
-        supports_parallel_tool_calls=config.supports_parallel_tool_calls,
-        reasoning_summary=config.reasoning_summary,
-        payload_snapshot_enabled=payload_snapshot_enabled,
+    main_runtime = config.model_runtimes.get(config.runtime_id)
+    provider = (
+        LLMProvider.from_runtime(
+            main_runtime,
+            system_prompt=config.system_prompt,
+            extra_body=main_extra,
+            read_timeout_s=_MAIN_NETWORK_READ_TIMEOUT_S,
+            payload_snapshot_enabled=payload_snapshot_enabled,
+        )
+        if main_runtime is not None
+        else LLMProvider(
+            api_key=config.api_key,
+            base_url=config.base_url,
+            system_prompt=config.system_prompt,
+            extra_body=main_extra,
+            read_timeout_s=_MAIN_NETWORK_READ_TIMEOUT_S,
+            provider_name=config.provider,
+            auth_id=config.auth_id,
+            runtime_id=config.runtime_id,
+            context_window=config.context_window,
+            effective_context_percent=config.effective_context_percent,
+            use_responses_lite=config.use_responses_lite,
+            supports_parallel_tool_calls=config.supports_parallel_tool_calls,
+            reasoning_summary=config.reasoning_summary,
+            payload_snapshot_enabled=payload_snapshot_enabled,
+        )
     )
 
     light_provider = _build_named_role_provider(
@@ -129,46 +140,12 @@ def _build_named_role_provider(
     if not runtime_id or runtime_id == config.runtime_id:
         return None
     runtime = config.model_runtimes[runtime_id]
-    extra_body: dict[str, object] = (
-        {}
-        if force_disable_thinking
-        else ({"reasoning_effort": runtime.reasoning_effort} if runtime.reasoning_effort else {})
-    )
-    return _provider_from_runtime(
+    return LLMProvider.from_runtime(
         runtime,
         system_prompt=system_prompt,
-        extra_body=extra_body,
         read_timeout_s=read_timeout_s,
         force_disable_thinking=force_disable_thinking,
         payload_snapshot_enabled=config.dev_mode,
-    )
-
-
-def _provider_from_runtime(
-    runtime: ModelRuntimeConfig,
-    *,
-    system_prompt: str,
-    extra_body: dict[str, object],
-    read_timeout_s: float,
-    force_disable_thinking: bool,
-    payload_snapshot_enabled: bool,
-) -> LLMProvider:
-    return LLMProvider(
-        api_key=runtime.api_key,
-        base_url=runtime.base_url or None,
-        system_prompt=system_prompt,
-        extra_body=extra_body,
-        read_timeout_s=read_timeout_s,
-        provider_name=runtime.provider,
-        auth_id=runtime.auth,
-        runtime_id=runtime.runtime_id,
-        context_window=runtime.context_window,
-        effective_context_percent=runtime.effective_context_percent,
-        use_responses_lite=runtime.use_responses_lite,
-        supports_parallel_tool_calls=runtime.supports_parallel_tool_calls,
-        reasoning_summary=runtime.reasoning_summary,
-        force_disable_thinking=force_disable_thinking,
-        payload_snapshot_enabled=payload_snapshot_enabled,
     )
 
 

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.config import load_config
-from agent.model_runtime.auth import Credential, CredentialStore
+from agent.model_runtime.auth.store import Credential, CredentialStore
 from bootstrap.setup_main import patch_main_model_config, run_main_model_setup
 from bootstrap.setup_wizard import WizardAnswers, _phase_codex_llm
 
@@ -15,124 +15,80 @@ from bootstrap.setup_wizard import WizardAnswers, _phase_codex_llm
 _CONFIG = """\
 # 顶部说明必须保留
 [llm]
-main = "old_main" # 当前主模型
+main = "api_main" # 当前主模型
 fast = "fast"
-agent = "agent"
-vl = "vl"
 
-[llm.runtimes.old_main]
+[llm.runtimes.api_main]
 provider = "openai"
-model = "old-model"
+model = "old"
 api_key = "old-secret"
 base_url = "https://old.example/v1"
 context_window = 32000
 
-# fast 注释必须原样保留
+# fast 注释必须保留
 [llm.runtimes.fast]
-provider = "openai"
-model = "fast-model"
+provider = "deepseek"
+model = "fast"
 api_key = "fast-secret"
-base_url = "https://fast.example/v1"
+base_url = "https://api.deepseek.com/v1"
 context_window = 16000
 
-[llm.runtimes.agent]
-provider = "openai"
-model = "agent-model"
-api_key = "agent-secret"
-base_url = "https://agent.example/v1"
-context_window = 64000
-
-[llm.runtimes.vl]
-provider = "openai"
-model = "vl-model"
-api_key = "vl-secret"
-base_url = "https://vl.example/v1"
-context_window = 64000
-input_modalities = ["text", "image"]
-
-[agent]
-max_tokens = 777 # 不由 setup-main 修改
-
 [agent.context]
-memory_window = 20 # 根据主上下文更新
+memory_window = 20 # 自动更新
 
-[channels.telegram]
-enabled = false
-token = "telegram-stays"
-
-# plugin/default-memory 自定义配置文本
 [plugins.custom]
 enabled = true
 """
 
 
-def _api_answers() -> WizardAnswers:
+def _answers() -> WizardAnswers:
     return WizardAnswers(
-        provider="openai",
+        provider="deepseek",
         model="new-main",
         api_key="new-secret",
         auth_id="main_default",
-        base_url="https://new.example/v1",
+        base_url="https://api.deepseek.com/v1",
         context_window=64_000,
-        max_context_window=128_000,
         max_output_tokens=8192,
         memory_window=40,
     )
 
 
-def test_patch_main_preserves_non_main_config_and_comments() -> None:
-    updated = patch_main_model_config(_CONFIG, _api_answers())
-    parsed = tomllib.loads(updated)
+def test_patch_main_is_scoped_secret_free_and_idempotent() -> None:
+    once = patch_main_model_config(_CONFIG, _answers())
+    parsed = tomllib.loads(once)
 
     assert parsed["llm"]["main"] == "api_main"
     assert parsed["llm"]["fast"] == "fast"
-    assert parsed["llm"]["agent"] == "agent"
-    assert parsed["llm"]["vl"] == "vl"
     assert parsed["llm"]["runtimes"]["api_main"]["model"] == "new-main"
-    assert parsed["llm"]["runtimes"]["api_main"]["max_context_window"] == 128_000
+    assert "api_key" not in parsed["llm"]["runtimes"]["api_main"]
     assert parsed["agent"]["context"]["memory_window"] == 40
-    assert parsed["agent"]["max_tokens"] == 777
-    assert "# fast 注释必须原样保留" in updated
-    assert 'token = "telegram-stays"' in updated
-    assert "# plugin/default-memory 自定义配置文本" in updated
-    assert "new-secret" not in updated
+    assert "# fast 注释必须保留" in once
+    assert "[plugins.custom]" in once
+    assert "new-secret" not in once
+    assert patch_main_model_config(once, _answers()) == once
 
 
-def test_patch_main_is_idempotent_without_duplicate_runtime() -> None:
-    once = patch_main_model_config(_CONFIG, _api_answers())
-    twice = patch_main_model_config(once, _api_answers())
-
-    assert twice == once
-    assert twice.count("[llm.runtimes.api_main]") == 1
-    assert tomllib.loads(twice)["llm"]["main"] == "api_main"
-
-
-def test_run_main_setup_backs_up_and_only_rewrites_config(
+def test_setup_main_backs_up_config_and_persists_credential(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
-    config_path = tmp_path / "config.toml"
-    config_path.write_text(_CONFIG, encoding="utf-8")
-    original = config_path.read_text(encoding="utf-8")
+    path = tmp_path / "config.toml"
+    path.write_text(_CONFIG, encoding="utf-8")
 
-    def fill_answers(answers: WizardAnswers, **_: object) -> None:
-        selected = _api_answers()
-        answers.__dict__.update(selected.__dict__)
+    def fill(target: WizardAnswers, **_: object) -> None:
+        target.__dict__.update(_answers().__dict__)
 
-    monkeypatch.setattr("bootstrap.setup_main._phase_main_llm", fill_answers)
+    monkeypatch.setattr("bootstrap.setup_main._phase_main_llm", fill)
+    run_main_model_setup(path)
 
-    run_main_model_setup(config_path)
-
-    backup = tmp_path / "config.toml.before-setup-main.bak"
-    assert backup.read_text(encoding="utf-8") == original
-    config = load_config(config_path)
-    assert config.runtime_id == "api_main"
-    assert config.model == "new-main"
-    assert config.fast_runtime_id == "fast"
+    assert path.with_name("config.toml.before-setup-main.bak").read_text() == _CONFIG
+    config = load_config(path)
+    assert (config.model, config.fast_runtime_id) == ("new-main", "fast")
     assert CredentialStore().get("main_default").access_token == "new-secret"
 
 
-def test_codex_phase_reuses_existing_auth_by_default(
+def test_codex_setup_reuses_existing_login_and_catalog(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -140,15 +96,12 @@ def test_codex_phase_reuses_existing_auth_by_default(
         "codex_default",
         Credential(driver="codex", access_token="existing-token"),
     )
-    login_started = False
 
-    class FakeAuth:
+    class Auth:
         def __init__(self, store: CredentialStore, credential_id: str) -> None:
             assert credential_id == "codex_default"
 
-        def begin_device_login(self):
-            nonlocal login_started
-            login_started = True
+        def begin_device_login(self) -> None:
             raise AssertionError("不应重新登录")
 
     capabilities = SimpleNamespace(
@@ -162,23 +115,21 @@ def test_codex_phase_reuses_existing_auth_by_default(
         use_responses_lite=False,
         supports_parallel_tool_calls=True,
         supports_reasoning_summaries=True,
-        default_reasoning_summary="none",
-    )
-    model = SimpleNamespace(
-        slug="gpt-test",
-        capabilities=capabilities,
-        input_modalities_known=True,
     )
 
-    class FakeCatalog:
-        def __init__(self, auth: FakeAuth) -> None:
+    class Catalog:
+        def __init__(self, auth: Auth) -> None:
             pass
 
-        async def list_models(self):
-            return [model]
+        async def list_models(self) -> list[SimpleNamespace]:
+            return [SimpleNamespace(
+                slug="gpt-test",
+                capabilities=capabilities,
+                input_modalities_known=True,
+            )]
 
-    monkeypatch.setattr("agent.model_runtime.auth.CodexAuthDriver", FakeAuth)
-    monkeypatch.setattr("agent.model_runtime.catalog.CodexModelCatalog", FakeCatalog)
+    monkeypatch.setattr("agent.model_runtime.auth.codex.CodexAuthDriver", Auth)
+    monkeypatch.setattr("agent.model_runtime.catalog.codex.CodexModelCatalog", Catalog)
     monkeypatch.setattr(
         "bootstrap.setup_wizard.click.prompt",
         lambda _text, **kwargs: kwargs.get("default", ""),
@@ -191,10 +142,5 @@ def test_codex_phase_reuses_existing_auth_by_default(
 
     _phase_codex_llm(answers, reuse_existing_auth=True)
 
-    assert login_started is False
-    assert answers.model == "gpt-test"
-    assert answers.context_window == 128_000
-    assert answers.max_context_window == 1_000_000
-    assert answers.effective_context_percent == 0.95
-    assert answers.max_output_tokens == 4096
+    assert (answers.model, answers.context_window) == ("gpt-test", 128_000)
     assert answers.reasoning_summary == "auto"

@@ -41,6 +41,12 @@ class CredentialStore:
         except TypeError as exc:
             raise AuthenticationError(f"凭据结构无效: {credential_id}") from exc
 
+    def api_key(self, credential_id: str) -> str:
+        credential = self.get(credential_id)
+        if credential.driver != "api_key" or not credential.access_token:
+            raise AuthenticationError(f"凭据 {credential_id} 不是有效 API key")
+        return credential.access_token
+
     def put(self, credential_id: str, credential: Credential) -> None:
         self.put_many({credential_id: credential})
 

@@ -5,7 +5,6 @@ import json
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable
 
 import httpx
 
@@ -61,14 +60,11 @@ class CodexAuthDriver:
         code: DeviceCode,
         *,
         timeout_seconds: int = 900,
-        on_wait: Callable[[], None] | None = None,
     ) -> Credential:
         """轮询授权结果、交换 token 并保存独立凭据。"""
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
             time.sleep(code.interval)
-            if on_wait is not None:
-                on_wait()
             response = httpx.post(
                 f"{CODEX_AUTH_BASE}/api/accounts/deviceauth/token",
                 json={"device_auth_id": code.device_auth_id, "user_code": code.user_code},

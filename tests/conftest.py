@@ -9,28 +9,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-# Provide a lightweight openai stub in test env so imports do not fail
-# when optional runtime dependency is absent.
-if "openai" not in sys.modules:
-    openai_stub = types.ModuleType("openai")
-
-    class _DummyChatCompletions:
-        async def create(self, *args, **kwargs):
-            raise RuntimeError(
-                "openai stub: AsyncOpenAI.chat.completions.create not mocked"
-            )
-
-    class _DummyChat:
-        def __init__(self):
-            self.completions = _DummyChatCompletions()
-
-    class AsyncOpenAI:
-        def __init__(self, *args, **kwargs):
-            self.chat = _DummyChat()
-
-    openai_stub.AsyncOpenAI = AsyncOpenAI
-    sys.modules["openai"] = openai_stub
-
 # Provide lightweight telegram stubs so optional messaging deps do not block
 # unrelated test collection.
 if "telegram" not in sys.modules:

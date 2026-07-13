@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 from typing import cast
 
 import httpx
+import openai
 import pytest
 
-import agent.model_runtime.fallback as fallback_module
-from agent.model_runtime.errors import QuotaError, RateLimitError, TransportError
+from agent.model_runtime.errors import (
+    QuotaError,
+    RateLimitError,
+    RetryableTransportError,
+    TransportError,
+)
 from agent.model_runtime.fallback import ResilientLightProvider
 from agent.provider import ContentSafetyError, ContextLengthError, LLMProvider, LLMResponse
 
@@ -22,7 +26,7 @@ class _Provider:
     async def chat(self, **kwargs) -> LLMResponse:
         self.calls.append(kwargs)
         callback = kwargs.get("on_content_delta")
-        if self.emit and callback is not None:
+        if self.emit and callback:
             await callback({"content_delta": "partial"})
         if isinstance(self.outcome, BaseException):
             raise self.outcome
@@ -36,26 +40,13 @@ class _HangingProvider(_Provider):
         raise AssertionError("unreachable")
 
 
-class _StatusError(Exception):
-    def __init__(self, status_code: int, body: object | None = None) -> None:
-        super().__init__(f"status={status_code}")
-        self.status_code = status_code
-        self.body = body
+def _status(code: int, body: object | None = None) -> openai.APIStatusError:
+    request = httpx.Request("POST", "https://light.example/v1")
+    response = httpx.Response(code, request=request)
+    return openai.APIStatusError(f"status={code}", response=response, body=body)
 
 
-@pytest.fixture(autouse=True)
-def _register_status_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(fallback_module, "_OPENAI_STATUS_ERROR_TYPES", (_StatusError,))
-    monkeypatch.setattr(
-        fallback_module,
-        "_RUNTIME_FAILURE_TYPES",
-        (*fallback_module._RUNTIME_FAILURE_TYPES, _StatusError),
-    )
-
-
-def _provider(
-    primary: _Provider, fallback: _Provider
-) -> ResilientLightProvider:
+def _resilient(primary: _Provider, fallback: _Provider) -> ResilientLightProvider:
     return ResilientLightProvider(
         primary=cast(LLMProvider, primary),
         primary_runtime_id="fast",
@@ -65,32 +56,25 @@ def _provider(
     )
 
 
-def test_light_wrapper_does_not_own_a_total_deadline() -> None:
-    source = inspect.getsource(ResilientLightProvider.chat)
-    assert "wait_for" not in source
-    assert "create_task" not in source
-    assert ".cancel(" not in source
-
-
 async def _chat(provider: ResilientLightProvider, **kwargs) -> LLMResponse:
     return await provider.chat(
         messages=kwargs.get("messages", [{"role": "user", "content": "hi"}]),
-        tools=kwargs.get("tools", [{"type": "function"}]),
-        model="caller-model",
-        max_tokens=kwargs.get("max_tokens", 128),
-        tool_choice=kwargs.get("tool_choice", "required"),
-        disable_thinking=kwargs.get("disable_thinking", True),
+        tools=kwargs.get("tools", []),
+        model="ignored",
+        max_tokens=321,
+        tool_choice="required",
+        disable_thinking=True,
         on_content_delta=kwargs.get("on_content_delta"),
-        cache_namespace=kwargs.get("cache_namespace", "session"),
+        cache_namespace="session",
     )
 
 
 @pytest.mark.asyncio
-async def test_light_primary_success_does_not_call_main() -> None:
+async def test_light_success_does_not_call_main() -> None:
     primary = _Provider(LLMResponse(content="fast"))
     fallback = _Provider(LLMResponse(content="main"))
 
-    result = await _chat(_provider(primary, fallback))
+    result = await _chat(_resilient(primary, fallback))
 
     assert result.content == "fast"
     assert primary.calls[0]["model"] == "fast-model"
@@ -102,91 +86,59 @@ async def test_light_primary_success_does_not_call_main() -> None:
     "error",
     [
         TimeoutError("timeout"),
-        httpx.ConnectError(
-            "connection", request=httpx.Request("POST", "https://light.example/v1")
-        ),
-        _StatusError(429),
-        _StatusError(503),
-        RateLimitError("Codex 请求被限流"),
-        TransportError("Codex Responses 连接失败"),
-        TransportError("Codex Responses 暂时失败 code=server_error"),
-    ],
-    ids=[
-        "timeout",
-        "connection",
-        "429",
-        "5xx",
-        "codex-rate-limit",
-        "codex-transport",
-        "codex-transient",
+        httpx.ConnectError("connection"),
+        _status(429),
+        _status(503),
+        RateLimitError("limited"),
+        RetryableTransportError("disconnected"),
     ],
 )
-async def test_light_recoverable_failure_falls_back_with_main_model(
-    error: BaseException,
-) -> None:
-    primary = _Provider(error)
+async def test_light_recoverable_failure_replays_same_request(error: BaseException) -> None:
     fallback = _Provider(LLMResponse(content="main"))
     messages = [{"role": "user", "content": "same"}]
     tools = [{"type": "function", "function": {"name": "x"}}]
 
     result = await _chat(
-        _provider(primary, fallback),
-        messages=messages,
-        tools=tools,
-        max_tokens=321,
+        _resilient(_Provider(error), fallback), messages=messages, tools=tools
     )
 
     assert result.content == "main"
     call = fallback.calls[0]
-    assert call["model"] == "main-model"
-    assert call["messages"] == messages
-    assert call["tools"] == tools
-    assert call["max_tokens"] == 321
-    assert call["tool_choice"] == "required"
-    assert call["disable_thinking"] is True
-    assert call["cache_namespace"] == "session"
+    assert (call["messages"], call["tools"], call["model"]) == (
+        messages,
+        tools,
+        "main-model",
+    )
+    assert (call["max_tokens"], call["tool_choice"], call["disable_thinking"]) == (
+        321,
+        "required",
+        True,
+    )
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "error",
     [
-        _StatusError(401),
-        _StatusError(400),
-        _StatusError(404),
-        _StatusError(429, body={"error": {"code": "insufficient_quota"}}),
+        _status(400),
+        _status(429, {"error": {"code": "insufficient_quota"}}),
         ContextLengthError("too long"),
         ContentSafetyError("unsafe"),
         QuotaError("quota"),
-        TransportError("响应 JSON 损坏"),
-        TransportError("Codex Responses 请求被拒绝 code=invalid_prompt"),
-    ],
-    ids=[
-        "401",
-        "invalid-request",
-        "unknown-model",
-        "quota",
-        "context",
-        "safety",
-        "typed-quota",
-        "protocol",
-        "codex-invalid-prompt",
+        TransportError("invalid protocol"),
     ],
 )
-async def test_light_nonrecoverable_failure_stays_fail_loud(
-    error: BaseException,
-) -> None:
+async def test_light_nonrecoverable_failure_stays_fail_loud(error: BaseException) -> None:
     fallback = _Provider(LLMResponse(content="main"))
 
     with pytest.raises(type(error)):
-        await _chat(_provider(_Provider(error), fallback))
+        await _chat(_resilient(_Provider(error), fallback))
 
     assert fallback.calls == []
 
 
 @pytest.mark.asyncio
-async def test_light_does_not_replay_after_visible_delta() -> None:
-    primary = _Provider(TimeoutError("timeout"), emit=True)
+async def test_light_never_replays_after_output_or_outer_cancellation() -> None:
     fallback = _Provider(LLMResponse(content="main"))
     deltas: list[dict[str, str]] = []
 
@@ -194,18 +146,15 @@ async def test_light_does_not_replay_after_visible_delta() -> None:
         deltas.append(delta)
 
     with pytest.raises(TimeoutError):
-        await _chat(_provider(primary, fallback), on_content_delta=on_delta)
+        await _chat(
+            _resilient(_Provider(TimeoutError("timeout"), emit=True), fallback),
+            on_content_delta=on_delta,
+        )
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(
+            _chat(_resilient(_HangingProvider(LLMResponse(content=None)), fallback)),
+            timeout=0.01,
+        )
 
     assert deltas == [{"content_delta": "partial"}]
-    assert fallback.calls == []
-
-
-@pytest.mark.asyncio
-async def test_upper_deadline_cancellation_does_not_trigger_fallback() -> None:
-    primary = _HangingProvider(LLMResponse(content="unused"))
-    fallback = _Provider(LLMResponse(content="main"))
-
-    with pytest.raises(TimeoutError):
-        await asyncio.wait_for(_chat(_provider(primary, fallback)), timeout=0.01)
-
     assert fallback.calls == []

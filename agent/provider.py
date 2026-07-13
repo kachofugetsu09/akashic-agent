@@ -16,21 +16,27 @@ import tempfile
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 from pathlib import Path
-from typing import Any, Awaitable, Callable, cast
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 import httpx
 from openai import AsyncOpenAI
 
-from agent.model_runtime.registry import ModelRuntimeRegistry
+from agent.model_runtime.auth.codex import CodexAuthDriver
+from agent.model_runtime.auth.store import CredentialStore
 from agent.model_runtime.context_policy import build_runtime_context_budget
 from agent.model_runtime.errors import ContextWindowError
+from agent.model_runtime.transports.responses import CodexResponsesTransport
 from agent.model_runtime.types import (
     LLMResponse,
+    ModelBackend,
     ModelRequest,
     ModelUsage,
     ToolCall,
     UsageCoverage,
 )
+
+if TYPE_CHECKING:
+    from agent.config_models import ModelRuntimeConfig
 
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
@@ -202,24 +208,19 @@ class ChatCompletionsRuntime:
         self,
         api_key: str,
         base_url: str | None = None,
-        system_prompt: str = "",
         extra_body: dict | None = None,
-        connect_timeout_s: float = 30.0,
         read_timeout_s: float = 90.0,
-        write_timeout_s: float = 30.0,
-        pool_timeout_s: float = 30.0,
         max_retries: int = 1,
         provider_name: str = "",
-        profile_name: str = "",
         force_disable_thinking: bool = False,
         payload_snapshot_enabled: bool | None = None,
     ) -> None:
         normalized_base_url = _normalize_openai_base_url(base_url)
         network_timeout = httpx.Timeout(
-            connect=max(0.001, float(connect_timeout_s)),
+            connect=30.0,
             read=max(0.001, float(read_timeout_s)),
-            write=max(0.001, float(write_timeout_s)),
-            pool=max(0.001, float(pool_timeout_s)),
+            write=30.0,
+            pool=30.0,
         )
         self._client = AsyncOpenAI(
             api_key=api_key or "credential-store",
@@ -229,8 +230,6 @@ class ChatCompletionsRuntime:
         )
         self._base_url = normalized_base_url or ""
         self._provider_name = provider_name
-        self._profile_name = profile_name
-        self._system = system_prompt
         self._extra_body = extra_body or {}
         self._max_retries = max(0, int(max_retries))
         self._force_disable_thinking = force_disable_thinking
@@ -240,47 +239,41 @@ class ChatCompletionsRuntime:
             else bool(payload_snapshot_enabled)
         )
 
-    async def chat(
-        self,
-        messages: list[dict],
-        tools: list[dict],
-        model: str,
-        max_tokens: int,
-        tool_choice: str | dict = "auto",
-        extra_body: dict | None = None,
-        disable_thinking: bool = False,
-        on_content_delta: Callable[[StreamDelta], Awaitable[None]] | None = None,
-    ) -> LLMResponse:
-        strategy = _strategy_from_profile(
-            self._profile_name,
+    async def send(self, request: ModelRequest) -> LLMResponse:
+        """把统一请求转换为 Chat Completions 并返回统一响应。"""
+        strategy = _select_provider_strategy(
             provider_name=self._provider_name,
             base_url=self._base_url,
-            model=model,
+            model=request.model,
         )
         # 系统提示作为第一条消息（若 messages 已自带 system 消息则不再重复添加）
+        messages = request.messages
         already_has_system = messages and messages[0].get("role") == "system"
         full_messages = (
-            [{"role": "system", "content": self._system}, *messages]
-            if self._system and not already_has_system
+            [{"role": "system", "content": request.system_prompt}, *messages]
+            if request.system_prompt and not already_has_system
             else messages
         )
         full_messages = _merge_leading_system_messages(full_messages)
         full_messages = strategy.normalize_messages(full_messages)
-        kwargs: dict = dict(model=model, max_tokens=max_tokens, messages=full_messages)
-        if tools:
-            kwargs["tools"] = tools
-            kwargs["tool_choice"] = tool_choice
+        kwargs: dict = dict(
+            model=request.model,
+            max_tokens=request.max_output_tokens,
+            messages=full_messages,
+        )
+        if request.tools:
+            kwargs["tools"] = request.tools
+            kwargs["tool_choice"] = request.tool_choice
         merged_extra_body = dict(self._extra_body)
-        if extra_body:
-            merged_extra_body.update(extra_body)
+        merged_extra_body.update(request.extra_body)
         strategy.prepare_request(
             kwargs,
             merged_extra_body,
-            disable_thinking=self._force_disable_thinking or disable_thinking,
+            disable_thinking=self._force_disable_thinking or request.disable_thinking,
         )
 
-        if on_content_delta is not None:
-            return await self._chat_streaming(kwargs, on_content_delta, strategy)
+        if request.on_delta is not None:
+            return await self._chat_streaming(kwargs, request.on_delta, strategy)
 
         resp = cast(Any, await self._create_with_retry(kwargs))
         msg = resp.choices[0].message
@@ -511,7 +504,40 @@ class ChatCompletionsRuntime:
 
 
 class LLMProvider:
-    """兼容旧调用签名并统一委托 ModelRuntime。"""
+    """把稳定调用签名收敛为统一模型请求，并隐藏后端差异。"""
+
+    @classmethod
+    def from_runtime(
+        cls,
+        runtime: ModelRuntimeConfig,
+        *,
+        system_prompt: str,
+        extra_body: dict[str, object] | None = None,
+        read_timeout_s: float = 90.0,
+        force_disable_thinking: bool = False,
+        payload_snapshot_enabled: bool | None = None,
+    ) -> LLMProvider:
+        """从已校验配置构建 provider，不向调用层暴露后端参数。"""
+        body = dict(extra_body or {})
+        if runtime.reasoning_effort and not force_disable_thinking:
+            body.setdefault("reasoning_effort", runtime.reasoning_effort)
+        return cls(
+            api_key=runtime.api_key,
+            base_url=runtime.base_url or None,
+            system_prompt=system_prompt,
+            extra_body=body,
+            read_timeout_s=read_timeout_s,
+            provider_name=runtime.provider,
+            auth_id=runtime.auth,
+            runtime_id=runtime.runtime_id,
+            context_window=runtime.context_window,
+            effective_context_percent=runtime.effective_context_percent,
+            use_responses_lite=runtime.use_responses_lite,
+            supports_parallel_tool_calls=runtime.supports_parallel_tool_calls,
+            reasoning_summary=runtime.reasoning_summary,
+            force_disable_thinking=force_disable_thinking,
+            payload_snapshot_enabled=payload_snapshot_enabled,
+        )
 
     def __init__(
         self,
@@ -519,10 +545,7 @@ class LLMProvider:
         base_url: str | None = None,
         system_prompt: str = "",
         extra_body: dict | None = None,
-        connect_timeout_s: float = 30.0,
         read_timeout_s: float = 90.0,
-        write_timeout_s: float = 30.0,
-        pool_timeout_s: float = 30.0,
         max_retries: int = 1,
         provider_name: str = "",
         auth_id: str = "",
@@ -545,34 +568,29 @@ class LLMProvider:
             raise ValueError("context_window 不能小于 0")
         if not 0 < self._effective_context_percent <= 1:
             raise ValueError("effective_context_percent 必须在 (0, 1] 内")
-        self._runtime = ModelRuntimeRegistry().build_runtime(
-            provider=provider_name,
-            auth_id=auth_id,
-            runtime_id=runtime_id,
-            base_url=base_url or "",
-            connect_timeout_s=connect_timeout_s,
-            read_timeout_s=read_timeout_s,
-            write_timeout_s=write_timeout_s,
-            pool_timeout_s=pool_timeout_s,
-            use_responses_lite=use_responses_lite,
-            supports_parallel_tool_calls=supports_parallel_tool_calls,
-            reasoning_summary=reasoning_summary,
-            chat_factory=lambda profile_name: ChatCompletionsRuntime(
+        self._backend: ModelBackend
+        if provider_name.lower() == "codex":
+            auth = CodexAuthDriver(CredentialStore(), auth_id)
+            self._backend = CodexResponsesTransport(
+                auth,
+                runtime_id=runtime_id,
+                base_url=base_url or "https://chatgpt.com/backend-api/codex",
+                read_timeout_s=read_timeout_s,
+                use_responses_lite=use_responses_lite,
+                supports_parallel_tool_calls=supports_parallel_tool_calls,
+                reasoning_summary=reasoning_summary,
+            )
+        else:
+            self._backend = ChatCompletionsRuntime(
                 api_key=api_key,
                 base_url=base_url,
-                system_prompt=system_prompt,
                 extra_body=extra_body,
-                connect_timeout_s=connect_timeout_s,
                 read_timeout_s=read_timeout_s,
-                write_timeout_s=write_timeout_s,
-                pool_timeout_s=pool_timeout_s,
                 max_retries=max_retries,
                 provider_name=provider_name,
-                profile_name=profile_name,
                 force_disable_thinking=force_disable_thinking,
                 payload_snapshot_enabled=payload_snapshot_enabled,
-            ),
-        )
+            )
 
     async def chat(
         self,
@@ -611,7 +629,7 @@ class LLMProvider:
             disable_thinking=self._force_disable_thinking or disable_thinking,
         )
         try:
-            return await self._runtime.send(request)
+            return await self._backend.send(request)
         except ContextWindowError as exc:
             raise ContextLengthError(str(exc)) from exc
 
@@ -749,7 +767,6 @@ def _extract_model_usage(usage: Any) -> ModelUsage | None:
     if cached_tokens is None:
         _, cached_tokens = _extract_cache_usage(usage)
     reasoning_tokens = _coerce_int(_get_field(completion_details, "reasoning_tokens"))
-    raw_usage = usage if isinstance(usage, dict) else {}
     return ModelUsage(
         input_tokens=prompt_tokens,
         cached_input_tokens=cached_tokens,
@@ -763,7 +780,6 @@ def _extract_model_usage(usage: Any) -> ModelUsage | None:
             if prompt_tokens is not None or completion_tokens is not None
             else UsageCoverage.UNAVAILABLE
         ),
-        raw_usage=raw_usage,
     )
 
 
@@ -862,29 +878,6 @@ def _select_provider_strategy(
     ):
         return DashScopeStrategy()
     return ProviderStrategy()
-
-
-def _strategy_from_profile(
-    profile_name: str,
-    *,
-    provider_name: str,
-    base_url: str,
-    model: str,
-) -> ProviderStrategy:
-    """把 registry 已确认的 profile 映射到 Chat 请求语义。"""
-    if profile_name == "deepseek":
-        return DeepSeekStrategy()
-    if profile_name == "dashscope":
-        return DashScopeStrategy()
-    if profile_name == "openai_compatible":
-        return ProviderStrategy()
-    if profile_name == "legacy_auto":
-        return _select_provider_strategy(
-            provider_name=provider_name,
-            base_url=base_url,
-            model=model,
-        )
-    raise ValueError(f"未知 Chat provider profile: {profile_name}")
 
 
 def _drop_thinking_keys(extra_body: dict[str, Any]) -> None:

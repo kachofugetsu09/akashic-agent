@@ -14,12 +14,12 @@ class QuotaError(ModelRuntimeError):
     """账号额度耗尽。"""
 
 
-class UnsupportedCapabilityError(ModelRuntimeError):
-    """请求使用了模型不支持的能力。"""
-
-
 class TransportError(ModelRuntimeError):
     """请求或响应协议错误。"""
+
+
+class RetryableTransportError(TransportError):
+    """连接或服务端瞬时故障，可由上层安全重试。"""
 
 
 class ContextWindowError(ModelRuntimeError):

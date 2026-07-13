@@ -27,15 +27,7 @@ def aggregate_usage(items: list[ModelUsage]) -> ModelUsage:
         cached_input_tokens=total("cached_input_tokens"),
         output_tokens=total("output_tokens"),
         reasoning_output_tokens=total("reasoning_output_tokens"),
-        cache_write_tokens=total("cache_write_tokens"),
         request_count=request_count,
         covered_request_count=covered,
         coverage=coverage,
-        raw_usage={},
     )
-
-
-def cache_hit_rate(usage: ModelUsage) -> float | None:
-    if usage.input_tokens in (None, 0) or usage.cached_input_tokens is None:
-        return None
-    return usage.cached_input_tokens / usage.input_tokens

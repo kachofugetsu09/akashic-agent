@@ -11,15 +11,13 @@ from agent.model_runtime.auth.codex import (
     CodexAuthDriver,
 )
 from agent.model_runtime.errors import AuthenticationError, TransportError
-from agent.model_runtime.context_policy import recommended_output_reserve
-from agent.model_runtime.types import CapabilitySource, ModelCapabilities
+from agent.model_runtime.context_policy import recommended_context_settings
+from agent.model_runtime.types import ModelCapabilities
 
 
 @dataclass(frozen=True)
 class CodexModel:
     slug: str
-    display_name: str
-    description: str
     capabilities: ModelCapabilities
     input_modalities_known: bool
 
@@ -99,13 +97,14 @@ class CodexModelCatalog:
         percent = int(raw.get("effective_context_window_percent", 90)) / 100
         capabilities = ModelCapabilities(
             context_window=context_window,
-            max_output_tokens=recommended_output_reserve(max_context_window, percent),
+            max_output_tokens=recommended_context_settings(
+                max_context_window, percent
+            ).output_reserve,
             max_context_window=max_context_window,
             effective_context_percent=percent,
             supported_reasoning_efforts=effort_names,
             default_reasoning_effort=raw.get("default_reasoning_level"),
             input_modalities=parsed_modalities,
-            supports_image_original_detail=bool(raw.get("supports_image_detail_original")),
             supports_parallel_tool_calls=bool(raw.get("supports_parallel_tool_calls")),
             supports_reasoning_summaries=bool(
                 raw.get(
@@ -113,16 +112,10 @@ class CodexModelCatalog:
                     raw.get("supports_reasoning_summaries", False),
                 )
             ),
-            default_reasoning_summary=str(raw.get("default_reasoning_summary") or "none"),
-            supports_prompt_cache=True,
             use_responses_lite=bool(raw.get("use_responses_lite")),
-            continuation_mode="responses_items",
-            source=CapabilitySource.CATALOG,
         )
         return CodexModel(
             slug=raw["slug"],
-            display_name=str(raw.get("display_name") or raw["slug"]),
-            description=str(raw.get("description") or ""),
             capabilities=capabilities,
             input_modalities_known=modalities_known,
         )

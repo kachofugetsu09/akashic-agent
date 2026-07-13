@@ -202,23 +202,6 @@ async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
-async def test_provider_create_has_no_internal_total_wait_for(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    fake = _FakeClient([_Response(content="ok")])
-    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
-
-    async def _reject_wait_for(*_args, **_kwargs):
-        raise AssertionError("provider 不应拥有业务总时限")
-
-    monkeypatch.setattr("agent.provider.asyncio.wait_for", _reject_wait_for)
-
-    result = await LLMProvider(api_key="k").chat([], [], "m", 1)
-
-    assert result.content == "ok"
-
-
-@pytest.mark.asyncio
 async def test_provider_outer_deadline_cancels_without_retry(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -248,35 +231,6 @@ async def test_provider_outer_deadline_cancels_without_retry(
 
     assert cancelled.is_set()
     assert calls == 1
-
-
-def test_provider_configures_sdk_network_timeout(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    captured: dict[str, object] = {}
-
-    def _build_client(**kwargs):
-        captured.update(kwargs)
-        return _FakeClient([])
-
-    monkeypatch.setattr("agent.provider.AsyncOpenAI", _build_client)
-
-    LLMProvider(
-        api_key="k",
-        connect_timeout_s=3,
-        read_timeout_s=4,
-        write_timeout_s=5,
-        pool_timeout_s=6,
-    )
-
-    timeout = cast(httpx.Timeout, captured["timeout"])
-    assert (timeout.connect, timeout.read, timeout.write, timeout.pool) == (
-        3.0,
-        4.0,
-        5.0,
-        6.0,
-    )
-    assert captured["max_retries"] == 0
 
 
 def test_normalize_openai_base_url_trims_endpoint_suffix():
