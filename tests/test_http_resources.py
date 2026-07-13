@@ -71,3 +71,37 @@ async def test_shared_http_resources_aclose_is_idempotent():
     await resources.aclose()
 
     assert resources.closed is True
+
+
+@pytest.mark.asyncio
+async def test_shared_http_resources_aclose_preserves_order_and_all_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resources = SharedHttpResources()
+    close_order: list[str] = []
+    errors = {
+        "feed_fetcher": RuntimeError("feed cleanup failed"),
+        "local_service": RuntimeError("local cleanup failed"),
+    }
+
+    for profile, requester in (
+        ("external_default", resources.external_default),
+        ("feed_fetcher", resources.feed_fetcher),
+        ("local_service", resources.local_service),
+    ):
+        async def _close(*, _profile: str = profile) -> None:
+            close_order.append(_profile)
+            if _profile in errors:
+                raise errors[_profile]
+
+        monkeypatch.setattr(requester.client, "aclose", _close)
+
+    with pytest.raises(ExceptionGroup) as caught:
+        await resources.aclose()
+
+    assert close_order == ["local_service", "feed_fetcher", "external_default"]
+    assert caught.value.exceptions == (
+        errors["local_service"],
+        errors["feed_fetcher"],
+    )
+    assert resources.closed is True
