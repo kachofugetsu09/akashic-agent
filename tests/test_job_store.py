@@ -73,6 +73,15 @@ class TestJobStoreLoadSave:
         with pytest.raises(ValueError, match=rf"path={path} index=0"):
             store.load()
 
+    def test_save_rejects_invalid_interval(self, tmp_path):
+        store = JobStore(tmp_path / "jobs.json")
+        job = make_job(trigger="every", interval_seconds=0)
+
+        with pytest.raises(ValueError, match="interval_seconds 无效"):
+            store.save({job.id: job})
+
+        assert not store.path.exists()
+
     def test_load_rejects_missing_persisted_id(self, tmp_path):
         path = tmp_path / "jobs.json"
         job = make_job()

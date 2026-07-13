@@ -21,7 +21,7 @@ import statistics
 import time
 import uuid
 from collections import deque
-from dataclasses import asdict, dataclass, field, fields as dataclass_fields
+from dataclasses import asdict, dataclass, field, fields as dataclass_fields, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, cast
@@ -276,7 +276,18 @@ class JobStore:
         return jobs
 
     def save(self, jobs: dict[str, ScheduledJob]) -> None:
-        data = [self._to_dict(j) for j in jobs.values()]
+        # 1. 保存前再次确认内存映射仍满足持久化 schema
+        data: list[dict[str, Any]] = []
+        for index, (job_id, job) in enumerate(jobs.items()):
+            if job_id != job.id:
+                raise ValueError(
+                    f"job_store 任务 ID 与字典键不一致："
+                    f"path={self.path} index={index} key={job_id!r} id={job.id!r}"
+                )
+            self._validate_job(job, index=index)
+            data.append(self._to_dict(job))
+
+        # 2. 只在完整校验通过后原子写入
         atomic_save_json(self.path, data, domain="job_store")
 
 # ── 私有方法 ──
@@ -388,6 +399,11 @@ class JobStore:
         )
 
     def _parse_dt(self, s: str, *, index: int, field_name: str) -> datetime:
+        if type(s) is not str:
+            raise ValueError(
+                f"job_store 时间字段不是字符串："
+                f"path={self.path} index={index} field={field_name} value={s!r}"
+            )
         parsed = _parse_iso(s)
         if parsed is None:
             raise ValueError(
@@ -430,6 +446,7 @@ class SchedulerService:
         self._jobs: dict[str, ScheduledJob] = {}
         self._in_flight: set[str] = set()
         self._tasks: set[asyncio.Task[None]] = set()
+        self._background_error: BaseException | None = None
         self._running = False
         self._stopping = False
 
@@ -437,13 +454,18 @@ class SchedulerService:
 
     async def run(self) -> None:
         self.load_and_recover()
+        self._background_error = None
         self._stopping = False
         self._running = True
         logger.info("SchedulerService started")
         try:
             while self._running:
                 await asyncio.sleep(1)
+                if not self._running:
+                    break
+                self._raise_background_error()
                 await self._tick()
+                self._raise_background_error()
         finally:
             # 1. 先阻止已触发任务在关闭期间重新排程
             self._running = False
@@ -463,8 +485,9 @@ class SchedulerService:
         # 确保 fire_at 带有 UTC 时区
         if job.fire_at.tzinfo is None:
             job.fire_at = job.fire_at.replace(tzinfo=timezone.utc)
-        self._jobs[job.id] = job
-        self.store.save(self._jobs)
+        candidate = dict(self._jobs)
+        candidate[job.id] = job
+        self._commit_jobs(candidate)
         logger.info(
             f"Job added: {job.id[:8]} tier={job.tier} trigger={job.trigger} "
             f"fire_at={job.fire_at.isoformat()}"
@@ -473,16 +496,18 @@ class SchedulerService:
     def cancel_job(self, job_id: str) -> bool:
         if job_id not in self._jobs:
             return False
-        del self._jobs[job_id]
-        self.store.save(self._jobs)
+        candidate = dict(self._jobs)
+        del candidate[job_id]
+        self._commit_jobs(candidate)
         return True
 
     def cancel_job_by_name(self, name: str) -> list[str]:
         cancelled = [jid for jid, j in self._jobs.items() if j.name == name]
-        for jid in cancelled:
-            del self._jobs[jid]
         if cancelled:
-            self.store.save(self._jobs)
+            candidate = dict(self._jobs)
+            for jid in cancelled:
+                del candidate[jid]
+            self._commit_jobs(candidate)
         return cancelled
 
     def list_jobs(self) -> list[ScheduledJob]:
@@ -492,10 +517,14 @@ class SchedulerService:
         """启动时加载持久化 jobs，处理 misfire。"""
         now = self._now()
         jobs = self.store.load()
+        recovered: dict[str, ScheduledJob] = {}
+        persisted: dict[str, ScheduledJob] = {}
+        persistence_changed = False
         count_loaded = 0
 
         for job in jobs:
             if not job.enabled:
+                persisted[job.id] = job
                 continue
 
             if job.fire_at.tzinfo is None:
@@ -505,22 +534,30 @@ class SchedulerService:
                 age = (now - job.fire_at).total_seconds()
                 if job.trigger == "every":
                     # 推进到下一个未来时间
-                    job.fire_at = self._advance_every(job, now)
-                    self._jobs[job.id] = job
+                    job = replace(job, fire_at=self._advance_every(job, now))
+                    recovered[job.id] = job
+                    persisted[job.id] = job
+                    persistence_changed = True
                     count_loaded += 1
                 elif age <= self.GRACE_SECONDS:
                     # 在宽限期内，保留（下次 tick 会执行）
-                    self._jobs[job.id] = job
+                    recovered[job.id] = job
+                    persisted[job.id] = job
                     count_loaded += 1
                 else:
                     logger.info(
                         f"Job {job.id[:8]} ({job.name or 'unnamed'}) expired "
                         f"{age:.0f}s ago, beyond grace period — discarded"
                     )
+                    persistence_changed = True
             else:
-                self._jobs[job.id] = job
+                recovered[job.id] = job
+                persisted[job.id] = job
                 count_loaded += 1
 
+        if persistence_changed:
+            self.store.save(persisted)
+        self._jobs = recovered
         logger.info(f"SchedulerService recovered {count_loaded} jobs")
 
 # ── 内部方法 ────────────────────────────────────────────────
@@ -554,12 +591,29 @@ class SchedulerService:
                 "scheduler 后台任务异常",
                 exc_info=(type(error), error, error.__traceback__),
             )
+            if self._background_error is None:
+                self._background_error = error
+
+    def _raise_background_error(self) -> None:
+        """向调度服务 owner 抛出后台任务的内部故障。"""
+
+        error = self._background_error
+        if error is not None:
+            self._background_error = None
+            raise error
+
+    def _commit_jobs(self, jobs: dict[str, ScheduledJob]) -> None:
+        """先持久化候选状态，再提交内存中的任务映射。"""
+
+        self.store.save(jobs)
+        self._jobs = jobs
 
     async def _execute_and_reschedule(self, job: ScheduledJob) -> None:
+        execution_succeeded = False
         execution_cancelled = False
         try:
             await self._execute(job)
-            job.run_count += 1
+            execution_succeeded = True
         except asyncio.CancelledError:
             execution_cancelled = True
             raise
@@ -567,23 +621,33 @@ class SchedulerService:
             logger.error(f"Job {job.id[:8]} execution failed: {e}", exc_info=True)
         finally:
             self._in_flight.discard(job.id)
-            now = self._now()
-            if job.trigger == "every":
+            candidate = self._jobs
+            committed_job: ScheduledJob | None = None
+            current_job = self._jobs.get(job.id)
+            if not execution_cancelled and job.trigger == "every":
                 # SOFT 循环任务可能早于名义 fire_at 执行。
                 # 重新排程必须严格晚于 now 与名义边界中较晚者，
                 # 否则 cron 任务可能在时钟越过 fire_at 前反复触发同一个周期。
-                if (
-                    not execution_cancelled
-                    and not self._stopping
-                    and job.id in self._jobs
-                ):
+                if not self._stopping and current_job is job:
+                    now = self._now()
                     reschedule_after = max(now, job.fire_at) + timedelta(microseconds=1)
-                    job.fire_at = self._advance_every(job, reschedule_after)
-                    self._jobs[job.id] = job
-            else:
-                if not execution_cancelled:
-                    _ = self._jobs.pop(job.id, None)
-            self.store.save(self._jobs)
+                    committed_job = replace(
+                        job,
+                        fire_at=self._advance_every(job, reschedule_after),
+                        run_count=job.run_count + (1 if execution_succeeded else 0),
+                    )
+                    candidate = dict(self._jobs)
+                    candidate[job.id] = committed_job
+            elif not execution_cancelled and job.trigger != "every":
+                if current_job is job:
+                    candidate = dict(self._jobs)
+                    _ = candidate.pop(job.id)
+
+            self.store.save(candidate)
+            self._jobs = candidate
+            if committed_job is not None:
+                job.fire_at = committed_job.fire_at
+                job.run_count = committed_job.run_count
 
     async def _execute(self, job: ScheduledJob) -> None:
         label = job.name or job.id[:8]
