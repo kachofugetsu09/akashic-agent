@@ -1,6 +1,9 @@
 from datetime import UTC, datetime, timedelta
 
-from plugins.wake_proactive.drift_drive import advance_drift_drive
+from plugins.wake_proactive.drift_drive import (
+    advance_drift_drive,
+    sample_drift_delay_hours,
+)
 
 
 NOW = datetime(2026, 7, 12, 12, tzinfo=UTC)
@@ -59,33 +62,6 @@ def test_high_content_evidence_continuously_reduces_drift_rate() -> None:
     assert "content_evidence" in result.reasons
 
 
-def test_busy_sleeping_and_in_game_decay_rate_without_hard_block() -> None:
-    baseline = advance_drift_drive(
-        now=NOW,
-        hazard=0.0,
-        threshold=2.0,
-        updated_at=NOW - timedelta(hours=2),
-        last_user_at=NOW - timedelta(hours=12),
-        last_drift_at=None,
-        content_evidence=0.0,
-    )
-    for flag in ("busy", "sleeping", "in_game"):
-        result = advance_drift_drive(
-            now=NOW,
-            hazard=0.0,
-            threshold=2.0,
-            updated_at=NOW - timedelta(hours=2),
-            last_user_at=NOW - timedelta(hours=12),
-            last_drift_at=None,
-            content_evidence=0.0,
-            **{flag: True},
-        )
-
-        assert result.decision == "idle"
-        assert 0 < result.rate < baseline.rate
-        assert flag in result.reasons
-
-
 def test_recent_drift_and_repetition_reduce_rate() -> None:
     baseline = advance_drift_drive(
         now=NOW,
@@ -110,3 +86,20 @@ def test_recent_drift_and_repetition_reduce_rate() -> None:
     assert suppressed.rate < baseline.rate * 0.1
     assert "recent_drift" in suppressed.reasons
     assert "repetition" in suppressed.reasons
+
+
+def test_drift_timer_is_sampled_from_idle_state_without_a_time_gate() -> None:
+    early = sample_drift_delay_hours(
+        random_draw=0.5,
+        idle_hours=0.0,
+        recent_drift_suppression=0.0,
+        repetition_suppression=0.0,
+    )
+    already_idle = sample_drift_delay_hours(
+        random_draw=0.5,
+        idle_hours=12.0,
+        recent_drift_suppression=0.0,
+        repetition_suppression=0.0,
+    )
+
+    assert early > already_idle > 0.0

@@ -146,10 +146,13 @@ class WakeStateStore:
                 updated_at TEXT NOT NULL,
                 last_drift_at TEXT,
                 last_fingerprint TEXT NOT NULL DEFAULT '',
-                repeat_count INTEGER NOT NULL DEFAULT 0
+                repeat_count INTEGER NOT NULL DEFAULT 0,
+                timer_anchor TEXT,
+                next_attempt_at TEXT
             )
             """
         )
+        self._migrate_drift_timer()
         _ = self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS pending_acknowledgements (
@@ -161,6 +164,20 @@ class WakeStateStore:
             """
         )
         self._conn.commit()
+
+    def _migrate_drift_timer(self) -> None:
+        columns = {
+            str(row[1])
+            for row in self._conn.execute("PRAGMA table_info(drift_state)")
+        }
+        if "timer_anchor" not in columns:
+            _ = self._conn.execute(
+                "ALTER TABLE drift_state ADD COLUMN timer_anchor TEXT"
+            )
+        if "next_attempt_at" not in columns:
+            _ = self._conn.execute(
+                "ALTER TABLE drift_state ADD COLUMN next_attempt_at TEXT"
+            )
 
     def _migrate_reservoir_sources(self) -> None:
         columns = {
@@ -294,7 +311,18 @@ class WakeStateStore:
         return [dict(row) for row in rows]
 
     def ingest(self, kind: str, events: list[dict[str, Any]], now: datetime) -> int:
-        inserted = 0
+        return len(self.ingest_with_ids(kind, events, now))
+
+    def ingest_with_ids(
+        self,
+        kind: str,
+        events: list[dict[str, Any]],
+        now: datetime,
+    ) -> list[str]:
+        """持久化事件，并返回本轮首次进入池子的项目 ID。"""
+
+        # 1. 在信任边界规范化来源标识
+        inserted_ids: list[str] = []
         for event in events:
             ack_source_id = str(
                 event.get("ack_server") or event.get("_source") or ""
@@ -351,9 +379,10 @@ class WakeStateStore:
                     status,
                 ),
             )
-            inserted += int(existing is None)
+            if existing is None:
+                inserted_ids.append(item_id)
         self._conn.commit()
-        return inserted
+        return inserted_ids
 
     def unread(self, kind: str) -> list[dict[str, Any]]:
         rows = self._conn.execute(
@@ -393,6 +422,38 @@ class WakeStateStore:
             """,
             (now.isoformat(), *item_ids),
         )
+        self._conn.commit()
+
+    def expire(self, item_ids: list[str], now: datetime) -> None:
+        if not item_ids:
+            return
+        placeholders = ",".join("?" for _ in item_ids)
+        _ = self._conn.execute(
+            f"""
+            UPDATE reservoir_events
+            SET status = 'expired', consumed_at = ?
+            WHERE item_id IN ({placeholders})
+            """,
+            (now.isoformat(), *item_ids),
+        )
+        self._conn.commit()
+
+    def queue_acknowledgements(
+        self,
+        acknowledgements: dict[str, list[str]],
+        now: datetime,
+    ) -> None:
+        for source_id, event_ids in acknowledgements.items():
+            for event_id in event_ids:
+                _ = self._conn.execute(
+                    """
+                    INSERT INTO pending_acknowledgements(
+                        source_id, source_event_id, queued_at
+                    ) VALUES (?, ?, ?)
+                    ON CONFLICT(source_id, source_event_id) DO NOTHING
+                    """,
+                    (source_id, event_id, now.isoformat()),
+                )
         self._conn.commit()
 
     def consume_and_queue_ack(
@@ -638,6 +699,7 @@ class WakeStateStore:
             transition=str(row["transition_name"]),
             observed_at=_parse_optional_time(row["observed_at"]),
             expires_at=_parse_optional_time(row["expires_at"]),
+            raw=cast(dict[str, Any], json.loads(str(row["payload_json"]))),
         )
 
     def list_contexts(self) -> list[NormalizedContext]:
@@ -727,6 +789,38 @@ class WakeStateStore:
         )
         self._conn.commit()
 
+    def save_drift_timer(
+        self,
+        *,
+        session_key: str,
+        timer_anchor: str,
+        next_attempt_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        """保存由当前活动状态派生的一次性 Drift 到期时间。"""
+
+        _ = self._conn.execute(
+            """
+            INSERT INTO drift_state(
+                session_key, hazard, threshold, updated_at,
+                timer_anchor, next_attempt_at
+            ) VALUES (?, 0, 0, ?, ?, ?)
+            ON CONFLICT(session_key) DO UPDATE SET
+                hazard=0,
+                threshold=0,
+                updated_at=excluded.updated_at,
+                timer_anchor=excluded.timer_anchor,
+                next_attempt_at=excluded.next_attempt_at
+            """,
+            (
+                session_key,
+                updated_at.isoformat(),
+                timer_anchor,
+                next_attempt_at.isoformat(),
+            ),
+        )
+        self._conn.commit()
+
     def record_drift_success(
         self,
         *,
@@ -751,6 +845,8 @@ class WakeStateStore:
                 threshold=excluded.threshold,
                 updated_at=excluded.updated_at,
                 last_drift_at=excluded.last_drift_at,
+                timer_anchor=NULL,
+                next_attempt_at=NULL,
                 last_fingerprint=excluded.last_fingerprint,
                 repeat_count=excluded.repeat_count
             """,
@@ -781,7 +877,9 @@ class WakeStateStore:
                 hazard=0,
                 threshold=excluded.threshold,
                 updated_at=excluded.updated_at,
-                last_drift_at=excluded.last_drift_at
+                last_drift_at=excluded.last_drift_at,
+                timer_anchor=NULL,
+                next_attempt_at=NULL
             """,
             (session_key, threshold, now.isoformat(), now.isoformat()),
         )

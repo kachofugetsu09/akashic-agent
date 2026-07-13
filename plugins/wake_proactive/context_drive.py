@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal, Mapping
 
@@ -24,6 +24,7 @@ class NormalizedContext:
     transition: str
     observed_at: datetime | None = None
     expires_at: datetime | None = None
+    raw: dict[str, Any] = field(default_factory=lambda: dict[str, Any]())
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +63,7 @@ def evaluate_context(
             transition=transition,
             observed_at=observed_at,
             expires_at=expires_at,
+            raw=dict(snapshot),
         ),
         signal="reevaluate" if meaningful_transition else "refresh",
         should_contact=False,

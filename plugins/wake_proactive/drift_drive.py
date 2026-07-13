@@ -20,7 +20,6 @@ class DriftDriveResult:
     idle_hours: float
     idle_drive: float
     content_suppression: float
-    context_suppression: float
     recent_drift_suppression: float
     repetition_suppression: float
     reasons: tuple[str, ...]
@@ -35,10 +34,6 @@ def advance_drift_drive(
     last_user_at: datetime | None,
     last_drift_at: datetime | None,
     content_evidence: float,
-    busy: bool = False,
-    sleeping: bool = False,
-    in_game: bool = False,
-    context_suppression: float | None = None,
     repetition: float = 0.0,
     max_rate_per_hour: float = 0.3,
 ) -> DriftDriveResult:
@@ -51,15 +46,6 @@ def advance_drift_drive(
     )
     idle_drive = 1.0 - math.exp(-idle_hours / 4.0)
     content_suppression = content
-    context_suppression_score = (
-        _bounded(context_suppression)
-        if context_suppression is not None
-        else _combined_context_suppression(
-            busy=busy,
-            sleeping=sleeping,
-            in_game=in_game,
-        )
-    )
     recent_drift_suppression = (
         math.exp(-max(0.0, (now - last_drift_at).total_seconds()) / (6 * 3600))
         if last_drift_at is not None
@@ -70,7 +56,6 @@ def advance_drift_drive(
         max_rate_per_hour
         * idle_drive
         * (1.0 - 0.95 * content_suppression)
-        * (1.0 - 0.98 * context_suppression_score)
         * (1.0 - 0.9 * recent_drift_suppression)
         * (1.0 - 0.9 * repetition_suppression)
     )
@@ -96,14 +81,10 @@ def advance_drift_drive(
         idle_hours=idle_hours,
         idle_drive=idle_drive,
         content_suppression=content_suppression,
-        context_suppression=context_suppression_score,
         recent_drift_suppression=recent_drift_suppression,
         repetition_suppression=repetition_suppression,
         reasons=_reasons(
             content=content,
-            busy=busy,
-            sleeping=sleeping,
-            in_game=in_game,
             recent_drift=recent_drift_suppression,
             repetition=repetition_score,
             attempt=attempt,
@@ -111,27 +92,48 @@ def advance_drift_drive(
     )
 
 
-def _combined_context_suppression(
+def sample_drift_delay_hours(
     *,
-    busy: bool,
-    sleeping: bool,
-    in_game: bool,
+    random_draw: float,
+    idle_hours: float,
+    recent_drift_suppression: float,
+    repetition_suppression: float,
+    max_rate_per_hour: float = 0.08,
 ) -> float:
-    suppressions = (
-        0.9 if busy else 0.0,
-        0.98 if sleeping else 0.0,
-        0.8 if in_game else 0.0,
+    """从递增的空闲 hazard 采样下一次一次性 Drift 到期时间。"""
+
+    # 1. 将上下文和近期重复转成连续速率
+    scale = (
+        max_rate_per_hour
+        * (1.0 - 0.9 * _bounded(recent_drift_suppression))
+        * (1.0 - 0.9 * _bounded(repetition_suppression))
     )
-    remaining = math.prod(1.0 - value for value in suppressions)
-    return 1.0 - remaining
+    target = -math.log1p(-min(1.0 - 1e-12, max(0.0, random_draw)))
+    start_mass = _integrated_idle_drive(max(0.0, idle_hours), scale)
+
+    # 2. 单调求解剩余累计 hazard，避免周期轮询积累
+    low = max(0.0, idle_hours)
+    high = low + 1.0
+    while _integrated_idle_drive(high, scale) - start_mass < target:
+        high = low + 2.0 * (high - low)
+    for _ in range(64):
+        middle = (low + high) / 2.0
+        if _integrated_idle_drive(middle, scale) - start_mass < target:
+            low = middle
+        else:
+            high = middle
+    return high - max(0.0, idle_hours)
+
+
+def _integrated_idle_drive(idle_hours: float, scale: float) -> float:
+    return scale * (
+        idle_hours - 4.0 * (1.0 - math.exp(-idle_hours / 4.0))
+    )
 
 
 def _reasons(
     *,
     content: float,
-    busy: bool,
-    sleeping: bool,
-    in_game: bool,
     recent_drift: float,
     repetition: float,
     attempt: bool,
@@ -139,12 +141,6 @@ def _reasons(
     reasons: list[str] = []
     if content >= 0.5:
         reasons.append("content_evidence")
-    if busy:
-        reasons.append("busy")
-    if sleeping:
-        reasons.append("sleeping")
-    if in_game:
-        reasons.append("in_game")
     if recent_drift >= 0.5:
         reasons.append("recent_drift")
     if repetition >= 0.5:

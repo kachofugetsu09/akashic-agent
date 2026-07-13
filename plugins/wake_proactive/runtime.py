@@ -7,17 +7,26 @@ import random
 import sqlite3
 from json import JSONDecodeError
 from contextlib import closing
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, cast
 
 from agent.turns.result import TurnOutbound, TurnResult, TurnSideEffect, TurnTrace
 from core.clock import Clock, ReplayClock, clock_from_env
+from plugins.default_proactive.context import AgentTickContext
+from plugins.drift_flow.factory import (
+    build_drift_llm_fn,
+    build_drift_pipeline,
+    build_drift_recent_chat_fn,
+)
 from plugins.wake_proactive.context import WakeContext
 from plugins.wake_proactive.context_drive import ContextDriveResult, NormalizedContext
-from plugins.wake_proactive.drift_drive import DriftDriveResult, advance_drift_drive
-from plugins.wake_proactive.drift_prompt import build_drift_messages
+from plugins.wake_proactive.drift_drive import (
+    DriftDriveResult,
+    advance_drift_drive,
+    sample_drift_delay_hours,
+)
 from plugins.wake_proactive.event_tools import (
     EVENT_TOOL_SCHEMAS,
     EventToolResult,
@@ -40,9 +49,9 @@ from session.embedding_store import MessageEmbeddingStore
 
 logger = logging.getLogger(__name__)
 _MAX_TITLES_PER_WAKE = 120
-_MAX_HAZARD_THRESHOLD = 1.0
-_HAZARD_THRESHOLD_SCALE = 1 / 4
 _SEMANTIC_CALIBRATION_POWER = 4
+_CONTENT_MIN_RESIDENCE = timedelta(hours=24)
+_CONTENT_MAX_AGE = timedelta(days=14)
 _SCHEMA_BY_NAME = {
     schema["function"]["name"]: schema
     for schema in [*TOOL_SCHEMAS, *EVENT_TOOL_SCHEMAS]
@@ -70,9 +79,11 @@ class WakeRunState:
     context_reevaluate: bool = False
     context_event: dict[str, Any] | None = None
     drift_result: DriftDriveResult | None = None
+    drift_ctx: AgentTickContext | None = None
     content_completed: bool = False
     new_alert_count: int = 0
     new_content_count: int = 0
+    new_content_ids: set[str] | None = None
 
 
 @dataclass(slots=True)
@@ -116,6 +127,11 @@ class WakeRuntime:
             state_store=self._state,
             max_chars=int(getattr(scope.cfg, "agent_tick_web_fetch_max_chars", 8_000)),
         )
+        self._drift_llm_fn = build_drift_llm_fn(scope)
+        self._drift_pipeline = build_drift_pipeline(
+            scope,
+            build_drift_recent_chat_fn(scope),
+        )
 
     def build_modules(self) -> list[object]:
         from plugins.wake_proactive.modules import (
@@ -148,6 +164,7 @@ class WakeRuntime:
         await self._flush_pending_acknowledgements()
         channels = await self._fetch_source_channels()
         self._ingest_source_channels(state, channels)
+        await self._flush_pending_acknowledgements()
         self._log_source_summary(state, channels)
 
         # 2. Alert 不依赖内容向量；普通轮次再刷新内容兴趣
@@ -182,8 +199,14 @@ class WakeRuntime:
         state.new_alert_count = self._state.ingest(
             "alert", channels["alert"], state.ctx.now_utc
         )
-        state.new_content_count = self._state.ingest(
+        new_content_ids = self._state.ingest_with_ids(
             "content", channels["content"], state.ctx.now_utc
+        )
+        state.new_content_ids = set(new_content_ids)
+        state.new_content_count = len(new_content_ids)
+        self._state.queue_acknowledgements(
+            _group_acknowledgements(channels["content"]),
+            state.ctx.now_utc,
         )
         state.context_results = self._state.ingest_context(
             channels["context"], state.ctx.now_utc
@@ -237,52 +260,36 @@ class WakeRuntime:
             await self._decide_event(state, "context", state.context_event)
             state.next_interval_seconds = self._tick_interval_seconds
             return True
+        expired_ids: set[str] = set()
         if state.contents:
             ranked = rank_events(state.contents, now=state.ctx.now_utc)
             expired_ids = {
                 str(event["id"])
                 for event in ranked
-                if float(event["_wake_rank_features"]["admission_mass"])
-                < WAKE_ADMISSION_FLOOR
+                if _content_expired(event, state.ctx.now_utc)
             }
             if expired_ids:
-                expired = [
-                    event
-                    for event in state.contents
-                    if str(event["id"]) in expired_ids
-                ]
-                await self._ack_and_consume(expired, state.ctx.now_utc)
+                self._state.expire(sorted(expired_ids), state.ctx.now_utc)
                 state.contents = [
                     event
                     for event in state.contents
                     if str(event["id"]) not in expired_ids
                 ]
-        should_evaluate_content = bool(state.contents)
+        new_content_ids = (state.new_content_ids or set()) - expired_ids
+        should_evaluate_content = bool(state.contents and new_content_ids)
         if should_evaluate_content:
             hazard_state = self._state.load_hazard(state.ctx.session_key)
-            threshold = (
-                min(_MAX_HAZARD_THRESHOLD, float(hazard_state["threshold"]))
-                if hazard_state is not None
-                else self._sample_threshold(
-                    state.ctx.session_key,
-                    state.ctx.now_utc,
-                )
-            )
-            updated_at = _parse_optional_time(
-                hazard_state.get("updated_at") if hazard_state is not None else None
-            )
             last_wake_at = _parse_optional_time(
                 hazard_state.get("last_wake_at") if hazard_state is not None else None
-            )
-            current_hazard = (
-                float(hazard_state["hazard"]) if hazard_state is not None else 0.0
             )
             result = advance_hazard(
                 state.contents,
                 now=state.ctx.now_utc,
-                hazard=current_hazard,
-                threshold=threshold,
-                updated_at=updated_at,
+                new_item_ids=new_content_ids,
+                random_draw=self._content_draw(
+                    state.ctx.session_key,
+                    state.ctx.now_utc,
+                ),
                 last_wake_at=last_wake_at,
             )
             state.hazard_result = result
@@ -306,15 +313,8 @@ class WakeRuntime:
                 completed = await self._commit_content_decision(state)
                 self._state.save_hazard(
                     session_key=state.ctx.session_key,
-                    hazard=0.0 if completed else result.hazard_after,
-                    threshold=(
-                        self._sample_threshold(
-                            state.ctx.session_key,
-                            state.ctx.now_utc,
-                        )
-                        if completed
-                        else result.threshold
-                    ),
+                    hazard=result.hazard_after,
+                    threshold=result.threshold,
                     updated_at=state.ctx.now_utc,
                     last_wake_at=state.ctx.now_utc if completed else last_wake_at,
                 )
@@ -481,17 +481,12 @@ class WakeRuntime:
         return call
 
     async def _commit_content_decision(self, state: WakeRunState) -> bool:
-        events = list(state.contents)
-        effect = AsyncEffect(
-            lambda: self._ack_and_consume(events, state.ctx.now_utc)
-        )
         if state.ctx.terminal_action == "skip":
             result = TurnResult(
                 decision="skip",
                 outbound=None,
                 evidence=[],
                 trace=TurnTrace(source="proactive"),
-                side_effects=[effect],
             )
             await self._require_orchestrator().handle_proactive_turn(
                 result=result,
@@ -501,6 +496,15 @@ class WakeRuntime:
             )
             return True
 
+        selected_ids = set(state.ctx.cited_item_ids)
+        selected_events = [
+            event
+            for event in state.contents
+            if str(event.get("id") or "") in selected_ids
+        ]
+        effect = AsyncEffect(
+            lambda: self._consume_events(selected_events, state.ctx.now_utc)
+        )
         result = TurnResult(
             decision="reply",
             outbound=TurnOutbound(
@@ -526,16 +530,11 @@ class WakeRuntime:
             )
         )
 
-    def _sample_threshold(self, session_key: str, now: datetime) -> float:
+    def _content_draw(self, session_key: str, now: datetime) -> float:
         if isinstance(self._clock, ReplayClock):
-            seed = f"wake:{session_key}:{now.isoformat()}"
-            sampled = random.Random(seed).gammavariate(
-                3.0,
-                _HAZARD_THRESHOLD_SCALE,
-            )
-        else:
-            sampled = self._rng.gammavariate(3.0, _HAZARD_THRESHOLD_SCALE)
-        return min(_MAX_HAZARD_THRESHOLD, float(sampled))
+            seed = f"wake-content:{session_key}:{now.isoformat()}"
+            return random.Random(seed).random()
+        return self._rng.random()
 
     def next_interval(self, state: WakeRunState) -> int:
         return state.next_interval_seconds
@@ -757,56 +756,60 @@ class WakeRuntime:
         if not bool(getattr(self._scope.cfg, "drift_enabled", True)):
             return
         stored = self._state.load_drift(state.ctx.session_key) or {}
-        contexts = self._active_contexts(state.ctx.now_utc)
         last_user_at = self._last_user_at(
             state.ctx.session_key,
             state.ctx.now_utc,
         )
-        content_evidence = max(
-            (float(event.get("_wake_interest_score") or 0.0) for event in state.contents),
-            default=0.0,
+        last_drift_at = _parse_optional_time(stored.get("last_drift_at"))
+        repetition = min(1.0, float(stored.get("repeat_count") or 0) / 3.0)
+        timer_anchor = _drift_timer_anchor(
+            last_user_at=last_user_at,
+            last_drift_at=last_drift_at,
+            repetition=repetition,
         )
+        next_attempt_at = _parse_optional_time(stored.get("next_attempt_at"))
+        if stored.get("timer_anchor") != timer_anchor or next_attempt_at is None:
+            next_attempt_at = self._schedule_drift_attempt(
+                state,
+                timer_anchor=timer_anchor,
+                last_user_at=last_user_at,
+                last_drift_at=last_drift_at,
+                repetition=repetition,
+            )
+        if state.ctx.now_utc < next_attempt_at:
+            return
+
+        # 到期事件只负责开启一次 LLM 判别，不再依赖轮询 hazard 穿线
         result = advance_drift_drive(
             now=state.ctx.now_utc,
-            hazard=float(stored.get("hazard") or 0.0),
-            threshold=float(stored.get("threshold") or 0.8),
-            updated_at=_parse_optional_time(stored.get("updated_at")),
+            hazard=0.0,
+            threshold=0.0,
+            updated_at=state.ctx.now_utc,
             last_user_at=last_user_at,
-            last_drift_at=_parse_optional_time(stored.get("last_drift_at")),
-            content_evidence=content_evidence,
-            busy=any(
-                context.presence == "offline"
-                or (
-                    context.presence not in {"sleeping", "in_game"}
-                    and context.interruptibility <= 0.1
-                )
-                for context in contexts
-            ),
-            sleeping=any(context.presence == "sleeping" for context in contexts),
-            in_game=any(context.presence == "in_game" for context in contexts),
-            context_suppression=_context_suppression(contexts),
-            repetition=min(1.0, float(stored.get("repeat_count") or 0) / 3.0),
+            last_drift_at=last_drift_at,
+            content_evidence=0.0,
+            repetition=repetition,
         )
+        result = replace(result, decision="attempt")
         state.drift_result = result
         state.base_score = max(state.base_score, result.rate)
-        self._state.save_drift_progress(
+        if self._drift_pipeline is None:
+            raise RuntimeError("Wake Drift 到期但缺少 DriftTurnPipeline")
+
+        # 1. Wake 只决定到期时间；进入后改用 Default 的完整 Drift 上下文
+        drift_ctx = AgentTickContext(
+            now_utc=state.ctx.now_utc,
             session_key=state.ctx.session_key,
-            hazard=result.hazard_after,
-            threshold=result.threshold,
-            updated_at=state.ctx.now_utc,
         )
-        if result.decision != "attempt":
+        drift_ctx.mark_context_prefetched(
+            [dict(context.raw) for context in self._active_contexts(state.ctx.now_utc)]
+        )
+        entered = await self._drift_pipeline.run(drift_ctx, self._drift_llm_fn)
+        if not entered:
             return
-        messages = build_drift_messages(
-            memory_text=self._read_memory(),
-            proactive_context=str(self._scope.workspace_context_fn() or ""),
-            recent_session=self._read_recent_session(
-                state.ctx.session_key,
-                state.ctx.now_utc,
-                include_proactive=True,
-            ),
-            drive=result,
-        )
+        state.drift_ctx = drift_ctx
+
+        # 2. 只有实际进入 pipeline 才消费本次到期事件
         self._state.record_observation(
             wake_id=state.ctx.wake_id,
             session_key=state.ctx.session_key,
@@ -814,13 +817,109 @@ class WakeRuntime:
             now=state.ctx.now_utc,
             trigger=_drift_trace(result),
             candidates=[],
-            llm_input=messages,
+            llm_input=[],
         )
         self._state.record_drift_observation(
             session_key=state.ctx.session_key,
             now=state.ctx.now_utc,
             threshold=result.threshold,
         )
+        await self._commit_full_drift(state, drift_ctx)
+
+    async def _commit_full_drift(
+        self,
+        state: WakeRunState,
+        drift_ctx: AgentTickContext,
+    ) -> None:
+        """按 Default 的投递语义提交完整 Drift 结果。"""
+
+        # 1. 将 pipeline 暂存的消息映射成统一主动 TurnResult
+        has_outbound = bool(drift_ctx.draft_message or drift_ctx.draft_media)
+        result = TurnResult(
+            decision="reply" if has_outbound else "skip",
+            outbound=(
+                TurnOutbound(
+                    session_key=state.ctx.session_key,
+                    content=drift_ctx.draft_message,
+                    media=list(drift_ctx.draft_media),
+                )
+                if has_outbound
+                else None
+            ),
+            evidence=[],
+            trace=TurnTrace(
+                source="proactive",
+                extra={"source_mode": "drift"},
+            ),
+        )
+        delivered = await self._require_orchestrator().handle_proactive_turn(
+            result=result,
+            session_key=state.ctx.session_key,
+            channel=str(getattr(self._scope.cfg, "default_channel", "")),
+            chat_id=str(getattr(self._scope.cfg, "default_chat_id", "")),
+        )
+
+        # 2. 与 Default 一样，在真实投递后修正 Drift message_result
+        if has_outbound:
+            pipeline = self._drift_pipeline
+            if pipeline is None:
+                raise RuntimeError("完整 Drift 投递时 pipeline 不应为空")
+            drift_ctx.drift_message_sent = bool(delivered)
+            pipeline.record_commit_result(drift_ctx, bool(delivered))
+        if has_outbound and delivered:
+            self._state.record_drift_success(
+                session_key=state.ctx.session_key,
+                now=state.ctx.now_utc,
+                fingerprint=drift_ctx.draft_message.strip().casefold(),
+            )
+
+    def _schedule_drift_attempt(
+        self,
+        state: WakeRunState,
+        *,
+        timer_anchor: str,
+        last_user_at: datetime | None,
+        last_drift_at: datetime | None,
+        repetition: float,
+    ) -> datetime:
+        """根据当前活动状态派生并持久化一次 Drift 到期事件。"""
+
+        # 1. 为回放提供确定性随机数，线上使用 Runtime RNG
+        if isinstance(self._clock, ReplayClock):
+            draw = random.Random(
+                f"wake-drift:{state.ctx.session_key}:{timer_anchor}"
+            ).random()
+        else:
+            draw = self._rng.random()
+        idle_hours = (
+            max(0.0, (state.ctx.now_utc - last_user_at).total_seconds() / 3600)
+            if last_user_at is not None
+            else 0.0
+        )
+        recent_drift = (
+            math.exp(
+                -max(0.0, (state.ctx.now_utc - last_drift_at).total_seconds())
+                / (6 * 3600)
+            )
+            if last_drift_at is not None
+            else 0.0
+        )
+
+        # 2. 一次性 timer 由状态事件重建，普通 tick 不会重新采样
+        delay_hours = sample_drift_delay_hours(
+            random_draw=draw,
+            idle_hours=idle_hours,
+            recent_drift_suppression=recent_drift,
+            repetition_suppression=repetition,
+        )
+        next_attempt_at = state.ctx.now_utc + timedelta(hours=delay_hours)
+        self._state.save_drift_timer(
+            session_key=state.ctx.session_key,
+            timer_anchor=timer_anchor,
+            next_attempt_at=next_attempt_at,
+            updated_at=state.ctx.now_utc,
+        )
+        return next_attempt_at
 
     def _last_user_at(self, session_key: str, now: datetime) -> datetime | None:
         if isinstance(self._clock, ReplayClock) and self._session_db_path.exists():
@@ -857,30 +956,15 @@ class WakeRuntime:
         ]
 
     def _current_context_text(self, now: datetime) -> str:
-        reliable = [
-            context
-            for context in self._active_contexts(now)
-            if context.presence != "unknown" and context.confidence >= 0.55
-        ]
-        if not reliable:
-            return "unknown（没有可靠 ContextEvent）"
-        context = max(
-            reliable,
-            key=lambda item: (
-                item.confidence,
-                item.observed_at.isoformat() if item.observed_at else "",
-            ),
+        """把所有仍有效的原始 ContextEvent 交给 Agent 判断。"""
+
+        contexts = self._active_contexts(now)
+        if not contexts:
+            return "没有有效 ContextEvent"
+        return "\n".join(
+            json.dumps(context.raw, ensure_ascii=False, sort_keys=True)
+            for context in contexts
         )
-        fields = [
-            f"presence={context.presence}",
-            f"interruptibility={context.interruptibility:.2f}",
-            f"confidence={context.confidence:.2f}",
-        ]
-        if context.observed_at is not None:
-            fields.append(f"observed_at={context.observed_at.isoformat()}")
-        if context.expires_at is not None:
-            fields.append(f"expires_at={context.expires_at.isoformat()}")
-        return " | ".join(fields)
 
     async def _ack_and_consume(
         self, events: list[dict[str, Any]], now: datetime
@@ -897,6 +981,16 @@ class WakeRuntime:
             now=now,
         )
         await self._flush_pending_acknowledgements()
+
+    async def _consume_events(
+        self,
+        events: list[dict[str, Any]],
+        now: datetime,
+    ) -> None:
+        self._state.consume(
+            [str(event["id"]) for event in events],
+            now,
+        )
 
     async def _flush_pending_acknowledgements(self) -> None:
         grouped = self._state.pending_acknowledgements()
@@ -963,6 +1057,42 @@ def _parse_optional_time(value: object) -> datetime | None:
     if value is None or not str(value).strip():
         return None
     return datetime.fromisoformat(str(value))
+
+
+def _content_expired(event: dict[str, Any], now: datetime) -> bool:
+    """只在内容超龄或度过驻留期后跌破衰减线时淘汰。"""
+
+    # 1. 发布时间可靠时直接淘汰绝对陈旧内容
+    published_at = _parse_optional_time(event.get("published_at"))
+    if published_at is not None and now - published_at >= _CONTENT_MAX_AGE:
+        return True
+
+    # 2. 新内容先获得一次跟随后续事件进入判别的机会
+    first_seen_at = _parse_optional_time(event.get("first_seen_at"))
+    if first_seen_at is None:
+        raise ValueError("wake content missing first_seen_at")
+    if now - first_seen_at < _CONTENT_MIN_RESIDENCE:
+        return False
+    return (
+        float(event["_wake_rank_features"]["admission_mass"])
+        < WAKE_ADMISSION_FLOOR
+    )
+
+
+def _group_acknowledgements(
+    events: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for event in events:
+        source_id = str(
+            event.get("ack_server") or event.get("_source") or ""
+        ).strip()
+        source_event_id = str(
+            event.get("event_id") or event.get("id") or ""
+        ).strip()
+        if source_id and source_event_id:
+            grouped.setdefault(source_id, []).append(source_event_id)
+    return grouped
 
 
 def _source_samples(channels: dict[str, list[dict[str, Any]]]) -> str:
@@ -1052,7 +1182,6 @@ def _drift_trace(result: DriftDriveResult) -> dict[str, Any]:
         "rate": result.rate,
         "idle_hours": result.idle_hours,
         "content_suppression": result.content_suppression,
-        "context_suppression": result.context_suppression,
         "recent_drift_suppression": result.recent_drift_suppression,
         "repetition_suppression": result.repetition_suppression,
         "reasons": list(result.reasons),
@@ -1073,20 +1202,16 @@ def _hazard_trace(result: HazardResult) -> dict[str, Any]:
     }
 
 
-def _context_suppression(contexts: list[NormalizedContext]) -> float:
-    suppressions: list[float] = []
-    presence_weight = {
-        "active": 0.2,
-        "idle": 0.1,
-        "sleeping": 0.98,
-        "in_game": 0.8,
-        "offline": 0.9,
-        "unknown": 0.4,
-    }
-    for context in contexts:
-        base = max(
-            presence_weight[context.presence],
-            1.0 - context.interruptibility,
+def _drift_timer_anchor(
+    *,
+    last_user_at: datetime | None,
+    last_drift_at: datetime | None,
+    repetition: float,
+) -> str:
+    return "|".join(
+        (
+            last_user_at.isoformat() if last_user_at is not None else "none",
+            last_drift_at.isoformat() if last_drift_at is not None else "none",
+            f"{repetition:.6f}",
         )
-        suppressions.append(base * context.confidence)
-    return 1.0 - math.prod(1.0 - value for value in suppressions)
+    )

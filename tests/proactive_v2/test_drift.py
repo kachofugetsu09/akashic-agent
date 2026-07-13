@@ -11,6 +11,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.prompting import is_context_frame
+from agent.plugins.snapshot import (
+    RuntimeSnapshotLease,
+    bind_runtime_snapshot,
+    reset_runtime_snapshot,
+)
 from plugins.default_proactive.runtime import ProactiveFlowRuntime, ProactiveFlowDeps
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
@@ -219,6 +224,37 @@ def test_drift_tool_schemas_include_reused_tools(tmp_path: Path):
     assert "list_dir" in names
     assert "edit_file" in names
     assert "get_recent_chat" not in names
+
+
+@pytest.mark.asyncio
+async def test_drift_tools_remain_local_under_runtime_snapshot(tmp_path: Path):
+    """Drift 局部工具表不能被全局 runtime snapshot 替换。"""
+
+    registry = build_drift_tool_registry(
+        ctx=AgentTickContext(now_utc=datetime.now(timezone.utc)),
+        deps=DriftToolDeps(
+            drift_dir=tmp_path,
+            store=DriftStateStore(tmp_path),
+        ),
+    )
+    lease = cast(
+        RuntimeSnapshotLease,
+        SimpleNamespace(
+            active=True,
+            snapshot=SimpleNamespace(tool_registry=ToolRegistry()),
+        ),
+    )
+
+    token = bind_runtime_snapshot(lease)
+    try:
+        names = {
+            schema["function"]["name"]
+            for schema in registry.get_schemas()
+        }
+    finally:
+        reset_runtime_snapshot(token)
+
+    assert {"select_skill", "idle_drift", "finish_drift"} <= names
 
 
 def test_drift_message_push_schema_supports_media(tmp_path: Path):

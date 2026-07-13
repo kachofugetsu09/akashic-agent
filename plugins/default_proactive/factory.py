@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -13,18 +12,21 @@ from plugins.default_proactive.runtime import (
     ProactiveFlowRuntime,
     ProactiveFlowDeps,
 )
-from plugins.drift_flow.runtime import DriftTurnPipeline, DriftTurnPipelineDeps
+from plugins.drift_flow.factory import (
+    LlmFn,
+    RecentChatFn,
+    build_drift_llm_fn,
+    build_drift_pipeline,
+    build_drift_recent_chat_fn,
+)
+from plugins.drift_flow.runtime import DriftTurnPipeline
 from plugins.default_proactive.anyaction import AnyActionGate, QuotaStore
-from plugins.drift_flow.state import DriftStateStore
-from plugins.drift_flow.tools import DriftToolDeps
 from plugins.default_proactive.deduper import MessageDeduper
 from plugins.proactive_flow.tools import ToolDeps
 from proactive_v2.runtime_scope import ProactiveRuntimeScope
 from proactive_v2.sensor import RecentProactiveMessage
 
 
-LlmFn = Callable[[list[dict], list[dict], str | dict, bool], Awaitable[dict | None]]
-RecentChatFn = Callable[[int], Awaitable[list[dict]]]
 RecentProactiveFn = Callable[[], list[RecentProactiveMessage]] | None
 
 
@@ -48,7 +50,7 @@ class AgentTickFactory:
             max_chars=tool_deps.max_chars,
         )
         recent_proactive_fn = self._build_recent_proactive_fn()
-        drift_pipeline = self._build_drift_pipeline(tool_deps)
+        drift_pipeline = self._build_drift_pipeline()
         any_action_gate = self._deps.any_action_gate or self._build_anyaction_gate()
         deduper = self._deps.deduper
         if deduper is None:
@@ -85,42 +87,7 @@ class AgentTickFactory:
         return lambda: presence.get_last_user_at(session_key)
 
     def _build_llm_fn(self) -> LlmFn:
-        agent_model = self._deps.cfg.agent_tick_model or self._deps.model
-        provider = self._deps.provider
-
-        async def llm_fn(
-            messages: list[dict],
-            schemas: list[dict],
-            tool_choice: str | dict = "auto",
-            disable_thinking: bool = False,
-        ) -> dict | None:
-            # ProactiveFlowRuntime 自己维护 messages 和工具 schema；
-            # factory 这里只负责把 provider.chat 包成“返回首个 tool_call”的薄适配层。
-            resp = await provider.chat(
-                messages=messages,
-                tools=schemas,
-                model=agent_model,
-                max_tokens=self._deps.max_tokens,
-                tool_choice=tool_choice,
-                disable_thinking=True,
-            )
-            if not resp.tool_calls:
-                text = (resp.content or "").strip()
-                logger.warning(
-                    "[proactive_v2] llm_fn: no tool call returned (text=%r)",
-                    text[:300] if text else "(empty)",
-                )
-                return None
-            tc = resp.tool_calls[0]
-            return {
-                "id": tc.id,
-                "name": tc.name,
-                "input": tc.arguments,
-                "_cache_prompt_tokens": resp.cache_prompt_tokens,
-                "_cache_hit_tokens": resp.cache_hit_tokens,
-            }
-
-        return llm_fn
+        return build_drift_llm_fn(self._deps)
 
     def _build_mcp_source(self) -> McpGatewaySource:
         return McpGatewaySource(
@@ -147,15 +114,7 @@ class AgentTickFactory:
         )
 
     def _build_recent_chat_fn(self) -> RecentChatFn:
-        sense = self._deps.sense
-
-        async def recent_chat_fn(n: int = 20) -> list[dict]:
-            # Sensor.collect_recent() 无参数
-            return await asyncio.get_running_loop().run_in_executor(
-                None, sense.collect_recent
-            )
-
-        return recent_chat_fn
+        return build_drift_recent_chat_fn(self._deps)
 
     def _build_tool_deps(self, source: McpGatewaySource) -> ToolDeps:
         web_fetch_tool = None
@@ -176,36 +135,5 @@ class AgentTickFactory:
         recent_n = self._deps.cfg.message_dedupe_recent_n
         return lambda: self._deps.sense.collect_recent_proactive(recent_n)
 
-    def _build_drift_pipeline(self, tool_deps: ToolDeps) -> DriftTurnPipeline | None:
-        if not self._deps.cfg.drift_enabled:
-            return None
-        drift_dir = Path(self._deps.state_store.workspace_dir) / "drift"
-        from agent.plugins.snapshot import get_current_runtime_snapshot
-
-        snapshot = get_current_runtime_snapshot()
-        plugin_skill_roots = (
-            tuple(
-                root
-                for generation in snapshot.active_generations()
-                for root in generation.contributions.drift_skill_roots
-            )
-            if snapshot is not None
-            else ()
-        )
-        store = DriftStateStore(drift_dir, plugin_skill_roots=plugin_skill_roots)
-        return DriftTurnPipeline(
-            DriftTurnPipelineDeps(
-                store=store,
-                tool_deps=DriftToolDeps(
-                    drift_dir=drift_dir,
-                    store=store,
-                    workspace_dir=Path(self._deps.state_store.workspace_dir),
-                    memory=self._deps.memory,
-                    recent_chat_fn=self._build_recent_chat_fn(),
-                    shared_tools=self._deps.shared_tools,
-                    event_bus=self._deps.event_bus,
-                ),
-                max_steps=self._deps.cfg.drift_max_steps,
-                tool_hooks=self._deps.tool_hooks,
-            )
-        )
+    def _build_drift_pipeline(self) -> DriftTurnPipeline | None:
+        return build_drift_pipeline(self._deps, self._build_recent_chat_fn())

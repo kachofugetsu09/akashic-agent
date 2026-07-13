@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
@@ -68,13 +69,38 @@ class FlakyAckGateway(FakeGateway):
 
 
 class FakeWebFetch:
+    name = "web_fetch"
+    description = "读取网页"
+    parameters = {
+        "type": "object",
+        "properties": {"url": {"type": "string"}},
+        "required": ["url"],
+    }
+
     async def execute(self, **kwargs):
         return json.dumps({"url": kwargs["url"], "text": f"正文 {kwargs['url']}"})
+
+    def to_schema(self):
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
 
 
 class FakeTools:
     def get_tool(self, name):
         return FakeWebFetch() if name == "web_fetch" else None
+
+    def get_mcp_server_names(self):
+        return set()
+
+    def get_tool_names_by_source(self, source_type, source_name):
+        _ = (source_type, source_name)
+        return set()
 
 
 class FakeOrchestrator:
@@ -97,6 +123,9 @@ class FailingOrchestrator(FakeOrchestrator):
 
 class FixedRng:
     def gammavariate(self, shape, scale):
+        return 0.000001
+
+    def random(self):
         return 0.000001
 
 
@@ -144,13 +173,15 @@ def _scope(tmp_path: Path, gateway, provider, orchestrator, source) -> Proactive
             agent_tick_web_fetch_max_chars=8000,
             default_channel="telegram",
             default_chat_id="1",
+            drift_enabled=True,
+            drift_max_steps=20,
         ),
         provider=provider,
         model="fake-model",
         max_tokens=1000,
         memory=memory,
         state_store=SimpleNamespace(workspace_dir=tmp_path),
-        sense=None,
+        sense=SimpleNamespace(collect_recent=lambda: []),
         any_action_gate=None,
         passive_busy_fn=None,
         deduper=None,
@@ -273,16 +304,16 @@ async def test_content_vertical_slice_filters_investigates_and_shares(
     assert "scratchpad" in system_prompt
     assert "宁可少选" in system_prompt
     assert "当前 ContextEvent" in first_prompt
-    assert "unknown（没有可靠 ContextEvent）" in first_prompt
+    assert "没有有效 ContextEvent" in first_prompt
     final_prompt = provider.chat.await_args_list[1].kwargs["messages"][0]["content"]
     assert "unknown 时保持中性" in final_prompt
     assert "敏感经历" in final_prompt
     assert gateway.acks == [{"event_ids": ["new", "old"]}]
-    assert runtime._state.unread("content") == []
+    assert [event["id"] for event in runtime._state.unread("content")] == [ids[1]]
 
 
 @pytest.mark.asyncio
-async def test_content_wake_closes_full_unread_window_when_title_page_is_capped(
+async def test_content_skip_keeps_full_unread_window_when_title_page_is_capped(
     tmp_path, request
 ):
     now = datetime(2026, 7, 12, tzinfo=UTC)
@@ -338,7 +369,7 @@ async def test_content_wake_closes_full_unread_window_when_title_page_is_capped(
     observation = runtime._state.observations("content")[0]
     assert len(json.loads(observation["candidates_json"])) == 120
     assert state.ctx.content_backlog_count == 1
-    assert runtime._state.unread("content") == []
+    assert len(runtime._state.unread("content")) == 121
     assert len(gateway.acks[0]["event_ids"]) == 121
 
 
@@ -679,7 +710,9 @@ async def test_source_poll_failure_is_visible_in_main_log(tmp_path, request, cap
 
 
 @pytest.mark.asyncio
-async def test_replay_clock_advance_triggers_persisted_content_hazard(tmp_path, request):
+async def test_replay_content_only_draws_again_when_a_new_event_arrives(
+    tmp_path, request
+):
     start = datetime(2026, 7, 12, 12, tzinfo=UTC)
     clock = ReplayClock(tmp_path / "replay" / "clock.json", start)
     events = [
@@ -738,18 +771,12 @@ async def test_replay_clock_advance_triggers_persisted_content_hazard(tmp_path, 
     gateway = FakeGateway(events)
     orchestrator = FakeOrchestrator()
     store = WakeStateStore(tmp_path / "wake.db")
-    store.save_hazard(
-        session_key="telegram:1",
-        hazard=0.0,
-        threshold=0.04,
-        updated_at=start,
-        last_wake_at=None,
-    )
     runtime = WakeRuntime(
         _scope(tmp_path, gateway, provider, orchestrator, _source("content")),
         state_store=store,
         clock=clock,
     )
+    runtime._content_draw = lambda _session_key, _now: 1.0
     request.addfinalizer(runtime.close)
 
     first = runtime.begin(new_proactive_frame("telegram:1"))
@@ -770,13 +797,25 @@ async def test_replay_clock_advance_triggers_persisted_content_hazard(tmp_path, 
     await runtime.ingest(second)
     await runtime.decide(second)
 
-    assert second.hazard_result is not None
-    assert second.hazard_result.should_wake is True
-    second_meter = store.load_hazard_monitor("telegram:1")
-    assert second_meter is not None
-    assert second_meter["should_wake"] == 1
-    assert second_meter["hazard_after"] >= second_meter["threshold"]
-    assert second_meter["evidence"] > 0
+    assert second.hazard_result is None
+    assert provider.chat.await_count == 0
+
+    gateway.events.append(
+        {
+            "kind": "content",
+            "event_id": "replay-2",
+            "title": "第二条真实事件",
+            "published_at": clock.now().isoformat(),
+            "preprocess_score": 0.99,
+        }
+    )
+    runtime._content_draw = lambda _session_key, _now: 0.0
+    third = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(third)
+    await runtime.decide(third)
+
+    assert third.hazard_result is not None
+    assert third.hazard_result.should_wake is True
     assert provider.chat.await_count == 2
     assert len(orchestrator.results) == 1
     assert orchestrator.results[0].decision == "reply"
@@ -802,6 +841,8 @@ async def test_runtime_owns_rng_when_live_scope_does_not_supply_one(tmp_path, re
     scope.rng = None
     runtime = WakeRuntime(scope, clock=FixedClock(now))
     request.addfinalizer(runtime.close)
+    assert isinstance(runtime._rng, random.Random)
+    runtime._rng.seed(0)
     state = runtime.begin(new_proactive_frame("telegram:1"))
 
     await runtime.ingest(state)
@@ -811,7 +852,7 @@ async def test_runtime_owns_rng_when_live_scope_does_not_supply_one(tmp_path, re
     assert provider.chat.await_count == 0
 
 
-def test_replay_threshold_is_stable_across_runtime_restart(tmp_path, request):
+def test_replay_content_draw_is_stable_across_runtime_restart(tmp_path, request):
     now = datetime(2026, 7, 12, 12, tzinfo=UTC)
     clock = ReplayClock(tmp_path / "replay" / "clock.json", now)
     scope = _scope(
@@ -826,15 +867,15 @@ def test_replay_threshold_is_stable_across_runtime_restart(tmp_path, request):
     request.addfinalizer(first.close)
     request.addfinalizer(second.close)
 
-    assert first._sample_threshold("telegram:1", now) == second._sample_threshold(
+    assert first._content_draw("telegram:1", now) == second._content_draw(
         "telegram:1", now
     )
-    assert first._sample_threshold(
+    assert first._content_draw(
         "telegram:1", now
-    ) != first._sample_threshold("telegram:1", now + timedelta(hours=1))
+    ) != first._content_draw("telegram:1", now + timedelta(hours=1))
 
 
-def test_hazard_threshold_is_capped_for_leaky_integrator(tmp_path, request):
+def test_live_content_draw_uses_runtime_rng(tmp_path, request):
     scope = _scope(
         tmp_path,
         FakeGateway([]),
@@ -842,18 +883,13 @@ def test_hazard_threshold_is_capped_for_leaky_integrator(tmp_path, request):
         FakeOrchestrator(),
         _source("content"),
     )
-    samples = []
-
-    def sample_threshold(shape, scale):
-        samples.append((shape, scale))
-        return 99.0
-
-    scope.rng = SimpleNamespace(gammavariate=sample_threshold)
+    scope.rng = SimpleNamespace(random=lambda: 0.75)
     runtime = WakeRuntime(scope, clock=FixedClock(datetime(2026, 7, 12, tzinfo=UTC)))
     request.addfinalizer(runtime.close)
 
-    assert runtime._sample_threshold("telegram:1", datetime(2026, 7, 12, tzinfo=UTC)) == 1.0
-    assert samples == [(3.0, 0.25)]
+    assert runtime._content_draw(
+        "telegram:1", datetime(2026, 7, 12, tzinfo=UTC)
+    ) == 0.75
 
 
 def test_replay_last_user_time_cannot_see_future_message(tmp_path, request):
@@ -1135,6 +1171,7 @@ async def test_context_snapshot_without_event_id_only_reevaluates_queued_content
     orchestrator = FakeOrchestrator()
     store = WakeStateStore(tmp_path / "wake.db")
     scope = _scope(tmp_path, gateway, provider, orchestrator, _source("context"))
+    scope.cfg.drift_enabled = False
     clock = FixedClock(now)
     runtime = WakeRuntime(scope, state_store=store, clock=clock)
     request.addfinalizer(runtime.close)
@@ -1145,7 +1182,7 @@ async def test_context_snapshot_without_event_id_only_reevaluates_queued_content
 
     assert first.context_reevaluate is False
     assert store.load_context("feed_plugin:main").presence == "sleeping"
-    assert "presence=sleeping" in runtime._current_context_text(now)
+    assert '"presence": "sleeping"' in runtime._current_context_text(now)
     assert provider.chat.await_count == 0
     assert orchestrator.results == []
 
@@ -1182,7 +1219,7 @@ async def test_context_snapshot_without_event_id_only_reevaluates_queued_content
     assert second.context_reevaluate is True
     assert second.hazard_result is None
     assert store.load_context("feed_plugin:main").presence == "active"
-    assert "presence=active" in runtime._current_context_text(now)
+    assert '"presence": "active"' in runtime._current_context_text(now)
     assert len(store.unread("content")) == 1
     assert provider.chat.await_count == 1
     assert "mode=context" in provider.chat.await_args.kwargs["messages"][1]["content"]
@@ -1196,9 +1233,8 @@ async def test_context_snapshot_without_event_id_only_reevaluates_queued_content
     await runtime.decide(third)
 
     assert third.context_reevaluate is False
-    assert runtime._current_context_text(clock.now()).startswith("unknown")
-    assert third.hazard_result is not None
-    assert third.hazard_result.hazard_after > 0
+    assert runtime._current_context_text(clock.now()) == "没有有效 ContextEvent"
+    assert third.hazard_result is None
     assert len(store.unread("content")) == 1
     assert provider.chat.await_count == 1
     assert len(orchestrator.results) == 1
@@ -1339,74 +1375,127 @@ def _drift_runtime(tmp_path, provider, orchestrator, now):
 
 
 @pytest.mark.asyncio
-async def test_drift_vertical_slice_records_llm_input_without_calling_model(
+async def test_drift_due_event_calls_model_and_sends_reply(
     tmp_path,
     request,
 ):
     now = datetime(2026, 7, 12, 12, tzinfo=UTC)
-    with closing(sqlite3.connect(tmp_path / "sessions.db")) as db:
-        db.execute(
-            """
-            CREATE TABLE messages (
-                id TEXT PRIMARY KEY,
-                session_key TEXT NOT NULL,
-                seq INTEGER NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT,
-                extra TEXT,
-                ts TEXT NOT NULL
-            )
-            """
-        )
-        db.executemany(
-            """
-            INSERT INTO messages(id, session_key, seq, role, content, extra, ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    "p1",
-                    "telegram:1",
-                    1,
-                    "assistant",
-                    "之前主动聊过时间回放",
-                    '{"proactive": true}',
-                    (now - timedelta(hours=2)).isoformat(),
+    skill_dir = tmp_path / "drift" / "skills" / "explore-curiosity"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: explore-curiosity\ndescription: 探索一个轻量想法\n---\n",
+        encoding="utf-8",
+    )
+    provider = SimpleNamespace(
+        chat=AsyncMock(
+            side_effect=[
+                LLMResponse(
+                    content=None,
+                    tool_calls=[
+                        ToolCall(
+                            "select",
+                            "select_skill",
+                            {
+                                "skill_name": "explore-curiosity",
+                                "decision": "explore",
+                                "intention": "想想事件钟",
+                                "reason": "当前适合做一个轻量探索",
+                            },
+                        )
+                    ],
                 ),
-                (
-                    "u2",
-                    "telegram:1",
-                    2,
-                    "user",
-                    "未来才会出现的话",
-                    "{}",
-                    (now + timedelta(hours=2)).isoformat(),
+                LLMResponse(
+                    content=None,
+                    tool_calls=[
+                        ToolCall(
+                            "push",
+                            "message_push",
+                            {"message": "突然想到，时间回放也许可以做成事件钟。"},
+                        )
+                    ],
                 ),
-            ],
+                LLMResponse(
+                    content=None,
+                    tool_calls=[
+                        ToolCall(
+                            "finish",
+                            "finish_drift",
+                            {
+                                "skill_used": "explore-curiosity",
+                                "status": "completed",
+                                "briefing": "分享了事件钟想法",
+                                "self_update": {
+                                    "next_tendency": "下次按当时状态自由选择",
+                                    "reflection": "本轮普通闭环",
+                                    "pattern": "ordinary",
+                                },
+                            },
+                        )
+                    ],
+                ),
+            ]
         )
-        db.commit()
-    provider = SimpleNamespace(chat=AsyncMock())
+    )
     orchestrator = FakeOrchestrator()
     runtime, store = _drift_runtime(tmp_path, provider, orchestrator, now)
     request.addfinalizer(runtime.close)
+    _ = store.ingest_context(
+        [
+            {
+                "_source": "activity:main",
+                "presence": "driving",
+                "road_kind": "highway",
+                "confidence": 0.91,
+                "observed_at": now.isoformat(),
+                "expires_at": (now + timedelta(hours=1)).isoformat(),
+            }
+        ],
+        now,
+    )
 
     state = runtime.begin(new_proactive_frame("telegram:1"))
     await runtime.ingest(state)
     await runtime.decide(state)
 
-    assert provider.chat.await_count == 0
-    assert orchestrator.results == []
+    cast(FixedClock, runtime._clock).advance(timedelta(minutes=1))
+    due = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(due)
+    await runtime.decide(due)
+
+    assert provider.chat.await_count == 3
+    assert len(orchestrator.results) == 1
+    assert orchestrator.results[0].outbound.content == "突然想到，时间回放也许可以做成事件钟。"
     observations = store.observations("drift")
     assert len(observations) == 1
-    llm_input = json.loads(observations[0]["llm_input_json"])
-    prompt = llm_input[1]["content"]
-    assert "【固定 MEMORY.md】" in prompt
-    assert "【固定 PROACTIVE_CONTEXT.md】" in prompt
-    assert "【截至当前时间的最近对话】" in prompt
-    assert "之前主动聊过时间回放" in prompt
-    assert "未来才会出现的话" not in prompt
+    assert json.loads(observations[0]["llm_input_json"]) == []
+    prompt = provider.chat.await_args_list[0].kwargs["messages"][1]["content"]
+    assert "drift_skills" in prompt
+    assert "explore-curiosity" in prompt
+    assert "current_context_events" in prompt
+    assert '"presence": "driving"' in prompt
+    assert '"road_kind": "highway"' in prompt
+    first_tools = {
+        schema["function"]["name"]
+        for schema in provider.chat.await_args_list[0].kwargs["tools"]
+    }
+    second_tools = {
+        schema["function"]["name"]
+        for schema in provider.chat.await_args_list[1].kwargs["tools"]
+    }
+    third_tools = {
+        schema["function"]["name"]
+        for schema in provider.chat.await_args_list[2].kwargs["tools"]
+    }
+    assert first_tools == {"select_skill", "idle_drift"}
+    assert {"read_file", "write_file", "message_push", "finish_drift"} <= second_tools
+    assert third_tools == {"finish_drift"}
+    assert state.drift_ctx is None
+    assert due.drift_ctx is not None
+    assert due.drift_ctx.drift_finished is True
+    assert due.drift_ctx.drift_message_sent is True
     drift = store.load_drift("telegram:1")
-    assert drift["last_drift_at"] == now.isoformat()
+    assert drift["last_drift_at"] == (now + timedelta(minutes=1)).isoformat()
+    assert drift["last_fingerprint"] == "突然想到，时间回放也许可以做成事件钟。"
     assert drift["hazard"] == 0
 
 

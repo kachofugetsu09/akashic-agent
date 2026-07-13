@@ -905,7 +905,7 @@ def build_drift_tool_registry(
     ctx: AgentTickContext,
     deps: DriftToolDeps,
 ) -> ToolRegistry:
-    tools = ToolRegistry()
+    tools = ToolRegistry(follow_runtime_snapshot=False)
     drift_dir = deps.drift_dir
     resolver = DriftPathResolver(drift_dir, deps.store)
     tools.register(SelectSkillTool(ctx, deps.store), risk="write")
