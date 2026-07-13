@@ -12,14 +12,24 @@ import logging
 import os
 import re
 import tempfile
+import math
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, cast
 
 import httpx
 from openai import AsyncOpenAI
+
+from agent.model_runtime.registry import ModelRuntimeRegistry
+from agent.model_runtime.errors import ContextWindowError
+from agent.model_runtime.types import (
+    LLMResponse,
+    ModelRequest,
+    ModelUsage,
+    ToolCall,
+    UsageCoverage,
+)
 
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
@@ -58,23 +68,6 @@ class ContextLengthError(Exception):
 
 class LLMNetworkTimeoutError(TimeoutError):
     """LLM provider 在网络连接或读取边界超时。"""
-
-
-@dataclass
-class ToolCall:
-    id: str
-    name: str
-    arguments: dict
-
-
-@dataclass
-class LLMResponse:
-    content: str | None
-    tool_calls: list[ToolCall] = field(default_factory=list)
-    thinking: str | None = None
-    provider_fields: dict[str, Any] = field(default_factory=dict)
-    cache_prompt_tokens: int | None = None
-    cache_hit_tokens: int | None = None
 
 
 class ProviderStrategy:
@@ -200,7 +193,7 @@ class DashScopeStrategy(ProviderStrategy):
             kwargs["extra_body"] = extra_body
 
 
-class LLMProvider:
+class ChatCompletionsRuntime:
     def __init__(
         self,
         api_key: str,
@@ -213,6 +206,7 @@ class LLMProvider:
         pool_timeout_s: float = 30.0,
         max_retries: int = 1,
         provider_name: str = "",
+        profile_name: str = "",
         force_disable_thinking: bool = False,
         payload_snapshot_enabled: bool | None = None,
     ) -> None:
@@ -224,13 +218,14 @@ class LLMProvider:
             pool=max(0.001, float(pool_timeout_s)),
         )
         self._client = AsyncOpenAI(
-            api_key=api_key,
+            api_key=api_key or "credential-store",
             base_url=normalized_base_url,
             timeout=network_timeout,
             max_retries=0,
         )
         self._base_url = normalized_base_url or ""
         self._provider_name = provider_name
+        self._profile_name = profile_name
         self._system = system_prompt
         self._extra_body = extra_body or {}
         self._max_retries = max(0, int(max_retries))
@@ -252,7 +247,8 @@ class LLMProvider:
         disable_thinking: bool = False,
         on_content_delta: Callable[[StreamDelta], Awaitable[None]] | None = None,
     ) -> LLMResponse:
-        strategy = _select_provider_strategy(
+        strategy = _strategy_from_profile(
+            self._profile_name,
             provider_name=self._provider_name,
             base_url=self._base_url,
             model=model,
@@ -300,6 +296,7 @@ class LLMProvider:
         cache_prompt_tokens, cache_hit_tokens = _extract_cache_usage(
             getattr(resp, "usage", None)
         )
+        usage = _extract_model_usage(getattr(resp, "usage", None))
         if tool_calls:
             provider_fields = strategy.provider_fields_for_tool_call(
                 provider_fields,
@@ -312,6 +309,7 @@ class LLMProvider:
             provider_fields=provider_fields,
             cache_prompt_tokens=cache_prompt_tokens,
             cache_hit_tokens=cache_hit_tokens,
+            usage=usage,
         )
 
     async def _chat_streaming(
@@ -333,6 +331,7 @@ class LLMProvider:
         tool_call_seen = False
         cache_prompt_tokens: int | None = None
         cache_hit_tokens: int | None = None
+        usage: ModelUsage | None = None
 
         try:
             stream_iter = aiter(stream)
@@ -341,7 +340,9 @@ class LLMProvider:
                     chunk = await anext(stream_iter)
                 except StopAsyncIteration:
                     break
-                except httpx.TimeoutException as exc:
+                except Exception as exc:
+                    if not self._is_network_timeout(exc):
+                        raise
                     raise LLMNetworkTimeoutError("LLM 流读取网络超时") from exc
                 prompt_tokens, hit_tokens = _extract_cache_usage(
                     getattr(chunk, "usage", None)
@@ -349,6 +350,7 @@ class LLMProvider:
                 if prompt_tokens is not None:
                     cache_prompt_tokens = prompt_tokens
                     cache_hit_tokens = hit_tokens
+                    usage = _extract_model_usage(getattr(chunk, "usage", None))
                 choices = getattr(chunk, "choices", None) or []
                 if not choices:
                     continue
@@ -418,6 +420,7 @@ class LLMProvider:
             provider_fields=provider_fields,
             cache_prompt_tokens=cache_prompt_tokens,
             cache_hit_tokens=cache_hit_tokens,
+            usage=usage,
         )
 
     async def _create_with_retry(self, kwargs: dict) -> object:
@@ -473,7 +476,7 @@ class LLMProvider:
 
     @staticmethod
     def _is_retryable(err: Exception) -> bool:
-        if LLMProvider._is_network_timeout(err):
+        if ChatCompletionsRuntime._is_network_timeout(err):
             return True
         status_code = getattr(err, "status_code", None)
         if status_code in {429, 500, 502, 503, 504}:
@@ -500,7 +503,118 @@ class LLMProvider:
         return isinstance(
             err,
             (TimeoutError, httpx.TimeoutException),
+        ) or type(err).__name__ == "APITimeoutError"
+
+
+class LLMProvider:
+    """兼容旧调用签名并统一委托 ModelRuntime。"""
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str | None = None,
+        system_prompt: str = "",
+        extra_body: dict | None = None,
+        connect_timeout_s: float = 30.0,
+        read_timeout_s: float = 90.0,
+        write_timeout_s: float = 30.0,
+        pool_timeout_s: float = 30.0,
+        max_retries: int = 1,
+        provider_name: str = "",
+        auth_id: str = "",
+        runtime_id: str = "main",
+        context_window: int = 0,
+        effective_context_percent: float = 0.9,
+        force_disable_thinking: bool = False,
+        payload_snapshot_enabled: bool | None = None,
+    ) -> None:
+        self._system = system_prompt
+        self._extra_body = dict(extra_body or {})
+        self._context_window = int(context_window)
+        self._effective_context_percent = float(effective_context_percent)
+        self._force_disable_thinking = force_disable_thinking
+        if self._context_window < 0:
+            raise ValueError("context_window 不能小于 0")
+        if not 0 < self._effective_context_percent <= 1:
+            raise ValueError("effective_context_percent 必须在 (0, 1] 内")
+        self._runtime = ModelRuntimeRegistry().build_runtime(
+            provider=provider_name,
+            auth_id=auth_id,
+            runtime_id=runtime_id,
+            base_url=base_url or "",
+            connect_timeout_s=connect_timeout_s,
+            read_timeout_s=read_timeout_s,
+            write_timeout_s=write_timeout_s,
+            pool_timeout_s=pool_timeout_s,
+            chat_factory=lambda profile_name: ChatCompletionsRuntime(
+                api_key=api_key,
+                base_url=base_url,
+                system_prompt=system_prompt,
+                extra_body=extra_body,
+                connect_timeout_s=connect_timeout_s,
+                read_timeout_s=read_timeout_s,
+                write_timeout_s=write_timeout_s,
+                pool_timeout_s=pool_timeout_s,
+                max_retries=max_retries,
+                provider_name=provider_name,
+                profile_name=profile_name,
+                force_disable_thinking=force_disable_thinking,
+                payload_snapshot_enabled=payload_snapshot_enabled,
+            ),
         )
+
+    async def chat(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        model: str,
+        max_tokens: int,
+        tool_choice: str | dict = "auto",
+        extra_body: dict | None = None,
+        disable_thinking: bool = False,
+        on_content_delta: Callable[[StreamDelta], Awaitable[None]] | None = None,
+    ) -> LLMResponse:
+        self._enforce_context_budget(messages, tools, max_tokens)
+        merged_extra = {**self._extra_body, **(extra_body or {})}
+        effort = merged_extra.get("reasoning_effort")
+        request = ModelRequest(
+            messages=messages,
+            tools=tools,
+            model=model,
+            max_output_tokens=max_tokens,
+            system_prompt=self._system,
+            tool_choice=tool_choice,
+            reasoning_effort=(
+                None
+                if self._force_disable_thinking or disable_thinking
+                else str(effort or "") or None
+            ),
+            on_delta=on_content_delta,
+            extra_body=dict(extra_body or {}),
+            disable_thinking=self._force_disable_thinking or disable_thinking,
+        )
+        try:
+            return await self._runtime.send(request)
+        except ContextWindowError as exc:
+            raise ContextLengthError(str(exc)) from exc
+
+    def _enforce_context_budget(
+        self, messages: list[dict], tools: list[dict], max_tokens: int
+    ) -> None:
+        if not self._context_window:
+            return
+        effective = math.floor(self._context_window * self._effective_context_percent)
+        input_budget = effective - max_tokens
+        payload = json.dumps(
+            {"system": self._system, "messages": messages, "tools": tools},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        estimated = max(1, len(payload) // 3)
+        if input_budget <= 0 or estimated > input_budget:
+            raise ContextLengthError(
+                f"上下文估算超限 estimated={estimated} budget={input_budget} quality=approximate"
+            )
 
 
 def _get_field(delta: Any, name: str) -> Any:
@@ -563,6 +677,36 @@ def _extract_cache_usage(usage: Any) -> tuple[int | None, int | None]:
     if prompt_tokens is None or cached_tokens is None:
         return None, None
     return prompt_tokens, cached_tokens
+
+
+def _extract_model_usage(usage: Any) -> ModelUsage | None:
+    """把 Chat Completions usage 映射为规范化用量。"""
+    if usage is None:
+        return None
+    prompt_tokens = _coerce_int(_get_field(usage, "prompt_tokens"))
+    completion_tokens = _coerce_int(_get_field(usage, "completion_tokens"))
+    prompt_details = _get_field(usage, "prompt_tokens_details")
+    completion_details = _get_field(usage, "completion_tokens_details")
+    cached_tokens = _coerce_int(_get_field(prompt_details, "cached_tokens"))
+    if cached_tokens is None:
+        _, cached_tokens = _extract_cache_usage(usage)
+    reasoning_tokens = _coerce_int(_get_field(completion_details, "reasoning_tokens"))
+    raw_usage = usage if isinstance(usage, dict) else {}
+    return ModelUsage(
+        input_tokens=prompt_tokens,
+        cached_input_tokens=cached_tokens,
+        output_tokens=completion_tokens,
+        reasoning_output_tokens=reasoning_tokens,
+        covered_request_count=1 if prompt_tokens is not None and completion_tokens is not None else 0,
+        coverage=(
+            UsageCoverage.EXACT
+            if prompt_tokens is not None and completion_tokens is not None
+            else UsageCoverage.PARTIAL
+            if prompt_tokens is not None or completion_tokens is not None
+            else UsageCoverage.UNAVAILABLE
+        ),
+        raw_usage=raw_usage,
+    )
 
 
 def _iter_tool_call_deltas(delta: Any) -> list[dict[str, str | int]]:
@@ -660,6 +804,29 @@ def _select_provider_strategy(
     ):
         return DashScopeStrategy()
     return ProviderStrategy()
+
+
+def _strategy_from_profile(
+    profile_name: str,
+    *,
+    provider_name: str,
+    base_url: str,
+    model: str,
+) -> ProviderStrategy:
+    """把 registry 已确认的 profile 映射到 Chat 请求语义。"""
+    if profile_name == "deepseek":
+        return DeepSeekStrategy()
+    if profile_name == "dashscope":
+        return DashScopeStrategy()
+    if profile_name == "openai_compatible":
+        return ProviderStrategy()
+    if profile_name == "legacy_auto":
+        return _select_provider_strategy(
+            provider_name=provider_name,
+            base_url=base_url,
+            model=model,
+        )
+    raise ValueError(f"未知 Chat provider profile: {profile_name}")
 
 
 def _drop_thinking_keys(extra_body: dict[str, Any]) -> None:

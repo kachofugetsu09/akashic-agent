@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from agent.config_models import Config
+from agent.config_models import Config, ModelRuntimeConfig
+from agent.model_runtime.fallback import ResilientLightProvider
 from infra.providers.llm_provider import LLMProvider
 
 _MAIN_NETWORK_READ_TIMEOUT_S = 120.0
@@ -22,11 +23,21 @@ def build_providers(
         extra_body=main_extra,
         read_timeout_s=_MAIN_NETWORK_READ_TIMEOUT_S,
         provider_name=config.provider,
+        auth_id=config.auth_id,
+        runtime_id=config.runtime_id,
+        context_window=config.context_window,
+        effective_context_percent=config.effective_context_percent,
         payload_snapshot_enabled=payload_snapshot_enabled,
     )
 
-    light_provider: LLMProvider | None = None
-    if config.light_model and (config.light_api_key or config.light_base_url):
+    light_provider = _build_named_role_provider(
+        config,
+        config.fast_runtime_id,
+        system_prompt=config.system_prompt,
+        read_timeout_s=_LIGHT_NETWORK_READ_TIMEOUT_S,
+        force_disable_thinking=True,
+    )
+    if light_provider is None and config.light_model and (config.light_api_key or config.light_base_url):
         light_url = config.light_base_url or config.base_url or ""
         light_extra: dict[str, object] = (
             {}
@@ -46,9 +57,24 @@ def build_providers(
             force_disable_thinking=True,
             payload_snapshot_enabled=payload_snapshot_enabled,
         )
+    if light_provider is not None:
+        primary_runtime_id = config.fast_runtime_id or "legacy-fast"
+        primary_model = config.light_model
+        light_provider = ResilientLightProvider(
+            primary=light_provider,
+            primary_runtime_id=primary_runtime_id,
+            primary_model=primary_model,
+            fallback=provider,
+            fallback_model=config.model,
+        )
 
-    agent_provider: LLMProvider | None = None
-    if config.agent_model and (config.agent_api_key or config.agent_base_url):
+    agent_provider = _build_named_role_provider(
+        config,
+        config.agent_runtime_id,
+        system_prompt=config.system_prompt,
+        read_timeout_s=_MAIN_NETWORK_READ_TIMEOUT_S,
+    )
+    if agent_provider is None and config.agent_model and (config.agent_api_key or config.agent_base_url):
         agent_url = config.agent_base_url or config.base_url or ""
         agent_extra = _sanitize_extra_body(base_url=agent_url, extra_body={})
         agent_provider = LLMProvider(
@@ -66,6 +92,14 @@ def build_providers(
 def build_vl_provider(config: Config) -> LLMProvider | None:
     """构建 VL 视觉模型 provider，仅当主模型不支持多模态且配置了 vl_model 时返回。"""
     if not config.multimodal and config.vl_model:
+        named = _build_named_role_provider(
+            config,
+            config.vl_runtime_id,
+            system_prompt="",
+            read_timeout_s=_MAIN_NETWORK_READ_TIMEOUT_S,
+        )
+        if named is not None:
+            return named
         payload_snapshot_enabled = config.dev_mode
         vl_url = config.vl_base_url or config.base_url or ""
         vl_extra = _sanitize_extra_body(base_url=vl_url, extra_body={})
@@ -78,6 +112,58 @@ def build_vl_provider(config: Config) -> LLMProvider | None:
             payload_snapshot_enabled=payload_snapshot_enabled,
         )
     return None
+
+
+def _build_named_role_provider(
+    config: Config,
+    runtime_id: str,
+    *,
+    system_prompt: str,
+    read_timeout_s: float,
+    force_disable_thinking: bool = False,
+) -> LLMProvider | None:
+    """为独立 named runtime 组装完整 provider；复用 main 时返回空。"""
+    if not runtime_id or runtime_id == config.runtime_id:
+        return None
+    runtime = config.model_runtimes[runtime_id]
+    extra_body: dict[str, object] = (
+        {}
+        if force_disable_thinking
+        else ({"reasoning_effort": runtime.reasoning_effort} if runtime.reasoning_effort else {})
+    )
+    return _provider_from_runtime(
+        runtime,
+        system_prompt=system_prompt,
+        extra_body=extra_body,
+        read_timeout_s=read_timeout_s,
+        force_disable_thinking=force_disable_thinking,
+        payload_snapshot_enabled=config.dev_mode,
+    )
+
+
+def _provider_from_runtime(
+    runtime: ModelRuntimeConfig,
+    *,
+    system_prompt: str,
+    extra_body: dict[str, object],
+    read_timeout_s: float,
+    force_disable_thinking: bool,
+    payload_snapshot_enabled: bool,
+) -> LLMProvider:
+    return LLMProvider(
+        api_key=runtime.api_key,
+        base_url=runtime.base_url or None,
+        system_prompt=system_prompt,
+        extra_body=extra_body,
+        read_timeout_s=read_timeout_s,
+        provider_name=runtime.provider,
+        auth_id=runtime.auth,
+        runtime_id=runtime.runtime_id,
+        context_window=runtime.context_window,
+        effective_context_percent=runtime.effective_context_percent,
+        force_disable_thinking=force_disable_thinking,
+        payload_snapshot_enabled=payload_snapshot_enabled,
+    )
 
 
 def _sanitize_extra_body(

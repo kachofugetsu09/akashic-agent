@@ -17,6 +17,8 @@ from agent.core.types import (
     ReasonerResult,
 )
 from agent.prompting import DEFAULT_CONTEXT_TRIM_PLANS, is_context_frame
+from agent.model_runtime.types import ModelUsage
+from agent.model_runtime.usage import aggregate_usage
 from agent.provider import ContentSafetyError, ContextLengthError
 from agent.retrieval.protocol import RetrievalRequest, RetrievalResult
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutionResult, ToolExecutor
@@ -1197,6 +1199,7 @@ class DefaultReasoner(Reasoner):
                 if isinstance(llm_context_frame, str) and llm_context_frame.strip():
                     retry_trace["llm_context_frame"] = llm_context_frame
                 retry_trace["react_stats"] = dict(result.metadata.get("react_stats") or {})
+                raw_model_state = result.metadata.get("model_state")
                 return TurnRunResult(
                     reply=result.reply,
                     tools_used=tools_used,
@@ -1205,6 +1208,11 @@ class DefaultReasoner(Reasoner):
                     thinking=result.thinking,
                     streamed=result.streamed,
                     context_retry=retry_trace,
+                    model_state=(
+                        cast(dict[str, object], raw_model_state)
+                        if isinstance(raw_model_state, dict)
+                        else None
+                    ),
                 )
             except ContentSafetyError:
                 if attempt < len(attempts) - 1:
@@ -1274,6 +1282,7 @@ class DefaultReasoner(Reasoner):
         react_cache_prompt_tokens = 0
         react_cache_hit_tokens = 0
         react_cache_seen = False
+        react_usages: list[ModelUsage] = []
         disabled = set(disabled_tools or set())
         before_step_phase, after_step_phase = self._runtime_step_phases()
         if self._tool_search_enabled:
@@ -1330,6 +1339,7 @@ class DefaultReasoner(Reasoner):
                     cache_hit_tokens=react_cache_hit_tokens,
                     cache_seen=react_cache_seen,
                     tools_unlocked=tools_unlocked,
+                    model_usages=react_usages,
                 )
             # 4. 调用 LLM，带上当前可见工具 schema。
             react_input_samples.append(step_ctx.input_tokens_estimate)
@@ -1354,6 +1364,7 @@ class DefaultReasoner(Reasoner):
                 tool_choice="auto",
                 on_content_delta=on_content_delta,
             )
+            react_usages.append(response.usage or ModelUsage())
             if on_content_delta is not None and response.content:
                 streamed = True
             if response.cache_prompt_tokens is not None:
@@ -1513,6 +1524,7 @@ class DefaultReasoner(Reasoner):
                                 cache_hit_tokens=react_cache_hit_tokens,
                                 cache_seen=react_cache_seen,
                                 tools_unlocked=tools_unlocked,
+                                model_usages=react_usages,
                             )
                         logger.warning(
                             "[工具未解锁] LLM 尝试调用 '%s'，但该工具 schema 不可见，引导模型先 tool_search",
@@ -1736,12 +1748,16 @@ class DefaultReasoner(Reasoner):
                             cache_hit_tokens=react_cache_hit_tokens,
                             cache_seen=react_cache_seen,
                             tools_unlocked=tools_unlocked,
+                            model_usages=react_usages,
                         )
 
                 # 7. 本轮工具执行完后，记录 tool_chain。
                 tool_chain_group = {"text": response.content, "calls": iter_calls}
                 if response.thinking is not None:
                     tool_chain_group["reasoning_content"] = response.thinking
+                model_state = response.provider_fields.get("model_state")
+                if isinstance(model_state, dict):
+                    tool_chain_group["model_state"] = model_state
                 tool_chain.append(tool_chain_group)
                 pressure_tokens = support.estimate_messages_tokens(messages)
                 # 7a. AfterStep 模块链（工具分支）：通知观察者本轮工具执行完毕。
@@ -1784,6 +1800,7 @@ class DefaultReasoner(Reasoner):
                         cache_hit_tokens=react_cache_hit_tokens,
                         cache_seen=react_cache_seen,
                         tools_unlocked=tools_unlocked,
+                        model_usages=react_usages,
                     )
                 continue
 
@@ -1806,6 +1823,7 @@ class DefaultReasoner(Reasoner):
                     max_tokens=self._llm_config.max_tokens,
                     on_content_delta=on_content_delta,
                 )
+                react_usages.append(retry_response.usage or ModelUsage())
                 if retry_response.cache_prompt_tokens is not None:
                     react_cache_seen = True
                     react_cache_prompt_tokens += retry_response.cache_prompt_tokens
@@ -1852,6 +1870,12 @@ class DefaultReasoner(Reasoner):
                 cache_hit_tokens=react_cache_hit_tokens,
                 cache_seen=react_cache_seen,
                 tools_unlocked=tools_unlocked,
+                model_usages=react_usages,
+                model_state=(
+                    cast(dict[str, object], response.provider_fields["model_state"])
+                    if isinstance(response.provider_fields.get("model_state"), dict)
+                    else None
+                ),
             )
 
         # 9. 达到最大迭代次数后，生成不完整进展总结。
@@ -1879,6 +1903,7 @@ class DefaultReasoner(Reasoner):
             cache_hit_tokens=react_cache_hit_tokens,
             cache_seen=react_cache_seen,
             tools_unlocked=tools_unlocked,
+            model_usages=react_usages,
         )
 
     async def _observe_tool_call_started(
@@ -1996,6 +2021,8 @@ class DefaultReasoner(Reasoner):
         cache_hit_tokens: int,
         cache_seen: bool,
         tools_unlocked: list[str] | None = None,
+        model_state: dict[str, object] | None = None,
+        model_usages: list[ModelUsage] | None = None,
     ) -> ReasonerResult:
         # 1. 先把 tool_chain 扁平化成 invocations。
         invocations: list[LLMToolCall] = []
@@ -2011,7 +2038,7 @@ class DefaultReasoner(Reasoner):
                 )
 
         # 2. 再把运行时元数据统一塞进 metadata。
-        react_stats = {
+        react_stats: dict[str, object] = {
             "iteration_count": len(react_input_samples),
             "turn_input_sum_tokens": sum(react_input_samples),
             "turn_input_peak_tokens": max(react_input_samples, default=0),
@@ -2031,6 +2058,16 @@ class DefaultReasoner(Reasoner):
                 cache_hit_tokens,
                 hit_rate * 100,
             )
+        usage = aggregate_usage(model_usages or [])
+        react_stats["model_usage"] = {
+            "input_tokens": usage.input_tokens,
+            "cached_input_tokens": usage.cached_input_tokens,
+            "output_tokens": usage.output_tokens,
+            "reasoning_output_tokens": usage.reasoning_output_tokens,
+            "request_count": usage.request_count,
+            "covered_request_count": usage.covered_request_count,
+            "coverage": usage.coverage.value,
+        }
         metadata = {
             "tools_used": list(tools_used),
             "tools_unlocked": list(tools_unlocked or []),
@@ -2038,6 +2075,7 @@ class DefaultReasoner(Reasoner):
             "media": list(media),
             "visible_names": set(visible_names) if visible_names is not None else None,
             "react_stats": react_stats,
+            "model_state": model_state,
         }
 
         # 3. 最后返回标准 ReasonerResult。

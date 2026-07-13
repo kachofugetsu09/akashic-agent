@@ -35,6 +35,7 @@ _HELP = """\
 
 命令:
   setup                         运行交互式初始化向导
+  setup-main                    仅切换主模型并保留其他配置
   init                          非交互初始化配置和工作区
   gateway                       启动 Agent 服务
   cli                           连接运行中的 Agent
@@ -255,6 +256,12 @@ if __name__ == "__main__":
             config_path=Path(config_path),
             workspace=workspace or _default_workspace(),
         )
+        sys.exit(0)
+
+    if args and args[0] == "setup-main":
+        from bootstrap.setup_main import run_main_model_setup
+
+        run_main_model_setup(Path(config_path))
         sys.exit(0)
 
     if args and args[0] == "init":

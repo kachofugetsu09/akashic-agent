@@ -280,6 +280,9 @@ class Session:
                 reasoning_content = group.get("reasoning_content")
                 if reasoning_content is not None:
                     assistant_msg["reasoning_content"] = reasoning_content
+                model_state = group.get("model_state")
+                if model_state is not None:
+                    assistant_msg["model_state"] = model_state
                 out.append(assistant_msg)
                 for c in calls:
                     out.append(
@@ -301,6 +304,9 @@ class Session:
             reasoning_content = m.get("reasoning_content")
             if reasoning_content is not None:
                 assistant_msg["reasoning_content"] = reasoning_content
+            model_state = m.get("model_state")
+            if model_state is not None:
+                assistant_msg["model_state"] = model_state
             out.append(assistant_msg)
 
         return out
