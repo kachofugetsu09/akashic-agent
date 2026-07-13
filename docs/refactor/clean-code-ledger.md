@@ -1071,3 +1071,16 @@
 - 测试删除及原因：删除副手新增的“临时文件创建期间 mode 并发”测试；它没有在旧实现实际修改 umask 的区间同步，旧坏实现也会通过，无法证明根因。
 - 验证结果：副手二审定向 `61 passed`、全量 `1758 passed`；主线删除无效测试后定向 `60 passed`、修改生产文件 pyright `0 errors, 0 warnings`，`git diff --check` 通过。
 - 残余风险：`read_file` 为保留完整统计仍线性扫描大文件；当前没有 profile 证据支持改变输出协议或增加索引。原子 replace 只显式保持 POSIX mode，不承诺保存项目当前未使用的跨平台扩展属性。
+
+### `33e22021` `fix(plugins): complete scoped resource cleanup`
+
+- 范围：`PluginScope` 所有 task/process/deferred cleanup，以及 PluginManager 的候选回滚、代际回收、快照关闭和全量 terminate 路径。
+- 原问题：调用方取消可传播到正在执行的 cleanup 并截断后续资源；作用域 task 在运行期失败只会等到关闭才暴露；async subprocess 已有 returncode 时没有完成 `wait()` transport 收尾，kill 后等待又可能无界；manager 在关键关闭步骤收到取消时可能留下半清理注册状态。
+- 为什么这样修改：每个 cleanup 在独立 task 中执行，调用方取消只延迟恢复而不传播到资源动作；manager 以统一 `_complete_critical()` 屏蔽关键生命周期操作，消费 scope failure 后再注销模块和注册表；process 使用有界 terminate、kill、二次 wait。
+- 不变量与拥有层：`PluginScope` 唯一拥有其 task/process/deferred cleanup 的逆序和幂等关闭；PluginManager 拥有插件 terminate、scope failure 聚合、模块/工具注册表卸载和最终取消恢复。cleanup 自身取消是资源失败，调用方取消是完成全部清理后重新抛出的控制流，两者不混淆。
+- 能力变化：插件后台 task 异常在发生时立即记录真实 traceback，关闭时仍进入结构化 failure；外部取消不再造成资源遗漏，也不被静默吞掉；已退出 process 仍完成系统收尾，强杀失败或超时明确进入 cleanup failure。
+- 性能变化：每个 cleanup 增加一个短生命周期 asyncio task，正常关闭有少量调度成本；进程等待都有明确上限，取消或异常路径不再无限挂起。正常插件加载、事件分发、工具调用和热重载租约语义不变。
+- 测试新增：task 运行期失败与关闭聚合、幂等 close、外部取消完成全部 cleanup、async process 已退出 wait 和 timeout kill、manager terminate 取消后仍消费 scope failure。
+- 测试删除及原因：无。
+- 验证结果：副手全量 `1804 passed`；主线合入后独立定向 `146 passed`，修改范围 pyright `0 errors`（24 个既有 warnings），`git diff --check` 通过。
+- 残余风险：`track_async_process()` 当前没有生产调用者；未来接入时需按实际子进程协议确认退出码语义。kill 后二次 wait 超时会显式失败，不做无证据的无限 retry。
