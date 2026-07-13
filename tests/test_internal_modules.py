@@ -56,13 +56,13 @@ class _ConsolidationHarness:
 async def test_consolidation_helpers(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    assert _format_pending_items("x") == ""
+    with pytest.raises(ValueError, match="pending_items must be an array"):
+        _format_pending_items("x")
     assert _format_pending_items(
         [
             {"tag": "preference", "content": "喜欢 A"},
             {"tag": "preference", "content": "喜欢 A"},
             {"tag": "bad", "content": "忽略"},
-            "x",
         ]
     ) == "- [preference] 喜欢 A"
     assert _parse_consolidation_payload('{"x":1}') == {"x": 1}

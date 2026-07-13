@@ -159,6 +159,9 @@ def test_consolidation_service_uses_profile_maint_for_reads():
 
     assert draft is not None
     profile_maint.read_long_term.assert_called_once()
+    profile_maint.read_recent_context.assert_called_once()
+    assert draft.scope_channel == "cli"
+    assert draft.scope_chat_id == "1"
     assert draft.history_entry_payloads == [
         ("[2026-03-15 10:00] 用户聊了 Zigbee 方案", 0)
     ]

@@ -101,7 +101,7 @@ class MemoryStore:
         kind: str = "pending",
     ) -> bool:
         """按 source_ref 幂等追加 PENDING，避免重启后重复 consolidation。"""
-        text = (facts or "").strip()
+        text = facts.strip()
         if not text:
             return False
         return self._append_once_with_index(
@@ -176,8 +176,8 @@ class MemoryStore:
 
     @staticmethod
     def _consolidation_marker(source_ref: str, kind: str) -> str:
-        src = (source_ref or "").replace("\n", " ").strip()
-        kd = (kind or "").replace("\n", " ").strip()
+        src = source_ref.replace("\n", " ").strip()
+        kd = kind.replace("\n", " ").strip()
         return f"{_CONSOLIDATION_MARKER_PREFIX}{src}:{kd}{_CONSOLIDATION_MARKER_SUFFIX}"
 
     @staticmethod
@@ -229,12 +229,15 @@ class MemoryStore:
         kind: str,
         trailing_blank_line: bool,
     ) -> bool:
-        marker = self._consolidation_marker(source_ref, kind)
-        src = (source_ref or "").strip()
-        kd = (kind or "").strip()
+        """在文件和 SQLite 索引之间执行一次幂等追加。"""
+        # 1. 校验调用方已建立的字符串契约，并生成稳定 marker。
+        src = source_ref.strip()
+        kd = kind.strip()
         if not src or not kd or not text:
             return False
+        marker = self._consolidation_marker(src, kd)
 
+        # 2. 锁定索引事务，恢复已记录但文件缺失的写入。
         with self._consolidation_lock:
             conn = sqlite3.connect(str(self._consolidation_db), timeout=30.0)
             try:
@@ -244,8 +247,15 @@ class MemoryStore:
                     (src, kd),
                 ).fetchone()
                 if row is not None:
-                    existing_payload = row[0] or ""
-                    existing_trailing = bool(int(row[1] or 0))
+                    existing_payload = row[0]
+                    existing_trailing_raw = row[1]
+                    if existing_payload is not None and not isinstance(
+                        existing_payload, str
+                    ):
+                        raise TypeError("consolidation payload must be text")
+                    if not isinstance(existing_trailing_raw, int):
+                        raise TypeError("consolidation trailing flag must be an integer")
+                    existing_trailing = bool(existing_trailing_raw)
                     if not self._file_contains_marker(target_file, marker):
                         if existing_payload:
                             with open(target_file, "a", encoding="utf-8") as f:
@@ -265,6 +275,7 @@ class MemoryStore:
                     conn.execute("COMMIT")
                     return False
 
+                # 3. 先追加 marker 和内容，再提交索引事务。
                 with open(target_file, "a", encoding="utf-8") as f:
                     f.write(marker + "\n")
                     f.write(text.rstrip() + "\n")
@@ -297,7 +308,7 @@ class MemoryStore:
             if take <= 0:
                 return False
             f.seek(size - take)
-            tail = f.read(take).decode("utf-8", errors="ignore")
+            tail = f.read(take).decode("utf-8")
             return marker in tail
 
     @staticmethod

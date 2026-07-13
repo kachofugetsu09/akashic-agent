@@ -110,3 +110,13 @@ def test_marker_reader_exposes_file_read_failure(tmp_path, monkeypatch, reader_n
     reader = getattr(MemoryStore, reader_name)
     with pytest.raises(PermissionError, match="denied"):
         reader(marker_file, "marker")
+
+
+@pytest.mark.parametrize("reader_name", ["_tail_contains_marker"])
+def test_marker_reader_exposes_invalid_utf8(tmp_path, reader_name):
+    marker_file = tmp_path / "PENDING.md"
+    marker_file.write_bytes(b"\xff")
+
+    reader = getattr(MemoryStore, reader_name)
+    with pytest.raises(UnicodeDecodeError):
+        reader(marker_file, "marker")

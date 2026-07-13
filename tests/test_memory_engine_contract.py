@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 import asyncio
+import logging
 import pytest
 from pathlib import Path
 from types import SimpleNamespace
@@ -510,6 +511,57 @@ async def test_default_memory_engine_consolidates_ready_session_from_lifecycle()
 
     maintenance._consolidate_unlocked.assert_awaited_once()
     save_session.assert_awaited_once_with(session)
+    await event_bus.aclose()
+
+
+async def test_default_memory_engine_logs_lifecycle_consolidation_failure(caplog):
+    event_bus = EventBus()
+    session = SimpleNamespace(
+        key="cli:1",
+        messages=[{"role": "user", "content": "u"}] * 31,
+        last_consolidated=0,
+    )
+    maintenance = MarkdownMemoryMaintenance(
+        store=MarkdownMemoryStore(Path(".")),
+        provider=cast(Any, SimpleNamespace()),
+        model="lm",
+        keep_count=20,
+        event_bus=event_bus,
+    )
+    maintenance._consolidate_unlocked = AsyncMock(
+        return_value=ConsolidateResult(
+            trace={
+                "mode": "failed",
+                "step": "event_extract",
+                "error": "invalid_schema",
+                "elapsed_ms": 1,
+            }
+        )
+    )
+    maintenance.bind_lifecycle(
+        MemoryLifecycleBindRequest(
+            get_session=lambda _key: session,
+            save_session=AsyncMock(),
+        )
+    )
+    caplog.set_level(logging.WARNING, logger="memory.markdown")
+
+    event_bus.enqueue(
+        TurnCommitted(
+            session_key="cli:1",
+            channel="cli",
+            chat_id="1",
+            input_message="hi",
+            persisted_user_message="hi",
+            assistant_response="ok",
+            tools_used=[],
+        )
+    )
+    await event_bus.drain()
+    await _drain_maintenance(maintenance)
+
+    assert "markdown memory maintenance consolidation failed" in caplog.text
+    assert "invalid_schema" in caplog.text
     await event_bus.aclose()
 
 
