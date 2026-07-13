@@ -1112,3 +1112,42 @@
 - 测试删除及原因：无。
 - 验证结果：副手定向 `58 passed`、全量 `1813 passed`；主线补刀后定向 `59 passed`、修改生产文件 pyright `0 errors`（16 个既有 warnings）、全量 `1828 passed in 20.72s`，`git diff --check` 通过。
 - 残余风险：远端接受任务但本地在读取 task id 前连接彻底失败时，当前 A2A 接口没有可确认的 cancel 或幂等查询键；不能假造本地恢复。per-agent lock map 只按启动配置中的有限 agent 名增长。
+
+### `7df557b5` `tune(proactive): 提高内容唤醒主动性`
+
+- 范围：Wake content hazard 的随机阈值分布与上限。
+- 原问题：线上阈值被 Gamma 尾部抽样到并持久化为 `2.0`，当时 `hazard + preference_pressure = 1.012`；按当时 rate 计算的理论稳定水位约为 `1.53`，没有更强新内容时无法达到阈值。
+- 为什么这样修改：将抽样 scale 从 `1/3` 降为 `1/4`，并将上限从 `2.0` 收紧到 `1.0`；已持久化的高阈值会被现有 clamp 自动收敛，不需要改状态 schema。
+- 不变量与拥有层：content 时效、兴趣证据、个人偏好和泄漏积分由 hazard 层拥有；阈值只决定何时进入 LLM 判断，不绕过 scratchpad、investigation 或 `skip` 决策。
+- 能力变化：content 进入判断的频率提高；Alert、Context、Drift、ACK、单条唤醒和 LLM 最终决策不变。线上同一状态回放由旧规则不触发改为进入 content 判断。
+- 性能变化：10 万次固定种子抽样中，截断后均值从 `0.972` 降为 `0.662`，中位数从 `0.891` 降为 `0.668`；这是产品频率调校，不声称执行性能提升。
+- 测试新增/调整：阈值上限和 Gamma scale 契约。
+- 测试删除及原因：无。
+- 验证结果：Wake 子系统 `51 passed`；修改文件 pyright `0 errors, 0 warnings`；真实状态回放通过。
+- 残余风险：更主动会增加 LLM 判断机会，但实际发送仍受内容排名、个人偏好和 LLM `skip` 约束。
+
+### `08c44c20` `fix(mcp): 升级工具结果协议协商`
+
+- 范围：stdio MCP initialize 协商、服务端版本边界和 `tools/call.structuredContent` 校验。
+- 原问题：宿主固定请求 `2024-11-05`，同时拒绝新版字段；本机 Fitbit/Calendar 的官方 Python MCP SDK 会返回 `content + structuredContent`，导致三条真实 proactive 工具同时失败。
+- 为什么这样修改：宿主请求已安装 SDK 共同支持的 `2025-11-25`，保存并校验服务端回复版本；只在声明支持的协议版本下接受 JSON object `structuredContent`。
+- 不变量与拥有层：MCP client 拥有 initialize/result 信任边界；旧协议越界、未知版本、非 object structured result 和坏 content 仍 fail-fast。工具对模型的文本输出继续来自 `content`。
+- 能力变化：Fitbit `get_proactive_events` / `get_sleep_context` 和 Calendar `get_proactive_events` 恢复；旧 MCP server 可继续协商受支持的旧版本。
+- 性能变化：无新增网络请求或重试；每次调用增加常数级版本/类型判断，不宣称性能收益。
+- 测试新增/调整：新版 initialize、未知版本、合法/非法 structured result，以及测试 MCP server 的真实协商响应。
+- 测试删除及原因：无。
+- 验证结果：修改范围 pyright `0 errors, 0 warnings`；全量 `1831 passed`；真实 Fitbit 1.1.2 与 Calendar 1.0.0 端到端调用通过，协商版本均为 `2025-11-25`。
+- 残余风险：客户端当前只消费文本/多媒体 content，不根据 tool `outputSchema` 二次验证 structured payload 内部字段；当前工具仍以 JSON 文本作为宿主契约，不应在未设计输出协议前盲目改用 structured payload。
+
+### `082fe863` `fix(bus): preserve async lifecycle failures`
+
+- 范围：EventBus admission task、后台 dispatcher、observer 取消和 `drain/aclose` 生命周期。
+- 原问题：admission task 在取消清理中转换的真实错误被 `gather(return_exceptions=True)` 丢弃；dispatcher 异常只记日志并自动重启，`drain/aclose` 无法向 owner 报告；observer 自取消与调用方取消共用一个模糊判断。
+- 为什么这样修改：总线记录 dispatcher 故障并在明确同步边界原样重抛；关闭时先停 admission、再排空 envelope 以释放 snapshot lease、最后停 dispatcher；多个清理错误用 `BaseExceptionGroup` 保留。
+- 不变量与拥有层：EventBus 拥有 admission/queue/dispatcher 生命周期；observer 业务失败继续隔离并记录，总线内部故障在 `drain/aclose` fail-loud；snapshot lease 仍由 envelope/单 observer 释放。
+- 能力变化：正常 emit/observe/fanout/enqueue 顺序、observer 隔离和 hot-reload snapshot 不变；dispatcher/admission 内部错误不再伪装成成功关闭。
+- 性能变化：每个 dispatcher 故障增加一次小列表记录，正常 fanout/队列复杂度不变；无性能收益声明。
+- 测试新增/调整：admission 取消转故障、dispatcher 失败向 `drain` 传播，并保留 observer 自取消不阻塞关闭的回归。
+- 测试删除及原因：无。
+- 验证结果：EventBus 直接/调用方 `587 passed`；修改文件 pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：observer 业务失败仍按设计只记录并返回失败计数，不中断用户主链；只有 EventBus 自身 dispatcher/admission ownership 错误进入关闭失败。
