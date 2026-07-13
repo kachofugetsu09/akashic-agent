@@ -2328,6 +2328,140 @@ async def test_plugin_watcher_recovers_after_revision_scan_error() -> None:
     assert manager.calls == 1
 
 
+@pytest.mark.asyncio
+async def test_plugin_watcher_does_not_reconcile_after_recovered_scan_error() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.scans = 0
+            self.calls = 0
+
+        def watch_revision(self) -> str:
+            self.scans += 1
+            if self.scans == 2:
+                raise OSError("transient")
+            return "stable"
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            return []
+
+    manager = Manager()
+    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    task = asyncio.create_task(watcher.run())
+    for _ in range(100):
+        if manager.scans >= 3:
+            break
+        await asyncio.sleep(0.01)
+
+    watcher.stop()
+    await task
+    assert manager.scans >= 3
+    assert manager.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_recovers_after_reconcile_failure() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.revision = "stable"
+            self.failed = asyncio.Event()
+            self.recovered = asyncio.Event()
+            self.calls = 0
+
+        def watch_revision(self) -> str:
+            return self.revision
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            if self.revision == "broken":
+                self.failed.set()
+                raise RuntimeError("callback failed")
+            self.recovered.set()
+            return []
+
+    manager = Manager()
+    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    task = asyncio.create_task(watcher.run())
+    await asyncio.sleep(0)
+    manager.revision = "broken"
+    await asyncio.wait_for(manager.failed.wait(), timeout=1)
+    await asyncio.sleep(0.03)
+    assert manager.calls == 1
+    assert not task.done()
+
+    manager.revision = "fixed"
+    await asyncio.wait_for(manager.recovered.wait(), timeout=1)
+    watcher.stop()
+    await task
+    assert manager.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_propagates_cancellation_and_marks_stopped() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.revision = "stable"
+            self.started = asyncio.Event()
+            self.calls = 0
+
+        def watch_revision(self) -> str:
+            return self.revision
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            self.started.set()
+            await asyncio.Event().wait()
+            return []
+
+    manager = Manager()
+    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    task = asyncio.create_task(watcher.run())
+    await asyncio.sleep(0)
+    manager.revision = "changed"
+    await asyncio.wait_for(manager.started.wait(), timeout=1)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await watcher.wait_stopped()
+    assert manager.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_stop_before_run_skips_initial_scan() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.scans = 0
+
+        def watch_revision(self) -> str:
+            self.scans += 1
+            return "stable"
+
+    manager = Manager()
+    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    watcher.stop()
+
+    await watcher.run()
+    await watcher.wait_stopped()
+    assert manager.scans == 0
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_cancellation_before_start_does_not_leak_waiter() -> None:
+    class Manager:
+        def watch_revision(self) -> str:
+            raise AssertionError("未启动的 watcher 不应扫描")
+
+    watcher = PluginWatcher(Manager(), interval_seconds=0.01)  # type: ignore[arg-type]
+    task = asyncio.create_task(watcher.run())
+    watcher.stop()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.wait_for(watcher.wait_stopped(), timeout=1)
+
+
 def _snapshot_tool_source(version: str) -> str:
     return (
         "from agent.plugins import Plugin, tool\n"
