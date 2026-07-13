@@ -884,6 +884,9 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
         )
     )
     assert channel._app.bot.delete_message.await_count == before_delete + 1
+    assert "telegram:456" not in channel._tool_lines
+    assert "telegram:456" not in channel._thinking_live_next_at
+    assert "telegram:456" not in channel._live_last_lengths
     mod.send_thinking_block.assert_awaited_once()
     assert mod.send_markdown.await_count == before_final_markdown + 2
     snapshot_text = mod.send_markdown.await_args_list[-2].args[2]
@@ -955,6 +958,18 @@ async def test_telegram_live_task_index_releases_finished_session(monkeypatch: p
 
     assert channel._live_tasks == set()
     assert channel._live_tasks_by_session == {}
+
+
+@pytest.mark.asyncio
+async def test_telegram_live_message_is_retained_when_delete_fails(monkeypatch):
+    mod = _import_telegram_channel(monkeypatch)
+    channel = object.__new__(mod.TelegramChannel)
+    message = SimpleNamespace(delete=AsyncMock(return_value=False))
+    channel._live_messages = {"telegram:stale": message}
+
+    await channel._delete_live_message("telegram:stale")
+
+    assert channel._live_messages["telegram:stale"] is message
 
 
 @pytest.mark.asyncio

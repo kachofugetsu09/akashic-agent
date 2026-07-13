@@ -108,6 +108,20 @@ async def test_dashboard_lifespan_swallows_its_own_compile_cancellation(
 
 
 @pytest.mark.asyncio
+async def test_dashboard_waits_for_async_closeable() -> None:
+    closed = False
+
+    class Closeable:
+        async def close(self) -> None:
+            nonlocal closed
+            closed = True
+
+    await dashboard_api._close_dashboard_value(Closeable())
+
+    assert closed
+
+
+@pytest.mark.asyncio
 async def test_dashboard_lifespan_exposes_unexpected_compile_failure(
     tmp_path, monkeypatch
 ):
@@ -853,6 +867,11 @@ def test_proactive_dashboard_endpoints(tmp_path, monkeypatch) -> None:
         assert tick_steps_resp.json()["items"][1]["terminal_action_after"] == "reply"
 
 
+def test_proactive_reader_rejects_corrupt_json() -> None:
+    with pytest.raises(ValueError, match="JSON 列表损坏"):
+        dashboard_api.ProactiveDashboardReader._decode_json_list("{")
+
+
 def test_wake_package_owns_dashboard_visibility(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         "bootstrap.dashboard_api.load_package_manifest",
@@ -982,6 +1001,13 @@ def test_plugin_asset_paths_reject_cross_platform_traversal(tmp_path) -> None:
         ):
             response = client.get(path)
             assert response.status_code == 400
+
+        assert (
+            client.get(
+                "/plugins/default_memory/dashboard_panel..%5Csecret.js"
+            ).status_code
+            == 400
+        )
 
         assert client.get("/plugins/missing/dashboard_panel.js").status_code == 404
 

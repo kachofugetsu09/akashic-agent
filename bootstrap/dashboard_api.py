@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import inspect
 from pathlib import Path, PureWindowsPath
 import importlib.util
 import logging
@@ -415,10 +416,10 @@ class ProactiveDashboardReader:
             return []
         try:
             value = json.loads(text)
-        except Exception:
-            return []
+        except json.JSONDecodeError as exc:
+            raise ValueError("proactive dashboard JSON 列表损坏") from exc
         if not isinstance(value, list):
-            return []
+            raise ValueError("proactive dashboard JSON 列表类型错误")
         return [str(item) for item in value]
 
     def _row_to_tick_log(self, row: sqlite3.Row) -> dict[str, Any]:
@@ -441,11 +442,13 @@ class ProactiveDashboardReader:
             return []
         try:
             value = json.loads(text)
-        except Exception:
-            return []
+        except json.JSONDecodeError as exc:
+            raise ValueError("proactive dashboard JSON 对象列表损坏") from exc
         if not isinstance(value, list):
-            return []
-        return [item for item in value if isinstance(item, dict)]
+            raise ValueError("proactive dashboard JSON 对象列表类型错误")
+        if not all(isinstance(item, dict) for item in value):
+            raise ValueError("proactive dashboard JSON 对象列表元素类型错误")
+        return value
 
     def _row_to_tick_step(self, row: sqlite3.Row) -> dict[str, Any]:
         payload = self._row_to_dict(row)
@@ -470,12 +473,14 @@ class ProactiveDashboardReader:
             return {}
         try:
             value = json.loads(text)
-        except Exception:
-            return {}
-        return value if isinstance(value, dict) else {}
+        except json.JSONDecodeError as exc:
+            raise ValueError("proactive dashboard JSON 对象损坏") from exc
+        if not isinstance(value, dict):
+            raise ValueError("proactive dashboard JSON 对象类型错误")
+        return value
 
 
-_pending_plugins: list[tuple[Path, Path]] = []
+_pending_plugins: set[tuple[Path, Path]] = set()
 _pending_plugins_lock = threading.Lock()
 
 
@@ -506,7 +511,7 @@ def _build_plugin_panels_js(project_root: Path, plugin_dir: Path) -> None:
             esbuild_cmd = _esbuild_command(project_root)
         if esbuild_cmd is None:
             with _pending_plugins_lock:
-                _pending_plugins.append((project_root, plugin_dir))
+                _pending_plugins.add((project_root, plugin_dir))
             return
         _run_esbuild(esbuild_cmd, ts_path, js_path, f"{plugin_dir.name}/{ts_path.stem}")
 
@@ -564,11 +569,24 @@ def _resolve_plugin_dir(
     return plugin_dir
 
 
+def _validate_panel_name(panel_name: str, detail: str) -> None:
+    """校验插件面板文件名，阻止跨平台路径穿越。"""
+    if not panel_name.startswith("dashboard_panel"):
+        raise HTTPException(status_code=404, detail=detail)
+    if (
+        any(separator in panel_name for separator in ("/", "\\"))
+        or "\x00" in panel_name
+    ):
+        raise HTTPException(status_code=400, detail="invalid plugin panel name")
+
+
 async def _compile_pending_plugins_async() -> None:
     with _pending_plugins_lock:
         if not _pending_plugins:
             return
-        pending = _pending_plugins.copy()
+        pending = tuple(
+            sorted(_pending_plugins, key=lambda item: (str(item[0]), str(item[1])))
+        )
         _pending_plugins.clear()
     first_root = pending[0][0]
 
@@ -669,10 +687,13 @@ def _is_dashboard_closeable(value: object) -> bool:
     return callable(getattr(value, "close", None))
 
 
-def _close_dashboard_value(value: object) -> None:
+async def _close_dashboard_value(value: object) -> None:
+    """关闭 dashboard 资源，并等待异步 close 完成。"""
     close = getattr(value, "close", None)
     if callable(close):
-        _ = close()
+        result = close()
+        if inspect.isawaitable(result):
+            await result
 
 
 def _preview_text(value: Any, limit: int) -> str:
@@ -716,17 +737,14 @@ def create_dashboard_app(
                 except asyncio.CancelledError:
                     return
 
-            async def _close_sync(value: object) -> None:
-                _close_dashboard_value(value)
-
             await run_cleanup_steps(
                 ("plugin_panel_compile.cancel", _cancel_compile_task),
-                ("dashboard.session_store.close", lambda: _close_sync(store)),
-                ("dashboard.memory_admin.close", lambda: _close_sync(memory_admin)),
+                ("dashboard.session_store.close", lambda: _close_dashboard_value(store)),
+                ("dashboard.memory_admin.close", lambda: _close_dashboard_value(memory_admin)),
                 *[
                     (
                         f"dashboard.plugin_closeable[{index}].close",
-                        lambda value=closeable: _close_sync(value),
+                        lambda value=closeable: _close_dashboard_value(value),
                     )
                     for index, closeable in enumerate(reversed(plugin_closeables))
                 ],
@@ -769,8 +787,7 @@ def create_dashboard_app(
                 media_type="text/plain; charset=utf-8",
                 status_code=503,
             )
-        html = index_file.read_text(encoding="utf-8")
-        return Response(content=html, media_type="text/html")
+        return FileResponse(index_file, media_type="text/html")
 
     @app.get("/api/dashboard/plugins")
     def list_dashboard_plugins() -> list[dict[str, Any]]:
@@ -793,8 +810,7 @@ def create_dashboard_app(
 
     @app.get("/plugins/{plugin_id}/{panel_name}.js")
     def get_plugin_panel_js(plugin_id: str, panel_name: str) -> FileResponse:
-        if not panel_name.startswith("dashboard_panel"):
-            raise HTTPException(status_code=404, detail="plugin panel not found")
+        _validate_panel_name(panel_name, "plugin panel not found")
         plugin_dir = _resolve_plugin_dir(
             _dashboard_plugin_dirs(project_root),
             plugin_id,
@@ -812,8 +828,7 @@ def create_dashboard_app(
 
     @app.get("/plugins/{plugin_id}/{panel_name}.css")
     def get_plugin_panel_css(plugin_id: str, panel_name: str) -> FileResponse:
-        if not panel_name.startswith("dashboard_panel"):
-            raise HTTPException(status_code=404, detail="plugin panel css not found")
+        _validate_panel_name(panel_name, "plugin panel css not found")
         plugin_dir = _resolve_plugin_dir(
             _dashboard_plugin_dirs(project_root),
             plugin_id,
