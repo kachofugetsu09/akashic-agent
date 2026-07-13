@@ -1098,3 +1098,17 @@
 - 测试删除及原因：删除二审拒绝的 degraded fail-open 和 resolver degraded trace 测试；它们只固化会在去重不可用时放行消息的错误设计，不属于应保留能力。
 - 验证结果：副手二审定向 `136 passed`、全量 `1813 passed`；主线补刀后定向 `57 passed`、修改生产文件 pyright `0 errors`（97 个既有 warnings）、全量 `1818 passed in 20.79s`，`git diff --check` 通过。
 - 残余风险：模型去重不可用会推迟本轮主动消息，这是明确的 fail-closed 产品取舍；当前没有可靠的本地等价算法可以安全降级，不能用“可用性”名义重新引入无标记放行。
+
+### `8a231f5b` `fix(peer-agent): make submit lifecycle atomic`
+
+- 范围：Peer Agent 冷启动、A2A submit、pending 登记与最后任务进程回收之间的并发 ownership。
+- 原问题：任务提交成功到 pending 登记之间没有和最后任务回收共享锁，旧任务可能在新任务已冷启动但尚未登记时终止共享进程；启动或提交错误被宽泛 catch 转成普通 JSON；冷启动后的提交失败会遗留新进程；重复 task id 只有通用 `ValueError`。
+- 为什么这样修改：Poller 提供 per-agent submission lease，工具在同一 lease 内完成 `ensure_ready -> submit -> register`，终态回收也在该 lease 内重新判断其他 pending；`ensure_ready` 返回本次是否取得新进程 ownership；失败只回收本次独占且没有其他 pending 的进程。
+- 不变量与拥有层：ToolRegistry 拥有统一工具错误呈现；PeerAgentTool 拥有一次 submit/register 事务；Poller 拥有 pending catalog 和 per-agent lease；ProcessManager 拥有受管子进程。外部健康 peer、旧 pending、跨 agent 并行、A2A payload 与轮询间隔不变。
+- 主审修正：副手首版把终态通知也放入 submission lease，慢 MessageBus 会阻塞同 agent 新提交；主线把通知移到 lease 外，task 在 catalog 中继续持有 ownership。副手 `finally` 中的 terminate 失败会覆盖原 submit/取消错误；主线在双故障时用 `BaseExceptionGroup` 同时保留，单故障原样重抛。
+- 能力变化：同 agent 新提交不会被旧任务的最后回收竞态杀死；冷启动后 submit/register 失败不会泄漏独占进程；外部健康 peer 和已有 pending 不被误终止；坏响应、编程错误与取消不再伪装成成功 JSON；duplicate 显式失败且不覆盖既有任务。
+- 性能变化：同 agent 的冷启动、网络 submit 与登记按 lease 串行，不同 agent 仍并行；终态通知不占锁，因此慢通知不再增加新提交等待。没有增加 HTTP 请求或 poll 次数。
+- 测试新增：真实 Event 交错验证慢通知期间新提交可完成且共享进程不终止；冷启动失败回收、外部 peer/旧 pending 保护、取消传播、duplicate 保留、submit 与 cleanup 双错误聚合。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `58 passed`、全量 `1813 passed`；主线补刀后定向 `59 passed`、修改生产文件 pyright `0 errors`（16 个既有 warnings）、全量 `1828 passed in 20.72s`，`git diff --check` 通过。
+- 残余风险：远端接受任务但本地在读取 task id 前连接彻底失败时，当前 A2A 接口没有可确认的 cancel 或幂等查询键；不能假造本地恢复。per-agent lock map 只按启动配置中的有限 agent 名增长。
