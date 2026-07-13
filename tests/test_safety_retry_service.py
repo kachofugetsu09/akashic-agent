@@ -37,7 +37,9 @@ def _session():
     return SimpleNamespace(
         key="s:1",
         messages=[{"role": "user", "content": str(i)} for i in range(6)],
-        get_history=lambda max_messages: [{"role": "user", "content": str(i)} for i in range(6)],
+        get_history=lambda max_messages=500, *, start_index=None: [
+            {"role": "user", "content": str(i)} for i in range(6)
+        ],
         last_consolidated=3,
     )
 
