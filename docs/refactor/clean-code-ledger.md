@@ -1191,3 +1191,51 @@
 - 测试删除及原因：无。
 - 验证结果：副手定向 `58 + 114 passed`、全量 `1838 passed`；主审补刀后定向 `59 passed`；组合全量 `1843 passed in 28.62s`，全库 pyright `0 errors`（2326 个既有 warnings），前端 typecheck/lint/build 全通过，`git diff --check` 通过。
 - 残余风险：未做真实 Telegram API 网络验证；外部限流/删除失败按现有显式日志和保留句柄语义等待后续事件重试。Dashboard overview 的多次 count 没有真实生产 workload 证据，本轮未引入缓存。
+
+### `123749de` `fix(dashboard): stop plugin reload render loop`
+
+- 范围：Dashboard 插件页面加载 effect 与插件状态读取。
+- 原问题：`loadPluginPanel` 依赖整个 `pluginState`；每次分页结果写回都会改变 callback 身份，再次触发加载 effect。兴奋阈值面板的空分页立即完成，闭环会以主线程可见的速度持续渲染并请求，点击后页面卡死。
+- 为什么这样修改：分页函数通过已有的稳定 `readPluginState()` 读取最新状态，callback 只依赖插件目录和稳定 reader；状态更新不再改变加载函数身份。
+- 不变量与拥有层：React state 继续拥有插件分页、筛选、排序和选中状态；加载函数只读取调用时快照。插件切换、手动刷新、分页结果校验和 workbench 渲染语义不变。
+- 能力变化：选择兴奋阈值或其他插件面板只触发一次入口加载；15 秒水位刷新仍由 `MeterPage` 自己持有并在卸载时清理。
+- 性能变化：删除由状态写回造成的无界请求/渲染循环；正常点击从持续占用主线程和重复 `fetchPage` 收敛为一次分页加载。
+- 测试新增/删除：无；仓库没有前端组件测试框架，不为单个回归引入新依赖。
+- 验证结果：前端 typecheck、lint、dashboard/chat/plugin build 全通过；用户在真实 Dashboard 点击兴奋阈值确认不再卡死；build 仅有既有大 chunk warning。
+- 残余风险：前端 effect 依赖仍主要靠静态检查和真实浏览器验收；后续若引入组件测试，应覆盖一次点击只调用一次 `fetchPage`。
+
+### `f3859d48` `style: 统一历史代码中文注释`
+
+- 范围：22 个生产 Python 文件中的英文 docstring、阶段标题、权限说明和 box-drawing 调用图节点。
+- 原问题：历史说明混用英文自然语言，与仓库要求的中文 docstring、代码注释和阶段注释不一致。
+- 为什么这样修改：只翻译自然语言说明，保留类名、协议、字段、命令、类型检查指令、公式和必要技术术语；没有为了形式新增注释。
+- 能力与性能变化：无。主审对提交前后 AST 去除 docstring 后逐文件比较，22 个文件完全等价。
+- 测试新增/删除：无。
+- 验证结果：AST 等价检查、Python 编译、`git diff --check` 通过；组合全量测试见本批末尾。
+- 残余风险：代码标识符和协议名继续保留英文，这是可执行契约，不属于自然语言注释残留。
+
+### `a1242670` `fix(session): harden persistence boundaries`
+
+- 范围：SessionStore JSON 边界、SessionManager 重载不变量、Dashboard session 列表 SQL 和 CoreRuntime 关闭 ownership。
+- 原问题：孤立 message 可在缺 session metadata 时被当前时间和空 metadata 拼成假 session；media 引用扫描遇到损坏 extra 会静默跳过；session 列表为一页结果先全表聚合全部 messages；主 SessionManager 的 SQLite 连接没有明确关闭 owner。
+- 为什么这样修改：持久化边界统一严格解析 message extra 并拒绝保留字段覆盖；metadata 缺失但存在消息立即失败；列表只对候选 session 通过索引相关子查询读取首条用户消息和计数；CoreRuntime 最后关闭唯一 SessionManager。
+- 不变量与拥有层：SessionStore 拥有 SQLite/JSON schema，SessionManager 拥有内存 session 与 store 生命周期，CoreRuntime 拥有 manager 关闭。正常 session 创建、消息顺序、media 引用保护、Dashboard 排序/分页和 memory runtime 关闭顺序不变。
+- 主审修正：拒绝副手把 proactive 窗口计数从 SQL 范围聚合改成拉取全部历史后逐条 Python 时间解析；坏时间应在写入/读取边界暴露，不能用每次热路径全表扫描换取补充校验。最终保留原索引友好计数。
+- 能力变化：坏 message extra 和孤立消息不再被当成合法空数据；正常关闭会释放主 sessions.db 连接。
+- 性能变化：500 个 session、每个 100 条消息的同一合成 workload 中，过滤列表查询中位数由旧聚合约 `16.949 ms` 降至 `0.132 ms`；不外推为所有 Dashboard 查询的固定倍数。
+- 测试新增：孤立消息、坏 media extra、runtime 关闭 session manager；测试删除及原因：删除“每次窗口计数扫描全部记录以发现坏时间”的测试，它固化了热路径性能退化。
+- 验证结果：主审定向 `104 passed`；修改范围 pyright `0 errors`；组合全量见本批末尾。
+- 残余风险：相关子查询优势依赖现有 `(session_key, seq)` 索引；schema owner 已创建该索引，若未来改变消息主键必须同步审查查询计划。
+
+### `6b590aee` + `cc8a731b` `refactor(memory2): expose boundary degradation`
+
+- 范围：Memory2 query 改写、profile 提取、sufficiency 检查和 sqlite-vec 历史迁移。
+- 原问题：主/可选 query lane 的模型失败与合法空结果不可区分；profile 主调用失败后会按 USER 子句继续调用，12 个子句会把一次失败放大为 13 次；模型响应通过动态属性兼容；向量迁移逐行跳过错误，可能留下部分索引。
+- 为什么这样修改：每条 query lane 返回明确成功/降级状态与原因；profile 返回独立 `ProfileExtraction`，区分事实 tuple、状态和原因；模型边界只接受字符串或 `LLMResponse`；向量迁移在单一事务中整批成功或回滚。
+- 不变量与拥有层：模型调用边界拥有响应类型和降级原因，parser 拥有 XML/schema，MemoryStore2 拥有主表与 vec 索引一致性。正常 query、profile 分类、sufficiency fail-open、sqlite-vec 可选索引和全表扫描 fallback 语义不变。
+- 主审修正：副手首版用 `ProfileFacts(list)` 子类同时冒充旧列表和状态对象；这会把兼容层带入新内部 API。主线改为冻结 dataclass，调用方必须显式读取 `.facts` 与 `.status`。
+- 能力变化：模型不可用不再伪装成合法空结果；profile 主失败停止子句重试；迁移失败不留下半套 vec 索引。
+- 性能变化：12 个 USER 子句的模型失败 workload 由 13 次边界调用降为 1 次，减少 92.3%；正常成功提取不增加调用次数。
+- 测试新增：query lane 降级原因、profile 失败不重试、vec 迁移回滚；测试删除：无。
+- 验证结果：Memory2/Profile 定向 `77 passed`，修改范围 pyright `0 errors`；本批组合全量 `1850 passed in 26.31s`，全库 pyright `0 errors`（2313 个既有 warnings），`git diff --check` 通过。
+- 残余风险：QueryRewriter、ProfileFactExtractor 和 SufficiencyChecker 当前主要由测试/eval 路径使用；状态已经在返回协议中明确，但未来接入主运行链时仍需决定降级是否应阻断该具体业务，不在底层假造统一策略。
