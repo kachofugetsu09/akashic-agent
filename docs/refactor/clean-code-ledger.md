@@ -1084,3 +1084,17 @@
 - 测试删除及原因：无。
 - 验证结果：副手全量 `1804 passed`；主线合入后独立定向 `146 passed`，修改范围 pyright `0 errors`（24 个既有 warnings），`git diff --check` 通过。
 - 残余风险：`track_async_process()` 当前没有生产调用者；未来接入时需按实际子进程协议确认退出码语义。kill 后二次 wait 超时会显式失败，不做无证据的无限 retry。
+
+### `de066492` `fix(proactive): make persistence and dedupe failures explicit`
+
+- 范围：主动状态 SQLite 时间与事务、消息语义去重、`RecentProactiveMessage` 内部契约，以及 `ProactiveLoop` 状态存储生命周期。
+- 原问题：损坏的持久化时间会被解释为“没有历史”，可能重复发送或重新打开 gate；context-only 两次写入不是显式原子操作；消息去重把 provider、网络、坏 JSON 和内部编程错误全部当成“不重复”放行；recent message 通过 dict、`getattr` 和字符串时间兼容掩盖内部契约错误；owned state store 没有明确关闭 owner。
+- 为什么这样修改：SQLite 已存在 row 的时间由状态存储边界严格解析，事务失败统一回滚；deduper 直接传播 provider 与解析失败并严格校验模型 JSON schema；producer、factory、deduper 和 resolver 统一使用 typed recent message 与 `MessageDeduper` 协议；bootstrap 显式把状态存储 ownership 转交给 loop。
+- 不变量与拥有层：`ProactiveStateStore` 拥有持久化 schema、时间解析和事务；`MessageDeduper` 拥有模型响应 schema；Sensor 拥有 recent message 构造；`ProactiveLoop` 只关闭明确归其所有的 store。resolver 信任 `tuple[bool, str]`，不再用 `str()`、空串默认值或 degraded 字符串协议重复归一化。
+- 主审修正：拒绝副手首版基于异常类名的 fail-open、`dedupe_degraded:` 字符串协议和 mapping 兼容；二审后主线继续以 Protocol 删除 resolver 的 `Any` 与 `str(reason or ...)`，确保边界之后信任已验证类型。
+- 能力变化：正常重复/非重复判断、delivery dedupe、投递和 ACK 不变；dedupe 不可用时当前 tick 明确失败且不发送，由 loop 边界记录后在下一 tick 重试。非法历史时间不再被当成新状态。loop 收尾失败仍设置 stopped 信号并向调用者暴露错误。
+- 性能变化：没有增加 LLM 调用或 SQLite 查询；只在读取实际历史时间时增加严格解析，在写失败时增加 rollback。正常发送路径调用次数不变。
+- 测试新增：坏时间、COUNT 契约、两步写入 rollback、provider/JSON/schema fail-loud、recent message 类型契约、owned store close 失败与幂等关闭。
+- 测试删除及原因：删除二审拒绝的 degraded fail-open 和 resolver degraded trace 测试；它们只固化会在去重不可用时放行消息的错误设计，不属于应保留能力。
+- 验证结果：副手二审定向 `136 passed`、全量 `1813 passed`；主线补刀后定向 `57 passed`、修改生产文件 pyright `0 errors`（97 个既有 warnings）、全量 `1818 passed in 20.79s`，`git diff --check` 通过。
+- 残余风险：模型去重不可用会推迟本轮主动消息，这是明确的 fail-closed 产品取舍；当前没有可靠的本地等价算法可以安全降级，不能用“可用性”名义重新引入无标记放行。
