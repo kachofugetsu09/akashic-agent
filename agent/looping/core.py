@@ -132,7 +132,7 @@ class AgentLoop:
         self._runtime_snapshot_store: RuntimeSnapshotStore | None = None
 
         # ── 中断控制面（纯内存态） ──
-        self._active_tasks: dict[str, asyncio.Task] = {}
+        self._active_tasks: dict[str, asyncio.Task[OutboundMessage]] = {}
         self._active_turn_states: dict[str, TurnInterruptState] = {}
         self._interrupt_states: dict[str, TurnInterruptState] = {}
 
@@ -378,37 +378,69 @@ class AgentLoop:
 
         self._running = True
         logger.info(f"AgentLoop 启动  max_iter={self.max_iterations}")
-        while self._running:
-            # 1. 等待下一条入站消息，空闲超时仅用于重新检查停止状态。
-            try:
-                item = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
-            except asyncio.TimeoutError:
-                continue
-
-            # 2. 建立本轮中断状态和执行任务。
-            key = item.session_key
-            self._active_turn_states[key] = self._build_initial_turn_state(item, key)
-            task = asyncio.create_task(self._process_with_runtime_admission(item))
-            self._active_tasks[key] = task
-
-            # 3. 发送结果，并在确认入站消息前先移除本轮内存状态。
-            try:
-                await task
-            except asyncio.CancelledError:
-                logger.info(f"Turn cancelled for {key}")
-            except Exception as e:
-                logger.error(f"处理消息出错: {e}", exc_info=True)
-                await self.bus.publish_outbound(
-                    OutboundMessage(
-                        channel=item.channel,
-                        chat_id=item.chat_id,
-                        content=f"出错：{e}",
+        try:
+            while self._running:
+                # 1. 等待下一条入站消息，空闲超时仅用于重新检查停止状态。
+                try:
+                    item = await asyncio.wait_for(
+                        self.bus.consume_inbound(),
+                        timeout=1.0,
                     )
+                except asyncio.TimeoutError:
+                    continue
+                await self._run_inbound_turn(item)
+        finally:
+            self._running = False
+
+    async def _run_inbound_turn(self, item: InboundItem) -> None:
+        """执行一个入站 turn，并在状态清理后确认消息。"""
+
+        # 1. 建立本轮中断状态和执行任务。
+        key = item.session_key
+        self._active_turn_states[key] = self._build_initial_turn_state(item, key)
+        task = asyncio.create_task(
+            self._process_with_runtime_admission(item),
+            name=f"agent-turn:{key}",
+        )
+        self._active_tasks[key] = task
+
+        # 2. 只吞掉本轮取消；运行器取消必须继续向生命周期 owner 传播。
+        try:
+            await task
+        except asyncio.CancelledError:
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling():
+                raise
+            logger.info(f"Turn cancelled for {key}")
+        except Exception as e:
+            logger.error(f"处理消息出错: {e}", exc_info=True)
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=item.channel,
+                    chat_id=item.chat_id,
+                    content=f"出错：{e}",
                 )
-            finally:
-                del self._active_tasks[key]
-                del self._active_turn_states[key]
-                await self.bus.complete_inbound(item)
+            )
+        finally:
+            # 3. 先收束内存状态，再完成总线确认。
+            del self._active_tasks[key]
+            del self._active_turn_states[key]
+            await self._complete_inbound(item)
+
+    async def _complete_inbound(self, item: InboundItem) -> None:
+        """在本轮清理中完成入站确认，并保留确认错误。"""
+
+        # 1. 让确认独立于 AgentLoop task，避免运行器取消留下未完成的 lane 计数。
+        completion = asyncio.create_task(
+            self.bus.complete_inbound(item),
+            name=f"agent-inbound-ack:{item.session_key}",
+        )
+        try:
+            await asyncio.shield(completion)
+        except asyncio.CancelledError as cancellation:
+            # 2. 确认必须先收束；确认本身失败时保留真实错误。
+            await completion
+            raise cancellation
 
     @property
     def processing_state(self) -> ProcessingState | None:
@@ -420,6 +452,9 @@ class AgentLoop:
 
     def stop(self) -> None:
         self._running = False
+        for task in self._active_tasks.values():
+            if not task.done():
+                _ = task.cancel()
         logger.info("AgentLoop 停止")
 
     def add_tool_hooks(self, hooks: list["ToolHook"]) -> None:
