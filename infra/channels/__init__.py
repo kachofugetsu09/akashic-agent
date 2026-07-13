@@ -1,3 +1,3 @@
-"""Channel infra package (no eager imports)."""
+"""提供不执行预加载的渠道基础设施包。"""
 
 __all__: list[str] = []

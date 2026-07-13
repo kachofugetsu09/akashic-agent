@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 SpawnDecisionSource = Literal["heuristic", "llm", "manual_rule"]
@@ -32,7 +32,7 @@ class SpawnDecision:
 
 
 class DelegationPolicy:
-    """Gate policy: enforces concurrent spawn limit; otherwise defers to LLM guidance."""
+    """限制并发委派数量，其余决策交由模型指引。"""
 
     def decide(
         self, *, task: str, label: str | None = None, running_count: int = 0

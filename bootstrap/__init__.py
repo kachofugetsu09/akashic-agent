@@ -1,1 +1,1 @@
-"""Bootstrap wiring for app runtime construction and lifecycle."""
+"""组装应用运行时并管理其生命周期。"""

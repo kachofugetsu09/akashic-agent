@@ -190,7 +190,7 @@ class MessageBus:
         self._running = False
 
     async def publish_inbound(self, msg: InboundItem) -> None:
-        """channel → agent"""
+        """将渠道输入交给 Agent 消费。"""
         await self._chat_lane.mark_passive_pending(msg.channel, msg.chat_id)
         await self._inbound.put(msg)
 
@@ -202,7 +202,7 @@ class MessageBus:
         await self._chat_lane.mark_passive_done(msg.channel, msg.chat_id)
 
     async def publish_outbound(self, msg: OutboundMessage) -> None:
-        """agent → channel"""
+        """将 Agent 输出交给对应渠道发送。"""
         await self._chat_lane.mark_passive_send_pending(msg.channel, msg.chat_id)
         await self._outbound.put(msg)
 

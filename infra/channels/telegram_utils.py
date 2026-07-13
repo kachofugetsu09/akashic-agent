@@ -396,17 +396,15 @@ async def send_thinking_block(
     thinking: str,
     limiter: TelegramOutboundLimiter | None = None,
 ) -> None:
-    """Send thinking content as expandable blockquote message(s).
+    """将思考内容按 Telegram 限制拆成可展开引用消息。"""
 
-    Telegram 单条消息限制 4096 UTF-16 code units。超长 thinking 按行分段，
-    每段独立包裹为 expandable_blockquote。
-    """
+    # 1. 计算标题之外可用的 UTF-16 码元预算
     cid = int(chat_id)
     header = "💭 思考过程\n\n"
-    # 4096 UTF-16 code units, 留一点余量
     max_utf16 = 4080
     header_utf16 = len(header.encode("utf-16-le")) // 2
 
+    # 2. 逐段构造引用实体并发送
     chunks = _split_thinking(thinking, max_utf16 - header_utf16)
     for i, chunk in enumerate(chunks):
         text = (header if i == 0 else "") + chunk

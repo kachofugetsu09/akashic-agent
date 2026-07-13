@@ -51,7 +51,7 @@ class MemoryConfig:
 
 @dataclass
 class LLMServices:
-    """LLM provider services."""
+    """集中持有主模型与轻量模型服务。"""
 
     provider: LLMProvider
     light_provider: LLMProvider

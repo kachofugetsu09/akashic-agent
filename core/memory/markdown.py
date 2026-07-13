@@ -86,7 +86,7 @@ _ALLOWED_PENDING_TAGS = frozenset(
 
 
 def _format_pending_items(raw_items) -> str:
-    """Normalize LLM pending_items into markdown bullets accepted by PENDING.md."""
+    """将模型输出整理为 PENDING.md 接受的 Markdown 列表。"""
     if not isinstance(raw_items, list):
         return ""
 
