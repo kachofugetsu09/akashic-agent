@@ -1,10 +1,11 @@
 import asyncio
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
 
-from core.memory.events import TurnIngested
+from core.memory.events import MemoryWritten, TurnIngested
 from memory2.memorizer import Memorizer
 from memory2.post_response_worker import PostResponseMemoryWorker
 from memory2.rule_schema import build_procedure_rule_schema
@@ -37,6 +38,55 @@ class _DummyMemorizer:
         self.supersede_batch = MagicMock()
         self.merge_item = AsyncMock()
         self._store = store
+
+
+class _InterleavingProvider:
+    def __init__(self) -> None:
+        self.a_started = asyncio.Event()
+        self.b_started = asyncio.Event()
+        self.b_release = asyncio.Event()
+
+    async def chat(self, **kwargs: Any) -> SimpleNamespace:
+        prompt = kwargs["messages"][0]["content"]
+        if "session-a" in prompt:
+            self.a_started.set()
+            await self.b_started.wait()
+            return SimpleNamespace(content='["topic-a"]')
+        if "session-b" in prompt:
+            self.b_started.set()
+            await self.b_release.wait()
+            return SimpleNamespace(content='["topic-b"]')
+        if "topic-a" in prompt:
+            return SimpleNamespace(content='["id-a"]')
+        if "topic-b" in prompt:
+            return SimpleNamespace(content='["id-b"]')
+        raise AssertionError(f"unexpected prompt: {prompt}")
+
+
+class _InterleavingRetriever:
+    async def retrieve(self, query: str, memory_types: Any = None) -> list[dict[str, Any]]:
+        return [{"id": f"id-{query[-1]}", "score": 0.9, "summary": query}]
+
+
+class _RecordingPublisher:
+    def __init__(self, trace: list[tuple[str, str]]) -> None:
+        self.events: list[MemoryWritten] = []
+        self.trace = trace
+        self.first_event = asyncio.Event()
+
+    async def fanout(self, event: object) -> None:
+        assert isinstance(event, MemoryWritten)
+        self.events.append(event)
+        self.trace.append(("event", event.session_key))
+        self.first_event.set()
+
+
+class _RecordingSuperseder:
+    def __init__(self, trace: list[tuple[str, str]]) -> None:
+        self.trace = trace
+
+    def supersede_batch(self, item_ids: list[str]) -> None:
+        self.trace.append(("supersede", item_ids[0]))
 
 
 class _StaticEmbedder:
@@ -114,6 +164,74 @@ def test_post_worker_handle_delegates_turn_ingested_event():
 
 
 @pytest.mark.asyncio
+async def test_post_worker_keeps_memory_written_scope_per_interleaved_run():
+    trace: list[tuple[str, str]] = []
+    provider = _InterleavingProvider()
+    publisher = _RecordingPublisher(trace)
+    memorizer = _RecordingSuperseder(trace)
+    worker = PostResponseMemoryWorker(
+        memorizer=cast(Any, memorizer),
+        retriever=cast(Any, _InterleavingRetriever()),
+        light_provider=cast(Any, provider),
+        light_model="test",
+        event_publisher=cast(Any, publisher),
+    )
+
+    task_a = asyncio.create_task(
+        worker.run(
+            user_msg="session-a 旧流程错了",
+            agent_response="收到",
+            tool_chain=[],
+            source_ref="source-a",
+            session_key="session-a",
+            channel="telegram",
+            chat_id="chat-a",
+        )
+    )
+    task_b = asyncio.create_task(
+        worker.run(
+            user_msg="session-b 旧流程错了",
+            agent_response="收到",
+            tool_chain=[],
+            source_ref="source-b",
+            session_key="session-b",
+            channel="cli",
+            chat_id="chat-b",
+        )
+    )
+
+    await provider.b_started.wait()
+    await publisher.first_event.wait()
+    assert publisher.events[0] == MemoryWritten(
+        session_key="session-a",
+        channel="telegram",
+        chat_id="chat-a",
+        source_ref="source-a",
+        action="supersede",
+        superseded_ids=["id-a"],
+    )
+    assert trace[:2] == [("supersede", "id-a"), ("event", "session-a")]
+
+    provider.b_release.set()
+    await asyncio.gather(task_a, task_b)
+
+    assert publisher.events[1] == MemoryWritten(
+        session_key="session-b",
+        channel="cli",
+        chat_id="chat-b",
+        source_ref="source-b",
+        action="supersede",
+        superseded_ids=["id-b"],
+    )
+    assert trace == [
+        ("supersede", "id-a"),
+        ("event", "session-a"),
+        ("supersede", "id-b"),
+        ("event", "session-b"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_post_worker_exposes_unexpected_storage_failure():
     worker = PostResponseMemoryWorker(
         memorizer=cast(Any, _DummyMemorizer()),
@@ -170,7 +288,7 @@ def test_build_procedure_rule_schema_infers_constraints_without_explicit_schema(
     assert "steam" in schema["mentioned_tools"]
 
 
-def test_collect_explicit_memorized_accepts_long_mixed_id():
+def test_collect_protected_memory_ids_accepts_long_mixed_id():
     worker = PostResponseMemoryWorker(
         memorizer=cast(Any, _DummyMemorizer()),
         retriever=cast(Any, _DummyRetriever([])),
@@ -188,12 +306,11 @@ def test_collect_explicit_memorized_accepts_long_mixed_id():
             ]
         }
     ]
-    summaries, protected = worker._collect_explicit_memorized(tool_chain)
-    assert summaries == ["规则A"]
+    protected = worker._collect_protected_memory_ids(tool_chain)
     assert "AbCDef12_34567890" in protected
 
 
-def test_collect_explicit_memorized_accepts_item_id_format():
+def test_collect_protected_memory_ids_accepts_item_id_format():
     worker = PostResponseMemoryWorker(
         memorizer=cast(Any, _DummyMemorizer()),
         retriever=cast(Any, _DummyRetriever([])),
@@ -211,9 +328,21 @@ def test_collect_explicit_memorized_accepts_item_id_format():
             ]
         }
     ]
-    summaries, protected = worker._collect_explicit_memorized(tool_chain)
-    assert summaries == ["规则B"]
+    protected = worker._collect_protected_memory_ids(tool_chain)
     assert "memu_12345" in protected
+
+
+@pytest.mark.parametrize("calls", [object(), [object()]])
+def test_collect_protected_memory_ids_rejects_invalid_call_shape(calls: object):
+    worker = PostResponseMemoryWorker(
+        memorizer=cast(Any, _DummyMemorizer()),
+        retriever=cast(Any, _DummyRetriever([])),
+        light_provider=cast(Any, _DummyProvider()),
+        light_model="test",
+    )
+
+    with pytest.raises(TypeError, match=r"tool_chain\[\]\.calls"):
+        worker._collect_protected_memory_ids([{"calls": calls}])
 
 
 def test_extract_invalidation_topics_skips_when_token_budget_exhausted():
@@ -230,6 +359,56 @@ def test_extract_invalidation_topics_skips_when_token_budget_exhausted():
     assert topics == []
     assert remain == 0
     assert provider.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_extract_invalidation_topics_exposes_provider_failure():
+    provider = SimpleNamespace(chat=AsyncMock(side_effect=RuntimeError("provider down")))
+    worker = PostResponseMemoryWorker(
+        memorizer=cast(Any, _DummyMemorizer()),
+        retriever=cast(Any, _DummyRetriever([])),
+        light_provider=cast(Any, provider),
+        light_model="test",
+    )
+
+    with pytest.raises(RuntimeError, match="provider down"):
+        await worker._extract_invalidation_topics("旧流程错了", token_budget=100)
+
+
+@pytest.mark.asyncio
+async def test_extract_invalidation_topics_exposes_invalid_json_schema():
+    provider = SimpleNamespace(
+        chat=AsyncMock(return_value=SimpleNamespace(content='{"topic": "流程"}'))
+    )
+    worker = PostResponseMemoryWorker(
+        memorizer=cast(Any, _DummyMemorizer()),
+        retriever=cast(Any, _DummyRetriever([])),
+        light_provider=cast(Any, provider),
+        light_model="test",
+    )
+
+    with pytest.raises(ValueError, match="JSON 数组"):
+        await worker._extract_invalidation_topics("旧流程错了", token_budget=100)
+
+
+@pytest.mark.asyncio
+async def test_check_invalidate_exposes_unknown_candidate_id():
+    provider = SimpleNamespace(
+        chat=AsyncMock(return_value=SimpleNamespace(content='["unknown"]'))
+    )
+    worker = PostResponseMemoryWorker(
+        memorizer=cast(Any, _DummyMemorizer()),
+        retriever=cast(Any, _DummyRetriever([])),
+        light_provider=cast(Any, provider),
+        light_model="test",
+    )
+
+    with pytest.raises(ValueError, match="未知候选 ID"):
+        await worker._check_invalidate(
+            "流程",
+            [{"id": "known", "summary": "旧流程"}],
+            token_budget=100,
+        )
 
 
 def test_merge_item_should_keep_procedure_metadata_consistent():

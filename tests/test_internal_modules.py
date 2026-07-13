@@ -200,9 +200,9 @@ async def test_post_response_worker_invalidation_paths():
     worker = PostResponseMemoryWorker(cast(Any, memorizer), cast(Any, retriever), cast(Any, provider), "lm")
 
     assert worker._consume_budget(10, 3) == (True, 7)
-    assert worker._collect_explicit_memorized(
+    assert worker._collect_protected_memory_ids(
         [{"calls": [{"name": "memorize", "arguments": {"summary": "规则A"}, "result": "已记住（new:AbCDef12_34567890）：规则A"}]}]
-    ) == (["规则A"], {"AbCDef12_34567890"})
+    ) == {"AbCDef12_34567890"}
 
     topics, remain = await worker._extract_invalidation_topics("你之前这个流程错了", 700)
     assert topics == ["topic"]
