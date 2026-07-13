@@ -19,6 +19,8 @@ from typing import Any, cast
 import math
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from memory2.store import MemoryStore2
 
 

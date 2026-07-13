@@ -252,8 +252,8 @@ async def test_session_trim_replaces_history_and_preserves_sequence_ids(
     _seed_message_embeddings(
         manager._store,
         [
-            *[message["id"] for message in session.messages],
-            *[message["id"] for message in other.messages],
+            *[cast(str, message["id"]) for message in session.messages],
+            *[cast(str, message["id"]) for message in other.messages],
         ],
     )
 
@@ -833,7 +833,10 @@ def test_session_get_history_truncates_long_tool_results_in_middle():
     ]
 
     history = session.get_history()
-    tool_content = next(m["content"] for m in history if m.get("role") == "tool")
+    tool_content = cast(
+        str,
+        next(m["content"] for m in history if m.get("role") == "tool"),
+    )
 
     assert tool_content.startswith("Total output lines: 1\n\nhead-")
     assert "chars truncated" in tool_content

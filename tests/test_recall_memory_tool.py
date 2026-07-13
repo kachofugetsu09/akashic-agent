@@ -21,7 +21,7 @@ from memory2.embedder import Embedder
 from memory2.retriever import Retriever
 from memory2.store import MemoryHit, MemoryStore2
 
-_MemoryHit: TypeAlias = dict[str, object]
+_MemoryHit: TypeAlias = MemoryHit
 _EmbeddingRow: TypeAlias = tuple[
     str,
     str,
@@ -418,6 +418,8 @@ async def test_retriever_returns_keyword_hits_when_vector_empty() -> None:
                 "id": "kw1",
                 "memory_type": "event",
                 "summary": "用户处理过支付问题",
+                "source_ref": "tg:keyword",
+                "happened_at": "2026-01-01T00:00:00+00:00",
                 "keyword_score": 1.0,
             }
         ],
@@ -427,7 +429,7 @@ async def test_retriever_returns_keyword_hits_when_vector_empty() -> None:
     hits = await retriever.retrieve("支付", top_k=5)
 
     assert [item["id"] for item in hits] == ["kw1"]
-    assert hits[0]["score"] == 1.0
+    assert hits[0].get("score") == 1.0
 
 
 @pytest.mark.asyncio
@@ -455,12 +457,16 @@ async def test_retriever_keeps_strong_vector_order_when_keyword_hits_are_low_ran
             "id": "vec1",
             "memory_type": "event",
             "summary": "高质量向量命中 1",
+            "source_ref": "tg:vector:1",
+            "happened_at": "2026-01-01T00:00:00+00:00",
             "score": 0.95,
         },
         {
             "id": "vec2",
             "memory_type": "event",
             "summary": "高质量向量命中 2",
+            "source_ref": "tg:vector:2",
+            "happened_at": "2026-01-01T00:00:00+00:00",
             "score": 0.9,
         },
     ]
@@ -469,6 +475,8 @@ async def test_retriever_keeps_strong_vector_order_when_keyword_hits_are_low_ran
             "id": f"kw{i}",
             "memory_type": "event",
             "summary": f"低排名关键词命中 {i}",
+            "source_ref": f"tg:keyword:{i}",
+            "happened_at": "2026-01-01T00:00:00+00:00",
             "keyword_score": 1.0,
         }
         for i in range(12)

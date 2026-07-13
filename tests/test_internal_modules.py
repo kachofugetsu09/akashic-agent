@@ -18,6 +18,7 @@ from core.memory.markdown import (
     _select_consolidation_window,
 )
 from memory2.post_response_worker import PostResponseMemoryWorker
+from memory2.store import MemoryHit
 
 
 class _Resp:
@@ -208,7 +209,17 @@ async def test_post_response_worker_invalidation_paths():
     assert topics == ["topic"]
 
     provider.chat = AsyncMock(return_value=_Resp('["x1"]'))
-    ids, remain = await worker._check_invalidate("topic", [{"id": "x1", "summary": "旧规则"}], remain)
+    candidates: list[MemoryHit] = [
+        {
+            "id": "x1",
+            "memory_type": "procedure",
+            "summary": "旧规则",
+            "source_ref": "turn:old",
+            "happened_at": "2025-01-01T00:00:00+00:00",
+            "score": 0.9,
+        }
+    ]
+    ids, remain = await worker._check_invalidate("topic", candidates, remain)
     assert ids == ["x1"]
 
 

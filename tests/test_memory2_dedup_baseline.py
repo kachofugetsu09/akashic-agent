@@ -8,7 +8,7 @@ import asyncio
 from typing import Any, cast
 
 from memory2.memorizer import Memorizer
-from memory2.rule_schema import procedure_rules_conflict
+from memory2.rule_schema import ProcedureRuleSchema, procedure_rules_conflict
 from memory2.store import MemoryStore2
 
 
@@ -50,16 +50,40 @@ def test_baseline_exact_hash_prevents_double_write(tmp_path):
 def test_baseline_procedure_rules_conflict_pure_logic():
     """[PASS] procedure_rules_conflict 函数正确识别工具方向对立。"""
     # 明确对立
-    new = {"required_tools": ["steam_mcp"], "forbidden_tools": ["web_search"], "mentioned_tools": ["steam_mcp", "web_search"]}
-    old = {"required_tools": ["web_search"], "forbidden_tools": ["steam_mcp"], "mentioned_tools": ["steam_mcp", "web_search"]}
+    new: ProcedureRuleSchema = {
+        "required_tools": ["steam_mcp"],
+        "forbidden_tools": ["web_search"],
+        "mentioned_tools": ["steam_mcp", "web_search"],
+    }
+    old: ProcedureRuleSchema = {
+        "required_tools": ["web_search"],
+        "forbidden_tools": ["steam_mcp"],
+        "mentioned_tools": ["steam_mcp", "web_search"],
+    }
     assert procedure_rules_conflict(new, old) is True
 
     # 同方向（都要求 steam_mcp）
-    new2 = {"required_tools": ["steam_mcp"], "forbidden_tools": [], "mentioned_tools": ["steam_mcp"]}
-    old2 = {"required_tools": ["steam_mcp"], "forbidden_tools": [], "mentioned_tools": ["steam_mcp"]}
+    new2: ProcedureRuleSchema = {
+        "required_tools": ["steam_mcp"],
+        "forbidden_tools": [],
+        "mentioned_tools": ["steam_mcp"],
+    }
+    old2: ProcedureRuleSchema = {
+        "required_tools": ["steam_mcp"],
+        "forbidden_tools": [],
+        "mentioned_tools": ["steam_mcp"],
+    }
     assert procedure_rules_conflict(new2, old2) is False
 
     # 无工具交集
-    new3 = {"required_tools": ["weather_skill"], "forbidden_tools": [], "mentioned_tools": ["weather_skill"]}
-    old3 = {"required_tools": ["steam_mcp"], "forbidden_tools": [], "mentioned_tools": ["steam_mcp"]}
+    new3: ProcedureRuleSchema = {
+        "required_tools": ["weather_skill"],
+        "forbidden_tools": [],
+        "mentioned_tools": ["weather_skill"],
+    }
+    old3: ProcedureRuleSchema = {
+        "required_tools": ["steam_mcp"],
+        "forbidden_tools": [],
+        "mentioned_tools": ["steam_mcp"],
+    }
     assert procedure_rules_conflict(new3, old3) is False

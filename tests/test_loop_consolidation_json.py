@@ -22,7 +22,10 @@ def test_parse_consolidation_payload_supports_fenced_json():
 
     assert result is not None
     assert result["history_entry"].startswith("[2026-03-09 12:00]")
-    assert result["pending_items"][0]["tag"] == "preference"
+    pending_items = result["pending_items"]
+    assert isinstance(pending_items, list)
+    assert isinstance(pending_items[0], dict)
+    assert pending_items[0].get("tag") == "preference"
 
 
 def test_parse_consolidation_payload_returns_none_for_non_object():

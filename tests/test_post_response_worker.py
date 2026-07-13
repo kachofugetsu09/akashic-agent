@@ -12,7 +12,7 @@ from memory2.rule_schema import (
     build_procedure_rule_schema,
     resolve_procedure_rule_schema,
 )
-from memory2.store import MemoryStore2
+from memory2.store import MemoryHit, MemoryStore2
 
 
 class _DummyProvider:
@@ -463,7 +463,16 @@ async def test_check_invalidate_exposes_unknown_candidate_id():
     with pytest.raises(ValueError, match="未知候选 ID"):
         await worker._check_invalidate(
             "流程",
-            [{"id": "known", "summary": "旧流程"}],
+            [
+                {
+                    "id": "known",
+                    "memory_type": "procedure",
+                    "summary": "旧流程",
+                    "source_ref": "turn:old",
+                    "happened_at": "2025-01-01T00:00:00+00:00",
+                    "score": 0.9,
+                }
+            ],
             token_budget=100,
         )
 
