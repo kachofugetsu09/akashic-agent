@@ -1430,3 +1430,16 @@
 - 测试新增：坏消息列、media/source_refs、tool group/calls 和非 OSError 媒体失败；Sensor 类型回归由既有测试覆盖。测试删除及原因：无。
 - 验证结果：Session/消息查询定向 `64 passed`，Sensor `4 passed`，修改后的 manager/sensor pyright `0 errors, 0 warnings`；本轮组合全量 `1914 passed in 25.76s`，全库 pyright `0 errors`，`git diff --check` 通过。
 - 残余风险：SessionStore 仍为 message lookup 和模型 history 共用同一稀疏 tool-chain 载荷；后续若要彻底消除可选字段，应先拆分两种公开读取协议，不能直接收紧共享存储 schema。
+
+### PR 检查点：测试契约与完整门禁
+
+- 范围：runtime、peer agent、memory2 和 I/O 测试夹具，以及 peer process 私有超时参数的类型契约。
+- 原问题：生产代码完成精确类型收窄后，测试仍把 `SimpleNamespace`、残缺 `MemoryHit` 和任意对象直接传入具体契约；生产 Pyright 已通过，但 CI 的测试配置仍有 85 个类型错误。
+- 为什么这样修改：正常数据补齐真实必填字段和精确 TypedDict；行为型 fake 只在测试注入边界集中转换；能使用真实轻量依赖时直接使用 `SessionStore`，不以 `Any` 掩盖类型缺口。
+- 不变量与拥有层：生产构造函数继续拥有具体依赖契约；测试夹具拥有 fake 与生产协议之间的显式适配；持久化命中样本必须符合 `MemoryHit`，不再依赖运行时碰巧未读取的缺失字段。
+- 主审修正：删除副手为毫秒级超时加入的 `cast(Any, 0.001)`，让 `_kill` 如实接受 `float` 秒；删除无意义的显式 `return None`；注册测试改用真实临时 `SessionStore`。
+- 能力变化：没有改变正常运行、错误处理或测试断言；仅让测试数据和 fake 明确满足已经建立的生产契约。
+- 性能变化：生产热路径无变化；测试使用的毫秒级超时保持不变。
+- 测试删除及原因：无。
+- 验证结果：`.venv/bin/pytest -q -W error tests/` 为 `1914 passed in 26.30s`；生产与测试 Pyright 均为 `0 errors, 0 warnings`；`git diff --check` 通过。前端在本检查点前已完成 `npm run typecheck`、`npm run lint` 和 `npm run build`，本批未修改前端文件。
+- 残余风险：peer agent 测试仍有集中式 fake 转换，这是测试替身与具体实现类型之间的明确边界；后续若生产改为 Protocol，可自然删除这些转换，本批不为测试便利扩大生产抽象。

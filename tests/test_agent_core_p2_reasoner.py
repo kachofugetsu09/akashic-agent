@@ -825,7 +825,7 @@ def test_get_history_since_consolidated_passes_session_cursor():
             media: list[str] | None = None,
             **kwargs: object,
         ) -> None:
-            return None
+            pass
 
     history = get_history_since_consolidated(Session(), 40)
 

@@ -255,7 +255,7 @@ class PeerProcessManager:
         del self._procs[name]
 
     @staticmethod
-    async def _kill(proc: asyncio.subprocess.Process, timeout_s: int) -> None:
+    async def _kill(proc: asyncio.subprocess.Process, timeout_s: float) -> None:
         """SIGTERM 后等待，超时则 SIGKILL 并再次 wait。"""
 
         if proc.returncode is not None:

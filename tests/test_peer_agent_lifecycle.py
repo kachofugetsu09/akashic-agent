@@ -3,13 +3,12 @@ import io
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, TypedDict, cast
+from typing import TypedDict, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 
-from bus.queue import MessageBus
 from agent.config_models import PeerAgentConfig
 from agent.peer_agent.card_resolver import (
     AgentCard,
@@ -24,6 +23,7 @@ from agent.peer_agent.process_manager import (
 )
 from agent.peer_agent.registry import PeerAgentRegistry
 from agent.peer_agent.tool import PeerAgentTool
+from bus.queue import MessageBus
 from core.net.http import HttpRequester
 
 
@@ -871,9 +871,7 @@ async def test_process_manager_spawn_timeout_releases_ownership(
 async def test_process_manager_kills_after_terminate_timeout() -> None:
     proc = _HangingProcess()
 
-    await PeerProcessManager._kill(
-        _as_process(proc), timeout_s=cast(Any, 0.001)
-    )
+    await PeerProcessManager._kill(_as_process(proc), timeout_s=0.001)
 
     assert proc.terminate_calls == 1
     assert proc.kill_calls == 1
