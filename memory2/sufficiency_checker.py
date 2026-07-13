@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from dataclasses import dataclass
 from typing import Any, TypedDict, cast
+
+from agent.provider import LLMResponse
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -22,16 +27,8 @@ class _ParsedSufficiency(TypedDict):
 
 
 def should_check_sufficiency(items: list[dict]) -> bool:
-    """触发条件：RETRIEVE 路径返回空结果，且没有 forced procedure。
-
-    有结果时不重查——分数过滤已在注入筛选阶段完成，
-    低分条目不会进入 selected_items，无需再做一次 LLM 质量判断。
-    """
-    if not items:
-        return True
-    if _has_forced_procedure(items):
-        return False
-    return False
+    """仅在检索没有结果时触发质检。"""
+    return not items
 
 
 class SufficiencyChecker:
@@ -54,11 +51,11 @@ class SufficiencyChecker:
         items: list[dict],
         context: str = "",
     ) -> SufficiencyResult:
-        # 1. 先构造 prompt 与 fail-open 默认结果。
+        # 1. 构造 prompt。
         started = time.perf_counter()
         prompt = self._build_prompt(query=query, items=items, context=context)
 
-        # 2. 再调用 LLM；异常时保留现有结果，不阻断主路径。
+        # 2. 模型边界失败时保留现有结果，并留下明确原因。
         try:
             response = await asyncio.wait_for(
                 self._llm_client.chat(
@@ -69,7 +66,9 @@ class SufficiencyChecker:
                 ),
                 timeout=self._timeout_s,
             )
-        except Exception:
+            content = self._response_content(response)
+        except Exception as exc:
+            logger.warning("memory2 sufficiency check failed: %s", exc)
             return self._result(
                 started=started,
                 is_sufficient=True,
@@ -77,8 +76,8 @@ class SufficiencyChecker:
                 refined_query=None,
             )
 
-        # 3. 最后解析输出；乱码时同样 fail-open。
-        parsed = self._parse_output(str(getattr(response, "content", response) or ""))
+        # 3. 解析模型输出；结构无效时不触发重查。
+        parsed = self._parse_output(content)
         if parsed is None:
             return self._result(
                 started=started,
@@ -87,6 +86,14 @@ class SufficiencyChecker:
                 refined_query=None,
             )
         return self._result(started=started, **parsed)
+
+    @staticmethod
+    def _response_content(response: object) -> str:
+        if isinstance(response, str):
+            return response
+        if not isinstance(response, LLMResponse):
+            raise TypeError("LLM response 必须是字符串或 LLMResponse")
+        return response.content or ""
 
     def _build_prompt(self, *, query: str, items: list[dict], context: str) -> str:
         context_block = f"\n补充上下文：\n{context.strip()}\n" if context.strip() else ""
@@ -177,12 +184,3 @@ class SufficiencyChecker:
             flags=re.IGNORECASE | re.DOTALL,
         )
         return match.group(1).strip() if match else ""
-
-
-def _has_forced_procedure(items: list[dict]) -> bool:
-    for item in items:
-        extra = item.get("extra_json")
-        if item.get("memory_type") == "procedure" and isinstance(extra, dict):
-            if str(extra.get("tool_requirement", "") or "").strip():
-                return True
-    return False

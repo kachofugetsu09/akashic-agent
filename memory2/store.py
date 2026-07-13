@@ -363,33 +363,33 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
     # ------------------------------------------------------------------
 
     def _migrate_existing_to_vec(self) -> None:
-        """启动时将 memory_items 中尚未同步到 vec_items 的 embedding 迁移过去。"""
+        """启动时迁移缺失的向量索引，失败时回滚本轮迁移。"""
         existing = {r[0] for r in self._db.execute("SELECT rowid FROM vec_items").fetchall()}
         rows = self._db.execute(
             "SELECT rowid, embedding FROM memory_items WHERE embedding IS NOT NULL"
         ).fetchall()
         migrated = 0
-        for rowid, emb_json in rows:
-            if rowid in existing:
-                continue
-            try:
+        _ = self._db.execute("BEGIN")
+        try:
+            for rowid, emb_json in rows:
+                if rowid in existing:
+                    continue
                 emb = _json_embedding(
                     emb_json,
                     context=f"memory item rowid {rowid} embedding",
                 )
                 if emb is None or len(emb) != self._vec_dim:
                     continue
-                self._db.execute(
+                _ = self._db.execute(
                     "INSERT INTO vec_items(rowid, embedding) VALUES (?, ?)",
                     (rowid, _emb_to_blob(emb)),
                 )
                 migrated += 1
-            except ValueError:
-                raise
-            except (OverflowError, sqlite3.Error, struct.error) as exc:
-                logger.debug("vec migrate skip rowid %s: %s", rowid, exc)
-        if migrated:
             self._db.commit()
+        except (ValueError, OverflowError, sqlite3.Error, struct.error):
+            self._db.rollback()
+            raise
+        if migrated:
             logger.info("sqlite-vec: 迁移了 %d 条历史 embedding", migrated)
 
     def _vec_insert(self, rowid: int, emb: list[float]) -> None:
@@ -598,7 +598,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         except Exception:
             try:
                 self._db.execute("ROLLBACK")
-            except Exception:
+            except sqlite3.Error:
                 pass
             raise
 
@@ -1652,7 +1652,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             )
             try:
                 self._db.execute("ROLLBACK")
-            except Exception:
+            except sqlite3.Error:
                 pass
             row = self._db.execute(
                 "SELECT memory_type FROM memory_items WHERE id=?", (item_id,)

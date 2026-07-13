@@ -2,7 +2,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from memory2.profile_extractor import ProfileFact, ProfileFactExtractor
+from memory2.profile_extractor import (
+    ExtractionStatus,
+    ProfileFact,
+    ProfileFactExtractor,
+)
 
 
 def _make_extractor(llm_response: str) -> ProfileFactExtractor:
@@ -67,6 +71,8 @@ async def test_extract_fails_open_on_malformed_output():
     extractor = _make_extractor("这是乱码")
     facts = await extractor.extract("我买了 Zigbee 网关")
     assert facts == []
+    assert facts.status is ExtractionStatus.DEGRADED
+    assert facts.reason == "parse_error"
 
 
 @pytest.mark.asyncio
@@ -76,6 +82,23 @@ async def test_extract_fails_open_on_llm_exception():
     extractor = ProfileFactExtractor(llm_client=client)
     facts = await extractor.extract("我买了 Zigbee 网关")
     assert facts == []
+    assert facts.status is ExtractionStatus.DEGRADED
+    assert facts.reason == "model_error"
+
+
+@pytest.mark.asyncio
+async def test_extract_does_not_retry_clause_fallback_after_model_failure():
+    client = MagicMock()
+    client.chat = AsyncMock(side_effect=RuntimeError("provider unavailable"))
+    extractor = ProfileFactExtractor(llm_client=client)
+
+    facts = await extractor.extract(
+        "USER: 我买了 Zigbee 网关。USER: 我还买了加湿器。"
+    )
+
+    assert facts == []
+    assert facts.status is ExtractionStatus.DEGRADED
+    assert client.chat.await_count == 1
 
 
 @pytest.mark.asyncio

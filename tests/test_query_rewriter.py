@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from memory2.query_rewriter import GateDecision, QueryRewriter
+from memory2.query_rewriter import GateDecision, QueryRewriter, RewriteStatus
 
 
 def _make_rewriter(llm_response: str) -> QueryRewriter:
@@ -70,6 +70,19 @@ async def test_decide_fails_open_on_llm_exception():
     assert result.needs_episodic is True
     assert result.episodic_query == "帮我搜代码"
     assert result.procedure_query == ""
+    assert result.status is RewriteStatus.DEGRADED
+    assert result.history_reason == "model_error"
+    assert result.procedure_reason == "model_error"
+
+
+@pytest.mark.asyncio
+async def test_decide_marks_malformed_output_as_degraded():
+    rewriter = _make_rewriter("这是乱码输出")
+
+    result = await rewriter.decide(user_msg="查一下", recent_history="")
+
+    assert result.status is RewriteStatus.DEGRADED
+    assert result.history_reason == "parse_error"
 
 
 @pytest.mark.asyncio
