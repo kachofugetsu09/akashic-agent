@@ -512,6 +512,12 @@ def test_session_store_reraises_non_capability_fts_errors() -> None:
         ("tool_chain", '{"call": "invalid"}', "message tool_chain"),
         ("extra", "", "message extra"),
         ("tool_chain", "", "message tool_chain"),
+        ("extra", '{"media": "path"}', "message media"),
+        ("extra", '{"media": null}', "message media"),
+        ("extra", '{"source_refs": ["bad"]}', "message source_refs"),
+        ("tool_chain", '[{"calls": null}]', "message tool_chain"),
+        ("tool_chain", '[null]', "message tool_chain"),
+        ("tool_chain", '[{"calls": [null]}]', "message tool_chain"),
     ],
 )
 def test_session_store_rejects_invalid_message_json(
@@ -577,6 +583,45 @@ def test_session_store_media_lookup_rejects_invalid_extra(
 
         with pytest.raises(ValueError, match="telegram:media:0"):
             store.media_path_exists(tmp_path / "path")
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    ("column", "payload", "field"),
+    [("role", "system", "message role"), ("content", None, "message content")],
+)
+def test_session_store_rejects_invalid_message_columns(
+    tmp_path: Path,
+    column: str,
+    payload: object,
+    field: str,
+) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    try:
+        store.persist_session(
+            "telegram:columns",
+            created_at="2026-07-13T00:00:00+00:00",
+            updated_at="2026-07-13T00:00:01+00:00",
+            last_consolidated=0,
+            metadata={},
+            messages=[
+                {
+                    "role": "user",
+                    "content": "消息",
+                    "timestamp": "2026-07-13T00:00:01+00:00",
+                    "extra": {},
+                }
+            ],
+        )
+        store._conn.execute(
+            f"UPDATE messages SET {column} = ? WHERE id = ?",
+            (payload, "telegram:columns:0"),
+        )
+        store._conn.commit()
+
+        with pytest.raises(ValueError, match=field):
+            store.fetch_session_messages("telegram:columns")
     finally:
         store.close()
 
@@ -794,6 +839,24 @@ def test_session_get_history_truncates_long_tool_results_in_middle():
     assert "chars truncated" in tool_content
     assert tool_content.endswith("-tail")
     assert len(tool_content) < len(long_result)
+
+
+def test_session_history_does_not_mask_non_oserror_media_read(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    image = tmp_path / "image.png"
+    image.write_bytes(b"image")
+
+    def fail_read(_path: Path) -> bytes:
+        raise ValueError("损坏的媒体读取状态")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read)
+    session = Session("cli:media")
+    session.add_message("user", "查看图片", media=[str(image)])
+
+    with pytest.raises(ValueError, match="损坏的媒体读取状态"):
+        session.get_history()
 
 
 @pytest.mark.asyncio

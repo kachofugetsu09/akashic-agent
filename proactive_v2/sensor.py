@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import cast
 
 from agent.prompting import is_context_frame
 from proactive_v2.config import ProactiveConfig
@@ -84,6 +85,7 @@ class Sensor:
                 continue
             if not message.get("proactive") or not message.get("content"):
                 continue
+            raw_source_refs = message.get("source_refs")
             results.append(
                 RecentProactiveMessage(
                     content=str(message["content"]),
@@ -91,7 +93,11 @@ class Sensor:
                     state_summary_tag=str(
                         message.get("state_summary_tag", "none") or "none"
                     ),
-                    source_refs=list(message.get("source_refs") or []),
+                    source_refs=(
+                        []
+                        if raw_source_refs is None
+                        else list(cast(list[object], raw_source_refs))
+                    ),
                 )
             )
             if len(results) >= n:

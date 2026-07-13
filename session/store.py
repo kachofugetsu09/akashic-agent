@@ -68,6 +68,27 @@ def _decode_message_extra(
         raise ValueError(
             f"message extra 不得覆盖消息列字段 ({fields}): {message_id}"
         )
+    media: object = extra_dict.get("media")
+    if "media" in extra_dict and (
+        not isinstance(media, list)
+        or not all(isinstance(item, str) for item in cast(list[object], media))
+    ):
+        raise ValueError(f"message media 必须是字符串数组: {message_id}")
+    source_refs: object = extra_dict.get("source_refs")
+    if "source_refs" in extra_dict and (
+        not isinstance(source_refs, list)
+        or not all(
+            isinstance(item, dict) for item in cast(list[object], source_refs)
+        )
+    ):
+        raise ValueError(f"message source_refs 必须是对象数组: {message_id}")
+    proactive = extra_dict.get("proactive")
+    if "proactive" in extra_dict and not isinstance(proactive, bool):
+        raise ValueError(f"message proactive 必须是布尔值: {message_id}")
+    for field in ("state_summary_tag", "reasoning_content"):
+        value = extra_dict.get(field)
+        if field in extra_dict and not isinstance(value, str):
+            raise ValueError(f"message {field} 必须是字符串: {message_id}")
     return extra_dict
 
 
@@ -84,6 +105,76 @@ def _decode_json_payload(
         return json.loads(fallback if raw is None else raw)
     except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
         raise ValueError(f"{field} JSON 损坏: {identifier}") from exc
+
+
+def _decode_message_tool_chain(
+    raw: str | bytes | bytearray,
+    message_id: str,
+) -> list[dict[str, object]]:
+    """解析并校验消息工具链的容器结构。"""
+
+    tool_chain = _decode_json_payload(
+        raw,
+        fallback="[]",
+        field="message tool_chain",
+        identifier=message_id,
+    )
+    if not isinstance(tool_chain, list):
+        raise ValueError(f"message tool_chain 必须是 JSON array: {message_id}")
+
+    # 1. 校验每个工具轮次和调用容器。
+    raw_groups = cast(list[object], tool_chain)
+    for group_index, raw_group in enumerate(raw_groups):
+        if not isinstance(raw_group, dict):
+            raise ValueError(
+                f"message tool_chain[{group_index}] 必须是 JSON object: {message_id}"
+            )
+        group = cast(dict[str, object], raw_group)
+        raw_calls = group.get("calls")
+        if not isinstance(raw_calls, list):
+            raise ValueError(
+                f"message tool_chain[{group_index}].calls 必须是 JSON array: {message_id}"
+            )
+        # 2. 校验调用字段；稀疏工具链仍可用于消息查询展示。
+        calls = cast(list[object], raw_calls)
+        for call_index, raw_call in enumerate(calls):
+            if not isinstance(raw_call, dict):
+                raise ValueError(
+                    "message tool_chain[{}].calls[{}] 必须是 JSON object: {}".format(
+                        group_index, call_index, message_id
+                    )
+                )
+            call = cast(dict[str, object], raw_call)
+            for field in ("call_id", "name"):
+                if field in call and not isinstance(call[field], str):
+                    raise ValueError(
+                        "message tool_chain[{}].calls[{}].{} 必须是字符串: {}".format(
+                            group_index, call_index, field, message_id
+                        )
+                    )
+            arguments = call.get("arguments")
+            if arguments is not None and not isinstance(arguments, dict):
+                raise ValueError(
+                    "message tool_chain[{}].calls[{}].arguments 必须是 JSON object: {}".format(
+                        group_index, call_index, message_id
+                    )
+                )
+            result = call.get("result")
+            if result is not None and not isinstance(result, str):
+                raise ValueError(
+                    "message tool_chain[{}].calls[{}].result 必须是字符串: {}".format(
+                        group_index, call_index, message_id
+                    )
+                )
+
+        # 3. 可选的展示字段若存在，也必须保持字符串契约。
+        for field in ("text", "reasoning_content"):
+            value = group.get(field)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(
+                    f"message tool_chain[{group_index}].{field} 必须是字符串: {message_id}"
+                )
+    return cast(list[dict[str, object]], tool_chain)
 
 
 class SessionStore:
@@ -1340,24 +1431,26 @@ class SessionStore:
         """校验并反序列化一行消息，拒绝损坏的 JSON 载荷。"""
 
         message_id = str(row["id"])
+        role = row["role"]
+        if role not in {"user", "assistant"}:
+            raise ValueError(f"message role 无效: {message_id}")
+        content = row["content"]
+        if not isinstance(content, str):
+            raise ValueError(f"message content 必须是字符串: {message_id}")
+        timestamp = row["ts"]
+        if not isinstance(timestamp, str):
+            raise ValueError(f"message timestamp 必须是字符串: {message_id}")
         message: dict[str, Any] = {
             "id": message_id,
             "session_key": row["session_key"],
             "seq": int(row["seq"]),
-            "role": row["role"],
-            "content": row["content"] or "",
-            "timestamp": row["ts"],
+            "role": role,
+            "content": content,
+            "timestamp": timestamp,
         }
         raw_tool_chain = row["tool_chain"]
         if raw_tool_chain is not None:
-            tool_chain = _decode_json_payload(
-                raw_tool_chain,
-                fallback="[]",
-                field="message tool_chain",
-                identifier=message_id,
-            )
-            if not isinstance(tool_chain, list):
-                raise ValueError(f"message tool_chain 必须是 JSON array: {message_id}")
+            tool_chain = _decode_message_tool_chain(raw_tool_chain, message_id)
             if tool_chain:
                 message["tool_chain"] = tool_chain
         extra_dict = _decode_message_extra(row["extra"], message_id)
