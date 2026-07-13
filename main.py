@@ -15,6 +15,37 @@ import sys
 from contextlib import suppress
 from pathlib import Path
 
+
+def _run_lightweight_setup_command() -> bool:
+    """在加载 Agent runtime 依赖前分发纯配置命令。"""
+    args = sys.argv[1:]
+    if not args or args[0] != "setup-main":
+        return False
+    config_path = "config.toml"
+    if "--config" in args:
+        index = args.index("--config")
+        if index + 1 >= len(args):
+            raise SystemExit("参数 --config 缺少值")
+        config_path = args[index + 1]
+    import click
+
+    from bootstrap.setup_main import run_main_model_setup
+
+    try:
+        run_main_model_setup(Path(config_path))
+    except click.ClickException as exc:
+        exc.show()
+        raise SystemExit(exc.exit_code) from exc
+    except click.Abort as exc:
+        click.echo("已取消。", err=True)
+        raise SystemExit(1) from exc
+    return True
+
+
+if __name__ == "__main__" and _run_lightweight_setup_command():
+    raise SystemExit(0)
+
+
 from agent.config import Config, resolve_cli_socket_endpoint
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
 from agent.plugins.install import (
