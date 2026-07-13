@@ -1278,3 +1278,40 @@
 - 测试删除及原因：无。
 - 验证结果：定向 `80 passed`；真实配置加载通过；修改范围 pyright `0 errors`；组合全量 `1864 passed in 25.44s`，`git diff --check` 通过。
 - 残余风险：历史 loader 仍存在若干 `str()`/`int()` 兼容转换；本批只修复能导致配置含义翻转的布尔边界，避免无真实迁移证据地全面收紧格式。
+
+### `1b3f36bb` `fix(memory2): isolate post-response run context`
+
+- 范围：回复后记忆废弃的转次上下文、memorize 结果保护和模型 JSON 响应边界。
+- 原问题：worker 把 session/channel/chat 保存在实例可变字段，并发 `run()` 会把 A 转次的 `MemoryWritten` 标成 B 的 scope；provider 失败、非数组 JSON 和未知候选 ID 又被当成“无需废弃”静默略过。
+- 为什么这样修改：每次执行构造冻结 `_RunContext` 并显式传递；模型响应只接受非空字符串数组，候选 ID 必须来自当前召回集。
+- 不变量与拥有层：单转次 scope 由 `_RunContext` 拥有；post-response worker 只校验它真正消费的嵌套 calls/result 和模型输出，不重复校验 memorize 已执行成功的入参。
+- 主审修正：删除副手新增但无下游用途的 summary 收集与参数校验；补上真实 ingest 内容可到达的 `calls`/call 结构边界，并删除只记录后原样重抛的宽泛 catch。
+- 能力变化：并发转次不再串 scope；坏模型响应和 provider 错误明确失败，不会伪装成合法空结果。正常 supersede 阈值、召回和事件投递不变。
+- 性能变化：正则改为模块级复用，删除无用 summary 处理；模型和存储调用次数不变，不声称端到端提速。
+- 测试新增：两转次真实交错执行、provider 失败、非法 JSON schema、未知候选 ID 和嵌套 call 结构。测试删除及原因：无。
+- 验证结果：定向 `50 passed`，修改生产文件 pyright `0 errors`（25 个既有动态 dict warning），组合全量 `1880 passed in 24.19s`，`git diff --check` 通过。
+- 残余风险：`Retriever` 仍以宽泛 dict 暴露候选结构；本批信任该内部 owner，没有在 worker 里再写一层重复 schema。
+
+### `62b9a4ff` `refactor(bootstrap): tighten runtime config contracts`
+
+- 范围：核心工具注册、AgentLoop 依赖装配、插件阶段检查和 CoreRuntime 启停。
+- 原问题：已经由 `Config` 构造边界保证的 `wiring`/`multimodal`/`vl_model` 仍在下游使用 `getattr(..., default)`；模块检查会在 `getattr` 默认表达式中无条件构造未使用的 outbound port。
+- 为什么这样修改：边界后直接读取 typed config 和同仓库构造不变量；对真正可选的 plugin/spawn hook 仍保留动态边界处理。
+- 不变量与拥有层：TOML loader/`Config` 拥有配置完整性；`AgentLoop`/pipeline 构造器拥有检查阶段需要的 context/session/outbound 字段；外部传入的 session store 仍由调用方关闭。
+- 能力与性能变化：toolset 顺序、MCP fallback、VL 能力和插件热重载不变；删除了每次检查时的一个无用对象分配，不宣称可测端到端收益。
+- 测试新增/调整：外部 session store 在注册失败后保持开启；历史 `SimpleNamespace` 配置替身改为真实 `Config`，runtime close 使用真实 `SessionManager`。测试删除及原因：无。
+- 验证结果：定向 `90 passed`，修改生产文件 pyright `0 errors`（24 个既有动态插件/私有资源 warning），组合全量 `1880 passed in 24.19s`，`git diff --check` 通过。
+- 残余风险：同步构造期自建 session store 后若后续注册失败，当前没有可等待异步 `MemoryRuntime.aclose()` 的完整 rollback 协议；未伪造后台清理或同步 mock 来掩盖该 ownership 缺口。
+
+### `3df29e9f` `fix(proactive): preserve lifecycle cleanup failures`
+
+- 范围：proactive lifecycle 动态模块编译边界、启动失败回滚和逆序停止。
+- 原问题：动态字段与 hook 在每次运行时重复 `getattr`；rollback 只记录并丢弃错误，stop 只保留第一个 `Exception`；调用方取消或 stopper 自取消会截断后续资源清理。
+- 为什么这样修改：builder 一次性校验并绑定 slot/依赖/run/start/stop；每个 cleanup 在独立 task 中完成，最后按原始顺序重抛单错误或聚合多错误。
+- 不变量与拥有层：`ProactiveLifecycleBuilder` 拥有动态模块结构边界；`_CompiledModule` 拥有编译后不变契约；`CompiledProactiveLifecycle` 拥有启停顺序、清理完整性和错误传播。
+- 主审修正：删除副手只为复述 `_CompiledModule` 形状而新增的 36 行 Protocol，直接使用唯一编译类；保留有真实 loop 取消路径的 shield 清理，没有为缩短代码犠牲资源完整性。
+- 能力变化：启动失败会逆序完成全部 rollback；stop 会尝试所有模块；多个清理失败和取消不再相互覆盖。拓扑、wildcard collect、执行顺序和热重载 snapshot 语义不变。
+- 性能变化：正常停止为每个 stopper 增加一个短生命 task，这是取消安全成本；运行热路径改为使用已绑定 runner，不增加模块执行次数。
+- 测试新增：启动与 rollback 多错误顺序、stopper 自取消、外部取消后仍完成全部清理，以及坏动态模块在编译边界失败。测试删除及原因：无。
+- 验证结果：定向 `42 passed`，修改文件 pyright `0 errors, 0 warnings`，组合全量 `1880 passed in 24.19s`，`git diff --check` 通过。
+- 残余风险：多清理失败现以 `BaseExceptionGroup` 暴露；这是为了不丢错误的明确契约变化，上层当前不吞该异常，会把真实关闭失败继续传给 runtime owner。
