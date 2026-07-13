@@ -1353,3 +1353,41 @@
 - 测试新增：入站确认失败清理、memory runtime 优先级和既有 deferred 可见性回归。测试删除及原因：无。
 - 验证结果：相关定向 `76 passed`，新增精确契约文件 pyright `0 errors, 0 warnings`；三项组合全量 `1888 passed in 25.94s`，`git diff --check` 通过。
 - 残余风险：passive/looping 两个历史大文件仍有大量宽泛消息 dict 类型告警；需按调用链分批收窄，不能用一次全文件类型改写冒险改变热重载、重试和中断语义。
+
+### `081e427a` `fix(loop): preserve turn shutdown lifecycle`
+
+- 范围：AgentLoop 入站 turn 的任务所有权、运行时取消、主动停止和消息确认。
+- 原问题：主循环取消时可能把取消当作普通子任务结束；`stop()` 不会终止仍在执行的 turn；确认消息失败与任务状态清理之间缺少统一生命周期顺序。
+- 为什么这样修改：由 AgentLoop 显式持有当前 turn task；把单轮执行抽为明确协程；运行时取消继续向上传播；停止时取消并等待当前 turn；确认操作使用 shield 完成边界收尾。
+- 不变量与拥有层：AgentLoop 拥有当前 turn 的创建、取消与清理；MessageBus 拥有入站确认结果；取消不是可恢复业务错误，不转换为空结果或普通日志。
+- 能力变化：正常串行 turn、热重载和入站确认语义不变；服务停止或 runtime 取消不再遗留后台 turn；确认失败仍 fail-loud。
+- 性能变化：正常 turn 不增加模型或工具调用；仅停止路径增加一次必要的任务等待，不声明提速。
+- 测试新增：runtime 取消传播、停止取消活动 turn、确认失败后的生命周期清理。测试删除及原因：无。
+- 验证结果：副手 worktree 全量 `1891 passed`；合并主审后的组合全量见本轮末项，`git diff --check` 通过。
+- 残余风险：AgentLoop 历史消息 payload 仍有宽泛 dict 类型；本批只修复可观察的取消与资源所有权，不扩大为全文件类型迁移。
+
+### `914f799b` `refactor(runtime): enforce tool discovery contracts`
+
+- 范围：runtime service 协议、tool discovery JSON 边界、deferred 工具目录和默认依赖工厂。
+- 原问题：tool search 对坏 JSON、非 object 和坏工具名以 warning 加空结果降级；部分内部 service 仍以宽泛对象传递；副手首版又加入了没有真实违反路径的容量校验。
+- 为什么这样修改：在 tool_search 的外部 JSON 边界严格解析；成功响应结构损坏直接抛错；边界后使用精确 SessionLike、TurnRunResult 和 AgentLoopRunner 协议；删除无法由生产构造路径触发的重复容量检查。
+- 不变量与拥有层：tool_search parser 拥有模型/工具 JSON schema；ToolRegistry 拥有 deferred 目录；typed runtime service 拥有内部字段完整性，调用方不再二次怀疑。
+- 主审修正：拒绝副手以“更稳健”为由增加的默认容量检查；把 warning + 空数组改为携带上下文的 fail-loud，并保留当前 `unlocked` 与已存在 legacy `matched` 两种真实协议。
+- 能力变化：合法工具发现和确定性去重不变；损坏的成功响应不再伪装成“没有匹配工具”。
+- 性能变化：非性能提交；删除重复校验和动态对象路径，不声明端到端收益。
+- 测试新增/调整：坏 JSON、非对象、坏数组、坏工具名、当前与 legacy 字段解析。测试删除及原因：删除仅覆盖不可达容量状态的四项测试。
+- 验证结果：定向 `40 passed`，修改范围 pyright `0 errors, 0 warnings`；组合全量见本轮末项。
+- 残余风险：legacy `matched` 仍为已存在的真实兼容输入；待上游协议正式移除后才能安全删除，当前不假设其已不可达。
+
+### `355d90f9` `fix(memory2): enforce procedure metadata contracts`
+
+- 范围：procedure 元数据解析、记忆合并事务、检索候选分数和 post-response 候选类型。
+- 原问题：坏 steps/tool_requirement/rule_schema 会被空数组、字符串化或过滤掩盖；Memorizer 越过 Store 私有锁和连接读取元数据；content-hash 冲突时旧实现会退休原记录并新建缺字段记录；多个模块重复实现 score fallback。
+- 为什么这样修改：在持久化元数据的消费边界集中严格解析；Store 提供合并元数据公共 API 并独占事务和 content hash；冲突回滚且明确失败；MemoryHit 分数由 Store 契约统一读取。
+- 不变量与拥有层：MemoryStore2 拥有 SQLite、JSON、content hash 和向量索引事务；Memorizer 拥有 procedure 合并语义；rule schema parser 只在外部或持久化边界校验，内部 TypedDict 不重复防御。
+- 主审修正：副手首版增加约 293 行并在内部 schema 上重复校验，还把两项全库 pyright error 误报为既有问题；主线删除不可达检查，修复类型错误，集中 score owner，并保留真实可达的损坏持久化与 hash 冲突路径。
+- 能力变化：正常保存、召回、procedure merge 和 tag 重建语义不变；损坏元数据立即暴露；合并 hash 冲突不再静默丢失 source、extra、时间等字段。
+- 性能变化：合并元数据改为一次 Store 查询；候选分数不再在三处重复解析。数据库和模型调用数量没有新增，不声明端到端提速。
+- 测试新增：四类坏 procedure 元数据、损坏持久化 steps、content-hash 冲突原子回滚。测试删除及原因：无。
+- 验证结果：Memory 定向 `81 passed`；修改范围 pyright `0 errors`（15 个既有动态 provider/tool-chain warning）；三项组合全量 `1899 passed in 25.37s`，全库 pyright `0 errors`，`git diff --check` 通过。
+- 残余风险：post-response tool chain 仍来自动态模型/工具 payload，存在既有宽泛 dict warning；应在其唯一输入边界单独建 schema，不能在每个消费函数重复检查。
