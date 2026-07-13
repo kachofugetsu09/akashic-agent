@@ -714,8 +714,8 @@ def test_init_workspace_creates_expected_assets(tmp_path):
 
     assert config_path.exists()
     config_text = config_path.read_text(encoding="utf-8")
-    assert "multimodal = false" in config_text
-    assert "[llm.vl]" in config_text
+    assert 'input_modalities = ["text"]' in config_text
+    assert "[llm.runtimes.qwen_vl]" in config_text
     assert 'model = "qwen-vl-plus"' in config_text
     assert "[channels.chat]" in config_text
     assert "port = 6322" in config_text

@@ -27,6 +27,8 @@ _MANAGED_RUNTIME_KEYS = {
     "reasoning_effort",
     "enable_thinking",
     "context_window",
+    "max_context_window",
+    "effective_context_percent",
     "max_output_tokens",
     "input_modalities",
     "use_responses_lite",
@@ -83,6 +85,10 @@ def patch_main_model_config(original: str, answers: WizardAnswers) -> str:
         "model": _toml_string(answers.model),
         "base_url": _toml_string(answers.base_url),
         "context_window": str(answers.context_window),
+        "max_context_window": str(
+            answers.max_context_window or answers.context_window
+        ),
+        "effective_context_percent": str(answers.effective_context_percent),
         "max_output_tokens": str(answers.max_output_tokens),
         "input_modalities": json.dumps(modalities, ensure_ascii=False),
     }

@@ -74,6 +74,7 @@ def _api_answers() -> WizardAnswers:
         auth_id="main_default",
         base_url="https://new.example/v1",
         context_window=64_000,
+        max_context_window=128_000,
         max_output_tokens=8192,
         memory_window=40,
     )
@@ -88,6 +89,7 @@ def test_patch_main_preserves_non_main_config_and_comments() -> None:
     assert parsed["llm"]["agent"] == "agent"
     assert parsed["llm"]["vl"] == "vl"
     assert parsed["llm"]["runtimes"]["api_main"]["model"] == "new-main"
+    assert parsed["llm"]["runtimes"]["api_main"]["max_context_window"] == 128_000
     assert parsed["agent"]["context"]["memory_window"] == 40
     assert parsed["agent"]["max_tokens"] == 777
     assert "# fast 注释必须原样保留" in updated
@@ -153,6 +155,9 @@ def test_codex_phase_reuses_existing_auth_by_default(
         supported_reasoning_efforts=(),
         default_reasoning_effort="",
         context_window=128_000,
+        max_context_window=1_000_000,
+        max_output_tokens=32_768,
+        effective_context_percent=0.95,
         input_modalities=("text",),
         use_responses_lite=False,
         supports_parallel_tool_calls=True,
@@ -189,4 +194,7 @@ def test_codex_phase_reuses_existing_auth_by_default(
     assert login_started is False
     assert answers.model == "gpt-test"
     assert answers.context_window == 128_000
+    assert answers.max_context_window == 1_000_000
+    assert answers.effective_context_percent == 0.95
+    assert answers.max_output_tokens == 4096
     assert answers.reasoning_summary == "auto"

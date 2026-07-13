@@ -1363,6 +1363,7 @@ class DefaultReasoner(Reasoner):
                 max_tokens=self._llm_config.max_tokens,
                 tool_choice="auto",
                 on_content_delta=on_content_delta,
+                cache_namespace=tool_event_session_key,
             )
             react_usages.append(response.usage or ModelUsage())
             if on_content_delta is not None and response.content:
@@ -1826,6 +1827,7 @@ class DefaultReasoner(Reasoner):
                     model=self._llm_config.model,
                     max_tokens=self._llm_config.max_tokens,
                     on_content_delta=on_content_delta,
+                    cache_namespace=tool_event_session_key,
                 )
                 react_usages.append(retry_response.usage or ModelUsage())
                 if retry_response.cache_prompt_tokens is not None:

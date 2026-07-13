@@ -40,6 +40,8 @@ class WizardAnswers:
     auth_id: str = ""
     reasoning_effort: str = ""
     context_window: int = 0
+    max_context_window: int = 0
+    effective_context_percent: float = 0.9
     max_output_tokens: int = 8192
     memory_window: int = 40
     enable_thinking: bool = False
@@ -52,11 +54,15 @@ class WizardAnswers:
     vl_base_url: str = ""
     vl_auth_id: str = ""
     vl_provider: str = "openai"
+    vl_context_window: int = 0
+    vl_max_output_tokens: int = 0
     fast_model: str = ""
     fast_api_key: str = ""
     fast_base_url: str = ""
     fast_auth_id: str = ""
     fast_provider: str = "openai"
+    fast_context_window: int = 0
+    fast_max_output_tokens: int = 0
     tg_token: str = ""
     tg_allow_from: list[str] = field(default_factory=_empty_str_list)
     proactive_enabled: bool = False
@@ -285,13 +291,16 @@ def _phase_main_llm(
     else:
         _phase_api_key_llm(a)
 
-    from agent.model_runtime.context_policy import recommended_memory_window
+    from agent.model_runtime.context_policy import recommended_context_settings
 
-    suggested = recommended_memory_window(a.context_window)
+    suggested = recommended_context_settings(
+        a.context_window,
+        a.effective_context_percent,
+    )
     a.memory_window = (
-        click.prompt("历史消息窗口", type=int, default=suggested)
+        click.prompt("历史消息窗口", type=int, default=suggested.memory_window)
         if prompt_memory_window
-        else suggested
+        else suggested.memory_window
     )
     if a.memory_window <= 0:
         raise click.BadParameter("历史消息窗口必须大于 0")
@@ -313,8 +322,18 @@ def _phase_api_key_llm(a: WizardAnswers) -> None:
         click.prompt("推理强度", default="medium") if a.enable_thinking else ""
     )
     a.context_window = click.prompt("上下文大小（tokens）", type=int, default=64000)
+    a.max_context_window = a.context_window
     if a.context_window <= 0:
         raise click.BadParameter("上下文大小必须大于 0")
+    from agent.model_runtime.context_policy import recommended_output_reserve
+
+    a.max_output_tokens = click.prompt(
+        "最大输出 tokens",
+        type=click.IntRange(min=1),
+        default=recommended_output_reserve(a.context_window),
+    )
+    if a.max_output_tokens <= 0:
+        raise click.BadParameter("最大输出 tokens 必须大于 0")
     a.multimodal = click.confirm("主模型原生支持图片输入？", default=False)
 
 
@@ -368,8 +387,22 @@ def _phase_codex_llm(
         a.reasoning_effort = click.prompt(
             "推理强度", type=click.Choice(list(efforts)), default=default_effort
         )
+    max_context_window = capabilities.max_context_window or capabilities.context_window
     a.context_window = click.prompt(
-        "上下文大小（tokens）", type=int, default=capabilities.context_window
+        "上下文大小（tokens）",
+        type=click.IntRange(min=1, max=max_context_window),
+        default=capabilities.context_window,
+    )
+    a.max_context_window = max_context_window
+    a.effective_context_percent = capabilities.effective_context_percent
+    from agent.model_runtime.context_policy import recommended_output_reserve
+
+    a.max_output_tokens = min(
+        capabilities.max_output_tokens,
+        recommended_output_reserve(
+            a.context_window,
+            a.effective_context_percent,
+        ),
     )
     detected_image = "image" in capabilities.input_modalities
     if not selected.input_modalities_known:
@@ -386,6 +419,7 @@ def _phase_codex_manual(a: WizardAnswers) -> None:
     a.reasoning_effort = click.prompt("推理强度", default="medium")
     a.reasoning_summary = "auto"
     a.context_window = click.prompt("上下文大小（tokens）", type=int)
+    a.max_context_window = a.context_window
     a.max_output_tokens = click.prompt("最大输出 tokens", type=int, default=8192)
     a.multimodal = click.confirm("主模型支持图片输入？", default=False)
 
@@ -409,6 +443,16 @@ def _phase_vl_model(a: WizardAnswers) -> None:
             show_default=False,
         ) or a.api_key
     a.vl_auth_id = "vl_default"
+    a.vl_context_window = click.prompt(
+        "视觉模型上下文大小（tokens）",
+        type=click.IntRange(min=1),
+        default=a.context_window,
+    )
+    a.vl_max_output_tokens = click.prompt(
+        "视觉模型最大输出 tokens",
+        type=click.IntRange(min=1),
+        default=min(a.max_output_tokens, 8192),
+    )
 
 
 def _phase_fast_model(a: WizardAnswers) -> None:
@@ -434,6 +478,16 @@ def _phase_fast_model(a: WizardAnswers) -> None:
             show_default=False,
         ) or a.api_key
     a.fast_auth_id = "fast_default"
+    a.fast_context_window = click.prompt(
+        "轻量模型上下文大小（tokens）",
+        type=click.IntRange(min=1),
+        default=min(a.context_window, 128_000),
+    )
+    a.fast_max_output_tokens = click.prompt(
+        "轻量模型最大输出 tokens",
+        type=click.IntRange(min=1),
+        default=min(a.max_output_tokens, 4096),
+    )
 
 
 def _phase_telegram(a: WizardAnswers) -> None:
@@ -802,6 +856,8 @@ def _render_llm(a: WizardAnswers) -> str:
         lines.append("enable_thinking = true")
     if a.reasoning_effort:
         lines.append(f'reasoning_effort = "{a.reasoning_effort}"')
+    if a.effective_context_percent != 0.9:
+        lines.append(f"effective_context_percent = {a.effective_context_percent}")
     if a.use_responses_lite:
         lines.append("use_responses_lite = true")
     if not a.supports_parallel_tool_calls:
@@ -810,6 +866,7 @@ def _render_llm(a: WizardAnswers) -> str:
         lines.append(f'reasoning_summary = "{a.reasoning_summary}"')
     lines.extend([
         f"context_window = {a.context_window}",
+        f"max_context_window = {a.max_context_window or a.context_window}",
         f"max_output_tokens = {a.max_output_tokens}",
         f"input_modalities = {main_modalities}",
         "",
@@ -823,8 +880,9 @@ def _render_llm(a: WizardAnswers) -> str:
             f'auth = "{a.fast_auth_id}"',
             f'model = "{a.fast_model}"',
             f'base_url = "{a.fast_base_url}"',
-            f"context_window = {a.context_window}",
-            f"max_output_tokens = {a.max_output_tokens}",
+            f"context_window = {a.fast_context_window or a.context_window}",
+            f"max_context_window = {a.fast_context_window or a.context_window}",
+            f"max_output_tokens = {a.fast_max_output_tokens or a.max_output_tokens}",
             'input_modalities = ["text"]',
             "",
         ])
@@ -836,8 +894,9 @@ def _render_llm(a: WizardAnswers) -> str:
             f'auth = "{a.vl_auth_id}"',
             f'model = "{a.vl_model}"',
             f'base_url = "{a.vl_base_url}"',
-            f"context_window = {a.context_window}",
-            f"max_output_tokens = {a.max_output_tokens}",
+            f"context_window = {a.vl_context_window or a.context_window}",
+            f"max_context_window = {a.vl_context_window or a.context_window}",
+            f"max_output_tokens = {a.vl_max_output_tokens or a.max_output_tokens}",
             'input_modalities = ["text", "image"]',
             "",
         ])

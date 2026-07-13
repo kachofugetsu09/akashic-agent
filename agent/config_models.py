@@ -97,6 +97,7 @@ class ModelRuntimeConfig:
     base_url: str = ""
     reasoning_effort: str = ""
     context_window: int = 0
+    max_context_window: int | None = None
     max_output_tokens: int = 8192
     input_modalities: tuple[str, ...] = ("text",)
     effective_context_percent: float = 0.9
@@ -111,6 +112,13 @@ class ModelRuntimeConfig:
             raise ValueError(f"Codex runtime {self.runtime_id} 必须配置 auth")
         if self.context_window <= 0:
             raise ValueError(f"runtime {self.runtime_id} 的 context_window 必须大于 0")
+        if (
+            self.max_context_window is not None
+            and self.max_context_window < self.context_window
+        ):
+            raise ValueError(
+                f"runtime {self.runtime_id} 的 max_context_window 不能小于 context_window"
+            )
         if self.max_output_tokens <= 0:
             raise ValueError(f"runtime {self.runtime_id} 的 max_output_tokens 必须大于 0")
         if "text" not in self.input_modalities:
@@ -118,6 +126,12 @@ class ModelRuntimeConfig:
         if not 0 < self.effective_context_percent <= 1:
             raise ValueError(
                 f"runtime {self.runtime_id} 的 effective_context_percent 必须在 (0, 1] 内"
+            )
+        if self.max_output_tokens >= int(
+            self.context_window * self.effective_context_percent
+        ):
+            raise ValueError(
+                f"runtime {self.runtime_id} 的 max_output_tokens 必须小于有效上下文"
             )
 
 

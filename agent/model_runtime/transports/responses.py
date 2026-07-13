@@ -17,6 +17,7 @@ from agent.model_runtime.auth.codex import (
 from agent.model_runtime.errors import (
     AuthenticationError,
     ContextWindowError,
+    QuotaError,
     RateLimitError,
     TransportError,
 )
@@ -101,6 +102,11 @@ class CodexResponsesTransport:
             if status_code == 401:
                 raise AuthenticationError("Codex 请求认证失败") from exc
             if status_code == 429:
+                if any(
+                    marker in error_text
+                    for marker in ("insufficient_quota", "quota exceeded", "billing")
+                ):
+                    raise QuotaError("Codex 账号额度不足") from exc
                 raise RateLimitError("Codex 请求被限流") from exc
             if status_code == 400 and any(
                 marker in error_text
@@ -129,6 +135,14 @@ class CodexResponsesTransport:
             "model": request.model,
             "instructions": instructions,
             "input": messages,
+            "extra_body": {
+                "client_metadata": {
+                    "x-codex-installation-id": self.installation_id,
+                    "session-id": self.session_id,
+                    "thread-id": self.thread_id,
+                    "x-codex-window-id": self.window_id,
+                }
+            },
             "tool_choice": tool_choice,
             "parallel_tool_calls": (
                 self.supports_parallel_tool_calls and not self.use_responses_lite
@@ -173,7 +187,20 @@ class CodexResponsesTransport:
                 content.append(delta)
                 if request.on_delta:
                     await request.on_delta({"content_delta": delta})
+            elif event_type == "response.output_text.done":
+                done_text = _field(event, "text")
+                current = "".join(content)
+                if isinstance(done_text, str) and done_text.startswith(current):
+                    suffix = done_text[len(current) :]
+                    if suffix:
+                        content.append(suffix)
+                        if request.on_delta:
+                            await request.on_delta({"content_delta": suffix})
             elif event_type == "response.reasoning_summary_text.delta" and isinstance(delta, str):
+                thinking.append(delta)
+                if request.on_delta:
+                    await request.on_delta({"thinking_delta": delta})
+            elif event_type == "response.reasoning_text.delta" and isinstance(delta, str):
                 thinking.append(delta)
                 if request.on_delta:
                     await request.on_delta({"thinking_delta": delta})
@@ -404,9 +431,15 @@ def _raise_stream_error(error: Any) -> None:
     message = str(_field(error, "message") or error or "未知错误")
     if code in {"context_length_exceeded", "context_window_exceeded"}:
         raise ContextWindowError(f"Codex 请求超过上下文窗口: {message}")
-    if code in {"rate_limit_exceeded", "rate_limit_error", "insufficient_quota"}:
+    if code in {"insufficient_quota", "usage_not_included"}:
+        raise QuotaError(f"Codex 账号额度不足: {message}")
+    if code in {"rate_limit_exceeded", "rate_limit_error"}:
         raise RateLimitError(f"Codex 请求受限: {message}")
-    raise TransportError(f"Codex Responses 未完成 code={code or '-'}: {message}")
+    if code in {"invalid_prompt", "bio_policy", "cyber_policy", "policy_violation"}:
+        raise TransportError(f"Codex Responses 请求被拒绝 code={code}: {message}")
+    raise TransportError(
+        f"Codex Responses 暂时失败 code={code or '-'}: {message}"
+    )
 
 
 def _normalize_effort(value: str) -> str:

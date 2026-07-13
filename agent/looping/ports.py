@@ -42,8 +42,7 @@ class MemoryConfig:
     @property
     def keep_count(self) -> int:
         """上下文携带条数，也是 consolidation 后 session 保留条数。"""
-        aligned_window = max(4, ((max(1, self.window) + 3) // 4) * 4)
-        return aligned_window // 2
+        return max(2, ((max(1, self.window) + 1) // 2) * 2)
 
 
 # ── 服务对象分组（仅放对象，不放配置参数）──────────────────────────────────────

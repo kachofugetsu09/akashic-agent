@@ -30,6 +30,7 @@ from agent.config_models import (
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.config_loader import ProactiveConfigError, load_proactive_config
 from agent.model_runtime.auth import ApiKeyAuthDriver, CredentialStore
+from agent.model_runtime.context_policy import recommended_memory_window
 from agent.model_runtime.registry import SUPPORTED_PROVIDER_PRESETS
 
 _PRESETS: dict[str, str] = {
@@ -135,9 +136,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         max_iterations=int(
             agent_cfg.get("max_iterations", data.get("max_iterations", 10))
         ),
-        memory_window=int(
-            agent_context.get("memory_window", data.get("memory_window", 40))
-        ),
+        memory_window=_load_memory_window(data, agent_context, llm_main),
         base_url=str(
             llm_main.get("base_url")
             or data.get("base_url")
@@ -220,7 +219,10 @@ def load_config(path: str | Path = "config.toml") -> Config:
             field="llm.main.supports_parallel_tool_calls",
         ),
         reasoning_summary=_as_reasoning_summary(
-            llm_main.get("reasoning_summary"),
+            llm_main.get(
+                "reasoning_summary",
+                "auto" if provider == "codex" else None,
+            ),
             field="llm.main.reasoning_summary",
         ),
         model_runtimes=model_runtimes,
@@ -458,6 +460,11 @@ def _load_llm_runtimes(
             base_url=str(item.get("base_url") or ""),
             reasoning_effort=str(item.get("reasoning_effort") or ""),
             context_window=int(item.get("context_window") or 0),
+            max_context_window=(
+                int(item["max_context_window"])
+                if item.get("max_context_window") is not None
+                else None
+            ),
             max_output_tokens=int(item.get("max_output_tokens") or 8192),
             input_modalities=tuple(modalities),
             effective_context_percent=float(item.get("effective_context_percent", 0.9)),
@@ -470,11 +477,30 @@ def _load_llm_runtimes(
                 field=f"llm.runtimes.{runtime_id}.supports_parallel_tool_calls",
             ),
             reasoning_summary=_as_reasoning_summary(
-                item.get("reasoning_summary"),
+                item.get(
+                    "reasoning_summary",
+                    "auto" if provider == "codex" else None,
+                ),
                 field=f"llm.runtimes.{runtime_id}.reasoning_summary",
             ),
         )
     return main_value, raw_main, parsed
+
+
+def _load_memory_window(data: dict, agent_context: dict, llm_main: dict) -> int:
+    """显式配置优先，否则根据主模型有效上下文推导历史窗口。"""
+
+    # 1. 保留现有配置的精确覆盖语义。
+    configured = agent_context.get("memory_window", data.get("memory_window"))
+    if configured is not None:
+        return int(configured)
+
+    # 2. 新 runtime 自动使用统一上下文策略；旧配置继续沿用 40。
+    context_window = int(llm_main.get("context_window") or 0)
+    if context_window <= 0:
+        return 40
+    effective_percent = float(llm_main.get("effective_context_percent", 0.9))
+    return recommended_memory_window(context_window, effective_percent)
 
 
 def _load_multimodal(llm_main: dict) -> bool:

@@ -10,11 +10,13 @@ import pytest
 import click
 
 from agent.config import load_config
+from agent.provider import LLMProvider
 from agent.model_runtime.auth.codex import CodexAuthDriver
 from agent.model_runtime.auth.store import Credential, CredentialStore
 from agent.model_runtime.errors import (
     AuthenticationError,
     ContextWindowError,
+    QuotaError,
     RateLimitError,
     TransportError,
 )
@@ -22,7 +24,9 @@ from agent.model_runtime.fallback import ResilientLightProvider
 from agent.model_runtime.catalog.codex import CodexModelCatalog
 from agent.model_runtime.context_policy import (
     build_context_budget,
+    recommended_context_settings,
     recommended_memory_window,
+    recommended_output_reserve,
 )
 from agent.model_runtime.transports.responses import (
     CodexResponsesTransport,
@@ -40,6 +44,7 @@ from agent.model_runtime.types import (
 )
 from agent.model_runtime.usage import aggregate_usage
 from agent.config_models import Config, ModelRuntimeConfig
+from agent.looping.ports import MemoryConfig as LoopMemoryConfig
 from bootstrap.providers import build_providers, build_vl_provider
 from bootstrap.setup_wizard import (
     WizardAnswers,
@@ -51,12 +56,19 @@ from session.manager import SessionManager
 from session.store import _decode_message_extra
 
 
-def test_recommended_memory_window_is_bounded() -> None:
+def test_recommended_context_settings_scale_from_one_million_baseline() -> None:
     assert recommended_memory_window(32_000) == 20
     assert recommended_memory_window(64_000) == 40
-    assert recommended_memory_window(128_000) == 80
-    assert recommended_memory_window(272_000) == 160
-    assert recommended_memory_window(400_000) == 160
+    assert recommended_memory_window(128_000) == 84
+    assert recommended_memory_window(272_000) == 176
+    assert recommended_memory_window(1_000_000) == 640
+    assert recommended_output_reserve(64_000) == 4096
+    assert recommended_output_reserve(272_000) == 8192
+    assert recommended_output_reserve(1_000_000) == 32768
+    assert recommended_context_settings(2_000_000).output_reserve == 32768
+    assert recommended_memory_window(1_000_000, 0.8) == 568
+    assert recommended_memory_window(272_000, 0.95) == 184
+    assert LoopMemoryConfig(window=recommended_memory_window(1_000_000)).keep_count == 640
 
 
 def test_context_budget_reserves_output() -> None:
@@ -68,6 +80,51 @@ def test_context_budget_reserves_output() -> None:
     budget = build_context_budget(capabilities, 8_000)
     assert budget.effective_context == 90_000
     assert budget.input_budget == 82_000
+
+
+def test_runtime_config_rejects_output_reserve_over_effective_context() -> None:
+    with pytest.raises(ValueError, match="max_output_tokens 必须小于有效上下文"):
+        ModelRuntimeConfig(
+            runtime_id="bad",
+            provider="openai",
+            model="model",
+            context_window=10_000,
+            effective_context_percent=0.8,
+            max_output_tokens=8_000,
+        )
+
+
+@pytest.mark.asyncio
+async def test_provider_hashes_session_cache_namespace() -> None:
+    class _Runtime:
+        request: ModelRequest | None = None
+
+        async def send(self, request: ModelRequest):
+            self.request = request
+            from agent.model_runtime.types import LLMResponse
+
+            return LLMResponse(content="ok")
+
+    provider = LLMProvider(
+        api_key="key",
+        provider_name="openai",
+        runtime_id="main",
+    )
+    runtime = _Runtime()
+    provider._runtime = runtime  # type: ignore[assignment]
+
+    await provider.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        model="model",
+        max_tokens=100,
+        cache_namespace="web:private-session",
+    )
+
+    assert runtime.request is not None
+    assert runtime.request.prompt_cache_key is not None
+    assert "private-session" not in runtime.request.prompt_cache_key
+    assert len(runtime.request.prompt_cache_key) == 64
 
 
 def test_credential_store_writes_private_atomic_document(tmp_path: Path) -> None:
@@ -107,6 +164,7 @@ def test_codex_catalog_maps_reasoning_context_and_modalities() -> None:
             "display_name": "GPT Test",
             "description": "test",
             "context_window": 272_000,
+            "max_context_window": 1_000_000,
             "effective_context_window_percent": 90,
             "default_reasoning_level": "high",
             "supported_reasoning_levels": [
@@ -115,14 +173,100 @@ def test_codex_catalog_maps_reasoning_context_and_modalities() -> None:
             ],
             "input_modalities": ["text", "image"],
             "supports_parallel_tool_calls": True,
+            "supports_reasoning_summaries": True,
         }
     )
 
     assert model.capabilities.context_window == 272_000
+    assert model.capabilities.max_context_window == 1_000_000
     assert model.capabilities.input_modalities == ("text", "image")
     assert model.capabilities.supported_reasoning_efforts == ("medium", "high")
+    assert model.capabilities.supports_reasoning_summaries is True
     assert model.capabilities.source is CapabilitySource.CATALOG
     assert model.input_modalities_known is True
+
+
+def test_codex_catalog_does_not_invent_reasoning_summary_support() -> None:
+    model = CodexModelCatalog._parse_model(
+        {"slug": "legacy", "context_window": 128_000}
+    )
+
+    assert model.capabilities.supports_reasoning_summaries is False
+
+
+def test_codex_refresh_uses_json_oauth_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = CredentialStore(tmp_path / "auth.json")
+    store.put(
+        "codex_default",
+        Credential(
+            driver="codex",
+            access_token="old",
+            refresh_token="rotation",
+            account_id="account",
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {
+                "access_token": "new",
+                "refresh_token": "next",
+                "expires_in": 3600,
+            }
+
+    def fake_post(url: str, **kwargs: object) -> _Response:
+        captured.update({"url": url, **kwargs})
+        return _Response()
+
+    monkeypatch.setattr("agent.model_runtime.auth.codex.httpx.post", fake_post)
+
+    refreshed = CodexAuthDriver(store, "codex_default").refresh()
+
+    assert refreshed.access_token == "new"
+    assert captured["json"] == {
+        "grant_type": "refresh_token",
+        "refresh_token": "rotation",
+        "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+    }
+    assert "data" not in captured
+
+
+def test_codex_refresh_keeps_previous_rotation_token_when_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = CredentialStore(tmp_path / "auth.json")
+    store.put(
+        "codex_default",
+        Credential(
+            driver="codex",
+            access_token="old",
+            refresh_token="rotation",
+            account_id="account",
+        ),
+    )
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {"access_token": "new", "expires_in": 3600}
+
+    monkeypatch.setattr(
+        "agent.model_runtime.auth.codex.httpx.post",
+        lambda *args, **kwargs: _Response(),
+    )
+
+    refreshed = CodexAuthDriver(store, "codex_default").refresh()
+
+    assert refreshed.access_token == "new"
+    assert refreshed.refresh_token == "rotation"
 
 
 def test_codex_catalog_uses_backend_compatible_client_version() -> None:
@@ -213,6 +357,12 @@ def test_codex_payload_matches_chatgpt_responses_contract() -> None:
     assert "max_output_tokens" not in payload
     assert payload["tool_choice"] == "auto"
     assert payload["parallel_tool_calls"] is True
+    assert payload["extra_body"]["client_metadata"] == {
+        "x-codex-installation-id": transport.installation_id,
+        "session-id": transport.session_id,
+        "thread-id": transport.thread_id,
+        "x-codex-window-id": transport.window_id,
+    }
 
 
 def test_codex_lite_payload_embeds_tools_and_instructions() -> None:
@@ -336,6 +486,72 @@ memory_window = 160
     assert config.context_window == 272_000
     assert config.multimodal is True
     assert config.light_model == ""
+    assert config.reasoning_summary == "auto"
+
+
+def test_codex_runtime_can_explicitly_disable_reasoning_summary(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[llm]
+main = "codex_main"
+
+[llm.runtimes.codex_main]
+provider = "codex"
+auth = "codex_default"
+model = "gpt-test"
+context_window = 128000
+reasoning_summary = "none"
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert config.reasoning_summary == "none"
+
+
+def test_config_derives_memory_window_from_effective_context(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[llm]
+main = "codex_main"
+
+[llm.runtimes.codex_main]
+provider = "codex"
+auth = "codex_default"
+model = "gpt-test"
+context_window = 272000
+effective_context_percent = 0.95
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert config.memory_window == 184
+
+
+def test_runtime_config_persists_max_context_window(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[llm]
+main = "codex_main"
+[llm.runtimes.codex_main]
+provider = "codex"
+auth = "codex_default"
+model = "gpt-test"
+context_window = 272000
+max_context_window = 1000000
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert config.model_runtimes["codex_main"].max_context_window == 1_000_000
 
 
 def test_runtime_config_rejects_unknown_reasoning_summary(tmp_path: Path) -> None:
@@ -385,7 +601,9 @@ async def test_responses_stream_builds_tool_usage_and_reasoning_state() -> None:
 
     async def events():
         yield {"type": "response.reasoning_summary_text.delta", "delta": "分析"}
-        yield {"type": "response.output_text.delta", "delta": "结果"}
+        yield {"type": "response.reasoning_text.delta", "delta": "过程"}
+        yield {"type": "response.output_text.delta", "delta": "结"}
+        yield {"type": "response.output_text.done", "text": "结果"}
         yield {
             "type": "response.output_item.done",
             "item": {
@@ -423,7 +641,7 @@ async def test_responses_stream_builds_tool_usage_and_reasoning_state() -> None:
     )
 
     assert result.content == "结果"
-    assert result.thinking == "分析"
+    assert result.thinking == "分析过程"
     assert result.tool_calls[0].arguments == {"q": "x"}
     assert result.cache_hit_tokens == 20
     assert result.continuation is not None
@@ -454,6 +672,9 @@ async def test_responses_stream_rejects_eof_before_completed() -> None:
     [
         ("context_length_exceeded", ContextWindowError),
         ("rate_limit_exceeded", RateLimitError),
+        ("insufficient_quota", QuotaError),
+        ("server_error", TransportError),
+        ("invalid_prompt", TransportError),
     ],
 )
 async def test_responses_stream_classifies_terminal_errors(
@@ -785,10 +1006,14 @@ def test_setup_api_key_named_runtimes_load_and_build_end_to_end(
         fast_api_key="fast-secret",
         fast_auth_id="fast_default",
         fast_base_url="https://fast.example/v1",
+        fast_context_window=32_000,
+        fast_max_output_tokens=2048,
         vl_model="vl-model",
         vl_api_key="vl-secret",
         vl_auth_id="vl_default",
         vl_base_url="https://vl.example/v1",
+        vl_context_window=128_000,
+        vl_max_output_tokens=4096,
         embed_model="embed-model",
         embed_api_key="embed-secret",
         embed_auth_id="embedding_default",
@@ -806,6 +1031,10 @@ def test_setup_api_key_named_runtimes_load_and_build_end_to_end(
     assert config.runtime_id == "main"
     assert config.fast_runtime_id == "fast"
     assert config.vl_runtime_id == "vl"
+    assert config.model_runtimes["fast"].context_window == 32_000
+    assert config.model_runtimes["fast"].max_output_tokens == 2048
+    assert config.model_runtimes["vl"].context_window == 128_000
+    assert config.model_runtimes["vl"].max_output_tokens == 4096
     assert (
         config.model_runtimes["main"].provider,
         config.model_runtimes["main"].auth,

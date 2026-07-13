@@ -6,13 +6,13 @@ LLM Provider — OpenAI 兼容格式
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import itertools
 import json
 import logging
 import os
 import re
 import tempfile
-import math
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 from pathlib import Path
@@ -22,6 +22,7 @@ import httpx
 from openai import AsyncOpenAI
 
 from agent.model_runtime.registry import ModelRuntimeRegistry
+from agent.model_runtime.context_policy import build_runtime_context_budget
 from agent.model_runtime.errors import ContextWindowError
 from agent.model_runtime.types import (
     LLMResponse,
@@ -128,10 +129,13 @@ class DeepSeekStrategy(ProviderStrategy):
         thinking_requested = bool(thinking_enabled) or bool(reasoning_effort)
         if _deepseek_thinking_enabled(extra_body):
             thinking_requested = True
-        if disable_thinking:
+        named_tool_choice = isinstance(kwargs.get("tool_choice"), dict)
+        if disable_thinking or named_tool_choice:
             extra_body["thinking"] = {"type": "disabled"}
             reasoning_effort = None
             thinking_requested = False
+            if named_tool_choice and not disable_thinking:
+                logger.info("[deepseek] 命名 tool_choice 要求本次关闭 thinking")
         elif thinking_enabled is not None and "thinking" not in extra_body:
             extra_body["thinking"] = {
                 "type": "enabled" if bool(thinking_enabled) else "disabled"
@@ -532,6 +536,7 @@ class LLMProvider:
         payload_snapshot_enabled: bool | None = None,
     ) -> None:
         self._system = system_prompt
+        self._runtime_id = runtime_id
         self._extra_body = dict(extra_body or {})
         self._context_window = int(context_window)
         self._effective_context_percent = float(effective_context_percent)
@@ -579,6 +584,7 @@ class LLMProvider:
         extra_body: dict | None = None,
         disable_thinking: bool = False,
         on_content_delta: Callable[[StreamDelta], Awaitable[None]] | None = None,
+        cache_namespace: str = "",
     ) -> LLMResponse:
         self._enforce_context_budget(messages, tools, max_tokens)
         merged_extra = {**self._extra_body, **(extra_body or {})}
@@ -595,6 +601,11 @@ class LLMProvider:
                 if self._force_disable_thinking or disable_thinking
                 else str(effort or "") or None
             ),
+            prompt_cache_key=(
+                _stable_prompt_cache_key(self._runtime_id, model, cache_namespace)
+                if cache_namespace
+                else None
+            ),
             on_delta=on_content_delta,
             extra_body=dict(extra_body or {}),
             disable_thinking=self._force_disable_thinking or disable_thinking,
@@ -609,12 +620,15 @@ class LLMProvider:
     ) -> None:
         if not self._context_window:
             return
-        effective = math.floor(self._context_window * self._effective_context_percent)
-        input_budget = effective - max_tokens
+        budget = build_runtime_context_budget(
+            self._context_window,
+            self._effective_context_percent,
+            max_tokens,
+        )
         estimated = _estimate_context_tokens(self._system, messages, tools)
-        if input_budget <= 0 or estimated > input_budget:
+        if estimated > budget.input_budget:
             raise ContextLengthError(
-                f"上下文估算超限 estimated={estimated} budget={input_budget} quality=approximate"
+                f"上下文估算超限 estimated={estimated} budget={budget.input_budget} quality=approximate"
             )
 
 
@@ -653,6 +667,12 @@ def _estimate_context_tokens(
             )
         )
     return max(1, text_chars // 3 + image_tokens)
+
+
+def _stable_prompt_cache_key(runtime_id: str, model: str, namespace: str) -> str:
+    """生成不泄露 session 标识的稳定缓存路由键。"""
+    raw = f"{runtime_id}\0{model}\0{namespace}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _get_field(delta: Any, name: str) -> Any:

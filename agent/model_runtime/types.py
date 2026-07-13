@@ -44,6 +44,7 @@ class ModelCapabilities:
     context_window: int
     max_output_tokens: int
     effective_context_percent: float = 0.9
+    max_context_window: int | None = None
     supported_reasoning_efforts: tuple[str, ...] = ()
     default_reasoning_effort: str | None = None
     input_modalities: tuple[str, ...] = ("text",)
@@ -63,6 +64,11 @@ class ModelCapabilities:
     def __post_init__(self) -> None:
         if self.context_window <= 0:
             raise ValueError("context_window 必须大于 0")
+        if (
+            self.max_context_window is not None
+            and self.max_context_window < self.context_window
+        ):
+            raise ValueError("max_context_window 不能小于 context_window")
         if self.max_output_tokens <= 0:
             raise ValueError("max_output_tokens 必须大于 0")
         if not 0 < self.effective_context_percent <= 1:

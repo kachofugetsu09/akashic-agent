@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 import agent.model_runtime.fallback as fallback_module
-from agent.model_runtime.errors import RateLimitError, TransportError
+from agent.model_runtime.errors import QuotaError, RateLimitError, TransportError
 from agent.model_runtime.fallback import ResilientLightProvider
 from agent.provider import ContentSafetyError, ContextLengthError, LLMProvider, LLMResponse
 
@@ -81,6 +81,7 @@ async def _chat(provider: ResilientLightProvider, **kwargs) -> LLMResponse:
         tool_choice=kwargs.get("tool_choice", "required"),
         disable_thinking=kwargs.get("disable_thinking", True),
         on_content_delta=kwargs.get("on_content_delta"),
+        cache_namespace=kwargs.get("cache_namespace", "session"),
     )
 
 
@@ -108,8 +109,17 @@ async def test_light_primary_success_does_not_call_main() -> None:
         _StatusError(503),
         RateLimitError("Codex 请求被限流"),
         TransportError("Codex Responses 连接失败"),
+        TransportError("Codex Responses 暂时失败 code=server_error"),
     ],
-    ids=["timeout", "connection", "429", "5xx", "codex-rate-limit", "codex-transport"],
+    ids=[
+        "timeout",
+        "connection",
+        "429",
+        "5xx",
+        "codex-rate-limit",
+        "codex-transport",
+        "codex-transient",
+    ],
 )
 async def test_light_recoverable_failure_falls_back_with_main_model(
     error: BaseException,
@@ -134,6 +144,7 @@ async def test_light_recoverable_failure_falls_back_with_main_model(
     assert call["max_tokens"] == 321
     assert call["tool_choice"] == "required"
     assert call["disable_thinking"] is True
+    assert call["cache_namespace"] == "session"
 
 
 @pytest.mark.asyncio
@@ -146,7 +157,9 @@ async def test_light_recoverable_failure_falls_back_with_main_model(
         _StatusError(429, body={"error": {"code": "insufficient_quota"}}),
         ContextLengthError("too long"),
         ContentSafetyError("unsafe"),
+        QuotaError("quota"),
         TransportError("响应 JSON 损坏"),
+        TransportError("Codex Responses 请求被拒绝 code=invalid_prompt"),
     ],
     ids=[
         "401",
@@ -155,7 +168,9 @@ async def test_light_recoverable_failure_falls_back_with_main_model(
         "quota",
         "context",
         "safety",
+        "typed-quota",
         "protocol",
+        "codex-invalid-prompt",
     ],
 )
 async def test_light_nonrecoverable_failure_stays_fail_loud(

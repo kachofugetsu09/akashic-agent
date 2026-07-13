@@ -659,6 +659,30 @@ async def test_deepseek_strategy_disables_thinking(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
+async def test_deepseek_named_tool_choice_disables_thinking(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake = _FakeClient([_Response(content="ok")])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    provider = LLMProvider(
+        api_key="k",
+        provider_name="deepseek",
+        extra_body={"enable_thinking": True, "reasoning_effort": "high"},
+    )
+
+    await provider.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[{"type": "function", "function": {"name": "probe"}}],
+        model="deepseek-v4-pro",
+        max_tokens=10,
+        tool_choice={"type": "function", "function": {"name": "probe"}},
+    )
+
+    assert fake.calls[-1]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert "reasoning_effort" not in fake.calls[-1]
+
+
+@pytest.mark.asyncio
 async def test_token_plan_strategy_disables_thinking(monkeypatch: pytest.MonkeyPatch):
     fake = _FakeClient([_Response(content="ok")])
     monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)

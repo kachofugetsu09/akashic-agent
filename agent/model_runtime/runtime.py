@@ -17,6 +17,7 @@ class ChatRuntimeAdapter:
         self.implementation = implementation
 
     async def send(self, request: ModelRequest) -> LLMResponse:
+        # Chat Completions 厂商按 prompt 前缀自动缓存，不接收 Responses 的 cache key。
         return await self.implementation.chat(
             messages=request.messages,
             tools=request.tools,

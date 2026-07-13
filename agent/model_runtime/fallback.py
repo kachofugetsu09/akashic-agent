@@ -65,6 +65,7 @@ class ResilientLightProvider(LLMProvider):
         extra_body: dict | None = None,
         disable_thinking: bool = False,
         on_content_delta: Callable[[StreamDelta], Awaitable[None]] | None = None,
+        cache_namespace: str = "",
     ) -> LLMResponse:
         """先调用轻量模型；未输出 delta 的可恢复故障才切换主模型。"""
 
@@ -90,6 +91,7 @@ class ResilientLightProvider(LLMProvider):
                 extra_body=extra_body,
                 disable_thinking=disable_thinking,
                 on_content_delta=callback,
+                cache_namespace=cache_namespace,
             )
         except _RUNTIME_FAILURE_TYPES as exc:
             if emitted or not _is_recoverable_runtime_error(exc):
@@ -113,6 +115,7 @@ class ResilientLightProvider(LLMProvider):
                 extra_body=extra_body,
                 disable_thinking=disable_thinking,
                 on_content_delta=on_content_delta,
+                cache_namespace=cache_namespace,
             )
 
 
@@ -156,7 +159,16 @@ def _is_connection_transport_error(exc: TransportError) -> bool:
     ):
         return True
     text = str(exc).lower()
-    return any(marker in text for marker in ("连接失败", "connection", "timeout", "超时"))
+    return any(
+        marker in text
+        for marker in (
+            "连接失败",
+            "connection",
+            "timeout",
+            "超时",
+            "暂时失败",
+        )
+    )
 
 
 def _looks_like_quota_error(exc: BaseException) -> bool:

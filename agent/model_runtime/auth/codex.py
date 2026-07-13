@@ -100,7 +100,7 @@ class CodexAuthDriver:
                 raise AuthenticationError("Codex refresh token 缺失，请重新登录")
             response = httpx.post(
                 CODEX_TOKEN_URL,
-                data={
+                json={
                     "grant_type": "refresh_token",
                     "refresh_token": current.refresh_token,
                     "client_id": CODEX_CLIENT_ID,
@@ -111,7 +111,9 @@ class CodexAuthDriver:
                 raise RateLimitError("Codex token 刷新被限流")
             self._require_success(response, "Codex token 刷新失败，请重新登录")
             refreshed = self._credential_from_token(
-                response.json(), fallback_account_id=current.account_id
+                response.json(),
+                fallback_account_id=current.account_id,
+                fallback_refresh_token=current.refresh_token,
             )
             self.store.replace_locked(self.credential_id, refreshed)
             return refreshed
@@ -138,10 +140,12 @@ class CodexAuthDriver:
 
     @staticmethod
     def _credential_from_token(
-        data: dict, fallback_account_id: str = ""
+        data: dict,
+        fallback_account_id: str = "",
+        fallback_refresh_token: str = "",
     ) -> Credential:
         access_token = str(data.get("access_token") or "")
-        refresh_token = str(data.get("refresh_token") or "")
+        refresh_token = str(data.get("refresh_token") or fallback_refresh_token)
         if not access_token or not refresh_token:
             raise AuthenticationError("Codex token 响应缺少必要字段")
         id_token = str(data.get("id_token") or "")

@@ -11,6 +11,7 @@ from agent.model_runtime.auth.codex import (
     CodexAuthDriver,
 )
 from agent.model_runtime.errors import AuthenticationError, TransportError
+from agent.model_runtime.context_policy import recommended_output_reserve
 from agent.model_runtime.types import CapabilitySource, ModelCapabilities
 
 
@@ -76,6 +77,12 @@ class CodexModelCatalog:
         context_window = raw.get("context_window") or raw.get("max_context_window")
         if not isinstance(context_window, int) or context_window <= 0:
             raise TransportError(f"模型 {raw['slug']} 缺少有效 context_window")
+        max_context_window = raw.get("max_context_window") or context_window
+        if (
+            not isinstance(max_context_window, int)
+            or max_context_window < context_window
+        ):
+            raise TransportError(f"模型 {raw['slug']} 的 max_context_window 无效")
         modalities = raw.get("input_modalities")
         modalities_known = isinstance(modalities, list)
         parsed_modalities = (
@@ -92,14 +99,20 @@ class CodexModelCatalog:
         percent = int(raw.get("effective_context_window_percent", 90)) / 100
         capabilities = ModelCapabilities(
             context_window=context_window,
-            max_output_tokens=min(32768, context_window // 4),
+            max_output_tokens=recommended_output_reserve(max_context_window, percent),
+            max_context_window=max_context_window,
             effective_context_percent=percent,
             supported_reasoning_efforts=effort_names,
             default_reasoning_effort=raw.get("default_reasoning_level"),
             input_modalities=parsed_modalities,
             supports_image_original_detail=bool(raw.get("supports_image_detail_original")),
             supports_parallel_tool_calls=bool(raw.get("supports_parallel_tool_calls")),
-            supports_reasoning_summaries=bool(raw.get("supports_reasoning_summaries")),
+            supports_reasoning_summaries=bool(
+                raw.get(
+                    "supports_reasoning_summary_parameter",
+                    raw.get("supports_reasoning_summaries", False),
+                )
+            ),
             default_reasoning_summary=str(raw.get("default_reasoning_summary") or "none"),
             supports_prompt_cache=True,
             use_responses_lite=bool(raw.get("use_responses_lite")),
