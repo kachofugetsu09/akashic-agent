@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from collections.abc import Awaitable, Callable
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 from pydantic import BaseModel, ValidationError
 
@@ -84,6 +84,7 @@ from bus.event_bus import EventBus
 from infra.channels.contract import Channel
 
 logger = logging.getLogger(__name__)
+U = TypeVar("U")
 
 
 def _package_project_root(plugin_dirs: list[Path]) -> Path | None:
@@ -94,16 +95,23 @@ def _package_project_root(plugin_dirs: list[Path]) -> Path | None:
     return None
 
 
-async def _complete_critical(awaitable: Awaitable[None]) -> bool:
+async def _complete_critical(awaitable: Awaitable[U]) -> tuple[U, bool]:
+    """在外部取消后完成关键异步操作，并返回是否收到取消。"""
+
+    # 1. 将关键操作放入独立任务，避免调用方取消传播进去
     task = asyncio.ensure_future(awaitable)
     cancelled = False
+
+    # 2. 屏蔽等待并记录外部取消，直到操作本身结束
     while not task.done():
         try:
-            await asyncio.shield(task)
+            _ = await asyncio.shield(task)
         except asyncio.CancelledError:
             cancelled = True
-    await task
-    return cancelled
+
+    # 3. 读取操作结果，保留其真实异常
+    result = await task
+    return result, cancelled
 
 _EVENT_TYPE_MAP: dict[PluginEventType, type] = {
     PluginEventType.BEFORE_TURN: BeforeTurnCtx,
@@ -508,19 +516,38 @@ class PluginManager:
         state: str,
         preserve_stable_alias: bool = False,
     ) -> None:
+        """完成插件终止、作用域清理和注册表卸载。"""
+
+        # 1. 终止生命周期对象，并在调用方取消后继续完成它
+        externally_cancelled = False
         if generation.initialization_started:
             terminator = getattr(generation.instance, "terminate", None)
             if callable(terminator):
                 try:
-                    await cast(Callable[[], Awaitable[None]], terminator)()
+                    _, terminator_cancelled = await _complete_critical(
+                        cast(Callable[[], Awaitable[None]], terminator)()
+                    )
+                    externally_cancelled = terminator_cancelled
                 except (asyncio.CancelledError, Exception) as error:
+                    current = asyncio.current_task()
+                    externally_cancelled = (
+                        current is not None and current.cancelling() > 0
+                    )
                     self._cleanup_failures.append(
                         CleanupFailure(
                             resource=f"plugin:{generation.plugin_id}:terminate",
                             error=str(error) or type(error).__name__,
                         )
                     )
-        self._cleanup_failures.extend(await generation.scope.aclose())
+
+        # 2. 收集作用域失败，确保外部取消不会截断资源清理
+        cleanup_failures, cleanup_cancelled = await _complete_critical(
+            generation.scope.aclose()
+        )
+        self._cleanup_failures.extend(cleanup_failures)
+        externally_cancelled = externally_cancelled or cleanup_cancelled
+
+        # 3. 清理注册表和模块树
         _ = self._scopes.pop(generation.module_path, None)
         self._loaded.discard(generation.module_path)
         _ = self._active_plugins.pop(generation.module_path, None)
@@ -540,6 +567,8 @@ class PluginManager:
             else:
                 self._fresh_importer.unregister(stable_alias)
         generation.state = state
+        if externally_cancelled:
+            raise asyncio.CancelledError
 
     async def _on_snapshot_drained(self, snapshot: RuntimeSnapshot) -> None:
         catalog_id = self._snapshot_skill_catalogs.pop(snapshot.snapshot_id, None)
@@ -705,7 +734,7 @@ class PluginManager:
         commit_cancelled = False
         try:
             assert transaction is not None
-            commit_cancelled = await _complete_critical(
+            _, commit_cancelled = await _complete_critical(
                 self._snapshot_store.commit(transaction)
             )
         except BaseException as error:
@@ -718,7 +747,7 @@ class PluginManager:
         ]
         resume_cancelled = False
         if self._endpoint_resumer is not None and quiesced is not None:
-            resume_cancelled = await _complete_critical(self._endpoint_resumer())
+            _, resume_cancelled = await _complete_critical(self._endpoint_resumer())
         if commit_error is not None:
             raise commit_error
         if commit_cancelled or resume_cancelled:
@@ -953,7 +982,7 @@ class PluginManager:
         commit_error: BaseException | None = None
         commit_cancelled = False
         try:
-            commit_cancelled = await _complete_critical(
+            _, commit_cancelled = await _complete_critical(
                 self._snapshot_store.commit(transaction)
             )
         except BaseException as error:
@@ -974,7 +1003,7 @@ class PluginManager:
         ]
         resume_cancelled = False
         if self._endpoint_resumer is not None and quiesced_snapshot is not None:
-            resume_cancelled = await _complete_critical(self._endpoint_resumer())
+            _, resume_cancelled = await _complete_critical(self._endpoint_resumer())
         if commit_error is not None:
             raise commit_error
         if commit_cancelled or resume_cancelled:
@@ -2305,9 +2334,17 @@ class PluginManager:
             logger.info("插件 tool hook 已注册: %s", hook.name)
 
     async def terminate_all(self) -> None:
-        await self._snapshot_store.close()
+        """完成快照、插件生命周期和作用域资源的全量关闭。"""
+
+        # 1. 先完成快照回收，再处理候选代际
+        _, externally_cancelled = await _complete_critical(
+            self._snapshot_store.close()
+        )
         for plugin_id in tuple(self._prepared_generations):
-            await self.discard_prepared(plugin_id)
+            _, cancelled = await _complete_critical(self.discard_prepared(plugin_id))
+            externally_cancelled = externally_cancelled or cancelled
+
+        # 2. 逐插件终止并消费全部 cleanup failures
         for mp in list(self._loaded):
             active_info = self._active_plugins.get(mp)
             instance = plugin_registry.get_instance(mp)
@@ -2318,19 +2355,28 @@ class PluginManager:
                         Callable[[], Awaitable[None]],
                         terminator,
                     )
-                    await typed_terminator()
-                except Exception as e:
-                    logger.warning("插件 terminate 失败 (%s): %s", mp, e)
+                    _, cancelled = await _complete_critical(typed_terminator())
+                    externally_cancelled = externally_cancelled or cancelled
+                except (asyncio.CancelledError, Exception) as error:
+                    current = asyncio.current_task()
+                    externally_cancelled = externally_cancelled or (
+                        current is not None and current.cancelling() > 0
+                    )
+                    error_text = str(error) or type(error).__name__
+                    logger.warning("插件 terminate 失败 (%s): %s", mp, error_text)
                     self._cleanup_failures.append(
                         CleanupFailure(
                             resource=f"plugin:{mp}:terminate",
-                            error=str(e),
+                            error=error_text,
                         )
                     )
             scope = self._scopes.pop(mp, None)
             if scope is not None:
-                self._cleanup_failures.extend(await scope.aclose())
-            # 注销工具
+                cleanup_failures, cancelled = await _complete_critical(scope.aclose())
+                self._cleanup_failures.extend(cleanup_failures)
+                externally_cancelled = externally_cancelled or cancelled
+
+            # 3. 注销工具、模块和运行时注册
             for md in plugin_registry.get_handlers_by_module_path(mp):
                 if md.kind == MetadataKind.TOOL and self._tool_registry is not None:
                     self._tool_registry.unregister(md.tool_name or md.handler_name)
@@ -2369,6 +2415,8 @@ class PluginManager:
         self._active_generations.clear()
         self._prepared_generations.clear()
         self._stable_aliases.clear()
+        if externally_cancelled:
+            raise asyncio.CancelledError
 
 
 class _PluginConfigError(Exception):

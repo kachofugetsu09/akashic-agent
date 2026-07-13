@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import shlex
 import shutil
@@ -436,6 +437,131 @@ async def test_plugin_scope_continues_after_cancelled_cleanup():
 
 
 @pytest.mark.asyncio
+async def test_plugin_scope_reports_failed_task_and_is_idempotent():
+    scope = PluginScope("task-failure")
+    cleaned: list[str] = []
+
+    async def fail() -> None:
+        raise RuntimeError("task failed")
+
+    task = scope.create_task(fail(), name="worker")
+    with pytest.raises(RuntimeError, match="task failed"):
+        await task
+    scope.defer("marker", lambda: cleaned.append("marker"))
+
+    failures = await scope.aclose()
+
+    assert cleaned == ["marker"]
+    assert [(failure.resource, failure.error) for failure in failures] == [
+        ("task:worker", "task failed")
+    ]
+    assert await scope.aclose() == []
+
+
+@pytest.mark.asyncio
+async def test_plugin_scope_reports_task_failure_before_close(caplog):
+    scope = PluginScope("task-runtime-failure")
+
+    async def fail() -> None:
+        raise RuntimeError("runtime task failed")
+
+    with caplog.at_level(logging.ERROR, logger="agent.plugins.scope"):
+        task = scope.create_task(fail(), name="runtime-worker")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    assert task.done()
+    record = next(
+        record
+        for record in caplog.records
+        if record.name == "agent.plugins.scope"
+    )
+    assert record.exc_info is not None
+    assert record.exc_info[0] is RuntimeError
+    assert "runtime task failed" in caplog.text
+    failures = await scope.aclose()
+    assert [(failure.resource, failure.error) for failure in failures] == [
+        ("task:runtime-worker", "runtime task failed")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_plugin_scope_finishes_cleanup_after_external_cancellation():
+    scope = PluginScope("cancelled-close")
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    cancelled_inside_cleanup = False
+    cleaned: list[str] = []
+
+    async def cleanup() -> None:
+        nonlocal cancelled_inside_cleanup
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled_inside_cleanup = True
+            await release.wait()
+
+    scope.defer("slow", cleanup)
+    scope.defer("marker", lambda: cleaned.append("marker"))
+    closing = asyncio.create_task(scope.aclose())
+    await entered.wait()
+    closing.cancel()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+
+    assert cancelled_inside_cleanup is False
+    assert cleaned == ["marker"]
+    assert scope.resource_count == 0
+    assert await scope.aclose() == []
+
+
+@pytest.mark.asyncio
+async def test_plugin_scope_handles_async_process_exit_and_timeout_kill():
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.returncode: int | None = None
+            self.terminate_calls = 0
+            self.kill_calls = 0
+            self.wait_calls = 0
+            self._exit = asyncio.Event()
+
+        def terminate(self) -> None:
+            self.terminate_calls += 1
+
+        def kill(self) -> None:
+            self.kill_calls += 1
+            self.returncode = -9
+            self._exit.set()
+
+        async def wait(self) -> int:
+            self.wait_calls += 1
+            await self._exit.wait()
+            assert self.returncode is not None
+            return self.returncode
+
+    exited = FakeProcess()
+    exited.returncode = 0
+    exited._exit.set()
+    scope = PluginScope("async-process-exit")
+    scope.track_async_process(cast(Any, exited), name="exited", timeout=0.01)
+    assert await scope.aclose() == []
+    assert exited.terminate_calls == 0
+    assert exited.kill_calls == 0
+    assert exited.wait_calls == 1
+
+    timed_out = FakeProcess()
+    scope = PluginScope("async-process-timeout")
+    scope.track_async_process(cast(Any, timed_out), name="timed-out", timeout=0.01)
+    assert await scope.aclose() == []
+    assert timed_out.terminate_calls == 1
+    assert timed_out.kill_calls == 1
+    assert timed_out.wait_calls == 2
+
+
+@pytest.mark.asyncio
 async def test_plugin_scope_terminates_process():
     scope = PluginScope("process-test")
     process = subprocess.Popen(
@@ -515,6 +641,52 @@ async def test_plugin_manager_scope_cleans_legacy_resources(tmp_path: Path):
         "closed": True
     }
     assert len(manager.cleanup_failures) == 20
+
+
+@pytest.mark.asyncio
+async def test_plugin_manager_consumes_scope_failures_after_terminate_cancellation(
+    tmp_path: Path,
+):
+    plugin_root = tmp_path / "plugins"
+    plugin_dir = plugin_root / "cancelled_close"
+    plugin_dir.mkdir(parents=True)
+    _ = (plugin_dir / "plugin.py").write_text(
+        "import asyncio\n"
+        "from agent.plugins import Plugin\n"
+        "entered = asyncio.Event()\n"
+        "release = asyncio.Event()\n"
+        "class CancelledClosePlugin(Plugin):\n"
+        "    name = 'cancelled_close'\n"
+        "    async def initialize(self):\n"
+        "        async def slow_cleanup():\n"
+        "            entered.set()\n"
+        "            await release.wait()\n"
+        "        def fail_cleanup():\n"
+        "            raise RuntimeError('scope failure')\n"
+        "        self.context.defer('slow', slow_cleanup)\n"
+        "        self.context.defer('failure', fail_cleanup)\n",
+        encoding="utf-8",
+    )
+    manager = PluginManager(
+        plugin_dirs=[plugin_root],
+        event_bus=EventBus(),
+        installed_cache_root=tmp_path / "cache",
+    )
+    await manager.load_all()
+    module = sys.modules["akasic_plugin_plugins_cancelled_close"]
+    closing = asyncio.create_task(manager.terminate_all())
+    await module.entered.wait()
+    closing.cancel()
+    module.release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+
+    assert manager.loaded_count == 0
+    assert any(
+        failure.resource == "failure" and failure.error == "scope failure"
+        for failure in manager.cleanup_failures
+    )
 
 
 @pytest.mark.asyncio
