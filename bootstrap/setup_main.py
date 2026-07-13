@@ -29,6 +29,9 @@ _MANAGED_RUNTIME_KEYS = {
     "context_window",
     "max_output_tokens",
     "input_modalities",
+    "use_responses_lite",
+    "supports_parallel_tool_calls",
+    "reasoning_summary",
 }
 
 
@@ -87,6 +90,12 @@ def patch_main_model_config(original: str, answers: WizardAnswers) -> str:
         values["reasoning_effort"] = _toml_string(answers.reasoning_effort)
     if answers.enable_thinking:
         values["enable_thinking"] = "true"
+    if answers.use_responses_lite:
+        values["use_responses_lite"] = "true"
+    if not answers.supports_parallel_tool_calls:
+        values["supports_parallel_tool_calls"] = "false"
+    if answers.reasoning_summary != "none":
+        values["reasoning_summary"] = _toml_string(answers.reasoning_summary)
     text = _replace_table_keys(
         text,
         f"llm.runtimes.{runtime_id}",

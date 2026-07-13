@@ -17,6 +17,7 @@ CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_AUTH_BASE = "https://auth.openai.com"
 CODEX_TOKEN_URL = f"{CODEX_AUTH_BASE}/oauth/token"
 CODEX_API_BASE = "https://chatgpt.com/backend-api/codex"
+CODEX_CLIENT_VERSION = "0.144.1"
 _REFRESH_SKEW_SECONDS = 120
 
 
@@ -83,6 +84,7 @@ class CodexAuthDriver:
 
     def headers(self, *, force_refresh: bool = False) -> dict[str, str]:
         credential = self.store.get(self.credential_id)
+        self._validate_credential(credential)
         if force_refresh or self._expires_soon(credential):
             credential = self.refresh()
         headers = {"Authorization": f"Bearer {credential.access_token}"}
@@ -108,7 +110,9 @@ class CodexAuthDriver:
             if response.status_code == 429:
                 raise RateLimitError("Codex token 刷新被限流")
             self._require_success(response, "Codex token 刷新失败，请重新登录")
-            refreshed = self._credential_from_token(response.json(), current.account_id)
+            refreshed = self._credential_from_token(
+                response.json(), fallback_account_id=current.account_id
+            )
             self.store.replace_locked(self.credential_id, refreshed)
             return refreshed
 
@@ -133,17 +137,20 @@ class CodexAuthDriver:
         return self._credential_from_token(response.json())
 
     @staticmethod
-    def _credential_from_token(data: dict, account_id: str = "") -> Credential:
+    def _credential_from_token(
+        data: dict, fallback_account_id: str = ""
+    ) -> Credential:
         access_token = str(data.get("access_token") or "")
         refresh_token = str(data.get("refresh_token") or "")
         if not access_token or not refresh_token:
             raise AuthenticationError("Codex token 响应缺少必要字段")
-        resolved_account_id = account_id
-        if not resolved_account_id:
-            id_token = str(data.get("id_token") or "")
-            if not id_token:
-                raise AuthenticationError("Codex token 响应缺少 id_token")
+        id_token = str(data.get("id_token") or "")
+        if id_token:
             resolved_account_id = _account_id_from_jwt(id_token)
+        elif fallback_account_id:
+            resolved_account_id = fallback_account_id
+        else:
+            raise AuthenticationError("Codex token 响应缺少 id_token")
         expires_in = int(data.get("expires_in") or 3600)
         now = datetime.now(timezone.utc)
         return Credential(
@@ -161,6 +168,13 @@ class CodexAuthDriver:
             return True
         expires = datetime.fromisoformat(credential.expires_at.replace("Z", "+00:00"))
         return expires <= datetime.now(timezone.utc) + timedelta(seconds=_REFRESH_SKEW_SECONDS)
+
+    @staticmethod
+    def _validate_credential(credential: Credential) -> None:
+        if credential.driver != "codex":
+            raise AuthenticationError("Codex auth 引用了非 Codex 凭据")
+        if not credential.access_token or not credential.account_id:
+            raise AuthenticationError("Codex 凭据缺少 access_token 或 account_id")
 
     @staticmethod
     def _require_success(response: httpx.Response, message: str) -> None:

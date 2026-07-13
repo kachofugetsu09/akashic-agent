@@ -27,6 +27,9 @@ def build_providers(
         runtime_id=config.runtime_id,
         context_window=config.context_window,
         effective_context_percent=config.effective_context_percent,
+        use_responses_lite=config.use_responses_lite,
+        supports_parallel_tool_calls=config.supports_parallel_tool_calls,
+        reasoning_summary=config.reasoning_summary,
         payload_snapshot_enabled=payload_snapshot_enabled,
     )
 
@@ -161,6 +164,9 @@ def _provider_from_runtime(
         runtime_id=runtime.runtime_id,
         context_window=runtime.context_window,
         effective_context_percent=runtime.effective_context_percent,
+        use_responses_lite=runtime.use_responses_lite,
+        supports_parallel_tool_calls=runtime.supports_parallel_tool_calls,
+        reasoning_summary=runtime.reasoning_summary,
         force_disable_thinking=force_disable_thinking,
         payload_snapshot_enabled=payload_snapshot_enabled,
     )

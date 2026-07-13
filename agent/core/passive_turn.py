@@ -1811,7 +1811,11 @@ class DefaultReasoner(Reasoner):
                     "[空回复重试] 第%d轮，content为空但thinking非空，触发一次重试",
                     iteration + 1,
                 )
-                messages.append({"role": "assistant", "content": ""})
+                retry_assistant: dict[str, Any] = {"role": "assistant", "content": ""}
+                model_state = response.provider_fields.get("model_state")
+                if isinstance(model_state, dict):
+                    retry_assistant["model_state"] = model_state
+                messages.append(retry_assistant)
                 messages.append({
                     "role": "user",
                     "content": "你刚才只输出了思考过程，没有给出正式回复。请直接回复用户，不要重复思考。",

@@ -5,7 +5,11 @@ from typing import Any
 
 import httpx
 
-from agent.model_runtime.auth.codex import CODEX_API_BASE, CodexAuthDriver
+from agent.model_runtime.auth.codex import (
+    CODEX_API_BASE,
+    CODEX_CLIENT_VERSION,
+    CodexAuthDriver,
+)
 from agent.model_runtime.errors import AuthenticationError, TransportError
 from agent.model_runtime.types import CapabilitySource, ModelCapabilities
 
@@ -27,7 +31,7 @@ class CodexModelCatalog:
         auth: CodexAuthDriver,
         *,
         base_url: str = CODEX_API_BASE,
-        client_version: str = "0.0.0",
+        client_version: str = CODEX_CLIENT_VERSION,
     ) -> None:
         self.auth = auth
         self.base_url = base_url.rstrip("/")
@@ -57,7 +61,13 @@ class CodexModelCatalog:
         raw_models = payload.get("models")
         if not isinstance(raw_models, list):
             raise TransportError("Codex 模型目录响应缺少 models 数组")
-        return [self._parse_model(item) for item in raw_models]
+        parsed_models = [self._parse_model(item) for item in raw_models]
+        return [
+            model
+            for raw, model in zip(raw_models, parsed_models, strict=True)
+            if raw.get("visibility", "list") == "list"
+            and raw.get("supported_in_api", True) is not False
+        ]
 
     @staticmethod
     def _parse_model(raw: Any) -> CodexModel:
@@ -89,7 +99,10 @@ class CodexModelCatalog:
             input_modalities=parsed_modalities,
             supports_image_original_detail=bool(raw.get("supports_image_detail_original")),
             supports_parallel_tool_calls=bool(raw.get("supports_parallel_tool_calls")),
+            supports_reasoning_summaries=bool(raw.get("supports_reasoning_summaries")),
+            default_reasoning_summary=str(raw.get("default_reasoning_summary") or "none"),
             supports_prompt_cache=True,
+            use_responses_lite=bool(raw.get("use_responses_lite")),
             continuation_mode="responses_items",
             source=CapabilitySource.CATALOG,
         )

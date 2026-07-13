@@ -44,6 +44,9 @@ class WizardAnswers:
     memory_window: int = 40
     enable_thinking: bool = False
     multimodal: bool = False
+    use_responses_lite: bool = False
+    supports_parallel_tool_calls: bool = True
+    reasoning_summary: str = "none"
     vl_model: str = ""
     vl_api_key: str = ""
     vl_base_url: str = ""
@@ -372,11 +375,16 @@ def _phase_codex_llm(
     if not selected.input_modalities_known:
         _warn("模型目录未提供多模态元数据，请手工确认")
     a.multimodal = click.confirm("主模型支持图片输入？", default=detected_image)
+    a.use_responses_lite = capabilities.use_responses_lite
+    a.supports_parallel_tool_calls = capabilities.supports_parallel_tool_calls
+    if capabilities.supports_reasoning_summaries:
+        a.reasoning_summary = "auto"
 
 
 def _phase_codex_manual(a: WizardAnswers) -> None:
     a.model = click.prompt("模型名")
     a.reasoning_effort = click.prompt("推理强度", default="medium")
+    a.reasoning_summary = "auto"
     a.context_window = click.prompt("上下文大小（tokens）", type=int)
     a.max_output_tokens = click.prompt("最大输出 tokens", type=int, default=8192)
     a.multimodal = click.confirm("主模型支持图片输入？", default=False)
@@ -794,6 +802,12 @@ def _render_llm(a: WizardAnswers) -> str:
         lines.append("enable_thinking = true")
     if a.reasoning_effort:
         lines.append(f'reasoning_effort = "{a.reasoning_effort}"')
+    if a.use_responses_lite:
+        lines.append("use_responses_lite = true")
+    if not a.supports_parallel_tool_calls:
+        lines.append("supports_parallel_tool_calls = false")
+    if a.reasoning_summary != "none":
+        lines.append(f'reasoning_summary = "{a.reasoning_summary}"')
     lines.extend([
         f"context_window = {a.context_window}",
         f"max_output_tokens = {a.max_output_tokens}",

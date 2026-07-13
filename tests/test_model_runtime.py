@@ -12,7 +12,12 @@ import click
 from agent.config import load_config
 from agent.model_runtime.auth.codex import CodexAuthDriver
 from agent.model_runtime.auth.store import Credential, CredentialStore
-from agent.model_runtime.errors import AuthenticationError
+from agent.model_runtime.errors import (
+    AuthenticationError,
+    ContextWindowError,
+    RateLimitError,
+    TransportError,
+)
 from agent.model_runtime.fallback import ResilientLightProvider
 from agent.model_runtime.catalog.codex import CodexModelCatalog
 from agent.model_runtime.context_policy import (
@@ -126,7 +131,39 @@ def test_codex_catalog_uses_backend_compatible_client_version() -> None:
 
     catalog = CodexModelCatalog(_Auth())  # type: ignore[arg-type]
 
-    assert catalog.client_version == "0.0.0"
+    assert catalog.client_version == "0.144.1"
+
+
+@pytest.mark.asyncio
+async def test_codex_catalog_only_returns_api_selectable_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Auth:
+        def headers(self, *, force_refresh: bool = False) -> dict[str, str]:
+            return {"Authorization": "Bearer test"}
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            base = {"context_window": 128_000}
+            return {
+                "models": [
+                    {**base, "slug": "visible"},
+                    {**base, "slug": "hidden", "visibility": "hide"},
+                    {**base, "slug": "unsupported", "supported_in_api": False},
+                ]
+            }
+
+    async def fake_get(self: object, *args: object, **kwargs: object) -> _Response:
+        return _Response()
+
+    monkeypatch.setattr("httpx.AsyncClient.get", fake_get)
+
+    models = await CodexModelCatalog(_Auth()).list_models()  # type: ignore[arg-type]
+
+    assert [model.slug for model in models] == ["visible"]
 
 
 def test_responses_adapter_preserves_tools_and_usage() -> None:
@@ -157,6 +194,90 @@ def test_responses_adapter_preserves_tools_and_usage() -> None:
     assert usage.cached_input_tokens == 70
     assert usage.reasoning_output_tokens == 8
     assert usage.total_tokens == 120
+
+
+def test_codex_payload_matches_chatgpt_responses_contract() -> None:
+    class _Auth:
+        pass
+
+    transport = CodexResponsesTransport(_Auth(), runtime_id="main")  # type: ignore[arg-type]
+    payload = transport._build_payload(
+        ModelRequest(
+            messages=[{"role": "user", "content": "hello"}],
+            tools=[],
+            model="gpt-test",
+            max_output_tokens=8192,
+        )
+    )
+
+    assert "max_output_tokens" not in payload
+    assert payload["tool_choice"] == "auto"
+    assert payload["parallel_tool_calls"] is True
+
+
+def test_codex_lite_payload_embeds_tools_and_instructions() -> None:
+    class _Auth:
+        pass
+
+    transport = CodexResponsesTransport(
+        _Auth(), runtime_id="main", use_responses_lite=True  # type: ignore[arg-type]
+    )
+    payload = transport._build_payload(
+        ModelRequest(
+            messages=[{"role": "user", "content": "hello"}],
+            tools=[{"type": "function", "function": {"name": "lookup"}}],
+            model="gpt-test",
+            max_output_tokens=8192,
+            system_prompt="system",
+            reasoning_effort="high",
+        )
+    )
+
+    assert payload["instructions"] == ""
+    assert "tools" not in payload
+    assert payload["input"][0]["type"] == "additional_tools"
+    assert payload["input"][1]["role"] == "developer"
+    assert payload["parallel_tool_calls"] is False
+    assert payload["reasoning"]["context"] == "all_turns"
+
+
+def test_codex_lite_keeps_reasoning_context_without_explicit_effort() -> None:
+    class _Auth:
+        pass
+
+    transport = CodexResponsesTransport(
+        _Auth(),  # type: ignore[arg-type]
+        runtime_id="main",
+        use_responses_lite=True,
+        reasoning_summary="auto",
+    )
+    payload = transport._build_payload(
+        ModelRequest(messages=[], tools=[], model="gpt-test", max_output_tokens=8192)
+    )
+
+    assert payload["reasoning"] == {"summary": "auto", "context": "all_turns"}
+
+
+def test_codex_named_tool_choice_filters_and_requires_tool() -> None:
+    class _Auth:
+        pass
+
+    transport = CodexResponsesTransport(_Auth(), runtime_id="main")  # type: ignore[arg-type]
+    payload = transport._build_payload(
+        ModelRequest(
+            messages=[],
+            tools=[
+                {"type": "function", "function": {"name": "first"}},
+                {"type": "function", "function": {"name": "finish"}},
+            ],
+            model="gpt-test",
+            max_output_tokens=100,
+            tool_choice={"type": "function", "function": {"name": "finish"}},
+        )
+    )
+
+    assert payload["tool_choice"] == "required"
+    assert [tool["name"] for tool in payload["tools"]] == ["finish"]
 
 
 def test_responses_transport_only_owns_network_timeouts() -> None:
@@ -217,6 +338,30 @@ memory_window = 160
     assert config.light_model == ""
 
 
+def test_runtime_config_rejects_unknown_reasoning_summary(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[llm]
+main = "codex_main"
+
+[llm.runtimes.codex_main]
+provider = "codex"
+auth = "codex_default"
+model = "gpt-test"
+reasoning_summary = "verbose"
+context_window = 128000
+
+[agent]
+system_prompt = "test"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="reasoning_summary"):
+        load_config(path)
+
+
 def test_session_boundary_rejects_invalid_continuation_state() -> None:
     payload = json.dumps(
         {
@@ -243,7 +388,13 @@ async def test_responses_stream_builds_tool_usage_and_reasoning_state() -> None:
         yield {"type": "response.output_text.delta", "delta": "结果"}
         yield {
             "type": "response.output_item.done",
-            "item": {"type": "reasoning", "id": "r1", "encrypted_content": "opaque"},
+            "item": {
+                "type": "reasoning",
+                "id": "r1",
+                "status": "completed",
+                "summary": [],
+                "encrypted_content": "opaque",
+            },
         }
         yield {
             "type": "response.output_item.done",
@@ -277,8 +428,52 @@ async def test_responses_stream_builds_tool_usage_and_reasoning_state() -> None:
     assert result.cache_hit_tokens == 20
     assert result.continuation is not None
     assert result.continuation.items == (
-        {"type": "reasoning", "id": "r1", "encrypted_content": "opaque"},
+        {"type": "reasoning", "summary": [], "encrypted_content": "opaque"},
     )
+
+
+@pytest.mark.asyncio
+async def test_responses_stream_rejects_eof_before_completed() -> None:
+    class _Auth:
+        pass
+
+    async def events():
+        yield {"type": "response.output_text.delta", "delta": "partial"}
+
+    transport = CodexResponsesTransport(_Auth(), runtime_id="main")  # type: ignore[arg-type]
+    with pytest.raises(TransportError, match="completed 事件前断流"):
+        await transport._consume_stream(
+            events(),
+            ModelRequest(messages=[], tools=[], model="gpt-test", max_output_tokens=100),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("code", "error_type"),
+    [
+        ("context_length_exceeded", ContextWindowError),
+        ("rate_limit_exceeded", RateLimitError),
+    ],
+)
+async def test_responses_stream_classifies_terminal_errors(
+    code: str, error_type: type[Exception]
+) -> None:
+    class _Auth:
+        pass
+
+    async def events():
+        yield {
+            "type": "response.failed",
+            "response": {"error": {"code": code, "message": "failed"}},
+        }
+
+    transport = CodexResponsesTransport(_Auth(), runtime_id="main")  # type: ignore[arg-type]
+    with pytest.raises(error_type):
+        await transport._consume_stream(
+            events(),
+            ModelRequest(messages=[], tools=[], model="gpt-test", max_output_tokens=100),
+        )
 
 
 def _state(runtime: str, model: str, item_id: str) -> dict[str, object]:
@@ -339,8 +534,8 @@ def test_responses_replays_only_matching_runtime_transport_and_model() -> None:
 
     converted, _ = _responses_input(messages, "", runtime_id="main", model="gpt-test")
 
-    reasoning_ids = [item["id"] for item in converted if item.get("type") == "reasoning"]
-    assert reasoning_ids == ["keep"]
+    reasoning_items = [item for item in converted if item.get("type") == "reasoning"]
+    assert reasoning_items == [{"type": "reasoning", "encrypted_content": "opaque"}]
     assert [item["content"] for item in converted if item.get("role") == "assistant"] == [
         "one",
         "two",

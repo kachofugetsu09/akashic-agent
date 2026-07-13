@@ -51,6 +51,9 @@ class ModelRuntimeRegistry:
         read_timeout_s: float,
         write_timeout_s: float,
         pool_timeout_s: float,
+        use_responses_lite: bool,
+        supports_parallel_tool_calls: bool,
+        reasoning_summary: str,
     ) -> CodexResponsesTransport:
         assembly = self.assembly("codex")
         if assembly.transport != "responses":
@@ -64,6 +67,9 @@ class ModelRuntimeRegistry:
             read_timeout_s=read_timeout_s,
             write_timeout_s=write_timeout_s,
             pool_timeout_s=pool_timeout_s,
+            use_responses_lite=use_responses_lite,
+            supports_parallel_tool_calls=supports_parallel_tool_calls,
+            reasoning_summary=reasoning_summary,
         )
 
     def build_runtime(
@@ -77,6 +83,9 @@ class ModelRuntimeRegistry:
         read_timeout_s: float,
         write_timeout_s: float,
         pool_timeout_s: float,
+        use_responses_lite: bool,
+        supports_parallel_tool_calls: bool,
+        reasoning_summary: str,
         chat_factory: Callable[[str], Any],
     ) -> ModelRuntime:
         """按 preset 选择 transport/profile，并返回统一 runtime。"""
@@ -90,6 +99,9 @@ class ModelRuntimeRegistry:
                 read_timeout_s=read_timeout_s,
                 write_timeout_s=write_timeout_s,
                 pool_timeout_s=pool_timeout_s,
+                use_responses_lite=use_responses_lite,
+                supports_parallel_tool_calls=supports_parallel_tool_calls,
+                reasoning_summary=reasoning_summary,
             )
             return ResponsesRuntime(transport)
         if assembly.transport == "chat_completions":

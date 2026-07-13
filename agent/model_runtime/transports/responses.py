@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
+import uuid
 from typing import Any, cast
 
 import httpx
 import openai
 from openai import AsyncOpenAI
 
-from agent.model_runtime.auth.codex import CODEX_API_BASE, CodexAuthDriver
+from agent.model_runtime.auth.codex import (
+    CODEX_API_BASE,
+    CODEX_CLIENT_VERSION,
+    CodexAuthDriver,
+)
 from agent.model_runtime.errors import (
     AuthenticationError,
     ContextWindowError,
@@ -39,10 +43,20 @@ class CodexResponsesTransport:
         read_timeout_s: float = 120,
         write_timeout_s: float = 30,
         pool_timeout_s: float = 30,
+        use_responses_lite: bool = False,
+        supports_parallel_tool_calls: bool = True,
+        reasoning_summary: str = "none",
     ) -> None:
         self.auth = auth
         self.runtime_id = runtime_id
         self.base_url = base_url
+        self.use_responses_lite = use_responses_lite
+        self.supports_parallel_tool_calls = supports_parallel_tool_calls
+        self.reasoning_summary = reasoning_summary
+        self.installation_id = str(uuid.uuid4())
+        self.session_id = str(uuid.uuid4())
+        self.thread_id = str(uuid.uuid4())
+        self.window_id = str(uuid.uuid4())
         self.network_timeout = httpx.Timeout(
             connect=connect_timeout_s,
             read=read_timeout_s,
@@ -60,13 +74,21 @@ class CodexResponsesTransport:
         self, request: ModelRequest, *, force_refresh: bool
     ) -> LLMResponse:
         headers = await asyncio.to_thread(self.auth.headers, force_refresh=force_refresh)
+        default_headers = {
+            "ChatGPT-Account-ID": headers.get("ChatGPT-Account-ID", ""),
+            "originator": "codex_cli_rs",
+            "User-Agent": f"codex_cli_rs/{CODEX_CLIENT_VERSION}",
+            "x-codex-installation-id": self.installation_id,
+            "session-id": self.session_id,
+            "thread-id": self.thread_id,
+            "x-codex-window-id": self.window_id,
+        }
+        if self.use_responses_lite:
+            default_headers["x-openai-internal-codex-responses-lite"] = "true"
         client = AsyncOpenAI(
             api_key=headers["Authorization"].removeprefix("Bearer "),
             base_url=self.base_url,
-            default_headers={
-                "ChatGPT-Account-ID": headers.get("ChatGPT-Account-ID", ""),
-                "OpenAI-Beta": "responses=experimental",
-            },
+            default_headers=default_headers,
             timeout=self.network_timeout,
             max_retries=0,
         )
@@ -98,24 +120,35 @@ class CodexResponsesTransport:
             runtime_id=self.runtime_id,
             model=request.model,
         )
+        tools = _responses_tools(request.tools)
+        tool_choice, tools = _normalize_tool_choice(request.tool_choice, tools)
+        if self.use_responses_lite:
+            messages = _responses_lite_input(messages, instructions, tools)
+            instructions = ""
         payload: dict[str, Any] = {
             "model": request.model,
             "instructions": instructions,
             "input": messages,
-            "max_output_tokens": request.max_output_tokens,
+            "tool_choice": tool_choice,
+            "parallel_tool_calls": (
+                self.supports_parallel_tool_calls and not self.use_responses_lite
+            ),
             "store": False,
             "stream": True,
             "include": ["reasoning.encrypted_content"],
         }
+        reasoning: dict[str, str] = {}
         if request.reasoning_effort:
-            payload["reasoning"] = {
-                "effort": _normalize_effort(request.reasoning_effort),
-                "summary": "auto",
-            }
-        tools = _responses_tools(request.tools)
-        if tools:
-            payload.update(tools=tools, tool_choice=request.tool_choice, parallel_tool_calls=True)
-        cache_key = request.prompt_cache_key or _prompt_cache_key(instructions, tools)
+            reasoning["effort"] = _normalize_effort(request.reasoning_effort)
+        if self.reasoning_summary != "none":
+            reasoning["summary"] = self.reasoning_summary
+        if self.use_responses_lite:
+            reasoning["context"] = "all_turns"
+        if reasoning:
+            payload["reasoning"] = reasoning
+        if tools and not self.use_responses_lite:
+            payload["tools"] = tools
+        cache_key = request.prompt_cache_key or self.thread_id
         if cache_key:
             payload["prompt_cache_key"] = cache_key
         return payload
@@ -127,6 +160,7 @@ class CodexResponsesTransport:
         tool_args: dict[str, dict[str, str]] = {}
         output_items: list[dict[str, Any]] = []
         usage: ModelUsage | None = None
+        completed = False
         iterator = aiter(stream)
         while True:
             try:
@@ -143,6 +177,15 @@ class CodexResponsesTransport:
                 thinking.append(delta)
                 if request.on_delta:
                     await request.on_delta({"thinking_delta": delta})
+            elif event_type == "response.reasoning_summary_text.done":
+                done_text = _field(event, "text")
+                current = "".join(thinking)
+                if isinstance(done_text, str) and done_text.startswith(current):
+                    suffix = done_text[len(current) :]
+                    if suffix:
+                        thinking.append(suffix)
+                        if request.on_delta:
+                            await request.on_delta({"thinking_delta": suffix})
             elif event_type == "response.function_call_arguments.delta":
                 item_id = str(_field(event, "item_id") or _field(event, "output_index") or "")
                 slot = tool_args.setdefault(item_id, {"arguments": ""})
@@ -151,7 +194,7 @@ class CodexResponsesTransport:
                 item = _dump(_field(event, "item"))
                 if item:
                     if item.get("type") == "reasoning":
-                        output_items.append(item)
+                        output_items.append(_sanitize_replay_item(item))
                     if item.get("type") == "function_call":
                         item_id = str(item.get("id") or item.get("call_id") or "")
                         tool_args[item_id] = {
@@ -162,10 +205,14 @@ class CodexResponsesTransport:
             elif event_type == "response.completed":
                 response = _field(event, "response")
                 usage = _parse_usage(_field(response, "usage"))
+                completed = True
+                break
             elif event_type in {"response.failed", "response.incomplete"}:
                 response = _field(event, "response")
                 error = _field(response, "error") or _field(response, "incomplete_details")
-                raise TransportError(f"Codex Responses 未完成: {error}")
+                _raise_stream_error(error)
+        if not completed:
+            raise TransportError("Codex Responses 在 completed 事件前断流")
         calls = [_tool_call(value) for value in tool_args.values() if value.get("name")]
         continuation = ContinuationState(
             runtime_id=self.runtime_id,
@@ -204,7 +251,11 @@ def _responses_input(
         if _matches_continuation(state, runtime_id=runtime_id, model=model):
             items = state.get("items")
             if isinstance(items, list):
-                result.extend(items)
+                result.extend(
+                    _sanitize_replay_item(item)
+                    for item in items
+                    if isinstance(item, dict)
+                )
         if role == "tool":
             result.append(
                 {
@@ -291,11 +342,71 @@ def _responses_tools(tools: list[dict]) -> list[dict]:
     return result
 
 
-def _prompt_cache_key(instructions: str, tools: list[dict]) -> str | None:
-    if not instructions and not tools:
-        return None
-    static = instructions + "\0" + json.dumps(tools, sort_keys=True, ensure_ascii=False)
-    return "pck_" + hashlib.sha256(static.encode()).hexdigest()[:24]
+def _normalize_tool_choice(
+    tool_choice: str | dict[str, Any], tools: list[dict]
+) -> tuple[str, list[dict]]:
+    """把 Chat Completions 工具选择收敛为 Codex Responses 字符串契约。"""
+    if isinstance(tool_choice, str):
+        if tool_choice not in {"auto", "none", "required"}:
+            raise TransportError(f"Responses 不支持的 tool_choice: {tool_choice}")
+        return tool_choice, tools
+    function = tool_choice.get("function")
+    name = function.get("name") if isinstance(function, dict) else tool_choice.get("name")
+    if tool_choice.get("type") != "function" or not isinstance(name, str) or not name:
+        raise TransportError("Responses 命名 tool_choice 结构无效")
+    selected = [tool for tool in tools if tool.get("name") == name]
+    if not selected:
+        raise TransportError(f"Responses 命名 tool_choice 引用了未知工具: {name}")
+    return "required", selected
+
+
+def _responses_lite_input(
+    messages: list[dict], instructions: str, tools: list[dict]
+) -> list[dict]:
+    """按 Codex Responses Lite 契约内嵌工具和开发者指令。"""
+    prefix: list[dict] = [
+        {"type": "additional_tools", "role": "developer", "tools": tools}
+    ]
+    if instructions:
+        prefix.append(
+            {
+                "type": "message",
+                "role": "developer",
+                "content": [{"type": "input_text", "text": instructions}],
+            }
+        )
+    return [*prefix, *_strip_image_details(messages)]
+
+
+def _strip_image_details(items: list[dict]) -> list[dict]:
+    """复制 Lite input，并移除后端不接受的图片 detail。"""
+    copied = json.loads(json.dumps(items, ensure_ascii=False))
+    for item in copied:
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "input_image":
+                _ = block.pop("detail", None)
+    return cast(list[dict], copied)
+
+
+def _sanitize_replay_item(item: dict[str, Any]) -> dict[str, Any]:
+    """只保留 reasoning 重放契约允许的字段。"""
+    if item.get("type") != "reasoning":
+        raise TransportError(f"Responses continuation 包含不支持的 item: {item.get('type')}")
+    allowed = {"type", "summary", "content", "encrypted_content"}
+    return {key: value for key, value in item.items() if key in allowed}
+
+
+def _raise_stream_error(error: Any) -> None:
+    code = str(_field(error, "code") or "").lower()
+    message = str(_field(error, "message") or error or "未知错误")
+    if code in {"context_length_exceeded", "context_window_exceeded"}:
+        raise ContextWindowError(f"Codex 请求超过上下文窗口: {message}")
+    if code in {"rate_limit_exceeded", "rate_limit_error", "insufficient_quota"}:
+        raise RateLimitError(f"Codex 请求受限: {message}")
+    raise TransportError(f"Codex Responses 未完成 code={code or '-'}: {message}")
 
 
 def _normalize_effort(value: str) -> str:

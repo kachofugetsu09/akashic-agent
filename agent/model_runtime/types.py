@@ -50,10 +50,13 @@ class ModelCapabilities:
     supports_image_original_detail: bool = False
     supports_tool_calling: bool = True
     supports_parallel_tool_calls: bool = True
+    supports_reasoning_summaries: bool = False
+    default_reasoning_summary: str = "none"
     supported_tool_choices: tuple[str, ...] = ("auto", "none", "required")
     supports_streaming: bool = True
     supports_stream_usage: bool = True
     supports_prompt_cache: bool = False
+    use_responses_lite: bool = False
     continuation_mode: str = "messages"
     source: CapabilitySource = CapabilitySource.MANUAL
 

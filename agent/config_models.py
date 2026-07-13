@@ -100,6 +100,9 @@ class ModelRuntimeConfig:
     max_output_tokens: int = 8192
     input_modalities: tuple[str, ...] = ("text",)
     effective_context_percent: float = 0.9
+    use_responses_lite: bool = False
+    supports_parallel_tool_calls: bool = True
+    reasoning_summary: str = "none"
 
     def __post_init__(self) -> None:
         if not self.provider or not self.model:
@@ -155,6 +158,9 @@ class Config:
     reasoning_effort: str = ""
     input_modalities: tuple[str, ...] = ("text",)
     effective_context_percent: float = 0.9
+    use_responses_lite: bool = False
+    supports_parallel_tool_calls: bool = True
+    reasoning_summary: str = "none"
     model_runtimes: dict[str, ModelRuntimeConfig] = field(default_factory=dict)
     fast_runtime_id: str = ""
     agent_runtime_id: str = ""

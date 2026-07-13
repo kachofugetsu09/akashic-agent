@@ -154,6 +154,10 @@ def test_codex_phase_reuses_existing_auth_by_default(
         default_reasoning_effort="",
         context_window=128_000,
         input_modalities=("text",),
+        use_responses_lite=False,
+        supports_parallel_tool_calls=True,
+        supports_reasoning_summaries=True,
+        default_reasoning_summary="none",
     )
     model = SimpleNamespace(
         slug="gpt-test",
@@ -185,3 +189,4 @@ def test_codex_phase_reuses_existing_auth_by_default(
     assert login_started is False
     assert answers.model == "gpt-test"
     assert answers.context_window == 128_000
+    assert answers.reasoning_summary == "auto"

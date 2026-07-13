@@ -525,6 +525,9 @@ class LLMProvider:
         runtime_id: str = "main",
         context_window: int = 0,
         effective_context_percent: float = 0.9,
+        use_responses_lite: bool = False,
+        supports_parallel_tool_calls: bool = True,
+        reasoning_summary: str = "none",
         force_disable_thinking: bool = False,
         payload_snapshot_enabled: bool | None = None,
     ) -> None:
@@ -546,6 +549,9 @@ class LLMProvider:
             read_timeout_s=read_timeout_s,
             write_timeout_s=write_timeout_s,
             pool_timeout_s=pool_timeout_s,
+            use_responses_lite=use_responses_lite,
+            supports_parallel_tool_calls=supports_parallel_tool_calls,
+            reasoning_summary=reasoning_summary,
             chat_factory=lambda profile_name: ChatCompletionsRuntime(
                 api_key=api_key,
                 base_url=base_url,
@@ -605,16 +611,48 @@ class LLMProvider:
             return
         effective = math.floor(self._context_window * self._effective_context_percent)
         input_budget = effective - max_tokens
-        payload = json.dumps(
-            {"system": self._system, "messages": messages, "tools": tools},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        estimated = max(1, len(payload) // 3)
+        estimated = _estimate_context_tokens(self._system, messages, tools)
         if input_budget <= 0 or estimated > input_budget:
             raise ContextLengthError(
                 f"上下文估算超限 estimated={estimated} budget={input_budget} quality=approximate"
             )
+
+
+def _estimate_context_tokens(
+    system_prompt: str, messages: list[dict], tools: list[dict]
+) -> int:
+    """估算文本与图片块预算，避免把 data URI 当作文本 token。"""
+    text_chars = len(system_prompt) + len(
+        json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
+    )
+    image_tokens = 0
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") in {
+                    "image_url",
+                    "input_image",
+                }:
+                    detail = block.get("detail")
+                    image = block.get("image_url")
+                    if isinstance(image, dict):
+                        detail = image.get("detail", detail)
+                    image_tokens += 1024 if detail == "low" else 8192
+                    continue
+                text_chars += len(
+                    json.dumps(block, ensure_ascii=False, separators=(",", ":"))
+                )
+        elif content is not None:
+            text_chars += len(str(content))
+        text_chars += len(
+            json.dumps(
+                {key: value for key, value in message.items() if key != "content"},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
+    return max(1, text_chars // 3 + image_tokens)
 
 
 def _get_field(delta: Any, name: str) -> Any:

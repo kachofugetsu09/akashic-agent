@@ -211,6 +211,18 @@ def load_config(path: str | Path = "config.toml") -> Config:
         reasoning_effort=str(llm_main.get("reasoning_effort") or ""),
         input_modalities=tuple(str(item) for item in llm_main.get("input_modalities", ["text"])),
         effective_context_percent=float(llm_main.get("effective_context_percent", 0.9)),
+        use_responses_lite=_as_bool(
+            llm_main.get("use_responses_lite", False),
+            field="llm.main.use_responses_lite",
+        ),
+        supports_parallel_tool_calls=_as_bool(
+            llm_main.get("supports_parallel_tool_calls", True),
+            field="llm.main.supports_parallel_tool_calls",
+        ),
+        reasoning_summary=_as_reasoning_summary(
+            llm_main.get("reasoning_summary"),
+            field="llm.main.reasoning_summary",
+        ),
         model_runtimes=model_runtimes,
         fast_runtime_id=fast_runtime_id,
         agent_runtime_id=agent_runtime_id,
@@ -449,6 +461,18 @@ def _load_llm_runtimes(
             max_output_tokens=int(item.get("max_output_tokens") or 8192),
             input_modalities=tuple(modalities),
             effective_context_percent=float(item.get("effective_context_percent", 0.9)),
+            use_responses_lite=_as_bool(
+                item.get("use_responses_lite", False),
+                field=f"llm.runtimes.{runtime_id}.use_responses_lite",
+            ),
+            supports_parallel_tool_calls=_as_bool(
+                item.get("supports_parallel_tool_calls", True),
+                field=f"llm.runtimes.{runtime_id}.supports_parallel_tool_calls",
+            ),
+            reasoning_summary=_as_reasoning_summary(
+                item.get("reasoning_summary"),
+                field=f"llm.runtimes.{runtime_id}.reasoning_summary",
+            ),
         )
     return main_value, raw_main, parsed
 
@@ -508,6 +532,13 @@ def _as_bool(value: object, *, field: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{field} 必须是布尔值")
     return value
+
+
+def _as_reasoning_summary(value: object, *, field: str) -> str:
+    summary = str(value or "none")
+    if summary not in {"none", "auto", "concise", "detailed"}:
+        raise ValueError(f"{field} 必须是 none、auto、concise 或 detailed")
+    return summary
 
 
 def _normalize_optional_config_text(value: str) -> str:
