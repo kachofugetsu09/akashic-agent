@@ -17,7 +17,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
-from typing import ParamSpec, TypeVar, cast
+from typing import NotRequired, ParamSpec, TypedDict, TypeVar, cast
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -33,7 +33,26 @@ logger = logging.getLogger(__name__)
 
 VEC_DIM = 1024  # 默认维度，MemoryStore2 构造时可覆盖
 _LOCAL_TZ = ZoneInfo("Asia/Shanghai")
-_MemoryHit = dict[str, object]
+
+
+class MemoryHit(TypedDict):
+    """MemoryStore2 检索 lane 输出的候选记忆结构。"""
+
+    id: str
+    memory_type: str
+    summary: str
+    source_ref: str
+    happened_at: str
+    score: NotRequired[float]
+    keyword_score: NotRequired[float]
+    extra_json: NotRequired[dict[str, object]]
+    _score_debug: NotRequired[dict[str, float]]
+    forced: NotRequired[bool]
+    confidence_label: NotRequired[str]
+    rrf_score: NotRequired[float]
+
+
+_MemoryHit = MemoryHit
 _EmbeddingRow = tuple[
     str,
     str,
@@ -261,9 +280,11 @@ def _is_memory_time_in_range(
     return True
 
 
-def _result_score(item: dict[str, object]) -> float:
-    raw = item.get("score", 0.0)
-    return float(raw) if isinstance(raw, int | float) else 0.0
+def _result_score(item: MemoryHit) -> float:
+    raw = item.get("score")
+    if isinstance(raw, bool) or not isinstance(raw, int | float):
+        raise TypeError(f"memory hit {item['id']!r} has no numeric score")
+    return float(raw)
 
 
 def _local_naive_iso(dt: datetime) -> str:
@@ -1038,7 +1059,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         memory_type: str = "",
         score_threshold: float = 0.0,
         include_superseded: bool = False,
-    ) -> list[dict[str, object]]:
+    ) -> list[MemoryHit]:
         base = self.get_item_for_dashboard(item_id, include_embedding=True)
         if base is None:
             raise KeyError(item_id)
@@ -1198,7 +1219,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         hotness_half_life_days: float = 14.0,
         time_start: datetime | None = None,
         time_end: datetime | None = None,
-    ) -> list[dict[str, object]]:
+    ) -> list[MemoryHit]:
         """cosine similarity 检索，返回 top-k 结果。
         hotness_alpha > 0 时启用热度融合：final = (1-alpha)*semantic + alpha*hotness。
         """
@@ -1262,7 +1283,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         hotness_half_life_days: float = 14.0,
         time_start: datetime | None = None,
         time_end: datetime | None = None,
-    ) -> list[list[dict[str, object]]]:
+    ) -> list[list[MemoryHit]]:
         if not query_vecs:
             return []
         if time_start is None and time_end is None:
@@ -1342,7 +1363,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         require_scope_match: bool = False,
         hotness_alpha: float = 0.0,
         hotness_half_life_days: float = 14.0,
-    ) -> list[_MemoryHit]:
+    ) -> list[MemoryHit]:
         """sqlite-vec KNN 检索路径。维度不符时自动回退全表扫描。"""
         if len(query_vec) != self._vec_dim:
             logger.debug(
@@ -1485,7 +1506,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         time_start: datetime | None = None,
         time_end: datetime | None = None,
         rows: list[_EmbeddingRow] | None = None,
-    ) -> list[_MemoryHit]:
+    ) -> list[MemoryHit]:
         """全表扫描回退路径（sqlite-vec 不可用时使用）。"""
         has_time_filter = time_start is not None or time_end is not None
         if rows is not None:
@@ -1539,7 +1560,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         score_threshold: float,
         hotness_alpha: float,
         hotness_half_life_days: float,
-    ) -> list[dict[str, object]]:
+    ) -> list[MemoryHit]:
         if not rows:
             return []
 
@@ -1876,7 +1897,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         scope_channel: str | None = None,
         scope_chat_id: str | None = None,
         require_scope_match: bool = False,
-    ) -> list[dict[str, object]]:
+    ) -> list[MemoryHit]:
         """对 summary 字段做 OR-LIKE 关键字检索，按命中词数降序排列。
 
         每条结果携带 keyword_score（命中词数 / 总词数），供 RRF 融合使用。

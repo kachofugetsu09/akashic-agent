@@ -19,7 +19,7 @@ from core.memory.engine import EvidenceRef, MemoryQueryResult, MemoryRecord, Mem
 from plugins.default_memory.engine import DefaultMemoryEngine
 from memory2.embedder import Embedder
 from memory2.retriever import Retriever
-from memory2.store import MemoryStore2
+from memory2.store import MemoryHit, MemoryStore2
 
 _MemoryHit: TypeAlias = dict[str, object]
 _EmbeddingRow: TypeAlias = tuple[
@@ -88,6 +88,11 @@ class _FakeProvider:
 class _FailingEmbedder:
     async def embed(self, text: str) -> list[float]:
         raise RuntimeError(f"embed failed: {text}")
+
+
+class _CancelledEmbedder:
+    async def embed(self, text: str) -> list[float]:
+        raise asyncio.CancelledError
 
 
 class _HangingEmbedder:
@@ -781,6 +786,103 @@ async def test_recall_memory_falls_back_to_keyword_when_query_embed_hangs(
     assert payload["count"] == 1
     assert payload["items"][0]["id"] == "mem:1"
     assert store.vector_search_called is False
+
+
+@pytest.mark.asyncio
+async def test_retriever_propagates_embedding_cancellation() -> None:
+    store = _KeywordOnlyStore()
+    retriever = Retriever(cast(MemoryStore2, store), cast(Embedder, _CancelledEmbedder()))
+
+    with pytest.raises(asyncio.CancelledError):
+        await retriever.retrieve("phase 支付")
+
+    assert store.vector_search_called is False
+
+
+def test_rrf_merge_uses_stable_id_tiebreak() -> None:
+    vector_items: list[MemoryHit] = [
+        {
+            "id": "filler",
+            "memory_type": "event",
+            "summary": "",
+            "source_ref": "",
+            "happened_at": "",
+            "score": 0.5,
+        },
+        {
+            "id": "A",
+            "memory_type": "event",
+            "summary": "",
+            "source_ref": "",
+            "happened_at": "",
+            "score": 0.5,
+        },
+        {
+            "id": "B",
+            "memory_type": "event",
+            "summary": "",
+            "source_ref": "",
+            "happened_at": "",
+            "score": 0.5,
+        },
+    ]
+    keyword_items: list[MemoryHit] = [
+        {
+            "id": item_id,
+            "memory_type": "event",
+            "summary": "",
+            "source_ref": "",
+            "happened_at": "",
+            "keyword_score": 0.5,
+        }
+        for item_id in ("k1", "B", "k2", "k3", "k4", "A")
+    ]
+
+    hits = retriever_module._rrf_merge(
+        vector_items,
+        keyword_items,
+        top_n=3,
+        k=0,
+    )
+
+    assert [item["id"] for item in hits] == ["filler", "A", "B"]
+
+
+def test_rrf_merge_rejects_missing_vector_score() -> None:
+    broken_hit = MemoryHit(
+        id="broken",
+        memory_type="event",
+        summary="",
+        source_ref="",
+        happened_at="",
+    )
+
+    with pytest.raises(TypeError, match="no numeric score"):
+        retriever_module._rrf_merge(
+            [broken_hit],
+            [],
+            top_n=1,
+        )
+
+
+def test_retriever_rejects_invalid_procedure_steps(tmp_path: Path) -> None:
+    hit = MemoryHit(
+        id="procedure:broken",
+        memory_type="procedure",
+        summary="损坏的流程",
+        source_ref="",
+        happened_at="",
+        score=0.9,
+        extra_json={"steps": "不是列表"},
+    )
+    store = MemoryStore2(tmp_path / "memory2.db")
+    retriever = Retriever(store, cast(Embedder, _HangingEmbedder()))
+
+    try:
+        with pytest.raises(TypeError, match="invalid steps"):
+            retriever.build_injection_block([hit])
+    finally:
+        store.close()
 
 
 def test_recall_memory_description_is_profile_backed() -> None:
