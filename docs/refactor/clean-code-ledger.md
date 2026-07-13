@@ -1239,3 +1239,42 @@
 - 测试新增：query lane 降级原因、profile 失败不重试、vec 迁移回滚；测试删除：无。
 - 验证结果：Memory2/Profile 定向 `77 passed`，修改范围 pyright `0 errors`；本批组合全量 `1850 passed in 26.31s`，全库 pyright `0 errors`（2313 个既有 warnings），`git diff --check` 通过。
 - 残余风险：QueryRewriter、ProfileFactExtractor 和 SufficiencyChecker 当前主要由测试/eval 路径使用；状态已经在返回协议中明确，但未来接入主运行链时仍需决定降级是否应阻断该具体业务，不在底层假造统一策略。
+
+### `71c53458` + `0142d9af` `refactor(memory): harden markdown consolidation contracts`
+
+- 范围：Markdown consolidation 模型响应、去重标记恢复、维护队列、会话 scope 与 Memory Profile API。
+- 原问题：模型输出缺少严格 schema，维护失败可从后台任务丢失；同轮重复读取 `RECENT_CONTEXT.md`；内部 API 通过动态属性和空值兼容掩盖契约错误；首版重构又错误地从可覆盖的 `session.key` 推导 channel/chat scope。
+- 为什么这样修改：模型和 SQLite/文件恢复在各自信任边界校验；后台维护任务显式保留并观察异常；同轮复用一次 recent context；内部调用改为明确协议。主审将 `TurnCommitted` 的真实 channel/chat 作为 scope owner 贯穿队列，拒绝从字符串 session key 反推身份。
+- 不变量与拥有层：Turn lifecycle 拥有真实 channel/chat；Session 只拥有可覆盖的存储 key；模型 parser 拥有 consolidation JSON schema；MemoryStore 拥有 sidecar/Markdown 恢复；maintenance runtime 拥有后台任务失败可见性。
+- 能力变化：正常 consolidation、marker 去重、文件恢复和维护调度不变；`agent_context` 作为 prompt 已声明标签现在可被合法解析；坏模型结构、坏 SQLite flag、缺失恢复 payload 与持久化失败明确暴露；自定义 session key 不再污染记忆 scope。
+- 性能变化：一次 consolidation 的 `RECENT_CONTEXT.md` 读取由 2 次降为 1 次；其余正常 I/O 与模型调用次数不变。
+- 测试新增：严格模型 schema、持久化失败、marker 恢复 payload/flag、后台维护失败、真实 event scope 与自定义 session key。
+- 测试删除及原因：无。
+- 验证结果：主审修正后定向 `61 passed`；修改范围 pyright `0 errors`；组合全量 `1864 passed in 25.44s`，`git diff --check` 通过。
+- 残余风险：Markdown 文件与 sidecar 仍依靠现有恢复协议收敛跨文件提交窗口；本批没有引入新的事务存储层。
+
+### `6e72db6c` `fix(scheduler): commit lifecycle state atomically`
+
+- 范围：JobStore 持久化、任务新增/取消、启动 misfire 恢复、循环任务执行和 scheduler 停止语义。
+- 原问题：新增和取消会先修改内存再持久化，写盘失败造成内存/磁盘分叉；启动时推进或丢弃 misfire 后没有保存恢复状态；`stop()` 在 sleep 中触发仍可能多执行一次 tick。
+- 为什么这样修改：先验证并原子持久化候选 job catalog，成功后才替换内存状态；启动恢复产生的状态变化立即提交；sleep 返回后再次检查停止信号。循环任务执行失败仍按既有产品语义推进下次 fire time。
+- 不变量与拥有层：JobStore 拥有持久化 catalog 的原子替换；SchedulerService 拥有内存状态、misfire policy 和 tick 生命周期；任务 handler 错误继续由调度执行边界隔离并记录。
+- 能力变化：正常单次/循环调度、misfire grace、取消和 handler 隔离不变；持久化失败不再留下假成功内存状态；重启不会重新消费已推进的 misfire；停止后不再额外执行任务。
+- 性能变化：正常 add/cancel 的持久化次数不变；启动只在真实发生 misfire 状态迁移时增加一次必要提交，不声明提速。
+- 测试新增：add/cancel 写盘失败回滚、启动恢复持久化、sleep 中 stop、循环任务失败后的 reschedule。
+- 测试删除及原因：无。
+- 验证结果：定向 `67 passed`；修改范围 pyright `0 errors`（8 个既有 APScheduler 类型 warning）；组合全量 `1864 passed in 25.44s`，`git diff --check` 通过。
+- 残余风险：持久化 catalog 仍随任务数线性序列化；当前任务规模和 profile 没有证据支持引入增量日志或数据库。
+
+### `f5c45e26` `fix(config): reject ambiguous boolean values`
+
+- 范围：主 TOML 布尔配置边界、模型扩展参数、typed Config 到 provider 的内部调用。
+- 原问题：`bool("false")` 会把字符串配置解释为真，影响 dev mode、渠道启用、memory、tool、multimodal 和 thinking；非 table thinking 被静默忽略；provider 在 typed `Config` 后继续用 `getattr` 默认值掩盖缺失字段。
+- 为什么这样修改：在唯一 TOML 加载边界集中要求真实 bool；边界后 provider 直接读取 dataclass 字段；删除无调用者的递归配置解析 helper。拒绝合并副手 630 行的整套加载器改写，因为它把 `load_config` 膨胀到约 195 行并扩大了兼容语义变更。
+- 不变量与拥有层：TOML loader 拥有外部 scalar/schema 校验；`Config` dataclass 拥有运行期字段完整性；provider 信任已构造配置，不重复 fallback。现有数字字符串兼容、环境变量解析、渠道默认值和 wiring 语义未改。
+- 能力变化：合法布尔配置行为不变；字符串伪布尔和非 table thinking 现在携带字段名 fail-fast；真实本机 `config.toml` 继续成功加载。
+- 性能变化：非性能提交；删除动态属性查询和无调用 dead code，不宣称可测收益。
+- 测试新增：四类字符串布尔配置拒绝；provider 测试由 `SimpleNamespace + Any` 改为真实 `Config`。
+- 测试删除及原因：无。
+- 验证结果：定向 `80 passed`；真实配置加载通过；修改范围 pyright `0 errors`；组合全量 `1864 passed in 25.44s`，`git diff --check` 通过。
+- 残余风险：历史 loader 仍存在若干 `str()`/`int()` 兼容转换；本批只修复能导致配置含义翻转的布尔边界，避免无真实迁移证据地全面收紧格式。
