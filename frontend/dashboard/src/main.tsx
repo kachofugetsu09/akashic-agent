@@ -347,7 +347,7 @@ function App(): React.ReactElement {
 
   const loadPluginPanel = useCallback(async (pluginId: string) => {
     const plugin = plugins.find((item) => item.id === pluginId);
-    const state = pluginState[pluginId];
+    const state = readPluginState()[pluginId];
     if (!plugin || !state) return;
     const result = checkedPluginPage(plugin, await plugin.fetchPage({ page: state.page, pageSize: state.pageSize, filters: state.filters, sortBy: state.sortBy, sortOrder: state.sortOrder }));
     setPluginState((current) => ({
@@ -364,7 +364,7 @@ function App(): React.ReactElement {
           : null,
       },
     }));
-  }, [pluginState, plugins]);
+  }, [plugins, readPluginState]);
 
   const refreshCurrentView = useCallback(async () => {
     await loadSessions();
