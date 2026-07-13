@@ -801,14 +801,31 @@ def test_empty_content_without_thinking_no_retry():
 
 
 def test_get_history_since_consolidated_passes_session_cursor():
-    calls: list[tuple[int, int]] = []
+    calls: list[tuple[int, int | None]] = []
 
     class Session:
-        last_consolidated = 3
+        key = "test-session"
+        messages: list[dict[str, object]] = []
+        metadata: dict[str, object] = {}
+        last_consolidated: int = 3
 
-        def get_history(self, max_messages=40, *, start_index=None):
+        def get_history(
+            self,
+            max_messages: int = 500,
+            *,
+            start_index: int | None = None,
+        ) -> list[dict[str, object]]:
             calls.append((max_messages, start_index))
             return [{"role": "user", "content": "kept"}]
+
+        def add_message(
+            self,
+            role: str,
+            content: str,
+            media: list[str] | None = None,
+            **kwargs: object,
+        ) -> None:
+            return None
 
     history = get_history_since_consolidated(Session(), 40)
 

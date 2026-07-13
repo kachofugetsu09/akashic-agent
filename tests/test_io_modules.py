@@ -619,7 +619,7 @@ async def test_ipc_stop_closes_clients_and_unsubscribes(
     await channel.start()
 
     writer = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
-    channel._writers["active"] = writer
+    channel._writers["active"] = cast(asyncio.StreamWriter, writer)
     assert len(bus._subscribers["cli"]) == 1
 
     await channel.stop()
@@ -697,7 +697,7 @@ async def test_ipc_stop_unsubscribes_before_server_wait_closed_failure(
     )
     await channel.start()
     writer = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
-    channel._writers["active"] = writer
+    channel._writers["active"] = cast(asyncio.StreamWriter, writer)
     assert "cli" in bus._subscribers
 
     with pytest.raises(OSError, match="close failed"):
@@ -726,7 +726,10 @@ async def test_ipc_stop_waits_for_other_writers_after_one_wait_failure(
         wait_closed=AsyncMock(side_effect=OSError("writer close failed")),
     )
     healthy = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
-    channel._writers.update(failed=failed, healthy=healthy)
+    channel._writers.update(
+        failed=cast(asyncio.StreamWriter, failed),
+        healthy=cast(asyncio.StreamWriter, healthy),
+    )
 
     with pytest.raises(OSError, match="writer close failed"):
         await channel.stop()

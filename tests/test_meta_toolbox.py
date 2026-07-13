@@ -101,7 +101,7 @@ def test_common_meta_toolset_registers_load_skill(tmp_path):
         ToolsetDeps(
             config=None,
             workspace=tmp_path,
-            session_store=object(),
+            session_store=cast(Any, object()),
         ),
     )
 
