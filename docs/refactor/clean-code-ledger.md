@@ -1151,3 +1151,16 @@
 - 测试删除及原因：无。
 - 验证结果：EventBus 直接/调用方 `587 passed`；修改文件 pyright `0 errors, 0 warnings`；`git diff --check` 通过。
 - 残余风险：observer 业务失败仍按设计只记录并返回失败计数，不中断用户主链；只有 EventBus 自身 dispatcher/admission ownership 错误进入关闭失败。
+
+### `66cb2ae4` `fix(memory): expose marker read failures`
+
+- 范围：Markdown consolidation 去重标记的尾部扫描与全文件扫描。
+- 原问题：标记文件读取发生权限、I/O 或关闭错误时，两个内部 helper 都宽泛捕获并返回 `False`；调用方会把“无法确认”误判为“标记不存在”，从而重复追加同一 consolidation 内容。
+- 为什么这样修改：文件系统是持久化边界，读取失败没有可在本层完成的正确恢复动作；删除静默 fallback，让原始异常触发现有事务回滚并暴露给 consolidation owner。
+- 不变量与拥有层：`MemoryStore` 拥有 consolidation sidecar 与 Markdown 文件的一致性；文件不存在仍表示没有标记，存在但不可读属于存储失败。正常判重、崩溃恢复、sidecar 领先时的文件修复语义不变。
+- 能力变化：正常写入与去重结果不变；存储不可读时不再冒险重复写入，而是明确失败并等待上层处理或下一次重试。
+- 性能变化：正常路径删除异常捕获框架，扫描次数和复杂度不变；不声明可测性能收益。
+- 测试新增：两个标记 reader 在底层 `open()` 权限失败时均传播原始 `PermissionError`。
+- 测试删除及原因：无。
+- 验证结果：记忆写入与语义去重定向 `13 passed`；修改生产文件 pyright `0 errors`（25 个既有 warnings）；`git diff --check` 通过。
+- 残余风险：追加 Markdown 与写 sidecar 仍不是跨文件原子事务；现有 marker 恢复协议负责收敛该窗口，本次只消除了读失败时的错误判定。
