@@ -1,5 +1,6 @@
 import asyncio
 import io
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -9,15 +10,18 @@ import pytest
 
 from agent.config_models import PeerAgentConfig
 from agent.peer_agent.card_resolver import (
+    AgentCard,
     AgentCardSchemaError,
     fetch_agent_card,
 )
-from agent.peer_agent.poller import PeerAgentPoller
+from agent.peer_agent.poller import PeerAgentPoller, PeerTaskDuplicateError
 from agent.peer_agent.process_manager import (
     PeerProcessConfig,
     PeerProcessManager,
+    PeerReady,
 )
 from agent.peer_agent.registry import PeerAgentRegistry
+from agent.peer_agent.tool import PeerAgentTool
 
 
 class _Response:
@@ -146,8 +150,17 @@ async def test_registry_keeps_config_identity_and_route_with_live_card() -> None
         get=AsyncMock(return_value=response),
         post=AsyncMock(return_value=submit_response),
     )
-    process_manager = SimpleNamespace(ensure_ready=AsyncMock())
-    poller = SimpleNamespace(register=MagicMock())
+    process_manager = SimpleNamespace(
+        ensure_ready=AsyncMock(return_value=PeerReady(started_by_call=False)),
+        terminate=AsyncMock(),
+    )
+    poller = SimpleNamespace(register=MagicMock(), has_pending=MagicMock(return_value=False))
+
+    @asynccontextmanager
+    async def submission_lease(agent_name: str):
+        yield
+
+    poller.submission_lease = submission_lease
     registry = PeerAgentRegistry(process_manager, poller, requester)
     config = PeerAgentConfig(
         name="configured-agent",
@@ -176,6 +189,10 @@ async def test_registry_keeps_config_identity_and_route_with_live_card() -> None
 
 def _task_response(payload: object) -> _Response:
     return _Response(payload)
+
+
+def _submit_response(task_id: str) -> _Response:
+    return _Response({"result": {"id": task_id}})
 
 
 def _completed_payload() -> dict[str, object]:
@@ -363,6 +380,93 @@ async def test_same_agent_tasks_keep_process_until_last_completion() -> None:
 
     pm.terminate.assert_awaited_once_with("research")
     assert not poller._pending
+
+
+def test_duplicate_task_id_keeps_existing_pending_entry() -> None:
+    poller = PeerAgentPoller(
+        SimpleNamespace(publish_inbound=AsyncMock()),
+        SimpleNamespace(terminate=AsyncMock()),
+        SimpleNamespace(post=AsyncMock()),
+    )
+    poller.register(
+        task_id="task-1",
+        agent_name="research",
+        agent_url="http://research.test",
+        channel="telegram",
+        chat_id="42",
+        goal="first",
+    )
+
+    with pytest.raises(PeerTaskDuplicateError, match="重复注册"):
+        poller.register(
+            task_id="task-1",
+            agent_name="research",
+            agent_url="http://research.test",
+            channel="telegram",
+            chat_id="42",
+            goal="duplicate",
+        )
+
+    assert poller._pending[("research", "task-1")].goal == "first"
+
+
+@pytest.mark.asyncio
+async def test_notification_does_not_block_submit_or_terminate_shared_process() -> None:
+    publish_started = asyncio.Event()
+    release_publish = asyncio.Event()
+    ensure_started = asyncio.Event()
+
+    async def publish(_message: object) -> None:
+        publish_started.set()
+        await release_publish.wait()
+
+    async def ensure_ready(_name: str) -> PeerReady:
+        ensure_started.set()
+        return PeerReady(started_by_call=False)
+
+    bus = SimpleNamespace(publish_inbound=publish)
+    pm = SimpleNamespace(
+        ensure_ready=ensure_ready,
+        terminate=AsyncMock(),
+    )
+    requester = SimpleNamespace(
+        post=AsyncMock(
+            side_effect=[
+                _task_response(_completed_payload()),
+                _submit_response("task-new"),
+            ]
+        )
+    )
+    poller = PeerAgentPoller(bus, pm, requester)
+    poller.register(
+        task_id="task-old",
+        agent_name="research",
+        agent_url="http://research.test",
+        channel="telegram",
+        chat_id="42",
+        goal="old",
+    )
+    old_check = asyncio.create_task(
+        poller._check("task-old", poller._pending[("research", "task-old")])
+    )
+    await asyncio.wait_for(publish_started.wait(), timeout=1)
+
+    tool = PeerAgentTool(
+        AgentCard(name="research", url="http://research.test"),
+        pm,
+        poller,
+        requester,
+    )
+    new_submit = asyncio.create_task(tool.execute(goal="new"))
+    await asyncio.wait_for(ensure_started.wait(), timeout=1)
+    result = await new_submit
+
+    release_publish.set()
+    await old_check
+
+    assert '"status": "submitted"' in result
+    pm.terminate.assert_not_awaited()
+    assert ("research", "task-new") in poller._pending
 
 
 @pytest.mark.asyncio
@@ -572,7 +676,8 @@ async def test_process_manager_reaps_process_and_log_on_terminate(
     monkeypatch.setattr(
         "agent.peer_agent.process_manager.asyncio.create_subprocess_exec", spawn
     )
-    await manager.ensure_ready("research")
+    ready = await manager.ensure_ready("research")
+    assert ready.started_by_call
     await manager.terminate("research")
 
     assert proc.terminate_calls == 1
@@ -737,6 +842,19 @@ async def test_process_manager_health_does_not_hide_programming_error(tmp_path: 
 
     with pytest.raises(RuntimeError, match="bad fake"):
         await manager._is_healthy(manager._configs["research"])
+
+
+@pytest.mark.asyncio
+async def test_process_manager_reports_external_health_without_ownership(
+    tmp_path: Path,
+) -> None:
+    requester = SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace(status_code=200)))
+    manager = _manager(tmp_path, requester)
+
+    ready = await manager.ensure_ready("research")
+
+    assert not ready.started_by_call
+    assert not manager._procs
 
 
 def test_process_manager_rejects_invalid_config(tmp_path: Path) -> None:

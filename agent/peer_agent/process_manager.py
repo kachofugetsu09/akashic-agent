@@ -28,6 +28,13 @@ class PeerProcessConfig:
     log_dir: str = "runtime/peer_agents"
 
 
+@dataclass(frozen=True)
+class PeerReady:
+    """描述 ensure_ready 本次调用是否取得了新的进程 ownership。"""
+
+    started_by_call: bool
+
+
 class PeerProcessManager:
     """管理 peer agent 子进程的生命周期。"""
 
@@ -78,8 +85,8 @@ class PeerProcessManager:
             if log_dir.exists() and not log_dir.is_dir():
                 raise ValueError(f"peer agent {config.name!r} log_dir 不是目录：{config.log_dir!r}")
 
-    async def ensure_ready(self, name: str) -> None:
-        """确保指定 agent 已启动且通过健康检查；未启动则冷启动。"""
+    async def ensure_ready(self, name: str) -> PeerReady:
+        """确保指定 agent 已启动且通过健康检查，并报告本次是否冷启动。"""
 
         cfg = self._configs.get(name)
         if cfg is None:
@@ -98,7 +105,7 @@ class PeerProcessManager:
             # 2. 健康的外部进程或已管理进程都可以复用
             if await self._is_healthy(cfg):
                 logger.debug("[PeerProcess] %s 已在线", name)
-                return
+                return PeerReady(started_by_call=False)
 
             # 3. 健康检查失败时先释放旧进程，再取得新进程 ownership
             existing = self._procs.get(name)
@@ -107,6 +114,7 @@ class PeerProcessManager:
             logger.info("[PeerProcess] %s 未运行，开始冷启动", name)
             await self._spawn(cfg)
             logger.info("[PeerProcess] %s 启动成功", name)
+            return PeerReady(started_by_call=True)
 
     async def terminate(self, name: str) -> None:
         """销毁指定 peer agent 进程；失败时保留 ownership 供重试。"""

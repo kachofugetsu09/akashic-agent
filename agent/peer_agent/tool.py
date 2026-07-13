@@ -11,12 +11,16 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from agent.peer_agent.card_resolver import AgentCard
 from agent.tools.base import Tool
 from core.net.http import HttpRequester, RequestBudget
+
+if TYPE_CHECKING:
+    from agent.peer_agent.poller import PeerAgentPoller
+    from agent.peer_agent.process_manager import PeerProcessManager
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +60,8 @@ class PeerAgentTool(Tool):
     def __init__(
         self,
         card: AgentCard,
-        process_manager,     # PeerProcessManager
-        poller,              # PeerAgentPoller
+        process_manager: PeerProcessManager,
+        poller: PeerAgentPoller,
         requester: HttpRequester,
     ) -> None:
         self._card = card
@@ -89,35 +93,31 @@ class PeerAgentTool(Tool):
         channel: str = kwargs.get("channel", "unknown")
         chat_id: str = kwargs.get("chat_id", "unknown")
 
-        # 1. 冷启动
-        try:
-            await self._pm.ensure_ready(self._card.name)
-        except Exception as e:
-            logger.error("[PeerAgentTool] 启动 %s 失败: %s", self._card.name, e)
-            return json.dumps(
-                {"error": f"peer agent 启动失败：{e}", "agent": self._card.name},
-                ensure_ascii=False,
-            )
+        async with self._poller.submission_lease(self._card.name):
+            # 1. 冷启动
+            ready = await self._pm.ensure_ready(self._card.name)
+            try:
+                # 2. 提交 A2A 任务
+                task_id = await self._submit_task(goal, breadth, rounds)
 
-        # 2. 提交 A2A 任务
-        try:
-            task_id = await self._submit_task(goal, breadth, rounds)
-        except Exception as e:
-            logger.error("[PeerAgentTool] 提交任务失败: %s", e)
-            return json.dumps(
-                {"error": f"任务提交失败：{e}", "agent": self._card.name},
-                ensure_ascii=False,
-            )
-
-        # 3. 注册到 Poller
-        self._poller.register(
-            task_id=task_id,
-            agent_name=self._card.name,
-            agent_url=self._card.url,
-            channel=channel,
-            chat_id=chat_id,
-            goal=goal,
-        )
+                # 3. 在同一 ownership 窗口登记到 Poller
+                self._poller.register(
+                    task_id=task_id,
+                    agent_name=self._card.name,
+                    agent_url=self._card.url,
+                    channel=channel,
+                    chat_id=chat_id,
+                    goal=goal,
+                )
+            except BaseException as submit_error:
+                try:
+                    await self._reap_failed_cold_start(ready.started_by_call)
+                except BaseException as cleanup_error:
+                    raise BaseExceptionGroup(
+                        "peer agent 提交失败且冷启动进程回收失败",
+                        [submit_error, cleanup_error],
+                    )
+                raise
 
         logger.info(
             "[PeerAgentTool] 任务已提交 task_id=%s agent=%s channel=%s chat_id=%s",
@@ -136,6 +136,12 @@ class PeerAgentTool(Tool):
             },
             ensure_ascii=False,
         )
+
+    async def _reap_failed_cold_start(self, started_by_call: bool) -> None:
+        """提交未登记时，仅回收本次调用独占的新进程。"""
+
+        if started_by_call and not self._poller.has_pending(self._card.name):
+            await self._pm.terminate(self._card.name)
 
     async def _submit_task(self, goal: str, breadth: int, rounds: int) -> str:
         """通过 A2A JSON-RPC 提交任务，返回 task_id。"""

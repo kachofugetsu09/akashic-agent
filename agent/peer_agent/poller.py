@@ -4,14 +4,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
 from bus.events import InboundMessage
 from bus.queue import MessageBus
 from core.net.http import HttpRequester, RequestBudget
+
+if TYPE_CHECKING:
+    from agent.peer_agent.process_manager import PeerProcessManager
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +29,10 @@ _FAILURE_STATES = frozenset({"failed", "canceled"})
 
 class PeerTaskProtocolError(ValueError):
     """远端 A2A 响应不符合本地消费协议。"""
+
+
+class PeerTaskDuplicateError(ValueError):
+    """本地 pending catalog 已经登记同一 agent 的 task id。"""
 
 
 class _PeerTaskRetryError(RuntimeError):
@@ -145,14 +154,28 @@ class PeerAgentPoller:
     def __init__(
         self,
         bus: MessageBus,
-        process_manager,          # PeerProcessManager，避免循环导入
+        process_manager: PeerProcessManager,
         requester: HttpRequester,
     ) -> None:
         self._bus = bus
         self._pm = process_manager
         self._requester = requester
         self._pending: dict[PendingKey, _PendingTask] = {}
-        self._task: asyncio.Task | None = None
+        self._agent_locks: dict[str, asyncio.Lock] = {}
+        self._task: asyncio.Task[None] | None = None
+
+    @asynccontextmanager
+    async def submission_lease(self, agent_name: str) -> AsyncIterator[None]:
+        """串行化同一 agent 的提交、登记和最后任务终结。"""
+
+        lock = self._agent_locks.setdefault(agent_name, asyncio.Lock())
+        async with lock:
+            yield
+
+    def has_pending(self, agent_name: str) -> bool:
+        """返回 agent 是否仍有 pending 或正在重试终态副作用的任务。"""
+
+        return any(meta.agent_name == agent_name for meta in self._pending.values())
 
     def register(
         self,
@@ -169,7 +192,9 @@ class PeerAgentPoller:
         # 1. task id 只在单个 agent 内唯一，跨 agent 必须隔离命名空间
         key = (agent_name, task_id)
         if key in self._pending:
-            raise ValueError(f"重复注册 A2A task：{agent_name!r}/{task_id!r}")
+            raise PeerTaskDuplicateError(
+                f"重复注册 A2A task：{agent_name!r}/{task_id!r}"
+            )
         self._pending[key] = _PendingTask(
             task_id=task_id,
             agent_name=agent_name,
@@ -273,6 +298,7 @@ class PeerAgentPoller:
             await self._finalize(task_id, meta)
 
     async def _finalize(self, task_id: str, meta: _PendingTask) -> None:
+        # 1. 通知不占用提交 lease；成功后 catalog 仍保留 task ownership
         if not meta.notification_sent:
             if meta.terminal_state == "completed":
                 await self._inject_completion(meta, meta.artifacts)
@@ -280,18 +306,21 @@ class PeerAgentPoller:
                 await self._inject_failure(meta, meta.failure_reason)
             meta.notification_sent = True
 
-        if not meta.termination_done:
-            has_other_pending = any(
-                other is not meta and other.agent_name == meta.agent_name
-                for other in self._pending.values()
-            )
-            if not has_other_pending:
-                await self._pm.terminate(meta.agent_name)
-            meta.termination_done = True
+        async with self.submission_lease(meta.agent_name):
+            # 2. 只有当前任务是该 agent 的最后 pending 才释放受管进程
+            if not meta.termination_done:
+                has_other_pending = any(
+                    other is not meta and other.agent_name == meta.agent_name
+                    for other in self._pending.values()
+                )
+                if not has_other_pending:
+                    await self._pm.terminate(meta.agent_name)
+                meta.termination_done = True
 
-        key = (meta.agent_name, meta.task_id)
-        if self._pending.get(key) is meta:
-            del self._pending[key]
+            # 3. 所有副作用成功后才从 catalog 删除任务
+            key = (meta.agent_name, meta.task_id)
+            if self._pending.get(key) is meta:
+                del self._pending[key]
 
     async def _get_task_status(
         self, agent_url: str, task_id: str
