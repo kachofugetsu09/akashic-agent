@@ -1055,7 +1055,8 @@ async def test_loads_installed_programmatic_plugin():
             "for line in sys.stdin:\n"
             "    msg = json.loads(line)\n"
             "    if 'id' not in msg: continue\n"
-            "    result = {'tools': []} if msg.get('method') == 'tools/list' else {}\n"
+            "    method = msg.get('method')\n"
+            "    result = {'protocolVersion': '2025-11-25'} if method == 'initialize' else {'tools': []}\n"
             "    print(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': result}), flush=True)\n",
             encoding="utf-8",
         )
