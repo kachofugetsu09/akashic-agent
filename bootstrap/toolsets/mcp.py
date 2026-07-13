@@ -14,7 +14,7 @@ from bootstrap.toolsets.protocol import (
 
 class McpToolsetProvider(ToolsetProvider):
     def register(self, registry: ToolRegistry, deps: ToolsetDeps):
-        before = set(registry._tools.keys())
+        before = registry.get_registered_names()
         mcp_registry = McpServerRegistry(
             config_path=deps.workspace / "mcp_servers.json",
             tool_registry=registry,

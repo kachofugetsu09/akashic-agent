@@ -6,24 +6,26 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from agent.config_models import Config
+    from agent.provider import LLMProvider
     from agent.scheduler import SchedulerService
     from agent.tools.message_push import MessagePushTool
     from agent.tools.registry import ToolRegistry
     from bus.event_bus import EventBus
     from bus.queue import MessageBus
     from core.net.http import SharedHttpResources
+    from session.store import SessionStore
 
 
 @dataclass
 class ToolsetDeps:
     config: "Config | None"
     workspace: Path
-    provider: Any = None
-    light_provider: Any = None
-    vl_provider: Any = None
+    provider: "LLMProvider | None" = None
+    light_provider: "LLMProvider | None" = None
+    vl_provider: "LLMProvider | None" = None
     vl_model: str = ""
     http_resources: "SharedHttpResources | None" = None
-    session_store: object | None = None
+    session_store: "SessionStore | None" = None
     push_tool: "MessagePushTool | None" = None
     bus: "MessageBus | None" = None
     scheduler: "SchedulerService | None" = None
@@ -34,9 +36,9 @@ class ToolsetDeps:
 @dataclass
 class ToolsetRegistrationResult:
     source_name: str
-    tool_names: list[str] = field(default_factory=list)
-    always_on_names: list[str] = field(default_factory=list)
-    extras: dict[str, Any] = field(default_factory=dict)
+    tool_names: list[str] = field(default_factory=list[str])
+    always_on_names: list[str] = field(default_factory=list[str])
+    extras: dict[str, Any] = field(default_factory=dict[str, Any])
 
 
 @runtime_checkable
@@ -61,5 +63,5 @@ def build_registration_result(
         source_name=source_name,
         tool_names=tool_names,
         always_on_names=always_on,
-        extras=dict(extras or {}),
+        extras={} if extras is None else dict(extras),
     )

@@ -109,6 +109,31 @@ def test_common_meta_toolset_registers_load_skill(tmp_path):
     assert "load_skill" in result.always_on_names
 
 
+def test_common_meta_toolset_rejects_missing_required_dependencies(tmp_path):
+    readonly_tools = {
+        "web_search": cast(Any, object()),
+        "web_fetch": cast(Any, object()),
+        "read_file": cast(Any, object()),
+        "list_dir": cast(Any, object()),
+    }
+
+    with pytest.raises(ValueError, match="session_store"):
+        CommonMetaToolsetProvider(readonly_tools).register(
+            ToolRegistry(),
+            ToolsetDeps(config=None, workspace=tmp_path),
+        )
+
+    with pytest.raises(ValueError, match="web_search"):
+        CommonMetaToolsetProvider({}).register(
+            ToolRegistry(),
+            ToolsetDeps(
+                config=None,
+                workspace=tmp_path,
+                session_store=cast(Any, object()),
+            ),
+        )
+
+
 def test_register_memory_meta_tools_rejects_duplicate_names():
     tools = ToolRegistry()
 
