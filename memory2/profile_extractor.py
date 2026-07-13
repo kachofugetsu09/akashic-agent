@@ -24,22 +24,11 @@ class ExtractionStatus(str, Enum):
     DEGRADED = "degraded"
 
 
-class ProfileFacts(list[ProfileFact]):
-    """兼容旧 list 接口，同时携带提取是否降级。"""
-
-    status: ExtractionStatus
-    reason: str
-
-    def __init__(
-        self,
-        facts: list[ProfileFact] | None = None,
-        *,
-        status: ExtractionStatus = ExtractionStatus.SUCCESS,
-        reason: str = "",
-    ) -> None:
-        super().__init__(facts or [])
-        self.status = status
-        self.reason = reason
+@dataclass(frozen=True)
+class ProfileExtraction:
+    facts: tuple[ProfileFact, ...] = ()
+    status: ExtractionStatus = ExtractionStatus.SUCCESS
+    reason: str = ""
 
 
 class ProfileFactExtractor:
@@ -61,10 +50,10 @@ class ProfileFactExtractor:
         conversation: str,
         *,
         existing_profile: str = "",
-    ) -> ProfileFacts:
+    ) -> ProfileExtraction:
         # 1. 空对话没有待提取事实。
         if not str(conversation or "").strip():
-            return ProfileFacts()
+            return ProfileExtraction()
         prompt = self._build_prompt(
             conversation=conversation,
             existing_profile=existing_profile,
@@ -75,7 +64,7 @@ class ProfileFactExtractor:
             max_tokens=self._max_tokens,
             timeout_s=self._timeout_s,
         )
-        if primary.status is ExtractionStatus.DEGRADED or primary:
+        if primary.status is ExtractionStatus.DEGRADED or primary.facts:
             return primary
 
         # 2. 主调用成功但过于保守时，按 USER 子句补一次抽取。
@@ -87,17 +76,17 @@ class ProfileFactExtractor:
                 "",
                 existing_profile=existing_profile,
             )
-            clause_facts.extend(clause_result)
+            clause_facts.extend(clause_result.facts)
             if clause_result.status is ExtractionStatus.DEGRADED and not degraded_reason:
                 degraded_reason = clause_result.reason
         facts = self._dedupe_facts(clause_facts)
         if degraded_reason:
-            return ProfileFacts(
-                facts,
+            return ProfileExtraction(
+                tuple(facts),
                 status=ExtractionStatus.DEGRADED,
                 reason=degraded_reason,
             )
-        return facts
+        return ProfileExtraction(tuple(facts))
 
     async def extract_from_exchange(
         self,
@@ -105,10 +94,10 @@ class ProfileFactExtractor:
         agent_response: str,
         *,
         existing_profile: str = "",
-    ) -> ProfileFacts:
+    ) -> ProfileExtraction:
         """只从单轮 user/assistant 交换中提取 purchase/status/personal_fact。"""
         if not (str(user_msg or "").strip() or str(agent_response or "").strip()):
-            return ProfileFacts()
+            return ProfileExtraction()
 
         prompt = self._build_exchange_prompt(
             user_msg=user_msg,
@@ -128,13 +117,18 @@ class ProfileFactExtractor:
             content = self._response_content(response)
         except Exception as exc:
             logger.warning("memory2 profile exchange extraction failed: %s", exc)
-            return ProfileFacts(status=ExtractionStatus.DEGRADED, reason="model_error")
+            return ProfileExtraction(
+                status=ExtractionStatus.DEGRADED,
+                reason="model_error",
+            )
 
         parsed = self._parse_response(content)
         if parsed.status is ExtractionStatus.DEGRADED:
             return parsed
         allowed = {"purchase", "status", "personal_fact"}
-        return ProfileFacts([fact for fact in parsed if fact.category in allowed])
+        return ProfileExtraction(
+            tuple(fact for fact in parsed.facts if fact.category in allowed)
+        )
 
     async def _extract_with_prompt(
         self,
@@ -142,7 +136,7 @@ class ProfileFactExtractor:
         *,
         max_tokens: int,
         timeout_s: float,
-    ) -> ProfileFacts:
+    ) -> ProfileExtraction:
         try:
             response = await asyncio.wait_for(
                 self._llm_client.chat(
@@ -156,7 +150,10 @@ class ProfileFactExtractor:
             content = self._response_content(response)
         except Exception as exc:
             logger.warning("memory2 profile extraction failed: %s", exc)
-            return ProfileFacts(status=ExtractionStatus.DEGRADED, reason="model_error")
+            return ProfileExtraction(
+                status=ExtractionStatus.DEGRADED,
+                reason="model_error",
+            )
         return self._parse_response(content)
 
     @staticmethod
@@ -167,12 +164,15 @@ class ProfileFactExtractor:
             raise TypeError("LLM response 必须是字符串或 LLMResponse")
         return response.content or ""
 
-    def _parse_response(self, raw_output: str) -> ProfileFacts:
+    def _parse_response(self, raw_output: str) -> ProfileExtraction:
         if not re.search(r"<facts(?:\s|>)", raw_output, flags=re.IGNORECASE) or not re.search(
             r"</facts>", raw_output, flags=re.IGNORECASE
         ):
-            return ProfileFacts(status=ExtractionStatus.DEGRADED, reason="parse_error")
-        return ProfileFacts(self._parse_facts(raw_output))
+            return ProfileExtraction(
+                status=ExtractionStatus.DEGRADED,
+                reason="parse_error",
+            )
+        return ProfileExtraction(tuple(self._parse_facts(raw_output)))
 
     @staticmethod
     def _split_user_clauses(conversation: str) -> list[str]:
@@ -195,7 +195,7 @@ class ProfileFactExtractor:
         return clauses
 
     @staticmethod
-    def _dedupe_facts(facts: list[ProfileFact]) -> ProfileFacts:
+    def _dedupe_facts(facts: list[ProfileFact]) -> list[ProfileFact]:
         deduped: list[ProfileFact] = []
         seen: set[tuple[str, str]] = set()
         for fact in facts:
@@ -204,7 +204,7 @@ class ProfileFactExtractor:
                 continue
             seen.add(key)
             deduped.append(fact)
-        return ProfileFacts(deduped)
+        return deduped
 
     @staticmethod
     def _build_prompt(*, conversation: str, existing_profile: str) -> str:
