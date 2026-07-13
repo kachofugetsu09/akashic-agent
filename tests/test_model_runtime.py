@@ -120,6 +120,15 @@ def test_codex_catalog_maps_reasoning_context_and_modalities() -> None:
     assert model.input_modalities_known is True
 
 
+def test_codex_catalog_uses_backend_compatible_client_version() -> None:
+    class _Auth:
+        pass
+
+    catalog = CodexModelCatalog(_Auth())  # type: ignore[arg-type]
+
+    assert catalog.client_version == "0.0.0"
+
+
 def test_responses_adapter_preserves_tools_and_usage() -> None:
     messages, instructions = _responses_input(
         [

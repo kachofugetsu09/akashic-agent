@@ -27,7 +27,7 @@ class CodexModelCatalog:
         auth: CodexAuthDriver,
         *,
         base_url: str = CODEX_API_BASE,
-        client_version: str = "0.1.0",
+        client_version: str = "0.0.0",
     ) -> None:
         self.auth = auth
         self.base_url = base_url.rstrip("/")
