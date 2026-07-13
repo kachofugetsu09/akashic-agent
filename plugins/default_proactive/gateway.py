@@ -83,7 +83,7 @@ class DataGateway:
             content_store=content_store,
         )
 
-    # ── private ────────────────────────────────────────────────────────────
+    # ── 私有方法 ────────────────────────────────────────────────────────────
 
     async def _fetch_alerts(self) -> list[dict]:
         return await self._alert_fn() if self._alert_fn else []

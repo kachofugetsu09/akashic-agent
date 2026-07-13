@@ -763,9 +763,9 @@ def create_dashboard_app(
     app = FastAPI(title="Akashic Dashboard API", lifespan=lifespan)
     app.state.memory_admin = memory_admin
     app.state.memory_store = memory_store or MemoryStore(workspace)
-    # Vite build output is gitignored, so a fresh clone (or CI) may lack it. Keep
-    # the directory present and mount without a dir check so app creation never
-    # depends on the build having run; dashboard_index() reports if it's missing.
+    # Vite 构建产物被 gitignore，新 clone 或 CI 环境可能没有该目录。
+    # 预先创建目录并在挂载时关闭目录检查，避免 app 创建依赖构建是否执行；
+    # dashboard_index() 会在入口文件缺失时报告错误。
     static_dir.mkdir(parents=True, exist_ok=True)
     app.mount(
         "/assets",
@@ -774,7 +774,7 @@ def create_dashboard_app(
     )
     plugin_dirs = _dashboard_plugin_dirs(project_root)
 
-    # Compile TypeScript plugin panels and mount plugin routes
+    # 编译 TypeScript 插件面板并挂载插件路由
     for _plugin_id, _plugin_dir in sorted(plugin_dirs.items()):
         if plugin_manager is None and not _plugin_dashboard_enabled(app, _plugin_dir):
             continue
@@ -786,8 +786,8 @@ def create_dashboard_app(
                 _load_plugin_dashboard(app, _plugin_dir, workspace)
             )
 
-    # Vite emits index.html with content-hashed asset URLs under /assets, so it
-    # is served verbatim — no manual cache-busting needed.
+    # Vite 会在 /assets 下生成带内容哈希的资源 URL，因此直接原样提供 index.html；
+    # 不需要手动处理缓存失效。
     @app.get("/")
     def dashboard_index() -> Response:
         index_file = static_dir / "index.html"

@@ -458,7 +458,7 @@ class ProactiveLoop:
     async def wait_stopped(self) -> None:
         _ = await self._stopped.wait()
 
-    # ── internal ──────────────────────────────────────────────────
+    # ── 内部方法 ──────────────────────────────────────────────────
 
     async def _tick(self) -> float | None:
         """执行一次 proactive v2 tick。"""

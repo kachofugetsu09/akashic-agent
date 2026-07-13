@@ -47,7 +47,7 @@ class MemoryStore:
         # 崩溃恢复：启动时若遗留 snapshot，回滚合并
         self._recover_pending_snapshot()
 
-    # ── long-term memory (MEMORY.md) ─────────────────────────────
+    # ── 长期记忆（MEMORY.md）─────────────────────────────
 
     def read_long_term(self) -> str:
         if self.memory_file.exists():
@@ -57,7 +57,7 @@ class MemoryStore:
     def write_long_term(self, content: str) -> None:
         self.memory_file.write_text(content, encoding="utf-8")
 
-    # ── RECENT_CONTEXT.md (compacted recent context) ──────────────
+    # ── RECENT_CONTEXT.md（压缩后的近期语境）──────────────
 
     def read_recent_context(self) -> str:
         if self.recent_context_file.exists():
@@ -67,7 +67,7 @@ class MemoryStore:
     def write_recent_context(self, content: str) -> None:
         self.recent_context_file.write_text(content, encoding="utf-8")
 
-    # ── SELF.md (Akashic self-model) ──────────────────────────────
+    # ── SELF.md（Akashic 自我模型）─────────────────────────────
 
     def read_self(self) -> str:
         if self.self_file.exists():
@@ -77,7 +77,7 @@ class MemoryStore:
     def write_self(self, content: str) -> None:
         self.self_file.write_text(content, encoding="utf-8")
 
-    # ── pending facts (conversation → optimizer buffer) ───────────
+    # ── 待处理事实（对话 → optimizer 缓冲区）───────────
 
     def read_pending(self) -> str:
         if self.pending_file.exists():

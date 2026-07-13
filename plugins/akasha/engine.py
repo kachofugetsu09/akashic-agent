@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 
 from plugins.akasha.core import (
-    # Types shared with core
+    # 与 core 共享的类型
     ActivationEventRow,
     ActivationTrace,
     AkashaActivationSnapshot,
@@ -37,7 +37,7 @@ from plugins.akasha.core import (
     initial_strength,
     parse_ts_unix,
     turn_key,
-    # Algorithm functions (aliased with _ prefix for internal convention)
+    # 算法函数（按内部约定统一使用 _ 前缀别名）
     activation_edge_updates as _activation_edge_updates,
     local_residual as _local_residual,
     activation_updates as _activation_updates,

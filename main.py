@@ -144,7 +144,7 @@ async def serve(
             loop.add_signal_handler(sig, stop_event.set)
             signal_handlers_registered = True
         except NotImplementedError:
-            # Windows' default event loop does not support add_signal_handler.
+            # Windows 默认事件循环不支持 add_signal_handler。
             signal.signal(
                 sig,
                 lambda _sig, _frame: loop.call_soon_threadsafe(stop_event.set),

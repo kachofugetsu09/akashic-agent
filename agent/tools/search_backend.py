@@ -157,7 +157,7 @@ def _default_normalize(query: str) -> set[str]:
         if segment:
             tokens.add(segment)
 
-    # CJK bigram + unigram
+    # CJK 双字词 + 单字词
     cjk = [c for c in query_lower if "\u4e00" <= c <= "\u9fff"]
     for i in range(len(cjk) - 1):
         tokens.add(cjk[i] + cjk[i + 1])

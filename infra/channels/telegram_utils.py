@@ -818,7 +818,7 @@ class TelegramStreamMessage:
         self._edit_cooldown_until = 0.0
 
     # ------------------------------------------------------------------
-    # public API
+    # 公共 API
     # ------------------------------------------------------------------
 
     async def push_delta(

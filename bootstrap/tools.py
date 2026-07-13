@@ -466,8 +466,8 @@ def build_core_runtime(
     event_bus = EventBus()
     provider, light_provider, agent_provider = build_providers(config)
     vl_provider = build_vl_provider(config)
-    # agent_provider is used for the AgentLoop (QA / tool calling).
-    # provider (llm.main) is used for consolidation event extraction.
+    # agent_provider 供 AgentLoop 使用（QA / 工具调用）。
+    # provider（llm.main）供 consolidation 事件提取使用。
     loop_provider = agent_provider or provider
     loop_model = config.agent_model or config.model
     session_manager = SessionManager(workspace)

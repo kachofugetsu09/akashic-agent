@@ -1,9 +1,4 @@
-"""
-IPC server channel.
-
-Uses a Unix domain socket on POSIX systems and loopback TCP on Windows so the
-local CLI can talk to the running agent process.
-"""
+"""IPC server 渠道：POSIX 使用 Unix domain socket，Windows 使用 loopback TCP，供本地 CLI 与运行中的 agent 进程通信。"""
 
 from __future__ import annotations
 

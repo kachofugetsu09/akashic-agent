@@ -57,7 +57,7 @@ class LatencyTracker:
         return statistics.quantiles(list(self._samples), n=10)[8]
 
 
-# ── Time Parsing ─────────────────────────────────────────────────
+# ── 时间解析 ─────────────────────────────────────────────────
 
 _DURATION_RE = re.compile(r"^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
 
@@ -146,13 +146,13 @@ def next_cron_fire(cron_expr: str, tz: str, after: datetime) -> datetime:
         result = trigger.get_next_fire_time(result, after)
     if result is None:
         raise ValueError(f"无效的 cron 表达式: {cron_expr!r}")
-    # Normalize to UTC-aware datetime
+    # 将结果规范为带 UTC 时区的 datetime
     if result.tzinfo is None:
         result = result.replace(tzinfo=timezone.utc)
     return result
 
 
-# ── fire_at Computation ──────────────────────────────────────────
+# ── fire_at 计算 ──────────────────────────────────────────
 
 
 def compute_fire_at(
@@ -223,8 +223,8 @@ class ScheduledJob:
     interval_seconds: int | None = None  # every + interval 模式
     cron_expr: str | None = None  # every + cron 模式
 
-    message: str | None = None  # instant tier
-    prompt: str | None = None  # soft tier
+    message: str | None = None  # instant 层
+    prompt: str | None = None  # soft 层
 
     name: str | None = None
     timezone: str = "UTC"
@@ -279,7 +279,7 @@ class JobStore:
         data = [self._to_dict(j) for j in jobs.values()]
         atomic_save_json(self.path, data, domain="job_store")
 
-    # ── private ──
+# ── 私有方法 ──
 
     def _to_dict(self, job: ScheduledJob) -> dict[str, Any]:
         d = asdict(job)
@@ -433,7 +433,7 @@ class SchedulerService:
         self._running = False
         self._stopping = False
 
-    # ── Public API ───────────────────────────────────────────────
+# ── 公共 API ───────────────────────────────────────────────
 
     async def run(self) -> None:
         self.load_and_recover()
@@ -460,7 +460,7 @@ class SchedulerService:
         self._stopping = True
 
     def add_job(self, job: ScheduledJob) -> None:
-        # Ensure fire_at is UTC-aware
+        # 确保 fire_at 带有 UTC 时区
         if job.fire_at.tzinfo is None:
             job.fire_at = job.fire_at.replace(tzinfo=timezone.utc)
         self._jobs[job.id] = job
@@ -523,7 +523,7 @@ class SchedulerService:
 
         logger.info(f"SchedulerService recovered {count_loaded} jobs")
 
-    # ── Internal ────────────────────────────────────────────────
+# ── 内部方法 ────────────────────────────────────────────────
 
     async def _tick(self) -> None:
         now = self._now()
@@ -569,10 +569,9 @@ class SchedulerService:
             self._in_flight.discard(job.id)
             now = self._now()
             if job.trigger == "every":
-                # SOFT recurring jobs may execute before nominal fire_at.
-                # Reschedule strictly after the later of "now" and the nominal
-                # boundary, otherwise cron jobs can re-fire the same occurrence
-                # repeatedly until wall clock passes fire_at.
+                # SOFT 循环任务可能早于名义 fire_at 执行。
+                # 重新排程必须严格晚于 now 与名义边界中较晚者，
+                # 否则 cron 任务可能在时钟越过 fire_at 前反复触发同一个周期。
                 if (
                     not execution_cancelled
                     and not self._stopping

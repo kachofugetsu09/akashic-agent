@@ -606,7 +606,7 @@ def message_id_to_key_from_db(cursor: sqlite3.Cursor, message_id: str) -> str:
     if row:
         _, _, key = turn_key(str(row[0]), int(row[1]), str(row[2] or ""))
         return key
-    return message_id  # fallback
+    return message_id  # 降级返回
 
 
 # ── DB 工具函数 ───────────────────────────────────────────────────────

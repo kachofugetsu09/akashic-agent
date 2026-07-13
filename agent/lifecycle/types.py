@@ -44,7 +44,7 @@ class TurnState:
 @dataclass
 class BeforeTurnCtx:
     # before-* ctx 走 GATE 链，插件可直接改写字段影响后续阶段。
-    # read-only by convention
+    # 按约定只读
     session_key: str
     channel: str
     chat_id: str
@@ -53,7 +53,7 @@ class BeforeTurnCtx:
     retrieved_memory_block: str
     retrieval_trace_raw: object | None
     history_messages: tuple[Any, ...]
-    # writable
+    # 可写
     skill_names: list[str] = field(default_factory=_empty_str_list)
     abort: bool = False
     abort_reply: str = ""
@@ -70,13 +70,13 @@ class BeforeReasoningInput:
 @dataclass
 class BeforeReasoningCtx:
     # before-* ctx 走 GATE 链，插件可直接改写字段影响后续阶段。
-    # read-only by convention
+    # 按约定只读
     session_key: str
     channel: str
     chat_id: str
     content: str
     timestamp: datetime
-    # writable
+    # 可写
     skill_names: list[str]
     retrieved_memory_block: str
     extra_hints: list[str] = field(default_factory=_empty_str_list)
@@ -103,7 +103,7 @@ class PromptRenderInput:
 @dataclass
 class PromptRenderCtx:
     # render/before-step ctx 走 GATE 链，插件可直接改写字段影响后续阶段。
-    # read-only by convention
+    # 按约定只读
     session_key: str
     channel: str
     chat_id: str
@@ -116,7 +116,7 @@ class PromptRenderCtx:
     disabled_sections: set[str]
     turn_injection_prompt: str
     extra_hints: list[str] = field(default_factory=_empty_str_list)
-    # writable
+    # 可写
     system_sections_top: list[PromptSectionRender] = field(
         default_factory=_empty_prompt_sections
     )
@@ -143,14 +143,14 @@ class BeforeStepInput:
 @dataclass
 class BeforeStepCtx:
     # before-* ctx 走 GATE 链，插件可直接改写字段影响后续阶段。
-    # read-only by convention
+    # 按约定只读
     session_key: str
     channel: str
     chat_id: str
     iteration: int
     input_tokens_estimate: int
     visible_tool_names: frozenset[str] | None
-    # writable
+    # 可写
     extra_hints: list[str] = field(default_factory=_empty_str_list)
     early_stop: bool = False
     early_stop_reply: str = ""
@@ -184,7 +184,7 @@ class AfterReasoningInput:
 @dataclass
 class AfterReasoningCtx:
     # after_reasoning 仍是 GATE 链，插件可改写 reply/media/outbound_metadata。
-    # read-only by convention
+    # 按约定只读
     session_key: str
     channel: str
     chat_id: str
@@ -194,7 +194,7 @@ class AfterReasoningCtx:
     streamed: bool
     tool_chain: tuple[dict[str, Any], ...]
     context_retry: dict[str, object]
-    # writable
+    # 可写
     reply: str
     media: list[str] = field(default_factory=_empty_str_list)
     meme_tag: str | None = None
@@ -223,7 +223,7 @@ class AfterTurnCtx:
     reply: str
     tools_used: tuple[str, ...]
     thinking: str | None
-    # pre-dispatch intent flag: dispatch has NOT happened yet when Tap handlers run
+    # dispatch 前意图标记：Tap handler 运行时尚未发生 dispatch
     will_dispatch: bool
     extra_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
 

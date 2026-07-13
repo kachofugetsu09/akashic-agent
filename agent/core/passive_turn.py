@@ -96,26 +96,26 @@ def _persistence_from_metadata(metadata: dict[str, Any] | None) -> TurnPersisten
 
 # 被动链路核心入口，负责串起 lifecycle 模块链与 reasoner。
 #
-# ┌─ inbound
+# ┌─ 输入
 # │  └─ AgentCore.process
 # │     └─ PassiveTurnPipeline.run
 # │        ├─ BeforeTurn
-# │        │  └─ session acquire + ContextStore.prepare + EventBus.emit
+# │        │  └─ 获取 session + ContextStore.prepare + EventBus.emit
 # │        ├─ BeforeReasoning
-# │        │  └─ tool context sync + EventBus.emit + prompt warmup
+# │        │  └─ 同步工具上下文 + EventBus.emit + prompt 预热
 # │        ├─ Reasoner.run_turn
 # │        │  ├─ PromptRender
-# │        │  │  └─ ContextBuilder.render + plugin prompt modules
+# │        │  │  └─ ContextBuilder.render + plugin prompt 模块
 # │        │  └─ Reasoner.run
 # │        │     ├─ BeforeStep
-# │        │     │  └─ token estimate + EventBus.emit + hint injection
+# │        │     │  └─ token 估算 + EventBus.emit + 注入提示
 # │        │     └─ AfterStep
 # │        │        └─ EventBus.fanout
 # │        ├─ AfterReasoning
-# │        │  └─ parse + EventBus.emit + persist + outbound build
+# │        │  └─ 解析 + EventBus.emit + 持久化 + 构建出站消息
 # │        └─ AfterTurn
-# │           └─ TurnCommitted fanout + AfterTurn fanout + dispatch
-# └─ done
+# │           └─ 广播 TurnCommitted + 广播 AfterTurn + dispatch
+# └─ 完成
 
 # ── 被动 turn 内联常量 ──────────────────────────────────────────
 _SAFETY_RETRY_RATIOS = (1.0, 0.5, 0.0)

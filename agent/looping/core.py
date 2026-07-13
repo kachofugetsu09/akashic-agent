@@ -32,7 +32,7 @@ from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.retrieval.protocol import MemoryRetrievalPipeline
 from agent.turns.outbound import BusOutboundPort
 
-# Re-export for backward-compat: existing callers import these from core.py
+# 为保持兼容重新导出：现有调用方从 core.py 导入这些名称。
 __all__ = [
     "AgentLoop",
 ]
