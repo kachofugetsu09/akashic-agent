@@ -750,7 +750,7 @@ async def test_mcp_client_and_loop_factory_cover_core_paths(
 
     proc = _Proc(
         [
-            b'{"jsonrpc":"2.0","id":1,"result":{}}\n',
+            b'{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25"}}\n',
             b'{"jsonrpc":"2.0","method":"note"}\n',
             b'{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"tool1","description":"desc","inputSchema":{"type":"object"}}]}}\n',
             b'not json\n',
@@ -762,7 +762,8 @@ async def test_mcp_client_and_loop_factory_cover_core_paths(
     client = McpClient("docs", ["python", str(script)], env={"X": "1"})
     infos = await client.connect()
     assert infos[0].name == "tool1"
-    assert proc.stdin.writes
+    initialize = json.loads(proc.stdin.writes[0])
+    assert initialize["params"]["protocolVersion"] == "2025-11-25"
     assert await client.call("tool1", {"q": "x"}) == "ok"
     await client.disconnect()
     assert proc.stdin.closed is True
@@ -774,6 +775,26 @@ async def test_mcp_client_and_loop_factory_cover_core_paths(
     client._process = proc
     with pytest.raises(ConnectionError):
         await client._recv(expected_id=1)
+
+
+@pytest.mark.asyncio
+async def test_mcp_client_rejects_unsupported_protocol_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = _Proc(
+        [b'{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2099-01-01"}}\n']
+    )
+    monkeypatch.setattr(
+        "agent.mcp.client.asyncio.create_subprocess_exec",
+        AsyncMock(return_value=proc),
+    )
+    client = McpClient("future", ["python", "server.py"])
+
+    with pytest.raises(RuntimeError, match="不支持的协议版本"):
+        await client.connect()
+
+    assert client.connected is False
+    assert client._protocol_version is None
 
 
 @pytest.mark.asyncio
@@ -795,7 +816,7 @@ async def test_mcp_client_rejects_invalid_tool_schema(
 ) -> None:
     proc = _Proc(
         [
-            b'{"jsonrpc":"2.0","id":1,"result":{}}\n',
+            b'{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25"}}\n',
             (
                 '{"jsonrpc":"2.0","id":2,"result":{"tools":['
                 + json.dumps(tool)
@@ -889,7 +910,7 @@ async def test_mcp_client_rejects_json_rpc_error_and_closes(
         [b'{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"bad init"}}\n']
         if stage == "initialize"
         else [
-            b'{"jsonrpc":"2.0","id":1,"result":{}}\n',
+            b'{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25"}}\n',
             b'{"jsonrpc":"2.0","id":2,"error":{"code":-1,"message":"bad list"}}\n',
         ]
     )
@@ -1060,6 +1081,48 @@ async def test_mcp_call_renders_valid_content_blocks() -> None:
     assert result.startswith("ok\n")
     assert '"type": "image"' in result
     assert '"uri": "resource://report"' in result
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_accepts_structured_content_for_negotiated_protocol() -> None:
+    response = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [{"type": "text", "text": "ok"}],
+                "structuredContent": {"result": "ok"},
+                "isError": False,
+            },
+        }
+    ).encode()
+    proc = _Proc([response + b"\n"])
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+    client._protocol_version = "2025-11-25"
+
+    assert await client.call("search", {}) == "ok"
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_rejects_non_object_structured_content() -> None:
+    response = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [],
+                "structuredContent": [],
+            },
+        }
+    ).encode()
+    proc = _Proc([response + b"\n"])
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+    client._protocol_version = "2025-11-25"
+
+    with pytest.raises(RuntimeError, match="structuredContent（需要 object）"):
+        await client.call("search", {})
 
 
 @pytest.mark.asyncio

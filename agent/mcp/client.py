@@ -15,6 +15,13 @@ _RECV_TIMEOUT = 30.0
 _CONNECT_TIMEOUT = 8.0
 _DISCONNECT_TIMEOUT = 5.0
 _STREAM_LIMIT = 4 * 1024 * 1024  # 4 MB，防止大响应触发 StreamReader 行限
+_MCP_PROTOCOL_VERSION = "2025-11-25"
+_SUPPORTED_PROTOCOL_VERSIONS = frozenset(
+    {"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"}
+)
+_STRUCTURED_CONTENT_PROTOCOL_VERSIONS = frozenset(
+    {"2025-06-18", "2025-11-25"}
+)
 _MCP_CONTENT_BLOCK_TYPES = frozenset(
     {"text", "image", "resource"}
 )
@@ -62,6 +69,7 @@ class McpClient:
         self._recent_stdout: deque[str] = deque(maxlen=8)
         self._recent_stderr: deque[str] = deque(maxlen=8)
         self._stderr_task: asyncio.Task[None] | None = None
+        self._protocol_version: str | None = None
 
     @property
     def tool_infos(self) -> list[McpToolInfo]:
@@ -107,14 +115,21 @@ class McpClient:
                 "id": init_id,
                 "method": "initialize",
                 "params": {
-                    "protocolVersion": "2024-11-05",
+                    "protocolVersion": _MCP_PROTOCOL_VERSION,
                     "capabilities": {"tools": {}},
                     "clientInfo": {"name": "akashic-agent", "version": "1.0"},
                 },
             }
         )
         init_response = await self._recv(expected_id=init_id, stage="initialize")
-        _ = self._response_result(init_response, "initialize")
+        init_result = self._response_result(init_response, "initialize")
+        protocol_version = init_result.get("protocolVersion")
+        if protocol_version not in _SUPPORTED_PROTOCOL_VERSIONS:
+            raise RuntimeError(
+                f"MCP server {self.name!r} 返回了不支持的协议版本："
+                f"{protocol_version!r}"
+            )
+        self._protocol_version = cast(str, protocol_version)
 
         # initialized 通知（无 id，不等响应）
         await self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -231,10 +246,18 @@ class McpClient:
             )
 
         if "structuredContent" in result:
-            raise RuntimeError(
-                f"MCP server {self.name!r} tools/call:{tool_name} 返回了无效 "
-                "structuredContent（2024-11-05 不支持）"
-            )
+            if self._protocol_version not in _STRUCTURED_CONTENT_PROTOCOL_VERSIONS:
+                raise RuntimeError(
+                    f"MCP server {self.name!r} tools/call:{tool_name} 返回了无效 "
+                    f"structuredContent（协议 {self._protocol_version or '未协商'} "
+                    "不支持）"
+                )
+            structured_content = result["structuredContent"]
+            if not isinstance(structured_content, dict):
+                raise RuntimeError(
+                    f"MCP server {self.name!r} tools/call:{tool_name} 返回了无效 "
+                    "structuredContent（需要 object）"
+                )
 
         is_error = result.get("isError", False)
         if not isinstance(is_error, bool):
@@ -349,6 +372,7 @@ class McpClient:
             finally:
                 if stopped:
                     self._process = None
+                    self._protocol_version = None
                 stderr_task = self._stderr_task
                 self._stderr_task = None
                 if stderr_task is not None:
