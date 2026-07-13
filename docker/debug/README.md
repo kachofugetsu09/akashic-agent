@@ -331,7 +331,7 @@ docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
 Wake package 已启用的 profile 使用：
 
 ```bash
-AKASHIC_DEBUG_PROFILE=wake-stack-contract \
+AKASHIC_DEBUG_PROFILE=wake-profile \
   docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
   python docker/debug/proactive_sandbox.py run-all --lifecycle wake
 ```
