@@ -1164,3 +1164,30 @@
 - 测试删除及原因：无。
 - 验证结果：记忆写入与语义去重定向 `13 passed`；修改生产文件 pyright `0 errors`（25 个既有 warnings）；`git diff --check` 通过。
 - 残余风险：追加 Markdown 与写 sidecar 仍不是跨文件原子事务；现有 marker 恢复协议负责收敛该窗口，本次只消除了读失败时的错误判定。
+
+### `cadcab5e` `refactor(runtime): cache passive snapshot phases`
+
+- 范围：被动回合四段 lifecycle phase、prompt render、before/after step 的 runtime snapshot 解析，以及 consolidation history 内部契约。
+- 原问题：同一 snapshot 的模块链在每个 phase 入口和每轮 tool step 重复组装、拓扑排序与校验；`get_history_since_consolidated()` 还捕获任意内部 `TypeError`，丢掉 cursor 后静默重试，可能把已 consolidation 的历史重新送入模型。
+- 为什么这样修改：按内容身份稳定的 `snapshot_id` 缓存不可变模块链 bundle，snapshot 换代或本地模块追加时失效；history helper 直接依赖 `SessionLike` 已声明并由真实 `Session` 实现的 `start_index` 契约。
+- 不变量与拥有层：RuntimeSnapshot compiler/store 拥有 snapshot 身份与代际唯一性，ContextVar lease 保证单 turn 绑定；phase owner 只缓存该身份对应的模块顺序。Session owner 拥有 consolidation cursor，helper 不再制造旧签名兼容层。
+- 能力变化：中断/续跑、context trim retry、tool loop、hot reload lease、session persist 与 outbound 顺序不变；snapshot id 变化会重建所有缓存 phase；内部 session 签名错误现在 fail-fast。
+- 性能变化：24 个插件模块、5000 次 before-step phase 获取的同 workload 微基准从 `673.699 ms` 降至 `0.742 ms`，约减少 `99.9%` 的 phase 解析开销；不外推为模型调用或完整 turn 延迟。
+- 测试新增/调整：cursor 透传、同 snapshot 复用、snapshot 换代重建，并把旧测试替身改为真实 `SessionLike` 签名。
+- 测试删除及原因：无。
+- 验证结果：副手全量 `1835 passed`；主审定向 lifecycle/hot-reload/turn `148 passed`；修改文件 pyright `0 errors`；组合全量见后续边界批次。
+- 残余风险：缓存以 snapshot 内容身份为 key；Store 已拒绝同一生命周期内重复 id，若未来允许原地改变 snapshot 模块而不改变身份，必须同时修改缓存失效契约。
+
+### `5b2d39c2` + `125358ba` `fix(boundary): harden dashboard and telegram lifecycles`
+
+- 范围：Dashboard proactive JSON/插件面板/资源关闭/待编译队列，以及 Telegram live preview、per-chat 限流状态和 UTF-16 消息边界。
+- 原问题：Dashboard 损坏 JSON 被伪装成空结果、异步 close 返回值未等待、重复插件编译请求无界入队、面板名未覆盖 Windows 反斜杠；Telegram 最终回复前可能遗留尚未建消息的 live task，删除失败会丢失句柄，多个 per-session/per-chat 状态长期积累，emoji 按 Python 字符数截断会越过 Telegram 的 UTF-16 上限。
+- 为什么这样修改：在 SQLite/HTTP/消息边界严格验证结构，资源 owner 等待同步或异步 close；待编译项按路径去重；live task、消息和状态在 turn/stop owner 明确收束；所有 Telegram 分段与 preview 统一使用 UTF-16 码元预算。
+- 不变量与拥有层：ProactiveStateStore 写侧拥有 `list[str]`、`list[object]` 与 object JSON schema，Dashboard reader 只接受 TEXT/NULL 和对应 schema；Telegram channel 拥有 live task/message/session 状态，outbound limiter 拥有 chat deadline 与 lock。正常 Markdown、附件、回复、中断、plugin panel 与 hot reload 能力不变。
+- 主审修正：拒绝副手把实际很小的首页改成 `FileResponse`；其 1 MiB TestClient 基准虽降低约 `11%` 峰值内存，却把 100 次 wall time 从 `0.387s` 增至 `0.944s`，不满足只优化不退化。主线保留原 `Response(read_text())`，并进一步删除 JSON `str()`/列表元素字符串化，拒绝底层存储类型损坏；UTF-16 极限预算无法容纳单字符时明确失败。
+- 能力变化：损坏 dashboard 数据不再显示成正常空列表；异步 dashboard close 真正完成；同插件 pending 编译从 10000 个重复项收敛为 1 个；最终回复后不再继续出现旧 live preview；3000 个 emoji fallback 被正确切为 2 段且每段不超过 4090 UTF-16 码元。
+- 性能变化：待编译队列由重复 list 改为 set，空间上界按唯一插件计；过期 chat deadline 超过阈值后清理，lock 无活跃引用时回收。撤回有 wall-time 退化证据的首页改动，不声明端到端提速。
+- 测试新增：异步 close、损坏 JSON/存储类型、反斜杠面板名、live 删除失败句柄、终态状态清理、emoji fallback/preview 和不可表示的 UTF-16 极限。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `58 + 114 passed`、全量 `1838 passed`；主审补刀后定向 `59 passed`；组合全量 `1843 passed in 28.62s`，全库 pyright `0 errors`（2326 个既有 warnings），前端 typecheck/lint/build 全通过，`git diff --check` 通过。
+- 残余风险：未做真实 Telegram API 网络验证；外部限流/删除失败按现有显式日志和保留句柄语义等待后续事件重试。Dashboard overview 的多次 count 没有真实生产 workload 证据，本轮未引入缓存。
