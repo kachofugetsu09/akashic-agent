@@ -1391,3 +1391,42 @@
 - 测试新增：四类坏 procedure 元数据、损坏持久化 steps、content-hash 冲突原子回滚。测试删除及原因：无。
 - 验证结果：Memory 定向 `81 passed`；修改范围 pyright `0 errors`（15 个既有动态 provider/tool-chain warning）；三项组合全量 `1899 passed in 25.37s`，全库 pyright `0 errors`，`git diff --check` 通过。
 - 残余风险：post-response tool chain 仍来自动态模型/工具 payload，存在既有宽泛 dict warning；应在其唯一输入边界单独建 schema，不能在每个消费函数重复检查。
+
+### `7d6aded2` `fix(http): preserve shared client cleanup errors`
+
+- 范围：共享 HTTP 客户端关闭生命周期和直接回归测试。
+- 原问题：多个客户端同时关闭失败时只保存第一个异常，后续真实清理错误被丢弃。
+- 为什么这样修改：仍按原有逆序串行尝试全部关闭；单错误保持原异常，多错误使用 `ExceptionGroup` 一次暴露；取消不被普通异常捕获。
+- 不变量与拥有层：SharedHttpResources 拥有三个客户端的关闭顺序和生命周期；AppRuntime 只负责调用 owner 的 `aclose()`，不在上层重建清理语义。
+- 主审修正：删除副手为 typed `HttpProfile` 增加的未知 profile 分支和 `type: ignore` 测试；该违反路径只能绕过类型契约构造，不应在内部函数重复防御。顺手清零修改文件的两个既有 pyright warning。
+- 能力变化：正常请求、连接复用、shutdown 顺序和单错误类型不变；多清理失败不再丢失。
+- 性能变化：仅失败关闭路径收集最多三个异常；正常热路径无变化。
+- 测试新增：逆序关闭、继续清理和多错误聚合。测试删除及原因：删除不可达 profile 防御测试。
+- 验证结果：HTTP 定向 `12 passed`，修改文件 pyright `0 errors, 0 warnings`；组合全量见本轮末项。
+- 残余风险：多清理失败以 `ExceptionGroup` 暴露，上层当前会继续 fail-loud；没有为未知调用方增加静默兼容层。
+
+### `6ffda115` `fix(plugins): tighten watcher recovery lifecycle`
+
+- 范围：插件 watcher 的 revision 扫描、热重载失败、外部唤醒、取消和停止等待。
+- 原问题：宽泛扫描 catch 会把内部错误当文件竞争；一次已恢复且 revision 未变化的扫描错误也会强制 reload；未启动 task 被取消时 `wait_stopped()` 可永久等待。
+- 为什么这样修改：扫描边界只恢复 `OSError`；外部 force 在扫描失败后保留；未启动 stop 明确完成等待信号；同一坏 revision 只尝试一次，文件再次变化或外部 force 后仍可恢复重载。
+- 不变量与拥有层：watch_revision 拥有同步文件快照；reconcile_changed 拥有原子候选发布；watcher 拥有重试节奏和 task 生命周期，业务失败明确记录但不能永久杀死热重载能力。
+- 主审修正：拒绝副手“reconcile 异常直接结束 watcher”的实现；那会让一次坏插件阻断后续热修复。主线保留 fail-loud 日志，并推进到失败 revision，避免无变化时反复执行有副作用的 reload。
+- 能力变化：源码变化自动重载、扫描期间二次变化、取消传播和显式 wake 均保留；坏版本不再无限重试，修复文件后自动恢复。
+- 性能变化：稳定轮询不增加扫描或重载次数；失败版本从每轮重复 reconcile 降为一次。
+- 测试新增：恢复后的稳定 revision 不误重载、坏版本单次失败后恢复、取消完成、启动前停止和未启动 task 取消。测试删除及原因：无。
+- 验证结果：watcher 定向 `8 passed`，修改文件 pyright `0 errors, 0 warnings`；组合全量见本轮末项。
+- 残余风险：reconcile 失败目前通过明确异常日志对外可见，没有单独的 dashboard 状态字段；本批不扩展观测协议。
+
+### `75b33293` `fix(session): reject malformed history payloads`
+
+- 范围：SessionStore 消息反序列化、Session history 渲染、主动 sensor 和媒体读取错误边界。
+- 原问题：坏 media/source_refs/tool-chain 容器会被 `or []` 或过滤伪装成空数据；NULL content 被改写为空字符串；媒体读取的宽泛 catch 会掩盖程序错误。
+- 为什么这样修改：SQLite/JSON 读取边界集中校验消息列、扩展字段和工具链容器；Session 下游直接信任已解析结构；只把真实文件系统 `OSError` 转为附件读取失败标记。
+- 不变量与拥有层：SessionStore 拥有持久化 JSON 和列类型；Session 拥有 LLM history 展开；Sensor 只复制已建立的 source_refs 类型，不再把任意 object 当 iterable。
+- 主审修正：使用真实运行库 `/home/huashen/.akashic/workspace/sessions.db` 只读核验 11,621 条消息、2,096 条 tool-chain 消息和 7,579 次调用；role、media、source_refs、arguments/result 均符合新边界。主线同时保留消息查询允许的稀疏 tool-chain，撤销会破坏现有 FetchMessages 公共用例的过严必填校验，并修复全库 pyright 暴露的 Sensor 类型遗漏。
+- 能力变化：正常 session、历史窗口、主动消息 metadata、附件、consolidation 与消息查询不变；损坏持久化数据携带 message id 失败，不再形成看似正常的空历史。
+- 性能变化：每条读取消息增加与 payload 大小线性的内存结构校验；没有新增 SQL、全表扫描或模型调用。
+- 测试新增：坏消息列、media/source_refs、tool group/calls 和非 OSError 媒体失败；Sensor 类型回归由既有测试覆盖。测试删除及原因：无。
+- 验证结果：Session/消息查询定向 `64 passed`，Sensor `4 passed`，修改后的 manager/sensor pyright `0 errors, 0 warnings`；本轮组合全量 `1914 passed in 25.76s`，全库 pyright `0 errors`，`git diff --check` 通过。
+- 残余风险：SessionStore 仍为 message lookup 和模型 history 共用同一稀疏 tool-chain 载荷；后续若要彻底消除可选字段，应先拆分两种公开读取协议，不能直接收紧共享存储 schema。
