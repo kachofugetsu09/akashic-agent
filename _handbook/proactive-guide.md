@@ -1,15 +1,16 @@
 # Proactive 主动推送指南
 
-Proactive 的轮询、判断和投递由核心 runtime 负责；插件只声明信息源并通过 MCP 提供数据。不再使用 `~/.akashic/workspace/proactive_sources.json`。
+Proactive 的判断和投递由核心 runtime 负责；插件通过 MCP 提供已经刷新的数据。不再使用 `~/.akashic/workspace/proactive_sources.json`。
 
 ```text
 ┌─ 插件 plugin.py
 │  ├─ 声明 MCP server
 │  └─ 声明一个或多个 ProactiveSourceSpec
 ├─ 核心 runtime
-│  ├─ 按 poll_interval_seconds 调用 poll_tool
-│  ├─ 每个 tick 调用 fetch_tool
+│  ├─ 每个 tick 异步调用 fetch_tool
 │  └─ 将同一份快照分发给各通道
+├─ MCP 生命周期
+│  └─ 自行维护外部数据与本地缓存的新鲜度
 ├─ proactive 判断
 │  ├─ alert   ──> 紧急事件
 │  ├─ content ──> 候选内容
@@ -51,13 +52,11 @@ class SourcePlugin(Plugin):
                 server="source",
                 fetch_tool="get_proactive_events",
                 ack_tool="acknowledge_events",
-                poll_tool="poll_updates",
-                poll_interval_seconds=300,
             )
         ]
 ```
 
-`poll_tool` 可省略。省略时，核心仍按 tick 调用 `fetch_tool`，但不会要求上游先执行刷新动作。
+`fetch_tool` 不负责驱动 agent。需要缓存的 MCP 应在自己的 lifespan、后台服务或按需读取路径中维护新鲜度，避免 proactive 插件切换后刷新任务消失。
 
 ## 插件内关闭主动链路
 
@@ -65,7 +64,6 @@ class SourcePlugin(Plugin):
 # ~/.akashic-plugin/data/source-github/config.local.toml
 [proactive]
 enabled = false
-poll_interval_seconds = 600
 ```
 
 关闭主动信息源不等于关闭整个插件。插件的普通 MCP 工具、skills 与其他生命周期能力仍可继续工作。若要关闭整个插件，修改全局 `manifest.toml`。
@@ -102,20 +100,18 @@ context 返回一个 JSON 对象或对象数组：
 
 ACK 工具接收 `event_ids: list[str]`。只确认已经成功投递的原始事件，不能用标题或 URL 代替 ID。
 
-## 轮询语义
+## 缓存刷新语义
 
 ```text
-┌─ runtime 启动
-│  └─ 为带 poll_tool 的 source 创建周期任务
-├─ 周期到期
-│  └─ 调用 poll_tool 更新上游缓存
+┌─ MCP 启动
+│  └─ 启动自己的缓存刷新生命周期
 ├─ proactive tick
-│  └─ 每个 source 调用一次 fetch_tool
+│  └─ 并发调用各 source 的 fetch_tool 读取快照
 ├─ 通道筛选与决策
 └─ 投递成功后精确 ACK
 ```
 
-source 的稳定身份是 `<plugin_id>:<source_id>`。公共调度层只理解 source、channel、interval 和工具名，不硬编码插件名。
+source 的稳定身份是 `<plugin_id>:<source_id>`。公共主动链只理解 source、channel 和工具名，不硬编码插件名，也不拥有外部数据刷新周期。
 
 ## 验证清单
 

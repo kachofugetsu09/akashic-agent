@@ -12,9 +12,6 @@ from agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
-_POLL_TOOL_TIMEOUT = 180.0
-
-
 class McpGateway(Protocol):
     async def call(
         self,
@@ -114,12 +111,18 @@ async def _fetch_source_async(
         raise RuntimeError(f"source 返回值必须是 list 或 context dict: {key}")
     for raw in data:
         if not isinstance(raw, dict):
-            continue
+            raise RuntimeError(
+                f"source item 必须是 object: {key} ({type(raw).__name__})"
+            )
         kind = str(raw.get("kind") or "").strip()
         if not kind and len(spec.channels) == 1:
             kind = spec.channels[0]
         if kind not in spec.channels:
             continue
+        if kind in {"alert", "content"} and not str(
+            raw.get("event_id") or raw.get("id") or ""
+        ).strip():
+            raise RuntimeError(f"source item 缺少 event_id/id: {key}")
         item = dict(raw)
         if kind == "context":
             item.setdefault("_source", key)
@@ -151,23 +154,6 @@ async def _fetch_pages(
             return result
         offset += len(page)
     raise RuntimeError(f"分页 source 超过 256 页: {source_key(source)}")
-
-
-async def poll_source_async(
-    pool: McpGateway,
-    source: RegisteredProactiveSource,
-) -> None:
-    poll_tool = source.spec.poll_tool
-    if not poll_tool:
-        return
-    result = await pool.call(
-        source.spec.server,
-        poll_tool,
-        {},
-        timeout=_POLL_TOOL_TIMEOUT,
-    )
-    if isinstance(result, str) and result.startswith("error:"):
-        raise RuntimeError(result)
 
 
 async def acknowledge_async(

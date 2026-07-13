@@ -1,6 +1,7 @@
 # pyright: reportPrivateUsage=false, reportUnusedCallResult=false
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 from datetime import datetime
 from pathlib import Path
@@ -18,9 +19,9 @@ from core.memory.engine import EvidenceRef, MemoryQueryResult, MemoryRecord, Mem
 from plugins.default_memory.engine import DefaultMemoryEngine
 from memory2.embedder import Embedder
 from memory2.retriever import Retriever
-from memory2.store import MemoryStore2
+from memory2.store import MemoryHit, MemoryStore2
 
-_MemoryHit: TypeAlias = dict[str, object]
+_MemoryHit: TypeAlias = MemoryHit
 _EmbeddingRow: TypeAlias = tuple[
     str,
     str,
@@ -87,6 +88,11 @@ class _FakeProvider:
 class _FailingEmbedder:
     async def embed(self, text: str) -> list[float]:
         raise RuntimeError(f"embed failed: {text}")
+
+
+class _CancelledEmbedder:
+    async def embed(self, text: str) -> list[float]:
+        raise asyncio.CancelledError
 
 
 class _HangingEmbedder:
@@ -412,6 +418,8 @@ async def test_retriever_returns_keyword_hits_when_vector_empty() -> None:
                 "id": "kw1",
                 "memory_type": "event",
                 "summary": "用户处理过支付问题",
+                "source_ref": "tg:keyword",
+                "happened_at": "2026-01-01T00:00:00+00:00",
                 "keyword_score": 1.0,
             }
         ],
@@ -421,7 +429,25 @@ async def test_retriever_returns_keyword_hits_when_vector_empty() -> None:
     hits = await retriever.retrieve("支付", top_k=5)
 
     assert [item["id"] for item in hits] == ["kw1"]
-    assert hits[0]["score"] == 1.0
+    assert hits[0].get("score") == 1.0
+
+
+@pytest.mark.asyncio
+async def test_retriever_propagates_vector_store_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _FusionStore(vector_groups=[[]], keyword_hits=[])
+
+    def fail_batch(*_args: object, **_kwargs: object) -> list[list[_MemoryHit]]:
+        raise RuntimeError("vector store failed")
+
+    monkeypatch.setattr(store, "vector_search_batch", fail_batch)
+    retriever = Retriever(cast(MemoryStore2, store), cast(Embedder, _StaticEmbedder()))
+
+    with pytest.raises(RuntimeError, match="vector store failed"):
+        await retriever.retrieve("支付", top_k=5)
+
+    assert store.keyword_kwargs == []
 
 
 @pytest.mark.asyncio
@@ -431,12 +457,16 @@ async def test_retriever_keeps_strong_vector_order_when_keyword_hits_are_low_ran
             "id": "vec1",
             "memory_type": "event",
             "summary": "高质量向量命中 1",
+            "source_ref": "tg:vector:1",
+            "happened_at": "2026-01-01T00:00:00+00:00",
             "score": 0.95,
         },
         {
             "id": "vec2",
             "memory_type": "event",
             "summary": "高质量向量命中 2",
+            "source_ref": "tg:vector:2",
+            "happened_at": "2026-01-01T00:00:00+00:00",
             "score": 0.9,
         },
     ]
@@ -445,6 +475,8 @@ async def test_retriever_keeps_strong_vector_order_when_keyword_hits_are_low_ran
             "id": f"kw{i}",
             "memory_type": "event",
             "summary": f"低排名关键词命中 {i}",
+            "source_ref": f"tg:keyword:{i}",
+            "happened_at": "2026-01-01T00:00:00+00:00",
             "keyword_score": 1.0,
         }
         for i in range(12)
@@ -518,6 +550,127 @@ def test_store_vector_batch_reuses_time_filtered_embedding_rows(
     assert len(results) == 3
     assert results[0][0]["summary"] == "[2026-04-25 09:00] DeepSeek 今日事件"
     assert results[1][0]["summary"] == "[2026-04-25 10:00] 重构今日事件"
+
+
+def test_store_vector_batch_reuses_fullscan_embedding_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = MemoryStore2(tmp_path / "memory2.db")
+    store.upsert_item("event", "批量全表扫描 A", [1.0, 0.0])
+    store.upsert_item("event", "批量全表扫描 B", [0.0, 1.0])
+    store._vec_enabled = False
+    calls = 0
+    original = store.get_all_with_embedding
+
+    def counted_get_all_with_embedding(
+        include_superseded: bool = False,
+    ) -> list[_EmbeddingRow]:
+        nonlocal calls
+        calls += 1
+        return original(include_superseded=include_superseded)
+
+    monkeypatch.setattr(store, "get_all_with_embedding", counted_get_all_with_embedding)
+
+    results = store.vector_search_batch(
+        [[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]],
+        top_k=1,
+        score_threshold=0.0,
+    )
+
+    assert calls == 1
+    assert [group[0]["summary"] for group in results] == [
+        "批量全表扫描 A",
+        "批量全表扫描 B",
+        "批量全表扫描 A",
+    ]
+
+
+def test_memory_extra_json_shape_corruption_fails_at_retrieval_boundary(
+    tmp_path: Path,
+) -> None:
+    store = MemoryStore2(tmp_path / "memory2.db")
+    result = store.upsert_item("procedure", "损坏的流程元数据", [1.0, 0.0], extra={})
+    item_id = result.removeprefix("new:")
+    store._db.execute(
+        "UPDATE memory_items SET extra_json = ? WHERE id = ?",
+        ("[]", item_id),
+    )
+    store._db.commit()
+    store._vec_enabled = False
+
+    with pytest.raises(ValueError, match=item_id):
+        store.vector_search([1.0, 0.0], top_k=1, score_threshold=0.0)
+
+
+def test_memory_embedding_shape_corruption_fails_at_retrieval_boundary(
+    tmp_path: Path,
+) -> None:
+    store = MemoryStore2(tmp_path / "memory2.db")
+    try:
+        result = store.upsert_item("event", "损坏的 embedding", [1.0, 0.0])
+        item_id = result.removeprefix("new:")
+        store._db.execute(
+            "UPDATE memory_items SET embedding = ? WHERE id = ?",
+            ("[1.0, \"bad\"]", item_id),
+        )
+        store._db.commit()
+        store._vec_enabled = False
+
+        with pytest.raises(ValueError, match=item_id):
+            store.vector_search([1.0, 0.0], top_k=1, score_threshold=0.0)
+    finally:
+        store.close()
+
+
+def test_memory_store_serializes_shared_connection_writes(tmp_path: Path) -> None:
+    store = MemoryStore2(tmp_path / "memory2.db")
+    try:
+        def write_item(_index: int) -> str:
+            return store.upsert_item(
+                "event",
+                "并发写入的同一条事件",
+                [1.0, 0.0],
+            )
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(write_item, range(32)))
+
+        items = store.list_by_type("event")
+        assert len(items) == 1
+        assert items[0]["reinforcement"] == 32
+        assert sum(result.startswith("new:") for result in results) == 1
+        assert all(result.endswith(results[0].split(":", 1)[1]) for result in results)
+    finally:
+        store.close()
+
+
+def test_vec_insert_failure_falls_back_to_fullscan(tmp_path: Path) -> None:
+    store = MemoryStore2(tmp_path / "memory2.db", vec_dim=2)
+    store._db.execute("DROP TABLE IF EXISTS vec_items")
+    store._db.commit()
+    store._vec_enabled = True
+
+    result = store.upsert_item("event", "索引故障后仍应召回", [1.0, 0.0])
+    hits = store.vector_search([1.0, 0.0], top_k=1, score_threshold=0.0)
+
+    assert result.startswith("new:")
+    assert store._vec_enabled is False
+    assert [hit["summary"] for hit in hits] == ["索引故障后仍应召回"]
+
+
+def test_vec_delete_failure_falls_back_to_fullscan(tmp_path: Path) -> None:
+    store = MemoryStore2(tmp_path / "memory2.db", vec_dim=2)
+    result = store.upsert_item("event", "待删除记忆", [1.0, 0.0])
+    item_id = result.removeprefix("new:")
+    store._db.execute("DROP TABLE IF EXISTS vec_items")
+    store._db.commit()
+    store._vec_enabled = True
+
+    assert store.delete_item(item_id) is True
+
+    assert store._vec_enabled is False
+    assert store.vector_search([1.0, 0.0], top_k=1, score_threshold=0.0) == []
 
 
 def test_store_keyword_time_filter_prefilters_before_candidate_limit(
@@ -641,6 +794,103 @@ async def test_recall_memory_falls_back_to_keyword_when_query_embed_hangs(
     assert payload["count"] == 1
     assert payload["items"][0]["id"] == "mem:1"
     assert store.vector_search_called is False
+
+
+@pytest.mark.asyncio
+async def test_retriever_propagates_embedding_cancellation() -> None:
+    store = _KeywordOnlyStore()
+    retriever = Retriever(cast(MemoryStore2, store), cast(Embedder, _CancelledEmbedder()))
+
+    with pytest.raises(asyncio.CancelledError):
+        await retriever.retrieve("phase 支付")
+
+    assert store.vector_search_called is False
+
+
+def test_rrf_merge_uses_stable_id_tiebreak() -> None:
+    vector_items: list[MemoryHit] = [
+        {
+            "id": "filler",
+            "memory_type": "event",
+            "summary": "",
+            "source_ref": "",
+            "happened_at": "",
+            "score": 0.5,
+        },
+        {
+            "id": "A",
+            "memory_type": "event",
+            "summary": "",
+            "source_ref": "",
+            "happened_at": "",
+            "score": 0.5,
+        },
+        {
+            "id": "B",
+            "memory_type": "event",
+            "summary": "",
+            "source_ref": "",
+            "happened_at": "",
+            "score": 0.5,
+        },
+    ]
+    keyword_items: list[MemoryHit] = [
+        {
+            "id": item_id,
+            "memory_type": "event",
+            "summary": "",
+            "source_ref": "",
+            "happened_at": "",
+            "keyword_score": 0.5,
+        }
+        for item_id in ("k1", "B", "k2", "k3", "k4", "A")
+    ]
+
+    hits = retriever_module._rrf_merge(
+        vector_items,
+        keyword_items,
+        top_n=3,
+        k=0,
+    )
+
+    assert [item["id"] for item in hits] == ["filler", "A", "B"]
+
+
+def test_rrf_merge_rejects_missing_vector_score() -> None:
+    broken_hit = MemoryHit(
+        id="broken",
+        memory_type="event",
+        summary="",
+        source_ref="",
+        happened_at="",
+    )
+
+    with pytest.raises(TypeError, match="no numeric score"):
+        retriever_module._rrf_merge(
+            [broken_hit],
+            [],
+            top_n=1,
+        )
+
+
+def test_retriever_rejects_invalid_procedure_steps(tmp_path: Path) -> None:
+    hit = MemoryHit(
+        id="procedure:broken",
+        memory_type="procedure",
+        summary="损坏的流程",
+        source_ref="",
+        happened_at="",
+        score=0.9,
+        extra_json={"steps": "不是列表"},
+    )
+    store = MemoryStore2(tmp_path / "memory2.db")
+    retriever = Retriever(store, cast(Embedder, _HangingEmbedder()))
+
+    try:
+        with pytest.raises(TypeError, match="invalid steps"):
+            retriever.build_injection_block([hit])
+    finally:
+        store.close()
 
 
 def test_recall_memory_description_is_profile_backed() -> None:

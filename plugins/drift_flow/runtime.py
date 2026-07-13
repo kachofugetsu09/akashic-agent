@@ -67,18 +67,18 @@ class DriftTurnPipelineDeps:
 
 # Drift 空闲时间链路核心入口，串起 Scan → Prepare → Execute → Finish 四段。
 #
-# ┌─ tick trigger (no content)
+# ┌─ tick 触发（无内容）
 # │  └─ DriftTurnPipeline.run
-# │     ├─ 1. Scan ── _scan_skills
+# │     ├─ 1. Scan（扫描）── _scan_skills
 # │     │  └─ store.scan_skills → MCP 过滤 → 空则 skip
-# │     ├─ 2. Prepare ── _prepare
+# │     ├─ 2. Prepare（准备）── _prepare
 # │     │  └─ 设置 ctx drift flags → build_drift_tool_registry → 构建 messages
-# │     ├─ 3. Execute ── _execute_loop
-# │     │  └─ while steps < max_steps: llm_fn → tool execute → append → record
+# │     ├─ 3. Execute（执行）── _execute_loop
+# │     │  └─ while steps < max_steps: llm_fn → 执行工具 → 追加消息 → 记录
 # │     │     message_push 后约束 schema 为 finish_drift
-# │     └─ 4. Finish ── _finish
+# │     └─ 4. Finish（收尾）── _finish
 # │        └─ 记录退出状态日志
-# └─ done
+# └─ 完成
 
 class DriftTurnPipeline:
 
@@ -113,7 +113,7 @@ class DriftTurnPipeline:
         self._finish(ctx)
         return True
 
-    # ── 1. Scan ───────────────────────────────────────────────────────
+    # ── 1. Scan（扫描）───────────────────────────────────────────────
 
     def _scan_skills(self) -> list[SkillMeta]:
         """扫描可用 skills，过滤掉 requires_mcp 未满足的。"""
@@ -141,7 +141,7 @@ class DriftTurnPipeline:
         )
         return skills
 
-    # ── 2. Prepare ────────────────────────────────────────────────────
+    # ── 2. Prepare（准备）───────────────────────────────────────────
 
     async def _prepare(
         self,
@@ -177,7 +177,7 @@ class DriftTurnPipeline:
 
         return tools, messages
 
-    # ── 3. Execute ────────────────────────────────────────────────────
+    # ── 3. Execute（执行）───────────────────────────────────────────
 
     async def _execute_loop(
         self,
@@ -491,7 +491,7 @@ class DriftTurnPipeline:
         ctx.drift_finish_status = "paused"
         ctx.drift_finish_briefing = "达到步数上限后模型未按要求调用 finish_drift，runtime 自动保存为 paused。"
 
-    # ── 4. Finish ──────────────────────────────────────────────────────
+    # ── 4. Finish（收尾）─────────────────────────────────────────────
 
     def _finish(self, ctx: AgentTickContext) -> None:
         """记录 drift 退出状态。"""

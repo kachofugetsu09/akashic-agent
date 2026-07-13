@@ -6,6 +6,8 @@ import uuid
 from pathlib import Path
 from typing import Any, cast
 
+from agent.config import Config
+from agent.plugins.base import Plugin
 from agent.plugins.manifest import load_plugin_manifest, plugins_root
 from agent.plugins.registry import plugin_registry
 from agent.plugins.specs import McpServerSpec
@@ -18,14 +20,21 @@ def run_plugin_doctor(
     workspace: Path | None = None,
     plugins_home: Path | None = None,
 ) -> dict[str, Any]:
-    _ = config_path
     resolved_workspace = workspace or Path.home() / ".akashic" / "workspace"
+    config = Config.load(config_path)
+    memory_engine = (config.memory.engine or "").strip() or "default"
     manifest = load_plugin_manifest(plugins_home)
     selected = [plugin_id] if plugin_id else sorted(manifest)
     if plugin_id and plugin_id not in manifest:
         return {"status": "broken", "plugins": [], "error": f"插件不存在: {plugin_id}"}
     plugins = [
-        _inspect_plugin(current_id, manifest[current_id], resolved_workspace, plugins_home)
+        _inspect_plugin(
+            current_id,
+            manifest[current_id],
+            resolved_workspace,
+            plugins_home,
+            memory_engine=memory_engine,
+        )
         for current_id in selected
     ]
     return {
@@ -53,6 +62,8 @@ def _inspect_plugin(
     enabled: bool,
     workspace: Path,
     plugins_home: Path | None,
+    *,
+    memory_engine: str,
 ) -> dict[str, Any]:
     plugin_root = _find_plugin_root(plugin_id, plugins_home)
     checks = [_check("policy", "ok" if enabled else "warn", f"enabled={str(enabled).lower()}")]
@@ -62,7 +73,16 @@ def _inspect_plugin(
         checks.append(_check("install", "ok", f"已发现 plugin.py: {plugin_root}"))
         try:
             plugin_class = _load_plugin_class(plugin_root)
-            checks.extend(_check_capabilities(plugin_class, plugin_root, workspace))
+            checks.extend(
+                _check_capabilities(
+                    plugin_class,
+                    plugin_root,
+                    workspace,
+                    links_required=enabled and not (
+                        plugin_id == "default_memory" and memory_engine != "default"
+                    ),
+                )
+            )
         except Exception as e:
             checks.append(_check("declaration", "error", str(e)))
     return {
@@ -82,7 +102,7 @@ def _find_plugin_root(plugin_id: str, plugins_home: Path | None) -> Path | None:
     return versions[-1] if versions and (versions[-1] / "plugin.py").exists() else None
 
 
-def _load_plugin_class(plugin_root: Path) -> type:
+def _load_plugin_class(plugin_root: Path) -> type[Plugin]:
     module_name = f"akasic_plugin_doctor_{uuid.uuid4().hex}"
     path = plugin_root / "plugin.py"
     spec = importlib.util.spec_from_file_location(
@@ -96,16 +116,24 @@ def _load_plugin_class(plugin_root: Path) -> type:
     sys.modules[module_name] = module
     try:
         spec.loader.exec_module(module)
-        plugin_class = plugin_registry._classes.get(module_name)
+        plugin_class = plugin_registry.get_class(module_name)
         if plugin_class is None:
             raise ValueError("plugin.py 未声明 Plugin 子类")
-        return plugin_class
+        if not issubclass(plugin_class, Plugin):
+            raise TypeError("plugin.py 注册的类型不是 Plugin 子类")
+        return cast(type[Plugin], plugin_class)
     finally:
         plugin_registry.remove_plugin(module_name)
-        sys.modules.pop(module_name, None)
+        _ = sys.modules.pop(module_name, None)
 
 
-def _check_capabilities(plugin_class: type, plugin_root: Path, workspace: Path) -> list[dict[str, str]]:
+def _check_capabilities(
+    plugin_class: type[Plugin],
+    plugin_root: Path,
+    workspace: Path,
+    *,
+    links_required: bool,
+) -> list[dict[str, str]]:
     checks: list[dict[str, str]] = []
     for label, roots, target in (
         ("skills", plugin_class.skill_roots(), workspace / "skills"),
@@ -113,7 +141,11 @@ def _check_capabilities(plugin_class: type, plugin_root: Path, workspace: Path) 
     ):
         missing = [raw for raw in roots if not (plugin_root / raw).is_dir()]
         links = [child.name for raw in roots for child in (plugin_root / raw).iterdir() if child.is_dir()]
-        unlinked = [name for name in links if not (target / name).is_symlink()]
+        unlinked = [
+            name
+            for name in links
+            if links_required and not (target / name).is_symlink()
+        ]
         status = "error" if missing else "warn" if unlinked else "ok"
         checks.append(_check(label, status, f"roots={len(roots)} missing={missing} unlinked={unlinked}"))
     servers = plugin_class.mcp_servers()

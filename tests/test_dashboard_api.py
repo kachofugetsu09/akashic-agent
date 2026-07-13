@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient as _RawTestClient
 
+import bootstrap.dashboard_api as dashboard_api
 from bootstrap.dashboard_api import (
     _dashboard_plugin_dirs,
     create_dashboard_app as _create_dashboard_app,
@@ -86,6 +87,57 @@ class _DashboardMemoryAdmin:
 def create_dashboard_app(tmp_path, **kwargs):
     kwargs.setdefault("memory_admin", _DashboardMemoryAdmin(tmp_path))
     return _create_dashboard_app(tmp_path, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_dashboard_lifespan_swallows_its_own_compile_cancellation(
+    tmp_path, monkeypatch
+):
+    async def _pending_compile() -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        dashboard_api,
+        "_compile_pending_plugins_async",
+        _pending_compile,
+    )
+    app = create_dashboard_app(tmp_path)
+
+    async with app.router.lifespan_context(app):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_dashboard_waits_for_async_closeable() -> None:
+    closed = False
+
+    class Closeable:
+        async def close(self) -> None:
+            nonlocal closed
+            closed = True
+
+    await dashboard_api._close_dashboard_value(Closeable())
+
+    assert closed
+
+
+@pytest.mark.asyncio
+async def test_dashboard_lifespan_exposes_unexpected_compile_failure(
+    tmp_path, monkeypatch
+):
+    async def _failed_compile() -> None:
+        raise RuntimeError("compile failed")
+
+    monkeypatch.setattr(
+        dashboard_api,
+        "_compile_pending_plugins_async",
+        _failed_compile,
+    )
+    app = create_dashboard_app(tmp_path)
+
+    with pytest.raises(RuntimeError, match="compile failed"):
+        async with app.router.lifespan_context(app):
+            await asyncio.sleep(0)
 
 
 class _ManualConsolidator:
@@ -815,6 +867,17 @@ def test_proactive_dashboard_endpoints(tmp_path, monkeypatch) -> None:
         assert tick_steps_resp.json()["items"][1]["terminal_action_after"] == "reply"
 
 
+def test_proactive_reader_rejects_corrupt_json() -> None:
+    with pytest.raises(ValueError, match="JSON 列表损坏"):
+        dashboard_api.ProactiveDashboardReader._decode_json_list("{")
+
+    with pytest.raises(ValueError, match="列表元素类型错误"):
+        dashboard_api.ProactiveDashboardReader._decode_json_list('["ok", 1]')
+
+    with pytest.raises(ValueError, match="存储类型错误"):
+        dashboard_api.ProactiveDashboardReader._decode_json_object(b"{}")
+
+
 def test_wake_package_owns_dashboard_visibility(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         "bootstrap.dashboard_api.load_package_manifest",
@@ -944,6 +1007,13 @@ def test_plugin_asset_paths_reject_cross_platform_traversal(tmp_path) -> None:
         ):
             response = client.get(path)
             assert response.status_code == 400
+
+        assert (
+            client.get(
+                "/plugins/default_memory/dashboard_panel..%5Csecret.js"
+            ).status_code
+            == 400
+        )
 
         assert client.get("/plugins/missing/dashboard_panel.js").status_code == 404
 

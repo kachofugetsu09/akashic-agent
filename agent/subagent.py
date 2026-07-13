@@ -1,19 +1,3 @@
-"""
-SubAgent — 通用子 Agent
-
-有固定工具集、独立的 LLM 循环，执行单个任务后返回结果。
-可作为后台任务执行引擎，也可用于未来其他子 Agent 场景。
-
-用法示例：
-    agent = SubAgent(
-        provider=provider,
-        model="deepseek-chat",
-        tools=[WebSearchTool(), WebFetchTool()],
-        system_prompt="你是后台研究助手...",
-    )
-    result = await agent.run("调研最新的 agent 相关论文，总结后发给我")
-"""
-
 from __future__ import annotations
 
 import logging
@@ -52,10 +36,10 @@ _CLEANUP_PROMPT = (
     "步骤预算已耗尽，进入强制收尾阶段。\n"
     "你必须调用 {tool_name}，如实汇报当前进度（已完成的步骤、产出路径、未完成的原因）。"
 )
-_WARN_THRESHOLD = 5  # 剩余步数 <= 此值时开始提示
-_MAX_TOOL_RESULT_CHARS = 100_000  # 单条工具结果字符上限（约 ~25K tokens）
-_RECENT_TOOL_ROUNDS = 3  # 保留完整 tool result 的最近轮次数
-_CLEARED = "[已清除]"  # 旧 tool result 的占位符
+_WARN_THRESHOLD = 5
+_MAX_TOOL_RESULT_CHARS = 100_000
+_RECENT_TOOL_ROUNDS = 3
+_CLEARED = "[已清除]"
 _SUMMARY_MAX_TOKENS = 512
 _INCOMPLETE_SUMMARY_PROMPT = (
     "当前任务未在步骤预算内完成，请直接输出中文进度总结，不要 JSON。\n"
@@ -84,27 +68,23 @@ def _is_tool_loop_guard_denial(exec_result: object) -> bool:
 
 
 def _trim_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """将旧轮次的 tool result 替换为占位符，防止长对话累积撑爆上下文。
+    """裁剪旧工具结果，同时保留消息闭链所需的调用结构。"""
 
-    保留最近 _RECENT_TOOL_ROUNDS 个 assistant(tool_calls) 轮次的完整结果；
-    更早轮次的 tool result 替换为 _CLEARED，保留因果结构供 LLM 理解调用链。
-    """
-    # 找到所有含 tool_calls 的 assistant 消息索引（即每轮工具调用的起点）
+    # 1. 定位需要保留完整结果的近期工具轮次
     tool_round_indices = [
         i
         for i, m in enumerate(messages)
         if m.get("role") == "assistant" and m.get("tool_calls")
     ]
     if len(tool_round_indices) <= _RECENT_TOOL_ROUNDS:
-        return messages  # 轮次不多，无需清理
+        return messages
 
-    # 需要清理的轮次边界：第 (len - _RECENT_TOOL_ROUNDS) 个之前的所有轮次
+    # 2. 清空更早的结果，但保留消息角色与调用 ID
     cutoff = tool_round_indices[-_RECENT_TOOL_ROUNDS]
 
     out = []
     for i, m in enumerate(messages):
         if m.get("role") == "tool" and i < cutoff:
-            # 找到这条 tool 消息对应的 assistant 轮次起点（往前找最近的含 tool_calls 的 assistant）
             out.append({**m, "content": _CLEARED})
         else:
             out.append(m)
@@ -112,13 +92,7 @@ def _trim_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 class SubAgent:
-    """有界子 Agent：固定工具集 + 单任务执行。
-
-    与主 AgentLoop 的区别：
-    - 不维护对话历史，每次 run() 是独立的一次性任务
-    - 工具集在构造时固定，不可在运行时扩展
-    - 没有 session/memory 写入能力（由调用方决定是否保存结果）
-    """
+    """使用固定工具集执行有界单任务，不持有会话或记忆状态。"""
 
     def __init__(
         self,
@@ -138,8 +112,8 @@ class SubAgent:
         self._max_tokens = max_tokens
         self._mandatory_exit_tools = list(mandatory_exit_tools)
         self.last_exit_reason: str = "idle"
-        self.iterations_used: int = 0  # 实际使用的迭代次数
-        self.tools_called: list[str] = []  # 实际调用的工具名称列表
+        self.iterations_used: int = 0
+        self.tools_called: list[str] = []
         self._run_seq = 0
         prepared = prepare_toolset(tools)
         self._tool_map: dict[str, Tool] = prepared.tool_map
@@ -150,12 +124,7 @@ class SubAgent:
         self._tool_executor.add_hooks(hooks)
 
     async def run(self, task: str) -> str:
-        """执行任务并返回文本结果。
-
-        - 任务正常完成：返回最终结果文本
-        - 命中循环保护或达到最大迭代：返回进度收尾总结
-        - LLM 调用等硬错误：返回空字符串
-        """
+        """执行单次任务，并返回完成结果或预算收尾总结。"""
         messages: list[dict[str, Any]] = []
         self.last_exit_reason = "running"
         self.iterations_used = 0
@@ -175,17 +144,20 @@ class SubAgent:
                     max_tokens=self._max_tokens,
                     tool_choice="auto",
                 )
-            except Exception as e:
-                logger.error("[subagent] LLM 调用失败 iteration=%d: %s", iteration, e)
+            except Exception:
                 self.last_exit_reason = "error"
-                return ""
+                raise
 
             if not response.tool_calls:
+                result = (response.content or "").strip()
+                if not result:
+                    self.last_exit_reason = "error"
+                    raise RuntimeError("SubAgent 模型未返回结果")
                 logger.info("[subagent] 任务完成 iterations=%d", iteration + 1)
                 self.last_exit_reason = "completed"
-                return (response.content or "").strip()
+                return result
 
-            # 追加 assistant 消息（含 tool_calls）
+            # 保持 assistant 调用与后续 tool 结果的消息闭链
             append_assistant_tool_calls(
                 messages,
                 content=response.content,
@@ -194,7 +166,6 @@ class SubAgent:
             )
             tool_batch = tool_call_batch_snapshot(response.tool_calls)
 
-            # 执行工具
             for tool_batch_index, tc in enumerate(response.tool_calls):
                 logger.info(
                     "[subagent] 调用工具 %s args=%s",
@@ -220,7 +191,7 @@ class SubAgent:
                     tc.name,
                     normalized.preview()[:120],
                 )
-                # 兜底截断：防止超长结果撑爆 LLM 上下文
+                # 限制单次工具结果，避免挤占后续推理上下文
                 if len(normalized.text) > _MAX_TOOL_RESULT_CHARS:
                     original_len = len(normalized.text)
                     normalized.text = (
@@ -353,9 +324,19 @@ class SubAgent:
                 continue
 
             if not response.tool_calls:
-                continue
+                self.last_exit_reason = "error"
+                raise RuntimeError(
+                    "mandatory_exit 未调用指定工具: "
+                    f"expected={tool_name} actual=none"
+                )
 
             tc = response.tool_calls[0]
+            if tc.name != tool_name:
+                self.last_exit_reason = "error"
+                raise RuntimeError(
+                    "mandatory_exit 调用了错误工具: "
+                    f"expected={tool_name} actual={tc.name}"
+                )
             append_assistant_tool_calls(
                 messages,
                 content=response.content,

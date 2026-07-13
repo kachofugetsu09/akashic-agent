@@ -19,7 +19,7 @@ from agent.core.types import (
 from agent.prompting import DEFAULT_CONTEXT_TRIM_PLANS, is_context_frame
 from agent.provider import ContentSafetyError, ContextLengthError
 from agent.retrieval.protocol import RetrievalRequest, RetrievalResult
-from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
+from agent.tool_hooks import ToolExecutionRequest, ToolExecutionResult, ToolExecutor
 from agent.tool_runtime import (
     append_assistant_tool_calls,
     append_tool_result,
@@ -96,26 +96,26 @@ def _persistence_from_metadata(metadata: dict[str, Any] | None) -> TurnPersisten
 
 # 被动链路核心入口，负责串起 lifecycle 模块链与 reasoner。
 #
-# ┌─ inbound
+# ┌─ 输入
 # │  └─ AgentCore.process
 # │     └─ PassiveTurnPipeline.run
 # │        ├─ BeforeTurn
-# │        │  └─ session acquire + ContextStore.prepare + EventBus.emit
+# │        │  └─ 获取 session + ContextStore.prepare + EventBus.emit
 # │        ├─ BeforeReasoning
-# │        │  └─ tool context sync + EventBus.emit + prompt warmup
+# │        │  └─ 同步工具上下文 + EventBus.emit + prompt 预热
 # │        ├─ Reasoner.run_turn
 # │        │  ├─ PromptRender
-# │        │  │  └─ ContextBuilder.render + plugin prompt modules
+# │        │  │  └─ ContextBuilder.render + plugin prompt 模块
 # │        │  └─ Reasoner.run
 # │        │     ├─ BeforeStep
-# │        │     │  └─ token estimate + EventBus.emit + hint injection
+# │        │     │  └─ token 估算 + EventBus.emit + 注入提示
 # │        │     └─ AfterStep
 # │        │        └─ EventBus.fanout
 # │        ├─ AfterReasoning
-# │        │  └─ parse + EventBus.emit + persist + outbound build
+# │        │  └─ 解析 + EventBus.emit + 持久化 + 构建出站消息
 # │        └─ AfterTurn
-# │           └─ TurnCommitted fanout + AfterTurn fanout + dispatch
-# └─ done
+# │           └─ 广播 TurnCommitted + 广播 AfterTurn + dispatch
+# └─ 完成
 
 # ── 被动 turn 内联常量 ──────────────────────────────────────────
 _SAFETY_RETRY_RATIOS = (1.0, 0.5, 0.0)
@@ -136,11 +136,10 @@ def _turn_log_id(key: str, msg: InboundMessage) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
 
 
-def _is_tool_loop_guard_denial(exec_result: object) -> bool:
-    traces = getattr(exec_result, "pre_hook_trace", ()) or ()
+def _is_tool_loop_guard_denial(exec_result: ToolExecutionResult) -> bool:
+    traces = exec_result.pre_hook_trace
     return any(
-        getattr(item, "decision", "") == "deny"
-        and str(getattr(item, "reason", "")).startswith("tool_loop_guard:")
+        item.decision == "deny" and item.reason.startswith("tool_loop_guard:")
         for item in traces
     )
 
@@ -179,6 +178,22 @@ class AgentCoreDeps:
     after_step_plugin_modules: list[object] | None = None
     after_reasoning_plugin_modules: list[object] | None = None
     after_turn_plugin_modules: list[object] | None = None
+
+
+@dataclass
+class _PassivePhaseBundle:
+    before_turn: Phase[TurnState, BeforeTurnCtx, BeforeTurnFrame]
+    before_reasoning: Phase[
+        BeforeReasoningInput,
+        BeforeReasoningCtx,
+        BeforeReasoningFrame,
+    ]
+    after_reasoning: Phase[
+        AfterReasoningInput,
+        AfterReasoningResult,
+        AfterReasoningFrame,
+    ]
+    after_turn: Phase[TurnSnapshot, OutboundMessage, AfterTurnFrame]
 
 
 class AgentCore:
@@ -256,12 +271,14 @@ class PassiveTurnPipeline:
         self._context = deps.context
         self._tools = deps.tools
         self._reasoner = deps.reasoner
-        add_before_step = getattr(self._reasoner, "add_before_step_plugin_modules", None)
-        if add_before_step is not None:
-            add_before_step(list(deps.before_step_plugin_modules or []))
-        add_after_step = getattr(self._reasoner, "add_after_step_plugin_modules", None)
-        if add_after_step is not None:
-            add_after_step(list(deps.after_step_plugin_modules or []))
+        if deps.before_step_plugin_modules is not None:
+            self._reasoner.add_before_step_plugin_modules(
+                list(deps.before_step_plugin_modules)
+            )
+        if deps.after_step_plugin_modules is not None:
+            self._reasoner.add_after_step_plugin_modules(
+                list(deps.after_step_plugin_modules)
+            )
         self._outbound_port = deps.outbound_port or _NoopOutboundPort()
         self._history_window = deps.history_window
         self._memory_consolidator = deps.memory_consolidator
@@ -276,38 +293,45 @@ class PassiveTurnPipeline:
         bus = deps.event_bus or EventBus()
         self._bus = bus
 
-        self._before_turn = self._build_before_turn_phase()
-        self._before_reasoning = self._build_before_reasoning_phase()
-        self._after_reasoning = self._build_after_reasoning_phase()
-        self._after_turn = self._build_after_turn_phase()
+        self._snapshot_phases: tuple[str, _PassivePhaseBundle] | None = None
+        self._rebuild_phases()
 
     def add_before_turn_plugin_modules(
         self,
         modules: list[object],
     ) -> None:
         self._before_turn_plugin_modules.extend(modules)
-        self._before_turn = self._build_before_turn_phase()
+        self._rebuild_phases()
 
     def add_before_reasoning_plugin_modules(
         self,
         modules: list[object],
     ) -> None:
         self._before_reasoning_plugin_modules.extend(modules)
-        self._before_reasoning = self._build_before_reasoning_phase()
+        self._rebuild_phases()
 
     def add_after_reasoning_plugin_modules(
         self,
         modules: list[object],
     ) -> None:
         self._after_reasoning_plugin_modules.extend(modules)
-        self._after_reasoning = self._build_after_reasoning_phase()
+        self._rebuild_phases()
 
     def add_after_turn_plugin_modules(
         self,
         modules: list[object],
     ) -> None:
         self._after_turn_plugin_modules.extend(modules)
-        self._after_turn = self._build_after_turn_phase()
+        self._rebuild_phases()
+
+    def _rebuild_phases(self) -> None:
+        self._phases = _PassivePhaseBundle(
+            before_turn=self._build_before_turn_phase(),
+            before_reasoning=self._build_before_reasoning_phase(),
+            after_reasoning=self._build_after_reasoning_phase(),
+            after_turn=self._build_after_turn_phase(),
+        )
+        self._snapshot_phases = None
 
     def _build_before_turn_phase(
         self,
@@ -388,12 +412,29 @@ class PassiveTurnPipeline:
             frame_factory=AfterTurnFrame,
         )
 
-    def _runtime_phase(self, name: str):
+    def _runtime_phases(self) -> _PassivePhaseBundle:
         snapshot = get_current_runtime_snapshot()
         if snapshot is None:
-            return getattr(self, f"_{name}")
-        modules = list(getattr(snapshot, f"{name}_modules"))
-        return getattr(self, f"_build_{name}_phase")(modules)
+            return self._phases
+        if self._snapshot_phases is None or self._snapshot_phases[0] != snapshot.snapshot_id:
+            self._snapshot_phases = (
+                snapshot.snapshot_id,
+                _PassivePhaseBundle(
+                    before_turn=self._build_before_turn_phase(
+                        list(snapshot.before_turn_modules)
+                    ),
+                    before_reasoning=self._build_before_reasoning_phase(
+                        list(snapshot.before_reasoning_modules)
+                    ),
+                    after_reasoning=self._build_after_reasoning_phase(
+                        list(snapshot.after_reasoning_modules)
+                    ),
+                    after_turn=self._build_after_turn_phase(
+                        list(snapshot.after_turn_modules)
+                    ),
+                ),
+            )
+        return self._snapshot_phases[1]
 
     # 核心方法：处理一条普通被动消息，并提交最终出站结果。
     async def run(
@@ -427,7 +468,7 @@ class PassiveTurnPipeline:
             try:
                 # Phase 1: BeforeTurn 模块链（会话、上下文、BeforeTurn 事件）。
                 with diagnostic_context(phase="before_turn"):
-                    before_turn = await self._runtime_phase("before_turn").run(state)
+                    before_turn = await self._runtime_phases().before_turn.run(state)
                 # TurnState 存内部默认 metadata；BeforeTurnCtx 存插件导出，同名 key 以后者覆盖。
                 state.extra_metadata.update(before_turn.extra_metadata)
                 if before_turn.abort:
@@ -467,7 +508,7 @@ class PassiveTurnPipeline:
 
                 # Phase 2: BeforeReasoning 模块链（工具上下文、BeforeReasoning 事件、prompt warmup）。
                 with diagnostic_context(phase="before_reasoning"):
-                    before_reasoning = await self._runtime_phase("before_reasoning").run(
+                    before_reasoning = await self._runtime_phases().before_reasoning.run(
                         BeforeReasoningInput(state=state, before_turn=before_turn)
                     )
                 if before_reasoning.abort:
@@ -562,7 +603,7 @@ class PassiveTurnPipeline:
             try:
                 # Phase 5: AfterReasoning 模块链（parse、AfterReasoning 事件、持久化、出站消息）。
                 with diagnostic_context(phase="after_reasoning"):
-                    after_reasoning = await self._runtime_phase("after_reasoning").run(
+                    after_reasoning = await self._runtime_phases().after_reasoning.run(
                         AfterReasoningInput(state=state, turn_result=turn_result)
                     )
             except Exception as exc:
@@ -598,7 +639,7 @@ class PassiveTurnPipeline:
             try:
                 # Phase 6: AfterTurn 模块链（TurnCommitted fanout、AfterTurn fanout、dispatch）。
                 with diagnostic_context(phase="after_turn"):
-                    outbound = await self._runtime_phase("after_turn").run(
+                    outbound = await self._runtime_phases().after_turn.run(
                         TurnSnapshot(
                             state=state,
                             outbound=after_reasoning.outbound,
@@ -653,10 +694,10 @@ class PassiveTurnPipeline:
             session=self._session.session_manager.get_or_create(session_key),
             persistence=persistence or _persistence_from_metadata(msg.metadata),
         )
-        after_reasoning = await self._runtime_phase("after_reasoning").run(
+        after_reasoning = await self._runtime_phases().after_reasoning.run(
             AfterReasoningInput(state=state, turn_result=turn_result)
         )
-        return await self._runtime_phase("after_turn").run(
+        return await self._runtime_phases().after_turn.run(
             TurnSnapshot(
                 state=state,
                 outbound=after_reasoning.outbound,
@@ -859,6 +900,17 @@ class DefaultReasoner(Reasoner):
         self._prompt_render_plugin_modules: list[object] = []
         self._before_step_plugin_modules: list[object] = []
         self._after_step_plugin_modules: list[object] = []
+        self._snapshot_step_phases: tuple[
+            str,
+            tuple[
+                Phase[BeforeStepInput, BeforeStepCtx, BeforeStepFrame],
+                Phase[AfterStepCtx, AfterStepCtx, AfterStepFrame],
+            ],
+        ] | None = None
+        self._snapshot_prompt_render_phase: tuple[
+            str,
+            Phase[PromptRenderInput, PromptRenderResult, PromptRenderFrame],
+        ] | None = None
         self._tool_executor = ToolExecutor([])
         self._stream_sink_factory: Callable[
             [object], Callable[[dict[str, str] | str], Awaitable[None]] | None
@@ -885,6 +937,7 @@ class DefaultReasoner(Reasoner):
         modules: list[object],
     ) -> None:
         self._prompt_render_plugin_modules.extend(modules)
+        self._snapshot_prompt_render_phase = None
         if self._context is not None:
             self._prompt_render = self._build_prompt_render_phase(self._context)
 
@@ -893,6 +946,7 @@ class DefaultReasoner(Reasoner):
         modules: list[object],
     ) -> None:
         self._before_step_plugin_modules.extend(modules)
+        self._snapshot_step_phases = None
         self._before_step = self._build_before_step_phase()
 
     def add_after_step_plugin_modules(
@@ -900,6 +954,7 @@ class DefaultReasoner(Reasoner):
         modules: list[object],
     ) -> None:
         self._after_step_plugin_modules.extend(modules)
+        self._snapshot_step_phases = None
         self._after_step = self._build_after_step_phase()
 
     def _build_before_step_phase(
@@ -963,30 +1018,41 @@ class DefaultReasoner(Reasoner):
             raise RuntimeError("DefaultReasoner.render_prompt requires context")
         snapshot = get_current_runtime_snapshot()
         if snapshot is not None:
-            phase = self._build_prompt_render_phase(
-                self._context,
-                list(snapshot.prompt_render_modules),
-            )
-            return await phase.run(input)
+            cached = self._snapshot_prompt_render_phase
+            if cached is None or cached[0] != snapshot.snapshot_id:
+                cached = (
+                    snapshot.snapshot_id,
+                    self._build_prompt_render_phase(
+                        self._context,
+                        list(snapshot.prompt_render_modules),
+                    ),
+                )
+                self._snapshot_prompt_render_phase = cached
+            return await cached[1].run(input)
         if self._prompt_render is None:
             self._prompt_render = self._build_prompt_render_phase(self._context)
         return await self._prompt_render.run(input)
 
-    def _runtime_before_step_phase(
+    def _runtime_step_phases(
         self,
-    ) -> Phase[BeforeStepInput, BeforeStepCtx, BeforeStepFrame]:
+    ) -> tuple[
+        Phase[BeforeStepInput, BeforeStepCtx, BeforeStepFrame],
+        Phase[AfterStepCtx, AfterStepCtx, AfterStepFrame],
+    ]:
         snapshot = get_current_runtime_snapshot()
         if snapshot is None:
-            return self._before_step
-        return self._build_before_step_phase(list(snapshot.before_step_modules))
-
-    def _runtime_after_step_phase(
-        self,
-    ) -> Phase[AfterStepCtx, AfterStepCtx, AfterStepFrame]:
-        snapshot = get_current_runtime_snapshot()
-        if snapshot is None:
-            return self._after_step
-        return self._build_after_step_phase(list(snapshot.after_step_modules))
+            return self._before_step, self._after_step
+        cached = self._snapshot_step_phases
+        if cached is None or cached[0] != snapshot.snapshot_id:
+            cached = (
+                snapshot.snapshot_id,
+                (
+                    self._build_before_step_phase(list(snapshot.before_step_modules)),
+                    self._build_after_step_phase(list(snapshot.after_step_modules)),
+                ),
+            )
+            self._snapshot_step_phases = cached
+        return cached[1]
 
     def set_stream_sink_factory(
         self,
@@ -1111,12 +1177,11 @@ class DefaultReasoner(Reasoner):
                         window,
                         sorted(plan["disabled_sections"]),
                     )
-                    if window == 0:
-                        session.messages.clear()
-                    else:
-                        session.messages = session.messages[-window:]
-                    session.last_consolidated = 0
-                    await self._session_manager.save_async(cast(Any, session))
+                    await self._session_manager.trim_history_async(
+                        cast(Any, session),
+                        window,
+                        last_consolidated=0,
+                    )
 
                 if self._tool_search_enabled and (tools_used or tools_unlocked):
                     self._discovery.update(
@@ -1210,6 +1275,7 @@ class DefaultReasoner(Reasoner):
         react_cache_hit_tokens = 0
         react_cache_seen = False
         disabled = set(disabled_tools or set())
+        before_step_phase, after_step_phase = self._runtime_step_phases()
         if self._tool_search_enabled:
             always_on = self._tools.get_always_on_names()
             visible_names = (always_on | (preloaded_tools or set())) - disabled
@@ -1236,7 +1302,7 @@ class DefaultReasoner(Reasoner):
             ):
                 break
             # 3. BeforeStep 模块链：token 估算、BeforeStep 事件、提示注入。
-            step_ctx = await self._runtime_before_step_phase().run(BeforeStepInput(
+            step_ctx = await before_step_phase.run(BeforeStepInput(
                 session_key=tool_event_session_key,
                 channel=tool_event_channel,
                 chat_id=tool_event_chat_id,
@@ -1679,7 +1745,7 @@ class DefaultReasoner(Reasoner):
                 tool_chain.append(tool_chain_group)
                 pressure_tokens = support.estimate_messages_tokens(messages)
                 # 7a. AfterStep 模块链（工具分支）：通知观察者本轮工具执行完毕。
-                after_step = await self._runtime_after_step_phase().run(AfterStepCtx(
+                after_step = await after_step_phase.run(AfterStepCtx(
                     session_key=tool_event_session_key,
                     channel=tool_event_channel,
                     chat_id=tool_event_chat_id,
@@ -1760,7 +1826,7 @@ class DefaultReasoner(Reasoner):
             )
             messages.append({"role": "assistant", "content": response.content})
             # 8b. AfterStep 模块链（最终回复分支）：通知观察者本轮推理结束。
-            _ = await self._runtime_after_step_phase().run(AfterStepCtx(
+            _ = await after_step_phase.run(AfterStepCtx(
                 session_key=tool_event_session_key,
                 channel=tool_event_channel,
                 chat_id=tool_event_chat_id,
@@ -2047,13 +2113,10 @@ def get_history_since_consolidated(
     session: "SessionLike",
     memory_window: int,
 ) -> list[dict]:
-    try:
-        return session.get_history(
-            max_messages=memory_window,
-            start_index=session.last_consolidated,
-        )
-    except TypeError:
-        return session.get_history(max_messages=memory_window)
+    return session.get_history(
+        max_messages=memory_window,
+        start_index=session.last_consolidated,
+    )
 
 
 def extract_model_facing_turn(
@@ -2109,20 +2172,9 @@ def build_deferred_tools_hint(
     tools: "ToolRegistry",
     visible: set[str] | None = None,
 ) -> str:
-    get_deferred_names = getattr(tools, "get_deferred_names", None)
-    if not callable(get_deferred_names):
-        return ""
-    deferred_raw = get_deferred_names(visible=visible)
-    if not isinstance(deferred_raw, dict):
-        return ""
-    builtin_raw = deferred_raw.get("builtin", [])
-    mcp_raw = deferred_raw.get("mcp", {})
-    builtin = [name for name in builtin_raw if isinstance(name, str)]
-    mcp = {
-        str(server): [name for name in names if isinstance(name, str)]
-        for server, names in mcp_raw.items()
-        if isinstance(server, str) and isinstance(names, list)
-    }
+    deferred = tools.get_deferred_names(visible=visible)
+    builtin = deferred["builtin"]
+    mcp = deferred["mcp"]
 
     if not builtin and not mcp:
         return ""

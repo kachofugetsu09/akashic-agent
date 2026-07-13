@@ -118,15 +118,23 @@ class RecallInspectorDashboardReader:
         records: list[dict[str, Any]] = []
         try:
             lines = self.data_path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            return []
-        for line in lines:
+        except OSError as exc:
+            raise RuntimeError(
+                f"读取默认记忆召回记录失败: {self.data_path}"
+            ) from exc
+        for line_number, line in enumerate(lines, start=1):
             try:
                 value = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(value, dict):
-                records.append(cast(dict[str, Any], value))
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"默认记忆召回记录 JSONL 第 {line_number} 行损坏: {self.data_path}"
+                ) from exc
+            if not isinstance(value, dict):
+                raise ValueError(
+                    f"默认记忆召回记录 JSONL 第 {line_number} 行必须是对象: "
+                    f"{self.data_path}"
+                )
+            records.append(cast(dict[str, Any], value))
         return records
 
 

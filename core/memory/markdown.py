@@ -11,7 +11,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 
 from agent.llm_json import load_json_object_loose
 from agent.memory import MemoryStore
@@ -34,6 +34,8 @@ class ConsolidateRequest:
     session: object
     archive_all: bool = False
     force: bool = False
+    scope_channel: str = ""
+    scope_chat_id: str = ""
 
 
 @dataclass
@@ -81,22 +83,33 @@ _ALLOWED_PENDING_TAGS = frozenset(
         "health_long_term",
         "requested_memory",
         "correction",
+        "agent_context",
     }
 )
 
 
-def _format_pending_items(raw_items) -> str:
-    """Normalize LLM pending_items into markdown bullets accepted by PENDING.md."""
-    if not isinstance(raw_items, list):
-        return ""
+class _ConsolidationPayloadError(ValueError):
+    """模型返回结构不符合 consolidation 合约。"""
 
-    lines = []
-    seen = set()
+
+def _format_pending_items(raw_items: object) -> str:
+    """校验并整理模型输出为 PENDING.md 接受的 Markdown 列表。"""
+    if not isinstance(raw_items, list):
+        raise _ConsolidationPayloadError("pending_items must be an array")
+
+    lines: list[str] = []
+    seen: set[str] = set()
     for item in raw_items:
         if not isinstance(item, dict):
-            continue
-        tag = str(item.get("tag", "")).strip().lower()
-        content = str(item.get("content", "")).strip()
+            raise _ConsolidationPayloadError("pending_items entries must be objects")
+        raw_tag = item.get("tag", "")
+        raw_content = item.get("content", "")
+        if not isinstance(raw_tag, str) or not isinstance(raw_content, str):
+            raise _ConsolidationPayloadError(
+                "pending_items tag and content must be strings"
+            )
+        tag = raw_tag.strip().lower()
+        content = raw_content.strip()
         if tag not in _ALLOWED_PENDING_TAGS or not content:
             continue
         line = f"- [{tag}] {content}"
@@ -107,8 +120,9 @@ def _format_pending_items(raw_items) -> str:
     return "\n".join(lines)
 
 
-def _parse_consolidation_payload(text: str) -> dict | None:
-    return load_json_object_loose(text)
+def _parse_consolidation_payload(text: str) -> dict[str, object] | None:
+    result = load_json_object_loose(text)
+    return cast(dict[str, object] | None, result)
 
 
 def _format_consolidation_error(exc: BaseException) -> str:
@@ -224,38 +238,49 @@ def _clip_context_text(text: str, max_chars: int = 16000) -> str:
 
 
 def _coerce_emotional_weight(value: object) -> int:
-    if value is None or value == "":
+    if value is None:
         return 0
-    if not isinstance(value, str | int | float):
-        return 0
-    try:
-        return max(0, min(10, int(value)))
-    except (TypeError, ValueError):
-        return 0
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 10:
+        raise _ConsolidationPayloadError(
+            "history entry emotional_weight must be an integer from 0 to 10"
+        )
+    return value
 
 
 def _normalize_history_entries(
     raw_entries: object,
     fallback_entry: object = None,
 ) -> list[tuple[str, int]]:
+    """校验并整理模型输出的 history 条目，保留合法条目的原有规则。"""
+    # 1. 收集当前数组格式和旧版单条格式的候选条目。
     entries: list[tuple[str, int]] = []
     seen: set[str] = set()
     candidates: list[object] = []
     if isinstance(raw_entries, list):
         candidates.extend(raw_entries)
     elif raw_entries is not None:
+        if not isinstance(raw_entries, str | dict):
+            raise _ConsolidationPayloadError("history_entries must be an array or object")
         candidates.append(raw_entries)
     if fallback_entry is not None and not isinstance(raw_entries, list):
         candidates.append(fallback_entry)
+    # 2. 校验字段类型，保留合法条目并按摘要去重。
     for item in candidates:
         if isinstance(item, str):
             summary = item.strip()
             emotional_weight = 0
         elif isinstance(item, dict):
-            summary = str(item.get("summary") or "").strip()
+            raw_summary = item.get("summary", "")
+            if not isinstance(raw_summary, str):
+                raise _ConsolidationPayloadError(
+                    "history entry summary must be a string"
+                )
+            summary = raw_summary.strip()
             emotional_weight = _coerce_emotional_weight(item.get("emotional_weight"))
         else:
-            continue
+            raise _ConsolidationPayloadError(
+                "history_entries entries must be strings or objects"
+            )
         if not summary or summary in seen:
             continue
         seen.add(summary)
@@ -338,22 +363,22 @@ def _render_recent_context(
     compression_until: str,
     recent_turns: str,
 ) -> str:
-    compression = compression or {}
+    compression = {} if compression is None else compression
     ongoing_threads = [
-        str(item).strip()
-        for item in (compression.get("ongoing_threads") or [])
-        if str(item).strip()
+        item.strip()
+        for item in compression.get("ongoing_threads", [])
+        if item.strip()
     ]
     sections = [
-        ("最近持续关注", compression.get("active_topics") or []),
-        ("最近明确偏好", compression.get("user_preferences") or []),
-        ("最近待延续话题", compression.get("follow_ups") or []),
-        ("最近避免事项", compression.get("avoidances") or []),
+        ("最近持续关注", compression.get("active_topics", [])),
+        ("最近明确偏好", compression.get("user_preferences", [])),
+        ("最近待延续话题", compression.get("follow_ups", [])),
+        ("最近避免事项", compression.get("avoidances", [])),
     ]
     lines = ["# Recent Context", "", "## Compression", f"until: {compression_until or 'none'}"]
     rendered_any = False
     for title, items in sections:
-        cleaned = [str(item).strip() for item in items if str(item).strip()]
+        cleaned = [item.strip() for item in items if item.strip()]
         if not cleaned:
             continue
         rendered_any = True
@@ -538,6 +563,42 @@ ongoing_threads 严格限制：
             parsed["ongoing_threads"] = ongoing_items[:3]
         return parsed
 
+    @staticmethod
+    def _normalize_recent_context_compression(
+        payload: dict[str, object],
+    ) -> dict[str, list[str]]:
+        """校验近期语境字段，避免把错误 JSON 当作字符序列写入记忆。"""
+        # 1. 逐字段确认模型返回数组或明确缺省。
+        fields = (
+            "active_topics",
+            "user_preferences",
+            "follow_ups",
+            "avoidances",
+            "ongoing_threads",
+        )
+        compression: dict[str, list[str]] = {}
+        # 2. 校验数组元素并保留原有最多三条限制。
+        for key in fields:
+            if key not in payload:
+                compression[key] = []
+                continue
+            raw_items = payload[key]
+            if not isinstance(raw_items, list):
+                raise _ConsolidationPayloadError(
+                    f"recent context {key} must be an array"
+                )
+            items: list[str] = []
+            for item in raw_items:
+                if not isinstance(item, str):
+                    raise _ConsolidationPayloadError(
+                        f"recent context {key} entries must be strings"
+                    )
+                value = item.strip()
+                if value:
+                    items.append(value)
+            compression[key] = items[:3]
+        return compression
+
     async def _call_llm_step(
         self,
         *,
@@ -571,16 +632,19 @@ ongoing_threads 严格限制：
             )
             return _ConsolidationFailure(step=step, error=error, elapsed_ms=elapsed_ms)
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-        return (response.content or "").strip(), elapsed_ms
+        content = response.content
+        return (content.strip() if content is not None else ""), elapsed_ms
 
     async def _build_recent_context_snapshot(
         self,
         *,
         session,
-        profile_maint,
         window: _ConsolidationWindow | None,
         archive_all: bool,
+        old_recent_context: str,
     ) -> str | _ConsolidationFailure:
+        """读取会话窗口并生成近期语境快照。"""
+        # 1. 复用调用方已读取的 recent context，保证两个模型步骤看到同一版本。
         tail = list(session.messages[-self._keep_count :]) if self._keep_count > 0 else []
         recent_count = min(len(tail), _recent_turn_count(self._keep_count))
         session_messages = list(session.messages)
@@ -594,12 +658,8 @@ ongoing_threads 严格限制：
         recent_turns = tail[-recent_count:] if recent_count > 0 else []
         rendered_recent_turns = _format_recent_context_messages(recent_turns)
         recent_turns_for_prompt = _format_conversation_for_recent_context(recent_turns)
-        old_recent_context = ""
-        if hasattr(profile_maint, "read_recent_context"):
-            old_recent_context = str(
-                await asyncio.to_thread(profile_maint.read_recent_context) or ""
-            )
         conversation = _format_conversation_for_recent_context(compact_source)
+        # 2. 只有存在待压缩对话时才调用近期语境模型。
         compression: dict[str, list[str]] | None = None
         if conversation:
             prompt = self._build_recent_context_prompt(
@@ -638,20 +698,14 @@ ongoing_threads 严格限制：
                 )
             parsed = _parse_consolidation_payload(text)
             if isinstance(parsed, dict):
-                compression = {
-                    key: [
-                        str(item).strip()
-                        for item in (parsed.get(key) or [])
-                        if str(item).strip()
-                    ][:3]
-                    for key in (
-                        "active_topics",
-                        "user_preferences",
-                        "follow_ups",
-                        "avoidances",
-                        "ongoing_threads",
+                try:
+                    compression = self._normalize_recent_context_compression(parsed)
+                except _ConsolidationPayloadError as exc:
+                    return _ConsolidationFailure(
+                        step="recent_context",
+                        error=f"invalid_schema: {exc}",
+                        elapsed_ms=elapsed_ms,
                     )
-                }
             else:
                 return _ConsolidationFailure(
                     step="recent_context",
@@ -675,17 +729,17 @@ ongoing_threads 严格限制：
         )
 
     async def refresh_recent_turns(self, *, session, profile_maint=None) -> None:
-        profile = profile_maint or self._profile_maint
+        """刷新 RECENT_CONTEXT.md 的 recent turns 区块。"""
+        # 1. 读取当前会话尾部并渲染稳定的 recent turns 格式。
+        profile = self._profile_maint if profile_maint is None else profile_maint
         tail = list(session.messages[-self._keep_count :]) if self._keep_count > 0 else []
         recent_count = min(len(tail), _recent_turn_count(self._keep_count))
         recent_turns = tail[-recent_count:] if recent_count > 0 else []
         rendered_recent_turns = _format_recent_context_messages(recent_turns)
-        existing_text = ""
-        if hasattr(profile, "read_recent_context"):
-            existing_text = str(await asyncio.to_thread(profile.read_recent_context) or "")
+        # 2. 保留压缩内容，只替换 recent turns。
+        existing_text = await asyncio.to_thread(profile.read_recent_context)
         updated = _replace_recent_turns_block(existing_text, rendered_recent_turns)
-        if hasattr(profile, "write_recent_context"):
-            await asyncio.to_thread(profile.write_recent_context, updated)
+        await asyncio.to_thread(profile.write_recent_context, updated)
 
     # 只做窗口选择和 LLM 提取，写入由 MemoryEngine 统一提交。
     async def prepare_consolidation(
@@ -693,6 +747,8 @@ ongoing_threads 严格限制：
         session,
         archive_all: bool = False,
         force: bool = False,
+        scope_channel: str = "",
+        scope_chat_id: str = "",
     ) -> _ConsolidationDraft | _ConsolidationFailure | None:
         profile_maint = self._profile_maint
         # 1. 先决定这次要归档哪一段消息窗口；没有新窗口就直接返回。
@@ -745,12 +801,8 @@ ongoing_threads 严格限制：
         source_ref = _build_consolidation_source_ref(window)
         conversation = _format_conversation_for_consolidation(window.old_messages)
         current_memory = await asyncio.to_thread(profile_maint.read_long_term)
-        recent_context_block = _clip_context_text(
-            await asyncio.to_thread(profile_maint.read_recent_context)
-        )
-
-        scope_channel = getattr(session, "_channel", "")
-        scope_chat_id = getattr(session, "_chat_id", "")
+        old_recent_context = await asyncio.to_thread(profile_maint.read_recent_context)
+        recent_context_block = _clip_context_text(old_recent_context)
 
         prompt = f"""你是记忆提取代理（Memory Extraction Agent）。从对话中精确提取结构化信息，返回 JSON。
 
@@ -910,17 +962,25 @@ history_entries.emotional_weight 规则：
             )
 
         # 4. 归一化文本产物，并把后续写入所需信息交给 engine。
-        history_entry_payloads = _normalize_history_entries(
-            result.get("history_entries"),
-            result.get("history_entry"),
-        )
-        pending_items = _format_pending_items(result.get("pending_items", []))
-        # 4. 归一化 markdown 产物，向量写入由 engine 订阅提交事件完成。
+        try:
+            history_entry_payloads = _normalize_history_entries(
+                result.get("history_entries"),
+                result.get("history_entry"),
+            )
+            pending_items = _format_pending_items(result.get("pending_items", []))
+        except _ConsolidationPayloadError as exc:
+            logger.warning("Memory consolidation: invalid event payload: %s", exc)
+            return _ConsolidationFailure(
+                step="event_extract",
+                error=f"invalid_schema: {exc}",
+                elapsed_ms=event_elapsed_ms,
+            )
+        # 5. 生成 markdown 产物，向量写入由 engine 订阅提交事件完成。
         recent_context_text = await self._build_recent_context_snapshot(
             session=session,
-            profile_maint=profile_maint,
             window=window,
             archive_all=archive_all,
+            old_recent_context=old_recent_context,
         )
         if isinstance(recent_context_text, _ConsolidationFailure):
             return recent_context_text
@@ -983,7 +1043,7 @@ class MarkdownMemoryMaintenance:
         self._consolidation_min_new_messages = max(5, keep_count // 2)
         self._get_session: Callable[[str], object] | None = None
         self._save_session: Callable[[object], Awaitable[None]] | None = None
-        self._maintenance_queues: dict[str, deque[str]] = {}
+        self._maintenance_queues: dict[str, deque[TurnCommitted]] = {}
         self._maintenance_tasks: dict[str, asyncio.Task[None]] = {}
         self._maintenance_locks: dict[str, asyncio.Lock] = {}
         if event_bus is not None:
@@ -996,13 +1056,14 @@ class MarkdownMemoryMaintenance:
     def on_turn_committed(self, event: TurnCommitted) -> None:
         if bool((event.extra or {}).get("skip_post_memory")):
             return
-        self._enqueue_maintenance(event.session_key)
+        self._enqueue_maintenance(event)
 
-    def _enqueue_maintenance(self, session_key: str) -> None:
+    def _enqueue_maintenance(self, event: TurnCommitted) -> None:
         if self._get_session is None or self._save_session is None:
             return
+        session_key = event.session_key
         queue = self._maintenance_queues.setdefault(session_key, deque())
-        queue.append(session_key)
+        queue.append(event)
         if session_key in self._maintenance_tasks:
             return
         task = asyncio.create_task(
@@ -1013,22 +1074,40 @@ class MarkdownMemoryMaintenance:
         task.add_done_callback(lambda t: self._on_maintenance_done(t, session_key))
 
     async def _run_maintenance_queue(self, session_key: str) -> None:
+        """按 session 顺序执行维护任务，并保留每个提交事件的刷新语义。"""
+        # 1. 固定本次任务的生命周期 owner，后续不再重复判空。
+        get_session = self._get_session
+        save_session = self._save_session
+        if get_session is None or save_session is None:
+            raise RuntimeError("markdown memory lifecycle is not bound")
         lock = self._maintenance_locks.setdefault(session_key, asyncio.Lock())
+        # 2. 在同一 session 锁内逐个消费提交事件。
         async with lock:
             while True:
                 queue = self._maintenance_queues.get(session_key)
                 if not queue:
                     return
-                _ = queue.popleft()
-                session = self._get_session(session_key) if self._get_session else None
-                if session is None:
-                    return
+                event = queue.popleft()
+                session = get_session(session_key)
                 if self._should_consolidate_session(session):
                     result = await self._consolidate_unlocked(
-                        ConsolidateRequest(session=session)
+                        ConsolidateRequest(
+                            session=session,
+                            scope_channel=event.channel,
+                            scope_chat_id=event.chat_id,
+                        )
                     )
-                    if result.trace.get("mode") == "markdown" and self._save_session:
-                        await self._save_session(session)
+                    if result.trace.get("mode") == "markdown":
+                        await save_session(session)
+                    elif result.trace.get("mode") == "failed":
+                        logger.warning(
+                            "markdown memory maintenance consolidation failed: "
+                            "session=%s step=%s error=%s elapsed_ms=%s",
+                            session_key,
+                            result.trace.get("step"),
+                            result.trace.get("error"),
+                            result.trace.get("elapsed_ms"),
+                        )
                 else:
                     await self.refresh_recent_turns(
                         RefreshRecentTurnsRequest(session=session)
@@ -1054,11 +1133,7 @@ class MarkdownMemoryMaintenance:
         if task.cancelled():
             logger.info("markdown memory maintenance cancelled: %s", session_key)
             return
-        try:
-            exc = task.exception()
-        except Exception as e:
-            logger.warning("markdown memory maintenance inspect failed: session=%s err=%s", session_key, e)
-            return
+        exc = task.exception()
         if exc is not None:
             logger.warning("markdown memory maintenance failed: session=%s err=%s", session_key, exc)
 
@@ -1075,7 +1150,7 @@ class MarkdownMemoryMaintenance:
         )
 
     async def consolidate(self, request: ConsolidateRequest) -> ConsolidateResult:
-        session_key = str(getattr(request.session, "key", "") or "")
+        session_key = request.session.key
         if not session_key:
             return await self._consolidate_unlocked(request)
         lock = self._maintenance_locks.setdefault(session_key, asyncio.Lock())
@@ -1087,6 +1162,8 @@ class MarkdownMemoryMaintenance:
             request.session,
             archive_all=request.archive_all,
             force=request.force,
+            scope_channel=request.scope_channel,
+            scope_chat_id=request.scope_chat_id,
         )
         if draft is None:
             return ConsolidateResult(trace={"mode": "skipped"})

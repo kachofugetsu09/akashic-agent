@@ -14,6 +14,7 @@ _T = TypeVar("_T")
 @dataclass
 class _ChatLaneState:
     condition: asyncio.Condition
+    active_users: int = 0
     passive_turns: int = 0
     passive_sends: int = 0
     next_non_passive_ticket: int = 0
@@ -28,13 +29,36 @@ class ChatLane:
     def __init__(self) -> None:
         self._states: dict[tuple[str, str], _ChatLaneState] = {}
 
-    def _state(self, channel: str, chat_id: str) -> _ChatLaneState:
+    def _acquire_state(
+        self,
+        channel: str,
+        chat_id: str,
+    ) -> tuple[tuple[str, str], _ChatLaneState]:
         key = (str(channel), str(chat_id))
         state = self._states.get(key)
         if state is None:
             state = _ChatLaneState(condition=asyncio.Condition())
             self._states[key] = state
-        return state
+        state.active_users += 1
+        return key, state
+
+    def _release_state(
+        self,
+        key: tuple[str, str],
+        state: _ChatLaneState,
+    ) -> None:
+        state.active_users -= 1
+        if (
+            state.active_users
+            or state.passive_turns
+            or state.passive_sends
+            or state.sending
+            or state.next_non_passive_ticket != state.serving_non_passive_ticket
+            or state.cancelled_non_passive_tickets
+        ):
+            return
+        if self._states.get(key) is state:
+            del self._states[key]
 
     def _skip_cancelled_non_passive(self, state: _ChatLaneState) -> None:
         while state.serving_non_passive_ticket in state.cancelled_non_passive_tickets:
@@ -44,23 +68,32 @@ class ChatLane:
             state.serving_non_passive_ticket += 1
 
     async def mark_passive_pending(self, channel: str, chat_id: str) -> None:
-        state = self._state(channel, chat_id)
-        async with state.condition:
-            state.passive_turns += 1
-            state.condition.notify_all()
+        key, state = self._acquire_state(channel, chat_id)
+        try:
+            async with state.condition:
+                state.passive_turns += 1
+                state.condition.notify_all()
+        finally:
+            self._release_state(key, state)
 
     async def mark_passive_done(self, channel: str, chat_id: str) -> None:
-        state = self._state(channel, chat_id)
-        async with state.condition:
-            if state.passive_turns > 0:
-                state.passive_turns -= 1
-            state.condition.notify_all()
+        key, state = self._acquire_state(channel, chat_id)
+        try:
+            async with state.condition:
+                if state.passive_turns > 0:
+                    state.passive_turns -= 1
+                state.condition.notify_all()
+        finally:
+            self._release_state(key, state)
 
     async def mark_passive_send_pending(self, channel: str, chat_id: str) -> None:
-        state = self._state(channel, chat_id)
-        async with state.condition:
-            state.passive_sends += 1
-            state.condition.notify_all()
+        key, state = self._acquire_state(channel, chat_id)
+        try:
+            async with state.condition:
+                state.passive_sends += 1
+                state.condition.notify_all()
+        finally:
+            self._release_state(key, state)
 
     async def run_passive(
         self,
@@ -68,19 +101,22 @@ class ChatLane:
         chat_id: str,
         send: Callable[[], Awaitable[_T]],
     ) -> _T:
-        state = self._state(channel, chat_id)
-        async with state.condition:
-            while state.sending:
-                _ = await state.condition.wait()
-            state.sending = True
+        key, state = self._acquire_state(channel, chat_id)
         try:
-            return await send()
-        finally:
             async with state.condition:
-                if state.passive_sends > 0:
-                    state.passive_sends -= 1
-                state.sending = False
-                state.condition.notify_all()
+                while state.sending:
+                    _ = await state.condition.wait()
+                state.sending = True
+            try:
+                return await send()
+            finally:
+                async with state.condition:
+                    if state.passive_sends > 0:
+                        state.passive_sends -= 1
+                    state.sending = False
+                    state.condition.notify_all()
+        finally:
+            self._release_state(key, state)
 
     async def run_non_passive(
         self,
@@ -88,35 +124,38 @@ class ChatLane:
         chat_id: str,
         send: Callable[[], Awaitable[_T]],
     ) -> _T:
-        state = self._state(channel, chat_id)
+        key, state = self._acquire_state(channel, chat_id)
         ticket = -1
         sending = False
         try:
-            async with state.condition:
-                ticket = state.next_non_passive_ticket
-                state.next_non_passive_ticket += 1
-                self._skip_cancelled_non_passive(state)
-                while (
-                    state.sending
-                    or state.passive_turns > 0
-                    or state.passive_sends > 0
-                    or ticket != state.serving_non_passive_ticket
-                ):
-                    _ = await state.condition.wait()
+            try:
+                async with state.condition:
+                    ticket = state.next_non_passive_ticket
+                    state.next_non_passive_ticket += 1
                     self._skip_cancelled_non_passive(state)
-                state.sending = True
-                sending = True
-            return await send()
+                    while (
+                        state.sending
+                        or state.passive_turns > 0
+                        or state.passive_sends > 0
+                        or ticket != state.serving_non_passive_ticket
+                    ):
+                        _ = await state.condition.wait()
+                        self._skip_cancelled_non_passive(state)
+                    state.sending = True
+                    sending = True
+                return await send()
+            finally:
+                async with state.condition:
+                    if ticket >= 0:
+                        if sending:
+                            state.serving_non_passive_ticket += 1
+                            state.sending = False
+                        else:
+                            state.cancelled_non_passive_tickets.add(ticket)
+                        self._skip_cancelled_non_passive(state)
+                    state.condition.notify_all()
         finally:
-            async with state.condition:
-                if ticket >= 0:
-                    if sending:
-                        state.serving_non_passive_ticket += 1
-                        state.sending = False
-                    else:
-                        state.cancelled_non_passive_tickets.add(ticket)
-                    self._skip_cancelled_non_passive(state)
-                state.condition.notify_all()
+            self._release_state(key, state)
 
 
 class OutboundSubscription:
@@ -151,7 +190,7 @@ class MessageBus:
         self._running = False
 
     async def publish_inbound(self, msg: InboundItem) -> None:
-        """channel → agent"""
+        """将渠道输入交给 Agent 消费。"""
         await self._chat_lane.mark_passive_pending(msg.channel, msg.chat_id)
         await self._inbound.put(msg)
 
@@ -163,7 +202,7 @@ class MessageBus:
         await self._chat_lane.mark_passive_done(msg.channel, msg.chat_id)
 
     async def publish_outbound(self, msg: OutboundMessage) -> None:
-        """agent → channel"""
+        """将 Agent 输出交给对应渠道发送。"""
         await self._chat_lane.mark_passive_send_pending(msg.channel, msg.chat_id)
         await self._outbound.put(msg)
 
@@ -209,7 +248,7 @@ class MessageBus:
                 continue
 
     async def _send_outbound(self, msg: OutboundMessage) -> None:
-        for cb in self._subscribers.get(msg.channel, []):
+        for cb in tuple(self._subscribers.get(msg.channel, [])):
             try:
                 await cb(msg)
             except Exception as first_err:

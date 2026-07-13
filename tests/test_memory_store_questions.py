@@ -1,5 +1,10 @@
 """Tests for current MemoryStore behavior."""
 
+import builtins
+import sqlite3
+
+import pytest
+
 from agent.memory import MemoryStore
 
 
@@ -88,3 +93,60 @@ def test_append_pending_once_repairs_file_when_db_ahead(tmp_path):
     assert "- pref A" in pending
     assert "ignored" not in pending
     assert "<!-- consolidation:session@1-10:user_facts -->" in raw
+
+
+@pytest.mark.parametrize(
+    "reader_name",
+    ["_tail_contains_marker", "_file_contains_marker"],
+)
+def test_marker_reader_exposes_file_read_failure(tmp_path, monkeypatch, reader_name):
+    marker_file = tmp_path / "PENDING.md"
+    marker_file.write_text("existing", encoding="utf-8")
+
+    def deny_read(*args, **kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(builtins, "open", deny_read)
+
+    reader = getattr(MemoryStore, reader_name)
+    with pytest.raises(PermissionError, match="denied"):
+        reader(marker_file, "marker")
+
+
+@pytest.mark.parametrize("reader_name", ["_tail_contains_marker"])
+def test_marker_reader_exposes_invalid_utf8(tmp_path, reader_name):
+    marker_file = tmp_path / "PENDING.md"
+    marker_file.write_bytes(b"\xff")
+
+    reader = getattr(MemoryStore, reader_name)
+    with pytest.raises(UnicodeDecodeError):
+        reader(marker_file, "marker")
+
+
+@pytest.mark.parametrize(
+    ("payload", "trailing", "error"),
+    [
+        (None, 0, "payload is missing"),
+        ("content", 2, "must be 0 or 1"),
+    ],
+)
+def test_consolidation_index_rejects_unrecoverable_rows(
+    tmp_path, payload, trailing, error
+):
+    store = MemoryStore(tmp_path)
+    source_ref = "source"
+    kind = "pending"
+    conn = sqlite3.connect(store._consolidation_db)
+    try:
+        conn.execute(
+            """INSERT INTO consolidation_writes(
+                source_ref, kind, payload, trailing_blank_line, done_at
+            ) VALUES (?, ?, ?, ?, datetime('now'))""",
+            (source_ref, kind, payload, trailing),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(ValueError, match=error):
+        store.append_pending_once("new content", source_ref=source_ref, kind=kind)

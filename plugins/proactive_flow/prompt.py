@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from typing import Any, cast
 
 from agent.persona import AKASHIC_IDENTITY, PERSONALITY_RULES
 from agent.prompting import (
@@ -22,7 +21,7 @@ class ProactivePromptBuilder:
         self,
         *,
         cfg: ProactiveConfig,
-        memory: Any | None,
+        memory: MemoryProfileApi | None,
         workspace_context_fn: Callable[[], str] | None,
     ) -> None:
         self._cfg = cfg
@@ -137,6 +136,9 @@ class ProactivePromptBuilder:
         ctx: AgentTickContext,
         gw: GatewayResult,
     ) -> dict[str, str]:
+        """汇总本轮主动决策所需的完整上下文帧。"""
+
+        # 1. 记录本轮路由与候选计数
         sections: list[PromptSectionRender] = [
             PromptSectionRender(
                 name="proactive_tick_state",
@@ -150,26 +152,16 @@ class ProactivePromptBuilder:
             )
         ]
 
-        self_content = ""
-        memory_block = ""
-        recent_context_block = ""
-        if self._memory is not None:
-            profile_memory = cast(MemoryProfileApi, self._memory)
-            try:
-                self_content = _read_self_text(profile_memory).strip()
-            except Exception:
-                self_content = ""
-            try:
-                memory_block = _read_long_term_text(profile_memory).strip()
-            except Exception:
-                memory_block = ""
-            try:
-                recent_context_block = str(
-                    profile_memory.read_recent_context() or ""
-                ).strip()
-            except Exception:
-                recent_context_block = ""
+        # 2. 读取用户画像与近期上下文
+        self_content = _read_self_text(self._memory).strip()
+        memory_block = _read_long_term_text(self._memory).strip()
+        recent_context_block = (
+            str(self._memory.read_recent_context() or "").strip()
+            if self._memory is not None
+            else ""
+        )
 
+        # 3. 追加本轮所有非空动态区块
         for name, content in (
             ("self_model", self_content),
             ("long_term_memory", memory_block),
@@ -191,6 +183,7 @@ class ProactivePromptBuilder:
                     )
                 )
 
+        # 4. 固定注入当前时钟并生成上下文帧
         sections.append(
             PromptSectionRender(
                 name="runtime_clock",
@@ -211,10 +204,7 @@ class ProactivePromptBuilder:
     def read_workspace_context_for_prompt(self) -> str:
         if self._workspace_context_fn is None:
             return ""
-        try:
-            raw = (self._workspace_context_fn() or "").strip()
-        except Exception:
-            return ""
+        raw = (self._workspace_context_fn() or "").strip()
         if not raw:
             return ""
         return (

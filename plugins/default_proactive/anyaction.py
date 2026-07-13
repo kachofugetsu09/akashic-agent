@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import json
 import logging
 import math
 import random as _random_module
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from typing import Never, TypedDict, cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from core.common.timekit import parse_iso as _parse_iso, safe_zone as _safe_zone
-from infra.persistence.json_store import atomic_save_json, load_json
+from infra.persistence.json_store import atomic_save_json
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +24,21 @@ class QuotaSnapshot:
     last_action_at: datetime | None
 
 
+class QuotaState(TypedDict):
+    version: int
+    window_key: str
+    next_reset_at: str
+    used: int
+    last_action_at: str
+
+
 class QuotaStore:
     """持久化每日动作计数，支持按本地时区 + 指定 reset_hour 刷新。"""
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._state = self._load()
+        self._state: QuotaState = self._load()
 
     def snapshot(
         self, *, now_utc: datetime, reset_hour: int, timezone_name: str
@@ -86,10 +96,9 @@ class QuotaStore:
         }
         self._save()
 
-    def _load(self) -> dict:
-        # 1. 读取磁盘数据
-        raw = load_json(self.path, default=None, domain="anyaction.quota")
-        if raw is None:
+    def _load(self) -> QuotaState:
+        # 1. 只有文件缺失时初始化新状态
+        if not self.path.exists():
             return {
                 "version": 1,
                 "window_key": "",
@@ -98,14 +107,81 @@ class QuotaStore:
                 "last_action_at": "",
             }
 
-        # 2. 规范化字段
-        return {
-            "version": int(raw.get("version", 1)),
-            "window_key": str(raw.get("window_key", "")),
-            "next_reset_at": str(raw.get("next_reset_at", "")),
-            "used": int(raw.get("used", 0)),
-            "last_action_at": str(raw.get("last_action_at", "")),
+        # 2. 严格读取已有状态，保留 JSON 与 I/O 原始异常
+        raw_data: object = json.loads(self.path.read_text(encoding="utf-8"))
+        if not isinstance(raw_data, dict):
+            raise ValueError(
+                f"anyaction quota 必须是 JSON 对象：path={self.path}"
+            )
+        raw = cast(dict[str, object], raw_data)
+
+        # 3. 验证写侧 version=1 的完整 schema
+        required = {
+            "version",
+            "window_key",
+            "next_reset_at",
+            "used",
+            "last_action_at",
         }
+        missing = sorted(required - raw.keys())
+        if missing:
+            raise ValueError(
+                f"anyaction quota 缺少字段：path={self.path} fields={missing}"
+            )
+        version = raw["version"]
+        used = raw["used"]
+        if type(version) is not int or version != 1:
+            self._raise_invalid_field("version", version)
+        if type(used) is not int or used < 0:
+            self._raise_invalid_field("used", used)
+        window_key = self._validate_window_key(raw["window_key"])
+        next_reset_at = self._validate_time("next_reset_at", raw["next_reset_at"])
+        last_action_at = self._validate_time(
+            "last_action_at", raw["last_action_at"], allow_empty=True
+        )
+        return {
+            "version": version,
+            "window_key": window_key,
+            "next_reset_at": next_reset_at,
+            "used": used,
+            "last_action_at": last_action_at,
+        }
+
+    def _validate_window_key(self, value: object) -> str:
+        if not isinstance(value, str):
+            self._raise_invalid_field("window_key", value)
+        try:
+            date_text, hour_text, timezone_name = value.split("@", 2)
+            _ = date.fromisoformat(date_text)
+            if len(hour_text) != 2 or not hour_text.isdigit():
+                raise ValueError
+            hour = int(hour_text)
+            if not 0 <= hour <= 23:
+                raise ValueError
+            _ = ZoneInfo(timezone_name)
+        except (ValueError, ZoneInfoNotFoundError):
+            self._raise_invalid_field("window_key", value)
+        return value
+
+    def _validate_time(
+        self, field_name: str, value: object, *, allow_empty: bool = False
+    ) -> str:
+        if not isinstance(value, str) or (not value and not allow_empty):
+            self._raise_invalid_field(field_name, value)
+        if value:
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                self._raise_invalid_field(field_name, value)
+            if parsed.tzinfo is None:
+                self._raise_invalid_field(field_name, value)
+        return value
+
+    def _raise_invalid_field(self, field_name: str, value: object) -> Never:
+        raise ValueError(
+            f"anyaction quota 字段无效：path={self.path} "
+            f"field={field_name} value={value!r}"
+        )
 
     def _save(self) -> None:
         atomic_save_json(self.path, self._state, domain="anyaction.quota")

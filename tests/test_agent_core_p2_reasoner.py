@@ -4,7 +4,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, cast
 
-from agent.core.passive_turn import DefaultReasoner
+from agent.core.passive_turn import DefaultReasoner, get_history_since_consolidated
 from agent.core.runtime_support import LLMServices, ToolDiscoveryState
 from agent.lifecycle.types import AfterStepCtx
 from agent.looping.ports import LLMConfig
@@ -418,7 +418,7 @@ def test_default_reasoner_observes_tool_lifecycle_events():
     session = SimpleNamespace(
         key="telegram:123",
         messages=[],
-        get_history=lambda max_messages=40: [],
+        get_history=lambda max_messages=40, *, start_index=None: [],
         last_consolidated=0,
     )
     msg = SimpleNamespace(
@@ -669,7 +669,9 @@ def test_default_reasoner_run_turn_uses_context_render():
     session = SimpleNamespace(
         key="cli:1",
         messages=[{"role": "assistant", "content": "old"}],
-        get_history=lambda max_messages=40: [{"role": "assistant", "content": "old"}],
+        get_history=lambda max_messages=40, *, start_index=None: [
+            {"role": "assistant", "content": "old"}
+        ],
         last_consolidated=0,
     )
     msg = SimpleNamespace(
@@ -706,7 +708,7 @@ def test_default_reasoner_run_turn_reports_llm_timeout():
     session = SimpleNamespace(
         key="cli:1",
         messages=[],
-        get_history=lambda max_messages=40: [],
+        get_history=lambda max_messages=40, *, start_index=None: [],
         last_consolidated=0,
     )
     msg = SimpleNamespace(
@@ -796,3 +798,77 @@ def test_empty_content_without_thinking_no_retry():
 
     assert result.reply == "（无响应）"
     assert len(provider.calls) == 1
+
+
+def test_get_history_since_consolidated_passes_session_cursor():
+    calls: list[tuple[int, int | None]] = []
+
+    class Session:
+        key = "test-session"
+        messages: list[dict[str, object]] = []
+        metadata: dict[str, object] = {}
+        last_consolidated: int = 3
+
+        def get_history(
+            self,
+            max_messages: int = 500,
+            *,
+            start_index: int | None = None,
+        ) -> list[dict[str, object]]:
+            calls.append((max_messages, start_index))
+            return [{"role": "user", "content": "kept"}]
+
+        def add_message(
+            self,
+            role: str,
+            content: str,
+            media: list[str] | None = None,
+            **kwargs: object,
+        ) -> None:
+            pass
+
+    history = get_history_since_consolidated(Session(), 40)
+
+    assert history == [{"role": "user", "content": "kept"}]
+    assert calls == [(40, 3)]
+
+
+def test_default_reasoner_reuses_snapshot_step_phases(monkeypatch):
+    provider = _Provider([LLMResponse(content="done", tool_calls=[])])
+    tools = ToolRegistry()
+    tools.register(_DummyTool(), always_on=True)
+    reasoner = DefaultReasoner(
+        llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=40,
+    )
+    snapshot = SimpleNamespace(
+        snapshot_id="snapshot-1",
+        before_step_modules=(),
+        after_step_modules=(),
+    )
+    current_snapshot = [snapshot]
+    monkeypatch.setattr(
+        "agent.core.passive_turn.get_current_runtime_snapshot",
+        lambda: current_snapshot[0],
+    )
+
+    first = reasoner._runtime_step_phases()
+    second = reasoner._runtime_step_phases()
+
+    assert second == first
+    assert second[0] is first[0]
+    assert second[1] is first[1]
+
+    current_snapshot[0] = SimpleNamespace(
+        snapshot_id="snapshot-2",
+        before_step_modules=(),
+        after_step_modules=(),
+    )
+    next_snapshot_phases = reasoner._runtime_step_phases()
+
+    assert next_snapshot_phases[0] is not first[0]
+    assert next_snapshot_phases[1] is not first[1]

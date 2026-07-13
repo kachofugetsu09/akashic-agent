@@ -32,7 +32,7 @@ from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.retrieval.protocol import MemoryRetrievalPipeline
 from agent.turns.outbound import BusOutboundPort
 
-# Re-export for backward-compat: existing callers import these from core.py
+# 为保持兼容重新导出：现有调用方从 core.py 导入这些名称。
 __all__ = [
     "AgentLoop",
 ]
@@ -132,7 +132,7 @@ class AgentLoop:
         self._runtime_snapshot_store: RuntimeSnapshotStore | None = None
 
         # ── 中断控制面（纯内存态） ──
-        self._active_tasks: dict[str, asyncio.Task] = {}
+        self._active_tasks: dict[str, asyncio.Task[OutboundMessage]] = {}
         self._active_turn_states: dict[str, TurnInterruptState] = {}
         self._interrupt_states: dict[str, TurnInterruptState] = {}
 
@@ -286,9 +286,7 @@ class AgentLoop:
     ) -> None:
         # 1. 先组基础 service ports。
         llm_svc = self._llm_services
-        memory_svc = deps.memory_services or MemoryServices(
-            engine=getattr(deps.memory_runtime, "engine", None),
-        )
+        memory_svc = MemoryServices(engine=self._memory_engine)
         session_svc = self._session_services
         # 2. 组执行层。
         self._tool_discovery = deps.tool_discovery or ToolDiscoveryState()
@@ -376,35 +374,73 @@ class AgentLoop:
         self._llm_config.max_iterations = int(value)
 
     async def run(self) -> None:
+        """消费入站消息，并在每轮结束时收束总线与内存状态。"""
+
         self._running = True
         logger.info(f"AgentLoop 启动  max_iter={self.max_iterations}")
-        while self._running:
-            try:
-                item = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
-            except asyncio.TimeoutError:
-                continue
-
-            key = item.session_key
-            self._active_turn_states[key] = self._build_initial_turn_state(item, key)
-            task = asyncio.create_task(self._process_with_runtime_admission(item))
-            self._active_tasks[key] = task
-            try:
-                await task
-            except asyncio.CancelledError:
-                logger.info(f"Turn cancelled for {key}")
-            except Exception as e:
-                logger.error(f"处理消息出错: {e}", exc_info=True)
-                await self.bus.publish_outbound(
-                    OutboundMessage(
-                        channel=item.channel,
-                        chat_id=item.chat_id,
-                        content=f"出错：{e}",
+        try:
+            while self._running:
+                # 1. 等待下一条入站消息，空闲超时仅用于重新检查停止状态。
+                try:
+                    item = await asyncio.wait_for(
+                        self.bus.consume_inbound(),
+                        timeout=1.0,
                     )
+                except asyncio.TimeoutError:
+                    continue
+                await self._run_inbound_turn(item)
+        finally:
+            self._running = False
+
+    async def _run_inbound_turn(self, item: InboundItem) -> None:
+        """执行一个入站 turn，并在状态清理后确认消息。"""
+
+        # 1. 建立本轮中断状态和执行任务。
+        key = item.session_key
+        self._active_turn_states[key] = self._build_initial_turn_state(item, key)
+        task = asyncio.create_task(
+            self._process_with_runtime_admission(item),
+            name=f"agent-turn:{key}",
+        )
+        self._active_tasks[key] = task
+
+        # 2. 只吞掉本轮取消；运行器取消必须继续向生命周期 owner 传播。
+        try:
+            await task
+        except asyncio.CancelledError:
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling():
+                raise
+            logger.info(f"Turn cancelled for {key}")
+        except Exception as e:
+            logger.error(f"处理消息出错: {e}", exc_info=True)
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=item.channel,
+                    chat_id=item.chat_id,
+                    content=f"出错：{e}",
                 )
-            finally:
-                await self.bus.complete_inbound(item)
-                self._active_tasks.pop(key, None)
-                self._active_turn_states.pop(key, None)
+            )
+        finally:
+            # 3. 先收束内存状态，再完成总线确认。
+            del self._active_tasks[key]
+            del self._active_turn_states[key]
+            await self._complete_inbound(item)
+
+    async def _complete_inbound(self, item: InboundItem) -> None:
+        """在本轮清理中完成入站确认，并保留确认错误。"""
+
+        # 1. 让确认独立于 AgentLoop task，避免运行器取消留下未完成的 lane 计数。
+        completion = asyncio.create_task(
+            self.bus.complete_inbound(item),
+            name=f"agent-inbound-ack:{item.session_key}",
+        )
+        try:
+            await asyncio.shield(completion)
+        except asyncio.CancelledError as cancellation:
+            # 2. 确认必须先收束；确认本身失败时保留真实错误。
+            await completion
+            raise cancellation
 
     @property
     def processing_state(self) -> ProcessingState | None:
@@ -416,6 +452,9 @@ class AgentLoop:
 
     def stop(self) -> None:
         self._running = False
+        for task in self._active_tasks.values():
+            if not task.done():
+                _ = task.cancel()
         logger.info("AgentLoop 停止")
 
     def add_tool_hooks(self, hooks: list["ToolHook"]) -> None:
@@ -574,7 +613,7 @@ class AgentLoop:
         if not state.original_user_message.strip():
             return
         session = self.session_manager.get_or_create(key)
-        start = len(getattr(session, "messages", []))
+        start = len(session.messages)
         session.add_message(
             "user",
             state.original_user_message,
@@ -617,36 +656,37 @@ class AgentLoop:
         busy_session_key: str | None = None,
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
-        started = time.time()
         key = session_key or msg.session_key
         busy_key = busy_session_key or key
         # 给本 turn task 打上 session 归属，供 observe 全局错误采集关联。
-        _ = current_session_key.set(key)
-
-        # 1. 先处理可能存在的续跑态，并发布 turn started。
-        msg, resumed_from_interrupt = await self._resume_interrupted_message(msg, key)
-        await self._observe_turn_started(msg, key)
-        content = _item_content(msg)
-        preview = content[:60] + "..." if len(content) > 60 else content
-        logger.info(f"Processing message from {msg.channel}: {preview}")
-
-        # 2. 再进入 busy 状态并执行核心处理。
-        if self._processing_state:
-            self._processing_state.enter(busy_key)
+        session_token = current_session_key.set(key)
         try:
-            outbound = await self._core_runner.process(
-                msg,
-                key,
-                dispatch_outbound=dispatch_outbound,
-            )
-            if resumed_from_interrupt:
-                self._interrupt_states.pop(key, None)
-            return outbound
-        finally:
-            # 3. 最后无论成功失败都直接释放 busy 状态。
+            # 1. 先处理可能存在的续跑态，并发布 turn started。
+            msg, resumed_from_interrupt = await self._resume_interrupted_message(msg, key)
+            await self._observe_turn_started(msg, key)
+            content = _item_content(msg)
+            preview = content[:60] + "..." if len(content) > 60 else content
+            logger.info(f"Processing message from {msg.channel}: {preview}")
+
+            # 2. 再进入 busy 状态并执行核心处理。
             if self._processing_state:
-                self._processing_state.exit(busy_key)
-            _ = started
+                self._processing_state.enter(busy_key)
+            try:
+                outbound = await self._core_runner.process(
+                    msg,
+                    key,
+                    dispatch_outbound=dispatch_outbound,
+                )
+                if resumed_from_interrupt:
+                    self._interrupt_states.pop(key, None)
+                return outbound
+            finally:
+                # 3. 无论核心处理结果如何，都释放 busy 状态。
+                if self._processing_state:
+                    self._processing_state.exit(busy_key)
+        finally:
+            # 4. 恢复调用方上下文，避免 session 归属泄漏到后续任务。
+            current_session_key.reset(session_token)
 
     async def _process_with_runtime_admission(
         self,

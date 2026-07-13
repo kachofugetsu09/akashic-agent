@@ -139,22 +139,43 @@ def test_unlock_empty_matched():
     assert d.unlock_from_result('{"matched": []}') == set()
 
 
-def test_unlock_invalid_json_is_silent():
-    """Invalid JSON must not raise; returns empty set."""
+def test_unlock_invalid_json_fails_loudly() -> None:
     d = _make_discovery()
-    assert d.unlock_from_result("not-json") == set()
+    with pytest.raises(ValueError, match="非法 JSON"):
+        d.unlock_from_result("not-json")
 
 
-def test_unlock_item_missing_name_skipped():
-    """Items without a 'name' key are silently skipped."""
+@pytest.mark.parametrize("payload", ["[]", "null", '{"matched": null}'])
+def test_unlock_invalid_structure_fails_loudly(payload: str) -> None:
     d = _make_discovery()
-    assert d.unlock_from_result('{"matched": [{"summary": "no name here"}]}') == set()
+    with pytest.raises(TypeError):
+        d.unlock_from_result(payload)
 
 
-def test_unlock_blank_name_skipped():
-    """Items with empty string name are silently skipped."""
+def test_unlock_item_missing_name_fails_loudly() -> None:
     d = _make_discovery()
-    assert d.unlock_from_result('{"matched": [{"name": ""}]}') == set()
+    with pytest.raises(TypeError, match=r"matched\[0\].name"):
+        d.unlock_from_result('{"matched": [{"summary": "no name here"}]}')
+
+
+def test_unlock_blank_name_fails_loudly() -> None:
+    d = _make_discovery()
+    with pytest.raises(TypeError, match=r"matched\[0\].name"):
+        d.unlock_from_result('{"matched": [{"name": ""}]}')
+
+
+def test_unlock_uses_canonical_unlocked_names() -> None:
+    d = _make_discovery()
+    assert d.unlock_names_from_result(
+        '{"unlocked": ["shell", "shell"], '
+        '"matched": [{"name": "legacy"}]}'
+    ) == ["shell"]
+
+
+def test_unlock_rejects_blank_canonical_name() -> None:
+    d = _make_discovery()
+    with pytest.raises(TypeError, match=r"unlocked\[1\]"):
+        d.unlock_names_from_result('{"unlocked": ["shell", "  "]}')
 
 
 # ── Item 2a: session metadata update behavior ─────────────────────────────────

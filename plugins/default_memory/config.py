@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass, field
+from math import isfinite
 from pathlib import Path
-from typing import Any
+from typing import cast
+
+from agent.plugins.manifest import builtin_plugin_data_dir
+from infra.persistence.json_store import atomic_write_text
 
 
 @dataclass(frozen=True)
@@ -45,7 +49,7 @@ def load_default_memory_config(
     *,
     plugin_dir: Path | None = None,
 ) -> DefaultMemoryConfig:
-    root = plugin_dir or Path(__file__).resolve().parent
+    root = plugin_dir or builtin_plugin_data_dir("default_memory")
     payload = _read_toml(root / "config.local.toml")
     return _build_config(payload)
 
@@ -79,10 +83,23 @@ def render_default_memory_config(config: DefaultMemoryConfig | None = None) -> s
 
 
 def ensure_default_memory_config_file(*, plugin_dir: Path | None = None) -> Path:
-    root = plugin_dir or Path(__file__).resolve().parent
+    """迁移或创建 default memory 的用户配置。"""
+
+    # 1. 已有用户配置直接复用
+    root = plugin_dir or builtin_plugin_data_dir("default_memory")
     path = root / "config.local.toml"
-    if not path.exists():
-        path.write_text(render_default_memory_config(), encoding="utf-8")
+    if path.exists():
+        return path
+
+    # 2. 首次迁移保留旧目录配置，否则写入默认配置
+    root.mkdir(parents=True, exist_ok=True)
+    legacy_path = Path(__file__).resolve().parent / "config.local.toml"
+    content = (
+        legacy_path.read_text(encoding="utf-8")
+        if legacy_path.exists()
+        else render_default_memory_config()
+    )
+    atomic_write_text(path, content, domain="default_memory.config")
     return path
 
 
@@ -97,41 +114,136 @@ def resolve_memory_db_path(
     return path if path.is_absolute() else workspace / path
 
 
-def _build_config(payload: dict[str, Any]) -> DefaultMemoryConfig:
-    retrieval = _as_dict(payload.get("retrieval"))
-    thresholds = _as_dict(retrieval.get("thresholds"))
-    inject = _as_dict(retrieval.get("inject"))
+def _build_config(payload: dict[str, object]) -> DefaultMemoryConfig:
+    retrieval = _section(payload, "retrieval")
+    thresholds = _section(retrieval, "retrieval.thresholds")
+    inject = _section(retrieval, "retrieval.inject")
     return DefaultMemoryConfig(
-        db_path=str(payload.get("db_path", "")),
+        db_path=_string_value(payload, "db_path", ""),
         retrieval=RetrievalConfig(
-            top_k_history=int(retrieval.get("top_k_history", 8)),
-            score_threshold=float(retrieval.get("score_threshold", 0.45)),
-            relative_delta=float(retrieval.get("relative_delta", 0.2)),
-            procedure_guard_enabled=bool(
-                retrieval.get("procedure_guard_enabled", True)
+            top_k_history=_int_value(retrieval, "retrieval.top_k_history", 8),
+            score_threshold=_float_value(
+                retrieval, "retrieval.score_threshold", 0.45
+            ),
+            relative_delta=_float_value(retrieval, "retrieval.relative_delta", 0.2),
+            procedure_guard_enabled=_bool_value(
+                retrieval, "retrieval.procedure_guard_enabled", True
             ),
             thresholds=RetrievalThresholdsConfig(
-                procedure=float(thresholds.get("procedure", 0.66)),
-                preference=float(thresholds.get("preference", 0.5)),
-                event=float(thresholds.get("event", 0.5)),
-                profile=float(thresholds.get("profile", 0.5)),
+                procedure=_float_value(
+                    thresholds, "retrieval.thresholds.procedure", 0.66
+                ),
+                preference=_float_value(
+                    thresholds, "retrieval.thresholds.preference", 0.5
+                ),
+                event=_float_value(thresholds, "retrieval.thresholds.event", 0.5),
+                profile=_float_value(
+                    thresholds, "retrieval.thresholds.profile", 0.5
+                ),
             ),
             inject=RetrievalInjectConfig(
-                max_chars=int(inject.get("max_chars", 6000)),
-                forced=int(inject.get("forced", 3)),
-                procedure_preference=int(inject.get("procedure_preference", 4)),
-                event_profile=int(inject.get("event_profile", 4)),
-                line_max=int(inject.get("line_max", 600)),
+                max_chars=_int_value(inject, "retrieval.inject.max_chars", 6000),
+                forced=_int_value(inject, "retrieval.inject.forced", 3),
+                procedure_preference=_int_value(
+                    inject,
+                    "retrieval.inject.procedure_preference",
+                    4,
+                ),
+                event_profile=_int_value(inject, "retrieval.inject.event_profile", 4),
+                line_max=_int_value(inject, "retrieval.inject.line_max", 600),
             ),
         ),
     )
 
 
-def _read_toml(path: Path) -> dict[str, Any]:
+def _read_toml(path: Path) -> dict[str, object]:
     if not path.exists():
         return {}
-    return tomllib.loads(path.read_text(encoding="utf-8"))
+    return cast(dict[str, object], tomllib.loads(path.read_text(encoding="utf-8")))
 
 
-def _as_dict(value: object) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
+def _field_key(field: str) -> str:
+    return field.rpartition(".")[2]
+
+
+def _section(
+    payload: dict[str, object],
+    field: str,
+) -> dict[str, object]:
+    key = _field_key(field)
+    if key not in payload:
+        return {}
+    value = payload[key]
+    if isinstance(value, dict):
+        return cast(dict[str, object], value)
+    raise ValueError(f"默认记忆配置 {field} 必须是 section，实际为 {value!r}")
+
+
+def _string_value(
+    payload: dict[str, object],
+    field: str,
+    default: str,
+) -> str:
+    key = _field_key(field)
+    if key not in payload:
+        return default
+    value = payload[key]
+    if isinstance(value, str):
+        return value
+    raise ValueError(f"默认记忆配置 {field} 必须是字符串，实际为 {value!r}")
+
+
+def _int_value(
+    payload: dict[str, object],
+    field: str,
+    default: int,
+) -> int:
+    key = _field_key(field)
+    if key not in payload:
+        return default
+    value = payload[key]
+    if not isinstance(value, bool):
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float) and isfinite(value) and value.is_integer():
+            return int(value)
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except ValueError:
+                pass
+    raise ValueError(f"默认记忆配置 {field} 必须是整数，实际为 {value!r}")
+
+
+def _float_value(
+    payload: dict[str, object],
+    field: str,
+    default: float,
+) -> float:
+    key = _field_key(field)
+    if key not in payload:
+        return default
+    value = payload[key]
+    if not isinstance(value, bool) and isinstance(value, int | float | str):
+        try:
+            parsed = float(value)
+        except ValueError:
+            pass
+        else:
+            if isfinite(parsed):
+                return parsed
+    raise ValueError(f"默认记忆配置 {field} 必须是有限数字，实际为 {value!r}")
+
+
+def _bool_value(
+    payload: dict[str, object],
+    field: str,
+    default: bool,
+) -> bool:
+    key = _field_key(field)
+    if key not in payload:
+        return default
+    value = payload[key]
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"默认记忆配置 {field} 必须是布尔值，实际为 {value!r}")

@@ -2,11 +2,14 @@ from typing import Any, cast
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from core.memory.markdown import (
     _build_consolidation_source_ref,
     _format_conversation_for_consolidation,
     _format_conversation_for_recent_context,
     _format_recent_context_messages,
+    _MarkdownConsolidationWorker,
     _parse_consolidation_payload,
     _select_consolidation_window,
 )
@@ -19,11 +22,21 @@ def test_parse_consolidation_payload_supports_fenced_json():
 
     assert result is not None
     assert result["history_entry"].startswith("[2026-03-09 12:00]")
-    assert result["pending_items"][0]["tag"] == "preference"
+    pending_items = result["pending_items"]
+    assert isinstance(pending_items, list)
+    assert isinstance(pending_items[0], dict)
+    assert pending_items[0].get("tag") == "preference"
 
 
 def test_parse_consolidation_payload_returns_none_for_non_object():
     assert _parse_consolidation_payload('["not","object"]') is None
+
+
+def test_recent_context_schema_rejects_non_array_fields():
+    with pytest.raises(ValueError, match="active_topics must be an array"):
+        _MarkdownConsolidationWorker._normalize_recent_context_compression(
+            {"active_topics": "not an array"}
+        )
 
 
 def test_select_consolidation_window_uses_half_window_tail_keep():

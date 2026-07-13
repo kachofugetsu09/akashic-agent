@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import logging
 from contextvars import ContextVar, Token
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -18,9 +17,6 @@ from agent.tool_hooks import ToolHook
 from agent.skills import SkillIndex
 from bus.event_bus import Handler
 from infra.channels.contract import Channel
-
-logger = logging.getLogger(__name__)
-
 
 SnapshotState = Literal[
     "compiled",
@@ -85,8 +81,7 @@ def plugin_is_active(instance: object, *, plugin_id: str) -> bool:
     try:
         return bool(checker())
     except Exception as error:
-        logger.warning("插件 active 状态检查失败 (%s): %s", plugin_id, error)
-        return True
+        raise RuntimeError(f"插件 active 状态检查失败: {plugin_id}") from error
 
 
 @dataclass(frozen=True)

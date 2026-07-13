@@ -15,20 +15,26 @@ class PluginWatcher:
         self._wake = asyncio.Event()
         self._forced = False
         self._running = True
+        self._run_started = False
         self._stopped = asyncio.Event()
 
     async def run(self) -> None:
+        """轮询插件文件状态，并在变化后执行一次热重载。"""
+
         revision: str | None = None
-        scan_failed = False
+        self._run_started = True
         try:
+            # 1. 启动前已停止时，不再触碰 manager
+            if not self._running:
+                return
             try:
                 revision = self._manager.watch_revision()
-            except Exception:
-                scan_failed = True
+            except OSError:
                 logger.exception("插件热重载状态扫描失败")
             while self._running:
+                # 2. 等待定时轮询或外部唤醒
                 try:
-                    await asyncio.wait_for(
+                    _ = await asyncio.wait_for(
                         self._wake.wait(),
                         timeout=self._interval_seconds,
                     )
@@ -37,28 +43,26 @@ class PluginWatcher:
                 self._wake.clear()
                 if not self._running:
                     break
-                forced = self._forced or scan_failed
+                forced = self._forced
                 self._forced = False
+                # 3. 读取最新状态；单次文件竞争交给下一轮恢复
                 try:
                     current_revision = self._manager.watch_revision()
-                except Exception:
-                    scan_failed = True
+                except OSError:
+                    self._forced = self._forced or forced
                     logger.exception("插件热重载状态扫描失败")
                     continue
-                scan_failed = False
                 if revision is None:
                     revision = current_revision
-                    if not forced:
-                        continue
+                    forced = True
                 if not forced and current_revision == revision:
                     continue
+                # 4. 失败版本只尝试一次，后续文件变化仍可恢复热重载
                 try:
-                    await self._manager.reconcile_changed()
-                    revision = current_revision
-                except asyncio.CancelledError:
-                    raise
+                    _ = await self._manager.reconcile_changed()
                 except Exception:
-                    logger.exception("插件热重载扫描失败")
+                    logger.exception("插件热重载失败")
+                revision = current_revision
         finally:
             self._stopped.set()
 
@@ -69,6 +73,8 @@ class PluginWatcher:
     def stop(self) -> None:
         self._running = False
         self._wake.set()
+        if not self._run_started:
+            self._stopped.set()
 
     async def wait_stopped(self) -> None:
-        await self._stopped.wait()
+        _ = await self._stopped.wait()

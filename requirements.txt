@@ -23,6 +23,7 @@ lxml>=6.0.0
 markdown-it-py>=4.0.0
 mdit-py-plugins>=0.5.0
 ncatbot>=4.4.0
+networkx>=3.4.0
 numpy>=2.4.0
 sqlite-vec>=0.1.6
 openai>=2.0.0

@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
@@ -15,6 +15,7 @@ import json_repair
 from agent.config_models import Config
 from agent.provider import LLMProvider, LLMResponse
 from agent.skills import SkillsLoader
+from bus.event_bus import EventSubscription
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import (
     EngineProfile,
@@ -44,7 +45,7 @@ from memory2.procedure_tagger import ProcedureTagger
 from memory2.query_builder import build_procedure_queries
 from memory2.retriever import Retriever
 from memory2.rule_schema import build_procedure_rule_schema
-from memory2.store import VEC_DIM, MemoryStore2
+from memory2.store import VEC_DIM, MemoryHit, MemoryStore2
 from plugins.default_memory.config import DefaultMemoryConfig, resolve_memory_db_path
 
 if TYPE_CHECKING:
@@ -542,7 +543,7 @@ class DefaultMemoryEngine:
 
     @property
     def embedding_api(self) -> Embedder:
-        return cast(Embedder, self._embedder)
+        return self._require_embedder()
 
     def __init__(
         self,
@@ -569,6 +570,7 @@ class DefaultMemoryEngine:
         self._post_response_worker: PostResponseMemoryWorker | None = None
         self._event_bus = event_publisher
         self.closeables: list[object] = []
+        self._event_wired = False
 
         db_path = resolve_memory_db_path(
             workspace=workspace,
@@ -631,8 +633,8 @@ class DefaultMemoryEngine:
             light_model=self._light_model,
             event_publisher=event_publisher,
         )
-        self._wire_memory2_events()
         self.closeables = [self._v2_store, self._embedder]
+        self._wire_memory2_events()
 
     @classmethod
     def ensure_workspace_storage(
@@ -640,22 +642,51 @@ class DefaultMemoryEngine:
         *,
         default_config: DefaultMemoryConfig,
         workspace: Path,
+        embedding_dim: int | None = None,
     ) -> None:
         db_path = resolve_memory_db_path(
             workspace=workspace,
             default_config=default_config,
         )
-        store = MemoryStore2(db_path)
+        store = MemoryStore2(db_path, vec_dim=embedding_dim or VEC_DIM)
         store.close()
 
     def _wire_memory2_events(self) -> None:
         if self._event_bus is None:
             return
-        if self._post_response_worker is not None:
-            self._event_bus.on(TurnCommitted, self._on_turn_committed)
-            self._event_bus.on(TurnIngested, self._post_response_worker.handle)
-        if self._memorizer is not None:
-            self._event_bus.on(ConsolidationCommitted, self._on_consolidation_committed)
+        if self._event_wired:
+            return
+        subscriptions: list[EventSubscription] = []
+        try:
+            if self._post_response_worker is not None:
+                subscriptions.append(
+                    self._event_bus.on(TurnCommitted, self._on_turn_committed)
+                )
+                subscriptions.append(
+                    self._event_bus.on(TurnIngested, self._post_response_worker.handle)
+                )
+            if self._memorizer is not None:
+                subscriptions.append(
+                    self._event_bus.on(
+                        ConsolidationCommitted,
+                        self._on_consolidation_committed,
+                    )
+                )
+        except BaseException as register_error:
+            cleanup_errors: list[BaseException] = []
+            for subscription in reversed(subscriptions):
+                try:
+                    subscription.close()
+                except BaseException as cleanup_error:
+                    cleanup_errors.append(cleanup_error)
+            if cleanup_errors:
+                raise BaseExceptionGroup(
+                    "memory event subscription cleanup failed",
+                    [register_error, *cleanup_errors],
+                ) from register_error
+            raise
+        self.closeables.extend(subscriptions)
+        self._event_wired = True
 
     # 对话提交后只入队，不在主回复链路里等待 memory2 后处理。
     def _on_turn_committed(self, event: TurnCommitted) -> None:
@@ -680,6 +711,7 @@ class DefaultMemoryEngine:
         self,
         event: ConsolidationCommitted,
     ) -> None:
+        self._require_memorizer()
         save_coros = [
             self._save_from_consolidation(
                 history_entry=entry,
@@ -749,8 +781,7 @@ class DefaultMemoryEngine:
         self,
         request: MemoryQuery,
     ) -> MemoryQueryResult:
-        if self._retriever is None:
-            return MemoryQueryResult(raw={"items": []})
+        self._require_retriever()
         if request.intent == "timeline":
             return self._query_timeline(request)
         if request.intent == "interest":
@@ -760,9 +791,7 @@ class DefaultMemoryEngine:
         return await self._query_answer(request)
 
     async def _query_context(self, request: MemoryQuery) -> MemoryQueryResult:
-        retriever = self._retriever
-        if retriever is None:
-            return MemoryQueryResult(raw={"items": []})
+        retriever = self._require_retriever()
         scope = resolve_memory_scope(request.scope)
         queries = self._resolve_queries(request)
         memory_types = self._resolve_memory_types(request)
@@ -843,10 +872,11 @@ class DefaultMemoryEngine:
 
     # 显式记忆写入入口，供 memorize 工具和内部迁移代码复用。
     async def _remember(self, request: MemoryMutation) -> MemoryMutationResult:
-        # 1. procedure 必须有执行条件，否则降级为 preference。
+        # 1. 归一化记忆类型和会话作用域
         if self._memorizer is None:
             raise RuntimeError("memorizer unavailable")
 
+        scope = resolve_memory_scope(request.scope)
         raw_steps = request.metadata.get("steps")
         steps = (
             [str(step) for step in cast(list[object], raw_steps)]
@@ -861,6 +891,8 @@ class DefaultMemoryEngine:
         extra: dict[str, object] = {
             "tool_requirement": request.metadata.get("tool_requirement"),
             "steps": list(steps or []),
+            "scope_channel": scope.channel,
+            "scope_chat_id": scope.chat_id,
         }
         if memory_type == "procedure":
             extra["rule_schema"] = build_procedure_rule_schema(
@@ -870,7 +902,7 @@ class DefaultMemoryEngine:
             )
             await self._attach_trigger_tags(extra=extra, summary=request.summary)
 
-        # 2. 写入时顺带执行相似记忆 supersede，避免同类偏好堆积。
+        # 2. 写入并合并同作用域内的相似记忆
         result = await self._memorizer.save_item_with_supersede(
             summary=request.summary,
             memory_type=memory_type,
@@ -915,15 +947,13 @@ class DefaultMemoryEngine:
         return self.DESCRIPTOR
 
     def reinforce_items_batch(self, ids: list[str]) -> None:
-        if self._memorizer is not None:
-            self._memorizer.reinforce_items_batch(ids)
+        self._require_memorizer().reinforce_items_batch(ids)
 
     def keyword_match_procedures(
         self,
         action_tokens: list[str],
     ) -> list[dict[str, object]]:
-        store = self._v2_store
-        return store.keyword_match_procedures(action_tokens) if store is not None else []
+        return self._require_v2_store().keyword_match_procedures(action_tokens)
 
     def list_events_by_time_range(
         self,
@@ -932,10 +962,11 @@ class DefaultMemoryEngine:
         *,
         limit: int = 200,
     ) -> list[dict[str, object]]:
-        store = self._v2_store
-        if store is None:
-            return []
-        return store.list_events_by_time_range(time_start, time_end, limit=limit)
+        return self._require_v2_store().list_events_by_time_range(
+            time_start,
+            time_end,
+            limit=limit,
+        )
 
     def list_items_for_dashboard(
         self,
@@ -1024,12 +1055,15 @@ class DefaultMemoryEngine:
         score_threshold: float = 0.0,
         include_superseded: bool = False,
     ) -> list[dict[str, object]]:
-        return self._require_v2_store().find_similar_items_for_dashboard(
-            item_id,
-            top_k=top_k,
-            memory_type=memory_type,
-            score_threshold=score_threshold,
-            include_superseded=include_superseded,
+        return cast(
+            list[dict[str, object]],
+            self._require_v2_store().find_similar_items_for_dashboard(
+                item_id,
+                top_k=top_k,
+                memory_type=memory_type,
+                score_threshold=score_threshold,
+                include_superseded=include_superseded,
+            ),
         )
 
     async def _save_from_consolidation(
@@ -1041,9 +1075,7 @@ class DefaultMemoryEngine:
         scope_chat_id: str,
         emotional_weight: int = 0,
     ) -> None:
-        if self._memorizer is None:
-            return
-        await self._memorizer.save_from_consolidation(
+        await self._require_memorizer().save_from_consolidation(
             history_entry=history_entry,
             behavior_updates=behavior_updates,
             source_ref=source_ref,
@@ -1061,9 +1093,7 @@ class DefaultMemoryEngine:
         happened_at: str | None = None,
         emotional_weight: int = 0,
     ) -> str:
-        if self._memorizer is None:
-            return ""
-        return await self._memorizer.save_item_with_supersede(
+        return await self._require_memorizer().save_item_with_supersede(
             summary=summary,
             memory_type=memory_type,
             extra=extra,
@@ -1080,6 +1110,7 @@ class DefaultMemoryEngine:
         scope_channel: str,
         scope_chat_id: str,
     ) -> dict[str, int]:
+        self._require_memorizer()
         saved_counts = {"profile": 0, "preference": 0, "procedure": 0}
 
         # 1. profile 写入用户画像类事实。
@@ -1165,7 +1196,7 @@ class DefaultMemoryEngine:
         )
         sliced = list(hits)[: request.limit]
         return MemoryQueryResult(
-            records=[self._build_record(item) for item in sliced if isinstance(item, dict)],
+            records=[self._build_record(item) for item in sliced],
             trace={
                 "source": self.DESCRIPTOR.name,
                 "intent": request.intent,
@@ -1217,7 +1248,7 @@ class DefaultMemoryEngine:
             scope_chat_id=scope.chat_id or None,
             require_scope_match=should_require_scope_match(request, scope),
         )
-        records = [self._build_record(item) for item in hits if isinstance(item, dict)]
+        records = [self._build_record(item) for item in hits]
         texts = [record.summary for record in records]
         return MemoryQueryResult(
             text_block="\n---\n".join(texts),
@@ -1244,12 +1275,10 @@ class DefaultMemoryEngine:
         time_start: datetime | None = None,
         time_end: datetime | None = None,
         keyword_enabled: bool = True,
-    ) -> list[dict[str, object]]:
-        retriever = self._retriever
-        if retriever is None:
-            return []
+    ) -> list[MemoryHit]:
+        retriever = self._require_retriever()
         return cast(
-            list[dict[str, object]],
+            list[MemoryHit],
             await retriever.retrieve(
                 query,
                 memory_types=memory_types,
@@ -1268,7 +1297,7 @@ class DefaultMemoryEngine:
     async def _gen_hypothesis(self, query: str, style: str) -> str | None:
         prompt = _explicit_hypothesis_prompt(query, style)
         try:
-            chat = cast(_ChatCall, getattr(self._light_provider, "chat"))
+            chat = cast(_ChatCall, self._light_provider.chat)
             resp = await asyncio.wait_for(
                 chat(
                     messages=[{"role": "user", "content": prompt}],
@@ -1291,10 +1320,12 @@ class DefaultMemoryEngine:
         summary: str,
     ) -> None:
         if self._tagger is None:
+            logger.debug("procedure trigger tagging skipped: tagger unavailable")
             return
         try:
             trigger_tags = await self._tagger.tag(summary)
-        except Exception:
+        except Exception as exc:
+            logger.debug("procedure trigger tagging failed: %s", exc)
             return
         if trigger_tags is not None:
             extra["trigger_tags"] = trigger_tags
@@ -1304,10 +1335,25 @@ class DefaultMemoryEngine:
             raise RuntimeError("memory v2 store unavailable")
         return self._v2_store
 
+    def _require_embedder(self) -> Embedder:
+        if self._embedder is None:
+            raise RuntimeError("memory embedder unavailable")
+        return self._embedder
+
+    def _require_memorizer(self) -> Memorizer:
+        if self._memorizer is None:
+            raise RuntimeError("memory memorizer unavailable")
+        return self._memorizer
+
+    def _require_retriever(self) -> Retriever:
+        if self._retriever is None:
+            raise RuntimeError("memory retriever unavailable")
+        return self._retriever
+
     @classmethod
     def _build_record(
         cls,
-        item: dict[str, object],
+        item: Mapping[str, object],
         *,
         injected_ids: list[str] | None = None,
     ) -> MemoryRecord:

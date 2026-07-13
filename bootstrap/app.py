@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import signal
 import sys
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+from agent.config import resolve_cli_socket_endpoint
 from agent.config_models import Config
 from bootstrap.channel_host import ChannelHost
 from bootstrap.channels import start_channels
 from bootstrap.chat_api import build_chat_server
+from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.dashboard_api import build_dashboard_server
 from bootstrap.proactive import build_memory_optimizer_task, build_proactive_runtime
 from bootstrap.tools import CoreRuntime, build_core_runtime
@@ -24,6 +27,9 @@ from core.net.http import (
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
+
+if TYPE_CHECKING:
+    from proactive_v2.loop import ProactiveLoop
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,21 +49,50 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-async def _run_cleanup_steps(*steps: tuple[str, Callable[[], Awaitable[None]]]) -> None:
-    first_error: Exception | None = None
-    for name, step in steps:
-        try:
-            await step()
-        except Exception as exc:
-            if first_error is None:
-                first_error = exc
-            logger.warning("shutdown step failed: %s: %s", name, exc)
-    if first_error is not None:
-        raise first_error
+_run_cleanup_steps = run_cleanup_steps
 
 
 async def _noop_async() -> None:
     return None
+
+
+def _raise_unexpected_task_errors(name: str, results: list[object]) -> None:
+    """记录并重新抛出任务停止时的首个非取消异常。"""
+
+    first_error: BaseException | None = None
+    for result in results:
+        if not isinstance(result, BaseException) or isinstance(
+            result, asyncio.CancelledError
+        ):
+            continue
+        logger.error(
+            "%s failed while stopping",
+            name,
+            exc_info=(type(result), result, result.__traceback__),
+        )
+        if first_error is None:
+            first_error = result
+    if first_error is not None:
+        raise first_error
+
+
+async def _run_primary_tasks(tasks: list[asyncio.Future[Any]]) -> None:
+    """监督 runtime tasks，并在失败或取消时等待兄弟任务收束。"""
+
+    try:
+        _ = await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        # gather 已把取消传播给子任务；再次 cancel 会打断子任务的 finally。
+        if tasks:
+            _ = await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+    except Exception:
+        for task in tasks:
+            if not task.done():
+                _ = task.cancel()
+        if tasks:
+            _ = await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 def _stop_plugin_jobs(runtime: PluginJobRuntime | None) -> Callable[[], Awaitable[None]]:
@@ -69,24 +104,47 @@ def _stop_plugin_jobs(runtime: PluginJobRuntime | None) -> Callable[[], Awaitabl
     return stop
 
 
-def _stop_proactive(runtime: object | None) -> Callable[[], Awaitable[None]]:
+def _stop_proactive(runtime: ProactiveLoop | None) -> Callable[[], Awaitable[None]]:
     async def stop() -> None:
         if runtime is not None:
-            runtime.stop()
-            await runtime.wait_stopped()
+            try:
+                runtime.stop()
+                await runtime.wait_stopped()
+            finally:
+                runtime.close()
 
     return stop
 
 
 def _stop_plugin_watcher(
     watcher: PluginWatcher | None,
+    task: asyncio.Task[None] | None,
 ) -> Callable[[], Awaitable[None]]:
     async def stop() -> None:
         if watcher is not None:
             watcher.stop()
             await watcher.wait_stopped()
+        if task is not None:
+            try:
+                await task
+            except asyncio.CancelledError:
+                return
 
     return stop
+
+
+def _wait_server_task(
+    task: asyncio.Task[None] | None,
+) -> Callable[[], Awaitable[None]]:
+    async def wait() -> None:
+        if task is None:
+            return
+        try:
+            await task
+        except asyncio.CancelledError:
+            return
+
+    return wait
 
 
 class AppRuntime:
@@ -127,6 +185,8 @@ class AppRuntime:
         self._started = False
         self._plugin_candidate_tasks: set[asyncio.Task[Any]] = set()
         self._plugin_reload_signal_installed = False
+        self._runtime_tasks: set[asyncio.Future[Any]] = set()
+        self._primary_task: asyncio.Future[Any] | None = None
 
     async def start(self) -> None:
         if self._started:
@@ -183,6 +243,10 @@ class AppRuntime:
                 plugin_channels.append(self.web_chat_channel)
             self.ipc, self.channel_host = await start_channels(
                 self.config,
+                socket_endpoint=resolve_cli_socket_endpoint(
+                    self.config.channels.socket,
+                    self.workspace,
+                ),
                 bus=self.bus,
                 session_manager=self.session_manager,
                 push_tool=self.push_tool,
@@ -317,16 +381,130 @@ class AppRuntime:
 
             self._install_plugin_reload_signal()
             self._started = True
-        except Exception:
-            await self.shutdown()
+        except (asyncio.CancelledError, Exception) as startup_error:
+            try:
+                await self.shutdown()
+            except (asyncio.CancelledError, Exception) as rollback_error:
+                raise startup_error from rollback_error
             raise
 
     async def run(self) -> None:
+        run_error: BaseException | None = None
         try:
             await self.start()
-            await asyncio.gather(*self.tasks)
-        finally:
+            runtime_tasks = self._schedule_runtime_tasks()
+            self._primary_task = asyncio.create_task(
+                _run_primary_tasks(runtime_tasks),
+                name="primary_runtime",
+            )
+            self._runtime_tasks.clear()
+            watched_tasks = {
+                task
+                for task in (
+                    self.dashboard_task,
+                    self.chat_task,
+                    self.plugin_watcher_task,
+                )
+                if task is not None
+            }
+            done, _ = await asyncio.wait(
+                {self._primary_task, *watched_tasks},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if self._primary_task in done:
+                await self._primary_task
+            else:
+                if self.dashboard_task is not None and self.dashboard_task in done:
+                    watched_task = self.dashboard_task
+                    self.dashboard_task = None
+                elif self.chat_task is not None and self.chat_task in done:
+                    watched_task = self.chat_task
+                    self.chat_task = None
+                else:
+                    assert self.plugin_watcher_task is not None
+                    watched_task = self.plugin_watcher_task
+                    self.plugin_watcher_task = None
+                await watched_task
+        except (asyncio.CancelledError, Exception) as error:
+            run_error = error
+
+        shutdown_error: BaseException | None = None
+        try:
             await self.shutdown()
+        except (asyncio.CancelledError, Exception) as error:
+            shutdown_error = error
+
+        if run_error is not None:
+            if shutdown_error is not None and shutdown_error is not run_error:
+                raise run_error from shutdown_error
+            raise run_error
+        if shutdown_error is not None:
+            raise shutdown_error
+
+    def _schedule_runtime_tasks(self) -> list[asyncio.Future[Any]]:
+        pending = self.tasks
+        self.tasks = []
+        scheduled: list[asyncio.Future[Any]] = []
+        try:
+            for awaitable in pending:
+                task = asyncio.ensure_future(awaitable)
+                scheduled.append(task)
+        except (asyncio.CancelledError, Exception):
+            self._runtime_tasks = set(scheduled)
+            self.tasks = pending[len(scheduled):]
+            for awaitable in self.tasks:
+                if inspect.iscoroutine(awaitable):
+                    awaitable.close()
+            raise
+        self._runtime_tasks = set(scheduled)
+        return scheduled
+
+    async def _cancel_runtime_tasks(self) -> None:
+        results: list[object] = []
+        primary_task = self._primary_task
+        try:
+            if primary_task is not None:
+                _ = primary_task.cancel()
+                try:
+                    await primary_task
+                except (asyncio.CancelledError, Exception) as error:
+                    results.append(error)
+            elif self._runtime_tasks:
+                for task in self._runtime_tasks:
+                    _ = task.cancel()
+                results = await asyncio.gather(
+                    *self._runtime_tasks,
+                    return_exceptions=True,
+                )
+        finally:
+            self._runtime_tasks.clear()
+            for awaitable in self.tasks:
+                if inspect.iscoroutine(awaitable):
+                    awaitable.close()
+            self.tasks.clear()
+            self._primary_task = None
+
+        _raise_unexpected_task_errors("primary runtime task", results)
+
+    async def _cancel_plugin_candidate_tasks(self) -> None:
+        for task in self._plugin_candidate_tasks:
+            _ = task.cancel()
+        results: list[object] = []
+        try:
+            if self._plugin_candidate_tasks:
+                results = await asyncio.gather(
+                    *self._plugin_candidate_tasks,
+                    return_exceptions=True,
+                )
+        finally:
+            self._plugin_candidate_tasks.clear()
+        _raise_unexpected_task_errors("plugin candidate task", results)
+
+    async def _request_server_shutdown(self) -> None:
+        if self.dashboard_server is not None:
+            self.dashboard_server.should_exit = True
+        if self.chat_server is not None:
+            self.chat_server.should_exit = True
 
     async def shutdown(self) -> None:
         if self._shutdown:
@@ -334,32 +512,24 @@ class AppRuntime:
         self._shutdown = True
         try:
             self._remove_plugin_reload_signal()
-            for task in self._plugin_candidate_tasks:
-                _ = task.cancel()
-            if self._plugin_candidate_tasks:
-                _ = await asyncio.gather(
-                    *self._plugin_candidate_tasks,
-                    return_exceptions=True,
-                )
-            self._plugin_candidate_tasks.clear()
-            if self.dashboard_server is not None:
-                self.dashboard_server.should_exit = True
-            if self.chat_server is not None:
-                self.chat_server.should_exit = True
-            if self.dashboard_task is not None:
-                try:
-                    await self.dashboard_task
-                except asyncio.CancelledError:
-                    pass
-            if self.chat_task is not None:
-                try:
-                    await self.chat_task
-                except asyncio.CancelledError:
-                    pass
             await _run_cleanup_steps(
+                ("plugin_candidate_tasks.cancel", self._cancel_plugin_candidate_tasks),
+                ("runtime_tasks.cancel", self._cancel_runtime_tasks),
+                ("servers.request_shutdown", self._request_server_shutdown),
+                (
+                    "dashboard_server.wait",
+                    _wait_server_task(self.dashboard_task),
+                ),
+                (
+                    "chat_server.wait",
+                    _wait_server_task(self.chat_task),
+                ),
                 (
                     "plugin_watcher.stop",
-                    _stop_plugin_watcher(self.plugin_watcher),
+                    _stop_plugin_watcher(
+                        self.plugin_watcher,
+                        self.plugin_watcher_task,
+                    ),
                 ),
                 (
                     "proactive.stop",
@@ -383,7 +553,9 @@ class AppRuntime:
                 ("core.stop", self.core.stop if self.core else _noop_async),
                 (
                     "memory_runtime.aclose",
-                    self.memory_runtime.aclose if self.memory_runtime else _noop_async,
+                    self.memory_runtime.aclose
+                    if self.memory_runtime
+                    else _noop_async,
                 ),
                 ("http_resources.aclose", self.http_resources.aclose),
             )

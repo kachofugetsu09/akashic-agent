@@ -57,7 +57,7 @@ class RunningSubagentJob:
 
 
 class SubagentManager:
-    """Manage background subagent jobs and announce completion to the main loop."""
+    """管理后台子任务，并将完成事件送回原会话。"""
 
     def __init__(
         self,
@@ -104,10 +104,7 @@ class SubagentManager:
         label: str | None,
         profile: str = PROFILE_RESEARCH,
     ) -> str:
-        """同步执行 subagent，阻塞当前 turn 直到完成，结果作为 tool result 直接返回。
-
-        适合：调研后需要立即回复用户的任务，预计 ≤ 10 次工具调用。
-        """
+        """同步执行子任务，并将结果直接返回当前轮次。"""
         job_id = uuid.uuid4().hex[:8]
         display_label = (label or task[:30] or job_id).strip()
         task_dir = self._job_task_dir(job_id)
@@ -163,7 +160,7 @@ class SubagentManager:
         job_id = uuid.uuid4().hex[:8]
         display_label = (label or task[:30] or job_id).strip()
         task_dir = self._job_task_dir(job_id)
-        # 1. 先生成 job_id 和 trace，确保后台任务还没起时也能追踪来源。
+        # 1. 先写追踪记录，确保后台任务创建失败时仍可定位
         self._append_spawn_trace(
             job_id=job_id,
             payload={
@@ -177,7 +174,7 @@ class SubagentManager:
                 "decision": _decision_payload(decision),
             },
         )
-        # 2. 再把真正执行逻辑放到后台 task 中，避免阻塞当前会话。
+        # 2. 租用当前快照后启动后台任务，隔离后续热重载
         from agent.plugins.snapshot import lease_current_runtime_snapshot
 
         snapshot_lease = lease_current_runtime_snapshot()
@@ -196,7 +193,7 @@ class SubagentManager:
             ),
             name=f"spawn:{job_id}",
         )
-        # 3. 最后登记运行中任务，并返回给主 agent 一段立即可回复用户的确认文本。
+        # 3. 登记任务后立即返回，完成回调负责释放快照
         self._running_tasks[job_id] = bg_task
         self._running_jobs[job_id] = RunningSubagentJob(
             job_id=job_id,
@@ -266,6 +263,7 @@ class SubagentManager:
         retry_count: int = 0,
         snapshot_lease: RuntimeSnapshotLease | None = None,
     ) -> None:
+        """运行后台子任务，并按统一协议回传结果。"""
         if snapshot_lease is not None:
             from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
 
@@ -286,12 +284,11 @@ class SubagentManager:
                 finally:
                     reset_runtime_snapshot(token)
             return
-        """运行后台 subagent，并把统一结果协议回灌给主 agent。"""
         job_runner = AgentBackgroundJobRunner(
             lambda: self._build_subagent(task_dir=task_dir, profile=profile)
         )
         try:
-            # 1. 先按统一 background job spec 执行 subagent，本层不直接碰 loop 细节。
+            # 1. 通过统一任务协议执行，不在管理器内复制推理循环
             result = await job_runner.run(
                 AgentBackgroundJobSpec(
                     job_id=job_id,
@@ -335,7 +332,7 @@ class SubagentManager:
                 },
             )
             raise
-        # 2. 再把统一结果协议转成 bus completion event，回到原会话。
+        # 2. 将结果转换为完成事件，送回原会话
         await self._announce_result(
             job_id=job_id,
             label=label,
@@ -349,7 +346,7 @@ class SubagentManager:
             profile=profile,
             retry_count=retry_count,
         )
-        # 3. 最后补 completion trace，方便排查"为什么这个后台任务结束了"。
+        # 3. 记录最终状态，保留任务结束原因
         self._append_spawn_trace(
             job_id=job_id,
             payload={
@@ -449,16 +446,16 @@ class SubagentManager:
         profile: str = PROFILE_RESEARCH,
         retry_count: int = 0,
     ) -> None:
-        """把后台结果包装成内部事件，重新投回主 agent 的消息总线。"""
+        """将后台结果包装为内部事件，并送回主 Agent 消息总线。"""
         payload_result = result
-        # 1. 先裁剪过长结果，避免 completion event 把主会话和 trace 撑爆。
+        # 1. 裁剪事件载荷，避免完成消息挤占主会话上下文
         if len(payload_result) > _RESULT_MAX_CHARS:
             original_len = len(payload_result)
             payload_result = (
                 payload_result[:_RESULT_MAX_CHARS]
                 + f"\n...[结果已截断，原始长度 {original_len}]"
             )
-        # 2. 再把结果包成 typed inbox item，路由回原 channel/chat_id。
+        # 2. 构建带原 channel/chat_id 的结构化事件
         item = SpawnCompletionItem(
             channel=origin_channel,
             chat_id=origin_chat_id,
@@ -474,7 +471,7 @@ class SubagentManager:
             ),
             decision=decision,
         )
-        # 3. 最后发布到 bus，让主 agent 以同一会话身份继续回复用户。
+        # 3. 发布到消息总线，由主 Agent 继续原会话
         await self._bus.publish_inbound(item)
         logger.info(
             "[spawn] completed job_id=%s status=%s exit_reason=%s profile=%s retry_count=%d route=%s:%s decision_reason=%s",

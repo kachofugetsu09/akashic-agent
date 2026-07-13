@@ -30,27 +30,34 @@ class ReplayClock:
 
     def now(self) -> datetime:
         with self._lock:
-            payload = json.loads(self._state_path.read_text(encoding="utf-8"))
-        return _as_utc(datetime.fromisoformat(str(payload["current_time"])))
+            return self._read_current()
 
     def set(self, value: datetime) -> datetime:
         current = _as_utc(value)
+        with self._lock:
+            return self._write_current(current)
+
+    def advance(self, delta: timedelta) -> datetime:
+        with self._lock:
+            return self._write_current(self._read_current() + delta)
+
+    def _read_current(self) -> datetime:
+        payload = json.loads(self._state_path.read_text(encoding="utf-8"))
+        return _as_utc(datetime.fromisoformat(str(payload["current_time"])))
+
+    def _write_current(self, current: datetime) -> datetime:
         payload = {
             "current_time": current.isoformat(),
             "updated_at": datetime.now(UTC).isoformat(),
         }
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
-        with self._lock:
-            _ = temporary.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
-            _ = temporary.replace(self._state_path)
+        _ = temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        _ = temporary.replace(self._state_path)
         return current
-
-    def advance(self, delta: timedelta) -> datetime:
-        return self.set(self.now() + delta)
 
 
 def clock_from_env(env: Mapping[str, str] | None = None) -> Clock:

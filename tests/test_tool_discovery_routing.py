@@ -22,6 +22,7 @@ import pytest
 
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryServices
+from bus.queue import MessageBus
 from agent.provider import LLMResponse, ToolCall
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
@@ -74,7 +75,7 @@ def _make_loop(
 ) -> AgentLoop:
     return AgentLoop(
         AgentLoopDeps(
-            bus=MagicMock(),
+            bus=MessageBus(),
             provider=cast(Any, provider),
             tools=registry,
             session_manager=MagicMock(),

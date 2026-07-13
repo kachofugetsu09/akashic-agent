@@ -61,6 +61,15 @@ class Scenario:
     turns: list[dict[str, object]]
 
 
+_FAILED_REPLIES = frozenset(
+    {
+        "处理消息时出错，请稍后再试。",
+        "模型流响应中断，请刷新对话重试。",
+        "（安全重试异常）",
+    }
+)
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -96,6 +105,11 @@ def _coerce_float(value: object, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _ensure_successful_reply(reply: str, turn_index: int) -> None:
+    if reply.strip() in _FAILED_REPLIES:
+        raise RuntimeError(f"turn {turn_index} 返回运行时失败回复: {reply}")
 
 
 def _legacy_scenario(data: dict[str, object]) -> Scenario:
@@ -604,6 +618,7 @@ async def _run_probe(args: argparse.Namespace) -> None:
                     continue
                 text = str(turn.get("content") or "").strip()
                 reply = await _send_and_read(writer, reader, text, args.turn_timeout)
+                _ensure_successful_reply(reply, index)
                 session_key = _probe_session_key(paths.sessions_db, session_key)
                 records.append({"user": text, "assistant": reply})
                 print(f"turn {index} ok: {reply[:80]}")

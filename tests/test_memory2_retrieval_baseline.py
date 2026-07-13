@@ -13,10 +13,13 @@ Memory2 检索排序能力基线测试
 
 from __future__ import annotations
 
+import struct
 from typing import Any, cast
 
 import math
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from memory2.store import MemoryStore2
 
@@ -31,6 +34,34 @@ def _now() -> datetime:
 
 def _days_ago(n: int) -> str:
     return (_now() - timedelta(days=n)).isoformat()
+
+
+def test_vec_migration_failure_rolls_back_partial_index(tmp_path, monkeypatch):
+    store = MemoryStore2(tmp_path / "memory2.db", vec_dim=2)
+    if not store._vec_enabled:
+        store.close()
+        pytest.skip("sqlite-vec unavailable")
+
+    store.upsert_item("event", "已有索引", [1.0, 0.0])
+    store.upsert_item("event", "待迁移", [0.0, 1.0])
+    store._db.execute(
+        "DELETE FROM vec_items WHERE rowid = ("
+        "SELECT rowid FROM memory_items WHERE summary = ?)",
+        ("待迁移",),
+    )
+    store._db.commit()
+    store.close()
+
+    def fail(_embedding: list[float]) -> bytes:
+        raise struct.error("simulated vec migration failure")
+
+    monkeypatch.setattr("memory2.store._emb_to_blob", fail)
+    reopened = MemoryStore2(tmp_path / "memory2.db", vec_dim=2)
+    try:
+        assert reopened._vec_enabled is False
+        assert reopened._db.execute("SELECT COUNT(*) FROM vec_items").fetchone()[0] == 1
+    finally:
+        reopened.close()
 
 
 # ─── A. 现有能力验证 ───────────────────────────────────────────────────────────

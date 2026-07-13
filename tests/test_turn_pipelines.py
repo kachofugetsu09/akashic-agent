@@ -22,7 +22,9 @@ from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
+from bus.queue import MessageBus
 from bus.events_lifecycle import TurnCommitted
+from core.error_context import current_session_key
 from core.memory.engine import MemoryQueryResult
 from bootstrap.wiring import wire_turn_lifecycle
 
@@ -243,6 +245,55 @@ async def test_process_uses_busy_session_key_for_processing_state(tmp_path: Path
     )
 
 
+@pytest.mark.asyncio
+async def test_process_restores_session_context(tmp_path: Path):
+    loop = _make_loop(tmp_path)
+    loop._core_runner.process = AsyncMock(  # type: ignore[attr-defined]
+        return_value=OutboundMessage(
+            channel="telegram",
+            chat_id="123",
+            content="ok",
+        )
+    )
+    msg = InboundMessage(
+        channel="telegram",
+        sender="user",
+        chat_id="123",
+        content="天气",
+    )
+    token = current_session_key.set("outer-session")
+    try:
+        await loop._process(msg, dispatch_outbound=False)
+        assert current_session_key.get() == "outer-session"
+    finally:
+        current_session_key.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_process_restores_session_context_after_core_failure(tmp_path: Path):
+    loop = _make_loop(tmp_path)
+    state = MagicMock()
+    loop._processing_state = state  # type: ignore[attr-defined]
+    loop._core_runner.process = AsyncMock(  # type: ignore[attr-defined]
+        side_effect=RuntimeError("core failed")
+    )
+    msg = InboundMessage(
+        channel="telegram",
+        sender="user",
+        chat_id="123",
+        content="天气",
+    )
+    token = current_session_key.set("outer-session")
+    try:
+        with pytest.raises(RuntimeError, match="core failed"):
+            await loop._process(msg, dispatch_outbound=False)
+        assert current_session_key.get() == "outer-session"
+        state.enter.assert_called_once_with("telegram:123")
+        state.exit.assert_called_once_with("telegram:123")
+    finally:
+        current_session_key.reset(token)
+
+
 def _make_loop(
     tmp_path: Path,
     *,
@@ -252,7 +303,7 @@ def _make_loop(
     tools.register(_NoopTool())
     return AgentLoop(
         AgentLoopDeps(
-            bus=MagicMock(),
+            bus=MessageBus(),
             provider=cast(Any, _Provider()),
             light_provider=cast(Any, _Provider()),
             tools=tools,

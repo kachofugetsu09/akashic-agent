@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
+import stat
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,8 +12,9 @@ from typing import cast
 
 import pytest
 import agent.mcp.client as mcp_client_module
+import agent.tools.filesystem as filesystem_module
 
-from agent.mcp.client import McpClient, _infer_cwd
+from agent.mcp.client import McpClient, McpToolExecutionError, _infer_cwd
 from agent.tool_runtime import append_tool_result
 from agent.tools.base import ToolResult
 from agent.tools.filesystem import (
@@ -209,9 +212,16 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     writer = WriteFileTool(base)
     result = await writer.execute("b.txt", "hello")
     assert "已写入" in result
+    b_file = base / "b.txt"
+    b_file.chmod(0o751)
+    result = await writer.execute("b.txt", "\ufeffhello\r\n")
+    assert "已写入" in result
+    assert b_file.read_bytes() == "\ufeffhello\r\n".encode("utf-8")
+    assert stat.S_IMODE(b_file.stat().st_mode) == 0o751
 
     editor = EditFileTool(base)
     assert "未找到 old_text" in await editor.execute("b.txt", "x", "y")
+    assert "不是文件" in await editor.execute(".", "x", "y")
     result = await editor.execute("b.txt", "hello", "world")
     assert "已成功编辑" in result
     assert "替换 1 处" in result, "edit_file 应在结果中报告替换数量"
@@ -220,6 +230,8 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     assert "+++ b.txt (after)" in result
     assert "-hello" in result
     assert "+world" in result
+    assert b_file.read_bytes() == "\ufeffworld\r\n".encode("utf-8")
+    assert stat.S_IMODE(b_file.stat().st_mode) == 0o751
     assert text_file.read_text(encoding="utf-8") == "line1\nline2\nline3\n"
 
     dup = base / "dup.txt"
@@ -356,6 +368,110 @@ async def test_file_mutation_lock_serializes_same_file_and_allows_different_file
 
 
 @pytest.mark.asyncio
+async def test_file_mutation_lock_releases_after_failure_and_cancellation(
+    tmp_path: Path,
+):
+    _FILE_MUTATION_LOCKS.clear()
+    path = tmp_path / "shared.txt"
+
+    async def fail() -> None:
+        raise AssertionError("callback failed")
+
+    with pytest.raises(AssertionError, match="callback failed"):
+        await _run_with_file_mutation_lock(path, fail)
+    assert not _FILE_MUTATION_LOCKS
+
+    entered = asyncio.Event()
+
+    async def wait_forever() -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(_run_with_file_mutation_lock(path, wait_forever))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not _FILE_MUTATION_LOCKS
+
+
+@pytest.mark.asyncio
+async def test_file_mutation_lock_keeps_waiter_key_until_waiter_acquires(
+    tmp_path: Path,
+):
+    _FILE_MUTATION_LOCKS.clear()
+    path = tmp_path / "shared.txt"
+    first_started = asyncio.Event()
+    first_release = asyncio.Event()
+    second_started = asyncio.Event()
+    second_release = asyncio.Event()
+    third_started = asyncio.Event()
+
+    async def first() -> None:
+        first_started.set()
+        await first_release.wait()
+
+    async def second() -> None:
+        second_started.set()
+        await second_release.wait()
+
+    async def third() -> None:
+        third_started.set()
+
+    first_task = asyncio.create_task(_run_with_file_mutation_lock(path, first))
+    await first_started.wait()
+    second_task = asyncio.create_task(_run_with_file_mutation_lock(path, second))
+    await asyncio.sleep(0)
+    first_release.set()
+    third_task: asyncio.Task[None] | None = None
+    try:
+        await first_task
+        await second_started.wait()
+        third_task = asyncio.create_task(_run_with_file_mutation_lock(path, third))
+        await asyncio.sleep(0)
+        assert not third_started.is_set()
+    finally:
+        second_release.set()
+        await second_task
+        if third_task is not None:
+            await third_task
+    assert not _FILE_MUTATION_LOCKS
+
+
+@pytest.mark.asyncio
+async def test_filesystem_tools_propagate_internal_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    base = tmp_path / "base"
+    base.mkdir()
+    file_path = base / "file.txt"
+    file_path.write_text("content\n", encoding="utf-8")
+
+    def fail_scan(*args: object) -> None:
+        raise AssertionError("scan programming error")
+
+    monkeypatch.setattr(filesystem_module, "_scan_text_file", fail_scan)
+    with pytest.raises(AssertionError, match="scan programming error"):
+        await ReadFileTool(base).execute("file.txt")
+
+    def fail_atomic(*args: object, **kwargs: object) -> None:
+        raise AssertionError("write programming error")
+
+    monkeypatch.setattr(filesystem_module, "atomic_write_text", fail_atomic)
+    with pytest.raises(AssertionError, match="write programming error"):
+        await WriteFileTool(base).execute("new.txt", "content")
+    with pytest.raises(AssertionError, match="write programming error"):
+        await EditFileTool(base).execute("file.txt", "content", "updated")
+
+    def fail_iterdir(*args: object, **kwargs: object) -> None:
+        raise AssertionError("list programming error")
+
+    monkeypatch.setattr(Path, "iterdir", fail_iterdir)
+    with pytest.raises(AssertionError, match="list programming error"):
+        await ListDirTool(base).execute(".")
+
+
+@pytest.mark.asyncio
 async def test_ipc_server_channel_covers_connection_command_and_response(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -392,6 +508,8 @@ async def test_ipc_server_channel_covers_connection_command_and_response(
     reader = SimpleNamespace(
         readline=AsyncMock(
             side_effect=[
+                b'[]\n',
+                b'null\n',
                 b'{"content":"hello"}\n',
                 b'{"type":"command","command":"noop"}\n',
                 b'{"type":"command","command":"unknown"}\n',
@@ -488,6 +606,143 @@ async def test_ipc_server_uses_tcp_for_explicit_host_port_on_all_platforms(
 
 
 @pytest.mark.asyncio
+async def test_ipc_stop_closes_clients_and_unsubscribes(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    bus = MessageBus()
+    channel = IPCServerChannel(bus, "127.0.0.1:8765", None)
+    server = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
+    monkeypatch.setattr(
+        "infra.channels.ipc_server.asyncio.start_server",
+        AsyncMock(return_value=server),
+    )
+    await channel.start()
+
+    writer = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
+    channel._writers["active"] = cast(asyncio.StreamWriter, writer)
+    assert len(bus._subscribers["cli"]) == 1
+
+    await channel.stop()
+
+    writer.close.assert_called_once()
+    writer.wait_closed.assert_awaited_once()
+    assert channel._writers == {}
+    assert channel._server is None
+    assert "cli" not in bus._subscribers
+
+
+@pytest.mark.asyncio
+async def test_ipc_start_failure_does_not_leave_outbound_subscription(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    bus = MessageBus()
+    channel = IPCServerChannel(bus, "127.0.0.1:8765", None)
+    monkeypatch.setattr(
+        "infra.channels.ipc_server.asyncio.start_server",
+        AsyncMock(side_effect=OSError("port unavailable")),
+    )
+
+    with pytest.raises(OSError, match="port unavailable"):
+        await channel.start()
+
+    assert "cli" not in bus._subscribers
+
+
+@pytest.mark.asyncio
+async def test_ipc_unix_chmod_failure_closes_server_and_socket(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    bus = MessageBus()
+    socket_path = tmp_path / "agent.sock"
+    channel = IPCServerChannel(bus, str(socket_path), None)
+    server = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
+
+    async def start_unix_server(*_args, **_kwargs):
+        socket_path.write_text("bound socket", encoding="utf-8")
+        return server
+
+    monkeypatch.setattr(
+        "infra.channels.ipc_server.asyncio.start_unix_server",
+        start_unix_server,
+    )
+    monkeypatch.setattr(
+        "infra.channels.ipc_server.os.chmod",
+        MagicMock(side_effect=PermissionError("chmod denied")),
+    )
+
+    with pytest.raises(PermissionError, match="chmod denied"):
+        await channel.start()
+
+    server.close.assert_called_once()
+    server.wait_closed.assert_awaited_once()
+    assert channel._server is None
+    assert not socket_path.exists()
+    assert "cli" not in bus._subscribers
+
+
+@pytest.mark.asyncio
+async def test_ipc_stop_unsubscribes_before_server_wait_closed_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    bus = MessageBus()
+    channel = IPCServerChannel(bus, "127.0.0.1:8765", None)
+    server = SimpleNamespace(
+        close=MagicMock(),
+        wait_closed=AsyncMock(side_effect=OSError("close failed")),
+    )
+    monkeypatch.setattr(
+        "infra.channels.ipc_server.asyncio.start_server",
+        AsyncMock(return_value=server),
+    )
+    await channel.start()
+    writer = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
+    channel._writers["active"] = cast(asyncio.StreamWriter, writer)
+    assert "cli" in bus._subscribers
+
+    with pytest.raises(OSError, match="close failed"):
+        await channel.stop()
+
+    assert "cli" not in bus._subscribers
+    writer.close.assert_called_once()
+    writer.wait_closed.assert_awaited_once()
+    assert channel._writers == {}
+
+
+@pytest.mark.asyncio
+async def test_ipc_stop_waits_for_other_writers_after_one_wait_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    bus = MessageBus()
+    channel = IPCServerChannel(bus, "127.0.0.1:8765", None)
+    server = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
+    monkeypatch.setattr(
+        "infra.channels.ipc_server.asyncio.start_server",
+        AsyncMock(return_value=server),
+    )
+    await channel.start()
+    failed = SimpleNamespace(
+        close=MagicMock(),
+        wait_closed=AsyncMock(side_effect=OSError("writer close failed")),
+    )
+    healthy = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
+    channel._writers.update(
+        failed=cast(asyncio.StreamWriter, failed),
+        healthy=cast(asyncio.StreamWriter, healthy),
+    )
+
+    with pytest.raises(OSError, match="writer close failed"):
+        await channel.stop()
+
+    failed.close.assert_called_once()
+    healthy.close.assert_called_once()
+    failed.wait_closed.assert_awaited_once()
+    healthy.wait_closed.assert_awaited_once()
+    assert channel._writers == {}
+    assert "cli" not in bus._subscribers
+
+
+@pytest.mark.asyncio
 async def test_mcp_client_and_loop_factory_cover_core_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -498,11 +753,11 @@ async def test_mcp_client_and_loop_factory_cover_core_paths(
 
     proc = _Proc(
         [
-            b'{"jsonrpc":"2.0","id":1,"result":{}}\n',
+            b'{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25"}}\n',
             b'{"jsonrpc":"2.0","method":"note"}\n',
             b'{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"tool1","description":"desc","inputSchema":{"type":"object"}}]}}\n',
             b'not json\n',
-            b'{"jsonrpc":"2.0","id":3,"result":{"content":[{"text":"ok"}]}}\n',
+            b'{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"ok"}]}}\n',
         ],
         [b"warn\n", b""],
     )
@@ -510,7 +765,8 @@ async def test_mcp_client_and_loop_factory_cover_core_paths(
     client = McpClient("docs", ["python", str(script)], env={"X": "1"})
     infos = await client.connect()
     assert infos[0].name == "tool1"
-    assert proc.stdin.writes
+    initialize = json.loads(proc.stdin.writes[0])
+    assert initialize["params"]["protocolVersion"] == "2025-11-25"
     assert await client.call("tool1", {"q": "x"}) == "ok"
     await client.disconnect()
     assert proc.stdin.closed is True
@@ -522,6 +778,63 @@ async def test_mcp_client_and_loop_factory_cover_core_paths(
     client._process = proc
     with pytest.raises(ConnectionError):
         await client._recv(expected_id=1)
+
+
+@pytest.mark.asyncio
+async def test_mcp_client_rejects_unsupported_protocol_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = _Proc(
+        [b'{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2099-01-01"}}\n']
+    )
+    monkeypatch.setattr(
+        "agent.mcp.client.asyncio.create_subprocess_exec",
+        AsyncMock(return_value=proc),
+    )
+    client = McpClient("future", ["python", "server.py"])
+
+    with pytest.raises(RuntimeError, match="不支持的协议版本"):
+        await client.connect()
+
+    assert client.connected is False
+    assert client._protocol_version is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool", "invalid_field"),
+    [
+        ({"name": "tool"}, "inputSchema"),
+        ({"name": "tool", "inputSchema": {"type": "string"}}, "inputSchema"),
+        (
+            {"name": "tool", "inputSchema": {"type": "object"}, "description": 1},
+            "description",
+        ),
+    ],
+)
+async def test_mcp_client_rejects_invalid_tool_schema(
+    monkeypatch: pytest.MonkeyPatch,
+    tool: dict[str, object],
+    invalid_field: str,
+) -> None:
+    proc = _Proc(
+        [
+            b'{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25"}}\n',
+            (
+                '{"jsonrpc":"2.0","id":2,"result":{"tools":['
+                + json.dumps(tool)
+                + "]}}\n"
+            ).encode(),
+        ]
+    )
+    monkeypatch.setattr(
+        "agent.mcp.client.asyncio.create_subprocess_exec",
+        AsyncMock(return_value=proc),
+    )
+    client = McpClient("broken", ["python", "server.py"])
+
+    with pytest.raises(RuntimeError, match=invalid_field):
+        await client.connect()
 
 
 @pytest.mark.asyncio
@@ -600,7 +913,7 @@ async def test_mcp_client_rejects_json_rpc_error_and_closes(
         [b'{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"bad init"}}\n']
         if stage == "initialize"
         else [
-            b'{"jsonrpc":"2.0","id":1,"result":{}}\n',
+            b'{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25"}}\n',
             b'{"jsonrpc":"2.0","id":2,"error":{"code":-1,"message":"bad list"}}\n',
         ]
     )
@@ -625,8 +938,8 @@ async def test_mcp_client_serializes_calls_on_same_server():
         def __init__(self) -> None:
             super().__init__(
                 [
-                    b'{"jsonrpc":"2.0","id":1,"result":{"content":[{"text":"a"}]}}\n',
-                    b'{"jsonrpc":"2.0","id":2,"result":{"content":[{"text":"b"}]}}\n',
+                    b'{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"a"}]}}\n',
+                    b'{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"b"}]}}\n',
                 ]
             )
             self.reading = False
@@ -652,6 +965,193 @@ async def test_mcp_client_serializes_calls_on_same_server():
     )
 
     assert results == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_raises_for_json_rpc_error_object() -> None:
+    error = {"code": -1, "message": "bad call"}
+    response = json.dumps({"jsonrpc": "2.0", "id": 1, "error": error}).encode()
+    proc = _Proc([response + b"\n"])
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+
+    with pytest.raises(McpToolExecutionError) as exc_info:
+        await client.call("search", {})
+
+    message = str(exc_info.value)
+    assert "JSON-RPC error" in message
+    assert "docs" in message
+    assert "tools/call:search" in message
+    assert "bad call" in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", ["server unavailable", ["invalid", "error"]])
+async def test_mcp_call_rejects_non_object_error(error: object) -> None:
+    import json
+
+    response = json.dumps({"jsonrpc": "2.0", "id": 1, "error": error}).encode()
+    proc = _Proc([response + b"\n"])
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await client.call("search", {})
+
+    message = str(exc_info.value)
+    assert "docs" in message
+    assert "tools/call:search" in message
+    assert type(error).__name__ in message
+    assert repr(error) in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result", "invalid_path"),
+    [
+        ("plain text", "result"),
+        ({}, "content"),
+        ({"content": "plain text"}, "content"),
+        ({"content": ["plain text"]}, "content[0]"),
+        ({"content": [{}]}, "content[0].type"),
+        ({"content": [{"type": "unknown"}]}, "content[0].type"),
+        ({"content": [{"type": "audio"}]}, "content[0].type"),
+        ({"content": [{"type": "resource_link"}]}, "content[0].type"),
+        ({"content": [{"type": "text"}]}, "content[0].text"),
+        ({"content": [{"type": "image", "mimeType": "image/png"}]}, "content[0].data"),
+        ({"content": [{"type": "image", "data": "AAAA"}]}, "content[0].mimeType"),
+        ({"content": [{"type": "resource"}]}, "content[0].resource"),
+        (
+            {"content": [{"type": "resource", "resource": {"text": "body"}}]},
+            "content[0].resource.uri",
+        ),
+        (
+            {"content": [{"type": "resource", "resource": {"uri": "r"}}]},
+            "content[0].resource（需要 text 或 blob）",
+        ),
+        ({"content": [{"type": "text", "text": 123}]}, "content[0].text"),
+        ({"content": [], "structuredContent": {}}, "structuredContent"),
+        ({"content": [], "isError": "true"}, "isError"),
+    ],
+)
+async def test_mcp_call_rejects_invalid_result_structure(
+    result: object,
+    invalid_path: str,
+) -> None:
+    response = json.dumps({"jsonrpc": "2.0", "id": 1, "result": result}).encode()
+    proc = _Proc([response + b"\n"])
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await client.call("search", {})
+
+    message = str(exc_info.value)
+    assert "docs" in message
+    assert "tools/call:search" in message
+    assert invalid_path in message
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_renders_valid_content_blocks() -> None:
+    response = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [
+                    {"type": "text", "text": "ok"},
+                    {"type": "image", "data": "AAAA", "mimeType": "image/png"},
+                    {
+                        "type": "resource",
+                        "resource": {
+                            "uri": "resource://report",
+                            "mimeType": "text/plain",
+                            "text": "report",
+                        },
+                    },
+                ],
+                "isError": False,
+            },
+        }
+    ).encode()
+    proc = _Proc([response + b"\n"])
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+
+    result = await client.call("search", {})
+
+    assert result.startswith("ok\n")
+    assert '"type": "image"' in result
+    assert '"uri": "resource://report"' in result
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_accepts_structured_content_for_negotiated_protocol() -> None:
+    response = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [{"type": "text", "text": "ok"}],
+                "structuredContent": {"result": "ok"},
+                "isError": False,
+            },
+        }
+    ).encode()
+    proc = _Proc([response + b"\n"])
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+    client._protocol_version = "2025-11-25"
+
+    assert await client.call("search", {}) == "ok"
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_rejects_non_object_structured_content() -> None:
+    response = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [],
+                "structuredContent": [],
+            },
+        }
+    ).encode()
+    proc = _Proc([response + b"\n"])
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+    client._protocol_version = "2025-11-25"
+
+    with pytest.raises(RuntimeError, match="structuredContent（需要 object）"):
+        await client.call("search", {})
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_raises_for_remote_tool_error() -> None:
+    response = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [{"type": "text", "text": "服务端失败：限流"}],
+                "isError": True,
+            },
+        },
+        ensure_ascii=False,
+    ).encode()
+    proc = _Proc([response + b"\n"])
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+
+    with pytest.raises(McpToolExecutionError) as exc_info:
+        await client.call("search", {})
+
+    message = str(exc_info.value)
+    assert "docs" in message
+    assert "tools/call:search" in message
+    assert "服务端失败：限流" in message
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import inspect
 from pathlib import Path, PureWindowsPath
 import importlib.util
 import logging
@@ -24,6 +25,7 @@ from pydantic import BaseModel
 from agent.plugins.manifest import load_package_manifest, load_plugin_manifest
 from agent.plugins.packages import enabled_plugin_packages
 from agent.plugins.source_resolver import resolve_plugin_sources
+from bootstrap.cleanup import run_cleanup_steps
 
 from agent.memory import MemoryStore
 from proactive_v2.memory_optimizer import MemoryOptimizerBusy
@@ -408,17 +410,19 @@ class ProactiveDashboardReader:
         return {key: row[key] for key in row.keys()}
 
     @staticmethod
-    def _decode_json_list(raw: Any) -> list[str]:
-        text = str(raw or "").strip()
+    def _decode_json_list(raw: object) -> list[str]:
+        text = ProactiveDashboardReader._json_text(raw, "列表")
         if not text:
             return []
         try:
             value = json.loads(text)
-        except Exception:
-            return []
+        except json.JSONDecodeError as exc:
+            raise ValueError("proactive dashboard JSON 列表损坏") from exc
         if not isinstance(value, list):
-            return []
-        return [str(item) for item in value]
+            raise ValueError("proactive dashboard JSON 列表类型错误")
+        if not all(isinstance(item, str) for item in value):
+            raise ValueError("proactive dashboard JSON 列表元素类型错误")
+        return value
 
     def _row_to_tick_log(self, row: sqlite3.Row) -> dict[str, Any]:
         payload = self._row_to_dict(row)
@@ -434,17 +438,19 @@ class ProactiveDashboardReader:
         return payload
 
     @staticmethod
-    def _decode_json_object_list(raw: Any) -> list[dict[str, Any]]:
-        text = str(raw or "").strip()
+    def _decode_json_object_list(raw: object) -> list[dict[str, Any]]:
+        text = ProactiveDashboardReader._json_text(raw, "对象列表")
         if not text:
             return []
         try:
             value = json.loads(text)
-        except Exception:
-            return []
+        except json.JSONDecodeError as exc:
+            raise ValueError("proactive dashboard JSON 对象列表损坏") from exc
         if not isinstance(value, list):
-            return []
-        return [item for item in value if isinstance(item, dict)]
+            raise ValueError("proactive dashboard JSON 对象列表类型错误")
+        if not all(isinstance(item, dict) for item in value):
+            raise ValueError("proactive dashboard JSON 对象列表元素类型错误")
+        return value
 
     def _row_to_tick_step(self, row: sqlite3.Row) -> dict[str, Any]:
         payload = self._row_to_dict(row)
@@ -463,18 +469,28 @@ class ProactiveDashboardReader:
         return payload
 
     @staticmethod
-    def _decode_json_object(raw: Any) -> dict[str, Any]:
-        text = str(raw or "").strip()
+    def _decode_json_object(raw: object) -> dict[str, Any]:
+        text = ProactiveDashboardReader._json_text(raw, "对象")
         if not text:
             return {}
         try:
             value = json.loads(text)
-        except Exception:
-            return {}
-        return value if isinstance(value, dict) else {}
+        except json.JSONDecodeError as exc:
+            raise ValueError("proactive dashboard JSON 对象损坏") from exc
+        if not isinstance(value, dict):
+            raise ValueError("proactive dashboard JSON 对象类型错误")
+        return value
+
+    @staticmethod
+    def _json_text(raw: object, label: str) -> str:
+        if raw is None:
+            return ""
+        if not isinstance(raw, str):
+            raise ValueError(f"proactive dashboard JSON {label}存储类型错误")
+        return raw.strip()
 
 
-_pending_plugins: list[tuple[Path, Path]] = []
+_pending_plugins: set[tuple[Path, Path]] = set()
 _pending_plugins_lock = threading.Lock()
 
 
@@ -505,7 +521,7 @@ def _build_plugin_panels_js(project_root: Path, plugin_dir: Path) -> None:
             esbuild_cmd = _esbuild_command(project_root)
         if esbuild_cmd is None:
             with _pending_plugins_lock:
-                _pending_plugins.append((project_root, plugin_dir))
+                _pending_plugins.add((project_root, plugin_dir))
             return
         _run_esbuild(esbuild_cmd, ts_path, js_path, f"{plugin_dir.name}/{ts_path.stem}")
 
@@ -563,11 +579,24 @@ def _resolve_plugin_dir(
     return plugin_dir
 
 
+def _validate_panel_name(panel_name: str, detail: str) -> None:
+    """校验插件面板文件名，阻止跨平台路径穿越。"""
+    if not panel_name.startswith("dashboard_panel"):
+        raise HTTPException(status_code=404, detail=detail)
+    if (
+        any(separator in panel_name for separator in ("/", "\\"))
+        or "\x00" in panel_name
+    ):
+        raise HTTPException(status_code=400, detail="invalid plugin panel name")
+
+
 async def _compile_pending_plugins_async() -> None:
     with _pending_plugins_lock:
         if not _pending_plugins:
             return
-        pending = _pending_plugins.copy()
+        pending = tuple(
+            sorted(_pending_plugins, key=lambda item: (str(item[0]), str(item[1])))
+        )
         _pending_plugins.clear()
     first_root = pending[0][0]
 
@@ -668,10 +697,13 @@ def _is_dashboard_closeable(value: object) -> bool:
     return callable(getattr(value, "close", None))
 
 
-def _close_dashboard_value(value: object) -> None:
+async def _close_dashboard_value(value: object) -> None:
+    """关闭 dashboard 资源，并等待异步 close 完成。"""
     close = getattr(value, "close", None)
     if callable(close):
-        _ = close()
+        result = close()
+        if inspect.isawaitable(result):
+            await result
 
 
 def _preview_text(value: Any, limit: int) -> str:
@@ -705,22 +737,35 @@ def create_dashboard_app(
         try:
             yield
         finally:
-            _ = compile_task.cancel()
-            try:
-                await compile_task
-            except asyncio.CancelledError:
-                pass
-            store.close()
-            _close_dashboard_value(memory_admin)
-            for closeable in reversed(plugin_closeables):
-                _close_dashboard_value(closeable)
+            async def _cancel_compile_task() -> None:
+                cancelled = compile_task.cancel()
+                if not cancelled:
+                    await compile_task
+                    return
+                try:
+                    await compile_task
+                except asyncio.CancelledError:
+                    return
+
+            await run_cleanup_steps(
+                ("plugin_panel_compile.cancel", _cancel_compile_task),
+                ("dashboard.session_store.close", lambda: _close_dashboard_value(store)),
+                ("dashboard.memory_admin.close", lambda: _close_dashboard_value(memory_admin)),
+                *[
+                    (
+                        f"dashboard.plugin_closeable[{index}].close",
+                        lambda value=closeable: _close_dashboard_value(value),
+                    )
+                    for index, closeable in enumerate(reversed(plugin_closeables))
+                ],
+            )
 
     app = FastAPI(title="Akashic Dashboard API", lifespan=lifespan)
     app.state.memory_admin = memory_admin
     app.state.memory_store = memory_store or MemoryStore(workspace)
-    # Vite build output is gitignored, so a fresh clone (or CI) may lack it. Keep
-    # the directory present and mount without a dir check so app creation never
-    # depends on the build having run; dashboard_index() reports if it's missing.
+    # Vite 构建产物被 gitignore，新 clone 或 CI 环境可能没有该目录。
+    # 预先创建目录并在挂载时关闭目录检查，避免 app 创建依赖构建是否执行；
+    # dashboard_index() 会在入口文件缺失时报告错误。
     static_dir.mkdir(parents=True, exist_ok=True)
     app.mount(
         "/assets",
@@ -729,7 +774,7 @@ def create_dashboard_app(
     )
     plugin_dirs = _dashboard_plugin_dirs(project_root)
 
-    # Compile TypeScript plugin panels and mount plugin routes
+    # 编译 TypeScript 插件面板并挂载插件路由
     for _plugin_id, _plugin_dir in sorted(plugin_dirs.items()):
         if plugin_manager is None and not _plugin_dashboard_enabled(app, _plugin_dir):
             continue
@@ -741,8 +786,8 @@ def create_dashboard_app(
                 _load_plugin_dashboard(app, _plugin_dir, workspace)
             )
 
-    # Vite emits index.html with content-hashed asset URLs under /assets, so it
-    # is served verbatim — no manual cache-busting needed.
+    # Vite 会在 /assets 下生成带内容哈希的资源 URL，因此直接原样提供 index.html；
+    # 不需要手动处理缓存失效。
     @app.get("/")
     def dashboard_index() -> Response:
         index_file = static_dir / "index.html"
@@ -776,8 +821,7 @@ def create_dashboard_app(
 
     @app.get("/plugins/{plugin_id}/{panel_name}.js")
     def get_plugin_panel_js(plugin_id: str, panel_name: str) -> FileResponse:
-        if not panel_name.startswith("dashboard_panel"):
-            raise HTTPException(status_code=404, detail="plugin panel not found")
+        _validate_panel_name(panel_name, "plugin panel not found")
         plugin_dir = _resolve_plugin_dir(
             _dashboard_plugin_dirs(project_root),
             plugin_id,
@@ -795,8 +839,7 @@ def create_dashboard_app(
 
     @app.get("/plugins/{plugin_id}/{panel_name}.css")
     def get_plugin_panel_css(plugin_id: str, panel_name: str) -> FileResponse:
-        if not panel_name.startswith("dashboard_panel"):
-            raise HTTPException(status_code=404, detail="plugin panel css not found")
+        _validate_panel_name(panel_name, "plugin panel css not found")
         plugin_dir = _resolve_plugin_dir(
             _dashboard_plugin_dirs(project_root),
             plugin_id,

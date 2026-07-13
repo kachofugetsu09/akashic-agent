@@ -337,6 +337,29 @@ def test_restricted_shell_blocks_windows_paths(
     assert inside_err is None
 
 
+def test_shell_policy_checks_use_command_basename(tmp_path: Path):
+    network_err = _validate_command(
+        "/usr/bin/curl https://example.com",
+        allow_network=False,
+        restricted_dir=None,
+    )
+    banned_err = _validate_command(
+        "/usr/bin/nc localhost 1",
+        allow_network=True,
+        restricted_dir=None,
+    )
+    runner_err = _validate_command(
+        "/usr/bin/python -c 'print(1)'",
+        allow_network=True,
+        restricted_dir=tmp_path,
+        cwd=tmp_path,
+    )
+
+    assert network_err == "当前 shell 配置禁止网络访问"
+    assert banned_err == "命令 'nc' 不被允许（安全限制）"
+    assert "二级 shell" in (runner_err or "")
+
+
 @pytest.mark.asyncio
 async def test_shell_tool_cancel_kills_process_group(monkeypatch):
     proc = _FakeProc(stdout="", stderr="")

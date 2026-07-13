@@ -37,7 +37,9 @@ def _session():
     return SimpleNamespace(
         key="s:1",
         messages=[{"role": "user", "content": str(i)} for i in range(6)],
-        get_history=lambda max_messages: [{"role": "user", "content": str(i)} for i in range(6)],
+        get_history=lambda max_messages=500, *, start_index=None: [
+            {"role": "user", "content": str(i)} for i in range(6)
+        ],
         last_consolidated=3,
     )
 
@@ -57,14 +59,25 @@ def _make_reasoner(*, discovery: ToolDiscoveryState, tool_search_enabled: bool):
     return DefaultReasoner(
         llm=cast(Any, LLMServices(provider=SimpleNamespace(chat=AsyncMock()), light_provider=SimpleNamespace())),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=256),
-        tools=cast(Any, SimpleNamespace(get_always_on_names=lambda: {"always"}, get_schemas=lambda names=None: [], get_tool=lambda name: None)),
+        tools=cast(Any, SimpleNamespace(
+            get_always_on_names=lambda: {"always"},
+            get_deferred_names=lambda visible=None: {"builtin": [], "mcp": {}},
+            get_schemas=lambda names=None: [],
+            get_tool=lambda name: None,
+        )),
         discovery=discovery,
         tool_search_enabled=tool_search_enabled,
         memory_window=10,
         context=cast(Any, SimpleNamespace(
             render=_render,
         )),
-        session_manager=cast(Any, SimpleNamespace(save_async=AsyncMock())),
+        session_manager=cast(
+            Any,
+            SimpleNamespace(
+                save_async=AsyncMock(),
+                trim_history_async=AsyncMock(),
+            ),
+        ),
     )
 
 
@@ -125,14 +138,25 @@ def test_reasoner_run_turn_context_length_trims_dynamic_sections_before_history(
     reasoner = DefaultReasoner(
         llm=cast(Any, LLMServices(provider=SimpleNamespace(chat=AsyncMock()), light_provider=SimpleNamespace())),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=256),
-        tools=cast(Any, SimpleNamespace(get_always_on_names=lambda: {"always"}, get_schemas=lambda names=None: [], get_tool=lambda name: None)),
+        tools=cast(Any, SimpleNamespace(
+            get_always_on_names=lambda: {"always"},
+            get_deferred_names=lambda visible=None: {"builtin": [], "mcp": {}},
+            get_schemas=lambda names=None: [],
+            get_tool=lambda name: None,
+        )),
         discovery=discovery,
         tool_search_enabled=False,
         memory_window=10,
         context=cast(Any, SimpleNamespace(
             render=_render,
         )),
-        session_manager=cast(Any, SimpleNamespace(save_async=AsyncMock())),
+        session_manager=cast(
+            Any,
+            SimpleNamespace(
+                save_async=AsyncMock(),
+                trim_history_async=AsyncMock(),
+            ),
+        ),
     )
     reasoner.run = AsyncMock(
         side_effect=[

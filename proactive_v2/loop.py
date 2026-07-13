@@ -81,6 +81,7 @@ class ProactiveLoop:
         proactive_runtime_factories: list[object] | None = None,
         proactive_sources: list[RegisteredProactiveSource] | None = None,
         runtime_snapshot_store: RuntimeSnapshotStore | None = None,
+        state_store_owned: bool = False,
     ) -> None:
         self._sessions = session_manager
         self._provider = provider
@@ -88,6 +89,8 @@ class ProactiveLoop:
         self._cfg = config
         self._model = config.model or model
         self._max_tokens = max_tokens
+        self._state_store_owned = state_store is None or state_store_owned
+        self._state_closed = False
         self._state = self._build_state_store(state_store, state_path)
         self._memory = memory_store
         self._presence = presence
@@ -386,10 +389,21 @@ class ProactiveLoop:
                 self._kernel_started = True
             await self._run_loop()
         finally:
+            stop_error: BaseException | None = None
             try:
                 await self._stop_active_kernel()
+            except BaseException as exc:
+                stop_error = exc
+            try:
+                self.close()
+            except BaseException as close_error:
+                if stop_error is None:
+                    raise
+                raise stop_error from close_error
             finally:
                 self._stopped.set()
+            if stop_error is not None:
+                raise stop_error
 
     async def _run_loop(self) -> None:
         last_base_score: float | None = None
@@ -432,10 +446,19 @@ class ProactiveLoop:
         self._running = False
         self._wake.set()
 
+    def close(self) -> None:
+        """关闭由主动循环负责的 SQLite 状态存储。"""
+
+        # 1. 仅关闭明确归主动循环所有的资源，外部注入的 store 由调用方负责。
+        if not self._state_store_owned or self._state_closed:
+            return
+        self._state.close()
+        self._state_closed = True
+
     async def wait_stopped(self) -> None:
         _ = await self._stopped.wait()
 
-    # ── internal ──────────────────────────────────────────────────
+    # ── 内部方法 ──────────────────────────────────────────────────
 
     async def _tick(self) -> float | None:
         """执行一次 proactive v2 tick。"""
@@ -476,53 +499,55 @@ class ProactiveLoop:
         self._wake.set()
 
     async def _tick_bound(self) -> float | None:
-        # 给本 tick 打上 session 归属，供 observe 全局错误采集关联；
-        # 纯埋点，依赖未就绪时静默跳过，绝不影响 tick 主流程。
-        _ = current_session_key.set(self._target_session_key())
-        # 主动回复全链路入口：Gate → Fetch → Judge → Resolve → Deliver。
-        started = time.perf_counter()
         session_key = self._target_session_key()
-        with diagnostic_context(session=session_key, flow="proactive", phase="tick"):
-            logger.info(
-                diagnostic_line(
-                    "ProactiveLoop._tick",
-                    event="start",
-                    flow="proactive",
-                    phase="tick",
-                    session=session_key,
-                    action="run",
-                )
-            )
-            try:
-                score = await self._proactive_kernel.run_tick(session_key)
-            except Exception as exc:
-                logger.exception(
+        session_token = current_session_key.set(session_key)
+        try:
+            # 1. 执行 Gate → Fetch → Judge → Resolve → Deliver 全链路。
+            started = time.perf_counter()
+            with diagnostic_context(session=session_key, flow="proactive", phase="tick"):
+                logger.info(
                     diagnostic_line(
                         "ProactiveLoop._tick",
-                        event="phase_error",
+                        event="start",
                         flow="proactive",
                         phase="tick",
                         session=session_key,
-                        action="fail",
-                        reason="proactive_tick_error",
-                        duration_ms=int((time.perf_counter() - started) * 1000),
-                        error_type=type(exc).__name__,
-                        note=str(exc)[:160],
+                        action="run",
                     )
                 )
-                raise
-            logger.info(
-                diagnostic_line(
-                    "ProactiveLoop._tick",
-                    event="end",
-                    flow="proactive",
-                    phase="tick",
-                    session=session_key,
-                    action="done",
-                    duration_ms=int((time.perf_counter() - started) * 1000),
+                try:
+                    score = await self._proactive_kernel.run_tick(session_key)
+                except Exception as exc:
+                    logger.exception(
+                        diagnostic_line(
+                            "ProactiveLoop._tick",
+                            event="phase_error",
+                            flow="proactive",
+                            phase="tick",
+                            session=session_key,
+                            action="fail",
+                            reason="proactive_tick_error",
+                            duration_ms=int((time.perf_counter() - started) * 1000),
+                            error_type=type(exc).__name__,
+                            note=str(exc)[:160],
+                        )
+                    )
+                    raise
+                logger.info(
+                    diagnostic_line(
+                        "ProactiveLoop._tick",
+                        event="end",
+                        flow="proactive",
+                        phase="tick",
+                        session=session_key,
+                        action="done",
+                        duration_ms=int((time.perf_counter() - started) * 1000),
+                    )
                 )
-            )
-            return score
+                return score
+        finally:
+            # 2. 恢复父 task 上下文，避免跨 tick 残留会话归属。
+            current_session_key.reset(session_token)
 
     async def _start_current_snapshot(self) -> None:
         assert self._runtime_snapshot_store is not None

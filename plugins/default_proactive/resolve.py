@@ -4,14 +4,24 @@ import json
 import logging
 from dataclasses import dataclass
 from hashlib import sha1
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Protocol
 
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from core.common.diagnostic_log import diagnostic_line
 from proactive_v2.config import ProactiveConfig
+from proactive_v2.sensor import RecentProactiveMessage
 from plugins.default_proactive.context import AgentTickContext
 
 logger = logging.getLogger(__name__)
+
+
+class MessageDeduper(Protocol):
+    async def is_duplicate(
+        self,
+        new_message: str,
+        recent_proactive: list[RecentProactiveMessage],
+        new_state_summary_tag: str = "none",
+    ) -> tuple[bool, str]: ...
 
 @dataclass
 class ResolveResult:
@@ -90,7 +100,7 @@ async def ack_post_guard_fail(
     *,
     alert_ack_fn: Any = None,
 ) -> None:
-    if ack_fn is None:
+    if ack_fn is None and alert_ack_fn is None:
         return
     fetched_alert_keys = {
         f"{e['ack_server']}:{e.get('event_id') or e.get('id', '')}"
@@ -101,19 +111,22 @@ async def ack_post_guard_fail(
     async def _ack_alert(key: str) -> None:
         if alert_ack_fn is not None:
             await alert_ack_fn(key)
-        else:
+        elif ack_fn is not None:
             await ack_fn(key, "interesting")
 
     for key in cited_set - fetched_alert_keys:
-        await ack_fn(key, "interesting")
+        if ack_fn is not None:
+            await ack_fn(key, "interesting")
     for key in cited_set & fetched_alert_keys:
         await _ack_alert(key)
     for key in fetched_alert_keys - cited_set:
         await _ack_alert(key)
     for key in (ctx.interesting_item_ids - cited_set) - fetched_alert_keys:
-        await ack_fn(key, "interesting")
+        if ack_fn is not None:
+            await ack_fn(key, "interesting")
     for key in ctx.discarded_item_ids:
-        await ack_fn(key, "not_interesting")
+        if ack_fn is not None:
+            await ack_fn(key, "not_interesting")
 
 
 async def ack_on_success(
@@ -122,7 +135,7 @@ async def ack_on_success(
     *,
     alert_ack_fn: Any = None,
 ) -> None:
-    if ack_fn is None:
+    if ack_fn is None and alert_ack_fn is None:
         return
     fetched_alert_keys = {
         f"{e['ack_server']}:{e.get('event_id') or e.get('id', '')}"
@@ -134,16 +147,19 @@ async def ack_on_success(
     }
     cited_set = set(ctx.cited_item_ids)
     for key in cited_set & fetched_content_keys:
-        await ack_fn(key, "interesting")
+        if ack_fn is not None:
+            await ack_fn(key, "interesting")
     for key in cited_set & fetched_alert_keys:
         if alert_ack_fn is not None:
             await alert_ack_fn(key)
         else:
             await ack_fn(key, "interesting")
     for key in (ctx.interesting_item_ids - cited_set) - fetched_alert_keys:
-        await ack_fn(key, "interesting")
+        if ack_fn is not None:
+            await ack_fn(key, "interesting")
     for key in ctx.discarded_item_ids:
-        await ack_fn(key, "not_interesting")
+        if ack_fn is not None:
+            await ack_fn(key, "not_interesting")
 
 
 async def _mark_delivery(
@@ -173,8 +189,8 @@ class ProactiveResolver:
         cfg: ProactiveConfig,
         session_key: str,
         state_store: Any,
-        deduper: Any,
-        recent_proactive_fn: Callable[[], list] | None,
+        deduper: MessageDeduper,
+        recent_proactive_fn: Callable[[], list[RecentProactiveMessage]] | None,
         ack_fn: Any,
         alert_ack_fn: Any,
     ) -> None:
@@ -210,7 +226,7 @@ class ProactiveResolver:
                 new_state_summary_tag="none",
             )
             if is_dup:
-                return self._build_message_dedupe_result(ctx, str(reason or ""))
+                return self._build_message_dedupe_result(ctx, reason)
 
         return self._build_send_result(ctx, delivery_key)
 
@@ -319,7 +335,7 @@ class ProactiveResolver:
                 action="skip",
                 reason="already_sent_similar",
                 counts=self._counts(ctx),
-                note=str(reason or "message_dedupe")[:160],
+                note=reason[:160],
             )
         )
         logger.info("[proactive_v2] resolve: message_dedupe hit: %s", reason)

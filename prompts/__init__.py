@@ -1,1 +1,1 @@
-"""Central prompt builders for agent, background, and proactive flows."""
+"""集中提供 Agent、后台任务和主动流程的提示词构造器。"""

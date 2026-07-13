@@ -18,6 +18,7 @@ from core.memory.markdown import (
     _select_consolidation_window,
 )
 from memory2.post_response_worker import PostResponseMemoryWorker
+from memory2.store import MemoryHit
 
 
 class _Resp:
@@ -56,15 +57,16 @@ class _ConsolidationHarness:
 async def test_consolidation_helpers(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    assert _format_pending_items("x") == ""
+    with pytest.raises(ValueError, match="pending_items must be an array"):
+        _format_pending_items("x")
     assert _format_pending_items(
         [
             {"tag": "preference", "content": "喜欢 A"},
             {"tag": "preference", "content": "喜欢 A"},
+            {"tag": "agent_context", "content": "服务运行在 9000 端口"},
             {"tag": "bad", "content": "忽略"},
-            "x",
         ]
-    ) == "- [preference] 喜欢 A"
+    ) == "- [preference] 喜欢 A\n- [agent_context] 服务运行在 9000 端口"
     assert _parse_consolidation_payload('{"x":1}') == {"x": 1}
 
     session = SimpleNamespace(
@@ -199,15 +201,25 @@ async def test_post_response_worker_invalidation_paths():
     worker = PostResponseMemoryWorker(cast(Any, memorizer), cast(Any, retriever), cast(Any, provider), "lm")
 
     assert worker._consume_budget(10, 3) == (True, 7)
-    assert worker._collect_explicit_memorized(
+    assert worker._collect_protected_memory_ids(
         [{"calls": [{"name": "memorize", "arguments": {"summary": "规则A"}, "result": "已记住（new:AbCDef12_34567890）：规则A"}]}]
-    ) == (["规则A"], {"AbCDef12_34567890"})
+    ) == {"AbCDef12_34567890"}
 
     topics, remain = await worker._extract_invalidation_topics("你之前这个流程错了", 700)
     assert topics == ["topic"]
 
     provider.chat = AsyncMock(return_value=_Resp('["x1"]'))
-    ids, remain = await worker._check_invalidate("topic", [{"id": "x1", "summary": "旧规则"}], remain)
+    candidates: list[MemoryHit] = [
+        {
+            "id": "x1",
+            "memory_type": "procedure",
+            "summary": "旧规则",
+            "source_ref": "turn:old",
+            "happened_at": "2025-01-01T00:00:00+00:00",
+            "score": 0.9,
+        }
+    ]
+    ids, remain = await worker._check_invalidate("topic", candidates, remain)
     assert ids == ["x1"]
 
 

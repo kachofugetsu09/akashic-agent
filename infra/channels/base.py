@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import logging
 import os
 from collections import deque
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 from uuid import uuid4
 
 from session.manager import SessionManager
 
 _DEFAULT_UPLOAD_DIR = Path.home() / ".akashic" / "workspace" / "uploads"
+_MISSING_METADATA = object()
+logger = logging.getLogger(__name__)
 
 
 class AttachmentStore:
@@ -18,22 +21,29 @@ class AttachmentStore:
         self.root = root or _DEFAULT_UPLOAD_DIR
 
     def _resolve_root(self) -> Path:
+        reason = "目录不可写"
         try:
             self.root.mkdir(parents=True, exist_ok=True)
             if os.access(self.root, os.W_OK):
                 return self.root
-        except Exception:
-            pass
+        except OSError as error:
+            reason = str(error)
         fallback = Path("/tmp/akashic_uploads")
         fallback.mkdir(parents=True, exist_ok=True)
         if os.access(fallback, os.W_OK):
+            logger.warning(
+                "附件目录不可用，使用降级目录 path=%s fallback=%s reason=%s",
+                self.root,
+                fallback,
+                reason,
+            )
             return fallback
         try:
             test = fallback / ".write_test"
             test.write_text("", encoding="utf-8")
             test.unlink(missing_ok=True)
             return fallback
-        except Exception:
+        except OSError:
             return self.root
 
     def create_path(self, prefix: str, suffix: str) -> Path:
@@ -45,10 +55,16 @@ class AttachmentStore:
         try:
             path.write_bytes(data)
             return path
-        except Exception:
+        except OSError as error:
             fallback = Path("/tmp/akashic_uploads")
             fallback.mkdir(parents=True, exist_ok=True)
             alt = fallback / f"{prefix}{uuid4().hex}{suffix}"
+            logger.warning(
+                "附件写入失败，使用降级目录 path=%s fallback=%s reason=%s",
+                path,
+                fallback,
+                error,
+            )
             alt.write_bytes(data)
             return alt
 
@@ -91,12 +107,21 @@ class SessionIdentityIndex:
         normalized = self._normalize(identity)
         if not normalized:
             return
-        self.mapping[normalized] = chat_id
         session = self._session_manager.get_or_create(f"{self._channel}:{chat_id}")
         if session.metadata.get(self._metadata_key) == normalized:
+            self.mapping[normalized] = chat_id
             return
+        previous = session.metadata.get(self._metadata_key, _MISSING_METADATA)
         session.metadata[self._metadata_key] = normalized
-        await self._session_manager.save_async(session)
+        try:
+            await self._session_manager.save_async(session)
+        except BaseException:
+            if previous is _MISSING_METADATA:
+                session.metadata.pop(self._metadata_key, None)
+            else:
+                session.metadata[self._metadata_key] = previous
+            raise
+        self.mapping[normalized] = chat_id
 
     def _normalize(self, value: str) -> str:
         return self._normalizer((value or "").strip())

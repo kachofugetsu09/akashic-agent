@@ -12,7 +12,7 @@ import sqlite3
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -22,6 +22,7 @@ from agent.plugins.manager import PluginManager
 from agent.provider import LLMResponse, ToolCall
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
+from agent.tools.web_fetch import WebFetchTool
 from bus.event_bus import EventBus
 from bootstrap.proactive import _build_proactive_provider
 from bootstrap.providers import build_providers
@@ -29,6 +30,12 @@ from proactive_v2.config import ProactiveConfig
 from proactive_v2.loop import ProactiveLoop
 from proactive_v2.state import ProactiveStateStore
 from plugins.drift_flow.state import DriftStateStore
+from plugins.wake_proactive.state import WakeStateStore
+from core.net.http import (
+    SharedHttpResources,
+    clear_default_shared_http_resources,
+    configure_default_shared_http_resources,
+)
 from session.manager import SessionManager
 
 EVENT_ID = "sandbox_content_001"
@@ -40,6 +47,7 @@ class SandboxProvider:
     def __init__(self, mode: str) -> None:
         self.mode = mode
         self.calls: list[str] = []
+        self.content_item_id = ""
 
     async def chat(self, **kwargs: Any) -> LLMResponse:
         names = {
@@ -61,7 +69,28 @@ class SandboxProvider:
 
     def _next_call(self, names: set[str]) -> tuple[str, dict[str, Any]]:
         if self.mode == "content":
-            item_id = f"feed:{EVENT_ID}"
+            item_id = self.content_item_id
+            if "scratchpad" in names:
+                return "scratchpad", {
+                    "items": [
+                        {
+                            "item_id": item_id,
+                            "initial_interest": "likely_interesting",
+                            "question": "确认沙盒正文能否被读取并分享",
+                        }
+                    ]
+                }
+            if "share_content" in names:
+                return "share_content", {
+                    "message": "沙盒主动推送：已读取 Feed MCP content。",
+                    "items": [
+                        {
+                            "item_id": item_id,
+                            "summary": "主动链路沙盒内容",
+                            "why_it_matters": "验证 Wake 与 Feed MCP 的完整协作链",
+                        }
+                    ],
+                }
             if "mark_interesting" in names and "mark_interesting" not in self.calls:
                 return "mark_interesting", {"item_ids": [item_id], "reason": "沙盒验证"}
             if "message_push" in names and "message_push" not in self.calls:
@@ -72,13 +101,23 @@ class SandboxProvider:
             return "finish_turn", {"decision": "reply"}
 
         if "select_skill" in names and "select_skill" not in self.calls:
-            return "select_skill", {"skill_name": SKILL_NAME}
+            return "select_skill", {
+                "skill_name": SKILL_NAME,
+                "decision": "explore",
+                "intention": "验证主动 Drift 完整协作链",
+                "reason": "沙盒当前没有 content，执行固定验证 skill",
+            }
         if "message_push" in names and "message_push" not in self.calls:
             return "message_push", {"message": "沙盒 Drift：空闲链路已执行。"}
         return "finish_drift", {
             "skill_used": SKILL_NAME,
             "status": "completed",
             "briefing": "完成沙盒 Drift 验证",
+            "self_update": {
+                "pattern": "ordinary",
+                "reflection": "本轮只执行固定的沙盒协作链验证，没有形成新的行为模式。",
+                "next_tendency": "下次按当时来源和上下文决定是否继续验证。",
+            },
         }
 
 
@@ -89,13 +128,17 @@ def _workspace_from_env() -> Path:
 
 def _installed_plugin_root(
     cache_root: Path,
-    marketplace: str,
     plugin_name: str,
 ) -> Path:
-    plugin_root = cache_root / marketplace / plugin_name
+    plugin_roots = sorted(cache_root.glob(f"*/{plugin_name}"))
+    if len(plugin_roots) != 1:
+        raise RuntimeError(
+            f"外置插件来源不唯一: {plugin_name}={plugin_roots}"
+        )
+    plugin_root = plugin_roots[0]
     versions = sorted(path for path in plugin_root.iterdir() if path.is_dir())
     if not versions:
-        raise RuntimeError(f"外置插件未安装: {plugin_name}@{marketplace}")
+        raise RuntimeError(f"外置插件没有可运行版本: {plugin_root}")
     return versions[-1]
 
 
@@ -171,7 +214,7 @@ def inject_content(workspace: Path) -> None:
                 "manual",
                 "主动链路沙盒内容",
                 "这条 content 由操作者手动注入，用于验证 MCP 拉取和主动发送。",
-                "https://example.com/akashic-proactive-sandbox",
+                "https://example.com/",
                 "sandbox",
                 now,
                 now,
@@ -188,6 +231,24 @@ def clear_content(workspace: Path) -> None:
     with sqlite3.connect(db_path) as conn:
         conn.execute("DELETE FROM acked_items")
         conn.execute("DELETE FROM items")
+
+
+def prime_wake_hazard(workspace: Path) -> None:
+    """把 Wake 水位置于确定可触发状态，只验证阈值后的协作链。"""
+
+    # 1. 固定阈值，避免随机采样掩盖后续链路问题
+    now = datetime.now(UTC)
+    store = WakeStateStore(workspace / "wake_proactive.db")
+    try:
+        store.save_hazard(
+            session_key="sandbox:operator",
+            hazard=0.0,
+            threshold=0.0,
+            updated_at=now,
+            last_wake_at=None,
+        )
+    finally:
+        store.close()
 
 
 def prepare_paused_resume(workspace: Path) -> None:
@@ -254,7 +315,7 @@ async def verify_paused_resume(
     config_path: Path,
 ) -> dict[str, Any]:
     prepare_paused_resume(workspace)
-    result = await tick(workspace, "drift", config_path)
+    result = await tick(workspace, "drift", "default", config_path)
     drift_steps = _query_all(
         workspace / "drift" / "drift.db",
         """
@@ -295,10 +356,10 @@ async def verify_paused_resume(
     }
 
 
-def _config(mode: str) -> ProactiveConfig:
+def _config(mode: str, lifecycle: str) -> ProactiveConfig:
     return ProactiveConfig(
         enabled=True,
-        lifecycle="default",
+        lifecycle=lifecycle,
         default_channel="sandbox",
         default_chat_id="operator",
         model="sandbox-model",
@@ -322,12 +383,16 @@ def _config(mode: str) -> ProactiveConfig:
 async def tick(
     workspace: Path,
     mode: str,
+    lifecycle: str,
     config_path: Path | None = None,
 ) -> dict[str, Any]:
     event_bus = EventBus()
     tools = ToolRegistry()
+    http_resources = SharedHttpResources()
+    configure_default_shared_http_resources(http_resources)
+    tools.register(WebFetchTool(http_resources.external_default))
     installed_cache = Path.home() / ".akashic-plugin" / "cache"
-    feed_root = _installed_plugin_root(installed_cache, "lab", "feed")
+    feed_root = _installed_plugin_root(installed_cache, "feed")
     sessions = SessionManager(workspace)
     plugins = PluginManager(
         plugin_dirs=[Path("/app/plugins")],
@@ -340,7 +405,7 @@ async def tick(
     mcp = McpServerRegistry(workspace / "mcp_servers.json", tools)
     state = ProactiveStateStore(workspace / "proactive.db")
     provider: Any = SandboxProvider(mode)
-    proactive_config = _config(mode)
+    proactive_config = _config(mode, lifecycle)
     model = "sandbox-model"
     max_tokens = 1024
     if config_path is not None:
@@ -348,7 +413,7 @@ async def tick(
         main_provider, _, _ = build_providers(app_config)
         provider = _build_proactive_provider(app_config, main_provider)
         proactive_config = app_config.proactive
-        proactive_config.lifecycle = "default"
+        proactive_config.lifecycle = lifecycle
         proactive_config.default_channel = "sandbox"
         proactive_config.default_chat_id = "operator"
         proactive_config.anyaction_daily_max_actions = 999
@@ -373,6 +438,18 @@ async def tick(
 
     push.register_channel("sandbox", text=send_text)
     await plugins.load_all()
+    if isinstance(provider, SandboxProvider):
+        feed_sources = [
+            source
+            for source in plugins.proactive_sources
+            if source.spec.server == "feed"
+        ]
+        if len(feed_sources) != 1:
+            raise RuntimeError(f"Feed 主动来源数量异常: {feed_sources}")
+        source = feed_sources[0]
+        provider.content_item_id = (
+            f"{source.plugin_id}:{source.spec.id}:{EVENT_ID}"
+        )
     connect_result = await mcp.add(
         "feed",
         [sys.executable, str(feed_root / "mcp" / "run_mcp.py")],
@@ -391,7 +468,7 @@ async def tick(
 
     loop = ProactiveLoop(
         session_manager=sessions,
-        provider=provider,
+        provider=cast(Any, provider),
         push_tool=push,
         config=proactive_config,
         model=model,
@@ -424,6 +501,8 @@ async def tick(
         await plugins.terminate_all()
         await mcp.shutdown()
         await event_bus.aclose()
+        clear_default_shared_http_resources(http_resources)
+        await http_resources.aclose()
         state.close()
         sessions._store.close()
 
@@ -433,6 +512,11 @@ def status(workspace: Path) -> dict[str, Any]:
         "feed": _query_one(
             workspace / "feed-data" / "feed_mcp.sqlite3",
             "SELECT event_id, interest_ok, interest_scored_at FROM items WHERE event_id = ?",
+            (EVENT_ID,),
+        ),
+        "feed_ack": _query_one(
+            workspace / "feed-data" / "feed_mcp.sqlite3",
+            "SELECT event_id, acked_at FROM acked_items WHERE event_id = ?",
             (EVENT_ID,),
         ),
         "tick": _query_one(
@@ -498,25 +582,38 @@ def _query_all(path: Path, sql: str) -> list[dict[str, Any]]:
 
 async def run_all(
     workspace: Path,
+    lifecycle: str,
     config_path: Path | None = None,
 ) -> dict[str, Any]:
     reset(workspace)
     inject_content(workspace)
-    content_result = await tick(workspace, "content", config_path)
+    if lifecycle == "wake":
+        prime_wake_hazard(workspace)
+    content_result = await tick(workspace, "content", lifecycle, config_path)
     content_status = status(workspace)
-    clear_content(workspace)
-    drift_result = await tick(workspace, "drift", config_path)
-    drift_status = status(workspace)
-    if content_result["decision"] != "reply" or not content_result["sent"]:
+    if lifecycle == "wake":
+        drift_result: dict[str, Any] = {"skipped": "content tick 已覆盖 wake.drift.decide"}
+        drift_status = content_status
+    else:
+        clear_content(workspace)
+        drift_result = await tick(workspace, "drift", lifecycle, config_path)
+        drift_status = status(workspace)
+    if not content_result["sent"]:
         raise AssertionError("content 主动发送未完成")
-    feed = content_status["feed"] or {}
-    if feed.get("interest_ok") != 1:
-        raise AssertionError("content ACK 未写回 Feed MCP")
-    if drift_result["decision"] != "reply" or not drift_result["sent"]:
-        raise AssertionError("Drift 主动发送未完成")
-    drift = drift_status["drift"] or {}
-    if drift.get("status") != "completed" or drift.get("message_result") != "sent":
-        raise AssertionError("Drift 状态未完整提交")
+    if lifecycle == "wake":
+        if not content_status["feed_ack"]:
+            raise AssertionError("Wake content ACK 未写回 Feed MCP")
+    else:
+        if content_result["decision"] != "reply":
+            raise AssertionError("default content 未以 reply 收尾")
+        feed = content_status["feed"] or {}
+        if feed.get("interest_ok") != 1:
+            raise AssertionError("content 兴趣反馈未写回 Feed MCP")
+        if drift_result["decision"] != "reply" or not drift_result["sent"]:
+            raise AssertionError("Drift 主动发送未完成")
+        drift = drift_status["drift"] or {}
+        if drift.get("status") != "completed" or drift.get("message_result") != "sent":
+            raise AssertionError("Drift 状态未完整提交")
     return {
         "content": content_result,
         "content_status": content_status,
@@ -543,6 +640,7 @@ def main() -> None:
     )
     parser.add_argument("--workspace", type=Path, default=_workspace_from_env())
     parser.add_argument("--config", type=Path)
+    parser.add_argument("--lifecycle", choices=("default", "wake"), default="default")
     args = parser.parse_args()
     workspace = args.workspace
     _assert_sandbox_path(workspace)
@@ -556,9 +654,9 @@ def main() -> None:
         clear_content(workspace)
         result = status(workspace)
     elif args.command == "tick-content":
-        result = asyncio.run(tick(workspace, "content", args.config))
+        result = asyncio.run(tick(workspace, "content", args.lifecycle, args.config))
     elif args.command == "tick-drift":
-        result = asyncio.run(tick(workspace, "drift", args.config))
+        result = asyncio.run(tick(workspace, "drift", args.lifecycle, args.config))
     elif args.command == "verify-paused-resume":
         if args.config is None:
             raise SystemExit("verify-paused-resume 必须通过 --config 使用真实模型")
@@ -566,7 +664,7 @@ def main() -> None:
     elif args.command == "status":
         result = status(workspace)
     else:
-        result = asyncio.run(run_all(workspace, args.config))
+        result = asyncio.run(run_all(workspace, args.lifecycle, args.config))
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
 
 

@@ -91,22 +91,42 @@ class ScheduleTool(Tool):
         self._default_tz = default_tz
 
     async def execute(self, **kwargs: Any) -> str:
+        """校验调度请求，注册任务并返回首次触发时间。"""
+
+        # 1. 提取并校验工具输入
         tier = kwargs.get("tier", "")
         trigger = kwargs.get("trigger", "")
         when = kwargs.get("when", "")
         message = kwargs.get("message")
         prompt = kwargs.get("prompt")
         channel = kwargs.get("channel", "")
-        chat_id = str(kwargs.get("chat_id", ""))
+        chat_id = kwargs.get("chat_id", "")
         tz = kwargs.get("timezone") or self._default_tz
         name = kwargs.get("name")
         request_time = kwargs.get("request_time")
 
-        # ── validation ──
         if tier not in ("instant", "soft"):
             return f"错误：tier 须为 instant 或 soft，收到 {tier!r}"
         if trigger not in ("at", "after", "every"):
             return f"错误：trigger 须为 at/after/every，收到 {trigger!r}"
+        if not isinstance(when, str):
+            return f"错误：when 必须是字符串，收到 {when!r}"
+        if not isinstance(channel, str):
+            return f"错误：channel 必须是字符串，收到 {channel!r}"
+        if not isinstance(chat_id, str):
+            return f"错误：chat_id 必须是字符串，收到 {chat_id!r}"
+        if not isinstance(tz, str):
+            return f"错误：timezone 必须是字符串，收到 {tz!r}"
+        if trigger == "after" and request_time is not None and not isinstance(
+            request_time, str
+        ):
+            return f"错误：request_time 必须是 ISO 字符串，收到 {request_time!r}"
+        if message is not None and not isinstance(message, str):
+            return f"错误：message 必须是字符串，收到 {message!r}"
+        if prompt is not None and not isinstance(prompt, str):
+            return f"错误：prompt 必须是字符串，收到 {prompt!r}"
+        if name is not None and not isinstance(name, str):
+            return f"错误：name 必须是字符串，收到 {name!r}"
         if tier == "instant" and not message:
             return "错误：tier=instant 时 message 为必填项"
         if tier == "soft" and not prompt:
@@ -115,17 +135,17 @@ class ScheduleTool(Tool):
             return "错误：channel 和 chat_id 为必填项"
 
         try:
-            ZoneInfo(tz)
+            _ = ZoneInfo(tz)
         except ZoneInfoNotFoundError:
             return f"错误：无效的时区 {tz!r}"
 
-        # ── compute fire_at ──
+        # 2. 计算首次触发时间
         try:
             fire_at = compute_fire_at(trigger, when, tz, request_time)
-        except ValueError as e:
+        except (TypeError, ValueError, OverflowError) as e:
             return f"错误：{e}"
 
-        # ── parse every spec ──
+        # 3. 解析循环调度参数
         interval_seconds = None
         cron_expr = None
         if trigger == "every":
@@ -135,10 +155,10 @@ class ScheduleTool(Tool):
                 else:
                     iv = parse_duration(when)
                     interval_seconds = int(iv.total_seconds())
-            except ValueError as e:
+            except (TypeError, ValueError, OverflowError) as e:
                 return f"错误：{e}"
 
-        # ── build & register ──
+        # 4. 构建并注册任务
         job = ScheduledJob(
             trigger=trigger,
             tier=tier,
@@ -154,8 +174,7 @@ class ScheduleTool(Tool):
         )
         self._service.add_job(job)
 
-        # 优先用 fire_at 自带的时区（来自 request_time 的 offset），
-        # 让用户看到本地时间而不是 UTC
+        # 5. 优先按请求时区展示，格式异常时保留已注册任务并回退 ISO 时间
         try:
             if fire_at.tzinfo is not None and str(fire_at.tzinfo) not in ("UTC", "utc"):
                 display_dt = fire_at
@@ -169,7 +188,7 @@ class ScheduleTool(Tool):
             else:
                 display_dt = fire_at.astimezone()
             time_str = display_dt.strftime("%Y-%m-%d %H:%M:%S %z")
-        except Exception:
+        except (TypeError, ValueError, OverflowError, OSError):
             time_str = fire_at.isoformat()
 
         label = f"「{name}」" if name else job.id[:8]
@@ -194,7 +213,13 @@ class ListSchedulesTool(Tool):
             try:
                 fire_at_local = job.fire_at.astimezone(ZoneInfo(job.timezone))
                 time_str = fire_at_local.strftime("%Y-%m-%d %H:%M:%S %Z")
-            except Exception:
+            except (
+                ZoneInfoNotFoundError,
+                TypeError,
+                ValueError,
+                OverflowError,
+                OSError,
+            ):
                 time_str = job.fire_at.isoformat()
 
             label = f"「{job.name}」" if job.name else job.id[:8]

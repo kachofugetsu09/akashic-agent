@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import inspect
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from agent.turns.outbound import OutboundDispatch, OutboundPort
-from agent.turns.result import TurnResult
+from agent.turns.result import TurnResult, TurnSideEffect
 
 if TYPE_CHECKING:
     from agent.core.runtime_support import SessionLike
@@ -58,7 +57,7 @@ class TurnOrchestrator:
                 )
             )
         except Exception as e:
-            logger.warning("proactive outbound dispatch failed: %s", e)
+            logger.exception("proactive outbound dispatch failed: %s", e)
 
         # 3. 只有用户真正收到后，才把 proactive 消息写入可见会话历史。
         if sent:
@@ -83,12 +82,10 @@ class TurnOrchestrator:
     async def _run_side_effects(self, result: TurnResult) -> None:
         await self._run_effects(result.side_effects)
 
-    async def _run_effects(self, effects: list[Any]) -> None:
+    async def _run_effects(self, effects: list[TurnSideEffect]) -> None:
         for effect in effects:
             try:
-                maybe = effect.run()
-                if inspect.isawaitable(maybe):
-                    await maybe
+                await effect.run()
             except Exception as e:
                 logger.warning("turn side effect failed: %s", e)
 

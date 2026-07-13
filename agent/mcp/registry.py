@@ -1,7 +1,6 @@
 """McpServerRegistry: 管理多个 MCP server 连接，持久化到 mcp_servers.json。"""
 
 import asyncio
-import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -10,6 +9,7 @@ from agent.mcp.client import McpClient, McpToolInfo
 from agent.mcp.tool import McpToolWrapper
 from agent.plugins.manager import ActivePluginInfo
 from agent.tools.registry import ToolRegistry
+from infra.persistence.json_store import atomic_save_json, load_json
 
 logger = logging.getLogger(__name__)
 
@@ -173,14 +173,63 @@ class McpServerRegistry:
         return tool_names
 
     def _load_raw_configs(self) -> dict[str, Any]:
-        if not self._config_path.exists():
-            return {}
-        try:
-            data = json.loads(self._config_path.read_text(encoding="utf-8"))
-            return data.get("servers", {})
-        except Exception as e:
-            logger.warning("[mcp] 读取配置失败 %s: %s", self._config_path, e)
-            return {}
+        """读取并校验 MCP 持久化配置，不触碰连接生命周期。"""
+
+        # 1. 读取 JSON；缺失文件和缺失 servers 都表示空配置
+        data = load_json(
+            self._config_path,
+            default={},
+            domain="mcp.registry",
+        )
+
+        # 2. 校验顶层 schema
+        if not isinstance(data, dict):
+            raise ValueError(f"[mcp.registry] 配置根节点必须是对象: {self._config_path}")
+        if set(data) - {"servers"}:
+            raise ValueError(f"[mcp.registry] 配置包含未知字段: {self._config_path}")
+
+        raw_servers = data.get("servers", {})
+        if not isinstance(raw_servers, dict):
+            raise ValueError(f"[mcp.registry] servers 必须是对象: {self._config_path}")
+
+        # 3. 校验每个 server 的启动参数
+        servers: dict[str, dict[str, Any]] = {}
+        for name, raw_config in raw_servers.items():
+            if not isinstance(name, str) or not name:
+                raise ValueError(f"[mcp.registry] server 名称无效: {self._config_path}")
+            if not isinstance(raw_config, dict):
+                raise ValueError(
+                    f"[mcp.registry] server 配置必须是对象: {name} path={self._config_path}"
+                )
+            if set(raw_config) - {"command", "env", "cwd"}:
+                raise ValueError(
+                    f"[mcp.registry] server 配置包含未知字段: {name} path={self._config_path}"
+                )
+            command = raw_config.get("command")
+            if not isinstance(command, list) or not command or not all(
+                isinstance(item, str) and item for item in command
+            ):
+                raise ValueError(
+                    f"[mcp.registry] server command 无效: {name} path={self._config_path}"
+                )
+            env = raw_config.get("env")
+            if "env" in raw_config and (
+                not isinstance(env, dict)
+                or not all(
+                    isinstance(key, str) and isinstance(value, str)
+                    for key, value in env.items()
+                )
+            ):
+                raise ValueError(
+                    f"[mcp.registry] server env 无效: {name} path={self._config_path}"
+                )
+            cwd = raw_config.get("cwd")
+            if cwd is not None and not isinstance(cwd, str):
+                raise ValueError(
+                    f"[mcp.registry] server cwd 无效: {name} path={self._config_path}"
+                )
+            servers[name] = raw_config
+        return servers
 
     def _save(self) -> None:
         servers = {
@@ -192,14 +241,12 @@ class McpServerRegistry:
             for name, client in self._clients.items()
             if name not in self._plugin_server_names
         }
-        try:
-            self._config_path.parent.mkdir(parents=True, exist_ok=True)
-            self._config_path.write_text(
-                json.dumps({"servers": servers}, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except Exception as e:
-            logger.error("[mcp] 保存配置失败: %s", e)
+        atomic_save_json(
+            self._config_path,
+            {"servers": servers},
+            ensure_ascii=False,
+            domain="mcp.registry",
+        )
 
     async def _disconnect_server(self, name: str) -> None:
         for tool_name in self._server_tools.pop(name, []):

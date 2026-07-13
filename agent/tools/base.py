@@ -2,7 +2,7 @@ import asyncio
 import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 
 @dataclass
@@ -97,8 +97,12 @@ class Tool(ABC):
         label = path or "参数"
         t = schema.get("type")
 
-        if t in self._TYPE_MAP and not isinstance(val, self._TYPE_MAP[t]):
-            return [f"{label} 应为 {t} 类型"]
+        if t in self._TYPE_MAP:
+            valid_type = isinstance(val, self._TYPE_MAP[t])
+            if t in ("integer", "number") and isinstance(val, bool):
+                valid_type = False
+            if not valid_type:
+                return [f"{label} 应为 {t} 类型"]
 
         errors = []
 
@@ -112,24 +116,27 @@ class Tool(ABC):
                 errors.append(f"{label} 须 <= {schema['maximum']}")
 
         if t == "string":
-            if "minLength" in schema and len(val) < schema["minLength"]:
+            string_value = cast(str, val)
+            if "minLength" in schema and len(string_value) < schema["minLength"]:
                 errors.append(f"{label} 最短 {schema['minLength']} 个字符")
-            if "maxLength" in schema and len(val) > schema["maxLength"]:
+            if "maxLength" in schema and len(string_value) > schema["maxLength"]:
                 errors.append(f"{label} 最长 {schema['maxLength']} 个字符")
 
         if t == "object":
+            object_value = cast(dict[str, Any], val)
             props = schema.get("properties", {})
             for k in schema.get("required", []):
-                if k not in val:
+                if k not in object_value:
                     errors.append(f"缺少必填字段：{path + '.' + k if path else k}")
-            for k, v in val.items():
+            for k, v in object_value.items():
                 if k in props:
                     errors.extend(
                         self._validate(v, props[k], f"{path}.{k}" if path else k)
                     )
 
         if t == "array" and "items" in schema:
-            for i, item in enumerate(val):
+            array_value = cast(list[Any], val)
+            for i, item in enumerate(array_value):
                 errors.extend(
                     self._validate(
                         item, schema["items"], f"{path}[{i}]" if path else f"[{i}]"

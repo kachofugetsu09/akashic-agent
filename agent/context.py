@@ -136,6 +136,8 @@ class MessageEnvelopeBuilder:
             p = Path(item)
             mime, _ = mimetypes.guess_type(p)
             if not p.is_file():
+                logger.warning("输入媒体文件不可用: %s", item)
+                file_refs.append(f"- 不可用媒体路径: {item}")
                 continue
             if not mime or not mime.startswith("image/"):
                 file_refs.append(f"- 文件路径: {item}")
@@ -158,15 +160,19 @@ class MessageEnvelopeBuilder:
     def _build_text_with_media_refs(self, text: str, media: list[str]) -> str:
         refs: list[str] = []
         local_image_paths: list[str] = []
+        has_remote_image = False
         for item in media:
             value = str(item)
             if value.startswith(("http://", "https://")):
                 refs.append(f"- 图片URL: {value}")
+                has_remote_image = True
                 continue
 
             p = Path(value)
             mime, _ = mimetypes.guess_type(p)
             if not p.is_file():
+                logger.warning("输入媒体文件不可用: %s", value)
+                refs.append(f"- 不可用媒体路径: {value}")
                 continue
             if not mime or not mime.startswith("image/"):
                 refs.append(f"- 文件路径: {value}")
@@ -187,10 +193,12 @@ class MessageEnvelopeBuilder:
                 lines.append(
                     f'- read_image_vision(path={quoted_path}, prompt="描述这张图片的内容")'
                 )
-        elif self._vl_available:
+        elif self._vl_available and has_remote_image:
             lines.append(
                 "当前主模型不能直接接收图片内容；远程图片需先取得本地路径后再读图。"
             )
+        elif self._vl_available:
+            lines.append("以上媒体中没有可供 read_image_vision 读取的本地图片。")
         else:
             lines.append("当前主模型不能直接接收图片内容，且未配置 VL 视觉模型。")
         return "\n".join(lines)

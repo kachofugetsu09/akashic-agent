@@ -11,7 +11,8 @@ import sys
 import tomllib
 import zlib
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from typing import cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent.config_models import (
     ChannelsConfig,
@@ -33,9 +34,10 @@ _PRESETS: dict[str, str] = {
     "deepseek": "https://api.deepseek.com/v1",
     "openai": "https://api.openai.com/v1",
 }
+_DEFAULT_TOOLSETS = ("meta_common", "spawn", "schedule", "mcp")
 
-# CLI channel 默认 Unix socket 路径
-DEFAULT_SOCKET = "127.0.0.1:8765" if os.name == "nt" else "/tmp/akashic.sock"
+# 空值表示由 workspace 派生 IPC 端点，避免多个实例争用全局路径。
+DEFAULT_SOCKET = ""
 
 
 def _normalize_cli_socket_endpoint(value: str | None) -> str:
@@ -54,32 +56,49 @@ def _normalize_cli_socket_endpoint(value: str | None) -> str:
     port_seed = zlib.crc32(text.encode("utf-8")) % 20000
     return f"127.0.0.1:{20000 + port_seed}"
 
+
+def resolve_cli_socket_endpoint(value: str, workspace: Path) -> str:
+    """解析当前 workspace 独占的 IPC 端点。"""
+
+    # 1. 显式配置保持原样
+    if value:
+        return value
+
+    # 2. 缺省配置按 workspace 稳定派生
+    if os.name != "nt":
+        return str(workspace / "akashic.sock")
+    port_seed = zlib.crc32(str(workspace).encode("utf-8")) % 20000
+    return f"127.0.0.1:{20000 + port_seed}"
+
+
 def _validated_timezone(tz_name: str, *, enabled: bool) -> str:
     """仅当 anyaction_enabled=True 时校验时区合法性，无效则启动时 fail-fast。"""
     if not enabled:
         return tz_name
     try:
-        ZoneInfo(tz_name)
+        _ = ZoneInfo(tz_name)
         return tz_name
-    except Exception:
+    except (ZoneInfoNotFoundError, ValueError) as exc:
         raise ValueError(
             f"proactive.anyaction_timezone 无效: {tz_name!r}，"
             "请使用 IANA 格式，如 'Asia/Shanghai'"
-        )
+        ) from exc
 
 
 def load_config(path: str | Path = "config.toml") -> Config:
     data = _load_config_data(path)
 
-    llm = _as_dict(data.get("llm"))
-    llm_main = _as_dict(llm.get("main"))
-    llm_fast = _as_dict(llm.get("fast"))
-    llm_agent = _as_dict(llm.get("agent"))
-    llm_vl = _as_dict(llm.get("vl"))
-    agent_cfg = _as_dict(data.get("agent"))
-    agent_context = _as_dict(agent_cfg.get("context"))
-    agent_tools = _as_dict(agent_cfg.get("tools"))
-    agent_maintenance = _as_dict(agent_cfg.get("maintenance"))
+    llm = _as_dict(data.get("llm"), field="llm")
+    llm_main = _as_dict(llm.get("main"), field="llm.main")
+    llm_fast = _as_dict(llm.get("fast"), field="llm.fast")
+    llm_agent = _as_dict(llm.get("agent"), field="llm.agent")
+    llm_vl = _as_dict(llm.get("vl"), field="llm.vl")
+    agent_cfg = _as_dict(data.get("agent"), field="agent")
+    agent_context = _as_dict(agent_cfg.get("context"), field="agent.context")
+    agent_tools = _as_dict(agent_cfg.get("tools"), field="agent.tools")
+    agent_maintenance = _as_dict(
+        agent_cfg.get("maintenance"), field="agent.maintenance"
+    )
     provider = str(llm.get("provider") or data["provider"])
     channels = _load_channels_config(data)
     proactive = _load_proactive_config(data)
@@ -106,11 +125,12 @@ def load_config(path: str | Path = "config.toml") -> Config:
         extra_body=_load_extra_body(data),
         channels=channels,
         proactive=proactive,
-        memory_optimizer_enabled=bool(
+        memory_optimizer_enabled=_as_bool(
             agent_maintenance.get(
                 "memory_optimizer_enabled",
                 data.get("memory_optimizer_enabled", True),
-            )
+            ),
+            field="agent.maintenance.memory_optimizer_enabled",
         ),
         memory_optimizer_interval_seconds=int(
             agent_maintenance.get(
@@ -133,22 +153,27 @@ def load_config(path: str | Path = "config.toml") -> Config:
             llm_agent.get("base_url") or data.get("agent_base_url", "")
         ),
         memory=memory,
-        tool_search_enabled=bool(
-            agent_tools.get("search_enabled", data.get("tool_search_enabled", False))
+        tool_search_enabled=_as_bool(
+            agent_tools.get("search_enabled", data.get("tool_search_enabled", False)),
+            field="agent.tools.search_enabled",
         ),
-        spawn_enabled=bool(
-            agent_tools.get("spawn_enabled", data.get("spawn_enabled", True))
+        spawn_enabled=_as_bool(
+            agent_tools.get("spawn_enabled", data.get("spawn_enabled", True)),
+            field="agent.tools.spawn_enabled",
         ),
-        dev_mode=bool(
+        dev_mode=_as_bool(
             agent_cfg.get(
                 "dev_mode",
                 agent_cfg.get(
                     "dev_model",
                     data.get("dev_mode", data.get("dev_model", False)),
                 ),
-            )
+            ),
+            field="agent.dev_mode",
         ),
-        multimodal=bool(llm_main.get("multimodal", True)),
+        multimodal=_as_bool(
+            llm_main.get("multimodal", True), field="llm.main.multimodal"
+        ),
         vl_model=str(llm_vl.get("model") or data.get("vl_model", "")),
         vl_api_key=_resolve(str(llm_vl.get("api_key") or data.get("vl_api_key", ""))),
         vl_base_url=str(llm_vl.get("base_url") or data.get("vl_base_url", "")),
@@ -158,12 +183,15 @@ def load_config(path: str | Path = "config.toml") -> Config:
 
 
 def _load_channels_config(data: dict) -> ChannelsConfig:
-    channels_data = data.get("channels", {})
+    channels_data = _as_dict(data.get("channels"), field="channels")
 
     telegram = None
-    if tg := channels_data.get("telegram"):
+    tg = _as_dict(channels_data.get("telegram"), field="channels.telegram")
+    if tg:
         token = _normalize_optional_config_text(_resolve(str(tg.get("token", ""))))
-        if bool(tg.get("enabled", True)) and token:
+        if _as_bool(
+            tg.get("enabled", True), field="channels.telegram.enabled"
+        ) and token:
             telegram = TelegramChannelConfig(
                 token=token,
                 allow_from=[
@@ -173,9 +201,12 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
             )
 
     qq = None
-    if qq_data := channels_data.get("qq"):
+    qq_data = _as_dict(channels_data.get("qq"), field="channels.qq")
+    if qq_data:
         bot_uin = _normalize_optional_config_text(str(qq_data.get("bot_uin", "")))
-        if bool(qq_data.get("enabled", True)) and bot_uin:
+        if _as_bool(
+            qq_data.get("enabled", True), field="channels.qq.enabled"
+        ) and bot_uin:
             groups = [
                 QQGroupConfig(
                     group_id=str(
@@ -185,7 +216,10 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
                         str(u)
                         for u in g.get("allow_from", g.get("allowFrom", []))
                     ],
-                    require_at=g.get("require_at", g.get("requireAt", True)),
+                    require_at=_as_bool(
+                        g.get("require_at", g.get("requireAt", True)),
+                        field="channels.qq.groups[].require_at",
+                    ),
                 )
                 for g in qq_data.get("groups", [])
             ]
@@ -201,10 +235,12 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
                 ),
             )
 
-    cli_data = _as_dict(channels_data.get("cli"))
-    chat_data = _as_dict(channels_data.get("chat"))
+    cli_data = _as_dict(channels_data.get("cli"), field="channels.cli")
+    chat_data = _as_dict(channels_data.get("chat"), field="channels.chat")
     chat = WebChatConfig(
-        enabled=bool(chat_data.get("enabled", True)),
+        enabled=_as_bool(
+            chat_data.get("enabled", True), field="channels.chat.enabled"
+        ),
         host=str(chat_data.get("host", "127.0.0.1") or "127.0.0.1"),
         port=int(chat_data.get("port", 6322)),
         channel_name=str(chat_data.get("channel_name", "web") or "web"),
@@ -224,7 +260,6 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
         socket=_normalize_cli_socket_endpoint(socket_value),
         cli_session_key=cli_session_key,
     )
-    channels.socket = _normalize_cli_socket_endpoint(channels.socket)
     return channels
 
 
@@ -240,8 +275,8 @@ def _load_proactive_config(data: dict) -> ProactiveConfig:
 
 
 def _load_memory_config(data: dict) -> MemoryConfig:
-    memory = _as_dict(data.get("memory"))
-    embedding = _as_dict(memory.get("embedding"))
+    memory = _as_dict(data.get("memory"), field="memory")
+    embedding = _as_dict(memory.get("embedding"), field="memory.embedding")
     raw_output_dimensionality = embedding.get("output_dimensionality")
     output_dimensionality = (
         int(raw_output_dimensionality)
@@ -251,7 +286,7 @@ def _load_memory_config(data: dict) -> MemoryConfig:
     if output_dimensionality is not None and output_dimensionality <= 0:
         raise ValueError("memory.embedding.output_dimensionality 必须大于 0")
     return MemoryConfig(
-        enabled=bool(memory.get("enabled", False)),
+        enabled=_as_bool(memory.get("enabled", False), field="memory.enabled"),
         engine=str(memory.get("engine", "") or ""),
         embedding=MemoryEmbeddingConfig(
             model=str(embedding.get("model", "text-embedding-v3")),
@@ -263,7 +298,7 @@ def _load_memory_config(data: dict) -> MemoryConfig:
 
 
 def _load_peer_agents_config(data: dict) -> list[PeerAgentConfig]:
-    integrations = _as_dict(data.get("integrations"))
+    integrations = _as_dict(data.get("integrations"), field="integrations")
     peer_agents = integrations.get("peer_agents", data.get("peer_agents", []))
     return [
         PeerAgentConfig(
@@ -281,30 +316,47 @@ def _load_peer_agents_config(data: dict) -> list[PeerAgentConfig]:
 
 
 def _load_wiring_config(data: dict) -> WiringConfig:
-    agent_cfg = _as_dict(data.get("agent"))
-    raw = _as_dict(agent_cfg.get("wiring")) or data.get("wiring", {}) or {}
-    toolsets = raw.get(
-        "toolsets",
-        ["meta_common", "spawn", "schedule", "mcp"],
-    )
-    if not isinstance(toolsets, list):
-        toolsets = ["meta_common", "spawn", "schedule", "mcp"]
+    """加载运行时装配配置，并拒绝会改变工具集语义的错误结构。"""
+
+    # 1. 选择新版 agent.wiring；空表继续兼容旧版顶层 wiring。
+    agent_cfg = _as_dict(data.get("agent"), field="agent")
+    agent_wiring = agent_cfg.get("wiring")
+    if agent_wiring is not None and not isinstance(agent_wiring, dict):
+        raise ValueError("agent.wiring 必须是 TOML table")
+    raw = agent_wiring or data.get("wiring", {}) or {}
+    if not isinstance(raw, dict):
+        raise ValueError("wiring 必须是 TOML table")
+
+    # 2. 缺失时使用默认工具集；显式数组中的名称必须非空。
+    raw_toolsets = raw.get("toolsets")
+    if raw_toolsets is None:
+        toolsets = list(_DEFAULT_TOOLSETS)
+    elif not isinstance(raw_toolsets, list) or any(
+        not isinstance(name, str) or not name.strip() for name in raw_toolsets
+    ):
+        raise ValueError("agent.wiring.toolsets 必须是字符串数组")
+    else:
+        toolsets = cast(list[str], raw_toolsets)
     return WiringConfig(
         context=str(raw.get("context", "default") or "default"),
         memory=str(raw.get("memory", "default") or "default"),
-        toolsets=[str(name) for name in toolsets if str(name).strip()],
+        toolsets=list(toolsets),
     )
 
 
 def _load_extra_body(data: dict) -> dict:
-    llm = _as_dict(data.get("llm"))
-    llm_main = _as_dict(llm.get("main"))
-    extra_body = dict(data.get("extra_body", {}))
+    llm = _as_dict(data.get("llm"), field="llm")
+    llm_main = _as_dict(llm.get("main"), field="llm.main")
+    extra_body = dict(_as_dict(data.get("extra_body"), field="extra_body"))
     thinking = llm_main.get("thinking")
-    if isinstance(thinking, dict):
+    if thinking is not None and not isinstance(thinking, dict):
+        raise ValueError("llm.main.thinking 必须是 TOML table")
+    if thinking is not None:
         extra_body["thinking"] = thinking
     if "enable_thinking" in llm_main:
-        extra_body["enable_thinking"] = bool(llm_main.get("enable_thinking"))
+        extra_body["enable_thinking"] = _as_bool(
+            llm_main["enable_thinking"], field="llm.main.enable_thinking"
+        )
     if "reasoning_effort" in llm_main:
         effort = str(llm_main.get("reasoning_effort") or "").strip()
         if effort:
@@ -312,17 +364,11 @@ def _load_extra_body(data: dict) -> dict:
     return extra_body
 
 
-def _as_dict(value: object) -> dict:
-    return value if isinstance(value, dict) else {}
-
-
-def _resolve_config_value(value: object) -> object:
-    if isinstance(value, str):
-        return _resolve(value)
-    if isinstance(value, list):
-        return [_resolve_config_value(item) for item in value]
-    if isinstance(value, dict):
-        return {str(key): _resolve_config_value(item) for key, item in value.items()}
+def _as_dict(value: object, *, field: str) -> dict:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} 必须是 TOML table")
     return value
 
 
@@ -337,6 +383,12 @@ def _resolve(value: str) -> str:
         if key_file.exists():
             resolved = key_file.read_text(encoding="utf-8").strip()
     return resolved
+
+
+def _as_bool(value: object, *, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{field} 必须是布尔值")
+    return value
 
 
 def _normalize_optional_config_text(value: str) -> str:
@@ -359,6 +411,7 @@ __all__ = [
     "ChannelsConfig",
     "Config",
     "DEFAULT_SOCKET",
+    "resolve_cli_socket_endpoint",
     "MemoryConfig",
     "MemoryEmbeddingConfig",
     "QQChannelConfig",

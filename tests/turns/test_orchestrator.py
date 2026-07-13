@@ -8,7 +8,7 @@ import pytest
 
 from agent.looping.ports import SessionServices
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
-from agent.turns.outbound import OutboundDispatch
+from agent.turns.outbound import OutboundDispatch, PushToolOutboundPort
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 
 
@@ -158,6 +158,73 @@ async def test_orchestrator_failed_dispatch_does_not_persist_proactive_message()
     assert sent is False
     assert session.messages == []
     session_manager.append_messages.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_push_outbound_port_propagates_unexpected_tool_error():
+    push_tool = SimpleNamespace(
+        execute=AsyncMock(side_effect=RuntimeError("channel disconnected"))
+    )
+    port = PushToolOutboundPort(push_tool)
+
+    with pytest.raises(RuntimeError, match="channel disconnected"):
+        await port.dispatch(
+            OutboundDispatch(
+                channel="telegram",
+                chat_id="123",
+                content="hello",
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_logs_dispatch_error_and_runs_failure_effect(
+    caplog: pytest.LogCaptureFixture,
+):
+    session = _DummySession("telegram:123")
+    session_manager = SimpleNamespace(
+        get_or_create=lambda _key: session,
+        append_messages=AsyncMock(return_value=None),
+    )
+    outbound = SimpleNamespace(
+        dispatch=AsyncMock(side_effect=RuntimeError("channel disconnected"))
+    )
+    failures: list[str] = []
+
+    class _FailureEffect:
+        async def run(self) -> None:
+            failures.append("failed")
+
+    orchestrator = TurnOrchestrator(
+        TurnOrchestratorDeps(
+            session=SessionServices(
+                session_manager=cast(Any, session_manager),
+                presence=None,
+            ),
+            outbound=cast(Any, outbound),
+        )
+    )
+
+    with caplog.at_level("ERROR", logger="agent.turn_orchestrator"):
+        sent = await orchestrator.handle_proactive_turn(
+            result=TurnResult(
+                decision="reply",
+                outbound=TurnOutbound(
+                    session_key="telegram:123",
+                    content="not delivered",
+                ),
+                failure_side_effects=[_FailureEffect()],
+            ),
+            session_key="telegram:123",
+            channel="telegram",
+            chat_id="123",
+        )
+
+    assert sent is False
+    assert failures == ["failed"]
+    assert session.messages == []
+    session_manager.append_messages.assert_not_awaited()
+    assert "channel disconnected" in caplog.text
 
 
 @pytest.mark.asyncio

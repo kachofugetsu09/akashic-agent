@@ -1,4 +1,4 @@
-"""Tests for current proactive.memory_optimizer behavior."""
+"""覆盖当前 proactive memory optimizer 行为。"""
 
 from typing import Any, cast
 import asyncio
@@ -39,11 +39,30 @@ def test_optimize_skips_when_memory_pending_history_all_empty(tmp_path):
     provider.chat.assert_not_called()
 
 
+def test_optimize_commits_marker_only_pending_snapshot(tmp_path):
+    memory = MarkdownMemoryStore(tmp_path)
+    _ = memory.pending_file.write_text(
+        "<!-- consolidation:test:pending -->\n",
+        encoding="utf-8",
+    )
+    provider = types.SimpleNamespace()
+    provider.chat = AsyncMock()
+    optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
+    optimizer._STEP_DELAY_SECONDS = 0
+
+    asyncio.run(optimizer.optimize())
+
+    provider.chat.assert_not_called()
+    assert not memory._snapshot_path.exists()
+    assert memory.pending_file.exists()
+    assert memory.read_pending() == ""
+
+
 def test_optimize_rewrites_memory_from_first_llm_call(tmp_path):
     memory = MarkdownMemoryStore(tmp_path)
     memory.write_long_term("old profile")
 
-    provider = _provider_with_responses("## 用户画像\n- 新版本\n")
+    provider = _provider_with_responses("## 用户画像\n- 新版本\n", "")
     optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
     optimizer._STEP_DELAY_SECONDS = 0
     asyncio.run(optimizer.optimize())
@@ -56,10 +75,62 @@ def test_optimize_rolls_back_snapshot_when_merge_returns_empty(tmp_path):
     memory.write_long_term("old profile")
     memory.append_pending("- pending fact")
 
-    provider = _provider_with_responses("")
+    provider = _provider_with_responses("", "")
     optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
     optimizer._STEP_DELAY_SECONDS = 0
     asyncio.run(optimizer.optimize())
+
+    assert "pending fact" in memory.read_pending()
+    assert not memory._snapshot_path.exists()
+
+
+def test_optimize_rolls_back_snapshot_and_propagates_merge_failure(tmp_path):
+    memory = MarkdownMemoryStore(tmp_path)
+    memory.write_long_term("old profile")
+    memory.append_pending("- pending fact")
+    provider = types.SimpleNamespace()
+    provider.chat = AsyncMock(side_effect=RuntimeError("merge failed"))
+    optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
+    optimizer._STEP_DELAY_SECONDS = 0
+
+    with pytest.raises(RuntimeError, match="merge failed"):
+        asyncio.run(optimizer.optimize())
+
+    assert "pending fact" in memory.read_pending()
+    assert not memory._snapshot_path.exists()
+    assert memory.read_long_term().strip() == "old profile"
+
+
+def test_optimize_rolls_back_snapshot_when_memory_write_fails(tmp_path):
+    memory = MarkdownMemoryStore(tmp_path)
+    memory.append_pending("- pending fact")
+
+    async def break_memory_file(**_kwargs: Any) -> _Resp:
+        memory.memory_file.mkdir()
+        return _Resp("## 新记忆")
+
+    provider = types.SimpleNamespace()
+    provider.chat = AsyncMock(side_effect=break_memory_file)
+    optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
+    optimizer._STEP_DELAY_SECONDS = 0
+
+    with pytest.raises(IsADirectoryError):
+        asyncio.run(optimizer.optimize())
+
+    assert "pending fact" in memory.read_pending()
+    assert not memory._snapshot_path.exists()
+
+
+def test_optimize_propagates_cancellation_and_restores_pending(tmp_path):
+    memory = MarkdownMemoryStore(tmp_path)
+    memory.append_pending("- pending fact")
+    provider = types.SimpleNamespace()
+    provider.chat = AsyncMock(side_effect=asyncio.CancelledError)
+    optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
+    optimizer._STEP_DELAY_SECONDS = 0
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(optimizer.optimize())
 
     assert "pending fact" in memory.read_pending()
     assert not memory._snapshot_path.exists()
@@ -86,12 +157,31 @@ def test_optimize_updates_self_using_pending_only(tmp_path):
     assert "- [preference] 回复保持简洁。" in self_prompt
 
 
+def test_optimize_propagates_self_update_failure(tmp_path):
+    memory = MarkdownMemoryStore(tmp_path)
+    memory.write_long_term("old")
+    memory.write_self("## 原 SELF")
+    memory.append_pending("- [preference] 回复保持简洁。")
+    provider = types.SimpleNamespace()
+    provider.chat = AsyncMock(
+        side_effect=[_Resp("## 新记忆"), RuntimeError("self update failed")]
+    )
+    optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
+    optimizer._STEP_DELAY_SECONDS = 0
+
+    with pytest.raises(RuntimeError, match="self update failed"):
+        asyncio.run(optimizer.optimize())
+
+    assert memory.read_long_term().strip() == "## 新记忆"
+    assert memory.read_self().strip() == "## 原 SELF"
+
+
 def test_merge_memory_ignores_history_and_only_uses_pending(tmp_path):
     memory = MarkdownMemoryStore(tmp_path)
     memory.write_long_term("old profile")
     memory.append_pending("- [identity] 新身份")
 
-    provider = _provider_with_responses("## 用户画像\n- 新版本\n")
+    provider = _provider_with_responses("## 用户画像\n- 新版本\n", "")
     optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
     optimizer._STEP_DELAY_SECONDS = 0
     asyncio.run(optimizer.optimize())

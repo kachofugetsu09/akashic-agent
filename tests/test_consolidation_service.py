@@ -25,12 +25,16 @@ def _prepare(
     *,
     archive_all: bool = False,
     force: bool = False,
+    scope_channel: str = "",
+    scope_chat_id: str = "",
 ):
     return asyncio.run(
         service.prepare_consolidation(
             session,
             archive_all=archive_all,
             force=force,
+            scope_channel=scope_channel,
+            scope_chat_id=scope_chat_id,
         )
     )
 
@@ -90,7 +94,13 @@ def test_consolidation_service_archive_all_and_profile_extract():
         _chat_id="1",
     )
 
-    draft = _prepare(service, session, archive_all=True)
+    draft = _prepare(
+        service,
+        session,
+        archive_all=True,
+        scope_channel="cli",
+        scope_chat_id="1",
+    )
 
     assert draft is not None
     assert draft.history_entry_payloads == [
@@ -155,10 +165,19 @@ def test_consolidation_service_uses_profile_maint_for_reads():
         _chat_id="1",
     )
 
-    draft = _prepare(service, session, archive_all=True)
+    draft = _prepare(
+        service,
+        session,
+        archive_all=True,
+        scope_channel="cli",
+        scope_chat_id="1",
+    )
 
     assert draft is not None
     profile_maint.read_long_term.assert_called_once()
+    profile_maint.read_recent_context.assert_called_once()
+    assert draft.scope_channel == "cli"
+    assert draft.scope_chat_id == "1"
     assert draft.history_entry_payloads == [
         ("[2026-03-15 10:00] 用户聊了 Zigbee 方案", 0)
     ]

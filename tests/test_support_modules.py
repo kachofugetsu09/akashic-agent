@@ -281,6 +281,7 @@ async def test_message_push_non_passive_same_chat_keeps_fifo_order():
         "start:second",
         "end:second",
     ]
+    assert bus.chat_lane._states == {}
 
 
 @pytest.mark.asyncio
@@ -308,6 +309,24 @@ async def test_chat_lane_cancelled_non_passive_waiter_does_not_wedge_lane():
     )
 
     assert ran == ["second"]
+    assert lane._states == {}
+
+
+@pytest.mark.asyncio
+async def test_chat_lane_releases_idle_state_after_send_error():
+    lane = ChatLane()
+
+    await lane.mark_passive_pending("cli", "1")
+    await lane.mark_passive_done("cli", "1")
+    assert lane._states == {}
+
+    async def failed_send() -> None:
+        raise RuntimeError("send failed")
+
+    with pytest.raises(RuntimeError, match="send failed"):
+        await lane.run_passive("cli", "1", failed_send)
+
+    assert lane._states == {}
 
 
 @pytest.mark.asyncio
@@ -365,6 +384,29 @@ async def test_message_push_passive_role_does_not_wait_for_passive_lane():
 
     assert "文本已发送" in result
     assert events == ["inline"]
+
+
+@pytest.mark.asyncio
+async def test_message_bus_outbound_snapshot_survives_subscription_close():
+    bus = MessageBus()
+    delivered: list[str] = []
+    first_subscription = None
+
+    async def first_callback(_msg: OutboundMessage) -> None:
+        delivered.append("first")
+        assert first_subscription is not None
+        first_subscription.close()
+
+    async def second_callback(_msg: OutboundMessage) -> None:
+        delivered.append("second")
+
+    first_subscription = bus.subscribe_outbound("cli", first_callback)
+    bus.subscribe_outbound("cli", second_callback)
+
+    await bus._send_outbound(OutboundMessage("cli", "1", "first"))
+    await bus._send_outbound(OutboundMessage("cli", "1", "second"))
+
+    assert delivered == ["first", "second", "second"]
 
 
 @pytest.mark.asyncio
@@ -614,6 +656,11 @@ def test_tool_base_and_timekit_and_json_store_cover_branches(
     assert tool.validate_params({})[:2] == ["缺少必填字段：name", "缺少必填字段：count"]
     assert tool.to_schema()["function"]["name"] == "dummy"
 
+    numeric_type_errors = tool.validate_params(
+        {"name": "ok", "count": True, "items": [False]}
+    )
+    assert numeric_type_errors == ["count 应为 integer 类型", "items[0] 应为 number 类型"]
+
     class _BadSchemaTool(_DummyTool):
         @property
         def parameters(self) -> dict:
@@ -645,26 +692,24 @@ def test_tool_base_and_timekit_and_json_store_cover_branches(
     save_json(path, {"x": "中"})
     assert load_json(path)["x"] == "中"
     path.write_text("{bad", encoding="utf-8")
-    assert load_json(path, default=[]) == []
+    with pytest.raises(RuntimeError, match=r"\[json_store\].*data\.json"):
+        load_json(path, default=[])
     atomic_save_json(path, {"y": 2})
     assert load_json(path)["y"] == 2
 
-    class _BadPath:
-        parent = tmp_path
-        suffix = ".json"
-
-        def with_suffix(self, suffix: str):
-            return tmp_path / "bad.json.tmp"
-
-    bad = _BadPath()
     monkeypatch.setattr(
         "pathlib.Path.write_text",
         lambda self, *args, **kwargs: (_ for _ in ()).throw(RuntimeError("bad")),
     )
     with pytest.raises(RuntimeError):
         save_json(tmp_path / "x.json", {"x": 1})
+
+    monkeypatch.setattr(
+        "infra.persistence.json_store.os.fsync",
+        lambda _fd: (_ for _ in ()).throw(RuntimeError("bad")),
+    )
     with pytest.raises(RuntimeError):
-        atomic_save_json(bad, {"x": 1})  # type: ignore[arg-type]
+        atomic_save_json(tmp_path / "x.json", {"x": 1})
 
     parsed = timekit.parse_iso("2025-06-01T09:00:00Z")
     assert parsed and parsed.tzinfo is not None
@@ -782,6 +827,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert stamped_message.startswith("[当前消息时间:")
     assert "[附加媒体]" in stamped_message
     assert f"- 文件路径: {document}" in stamped_message
+    assert f"- 不可用媒体路径: {tmp_path / 'bad.txt'}" in stamped_message
     assert "request_time=" in stamped_message
     assert "今天=" in stamped_message
     assert "昨天=" in stamped_message
@@ -845,7 +891,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         ContextRequest(
             history=[],
             current_message="看看这张图",
-            media=[str(image), str(document)],
+            media=[str(image), str(document), str(tmp_path / "bad.txt")],
             skill_names=["extra"],
             message_timestamp=now,
         )
@@ -854,8 +900,20 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert isinstance(text_media_content, str)
     assert str(image) in text_media_content
     assert str(document) in text_media_content
+    assert f"- 不可用媒体路径: {tmp_path / 'bad.txt'}" in text_media_content
     assert "read_image_vision" in text_media_content
     assert "image_url" not in text_media_content
+
+    missing_media_content = text_media_builder.render(
+        ContextRequest(
+            history=[],
+            current_message="附件呢",
+            media=[str(tmp_path / "bad.txt")],
+        )
+    ).messages[-1]["content"]
+    assert f"- 不可用媒体路径: {tmp_path / 'bad.txt'}" in missing_media_content
+    assert "没有可供 read_image_vision 读取的本地图片" in missing_media_content
+    assert "read_image_vision(path=" not in missing_media_content
 
 
 def test_context_builder_reproduces_temporal_conflict_baseline(

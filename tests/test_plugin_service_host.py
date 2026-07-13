@@ -181,3 +181,28 @@ async def test_managed_service_without_readiness_rejects_fast_exit(
         await host.swap_plugin_services("failed", {}, spec)  # type: ignore[arg-type]
 
     assert host._running == {}
+
+
+@pytest.mark.asyncio
+async def test_start_all_preserves_start_error_when_rollback_fails() -> None:
+    host = PluginServiceHost()
+    host.bind_plugin_services({"plugin": {"a": {}, "b": {}}})
+    start_error = RuntimeError("start failed")
+    rollback_error = RuntimeError("rollback failed")
+
+    async def _start(plugin_id: str, service_id: str, spec: object) -> None:
+        if service_id == "b":
+            raise start_error
+
+    async def _stop(plugin_id: str, service_id: str) -> None:
+        raise rollback_error
+
+    host._start = _start  # type: ignore[method-assign]
+    host._stop = _stop  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="start failed") as caught:
+        await host.start_all()
+
+    assert caught.value is start_error
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert "rollback failed" in str(caught.value.__cause__)

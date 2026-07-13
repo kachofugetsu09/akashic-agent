@@ -38,6 +38,8 @@ class PluginScope:
 
     def defer(self, resource: str, cleanup: Cleanup) -> None:
         self._ensure_open()
+        if not callable(cleanup):
+            raise TypeError(f"插件清理动作不可调用: {self.plugin_id}:{resource}")
         self._cleanups.append((resource, cleanup))
 
     def subscribe(
@@ -65,6 +67,21 @@ class PluginScope:
             self._ensure_open()
         task = asyncio.create_task(coroutine, name=name)
 
+        def report_failure(completed: asyncio.Task[T]) -> None:
+            if completed.cancelled():
+                return
+            error = completed.exception()
+            if error is None:
+                return
+            logger.error(
+                "插件作用域任务异常: plugin=%s task=%s",
+                self.plugin_id,
+                completed.get_name(),
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
+        task.add_done_callback(report_failure)
+
         async def cancel() -> None:
             if not task.done():
                 _ = task.cancel()
@@ -84,13 +101,29 @@ class PluginScope:
         timeout: float = 5,
     ) -> None:
         async def terminate() -> None:
+            """终止异步进程并在竞态或超时时完成有限等待。"""
+
+            # 1. 进程已退出时仍 wait 一次完成 transport 收尾
             if process.returncode is None:
-                process.terminate()
+                try:
+                    process.terminate()
+                except ProcessLookupError:
+                    _ = await asyncio.wait_for(process.wait(), timeout=timeout)
+                    return
+            else:
+                _ = await asyncio.wait_for(process.wait(), timeout=timeout)
+                return
+
+            # 2. 先等待优雅退出
             try:
                 _ = await asyncio.wait_for(process.wait(), timeout=timeout)
             except TimeoutError:
-                process.kill()
-                _ = await process.wait()
+                # 3. 超时后强杀，并保持二次等待有界
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                _ = await asyncio.wait_for(process.wait(), timeout=timeout)
 
         self.defer(f"process:{name}", terminate)
 
@@ -102,41 +135,81 @@ class PluginScope:
         timeout: float = 5,
     ) -> None:
         async def terminate() -> None:
+            """终止同步进程并在竞态或超时时完成有限等待。"""
+
+            # 1. 进程已退出时 poll 已完成回收
             if process.poll() is not None:
                 return
-            process.terminate()
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                if process.poll() is None:
+                    raise
+
+            # 2. 先等待优雅退出
             try:
                 _ = await asyncio.to_thread(process.wait, timeout)
             except subprocess.TimeoutExpired:
-                process.kill()
-                _ = await asyncio.to_thread(process.wait)
+                # 3. 超时后强杀，并保持二次等待有界
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    if process.poll() is None:
+                        raise
+                _ = await asyncio.to_thread(process.wait, timeout)
 
         self.defer(f"process:{name}", terminate)
 
     async def aclose(self) -> list[CleanupFailure]:
+        """按逆序完成全部资源清理，并在末尾恢复外部取消。"""
+
+        # 1. 关闭入口只消费一次，后续调用保持幂等
         if self._closed:
             return []
         self._closed = True
         failures: list[CleanupFailure] = []
-        externally_cancelled = False
+        current = asyncio.current_task()
+        externally_cancelled = current is not None and current.cancelling() > 0
+
+        # 2. 每个 cleanup 脱离调用方取消，保证当前资源完成后再处理下一个
         while self._cleanups:
             resource, cleanup = self._cleanups.pop()
-            try:
+
+            async def run_cleanup() -> None:
                 result = cleanup()
                 if inspect.isawaitable(result):
                     await result
+
+            cleanup_task = asyncio.create_task(
+                run_cleanup(),
+                name=f"plugin_cleanup:{self.plugin_id}:{resource}",
+            )
+            while not cleanup_task.done():
+                try:
+                    _ = await asyncio.wait({cleanup_task})
+                except asyncio.CancelledError:
+                    current = asyncio.current_task()
+                    if current is not None and current.cancelling() > 0:
+                        externally_cancelled = True
+                    continue
+            try:
+                await cleanup_task
             except (asyncio.CancelledError, Exception) as error:
-                failure = CleanupFailure(resource=resource, error=str(error))
+                error_text = str(error) or type(error).__name__
+                failure = CleanupFailure(resource=resource, error=error_text)
                 failures.append(failure)
-                if isinstance(error, asyncio.CancelledError):
-                    task = asyncio.current_task()
-                    externally_cancelled = task is not None and task.cancelling() > 0
                 logger.warning(
                     "插件资源清理失败: plugin=%s resource=%s error=%s",
                     self.plugin_id,
                     resource,
-                    error,
+                    error_text,
                 )
+            current = asyncio.current_task()
+            externally_cancelled = externally_cancelled or (
+                current is not None and current.cancelling() > 0
+            )
+
+        # 3. 所有资源处理完后才恢复原始取消语义
         if externally_cancelled:
             raise asyncio.CancelledError
         return failures

@@ -141,6 +141,74 @@ async def test_web_chat_message_send_can_create_session_without_persisting_empty
     assert str(bus.inbound[0].session_key).startswith("web:")
 
 
+@pytest.mark.asyncio
+async def test_web_chat_rejects_malformed_fields_without_closing_connection(tmp_path: Path) -> None:
+    bus = _Bus()
+    session_manager = _SessionManager()
+    channel = WebChatChannel()
+    await channel.start(cast(Any, SimpleNamespace(
+        bus=bus,
+        session_manager=session_manager,
+        event_bus=_EventBus(),
+        push_tool=_PushTool(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
+        interrupt_controller=None,
+    )))
+    app = create_chat_app(workspace=tmp_path, channel=channel)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({
+                "type": "message.send",
+                "request_id": "bad",
+                "text": "你好",
+                "media": "not-a-list",
+            })
+            error = ws.receive_json()
+            assert error == {
+                "type": "error",
+                "request_id": "bad",
+                "message": "media 必须是数组",
+            }
+
+            ws.send_json({
+                "type": "message.send",
+                "request_id": "bad-text",
+                "text": 123,
+                "media": [],
+            })
+            assert ws.receive_json() == {
+                "type": "error",
+                "request_id": "bad-text",
+                "message": "text 必须是字符串",
+            }
+
+            ws.send_json({
+                "type": "message.send",
+                "request_id": "bad-media-item",
+                "text": "你好",
+                "media": ["ok.png", 123],
+            })
+            assert ws.receive_json() == {
+                "type": "error",
+                "request_id": "bad-media-item",
+                "message": "media 必须是字符串数组",
+            }
+
+            ws.send_json({"type": "ping", "request_id": "ping-1"})
+            assert ws.receive_json() == {"type": "pong", "request_id": "ping-1"}
+
+            ws.send_json({
+                "type": "message.send",
+                "request_id": "good",
+                "text": "继续",
+                "media": [],
+            })
+
+    assert len(bus.inbound) == 1
+    assert bus.inbound[0].content == "继续"
+
+
 def test_chat_upload_returns_local_path(tmp_path: Path) -> None:
     channel = WebChatChannel()
     app = create_chat_app(workspace=tmp_path, channel=channel)

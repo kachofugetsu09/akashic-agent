@@ -1,6 +1,4 @@
-"""
-Basic CLI client for the local agent.
-"""
+"""本地 agent 的基础 CLI 客户端。"""
 
 from __future__ import annotations
 

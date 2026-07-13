@@ -387,9 +387,6 @@ class ShellTool(Tool):
 
         logger.info("shell [%s]: %s", description, command[:120])
 
-        base_cmd = command.split()[0].lower()
-        if base_cmd in _BANNED:
-            return _err(f"命令 '{base_cmd}' 不被允许（安全限制）")
         cmd_err = _validate_command(
             command,
             allow_network=self._allow_network,
@@ -1051,7 +1048,9 @@ def _validate_command(
     if not tokens:
         return None
 
-    cmd = tokens[0].lower()
+    cmd = _command_name(tokens[0])
+    if cmd in _BANNED:
+        return f"命令 '{cmd}' 不被允许（安全限制）"
     if not allow_network and cmd in _NETWORK_CMDS:
         return "当前 shell 配置禁止网络访问"
 
@@ -1075,7 +1074,7 @@ def _validate_network_command(command: str) -> str | None:
     if not tokens:
         return None
 
-    cmd = tokens[0].lower()
+    cmd = _command_name(tokens[0])
     if cmd not in _NETWORK_CMDS:
         return None
 
@@ -1128,9 +1127,9 @@ def _validate_restricted_command(tokens: list[str], restricted_dir: Path) -> str
     if any(marker in command for marker in _RESTRICTED_META_CHARS):
         return "受限 shell 禁止管道、重定向或串联命令"
 
-    base_cmd = tokens[0].lower()
-    if base_cmd in _RESTRICTED_SHELL_RUNNERS:
-        return f"受限 shell 禁止启动解释器或二级 shell：{base_cmd}"
+    command_name = _command_name(tokens[0])
+    if command_name in _RESTRICTED_SHELL_RUNNERS:
+        return f"受限 shell 禁止启动解释器或二级 shell：{command_name}"
 
     for token in tokens[1:]:
         if token.startswith("-") or token == "--":
@@ -1180,6 +1179,12 @@ def _split_command(command: str) -> list[str]:
         _strip_shell_quotes(token)
         for token in shlex.split(command, posix=not _IS_WINDOWS)
     ]
+
+
+def _command_name(token: str) -> str:
+    name = PureWindowsPath(token).name if _IS_WINDOWS else Path(token).name
+    name = name.lower()
+    return name.removesuffix(".exe")
 
 
 def _strip_shell_quotes(token: str) -> str:

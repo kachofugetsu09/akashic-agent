@@ -174,7 +174,7 @@ class RecentContextPromptBlock:
         content = ctx.memory.read_recent_context()
         if not content:
             return None
-        # Strip ## Recent Turns section — it mirrors the sliding window and causes overlap.
+        # 移除 ## Recent Turns 段落；它与滑动窗口重复，会造成内容重叠。
         marker = "\n## Recent Turns"
         cut = content.find(marker)
         trimmed = content[:cut].strip() if cut != -1 else content.strip()

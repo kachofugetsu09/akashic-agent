@@ -12,7 +12,9 @@ from agent.core.passive_turn import DefaultReasoner
 from prompts.agent import build_current_message_time_envelope
 import agent.looping.core as loop_core
 from agent.looping.core import AgentLoop
-from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
+from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, MemoryServices
+from agent.retrieval.protocol import MemoryRetrievalPipeline, RetrievalRequest
+from bus.queue import MessageBus
 from core.memory.markdown import ConsolidateResult
 from core.memory.runtime import MemoryRuntime
 from tests.memory_fakes import FakeMemoryEngine
@@ -29,7 +31,7 @@ def _make_loop(tmp_path: Path) -> AgentLoop:
     )
     return AgentLoop(
         AgentLoopDeps(
-            bus=MagicMock(),
+            bus=MessageBus(),
             provider=MagicMock(),
             tools=MagicMock(),
             session_manager=MagicMock(),
@@ -38,6 +40,48 @@ def _make_loop(tmp_path: Path) -> AgentLoop:
         ),
         AgentLoopConfig(),
     )
+
+
+@pytest.mark.asyncio
+async def test_memory_runtime_engine_is_not_masked_by_empty_services(
+    tmp_path: Path,
+) -> None:
+    memory = FakeMemoryEngine(tmp_path)
+    runtime = cast(
+        MemoryRuntime,
+        SimpleNamespace(
+            engine=memory,
+            markdown=SimpleNamespace(store=memory, maintenance=memory),
+        ),
+    )
+
+    loop = AgentLoop(
+        AgentLoopDeps(
+            bus=MessageBus(),
+            provider=MagicMock(),
+            tools=MagicMock(),
+            session_manager=MagicMock(),
+            workspace=tmp_path,
+            memory_runtime=runtime,
+            memory_services=MemoryServices(),
+        ),
+        AgentLoopConfig(),
+    )
+
+    memory.retrieve_result.text_block = "runtime memory"
+    retrieval = cast(MemoryRetrievalPipeline, loop._retrieval_pipeline)
+    result = await retrieval.retrieve(
+        RetrievalRequest(
+            message="测试",
+            session_key="cli:1",
+            channel="cli",
+            chat_id="1",
+            history=[],
+            session_metadata={},
+        )
+    )
+
+    assert result.block == "runtime memory"
 
 
 def test_collect_skill_mentions_returns_unique_existing_names(tmp_path):

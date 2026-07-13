@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import shlex
 import shutil
@@ -17,7 +18,9 @@ import pytest
 
 # 预热 agent.core 导入链，避免 agent.lifecycle.types 触发循环导入
 from agent.core.passive_turn import ContextStore as _  # noqa: F401
+from agent.config_models import Config
 from agent.lifecycle.types import AfterStepCtx, AfterToolResultCtx, BeforeToolCallCtx, BeforeTurnCtx
+from agent.plugins.context import PluginKVStore
 from agent.plugins.manager import PluginManager
 from agent.plugins.manifest import write_package_manifest
 from agent.plugins.jobs import PluginJobRuntime, PluginJobSpec, RegisteredPluginJob
@@ -403,6 +406,19 @@ async def test_plugin_scope_cleans_in_reverse_order_after_failure():
     assert scope.resource_count == 0
 
 
+def test_plugin_scope_rejects_non_callable_cleanup() -> None:
+    scope = PluginScope("invalid-cleanup")
+    cleanup: Any = None
+
+    with pytest.raises(
+        TypeError,
+        match="插件清理动作不可调用: invalid-cleanup:broken",
+    ):
+        scope.defer("broken", cleanup)
+
+    assert scope.resource_count == 0
+
+
 @pytest.mark.asyncio
 async def test_plugin_scope_continues_after_cancelled_cleanup():
     scope = PluginScope("cancelled-cleanup")
@@ -419,6 +435,131 @@ async def test_plugin_scope_continues_after_cancelled_cleanup():
 
     assert cleaned == ["first", "last"]
     assert [failure.resource for failure in failures] == ["cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_plugin_scope_reports_failed_task_and_is_idempotent():
+    scope = PluginScope("task-failure")
+    cleaned: list[str] = []
+
+    async def fail() -> None:
+        raise RuntimeError("task failed")
+
+    task = scope.create_task(fail(), name="worker")
+    with pytest.raises(RuntimeError, match="task failed"):
+        await task
+    scope.defer("marker", lambda: cleaned.append("marker"))
+
+    failures = await scope.aclose()
+
+    assert cleaned == ["marker"]
+    assert [(failure.resource, failure.error) for failure in failures] == [
+        ("task:worker", "task failed")
+    ]
+    assert await scope.aclose() == []
+
+
+@pytest.mark.asyncio
+async def test_plugin_scope_reports_task_failure_before_close(caplog):
+    scope = PluginScope("task-runtime-failure")
+
+    async def fail() -> None:
+        raise RuntimeError("runtime task failed")
+
+    with caplog.at_level(logging.ERROR, logger="agent.plugins.scope"):
+        task = scope.create_task(fail(), name="runtime-worker")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    assert task.done()
+    record = next(
+        record
+        for record in caplog.records
+        if record.name == "agent.plugins.scope"
+    )
+    assert record.exc_info is not None
+    assert record.exc_info[0] is RuntimeError
+    assert "runtime task failed" in caplog.text
+    failures = await scope.aclose()
+    assert [(failure.resource, failure.error) for failure in failures] == [
+        ("task:runtime-worker", "runtime task failed")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_plugin_scope_finishes_cleanup_after_external_cancellation():
+    scope = PluginScope("cancelled-close")
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    cancelled_inside_cleanup = False
+    cleaned: list[str] = []
+
+    async def cleanup() -> None:
+        nonlocal cancelled_inside_cleanup
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled_inside_cleanup = True
+            await release.wait()
+
+    scope.defer("slow", cleanup)
+    scope.defer("marker", lambda: cleaned.append("marker"))
+    closing = asyncio.create_task(scope.aclose())
+    await entered.wait()
+    closing.cancel()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+
+    assert cancelled_inside_cleanup is False
+    assert cleaned == ["marker"]
+    assert scope.resource_count == 0
+    assert await scope.aclose() == []
+
+
+@pytest.mark.asyncio
+async def test_plugin_scope_handles_async_process_exit_and_timeout_kill():
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.returncode: int | None = None
+            self.terminate_calls = 0
+            self.kill_calls = 0
+            self.wait_calls = 0
+            self._exit = asyncio.Event()
+
+        def terminate(self) -> None:
+            self.terminate_calls += 1
+
+        def kill(self) -> None:
+            self.kill_calls += 1
+            self.returncode = -9
+            self._exit.set()
+
+        async def wait(self) -> int:
+            self.wait_calls += 1
+            await self._exit.wait()
+            assert self.returncode is not None
+            return self.returncode
+
+    exited = FakeProcess()
+    exited.returncode = 0
+    exited._exit.set()
+    scope = PluginScope("async-process-exit")
+    scope.track_async_process(cast(Any, exited), name="exited", timeout=0.01)
+    assert await scope.aclose() == []
+    assert exited.terminate_calls == 0
+    assert exited.kill_calls == 0
+    assert exited.wait_calls == 1
+
+    timed_out = FakeProcess()
+    scope = PluginScope("async-process-timeout")
+    scope.track_async_process(cast(Any, timed_out), name="timed-out", timeout=0.01)
+    assert await scope.aclose() == []
+    assert timed_out.terminate_calls == 1
+    assert timed_out.kill_calls == 1
+    assert timed_out.wait_calls == 2
 
 
 @pytest.mark.asyncio
@@ -501,6 +642,52 @@ async def test_plugin_manager_scope_cleans_legacy_resources(tmp_path: Path):
         "closed": True
     }
     assert len(manager.cleanup_failures) == 20
+
+
+@pytest.mark.asyncio
+async def test_plugin_manager_consumes_scope_failures_after_terminate_cancellation(
+    tmp_path: Path,
+):
+    plugin_root = tmp_path / "plugins"
+    plugin_dir = plugin_root / "cancelled_close"
+    plugin_dir.mkdir(parents=True)
+    _ = (plugin_dir / "plugin.py").write_text(
+        "import asyncio\n"
+        "from agent.plugins import Plugin\n"
+        "entered = asyncio.Event()\n"
+        "release = asyncio.Event()\n"
+        "class CancelledClosePlugin(Plugin):\n"
+        "    name = 'cancelled_close'\n"
+        "    async def initialize(self):\n"
+        "        async def slow_cleanup():\n"
+        "            entered.set()\n"
+        "            await release.wait()\n"
+        "        def fail_cleanup():\n"
+        "            raise RuntimeError('scope failure')\n"
+        "        self.context.defer('slow', slow_cleanup)\n"
+        "        self.context.defer('failure', fail_cleanup)\n",
+        encoding="utf-8",
+    )
+    manager = PluginManager(
+        plugin_dirs=[plugin_root],
+        event_bus=EventBus(),
+        installed_cache_root=tmp_path / "cache",
+    )
+    await manager.load_all()
+    module = sys.modules["akasic_plugin_plugins_cancelled_close"]
+    closing = asyncio.create_task(manager.terminate_all())
+    await module.entered.wait()
+    closing.cancel()
+    module.release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+
+    assert manager.loaded_count == 0
+    assert any(
+        failure.resource == "failure" and failure.error == "scope failure"
+        for failure in manager.cleanup_failures
+    )
 
 
 @pytest.mark.asyncio
@@ -784,6 +971,15 @@ async def test_kv_store_persists_across_manager_instances():
         assert data["turn_count"] == 2
 
 
+def test_kv_store_rejects_non_object_root(tmp_path: Path) -> None:
+    path = tmp_path / ".kv.json"
+    _ = path.write_text("[]", encoding="utf-8")
+    store = PluginKVStore(path)
+
+    with pytest.raises(ValueError, match="插件 KV 根节点必须是对象"):
+        store.get("turn_count")
+
+
 # ── 程序化身份声明测试 ────────────────────────────────────────────────────────
 
 
@@ -860,7 +1056,8 @@ async def test_loads_installed_programmatic_plugin():
             "for line in sys.stdin:\n"
             "    msg = json.loads(line)\n"
             "    if 'id' not in msg: continue\n"
-            "    result = {'tools': []} if msg.get('method') == 'tools/list' else {}\n"
+            "    method = msg.get('method')\n"
+            "    result = {'protocolVersion': '2025-11-25'} if method == 'initialize' else {'tools': []}\n"
             "    print(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': result}), flush=True)\n",
             encoding="utf-8",
         )
@@ -949,6 +1146,38 @@ async def test_active_plugins_excludes_inactive_memory_plugin(
         for generation in active_generations
         for root in generation.contributions.drift_skill_roots
     )
+
+
+@pytest.mark.asyncio
+async def test_active_plugin_check_propagates_plugin_failure(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins" / "broken_active"
+    plugin_dir.mkdir(parents=True)
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class BrokenActivePlugin(Plugin):\n"
+        "    name = 'broken_active'\n"
+        "    def is_active(self):\n"
+        "        raise RuntimeError('active check failed')\n",
+        encoding="utf-8",
+    )
+    manager = _make_manager([tmp_path / "plugins"], event_bus=EventBus())
+    await manager.load_all()
+
+    with pytest.raises(RuntimeError, match="插件 active 状态检查失败") as manager_error:
+        manager.active_plugins()
+    assert isinstance(manager_error.value.__cause__, RuntimeError)
+    assert str(manager_error.value.__cause__) == "active check failed"
+    snapshot = manager.current_snapshot
+    assert snapshot is not None
+    with pytest.raises(
+        RuntimeError,
+        match="插件 active 状态检查失败: broken_active",
+    ) as snapshot_error:
+        snapshot.active_generations()
+    assert isinstance(snapshot_error.value.__cause__, RuntimeError)
+    assert str(snapshot_error.value.__cause__) == "active check failed"
+
+    await manager.terminate_all()
 
 
 @pytest.mark.asyncio
@@ -1746,7 +1975,12 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
     plugin_manager = FakePluginManager()
 
     runtime = CoreRuntime(
-        config=SimpleNamespace(peer_agents=[]),  # type: ignore[arg-type]
+        config=Config(
+            provider="openai",
+            model="m",
+            api_key="k",
+            system_prompt="s",
+        ),
         http_resources=SimpleNamespace(local_service=None),  # type: ignore[arg-type]
         loop=loop,  # type: ignore[arg-type]
         bus=SimpleNamespace(),  # type: ignore[arg-type]
@@ -1778,3 +2012,43 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
     assert loop.received_after_turn is None
     assert loop.received_hooks == plugin_manager.tool_hooks
     assert spawn_tool.received_hooks == plugin_manager.tool_hooks
+
+
+@pytest.mark.asyncio
+async def test_core_runtime_stop_closes_session_manager(tmp_path: Path):
+    from bootstrap.tools import CoreRuntime
+
+    from session.manager import SessionManager
+
+    async def _noop() -> None:
+        return None
+
+    session_manager = SessionManager(tmp_path)
+    runtime = CoreRuntime(
+        config=Config(
+            provider="openai",
+            model="m",
+            api_key="k",
+            system_prompt="s",
+        ),
+        http_resources=SimpleNamespace(),  # type: ignore[arg-type]
+        loop=SimpleNamespace(),  # type: ignore[arg-type]
+        bus=SimpleNamespace(),  # type: ignore[arg-type]
+        event_bus=SimpleNamespace(aclose=_noop),  # type: ignore[arg-type]
+        tools=SimpleNamespace(get_tool=lambda _name: None),  # type: ignore[arg-type]
+        push_tool=SimpleNamespace(),  # type: ignore[arg-type]
+        session_manager=session_manager,
+        scheduler=SimpleNamespace(),  # type: ignore[arg-type]
+        provider=SimpleNamespace(),  # type: ignore[arg-type]
+        light_provider=None,
+        mcp_registry=SimpleNamespace(shutdown=_noop),  # type: ignore[arg-type]
+        memory_runtime=SimpleNamespace(),  # type: ignore[arg-type]
+        presence=SimpleNamespace(),  # type: ignore[arg-type]
+        peer_process_manager=None,
+        peer_poller=None,
+        plugin_manager=None,
+    )
+
+    await runtime.stop()
+
+    assert session_manager._store._closed is True

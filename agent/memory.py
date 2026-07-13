@@ -47,7 +47,7 @@ class MemoryStore:
         # 崩溃恢复：启动时若遗留 snapshot，回滚合并
         self._recover_pending_snapshot()
 
-    # ── long-term memory (MEMORY.md) ─────────────────────────────
+    # ── 长期记忆（MEMORY.md）─────────────────────────────
 
     def read_long_term(self) -> str:
         if self.memory_file.exists():
@@ -57,7 +57,7 @@ class MemoryStore:
     def write_long_term(self, content: str) -> None:
         self.memory_file.write_text(content, encoding="utf-8")
 
-    # ── RECENT_CONTEXT.md (compacted recent context) ──────────────
+    # ── RECENT_CONTEXT.md（压缩后的近期语境）──────────────
 
     def read_recent_context(self) -> str:
         if self.recent_context_file.exists():
@@ -67,7 +67,7 @@ class MemoryStore:
     def write_recent_context(self, content: str) -> None:
         self.recent_context_file.write_text(content, encoding="utf-8")
 
-    # ── SELF.md (Akashic self-model) ──────────────────────────────
+    # ── SELF.md（Akashic 自我模型）─────────────────────────────
 
     def read_self(self) -> str:
         if self.self_file.exists():
@@ -77,7 +77,7 @@ class MemoryStore:
     def write_self(self, content: str) -> None:
         self.self_file.write_text(content, encoding="utf-8")
 
-    # ── pending facts (conversation → optimizer buffer) ───────────
+    # ── 待处理事实（对话 → optimizer 缓冲区）───────────
 
     def read_pending(self) -> str:
         if self.pending_file.exists():
@@ -101,7 +101,7 @@ class MemoryStore:
         kind: str = "pending",
     ) -> bool:
         """按 source_ref 幂等追加 PENDING，避免重启后重复 consolidation。"""
-        text = (facts or "").strip()
+        text = facts.strip()
         if not text:
             return False
         return self._append_once_with_index(
@@ -176,8 +176,8 @@ class MemoryStore:
 
     @staticmethod
     def _consolidation_marker(source_ref: str, kind: str) -> str:
-        src = (source_ref or "").replace("\n", " ").strip()
-        kd = (kind or "").replace("\n", " ").strip()
+        src = source_ref.replace("\n", " ").strip()
+        kd = kind.replace("\n", " ").strip()
         return f"{_CONSOLIDATION_MARKER_PREFIX}{src}:{kd}{_CONSOLIDATION_MARKER_SUFFIX}"
 
     @staticmethod
@@ -229,12 +229,15 @@ class MemoryStore:
         kind: str,
         trailing_blank_line: bool,
     ) -> bool:
-        marker = self._consolidation_marker(source_ref, kind)
-        src = (source_ref or "").strip()
-        kd = (kind or "").strip()
+        """在文件和 SQLite 索引之间执行一次幂等追加。"""
+        # 1. 校验调用方已建立的字符串契约，并生成稳定 marker。
+        src = source_ref.strip()
+        kd = kind.strip()
         if not src or not kd or not text:
             return False
+        marker = self._consolidation_marker(src, kd)
 
+        # 2. 锁定索引事务，恢复已记录但文件缺失的写入。
         with self._consolidation_lock:
             conn = sqlite3.connect(str(self._consolidation_db), timeout=30.0)
             try:
@@ -244,15 +247,27 @@ class MemoryStore:
                     (src, kd),
                 ).fetchone()
                 if row is not None:
-                    existing_payload = row[0] or ""
-                    existing_trailing = bool(int(row[1] or 0))
+                    existing_payload = row[0]
+                    existing_trailing_raw = row[1]
+                    if existing_payload is not None and not isinstance(
+                        existing_payload, str
+                    ):
+                        raise TypeError("consolidation payload must be text")
+                    if not isinstance(existing_trailing_raw, int):
+                        raise TypeError("consolidation trailing flag must be an integer")
+                    if existing_trailing_raw not in (0, 1):
+                        raise ValueError("consolidation trailing flag must be 0 or 1")
+                    existing_trailing = bool(existing_trailing_raw)
                     if not self._file_contains_marker(target_file, marker):
-                        if existing_payload:
-                            with open(target_file, "a", encoding="utf-8") as f:
-                                f.write(marker + "\n")
-                                f.write(existing_payload.rstrip() + "\n")
-                                if existing_trailing:
-                                    f.write("\n")
+                        if not existing_payload:
+                            raise ValueError(
+                                "consolidation index payload is missing for file recovery"
+                            )
+                        with open(target_file, "a", encoding="utf-8") as f:
+                            f.write(marker + "\n")
+                            f.write(existing_payload.rstrip() + "\n")
+                            if existing_trailing:
+                                f.write("\n")
                     conn.execute("COMMIT")
                     return False
 
@@ -265,6 +280,7 @@ class MemoryStore:
                     conn.execute("COMMIT")
                     return False
 
+                # 3. 先追加 marker 和内容，再提交索引事务。
                 with open(target_file, "a", encoding="utf-8") as f:
                     f.write(marker + "\n")
                     f.write(text.rstrip() + "\n")
@@ -290,18 +306,15 @@ class MemoryStore:
     def _tail_contains_marker(path: Path, marker: str) -> bool:
         if not path.exists():
             return False
-        try:
-            with open(path, "rb") as f:
-                f.seek(0, 2)
-                size = f.tell()
-                take = min(size, _CONSOLIDATION_TAIL_BYTES)
-                if take <= 0:
-                    return False
-                f.seek(size - take)
-                tail = f.read(take).decode("utf-8", errors="ignore")
-                return marker in tail
-        except Exception:
-            return False
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            take = min(size, _CONSOLIDATION_TAIL_BYTES)
+            if take <= 0:
+                return False
+            f.seek(size - take)
+            tail = f.read(take).decode("utf-8")
+            return marker in tail
 
     @staticmethod
     def _file_contains_marker(path: Path, marker: str) -> bool:
@@ -311,16 +324,13 @@ class MemoryStore:
         if not needle:
             return False
         carry = b""
-        try:
-            with open(path, "rb") as f:
-                for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                    data = carry + chunk
-                    if needle in data:
-                        return True
-                    if len(needle) > 1:
-                        carry = data[-(len(needle) - 1) :]
-                    else:
-                        carry = b""
-        except Exception:
-            return False
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                data = carry + chunk
+                if needle in data:
+                    return True
+                if len(needle) > 1:
+                    carry = data[-(len(needle) - 1) :]
+                else:
+                    carry = b""
         return False

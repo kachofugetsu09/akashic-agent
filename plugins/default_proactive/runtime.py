@@ -49,7 +49,6 @@ from plugins.default_proactive.resolve import (
     ack_post_guard_fail,
     build_delivery_key,
 )
-from plugins.default_proactive.source_poll import DefaultSourcePollModule
 from plugins.proactive_flow.tools import ToolDeps
 
 logger = logging.getLogger(__name__)
@@ -127,26 +126,25 @@ class ProactiveFlowDeps:
     schedule_fn: Callable[[float | None], int] | None = None
     event_bus: EventBus | None = None
     tool_hooks: list[ToolHook] | None = None
-    source_poll_module: DefaultSourcePollModule | None = None
 
 
 # ── 主 Pipeline ─────────────────────────────────────────────────────────
 
 # 主动链路核心入口，串起 Gate → Fetch → Judge → Resolve → Deliver 五段。
 #
-# ┌─ tick trigger
+# ┌─ tick 触发
 # │  └─ ProactiveFlowRuntime.run
-# │     ├─ 1. Gate ── _gate_check
+# │     ├─ 1. Gate（准入）── _gate_check
 # │     │  └─ no_target / busy / cooldown / anyaction / context_fallback
-# │     ├─ 2. Fetch ── _fetch_pull
+# │     ├─ 2. Fetch（拉取）── _fetch_pull
 # │     │  └─ DataGateway 并行拉取 → drift 分支 → 构建 system prompt + messages
-# │     ├─ 3. Judge ── _judge_evaluate
+# │     ├─ 3. Judge（评估）── _judge_evaluate
 # │     │  └─ _run_tool_step 循环 → completeness_check → reflection_pass
-# │     ├─ 4. Resolve ── _resolve_decide
+# │     ├─ 4. Resolve（决策）── _resolve_decide
 # │     │  └─ skip 判定 / delivery_dedupe / message_dedupe → TurnResult
-# │     └─ 5. Deliver ── _deliver_execute
+# │     └─ 5. Deliver（发送）── _deliver_execute
 # │        └─ _record_tick_log_finish → TurnOrchestrator.handle_proactive_turn
-# └─ done
+# └─ 完成
 
 # 主动业务执行服务，由 Lifecycle Module 分段调用。
 class ProactiveFlowRuntime:
@@ -169,7 +167,6 @@ class ProactiveFlowRuntime:
         self._schedule_fn = deps.schedule_fn
         self._event_bus = deps.event_bus
         self._tool_executor = ToolExecutor(deps.tool_hooks or [])
-        self._source_poll_module = deps.source_poll_module
         self._proactive_slots: dict[str, Any] = {}
         self._proactive_prompt_sections: list[str] = []
         self._proactive_effect_logs: list[dict[str, Any]] = []
@@ -439,7 +436,7 @@ class ProactiveFlowRuntime:
             return None
         return self._schedule_fn(state.base_score)
 
-    # ── 1. Gate ───────────────────────────────────────────────────────
+    # ── 1. Gate（准入）───────────────────────────────────────────────
 
     def _gate_check(self, ctx: AgentTickContext) -> GateResult:
         gate = self._gate_chain.check(ctx)
@@ -468,7 +465,7 @@ class ProactiveFlowRuntime:
             and isinstance(value, dict)
         ]
 
-    # ── 2. Fetch ──────────────────────────────────────────────────────
+    # ── 2. Fetch（拉取）─────────────────────────────────────────────
 
     async def _fetch_gateway(self, ctx: AgentTickContext) -> GatewayResult:
 
@@ -579,18 +576,18 @@ class ProactiveFlowRuntime:
         messages: list[dict] = [system_msg, runtime_context_msg, kickoff_msg]
         return FeedResult(drift_entered=False, base_score=None, messages=messages)
 
-    # ── 3. Judge ──────────────────────────────────────────────────────
+    # ── 3. Judge（评估）─────────────────────────────────────────────
 
     async def _judge_evaluate(self, ctx: AgentTickContext, messages: list[dict]) -> None:
         await self._judge.evaluate(ctx, messages, self._last_gateway_result)
         self.last_ctx = ctx
 
-    # ── 4. Resolve ────────────────────────────────────────────────────
+    # ── 4. Resolve（决策）───────────────────────────────────────────
 
     async def _resolve_decide(self, ctx: AgentTickContext) -> ResolveResult:
         return await self._resolver.resolve(ctx)
 
-    # ── 5. Deliver ────────────────────────────────────────────────────
+    # ── 5. Deliver（发送）───────────────────────────────────────────
 
     async def _deliver_execute(self, ctx: AgentTickContext, decision: ResolveResult) -> float | None:
         return await self._deliverer.deliver(ctx, decision)
@@ -858,6 +855,4 @@ def build_default_proactive_modules(
         ProactiveCommitModule(runtime),
         ProactiveScheduleModule(runtime),
     ]
-    if runtime._source_poll_module is not None:
-        modules.insert(0, runtime._source_poll_module)
     return modules

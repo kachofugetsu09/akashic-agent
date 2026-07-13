@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 
 from plugins.akasha.core import (
-    # Types shared with core
+    # 与 core 共享的类型
     ActivationEventRow,
     ActivationTrace,
     AkashaActivationSnapshot,
@@ -35,8 +35,9 @@ from plugins.akasha.core import (
     SourceMessage,
     build_dense_message_index,
     initial_strength,
+    parse_ts_unix,
     turn_key,
-    # Algorithm functions (aliased with _ prefix for internal convention)
+    # 算法函数（按内部约定统一使用 _ 前缀别名）
     activation_edge_updates as _activation_edge_updates,
     local_residual as _local_residual,
     activation_updates as _activation_updates,
@@ -169,6 +170,7 @@ class AkashaMemoryEngine:
         self._fan: dict[str, int] = {}
         self._message_embeddings: dict[str, np.ndarray] = {}
         self._message_turn_keys: dict[str, str] = {}
+        self._message_timestamps: dict[str, float] = {}
         self._message_index = build_dense_message_index({})
         self._load_graph_cache()
         self._ensure_idf_table()
@@ -186,18 +188,20 @@ class AkashaMemoryEngine:
         )
         sessions_db = str(self._session_db_path)
         conn = self._store.db
-        try:
-            stale = idf_table_is_stale(sessions_db, conn)
-        except Exception:
-            stale = True
-        if stale and self._session_db_path.exists():
-            try:
-                idf = build_idf_table(sessions_db, conn)
-                print(f"[akasha] built FTS IDF table: {len(idf)} tokens")
-            except Exception as exc:  # noqa: BLE001
-                print(f"[akasha] IDF build failed, falling back to no-filter: {exc}")
-                set_idf_table({})
-                return
+        stale = idf_table_is_stale(sessions_db, conn)
+        source_table_exists = False
+        if self._session_db_path.exists():
+            with closing(sqlite3.connect(sessions_db)) as source_db:
+                source_table_exists = source_db.execute(
+                    """
+                    SELECT 1
+                    FROM sqlite_master
+                    WHERE type = 'table' AND name = 'messages'
+                    """
+                ).fetchone() is not None
+        if stale and source_table_exists:
+            idf = build_idf_table(sessions_db, conn)
+            print(f"[akasha] built FTS IDF table: {len(idf)} tokens")
         idf = load_idf_from_db(conn)
         set_idf_table(idf)
 
@@ -222,7 +226,9 @@ class AkashaMemoryEngine:
     def _wire_events(self) -> None:
         # 1. Akasha 不接 consolidation，只关心每轮真实消息提交。
         if self._event_bus is not None:
-            self._event_bus.on(TurnCommitted, self._on_turn_committed)
+            self.closeables.append(
+                self._event_bus.on(TurnCommitted, self._on_turn_committed)
+            )
 
     # 返回 Akasha 工具描述。
     def tool_profile(self) -> MemoryToolProfile:
@@ -669,8 +675,13 @@ class AkashaMemoryEngine:
 
         # 2. 分别 embed user 和 assistant，再按 cross CLI 规则合并到 turn 节点。
         embeddings = await self._embedder.embed_batch([message.content for message in messages])
+        if len(embeddings) != len(messages):
+            raise ValueError(
+                "Akasha embedding 数量与已提交消息数量不一致: "
+                f"messages={len(messages)} embeddings={len(embeddings)}"
+            )
         current_key = ""
-        for message, embedding in zip(messages, embeddings, strict=False):
+        for message, embedding in zip(messages, embeddings, strict=True):
             self._embedding_store.upsert(
                 message_id=message.id,
                 content=message.content,
@@ -679,7 +690,14 @@ class AkashaMemoryEngine:
             )
             current_key = self._store.upsert_message_node(message, embedding)
             self._refresh_cached_node(current_key)
-            self._refresh_cached_message(message, embedding, current_key)
+            self._refresh_cached_message(
+                message,
+                embedding,
+                current_key,
+                rebuild_index=False,
+            )
+        with self._graph_lock:
+            self._message_index = build_dense_message_index(self._message_embeddings)
 
         # 3. 用真实 current_key 建边，并记录激活诊断。
         #    reinforce 标记 = 本轮调用了 reinforce_memory 工具(记在 tool_chain)或 extra 回填；
@@ -750,13 +768,38 @@ class AkashaMemoryEngine:
     def _load_graph_cache(self) -> None:
         nodes = {node.key: node for node in self._store.list_nodes()}
         edges, edges_meta = self._store.load_edges_with_meta()
+        model = self._config.memory.embedding.model
+        cached_embedding_ids = _load_message_embedding_ids(
+            self._session_db_path,
+            model=model,
+        )
         message_embeddings = {
             message_id: np.asarray(embedding, dtype=np.float32)
             for message_id, embedding in self._embedding_store.list(
-                model=self._config.memory.embedding.model
+                model=model
             )
         }
-        message_turn_keys = _load_message_turn_keys(self._session_db_path)
+        message_turn_keys, message_timestamps = _load_message_cache_metadata(
+            self._session_db_path
+        )
+        metadata_ids = set(message_turn_keys) & set(message_timestamps)
+        orphan_ids = sorted(cached_embedding_ids - metadata_ids)
+        if orphan_ids:
+            preview = ", ".join(orphan_ids[:5])
+            raise ValueError(
+                "Akasha 消息向量缓存存在 sessions.db 缺失的消息: "
+                f"count={len(orphan_ids)} ids=[{preview}]"
+            )
+        message_turn_keys = {
+            message_id: key
+            for message_id, key in message_turn_keys.items()
+            if message_id in message_embeddings
+        }
+        message_timestamps = {
+            message_id: timestamp
+            for message_id, timestamp in message_timestamps.items()
+            if message_id in message_embeddings
+        }
         message_index = build_dense_message_index(message_embeddings)
         with self._graph_lock:
             self._nodes = nodes
@@ -766,10 +809,18 @@ class AkashaMemoryEngine:
             self._fan = _fan_counts(edges)
             self._message_embeddings = message_embeddings
             self._message_turn_keys = message_turn_keys
+            self._message_timestamps = message_timestamps
             self._message_index = message_index
 
     # 取查询使用的内存图快照。
     def _graph_snapshot(self) -> AkashaActivationSnapshot:
+        self._ensure_graph_cache()
+        with self._graph_lock:
+            return self._graph_snapshot_locked()
+
+    def _ensure_graph_cache(self) -> None:
+        """初始化延迟加载的内存图缓存。"""
+
         if not hasattr(self, "_graph_lock"):
             self._graph_lock = threading.RLock()
             self._nodes = {}
@@ -779,27 +830,32 @@ class AkashaMemoryEngine:
             self._fan = {}
             self._message_embeddings = {}
             self._message_turn_keys = {}
+            self._message_timestamps = {}
             self._message_index = build_dense_message_index({})
             self._load_graph_cache()
-        with self._graph_lock:
-            if not hasattr(self, "_message_index"):
-                self._message_index = build_dense_message_index(self._message_embeddings)
-            return AkashaActivationSnapshot(
-                nodes=dict(self._nodes),
-                edges=dict(self._edges),
-                edges_meta=dict(self._edges_meta),
-                fan=dict(self._fan),
-                edges_by_src={
-                    key: dict(value)
-                    for key, value in self._edges_by_src.items()
-                },
-                message_embeddings=dict(self._message_embeddings),
-                message_turn_keys=dict(self._message_turn_keys),
-                message_index=self._message_index,
-            )
+
+    def _graph_snapshot_locked(self) -> AkashaActivationSnapshot:
+        if not hasattr(self, "_message_index"):
+            self._message_index = build_dense_message_index(self._message_embeddings)
+        return AkashaActivationSnapshot(
+            nodes=dict(self._nodes),
+            edges=dict(self._edges),
+            edges_meta=dict(self._edges_meta),
+            fan=dict(self._fan),
+            edges_by_src={
+                key: dict(value)
+                for key, value in self._edges_by_src.items()
+            },
+            message_embeddings=dict(self._message_embeddings),
+            message_turn_keys=dict(self._message_turn_keys),
+            message_index=self._message_index,
+        )
 
     def _graph_snapshot_at(self, now_ts: float) -> AkashaActivationSnapshot:
-        snapshot = self._graph_snapshot()
+        self._ensure_graph_cache()
+        with self._graph_lock:
+            snapshot = self._graph_snapshot_locked()
+            message_timestamps = dict(self._message_timestamps)
         visible_nodes: dict[str, AkashaNode] = {}
         for key, node in snapshot.nodes.items():
             if node.first_ts_unix > now_ts:
@@ -822,10 +878,8 @@ class AkashaMemoryEngine:
 
         visible_embeddings = {
             message_id: np.asarray(embedding, dtype=np.float32)
-            for message_id, embedding in self._embedding_store.list_until(
-                model=self._config.memory.embedding.model,
-                cutoff=datetime.fromtimestamp(now_ts, timezone.utc).isoformat(),
-            )
+            for message_id, embedding in snapshot.message_embeddings.items()
+            if message_timestamps[message_id] <= now_ts
         }
         visible_turn_keys = {
             message_id: key
@@ -908,11 +962,15 @@ class AkashaMemoryEngine:
         message: SourceMessage,
         embedding: list[float],
         turn_key_value: str,
+        *,
+        rebuild_index: bool = True,
     ) -> None:
         with self._graph_lock:
             self._message_embeddings[message.id] = np.array(embedding, dtype=np.float32)
             self._message_turn_keys[message.id] = turn_key_value
-            self._message_index = build_dense_message_index(self._message_embeddings)
+            self._message_timestamps[message.id] = parse_ts_unix(message.ts)
+            if rebuild_index:
+                self._message_index = build_dense_message_index(self._message_embeddings)
 
     # ν_turn = 1 − max_{j<i} cos(query, prior_j)²；当前 turn 自身排除。
     def _compute_query_residual(self, query_vec: np.ndarray, current_key: str) -> float:
@@ -986,6 +1044,7 @@ class AkashaMemoryEngine:
             for message_id in remove_ids:
                 _ = self._message_embeddings.pop(message_id, None)
                 _ = self._message_turn_keys.pop(message_id, None)
+                _ = self._message_timestamps.pop(message_id, None)
             self._message_index = build_dense_message_index(self._message_embeddings)
 
     # 根据 message id 找到本轮 Akasha turn 节点。
@@ -1058,19 +1117,7 @@ class AkashaMemoryEngine:
         text_block: str,
     ) -> None:
         # 1. 收集 source_ref 去重统计。
-        all_source_refs: set[str] = set()
-        for card in dense_cards:
-            try:
-                for ref in json.loads(card.source_ref):
-                    all_source_refs.add(str(ref))
-            except Exception:
-                pass
-        for card in ripple_cards:
-            try:
-                for ref in json.loads(card.source_ref):
-                    all_source_refs.add(str(ref))
-            except Exception:
-                pass
+        all_source_refs = _source_refs(dense_cards, ripple_cards)
 
         # 2. 批量读取 activation_items 的消息内容，填充 user_message / assistant_preview。
         session_db_path = getattr(self, "_session_db_path", None) or Path("")
@@ -1274,23 +1321,54 @@ def _query_timestamp_unix(request: MemoryQuery) -> float | None:
     return float(request.timestamp.timestamp())
 
 
-# 读取 message 到 turn key 的映射。
-def _load_message_turn_keys(session_db_path: Path) -> dict[str, str]:
+# 读取指定模型的全部消息向量缓存 ID，包括无法关联消息的 orphan 行。
+def _load_message_embedding_ids(
+    session_db_path: Path,
+    *,
+    model: str,
+) -> set[str]:
+    """读取指定模型的全部消息向量缓存 ID。"""
+
+    if not session_db_path.exists():
+        return set()
+    with closing(sqlite3.connect(str(session_db_path))) as db:
+        table = db.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'message_embeddings'"
+        ).fetchone()
+        if table is None:
+            return set()
+        rows = db.execute(
+            "SELECT message_id FROM message_embeddings WHERE model = ?",
+            (model,),
+        ).fetchall()
+    return {str(row[0]) for row in rows}
+
+
+# 读取 message 的 turn key 和原始时间。
+def _load_message_cache_metadata(
+    session_db_path: Path,
+) -> tuple[dict[str, str], dict[str, float]]:
     # 1. sessions.db messages 表映射。
     if not session_db_path.exists():
-        return {}
+        return {}, {}
     with closing(sqlite3.connect(str(session_db_path))) as db:
         table = db.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
         ).fetchone()
         if table is None:
-            return {}
-        rows = db.execute("SELECT id, session_key, seq, role FROM messages").fetchall()
-    result: dict[str, str] = {}
-    for message_id, session_key, seq, role in rows:
+            return {}, {}
+        rows = db.execute(
+            "SELECT id, session_key, seq, role, ts FROM messages"
+        ).fetchall()
+    turn_keys: dict[str, str] = {}
+    timestamps: dict[str, float] = {}
+    for message_id, session_key, seq, role, timestamp in rows:
         _, _, key = turn_key(str(session_key), int(seq), str(role or ""))
-        result[str(message_id)] = key
-    return result
+        message_key = str(message_id)
+        turn_keys[message_key] = key
+        timestamps[message_key] = parse_ts_unix(str(timestamp))
+    return turn_keys, timestamps
 
 
 # 获取当前 query 对应的预测 seq。
@@ -1412,11 +1490,12 @@ def _load_turn_card(
     ]
     assistant_text = str(assistant_row["content"] or "") if assistant_row is not None else ""
     user_text = str(user_row["content"] or "") if user_row is not None else ""
-    happened_at = (
-        str(user_row["ts"] or "")
-        if user_row is not None
-        else str(assistant_row["ts"] or "")
-    )
+    if user_row is not None:
+        happened_at = str(user_row["ts"] or "")
+    elif assistant_row is not None:
+        happened_at = str(assistant_row["ts"] or "")
+    else:
+        raise RuntimeError(f"Akasha turn {key} 缺少消息时间")
     return AkashaCard(
         key=key,
         source_ref=json.dumps(source_ids, ensure_ascii=False),
@@ -1471,6 +1550,16 @@ def _normalize_card_text(text: str) -> str:
 def _card_dedupe_key(card: AkashaCard) -> tuple[str, str]:
     # 1. 同一句历史消息可能在不同 turn 重复出现，展示时只保留最高分。
     return _normalize_card_text(card.user_message), _normalize_card_text(card.assistant_preview)
+
+
+def _source_refs(
+    dense_cards: list[AkashaCard],
+    ripple_cards: list[AkashaCard],
+) -> set[str]:
+    refs: set[str] = set()
+    for card in [*dense_cards, *ripple_cards]:
+        refs.update(_source_ref_ids(card.source_ref))
+    return refs
 
 
 def _card_ts(card: AkashaCard) -> float:
@@ -1613,13 +1702,10 @@ def _load_messages_batch(
 
 # 从 source_ref JSON 数组中取消息 id。
 def _source_ref_ids(source_ref: str) -> list[str]:
-    # 1. source_ref 始终由 Akasha 生成，解析失败时回退空列表。
-    try:
-        value = cast(object, json.loads(source_ref))
-    except json.JSONDecodeError:
-        return []
+    # 1. source_ref 始终由 Akasha 生成，违反内部契约时直接失败。
+    value = cast(object, json.loads(source_ref))
     if not isinstance(value, list):
-        return []
+        raise ValueError("Akasha source_ref 必须是 JSON 数组")
     items = cast(list[object], value)
     return [str(item) for item in items if str(item).strip()]
 

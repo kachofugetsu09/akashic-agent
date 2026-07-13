@@ -220,7 +220,7 @@ docker/debug/profiles/<profile>/workspace/context-probe-<profile>.json
 }
 ```
 
-场景 JSON 只描述输入和流程，不写结果要求。报告只记录 observe 结果，不判定通过/失败。
+场景 JSON 只描述输入和流程，不写语义结果要求。探针遇到主流程的通用失败回复时会立即失败，正常回复则只记录 observe 结果，不主观判断内容质量。
 
 内置样例在：
 
@@ -299,6 +299,8 @@ AKASHIC_RACE_WORKSPACE 指定临时 workspace；不指定时使用临时目录
 
 `proactive_sandbox.py` 使用隔离 workspace、真实插件加载器、Slot Lifecycle、Feed MCP 子进程和消息发送编排器。模型使用可预测驱动器，测试失败时可以排除模型随机性。
 
+同一脚本通过 `--lifecycle default` 和 `--lifecycle wake` 分别验证两套主动生命周期。Wake 验证会走真实正文抓取、消息提交与 Feed ACK，不把消费事件误记为兴趣反馈。
+
 ```text
 ┌─ operator
 │  ├─ inject-content ──> feed_mcp.sqlite3
@@ -324,6 +326,14 @@ AKASHIC_RACE_WORKSPACE 指定临时 workspace；不指定时使用临时目录
 docker compose -f docker/debug/docker-compose.yml build akashic-debug
 docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
   python docker/debug/proactive_sandbox.py run-all
+```
+
+Wake package 已启用的 profile 使用：
+
+```bash
+AKASHIC_DEBUG_PROFILE=wake-profile \
+  docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
+  python docker/debug/proactive_sandbox.py run-all --lifecycle wake
 ```
 
 使用当前 profile 的真实模型配置：

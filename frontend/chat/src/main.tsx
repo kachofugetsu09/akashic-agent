@@ -1,14 +1,12 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { FileUIPart } from "ai";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import {
-  ChevronDown,
   CircleStop,
   Pencil,
   Plus,
   SendHorizontal,
-  Wrench,
 } from "lucide-react";
 import {
   Attachment,
@@ -29,11 +27,6 @@ import {
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
 import {
-  Message,
-  MessageContent,
-  MessageResponse,
-} from "@/components/ai-elements/message";
-import {
   PromptInput,
   PromptInputActionAddAttachments,
   PromptInputActionMenu,
@@ -46,18 +39,6 @@ import {
   PromptInputTools,
   usePromptInputAttachments,
 } from "@/components/ai-elements/prompt-input";
-import {
-  Reasoning,
-  ReasoningTrigger,
-  useReasoning,
-} from "@/components/ai-elements/reasoning";
-import { CollapsibleContent } from "@/components/ui/collapsible";
-import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import "./styles.css";
 
@@ -83,12 +64,12 @@ interface MessageRow {
   extra?: Record<string, unknown>;
 }
 
-interface ThinkingBlock {
+export interface ThinkingBlock {
   kind: "thinking";
   content: string;
 }
 
-interface ToolBlock {
+export interface ToolBlock {
   kind: "tool";
   callId: string;
   name: string;
@@ -98,7 +79,7 @@ interface ToolBlock {
   errorText: string | undefined;
 }
 
-type AgentBlock = ThinkingBlock | ToolBlock;
+export type AgentBlock = ThinkingBlock | ToolBlock;
 
 type ComposerFile = {
   filename?: string;
@@ -112,12 +93,12 @@ type UploadedFile = {
   upload_url?: string;
 };
 
-type MessageAttachment = FileUIPart & {
+export type MessageAttachment = FileUIPart & {
   id: string;
   path?: string;
 };
 
-interface ChatMessage {
+export interface ChatMessage {
   id: string;
   role: Role;
   content: string;
@@ -128,6 +109,10 @@ interface ChatMessage {
   durationMs?: number;
 }
 
+const LazyChatMessageView = lazy(() =>
+  import("./message-view").then(({ ChatMessageView }) => ({ default: ChatMessageView })),
+);
+
 type ChatFrame =
   | { type: "session.created"; request_id: string; session_id: string }
   | { type: "turn.started"; session_id: string; turn_id: string; content: string }
@@ -136,9 +121,80 @@ type ChatFrame =
   | { type: "react.tool.completed"; session_id: string; turn_id: string; call_id: string; tool_name: string; status: string; result_preview: string }
   | { type: "answer.delta"; session_id: string; turn_id: string; delta: string }
   | { type: "message.final"; session_id: string; turn_id: string; content: string; thinking?: string; media?: string[]; duration_ms?: number; metadata?: Record<string, unknown> }
-  | { type: "turn.interrupted"; session_id: string; status: string; message: string }
+  | { type: "turn.interrupted"; request_id: string; session_id: string; status: string; message: string }
   | { type: "error"; request_id: string; message: string }
   | { type: "pong"; request_id: string };
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function fetchChatJson<T>(url: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(url, options);
+  const text = await response.text();
+  let payload: unknown = null;
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      throw new Error(response.ok ? "服务器返回了无效 JSON" : `请求失败: ${response.status}`);
+    }
+  }
+  if (!response.ok) {
+    const body = recordValue(payload);
+    const detail = typeof body?.detail === "string" ? body.detail : typeof body?.message === "string" ? body.message : "";
+    throw new Error(detail || `请求失败: ${response.status}`);
+  }
+  if (payload === null) throw new Error("服务器返回空响应");
+  return payload as T;
+}
+
+function responseItems(payload: unknown, endpoint: string): Record<string, unknown>[] {
+  const body = recordValue(payload);
+  if (!body || !Array.isArray(body.items) || body.items.some((item) => !recordValue(item))) {
+    throw new Error(`${endpoint} 返回格式无效`);
+  }
+  return body.items as Record<string, unknown>[];
+}
+
+function sessionRows(payload: unknown): SessionRow[] {
+  const items = responseItems(payload, "/api/chat/sessions");
+  if (items.some((item) => (
+    typeof item.key !== "string"
+    || !item.key.trim()
+    || (item.first_message_content !== undefined && typeof item.first_message_content !== "string")
+  ))) {
+    throw new Error("/api/chat/sessions 返回了无效 session 行");
+  }
+  return items as unknown as SessionRow[];
+}
+
+function messageRows(payload: unknown, endpoint: string): MessageRow[] {
+  const items = responseItems(payload, endpoint);
+  if (items.some((item) => (
+    (typeof item.id !== "string" && (typeof item.id !== "number" || !Number.isFinite(item.id)))
+    || typeof item.role !== "string"
+    || typeof item.content !== "string"
+  ))) {
+    throw new Error(`${endpoint} 返回了无效 message 行`);
+  }
+  return items as unknown as MessageRow[];
+}
+
+function uploadedFileResponse(payload: unknown): UploadedFile {
+  const body = recordValue(payload);
+  if (!body || typeof body.filename !== "string" || typeof body.upload_path !== "string" || !body.upload_path) {
+    throw new Error("上传接口返回格式无效");
+  }
+  if (body.upload_url !== undefined && typeof body.upload_url !== "string") {
+    throw new Error("上传接口返回了无效 URL");
+  }
+  return body as unknown as UploadedFile;
+}
 
 function App() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -150,6 +206,9 @@ function App() {
   const socketRef = useRef<WebSocket | null>(null);
   const activeSessionRef = useRef("");
   const statusRef = useRef<ChatStatus>("idle");
+  const sessionsRequestRef = useRef<AbortController | null>(null);
+  const messagesRequestRef = useRef<AbortController | null>(null);
+  const sendRequestRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     activeSessionRef.current = activeSessionId;
@@ -159,17 +218,41 @@ function App() {
     statusRef.current = status;
   }, [status]);
 
+  const reportError = useCallback((error: unknown, nextStatus?: ChatStatus): void => {
+    if (isAbortError(error)) return;
+    console.error("[chat] request failed", error);
+    setError(errorMessage(error));
+    if (nextStatus) setStatus(nextStatus);
+  }, []);
+
   const loadSessions = useCallback(async () => {
-    const response = await fetch("/api/chat/sessions?page=1&page_size=80");
-    const data = await response.json() as { items?: SessionRow[] };
-    setSessions((data.items ?? []).filter((session) => session.first_message_content?.trim()));
+    sessionsRequestRef.current?.abort();
+    const controller = new AbortController();
+    sessionsRequestRef.current = controller;
+    try {
+      const payload = await fetchChatJson<unknown>("/api/chat/sessions?page=1&page_size=80", { signal: controller.signal });
+      const items = sessionRows(payload);
+      setSessions(items.filter((session) => session.first_message_content?.trim()));
+    } finally {
+      if (sessionsRequestRef.current === controller) sessionsRequestRef.current = null;
+    }
   }, []);
 
   const loadMessages = useCallback(async (sessionId: string) => {
-    const response = await fetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}/messages?page=1&page_size=100&sort_by=seq&sort_order=asc`);
-    const data = await response.json() as { items?: MessageRow[] };
-    setMessages((data.items ?? []).filter(isVisibleChatRow).map(rowToMessage));
+    messagesRequestRef.current?.abort();
+    const controller = new AbortController();
+    messagesRequestRef.current = controller;
+    const endpoint = `/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`;
+    try {
+      const payload = await fetchChatJson<unknown>(`${endpoint}?page=1&page_size=100&sort_by=seq&sort_order=asc`, { signal: controller.signal });
+      setMessages(messageRows(payload, endpoint).filter(isVisibleChatRow).map(rowToMessage));
+    } finally {
+      if (messagesRequestRef.current === controller) messagesRequestRef.current = null;
+    }
   }, []);
+
+  const loadSessionsSafely = useCallback(() => loadSessions().catch((error: unknown) => reportError(error)), [loadSessions, reportError]);
+  const loadMessagesSafely = useCallback((sessionId: string) => loadMessages(sessionId).catch((error: unknown) => reportError(error)), [loadMessages, reportError]);
 
   const connect = useCallback(() => {
     const current = socketRef.current;
@@ -180,27 +263,45 @@ function App() {
     const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
     socketRef.current = socket;
     socket.onmessage = (event) => {
-      const frame = JSON.parse(String(event.data)) as ChatFrame;
-      handleFrame(frame, {
-        activeSessionRef,
-        setActiveSessionId,
-        setError,
-        setMessages,
-        setStatus,
-        loadSessions,
-      });
+      if (socketRef.current !== socket) return;
+      try {
+        const frame = parseChatFrame(JSON.parse(String(event.data)));
+        handleFrame(frame, {
+          activeSessionRef,
+          setActiveSessionId,
+          setError,
+          setMessages,
+          setStatus,
+          loadSessions: loadSessionsSafely,
+        });
+      } catch (error) {
+        reportError(error, "error");
+      }
     };
-    socket.onclose = () => {
-      if (statusRef.current !== "idle") setStatus("error");
+    socket.onerror = () => {
+      if (socketRef.current === socket) reportError(new Error("聊天连接失败"), "error");
+    };
+    socket.onclose = (event) => {
+      if (socketRef.current !== socket) return;
+      socketRef.current = null;
+      if (event.code !== 1000 || statusRef.current !== "idle") {
+        reportError(new Error("聊天连接已关闭"), "error");
+      }
     };
     return socket;
-  }, [loadSessions]);
+  }, [loadSessionsSafely, reportError]);
 
   useEffect(() => {
-    void loadSessions();
+    void loadSessionsSafely();
     const socket = connect();
-    return () => socket.close();
-  }, [connect, loadSessions]);
+    return () => {
+      sessionsRequestRef.current?.abort();
+      messagesRequestRef.current?.abort();
+      sendRequestRef.current?.abort();
+      if (socketRef.current === socket) socketRef.current = null;
+      socket.close(1000, "component unmounted");
+    };
+  }, [connect, loadSessionsSafely]);
 
   const ensureSession = useCallback(async () => {
     if (activeSessionRef.current) return activeSessionRef.current;
@@ -216,37 +317,50 @@ function App() {
     setError("");
     setStatus("submitted");
     setInput("");
-    const sessionId = await ensureSession();
-    const media = await uploadFiles(files);
-    const attachments = media.map((item, index) => uploadedFileToAttachment(item, files[index]));
-    setMessages((current) => [
-      ...current,
-      {
-        id: crypto.randomUUID(),
-        role: "user",
-        content: cleanText || media.map((item) => item.filename).join("\n"),
-        attachments,
-        blocks: [],
-      },
-    ]);
-    sendWhenOpen(connect(), {
-      type: "message.send",
-      request_id: crypto.randomUUID(),
-      session_id: sessionId,
-      text: cleanText,
-      media: media.map((item) => item.upload_path),
-    });
-  }, [connect, ensureSession]);
+    sendRequestRef.current?.abort();
+    const controller = new AbortController();
+    sendRequestRef.current = controller;
+    const optimisticId = crypto.randomUUID();
+    try {
+      const sessionId = await ensureSession();
+      const media = await uploadFiles(files, controller.signal);
+      const attachments = media.map((item) => uploadedFileToAttachment(item));
+      setMessages((current) => [
+        ...current,
+        {
+          id: optimisticId,
+          role: "user",
+          content: cleanText || media.map((item) => item.filename).join("\n"),
+          attachments,
+          blocks: [],
+        },
+      ]);
+      await sendWhenOpen(connect(), {
+        type: "message.send",
+        request_id: crypto.randomUUID(),
+        session_id: sessionId,
+        text: cleanText,
+        media: media.map((item) => item.upload_path),
+      }, controller.signal);
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      setMessages((current) => current.filter((message) => message.id !== optimisticId));
+      setInput(text);
+      reportError(error, "error");
+      throw error;
+    } finally {
+      if (sendRequestRef.current === controller) sendRequestRef.current = null;
+    }
+  }, [connect, ensureSession, reportError]);
 
   const stopTurn = useCallback(() => {
     if (!activeSessionId) return;
-    sendWhenOpen(connect(), {
+    void sendWhenOpen(connect(), {
       type: "turn.stop",
       request_id: crypto.randomUUID(),
       session_id: activeSessionId,
-    });
-    setStatus("idle");
-  }, [activeSessionId, connect]);
+    }).then(() => setStatus("idle")).catch((error: unknown) => reportError(error, "error"));
+  }, [activeSessionId, connect, reportError]);
 
   return (
     <main className="chat-shell dark">
@@ -259,6 +373,9 @@ function App() {
               type="button"
               aria-label="新聊天"
               onClick={() => {
+                activeSessionRef.current = "";
+                messagesRequestRef.current?.abort();
+                sendRequestRef.current?.abort();
                 setActiveSessionId("");
                 setMessages([]);
                 setStatus("idle");
@@ -275,7 +392,7 @@ function App() {
                 type="button"
                 onClick={() => {
                   setActiveSessionId(session.key);
-                  void loadMessages(session.key);
+                  void loadMessagesSafely(session.key);
                 }}
               >
                 {sessionLabel(session)}
@@ -293,12 +410,16 @@ function App() {
                 <h1>今天有什么计划?</h1>
               </ConversationEmptyState>
             ) : (
-              messages.map((message, index) => (
-                <React.Fragment key={message.id}>
-                  {messages[index - 1]?.role === message.role ? <RoleDivider role={message.role} /> : null}
-                  <ChatMessageView message={message} />
-                </React.Fragment>
-              ))
+              <MessageRendererErrorBoundary>
+                <Suspense fallback={<div className="message-row message-loading">正在加载消息渲染器…</div>}>
+                  {messages.map((message, index) => (
+                    <React.Fragment key={message.id}>
+                      {messages[index - 1]?.role === message.role ? <RoleDivider role={message.role} /> : null}
+                      <LazyChatMessageView message={message} />
+                    </React.Fragment>
+                  ))}
+                </Suspense>
+              </MessageRendererErrorBoundary>
             )}
           </ConversationContent>
           <AutoScroll messages={messages} status={status} />
@@ -340,6 +461,28 @@ function App() {
       </section>
     </main>
   );
+}
+
+class MessageRendererErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error("消息渲染器加载失败", error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.error) {
+      return <div className="message-row message-renderer-error">消息渲染器加载失败，请刷新页面</div>;
+    }
+    return this.props.children;
+  }
 }
 
 function ComposerAttachments() {
@@ -417,29 +560,6 @@ function ComposerSubmit({
   );
 }
 
-function ChatMessageView({ message }: { message: ChatMessage }) {
-  if (message.role === "user") {
-    return (
-      <Message from="user" className="message-row user-row">
-        <MessageContent className="user-bubble">
-          {message.attachments?.length ? <MessageAttachments attachments={message.attachments} /> : null}
-          {message.content ? <MessageResponse>{message.content}</MessageResponse> : null}
-        </MessageContent>
-      </Message>
-    );
-  }
-
-  return (
-    <Message from="assistant" className="message-row agent-row">
-      <MessageContent className="agent-content">
-        {message.blocks.length ? <ProcessTrace message={message} /> : null}
-        {message.attachments?.length ? <MessageAttachments attachments={message.attachments} /> : null}
-        {message.content && <MessageResponse>{message.content}</MessageResponse>}
-      </MessageContent>
-    </Message>
-  );
-}
-
 function RoleDivider({ role }: { role: Role }) {
   return <div aria-hidden="true" className={`role-divider ${role}-divider`} />;
 }
@@ -475,112 +595,55 @@ function AutoScroll({ messages, status }: { messages: ChatMessage[]; status: Cha
   return null;
 }
 
-function MessageAttachments({ attachments }: { attachments: MessageAttachment[] }) {
-  return (
-    <Attachments className="message-attachments" variant="grid">
-      {attachments.map((attachment) => (
-        <MessageAttachmentItem attachment={attachment} key={attachment.id} />
-      ))}
-    </Attachments>
-  );
-}
-
-function MessageAttachmentItem({ attachment }: { attachment: MessageAttachment }) {
-  const isImage = getMediaCategory(attachment) === "image" && attachment.url;
-  const label = getAttachmentLabel(attachment);
-
-  if (isImage) {
-    return (
-      <Dialog>
-        <DialogTrigger asChild>
-          <Attachment
-            className="previewable-attachment"
-            data={attachment}
-            role="button"
-            tabIndex={0}
-            title="点击预览图片"
-          >
-            <AttachmentPreview />
-          </Attachment>
-        </DialogTrigger>
-        <DialogContent className="image-preview-dialog">
-          <DialogTitle className="sr-only">{label}</DialogTitle>
-          <img alt={label} className="image-preview-full" src={attachment.url} />
-        </DialogContent>
-      </Dialog>
-    );
+function parseChatFrame(value: unknown): ChatFrame {
+  const frame = recordValue(value);
+  if (!frame || typeof frame.type !== "string") throw new Error("WebSocket 返回了无效消息");
+  switch (frame.type) {
+    case "session.created":
+      requireStrings(frame, ["request_id", "session_id"]);
+      break;
+    case "turn.started":
+      requireStrings(frame, ["session_id", "turn_id", "content"]);
+      break;
+    case "react.thinking.delta":
+      requireStrings(frame, ["session_id", "turn_id", "delta"]);
+      break;
+    case "react.tool.started":
+      requireStrings(frame, ["session_id", "turn_id", "call_id", "tool_name"]);
+      break;
+    case "react.tool.completed":
+      requireStrings(frame, ["session_id", "turn_id", "call_id", "tool_name", "status", "result_preview"]);
+      break;
+    case "answer.delta":
+      requireStrings(frame, ["session_id", "turn_id", "delta"]);
+      break;
+    case "message.final":
+      requireStrings(frame, ["session_id", "turn_id", "content"]);
+      if (frame.thinking !== undefined && typeof frame.thinking !== "string") throw new Error("message.final.thinking 格式无效");
+      if (frame.media !== undefined && (!Array.isArray(frame.media) || frame.media.some((item) => typeof item !== "string"))) {
+        throw new Error("message.final.media 格式无效");
+      }
+      if (frame.metadata !== undefined && !recordValue(frame.metadata)) throw new Error("message.final.metadata 格式无效");
+      break;
+    case "turn.interrupted":
+      requireStrings(frame, ["request_id", "session_id", "status", "message"]);
+      break;
+    case "error":
+      requireStrings(frame, ["request_id", "message"]);
+      break;
+    case "pong":
+      requireStrings(frame, ["request_id"]);
+      break;
+    default:
+      throw new Error(`WebSocket 返回了未知消息类型: ${frame.type}`);
   }
-
-  return (
-    <AttachmentHoverCard>
-      <AttachmentHoverCardTrigger asChild>
-        <Attachment data={attachment}>
-          <AttachmentPreview />
-        </Attachment>
-      </AttachmentHoverCardTrigger>
-      <AttachmentHoverCardContent>
-        <AttachmentHover attachment={attachment} />
-      </AttachmentHoverCardContent>
-    </AttachmentHoverCard>
-  );
+  return frame as unknown as ChatFrame;
 }
 
-function ProcessTrace({ message }: { message: ChatMessage }) {
-  return (
-    <Reasoning
-      className="process-trace"
-      isStreaming={!!message.streaming}
-      defaultOpen={!!message.streaming}
-      duration={message.durationMs ? Math.max(1, Math.round(message.durationMs / 1000)) : undefined}
-    >
-      <ProcessTraceTrigger />
-      <CollapsibleContent className="process-content">
-        <div className="process-line" aria-hidden="true" />
-        <div className="process-items">
-          {message.blocks.map((block, index) => (
-            block.kind === "thinking"
-              ? <ThinkingStep key={`thinking-${index}`} block={block} active={!!message.streaming && index === message.blocks.length - 1} />
-              : <ToolStep key={block.callId} block={block} active={block.status === "input-available"} />
-          ))}
-        </div>
-      </CollapsibleContent>
-    </Reasoning>
-  );
-}
-
-function ProcessTraceTrigger() {
-  const { isOpen, isStreaming, duration } = useReasoning();
-  return (
-    <ReasoningTrigger className="process-trigger">
-      <span>{isStreaming ? "正在思考" : `已思考${duration ? ` ${duration}s` : ""}`}</span>
-      <ChevronDown className={`process-chevron ${isOpen ? "open" : ""}`} size={15} />
-    </ReasoningTrigger>
-  );
-}
-
-function ThinkingStep({ block, active }: { block: ThinkingBlock; active: boolean }) {
-  return (
-    <div className={`process-item thinking-step ${active ? "active" : ""}`}>
-      <span className="process-node circle" />
-      <div className="process-text">{block.content}</div>
-    </div>
-  );
-}
-
-function ToolStep({ block, active }: { block: ToolBlock; active: boolean }) {
-  const description = toolDescription(block.input);
-  return (
-    <div className={`process-item tool-step ${active ? "active" : ""} ${block.status === "output-error" ? "error" : ""}`}>
-      <span className="process-node diamond" />
-      <div className="tool-step-body">
-        <div className="tool-step-title">
-          <Wrench className="tool-step-icon" size={14} />
-          <span>{block.name}</span>
-        </div>
-        {description ? <div className="tool-step-description">{description}</div> : null}
-      </div>
-    </div>
-  );
+function requireStrings(record: Record<string, unknown>, keys: string[]): void {
+  for (const key of keys) {
+    if (typeof record[key] !== "string") throw new Error(`WebSocket 消息缺少字符串字段: ${key}`);
+  }
 }
 
 function handleFrame(
@@ -606,6 +669,12 @@ function handleFrame(
   }
   if (!("session_id" in frame)) return;
   if (ctx.activeSessionRef.current && frame.session_id !== ctx.activeSessionRef.current) return;
+
+  if (frame.type === "turn.interrupted") {
+    ctx.setError(frame.status === "idle" ? frame.message : "");
+    ctx.setStatus("idle");
+    return;
+  }
 
   if (frame.type === "turn.started") {
     ctx.setStatus("streaming");
@@ -728,26 +797,83 @@ function updateTool(
   }));
 }
 
-function sendWhenOpen(socket: WebSocket, payload: Record<string, unknown>) {
-  const send = () => socket.send(JSON.stringify(payload));
+function sendWhenOpen(socket: WebSocket, payload: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new DOMException("请求已取消", "AbortError"));
   if (socket.readyState === WebSocket.OPEN) {
-    send();
-    return;
+    try {
+      socket.send(JSON.stringify(payload));
+      return Promise.resolve();
+    } catch (error) {
+      return Promise.reject(error);
+    }
   }
-  socket.addEventListener("open", send, { once: true });
+  if (socket.readyState !== WebSocket.CONNECTING) {
+    return Promise.reject(new Error("聊天连接尚未建立"));
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+
+    function cleanup(): void {
+      socket.removeEventListener("open", onOpen);
+      socket.removeEventListener("error", onError);
+      socket.removeEventListener("close", onClose);
+      signal?.removeEventListener("abort", onAbort);
+    }
+
+    function fail(error: Error): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    }
+
+    function onOpen(): void {
+      if (settled) return;
+      try {
+        if (socket.readyState !== WebSocket.OPEN) throw new Error("聊天连接未能打开");
+        socket.send(JSON.stringify(payload));
+        settled = true;
+        cleanup();
+        resolve();
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+
+    function onError(): void {
+      fail(new Error("聊天连接失败"));
+    }
+
+    function onClose(): void {
+      fail(new Error("聊天连接在发送前关闭"));
+    }
+
+    function onAbort(): void {
+      fail(new DOMException("请求已取消", "AbortError"));
+    }
+
+    socket.addEventListener("open", onOpen, { once: true });
+    socket.addEventListener("error", onError, { once: true });
+    socket.addEventListener("close", onClose, { once: true });
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
 }
 
-async function uploadFiles(files: ComposerFile[]) {
+async function uploadFiles(files: ComposerFile[], signal: AbortSignal) {
   const result: UploadedFile[] = [];
   for (const file of files) {
-    if (!file.url) continue;
-    const blob = await fetch(file.url).then((response) => response.blob());
+    if (!file.url) throw new Error(`附件 ${file.filename || "未命名"} 缺少内容 URL`);
+    const sourceResponse = await fetch(file.url, { signal });
+    if (!sourceResponse.ok) throw new Error(`读取附件失败: ${sourceResponse.status}`);
+    const blob = await sourceResponse.blob();
     const filename = file.filename || "upload.bin";
-    const response = await fetch(`/api/chat/uploads?filename=${encodeURIComponent(filename)}`, {
+    const payload = await fetchChatJson<unknown>(`/api/chat/uploads?filename=${encodeURIComponent(filename)}`, {
       method: "POST",
       body: blob,
+      signal,
     });
-    result.push(await response.json() as UploadedFile);
+    result.push(uploadedFileResponse(payload));
   }
   return result;
 }
@@ -819,11 +945,6 @@ function blocksWithFinalThinking(blocks: AgentBlock[], thinking: string | undefi
   return [{ kind: "thinking", content: text } satisfies ThinkingBlock, ...blocks];
 }
 
-function toolDescription(input: unknown) {
-  const inputRecord = recordValue(input);
-  return stringValue(inputRecord?.description);
-}
-
 function recordValue(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -843,14 +964,14 @@ function numberValue(value: unknown) {
   return undefined;
 }
 
-function uploadedFileToAttachment(file: UploadedFile, source?: ComposerFile): MessageAttachment {
+function uploadedFileToAttachment(file: UploadedFile): MessageAttachment {
   const filename = file.filename || filenameFromPath(file.upload_path);
   return {
     id: file.upload_path,
     type: "file",
     filename,
-    mediaType: source?.mediaType || guessMediaType(filename),
-    url: source?.url || file.upload_url || mediaUrl(file.upload_path),
+    mediaType: guessMediaType(filename),
+    url: file.upload_url || mediaUrl(file.upload_path),
     path: file.upload_path,
   };
 }

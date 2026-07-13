@@ -107,8 +107,12 @@ export function attachJsonViewers(container: ParentNode): void {
     try {
       const value = JSON.parse(decodeURIComponent(encoded));
       node.replaceWith(makeJsonViewer(value));
-    } catch {
-      node.replaceWith(makeJsonViewer(null));
+    } catch (error) {
+      console.error("[dashboard] failed to decode plugin JSON viewer payload", error);
+      const fallback = document.createElement("span");
+      fallback.className = "json-tree-error";
+      fallback.textContent = "JSON 数据损坏，无法展示。";
+      node.replaceWith(fallback);
     }
   });
 }
@@ -293,15 +297,35 @@ export function installDashboardGlobals(onRegister: (plugin: PluginConfig) => vo
 }
 
 export async function loadPluginAssets(): Promise<void> {
-  const plugins = await api<{ id: string; panels: { name: string; js_version: string; has_css: boolean }[] }[]>("/api/dashboard/plugins").catch(() => []);
-  for (const plugin of plugins) {
-    for (const panel of plugin.panels ?? []) {
-      const v = panel.js_version ? `?v=${encodeURIComponent(panel.js_version)}` : "";
-      if (panel.has_css) injectStylesheet(`/plugins/${plugin.id}/${panel.name}.css${v}`);
+  const payload = await api<unknown>("/api/dashboard/plugins");
+  if (!Array.isArray(payload)) {
+    throw new Error("插件发现接口返回格式无效");
+  }
+  for (const rawPlugin of payload) {
+    if (!isRecord(rawPlugin) || typeof rawPlugin.id !== "string" || !Array.isArray(rawPlugin.panels)) {
+      console.error("[dashboard] ignored malformed plugin discovery entry", rawPlugin);
+      continue;
+    }
+    for (const rawPanel of rawPlugin.panels) {
+      if (
+        !isRecord(rawPanel)
+        || typeof rawPanel.name !== "string"
+        || typeof rawPanel.has_css !== "boolean"
+        || (rawPanel.js_version !== undefined && typeof rawPanel.js_version !== "string")
+      ) {
+        console.error(`[dashboard] ignored malformed panel for plugin ${rawPlugin.id}`, rawPanel);
+        continue;
+      }
+      const plugin = { id: rawPlugin.id };
+      const panel = rawPanel;
+      const panelName = panel.name as string;
+      const jsVersion = panel.js_version as string | undefined;
+      const v = jsVersion ? `?v=${encodeURIComponent(jsVersion)}` : "";
+      if (panel.has_css) injectStylesheet(`/plugins/${plugin.id}/${panelName}.css${v}`);
       // ESM modules: bare react / @akashic/dashboard-ui specifiers resolve via
       // the host import map to shared singletons. The module registers itself
       // as a side-effect of import.
-      await importPanel(`/plugins/${plugin.id}/${panel.name}.js${v}`);
+      await importPanel(`/plugins/${plugin.id}/${panelName}.js${v}`);
     }
   }
 }
@@ -318,5 +342,12 @@ function injectStylesheet(href: string): void {
   const link = document.createElement("link");
   link.rel = "stylesheet";
   link.href = href;
+  link.addEventListener("error", () => {
+    console.error(`[dashboard] failed to load plugin stylesheet ${href}`);
+  }, { once: true });
   document.head.appendChild(link);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

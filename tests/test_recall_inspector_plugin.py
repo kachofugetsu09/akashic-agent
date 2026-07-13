@@ -129,6 +129,52 @@ def test_recall_inspector_reader_reports_unavailable(tmp_path: Path) -> None:
     assert reader.get_turn("missing") is None
 
 
+def test_recall_inspector_reader_exposes_corrupt_jsonl(tmp_path: Path) -> None:
+    data_path = tmp_path / "observe" / "recall_inspector.jsonl"
+    data_path.parent.mkdir(parents=True)
+    data_path.write_text('{"kind":"context_prepare"}\nnot-json\n', encoding="utf-8")
+
+    reader = RecallInspectorDashboardReader(tmp_path)
+
+    with pytest.raises(ValueError, match="第 2 行损坏"):
+        reader.list_turns()
+
+
+@pytest.mark.asyncio
+async def test_recall_inspector_is_inactive_without_memory_engine(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins" / "default_memory"
+    plugin_dir.mkdir(parents=True)
+    plugin = DefaultMemoryInspector()
+    plugin.context = PluginContext(
+        event_bus=cast(Any, None),
+        tool_registry=None,
+        plugin_id="default_memory",
+        plugin_dir=plugin_dir,
+        data_dir=plugin_dir / ".data",
+        kv_store=PluginKVStore(plugin_dir / ".kv.json"),
+        workspace=tmp_path,
+        memory_engine=None,
+    )
+
+    await plugin.initialize()
+
+    assert plugin.is_active() is False
+    plugin.record_context_prepare(
+        BeforeTurnCtx(
+            session_key="cli:1",
+            channel="cli",
+            chat_id="1",
+            content="不应记录",
+            timestamp=datetime(2026, 5, 1, tzinfo=timezone.utc),
+            skill_names=[],
+            retrieved_memory_block="",
+            retrieval_trace_raw=None,
+            history_messages=(),
+        )
+    )
+    assert not (tmp_path / "observe" / "recall_inspector.jsonl").exists()
+
+
 def test_recall_inspector_exposes_before_turn_module_before_initialize() -> None:
     plugin = DefaultMemoryInspector()
 

@@ -1,15 +1,20 @@
 from __future__ import annotations
 from typing import Any, cast
 
+import pytest
 from pathlib import Path
 from types import SimpleNamespace
 
+from agent.config_models import Config, WiringConfig
 from agent.tools.registry import ToolRegistry
 from bootstrap.toolsets.protocol import (
+    ToolsetDeps,
     ToolsetRegistrationResult,
     build_registration_result,
 )
 from bootstrap.toolsets.schedule import SchedulerToolsetProvider
+from bootstrap.toolsets.memory import MemoryToolsetProvider
+from bootstrap.toolsets.meta import SpawnToolsetProvider
 from bootstrap.tools import build_registered_tools
 from bus.event_bus import EventBus
 
@@ -100,7 +105,16 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
 
     tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_pm, peer_poller = (
         build_registered_tools(
-            config=cast(Any, SimpleNamespace(spawn_enabled=False, proactive=SimpleNamespace())),
+            config=Config(
+                provider="openai",
+                model="m",
+                api_key="k",
+                system_prompt="s",
+                spawn_enabled=False,
+                wiring=WiringConfig(
+                    toolsets=["meta_common", "spawn", "schedule", "mcp"]
+                ),
+            ),
             workspace=tmp_path,
             http_resources=cast(Any, SimpleNamespace()),
             bus=cast(Any, SimpleNamespace(chat_lane=None)),
@@ -136,3 +150,33 @@ def test_build_registration_result_uses_public_registry_names():
 
     assert result.tool_names == ["always", "b"]
     assert result.always_on_names == ["always"]
+
+
+def test_memory_and_spawn_toolsets_reject_missing_provider(tmp_path: Path):
+    config = Config(
+        provider="openai",
+        model="m",
+        api_key="k",
+        system_prompt="s",
+    )
+
+    with pytest.raises(ValueError, match="provider"):
+        MemoryToolsetProvider().register(
+            ToolRegistry(),
+            ToolsetDeps(
+                config=config,
+                workspace=tmp_path,
+                http_resources=cast(Any, object()),
+            ),
+        )
+
+    with pytest.raises(ValueError, match="provider"):
+        SpawnToolsetProvider().register(
+            ToolRegistry(),
+            ToolsetDeps(
+                config=config,
+                workspace=tmp_path,
+                bus=cast(Any, object()),
+                http_resources=cast(Any, object()),
+            ),
+        )

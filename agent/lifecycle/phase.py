@@ -331,27 +331,23 @@ class Phase(Generic[I, O, F]):
                 slot = str(raw_slot)
                 if slot in module_slots:
                     if slot != getattr(module, "slot", None) and slot not in provided:
-                        logger.warning(
-                            "Phase 模块依赖未满足: module=%d name=%s requires=%s",
-                            index,
-                            module.__class__.__name__,
-                            slot,
+                        raise RuntimeError(
+                            "Phase 模块依赖未满足: "
+                            f"module={index} name={module.__class__.__name__} "
+                            f"requires={slot}"
                         )
                     continue
                 if _is_module_slot(slot):
-                    logger.warning(
-                        "Phase 模块依赖不存在: module=%d name=%s requires=%s",
-                        index,
-                        module.__class__.__name__,
-                        slot,
+                    raise RuntimeError(
+                        "Phase 模块依赖不存在: "
+                        f"module={index} name={module.__class__.__name__} "
+                        f"requires={slot}"
                     )
-                    continue
                 if slot not in provided:
-                    logger.warning(
-                        "Phase slot 未闭合: module=%d name=%s requires=%s",
-                        index,
-                        module.__class__.__name__,
-                        slot,
+                    raise RuntimeError(
+                        "Phase slot 未闭合: "
+                        f"module={index} name={module.__class__.__name__} "
+                        f"requires={slot}"
                     )
             module_slot = getattr(module, "slot", None)
             if isinstance(module_slot, str) and module_slot:

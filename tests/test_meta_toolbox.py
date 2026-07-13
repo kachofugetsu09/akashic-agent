@@ -15,6 +15,7 @@ from agent.tools.web_search import WebSearchTool
 from bootstrap.toolsets.meta import CommonMetaToolsetProvider
 from bootstrap.toolsets.protocol import ToolsetDeps
 from core.memory.engine import MemoryToolProfile, MemoryToolSpec
+from session.store import SessionStore
 
 
 class _MemoryEngineStub:
@@ -89,6 +90,7 @@ def test_register_meta_tool_helpers_mark_expected_tools_always_on():
 
 def test_common_meta_toolset_registers_load_skill(tmp_path):
     tools = ToolRegistry()
+    session_store = SessionStore(tmp_path / "sessions.db")
     readonly_tools = {
         "web_search": WebSearchTool(),
         "web_fetch": WebFetchTool(requester=cast(Any, object())),
@@ -101,12 +103,38 @@ def test_common_meta_toolset_registers_load_skill(tmp_path):
         ToolsetDeps(
             config=None,
             workspace=tmp_path,
-            session_store=object(),
+            session_store=session_store,
         ),
     )
+    session_store.close()
 
     assert tools.has_tool("load_skill")
     assert "load_skill" in result.always_on_names
+
+
+def test_common_meta_toolset_rejects_missing_required_dependencies(tmp_path):
+    readonly_tools = {
+        "web_search": cast(Any, object()),
+        "web_fetch": cast(Any, object()),
+        "read_file": cast(Any, object()),
+        "list_dir": cast(Any, object()),
+    }
+
+    with pytest.raises(ValueError, match="session_store"):
+        CommonMetaToolsetProvider(readonly_tools).register(
+            ToolRegistry(),
+            ToolsetDeps(config=None, workspace=tmp_path),
+        )
+
+    with pytest.raises(ValueError, match="web_search"):
+        CommonMetaToolsetProvider({}).register(
+            ToolRegistry(),
+            ToolsetDeps(
+                config=None,
+                workspace=tmp_path,
+                session_store=cast(Any, object()),
+            ),
+        )
 
 
 def test_register_memory_meta_tools_rejects_duplicate_names():

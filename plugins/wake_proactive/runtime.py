@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, cast
 
-from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
+from agent.turns.result import TurnOutbound, TurnResult, TurnSideEffect, TurnTrace
 from core.clock import Clock, ReplayClock, clock_from_env
 from plugins.wake_proactive.context import WakeContext
 from plugins.wake_proactive.context_drive import ContextDriveResult, NormalizedContext
@@ -40,7 +40,8 @@ from session.embedding_store import MessageEmbeddingStore
 
 logger = logging.getLogger(__name__)
 _MAX_TITLES_PER_WAKE = 120
-_MAX_HAZARD_THRESHOLD = 2.0
+_MAX_HAZARD_THRESHOLD = 1.0
+_HAZARD_THRESHOLD_SCALE = 1 / 4
 _SEMANTIC_CALIBRATION_POWER = 4
 _SCHEMA_BY_NAME = {
     schema["function"]["name"]: schema
@@ -528,9 +529,12 @@ class WakeRuntime:
     def _sample_threshold(self, session_key: str, now: datetime) -> float:
         if isinstance(self._clock, ReplayClock):
             seed = f"wake:{session_key}:{now.isoformat()}"
-            sampled = random.Random(seed).gammavariate(3.0, 1 / 3)
+            sampled = random.Random(seed).gammavariate(
+                3.0,
+                _HAZARD_THRESHOLD_SCALE,
+            )
         else:
-            sampled = self._rng.gammavariate(3.0, 1 / 3)
+            sampled = self._rng.gammavariate(3.0, _HAZARD_THRESHOLD_SCALE)
         return min(_MAX_HAZARD_THRESHOLD, float(sampled))
 
     def next_interval(self, state: WakeRunState) -> int:
@@ -719,7 +723,7 @@ class WakeRuntime:
         self._state.save(state.ctx)
 
         # 2. 只在发送成功后消费 alert；context 不参与 reservoir ack
-        effects = (
+        effects: list[TurnSideEffect] = (
             [AsyncEffect(lambda: self._ack_and_consume([event], state.ctx.now_utc))]
             if kind == "alert"
             else []

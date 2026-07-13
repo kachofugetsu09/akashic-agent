@@ -1,0 +1,1472 @@
+# Clean Code 重构账本
+
+本文档记录 `refactor/code-clean` 系列重构的决策依据、能力变化、性能数据和测试调整。每个被接受的提交都必须补充一条记录；没有测量或调用链证据的“优化”不得合并。
+
+## 基线
+
+- 基准提交：`3b456e7b`（PR #109 合并后）
+- Python 测试：`1484 passed`，耗时 22.55 秒
+- Pyright：`0 errors, 3119 warnings`
+- 前端 TypeScript：`npm run typecheck` 通过
+- 前端 ESLint：`0 errors, 3 warnings`，均为 `frontend/dashboard/src/main.tsx` 的既有 React Hook 依赖警告
+- 工作区：除本地 `.codegraph/` 外无未提交代码
+- 关键历史约束：PR #105 全能力热重载、PR #109 事件流唤醒、PR #90 主动发送串行、PR #89 shell 超时取消、PR #75 memory fail-stop
+
+## 验收原则
+
+1. 重构默认保持外部行为；能力变化必须明确列出并由测试覆盖。
+2. 性能优化必须记录修改前后的同一 workload 数据，并证明 freshness、hot reload、错误传播和一致性未退化。
+3. 删除或保留防御性检查时，必须说明不变量、拥有层、上游保证和真实可达违反路径。
+4. 测试只保留能够保护真实契约、历史回归或性能边界的内容；删除测试必须记录其重复、错误耦合或已失效的原因。
+5. God file 是否拆分以阅读成本为准，不以行数为准。若拆分增加跨文件跳转、隐藏弱类型数据流或割裂同一状态机，应保留同文件并在函数级整理。
+6. 新增或改写的 docstring 与注释使用简洁中文；保留解释约束、所有权和 workaround 的有效注释。
+
+## 变更记录模板
+
+### `f82be7b6` `perf(runtime): 回收空闲聊天通道状态`
+
+- 范围：`bus/queue.py` 的 `ChatLane` 与直接回归测试。
+- 历史依据：PR #90 固化被动优先、主动 FIFO 和取消 ticket 语义；PR #97 固化中断恢复边界。本次没有触碰 lifecycle、interrupt 或 turn 内容。
+- 原问题：`ChatLane._states` 永久保留历史见过的 chat，唯一 chat 数持续增长时形成无界内存占用。
+- 为什么这样修改：为每次公开操作成对持有状态引用，只在没有活跃用户、被动计数、发送、未完成 ticket 和取消残留时回收；等待者持有引用，因此不会与新进入者分裂到两个状态锁。
+- 不变量与拥有层：`active_users` 由 `_acquire_state` / `_release_state` 唯一维护；FIFO 和取消 ticket 仍由同一 `_ChatLaneState` 拥有。
+- 能力变化：串行、FIFO、被动优先、取消恢复和异常传播不变；空闲 chat 不再保留无语义状态。
+- 性能变化：20,000 个唯一 chat 顺序执行 pending/done 后，保留状态由 20,000 降至 0；当前 tracemalloc 由 32,702,434 B 降至 374 B，峰值由 32,703,122 B 降至 3,026 B。
+- 测试新增：覆盖 FIFO 完成、取消 waiter、被动生命周期和发送异常后的回收。
+- 测试删除及原因：无。
+- 验证结果：相关子系统 `48 passed`；修改文件 pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：回收依赖 asyncio 单线程事件循环中 acquire/release 之间无 `await` 的原子执行语义；跨线程调用不在 `ChatLane` 契约内。
+
+### `3b962903` `fix(memory): 暴露向量存储故障`
+
+- 范围：`memory2/retriever.py` 的统一向量检索链及直接回归测试。
+- 历史依据：PR #23/#61 统一召回与 memory engine 协议；PR #75/#80 确立 memory 失败只有在存在明确恢复动作时才能恢复；PR #106 保证唯一 Memory Engine。
+- 原问题：批量向量存储失败会被宽泛捕获，随后逐向量重复同一存储调用并继续吞错，最终把存储或反序列化故障伪装成空召回。
+- 为什么这样修改：`MemoryStore2.vector_search_batch` 已拥有 sqlite-vec/full-scan 选择、时间过滤、反序列化和批量结果形状；Retriever 没有第二种恢复手段，应让该层错误向上传播。
+- 不变量与拥有层：非空 vectors 必须获得同长度 outer result，由 `MemoryStore2` 保证；embedding 是外部边界，单 lane embedding 失败仍可跳过并保留关键词检索。
+- 能力变化：正常 vector + keyword + RRF、零向量命中后的关键词召回、scope、top-k 和时间过滤不变；存储损坏由静默空结果变为显式失败。
+- 性能变化：正常路径调用次数不变；故障路径由 `1 + N` 次重复存储调用收敛为 1 次后立即失败；生产代码净减少 21 行。
+- 测试新增：覆盖向量存储失败向上传播且不会继续执行关键词 lane。
+- 测试删除及原因：无。
+- 验证结果：独立复验 59 个相关测试通过；修改文件 pyright `0 errors`，总 warning 由 150 降至 128；`git diff --check` 通过。
+- 残余风险：该变化会让过去被误判为“无记忆”的存储故障显式中止 recall，这是预期错误语义修复。
+
+### `9bb4913d` `perf(plugins): 复用热重载发现快照`
+
+- 范围：`PluginManager.reconcile_changed` / `_prepare_changed` 与多插件热重载测试。
+- 历史依据：PR #51 的拓扑依赖、PR #95 的代际 Skill Catalog、PR #104 的程序化能力声明、PR #105 的 generation/snapshot/lease/rollback 事务。
+- 原问题：一次 reconciliation 已发现完整拓扑，之后每个活跃插件和每个变化候选又重复完整 `discover()`，调用次数为 `1 + N + C`。
+- 为什么这样修改：同一发布事务应使用同一个 discovery topology；watcher 的 revision 在事务外采样，中途变化会在下一轮形成新 revision，不需要在同一事务内部漂移拓扑。
+- 不变量与拥有层：单轮 topology 由 reconciliation 拥有；源码 revision、candidate gate、snapshot 编译和下一轮 freshness 仍由原有层负责。
+- 能力变化：同轮一致性增强；generation、gate、snapshot、lease、drain、abort、rollback 和下一轮 hot reload 不变。
+- 性能变化：两个活跃插件同时变化时 `discover()` 从 5 次降至 1 次，减少 80%；一般情况从 `1 + N + C` 降至固定 1 次。
+- 测试新增：在既有多插件换代测试中增加 discover 次数断言，同时保留最终 snapshot 包含两个新 generation 的能力断言。
+- 测试删除及原因：无；复用已有昂贵 fixture，避免新增重复测试。
+- 验证结果：`137 passed`；pyright `0 errors` 且无新增 warning；`git diff --check` 通过。
+- 残余风险：单轮扫描后的文件变化不会混入当前事务，而由 watcher 下一轮重新 reconcile；这是 PR #105 的代际一致性边界。
+
+### `c845327b` `fix(runtime): 暴露主动发送异常`
+
+- 范围：主动发送的 `PushToolOutboundPort`、`TurnOrchestrator` 与直接测试。
+- 历史依据：PR #90 的 ChatLane/outbound 串行链路，PR #97 的中断恢复与可见历史可信边界，PR #27/#31 的 persist/dispatch 和 lifecycle 职责。
+- 原问题：端口把所有意外异常静默转换成 `False`，无法区分正常业务失败与 channel/tool 故障；同时用字符串归一化掩盖内部 `OutboundDispatch` 契约错误。
+- 为什么这样修改：端口传播意外异常，由拥有恢复动作的 orchestrator 记录完整堆栈、保持 `sent=False`、禁止未送达消息落库并执行失败副作用。
+- 不变量与拥有层：channel/chat_id/content/media 的结构由 `OutboundDispatch` 构造链拥有；“目标和内容可发送”仍由端口判断；失败恢复由 orchestrator 拥有。
+- 能力变化：正常文本、多媒体发送与业务失败字符串不变；意外异常从无诊断 `False` 变为有堆栈的原失败路径；ChatLane 串行和持久化顺序不变。
+- 性能变化：非性能提交，发送次数和调用顺序不变。
+- 测试新增：覆盖端口异常传播，以及 orchestrator 记录错误、不落库并运行 failure effect。
+- 测试删除及原因：无。
+- 验证结果：Runtime/turn 子系统 `125 passed`；pyright `0 errors`，4 个既有容器类型 warning；`git diff --check` 通过。
+- 残余风险：多媒体分批发送中后续图片失败时，用户可能已收到前序内容但整次 dispatch 仍判失败；这是既有非事务性外部发送语义，本提交未扩大范围。
+
+### `a661c5f9` `fix(memory): 保持向量索引降级一致性`
+
+- 范围：`MemoryStore2` 的 sqlite-vec 初始化、写入和删除故障路径。
+- 历史依据：PR #72 的 embedding 维度配置、PR #41/#61 的单一 Memory runtime/engine、PR #75/#80 的显式失败与可恢复边界。
+- 原问题：`vec_items` 写入或删除失败后 `_vec_enabled` 仍为真，主表与加速索引分叉，后续可能漏召回或继续触发 `OperationalError`。
+- 为什么这样修改：`memory_items` 是 canonical 数据，`vec_items` 只是可选索引；store 层有明确恢复动作，应禁用已不可信索引并复用现有 fullscan。
+- 不变量与拥有层：主表/索引同步和降级由 `MemoryStore2` 拥有；只处理 `sqlite3.Error`，embedding blob 等内部程序错误继续传播。
+- 能力变化：正常 sqlite-vec KNN、排序、scope、hotness、事务和 freshness 不变；索引故障由错误或漏召回变为较慢但正确的 fullscan。
+- 性能变化：正常路径不变；故障路径牺牲索引速度换取 canonical 正确性，不宣称提速。
+- 测试新增：故障注入覆盖 vec 写入与删除失败，验证主表写入/删除结果和 fullscan 一致。
+- 测试删除及原因：无。
+- 验证结果：Memory 子系统 `124 passed`；pyright `0 errors` 且无新增 warning；`git diff --check` 通过。
+- 残余风险：禁用持续到进程重启，不自动重建损坏索引；这是避免不一致索引重新上线的保守语义。
+
+### `ece6c837` `fix(plugins): 暴露 active 状态检查故障`
+
+- 范围：插件 `is_active()` 协议边界与真实临时插件测试。
+- 历史依据：PR #104 的程序化能力声明；PR #106 的单 Memory Engine active 过滤。
+- 原问题：插件 `is_active()` 抛错后 runtime 记录 warning 并返回 `True`，把无法判断状态的插件错误加入 active generation 和 Drift skill roots。
+- 为什么这样修改：runtime 无法从任意插件异常推导正确启用状态，只能补充插件身份并链式重抛。
+- 不变量与拥有层：插件实现合法 `is_active()`；runtime 负责调用协议和错误上下文；未声明该方法仍按既有规则默认启用。
+- 能力变化：正常 true/false 与缺失方法语义不变；故障插件由错误启用改为明确失败，generation/snapshot/lease/drain/rollback 未触及。
+- 性能变化：非性能提交，正常调用次数不变。
+- 测试新增：真实临时插件覆盖 `PluginManager.active_plugins()` 与 `RuntimeSnapshot.active_generations()` 的 cause 链。
+- 测试删除及原因：无。
+- 验证结果：相关 plugin 子系统 `145 passed`；pyright `0 errors` 且无新增 warning；`git diff --check` 通过。
+- 残余风险：第三方插件的 `is_active()` 旧错误现在会阻止状态枚举，这是预期 fail-loud 行为。
+
+### `dffb1f69` `refactor(runtime): 收紧工具解锁结果边界`
+
+- 范围：`ToolDiscoveryState` 的 tool-search JSON 解析与直接测试。
+- 历史依据：PR #27/#31 的 lifecycle/tool discovery 阶段边界，PR #48 的工具循环与无限迭代能力。
+- 原问题：宽泛 `except Exception` 会把解析函数内部程序错误也伪装成“没有工具可解锁”；现有英文 docstring 还保留无助于当前理解的搬迁历史。
+- 为什么这样修改：JSON 语法和结构是明确外部边界，只恢复 `JSONDecodeError`、非对象顶层和非列表 `matched`；领域层继续过滤空名称与重复名称。
+- 不变量与拥有层：输入参数的 `str` 类型由内部调用契约拥有；JSON 结构由解析边界拥有；工具名非空与去重由 `ToolDiscoveryState` 拥有。
+- 能力变化：非法 JSON、`[]`、`null`、`matched=null` 仍不解锁工具；合法 unlocked/matched 顺序和去重不变；内部非 JSON 错误不再静默。
+- 性能变化：非性能提交，仍是一次 JSON decode 和一次线性遍历。
+- 测试新增：参数化覆盖合法 JSON 中的三种错误顶层/字段结构。
+- 测试删除及原因：无。
+- 验证结果：相关子系统 `58 passed`；pyright `0 errors`，无新增 warning；`git diff --check` 通过。
+- 残余风险：旧的 `dict` 裸容器类型仍存在于同模块其他协议，已拒绝在本提交中用 `Any` 顺手掩盖，留给独立类型设计。
+
+### `70f79c60` `refactor(plugins): 删除旧描述符声明标记`
+
+- 范围：`ActivePluginInfo` 和直接构造测试。
+- 历史依据：PR #96 引入旧 `.aka-plugin/plugin.json` descriptor；PR #104 明确删除 descriptor 并迁移到 `plugin.py` 程序化声明。
+- 原问题：`declares_aka_plugin` 已无生产读取者，却继续暗示 runtime 支持已删除协议，并让测试持续构造无意义参数。
+- 为什么这样修改：删除无主不变量和测试样板，不增加兼容层。
+- 不变量与拥有层：插件能力声明只由当前程序化 `plugin.py` 协议拥有。
+- 能力变化：无运行行为变化；skill/MCP 装配和 generation/snapshot/lease/rollback 未触及。
+- 性能变化：非性能提交。
+- 测试新增：无。
+- 测试删除及原因：未删除测试，只移除四处失效构造参数。
+- 验证结果：相关 plugin 测试 `78 passed`；pyright `0 errors` 且无新增 warning；字段全库搜索零残留；`git diff --check` 通过。
+- 残余风险：无已知残余；若未来重新支持 descriptor，应以新协议显式设计，而不是恢复布尔标记。
+
+### `ba83aab2` `refactor(runtime): 收紧出站总线契约`
+
+- 范围：`BusOutboundPort`、真实 `MessageBus` 测试夹具和直接出站测试。
+- 历史依据：PR #90 的 MessageBus/ChatLane 被动出站链，PR #27/#31 的 after-turn dispatch 边界。
+- 原问题：端口用 `Any + inspect.isawaitable` 兼容不存在的同步 bus，并对 typed dataclass 容器重复提供空值 fallback；测试的 `MagicMock` 反向维持了假契约。
+- 为什么这样修改：生产构造链保证 `MessageBus`，其 `publish_outbound` 明确为 async；直接 await 真实契约并让发布异常继续传播。
+- 不变量与拥有层：bus 类型由 `AgentLoopDeps`/bootstrap wiring 拥有；metadata/media 非空容器由 `OutboundDispatch` dataclass 拥有。
+- 能力变化：channel、chat_id、content、thinking、metadata、media、ChatLane 计数和异常传播不变；测试与生产异步契约一致。
+- 性能变化：删除动态 awaitable 判断和无效 fallback，但未做稳定 benchmark，不声明性能收益。
+- 测试新增：使用真实 MessageBus 验证完整 typed `OutboundMessage`。
+- 测试删除及原因：无；将违反生产契约的 MagicMock 夹具改为真实 bus。
+- 验证结果：相关 runtime/turn 测试 `36 passed`；修改文件 pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：直接测试读取 MessageBus 私有队列以避免启动长期 dispatch loop；生产 API 语义仍由 publish/dispatch 集成测试覆盖。
+
+### `8d1c4589` `fix(session): 暴露 metadata 损坏`
+
+- 范围：`sessions.metadata` 数据库反序列化边界、SessionManager 转发层和三条读取入口测试。
+- 历史依据：`708d6f251` 将 JSONL session 迁移到中心 SQLite；PR #75/#80 确立无恢复动作时的 fail-stop。
+- 原问题：损坏 JSON 被 manager 宽泛捕获并归一化为整个 channel 空列表；合法 JSON list/string 会穿透到下游 `.get()` 才无上下文失败。
+- 为什么这样修改：store 在读取 SQLite 时统一解析并验证 JSON object，错误携带 session key；manager 信任边界后的 dict。
+- 不变量与拥有层：metadata JSON schema 由 `SessionStore` 拥有；NULL 是 schema 允许的旧记录，继续明确解释为 `{}`；identity index 无修复损坏数据的能力。
+- 能力变化：有效 metadata、NULL 兼容、排序、cache 和 identity 映射不变；损坏数据由空结果或延迟错误变为带 key 的即时 `ValueError`。
+- 性能变化：仍为一次 SQL 查询和每行一次 JSON 解析，无新增 I/O。
+- 测试新增：注入损坏 JSON 和非 object JSON，覆盖 channel metadata、单 session metadata、dashboard 列表三个入口。
+- 测试删除及原因：无。
+- 验证结果：Session 相关调用方 `82 passed`；pyright `0 errors` 且无新增 warning；`git diff --check` 通过。
+- 残余风险：数据库中已有损坏 metadata 会在首次读取时显式暴露，需要人工修复数据；这是预期行为。
+
+### `6f50a391` `test(runtime): 使用真实异步消息总线`
+
+- 范围：所有直接构造 `AgentLoopDeps` 的测试夹具。
+- 历史依据：`ba83aab2` 收紧 `BusOutboundPort` 后的集成回归。
+- 原问题：10 处测试用同步 `MagicMock` 伪造生产中明确为异步 `MessageBus` 的依赖，其中两条 spawn completion 流程在完整测试中触发 `TypeError`。
+- 为什么这样修改：统一改用真实 `MessageBus`，让测试遵循生产构造契约，不恢复同步兼容层。
+- 不变量与拥有层：bus 类型与 async publish 由 `AgentLoopDeps`/`MessageBus` 拥有。
+- 能力变化：无生产行为变化；测试现在能覆盖真实出站类型。
+- 性能变化：非性能提交。
+- 测试新增：无。
+- 测试删除及原因：无；替换错误夹具。
+- 验证结果：相关测试 `49 passed`，完整测试 `1497 passed`；pyright `0 errors, 0 warnings`；全库同类 `bus=MagicMock()` 搜索零残留。
+- 残余风险：这笔修复证明目标测试不足以验收公共契约变更；后续公共类型收紧必须运行完整测试。
+
+### `6c7a4ba5` `fix(plugins): 校验 KV 根节点结构`
+
+- 范围：`PluginKVStore._read()` 数据文件反序列化边界与真实磁盘测试。
+- 历史依据：插件 KV 可被用户、旧版本和外部插件绕过正常 `_write()` 直接修改。
+- 原问题：合法 JSON array/scalar 会穿透边界，在后续 `.get()` 或赋值处以无文件上下文的异常失败。
+- 为什么这样修改：KV 根节点必须是 JSON object；在唯一读取边界校验并以包含文件路径的 `ValueError` 失败，非法 JSON 继续保留 `JSONDecodeError`。
+- 不变量与拥有层：KV object schema 由 `PluginKVStore._read()` 拥有；正常 `_write()` 始终写入 dict。
+- 能力变化：正常 get/set/increment 和跨 manager 持久化不变；错误更早且带路径；plugin generation/snapshot 状态机未触及。
+- 性能变化：非性能提交，正常路径仅增加一次 `isinstance`。
+- 测试新增：真实 `.kv.json` 数组根节点拒绝测试。
+- 测试删除及原因：无。
+- 验证结果：相关 plugin 测试 `142 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：已有非 object KV 文件会在首次读取时显式失败，需要插件作者修复数据。
+
+### `9d449162` `fix(session): 校验缓存向量维度`
+
+- 范围：`MessageEmbeddingStore` 的向量写入与 `sessions.db` 缓存反序列化边界。
+- 历史依据：PR #109 引入共享 message embedding cache，要求 cache hit 表示可直接复用的完整向量。
+- 原问题：写入允许空 embedding；读取忽略持久化 `dim`，空 BLOB 会被错误计为 cache hit，BLOB/dim 不一致会按实际字节静默解码。
+- 为什么这样修改：upsert 拒绝空向量；读取统一校验 BLOB 类型、正整数 dim 和 `len(blob) == dim * 4`，错误携带 message/model/dim/bytes。
+- 不变量与拥有层：非空向量由 upsert 写边界拥有；持久化 BLOB/dim 一致性由读取边界拥有；元素数值错误继续由 `struct.pack` fail-loud，不重复检查。
+- 能力变化：合法 cache、content hash miss、时间 cutoff、replay 顺序和 legacy migration 不变；空向量和损坏缓存变为即时失败。
+- 性能变化：SQL 次数不变，正常读取增加常数级类型与长度比较，不宣称提速。
+- 测试新增：空 embedding 写入拒绝且无缓存残留；空 BLOB 和维度/字节不一致覆盖 get/list/list_until。
+- 测试删除及原因：无。
+- 验证结果：Akasha/replay 相关 `84 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：已有损坏 cache 会阻止 replay，需删除或重建对应缓存；这是避免错误 cache hit 的预期行为。
+
+### `943820ee` `refactor(runtime): 收紧回合副作用契约`
+
+- 范围：`TurnResult` 三类副作用集合、`TurnOrchestrator` 执行边界和直接测试替身。
+- 历史依据：PR #27/#31 将副作用放在明确的 lifecycle/commit 阶段；PR #90/#97 要求保持发送顺序，并禁止未送达消息进入历史。
+- 原问题：副作用以 `list[Any]` 表示，orchestrator 用 `inspect.isawaitable` 兼容没有生产调用者的同步假实现。
+- 为什么这样修改：现有生产副作用全部实现异步 `TurnSideEffect` 协议；将三类集合收紧到该协议并直接 await，让协议错误即时暴露。
+- 不变量与拥有层：副作用的异步调用契约由 `TurnSideEffect` 拥有；通用、成功和失败副作用的选择与次序由 orchestrator 拥有。
+- 能力变化：通用副作用仍先于 dispatch；成功/失败副作用仍只进入对应分支；单项异常仍记录并继续；持久化和 ChatLane 语义不变。
+- 性能变化：删除一次动态 awaitable 判断，但无独立 benchmark，不声明性能收益。
+- 测试新增：无；唯一同步测试替身改为真实异步协议。
+- 测试删除及原因：无。
+- 验证结果：相关 Runtime/proactive 测试 `144 passed`；副手完整测试 `1501 passed`；pyright `0 errors`；`git diff --check` 通过。
+- 残余风险：无已知生产同步副作用；未来扩展必须显式实现协议。
+
+### `e16f2dcc` `fix(plugins): 拒绝无效清理动作`
+
+- 范围：`PluginScope.defer()` 动态插件边界、`PluginContext` cleanup/task 类型和直接测试。
+- 历史依据：PR #105 的候选初始化、回滚和 generation 换代要求资源清理动作在候选发布前有效。
+- 原问题：动态外部插件可绕过静态类型注册不可调用对象，错误延迟到卸载或换代时才暴露，候选甚至可能已经发布。
+- 为什么这样修改：在 cleanup 唯一注册入口验证 callable，并携带 plugin/resource 身份抛出 `TypeError`；同时把 context 类型收紧为 `Cleanup` 和 `Task[T]`。
+- 不变量与拥有层：进入 scope 栈的 cleanup 必须可调用，该不变量由 `PluginScope.defer()` 唯一拥有；静态类型不能覆盖动态插件边界。
+- 能力变化：合法同步/异步 cleanup、逆序排空、取消传播、task/process 跟踪不变；无效候选在 initialize/rollback 阶段提前失败。
+- 性能变化：正常注册仅增加一次常数级 callable 检查，不声明性能收益。
+- 测试新增：动态注册不可调用 cleanup 的边界测试。
+- 测试删除及原因：无；generation/snapshot/lease/drain/abort/rollback 测试全部保留。
+- 验证结果：plugin 相关测试 `145 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：`manager.py` 的候选 gate 和 watcher retry 属于更大的状态协议，本提交未改动。
+
+### `7b4b7821` `refactor(schedule): 收紧时间展示降级边界`
+
+- 范围：调度工具注册后的时间展示、历史任务列表展示及直接测试。
+- 历史依据：PR #52 的 scheduler 后台任务隔离；PR #79/#89 的轮询与取消边界；PR #107 的 MCP 超时透传均未触及。
+- 原问题：任务成功注册后，展示阶段用宽泛 `except Exception` 把内部程序错误也伪装成正常 ISO fallback。
+- 为什么这样修改：只恢复 datetime/时区格式化真实会产生且当前位置能处理的 `TypeError`、`ValueError`、`OverflowError`、`OSError`；历史失效时区额外处理 `ZoneInfoNotFoundError`。
+- 不变量与拥有层：调度参数结构由工具输入边界拥有；`ScheduledJob.fire_at` 的 datetime 契约由 scheduler 构造/反序列化层拥有；展示层只拥有格式降级。
+- 能力变化：合法注册、循环任务和取消不变；无效展示时区/request_time 仍回退 ISO；违反内部 job 契约的错误改为显式失败。
+- 性能变化：非性能提交。
+- 测试新增：无效字符串/错误类型 request_time 和历史失效时区的展示回退。
+- 测试删除及原因：无。
+- 验证结果：定向 `39 passed`；副手完整测试 `1505 passed`；pyright `0 errors`；`git diff --check` 通过。
+- 残余风险：ToolRegistry 当前不主动调用 schema validator，错误类型参数仍可从动态调用进入工具，因此该 TypeError 恢复路径真实可达。
+
+### `6cc15427` `fix(proactive): 暴露会话读取故障`
+
+- 范围：`Sensor` 的普通/主动历史读取、时间戳解析、配置与返回类型及直接测试。
+- 历史依据：PR #103 的 Gate→Fetch→Judge→Resolve→Deliver 次序；PR #101 的 Drift 时钟；PR #67 的 read-only 主动召回。
+- 原问题：sessions SQLite 关闭、schema 或加载故障被两个入口宽泛捕获并返回空列表，普通链误判为无上下文，主动链还可能绕过去重造成重复投递。
+- 为什么这样修改：Sensor 没有恢复数据库故障的能力；让错误传播到 `ProactiveLoop._tick_bound()` 现有的完整日志与重抛边界，仅保留非法旧时间戳到 `None` 的明确字段级恢复。
+- 不变量与拥有层：Session 持久化错误由 SessionManager/Store 拥有；Sensor 只读取筛选；tick 级失败可观察性由 loop 拥有。
+- 能力变化：无目标 session 仍返回空历史；角色、context frame、长度、主动顺序与状态标签不变；数据库故障由假空结果变为明确失败。
+- 性能变化：数据库读取次数和正常筛选复杂度不变。
+- 测试新增：普通筛选/截断、主动顺序/metadata、两个真实入口的已关闭 SQLite 传播。
+- 测试删除及原因：无。
+- 验证结果：主动相关组合 `416 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：tick 失败沿既有 supervisor 策略进入下一轮；本提交未改变重试节奏。
+
+### `bba83b52` `perf(akasha): 合并批量删除事务`
+
+- 范围：Akasha sidecar 节点/关联边批量物理删除和存储回归测试。
+- 历史依据：PR #65 的 sidecar 存储边界；PR #66 的快速路径一致性；PR #67/#68 的 scheduler/read-only 隔离与 live/replay parity 均未触及。
+- 原问题：批量接口逐项获取锁并提交事务，200 项产生 200 次 COMMIT；中途失败还会留下部分删除结果。
+- 为什么这样修改：用一次锁和一次 SQLite 事务包住逐 ID `executemany`；不构造无界 `IN (...)`，避免 dashboard 批量输入触发 SQLite 参数上限。
+- 不变量与拥有层：节点与全部入边/出边的一致物理删除由 AkashaStore 拥有；缺失和重复 ID 不增加删除计数。
+- 能力变化：最终删除计数、缺失/重复、边清理与无关边保留不变；批次从部分提交升级为全有或全无。
+- 性能变化：同一 200 项 workload、12 次测量，中位耗时 `10.208 ms → 0.926 ms`，约 `11.0x`；COMMIT `200 → 1`。
+- 测试新增：成功路径覆盖计数/重复/缺失/入出边；SQLite trigger 在批次中间失败，验证节点和边全部 rollback。
+- 测试删除及原因：无。
+- 验证结果：`tests/test_akasha_plugin.py` `37 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：大批次仍逐 ID 执行 SQL，避免参数上限但持锁时间随批量线性增长；这是相对原实现更短的同量工作。
+
+### `c1d37dbd` `fix(mcp): 拒绝非对象调用错误`
+
+- 范围：`McpClient.call()` 的 JSON-RPC `tools/call` error 边界和真实 stdio 响应测试。
+- 历史依据：PR #105 的 MCP generation/连接清理；PR #107 的 180 秒超时贯通；PR #89 的取消边界均未触及。
+- 原问题：代码无条件对 `error` 调用 `.get()`；非对象合法 JSON 会产生无 server/tool 上下文的 `AttributeError`。
+- 为什么这样修改：JSON-RPC error 必须是 object；标准对象保持既有用户可见字符串，字符串/列表等协议损坏携带 server、tool、类型和值抛出 `RuntimeError`，不归一化为普通工具失败。
+- 不变量与拥有层：JSON 解码和 response id 由 `_recv` 拥有；tools/call error schema 与用户可见转换由 `McpClient.call()` 拥有。
+- 能力变化：正常 content、标准远端错误、同 server 串行、timeout/cancel/disconnect 不变；损坏 error 从偶发属性错误变为有上下文的 fail-loud。
+- 性能变化：仅错误路径增加常数级类型判断，不声明性能收益。
+- 测试新增：标准 error object，以及字符串/列表 error 的拒绝和上下文断言。
+- 测试删除及原因：无。
+- 验证结果：MCP/热重载相关 `30 passed`；副手完整测试 `1508 passed`；pyright `0 errors`；`git diff --check` 通过。
+- 残余风险：标准 object 内部字段继续保持既有宽松展示，不在本提交扩大协议迁移范围。
+
+### `8181bd51` `perf(proactive): 初始化时完成日志迁移`
+
+- 范围：`ProactiveStateStore` tick log schema 迁移、finish 热路径及真实 SQLite 测试。
+- 历史依据：PR #103/#109 的主动 tick 与事件流架构；迁移不改变 phase/order、delivery/feedback、hot reload 或 MCP poll。
+- 原问题：每次 tick finish 都执行 `PRAGMA table_info(tick_log)`，但 schema 在一个 store 生命周期内只可能由初始化改变。
+- 为什么这样修改：把旧库 `proactive_effects_json` 补列放入 `_init_schema()` 的建表事务；业务写入信任初始化后的 schema。
+- 不变量与拥有层：finish 前列必须存在，该不变量由 `ProactiveStateStore._init_schema()` 唯一拥有；业务写入不重复验证。
+- 能力变化：新库、旧库迁移、tick log JSON、dashboard 查询和提交时机不变；旧库在首次初始化即完成迁移。
+- 性能变化：10 次 finish 的 schema 查询 `10 → 0`；包含初始化则 `10 → 1`，总数减少 90%，热路径减少 100%。
+- 测试新增：真实旧 schema 初始化补列并写入；SQLite trace 断言连续 finish 不再查询 schema。
+- 测试删除及原因：无。
+- 验证结果：主动相关组合 `418 passed`、dashboard `25 passed`；pyright `0 errors`；`git diff --check` 通过。
+- 残余风险：初始化本身仍执行一次 `PRAGMA table_info`，这是兼容旧库所需的一次性成本。
+
+### `0b916a57` `fix(mcp): 校验工具调用结果结构`
+
+- 范围：MCP `tools/call` 成功结果的 result/content/block/text 边界及 stdio 响应测试。
+- 历史依据：客户端固定协商 MCP `2024-11-05`；PR #107 的 timeout 透传和 PR #105 的连接/代际清理未修改。
+- 原问题：损坏 result 有时被字符串化为“成功”工具输出，有时产生无字段上下文的属性/类型错误。
+- 为什么这样修改：按已协商协议验证 result object、必需 content list、每个内容对象和 text 字符串；字段错误携带 server/tool/path/type/value 失败。
+- 不变量与拥有层：`_recv` 拥有 JSON/id；`_response_result` 拥有 result object；`McpClient.call()` 拥有 CallToolResult content schema。
+- 能力变化：标准 text block 仍拼接文本；合法 image/resource 等无 text 对象继续保持既有字典字符串；锁、超时、取消、断连和标准 error 不变。
+- 性能变化：成功响应增加线性类型校验，与原本遍历 content 同阶，不声明性能收益。
+- 测试新增：result 标量、缺失/错误 content、标量 block、非字符串 text 五条损坏路径。
+- 测试删除及原因：无。
+- 验证结果：MCP/热重载相关 `35 passed`；副手完整测试 `1519 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：合法非文本内容仍以 Python dict 字符串传给模型，这是既有表示协议，后续若需多模态 ToolResult 应独立设计。
+
+### `3f4e2645` `fix(akasha): 暴露 dashboard 配置错误`
+
+- 范围：Akasha dashboard 注册时的插件配置来源与损坏配置回归。
+- 历史依据：PR #93 的 snapshot freshness/旧坐标复用；PR #105 的 candidate 初始化/回滚边界。
+- 原问题：dashboard 忽略 runtime 传入的真实 `plugin_dir`，并捕获所有配置加载异常后退回默认配置，可能连接或创建错误 sidecar。
+- 为什么这样修改：直接从 canonical plugin_dir 调用统一配置加载器；配置不存在仍由加载器使用默认值，配置存在但 TOML 损坏/不可读则阻止注册。
+- 不变量与拥有层：外部 TOML 结构与读取由 `load_akasha_config` 拥有；dashboard 没有推导正确 DB 路径的恢复能力。
+- 能力变化：合法配置和缺失配置默认值不变；损坏配置从静默换库变为原始配置错误；recall/replay/snapshot 算法未触及。
+- 性能变化：删除一层 helper 和异常分支，无性能声明。
+- 测试新增：真实非法 TOML 在 dashboard 注册时传播 `TOMLDecodeError`。
+- 测试删除及原因：无。
+- 验证结果：Akasha/dashboard 相关 `38 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：配置字段的数值转换仍有历史默认策略，需要按字段契约另行审计。
+
+### `f45b899e` `fix(proactive): 暴露上下文组装故障`
+
+- 范围：主动 prompt 的 MemoryProfile/workspace 规则读取、类型协议和 facade 测试替身。
+- 历史依据：PR #101 的 runtime clock 和 Drift 规则；PR #103 的 Prepare→Judge→Resolve→Deliver 次序。
+- 原问题：prompt builder 分别吞掉四个任意异常，把画像、长期记忆、近期上下文和 workspace 规则故障伪装成内容为空；旧测试假对象缺少真实协议方法也被掩盖。
+- 为什么这样修改：MemoryProfile 是完整内部协议；workspace callback 已在文件 I/O 边界记录失败并返回旧缓存，组装层没有第二种恢复动作。
+- 不变量与拥有层：profile 读取由 MemoryProfileApi/runtime 拥有；workspace 文件恢复由 loop callback 拥有；prompt builder 只组装；tick supervisor 记录并隔离整轮错误。
+- 能力变化：正常区块、空内容跳过和 runtime clock 位置不变；依赖故障从缺块假成功变为明确 tick 失败。
+- 性能变化：读取次数不变，删除重复异常框架，无性能声明。
+- 测试新增：三个 profile 方法和 workspace callback 的失败传播；修复 facade 使其实现真实读取协议。
+- 测试删除及原因：无。
+- 验证结果：主动相关组合 `422 passed`；pyright `0 errors`；`git diff --check` 通过。
+- 残余风险：workspace I/O 仍按设计可降级到旧缓存并记录 warning；这是拥有恢复动作的边界，不属于静默失败。
+
+### `f0af9b55` `fix(peer-agent): reject missing remote task id`
+
+- 范围：A2A `message/send` 非阻塞提交响应、Poller 注册和新直接测试。
+- 历史依据：现有请求固定 `configuration.blocking=false`，随后必须以服务端 Task ID 调用异步 Poller。
+- 原问题：响应缺少 `result.id` 时生成从未发给服务端的本地 UUID，返回 submitted 并永久轮询不存在的任务。
+- 为什么这样修改：验证顶层/result object 和非空字符串 Task ID；协议损坏进入既有公开提交失败结果，且不注册 Poller。
+- 不变量与拥有层：A2A HTTP/JSON 响应由 `_submit_task` 拥有；只有服务端 Task ID 能进入 Poller；`execute()` 拥有对用户可见的提交失败转换。
+- 能力变化：合法异步 Task、冷启动、channel/chat 绑定与后台通知不变；假成功被删除。
+- 性能变化：仅响应边界增加常数级校验，不声明性能收益。
+- 测试新增：服务端 ID 正常注册，以及数组响应、缺失/空/非对象 result、空/非字符串 id 共七条路径。
+- 测试删除及原因：无。
+- 验证结果：定向 `7 passed`；副手完整测试 `1528 passed`；pyright `0 errors`；`git diff --check` 通过。
+- 残余风险：若未来改为 blocking 请求允许直接 Message，必须单独设计同步结果分支，不能复用异步 Poller。
+
+### `e6187d6f` `fix(akasha): 拒绝非法显式配置值`
+
+- 范围：Akasha 配置字符串/整数/浮点解析及真实 TOML 参数化测试。
+- 历史依据：统一 `load_akasha_config` 被 candidate 初始化、replay、dashboard 和诊断命令共同使用，是唯一 schema owner。
+- 原问题：显式非法值被静默替换为默认值，且 `bool` 会因 Python 是 `int` 子类而可能穿透数字判断。
+- 为什么这样修改：文件或字段缺失才使用默认；合法整数、浮点和历史数字字符串继续支持；显式错误携带字段名失败。
+- 不变量与拥有层：TOML 类型收敛由配置加载器拥有，上游无法保证手工文件；算法层信任强类型且有限的数值。
+- 能力变化：缺失配置默认值和合法历史写法不变；错误 db_path、非数字字符串、非整数 float、nan、bool、容器改为 fail-fast。
+- 性能变化：仅初始化解析路径，无性能声明。
+- 测试新增：默认/合法数字字符串，以及上述显式错误类型；特别覆盖 int/float 字段的 bool 与容器。
+- 测试删除及原因：无。
+- 验证结果：配置定向 `8 passed`、Akasha+fast replay parity `46 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：字段领域范围未在本提交新增限制；需要先从算法和历史配置证明范围，避免武断裁剪能力。
+
+### `94e9ac6a` `fix(akasha): 对齐来源引用失败语义`
+
+- 范围：live/replay query log 的 source_ref 统计和内部共享 helper。
+- 历史依据：PR #66 要求离线快速 replay 与线上单轮路径保持一致。
+- 原问题：live 独立实现并两次吞掉任意 JSON 错误，写入 `source_ref_count=0` 的假成功诊断；replay 对相同内部契约则直接失败。
+- 为什么这样修改：`_load_turn_card` 唯一生成 JSON list source_ref；live/replay 共用解析逻辑，内部契约违反时不应由诊断写入层恢复。
+- 不变量与拥有层：card source_ref 结构由 card 构造拥有；query log 只统计并持久化，不能把损坏解释为空来源。
+- 能力变化：合法引用计数和 query log 内容不变；损坏引用从假成功改为失败且不写半条诊断。
+- 性能变化：同阶线性解析，删除重复实现，无性能声明。
+- 测试新增：构造损坏内部 card，断言 JSON 错误传播且 query log 总数仍为零。
+- 测试删除及原因：无。
+- 验证结果：Akasha+fast replay parity `50 passed`；pyright `0 errors` 且无新增 warning；`git diff --check` 通过。
+- 残余风险：source_ref 仍是 JSON 字符串内部表示；若未来开放外部构造，应升级为 typed 字段而不是下游重复校验。
+
+### `54da202c` `fix(scheduler): reject corrupt persisted jobs`
+
+- 范围：JobStore 严格读取、schema 反序列化、原子保存和持久化测试。
+- 历史依据：PR #52 的 scheduler 后台任务语义；PR #79/#89 的 timeout/cancel 行为未改。
+- 原问题：坏 JSON、顶层/任务结构和时间戳损坏全部被当成空任务集；下一次 add/cancel/save 会覆盖原文件并丢失任务；非原子保存还会制造半文件。
+- 为什么这样修改：文件不存在才为空；严格 read_text/json.loads 保留 I/O/JSON 原异常；成功解析后的 schema 错误带 path/index/field；保存改用既有同目录原子替换。
+- 不变量与拥有层：JSON→ScheduledJob 由 JobStore 拥有，下游 SchedulerService 信任完整任务；读/解析错误不能伪装为无任务。
+- 能力变化：合法 roundtrip、misfire/recovery、执行和取消不变；损坏文件阻止启动/覆盖；保存具备原子替换。
+- 性能变化：写入增加一次同目录临时文件 rename，以可靠性为目标，不声明提速。
+- 测试新增：原始 JSONDecodeError/PermissionError、顶层/条目 schema、缺失/损坏时间字段与 roundtrip。
+- 测试删除及原因：无。
+- 验证结果：定向 `33 passed`；副手完整测试 `1539 passed`；`git diff --check` 通过；worktree pyright 仅缺可选环境包产生既有 missing-import，新增路径无错误。
+- 残余风险：已有损坏 jobs.json 会在启动时明确失败，需要人工修复或从备份恢复；这是防止静默丢任务的预期行为。
+
+### `9b11ec4b` `fix(akasha): 暴露空节点向量损坏`
+
+- 范围：Akasha sidecar 节点反序列化与损坏 DB 测试。
+- 历史依据：PR #65/#66 的 sidecar/dense 图与 live/replay parity；上游 MessageEmbeddingStore 已拥有非空向量写契约。
+- 原问题：空 embedding BLOB 节点被 list/get 静默当作不存在，使节点、边、fan 和诊断计数分叉。
+- 为什么这样修改：sidecar DB 可来自旧版本或手工修改；读取边界没有正确修复动作，应携带节点 key 失败。
+- 不变量与拥有层：正常写入的非空向量由 embedding/upsert 构造链拥有；持久化 BLOB 到 AkashaNode 由 `_row_to_node` 拥有。
+- 能力变化：合法节点、召回、replay、read-only、reinforce 和 snapshot 不变；损坏节点不再被过滤。
+- 性能变化：删除 list comprehension 的 None 过滤，非性能提交。
+- 测试新增：真实写入节点后把 BLOB 改为空，断言 list_nodes 以节点 key 报错。
+- 测试删除及原因：无。
+- 验证结果：Akasha+fast replay parity `51 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：已有空向量节点会阻止整图加载，需重建 sidecar；这是避免错图运行的预期 fail-stop。
+
+### `badc79c1` `fix(proactive): 暴露记忆优化失败`
+
+- 范围：MemoryOptimizer pending 两阶段事务、SELF 更新、取消传播与历史测试替身。
+- 历史依据：PR #75 的 memory fail-stop；后台 `MemoryOptimizerLoop` 已拥有记录异常并等待下周期的 supervisor 边界。
+- 原问题：merge/provider 与 SELF 异常被吞成空内容或假成功；旧测试只提供一次模型响应，第二步 `StopAsyncIteration` 也被掩盖；marker-only snapshot 会永久遗留。
+- 为什么这样修改：snapshot 成功后，read/merge/backup/write/commit/rollback 整个 MEMORY 阶段任一步失败或取消都恢复 pending 并重抛；SELF 在事务外，不能回滚已提交 MEMORY但必须报告失败。
+- 不变量与拥有层：pending 两阶段事务由 optimizer 拥有；周期隔离由 loop supervisor 拥有；正常空 merge 明确 rollback；marker-only 空有效内容明确 commit 清理 snapshot。
+- 能力变化：正常合并、空结果保留原记忆、SELF 更新和周期续跑不变；异常/取消可见且 pending 不丢；SELF 部分失败如实暴露。
+- 性能变化：正常模型调用次数和顺序不变，无性能声明。
+- 测试新增：merge RuntimeError、真实 MEMORY 写失败、CancelledError、SELF 失败、marker-only snapshot；修正旧测试两步响应。
+- 测试删除及原因：无。
+- 验证结果：optimizer `14 passed`，相关主动组合 `422 passed`；pyright `0 errors` 且仅一个既有 warning；`git diff --check` 通过。
+- 残余风险：SELF 写入不是与 MEMORY 同一原子事务，失败会保留已提交 MEMORY；该部分成功状态现在显式可见，后续若要全局原子性需独立设计。
+
+### `96baa0ab` `fix(proactive): 收紧时间归一化异常边界`
+
+- 范围：主动候选时间与时区归一化、直接边界测试。
+- 历史依据：PR #101 的 runtime clock；外部候选非法时间按既有契约可忽略，运行环境故障不可伪装成无时间。
+- 原问题：两个 `except Exception` 同时吞掉非法输入与 tzdata/runtime 程序错误。
+- 为什么这样修改：ISO 只恢复 `ValueError`；时区只恢复 `ValueError`/`ZoneInfoNotFoundError`；其他故障向 tick supervisor 传播。
+- 不变量与拥有层：外部字符串解析由 contracts 边界拥有；tzdata/runtime 可用性不由归一化函数恢复；tick supervisor 负责记录和续跑。
+- 能力变化：合法本地时间、非法 ISO/未知时区忽略不变；非预期时区解析故障改为明确失败。
+- 性能变化：分支和调用次数不变，无性能声明。
+- 测试新增：非法时间/时区继续恢复，以及注入非预期 ZoneInfo RuntimeError 的传播。
+- 测试删除及原因：无。
+- 验证结果：定向 `10 passed`、主动相关 `424 passed`；pyright `0 errors` 且无新增 warning；`git diff --check` 通过。
+- 残余风险：GatewayResult 动态 payload 类型仍需跨模块协议设计，不能靠局部 cast 解决。
+
+### `94534191` `fix(akasha): 对齐只读来源引用契约`
+
+- 范围：Akasha source_ref JSON-list 统一解析和 read-only query 回归。
+- 历史依据：PR #66 的 live/replay parity；PR #67 的 read-only 查询不得写 activation/query log。
+- 原问题：stateful query log 已 fail-loud，但 read-only record 构造仍把损坏 JSON 或非数组归为空 evidence，形成模式间失败语义分叉。
+- 为什么这样修改：`_source_refs()` 与 `_source_ref_ids()` 共用唯一 JSON-list parser；内部生成契约违反时直接失败。
+- 不变量与拥有层：source_ref 由 `_load_turn_card` 生成 JSON list；record/query-log 消费层不拥有修复动作。
+- 能力变化：合法 evidence、stateful/read-only 召回结果不变；read-only 损坏引用明确失败，同时仍不产生 pending activation 或 query log。
+- 性能变化：删除重复解析分支，无性能声明。
+- 测试新增：同一 read-only request 先验证合法结果，再注入非数组 source_ref，断言失败且两次均 `update_state=False`、无状态写入。
+- 测试删除及原因：无。
+- 验证结果：Akasha+fast replay parity `51 passed`；pyright `0 errors` 且无新增 warning；`git diff --check` 通过。
+- 残余风险：历史 sidecar/query log 若含坏 source_ref 会显式失败，需要迁移或重建；这是避免空证据假成功的预期行为。
+
+## 集成检查点
+
+- Wave 1 主分支组合验证：`1502 passed`。
+- Wave 2 中段主分支组合验证：`1516 passed`。
+- Wave 2 收束前主分支组合验证：`1554 passed`。
+- 三次均运行 `pytest -q tests/`，未删除测试；用例增长来自真实契约、事务和性能回归。
+
+### `48a8768f` `fix(memory): 拒绝非法显式插件配置`
+
+- 范围：default-memory TOML section/字段类型收敛和配置回归。
+- 历史依据：PR #41 的默认记忆插件标准 TOML 写法全部保留。
+- 原问题：错误 section 被归为空配置；`bool("false")` 变 True；db_path/整数/浮点错误值被强转或截断。
+- 为什么这样修改：只对文件、section 或字段缺失使用默认；显式值由唯一配置 owner 严格解析并携带完整字段路径失败。
+- 不变量与拥有层：外部 TOML schema 由 `load_default_memory_config`/codec 拥有，engine 信任强类型；不在算法层重复检查。
+- 能力变化：标准 TOML、历史整数/数字字符串和整数值 float 保留；错误根/嵌套 section、bool 冒充数字、非整数 float、容器等 fail-fast；未新增范围限制。
+- 性能变化：仅初始化解析，无性能声明。
+- 测试新增：合法旧写法和九类显式错误值/section。
+- 测试删除及原因：无。
+- 验证结果：配置与 memory engine contract `39 passed`；pyright `0 errors` 且无新增 warning；`git diff --check` 通过。
+- 残余风险：字段数值范围仍需结合召回算法和历史配置设计，未武断收紧。
+
+### `e2d3a7ba` `fix(bus): report admission enqueue failures`
+
+- 范围：EventBus 热重载 admission 后台入队 task 所有权与错误日志测试。
+- 历史依据：PR #105 的 snapshot admission/lease/drain；PR #109 的事件流唤醒。
+- 原问题：暂停 admission 时创建的后台 task 只从集合删除，不读取异常；acquire 失败导致事件丢失并产生无人拥有的 asyncio 异常。
+- 为什么这样修改：EventBus 作为 task owner，done 时统一清集合；shutdown cancellation 静默，其他失败读取原异常并记录 traceback 和事件类型。
+- 不变量与拥有层：admission/acquire 由 snapshot store 拥有；task 生命周期和失败可见性由 EventBus 拥有；不新增 retry/fallback。
+- 能力变化：成功入队、lease、queue、drain/close 不变；失败仍不伪装成功，但具备领域日志。
+- 性能变化：成功路径多一次 `task.exception()` 常数操作，无性能声明。
+- 测试新增：模拟 acquire 失败，断言原 cause、日志和 pending owner 清理。
+- 测试删除及原因：无。
+- 验证结果：热重载相关 `90 passed`；副手完整测试 `1557 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：失败事件不自动重试；是否持久化事件属于 durable delivery 设计，不应局部猜测。
+
+### `7a595739` `fix(skills): 拒绝损坏的元数据配置`
+
+- 范围：SKILL.md metadata YAML/JSON 边界、requires 可用性与 loader 测试。
+- 历史依据：PR #95 的 Skill Catalog generation 与 PR #105 的候选 snapshot/hot reload。
+- 原问题：损坏或非对象 JSON metadata 被归为空配置，绕过 requires 后错误标记技能可用。
+- 为什么这样修改：metadata 缺失/空才无配置；YAML map/JSON object 正常；损坏 JSON、数组、null 携带具体 SKILL.md 路径失败。
+- 不变量与拥有层：metadata schema 和 requirements 由 SkillsLoader 拥有；snapshot 只接收已校验 SkillRecord。
+- 能力变化：合法技能、优先级、缺失 metadata 和热重载不变；损坏候选在发布前失败。
+- 性能变化：索引构建增加常数级结构判断，无性能声明。
+- 测试新增：空 metadata 两种写法、损坏 JSON、数组/null 非对象和路径上下文。
+- 测试删除及原因：无。
+- 验证结果：相关公共契约/snapshot/热重载 `224 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：requires 领域规则未扩展；未来字段必须在 owner 层显式设计。
+
+### `717e61ee` `fix(bootstrap): continue cleanup after server failure`
+
+- 范围：AppRuntime dashboard/chat task 等待与 shutdown supervisor 测试。
+- 历史依据：应用 shutdown 已定义逐项继续清理、最后抛首错；PR #105 的 watcher/services/core drain 需要完整执行。
+- 原问题：server task 已失败时，统一 cleanup supervisor 之前的直接 await 立即重抛，跳过 watcher、proactive、IPC、channels、core、memory 和 HTTP 资源清理。
+- 为什么这样修改：把两个 server wait 纳入 `_run_cleanup_steps`；server 异常仍是最终首错，但后续资源全部获得清理机会。
+- 不变量与拥有层：server should_exit/等待由 server step 拥有；跨资源继续清理和首错由 shutdown supervisor 拥有。
+- 能力变化：正常顺序和 CancelledError 语义不变；失败 shutdown 不再短路后续清理。
+- 性能变化：正常 shutdown 等待顺序不变，无性能声明。
+- 测试新增：dashboard task 预先失败，断言最终原错、core.stop、should_exit 和 HTTP close。
+- 测试删除及原因：无。
+- 验证结果：相关 `40 passed`；副手完整测试 `1568 passed`；pyright `0 errors` 且无新增 warning；`git diff --check` 通过。
+- 残余风险：server task 无限等待和 shutdown 外部取消需要整体 timeout/shield 契约，本提交不局部改变。
+
+### `363b725e` `fix(chat): 限制代码高亮缓存`
+
+- 范围：聊天前端代码块高亮缓存与并发请求合并。
+- 原问题：以不完整键缓存高亮结果且无容量上限；同一输入可重复启动异步高亮。
+- 为什么这样修改：缓存键覆盖语言、主题和代码全文，使用 128 项 LRU，并复用同键 pending promise。
+- 不变量与拥有层：代码块组件拥有展示缓存；Shiki 仍拥有语法高亮结果，组件不伪造失败结果。
+- 能力变化：高亮内容与主题切换保持；消除键碰撞和重复计算。
+- 性能变化：已完成缓存从无界变为最多 128 项；同键并发计算从 N 次变为 1 次。
+- 测试新增：无；该组件暂无前端测试 runner。
+- 测试删除及原因：无。
+- 验证结果：typecheck、lint 和 build 通过；lint 仅 3 条既有 Hook warning。
+- 残余风险：pending 表在任务存续期保留 promise；任务完成后立即删除。
+
+### `27dd8f0a` `fix(ipc): reject non-object client frames`
+
+- 范围：IPC client newline JSON 帧反序列化边界。
+- 原问题：合法 JSON 标量随后以对象方法访问，产生不透明异常并断开连接。
+- 为什么这样修改：JSON 解码后立即确认顶层对象；非法帧显式记录并跳过，后续合法帧仍可处理。
+- 不变量与拥有层：wire JSON 结构由 IPC 边界拥有；handler 信任对象，不重复检查。
+- 能力变化：合法对象不变；单个非对象帧不再破坏长连接。
+- 性能变化：每帧增加一次常数结构判断，无提速声明。
+- 测试新增：同一连接发送标量后发送合法对象，验证错误可见且连接继续工作。
+- 测试删除及原因：无。
+- 验证结果：IPC 定向测试和 pyright 通过。
+- 残余风险：对象内部字段仍按各消息 handler 的协议分别校验。
+
+### `6d4d58ee` `fix(config): 拒绝无效工具集装配配置`
+
+- 范围：agent 工具集装配配置读取。
+- 原问题：错误类型和未知工具集被静默归一化，容易在启动后表现为能力缺失。
+- 为什么这样修改：缺失字段使用默认；显式空列表保留“禁用全部”；错误结构和未知名字启动期失败。
+- 不变量与拥有层：外部配置 schema 由装配层拥有；运行时只接收已解析工具集。
+- 能力变化：默认与显式禁用语义不变；配置错误从隐性降级变为明确失败。
+- 性能变化：仅启动期校验，无性能声明。
+- 测试新增：覆盖缺失、显式空、错误类型和未知工具集。
+- 测试删除及原因：无。
+- 验证结果：相关配置测试和 pyright 通过。
+- 残余风险：工具自身的运行时外部输入仍由各自边界拥有。
+
+### `54f2026b` `refactor(chat): 保持代码高亮渲染纯净`
+
+- 范围：聊天代码块异步高亮状态更新时机。
+- 原问题：React render 阶段触发 setState，可能引发重复渲染与陈旧结果覆盖。
+- 为什么这样修改：副作用移入 effect，并把异步结果绑定到当前输入。
+- 不变量与拥有层：React effect 拥有异步生命周期；render 只从状态生成视图。
+- 能力变化：高亮、复制和主题效果不变；旧请求不再覆盖新代码。
+- 性能变化：消除 render 阶段额外状态更新，无量化延迟声明。
+- 测试新增：无；该组件暂无前端测试 runner。
+- 测试删除及原因：无。
+- 验证结果：typecheck、lint 和 build 通过。
+- 残余风险：前端缺少组件级并发测试，当前由类型、构建与代码审阅覆盖。
+
+### `5cdff4b9` `fix(lifecycle): 拒绝未闭合的阶段依赖`
+
+- 范围：Phase 核心模块依赖和数据 slot 启动校验。
+- 原问题：核心依赖缺失、顺序错误或 slot 未产生只记录 warning，真实 turn 才以 KeyError 等不透明方式失败。
+- 为什么这样修改：核心阶段构造期 fail-fast；插件模块缺失插件依赖仍由拓扑层递归禁用，保留热插拔降级。
+- 不变量与拥有层：Phase 拥有核心链闭合；插件拓扑拥有可卸载插件依赖。
+- 能力变化：正常 turn、snapshot、interrupt 和 hot reload 不变；核心装配错误提前暴露。
+- 性能变化：仅构造期校验，无性能声明。
+- 测试新增：核心依赖不存在、顺序错误和未闭合 slot；保留插件递归禁用回归。
+- 测试删除及原因：无。
+- 验证结果：主线生命周期/热重载组合 `137 passed`；副手相关 `148 passed`；pyright 通过。
+- 残余风险：动态插件是否允许依赖核心 slot 仍由现有命名协议区分。
+
+### `92c7addd` `fix(akasha): 串行化图快照轮询`
+
+- 范围：Akasha graph panel 快照轮询与 disposer。
+- 原问题：请求慢于 5 秒轮询周期时会无限重叠，旧响应还可能晚到并覆盖新结果。
+- 为什么这样修改：每个 panel 最多一个 in-flight 请求；完成后恢复轮询；dispose 后不再应用结果。
+- 不变量与拥有层：panel 拥有轮询并发；后端 snapshot version 与增量坐标协议未改。
+- 能力变化：首次 refit、坐标、交互和热重载 disposer 保持；消除旧响应覆盖。
+- 性能变化：并发快照请求从无界降为最多 1；不声明单次延迟提升。
+- 测试新增：无；插件面板暂无前端测试 runner。
+- 测试删除及原因：无。
+- 验证结果：typecheck、lint 与真实 esbuild 参数编译通过；未修改 static bundle。
+- 残余风险：请求失败仍沿既有显式失败路径，由下一轮定时器重试。
+
+### `64c66fb0` `fix(clock): make replay advance atomic`
+
+- 范围：ReplayClock 单实例并发推进与持久化。
+- 原问题：`advance` 的读取和写入分属两个锁区间，并发调用会丢失 delta。
+- 为什么这样修改：同一锁内完成 read-modify-write；底层同目录临时文件替换保持。
+- 不变量与拥有层：ReplayClock 实例拥有进程内串行化；不声明跨实例或跨进程互斥。
+- 能力变化：now/set/环境选择保持；同实例并发推进不再丢增量。
+- 性能变化：锁覆盖一次文件读写，以正确性为目标；无延迟优化声明。
+- 测试新增：8 线程各推进 50 次，400 个返回时间唯一且最终时间累计完整。
+- 测试删除及原因：无；初版审阅时删除了未被生产路径调用的无效 barrier 测试钩子，改为真实并发压力回归。
+- 验证结果：Clock/wake `25 passed`；副手全量 `1574 passed`；pyright `0 errors, 0 warnings`。
+- 残余风险：多个 ReplayClock 实例指向同一路径仍需文件锁或单 owner 架构，本提交不扩大承诺。
+
+### `93de1a8a` `fix(context): 显式标记不可用媒体`
+
+- 范围：MessageEnvelopeBuilder 本地媒体装配。
+- 原问题：不存在的本地附件在多模态和文本/VL 两条路径都被静默丢弃，模型无法区分“无附件”和“附件不可用”。
+- 为什么这样修改：保留文字 turn，在上下文和 warning 中明确具体不可用路径；仅缺失附件时不诱导调用读图工具。
+- 不变量与拥有层：媒体文件可访问性由上下文装配边界拥有；模型调用链信任已标注媒体引用。
+- 能力变化：有效本地图片、文档、远程图片和 VL fallback 不变；缺失附件变为可观察降级。
+- 性能变化：缺失路径增加一条 warning 和文本标记，无性能声明。
+- 测试新增：两种媒体能力路径的缺失文件，以及仅缺失附件时不生成读图调用。
+- 测试删除及原因：无。
+- 验证结果：副手 ContextBuilder/lifecycle `117 passed`；主线相关 `47 passed`；pyright 通过。
+- 残余风险：远程 URL 的可达性仍由实际 HTTP/视觉工具边界判断，装配期不预请求。
+
+### `f97e0eb9` `fix(dashboard): 暴露插件发现失败`
+
+- 范围：Dashboard 插件清单启动加载与既有错误边界。
+- 原问题：`/api/dashboard/plugins` 失败被转为空列表，UI 看似正常但插件能力全部消失。
+- 为什么这样修改：移除空列表 fallback，把失败交给 App 统一 `run()` 边界展示；单 panel import 隔离策略保留。
+- 不变量与拥有层：清单请求整体成功由启动加载拥有；单插件模块失败由 importPanel 隔离并记录。
+- 能力变化：合法插件、版本 URL、CSS 注入和 hot-reload freshness 不变；发现失败明确显示。
+- 性能变化：请求与加载次数不变，无性能声明。
+- 测试新增：无；该启动链暂无前端测试 runner。
+- 测试删除及原因：无。
+- 验证结果：typecheck、lint 和 production build 通过；lint 仍为 3 条既有 Hook warning。
+- 残余风险：单 panel import 失败仍允许其他插件继续加载，这是插件隔离边界的既有能力。
+
+### `8307360f` `fix(persistence): isolate atomic save temp files`
+
+- 范围：scheduler 与 AnyAction 共用的 JSON 原子写底座。
+- 原问题：同一目标的并发 writer 共用固定 `.tmp`；一个 writer 可替换另一个的内容，随后另一个因临时文件已移动而失败。
+- 为什么这样修改：每次写入使用同目录唯一临时文件，再原子 replace；失败仅清理本 writer 的临时文件并传播原异常。
+- 不变量与拥有层：helper 拥有 staging 文件隔离和原子替换；不声明 writer 顺序、跨进程锁或 compare-and-swap。
+- 能力变化：JSON 格式、目标路径和错误契约不变；并发写不再互相窃取/删除 staging 文件。
+- 性能变化：写入与 replace 次数不变，UUID 生成是常数开销；无提速声明。
+- 测试新增：两个真实线程同步到 replace 后均可提交且结果完整；replace 失败保持旧目标、清理本次临时文件并传播。
+- 测试删除及原因：无。
+- 验证结果：主线持久化 `16 passed`；副手全量 `1583 passed`；pyright 无 error。
+- 残余风险：最后写入者覆盖先写入者仍是普通文件存储语义；需 CAS 的调用方必须另设版本协议。
+
+### `d0171f73` `fix(persistence): log atomic cleanup failures`
+
+- 范围：JSON 原子替换失败后的 staging 清理。
+- 原问题：replace 首错后的 `unlink` 使用宽泛捕获并静默 pass，残留临时文件没有路径和原因。
+- 为什么这样修改：仅捕获文件清理边界的 `OSError` 并记录 domain/tmp/error，随后继续抛原 replace 错误。
+- 不变量与拥有层：原事务错误保持首错；helper 只补充 best-effort cleanup 的可观测性。
+- 能力变化：成功路径和错误类型不变；清理失败不再静默。
+- 性能变化：仅失败路径增加一条日志，无性能声明。
+- 测试新增：replace 与 unlink 同时失败，断言首错和 cleanup 上下文。
+- 测试删除及原因：无。
+- 验证结果：副手全量 `1584 passed`；pyright 无 error。
+- 残余风险：cleanup 失败会保留唯一临时文件，需按日志人工清理。
+
+### `0c9e8da9` `perf(core): 限制工具发现会话缓存`
+
+- 范围：ToolDiscoveryState 跨会话和会话内解锁工具缓存。
+- 原问题：每会话已有 5 项 LRU，但 session 数无限增长；仅使用 always-on/meta 工具也会制造空项。
+- 为什么这样修改：增加默认 1024 session 的 LRU；访问刷新顺序；空会话不入表，淘汰后可重新 tool_search。
+- 不变量与拥有层：发现缓存只保存可重建的工具名，不是业务状态；registry 仍拥有真实工具可用性。
+- 能力变化：当前 1024 个活跃 session 的工具顺序与复用不变；旧 session 被淘汰后重新发现。
+- 性能变化：默认最坏驻留从无限增长收敛为约 5120 个工具名。
+- 测试新增：空项不创建、跨会话 LRU 访问刷新和最旧淘汰。
+- 测试删除及原因：无；审阅阶段删除了两个无意义 default-factory 包装函数后才合入。
+- 验证结果：副手相关 `118 passed`；主线组合 `23 passed`；pyright 无 error。
+- 残余风险：容量是实例参数；显式调大时上界随配置线性增长。
+
+### `9d54a421` `refactor(chat): 清理代码块注释`
+
+- 范围：聊天代码块组件注释。
+- 原问题：Types/Context/Token rendering 等标题式英文注释重复代码结构，必要约束也未按项目中文约定表达。
+- 为什么这样修改：删除 10 条废注释；保留并中文化 Shiki 位标志、稳定键、CSS 行号、缓存和异步展示约束。
+- 不变量与拥有层：仅注释变更，运行代码和 lint 指令不变。
+- 能力变化：无。
+- 性能变化：无。
+- 测试新增：无。
+- 测试删除及原因：无。
+- 验证结果：目标 lint、typecheck、全量 lint 和 chat build 通过。
+- 残余风险：其他前端文件的英文注释按文件继续审阅，不机械全局替换。
+
+### `ad7f7959` `fix(dashboard): 收紧 Hook 生命周期`
+
+- 范围：Dashboard MagicIndicator 与插件跨页事件 Hook。
+- 原问题：动态依赖数组无法静态验证；goto-session 订阅闭包可能调用旧 selectView。
+- 为什么这样修改：MagicIndicator 只声明真实静态依赖，DOM 选中变化继续由 MutationObserver 驱动；事件订阅用 Effect Event 读取最新跳转逻辑。
+- 不变量与拥有层：观察器拥有 DOM/class 变化；全局事件只订阅一次，不因 view state 重装。
+- 能力变化：指示器、插件跳转与 DOM 生命周期保持；消除 stale closure。
+- 性能变化：切换状态不再为依赖变化拆装观察器，无量化声明。
+- 测试新增：无；该 UI 链暂无组件测试 runner。
+- 测试删除及原因：无。
+- 验证结果：typecheck、production build 和 lint 全过，历史 3 条 Hook warning 归零。
+- 残余风险：MutationObserver 高频 mutation 的 RAF 合并仍可进一步独立评估。
+
+### `be2e828b` `fix(subagent): 暴露模型调用硬错误`
+
+- 范围：SubAgent provider 调用与同步/后台失败转换链。
+- 原问题：provider 硬错误被 SubAgent 捕获后返回空字符串，可能被上层解释为正常空结果。
+- 为什么这样修改：owner 先标记 `last_exit_reason=error`，再传播原异常；同步 spawn/后台 runner 继续在各自边界转成明确失败。
+- 不变量与拥有层：SubAgent 拥有退出原因；任务 runner 拥有面向调用方的 error status/摘要。
+- 能力变化：正常完成、loop guard、预算收尾不变；provider 故障不再假成功。
+- 性能变化：无。
+- 测试新增：provider RuntimeError 原样传播且退出原因为 error。
+- 测试删除及原因：无。
+- 验证结果：副手 SubAgent/spawn/background `40 passed`；主线相关 `34 passed`；pyright 无 error。
+- 残余风险：工具执行错误仍按 ToolResult 协议处理，不与 provider 基础设施故障混淆。
+
+### `0109b65f` `fix(proactive): reject corrupt quota state`
+
+- 范围：AnyAction 每日配额 JSON 反序列化边界。
+- 原问题：坏 JSON、权限错误和缺失文件都初始化零用量，可绕过每日动作上限；字段又被不一致地强转。
+- 为什么这样修改：仅文件不存在初始化；严格读取 version=1 完整 schema、window key、非负整数和 aware ISO 时间；TypedDict 固化下游类型。
+- 不变量与拥有层：QuotaStore 拥有持久化 schema；drift best-effort skill state 继续保留独立降级语义。
+- 能力变化：合法首版格式、空 last_action 和 rollover 保持；损坏 quota 阻止启动且保留原文件。
+- 性能变化：仅启动期校验，无性能声明。
+- 测试新增：缺失、合法、非对象、缺字段、version/used/window/time、JSON 与读取权限错误。
+- 测试删除及原因：无。
+- 验证结果：定向 `12 passed`；副手全量 `1603 passed`；pyright 无 error。
+- 残余风险：未知额外字段被忽略以保留向前兼容；schema 升级需显式版本迁移。
+
+### `fc7fae40` `fix(subagent): 拒绝空白任务结果`
+
+- 范围：SubAgent 无工具调用的最终响应契约。
+- 原问题：模型以空白 content 结束时被标记 completed，后台/同步调用方收到假成功空结果。
+- 为什么这样修改：最终响应 trim 后必须非空；否则标记 error 并由既有任务边界转换失败。
+- 不变量与拥有层：中间 tool-call 响应允许空 content；最终任务结果由 SubAgent owner 保证可展示。
+- 能力变化：正常文本、工具循环和预算收尾不变；空白最终响应明确失败。
+- 性能变化：一次常数级字符串判断，无性能声明。
+- 测试新增：空白 final response 抛错且退出原因为 error。
+- 测试删除及原因：无。
+- 验证结果：副手相关 `41 passed`；主线相关 `35 passed`；pyright 无 error。
+- 残余风险：强制收尾 helper 的空结果契约继续单独沿完整调用链审阅。
+
+### `23b08f74` `refactor(memory): 清理面板注释`
+
+- 范围：默认记忆 Dashboard 面板注释。
+- 原问题：12 条英文标题/逐段翻译注释无信息增量，必要的全局命名和增量 DOM 约束未按中文约定表达。
+- 为什么这样修改：删除废注释；保留并中文化命名冲突、计数缓存、增量 DOM、焦点保持和降级边界。
+- 不变量与拥有层：仅注释修改；运行代码和 TypeScript reference 不变。
+- 能力变化：无。
+- 性能变化：无。
+- 测试新增：无。
+- 测试删除及原因：无。
+- 验证结果：typecheck、lint、插件 esbuild 与 dashboard build 通过。
+- 残余风险：审阅同时发现文件内 catch 降级缺少可观测性，已作为下一笔功能修复处理，不能靠注释合理化静默失败。
+
+### 外部插件 `8aaeab3` `fix(feed): maintain cache freshness in MCP lifecycle`
+
+- 范围：canonical Feed 插件 `/mnt/data/coding/akashic-plugin/feed-mcp`、GitHub `akashic-plugins/feed-mcp` 与安装版本 `feed@github 1.2.0`。
+- 历史依据：`3b456e7b` 把 source poll 绑定到 `default_proactive` lifecycle；启用 wake package 时 manifest 会禁用 default package，但 wake 只调用 `get_proactive_events`，从而丢失 Feed 外部刷新能力。
+- 原问题：Feed MCP 进程持续运行且 wake 每约 5 分钟读取一次缓存，但 `poll_state.last_polled_at` 停在 2026-07-12 14:59 UTC；Tibo RSS 已有新消息，SQLite 仍是旧列表。现有测试只证明 default lifecycle 拥有 poll，没有覆盖 wake + Feed freshness 组合。
+- 为什么这样修改：缓存 freshness 归缓存拥有者。Feed MCP 使用 FastMCP lifespan 启动唯一后台 poller；首次主动读取等待首次刷新，之后按 `feed_mcp.json.poll_ttl_seconds` 刷新。插件不再声明宿主 `poll_tool`，default 与 wake 都只通过异步 MCP 调用读取稳定缓存。
+- 不变量与拥有层：Feed poller 唯一拥有刷新串行、首次 ready、失败状态和重试；backend 拥有单源 TTL 与 SQLite 数据；proactive lifecycle 只消费 source snapshot。系统级刷新错误使读取显式失败，单源失败继续由 Feed `_poll_rows` 隔离并记录。
+- 能力变化：default/wake 的 fetch、分页、ack 和排序不变；wake 模式恢复新消息获取。MCP 启动不等待 32 个网络源，首次 `get_proactive_events` 才等待首次刷新；手动 poll 与后台 poll 由同一异步锁串行。
+- 性能变化：外部抓取由宿主生命周期耦合改为 MCP 每 300 秒自行刷新；SQLite 启用 WAL 和 30 秒 busy timeout，轮询写入期间读取稳定快照。没有增加每次 wake 的网络抓取。
+- 测试新增：poller 首次刷新屏障、持续刷新、失败可见与下一轮恢复。
+- 测试删除及原因：删除未接线且吞掉启动错误的 `startup_force_poll()` 死代码；未删除行为测试。
+- 验证结果：Feed 插件 `11 passed`；pyright `0 errors, 0 warnings`；GitHub 已推送；`plugin-install` 安装 1.2.0；运行进程切换到 1.2.0；首次自刷新 32/32 成功，Tibo 源解析 19 条并新增 2 条，`last_polled_at` 推进到 2026-07-12 18:59 UTC。
+- 残余风险：同轮审计发现 Steam 历史 snapshot 的部分同类问题，已由下一条记录修复；Calendar 每次读取实时查询 Google API，Fitbit managed service 已自行轮询，二者不存在本次旧缓存问题。
+
+### 外部插件 `326c055` `fix(steam): refresh proactive snapshots on demand`
+
+- 范围：canonical Steam 插件 `/mnt/data/coding/akashic-plugin/steam-mcp`、GitHub `akashic-plugins/steam-mcp` 与安装版本 `steam@github 1.1.0`。
+- 历史依据：Steam proactive source 的在线状态每次实时查询，但历史游戏时长只由手动 `take_steam_snapshot` 更新；运行数据库最后快照停在 2026-06-06。
+- 原问题：`get_steam_context` 每约 5 分钟读取相同旧 snapshot；仓库没有定时调用者。即使新增定时调用，空的最近游玩列表也不会写任何行，下一轮仍会判断为从未成功刷新。
+- 为什么这样修改：Steam context owner 在读取前检查 snapshot run 的 TTL，超过 6 小时才调用一次 Recently Played API；独立 `snapshot_runs` 表记录包括空结果在内的成功刷新批次。
+- 不变量与拥有层：Steam MCP 拥有实时状态和历史快照 freshness；wake 只读取结构化 context。配置 JSON 损坏在读取边界 fail-loud；远端快照刷新失败保留实时状态并通过 `snapshot_refresh_error` 显式降级。
+- 能力变化：实时 online/in-game 查询、两周与历史时长对比、wake presence/transition 保持；旧快照自动恢复刷新，空列表不再造成重复请求。
+- 性能变化：wake 仍每轮查询轻量在线状态；Recently Played API 由过去“永不自动调用”变为最多每 6 小时一次，同 TTL 内只读 SQLite。
+- 测试新增：过期快照只刷新一次、空快照记录成功批次、刷新失败可见、TTL 内跳过刷新。
+- 测试删除及原因：无。
+- 验证结果：Steam 插件 `7 passed`；pyright `0 errors, 0 warnings`；GitHub main 已推送；安装 1.1.0；真实 context 刷新成功，freshness `0.0h`、2 个近期游戏、无刷新错误；旧 1.0.0 generation 排空后仅保留 1.1.0 MCP 进程。
+- 残余风险：Recently Played 和 Player Summary 是两个独立 Steam API 请求；其中一条失败时 context 会明确区分 snapshot 与 realtime 的降级状态，不提供跨 API 原子快照。
+
+### `05ab66b3` `fix(runtime): restore session context after turn and tick`
+
+- 范围：被动 turn 与 proactive tick 的 `current_session_key` 生命周期。
+- 原问题：两个长链路入口调用 `ContextVar.set()` 后没有 reset；同一 task 后续执行会继承上一轮 session，导致 observe 全局错误归属错误。常规消息循环为每条消息创建 task，会掩盖被动路径问题，但 `process_direct` 和 proactive 长生命周期 loop 可真实触发。
+- 为什么这样修改：由设置上下文的入口保存 token，并在最外层 `finally` 恢复调用方上下文；busy 状态仍由内层 `finally` 独立释放。
+- 不变量与拥有层：`AgentLoop._process` 拥有单个 turn 的 session 绑定，`ProactiveLoop._tick_bound` 拥有单个 tick 的绑定；共享 ContextVar 和 observe 只读取，不承担生命周期清理。
+- 能力变化：续跑、TurnStarted、核心处理、主动 Gate → Fetch → Judge → Resolve → Deliver、异常传播和 busy 状态语义保持；成功、失败与取消离开入口后均不残留 session。
+- 性能变化：删除一处未使用计时，增加两次常数级 ContextVar token 操作；无性能收益声明。
+- 测试新增：被动成功恢复、核心失败恢复并释放 processing state、主动成功与失败恢复。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `19 passed`、全量 `1619 passed`、pyright `0 errors`；主线合入后定向 `19 passed`、全量 `1619 passed`，`git diff --check` 通过。
+- 残余风险：其他独立 ContextVar 设置点仍需按各自任务生命周期审阅，不能从本次两处修复推断全仓已覆盖。
+
+### `27e1c638` `fix(mcp): enforce 2024 tool result boundaries`
+
+- 范围：MCP `tools/list`、`tools/call` 的外部 schema 与远端失败分类。
+- 原问题：缺失 `inputSchema` 会静默变成空 schema，非字符串 description 被强转；坏 content block 可能以 Python repr 当成功结果进入模型；JSON-RPC error 与 `isError=true` 都被返回为普通字符串，直接调用方无法区分成功和失败。
+- 为什么这样修改：按客户端实际协商的 `2024-11-05` 严格接受 text、image、resource 三类结果；后续版本字段明确拒绝。工具声明在 `tools/list` 边界校验，远端执行失败统一抛出带 server/tool/服务端内容的 `McpToolExecutionError`。
+- 不变量与拥有层：`McpClient` 拥有 MCP 反序列化和协议版本边界；`ToolRegistry` 继续拥有面向模型的错误日志与 `工具执行出错` 回填。边界之后的 `McpToolInfo` 和工具结果不再重复防御。
+- 能力变化：合法三类结果、stdio 串行、连接/执行 timeout、插件 generation 与热重载不变；坏 schema 不再进入工具目录，远端失败对直接调用方 fail-loud、对模型仍明确可见。
+- 性能变化：每项增加常数级字段检查，content 仍单次 O(n) 遍历；无新增 I/O、重试或缓存。
+- 测试新增：工具声明缺失/坏类型、三类有效内容、各类关键缺字段、未知与后续类型、非法 `isError`、JSON-RPC error 和 tool result error 异常。
+- 测试删除及原因：无；旧 MCP 夹具补齐协议要求的 `type=text`。
+- 验证结果：副手定向 `212 passed`、全量 `1632 passed`、pyright `0 errors`；主线合入后 MCP/IO 定向 `52 passed`，`git diff --check` 通过。
+- 残余风险：客户端仍固定协商 `2024-11-05`；未来协议升级必须单独实现版本协商与新增 content union，不能在旧版本路径静默兼容。
+
+### `61fba5be` `fix(channels): close resources and validate message boundaries`
+
+- 范围：WebChat 外部消息、IPC server/client 生命周期、附件降级、渠道身份索引与 Telegram live-task 索引。
+- 原问题：WebChat 强转坏 text 并静默丢弃坏 media 元素；IPC 构造时永久订阅且 stop 不关闭客户端，Unix chmod 失败会遗留已绑定 server/socket；身份保存失败会留下未持久化内存路由；Telegram 每个完成任务扫描全部 session 并永久保留空集合；附件 fallback 吞掉所有异常且无降级日志。
+- 为什么这样修改：外部字段在 WebSocket 边界一次性严格校验；IPC 成功启动后才提交 server/subscription，停止前同步转移并 close 全部 ownership，再等待所有资源并重新抛首个 `OSError`；identity mapping 只在持久化成功后提交；任务回调按所属 session O(1) 清理；附件仅对 `OSError` 保留有日志的 `/tmp` 降级。
+- 不变量与拥有层：WebChat 拥有帧 schema；IPC channel 拥有 server、writers 与 outbound subscription；SessionIdentityIndex 拥有 metadata/mapping 一致性；Telegram channel 拥有 live-task 索引；AttachmentStore 拥有文件系统降级。
+- 能力变化：合法 WebChat、IPC、Telegram、附件上传和身份路由保持；坏帧返回明确 error 且连接可继续；IPC 启停失败不留订阅或客户端 ownership，多个关闭错误完成清理后 fail-loud。
+- 性能变化：Telegram 完成回调由 O(session 数) 降为 O(1)，并删除空 session 集合；其余仅边界/生命周期常数级操作，无量化收益声明。
+- 测试新增：WebChat 三类坏字段与连接续用、Unix chmod 失败事务回滚、server/writer wait 失败仍清理其余资源、IPC 正常 stop、identity 保存回滚、Telegram 空索引回收、附件 fallback 日志。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `45 passed`、全量 `1628 passed`、pyright `0 errors`；主线合入后 channels/MCP 交叉定向 `69 passed`，`git diff --check` 通过。
+- 残余风险：未改变 MessageBus 既有重试、FIFO、背压与取消策略；QQ/Telegram 外部 API 的独立错误策略需按具体调用链继续审阅。
+
+### `f30973e9` `fix(proactive): tighten source and delivery boundaries`
+
+- 范围：默认 proactive Gateway、MCP source event 边界与 success/post-guard ACK。
+- 原问题：Gateway 再次捕获共享 source snapshot 故障并伪装成三路空数据；坏 web_fetch payload 被当成普通空正文；非对象或无 ID 的 alert/content 被跳过或生成碰撞 key；仅配置独立 alert ACK 时，普通 ACK 缺失导致 helper 提前返回。
+- 为什么这样修改：单 source 隔离继续由 `fetch_sources_async` 唯一拥有，Gateway 只消费聚合 snapshot；整体失败和工具协议损坏 fail-loud。WebFetchTool 明确返回的 `{error}` 仍按可选正文降级，但记录 URL/原因 warning。source payload 在 MCP 边界拒绝无法可靠 ACK 的事件；两个 ACK 通道按实际依赖分别执行。
+- 不变量与拥有层：source 聚合层拥有单源失败隔离；Gateway 拥有 snapshot 与 web_fetch 结果形状；`mcp_sources` 拥有 event object/ID；resolve helper 拥有 alert/content ACK 路由。
+- 能力变化：正常并行抓取、单源隔离、显式 HTTP 失败空正文、ACK 顺序、发送、wake、热重载和 Gate → Fetch → Judge → Resolve → Deliver 不变；全部 source 失败不再假装无事件，独立 alert ACK 不再丢失。
+- 性能变化：三路和 URL 抓取并行度、调用次数不变；新增每 item 常数级字段检查，无性能收益声明。
+- 测试新增：三路 snapshot 失败传播、web_fetch 显式降级日志与损坏协议、坏 source item/空 ID、仅 alert ACK 的 success/post-guard 路径。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `182 passed`、全量 `1646 passed`、pyright `0 errors`；主线合入后主动链交叉定向 `113 passed`，`git diff --check` 通过。
+- 残余风险：Gateway/source payload 仍使用历史弱类型 dict；本批没有扩大为跨模块 typed contract 重构。
+
+### `bcaf40e8` `fix(tools): harden exact selection and search ranking`
+
+- 范围：tool_search 精确选择、runtime snapshot 文档查询与关键词 top-k 排序。
+- 原问题：`select:` 通过宿主 registry 私有 `_documents` 做 risk 过滤，热重载 snapshot 新增/替换工具会读取错误代际元数据；重复名称产生重复结果；关键词搜索为所有命中候选生成解释并全量排序。
+- 为什么这样修改：新增经过 `_runtime_view()` 的 `get_document()`；select 按输入顺序去重；保持 score 降序和 name 字典序 tie-break，正数 top-k 用 heap 选取后只为最终结果生成解释。
+- 不变量与拥有层：ToolRegistry 拥有工具与索引文档，runtime view 拥有当前代际；ToolSearchTool 拥有 select 解析；KeywordSearchBackend 拥有评分与排序。hook、timeout、ToolResult、解锁与 snapshot 生命周期未改。
+- 能力变化：正常搜索召回、精确名称 fast path、风险过滤和排除集合保持；snapshot risk 使用正确代际；重复 select 幂等。
+- 性能变化：同机 20,000 个匹配文档、每轮 5 次 top-5 的合成负载，中位数由 `1.2399s` 降至 `0.4648s`，约 `2.67x`；不外推为整体生产延迟。
+- 测试新增：score/name tie-break、重复 select、runtime snapshot risk 过滤。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `122 passed`、全量 `1658 passed`、pyright `0 errors`；主线合入后工具交叉定向 `71 passed`，`git diff --check` 通过。
+- 残余风险：高候选、小 top-k 场景收益最大；仍需为所有候选计算基础关键词分数，这是正确排序所必需。
+
+### `62fec3e6` `fix(session): tighten config and persistence boundaries`
+
+- 范围：TOML section、session SQLite JSON、FTS 初始化与 CLI socket 配置。
+- 原问题：显式非 table 配置被静默当空表；空/坏 JSON 与错误形状可能进入消息，extra 可覆盖 role/id 等列字段；FTS 每次启动都因错误检查 config 表而全量 rebuild，并把所有 OperationalError 当成“无 FTS”；socket 被重复规范化。
+- 为什么这样修改：只有缺失 section 使用默认空表，显式错误结构 fail-loud；SQLite 边界集中校验 metadata/extra/tool_chain 形状、空载荷和保留字段；从 sqlite_master 表定义判断 trigram，只有创建/迁移/触发器缺失才 rebuild；仅真实 FTS5/trigram 能力缺失带 warning 降级，其余数据库错误传播。
+- 不变量与拥有层：Config loader 拥有 TOML schema；SessionStore 拥有 DB JSON 与消息列；FTS initializer 拥有索引/触发器；SessionManager 正常写入已排除 extra 保留字段。合法默认配置、消息顺序、事务保存、热重载不变。
+- 能力变化：合法缺失配置和 LIKE fallback 保持；坏配置/数据不再伪装；正常重启保留中文 FTS 命中，缺触发器仍自动 rebuild；数据库锁/损坏不再静默关闭全文检索。
+- 性能变化：已有 trigram FTS 的正常启动从每次扫描全 messages rebuild 改为只检查 sqlite_master 与三条 trigger；构造阶段 trace 已证明无 rebuild。收益随消息表大小增长，本批未虚构固定倍数。
+- 测试新增：非 table section、空/坏 JSON、extra 保留字段、构造期无 rebuild、缺 trigger rebuild、FTS 能力缺失降级和普通 OperationalError 传播。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `50 passed`、全量 `1675 passed`、pyright `0 errors`；主线合入后 session/config/tool 交叉定向 `113 passed`，`git diff --check` 通过。
+- 残余风险：历史 `GatewayResult` 弱类型与 SessionStore 其他用途型扫描 API 继续按各自契约审阅，未在本批扩张。
+
+### `d4f79950` `fix(provider): close streams and validate tool arguments`
+
+- 范围：OpenAI-compatible stream 生命周期与 tool-call arguments 外部响应边界。
+- 原问题：stream 成功或 timeout/回调/解析异常退出时未显式关闭，可能占用 HTTP response/连接；tool arguments 解码为数组或标量后直接进入内部 `dict` 契约。
+- 为什么这样修改：provider 作为 stream owner 在消费循环最外层 finally 调用异步 close；流式与非流式统一通过边界 helper 解析并要求 JSON object。
+- 不变量与拥有层：Provider 拥有外部 response 与 ToolCall 构造；delta 顺序、idle timeout、reasoning/provider 字段、缓存 token、retry/context guard 不变。
+- 能力变化：合法响应完全保持；资源在成功、timeout、delta 回调异常与参数解析失败路径均释放；坏 tool arguments fail-loud。
+- 性能变化：每次 stream 增加一次必要 close，无性能收益声明。
+- 测试新增：四类 stream 关闭路径，以及流式/非流式非 object arguments。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `23 passed`、全量 `1681 passed`、主文件 pyright `0 errors`；主线合入后定向 `23 passed`，`git diff --check` 通过。
+- 残余风险：provider 综合测试文件仍有既有弱类型 warnings；本批未修改 retry 分类。
+
+### `8eeaa270` `fix(lifecycle): expose subscription ownership`
+
+- 范围：TurnLifecycle 的七个 EventBus handler 注册 façade。
+- 原问题：façade 丢弃 EventBus 已返回的 `EventSubscription`，调用方无法表达和执行 handler ownership 的显式释放。
+- 为什么这样修改：直接返回已有 subscription，不新增抽象、不改变注册与执行顺序；owner 可在自身销毁时 close。
+- 不变量与拥有层：EventBus 仍拥有 handler 列表和 off；注册调用方拥有 subscription 生命周期。现有 app-lifetime 调用方忽略返回值时行为不变。
+- 能力变化：现有 handler 行为无变化；新增显式注销能力。本批不声称已经改变生产 wiring 次数。
+- 性能变化：无。
+- 测试新增：subscription close 后 handler 不执行、handler count 归零。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `60 passed`、全量 `1679 passed`、pyright `0 errors`；主线合入后 lifecycle 交叉定向 `57 passed`，`git diff --check` 通过。
+- 残余风险：多媒体主动发送存在不可原子撤回的 partial-delivery contract，需单独设计，不能在本批用 bool 假装事务成功。
+
+### `72bc91e7` `fix(bus): preserve outbound subscriber fanout`
+
+- 范围：MessageBus 单条出站消息的订阅者 fan-out。
+- 原问题：直接遍历可变订阅 list；首个回调在执行中关闭自身 subscription 时，元素左移会让 Python 迭代器跳过下一回调，静默漏发同一消息。
+- 为什么这样修改：fan-out 开始时创建不可变 tuple snapshot；当前消息对开始时的订阅者保持稳定，后续消息重新读取最新订阅列表。
+- 不变量与拥有层：MessageBus 拥有每条消息的 fan-out snapshot；EventSubscription 仍拥有后续注销。ChatLane、FIFO、重试/退避和降级不变。
+- 能力变化：回调自注销不再造成其他订阅者漏发；该回调不会收到下一条消息。
+- 性能变化：每次 fan-out 复制当前 channel 的小型订阅 tuple，O(订阅者数)；这是稳定迭代所需成本，无性能收益声明。
+- 测试新增：连续两条消息验证当前 snapshot 与后续 unsubscribe 语义。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `21 passed`、全量 `1683 passed`、范围 pyright `0 errors`；主线合入后 bus/event 定向 `26 passed`，`git diff --check` 通过。
+- 残余风险：MessageBus/EventBus 队列仍无固定容量；缺少明确容量与背压契约前不任意加限额。
+
+### `6c47cdbb` `fix(plugins): expose only current generation views`
+
+- 范围：PluginManager 当前插件视图与 Telegram bot command 汇总。
+- 原问题：旧 snapshot lease 排空前，`_active_plugins`/`_loaded` 同时含旧代和当前代；公开视图遍历 namespace 会重复暴露旧 metadata/commands，禁用当前插件后旧代仍可能被报告。
+- 为什么这样修改：只从 `_active_generations` 当前代际映射获取 ActivePluginInfo 与 instance，并保留 registry active 检查。
+- 不变量与拥有层：snapshot/lease 拥有旧代执行连续性；PluginManager 当前代映射拥有对外 catalog。prepare/publish/rollback、drain、MCP/channel/service/dashboard 事务不变。
+- 能力变化：旧 turn 继续使用 lease 固定旧 snapshot；新查询只见当前代，禁用后不暴露旧能力；命令转换语义保持。
+- 性能变化：从遍历全部 retained namespace 收敛到当前 generation 数量；通常插件数很小，不作量化声明。
+- 测试新增：保留旧 lease 时 v1→v2 只暴露 v2，禁用后两个公开视图均为空。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `156 passed`、全量 `1683 passed`、pyright `0 errors`；主线合入后 hot-reload 定向 `141 passed`，`git diff --check` 通过。
+- 残余风险：旧 generation 仍按 lease 正常保留资源，这是连续性设计，不应为“清理视图”提前销毁。
+
+### `b35cd6f1` `fix(scheduler): tighten time and job boundaries`
+
+- 范围：定时任务持久化 schema、时间/时区解析、cron 依赖边界、后台执行 ownership 与调度工具输入。
+- 原问题：执行中的循环任务被用户取消后会在 finally 中重新写回；坏 interval 等持久化字段可进入运行时；`HH:MM` 没有把注入时钟转换到请求时区；长 misfire 逐 interval 循环；缺 APScheduler 时启用的自写 cron 与正式路径连 weekday 语义都不一致；`chat_id` 会把 `None`/对象静默转成字符串。
+- 为什么这样修改：JobStore 在 JSON 边界严格校验当前 15 字段 schema 与领域不变量；scheduler 显式持有后台 task，区分用户取消与 shutdown；周期推进改为算术跳跃；直接使用 requirements 中的 APScheduler 和 ZoneInfo，删除约百行近似 fallback；工具边界拒绝错误类型。
+- 不变量与拥有层：ScheduleTool 拥有外部工具输入；JobStore 拥有持久化 schema；SchedulerService 拥有运行 task、取消与重排；APScheduler 拥有 cron 语义。当前 live schedules 文件与历史提交均为相同 15 字段，不新增迁移或兼容层。
+- 能力变化：合法 at/after/every、发送顺序、soft job 工具限制和任务恢复保持；用户取消不再复活；shutdown 中断的循环任务仍持久化供重启恢复；缺少必需 APScheduler 时直接失败，不再运行语义不一致的替代实现。
+- 性能变化：365 天停机、1 秒 interval 的推进由逐秒循环改为 O(1) 算术计算；cron 删除自写扫描实现，不声明额外倍数。
+- 测试新增：坏 schema/重复 ID/时区、目标时区 HH:MM、5/6 字段 cron 与 weekday、显式取消和 shutdown 恢复、后台异常唯一日志、非法 interval、chat_id 边界、长 misfire。
+- 测试删除及原因：无。
+- 验证结果：副手全量 `1701 passed`、目标文件 pyright `0 errors`；主线合入后定向 `102 passed`，`git diff --check` 通过。
+- 残余风险：当前发送工具没有结构化 delivery outcome 与幂等键，因此本批没有擅自新增自动 retry，避免重复发送。
+
+### `246583c5` `fix(bootstrap): 收束 AppRuntime 资源生命周期`
+
+- 范围：AppRuntime 启停、primary/server/watcher task 监督、channel/managed service 启动回滚、CoreRuntime/MemoryRuntime/dashboard 资源关闭。
+- 原问题：启动取消不稳定进入回滚；dashboard/chat/watcher 提前返回或失败不会结束仍运行的核心任务；`asyncio.gather` 首个 sibling 失败后其他任务可能继续；单个 cleanup 失败或取消会跳过后续资源；IPC/channel/service 的部分启动存在资源泄漏路径；dashboard compile task 异常可跳过其他 closeable。
+- 为什么这样修改：一个 primary supervisor 唯一持有 runtime tasks，失败和取消时 cancel 并确定性 await 全部 siblings；已消费的 watched task 立即移交引用；通用 bootstrap cleanup runner 在调用方取消时仍完成所有已取得资源并重新抛出首个失败；各 owner 的启动回滚和关闭路径接入同一语义。
+- 不变量与拥有层：AppRuntime 拥有核心任务、server/watcher 和总 shutdown 顺序；ChannelHost 拥有 channel scoped resources；PluginServiceHost 拥有 managed subprocess；CoreRuntime/MemoryRuntime/dashboard lifespan 各自拥有其资源。startup/run 原错误保持主异常，rollback/shutdown 错误作为 cause 保留。
+- 能力变化：启动顺序、插件热重载事务、channel、CLI、proactive 和 dashboard 功能保持；server/watcher 正常退出或失败会触发全局收尾；外部取消完成 cleanup 后原样重抛；primary sibling 的异步 finally 完成前 `run()` 不返回。
+- 性能变化：无吞吐收益声明；新增常数级 task supervisor 与 shutdown bookkeeping，换取确定性资源回收。
+- 测试新增：server 正常返回/失败、run 与 shutdown 双失败、primary sibling 失败与异步 finally、外部取消、startup rollback、cleanup 继续执行、dashboard compile 取消/异常、IPC 构造回滚、channel scoped resource、managed service rollback。
+- 测试删除及原因：无。
+- 验证结果：副手全量 `1697 passed`；主线合入后定向 `73 passed`、全量 `1716 passed in 20.73s`；修改文件 pyright `0 errors`，`git diff --check` 通过。
+- 残余风险：shutdown 仍按既有顺序串行执行，未引入并行关闭；这是为保持资源依赖顺序和错误上下文，不宣称关闭耗时优化。
+
+### `deb87c8a` `fix(memory2): enforce storage and boundary ownership`
+
+- 范围：MemoryStore2 共享 SQLite 连接、embedding/provider 数据边界、query rewrite task 回收和 post-response worker 错误传播。
+- 原问题：`check_same_thread=False` 的共享连接仅有部分写路径加锁，8 线程并发写可复现 `UNIQUE constraint`、`InterfaceError` 和 SQLite API misuse；数据库 embedding 与 provider batch 结构未经完整校验；query rewrite 超时只 cancel 不 await；后台 memory worker 顶层吞掉存储错误。
+- 为什么这样修改：由 store 的同一 `RLock` 串行化该连接的全部公开操作；在 SQLite/provider 唯一边界校验 JSON、有限数值、index、数量和维度；创建 task 的 rewriter 负责 cancel 后确定性 await；worker 将错误交给已有 EventBus observer 隔离层记录，同时让显式 ingest 看见失败。
+- 不变量与拥有层：MemoryStore2 拥有单连接并发与持久化 JSON；Embedder 拥有外部响应 schema；QueryRewriter 拥有其两个 task；EventBus 拥有后台观察者隔离。Retriever 的 cosine/keyword/RRF、情景 lane、scope、注入预算和热重载均未修改。
+- 能力变化：正常召回、排序、去重、合并、遗忘和 full-context 保持；并发写不再互相破坏；坏向量/响应即时带上下文失败；超时不遗留 LLM task；后台失败仍不阻断已提交用户回复，但显式 ingest 不再假成功。
+- 性能变化：共享单连接操作由隐式争用改为显式串行，未宣称吞吐提升；故障并发不再重试或产生重复写。正常检索 SQL、候选数和排序复杂度不变。
+- 测试新增：32 次并发同摘要写、SQLite embedding 损坏、provider malformed/index/数量/维度、query timeout task 回收和 worker 存储故障传播。
+- 测试删除及原因：无。
+- 验证结果：副手两轮全量最终 `1723 passed`；主线独立定向 `53 passed`；修改文件 pyright `0 errors`，`git diff --check` 通过。
+- 残余风险：单 SQLite connection 仍限制并行读吞吐；改为连接池或读写分离会改变事务与 sqlite-vec ownership，本批没有无证据扩张。
+
+### `0f25007b` `fix(persistence): harden JSON durability boundaries`
+
+- 范围：共享 JSON/文本原子写底座、Plugin KV、plugin/package manifest 与本地 MCP registry 配置。
+- 原问题：损坏或无权限 JSON 被静默当默认空状态；Plugin KV 和 MCP 配置直接覆盖写且 MCP 保存失败被吞；manifest 原子替换没有 file/directory fsync 和统一失败清理。
+- 为什么这样修改：仅 `FileNotFoundError` 解释为可选缺失；共享底座在同目录唯一临时文件完成序列化、flush、file fsync、replace、directory fsync；各持久化 owner 复用同一耐久契约，MCP 边界按 live 配置与历史 schema 校验。
+- 不变量与拥有层：`load_json` 拥有文件读取/JSON 边界；原子写底座拥有临时文件与落盘顺序；PluginKVStore、manifest loader 和 McpServerRegistry 分别拥有领域 schema。live `mcp_servers.json` 的 `{"servers": {}}`、合法 `{}` 和缺失 servers 均保持有效。
+- 能力变化：合法 KV/TOML/MCP 配置与插件热重载格式不变；损坏数据和保存失败改为 fail-loud；MCP connect/disconnect、注册事务与运行协议未修改。
+- 性能变化：持久化成功路径增加必要的 file/directory fsync，属于耐久性成本，不宣称提速；并发 writer 使用独立 tmp，不再互相窃取或清理 staging 文件。
+- 测试新增：缺失与损坏 JSON、并发 writer、序列化/file fsync/replace/directory fsync、cleanup 双失败、合法空 MCP schema。
+- 测试删除及原因：无；更新了过去错误期待坏 JSON 返回 default 的测试。
+- 验证结果：副手两轮全量最终 `1727 passed`；主线独立相关测试 `115 passed`；修改文件 pyright `0 errors, 0 warnings`，`git diff --check` 通过。
+- 残余风险：directory fsync 在 replace 后失败时新目标可能已经可见，函数仍抛错表示耐久性未确认；文件存储不提供跨 writer CAS 或业务级回滚。
+
+### `e323325b` `fix(frontend): 收紧运行时边界与请求生命周期`
+
+- 范围：Chat HTTP/WebSocket/上传链路、Dashboard 分页与插件边界、请求取消和 legacy plugin workbench dispatch。
+- 原问题：非 2xx、坏 JSON 和缺字段响应可变成空列表；快速切换时旧请求覆盖新状态；WebSocket 等待发送缺少 error/close 收尾；上传后的消息保留即将 revoke 的 blob URL；view 切换重复请求；legacy workbench 因 dispatch identity 重建，初稿修复又暴露 stale state 闭包。
+- 为什么这样修改：在 fetch/socket/plugin 唯一外部边界校验实际消费字段；各请求 owner 持有 AbortController；上传成功后只保留服务端 URL；view effect 唯一触发加载；稳定 dispatch 通过 `useLatestReader` 在事件期读取最新 plugin state，避免重建和旧闭包。
+- 不变量与拥有层：Chat API/WebSocket 拥有外部 frame/schema；PromptInput 拥有本地 blob URL；页面组件拥有请求取消；Dashboard plugin runtime 拥有单 panel 隔离；legacy PluginMain 拥有一次 DOM 初始化。后端 API、插件热重载协议与视觉语言未修改。
+- 能力变化：真实错误进入现有错误 UI；快速切换不回填旧结果；附件提交后预览继续有效；中断帧结束 streaming 状态；坏 plugin panel 仍只隔离该 panel 并显式记录。
+- 性能变化：移除 selectView 与 effect 的双重请求；session 选择不再重拉 sessions；legacy graph/workbench 不因无关父 rerender 重建 canvas、重复拉 snapshot 或重绑 listener。未机械 memo 普通渲染。
+- 测试新增：无；仓库没有前端 test runner，未为本批引入框架。
+- 测试删除及原因：无。
+- 验证结果：副手 `typecheck`、`lint`、`build` 通过；主线合入前主审再次运行 typecheck/lint 均通过，`git diff --check` 通过；build 仅有既有大 chunk warning。
+- 残余风险：前端外部边界目前依赖静态检查和真实 build，缺少可执行组件测试；后续引入 test runner 应优先覆盖请求竞态、socket close 与 legacy dispatch 最新状态。
+
+### `c7fb6a87` `fix(proactive): decouple source cache refresh`
+
+- 范围：ProactiveSourceSpec、default/wake source 读取契约、插件 MCP 工具校验、开发文档与热重载探针；同步审计 Feed、Steam、Calendar、Fitbit 四个已启用 proactive MCP。
+- 原问题：外部数据刷新由 `default_proactive` 私有 `DefaultSourcePollModule` 持有；启用互斥的 `wake_proactive` 后该模块随默认流程消失，`fetch_tool` 只能读到旧缓存。
+- 为什么这样修改：缓存新鲜度属于 MCP 的外部 API/持久化边界，收回各 MCP 自己的 lifespan、后台服务或按需读取路径；两套 proactive 只通过 `fetch_sources_async()` 并发读取稳定快照。
+- 不变量与拥有层：MCP 拥有外部抓取、刷新周期和缓存；proactive runtime 拥有读取、通道归类、决策与 ACK。source 稳定键、分页、单源故障隔离、事件 ID、排序和投递语义不变。
+- 能力变化：删除宿主 `poll_tool/poll_interval_seconds` API 和 105 行默认流程后台 poller；切换 proactive package 不再影响缓存刷新。Fitbit 删除原本未被实际使用的 source interval 声明，监控服务自己的 5 分钟轮询保持。
+- 外部插件：Feed `8aaeab3` 已由 FastMCP lifespan 持续刷新并让首次读取等待刷新结果；Steam `326c055` 在快照过期时按需刷新；Fitbit `a680ac6` 合入 GitHub main、升至 `1.1.1` 并从 GitHub 重装；Calendar 每次读取直接查询 live API，无本地陈旧缓存问题。
+- 性能变化：default runtime 不再创建或持有 source 轮询 task；同一 tick 的 source 读取仍由 `asyncio.gather` 并发执行。网络刷新从 agent 主动链移出后，不再绑定 proactive 生命周期。
+- 测试新增/调整：默认 phase graph 明确不含 `default.source.poll`；source、MCP catalog、热重载和探针契约移除宿主轮询字段；未删除业务场景测试，只删除已废弃 poller 的实现测试。
+- 验证结果：主仓库定向 `184 passed`，全量 `1724 passed`，范围 pyright `0 errors`（45 个既有 warnings），skill 校验通过；Fitbit `5 passed`、pyright `0 errors`；运行缓存与源码一致，plugin doctor 为 healthy。
+- 残余风险：Feed 的网络刷新仍受各订阅源可用性影响，但系统级刷新失败会显式暴露且后台继续重试；不再由 proactive runtime 提供第二套隐藏 fallback。
+
+### `902f6f44` `fix(akasha): harden runtime sidecar ownership`
+
+- 范围：Akasha engine 的历史图缓存、dashboard 图读取器、图快照 sidecar、诊断 JSON 和事件订阅生命周期。
+- 原问题：历史 query 每次通过 `MessageEmbeddingStore.list_until` 扫描 8,920 条缓存并回查 messages；dashboard 每次轮询重扫完整图签名；后台 snapshot 失败、损坏 JSON/BLOB、短 embedding batch 和 orphan cache 可被空结果或部分写入掩盖；engine 订阅未随 closeables 释放。
+- 为什么这样修改：启动边界一次加载 message embedding 的 turn key 与 timestamp，query 在同一 graph lock 快照上做内存 cutoff；以 dashboard store connection 的 `PRAGMA data_version` 驱动签名 cache；所有 sidecar/embedding/diagnostic 边界 fail-loud；创建者持有 subscription 和 rebuild thread。
+- 不变量与拥有层：sessions.db 仍拥有消息事实与时间；engine 拥有其内存 cache、dense index 和订阅；graph reader 拥有 rebuild thread 与签名 cache；snapshot loader 拥有 JSON/BLOB 边界。情景补全/增量、full-context、scope、候选排序、threshold、图节点/边语义和 dashboard API 不变。
+- 能力变化：合法召回与图输出保持；损坏 sidecar、orphan embedding 和 provider 短 batch 立即失败且不产生部分 cache；hot reload 不遗留旧 Akasha handler；dashboard close 时先等待 reader，再关闭 store。
+- 性能变化：live 8,920 条 embedding 的历史 cutoff 由约 `425.1 ms/query` SQL 路径降为约 `0.463 ms/query` 内存过滤；无外部 DB commit 时图签名不再重复扫描 4,439 节点和 153,354 边。首次 cache 加载和发生 commit 后的一次签名扫描保留。
+- 测试新增：同锁 snapshot/timestamp、orphan cache、短 embedding batch、signature cache 与外部 commit invalidation、rebuild failure、closeable 逆序、损坏 snapshot/诊断 JSON、event subscription close。
+- 测试删除及原因：无。
+- 验证结果：主线独立 Akasha `56 passed`，全量 `1732 passed`，修改生产文件 pyright `0 errors, 0 warnings`，`git diff --check` 通过；live DB/snapshot 只读完整性与签名相符。
+- 残余风险：完整 embedding cache 仍是 engine 启动成本；外部 graph commit 后仍必须做一次真实 signature scan，这是正确性成本，不用 TTL 或近似值替代。
+
+### `44e974c5` `fix(default-memory): close facade resources explicitly`
+
+- 范围：default_memory façade 的 EventBus wiring、内部依赖不变量、workspace storage 维度、inspector/dashboard 边界。
+- 原问题：engine 创建的三类 memory 订阅未进入 runtime closeables，reload 后旧 handler 可重复摄入；缺失 retriever/memorizer/store/embedder 被空结果或 no-op 掩盖；新 workspace provisioning 固定 1024 维，可能与配置 embedding 维度错配并触发 sqlite-vec fallback；inspector 在未绑定 engine 时仍被视为 active，损坏 JSONL 被显示为空。
+- 为什么这样修改：engine 明确持有 subscription 并随 MemoryRuntime 逆序关闭；构造后依赖通过集中 require owner fail-fast；storage 使用实际 `output_dimensionality`；inspector 只接受真实 default engine，dashboard 只把文件缺失解释为暂无记录。
+- 不变量与拥有层：DefaultMemoryEngine 构造函数拥有 store/embedder/memorizer/retriever；engine 与 MemoryRuntime 共同拥有 subscription 生命周期；Config.memory.embedding 拥有向量维度；inspector/dashboard 拥有各自激活和 JSONL 边界。召回 lanes、RRF、scope、合并/遗忘、consolidation、ranking、threshold、budget 和 prompt 不变。
+- 能力变化：reload 不再遗留旧 memory handler；内部契约违反不再伪装为空召回或假成功；新库 sqlite-vec schema 与真实 embedding 维度一致；坏 inspector 数据 fail-loud。
+- 主审修正：首次实现若第二个 `EventBus.on()` 失败会泄漏第一个 subscription 且锁死重试；amend 后失败时逆序关闭本轮订阅，清理失败以 `BaseExceptionGroup` 保留，全部成功后才设置 wired。恢复后可重试且不重复注册。
+- 性能变化：避免错维 schema 导致的 sqlite-vec fallback；正常 query/embedding/index 调用次数不变，不宣称召回延迟倍数提升。
+- 测试新增：subscription 生命周期与部分注册失败回滚/重试、缺失内部依赖 fail-fast、自定义 embedding 维度、inspector 无 engine inactive、损坏 JSONL。
+- 测试删除及原因：无。
+- 验证结果：主线独立定向 `123 passed`，全量 `1737 passed`，修改生产文件 pyright `0 errors`（64 个既有 warnings），`git diff --check` 通过。
+- 残余风险：既有历史错维 vec schema 没有证据支持自动迁移，本批只保证新建 workspace 正确；迁移必须另行设计可恢复 DB 流程。
+
+### `82b6056d` `fix(session): atomically replace trimmed history`
+
+- 范围：被动轮次在内容安全或上下文长度重试成功后的 history trim、SessionManager 内存 cache、SessionStore 消息与 embedding 持久化。
+- 原问题：retry 成功后先裁剪内存，再调用只会追加无 ID 消息的 `save_async()`；SQLite 中旧消息没有删除，进程重启后被裁历史会复活，保存失败时内存和磁盘也会分叉。
+- 为什么这样修改：reasoner 只提交裁剪意图；SessionManager 持有 per-session 写锁，SessionStore 在一个 `BEGIN IMMEDIATE` 事务内更新 session metadata、删除未保留消息及其 embedding、追加尚未持久化消息；事务成功后才更新内存视图。
+- 不变量与拥有层：reasoner 拥有 retry plan；SessionManager 拥有 session 锁和内存 cache；SessionStore 拥有 SQLite 消息、FTS、embedding 清理和 `next_seq` 高水位。保留消息 ID/seq、正常 append-save、tool discovery、stream、media 和热重载语义不变。
+- 能力变化：裁剪结果跨重启稳定；数据库失败时消息、metadata、`last_consolidated`、embedding 和内存全部保持原状；其他 session 的消息与 embedding 不受影响。
+- 性能变化：正常无 retry turn 不增加数据库操作；仅 retry trim 执行一次同事务消息枚举和删除，避免后续重启重新加载无效历史及对应 embedding。
+- 测试新增：真实重载不复活、保留 ID/seq 与后续高水位、真实 `message_embeddings` 删除/保留/跨 session 隔离、DELETE 失败时消息/metadata/embedding/内存共同回滚。
+- 测试删除及原因：无。
+- 验证结果：副手全量 `1734 passed`；主线合入后定向 `55 passed`、全量 `1739 passed in 20.53s`；修改生产文件 pyright `0 errors`（274 个既有 warnings），`git diff --check` 通过。
+- 残余风险：trim 路径仍按 session 当前消息数做一次线性 ID 枚举；只在模型 retry 成功时触发，当前没有证据支持引入更复杂的临时表或批量阈值优化。
+
+### `7d7eeb67` `fix(plugins): make plugin installation atomic and bounded`
+
+- 范围：Git 插件 source/ref 输入、plugin metadata 与 MCP runtime 路径边界、cache 发布/回滚、installed source resolver 和 package metadata schema。
+- 原问题：同版本重装会先删除旧 cache，clone/依赖准备/manifest 写入失败可使插件消失或留下半成品；name/version/marketplace、source symlink、MCP cwd 可越过目标目录；多个可见版本或坏 cache 会被字典序选择或静默当成未安装；错误 package 类型被 `bool()`/`str()` 归一化。
+- 为什么这样修改：在隐藏 staging 完成 clone、内部 symlink 校验和 MCP 依赖准备，旧普通版本在长耗时阶段持续可发现；只在准备完成后执行最短 rename 切换并保留 hidden backup，manifest 失败恢复旧 cache；installed resolver 对可见结构违反 fail-loud。
+- 不变量与拥有层：installer 入口拥有 URL/ref/marketplace/name/version 与目标路径；cache activation 拥有 staging/backup/rollback；manifest owner 继续拥有原子 TOML 写；resolver 拥有已安装 cache 结构；package loader 拥有 package.toml schema。插件 data/config、同版本重装、热重载和 MCP 命令语义保持。
+- 主审修正：第一版在 pip/venv 阶段先隐藏所有旧版本且 resolver 忽略临时 symlink，会让 watcher 长时间看见插件消失；二审改为 staging 准备期间旧版本持续可见。主线又补充拒绝可见普通文件，避免 installer 发布成功后 resolver 才因坏版本项失败。
+- 能力变化：branch/tag/commit SHA ref 均先解析为 commit 后 detached checkout；合法仓库内 symlink 可安装并复制为普通内容，断链/循环/越界 symlink 被拒绝；cache root/marketplace/plugin/version/plugin.py 的可见 symlink、坏路径、缺文件和版本冲突显式失败。
+- 性能变化：正常安装增加一次 source tree 线性 symlink 扫描和常数次 rename；长耗时 pip/venv 本就存在且移到不可发现 staging。运行时 resolver 只增加目录结构校验，不增加网络或依赖安装。
+- 测试新增：依赖准备期间真实 resolver 仍看到旧版本、prepare/manifest 失败回滚、unsafe metadata/MCP cwd、内部/越界 symlink、probe 模块清理、branch/tag/SHA 与 option-like ref、cache symlink/缺 plugin.py/多版本/普通文件、package 类型边界。
+- 测试删除及原因：无。
+- 验证结果：副手二审定向 `24 passed`、相关 `159 passed`、全量 `1749 passed`；主线补刀后相关 `184 passed`、live 安装 cache 20 个来源全部可解析、修改生产文件 pyright `0 errors, 0 warnings`、全量 `1752 passed in 20.31s`，`git diff --check` 通过。
+- 残余风险：最终发布仍由数次同文件系统 rename 组成，存在极短目录切换窗口；跨进程并发 installer 尚无 owner，当前 CLI 是单安装流程，没有证据支持新增锁服务。
+
+### `b1640920` `fix(peer-agent): enforce lifecycle ownership and response schemas`
+
+- 范围：Peer Agent 的 AgentCard 发现、A2A `tasks/get` 解析、pending task 归属、后台 poller 与子进程启停。
+- 原问题：live AgentCard 可覆盖配置中的进程身份和路由；pending 只以远端 task ID 为键，跨 agent 会冲突；未知状态、坏 JSON/schema 和 JSON-RPC error 可被永久轮询；同 agent 多任务完成一个就会提前终止共享进程；poller 失败 task 可被静默覆盖；spawn/health/shutdown 的取消、日志 fd 和并行清理存在泄漏或丢错路径。
+- 为什么这样修改：配置继续唯一拥有 name/base URL，live card 只补充展示信息；外部 AgentCard/A2A 响应在唯一边界按实际消费字段解析；pending 使用 `(agent_name, task_id)`；终态先投递通知、最后一个任务再回收进程；ProcessManager 明确持有进程登记、父日志 fd、健康等待和 shutdown 聚合。
+- 不变量与拥有层：PeerAgentConfig 拥有本地身份与路由；card/status parser 拥有外部 schema；Poller 拥有 pending、终态通知和 agent 任务计数；ProcessManager 拥有 subprocess、per-agent lock 和关闭顺序。网络/HTTP 临时失败保留 pending；协议、MessageBus、ownership 和进程系统调用错误 fail-loud。
+- 主审修正：终审删除了副手新增的 `PeerProcessRetryableError`。`asyncio.subprocess` 的普通 `OSError` 没有统一可恢复契约，把 PermissionError、坏 fd 等全部无限重试会再次掩盖真实错误；现在只把明确的 HTTP transport/timeout 作为 poll retry，`ProcessLookupError` 表示目标已消失，其余进程错误原样暴露且 ownership/pending 不被误删。
+- 能力变化：跨 agent 同 ID 任务互不覆盖；同一 agent 的多个 pending 全部完成后才停止进程；queued/running/submitted/working 与 completed/failed/canceled 语义明确；坏远端响应转为一次显式失败通知并回收；poller 已失败时再次 start 会先重抛旧异常；启动或关闭部分失败保留原始错误并继续清理其余资源。
+- 性能变化：`shutdown_all` 按 agent 并行回收，关闭耗时由各进程超时之和收敛为最慢进程耗时上界；正常轮询间隔、每任务查询次数和 HTTP retry budget 不变。
+- 测试新增：真实 loop 的协议失败通知、身份/路由不被 live card 覆盖、复合任务键、同 agent 多任务、通知与进程错误边界、done task 重抛、spawn/cancel/log-fd fault injection、并行 shutdown 与错误聚合。
+- 测试删除及原因：删除“任意进程 OSError 都可自动恢复”的人工测试；真实 owner 没有该恢复协议，保留会固化静默无限重试。
+- 验证结果：副手终审定向 `52 passed`、全量 `1782 passed`、pyright `0 errors`；主审补刀后定向 `51 passed`、修改生产文件 pyright `0 errors, 0 warnings`，`git diff --check` 通过。
+- 残余风险：任务提交成功到登记 pending 之间仍依赖当前 Tool 调用顺序；若未来允许同一 agent 高并发提交，需要让 submit 与最后任务 terminate 共享显式 lease，不能仅靠增加下游空值检查解决。
+
+### `7baf4169` `fix(filesystem): harden mutation and atomic writes`
+
+- 范围：`read_file`、`write_file`、`edit_file`、`list_dir` 的错误边界，同路径 mutation lock，以及共享文本原子写底座。
+- 原问题：四个文件工具用宽泛 `except Exception` 把内部编程错误伪装成用户文件错误；mutation callback 异常或取消会泄漏 lock map，等待者存在时又可能过早移除 key、产生第二把锁；write/edit 直接覆盖目标，失败可截断文件，并丢失 BOM/换行与 executable mode。
+- 为什么这样修改：文件工具只转换可由用户处理的 `PermissionError`/`OSError`；锁状态显式计数当前持有者和等待者并在 `finally` 回收；write/edit 复用同目录临时文件、file fsync、原子 replace 和 directory fsync 的统一写入契约。
+- 不变量与拥有层：路径解析和文件/目录状态由文件工具边界拥有；规范化路径对应的 mutation 串行性由 `_run_with_file_mutation_lock` 拥有；临时 fd、目标 mode、写入/replace/fsync/cleanup 顺序由 `atomic_write_text` 拥有。BOM、CRLF/mixed newline、diff 文本和读取统计语义不变。
+- 主审修正：副手首版通过 `os.umask(0)` 读取进程 umask，模块锁无法阻止其他线程在窗口内创建出权限过宽的文件；二审改为高熵同目录临时名加 `os.open(O_CREAT|O_EXCL|O_WRONLY, 0o666)`，直接让内核应用当前 umask，已有目标再复制 `S_IMODE`。主线删除了一个只暂停临时 `open`、实际无法复现旧 `umask(0)` 窗口的误导性并发测试。
+- 能力变化：内部 AssertionError/TypeError 不再被本层吞掉；同文件并发写不会因异常、取消或 waiter 交接产生双锁；覆盖写失败保留旧文件；BOM、混合换行和 executable mode 保持；新文件权限与普通文本创建一致。
+- 性能变化：正常 write/edit 增加同目录临时文件、两次 fsync 和原子 rename，这是耐久性成本；不同路径仍可并行，同路径只增加常数级引用计数。read 分页仍完整扫描以保留总行数、总字节和解码提示，没有用能力退化换取表面提速。
+- 测试新增：mutation 异常/取消清理、等待者交接、内部错误冒泡、写入/编辑 BOM/CRLF/mode、原子写旧 mode/新文件权限、编码失败保留旧文件和清理 tmp。
+- 测试删除及原因：删除副手新增的“临时文件创建期间 mode 并发”测试；它没有在旧实现实际修改 umask 的区间同步，旧坏实现也会通过，无法证明根因。
+- 验证结果：副手二审定向 `61 passed`、全量 `1758 passed`；主线删除无效测试后定向 `60 passed`、修改生产文件 pyright `0 errors, 0 warnings`，`git diff --check` 通过。
+- 残余风险：`read_file` 为保留完整统计仍线性扫描大文件；当前没有 profile 证据支持改变输出协议或增加索引。原子 replace 只显式保持 POSIX mode，不承诺保存项目当前未使用的跨平台扩展属性。
+
+### `33e22021` `fix(plugins): complete scoped resource cleanup`
+
+- 范围：`PluginScope` 所有 task/process/deferred cleanup，以及 PluginManager 的候选回滚、代际回收、快照关闭和全量 terminate 路径。
+- 原问题：调用方取消可传播到正在执行的 cleanup 并截断后续资源；作用域 task 在运行期失败只会等到关闭才暴露；async subprocess 已有 returncode 时没有完成 `wait()` transport 收尾，kill 后等待又可能无界；manager 在关键关闭步骤收到取消时可能留下半清理注册状态。
+- 为什么这样修改：每个 cleanup 在独立 task 中执行，调用方取消只延迟恢复而不传播到资源动作；manager 以统一 `_complete_critical()` 屏蔽关键生命周期操作，消费 scope failure 后再注销模块和注册表；process 使用有界 terminate、kill、二次 wait。
+- 不变量与拥有层：`PluginScope` 唯一拥有其 task/process/deferred cleanup 的逆序和幂等关闭；PluginManager 拥有插件 terminate、scope failure 聚合、模块/工具注册表卸载和最终取消恢复。cleanup 自身取消是资源失败，调用方取消是完成全部清理后重新抛出的控制流，两者不混淆。
+- 能力变化：插件后台 task 异常在发生时立即记录真实 traceback，关闭时仍进入结构化 failure；外部取消不再造成资源遗漏，也不被静默吞掉；已退出 process 仍完成系统收尾，强杀失败或超时明确进入 cleanup failure。
+- 性能变化：每个 cleanup 增加一个短生命周期 asyncio task，正常关闭有少量调度成本；进程等待都有明确上限，取消或异常路径不再无限挂起。正常插件加载、事件分发、工具调用和热重载租约语义不变。
+- 测试新增：task 运行期失败与关闭聚合、幂等 close、外部取消完成全部 cleanup、async process 已退出 wait 和 timeout kill、manager terminate 取消后仍消费 scope failure。
+- 测试删除及原因：无。
+- 验证结果：副手全量 `1804 passed`；主线合入后独立定向 `146 passed`，修改范围 pyright `0 errors`（24 个既有 warnings），`git diff --check` 通过。
+- 残余风险：`track_async_process()` 当前没有生产调用者；未来接入时需按实际子进程协议确认退出码语义。kill 后二次 wait 超时会显式失败，不做无证据的无限 retry。
+
+### `de066492` `fix(proactive): make persistence and dedupe failures explicit`
+
+- 范围：主动状态 SQLite 时间与事务、消息语义去重、`RecentProactiveMessage` 内部契约，以及 `ProactiveLoop` 状态存储生命周期。
+- 原问题：损坏的持久化时间会被解释为“没有历史”，可能重复发送或重新打开 gate；context-only 两次写入不是显式原子操作；消息去重把 provider、网络、坏 JSON 和内部编程错误全部当成“不重复”放行；recent message 通过 dict、`getattr` 和字符串时间兼容掩盖内部契约错误；owned state store 没有明确关闭 owner。
+- 为什么这样修改：SQLite 已存在 row 的时间由状态存储边界严格解析，事务失败统一回滚；deduper 直接传播 provider 与解析失败并严格校验模型 JSON schema；producer、factory、deduper 和 resolver 统一使用 typed recent message 与 `MessageDeduper` 协议；bootstrap 显式把状态存储 ownership 转交给 loop。
+- 不变量与拥有层：`ProactiveStateStore` 拥有持久化 schema、时间解析和事务；`MessageDeduper` 拥有模型响应 schema；Sensor 拥有 recent message 构造；`ProactiveLoop` 只关闭明确归其所有的 store。resolver 信任 `tuple[bool, str]`，不再用 `str()`、空串默认值或 degraded 字符串协议重复归一化。
+- 主审修正：拒绝副手首版基于异常类名的 fail-open、`dedupe_degraded:` 字符串协议和 mapping 兼容；二审后主线继续以 Protocol 删除 resolver 的 `Any` 与 `str(reason or ...)`，确保边界之后信任已验证类型。
+- 能力变化：正常重复/非重复判断、delivery dedupe、投递和 ACK 不变；dedupe 不可用时当前 tick 明确失败且不发送，由 loop 边界记录后在下一 tick 重试。非法历史时间不再被当成新状态。loop 收尾失败仍设置 stopped 信号并向调用者暴露错误。
+- 性能变化：没有增加 LLM 调用或 SQLite 查询；只在读取实际历史时间时增加严格解析，在写失败时增加 rollback。正常发送路径调用次数不变。
+- 测试新增：坏时间、COUNT 契约、两步写入 rollback、provider/JSON/schema fail-loud、recent message 类型契约、owned store close 失败与幂等关闭。
+- 测试删除及原因：删除二审拒绝的 degraded fail-open 和 resolver degraded trace 测试；它们只固化会在去重不可用时放行消息的错误设计，不属于应保留能力。
+- 验证结果：副手二审定向 `136 passed`、全量 `1813 passed`；主线补刀后定向 `57 passed`、修改生产文件 pyright `0 errors`（97 个既有 warnings）、全量 `1818 passed in 20.79s`，`git diff --check` 通过。
+- 残余风险：模型去重不可用会推迟本轮主动消息，这是明确的 fail-closed 产品取舍；当前没有可靠的本地等价算法可以安全降级，不能用“可用性”名义重新引入无标记放行。
+
+### `8a231f5b` `fix(peer-agent): make submit lifecycle atomic`
+
+- 范围：Peer Agent 冷启动、A2A submit、pending 登记与最后任务进程回收之间的并发 ownership。
+- 原问题：任务提交成功到 pending 登记之间没有和最后任务回收共享锁，旧任务可能在新任务已冷启动但尚未登记时终止共享进程；启动或提交错误被宽泛 catch 转成普通 JSON；冷启动后的提交失败会遗留新进程；重复 task id 只有通用 `ValueError`。
+- 为什么这样修改：Poller 提供 per-agent submission lease，工具在同一 lease 内完成 `ensure_ready -> submit -> register`，终态回收也在该 lease 内重新判断其他 pending；`ensure_ready` 返回本次是否取得新进程 ownership；失败只回收本次独占且没有其他 pending 的进程。
+- 不变量与拥有层：ToolRegistry 拥有统一工具错误呈现；PeerAgentTool 拥有一次 submit/register 事务；Poller 拥有 pending catalog 和 per-agent lease；ProcessManager 拥有受管子进程。外部健康 peer、旧 pending、跨 agent 并行、A2A payload 与轮询间隔不变。
+- 主审修正：副手首版把终态通知也放入 submission lease，慢 MessageBus 会阻塞同 agent 新提交；主线把通知移到 lease 外，task 在 catalog 中继续持有 ownership。副手 `finally` 中的 terminate 失败会覆盖原 submit/取消错误；主线在双故障时用 `BaseExceptionGroup` 同时保留，单故障原样重抛。
+- 能力变化：同 agent 新提交不会被旧任务的最后回收竞态杀死；冷启动后 submit/register 失败不会泄漏独占进程；外部健康 peer 和已有 pending 不被误终止；坏响应、编程错误与取消不再伪装成成功 JSON；duplicate 显式失败且不覆盖既有任务。
+- 性能变化：同 agent 的冷启动、网络 submit 与登记按 lease 串行，不同 agent 仍并行；终态通知不占锁，因此慢通知不再增加新提交等待。没有增加 HTTP 请求或 poll 次数。
+- 测试新增：真实 Event 交错验证慢通知期间新提交可完成且共享进程不终止；冷启动失败回收、外部 peer/旧 pending 保护、取消传播、duplicate 保留、submit 与 cleanup 双错误聚合。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `58 passed`、全量 `1813 passed`；主线补刀后定向 `59 passed`、修改生产文件 pyright `0 errors`（16 个既有 warnings）、全量 `1828 passed in 20.72s`，`git diff --check` 通过。
+- 残余风险：远端接受任务但本地在读取 task id 前连接彻底失败时，当前 A2A 接口没有可确认的 cancel 或幂等查询键；不能假造本地恢复。per-agent lock map 只按启动配置中的有限 agent 名增长。
+
+### `7df557b5` `tune(proactive): 提高内容唤醒主动性`
+
+- 范围：Wake content hazard 的随机阈值分布与上限。
+- 原问题：线上阈值被 Gamma 尾部抽样到并持久化为 `2.0`，当时 `hazard + preference_pressure = 1.012`；按当时 rate 计算的理论稳定水位约为 `1.53`，没有更强新内容时无法达到阈值。
+- 为什么这样修改：将抽样 scale 从 `1/3` 降为 `1/4`，并将上限从 `2.0` 收紧到 `1.0`；已持久化的高阈值会被现有 clamp 自动收敛，不需要改状态 schema。
+- 不变量与拥有层：content 时效、兴趣证据、个人偏好和泄漏积分由 hazard 层拥有；阈值只决定何时进入 LLM 判断，不绕过 scratchpad、investigation 或 `skip` 决策。
+- 能力变化：content 进入判断的频率提高；Alert、Context、Drift、ACK、单条唤醒和 LLM 最终决策不变。线上同一状态回放由旧规则不触发改为进入 content 判断。
+- 性能变化：10 万次固定种子抽样中，截断后均值从 `0.972` 降为 `0.662`，中位数从 `0.891` 降为 `0.668`；这是产品频率调校，不声称执行性能提升。
+- 测试新增/调整：阈值上限和 Gamma scale 契约。
+- 测试删除及原因：无。
+- 验证结果：Wake 子系统 `51 passed`；修改文件 pyright `0 errors, 0 warnings`；真实状态回放通过。
+- 残余风险：更主动会增加 LLM 判断机会，但实际发送仍受内容排名、个人偏好和 LLM `skip` 约束。
+
+### `08c44c20` `fix(mcp): 升级工具结果协议协商`
+
+- 范围：stdio MCP initialize 协商、服务端版本边界和 `tools/call.structuredContent` 校验。
+- 原问题：宿主固定请求 `2024-11-05`，同时拒绝新版字段；本机 Fitbit/Calendar 的官方 Python MCP SDK 会返回 `content + structuredContent`，导致三条真实 proactive 工具同时失败。
+- 为什么这样修改：宿主请求已安装 SDK 共同支持的 `2025-11-25`，保存并校验服务端回复版本；只在声明支持的协议版本下接受 JSON object `structuredContent`。
+- 不变量与拥有层：MCP client 拥有 initialize/result 信任边界；旧协议越界、未知版本、非 object structured result 和坏 content 仍 fail-fast。工具对模型的文本输出继续来自 `content`。
+- 能力变化：Fitbit `get_proactive_events` / `get_sleep_context` 和 Calendar `get_proactive_events` 恢复；旧 MCP server 可继续协商受支持的旧版本。
+- 性能变化：无新增网络请求或重试；每次调用增加常数级版本/类型判断，不宣称性能收益。
+- 测试新增/调整：新版 initialize、未知版本、合法/非法 structured result，以及测试 MCP server 的真实协商响应。
+- 测试删除及原因：无。
+- 验证结果：修改范围 pyright `0 errors, 0 warnings`；全量 `1831 passed`；真实 Fitbit 1.1.2 与 Calendar 1.0.0 端到端调用通过，协商版本均为 `2025-11-25`。
+- 残余风险：客户端当前只消费文本/多媒体 content，不根据 tool `outputSchema` 二次验证 structured payload 内部字段；当前工具仍以 JSON 文本作为宿主契约，不应在未设计输出协议前盲目改用 structured payload。
+
+### `082fe863` `fix(bus): preserve async lifecycle failures`
+
+- 范围：EventBus admission task、后台 dispatcher、observer 取消和 `drain/aclose` 生命周期。
+- 原问题：admission task 在取消清理中转换的真实错误被 `gather(return_exceptions=True)` 丢弃；dispatcher 异常只记日志并自动重启，`drain/aclose` 无法向 owner 报告；observer 自取消与调用方取消共用一个模糊判断。
+- 为什么这样修改：总线记录 dispatcher 故障并在明确同步边界原样重抛；关闭时先停 admission、再排空 envelope 以释放 snapshot lease、最后停 dispatcher；多个清理错误用 `BaseExceptionGroup` 保留。
+- 不变量与拥有层：EventBus 拥有 admission/queue/dispatcher 生命周期；observer 业务失败继续隔离并记录，总线内部故障在 `drain/aclose` fail-loud；snapshot lease 仍由 envelope/单 observer 释放。
+- 能力变化：正常 emit/observe/fanout/enqueue 顺序、observer 隔离和 hot-reload snapshot 不变；dispatcher/admission 内部错误不再伪装成成功关闭。
+- 性能变化：每个 dispatcher 故障增加一次小列表记录，正常 fanout/队列复杂度不变；无性能收益声明。
+- 测试新增/调整：admission 取消转故障、dispatcher 失败向 `drain` 传播，并保留 observer 自取消不阻塞关闭的回归。
+- 测试删除及原因：无。
+- 验证结果：EventBus 直接/调用方 `587 passed`；修改文件 pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：observer 业务失败仍按设计只记录并返回失败计数，不中断用户主链；只有 EventBus 自身 dispatcher/admission ownership 错误进入关闭失败。
+
+### `66cb2ae4` `fix(memory): expose marker read failures`
+
+- 范围：Markdown consolidation 去重标记的尾部扫描与全文件扫描。
+- 原问题：标记文件读取发生权限、I/O 或关闭错误时，两个内部 helper 都宽泛捕获并返回 `False`；调用方会把“无法确认”误判为“标记不存在”，从而重复追加同一 consolidation 内容。
+- 为什么这样修改：文件系统是持久化边界，读取失败没有可在本层完成的正确恢复动作；删除静默 fallback，让原始异常触发现有事务回滚并暴露给 consolidation owner。
+- 不变量与拥有层：`MemoryStore` 拥有 consolidation sidecar 与 Markdown 文件的一致性；文件不存在仍表示没有标记，存在但不可读属于存储失败。正常判重、崩溃恢复、sidecar 领先时的文件修复语义不变。
+- 能力变化：正常写入与去重结果不变；存储不可读时不再冒险重复写入，而是明确失败并等待上层处理或下一次重试。
+- 性能变化：正常路径删除异常捕获框架，扫描次数和复杂度不变；不声明可测性能收益。
+- 测试新增：两个标记 reader 在底层 `open()` 权限失败时均传播原始 `PermissionError`。
+- 测试删除及原因：无。
+- 验证结果：记忆写入与语义去重定向 `13 passed`；修改生产文件 pyright `0 errors`（25 个既有 warnings）；`git diff --check` 通过。
+- 残余风险：追加 Markdown 与写 sidecar 仍不是跨文件原子事务；现有 marker 恢复协议负责收敛该窗口，本次只消除了读失败时的错误判定。
+
+### `cadcab5e` `refactor(runtime): cache passive snapshot phases`
+
+- 范围：被动回合四段 lifecycle phase、prompt render、before/after step 的 runtime snapshot 解析，以及 consolidation history 内部契约。
+- 原问题：同一 snapshot 的模块链在每个 phase 入口和每轮 tool step 重复组装、拓扑排序与校验；`get_history_since_consolidated()` 还捕获任意内部 `TypeError`，丢掉 cursor 后静默重试，可能把已 consolidation 的历史重新送入模型。
+- 为什么这样修改：按内容身份稳定的 `snapshot_id` 缓存不可变模块链 bundle，snapshot 换代或本地模块追加时失效；history helper 直接依赖 `SessionLike` 已声明并由真实 `Session` 实现的 `start_index` 契约。
+- 不变量与拥有层：RuntimeSnapshot compiler/store 拥有 snapshot 身份与代际唯一性，ContextVar lease 保证单 turn 绑定；phase owner 只缓存该身份对应的模块顺序。Session owner 拥有 consolidation cursor，helper 不再制造旧签名兼容层。
+- 能力变化：中断/续跑、context trim retry、tool loop、hot reload lease、session persist 与 outbound 顺序不变；snapshot id 变化会重建所有缓存 phase；内部 session 签名错误现在 fail-fast。
+- 性能变化：24 个插件模块、5000 次 before-step phase 获取的同 workload 微基准从 `673.699 ms` 降至 `0.742 ms`，约减少 `99.9%` 的 phase 解析开销；不外推为模型调用或完整 turn 延迟。
+- 测试新增/调整：cursor 透传、同 snapshot 复用、snapshot 换代重建，并把旧测试替身改为真实 `SessionLike` 签名。
+- 测试删除及原因：无。
+- 验证结果：副手全量 `1835 passed`；主审定向 lifecycle/hot-reload/turn `148 passed`；修改文件 pyright `0 errors`；组合全量见后续边界批次。
+- 残余风险：缓存以 snapshot 内容身份为 key；Store 已拒绝同一生命周期内重复 id，若未来允许原地改变 snapshot 模块而不改变身份，必须同时修改缓存失效契约。
+
+### `5b2d39c2` + `125358ba` `fix(boundary): harden dashboard and telegram lifecycles`
+
+- 范围：Dashboard proactive JSON/插件面板/资源关闭/待编译队列，以及 Telegram live preview、per-chat 限流状态和 UTF-16 消息边界。
+- 原问题：Dashboard 损坏 JSON 被伪装成空结果、异步 close 返回值未等待、重复插件编译请求无界入队、面板名未覆盖 Windows 反斜杠；Telegram 最终回复前可能遗留尚未建消息的 live task，删除失败会丢失句柄，多个 per-session/per-chat 状态长期积累，emoji 按 Python 字符数截断会越过 Telegram 的 UTF-16 上限。
+- 为什么这样修改：在 SQLite/HTTP/消息边界严格验证结构，资源 owner 等待同步或异步 close；待编译项按路径去重；live task、消息和状态在 turn/stop owner 明确收束；所有 Telegram 分段与 preview 统一使用 UTF-16 码元预算。
+- 不变量与拥有层：ProactiveStateStore 写侧拥有 `list[str]`、`list[object]` 与 object JSON schema，Dashboard reader 只接受 TEXT/NULL 和对应 schema；Telegram channel 拥有 live task/message/session 状态，outbound limiter 拥有 chat deadline 与 lock。正常 Markdown、附件、回复、中断、plugin panel 与 hot reload 能力不变。
+- 主审修正：拒绝副手把实际很小的首页改成 `FileResponse`；其 1 MiB TestClient 基准虽降低约 `11%` 峰值内存，却把 100 次 wall time 从 `0.387s` 增至 `0.944s`，不满足只优化不退化。主线保留原 `Response(read_text())`，并进一步删除 JSON `str()`/列表元素字符串化，拒绝底层存储类型损坏；UTF-16 极限预算无法容纳单字符时明确失败。
+- 能力变化：损坏 dashboard 数据不再显示成正常空列表；异步 dashboard close 真正完成；同插件 pending 编译从 10000 个重复项收敛为 1 个；最终回复后不再继续出现旧 live preview；3000 个 emoji fallback 被正确切为 2 段且每段不超过 4090 UTF-16 码元。
+- 性能变化：待编译队列由重复 list 改为 set，空间上界按唯一插件计；过期 chat deadline 超过阈值后清理，lock 无活跃引用时回收。撤回有 wall-time 退化证据的首页改动，不声明端到端提速。
+- 测试新增：异步 close、损坏 JSON/存储类型、反斜杠面板名、live 删除失败句柄、终态状态清理、emoji fallback/preview 和不可表示的 UTF-16 极限。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `58 + 114 passed`、全量 `1838 passed`；主审补刀后定向 `59 passed`；组合全量 `1843 passed in 28.62s`，全库 pyright `0 errors`（2326 个既有 warnings），前端 typecheck/lint/build 全通过，`git diff --check` 通过。
+- 残余风险：未做真实 Telegram API 网络验证；外部限流/删除失败按现有显式日志和保留句柄语义等待后续事件重试。Dashboard overview 的多次 count 没有真实生产 workload 证据，本轮未引入缓存。
+
+### `123749de` `fix(dashboard): stop plugin reload render loop`
+
+- 范围：Dashboard 插件页面加载 effect 与插件状态读取。
+- 原问题：`loadPluginPanel` 依赖整个 `pluginState`；每次分页结果写回都会改变 callback 身份，再次触发加载 effect。兴奋阈值面板的空分页立即完成，闭环会以主线程可见的速度持续渲染并请求，点击后页面卡死。
+- 为什么这样修改：分页函数通过已有的稳定 `readPluginState()` 读取最新状态，callback 只依赖插件目录和稳定 reader；状态更新不再改变加载函数身份。
+- 不变量与拥有层：React state 继续拥有插件分页、筛选、排序和选中状态；加载函数只读取调用时快照。插件切换、手动刷新、分页结果校验和 workbench 渲染语义不变。
+- 能力变化：选择兴奋阈值或其他插件面板只触发一次入口加载；15 秒水位刷新仍由 `MeterPage` 自己持有并在卸载时清理。
+- 性能变化：删除由状态写回造成的无界请求/渲染循环；正常点击从持续占用主线程和重复 `fetchPage` 收敛为一次分页加载。
+- 测试新增/删除：无；仓库没有前端组件测试框架，不为单个回归引入新依赖。
+- 验证结果：前端 typecheck、lint、dashboard/chat/plugin build 全通过；用户在真实 Dashboard 点击兴奋阈值确认不再卡死；build 仅有既有大 chunk warning。
+- 残余风险：前端 effect 依赖仍主要靠静态检查和真实浏览器验收；后续若引入组件测试，应覆盖一次点击只调用一次 `fetchPage`。
+
+### `f3859d48` `style: 统一历史代码中文注释`
+
+- 范围：22 个生产 Python 文件中的英文 docstring、阶段标题、权限说明和 box-drawing 调用图节点。
+- 原问题：历史说明混用英文自然语言，与仓库要求的中文 docstring、代码注释和阶段注释不一致。
+- 为什么这样修改：只翻译自然语言说明，保留类名、协议、字段、命令、类型检查指令、公式和必要技术术语；没有为了形式新增注释。
+- 能力与性能变化：无。主审对提交前后 AST 去除 docstring 后逐文件比较，22 个文件完全等价。
+- 测试新增/删除：无。
+- 验证结果：AST 等价检查、Python 编译、`git diff --check` 通过；组合全量测试见本批末尾。
+- 残余风险：代码标识符和协议名继续保留英文，这是可执行契约，不属于自然语言注释残留。
+
+### `a1242670` `fix(session): harden persistence boundaries`
+
+- 范围：SessionStore JSON 边界、SessionManager 重载不变量、Dashboard session 列表 SQL 和 CoreRuntime 关闭 ownership。
+- 原问题：孤立 message 可在缺 session metadata 时被当前时间和空 metadata 拼成假 session；media 引用扫描遇到损坏 extra 会静默跳过；session 列表为一页结果先全表聚合全部 messages；主 SessionManager 的 SQLite 连接没有明确关闭 owner。
+- 为什么这样修改：持久化边界统一严格解析 message extra 并拒绝保留字段覆盖；metadata 缺失但存在消息立即失败；列表只对候选 session 通过索引相关子查询读取首条用户消息和计数；CoreRuntime 最后关闭唯一 SessionManager。
+- 不变量与拥有层：SessionStore 拥有 SQLite/JSON schema，SessionManager 拥有内存 session 与 store 生命周期，CoreRuntime 拥有 manager 关闭。正常 session 创建、消息顺序、media 引用保护、Dashboard 排序/分页和 memory runtime 关闭顺序不变。
+- 主审修正：拒绝副手把 proactive 窗口计数从 SQL 范围聚合改成拉取全部历史后逐条 Python 时间解析；坏时间应在写入/读取边界暴露，不能用每次热路径全表扫描换取补充校验。最终保留原索引友好计数。
+- 能力变化：坏 message extra 和孤立消息不再被当成合法空数据；正常关闭会释放主 sessions.db 连接。
+- 性能变化：500 个 session、每个 100 条消息的同一合成 workload 中，过滤列表查询中位数由旧聚合约 `16.949 ms` 降至 `0.132 ms`；不外推为所有 Dashboard 查询的固定倍数。
+- 测试新增：孤立消息、坏 media extra、runtime 关闭 session manager；测试删除及原因：删除“每次窗口计数扫描全部记录以发现坏时间”的测试，它固化了热路径性能退化。
+- 验证结果：主审定向 `104 passed`；修改范围 pyright `0 errors`；组合全量见本批末尾。
+- 残余风险：相关子查询优势依赖现有 `(session_key, seq)` 索引；schema owner 已创建该索引，若未来改变消息主键必须同步审查查询计划。
+
+### `6b590aee` + `cc8a731b` `refactor(memory2): expose boundary degradation`
+
+- 范围：Memory2 query 改写、profile 提取、sufficiency 检查和 sqlite-vec 历史迁移。
+- 原问题：主/可选 query lane 的模型失败与合法空结果不可区分；profile 主调用失败后会按 USER 子句继续调用，12 个子句会把一次失败放大为 13 次；模型响应通过动态属性兼容；向量迁移逐行跳过错误，可能留下部分索引。
+- 为什么这样修改：每条 query lane 返回明确成功/降级状态与原因；profile 返回独立 `ProfileExtraction`，区分事实 tuple、状态和原因；模型边界只接受字符串或 `LLMResponse`；向量迁移在单一事务中整批成功或回滚。
+- 不变量与拥有层：模型调用边界拥有响应类型和降级原因，parser 拥有 XML/schema，MemoryStore2 拥有主表与 vec 索引一致性。正常 query、profile 分类、sufficiency fail-open、sqlite-vec 可选索引和全表扫描 fallback 语义不变。
+- 主审修正：副手首版用 `ProfileFacts(list)` 子类同时冒充旧列表和状态对象；这会把兼容层带入新内部 API。主线改为冻结 dataclass，调用方必须显式读取 `.facts` 与 `.status`。
+- 能力变化：模型不可用不再伪装成合法空结果；profile 主失败停止子句重试；迁移失败不留下半套 vec 索引。
+- 性能变化：12 个 USER 子句的模型失败 workload 由 13 次边界调用降为 1 次，减少 92.3%；正常成功提取不增加调用次数。
+- 测试新增：query lane 降级原因、profile 失败不重试、vec 迁移回滚；测试删除：无。
+- 验证结果：Memory2/Profile 定向 `77 passed`，修改范围 pyright `0 errors`；本批组合全量 `1850 passed in 26.31s`，全库 pyright `0 errors`（2313 个既有 warnings），`git diff --check` 通过。
+- 残余风险：QueryRewriter、ProfileFactExtractor 和 SufficiencyChecker 当前主要由测试/eval 路径使用；状态已经在返回协议中明确，但未来接入主运行链时仍需决定降级是否应阻断该具体业务，不在底层假造统一策略。
+
+### `71c53458` + `0142d9af` `refactor(memory): harden markdown consolidation contracts`
+
+- 范围：Markdown consolidation 模型响应、去重标记恢复、维护队列、会话 scope 与 Memory Profile API。
+- 原问题：模型输出缺少严格 schema，维护失败可从后台任务丢失；同轮重复读取 `RECENT_CONTEXT.md`；内部 API 通过动态属性和空值兼容掩盖契约错误；首版重构又错误地从可覆盖的 `session.key` 推导 channel/chat scope。
+- 为什么这样修改：模型和 SQLite/文件恢复在各自信任边界校验；后台维护任务显式保留并观察异常；同轮复用一次 recent context；内部调用改为明确协议。主审将 `TurnCommitted` 的真实 channel/chat 作为 scope owner 贯穿队列，拒绝从字符串 session key 反推身份。
+- 不变量与拥有层：Turn lifecycle 拥有真实 channel/chat；Session 只拥有可覆盖的存储 key；模型 parser 拥有 consolidation JSON schema；MemoryStore 拥有 sidecar/Markdown 恢复；maintenance runtime 拥有后台任务失败可见性。
+- 能力变化：正常 consolidation、marker 去重、文件恢复和维护调度不变；`agent_context` 作为 prompt 已声明标签现在可被合法解析；坏模型结构、坏 SQLite flag、缺失恢复 payload 与持久化失败明确暴露；自定义 session key 不再污染记忆 scope。
+- 性能变化：一次 consolidation 的 `RECENT_CONTEXT.md` 读取由 2 次降为 1 次；其余正常 I/O 与模型调用次数不变。
+- 测试新增：严格模型 schema、持久化失败、marker 恢复 payload/flag、后台维护失败、真实 event scope 与自定义 session key。
+- 测试删除及原因：无。
+- 验证结果：主审修正后定向 `61 passed`；修改范围 pyright `0 errors`；组合全量 `1864 passed in 25.44s`，`git diff --check` 通过。
+- 残余风险：Markdown 文件与 sidecar 仍依靠现有恢复协议收敛跨文件提交窗口；本批没有引入新的事务存储层。
+
+### `6e72db6c` `fix(scheduler): commit lifecycle state atomically`
+
+- 范围：JobStore 持久化、任务新增/取消、启动 misfire 恢复、循环任务执行和 scheduler 停止语义。
+- 原问题：新增和取消会先修改内存再持久化，写盘失败造成内存/磁盘分叉；启动时推进或丢弃 misfire 后没有保存恢复状态；`stop()` 在 sleep 中触发仍可能多执行一次 tick。
+- 为什么这样修改：先验证并原子持久化候选 job catalog，成功后才替换内存状态；启动恢复产生的状态变化立即提交；sleep 返回后再次检查停止信号。循环任务执行失败仍按既有产品语义推进下次 fire time。
+- 不变量与拥有层：JobStore 拥有持久化 catalog 的原子替换；SchedulerService 拥有内存状态、misfire policy 和 tick 生命周期；任务 handler 错误继续由调度执行边界隔离并记录。
+- 能力变化：正常单次/循环调度、misfire grace、取消和 handler 隔离不变；持久化失败不再留下假成功内存状态；重启不会重新消费已推进的 misfire；停止后不再额外执行任务。
+- 性能变化：正常 add/cancel 的持久化次数不变；启动只在真实发生 misfire 状态迁移时增加一次必要提交，不声明提速。
+- 测试新增：add/cancel 写盘失败回滚、启动恢复持久化、sleep 中 stop、循环任务失败后的 reschedule。
+- 测试删除及原因：无。
+- 验证结果：定向 `67 passed`；修改范围 pyright `0 errors`（8 个既有 APScheduler 类型 warning）；组合全量 `1864 passed in 25.44s`，`git diff --check` 通过。
+- 残余风险：持久化 catalog 仍随任务数线性序列化；当前任务规模和 profile 没有证据支持引入增量日志或数据库。
+
+### `f5c45e26` `fix(config): reject ambiguous boolean values`
+
+- 范围：主 TOML 布尔配置边界、模型扩展参数、typed Config 到 provider 的内部调用。
+- 原问题：`bool("false")` 会把字符串配置解释为真，影响 dev mode、渠道启用、memory、tool、multimodal 和 thinking；非 table thinking 被静默忽略；provider 在 typed `Config` 后继续用 `getattr` 默认值掩盖缺失字段。
+- 为什么这样修改：在唯一 TOML 加载边界集中要求真实 bool；边界后 provider 直接读取 dataclass 字段；删除无调用者的递归配置解析 helper。拒绝合并副手 630 行的整套加载器改写，因为它把 `load_config` 膨胀到约 195 行并扩大了兼容语义变更。
+- 不变量与拥有层：TOML loader 拥有外部 scalar/schema 校验；`Config` dataclass 拥有运行期字段完整性；provider 信任已构造配置，不重复 fallback。现有数字字符串兼容、环境变量解析、渠道默认值和 wiring 语义未改。
+- 能力变化：合法布尔配置行为不变；字符串伪布尔和非 table thinking 现在携带字段名 fail-fast；真实本机 `config.toml` 继续成功加载。
+- 性能变化：非性能提交；删除动态属性查询和无调用 dead code，不宣称可测收益。
+- 测试新增：四类字符串布尔配置拒绝；provider 测试由 `SimpleNamespace + Any` 改为真实 `Config`。
+- 测试删除及原因：无。
+- 验证结果：定向 `80 passed`；真实配置加载通过；修改范围 pyright `0 errors`；组合全量 `1864 passed in 25.44s`，`git diff --check` 通过。
+- 残余风险：历史 loader 仍存在若干 `str()`/`int()` 兼容转换；本批只修复能导致配置含义翻转的布尔边界，避免无真实迁移证据地全面收紧格式。
+
+### `1b3f36bb` `fix(memory2): isolate post-response run context`
+
+- 范围：回复后记忆废弃的转次上下文、memorize 结果保护和模型 JSON 响应边界。
+- 原问题：worker 把 session/channel/chat 保存在实例可变字段，并发 `run()` 会把 A 转次的 `MemoryWritten` 标成 B 的 scope；provider 失败、非数组 JSON 和未知候选 ID 又被当成“无需废弃”静默略过。
+- 为什么这样修改：每次执行构造冻结 `_RunContext` 并显式传递；模型响应只接受非空字符串数组，候选 ID 必须来自当前召回集。
+- 不变量与拥有层：单转次 scope 由 `_RunContext` 拥有；post-response worker 只校验它真正消费的嵌套 calls/result 和模型输出，不重复校验 memorize 已执行成功的入参。
+- 主审修正：删除副手新增但无下游用途的 summary 收集与参数校验；补上真实 ingest 内容可到达的 `calls`/call 结构边界，并删除只记录后原样重抛的宽泛 catch。
+- 能力变化：并发转次不再串 scope；坏模型响应和 provider 错误明确失败，不会伪装成合法空结果。正常 supersede 阈值、召回和事件投递不变。
+- 性能变化：正则改为模块级复用，删除无用 summary 处理；模型和存储调用次数不变，不声称端到端提速。
+- 测试新增：两转次真实交错执行、provider 失败、非法 JSON schema、未知候选 ID 和嵌套 call 结构。测试删除及原因：无。
+- 验证结果：定向 `50 passed`，修改生产文件 pyright `0 errors`（25 个既有动态 dict warning），组合全量 `1880 passed in 24.19s`，`git diff --check` 通过。
+- 残余风险：`Retriever` 仍以宽泛 dict 暴露候选结构；本批信任该内部 owner，没有在 worker 里再写一层重复 schema。
+
+### `62b9a4ff` `refactor(bootstrap): tighten runtime config contracts`
+
+- 范围：核心工具注册、AgentLoop 依赖装配、插件阶段检查和 CoreRuntime 启停。
+- 原问题：已经由 `Config` 构造边界保证的 `wiring`/`multimodal`/`vl_model` 仍在下游使用 `getattr(..., default)`；模块检查会在 `getattr` 默认表达式中无条件构造未使用的 outbound port。
+- 为什么这样修改：边界后直接读取 typed config 和同仓库构造不变量；对真正可选的 plugin/spawn hook 仍保留动态边界处理。
+- 不变量与拥有层：TOML loader/`Config` 拥有配置完整性；`AgentLoop`/pipeline 构造器拥有检查阶段需要的 context/session/outbound 字段；外部传入的 session store 仍由调用方关闭。
+- 能力与性能变化：toolset 顺序、MCP fallback、VL 能力和插件热重载不变；删除了每次检查时的一个无用对象分配，不宣称可测端到端收益。
+- 测试新增/调整：外部 session store 在注册失败后保持开启；历史 `SimpleNamespace` 配置替身改为真实 `Config`，runtime close 使用真实 `SessionManager`。测试删除及原因：无。
+- 验证结果：定向 `90 passed`，修改生产文件 pyright `0 errors`（24 个既有动态插件/私有资源 warning），组合全量 `1880 passed in 24.19s`，`git diff --check` 通过。
+- 残余风险：同步构造期自建 session store 后若后续注册失败，当前没有可等待异步 `MemoryRuntime.aclose()` 的完整 rollback 协议；未伪造后台清理或同步 mock 来掩盖该 ownership 缺口。
+
+### `3df29e9f` `fix(proactive): preserve lifecycle cleanup failures`
+
+- 范围：proactive lifecycle 动态模块编译边界、启动失败回滚和逆序停止。
+- 原问题：动态字段与 hook 在每次运行时重复 `getattr`；rollback 只记录并丢弃错误，stop 只保留第一个 `Exception`；调用方取消或 stopper 自取消会截断后续资源清理。
+- 为什么这样修改：builder 一次性校验并绑定 slot/依赖/run/start/stop；每个 cleanup 在独立 task 中完成，最后按原始顺序重抛单错误或聚合多错误。
+- 不变量与拥有层：`ProactiveLifecycleBuilder` 拥有动态模块结构边界；`_CompiledModule` 拥有编译后不变契约；`CompiledProactiveLifecycle` 拥有启停顺序、清理完整性和错误传播。
+- 主审修正：删除副手只为复述 `_CompiledModule` 形状而新增的 36 行 Protocol，直接使用唯一编译类；保留有真实 loop 取消路径的 shield 清理，没有为缩短代码犠牲资源完整性。
+- 能力变化：启动失败会逆序完成全部 rollback；stop 会尝试所有模块；多个清理失败和取消不再相互覆盖。拓扑、wildcard collect、执行顺序和热重载 snapshot 语义不变。
+- 性能变化：正常停止为每个 stopper 增加一个短生命 task，这是取消安全成本；运行热路径改为使用已绑定 runner，不增加模块执行次数。
+- 测试新增：启动与 rollback 多错误顺序、stopper 自取消、外部取消后仍完成全部清理，以及坏动态模块在编译边界失败。测试删除及原因：无。
+- 验证结果：定向 `42 passed`，修改文件 pyright `0 errors, 0 warnings`，组合全量 `1880 passed in 24.19s`，`git diff --check` 通过。
+- 残余风险：多清理失败现以 `BaseExceptionGroup` 暴露；这是为了不丢错误的明确契约变化，上层当前不吞该异常，会把真实关闭失败继续传给 runtime owner。
+
+### `0c992c96` `fix(bootstrap): fail fast on missing toolset deps`
+
+- 范围：memory、common meta、spawn、MCP 和 scheduler toolset 的依赖装配与注册结果协议。
+- 原问题：`ToolsetDeps` 用 `Any`/`object` 隐去真实依赖类型；memory 与 spawn 把多个缺失依赖合成同一错误，甚至允许缺 provider 继续进入构造；provider 又通过 registry 私有字段计算注册差集。
+- 为什么这样修改：在各 toolset 注册边界逐项校验真正必需的依赖并指出字段名；`ToolsetDeps` 改用现有 provider/session 类型；注册差集统一通过 `ToolRegistry.get_registered_names()` 公共契约计算。
+- 不变量与拥有层：bootstrap toolset provider 拥有装配完整性，具体 runtime 构造器只接收已确认存在的依赖，ToolRegistry 独占内部索引。可选 light/VL provider、事件发布器和 spawn 配置语义不变。
+- 主审修正：副手首版继续读取 `registry._tools`，并用无类型的 `list`/`dict` default factory；主线改为公共查询 API、参数化容器 factory，并区分 `extras=None` 与显式空映射。
+- 能力与性能变化：合法启动和工具注册顺序不变；缺失依赖现在在对应 toolset 边界 fail-fast，不再以更深层的属性错误暴露。非性能提交，不声明提速。
+- 测试新增：memory/spawn provider 缺失、common meta 缺只读工具或 session store 的明确失败。测试删除及原因：无。
+- 验证结果：定向 `35 passed`，`bootstrap/toolsets` pyright `0 errors, 0 warnings`；本批组合全量见末项。
+- 残余风险：部分历史 toolset 仍以宽泛 extras 传递扩展对象；其用途跨 provider，不在没有具体错误路径时强行收窄。
+
+### `e9b18447` `fix(memory2): tighten retrieval hit contracts`
+
+- 范围：MemoryStore2 检索 lane 输出、vector/keyword 融合、embedding 取消传播和记忆注入格式化。
+- 原问题：内部候选长期以宽泛 dict 传递，缺 id/score 会被空值或 `0.0` 掩盖；`gather(return_exceptions=True)` 会吞掉取消信号；RRF 完全平分时依赖 set 遍历顺序；procedure steps 通过 `cast` 假定形状。
+- 为什么这样修改：由存储层定义唯一 `MemoryHit` 契约；检索器直接消费已建立字段，缺失 id/数值得分明确失败；取消信号继续向上；RRF 用 score 与 id 给出确定顺序；procedure steps 在实际消费边界要求字符串列表。
+- 不变量与拥有层：MemoryStore2 拥有 SQLite/JSON 到候选结构的转换，Retriever 拥有 lane 融合、排序和注入元数据消费。单条普通 embedding provider 失败仍只跳过对应可选 lane，存储失败与任务取消不降级。
+- 主审修正：副手测试用 `cast(Any, ...)` 和缺少必需字段的 dict 绕过新契约；主线改为真实 `MemoryHit` 构造，并补上 dashboard/历史数据可达的 procedure steps 损坏路径。
+- 能力变化：取消可及时终止召回；坏候选不再悄悄降权或消失；相同输入的融合顺序稳定。正常 vector/keyword 召回、阈值和注入预算不变。
+- 性能变化：RRF 仍为同阶排序与线性融合，只增加常数级确定性排序键和真实 procedure 元数据校验，不宣称端到端提速。
+- 测试新增：embedding 取消、RRF 平分顺序、缺 vector score、坏 extra JSON/embedding/steps。测试删除及原因：无。
+- 验证结果：定向 `27 passed`，retriever 与相关测试 pyright `0 errors, 0 warnings`；本批组合全量见末项。
+- 残余风险：`extra_json` 是多记忆类型共用的扩展对象，暂不为所有可选字段制造统一大 schema；只在各字段的真实消费 owner 收窄。
+
+### `194453fb` `refactor(passive): tighten runtime contracts`
+
+- 范围：passive turn 工具保护判断、reasoner 插件模块装配、deferred 工具目录、memory retrieval owner 和 AgentLoop 入站确认清理。
+- 原问题：内部 typed 对象仍通过 `getattr`/`callable`/类型过滤当作不可信数据；passive retrieval 可被一个空 `MemoryServices` 遮蔽真实 runtime engine；入站确认失败时 active task/turn state 留在内存中。
+- 为什么这样修改：直接调用 Reasoner、ToolExecutionResult、SessionLike 与 ToolRegistry 的既有协议；为 deferred 目录定义精确 `TypedDict`；retrieval 始终使用 `_resolve_memory_runtime` 已确定的唯一 engine；确认消息前先收束本轮内存状态。
+- 不变量与拥有层：Reasoner ABC 拥有插件扩展方法，ToolRegistry 拥有 deferred 目录形状，AgentLoop 的 runtime 解析拥有 memory engine 选择，MessageBus 只拥有最终入站确认。正常工具提示、turn 执行和确认顺序不变。
+- 主审修正：副手首版先 `cast` 再逐项过滤 deferred 目录，等于重复怀疑 ToolRegistry；主线把 schema 放回 registry。内存 owner 测试也从读取私有字段改为执行真实 retrieval 并检查可观察结果。
+- 能力变化：入站确认失败仍会明确抛错，但不再遗留幽灵 active turn；显式空 service 不会关闭已经解析成功的 memory runtime；内部契约缺失直接失败。
+- 性能变化：删除 deferred 目录的重复扫描和动态属性分派；规模很小，不宣称可测端到端收益。
+- 测试新增：入站确认失败清理、memory runtime 优先级和既有 deferred 可见性回归。测试删除及原因：无。
+- 验证结果：相关定向 `76 passed`，新增精确契约文件 pyright `0 errors, 0 warnings`；三项组合全量 `1888 passed in 25.94s`，`git diff --check` 通过。
+- 残余风险：passive/looping 两个历史大文件仍有大量宽泛消息 dict 类型告警；需按调用链分批收窄，不能用一次全文件类型改写冒险改变热重载、重试和中断语义。
+
+### `081e427a` `fix(loop): preserve turn shutdown lifecycle`
+
+- 范围：AgentLoop 入站 turn 的任务所有权、运行时取消、主动停止和消息确认。
+- 原问题：主循环取消时可能把取消当作普通子任务结束；`stop()` 不会终止仍在执行的 turn；确认消息失败与任务状态清理之间缺少统一生命周期顺序。
+- 为什么这样修改：由 AgentLoop 显式持有当前 turn task；把单轮执行抽为明确协程；运行时取消继续向上传播；停止时取消并等待当前 turn；确认操作使用 shield 完成边界收尾。
+- 不变量与拥有层：AgentLoop 拥有当前 turn 的创建、取消与清理；MessageBus 拥有入站确认结果；取消不是可恢复业务错误，不转换为空结果或普通日志。
+- 能力变化：正常串行 turn、热重载和入站确认语义不变；服务停止或 runtime 取消不再遗留后台 turn；确认失败仍 fail-loud。
+- 性能变化：正常 turn 不增加模型或工具调用；仅停止路径增加一次必要的任务等待，不声明提速。
+- 测试新增：runtime 取消传播、停止取消活动 turn、确认失败后的生命周期清理。测试删除及原因：无。
+- 验证结果：副手 worktree 全量 `1891 passed`；合并主审后的组合全量见本轮末项，`git diff --check` 通过。
+- 残余风险：AgentLoop 历史消息 payload 仍有宽泛 dict 类型；本批只修复可观察的取消与资源所有权，不扩大为全文件类型迁移。
+
+### `914f799b` `refactor(runtime): enforce tool discovery contracts`
+
+- 范围：runtime service 协议、tool discovery JSON 边界、deferred 工具目录和默认依赖工厂。
+- 原问题：tool search 对坏 JSON、非 object 和坏工具名以 warning 加空结果降级；部分内部 service 仍以宽泛对象传递；副手首版又加入了没有真实违反路径的容量校验。
+- 为什么这样修改：在 tool_search 的外部 JSON 边界严格解析；成功响应结构损坏直接抛错；边界后使用精确 SessionLike、TurnRunResult 和 AgentLoopRunner 协议；删除无法由生产构造路径触发的重复容量检查。
+- 不变量与拥有层：tool_search parser 拥有模型/工具 JSON schema；ToolRegistry 拥有 deferred 目录；typed runtime service 拥有内部字段完整性，调用方不再二次怀疑。
+- 主审修正：拒绝副手以“更稳健”为由增加的默认容量检查；把 warning + 空数组改为携带上下文的 fail-loud，并保留当前 `unlocked` 与已存在 legacy `matched` 两种真实协议。
+- 能力变化：合法工具发现和确定性去重不变；损坏的成功响应不再伪装成“没有匹配工具”。
+- 性能变化：非性能提交；删除重复校验和动态对象路径，不声明端到端收益。
+- 测试新增/调整：坏 JSON、非对象、坏数组、坏工具名、当前与 legacy 字段解析。测试删除及原因：删除仅覆盖不可达容量状态的四项测试。
+- 验证结果：定向 `40 passed`，修改范围 pyright `0 errors, 0 warnings`；组合全量见本轮末项。
+- 残余风险：legacy `matched` 仍为已存在的真实兼容输入；待上游协议正式移除后才能安全删除，当前不假设其已不可达。
+
+### `355d90f9` `fix(memory2): enforce procedure metadata contracts`
+
+- 范围：procedure 元数据解析、记忆合并事务、检索候选分数和 post-response 候选类型。
+- 原问题：坏 steps/tool_requirement/rule_schema 会被空数组、字符串化或过滤掩盖；Memorizer 越过 Store 私有锁和连接读取元数据；content-hash 冲突时旧实现会退休原记录并新建缺字段记录；多个模块重复实现 score fallback。
+- 为什么这样修改：在持久化元数据的消费边界集中严格解析；Store 提供合并元数据公共 API 并独占事务和 content hash；冲突回滚且明确失败；MemoryHit 分数由 Store 契约统一读取。
+- 不变量与拥有层：MemoryStore2 拥有 SQLite、JSON、content hash 和向量索引事务；Memorizer 拥有 procedure 合并语义；rule schema parser 只在外部或持久化边界校验，内部 TypedDict 不重复防御。
+- 主审修正：副手首版增加约 293 行并在内部 schema 上重复校验，还把两项全库 pyright error 误报为既有问题；主线删除不可达检查，修复类型错误，集中 score owner，并保留真实可达的损坏持久化与 hash 冲突路径。
+- 能力变化：正常保存、召回、procedure merge 和 tag 重建语义不变；损坏元数据立即暴露；合并 hash 冲突不再静默丢失 source、extra、时间等字段。
+- 性能变化：合并元数据改为一次 Store 查询；候选分数不再在三处重复解析。数据库和模型调用数量没有新增，不声明端到端提速。
+- 测试新增：四类坏 procedure 元数据、损坏持久化 steps、content-hash 冲突原子回滚。测试删除及原因：无。
+- 验证结果：Memory 定向 `81 passed`；修改范围 pyright `0 errors`（15 个既有动态 provider/tool-chain warning）；三项组合全量 `1899 passed in 25.37s`，全库 pyright `0 errors`，`git diff --check` 通过。
+- 残余风险：post-response tool chain 仍来自动态模型/工具 payload，存在既有宽泛 dict warning；应在其唯一输入边界单独建 schema，不能在每个消费函数重复检查。
+
+### `7d6aded2` `fix(http): preserve shared client cleanup errors`
+
+- 范围：共享 HTTP 客户端关闭生命周期和直接回归测试。
+- 原问题：多个客户端同时关闭失败时只保存第一个异常，后续真实清理错误被丢弃。
+- 为什么这样修改：仍按原有逆序串行尝试全部关闭；单错误保持原异常，多错误使用 `ExceptionGroup` 一次暴露；取消不被普通异常捕获。
+- 不变量与拥有层：SharedHttpResources 拥有三个客户端的关闭顺序和生命周期；AppRuntime 只负责调用 owner 的 `aclose()`，不在上层重建清理语义。
+- 主审修正：删除副手为 typed `HttpProfile` 增加的未知 profile 分支和 `type: ignore` 测试；该违反路径只能绕过类型契约构造，不应在内部函数重复防御。顺手清零修改文件的两个既有 pyright warning。
+- 能力变化：正常请求、连接复用、shutdown 顺序和单错误类型不变；多清理失败不再丢失。
+- 性能变化：仅失败关闭路径收集最多三个异常；正常热路径无变化。
+- 测试新增：逆序关闭、继续清理和多错误聚合。测试删除及原因：删除不可达 profile 防御测试。
+- 验证结果：HTTP 定向 `12 passed`，修改文件 pyright `0 errors, 0 warnings`；组合全量见本轮末项。
+- 残余风险：多清理失败以 `ExceptionGroup` 暴露，上层当前会继续 fail-loud；没有为未知调用方增加静默兼容层。
+
+### `6ffda115` `fix(plugins): tighten watcher recovery lifecycle`
+
+- 范围：插件 watcher 的 revision 扫描、热重载失败、外部唤醒、取消和停止等待。
+- 原问题：宽泛扫描 catch 会把内部错误当文件竞争；一次已恢复且 revision 未变化的扫描错误也会强制 reload；未启动 task 被取消时 `wait_stopped()` 可永久等待。
+- 为什么这样修改：扫描边界只恢复 `OSError`；外部 force 在扫描失败后保留；未启动 stop 明确完成等待信号；同一坏 revision 只尝试一次，文件再次变化或外部 force 后仍可恢复重载。
+- 不变量与拥有层：watch_revision 拥有同步文件快照；reconcile_changed 拥有原子候选发布；watcher 拥有重试节奏和 task 生命周期，业务失败明确记录但不能永久杀死热重载能力。
+- 主审修正：拒绝副手“reconcile 异常直接结束 watcher”的实现；那会让一次坏插件阻断后续热修复。主线保留 fail-loud 日志，并推进到失败 revision，避免无变化时反复执行有副作用的 reload。
+- 能力变化：源码变化自动重载、扫描期间二次变化、取消传播和显式 wake 均保留；坏版本不再无限重试，修复文件后自动恢复。
+- 性能变化：稳定轮询不增加扫描或重载次数；失败版本从每轮重复 reconcile 降为一次。
+- 测试新增：恢复后的稳定 revision 不误重载、坏版本单次失败后恢复、取消完成、启动前停止和未启动 task 取消。测试删除及原因：无。
+- 验证结果：watcher 定向 `8 passed`，修改文件 pyright `0 errors, 0 warnings`；组合全量见本轮末项。
+- 残余风险：reconcile 失败目前通过明确异常日志对外可见，没有单独的 dashboard 状态字段；本批不扩展观测协议。
+
+### `75b33293` `fix(session): reject malformed history payloads`
+
+- 范围：SessionStore 消息反序列化、Session history 渲染、主动 sensor 和媒体读取错误边界。
+- 原问题：坏 media/source_refs/tool-chain 容器会被 `or []` 或过滤伪装成空数据；NULL content 被改写为空字符串；媒体读取的宽泛 catch 会掩盖程序错误。
+- 为什么这样修改：SQLite/JSON 读取边界集中校验消息列、扩展字段和工具链容器；Session 下游直接信任已解析结构；只把真实文件系统 `OSError` 转为附件读取失败标记。
+- 不变量与拥有层：SessionStore 拥有持久化 JSON 和列类型；Session 拥有 LLM history 展开；Sensor 只复制已建立的 source_refs 类型，不再把任意 object 当 iterable。
+- 主审修正：使用真实运行库 `/home/huashen/.akashic/workspace/sessions.db` 只读核验 11,621 条消息、2,096 条 tool-chain 消息和 7,579 次调用；role、media、source_refs、arguments/result 均符合新边界。主线同时保留消息查询允许的稀疏 tool-chain，撤销会破坏现有 FetchMessages 公共用例的过严必填校验，并修复全库 pyright 暴露的 Sensor 类型遗漏。
+- 能力变化：正常 session、历史窗口、主动消息 metadata、附件、consolidation 与消息查询不变；损坏持久化数据携带 message id 失败，不再形成看似正常的空历史。
+- 性能变化：每条读取消息增加与 payload 大小线性的内存结构校验；没有新增 SQL、全表扫描或模型调用。
+- 测试新增：坏消息列、media/source_refs、tool group/calls 和非 OSError 媒体失败；Sensor 类型回归由既有测试覆盖。测试删除及原因：无。
+- 验证结果：Session/消息查询定向 `64 passed`，Sensor `4 passed`，修改后的 manager/sensor pyright `0 errors, 0 warnings`；本轮组合全量 `1914 passed in 25.76s`，全库 pyright `0 errors`，`git diff --check` 通过。
+- 残余风险：SessionStore 仍为 message lookup 和模型 history 共用同一稀疏 tool-chain 载荷；后续若要彻底消除可选字段，应先拆分两种公开读取协议，不能直接收紧共享存储 schema。
+
+### PR 检查点：测试契约与完整门禁
+
+- 范围：runtime、peer agent、memory2 和 I/O 测试夹具，以及 peer process 私有超时参数的类型契约。
+- 原问题：生产代码完成精确类型收窄后，测试仍把 `SimpleNamespace`、残缺 `MemoryHit` 和任意对象直接传入具体契约；生产 Pyright 已通过，但 CI 的测试配置仍有 85 个类型错误。
+- 为什么这样修改：正常数据补齐真实必填字段和精确 TypedDict；行为型 fake 只在测试注入边界集中转换；能使用真实轻量依赖时直接使用 `SessionStore`，不以 `Any` 掩盖类型缺口。
+- 不变量与拥有层：生产构造函数继续拥有具体依赖契约；测试夹具拥有 fake 与生产协议之间的显式适配；持久化命中样本必须符合 `MemoryHit`，不再依赖运行时碰巧未读取的缺失字段。
+- 主审修正：删除副手为毫秒级超时加入的 `cast(Any, 0.001)`，让 `_kill` 如实接受 `float` 秒；删除无意义的显式 `return None`；注册测试改用真实临时 `SessionStore`。
+- 能力变化：没有改变正常运行、错误处理或测试断言；仅让测试数据和 fake 明确满足已经建立的生产契约。
+- 性能变化：生产热路径无变化；测试使用的毫秒级超时保持不变。
+- 测试删除及原因：无。
+- 验证结果：`.venv/bin/pytest -q -W error tests/` 为 `1914 passed in 26.30s`；生产与测试 Pyright 均为 `0 errors, 0 warnings`；`git diff --check` 通过。前端在本检查点前已完成 `npm run typecheck`、`npm run lint` 和 `npm run build`，本批未修改前端文件。
+- 残余风险：peer agent 测试仍有集中式 fake 转换，这是测试替身与具体实现类型之间的明确边界；后续若生产改为 Protocol，可自然删除这些转换，本批不为测试便利扩大生产抽象。
+
+### PR 检查点：初始化矩阵、资源所有权与真实插件验收
+
+- 范围：fresh init、memory engine 与 proactive 组合、IPC 端点、主任务取消、内置 memory 配置所有权、插件 doctor、CLI help/inspect，以及 Fitbit、飞书外部插件的运行缓存。
+- 原问题：主任务被取消时会再次取消子任务并打断其 `finally`；默认 `/tmp/akashic.sock` 会让多 workspace 争用；内置 memory 配置写在源码目录；`--help` 会误启动服务；`--inspect-modules` 漏关 memory runtime；干净环境缺 `networkx`；Akasha 首次导入会暴露 `jieba` 的第三方弃用告警；doctor 会把未选中的 default-memory drift skill 误判为缺失。
+- 为什么这样修改：由 workspace 稳定派生 IPC；由 AppRuntime、inspect 命令和各插件分别关闭自己创建的资源；内置插件配置迁移到 `~/.akashic-plugin/data/*-builtin`；只隔离第三方库的精确已知告警，导入错误仍直接失败；doctor 根据真实 memory 配置判断链接是否应存在。
+- 不变量与拥有层：Config 负责结构化配置，workspace 负责实例级 IPC，memory 插件数据目录负责可写配置，runtime owner 负责关闭连接和任务；测试 fake 必须补齐 schema 已保证的 `channels.socket`，生产路径不增加 `getattr` 或默认值兜底。
+- 能力变化：不同 workspace 可并行启动；SIGTERM 会等待插件任务完成收尾；源码目录只读安装可正常创建 memory 配置；CLI help 不再产生服务副作用；inspect 不再泄漏 SQLite；合法 memory/proactive 组合行为不变。
+- 性能变化：正常请求、召回和主动判断热路径没有新增 I/O 或模型调用；仅取消和关闭路径增加必要等待，不声明端到端提速。
+- 外部插件：Fitbit `57ae832` 删除无引用且无法解析的 `monitor/fitbit-swagger.json`，canonical 仓库已推送并重装；飞书 `d66c0e0`、`a2701ea` 修正 SDK loop 停止、主动关闭噪声和未取 task 异常，已推送并重装。旧 Fitbit workspace 文件删除前备份到 `~/.akashic/workspace/backups/fitbit-corrupt-swagger-20260713/`。
+- 测试新增：3 种 memory 状态乘 3 种 proactive 状态的 9 组 core 矩阵，以及 default/Akasha 乘 3 种 proactive 状态的 6 组完整 start/stop 矩阵；另覆盖 workspace IPC、help 无副作用、取消收尾、配置迁移、doctor active policy 和 inspect 清理。测试删除及原因：无。
+- 真实验收：用户配置下 24 个插件加载，Calendar、Feed、Fitbit、Steam 四个 MCP 完成连接，wake source 实际读到 `alerts/content/context`，全部 channel 启动；SIGTERM 后 MCP、Fitbit monitor、飞书线程和 IPC 全部退出。隔离 HOME 下真实执行 `main.py init`，仅两个内置 memory 插件启动并干净退出。
+- 验证结果：主仓库 `.venv/bin/pytest tests/ -q -W error` 为 `1936 passed in 28.99s`；`pip check` 无损坏依赖；修改范围 pyright 为 `0 errors`，其中 doctor/main 为 `0 errors, 0 warnings`。全量修改文件仍显示 308 条历史动态配置与 runtime unknown-type warning，本批不以 `Any` 或 ignore 掩盖。
+- 残余风险：daynight_gate 是用户显式 disabled，doctor 的 degraded 属预期策略状态；动态配置解析和 AppRuntime 若要清零历史 pyright warning，需要单独收窄边界，不能在本次启动修复中扩大为全文件类型重写。
+
+### PR 检查点：默认记忆、Akasha、Wake 与外置 MCP 行为契约
+
+- 范围：默认记忆显式写入作用域、上下文探针失败判定、default/Wake 主动沙盒、Akasha 真实多轮召回，以及 Feed、Calendar、Fitbit 的主仓库 MCP client 协议。
+- 原问题：显式 `memorize` 没有持久化 channel/chat scope，导致同作用域的 answer/interest 查询看不到刚写入的记忆；上下文探针会把通用错误回复记成成功；主动沙盒硬编码 `default` lifecycle，不能证明 Wake 真正工作；Feed 首次后台刷新会阻塞已有缓存读取。
+- 为什么这样修改：作用域由 memory engine 写入 owner 一次持久化；探针识别主流程的明确失败回复并 fail-loud；沙盒显式选择 lifecycle，并以真实 Feed MCP、WebFetch、消息编排和 ACK 验收；Feed 刷新继续后台执行，缓存读取不等待整轮网络轮询。
+- 不变量与拥有层：MemoryScope 由 memory engine 转换为持久化字段；Context Probe 只判断运行失败，不替代语义评分；Wake reservoir 拥有消费状态，Feed 只把明确反馈写入 `interest_ok`；MCP client 继续拥有 structured content 协议校验。
+- 能力变化：显式偏好可被同会话 answer 查询立即召回；运行时错误不再形成假绿报告；Wake 的 `scratchpad → 正文抓取 → share_content → message_push → ACK` 可重复验收；Feed 刷新期间仍可读取旧缓存。
+- 性能变化：Feed MCP 启动不再把缓存读取阻塞到所有订阅轮询完成；默认记忆仅增加两个已有 scope 字段的持久化，无额外模型调用。
+- 外部插件：Feed canonical 仓库提交 `5c86997`，已推送、重装，并确认运行缓存 commit 与 canonical 一致。
+- 真实验收：默认主动链完成 content、Drift 与兴趣反馈；Wake 完成正文抓取、主动发送、session 持久化和消费 ACK，且 `interest_ok` 保持 `NULL`；Akasha 全新 workspace 两轮会话从“喝茶不加糖”准确召回“不加糖”，生成 2 个节点、2 条边、3 条 query log 和 1 条 activation event；Feed、Calendar、Fitbit 均通过主仓库 MCP client 调用真实插件进程，Fitbit sleep context 返回 12 字段对象。
+- 测试新增：Context Probe 失败回复、默认记忆 scope、fresh init memory/proactive 矩阵和稳定场景文件。测试删除及原因：无。
+- 验证结果：主仓库 `.venv/bin/pytest -q -W error tests/` 为 `1938 passed in 29.21s`；default 与 Wake Docker 主动行为沙盒均通过；修改后的 default memory engine Pyright 为 `0 errors`。

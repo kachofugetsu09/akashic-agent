@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from pathlib import Path
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -64,7 +63,7 @@ class AkashaPlugin(Plugin):
         store = AkashaStore(
             resolve_akasha_db_path(
                 workspace=workspace,
-                akasha_config=load_akasha_config(plugin_dir=Path(__file__).resolve().parent),
+                akasha_config=load_akasha_config(),
             )
         )
         try:
@@ -238,17 +237,20 @@ def _rank_label(index: int) -> str:
 
 
 def _json_items(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, str):
+        raise ValueError("Akasha 检索诊断缺少 JSON 数组")
     try:
-        loaded = json.loads(str(value or "[]"))
-    except json.JSONDecodeError:
-        return []
+        loaded = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Akasha 检索诊断 JSON 损坏") from exc
     if not isinstance(loaded, list):
-        return []
-    return [
-        cast(dict[str, object], item)
-        for item in cast(list[object], loaded)
-        if isinstance(item, dict)
-    ]
+        raise ValueError("Akasha 检索诊断字段必须是 JSON 数组")
+    items: list[dict[str, object]] = []
+    for index, item in enumerate(cast(list[object], loaded)):
+        if not isinstance(item, dict):
+            raise ValueError(f"Akasha 检索诊断字段[{index}]必须是 JSON 对象")
+        items.append(cast(dict[str, object], item))
+    return items
 
 
 def _normalize_command(content: str) -> str:

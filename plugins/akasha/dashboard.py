@@ -8,10 +8,11 @@ from typing import Any, cast
 
 from fastapi import FastAPI, HTTPException
 
-from plugins.akasha.config import AkashaConfig, load_akasha_config, resolve_akasha_db_path
+from plugins.akasha.config import load_akasha_config, resolve_akasha_db_path
 from plugins.akasha.graph_snapshot import (
     EdgeRow,
     GraphSnapshotConfig,
+    GraphSnapshotSignature,
     as_float,
     as_int,
     build_snapshot_to_file,
@@ -70,12 +71,11 @@ class AkashaInspectorReader:
             ("dense_items_json", "dense_items"),
             ("ripple_items_json", "ripple_items"),
         ]:
-            raw_json = result.pop(json_key, "[]")
-            try:
-                parsed = json.loads(str(raw_json))
-            except Exception:
-                parsed = []
-            result[out_key] = parsed if isinstance(parsed, list) else []
+            raw_json = result.pop(json_key, None)
+            result[out_key] = _json_items(
+                raw_json,
+                field=f"query_id={raw.get('query_id')} {json_key}",
+            )
         return cast(dict[str, Any], result)
 
 
@@ -96,8 +96,14 @@ class AkashaGraphReader:
         self._rebuild_lock = threading.RLock()
         self._rebuild_running = False
         self._rebuild_thread: threading.Thread | None = None
+        self._rebuild_error: Exception | None = None
+        self._signature: GraphSnapshotSignature | None = None
+        self._signature_data_version: int | None = None
+        self._closed = False
 
     def get_global_graph(self) -> dict[str, Any]:
+        self._raise_if_closed()
+        self._raise_rebuild_error()
         snapshot = load_snapshot(self._snapshot_path)
         if snapshot is not None:
             status = self._snapshot_status(snapshot)
@@ -122,8 +128,11 @@ class AkashaGraphReader:
         with self._rebuild_lock:
             if self._rebuild_running and self._rebuild_thread is not threading.current_thread():
                 thread_to_wait = self._rebuild_thread
+            else:
+                self._rebuild_error = None
         if thread_to_wait is not None:
             thread_to_wait.join()
+            self._raise_rebuild_error()
             snapshot = load_snapshot(self._snapshot_path)
             if snapshot is not None:
                 return snapshot
@@ -137,8 +146,10 @@ class AkashaGraphReader:
 
     def ensure_rebuild_started(self) -> None:
         with self._rebuild_lock:
+            self._raise_if_closed()
             if self._rebuild_running:
                 return
+            self._rebuild_error = None
             thread = threading.Thread(target=self._rebuild_in_background, daemon=True)
             self._rebuild_running = True
             self._rebuild_thread = thread
@@ -147,13 +158,38 @@ class AkashaGraphReader:
     def _rebuild_in_background(self) -> None:
         try:
             _ = self.rebuild_global_graph()
+        except Exception as exc:
+            with self._rebuild_lock:
+                self._rebuild_error = exc
         finally:
             with self._rebuild_lock:
                 self._rebuild_running = False
                 self._rebuild_thread = None
 
+    def close(self) -> None:
+        """等待图快照重建线程结束，并暴露后台失败。"""
+
+        with self._rebuild_lock:
+            self._closed = True
+            thread = self._rebuild_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join()
+        self._raise_rebuild_error()
+
+    def _raise_if_closed(self) -> None:
+        if self._closed:
+            raise RuntimeError("Akasha 图读取器已关闭")
+
+    def _raise_rebuild_error(self) -> None:
+        with self._rebuild_lock:
+            error = self._rebuild_error
+        if error is not None:
+            raise RuntimeError(
+                f"Akasha 图快照后台重建失败: path={self._snapshot_path}"
+            ) from error
+
     def _snapshot_status(self, snapshot: dict[str, Any]) -> dict[str, object]:
-        current = read_graph_signature(self._akasha_db_path)
+        current = self._current_graph_signature()
         raw_meta = snapshot.get("meta", {})
         meta = cast(dict[str, object], raw_meta) if isinstance(raw_meta, dict) else {}
         old_signature = meta.get("signature")
@@ -165,13 +201,37 @@ class AkashaGraphReader:
             "current_signature": current.as_dict(),
         }
 
+    def _current_graph_signature(self) -> GraphSnapshotSignature:
+        with self._lock:
+            with self._store._lock:  # pyright: ignore[reportPrivateUsage]
+                row = self._store.db.execute("PRAGMA data_version").fetchone()
+            data_version = int(row[0]) if row is not None else 0
+            if (
+                self._signature is not None
+                and self._signature_data_version == data_version
+            ):
+                return self._signature
+            current = read_graph_signature(self._akasha_db_path)
+            self._signature = current
+            self._signature_data_version = data_version
+            return current
+
     def get_query_graph(self, query_id: str) -> dict[str, Any]:
         raw = self._store.get_query_log(query_id)
         if raw is None:
             raise KeyError(query_id)
-        activation_items = _json_items(raw.get("activation_items_json"))
-        dense_items = _json_items(raw.get("dense_items_json"))
-        ripple_items = _json_items(raw.get("ripple_items_json"))
+        activation_items = _json_items(
+            raw.get("activation_items_json"),
+            field=f"query_id={query_id} activation_items_json",
+        )
+        dense_items = _json_items(
+            raw.get("dense_items_json"),
+            field=f"query_id={query_id} dense_items_json",
+        )
+        ripple_items = _json_items(
+            raw.get("ripple_items_json"),
+            field=f"query_id={query_id} ripple_items_json",
+        )
         node_meta = _query_node_meta(activation_items, dense_items, ripple_items)
         focus_keys = set(node_meta)
         for item in [*activation_items, *dense_items, *ripple_items]:
@@ -276,7 +336,7 @@ class AkashaGraphReader:
     def _load_nodes(self, keys: set[str]) -> dict[str, dict[str, object]]:
         result: dict[str, dict[str, object]] = {}
         key_list = sorted(keys)
-        with self._lock:
+        with self._lock, self._store._lock:  # pyright: ignore[reportPrivateUsage]
             for part in chunks(key_list, 800):
                 placeholders = ",".join("?" for _ in part)
                 rows = self._store.db.execute(
@@ -307,7 +367,7 @@ class AkashaGraphReader:
             return []
         rows: list[sqlite3.Row] = []
         key_list = sorted(keys)
-        with self._lock:
+        with self._lock, self._store._lock:  # pyright: ignore[reportPrivateUsage]
             for part in chunks(key_list, 400):
                 placeholders = ",".join("?" for _ in part)
                 rows.extend(self._store.db.execute(
@@ -343,12 +403,8 @@ class AkashaGraphReader:
         return result
 
 
-def register(app: FastAPI, plugin_dir: Path, workspace: Path) -> list[object]:
-    _ = plugin_dir
-    akasha_config = _load_akasha_config(workspace)
-    if akasha_config is None:
-        return []
-
+def register(app: FastAPI, _plugin_dir: Path, workspace: Path) -> list[object]:
+    akasha_config = load_akasha_config()
     akasha_db_path = resolve_akasha_db_path(workspace=workspace, akasha_config=akasha_config)
     store = AkashaStore(akasha_db_path)
     reader = AkashaInspectorReader(store)
@@ -405,7 +461,7 @@ def register(app: FastAPI, plugin_dir: Path, workspace: Path) -> list[object]:
         except KeyError:
             raise HTTPException(status_code=404, detail="Akasha 检索记录不存在") from None
 
-    return [store]
+    return [store, graph_reader]
 
 
 def _active_memory_engine(app: FastAPI) -> str:
@@ -416,27 +472,21 @@ def _active_memory_engine(app: FastAPI) -> str:
     return str(getattr(describe(), "name", ""))
 
 
-def _load_akasha_config(workspace: Path) -> AkashaConfig | None:
-    _ = workspace
+def _json_items(value: object, *, field: str = "Akasha 检索诊断") -> list[dict[str, object]]:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} 缺少 JSON 数组")
     try:
-        plugin_dir = Path(__file__).resolve().parent
-        return load_akasha_config(plugin_dir=plugin_dir)
-    except Exception:
-        return AkashaConfig()
-
-
-def _json_items(value: object) -> list[dict[str, object]]:
-    try:
-        loaded = json.loads(str(value or "[]"))
-    except json.JSONDecodeError:
-        return []
+        loaded = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{field} JSON 损坏") from exc
     if not isinstance(loaded, list):
-        return []
-    return [
-        cast(dict[str, object], item)
-        for item in cast(list[object], loaded)
-        if isinstance(item, dict)
-    ]
+        raise ValueError(f"{field} 必须是 JSON 数组")
+    items: list[dict[str, object]] = []
+    for index, item in enumerate(cast(list[object], loaded)):
+        if not isinstance(item, dict):
+            raise ValueError(f"{field}[{index}] 必须是 JSON 对象")
+        items.append(cast(dict[str, object], item))
+    return items
 
 
 def _query_node_meta(

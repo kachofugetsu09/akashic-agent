@@ -1,8 +1,9 @@
 """Tests for SchedulerService: tick, execution, misfire, rescheduling."""
 
 import asyncio
+import logging
 from datetime import datetime, timezone, timedelta
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -240,6 +241,33 @@ async def test_every_run_count_increments(tmp_path, mock_push, mock_loop, fixed_
     assert svc._jobs[job.id].run_count == 1
 
 
+def test_add_job_does_not_publish_memory_state_when_persistence_fails(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    svc.store.save = MagicMock(side_effect=RuntimeError("persist failed"))
+    job = make_job()
+
+    with pytest.raises(RuntimeError, match="persist failed"):
+        svc.add_job(job)
+
+    assert svc.list_jobs() == []
+
+
+def test_cancel_job_keeps_memory_state_when_persistence_fails(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    job = make_job()
+    svc._jobs[job.id] = job
+    svc.store.save = MagicMock(side_effect=RuntimeError("persist failed"))
+
+    with pytest.raises(RuntimeError, match="persist failed"):
+        svc.cancel_job(job.id)
+
+    assert svc._jobs[job.id] is job
+
+
 async def test_every_soft_p90_updates_affect_next_trigger(
     tmp_path, mock_push, mock_loop, fixed_now
 ):
@@ -299,6 +327,142 @@ async def test_every_soft_cron_pretrigger_advances_past_current_boundary(
     assert mock_loop.process_direct.call_count == 1
 
 
+async def test_cancel_inflight_every_job_does_not_reschedule(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_push(**kwargs):
+        started.set()
+        await release.wait()
+        return "文本已发送"
+
+    mock_push.execute.side_effect = blocked_push
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    job = make_job(
+        trigger="every",
+        tier="instant",
+        fire_at=fixed_now - timedelta(seconds=1),
+        interval_seconds=60,
+    )
+    svc._jobs[job.id] = job
+
+    await svc._tick()
+    await started.wait()
+    assert svc.cancel_job(job.id) is True
+    release.set()
+    await drain_tasks()
+
+    assert job.id not in svc._jobs
+    assert svc.store.load() == []
+
+
+async def test_run_cancellation_cleans_up_inflight_tasks(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_push(**kwargs):
+        started.set()
+        await release.wait()
+        return "文本已发送"
+
+    mock_push.execute.side_effect = blocked_push
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    job = make_job(
+        trigger="every",
+        tier="instant",
+        fire_at=fixed_now - timedelta(seconds=1),
+        interval_seconds=60,
+    )
+    svc._jobs[job.id] = job
+    svc.store.save({job.id: job})
+
+    runner = asyncio.create_task(svc.run())
+    await asyncio.sleep(0)
+    svc._jobs[job.id].fire_at = fixed_now - timedelta(seconds=1)
+    await svc._tick()
+    await started.wait()
+    runner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await runner
+
+    assert svc._tasks == set()
+    assert svc._in_flight == set()
+    assert job.id in svc._jobs
+    assert svc.store.load()[0].id == job.id
+    release.set()
+
+
+def test_advance_every_jumps_over_long_misfire_window(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    job = make_job(
+        trigger="every",
+        tier="instant",
+        fire_at=fixed_now - timedelta(days=365),
+        interval_seconds=1,
+    )
+
+    assert svc._advance_every(job, fixed_now) == fixed_now + timedelta(seconds=1)
+
+
+@pytest.mark.parametrize("interval_seconds", [0, None])
+def test_advance_every_rejects_invalid_interval(
+    tmp_path, mock_push, mock_loop, fixed_now, interval_seconds
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    job = make_job(
+        trigger="every",
+        tier="instant",
+        fire_at=fixed_now,
+        interval_seconds=interval_seconds,
+    )
+
+    with pytest.raises(ValueError, match="interval_seconds 必须为正数"):
+        svc._advance_every(job, fixed_now)
+
+
+@pytest.mark.asyncio
+async def test_run_shutdown_logs_non_cancelled_background_failure(
+    tmp_path, mock_push, mock_loop, fixed_now, caplog
+):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_push(**kwargs):
+        started.set()
+        await release.wait()
+        return "文本已发送"
+
+    mock_push.execute.side_effect = blocked_push
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    job = make_job(
+        trigger="every",
+        tier="instant",
+        fire_at=fixed_now - timedelta(seconds=1),
+        interval_seconds=60,
+    )
+    svc._jobs[job.id] = job
+    svc.store.save({job.id: job})
+
+    runner = asyncio.create_task(svc.run())
+    await asyncio.sleep(0)
+    svc._jobs[job.id].fire_at = fixed_now - timedelta(seconds=1)
+    svc.store.save = MagicMock(side_effect=RuntimeError("persist failed"))
+    await svc._tick()
+    await started.wait()
+    caplog.set_level(logging.ERROR, logger="agent.scheduler")
+    runner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await runner
+
+    assert caplog.text.count("scheduler 后台任务异常") == 1
+
+
 # ── Misfire handling ─────────────────────────────────────────────
 
 
@@ -346,6 +510,67 @@ def test_every_misfire_advances_to_future(tmp_path, mock_push, mock_loop, fixed_
 
     assert job.id in svc._jobs
     assert svc._jobs[job.id].fire_at > fixed_now
+    assert svc.store.load()[0].fire_at == svc._jobs[job.id].fire_at
+
+
+@pytest.mark.asyncio
+async def test_run_propagates_scheduler_internal_background_failure(
+    tmp_path, mock_push, mock_loop, fixed_now, monkeypatch
+):
+    real_sleep = asyncio.sleep
+    sleep_started = asyncio.Event()
+    release_sleep = asyncio.Event()
+
+    async def controlled_sleep(_delay: float) -> None:
+        sleep_started.set()
+        await release_sleep.wait()
+
+    monkeypatch.setattr("agent.scheduler.asyncio.sleep", controlled_sleep)
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    job = make_job(
+        trigger="every",
+        tier="instant",
+        fire_at=fixed_now - timedelta(seconds=1),
+        interval_seconds=60,
+    )
+    svc._jobs[job.id] = job
+    svc.store.save({job.id: job})
+
+    runner = asyncio.create_task(svc.run())
+    await sleep_started.wait()
+    svc._jobs[job.id].fire_at = fixed_now - timedelta(seconds=1)
+    svc.store.save = MagicMock(side_effect=RuntimeError("persist failed"))
+    await svc._tick()
+    await real_sleep(0)
+    release_sleep.set()
+
+    with pytest.raises(RuntimeError, match="persist failed"):
+        await runner
+
+
+@pytest.mark.asyncio
+async def test_stop_does_not_start_an_extra_tick(
+    tmp_path, mock_push, mock_loop, fixed_now, monkeypatch
+):
+    sleep_started = asyncio.Event()
+    release_sleep = asyncio.Event()
+
+    async def controlled_sleep(_delay: float) -> None:
+        sleep_started.set()
+        await release_sleep.wait()
+
+    monkeypatch.setattr("agent.scheduler.asyncio.sleep", controlled_sleep)
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    tick = AsyncMock()
+    monkeypatch.setattr(svc, "_tick", tick)
+
+    runner = asyncio.create_task(svc.run())
+    await sleep_started.wait()
+    svc.stop()
+    release_sleep.set()
+    await runner
+
+    tick.assert_not_awaited()
 
 
 # ── Cancel ───────────────────────────────────────────────────────

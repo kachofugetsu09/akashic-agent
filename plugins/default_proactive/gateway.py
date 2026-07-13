@@ -8,6 +8,7 @@ proactive_v2/gateway.py — DataGateway
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -57,7 +58,7 @@ class DataGateway:
         self._content_limit = content_limit
 
     async def run(self) -> GatewayResult:
-        """并行拉取所有数据源，返回 GatewayResult。单源失败不影响其他源。"""
+        """并行拉取本轮数据；上游 source 聚合层负责隔离单源失败。"""
         if self._begin_fn is not None:
             self._begin_fn()
         # 1. 在 agent 真正开始决策前，先把三路输入源并行预取完：
@@ -82,29 +83,17 @@ class DataGateway:
             content_store=content_store,
         )
 
-    # ── private ────────────────────────────────────────────────────────────
+    # ── 私有方法 ────────────────────────────────────────────────────────────
 
     async def _fetch_alerts(self) -> list[dict]:
-        try:
-            return await self._alert_fn() if self._alert_fn else []
-        except Exception as e:
-            logger.warning("[gateway] alerts fetch failed: %s", e)
-            return []
+        return await self._alert_fn() if self._alert_fn else []
 
     async def _fetch_context(self) -> list[dict]:
-        try:
-            return await self._context_fn() if self._context_fn else []
-        except Exception as e:
-            logger.warning("[gateway] context fetch failed: %s", e)
-            return []
+        return await self._context_fn() if self._context_fn else []
 
     async def _fetch_content(self) -> tuple[list[dict], dict[str, str]]:
         """拉取 content events，并行 web_fetch，返回 (meta列表, content_store)。"""
-        try:
-            events = await self._feed_fn(limit=self._content_limit) if self._feed_fn else []
-        except Exception as e:
-            logger.warning("[gateway] feed fetch failed: %s", e)
-            return [], {}
+        events = await self._feed_fn(limit=self._content_limit) if self._feed_fn else []
 
         if not events:
             return [], {}
@@ -112,7 +101,7 @@ class DataGateway:
         # 1. 对 content 先保留轻量 meta，再提前并行抓正文。
         #    后续 agent loop 默认只看 meta，需要时再 get_content 读取缓存正文。
         fetch_tasks = [asyncio.create_task(self._fetch_one_url(e.get("url", ""))) for e in events]
-        fetch_results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+        fetch_results = await asyncio.gather(*fetch_tasks)
 
         content_meta: list[dict] = []
         content_store: dict[str, str] = {}
@@ -130,8 +119,7 @@ class DataGateway:
                 "published_at": event.get("published_at") or "",
             })
 
-            if isinstance(result, Exception) or not result:
-                logger.debug("[gateway] web_fetch failed for %s: %s", compound_key, result)
+            if not result:
                 content_store[compound_key] = ""
             else:
                 # 2. 正文统一收敛到 hashmap，供 get_content 按 item_id 读取。
@@ -140,17 +128,22 @@ class DataGateway:
         return content_meta, content_store
 
     async def _fetch_one_url(self, url: str) -> str:
-        """抓取单个 URL，返回截断后正文，失败返回空字符串。"""
+        """抓取单个 URL，保留业务失败降级并拒绝损坏的工具协议。"""
         if not url or not self._web_fetch_tool:
             return ""
-        try:
-            import json
-            result_json = await self._web_fetch_tool.execute(url=url, format="text")
-            result = json.loads(result_json)
-            if "error" in result:
-                return ""
-            text = result.get("text", "")
-            return text[:self._max_chars]
-        except Exception as e:
-            logger.debug("[gateway] _fetch_one_url(%s) error: %s", url, e)
+
+        result_json = await self._web_fetch_tool.execute(url=url, format="text")
+        result = json.loads(result_json)
+        if not isinstance(result, dict):
+            raise RuntimeError("web_fetch 返回值必须是 JSON object")
+        if "error" in result:
+            logger.warning(
+                "[gateway] web_fetch failed url=%s error=%s",
+                url,
+                str(result["error"])[:160],
+            )
             return ""
+        text = result.get("text", "")
+        if not isinstance(text, str):
+            raise RuntimeError("web_fetch 返回值的 text 必须是字符串")
+        return text[:self._max_chars]

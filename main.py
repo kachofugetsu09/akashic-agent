@@ -15,7 +15,7 @@ import sys
 from contextlib import suppress
 from pathlib import Path
 
-from agent.config import Config
+from agent.config import Config, resolve_cli_socket_endpoint
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
 from agent.plugins.install import (
     install_git_plugin,
@@ -28,6 +28,30 @@ from bootstrap.init_workspace import InitSummary, init_workspace
 from bootstrap.memory import build_memory_admin_runtime
 from bootstrap.providers import build_providers
 from core.net.http import SharedHttpResources
+
+
+_HELP = """\
+用法: python main.py [命令] [选项]
+
+命令:
+  setup                         运行交互式初始化向导
+  init                          非交互初始化配置和工作区
+  gateway                       启动 Agent 服务
+  cli                           连接运行中的 Agent
+  dashboard                     单独启动 Dashboard
+  plugin-install                安装 Git 插件
+  plugin-enable PLUGIN_ID       启用插件
+  plugin-disable PLUGIN_ID      禁用插件
+  plugin-uninstall PLUGIN_ID    卸载插件
+  plugin-doctor [PLUGIN_ID]     检查插件状态
+
+通用选项:
+  --config PATH                 配置文件，默认 config.toml
+  --workspace PATH              工作区，默认 ~/.akashic/workspace
+  -h, --help                    显示帮助
+
+无命令时启动 Agent 服务。
+"""
 
 
 def _default_workspace() -> Path:
@@ -70,12 +94,20 @@ def _parse_csv_flag(value: str | None) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-def _wait_plugin_disabled(config_path: str, plugin_id: str) -> None:
+def _wait_plugin_disabled(
+    config_path: str,
+    plugin_id: str,
+    workspace: Path | None = None,
+) -> None:
     if not Path(config_path).is_file():
         return
     from infra.channels.cli import request_command
 
-    socket_path = Config.load(config_path).channels.socket
+    config = Config.load(config_path)
+    socket_path = resolve_cli_socket_endpoint(
+        config.channels.socket,
+        workspace or _default_workspace(),
+    )
     result = asyncio.run(
         request_command(
             socket_path,
@@ -89,8 +121,15 @@ def _wait_plugin_disabled(config_path: str, plugin_id: str) -> None:
         raise RuntimeError(str(result.get("message", "插件停用失败")))
 
 
-def connect_cli(config_path: str = "config.toml") -> None:
-    socket_path = Config.load(config_path).channels.socket
+def connect_cli(
+    config_path: str = "config.toml",
+    workspace: Path | None = None,
+) -> None:
+    config = Config.load(config_path)
+    socket_path = resolve_cli_socket_endpoint(
+        config.channels.socket,
+        workspace or _default_workspace(),
+    )
     try:
         from infra.channels.cli_tui import run_tui
     except RuntimeError as exc:
@@ -109,6 +148,7 @@ async def inspect_modules(
     workspace: Path | None = None,
 ) -> None:
     import logging
+    from bootstrap.cleanup import run_cleanup_steps
     from bootstrap.tools import build_core_runtime
 
     logging.getLogger().setLevel(logging.WARNING)
@@ -122,8 +162,11 @@ async def inspect_modules(
     try:
         print(await runtime.inspect_modules())
     finally:
-        await runtime.stop()
-        await http_resources.aclose()
+        await run_cleanup_steps(
+            ("core.stop", runtime.stop),
+            ("memory_runtime.aclose", runtime.memory_runtime.aclose),
+            ("http_resources.aclose", http_resources.aclose),
+        )
 
 
 async def serve(
@@ -144,8 +187,8 @@ async def serve(
             loop.add_signal_handler(sig, stop_event.set)
             signal_handlers_registered = True
         except NotImplementedError:
-            # Windows' default event loop does not support add_signal_handler.
-            signal.signal(
+            # Windows 默认事件循环不支持 add_signal_handler。
+            _ = signal.signal(
                 sig,
                 lambda _sig, _frame: loop.call_soon_threadsafe(stop_event.set),
             )
@@ -175,6 +218,9 @@ async def serve(
 
 if __name__ == "__main__":
     args = sys.argv[1:]
+    if "-h" in args or "--help" in args:
+        print(_HELP)
+        sys.exit(0)
     config_path = "config.toml"
     workspace: Path | None = None
     force = "--force" in args
@@ -263,6 +309,7 @@ if __name__ == "__main__":
                 wait_until_disabled=lambda target: _wait_plugin_disabled(
                     config_path,
                     target,
+                    workspace,
                 ),
             )
         except (ValueError, RuntimeError) as exc:
@@ -324,6 +371,6 @@ if __name__ == "__main__":
     if "--inspect-modules" in args:
         asyncio.run(inspect_modules(config_path, workspace))
     elif "cli" in args:
-        connect_cli(config_path)
+        connect_cli(config_path, workspace)
     else:
         asyncio.run(serve(config_path, workspace))

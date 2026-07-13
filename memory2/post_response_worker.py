@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import json_repair
@@ -11,21 +13,29 @@ from agent.provider import LLMProvider
 from core.memory.events import MemoryWritten, TurnIngested
 from memory2.memorizer import Memorizer
 from memory2.retriever import Retriever
+from memory2.store import MemoryHit, memory_hit_score
 
 if TYPE_CHECKING:
     from bus.publisher import EventPublisher
 
 logger = logging.getLogger(__name__)
 
+_LEGACY_MEMORY_ID = re.compile(
+    r"(?:new|reinforced|merged):([A-Za-z0-9_-]{1,128})"
+)
+_EXPLICIT_MEMORY_ID = re.compile(r"item_id=([A-Za-z0-9:_-]{1,128})")
+
+
+@dataclass(frozen=True)
+class _RunContext:
+    session_key: str
+    channel: str
+    chat_id: str
+    source_ref: str
+
 
 class PostResponseMemoryWorker:
-    """
-    回复后异步执行：
-    1. 检测并退休用户明确否定的旧行为（invalidation）。
-
-    隐式 procedure/preference/profile 提炼已移至 consolidation 窗口期，
-    与 event 提取并行、用主模型处理，不再在每轮 post-response 里跑。
-    """
+    """在回复后检测并退休用户明确否定的旧记忆。"""
 
     SUPERSEDE_THRESHOLD = 0.82
     SUPERSEDE_CANDIDATE_K = 5
@@ -46,9 +56,6 @@ class PostResponseMemoryWorker:
         self._provider = light_provider
         self._model = light_model
         self._event_publisher = event_publisher
-        self._current_run_session_key = ""
-        self._current_run_channel = ""
-        self._current_run_chat_id = ""
 
     async def handle(self, event: TurnIngested) -> None:
         await self.run(
@@ -71,49 +78,46 @@ class PostResponseMemoryWorker:
         channel: str = "",
         chat_id: str = "",
     ) -> None:
+        """在独立转次上下文中识别并废弃失效记忆。"""
+
         # 1. 初始化本轮异步提炼的上下文和 token 预算。
-        self._current_run_session_key = session_key
-        self._current_run_channel = channel
-        self._current_run_chat_id = chat_id
+        context = _RunContext(
+            session_key=session_key,
+            channel=channel,
+            chat_id=chat_id,
+            source_ref=source_ref,
+        )
         token_budget = self.TOKEN_BUDGET_PER_RUN
         logger.debug(
             "post_response_memorize start session=%s source_ref=%s user_len=%d resp_len=%d tool_steps=%d",
-            session_key or "-",
-            source_ref or "-",
-            len((user_msg or "").strip()),
-            len((agent_response or "").strip()),
-            len(tool_chain or []),
+            context.session_key or "-",
+            context.source_ref or "-",
+            len(user_msg.strip()),
+            len(agent_response.strip()),
+            len(tool_chain),
         )
-        try:
-            # 2. 先从本轮 tool_chain 里找显式 memorize 结果，后续 supersede 都要用。
-            already_memorized, protected_ids = self._collect_explicit_memorized(
-                tool_chain
-            )
-            logger.debug(
-                "post_response_memorize explicit_memories session=%s summaries=%d protected_ids=%d",
-                session_key or "-",
-                len(already_memorized),
-                len(protected_ids),
-            )
 
-            # 3. 处理"旧的有误/需要遗忘"的显式废弃信号，优先退休旧记忆。
-            # 隐式 procedure/preference/profile 提炼已移至 consolidation 窗口期，
-            # 与 event 提取并行、用主模型处理，不再在每轮 post-response 里跑。
-            token_budget = await self._handle_invalidations(
-                user_msg,
-                source_ref,
-                protected_ids,
-                token_budget,
-            )
+        # 2. 保护本轮刚写入的记忆，避免紧接着被退休。
+        protected_ids = self._collect_protected_memory_ids(tool_chain)
+        logger.debug(
+            "post_response_memorize explicit_memories session=%s protected_ids=%d",
+            context.session_key or "-",
+            len(protected_ids),
+        )
 
-            logger.debug(
-                "post_response_memorize done session=%s source_ref=%s remain_budget=%d",
-                session_key or "-",
-                source_ref or "-",
-                token_budget,
-            )
-        except Exception as e:
-            logger.warning(f"post_response_memorize run failed: {e}")
+        # 3. 隐式提炼已由 consolidation 负责，此处只处理显式废弃信号。
+        token_budget = await self._handle_invalidations(
+            user_msg,
+            context,
+            protected_ids,
+            token_budget,
+        )
+        logger.debug(
+            "post_response_memorize done session=%s source_ref=%s remain_budget=%d",
+            context.session_key or "-",
+            context.source_ref or "-",
+            token_budget,
+        )
 
     @staticmethod
     def _consume_budget(remain: int, cost: int) -> tuple[bool, int]:
@@ -123,60 +127,43 @@ class PostResponseMemoryWorker:
 
     @staticmethod
     def _preview_text(text: str, limit: int = 80) -> str:
-        import re
-        compact = re.sub(r"\s+", " ", str(text or "").strip())
+        compact = " ".join(text.split())
         if len(compact) <= limit:
             return compact
         return compact[:limit] + "..."
 
-    def _collect_explicit_memorized(
-        self, tool_chain: list[dict]
-    ) -> tuple[list[str], set[str]]:
-        """从 tool_chain 收集本轮 memorize tool 显式写入的 summary 和 DB id。
+    def _collect_protected_memory_ids(self, tool_chain: list[dict]) -> set[str]:
+        """收集本轮 memorize 工具真实写入的记忆 ID。"""
 
-        返回 (summaries, protected_ids)：
-        - summaries：传给 light model 的排除列表
-        - protected_ids：memorize tool 本轮写入的条目 id，不允许被 worker supersede
-        """
-        import re as _re
-
-        _legacy_pattern = _re.compile(
-            r"(?:new|reinforced|merged):([A-Za-z0-9_-]{1,128})"
-        )
-        _explicit_pattern = _re.compile(r"item_id=([A-Za-z0-9:_-]{1,128})")
-
-        summaries: list[str] = []
         protected_ids: set[str] = set()
-        # 1. 遍历本轮工具调用，只关心 memorize 工具。
+        # 1. 遍历本轮工具调用，只解析 memorize 结果。
         for step in tool_chain:
-            if not isinstance(step, dict):
-                continue
-            for call in step.get("calls", []):
-                if not isinstance(call, dict) or call.get("name") != "memorize":
+            calls = step.get("calls", [])
+            if not isinstance(calls, list):
+                raise TypeError("tool_chain[].calls 必须是数组")
+            for call in calls:
+                if not isinstance(call, dict):
+                    raise TypeError("tool_chain[].calls[] 必须是对象")
+                if call.get("name") != "memorize":
                     continue
-                # 2. 从参数里拿 summary，后面给隐式提取做排重。
-                args = call.get("arguments")
-                if isinstance(args, dict):
-                    summary = (args.get("summary") or "").strip()
-                    if summary:
-                        summaries.append(summary)
-                # 3. 再从工具结果文本里解析真实写入的 DB id，避免后续误删本轮新记忆。
-                result = call.get("result") or ""
-                m = _legacy_pattern.search(result)
-                if m:
-                    protected_ids.add(m.group(1))
-                    continue
-                m = _explicit_pattern.search(result)
-                if m:
-                    protected_ids.add(m.group(1))
-        return summaries, protected_ids
+
+                # 2. 从结果中解析真实 ID，不重复校验 memorize 入参。
+                result = call["result"]
+                if not isinstance(result, str):
+                    raise TypeError("memorize call result 必须是字符串")
+                match = _LEGACY_MEMORY_ID.search(result) or _EXPLICIT_MEMORY_ID.search(
+                    result
+                )
+                if match:
+                    protected_ids.add(match.group(1))
+        return protected_ids
 
     async def _handle_invalidations(
         self,
         user_msg: str,
-        source_ref: str,
-        protected_ids: set[str] | None = None,
-        token_budget: int = TOKEN_BUDGET_PER_RUN,
+        context: _RunContext,
+        protected_ids: set[str],
+        token_budget: int,
     ) -> int:
         """检测用户明确指出 agent 旧行为有误的情况，无需替代规则即直接 supersede 旧条目。"""
         # 1. 先从当前用户消息里提取"要废弃什么旧行为"的主题。
@@ -186,14 +173,13 @@ class PostResponseMemoryWorker:
         )
         logger.debug(
             "post_response invalidation_topics session=%s count=%d remain_budget=%d topics=%s",
-            self._current_run_session_key or "-",
+            context.session_key or "-",
             len(topics),
             token_budget,
             [self._preview_text(topic, 40) for topic in topics[:3]],
         )
         if not topics:
             return token_budget
-        _protected = protected_ids or set()
         for topic in topics:
             # 2. 再到现有 procedure/preference 里召回和该主题最相关的旧条目。
             candidates = await self._retriever.retrieve(
@@ -203,9 +189,8 @@ class PostResponseMemoryWorker:
             high_sim = [
                 c
                 for c in candidates
-                if isinstance(c, dict)
-                and c.get("score", 0) >= self.SUPERSEDE_THRESHOLD
-                and c.get("id") not in _protected
+                if memory_hit_score(c) >= self.SUPERSEDE_THRESHOLD
+                and c["id"] not in protected_ids
             ][: self.SUPERSEDE_CANDIDATE_K]
             if not high_sim:
                 continue
@@ -223,18 +208,40 @@ class PostResponseMemoryWorker:
                     supersede_ids,
                     topic,
                 )
-                if self._event_publisher is not None and self._current_run_session_key:
+                if self._event_publisher is not None and context.session_key:
                     await self._event_publisher.fanout(
                         MemoryWritten(
-                            session_key=self._current_run_session_key,
-                            channel=self._current_run_channel,
-                            chat_id=self._current_run_chat_id,
-                            source_ref=source_ref,
+                            session_key=context.session_key,
+                            channel=context.channel,
+                            chat_id=context.chat_id,
+                            source_ref=context.source_ref,
                             action="supersede",
                             superseded_ids=supersede_ids,
                         )
                     )
         return token_budget
+
+    @staticmethod
+    def _parse_json_string_array(text: str, response_name: str) -> list[str]:
+        """解析并校验模型返回的 JSON 字符串数组。"""
+        # 1. 去掉模型常见的 Markdown 代码围栏。
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if len(lines) < 2 or lines[-1].strip() != "```":
+                raise ValueError(f"{response_name} 返回了未闭合的代码围栏")
+            text = "\n".join(lines[1:-1]).strip()
+        if not text:
+            raise ValueError(f"{response_name} 返回了空内容")
+
+        # 2. 解析 JSON；json_repair 只负责既有的轻微格式修复，不负责吞掉错误。
+        result = json_repair.loads(text)
+        if not isinstance(result, list):
+            raise ValueError(f"{response_name} 必须返回 JSON 数组")
+
+        # 3. 严格校验数组元素，区分合法空数组和损坏的模型响应。
+        if any(not isinstance(item, str) or not item.strip() for item in result):
+            raise ValueError(f"{response_name} 只能包含非空字符串")
+        return result
 
     async def _extract_invalidation_topics(
         self,
@@ -267,29 +274,25 @@ class PostResponseMemoryWorker:
             logger.debug("post_response invalidation skipped: token budget exhausted")
             return [], token_budget
 
-        try:
-            resp = await self._provider.chat(
-                messages=[{"role": "user", "content": prompt}],
-                tools=[],
-                model=self._model,
-                max_tokens=self.TOKENS_EXTRACT_INVALIDATION,
-            )
-            text = (resp.content or "").strip()
-            if text.startswith("```"):
-                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-            result = json_repair.loads(text)
-            if isinstance(result, list):
-                return [
-                    t for t in result if isinstance(t, str) and t.strip()
-                ], token_budget
-        except Exception as e:
-            logger.warning(f"extract_invalidation_topics failed: {e}")
-        return [], token_budget
+        resp = await self._provider.chat(
+            messages=[{"role": "user", "content": prompt}],
+            tools=[],
+            model=self._model,
+            max_tokens=self.TOKENS_EXTRACT_INVALIDATION,
+        )
+        text = resp.content
+        if not isinstance(text, str):
+            raise ValueError("extract_invalidation_topics 未返回文本")
+        topics = self._parse_json_string_array(
+            text.strip(),
+            "extract_invalidation_topics",
+        )
+        return topics, token_budget
 
     async def _check_invalidate(
         self,
         topic: str,
-        candidates: list[dict],
+        candidates: list[MemoryHit],
         token_budget: int,
     ) -> tuple[list[str], int]:
         """用户声明旧行为有误时，判断哪些旧条目应被 supersede（无需新规则替代）。"""
@@ -314,22 +317,23 @@ class PostResponseMemoryWorker:
                 "post_response check_invalidate skipped: token budget exhausted"
             )
             return [], token_budget
-        try:
-            resp = await self._provider.chat(
-                messages=[{"role": "user", "content": prompt}],
-                tools=[],
-                model=self._model,
-                max_tokens=self.TOKENS_CHECK_INVALIDATE,
+        resp = await self._provider.chat(
+            messages=[{"role": "user", "content": prompt}],
+            tools=[],
+            model=self._model,
+            max_tokens=self.TOKENS_CHECK_INVALIDATE,
+        )
+        text = resp.content
+        if not isinstance(text, str):
+            raise ValueError("check_invalidate 未返回文本")
+        selected_ids = self._parse_json_string_array(
+            text.strip(),
+            "check_invalidate",
+        )
+        valid_ids = {c["id"] for c in candidates}
+        unknown_ids = [item_id for item_id in selected_ids if item_id not in valid_ids]
+        if unknown_ids:
+            raise ValueError(
+                f"check_invalidate 返回了未知候选 ID: {unknown_ids}"
             )
-            text = (resp.content or "").strip()
-            if text.startswith("```"):
-                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-            result = json_repair.loads(text)
-            if isinstance(result, list):
-                valid_ids = {c["id"] for c in candidates}
-                return [
-                    i for i in result if isinstance(i, str) and i in valid_ids
-                ], token_budget
-        except Exception as e:
-            logger.warning(f"check_invalidate failed: {e}")
-        return [], token_budget
+        return selected_ids, token_budget

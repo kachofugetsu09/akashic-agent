@@ -143,8 +143,11 @@ class TelegramChannel:
 
         def _done(done_task: asyncio.Task[None]) -> None:
             self._live_tasks.discard(done_task)
-            for tasks in self._live_tasks_by_session.values():
+            tasks = self._live_tasks_by_session.get(session_key)
+            if tasks is not None:
                 tasks.discard(done_task)
+                if not tasks:
+                    self._live_tasks_by_session.pop(session_key, None)
             try:
                 _ = done_task.result()
             except asyncio.CancelledError:
@@ -202,8 +205,10 @@ class TelegramChannel:
     async def stop(self) -> None:
         if self._polling_conflict_task and not self._polling_conflict_task.done():
             await self._polling_conflict_task
-        if self._live_tasks:
-            _ = await asyncio.gather(*self._live_tasks, return_exceptions=True)
+        for session_key in tuple(self._live_tasks_by_session):
+            await self._cancel_live_tasks(session_key)
+        for session_key in tuple(self._live_messages):
+            await self._delete_live_message(session_key)
         updater = self._app.updater
         if updater and updater.running:
             await updater.stop()
@@ -559,12 +564,12 @@ class TelegramChannel:
         if event.channel != self._channel:
             return
         await self._cancel_live_tasks(event.session_key)
+        await self._delete_live_message(event.session_key)
         _ = self._tool_lines.pop(event.session_key, None)
         _ = self._reply_buffers.pop(event.session_key, None)
         _ = self._thinking_buffers.pop(event.session_key, None)
         _ = self._thinking_live_next_at.pop(event.session_key, None)
         _ = self._live_last_lengths.pop(event.session_key, None)
-        _ = self._live_messages.pop(event.session_key, None)
 
     async def _on_stream_delta(self, event: StreamDeltaReady) -> None:
         if event.channel != self._channel:
@@ -667,9 +672,9 @@ class TelegramChannel:
         return session_key in self._live_messages
 
     async def _delete_live_message(self, session_key: str) -> None:
-        message = self._live_messages.pop(session_key, None)
-        if message is not None:
-            await message.delete()
+        message = self._live_messages.get(session_key)
+        if message is not None and await message.delete():
+            self._live_messages.pop(session_key, None)
 
     async def _drain_live_tasks(self) -> None:
         tasks = [task for task in self._live_tasks if not task.done()]
@@ -779,8 +784,10 @@ class TelegramChannel:
         cid = int(self._resolve_chat_id(msg.chat_id))
         session_key = f"{self._channel}:{msg.chat_id}"
         had_live = self._has_live_messages(session_key)
-        if had_live:
+        has_live_tasks = bool(self._live_tasks_by_session.get(session_key))
+        if has_live_tasks:
             await self._cancel_live_tasks(session_key)
+        if had_live or self._has_live_messages(session_key):
             await self._delete_live_message(session_key)
         final_thinking = self._final_thinking_text(session_key, msg.thinking)
         if had_live:
@@ -816,6 +823,10 @@ class TelegramChannel:
             await self._send_final_thinking(cid, msg.chat_id, final_thinking)
         self._reply_buffers.pop(session_key, None)
         self._thinking_buffers.pop(session_key, None)
+        _ = self._thinking_live_next_at.pop(session_key, None)
+        _ = self._live_last_lengths.pop(session_key, None)
+        _ = self._tool_lines.pop(session_key, None)
+        _ = self._active_streams.pop(str(msg.chat_id), None)
         for image in (msg.media or []):
             try:
                 await self.send_image(str(msg.chat_id), image)

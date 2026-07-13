@@ -2,6 +2,9 @@ from __future__ import annotations
 from typing import Any, cast
 
 import asyncio
+import logging
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +25,44 @@ from session.manager import (
     _TOOL_RESULT_CHAR_BUDGET,
     _safe_filename,
 )
+from session.store import SessionStore
+
+
+def _seed_message_embeddings(store: SessionStore, message_ids: list[str]) -> None:
+    store._conn.execute(
+        """
+        CREATE TABLE message_embeddings (
+            message_id TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            model TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            dim INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (message_id, model)
+        )
+        """
+    )
+    store._conn.executemany(
+        """
+        INSERT INTO message_embeddings
+            (message_id, content_hash, model, embedding, dim, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                message_id,
+                f"hash:{message_id}",
+                "test-model",
+                f"embedding:{message_id}".encode(),
+                1,
+                "before",
+                "before",
+            )
+            for message_id in message_ids
+        ],
+    )
+    store._conn.commit()
 
 
 @pytest.mark.asyncio
@@ -108,6 +149,483 @@ async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
     (tmp_path / "AGENTS.md").write_text("guide", encoding="utf-8")
     loop._sender = SimpleNamespace(send=AsyncMock(return_value=True))
     loop._engine = SimpleNamespace(tick=AsyncMock(return_value=0.2))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ["{broken", "[]", "", sqlite3.Binary(b"\xff"), sqlite3.Binary(b"")],
+)
+def test_session_metadata_corruption_fails_at_database_boundary(
+    tmp_path: Path,
+    payload: object,
+) -> None:
+    manager = SessionManager(tmp_path)
+    session_key = "telegram:broken"
+    manager.get_or_create(session_key)
+    manager._store._conn.execute(
+        "UPDATE sessions SET metadata = ? WHERE key = ?",
+        (payload, session_key),
+    )
+    manager._store._conn.commit()
+
+    with pytest.raises(ValueError, match=session_key):
+        manager.get_channel_metadata("telegram")
+    with pytest.raises(ValueError, match=session_key):
+        manager._store.get_session_meta(session_key)
+    with pytest.raises(ValueError, match=session_key):
+        manager._store.list_sessions_for_dashboard()
+
+
+def test_session_manager_rejects_orphan_messages_without_metadata(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path)
+    try:
+        manager._store.insert_message(
+            "telegram:orphan",
+            role="user",
+            content="孤立消息",
+            ts="2026-07-13T00:00:00+00:00",
+            seq=0,
+        )
+
+        with pytest.raises(ValueError, match="session metadata 缺失"):
+            manager.get_or_create("telegram:orphan")
+    finally:
+        manager.close()
+
+
+@pytest.mark.asyncio
+async def test_session_batch_persistence_rolls_back_all_messages_on_failure(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("telegram:atomic")
+    session.add_message("user", "第一条")
+    session.add_message("assistant", "第二条")
+    manager._store._conn.execute(
+        """
+        CREATE TRIGGER reject_assistant_message
+        BEFORE INSERT ON messages
+        WHEN NEW.role = 'assistant'
+        BEGIN
+            SELECT RAISE(ABORT, '测试写入失败');
+        END
+        """
+    )
+    manager._store._conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="测试写入失败"):
+        await manager.append_messages(session, session.messages)
+
+    assert manager._store.count_messages(session.key) == 0
+    assert all("id" not in message for message in session.messages)
+
+
+@pytest.mark.asyncio
+async def test_session_batch_persistence_uses_one_commit(tmp_path: Path) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("telegram:batch")
+    session.add_message("user", "第一条")
+    session.add_message("assistant", "第二条")
+    statements: list[str] = []
+    manager._store._conn.set_trace_callback(statements.append)
+
+    await manager.append_messages(session, session.messages)
+
+    assert statements.count("COMMIT") == 1
+
+
+@pytest.mark.asyncio
+async def test_session_trim_replaces_history_and_preserves_sequence_ids(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("telegram:trim")
+    for index in range(4):
+        session.add_message("user" if index % 2 == 0 else "assistant", str(index))
+    session.last_consolidated = 3
+    manager.save(session)
+    other = manager.get_or_create("telegram:other")
+    other.add_message("user", "other")
+    manager.save(other)
+    _seed_message_embeddings(
+        manager._store,
+        [
+            *[cast(str, message["id"]) for message in session.messages],
+            *[cast(str, message["id"]) for message in other.messages],
+        ],
+    )
+
+    await manager.trim_history_async(session, 2, last_consolidated=0)
+
+    assert [message["content"] for message in session.messages] == ["2", "3"]
+    assert [message["id"] for message in session.messages] == [
+        "telegram:trim:2",
+        "telegram:trim:3",
+    ]
+    assert session.last_consolidated == 0
+    assert manager._store.count_messages(session.key) == 2
+    assert manager._store.get_session_meta(session.key)["last_consolidated"] == 0
+    embedding_rows = {
+        str(row["message_id"]): bytes(row["embedding"])
+        for row in manager._store._conn.execute(
+            "SELECT message_id, embedding FROM message_embeddings"
+        ).fetchall()
+    }
+    assert embedding_rows == {
+        "telegram:trim:2": b"embedding:telegram:trim:2",
+        "telegram:trim:3": b"embedding:telegram:trim:3",
+        "telegram:other:0": b"embedding:telegram:other:0",
+    }
+
+    manager.invalidate(session.key)
+    reloaded = manager.get_or_create(session.key)
+    assert [message["content"] for message in reloaded.messages] == ["2", "3"]
+    reloaded.add_message("assistant", "4")
+    manager.save(reloaded)
+    assert reloaded.messages[-1]["id"] == "telegram:trim:4"
+    assert reloaded.messages[-1]["seq"] == 4
+
+
+@pytest.mark.asyncio
+async def test_session_trim_failure_keeps_memory_and_database_unchanged(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("telegram:trim-failure")
+    for index in range(4):
+        session.add_message("user", str(index))
+    session.metadata = {"marker": "before"}
+    session.last_consolidated = 2
+    manager.save(session)
+    original_messages = list(session.messages)
+    before_meta = manager._store.get_session_meta(session.key)
+    _seed_message_embeddings(
+        manager._store,
+        [str(message["id"]) for message in session.messages],
+    )
+    before_embeddings = [
+        tuple(row)
+        for row in manager._store._conn.execute(
+            """
+            SELECT message_id, content_hash, model, embedding, dim, created_at, updated_at
+            FROM message_embeddings
+            ORDER BY message_id
+            """
+        ).fetchall()
+    ]
+    manager._store._conn.execute(
+        """
+        CREATE TRIGGER reject_history_trim
+        BEFORE DELETE ON messages
+        BEGIN
+            SELECT RAISE(ABORT, '测试裁剪失败');
+        END
+        """
+    )
+    manager._store._conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="测试裁剪失败"):
+        await manager.trim_history_async(session, 2, last_consolidated=0)
+
+    assert session.messages == original_messages
+    assert session.last_consolidated == 2
+    assert manager._store.count_messages(session.key) == 4
+    assert manager._store.get_session_meta(session.key) == before_meta
+    assert [
+        message["content"]
+        for message in manager._store.fetch_session_messages(session.key)
+    ] == ["0", "1", "2", "3"]
+    after_embeddings = [
+        tuple(row)
+        for row in manager._store._conn.execute(
+            """
+            SELECT message_id, content_hash, model, embedding, dim, created_at, updated_at
+            FROM message_embeddings
+            ORDER BY message_id
+            """
+        ).fetchall()
+    ]
+    assert after_embeddings == before_embeddings
+
+
+def test_session_persistence_allocates_sequences_inside_transaction(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "sessions.db"
+    store_a = SessionStore(db_path)
+    store_b = SessionStore(db_path)
+    key = "telegram:concurrent"
+
+    def persist(store: SessionStore, content: str) -> list[dict[str, Any]]:
+        return store.persist_session(
+            key,
+            created_at="2026-07-13T00:00:00+00:00",
+            updated_at="2026-07-13T00:00:01+00:00",
+            last_consolidated=0,
+            metadata={},
+            messages=[
+                {
+                    "role": "user",
+                    "content": content,
+                    "timestamp": "2026-07-13T00:00:01+00:00",
+                    "extra": {},
+                }
+            ],
+        )
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(persist, store_a, "来自 A"),
+                pool.submit(persist, store_b, "来自 B"),
+            ]
+            rows = [future.result(timeout=5) for future in futures]
+        messages = store_a.fetch_session_messages(key)
+    finally:
+        store_a.close()
+        store_b.close()
+
+    assert {str(row[0]["id"]) for row in rows} == {
+        f"{key}:0",
+        f"{key}:1",
+    }
+    assert [str(message["id"]) for message in messages] == [
+        f"{key}:0",
+        f"{key}:1",
+    ]
+
+
+def test_session_store_reuses_existing_fts_without_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "sessions.db"
+    store = SessionStore(db_path)
+    store.persist_session(
+        "telegram:fts",
+        created_at="2026-07-13T00:00:00+00:00",
+        updated_at="2026-07-13T00:00:01+00:00",
+        last_consolidated=0,
+        metadata={},
+        messages=[
+            {
+                "role": "user",
+                "content": "全文索引消息",
+                "timestamp": "2026-07-13T00:00:01+00:00",
+                "extra": {},
+            }
+        ],
+    )
+    store.close()
+
+    statements: list[str] = []
+
+    original_ensure_fts = SessionStore._ensure_fts
+
+    def trace_constructor_fts(instance: SessionStore) -> None:
+        instance._conn.set_trace_callback(statements.append)
+        original_ensure_fts(instance)
+
+    monkeypatch.setattr(SessionStore, "_ensure_fts", trace_constructor_fts)
+    reopened = SessionStore(db_path)
+
+    assert reopened._has_fts is True
+    assert not any("VALUES('rebuild')" in statement for statement in statements)
+    assert reopened.search_messages("全文索引")[1] == 1
+    reopened.close()
+
+
+def test_session_store_rebuilds_fts_when_trigger_is_missing(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+    store = SessionStore(db_path)
+    store.persist_session(
+        "telegram:fts-trigger",
+        created_at="2026-07-13T00:00:00+00:00",
+        updated_at="2026-07-13T00:00:01+00:00",
+        last_consolidated=0,
+        metadata={},
+        messages=[
+            {
+                "role": "user",
+                "content": "触发器缺失后仍要检索",
+                "timestamp": "2026-07-13T00:00:01+00:00",
+                "extra": {},
+            }
+        ],
+    )
+    store._conn.execute("DROP TRIGGER messages_ai")
+    store._conn.commit()
+    statements: list[str] = []
+    store._conn.set_trace_callback(statements.append)
+
+    store._ensure_fts()
+
+    assert any("VALUES('rebuild')" in statement for statement in statements)
+    assert store.search_messages("触发器缺失")[1] == 1
+    store.close()
+
+
+def test_session_store_disables_fts_only_when_capability_is_missing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _MissingFtsConnection:
+        def execute(self, sql: str, _params: object = ()) -> object:
+            if sql.startswith("SELECT name, sql"):
+                return SimpleNamespace(fetchone=lambda: None)
+            raise sqlite3.OperationalError("no such module: fts5")
+
+    store = SessionStore.__new__(SessionStore)
+    store._conn = _MissingFtsConnection()  # type: ignore[assignment]
+    store._has_fts = True
+    store._closed = True
+
+    with caplog.at_level(logging.WARNING, logger="session.store"):
+        store._ensure_fts()
+
+    assert store._has_fts is False
+    assert "FTS5/trigram" in caplog.text
+
+
+def test_session_store_reraises_non_capability_fts_errors() -> None:
+    class _BrokenFtsConnection:
+        def execute(self, _sql: str, _params: object = ()) -> object:
+            raise sqlite3.OperationalError("database is locked")
+
+    store = SessionStore.__new__(SessionStore)
+    store._conn = _BrokenFtsConnection()  # type: ignore[assignment]
+    store._has_fts = True
+    store._closed = True
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        store._ensure_fts()
+
+    assert store._has_fts is True
+
+
+@pytest.mark.parametrize(
+    ("column", "payload", "field"),
+    [
+        ("extra", '[["role", "spoofed"]]', "message extra"),
+        ("extra", '{"role": "spoofed"}', "不得覆盖消息列字段"),
+        ("tool_chain", '{"call": "invalid"}', "message tool_chain"),
+        ("extra", "", "message extra"),
+        ("tool_chain", "", "message tool_chain"),
+        ("extra", '{"media": "path"}', "message media"),
+        ("extra", '{"media": null}', "message media"),
+        ("extra", '{"source_refs": ["bad"]}', "message source_refs"),
+        ("tool_chain", '[{"calls": null}]', "message tool_chain"),
+        ("tool_chain", '[null]', "message tool_chain"),
+        ("tool_chain", '[{"calls": [null]}]', "message tool_chain"),
+    ],
+)
+def test_session_store_rejects_invalid_message_json(
+    tmp_path: Path,
+    column: str,
+    payload: str,
+    field: str,
+) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store.persist_session(
+        "telegram:json",
+        created_at="2026-07-13T00:00:00+00:00",
+        updated_at="2026-07-13T00:00:01+00:00",
+        last_consolidated=0,
+        metadata={},
+        messages=[
+            {
+                "role": "user",
+                "content": "消息",
+                "timestamp": "2026-07-13T00:00:01+00:00",
+                "extra": {},
+            }
+        ],
+    )
+    store._conn.execute(
+        f"UPDATE messages SET {column} = ? WHERE id = ?",
+        (payload, "telegram:json:0"),
+    )
+    store._conn.commit()
+
+    with pytest.raises(ValueError, match=field):
+        store.fetch_session_messages("telegram:json")
+    store.close()
+
+
+@pytest.mark.parametrize("payload", ['{"media": [}', '{"media": "path"}'])
+def test_session_store_media_lookup_rejects_invalid_extra(
+    tmp_path: Path,
+    payload: str,
+) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    try:
+        store.persist_session(
+            "telegram:media",
+            created_at="2026-07-13T00:00:00+00:00",
+            updated_at="2026-07-13T00:00:01+00:00",
+            last_consolidated=0,
+            metadata={},
+            messages=[
+                {
+                    "role": "user",
+                    "content": "消息",
+                    "timestamp": "2026-07-13T00:00:01+00:00",
+                    "extra": {},
+                }
+            ],
+        )
+        store._conn.execute(
+            "UPDATE messages SET extra = ? WHERE id = ?",
+            (payload, "telegram:media:0"),
+        )
+        store._conn.commit()
+
+        with pytest.raises(ValueError, match="telegram:media:0"):
+            store.media_path_exists(tmp_path / "path")
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    ("column", "payload", "field"),
+    [("role", "system", "message role"), ("content", None, "message content")],
+)
+def test_session_store_rejects_invalid_message_columns(
+    tmp_path: Path,
+    column: str,
+    payload: object,
+    field: str,
+) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    try:
+        store.persist_session(
+            "telegram:columns",
+            created_at="2026-07-13T00:00:00+00:00",
+            updated_at="2026-07-13T00:00:01+00:00",
+            last_consolidated=0,
+            metadata={},
+            messages=[
+                {
+                    "role": "user",
+                    "content": "消息",
+                    "timestamp": "2026-07-13T00:00:01+00:00",
+                    "extra": {},
+                }
+            ],
+        )
+        store._conn.execute(
+            f"UPDATE messages SET {column} = ? WHERE id = ?",
+            (payload, "telegram:columns:0"),
+        )
+        store._conn.commit()
+
+        with pytest.raises(ValueError, match=field):
+            store.fetch_session_messages("telegram:columns")
+    finally:
+        store.close()
+
+
 def test_session_get_history_returns_empty_when_window_is_zero():
     session = Session("cli:1")
     session.add_message("user", "hello")
@@ -315,12 +833,33 @@ def test_session_get_history_truncates_long_tool_results_in_middle():
     ]
 
     history = session.get_history()
-    tool_content = next(m["content"] for m in history if m.get("role") == "tool")
+    tool_content = cast(
+        str,
+        next(m["content"] for m in history if m.get("role") == "tool"),
+    )
 
     assert tool_content.startswith("Total output lines: 1\n\nhead-")
     assert "chars truncated" in tool_content
     assert tool_content.endswith("-tail")
     assert len(tool_content) < len(long_result)
+
+
+def test_session_history_does_not_mask_non_oserror_media_read(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    image = tmp_path / "image.png"
+    image.write_bytes(b"image")
+
+    def fail_read(_path: Path) -> bytes:
+        raise ValueError("损坏的媒体读取状态")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read)
+    session = Session("cli:media")
+    session.add_message("user", "查看图片", media=[str(image)])
+
+    with pytest.raises(ValueError, match="损坏的媒体读取状态"):
+        session.get_history()
 
 
 @pytest.mark.asyncio
@@ -337,6 +876,8 @@ async def test_proactive_loop_wrapper_methods_cover_paths(tmp_path: Path):
         default_chat_id="42",
     )
     loop._running = False
+    loop._state_store_owned = False
+    loop._state_closed = False
     loop._runtime_snapshot_store = None
     loop._stopped = asyncio.Event()
     loop._wake = asyncio.Event()

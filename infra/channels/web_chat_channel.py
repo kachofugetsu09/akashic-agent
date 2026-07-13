@@ -202,12 +202,25 @@ class WebChatChannel:
         session_key = self._normalize_session_id(payload.get("session_id"))
         if not session_key:
             session_key = self._session_key(uuid4().hex)
-        text = str(payload.get("text") or "")
-        media = [
-            str(item)
-            for item in payload.get("media", [])
-            if isinstance(item, str) and item.strip()
-        ]
+        if "text" not in payload:
+            text = ""
+        else:
+            raw_text = payload["text"]
+            if not isinstance(raw_text, str):
+                await self._send_error(websocket, request_id, "text 必须是字符串")
+                return session_key
+            text = raw_text
+        raw_media = payload.get("media", [])
+        if not isinstance(raw_media, list):
+            await self._send_error(websocket, request_id, "media 必须是数组")
+            return session_key
+        media: list[str] = []
+        for item in raw_media:
+            if not isinstance(item, str):
+                await self._send_error(websocket, request_id, "media 必须是字符串数组")
+                return session_key
+            if item.strip():
+                media.append(item)
         if not text.strip() and not media:
             await self._send_error(websocket, request_id, "text 和 media 不能同时为空")
             return session_key

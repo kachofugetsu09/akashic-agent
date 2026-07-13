@@ -26,7 +26,7 @@ class MemoryOptimizerBusy(RuntimeError):
     pass
 
 
-# ── Prompts ──────────────────────────────────────────────────────
+# ── 提示词 ──────────────────────────────────────────────────────
 
 _MERGE_SYSTEM = (
     "你是一个用户长期记忆整理器。"
@@ -228,33 +228,40 @@ class MemoryOptimizer:
             await self._optimize()
 
     async def _optimize(self) -> None:
-        # ── Step 1: MEMORY.md 合并 ────────────────────────────────
+        """提交 pending 记忆合并，并随后更新自我认知。"""
+
+        # 1. 冻结本轮 pending 并读取当前长期记忆
         pending = self._memory.snapshot_pending()
-        current_memory = self._memory.read_long_term().strip()
+        # 2. MEMORY 阶段完成明确提交或回滚后才离开事务
+        try:
+            current_memory = self._memory.read_long_term().strip()
+            if not current_memory and not pending:
+                self._memory.commit_pending_snapshot()
+                logger.info("[memory_optimizer] 记忆和 pending 均为空，跳过优化")
+                return
 
-        if not current_memory and not pending:
-            logger.info("[memory_optimizer] 记忆和 pending 均为空，跳过优化")
-            return
-
-        merged_memory = await self._merge_memory(current_memory, pending)
-        if merged_memory:
-            if current_memory:
-                self._memory.backup_long_term()
-            self._memory.write_long_term(merged_memory)
-            logger.info(
-                "[memory_optimizer] 记忆已合并 before=%d after=%d chars",
-                len(current_memory),
-                len(merged_memory),
-            )
-            self._memory.commit_pending_snapshot()
-            logger.info("[memory_optimizer] PENDING 已归档，snapshot 已提交")
-        else:
+            merged_memory = await self._merge_memory(current_memory, pending)
+            if merged_memory:
+                if current_memory:
+                    self._memory.backup_long_term()
+                self._memory.write_long_term(merged_memory)
+                logger.info(
+                    "[memory_optimizer] 记忆已合并 before=%d after=%d chars",
+                    len(current_memory),
+                    len(merged_memory),
+                )
+                self._memory.commit_pending_snapshot()
+                logger.info("[memory_optimizer] PENDING 已归档，snapshot 已提交")
+            else:
+                self._memory.rollback_pending_snapshot()
+                logger.warning(
+                    "[memory_optimizer] 合并返回空，保留原有内容，snapshot 已回滚"
+                )
+        except BaseException:
             self._memory.rollback_pending_snapshot()
-            logger.warning(
-                "[memory_optimizer] 合并返回空，保留原有内容，snapshot 已回滚"
-            )
+            raise
 
-        # ── Step 2: SELF.md 更新 ──────────────────────────────────
+        # 3. 使用同一批 pending 更新自我认知
         await asyncio.sleep(self._STEP_DELAY_SECONDS)
         await self._update_self(pending)
 
@@ -265,15 +272,11 @@ class MemoryOptimizer:
             memory=memory or "（空）",
             pending=pending or "（无新内容）",
         )
-        try:
-            return await self._request_text_response(
-                system_content=_MERGE_SYSTEM,
-                user_content=prompt,
-                max_tokens=self._max_tokens,
-            )
-        except Exception as e:
-            logger.error("[memory_optimizer] 记忆合并失败: %s", e)
-            return ""
+        return await self._request_text_response(
+            system_content=_MERGE_SYSTEM,
+            user_content=prompt,
+            max_tokens=self._max_tokens,
+        )
 
     async def _update_self(self, pending: str) -> None:
         """只更新 SELF.md 现有保留的三段，不新增 section。"""
@@ -285,17 +288,14 @@ class MemoryOptimizer:
             self_content=self_content,
             pending=pending or "（无新内容）",
         )
-        try:
-            updated = await self._request_text_response(
-                system_content=_SELF_SYSTEM,
-                user_content=prompt,
-                max_tokens=2048,
-            )
-            if updated:
-                self._memory.write_self(updated)
-                logger.info("[memory_optimizer] SELF.md 已更新")
-        except Exception as e:
-            logger.error("[memory_optimizer] SELF.md 更新失败: %s", e)
+        updated = await self._request_text_response(
+            system_content=_SELF_SYSTEM,
+            user_content=prompt,
+            max_tokens=2048,
+        )
+        if updated:
+            self._memory.write_self(updated)
+            logger.info("[memory_optimizer] SELF.md 已更新")
 
     async def _request_text_response(
         self,

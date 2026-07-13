@@ -22,11 +22,24 @@ export function pageCount(total: number, pageSize: number): number {
   return Math.max(1, Math.ceil(total / pageSize));
 }
 
-export function asPageResult<T>(payload: PageResult<T>): PageResult<T> {
+export function asPageResult<T>(payload: unknown): PageResult<T> {
+  if (
+    typeof payload !== "object"
+    || payload === null
+    || Array.isArray(payload)
+    || !Array.isArray((payload as { items?: unknown }).items)
+    || typeof (payload as { total?: unknown }).total !== "number"
+    || !Number.isFinite((payload as { total: number }).total)
+    || (payload as { total: number }).total < 0
+  ) {
+    throw new Error("分页接口返回格式无效");
+  }
+
+  const page = payload as PageResult<T>;
   return {
-    items: payload.items ?? [],
-    total: payload.total ?? 0,
-    page: payload.page,
-    page_size: payload.page_size,
+    items: page.items,
+    total: page.total,
+    page: page.page,
+    page_size: page.page_size,
   };
 }

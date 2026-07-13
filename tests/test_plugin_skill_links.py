@@ -206,7 +206,6 @@ def test_aka_plugin_skill_is_exposed_with_bare_name(tmp_path: Path) -> None:
         plugin_dir=plugin_dir,
         manifest={},
         module_path="feed",
-        declares_aka_plugin=True,
         skill_roots=(plugin_dir / "skills",),
     )
 
@@ -243,7 +242,6 @@ def test_aka_plugin_skill_sync_removes_old_prefixed_link(tmp_path: Path) -> None
         plugin_dir=plugin_dir,
         manifest={},
         module_path="feed",
-        declares_aka_plugin=True,
         skill_roots=(plugin_dir / "skills",),
     )
 
@@ -278,7 +276,6 @@ def test_aka_plugin_drift_skill_uses_bare_plugin_name(tmp_path: Path) -> None:
         plugin_dir=plugin_dir,
         manifest={},
         module_path="emotion",
-        declares_aka_plugin=True,
         drift_skill_roots=(plugin_dir / "drift" / "skills",),
     )
 
@@ -436,7 +433,6 @@ def test_emotion_feedback_drift_skill_is_exposed(tmp_path: Path) -> None:
         plugin_dir=plugin_dir,
         manifest={},
         module_path="emotion",
-        declares_aka_plugin=True,
         drift_skill_roots=(plugin_dir / "drift" / "skills",),
     )
 

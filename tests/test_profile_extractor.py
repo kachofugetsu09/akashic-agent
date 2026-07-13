@@ -2,7 +2,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from memory2.profile_extractor import ProfileFact, ProfileFactExtractor
+from memory2.profile_extractor import (
+    ExtractionStatus,
+    ProfileFact,
+    ProfileFactExtractor,
+)
 
 
 def _make_extractor(llm_response: str) -> ProfileFactExtractor:
@@ -31,7 +35,7 @@ async def test_extract_purchase_fact_from_zigbee_conversation():
 </facts>
 """
     )
-    facts = await extractor.extract("我买了 Zigbee 网关和加湿器")
+    facts = (await extractor.extract("我买了 Zigbee 网关和加湿器")).facts
     assert any(f.category == "purchase" and ("Zigbee" in f.summary or "加湿器" in f.summary) for f in facts)
 
 
@@ -44,29 +48,31 @@ async def test_extract_decision_fact_from_solution_discussion():
 </facts>
 """
     )
-    facts = await extractor.extract("决定用SNZB-02D + BroadLink方案")
+    facts = (await extractor.extract("决定用SNZB-02D + BroadLink方案")).facts
     assert any(f.category == "decision" for f in facts)
 
 
 @pytest.mark.asyncio
 async def test_pure_technical_discussion_returns_empty():
     extractor = _make_extractor("<facts></facts>")
-    facts = await extractor.extract("这里讨论某个算法原理和时间复杂度")
-    assert facts == []
+    result = await extractor.extract("这里讨论某个算法原理和时间复杂度")
+    assert result.facts == ()
 
 
 @pytest.mark.asyncio
 async def test_greeting_conversation_returns_empty():
     extractor = _make_extractor("<facts></facts>")
-    facts = await extractor.extract("你好呀，今天天气不错")
-    assert facts == []
+    result = await extractor.extract("你好呀，今天天气不错")
+    assert result.facts == ()
 
 
 @pytest.mark.asyncio
 async def test_extract_fails_open_on_malformed_output():
     extractor = _make_extractor("这是乱码")
-    facts = await extractor.extract("我买了 Zigbee 网关")
-    assert facts == []
+    result = await extractor.extract("我买了 Zigbee 网关")
+    assert result.facts == ()
+    assert result.status is ExtractionStatus.DEGRADED
+    assert result.reason == "parse_error"
 
 
 @pytest.mark.asyncio
@@ -74,8 +80,25 @@ async def test_extract_fails_open_on_llm_exception():
     client = MagicMock()
     client.chat = AsyncMock(side_effect=RuntimeError("timeout"))
     extractor = ProfileFactExtractor(llm_client=client)
-    facts = await extractor.extract("我买了 Zigbee 网关")
-    assert facts == []
+    result = await extractor.extract("我买了 Zigbee 网关")
+    assert result.facts == ()
+    assert result.status is ExtractionStatus.DEGRADED
+    assert result.reason == "model_error"
+
+
+@pytest.mark.asyncio
+async def test_extract_does_not_retry_clause_fallback_after_model_failure():
+    client = MagicMock()
+    client.chat = AsyncMock(side_effect=RuntimeError("provider unavailable"))
+    extractor = ProfileFactExtractor(llm_client=client)
+
+    result = await extractor.extract(
+        "USER: 我买了 Zigbee 网关。USER: 我还买了加湿器。"
+    )
+
+    assert result.facts == ()
+    assert result.status is ExtractionStatus.DEGRADED
+    assert client.chat.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -117,7 +140,7 @@ async def test_happened_at_parsed_when_provided():
 </facts>
 """
     )
-    facts = await extractor.extract("买了加湿器")
+    facts = (await extractor.extract("买了加湿器")).facts
     assert facts[0].happened_at == "2026-03-12"
 
 
@@ -130,7 +153,7 @@ async def test_happened_at_is_none_when_not_provided():
 </facts>
 """
     )
-    facts = await extractor.extract("在等 Zigbee 网关到货")
+    facts = (await extractor.extract("在等 Zigbee 网关到货")).facts
     assert facts[0].happened_at is None
 
 
@@ -143,7 +166,7 @@ async def test_personal_fact_discards_happened_at_even_if_model_outputs_it():
 </facts>
 """
     )
-    facts = await extractor.extract("我有一块 Fitbit 手表")
+    facts = (await extractor.extract("我有一块 Fitbit 手表")).facts
     assert facts[0].happened_at is None
 
 
@@ -157,7 +180,7 @@ async def test_duplicate_facts_within_one_extraction_are_deduplicated():
 </facts>
 """
     )
-    facts = await extractor.extract("买了 Zigbee 网关")
+    facts = (await extractor.extract("买了 Zigbee 网关")).facts
     assert len(facts) == 1
 
 
@@ -172,15 +195,15 @@ async def test_extract_from_exchange_returns_only_targeted_categories():
 </facts>
 """
     )
-    facts = await extractor.extract_from_exchange("我买了键盘", "记住了")
+    facts = (await extractor.extract_from_exchange("我买了键盘", "记住了")).facts
     assert [fact.category for fact in facts] == ["purchase", "status"]
 
 
 @pytest.mark.asyncio
 async def test_extract_from_exchange_empty_for_chitchat():
     extractor = _make_extractor("<facts></facts>")
-    facts = await extractor.extract_from_exchange("你好", "你好呀")
-    assert facts == []
+    result = await extractor.extract_from_exchange("你好", "你好呀")
+    assert result.facts == ()
 
 
 @pytest.mark.asyncio
@@ -268,8 +291,8 @@ async def test_extract_ignores_preference_category_even_if_model_outputs_it():
 </facts>
 """
     )
-    facts = await extractor.extract("你给我讲内容的时候最好附带一个很棒的例子，并且最好贯穿始终。")
-    assert facts == []
+    result = await extractor.extract("你给我讲内容的时候最好附带一个很棒的例子，并且最好贯穿始终。")
+    assert result.facts == ()
 
 
 @pytest.mark.asyncio
@@ -313,7 +336,7 @@ async def test_extract_rejects_assistant_restatement_as_purchase():
     )
     # mock LLM 正确遵从 USER-first 规则，返回空
     extractor = _make_extractor("<facts></facts>")
-    facts = await extractor.extract(conversation)
+    facts = (await extractor.extract(conversation)).facts
     purchase_facts = [f for f in facts if f.category == "purchase"]
     assert not purchase_facts
 
@@ -329,5 +352,5 @@ async def test_extract_rejects_engineering_operations_as_profile():
         "ASSISTANT: 好的，已记录。"
     )
     extractor = _make_extractor("<facts></facts>")
-    facts = await extractor.extract(conversation)
-    assert facts == [], f"不应提取工程操作为 profile，但得到: {facts}"
+    result = await extractor.extract(conversation)
+    assert result.facts == (), f"不应提取工程操作为 profile，但得到: {result.facts}"

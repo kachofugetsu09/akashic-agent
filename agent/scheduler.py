@@ -14,22 +14,24 @@ Scheduler: 定时任务核心模块
 """
 
 import asyncio
-from importlib import import_module
+import json
 import logging
 import re
 import statistics
 import time
 import uuid
 from collections import deque
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields as dataclass_fields, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from apscheduler.triggers.cron import CronTrigger
 
 from core.common.timekit import parse_iso as _parse_iso
-from infra.persistence.json_store import load_json, save_json
+from infra.persistence.json_store import atomic_save_json
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +57,7 @@ class LatencyTracker:
         return statistics.quantiles(list(self._samples), n=10)[8]
 
 
-# ── Time Parsing ─────────────────────────────────────────────────
+# ── 时间解析 ─────────────────────────────────────────────────
 
 _DURATION_RE = re.compile(r"^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
 
@@ -83,6 +85,10 @@ def parse_when_at(
     # HH:MM 格式
     if re.match(r"^\d{1,2}:\d{2}$", s):
         now = now_fn()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=tzinfo)
+        else:
+            now = now.astimezone(tzinfo)
         t = datetime.strptime(s, "%H:%M").time()
         dt = now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
         if dt <= now:
@@ -107,96 +113,46 @@ def is_cron_expr(s: str) -> bool:
     return len(parts) in (5, 6)
 
 
-def _parse_cron_field(field: str, minimum: int, maximum: int) -> set[int]:
-    values: set[int] = set()
-    for part in field.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        step = 1
-        if "/" in part:
-            part, step_str = part.split("/", 1)
-            step = int(step_str)
-            if step <= 0:
-                raise ValueError(f"无效 cron step: {field!r}")
-        if part == "*":
-            start, end = minimum, maximum
-        elif "-" in part:
-            start_str, end_str = part.split("-", 1)
-            start, end = int(start_str), int(end_str)
-        else:
-            start = end = int(part)
-        if start < minimum or end > maximum or start > end:
-            raise ValueError(f"无效 cron 字段: {field!r}")
-        values.update(range(start, end + 1, step))
-    if not values:
-        raise ValueError(f"无效 cron 字段: {field!r}")
-    return values
-
-
-def _next_cron_fire_fallback(cron_expr: str, tz: str, after: datetime) -> datetime:
-    parts = cron_expr.strip().split()
-    if len(parts) == 5:
-        second_values = {0}
-        minute_s, hour_s, dom_s, month_s, dow_s = parts
-        step = timedelta(minutes=1)
-        current = after.astimezone(ZoneInfo(tz)).replace(second=0, microsecond=0)
-        if current <= after.astimezone(ZoneInfo(tz)):
-            current += step
-    elif len(parts) == 6:
-        second_s, minute_s, hour_s, dom_s, month_s, dow_s = parts
-        second_values = _parse_cron_field(second_s, 0, 59)
-        step = timedelta(seconds=1)
-        current = after.astimezone(ZoneInfo(tz)).replace(microsecond=0) + step
-    else:
-        raise ValueError(f"无效的 cron 表达式: {cron_expr!r}")
-
-    minute_values = _parse_cron_field(minute_s, 0, 59)
-    hour_values = _parse_cron_field(hour_s, 0, 23)
-    dom_values = _parse_cron_field(dom_s, 1, 31)
-    month_values = _parse_cron_field(month_s, 1, 12)
-    dow_values = _parse_cron_field(dow_s.replace("7", "0"), 0, 6)
-
-    for _ in range(366 * 24 * 60 * (60 if len(parts) == 6 else 1)):
-        cron_dow = (current.weekday() + 1) % 7
-        if (
-            current.second in second_values
-            and current.minute in minute_values
-            and current.hour in hour_values
-            and current.day in dom_values
-            and current.month in month_values
-            and cron_dow in dow_values
-        ):
-            return current.astimezone(timezone.utc)
-        current += step
-    raise ValueError(f"无法在合理范围内解析 cron 表达式: {cron_expr!r}")
-
-
 def next_cron_fire(cron_expr: str, tz: str, after: datetime) -> datetime:
     """用 APScheduler CronTrigger 计算 cron 下次触发时间。"""
-    try:
-        from apscheduler.triggers.cron import CronTrigger
-    except ModuleNotFoundError:
-        return _next_cron_fire_fallback(cron_expr, tz, after)
+    parts = cron_expr.strip().split()
+    if len(parts) not in (5, 6):
+        raise ValueError(f"无效的 cron 表达式: {cron_expr!r}")
+    tzinfo = ZoneInfo(tz)
 
-    # APScheduler 3.x 兼容：优先用 pytz，回退到 ZoneInfo
-    try:
-        pytz = import_module("pytz")
-        tzinfo = pytz.timezone(tz)
-    except Exception:
-        tzinfo = ZoneInfo(tz)
-
-    trigger = CronTrigger.from_crontab(cron_expr, timezone=tzinfo)
+    if len(parts) == 5:
+        minute_s, hour_s, dom_s, month_s, dow_s = parts
+        trigger = CronTrigger(
+            minute=minute_s,
+            hour=hour_s,
+            day=dom_s,
+            month=month_s,
+            day_of_week=dow_s,
+            timezone=tzinfo,
+        )
+    else:
+        second_s, minute_s, hour_s, dom_s, month_s, dow_s = parts
+        trigger = CronTrigger(
+            second=second_s,
+            minute=minute_s,
+            hour=hour_s,
+            day=dom_s,
+            month=month_s,
+            day_of_week=dow_s,
+            timezone=tzinfo,
+        )
     result = trigger.get_next_fire_time(None, after)
+    if result is not None and result <= after:
+        result = trigger.get_next_fire_time(result, after)
     if result is None:
         raise ValueError(f"无效的 cron 表达式: {cron_expr!r}")
-    # Normalize to UTC-aware datetime
+    # 将结果规范为带 UTC 时区的 datetime
     if result.tzinfo is None:
         result = result.replace(tzinfo=timezone.utc)
     return result
 
 
-# ── fire_at Computation ──────────────────────────────────────────
+# ── fire_at 计算 ──────────────────────────────────────────
 
 
 def compute_fire_at(
@@ -267,8 +223,8 @@ class ScheduledJob:
     interval_seconds: int | None = None  # every + interval 模式
     cron_expr: str | None = None  # every + cron 模式
 
-    message: str | None = None  # instant tier
-    prompt: str | None = None  # soft tier
+    message: str | None = None  # instant 层
+    prompt: str | None = None  # soft 层
 
     name: str | None = None
     timezone: str = "UTC"
@@ -290,21 +246,51 @@ class JobStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def load(self) -> list[ScheduledJob]:
-        # 1. 读取原始列表
-        raw = load_json(self.path, default=[], domain="job_store")
-
-        # 2. 反序列化
-        try:
-            return [self._from_dict(d) for d in raw]
-        except Exception as e:
-            logger.warning("[job_store] 反序列化失败: %s", e)
+        # 1. 未创建的存储按空调度处理
+        if not self.path.exists():
             return []
 
-    def save(self, jobs: dict[str, ScheduledJob]) -> None:
-        data = [self._to_dict(j) for j in jobs.values()]
-        save_json(self.path, data, domain="job_store")
+        # 2. 严格读取并解析，保留 I/O 与 JSON 原始异常
+        raw: object = json.loads(self.path.read_text(encoding="utf-8"))
+        if not isinstance(raw, list):
+            raise ValueError(
+                f"job_store 必须是 JSON 列表：path={self.path} value={raw!r}"
+            )
 
-    # ── private ──
+        # 3. 反序列化所有任务，损坏记录直接暴露
+        jobs: list[ScheduledJob] = []
+        seen_ids: set[str] = set()
+        for index, item in enumerate(cast(list[object], raw)):
+            if not isinstance(item, dict):
+                raise ValueError(
+                    f"job_store 任务必须是 JSON 对象："
+                    f"path={self.path} index={index} value={item!r}"
+                )
+            job = self._from_dict(cast(dict[str, Any], item), index=index)
+            if job.id in seen_ids:
+                raise ValueError(
+                    f"job_store 任务 ID 重复：path={self.path} index={index} id={job.id!r}"
+                )
+            seen_ids.add(job.id)
+            jobs.append(job)
+        return jobs
+
+    def save(self, jobs: dict[str, ScheduledJob]) -> None:
+        # 1. 保存前再次确认内存映射仍满足持久化 schema
+        data: list[dict[str, Any]] = []
+        for index, (job_id, job) in enumerate(jobs.items()):
+            if job_id != job.id:
+                raise ValueError(
+                    f"job_store 任务 ID 与字典键不一致："
+                    f"path={self.path} index={index} key={job_id!r} id={job.id!r}"
+                )
+            self._validate_job(job, index=index)
+            data.append(self._to_dict(job))
+
+        # 2. 只在完整校验通过后原子写入
+        atomic_save_json(self.path, data, domain="job_store")
+
+# ── 私有方法 ──
 
     def _to_dict(self, job: ScheduledJob) -> dict[str, Any]:
         d = asdict(job)
@@ -312,15 +298,119 @@ class JobStore:
         d["created_at"] = job.created_at.isoformat()
         return d
 
-    def _from_dict(self, d: dict[str, Any]) -> ScheduledJob:
+    def _from_dict(self, d: dict[str, Any], *, index: int) -> ScheduledJob:
         d = dict(d)
-        d["fire_at"] = self._parse_dt(d["fire_at"])
-        d["created_at"] = self._parse_dt(d["created_at"])
-        return ScheduledJob(**d)
+        expected = {item.name for item in dataclass_fields(ScheduledJob)}
+        missing = sorted(expected.difference(d))
+        extra = sorted(set(d).difference(expected))
+        if missing or extra:
+            raise ValueError(
+                f"job_store 任务 schema 无效：path={self.path} index={index} "
+                f"missing={missing} extra={extra}"
+            )
+        for field_name in ("fire_at", "created_at"):
+            if field_name not in d:
+                raise ValueError(
+                    f"job_store 任务缺少必填字段："
+                    f"path={self.path} index={index} field={field_name}"
+                )
+            d[field_name] = self._parse_dt(
+                d[field_name], index=index, field_name=field_name
+            )
+        try:
+            job = ScheduledJob(**d)
+        except TypeError as e:
+            raise ValueError(
+                f"job_store 任务结构无效：path={self.path} index={index}"
+            ) from e
+        self._validate_job(job, index=index)
+        return job
 
-    @staticmethod
-    def _parse_dt(s: str) -> datetime:
-        return _parse_iso(s) or datetime.now(timezone.utc)
+    def _validate_job(self, job: ScheduledJob, *, index: int) -> None:
+        """校验持久化任务的不变量后再交给调度器使用。"""
+
+        self._validate_job_identity(job, index=index)
+        self._validate_job_payload(job, index=index)
+        self._validate_job_schedule(job, index=index)
+
+    def _validate_job_identity(self, job: ScheduledJob, *, index: int) -> None:
+        """校验任务身份、渠道和 IANA 时区。"""
+
+        # 1. 校验基础字段和枚举
+        if job.trigger not in ("at", "after", "every"):
+            raise self._schema_error(index, "trigger 无效")
+        if job.tier not in ("instant", "soft"):
+            raise self._schema_error(index, "tier 无效")
+        if type(job.id) is not str or not job.id:
+            raise self._schema_error(index, "id 无效")
+        if type(job.channel) is not str or not job.channel:
+            raise self._schema_error(index, "channel 无效")
+        if type(job.chat_id) is not str or not job.chat_id:
+            raise self._schema_error(index, "chat_id 无效")
+        if type(job.timezone) is not str or not job.timezone:
+            raise self._schema_error(index, "timezone 无效")
+        try:
+            _ = ZoneInfo(job.timezone)
+        except (ZoneInfoNotFoundError, ValueError) as e:
+            raise self._schema_error(
+                index, f"timezone 无效 timezone={job.timezone!r}"
+            ) from e
+
+    def _validate_job_payload(self, job: ScheduledJob, *, index: int) -> None:
+        """校验消息载荷、运行计数和可选字段类型。"""
+
+        # 2. 校验消息、计数和可选字段类型
+        if job.tier == "instant" and (type(job.message) is not str or not job.message):
+            raise self._schema_error(index, "instant 任务缺少 message")
+        if job.tier == "soft" and (type(job.prompt) is not str or not job.prompt):
+            raise self._schema_error(index, "soft 任务缺少 prompt")
+        if job.message is not None and type(job.message) is not str:
+            raise self._schema_error(index, "message 类型无效")
+        if job.prompt is not None and type(job.prompt) is not str:
+            raise self._schema_error(index, "prompt 类型无效")
+        if job.name is not None and type(job.name) is not str:
+            raise self._schema_error(index, "name 类型无效")
+        if type(job.run_count) is not int or job.run_count < 0:
+            raise self._schema_error(index, "run_count 无效")
+        if type(job.enabled) is not bool:
+            raise self._schema_error(index, "enabled 类型无效")
+
+    def _validate_job_schedule(self, job: ScheduledJob, *, index: int) -> None:
+        """校验循环模式的互斥关系和正间隔。"""
+
+        # 3. 校验循环模式的互斥关系和正间隔
+        if job.trigger == "every":
+            if (job.interval_seconds is None) == (job.cron_expr is None):
+                raise self._schema_error(index, "every 任务必须且只能有一种周期")
+            if job.interval_seconds is not None and (
+                type(job.interval_seconds) is not int or job.interval_seconds <= 0
+            ):
+                raise self._schema_error(index, "interval_seconds 无效")
+            if job.cron_expr is not None and (
+                type(job.cron_expr) is not str or not is_cron_expr(job.cron_expr)
+            ):
+                raise self._schema_error(index, "cron_expr 无效")
+        elif job.interval_seconds is not None or job.cron_expr is not None:
+            raise self._schema_error(index, "非 every 任务不能带周期字段")
+
+    def _schema_error(self, index: int, detail: str) -> ValueError:
+        return ValueError(
+            f"job_store 任务 schema 无效：path={self.path} index={index} {detail}"
+        )
+
+    def _parse_dt(self, s: str, *, index: int, field_name: str) -> datetime:
+        if type(s) is not str:
+            raise ValueError(
+                f"job_store 时间字段不是字符串："
+                f"path={self.path} index={index} field={field_name} value={s!r}"
+            )
+        parsed = _parse_iso(s)
+        if parsed is None:
+            raise ValueError(
+                f"job_store 时间字段不是有效 ISO 8601："
+                f"path={self.path} index={index} field={field_name} value={s!r}"
+            )
+        return parsed
 
 
 # ── SchedulerService ─────────────────────────────────────────────
@@ -355,27 +445,49 @@ class SchedulerService:
         self._now = _now_fn or (lambda: datetime.now(timezone.utc))
         self._jobs: dict[str, ScheduledJob] = {}
         self._in_flight: set[str] = set()
+        self._tasks: set[asyncio.Task[None]] = set()
+        self._background_error: BaseException | None = None
         self._running = False
+        self._stopping = False
 
-    # ── Public API ───────────────────────────────────────────────
+# ── 公共 API ───────────────────────────────────────────────
 
     async def run(self) -> None:
         self.load_and_recover()
+        self._background_error = None
+        self._stopping = False
         self._running = True
         logger.info("SchedulerService started")
-        while self._running:
-            await asyncio.sleep(1)
-            await self._tick()
+        try:
+            while self._running:
+                await asyncio.sleep(1)
+                if not self._running:
+                    break
+                self._raise_background_error()
+                await self._tick()
+                self._raise_background_error()
+        finally:
+            # 1. 先阻止已触发任务在关闭期间重新排程
+            self._running = False
+            self._stopping = True
+            tasks = tuple(self._tasks)
+            for task in tasks:
+                _ = task.cancel()
+            if tasks:
+                _ = await asyncio.gather(*tasks, return_exceptions=True)
+            self._tasks.clear()
 
     def stop(self) -> None:
         self._running = False
+        self._stopping = True
 
     def add_job(self, job: ScheduledJob) -> None:
-        # Ensure fire_at is UTC-aware
+        # 确保 fire_at 带有 UTC 时区
         if job.fire_at.tzinfo is None:
             job.fire_at = job.fire_at.replace(tzinfo=timezone.utc)
-        self._jobs[job.id] = job
-        self.store.save(self._jobs)
+        candidate = dict(self._jobs)
+        candidate[job.id] = job
+        self._commit_jobs(candidate)
         logger.info(
             f"Job added: {job.id[:8]} tier={job.tier} trigger={job.trigger} "
             f"fire_at={job.fire_at.isoformat()}"
@@ -384,16 +496,18 @@ class SchedulerService:
     def cancel_job(self, job_id: str) -> bool:
         if job_id not in self._jobs:
             return False
-        del self._jobs[job_id]
-        self.store.save(self._jobs)
+        candidate = dict(self._jobs)
+        del candidate[job_id]
+        self._commit_jobs(candidate)
         return True
 
     def cancel_job_by_name(self, name: str) -> list[str]:
         cancelled = [jid for jid, j in self._jobs.items() if j.name == name]
-        for jid in cancelled:
-            del self._jobs[jid]
         if cancelled:
-            self.store.save(self._jobs)
+            candidate = dict(self._jobs)
+            for jid in cancelled:
+                del candidate[jid]
+            self._commit_jobs(candidate)
         return cancelled
 
     def list_jobs(self) -> list[ScheduledJob]:
@@ -403,10 +517,14 @@ class SchedulerService:
         """启动时加载持久化 jobs，处理 misfire。"""
         now = self._now()
         jobs = self.store.load()
+        recovered: dict[str, ScheduledJob] = {}
+        persisted: dict[str, ScheduledJob] = {}
+        persistence_changed = False
         count_loaded = 0
 
         for job in jobs:
             if not job.enabled:
+                persisted[job.id] = job
                 continue
 
             if job.fire_at.tzinfo is None:
@@ -416,25 +534,33 @@ class SchedulerService:
                 age = (now - job.fire_at).total_seconds()
                 if job.trigger == "every":
                     # 推进到下一个未来时间
-                    job.fire_at = self._advance_every(job, now)
-                    self._jobs[job.id] = job
+                    job = replace(job, fire_at=self._advance_every(job, now))
+                    recovered[job.id] = job
+                    persisted[job.id] = job
+                    persistence_changed = True
                     count_loaded += 1
                 elif age <= self.GRACE_SECONDS:
                     # 在宽限期内，保留（下次 tick 会执行）
-                    self._jobs[job.id] = job
+                    recovered[job.id] = job
+                    persisted[job.id] = job
                     count_loaded += 1
                 else:
                     logger.info(
                         f"Job {job.id[:8]} ({job.name or 'unnamed'}) expired "
                         f"{age:.0f}s ago, beyond grace period — discarded"
                     )
+                    persistence_changed = True
             else:
-                self._jobs[job.id] = job
+                recovered[job.id] = job
+                persisted[job.id] = job
                 count_loaded += 1
 
+        if persistence_changed:
+            self.store.save(persisted)
+        self._jobs = recovered
         logger.info(f"SchedulerService recovered {count_loaded} jobs")
 
-    # ── Internal ────────────────────────────────────────────────
+# ── 内部方法 ────────────────────────────────────────────────
 
     async def _tick(self) -> None:
         now = self._now()
@@ -448,28 +574,80 @@ class SchedulerService:
                     f"[scheduler] 触发任务 {label!r}  tier={job.tier}  channel={job.channel}:{job.chat_id}"
                 )
                 self._in_flight.add(job.id)
-                asyncio.create_task(self._execute_and_reschedule(job))
+                task = asyncio.create_task(
+                    self._execute_and_reschedule(job),
+                    name=f"scheduler:{job.id}",
+                )
+                self._tasks.add(task)
+                task.add_done_callback(self._task_done)
+
+    def _task_done(self, task: asyncio.Task[None]) -> None:
+        self._tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "scheduler 后台任务异常",
+                exc_info=(type(error), error, error.__traceback__),
+            )
+            if self._background_error is None:
+                self._background_error = error
+
+    def _raise_background_error(self) -> None:
+        """向调度服务 owner 抛出后台任务的内部故障。"""
+
+        error = self._background_error
+        if error is not None:
+            self._background_error = None
+            raise error
+
+    def _commit_jobs(self, jobs: dict[str, ScheduledJob]) -> None:
+        """先持久化候选状态，再提交内存中的任务映射。"""
+
+        self.store.save(jobs)
+        self._jobs = jobs
 
     async def _execute_and_reschedule(self, job: ScheduledJob) -> None:
+        execution_succeeded = False
+        execution_cancelled = False
         try:
             await self._execute(job)
-            job.run_count += 1
+            execution_succeeded = True
+        except asyncio.CancelledError:
+            execution_cancelled = True
+            raise
         except Exception as e:
             logger.error(f"Job {job.id[:8]} execution failed: {e}", exc_info=True)
         finally:
             self._in_flight.discard(job.id)
-            now = self._now()
-            if job.trigger == "every":
-                # SOFT recurring jobs may execute before nominal fire_at.
-                # Reschedule strictly after the later of "now" and the nominal
-                # boundary, otherwise cron jobs can re-fire the same occurrence
-                # repeatedly until wall clock passes fire_at.
-                reschedule_after = max(now, job.fire_at) + timedelta(microseconds=1)
-                job.fire_at = self._advance_every(job, reschedule_after)
-                self._jobs[job.id] = job
-            else:
-                self._jobs.pop(job.id, None)
-            self.store.save(self._jobs)
+            candidate = self._jobs
+            committed_job: ScheduledJob | None = None
+            current_job = self._jobs.get(job.id)
+            if not execution_cancelled and job.trigger == "every":
+                # SOFT 循环任务可能早于名义 fire_at 执行。
+                # 重新排程必须严格晚于 now 与名义边界中较晚者，
+                # 否则 cron 任务可能在时钟越过 fire_at 前反复触发同一个周期。
+                if not self._stopping and current_job is job:
+                    now = self._now()
+                    reschedule_after = max(now, job.fire_at) + timedelta(microseconds=1)
+                    committed_job = replace(
+                        job,
+                        fire_at=self._advance_every(job, reschedule_after),
+                        run_count=job.run_count + (1 if execution_succeeded else 0),
+                    )
+                    candidate = dict(self._jobs)
+                    candidate[job.id] = committed_job
+            elif not execution_cancelled and job.trigger != "every":
+                if current_job is job:
+                    candidate = dict(self._jobs)
+                    _ = candidate.pop(job.id)
+
+            self.store.save(candidate)
+            self._jobs = candidate
+            if committed_job is not None:
+                job.fire_at = committed_job.fire_at
+                job.run_count = committed_job.run_count
 
     async def _execute(self, job: ScheduledJob) -> None:
         label = job.name or job.id[:8]
@@ -524,8 +702,12 @@ class SchedulerService:
         """将 every job 的 fire_at 推进到 after 之后的下一个触发时间。"""
         if job.cron_expr:
             return next_cron_fire(job.cron_expr, job.timezone, after)
-        interval = timedelta(seconds=job.interval_seconds or 3600)
-        next_fire = job.fire_at + interval
-        while next_fire <= after:
-            next_fire += interval
-        return next_fire
+        interval_seconds = job.interval_seconds
+        if type(interval_seconds) is not int or interval_seconds <= 0:
+            raise ValueError(f"every 任务 interval_seconds 必须为正数: {interval_seconds}")
+        interval = timedelta(seconds=interval_seconds)
+        if after < job.fire_at:
+            return job.fire_at + interval
+        elapsed = after - job.fire_at
+        steps = elapsed // interval + 1
+        return job.fire_at + steps * interval

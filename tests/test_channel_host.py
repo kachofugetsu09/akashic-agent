@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -135,6 +136,26 @@ async def test_channel_host_stops_in_reverse_order():
     await host.stop_all()
 
     assert events == ["stop:c", "stop:b", "stop:a"]
+
+
+@pytest.mark.asyncio
+async def test_channel_host_continues_after_cancelled_stop():
+    events: list[str] = []
+
+    class _CancelledStopChannel(_Channel):
+        async def stop(self) -> None:
+            events.append(f"stop:{self.name}")
+            raise asyncio.CancelledError
+
+    host = ChannelHost(_context)  # type: ignore[arg-type]
+    host.add(_CancelledStopChannel("cancel", events))  # type: ignore[arg-type]
+    host.add(_Channel("other", events))  # type: ignore[arg-type]
+    await host.start_all()
+
+    with pytest.raises(asyncio.CancelledError):
+        await host.stop_all()
+
+    assert events[-2:] == ["stop:other", "stop:cancel"]
 
 
 @pytest.mark.asyncio

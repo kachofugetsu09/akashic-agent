@@ -12,6 +12,7 @@ tool_search 搜索质量回归测试。
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -301,6 +302,18 @@ class TestRegistrySearch:
         results = reg.search("文件", top_k=2)
         assert len(results) <= 2
 
+    def test_top_k_preserves_score_and_name_tie_break(self):
+        reg = ToolRegistry()
+        for name in ("zeta_tool", "alpha_tool", "beta_tool"):
+            reg.register(_StubTool(name, "共享关键词"))
+
+        results = reg.search("共享关键词", top_k=2)
+
+        assert [item["name"] for item in results] == [
+            "alpha_tool",
+            "beta_tool",
+        ]
+
     # risk 过滤
     def test_risk_filter_read_only(self, reg):
         results = reg.search("文件", allowed_risk=["read-only"])
@@ -544,6 +557,17 @@ class TestToolSearchTool:
         assert "schedule" in names
         assert "write_file" in names
 
+    def test_select_deduplicates_requested_names(self):
+        reg = _make_registry()
+        tool = ToolSearchTool(reg)
+
+        data = json.loads(
+            asyncio.run(tool.execute(query="select:schedule,schedule,schedule"))
+        )
+
+        assert [item["name"] for item in data["matched"]] == ["schedule"]
+        assert data["unlocked"] == ["schedule"]
+
     def test_select_result_has_expected_fields(self):
         """select: 结果包含 summary / risk / always_on 字段。"""
         reg = _make_registry()
@@ -587,8 +611,8 @@ class TestToolSearchTool:
     def test_get_deferred_names_excludes_visible(self):
         """get_deferred_names(visible=...) 不包含已可见（preloaded）工具。"""
         reg = _make_registry()
-        deferred = cast(dict[str, object], reg.get_deferred_names(visible={"schedule"}))
-        builtin = cast(list[str], deferred.get("builtin", []))
+        deferred = reg.get_deferred_names(visible={"schedule"})
+        builtin = deferred["builtin"]
         assert "schedule" not in builtin
         # write_file 未在 visible 中，应出现在 deferred 里
         assert "write_file" in builtin
@@ -622,6 +646,31 @@ class TestToolSearchTool:
         assert "tip" in data
         assert "schedule" in data["tip"]
         assert data["already_loaded"] == ["schedule"]
+
+    def test_select_risk_filter_uses_runtime_registry_view(self, monkeypatch):
+        base = ToolRegistry()
+        base_search = ToolSearchTool(base)
+        base.register(base_search, always_on=True, risk="read-only")
+
+        runtime = base.fork()
+        runtime.register(_StubTool("runtime_write", "运行时写工具"), risk="write")
+        monkeypatch.setattr(
+            "agent.plugins.snapshot.get_current_runtime_snapshot",
+            lambda: SimpleNamespace(tool_registry=runtime),
+        )
+
+        data = json.loads(
+            asyncio.run(
+                base_search.execute(
+                    query="select:runtime_write",
+                    allowed_risk=["read-only"],
+                )
+            )
+        )
+
+        assert data["matched"] == []
+        assert data["unlocked"] == []
+        assert "风险等级不符" in data["tip"]
 
     def test_select_result_reports_unlocked_next_action(self):
         reg = _make_registry()

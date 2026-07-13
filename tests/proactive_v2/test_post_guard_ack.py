@@ -698,6 +698,18 @@ async def test_ack_post_guard_fail_alert_cited_uses_alert_ack_fn():
 
 
 @pytest.mark.asyncio
+async def test_ack_post_guard_fail_alert_channel_works_without_regular_ack_fn():
+    ctx = AgentTickContext()
+    ctx.fetched_alerts = [{"id": "a1", "ack_server": "alert-mcp"}]
+    ctx.cited_item_ids = ["alert-mcp:a1"]
+    alert_sink = FakeAlertAckSink()
+
+    await ack_post_guard_fail(ctx, None, alert_ack_fn=alert_sink)
+
+    assert alert_sink.all_keys() == {"alert-mcp:a1"}
+
+
+@pytest.mark.asyncio
 async def test_ack_post_guard_fail_alert_cited_fallback_to_ack_fn_when_no_alert_ack_fn():
     """post-guard 失败，无 alert_ack_fn 时，alert cited → ack_fn（回退）。"""
     ctx = AgentTickContext()
@@ -839,6 +851,18 @@ async def test_ack_on_success_alert_cited_calls_alert_ack_fn():
 
     assert alert_sink.all_keys() == {"alert-mcp:a1"}   # alert 走独立通道
     assert regular_sink.not_acked("alert-mcp:a1")       # 普通 ack_fn 不调用
+
+
+@pytest.mark.asyncio
+async def test_ack_on_success_alert_channel_works_without_regular_ack_fn():
+    ctx = AgentTickContext()
+    ctx.fetched_alerts = [{"id": "a1", "ack_server": "alert-mcp"}]
+    ctx.cited_item_ids = ["alert-mcp:a1"]
+    alert_sink = FakeAlertAckSink()
+
+    await ack_on_success(ctx, None, alert_ack_fn=alert_sink)
+
+    assert alert_sink.all_keys() == {"alert-mcp:a1"}
 
 
 @pytest.mark.asyncio

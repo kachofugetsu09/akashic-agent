@@ -15,6 +15,7 @@ from infra.channels.telegram_utils import (
     send_stream_markdown,
     send_thinking_block,
 )
+from infra.channels import telegram_utils as telegram_utils_module
 
 
 class BotStub:
@@ -189,6 +190,30 @@ async def test_send_markdown_falls_back_to_plain_text(monkeypatch):
     assert bot.messages == [{"chat_id": 456, "text": "line1\nline2"}]
 
 
+@pytest.mark.asyncio
+async def test_plain_text_fallback_respects_utf16_message_limit(monkeypatch):
+    bot = BotStub()
+
+    monkeypatch.setattr(
+        telegram_utils_module,
+        "convert_with_segments",
+        lambda text: (_ for _ in ()).throw(TypeError("boom")),
+    )
+
+    await send_markdown(cast(Any, bot), 456, "😀" * 3000)
+
+    assert len(bot.messages) == 2
+    assert all(
+        len(message["text"].encode("utf-16-le")) // 2 <= 4090
+        for message in bot.messages
+    )
+
+
+def test_plain_text_split_rejects_character_larger_than_limit() -> None:
+    with pytest.raises(ValueError, match="单个字符超过"):
+        telegram_utils_module._split_text("😀", 1)
+
+
 def test_render_telegram_preview_html_renders_markdown():
     html = render_telegram_preview_html("### 标题\n\n**重点**\n\n- 一\n- 二")
     assert "<b>标题</b>" in html
@@ -231,6 +256,16 @@ async def test_stream_message_falls_back_to_plain_text_on_html_parse_error():
 
     assert bot.messages[0]["parse_mode"] == "HTML"
     assert bot.edits[-1]["text"] == "**hello**\n\n- a\n- b"
+
+
+@pytest.mark.asyncio
+async def test_stream_preview_clips_utf16_text() -> None:
+    bot = BotStub()
+    stream = TelegramStreamMessage(cast(Any, bot), 123)
+
+    await stream.push_delta("😀" * 3000, force=True)
+
+    assert len(stream._last_sent_plain.encode("utf-16-le")) // 2 <= 4096
 
 
 @pytest.mark.asyncio

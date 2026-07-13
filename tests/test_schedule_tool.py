@@ -85,6 +85,43 @@ async def test_invalid_when_returns_error(tmp_path, mock_push, mock_loop):
     assert "错误" in result
 
 
+async def test_after_rejects_non_string_request_time(tmp_path, mock_push, mock_loop):
+    svc = make_svc(tmp_path, mock_push, mock_loop)
+    tool = ScheduleTool(svc, default_tz="UTC")
+
+    result = await tool.execute(
+        tier="instant",
+        trigger="after",
+        when="5m",
+        channel="tg",
+        chat_id="1",
+        message="hi",
+        request_time=123,
+    )
+
+    assert "错误" in result
+    assert "request_time" in result
+
+
+@pytest.mark.parametrize("chat_id", [None, 123])
+async def test_rejects_non_string_chat_id(tmp_path, mock_push, mock_loop, chat_id):
+    svc = make_svc(tmp_path, mock_push, mock_loop)
+    tool = ScheduleTool(svc, default_tz="UTC")
+
+    result = await tool.execute(
+        tier="instant",
+        trigger="after",
+        when="5m",
+        channel="tg",
+        chat_id=chat_id,
+        message="hi",
+    )
+
+    assert "错误" in result
+    assert "chat_id" in result
+    assert svc.list_jobs() == []
+
+
 # ── ScheduleTool: successful registration ────────────────────────
 
 
@@ -191,6 +228,27 @@ async def test_named_job(tmp_path, mock_push, mock_loop):
     assert job.name == "my-reminder"
 
 
+@pytest.mark.parametrize("request_time", ["invalid", 123])
+async def test_registration_display_falls_back_for_invalid_request_time(
+    tmp_path, mock_push, mock_loop, request_time: object
+):
+    svc = make_svc(tmp_path, mock_push, mock_loop)
+    tool = ScheduleTool(svc, default_tz="UTC")
+
+    result = await tool.execute(
+        tier="instant",
+        trigger="at",
+        when="2025-06-01T14:00:00",
+        channel="tg",
+        chat_id="1",
+        message="hi",
+        request_time=request_time,
+    )
+    job = next(iter(svc._jobs.values()))
+
+    assert job.fire_at.isoformat() in result
+
+
 # ── ListSchedulesTool ────────────────────────────────────────────
 
 
@@ -209,6 +267,16 @@ async def test_list_shows_jobs(tmp_path, mock_push, mock_loop):
     tool = ListSchedulesTool(svc)
     result = await tool.execute()
     assert "喝水提醒" in result
+
+
+async def test_list_falls_back_for_invalid_timezone(tmp_path, mock_push, mock_loop):
+    svc = make_svc(tmp_path, mock_push, mock_loop)
+    job = make_job(name="legacy", timezone_="Invalid/Timezone")
+    svc._jobs[job.id] = job
+
+    result = await ListSchedulesTool(svc).execute()
+
+    assert job.fire_at.isoformat() in result
 
 
 # ── CancelScheduleTool ───────────────────────────────────────────

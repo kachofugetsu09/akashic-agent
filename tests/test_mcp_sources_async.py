@@ -32,7 +32,7 @@ class FakePool:
         return response(args) if callable(response) else response
 
 
-def source(plugin_id: str, source_id: str, channels: tuple, server: str, fetch: str, *, ack: str = "", poll: str = "", page_size: int = 0) -> RegisteredProactiveSource:
+def source(plugin_id: str, source_id: str, channels: tuple, server: str, fetch: str, *, ack: str = "", page_size: int = 0) -> RegisteredProactiveSource:
     return RegisteredProactiveSource(
         plugin_id=plugin_id,
         spec=ProactiveSourceSpec(
@@ -41,8 +41,6 @@ def source(plugin_id: str, source_id: str, channels: tuple, server: str, fetch: 
             server=server,
             fetch_tool=fetch,
             ack_tool=ack,
-            poll_tool=poll,
-            poll_interval_seconds=10 if poll else 0,
             fetch_page_size=page_size,
         ),
     )
@@ -171,6 +169,25 @@ async def test_context_accepts_single_dict() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "error"),
+    [
+        (["not-an-event"], "必须是 object"),
+        ([{"kind": "content"}], "缺少 event_id/id"),
+    ],
+)
+async def test_fetch_source_rejects_corrupt_event_items(
+    payload: list[object],
+    error: str,
+) -> None:
+    pool = FakePool({("feed", "events"): payload})
+    item = source("feed", "content", ("content",), "feed", "events")
+
+    with pytest.raises(RuntimeError, match=error):
+        await mcp_sources._fetch_source_async(cast(Any, pool), item)
+
+
+@pytest.mark.asyncio
 async def test_fetch_isolates_single_source_failure() -> None:
     pool = FakePool(
         {("ok", "events"): [{"kind": "content", "event_id": "1"}], ("bad", "events"): []},
@@ -196,11 +213,3 @@ async def test_ack_targets_exact_source_and_passes_feedback() -> None:
         feedback="interesting",
     )
     assert pool.calls == [("feed", "ack", {"event_ids": ["e1"], "feedback": "interesting"})]
-
-
-@pytest.mark.asyncio
-async def test_poll_uses_timeout() -> None:
-    pool = FakePool({("feed", "poll"): {"ok": True}})
-    item = source("feed", "subscriptions", ("content",), "feed", "events", poll="poll")
-    await mcp_sources.poll_source_async(cast(Any, pool), item)
-    assert pool.timeouts == [mcp_sources._POLL_TOOL_TIMEOUT]

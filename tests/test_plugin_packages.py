@@ -75,3 +75,24 @@ def test_sync_manifest_migrates_legacy_proactive_members(tmp_path: Path) -> None
     manifest = (tmp_path / "manifest.toml").read_text(encoding="utf-8")
     assert 'plugins."wake_proactive"' not in manifest
     assert 'plugins."default_proactive"' not in manifest
+
+
+def test_package_manifest_rejects_non_schema_values(tmp_path: Path) -> None:
+    package_dir = tmp_path / "plugin_packages" / "broken"
+    package_dir.mkdir(parents=True)
+
+    (package_dir / "package.toml").write_text(
+        '[package]\nid = "broken"\nmembers = ["broken"]\n'
+        'dashboard = "false"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="dashboard 无效"):
+        discover_plugin_packages(tmp_path)
+
+    (package_dir / "package.toml").write_text(
+        '[package]\nid = "broken"\nmembers = ["broken"]\n'
+        'provides = "proactive.runtime"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="provides 无效"):
+        discover_plugin_packages(tmp_path)

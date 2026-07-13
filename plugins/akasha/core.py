@@ -7,13 +7,17 @@ Akasha RAR（Ripple Activation & Recall）引擎的纯算法层。
 
 from __future__ import annotations
 
+import importlib
 import json
 import math
+import re
 import struct
 import sqlite3
+import warnings
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
+from types import ModuleType
 from typing import cast
 
 import numpy as np
@@ -144,6 +148,17 @@ FTS_OVERLAP_BOOST = 1.3    # Dense ∩ FTS 时 seed_energy 倍数
 _IDF_TABLE: dict[str, float] = {}
 
 
+def _load_jieba() -> ModuleType:
+    """加载 jieba，同时隔离其旧版 pkg_resources 弃用告警。"""
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"^pkg_resources is deprecated as an API\.",
+            category=UserWarning,
+        )
+        return importlib.import_module("jieba")
+
+
 def set_idf_table(table: dict[str, float] | None) -> None:
     """注入 IDF 表。空表 / None 时退化到无过滤行为。"""
     global _IDF_TABLE
@@ -168,9 +183,9 @@ def build_idf_table(
     用法：当 fts_token_idf 不存在或为空时调用，一次性建表。
     增量更新场景下也可重新调用——会全表重写。
     """
-    import jieba
     from collections import defaultdict
 
+    jieba = _load_jieba()
     sconn = sqlite3.connect(sessions_db_path)
     df: dict[str, int] = defaultdict(int)
     n_docs = 0
@@ -546,19 +561,6 @@ def advance_salience_state(
     return total, prior_count + 1
 
 
-def _best_device() -> str:
-    """选择最佳推理设备。"""
-    try:
-        import torch
-        if torch.cuda.is_available():
-            return "cuda"
-        if torch.backends.mps.is_available():
-            return "mps"
-    except Exception:
-        pass
-    return "cpu"
-
-
 def parse_turn_key(key: str) -> tuple[str, int] | None:
     """从 turn key 解析 session_key 和 seq。"""
     left, sep, right = key.rpartition(":")
@@ -606,7 +608,7 @@ def message_id_to_key_from_db(cursor: sqlite3.Cursor, message_id: str) -> str:
     if row:
         _, _, key = turn_key(str(row[0]), int(row[1]), str(row[2] or ""))
         return key
-    return message_id  # fallback
+    return message_id  # 降级返回
 
 
 # ── DB 工具函数 ───────────────────────────────────────────────────────
@@ -915,8 +917,7 @@ def graph_seed_keys_from_snapshot(
 
 def get_jieba_keywords(text: str) -> str:
     """把文本切成 SQLite FTS 可用的 OR 查询。"""
-    import jieba
-    import re
+    jieba = _load_jieba()
 
     pairs: list[tuple[str, float]] = []
     seen: set[str] = set()

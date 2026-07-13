@@ -3,7 +3,7 @@ infra.persistence.json_store — 统一 JSON 文件持久化基础工具。
 
 替代散落在各模块的 _load()/_save() 重复实现，提供：
 - 原子写（tmp 文件 + rename）
-- 读取容错（坏文件不崩溃，返回 default）
+- 读取边界（仅文件缺失返回 default）
 - 统一日志格式
 """
 
@@ -11,16 +11,21 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
+import os
+import secrets
+import stat
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO, cast
 
 logger = logging.getLogger(__name__)
+_ATOMIC_WRITE_TEMP_ATTEMPTS = 100
 
 __all__ = [
     "load_json",
     "save_json",
     "atomic_save_json",
+    "atomic_write_text",
 ]
 
 
@@ -31,26 +36,23 @@ def load_json(
     domain: str = "json_store",
 ) -> Any:
     """
-    从文件读取 JSON，失败时返回 default。
+    从文件读取 JSON，仅文件缺失返回 default，其他失败带上下文抛出异常。
 
     Args:
         path: JSON 文件路径。
-        default: 文件不存在或解析失败时的返回值（默认 None）。
+        default: 文件不存在时的返回值（默认 None）。
         domain: 日志标识域，格式 "[domain] ..."。
     """
-    # 1. 文件不存在直接返回默认值
-    if not path.exists():
-        return default
-
-    # 2. 读取并解析
+    # 1. 读取并解析；只有文件不存在属于可选状态
     try:
-        raw = path.read_text(encoding="utf-8")
-        return json.loads(raw)
-    except Exception as e:
-        logger.warning(
-            "[%s] 读取 JSON 失败，返回默认值: path=%s err=%s", domain, path, e
-        )
+        with path.open("r", encoding="utf-8") as stream:
+            return json.load(stream)
+    except FileNotFoundError:
         return default
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise RuntimeError(
+            f"[{domain}] 读取 JSON 失败: path={path} err={error}"
+        ) from error
 
 
 def save_json(
@@ -104,31 +106,98 @@ def atomic_save_json(
         ensure_ascii: 是否转义非 ASCII。
         domain: 日志标识域。
     """
-    # 1. 确保父目录存在
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(
+        path,
+        lambda stream: json.dump(
+            data,
+            stream,
+            indent=indent,
+            ensure_ascii=ensure_ascii,
+        ),
+        domain=domain,
+    )
 
-    # 2. 写到临时文件
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    try:
-        tmp.write_text(
-            json.dumps(data, indent=indent, ensure_ascii=ensure_ascii),
-            encoding="utf-8",
-        )
-    except Exception as e:
-        logger.warning("[%s] 原子写临时文件失败: path=%s err=%s", domain, tmp, e)
-        raise
 
-    # 3. 原子替换
-    try:
-        tmp.replace(path)
-        logger.debug("[%s] 原子写完成 path=%s", domain, path)
-    except Exception as e:
-        logger.warning(
-            "[%s] 原子替换失败: tmp=%s target=%s err=%s", domain, tmp, path, e
-        )
-        # 尝试清理临时文件
+def atomic_write_text(
+    path: Path,
+    content: str,
+    *,
+    domain: str = "json_store",
+) -> None:
+    """原子写入 UTF-8 文本，并在替换后持久化父目录。"""
+
+    def write_content(stream: TextIO) -> None:
+        stream.write(content)
+
+    _atomic_write(path, write_content, domain=domain)
+
+
+def _create_atomic_temp(path: Path) -> tuple[int, Path]:
+    """使用内核 umask 创建同目录的唯一临时文件。"""
+
+    # 1. 用高熵文件名和 O_EXCL 排除临时文件碰撞
+    for _ in range(_ATOMIC_WRITE_TEMP_ATTEMPTS):
+        temporary = path.parent / f"{path.name}.{secrets.token_hex(16)}.tmp"
         try:
-            tmp.unlink(missing_ok=True)
-        except Exception:
-            pass
+            fd = os.open(
+                temporary,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o666,
+            )
+        except FileExistsError:
+            continue
+        return fd, temporary
+
+    raise FileExistsError(f"无法为 {path} 创建唯一临时文件")
+
+
+def _atomic_write(
+    path: Path,
+    writer: Callable[[TextIO], None],
+    *,
+    domain: str,
+) -> None:
+    """在同目录临时文件中完成写入、替换和目录同步。"""
+
+    # 1. 创建父目录并读取现有目标的权限位
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        target_mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        target_mode = None
+
+    # 2. 创建同目录唯一临时文件；新文件权限由内核直接应用 umask
+    fd, temporary = _create_atomic_temp(path)
+    try:
+        if target_mode is not None:
+            os.fchmod(fd, target_mode)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+            fd = -1
+            # 3. 序列化、写入、刷写并同步临时文件
+            writer(cast(TextIO, stream))
+            stream.flush()
+            os.fsync(stream.fileno())
+
+        # 4. 原子替换并同步目录项
+        _ = temporary.replace(path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except BaseException:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            logger.warning(
+                "[%s] 原子写清理临时文件失败: tmp=%s err=%s",
+                domain,
+                temporary,
+                cleanup_error,
+            )
         raise
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+    logger.debug("[%s] 原子写完成 path=%s", domain, path)

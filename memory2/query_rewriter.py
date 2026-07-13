@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
+
+from agent.provider import LLMResponse
+
+logger = logging.getLogger(__name__)
+
+
+class RewriteStatus(str, Enum):
+    SUCCESS = "success"
+    DEGRADED = "degraded"
 
 
 @dataclass
@@ -13,6 +24,18 @@ class GateDecision:
     episodic_query: str
     latency_ms: int
     procedure_query: str = ""
+    history_status: RewriteStatus = RewriteStatus.SUCCESS
+    procedure_status: RewriteStatus = RewriteStatus.SUCCESS
+    history_reason: str = ""
+    procedure_reason: str = ""
+
+    @property
+    def status(self) -> RewriteStatus:
+        return (
+            RewriteStatus.DEGRADED
+            if RewriteStatus.DEGRADED in {self.history_status, self.procedure_status}
+            else RewriteStatus.SUCCESS
+        )
 
 
 class QueryRewriter:
@@ -30,17 +53,11 @@ class QueryRewriter:
         self._timeout_s = max(0.1, float(timeout_ms) / 1000.0)
 
     async def decide(self, user_msg: str, recent_history: str) -> GateDecision:
-        # 1. 先准备 prompt 和 fail-open 默认值。
+        # 1. 准备 prompt 和原始消息回退。
         started = time.perf_counter()
-        fallback = self._build_decision(
-            started=started,
-            user_msg=user_msg,
-            needs_episodic=True,
-            episodic_query=user_msg,
-        )
 
-        # 2. 分开改写 history 和 procedure，避免任一路失败吞掉另一路结果。
-        raw_output = ""
+        # 2. 并行执行主改写和可选 procedure 改写。
+        raw_output: str | None = None
         procedure_query = ""
         main_task = asyncio.create_task(
             self._call_llm(
@@ -51,37 +68,100 @@ class QueryRewriter:
             )
         )
         procedure_task = asyncio.create_task(self._rewrite_procedure_query(user_msg))
-        done, pending = await asyncio.wait(
-            {main_task, procedure_task},
-            timeout=self._timeout_s,
-        )
-        for task in pending:
-            _ = task.cancel()
-        if not done:
-            return fallback
+        tasks = {main_task, procedure_task}
+        try:
+            done, pending = await asyncio.wait(tasks, timeout=self._timeout_s)
+            for task in pending:
+                _ = task.cancel()
+            if pending:
+                _ = await asyncio.gather(*pending, return_exceptions=True)
+            if not done:
+                return self._build_decision(
+                    started=started,
+                    user_msg=user_msg,
+                    needs_episodic=True,
+                    episodic_query=user_msg,
+                    history_status=RewriteStatus.DEGRADED,
+                    procedure_status=RewriteStatus.DEGRADED,
+                    history_reason="timeout",
+                    procedure_reason="timeout",
+                )
+        finally:
+            # 3. 无论超时还是取消，都回收本轮创建的 task。
+            for task in tasks:
+                if not task.done():
+                    _ = task.cancel()
+            _ = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 4. 读取结果；可选 lane 失败只标记降级，不拖垮主链。
+        history_status = RewriteStatus.SUCCESS
+        procedure_status = RewriteStatus.SUCCESS
+        history_reason = ""
+        procedure_reason = ""
         if main_task in done:
             try:
                 raw_output = main_task.result()
-            except Exception:
-                raw_output = ""
+            except Exception as exc:
+                history_status = RewriteStatus.DEGRADED
+                history_reason = "model_error"
+                logger.warning("memory2 history query rewrite failed: %s", exc)
+        else:
+            history_status = RewriteStatus.DEGRADED
+            history_reason = "timeout"
         if procedure_task in done:
             try:
                 procedure_query = procedure_task.result()
-            except Exception:
-                procedure_query = ""
+            except Exception as exc:
+                procedure_status = RewriteStatus.DEGRADED
+                procedure_reason = "model_error"
+                logger.warning("memory2 procedure query rewrite failed: %s", exc)
+        else:
+            procedure_status = RewriteStatus.DEGRADED
+            procedure_reason = "timeout"
 
-        # 3. 最后解析；history 结构无效则回退原始消息，但保留 procedure 改写。
-        decision = self._parse_output(raw_output)
-        if decision is None:
+        # 5. 主模型失败时直接回退，保留具体失败原因。
+        if history_status is RewriteStatus.DEGRADED:
             return self._build_decision(
                 started=started,
                 user_msg=user_msg,
                 needs_episodic=True,
                 episodic_query=user_msg,
                 procedure_query=procedure_query,
+                history_status=history_status,
+                procedure_status=procedure_status,
+                history_reason=history_reason,
+                procedure_reason=procedure_reason,
             )
+
+        # 6. 解析主改写；结构无效时保留原始 query 并标记降级。
+        decision = self._parse_output(raw_output or "")
+        if decision is None:
+            history_status = RewriteStatus.DEGRADED
+            history_reason = "parse_error"
+            return self._build_decision(
+                started=started,
+                user_msg=user_msg,
+                needs_episodic=True,
+                episodic_query=user_msg,
+                procedure_query=procedure_query,
+                history_status=history_status,
+                procedure_status=procedure_status,
+                history_reason=history_reason,
+                procedure_reason=procedure_reason,
+            )
+        if decision["needs_episodic"] and not decision["episodic_query"].strip():
+            history_status = RewriteStatus.DEGRADED
+            history_reason = "empty_history_query"
         decision["procedure_query"] = procedure_query
-        return self._build_decision(started=started, user_msg=user_msg, **decision)
+        return self._build_decision(
+            started=started,
+            user_msg=user_msg,
+            history_status=history_status,
+            procedure_status=procedure_status,
+            history_reason=history_reason,
+            procedure_reason=procedure_reason,
+            **decision,
+        )
 
     async def _call_llm(self, prompt: str) -> str:
         response = await self._llm_client.chat(
@@ -91,19 +171,19 @@ class QueryRewriter:
             max_tokens=self._max_tokens,
             disable_thinking=True,
         )
-        content = getattr(response, "content", response)
-        return str(content or "")
+        if isinstance(response, str):
+            return response
+        if not isinstance(response, LLMResponse):
+            raise TypeError("LLM response 必须是字符串或 LLMResponse")
+        return response.content or ""
 
     # 用独立 LLM 调用把用户消息改写为 procedure/preference 库可命中的 summary 句式。
     async def _rewrite_procedure_query(self, user_msg: str) -> str:
         # 1. 构造 procedure 改写专用 prompt。
         prompt = self._build_procedure_prompt(user_msg)
-        # 2. 调用 LLM；异常时返回空，不阻断 history 决策路径。
-        try:
-            raw_output = await self._call_llm(prompt)
-        except Exception:
-            return ""
-        # 3. 清洗输出：压缩空白、剔除哨兵占位符。
+        # 2. 调用 LLM；异常交给 decide 标记可选 lane 降级。
+        raw_output = await self._call_llm(prompt)
+        # 3. 清洗输出，剔除哨兵占位符。
         return self._clean_procedure_query(raw_output)
 
     def _parse_output(self, raw_output: str) -> dict[str, Any] | None:
@@ -123,6 +203,10 @@ class QueryRewriter:
         needs_episodic: bool,
         episodic_query: str,
         procedure_query: str = "",
+        history_status: RewriteStatus = RewriteStatus.SUCCESS,
+        procedure_status: RewriteStatus = RewriteStatus.SUCCESS,
+        history_reason: str = "",
+        procedure_reason: str = "",
     ) -> GateDecision:
         fallback_query = user_msg.strip()
         latency_ms = max(0, int((time.perf_counter() - started) * 1000))
@@ -131,6 +215,10 @@ class QueryRewriter:
             episodic_query=episodic_query.strip() or fallback_query,
             latency_ms=latency_ms,
             procedure_query=procedure_query.strip(),
+            history_status=history_status,
+            procedure_status=procedure_status,
+            history_reason=history_reason,
+            procedure_reason=procedure_reason,
         )
 
     @staticmethod

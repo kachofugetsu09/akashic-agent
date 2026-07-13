@@ -104,7 +104,8 @@ def _write_mcp_server(plugin_dir: Path, tools: tuple[str, ...]) -> None:
         "            continue\n"
         "        method = msg.get('method')\n"
         "        result = {}\n"
-        f"        if method == 'tools/list': result = {{'tools': [{tool_items}]}}\n"
+        "        if method == 'initialize': result = {'protocolVersion': '2025-11-25'}\n"
+        f"        elif method == 'tools/list': result = {{'tools': [{tool_items}]}}\n"
         "        elif method == 'tools/call': result = {'content': [{'type': 'text', 'text': '[]'}]}\n"
         "        print(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': result}), flush=True)\n"
         "finally:\n"
@@ -966,7 +967,7 @@ async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
         "    name = 'mcp_ready'\n"
         "    def __init__(self):\n"
         "        self.job_spec = PluginJobSpec(id='refresh', triggers=[IntervalTrigger(3600)], handler=self.refresh)\n"
-        "        self.source_spec = ProactiveSourceSpec(id='feed', channels=['content'], server='feed', fetch_tool='fetch_events', ack_tool='ack_events', poll_tool='poll_events')\n"
+        "        self.source_spec = ProactiveSourceSpec(id='feed', channels=['content'], server='feed', fetch_tool='fetch_events', ack_tool='ack_events')\n"
         "    @classmethod\n"
         "    def mcp_servers(cls):\n"
         "        return [McpServerSpec(name='feed', command=('python', 'server.py'))]\n"
@@ -993,7 +994,7 @@ async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
     )
     _write_mcp_server(
         plugin_dir,
-        ("fetch_events", "ack_events", "poll_events"),
+        ("fetch_events", "ack_events"),
     )
     tools = ToolRegistry()
     manager = _manager(tmp_path, tools=tools)
@@ -1020,7 +1021,6 @@ async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
     assert catalog.tool_names == (
         "mcp_feed__ack_events",
         "mcp_feed__fetch_events",
-        "mcp_feed__poll_events",
     )
     assert not any(prepared.generation_id in name for name in catalog.tool_names)
     assert tools.get_registered_names() == set()
@@ -1945,6 +1945,7 @@ async def test_dead_candidate_mcp_aborts_post_publish_invariant(
 @pytest.mark.asyncio
 async def test_reconcile_changed_publishes_multiple_plugins_from_latest_snapshot(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plugins = tmp_path / "plugins"
 
@@ -1973,9 +1974,19 @@ async def test_reconcile_changed_publishes_multiple_plugins_from_latest_snapshot
         source("snapshot_second", "v2"),
         encoding="utf-8",
     )
+    discover_calls = 0
+    original_discover = manager.discover
+
+    def count_discoveries() -> list[dict[str, str]]:
+        nonlocal discover_calls
+        discover_calls += 1
+        return original_discover()
+
+    monkeypatch.setattr(manager, "discover", count_discoveries)
 
     results = await manager.reconcile_changed()
 
+    assert discover_calls == 1
     assert [result["publication_state"] for result in results] == [
         "committed",
         "committed",
@@ -2078,6 +2089,54 @@ async def test_repeated_disable_with_retained_snapshot_keeps_unique_id_and_alias
     second_disabled = manager.current_snapshot
     assert second_disabled is not None
     assert second_disabled.snapshot_id != first_disabled.snapshot_id
+
+    await retained.release()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_current_plugin_views_ignore_retained_old_generation(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "current_view",
+        "from agent.plugins import Plugin\n"
+        "class CurrentViewPlugin(Plugin):\n"
+        "    name = 'current_view'\n"
+        "    version = 'v1'\n"
+        "    def telegram_bot_commands(self):\n"
+        "        return [(f'view-{self.version}', self.version)]\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    retained = manager.snapshot_store.lease()
+
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class CurrentViewPlugin(Plugin):\n"
+        "    name = 'current_view'\n"
+        "    version = 'v2'\n"
+        "    def telegram_bot_commands(self):\n"
+        "        return [(f'view-{self.version}', self.version)]\n",
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("current_view")
+    assert candidate is not None
+    await manager.publish_prepared("current_view")
+
+    active = manager.active_plugins()
+    assert len(active) == 1
+    assert active[0].manifest["version"] == "v2"
+    assert manager.telegram_bot_commands == [("view-v2", "v2")]
+
+    write_plugin_manifest(
+        {"current_view": False},
+        plugins_home=tmp_path / "home",
+    )
+    await manager.reconcile_changed()
+    assert manager.active_plugins() == []
+    assert manager.telegram_bot_commands == []
 
     await retained.release()
     await manager.terminate_all()
@@ -2267,6 +2326,140 @@ async def test_plugin_watcher_recovers_after_revision_scan_error() -> None:
     watcher.stop()
     await task
     assert manager.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_does_not_reconcile_after_recovered_scan_error() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.scans = 0
+            self.calls = 0
+
+        def watch_revision(self) -> str:
+            self.scans += 1
+            if self.scans == 2:
+                raise OSError("transient")
+            return "stable"
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            return []
+
+    manager = Manager()
+    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    task = asyncio.create_task(watcher.run())
+    for _ in range(100):
+        if manager.scans >= 3:
+            break
+        await asyncio.sleep(0.01)
+
+    watcher.stop()
+    await task
+    assert manager.scans >= 3
+    assert manager.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_recovers_after_reconcile_failure() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.revision = "stable"
+            self.failed = asyncio.Event()
+            self.recovered = asyncio.Event()
+            self.calls = 0
+
+        def watch_revision(self) -> str:
+            return self.revision
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            if self.revision == "broken":
+                self.failed.set()
+                raise RuntimeError("callback failed")
+            self.recovered.set()
+            return []
+
+    manager = Manager()
+    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    task = asyncio.create_task(watcher.run())
+    await asyncio.sleep(0)
+    manager.revision = "broken"
+    await asyncio.wait_for(manager.failed.wait(), timeout=1)
+    await asyncio.sleep(0.03)
+    assert manager.calls == 1
+    assert not task.done()
+
+    manager.revision = "fixed"
+    await asyncio.wait_for(manager.recovered.wait(), timeout=1)
+    watcher.stop()
+    await task
+    assert manager.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_propagates_cancellation_and_marks_stopped() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.revision = "stable"
+            self.started = asyncio.Event()
+            self.calls = 0
+
+        def watch_revision(self) -> str:
+            return self.revision
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            self.started.set()
+            await asyncio.Event().wait()
+            return []
+
+    manager = Manager()
+    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    task = asyncio.create_task(watcher.run())
+    await asyncio.sleep(0)
+    manager.revision = "changed"
+    await asyncio.wait_for(manager.started.wait(), timeout=1)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await watcher.wait_stopped()
+    assert manager.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_stop_before_run_skips_initial_scan() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.scans = 0
+
+        def watch_revision(self) -> str:
+            self.scans += 1
+            return "stable"
+
+    manager = Manager()
+    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    watcher.stop()
+
+    await watcher.run()
+    await watcher.wait_stopped()
+    assert manager.scans == 0
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_cancellation_before_start_does_not_leak_waiter() -> None:
+    class Manager:
+        def watch_revision(self) -> str:
+            raise AssertionError("未启动的 watcher 不应扫描")
+
+    watcher = PluginWatcher(Manager(), interval_seconds=0.01)  # type: ignore[arg-type]
+    task = asyncio.create_task(watcher.run())
+    watcher.stop()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.wait_for(watcher.wait_stopped(), timeout=1)
 
 
 def _snapshot_tool_source(version: str) -> str:

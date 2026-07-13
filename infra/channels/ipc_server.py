@@ -1,9 +1,4 @@
-"""
-IPC server channel.
-
-Uses a Unix domain socket on POSIX systems and loopback TCP on Windows so the
-local CLI can talk to the running agent process.
-"""
+"""IPC server 渠道：POSIX 使用 Unix domain socket，Windows 使用 loopback TCP，供本地 CLI 与运行中的 agent 进程通信。"""
 
 from __future__ import annotations
 
@@ -13,11 +8,11 @@ import logging
 import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from agent.config import _normalize_cli_socket_endpoint
 from bus.events import InboundMessage, OutboundMessage
-from bus.queue import MessageBus
+from bus.queue import MessageBus, OutboundSubscription
 
 if TYPE_CHECKING:
     from proactive_v2.loop import ProactiveLoop
@@ -59,7 +54,7 @@ class IPCServerChannel:
         self._writers: dict[str, asyncio.StreamWriter] = {}
         self._server: asyncio.AbstractServer | None = None
         self._command_handlers: dict[str, CommandHandler] = {}
-        bus.subscribe_outbound(CHANNEL, self._on_response)
+        self._outbound_subscription: OutboundSubscription | None = None
 
     def register_command(self, name: str, handler: CommandHandler) -> None:
         self._command_handlers[name] = handler
@@ -73,26 +68,94 @@ class IPCServerChannel:
                 host=host,
                 port=port,
             )
+            self._outbound_subscription = self._bus.subscribe_outbound(
+                CHANNEL,
+                self._on_response,
+            )
             logger.info("IPC server listening on tcp://%s:%s", host, port)
             return
 
         if not hasattr(asyncio, "start_unix_server"):
             raise RuntimeError("Unix sockets are unavailable on this platform; use a host:port endpoint instead.")
         Path(self._socket_path).unlink(missing_ok=True)
-        self._server = await asyncio.start_unix_server(
+        server = await asyncio.start_unix_server(
             self._handle_connection,
             path=self._socket_path,
         )
-        os.chmod(self._socket_path, 0o600)
+        try:
+            os.chmod(self._socket_path, 0o600)
+            subscription = self._bus.subscribe_outbound(
+                CHANNEL,
+                self._on_response,
+            )
+        except OSError as start_error:
+            server.close()
+            cleanup_error: OSError | None = None
+            try:
+                await server.wait_closed()
+            except OSError as error:
+                cleanup_error = error
+            finally:
+                try:
+                    Path(self._socket_path).unlink(missing_ok=True)
+                except OSError as error:
+                    if cleanup_error is None:
+                        cleanup_error = error
+            if cleanup_error is not None:
+                raise start_error from cleanup_error
+            raise
+        self._server = server
+        self._outbound_subscription = subscription
         logger.info("IPC server listening on %s", self._socket_path)
 
     async def stop(self) -> None:
-        if not self._server:
-            return
-        self._server.close()
-        await self._server.wait_closed()
-        if _parse_tcp_endpoint(self._socket_path) is None:
-            Path(self._socket_path).unlink(missing_ok=True)
+        """关闭 IPC server、客户端连接和 outbound subscription。"""
+
+        # 1. 在任何 await 前转移并关闭全部资源所有权。
+        subscription = self._outbound_subscription
+        self._outbound_subscription = None
+        if subscription is not None:
+            subscription.close()
+
+        server = self._server
+        self._server = None
+        writers = tuple(self._writers.values())
+        self._writers.clear()
+        first_error: OSError | None = None
+        if server is not None:
+            try:
+                server.close()
+            except OSError as error:
+                first_error = error
+        for writer in writers:
+            try:
+                writer.close()
+            except OSError as error:
+                if first_error is None:
+                    first_error = error
+
+        # 2. 等待所有关闭动作，记录首个 OSError 但不跳过后续资源。
+        if server is not None:
+            try:
+                await server.wait_closed()
+            except OSError as error:
+                if first_error is None:
+                    first_error = error
+            finally:
+                if _parse_tcp_endpoint(self._socket_path) is None:
+                    try:
+                        Path(self._socket_path).unlink(missing_ok=True)
+                    except OSError as error:
+                        if first_error is None:
+                            first_error = error
+        for writer in writers:
+            try:
+                await writer.wait_closed()
+            except OSError as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise first_error
 
     def set_proactive_loop(self, proactive_loop: "ProactiveLoop") -> None:
         self._proactive_loop = proactive_loop
@@ -113,10 +176,17 @@ class IPCServerChannel:
                 if not line:
                     break
                 try:
-                    data = json.loads(line)
+                    raw_data: object = json.loads(line)
                 except json.JSONDecodeError:
                     logger.warning("[cli] received non-JSON payload")
                     continue
+                if not isinstance(raw_data, dict):
+                    logger.warning(
+                        "[cli] received non-object JSON payload: type=%s",
+                        type(raw_data).__name__,
+                    )
+                    continue
+                data = cast(dict[str, object], raw_data)
 
                 if data.get("type") == "command":
                     await self._handle_command(data, chat_id, writer)
@@ -215,7 +285,7 @@ class IPCServerChannel:
 
 
 def _session_override_metadata(
-    data: dict,
+    data: dict[str, object],
     *,
     default_session_key: str,
 ) -> dict[str, object]:

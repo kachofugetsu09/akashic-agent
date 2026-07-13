@@ -7,6 +7,7 @@ import pytest
 
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryServices
+from bus.queue import MessageBus
 from agent.provider import LLMResponse, ToolCall
 from agent.subagent import SubAgent
 from agent.tool_hooks.base import ToolHook
@@ -84,6 +85,11 @@ class _StrictProvider(_FakeProvider):
         messages = kwargs.get("messages") or []
         _assert_no_unresolved_tool_calls(messages)
         return await super().chat(**kwargs)
+
+
+class _FailingProvider:
+    async def chat(self, **kwargs):
+        raise RuntimeError("provider unavailable")
 
 
 @pytest.fixture(autouse=True)
@@ -190,7 +196,7 @@ def _make_agent_loop_with_tools(
         tools.register(tool)
     loop = AgentLoop(
         AgentLoopDeps(
-            bus=MagicMock(),
+            bus=MessageBus(),
             provider=cast(Any, provider),
             tools=tools,
             session_manager=MagicMock(),
@@ -373,6 +379,33 @@ def test_subagent_marks_tool_loop_and_summarizes():
     assert subagent.last_exit_reason == "tool_loop"
     assert "最大迭代" not in result
     assert len(tool.calls) == 2
+
+
+def test_subagent_propagates_provider_failure():
+    subagent = SubAgent(
+        provider=cast(Any, _FailingProvider()),
+        model="m",
+        tools=[],
+    )
+
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        asyncio.run(subagent.run("do work"))
+    assert subagent.last_exit_reason == "error"
+
+
+def test_subagent_rejects_empty_final_result():
+    subagent = SubAgent(
+        provider=cast(
+            Any,
+            _FakeProvider([LLMResponse(content="   ", tool_calls=[])]),
+        ),
+        model="m",
+        tools=[],
+    )
+
+    with pytest.raises(RuntimeError, match="SubAgent 模型未返回结果"):
+        asyncio.run(subagent.run("do work"))
+    assert subagent.last_exit_reason == "error"
 
 
 def test_subagent_breaks_on_repeated_multi_tool_batch_with_closed_chain():
@@ -659,7 +692,7 @@ def test_agent_loop_does_not_false_positive_when_tool_order_changes(tmp_path):
     tools.register(t2)
     loop = AgentLoop(
         AgentLoopDeps(
-            bus=MagicMock(),
+            bus=MessageBus(),
             provider=cast(Any, provider),
             tools=tools,
             session_manager=MagicMock(),
@@ -778,3 +811,51 @@ def test_subagent_loop_path_runs_mandatory_exit_with_closed_chain():
     assert "记录" in result
     assert len(tool.calls) == 2
     assert exit_tool.called == 1
+
+
+@pytest.mark.parametrize(
+    ("exit_response", "actual"),
+    [
+        (LLMResponse(content="", tool_calls=[]), "none"),
+        (
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall("wrong", "dummy", {"x": 2})],
+            ),
+            "dummy",
+        ),
+    ],
+)
+def test_subagent_mandatory_exit_rejects_missing_or_wrong_tool(
+    exit_response: LLMResponse,
+    actual: str,
+):
+    tool = _DummyTool("dummy")
+    exit_tool = _ExitTool("checkpoint")
+    provider = _FakeProvider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall("s1", "dummy", {"x": 1})],
+            ),
+            exit_response,
+        ]
+    )
+    subagent = SubAgent(
+        provider=cast(Any, provider),
+        model="m",
+        tools=[tool, exit_tool],
+        max_iterations=1,
+        mandatory_exit_tools=["checkpoint"],
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=rf"expected=checkpoint actual={actual}",
+    ):
+        asyncio.run(subagent.run("do work"))
+
+    assert subagent.last_exit_reason == "error"
+    assert len(tool.calls) == 1
+    assert exit_tool.called == 0
+    assert len(provider.calls) == 2

@@ -73,7 +73,7 @@ class HttpRequester:
                 )
                 if not self._should_retry_response(response, attempt, attempts):
                     return response
-                await response.aread()
+                _ = await response.aread()
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = exc
                 if not self._should_retry_exception(exc, attempt, attempts):
@@ -134,7 +134,10 @@ class SharedHttpResources:
     external_default: HttpRequester = field(init=False)
     feed_fetcher: HttpRequester = field(init=False)
     local_service: HttpRequester = field(init=False)
-    _clients: list[httpx.AsyncClient] = field(init=False, default_factory=list)
+    _clients: list[httpx.AsyncClient] = field(
+        init=False,
+        default_factory=list[httpx.AsyncClient],
+    )
     _closed: bool = field(init=False, default=False)
 
     def __post_init__(self) -> None:
@@ -170,18 +173,25 @@ class SharedHttpResources:
         )
 
     async def aclose(self) -> None:
+        """按逆序关闭共享客户端，并汇总所有清理失败。"""
+
         if self._closed:
             return
-        first_error: Exception | None = None
+
+        # 1. 按既有关闭顺序关闭全部客户端
+        errors: list[Exception] = []
         for client in reversed(self._clients):
             try:
                 await client.aclose()
             except Exception as exc:
-                if first_error is None:
-                    first_error = exc
+                errors.append(exc)
+
+        # 2. 标记生命周期终止并暴露全部清理失败
         self._closed = True
-        if first_error is not None:
-            raise first_error
+        if len(errors) == 1:
+            raise errors[0]
+        if len(errors) > 1:
+            raise ExceptionGroup("shared HTTP client cleanup failed", errors)
 
     @property
     def closed(self) -> bool:

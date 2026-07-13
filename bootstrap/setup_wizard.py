@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import cast
 
 import click
+from agent.plugins.manifest import builtin_plugin_data_dir
 from plugins.default_memory.config import render_default_memory_config
 
 
@@ -777,7 +778,7 @@ def _render_default_memory_config() -> str:
 
 
 def _default_memory_local_config_path() -> Path:
-    return Path(__file__).resolve().parent.parent / "plugins" / "default_memory" / "config.local.toml"
+    return builtin_plugin_data_dir("default_memory") / "config.local.toml"
 
 
 def _render_proactive(a: WizardAnswers) -> str:

@@ -1,5 +1,6 @@
 """Tests for JobStore persistence."""
 
+import json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -13,6 +14,85 @@ class TestJobStoreLoadSave:
     def test_load_empty_when_file_missing(self, tmp_path):
         store = JobStore(tmp_path / "jobs.json")
         assert store.load() == []
+
+    def test_load_preserves_json_decode_error(self, tmp_path):
+        path = tmp_path / "jobs.json"
+        path.write_text("not-json", encoding="utf-8")
+
+        with pytest.raises(json.JSONDecodeError):
+            JobStore(path).load()
+
+    def test_load_preserves_read_error(self, tmp_path, monkeypatch):
+        path = tmp_path / "jobs.json"
+        path.write_text("[]", encoding="utf-8")
+
+        def fail_read_text(_path, *, encoding):
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(Path, "read_text", fail_read_text)
+        with pytest.raises(PermissionError, match="denied"):
+            JobStore(path).load()
+
+    @pytest.mark.parametrize("contents", ['{"jobs": []}', "null"])
+    def test_load_rejects_invalid_store_structure(self, tmp_path, contents):
+        path = tmp_path / "jobs.json"
+        path.write_text(contents, encoding="utf-8")
+
+        with pytest.raises(ValueError, match=rf"path={path}"):
+            JobStore(path).load()
+
+    def test_load_rejects_non_object_job_with_path_and_index(self, tmp_path):
+        path = tmp_path / "jobs.json"
+        path.write_text('["invalid-job"]', encoding="utf-8")
+
+        with pytest.raises(ValueError, match=rf"path={path} index=0"):
+            JobStore(path).load()
+
+    def test_load_rejects_invalid_persisted_timestamp(self, tmp_path):
+        path = tmp_path / "jobs.json"
+        job = make_job()
+        store = JobStore(path)
+        store.save({job.id: job})
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(job.fire_at.isoformat(), "invalid"),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match=rf"path={path} index=0 field=fire_at"):
+            store.load()
+
+    def test_load_rejects_invalid_interval_type(self, tmp_path):
+        path = tmp_path / "jobs.json"
+        job = make_job(trigger="every", interval_seconds=60)
+        store = JobStore(path)
+        store.save({job.id: job})
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload[0]["interval_seconds"] = "60"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        with pytest.raises(ValueError, match=rf"path={path} index=0"):
+            store.load()
+
+    def test_save_rejects_invalid_interval(self, tmp_path):
+        store = JobStore(tmp_path / "jobs.json")
+        job = make_job(trigger="every", interval_seconds=0)
+
+        with pytest.raises(ValueError, match="interval_seconds 无效"):
+            store.save({job.id: job})
+
+        assert not store.path.exists()
+
+    def test_load_rejects_missing_persisted_id(self, tmp_path):
+        path = tmp_path / "jobs.json"
+        job = make_job()
+        store = JobStore(path)
+        store.save({job.id: job})
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        del payload[0]["id"]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        with pytest.raises(ValueError, match=rf"path={path} index=0"):
+            store.load()
 
     def test_save_and_load_roundtrip(self, tmp_path):
         store = JobStore(tmp_path / "jobs.json")

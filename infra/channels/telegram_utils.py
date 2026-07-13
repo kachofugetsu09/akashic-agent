@@ -11,6 +11,7 @@ import asyncio
 import html
 import logging
 import re
+import weakref
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 from typing import TypeVar
@@ -33,6 +34,7 @@ _LIVE_MAX_BACKOFF_S = 10.0
 _THINKING_CAP = 800
 _THINKING_MIN = 100
 _PREVIEW_OVERHEAD = 80
+_THROTTLE_PRUNE_THRESHOLD = 256
 _PARSE_ERR_RE = re.compile(r"can't parse entities|parse entities|find end of the entity", re.I)
 _SPOILER_RE = re.compile(r"\|\|(.+?)\|\|", re.S)
 _STRIKE_RE = re.compile(r"~~(.+?)~~", re.S)
@@ -64,8 +66,12 @@ class TelegramOutboundLimiter:
         self._global_interval_s = global_interval_s
         self._retry_padding_s = retry_padding_s
         self._max_attempts = max_attempts
-        self._chat_locks: dict[int, asyncio.Lock] = {}
-        self._typing_locks: dict[int, asyncio.Lock] = {}
+        self._chat_locks: weakref.WeakValueDictionary[int, asyncio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
+        self._typing_locks: weakref.WeakValueDictionary[int, asyncio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
         self._global_lock = asyncio.Lock()
         self._next_chat_at: dict[int, float] = {}
         self._next_typing_at: dict[int, float] = {}
@@ -81,6 +87,7 @@ class TelegramOutboundLimiter:
         max_attempts: int | None = None,
     ) -> _T:
         cid = int(chat_id)
+        self._prune_expired(asyncio.get_running_loop().time())
         if kind == "typing":
             return await self._run_typing(cid, label=label, action=action)
         attempts = max_attempts or self._max_attempts
@@ -201,6 +208,17 @@ class TelegramOutboundLimiter:
         if kind == "typing":
             return self._typing_interval_s
         return self._send_interval_s
+
+    def _prune_expired(self, now: float) -> None:
+        if (
+            max(len(self._next_chat_at), len(self._next_typing_at))
+            <= _THROTTLE_PRUNE_THRESHOLD
+        ):
+            return
+        for deadlines in (self._next_chat_at, self._next_typing_at):
+            for chat_id, deadline in list(deadlines.items()):
+                if deadline <= now:
+                    deadlines.pop(chat_id, None)
 
 
 async def _run_outbound(
@@ -342,19 +360,31 @@ async def send_markdown(
 
 
 def _split_text(text: str, limit: int) -> list[str]:
-    """按行切分文本，每段不超过 limit 字符。"""
-    chunks, current = [], []
+    """按行切分文本，每段不超过 limit 个 UTF-16 码元。"""
+    if limit <= 0:
+        raise ValueError("文本分段上限必须大于 0")
+    chunks: list[str] = []
+    current: list[str] = []
     current_len = 0
     for line in text.splitlines(keepends=True):
-        if current_len + len(line) > limit and current:
+        while line:
+            remaining = limit - current_len
+            line_len = len(line.encode("utf-16-le")) // 2
+            if line_len <= remaining:
+                current.append(line)
+                current_len += line_len
+                break
+            cut = _utf16_cut(line, remaining)
+            if cut == 0:
+                if current:
+                    chunks.append("".join(current))
+                    current, current_len = [], 0
+                    continue
+                raise ValueError("单个字符超过文本分段上限")
+            current.append(line[:cut])
             chunks.append("".join(current))
             current, current_len = [], 0
-        # 单行本身超限时强制切断
-        while len(line) > limit:
-            chunks.append(line[:limit])
-            line = line[limit:]
-        current.append(line)
-        current_len += len(line)
+            line = line[cut:]
     if current:
         chunks.append("".join(current))
     return chunks
@@ -366,17 +396,15 @@ async def send_thinking_block(
     thinking: str,
     limiter: TelegramOutboundLimiter | None = None,
 ) -> None:
-    """Send thinking content as expandable blockquote message(s).
+    """将思考内容按 Telegram 限制拆成可展开引用消息。"""
 
-    Telegram 单条消息限制 4096 UTF-16 code units。超长 thinking 按行分段，
-    每段独立包裹为 expandable_blockquote。
-    """
+    # 1. 计算标题之外可用的 UTF-16 码元预算
     cid = int(chat_id)
     header = "💭 思考过程\n\n"
-    # 4096 UTF-16 code units, 留一点余量
     max_utf16 = 4080
     header_utf16 = len(header.encode("utf-16-le")) // 2
 
+    # 2. 逐段构造引用实体并发送
     chunks = _split_thinking(thinking, max_utf16 - header_utf16)
     for i, chunk in enumerate(chunks):
         text = (header if i == 0 else "") + chunk
@@ -462,13 +490,32 @@ async def send_stream_markdown(
         await send_markdown(bot, cid, text, limiter)
 
 
+def _utf16_prefix(text: str, limit: int) -> str:
+    """返回不超过 UTF-16 上限的文本前缀。"""
+    if limit <= 0:
+        return ""
+    if len(text.encode("utf-16-le")) // 2 <= limit:
+        return text
+    cut = _utf16_cut(text, limit)
+    return text[:cut]
+
+
 def _ring_tail(text: str, cap: int) -> str:
-    """保留文本最后 cap 个字符，超出部分用省略号标记。"""
+    """保留文本尾部，结果不超过 cap 个 UTF-16 码元。"""
     if cap <= 0:
         return ""
-    if len(text) <= cap:
+    if len(text.encode("utf-16-le")) // 2 <= cap:
         return text
-    return "…" + text[-(cap - 1):]
+    remaining = max(cap - 1, 0)
+    tail: list[str] = []
+    used = 0
+    for char in reversed(text):
+        char_len = 2 if ord(char) > 0xFFFF else 1
+        if used + char_len > remaining:
+            break
+        tail.append(char)
+        used += char_len
+    return "…" + "".join(reversed(tail))
 
 
 class TelegramLiveEditQueue:
@@ -663,9 +710,9 @@ class TelegramLiveTextMessage:
         if ok:
             self._last_plain = plain
 
-    async def delete(self) -> None:
+    async def delete(self) -> bool:
         if self._message_id is None:
-            return
+            return True
         message_id = self._message_id
         try:
             ok = await self._queue.run(
@@ -680,10 +727,12 @@ class TelegramLiveTextMessage:
             if ok is not None:
                 self._message_id = None
                 self._last_plain = ""
+                return True
         except RetryAfter as e:
             logger.warning("[telegram] live 预览删除命中限流，已跳过: %s", e)
         except (TimedOut, NetworkError) as e:
             logger.warning("[telegram] live 预览删除失败，已跳过: %s", e)
+        return False
 
 
 def _clip_live_text(text: str) -> str:
@@ -769,7 +818,7 @@ class TelegramStreamMessage:
         self._edit_cooldown_until = 0.0
 
     # ------------------------------------------------------------------
-    # public API
+    # 公共 API
     # ------------------------------------------------------------------
 
     async def push_delta(
@@ -824,7 +873,7 @@ class TelegramStreamMessage:
 
         # ---- 仅回复 ----
         if not thinking:
-            trimmed = reply[:limit]
+            trimmed = _utf16_prefix(reply, limit)
             return render_telegram_preview_html(trimmed), trimmed
 
         # ---- 仅思考 ----
@@ -836,7 +885,10 @@ class TelegramStreamMessage:
             return h, plain
 
         # ---- 双区域：reply 优先，thinking 取剩余 ----
-        reply_need = min(len(reply), limit - _PREVIEW_OVERHEAD - _THINKING_MIN)
+        reply_need = min(
+            len(reply.encode("utf-16-le")) // 2,
+            limit - _PREVIEW_OVERHEAD - _THINKING_MIN,
+        )
         t_budget = max(
             min(limit - reply_need - _PREVIEW_OVERHEAD, _THINKING_CAP),
             _THINKING_MIN,
@@ -844,7 +896,7 @@ class TelegramStreamMessage:
         r_budget = limit - t_budget - _PREVIEW_OVERHEAD
 
         tail = _ring_tail(thinking, t_budget)
-        reply_trimmed = reply[:r_budget]
+        reply_trimmed = _utf16_prefix(reply, r_budget)
 
         plain = f"💭 {tail}\n\n{reply_trimmed}"
         h = (
@@ -859,7 +911,7 @@ class TelegramStreamMessage:
 
     async def _push_reply_text(self, text: str) -> None:
         """finalize 专用：发送纯回复文本（无思考前缀）。"""
-        preview = text if len(text) <= _TELEGRAM_MSG_LIMIT else text[:_TELEGRAM_MSG_LIMIT]
+        preview = _utf16_prefix(text, _TELEGRAM_MSG_LIMIT)
         if preview == self._last_sent_plain:
             return
         html_text = render_telegram_preview_html(preview)

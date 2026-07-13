@@ -150,5 +150,7 @@ def build_spawn_subagent_prompt(
         scripting — 执行型，可运行命令和写文件
         general   — 两者兼有
     """
-    builder = _PROFILE_BUILDERS.get(profile, build_research_subagent_prompt)
+    builder = _PROFILE_BUILDERS.get(profile)
+    if builder is None:
+        raise ValueError(f"未知 subagent profile: {profile!r}")
     return builder(workspace, task_dir)

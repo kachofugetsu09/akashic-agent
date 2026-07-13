@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-from agent.config_models import Config, WiringConfig
+from agent.config_models import Config
 from agent.context import ContextBuilder
 from agent.peer_agent.process_manager import PeerProcessManager
 from agent.peer_agent.poller import PeerAgentPoller
@@ -34,20 +34,10 @@ from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.scheduler import SchedulerService
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
-from agent.turns.outbound import BusOutboundPort
-from bootstrap.toolsets.mcp import McpToolsetProvider
-from bootstrap.toolsets.memory import MemoryToolsetProvider
-from bootstrap.toolsets.meta import (
-    CommonMetaToolsetProvider,
-    SpawnToolsetProvider,
-    build_readonly_tools,
-)
+from bootstrap.toolsets.meta import build_readonly_tools
 from bootstrap.toolsets.peer import build_peer_agent_resources
 from bootstrap.toolsets.protocol import ToolsetDeps
-from bootstrap.toolsets.schedule import (
-    SchedulerToolsetProvider,
-    build_scheduler,
-)
+from bootstrap.toolsets.schedule import build_scheduler
 from bootstrap.wiring import (
     wire_turn_lifecycle,
     resolve_context_factory,
@@ -57,6 +47,7 @@ from bootstrap.wiring import (
 from agent.lifecycle.facade import TurnLifecycle
 from agent.plugins.jobs import ProviderPluginLlmService
 from bootstrap.providers import build_providers, build_vl_provider
+from bootstrap.cleanup import run_cleanup_steps
 from bus.event_bus import EventBus
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
@@ -65,6 +56,10 @@ from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
 from proactive_v2.presence import PresenceStore
 from session.manager import Session, SessionManager
+
+
+async def _noop_async() -> None:
+    return None
 
 
 @dataclass
@@ -90,8 +85,12 @@ class CoreRuntime:
     workspace: Path | None = None
 
     async def start(self) -> None:
+        """启动外部连接、peer 资源和插件扩展。"""
+
+        # 1. MCP 必须先完成连接，后续插件才能看到完整工具集。
         await self.mcp_registry.load_and_connect_all()
 
+        # 2. 仅在 peer 配置真实启用时发现工具并启动轮询。
         if (
             self.peer_poller is not None
             and self.peer_process_manager is not None
@@ -110,6 +109,8 @@ class CoreRuntime:
                     risk="external-side-effect",
                 )
             self.peer_poller.start()
+
+        # 3. 加载插件后同步 skill，再绑定工具 hook。
         if self.plugin_manager is not None:
             await self.plugin_manager.load_all()
             if self.workspace is not None:
@@ -118,7 +119,7 @@ class CoreRuntime:
                 link_result = PluginSkillLinker(
                     workspace=self.workspace,
                     plugin_roots=self.plugin_manager.plugin_dirs,
-                    memory_engine=getattr(self.memory_runtime, "engine", None),
+                    memory_engine=self.memory_runtime.engine,
                 ).sync(self.plugin_manager.active_plugins())
                 logger.info(
                     "插件 skill 同步完成: expected=%d created=%d repaired=%d removed=%d skipped=%d",
@@ -140,6 +141,9 @@ class CoreRuntime:
                     spawn_tool.add_tool_hooks(self.plugin_manager.tool_hooks)
 
     async def inspect_modules(self) -> str:
+        """按实际运行时依赖生成各阶段模块图。"""
+
+        # 1. 先加载插件，确保展示的是当前快照。
         if self.plugin_manager is not None:
             await self.plugin_manager.load_all()
 
@@ -156,6 +160,7 @@ class CoreRuntime:
         from agent.lifecycle.phases.before_turn import default_before_turn_modules
         from agent.lifecycle.phases.prompt_render import default_prompt_render_modules
 
+        # 2. 收集各阶段插件贡献。
         manager = self.plugin_manager
         before_turn_modules = manager.before_turn_modules if manager is not None else []
         before_reasoning_modules = (
@@ -169,10 +174,10 @@ class CoreRuntime:
         )
         after_turn_modules = manager.after_turn_modules if manager is not None else []
 
-        agent_core = cast(Any, getattr(self.loop, "_agent_core"))
+        # 3. 从 AgentLoop 的构造不变量取得阶段依赖。
+        agent_core = self.loop._agent_core
         pipeline = agent_core.pipeline
-        reasoner = getattr(self.loop, "_reasoner", None)
-        context = getattr(reasoner, "_context", None)
+        context = self.loop.context
 
         phases = [
             (
@@ -180,7 +185,7 @@ class CoreRuntime:
                 default_before_turn_modules(
                     self.event_bus,
                     self.session_manager,
-                    cast(Any, getattr(pipeline, "_context_store", None)),
+                    pipeline._context_store,
                     plugin_modules=cast(Any, before_turn_modules),
                 ),
             ),
@@ -190,7 +195,7 @@ class CoreRuntime:
                     self.event_bus,
                     self.tools,
                     self.session_manager,
-                    cast(Any, context),
+                    context,
                     plugin_modules=cast(Any, before_reasoning_modules),
                 ),
             ),
@@ -198,7 +203,7 @@ class CoreRuntime:
                 "prompt_render",
                 default_prompt_render_modules(
                     self.event_bus,
-                    cast(Any, context),
+                    context,
                     plugin_modules=cast(Any, prompt_render_modules),
                 ),
             ),
@@ -220,7 +225,7 @@ class CoreRuntime:
                 "after_reasoning",
                 default_after_reasoning_modules(
                     self.event_bus,
-                    cast(Any, getattr(pipeline, "_session", None)),
+                    pipeline._session,
                     plugin_modules=cast(Any, after_reasoning_modules),
                 ),
             ),
@@ -228,14 +233,15 @@ class CoreRuntime:
                 "after_turn",
                 default_after_turn_modules(
                     self.event_bus,
-                    cast(Any, getattr(pipeline, "_outbound_port", BusOutboundPort(self.bus))),
-                    cast(Any, context),
-                    cast(int, getattr(pipeline, "_history_window", 500)),
+                    pipeline._outbound_port,
+                    context,
+                    pipeline._history_window,
                     plugin_modules=cast(Any, after_turn_modules),
                 ),
             ),
         ]
 
+        # 4. 统一渲染执行顺序和依赖树。
         parts: list[str] = []
         for phase_name, modules in phases:
             parts.append("=" * 60)
@@ -245,20 +251,43 @@ class CoreRuntime:
         return "\n".join(parts)
 
     async def stop(self) -> None:
-        spawn_tool = self.tools.get_tool("spawn")
-        shutdown = getattr(spawn_tool, "shutdown", None)
-        if callable(shutdown):
-            result = shutdown()
-            if inspect.isawaitable(result):
-                await cast(Awaitable[object], result)
-        await self.event_bus.aclose()
-        if self.plugin_manager is not None:
-            await self.plugin_manager.terminate_all()
-        await self.mcp_registry.shutdown()
-        if self.peer_poller is not None:
-            await self.peer_poller.stop()
-        if self.peer_process_manager is not None:
-            await self.peer_process_manager.shutdown_all()
+        """按所有权逆序关闭核心运行时资源。"""
+
+        # 1. 将动态 spawn 工具和同步 session close 适配为异步清理步骤。
+        async def _stop_spawn() -> None:
+            spawn_tool = self.tools.get_tool("spawn")
+            shutdown = getattr(spawn_tool, "shutdown", None)
+            if callable(shutdown):
+                result = shutdown()
+                if inspect.isawaitable(result):
+                    await cast(Awaitable[object], result)
+
+        async def _close_session_manager() -> None:
+            self.session_manager.close()
+
+        # 2. 由统一 cleanup runner 完成全部步骤并保留失败。
+        await run_cleanup_steps(
+            ("spawn.shutdown", _stop_spawn),
+            ("event_bus.aclose", self.event_bus.aclose),
+            (
+                "plugin_manager.terminate_all",
+                self.plugin_manager.terminate_all
+                if self.plugin_manager is not None
+                else _noop_async,
+            ),
+            ("mcp_registry.shutdown", self.mcp_registry.shutdown),
+            (
+                "peer_poller.stop",
+                self.peer_poller.stop if self.peer_poller is not None else _noop_async,
+            ),
+            (
+                "peer_process_manager.shutdown_all",
+                self.peer_process_manager.shutdown_all
+                if self.peer_process_manager is not None
+                else _noop_async,
+            ),
+            ("session_manager.close", _close_session_manager),
+        )
 
 
 def build_registered_tools(
@@ -283,17 +312,23 @@ def build_registered_tools(
     PeerProcessManager | None,
     PeerAgentPoller | None,
 ]:
+    """按配置顺序构造并注册核心工具资源。"""
+
     from session.store import SessionStore
 
-    # ── 第一阶段：建服务（依赖无顺序陷阱）────────────────────────────────────
-    wiring = getattr(config, "wiring", WiringConfig())
-    tools = tools or ToolRegistry()
-    multimodal = getattr(config, "multimodal", True)
-    vl_available = (not multimodal) and bool(getattr(config, "vl_model", ""))
+    # 1. 构造共享服务；外部传入的 session_store 和 http_resources 不转移 ownership。
+    wiring = config.wiring
+    tools = tools if tools is not None else ToolRegistry()
+    multimodal = config.multimodal
+    vl_available = not multimodal and config.vl_model != ""
     readonly_tools = build_readonly_tools(
         http_resources, multimodal=multimodal, vl_available=vl_available
     )
-    store = session_store or SessionStore(workspace / "sessions.db")
+    store = (
+        session_store
+        if session_store is not None
+        else SessionStore(workspace / "sessions.db")
+    )
     push_tool = MessagePushTool(chat_lane=bus.chat_lane)
     memory_result = resolve_memory_toolset_provider(wiring.memory).register(
         tools,
@@ -316,7 +351,7 @@ def build_registered_tools(
         config, bus, http_resources
     )
 
-    # ── 第二阶段：注册工具（所有服务已就绪）──────────────────────────────────
+    # 2. 保持 wiring.toolsets 顺序注册，确保 memory engine 与 MCP fallback 不变。
     mcp_registry = None
     for name in wiring.toolsets:
         provider_obj = resolve_toolset_provider(
@@ -334,7 +369,7 @@ def build_registered_tools(
                 provider=provider,
                 light_provider=light_provider,
                 vl_provider=vl_provider,
-                vl_model=getattr(config, "vl_model", ""),
+                vl_model=config.vl_model,
                 bus=bus,
                 memory_engine=memory_runtime.engine,
                 scheduler=scheduler,
@@ -377,16 +412,21 @@ def _build_loop_deps(
     event_bus: EventBus,
     memory_runtime: MemoryRuntime,
 ) -> AgentLoopDeps:
-    wiring = getattr(config, "wiring", WiringConfig())
+    """将已构造的 runtime 资源装配成 AgentLoop 依赖。"""
+
+    # 1. 按 typed wiring 解析 context，并注入配置声明的媒体能力。
+    wiring = config.wiring
     context = resolve_context_factory(wiring.context)(
         workspace,
         memory_runtime.markdown.store,
     )
     if isinstance(context, ContextBuilder):
         context.set_media_capabilities(
-            multimodal=bool(getattr(config, "multimodal", True)),
-            vl_available=bool(getattr(config, "vl_model", "")),
+            multimodal=config.multimodal,
+            vl_available=config.vl_model != "",
         )
+
+    # 2. 绑定 memory/session service 与 retrieval pipeline。
     memory_engine = memory_runtime.engine
     light = light_provider or provider
     llm_services = LLMServices(provider=provider, light_provider=light)
@@ -442,12 +482,14 @@ def build_core_runtime(
     workspace: Path,
     http_resources: SharedHttpResources,
 ) -> CoreRuntime:
+    """构造核心运行时及其插件快照依赖。"""
+
+    # 1. 创建总线、provider 和由 CoreRuntime.stop 负责关闭的 session owner。
     bus = MessageBus()
     event_bus = EventBus()
     provider, light_provider, agent_provider = build_providers(config)
     vl_provider = build_vl_provider(config)
-    # agent_provider is used for the AgentLoop (QA / tool calling).
-    # provider (llm.main) is used for consolidation event extraction.
+    # 2. agent_provider 供 AgentLoop 使用，provider 供 consolidation 事件提取使用。
     loop_provider = agent_provider or provider
     loop_model = config.agent_model or config.model
     session_manager = SessionManager(workspace)
@@ -490,8 +532,8 @@ def build_core_runtime(
                 max_iterations=config.max_iterations,
                 max_tokens=config.max_tokens,
                 tool_search_enabled=config.tool_search_enabled,
-                multimodal=bool(getattr(config, "multimodal", True)),
-                vl_available=bool(getattr(config, "vl_model", "")),
+                multimodal=config.multimodal,
+                vl_available=config.vl_model != "",
             ),
             memory=MemoryConfig(
                 window=config.memory_window,
@@ -505,6 +547,8 @@ def build_core_runtime(
     )
 
     from agent.plugins.manager import PluginManager as _PluginManager
+
+    # 3. 创建插件 manager，并把 snapshot store 绑定到 loop。
     plugin_manager = _PluginManager(
         plugin_dirs=_resolve_plugin_dirs(workspace),
         event_bus=event_bus,

@@ -42,7 +42,7 @@ class ToolDeps:
     max_chars: int = 8_000
 
 
-# ── Tool Schemas ──────────────────────────────────────────────────────────
+# ── 工具 Schema ──────────────────────────────────────────────────────────
 
 def _schema(name: str, description: str, parameters: dict) -> dict:
     return {"type": "function", "function": {"name": name, "description": description, "parameters": parameters}}

@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
+
+logger = logging.getLogger(__name__)
+
+_FTS_CAPABILITY_ERROR_MARKERS = (
+    "no such module: fts5",
+    "no such tokenizer: trigram",
+    "unknown tokenizer: trigram",
+)
+_MESSAGE_COLUMN_FIELDS = frozenset(
+    {"id", "session_key", "seq", "role", "content", "timestamp", "tool_chain"}
+)
 
 
 def _resolve_path_text(value: object) -> str:
@@ -16,6 +28,153 @@ def _resolve_path_text(value: object) -> str:
         return str(Path(text).expanduser().resolve())
     except OSError:
         return ""
+
+
+def _decode_session_metadata(
+    raw: str | bytes | bytearray | None,
+    session_key: str,
+) -> dict[str, Any]:
+    """解析并校验 sessions.metadata 的 JSON object 契约。"""
+
+    metadata = _decode_json_payload(
+        raw,
+        fallback="{}",
+        field="session metadata",
+        identifier=session_key,
+    )
+    if not isinstance(metadata, dict):
+        raise ValueError(f"session metadata 必须是 JSON object: {session_key}")
+    return cast(dict[str, Any], metadata)
+
+
+def _decode_message_extra(
+    raw: str | bytes | bytearray | None,
+    message_id: str,
+) -> dict[str, Any]:
+    """解析并校验一条消息的 extra JSON object。"""
+
+    extra = _decode_json_payload(
+        raw,
+        fallback="{}",
+        field="message extra",
+        identifier=message_id,
+    )
+    if not isinstance(extra, dict):
+        raise ValueError(f"message extra 必须是 JSON object: {message_id}")
+    extra_dict = cast(dict[str, Any], extra)
+    reserved_fields = _MESSAGE_COLUMN_FIELDS.intersection(extra_dict)
+    if reserved_fields:
+        fields = ", ".join(sorted(reserved_fields))
+        raise ValueError(
+            f"message extra 不得覆盖消息列字段 ({fields}): {message_id}"
+        )
+    media: object = extra_dict.get("media")
+    if "media" in extra_dict and (
+        not isinstance(media, list)
+        or not all(isinstance(item, str) for item in cast(list[object], media))
+    ):
+        raise ValueError(f"message media 必须是字符串数组: {message_id}")
+    source_refs: object = extra_dict.get("source_refs")
+    if "source_refs" in extra_dict and (
+        not isinstance(source_refs, list)
+        or not all(
+            isinstance(item, dict) for item in cast(list[object], source_refs)
+        )
+    ):
+        raise ValueError(f"message source_refs 必须是对象数组: {message_id}")
+    proactive = extra_dict.get("proactive")
+    if "proactive" in extra_dict and not isinstance(proactive, bool):
+        raise ValueError(f"message proactive 必须是布尔值: {message_id}")
+    for field in ("state_summary_tag", "reasoning_content"):
+        value = extra_dict.get(field)
+        if field in extra_dict and not isinstance(value, str):
+            raise ValueError(f"message {field} 必须是字符串: {message_id}")
+    return extra_dict
+
+
+def _decode_json_payload(
+    raw: str | bytes | bytearray | None,
+    *,
+    fallback: str,
+    field: str,
+    identifier: str,
+) -> object:
+    """在 SQLite 反序列化边界统一转换 JSON 损坏错误。"""
+
+    try:
+        return json.loads(fallback if raw is None else raw)
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
+        raise ValueError(f"{field} JSON 损坏: {identifier}") from exc
+
+
+def _decode_message_tool_chain(
+    raw: str | bytes | bytearray,
+    message_id: str,
+) -> list[dict[str, object]]:
+    """解析并校验消息工具链的容器结构。"""
+
+    tool_chain = _decode_json_payload(
+        raw,
+        fallback="[]",
+        field="message tool_chain",
+        identifier=message_id,
+    )
+    if not isinstance(tool_chain, list):
+        raise ValueError(f"message tool_chain 必须是 JSON array: {message_id}")
+
+    # 1. 校验每个工具轮次和调用容器。
+    raw_groups = cast(list[object], tool_chain)
+    for group_index, raw_group in enumerate(raw_groups):
+        if not isinstance(raw_group, dict):
+            raise ValueError(
+                f"message tool_chain[{group_index}] 必须是 JSON object: {message_id}"
+            )
+        group = cast(dict[str, object], raw_group)
+        raw_calls = group.get("calls")
+        if not isinstance(raw_calls, list):
+            raise ValueError(
+                f"message tool_chain[{group_index}].calls 必须是 JSON array: {message_id}"
+            )
+        # 2. 校验调用字段；稀疏工具链仍可用于消息查询展示。
+        calls = cast(list[object], raw_calls)
+        for call_index, raw_call in enumerate(calls):
+            if not isinstance(raw_call, dict):
+                raise ValueError(
+                    "message tool_chain[{}].calls[{}] 必须是 JSON object: {}".format(
+                        group_index, call_index, message_id
+                    )
+                )
+            call = cast(dict[str, object], raw_call)
+            for field in ("call_id", "name"):
+                if field in call and not isinstance(call[field], str):
+                    raise ValueError(
+                        "message tool_chain[{}].calls[{}].{} 必须是字符串: {}".format(
+                            group_index, call_index, field, message_id
+                        )
+                    )
+            arguments = call.get("arguments")
+            if arguments is not None and not isinstance(arguments, dict):
+                raise ValueError(
+                    "message tool_chain[{}].calls[{}].arguments 必须是 JSON object: {}".format(
+                        group_index, call_index, message_id
+                    )
+                )
+            result = call.get("result")
+            if result is not None and not isinstance(result, str):
+                raise ValueError(
+                    "message tool_chain[{}].calls[{}].result 必须是字符串: {}".format(
+                        group_index, call_index, message_id
+                    )
+                )
+
+        # 3. 可选的展示字段若存在，也必须保持字符串契约。
+        for field in ("text", "reasoning_content"):
+            value = group.get(field)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(
+                    f"message tool_chain[{group_index}].{field} 必须是字符串: {message_id}"
+                )
+    return cast(list[dict[str, object]], tool_chain)
 
 
 class SessionStore:
@@ -34,8 +193,12 @@ class SessionStore:
         if not self._closed:
             try:
                 self.close()
-            except Exception:
-                pass
+            except sqlite3.Error as cleanup_error:
+                logger.warning(
+                    "SessionStore 析构关闭失败 db=%s err=%s",
+                    self.db_path,
+                    cleanup_error,
+                )
 
     def _init_schema(self) -> None:
         with self._lock:
@@ -95,27 +258,33 @@ class SessionStore:
                 )
 
     def _ensure_fts(self) -> None:
+        """确保全文索引可用，并仅在创建或修复时重建已有消息。"""
+
+        needs_rebuild = False
         try:
-            # Migrate to trigram tokenizer if the table exists without it.
-            # trigram supports CJK substring matching; the old unicode61 default does not.
+            # 1. 发现旧索引或缺失索引时，准备一次性重建。
             existing = self._conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+                "SELECT name, sql FROM sqlite_master "
+                "WHERE type='table' AND name='messages_fts'"
             ).fetchone()
+            needs_rebuild = existing is None
             if existing:
-                try:
-                    cfg = dict(
-                        self._conn.execute(
-                            "SELECT * FROM messages_fts_config"
-                        ).fetchall()
-                    )
-                    is_trigram = "trigram" in cfg.get("tokenize", "")
-                except sqlite3.OperationalError:
-                    is_trigram = False
+                table_sql = "".join(str(existing["sql"] or "").split()).lower()
+                is_trigram = "tokenize='trigram'" in table_sql
                 if not is_trigram:
                     self._conn.execute("DROP TABLE IF EXISTS messages_fts")
                     for trig in ("messages_ai", "messages_ad", "messages_au"):
                         self._conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
+                    needs_rebuild = True
 
+                trigger_rows = self._conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'trigger' AND name IN (?, ?, ?)",
+                    ("messages_ai", "messages_ad", "messages_au"),
+                ).fetchall()
+                needs_rebuild = needs_rebuild or len(trigger_rows) < 3
+
+            # 2. 确保索引和消息写入触发器存在。
             self._conn.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                     content,
@@ -142,13 +311,21 @@ class SessionStore:
                     INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
                 END
                 """)
-            # Rebuild index so existing messages are covered by trigram.
-            self._conn.execute(
-                "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')"
-            )
+            # 3. 正常重启依赖触发器增量维护，避免重复扫描整张 messages 表。
+            if needs_rebuild:
+                self._conn.execute(
+                    "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')"
+                )
             self._conn.commit()
             self._has_fts = True
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            if not any(
+                marker in str(exc).lower() for marker in _FTS_CAPABILITY_ERROR_MARKERS
+            ):
+                raise
+            logger.warning(
+                "SQLite FTS5/trigram 不可用，已禁用 session 全文检索: %s", exc
+            )
             self._has_fts = False
 
     def _has_message_embeddings_locked(self) -> bool:
@@ -234,7 +411,7 @@ class SessionStore:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "last_consolidated": int(row["last_consolidated"] or 0),
-            "metadata": json.loads(row["metadata"] or "{}"),
+            "metadata": _decode_session_metadata(row["metadata"], str(row["key"])),
             "last_user_at": row["last_user_at"],
             "last_proactive_at": row["last_proactive_at"],
         }
@@ -322,24 +499,21 @@ class SessionStore:
                 s.metadata,
                 s.last_user_at,
                 s.last_proactive_at,
-                first_user.content AS first_message_content,
-                COALESCE(msg.message_count, 0) AS message_count
+                (
+                    SELECT m.content
+                    FROM messages m
+                    WHERE m.session_key = s.key
+                      AND m.role = 'user'
+                      AND TRIM(COALESCE(m.content, '')) != ''
+                    ORDER BY m.seq ASC
+                    LIMIT 1
+                ) AS first_message_content,
+                (
+                    SELECT COUNT(1)
+                    FROM messages m
+                    WHERE m.session_key = s.key
+                ) AS message_count
             FROM sessions s
-            LEFT JOIN (
-                SELECT session_key, COUNT(1) AS message_count
-                FROM messages
-                GROUP BY session_key
-            ) msg ON msg.session_key = s.key
-            LEFT JOIN (
-                SELECT m.session_key, m.content
-                FROM messages m
-                INNER JOIN (
-                    SELECT session_key, MIN(seq) AS first_user_seq
-                    FROM messages
-                    WHERE role = 'user' AND TRIM(COALESCE(content, '')) != ''
-                    GROUP BY session_key
-                ) first ON first.session_key = m.session_key AND first.first_user_seq = m.seq
-            ) first_user ON first_user.session_key = s.key
             {where_sql}
             ORDER BY s.{safe_sort_by} {safe_sort_order}, s.key ASC
             LIMIT ? OFFSET ?
@@ -357,7 +531,9 @@ class SessionStore:
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
                 "last_consolidated": int(row["last_consolidated"] or 0),
-                "metadata": json.loads(row["metadata"] or "{}"),
+                "metadata": _decode_session_metadata(
+                    row["metadata"], str(row["key"])
+                ),
                 "last_user_at": row["last_user_at"],
                 "last_proactive_at": row["last_proactive_at"],
                 "first_message_content": row["first_message_content"],
@@ -604,7 +780,7 @@ class SessionStore:
                 {
                     "key": key,
                     "chat_id": chat_id,
-                    "metadata": json.loads(row["metadata"] or "{}"),
+                    "metadata": _decode_session_metadata(row["metadata"], key),
                 }
             )
         return results
@@ -617,20 +793,23 @@ class SessionStore:
             ).fetchone()
         return int((row["c"] if row else 0) or 0)
 
-    def next_seq(self, session_key: str) -> int:
-        with self._lock:
-            meta = self._conn.execute(
-                "SELECT next_seq FROM sessions WHERE key = ?",
-                (session_key,),
-            ).fetchone()
-            row = self._conn.execute(
-                "SELECT COALESCE(MAX(seq) + 1, 0) AS next_seq FROM messages WHERE session_key = ?",
-                (session_key,),
-            ).fetchone()
+    def _next_seq_locked(self, session_key: str) -> int:
+        meta = self._conn.execute(
+            "SELECT next_seq FROM sessions WHERE key = ?",
+            (session_key,),
+        ).fetchone()
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(seq) + 1, 0) AS next_seq FROM messages WHERE session_key = ?",
+            (session_key,),
+        ).fetchone()
         from_messages = int((row["next_seq"] if row else 0) or 0)
         if meta is None:
             return from_messages
         return max(int(meta["next_seq"] or 0), from_messages)
+
+    def next_seq(self, session_key: str) -> int:
+        with self._lock:
+            return self._next_seq_locked(session_key)
 
     def insert_message(
         self,
@@ -689,6 +868,144 @@ class SessionStore:
         if extra:
             row.update(extra)
         return row
+
+    def _prepare_message_batch(
+        self,
+        key: str,
+        *,
+        start_seq: int,
+        messages: list[dict[str, Any]],
+    ) -> tuple[list[tuple[Any, ...]], list[dict[str, Any]]]:
+        """序列化待写消息并构造提交成功后的内存行。"""
+
+        insert_rows: list[tuple[Any, ...]] = []
+        result_rows: list[dict[str, Any]] = []
+
+        # 1. 先完成序列化，失败时不改变数据库和内存消息。
+        for offset, message in enumerate(messages):
+            seq = start_seq + offset
+            message_id = f"{key}:{seq}"
+            tool_chain = message.get("tool_chain")
+            extra = message["extra"]
+            tool_chain_payload = (
+                json.dumps(tool_chain, ensure_ascii=False)
+                if tool_chain is not None
+                else None
+            )
+            insert_rows.append(
+                (
+                    message_id,
+                    key,
+                    seq,
+                    str(message["role"]),
+                    str(message["content"]),
+                    tool_chain_payload,
+                    json.dumps(extra, ensure_ascii=False),
+                    str(message["timestamp"]),
+                )
+            )
+            row = {
+                "id": message_id,
+                "session_key": key,
+                "seq": seq,
+                "role": str(message["role"]),
+                "content": str(message["content"]),
+                "timestamp": str(message["timestamp"]),
+            }
+            if tool_chain is not None:
+                row["tool_chain"] = tool_chain
+            row.update(extra)
+            result_rows.append(row)
+        return insert_rows, result_rows
+
+    def persist_session(
+        self,
+        key: str,
+        *,
+        created_at: str,
+        updated_at: str,
+        last_consolidated: int,
+        metadata: dict[str, Any],
+        messages: list[dict[str, Any]],
+        retained_message_ids: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """原子更新 session 元数据并追加消息，传保留 ID 时替换该 session 的消息集合。"""
+
+        metadata_payload = json.dumps(metadata, ensure_ascii=False)
+        result_rows: list[dict[str, Any]] = []
+
+        # 1. 元数据和消息必须同成同败，避免磁盘留下半个 turn。
+        with self._lock:
+            with self._conn:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute(
+                    """
+                    INSERT INTO sessions (key, created_at, updated_at, last_consolidated, metadata)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        updated_at = excluded.updated_at,
+                        last_consolidated = excluded.last_consolidated,
+                        metadata = excluded.metadata
+                    """,
+                    (key, created_at, updated_at, int(last_consolidated), metadata_payload),
+                )
+                if retained_message_ids is not None:
+                    self._delete_messages_not_retained_locked(
+                        key,
+                        retained_message_ids,
+                    )
+                if messages:
+                    start_seq = self._next_seq_locked(key)
+                    insert_rows, result_rows = self._prepare_message_batch(
+                        key,
+                        start_seq=start_seq,
+                        messages=messages,
+                    )
+                    self._conn.executemany(
+                        """
+                        INSERT INTO messages (id, session_key, seq, role, content, tool_chain, extra, ts)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        insert_rows,
+                    )
+                    next_seq = start_seq + len(insert_rows)
+                    self._conn.execute(
+                        """
+                        UPDATE sessions
+                        SET next_seq = CASE WHEN next_seq < ? THEN ? ELSE next_seq END
+                        WHERE key = ?
+                        """,
+                        (next_seq, next_seq, key),
+                    )
+        return result_rows
+
+    def _delete_messages_not_retained_locked(
+        self,
+        session_key: str,
+        retained_message_ids: set[str],
+    ) -> None:
+        """删除同一 session 中不在替换结果里的旧消息。"""
+
+        # 1. 在当前事务内确定需要移除的消息，避免删除其他 session 的记录。
+        rows = self._conn.execute(
+            "SELECT id FROM messages WHERE session_key = ?",
+            (session_key,),
+        ).fetchall()
+        removed_ids = [
+            str(row["id"])
+            for row in rows
+            if str(row["id"]) not in retained_message_ids
+        ]
+        if not removed_ids:
+            return
+
+        # 2. 同步清理消息及其 embedding，事务失败时由调用方统一回滚。
+        placeholders = ",".join("?" for _ in removed_ids)
+        self._conn.execute(
+            f"DELETE FROM messages WHERE session_key = ? AND id IN ({placeholders})",
+            (session_key, *removed_ids),
+        )
+        self._delete_message_embeddings_locked(removed_ids)
 
     def fetch_session_messages(self, session_key: str) -> list[dict[str, Any]]:
         with self._lock:
@@ -759,21 +1076,20 @@ class SessionStore:
             return False
         with self._lock:
             rows = self._conn.execute(
-                "SELECT extra FROM messages WHERE extra LIKE ?",
+                "SELECT id, extra FROM messages WHERE extra LIKE ?",
                 ('%"media"%',),
             ).fetchall()
         for row in rows:
-            try:
-                loaded = json.loads(row["extra"] or "{}")
-            except json.JSONDecodeError:
+            message_id = str(row["id"])
+            extra = _decode_message_extra(row["extra"], message_id)
+            if "media" not in extra:
                 continue
-            if not isinstance(loaded, dict):
-                continue
-            extra = cast(dict[str, object], loaded)
-            media = extra.get("media")
-            if not isinstance(media, list):
-                continue
-            for item in cast(list[object], media):
+            media = extra["media"]
+            if not isinstance(media, list) or not all(
+                isinstance(item, str) for item in media
+            ):
+                raise ValueError(f"message media 必须是字符串数组: {message_id}")
+            for item in cast(list[str], media):
                 if _resolve_path_text(item) == target:
                     return True
         return False
@@ -1112,18 +1428,32 @@ class SessionStore:
         return [self._row_to_message(row) for row in rows], total
 
     def _row_to_message(self, row: sqlite3.Row) -> dict[str, Any]:
+        """校验并反序列化一行消息，拒绝损坏的 JSON 载荷。"""
+
+        message_id = str(row["id"])
+        role = row["role"]
+        if role not in {"user", "assistant"}:
+            raise ValueError(f"message role 无效: {message_id}")
+        content = row["content"]
+        if not isinstance(content, str):
+            raise ValueError(f"message content 必须是字符串: {message_id}")
+        timestamp = row["ts"]
+        if not isinstance(timestamp, str):
+            raise ValueError(f"message timestamp 必须是字符串: {message_id}")
         message: dict[str, Any] = {
-            "id": row["id"],
+            "id": message_id,
             "session_key": row["session_key"],
             "seq": int(row["seq"]),
-            "role": row["role"],
-            "content": row["content"] or "",
-            "timestamp": row["ts"],
+            "role": role,
+            "content": content,
+            "timestamp": timestamp,
         }
-        tool_chain = row["tool_chain"]
-        if tool_chain:
-            message["tool_chain"] = json.loads(tool_chain)
-        extra = json.loads(row["extra"] or "{}")
-        if extra:
-            message.update(extra)
+        raw_tool_chain = row["tool_chain"]
+        if raw_tool_chain is not None:
+            tool_chain = _decode_message_tool_chain(raw_tool_chain, message_id)
+            if tool_chain:
+                message["tool_chain"] = tool_chain
+        extra_dict = _decode_message_extra(row["extra"], message_id)
+        if extra_dict:
+            message.update(extra_dict)
         return message

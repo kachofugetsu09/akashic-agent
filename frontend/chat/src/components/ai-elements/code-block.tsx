@@ -29,7 +29,7 @@ import type {
 } from "shiki";
 import { createHighlighter } from "shiki";
 
-// Shiki uses bitflags for font styles: 1=italic, 2=bold, 4=underline
+// Shiki 用位标志表示字体样式：1 为斜体，2 为粗体，4 为下划线。
 // oxlint-disable-next-line eslint(no-bitwise)
 const isItalic = (fontStyle: number | undefined) => fontStyle && fontStyle & 1;
 // oxlint-disable-next-line eslint(no-bitwise)
@@ -38,7 +38,7 @@ const isUnderline = (fontStyle: number | undefined) =>
   // oxlint-disable-next-line eslint(no-bitwise)
   fontStyle && fontStyle & 4;
 
-// Transform tokens to include pre-computed keys to avoid noArrayIndexKey lint
+// 预先生成稳定键，避免渲染时直接使用数组下标。
 interface KeyedToken {
   token: ThemedToken;
   key: string;
@@ -57,7 +57,6 @@ const addKeysToTokens = (lines: ThemedToken[][]): KeyedLine[] =>
     })),
   }));
 
-// Token rendering component
 const TokenSpan = ({ token }: { token: ThemedToken }) => (
   <span
     className="dark:!bg-[var(--shiki-dark-bg)] dark:!text-[var(--shiki-dark)]"
@@ -76,7 +75,7 @@ const TokenSpan = ({ token }: { token: ThemedToken }) => (
   </span>
 );
 
-// Line number styles using CSS counters
+// 行号由 CSS 计数器生成，不写入代码文本。
 const LINE_NUMBER_CLASSES = cn(
   "block",
   "before:content-[counter(line)]",
@@ -90,7 +89,6 @@ const LINE_NUMBER_CLASSES = cn(
   "before:select-none"
 );
 
-// Line rendering component
 const LineSpan = ({
   keyedLine,
   showLineNumbers,
@@ -107,7 +105,6 @@ const LineSpan = ({
   </span>
 );
 
-// Types
 type CodeBlockProps = HTMLAttributes<HTMLDivElement> & {
   code: string;
   language: BundledLanguage;
@@ -124,27 +121,40 @@ interface CodeBlockContextType {
   code: string;
 }
 
-// Context
 const CodeBlockContext = createContext<CodeBlockContextType>({
   code: "",
 });
 
-// Highlighter cache (singleton per language)
+// 每种语言复用一个 Shiki 高亮器。
 const highlighterCache = new Map<
   string,
   Promise<HighlighterGeneric<BundledLanguage, BundledTheme>>
 >();
 
-// Token cache
+// 限制高亮结果缓存容量，避免长会话持续占用内存。
+const TOKEN_CACHE_LIMIT = 128;
 const tokensCache = new Map<string, TokenizedCode>();
+const pendingHighlights = new Map<string, Promise<void>>();
 
-// Subscribers for async token updates
 const subscribers = new Map<string, Set<(result: TokenizedCode) => void>>();
 
 const getTokensCacheKey = (code: string, language: BundledLanguage) => {
-  const start = code.slice(0, 100);
-  const end = code.length > 100 ? code.slice(-100) : "";
-  return `${language}:${code.length}:${start}:${end}`;
+  return `${language}\0${code}`;
+};
+
+const getCachedTokens = (key: string): TokenizedCode | undefined => {
+  const cached = tokensCache.get(key);
+  if (!cached) return undefined;
+  tokensCache.delete(key);
+  tokensCache.set(key, cached);
+  return cached;
+};
+
+const cacheTokens = (key: string, value: TokenizedCode): void => {
+  tokensCache.set(key, value);
+  if (tokensCache.size <= TOKEN_CACHE_LIMIT) return;
+  const oldestKey = tokensCache.keys().next().value;
+  if (oldestKey !== undefined) tokensCache.delete(oldestKey);
 };
 
 const getHighlighter = (
@@ -164,7 +174,7 @@ const getHighlighter = (
   return highlighterPromise;
 };
 
-// Create raw tokens for immediate display while highlighting loads
+// Shiki 加载期间先展示原始代码，避免内容区域留空。
 const createRawTokens = (code: string): TokenizedCode => ({
   bg: "transparent",
   fg: "inherit",
@@ -180,7 +190,6 @@ const createRawTokens = (code: string): TokenizedCode => ({
   ),
 });
 
-// Synchronous highlight with callback for async results
 export const highlightCode = (
   code: string,
   language: BundledLanguage,
@@ -189,13 +198,11 @@ export const highlightCode = (
 ): TokenizedCode | null => {
   const tokensCacheKey = getTokensCacheKey(code, language);
 
-  // Return cached result if available
-  const cached = tokensCache.get(tokensCacheKey);
+  const cached = getCachedTokens(tokensCacheKey);
   if (cached) {
     return cached;
   }
 
-  // Subscribe callback if provided
   if (callback) {
     if (!subscribers.has(tokensCacheKey)) {
       subscribers.set(tokensCacheKey, new Set());
@@ -203,8 +210,10 @@ export const highlightCode = (
     subscribers.get(tokensCacheKey)?.add(callback);
   }
 
-  // Start highlighting in background - fire-and-forget async pattern
-  getHighlighter(language)
+  if (pendingHighlights.has(tokensCacheKey)) return null;
+
+  // 同一段代码只启动一次异步高亮，渲染与副作用共用结果。
+  const pending = getHighlighter(language)
     // oxlint-disable-next-line eslint-plugin-promise(prefer-await-to-then)
     .then((highlighter) => {
       const availableLangs = highlighter.getLoadedLanguages();
@@ -224,10 +233,8 @@ export const highlightCode = (
         tokens: result.tokens,
       };
 
-      // Cache the result
-      tokensCache.set(tokensCacheKey, tokenized);
+      cacheTokens(tokensCacheKey, tokenized);
 
-      // Notify all subscribers
       const subs = subscribers.get(tokensCacheKey);
       if (subs) {
         for (const sub of subs) {
@@ -240,7 +247,11 @@ export const highlightCode = (
     .catch((error) => {
       console.error("Failed to highlight code:", error);
       subscribers.delete(tokensCacheKey);
+    })
+    .finally(() => {
+      pendingHighlights.delete(tokensCacheKey);
     });
+  pendingHighlights.set(tokensCacheKey, pending);
 
   return null;
 };
@@ -380,34 +391,26 @@ export const CodeBlockContent = ({
   language: BundledLanguage;
   showLineNumbers?: boolean;
 }) => {
-  // Memoized raw tokens for immediate display
   const rawTokens = useMemo(() => createRawTokens(code), [code]);
 
-  // Synchronous cache lookup — avoids setState in effect for cached results
+  // 同步读取缓存，避免命中后仍在副作用中更新状态。
   const syncTokens = useMemo(
     () => highlightCode(code, language) ?? rawTokens,
     [code, language, rawTokens]
   );
 
-  // Async highlighting result (populated after shiki loads)
-  const [asyncTokens, setAsyncTokens] = useState<TokenizedCode | null>(null);
-  const asyncKeyRef = useRef({ code, language });
-
-  // Invalidate stale async tokens synchronously during render
-  if (
-    asyncKeyRef.current.code !== code ||
-    asyncKeyRef.current.language !== language
-  ) {
-    asyncKeyRef.current = { code, language };
-    setAsyncTokens(null);
-  }
+  const [asyncResult, setAsyncResult] = useState<{
+    code: string;
+    language: BundledLanguage;
+    tokens: TokenizedCode;
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
     highlightCode(code, language, (result) => {
       if (!cancelled) {
-        setAsyncTokens(result);
+        setAsyncResult({ code, language, tokens: result });
       }
     });
 
@@ -416,7 +419,11 @@ export const CodeBlockContent = ({
     };
   }, [code, language]);
 
-  const tokenized = asyncTokens ?? syncTokens;
+  // 旧异步结果保留在状态中，但只展示与当前输入匹配的结果。
+  const tokenized =
+    asyncResult?.code === code && asyncResult.language === language
+      ? asyncResult.tokens
+      : syncTokens;
 
   return (
     <div className="relative overflow-auto">

@@ -11,7 +11,7 @@ import logging
 import re
 from typing import cast
 
-from memory2.store import MemoryStore2
+from memory2.store import MemoryHit, MemoryStore2, memory_hit_score
 from memory2.embedder import Embedder
 
 logger = logging.getLogger(__name__)
@@ -79,7 +79,6 @@ class Retriever:
         self._hotness_alpha = max(0.0, min(1.0, float(hotness_alpha)))
         self._hotness_half_life_days = max(1.0, float(hotness_half_life_days))
 
-    # 统一检索入口：recall_memory 和被动预检索都复用这条查库路径。
     async def retrieve(
         self,
         query: str,
@@ -93,7 +92,9 @@ class Retriever:
         time_start: datetime | None = None,
         time_end: datetime | None = None,
         keyword_enabled: bool = True,
-    ) -> list[dict]:
+    ) -> list[MemoryHit]:
+        """融合 vector 与 keyword lane，并返回统一的 top-k 候选。"""
+
         # 1. query 与辅助 query 一起进入向量 lane，避免多入口语义漂移。
         actual_top_k = self._top_k if top_k is None else max(1, int(top_k))
         actual_threshold = (
@@ -113,7 +114,7 @@ class Retriever:
         )
 
         # 2. 关键词 lane 只用原始 query，保留用户字面命中的召回能力。
-        keyword_items: list[dict] = []
+        keyword_items: list[MemoryHit] = []
         if keyword_enabled:
             keyword_items = self._retrieve_keyword_lane(
                 query,
@@ -149,60 +150,42 @@ class Retriever:
         require_scope_match: bool,
         time_start: datetime | None,
         time_end: datetime | None,
-    ) -> list[dict]:
+    ) -> list[MemoryHit]:
+        """并行生成查询向量，并合并批量检索返回的候选。"""
+
+        # 1. 生成各检索 lane 的向量；单个外部 embedding 失败不影响其余 lane。
         if not query_texts:
             return []
         vectors = await self._embed_lanes(query_texts)
         if not vectors:
             return []
-        hit_groups: list[list[dict]] = []
-        try:
-            hit_groups = self._store.vector_search_batch(
-                vectors,
-                top_k=actual_top_k,
-                memory_types=memory_types,
-                score_threshold=score_threshold,
-                scope_channel=scope_channel,
-                scope_chat_id=scope_chat_id,
-                require_scope_match=require_scope_match,
-                hotness_alpha=self._hotness_alpha,
-                hotness_half_life_days=self._hotness_half_life_days,
-                time_start=time_start,
-                time_end=time_end,
-            )
-        except Exception as e:
-            logger.debug("memory2 retrieve: vector_search_batch failed: %s", e)
 
-        seen: dict[str, dict] = {}
-        if hit_groups:
-            for hits in hit_groups:
-                for hit in hits:
-                    _remember_vector_hit(seen, hit)
-            return list(seen.values())
+        # 2. 由 MemoryStore2 统一执行批量检索；存储故障必须向调用方暴露。
+        hit_groups = self._store.vector_search_batch(
+            vectors,
+            top_k=actual_top_k,
+            memory_types=memory_types,
+            score_threshold=score_threshold,
+            scope_channel=scope_channel,
+            scope_chat_id=scope_chat_id,
+            require_scope_match=require_scope_match,
+            hotness_alpha=self._hotness_alpha,
+            hotness_half_life_days=self._hotness_half_life_days,
+            time_start=time_start,
+            time_end=time_end,
+        )
 
-        for vector in vectors:
-            try:
-                hits = self._store.vector_search(
-                    query_vec=vector,
-                    top_k=actual_top_k,
-                    memory_types=memory_types,
-                    score_threshold=score_threshold,
-                    scope_channel=scope_channel,
-                    scope_chat_id=scope_chat_id,
-                    require_scope_match=require_scope_match,
-                    hotness_alpha=self._hotness_alpha,
-                    hotness_half_life_days=self._hotness_half_life_days,
-                    time_start=time_start,
-                    time_end=time_end,
-                )
-            except Exception as e:
-                logger.debug("memory2 retrieve: vector_search failed: %s", e)
-                continue
+        # 3. 同一记忆只保留得分最高的 lane 命中。
+        seen: dict[str, MemoryHit] = {}
+        for hits in hit_groups:
             for hit in hits:
                 _remember_vector_hit(seen, hit)
         return list(seen.values())
 
     async def _embed_lanes(self, query_texts: list[str]) -> list[list[float]]:
+        """并行生成查询向量，仅将单条外部 embedding 异常降级为缺失 lane。"""
+
+        # 1. 每条 query 独立设置超时，保留可选 vector lane 的降级能力。
         results = await asyncio.gather(
             *(
                 asyncio.wait_for(
@@ -213,9 +196,12 @@ class Retriever:
             ),
             return_exceptions=True,
         )
+        # 2. 只吞掉普通 provider 异常；取消信号必须继续传播。
         vectors: list[list[float]] = []
         for result in results:
-            if isinstance(result, BaseException):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, Exception):
                 logger.warning("memory2 retrieve: embed failed, fallback lane skipped: %s", result)
                 continue
             vectors.append(cast(list[float], result))
@@ -232,7 +218,7 @@ class Retriever:
         require_scope_match: bool,
         time_start: datetime | None,
         time_end: datetime | None,
-    ) -> list[dict]:
+    ) -> list[MemoryHit]:
         terms = _extract_terms(query)
         if not terms:
             return []
@@ -259,7 +245,7 @@ class Retriever:
         scope_channel: str | None = None,
         scope_chat_id: str | None = None,
         require_scope_match: bool = False,
-    ) -> list[dict]:
+    ) -> list[MemoryHit]:
         """复用已有 query_vec 做本地 vector_search，跳过 embedding 步骤。"""
         actual_top_k = self._top_k if top_k is None else max(1, int(top_k))
         items = self._store.vector_search(
@@ -276,7 +262,7 @@ class Retriever:
         logger.debug(f"memory2 retrieve_with_vec: hits={len(items)}")
         return items
 
-    def build_injection_block(self, items: list[dict]) -> tuple[str, list[str]]:
+    def build_injection_block(self, items: list[MemoryHit]) -> tuple[str, list[str]]:
         """单次流程：筛选条目 → 分段格式化 → 应用字符预算。"""
         selected, forced, norms, events = self._select_injection_sections(items)
         if not selected:
@@ -285,27 +271,30 @@ class Retriever:
         parts = self._build_section_parts(forced, norms, events)
         return self._apply_char_budget(parts, has_forced=bool(forced))
 
-    def _select_for_injection(self, items: list[dict]) -> list[dict]:
+    def _select_for_injection(self, items: list[MemoryHit]) -> list[MemoryHit]:
         selected, _forced, _norms, _events = self._select_injection_sections(items)
         return selected
 
     def _select_injection_sections(
         self,
-        items: list[dict],
-    ) -> tuple[list[dict], list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
-        """1. 筛选条目 2. 按段落准备格式化文本。"""
+        items: list[MemoryHit],
+    ) -> tuple[list[MemoryHit], list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
+        """按检索分数和记忆类型筛选候选，并准备注入段落。"""
+
+        # 1. store 已建立候选结构，按统一 score 排序并直接消费。
         if not items:
             return [], [], [], []
 
         sorted_items = sorted(
-            [i for i in items if isinstance(i, dict)],
-            key=lambda x: float(x.get("score", 0.0) or 0.0),
+            items,
+            key=memory_hit_score,
             reverse=True,
         )
         if not sorted_items:
             return [], [], [], []
 
-        selected: list[dict] = []
+        # 2. 应用类型、强制规则和数量上限。
+        selected: list[MemoryHit] = []
         forced: list[tuple[str, str]] = []
         norms: list[tuple[str, str]] = []
         events: list[tuple[str, str]] = []
@@ -313,12 +302,12 @@ class Retriever:
         norm_count = 0
         event_count = 0
         for item in sorted_items:
-            mtype = str(item.get("memory_type", "") or "")
-            score = float(item.get("score", 0.0) or 0.0)
-            extra = item.get("extra_json") or {}
-            item_id = str(item.get("id", "") or "")
-            summary = str(item.get("summary", "") or "").strip()
-            happened_at = item.get("happened_at") or ""
+            mtype = item["memory_type"]
+            score = memory_hit_score(item)
+            extra = item.get("extra_json", {})
+            item_id = item["id"]
+            summary = item["summary"].strip()
+            happened_at = item["happened_at"]
             if (
                 self._procedure_guard_enabled
                 and mtype == "procedure"
@@ -354,9 +343,9 @@ class Retriever:
                 confidence_label = "有印象，不确定"
             item["confidence_label"] = confidence_label
             if mtype == "procedure":
-                steps = extra.get("steps") or []
+                steps = _procedure_steps(item_id, extra)
                 if steps:
-                    step_text = "；".join(str(s) for s in steps)
+                    step_text = "；".join(steps)
                     norms.append(
                         (
                             item_id,
@@ -386,6 +375,7 @@ class Retriever:
                     )
                 )
 
+        # 3. 返回已选候选和按注入 section 分组的文本。
         return selected, forced, norms, events
 
     def _build_section_parts(
@@ -461,25 +451,36 @@ def _dedupe_texts(texts: list[str]) -> list[str]:
 
 
 def _remember_vector_hit(
-    seen: dict[str, dict],
-    hit: dict,
+    seen: dict[str, MemoryHit],
+    hit: MemoryHit,
 ) -> None:
     hit_id = _hit_id(hit)
-    hit_score = _hit_score(hit)
-    seen_score = _hit_score(seen.get(hit_id, {}))
-    if hit_id and (hit_id not in seen or hit_score > seen_score):
+    if hit_id not in seen:
+        seen[hit_id] = hit
+        return
+    if memory_hit_score(hit) > memory_hit_score(seen[hit_id]):
         seen[hit_id] = hit
 
 
-def _hit_id(item: dict) -> str:
-    return str(item.get("id", "") or "")
+def _hit_id(item: MemoryHit) -> str:
+    item_id = item["id"]
+    if not item_id:
+        raise ValueError("memory hit id must not be empty")
+    return item_id
 
 
-def _hit_score(item: dict, fallback_key: str = "score") -> float:
-    raw = item.get(fallback_key)
-    if raw is None and fallback_key != "score":
-        raw = item.get("score")
-    return float(raw) if isinstance(raw, int | float) else 0.0
+def _procedure_steps(item_id: str, extra: dict[str, object]) -> list[str]:
+    raw_steps = extra.get("steps")
+    if raw_steps is None:
+        return []
+    if not isinstance(raw_steps, list):
+        raise TypeError(f"procedure memory hit {item_id!r} has invalid steps")
+    steps: list[str] = []
+    for step in cast(list[object], raw_steps):
+        if not isinstance(step, str):
+            raise TypeError(f"procedure memory hit {item_id!r} has invalid steps")
+        steps.append(step)
+    return steps
 
 
 _CJK_STOPWORDS = {
@@ -518,37 +519,42 @@ def _extract_terms(query: str) -> list[str]:
 
 
 def _rrf_merge(
-    vector_items: list[dict],
-    keyword_items: list[dict],
+    vector_items: list[MemoryHit],
+    keyword_items: list[MemoryHit],
     *,
     top_n: int,
     k: int = _RRF_K,
-) -> list[dict]:
+) -> list[MemoryHit]:
+    """按 vector 与 keyword 的 lane rank 融合候选，并保持平分时的稳定顺序。"""
+
+    # 1. 记录每个 lane 的首个 rank。
     vec_rank: dict[str, int] = {}
-    for index, item in enumerate(sorted(vector_items, key=_hit_score, reverse=True)):
+    for index, item in enumerate(
+        sorted(vector_items, key=memory_hit_score, reverse=True)
+    ):
         item_id = _hit_id(item)
-        if item_id and item_id not in vec_rank:
+        if item_id not in vec_rank:
             vec_rank[item_id] = index + 1
 
     keyword_rank: dict[str, int] = {}
     for index, item in enumerate(keyword_items):
         item_id = _hit_id(item)
-        if item_id and item_id not in keyword_rank:
+        if item_id not in keyword_rank:
             keyword_rank[item_id] = index + 1
 
-    id_to_item: dict[str, dict] = {}
+    # 2. 归一化 keyword-only 候选，保留 vector hit 的完整字段。
+    id_to_item: dict[str, MemoryHit] = {}
     for item in keyword_items:
         item_id = _hit_id(item)
-        if item_id:
-            merged_item = dict(item)
-            if "score" not in merged_item:
-                merged_item["score"] = _hit_score(merged_item, fallback_key="keyword_score")
-            id_to_item[item_id] = merged_item
+        merged_item = cast(MemoryHit, dict(item))
+        if "score" not in merged_item:
+            merged_item["score"] = memory_hit_score(item, field="keyword_score")
+        id_to_item[item_id] = merged_item
     for item in vector_items:
         item_id = _hit_id(item)
-        if item_id:
-            id_to_item[item_id] = item
+        id_to_item[item_id] = item
 
+    # 3. 计算 RRF，并用 id 消除相同分数下的 set 遍历顺序不确定性。
     scored: list[tuple[str, float, float]] = []
     for item_id in set(vec_rank) | set(keyword_rank):
         rrf_score = 0.0
@@ -556,12 +562,12 @@ def _rrf_merge(
             rrf_score += 1.0 / (k + vec_rank[item_id])
         if item_id in keyword_rank:
             rrf_score += _KEYWORD_RRF_WEIGHT / (k + keyword_rank[item_id])
-        scored.append((item_id, rrf_score, _hit_score(id_to_item.get(item_id, {}))))
+        scored.append((item_id, rrf_score, memory_hit_score(id_to_item[item_id])))
 
-    scored.sort(key=lambda item: (item[1], item[2]), reverse=True)
-    result: list[dict] = []
+    scored.sort(key=lambda item: (-item[1], -item[2], item[0]))
+    result: list[MemoryHit] = []
     for item_id, rrf_score, _score in scored[:top_n]:
-        item = dict(id_to_item[item_id])
+        item = cast(MemoryHit, dict(id_to_item[item_id]))
         item["rrf_score"] = rrf_score
         result.append(item)
     return result
@@ -579,7 +585,7 @@ def _format_source_tag(source_ref: str | None) -> str:
     try:
         parsed = json.loads(raw)
         if isinstance(parsed, list):
-            ids = [str(i) for i in parsed if i]
+            ids = [str(i) for i in cast(list[object], parsed) if i]
     except (json.JSONDecodeError, ValueError):
         if raw:
             ids = [raw]
@@ -591,7 +597,7 @@ def _format_source_tag(source_ref: str | None) -> str:
 
 
 def _format_memory_meta(
-    item: dict,
+    item: MemoryHit,
     memory_type: str,
     *,
     confidence_label: str = "",
@@ -599,21 +605,21 @@ def _format_memory_meta(
     parts: list[str] = []
     if confidence_label:
         parts.append(confidence_label)
-    happened_at_raw = item.get("happened_at")
+    happened_at_raw = item["happened_at"]
     happened_at = _normalize_happened_at(happened_at_raw)
     if happened_at:
         parts.append(f"发生于: {happened_at}")
         age = _format_relative_age(happened_at_raw)
         if age:
             parts.append(age)
-    source_ref = item.get("source_ref")
+    source_ref = item["source_ref"]
     src_tag = _format_source_tag(source_ref)
     if src_tag:
         parts.append("证据: 可回源原文")
         parts.append(src_tag.strip())
     else:
         parts.append("证据: 记忆摘要")
-    if memory_type == "preference" and _looks_low_confidence_memory(item.get("summary", "")):
+    if memory_type == "preference" and _looks_low_confidence_memory(item["summary"]):
         parts.append("低置信线索: 不能单独证明历史细节")
     if not parts:
         return ""

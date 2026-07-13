@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from dataclasses import dataclass, field
@@ -62,7 +63,7 @@ class MemoryRuntime:
         return await self.engine.mutate(request)
 
     async def aclose(self) -> None:
-        first_error: Exception | None = None
+        first_error: BaseException | None = None
         for closeable in reversed(self.closeables):
             try:
                 if hasattr(closeable, "aclose"):
@@ -71,6 +72,14 @@ class MemoryRuntime:
                         await result
                 elif hasattr(closeable, "close"):
                     _ = cast(_Closeable, closeable).close()
+            except asyncio.CancelledError as exc:
+                if first_error is None:
+                    first_error = exc
+                logger.warning(
+                    "memory runtime close cancelled for %s: %s",
+                    type(closeable).__name__,
+                    exc,
+                )
             except Exception as exc:
                 if first_error is None:
                     first_error = exc

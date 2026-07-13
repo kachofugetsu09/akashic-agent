@@ -94,7 +94,6 @@ from agent.plugins import Plugin
 
 class ProactiveConfig(BaseModel):
     enabled: bool = True
-    poll_interval_seconds: int = Field(default=300, ge=1)
 
 
 class DemoConfig(BaseModel):
@@ -113,7 +112,6 @@ class DemoPlugin(Plugin):
 # ~/.akashic-plugin/data/demo-github/config.local.toml
 [proactive]
 enabled = false
-poll_interval_seconds = 600
 ```
 
 实例方法通过 `self.context.config` 读取验证后的模型，通过 `self.context.data_dir` 读写持久数据。不要向插件仓库或 cache 写运行状态。
@@ -176,14 +174,12 @@ def proactive_sources(self) -> list[ProactiveSourceSpec]:
             server="demo",
             fetch_tool="get_proactive_events",
             ack_tool="acknowledge_events",
-            poll_interval_seconds=300,
         ),
         ProactiveSourceSpec(
             id="state",
             channels=("context",),
             server="demo",
             fetch_tool="get_context",
-            poll_interval_seconds=300,
         ),
     ]
 ```
@@ -193,16 +189,15 @@ def proactive_sources(self) -> list[ProactiveSourceSpec]:
 │  ├─ 读取 manifest.toml 决定是否加载
 │  ├─ 验证 config.local.toml
 │  └─ 收集 MCP、skills、生命周期与主动信息源
-├─ 核心 runtime 创建轮询任务
-│  ├─ 到期时调用 poll_tool
-│  └─ 每个 tick 调用 fetch_tool 获取一次快照
+├─ MCP 生命周期维护外部数据和缓存
+├─ 核心 runtime 每个 tick 异步调用 fetch_tool 获取快照
 └─ proactive 引擎按通道消费
    ├─ alert   ──> 快速告警与精确 ACK
    ├─ content ──> 兴趣判断、投递与 ACK
    └─ context ──> 只注入决策上下文
 ```
 
-轮询时机由核心 runtime 决定；插件只声明能力和周期，不自行驱动 agent。
+缓存刷新由 MCP 自己负责；插件只声明读取能力，不自行驱动 agent。这样切换 proactive 流程不会中断数据刷新。
 
 ## 安装与检查
 

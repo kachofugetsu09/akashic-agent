@@ -4,6 +4,7 @@ import json
 import hashlib
 import sqlite3
 import threading
+import tomllib
 from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -14,14 +15,28 @@ from unittest.mock import AsyncMock
 
 import pytest
 import numpy as np
+from fastapi import FastAPI
 
+from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryQuery, MemoryQueryIntent, MemoryScope
 from agent.plugins.context import PluginContext, PluginKVStore
 from agent.config_models import Config, MemoryConfig, MemoryEmbeddingConfig
-from plugins.akasha.config import AkashaConfig, load_akasha_config, render_akasha_config
+from plugins.akasha.config import (
+    AkashaConfig,
+    ensure_akasha_config_file,
+    load_akasha_config,
+    render_akasha_config,
+)
+import plugins.akasha.dashboard as akasha_dashboard
+from plugins.akasha.dashboard import (
+    AkashaGraphReader,
+    _json_items as dashboard_json_items,
+    register as register_akasha_dashboard,
+)
 from plugins.akasha.engine import (
     ActivationTrace,
+    AkashaCard,
     AkashaCandidate,
     AkashaMemoryEngine,
     PendingActivation,
@@ -38,6 +53,7 @@ from plugins.akasha.core import (
     reinforce_boost_from_payload,
     serialize_f32,
 )
+import plugins.akasha.graph_snapshot as graph_snapshot
 from plugins.akasha.plugin import AkashaPlugin
 from plugins.akasha.replay import AkashaReplayRuntime, ReplayMessage, _turn_messages
 from plugins.akasha.store import (
@@ -67,6 +83,231 @@ def test_akasha_config_does_not_expose_dynamic_budget_limits(tmp_path: Path) -> 
     assert not hasattr(config, "activate_limit")
     assert "top_k" not in rendered
     assert "activate_limit" not in rendered
+
+
+def test_akasha_config_uses_defaults_only_for_missing_fields(tmp_path: Path) -> None:
+    assert load_akasha_config(plugin_dir=tmp_path) == AkashaConfig()
+
+    (tmp_path / "config.local.toml").write_text(
+        'inject_max_chars = "7000"\nactivation_threshold = "0.3"\n',
+        encoding="utf-8",
+    )
+    config = load_akasha_config(plugin_dir=tmp_path)
+
+    assert config.inject_max_chars == 7000
+    assert config.activation_threshold == 0.3
+    assert config.assistant_preview_chars == AkashaConfig().assistant_preview_chars
+
+
+def test_akasha_config_migrates_to_user_data_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "data" / "akasha-builtin"
+    monkeypatch.setattr(
+        "plugins.akasha.config.builtin_plugin_data_dir",
+        lambda _name: target,
+    )
+
+    path = ensure_akasha_config_file()
+
+    assert path == target / "config.local.toml"
+    assert load_akasha_config() == AkashaConfig()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("db_path", "42"),
+        ("inject_max_chars", '"many"'),
+        ("assistant_preview_chars", "1.5"),
+        ("nearby_time_seconds", "true"),
+        ("activation_threshold", "nan"),
+        ("dense_seed_threshold", "true"),
+        ("cross_boost", "[]"),
+    ],
+)
+def test_akasha_config_rejects_invalid_present_fields(
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    (tmp_path / "config.local.toml").write_text(
+        f"{field} = {value}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=field):
+        load_akasha_config(plugin_dir=tmp_path)
+
+
+def test_akasha_dashboard_exposes_invalid_plugin_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "plugins.akasha.config.builtin_plugin_data_dir",
+        lambda _name: tmp_path,
+    )
+    (tmp_path / "config.local.toml").write_text("db_path = [", encoding="utf-8")
+
+    with pytest.raises(tomllib.TOMLDecodeError):
+        register_akasha_dashboard(FastAPI(), tmp_path, tmp_path / "workspace")
+
+
+def test_graph_snapshot_distinguishes_missing_from_corruption(tmp_path: Path) -> None:
+    snapshot_path = tmp_path / "memory" / "akasha_graph_snapshot.json"
+
+    assert graph_snapshot.load_snapshot(snapshot_path) is None
+    snapshot_path.parent.mkdir()
+    snapshot_path.write_text("{", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="图快照读取失败"):
+        graph_snapshot.load_snapshot(snapshot_path)
+
+
+def test_graph_reader_surfaces_background_rebuild_failure(tmp_path: Path, monkeypatch) -> None:
+    store = AkashaStore(tmp_path / "akasha.db")
+    reader = AkashaGraphReader(
+        store,
+        akasha_db_path=store.db_path,
+        sessions_db_path=tmp_path / "sessions.db",
+        snapshot_path=tmp_path / "memory" / "akasha_graph_snapshot.json",
+    )
+
+    def fail_rebuild(**_: object) -> dict[str, object]:
+        raise RuntimeError("rebuild boom")
+
+    monkeypatch.setattr(graph_snapshot, "build_snapshot_to_file", fail_rebuild)
+    monkeypatch.setattr(
+        "plugins.akasha.dashboard.build_snapshot_to_file",
+        fail_rebuild,
+    )
+    try:
+        reader._rebuild_in_background()
+
+        with pytest.raises(RuntimeError, match="后台重建失败"):
+            reader.get_global_graph()
+        with pytest.raises(RuntimeError, match="后台重建失败"):
+            reader.close()
+    finally:
+        store.close()
+
+
+def test_graph_reader_caches_signature_until_external_graph_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = AkashaStore(tmp_path / "akasha.db")
+    reader = AkashaGraphReader(
+        store,
+        akasha_db_path=store.db_path,
+        sessions_db_path=tmp_path / "sessions.db",
+        snapshot_path=tmp_path / "memory" / "akasha_graph_snapshot.json",
+    )
+    calls = 0
+    original = akasha_dashboard.read_graph_signature
+
+    def counted(path: Path):
+        nonlocal calls
+        calls += 1
+        return original(path)
+
+    monkeypatch.setattr(akasha_dashboard, "read_graph_signature", counted)
+    try:
+        first = reader._current_graph_signature()
+        assert reader._current_graph_signature() == first
+        assert calls == 1
+
+        with closing(sqlite3.connect(str(store.db_path))) as db:
+            db.execute(
+                "INSERT INTO akasha_edges "
+                "(src_key, dst_key, weight, co_count, last_used_ts) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("external-src", "external-dst", 1.0, 1, 1.0),
+            )
+            db.commit()
+
+        second = reader._current_graph_signature()
+        assert calls == 2
+        assert second.edge_count == first.edge_count + 1
+    finally:
+        store.close()
+
+
+def test_akasha_dashboard_closeables_close_reader_before_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closeables = register_akasha_dashboard(
+        FastAPI(),
+        tmp_path / "plugin",
+        tmp_path / "workspace",
+    )
+
+    assert isinstance(closeables[0], AkashaStore)
+    assert isinstance(closeables[1], AkashaGraphReader)
+
+    close_order: list[str] = []
+    for name, closeable in zip(("store", "reader"), closeables):
+        original_close = closeable.close
+
+        def close(*, _name=name, _original=original_close) -> None:
+            close_order.append(_name)
+            _original()
+
+        monkeypatch.setattr(closeable, "close", close)
+
+    for closeable in reversed(closeables):
+        closeable.close()
+
+    assert close_order == ["reader", "store"]
+
+
+def test_graph_cache_rejects_orphan_message_embedding(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+    _init_sessions_db(db_path)
+    embedding_store = MessageEmbeddingStore(db_path)
+    store = AkashaStore(tmp_path / "akasha.db")
+    embedding_store.upsert(
+        message_id="orphan-message",
+        content="已从 messages 删除",
+        model="m",
+        embedding=[1.0, 0.0],
+    )
+    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+    engine._session_db_path = db_path
+    engine._store = store
+    engine._embedding_store = embedding_store
+    engine._config = SimpleNamespace(
+        memory=SimpleNamespace(embedding=SimpleNamespace(model="m"))
+    )
+    engine._graph_lock = threading.RLock()
+    try:
+        with pytest.raises(ValueError, match=r"count=1.*orphan-message"):
+            engine._load_graph_cache()
+    finally:
+        embedding_store.close()
+        store.close()
+
+
+def test_engine_owns_event_subscription_lifetime() -> None:
+    event_bus = EventBus()
+    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+    engine._event_bus = event_bus
+    engine.closeables = []
+
+    engine._wire_events()
+
+    assert event_bus.handler_count() == 1
+    for closeable in engine.closeables:
+        closeable.close()
+    assert event_bus.handler_count() == 0
+
+
+def test_diagnostic_json_rejects_corruption() -> None:
+    with pytest.raises(ValueError, match="JSON 损坏"):
+        dashboard_json_items("{")
 
 
 def _init_sessions_db(path: Path) -> None:
@@ -320,6 +561,107 @@ def test_store_merges_user_and_assistant_into_turn_node(tmp_path: Path) -> None:
     assert nodes[0].emb_count == 2
 
 
+def test_store_exposes_empty_node_embedding_corruption(tmp_path: Path) -> None:
+    store = AkashaStore(tmp_path / "akasha.db")
+    try:
+        key = store.upsert_message_node(
+            SourceMessage(
+                "m:0",
+                "s",
+                0,
+                "user",
+                "用户消息",
+                "2026-01-01T00:00:00+00:00",
+            ),
+            [1.0, 0.0],
+        )
+        store.db.execute(
+            "UPDATE akasha_nodes SET embedding = ? WHERE key = ?",
+            (b"", key),
+        )
+        store.db.commit()
+
+        with pytest.raises(ValueError, match=f"节点 {key} 的 embedding 为空"):
+            store.list_nodes()
+    finally:
+        store.close()
+
+
+def test_store_batch_delete_keeps_count_and_edge_cleanup_semantics(tmp_path: Path) -> None:
+    store = AkashaStore(tmp_path / "akasha.db")
+    try:
+        keys = [
+            store.upsert_message_node(
+                SourceMessage(
+                    f"m:{seq}",
+                    "s",
+                    seq,
+                    "user",
+                    f"消息 {seq}",
+                    "2026-01-01T00:00:00+00:00",
+                ),
+                [1.0, 0.0],
+            )
+            for seq in (0, 2, 4, 6)
+        ]
+        store.upsert_edges([
+            EdgeUpdate(keys[0], keys[2], 1.0, 0),
+            EdgeUpdate(keys[2], keys[1], 1.0, 0),
+            EdgeUpdate(keys[2], keys[3], 1.0, 0),
+        ])
+
+        deleted = store.delete_items_batch([keys[0], keys[1], keys[0], "missing"])
+
+        assert deleted == 2
+        assert {node.key for node in store.list_nodes()} == {keys[2], keys[3]}
+        assert set(store.load_edges()) == {(keys[2], keys[3])}
+    finally:
+        store.close()
+
+
+def test_store_batch_delete_rolls_back_nodes_and_edges_on_failure(tmp_path: Path) -> None:
+    store = AkashaStore(tmp_path / "akasha.db")
+    try:
+        keys = [
+            store.upsert_message_node(
+                SourceMessage(
+                    f"m:{seq}",
+                    "s",
+                    seq,
+                    "user",
+                    f"消息 {seq}",
+                    "2026-01-01T00:00:00+00:00",
+                ),
+                [1.0, 0.0],
+            )
+            for seq in (0, 2, 4)
+        ]
+        store.upsert_edges([
+            EdgeUpdate(keys[0], keys[2], 1.0, 0),
+            EdgeUpdate(keys[1], keys[2], 1.0, 0),
+        ])
+        original_edges = store.load_edges()
+        store.db.execute(
+            f"""
+            CREATE TRIGGER abort_second_edge_delete
+            BEFORE DELETE ON akasha_edges
+            WHEN OLD.src_key = '{keys[1]}'
+            BEGIN
+                SELECT RAISE(ABORT, '模拟边删除失败');
+            END
+            """
+        )
+        store.db.commit()
+
+        with pytest.raises(sqlite3.IntegrityError, match="模拟边删除失败"):
+            store.delete_items_batch(keys[:2])
+
+        assert {node.key for node in store.list_nodes()} == set(keys)
+        assert store.load_edges() == original_edges
+    finally:
+        store.close()
+
+
 def test_reset_schema_keeps_legacy_embedding_source(tmp_path: Path) -> None:
     store = AkashaStore(tmp_path / "akasha.db")
     message = SourceMessage(
@@ -361,6 +703,64 @@ def test_message_embedding_store_reuses_only_matching_content(tmp_path: Path) ->
 
         assert store.get(message_id="s:0", content="原始内容", model="m") == [1.0, 2.0]
         assert store.get(message_id="s:0", content="变更内容", model="m") is None
+    finally:
+        store.close()
+
+
+def test_message_embedding_store_rejects_empty_vector_before_write(
+    tmp_path: Path,
+) -> None:
+    store = MessageEmbeddingStore(tmp_path / "sessions.db")
+    try:
+        with pytest.raises(ValueError, match="消息向量不能为空"):
+            store.upsert(
+                message_id="s:0",
+                content="原始内容",
+                model="m",
+                embedding=[],
+            )
+
+        assert store.get(message_id="s:0", content="原始内容", model="m") is None
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    ("blob", "dim"),
+    [
+        (b"", 2),
+        (b"\x00" * 8, 3),
+    ],
+)
+def test_message_embedding_store_rejects_corrupt_vectors(
+    tmp_path: Path,
+    blob: bytes,
+    dim: int,
+) -> None:
+    db_path = tmp_path / "sessions.db"
+    _init_sessions_db(db_path)
+    store = MessageEmbeddingStore(db_path)
+    try:
+        content = "第一条用户消息需要完整展示"
+        store.upsert(
+            message_id="s:0",
+            content=content,
+            model="m",
+            embedding=[1.0, 2.0],
+        )
+        store._db.execute(
+            "UPDATE message_embeddings SET embedding = ?, dim = ? "
+            "WHERE message_id = ? AND model = ?",
+            (blob, dim, "s:0", "m"),
+        )
+        store._db.commit()
+
+        with pytest.raises(ValueError, match=r"message_id=s:0 model=m"):
+            store.get(message_id="s:0", content=content, model="m")
+        with pytest.raises(ValueError, match=r"message_id=s:0 model=m"):
+            store.list(model="m")
+        with pytest.raises(ValueError, match=r"message_id=s:0 model=m"):
+            store.list_until(model="m", cutoff="2026-01-01T00:00:01+00:00")
     finally:
         store.close()
 
@@ -855,6 +1255,7 @@ async def test_runtime_writes_message_embeddings_to_sessions_db(tmp_path: Path) 
     engine._nodes = {}
     engine._message_embeddings = {}
     engine._message_turn_keys = {}
+    engine._message_timestamps = {}
     engine._message_index = build_dense_message_index({})
     try:
         await engine._on_turn_committed(
@@ -889,6 +1290,46 @@ async def test_runtime_writes_message_embeddings_to_sessions_db(tmp_path: Path) 
         graph_store.close()
 
 
+@pytest.mark.asyncio
+async def test_runtime_rejects_partial_embedding_batch(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+    _init_sessions_db(db_path)
+    graph_store = AkashaStore(tmp_path / "akasha.db")
+    embedding_store = MessageEmbeddingStore(db_path)
+    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+    engine._session_db_path = db_path
+    engine._store = graph_store
+    engine._embedding_store = embedding_store
+    engine._embedder = SimpleNamespace(
+        embed_batch=AsyncMock(return_value=[[1.0, 0.0]])
+    )
+    engine._config = SimpleNamespace(
+        memory=SimpleNamespace(embedding=SimpleNamespace(model="m"))
+    )
+    try:
+        with pytest.raises(ValueError, match="数量与已提交消息数量不一致"):
+            await engine._on_turn_committed(
+                TurnCommitted(
+                    session_key="s",
+                    channel="telegram",
+                    chat_id="1",
+                    input_message="第一条用户消息需要完整展示",
+                    persisted_user_message="第一条用户消息需要完整展示",
+                    assistant_response="第一条助手回复会被截断展示并保留引用",
+                    tools_used=[],
+                )
+            )
+
+        assert embedding_store.get(
+            message_id="s:0",
+            content="第一条用户消息需要完整展示",
+            model="m",
+        ) is None
+    finally:
+        embedding_store.close()
+        graph_store.close()
+
+
 def test_load_turn_card_uses_full_user_and_short_assistant(tmp_path: Path) -> None:
     db_path = tmp_path / "sessions.db"
     _init_sessions_db(db_path)
@@ -911,6 +1352,7 @@ def test_load_turn_card_uses_full_user_and_short_assistant(tmp_path: Path) -> No
 
 def test_historical_snapshot_excludes_future_messages_nodes_and_edges(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_path = tmp_path / "sessions.db"
     _init_sessions_db(db_path)
@@ -926,6 +1368,11 @@ def test_historical_snapshot_excludes_future_messages_nodes_and_edges(
             model="m",
             embedding=vector,
         )
+    monkeypatch.setattr(
+        embedding_store,
+        "list_until",
+        lambda **_: pytest.fail("historical snapshot must use the engine cache"),
+    )
     cutoff = datetime.fromisoformat("2026-01-01T00:00:00.500000+00:00").timestamp()
     past_node = AkashaNode(
         key="s:0",
@@ -956,16 +1403,37 @@ def test_historical_snapshot_excludes_future_messages_nodes_and_edges(
         edges_meta={("s:0", "s:2"): cutoff + 10},
         fan={"s:0": 1, "s:2": 1},
         edges_by_src={"s:0": {"s:2": 1.0}},
-        message_embeddings={},
+        message_embeddings={
+            "s:0": np.array([1.0, 0.0], dtype=np.float32),
+            "s:1": np.array([0.0, 1.0], dtype=np.float32),
+            "s:2": np.array([0.0, 1.0], dtype=np.float32),
+        },
         message_turn_keys={"s:0": "s:0", "s:1": "s:0", "s:2": "s:2"},
-        message_index=build_dense_message_index({}),
+        message_index=build_dense_message_index({
+            "s:0": np.array([1.0, 0.0], dtype=np.float32),
+            "s:1": np.array([0.0, 1.0], dtype=np.float32),
+            "s:2": np.array([0.0, 1.0], dtype=np.float32),
+        }),
     )
     engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
     engine._embedding_store = embedding_store
+    engine._graph_lock = threading.RLock()
+    engine._nodes = snapshot.nodes
+    engine._edges = snapshot.edges
+    engine._edges_meta = snapshot.edges_meta
+    engine._edges_by_src = snapshot.edges_by_src
+    engine._fan = snapshot.fan
+    engine._message_embeddings = snapshot.message_embeddings
+    engine._message_turn_keys = snapshot.message_turn_keys
+    engine._message_index = snapshot.message_index
+    engine._message_timestamps = {
+        "s:0": datetime.fromisoformat("2026-01-01T00:00:00+00:00").timestamp(),
+        "s:1": datetime.fromisoformat("2026-01-01T00:00:01+00:00").timestamp(),
+        "s:2": datetime.fromisoformat("2026-01-01T00:00:02+00:00").timestamp(),
+    }
     engine._config = SimpleNamespace(
         memory=SimpleNamespace(embedding=SimpleNamespace(model="m"))
     )
-    engine._graph_snapshot = lambda: snapshot
     try:
         visible = engine._graph_snapshot_at(cutoff)
         card = _load_turn_card(
@@ -1304,6 +1772,50 @@ def test_query_log_keeps_context_and_answer_for_same_seq(tmp_path: Path) -> None
     assert {item["intent"] for item in items} == {"context", "answer"}
 
 
+def test_live_query_log_rejects_invalid_internal_source_ref(tmp_path: Path) -> None:
+    store = AkashaStore(tmp_path / "akasha.db")
+    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+    engine._store = store
+    engine._session_db_path = tmp_path / "sessions.db"
+    engine._akasha_config = AkashaConfig()
+    result = _AkashaRetrieval(
+        dense_items=[],
+        ripple_items=[],
+        activation_items=[],
+        trace=ActivationTrace(seed_count=1, pool_count=1),
+        seq=2,
+    )
+    invalid_card = AkashaCard(
+        key="s:0",
+        source_ref="not-json",
+        user_message="历史消息",
+        assistant_preview="",
+        happened_at=QUERY_TS.isoformat(),
+        score=0.8,
+        lane="dense",
+        signals={},
+    )
+    try:
+        with pytest.raises(json.JSONDecodeError):
+            engine._write_query_log(
+                request=MemoryQuery(
+                    text="当前问题",
+                    intent="context",
+                    scope=MemoryScope(session_key="s"),
+                    timestamp=QUERY_TS,
+                ),
+                result=result,
+                seq=2,
+                dense_cards=[invalid_card],
+                ripple_cards=[],
+                text_block="",
+            )
+        _, total = store.list_query_logs(session_key="s", page=1, page_size=10)
+        assert total == 0
+    finally:
+        store.close()
+
+
 @pytest.mark.asyncio
 async def test_read_only_query_skips_akasha_state_effects(tmp_path: Path) -> None:
     db_path = tmp_path / "sessions.db"
@@ -1338,20 +1850,43 @@ async def test_read_only_query_skips_akasha_state_effects(tmp_path: Path) -> Non
     engine._remember_pending_activation = lambda *_, **__: side_effects.append("pending")
     engine._write_query_log = lambda *_, **__: side_effects.append("query_log")
 
-    result = await engine.query(
-        MemoryQuery(
-            text="用户消息",
-            intent="answer",
-            effect="read_only",
-            scope=MemoryScope(session_key="s"),
-            timestamp=QUERY_TS,
-        )
+    request = MemoryQuery(
+        text="用户消息",
+        intent="answer",
+        effect="read_only",
+        scope=MemoryScope(session_key="s"),
+        timestamp=QUERY_TS,
     )
+    result = await engine.query(request)
 
     assert update_state_values == [False]
     assert side_effects == []
     assert result.trace["effect"] == "read_only"
     assert result.records
+
+    invalid_card = AkashaCard(
+        key="s:0",
+        source_ref="{}",
+        user_message="历史消息",
+        assistant_preview="",
+        happened_at=QUERY_TS.isoformat(),
+        score=0.9,
+        lane="dense",
+        signals={},
+    )
+
+    def invalid_cards(
+        items: list[tuple[str, float, str, dict[str, object]]],
+        **_: object,
+    ) -> list[AkashaCard]:
+        return [invalid_card] if items else []
+
+    engine._cards_from_keys = invalid_cards
+    with pytest.raises(ValueError, match="source_ref 必须是 JSON 数组"):
+        await engine.query(request)
+
+    assert update_state_values == [False, False]
+    assert side_effects == []
 
 
 def test_undo_removes_akasha_turn_state_after_session_delete(tmp_path: Path) -> None:

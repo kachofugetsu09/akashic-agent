@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Set as AbstractSet
+from heapq import nsmallest
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -92,7 +93,7 @@ class KeywordSearchBackend(SearchBackend):
             # 空/纯空白 query 归一化后无有效词，直接返回空，不做全量扫描
             return []
 
-        results: list[tuple[int, str, dict[str, Any]]] = []
+        results: list[tuple[int, str, "ToolDocument"]] = []
         for name, doc in self._docs.items():
             if name in skip:
                 continue
@@ -101,13 +102,17 @@ class KeywordSearchBackend(SearchBackend):
 
             score = _score(doc, keywords)
             if score > 0:
-                results.append(
-                    (score, name, _doc_to_result(doc, _explain(doc, keywords)))
-                )
+                results.append((score, name, doc))
 
-        # 主键：score 降序；次键：name 字母序（稳定 tie-break）
-        results.sort(key=lambda x: (-x[0], x[1]))
-        return [r for _, _, r in results[:top_k]]
+        # 主键：score 降序；次键：name 字母序（稳定 tie-break）。
+        if top_k > 0:
+            selected = nsmallest(top_k, results, key=lambda x: (-x[0], x[1]))
+        else:
+            selected = sorted(results, key=lambda x: (-x[0], x[1]))[:top_k]
+        return [
+            _doc_to_result(doc, _explain(doc, keywords))
+            for _, _, doc in selected
+        ]
 
 
 # ── 内部工具函数 ───────────────────────────────────────────────────────────────
@@ -152,7 +157,7 @@ def _default_normalize(query: str) -> set[str]:
         if segment:
             tokens.add(segment)
 
-    # CJK bigram + unigram
+    # CJK 双字词 + 单字词
     cjk = [c for c in query_lower if "\u4e00" <= c <= "\u9fff"]
     for i in range(len(cjk) - 1):
         tokens.add(cjk[i] + cjk[i + 1])

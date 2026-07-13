@@ -4,6 +4,8 @@ from typing import Any, cast
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from bootstrap.proactive import _build_proactive_provider, build_proactive_runtime
 from plugins.default_proactive.runtime import (
     ProactiveFlowDeps,
@@ -12,6 +14,7 @@ from plugins.default_proactive.runtime import (
 from plugins.default_proactive.plugin import DefaultRuntimeFactory, DefaultModuleFactory
 from plugins.drift_flow.plugin import DriftModuleFactory
 from plugins.proactive_flow.plugin import ProactiveModuleFactory
+from plugins.proactive_flow.prompt import ProactivePromptBuilder
 from core.memory.markdown import MemoryProfileApi
 from proactive_v2.config import ProactiveConfig
 from plugins.default_proactive.context import AgentTickContext
@@ -59,7 +62,9 @@ def test_build_proactive_runtime_accepts_facade_memory(tmp_path):
 
     assert loop is not None
     assert loop._memory is facade
-    assert "default.source.poll" in loop._proactive_kernel.inspect()
+    phases = loop._proactive_kernel.inspect()
+    assert "proactive.source.collect" in phases
+    assert "default.source.poll" not in phases
     for task in tasks:
         close = getattr(task, "close", None)
         if callable(close):
@@ -94,10 +99,14 @@ def test_agent_tick_prompt_keeps_self_block_with_facade():
             turn_orchestrator=None,
             deduper=MagicMock(),
             tool_deps=ToolDeps(
-                memory=cast(MemoryProfileApi, SimpleNamespace(
-                    read_long_term_context=lambda: "MEMORY",
-                    read_self=lambda: "SELF",
-                )),
+                memory=cast(
+                    MemoryProfileApi,
+                    SimpleNamespace(
+                        read_long_term=lambda: "MEMORY",
+                        read_self=lambda: "SELF",
+                        read_recent_context=lambda: "",
+                    ),
+                ),
                 recent_chat_fn=None,
             ),
             gateway_deps=GatewayDeps(
@@ -121,3 +130,49 @@ def test_agent_tick_prompt_keeps_self_block_with_facade():
 
     assert "self_model" in content
     assert "SELF" in content
+
+
+@pytest.mark.parametrize(
+    "failing_method",
+    ["read_self", "read_long_term", "read_recent_context"],
+)
+def test_agent_tick_prompt_propagates_memory_profile_failure(
+    failing_method: str,
+) -> None:
+    def fail() -> str:
+        raise RuntimeError(failing_method)
+
+    methods = {
+        "read_self": lambda: "SELF",
+        "read_long_term": lambda: "MEMORY",
+        "read_recent_context": lambda: "RECENT",
+    }
+    methods[failing_method] = fail
+    builder = ProactivePromptBuilder(
+        cfg=ProactiveConfig(),
+        memory=cast(MemoryProfileApi, SimpleNamespace(**methods)),
+        workspace_context_fn=None,
+    )
+
+    with pytest.raises(RuntimeError, match=failing_method):
+        builder.build_runtime_context_message(
+            AgentTickContext(session_key="test"),
+            GatewayResult(),
+        )
+
+
+def test_agent_tick_prompt_propagates_workspace_context_failure() -> None:
+    def fail() -> str:
+        raise RuntimeError("workspace context failed")
+
+    builder = ProactivePromptBuilder(
+        cfg=ProactiveConfig(),
+        memory=None,
+        workspace_context_fn=fail,
+    )
+
+    with pytest.raises(RuntimeError, match="workspace context failed"):
+        builder.build_runtime_context_message(
+            AgentTickContext(session_key="test"),
+            GatewayResult(),
+        )

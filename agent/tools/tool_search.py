@@ -149,7 +149,13 @@ class ToolSearchTool(Tool):
         - excluded_names 中的工具已可见，无需加载（返回 tip 提示直接调用）
         - allowed_risk 不为空时，风险等级不符的工具不返回
         """
-        requested = [n.strip() for n in names_str.split(",") if n.strip()]
+        requested: list[str] = []
+        seen: set[str] = set()
+        for raw_name in names_str.split(","):
+            name = raw_name.strip()
+            if name and name not in seen:
+                seen.add(name)
+                requested.append(name)
         if not requested:
             return json.dumps(
                 {
@@ -177,7 +183,7 @@ class ToolSearchTool(Tool):
             elif not self._registry.has_tool(name):
                 missing.append(name)
             else:
-                doc = self._registry._documents.get(name)
+                doc = self._registry.get_document(name)
                 if risk_filter and doc and doc.risk not in risk_filter:
                     risk_blocked.append(name)
                 else:

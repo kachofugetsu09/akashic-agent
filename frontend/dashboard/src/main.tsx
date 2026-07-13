@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BookOpenText, Sparkles } from "lucide-react";
 import "./styles.css";
@@ -47,7 +47,12 @@ function makeDispatch(
   onSetState: (updater: (s: PluginState) => PluginState) => void,
   onActivate?: () => void,
   onClosePane?: () => void,
+  onError: (error: unknown) => void = (error) => console.error("[dashboard] plugin request failed", error),
 ): PluginDispatch {
+  const report = (promise: Promise<void>): void => {
+    void promise.catch(onError);
+  };
+
   const fetchAndApply = async (
     nextFilters: Record<string, string>,
     nextSortBy: string,
@@ -55,12 +60,12 @@ function makeDispatch(
   ): Promise<void> => {
     const state = getState();
     if (!state) return;
-    const result = await plugin.fetchPage({ page: 1, pageSize: state.pageSize, filters: nextFilters, sortBy: nextSortBy, sortOrder: nextSortOrder });
+    const result = checkedPluginPage(plugin, await plugin.fetchPage({ page: 1, pageSize: state.pageSize, filters: nextFilters, sortBy: nextSortBy, sortOrder: nextSortOrder }));
     onSetState((s) => ({
       ...s,
       page: 1,
-      total: result.total || 0,
-      items: result.items || [],
+      total: result.total,
+      items: result.items,
       activeRowKey: null,
       activeDetail: null,
       filters: nextFilters,
@@ -72,7 +77,7 @@ function makeDispatch(
   const updateFilters = (updater: (filters: Record<string, string>) => Record<string, string>): void => {
     const state = getState();
     if (!state) return;
-    void fetchAndApply(updater({ ...state.filters }), state.sortBy, state.sortOrder);
+    report(fetchAndApply(updater({ ...state.filters }), state.sortBy, state.sortOrder));
   };
 
   return {
@@ -101,12 +106,12 @@ function makeDispatch(
       const state = getState();
       if (!state) return;
       const nextOrder: SortOrder = state.sortBy === key && state.sortOrder === "desc" ? "asc" : "desc";
-      void fetchAndApply(state.filters, key, nextOrder);
+      report(fetchAndApply(state.filters, key, nextOrder));
     },
     refresh(): void {
       const state = getState();
       if (!state) return;
-      void fetchAndApply(state.filters, state.sortBy, state.sortOrder);
+      report(fetchAndApply(state.filters, state.sortBy, state.sortOrder));
     },
     activate(): void {
       onActivate?.();
@@ -117,7 +122,32 @@ function makeDispatch(
   };
 }
 
-function MagicIndicator(props: { containerRef: React.RefObject<HTMLElement | null>; activeSelector: string; deps: React.DependencyList }) {
+function checkedPluginPage(plugin: PluginConfig, result: FetchPageResult): FetchPageResult {
+  if (
+    !result
+    || !Array.isArray(result.items)
+    || typeof result.total !== "number"
+    || !Number.isFinite(result.total)
+    || result.total < 0
+  ) {
+    throw new Error(`插件 ${plugin.id} 返回了无效分页数据`);
+  }
+  return result;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+function useLatestReader<T>(value: T): () => T {
+  const ref = useRef(value);
+  useLayoutEffect(() => {
+    ref.current = value;
+  }, [value]);
+  return useCallback(() => ref.current, []);
+}
+
+function MagicIndicator(props: { containerRef: React.RefObject<HTMLElement | null>; activeSelector: string }) {
   const [style, setStyle] = useState<React.CSSProperties>({ opacity: 0 });
 
   useEffect(() => {
@@ -160,7 +190,7 @@ function MagicIndicator(props: { containerRef: React.RefObject<HTMLElement | nul
       observer.disconnect();
       window.removeEventListener("resize", update);
     };
-  }, props.deps);
+  }, [props.activeSelector, props.containerRef]);
 
   return <div className="magic-indicator" style={style} />;
 }
@@ -199,39 +229,77 @@ function App(): React.ReactElement {
 
   const explorerBodyRef = useRef<HTMLDivElement>(null);
   const tableBodyRef = useRef<HTMLDivElement>(null);
+  const sessionsRequestRef = useRef<AbortController | null>(null);
+  const messagesRequestRef = useRef<AbortController | null>(null);
+  const proactiveRequestRef = useRef<AbortController | null>(null);
 
   const messagePageSize = 25;
   const proactivePageSize = 25;
   const currentPluginId = viewMode.startsWith("plugin:") ? viewMode.slice(7) : "";
   const currentPlugin = plugins.find((plugin) => plugin.id === currentPluginId) ?? null;
   const currentPluginState = currentPluginId ? pluginState[currentPluginId] : null;
+  const hasCurrentPluginState = Boolean(currentPluginState);
   const currentPluginLayout = currentPlugin?.layout ?? "table";
+  const readPluginState = useLatestReader(pluginState);
+  const setPluginStateFor = useCallback((pluginId: string, updater: (s: PluginState) => PluginState): void => {
+    setPluginState((current) => {
+      const state = current[pluginId];
+      if (!state) return current;
+      return { ...current, [pluginId]: updater(state) };
+    });
+  }, []);
+  const activatePlugin = useCallback((pluginId: string): void => {
+    setViewMode(`plugin:${pluginId}`);
+  }, []);
+  const closePlugin = useCallback((pluginId: string): void => {
+    setPluginState((current) => {
+      const state = current[pluginId];
+      if (!state) return current;
+      return { ...current, [pluginId]: { ...state, activeRowKey: null, activeDetail: null } };
+    });
+  }, []);
 
   const channels = useMemo(() => Array.from(new Set(sessions.map((session) => session.key.split(":")[0]).filter(Boolean))), [sessions]);
+
+  const reportError = useCallback((exc: unknown): void => {
+    if (isAbortError(exc)) return;
+    console.error("[dashboard] request failed", exc);
+    setError(exc instanceof Error ? exc.message : String(exc));
+  }, []);
 
   const run = useCallback(async (work: () => Promise<void>) => {
     try {
       setError(null);
       await work();
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : String(exc));
+      reportError(exc);
     }
-  }, []);
+  }, [reportError]);
 
   const loadSessions = useCallback(async () => {
+    sessionsRequestRef.current?.abort();
+    const controller = new AbortController();
+    sessionsRequestRef.current = controller;
     const params = new URLSearchParams();
     if (sessionSearch) params.set("q", sessionSearch);
     if (sessionChannel) params.set("channel", sessionChannel);
     params.set("page_size", "200");
-    const payload = asPageResult(await api<PageResult<SessionRow>>(`/api/dashboard/sessions?${params.toString()}`));
-    setSessions(payload.items);
-    setActiveSession((current) => {
-      if (!activeSessionKey) return current;
-      return payload.items.find((session) => session.key === activeSessionKey) ?? null;
-    });
-  }, [activeSessionKey, sessionChannel, sessionSearch]);
+    try {
+      const payload = asPageResult<SessionRow>(await api(`/api/dashboard/sessions?${params.toString()}`, { signal: controller.signal }));
+      setSessions(payload.items);
+      setActiveSession((current) => {
+        if (!current) return null;
+        return payload.items.find((session) => session.key === current.key) ?? null;
+      });
+    } finally {
+      if (sessionsRequestRef.current === controller) sessionsRequestRef.current = null;
+    }
+  }, [sessionChannel, sessionSearch]);
 
   const loadMessages = useCallback(async () => {
+    messagesRequestRef.current?.abort();
+    const controller = new AbortController();
+    messagesRequestRef.current = controller;
     const params = new URLSearchParams();
     if (activeSessionKey) params.set("session_key", activeSessionKey);
     if (messageSearch) params.set("q", messageSearch);
@@ -240,10 +308,14 @@ function App(): React.ReactElement {
     params.set("page_size", String(messagePageSize));
     params.set("sort_by", messageSortBy);
     params.set("sort_order", messageSortOrder);
-    const payload = asPageResult(await api<PageResult<MessageRow>>(`/api/dashboard/messages?${params.toString()}`));
-    setMessages(payload.items);
-    setTotalMessages(payload.total);
-    setActiveMessage((current) => current && payload.items.some((item) => item.id === current.id) ? current : null);
+    try {
+      const payload = asPageResult<MessageRow>(await api(`/api/dashboard/messages?${params.toString()}`, { signal: controller.signal }));
+      setMessages(payload.items);
+      setTotalMessages(payload.total);
+      setActiveMessage((current) => current && payload.items.some((item) => item.id === current.id) ? current : null);
+    } finally {
+      if (messagesRequestRef.current === controller) messagesRequestRef.current = null;
+    }
   }, [activeSessionKey, messagePage, messageRole, messageSearch, messageSortBy, messageSortOrder]);
 
   const loadProactiveOverview = useCallback(async () => {
@@ -251,6 +323,9 @@ function App(): React.ReactElement {
   }, []);
 
   const loadProactivePanel = useCallback(async () => {
+    proactiveRequestRef.current?.abort();
+    const controller = new AbortController();
+    proactiveRequestRef.current = controller;
     const params = new URLSearchParams();
     params.set("page", String(proactivePage));
     params.set("page_size", String(proactivePageSize));
@@ -260,23 +335,27 @@ function App(): React.ReactElement {
     if (proactiveSection === "reply" || proactiveSection === "skip") params.set("terminal_action", proactiveSection);
     if (proactiveSection === "drift" || proactiveSection === "proactive") params.set("flow", proactiveSection);
     if (["busy", "cooldown", "presence"].includes(proactiveSection)) params.set("gate_exit", proactiveSection);
-    const payload = asPageResult(await api<PageResult<ProactiveTick>>(`/api/dashboard/proactive/tick_logs?${params.toString()}`));
-    setProactiveItems(payload.items);
-    setProactiveTotal(payload.total);
-    setActiveProactiveKey((current) => current && payload.items.some((item) => item.tick_id === current) ? current : null);
+    try {
+      const payload = asPageResult<ProactiveTick>(await api(`/api/dashboard/proactive/tick_logs?${params.toString()}`, { signal: controller.signal }));
+      setProactiveItems(payload.items);
+      setProactiveTotal(payload.total);
+      setActiveProactiveKey((current) => current && payload.items.some((item) => item.tick_id === current) ? current : null);
+    } finally {
+      if (proactiveRequestRef.current === controller) proactiveRequestRef.current = null;
+    }
   }, [proactivePage, proactiveSection, proactiveSessionFilter, proactiveSortBy, proactiveSortOrder]);
 
   const loadPluginPanel = useCallback(async (pluginId: string) => {
     const plugin = plugins.find((item) => item.id === pluginId);
-    const state = pluginState[pluginId];
+    const state = readPluginState()[pluginId];
     if (!plugin || !state) return;
-    const result = await plugin.fetchPage({ page: state.page, pageSize: state.pageSize, filters: state.filters, sortBy: state.sortBy, sortOrder: state.sortOrder });
+    const result = checkedPluginPage(plugin, await plugin.fetchPage({ page: state.page, pageSize: state.pageSize, filters: state.filters, sortBy: state.sortBy, sortOrder: state.sortOrder }));
     setPluginState((current) => ({
       ...current,
       [pluginId]: {
         ...current[pluginId],
-        total: result.total || 0,
-        items: result.items || [],
+        total: result.total,
+        items: result.items,
         activeRowKey: current[pluginId]?.activeRowKey && result.items.some((item) => String(item[plugin.rowKey] ?? "") === current[pluginId].activeRowKey)
           ? current[pluginId].activeRowKey
           : null,
@@ -285,7 +364,7 @@ function App(): React.ReactElement {
           : null,
       },
     }));
-  }, [pluginState, plugins]);
+  }, [plugins, readPluginState]);
 
   const refreshCurrentView = useCallback(async () => {
     await loadSessions();
@@ -307,6 +386,12 @@ function App(): React.ReactElement {
     return () => window.removeEventListener("akashic-dashboard-refresh", refresh);
   }, [refreshCurrentView, run]);
 
+  useEffect(() => () => {
+    sessionsRequestRef.current?.abort();
+    messagesRequestRef.current?.abort();
+    proactiveRequestRef.current?.abort();
+  }, []);
+
   useEffect(() => {
     installDashboardGlobals((plugin) => {
       setPlugins((current) => current.some((item) => item.id === plugin.id) ? current : [...current, plugin]);
@@ -327,15 +412,12 @@ function App(): React.ReactElement {
       });
     });
     exposeRuntime();
-    void loadPluginAssets();
-  }, []);
+    void run(loadPluginAssets);
+  }, [run]);
 
   useEffect(() => {
-    void run(async () => {
-      await loadSessions();
-      await loadMessages();
-    });
-  }, [loadMessages, loadProactiveOverview, loadSessions, run]);
+    void run(loadSessions);
+  }, [loadSessions, run]);
 
   useEffect(() => {
     for (const plugin of plugins) {
@@ -344,6 +426,9 @@ function App(): React.ReactElement {
         if (count === null) {
           setHiddenPlugins((current) => ({ ...current, [plugin.id]: true }));
         } else {
+          if (!Number.isFinite(count) || count < 0) {
+            throw new Error(`插件 ${plugin.id} 返回了无效计数`);
+          }
           setHiddenPlugins((current) => ({ ...current, [plugin.id]: false }));
           setPluginState((current) => ({
             ...current,
@@ -360,24 +445,22 @@ function App(): React.ReactElement {
 
   const selectView = (next: ViewMode): void => {
     focusView(next);
-    void run(async () => {
-      if (next === "sessions") await loadMessages();
-      else if (next === "proactive") {
-        await loadProactiveOverview();
-        await loadProactivePanel();
-      } else await loadPluginPanel(next.slice(7));
-    });
   };
+
+  const gotoSession = useEffectEvent((key: string): void => {
+    setActiveSessionKey(key);
+    setActiveSession(sessions.find((session) => session.key === key) ?? null);
+    setActiveMessage(null);
+    setMessagePage(1);
+    selectView("sessions");
+  });
 
   // 插件面板（如 observe 错误排障台）通过 CustomEvent 请求跳到某个 session 的对话现场。
   useEffect(() => {
     const onGoto = (e: Event): void => {
       const key = (e as CustomEvent<string>).detail;
       if (!key) return;
-      setActiveSessionKey(key);
-      setActiveMessage(null);
-      setMessagePage(1);
-      selectView("sessions");
+      gotoSession(key);
     };
     window.addEventListener("akashic:goto-session", onGoto);
     return () => window.removeEventListener("akashic:goto-session", onGoto);
@@ -404,6 +487,10 @@ function App(): React.ReactElement {
     if (viewMode === "proactive") void run(loadProactivePanel);
   }, [loadProactivePanel, run, viewMode]);
 
+  useEffect(() => {
+    if (viewMode.startsWith("plugin:")) void run(() => loadPluginPanel(viewMode.slice(7)));
+  }, [loadPluginPanel, run, viewMode]);
+
   const currentPageCount = currentPluginState
     ? pageCount(currentPluginState.total, currentPluginState.pageSize)
     : viewMode === "proactive"
@@ -420,14 +507,14 @@ function App(): React.ReactElement {
         const state = pluginState[currentPluginId];
         if (!plugin || !state) return;
         const nextPage = state.page + delta;
-        const result = await plugin.fetchPage({ page: nextPage, pageSize: state.pageSize, filters: state.filters, sortBy: state.sortBy, sortOrder: state.sortOrder });
+        const result = checkedPluginPage(plugin, await plugin.fetchPage({ page: nextPage, pageSize: state.pageSize, filters: state.filters, sortBy: state.sortBy, sortOrder: state.sortOrder }));
         setPluginState((current) => ({
           ...current,
           [currentPluginId]: {
             ...current[currentPluginId],
             page: nextPage,
-            total: result.total || 0,
-            items: result.items || [],
+            total: result.total,
+            items: result.items,
             activeRowKey: null,
             activeDetail: null,
           },
@@ -442,15 +529,17 @@ function App(): React.ReactElement {
   const batchCount = viewMode.startsWith("plugin:") ? pluginBatchCount : selectedMessageIds.size;
 
   // dispatch for current plugin (used in DetailPane and batch bar)
-  const currentDispatch = currentPlugin && currentPluginState
+  // 插件 dispatch 是宿主持有的稳定能力；事件读取最新状态，legacy DOM 不重复初始化。
+  const currentDispatch = useMemo(() => currentPlugin && hasCurrentPluginState
     ? makeDispatch(
         currentPlugin,
-        () => pluginState[currentPlugin.id] ?? null,
-        (updater) => setPluginState((c) => ({ ...c, [currentPlugin.id]: updater(c[currentPlugin.id]) })),
-        () => focusView(`plugin:${currentPlugin.id}`),
-        () => setPluginState((c) => ({ ...c, [currentPlugin.id]: { ...c[currentPlugin.id], activeRowKey: null, activeDetail: null } }))
+        () => readPluginState()[currentPlugin.id] ?? null,
+        (updater) => setPluginStateFor(currentPlugin.id, updater),
+        () => activatePlugin(currentPlugin.id),
+        () => closePlugin(currentPlugin.id),
+        reportError,
       )
-    : undefined;
+    : undefined, [activatePlugin, closePlugin, currentPlugin, hasCurrentPluginState, readPluginState, reportError, setPluginStateFor]);
   const isPluginWorkbench = Boolean(
     currentPlugin
       && currentPluginState
@@ -486,6 +575,7 @@ function App(): React.ReactElement {
           currentPlugin={currentPlugin}
           currentPluginState={currentPluginState}
           onSetPluginState={currentPlugin ? (updater) => setPluginState((c) => ({ ...c, [currentPlugin.id]: updater(c[currentPlugin.id]) })) : undefined}
+          onError={reportError}
         />
         <div className="topbar-view">
           <div className="view-chip"><span>{viewLabel(viewMode, currentPlugin)}</span></div>
@@ -496,6 +586,7 @@ function App(): React.ReactElement {
               state={currentPluginState}
               onSetState={(updater) => setPluginState((c) => ({ ...c, [currentPlugin.id]: updater(c[currentPlugin.id]) }))}
               onActivate={() => focusView(`plugin:${currentPlugin.id}`)}
+              onError={reportError}
             />
           )}
         </div>
@@ -526,7 +617,7 @@ function App(): React.ReactElement {
           </div>
 
           <div className="explorer-body" ref={explorerBodyRef} style={{ position: "relative" }}>
-            <MagicIndicator containerRef={explorerBodyRef} activeSelector=".active" deps={[viewMode, activeSessionKey, proactiveSection, currentPluginState?.activeRowKey]} />
+            <MagicIndicator containerRef={explorerBodyRef} activeSelector=".active" />
             {viewMode === "sessions" && (
               <>
                 <div className="filters-stack">
@@ -592,6 +683,7 @@ function App(): React.ReactElement {
                 state={currentPluginState}
                 onSetState={(updater) => setPluginState((c) => ({ ...c, [currentPlugin.id]: updater(c[currentPlugin.id]) }))}
                 onActivate={() => focusView(`plugin:${currentPlugin.id}`)}
+                onError={reportError}
               />
             )}
           </div>
@@ -633,7 +725,7 @@ function App(): React.ReactElement {
               )}
               <TableHead viewMode={viewMode} plugin={currentPlugin} pluginState={currentPluginState} messageSortBy={messageSortBy} messageSortOrder={messageSortOrder} proactiveSortBy={proactiveSortBy} proactiveSortOrder={proactiveSortOrder} onSort={sort} onPluginSort={currentDispatch ? (key) => currentDispatch.setSort(key) : undefined} />
               <div className="table-body" ref={tableBodyRef} style={{ position: "relative" }}>
-                <MagicIndicator containerRef={tableBodyRef} activeSelector=".active" deps={[viewMode, activeMessage?.id, activeProactiveKey, currentPluginState?.activeRowKey]} />
+                <MagicIndicator containerRef={tableBodyRef} activeSelector=".active" />
                 <Rows
                   viewMode={viewMode}
                   messages={messages}
@@ -649,12 +741,13 @@ function App(): React.ReactElement {
                       if (current === item.tick_id) return null;
                       return item.tick_id;
                     });
-                    const [detail, steps] = await Promise.all([
+                    const [detail, stepsPayload] = await Promise.all([
                       api<ProactiveTick>(`/api/dashboard/proactive/tick_logs/${encodePath(item.tick_id)}`),
                       api<PageResult<ProactiveStep>>(`/api/dashboard/proactive/tick_logs/${encodePath(item.tick_id)}/steps`),
                     ]);
+                    const steps = asPageResult<ProactiveStep>(stepsPayload);
                     setActiveProactiveDetail(detail);
-                    setActiveProactiveSteps(steps.items ?? []);
+                    setActiveProactiveSteps(steps.items);
                   })}
                   onSelectPluginRow={(row) => {
                     if (!currentPlugin) return;
@@ -734,18 +827,21 @@ function PluginNavBody(props: {
   state: PluginState;
   onSetState: (updater: (s: PluginState) => PluginState) => void;
   onActivate(): void;
+  onError(error: unknown): void;
 }): React.ReactElement {
   const ref = useRef<HTMLDivElement>(null);
   const getState = useEffectEvent(() => props.state);
+  const setState = useEffectEvent((updater: (s: PluginState) => PluginState) => props.onSetState(updater));
+  const activate = useEffectEvent(() => props.onActivate());
+  const report = useEffectEvent((error: unknown) => props.onError(error));
   const filtersKey = JSON.stringify(props.state.filters);
 
   useEffect(() => {
     if (ref.current && props.plugin.renderNavBody) {
-      const dispatch = makeDispatch(props.plugin, getState, props.onSetState, props.onActivate);
+      const dispatch = makeDispatch(props.plugin, getState, setState, activate, undefined, report);
       props.plugin.renderNavBody(ref.current, dispatch);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtersKey, props.onActivate, props.plugin, props.pluginId, props.state.sortBy, props.state.sortOrder, props.state.total]);
+  }, [filtersKey, props.plugin, props.pluginId, props.state.sortBy, props.state.sortOrder, props.state.total]);
 
   return <div ref={ref} />;
 }
@@ -756,18 +852,21 @@ function PluginFilters(props: {
   state: PluginState;
   onSetState: (updater: (s: PluginState) => PluginState) => void;
   onActivate(): void;
+  onError(error: unknown): void;
 }): React.ReactElement {
   const ref = useRef<HTMLDivElement>(null);
   const getState = useEffectEvent(() => props.state);
+  const setState = useEffectEvent((updater: (s: PluginState) => PluginState) => props.onSetState(updater));
+  const activate = useEffectEvent(() => props.onActivate());
+  const report = useEffectEvent((error: unknown) => props.onError(error));
   const filtersKey = JSON.stringify(props.state.filters);
 
   useEffect(() => {
     if (ref.current && props.plugin.renderFilters) {
-      const dispatch = makeDispatch(props.plugin, getState, props.onSetState, props.onActivate);
+      const dispatch = makeDispatch(props.plugin, getState, setState, activate, undefined, report);
       props.plugin.renderFilters(ref.current, dispatch);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtersKey, props.onActivate, props.plugin, props.pluginId, props.state.sortBy, props.state.sortOrder]);
+  }, [filtersKey, props.plugin, props.pluginId, props.state.sortBy, props.state.sortOrder]);
 
   return <div ref={ref} />;
 }
@@ -778,18 +877,21 @@ function PluginTopbarAction(props: {
   state: PluginState;
   onSetState: (updater: (s: PluginState) => PluginState) => void;
   onActivate(): void;
+  onError(error: unknown): void;
 }): React.ReactElement {
   const ref = useRef<HTMLDivElement>(null);
   const getState = useEffectEvent(() => props.state);
+  const setState = useEffectEvent((updater: (s: PluginState) => PluginState) => props.onSetState(updater));
+  const activate = useEffectEvent(() => props.onActivate());
+  const report = useEffectEvent((error: unknown) => props.onError(error));
   const filtersKey = JSON.stringify(props.state.filters);
 
   useEffect(() => {
     if (ref.current && props.plugin.renderTopbarAction) {
-      const dispatch = makeDispatch(props.plugin, getState, props.onSetState, props.onActivate);
+      const dispatch = makeDispatch(props.plugin, getState, setState, activate, undefined, report);
       props.plugin.renderTopbarAction(ref.current, dispatch);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtersKey, props.onActivate, props.plugin, props.pluginId, props.state.sortBy, props.state.sortOrder]);
+  }, [filtersKey, props.plugin, props.pluginId, props.state.sortBy, props.state.sortOrder]);
 
   return <div ref={ref} />;
 }
@@ -808,6 +910,7 @@ function TopbarFilters(props: {
   currentPlugin: PluginConfig | null;
   currentPluginState: PluginState | null;
   onSetPluginState?: (updater: (s: PluginState) => PluginState) => void;
+  onError(error: unknown): void;
 }): React.ReactElement {
   return (
     <div className="topbar-filters">
@@ -819,6 +922,7 @@ function TopbarFilters(props: {
                 state={props.currentPluginState}
                 onSetState={props.onSetPluginState}
                 onActivate={() => {}}
+                onError={props.onError}
               />
             : null
         ) : props.viewMode === "proactive" ? (

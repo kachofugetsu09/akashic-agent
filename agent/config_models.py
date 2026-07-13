@@ -41,7 +41,7 @@ class ChannelsConfig:
     telegram: TelegramChannelConfig | None = None
     qq: QQChannelConfig | None = None
     chat: WebChatConfig = field(default_factory=WebChatConfig)
-    socket: str = "/tmp/akashic.sock"
+    socket: str = ""
     cli_session_key: str = ""
 
 
@@ -96,7 +96,7 @@ class Config:
     max_iterations: int = 10
     memory_window: int = 40
     base_url: str | None = None
-    extra_body: dict = field(default_factory=dict)
+    extra_body: dict[str, object] = field(default_factory=dict)
     channels: ChannelsConfig = field(default_factory=ChannelsConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     memory_optimizer_enabled: bool = True

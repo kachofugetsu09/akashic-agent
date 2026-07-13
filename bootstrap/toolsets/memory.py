@@ -10,6 +10,7 @@ from bootstrap.memory import build_memory_runtime
 from bootstrap.toolsets.protocol import (
     ToolsetDeps,
     ToolsetProvider,
+    ToolsetRegistrationResult,
     build_registration_result,
 )
 from core.memory.runtime import MemoryRuntime
@@ -24,17 +25,27 @@ class MemoryToolsetProvider(ToolsetProvider):
         self,
         registry: ToolRegistry,
         deps: ToolsetDeps,
-    ):
-        before = set(registry._tools.keys())
+    ) -> ToolsetRegistrationResult:
+        """校验 memory 依赖并注册 memory runtime。"""
+
+        # 1. 收集此 provider 的必需依赖。
+        before = registry.get_registered_names()
         config = deps.config
+        provider = deps.provider
         http_resources = deps.http_resources
-        if config is None or http_resources is None:
-            raise ValueError("memory toolset 缺少必要依赖")
+        if config is None:
+            raise ValueError("memory toolset 缺少必要依赖: config")
+        if provider is None:
+            raise ValueError("memory toolset 缺少必要依赖: provider")
+        if http_resources is None:
+            raise ValueError("memory toolset 缺少必要依赖: http_resources")
+
+        # 2. 构造 runtime，并把可选事件发布器继续向下传递。
         memory_runtime = build_memory_runtime(
             config,
             deps.workspace,
             registry,
-            deps.provider,
+            provider,
             deps.light_provider,
             http_resources,
             event_publisher=deps.event_publisher,

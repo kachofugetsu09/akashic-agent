@@ -6,6 +6,7 @@ import pytest
 
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryServices
+from bus.queue import MessageBus
 from agent.provider import LLMResponse, ToolCall
 from agent.tools.filesystem import ReadFileTool
 from agent.tools.registry import ToolRegistry
@@ -36,7 +37,7 @@ def _make_loop(
     tools.register(ReadFileTool(allowed_dir=tmp_path))
     return AgentLoop(
         AgentLoopDeps(
-            bus=MagicMock(),
+            bus=MessageBus(),
             provider=cast(Any, provider),
             tools=tools,
             session_manager=MagicMock(),

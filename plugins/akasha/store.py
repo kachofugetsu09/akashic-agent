@@ -446,7 +446,7 @@ class AkashaStore:
         # 1. 查询阶段一次性读入节点，和 cross CLI 的内存图保持一致。
         with self._lock:
             rows = self._db.execute("SELECT * FROM akasha_nodes").fetchall()
-        return [node for row in rows if (node := _row_to_node(row)) is not None]
+        return [_row_to_node(row) for row in rows]
 
     # 读取单个 turn 节点。
     def get_node(self, key: str) -> AkashaNode | None:
@@ -670,12 +670,23 @@ class AkashaStore:
 
     # 批量物理删除 Akasha 节点。
     def delete_items_batch(self, ids: list[str]) -> int:
-        # 1. 复用单删逻辑，保持边清理一致。
-        count = 0
-        for item_id in ids:
-            if self.delete_item(item_id):
-                count += 1
-        return count
+        """在单个事务中删除节点及其关联边。"""
+        if not ids:
+            return 0
+
+        # 1. 保持逐项删除语义，同时合并锁和事务边界
+        node_params = [(item_id,) for item_id in ids]
+        edge_params = [(item_id, item_id) for item_id in ids]
+        with self._lock, self._db:
+            cur = self._db.executemany(
+                "DELETE FROM akasha_nodes WHERE key = ?",
+                node_params,
+            )
+            _ = self._db.executemany(
+                "DELETE FROM akasha_edges WHERE src_key = ? OR dst_key = ?",
+                edge_params,
+            )
+        return cur.rowcount
 
     # 删除指定 turn 的检索诊断状态。
     def delete_query_state_for_turns(self, turns: list[tuple[str, int]]) -> None:
@@ -829,11 +840,10 @@ class AkashaStore:
 
 
 # 把 SQLite row 转成 AkashaNode。
-def _row_to_node(row: sqlite3.Row) -> AkashaNode | None:
-    # 1. embedding 损坏时跳过该节点，避免一次坏数据打断整轮检索。
+def _row_to_node(row: sqlite3.Row) -> AkashaNode:
     embedding = deserialize_f32(row["embedding"])
     if embedding.size == 0:
-        return None
+        raise ValueError(f"Akasha 节点 {row['key']} 的 embedding 为空")
     return AkashaNode(
         key=str(row["key"]),
         anchor_id=str(row["anchor_id"]),

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
@@ -63,7 +62,7 @@ def build_research_spec(
     max_iterations: int = 20,
     multimodal: bool = True,
 ) -> SubagentSpec:
-    """只读调研：搜索、读文件、抓网页；禁止执行命令和写文件。"""
+    """构建可联网但禁止命令执行与写文件的只读调研配置。"""
     tools = build_readonly_research_tools(
         fetch_requester=fetch_requester,
         allowed_dir=workspace,
@@ -86,7 +85,7 @@ def build_scripting_spec(
     max_iterations: int = 20,
     multimodal: bool = True,
 ) -> SubagentSpec:
-    """执行型：运行命令、读写文件（仅限 task_dir）；禁止网络访问。"""
+    """构建可执行命令并仅向任务目录写入、但禁止联网的配置。"""
     tools: list[Tool] = [
         ReadFileTool(allowed_dir=workspace, multimodal=multimodal),
         ListDirTool(allowed_dir=workspace),
@@ -113,7 +112,7 @@ def build_general_spec(
     max_iterations: int = 20,
     multimodal: bool = True,
 ) -> SubagentSpec:
-    """通用型：调研与执行兼有；仅在任务明确需要两者时使用。"""
+    """构建同时允许联网调研和任务目录写入的通用配置。"""
     tools = build_readonly_research_tools(
         fetch_requester=fetch_requester,
         allowed_dir=workspace,
@@ -151,14 +150,10 @@ def build_spawn_spec(
     profile: str = PROFILE_RESEARCH,
     multimodal: bool = True,
 ) -> SubagentSpec:
-    """根据 profile 选择对应的工具集构建 SubagentSpec。
-
-    profile:
-        research  — 只读调研（默认，最小权限）
-        scripting — 执行型，可运行命令和写文件，禁止网络
-        general   — 两者兼有，仅在明确需要时使用
-    """
-    builder = _PROFILE_BUILDERS.get(profile, build_research_spec)
+    """按 profile 选择权限边界并构建子任务配置。"""
+    builder = _PROFILE_BUILDERS.get(profile)
+    if builder is None:
+        raise ValueError(f"未知 subagent profile: {profile!r}")
     return builder(
         workspace=workspace,
         task_dir=task_dir,

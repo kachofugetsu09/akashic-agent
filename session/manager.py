@@ -1,13 +1,12 @@
 import asyncio
 import base64
 import json
-import logging
 import mimetypes
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from agent.prompting import (
     PromptSectionRender,
@@ -15,8 +14,6 @@ from agent.prompting import (
     build_context_frame_message,
 )
 from session.store import SessionStore
-
-logger = logging.getLogger(__name__)
 
 _TOOL_RESULT_CHAR_BUDGET = 10000
 _PROACTIVE_HISTORY_CHAR_BUDGET = 360
@@ -41,26 +38,28 @@ def _truncate_tool_result(content: object) -> str:
     return f"Total output lines: {len(text.splitlines())}\n\n{truncated}"
 
 
-def _append_proactive_meta(content: str, msg: dict[str, Any]) -> str:
-    """Expose source trace and state tag back to the model without changing user-visible text."""
+def _append_proactive_meta(content: str, msg: dict[str, object]) -> str:
+    """向模型补充来源和状态标签，但不改变用户可见正文。"""
     if not msg.get("proactive"):
         return content
     meta_lines: list[str] = []
-    state_tag = str(msg.get("state_summary_tag", "") or "").strip()
+    raw_state_tag = msg.get("state_summary_tag")
+    state_tag = cast(str, raw_state_tag).strip() if raw_state_tag is not None else ""
     if state_tag and state_tag != "none":
         meta_lines.append(f"state_summary_tag={state_tag}")
-    source_refs = msg.get("source_refs") or []
-    if isinstance(source_refs, list) and source_refs:
-        meta_lines.append("sources:")
-        for raw in source_refs[:1]:
-            if not isinstance(raw, dict):
-                continue
-            parts = [
-                str(raw.get("source_name", "") or "").strip(),
-                str(raw.get("title", "") or "").strip(),
-                str(raw.get("url", "") or "").strip(),
-            ]
-            meta_lines.append("- " + " | ".join(p for p in parts if p))
+    raw_source_refs = msg.get("source_refs")
+    if raw_source_refs is not None:
+        source_refs = cast(list[dict[str, object]], raw_source_refs)
+        if source_refs:
+            meta_lines.append("sources:")
+            raw = source_refs[0]
+            parts: list[str] = []
+            for field in ("source_name", "title", "url"):
+                value = raw.get(field)
+                if value is not None and str(value).strip():
+                    parts.append(str(value).strip())
+            if parts:
+                meta_lines.append("- " + " | ".join(parts))
     if not meta_lines:
         return content
     return f"{content}\n\n[proactive_meta]\n" + "\n".join(meta_lines)
@@ -68,10 +67,10 @@ def _append_proactive_meta(content: str, msg: dict[str, Any]) -> str:
 
 def _build_proactive_history_messages(
     content: str,
-    msg: dict[str, Any],
-) -> list[dict[str, str]]:
+    msg: dict[str, object],
+) -> list[dict[str, object]]:
     preview = _truncate_text(content, _PROACTIVE_HISTORY_CHAR_BUDGET)
-    messages = [
+    messages: list[dict[str, object]] = [
         {
             "role": "assistant",
             "content": f"[主动推送] {preview}" if preview else "[主动推送]",
@@ -80,18 +79,21 @@ def _build_proactive_history_messages(
     meta = _append_proactive_meta("", msg).strip()
     if not meta:
         return messages
-    frame = build_context_frame_message(
-        build_context_frame_content([
-            PromptSectionRender(
-                name="recent_proactive_message_meta",
-                content=(
-                    "上一条 assistant 消息是系统主动推送。"
-                    "以下 metadata 仅用于理解用户后续指代，不是用户陈述。\n"
-                    + _truncate_text(meta, _PROACTIVE_META_HISTORY_CHAR_BUDGET)
-                ),
-                is_static=False,
-            )
-        ])
+    frame = cast(
+        dict[str, object],
+        build_context_frame_message(
+            build_context_frame_content([
+                PromptSectionRender(
+                    name="recent_proactive_message_meta",
+                    content=(
+                        "上一条 assistant 消息是系统主动推送。"
+                        "以下 metadata 仅用于理解用户后续指代，不是用户陈述。\n"
+                        + _truncate_text(meta, _PROACTIVE_META_HISTORY_CHAR_BUDGET)
+                    ),
+                    is_static=False,
+                )
+            ])
+        ),
     )
     messages.append(frame)
     return messages
@@ -103,10 +105,12 @@ def _truncate_text(text: str, limit: int) -> str:
     return text[:limit].rstrip() + f"…（截断 {len(text) - limit} 字）"
 
 
-def _rebuild_user_content(text: str, media_paths: list[str]) -> "str | list[dict]":
+def _rebuild_user_content(
+    text: str, media_paths: list[str]
+) -> "str | list[dict[str, object]]":
     """重建带附件的用户消息。图片内联 base64；非图片文件保留路径引用供 agent 调用 read_file。"""
-    images = []
-    file_refs = []
+    images: list[dict[str, object]] = []
+    file_refs: list[str] = []
     for path in media_paths:
         p = Path(path)
         mime, _ = mimetypes.guess_type(p)
@@ -119,7 +123,7 @@ def _rebuild_user_content(text: str, media_paths: list[str]) -> "str | list[dict
                         "image_url": {"url": f"data:{mime};base64,{b64}"},
                     }
                 )
-            except Exception:
+            except OSError:
                 file_refs.append(f"[图片（读取失败）: {p.name}]")
         else:
             if p.is_file():
@@ -135,7 +139,9 @@ def _rebuild_user_content(text: str, media_paths: list[str]) -> "str | list[dict
     return images + [{"type": "text", "text": combined_text}]
 
 
-def _align_to_user_boundary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _align_to_user_boundary(
+    messages: list[dict[str, object]],
+) -> list[dict[str, object]]:
     for i, m in enumerate(messages):
         if m.get("role") == "user" or (
             m.get("role") == "assistant" and m.get("proactive")
@@ -154,18 +160,20 @@ class Session:
     """单次对话中的 session。"""
 
     key: str
-    messages: list[dict[str, Any]] = field(default_factory=list)
+    messages: list[dict[str, object]] = field(
+        default_factory=list[dict[str, object]]
+    )
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict[str, Any])
     last_consolidated: int = 0
     consolidation_requested: bool = False
 
     def add_message(
-        self, role: str, content: str, media: list[str] | None = None, **kwargs: Any
+        self, role: str, content: str, media: list[str] | None = None, **kwargs: object
     ) -> None:
-        """Add a message to session."""
-        msg = {
+        """向 session 追加一条消息并更新时间。"""
+        msg: dict[str, object] = {
             "role": role,
             "content": content,
             "timestamp": datetime.now().astimezone().isoformat(),
@@ -181,7 +189,7 @@ class Session:
         max_messages: int = 500,
         *,
         start_index: int | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, object]]:
         """将 session 消息展开为 LLM 可直接使用的 OpenAI 格式消息列表。"""
         if start_index is not None:
             if max_messages <= 0:
@@ -215,37 +223,43 @@ class Session:
             messages = []
         else:
             messages = self.messages[-max_messages:]
-        out: list[dict[str, Any]] = []
+        out: list[dict[str, object]] = []
         for m in messages:
-            role = m.get("role")
+            role = m["role"]
 
             if role == "user":
                 user_content = m.get("llm_user_content")
                 if user_content is None:
-                    text = m.get("content", "")
-                    media_paths = m.get("media") or []
-                    user_content = (
-                        _rebuild_user_content(text, media_paths)
-                        if media_paths
-                        else text
-                    )
+                    text = cast(str, m["content"])
+                    raw_media_paths = m.get("media")
+                    if raw_media_paths is None:
+                        user_content = text
+                    else:
+                        user_content = _rebuild_user_content(
+                            text, cast(list[str], raw_media_paths)
+                        )
                 out.append({"role": "user", "content": user_content})
                 continue
 
             if role != "assistant":
-                continue
+                raise ValueError(f"session message role 无效: {role!r}")
 
-            content = m.get("content", "") or ""
+            content = cast(str, m["content"])
             if m.get("proactive"):
                 out.extend(_build_proactive_history_messages(str(content), m))
                 continue
 
-            tool_chain: list[dict] = m.get("tool_chain") or []
+            raw_tool_chain = m.get("tool_chain")
+            tool_chain = (
+                cast(list[dict[str, object]], raw_tool_chain)
+                if raw_tool_chain is not None
+                else []
+            )
             for group in tool_chain:
-                calls: list[dict] = group.get("calls") or []
+                calls = cast(list[dict[str, object]], group["calls"])
                 if not calls:
                     continue
-                assistant_msg = {
+                assistant_msg: dict[str, object] = {
                     "role": "assistant",
                     "content": group.get("text"),
                     "tool_calls": [
@@ -255,7 +269,8 @@ class Session:
                             "function": {
                                 "name": c["name"],
                                 "arguments": json.dumps(
-                                    c.get("arguments", {}), ensure_ascii=False
+                                    c["arguments"] if "arguments" in c else {},
+                                    ensure_ascii=False,
                                 ),
                             },
                         }
@@ -263,7 +278,7 @@ class Session:
                     ],
                 }
                 reasoning_content = group.get("reasoning_content")
-                if isinstance(reasoning_content, str):
+                if reasoning_content is not None:
                     assistant_msg["reasoning_content"] = reasoning_content
                 out.append(assistant_msg)
                 for c in calls:
@@ -271,15 +286,20 @@ class Session:
                         {
                             "role": "tool",
                             "tool_call_id": c["call_id"],
-                            "content": _truncate_tool_result(c.get("result", "")),
+                            "content": _truncate_tool_result(
+                                c["result"] if "result" in c else ""
+                            ),
                         }
                     )
 
             if content:
                 content = _append_proactive_meta(content, m)
-            assistant_msg = {"role": "assistant", "content": content}
+            assistant_msg: dict[str, object] = {
+                "role": "assistant",
+                "content": content,
+            }
             reasoning_content = m.get("reasoning_content")
-            if isinstance(reasoning_content, str):
+            if reasoning_content is not None:
                 assistant_msg["reasoning_content"] = reasoning_content
             out.append(assistant_msg)
 
@@ -327,21 +347,15 @@ class SessionManager:
     def _load(self, key: str) -> Session | None:
         meta = self._store.get_session_meta(key)
         messages = self._store.fetch_session_messages(key)
-        if meta is None and not messages:
+        if meta is None:
+            if messages:
+                raise ValueError(f"session metadata 缺失但存在 messages: {key}")
             return None
 
-        created_at = (
-            datetime.fromisoformat(meta["created_at"])
-            if meta and meta.get("created_at")
-            else datetime.now()
-        )
-        updated_at = (
-            datetime.fromisoformat(meta["updated_at"])
-            if meta and meta.get("updated_at")
-            else datetime.now()
-        )
-        metadata = meta.get("metadata", {}) if meta else {}
-        last_consolidated = int(meta.get("last_consolidated", 0)) if meta else 0
+        created_at = datetime.fromisoformat(meta["created_at"])
+        updated_at = datetime.fromisoformat(meta["updated_at"])
+        metadata = meta["metadata"]
+        last_consolidated = int(meta["last_consolidated"])
         return Session(
             key=key,
             messages=messages,
@@ -360,7 +374,7 @@ class SessionManager:
             metadata=session.metadata,
         )
 
-    def _extract_extra(self, msg: dict[str, Any]) -> dict[str, Any]:
+    def _extract_extra(self, msg: dict[str, object]) -> dict[str, object]:
         skip = {
             "id",
             "session_key",
@@ -372,11 +386,26 @@ class SessionManager:
         }
         return {k: v for k, v in msg.items() if k not in skip}
 
-    def _persist_messages(self, session: Session, messages: list[dict[str, Any]]) -> int:
-        next_seq = self._store.next_seq(session.key)
-        inserted = 0
+    def _persist_session(
+        self,
+        session: Session,
+        messages: list[dict[str, object]],
+        *,
+        updated_at: datetime,
+        last_consolidated: int | None = None,
+        retained_message_ids: set[str] | None = None,
+    ) -> int:
+        """准备待写消息并原子追加；传保留 ID 时在同一事务内替换消息集合。"""
 
-        # 1. 只写入尚未持久化（没有 id）的消息。
+        effective_last_consolidated = (
+            session.last_consolidated
+            if last_consolidated is None
+            else int(last_consolidated)
+        )
+        pending_messages: list[dict[str, object]] = []
+        pending_payloads: list[dict[str, object]] = []
+
+        # 1. 准备尚未持久化的消息，不提前修改内存中的稳定 id。
         for msg in messages:
             if msg.get("id"):
                 continue
@@ -384,64 +413,99 @@ class SessionManager:
             content = msg.get("content", "")
             if not isinstance(content, str):
                 content = json.dumps(content, ensure_ascii=False)
-            row = self._store.insert_message(
-                session.key,
-                role=str(msg.get("role") or "assistant"),
-                content=content,
-                ts=ts,
-                seq=next_seq,
-                tool_chain=msg.get("tool_chain"),
-                extra=self._extract_extra(msg),
+            pending_messages.append(msg)
+            pending_payloads.append(
+                {
+                    "role": str(msg.get("role") or "assistant"),
+                    "content": content,
+                    "timestamp": ts,
+                    "tool_chain": msg.get("tool_chain"),
+                    "extra": self._extract_extra(msg),
+                }
             )
-            msg.update(row)
-            next_seq += 1
-            inserted += 1
 
-        # 2. 保持会话消息缓存里的时间字段完整。
+        # 2. session 元数据和消息在同一事务中提交。
+        rows = self._store.persist_session(
+            session.key,
+            created_at=session.created_at.isoformat(),
+            updated_at=updated_at.isoformat(),
+            last_consolidated=effective_last_consolidated,
+            metadata=session.metadata,
+            messages=pending_payloads,
+            retained_message_ids=retained_message_ids,
+        )
+        for msg, row in zip(pending_messages, rows):
+            msg.update(row)
+
+        # 3. 保持会话消息缓存里的时间字段完整。
         for msg in messages:
             if "timestamp" not in msg:
                 msg["timestamp"] = datetime.now().astimezone().isoformat()
 
-        return inserted
+        session.updated_at = updated_at
+        return len(rows)
 
     def save(self, session: Session) -> None:
-        session.updated_at = datetime.now()
-        self._ensure_session_meta(session)
-        self._persist_messages(session, session.messages)
-        self._store.upsert_session(
-            session.key,
-            created_at=session.created_at.isoformat(),
-            updated_at=session.updated_at.isoformat(),
-            last_consolidated=session.last_consolidated,
-            metadata=session.metadata,
+        _ = self._persist_session(
+            session,
+            session.messages,
+            updated_at=datetime.now(),
         )
         self._cache[session.key] = session
 
+    def close(self) -> None:
+        self._store.close()
+
     async def save_async(self, session: Session) -> None:
-        session.updated_at = datetime.now()
         async with self._lock(session.key):
             self.save(session)
 
-    async def append_messages(self, session: Session, messages: list[dict]) -> None:
-        session.updated_at = datetime.now()
+    async def append_messages(
+        self, session: Session, messages: list[dict[str, object]]
+    ) -> None:
+        updated_at = datetime.now()
         msgs_copy = list(messages)
         async with self._lock(session.key):
-            # 1. 确保 session 元数据存在并刷新 updated_at。
-            self._ensure_session_meta(session)
-            # 2. 追加写入本次新增消息，并补齐稳定 id。
-            self._persist_messages(session, msgs_copy)
-            # 3. 回写 session 元数据（含 last_consolidated / metadata）。
-            self._store.upsert_session(
-                session.key,
-                created_at=session.created_at.isoformat(),
-                updated_at=session.updated_at.isoformat(),
-                last_consolidated=session.last_consolidated,
-                metadata=session.metadata,
+            # 1. 原子追加消息并刷新 session 元数据。
+            _ = self._persist_session(session, msgs_copy, updated_at=updated_at)
+            self._cache[session.key] = session
+
+    async def trim_history_async(
+        self,
+        session: Session,
+        keep_count: int,
+        *,
+        last_consolidated: int = 0,
+    ) -> None:
+        """在同一事务中裁剪 session 历史，并在成功后更新内存。"""
+
+        # 1. 在 session owner 的写锁内计算替换结果，避免覆盖并发追加。
+        async with self._lock(session.key):
+            retained = (
+                list(session.messages[-keep_count:]) if keep_count > 0 else []
             )
+            retained_ids = {
+                str(message["id"])
+                for message in retained
+                if message.get("id")
+            }
+
+            # 2. 先让 SQLite 原子提交删除、追加和 cursor 更新。
+            _ = self._persist_session(
+                session,
+                retained,
+                updated_at=datetime.now(),
+                last_consolidated=last_consolidated,
+                retained_message_ids=retained_ids,
+            )
+
+            # 3. 数据库成功后再提交内存视图，失败时调用方仍持有原历史。
+            session.messages[:] = retained
+            session.last_consolidated = int(last_consolidated)
             self._cache[session.key] = session
 
     def invalidate(self, key: str) -> None:
-        self._cache.pop(key, None)
+        _ = self._cache.pop(key, None)
 
     def list_sessions(self) -> list[dict[str, Any]]:
         sessions = self._store.list_sessions()
@@ -450,8 +514,4 @@ class SessionManager:
         return sessions
 
     def get_channel_metadata(self, channel: str) -> list[dict[str, Any]]:
-        try:
-            return self._store.get_channel_metadata(channel)
-        except Exception as e:
-            logging.warning("Failed to read channel metadata for %s: %s", channel, e)
-            return []
+        return self._store.get_channel_metadata(channel)

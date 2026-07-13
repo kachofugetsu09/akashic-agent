@@ -6,12 +6,9 @@ import pytest
 
 from agent.plugins.specs import ProactiveSourceSpec, RegisteredProactiveSource
 from plugins.default_proactive.source import McpGatewaySource
-from plugins.default_proactive.source_poll import DefaultSourcePollModule
-from plugins.default_proactive.plugin import DefaultModuleFactory
-from plugins.default_proactive.runtime import ProactiveFlowRuntime
 
 
-def registered(*, poll: bool = False) -> RegisteredProactiveSource:
+def registered() -> RegisteredProactiveSource:
     return RegisteredProactiveSource(
         plugin_id="feed@lab",
         spec=ProactiveSourceSpec(
@@ -20,34 +17,8 @@ def registered(*, poll: bool = False) -> RegisteredProactiveSource:
             server="feed",
             fetch_tool="events",
             ack_tool="ack",
-            poll_tool="poll" if poll else "",
-            poll_interval_seconds=3600 if poll else 0,
         ),
     )
-
-
-def test_default_lifecycle_owns_source_poll_module() -> None:
-    poll_module = object()
-    runtime = object.__new__(ProactiveFlowRuntime)
-    runtime._source_poll_module = poll_module
-
-    modules = DefaultModuleFactory()(runtime)
-
-    assert modules[0] is poll_module
-
-
-@pytest.mark.asyncio
-async def test_mcp_runtime_module_manages_poll_lifecycle(monkeypatch) -> None:
-    poll = AsyncMock()
-    monkeypatch.setattr("plugins.default_proactive.source_poll.mcp_sources.poll_source_async", poll)
-    gateway = object()
-    source = registered(poll=True)
-    module = DefaultSourcePollModule(gateway=gateway, sources=[source])  # type: ignore[arg-type]
-
-    await module.start()
-    await module.stop()
-
-    poll.assert_awaited_once_with(gateway, source)
 
 
 @pytest.mark.asyncio

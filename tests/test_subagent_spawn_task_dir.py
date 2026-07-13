@@ -86,6 +86,23 @@ def test_scripting_profile_has_no_web_tools(tmp_path: Path):
     assert "write_file" in tool_names
 
 
+def test_unknown_spawn_profile_is_rejected(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    task_dir = workspace / "subagent-runs" / "job-1"
+
+    with pytest.raises(ValueError, match="未知 subagent profile"):
+        build_spawn_spec(
+            workspace=workspace,
+            task_dir=task_dir,
+            fetch_requester=MagicMock(),
+            system_prompt="test",
+            profile="typo",
+        )
+
+    with pytest.raises(ValueError, match="未知 subagent profile"):
+        build_spawn_subagent_prompt(workspace, task_dir, profile="typo")
+
+
 @pytest.mark.asyncio
 async def test_scripting_shell_allows_pipes_and_target_paths(tmp_path: Path):
     workspace = tmp_path / "workspace"

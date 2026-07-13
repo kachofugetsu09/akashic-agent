@@ -16,7 +16,7 @@ from bootstrap.toolsets.protocol import (
 
 class SchedulerToolsetProvider(ToolsetProvider):
     def register(self, registry: ToolRegistry, deps: ToolsetDeps):
-        before = set(registry._tools.keys())
+        before = registry.get_registered_names()
         scheduler = deps.scheduler
         if scheduler is None:
             raise RuntimeError("SchedulerToolsetProvider requires scheduler")
@@ -62,7 +62,7 @@ def register_scheduler_tools(
     tools: ToolRegistry,
     scheduler: SchedulerService,
 ) -> None:
-    SchedulerToolsetProvider().register(
+    _ = SchedulerToolsetProvider().register(
         tools,
         ToolsetDeps(
             config=None,

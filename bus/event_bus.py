@@ -27,7 +27,7 @@ class _QueuedEvent:
 
 
 class EventBus:
-    """Typed lifecycle hooks: observe + ordered intercept pipeline."""
+    """提供 observe 隔离、fanout 并行和 ordered intercept 生命周期语义。"""
 
     def __init__(self) -> None:
         self._handlers: dict[type[object], list[Handler[object]]] = {}
@@ -36,6 +36,9 @@ class EventBus:
         self._closed = False
         self._runtime_snapshot_store: RuntimeSnapshotStore | None = None
         self._pending_enqueue_tasks: set[asyncio.Task[None]] = set()
+        self._dispatcher_failures: list[BaseException] = []
+        self._dispatcher_failure_tasks: set[asyncio.Task[None]] = set()
+        self._dispatcher_stopping = False
 
     def bind_runtime_snapshot_store(self, store: RuntimeSnapshotStore) -> None:
         self._runtime_snapshot_store = store
@@ -171,10 +174,10 @@ class EventBus:
             if snapshot is not None and not snapshot.accepting_leases:
                 task = asyncio.create_task(
                     self._enqueue_after_admission(event, queue),
-                    name="event_enqueue_admission",
+                    name=f"event_enqueue_admission:{type(event).__name__}",
                 )
                 self._pending_enqueue_tasks.add(task)
-                task.add_done_callback(self._pending_enqueue_tasks.discard)
+                task.add_done_callback(self._on_enqueue_task_done)
                 return
             snapshot_lease = self._runtime_snapshot_store.lease()
         queue.put_nowait(
@@ -193,6 +196,18 @@ class EventBus:
         lease = await self._runtime_snapshot_store.acquire()
         queue.put_nowait(_QueuedEvent(event=event, snapshot_lease=lease))
 
+    def _on_enqueue_task_done(self, task: asyncio.Task[None]) -> None:
+        self._pending_enqueue_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "event enqueue admission failed: task=%s",
+                task.get_name(),
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
     async def _runtime_lease(self) -> RuntimeSnapshotLease | None:
         if self._runtime_snapshot_store is None:
             return None
@@ -207,33 +222,66 @@ class EventBus:
     async def drain(
         self,
     ) -> None:
+        """等待已入队事件完成，并报告 dispatcher 的内部失败。"""
+
         queue = self._observe_queue
         if queue is None:
             return
         self._ensure_observe_task()
         await queue.join()
+        self._raise_dispatcher_failures()
 
     async def aclose(
         self,
     ) -> None:
+        """停止 admission、排空队列并关闭 dispatcher，同时保留所有清理错误。"""
+
+        errors: list[BaseException] = []
+
+        # 1. 关闭 admission，已创建但尚未入队的事件不再进入已关闭总线。
         self._closed = True
-        for task in self._pending_enqueue_tasks:
+        pending_enqueue_tasks = tuple(self._pending_enqueue_tasks)
+        for task in pending_enqueue_tasks:
             _ = task.cancel()
-        if self._pending_enqueue_tasks:
-            _ = await asyncio.gather(
-                *self._pending_enqueue_tasks,
+        if pending_enqueue_tasks:
+            results = await asyncio.gather(
+                *pending_enqueue_tasks,
                 return_exceptions=True,
             )
+            errors.extend(
+                result
+                for result in results
+                if isinstance(result, BaseException)
+                and not isinstance(result, asyncio.CancelledError)
+            )
         self._pending_enqueue_tasks.clear()
-        await self.drain()
-        task = self._observe_task
-        if task is None:
-            return
-        _ = task.cancel()
+
+        # 2. 先排空已有 envelope，确保每个 snapshot lease 都由队列 owner 释放。
         try:
-            await task
-        except asyncio.CancelledError:
-            pass
+            await self.drain()
+        except BaseException as error:
+            errors.append(error)
+
+        # 3. 排空后停止 dispatcher；取消本身正常，其他退出错误必须保留。
+        self._dispatcher_stopping = True
+        task = self._observe_task
+        if task is not None:
+            _ = task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                if self._observe_task is task:
+                    self._observe_task = None
+
+        for error in self._dispatcher_failures:
+            if not any(existing is error for existing in errors):
+                errors.append(error)
+        self._dispatcher_failures.clear()
+        _raise_event_bus_errors("EventBus 关闭失败", errors)
 
     async def _run_observer(
         self,
@@ -241,10 +289,16 @@ class EventBus:
         handler: Handler[object],
         source_lease: RuntimeSnapshotLease | None = None,
     ) -> bool:
+        """在隔离 task 中运行单个 observer，并区分 observer 与调用方取消。"""
+
         from agent.plugins.snapshot import get_current_runtime_lease
 
         source_lease = source_lease or get_current_runtime_lease()
         snapshot_lease = source_lease.fork() if source_lease is not None else None
+        caller_task = asyncio.current_task()
+        caller_cancelling = (
+            caller_task.cancelling() if caller_task is not None else 0
+        )
         handler_task = asyncio.create_task(
             self._invoke_observer(handler, event, snapshot_lease),
             name=f"event_observer:{_handler_name(handler)}",
@@ -253,13 +307,19 @@ class EventBus:
             await asyncio.shield(handler_task)
             return True
         except asyncio.CancelledError:
-            task = asyncio.current_task()
-            if task is not None and task.cancelling():
+            caller_cancelled = caller_task is not None and (
+                caller_task.cancelling() > caller_cancelling
+                or not handler_task.cancelled()
+            )
+            if caller_cancelled:
                 _ = handler_task.cancel()
-                _ = await asyncio.gather(handler_task, return_exceptions=True)
+                try:
+                    await handler_task
+                except asyncio.CancelledError:
+                    pass
                 raise
             logger.warning(
-                "observer cancelled for %s handler=%s",
+                "observer handler cancelled for %s handler=%s",
                 type(event).__name__,
                 _handler_name(handler),
             )
@@ -306,7 +366,7 @@ class EventBus:
     def _ensure_observe_task(
         self,
     ) -> None:
-        if self._closed:
+        if self._dispatcher_stopping:
             return
         if self._observe_task is not None and not self._observe_task.done():
             return
@@ -320,15 +380,26 @@ class EventBus:
     async def _run_observe_queue(
         self,
     ) -> None:
-        while True:
-            queue = self._observe_queue
-            if queue is None:
-                return
-            envelope = await queue.get()
-            try:
-                await self._fanout_queued(envelope)
-            finally:
-                queue.task_done()
+        try:
+            while True:
+                queue = self._observe_queue
+                if queue is None:
+                    return
+                envelope = await queue.get()
+                try:
+                    await self._fanout_queued(envelope)
+                finally:
+                    queue.task_done()
+        except asyncio.CancelledError:
+            if not self._dispatcher_stopping:
+                self._record_dispatcher_failure(
+                    RuntimeError("EventBus dispatcher 被意外取消"),
+                    task=asyncio.current_task(),
+                )
+            raise
+        except Exception as error:
+            self._record_dispatcher_failure(error, task=asyncio.current_task())
+            raise
 
     async def _fanout_queued(self, envelope: _QueuedEvent) -> None:
         lease = envelope.snapshot_lease
@@ -360,20 +431,48 @@ class EventBus:
     ) -> None:
         if self._observe_task is task:
             self._observe_task = None
-        if self._closed or task.cancelled():
+        if task.cancelled():
+            if not self._dispatcher_stopping:
+                if task not in self._dispatcher_failure_tasks:
+                    self._record_dispatcher_failure(
+                        RuntimeError("EventBus dispatcher 被意外取消"),
+                        task=task,
+                    )
+                else:
+                    self._dispatcher_failure_tasks.discard(task)
+                logger.error("event dispatcher cancelled unexpectedly")
+                if self._observe_queue is not None:
+                    self._ensure_observe_task()
             return
-        try:
-            exc = task.exception()
-        except Exception as e:
-            logger.warning("event dispatcher inspect failed: %s", e)
-            exc = None
+
+        exc = task.exception()
         if exc is not None:
+            if task not in self._dispatcher_failure_tasks:
+                self._record_dispatcher_failure(exc, task=task)
+            self._dispatcher_failure_tasks.discard(task)
             logger.error(
                 "event dispatcher stopped unexpectedly",
                 exc_info=(type(exc), exc, exc.__traceback__),
             )
         if self._observe_queue is not None:
             self._ensure_observe_task()
+
+    def _raise_dispatcher_failures(self) -> None:
+        errors = list(self._dispatcher_failures)
+        self._dispatcher_failures = []
+        _raise_event_bus_errors("EventBus dispatcher 失败", errors)
+
+    def _record_dispatcher_failure(
+        self,
+        error: BaseException,
+        *,
+        task: asyncio.Task[None] | None = None,
+    ) -> None:
+        if task is not None:
+            self._dispatcher_failure_tasks.add(task)
+        if any(existing is error for existing in self._dispatcher_failures):
+            return
+        self._dispatcher_failures.append(error)
 
 
 class EventSubscription:
@@ -407,3 +506,13 @@ def _handler_name(handler: Handler[object]) -> str:
             getattr(handler, "__name__", repr(handler)),
         )
     )
+
+
+def _raise_event_bus_errors(message: str, errors: list[BaseException]) -> None:
+    """保留单个错误的原始类型，多个错误用异常组完整返回。"""
+
+    if not errors:
+        return
+    if len(errors) == 1:
+        raise errors[0]
+    raise BaseExceptionGroup(message, errors)
