@@ -1,6 +1,7 @@
 """Tests for current MemoryStore behavior."""
 
 import builtins
+import sqlite3
 
 import pytest
 
@@ -120,3 +121,32 @@ def test_marker_reader_exposes_invalid_utf8(tmp_path, reader_name):
     reader = getattr(MemoryStore, reader_name)
     with pytest.raises(UnicodeDecodeError):
         reader(marker_file, "marker")
+
+
+@pytest.mark.parametrize(
+    ("payload", "trailing", "error"),
+    [
+        (None, 0, "payload is missing"),
+        ("content", 2, "must be 0 or 1"),
+    ],
+)
+def test_consolidation_index_rejects_unrecoverable_rows(
+    tmp_path, payload, trailing, error
+):
+    store = MemoryStore(tmp_path)
+    source_ref = "source"
+    kind = "pending"
+    conn = sqlite3.connect(store._consolidation_db)
+    try:
+        conn.execute(
+            """INSERT INTO consolidation_writes(
+                source_ref, kind, payload, trailing_blank_line, done_at
+            ) VALUES (?, ?, ?, ?, datetime('now'))""",
+            (source_ref, kind, payload, trailing),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(ValueError, match=error):
+        store.append_pending_once("new content", source_ref=source_ref, kind=kind)

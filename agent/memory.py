@@ -255,14 +255,19 @@ class MemoryStore:
                         raise TypeError("consolidation payload must be text")
                     if not isinstance(existing_trailing_raw, int):
                         raise TypeError("consolidation trailing flag must be an integer")
+                    if existing_trailing_raw not in (0, 1):
+                        raise ValueError("consolidation trailing flag must be 0 or 1")
                     existing_trailing = bool(existing_trailing_raw)
                     if not self._file_contains_marker(target_file, marker):
-                        if existing_payload:
-                            with open(target_file, "a", encoding="utf-8") as f:
-                                f.write(marker + "\n")
-                                f.write(existing_payload.rstrip() + "\n")
-                                if existing_trailing:
-                                    f.write("\n")
+                        if not existing_payload:
+                            raise ValueError(
+                                "consolidation index payload is missing for file recovery"
+                            )
+                        with open(target_file, "a", encoding="utf-8") as f:
+                            f.write(marker + "\n")
+                            f.write(existing_payload.rstrip() + "\n")
+                            if existing_trailing:
+                                f.write("\n")
                     conn.execute("COMMIT")
                     return False
 

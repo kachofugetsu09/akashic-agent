@@ -62,9 +62,10 @@ async def test_consolidation_helpers(
         [
             {"tag": "preference", "content": "喜欢 A"},
             {"tag": "preference", "content": "喜欢 A"},
+            {"tag": "agent_context", "content": "服务运行在 9000 端口"},
             {"tag": "bad", "content": "忽略"},
         ]
-    ) == "- [preference] 喜欢 A"
+    ) == "- [preference] 喜欢 A\n- [agent_context] 服务运行在 9000 端口"
     assert _parse_consolidation_payload('{"x":1}') == {"x": 1}
 
     session = SimpleNamespace(

@@ -473,7 +473,7 @@ async def test_default_memory_engine_refreshes_recent_context_from_lifecycle():
 async def test_default_memory_engine_consolidates_ready_session_from_lifecycle():
     event_bus = EventBus()
     session = SimpleNamespace(
-        key="cli:1",
+        key="shared-context",
         messages=[{"role": "user", "content": "u"}] * 31,
         last_consolidated=0,
     )
@@ -497,9 +497,9 @@ async def test_default_memory_engine_consolidates_ready_session_from_lifecycle()
 
     event_bus.enqueue(
         TurnCommitted(
-            session_key="cli:1",
-            channel="cli",
-            chat_id="1",
+            session_key="shared-context",
+            channel="telegram",
+            chat_id="user-1",
             input_message="hi",
             persisted_user_message="hi",
             assistant_response="ok",
@@ -509,7 +509,10 @@ async def test_default_memory_engine_consolidates_ready_session_from_lifecycle()
     await event_bus.drain()
     await _drain_maintenance(maintenance)
 
-    maintenance._consolidate_unlocked.assert_awaited_once()
+    request = maintenance._consolidate_unlocked.await_args.args[0]
+    assert request.session is session
+    assert request.scope_channel == "telegram"
+    assert request.scope_chat_id == "user-1"
     save_session.assert_awaited_once_with(session)
     await event_bus.aclose()
 

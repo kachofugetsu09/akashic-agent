@@ -34,6 +34,8 @@ class ConsolidateRequest:
     session: object
     archive_all: bool = False
     force: bool = False
+    scope_channel: str = ""
+    scope_chat_id: str = ""
 
 
 @dataclass
@@ -81,6 +83,7 @@ _ALLOWED_PENDING_TAGS = frozenset(
         "health_long_term",
         "requested_memory",
         "correction",
+        "agent_context",
     }
 )
 
@@ -291,13 +294,6 @@ def _recent_turn_count(keep_count: int) -> int:
 
 def _message_time(message: dict) -> str:
     return str(message.get("timestamp") or "").strip()
-
-
-def _session_scope(session_key: str) -> tuple[str, str]:
-    if ":" not in session_key:
-        return "", ""
-    channel, chat_id = session_key.split(":", 1)
-    return channel, chat_id
 
 
 def _is_context_frame_message(message: dict) -> bool:
@@ -751,6 +747,8 @@ ongoing_threads 严格限制：
         session,
         archive_all: bool = False,
         force: bool = False,
+        scope_channel: str = "",
+        scope_chat_id: str = "",
     ) -> _ConsolidationDraft | _ConsolidationFailure | None:
         profile_maint = self._profile_maint
         # 1. 先决定这次要归档哪一段消息窗口；没有新窗口就直接返回。
@@ -805,8 +803,6 @@ ongoing_threads 严格限制：
         current_memory = await asyncio.to_thread(profile_maint.read_long_term)
         old_recent_context = await asyncio.to_thread(profile_maint.read_recent_context)
         recent_context_block = _clip_context_text(old_recent_context)
-
-        scope_channel, scope_chat_id = _session_scope(session.key)
 
         prompt = f"""你是记忆提取代理（Memory Extraction Agent）。从对话中精确提取结构化信息，返回 JSON。
 
@@ -1047,7 +1043,7 @@ class MarkdownMemoryMaintenance:
         self._consolidation_min_new_messages = max(5, keep_count // 2)
         self._get_session: Callable[[str], object] | None = None
         self._save_session: Callable[[object], Awaitable[None]] | None = None
-        self._maintenance_queues: dict[str, deque[str]] = {}
+        self._maintenance_queues: dict[str, deque[TurnCommitted]] = {}
         self._maintenance_tasks: dict[str, asyncio.Task[None]] = {}
         self._maintenance_locks: dict[str, asyncio.Lock] = {}
         if event_bus is not None:
@@ -1060,13 +1056,14 @@ class MarkdownMemoryMaintenance:
     def on_turn_committed(self, event: TurnCommitted) -> None:
         if bool((event.extra or {}).get("skip_post_memory")):
             return
-        self._enqueue_maintenance(event.session_key)
+        self._enqueue_maintenance(event)
 
-    def _enqueue_maintenance(self, session_key: str) -> None:
+    def _enqueue_maintenance(self, event: TurnCommitted) -> None:
         if self._get_session is None or self._save_session is None:
             return
+        session_key = event.session_key
         queue = self._maintenance_queues.setdefault(session_key, deque())
-        queue.append(session_key)
+        queue.append(event)
         if session_key in self._maintenance_tasks:
             return
         task = asyncio.create_task(
@@ -1090,13 +1087,15 @@ class MarkdownMemoryMaintenance:
                 queue = self._maintenance_queues.get(session_key)
                 if not queue:
                     return
-                _ = queue.popleft()
+                event = queue.popleft()
                 session = get_session(session_key)
-                if session is None:
-                    return
                 if self._should_consolidate_session(session):
                     result = await self._consolidate_unlocked(
-                        ConsolidateRequest(session=session)
+                        ConsolidateRequest(
+                            session=session,
+                            scope_channel=event.channel,
+                            scope_chat_id=event.chat_id,
+                        )
                     )
                     if result.trace.get("mode") == "markdown":
                         await save_session(session)
@@ -1163,6 +1162,8 @@ class MarkdownMemoryMaintenance:
             request.session,
             archive_all=request.archive_all,
             force=request.force,
+            scope_channel=request.scope_channel,
+            scope_chat_id=request.scope_chat_id,
         )
         if draft is None:
             return ConsolidateResult(trace={"mode": "skipped"})
