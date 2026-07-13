@@ -51,8 +51,12 @@ class ProactiveStateStore:
         if not self._closed:
             try:
                 self.close()
-            except Exception:
-                pass
+            except sqlite3.Error as cleanup_error:
+                logger.warning(
+                    "ProactiveStateStore 析构关闭失败 db=%s err=%s",
+                    self.db_path,
+                    cleanup_error,
+                )
 
     def close(self) -> None:
         with self._lock:

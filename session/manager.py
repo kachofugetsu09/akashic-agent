@@ -324,21 +324,15 @@ class SessionManager:
     def _load(self, key: str) -> Session | None:
         meta = self._store.get_session_meta(key)
         messages = self._store.fetch_session_messages(key)
-        if meta is None and not messages:
+        if meta is None:
+            if messages:
+                raise ValueError(f"session metadata 缺失但存在 messages: {key}")
             return None
 
-        created_at = (
-            datetime.fromisoformat(meta["created_at"])
-            if meta and meta.get("created_at")
-            else datetime.now()
-        )
-        updated_at = (
-            datetime.fromisoformat(meta["updated_at"])
-            if meta and meta.get("updated_at")
-            else datetime.now()
-        )
-        metadata = meta.get("metadata", {}) if meta else {}
-        last_consolidated = int(meta.get("last_consolidated", 0)) if meta else 0
+        created_at = datetime.fromisoformat(meta["created_at"])
+        updated_at = datetime.fromisoformat(meta["updated_at"])
+        metadata = meta["metadata"]
+        last_consolidated = int(meta["last_consolidated"])
         return Session(
             key=key,
             messages=messages,
@@ -435,6 +429,9 @@ class SessionManager:
             updated_at=datetime.now(),
         )
         self._cache[session.key] = session
+
+    def close(self) -> None:
+        self._store.close()
 
     async def save_async(self, session: Session) -> None:
         async with self._lock(session.key):

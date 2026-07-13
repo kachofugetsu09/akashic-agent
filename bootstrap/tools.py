@@ -258,6 +258,9 @@ class CoreRuntime:
                 if inspect.isawaitable(result):
                     await cast(Awaitable[object], result)
 
+        async def _close_session_manager() -> None:
+            self.session_manager.close()
+
         await run_cleanup_steps(
             ("spawn.shutdown", _stop_spawn),
             ("event_bus.aclose", self.event_bus.aclose),
@@ -278,6 +281,7 @@ class CoreRuntime:
                 if self.peer_process_manager is not None
                 else _noop_async,
             ),
+            ("session_manager.close", _close_session_manager),
         )
 
 

@@ -176,6 +176,25 @@ def test_session_metadata_corruption_fails_at_database_boundary(
         manager._store.list_sessions_for_dashboard()
 
 
+def test_session_manager_rejects_orphan_messages_without_metadata(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path)
+    try:
+        manager._store.insert_message(
+            "telegram:orphan",
+            role="user",
+            content="孤立消息",
+            ts="2026-07-13T00:00:00+00:00",
+            seq=0,
+        )
+
+        with pytest.raises(ValueError, match="session metadata 缺失"):
+            manager.get_or_create("telegram:orphan")
+    finally:
+        manager.close()
+
+
 @pytest.mark.asyncio
 async def test_session_batch_persistence_rolls_back_all_messages_on_failure(
     tmp_path: Path,
@@ -526,6 +545,40 @@ def test_session_store_rejects_invalid_message_json(
     with pytest.raises(ValueError, match=field):
         store.fetch_session_messages("telegram:json")
     store.close()
+
+
+@pytest.mark.parametrize("payload", ['{"media": [}', '{"media": "path"}'])
+def test_session_store_media_lookup_rejects_invalid_extra(
+    tmp_path: Path,
+    payload: str,
+) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    try:
+        store.persist_session(
+            "telegram:media",
+            created_at="2026-07-13T00:00:00+00:00",
+            updated_at="2026-07-13T00:00:01+00:00",
+            last_consolidated=0,
+            metadata={},
+            messages=[
+                {
+                    "role": "user",
+                    "content": "消息",
+                    "timestamp": "2026-07-13T00:00:01+00:00",
+                    "extra": {},
+                }
+            ],
+        )
+        store._conn.execute(
+            "UPDATE messages SET extra = ? WHERE id = ?",
+            (payload, "telegram:media:0"),
+        )
+        store._conn.commit()
+
+        with pytest.raises(ValueError, match="telegram:media:0"):
+            store.media_path_exists(tmp_path / "path")
+    finally:
+        store.close()
 
 
 def test_session_get_history_returns_empty_when_window_is_zero():

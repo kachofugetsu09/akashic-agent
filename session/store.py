@@ -47,6 +47,30 @@ def _decode_session_metadata(
     return cast(dict[str, Any], metadata)
 
 
+def _decode_message_extra(
+    raw: str | bytes | bytearray | None,
+    message_id: str,
+) -> dict[str, Any]:
+    """解析并校验一条消息的 extra JSON object。"""
+
+    extra = _decode_json_payload(
+        raw,
+        fallback="{}",
+        field="message extra",
+        identifier=message_id,
+    )
+    if not isinstance(extra, dict):
+        raise ValueError(f"message extra 必须是 JSON object: {message_id}")
+    extra_dict = cast(dict[str, Any], extra)
+    reserved_fields = _MESSAGE_COLUMN_FIELDS.intersection(extra_dict)
+    if reserved_fields:
+        fields = ", ".join(sorted(reserved_fields))
+        raise ValueError(
+            f"message extra 不得覆盖消息列字段 ({fields}): {message_id}"
+        )
+    return extra_dict
+
+
 def _decode_json_payload(
     raw: str | bytes | bytearray | None,
     *,
@@ -78,8 +102,12 @@ class SessionStore:
         if not self._closed:
             try:
                 self.close()
-            except Exception:
-                pass
+            except sqlite3.Error as cleanup_error:
+                logger.warning(
+                    "SessionStore 析构关闭失败 db=%s err=%s",
+                    self.db_path,
+                    cleanup_error,
+                )
 
     def _init_schema(self) -> None:
         with self._lock:
@@ -380,24 +408,21 @@ class SessionStore:
                 s.metadata,
                 s.last_user_at,
                 s.last_proactive_at,
-                first_user.content AS first_message_content,
-                COALESCE(msg.message_count, 0) AS message_count
+                (
+                    SELECT m.content
+                    FROM messages m
+                    WHERE m.session_key = s.key
+                      AND m.role = 'user'
+                      AND TRIM(COALESCE(m.content, '')) != ''
+                    ORDER BY m.seq ASC
+                    LIMIT 1
+                ) AS first_message_content,
+                (
+                    SELECT COUNT(1)
+                    FROM messages m
+                    WHERE m.session_key = s.key
+                ) AS message_count
             FROM sessions s
-            LEFT JOIN (
-                SELECT session_key, COUNT(1) AS message_count
-                FROM messages
-                GROUP BY session_key
-            ) msg ON msg.session_key = s.key
-            LEFT JOIN (
-                SELECT m.session_key, m.content
-                FROM messages m
-                INNER JOIN (
-                    SELECT session_key, MIN(seq) AS first_user_seq
-                    FROM messages
-                    WHERE role = 'user' AND TRIM(COALESCE(content, '')) != ''
-                    GROUP BY session_key
-                ) first ON first.session_key = m.session_key AND first.first_user_seq = m.seq
-            ) first_user ON first_user.session_key = s.key
             {where_sql}
             ORDER BY s.{safe_sort_by} {safe_sort_order}, s.key ASC
             LIMIT ? OFFSET ?
@@ -960,21 +985,20 @@ class SessionStore:
             return False
         with self._lock:
             rows = self._conn.execute(
-                "SELECT extra FROM messages WHERE extra LIKE ?",
+                "SELECT id, extra FROM messages WHERE extra LIKE ?",
                 ('%"media"%',),
             ).fetchall()
         for row in rows:
-            try:
-                loaded = json.loads(row["extra"] or "{}")
-            except json.JSONDecodeError:
+            message_id = str(row["id"])
+            extra = _decode_message_extra(row["extra"], message_id)
+            if "media" not in extra:
                 continue
-            if not isinstance(loaded, dict):
-                continue
-            extra = cast(dict[str, object], loaded)
-            media = extra.get("media")
-            if not isinstance(media, list):
-                continue
-            for item in cast(list[object], media):
+            media = extra["media"]
+            if not isinstance(media, list) or not all(
+                isinstance(item, str) for item in media
+            ):
+                raise ValueError(f"message media 必须是字符串数组: {message_id}")
+            for item in cast(list[str], media):
                 if _resolve_path_text(item) == target:
                     return True
         return False
@@ -1336,21 +1360,7 @@ class SessionStore:
                 raise ValueError(f"message tool_chain 必须是 JSON array: {message_id}")
             if tool_chain:
                 message["tool_chain"] = tool_chain
-        extra = _decode_json_payload(
-            row["extra"],
-            fallback="{}",
-            field="message extra",
-            identifier=message_id,
-        )
-        if not isinstance(extra, dict):
-            raise ValueError(f"message extra 必须是 JSON object: {message_id}")
-        extra_dict = cast(dict[str, Any], extra)
-        reserved_fields = _MESSAGE_COLUMN_FIELDS.intersection(extra_dict)
-        if reserved_fields:
-            fields = ", ".join(sorted(reserved_fields))
-            raise ValueError(
-                f"message extra 不得覆盖消息列字段 ({fields}): {message_id}"
-            )
-        if extra:
+        extra_dict = _decode_message_extra(row["extra"], message_id)
+        if extra_dict:
             message.update(extra_dict)
         return message

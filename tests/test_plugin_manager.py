@@ -2006,3 +2006,39 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
     assert loop.received_after_turn is None
     assert loop.received_hooks == plugin_manager.tool_hooks
     assert spawn_tool.received_hooks == plugin_manager.tool_hooks
+
+
+@pytest.mark.asyncio
+async def test_core_runtime_stop_closes_session_manager():
+    from bootstrap.tools import CoreRuntime
+
+    closed: list[str] = []
+
+    async def _noop() -> None:
+        return None
+
+    runtime = CoreRuntime(
+        config=SimpleNamespace(peer_agents=[]),  # type: ignore[arg-type]
+        http_resources=SimpleNamespace(),  # type: ignore[arg-type]
+        loop=SimpleNamespace(),  # type: ignore[arg-type]
+        bus=SimpleNamespace(),  # type: ignore[arg-type]
+        event_bus=SimpleNamespace(aclose=_noop),  # type: ignore[arg-type]
+        tools=SimpleNamespace(get_tool=lambda _name: None),  # type: ignore[arg-type]
+        push_tool=SimpleNamespace(),  # type: ignore[arg-type]
+        session_manager=SimpleNamespace(
+            close=lambda: closed.append("session_manager")
+        ),  # type: ignore[arg-type]
+        scheduler=SimpleNamespace(),  # type: ignore[arg-type]
+        provider=SimpleNamespace(),  # type: ignore[arg-type]
+        light_provider=None,
+        mcp_registry=SimpleNamespace(shutdown=_noop),  # type: ignore[arg-type]
+        memory_runtime=SimpleNamespace(),  # type: ignore[arg-type]
+        presence=SimpleNamespace(),  # type: ignore[arg-type]
+        peer_process_manager=None,
+        peer_poller=None,
+        plugin_manager=None,
+    )
+
+    await runtime.stop()
+
+    assert closed == ["session_manager"]
