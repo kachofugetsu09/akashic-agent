@@ -17,6 +17,8 @@ from urllib.parse import urlsplit, urlunsplit
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, cast
+
+import httpx
 from openai import AsyncOpenAI
 
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
@@ -52,6 +54,10 @@ class ContentSafetyError(Exception):
 
 class ContextLengthError(Exception):
     """LLM provider 因上下文超长拒绝请求"""
+
+
+class LLMNetworkTimeoutError(TimeoutError):
+    """LLM provider 在网络连接或读取边界超时。"""
 
 
 @dataclass
@@ -201,28 +207,32 @@ class LLMProvider:
         base_url: str | None = None,
         system_prompt: str = "",
         extra_body: dict | None = None,
-        request_timeout_s: float = 90.0,
-        stream_idle_timeout_s: float | None = None,
+        connect_timeout_s: float = 30.0,
+        read_timeout_s: float = 90.0,
+        write_timeout_s: float = 30.0,
+        pool_timeout_s: float = 30.0,
         max_retries: int = 1,
         provider_name: str = "",
         force_disable_thinking: bool = False,
         payload_snapshot_enabled: bool | None = None,
     ) -> None:
         normalized_base_url = _normalize_openai_base_url(base_url)
-        self._client = AsyncOpenAI(api_key=api_key, base_url=normalized_base_url)
+        network_timeout = httpx.Timeout(
+            connect=max(0.001, float(connect_timeout_s)),
+            read=max(0.001, float(read_timeout_s)),
+            write=max(0.001, float(write_timeout_s)),
+            pool=max(0.001, float(pool_timeout_s)),
+        )
+        self._client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=normalized_base_url,
+            timeout=network_timeout,
+            max_retries=0,
+        )
         self._base_url = normalized_base_url or ""
         self._provider_name = provider_name
         self._system = system_prompt
         self._extra_body = extra_body or {}
-        self._request_timeout_s = max(1.0, float(request_timeout_s))
-        self._stream_idle_timeout_s = max(
-            0.001,
-            float(
-                request_timeout_s
-                if stream_idle_timeout_s is None
-                else stream_idle_timeout_s
-            ),
-        )
         self._max_retries = max(0, int(max_retries))
         self._force_disable_thinking = force_disable_thinking
         self._payload_snapshot_enabled = (
@@ -312,7 +322,7 @@ class LLMProvider:
     ) -> LLMResponse:
         """消费单个 provider stream 并组装最终响应。"""
 
-        # 1. 创建并消费流，保持既有 delta 顺序与超时语义
+        # 1. 创建并消费流，网络 idle 超时由 SDK read timeout 统一拥有。
         stream = cast(
             Any,
             await self._create_with_retry(strategy.prepare_stream_request(kwargs)),
@@ -328,12 +338,11 @@ class LLMProvider:
             stream_iter = aiter(stream)
             while True:
                 try:
-                    chunk = await asyncio.wait_for(
-                        anext(stream_iter),
-                        timeout=self._stream_idle_timeout_s,
-                    )
+                    chunk = await anext(stream_iter)
                 except StopAsyncIteration:
                     break
+                except httpx.TimeoutException as exc:
+                    raise LLMNetworkTimeoutError("LLM 流读取网络超时") from exc
                 prompt_tokens, hit_tokens = _extract_cache_usage(
                     getattr(chunk, "usage", None)
                 )
@@ -416,10 +425,7 @@ class LLMProvider:
         last_err: Exception | None = None
         for attempt in range(self._max_retries + 1):
             try:
-                return await asyncio.wait_for(
-                    self._client.chat.completions.create(**kwargs),
-                    timeout=self._request_timeout_s,
-                )
+                return await self._client.chat.completions.create(**kwargs)
             except Exception as e:
                 last_err = e
                 logger.warning(
@@ -439,6 +445,8 @@ class LLMProvider:
                 retryable = self._is_retryable(e)
                 exhausted = attempt >= self._max_retries
                 if (not retryable) or exhausted:
+                    if self._is_network_timeout(e):
+                        raise LLMNetworkTimeoutError("LLM 请求网络超时") from e
                     raise
                 wait_s = min(8.0, 1.0 * (2**attempt))
                 logger.warning(
@@ -465,7 +473,7 @@ class LLMProvider:
 
     @staticmethod
     def _is_retryable(err: Exception) -> bool:
-        if isinstance(err, TimeoutError):
+        if LLMProvider._is_network_timeout(err):
             return True
         status_code = getattr(err, "status_code", None)
         if status_code in {429, 500, 502, 503, 504}:
@@ -486,6 +494,13 @@ class LLMProvider:
             "too many requests",
         )
         return any(k in text for k in keywords)
+
+    @staticmethod
+    def _is_network_timeout(err: Exception) -> bool:
+        return isinstance(
+            err,
+            (TimeoutError, httpx.TimeoutException),
+        )
 
 
 def _get_field(delta: Any, name: str) -> Any:

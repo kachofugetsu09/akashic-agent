@@ -3,10 +3,8 @@ from __future__ import annotations
 from agent.config_models import Config
 from infra.providers.llm_provider import LLMProvider
 
-_MAIN_PROVIDER_TIMEOUT_S = 300.0
-_LIGHT_PROVIDER_TIMEOUT_S = 180.0
-_MAIN_STREAM_IDLE_TIMEOUT_S = 120.0
-_LIGHT_STREAM_IDLE_TIMEOUT_S = 60.0
+_MAIN_NETWORK_READ_TIMEOUT_S = 120.0
+_LIGHT_NETWORK_READ_TIMEOUT_S = 60.0
 
 
 def build_providers(
@@ -22,8 +20,7 @@ def build_providers(
         base_url=config.base_url,
         system_prompt=config.system_prompt,
         extra_body=main_extra,
-        request_timeout_s=_MAIN_PROVIDER_TIMEOUT_S,
-        stream_idle_timeout_s=_MAIN_STREAM_IDLE_TIMEOUT_S,
+        read_timeout_s=_MAIN_NETWORK_READ_TIMEOUT_S,
         provider_name=config.provider,
         payload_snapshot_enabled=payload_snapshot_enabled,
     )
@@ -45,8 +42,7 @@ def build_providers(
             base_url=config.light_base_url or config.base_url,
             system_prompt=config.system_prompt,
             extra_body=light_extra,
-            request_timeout_s=_LIGHT_PROVIDER_TIMEOUT_S,
-            stream_idle_timeout_s=_LIGHT_STREAM_IDLE_TIMEOUT_S,
+            read_timeout_s=_LIGHT_NETWORK_READ_TIMEOUT_S,
             force_disable_thinking=True,
             payload_snapshot_enabled=payload_snapshot_enabled,
         )
@@ -60,8 +56,7 @@ def build_providers(
             base_url=agent_url,
             system_prompt=config.system_prompt,
             extra_body=agent_extra,
-            request_timeout_s=_MAIN_PROVIDER_TIMEOUT_S,
-            stream_idle_timeout_s=_MAIN_STREAM_IDLE_TIMEOUT_S,
+            read_timeout_s=_MAIN_NETWORK_READ_TIMEOUT_S,
             payload_snapshot_enabled=payload_snapshot_enabled,
         )
 
@@ -79,8 +74,7 @@ def build_vl_provider(config: Config) -> LLMProvider | None:
             base_url=config.vl_base_url or config.base_url,
             system_prompt="",
             extra_body=vl_extra,
-            request_timeout_s=_MAIN_PROVIDER_TIMEOUT_S,
-            stream_idle_timeout_s=_MAIN_STREAM_IDLE_TIMEOUT_S,
+            read_timeout_s=_MAIN_NETWORK_READ_TIMEOUT_S,
             payload_snapshot_enabled=payload_snapshot_enabled,
         )
     return None
