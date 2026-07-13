@@ -1315,3 +1315,41 @@
 - 测试新增：启动与 rollback 多错误顺序、stopper 自取消、外部取消后仍完成全部清理，以及坏动态模块在编译边界失败。测试删除及原因：无。
 - 验证结果：定向 `42 passed`，修改文件 pyright `0 errors, 0 warnings`，组合全量 `1880 passed in 24.19s`，`git diff --check` 通过。
 - 残余风险：多清理失败现以 `BaseExceptionGroup` 暴露；这是为了不丢错误的明确契约变化，上层当前不吞该异常，会把真实关闭失败继续传给 runtime owner。
+
+### `0c992c96` `fix(bootstrap): fail fast on missing toolset deps`
+
+- 范围：memory、common meta、spawn、MCP 和 scheduler toolset 的依赖装配与注册结果协议。
+- 原问题：`ToolsetDeps` 用 `Any`/`object` 隐去真实依赖类型；memory 与 spawn 把多个缺失依赖合成同一错误，甚至允许缺 provider 继续进入构造；provider 又通过 registry 私有字段计算注册差集。
+- 为什么这样修改：在各 toolset 注册边界逐项校验真正必需的依赖并指出字段名；`ToolsetDeps` 改用现有 provider/session 类型；注册差集统一通过 `ToolRegistry.get_registered_names()` 公共契约计算。
+- 不变量与拥有层：bootstrap toolset provider 拥有装配完整性，具体 runtime 构造器只接收已确认存在的依赖，ToolRegistry 独占内部索引。可选 light/VL provider、事件发布器和 spawn 配置语义不变。
+- 主审修正：副手首版继续读取 `registry._tools`，并用无类型的 `list`/`dict` default factory；主线改为公共查询 API、参数化容器 factory，并区分 `extras=None` 与显式空映射。
+- 能力与性能变化：合法启动和工具注册顺序不变；缺失依赖现在在对应 toolset 边界 fail-fast，不再以更深层的属性错误暴露。非性能提交，不声明提速。
+- 测试新增：memory/spawn provider 缺失、common meta 缺只读工具或 session store 的明确失败。测试删除及原因：无。
+- 验证结果：定向 `35 passed`，`bootstrap/toolsets` pyright `0 errors, 0 warnings`；本批组合全量见末项。
+- 残余风险：部分历史 toolset 仍以宽泛 extras 传递扩展对象；其用途跨 provider，不在没有具体错误路径时强行收窄。
+
+### `e9b18447` `fix(memory2): tighten retrieval hit contracts`
+
+- 范围：MemoryStore2 检索 lane 输出、vector/keyword 融合、embedding 取消传播和记忆注入格式化。
+- 原问题：内部候选长期以宽泛 dict 传递，缺 id/score 会被空值或 `0.0` 掩盖；`gather(return_exceptions=True)` 会吞掉取消信号；RRF 完全平分时依赖 set 遍历顺序；procedure steps 通过 `cast` 假定形状。
+- 为什么这样修改：由存储层定义唯一 `MemoryHit` 契约；检索器直接消费已建立字段，缺失 id/数值得分明确失败；取消信号继续向上；RRF 用 score 与 id 给出确定顺序；procedure steps 在实际消费边界要求字符串列表。
+- 不变量与拥有层：MemoryStore2 拥有 SQLite/JSON 到候选结构的转换，Retriever 拥有 lane 融合、排序和注入元数据消费。单条普通 embedding provider 失败仍只跳过对应可选 lane，存储失败与任务取消不降级。
+- 主审修正：副手测试用 `cast(Any, ...)` 和缺少必需字段的 dict 绕过新契约；主线改为真实 `MemoryHit` 构造，并补上 dashboard/历史数据可达的 procedure steps 损坏路径。
+- 能力变化：取消可及时终止召回；坏候选不再悄悄降权或消失；相同输入的融合顺序稳定。正常 vector/keyword 召回、阈值和注入预算不变。
+- 性能变化：RRF 仍为同阶排序与线性融合，只增加常数级确定性排序键和真实 procedure 元数据校验，不宣称端到端提速。
+- 测试新增：embedding 取消、RRF 平分顺序、缺 vector score、坏 extra JSON/embedding/steps。测试删除及原因：无。
+- 验证结果：定向 `27 passed`，retriever 与相关测试 pyright `0 errors, 0 warnings`；本批组合全量见末项。
+- 残余风险：`extra_json` 是多记忆类型共用的扩展对象，暂不为所有可选字段制造统一大 schema；只在各字段的真实消费 owner 收窄。
+
+### `194453fb` `refactor(passive): tighten runtime contracts`
+
+- 范围：passive turn 工具保护判断、reasoner 插件模块装配、deferred 工具目录、memory retrieval owner 和 AgentLoop 入站确认清理。
+- 原问题：内部 typed 对象仍通过 `getattr`/`callable`/类型过滤当作不可信数据；passive retrieval 可被一个空 `MemoryServices` 遮蔽真实 runtime engine；入站确认失败时 active task/turn state 留在内存中。
+- 为什么这样修改：直接调用 Reasoner、ToolExecutionResult、SessionLike 与 ToolRegistry 的既有协议；为 deferred 目录定义精确 `TypedDict`；retrieval 始终使用 `_resolve_memory_runtime` 已确定的唯一 engine；确认消息前先收束本轮内存状态。
+- 不变量与拥有层：Reasoner ABC 拥有插件扩展方法，ToolRegistry 拥有 deferred 目录形状，AgentLoop 的 runtime 解析拥有 memory engine 选择，MessageBus 只拥有最终入站确认。正常工具提示、turn 执行和确认顺序不变。
+- 主审修正：副手首版先 `cast` 再逐项过滤 deferred 目录，等于重复怀疑 ToolRegistry；主线把 schema 放回 registry。内存 owner 测试也从读取私有字段改为执行真实 retrieval 并检查可观察结果。
+- 能力变化：入站确认失败仍会明确抛错，但不再遗留幽灵 active turn；显式空 service 不会关闭已经解析成功的 memory runtime；内部契约缺失直接失败。
+- 性能变化：删除 deferred 目录的重复扫描和动态属性分派；规模很小，不宣称可测端到端收益。
+- 测试新增：入站确认失败清理、memory runtime 优先级和既有 deferred 可见性回归。测试删除及原因：无。
+- 验证结果：相关定向 `76 passed`，新增精确契约文件 pyright `0 errors, 0 warnings`；三项组合全量 `1888 passed in 25.94s`，`git diff --check` 通过。
+- 残余风险：passive/looping 两个历史大文件仍有大量宽泛消息 dict 类型告警；需按调用链分批收窄，不能用一次全文件类型改写冒险改变热重载、重试和中断语义。
