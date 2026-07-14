@@ -21,6 +21,40 @@ failure，并检查 RSS、fd、线程与 DB 非终态阈值。
 每次运行的证据位于
 `docker/debug/reports/programmatic-control/<run-id>/`。
 
+## Runtime 扩展生命周期验收门
+
+workspace MCP 和 agent restart 共用 `docker-compose.control-gate.yml`，但每次运行都会创建
+独立 Compose project 与 sandbox。Gate 复制当前 tracked 和 non-ignored untracked 源码，记录
+Git HEAD、工作树状态、源码摘要、容器 `/app` 摘要与 image ID；运行结束后按 Compose project
+label 检查容器、网络和卷均无残留。
+
+```text
+┌─ workspace MCP Gate
+│  ├─ v1 → v2 → watched-content reload
+│  ├─ 旧 turn lease 与新 generation 隔离
+│  ├─ 坏声明整批 rollback、修复后自动恢复
+│  └─ 删除声明后工具与真实 MCP 进程全部退出
+└─ restart + MCP 组合 Gate
+   ├─ tool_search → agent_restart → terminal delivery
+   ├─ supervisor 固定、child/boot ID 更换、session resume
+   ├─ MCP 热更后跨进程重启恢复，旧 MCP PID 退出
+   ├─ 裸 exit 75、stale readiness、断线和 SIGTERM 失败矩阵
+   └─ 20 轮 FD、线程、zombie 与非终态 turn 资源门禁
+```
+
+本地合并前运行：
+
+```bash
+python docker/debug/workspace_mcp_reload_probe.py
+python docker/debug/restart_probe.py --soak
+```
+
+验收以两个 host `gate.json` 的 `status=passed` 为准，不能只使用容器内
+`restart-gate.json`。两份报告必须来自同一 HEAD、相同 source digest；CI 还要求工作树为空。
+20 轮 soak 的阈值为 supervisor FD 增量不超过 2、线程增量为 0，child FD 增量不超过 4、
+线程增量不超过 2；supervisor 与新 child 的 sampled RSS 增量及内核记录的 HWM 增量分别
+不超过 64 MiB，并要求无 zombie、无 `queued/in_progress` turn。
+
 确定性模型 sidecar 的控制协议：
 
 - `PUT /control/script`：装载一个脚本对象或脚本数组。`mode` 支持 `complete`、
