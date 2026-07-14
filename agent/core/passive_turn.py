@@ -32,7 +32,7 @@ from agent.tools.base import normalize_tool_result
 from agent.tools.registry import begin_turn_search_scope, end_turn_search_scope
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
-from bus.events import InboundMessage, OutboundMessage
+from bus.events import InboundMessage, OutboundMessage, TurnDisposition
 from bus.events_lifecycle import (
     ToolCallCompleted,
     ToolCallStarted,
@@ -495,6 +495,7 @@ class PassiveTurnPipeline:
                             channel=msg.channel,
                             chat_id=msg.chat_id,
                             content=before_turn.abort_reply,
+                            turn_disposition=TurnDisposition.SHORT_CIRCUITED,
                         ),
                     )
                 logger.info(
@@ -535,6 +536,7 @@ class PassiveTurnPipeline:
                             channel=msg.channel,
                             chat_id=msg.chat_id,
                             content=before_reasoning.abort_reply,
+                            turn_disposition=TurnDisposition.SHORT_CIRCUITED,
                         ),
                     )
                 logger.info(

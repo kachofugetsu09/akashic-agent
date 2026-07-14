@@ -17,7 +17,7 @@ from agent.looping.ports import SessionServices
 from agent.tools.registry import ToolRegistry
 from agent.turns.outbound import OutboundPort
 from bus.event_bus import EventBus
-from bus.events import InboundMessage, OutboundMessage
+from bus.events import InboundMessage, OutboundMessage, TurnDisposition
 from agent.lifecycle.types import BeforeReasoningCtx, BeforeTurnCtx
 from session.manager import SessionManager
 
@@ -305,6 +305,7 @@ async def test_before_turn_abort_skips_reasoner_and_commit_and_dispatches():
     out = await agent_core.process(msg, "telegram:123", dispatch_outbound=True)
 
     assert out.content == "blocked by policy"
+    assert out.turn_disposition is TurnDisposition.SHORT_CIRCUITED
     # 不经过 reasoner 和持久化
     reasoner.run_turn.assert_not_called()
     # 通过 outbound_port 实际 dispatch
@@ -357,6 +358,7 @@ async def test_before_reasoning_abort_skips_reasoner_and_commit_and_dispatches()
     out = await agent_core.process(msg, "telegram:123", dispatch_outbound=True)
 
     assert out.content == "rate limited"
+    assert out.turn_disposition is TurnDisposition.SHORT_CIRCUITED
     reasoner.run_turn.assert_not_called()
     dispatch_port.dispatch.assert_awaited_once()
     dispatched = dispatch_port.dispatch.await_args.args[0]

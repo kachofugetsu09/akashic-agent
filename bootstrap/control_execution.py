@@ -19,6 +19,7 @@ from agent.model_runtime.errors import (
 )
 from agent.provider import ContentSafetyError, ContextLengthError, LLMNetworkTimeoutError
 from bus.event_bus import EventBus
+from bus.events import TurnDisposition
 from bus.events_lifecycle import (
     StreamDeltaReady,
     ToolCallCompleted,
@@ -129,8 +130,9 @@ async def execute_control_turn(
         tool_started_subscription.close()
         tool_subscription.close()
 
-    # 2. 核心成功后 TurnCommitted 必须已同步 fanout，否则属于内部契约错误。
-    if committed is None:
+    # 2. 插件命令可在推理前合法短路；普通 turn 仍必须完成正式提交。
+    short_circuited = outbound.turn_disposition is TurnDisposition.SHORT_CIRCUITED
+    if committed is None and not short_circuited:
         raise RuntimeError(f"turn 缺少 TurnCommitted 事件: {turn_id}")
     if tool_item_ids or invalid_tool_events:
         raise RuntimeError(
@@ -147,7 +149,7 @@ async def execute_control_turn(
         },
         items=completed_items,
         deltas=deltas,
-        usage=_turn_usage(committed.model_usage),
+        usage=_turn_usage(committed.model_usage) if committed is not None else None,
     )
 
 
