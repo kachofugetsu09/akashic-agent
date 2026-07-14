@@ -63,6 +63,7 @@ fun MobileConversationScaffold(
     onStop: () -> Unit,
     onRetryDownloadedAttachment: (String) -> Unit,
     onOpenDownloadedAttachment: (String) -> Unit,
+    onDismissError: () -> Unit,
 ) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -99,6 +100,7 @@ fun MobileConversationScaffold(
                 onStop = onStop,
                 onRetryDownloadedAttachment = onRetryDownloadedAttachment,
                 onOpenDownloadedAttachment = onOpenDownloadedAttachment,
+                onDismissError = onDismissError,
             )
         }
 

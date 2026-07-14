@@ -36,6 +36,21 @@ interface ConversationDao {
 
     @Query("SELECT * FROM conversations WHERE sessionId = :sessionId")
     suspend fun get(sessionId: String): ConversationEntity?
+
+    @Query(
+        """
+        DELETE FROM conversations
+        WHERE serverId = :serverId
+          AND (:preservedSessionId IS NULL OR sessionId != :preservedSessionId)
+          AND NOT EXISTS (SELECT 1 FROM messages WHERE messages.sessionId = conversations.sessionId)
+          AND NOT EXISTS (
+            SELECT 1 FROM attachment_transfers
+            WHERE attachment_transfers.sessionId = conversations.sessionId
+              AND attachment_transfers.serverId = :serverId
+          )
+        """,
+    )
+    suspend fun deleteEmptyProjection(serverId: String, preservedSessionId: String?): Int
 }
 
 @Dao
@@ -75,6 +90,18 @@ interface MessageDao {
 
     @Query("UPDATE messages SET clientMessageId = NULL WHERE messageId = :messageId")
     suspend fun clearClientMessageId(messageId: String): Int
+
+    @Query(
+        """
+        DELETE FROM messages
+        WHERE sessionId IN (SELECT sessionId FROM conversations WHERE serverId = :serverId)
+          AND NOT (
+            clientMessageId IS NOT NULL
+            AND deliveryState IN ('pending', 'sent', 'failed')
+          )
+        """,
+    )
+    suspend fun deleteServerProjection(serverId: String): Int
 
     @Query("UPDATE messages SET deliveryState = :state, updatedAt = :updatedAt WHERE clientMessageId = :clientMessageId")
     suspend fun updateDelivery(clientMessageId: String, state: String, updatedAt: Long): Int
@@ -244,6 +271,24 @@ interface RealtimeCursorDao {
     suspend fun advance(
         deviceId: String,
         throughEventSeq: Long,
+        connectionEpoch: Long,
+        updatedAt: Long,
+    ): Int
+
+    @Query(
+        """
+        UPDATE realtime_cursors
+        SET lastAcknowledgedEventSeq = :eventSeq,
+            connectionEpoch = :connectionEpoch,
+            updatedAt = :updatedAt
+        WHERE deviceId = :deviceId
+          AND lastAcknowledgedEventSeq <= :eventSeq
+          AND connectionEpoch <= :connectionEpoch
+        """,
+    )
+    suspend fun reset(
+        deviceId: String,
+        eventSeq: Long,
         connectionEpoch: Long,
         updatedAt: Long,
     ): Int

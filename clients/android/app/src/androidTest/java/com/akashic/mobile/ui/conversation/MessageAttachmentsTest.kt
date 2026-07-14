@@ -1,5 +1,6 @@
 package com.akashic.mobile.ui.conversation
 
+import android.content.Intent
 import androidx.compose.ui.test.assertRangeInfoEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -9,9 +10,12 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import com.akashic.mobile.ui.design.AkashicTheme
 import android.content.Context
+import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -113,6 +117,66 @@ class MessageAttachmentsTest {
         }
         compose.onNodeWithContentDescription("打开文件 invalid.gif").assertExists()
         invalidGif.delete()
+    }
+
+    @Test
+    fun shareActionExistsOnlyForCachedAttachments() {
+        compose.setContent {
+            AkashicTheme {
+                MessageAttachments(
+                    attachments = listOf(
+                        attachment("cached", MessageAttachmentState.CACHED, 100),
+                        attachment("pending", MessageAttachmentState.PENDING, 0),
+                        attachment("failed", MessageAttachmentState.FAILED, 0),
+                    ),
+                    onRetry = {},
+                    onOpen = {},
+                )
+            }
+        }
+
+        compose.onNodeWithContentDescription("分享文件 cached.pdf").assertExists()
+        compose.onNodeWithContentDescription("分享文件 pending.pdf").assertDoesNotExist()
+        compose.onNodeWithContentDescription("分享文件 failed.pdf").assertDoesNotExist()
+    }
+
+    @Test
+    fun cachedShareIntentUsesRestrictedContentUriAndReadGrant() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val root = File(context.filesDir, "received-attachments").apply { mkdirs() }
+        val cached = File(root, "share.pdf").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        val attachment = attachment(
+            id = "share",
+            state = MessageAttachmentState.CACHED,
+            transferredBytes = 100,
+            cachePath = cached.path,
+        )
+
+        val chooser = buildShareIntent(context, attachment)
+        @Suppress("DEPRECATION")
+        val send = requireNotNull(chooser.getParcelableExtra<Intent>(Intent.EXTRA_INTENT))
+        @Suppress("DEPRECATION")
+        val stream = requireNotNull(send.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))
+
+        assertEquals(Intent.ACTION_CHOOSER, chooser.action)
+        assertEquals(Intent.ACTION_SEND, send.action)
+        assertEquals("application/pdf", send.type)
+        assertEquals("content", stream.scheme)
+        assertEquals(stream, send.clipData?.getItemAt(0)?.uri)
+        assertTrue(send.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
+        cached.delete()
+    }
+
+    @Test
+    fun uncachedAttachmentCannotBuildShareIntent() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            buildShareIntent(
+                context,
+                attachment("pending", MessageAttachmentState.PENDING, 0),
+            )
+        }
     }
 
     private fun attachment(

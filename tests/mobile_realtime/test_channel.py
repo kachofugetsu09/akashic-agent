@@ -112,6 +112,7 @@ def _generic_frame(
     frame_id: str,
     command_type: str,
     session_id: str | None = None,
+    turn_id: str | None = None,
     payload: dict[str, object] | None = None,
 ) -> GenericCommand:
     raw: dict[str, object] = {
@@ -124,6 +125,8 @@ def _generic_frame(
     }
     if session_id is not None:
         raw["session_id"] = session_id
+    if turn_id is not None:
+        raw["turn_id"] = turn_id
     frame = parse_frame(json.dumps(raw))
     assert isinstance(frame, GenericCommand)
     return frame
@@ -520,7 +523,7 @@ async def test_turn_stop_accepts_a_shared_mobile_session(tmp_path: Path) -> None
     )
     manager.save(manager.get_or_create(session_id))
     interrupt = SimpleNamespace(
-        request_interrupt=lambda **_: SimpleNamespace(status="accepted", message="已停止"),
+        request_interrupt=lambda **_: SimpleNamespace(status="interrupted", message="已停止"),
     )
     await channel.start(
         cast(
@@ -535,6 +538,17 @@ async def test_turn_stop_accepts_a_shared_mobile_session(tmp_path: Path) -> None
             ),
         )
     )
+    turn_id = "01ARZ3NDEKTSV4RRFFQ69G5FAY"
+    await channel._on_turn_started(
+        TurnStarted(
+            session_key=session_id,
+            channel="mobile",
+            chat_id=session_id.removeprefix("mobile:"),
+            content="正在生成",
+            timestamp=datetime.now(timezone.utc),
+            turn_id=turn_id,
+        )
+    )
 
     reply = await channel.handle_command(
         device_id=current_device,
@@ -542,11 +556,84 @@ async def test_turn_stop_accepts_a_shared_mobile_session(tmp_path: Path) -> None
             frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAZ",
             command_type="turn.stop",
             session_id=session_id,
+            turn_id=turn_id,
         ),
     )
 
     assert reply.type == "turn.stop.ok"
     assert runtime.events[-1]["event_type"] == "turn.interrupted"
+    manager.close()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_turn_stop_rejects_missing_or_stale_turn_identity(tmp_path: Path) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    manager = SessionManager(tmp_path / "workspace")
+    session_id = f"mobile:{uuid4()}"
+    storage.claim_session(
+        device_id=device_id,
+        session_id=session_id,
+        created_at=datetime.now(timezone.utc),
+    )
+    manager.save(manager.get_or_create(session_id))
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=_Bus(),
+                session_manager=manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=SimpleNamespace(
+                    request_interrupt=lambda **_: SimpleNamespace(
+                        status="interrupted",
+                        message="已停止",
+                    ),
+                ),
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+            ),
+        )
+    )
+    active_turn = "01ARZ3NDEKTSV4RRFFQ69G5FAT"
+    await channel._on_turn_started(
+        TurnStarted(
+            session_key=session_id,
+            channel="mobile",
+            chat_id=session_id.removeprefix("mobile:"),
+            content="正在生成",
+            timestamp=datetime.now(timezone.utc),
+            turn_id=active_turn,
+        )
+    )
+
+    missing = await channel.handle_command(
+        device_id=device_id,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAS",
+            command_type="turn.stop",
+            session_id=session_id,
+        ),
+    )
+    assert missing.type == "turn.stop.error"
+    assert missing.payload["code"] == "turn_id_required"
+    stale = await channel.handle_command(
+        device_id=device_id,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAR",
+            command_type="turn.stop",
+            session_id=session_id,
+            turn_id="01ARZ3NDEKTSV4RRFFQ69G5FAQ",
+        ),
+    )
+    assert stale.type == "turn.stop.error"
+    assert stale.payload["code"] == "stale_turn"
+
+    await channel.stop()
     manager.close()
     storage.close()
 

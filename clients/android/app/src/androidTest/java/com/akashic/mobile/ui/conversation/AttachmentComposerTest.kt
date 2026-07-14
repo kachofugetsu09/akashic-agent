@@ -28,6 +28,7 @@ class AttachmentComposerTest {
                     onRetryAttachment = {},
                     onRetryDownloadedAttachment = {},
                     onOpenDownloadedAttachment = {},
+                    onDismissError = {},
                     onSend = {},
                     onStop = {},
                 )
@@ -52,6 +53,7 @@ class AttachmentComposerTest {
                     onRetryAttachment = {},
                     onRetryDownloadedAttachment = {},
                     onOpenDownloadedAttachment = {},
+                    onDismissError = {},
                     onSend = { sends += 1 },
                     onStop = {},
                 )
@@ -73,6 +75,7 @@ class AttachmentComposerTest {
                     onRetryAttachment = {},
                     onRetryDownloadedAttachment = {},
                     onOpenDownloadedAttachment = {},
+                    onDismissError = {},
                     onSend = {},
                     onStop = {},
                 )
@@ -92,6 +95,7 @@ class AttachmentComposerTest {
                     onRetryAttachment = {},
                     onRetryDownloadedAttachment = {},
                     onOpenDownloadedAttachment = {},
+                    onDismissError = {},
                     onSend = {},
                     onStop = {},
                 )

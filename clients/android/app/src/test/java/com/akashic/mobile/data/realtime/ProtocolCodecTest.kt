@@ -65,6 +65,22 @@ class ProtocolCodecTest {
     }
 
     @Test
+    fun `round trips turn stop with current identity`() {
+        val envelope = WireEnvelope(
+            v = WIRE_PROTOCOL_VERSION,
+            kind = WireKind.COMMAND,
+            type = "turn.stop",
+            id = "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            connectionEpoch = 7,
+            sessionId = "mobile:one",
+            turnId = "turn-1",
+            payload = buildJsonObject {},
+        )
+
+        assertEquals(envelope, ProtocolCodec.decode(ProtocolCodec.encode(envelope)))
+    }
+
+    @Test
     fun `rejects unsupported version at boundary`() {
         val frame = """{"v":2,"kind":"control","type":"server.challenge","payload":{}}"""
 

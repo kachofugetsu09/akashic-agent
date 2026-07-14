@@ -78,6 +78,36 @@ class MediaCacheStoreTest {
         assertTrue(dao.pendingDownloads("server").isEmpty())
     }
 
+    @Test
+    fun `outbound draft is atomically copied into received cache`() = runBlocking {
+        val dao = FakeMediaDao()
+        val cache = MediaCacheStore(temporary.root.resolve("received"), dao)
+        val content = byteArrayOf(7, 8, 9)
+        val source = temporary.root.resolve("draft.upload").apply { writeBytes(content) }
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(content)
+            .joinToString("") { "%02x".format(it) }
+        val draft = AttachmentTransferEntity(
+            attachmentId = "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            serverId = "server",
+            sessionId = "mobile:test",
+            filename = "photo.png",
+            contentType = "image/png",
+            sizeBytes = content.size.toLong(),
+            sha256 = digest,
+            transferredBytes = content.size.toLong(),
+            state = "ready",
+            updatedAt = 1,
+        )
+
+        val cached = cache.importOutbound(draft, source, updatedAt = 2)
+
+        assertEquals("cached", cached.state)
+        assertEquals(content.toList(), File(cached.cachePath).readBytes().toList())
+        assertTrue(source.exists())
+        assertFalse(temporary.root.resolve("received").listFiles()!!.any { it.extension == "import" })
+    }
+
     private fun transfer(
         cache: MediaCacheStore,
         id: String,

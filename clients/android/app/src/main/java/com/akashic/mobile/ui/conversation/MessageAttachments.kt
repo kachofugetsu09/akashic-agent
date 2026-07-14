@@ -1,6 +1,7 @@
 package com.akashic.mobile.ui.conversation
 
 import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
@@ -35,6 +36,7 @@ import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -113,6 +115,13 @@ internal fun MessageAttachments(
                     },
                     onError = { failedPreviews = failedPreviews + attachment.id },
                 )
+                ImageAttachmentFooter(
+                    attachment = attachment,
+                    onShare = {
+                        onOpen(attachment.id)
+                        shareCachedAttachment(context, attachment)
+                    },
+                )
             } else {
                 FileAttachmentRow(
                     attachment = attachment,
@@ -120,6 +129,10 @@ internal fun MessageAttachments(
                     onOpen = {
                         onOpen(attachment.id)
                         openCachedAttachment(context, attachment)
+                    },
+                    onShare = {
+                        onOpen(attachment.id)
+                        shareCachedAttachment(context, attachment)
                     },
                 )
             }
@@ -172,6 +185,7 @@ private fun FileAttachmentRow(
     attachment: MessageAttachmentUi,
     onRetry: (String) -> Unit,
     onOpen: () -> Unit,
+    onShare: () -> Unit,
 ) {
     val progress = attachment.progress
     val animatedProgress by animateFloatAsState(
@@ -180,7 +194,6 @@ private fun FileAttachmentRow(
         label = "download progress",
     )
     val stateLabel = attachment.stateLabel(animatedProgress)
-    val interactionSource = remember { MutableInteractionSource() }
     val rowModifier = Modifier
         .fillMaxWidth()
         .heightIn(min = 64.dp)
@@ -249,11 +262,19 @@ private fun FileAttachmentRow(
                 ) {
                     Icon(Icons.Rounded.Refresh, contentDescription = null)
                 }
-                MessageAttachmentState.CACHED -> Box(
-                    modifier = Modifier.size(48.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null)
+                MessageAttachmentState.CACHED -> Row {
+                    AttachmentActionButton(
+                        onClick = onOpen,
+                        contentDescription = "打开文件 ${attachment.filename}",
+                    ) {
+                        Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null)
+                    }
+                    AttachmentActionButton(
+                        onClick = onShare,
+                        contentDescription = "分享文件 ${attachment.filename}",
+                    ) {
+                        Icon(Icons.Rounded.Share, contentDescription = null)
+                    }
                 }
                 MessageAttachmentState.PENDING,
                 MessageAttachmentState.DOWNLOADING,
@@ -262,17 +283,35 @@ private fun FileAttachmentRow(
         }
     }
 
-    if (attachment.state == MessageAttachmentState.CACHED) {
-        Surface(
-            onClick = onOpen,
-            interactionSource = interactionSource,
-            color = Color.Transparent,
-            shape = RoundedCornerShape(12.dp),
-            modifier = rowModifier.pressScale(interactionSource),
-            content = content,
+    Box(modifier = rowModifier, contentAlignment = Alignment.CenterStart) { content() }
+}
+
+@Composable
+private fun ImageAttachmentFooter(
+    attachment: MessageAttachmentUi,
+    onShare: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .padding(start = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = attachment.filename,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
         )
-    } else {
-        Box(modifier = rowModifier, contentAlignment = Alignment.CenterStart) { content() }
+        AttachmentActionButton(
+            onClick = onShare,
+            contentDescription = "分享图片 ${attachment.filename}",
+        ) {
+            Icon(Icons.Rounded.Share, contentDescription = null)
+        }
     }
 }
 
@@ -458,6 +497,30 @@ private fun openCachedAttachment(context: Context, attachment: MessageAttachment
     } catch (_: ActivityNotFoundException) {
         Toast.makeText(context, "没有可打开此文件的应用", Toast.LENGTH_SHORT).show()
     }
+}
+
+private fun shareCachedAttachment(context: Context, attachment: MessageAttachmentUi) {
+    try {
+        context.startActivity(buildShareIntent(context, attachment))
+    } catch (_: ActivityNotFoundException) {
+        Toast.makeText(context, "没有可分享此文件的应用", Toast.LENGTH_SHORT).show()
+    }
+}
+
+internal fun buildShareIntent(context: Context, attachment: MessageAttachmentUi): Intent {
+    require(attachment.state == MessageAttachmentState.CACHED) { "只有已缓存附件可以分享" }
+    val uri = FileProvider.getUriForFile(
+        context,
+        "${BuildConfig.APPLICATION_ID}.files",
+        File(attachment.cachePath),
+    )
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = attachment.contentType
+        putExtra(Intent.EXTRA_STREAM, uri)
+        clipData = ClipData.newUri(context.contentResolver, attachment.filename, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    return Intent.createChooser(send, "分享 ${attachment.filename}")
 }
 
 private fun formatFileSize(bytes: Long): String = when {

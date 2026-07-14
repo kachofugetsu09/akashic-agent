@@ -4,11 +4,14 @@ data class ConversationUiState(
     val connectionLabel: String,
     val connectionStatus: ConnectionStatusUi,
     val connectionNotice: String?,
+    val errorNotice: String?,
     val sessions: List<SessionUi>,
     val selectedSessionId: String?,
     val messages: List<MessageUi>,
     val attachments: List<ComposerAttachmentUi>,
     val isStreaming: Boolean,
+    val isStopping: Boolean,
+    val canStop: Boolean,
     val canSend: Boolean,
 )
 
@@ -105,11 +108,14 @@ internal val EmptyConversationState = ConversationUiState(
     connectionLabel = "正在连接",
     connectionStatus = ConnectionStatusUi.CONNECTING,
     connectionNotice = null,
+    errorNotice = null,
     sessions = emptyList(),
     selectedSessionId = null,
     messages = emptyList(),
     attachments = emptyList(),
     isStreaming = false,
+    isStopping = false,
+    canStop = false,
     canSend = false,
 )
 
@@ -117,6 +123,7 @@ internal val PreviewConversationState = ConversationUiState(
     connectionLabel = "网络不稳 · 正在续传",
     connectionStatus = ConnectionStatusUi.DEGRADED,
     connectionNotice = "网络不稳 · 消息已缓存，正在续传",
+    errorNotice = "附件读取失败，请重新选择文件。",
     sessions = listOf(
         SessionUi("mobile:preview-1", "Android 会话设计"),
         SessionUi("mobile:preview-2", "网络抖动恢复策略"),
@@ -190,5 +197,7 @@ internal val PreviewConversationState = ConversationUiState(
         ),
     ),
     isStreaming = true,
+    isStopping = false,
+    canStop = true,
     canSend = true,
 )

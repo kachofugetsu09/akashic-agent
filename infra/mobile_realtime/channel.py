@@ -521,24 +521,36 @@ class MobileRealtimeChannel:
     ) -> CommandReply:
         _expect_keys(frame.payload, set())
         session_id = self._require_mobile_session(frame.session_id)
+        turn_id = frame.turn_id
+        if turn_id is None:
+            raise MobileCommandError("turn_id_required", "停止生成必须携带 turn_id")
+        active_turn_id = self._active_turn_ids.get(session_id)
+        if active_turn_id is None:
+            raise MobileCommandError("turn_not_active", "当前会话没有正在生成的内容")
+        if active_turn_id != turn_id:
+            raise MobileCommandError("stale_turn", "目标 turn 已结束或已被新一轮替代")
         interrupt = self._require_ctx().interrupt_controller
         if interrupt is None:
             raise MobileCommandError("interrupt_unavailable", "当前未启用中断功能")
+        await self._flush_deltas(session_id, turn_id)
         result = interrupt.request_interrupt(
             session_key=session_id,
             sender=f"device:{device_id}",
             command="/stop",
         )
-        await self._runtime.publish_event(
-            event_type="turn.interrupted",
-            session_id=session_id,
-            turn_id=frame.turn_id,
-            payload={"status": result.status, "message": result.message},
-        )
+        if result.status == "interrupted":
+            await self._runtime.publish_event(
+                event_type="turn.interrupted",
+                session_id=session_id,
+                turn_id=turn_id,
+                payload={"status": result.status, "message": result.message},
+            )
+            _ = self._active_turn_ids.pop(session_id, None)
+            _ = self._process_turns.pop((session_id, turn_id), None)
         return CommandReply(
             type="turn.stop.ok",
             session_id=session_id,
-            turn_id=frame.turn_id,
+            turn_id=turn_id,
             payload={"status": result.status, "message": result.message},
         )
 

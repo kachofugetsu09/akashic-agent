@@ -59,13 +59,20 @@ class LocalDeliveryStore(
         conversation: ConversationEntity,
         message: MessageEntity,
         command: OutboxCommandEntity,
-        attachmentIds: List<String>,
+        attachments: List<MediaAttachmentEntity>,
     ) {
         database.withTransaction {
             database.conversations().upsert(conversation)
             database.messages().upsert(message)
             database.outbox().enqueue(command)
-            if (attachmentIds.isNotEmpty()) {
+            if (attachments.isNotEmpty()) {
+                val attachmentIds = attachments.map { it.attachmentId }
+                database.mediaAttachments().upsertAll(attachments)
+                database.mediaAttachments().linkAll(
+                    attachmentIds.mapIndexed { ordinal, id ->
+                        MessageAttachmentEntity(message.messageId, id, ordinal)
+                    },
+                )
                 check(database.attachmentTransfers().markSending(attachmentIds, message.updatedAt) == attachmentIds.size)
             }
         }
@@ -77,6 +84,7 @@ class LocalDeliveryStore(
         deviceId: String,
         envelope: WireEnvelope,
         updatedAt: Long,
+        preservedSessionId: String? = null,
     ): Long {
         require(envelope.kind == WireKind.EVENT) { "Only event envelopes can advance the cursor" }
         val eventSeq = requireNotNull(envelope.eventSeq)
@@ -85,7 +93,17 @@ class LocalDeliveryStore(
             val cursor = requireNotNull(database.realtimeCursors().get(deviceId)) {
                 "Realtime cursor is missing for device $deviceId"
             }
+            require(cursor.serverId == serverId) { "Realtime cursor belongs to another server" }
             require(connectionEpoch >= cursor.connectionEpoch) { "Stale event connection epoch" }
+            if (envelope.type == "sync.reset_required") {
+                require(eventSeq >= cursor.lastAcknowledgedEventSeq) { "Stale reset event sequence" }
+                database.messages().deleteServerProjection(serverId)
+                database.conversations().deleteEmptyProjection(serverId, preservedSessionId)
+                check(
+                    database.realtimeCursors().reset(deviceId, eventSeq, connectionEpoch, updatedAt) == 1,
+                ) { "Reset cursor rollback or stale connection epoch for device $deviceId" }
+                return@withTransaction eventSeq
+            }
             require(eventSeq == cursor.lastAcknowledgedEventSeq + 1) {
                 "Event sequence gap: expected ${cursor.lastAcknowledgedEventSeq + 1}, got $eventSeq"
             }

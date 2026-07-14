@@ -1,3 +1,13 @@
 <resources>
     <string name="app_name">Akashic</string>
+    <string name="notification_channel_connection">实时连接</string>
+    <string name="notification_channel_connection_description">保持手机与 Akashic 服务端的低打扰连接</string>
+    <string name="notification_channel_messages">最终回复</string>
+    <string name="notification_channel_messages_description">在其他会话或应用不可见时提醒最终回复</string>
+    <string name="notification_connection_title">Akashic 实时连接</string>
+    <string name="notification_message_title">Akashic 新回复</string>
+    <string name="notification_private_title">Akashic</string>
+    <string name="notification_private_text">解锁后查看新消息</string>
+    <string name="notification_permission_notice">允许通知后，离开应用也能收到最终回复</string>
+    <string name="notification_permission_action">开启</string>
 </resources>

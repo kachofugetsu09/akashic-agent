@@ -15,9 +15,11 @@ import kotlinx.coroutines.SupervisorJob
 class App : Application() {
     lateinit var container: AppContainer
         private set
+    val visibility = AppVisibilityTracker()
 
     override fun onCreate() {
         super.onCreate()
+        registerActivityLifecycleCallbacks(visibility)
         container = AppContainer(this)
     }
 }

@@ -255,6 +255,43 @@ def test_authenticated_gateway_requires_resume_and_acks_durable_sync(
     runtime.close()
 
 
+def test_resume_reset_terminal_explicitly_bridges_client_sequence_gap(
+    tmp_path: Path,
+) -> None:
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    runtime, _ = asyncio.run(build())
+    device_id = uuid4().hex
+    _register_test_device(runtime, device_id)
+    try:
+        for index in range(3):
+            runtime._enqueue_event(
+                device_id=device_id,
+                event_type="message.final",
+                payload={"content": f"message-{index}"},
+            )
+        runtime.inbox.mark_sent(device_id, through_event_seq=3)
+        runtime.inbox.acknowledge(device_id, through_event_seq=3)
+
+        replay_after, replay_through, terminal = runtime._prepare_resume(
+            device_id=device_id,
+            last_ack=1,
+        )
+
+        assert (replay_after, replay_through) == (1, 1)
+        assert terminal.event_seq == 4
+        stored = json.loads(terminal.envelope_json)
+        assert stored["type"] == "sync.reset_required"
+        assert stored["payload"]["reason"] == "client_ack_behind_server_cursor"
+    finally:
+        runtime.close()
+
+
 def test_gateway_restart_allocates_epoch_newer_than_previous_connection(
     tmp_path: Path,
 ) -> None:

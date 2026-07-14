@@ -2,6 +2,7 @@ package com.akashic.mobile.data.local
 
 import java.io.File
 import java.io.FileInputStream
+import java.io.RandomAccessFile
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.StandardCopyOption
@@ -24,6 +25,61 @@ class MediaCacheStore(
     fun finalFile(transfer: MediaAttachmentEntity): File = requireRegularPath(rawFile(transfer, ".bin"))
 
     fun partialFile(transfer: MediaAttachmentEntity): File = requireRegularPath(rawFile(transfer, ".bin.part"))
+
+    /** 把已上传草稿原子复制到 received cache，供本地消息长期引用。 */
+    suspend fun importOutbound(
+        transfer: AttachmentTransferEntity,
+        source: File,
+        updatedAt: Long,
+    ): MediaAttachmentEntity {
+        require(source.isFile && !Files.isSymbolicLink(source.toPath())) { "附件草稿文件无效" }
+        require(source.length() == transfer.sizeBytes && sha256(source) == transfer.sha256.lowercase()) {
+            "附件草稿内容与上传元数据不一致"
+        }
+        val cached = MediaAttachmentEntity(
+            attachmentId = transfer.attachmentId,
+            serverId = transfer.serverId,
+            sessionId = transfer.sessionId,
+            filename = transfer.filename,
+            contentType = transfer.contentType,
+            sizeBytes = transfer.sizeBytes,
+            sha256 = transfer.sha256.lowercase(),
+            transferredBytes = transfer.sizeBytes,
+            state = "cached",
+            cachePath = cachePath(transfer.attachmentId),
+            lastAccessedAt = updatedAt,
+            updatedAt = updatedAt,
+        )
+        val target = finalFile(cached)
+        if (target.exists() && isComplete(target, cached)) return cached
+        reserve(cached)
+        val staged = root.resolve("${cacheKey(transfer.attachmentId)}.bin.import")
+        require(!Files.isSymbolicLink(staged.toPath())) { "附件缓存暂存路径不能是符号链接" }
+        try {
+            FileInputStream(source).use { input ->
+                RandomAccessFile(staged, "rw").use { output ->
+                    output.setLength(0)
+                    val buffer = ByteArray(1024 * 1024)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                    }
+                    output.fd.sync()
+                }
+            }
+            require(isComplete(staged, cached)) { "附件缓存复制校验失败" }
+            Files.move(
+                staged.toPath(),
+                target.toPath(),
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+            return cached
+        } finally {
+            Files.deleteIfExists(staged.toPath())
+        }
+    }
 
     /** 启动时校准 DB/文件状态、删除孤儿，并执行引用感知配额回收。 */
     suspend fun reconcile() {

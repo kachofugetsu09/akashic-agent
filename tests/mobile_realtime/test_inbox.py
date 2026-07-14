@@ -86,6 +86,29 @@ def test_expired_p0_requires_reset_without_silent_deletion(tmp_path: Path) -> No
         storage.close()
 
 
+def test_default_retention_allows_exactly_seven_days_then_requires_reset(
+    tmp_path: Path,
+) -> None:
+    storage = _build_storage(tmp_path)
+    try:
+        current_time = NOW
+        manager = DurableInboxManager(storage, clock=lambda: current_time)
+        manager.enqueue(
+            device_id="device-1",
+            event_id="event-1",
+            envelope_json=_envelope("event-1"),
+        )
+
+        current_time = NOW + timedelta(days=7)
+        assert len(manager.replay("device-1", after_event_seq=0, limit=10).events) == 1
+
+        current_time += timedelta(microseconds=1)
+        with pytest.raises(InboxResetRequired, match="恢复窗口"):
+            manager.replay("device-1", after_event_seq=0, limit=10)
+    finally:
+        storage.close()
+
+
 def test_inbox_rejects_naive_clock(tmp_path: Path) -> None:
     storage = _build_storage(tmp_path)
     try:
