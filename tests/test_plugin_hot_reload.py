@@ -18,7 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.convertors import CONVERTOR_TYPES, StringConvertor
 
-from agent.plugins.manager import PluginManager
+from agent.plugins.manager import PluginManager, _CandidateRejected
 from agent.plugins.manifest import write_plugin_manifest
 from agent.plugins.watcher import PluginWatcher
 from agent.plugins.jobs import PluginJobRuntime
@@ -112,6 +112,22 @@ def _write_mcp_server(plugin_dir: Path, tools: tuple[str, ...]) -> None:
         "    with log.open('a', encoding='utf-8') as f: f.write('stopped\\n')\n",
         encoding="utf-8",
     )
+
+
+def _workspace_mcp_spec(
+    server_dir: Path,
+    *,
+    tool_name: str,
+) -> dict[str, dict[str, object]]:
+    server_dir.mkdir(parents=True, exist_ok=True)
+    _write_mcp_server(server_dir, (tool_name,))
+    return {
+        "workspace": {
+            "command": [sys.executable, str(server_dir / "server.py")],
+            "env": {"AKA_PLUGIN_DATA_DIR": str(server_dir / "data")},
+            "cwd": str(server_dir),
+        }
+    }
 
 
 async def _wait_for_log(path: Path, expected: list[str]) -> None:
@@ -2753,6 +2769,314 @@ async def test_initial_plugin_mcp_tool_is_visible_in_first_snapshot(
     await loop._process_with_runtime_admission(message)
 
     assert seen == ["[]"]
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_workspace_mcp_generation_publish_preserves_old_turn_lease(
+    tmp_path: Path,
+) -> None:
+    from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+    tools = ToolRegistry()
+    manager = _manager(tmp_path, tools=tools)
+    first = await manager.prepare_workspace_mcp(
+        _workspace_mcp_spec(tmp_path / "workspace-v1", tool_name="version_v1"),
+        revision="v1",
+    )
+    await manager.publish_workspace_mcp()
+    old_client = first.catalog.servers["workspace"].client
+    old_lease = await manager.snapshot_store.acquire()
+    old_fork = old_lease.fork()
+    token = bind_runtime_snapshot(old_lease)
+    try:
+        assert await tools.execute("mcp_workspace__version_v1", {}) == "[]"
+        second = await manager.prepare_workspace_mcp(
+            _workspace_mcp_spec(tmp_path / "workspace-v2", tool_name="version_v2"),
+            revision="v2",
+        )
+        await manager.publish_workspace_mcp()
+        assert manager.active_workspace_mcp is second
+        assert old_client.connected is True
+        assert await tools.execute("mcp_workspace__version_v1", {}) == "[]"
+        assert tools.has_tool("mcp_workspace__version_v2") is False
+        new_lease = await manager.snapshot_store.acquire()
+        new_token = bind_runtime_snapshot(new_lease)
+        try:
+            assert await tools.execute("mcp_workspace__version_v2", {}) == "[]"
+        finally:
+            reset_runtime_snapshot(new_token)
+            await new_lease.release()
+    finally:
+        reset_runtime_snapshot(token)
+        await old_lease.release()
+
+    assert old_client.connected is True
+    await old_fork.release()
+    assert old_client.connected is False
+    new_lease = await manager.snapshot_store.acquire()
+    token = bind_runtime_snapshot(new_lease)
+    try:
+        assert tools.has_tool("mcp_workspace__version_v1") is False
+        assert await tools.execute("mcp_workspace__version_v2", {}) == "[]"
+    finally:
+        reset_runtime_snapshot(token)
+        await new_lease.release()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_workspace_mcp_candidate_failure_keeps_active_and_cleans_partial(
+    tmp_path: Path,
+) -> None:
+    tools = ToolRegistry()
+    manager = _manager(tmp_path, tools=tools)
+    first = await manager.prepare_workspace_mcp(
+        _workspace_mcp_spec(tmp_path / "active", tool_name="active"),
+        revision="active",
+    )
+    await manager.publish_workspace_mcp()
+    current = manager.current_snapshot
+
+    good_dir = tmp_path / "candidate-good"
+    good_spec = _workspace_mcp_spec(good_dir, tool_name="candidate")
+    specs = {
+        "a_good": next(iter(good_spec.values())),
+        "z_bad": {"command": [str(tmp_path / "missing-command")]},
+    }
+    with pytest.raises(FileNotFoundError):
+        await manager.prepare_workspace_mcp(specs, revision="broken")
+
+    await _wait_for_log(
+        good_dir / "data" / "mcp-lifecycle.log",
+        ["started", "stopped"],
+    )
+    assert manager.current_snapshot is current
+    assert manager.active_workspace_mcp is first
+    assert manager.prepared_workspace_mcp is None
+    assert first.catalog.servers["workspace"].client.connected is True
+
+    candidate = await manager.prepare_workspace_mcp(
+        _workspace_mcp_spec(tmp_path / "candidate-dead", tool_name="dead"),
+        revision="dead",
+    )
+    process = candidate.catalog.servers["workspace"].client._process
+    assert process is not None
+    process.kill()
+    await process.wait()
+    with pytest.raises(RuntimeError, match="client 已断开"):
+        await manager.publish_workspace_mcp()
+    assert candidate.scope.closed is True
+    assert manager.current_snapshot is current
+    assert manager.active_workspace_mcp is first
+    assert manager.prepared_workspace_mcp is None
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_workspace_mcp_and_plugin_mcp_names_conflict_both_directions(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "plugin_owner",
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        "class PluginOwner(Plugin):\n"
+        "    name = 'plugin_owner'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='shared', command=('python', 'server.py'))]\n",
+    )
+    _write_mcp_server(plugin_dir, ("value",))
+    manager = _manager(tmp_path, tools=ToolRegistry())
+    await manager.load_all()
+    workspace_spec = _workspace_mcp_spec(tmp_path / "workspace", tool_name="value")
+    shared_spec = {"shared": next(iter(workspace_spec.values()))}
+    with pytest.raises(RuntimeError, match="名称冲突"):
+        await manager.prepare_workspace_mcp(shared_spec, revision="workspace")
+    await manager.terminate_all()
+
+    other = _manager(tmp_path / "other", tools=ToolRegistry())
+    active_spec = _workspace_mcp_spec(tmp_path / "active-user", tool_name="value")
+    active_spec = {"shared": next(iter(active_spec.values()))}
+    await other.prepare_workspace_mcp(active_spec, revision="user")
+    await other.publish_workspace_mcp()
+    other_plugin = _write_plugin(
+        tmp_path / "other" / "plugins",
+        "plugin_candidate",
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        "class PluginCandidate(Plugin):\n"
+        "    name = 'plugin_candidate'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='shared', command=('python', 'server.py'))]\n",
+    )
+    _write_mcp_server(other_plugin, ("value",))
+    assert await other.prepare_candidate("plugin_candidate") is None
+    await other.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_plugin_publish_rebases_latest_workspace_mcp_generation(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path, tools=ToolRegistry())
+    await manager.prepare_workspace_mcp(
+        _workspace_mcp_spec(tmp_path / "v1", tool_name="v1"), revision="v1"
+    )
+    await manager.publish_workspace_mcp()
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "late_plugin",
+        "from agent.plugins import Plugin\n"
+        "class LatePlugin(Plugin):\n"
+        "    name = 'late_plugin'\n",
+    )
+    candidate = await manager.prepare_candidate("late_plugin")
+    assert candidate is not None
+    await manager.prepare_workspace_mcp(
+        _workspace_mcp_spec(tmp_path / "v2", tool_name="v2"), revision="v2"
+    )
+    latest = await manager.publish_workspace_mcp()
+    await manager.publish_prepared("late_plugin")
+    assert manager.current_snapshot is not None
+    assert manager.current_snapshot.workspace_mcp_generation is latest
+    assert candidate.runtime_snapshot is manager.current_snapshot
+    assert candidate.instance.context.tool_registry is manager.current_snapshot.tool_registry
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("publish_owner", ["workspace", "plugin"])
+async def test_later_mcp_publish_revalidates_prepared_name_conflict(
+    tmp_path: Path,
+    publish_owner: str,
+) -> None:
+    manager = _manager(tmp_path, tools=ToolRegistry())
+    workspace = _workspace_mcp_spec(tmp_path / "workspace", tool_name="value")
+    await manager.prepare_workspace_mcp(
+        {"shared": next(iter(workspace.values()))}, revision="workspace"
+    )
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "prepared_plugin",
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        "class PreparedPlugin(Plugin):\n"
+        "    name = 'prepared_plugin'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='shared', command=('python', 'server.py'))]\n",
+    )
+    _write_mcp_server(plugin_dir, ("value",))
+    plugin = await manager.prepare_candidate("prepared_plugin")
+    assert plugin is not None
+    current = manager.current_snapshot
+    with pytest.raises(RuntimeError, match="名称冲突"):
+        if publish_owner == "workspace":
+            await manager.publish_workspace_mcp()
+        else:
+            await manager.publish_prepared("prepared_plugin")
+    assert manager.current_snapshot is current
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_workspace_mcp_publish_cancellation_aborts_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _manager(tmp_path, tools=ToolRegistry())
+    first = await manager.prepare_workspace_mcp(
+        _workspace_mcp_spec(tmp_path / "active-cancel", tool_name="active"),
+        revision="active",
+    )
+    await manager.publish_workspace_mcp()
+    current = manager.current_snapshot
+    candidate = await manager.prepare_workspace_mcp(
+        _workspace_mcp_spec(tmp_path / "candidate-cancel", tool_name="candidate"),
+        revision="candidate",
+    )
+    entered = asyncio.Event()
+
+    async def wait_invariant(snapshot: RuntimeSnapshot) -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(manager, "_post_snapshot_invariants", wait_invariant)
+    task = asyncio.create_task(manager.publish_workspace_mcp())
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert manager.current_snapshot is current
+    assert manager.snapshot_store._pending is None
+    assert manager.active_workspace_mcp is first
+    assert manager.prepared_workspace_mcp is None
+    assert candidate.scope.closed is True
+    assert candidate.catalog.servers["workspace"].client.connected is False
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_prepared_plugin_mcp_namespace_rejects_second_candidate_early(
+    tmp_path: Path,
+) -> None:
+    source = lambda class_name, name: (
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        f"class {class_name}(Plugin):\n"
+        f"    name = '{name}'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='shared_plugin', command=('python', 'server.py'))]\n"
+    )
+    for name, class_name in (("owner_a", "OwnerA"), ("owner_b", "OwnerB")):
+        plugin_dir = _write_plugin(
+            tmp_path / "plugins", name, source(class_name, name)
+        )
+        _write_mcp_server(plugin_dir, ("value",))
+    manager = _manager(tmp_path, tools=ToolRegistry())
+    assert await manager.prepare_candidate("owner_a") is not None
+    assert await manager.prepare_candidate("owner_b") is None
+    assert manager.prepared_generation("owner_a") is not None
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_plugin_publish_rebase_conflict_discards_stale_candidate(
+    tmp_path: Path,
+) -> None:
+    def source(class_name: str, name: str) -> str:
+        return (
+            "from agent.plugins import McpServerSpec, Plugin\n"
+            f"class {class_name}(Plugin):\n"
+            f"    name = '{name}'\n"
+            "    @classmethod\n"
+            "    def mcp_servers(cls):\n"
+            "        return [McpServerSpec(name='shared_plugin', command=('python', 'server.py'))]\n"
+        )
+
+    for name, class_name in (("owner_a", "OwnerA"), ("owner_b", "OwnerB")):
+        plugin_dir = _write_plugin(tmp_path / "plugins", name, source(class_name, name))
+        _write_mcp_server(plugin_dir, ("value",))
+    manager = _manager(tmp_path, tools=ToolRegistry())
+    stale = await manager.prepare_candidate("owner_b")
+    assert stale is not None and stale.mcp_catalog is not None
+    _ = manager._prepared_generations.pop("owner_b")
+    owner = await manager.prepare_candidate("owner_a")
+    assert owner is not None
+    await manager.publish_prepared("owner_a")
+    current = manager.current_snapshot
+    manager._prepared_generations["owner_b"] = stale
+    client = stale.mcp_catalog.servers["shared_plugin"].client
+    with pytest.raises(_CandidateRejected):
+        await manager.publish_prepared("owner_b")
+    assert manager.prepared_generation("owner_b") is None
+    assert client.connected is False
+    assert stale.scope.closed is True
+    assert manager.current_snapshot is current
+    assert manager.generation("owner_a") is owner
+    assert manager.generation("owner_b") is None
+    assert manager.latest_gate("owner_b").checks[0].check_id == "publish_rebase"
     await manager.terminate_all()
 
 

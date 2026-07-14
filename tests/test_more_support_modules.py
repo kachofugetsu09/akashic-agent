@@ -16,7 +16,6 @@ import pytest
 import agent.provider as provider_module
 from agent.config_models import Config as ConfigModel
 from agent.mcp.registry import McpServerRegistry
-from agent.plugins.manager import ActivePluginInfo
 from agent.provider import (
     ContextLengthError,
     ContentSafetyError,
@@ -841,54 +840,6 @@ async def test_mcp_registry_anyaction_and_sampler_cover_core_paths(
     assert meta["reason"] == "probability"
     gate.record_action(now_utc=now)
 
-
-@pytest.mark.asyncio
-async def test_mcp_registry_syncs_plugin_servers(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-):
-    class _Client:
-        def __init__(self, name: str, command: list[str], env=None, cwd=None):
-            self.name = name
-            self.command = command
-            self.env = env
-            self.cwd = cwd
-
-        async def connect(self):
-            return [SimpleNamespace(name="tool", description="desc")]
-
-        async def disconnect(self):
-            return None
-
-    class _Wrapper:
-        def __init__(self, client, info):
-            self.name = f"mcp_{client.name}__{info.name}"
-            self.description = info.description
-            self.parameters = {"type": "object", "properties": {}, "required": []}
-
-    monkeypatch.setattr("agent.mcp.registry.McpClient", _Client)
-    monkeypatch.setattr("agent.mcp.registry.McpToolWrapper", _Wrapper)
-    tools = MagicMock()
-    registry = McpServerRegistry(tmp_path / "mcp.json", tools)
-    plugin = ActivePluginInfo(
-        plugin_id="feed@lab",
-        plugin_dir=tmp_path / "feed",
-        manifest={},
-        module_path="feed",
-        mcp_servers={
-            "feed": {
-                "command": ["python", "run_mcp.py"],
-                "env": {"A": "1"},
-                "cwd": str(tmp_path),
-            }
-        },
-    )
-
-    await registry.sync_plugin_servers([plugin])
-    assert "feed（1 个工具）" in registry.list_servers()
-
-    await registry.sync_plugin_servers([])
-    assert registry.list_servers() == "当前没有已注册的 MCP server。"
 
 @pytest.mark.asyncio
 async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(

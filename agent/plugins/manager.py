@@ -14,7 +14,7 @@ import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, TypeVar, cast
 
 from pydantic import BaseModel, ValidationError
@@ -63,7 +63,8 @@ from agent.plugins.generation import (
 )
 from agent.plugins.importer import FreshPluginImporter
 from agent.plugins.skill_host import PluginSkillHost, PreparedSkillCatalog
-from agent.plugins.mcp_host import PluginMcpHost, PreparedMcpCatalog
+from agent.mcp.generation import WorkspaceMcpGeneration
+from agent.mcp.host import McpGenerationHost, PreparedMcpCatalog
 from agent.plugins.activity_host import (
     PluginJobHost,
     PluginProactiveHost,
@@ -211,7 +212,9 @@ class PluginManager:
         self._fresh_importer = FreshPluginImporter()
         self._manager_namespace = secrets.token_hex(4)
         self._skill_host = PluginSkillHost(workspace)
-        self._mcp_host = PluginMcpHost()
+        self._mcp_host = McpGenerationHost()
+        self._active_workspace_mcp: WorkspaceMcpGeneration | None = None
+        self._prepared_workspace_mcp: WorkspaceMcpGeneration | None = None
         self._job_host = PluginJobHost()
         self._proactive_host = PluginProactiveHost()
         self._snapshot_compiler = RuntimeSnapshotCompiler()
@@ -316,6 +319,138 @@ class PluginManager:
 
     def mcp_catalog(self, generation_id: str) -> PreparedMcpCatalog | None:
         return self._mcp_host.get(generation_id)
+
+    @property
+    def active_workspace_mcp(self) -> WorkspaceMcpGeneration | None:
+        return self._active_workspace_mcp
+
+    @property
+    def prepared_workspace_mcp(self) -> WorkspaceMcpGeneration | None:
+        return self._prepared_workspace_mcp
+
+    async def prepare_workspace_mcp(
+        self,
+        server_specs: dict[str, dict[str, Any]],
+        *,
+        revision: str,
+    ) -> WorkspaceMcpGeneration:
+        """准备 workspace MCP 候选，不改变当前运行快照。"""
+
+        async with self._candidate_prepare_lock:
+            await self._discard_workspace_mcp_candidate()
+            self._check_workspace_mcp_name_conflicts(server_specs)
+
+            # 1. 完整连接候选 catalog，任何失败都回收候选作用域
+            self._generation_sequence += 1
+            generation_id = (
+                f"workspace-mcp:{self._generation_sequence}:{secrets.token_hex(4)}"
+            )
+            scope = PluginScope("workspace-mcp")
+            try:
+                catalog = await self._mcp_host.prepare(
+                    generation_id,
+                    server_specs=server_specs,
+                    required_tools={},
+                    scope=scope,
+                )
+                scope.defer(
+                    "mcp_catalog",
+                    lambda: self._mcp_host.close(generation_id),
+                )
+            except BaseException:
+                cleanup_failures = await scope.aclose()
+                self._cleanup_failures.extend(cleanup_failures)
+                raise
+
+            # 2. 基于锁内最新插件 generations 编译候选 snapshot
+            generation = WorkspaceMcpGeneration(
+                generation_id=generation_id,
+                revision=revision,
+                scope=scope,
+                catalog=catalog,
+            )
+            try:
+                generation.runtime_snapshot = self._compile_workspace_mcp_snapshot(
+                    generation
+                )
+            except BaseException:
+                await self._dispose_workspace_mcp(generation, state="rejected")
+                raise
+            self._prepared_workspace_mcp = generation
+            return generation
+
+    async def publish_workspace_mcp(self) -> WorkspaceMcpGeneration:
+        """原子发布 workspace MCP 候选，并让旧代际随 lease 排空。"""
+
+        async with self._candidate_prepare_lock:
+            generation = self._prepared_workspace_mcp
+            if generation is None or generation.runtime_snapshot is None:
+                raise RuntimeError("workspace MCP 没有可发布候选")
+            try:
+                self._check_workspace_mcp_name_conflicts(generation.catalog.servers)
+                snapshot = self._compile_workspace_mcp_snapshot(generation)
+                generation.runtime_snapshot = snapshot
+                self._validate_workspace_mcp_generation(generation)
+            except BaseException:
+                await self._discard_workspace_mcp_candidate()
+                raise
+
+            # 1. 首个快照直接安装；已有快照使用可回滚发布事务
+            if self._snapshot_store.current is None:
+                self._snapshot_store.install(snapshot)
+            else:
+                transaction = self._snapshot_store.begin_publish(snapshot)
+                try:
+                    await self._post_snapshot_invariants(snapshot)
+                except BaseException:
+                    self._prepared_workspace_mcp = None
+                    await _complete_critical(self._snapshot_store.abort(transaction))
+                    raise
+                self._active_workspace_mcp = generation
+                self._prepared_workspace_mcp = None
+                generation.state = "active"
+                _, commit_cancelled = await _complete_critical(
+                    self._snapshot_store.commit(transaction)
+                )
+                if commit_cancelled:
+                    raise asyncio.CancelledError
+                return generation
+
+            self._active_workspace_mcp = generation
+            self._prepared_workspace_mcp = None
+            generation.state = "active"
+            return generation
+
+    async def discard_workspace_mcp_candidate(self) -> None:
+        async with self._candidate_prepare_lock:
+            await self._discard_workspace_mcp_candidate()
+
+    async def _discard_workspace_mcp_candidate(self) -> None:
+        generation = self._prepared_workspace_mcp
+        self._prepared_workspace_mcp = None
+        if generation is None:
+            return
+        await self._dispose_workspace_mcp(generation, state="discarded")
+
+    def _check_workspace_mcp_name_conflicts(
+        self,
+        server_specs: Mapping[str, object],
+    ) -> None:
+        occupied = {
+            server_name
+            for generation in self._active_generations.values()
+            for server_name in generation.contributions.mcp_servers
+        }
+        occupied.update(
+            server_name
+            for generation in self._prepared_generations.values()
+            for server_name in generation.contributions.mcp_servers
+        )
+        conflicts = sorted(occupied.intersection(server_specs))
+        if conflicts:
+            raise RuntimeError(
+                f"workspace MCP 与插件 server 名称冲突: {', '.join(conflicts)}"
+            )
 
     def bind_channel_switcher(
         self,
@@ -594,6 +729,25 @@ class PluginManager:
                     replacement is not None and replacement is not generation
                 ),
             )
+        workspace_mcp = snapshot.workspace_mcp_generation
+        if (
+            workspace_mcp is not None
+            and not self._snapshot_store.workspace_mcp_is_referenced_elsewhere(
+                workspace_mcp,
+                excluding_snapshot_id=snapshot.snapshot_id,
+            )
+        ):
+            await self._dispose_workspace_mcp(workspace_mcp, state=state)
+
+    async def _dispose_workspace_mcp(
+        self,
+        generation: WorkspaceMcpGeneration,
+        *,
+        state: str,
+    ) -> None:
+        cleanup_failures, _ = await _complete_critical(generation.scope.aclose())
+        self._cleanup_failures.extend(cleanup_failures)
+        generation.state = state
 
     async def prepare_changed(self) -> list[dict[str, object]]:
         async with self._candidate_prepare_lock:
@@ -821,10 +975,14 @@ class PluginManager:
             snapshot = self._snapshot_compiler.compile(
                 generations,
                 snapshot_revision=catalog_id,
+                workspace_mcp_generation=self._active_workspace_mcp,
             )
             snapshot.skill_catalog_generation_id = catalog_id
             snapshot.plugin_skill_index = catalog.normal_plugins
-            snapshot.tool_registry = self._compile_snapshot_tools(generations)
+            snapshot.tool_registry = self._compile_snapshot_tools(
+                generations,
+                self._active_workspace_mcp,
+            )
             snapshot.tool_hooks = self._compile_snapshot_tool_hooks(generations)
             return snapshot, catalog_id
         except BaseException:
@@ -839,9 +997,38 @@ class PluginManager:
         generation = self._prepared_generations.get(plugin_id)
         if generation is None:
             raise KeyError(f"插件没有待发布候选: {plugin_id}")
-        snapshot = generation.runtime_snapshot
-        if snapshot is None:
-            raise RuntimeError(f"插件候选缺少 RuntimeSnapshot: {plugin_id}")
+        try:
+            workspace_generations = tuple(
+                item
+                for item in (
+                    self._active_workspace_mcp,
+                    self._prepared_workspace_mcp,
+                )
+                if item is not None
+            )
+            conflicts = sorted(
+                set(generation.contributions.mcp_servers).intersection(
+                    server_name
+                    for item in workspace_generations
+                    for server_name in item.catalog.servers
+                )
+            )
+            if conflicts:
+                raise RuntimeError(
+                    f"插件 MCP 与 workspace server 名称冲突: {', '.join(conflicts)}"
+                )
+            generation.runtime_snapshot = self._compile_generation_snapshot(generation)
+            snapshot = generation.runtime_snapshot
+            cast(Any, generation.instance).context.tool_registry = snapshot.tool_registry
+        except (asyncio.CancelledError, Exception) as error:
+            self._record_failed_gate(
+                plugin_id=plugin_id,
+                revision=generation.source_revision,
+                check_id="publish_rebase",
+                reason=str(error) or type(error).__name__,
+            )
+            await self.discard_prepared(plugin_id)
+            raise
         active = self._active_generations.get(plugin_id)
         try:
             await self._initialize_prepared_generation(generation)
@@ -1136,6 +1323,11 @@ class PluginManager:
                 raise RuntimeError("RuntimeSnapshot MCP catalog 不可用")
             if any(not server.client.connected for server in catalog.servers.values()):
                 raise RuntimeError("RuntimeSnapshot MCP client 已断开")
+        workspace_mcp = snapshot.workspace_mcp_generation
+        if workspace_mcp is not None:
+            if self._mcp_host.get(workspace_mcp.generation_id) is not workspace_mcp.catalog:
+                raise RuntimeError("RuntimeSnapshot workspace MCP catalog 不可用")
+            self._validate_workspace_mcp_generation(workspace_mcp)
         for item in snapshot.generations.values():
             if item.scope.closed:
                 raise RuntimeError("RuntimeSnapshot 插件作用域已关闭")
@@ -1617,7 +1809,9 @@ class PluginManager:
                     mcp_catalog = await self._mcp_host.prepare(
                         generation_id,
                         server_specs=contributions.mcp_servers,
-                        proactive_sources=contributions.proactive_sources,
+                        required_tools=_required_mcp_tools(
+                            contributions.proactive_sources
+                        ),
                         scope=scope,
                     )
                 except Exception as error:
@@ -1787,8 +1981,12 @@ class PluginManager:
             snapshot = self._snapshot_compiler.compile(
                 generations,
                 catalog_generation=generation,
+                workspace_mcp_generation=self._active_workspace_mcp,
             )
-            snapshot.tool_registry = self._compile_snapshot_tools(generations)
+            snapshot.tool_registry = self._compile_snapshot_tools(
+                generations,
+                self._active_workspace_mcp,
+            )
             snapshot.tool_hooks = self._compile_snapshot_tool_hooks(generations)
             return snapshot
         except Exception as error:
@@ -1805,6 +2003,7 @@ class PluginManager:
     def _compile_snapshot_tools(
         self,
         generations: dict[str, PluginGeneration],
+        workspace_mcp: WorkspaceMcpGeneration | None = None,
     ) -> Any:
         if self._tool_registry is None:
             return None
@@ -1813,9 +2012,17 @@ class PluginManager:
             for generation in generations.values()
             for server_name in generation.contributions.mcp_servers
         }
+        workspace_mcp_sources: set[tuple[str, str]] = (
+            {
+                ("mcp", server_name)
+                for server_name in workspace_mcp.catalog.servers
+            }
+            if workspace_mcp is not None
+            else set()
+        )
         registry = self._tool_registry.fork(
             excluded_source_types={"plugin"},
-            excluded_sources=plugin_mcp_sources,
+            excluded_sources=plugin_mcp_sources | workspace_mcp_sources,
         )
         for generation in sorted(generations.values(), key=lambda item: item.plugin_id):
             plugin_name = getattr(
@@ -1851,7 +2058,49 @@ class PluginManager:
                         source_type="mcp",
                         source_name=server.name,
                     )
+        if workspace_mcp is not None:
+            for server in workspace_mcp.catalog.servers.values():
+                for tool in server.tools:
+                    if registry.has_tool(tool.name):
+                        raise RuntimeError(f"workspace MCP 工具名称重复: {tool.name}")
+                    registry.register(
+                        tool,
+                        risk="external-side-effect",
+                        source_type="mcp",
+                        source_name=server.name,
+                    )
         return registry
+
+    def _compile_workspace_mcp_snapshot(
+        self,
+        generation: WorkspaceMcpGeneration,
+    ) -> RuntimeSnapshot:
+        snapshot = self._snapshot_compiler.compile(
+            self._active_generations,
+            snapshot_revision=generation.revision,
+            workspace_mcp_generation=generation,
+        )
+        snapshot.tool_registry = self._compile_snapshot_tools(
+            self._active_generations,
+            generation,
+        )
+        snapshot.tool_hooks = self._compile_snapshot_tool_hooks(
+            self._active_generations
+        )
+        self._compile_snapshot_event_handlers(snapshot)
+        return snapshot
+
+    @staticmethod
+    def _validate_workspace_mcp_generation(
+        generation: WorkspaceMcpGeneration,
+    ) -> None:
+        if generation.scope.closed:
+            raise RuntimeError("workspace MCP 候选作用域已关闭")
+        if any(
+            not server.client.connected
+            for server in generation.catalog.servers.values()
+        ):
+            raise RuntimeError("workspace MCP 候选 client 已断开")
 
     def _compile_snapshot_tool_hooks(
         self,
@@ -2000,6 +2249,11 @@ class PluginManager:
             for generation in self._active_generations.values()
             if generation.plugin_id != plugin_id
         ]
+        other_generations.extend(
+            generation
+            for prepared_id, generation in self._prepared_generations.items()
+            if prepared_id != plugin_id
+        )
 
         def check(check_id: str, passed: bool, evidence: object = "") -> None:
             checks.append(
@@ -2070,6 +2324,8 @@ class PluginManager:
             for server_name in generation.contributions.mcp_servers
         }
         occupied_servers.update(self._user_mcp_server_names())
+        if self._active_workspace_mcp is not None:
+            occupied_servers.update(self._active_workspace_mcp.catalog.servers)
         check(
             "mcp_servers",
             not occupied_servers.intersection(contributions.mcp_servers),
@@ -2343,6 +2599,11 @@ class PluginManager:
         for plugin_id in tuple(self._prepared_generations):
             _, cancelled = await _complete_critical(self.discard_prepared(plugin_id))
             externally_cancelled = externally_cancelled or cancelled
+        if self._prepared_workspace_mcp is not None:
+            _, cancelled = await _complete_critical(
+                self._discard_workspace_mcp_candidate()
+            )
+            externally_cancelled = externally_cancelled or cancelled
 
         # 2. 逐插件终止并消费全部 cleanup failures
         for mp in list(self._loaded):
@@ -2414,6 +2675,8 @@ class PluginManager:
         self._scopes.clear()
         self._active_generations.clear()
         self._prepared_generations.clear()
+        self._active_workspace_mcp = None
+        self._prepared_workspace_mcp = None
         self._stable_aliases.clear()
         if externally_cancelled:
             raise asyncio.CancelledError
@@ -2943,6 +3206,21 @@ def _skill_body_hashes(
 def _mcp_tool_names(generation: PluginGeneration) -> list[str]:
     catalog = generation.mcp_catalog
     return list(catalog.tool_names) if catalog is not None else []
+
+
+def _required_mcp_tools(
+    sources: tuple[RegisteredProactiveSource, ...],
+) -> dict[str, tuple[str, ...]]:
+    required: dict[str, list[str]] = {}
+    for source in sources:
+        names = required.setdefault(source.spec.server, [])
+        names.append(source.spec.fetch_tool)
+        if source.spec.ack_tool:
+            names.append(source.spec.ack_tool)
+    return {
+        server_name: tuple(tool_names)
+        for server_name, tool_names in required.items()
+    }
 
 
 def _log_candidate_status(result: dict[str, object]) -> None:

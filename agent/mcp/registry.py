@@ -5,9 +5,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from agent.mcp.client import McpClient, McpToolInfo
+from agent.mcp.client import McpClient
 from agent.mcp.tool import McpToolWrapper
-from agent.plugins.manager import ActivePluginInfo
 from agent.tools.registry import ToolRegistry
 from infra.persistence.json_store import atomic_save_json, load_json
 
@@ -35,7 +34,6 @@ class McpServerRegistry:
         self._server_tools: dict[str, list[str]] = (
             {}
         )  # server_name -> 已注册的工具名列表
-        self._plugin_server_names: set[str] = set()
         self._connect_task: asyncio.Task[None] | None = None
 
     async def load_and_connect_all(self) -> None:
@@ -71,44 +69,10 @@ class McpServerRegistry:
         clients = list(self._clients.values())
         self._clients.clear()
         self._server_tools.clear()
-        self._plugin_server_names.clear()
         await asyncio.gather(
             *(client.disconnect() for client in clients),
             return_exceptions=True,
         )
-
-    async def sync_plugin_servers(
-        self,
-        active_plugins: list[ActivePluginInfo],
-    ) -> None:
-        desired: dict[str, dict[str, Any]] = {}
-        for plugin in active_plugins:
-            for server_name, config in plugin.mcp_servers.items():
-                if server_name in desired:
-                    logger.warning("[mcp] 插件 MCP server 名称冲突，保留第一项: %s", server_name)
-                    continue
-                desired[server_name] = config
-
-        for server_name in sorted(self._plugin_server_names - desired.keys()):
-            await self._disconnect_server(server_name)
-            self._plugin_server_names.discard(server_name)
-
-        for server_name in sorted(desired.keys() - self._plugin_server_names):
-            if server_name in self._clients:
-                logger.warning("[mcp] 插件 MCP server 已存在，跳过: %s", server_name)
-                continue
-            config = desired[server_name]
-            try:
-                await self._connect(
-                    server_name,
-                    list(config.get("command") or []),
-                    dict(config.get("env") or {}),
-                    str(config.get("cwd") or "") or None,
-                )
-            except Exception as e:
-                logger.warning("[mcp] 插件 MCP server 启动失败 (%s): %s", server_name, e)
-                continue
-            self._plugin_server_names.add(server_name)
 
     async def add(
         self,
@@ -133,7 +97,6 @@ class McpServerRegistry:
         if name not in self._clients:
             return f"MCP server {name!r} 不存在，当前已注册：{list(self._clients.keys()) or '无'}"
         await self._disconnect_server(name)
-        self._plugin_server_names.discard(name)
         self._save()
         return f"已注销 MCP server {name!r}。"
 
@@ -239,7 +202,6 @@ class McpServerRegistry:
                 "cwd": client.cwd,
             }
             for name, client in self._clients.items()
-            if name not in self._plugin_server_names
         }
         atomic_save_json(
             self._config_path,
