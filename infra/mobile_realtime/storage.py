@@ -48,6 +48,14 @@ class SentCursorError(MobileStorageError):
     """表示已发送游标倒退或超过已分配上限。"""
 
 
+class CommandConflictError(MobileStorageError):
+    """表示同一命令 ID 被用于不同请求。"""
+
+
+class SessionOwnershipError(MobileStorageError):
+    """表示移动会话不属于当前设备。"""
+
+
 @dataclass(frozen=True, slots=True)
 class ServerIdentityReference:
     server_id: str
@@ -96,6 +104,19 @@ class AckAdvance:
     previous_event_seq: int
     acknowledged_event_seq: int
     deleted_events: int
+
+
+@dataclass(frozen=True, slots=True)
+class CommandReceipt:
+    device_id: str
+    command_id: str
+    command_type: str
+    request_hash: str
+    status: Literal["processing", "completed"]
+    reply_type: str | None
+    reply_payload_json: str | None
+    session_id: str | None
+    turn_id: str | None
 
 
 class MobileRealtimeStorage:
@@ -575,6 +596,228 @@ class MobileRealtimeStorage:
             raise RuntimeError("mobile_device_inbox COUNT 查询未返回结果行")
         return _row_nonnegative_int(row, "event_count")
 
+    def list_active_devices(self) -> tuple[DeviceRecord, ...]:
+        """返回所有尚未撤销的移动设备。"""
+
+        with self._lock:
+            rows = self._db.execute(
+                """
+                SELECT device_id, public_key, display_name, created_at,
+                       revoked_at, capabilities
+                FROM mobile_devices
+                WHERE revoked_at IS NULL
+                ORDER BY created_at ASC, device_id ASC
+                """
+            ).fetchall()
+        return tuple(_device_from_row(row) for row in rows)
+
+    def allocate_connection_epoch(self) -> int:
+        """原子分配跨进程重启仍严格递增的连接代际。"""
+
+        with self._lock, self._db:
+            _ = self._db.execute("BEGIN IMMEDIATE")
+            row = self._db.execute(
+                """
+                SELECT last_epoch
+                FROM mobile_connection_epoch
+                WHERE singleton = 1
+                """
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("mobile_connection_epoch 单例记录缺失")
+            last_epoch = _row_nonnegative_int(row, "last_epoch")
+            next_epoch = last_epoch + 1
+            _ = self._db.execute(
+                """
+                UPDATE mobile_connection_epoch
+                SET last_epoch = ?
+                WHERE singleton = 1
+                """,
+                (next_epoch,),
+            )
+        return next_epoch
+
+    def claim_session(
+        self,
+        *,
+        device_id: str,
+        session_id: str,
+        created_at: datetime,
+    ) -> None:
+        """首次绑定设备会话，后续只允许原设备继续使用。"""
+
+        # 1. 在写事务内读取会话当前 owner
+        device_key = _require_text(device_id, "device_id")
+        session_key = _require_text(session_id, "session_id")
+        timestamp = _serialize_datetime(created_at, "created_at")
+        with self._lock, self._db:
+            _ = self._db.execute("BEGIN IMMEDIATE")
+            _ = self._read_device_row(device_key)
+            row = self._db.execute(
+                """
+                SELECT device_id
+                FROM mobile_device_sessions
+                WHERE session_id = ?
+                """,
+                (session_key,),
+            ).fetchone()
+            if row is not None:
+                owner = _row_text(row, "device_id")
+                if owner != device_key:
+                    raise SessionOwnershipError(
+                        f"移动会话属于其他设备: {session_key}"
+                    )
+                return
+
+            # 2. 新会话只在没有 owner 时完成首次绑定
+            _ = self._db.execute(
+                """
+                INSERT INTO mobile_device_sessions(device_id, session_id, created_at)
+                VALUES(?, ?, ?)
+                """,
+                (device_key, session_key, timestamp),
+            )
+
+    def require_session_owner(self, *, device_id: str, session_id: str) -> None:
+        device_key = _require_text(device_id, "device_id")
+        owner = self.session_owner(session_id)
+        if owner != device_key:
+            raise SessionOwnershipError(f"移动会话不属于当前设备: {session_id}")
+
+    def session_owner(self, session_id: str) -> str:
+        session_key = _require_text(session_id, "session_id")
+        with self._lock:
+            row = self._db.execute(
+                """
+                SELECT device_id
+                FROM mobile_device_sessions
+                WHERE session_id = ?
+                """,
+                (session_key,),
+            ).fetchone()
+        if row is None:
+            raise SessionOwnershipError(f"移动会话尚未绑定设备: {session_key}")
+        return _row_text(row, "device_id")
+
+    def reserve_command(
+        self,
+        *,
+        device_id: str,
+        command_id: str,
+        command_type: str,
+        request_hash: str,
+        created_at: datetime,
+    ) -> tuple[CommandReceipt, bool]:
+        """原子占用命令 ID，并返回收据及是否首次创建。"""
+
+        # 1. 固化来自协议边界的命令身份
+        device_key = _require_text(device_id, "device_id")
+        command_key = _require_text(command_id, "command_id")
+        command_name = _require_text(command_type, "command_type")
+        digest = _require_text(request_hash, "request_hash")
+        timestamp = _serialize_datetime(created_at, "created_at")
+
+        # 2. 在写事务内复用相同请求，拒绝命令 ID 冲突
+        with self._lock, self._db:
+            _ = self._db.execute("BEGIN IMMEDIATE")
+            _ = self._read_device_row(device_key)
+            row = self._db.execute(
+                """
+                SELECT device_id, command_id, command_type, request_hash,
+                       status, reply_type, reply_payload_json, session_id, turn_id
+                FROM mobile_command_receipts
+                WHERE device_id = ? AND command_id = ?
+                """,
+                (device_key, command_key),
+            ).fetchone()
+            if row is not None:
+                receipt = _command_receipt_from_row(row)
+                if (
+                    receipt.command_type != command_name
+                    or receipt.request_hash != digest
+                ):
+                    raise CommandConflictError(
+                        f"命令 ID 已绑定其他请求: {device_key}/{command_key}"
+                    )
+                return receipt, False
+            _ = self._db.execute(
+                """
+                INSERT INTO mobile_command_receipts(
+                    device_id, command_id, command_type, request_hash,
+                    status, created_at
+                ) VALUES(?, ?, ?, ?, 'processing', ?)
+                """,
+                (device_key, command_key, command_name, digest, timestamp),
+            )
+        return CommandReceipt(
+            device_id=device_key,
+            command_id=command_key,
+            command_type=command_name,
+            request_hash=digest,
+            status="processing",
+            reply_type=None,
+            reply_payload_json=None,
+            session_id=None,
+            turn_id=None,
+        ), True
+
+    def complete_command(
+        self,
+        *,
+        device_id: str,
+        command_id: str,
+        reply_type: str,
+        reply_payload_json: str,
+        session_id: str | None,
+        turn_id: str | None,
+        completed_at: datetime,
+    ) -> CommandReceipt:
+        """原子保存命令结果，使断线重试得到同一回复。"""
+
+        # 1. 校验要写入 SQLite 的稳定回复字段
+        device_key = _require_text(device_id, "device_id")
+        command_key = _require_text(command_id, "command_id")
+        reply_name = _require_text(reply_type, "reply_type")
+        payload = _require_text(reply_payload_json, "reply_payload_json")
+        timestamp = _serialize_datetime(completed_at, "completed_at")
+
+        # 2. 只允许 processing 收据推进为 completed
+        with self._lock, self._db:
+            _ = self._db.execute("BEGIN IMMEDIATE")
+            updated = self._db.execute(
+                """
+                UPDATE mobile_command_receipts
+                SET status = 'completed', reply_type = ?, reply_payload_json = ?,
+                    session_id = ?, turn_id = ?, completed_at = ?
+                WHERE device_id = ? AND command_id = ? AND status = 'processing'
+                """,
+                (
+                    reply_name,
+                    payload,
+                    session_id,
+                    turn_id,
+                    timestamp,
+                    device_key,
+                    command_key,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise MobileStorageError(
+                    f"命令收据不处于 processing: {device_key}/{command_key}"
+                )
+            row = self._db.execute(
+                """
+                SELECT device_id, command_id, command_type, request_hash,
+                       status, reply_type, reply_payload_json, session_id, turn_id
+                FROM mobile_command_receipts
+                WHERE device_id = ? AND command_id = ?
+                """,
+                (device_key, command_key),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("已完成命令收据在同一事务中消失")
+        return _command_receipt_from_row(row)
+
     def _init_schema(self) -> None:
         """创建移动端身份、配对、设备、cursor 和 inbox 表。"""
 
@@ -587,6 +830,15 @@ class MobileRealtimeStorage:
                 keyset_manifest_path TEXT NOT NULL,
                 public_key_fingerprint TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS mobile_connection_epoch (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                last_epoch INTEGER NOT NULL CHECK(last_epoch >= 0)
+            );
+
+            INSERT INTO mobile_connection_epoch(singleton, last_epoch)
+            VALUES(1, 0)
+            ON CONFLICT(singleton) DO NOTHING;
 
             CREATE TABLE IF NOT EXISTS mobile_pairing_sessions (
                 pairing_id TEXT PRIMARY KEY,
@@ -643,6 +895,41 @@ class MobileRealtimeStorage:
 
             CREATE INDEX IF NOT EXISTS idx_mobile_inbox_created
             ON mobile_device_inbox(device_id, created_at);
+
+            -- 4. 命令收据跨重连提供幂等回复
+            CREATE TABLE IF NOT EXISTS mobile_command_receipts (
+                device_id TEXT NOT NULL,
+                command_id TEXT NOT NULL,
+                command_type TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('processing', 'completed')),
+                reply_type TEXT,
+                reply_payload_json TEXT,
+                session_id TEXT,
+                turn_id TEXT,
+                created_at TEXT NOT NULL,
+                completed_at TEXT,
+                PRIMARY KEY(device_id, command_id),
+                CHECK(
+                    (status = 'processing' AND reply_type IS NULL
+                     AND reply_payload_json IS NULL AND completed_at IS NULL)
+                    OR
+                    (status = 'completed' AND reply_type IS NOT NULL
+                     AND reply_payload_json IS NOT NULL AND completed_at IS NOT NULL)
+                ),
+                FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
+                    ON DELETE CASCADE
+            );
+
+            -- 5. 会话由首次发消息的设备独占，禁止跨设备猜测访问
+            CREATE TABLE IF NOT EXISTS mobile_device_sessions (
+                device_id TEXT NOT NULL,
+                session_id TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(device_id, session_id),
+                FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
+                    ON DELETE CASCADE
+            );
             """
         )
         self._db.commit()
@@ -761,6 +1048,38 @@ def _device_from_row(row: sqlite3.Row) -> DeviceRecord:
             else None
         ),
         capabilities=_parse_capabilities(_row_text(row, "capabilities")),
+    )
+
+
+def _command_receipt_from_row(row: sqlite3.Row) -> CommandReceipt:
+    status = _row_text(row, "status")
+    if status not in {"processing", "completed"}:
+        raise ValueError(f"mobile_command_receipts.status 非法: {status}")
+    optional: dict[str, str | None] = {}
+    for field in ("reply_type", "reply_payload_json", "session_id", "turn_id"):
+        value = row[field]
+        if value is not None and not isinstance(value, str):
+            raise TypeError(f"mobile_command_receipts.{field} 必须为文本或 NULL")
+        optional[field] = value
+    if status == "processing" and (
+        optional["reply_type"] is not None
+        or optional["reply_payload_json"] is not None
+    ):
+        raise ValueError("processing 命令收据包含回复")
+    if status == "completed" and (
+        not optional["reply_type"] or not optional["reply_payload_json"]
+    ):
+        raise ValueError("completed 命令收据缺少回复")
+    return CommandReceipt(
+        device_id=_row_text(row, "device_id"),
+        command_id=_row_text(row, "command_id"),
+        command_type=_row_text(row, "command_type"),
+        request_hash=_row_text(row, "request_hash"),
+        status=cast(Literal["processing", "completed"], status),
+        reply_type=optional["reply_type"],
+        reply_payload_json=optional["reply_payload_json"],
+        session_id=optional["session_id"],
+        turn_id=optional["turn_id"],
     )
 
 

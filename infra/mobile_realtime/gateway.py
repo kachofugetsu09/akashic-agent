@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import secrets
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -54,6 +55,7 @@ from infra.mobile_realtime.protocol import (
 from infra.mobile_realtime.storage import (
     AckOverflowError,
     AckRollbackError,
+    CommandConflictError,
     DeviceRecord,
     MobileRealtimeStorage,
     PairingStateError,
@@ -61,11 +63,16 @@ from infra.mobile_realtime.storage import (
     UnknownDeviceError,
 )
 
+if TYPE_CHECKING:
+    from infra.mobile_realtime.channel import MobileRealtimeChannel
+
 _CLOSE_PROTOCOL = 4400
 _CLOSE_UNAUTHENTICATED = 4401
 _CLOSE_REVOKED = 4403
 _CLOSE_VERSION = 4406
 _CROCKFORD32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+logger = logging.getLogger(__name__)
 
 
 class MobileGatewayError(RuntimeError):
@@ -76,6 +83,12 @@ class MobileGatewayError(RuntimeError):
 class PairingApproval:
     pairing_id: str
     device_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveMobileConnection:
+    websocket: WebSocket
+    connection_epoch: int
 
 
 class PairingApprovalRegistry:
@@ -151,6 +164,7 @@ class MobileGatewayRuntime:
         authenticator: DeviceAuthenticator,
         inbox: DurableInboxManager,
         approvals: PairingApprovalRegistry,
+        keyset: LoadedKeyset,
     ) -> None:
         self.config = config
         self.storage = storage
@@ -158,7 +172,22 @@ class MobileGatewayRuntime:
         self.authenticator = authenticator
         self.inbox = inbox
         self.approvals = approvals
+        self.keyset = keyset
         self.admin = MobilePairingAdmin(pairing, approvals)
+        self._channel: MobileRealtimeChannel | None = None
+        self._connections: dict[str, ActiveMobileConnection] = {}
+        self._delivery_lock = asyncio.Lock()
+
+    @property
+    def channel(self) -> MobileRealtimeChannel:
+        if self._channel is None:
+            raise RuntimeError("MobileRealtimeChannel 尚未绑定")
+        return self._channel
+
+    def bind_channel(self, channel: MobileRealtimeChannel) -> None:
+        if self._channel is not None:
+            raise RuntimeError("MobileRealtimeChannel 只能绑定一次")
+        self._channel = channel
 
     async def handle_websocket(self, websocket: WebSocket) -> None:
         """执行 challenge、配对或设备认证，再进入已认证协议循环。"""
@@ -292,67 +321,110 @@ class MobileGatewayRuntime:
         """只处理 epoch 匹配的 resume、ACK 和基础 command。"""
 
         resumed = False
-        while True:
-            frame = await _receive_frame(websocket)
-            if not isinstance(
-                frame,
-                (ResumeControl, AckFrame, GenericCommand, MessageSendCommand),
-            ):
-                await _close_with_error(
-                    websocket,
-                    code=_CLOSE_PROTOCOL,
-                    reason="客户端发送了方向不允许的帧",
-                )
-                return
-            frame_epoch = frame.connection_epoch
-            if frame_epoch != connection_epoch:
-                await _close_with_error(
-                    websocket,
-                    code=_CLOSE_PROTOCOL,
-                    reason="connection_epoch 不匹配",
-                )
-                return
-            if isinstance(frame, ResumeControl):
-                if resumed:
+        try:
+            while True:
+                frame = await _receive_frame(websocket)
+                if not isinstance(
+                    frame,
+                    (ResumeControl, AckFrame, GenericCommand, MessageSendCommand),
+                ):
                     await _close_with_error(
                         websocket,
                         code=_CLOSE_PROTOCOL,
-                        reason="同一连接只能 resume 一次",
+                        reason="客户端发送了方向不允许的帧",
                     )
                     return
-                resumed = True
-                await self._resume(
-                    websocket,
-                    device_id=device_id,
-                    connection_epoch=connection_epoch,
-                    last_ack=frame.payload.last_ack,
-                )
-                continue
-            if not resumed:
-                await _close_with_error(
-                    websocket,
-                    code=_CLOSE_UNAUTHENTICATED,
-                    reason="auth.accepted 后必须先 resume",
-                )
-                return
-            if isinstance(frame, AckFrame):
-                try:
-                    _ = self.inbox.acknowledge(
+                frame_epoch = frame.connection_epoch
+                if frame_epoch != connection_epoch:
+                    await _close_with_error(
+                        websocket,
+                        code=_CLOSE_PROTOCOL,
+                        reason="connection_epoch 不匹配",
+                    )
+                    return
+                if isinstance(frame, ResumeControl):
+                    if resumed:
+                        await _close_with_error(
+                            websocket,
+                            code=_CLOSE_PROTOCOL,
+                            reason="同一连接只能 resume 一次",
+                        )
+                        return
+                    await self._resume_and_register(
+                        websocket,
+                        device_id=device_id,
+                        connection_epoch=connection_epoch,
+                        last_ack=frame.payload.last_ack,
+                    )
+                    resumed = True
+                    continue
+                if not resumed:
+                    await _close_with_error(
+                        websocket,
+                        code=_CLOSE_UNAUTHENTICATED,
+                        reason="auth.accepted 后必须先 resume",
+                    )
+                    return
+                if isinstance(frame, AckFrame):
+                    try:
+                        _ = self.inbox.acknowledge(
+                            device_id,
+                            through_event_seq=frame.payload.through_event_seq,
+                        )
+                    except (AckRollbackError, AckOverflowError) as error:
+                        await _close_with_error(
+                            websocket,
+                            code=_CLOSE_PROTOCOL,
+                            reason=str(error),
+                        )
+                        return
+                    continue
+                if isinstance(frame, (GenericCommand, MessageSendCommand)):
+                    await self._handle_command(
+                        websocket,
+                        frame,
+                        connection_epoch,
                         device_id,
-                        through_event_seq=frame.payload.through_event_seq,
                     )
-                except (AckRollbackError, AckOverflowError) as error:
-                    await _close_with_error(
-                        websocket,
-                        code=_CLOSE_PROTOCOL,
-                        reason=str(error),
+                    continue
+                raise AssertionError("已验证客户端帧没有对应处理分支")
+        finally:
+            if resumed:
+                await self._remove_connection(
+                    device_id=device_id,
+                    websocket=websocket,
+                )
+
+    async def _resume_and_register(
+        self,
+        websocket: WebSocket,
+        *,
+        device_id: str,
+        connection_epoch: int,
+        last_ack: int,
+    ) -> None:
+        """在全局投递锁内完成重放并注册当前设备连接。"""
+
+        async with self._delivery_lock:
+            await self._resume(
+                websocket,
+                device_id=device_id,
+                connection_epoch=connection_epoch,
+                last_ack=last_ack,
+            )
+            previous = self._connections.get(device_id)
+            if previous is not None and previous.websocket is not websocket:
+                try:
+                    await previous.websocket.close(
+                        code=4001,
+                        reason="设备已在新连接上线",
                     )
-                    return
-                continue
-            if isinstance(frame, (GenericCommand, MessageSendCommand)):
-                await self._handle_command(websocket, frame, connection_epoch)
-                continue
-            raise AssertionError("已验证客户端帧没有对应处理分支")
+                except (RuntimeError, OSError):
+                    logger.info("旧 mobile WebSocket 已先于新连接关闭: %s", device_id)
+            self._connections[device_id] = ActiveMobileConnection(
+                websocket=websocket,
+                connection_epoch=connection_epoch,
+            )
 
     async def _resume(
         self,
@@ -423,6 +495,79 @@ class MobileGatewayRuntime:
             payload={"mode": "replay", "replayed_events": replayed_events},
         )
 
+    async def publish_event(
+        self,
+        *,
+        event_type: str,
+        payload: dict[str, object],
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        device_id: str | None = None,
+    ) -> None:
+        """把 P0 事件写入每个设备 inbox，并向在线连接即时投递。"""
+
+        # 1. 先在协议边界验证事件，拒绝把坏 envelope 写入 SQLite
+        event_id = _new_ulid()
+        stored = _encode_stored_event(
+            event_id=event_id,
+            event_type=event_type,
+            payload=payload,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+
+        # 2. 串行化 resume 与 fanout，避免重放窗口漏掉并发事件
+        async with self._delivery_lock:
+            if device_id is not None:
+                target_device_ids = (device_id,)
+            elif session_id is not None:
+                target_device_ids = (self.storage.session_owner(session_id),)
+            else:
+                target_device_ids = tuple(
+                    device.device_id for device in self.storage.list_active_devices()
+                )
+            for target_device_id in target_device_ids:
+                event = self.inbox.enqueue(
+                    device_id=target_device_id,
+                    event_id=event_id,
+                    envelope_json=stored,
+                )
+                connection = self._connections.get(target_device_id)
+                if connection is None:
+                    continue
+                try:
+                    await _send_stored_event(
+                        connection.websocket,
+                        event.envelope_json,
+                        event.event_seq,
+                        connection.connection_epoch,
+                    )
+                except (WebSocketDisconnect, RuntimeError, OSError) as error:
+                    logger.warning(
+                        "mobile 在线投递失败，事件保留到下次 resume: device=%s seq=%s error=%s",
+                        target_device_id,
+                        event.event_seq,
+                        error,
+                    )
+                    if self._connections.get(target_device_id) is connection:
+                        _ = self._connections.pop(target_device_id)
+                    continue
+                _ = self.inbox.mark_sent(
+                    target_device_id,
+                    through_event_seq=event.event_seq,
+                )
+
+    async def _remove_connection(
+        self,
+        *,
+        device_id: str,
+        websocket: WebSocket,
+    ) -> None:
+        async with self._delivery_lock:
+            connection = self._connections.get(device_id)
+            if connection is not None and connection.websocket is websocket:
+                _ = self._connections.pop(device_id)
+
     async def _enqueue_and_send_event(
         self,
         websocket: WebSocket,
@@ -433,11 +578,10 @@ class MobileGatewayRuntime:
         payload: dict[str, object],
     ) -> None:
         event_id = _new_ulid()
-        stored = json.dumps(
-            {"id": event_id, "type": event_type, "payload": payload},
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
+        stored = _encode_stored_event(
+            event_id=event_id,
+            event_type=event_type,
+            payload=payload,
         )
         event = self.inbox.enqueue(
             device_id=device_id,
@@ -460,6 +604,7 @@ class MobileGatewayRuntime:
         websocket: WebSocket,
         frame: GenericCommand | MessageSendCommand,
         connection_epoch: int,
+        device_id: str,
     ) -> None:
         if frame.type == "ping":
             await websocket.send_json(
@@ -473,18 +618,30 @@ class MobileGatewayRuntime:
                 }
             )
             return
-        await websocket.send_json(
-            {
-                "v": 1,
-                "kind": "reply",
-                "type": f"{frame.type}.error",
-                "id": frame.id,
-                "connection_epoch": connection_epoch,
-                "payload": {
-                    "code": "not_implemented",
-                    "message": "该 command 尚未接入 mobile channel",
-                },
-            }
+        try:
+            reply = await self.channel.handle_command(
+                device_id=device_id,
+                frame=frame,
+            )
+        except CommandConflictError as error:
+            await _send_reply(
+                websocket,
+                frame_id=frame.id,
+                connection_epoch=connection_epoch,
+                reply_type=f"{frame.type}.error",
+                payload={"code": "command_id_conflict", "message": str(error)},
+                session_id=frame.session_id,
+                turn_id=frame.turn_id,
+            )
+            return
+        await _send_reply(
+            websocket,
+            frame_id=frame.id,
+            connection_epoch=connection_epoch,
+            reply_type=reply.type,
+            payload=reply.payload,
+            session_id=reply.session_id,
+            turn_id=reply.turn_id,
         )
 
     def close(self) -> None:
@@ -548,7 +705,11 @@ def build_mobile_gateway_runtime(
                 retention=config.inbox_retention,
             ),
             approvals=approvals,
+            keyset=keyset,
         )
+        from infra.mobile_realtime.channel import MobileRealtimeChannel
+
+        runtime.bind_channel(MobileRealtimeChannel(runtime))
         return runtime, keyset
     except BaseException:
         storage.close()
@@ -602,6 +763,40 @@ async def _send_control(
     )
 
 
+async def _send_reply(
+    websocket: WebSocket,
+    *,
+    frame_id: str,
+    connection_epoch: int,
+    reply_type: str,
+    payload: dict[str, object],
+    session_id: str | None,
+    turn_id: str | None,
+) -> None:
+    frame: dict[str, object] = {
+        "v": 1,
+        "kind": "reply",
+        "type": reply_type,
+        "id": frame_id,
+        "connection_epoch": connection_epoch,
+        "payload": payload,
+    }
+    if session_id is not None:
+        frame["session_id"] = session_id
+    if turn_id is not None:
+        frame["turn_id"] = turn_id
+    wire = parse_frame(
+        json.dumps(
+            frame,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
+    )
+    await websocket.send_text(frame_to_json(wire))
+
+
 async def _close_with_error(
     websocket: WebSocket,
     *,
@@ -622,28 +817,78 @@ async def _send_stored_event(
     event_seq: int,
     connection_epoch: int,
 ) -> None:
-    raw = _decode_stored_envelope(envelope_json)
-    if not isinstance(raw, dict) or raw.keys() != {"id", "type", "payload"}:
-        raise MobileGatewayError("durable inbox envelope 格式无效")
-    wire = parse_frame(
-        json.dumps(
-            {
-                "v": 1,
-                "kind": "event",
-                "type": raw["type"],
-                "id": raw["id"],
-                "connection_epoch": connection_epoch,
-                "event_seq": event_seq,
-                "payload": raw["payload"],
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
+    wire = _stored_event_to_wire(
+        envelope_json,
+        event_seq=event_seq,
+        connection_epoch=connection_epoch,
     )
     if wire.kind != "event":
         raise AssertionError("stored event 被解析成非 event 帧")
     await websocket.send_text(frame_to_json(wire))
+
+
+def _encode_stored_event(
+    *,
+    event_id: str,
+    event_type: str,
+    payload: dict[str, object],
+    session_id: str | None = None,
+    turn_id: str | None = None,
+) -> str:
+    """在入箱前验证事件，并编码不含连接态字段的稳定 envelope。"""
+
+    body: dict[str, object] = {
+        "id": event_id,
+        "type": event_type,
+        "payload": payload,
+    }
+    if session_id is not None:
+        body["session_id"] = session_id
+    if turn_id is not None:
+        body["turn_id"] = turn_id
+    encoded = json.dumps(
+        body,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )
+    _ = _stored_event_to_wire(encoded, event_seq=1, connection_epoch=1)
+    return encoded
+
+
+def _stored_event_to_wire(
+    envelope_json: str,
+    *,
+    event_seq: int,
+    connection_epoch: int,
+) -> MobileFrame:
+    raw = _decode_stored_envelope(envelope_json)
+    allowed = {"id", "type", "payload", "session_id", "turn_id"}
+    if not {"id", "type", "payload"}.issubset(raw) or not raw.keys() <= allowed:
+        raise MobileGatewayError("durable inbox envelope 格式无效")
+    body: dict[str, object] = {
+        "v": 1,
+        "kind": "event",
+        "type": raw["type"],
+        "id": raw["id"],
+        "connection_epoch": connection_epoch,
+        "event_seq": event_seq,
+        "payload": raw["payload"],
+    }
+    if "session_id" in raw:
+        body["session_id"] = raw["session_id"]
+    if "turn_id" in raw:
+        body["turn_id"] = raw["turn_id"]
+    return parse_frame(
+        json.dumps(
+            body,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
+    )
 
 
 def _decode_stored_envelope(envelope_json: str) -> dict[str, object]:

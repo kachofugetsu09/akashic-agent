@@ -252,11 +252,38 @@
       "DeltaPayload": {
         "additionalProperties": false,
         "properties": {
+          "block_id": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Block Id"
+          },
           "delta": {
             "maxLength": 65536,
             "minLength": 1,
             "title": "Delta",
             "type": "string"
+          },
+          "ordinal": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ordinal"
           }
         },
         "required": [

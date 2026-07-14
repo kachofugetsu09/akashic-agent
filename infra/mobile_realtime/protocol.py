@@ -133,6 +133,14 @@ class TurnSnapshotPayload(ProtocolModel):
 
 class DeltaPayload(ProtocolModel):
     delta: str = Field(min_length=1, max_length=65_536)
+    block_id: NonEmptyId | None = None
+    ordinal: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_process_block(self) -> DeltaPayload:
+        if (self.block_id is None) != (self.ordinal is None):
+            raise ValueError("delta block_id 与 ordinal 必须同时出现")
+        return self
 
 
 class AckPayload(ProtocolModel):

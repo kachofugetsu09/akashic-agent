@@ -13,12 +13,12 @@ from infra.mobile_realtime.protocol import (
     PRE_AUTH_CONTROL_TYPES,
     ProtocolDecodeError,
     ReplyFrame,
+    ThinkingDeltaEvent,
     TurnSnapshotEvent,
     frame_to_json,
     parse_frame,
 )
 from scripts.generate_mobile_realtime_schema import OUTPUT, build_schema
-
 
 FIXTURES = Path(__file__).parent / "fixtures" / "frames-v1.json"
 
@@ -69,6 +69,23 @@ def test_event_rejects_unknown_type_and_missing_sequence() -> None:
         parse_frame(json.dumps(frame))
 
 
+def test_delta_process_block_fields_must_appear_together() -> None:
+    frame = _golden_frame(2)
+    frame["type"] = "react.thinking.delta"
+    frame["payload"] = {
+        "delta": "思考中",
+        "block_id": "thinking:turn-1:0",
+        "ordinal": 0,
+    }
+    parsed = parse_frame(json.dumps(frame))
+    assert isinstance(parsed, ThinkingDeltaEvent)
+    assert parsed.payload.block_id == "thinking:turn-1:0"
+
+    frame["payload"].pop("ordinal")
+    with pytest.raises(ValidationError, match="必须同时出现"):
+        parse_frame(json.dumps(frame))
+
+
 @pytest.mark.parametrize(
     "reply_type",
     ("message.send", "unknown.ok", "message.send.done"),
@@ -101,9 +118,7 @@ def test_pair_claim_is_valid_before_authentication() -> None:
 
 def test_control_rejects_unknown_type() -> None:
     with pytest.raises(ValidationError):
-        parse_frame(
-            '{"v":1,"kind":"control","type":"auth.skipped","payload":{}}'
-        )
+        parse_frame('{"v":1,"kind":"control","type":"auth.skipped","payload":{}}')
 
 
 def test_decoder_rejects_ambiguous_or_non_object_json() -> None:
@@ -125,8 +140,7 @@ def test_models_reject_unknown_fields() -> None:
 
 def test_generated_schema_matches_checked_in_file() -> None:
     encoded = (
-        json.dumps(build_schema(), ensure_ascii=False, indent=2, sort_keys=True)
-        + "\n"
+        json.dumps(build_schema(), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     )
     assert OUTPUT.read_text(encoding="utf-8") == encoded
 

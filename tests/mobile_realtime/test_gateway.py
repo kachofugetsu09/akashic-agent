@@ -4,6 +4,8 @@ import base64
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 from uuid import uuid4
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -11,6 +13,13 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
 from agent.config_models import MobileKeyEncryptionConfig, MobileRealtimeConfig
+from bus.events import OutboundMessage
+from bus.events_lifecycle import (
+    StreamDeltaReady,
+    ToolCallCompleted,
+    ToolCallStarted,
+    TurnStarted,
+)
 from infra.mobile_realtime.auth import device_proof_signing_bytes
 from infra.mobile_realtime.gateway import (
     build_mobile_gateway_runtime,
@@ -19,6 +28,7 @@ from infra.mobile_realtime.gateway import (
 )
 from infra.mobile_realtime.key_protection import KeyProtectionError
 from infra.mobile_realtime.storage import DeviceRecord
+from session.manager import SessionManager
 
 
 class _EphemeralMasterKeys:
@@ -178,6 +188,63 @@ def test_authenticated_gateway_requires_resume_and_acks_durable_sync(
     runtime.close()
 
 
+def test_gateway_restart_allocates_epoch_newer_than_previous_connection(
+    tmp_path: Path,
+) -> None:
+    import asyncio
+
+    master_keys = _EphemeralMasterKeys()
+
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=master_keys,
+        )
+
+    device_key = ec.generate_private_key(ec.SECP256R1())
+    device_id = uuid4().hex
+    runtime, _ = asyncio.run(build())
+    runtime.storage.register_device(
+        DeviceRecord(
+            device_id=device_id,
+            public_key=_device_public_key(device_key),
+            display_name="Pixel Emulator",
+            created_at=datetime.now(timezone.utc),
+            revoked_at=None,
+            capabilities=("stream-v1",),
+        )
+    )
+    with TestClient(create_mobile_gateway_app(runtime)).websocket_connect("/ws") as ws:
+        challenge = ws.receive_json()
+        ws.send_json(
+            _device_proof(
+                challenge=challenge["payload"],
+                device_id=device_id,
+                device_key=device_key,
+            )
+        )
+        first_epoch = ws.receive_json()["connection_epoch"]
+    runtime.close()
+
+    restarted, _ = asyncio.run(build())
+    with TestClient(create_mobile_gateway_app(restarted)).websocket_connect(
+        "/ws"
+    ) as ws:
+        challenge = ws.receive_json()
+        ws.send_json(
+            _device_proof(
+                challenge=challenge["payload"],
+                device_id=device_id,
+                device_key=device_key,
+            )
+        )
+        restarted_epoch = ws.receive_json()["connection_epoch"]
+
+    assert restarted_epoch > first_epoch
+    restarted.close()
+
+
 def test_gateway_rejects_business_frame_before_device_authentication(
     tmp_path: Path,
 ) -> None:
@@ -207,4 +274,283 @@ def test_gateway_rejects_business_frame_before_device_authentication(
         error = websocket.receive_json()
         assert error["type"] == "protocol.error"
         assert error["payload"]["code"] == 4401
+    runtime.close()
+
+
+def test_offline_proactive_event_is_durable_and_replayed_with_session(
+    tmp_path: Path,
+) -> None:
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    import asyncio
+
+    runtime, _ = asyncio.run(build())
+    device_key = ec.generate_private_key(ec.SECP256R1())
+    device_id = uuid4().hex
+    runtime.storage.register_device(
+        DeviceRecord(
+            device_id=device_id,
+            public_key=_device_public_key(device_key),
+            display_name="Pixel Emulator",
+            created_at=datetime.now(timezone.utc),
+            revoked_at=None,
+            capabilities=("stream-v1",),
+        )
+    )
+    chat_id = str(uuid4())
+    session_id = f"mobile:{chat_id}"
+    runtime.storage.claim_session(
+        device_id=device_id,
+        session_id=session_id,
+        created_at=datetime.now(timezone.utc),
+    )
+    asyncio.run(runtime.channel.send(chat_id, "后台任务完成"))
+    assert runtime.storage.count_durable_events(device_id) == 1
+
+    client = TestClient(create_mobile_gateway_app(runtime))
+    with client.websocket_connect("/ws") as websocket:
+        challenge_frame = websocket.receive_json()
+        websocket.send_json(
+            _device_proof(
+                challenge=challenge_frame["payload"],
+                device_id=device_id,
+                device_key=device_key,
+            )
+        )
+        accepted = websocket.receive_json()
+        epoch = accepted["connection_epoch"]
+        websocket.send_json(
+            {
+                "v": 1,
+                "kind": "control",
+                "type": "resume",
+                "connection_epoch": epoch,
+                "payload": {"last_ack": 0, "active_turns": []},
+            }
+        )
+        proactive = websocket.receive_json()
+        synced = websocket.receive_json()
+
+    assert proactive["type"] == "message.proactive"
+    assert proactive["session_id"] == session_id
+    assert proactive["payload"]["content"] == "后台任务完成"
+    assert synced["type"] == "sync.completed"
+    runtime.close()
+
+
+def test_authenticated_message_send_reaches_agent_event_path_once(
+    tmp_path: Path,
+) -> None:
+    """验证 WSS command 进入 InboundMessage，并按顺序返回完整事件流。"""
+
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    class LoopbackBus:
+        def __init__(self) -> None:
+            self.inbound: list[object] = []
+
+        def subscribe_outbound(self, channel: str, callback: object) -> None:
+            assert channel == "mobile"
+
+        async def publish_inbound(self, message: object) -> None:
+            from bus.events import InboundMessage
+
+            assert isinstance(message, InboundMessage)
+            self.inbound.append(message)
+            turn_id = uuid4().hex
+            await runtime.channel._on_turn_started(
+                TurnStarted(
+                    session_key=message.session_key,
+                    channel=message.channel,
+                    chat_id=message.chat_id,
+                    content=message.content,
+                    timestamp=message.timestamp,
+                    turn_id=turn_id,
+                )
+            )
+            await runtime.channel._on_stream_delta(
+                StreamDeltaReady(
+                    session_key=message.session_key,
+                    channel=message.channel,
+                    chat_id=message.chat_id,
+                    turn_id=turn_id,
+                    thinking_delta="先检查",
+                )
+            )
+            await runtime.channel._on_tool_call_started(
+                ToolCallStarted(
+                    session_key=message.session_key,
+                    channel=message.channel,
+                    chat_id=message.chat_id,
+                    iteration=1,
+                    call_id="call-1",
+                    tool_name="shell",
+                    arguments={"command": "pwd"},
+                    turn_id=turn_id,
+                )
+            )
+            await runtime.channel._on_tool_call_completed(
+                ToolCallCompleted(
+                    session_key=message.session_key,
+                    channel=message.channel,
+                    chat_id=message.chat_id,
+                    iteration=1,
+                    call_id="call-1",
+                    tool_name="shell",
+                    arguments={"command": "pwd"},
+                    final_arguments={"command": "pwd"},
+                    status="completed",
+                    result_preview="ok",
+                    turn_id=turn_id,
+                )
+            )
+            await runtime.channel._on_stream_delta(
+                StreamDeltaReady(
+                    session_key=message.session_key,
+                    channel=message.channel,
+                    chat_id=message.chat_id,
+                    turn_id=turn_id,
+                    thinking_delta="工具后继续",
+                )
+            )
+            await runtime.channel._on_response(
+                OutboundMessage(
+                    channel="mobile",
+                    chat_id=message.chat_id,
+                    content="完成",
+                    thinking="先检查",
+                    control_turn_id=turn_id,
+                )
+            )
+
+    class FakeEventBus:
+        def on(self, event_type: type[object], callback: object) -> None:
+            return None
+
+    class FakePushTool:
+        def register_channel(self, channel: str, **senders: object) -> None:
+            assert channel == "mobile"
+
+    import asyncio
+
+    runtime, _ = asyncio.run(build())
+    bus = LoopbackBus()
+    asyncio.run(
+        runtime.channel.start(
+            cast(
+                Any,
+                SimpleNamespace(
+                    bus=bus,
+                    session_manager=SessionManager(tmp_path / "sessions"),
+                    event_bus=FakeEventBus(),
+                    push_tool=FakePushTool(),
+                    interrupt_controller=None,
+                ),
+            )
+        )
+    )
+    device_key = ec.generate_private_key(ec.SECP256R1())
+    device_id = uuid4().hex
+    runtime.storage.register_device(
+        DeviceRecord(
+            device_id=device_id,
+            public_key=_device_public_key(device_key),
+            display_name="Pixel Emulator",
+            created_at=datetime.now(timezone.utc),
+            revoked_at=None,
+            capabilities=("stream-v1",),
+        )
+    )
+    session_id = f"mobile:{uuid4()}"
+    command_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    command = {
+        "v": 1,
+        "kind": "command",
+        "type": "message.send",
+        "id": command_id,
+        "connection_epoch": 1,
+        "session_id": session_id,
+        "payload": {
+            "client_message_id": command_id,
+            "session_id": session_id,
+            "text": "帮我检查",
+            "media_refs": [],
+            "client_created_at": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+
+    client = TestClient(create_mobile_gateway_app(runtime))
+    with client.websocket_connect("/ws") as websocket:
+        challenge_frame = websocket.receive_json()
+        websocket.send_json(
+            _device_proof(
+                challenge=challenge_frame["payload"],
+                device_id=device_id,
+                device_key=device_key,
+            )
+        )
+        accepted = websocket.receive_json()
+        epoch = accepted["connection_epoch"]
+        websocket.send_json(
+            {
+                "v": 1,
+                "kind": "control",
+                "type": "resume",
+                "connection_epoch": epoch,
+                "payload": {"last_ack": 0, "active_turns": []},
+            }
+        )
+        assert websocket.receive_json()["type"] == "sync.completed"
+        command["connection_epoch"] = epoch
+        websocket.send_json(command)
+        frames = [websocket.receive_json() for _ in range(7)]
+        assert [frame["type"] for frame in frames] == [
+            "turn.started",
+            "react.thinking.delta",
+            "react.tool.started",
+            "react.tool.completed",
+            "react.thinking.delta",
+            "message.final",
+            "message.send.ok",
+        ]
+        first_thinking, tool_started, tool_completed, second_thinking = (
+            frames[1],
+            frames[2],
+            frames[3],
+            frames[4],
+        )
+        assert first_thinking["payload"]["ordinal"] == 0
+        assert tool_started["payload"]["ordinal"] == 1
+        assert tool_completed["payload"]["ordinal"] == 1
+        assert (
+            tool_completed["payload"]["block_id"] == tool_started["payload"]["block_id"]
+        )
+        assert second_thinking["payload"]["ordinal"] == 2
+
+        websocket.send_json(command)
+        websocket.send_json(
+            {
+                "v": 1,
+                "kind": "command",
+                "type": "ping",
+                "id": "01ARZ3NDEKTSV4RRFFQ69G5FAX",
+                "connection_epoch": epoch,
+                "payload": {},
+            }
+        )
+        assert websocket.receive_json()["type"] == "message.send.ok"
+        assert websocket.receive_json()["type"] == "ping.ok"
+
+    assert len(bus.inbound) == 1
+    asyncio.run(runtime.channel.stop())
     runtime.close()

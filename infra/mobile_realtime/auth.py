@@ -111,7 +111,6 @@ class DeviceAuthenticator:
         self._challenge_ttl = challenge_ttl
         self._clock = clock
         self._challenges: dict[str, _ChallengeRecord] = {}
-        self._connection_epoch = 0
         self._lock = threading.RLock()
 
     def create_challenge(self, connection_id: str) -> ServerChallenge:
@@ -196,10 +195,8 @@ class DeviceAuthenticator:
         except (InvalidSignature, ValueError) as error:
             raise DeviceAuthenticationError("设备 challenge 签名无效") from error
 
-        # 3. epoch 在当前服务端进程内严格递增，旧 socket 回调无法越代发布
-        with self._lock:
-            self._connection_epoch += 1
-            connection_epoch = self._connection_epoch
+        # 3. epoch 由 SQLite 原子分配，服务重启后仍拒绝旧代连接
+        connection_epoch = self._storage.allocate_connection_epoch()
         return AuthenticatedDevice(
             device_id=device.device_id,
             display_name=device.display_name,

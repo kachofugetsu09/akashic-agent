@@ -188,6 +188,30 @@ def test_device_challenge_authentication_is_signed_one_shot_and_revocable(
     with pytest.raises(UnknownAuthenticationChallenge):
         authenticator.authenticate("connection-1", proof)
 
+    restarted = DeviceAuthenticator(storage, keyset)
+    restart_challenge = restarted.create_challenge("connection-after-restart")
+    restart_bytes = device_proof_signing_bytes(
+        server_id=restart_challenge.server_id,
+        challenge_id=restart_challenge.challenge_id,
+        challenge_nonce=restart_challenge.nonce,
+        device_id=device.device_id,
+        client_nonce=client_nonce,
+    )
+    restart_signature = device_key.sign(
+        restart_bytes,
+        ec.ECDSA(hashes.SHA256()),
+    )
+    after_restart = restarted.authenticate(
+        "connection-after-restart",
+        DeviceProofPayload(
+            challenge_id=restart_challenge.challenge_id,
+            device_id=device.device_id,
+            client_nonce=client_nonce,
+            signature=base64.b64encode(restart_signature).decode("ascii"),
+        ),
+    )
+    assert after_restart.connection_epoch == 2
+
     _ = storage.revoke_device(device.device_id, revoked_at=datetime.now(timezone.utc))
     revoked_challenge = authenticator.create_challenge("connection-2")
     revoked_bytes = device_proof_signing_bytes(

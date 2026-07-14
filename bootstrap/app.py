@@ -373,7 +373,18 @@ class AppRuntime:
                 plugin_manager.bind_service_switcher(
                     self.plugin_service_host.swap_plugin_services
                 )
+            if self.config.mobile_realtime.enabled:
+                from infra.mobile_realtime.gateway import (
+                    build_mobile_gateway_runtime,
+                )
+
+                self.mobile_gateway_runtime, _ = build_mobile_gateway_runtime(
+                    self.config.mobile_realtime,
+                    self.workspace,
+                )
             plugin_channels = list(plugin_manager.channels) if plugin_manager else []
+            if self.mobile_gateway_runtime is not None:
+                plugin_channels.append(self.mobile_gateway_runtime.channel)
             if self.config.channels.chat.enabled:
                 from infra.channels.web_chat_channel import WebChatChannel
 
@@ -445,16 +456,11 @@ class AppRuntime:
             )
             if self.config.mobile_realtime.enabled:
                 from infra.mobile_realtime.gateway import (
-                    build_mobile_gateway_runtime,
                     build_mobile_gateway_server,
                 )
 
-                self.mobile_gateway_runtime, mobile_keyset = (
-                    build_mobile_gateway_runtime(
-                        self.config.mobile_realtime,
-                        self.workspace,
-                    )
-                )
+                assert self.mobile_gateway_runtime is not None
+                mobile_keyset = self.mobile_gateway_runtime.keyset
                 self.mobile_gateway_server = build_mobile_gateway_server(
                     self.mobile_gateway_runtime,
                     mobile_keyset,
