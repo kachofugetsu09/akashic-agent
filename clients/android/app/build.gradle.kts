@@ -6,6 +6,20 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+val releaseKeystorePath = providers.environmentVariable("AKASHIC_ANDROID_KEYSTORE_PATH").orNull
+val releaseStorePassword = providers.environmentVariable("AKASHIC_ANDROID_STORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("AKASHIC_ANDROID_KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("AKASHIC_ANDROID_KEY_PASSWORD").orNull
+val hasReleaseSigning = listOf(
+    releaseKeystorePath,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() }
+if (!hasReleaseSigning && gradle.startParameter.taskNames.any { it.contains("release", ignoreCase = true) }) {
+    throw GradleException("Release signing environment is required")
+}
+
 android {
     namespace = "com.akashic.mobile"
     compileSdk = 36
@@ -14,10 +28,21 @@ android {
         applicationId = "com.akashic.mobile"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(requireNotNull(releaseKeystorePath))
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
     }
 
     buildTypes {
@@ -26,6 +51,7 @@ android {
         }
         release {
             isMinifyEnabled = true
+            signingConfig = signingConfigs.findByName("release")
             buildConfigField("boolean", "ALLOW_INSECURE_WS", "false")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
