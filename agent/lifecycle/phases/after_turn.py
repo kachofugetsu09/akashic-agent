@@ -11,6 +11,7 @@ from agent.core.passive_support import (
     log_post_reply_context_budget,
     log_react_context_budget,
 )
+from agent.control.context import current_turn_id
 from agent.core.types import to_tool_call_groups
 from agent.lifecycle.phase import (
     PhaseFrame,
@@ -115,6 +116,12 @@ class _BuildTurnCommittedModule:
         msg = state.msg
         tool_chain_list = cast(list[dict[str, Any]], frame.slots[_TOOL_CHAIN_SLOT])
         persistence = cast(TurnPersistencePolicy, frame.slots[_PERSISTENCE_SLOT])
+        raw_react_stats = snap.ctx.context_retry.get("react_stats")
+        raw_model_usage = (
+            raw_react_stats.get("model_usage")
+            if isinstance(raw_react_stats, dict)
+            else None
+        )
         frame.slots[_TURN_COMMITTED_SLOT] = TurnCommitted(
             session_key=state.session_key,
             channel=msg.channel,
@@ -123,6 +130,7 @@ class _BuildTurnCommittedModule:
             persisted_user_message=msg.content if persistence.persist_user else None,
             assistant_response=snap.ctx.reply,
             tools_used=list(snap.ctx.tools_used),
+            turn_id=current_turn_id.get(),
             thinking=snap.ctx.thinking,
             raw_reply=snap.ctx.response_metadata.raw_text,
             meme_tag=snap.ctx.meme_tag,
@@ -133,6 +141,9 @@ class _BuildTurnCommittedModule:
             post_reply_budget=dict(cast(dict[str, int], frame.slots[_BUDGET_SLOT])),
             react_stats=dict(cast(dict[str, int], frame.slots[_REACT_STATS_SLOT])),
             extra=dict(cast(dict[str, object], frame.slots[_EXTRA_SLOT])),
+            model_usage=(
+                dict(raw_model_usage) if isinstance(raw_model_usage, dict) else {}
+            ),
         )
         return frame
 

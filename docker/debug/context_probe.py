@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import subprocess
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -14,6 +15,10 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from agent.control.client import ControlClient
 
 
 @dataclass
@@ -117,8 +122,7 @@ def _legacy_scenario(data: dict[str, object]) -> Scenario:
     phase2 = _coerce_string_list(data.get("phase2"))
     final_question = str(data.get("final_question") or "").strip()
     turns: list[dict[str, object]] = [
-        {"role": "user", "content": text}
-        for text in phase1
+        {"role": "user", "content": text} for text in phase1
     ]
     turns.append({"action": "consolidate", "force": False, "archive_all": False})
     turns.extend({"role": "user", "content": text} for text in phase2)
@@ -203,18 +207,14 @@ def _disable_qq_config(config_path: Path) -> str | None:
 
 
 async def _send_and_read(
-    writer: asyncio.StreamWriter,
-    reader: asyncio.StreamReader,
+    client: ControlClient,
+    thread_id: str,
     text: str,
     timeout: int,
 ) -> str:
-    writer.write((json.dumps({"content": text}, ensure_ascii=False) + "\n").encode())
-    await writer.drain()
-    line = await asyncio.wait_for(reader.readline(), timeout=timeout)
-    if not line:
-        return "（连接已断开）"
-    data = json.loads(line)
-    return str(data.get("content") or "")
+    handle = await client.start_turn(thread_id, text)
+    result = await asyncio.wait_for(handle.result(), timeout=timeout)
+    return str(result.get("finalResponse") or "")
 
 
 def _latest_session_key(db_path: Path) -> str:
@@ -324,13 +324,11 @@ def _memory_rows_changed_since(
 ) -> list[dict[str, str]]:
     conn = sqlite3.connect(memory_db)
     try:
-        rows = conn.execute(
-            """
+        rows = conn.execute("""
             select id, memory_type, summary, source_ref, updated_at
             from memory_items
             order by updated_at
-            """
-        ).fetchall()
+            """).fetchall()
         return [
             {
                 "item_id": str(row[0] or ""),
@@ -592,11 +590,14 @@ async def _run_probe(args: argparse.Namespace) -> None:
         consolidate_result: dict[str, Any] | None = None
         recent_after_consolidate = ""
         session_key = ""
-        reader, writer = await asyncio.open_unix_connection(str(paths.socket))
+        client = await ControlClient.connect(str(paths.socket))
         try:
+            thread = await client.start_thread(
+                {"probe": "context", "scenario": scenario.name}
+            )
+            session_key = str(thread["id"])
             for index, turn in enumerate(scenario.turns, 1):
                 if turn.get("action") == "consolidate":
-                    session_key = _probe_session_key(paths.sessions_db, session_key)
                     consolidate_result = _dashboard_consolidate(
                         dashboard_url=args.dashboard_url,
                         session_key=session_key,
@@ -617,17 +618,16 @@ async def _run_probe(args: argparse.Namespace) -> None:
                     print(f"turn {index} wait ok")
                     continue
                 text = str(turn.get("content") or "").strip()
-                reply = await _send_and_read(writer, reader, text, args.turn_timeout)
+                reply = await _send_and_read(
+                    client, session_key, text, args.turn_timeout
+                )
                 _ensure_successful_reply(reply, index)
-                session_key = _probe_session_key(paths.sessions_db, session_key)
                 records.append({"user": text, "assistant": reply})
                 print(f"turn {index} ok: {reply[:80]}")
         finally:
-            writer.close()
-            await writer.wait_closed()
+            await client.close()
 
         await asyncio.sleep(args.after_final_wait)
-        session_key = _probe_session_key(paths.sessions_db, session_key)
         report_base = args.output or paths.workspace / f"context-probe-{paths.profile}"
         report_md = report_base.with_suffix(".md")
         report_json = report_base.with_suffix(".json")

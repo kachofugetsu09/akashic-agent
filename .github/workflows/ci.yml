@@ -32,9 +32,37 @@ jobs:
         run: |
           .venv/bin/pyright --project pyrightconfig.tests.json --level error
 
+      - name: Check control protocol schema
+        run: .venv/bin/python scripts/generate_control_schema.py --check
+
+      - name: Check Python SDK
+        run: |
+          cd sdk/python
+          ../../.venv/bin/pyright src tests --level error
+          ../../.venv/bin/pytest -q tests
+
       - name: Run pytest
         timeout-minutes: 10
         env:
           PYTHONWARNINGS: "ignore:.*AbstractEventLoopPolicy.*:DeprecationWarning"
         run: |
           .venv/bin/pytest -q -W error tests/
+
+  docker-control-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run deterministic control gates
+        run: |
+          python docker/debug/programmatic_control_probe.py --gate smoke
+          python docker/debug/programmatic_control_probe.py --gate failure-matrix
+
+      - name: Upload control gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: programmatic-control-gate
+          path: docker/debug/reports/programmatic-control/

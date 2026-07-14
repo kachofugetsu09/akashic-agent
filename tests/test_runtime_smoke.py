@@ -21,7 +21,7 @@ from agent.config import (
     TelegramChannelConfig,
     _validated_timezone,
     load_config,
-    resolve_cli_socket_endpoint,
+    resolve_app_server_endpoint,
 )
 from agent.memory import DEFAULT_SELF_MD
 from bus.event_bus import EventBus
@@ -95,10 +95,8 @@ def _write_config(path: Path, socket_path: Path) -> None:
             "enabled": False,
             "profile": "quiet",
         },
-        "channels": {
-            "cli": {
-                "socket": str(socket_path),
-            }
+        "app_server": {
+            "listen": str(socket_path),
         },
     }
     path.write_text("\n".join(_dump_toml(payload)).strip() + "\n", encoding="utf-8")
@@ -152,7 +150,7 @@ system_prompt = "test"
 
 
 def test_default_socket_is_derived_from_workspace(tmp_path: Path) -> None:
-    endpoint = resolve_cli_socket_endpoint(DEFAULT_SOCKET, tmp_path)
+    endpoint = resolve_app_server_endpoint(DEFAULT_SOCKET, tmp_path)
 
     if sys.platform == "win32":
         assert endpoint.startswith("127.0.0.1:")
@@ -292,6 +290,11 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
             return None
 
         agent_loop.run = _agent_loop_run  # type: ignore[assignment]
+        monkeypatch.setattr(
+            bootstrap_app,
+            "PassiveMessageWorker",
+            lambda *args, **kwargs: types.SimpleNamespace(run=_agent_loop_run),
+        )
         bus.dispatch_outbound = _bus_dispatch_outbound  # type: ignore[assignment]
         scheduler.run = _scheduler_run  # type: ignore[assignment]
         observed["scheduler"] = scheduler
@@ -680,29 +683,6 @@ async def test_app_runtime_shutdown_cleans_up_after_server_failure(tmp_path):
     assert runtime.http_resources.closed is True
 
 
-def test_connect_cli_uses_socket_from_config(monkeypatch, tmp_path):
-    config_path = tmp_path / "config.toml"
-    socket_path = tmp_path / "cli.sock"
-    _write_config(config_path, socket_path)
-    observed: dict[str, str] = {}
-
-    fake_cli_tui = types.ModuleType("infra.channels.cli_tui")
-
-    def _run_tui(socket: str) -> None:
-        observed["socket"] = socket
-
-    fake_cli_tui.run_tui = _run_tui  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "infra.channels.cli_tui", fake_cli_tui)
-
-    main.connect_cli(str(config_path))
-
-    if sys.platform == "win32":
-        assert observed["socket"] != str(socket_path)
-        assert observed["socket"].startswith("127.0.0.1:")
-    else:
-        assert observed["socket"] == str(socket_path)
-
-
 def test_init_workspace_creates_expected_assets(tmp_path):
     config_path = tmp_path / "config.toml"
     workspace = tmp_path / "workspace"
@@ -766,32 +746,20 @@ def test_init_workspace_respects_force_for_text_assets(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
+async def test_start_channels_wires_telegram_qq_and_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     starts: list[str] = []
     registrations: list[tuple[str, list[str]]] = []
-
-    fake_ipc_server = types.ModuleType("infra.channels.ipc_server")
-    fake_telegram_channel = types.ModuleType("infra.channels.telegram_channel")
-    fake_qq_channel = types.ModuleType("infra.channels.qq_channel")
-
-    class _IPCServerChannel:
-        def __init__(self, bus, socket, default_session_key: str = ""):
-            self.bus = bus
-            self.socket = socket
-            self.default_session_key = default_session_key
-
-        async def start(self) -> None:
-            starts.append("ipc")
-
-        async def stop(self) -> None:
-            starts.append("ipc.stop")
+    fake_telegram = types.ModuleType("infra.channels.telegram_channel")
+    fake_qq = types.ModuleType("infra.channels.qq_channel")
 
     class _TelegramChannel:
-        def __init__(self, **kwargs):
+        def __init__(self, **kwargs: object) -> None:
             self.kwargs = kwargs
-            self.name = kwargs.get("channel_name", "telegram")
+            self.name = str(kwargs.get("channel_name") or "telegram")
 
-        async def start(self, ctx) -> None:
+        async def start(self, ctx: Any) -> None:
             starts.append("telegram")
             ctx.push_tool.register_channel(
                 self.name,
@@ -804,25 +772,25 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
         async def stop(self) -> None:
             starts.append("telegram.stop")
 
-        async def send(self, *args, **kwargs):
+        async def send(self, *args: object, **kwargs: object) -> None:
             return None
 
-        async def send_stream(self, *args, **kwargs):
+        async def send_stream(self, *args: object, **kwargs: object) -> None:
             return None
 
-        async def send_file(self, *args, **kwargs):
+        async def send_file(self, *args: object, **kwargs: object) -> None:
             return None
 
-        async def send_image(self, *args, **kwargs):
+        async def send_image(self, *args: object, **kwargs: object) -> None:
             return None
 
     class _QQChannel:
         name = "qq"
 
-        def __init__(self, **kwargs):
+        def __init__(self, **kwargs: object) -> None:
             self.kwargs = kwargs
 
-        async def start(self, ctx) -> None:
+        async def start(self, ctx: Any) -> None:
             starts.append("qq")
             ctx.push_tool.register_channel(
                 self.name,
@@ -834,47 +802,35 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
         async def stop(self) -> None:
             starts.append("qq.stop")
 
-        async def send(self, *args, **kwargs):
+        async def send(self, *args: object, **kwargs: object) -> None:
             return None
 
-        async def send_file(self, *args, **kwargs):
+        async def send_file(self, *args: object, **kwargs: object) -> None:
             return None
 
-        async def send_image(self, *args, **kwargs):
+        async def send_image(self, *args: object, **kwargs: object) -> None:
             return None
 
-    class _QQBotChannel:
-        name = "qqbot"
+    class _PluginChannel:
+        name = "plugin"
 
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        async def start(self, ctx) -> None:
-            starts.append("qqbot")
-            ctx.push_tool.register_channel(
-                self.name,
-                text=self.send_proactive,
-                stream_text=self.send_stream,
-            )
+        async def start(self, ctx: Any) -> None:
+            starts.append("plugin")
+            ctx.push_tool.register_channel(self.name, text=self.send)
 
         async def stop(self) -> None:
-            starts.append("qqbot.stop")
+            starts.append("plugin.stop")
 
-        async def send_proactive(self, *args, **kwargs):
+        async def send(self, *args: object, **kwargs: object) -> None:
             return None
 
-        async def send_stream(self, *args, **kwargs):
-            return None
-
-    fake_ipc_server.IPCServerChannel = _IPCServerChannel  # type: ignore[attr-defined]
-    fake_telegram_channel.TelegramChannel = _TelegramChannel  # type: ignore[attr-defined]
-    fake_qq_channel.QQChannel = _QQChannel  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "infra.channels.ipc_server", fake_ipc_server)
-    monkeypatch.setitem(sys.modules, "infra.channels.telegram_channel", fake_telegram_channel)
-    monkeypatch.setitem(sys.modules, "infra.channels.qq_channel", fake_qq_channel)
+    fake_telegram.TelegramChannel = _TelegramChannel  # type: ignore[attr-defined]
+    fake_qq.QQChannel = _QQChannel  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "infra.channels.telegram_channel", fake_telegram)
+    monkeypatch.setitem(sys.modules, "infra.channels.qq_channel", fake_qq)
 
     class _PushTool:
-        def register_channel(self, name: str, **kwargs) -> None:
+        def register_channel(self, name: str, **kwargs: object) -> None:
             registrations.append((name, sorted(kwargs)))
 
     config = Config(
@@ -889,157 +845,60 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
                 allow_from=["2"],
                 groups=[QQGroupConfig(group_id="3")],
             ),
-            socket=str(tmp_path / "sock"),
         ),
     )
     resources = SharedHttpResources()
     event_bus = EventBus()
+    controller = object()
+    host = await start_channels(
+        config,
+        bus=cast(Any, object()),
+        session_manager=cast(Any, object()),
+        push_tool=cast(Any, _PushTool()),
+        http_resources=resources,
+        event_bus=event_bus,
+        interrupt_controller=cast(Any, controller),
+        plugin_channels=[cast(Any, _PluginChannel())],
+    )
     try:
-        controller = object()
-        plugin_channel = _QQBotChannel(event_bus=event_bus)
-        ipc, host = await start_channels(
-            config,
-            socket_endpoint=config.channels.socket,
-            bus=cast(Any, object()),
-            session_manager=cast(Any, object()),
-            push_tool=cast(Any, _PushTool()),
-            http_resources=resources,
-            event_bus=event_bus,
-            interrupt_controller=cast(Any, controller),
-            plugin_channels=[cast(Any, plugin_channel)],
-        )
         await host.start_all()
-    finally:
-        await resources.aclose()
 
-    assert ipc is not None
-    tg, qq, qqbot = host.channels
-    assert starts == ["ipc", "telegram", "qq", "qqbot"]
-    assert registrations == [
-        ("telegram", ["file", "image", "stream_text", "text"]),
-        ("qq", ["file", "image", "text"]),
-        ("qqbot", ["stream_text", "text"]),
-    ]
-    assert tg.kwargs["event_bus"] is event_bus
-    assert tg.kwargs["interrupt_controller"] is controller
-    assert qq.kwargs["interrupt_controller"] is controller
-    assert qqbot.kwargs["event_bus"] is event_bus
+        telegram, qq, plugin = host.channels
+        assert starts == ["telegram", "qq", "plugin"]
+        assert registrations == [
+            ("telegram", ["file", "image", "stream_text", "text"]),
+            ("qq", ["file", "image", "text"]),
+            ("plugin", ["text"]),
+        ]
+        assert telegram.kwargs["event_bus"] is event_bus
+        assert telegram.kwargs["interrupt_controller"] is controller
+        assert qq.kwargs["interrupt_controller"] is controller
+        assert plugin.name == "plugin"
+    finally:
+        await host.stop_all()
+        await resources.aclose()
 
 
 @pytest.mark.asyncio
-async def test_start_channels_skips_unfilled_optional_channels(monkeypatch, tmp_path):
-    starts: list[str] = []
-
-    fake_ipc_server = types.ModuleType("infra.channels.ipc_server")
-    fake_telegram_channel = types.ModuleType("infra.channels.telegram_channel")
-    fake_qq_channel = types.ModuleType("infra.channels.qq_channel")
-
-    class _IPCServerChannel:
-        def __init__(self, bus, socket, default_session_key: str = ""):
-            self.bus = bus
-            self.socket = socket
-            self.default_session_key = default_session_key
-
-        async def start(self) -> None:
-            starts.append("ipc")
-
-        async def stop(self) -> None:
-            starts.append("ipc.stop")
-
-    class _TelegramChannel:
-        async def start(self) -> None:
-            starts.append("telegram")
-
-    class _QQChannel:
-        async def start(self) -> None:
-            starts.append("qq")
-
-    fake_ipc_server.IPCServerChannel = _IPCServerChannel  # type: ignore[attr-defined]
-    fake_telegram_channel.TelegramChannel = _TelegramChannel  # type: ignore[attr-defined]
-    fake_qq_channel.QQChannel = _QQChannel  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "infra.channels.ipc_server", fake_ipc_server)
-    monkeypatch.setitem(sys.modules, "infra.channels.telegram_channel", fake_telegram_channel)
-    monkeypatch.setitem(sys.modules, "infra.channels.qq_channel", fake_qq_channel)
-
-    class _PushTool:
-        def register_channel(self, name: str, **kwargs) -> None:
-            raise AssertionError(f"unexpected channel registration: {name}")
-
+async def test_start_channels_skips_unfilled_optional_channels() -> None:
     config = Config(
         provider="openai",
         model="m",
         api_key="k",
         system_prompt="s",
-        channels=ChannelsConfig(
-            telegram=None,
-            qq=None,
-            socket=str(tmp_path / "sock"),
-        ),
+        channels=ChannelsConfig(telegram=None, qq=None),
     )
     resources = SharedHttpResources()
     try:
-        ipc, host = await start_channels(
+        host = await start_channels(
             config,
-            socket_endpoint=config.channels.socket,
             bus=cast(Any, object()),
             session_manager=cast(Any, object()),
-            push_tool=cast(Any, _PushTool()),
+            push_tool=cast(Any, object()),
             http_resources=resources,
             event_bus=EventBus(),
         )
     finally:
         await resources.aclose()
 
-    assert ipc is not None
     assert host.channels == []
-    assert starts == ["ipc"]
-
-
-@pytest.mark.asyncio
-async def test_start_channels_preserves_construction_error_when_ipc_cleanup_fails(
-    monkeypatch, tmp_path
-):
-    fake_ipc_server = types.ModuleType("infra.channels.ipc_server")
-    start_error = RuntimeError("channel construction failed")
-    cleanup_error = RuntimeError("ipc cleanup failed")
-
-    class _IPCServerChannel:
-        def __init__(self, bus, socket, default_session_key: str = "") -> None:
-            pass
-
-        async def start(self) -> None:
-            return None
-
-        async def stop(self) -> None:
-            raise cleanup_error
-
-    def _fail_attachment_store() -> None:
-        raise start_error
-
-    fake_ipc_server.IPCServerChannel = _IPCServerChannel  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "infra.channels.ipc_server", fake_ipc_server)
-    monkeypatch.setattr("bootstrap.channels.AttachmentStore", _fail_attachment_store)
-    config = Config(
-        provider="openai",
-        model="m",
-        api_key="k",
-        system_prompt="s",
-        channels=ChannelsConfig(socket=str(tmp_path / "sock")),
-    )
-    resources = SharedHttpResources()
-    try:
-        with pytest.raises(RuntimeError, match="channel construction failed") as caught:
-            await start_channels(
-                config,
-                socket_endpoint=config.channels.socket,
-                bus=cast(Any, object()),
-                session_manager=cast(Any, object()),
-                push_tool=cast(Any, object()),
-                http_resources=resources,
-                event_bus=EventBus(),
-            )
-    finally:
-        await resources.aclose()
-
-    assert caught.value is start_error
-    assert caught.value.__cause__ is cleanup_error

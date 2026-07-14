@@ -8,6 +8,7 @@ config.yaml
 /docker/napcat/runtime/
 /docker/debug/runtime/
 /docker/debug/profiles/
+/docker/debug/reports/
 
 # Python 缓存
 __pycache__/

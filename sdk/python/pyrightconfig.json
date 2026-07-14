@@ -1,0 +1,5 @@
+{
+  "extends": "../../pyrightconfig.json",
+  "extraPaths": ["src", "../.."],
+  "include": ["src", "tests"]
+}

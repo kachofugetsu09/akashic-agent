@@ -41,8 +41,16 @@ class ChannelsConfig:
     telegram: TelegramChannelConfig | None = None
     qq: QQChannelConfig | None = None
     chat: WebChatConfig = field(default_factory=WebChatConfig)
-    socket: str = ""
-    cli_session_key: str = ""
+
+
+@dataclass
+class AppServerConfig:
+    enabled: bool = True
+    listen: str = ""
+    max_connections: int = 32
+    ingress_queue_size: int = 128
+    outbound_queue_size: int = 512
+    max_message_bytes: int = 2 * 1024 * 1024
 
 
 @dataclass
@@ -139,6 +147,7 @@ class Config:
     base_url: str | None = None
     extra_body: dict[str, object] = field(default_factory=dict)
     channels: ChannelsConfig = field(default_factory=ChannelsConfig)
+    app_server: AppServerConfig = field(default_factory=AppServerConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     memory_optimizer_enabled: bool = True
     memory_optimizer_interval_seconds: int = 64800
@@ -180,6 +189,7 @@ class Config:
 
 
 __all__ = [
+    "AppServerConfig",
     "ChannelsConfig",
     "Config",
     "MemoryConfig",

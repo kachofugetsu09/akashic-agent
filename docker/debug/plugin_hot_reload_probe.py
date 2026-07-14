@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
 import os
@@ -10,6 +11,7 @@ import shutil
 import socket
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
@@ -18,6 +20,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from collections.abc import Callable
 from typing import cast
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from agent.control.client import ControlClient
 
 
 @dataclass(frozen=True)
@@ -102,6 +108,34 @@ def _repository_digest(repo: Path) -> str:
     return digest.hexdigest()
 
 
+def _mounted_tree_digest(root: Path, *, excluded_roots: set[Path] | None = None) -> str:
+    """不依赖 Git 元数据，摘要只读挂载中容器实际可见的源码树。"""
+
+    digest = hashlib.sha256()
+    excluded = {path.resolve() for path in (excluded_roots or set())}
+    for directory, names, files in os.walk(root, topdown=True):
+        current = Path(directory)
+        names[:] = sorted(
+            name
+            for name in names
+            if name not in {".git", "__pycache__"}
+            and (current / name).resolve() not in excluded
+        )
+        for name in sorted(files):
+            path = current / name
+            if path.resolve() in excluded:
+                continue
+            relative = path.relative_to(root)
+            digest.update(os.fsencode(relative))
+            if path.is_symlink():
+                digest.update(b"symlink\0" + os.fsencode(os.readlink(path)))
+                continue
+            with path.open("rb") as file:
+                for chunk in iter(lambda: file.read(1024 * 1024), b""):
+                    digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _repositories() -> list[Path]:
     repositories = [Path("/app")]
     plugin_root = Path("/fixtures/plugins")
@@ -157,7 +191,14 @@ def _path_check(check_id: str, actual: Path, expected: Path) -> CheckResult:
 
 def _sandbox_integrity() -> GateResult:
     repositories = _repositories()
-    before = {str(repo): _repository_digest(repo) for repo in repositories}
+    excluded = {Path("/app/static").resolve()}
+    before = {
+        str(repo): _mounted_tree_digest(
+            repo,
+            excluded_roots=excluded if repo == Path("/app") else None,
+        )
+        for repo in repositories
+    }
 
     sandbox = Path("/sandbox")
     cache = Path.home() / ".akashic-plugin" / "cache"
@@ -166,7 +207,13 @@ def _sandbox_integrity() -> GateResult:
     _ = test_plugin.write_text("REVISION = 1\n", encoding="utf-8")
     _ = test_plugin.write_text("REVISION = 2\n", encoding="utf-8")
 
-    after = {str(repo): _repository_digest(repo) for repo in repositories}
+    after = {
+        str(repo): _mounted_tree_digest(
+            repo,
+            excluded_roots=excluded if repo == Path("/app") else None,
+        )
+        for repo in repositories
+    }
     app_options = _mount_options(Path("/app"))
     fixtures_options = _mount_options(Path("/fixtures/plugins"))
     sandbox_options = _mount_options(sandbox)
@@ -177,7 +224,9 @@ def _sandbox_integrity() -> GateResult:
             "ro" in fixtures_options,
             sorted(fixtures_options),
         ),
-        CheckResult("sandbox_writable", "rw" in sandbox_options, sorted(sandbox_options)),
+        CheckResult(
+            "sandbox_writable", "rw" in sandbox_options, sorted(sandbox_options)
+        ),
         _path_check("home_isolated", Path.home(), Path("/sandbox/home")),
         _path_check(
             "workspace_isolated",
@@ -228,7 +277,9 @@ def _run_controller(*, scenario: str, phase: str) -> int:
         os.environ.get("AKASHIC_PLUGIN_SOURCE", "/mnt/data/coding/akashic-plugin")
     ).resolve()
     host_cache = (Path.home() / ".akashic-plugin" / "cache").resolve()
-    sandbox = Path(tempfile.mkdtemp(prefix="akashic-plugin-gate-", dir="/tmp")).resolve()
+    sandbox = Path(
+        tempfile.mkdtemp(prefix="akashic-plugin-gate-", dir="/tmp")
+    ).resolve()
     (sandbox / "static").mkdir()
     protected = [repo.resolve(), plugin_root, host_cache]
     if _sandbox_is_protected(sandbox, protected):
@@ -314,7 +365,9 @@ def _run_controller(*, scenario: str, phase: str) -> int:
         controller_error=controller_error,
     )
     report: dict[str, object] = {
-        "gate_id": "G-1-host" if scenario == "sandbox-integrity" else f"runtime:{phase}",
+        "gate_id": (
+            "G-1-host" if scenario == "sandbox-integrity" else f"runtime:{phase}"
+        ),
         "status": "passed" if passed else "failed",
         "checks": {
             "image_build_passed": build_returncode == 0,
@@ -351,8 +404,12 @@ def _write_smoke_config(
         "memory_optimizer_enabled = false",
         "spawn_enabled = false",
         "",
-        "[channels]",
-        'socket = "/sandbox/akashic.sock"',
+        "[app_server]",
+        "enabled = true",
+        'listen = "/sandbox/akashic.sock"',
+        "max_connections = 8",
+        "ingress_queue_size = 32",
+        "outbound_queue_size = 64",
         "",
         "[channels.chat]",
         "enabled = false",
@@ -391,10 +448,7 @@ def _write_smoke_config(
 
 
 def _install_scope_plugin(sandbox: Path) -> Path:
-    plugin_dir = (
-        sandbox
-        / "home/.akashic-plugin/cache/gate/scope_gate/1.0.0"
-    )
+    plugin_dir = sandbox / "home/.akashic-plugin/cache/gate/scope_gate/1.0.0"
     plugin_dir.mkdir(parents=True, exist_ok=True)
     _ = (plugin_dir / "plugin.py").write_text(
         "from __future__ import annotations\n"
@@ -487,7 +541,7 @@ def _install_management_plugin(sandbox: Path) -> tuple[Path, Path, Path]:
         "        return [ManagedServiceSpec(id='probe', command=('python', 'management_service.py'), readiness_url='http://127.0.0.1:18768/')]\n"
         "    @tool(name='management_probe')\n"
         "    async def probe(self, event):\n"
-        "        \"\"\"Return the management probe state.\"\"\"\n"
+        '        """Return the management probe state."""\n'
         "        return 'ok'\n",
         encoding="utf-8",
     )
@@ -574,11 +628,11 @@ def _install_migrated_plugins(sandbox: Path, plugin_root: Path) -> Path:
         shutil.copytree(
             plugin_root / source_name,
             target,
-            ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__", ".pytest_cache"),
+            ignore=shutil.ignore_patterns(
+                ".git", ".venv", "__pycache__", ".pytest_cache"
+            ),
         )
-        entries.append(
-            f'[plugins."{plugin_name}@gate"]\nenabled = true\n'
-        )
+        entries.append(f'[plugins."{plugin_name}@gate"]\nenabled = true\n')
         if plugin_name == "observe":
             observe_source = target / "plugin.py"
     manifest = sandbox / "home/.akashic-plugin/manifest.toml"
@@ -748,7 +802,7 @@ def _install_candidate_plugins(
         "    name = 'candidate_failed'\n"
         "    @tool(name='candidate_failed_tool')\n"
         "    async def failed_tool(self, event):\n"
-        "        \"\"\"Failed candidate tool.\"\"\"\n"
+        '        """Failed candidate tool."""\n'
         "        return 'leaked'\n"
         "    async def initialize(self):\n"
         "        self.context.event_bus.on(TurnCommitted, self._on_turn)\n"
@@ -939,7 +993,7 @@ def _candidate_reload_source(version: str) -> str:
         f"        return [PluginSemanticCheck('candidate_capabilities', value == '{version}' and owned and job_interval == {1 if version == 'v1' else 2}, evidence)]\n"
         "    @tool(name='candidate_reload_tool')\n"
         "    async def run(self, event):\n"
-        "        \"\"\"Candidate reload tool.\"\"\"\n"
+        '        """Candidate reload tool."""\n'
         f"        return '{version}'\n"
         "    @on_tool_pre(tool_name='candidate_reload_tool')\n"
         "    async def before_candidate_tool(self, event):\n"
@@ -1160,7 +1214,7 @@ def _exercise_migrated_plugins(
     observe_source: Path,
     sandbox: Path,
 ) -> dict[str, object]:
-    status_response = _ipc_roundtrip(
+    status_response = _control_roundtrip(
         sandbox / "akashic.sock",
         "/memorystatus 被回复消息：这是一条用于验证主动反馈工作链路的提醒消息"
         "【你当前新消息】谢谢",
@@ -1261,8 +1315,7 @@ def _exercise_all_plugins(
         and result.get("old_generation") != result.get("new_generation")
         for result in reloads.values()
     ) and all(
-        isinstance(result, dict)
-        and result.get("publication_state") == "disabled"
+        isinstance(result, dict) and result.get("publication_state") == "disabled"
         for result in disables.values()
     )
     return {
@@ -1338,11 +1391,14 @@ def _exercise_plugin_management(
         "output": disabled_command.stdout.strip(),
         "status": disabled,
     }
-    service_states["disabled"] = _wait_process_count(
-        container_id,
-        "management_service.py",
-        lambda count: count == 0,
-    ) == 0
+    service_states["disabled"] = (
+        _wait_process_count(
+            container_id,
+            "management_service.py",
+            lambda count: count == 0,
+        )
+        == 0
+    )
     (data / "service.stopped").unlink(missing_ok=True)
 
     before = len(_snapshot_statuses(container_id))
@@ -1373,11 +1429,14 @@ def _exercise_plugin_management(
         "output": uninstall_command.stdout.strip(),
         "status": uninstalled,
     }
-    service_states["uninstalled"] = _wait_process_count(
-        container_id,
-        "management_service.py",
-        lambda count: count == 0,
-    ) == 0
+    service_states["uninstalled"] = (
+        _wait_process_count(
+            container_id,
+            "management_service.py",
+            lambda count: count == 0,
+        )
+        == 0
+    )
     manifest_data = tomllib.loads(manifest.read_text(encoding="utf-8"))
     manifest_plugins = manifest_data.get("plugins", {})
     passed = (
@@ -1385,7 +1444,8 @@ def _exercise_plugin_management(
         and disabled.get("publication_state") == "disabled"
         and enabled.get("publication_state") == "committed"
         and uninstalled.get("publication_state") == "disabled"
-        and service_states == {
+        and service_states
+        == {
             "initial": True,
             "disabled": True,
             "enabled": True,
@@ -1422,6 +1482,8 @@ def _management_service_ready(container_id: str) -> bool:
         stderr=subprocess.DEVNULL,
     )
     return result.returncode == 0
+
+
 def _fitbit_runtime_probe(container_id: str) -> dict[str, object]:
     script = (
         "import json, urllib.request\n"
@@ -1472,30 +1534,25 @@ def _wait_process_count(
     return count
 
 
-def _ipc_roundtrip(path: Path, content: str) -> dict[str, object]:
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout(15)
-    try:
-        client.connect(str(path))
-        payload = json.dumps(
-            {
-                "content": content,
-                "as_session_key": "cli:snapshot-gate",
+def _control_roundtrip(path: Path, content: str) -> dict[str, object]:
+    """通过正式 JSON-RPC 客户端运行 turn，并返回兼容 gate 断言的结果。"""
+
+    async def run() -> dict[str, object]:
+        # 1. 建立完成握手的控制连接和独立 thread。
+        async with await ControlClient.connect(str(path)) as client:
+            thread = await client.start_thread({"source": "plugin-hot-reload-gate"})
+
+            # 2. 等待终态事件，失败也作为真实结果交给 gate 判定。
+            handle = await client.start_turn(str(thread["id"]), content)
+            turn = await handle.result()
+            return {
+                "content": turn.get("finalResponse"),
+                "status": turn.get("status"),
+                "error": turn.get("error"),
+                "turn_id": turn.get("id"),
             }
-        )
-        client.sendall((payload + "\n").encode())
-        data = b""
-        while b"\n" not in data:
-            chunk = client.recv(65536)
-            if not chunk:
-                break
-            data += chunk
-        raw: object = json.loads(data.split(b"\n", 1)[0]) if data else {}
-        if not isinstance(raw, dict):
-            return {}
-        return {str(key): value for key, value in raw.items()}
-    finally:
-        client.close()
+
+    return asyncio.run(run())
 
 
 def _wait_candidate_status(
@@ -1594,10 +1651,7 @@ def _exercise_topology_watch(
         publication_state="committed",
     )
 
-    added_root = (
-        sandbox
-        / "home/.akashic-plugin/cache/gate/topology_added/1.0.0"
-    )
+    added_root = sandbox / "home/.akashic-plugin/cache/gate/topology_added/1.0.0"
     added_root.mkdir(parents=True)
     _ = (added_root / "plugin.py").write_text(
         "from agent.plugins import Plugin\n"
@@ -1695,7 +1749,7 @@ def _exercise_snapshot_publish(
     detached_release.unlink(missing_ok=True)
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        old_turn = executor.submit(_ipc_roundtrip, socket_path, "block snapshot")
+        old_turn = executor.submit(_control_roundtrip, socket_path, "block snapshot")
         blocked = _wait_json_value(state_path, "blocked_v1_turn", True)
         _ = source_path.write_text(_candidate_reload_source("v2"), encoding="utf-8")
         candidate_before = _candidate_statuses(container_id)
@@ -1720,7 +1774,7 @@ def _exercise_snapshot_publish(
             publication_state="committed",
         )
 
-    new_response = _ipc_roundtrip(socket_path, "snapshot after publish")
+    new_response = _control_roundtrip(socket_path, "snapshot after publish")
     final_service_version = _candidate_service_version(container_id)
     final_service_processes = _container_process_count(
         container_id,
@@ -1829,7 +1883,7 @@ def _exercise_candidate_prepare(
     after_valid_calls = _mcp_call_counts(calls_path)
     detached_release = state_path.parent / "release-detached-probe"
     detached_release.unlink(missing_ok=True)
-    passive_response = _ipc_roundtrip(socket_path, "snapshot lease gate")
+    passive_response = _control_roundtrip(socket_path, "snapshot lease gate")
     _ = detached_release.write_text("released\n", encoding="utf-8")
     after_passive = _wait_json_value(
         state_path,
@@ -1931,11 +1985,7 @@ def _exercise_candidate_prepare(
         and return_status.get("proactive_sources")
         == ["candidate_reload@gate:candidate_feed"]
         and valid_status.get("job_specs")
-        == {
-            "candidate_reload@gate:refresh": [
-                {"type": "interval", "seconds": 2}
-            ]
-        }
+        == {"candidate_reload@gate:refresh": [{"type": "interval", "seconds": 2}]}
         and valid_status.get("proactive_source_specs")
         == {
             "candidate_reload@gate:candidate_feed": {
@@ -1946,11 +1996,7 @@ def _exercise_candidate_prepare(
             }
         }
         and return_status.get("job_specs")
-        == {
-            "candidate_reload@gate:refresh": [
-                {"type": "interval", "seconds": 1}
-            ]
-        }
+        == {"candidate_reload@gate:refresh": [{"type": "interval", "seconds": 1}]}
         and return_status.get("proactive_source_specs")
         == {
             "candidate_reload@gate:candidate_feed": {
@@ -1966,8 +2012,7 @@ def _exercise_candidate_prepare(
         )
         == 1
         and all(
-            cast(dict[str, int], after_valid_calls.get("v2", {})).get(tool, 0)
-            == 0
+            cast(dict[str, int], after_valid_calls.get("v2", {})).get(tool, 0) == 0
             for tool in ("fetch_events", "ack_events")
         )
         and _integer(after_valid.get("job_runs_v1"))
@@ -1992,12 +2037,10 @@ def _exercise_candidate_prepare(
         and valid_drift_description_map.get("candidate-drift") == "candidate drift v2"
         and hash_maps[0].get("candidate-skill")
         == _skill_fixture_hash("v2", drift=False)
-        and hash_maps[1].get("candidate-drift")
-        == _skill_fixture_hash("v2", drift=True)
+        and hash_maps[1].get("candidate-drift") == _skill_fixture_hash("v2", drift=True)
         and hash_maps[2].get("candidate-skill")
         == _skill_fixture_hash("v1", drift=False)
-        and hash_maps[3].get("candidate-drift")
-        == _skill_fixture_hash("v1", drift=True)
+        and hash_maps[3].get("candidate-drift") == _skill_fixture_hash("v1", drift=True)
         and return_status.get("active_generation") == initial_generation
         and return_status.get("prepared_generation") is None
         and after_invalid.get("active_generation") == initial_generation
@@ -2049,7 +2092,8 @@ def _run_runtime_smoke(
 ) -> tuple[bool, dict[str, object]]:
     _write_smoke_config(
         sandbox,
-        proactive_enabled=phase in {
+        proactive_enabled=phase
+        in {
             "capability-hosts",
             "snapshot",
             "fitbit",
@@ -2069,9 +2113,7 @@ def _run_runtime_smoke(
     )
     management = _install_management_plugin(sandbox) if phase == "management" else None
     proactive_fetch_calls = (
-        _install_proactive_fetch_plugin(sandbox)
-        if phase == "proactive-fetch"
-        else None
+        _install_proactive_fetch_plugin(sandbox) if phase == "proactive-fetch" else None
     )
     migrated_observe = (
         _install_migrated_plugins(
@@ -2105,7 +2147,7 @@ def _run_runtime_smoke(
     )
     socket = sandbox / "akashic.sock"
     container_id = ""
-    ipc_ready = False
+    control_ready = False
     dashboard_ready = False
     stable_since: float | None = None
     deadline = time.monotonic() + 30
@@ -2121,17 +2163,20 @@ def _run_runtime_smoke(
         if not container_id:
             time.sleep(0.2)
             continue
-        running = subprocess.run(
-            ["docker", "inspect", "--format", "{{.State.Running}}", container_id],
-            check=False,
-            stdout=subprocess.PIPE,
-            text=True,
-        ).stdout.strip() == "true"
+        running = (
+            subprocess.run(
+                ["docker", "inspect", "--format", "{{.State.Running}}", container_id],
+                check=False,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            == "true"
+        )
         if not running:
             break
-        ipc_ready = _ipc_ready(socket)
+        control_ready = _control_ready(socket)
         dashboard_ready = _dashboard_ready(container_id)
-        if ipc_ready and dashboard_ready:
+        if control_ready and dashboard_ready:
             stable_since = stable_since or time.monotonic()
             if time.monotonic() - stable_since >= 1:
                 break
@@ -2177,8 +2222,7 @@ def _run_runtime_smoke(
         fitbit_processes = _container_process_count(container_id, "monitor/server.py")
         before = _snapshot_statuses(container_id)
         fitbit_source = (
-            sandbox
-            / "home/.akashic-plugin/cache/gate/fitbit/1.1.0/plugin.py"
+            sandbox / "home/.akashic-plugin/cache/gate/fitbit/1.1.0/plugin.py"
         )
         _ = fitbit_source.write_text(
             fitbit_source.read_text(encoding="utf-8") + "\n",
@@ -2326,8 +2370,10 @@ def _run_runtime_smoke(
         }
         phase_passed = all(state.get(key) == value for key, value in expected.items())
         generation = state.get("generation")
-        phase_passed = phase_passed and isinstance(generation, str) and generation.startswith(
-            "scope_gate@gate:"
+        phase_passed = (
+            phase_passed
+            and isinstance(generation, str)
+            and generation.startswith("scope_gate@gate:")
         )
         expected["generation"] = "scope_gate@gate:<revision>:<sequence>"
         phase_evidence = {"phase": phase, "state": state, "expected": expected}
@@ -2348,14 +2394,10 @@ def _run_runtime_smoke(
                 valid_state = {str(key): value for key, value in mapping.items()}
         observer_state: dict[str, object] = {}
         if observer_path.exists():
-            raw_observer: object = json.loads(
-                observer_path.read_text(encoding="utf-8")
-            )
+            raw_observer: object = json.loads(observer_path.read_text(encoding="utf-8"))
             if isinstance(raw_observer, dict):
                 mapping = cast(dict[object, object], raw_observer)
-                observer_state = {
-                    str(key): value for key, value in mapping.items()
-                }
+                observer_state = {str(key): value for key, value in mapping.items()}
         generation = valid_state.get("generation")
         phase_passed = (
             valid_state.get("initialized") is True
@@ -2413,7 +2455,7 @@ def _run_runtime_smoke(
         phase_evidence = {"phase": phase, **proactive_fetch_probe}
     passed = (
         started.returncode == 0
-        and ipc_ready
+        and control_ready
         and dashboard_ready
         and runtime_stable
         and "python main.py" in process
@@ -2423,7 +2465,7 @@ def _run_runtime_smoke(
     )
     return passed, {
         "container_id": container_id,
-        "ipc_ready": ipc_ready,
+        "control_ready": control_ready,
         "dashboard_ready": dashboard_ready,
         "runtime_stable": runtime_stable,
         "pid1_is_main": "python main.py" in process,
@@ -2436,7 +2478,7 @@ def _run_runtime_smoke(
     }
 
 
-def _ipc_ready(path: Path) -> bool:
+def _control_ready(path: Path) -> bool:
     if not path.exists():
         return False
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

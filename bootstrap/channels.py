@@ -19,7 +19,6 @@ from session.manager import SessionManager
 async def start_channels(
     config: Config,
     *,
-    socket_endpoint: str,
     bus: MessageBus,
     session_manager: SessionManager,
     push_tool: MessagePushTool,
@@ -28,18 +27,8 @@ async def start_channels(
     bot_commands: list[tuple[str, str]] | None = None,
     interrupt_controller: InterruptController | None = None,
     plugin_channels: list[Channel] | None = None,
-) -> tuple[object, ChannelHost]:
-    from infra.channels.ipc_server import IPCServerChannel
-
-    ipc = IPCServerChannel(
-        bus,
-        socket_endpoint,
-        default_session_key=config.channels.cli_session_key,
-    )
+) -> ChannelHost:
     try:
-        await ipc.start()
-        print(f"Agent 已启动  |  CLI 连接地址: {socket_endpoint}")
-
         attachment_store = AttachmentStore()
 
         def _ctx_factory(channel: Channel) -> ChannelContext:
@@ -91,10 +80,6 @@ async def start_channels(
         for channel in plugin_channels or []:
             host.add(channel)
 
-        return ipc, host
+        return host
     except (asyncio.CancelledError, Exception) as start_error:
-        try:
-            await run_cleanup_steps(("ipc.stop", ipc.stop))
-        except (asyncio.CancelledError, Exception) as cleanup_error:
-            raise start_error from cleanup_error
         raise

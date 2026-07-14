@@ -58,9 +58,9 @@ def _request(**kwargs: object) -> ModelRequest:
     ("context", "memory", "output"),
     [
         (32_000, 20, 4096),
-        (64_000, 40, 4096),
-        (272_000, 176, 8192),
-        (1_000_000, 640, 32_768),
+        (64_000, 20, 4096),
+        (272_000, 44, 8192),
+        (1_000_000, 160, 32_768),
     ],
 )
 def test_context_policy_scales_from_one_million(

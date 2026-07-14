@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from core.error_context import current_session_key
+from agent.control.context import current_turn_id
+from agent.control.ids import new_turn_id
 from agent.context import ContextBuilder
 from agent.core.passive_turn import (
     AgentCore,
@@ -82,6 +84,7 @@ def _is_nonempty(value: str) -> bool:
 
 
 _STREAM_SUPPORT_POLICIES: dict[str, StreamSupportPolicy] = {
+    "programmatic": _is_nonempty,
     "telegram": _is_positive_int,
     "web": _is_nonempty,
     # 飞书私聊渠道：chat_id 形如 oc_xxx，全程支持流式预览（卡片 PATCH 消费 StreamDeltaReady）。
@@ -241,6 +244,7 @@ class AgentLoop:
                     session_key=session_key,
                     channel=channel,
                     chat_id=chat_id,
+                    turn_id=current_turn_id.get(),
                     content_delta=content_delta if isinstance(content_delta, str) else "",
                     thinking_delta=thinking_delta if isinstance(thinking_delta, str) else "",
                 )
@@ -644,6 +648,7 @@ class AgentLoop:
                 chat_id=msg.chat_id,
                 content=_item_content(msg),
                 timestamp=msg.timestamp,
+                turn_id=current_turn_id.get(),
             )
         )
 
@@ -660,6 +665,12 @@ class AgentLoop:
         busy_key = busy_session_key or key
         # 给本 turn task 打上 session 归属，供 observe 全局错误采集关联。
         session_token = current_session_key.set(key)
+        inherited_turn_id = (
+            str(msg.metadata.get("control_turn_id") or "")
+            if isinstance(msg, InboundMessage)
+            else ""
+        )
+        turn_token = current_turn_id.set(inherited_turn_id or new_turn_id())
         try:
             # 1. 先处理可能存在的续跑态，并发布 turn started。
             msg, resumed_from_interrupt = await self._resume_interrupted_message(msg, key)
@@ -687,6 +698,7 @@ class AgentLoop:
         finally:
             # 4. 恢复调用方上下文，避免 session 归属泄漏到后续任务。
             current_session_key.reset(session_token)
+            current_turn_id.reset(turn_token)
 
     async def _process_with_runtime_admission(
         self,
@@ -728,16 +740,54 @@ class AgentLoop:
     async def process_direct(
         self,
         content: str,
-        session_key: str = "cli:direct",
+        session_key: str = "programmatic:direct",
         busy_session_key: str | None = None,
-        channel: str = "cli",
+        channel: str = "programmatic",
         chat_id: str = "direct",
         omit_user_turn: bool = False,
         skip_post_memory: bool = False,
         skip_memory_retrieval: bool = False,
         stream_events: bool = False,
         disabled_tools: list[str] | None = None,
+        sender: str = "user",
+        media: list[str] | None = None,
+        turn_id: str = "",
     ) -> str:
+        response = await self.process_direct_message(
+            content,
+            session_key=session_key,
+            busy_session_key=busy_session_key,
+            channel=channel,
+            chat_id=chat_id,
+            omit_user_turn=omit_user_turn,
+            skip_post_memory=skip_post_memory,
+            skip_memory_retrieval=skip_memory_retrieval,
+            stream_events=stream_events,
+            disabled_tools=disabled_tools,
+            sender=sender,
+            media=media,
+            turn_id=turn_id,
+        )
+        return response.content
+
+    async def process_direct_message(
+        self,
+        content: str,
+        session_key: str = "programmatic:direct",
+        busy_session_key: str | None = None,
+        channel: str = "programmatic",
+        chat_id: str = "direct",
+        omit_user_turn: bool = False,
+        skip_post_memory: bool = False,
+        skip_memory_retrieval: bool = False,
+        stream_events: bool = False,
+        disabled_tools: list[str] | None = None,
+        sender: str = "user",
+        media: list[str] | None = None,
+        turn_id: str = "",
+    ) -> OutboundMessage:
+        """执行直接消息并保留渠道可观察的完整输出。"""
+
         metadata: dict[str, object] = {}
         if omit_user_turn:
             metadata["omit_user_turn"] = True
@@ -749,11 +799,14 @@ class AgentLoop:
             metadata["suppress_stream_events"] = True
         if disabled_tools:
             metadata["disabled_tools"] = list(disabled_tools)
+        if turn_id:
+            metadata["control_turn_id"] = turn_id
         msg = InboundMessage(
             channel=channel,
-            sender="user",
+            sender=sender,
             chat_id=chat_id,
             content=content,
+            media=list(media or []),
             metadata=metadata,
         )
         response = await self._process_with_runtime_admission(
@@ -762,7 +815,7 @@ class AgentLoop:
             busy_session_key=busy_session_key,
             dispatch_outbound=False,
         )
-        return response.content if response else ""
+        return response
 
     async def _run_agent_loop(
         self,

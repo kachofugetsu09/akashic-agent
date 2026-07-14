@@ -103,6 +103,14 @@ websocket_open_timeout_seconds = 5.0
 # allow_from = ["your_qq_number"]
 # require_at = true
 
+# 本地程序化控制面；listen 留空时按 workspace 派生 Unix socket。
+[app_server]
+enabled = true
+listen = ""
+max_connections = 32
+ingress_queue_size = 128
+outbound_queue_size = 512
+
 # 插件配置位于 ~/.akashic-plugin/data/<插件名>-<市场>/config.local.toml。
 
 # =============================================================================

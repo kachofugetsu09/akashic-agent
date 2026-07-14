@@ -39,6 +39,7 @@ class TurnStarted:
     chat_id: str
     content: str
     timestamp: datetime
+    turn_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ class StreamDeltaReady:
     session_key: str
     channel: str
     chat_id: str
+    turn_id: str = ""
     content_delta: str = ""
     thinking_delta: str = ""
 
@@ -69,6 +71,7 @@ class TurnCommitted:
     persisted_user_message: str | None
     assistant_response: str
     tools_used: list[str]
+    turn_id: str = ""
     thinking: str | None = None
     raw_reply: str | None = None
     meme_tag: str | None = None
@@ -81,6 +84,7 @@ class TurnCommitted:
     post_reply_budget: dict[str, int] = field(default_factory=_empty_int_metadata)
     react_stats: dict[str, int] = field(default_factory=_empty_int_metadata)
     extra: dict[str, Any] = field(default_factory=_empty_metadata)
+    model_usage: dict[str, Any] = field(default_factory=_empty_metadata)
 
 
 @dataclass(frozen=True)
@@ -121,6 +125,7 @@ class ToolCallStarted:
     call_id: str
     tool_name: str
     arguments: dict[str, Any]
+    turn_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -135,3 +140,4 @@ class ToolCallCompleted:
     final_arguments: dict[str, Any]
     status: str
     result_preview: str
+    turn_id: str = ""

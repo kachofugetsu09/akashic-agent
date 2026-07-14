@@ -262,7 +262,7 @@ def test_config_load_reads_embedding_and_ignores_private_memory_sections(tmp_pat
     assert cfg.memory.embedding.output_dimensionality == 1536
 
 
-def test_config_load_reads_memory_window_and_socket(tmp_path: Path):
+def test_config_load_reads_memory_window_and_app_server(tmp_path: Path):
     cfg_path = tmp_path / "config.toml"
     _write_toml(
         cfg_path,
@@ -280,8 +280,8 @@ def test_config_load_reads_memory_window_and_socket(tmp_path: Path):
                     "memory_window": 20,
                 },
             },
-            "channels": {
-                "socket": "/tmp/dev-akashic.sock",
+            "app_server": {
+                "listen": "/tmp/dev-akashic.sock",
             },
         },
     )
@@ -289,6 +289,7 @@ def test_config_load_reads_memory_window_and_socket(tmp_path: Path):
     cfg = Config.load(cfg_path)
 
     assert cfg.memory_window == 20
+    assert cfg.app_server.listen == "/tmp/dev-akashic.sock"
 
 
 def test_config_load_reads_agent_dev_mode(tmp_path: Path):
@@ -371,7 +372,7 @@ def test_config_load_skips_unfilled_channels(tmp_path: Path):
 
     assert cfg.channels.telegram is None
     assert cfg.channels.qq is None
-    assert cfg.channels.socket == DEFAULT_SOCKET
+    assert cfg.app_server.listen == DEFAULT_SOCKET
 
 
 def test_config_load_reads_toml_layout(tmp_path: Path):
@@ -392,8 +393,8 @@ max_tokens = 256
 [agent.context]
 memory_window = 12
 
-[channels]
-socket = "/tmp/toml-akashic.sock"
+[app_server]
+listen = "/tmp/toml-akashic.sock"
 
 """.strip()
         + "\n",
@@ -407,10 +408,24 @@ socket = "/tmp/toml-akashic.sock"
     assert cfg.max_tokens == 256
     assert cfg.memory_window == 12
     if sys.platform == "win32":
-        assert cfg.channels.socket != "/tmp/toml-akashic.sock"
-        assert cfg.channels.socket.startswith("127.0.0.1:")
+        assert cfg.app_server.listen != "/tmp/toml-akashic.sock"
+        assert cfg.app_server.listen.startswith("127.0.0.1:")
     else:
-        assert cfg.channels.socket == "/tmp/toml-akashic.sock"
+        assert cfg.app_server.listen == "/tmp/toml-akashic.sock"
+
+
+def test_config_rejects_legacy_cli_socket(tmp_path: Path):
+    cfg_path = tmp_path / "config.toml"
+    _write_toml(
+        cfg_path,
+        {
+            "llm": {"provider": "openai", "main": {"model": "m", "api_key": "k"}},
+            "agent": {"system_prompt": "s"},
+            "channels": {"socket": "/tmp/legacy.sock"},
+        },
+    )
+    with pytest.raises(ValueError, match="app_server"):
+        _ = Config.load(cfg_path)
 
 
 def test_config_load_reads_qq_websocket_timeout(tmp_path: Path):

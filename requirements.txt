@@ -39,7 +39,6 @@ scipy>=1.17.0
 SQLAlchemy>=2.0.0
 starlette>=0.52.0
 telegramify-markdown
-textual>=8.0.0
 toml>=0.10.0
 tomlkit>=0.13.0,<1
 tzlocal>=5.3.0

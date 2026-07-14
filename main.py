@@ -1,9 +1,10 @@
 """
 入口
 
-两种模式：
-  python main.py          启动 agent 服务（AgentLoop + 所有 channel + IPC server）
-  python main.py cli      连接到运行中的 agent（CLI 客户端）
+主要模式：
+  python main.py gateway            启动完整 agent 与 app-server
+  python main.py app-server --stdio 启动父进程托管控制面
+  python main.py exec ...           非交互执行一个 turn
 """
 
 from __future__ import annotations
@@ -46,7 +47,8 @@ if __name__ == "__main__" and _run_lightweight_setup_command():
     raise SystemExit(0)
 
 
-from agent.config import Config, resolve_cli_socket_endpoint
+from agent.config import Config, resolve_app_server_endpoint
+from agent.control.client import ControlClient, RemoteControlError
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
 from agent.plugins.install import (
     install_git_plugin,
@@ -57,8 +59,10 @@ from bootstrap.app import build_app_runtime
 from bootstrap.dashboard_api import run_dashboard_api
 from bootstrap.init_workspace import InitSummary, init_workspace
 from bootstrap.memory import build_memory_admin_runtime
+from bootstrap.workspace_token import read_workspace_token
 from bootstrap.providers import build_providers
 from core.net.http import SharedHttpResources
+from infra.control.socket import is_tcp_endpoint
 
 
 _HELP = """\
@@ -69,7 +73,8 @@ _HELP = """\
   setup-main                    仅切换主模型并保留其他配置
   init                          非交互初始化配置和工作区
   gateway                       启动 Agent 服务
-  cli                           连接运行中的 Agent
+  app-server --stdio            在 stdio 上运行程序化控制面
+  exec --new|--thread ID PROMPT 执行一个非交互 turn
   dashboard                     单独启动 Dashboard
   plugin-install                安装 Git 插件
   plugin-enable PLUGIN_ID       启用插件
@@ -133,46 +138,135 @@ def _wait_plugin_disabled(
 ) -> None:
     if not Path(config_path).is_file():
         return
-    from infra.channels.cli import request_command
-
     config = Config.load(config_path)
-    socket_path = resolve_cli_socket_endpoint(
-        config.channels.socket,
+    endpoint = resolve_app_server_endpoint(
+        config.app_server.listen,
         workspace or _default_workspace(),
     )
-    result = asyncio.run(
-        request_command(
-            socket_path,
-            "plugin-disable-and-drain",
-            plugin_id=plugin_id,
-        )
+    asyncio.run(
+        _request_plugin_drain(endpoint, plugin_id, workspace or _default_workspace())
     )
-    if result is None:
-        return
-    if result.get("ok") is not True:
-        raise RuntimeError(str(result.get("message", "插件停用失败")))
 
 
-def connect_cli(
-    config_path: str = "config.toml",
-    workspace: Path | None = None,
+async def _request_plugin_drain(
+    endpoint: str,
+    plugin_id: str,
+    workspace: Path,
 ) -> None:
-    config = Config.load(config_path)
-    socket_path = resolve_cli_socket_endpoint(
-        config.channels.socket,
-        workspace or _default_workspace(),
+    token = read_workspace_token(workspace) if is_tcp_endpoint(endpoint) else None
+    async with await ControlClient.connect(endpoint, workspace_token=token) as client:
+        _ = await client.request("plugin/disable-and-drain", {"pluginId": plugin_id})
+
+
+def _exec_prompt(args: list[str]) -> str:
+    values_with_argument = {"--config", "--workspace", "--endpoint", "--thread"}
+    positional: list[str] = []
+    skip = False
+    for index, value in enumerate(args[1:], start=1):
+        if skip:
+            skip = False
+            continue
+        if value in values_with_argument:
+            skip = True
+            continue
+        if value.startswith("--"):
+            continue
+        positional.append(value)
+    if not positional:
+        raise ValueError("exec 缺少 prompt；使用 - 可从 stdin 读取")
+    if len(positional) != 1:
+        raise ValueError("exec 只接受一个 prompt 参数")
+    return sys.stdin.read() if positional[0] == "-" else positional[0]
+
+
+async def run_exec(args: list[str], config_path: str, workspace: Path) -> int:
+    """连接现有 gateway，执行一轮并输出稳定机器结果。"""
+
+    # 1. 校验 thread 选择和输入来源。
+    new_thread = "--new" in args
+    thread_id = _get_flag_value(args, "--thread")
+    if new_thread == (thread_id is not None):
+        raise ValueError("exec 必须且只能指定 --new 或 --thread ID")
+    prompt = _exec_prompt(args)
+    if "--json" in args and "--final-only" in args:
+        raise ValueError("exec 的 --json 与 --final-only 不能同时使用")
+    endpoint = _get_flag_value(args, "--endpoint")
+    if endpoint is None:
+        config = Config.load(config_path)
+        endpoint = resolve_app_server_endpoint(config.app_server.listen, workspace)
+
+    # 2. turn events 与最终文本严格按选定 stdout 模式输出。
+    workspace_token = (
+        read_workspace_token(workspace) if is_tcp_endpoint(endpoint) else None
     )
-    try:
-        from infra.channels.cli_tui import run_tui
-    except RuntimeError as exc:
-        print(exc)
-        print("回退到纯文本 CLI。")
-        from infra.channels.cli import CLIClient
+    async with await ControlClient.connect(
+        endpoint,
+        workspace_token=workspace_token,
+    ) as client:
+        if new_thread:
+            thread = await client.start_thread()
+            thread_id = str(thread["id"])
+        assert thread_id is not None
+        handle = await client.start_turn(thread_id, prompt)
+        interrupt_requested = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        previous_sigint: object | None = None
+        native_handler = False
+        try:
+            loop.add_signal_handler(signal.SIGINT, interrupt_requested.set)
+            native_handler = True
+        except NotImplementedError:
+            previous_sigint = signal.getsignal(signal.SIGINT)
+            _ = signal.signal(
+                signal.SIGINT,
+                lambda _sig, _frame: loop.call_soon_threadsafe(interrupt_requested.set),
+            )
 
-        asyncio.run(CLIClient(socket_path).run())
-        return
+        async def consume_events() -> dict[str, object]:
+            async for event in handle.events():
+                if "--json" in args:
+                    print(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
+                if event.get("method") == "turn/completed":
+                    params = event["params"]
+                    assert isinstance(params, dict)
+                    value = params["turn"]
+                    assert isinstance(value, dict)
+                    return value
+            raise ConnectionError("turn event stream closed without terminal event")
 
-    run_tui(socket_path)
+        event_task = asyncio.create_task(consume_events(), name=f"exec-events:{handle.id}")
+        interrupt_task = asyncio.create_task(interrupt_requested.wait(), name="exec-sigint")
+        interrupted_by_user = False
+        try:
+            done, _ = await asyncio.wait(
+                {event_task, interrupt_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if interrupt_task in done and not event_task.done():
+                interrupted_by_user = True
+                _ = await handle.interrupt()
+            terminal = await event_task
+        finally:
+            interrupt_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await interrupt_task
+            if native_handler:
+                _ = loop.remove_signal_handler(signal.SIGINT)
+            elif previous_sigint is not None:
+                _ = signal.signal(signal.SIGINT, previous_sigint)
+
+        if "--final-only" in args:
+            print(str(terminal.get("finalResponse") or ""))
+        status = terminal["status"]
+        if interrupted_by_user:
+            return 130
+        if status == "completed":
+            return 0
+        if status in {"interrupted", "cancelled"}:
+            return 130
+        if not terminal.get("error"):
+            print(json.dumps(terminal, ensure_ascii=False), file=sys.stderr)
+        return 1
 
 
 async def inspect_modules(
@@ -377,6 +471,26 @@ if __name__ == "__main__":
         asyncio.run(serve(config_path, workspace))
         sys.exit(0)
 
+    if args and args[0] == "app-server":
+        if "--stdio" not in args:
+            print("app-server 当前必须指定 --stdio", file=sys.stderr)
+            sys.exit(2)
+        from bootstrap.app_server import run_stdio_app_server
+
+        config = Config.load(config_path)
+        asyncio.run(run_stdio_app_server(config, workspace or _default_workspace()))
+        sys.exit(0)
+
+    if args and args[0] == "exec":
+        try:
+            exit_code = asyncio.run(
+                run_exec(args, config_path, workspace or _default_workspace())
+            )
+        except (ValueError, ConnectionError, OSError, RemoteControlError) as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(2)
+        sys.exit(exit_code)
+
     if args and args[0] == "dashboard":
         config = Config.load(config_path)
         dashboard_workspace = workspace or _default_workspace()
@@ -408,7 +522,5 @@ if __name__ == "__main__":
 
     if "--inspect-modules" in args:
         asyncio.run(inspect_modules(config_path, workspace))
-    elif "cli" in args:
-        connect_cli(config_path, workspace)
     else:
         asyncio.run(serve(config_path, workspace))

@@ -28,7 +28,7 @@ ensure_sandbox_path() {
     esac
 }
 
-ensure_socket_config() {
+ensure_app_server_config() {
     if [ ! -f "$CONFIG" ]; then
         return
     fi
@@ -41,10 +41,8 @@ import tomllib
 path = Path(sys.argv[1])
 socket = sys.argv[2]
 data = tomllib.loads(path.read_text(encoding="utf-8"))
-channels = data.setdefault("channels", {})
-channels["socket"] = socket
-cli = channels.setdefault("cli", {})
-cli["socket"] = socket
+app_server = data.setdefault("app_server", {})
+app_server["listen"] = socket
 path.write_text(toml.dumps(data), encoding="utf-8")
 PY
 }
@@ -72,32 +70,48 @@ shift || true
 case "$cmd" in
     setup)
         as_host python main.py setup --config "$CONFIG" --workspace "$WORKSPACE" "$@"
-        ensure_socket_config
+        ensure_app_server_config
         ;;
     init)
         as_host python main.py init --config "$CONFIG" --workspace "$WORKSPACE" "$@"
-        ensure_socket_config
+        ensure_app_server_config
         ;;
     reset-workspace)
         as_host rm -rf "$WORKSPACE"
         as_host python main.py init --config "$CONFIG" --workspace "$WORKSPACE" "$@"
-        ensure_socket_config
+        ensure_app_server_config
         ;;
-    run|gateway|serve)
+    run|serve)
         if [ ! -f "$CONFIG" ]; then
             echo "缺少 $CONFIG，请先运行：docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug setup" >&2
             exit 2
         fi
-        ensure_socket_config
+        ensure_app_server_config
         exec_as_host python main.py --config "$CONFIG" --workspace "$WORKSPACE" "$@"
         ;;
-    cli)
+    gateway)
         if [ ! -f "$CONFIG" ]; then
             echo "缺少 $CONFIG，请先运行 setup。" >&2
             exit 2
         fi
-        ensure_socket_config
-        exec_as_host python main.py cli --config "$CONFIG" "$@"
+        exec_as_host python main.py gateway \
+            --config "$CONFIG" \
+            --workspace "$WORKSPACE" \
+            "$@"
+        ;;
+    app-server)
+        if [ ! -f "$CONFIG" ]; then
+            echo "缺少 $CONFIG，请先运行 setup。" >&2
+            exit 2
+        fi
+        exec_as_host python main.py app-server \
+            --config "$CONFIG" \
+            --workspace "$WORKSPACE" \
+            "$@"
+        ;;
+    exec)
+        ensure_app_server_config
+        exec_as_host python main.py exec --config "$CONFIG" --workspace "$WORKSPACE" "$@"
         ;;
     dashboard)
         exec_as_host python main.py dashboard \

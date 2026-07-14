@@ -6,8 +6,10 @@ from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketState
 
 from bootstrap.chat_api import create_chat_app
+from bus.events import OutboundMessage
 from infra.channels.base import AttachmentStore
 from infra.channels.web_chat_channel import WebChatChannel
 from session.manager import Session
@@ -39,6 +41,15 @@ class _PushTool:
 
     def register_channel(self, channel: str, **senders: Any) -> None:
         self.registered[channel] = senders
+
+
+class _WebSocket:
+    def __init__(self) -> None:
+        self.frames: list[dict[str, Any]] = []
+        self.application_state = WebSocketState.CONNECTED
+
+    async def send_json(self, frame: dict[str, Any]) -> None:
+        self.frames.append(frame)
 
 
 class _SessionManager:
@@ -307,3 +318,38 @@ async def test_web_message_push_image_only_broadcasts_realtime_frame(tmp_path: P
 
     assert "web:abc" not in session_manager.sessions
     assert session_manager.appended == []
+
+
+@pytest.mark.asyncio
+async def test_web_final_preserves_full_outbound_projection(tmp_path: Path) -> None:
+    channel = WebChatChannel()
+    socket = _WebSocket()
+    channel._connections["web:abc"] = {cast(Any, socket)}
+    channel._active_turn_ids["web:abc"] = "turn-1"
+    image = tmp_path / "result.png"
+    image.write_bytes(b"image")
+
+    await channel._on_response(
+        OutboundMessage(
+            channel="web",
+            chat_id="abc",
+            content="answer",
+            thinking="reasoning",
+            media=[str(image)],
+            metadata={"render": "card", "turn_duration_ms": 17},
+        )
+    )
+
+    assert socket.frames == [
+        {
+            "type": "message.final",
+            "session_id": "web:abc",
+            "turn_id": "turn-1",
+            "content": "answer",
+            "thinking": "reasoning",
+            "media": [str(image)],
+            "duration_ms": 17,
+            "metadata": {"render": "card", "turn_duration_ms": 17},
+        }
+    ]
+    assert channel.has_media(image)
