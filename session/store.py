@@ -89,7 +89,27 @@ def _decode_message_extra(
         value = extra_dict.get(field)
         if field in extra_dict and not isinstance(value, str):
             raise ValueError(f"message {field} 必须是字符串: {message_id}")
+    if "model_state" in extra_dict:
+        _validate_model_state(extra_dict["model_state"], message_id)
     return extra_dict
+
+
+def _validate_model_state(value: object, message_id: str) -> None:
+    """在数据库边界校验 Responses continuation state。"""
+    if not isinstance(value, dict):
+        raise ValueError(f"message model_state 必须是 JSON object: {message_id}")
+    state = cast(dict[str, object], value)
+    if state.get("schema_version") != 1:
+        raise ValueError(f"message model_state schema_version 无效: {message_id}")
+    for field in ("runtime_id", "transport", "model"):
+        if not isinstance(state.get(field), str) or not state[field]:
+            raise ValueError(f"message model_state.{field} 必须是非空字符串: {message_id}")
+    items = state.get("items")
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        raise ValueError(f"message model_state.items 必须是对象数组: {message_id}")
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > 2 * 1024 * 1024:
+        raise ValueError(f"message model_state 超过 2 MiB: {message_id}")
 
 
 def _decode_json_payload(
@@ -174,6 +194,8 @@ def _decode_message_tool_chain(
                 raise ValueError(
                     f"message tool_chain[{group_index}].{field} 必须是字符串: {message_id}"
                 )
+        if "model_state" in group:
+            _validate_model_state(group["model_state"], message_id)
     return cast(list[dict[str, object]], tool_chain)
 
 

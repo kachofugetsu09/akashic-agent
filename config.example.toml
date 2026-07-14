@@ -1,32 +1,47 @@
 # =============================================================================
 # 必填：LLM 配置
+# 最省事的切换方式：只修改 main 指向的 runtime。
 # api_key 可以直接填字符串，也可以用 ${ENV_VAR} 引用环境变量。
 # =============================================================================
 
 [llm]
-provider = "deepseek"
+main = "deepseek_main"
+fast = "qwen_fast"
+agent = "deepseek_main"
+vl = "qwen_vl"
 
-[llm.main]
+[llm.runtimes.deepseek_main]
 # 主模型，必填。推荐 deepseek-v4-flash（agent 能力强、价格低）。
+provider = "deepseek"
 model = "deepseek-v4-flash"
 api_key = "sk-..."
 base_url = "https://api.deepseek.com/v1"
 enable_thinking = true
-multimodal = false
+reasoning_effort = "high"
+context_window = 128000
+effective_context_percent = 0.9
+max_output_tokens = 8192
+input_modalities = ["text"]
 
-[llm.fast]
+[llm.runtimes.qwen_fast]
 # 轻量模型，用于 memory gate / query rewrite / HyDE。
-# 不填则退回主模型，但延迟会稍高。
+provider = "qwen"
 model = "qwen-flash"
 api_key = "sk-..."
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+context_window = 128000
+max_output_tokens = 4096
+input_modalities = ["text"]
 
-[llm.vl]
-# 视觉模型，仅在 llm.main.multimodal = false 时需要。
-# model 留空则不启用，图片会作为路径传给主模型。
+[llm.runtimes.qwen_vl]
+# 视觉模型，仅在主 runtime 不支持图片时需要。
+provider = "qwen"
 model = "qwen-vl-plus"
 api_key = "sk-..."
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+context_window = 128000
+max_output_tokens = 4096
+input_modalities = ["text", "image"]
 
 # =============================================================================
 # Agent 行为
@@ -40,7 +55,8 @@ max_iterations = 40
 dev_mode = false
 
 [agent.context]
-memory_window = 40
+# 默认按主模型有效上下文自动推导；取消注释可显式覆盖。
+# memory_window = 84
 
 [agent.tools]
 search_enabled = true

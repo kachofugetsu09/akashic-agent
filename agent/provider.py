@@ -6,6 +6,7 @@ LLM Provider — OpenAI 兼容格式
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import itertools
 import json
 import logging
@@ -14,10 +15,28 @@ import re
 import tempfile
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, cast
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
+
+import httpx
 from openai import AsyncOpenAI
+
+from agent.model_runtime.auth.codex import CodexAuthDriver
+from agent.model_runtime.auth.store import CredentialStore
+from agent.model_runtime.context_policy import build_runtime_context_budget
+from agent.model_runtime.errors import ContextWindowError
+from agent.model_runtime.transports.responses import CodexResponsesTransport
+from agent.model_runtime.types import (
+    LLMResponse,
+    ModelBackend,
+    ModelRequest,
+    ModelUsage,
+    ToolCall,
+    UsageCoverage,
+)
+
+if TYPE_CHECKING:
+    from agent.config_models import ModelRuntimeConfig
 
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
@@ -54,21 +73,8 @@ class ContextLengthError(Exception):
     """LLM provider 因上下文超长拒绝请求"""
 
 
-@dataclass
-class ToolCall:
-    id: str
-    name: str
-    arguments: dict
-
-
-@dataclass
-class LLMResponse:
-    content: str | None
-    tool_calls: list[ToolCall] = field(default_factory=list)
-    thinking: str | None = None
-    provider_fields: dict[str, Any] = field(default_factory=dict)
-    cache_prompt_tokens: int | None = None
-    cache_hit_tokens: int | None = None
+class LLMNetworkTimeoutError(TimeoutError):
+    """LLM provider 在网络连接或读取边界超时。"""
 
 
 class ProviderStrategy:
@@ -129,10 +135,13 @@ class DeepSeekStrategy(ProviderStrategy):
         thinking_requested = bool(thinking_enabled) or bool(reasoning_effort)
         if _deepseek_thinking_enabled(extra_body):
             thinking_requested = True
-        if disable_thinking:
+        named_tool_choice = isinstance(kwargs.get("tool_choice"), dict)
+        if disable_thinking or named_tool_choice:
             extra_body["thinking"] = {"type": "disabled"}
             reasoning_effort = None
             thinking_requested = False
+            if named_tool_choice and not disable_thinking:
+                logger.info("[deepseek] 命名 tool_choice 要求本次关闭 thinking")
         elif thinking_enabled is not None and "thinking" not in extra_body:
             extra_body["thinking"] = {
                 "type": "enabled" if bool(thinking_enabled) else "disabled"
@@ -194,35 +203,34 @@ class DashScopeStrategy(ProviderStrategy):
             kwargs["extra_body"] = extra_body
 
 
-class LLMProvider:
+class ChatCompletionsRuntime:
     def __init__(
         self,
         api_key: str,
         base_url: str | None = None,
-        system_prompt: str = "",
         extra_body: dict | None = None,
-        request_timeout_s: float = 90.0,
-        stream_idle_timeout_s: float | None = None,
+        read_timeout_s: float = 90.0,
         max_retries: int = 1,
         provider_name: str = "",
         force_disable_thinking: bool = False,
         payload_snapshot_enabled: bool | None = None,
     ) -> None:
         normalized_base_url = _normalize_openai_base_url(base_url)
-        self._client = AsyncOpenAI(api_key=api_key, base_url=normalized_base_url)
+        network_timeout = httpx.Timeout(
+            connect=30.0,
+            read=max(0.001, float(read_timeout_s)),
+            write=30.0,
+            pool=30.0,
+        )
+        self._client = AsyncOpenAI(
+            api_key=api_key or "credential-store",
+            base_url=normalized_base_url,
+            timeout=network_timeout,
+            max_retries=0,
+        )
         self._base_url = normalized_base_url or ""
         self._provider_name = provider_name
-        self._system = system_prompt
         self._extra_body = extra_body or {}
-        self._request_timeout_s = max(1.0, float(request_timeout_s))
-        self._stream_idle_timeout_s = max(
-            0.001,
-            float(
-                request_timeout_s
-                if stream_idle_timeout_s is None
-                else stream_idle_timeout_s
-            ),
-        )
         self._max_retries = max(0, int(max_retries))
         self._force_disable_thinking = force_disable_thinking
         self._payload_snapshot_enabled = (
@@ -231,46 +239,41 @@ class LLMProvider:
             else bool(payload_snapshot_enabled)
         )
 
-    async def chat(
-        self,
-        messages: list[dict],
-        tools: list[dict],
-        model: str,
-        max_tokens: int,
-        tool_choice: str | dict = "auto",
-        extra_body: dict | None = None,
-        disable_thinking: bool = False,
-        on_content_delta: Callable[[StreamDelta], Awaitable[None]] | None = None,
-    ) -> LLMResponse:
+    async def send(self, request: ModelRequest) -> LLMResponse:
+        """把统一请求转换为 Chat Completions 并返回统一响应。"""
         strategy = _select_provider_strategy(
             provider_name=self._provider_name,
             base_url=self._base_url,
-            model=model,
+            model=request.model,
         )
         # 系统提示作为第一条消息（若 messages 已自带 system 消息则不再重复添加）
+        messages = request.messages
         already_has_system = messages and messages[0].get("role") == "system"
         full_messages = (
-            [{"role": "system", "content": self._system}, *messages]
-            if self._system and not already_has_system
+            [{"role": "system", "content": request.system_prompt}, *messages]
+            if request.system_prompt and not already_has_system
             else messages
         )
         full_messages = _merge_leading_system_messages(full_messages)
         full_messages = strategy.normalize_messages(full_messages)
-        kwargs: dict = dict(model=model, max_tokens=max_tokens, messages=full_messages)
-        if tools:
-            kwargs["tools"] = tools
-            kwargs["tool_choice"] = tool_choice
+        kwargs: dict = dict(
+            model=request.model,
+            max_tokens=request.max_output_tokens,
+            messages=full_messages,
+        )
+        if request.tools:
+            kwargs["tools"] = request.tools
+            kwargs["tool_choice"] = request.tool_choice
         merged_extra_body = dict(self._extra_body)
-        if extra_body:
-            merged_extra_body.update(extra_body)
+        merged_extra_body.update(request.extra_body)
         strategy.prepare_request(
             kwargs,
             merged_extra_body,
-            disable_thinking=self._force_disable_thinking or disable_thinking,
+            disable_thinking=self._force_disable_thinking or request.disable_thinking,
         )
 
-        if on_content_delta is not None:
-            return await self._chat_streaming(kwargs, on_content_delta, strategy)
+        if request.on_delta is not None:
+            return await self._chat_streaming(kwargs, request.on_delta, strategy)
 
         resp = cast(Any, await self._create_with_retry(kwargs))
         msg = resp.choices[0].message
@@ -290,6 +293,7 @@ class LLMProvider:
         cache_prompt_tokens, cache_hit_tokens = _extract_cache_usage(
             getattr(resp, "usage", None)
         )
+        usage = _extract_model_usage(getattr(resp, "usage", None))
         if tool_calls:
             provider_fields = strategy.provider_fields_for_tool_call(
                 provider_fields,
@@ -302,6 +306,7 @@ class LLMProvider:
             provider_fields=provider_fields,
             cache_prompt_tokens=cache_prompt_tokens,
             cache_hit_tokens=cache_hit_tokens,
+            usage=usage,
         )
 
     async def _chat_streaming(
@@ -312,7 +317,7 @@ class LLMProvider:
     ) -> LLMResponse:
         """消费单个 provider stream 并组装最终响应。"""
 
-        # 1. 创建并消费流，保持既有 delta 顺序与超时语义
+        # 1. 创建并消费流，网络 idle 超时由 SDK read timeout 统一拥有。
         stream = cast(
             Any,
             await self._create_with_retry(strategy.prepare_stream_request(kwargs)),
@@ -323,23 +328,26 @@ class LLMProvider:
         tool_call_seen = False
         cache_prompt_tokens: int | None = None
         cache_hit_tokens: int | None = None
+        usage: ModelUsage | None = None
 
         try:
             stream_iter = aiter(stream)
             while True:
                 try:
-                    chunk = await asyncio.wait_for(
-                        anext(stream_iter),
-                        timeout=self._stream_idle_timeout_s,
-                    )
+                    chunk = await anext(stream_iter)
                 except StopAsyncIteration:
                     break
+                except Exception as exc:
+                    if not self._is_network_timeout(exc):
+                        raise
+                    raise LLMNetworkTimeoutError("LLM 流读取网络超时") from exc
                 prompt_tokens, hit_tokens = _extract_cache_usage(
                     getattr(chunk, "usage", None)
                 )
                 if prompt_tokens is not None:
                     cache_prompt_tokens = prompt_tokens
                     cache_hit_tokens = hit_tokens
+                    usage = _extract_model_usage(getattr(chunk, "usage", None))
                 choices = getattr(chunk, "choices", None) or []
                 if not choices:
                     continue
@@ -409,6 +417,7 @@ class LLMProvider:
             provider_fields=provider_fields,
             cache_prompt_tokens=cache_prompt_tokens,
             cache_hit_tokens=cache_hit_tokens,
+            usage=usage,
         )
 
     async def _create_with_retry(self, kwargs: dict) -> object:
@@ -416,10 +425,7 @@ class LLMProvider:
         last_err: Exception | None = None
         for attempt in range(self._max_retries + 1):
             try:
-                return await asyncio.wait_for(
-                    self._client.chat.completions.create(**kwargs),
-                    timeout=self._request_timeout_s,
-                )
+                return await self._client.chat.completions.create(**kwargs)
             except Exception as e:
                 last_err = e
                 logger.warning(
@@ -439,6 +445,8 @@ class LLMProvider:
                 retryable = self._is_retryable(e)
                 exhausted = attempt >= self._max_retries
                 if (not retryable) or exhausted:
+                    if self._is_network_timeout(e):
+                        raise LLMNetworkTimeoutError("LLM 请求网络超时") from e
                     raise
                 wait_s = min(8.0, 1.0 * (2**attempt))
                 logger.warning(
@@ -465,7 +473,7 @@ class LLMProvider:
 
     @staticmethod
     def _is_retryable(err: Exception) -> bool:
-        if isinstance(err, TimeoutError):
+        if ChatCompletionsRuntime._is_network_timeout(err):
             return True
         status_code = getattr(err, "status_code", None)
         if status_code in {429, 500, 502, 503, 504}:
@@ -486,6 +494,203 @@ class LLMProvider:
             "too many requests",
         )
         return any(k in text for k in keywords)
+
+    @staticmethod
+    def _is_network_timeout(err: Exception) -> bool:
+        return isinstance(
+            err,
+            (TimeoutError, httpx.TimeoutException),
+        ) or type(err).__name__ == "APITimeoutError"
+
+
+class LLMProvider:
+    """把稳定调用签名收敛为统一模型请求，并隐藏后端差异。"""
+
+    @classmethod
+    def from_runtime(
+        cls,
+        runtime: ModelRuntimeConfig,
+        *,
+        system_prompt: str,
+        extra_body: dict[str, object] | None = None,
+        read_timeout_s: float = 90.0,
+        force_disable_thinking: bool = False,
+        payload_snapshot_enabled: bool | None = None,
+    ) -> LLMProvider:
+        """从已校验配置构建 provider，不向调用层暴露后端参数。"""
+        body = dict(extra_body or {})
+        if runtime.reasoning_effort and not force_disable_thinking:
+            body.setdefault("reasoning_effort", runtime.reasoning_effort)
+        return cls(
+            api_key=runtime.api_key,
+            base_url=runtime.base_url or None,
+            system_prompt=system_prompt,
+            extra_body=body,
+            read_timeout_s=read_timeout_s,
+            provider_name=runtime.provider,
+            auth_id=runtime.auth,
+            runtime_id=runtime.runtime_id,
+            context_window=runtime.context_window,
+            effective_context_percent=runtime.effective_context_percent,
+            use_responses_lite=runtime.use_responses_lite,
+            supports_parallel_tool_calls=runtime.supports_parallel_tool_calls,
+            reasoning_summary=runtime.reasoning_summary,
+            force_disable_thinking=force_disable_thinking,
+            payload_snapshot_enabled=payload_snapshot_enabled,
+        )
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str | None = None,
+        system_prompt: str = "",
+        extra_body: dict | None = None,
+        read_timeout_s: float = 90.0,
+        max_retries: int = 1,
+        provider_name: str = "",
+        auth_id: str = "",
+        runtime_id: str = "main",
+        context_window: int = 0,
+        effective_context_percent: float = 0.9,
+        use_responses_lite: bool = False,
+        supports_parallel_tool_calls: bool = True,
+        reasoning_summary: str = "none",
+        force_disable_thinking: bool = False,
+        payload_snapshot_enabled: bool | None = None,
+    ) -> None:
+        self._system = system_prompt
+        self._runtime_id = runtime_id
+        self._extra_body = dict(extra_body or {})
+        self._context_window = int(context_window)
+        self._effective_context_percent = float(effective_context_percent)
+        self._force_disable_thinking = force_disable_thinking
+        if self._context_window < 0:
+            raise ValueError("context_window 不能小于 0")
+        if not 0 < self._effective_context_percent <= 1:
+            raise ValueError("effective_context_percent 必须在 (0, 1] 内")
+        self._backend: ModelBackend
+        if provider_name.lower() == "codex":
+            auth = CodexAuthDriver(CredentialStore(), auth_id)
+            self._backend = CodexResponsesTransport(
+                auth,
+                runtime_id=runtime_id,
+                base_url=base_url or "https://chatgpt.com/backend-api/codex",
+                read_timeout_s=read_timeout_s,
+                use_responses_lite=use_responses_lite,
+                supports_parallel_tool_calls=supports_parallel_tool_calls,
+                reasoning_summary=reasoning_summary,
+            )
+        else:
+            self._backend = ChatCompletionsRuntime(
+                api_key=api_key,
+                base_url=base_url,
+                extra_body=extra_body,
+                read_timeout_s=read_timeout_s,
+                max_retries=max_retries,
+                provider_name=provider_name,
+                force_disable_thinking=force_disable_thinking,
+                payload_snapshot_enabled=payload_snapshot_enabled,
+            )
+
+    async def chat(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        model: str,
+        max_tokens: int,
+        tool_choice: str | dict = "auto",
+        extra_body: dict | None = None,
+        disable_thinking: bool = False,
+        on_content_delta: Callable[[StreamDelta], Awaitable[None]] | None = None,
+        cache_namespace: str = "",
+    ) -> LLMResponse:
+        self._enforce_context_budget(messages, tools, max_tokens)
+        merged_extra = {**self._extra_body, **(extra_body or {})}
+        effort = merged_extra.get("reasoning_effort")
+        request = ModelRequest(
+            messages=messages,
+            tools=tools,
+            model=model,
+            max_output_tokens=max_tokens,
+            system_prompt=self._system,
+            tool_choice=tool_choice,
+            reasoning_effort=(
+                None
+                if self._force_disable_thinking or disable_thinking
+                else str(effort or "") or None
+            ),
+            prompt_cache_key=(
+                _stable_prompt_cache_key(self._runtime_id, model, cache_namespace)
+                if cache_namespace
+                else None
+            ),
+            on_delta=on_content_delta,
+            extra_body=dict(extra_body or {}),
+            disable_thinking=self._force_disable_thinking or disable_thinking,
+        )
+        try:
+            return await self._backend.send(request)
+        except ContextWindowError as exc:
+            raise ContextLengthError(str(exc)) from exc
+
+    def _enforce_context_budget(
+        self, messages: list[dict], tools: list[dict], max_tokens: int
+    ) -> None:
+        if not self._context_window:
+            return
+        budget = build_runtime_context_budget(
+            self._context_window,
+            self._effective_context_percent,
+            max_tokens,
+        )
+        estimated = _estimate_context_tokens(self._system, messages, tools)
+        if estimated > budget.input_budget:
+            raise ContextLengthError(
+                f"上下文估算超限 estimated={estimated} budget={budget.input_budget} quality=approximate"
+            )
+
+
+def _estimate_context_tokens(
+    system_prompt: str, messages: list[dict], tools: list[dict]
+) -> int:
+    """估算文本与图片块预算，避免把 data URI 当作文本 token。"""
+    text_chars = len(system_prompt) + len(
+        json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
+    )
+    image_tokens = 0
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") in {
+                    "image_url",
+                    "input_image",
+                }:
+                    detail = block.get("detail")
+                    image = block.get("image_url")
+                    if isinstance(image, dict):
+                        detail = image.get("detail", detail)
+                    image_tokens += 1024 if detail == "low" else 8192
+                    continue
+                text_chars += len(
+                    json.dumps(block, ensure_ascii=False, separators=(",", ":"))
+                )
+        elif content is not None:
+            text_chars += len(str(content))
+        text_chars += len(
+            json.dumps(
+                {key: value for key, value in message.items() if key != "content"},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
+    return max(1, text_chars // 3 + image_tokens)
+
+
+def _stable_prompt_cache_key(runtime_id: str, model: str, namespace: str) -> str:
+    """生成不泄露 session 标识的稳定缓存路由键。"""
+    raw = f"{runtime_id}\0{model}\0{namespace}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _get_field(delta: Any, name: str) -> Any:
@@ -548,6 +753,34 @@ def _extract_cache_usage(usage: Any) -> tuple[int | None, int | None]:
     if prompt_tokens is None or cached_tokens is None:
         return None, None
     return prompt_tokens, cached_tokens
+
+
+def _extract_model_usage(usage: Any) -> ModelUsage | None:
+    """把 Chat Completions usage 映射为规范化用量。"""
+    if usage is None:
+        return None
+    prompt_tokens = _coerce_int(_get_field(usage, "prompt_tokens"))
+    completion_tokens = _coerce_int(_get_field(usage, "completion_tokens"))
+    prompt_details = _get_field(usage, "prompt_tokens_details")
+    completion_details = _get_field(usage, "completion_tokens_details")
+    cached_tokens = _coerce_int(_get_field(prompt_details, "cached_tokens"))
+    if cached_tokens is None:
+        _, cached_tokens = _extract_cache_usage(usage)
+    reasoning_tokens = _coerce_int(_get_field(completion_details, "reasoning_tokens"))
+    return ModelUsage(
+        input_tokens=prompt_tokens,
+        cached_input_tokens=cached_tokens,
+        output_tokens=completion_tokens,
+        reasoning_output_tokens=reasoning_tokens,
+        covered_request_count=1 if prompt_tokens is not None and completion_tokens is not None else 0,
+        coverage=(
+            UsageCoverage.EXACT
+            if prompt_tokens is not None and completion_tokens is not None
+            else UsageCoverage.PARTIAL
+            if prompt_tokens is not None or completion_tokens is not None
+            else UsageCoverage.UNAVAILABLE
+        ),
+    )
 
 
 def _iter_tool_call_deltas(delta: Any) -> list[dict[str, str | int]]:

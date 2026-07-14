@@ -19,6 +19,7 @@ from agent.config_models import (
     Config,
     MemoryConfig,
     MemoryEmbeddingConfig,
+    ModelRuntimeConfig,
     PeerAgentConfig,
     QQChannelConfig,
     QQGroupConfig,
@@ -28,6 +29,8 @@ from agent.config_models import (
 )
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.config_loader import ProactiveConfigError, load_proactive_config
+from agent.model_runtime.auth.store import CredentialStore
+from agent.model_runtime.context_policy import recommended_context_settings
 
 _PRESETS: dict[str, str] = {
     "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -89,17 +92,19 @@ def load_config(path: str | Path = "config.toml") -> Config:
     data = _load_config_data(path)
 
     llm = _as_dict(data.get("llm"), field="llm")
-    llm_main = _as_dict(llm.get("main"), field="llm.main")
-    llm_fast = _as_dict(llm.get("fast"), field="llm.fast")
-    llm_agent = _as_dict(llm.get("agent"), field="llm.agent")
-    llm_vl = _as_dict(llm.get("vl"), field="llm.vl")
+    runtime_id, llm_main, model_runtimes = _load_llm_runtimes(llm)
+    fast_runtime_id, llm_fast = _load_role_runtime(llm, "fast", runtime_id)
+    agent_runtime_id, llm_agent = _load_role_runtime(llm, "agent", runtime_id)
+    vl_runtime_id, llm_vl = _load_role_runtime(llm, "vl", runtime_id)
     agent_cfg = _as_dict(data.get("agent"), field="agent")
     agent_context = _as_dict(agent_cfg.get("context"), field="agent.context")
     agent_tools = _as_dict(agent_cfg.get("tools"), field="agent.tools")
     agent_maintenance = _as_dict(
         agent_cfg.get("maintenance"), field="agent.maintenance"
     )
-    provider = str(llm.get("provider") or data["provider"])
+    provider = str(llm_main.get("provider") or llm.get("provider") or data.get("provider") or "").lower()
+    if not provider:
+        raise ValueError("必须配置 llm provider")
     channels = _load_channels_config(data)
     proactive = _load_proactive_config(data)
     memory = _load_memory_config(data)
@@ -108,21 +113,33 @@ def load_config(path: str | Path = "config.toml") -> Config:
 
     return Config(
         provider=provider,
-        model=str(llm_main.get("model") or data["model"]),
-        api_key=_resolve(str(llm_main.get("api_key") or data.get("api_key", ""))),
+        model=str(llm_main.get("model") or data.get("model") or ""),
+        api_key=(
+            ""
+            if provider == "codex"
+            else _load_api_key(
+                auth_id=str(llm_main.get("auth") or ""),
+                inline_value=str(llm_main.get("api_key") or data.get("api_key", "")),
+            )
+        ),
         system_prompt=str(
             agent_cfg.get("system_prompt")
             or data.get("system_prompt", "You are a helpful assistant.")
         ),
-        max_tokens=int(agent_cfg.get("max_tokens", data.get("max_tokens", 8192))),
+        max_tokens=int(
+            llm_main.get(
+                "max_output_tokens",
+                agent_cfg.get("max_tokens", data.get("max_tokens", 8192)),
+            )
+        ),
         max_iterations=int(
             agent_cfg.get("max_iterations", data.get("max_iterations", 10))
         ),
-        memory_window=int(
-            agent_context.get("memory_window", data.get("memory_window", 40))
+        memory_window=_load_memory_window(data, agent_context, llm_main),
+        base_url=_model_base_url(
+            provider, llm_main.get("base_url") or data.get("base_url")
         ),
-        base_url=str(llm_main.get("base_url") or data.get("base_url") or _PRESETS.get(provider) or ""),
-        extra_body=_load_extra_body(data),
+        extra_body=_load_extra_body(data, llm_main),
         channels=channels,
         proactive=proactive,
         memory_optimizer_enabled=_as_bool(
@@ -139,15 +156,17 @@ def load_config(path: str | Path = "config.toml") -> Config:
             )
         ),
         light_model=str(llm_fast.get("model") or data.get("light_model", "")),
-        light_api_key=_resolve(
-            str(llm_fast.get("api_key") or data.get("light_api_key", ""))
+        light_api_key=_load_api_key(
+            auth_id=str(llm_fast.get("auth") or ""),
+            inline_value=str(llm_fast.get("api_key") or data.get("light_api_key", "")),
         ),
         light_base_url=str(
             llm_fast.get("base_url") or data.get("light_base_url", "")
         ),
         agent_model=str(llm_agent.get("model") or data.get("agent_model", "")),
-        agent_api_key=_resolve(
-            str(llm_agent.get("api_key") or data.get("agent_api_key", ""))
+        agent_api_key=_load_api_key(
+            auth_id=str(llm_agent.get("auth") or ""),
+            inline_value=str(llm_agent.get("api_key") or data.get("agent_api_key", "")),
         ),
         agent_base_url=str(
             llm_agent.get("base_url") or data.get("agent_base_url", "")
@@ -171,14 +190,40 @@ def load_config(path: str | Path = "config.toml") -> Config:
             ),
             field="agent.dev_mode",
         ),
-        multimodal=_as_bool(
-            llm_main.get("multimodal", True), field="llm.main.multimodal"
-        ),
+        multimodal=_load_multimodal(llm_main),
         vl_model=str(llm_vl.get("model") or data.get("vl_model", "")),
-        vl_api_key=_resolve(str(llm_vl.get("api_key") or data.get("vl_api_key", ""))),
+        vl_api_key=_load_api_key(
+            auth_id=str(llm_vl.get("auth") or ""),
+            inline_value=str(llm_vl.get("api_key") or data.get("vl_api_key", "")),
+        ),
         vl_base_url=str(llm_vl.get("base_url") or data.get("vl_base_url", "")),
         peer_agents=peer_agents,
         wiring=wiring,
+        runtime_id=runtime_id,
+        auth_id=str(llm_main.get("auth") or ""),
+        context_window=int(llm_main.get("context_window") or 0),
+        reasoning_effort=str(llm_main.get("reasoning_effort") or ""),
+        input_modalities=tuple(str(item) for item in llm_main.get("input_modalities", ["text"])),
+        effective_context_percent=float(llm_main.get("effective_context_percent", 0.9)),
+        use_responses_lite=_as_bool(
+            llm_main.get("use_responses_lite", False),
+            field="llm.main.use_responses_lite",
+        ),
+        supports_parallel_tool_calls=_as_bool(
+            llm_main.get("supports_parallel_tool_calls", True),
+            field="llm.main.supports_parallel_tool_calls",
+        ),
+        reasoning_summary=_as_reasoning_summary(
+            llm_main.get(
+                "reasoning_summary",
+                "auto" if provider == "codex" else None,
+            ),
+            field="llm.main.reasoning_summary",
+        ),
+        model_runtimes=model_runtimes,
+        fast_runtime_id=fast_runtime_id,
+        agent_runtime_id=agent_runtime_id,
+        vl_runtime_id=vl_runtime_id,
     )
 
 
@@ -290,9 +335,13 @@ def _load_memory_config(data: dict) -> MemoryConfig:
         engine=str(memory.get("engine", "") or ""),
         embedding=MemoryEmbeddingConfig(
             model=str(embedding.get("model", "text-embedding-v3")),
-            api_key=_resolve(str(embedding.get("api_key", ""))),
+            api_key=_load_api_key(
+                auth_id=str(embedding.get("auth") or ""),
+                inline_value=str(embedding.get("api_key", "")),
+            ),
             base_url=str(embedding.get("base_url", "")),
             output_dimensionality=output_dimensionality,
+            auth=str(embedding.get("auth") or ""),
         ),
     )
 
@@ -344,9 +393,10 @@ def _load_wiring_config(data: dict) -> WiringConfig:
     )
 
 
-def _load_extra_body(data: dict) -> dict:
+def _load_extra_body(data: dict, llm_main: dict | None = None) -> dict:
     llm = _as_dict(data.get("llm"), field="llm")
-    llm_main = _as_dict(llm.get("main"), field="llm.main")
+    if llm_main is None:
+        llm_main = _as_dict(llm.get("main"), field="llm.main")
     extra_body = dict(_as_dict(data.get("extra_body"), field="extra_body"))
     thinking = llm_main.get("thinking")
     if thinking is not None and not isinstance(thinking, dict):
@@ -362,6 +412,103 @@ def _load_extra_body(data: dict) -> dict:
         if effort:
             extra_body["reasoning_effort"] = effort
     return extra_body
+
+
+def _load_llm_runtimes(
+    llm: dict,
+) -> tuple[str, dict, dict[str, ModelRuntimeConfig]]:
+    """在配置边界把新版 runtime 与旧版 llm.main 统一。"""
+    main_value = llm.get("main")
+    if not isinstance(main_value, str):
+        return "main", _as_dict(main_value, field="llm.main"), {}
+    runtimes = _as_dict(llm.get("runtimes"), field="llm.runtimes")
+    raw_main = _as_dict(runtimes.get(main_value), field=f"llm.runtimes.{main_value}")
+    if not raw_main:
+        raise ValueError(f"llm.main 引用不存在的 runtime: {main_value}")
+    parsed: dict[str, ModelRuntimeConfig] = {}
+    for runtime_id, raw in runtimes.items():
+        item = _as_dict(raw, field=f"llm.runtimes.{runtime_id}")
+        modalities = item.get("input_modalities", ["text"])
+        if not isinstance(modalities, list) or not all(isinstance(v, str) for v in modalities):
+            raise ValueError(f"llm.runtimes.{runtime_id}.input_modalities 必须是字符串数组")
+        provider = str(item.get("provider") or "").lower()
+        auth_id = str(item.get("auth") or "")
+        parsed[runtime_id] = ModelRuntimeConfig(
+            runtime_id=runtime_id,
+            provider=provider,
+            model=str(item.get("model") or ""),
+            auth=auth_id,
+            api_key=(
+                ""
+                if provider == "codex"
+                else _load_api_key(
+                    auth_id=auth_id,
+                    inline_value=str(item.get("api_key") or ""),
+                )
+            ),
+            base_url=_model_base_url(provider, item.get("base_url")),
+            reasoning_effort=str(item.get("reasoning_effort") or ""),
+            context_window=int(item.get("context_window") or 0),
+            max_output_tokens=int(item.get("max_output_tokens") or 8192),
+            input_modalities=tuple(modalities),
+            effective_context_percent=float(item.get("effective_context_percent", 0.9)),
+            use_responses_lite=_as_bool(
+                item.get("use_responses_lite", False),
+                field=f"llm.runtimes.{runtime_id}.use_responses_lite",
+            ),
+            supports_parallel_tool_calls=_as_bool(
+                item.get("supports_parallel_tool_calls", True),
+                field=f"llm.runtimes.{runtime_id}.supports_parallel_tool_calls",
+            ),
+            reasoning_summary=_as_reasoning_summary(
+                item.get(
+                    "reasoning_summary",
+                    "auto" if provider == "codex" else None,
+                ),
+                field=f"llm.runtimes.{runtime_id}.reasoning_summary",
+            ),
+        )
+    return main_value, raw_main, parsed
+
+
+def _load_memory_window(data: dict, agent_context: dict, llm_main: dict) -> int:
+    """显式配置优先，否则根据主模型有效上下文推导历史窗口。"""
+
+    # 1. 保留现有配置的精确覆盖语义。
+    configured = agent_context.get("memory_window", data.get("memory_window"))
+    if configured is not None:
+        return int(configured)
+
+    # 2. 新 runtime 自动使用统一上下文策略；旧配置继续沿用 40。
+    context_window = int(llm_main.get("context_window") or 0)
+    if context_window <= 0:
+        return 40
+    effective_percent = float(llm_main.get("effective_context_percent", 0.9))
+    return recommended_context_settings(context_window, effective_percent).memory_window
+
+
+def _load_multimodal(llm_main: dict) -> bool:
+    modalities = llm_main.get("input_modalities")
+    if modalities is not None:
+        if not isinstance(modalities, list) or not all(isinstance(v, str) for v in modalities):
+            raise ValueError("llm.main.input_modalities 必须是字符串数组")
+        return "image" in modalities
+    return _as_bool(llm_main.get("multimodal", True), field="llm.main.multimodal")
+
+
+def _load_role_runtime(
+    llm: dict, role: str, main_runtime_id: str
+) -> tuple[str, dict]:
+    value = llm.get(role)
+    if not isinstance(value, str):
+        return "", _as_dict(value, field=f"llm.{role}")
+    if value == main_runtime_id:
+        return value, {}
+    runtimes = _as_dict(llm.get("runtimes"), field="llm.runtimes")
+    runtime = _as_dict(runtimes.get(value), field=f"llm.runtimes.{value}")
+    if not runtime:
+        raise ValueError(f"llm.{role} 引用不存在的 runtime: {value}")
+    return value, runtime
 
 
 def _as_dict(value: object, *, field: str) -> dict:
@@ -385,10 +532,32 @@ def _resolve(value: str) -> str:
     return resolved
 
 
+def _load_api_key(*, auth_id: str, inline_value: str) -> str:
+    if auth_id:
+        return CredentialStore().api_key(auth_id)
+    return _resolve(inline_value)
+
+
+def _model_base_url(provider: str, configured: object) -> str:
+    return str(
+        configured
+        or ("https://chatgpt.com/backend-api/codex" if provider == "codex" else "")
+        or _PRESETS.get(provider)
+        or ""
+    )
+
+
 def _as_bool(value: object, *, field: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{field} 必须是布尔值")
     return value
+
+
+def _as_reasoning_summary(value: object, *, field: str) -> str:
+    summary = str(value or "none")
+    if summary not in {"none", "auto", "concise", "detailed"}:
+        raise ValueError(f"{field} 必须是 none、auto、concise 或 detailed")
+    return summary
 
 
 def _normalize_optional_config_text(value: str) -> str:

@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 import asyncio
+import httpx
 import json
 import runpy
 import sys
@@ -19,6 +20,7 @@ from agent.plugins.manager import ActivePluginInfo
 from agent.provider import (
     ContextLengthError,
     ContentSafetyError,
+    LLMNetworkTimeoutError,
     LLMProvider,
     _normalize_openai_base_url,
 )
@@ -85,7 +87,10 @@ class _FakeStream:
             raise StopAsyncIteration
         if self._delay_s:
             await asyncio.sleep(self._delay_s)
-        return self._chunks.pop(0)
+        chunk = self._chunks.pop(0)
+        if isinstance(chunk, BaseException):
+            raise chunk
+        return chunk
 
     async def close(self) -> None:
         self.closed = True
@@ -95,7 +100,7 @@ class _FakeStream:
 async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
     fake = _FakeClient(
         [
-            RuntimeError("timeout"),
+            httpx.ReadTimeout("request idle"),
             _Response(
                 content="done",
                 tool_calls=[_ToolCall("1", "search", {"q": "x"})],
@@ -114,7 +119,6 @@ async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
         base_url="https://example.com",
         system_prompt="system",
         extra_body={"x": 1},
-        request_timeout_s=3,
         max_retries=1,
     )
     result = await provider.chat(
@@ -195,6 +199,38 @@ async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
     with pytest.raises(RuntimeError):
         await LLMProvider(api_key="k", max_retries=0).chat([], [], "m", 1)
+
+
+@pytest.mark.asyncio
+async def test_provider_outer_deadline_cancels_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    calls = 0
+
+    async def _blocking_create(**_kwargs):
+        nonlocal calls
+        calls += 1
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    fake = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=_blocking_create))
+    )
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    provider = LLMProvider(api_key="k", max_retries=2)
+
+    task = asyncio.create_task(provider.chat([], [], "m", 1))
+    await started.wait()
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(task, timeout=0.01)
+
+    assert cancelled.is_set()
+    assert calls == 1
 
 
 def test_normalize_openai_base_url_trims_endpoint_suffix():
@@ -381,28 +417,15 @@ async def test_provider_chat_stream_extracts_openai_cached_tokens(
 
 
 @pytest.mark.asyncio
-async def test_provider_chat_stream_times_out_when_idle(
+async def test_provider_chat_stream_propagates_sdk_read_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    stream = _FakeStream(
-        [
-            SimpleNamespace(
-                choices=[
-                    SimpleNamespace(delta=SimpleNamespace(content="慢", tool_calls=[]))
-                ]
-            )
-        ],
-        delay_s=0.05,
-    )
+    stream = _FakeStream([httpx.ReadTimeout("stream idle")])
     fake = _FakeClient([stream])
     monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
 
-    provider = LLMProvider(
-        api_key="k",
-        stream_idle_timeout_s=0.01,
-        max_retries=0,
-    )
-    with pytest.raises(asyncio.TimeoutError):
+    provider = LLMProvider(api_key="k", read_timeout_s=0.01, max_retries=0)
+    with pytest.raises(LLMNetworkTimeoutError, match="流读取网络超时") as exc_info:
         await provider.chat(
             messages=[{"role": "user", "content": "hi"}],
             tools=[],
@@ -410,6 +433,7 @@ async def test_provider_chat_stream_times_out_when_idle(
             max_tokens=10,
             on_content_delta=lambda chunk: _collect_delta([], chunk),
         )
+    assert isinstance(exc_info.value.__cause__, httpx.ReadTimeout)
     assert stream.closed is True
 
 
@@ -500,7 +524,7 @@ async def test_provider_stream_closes_when_delta_callback_fails(
     assert stream.closed is True
 
 
-def test_bootstrap_providers_set_stream_idle_timeout(
+def test_bootstrap_providers_set_network_read_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ):
     created: list[dict] = []
@@ -533,7 +557,7 @@ def test_bootstrap_providers_set_stream_idle_timeout(
     build_providers(cfg)
     build_vl_provider(cfg)
 
-    assert [item["stream_idle_timeout_s"] for item in created] == [
+    assert [item["read_timeout_s"] for item in created] == [
         120.0,
         60.0,
         120.0,
@@ -582,6 +606,30 @@ async def test_deepseek_strategy_disables_thinking(monkeypatch: pytest.MonkeyPat
         model="deepseek-v4-pro",
         max_tokens=10,
         disable_thinking=True,
+    )
+
+    assert fake.calls[-1]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert "reasoning_effort" not in fake.calls[-1]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_named_tool_choice_disables_thinking(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake = _FakeClient([_Response(content="ok")])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    provider = LLMProvider(
+        api_key="k",
+        provider_name="deepseek",
+        extra_body={"enable_thinking": True, "reasoning_effort": "high"},
+    )
+
+    await provider.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[{"type": "function", "function": {"name": "probe"}}],
+        model="deepseek-v4-pro",
+        max_tokens=10,
+        tool_choice={"type": "function", "function": {"name": "probe"}},
     )
 
     assert fake.calls[-1]["extra_body"] == {"thinking": {"type": "disabled"}}

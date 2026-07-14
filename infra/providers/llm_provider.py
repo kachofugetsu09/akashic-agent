@@ -1,6 +1,7 @@
 from agent.provider import (
     ContentSafetyError,
     ContextLengthError,
+    LLMNetworkTimeoutError,
     LLMProvider,
     LLMResponse,
     ToolCall,
@@ -9,6 +10,7 @@ from agent.provider import (
 __all__ = [
     "ContentSafetyError",
     "ContextLengthError",
+    "LLMNetworkTimeoutError",
     "LLMProvider",
     "LLMResponse",
     "ToolCall",

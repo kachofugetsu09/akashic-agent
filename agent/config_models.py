@@ -51,6 +51,7 @@ class MemoryEmbeddingConfig:
     api_key: str = ""
     base_url: str = ""
     output_dimensionality: int | None = None
+    auth: str = ""
 
 
 @dataclass
@@ -86,6 +87,46 @@ class WiringConfig:
     )
 
 
+@dataclass(frozen=True)
+class ModelRuntimeConfig:
+    runtime_id: str
+    provider: str
+    model: str
+    auth: str = ""
+    api_key: str = ""
+    base_url: str = ""
+    reasoning_effort: str = ""
+    context_window: int = 0
+    max_output_tokens: int = 8192
+    input_modalities: tuple[str, ...] = ("text",)
+    effective_context_percent: float = 0.9
+    use_responses_lite: bool = False
+    supports_parallel_tool_calls: bool = True
+    reasoning_summary: str = "none"
+
+    def __post_init__(self) -> None:
+        if not self.provider or not self.model:
+            raise ValueError(f"runtime {self.runtime_id} 必须配置 provider 和 model")
+        if self.provider == "codex" and not self.auth:
+            raise ValueError(f"Codex runtime {self.runtime_id} 必须配置 auth")
+        if self.context_window <= 0:
+            raise ValueError(f"runtime {self.runtime_id} 的 context_window 必须大于 0")
+        if self.max_output_tokens <= 0:
+            raise ValueError(f"runtime {self.runtime_id} 的 max_output_tokens 必须大于 0")
+        if "text" not in self.input_modalities:
+            raise ValueError(f"runtime {self.runtime_id} 的 input_modalities 必须包含 text")
+        if not 0 < self.effective_context_percent <= 1:
+            raise ValueError(
+                f"runtime {self.runtime_id} 的 effective_context_percent 必须在 (0, 1] 内"
+            )
+        if self.max_output_tokens >= int(
+            self.context_window * self.effective_context_percent
+        ):
+            raise ValueError(
+                f"runtime {self.runtime_id} 的 max_output_tokens 必须小于有效上下文"
+            )
+
+
 @dataclass
 class Config:
     provider: str
@@ -117,6 +158,19 @@ class Config:
     dev_mode: bool = False
     peer_agents: list[PeerAgentConfig] = field(default_factory=list)
     wiring: WiringConfig = field(default_factory=WiringConfig)
+    runtime_id: str = "main"
+    auth_id: str = ""
+    context_window: int = 0
+    reasoning_effort: str = ""
+    input_modalities: tuple[str, ...] = ("text",)
+    effective_context_percent: float = 0.9
+    use_responses_lite: bool = False
+    supports_parallel_tool_calls: bool = True
+    reasoning_summary: str = "none"
+    model_runtimes: dict[str, ModelRuntimeConfig] = field(default_factory=dict)
+    fast_runtime_id: str = ""
+    agent_runtime_id: str = ""
+    vl_runtime_id: str = ""
 
     @classmethod
     def load(cls, path: str | Path = "config.toml") -> Config:
@@ -130,6 +184,7 @@ __all__ = [
     "Config",
     "MemoryConfig",
     "MemoryEmbeddingConfig",
+    "ModelRuntimeConfig",
     "PeerAgentConfig",
     "QQChannelConfig",
     "QQGroupConfig",

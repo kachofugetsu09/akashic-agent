@@ -181,6 +181,7 @@ class TurnRunResult:
     thinking: str | None = None
     streamed: bool = False
     context_retry: dict[str, object] = field(default_factory=dict[str, object])
+    model_state: dict[str, object] | None = None
 
 
 class AgentLoopRunner(Protocol):

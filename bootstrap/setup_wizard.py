@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shutil
 import sys
 import select
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -34,14 +37,31 @@ class WizardAnswers:
     model: str = ""
     api_key: str = ""
     base_url: str = ""
+    auth_id: str = ""
+    reasoning_effort: str = ""
+    context_window: int = 0
+    effective_context_percent: float = 0.9
+    max_output_tokens: int = 8192
+    memory_window: int = 40
     enable_thinking: bool = False
     multimodal: bool = False
+    use_responses_lite: bool = False
+    supports_parallel_tool_calls: bool = True
+    reasoning_summary: str = "none"
     vl_model: str = ""
     vl_api_key: str = ""
     vl_base_url: str = ""
+    vl_auth_id: str = ""
+    vl_provider: str = "openai"
+    vl_context_window: int = 0
+    vl_max_output_tokens: int = 0
     fast_model: str = ""
     fast_api_key: str = ""
     fast_base_url: str = ""
+    fast_auth_id: str = ""
+    fast_provider: str = "openai"
+    fast_context_window: int = 0
+    fast_max_output_tokens: int = 0
     tg_token: str = ""
     tg_allow_from: list[str] = field(default_factory=_empty_str_list)
     proactive_enabled: bool = False
@@ -53,6 +73,7 @@ class WizardAnswers:
     embed_model: str = ""
     embed_api_key: str = ""
     embed_base_url: str = ""
+    embed_auth_id: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -211,20 +232,20 @@ def run_setup_wizard(config_path: Path, workspace: Path) -> None:
     _divider()
     click.echo("\n正在生成配置并初始化工作区...")
 
+    _persist_answer_credentials(answers)
     toml_str = _render_config(answers)
-    _ = config_path.write_text(toml_str, encoding="utf-8")
+    _atomic_write_with_backup(config_path, toml_str, mode=0o600)
     _ok(f"{config_path} 已生成")
     memory_config_path = _default_memory_local_config_path()
     memory_config_path.parent.mkdir(parents=True, exist_ok=True)
-    _ = memory_config_path.write_text(
+    _atomic_write_with_backup(
+        memory_config_path,
         _render_default_memory_config(),
-        encoding="utf-8",
     )
     _ok(f"{memory_config_path} 已生成")
     qqbot_config_path = _qqbot_local_config_path()
     qqbot_config_path.parent.mkdir(parents=True, exist_ok=True)
-    _ = qqbot_config_path.write_text(_render_qqbot_config(answers), encoding="utf-8")
-    qqbot_config_path.chmod(0o600)
+    _atomic_write_with_backup(qqbot_config_path, _render_qqbot_config(answers), mode=0o600)
     _ok(f"{qqbot_config_path} 已生成")
 
     _validate_config(config_path)
@@ -250,29 +271,175 @@ def _collect_answers() -> WizardAnswers:
     return a
 
 
-def _phase_main_llm(a: WizardAnswers) -> None:
+def _phase_main_llm(
+    a: WizardAnswers,
+    *,
+    configure_vl: bool = True,
+    prompt_memory_window: bool = True,
+    reuse_codex_auth: bool = False,
+) -> None:
     _section_header("1/4", "主模型")
 
+    auth_mode = click.prompt(
+        "认证方式",
+        type=click.Choice(["codex", "api-key"], case_sensitive=False),
+        default="codex",
+    )
+    if auth_mode == "codex":
+        _phase_codex_llm(a, reuse_existing_auth=reuse_codex_auth)
+    else:
+        _phase_api_key_llm(a)
+
+    from agent.model_runtime.context_policy import recommended_context_settings
+
+    suggested = recommended_context_settings(
+        a.context_window,
+        a.effective_context_percent,
+    )
+    a.memory_window = (
+        click.prompt("历史消息窗口", type=int, default=suggested.memory_window)
+        if prompt_memory_window
+        else suggested.memory_window
+    )
+    if a.memory_window <= 0:
+        raise click.BadParameter("历史消息窗口必须大于 0")
+
+    if configure_vl and not a.multimodal:
+        _phase_vl_model(a)
+
+
+def _phase_api_key_llm(a: WizardAnswers) -> None:
+    """收集 OpenAI-compatible API Key 模型配置。"""
+
+    a.provider = click.prompt(
+        "服务商",
+        type=click.Choice(["deepseek", "qwen", "openai"], case_sensitive=False),
+        default="deepseek",
+    ).lower()
     a.model = click.prompt("模型名")
     a.base_url = click.prompt("base_url（OpenAI 兼容格式）")
     a.api_key = _secret_prompt("API key")
-    a.provider = "openai"
+    a.auth_id = "main_default"
     a.enable_thinking = click.confirm("开启 thinking 模式？", default=False)
+    a.reasoning_effort = (
+        click.prompt("推理强度", default="medium") if a.enable_thinking else ""
+    )
+    a.context_window = click.prompt("上下文大小（tokens）", type=int, default=64000)
+    if a.context_window <= 0:
+        raise click.BadParameter("上下文大小必须大于 0")
+    from agent.model_runtime.context_policy import recommended_context_settings
+
+    a.max_output_tokens = click.prompt(
+        "最大输出 tokens",
+        type=click.IntRange(min=1),
+        default=recommended_context_settings(a.context_window).output_reserve,
+    )
+    if a.max_output_tokens <= 0:
+        raise click.BadParameter("最大输出 tokens 必须大于 0")
     a.multimodal = click.confirm("主模型原生支持图片输入？", default=False)
 
-    if not a.multimodal:
-        if click.confirm("配置独立视觉模型？", default=False):
-            a.vl_model = click.prompt("视觉模型名")
-            a.vl_base_url = click.prompt(
-                "base_url（回车 = 复用主模型 base_url）",
-                default="",
-                show_default=False,
-            ) or a.base_url
-            a.vl_api_key = _secret_prompt(
-                "API key（回车 = 复用主模型 key）",
-                default="",
-                show_default=False,
-            ) or a.api_key
+
+def _phase_codex_llm(
+    a: WizardAnswers, *, reuse_existing_auth: bool = False
+) -> None:
+    """完成 Codex 登录并从目录选择模型能力。"""
+    from agent.model_runtime.context_policy import recommended_context_settings
+    from agent.model_runtime.auth.codex import CodexAuthDriver
+    from agent.model_runtime.auth.store import CredentialStore
+    from agent.model_runtime.catalog.codex import CodexModelCatalog
+    from agent.model_runtime.errors import AuthenticationError, TransportError
+    import httpx
+
+    a.provider = "codex"
+    a.auth_id = "codex_default"
+    a.base_url = "https://chatgpt.com/backend-api/codex"
+    store = CredentialStore()
+    auth = CodexAuthDriver(store, a.auth_id)
+    login_required = True
+    if reuse_existing_auth:
+        try:
+            credential = store.get(a.auth_id)
+        except AuthenticationError:
+            pass
+        else:
+            if credential.driver == "codex" and credential.access_token:
+                login_required = not click.confirm(
+                    "检测到已有 codex_default 登录，直接复用？",
+                    default=True,
+                )
+    if login_required:
+        code = auth.begin_device_login()
+        click.echo(f"请打开 {code.verification_uri} 并输入代码：{code.user_code}")
+        _ = auth.complete_device_login(code)
+    try:
+        models = asyncio.run(CodexModelCatalog(auth).list_models())
+    except (AuthenticationError, TransportError, httpx.HTTPError) as exc:
+        _err(f"Codex 模型目录加载失败：{exc}")
+        if not click.confirm("显式进入手动模式？", default=False):
+            raise click.ClickException("未取得模型目录，初始化已停止") from exc
+        _phase_codex_manual(a)
+        return
+    if not models:
+        raise click.ClickException("Codex 模型目录为空")
+    choices = {model.slug: model for model in models}
+    a.model = click.prompt("模型", type=click.Choice(list(choices)), default=models[0].slug)
+    selected = choices[a.model]
+    capabilities = selected.capabilities
+    efforts = capabilities.supported_reasoning_efforts
+    if efforts:
+        default_effort = capabilities.default_reasoning_effort or efforts[0]
+        a.reasoning_effort = click.prompt(
+            "推理强度", type=click.Choice(list(efforts)), default=default_effort
+        )
+    max_context_window = capabilities.max_context_window or capabilities.context_window
+    a.context_window = click.prompt(
+        "上下文大小（tokens）",
+        type=click.IntRange(min=1, max=max_context_window),
+        default=capabilities.context_window,
+    )
+    a.effective_context_percent = capabilities.effective_context_percent
+    a.max_output_tokens = min(
+        capabilities.max_output_tokens,
+        recommended_context_settings(
+            a.context_window,
+            a.effective_context_percent,
+        ).output_reserve,
+    )
+    detected_image = "image" in capabilities.input_modalities
+    if not selected.input_modalities_known:
+        _warn("模型目录未提供多模态元数据，请手工确认")
+    a.multimodal = click.confirm("主模型支持图片输入？", default=detected_image)
+    a.use_responses_lite = capabilities.use_responses_lite
+    a.supports_parallel_tool_calls = capabilities.supports_parallel_tool_calls
+    if capabilities.supports_reasoning_summaries:
+        a.reasoning_summary = "auto"
+
+
+def _phase_codex_manual(a: WizardAnswers) -> None:
+    a.model = click.prompt("模型名")
+    a.reasoning_effort = click.prompt("推理强度", default="medium")
+    a.reasoning_summary = "auto"
+    a.context_window = click.prompt("上下文大小（tokens）", type=int)
+    a.max_output_tokens = click.prompt("最大输出 tokens", type=int, default=8192)
+    a.multimodal = click.confirm("主模型支持图片输入？", default=False)
+
+
+def _phase_vl_model(a: WizardAnswers) -> None:
+    if not click.confirm("配置独立视觉模型？", default=False):
+        return
+    a.vl_model = click.prompt("视觉模型名")
+    a.vl_provider, a.vl_base_url, a.vl_api_key = _phase_role_endpoint(a)
+    a.vl_auth_id = "vl_default"
+    a.vl_context_window = click.prompt(
+        "视觉模型上下文大小（tokens）",
+        type=click.IntRange(min=1),
+        default=a.context_window,
+    )
+    a.vl_max_output_tokens = click.prompt(
+        "视觉模型最大输出 tokens",
+        type=click.IntRange(min=1),
+        default=min(a.max_output_tokens, 8192),
+    )
 
 
 def _phase_fast_model(a: WizardAnswers) -> None:
@@ -283,16 +450,40 @@ def _phase_fast_model(a: WizardAnswers) -> None:
         return
 
     a.fast_model = click.prompt("模型名")
-    a.fast_base_url = click.prompt(
+    a.fast_provider, a.fast_base_url, a.fast_api_key = _phase_role_endpoint(a)
+    a.fast_auth_id = "fast_default"
+    a.fast_context_window = click.prompt(
+        "轻量模型上下文大小（tokens）",
+        type=click.IntRange(min=1),
+        default=min(a.context_window, 128_000),
+    )
+    a.fast_max_output_tokens = click.prompt(
+        "轻量模型最大输出 tokens",
+        type=click.IntRange(min=1),
+        default=min(a.max_output_tokens, 4096),
+    )
+
+
+def _phase_role_endpoint(a: WizardAnswers) -> tuple[str, str, str]:
+    """收集独立角色的兼容端点；API-key 主模型默认复用连接。"""
+    if a.provider == "codex":
+        provider = click.prompt(
+            "服务商",
+            type=click.Choice(["deepseek", "qwen", "openai"], case_sensitive=False),
+            default="openai",
+        ).lower()
+        return provider, click.prompt("OpenAI-compatible base_url"), _secret_prompt("API key")
+    base_url = click.prompt(
         "base_url（回车 = 复用主模型 base_url）",
         default="",
         show_default=False,
     ) or a.base_url
-    a.fast_api_key = _secret_prompt(
+    api_key = _secret_prompt(
         "API key（回车 = 复用主模型 key）",
         default="",
         show_default=False,
     ) or a.api_key
+    return a.provider, base_url, api_key
 
 
 def _phase_telegram(a: WizardAnswers) -> None:
@@ -402,6 +593,7 @@ def _phase_memory(a: WizardAnswers) -> None:
 
     a.embed_model = click.prompt("Embedding 模型名")
     a.embed_api_key = _secret_prompt("Embedding API key")
+    a.embed_auth_id = "embedding_default"
     a.embed_base_url = click.prompt("Embedding base_url")
 
 
@@ -623,7 +815,7 @@ def _validate_config(config_path: Path) -> None:
 def _render_config(a: WizardAnswers) -> str:
     return "\n".join([
         _render_llm(a),
-        _render_agent(),
+        _render_agent(a),
         _render_channels(a),
         _render_memory(a),
         _render_proactive(a),
@@ -632,70 +824,150 @@ def _render_config(a: WizardAnswers) -> str:
 
 
 def _render_llm(a: WizardAnswers) -> str:
-    lines: list[str] = [
+    """把向导答案渲染为角色引用与 named runtimes。"""
+
+    # 1. 角色只引用 runtime ID，跳过独立模型时复用 main。
+    lines = [
         "[llm]",
-        f'provider = "{a.provider}"',
-        "",
-        "[llm.main]",
-        f'model = "{a.model}"',
-        f'api_key = "{a.api_key}"',
-        f'base_url = "{a.base_url}"',
+        'main = "main"',
+        f'fast = "{"fast" if a.fast_model else "main"}"',
+        'agent = "main"',
     ]
-    if a.enable_thinking:
-        lines.append("enable_thinking = true")
-    lines.append(f"multimodal = {'true' if a.multimodal else 'false'}")
+    if a.multimodal:
+        lines.append('vl = "main"')
+    elif a.vl_model:
+        lines.append('vl = "vl"')
     lines.append("")
 
+    # 2. 主 runtime 完整声明认证、能力与上下文边界。
+    main_modalities = '["text", "image"]' if a.multimodal else '["text"]'
+    lines.extend([
+        "[llm.runtimes.main]",
+        f'provider = "{a.provider}"',
+        f'auth = "{a.auth_id}"',
+        f'model = "{a.model}"',
+        f'base_url = "{a.base_url}"',
+    ])
+    if a.enable_thinking:
+        lines.append("enable_thinking = true")
+    if a.reasoning_effort:
+        lines.append(f'reasoning_effort = "{a.reasoning_effort}"')
+    if a.effective_context_percent != 0.9:
+        lines.append(f"effective_context_percent = {a.effective_context_percent}")
+    if a.use_responses_lite:
+        lines.append("use_responses_lite = true")
+    if not a.supports_parallel_tool_calls:
+        lines.append("supports_parallel_tool_calls = false")
+    if a.reasoning_summary != "none":
+        lines.append(f'reasoning_summary = "{a.reasoning_summary}"')
+    lines.extend([
+        f"context_window = {a.context_window}",
+        f"max_output_tokens = {a.max_output_tokens}",
+        f"input_modalities = {main_modalities}",
+        "",
+    ])
+
+    # 3. 独立角色使用完整 OpenAI-compatible runtime，不继承主端点。
     if a.fast_model:
-        lines += [
-            "[llm.fast]",
+        lines.extend([
+            "[llm.runtimes.fast]",
+            f'provider = "{a.fast_provider}"',
+            f'auth = "{a.fast_auth_id}"',
             f'model = "{a.fast_model}"',
-            f'api_key = "{a.fast_api_key}"',
             f'base_url = "{a.fast_base_url}"',
+            f"context_window = {a.fast_context_window or a.context_window}",
+            f"max_output_tokens = {a.fast_max_output_tokens or a.max_output_tokens}",
+            'input_modalities = ["text"]',
             "",
-        ]
-    else:
-        lines += [
-            "# 轻量模型未配置，memory gate / HyDE 将使用主模型",
-            "# [llm.fast]",
-            "# model = \"\"",
-            "",
-        ]
+        ])
 
     if a.vl_model:
-        lines += [
-            "[llm.vl]",
+        lines.extend([
+            "[llm.runtimes.vl]",
+            f'provider = "{a.vl_provider}"',
+            f'auth = "{a.vl_auth_id}"',
             f'model = "{a.vl_model}"',
-            f'api_key = "{a.vl_api_key}"',
             f'base_url = "{a.vl_base_url}"',
+            f"context_window = {a.vl_context_window or a.context_window}",
+            f"max_output_tokens = {a.vl_max_output_tokens or a.max_output_tokens}",
+            'input_modalities = ["text", "image"]',
             "",
-        ]
-    else:
-        lines += [
-            "# 视觉模型未配置",
-            "# [llm.vl]",
-            "# model = \"\"",
-            "",
-        ]
+        ])
 
     return "\n".join(lines)
 
 
-def _render_agent() -> str:
-    return """\
+def _render_agent(a: WizardAnswers) -> str:
+    return f"""\
 [agent]
 system_prompt = "You are Akashic, a helpful AI assistant with access to tools. Always respond in the same language the user uses."
-max_tokens = 8192
+max_tokens = {a.max_output_tokens}
 # 设为 0 表示不限制迭代轮数；长任务仍可用 /stop 中断。
 max_iterations = 40
 dev_mode = false
 
 [agent.context]
-memory_window = 40
+memory_window = {a.memory_window}
 
 [agent.tools]
 search_enabled = true
 """
+
+
+def _atomic_write_with_backup(
+    path: Path,
+    content: str,
+    *,
+    mode: int = 0o644,
+    backup_name: str | None = None,
+) -> None:
+    """备份旧文件后 fsync 并原子替换目标配置。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        backup = path.with_name(backup_name or f"{path.name}.before-setup.bak")
+        shutil.copy2(path, backup)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_name, mode)
+        os.replace(temp_name, path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def _persist_answer_credentials(a: WizardAnswers) -> None:
+    """问答全部完成后一次性持久化向导收集的 API key。"""
+    from datetime import datetime, timezone
+    from agent.model_runtime.auth.store import Credential, CredentialStore
+
+    raw = {
+        a.auth_id: a.api_key if a.provider != "codex" else "",
+        a.fast_auth_id: a.fast_api_key,
+        a.vl_auth_id: a.vl_api_key,
+        a.embed_auth_id: a.embed_api_key,
+    }
+    credentials = {
+        credential_id: Credential(
+            driver="api_key",
+            access_token=api_key,
+            updated_at=datetime.now(timezone.utc).isoformat(),
+        )
+        for credential_id, api_key in raw.items()
+        if credential_id and api_key
+    }
+    if a.provider != "codex" and a.auth_id not in credentials:
+        raise click.BadParameter("主模型 API key 不能为空")
+    if a.embed_auth_id not in credentials:
+        raise click.BadParameter("Embedding API key 不能为空")
+    if a.fast_model and a.fast_auth_id not in credentials:
+        raise click.BadParameter("独立轻量模型 API key 不能为空")
+    if a.vl_model and a.vl_auth_id not in credentials:
+        raise click.BadParameter("独立视觉模型 API key 不能为空")
+    CredentialStore().put_many(credentials)
 
 
 def _render_channels(a: WizardAnswers) -> str:
@@ -767,7 +1039,11 @@ def _render_memory(a: WizardAnswers) -> str:
         "",
         "[memory.embedding]",
         f'model = "{a.embed_model}"',
-        f'api_key = "{a.embed_api_key}"',
+        (
+            f'auth = "{a.embed_auth_id}"'
+            if a.embed_auth_id
+            else f'api_key = "{a.embed_api_key}"'
+        ),
         f'base_url = "{a.embed_base_url}"',
         "",
     ])

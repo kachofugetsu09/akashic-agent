@@ -42,7 +42,7 @@ _PERSIST_USER_PREFIX = "persist:user:"
 _PERSIST_ASSISTANT_PREFIX = "persist:assistant:"
 _OUTBOUND_METADATA_PREFIX = "outbound:metadata:"
 _OUTBOUND_MEDIA_PREFIX = "outbound:media:"
-_ASSISTANT_FIXED_FIELDS = {"tools_used", "tool_chain", "reasoning_content"}
+_ASSISTANT_FIXED_FIELDS = {"tools_used", "tool_chain", "reasoning_content", "model_state"}
 _USER_FIXED_FIELDS = {"media"}
 
 
@@ -153,6 +153,8 @@ class _PersistAssistantMessageModule:
             assistant_kwargs["turn_duration_ms"] = turn_duration_ms
         if ctx.thinking is not None:
             assistant_kwargs["reasoning_content"] = ctx.thinking
+        if frame.input.turn_result.model_state is not None:
+            assistant_kwargs["model_state"] = frame.input.turn_result.model_state
         assistant_kwargs.update(_collect_persist_assistant_slots(frame.slots))
         if frame.input.state.persistence.persist_assistant:
             session.add_message(
