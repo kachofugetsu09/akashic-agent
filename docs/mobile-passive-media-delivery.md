@@ -186,7 +186,8 @@ better-ui：
 - 交互：已缓存文件可经受限 FileProvider 分享；READY 状态错误可关闭；流式文字和展开动画使用 stick-to-bottom，用户主动上滑后不抢位置。
 - 自动验证：`tests/mobile_realtime` 110 项通过；Android JVM、Kotlin、AndroidTest 编译、Lint 与 debug APK 构建通过；主仓库完整 `pytest tests/` 在前一提交点 2221 项通过。
 - 隔离 E2E：临时 TLS Gateway 的 17 项 gateway/isolated 测试通过，覆盖两次 history 去重、换 epoch 补发、固定 GIF 二进制/SHA 和单次 Agent 入站；真实启动可生成单次 pairing JSON/PNG 并干净退出，所有数据库与附件均位于临时根。
-- 模拟器 E2E：待执行；完成后在本节补充 Android instrumentation、弱网断开恢复与 APK 版本。
+- 模拟器 E2E：API 36.1 无窗口模拟器运行 29 项 Room migration、Compose、Keystore instrumentation 全部通过；真实隔离 Gateway 完成配对、历史、发送、固定 GIF 下载与缓存，强停进程后恢复不重复。移除 `adb reverse` 后恢复，客户端 13.2 秒内经 full-jitter 自动回到 READY。
+- 版本：Android `0.4.0`（versionCode 4）。Release 构建、签名与发布信息在版本提交后补充。
 
 #### 本组 UI skill 约束落实
 
