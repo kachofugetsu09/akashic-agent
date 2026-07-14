@@ -11,7 +11,8 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeDown
 import com.akashic.mobile.ui.design.AkashicTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -73,10 +74,12 @@ class ConversationInteractionsTest {
         compose.runOnIdle { state = messageState("bottom-after") }
         compose.onNodeWithText("bottom-after").assertIsDisplayed()
 
-        compose.onNodeWithTag("conversation-message-list").performScrollToIndex(0)
-        compose.onNodeWithText("question-0").assertIsDisplayed()
+        repeat(3) {
+            compose.onNodeWithTag("conversation-message-list").performTouchInput { swipeDown() }
+        }
+        compose.onNodeWithText("bottom-after").assertDoesNotExist()
         compose.runOnIdle { state = messageState("bottom-final") }
-        compose.onNodeWithText("question-0").assertIsDisplayed()
+        compose.onNodeWithText("bottom-final").assertDoesNotExist()
     }
 
     private fun show(

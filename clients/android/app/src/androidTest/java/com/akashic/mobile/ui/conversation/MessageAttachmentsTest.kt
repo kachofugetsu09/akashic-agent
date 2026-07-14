@@ -1,6 +1,7 @@
 package com.akashic.mobile.ui.conversation
 
 import android.content.Intent
+import android.util.Base64
 import androidx.compose.ui.test.assertRangeInfoEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -48,6 +49,16 @@ class MessageAttachmentsTest {
 
     @Test
     fun cachedImageUsesInlinePreviewInsteadOfFileRow() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val root = File(context.filesDir, "received-attachments").apply { mkdirs() }
+        val validGif = File(root, "valid.gif").apply {
+            writeBytes(
+                Base64.decode(
+                    "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==",
+                    Base64.DEFAULT,
+                ),
+            )
+        }
         compose.setContent {
             AkashicTheme {
                 MessageAttachments(
@@ -57,6 +68,7 @@ class MessageAttachmentsTest {
                             state = MessageAttachmentState.CACHED,
                             transferredBytes = 100,
                             contentType = "image/gif",
+                            cachePath = validGif.path,
                         ),
                     ),
                     onRetry = {},
@@ -67,6 +79,7 @@ class MessageAttachmentsTest {
 
         compose.onNodeWithTag("message-image-image").assertExists()
         compose.onNodeWithTag("message-attachment-image").assertDoesNotExist()
+        validGif.delete()
     }
 
     @Test

@@ -28,6 +28,7 @@ from session.manager import SessionManager
 _FIXED_GIF = bytes.fromhex(
     "47494638396101000100800000000000ffffff21f90401000000002c00000000010001000002024401003b"
 )
+_HISTORY_SESSION_ID = "mobile:00000000-0000-7000-8000-000000000001"
 
 
 class EphemeralMasterKeys:
@@ -206,7 +207,7 @@ async def run_harness(args: argparse.Namespace) -> None:
             ),
         )
     )
-    history = manager.get_or_create("mobile:isolated-history")
+    history = manager.get_or_create(_HISTORY_SESSION_ID)
     _ = history.add_message(
         "user",
         "这是隔离 Gateway 的历史消息",
@@ -217,6 +218,7 @@ async def run_harness(args: argparse.Namespace) -> None:
     offer = runtime.admin.create_offer()
     write_pairing_artifacts(root, offer)
     print(f"isolated_root={root}", flush=True)
+    print(f"history_session={_HISTORY_SESSION_ID}", flush=True)
     print(f"adb_reverse=adb reverse tcp:{args.port} tcp:{args.port}", flush=True)
 
     # 2. 启动真实 TLS WebSocket，并自动批准唯一的隔离配对请求

@@ -199,11 +199,7 @@ private fun FileAttachmentRow(
         .heightIn(min = 64.dp)
         .testTag("message-attachment-${attachment.id}")
         .semantics {
-            contentDescription = if (attachment.state == MessageAttachmentState.CACHED) {
-                "打开文件 ${attachment.filename}"
-            } else {
-                "文件 ${attachment.filename}"
-            }
+            contentDescription = "文件 ${attachment.filename}"
             stateDescription = stateLabel
             if (attachment.state == MessageAttachmentState.DOWNLOADING) {
                 progressBarRangeInfo = ProgressBarRangeInfo(animatedProgress, 0f..1f)
