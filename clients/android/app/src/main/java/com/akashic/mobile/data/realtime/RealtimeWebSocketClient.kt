@@ -9,7 +9,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import javax.net.ssl.SSLContext
 import kotlinx.serialization.SerializationException
-import okhttp3.CertificatePinner
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -159,16 +158,10 @@ class RealtimeWebSocketClient(
 
     private fun clientFor(endpoint: ServerEndpoint): OkHttpClient {
         if (endpoint.route == EndpointRoute.TUNNEL) return baseClient
-        val uri = URI(endpoint.url)
-        val host = requireNotNull(uri.host) { "WebSocket endpoint host is required" }
         val trustManager = LanPinnedTrustManager(endpoint.tlsSpkiPins.toSet())
         val sslContext = SSLContext.getInstance("TLS").apply { init(null, arrayOf(trustManager), null) }
-        val pinner = CertificatePinner.Builder()
-            .add(host, *endpoint.tlsSpkiPins.toTypedArray())
-            .build()
         return baseClient.newBuilder()
             .sslSocketFactory(sslContext.socketFactory, trustManager)
-            .certificatePinner(pinner)
             .build()
     }
 
