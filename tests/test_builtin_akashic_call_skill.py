@@ -5,13 +5,21 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import BinaryIO, cast
+from typing import Protocol, cast
 
 from agent.skills import SkillsLoader
 
 
 REPO_ROOT = Path(__file__).parents[1]
 SKILL_ROOT = REPO_ROOT / "skills" / "akashic-call"
+
+
+class _FrameStream(Protocol):
+    def readline(self) -> bytes: ...
+
+    def write(self, data: bytes, /) -> int: ...
+
+    def flush(self) -> None: ...
 
 
 def test_akashic_call_is_discoverable_builtin(tmp_path: Path) -> None:
@@ -79,14 +87,14 @@ def test_akashic_call_examples_are_complete_and_referenced(tmp_path: Path) -> No
     compile(raw_client.read_text(encoding="utf-8"), str(raw_client), "exec")
 
 
-def _read_frame(stream: BinaryIO) -> dict[str, object]:
+def _read_frame(stream: _FrameStream) -> dict[str, object]:
     payload = json.loads(stream.readline())
     if not isinstance(payload, dict):
         raise ValueError("request frame must be an object")
     return cast(dict[str, object], payload)
 
 
-def _write_frame(stream: BinaryIO, payload: dict[str, object]) -> None:
+def _write_frame(stream: _FrameStream, payload: dict[str, object]) -> None:
     _ = stream.write(json.dumps(payload, separators=(",", ":")).encode() + b"\n")
     stream.flush()
 
