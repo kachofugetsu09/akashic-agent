@@ -66,3 +66,64 @@ jobs:
         with:
           name: programmatic-control-gate
           path: docker/debug/reports/programmatic-control/
+
+  runtime-extension-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install runtime dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run workspace MCP lifecycle gate
+        run: python docker/debug/workspace_mcp_reload_probe.py
+
+      - name: Run restart and MCP soak gate
+        run: python docker/debug/restart_probe.py --soak
+
+      - name: Verify combined source and cleanup evidence
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          def latest(pattern: str) -> dict[str, object]:
+              reports = list(Path("docker/debug/reports").glob(pattern))
+              if not reports:
+                  raise SystemExit(f"缺少 Gate 报告: {pattern}")
+              path = max(reports, key=lambda item: item.stat().st_mtime_ns)
+              return json.loads(path.read_text(encoding="utf-8"))
+
+          mcp = latest("workspace-mcp/*/gate.json")
+          restart = latest("restart/*/gate.json")
+          restart_digest = restart["sourceDigest"]
+          assert isinstance(restart_digest, dict)
+          assert mcp["status"] == restart["status"] == "passed"
+          assert mcp["head"] == restart["head"] == os.environ["GITHUB_SHA"]
+          assert mcp["sourceDigest"] == restart_digest["sha256"]
+          assert mcp["dirtyStatus"] == restart["dirtyStatus"] == []
+          assert not any(
+              mcp[name]
+              for name in ("residualContainers", "residualNetworks", "residualVolumes")
+          )
+          assert not any(restart["residualResources"].values())
+          PY
+
+      - name: Upload runtime extension evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-extension-gate
+          path: |
+            docker/debug/reports/workspace-mcp/
+            docker/debug/reports/restart/
