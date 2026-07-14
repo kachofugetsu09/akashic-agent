@@ -1,0 +1,866 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Literal, cast
+
+
+PairingStatus = Literal["pending", "confirmed", "consumed", "expired"]
+
+
+class MobileStorageError(RuntimeError):
+    """表示移动端持久化契约被违反。"""
+
+
+class ServerIdentityConflictError(MobileStorageError):
+    """表示数据库中的服务器身份与当前身份冲突。"""
+
+
+class UnknownPairingError(MobileStorageError):
+    """表示配对会话不存在。"""
+
+
+class PairingStateError(MobileStorageError):
+    """表示配对会话状态不允许当前操作。"""
+
+
+class PairingExpiredError(MobileStorageError):
+    """表示配对会话已经过期。"""
+
+
+class UnknownDeviceError(MobileStorageError):
+    """表示设备不存在。"""
+
+
+class AckRollbackError(MobileStorageError):
+    """表示累计 ACK 试图倒退。"""
+
+
+class AckOverflowError(MobileStorageError):
+    """表示累计 ACK 超过设备已发送上限。"""
+
+
+class SentCursorError(MobileStorageError):
+    """表示已发送游标倒退或超过已分配上限。"""
+
+
+@dataclass(frozen=True, slots=True)
+class ServerIdentityReference:
+    server_id: str
+    keyset_manifest_path: str
+    public_key_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class PairingSessionRecord:
+    pairing_id: str
+    secret_hash: str | None
+    expires_at: datetime
+    status: PairingStatus
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceRecord:
+    device_id: str
+    public_key: str
+    display_name: str
+    created_at: datetime
+    revoked_at: datetime | None
+    capabilities: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceCursor:
+    device_id: str
+    next_event_seq: int
+    sent_event_seq: int
+    acknowledged_event_seq: int
+
+
+@dataclass(frozen=True, slots=True)
+class DurableInboxEvent:
+    device_id: str
+    event_seq: int
+    event_id: str
+    priority: Literal["P0"]
+    envelope_json: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AckAdvance:
+    previous_event_seq: int
+    acknowledged_event_seq: int
+    deleted_events: int
+
+
+class MobileRealtimeStorage:
+    """持有移动端数据库 schema，并原子维护设备游标与 durable inbox。"""
+
+    def __init__(self, db_path: Path) -> None:
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self._db = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self._db.row_factory = sqlite3.Row
+        self._closed = False
+
+        # 1. 建立 SQLite 运行约束
+        with self._lock:
+            journal_mode = self._db.execute("PRAGMA journal_mode=WAL").fetchone()
+            if journal_mode is None or str(journal_mode[0]).lower() != "wal":
+                raise RuntimeError("mobile realtime 数据库未能启用 WAL")
+            _ = self._db.execute("PRAGMA synchronous=NORMAL")
+            _ = self._db.execute("PRAGMA foreign_keys=ON")
+
+            # 2. 创建由本存储层拥有的 schema
+            self._init_schema()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._db.close()
+
+    def write_server_identity(self, reference: ServerIdentityReference) -> None:
+        """首次记录服务器身份，后续只允许同一身份更新 manifest 引用。"""
+
+        # 1. 校验新引用属于完整身份记录
+        _ = _require_text(reference.server_id, "server_id")
+        _ = _require_text(reference.keyset_manifest_path, "keyset_manifest_path")
+        _ = _require_text(reference.public_key_fingerprint, "public_key_fingerprint")
+
+        # 2. 锁定单例身份并拒绝公钥变化
+        with self._lock, self._db:
+            _ = self._db.execute("BEGIN IMMEDIATE")
+            row = self._db.execute(
+                """
+                SELECT server_id, public_key_fingerprint
+                FROM mobile_server_identity
+                WHERE singleton = 1
+                """
+            ).fetchone()
+            if row is not None:
+                server_id = _row_text(row, "server_id")
+                fingerprint = _row_text(row, "public_key_fingerprint")
+                if (
+                    server_id != reference.server_id
+                    or fingerprint != reference.public_key_fingerprint
+                ):
+                    raise ServerIdentityConflictError(
+                        "mobile realtime 服务器身份与数据库记录不一致"
+                    )
+
+            # 3. 原子写入当前 keyset manifest 引用
+            _ = self._db.execute(
+                """
+                INSERT INTO mobile_server_identity(
+                    singleton, server_id, keyset_manifest_path,
+                    public_key_fingerprint
+                ) VALUES(1, ?, ?, ?)
+                ON CONFLICT(singleton) DO UPDATE SET
+                    keyset_manifest_path = excluded.keyset_manifest_path
+                """,
+                (
+                    reference.server_id,
+                    reference.keyset_manifest_path,
+                    reference.public_key_fingerprint,
+                ),
+            )
+
+    def read_server_identity(self) -> ServerIdentityReference | None:
+        with self._lock:
+            row = self._db.execute(
+                """
+                SELECT server_id, keyset_manifest_path, public_key_fingerprint
+                FROM mobile_server_identity
+                WHERE singleton = 1
+                """
+            ).fetchone()
+        if row is None:
+            return None
+        return ServerIdentityReference(
+            server_id=_row_text(row, "server_id"),
+            keyset_manifest_path=_row_text(row, "keyset_manifest_path"),
+            public_key_fingerprint=_row_text(row, "public_key_fingerprint"),
+        )
+
+    def create_pairing_session(self, session: PairingSessionRecord) -> None:
+        """创建尚未确认的一次性配对会话。"""
+
+        if session.status != "pending":
+            raise PairingStateError("新配对会话必须处于 pending 状态")
+        secret_hash = _require_text(session.secret_hash, "secret_hash")
+        with self._lock, self._db:
+            _ = self._db.execute(
+                """
+                INSERT INTO mobile_pairing_sessions(
+                    pairing_id, secret_hash, expires_at, status
+                ) VALUES(?, ?, ?, 'pending')
+                """,
+                (
+                    _require_text(session.pairing_id, "pairing_id"),
+                    secret_hash,
+                    _serialize_datetime(session.expires_at, "expires_at"),
+                ),
+            )
+
+    def read_pairing_session(self, pairing_id: str) -> PairingSessionRecord | None:
+        with self._lock:
+            row = self._db.execute(
+                """
+                SELECT pairing_id, secret_hash, expires_at, status
+                FROM mobile_pairing_sessions
+                WHERE pairing_id = ?
+                """,
+                (_require_text(pairing_id, "pairing_id"),),
+            ).fetchone()
+        if row is None:
+            return None
+        return _pairing_from_row(row)
+
+    def confirm_pairing(self, pairing_id: str, *, now: datetime) -> PairingSessionRecord:
+        """确认未过期的 pending 配对会话。"""
+
+        # 1. 在写事务内读取当前状态
+        pairing_key = _require_text(pairing_id, "pairing_id")
+        current_time = _require_aware_datetime(now, "now")
+        with self._lock, self._db:
+            _ = self._db.execute("BEGIN IMMEDIATE")
+            row = self._read_pairing_row(pairing_key)
+            session = _pairing_from_row(row)
+            if session.status != "pending":
+                raise PairingStateError(
+                    f"配对会话不能确认: {pairing_key} status={session.status}"
+                )
+            if session.expires_at <= current_time:
+                raise PairingExpiredError(f"配对会话已过期: {pairing_key}")
+
+            # 2. 原子推进到电脑已确认状态
+            _ = self._db.execute(
+                """
+                UPDATE mobile_pairing_sessions
+                SET status = 'confirmed'
+                WHERE pairing_id = ?
+                """,
+                (pairing_key,),
+            )
+        return PairingSessionRecord(
+            pairing_id=session.pairing_id,
+            secret_hash=session.secret_hash,
+            expires_at=session.expires_at,
+            status="confirmed",
+        )
+
+    def consume_pairing(
+        self,
+        pairing_id: str,
+        device: DeviceRecord,
+        *,
+        now: datetime,
+    ) -> None:
+        """原子注册设备并销毁已确认配对会话的一次性 secret。"""
+
+        # 1. 校验会话仍然处于可消费状态
+        pairing_key = _require_text(pairing_id, "pairing_id")
+        current_time = _require_aware_datetime(now, "now")
+        with self._lock, self._db:
+            _ = self._db.execute("BEGIN IMMEDIATE")
+            session = _pairing_from_row(self._read_pairing_row(pairing_key))
+            if session.status != "confirmed":
+                raise PairingStateError(
+                    f"配对会话不能消费: {pairing_key} status={session.status}"
+                )
+            if session.expires_at <= current_time:
+                raise PairingExpiredError(f"配对会话已过期: {pairing_key}")
+
+            # 2. 在同一事务注册设备与初始 cursor
+            self._insert_device(device)
+
+            # 3. 作废一次性 secret 并提交完成状态
+            updated = self._db.execute(
+                """
+                UPDATE mobile_pairing_sessions
+                SET secret_hash = NULL, status = 'consumed'
+                WHERE pairing_id = ? AND status = 'confirmed'
+                """,
+                (pairing_key,),
+            )
+            if updated.rowcount != 1:
+                raise PairingStateError(f"配对会话状态并发变化: {pairing_key}")
+
+    def register_device(self, device: DeviceRecord) -> None:
+        """注册设备，并在同一事务建立初始事件游标。"""
+
+        with self._lock, self._db:
+            _ = self._db.execute("BEGIN IMMEDIATE")
+            self._insert_device(device)
+
+    def read_device(self, device_id: str) -> DeviceRecord | None:
+        with self._lock:
+            row = self._db.execute(
+                """
+                SELECT device_id, public_key, display_name, created_at,
+                       revoked_at, capabilities
+                FROM mobile_devices
+                WHERE device_id = ?
+                """,
+                (_require_text(device_id, "device_id"),),
+            ).fetchone()
+        if row is None:
+            return None
+        return _device_from_row(row)
+
+    def revoke_device(self, device_id: str, *, revoked_at: datetime) -> DeviceRecord:
+        """原子标记设备已撤销，并返回数据库中的最终状态。"""
+
+        # 1. 锁定设备当前撤销状态
+        device_key = _require_text(device_id, "device_id")
+        timestamp = _serialize_datetime(revoked_at, "revoked_at")
+        with self._lock, self._db:
+            _ = self._db.execute("BEGIN IMMEDIATE")
+            row = self._read_device_row(device_key)
+            existing = _device_from_row(row)
+
+            # 2. 首次撤销时保留准确时间，重复调用保持幂等
+            if existing.revoked_at is None:
+                _ = self._db.execute(
+                    """
+                    UPDATE mobile_devices
+                    SET revoked_at = ?
+                    WHERE device_id = ?
+                    """,
+                    (timestamp, device_key),
+                )
+                return DeviceRecord(
+                    device_id=existing.device_id,
+                    public_key=existing.public_key,
+                    display_name=existing.display_name,
+                    created_at=existing.created_at,
+                    revoked_at=_parse_datetime(timestamp, "revoked_at"),
+                    capabilities=existing.capabilities,
+                )
+        return existing
+
+    def read_cursor(self, device_id: str) -> DeviceCursor:
+        with self._lock:
+            row = self._db.execute(
+                """
+                SELECT device_id, next_event_seq, sent_event_seq,
+                       acknowledged_event_seq
+                FROM mobile_device_cursors
+                WHERE device_id = ?
+                """,
+                (_require_text(device_id, "device_id"),),
+            ).fetchone()
+        if row is None:
+            raise UnknownDeviceError(f"设备不存在或缺少 cursor: {device_id}")
+        return _cursor_from_row(row)
+
+    def append_durable_event(
+        self,
+        *,
+        device_id: str,
+        event_id: str,
+        envelope_json: str,
+        created_at: datetime,
+    ) -> DurableInboxEvent:
+        """在同一写事务分配 event_seq 并插入 P0 durable event。"""
+
+        # 1. 固化内部已验证的事件字段
+        device_key = _require_text(device_id, "device_id")
+        event_key = _require_text(event_id, "event_id")
+        envelope = _require_text(envelope_json, "envelope_json")
+        timestamp = _serialize_datetime(created_at, "created_at")
+
+        # 2. 锁定 cursor 并分配严格递增序号
+        with self._lock, self._db:
+            _ = self._db.execute("BEGIN IMMEDIATE")
+            row = self._db.execute(
+                """
+                SELECT next_event_seq
+                FROM mobile_device_cursors
+                WHERE device_id = ?
+                """,
+                (device_key,),
+            ).fetchone()
+            if row is None:
+                raise UnknownDeviceError(f"设备不存在或缺少 cursor: {device_key}")
+            event_seq = _row_positive_int(row, "next_event_seq")
+
+            # 3. 同事务写入 durable event 后推进 cursor
+            _ = self._db.execute(
+                """
+                INSERT INTO mobile_device_inbox(
+                    device_id, event_seq, event_id, priority,
+                    envelope_json, created_at
+                ) VALUES(?, ?, ?, 'P0', ?, ?)
+                """,
+                (device_key, event_seq, event_key, envelope, timestamp),
+            )
+            updated = self._db.execute(
+                """
+                UPDATE mobile_device_cursors
+                SET next_event_seq = ?
+                WHERE device_id = ? AND next_event_seq = ?
+                """,
+                (event_seq + 1, device_key, event_seq),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError(f"设备 event_seq 分配发生并发冲突: {device_key}")
+
+        return DurableInboxEvent(
+            device_id=device_key,
+            event_seq=event_seq,
+            event_id=event_key,
+            priority="P0",
+            envelope_json=envelope,
+            created_at=_parse_datetime(timestamp, "created_at"),
+        )
+
+    def read_durable_events(
+        self,
+        device_id: str,
+        *,
+        after_event_seq: int,
+        limit: int,
+    ) -> tuple[DurableInboxEvent, ...]:
+        if after_event_seq < 0:
+            raise ValueError("after_event_seq 不能为负数")
+        if limit <= 0:
+            raise ValueError("limit 必须大于零")
+        with self._lock:
+            self._require_device_cursor(device_id)
+            rows = self._db.execute(
+                """
+                SELECT device_id, event_seq, event_id, priority,
+                       envelope_json, created_at
+                FROM mobile_device_inbox
+                WHERE device_id = ? AND event_seq > ?
+                ORDER BY event_seq ASC
+                LIMIT ?
+                """,
+                (device_id, after_event_seq, limit),
+            ).fetchall()
+        return tuple(_inbox_event_from_row(row) for row in rows)
+
+    def mark_events_sent(self, device_id: str, *, through_event_seq: int) -> DeviceCursor:
+        """推进持久化的已发送上限，供累计 ACK 做越界判断。"""
+
+        # 1. 锁定当前 cursor 并验证范围
+        device_key = _require_text(device_id, "device_id")
+        if through_event_seq < 0:
+            raise ValueError("through_event_seq 不能为负数")
+        with self._lock, self._db:
+            _ = self._db.execute("BEGIN IMMEDIATE")
+            row = self._read_cursor_row(device_key)
+            cursor = _cursor_from_row(row)
+            if through_event_seq < cursor.sent_event_seq:
+                raise SentCursorError(
+                    f"已发送 cursor 不能倒退: {through_event_seq} < {cursor.sent_event_seq}"
+                )
+            allocated_event_seq = cursor.next_event_seq - 1
+            if through_event_seq > allocated_event_seq:
+                raise SentCursorError(
+                    f"已发送 cursor 超过已分配上限: {through_event_seq} > {allocated_event_seq}"
+                )
+
+            # 2. 同值视为重试，前进值写入数据库
+            if through_event_seq > cursor.sent_event_seq:
+                _ = self._db.execute(
+                    """
+                    UPDATE mobile_device_cursors
+                    SET sent_event_seq = ?
+                    WHERE device_id = ?
+                    """,
+                    (through_event_seq, device_key),
+                )
+        return DeviceCursor(
+            device_id=cursor.device_id,
+            next_event_seq=cursor.next_event_seq,
+            sent_event_seq=through_event_seq,
+            acknowledged_event_seq=cursor.acknowledged_event_seq,
+        )
+
+    def acknowledge_durable_events(
+        self,
+        device_id: str,
+        *,
+        through_event_seq: int,
+    ) -> AckAdvance:
+        """原子推进累计 ACK，并删除该设备已确认的 P0 事件。"""
+
+        # 1. 锁定 cursor 并拒绝倒退或越界 ACK
+        device_key = _require_text(device_id, "device_id")
+        if through_event_seq < 0:
+            raise ValueError("through_event_seq 不能为负数")
+        with self._lock, self._db:
+            _ = self._db.execute("BEGIN IMMEDIATE")
+            cursor = _cursor_from_row(self._read_cursor_row(device_key))
+            if through_event_seq < cursor.acknowledged_event_seq:
+                raise AckRollbackError(
+                    "累计 ACK 不能倒退: "
+                    f"{through_event_seq} < {cursor.acknowledged_event_seq}"
+                )
+            if through_event_seq > cursor.sent_event_seq:
+                raise AckOverflowError(
+                    "累计 ACK 超过已发送上限: "
+                    f"{through_event_seq} > {cursor.sent_event_seq}"
+                )
+            if through_event_seq == cursor.acknowledged_event_seq:
+                return AckAdvance(
+                    previous_event_seq=cursor.acknowledged_event_seq,
+                    acknowledged_event_seq=through_event_seq,
+                    deleted_events=0,
+                )
+
+            # 2. 在同一事务推进 cursor 并批量删除 durable event
+            _ = self._db.execute(
+                """
+                UPDATE mobile_device_cursors
+                SET acknowledged_event_seq = ?
+                WHERE device_id = ?
+                """,
+                (through_event_seq, device_key),
+            )
+            deleted = self._db.execute(
+                """
+                DELETE FROM mobile_device_inbox
+                WHERE device_id = ? AND event_seq <= ?
+                """,
+                (device_key, through_event_seq),
+            )
+        return AckAdvance(
+            previous_event_seq=cursor.acknowledged_event_seq,
+            acknowledged_event_seq=through_event_seq,
+            deleted_events=deleted.rowcount,
+        )
+
+    def has_unacked_event_before(self, device_id: str, *, cutoff: datetime) -> bool:
+        """检查设备是否存在超过保留期的未确认 P0 事件。"""
+
+        device_key = _require_text(device_id, "device_id")
+        cutoff_text = _serialize_datetime(cutoff, "cutoff")
+        with self._lock:
+            self._require_device_cursor(device_key)
+            row = self._db.execute(
+                """
+                SELECT 1
+                FROM mobile_device_inbox
+                WHERE device_id = ? AND created_at < ?
+                LIMIT 1
+                """,
+                (device_key, cutoff_text),
+            ).fetchone()
+        return row is not None
+
+    def count_durable_events(self, device_id: str) -> int:
+        device_key = _require_text(device_id, "device_id")
+        with self._lock:
+            self._require_device_cursor(device_key)
+            row = self._db.execute(
+                """
+                SELECT COUNT(*) AS event_count
+                FROM mobile_device_inbox
+                WHERE device_id = ?
+                """,
+                (device_key,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("mobile_device_inbox COUNT 查询未返回结果行")
+        return _row_nonnegative_int(row, "event_count")
+
+    def _init_schema(self) -> None:
+        """创建移动端身份、配对、设备、cursor 和 inbox 表。"""
+
+        # 1. 身份与配对状态
+        _ = self._db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS mobile_server_identity (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                server_id TEXT NOT NULL,
+                keyset_manifest_path TEXT NOT NULL,
+                public_key_fingerprint TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS mobile_pairing_sessions (
+                pairing_id TEXT PRIMARY KEY,
+                secret_hash TEXT,
+                expires_at TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(
+                    status IN ('pending', 'confirmed', 'consumed', 'expired')
+                ),
+                CHECK(
+                    (status = 'consumed' AND secret_hash IS NULL)
+                    OR (status != 'consumed' AND secret_hash IS NOT NULL)
+                )
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_mobile_pairing_expiry
+            ON mobile_pairing_sessions(status, expires_at);
+
+            -- 2. 已配对设备与严格单调 cursor
+            CREATE TABLE IF NOT EXISTS mobile_devices (
+                device_id TEXT PRIMARY KEY,
+                public_key TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                revoked_at TEXT,
+                capabilities TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS mobile_device_cursors (
+                device_id TEXT PRIMARY KEY,
+                next_event_seq INTEGER NOT NULL CHECK(next_event_seq >= 1),
+                sent_event_seq INTEGER NOT NULL CHECK(sent_event_seq >= 0),
+                acknowledged_event_seq INTEGER NOT NULL CHECK(
+                    acknowledged_event_seq >= 0
+                ),
+                CHECK(acknowledged_event_seq <= sent_event_seq),
+                CHECK(sent_event_seq < next_event_seq),
+                FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
+                    ON DELETE CASCADE
+            );
+
+            -- 3. 每设备 P0 durable inbox
+            CREATE TABLE IF NOT EXISTS mobile_device_inbox (
+                device_id TEXT NOT NULL,
+                event_seq INTEGER NOT NULL CHECK(event_seq >= 1),
+                event_id TEXT NOT NULL,
+                priority TEXT NOT NULL CHECK(priority = 'P0'),
+                envelope_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(device_id, event_seq),
+                UNIQUE(device_id, event_id),
+                FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_mobile_inbox_created
+            ON mobile_device_inbox(device_id, created_at);
+            """
+        )
+        self._db.commit()
+
+    def _insert_device(self, device: DeviceRecord) -> None:
+        if device.revoked_at is not None:
+            raise ValueError("新设备不能在注册时已撤销")
+        capabilities = _serialize_capabilities(device.capabilities)
+        _ = self._db.execute(
+            """
+            INSERT INTO mobile_devices(
+                device_id, public_key, display_name, created_at,
+                revoked_at, capabilities
+            ) VALUES(?, ?, ?, ?, NULL, ?)
+            """,
+            (
+                _require_text(device.device_id, "device_id"),
+                _require_text(device.public_key, "public_key"),
+                _require_text(device.display_name, "display_name"),
+                _serialize_datetime(device.created_at, "created_at"),
+                capabilities,
+            ),
+        )
+        _ = self._db.execute(
+            """
+            INSERT INTO mobile_device_cursors(
+                device_id, next_event_seq, sent_event_seq,
+                acknowledged_event_seq
+            ) VALUES(?, 1, 0, 0)
+            """,
+            (device.device_id,),
+        )
+
+    def _read_pairing_row(self, pairing_id: str) -> sqlite3.Row:
+        row = self._db.execute(
+            """
+            SELECT pairing_id, secret_hash, expires_at, status
+            FROM mobile_pairing_sessions
+            WHERE pairing_id = ?
+            """,
+            (pairing_id,),
+        ).fetchone()
+        if row is None:
+            raise UnknownPairingError(f"配对会话不存在: {pairing_id}")
+        return cast(sqlite3.Row, row)
+
+    def _read_device_row(self, device_id: str) -> sqlite3.Row:
+        row = self._db.execute(
+            """
+            SELECT device_id, public_key, display_name, created_at,
+                   revoked_at, capabilities
+            FROM mobile_devices
+            WHERE device_id = ?
+            """,
+            (device_id,),
+        ).fetchone()
+        if row is None:
+            raise UnknownDeviceError(f"设备不存在: {device_id}")
+        return cast(sqlite3.Row, row)
+
+    def _read_cursor_row(self, device_id: str) -> sqlite3.Row:
+        row = self._db.execute(
+            """
+            SELECT device_id, next_event_seq, sent_event_seq,
+                   acknowledged_event_seq
+            FROM mobile_device_cursors
+            WHERE device_id = ?
+            """,
+            (device_id,),
+        ).fetchone()
+        if row is None:
+            raise UnknownDeviceError(f"设备不存在或缺少 cursor: {device_id}")
+        return cast(sqlite3.Row, row)
+
+    def _require_device_cursor(self, device_id: str) -> None:
+        _ = _require_text(device_id, "device_id")
+        row = self._db.execute(
+            "SELECT 1 FROM mobile_device_cursors WHERE device_id = ?",
+            (device_id,),
+        ).fetchone()
+        if row is None:
+            raise UnknownDeviceError(f"设备不存在或缺少 cursor: {device_id}")
+
+
+def _pairing_from_row(row: sqlite3.Row) -> PairingSessionRecord:
+    status = _row_text(row, "status")
+    if status not in {"pending", "confirmed", "consumed", "expired"}:
+        raise ValueError(f"mobile_pairing_sessions.status 非法: {status}")
+    secret_raw = row["secret_hash"]
+    if secret_raw is not None and not isinstance(secret_raw, str):
+        raise TypeError("mobile_pairing_sessions.secret_hash 必须为文本或 NULL")
+    if status == "consumed" and secret_raw is not None:
+        raise ValueError("consumed 配对会话仍然包含 secret_hash")
+    if status != "consumed" and (not isinstance(secret_raw, str) or not secret_raw):
+        raise ValueError(f"{status} 配对会话缺少 secret_hash")
+    return PairingSessionRecord(
+        pairing_id=_row_text(row, "pairing_id"),
+        secret_hash=secret_raw,
+        expires_at=_parse_datetime(_row_text(row, "expires_at"), "expires_at"),
+        status=cast(PairingStatus, status),
+    )
+
+
+def _device_from_row(row: sqlite3.Row) -> DeviceRecord:
+    revoked_raw = row["revoked_at"]
+    if revoked_raw is not None and not isinstance(revoked_raw, str):
+        raise TypeError("mobile_devices.revoked_at 必须为文本或 NULL")
+    return DeviceRecord(
+        device_id=_row_text(row, "device_id"),
+        public_key=_row_text(row, "public_key"),
+        display_name=_row_text(row, "display_name"),
+        created_at=_parse_datetime(_row_text(row, "created_at"), "created_at"),
+        revoked_at=(
+            _parse_datetime(revoked_raw, "revoked_at")
+            if revoked_raw is not None
+            else None
+        ),
+        capabilities=_parse_capabilities(_row_text(row, "capabilities")),
+    )
+
+
+def _cursor_from_row(row: sqlite3.Row) -> DeviceCursor:
+    cursor = DeviceCursor(
+        device_id=_row_text(row, "device_id"),
+        next_event_seq=_row_positive_int(row, "next_event_seq"),
+        sent_event_seq=_row_nonnegative_int(row, "sent_event_seq"),
+        acknowledged_event_seq=_row_nonnegative_int(
+            row, "acknowledged_event_seq"
+        ),
+    )
+    if cursor.sent_event_seq >= cursor.next_event_seq:
+        raise ValueError("mobile_device_cursors.sent_event_seq 超过已分配上限")
+    if cursor.acknowledged_event_seq > cursor.sent_event_seq:
+        raise ValueError("mobile_device_cursors.acknowledged_event_seq 超过已发送上限")
+    return cursor
+
+
+def _inbox_event_from_row(row: sqlite3.Row) -> DurableInboxEvent:
+    priority = _row_text(row, "priority")
+    if priority != "P0":
+        raise ValueError(f"mobile_device_inbox.priority 非法: {priority}")
+    envelope_json = _row_text(row, "envelope_json")
+    parsed = json.loads(envelope_json)
+    if not isinstance(parsed, dict):
+        raise TypeError("mobile_device_inbox.envelope_json 必须编码 JSON object")
+    return DurableInboxEvent(
+        device_id=_row_text(row, "device_id"),
+        event_seq=_row_positive_int(row, "event_seq"),
+        event_id=_row_text(row, "event_id"),
+        priority="P0",
+        envelope_json=envelope_json,
+        created_at=_parse_datetime(_row_text(row, "created_at"), "created_at"),
+    )
+
+
+def _serialize_capabilities(capabilities: tuple[str, ...]) -> str:
+    if len(set(capabilities)) != len(capabilities):
+        raise ValueError("capabilities 不能包含重复项")
+    values = [_require_text(value, "capability") for value in capabilities]
+    return json.dumps(values, ensure_ascii=False, separators=(",", ":"))
+
+
+def _parse_capabilities(raw: str) -> tuple[str, ...]:
+    parsed: object = json.loads(raw)
+    if not isinstance(parsed, list):
+        raise TypeError("mobile_devices.capabilities 必须编码 JSON array")
+    raw_values = cast(list[object], parsed)
+    values: list[str] = []
+    for value in raw_values:
+        if not isinstance(value, str) or not value:
+            raise TypeError("mobile_devices.capabilities 必须只包含非空文本")
+        values.append(value)
+    if len(set(values)) != len(values):
+        raise ValueError("mobile_devices.capabilities 包含重复项")
+    return tuple(values)
+
+
+def _serialize_datetime(value: datetime, field: str) -> str:
+    return _require_aware_datetime(value, field).astimezone(timezone.utc).isoformat()
+
+
+def _parse_datetime(value: str, field: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    return _require_aware_datetime(parsed, field)
+
+
+def _require_aware_datetime(value: datetime, field: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field} 必须包含时区")
+    return value
+
+
+def _require_text(value: str | None, field: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field} 必须为非空文本")
+    return value
+
+
+def _row_text(row: sqlite3.Row, field: str) -> str:
+    value = row[field]
+    if not isinstance(value, str) or not value:
+        raise TypeError(f"SQLite 字段 {field} 必须为非空文本")
+    return value
+
+
+def _row_positive_int(row: sqlite3.Row, field: str) -> int:
+    value = row[field]
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"SQLite 字段 {field} 必须为整数")
+    if value < 1:
+        raise ValueError(f"SQLite 字段 {field} 必须大于零")
+    return value
+
+
+def _row_nonnegative_int(row: sqlite3.Row, field: str) -> int:
+    value = row[field]
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"SQLite 字段 {field} 必须为整数")
+    if value < 0:
+        raise ValueError(f"SQLite 字段 {field} 不能为负数")
+    return value

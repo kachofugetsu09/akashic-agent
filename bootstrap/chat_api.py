@@ -1,20 +1,33 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
 
 from infra.channels.web_chat_channel import WebChatChannel
+from infra.mobile_realtime.pairing import PairingError
+from infra.mobile_realtime.storage import PairingStateError
+
+if TYPE_CHECKING:
+    from infra.mobile_realtime.gateway import MobilePairingAdmin
+
+
+class PairingApprovalPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    confirmation_code: str = Field(pattern=r"^[0-9]{6}$")
 
 
 def create_chat_app(
     *,
     workspace: Path,
     channel: WebChatChannel,
+    mobile_pairing_admin: MobilePairingAdmin | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Akashic Chat API")
     app.state.workspace = workspace
@@ -92,6 +105,32 @@ def create_chat_app(
             raise HTTPException(status_code=404, detail="文件不存在")
         return FileResponse(requested)
 
+    if mobile_pairing_admin is not None:
+
+        @app.post("/api/chat/mobile-pairing")
+        def create_mobile_pairing() -> dict[str, object]:
+            return mobile_pairing_admin.create_offer()
+
+        @app.get("/api/chat/mobile-pairing/{pairing_id}")
+        def read_mobile_pairing(pairing_id: str) -> dict[str, object]:
+            claim = mobile_pairing_admin.pending_claim(pairing_id)
+            if claim is None:
+                return {"pairing_id": pairing_id, "status": "waiting_for_phone"}
+            return {**claim, "status": "waiting_for_desktop_confirmation"}
+
+        @app.post("/api/chat/mobile-pairing/{pairing_id}/approve")
+        def approve_mobile_pairing(
+            pairing_id: str,
+            payload: PairingApprovalPayload,
+        ) -> dict[str, object]:
+            try:
+                return mobile_pairing_admin.approve(
+                    pairing_id,
+                    payload.confirmation_code,
+                )
+            except (PairingError, PairingStateError) as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+
     return app
 
 
@@ -99,6 +138,7 @@ def build_chat_server(
     *,
     workspace: Path,
     channel: WebChatChannel,
+    mobile_pairing_admin: MobilePairingAdmin | None = None,
     host: str = "127.0.0.1",
     port: int = 6322,
 ) -> uvicorn.Server:
@@ -106,6 +146,7 @@ def build_chat_server(
         create_chat_app(
             workspace=workspace,
             channel=channel,
+            mobile_pairing_admin=mobile_pairing_admin,
         ),
         host=host,
         port=port,
