@@ -1,5 +1,34 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "attachmentBinaryFrame": {
+    "byteOrder": "big-endian",
+    "headerSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "attachment_id": {
+          "maxLength": 36,
+          "minLength": 26,
+          "type": "string"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "attachment_id",
+        "offset"
+      ],
+      "type": "object"
+    },
+    "layout": [
+      "uint32 header_length",
+      "header_length bytes UTF-8 JSON header",
+      "remaining bytes chunk payload"
+    ],
+    "maxHeaderBytes": 1024,
+    "payloadOffsetSemantics": "absolute byte offset"
+  },
   "commandTypes": [
     "attachment.begin",
     "attachment.finish",
@@ -174,6 +203,180 @@
           "payload"
         ],
         "title": "AnswerDeltaEvent",
+        "type": "object"
+      },
+      "AttachmentBeginCommand": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_epoch": {
+            "minimum": 1,
+            "title": "Connection Epoch",
+            "type": "integer"
+          },
+          "id": {
+            "maxLength": 36,
+            "minLength": 26,
+            "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12})$",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "command",
+            "title": "Kind",
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/$defs/AttachmentBeginPayload"
+          },
+          "session_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          },
+          "turn_id": {
+            "default": null,
+            "title": "Turn Id",
+            "type": "null"
+          },
+          "type": {
+            "const": "attachment.begin",
+            "title": "Type",
+            "type": "string"
+          },
+          "v": {
+            "const": 1,
+            "title": "V",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "v",
+          "kind",
+          "type",
+          "id",
+          "connection_epoch",
+          "session_id",
+          "payload"
+        ],
+        "title": "AttachmentBeginCommand",
+        "type": "object"
+      },
+      "AttachmentBeginPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment_id": {
+            "maxLength": 36,
+            "minLength": 26,
+            "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12})$",
+            "title": "Attachment Id",
+            "type": "string"
+          },
+          "content_type": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Content Type",
+            "type": "string"
+          },
+          "filename": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Filename",
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[0-9a-fA-F]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size_bytes": {
+            "minimum": 1,
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attachment_id",
+          "filename",
+          "content_type",
+          "size_bytes",
+          "sha256"
+        ],
+        "title": "AttachmentBeginPayload",
+        "type": "object"
+      },
+      "AttachmentFinishCommand": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_epoch": {
+            "minimum": 1,
+            "title": "Connection Epoch",
+            "type": "integer"
+          },
+          "id": {
+            "maxLength": 36,
+            "minLength": 26,
+            "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12})$",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "command",
+            "title": "Kind",
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/$defs/AttachmentFinishPayload"
+          },
+          "session_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          },
+          "turn_id": {
+            "default": null,
+            "title": "Turn Id",
+            "type": "null"
+          },
+          "type": {
+            "const": "attachment.finish",
+            "title": "Type",
+            "type": "string"
+          },
+          "v": {
+            "const": 1,
+            "title": "V",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "v",
+          "kind",
+          "type",
+          "id",
+          "connection_epoch",
+          "session_id",
+          "payload"
+        ],
+        "title": "AttachmentFinishCommand",
+        "type": "object"
+      },
+      "AttachmentFinishPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment_id": {
+            "maxLength": 36,
+            "minLength": 26,
+            "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12})$",
+            "title": "Attachment Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "attachment_id"
+        ],
+        "title": "AttachmentFinishPayload",
         "type": "object"
       },
       "AuthAcceptedControl": {
@@ -355,8 +558,6 @@
               "session.open",
               "history.get",
               "turn.stop",
-              "attachment.begin",
-              "attachment.finish",
               "device.update",
               "ping"
             ],
@@ -639,7 +840,7 @@
               "minLength": 1,
               "type": "string"
             },
-            "maxItems": 128,
+            "maxItems": 10,
             "title": "Media Refs",
             "type": "array"
           },
@@ -1039,8 +1240,8 @@
         "command": {
           "discriminator": {
             "mapping": {
-              "attachment.begin": "#/$defs/GenericCommand",
-              "attachment.finish": "#/$defs/GenericCommand",
+              "attachment.begin": "#/$defs/AttachmentBeginCommand",
+              "attachment.finish": "#/$defs/AttachmentFinishCommand",
               "device.update": "#/$defs/GenericCommand",
               "history.get": "#/$defs/GenericCommand",
               "message.send": "#/$defs/MessageSendCommand",
@@ -1055,6 +1256,12 @@
           "oneOf": [
             {
               "$ref": "#/$defs/MessageSendCommand"
+            },
+            {
+              "$ref": "#/$defs/AttachmentBeginCommand"
+            },
+            {
+              "$ref": "#/$defs/AttachmentFinishCommand"
             },
             {
               "$ref": "#/$defs/GenericCommand"
@@ -1135,8 +1342,8 @@
       {
         "discriminator": {
           "mapping": {
-            "attachment.begin": "#/$defs/GenericCommand",
-            "attachment.finish": "#/$defs/GenericCommand",
+            "attachment.begin": "#/$defs/AttachmentBeginCommand",
+            "attachment.finish": "#/$defs/AttachmentFinishCommand",
             "device.update": "#/$defs/GenericCommand",
             "history.get": "#/$defs/GenericCommand",
             "message.send": "#/$defs/MessageSendCommand",
@@ -1151,6 +1358,12 @@
         "oneOf": [
           {
             "$ref": "#/$defs/MessageSendCommand"
+          },
+          {
+            "$ref": "#/$defs/AttachmentBeginCommand"
+          },
+          {
+            "$ref": "#/$defs/AttachmentFinishCommand"
           },
           {
             "$ref": "#/$defs/GenericCommand"
@@ -1231,6 +1444,7 @@
       }
     ]
   },
+  "maxAttachmentChunkBytes": 131072,
   "maxJsonFrameBytes": 262144,
   "preAuthControlTypes": [
     "device.proof",
@@ -1242,5 +1456,5 @@
   ],
   "protocolVersion": 1,
   "title": "Akashic Mobile Realtime Protocol v1",
-  "transport": "WebSocket JSON text frames"
+  "transport": "WebSocket JSON text frames and attachment binary chunks"
 }

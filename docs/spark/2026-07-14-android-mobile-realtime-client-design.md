@@ -443,18 +443,16 @@ attachment.finish(JSON)
 attachment.ready(media_ref)
 ```
 
-二进制 frame 固定头：
+实施阶段将固定 chunk index 头调整为绝对 byte offset 头，以便服务端在断线重连后直接返回持久化 offset，客户端无需推断最后完整 chunk。二进制 frame 布局：
 
 ```text
-4 bytes   magic "AKMB"
-1 byte    protocol version
-16 bytes  attachment UUID
-4 bytes   chunk index, unsigned big-endian
-1 byte    flags
-N bytes   payload, max 64KiB
+4 bytes   JSON header 长度，unsigned big-endian
+N bytes   UTF-8 JSON header，最大 1024 bytes
+          {"attachment_id":"<ULID/UUIDv7>","offset":<absolute byte offset>}
+M bytes   payload，最大 128KiB
 ```
 
-客户端最多允许 4 个未确认 chunk。服务端在 `attachment.finish` 时校验总大小和 SHA-256，再交给现有 `AttachmentStore`；不完整、越界、重复冲突或哈希不一致直接失败并清理临时文件。默认单附件上限 `50MiB`，由服务端配置收紧或放宽。
+客户端按服务端 `attachment.begin.ok.next_offset` 串行续传；服务端按 1MiB 边界和完成点确认进度。服务端在 `attachment.finish` 时校验总大小和 SHA-256，再交给现有 `AttachmentStore`；摘要失败标记为 failed，同一声明再次 begin 时从 offset 0 重传。默认单附件上限 `50MiB`，由服务端配置收紧或放宽。
 
 ## 12. 首次配对与缓存认证
 
@@ -985,8 +983,8 @@ recovery
 └── queue overflow disconnects without P0 loss
 
 attachments
-├── four-chunk window
-├── index conflict rejected
+├── persisted byte-offset resume
+├── offset conflict rejected
 ├── size/hash mismatch rejected
 └── completed file enters AttachmentStore
 ```
@@ -1083,7 +1081,7 @@ heartbeat              25s
 reconnect              full jitter 0.5s -> 30s
 endpoint stagger       750ms
 priority scheduler     P0:P1:P2 = 8:4:1
-attachment chunk       64KiB, max 4 in flight
+attachment chunk       128KiB, sequential offset
 background realtime    remoteMessaging foreground service
 UI                     native Compose, restrained Material 3
 color                  stable OKLCH semantic palette
