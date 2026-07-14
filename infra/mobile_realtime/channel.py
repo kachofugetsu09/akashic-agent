@@ -17,8 +17,21 @@ from bus.events_lifecycle import (
     TurnStarted,
 )
 from infra.channels.contract import ChannelContext
-from infra.mobile_realtime.protocol import GenericCommand, MessageSendCommand
-from infra.mobile_realtime.storage import CommandReceipt
+from infra.mobile_realtime.attachments import (
+    AttachmentChunk,
+    AttachmentRequestError,
+    AttachmentTransferService,
+    MAX_ATTACHMENT_CHUNK_BYTES,
+    attachment_descriptor,
+)
+from infra.mobile_realtime.protocol import (
+    AttachmentBeginCommand,
+    AttachmentFinishCommand,
+    ClientCommand,
+    GenericCommand,
+    MessageSendCommand,
+)
+from infra.mobile_realtime.storage import AttachmentStateError, CommandReceipt
 
 if TYPE_CHECKING:
     from infra.mobile_realtime.gateway import MobileGatewayRuntime
@@ -70,6 +83,7 @@ class MobileRealtimeChannel:
         self._delta_batches: dict[tuple[str, str], _DeltaBatch] = {}
         self._delta_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._delta_failure: BaseException | None = None
+        self._attachments: AttachmentTransferService | None = None
 
     async def start(self, ctx: ChannelContext) -> None:
         """注册移动渠道的出站、流事件和主动推送入口。"""
@@ -77,6 +91,11 @@ class MobileRealtimeChannel:
         if self._ctx is not None:
             raise RuntimeError("MobileRealtimeChannel 已启动")
         self._ctx = ctx
+        self._attachments = AttachmentTransferService(
+            self._runtime.storage,
+            ctx.attachment_store,
+            max_attachment_bytes=self._runtime.config.max_attachment_mb * 1024 * 1024,
+        )
         _ = ctx.bus.subscribe_outbound(self.name, self._on_response)
         _ = ctx.event_bus.on(TurnStarted, self._on_turn_started)
         _ = ctx.event_bus.on(StreamDeltaReady, self._on_stream_delta)
@@ -99,6 +118,7 @@ class MobileRealtimeChannel:
         self._delta_batches.clear()
         self._delta_locks.clear()
         self._delta_failure = None
+        self._attachments = None
         self._ctx = None
         self._active_turn_ids.clear()
         self._process_turns.clear()
@@ -107,7 +127,7 @@ class MobileRealtimeChannel:
         self,
         *,
         device_id: str,
-        frame: GenericCommand | MessageSendCommand,
+        frame: ClientCommand,
     ) -> CommandReply:
         """幂等执行业务命令，并持久化可跨重连复用的回复。"""
 
@@ -171,7 +191,7 @@ class MobileRealtimeChannel:
         self,
         *,
         device_id: str,
-        frame: GenericCommand | MessageSendCommand,
+        frame: ClientCommand,
     ) -> CommandReply:
         if frame.type == "session.list":
             return await self._list_sessions(device_id, frame)
@@ -188,7 +208,96 @@ class MobileRealtimeChannel:
             return await self._send_message(device_id, frame)
         if frame.type == "turn.stop":
             return await self._stop_turn(device_id, frame)
+        if frame.type == "attachment.begin":
+            return await self._begin_attachment(device_id, frame)
+        if frame.type == "attachment.finish":
+            return await self._finish_attachment(device_id, frame)
         raise MobileCommandError("unsupported_command", f"尚不支持命令: {frame.type}")
+
+    async def handle_attachment_chunk(
+        self,
+        *,
+        device_id: str,
+        chunk: AttachmentChunk,
+    ) -> None:
+        """落盘一个二进制分片，并按稀疏确认发布进度。"""
+
+        try:
+            record, should_report = await asyncio.to_thread(
+                self._require_attachments().append_chunk,
+                device_id=device_id,
+                chunk=chunk,
+            )
+        except (AttachmentRequestError, AttachmentStateError) as error:
+            raise MobileCommandError("attachment_chunk_rejected", str(error)) from error
+        if should_report:
+            await self._runtime.publish_event(
+                event_type="attachment.progress",
+                device_id=device_id,
+                session_id=record.session_id,
+                payload={
+                    "attachment_id": record.attachment_id,
+                    "transferred_bytes": record.transferred_bytes,
+                    "size_bytes": record.size_bytes,
+                },
+            )
+
+    async def _begin_attachment(
+        self,
+        device_id: str,
+        frame: AttachmentBeginCommand,
+    ) -> CommandReply:
+        session_id = self._normalize_session_id(frame.session_id)
+        try:
+            record = await asyncio.to_thread(
+                self._require_attachments().begin_upload,
+                device_id=device_id,
+                attachment_id=frame.payload.attachment_id,
+                session_id=session_id,
+                filename=frame.payload.filename,
+                content_type=frame.payload.content_type,
+                size_bytes=frame.payload.size_bytes,
+                sha256=frame.payload.sha256,
+            )
+        except (AttachmentRequestError, AttachmentStateError) as error:
+            raise MobileCommandError("attachment_begin_rejected", str(error)) from error
+        return CommandReply(
+            type="attachment.begin.ok",
+            session_id=session_id,
+            payload={
+                **attachment_descriptor(record),
+                "next_offset": record.transferred_bytes,
+                "chunk_size": MAX_ATTACHMENT_CHUNK_BYTES,
+                "state": record.state,
+            },
+        )
+
+    async def _finish_attachment(
+        self,
+        device_id: str,
+        frame: AttachmentFinishCommand,
+    ) -> CommandReply:
+        session_id = self._normalize_session_id(frame.session_id)
+        try:
+            record = await asyncio.to_thread(
+                self._require_attachments().finish_upload,
+                device_id=device_id,
+                session_id=session_id,
+                attachment_id=frame.payload.attachment_id,
+            )
+        except (AttachmentRequestError, AttachmentStateError) as error:
+            raise MobileCommandError("attachment_finish_rejected", str(error)) from error
+        await self._runtime.publish_event(
+            event_type="attachment.ready",
+            device_id=device_id,
+            session_id=session_id,
+            payload=attachment_descriptor(record),
+        )
+        return CommandReply(
+            type="attachment.finish.ok",
+            session_id=session_id,
+            payload={**attachment_descriptor(record), "state": "ready"},
+        )
 
     async def _list_sessions(
         self,
@@ -297,13 +406,16 @@ class MobileRealtimeChannel:
         frame: MessageSendCommand,
     ) -> CommandReply:
         session_id = self._normalize_session_id(frame.session_id)
-        if frame.payload.media_refs:
-            raise MobileCommandError(
-                "attachments_not_ready",
-                "当前版本尚未开放移动端附件发送",
+        if not frame.payload.text.strip() and not frame.payload.media_refs:
+            raise MobileCommandError("empty_message", "文字和附件不能同时为空")
+        try:
+            media = self._require_attachments().resolve_uploads(
+                device_id=device_id,
+                session_id=session_id,
+                attachment_ids=list(frame.payload.media_refs),
             )
-        if not frame.payload.text.strip():
-            raise MobileCommandError("empty_message", "消息内容不能为空")
+        except (AttachmentRequestError, AttachmentStateError) as error:
+            raise MobileCommandError("attachment_not_ready", str(error)) from error
         ctx = self._require_ctx()
         self._runtime.storage.claim_session(
             device_id=device_id,
@@ -317,6 +429,7 @@ class MobileRealtimeChannel:
                 sender=f"device:{device_id}",
                 chat_id=self._chat_id(session_id),
                 content=frame.payload.text,
+                media=media,
                 metadata={
                     "client_request_id": frame.id,
                     "client_message_id": frame.payload.client_message_id,
@@ -649,8 +762,13 @@ class MobileRealtimeChannel:
             raise RuntimeError("MobileRealtimeChannel 尚未启动")
         return self._ctx
 
+    def _require_attachments(self) -> AttachmentTransferService:
+        if self._attachments is None:
+            raise RuntimeError("MobileRealtimeChannel 附件服务尚未启动")
+        return self._attachments
 
-def _command_hash(frame: GenericCommand | MessageSendCommand) -> str:
+
+def _command_hash(frame: ClientCommand) -> str:
     payload = frame.model_dump(mode="json", exclude_none=True)
     _ = payload.pop("connection_epoch")
     encoded = json.dumps(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from uuid import uuid4
 
+import pytest
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
@@ -20,6 +22,8 @@ from bus.events_lifecycle import (
     ToolCallStarted,
     TurnStarted,
 )
+from infra.channels.base import AttachmentStore
+from infra.mobile_realtime.attachments import AttachmentChunk, encode_attachment_chunk
 from infra.mobile_realtime.auth import device_proof_signing_bytes
 from infra.mobile_realtime.gateway import (
     build_mobile_gateway_runtime,
@@ -277,6 +281,62 @@ def test_gateway_rejects_business_frame_before_device_authentication(
     runtime.close()
 
 
+def test_authenticated_gateway_rejects_malformed_attachment_binary(
+    tmp_path: Path,
+) -> None:
+    """验证坏二进制帧以明确协议错误关闭，而不是逃出 ASGI。"""
+
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    import asyncio
+
+    runtime, _ = asyncio.run(build())
+    device_key = ec.generate_private_key(ec.SECP256R1())
+    device_id = uuid4().hex
+    runtime.storage.register_device(
+        DeviceRecord(
+            device_id=device_id,
+            public_key=_device_public_key(device_key),
+            display_name="Pixel Emulator",
+            created_at=datetime.now(timezone.utc),
+            revoked_at=None,
+            capabilities=("attachments-v1",),
+        )
+    )
+
+    with TestClient(create_mobile_gateway_app(runtime)).websocket_connect("/ws") as ws:
+        challenge = ws.receive_json()
+        ws.send_json(
+            _device_proof(
+                challenge=challenge["payload"],
+                device_id=device_id,
+                device_key=device_key,
+            )
+        )
+        epoch = ws.receive_json()["connection_epoch"]
+        ws.send_json(
+            {
+                "v": 1,
+                "kind": "control",
+                "type": "resume",
+                "connection_epoch": epoch,
+                "payload": {"last_ack": 0, "active_turns": []},
+            }
+        )
+        assert ws.receive_json()["type"] == "sync.completed"
+        ws.send_bytes(b"\x00")
+        error = ws.receive_json()
+
+    assert error["type"] == "protocol.error"
+    assert error["payload"]["code"] == 4400
+    runtime.close()
+
+
 def test_offline_proactive_event_is_durable_and_replayed_with_session(
     tmp_path: Path,
 ) -> None:
@@ -467,6 +527,7 @@ def test_authenticated_message_send_reaches_agent_event_path_once(
                     event_bus=FakeEventBus(),
                     push_tool=FakePushTool(),
                     interrupt_controller=None,
+                    attachment_store=AttachmentStore(tmp_path / "uploads"),
                 ),
             )
         )
@@ -566,3 +627,233 @@ def test_authenticated_message_send_reaches_agent_event_path_once(
     assert len(bus.inbound) == 1
     asyncio.run(runtime.channel.stop())
     runtime.close()
+
+
+def test_attachment_upload_resumes_and_reaches_agent_media(
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+) -> None:
+    """验证二进制上传跨连接续传，并以 media_refs 进入 Agent。"""
+
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    class CaptureBus:
+        def __init__(self) -> None:
+            self.inbound: list[object] = []
+
+        def subscribe_outbound(self, channel: str, callback: object) -> None:
+            assert channel == "mobile"
+
+        async def publish_inbound(self, message: object) -> None:
+            self.inbound.append(message)
+
+    class FakeEventBus:
+        def on(self, event_type: type[object], callback: object) -> None:
+            return None
+
+    class FakePushTool:
+        def register_channel(self, channel: str, **senders: object) -> None:
+            assert channel == "mobile"
+
+    import asyncio
+
+    runtime, _ = asyncio.run(build())
+    request.addfinalizer(runtime.close)
+    bus = CaptureBus()
+    asyncio.run(
+        runtime.channel.start(
+            cast(
+                Any,
+                SimpleNamespace(
+                    bus=bus,
+                    session_manager=SessionManager(tmp_path / "sessions"),
+                    event_bus=FakeEventBus(),
+                    push_tool=FakePushTool(),
+                    interrupt_controller=None,
+                    attachment_store=AttachmentStore(tmp_path / "uploads"),
+                ),
+            )
+        )
+    )
+    request.addfinalizer(lambda: asyncio.run(runtime.channel.stop()))
+    device_key = ec.generate_private_key(ec.SECP256R1())
+    device_id = uuid4().hex
+    runtime.storage.register_device(
+        DeviceRecord(
+            device_id=device_id,
+            public_key=_device_public_key(device_key),
+            display_name="Pixel Emulator",
+            created_at=datetime.now(timezone.utc),
+            revoked_at=None,
+            capabilities=("stream-v1", "attachments-v1"),
+        )
+    )
+    session_id = f"mobile:{uuid4()}"
+    attachment_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    confirmed_offset = 1024 * 1024
+    content = b"a" * confirmed_offset + b"resumed payload"
+    digest = hashlib.sha256(content).hexdigest()
+    client = TestClient(create_mobile_gateway_app(runtime))
+
+    with client.websocket_connect("/ws") as websocket:
+        challenge = websocket.receive_json()
+        websocket.send_json(
+            _device_proof(
+                challenge=challenge["payload"],
+                device_id=device_id,
+                device_key=device_key,
+            )
+        )
+        epoch = websocket.receive_json()["connection_epoch"]
+        websocket.send_json(
+            {
+                "v": 1,
+                "kind": "control",
+                "type": "resume",
+                "connection_epoch": epoch,
+                "payload": {"last_ack": 0, "active_turns": []},
+            }
+        )
+        synced = websocket.receive_json()
+        assert synced["type"] == "sync.completed"
+        websocket.send_json(
+            {
+                "v": 1,
+                "kind": "ack",
+                "type": "event.ack",
+                "connection_epoch": epoch,
+                "payload": {"through_event_seq": synced["event_seq"]},
+            }
+        )
+        websocket.send_json(
+            {
+                "v": 1,
+                "kind": "command",
+                "type": "attachment.begin",
+                "id": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+                "connection_epoch": epoch,
+                "session_id": session_id,
+                "payload": {
+                    "attachment_id": attachment_id,
+                    "filename": "meme.png",
+                    "content_type": "image/png",
+                    "size_bytes": len(content),
+                    "sha256": digest,
+                },
+            }
+        )
+        begin = websocket.receive_json()
+        assert begin["type"] == "attachment.begin.ok"
+        assert begin["payload"]["next_offset"] == 0
+        for offset in range(0, confirmed_offset, 128 * 1024):
+            websocket.send_bytes(
+                encode_attachment_chunk(
+                    AttachmentChunk(
+                        attachment_id,
+                        offset,
+                        content[offset : offset + 128 * 1024],
+                    )
+                )
+            )
+        confirmed = websocket.receive_json()
+        assert confirmed["type"] == "attachment.progress"
+        assert confirmed["payload"]["transferred_bytes"] == confirmed_offset
+
+    with client.websocket_connect("/ws") as websocket:
+        challenge = websocket.receive_json()
+        websocket.send_json(
+            _device_proof(
+                challenge=challenge["payload"],
+                device_id=device_id,
+                device_key=device_key,
+            )
+        )
+        epoch = websocket.receive_json()["connection_epoch"]
+        websocket.send_json(
+            {
+                "v": 1,
+                "kind": "control",
+                "type": "resume",
+                "connection_epoch": epoch,
+                "payload": {
+                    "last_ack": confirmed["event_seq"],
+                    "active_turns": [],
+                },
+            }
+        )
+        assert websocket.receive_json()["type"] == "sync.completed"
+        websocket.send_json(
+            {
+                "v": 1,
+                "kind": "command",
+                "type": "attachment.begin",
+                "id": "01ARZ3NDEKTSV4RRFFQ69G5FAX",
+                "connection_epoch": epoch,
+                "session_id": session_id,
+                "payload": {
+                    "attachment_id": attachment_id,
+                    "filename": "meme.png",
+                    "content_type": "image/png",
+                    "size_bytes": len(content),
+                    "sha256": digest,
+                },
+            }
+        )
+        resumed = websocket.receive_json()
+        assert resumed["payload"]["next_offset"] == confirmed_offset
+        websocket.send_bytes(
+            encode_attachment_chunk(
+                AttachmentChunk(
+                    attachment_id,
+                    confirmed_offset,
+                    content[confirmed_offset:],
+                )
+            )
+        )
+        progress = websocket.receive_json()
+        assert progress["type"] == "attachment.progress"
+        assert progress["payload"]["transferred_bytes"] == len(content)
+        websocket.send_json(
+            {
+                "v": 1,
+                "kind": "command",
+                "type": "attachment.finish",
+                "id": "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+                "connection_epoch": epoch,
+                "session_id": session_id,
+                "payload": {"attachment_id": attachment_id},
+            }
+        )
+        assert websocket.receive_json()["type"] == "attachment.ready"
+        assert websocket.receive_json()["type"] == "attachment.finish.ok"
+        websocket.send_json(
+            {
+                "v": 1,
+                "kind": "command",
+                "type": "message.send",
+                "id": "01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+                "connection_epoch": epoch,
+                "session_id": session_id,
+                "payload": {
+                    "client_message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+                    "session_id": session_id,
+                    "text": "",
+                    "media_refs": [attachment_id],
+                    "client_created_at": datetime.now(timezone.utc).isoformat(),
+                },
+            }
+        )
+        assert websocket.receive_json()["type"] == "message.send.ok"
+
+    from bus.events import InboundMessage
+
+    assert len(bus.inbound) == 1
+    assert isinstance(bus.inbound[0], InboundMessage)
+    assert bus.inbound[0].content == ""
+    assert len(bus.inbound[0].media) == 1
+    assert Path(bus.inbound[0].media[0]).read_bytes() == content

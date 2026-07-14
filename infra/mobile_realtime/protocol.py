@@ -109,13 +109,27 @@ class MessageSendPayload(ProtocolModel):
     client_message_id: FrameId
     session_id: NonEmptyId
     text: str = Field(max_length=65_536)
-    media_refs: list[NonEmptyId] = Field(max_length=128)
+    media_refs: list[NonEmptyId] = Field(max_length=10)
     client_created_at: str = Field(min_length=1, max_length=64)
 
     @model_validator(mode="after")
     def validate_client_message_id(self) -> MessageSendPayload:
         _validate_frame_id(self.client_message_id, "client_message_id")
+        if len(set(self.media_refs)) != len(self.media_refs):
+            raise ValueError("media_refs 不能重复")
         return self
+
+
+class AttachmentBeginPayload(ProtocolModel):
+    attachment_id: FrameId
+    filename: str = Field(min_length=1, max_length=255)
+    content_type: str = Field(min_length=1, max_length=255)
+    size_bytes: int = Field(ge=1)
+    sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+
+
+class AttachmentFinishPayload(ProtocolModel):
+    attachment_id: FrameId
 
 
 class TurnSnapshotPayload(ProtocolModel):
@@ -192,6 +206,28 @@ class MessageSendCommand(ProtocolModel):
         return self
 
 
+class AttachmentBeginCommand(ProtocolModel):
+    v: Literal[1]
+    kind: Literal["command"]
+    type: Literal["attachment.begin"]
+    id: FrameId
+    connection_epoch: ConnectionEpoch
+    session_id: NonEmptyId
+    turn_id: None = None
+    payload: AttachmentBeginPayload
+
+
+class AttachmentFinishCommand(ProtocolModel):
+    v: Literal[1]
+    kind: Literal["command"]
+    type: Literal["attachment.finish"]
+    id: FrameId
+    connection_epoch: ConnectionEpoch
+    session_id: NonEmptyId
+    turn_id: None = None
+    payload: AttachmentFinishPayload
+
+
 class GenericCommand(CommandEnvelope):
     type: Literal[
         "session.list",
@@ -199,15 +235,19 @@ class GenericCommand(CommandEnvelope):
         "session.open",
         "history.get",
         "turn.stop",
-        "attachment.begin",
-        "attachment.finish",
         "device.update",
         "ping",
     ]
 
 
+ClientCommand: TypeAlias = (
+    MessageSendCommand
+    | AttachmentBeginCommand
+    | AttachmentFinishCommand
+    | GenericCommand
+)
 CommandFrame: TypeAlias = Annotated[
-    MessageSendCommand | GenericCommand,
+    ClientCommand,
     Field(discriminator="type"),
 ]
 

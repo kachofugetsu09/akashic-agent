@@ -23,6 +23,7 @@ from infra.mobile_realtime.auth import (
     DeviceRevokedError,
     UnknownAuthenticationChallenge,
 )
+from infra.mobile_realtime.attachments import AttachmentChunk, decode_attachment_chunk
 from infra.mobile_realtime.inbox import DurableInboxManager, InboxResetRequired
 from infra.mobile_realtime.key_protection import (
     KeyProtectionError,
@@ -41,6 +42,8 @@ from infra.mobile_realtime.pairing import (
 )
 from infra.mobile_realtime.protocol import (
     AckFrame,
+    AttachmentBeginCommand,
+    AttachmentFinishCommand,
     AuthAcceptedControl,
     AuthAcceptedPayload,
     GenericCommand,
@@ -323,10 +326,39 @@ class MobileGatewayRuntime:
         resumed = False
         try:
             while True:
-                frame = await _receive_frame(websocket)
+                incoming = await _receive_authenticated_item(websocket)
+                if isinstance(incoming, AttachmentChunk):
+                    if not resumed:
+                        await _close_with_error(
+                            websocket,
+                            code=_CLOSE_UNAUTHENTICATED,
+                            reason="auth.accepted 后必须先 resume",
+                        )
+                        return
+                    try:
+                        await self.channel.handle_attachment_chunk(
+                            device_id=device_id,
+                            chunk=incoming,
+                        )
+                    except ValueError as error:
+                        await _close_with_error(
+                            websocket,
+                            code=_CLOSE_PROTOCOL,
+                            reason=str(error),
+                        )
+                        return
+                    continue
+                frame = incoming
                 if not isinstance(
                     frame,
-                    (ResumeControl, AckFrame, GenericCommand, MessageSendCommand),
+                    (
+                        ResumeControl,
+                        AckFrame,
+                        GenericCommand,
+                        MessageSendCommand,
+                        AttachmentBeginCommand,
+                        AttachmentFinishCommand,
+                    ),
                 ):
                     await _close_with_error(
                         websocket,
@@ -379,7 +411,15 @@ class MobileGatewayRuntime:
                         )
                         return
                     continue
-                if isinstance(frame, (GenericCommand, MessageSendCommand)):
+                if isinstance(
+                    frame,
+                    (
+                        GenericCommand,
+                        MessageSendCommand,
+                        AttachmentBeginCommand,
+                        AttachmentFinishCommand,
+                    ),
+                ):
                     await self._handle_command(
                         websocket,
                         frame,
@@ -600,7 +640,12 @@ class MobileGatewayRuntime:
     async def _handle_command(
         self,
         websocket: WebSocket,
-        frame: GenericCommand | MessageSendCommand,
+        frame: (
+            GenericCommand
+            | MessageSendCommand
+            | AttachmentBeginCommand
+            | AttachmentFinishCommand
+        ),
         connection_epoch: int,
         device_id: str,
     ) -> None:
@@ -749,6 +794,26 @@ def build_mobile_gateway_server(
 
 async def _receive_frame(websocket: WebSocket) -> MobileFrame:
     return parse_frame(await websocket.receive_text())
+
+
+async def _receive_authenticated_item(
+    websocket: WebSocket,
+) -> MobileFrame | AttachmentChunk:
+    """接收认证后的 JSON 协议帧或附件二进制分片。"""
+
+    message = await websocket.receive()
+    if message["type"] == "websocket.disconnect":
+        raise WebSocketDisconnect(code=int(message.get("code") or 1000))
+    text = message.get("text")
+    data = message.get("bytes")
+    if isinstance(text, str) and data is None:
+        return parse_frame(text)
+    if isinstance(data, bytes) and text is None:
+        try:
+            return decode_attachment_chunk(data)
+        except (ValueError, ValidationError) as error:
+            raise ProtocolDecodeError(str(error)) from error
+    raise ProtocolDecodeError("WebSocket frame 必须恰好包含 text 或 bytes")
 
 
 async def _send_control(

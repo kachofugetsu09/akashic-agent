@@ -42,6 +42,23 @@ def test_message_send_rejects_mismatched_session() -> None:
         parse_frame(json.dumps(frame))
 
 
+def test_message_send_rejects_duplicate_or_too_many_media_refs() -> None:
+    duplicate = _golden_frame(0)
+    duplicate["payload"]["media_refs"] = [
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    ]
+    with pytest.raises(ValidationError, match="不能重复"):
+        parse_frame(json.dumps(duplicate))
+
+    oversized = _golden_frame(0)
+    oversized["payload"]["media_refs"] = [
+        f"01ARZ3NDEKTSV4RRFFQ69G5FA{suffix}" for suffix in "0123456789A"
+    ]
+    with pytest.raises(ValidationError):
+        parse_frame(json.dumps(oversized))
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     (

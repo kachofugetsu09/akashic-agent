@@ -18,6 +18,7 @@ from bus.events_lifecycle import (
     ToolCallStarted,
     TurnStarted,
 )
+from infra.channels.base import AttachmentStore
 from infra.mobile_realtime.channel import MobileRealtimeChannel
 from infra.mobile_realtime.gateway import MobileGatewayRuntime
 from infra.mobile_realtime.protocol import GenericCommand, MessageSendCommand, parse_frame
@@ -28,6 +29,7 @@ from session.manager import SessionManager
 class _Runtime:
     def __init__(self, storage: MobileRealtimeStorage) -> None:
         self.storage = storage
+        self.config = MobileRealtimeConfig(max_attachment_mb=50)
         self.events: list[dict[str, object]] = []
 
     async def publish_event(self, **event: object) -> None:
@@ -147,6 +149,7 @@ async def test_message_send_is_idempotent_and_session_is_shared_between_devices(
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
                 interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
     )
@@ -197,6 +200,7 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
                 interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
     )
@@ -302,6 +306,7 @@ async def test_turn_stop_accepts_a_shared_mobile_session(tmp_path: Path) -> None
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
                 interrupt_controller=interrupt,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
     )
@@ -339,6 +344,7 @@ async def test_stream_deltas_batch_at_50ms_and_flush_before_tool_and_final(
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
                 interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
     )
@@ -472,6 +478,7 @@ async def test_proactive_sender_uses_mobile_event_path(tmp_path: Path) -> None:
                 event_bus=_EventBus(),
                 push_tool=push,
                 interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
     )

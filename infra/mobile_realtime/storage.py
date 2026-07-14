@@ -10,6 +10,8 @@ from typing import Literal, cast
 
 
 PairingStatus = Literal["pending", "confirmed", "consumed", "expired"]
+AttachmentDirection = Literal["upload", "outbound"]
+AttachmentState = Literal["transferring", "ready", "failed"]
 
 
 class MobileStorageError(RuntimeError):
@@ -54,6 +56,10 @@ class CommandConflictError(MobileStorageError):
 
 class SessionOwnershipError(MobileStorageError):
     """表示移动会话不属于当前设备。"""
+
+
+class AttachmentStateError(MobileStorageError):
+    """表示附件不存在、归属错误或传输状态不允许当前操作。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +123,23 @@ class CommandReceipt:
     reply_payload_json: str | None
     session_id: str | None
     turn_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class AttachmentRecord:
+    attachment_id: str
+    device_id: str | None
+    session_id: str
+    direction: AttachmentDirection
+    filename: str
+    content_type: str
+    size_bytes: int
+    sha256: str
+    local_path: str
+    transferred_bytes: int
+    state: AttachmentState
+    created_at: datetime
+    updated_at: datetime
 
 
 class MobileRealtimeStorage:
@@ -736,6 +759,243 @@ class MobileRealtimeStorage:
             ).fetchall()
         return tuple(_row_text(row, "session_id") for row in rows)
 
+    def create_attachment(self, record: AttachmentRecord) -> AttachmentRecord:
+        """创建附件传输记录，并保持客户端标识全局唯一。"""
+
+        with self._lock, self._db:
+            if record.device_id is not None:
+                _ = self._read_device_row(record.device_id)
+            _ = self._db.execute(
+                """
+                INSERT INTO mobile_attachments(
+                    attachment_id, device_id, session_id, direction,
+                    filename, content_type, size_bytes, sha256, local_path,
+                    transferred_bytes, state, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    _require_text(record.attachment_id, "attachment_id"),
+                    record.device_id,
+                    _require_text(record.session_id, "session_id"),
+                    record.direction,
+                    _require_text(record.filename, "filename"),
+                    _require_text(record.content_type, "content_type"),
+                    record.size_bytes,
+                    _require_text(record.sha256, "sha256"),
+                    _require_text(record.local_path, "local_path"),
+                    record.transferred_bytes,
+                    record.state,
+                    _serialize_datetime(record.created_at, "created_at"),
+                    _serialize_datetime(record.updated_at, "updated_at"),
+                ),
+            )
+        return record
+
+    def read_attachment(self, attachment_id: str) -> AttachmentRecord | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM mobile_attachments WHERE attachment_id = ?",
+                (_require_text(attachment_id, "attachment_id"),),
+            ).fetchone()
+        return _attachment_from_row(row) if row is not None else None
+
+    def require_upload_attachment(
+        self,
+        *,
+        device_id: str,
+        attachment_id: str,
+    ) -> AttachmentRecord:
+        record = self.read_attachment(attachment_id)
+        if record is None:
+            raise AttachmentStateError(f"附件不存在: {attachment_id}")
+        if record.direction != "upload" or record.device_id != device_id:
+            raise AttachmentStateError(f"附件不属于当前上传设备: {attachment_id}")
+        if record.state != "transferring":
+            raise AttachmentStateError(f"附件不处于传输状态: {attachment_id}")
+        return record
+
+    def require_owned_upload(
+        self,
+        *,
+        device_id: str,
+        session_id: str,
+        attachment_id: str,
+    ) -> AttachmentRecord:
+        """返回属于指定设备和会话的上传，不限制其传输状态。"""
+
+        record = self.read_attachment(attachment_id)
+        if record is None:
+            raise AttachmentStateError(f"附件不存在: {attachment_id}")
+        if (
+            record.direction != "upload"
+            or record.device_id != device_id
+            or record.session_id != session_id
+        ):
+            raise AttachmentStateError(f"附件不属于当前上传会话: {attachment_id}")
+        return record
+
+    def fail_attachment_upload(
+        self,
+        *,
+        device_id: str,
+        attachment_id: str,
+        updated_at: datetime,
+    ) -> AttachmentRecord:
+        """把传输中的上传标记为失败，允许后续 begin 显式重置。"""
+
+        with self._lock, self._db:
+            updated = self._db.execute(
+                """
+                UPDATE mobile_attachments
+                SET state = 'failed', updated_at = ?
+                WHERE attachment_id = ? AND device_id = ?
+                  AND direction = 'upload' AND state = 'transferring'
+                """,
+                (
+                    _serialize_datetime(updated_at, "updated_at"),
+                    _require_text(attachment_id, "attachment_id"),
+                    _require_text(device_id, "device_id"),
+                ),
+            )
+            if updated.rowcount != 1:
+                raise AttachmentStateError(f"附件不能标记为失败: {attachment_id}")
+            row = self._db.execute(
+                "SELECT * FROM mobile_attachments WHERE attachment_id = ?",
+                (attachment_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("已标记失败的附件记录在同一事务中消失")
+        return _attachment_from_row(row)
+
+    def reset_failed_upload(
+        self,
+        *,
+        device_id: str,
+        attachment_id: str,
+        updated_at: datetime,
+    ) -> AttachmentRecord:
+        """把已失败上传重置到 offset 0，供同一附件重新发送。"""
+
+        with self._lock, self._db:
+            updated = self._db.execute(
+                """
+                UPDATE mobile_attachments
+                SET state = 'transferring', transferred_bytes = 0, updated_at = ?
+                WHERE attachment_id = ? AND device_id = ?
+                  AND direction = 'upload' AND state = 'failed'
+                """,
+                (
+                    _serialize_datetime(updated_at, "updated_at"),
+                    _require_text(attachment_id, "attachment_id"),
+                    _require_text(device_id, "device_id"),
+                ),
+            )
+            if updated.rowcount != 1:
+                raise AttachmentStateError(f"附件不能重置: {attachment_id}")
+            row = self._db.execute(
+                "SELECT * FROM mobile_attachments WHERE attachment_id = ?",
+                (attachment_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("已重置附件记录在同一事务中消失")
+        return _attachment_from_row(row)
+
+    def advance_attachment(
+        self,
+        *,
+        device_id: str,
+        attachment_id: str,
+        expected_offset: int,
+        next_offset: int,
+        updated_at: datetime,
+    ) -> AttachmentRecord:
+        """以 compare-and-set 推进已落盘的上传 offset。"""
+
+        if next_offset <= expected_offset:
+            raise ValueError("next_offset 必须大于 expected_offset")
+        with self._lock, self._db:
+            updated = self._db.execute(
+                """
+                UPDATE mobile_attachments
+                SET transferred_bytes = ?, updated_at = ?
+                WHERE attachment_id = ? AND device_id = ?
+                  AND direction = 'upload' AND state = 'transferring'
+                  AND transferred_bytes = ? AND size_bytes >= ?
+                """,
+                (
+                    next_offset,
+                    _serialize_datetime(updated_at, "updated_at"),
+                    _require_text(attachment_id, "attachment_id"),
+                    _require_text(device_id, "device_id"),
+                    expected_offset,
+                    next_offset,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise AttachmentStateError(
+                    f"附件 offset 推进冲突: {attachment_id}/{expected_offset}"
+                )
+            row = self._db.execute(
+                "SELECT * FROM mobile_attachments WHERE attachment_id = ?",
+                (attachment_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("已推进附件记录在同一事务中消失")
+        return _attachment_from_row(row)
+
+    def mark_attachment_ready(
+        self,
+        *,
+        device_id: str,
+        attachment_id: str,
+        updated_at: datetime,
+    ) -> AttachmentRecord:
+        """只允许完整上传从 transferring 推进到 ready。"""
+
+        with self._lock, self._db:
+            updated = self._db.execute(
+                """
+                UPDATE mobile_attachments
+                SET state = 'ready', updated_at = ?
+                WHERE attachment_id = ? AND device_id = ?
+                  AND direction = 'upload' AND state = 'transferring'
+                  AND transferred_bytes = size_bytes
+                """,
+                (
+                    _serialize_datetime(updated_at, "updated_at"),
+                    _require_text(attachment_id, "attachment_id"),
+                    _require_text(device_id, "device_id"),
+                ),
+            )
+            if updated.rowcount != 1:
+                raise AttachmentStateError(f"附件尚不能完成: {attachment_id}")
+            row = self._db.execute(
+                "SELECT * FROM mobile_attachments WHERE attachment_id = ?",
+                (attachment_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("已完成附件记录在同一事务中消失")
+        return _attachment_from_row(row)
+
+    def require_ready_upload(
+        self,
+        *,
+        device_id: str,
+        session_id: str,
+        attachment_id: str,
+    ) -> AttachmentRecord:
+        record = self.read_attachment(attachment_id)
+        if record is None:
+            raise AttachmentStateError(f"附件不存在: {attachment_id}")
+        if (
+            record.direction != "upload"
+            or record.device_id != device_id
+            or record.session_id != session_id
+            or record.state != "ready"
+        ):
+            raise AttachmentStateError(f"附件未就绪或不属于当前消息: {attachment_id}")
+        return record
+
     def reserve_command(
         self,
         *,
@@ -970,6 +1230,29 @@ class MobileRealtimeStorage:
                 FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
                     ON DELETE CASCADE
             );
+
+            -- 6. 附件元数据只暴露不透明 ID，本地路径留在服务端边界内
+            CREATE TABLE IF NOT EXISTS mobile_attachments (
+                attachment_id TEXT PRIMARY KEY,
+                device_id TEXT,
+                session_id TEXT NOT NULL,
+                direction TEXT NOT NULL CHECK(direction IN ('upload', 'outbound')),
+                filename TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL CHECK(size_bytes > 0),
+                sha256 TEXT NOT NULL,
+                local_path TEXT NOT NULL,
+                transferred_bytes INTEGER NOT NULL CHECK(transferred_bytes >= 0),
+                state TEXT NOT NULL CHECK(state IN ('transferring', 'ready', 'failed')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                CHECK(transferred_bytes <= size_bytes),
+                FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
+                    ON DELETE SET NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_mobile_attachments_session
+            ON mobile_attachments(session_id, created_at);
             """
         )
         self._db.commit()
@@ -1121,6 +1404,36 @@ def _command_receipt_from_row(row: sqlite3.Row) -> CommandReceipt:
         session_id=optional["session_id"],
         turn_id=optional["turn_id"],
     )
+
+
+def _attachment_from_row(row: sqlite3.Row) -> AttachmentRecord:
+    direction = _row_text(row, "direction")
+    if direction not in {"upload", "outbound"}:
+        raise ValueError(f"mobile_attachments.direction 非法: {direction}")
+    state = _row_text(row, "state")
+    if state not in {"transferring", "ready", "failed"}:
+        raise ValueError(f"mobile_attachments.state 非法: {state}")
+    device_id = row["device_id"]
+    if device_id is not None and not isinstance(device_id, str):
+        raise TypeError("mobile_attachments.device_id 必须为文本或 NULL")
+    record = AttachmentRecord(
+        attachment_id=_row_text(row, "attachment_id"),
+        device_id=device_id,
+        session_id=_row_text(row, "session_id"),
+        direction=cast(AttachmentDirection, direction),
+        filename=_row_text(row, "filename"),
+        content_type=_row_text(row, "content_type"),
+        size_bytes=_row_positive_int(row, "size_bytes"),
+        sha256=_row_text(row, "sha256"),
+        local_path=_row_text(row, "local_path"),
+        transferred_bytes=_row_nonnegative_int(row, "transferred_bytes"),
+        state=cast(AttachmentState, state),
+        created_at=_parse_datetime(_row_text(row, "created_at"), "created_at"),
+        updated_at=_parse_datetime(_row_text(row, "updated_at"), "updated_at"),
+    )
+    if record.transferred_bytes > record.size_bytes:
+        raise ValueError("mobile_attachments.transferred_bytes 超过 size_bytes")
+    return record
 
 
 def _cursor_from_row(row: sqlite3.Row) -> DeviceCursor:

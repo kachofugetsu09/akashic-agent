@@ -18,6 +18,7 @@ from infra.mobile_realtime.protocol import (
     PRE_AUTH_CONTROL_TYPES,
     PROTOCOL_VERSION,
 )
+from infra.mobile_realtime.attachments import MAX_ATTACHMENT_CHUNK_BYTES
 
 
 OUTPUT = ROOT / "schema" / "mobile-realtime-v1.json"
@@ -29,8 +30,32 @@ def build_schema() -> dict[str, object]:
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Akashic Mobile Realtime Protocol v1",
         "protocolVersion": PROTOCOL_VERSION,
-        "transport": "WebSocket JSON text frames",
+        "transport": "WebSocket JSON text frames and attachment binary chunks",
         "maxJsonFrameBytes": MAX_JSON_FRAME_BYTES,
+        "maxAttachmentChunkBytes": MAX_ATTACHMENT_CHUNK_BYTES,
+        "attachmentBinaryFrame": {
+            "byteOrder": "big-endian",
+            "layout": [
+                "uint32 header_length",
+                "header_length bytes UTF-8 JSON header",
+                "remaining bytes chunk payload",
+            ],
+            "headerSchema": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["attachment_id", "offset"],
+                "properties": {
+                    "attachment_id": {
+                        "type": "string",
+                        "minLength": 26,
+                        "maxLength": 36,
+                    },
+                    "offset": {"type": "integer", "minimum": 0},
+                },
+            },
+            "maxHeaderBytes": 1024,
+            "payloadOffsetSemantics": "absolute byte offset",
+        },
         "commandTypes": sorted(COMMAND_TYPES),
         "eventTypes": sorted(EVENT_TYPES),
         "controlTypes": sorted(CONTROL_TYPES),
