@@ -1,0 +1,264 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import secrets
+import shutil
+import subprocess
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
+from uuid import uuid4
+
+from bus.events import InboundMessage, OutboundMessage
+from bus.events_lifecycle import TurnStarted
+from agent.config_models import MobileKeyEncryptionConfig, MobileRealtimeConfig
+from infra.channels.base import AttachmentStore
+from infra.mobile_realtime.gateway import (
+    MobileGatewayRuntime,
+    build_mobile_gateway_runtime,
+    build_mobile_gateway_server,
+)
+from infra.mobile_realtime.key_protection import KeyProtectionError
+from session.manager import SessionManager
+
+_FIXED_GIF = bytes.fromhex(
+    "47494638396101000100800000000000ffffff21f90401000000002c00000000010001000002024401003b"
+)
+
+
+class EphemeralMasterKeys:
+    def __init__(self) -> None:
+        self.keys: dict[str, bytes] = {}
+
+    def create(self) -> tuple[str, bytes]:
+        key_id = uuid4().hex
+        key = secrets.token_bytes(32)
+        self.keys[key_id] = key
+        return key_id, key
+
+    def load(self, master_key_id: str) -> bytes:
+        try:
+            return self.keys[master_key_id]
+        except KeyError as error:
+            raise KeyProtectionError("隔离 master key 不存在") from error
+
+
+class EventBus:
+    def on(self, event_type: type[object], callback: object) -> None:
+        return None
+
+
+class PushTool:
+    def register_channel(self, channel: str, **senders: object) -> None:
+        if channel != "mobile":
+            raise RuntimeError(f"隔离 Gateway 收到未知渠道: {channel}")
+
+
+class FixedReplyBus:
+    """把真实手机入站写入隔离会话库，并返回固定文字和媒体。"""
+
+    def __init__(self, manager: SessionManager, reply_media: Path) -> None:
+        self._manager = manager
+        self._reply_media = reply_media
+        self._runtime: MobileGatewayRuntime | None = None
+
+    def bind(self, runtime: MobileGatewayRuntime) -> None:
+        self._runtime = runtime
+
+    def subscribe_outbound(self, channel: str, callback: object) -> None:
+        if channel != "mobile":
+            raise RuntimeError(f"隔离 Gateway 收到未知渠道订阅: {channel}")
+
+    async def publish_inbound(self, message: object) -> None:
+        """持久化一轮对话，并走真实 MobileRealtimeChannel 发布回复。"""
+
+        # 1. 用客户端 canonical ID 持久化用户消息和固定回复
+        inbound = cast(InboundMessage, message)
+        runtime = self._require_runtime()
+        session = self._manager.get_or_create(inbound.session_key)
+        _ = session.add_message(
+            "user",
+            inbound.content,
+            media=inbound.media,
+            client_message_id=cast(str, inbound.metadata["client_message_id"]),
+        )
+        _ = session.add_message(
+            "assistant",
+            "隔离 Gateway 已收到消息，这是固定媒体回复。",
+            media=[str(self._reply_media)],
+        )
+        self._manager.save(session)
+        assistant_message_id = str(session.messages[-1]["id"])
+        turn_id = uuid4().hex
+
+        # 2. 通过真实 durable inbox 发布可断线恢复事件
+        await runtime.channel._on_turn_started(  # pyright: ignore[reportPrivateUsage]
+            TurnStarted(
+                session_key=inbound.session_key,
+                channel="mobile",
+                chat_id=inbound.chat_id,
+                content=inbound.content,
+                timestamp=datetime.now(timezone.utc),
+                turn_id=turn_id,
+            )
+        )
+        await runtime.channel._on_response(  # pyright: ignore[reportPrivateUsage]
+            OutboundMessage(
+                channel="mobile",
+                chat_id=inbound.chat_id,
+                content="隔离 Gateway 已收到消息，这是固定媒体回复。",
+                media=[str(self._reply_media)],
+                control_turn_id=turn_id,
+                session_message_id=assistant_message_id,
+            )
+        )
+
+    def _require_runtime(self) -> MobileGatewayRuntime:
+        if self._runtime is None:
+            raise RuntimeError("固定回复 bus 尚未绑定 Gateway")
+        return self._runtime
+
+
+def build_config(root: Path, host: str, port: int) -> MobileRealtimeConfig:
+    return MobileRealtimeConfig(
+        enabled=True,
+        host=host,
+        port=port,
+        database=root / "gateway" / "mobile.db",
+        lan_hostname="localhost",
+        public_url="",
+        key_encryption=MobileKeyEncryptionConfig(
+            keyset_manifest=root / "gateway" / "keys" / "current.json"
+        ),
+    )
+
+
+def write_pairing_artifacts(root: Path, offer: dict[str, object]) -> None:
+    """写出二维码原文和 PNG，供 USB 设备或模拟器扫码。"""
+
+    payload = json.dumps(offer, ensure_ascii=False, separators=(",", ":"))
+    json_path = root / "pairing-offer.json"
+    png_path = root / "pairing-offer.png"
+    _ = json_path.write_text(payload, encoding="utf-8")
+    _ = subprocess.run(
+        ["qrencode", "-m", "4", "-s", "8", "-o", str(png_path)],
+        input=payload,
+        text=True,
+        check=True,
+    )
+    print(f"pairing_json={json_path}", flush=True)
+    print(f"pairing_qr={png_path}", flush=True)
+
+
+async def approve_pairing(runtime: MobileGatewayRuntime, pairing_id: str) -> None:
+    """只批准本次隔离进程创建的一次性 pairing。"""
+
+    while True:
+        claim = runtime.admin.pending_claim(pairing_id)
+        if claim is not None:
+            code = cast(str, claim["confirmation_code"])
+            device = runtime.admin.approve(pairing_id, code)
+            print(
+                f"pairing_approved device_id={device['device_id']} code={code}",
+                flush=True,
+            )
+            return
+        await asyncio.sleep(0.2)
+
+
+async def run_harness(args: argparse.Namespace) -> None:
+    """启动临时 TLS Gateway，直到收到 SIGINT 或 SIGTERM。"""
+
+    # 1. 构造与真实 runtime 完全分离的目录和确定性数据
+    generated_root = args.root is None
+    root = (
+        Path(tempfile.mkdtemp(prefix="akashic-mobile-e2e-"))
+        if generated_root
+        else args.root.resolve()
+    )
+    _ = root.mkdir(parents=True, exist_ok=True)
+    manager = SessionManager(root / "workspace")
+    media = root / "fixtures" / "fixed-reply.gif"
+    _ = media.parent.mkdir(parents=True, exist_ok=True)
+    _ = media.write_bytes(_FIXED_GIF)
+    config = build_config(root, args.host, args.port)
+    runtime, keyset = build_mobile_gateway_runtime(
+        config,
+        root,
+        master_keys=EphemeralMasterKeys(),
+    )
+    bus = FixedReplyBus(manager, media)
+    bus.bind(runtime)
+    await runtime.channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=bus,
+                session_manager=manager,
+                event_bus=EventBus(),
+                push_tool=PushTool(),
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(root / "attachments"),
+            ),
+        )
+    )
+    history = manager.get_or_create("mobile:isolated-history")
+    _ = history.add_message(
+        "user",
+        "这是隔离 Gateway 的历史消息",
+        client_message_id="01J00000000000000000000000",
+    )
+    _ = history.add_message("assistant", "历史同步成功后应只出现一次。")
+    manager.save(history)
+    offer = runtime.admin.create_offer()
+    write_pairing_artifacts(root, offer)
+    print(f"isolated_root={root}", flush=True)
+    print(f"adb_reverse=adb reverse tcp:{args.port} tcp:{args.port}", flush=True)
+
+    # 2. 启动真实 TLS WebSocket，并自动批准唯一的隔离配对请求
+    server = build_mobile_gateway_server(runtime, keyset)
+    approval_task = asyncio.create_task(
+        approve_pairing(runtime, cast(str, offer["pairing_id"]))
+    )
+    try:
+        await server.serve()
+    finally:
+        _ = approval_task.cancel()
+        try:
+            _ = await asyncio.gather(approval_task, return_exceptions=True)
+        finally:
+            await runtime.channel.stop()
+            manager.close()
+            runtime.close()
+            if generated_root and not args.keep:
+                shutil.rmtree(root)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="启动不接触真实 workspace/DB 的 Android MobileRealtime Gateway",
+    )
+    _ = parser.add_argument("--root", type=Path, help="显式隔离根目录；指定后不会自动删除")
+    _ = parser.add_argument("--host", default="127.0.0.1")
+    _ = parser.add_argument("--port", type=int, default=16323)
+    _ = parser.add_argument(
+        "--keep",
+        action="store_true",
+        help="保留自动创建的临时根目录",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    try:
+        asyncio.run(run_harness(parse_args()))
+    except KeyboardInterrupt:
+        return
+
+
+if __name__ == "__main__":
+    main()
