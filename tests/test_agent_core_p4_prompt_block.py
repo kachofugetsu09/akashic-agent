@@ -17,7 +17,10 @@ from agent.core.prompt_block import (
     SystemPromptBuilder,
     TurnContext,
 )
-from prompts.agent import build_agent_static_identity_prompt
+from prompts.agent import (
+    build_agent_static_identity_prompt,
+    build_current_session_prompt,
+)
 
 
 class _Memory:
@@ -92,6 +95,34 @@ def test_static_identity_prompt_is_not_hardcoded_to_specific_user(tmp_path: Path
 
     assert "花月的长期 AI 伙伴" not in prompt
     assert "用户的长期 AI 伙伴" in prompt
+
+
+def test_current_session_prompt_distinguishes_web_and_android_surfaces():
+    web = build_current_session_prompt(channel="web", chat_id="desktop-chat")
+    mobile = build_current_session_prompt(channel="mobile", chat_id="phone-chat")
+
+    assert "Channel: web" in web
+    assert "Chat ID: desktop-chat" in web
+    assert "Client Surface: WebChat" in web
+    assert "Client Device Context: 电脑网页端" in web
+    assert "Channel: mobile" in mobile
+    assert "Chat ID: phone-chat" in mobile
+    assert "Client Surface: Akashic Android" in mobile
+    assert "Client Device Context: Android 手机端" in mobile
+
+
+def test_current_session_prompt_does_not_guess_unknown_channel_surface():
+    prompt = build_current_session_prompt(
+        channel="custom_web_bridge",
+        chat_id="raw-chat-id",
+    )
+
+    assert "Channel: custom_web_bridge" in prompt
+    assert "Chat ID: raw-chat-id" in prompt
+    assert "Client Surface: Unknown" in prompt
+    assert "Client Device Context: Unknown" in prompt
+    assert "Client Surface: WebChat" not in prompt
+    assert "Client Surface: Akashic Android" not in prompt
 
 
 def test_prompt_block_priorities_leave_spacing_for_future_inserts():
