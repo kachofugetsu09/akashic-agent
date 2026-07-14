@@ -638,9 +638,12 @@ import pathlib, sys, time
 pathlib.Path(sys.argv[1]).write_text(pathlib.Path('/proc/self/status').read_text())
 time.sleep(30)
 """
-        return real_popen(
-            [sys.executable, "-c", code, str(probe_path)],
-            **kwargs,
+        return cast(
+            "subprocess.Popen[bytes]",
+            real_popen(
+                [sys.executable, "-c", code, str(probe_path)],
+                **kwargs,
+            ),
         )
 
     monkeypatch.setattr(supervisor_module.subprocess, "Popen", launch)
@@ -706,6 +709,23 @@ async def test_ndjson_send_receipt_waits_for_writer_drain() -> None:
     await connection._queue.put(None)
     await writer_task
     assert connection._writer.frames == [b'{"method":"turn/completed"}\n']
+
+
+@pytest.mark.asyncio
+async def test_ndjson_stream_frame_does_not_wait_for_writer_drain() -> None:
+    connection = object.__new__(NdjsonConnection)
+    connection._queue = asyncio.Queue(2)
+    gate = asyncio.Event()
+    connection._writer = _DrainWriter(gate)
+    writer_task = asyncio.create_task(connection._write_loop())
+
+    await connection.send({"method": "item/completed"})
+    await asyncio.sleep(0)
+    assert connection._writer.frames == [b'{"method":"item/completed"}\n']
+
+    gate.set()
+    await connection._queue.put(None)
+    await writer_task
 
 
 @pytest.mark.asyncio
