@@ -1,0 +1,10 @@
+[Unit]
+Description=Generic rolling backup
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.local/share/rolling-backup/rolling_backup.py --config %h/.config/rolling-backup/config.toml
+Restart=on-failure
+RestartSec=5min
+NoNewPrivileges=true
+PrivateTmp=true
