@@ -22,6 +22,10 @@
   - 把长代码库任务委托给本机 Codex CLI 后台执行，并等待完成后回灌结果。
   - 文件：`skills/codex-delegate/SKILL.md`
 
+- `akashic-call`
+  - 指导 Codex 或其他外部程序调用已运行的固定 Akashic runtime，并复用持久 thread。
+  - 文件：`skills/akashic-call/SKILL.md`
+
 - `skill-creater`
   - 创建或改写技能 `SKILL.md`，用于新增技能与结构迁移。
   - 文件：`skills/skill-creater/SKILL.md`

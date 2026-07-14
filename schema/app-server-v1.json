@@ -1,0 +1,293 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "methods": {
+    "initialize": {
+      "$defs": {
+        "ClientCapabilities": {
+          "additionalProperties": false,
+          "properties": {
+            "reasoningEvents": {
+              "default": false,
+              "title": "Reasoningevents",
+              "type": "boolean"
+            }
+          },
+          "title": "ClientCapabilities",
+          "type": "object"
+        },
+        "ClientInfo": {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Name",
+              "type": "string"
+            },
+            "version": {
+              "maxLength": 64,
+              "minLength": 1,
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "version"
+          ],
+          "title": "ClientInfo",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "$ref": "#/$defs/ClientCapabilities"
+        },
+        "clientInfo": {
+          "$ref": "#/$defs/ClientInfo"
+        },
+        "protocolVersion": {
+          "const": "1.0",
+          "title": "Protocolversion",
+          "type": "string"
+        },
+        "workspaceToken": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspacetoken"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "clientInfo"
+      ],
+      "title": "InitializeParams",
+      "type": "object"
+    },
+    "plugin/disable-and-drain": {
+      "additionalProperties": false,
+      "properties": {
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Pluginid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pluginId"
+      ],
+      "title": "PluginDrainParams",
+      "type": "object"
+    },
+    "server/status": {
+      "additionalProperties": false,
+      "properties": {},
+      "title": "StrictModel",
+      "type": "object"
+    },
+    "thread/consolidate/start": {
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Threadid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "ThreadIdParams",
+      "type": "object"
+    },
+    "thread/delete": {
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Threadid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "ThreadIdParams",
+      "type": "object"
+    },
+    "thread/list": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cursor"
+        },
+        "limit": {
+          "default": 50,
+          "maximum": 200,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "title": "ThreadListParams",
+      "type": "object"
+    },
+    "thread/read": {
+      "additionalProperties": false,
+      "properties": {
+        "includeTurns": {
+          "default": false,
+          "title": "Includeturns",
+          "type": "boolean"
+        },
+        "threadId": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Threadid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "ThreadReadParams",
+      "type": "object"
+    },
+    "thread/resume": {
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Threadid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "ThreadIdParams",
+      "type": "object"
+    },
+    "thread/start": {
+      "additionalProperties": false,
+      "properties": {
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        }
+      },
+      "title": "ThreadStartParams",
+      "type": "object"
+    },
+    "turn/interrupt": {
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Threadid",
+          "type": "string"
+        },
+        "turnId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Turnid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId"
+      ],
+      "title": "TurnIdParams",
+      "type": "object"
+    },
+    "turn/read": {
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Threadid",
+          "type": "string"
+        },
+        "turnId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Turnid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId"
+      ],
+      "title": "TurnIdParams",
+      "type": "object"
+    },
+    "turn/start": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "maxLength": 1048576,
+          "minLength": 1,
+          "title": "Input",
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "threadId": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Threadid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "input"
+      ],
+      "title": "TurnStartParams",
+      "type": "object"
+    }
+  },
+  "notifications": [
+    "thread/started",
+    "thread/deleted",
+    "turn/queued",
+    "turn/started",
+    "turn/completed",
+    "item/started",
+    "item/assistantMessage/delta",
+    "item/completed",
+    "operation/completed"
+  ],
+  "protocolVersion": "1.0",
+  "title": "Akashic App Server Protocol v1",
+  "transport": "JSON-RPC 2.0 NDJSON"
+}

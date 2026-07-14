@@ -12,6 +12,7 @@ shell_background_probe.py
   4. agent 判定卡死，调用 task_stop
   5. agent 给用户一条最终回复，整个 turn 内完成，无孤悬后台进程
 """
+
 from __future__ import annotations
 
 import argparse
@@ -22,13 +23,18 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from agent.control.client import ControlClient
 
 # ── 路径 ─────────────────────────────────────────────────────────────
+
 
 @dataclass
 class ProbePaths:
@@ -66,6 +72,7 @@ def _repo_root() -> Path:
 
 
 # ── Docker / 配置 ─────────────────────────────────────────────────────
+
 
 def _run_compose(paths: ProbePaths, args: list[str]) -> None:
     _ = subprocess.run(
@@ -116,6 +123,7 @@ def _isolate_cli_config(config_path: Path) -> str:
 
 # ── DB ────────────────────────────────────────────────────────────────
 
+
 def _connect_db(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path, timeout=10)
     conn.row_factory = sqlite3.Row
@@ -123,7 +131,7 @@ def _connect_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _latest_cli_session_key(db_path: Path) -> str:
+def _latest_channel_session_key(db_path: Path) -> str:
     conn = _connect_db(db_path)
     try:
         row = conn.execute(
@@ -155,18 +163,21 @@ def _session_messages(db_path: Path, session_key: str) -> list[dict[str, Any]]:
         conn.close()
     result: list[dict[str, Any]] = []
     for row in rows:
-        result.append({
-            "seq": int(row["seq"]),
-            "role": str(row["role"]),
-            "content": str(row["content"] or ""),
-            "tool_chain": _json_loads(row["tool_chain"]),
-            "extra": _json_loads(row["extra"]) or {},
-            "ts": str(row["ts"]),
-        })
+        result.append(
+            {
+                "seq": int(row["seq"]),
+                "role": str(row["role"]),
+                "content": str(row["content"] or ""),
+                "tool_chain": _json_loads(row["tool_chain"]),
+                "extra": _json_loads(row["extra"]) or {},
+                "ts": str(row["ts"]),
+            }
+        )
     return result
 
 
 # ── 工具调用提取 ──────────────────────────────────────────────────────
+
 
 def _flatten_calls(tool_chain: Any) -> list[dict[str, Any]]:
     """从 tool_chain 里按顺序提取所有工具调用。"""
@@ -192,6 +203,7 @@ def _calls_from_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 # ── Checks ────────────────────────────────────────────────────────────
 
+
 def _build_checks(
     *,
     responses: list[dict[str, Any]],
@@ -201,7 +213,9 @@ def _build_checks(
     call_names = [c.get("name", "") for c in all_calls]
 
     shell_idx = next((i for i, n in enumerate(call_names) if n == "shell"), -1)
-    task_output_idx = next((i for i, n in enumerate(call_names) if n == "task_output"), -1)
+    task_output_idx = next(
+        (i for i, n in enumerate(call_names) if n == "task_output"), -1
+    )
     task_stop_idx = next((i for i, n in enumerate(call_names) if n == "task_stop"), -1)
 
     assistant_messages = [m for m in messages if m["role"] == "assistant"]
@@ -255,30 +269,23 @@ def _build_checks(
 
 # ── CLI 通信 ──────────────────────────────────────────────────────────
 
-async def _read_assistant(reader: asyncio.StreamReader, timeout: float) -> dict[str, Any]:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        line = await asyncio.wait_for(reader.readline(), timeout=remaining)
-        if not line:
-            raise RuntimeError("CLI 连接已断开")
-        data = json.loads(line)
-        if data.get("type") == "assistant":
-            return {
-                "content": str(data.get("content") or ""),
-                "metadata": data.get("metadata") or {},
-            }
-    raise TimeoutError("等待 assistant 回复超时")
 
-
-async def _send(writer: asyncio.StreamWriter, text: str) -> None:
-    writer.write((json.dumps({"content": text}, ensure_ascii=False) + "\n").encode())
-    await writer.drain()
+async def _run_turn(
+    client: ControlClient,
+    thread_id: str,
+    text: str,
+    timeout: float,
+) -> dict[str, Any]:
+    handle = await client.start_turn(thread_id, text)
+    result = await asyncio.wait_for(handle.result(), timeout=timeout)
+    return {
+        "content": str(result.get("finalResponse") or ""),
+        "metadata": {},
+    }
 
 
 # ── 报告 ──────────────────────────────────────────────────────────────
+
 
 def _write_report(*, report_base: Path, payload: dict[str, Any]) -> None:
     report_base.parent.mkdir(parents=True, exist_ok=True)
@@ -311,7 +318,9 @@ def _write_report(*, report_base: Path, payload: dict[str, Any]) -> None:
     ]
     for key, value in checks.items():
         if key == "call_sequence":
-            lines.append(f"- call_sequence: {' → '.join(value) if value else '(empty)'}")
+            lines.append(
+                f"- call_sequence: {' → '.join(value) if value else '(empty)'}"
+            )
         else:
             icon = "✓" if value else "✗"
             lines.append(f"- {icon} {key}: {value}")
@@ -323,7 +332,9 @@ def _write_report(*, report_base: Path, payload: dict[str, Any]) -> None:
         content = row["content"].replace("\n", "\\n")
         if len(content) > 200:
             content = content[:200] + "..."
-        tools = row["extra"].get("tools_used") if isinstance(row["extra"], dict) else None
+        tools = (
+            row["extra"].get("tools_used") if isinstance(row["extra"], dict) else None
+        )
         lines.append(f"- seq={row['seq']} role={row['role']} tools={tools} | {content}")
     report_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"markdown: {report_md}")
@@ -334,12 +345,11 @@ def _write_report(*, report_base: Path, payload: dict[str, Any]) -> None:
 
 # 死循环命令：外表像"运行中"，实际永远无输出
 # iter(int, 1) 是永远不停的迭代器；time.sleep(1) 让进程安静占着 CPU
-_HIDDEN_LOOP_COMMAND = "python3 -c \"import time; [time.sleep(1) for _ in iter(int, 1)]\""
+_HIDDEN_LOOP_COMMAND = 'python3 -c "import time; [time.sleep(1) for _ in iter(int, 1)]"'
 
 # 发给 agent 的 prompt：不暴露循环意图，agent 只能通过 task_output 观察到什么都没输出
 _PROBE_PROMPT = (
-    "帮我运行下面这个命令，告诉我它的输出是什么。\n\n"
-    f"命令：{_HIDDEN_LOOP_COMMAND}"
+    "帮我运行下面这个命令，告诉我它的输出是什么。\n\n" f"命令：{_HIDDEN_LOOP_COMMAND}"
 )
 
 
@@ -350,7 +360,9 @@ async def _run_probe(args: argparse.Namespace) -> None:
         profile=args.profile,
     )
     _bootstrap_profile(paths, args.bootstrap_from)
-    original_config = _isolate_cli_config(paths.config) if args.isolate_channels else None
+    original_config = (
+        _isolate_cli_config(paths.config) if args.isolate_channels else None
+    )
     proc: subprocess.Popen[bytes] | None = None
     try:
         if args.reset_workspace:
@@ -359,8 +371,14 @@ async def _run_probe(args: argparse.Namespace) -> None:
         if args.start_agent:
             paths.socket.unlink(missing_ok=True)
             proc = subprocess.Popen(
-                ["docker", "compose", "-f", str(paths.debug_dir / "docker-compose.yml"),
-                 "up", "akashic-debug"],
+                [
+                    "docker",
+                    "compose",
+                    "-f",
+                    str(paths.debug_dir / "docker-compose.yml"),
+                    "up",
+                    "akashic-debug",
+                ],
                 cwd=paths.repo,
                 env={**dict(os.environ), "AKASHIC_DEBUG_PROFILE": paths.profile},
                 stdout=subprocess.DEVNULL if args.quiet_agent else None,
@@ -374,25 +392,27 @@ async def _run_probe(args: argparse.Namespace) -> None:
             if not paths.socket.exists():
                 raise SystemExit(f"等待 socket 超时: {paths.socket}")
 
-        reader, writer = await asyncio.open_unix_connection(str(paths.socket))
+        client = await ControlClient.connect(str(paths.socket))
         responses: list[dict[str, Any]] = []
         try:
-            print(f"发送 prompt（死循环命令，agent 不知情）：\n  {_HIDDEN_LOOP_COMMAND}\n")
-            await _send(writer, _PROBE_PROMPT)
+            thread = await client.start_thread(
+                {"probe": "shell-background", "channel": "cli"}
+            )
+            session_key = str(thread["id"])
+            print(
+                f"发送 prompt（死循环命令，agent 不知情）：\n  {_HIDDEN_LOOP_COMMAND}\n"
+            )
             # agent 需要：15s auto-promote + 至少一次 task_output + task_stop + 回复
             # 给充裕的 turn_timeout（默认 120s）
-            response = await _read_assistant(reader, args.turn_timeout)
+            response = await _run_turn(
+                client, session_key, _PROBE_PROMPT, args.turn_timeout
+            )
             responses.append(response)
             print(f"agent 回复：{response['content'][:200]}")
         finally:
-            writer.close()
-            await writer.wait_closed()
+            await client.close()
 
         await asyncio.sleep(2.0)  # 等 DB 写入
-
-        session_key = _latest_cli_session_key(paths.sessions_db)
-        if not session_key:
-            raise SystemExit("未找到 CLI session")
 
         messages = _session_messages(paths.sessions_db, session_key)
         checks = _build_checks(responses=responses, messages=messages)
@@ -415,7 +435,9 @@ async def _run_probe(args: argparse.Namespace) -> None:
             "session_messages": messages,
             "checks": checks,
         }
-        report_base = args.output or paths.workspace / f"shell-background-probe-{paths.profile}"
+        report_base = (
+            args.output or paths.workspace / f"shell-background-probe-{paths.profile}"
+        )
         _write_report(report_base=report_base, payload=payload)
 
         if not checks["passed"]:
@@ -431,6 +453,7 @@ async def _run_probe(args: argparse.Namespace) -> None:
 
 # ── CLI ───────────────────────────────────────────────────────────────
 
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="测试 agent 能否自主发现卡死后台 shell 任务并调用 task_stop。"
@@ -438,15 +461,21 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--profile", default="shell-bg-probe")
     parser.add_argument("--bootstrap-from", default="")
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--turn-timeout", type=float, default=120,
-                        help="等待 agent 完成整个 turn 的超时秒数（含 auto-promote 15s + 轮询 + 回复）")
+    parser.add_argument(
+        "--turn-timeout",
+        type=float,
+        default=120,
+        help="等待 agent 完成整个 turn 的超时秒数（含 auto-promote 15s + 轮询 + 回复）",
+    )
     parser.add_argument("--start-timeout", type=float, default=90)
     parser.add_argument("--reset-workspace", action="store_true")
     parser.add_argument("--start-agent", action="store_true")
     parser.add_argument("--stop-agent", action="store_true")
     parser.add_argument("--quiet-agent", action="store_true")
     parser.add_argument("--isolate-channels", action="store_true", default=True)
-    parser.add_argument("--no-isolate-channels", dest="isolate_channels", action="store_false")
+    parser.add_argument(
+        "--no-isolate-channels", dest="isolate_channels", action="store_false"
+    )
     return parser.parse_args()
 
 

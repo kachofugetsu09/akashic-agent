@@ -4,7 +4,7 @@ import json
 import mimetypes
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -163,8 +163,8 @@ class Session:
     messages: list[dict[str, object]] = field(
         default_factory=list[dict[str, object]]
     )
-    created_at: datetime = field(default_factory=datetime.now)
-    updated_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = field(default_factory=dict[str, Any])
     last_consolidated: int = 0
     consolidation_requested: bool = False
@@ -176,13 +176,13 @@ class Session:
         msg: dict[str, object] = {
             "role": role,
             "content": content,
-            "timestamp": datetime.now().astimezone().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             **kwargs,
         }
         if media:
             msg["media"] = list(media)
         self.messages.append(msg)
-        self.updated_at = datetime.now()
+        self.updated_at = datetime.now(UTC)
 
     def get_history(
         self,
@@ -313,7 +313,7 @@ class Session:
 
     def clear(self) -> None:
         self.messages = []
-        self.updated_at = datetime.now()
+        self.updated_at = datetime.now(UTC)
         self.last_consolidated = 0
         self.consolidation_requested = False
 
@@ -415,7 +415,7 @@ class SessionManager:
         for msg in messages:
             if msg.get("id"):
                 continue
-            ts = str(msg.get("timestamp") or datetime.now().astimezone().isoformat())
+            ts = str(msg.get("timestamp") or datetime.now(UTC).isoformat())
             content = msg.get("content", "")
             if not isinstance(content, str):
                 content = json.dumps(content, ensure_ascii=False)
@@ -446,7 +446,7 @@ class SessionManager:
         # 3. 保持会话消息缓存里的时间字段完整。
         for msg in messages:
             if "timestamp" not in msg:
-                msg["timestamp"] = datetime.now().astimezone().isoformat()
+                msg["timestamp"] = datetime.now(UTC).isoformat()
 
         session.updated_at = updated_at
         return len(rows)
@@ -455,7 +455,7 @@ class SessionManager:
         _ = self._persist_session(
             session,
             session.messages,
-            updated_at=datetime.now(),
+            updated_at=datetime.now(UTC),
         )
         self._cache[session.key] = session
 
@@ -469,7 +469,7 @@ class SessionManager:
     async def append_messages(
         self, session: Session, messages: list[dict[str, object]]
     ) -> None:
-        updated_at = datetime.now()
+        updated_at = datetime.now(UTC)
         msgs_copy = list(messages)
         async with self._lock(session.key):
             # 1. 原子追加消息并刷新 session 元数据。
@@ -500,7 +500,7 @@ class SessionManager:
             _ = self._persist_session(
                 session,
                 retained,
-                updated_at=datetime.now(),
+                updated_at=datetime.now(UTC),
                 last_consolidated=last_consolidated,
                 retained_message_ids=retained_ids,
             )
@@ -518,6 +518,21 @@ class SessionManager:
         for item in sessions:
             item["path"] = str(self.db_path)
         return sessions
+
+    @property
+    def control_store(self) -> SessionStore:
+        """向会话控制服务暴露同一 SQLite owner，避免建立第二条连接。"""
+        return self._store
+
+    def session_exists(self, key: str) -> bool:
+        return self._store.session_exists(key)
+
+    def delete_session(self, key: str) -> bool:
+        """删除 thread 的会话、消息和 turn 记录。"""
+
+        deleted = self._store.delete_session(key, cascade=True)
+        self.invalidate(key)
+        return deleted
 
     def get_channel_metadata(self, channel: str) -> list[dict[str, Any]]:
         return self._store.get_channel_metadata(channel)

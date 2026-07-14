@@ -15,6 +15,7 @@ from typing import cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent.config_models import (
+    AppServerConfig,
     ChannelsConfig,
     Config,
     MemoryConfig,
@@ -39,11 +40,11 @@ _PRESETS: dict[str, str] = {
 }
 _DEFAULT_TOOLSETS = ("meta_common", "spawn", "schedule", "mcp")
 
-# 空值表示由 workspace 派生 IPC 端点，避免多个实例争用全局路径。
+# 空值表示由 workspace 派生 app-server 端点，避免多个实例争用全局路径。
 DEFAULT_SOCKET = ""
 
 
-def _normalize_cli_socket_endpoint(value: str | None) -> str:
+def _normalize_app_server_endpoint(value: str | None) -> str:
     text = str(value or "").strip()
     if not text:
         return DEFAULT_SOCKET
@@ -60,8 +61,8 @@ def _normalize_cli_socket_endpoint(value: str | None) -> str:
     return f"127.0.0.1:{20000 + port_seed}"
 
 
-def resolve_cli_socket_endpoint(value: str, workspace: Path) -> str:
-    """解析当前 workspace 独占的 IPC 端点。"""
+def resolve_app_server_endpoint(value: str, workspace: Path) -> str:
+    """解析当前 workspace 独占的 app-server 端点。"""
 
     # 1. 显式配置保持原样
     if value:
@@ -106,6 +107,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
     if not provider:
         raise ValueError("必须配置 llm provider")
     channels = _load_channels_config(data)
+    app_server = _load_app_server_config(data)
     proactive = _load_proactive_config(data)
     memory = _load_memory_config(data)
     peer_agents = _load_peer_agents_config(data)
@@ -141,6 +143,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         ),
         extra_body=_load_extra_body(data, llm_main),
         channels=channels,
+        app_server=app_server,
         proactive=proactive,
         memory_optimizer_enabled=_as_bool(
             agent_maintenance.get(
@@ -280,7 +283,10 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
                 ),
             )
 
-    cli_data = _as_dict(channels_data.get("cli"), field="channels.cli")
+    if "socket" in channels_data or "cli" in channels_data:
+        raise ValueError(
+            "旧 channels.socket/channels.cli 配置已删除；请改用 [app_server] listen = \"\""
+        )
     chat_data = _as_dict(channels_data.get("chat"), field="channels.chat")
     chat = WebChatConfig(
         enabled=_as_bool(
@@ -290,22 +296,30 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
         port=int(chat_data.get("port", 6322)),
         channel_name=str(chat_data.get("channel_name", "web") or "web"),
     )
-    socket_value = channels_data.get("socket") or cli_data.get(
-        "socket", DEFAULT_SOCKET
-    )
-    cli_session_key = str(cli_data.get("session_key") or "").strip()
-    cli_channel = str(cli_data.get("channel") or "").strip()
-    cli_chat_id = str(cli_data.get("chat_id") or "").strip()
-    if not cli_session_key and cli_channel and cli_chat_id:
-        cli_session_key = f"{cli_channel}:{cli_chat_id}"
     channels = ChannelsConfig(
         telegram=telegram,
         qq=qq,
         chat=chat,
-        socket=_normalize_cli_socket_endpoint(socket_value),
-        cli_session_key=cli_session_key,
     )
     return channels
+
+
+def _load_app_server_config(data: dict) -> AppServerConfig:
+    """在配置边界校验本地控制面的资源上限。"""
+
+    raw = _as_dict(data.get("app_server"), field="app_server")
+    config = AppServerConfig(
+        enabled=_as_bool(raw.get("enabled", True), field="app_server.enabled"),
+        listen=_normalize_app_server_endpoint(str(raw.get("listen", ""))),
+        max_connections=int(raw.get("max_connections", 32)),
+        ingress_queue_size=int(raw.get("ingress_queue_size", 128)),
+        outbound_queue_size=int(raw.get("outbound_queue_size", 512)),
+        max_message_bytes=int(raw.get("max_message_bytes", 2 * 1024 * 1024)),
+    )
+    for name in ("max_connections", "ingress_queue_size", "outbound_queue_size", "max_message_bytes"):
+        if getattr(config, name) <= 0:
+            raise ValueError(f"app_server.{name} 必须大于 0")
+    return config
 
 
 def _load_proactive_config(data: dict) -> ProactiveConfig:
@@ -580,7 +594,7 @@ __all__ = [
     "ChannelsConfig",
     "Config",
     "DEFAULT_SOCKET",
-    "resolve_cli_socket_endpoint",
+    "resolve_app_server_endpoint",
     "MemoryConfig",
     "MemoryEmbeddingConfig",
     "QQChannelConfig",

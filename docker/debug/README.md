@@ -1,5 +1,49 @@
 # Docker 调试沙盒
 
+## 程序化控制面验收门
+
+`programmatic_control_probe.py` 拥有独立 Compose project、隔离 sandbox、证据收集、
+源码 digest 审计和强制 cleanup。`/app` 与 model-gate 源码均只读挂载，运行时只允许写
+`/sandbox` 和 tmpfs `/tmp`。
+
+```bash
+python docker/debug/programmatic_control_probe.py --gate smoke
+python docker/debug/programmatic_control_probe.py --gate failure-matrix
+python docker/debug/programmatic_control_probe.py --gate soak
+```
+
+当前基建实现 `smoke`、PR 必选的 `failure-matrix` 和 nightly/release `soak`。`smoke`
+覆盖 UDS/stdio、基本 turn，以及 streaming/tool/usage 的事件与 DB 一致性；
+`failure-matrix` 覆盖双连接隔离、同 thread 冲突、精确中断、断线恢复、慢客户端背压、
+provider 分类、非法协议、Web channel parity、workspace lock、SIGTERM 和 crash/restart。
+`soak` 执行 10 次预热与 100 次混合 turn，包含 10 次 reconnect、interrupt 和 provider
+failure，并检查 RSS、fd、线程与 DB 非终态阈值。
+每次运行的证据位于
+`docker/debug/reports/programmatic-control/<run-id>/`。
+
+确定性模型 sidecar 的控制协议：
+
+- `PUT /control/script`：装载一个脚本对象或脚本数组。`mode` 支持 `complete`、
+  `stream`、`error`、`timeout`、`truncate`；可提供 `content`、`deltas`、`tool_calls`、`usage`、
+  `status` 和 `body`。
+- `PUT /control/barriers/{name}`：创建 barrier。将 `"barrier":"{name}"` 放入脚本后，
+  对应模型请求到达 provider sidecar 时会精确阻塞。
+- `GET /control/barriers/{name}/wait?timeout=30`：服务端长等待请求到达，不靠 controller
+  固定 sleep 猜竞态。
+- `POST /control/barriers/{name}/release`：释放已到达的模型请求。
+- `GET /control/requests`：读取完整 payload、关联 header、脚本和请求状态证据。
+
+示例脚本：
+
+```json
+{
+  "mode": "stream",
+  "barrier": "turn-entered-provider",
+  "deltas": ["hello ", "world"],
+  "usage": {"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9}
+}
+```
+
 这个目录用于临时调试真实入口，例如 Telegram 图片、多模态链路、独立 bot 配置。调试容器基于 Arch Linux，沙盒不会挂载宿主机 `HOME`，也不会挂载正式 `~/.akashic/workspace`。
 
 ```
@@ -105,13 +149,13 @@ AKASHIC_DEBUG_PROFILE=multimodal docker compose -f docker/debug/docker-compose.y
 
 对应目录是 `docker/debug/profiles/multimodal/`。
 
-## 连接调试 CLI
+## 调用调试实例
 
 ```bash
-docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug cli
+docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug exec --new "测试消息"
 ```
 
-CLI socket 固定为 `/sandbox/akashic.sock`，不会连接正式实例。
+app-server socket 固定为 `/sandbox/akashic.sock`，不会连接正式实例。
 
 ## 打开调试 Dashboard
 

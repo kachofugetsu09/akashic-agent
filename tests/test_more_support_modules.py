@@ -25,7 +25,6 @@ from agent.provider import (
     _normalize_openai_base_url,
 )
 from agent.tool_runtime import append_assistant_tool_calls
-from infra.channels.cli import CLIClient, _print_banner
 from infra.channels.group_filter import DefaultGroupFilter, strip_at_segments
 from memory2.models import MemoryItem
 from plugins.default_proactive.anyaction import AnyActionGate, QuotaStore
@@ -926,10 +925,7 @@ async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
     monkeypatch.setattr(
         "bootstrap.app.start_channels",
         AsyncMock(
-            return_value=(
-                MagicMock(),
-                SimpleNamespace(start_all=AsyncMock(), stop_all=AsyncMock()),
-            )
+            return_value=SimpleNamespace(start_all=AsyncMock(), stop_all=AsyncMock())
         ),
     )
     build_proactive_runtime = MagicMock(return_value=([], None))
@@ -954,10 +950,8 @@ async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
         config=cast(
             Any,
             SimpleNamespace(
-                    channels=SimpleNamespace(
-                        socket="",
-                        chat=SimpleNamespace(enabled=False),
-                    ),
+                app_server=SimpleNamespace(enabled=False),
+                channels=SimpleNamespace(chat=SimpleNamespace(enabled=False)),
             ),
         ),
         workspace=tmp_path,
@@ -967,59 +961,27 @@ async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
     build_memory_optimizer_task.assert_called_once()
     assert build_memory_optimizer_task.call_args.kwargs["memory_store"] is markdown_store
     assert app.dashboard_server.manual_memory_optimizer is memory_optimizer
+    await app.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_group_filter_and_cli_paths(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-):
+async def test_group_filter_paths() -> None:
     group = SimpleNamespace(group_id="1", allow_from=["42"], require_at=True)
     event = SimpleNamespace(user_id="42", raw_message="[CQ:at,qq=10001] hi")
-    assert await DefaultGroupFilter("10001").should_process(event, cast(Any, group)) is True
+
+    assert (
+        await DefaultGroupFilter("10001").should_process(event, cast(Any, group))
+        is True
+    )
     assert strip_at_segments("x [CQ:at,qq=10001] y") == "x  y".strip()
+
     bad_user = SimpleNamespace(user_id="9", raw_message="hi")
-    assert await DefaultGroupFilter("10001").should_process(bad_user, cast(Any, group)) is False
-
-    reader = MagicMock()
-    reader.readline = AsyncMock(side_effect=[b'{"content":"hi"}\n', b""])
-    writer = MagicMock()
-    writer.write = MagicMock()
-    writer.drain = AsyncMock()
-    writer.close = MagicMock()
-    writer.wait_closed = AsyncMock()
-    if sys.platform == "win32":
-        monkeypatch.setattr(
-            "infra.channels.cli.asyncio.open_connection",
-            AsyncMock(return_value=(reader, writer)),
+    assert (
+        await DefaultGroupFilter("10001").should_process(
+            bad_user, cast(Any, group)
         )
-    else:
-        monkeypatch.setattr(
-            "infra.channels.cli.asyncio.open_unix_connection",
-            AsyncMock(return_value=(reader, writer)),
-        )
-    lines = iter(["hello\n", "exit\n"])
-
-    async def _fake_read_line() -> str:
-        return next(lines)
-
-    monkeypatch.setattr("infra.channels.cli._read_line", _fake_read_line)
-    await CLIClient("/tmp/sock").run()
-    writer.write.assert_called()
-    assert "再见" in capsys.readouterr().out
-
-    if sys.platform == "win32":
-        monkeypatch.setattr(
-            "infra.channels.cli.asyncio.open_connection",
-            AsyncMock(side_effect=FileNotFoundError()),
-        )
-    else:
-        monkeypatch.setattr(
-            "infra.channels.cli.asyncio.open_unix_connection",
-            AsyncMock(side_effect=FileNotFoundError()),
-        )
-    await CLIClient("/tmp/missing").run()
-    _print_banner()
-    assert "akashic Agent CLI" in capsys.readouterr().out
+        is False
+    )
 
 
 @pytest.mark.asyncio
@@ -1057,22 +1019,14 @@ async def test_bootstrap_trigger_and_entrypoints_cover_paths(
         "agent.config.Config.load",
         classmethod(
             lambda cls, path="config.toml": SimpleNamespace(
-                channels=SimpleNamespace(socket="/tmp/sock")
+                app_server=SimpleNamespace(listen="/tmp/control.sock")
             )
         ),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "infra.channels.cli_tui",
-        SimpleNamespace(run_tui=MagicMock()),
     )
     monkeypatch.setattr(
         "bootstrap.app.build_app_runtime",
         lambda *args, **kwargs: SimpleNamespace(run=AsyncMock()),
     )
-    monkeypatch.setattr(sys, "argv", ["main.py", "cli"])
-    runpy.run_module("main", run_name="__main__")
-
     monkeypatch.setattr(sys, "argv", ["main.py"])
     runpy.run_module("main", run_name="__main__")
 

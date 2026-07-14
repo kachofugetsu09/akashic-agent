@@ -455,6 +455,9 @@ async def test_reasoner_exception_turn_returns_control_outbound():
     dispatched = dispatch_port.dispatch.await_args.args[0]
     assert dispatched.content == "处理消息时出错，请稍后再试。"
 
+    with pytest.raises(RuntimeError, match="budget guard"):
+        _ = await agent_core.process(msg, "telegram:123", dispatch_outbound=False)
+
 
 @pytest.mark.asyncio
 async def test_after_turn_dispatch_exception_is_not_wrapped_by_control_outbound():

@@ -490,7 +490,7 @@ def _phase_telegram(a: WizardAnswers) -> None:
     _section_header("3/5", "Telegram 频道 + Proactive")
 
     if not click.confirm("配置 Telegram 频道？", default=True):
-        _hint("跳过后仅支持 CLI 模式（uv run python main.py cli），proactive 已关闭")
+        _hint("跳过后仅支持程序化调用（python main.py exec），proactive 已关闭")
         a.proactive_enabled = False
         return
 

@@ -9,15 +9,22 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from agent.config import resolve_cli_socket_endpoint
+from agent.config import resolve_app_server_endpoint
+from agent.control.models import TurnRequest
+from agent.control.runtime import ConversationRuntime
+from agent.control.service import ControlService
 from agent.config_models import Config
 from bootstrap.channel_host import ChannelHost
 from bootstrap.channels import start_channels
 from bootstrap.chat_api import build_chat_server
 from bootstrap.cleanup import run_cleanup_steps
+from bootstrap.control_execution import execute_control_turn
 from bootstrap.dashboard_api import build_dashboard_server
 from bootstrap.proactive import build_memory_optimizer_task, build_proactive_runtime
+from bootstrap.passive_worker import PassiveMessageWorker
 from bootstrap.tools import CoreRuntime, build_core_runtime
+from bootstrap.workspace_lock import WorkspaceInstanceLock
+from bootstrap.workspace_token import ensure_workspace_token
 from bus.event_bus import EventBus
 from agent.plugins.jobs import PluginJobRuntime
 from agent.plugins.service_host import PluginServiceHost
@@ -27,6 +34,7 @@ from core.net.http import (
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
+from infra.control.socket import SocketAppServer, is_tcp_endpoint
 
 if TYPE_CHECKING:
     from proactive_v2.loop import ProactiveLoop
@@ -35,7 +43,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
     datefmt="%H:%M:%S",
-    stream=sys.stdout,
+    stream=sys.stderr,
     force=True,
 )
 logging.getLogger("agent.plugins.manager").setLevel(
@@ -54,6 +62,15 @@ _run_cleanup_steps = run_cleanup_steps
 
 async def _noop_async() -> None:
     return None
+
+
+def _release_workspace_lock(
+    lock: WorkspaceInstanceLock,
+) -> Callable[[], Awaitable[None]]:
+    async def release() -> None:
+        lock.release()
+
+    return release
 
 
 def _raise_unexpected_task_errors(name: str, results: list[object]) -> None:
@@ -152,7 +169,10 @@ class AppRuntime:
         self.config = config
         self.workspace = workspace
         self.http_resources = SharedHttpResources()
-        self.ipc = None
+        self.app_server: SocketAppServer | None = None
+        self.conversation_runtime: ConversationRuntime | None = None
+        self.control_service: ControlService | None = None
+        self.passive_worker: PassiveMessageWorker | None = None
         self.channel_host: ChannelHost | None = None
         self.core: CoreRuntime | None = None
         self.agent_loop = None
@@ -187,12 +207,14 @@ class AppRuntime:
         self._plugin_reload_signal_installed = False
         self._runtime_tasks: set[asyncio.Future[Any]] = set()
         self._primary_task: asyncio.Future[Any] | None = None
+        self._workspace_lock = WorkspaceInstanceLock(workspace)
 
     async def start(self) -> None:
         if self._started:
             return
-        configure_default_shared_http_resources(self.http_resources)
+        self._workspace_lock.acquire()
         try:
+            configure_default_shared_http_resources(self.http_resources)
             self.core = build_core_runtime(
                 self.config,
                 self.workspace,
@@ -214,6 +236,56 @@ class AppRuntime:
             self.peer_process_manager = self.core.peer_process_manager
             self.peer_poller = self.core.peer_poller
             await self.core.start()
+
+            async def _execute_control_request(request: TurnRequest):
+                assert self.agent_loop is not None
+                return await execute_control_turn(
+                    self.agent_loop,
+                    event_bus,
+                    request,
+                )
+
+            self.conversation_runtime = ConversationRuntime(
+                self.session_manager.control_store,
+                _execute_control_request,
+            )
+            app_server_endpoint: str | None = None
+            workspace_token: str | None = None
+            if self.config.app_server.enabled:
+                app_server_endpoint = resolve_app_server_endpoint(
+                    self.config.app_server.listen,
+                    self.workspace,
+                )
+                if is_tcp_endpoint(app_server_endpoint):
+                    workspace_token = ensure_workspace_token(self.workspace)
+            self.control_service = ControlService(
+                self.conversation_runtime,
+                self.session_manager,
+                self.workspace,
+                plugin_drain=self._disable_and_drain_plugin,
+                consolidate=(
+                    self.agent_loop.trigger_memory_consolidation
+                    if self.config.app_server.enabled
+                    else None
+                ),
+                workspace_token=workspace_token,
+            )
+            self.passive_worker = PassiveMessageWorker(
+                self.bus,
+                self.conversation_runtime,
+                self.agent_loop,
+            )
+            if self.config.app_server.enabled:
+                assert app_server_endpoint is not None
+                self.app_server = SocketAppServer(
+                    app_server_endpoint,
+                    self.control_service,
+                    max_connections=self.config.app_server.max_connections,
+                    max_pending_requests=self.config.app_server.ingress_queue_size,
+                    max_message_bytes=self.config.app_server.max_message_bytes,
+                    outbound_queue_size=self.config.app_server.outbound_queue_size,
+                )
+                await self.app_server.start()
 
             plugin_manager = getattr(self.core, "plugin_manager", None)
             if plugin_manager is not None:
@@ -241,12 +313,8 @@ class AppRuntime:
                     channel_name=self.config.channels.chat.channel_name,
                 )
                 plugin_channels.append(self.web_chat_channel)
-            self.ipc, self.channel_host = await start_channels(
+            self.channel_host = await start_channels(
                 self.config,
-                socket_endpoint=resolve_cli_socket_endpoint(
-                    self.config.channels.socket,
-                    self.workspace,
-                ),
                 bus=self.bus,
                 session_manager=self.session_manager,
                 push_tool=self.push_tool,
@@ -257,14 +325,9 @@ class AppRuntime:
                     if plugin_manager
                     else None
                 ),
-                interrupt_controller=self.agent_loop,
+                interrupt_controller=self.conversation_runtime,
                 plugin_channels=plugin_channels,
             )
-            if plugin_manager is not None:
-                self.ipc.register_command(
-                    "plugin-disable-and-drain",
-                    self._disable_and_drain_plugin,
-                )
             await self.channel_host.start_all()
             if plugin_manager is not None:
                 channel_bindings = {
@@ -280,7 +343,7 @@ class AppRuntime:
                 )
 
             self.tasks = [
-                self.agent_loop.run(),
+                self.passive_worker.run(),
                 self.bus.dispatch_outbound(),
                 self.scheduler.run(),
             ]
@@ -365,7 +428,6 @@ class AppRuntime:
             )
             self.tasks.extend(proactive_tasks)
             if self.proactive_loop is not None:
-                self.ipc.set_proactive_loop(self.proactive_loop)
                 if plugin_manager is not None:
                     plugin_manager.bind_endpoint_admission(
                         quiesce=self.proactive_loop.quiesce_for_reload,
@@ -539,7 +601,22 @@ class AppRuntime:
                     "plugin_jobs.stop",
                     _stop_plugin_jobs(self.plugin_job_runtime),
                 ),
-                ("ipc.stop", self.ipc.stop if self.ipc else _noop_async),
+                (
+                    "app_server.stop",
+                    self.app_server.stop if self.app_server else _noop_async,
+                ),
+                (
+                    "control_service.shutdown",
+                    self.control_service.shutdown
+                    if self.control_service
+                    else _noop_async,
+                ),
+                (
+                    "conversation_runtime.shutdown",
+                    self.conversation_runtime.shutdown
+                    if self.conversation_runtime
+                    else _noop_async,
+                ),
                 (
                     "channels.stop",
                     self.channel_host.stop_all if self.channel_host else _noop_async,
@@ -558,6 +635,7 @@ class AppRuntime:
                     else _noop_async,
                 ),
                 ("http_resources.aclose", self.http_resources.aclose),
+                ("workspace_lock.release", _release_workspace_lock(self._workspace_lock)),
             )
         finally:
             clear_default_shared_http_resources(self.http_resources)
@@ -592,8 +670,8 @@ class AppRuntime:
         self._plugin_candidate_tasks.add(task)
         task.add_done_callback(self._plugin_candidate_scan_done)
 
-    async def _disable_and_drain_plugin(self, data: dict[str, object]) -> str:
-        plugin_id = str(data.get("plugin_id", "")).strip()
+    async def _disable_and_drain_plugin(self, plugin_id: str) -> str:
+        plugin_id = plugin_id.strip()
         if not plugin_id:
             raise ValueError("缺少插件 ID")
         manager = getattr(self.core, "plugin_manager", None)

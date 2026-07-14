@@ -184,7 +184,8 @@ Agent 根据电量模型自适应调整轮询频率——你刚聊完时不烦�
 ## 其他命令
 
 ```bash
-uv run python main.py cli       # 连接运行中的 agent（TUI）
+uv run python main.py exec --new --final-only "总结最近上下文"
+uv run python main.py app-server --stdio # 父进程托管 JSON-RPC app-server
 uv run python main.py dashboard # 打开 Dashboard（默认 :2236）
 # Web Chatbox 跟主进程一起启动，默认 http://127.0.0.1:6322
 uv run python main.py --help    # 查看全部子命令
@@ -196,3 +197,10 @@ akashic_RUN_SCENARIOS=1 pytest -c pytest-scenarios.ini tests_scenarios/
 ## 工作区
 
 所有运行时数据在 `~/.akashic/workspace/`。
+
+程序化客户端连接 workspace 下的 `akashic.sock`，先完成 JSON-RPC
+`initialize`/`initialized`，再使用 `thread/start`、`turn/start`、`turn/read` 和
+`turn/interrupt`。Python SDK 位于 `sdk/python/`；旧 TUI 和无 request id 的 IPC payload
+已删除，不提供兼容 fallback。
+
+完整配置、协议和回滚说明见[程序化控制面迁移指南](./_handbook/programmatic-control-migration.md)。

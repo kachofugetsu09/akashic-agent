@@ -1,0 +1,25 @@
+name: Programmatic Control Nightly
+
+on:
+  schedule:
+    - cron: "23 18 * * *"
+  workflow_dispatch:
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run deterministic resource soak
+        run: python docker/debug/programmatic_control_probe.py --gate soak
+
+      - name: Upload commit-bound soak evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: programmatic-control-soak-${{ github.sha }}
+          path: docker/debug/reports/programmatic-control/
+          retention-days: 30
