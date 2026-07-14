@@ -95,10 +95,12 @@ class _FakeMemoryEngine:
         return None
 
 
-def test_stream_events_only_support_telegram_private_chat():
+def test_stream_events_support_realtime_private_channels():
     assert _supports_stream_events("telegram", "123")
     assert not _supports_stream_events("telegram", "-1001")
     assert not _supports_stream_events("telegram", "@alice")
+    assert _supports_stream_events("web", "desktop-chat")
+    assert _supports_stream_events("mobile", "b2b817df-2d23-4a8f-af01-415f4faf0f9b")
     assert not _supports_stream_events("qq", "123")
     assert not _supports_stream_events("cli", "direct")
 
