@@ -35,16 +35,16 @@ Agent / meme 插件输出媒体
 | --- | --- | --- | --- |
 | 文字、思考与工具流 | Android 已支持 | 保持现有流畅度 | 已有 |
 | 停止生成 | UI 按钮为空回调 | 接通 `turn.stop` | 待实现 |
-| 文件与图片选择 | 附件按钮为空回调 | 系统多选、预览、移除 | 待实现 |
+| 文件与图片选择 | 附件按钮为空回调 | 系统多选、预览、移除 | Android 完成 |
 | 上传传输 | 协议只有 begin/finish 名称 | 全 WebSocket 二进制分片 | 服务端完成 |
 | 上传进度 | Room 有 transfer 表但未使用 | 乐观进度加服务端确认 | 服务端完成 |
 | 弱网续传 | 无 | 按确认 offset 恢复 | 服务端完成 |
 | 图文和纯附件消息 | 服务端拒绝 media_refs | 两者均支持 | 服务端完成 |
 | Agent 图片理解 | Web 可进入 VL 链路 | Android 上传图片等价接入 | 服务端完成 |
-| 助手图片、文件、meme | 服务端发送路径，Android 丢弃 | descriptor、下载、缓存、展示 | 服务端完成 |
-| 历史媒体同步 | 历史 DTO 裁掉 media | 全 mobile 会话恢复媒体 | 服务端完成 |
-| 图片预览 | 无 | Material 3 全屏预览、缩放、GIF | 待实现 |
-| 普通文件操作 | 无 | 类型、大小、进度、系统打开与分享 | 待实现 |
+| 助手图片、文件、meme | 服务端发送路径，Android 丢弃 | descriptor、下载、缓存、展示 | 完成 |
+| 历史媒体同步 | 历史 DTO 裁掉 media | 全 mobile 会话恢复媒体 | 完成 |
+| 图片预览 | 无 | Material 3 全屏预览、缩放、GIF | 完成 |
+| 普通文件操作 | 无 | 类型、大小、进度、系统打开与分享 | 打开完成，分享待补 |
 | Telegram 被动媒体等价 | Telegram 支持本地路径与 HTTP(S) 图片出站 | Android 覆盖同类能力 | 服务端完成 |
 
 ## 设计约束
@@ -135,8 +135,43 @@ better-ui：
 
 ### 4. Material 3 预览与文件交互
 
-- Commit：待完成。
-- E2E：待完成。
+- Commit：`d04ce0f9 feat(android): receive realtime attachments`。
+- 身份合并：发送 command 与用户 `client_message_id` 复用一个 ULID；assistant live final 迁移到服务端 canonical ID，history 同 ID 原子替换消息、附件链接和 thinking/tool blocks，不重复显示。
+- 即时回复：无持久化 ID 的 control/plugin final 使用 `ephemeral:<event-id>` 独立命名空间，只负责本机展示，不伪装成可同步历史。
+- 下载：单 active coordinator 按持久 offset 串行续传；协议、文件、Room 与溢出错误关闭当前连接并重新调度，失败项可手动重下。
+- 缓存：受限私有目录、SHA-256 文件名、启动 reconcile、512MiB 配额与真实 LRU；重连只恢复待下载队列，不重复扫描全缓存。
+- 迁移：Room v1→v2 显式 migration，并以 `MigrationTestHelper` 创建真实 v1 数据后升级验证。
+- 展示：图片和 GIF 使用 Coil inline 预览及全屏缩放；解码失败回退到文件行。普通文件显示类型、大小和进度，通过非导出 FileProvider 交给系统打开。
+- 验证：独立 reviewer 两轮检查后批准；JVM 34 项通过，`compileDebugAndroidTestKotlin`、Lint 与 debug APK 构建通过；被根 `data/` 规则忽略的核心源码、测试与 Room schema 已 force-add，并用 `git ls-tree` 确认进入提交。
+- E2E：数据层、Compose 与 migration instrumentation 已编译；真实模拟器联合链路留在第 5 组执行。
+
+#### UI skill 约束落实
+
+better-colors：
+
+| Before | After |
+| --- | --- |
+| 已缓存和下载中都使用 `primary` | 已缓存使用 `onSurfaceVariant`；下载、重试等主动状态保留 `primary` |
+| 图片边缘在浅色背景上不稳定 | 浅色使用纯黑 10% outline，深色使用纯白 10% outline |
+| 容易为附件再造 pastel 色系 | 复用现有 Material 3 token；亮紫仍只表达思考和工具活动 |
+
+better-typography：
+
+| Before | After |
+| --- | --- |
+| 附件没有信息层级 | 文件名使用 `labelLarge`，类型、大小与状态使用 `labelMedium` |
+| 百分比更新会造成字宽跳动 | 大小与进度启用 `tnum` |
+| 长文件名挤压操作 | 单行省略，完整名称保留在无障碍语义中 |
+
+better-ui：
+
+| Before | After |
+| --- | --- |
+| 被动附件不可见 | 附件进入 user/assistant 消息内容层 |
+| 每个文件容易形成独立卡片墙 | 普通文件共享同一列表平面，以浅分隔线表达关系 |
+| 图片只能当普通文件 | inline 图片/GIF，点击进入全屏 Material 3 预览 |
+| 缓存淘汰或图片损坏没有恢复路径 | `EVICTED` 提供真实重下；Coil 失败回退为可打开文件行 |
+| 操作反馈与系统边界不明确 | 48dp 触控区、0.96 按压、state layer、`safeDrawing` 与缩放平移限界 |
 
 ### 5. 弱网、模拟器与 APK 发布
 
