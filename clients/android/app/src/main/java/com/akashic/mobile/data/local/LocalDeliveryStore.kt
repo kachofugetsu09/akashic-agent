@@ -4,10 +4,33 @@ import androidx.room.withTransaction
 import com.akashic.mobile.data.realtime.ProtocolCodec
 import com.akashic.mobile.data.realtime.WireEnvelope
 import com.akashic.mobile.data.realtime.WireKind
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+
+private const val TOOL_BLOCK_V1_PREFIX = "tool.v1:"
+
+@Serializable
+internal data class StoredToolBlock(
+    val name: String,
+    val description: String? = null,
+    val resultPreview: String? = null,
+)
+
+internal fun decodeStoredToolBlock(content: String): StoredToolBlock {
+    if (!content.startsWith(TOOL_BLOCK_V1_PREFIX)) {
+        return StoredToolBlock(name = "工具调用", description = content)
+    }
+    return ProtocolCodec.json().decodeFromString(content.removePrefix(TOOL_BLOCK_V1_PREFIX))
+}
+
+private fun encodeStoredToolBlock(content: StoredToolBlock): String =
+    TOOL_BLOCK_V1_PREFIX + ProtocolCodec.json().encodeToString(content)
 
 class LocalDeliveryStore(private val database: AppDatabase) {
     suspend fun savePairedProfile(profile: ServerProfileEntity, cursor: RealtimeCursorEntity) {
@@ -172,6 +195,13 @@ class LocalDeliveryStore(private val database: AppDatabase) {
         val callId = toolCallId(envelope)
         val blockId = payloadText(envelope, "block_id") ?: "tool:$callId"
         val previous = database.messages().getBlock(blockId)
+        val toolName = requireNotNull(payloadText(envelope, "tool_name")) {
+            "Tool start has no tool_name"
+        }
+        val arguments = requireNotNull(envelope.payload["arguments"] as? JsonObject) {
+            "Tool start arguments must be an object"
+        }
+        database.messages().completeRunningThinking(message.messageId, updatedAt)
         database.messages().upsertBlocks(
             listOf(
                 TurnBlockEntity(
@@ -183,7 +213,12 @@ class LocalDeliveryStore(private val database: AppDatabase) {
                     }.toInt(),
                     kind = "tool",
                     status = "running",
-                    content = payloadText(envelope, "name") ?: "工具调用",
+                    content = encodeStoredToolBlock(
+                        StoredToolBlock(
+                            name = toolName,
+                            description = payloadText(arguments, "description"),
+                        ),
+                    ),
                     updatedAt = updatedAt,
                 ),
             ),
@@ -195,23 +230,27 @@ class LocalDeliveryStore(private val database: AppDatabase) {
         val turnId = requireNotNull(envelope.turnId)
         val callId = toolCallId(envelope)
         val blockId = payloadText(envelope, "block_id") ?: "tool:$callId"
-        val previous = database.messages().getBlock(blockId)
-        val detail = payloadText(envelope, "summary")
-            ?: payloadText(envelope, "output")
-            ?: previous?.content
-            ?: "工具调用完成"
+        val previous = requireNotNull(database.messages().getBlock(blockId)) {
+            "Tool completion arrived before start: $callId"
+        }
+        val stored = decodeStoredToolBlock(previous.content)
+        val toolName = requireNotNull(payloadText(envelope, "tool_name")) {
+            "Tool completion has no tool_name"
+        }
+        require(toolName == stored.name) { "Tool completion name mismatch: $toolName != ${stored.name}" }
+        val failed = payloadText(envelope, "status") == "error"
         database.messages().upsertBlocks(
             listOf(
                 TurnBlockEntity(
                     blockId = blockId,
                     messageId = message.messageId,
                     turnId = turnId,
-                    ordinal = previous?.ordinal ?: requireNotNull(payloadLong(envelope, "ordinal")) {
-                        "Tool completion has no ordinal"
-                    }.toInt(),
+                    ordinal = previous.ordinal,
                     kind = "tool",
-                    status = "completed",
-                    content = detail,
+                    status = if (failed) "failed" else "completed",
+                    content = encodeStoredToolBlock(
+                        stored.copy(resultPreview = payloadText(envelope, "result_preview")),
+                    ),
                     updatedAt = updatedAt,
                 ),
             ),
@@ -231,6 +270,25 @@ class LocalDeliveryStore(private val database: AppDatabase) {
 
     private suspend fun finalizeMessage(envelope: WireEnvelope, updatedAt: Long) {
         val current = ensureAssistantTurn(envelope, updatedAt)
+        val blocks = database.messages().getBlocks(current.messageId)
+        val finalThinking = payloadText(envelope, "thinking")?.trim().orEmpty()
+        if (finalThinking.isNotEmpty() && blocks.none { it.kind == "thinking" }) {
+            val turnId = requireNotNull(envelope.turnId)
+            database.messages().upsertBlocks(
+                listOf(
+                    TurnBlockEntity(
+                        blockId = "thinking:$turnId:final",
+                        messageId = current.messageId,
+                        turnId = turnId,
+                        ordinal = -1,
+                        kind = "thinking",
+                        status = "completed",
+                        content = finalThinking,
+                        updatedAt = updatedAt,
+                    ),
+                ),
+            )
+        }
         database.messages().upsert(
             current.copy(
                 text = payloadText(envelope, "text") ?: payloadText(envelope, "content") ?: current.text,
@@ -271,6 +329,9 @@ class LocalDeliveryStore(private val database: AppDatabase) {
 
     private fun payloadText(envelope: WireEnvelope, key: String): String? =
         (envelope.payload[key] as? JsonPrimitive)?.contentOrNull
+
+    private fun payloadText(payload: JsonObject, key: String): String? =
+        (payload[key] as? JsonPrimitive)?.contentOrNull
 
     private fun payloadLong(envelope: WireEnvelope, key: String): Long? =
         envelope.payload[key]?.jsonPrimitive?.longOrNull

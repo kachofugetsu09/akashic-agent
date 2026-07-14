@@ -1,13 +1,28 @@
 package com.akashic.mobile.ui.conversation
 
 data class ConversationUiState(
-    val title: String,
     val connectionLabel: String,
+    val connectionStatus: ConnectionStatusUi,
+    val connectionNotice: String?,
+    val sessions: List<SessionUi>,
+    val selectedSessionId: String?,
     val messages: List<MessageUi>,
-    val isConnectionDegraded: Boolean,
     val isStreaming: Boolean,
     val canSend: Boolean,
 )
+
+data class SessionUi(
+    val sessionId: String,
+    val title: String,
+)
+
+enum class ConnectionStatusUi {
+    CONNECTING,
+    READY,
+    DEGRADED,
+    RECONNECTING,
+    DISCONNECTED,
+}
 
 sealed interface MessageUi {
     val id: String
@@ -23,6 +38,8 @@ sealed interface MessageUi {
         val intro: String?,
         val blocks: List<ProcessBlockUi>,
         val answer: String,
+        val isStreaming: Boolean,
+        val durationSeconds: Int?,
     ) : MessageUi
 }
 
@@ -46,17 +63,26 @@ enum class ProcessBlockState {
 }
 
 internal val EmptyConversationState = ConversationUiState(
-    title = "新对话",
-    connectionLabel = "等待安全连接",
+    connectionLabel = "正在连接",
+    connectionStatus = ConnectionStatusUi.CONNECTING,
+    connectionNotice = null,
+    sessions = emptyList(),
+    selectedSessionId = null,
     messages = emptyList(),
-    isConnectionDegraded = false,
     isStreaming = false,
     canSend = false,
 )
 
 internal val PreviewConversationState = ConversationUiState(
-    title = "Akashic",
-    connectionLabel = "设备已认证 · 局域网",
+    connectionLabel = "网络不稳 · 正在续传",
+    connectionStatus = ConnectionStatusUi.DEGRADED,
+    connectionNotice = "网络不稳 · 消息已缓存，正在续传",
+    sessions = listOf(
+        SessionUi("mobile:preview-1", "Android 会话设计"),
+        SessionUi("mobile:preview-2", "网络抖动恢复策略"),
+        SessionUi("mobile:preview-3", "Material 3 交互细节"),
+    ),
+    selectedSessionId = "mobile:preview-1",
     messages = listOf(
         MessageUi.User(
             id = "user-1",
@@ -97,9 +123,10 @@ internal val PreviewConversationState = ConversationUiState(
                 ),
             ),
             answer = "当前事件顺序保持一致；连接恢复后会从最后一次累计 ACK 继续。",
+            isStreaming = true,
+            durationSeconds = null,
         ),
     ),
-    isConnectionDegraded = true,
     isStreaming = true,
     canSend = true,
 )

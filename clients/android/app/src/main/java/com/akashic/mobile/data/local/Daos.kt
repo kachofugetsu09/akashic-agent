@@ -67,6 +67,12 @@ interface MessageDao {
     @Query("UPDATE turn_blocks SET status = 'completed', updatedAt = :updatedAt WHERE messageId = :messageId AND status = 'running'")
     suspend fun completeRunningBlocks(messageId: String, updatedAt: Long): Int
 
+    @Query(
+        "UPDATE turn_blocks SET status = 'completed', updatedAt = :updatedAt " +
+            "WHERE messageId = :messageId AND kind = 'thinking' AND status = 'running'",
+    )
+    suspend fun completeRunningThinking(messageId: String, updatedAt: Long): Int
+
     @Transaction
     @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY createdAt, messageId")
     fun observeMessageGraph(sessionId: String): Flow<List<MessageWithBlocks>>

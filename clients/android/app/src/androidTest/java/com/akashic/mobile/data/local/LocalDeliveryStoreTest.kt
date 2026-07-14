@@ -44,10 +44,12 @@ class LocalDeliveryStoreTest {
                 put("block_id", "think-1"); put("ordinal", 0); put("delta", "先分析")
             }),
             event(3, "react.tool.started", buildJsonObject {
-                put("block_id", "tool-1"); put("tool_call_id", "call-1"); put("ordinal", 1); put("name", "shell")
+                put("block_id", "tool-1"); put("call_id", "call-1"); put("ordinal", 1); put("tool_name", "shell")
+                put("arguments", buildJsonObject { put("description", "读取运行日志") })
             }),
             event(4, "react.tool.completed", buildJsonObject {
-                put("block_id", "tool-1"); put("tool_call_id", "call-1"); put("ordinal", 1); put("summary", "完成")
+                put("block_id", "tool-1"); put("call_id", "call-1"); put("ordinal", 1); put("tool_name", "shell")
+                put("status", "success"); put("result_preview", "完成")
             }),
             event(5, "react.thinking.delta", buildJsonObject {
                 put("block_id", "think-2"); put("ordinal", 2); put("delta", "再判断")
@@ -58,7 +60,36 @@ class LocalDeliveryStoreTest {
 
         val blocks = database.messages().getBlocks("assistant:turn")
         assertEquals(listOf("think-1", "tool-1", "think-2"), blocks.map { it.blockId })
+        assertEquals(listOf("completed", "completed", "running"), blocks.map { it.status })
+        assertEquals(
+            StoredToolBlock("shell", "读取运行日志", "完成"),
+            decodeStoredToolBlock(blocks[1].content),
+        )
         assertEquals("答案", database.messages().get("assistant:turn")!!.text)
+    }
+
+    @Test
+    fun finalMessageAddsReasoningWhenProviderDidNotStreamThinking() = runBlocking {
+        val events = listOf(
+            event(1, "turn.started", buildJsonObject {}),
+            event(2, "react.tool.started", buildJsonObject {
+                put("block_id", "tool-1"); put("call_id", "call-1"); put("ordinal", 0); put("tool_name", "shell")
+                put("arguments", buildJsonObject { put("description", "检查进程") })
+            }),
+            event(3, "react.tool.completed", buildJsonObject {
+                put("block_id", "tool-1"); put("call_id", "call-1"); put("ordinal", 0); put("tool_name", "shell")
+                put("status", "success"); put("result_preview", "完成")
+            }),
+            event(4, "message.final", buildJsonObject {
+                put("content", "答案"); put("thinking", "先确认运行状态，再给出结论。")
+            }),
+        )
+        events.forEach { store.applyEvent("server", "device", it, it.eventSeq!!) }
+
+        val blocks = database.messages().getBlocks("assistant:turn")
+        assertEquals(listOf("thinking", "tool"), blocks.map { it.kind })
+        assertEquals(listOf(-1, 0), blocks.map { it.ordinal })
+        assertEquals("先确认运行状态，再给出结论。", blocks.first().content)
     }
 
     private fun event(sequence: Long, type: String, payload: kotlinx.serialization.json.JsonObject) = WireEnvelope(

@@ -38,6 +38,7 @@ data class MobileSessionState(
     val scanGeneration: Long = 0,
     val connection: ConnectionState = ConnectionState(),
     val hasProfile: Boolean = false,
+    val serverId: String? = null,
     val pairingConfirmationCode: String? = null,
     val currentSessionId: String? = null,
     val errorMessage: String? = null,
@@ -96,6 +97,7 @@ class RealtimeSession(
                 mutableState.value = mutableState.value.copy(
                     initialized = true,
                     hasProfile = profile != null,
+                    serverId = profile?.serverId,
                     currentSessionId = selected,
                 )
                 profile?.let {
@@ -142,9 +144,11 @@ class RealtimeSession(
         }
     }
 
+    /** 创建本地消息和 outbox 命令，并在链路可用时立即发送。 */
     fun sendMessage(text: String) {
         scope.launch {
             mutex.withLock {
+                // 1. 确定当前手机会话
                 val currentProfile = requireNotNull(profile) { "Pair a server before sending" }
                 val body = text.trim()
                 require(body.isNotEmpty()) { "Message text is empty" }
@@ -154,6 +158,8 @@ class RealtimeSession(
                         mutableState.value = mutableState.value.copy(currentSessionId = it)
                     }
                 require(MOBILE_SESSION.matches(sessionId)) { "Invalid mobile session_id" }
+
+                // 2. 持久化消息和可重放命令
                 val now = System.currentTimeMillis()
                 val commandId = Ulid.next(now)
                 val clientMessageId = Ulid.next(now)
@@ -174,7 +180,7 @@ class RealtimeSession(
                     payload = ProtocolCodec.json().encodeToJsonElement(MessageSendPayload.serializer(), payload).jsonObject,
                 )
                 deliveryStore.enqueueMessage(
-                    conversation = ConversationEntity(sessionId, currentProfile.serverId, "新对话", now),
+                    conversation = conversationForMessage(currentProfile, sessionId, body, now),
                     message = MessageEntity(
                         messageId = "user:$clientMessageId",
                         clientMessageId = clientMessageId,
@@ -196,6 +202,44 @@ class RealtimeSession(
                     ),
                 )
                 if (mutableState.value.connection.phase == ConnectionPhase.READY) flushOutbox()
+            }
+        }
+    }
+
+    /** 创建并选中一个独立的手机会话。 */
+    fun createSession() {
+        scope.launch {
+            mutex.withLock {
+                // 1. 创建本地会话
+                val currentProfile = requireNotNull(profile) { "Pair a server before creating a session" }
+                val now = System.currentTimeMillis()
+                val sessionId = "mobile:${UUID.randomUUID()}"
+                database.conversations().upsert(
+                    ConversationEntity(sessionId, currentProfile.serverId, "新对话", now),
+                )
+
+                // 2. 切换当前会话
+                preferences.selectSession(sessionId)
+                mutableState.value = mutableState.value.copy(currentSessionId = sessionId)
+            }
+        }
+    }
+
+    /** 选择属于当前电脑的现有手机会话。 */
+    fun selectSession(sessionId: String) {
+        scope.launch {
+            mutex.withLock {
+                // 1. 校验会话归属
+                require(MOBILE_SESSION.matches(sessionId)) { "Invalid mobile session_id" }
+                val currentProfile = requireNotNull(profile) { "Pair a server before selecting a session" }
+                val conversation = requireNotNull(database.conversations().get(sessionId)) {
+                    "Unknown mobile session: $sessionId"
+                }
+                require(conversation.serverId == currentProfile.serverId) { "Mobile session belongs to another server" }
+
+                // 2. 持久化选择
+                preferences.selectSession(sessionId)
+                mutableState.value = mutableState.value.copy(currentSessionId = sessionId)
             }
         }
     }
@@ -340,6 +384,7 @@ class RealtimeSession(
             initialized = true,
             connection = ConnectionState(phase = ConnectionPhase.CONNECTING),
             hasProfile = true,
+            serverId = saved.serverId,
         )
         socket.close(reason = "pairing accepted; reconnecting with device proof")
         connectProfile(saved)
@@ -492,7 +537,23 @@ class RealtimeSession(
         mutableState.value = mutableState.value.copy(
             connection = ConnectionState(phase = ConnectionPhase.CONNECTING, retryCount = retryCount),
             hasProfile = true,
+            serverId = value.serverId,
         )
+    }
+
+    private suspend fun conversationForMessage(
+        currentProfile: ServerProfileEntity,
+        sessionId: String,
+        body: String,
+        now: Long,
+    ): ConversationEntity {
+        val current = database.conversations().get(sessionId)
+        val title = if (current == null || current.title == "新对话") {
+            body.lineSequence().first().take(32)
+        } else {
+            current.title
+        }
+        return ConversationEntity(sessionId, currentProfile.serverId, title, now)
     }
 
     private fun scheduleReconnect(message: String) {

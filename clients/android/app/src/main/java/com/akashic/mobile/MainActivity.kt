@@ -14,7 +14,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.akashic.mobile.ui.conversation.ConversationScreen
+import com.akashic.mobile.ui.conversation.MobileConversationScaffold
 import com.akashic.mobile.ui.design.AkashicTheme
 import com.akashic.mobile.ui.pairing.PairingScreen
 
@@ -36,10 +36,10 @@ class MainActivity : ComponentActivity() {
                         CircularProgressIndicator()
                     }
                 } else if (session.hasProfile) {
-                    ConversationScreen(
+                    MobileConversationScaffold(
                         state = conversation,
-                        onOpenNavigation = null,
-                        onOpenMenu = null,
+                        onSelectSession = viewModel::selectSession,
+                        onNewSession = viewModel::createSession,
                         onAttach = {},
                         onSend = viewModel::sendMessage,
                         onStop = {},
