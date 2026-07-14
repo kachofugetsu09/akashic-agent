@@ -381,13 +381,22 @@ class WakeRuntime:
         )
 
     async def _run_content_tools(self, ctx: WakeContext) -> None:
+        """依次完成标题初筛、候选调查和最终内容决策。"""
+
+        # 1. 固定本轮上下文，避免两个 LLM 阶段读取到不同快照
+        memory_text = self._read_memory()
+        proactive_context = str(self._scope.workspace_context_fn() or "")
+        recent_session = self._read_recent_session(ctx.session_key, ctx.now_utc)
+        current_context = self._current_context_text(ctx.now_utc)
         base_messages = build_messages(
             ctx=ctx,
-            memory_text=self._read_memory(),
-            proactive_context=str(self._scope.workspace_context_fn() or ""),
-            recent_session=self._read_recent_session(ctx.session_key, ctx.now_utc),
-            current_context=self._current_context_text(ctx.now_utc),
+            memory_text=memory_text,
+            proactive_context=proactive_context,
+            recent_session=recent_session,
+            current_context=current_context,
         )
+
+        # 2. 初筛标题并并发调查入选候选
         await self._run_phase(base_messages, ctx, {"scratchpad"}, "scratchpad")
         investigation = await execute(
             "investigate_candidates",
@@ -395,32 +404,26 @@ class WakeRuntime:
             ctx,
             self._tool_deps,
         )
+        final_base_messages = build_messages(
+            ctx=ctx,
+            memory_text=memory_text,
+            proactive_context=proactive_context,
+            recent_session=recent_session,
+            current_context=current_context,
+            content_phase="final",
+        )
+
+        # 3. 保留稳定公共前缀，把最终阶段提醒放在调查结果之后
         final_messages = [
-            base_messages[0],
+            *final_base_messages[:2],
             {
                 "role": "user",
                 "content": (
-                    f"{base_messages[1]['content']}\n\n"
                     "【已执行的初筛与并发调查结果】\n"
-                    f"{investigation}\n\n"
-                    "【本轮最终任务】\n标题初筛和并发调查已经完成。现在只做最终判断：调用 "
-                    "share_content 分享有正文证据且此刻值得告诉用户的内容，或调用 "
-                    "skip_content 保持安静。通常分享一到三条；只有同时出现多个彼此独立、"
-                    "都高度相关的重要变化时才可扩展到五条。不要重复标题。"
-                    "share_content 优先使用 message 写成完整自然的一段主动消息，items 只负责"
-                    "声明引用证据。你知道自己是在主动找用户说话，可以自然地说刚看到、碰到或"
-                    "发现了什么，但不要每次套同一句开场，也不要假装亲历未发生的事情。"
-                    "语气像真正熟悉用户的协作者：可以自然接住稳定偏好和期待，例如对方特别"
-                    "喜欢某类事物时可以带一点会心的判断，也可以偶尔使用双方已经稳定使用的"
-                    "简称、昵称或梗；只有自然贴合当前内容时才用，不要每条都刻意套亲密称呼。"
-                    "不要说‘根据记忆’或复述个人档案。"
-                    "涉及敏感经历时允许共情，但必须与当前事实直接相关、轻柔且有帮助，不能"
-                    "替用户定义感受或把焦虑当作推送理由。不要制造紧迫感，不强行提问。"
-                    "只有当前 ContextEvent 明确支持时，才能描述用户正在睡眠、忙碌、"
-                    "离线或游戏；unknown 时保持中性。唤醒只代表允许判断，不代表必须分享；"
-                    "缺少新事实、用户已经知道、只有营销或泛泛观点时应调用 skip_content。"
+                    f"{investigation}"
                 ),
             },
+            final_base_messages[2],
         ]
         await self._run_phase(
             final_messages,

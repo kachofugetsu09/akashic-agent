@@ -3,10 +3,16 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
+from agent.prompting import (
+    PromptSectionRender,
+    build_context_frame_content,
+    build_context_frame_message,
+)
 from plugins.wake_proactive.context import WakeContext
 
 
 PromptMode = Literal["content", "alert", "context"]
+ContentPhase = Literal["screen", "final"]
 
 _SYSTEM_PROMPT = (
     "你正在处理一次主动唤醒。运行时会明确给出 mode，并且只开放当前 mode 可用的工具。"
@@ -17,14 +23,39 @@ _SYSTEM_PROMPT = (
     "推断，或把敏感经历和脆弱经历当作吸引注意的钩子。关于用户此刻是否睡眠、忙碌、离线或在游戏，"
     "只允许依据当前 ContextEvent；ContextEvent 为 unknown 时不得根据时间、历史习惯或语气"
     "猜测当前状态，unknown 时保持中性。\n\n"
+)
+
+_ALERT_PROMPT = (
     "mode=alert：只处理本轮给出的一条告警。忠实保留告警事实和不确定性，将结构化输入改写成"
     "自然、克制、对用户有帮助的一条消息，然后调用 send_event；不得混入内容池中的其他资讯。\n"
+)
+
+_CONTEXT_PROMPT = (
     "mode=context：只判断本轮给出的单条 ContextEvent 变化是否自然且值得主动告诉用户。值得时"
     "调用 send_event，不值得时调用 skip_event；不得为了展示感知能力而打扰用户。\n"
+)
+
+_CONTENT_SCREEN_PROMPT = (
     "mode=content：候选按来源分组，来源内部按 published_at 倒序。先快速阅读全部标题，再调用"
     "一次 scratchpad，只记录最多八条确实值得查正文或需要确认用户兴趣的候选。"
     "likely_interesting 用于已有明确兴趣依据的内容；uncertain 用于需要 RecallMemory 确认的"
     "内容。宁可少选，不要为了覆盖资讯而选择，也不要把预测当成用户反馈。"
+)
+
+_CONTENT_FINAL_PROMPT = (
+    "mode=content：标题初筛和并发调查已经完成。现在只做最终判断，只调用当前开放的 "
+    "share_content 分享有正文证据且此刻值得告诉用户的内容，或调用 skip_content 保持安静；"
+    "不要重新执行初筛或调用已关闭的阶段工具。通常分享一到三条；只有同时出现多个彼此独立、"
+    "都高度相关的重要变化时才可扩展到五条。不要重复标题。share_content 优先使用 message "
+    "写成完整自然的一段主动消息，items 只负责声明引用证据。你知道自己是在主动找用户说话，"
+    "可以自然地说刚看到、碰到或发现了什么，但不要每次套同一句开场，也不要假装亲历未发生的"
+    "事情。语气像真正熟悉用户的协作者：可以自然接住稳定偏好和期待，例如对方特别喜欢某类"
+    "事物时可以带一点会心的判断，也可以偶尔使用双方已经稳定使用的简称、昵称或梗；只有自然"
+    "贴合当前内容时才用，不要每条都刻意套亲密称呼。不要说‘根据记忆’或复述个人档案。涉及"
+    "敏感经历时允许共情，但必须与当前事实直接相关、轻柔且有帮助，不能替用户定义感受或把"
+    "焦虑当作推送理由。不要制造紧迫感，不强行提问。只有当前 ContextEvent 明确支持时，才能"
+    "描述用户正在睡眠、忙碌、离线或游戏；unknown 时保持中性。唤醒只代表允许判断，不代表"
+    "必须分享；缺少新事实、用户已经知道、只有营销或泛泛观点时应调用 skip_content。"
 )
 
 
@@ -37,6 +68,7 @@ def build_messages(
     current_context: str = "unknown（没有可靠 ContextEvent）",
     mode: PromptMode = "content",
     event: dict[str, Any] | None = None,
+    content_phase: ContentPhase = "screen",
 ) -> list[dict[str, str]]:
     """用稳定前缀渲染 content、alert 或 context 主动唤醒输入。"""
 
@@ -59,9 +91,30 @@ def build_messages(
             "【本轮单条事件】\n"
             + json.dumps(event, ensure_ascii=False, sort_keys=True, default=str)
         )
+    mode_prompt = {
+        "content": (
+            _CONTENT_SCREEN_PROMPT
+            if content_phase == "screen"
+            else _CONTENT_FINAL_PROMPT
+        ),
+        "alert": _ALERT_PROMPT,
+        "context": _CONTEXT_PROMPT,
+    }[mode]
+    phase_reminder = build_context_frame_message(
+        build_context_frame_content(
+            [
+                PromptSectionRender(
+                    name="wake_phase",
+                    content=mode_prompt,
+                    is_static=False,
+                )
+            ]
+        )
+    )
     return [
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": "\n\n".join(sections)},
+        phase_reminder,
     ]
 
 
