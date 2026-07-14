@@ -597,6 +597,37 @@ def build_core_runtime(
         workspace / "mcp" / "servers",
         mcp_root=workspace / "mcp",
     )
+    if config.tool_search_enabled:
+        from agent.mcp.admin import WorkspaceMcpAdmin
+        from agent.tools.workspace_mcp import (
+            WorkspaceMcpApplyTool,
+            WorkspaceMcpRemoveTool,
+            WorkspaceMcpStatusTool,
+        )
+
+        workspace_mcp_admin = WorkspaceMcpAdmin(workspace, workspace_mcp_watcher)
+        tools.register(
+            WorkspaceMcpApplyTool(workspace_mcp_admin),
+            risk="external-side-effect",
+            always_on=False,
+            preloadable=False,
+            requires_turn_search=True,
+            search_hint="安装 注册 更新 添加 MCP server 常驻服务 热重载",
+        )
+        tools.register(
+            WorkspaceMcpRemoveTool(workspace_mcp_admin),
+            risk="external-side-effect",
+            always_on=False,
+            preloadable=False,
+            requires_turn_search=True,
+            search_hint="删除 卸载 移除 MCP server 停止常驻服务",
+        )
+        tools.register(
+            WorkspaceMcpStatusTool(workspace_mcp_admin),
+            risk="read-only",
+            always_on=False,
+            search_hint="查看 列出 诊断 MCP server generation 热加载错误",
+        )
 
     return CoreRuntime(
         config=config,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -497,8 +498,11 @@ async def test_watcher_keeps_latest_change_and_deduplicates_failed_revision(
             if command.endswith("bad.py"):
                 raise RuntimeError("bad")
 
-        async def publish_workspace_mcp(self) -> None:
-            return None
+        async def publish_workspace_mcp(self) -> Any:
+            return SimpleNamespace(
+                generation_id=f"test:{len(calls)}",
+                catalog=SimpleNamespace(servers={"docs": object()}, tool_names=()),
+            )
 
     watcher = WorkspaceMcpWatcher(Manager(), declarations, interval_seconds=0.01)  # type: ignore[arg-type]
     _declare(declarations, "docs", server)

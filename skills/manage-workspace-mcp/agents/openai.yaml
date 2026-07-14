@@ -1,0 +1,4 @@
+interface:
+  display_name: "Manage Workspace MCP"
+  short_description: "Install and hot-reload standalone MCP servers"
+  default_prompt: "Use $manage-workspace-mcp to register and verify a standalone MCP server without restarting Akashic."

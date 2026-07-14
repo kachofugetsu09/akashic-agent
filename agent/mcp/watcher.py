@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from typing import Any
 
 from agent.mcp.declarations import (
     declarations_input_revision,
@@ -34,28 +35,47 @@ class WorkspaceMcpWatcher:
         self._forced = False
         self._last_input_revision: str | None = None
         self._stopped = asyncio.Event()
+        self._reconcile_lock = asyncio.Lock()
         self.last_error: str | None = None
+        self._active_generation_id: str | None = None
+        self._active_servers: tuple[str, ...] = ()
+        self._active_tools: tuple[str, ...] = ()
 
     async def reconcile(self) -> bool:
         """发布变化后的完整声明；失败时调用方获得原始异常。"""
 
-        desired = load_workspace_mcp_declarations(
-            self._declarations_dir,
-            mcp_root=self._mcp_root,
-        )
-        if desired.revision == self._active_revision:
-            return False
-        await self._manager.prepare_workspace_mcp(
-            desired.specs,
-            revision=desired.revision,
-        )
-        if not self._running:
-            await self._manager.discard_workspace_mcp_candidate()
-            return False
-        await self._manager.publish_workspace_mcp()
-        self._active_revision = desired.revision
-        self.last_error = None
-        return True
+        async with self._reconcile_lock:
+            desired = load_workspace_mcp_declarations(
+                self._declarations_dir,
+                mcp_root=self._mcp_root,
+            )
+            if desired.revision == self._active_revision:
+                return False
+            await self._manager.prepare_workspace_mcp(
+                desired.specs,
+                revision=desired.revision,
+            )
+            if not self._running:
+                await self._manager.discard_workspace_mcp_candidate()
+                return False
+            generation = await self._manager.publish_workspace_mcp()
+            self._active_revision = desired.revision
+            self._active_generation_id = generation.generation_id
+            self._active_servers = tuple(sorted(generation.catalog.servers))
+            self._active_tools = generation.catalog.tool_names
+            self.last_error = None
+            return True
+
+    def status(self) -> dict[str, Any]:
+        """返回当前已发布 workspace MCP 代际的只读状态。"""
+
+        return {
+            "generationId": self._active_generation_id,
+            "revision": self._active_revision,
+            "servers": list(self._active_servers),
+            "tools": list(self._active_tools),
+            "lastError": self.last_error,
+        }
 
     async def run(self) -> None:
         """持续检查内容 revision，并允许失败版本在修复后恢复。"""

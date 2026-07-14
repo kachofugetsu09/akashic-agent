@@ -31,8 +31,12 @@
   - 文件：`skills/skill-creater/SKILL.md`
 
 - `plugin-system`
-  - 说明并执行 Akashic 插件系统的安装、加载、启停、配置、MCP、skill、lifecycle 与 registry。
+  - 说明并执行 Akashic 插件系统的安装、加载、启停、配置、插件内 MCP、skill 与 lifecycle。
   - 文件：`skills/plugin-system/SKILL.md`
+
+- `manage-workspace-mcp`
+  - 注册、热重载、移除和诊断非插件 workspace MCP server。
+  - 文件：`skills/manage-workspace-mcp/SKILL.md`
 
 - `summarize`
   - 总结 URL/文件/YouTube 内容，支持提取转写。

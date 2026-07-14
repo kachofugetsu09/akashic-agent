@@ -18,6 +18,7 @@ from uuid import uuid4
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import bootstrap.app as bootstrap_app
+from agent.control.context import current_turn_id
 from agent.config_models import (
     AppServerConfig,
     ChannelsConfig,
@@ -26,6 +27,7 @@ from agent.config_models import (
 )
 from agent.plugins.manager import PluginManager
 from agent.tools.base import ToolResult
+from core.error_context import current_session_key
 from proactive_v2.config import ProactiveConfig
 from docker.debug.programmatic_control_probe import (
     _prepare_host_sandbox,
@@ -84,6 +86,7 @@ def _config() -> Config:
         memory_optimizer_enabled=False,
         multimodal=False,
         spawn_enabled=False,
+        tool_search_enabled=True,
     )
 
 
@@ -201,6 +204,37 @@ async def _call_version(lease: Any, server_name: str = "docs") -> str:
         raise_errors=True,
     )
     return result.text if isinstance(result, ToolResult) else result
+
+
+async def _execute_admin_tool(
+    registry: Any,
+    *,
+    turn_id: str,
+    name: str,
+    arguments: dict[str, object],
+) -> str:
+    """模拟真实 turn 的搜索授权后调用一个 workspace MCP 管理工具。"""
+
+    session_key = "programmatic:workspace-mcp-admin-gate"
+    turn_token = current_turn_id.set(turn_id)
+    session_token = current_session_key.set(session_key)
+    scope = registry.begin_turn_search_scope(
+        turn_id=turn_id,
+        session_key=session_key,
+        attempt=0,
+    )
+    try:
+        _ = await registry.execute(
+            "tool_search",
+            {"query": f"select:{name}"},
+            raise_errors=True,
+        )
+        result = await registry.execute(name, arguments, raise_errors=True)
+        return result.text if isinstance(result, ToolResult) else result
+    finally:
+        registry.end_turn_search_scope(scope)
+        current_session_key.reset(session_token)
+        current_turn_id.reset(turn_token)
 
 
 def _check(checks: list[dict[str, object]], name: str, passed: bool, **evidence: object) -> None:
@@ -427,6 +461,95 @@ async def _run_reload_sequence(root: Path, checks: list[dict[str, object]]) -> N
             leasedPids=leased_pids,
             emptyRegistryNames=empty_names,
             lifecycle=_lifecycle(lifecycle),
+        )
+
+        # 管理工具必须走真实 search grant，并保持当前 turn 的旧快照隔离。
+        admin_lease = await manager.snapshot_store.acquire()
+        try:
+            admin_registry = admin_lease.snapshot.tool_registry
+            if admin_registry is None:
+                raise AssertionError("admin snapshot 缺少 tool registry")
+            admin_error = ""
+            try:
+                _ = await _execute_admin_tool(
+                    admin_registry,
+                    turn_id="turn:admin-failed-apply",
+                    name="workspace_mcp_apply",
+                    arguments={
+                        "name": "broken",
+                        "command": [sys.executable, str(root / "missing-admin.py")],
+                    },
+                )
+            except RuntimeError as error:
+                admin_error = str(error)
+            _check(
+                checks,
+                "admin-tool-failure-rollback",
+                "声明已回滚" in admin_error
+                and not (declarations / "broken.toml").exists()
+                and not manager.active_workspace_mcp.catalog.servers,
+                error=admin_error,
+            )
+            applied = json.loads(
+                await _execute_admin_tool(
+                    admin_registry,
+                    turn_id="turn:admin-apply",
+                    name="workspace_mcp_apply",
+                    arguments={
+                        "name": "admin",
+                        "command": [sys.executable, str(server)],
+                        "env": {
+                            "VERSION": "managed",
+                            "INSTANCE": "admin",
+                            "LIFECYCLE_LOG": str(lifecycle),
+                            "MARKER_PATH": str(marker),
+                        },
+                        "watch_paths": ["../synthetic/watch.txt"],
+                    },
+                )
+            )
+            _check(
+                checks,
+                "admin-tool-apply-next-turn",
+                applied["status"] == "active"
+                and applied["effectiveFrom"] == "next_turn"
+                and "mcp_admin__version" not in admin_registry.get_registered_names(),
+                result=applied,
+            )
+        finally:
+            await admin_lease.release()
+
+        managed_lease = await manager.snapshot_store.acquire()
+        try:
+            managed_registry = managed_lease.snapshot.tool_registry
+            if managed_registry is None:
+                raise AssertionError("managed snapshot 缺少 tool registry")
+            managed_result = await _call_version(managed_lease, "admin")
+            removed = json.loads(
+                await _execute_admin_tool(
+                    managed_registry,
+                    turn_id="turn:admin-remove",
+                    name="workspace_mcp_remove",
+                    arguments={"name": "admin"},
+                )
+            )
+            leased_admin_pids = _running_pids(lifecycle, instance="admin")
+            _check(
+                checks,
+                "admin-tool-remove-drains-lease",
+                managed_result == "managed:two"
+                and removed["status"] == "removed"
+                and removed["runtime"]["servers"] == []
+                and bool(leased_admin_pids),
+                toolResult=managed_result,
+                result=removed,
+                leasedPids=leased_admin_pids,
+            )
+        finally:
+            await managed_lease.release()
+        await _wait_until(
+            lambda: not _running_pids(lifecycle, instance="admin"),
+            "admin tool lease drain",
         )
     finally:
         await app.shutdown()

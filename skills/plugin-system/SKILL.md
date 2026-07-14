@@ -1,13 +1,16 @@
 ---
 name: plugin-system
-description: 说明并执行 Akashic 插件安装、加载、启停、配置、MCP、skill、生命周期与 manifest 管理。
-when_to_use: 用户询问或要求处理 Akashic 插件、marketplace、MCP、skill、插件配置、安装、更新、启用、禁用或排障时。
+description: 说明并执行 Akashic 插件安装、加载、启停、配置、插件内 MCP、skill、生命周期与 manifest 管理。
+when_to_use: 用户询问或要求处理 Akashic 插件、marketplace、插件自带 MCP、skill、插件配置、安装、更新、启用、禁用或排障时。独立本地 MCP server 使用 manage-workspace-mcp。
 metadata: {"akashic": {"always": false}}
 ---
 
 # Akashic 插件系统
 
 优先直接完成明确的插件管理请求，并在修改后验证。
+
+独立 binary、脚本或本地项目需要作为 MCP 常驻时，加载 `manage-workspace-mcp`；
+不要为它创建插件，也不要修改主 `config.toml`。
 
 ## 事实来源
 
