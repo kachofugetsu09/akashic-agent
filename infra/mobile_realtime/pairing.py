@@ -257,7 +257,7 @@ class PairingService:
             revoked_at=None,
             capabilities=claim.capabilities,
         )
-        self._storage.consume_pairing(pairing_id, device, now=now)
+        device = self._storage.consume_pairing(pairing_id, device, now=now)
         with self._lock:
             del self._claims[pairing_id]
         return device

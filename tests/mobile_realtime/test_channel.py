@@ -20,7 +20,7 @@ from bus.events_lifecycle import (
 )
 from infra.mobile_realtime.channel import MobileRealtimeChannel
 from infra.mobile_realtime.gateway import MobileGatewayRuntime
-from infra.mobile_realtime.protocol import MessageSendCommand, parse_frame
+from infra.mobile_realtime.protocol import GenericCommand, MessageSendCommand, parse_frame
 from infra.mobile_realtime.storage import DeviceRecord, MobileRealtimeStorage
 from session.manager import SessionManager
 
@@ -66,7 +66,7 @@ def _register_device(storage: MobileRealtimeStorage, device_id: str) -> None:
     storage.register_device(
         DeviceRecord(
             device_id=device_id,
-            public_key="test-public-key",
+            public_key=f"test-public-key:{device_id}",
             display_name=device_id,
             created_at=datetime.now(timezone.utc),
             revoked_at=None,
@@ -101,6 +101,28 @@ def _message_frame(
         )
     )
     assert isinstance(frame, MessageSendCommand)
+    return frame
+
+
+def _generic_frame(
+    *,
+    frame_id: str,
+    command_type: str,
+    session_id: str | None = None,
+    payload: dict[str, object] | None = None,
+) -> GenericCommand:
+    raw: dict[str, object] = {
+        "v": 1,
+        "kind": "command",
+        "type": command_type,
+        "id": frame_id,
+        "connection_epoch": 1,
+        "payload": payload or {},
+    }
+    if session_id is not None:
+        raw["session_id"] = session_id
+    frame = parse_frame(json.dumps(raw))
+    assert isinstance(frame, GenericCommand)
     return frame
 
 
@@ -152,6 +174,92 @@ async def test_message_send_is_idempotent_and_session_is_device_owned(
     assert len(bus.inbound) == 1
     assert forbidden.type == "message.send.error"
     assert forbidden.payload["code"] == "session_forbidden"
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_session_list_and_history_sync_only_publish_owned_mobile_sessions(
+    tmp_path: Path,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    manager = SessionManager(tmp_path / "workspace")
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=_Bus(),
+                session_manager=manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=None,
+            ),
+        )
+    )
+    session_id = f"mobile:{uuid4()}"
+    storage.claim_session(device_id=device_id, session_id=session_id, created_at=datetime.now(timezone.utc))
+    session = manager.get_or_create(session_id)
+    session.add_message("user", "恢复这段对话", llm_context_frame="private context")
+    session.add_message(
+        "assistant",
+        "历史回答",
+        reasoning_content="历史思考",
+        tool_chain=[
+            {
+                "text": "先检查",
+                "calls": [
+                    {
+                        "call_id": "call-1",
+                        "name": "shell",
+                        "status": "success",
+                        "arguments": {"description": "读取状态", "secret": "hidden"},
+                        "result": "完成",
+                    }
+                ],
+            }
+        ],
+    )
+    manager.save(session)
+
+    listed = await channel.handle_command(
+        device_id=device_id,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAX",
+            command_type="session.list",
+        ),
+    )
+    history = await channel.handle_command(
+        device_id=device_id,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAY",
+            command_type="history.get",
+            session_id=session_id,
+            payload={"page": 1, "page_size": 10},
+        ),
+    )
+
+    assert listed.type == "session.list.ok"
+    session_event = runtime.events[-2]
+    assert session_event["event_type"] == "session.list"
+    session_payload = cast(dict[str, object], session_event["payload"])
+    session_items = cast(list[dict[str, object]], session_payload["items"])
+    assert session_items[0]["session_id"] == session_id
+    assert session_items[0]["title"] == "恢复这段对话"
+    assert history.type == "history.get.ok"
+    history_event = runtime.events[-1]
+    history_payload = cast(dict[str, object], history_event["payload"])
+    history_items = cast(list[dict[str, object]], history_payload["items"])
+    assert history_items[0]["extra"] == {}
+    assert "llm_context_frame" not in history_items[0]
+    assert history_items[1]["extra"] == {"reasoning_content": "历史思考"}
+    tool_chain = cast(list[dict[str, object]], history_items[1]["tool_chain"])
+    calls = cast(list[dict[str, object]], tool_chain[0]["calls"])
+    assert calls[0]["description"] == "读取状态"
+    assert "secret" not in calls[0]
+    manager.close()
     storage.close()
 
 

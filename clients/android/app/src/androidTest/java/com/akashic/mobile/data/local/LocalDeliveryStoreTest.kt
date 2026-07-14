@@ -6,7 +6,9 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.akashic.mobile.data.realtime.WireEnvelope
 import com.akashic.mobile.data.realtime.WireKind
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -90,6 +92,61 @@ class LocalDeliveryStoreTest {
         assertEquals(listOf("thinking", "tool"), blocks.map { it.kind })
         assertEquals(listOf(-1, 0), blocks.map { it.ordinal })
         assertEquals("先确认运行状态，再给出结论。", blocks.first().content)
+    }
+
+    @Test
+    fun historyPageRestoresMessagesThinkingAndTools() = runBlocking {
+        val history = event(
+            1,
+            "history.page",
+            buildJsonObject {
+                put("total", 2)
+                put("page", 1)
+                put("page_size", 10)
+                put("items", buildJsonArray {
+                    add(buildJsonObject {
+                        put("id", "mobile:test:0")
+                        put("session_key", "mobile:test")
+                        put("seq", 0)
+                        put("role", "user")
+                        put("content", "恢复问题")
+                        put("extra", buildJsonObject {})
+                        put("ts", "2026-07-14T16:00:00Z")
+                    })
+                    add(buildJsonObject {
+                        put("id", "mobile:test:1")
+                        put("session_key", "mobile:test")
+                        put("seq", 1)
+                        put("role", "assistant")
+                        put("content", "恢复回答")
+                        put("tool_chain", buildJsonArray {
+                            add(buildJsonObject {
+                                put("text", "先检查")
+                                put("calls", buildJsonArray {
+                                    add(buildJsonObject {
+                                        put("call_id", "call-1")
+                                        put("name", "shell")
+                                        put("status", "success")
+                                        put("description", "读取状态")
+                                        put("result_preview", "完成")
+                                    })
+                                })
+                            })
+                        })
+                        put("extra", buildJsonObject { put("reasoning_content", "最后判断") })
+                        put("ts", "2026-07-14T16:00:05Z")
+                    })
+                })
+            },
+        )
+
+        store.applyEvent("server", "device", history, 1)
+
+        assertEquals("恢复问题", database.messages().get("history:mobile:test:0")!!.text)
+        assertEquals("恢复回答", database.messages().get("history:mobile:test:1")!!.text)
+        val blocks = database.messages().getBlocks("history:mobile:test:1")
+        assertEquals(listOf("thinking", "tool", "thinking"), blocks.map { it.kind })
+        assertEquals(StoredToolBlock("shell", "读取状态", "完成"), decodeStoredToolBlock(blocks[1].content))
     }
 
     private fun event(sequence: Long, type: String, payload: kotlinx.serialization.json.JsonObject) = WireEnvelope(

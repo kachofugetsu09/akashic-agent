@@ -5,6 +5,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 
@@ -95,6 +96,39 @@ data class PairAcceptedPayload(
 )
 
 @Serializable
+data class SessionListPayload(
+    val items: List<RemoteSessionSummary>,
+)
+
+@Serializable
+data class RemoteSessionSummary(
+    @SerialName("session_id") val sessionId: String,
+    val title: String,
+    @SerialName("updated_at") val updatedAt: String,
+    @SerialName("message_count") val messageCount: Int,
+)
+
+@Serializable
+data class HistoryPagePayload(
+    val items: List<RemoteHistoryMessage>,
+    val total: Int,
+    val page: Int,
+    @SerialName("page_size") val pageSize: Int,
+)
+
+@Serializable
+data class RemoteHistoryMessage(
+    val id: String,
+    @SerialName("session_key") val sessionKey: String,
+    val seq: Int,
+    val role: String,
+    val content: String,
+    @SerialName("tool_chain") val toolChain: JsonElement? = null,
+    val extra: JsonObject,
+    val ts: String,
+)
+
+@Serializable
 data class ProtocolErrorPayload(
     val code: Int,
     val message: String,
@@ -124,6 +158,7 @@ object ProtocolCodec {
             "ping",
         ),
         WireKind.EVENT to setOf(
+            "session.list",
             "session.created",
             "session.updated",
             "history.page",

@@ -58,6 +58,9 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE messageId = :messageId")
     suspend fun get(messageId: String): MessageEntity?
 
+    @Query("SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId")
+    suspend fun countForSession(sessionId: String): Int
+
     @Query("SELECT * FROM turn_blocks WHERE blockId = :blockId")
     suspend fun getBlock(blockId: String): TurnBlockEntity?
 

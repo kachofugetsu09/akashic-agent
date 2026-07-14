@@ -40,6 +40,7 @@ class MainActivity : ComponentActivity() {
                         state = conversation,
                         onSelectSession = viewModel::selectSession,
                         onNewSession = viewModel::createSession,
+                        onRestartPairing = viewModel::restartPairing,
                         onAttach = {},
                         onSend = viewModel::sendMessage,
                         onStop = {},

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -149,7 +150,7 @@ def test_pairing_expiry_and_failed_device_insert_leave_secret_usable(
     with pytest.raises(sqlite3.IntegrityError):
         storage.consume_pairing(
             "pairing-duplicate-device",
-            _device(),
+            replace(_device(), public_key="different-public-key"),
             now=NOW,
         )
 
@@ -157,6 +158,42 @@ def test_pairing_expiry_and_failed_device_insert_leave_secret_usable(
     assert unchanged is not None
     assert unchanged.status == "confirmed"
     assert unchanged.secret_hash == "hash-active"
+
+
+def test_repairing_same_public_key_preserves_device_cursor_and_sessions(
+    storage: MobileRealtimeStorage,
+) -> None:
+    original = _device()
+    storage.register_device(original)
+    storage.claim_session(
+        device_id=original.device_id,
+        session_id="mobile:session-1",
+        created_at=NOW,
+    )
+    storage.create_pairing_session(
+        PairingSessionRecord(
+            pairing_id="pairing-repair",
+            secret_hash="hash-repair",
+            expires_at=NOW + timedelta(minutes=5),
+            status="pending",
+        )
+    )
+    storage.confirm_pairing("pairing-repair", now=NOW)
+
+    repaired = storage.consume_pairing(
+        "pairing-repair",
+        replace(
+            original,
+            device_id="new-proposed-device-id",
+            display_name="Renamed Phone",
+        ),
+        now=NOW,
+    )
+
+    assert repaired.device_id == original.device_id
+    assert repaired.display_name == "Renamed Phone"
+    assert storage.read_cursor(original.device_id).next_event_seq == 1
+    assert storage.list_device_sessions(original.device_id) == ("mobile:session-1",)
 
 
 def test_event_sequence_and_insert_rollback_together(

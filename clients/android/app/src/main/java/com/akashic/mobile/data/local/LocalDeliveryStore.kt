@@ -2,14 +2,20 @@ package com.akashic.mobile.data.local
 
 import androidx.room.withTransaction
 import com.akashic.mobile.data.realtime.ProtocolCodec
+import com.akashic.mobile.data.realtime.HistoryPagePayload
+import com.akashic.mobile.data.realtime.RemoteHistoryMessage
+import com.akashic.mobile.data.realtime.SessionListPayload
 import com.akashic.mobile.data.realtime.WireEnvelope
 import com.akashic.mobile.data.realtime.WireKind
+import java.time.Instant
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
@@ -36,7 +42,9 @@ class LocalDeliveryStore(private val database: AppDatabase) {
     suspend fun savePairedProfile(profile: ServerProfileEntity, cursor: RealtimeCursorEntity) {
         database.withTransaction {
             database.serverProfiles().upsert(profile)
-            database.realtimeCursors().upsert(cursor)
+            if (database.realtimeCursors().get(cursor.deviceId) == null) {
+                database.realtimeCursors().insert(cursor)
+            }
         }
     }
 
@@ -116,7 +124,9 @@ class LocalDeliveryStore(private val database: AppDatabase) {
 
     private suspend fun applyEventContent(serverId: String, envelope: WireEnvelope, updatedAt: Long) {
         when (envelope.type) {
+            "session.list" -> applySessionList(serverId, envelope)
             "session.created", "session.updated" -> upsertConversation(serverId, envelope, updatedAt)
+            "history.page" -> applyHistoryPage(serverId, envelope)
             "turn.started" -> ensureAssistantTurn(envelope, updatedAt)
             "react.thinking.delta" -> appendThinking(envelope, updatedAt)
             "react.tool.started" -> startTool(envelope, updatedAt)
@@ -128,6 +138,110 @@ class LocalDeliveryStore(private val database: AppDatabase) {
             else -> Unit
         }
     }
+
+    private suspend fun applySessionList(serverId: String, envelope: WireEnvelope) {
+        val payload = ProtocolCodec.decodePayload<SessionListPayload>(envelope.payload)
+        payload.items.forEach { item ->
+            database.conversations().upsert(
+                ConversationEntity(
+                    sessionId = item.sessionId,
+                    serverId = serverId,
+                    title = item.title,
+                    updatedAt = Instant.parse(item.updatedAt).toEpochMilli(),
+                ),
+            )
+        }
+    }
+
+    private suspend fun applyHistoryPage(
+        serverId: String,
+        envelope: WireEnvelope,
+    ) {
+        val sessionId = requireNotNull(envelope.sessionId) { "History page has no session_id" }
+        val payload = ProtocolCodec.decodePayload<HistoryPagePayload>(envelope.payload)
+        if (database.conversations().get(sessionId) == null) {
+            database.conversations().upsert(
+                ConversationEntity(sessionId, serverId, "新对话", System.currentTimeMillis()),
+            )
+        }
+        payload.items.forEach { remote ->
+            require(remote.sessionKey == sessionId) { "History item session mismatch" }
+            require(remote.role in setOf("user", "assistant")) { "Unsupported history role: ${remote.role}" }
+            val completedAt = Instant.parse(remote.ts).toEpochMilli()
+            val duration = remote.extra["turn_duration_ms"]?.jsonPrimitive?.longOrNull ?: 0L
+            val messageId = "history:${remote.id}"
+            database.messages().upsert(
+                MessageEntity(
+                    messageId = messageId,
+                    clientMessageId = null,
+                    sessionId = sessionId,
+                    role = remote.role,
+                    text = remote.content,
+                    deliveryState = "complete",
+                    createdAt = (completedAt - duration).coerceAtMost(completedAt),
+                    updatedAt = completedAt,
+                ),
+            )
+            if (remote.role == "assistant") {
+                database.messages().upsertBlocks(historyBlocks(messageId, remote, completedAt))
+            }
+        }
+    }
+
+    private fun historyBlocks(
+        messageId: String,
+        remote: RemoteHistoryMessage,
+        updatedAt: Long,
+    ): List<TurnBlockEntity> {
+        val blocks = mutableListOf<TurnBlockEntity>()
+        val turnId = remote.id
+
+        fun addThinking(content: String) {
+            if (content.isBlank()) return
+            val ordinal = blocks.size
+            blocks += TurnBlockEntity(
+                blockId = "history:$turnId:$ordinal",
+                messageId = messageId,
+                turnId = turnId,
+                ordinal = ordinal,
+                kind = "thinking",
+                status = "completed",
+                content = content,
+                updatedAt = updatedAt,
+            )
+        }
+
+        (remote.toolChain as? JsonArray)?.forEach { rawGroup ->
+            val group = rawGroup.jsonObject
+            addThinking(jsonText(group, "reasoning_content") ?: jsonText(group, "text") ?: "")
+            (group["calls"] as? JsonArray)?.forEach { rawCall ->
+                val call = rawCall.jsonObject
+                val name = jsonText(call, "name") ?: return@forEach
+                val ordinal = blocks.size
+                blocks += TurnBlockEntity(
+                    blockId = "history:$turnId:$ordinal",
+                    messageId = messageId,
+                    turnId = turnId,
+                    ordinal = ordinal,
+                    kind = "tool",
+                    status = if (jsonText(call, "status") == "error") "failed" else "completed",
+                    content = encodeStoredToolBlock(
+                        StoredToolBlock(
+                            name = name,
+                            description = jsonText(call, "description"),
+                            resultPreview = jsonText(call, "result_preview"),
+                        ),
+                    ),
+                    updatedAt = updatedAt,
+                )
+            }
+        }
+        addThinking(jsonText(remote.extra, "reasoning_content") ?: "")
+        return blocks
+    }
+
+    private fun jsonText(payload: JsonObject, key: String): String? =
+        (payload[key] as? JsonPrimitive)?.contentOrNull
 
     private suspend fun upsertConversation(serverId: String, envelope: WireEnvelope, updatedAt: Long) {
         val sessionId = envelope.sessionId ?: payloadText(envelope, "session_id")

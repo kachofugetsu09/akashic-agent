@@ -182,10 +182,7 @@ class MobileRealtimeChannel:
         frame: GenericCommand | MessageSendCommand,
     ) -> CommandReply:
         if frame.type == "session.list":
-            raise MobileCommandError(
-                "unsupported_command",
-                "当前版本由手机本地维护会话列表",
-            )
+            return await self._list_sessions(device_id, frame)
         if frame.type == "session.create":
             raise MobileCommandError(
                 "unsupported_command",
@@ -200,6 +197,50 @@ class MobileRealtimeChannel:
         if frame.type == "turn.stop":
             return await self._stop_turn(device_id, frame)
         raise MobileCommandError("unsupported_command", f"尚不支持命令: {frame.type}")
+
+    async def _list_sessions(
+        self,
+        device_id: str,
+        frame: GenericCommand,
+    ) -> CommandReply:
+        """发布设备会话索引，供手机按需分页拉取缺失历史。"""
+
+        # 1. 会话范围只来自移动网关已建立的设备所有权
+        _expect_keys(frame.payload, set())
+        session_ids = self._runtime.storage.list_device_sessions(device_id)
+        ctx = self._require_ctx()
+        session_rows = {item["key"]: item for item in ctx.session_manager.list_sessions()}
+
+        # 2. 补充抽屉标题和历史消息总数
+        items: list[dict[str, object]] = []
+        for session_id in session_ids:
+            session = session_rows.get(session_id)
+            if session is None:
+                raise RuntimeError(f"已绑定移动会话在 session store 中不存在: {session_id}")
+            messages, total = ctx.session_manager.control_store.list_messages_for_dashboard(
+                session_key=session_id,
+                page=1,
+                page_size=1,
+                sort_by="seq",
+                sort_order="asc",
+            )
+            first_content = str(messages[0]["content"]).strip() if messages else ""
+            items.append(
+                {
+                    "session_id": session_id,
+                    "title": first_content.splitlines()[0][:32] or "新对话",
+                    "updated_at": str(session["updated_at"]),
+                    "message_count": total,
+                }
+            )
+
+        # 3. 索引也走 durable event，断线后仍会重放
+        await self._runtime.publish_event(
+            event_type="session.list",
+            device_id=device_id,
+            payload={"items": cast(list[object], items)},
+        )
+        return CommandReply(type="session.list.ok", payload={"total": len(items)})
 
     async def _open_session(
         self,
@@ -236,8 +277,9 @@ class MobileRealtimeChannel:
             sort_by="seq",
             sort_order="asc",
         )
+        mobile_items = [_mobile_history_item(item) for item in items]
         page_payload: dict[str, object] = {
-            "items": cast(list[object], items),
+            "items": cast(list[object], mobile_items),
             "total": total,
             **pagination,
         }
@@ -693,6 +735,69 @@ def _expect_keys(payload: Mapping[str, object], allowed: set[str]) -> None:
     if unexpected:
         names = ", ".join(sorted(unexpected))
         raise MobileCommandError("invalid_payload", f"payload 包含未知字段: {names}")
+
+
+def _mobile_history_item(item: Mapping[str, object]) -> dict[str, object]:
+    """裁剪服务端内部字段，只向手机同步可展示历史。"""
+
+    mobile_extra: dict[str, object] = {}
+    for field in ("reasoning_content", "turn_duration_ms"):
+        value = item.get(field)
+        if isinstance(value, (str, int, float)):
+            mobile_extra[field] = value
+
+    return {
+        "id": str(item["id"]),
+        "session_key": str(item["session_key"]),
+        "seq": cast(int, item["seq"]),
+        "role": str(item["role"]),
+        "content": str(item["content"]),
+        "tool_chain": _mobile_tool_chain(item.get("tool_chain")),
+        "extra": mobile_extra,
+        "ts": str(item["timestamp"]),
+    }
+
+
+def _mobile_tool_chain(value: object) -> list[dict[str, object]] | None:
+    if not isinstance(value, list):
+        return None
+    groups: list[dict[str, object]] = []
+    for raw_group in cast(list[object], value):
+        if not isinstance(raw_group, dict):
+            continue
+        group_record = cast(dict[str, object], raw_group)
+        group: dict[str, object] = {}
+        for field in ("reasoning_content", "text"):
+            group_text = group_record.get(field)
+            if isinstance(group_text, str) and group_text:
+                group[field] = group_text
+        raw_calls = group_record.get("calls")
+        calls: list[dict[str, object]] = []
+        if isinstance(raw_calls, list):
+            for raw_call in cast(list[object], raw_calls):
+                if not isinstance(raw_call, dict):
+                    continue
+                call_record = cast(dict[str, object], raw_call)
+                name = call_record.get("name")
+                if not isinstance(name, str) or not name:
+                    continue
+                arguments = call_record.get("final_arguments", call_record.get("arguments"))
+                arguments_record = cast(dict[str, object], arguments) if isinstance(arguments, dict) else None
+                description = arguments_record.get("description") if arguments_record is not None else None
+                call: dict[str, object] = {
+                    "call_id": str(call_record.get("call_id") or ""),
+                    "name": name,
+                    "status": str(call_record.get("status") or "success"),
+                }
+                if isinstance(description, str) and description:
+                    call["description"] = description
+                result = call_record.get("result")
+                if result is not None:
+                    call["result_preview"] = str(result)[:2000]
+                calls.append(call)
+        group["calls"] = calls
+        groups.append(group)
+    return groups
 
 
 def _utc_now() -> datetime:

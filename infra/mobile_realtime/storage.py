@@ -284,8 +284,8 @@ class MobileRealtimeStorage:
         device: DeviceRecord,
         *,
         now: datetime,
-    ) -> None:
-        """原子注册设备并销毁已确认配对会话的一次性 secret。"""
+    ) -> DeviceRecord:
+        """原子恢复或注册设备，并销毁已确认配对会话的一次性 secret。"""
 
         # 1. 校验会话仍然处于可消费状态
         pairing_key = _require_text(pairing_id, "pairing_id")
@@ -300,8 +300,43 @@ class MobileRealtimeStorage:
             if session.expires_at <= current_time:
                 raise PairingExpiredError(f"配对会话已过期: {pairing_key}")
 
-            # 2. 在同一事务注册设备与初始 cursor
-            self._insert_device(device)
+            # 2. 同一设备公钥沿用原 device_id、cursor 和会话所有权
+            row = self._db.execute(
+                """
+                SELECT device_id, public_key, display_name, created_at,
+                       revoked_at, capabilities
+                FROM mobile_devices
+                WHERE public_key = ?
+                """,
+                (_require_text(device.public_key, "public_key"),),
+            ).fetchone()
+            if row is None:
+                effective_device = device
+                self._insert_device(effective_device)
+            else:
+                existing = _device_from_row(cast(sqlite3.Row, row))
+                if existing.revoked_at is not None:
+                    raise PairingStateError("已撤销的设备密钥不能重新配对")
+                effective_device = DeviceRecord(
+                    device_id=existing.device_id,
+                    public_key=existing.public_key,
+                    display_name=device.display_name,
+                    created_at=existing.created_at,
+                    revoked_at=None,
+                    capabilities=device.capabilities,
+                )
+                _ = self._db.execute(
+                    """
+                    UPDATE mobile_devices
+                    SET display_name = ?, capabilities = ?
+                    WHERE device_id = ?
+                    """,
+                    (
+                        effective_device.display_name,
+                        _serialize_capabilities(effective_device.capabilities),
+                        effective_device.device_id,
+                    ),
+                )
 
             # 3. 作废一次性 secret 并提交完成状态
             updated = self._db.execute(
@@ -314,6 +349,7 @@ class MobileRealtimeStorage:
             )
             if updated.rowcount != 1:
                 raise PairingStateError(f"配对会话状态并发变化: {pairing_key}")
+        return effective_device
 
     def register_device(self, device: DeviceRecord) -> None:
         """注册设备，并在同一事务建立初始事件游标。"""
@@ -699,6 +735,23 @@ class MobileRealtimeStorage:
             raise SessionOwnershipError(f"移动会话尚未绑定设备: {session_key}")
         return _row_text(row, "device_id")
 
+    def list_device_sessions(self, device_id: str) -> tuple[str, ...]:
+        """按最近绑定顺序列出设备拥有的移动会话。"""
+
+        device_key = _require_text(device_id, "device_id")
+        with self._lock:
+            _ = self._read_device_row(device_key)
+            rows = self._db.execute(
+                """
+                SELECT session_id
+                FROM mobile_device_sessions
+                WHERE device_id = ?
+                ORDER BY created_at DESC
+                """,
+                (device_key,),
+            ).fetchall()
+        return tuple(_row_text(row, "session_id") for row in rows)
+
     def reserve_command(
         self,
         *,
@@ -865,6 +918,9 @@ class MobileRealtimeStorage:
                 revoked_at TEXT,
                 capabilities TEXT NOT NULL
             );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_mobile_devices_public_key
+            ON mobile_devices(public_key);
 
             CREATE TABLE IF NOT EXISTS mobile_device_cursors (
                 device_id TEXT PRIMARY KEY,

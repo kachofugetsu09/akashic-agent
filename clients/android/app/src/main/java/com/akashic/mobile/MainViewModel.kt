@@ -78,6 +78,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectSession(sessionId: String) = container.realtimeSession.selectSession(sessionId)
 
+    fun restartPairing() = container.realtimeSession.restartPairing()
+
     private fun toMessageUi(graph: MessageWithBlocks): MessageUi {
         val message = graph.message
         if (message.role == "user") {

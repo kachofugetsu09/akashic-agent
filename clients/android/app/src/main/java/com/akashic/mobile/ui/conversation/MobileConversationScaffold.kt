@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Menu
+import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -54,6 +55,7 @@ fun MobileConversationScaffold(
     state: ConversationUiState,
     onSelectSession: (String) -> Unit,
     onNewSession: () -> Unit,
+    onRestartPairing: () -> Unit = {},
     onAttach: () -> Unit,
     onSend: (String) -> Unit,
     onStop: () -> Unit,
@@ -73,6 +75,10 @@ fun MobileConversationScaffold(
                     },
                     onNewSession = {
                         onNewSession()
+                        scope.launch { drawerState.close() }
+                    },
+                    onRestartPairing = {
+                        onRestartPairing()
                         scope.launch { drawerState.close() }
                     },
                 )
@@ -108,6 +114,7 @@ private fun MobileSessionDrawer(
     state: ConversationUiState,
     onSelectSession: (String) -> Unit,
     onNewSession: () -> Unit,
+    onRestartPairing: () -> Unit,
 ) {
     ModalDrawerSheet(
         modifier = Modifier
@@ -175,6 +182,26 @@ private fun MobileSessionDrawer(
                     )
                 }
             }
+
+            NavigationDrawerItem(
+                icon = {
+                    Icon(
+                        Icons.Rounded.QrCodeScanner,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                    )
+                },
+                label = { Text("重新扫码连接") },
+                selected = false,
+                onClick = onRestartPairing,
+                shape = RoundedCornerShape(28.dp),
+                colors = NavigationDrawerItemDefaults.colors(
+                    unselectedContainerColor = MaterialTheme.colorScheme.surface,
+                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                ),
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
 
             FilledTonalButton(
                 onClick = onNewSession,
