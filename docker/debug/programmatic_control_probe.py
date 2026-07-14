@@ -1662,6 +1662,45 @@ profile = "quiet"
     (sandbox / "config.toml").write_text(config, encoding="utf-8")
 
 
+def _prepare_host_sandbox(sandbox: Path, source_root: Path) -> None:
+    """创建 control gate 独占的运行目录和可写静态目录。"""
+
+    # 1. 复制当前工作树，确保 /app mountpoint 也完全归 sandbox 所有。
+    source_root = source_root.resolve()
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        relative = Path(directory).resolve().relative_to(source_root)
+        ignored = {
+            name
+            for name in names
+            if name in {"__pycache__", ".pytest_cache", ".venv", "node_modules"}
+            or name.endswith(".pyc")
+        }
+        if relative == Path("."):
+            ignored.update({".git", "static"})
+        if relative == Path("docker/debug"):
+            ignored.add("reports")
+        return ignored
+
+    shutil.copytree(
+        source_root,
+        sandbox / "app",
+        symlinks=True,
+        ignore=ignore,
+    )
+    (sandbox / "app/static").mkdir()
+
+    # 2. 所有运行时写入均归外部 sandbox，不依赖仓库 ignored 目录。
+    (sandbox / "workspace").mkdir(parents=True)
+    (sandbox / "home").mkdir()
+    (sandbox / "reports").mkdir()
+    (sandbox / "static/dashboard").mkdir(parents=True)
+    (sandbox / "static/chat").mkdir()
+
+    # 3. 配置只引用同一 sandbox 内的路径。
+    _write_config(sandbox)
+
+
 def _install_control_failure_plugin(sandbox: Path) -> None:
     """安装只为 PC10 构造 started 后 gate failure 的隔离插件。"""
 
@@ -2005,10 +2044,7 @@ def _run_host(gate: str) -> int:
     report_dir = repo / "docker/debug/reports/programmatic-control" / run_id
     report_dir.mkdir(parents=True)
     sandbox = Path(tempfile.mkdtemp(prefix="akashic-control-gate-", dir="/tmp"))
-    (sandbox / "workspace").mkdir()
-    (sandbox / "home").mkdir()
-    (sandbox / "reports").mkdir()
-    _write_config(sandbox)
+    _prepare_host_sandbox(sandbox, repo)
     if gate == "failure-matrix":
         _install_control_failure_plugin(sandbox)
     before = _repository_digest(repo)

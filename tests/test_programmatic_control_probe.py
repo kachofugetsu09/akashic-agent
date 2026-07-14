@@ -12,11 +12,41 @@ from docker.debug.programmatic_control_probe import (
     JsonRpcSocketClient,
     _extract_id,
     _is_terminal_event,
+    _prepare_host_sandbox,
     _recorded_turn_notifications,
     _wait_socket,
     _turn_projection,
     _tool_lifecycle,
 )
+
+
+def test_control_gate_prepares_external_static_mount_without_repo_static(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "clean-checkout"
+    repo.mkdir()
+    (repo / "main.py").write_text("print('clean')\n", encoding="utf-8")
+    assert not (repo / "static").exists()
+
+    sandbox = tmp_path / "sandbox"
+    _prepare_host_sandbox(sandbox, repo)
+    compose = (
+        Path(__file__).parents[1] / "docker/debug/docker-compose.control-gate.yml"
+    ).read_text(encoding="utf-8")
+
+    assert (sandbox / "static/dashboard").is_dir()
+    assert (sandbox / "static/chat").is_dir()
+    assert (sandbox / "app/main.py").read_text(encoding="utf-8") == "print('clean')\n"
+    assert (sandbox / "app/static").is_dir()
+    assert "read_only: true" in compose
+    assert (
+        "${AKASHIC_CONTROL_SANDBOX:?set by programmatic_control_probe.py}"
+        "/app:/app:ro"
+    ) in compose
+    assert (
+        "${AKASHIC_CONTROL_SANDBOX:?set by programmatic_control_probe.py}"
+        "/static:/app/static"
+    ) in compose
 
 
 def test_socket_client_correlates_response_and_buffers_notifications(

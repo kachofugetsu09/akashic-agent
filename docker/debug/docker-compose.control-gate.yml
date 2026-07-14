@@ -43,8 +43,9 @@ services:
       HOME: /sandbox/home
       PYTHONUNBUFFERED: "1"
     volumes: &control-volumes
-      - ../..:/app:ro
+      - ${AKASHIC_CONTROL_SANDBOX:?set by programmatic_control_probe.py}/app:/app:ro
       - ${AKASHIC_CONTROL_SANDBOX:?set by programmatic_control_probe.py}:/sandbox
+      - ${AKASHIC_CONTROL_SANDBOX:?set by programmatic_control_probe.py}/static:/app/static
     tmpfs:
       - /tmp
     depends_on:
