@@ -187,7 +187,9 @@ better-ui：
 - 自动验证：`tests/mobile_realtime` 110 项通过；Android JVM、Kotlin、AndroidTest 编译、Lint 与 debug APK 构建通过；主仓库完整 `pytest tests/` 在前一提交点 2221 项通过。
 - 隔离 E2E：临时 TLS Gateway 的 17 项 gateway/isolated 测试通过，覆盖两次 history 去重、换 epoch 补发、固定 GIF 二进制/SHA 和单次 Agent 入站；真实启动可生成单次 pairing JSON/PNG 并干净退出，所有数据库与附件均位于临时根。
 - 模拟器 E2E：API 36.1 无窗口模拟器运行 29 项 Room migration、Compose、Keystore instrumentation 全部通过；真实隔离 Gateway 完成配对、历史、发送、固定 GIF 下载与缓存，强停进程后恢复不重复。移除 `adb reverse` 后恢复，客户端 13.2 秒内经 full-jitter 自动回到 READY。
-- 版本：Android `0.4.0`（versionCode 4）。Release 构建、签名与发布信息在版本提交后补充。
+- 版本：Android `0.4.0`（versionCode 4）；私有 Release [`v0.4.0`](https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.4.0)，资产 `Akashic-Mobile-v0.4.0.apk`（5,007,406 bytes）。
+- 发布验证：release JVM、Lint、R8 与 assemble 在 1m54s 内完成；APK v2 签名有效，版本清单为 `0.4.0/4`；本地与 GitHub 资产 SHA-256 均为 `f9a43a3981bae767e952c00271549e0655f7f4f4ed6d349ab5abb3993b1dc853`。
+- 资源清理：隔离 Gateway 根目录确认无符号链接后删除；无窗口模拟器已关闭，`adb devices` 无残留设备。
 
 #### 本组 UI skill 约束落实
 
