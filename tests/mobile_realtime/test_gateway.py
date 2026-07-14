@@ -302,6 +302,17 @@ def test_offline_proactive_event_is_durable_and_replayed_with_session(
             capabilities=("stream-v1",),
         )
     )
+    second_device_id = uuid4().hex
+    runtime.storage.register_device(
+        DeviceRecord(
+            device_id=second_device_id,
+            public_key=_device_public_key(ec.generate_private_key(ec.SECP256R1())),
+            display_name="Second Pixel",
+            created_at=datetime.now(timezone.utc),
+            revoked_at=None,
+            capabilities=("stream-v1",),
+        )
+    )
     chat_id = str(uuid4())
     session_id = f"mobile:{chat_id}"
     runtime.storage.claim_session(
@@ -311,6 +322,7 @@ def test_offline_proactive_event_is_durable_and_replayed_with_session(
     )
     asyncio.run(runtime.channel.send(chat_id, "后台任务完成"))
     assert runtime.storage.count_durable_events(device_id) == 1
+    assert runtime.storage.count_durable_events(second_device_id) == 1
 
     client = TestClient(create_mobile_gateway_app(runtime))
     with client.websocket_connect("/ws") as websocket:

@@ -69,6 +69,20 @@ def test_event_rejects_unknown_type_and_missing_sequence() -> None:
         parse_frame(json.dumps(frame))
 
 
+def test_session_list_is_a_valid_server_event() -> None:
+    frame = {
+        "v": 1,
+        "kind": "event",
+        "type": "session.list",
+        "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "connection_epoch": 1,
+        "event_seq": 1,
+        "payload": {"items": []},
+    }
+
+    assert parse_frame(json.dumps(frame)).type == "session.list"
+
+
 def test_delta_process_block_fields_must_appear_together() -> None:
     frame = _golden_frame(2)
     frame["type"] = "react.thinking.delta"

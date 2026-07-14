@@ -680,36 +680,20 @@ class MobileRealtimeStorage:
         session_id: str,
         created_at: datetime,
     ) -> None:
-        """首次绑定设备会话，后续只允许原设备继续使用。"""
+        """记录移动会话的首次创建设备，不限制其他已认证设备使用。"""
 
-        # 1. 在写事务内读取会话当前 owner
+        # 1. 设备身份只负责认证，会话归属不再作为访问边界
         device_key = _require_text(device_id, "device_id")
         session_key = _require_text(session_id, "session_id")
         timestamp = _serialize_datetime(created_at, "created_at")
         with self._lock, self._db:
             _ = self._db.execute("BEGIN IMMEDIATE")
             _ = self._read_device_row(device_key)
-            row = self._db.execute(
-                """
-                SELECT device_id
-                FROM mobile_device_sessions
-                WHERE session_id = ?
-                """,
-                (session_key,),
-            ).fetchone()
-            if row is not None:
-                owner = _row_text(row, "device_id")
-                if owner != device_key:
-                    raise SessionOwnershipError(
-                        f"移动会话属于其他设备: {session_key}"
-                    )
-                return
-
-            # 2. 新会话只在没有 owner 时完成首次绑定
             _ = self._db.execute(
                 """
                 INSERT INTO mobile_device_sessions(device_id, session_id, created_at)
                 VALUES(?, ?, ?)
+                ON CONFLICT(session_id) DO NOTHING
                 """,
                 (device_key, session_key, timestamp),
             )

@@ -520,8 +520,6 @@ class MobileGatewayRuntime:
         async with self._delivery_lock:
             if device_id is not None:
                 target_device_ids = (device_id,)
-            elif session_id is not None:
-                target_device_ids = (self.storage.session_owner(session_id),)
             else:
                 target_device_ids = tuple(
                     device.device_id for device in self.storage.list_active_devices()

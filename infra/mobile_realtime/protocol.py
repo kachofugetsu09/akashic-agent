@@ -34,6 +34,7 @@ COMMAND_TYPES = frozenset(
 )
 EVENT_TYPES = frozenset(
     {
+        "session.list",
         "session.created",
         "session.updated",
         "history.page",
@@ -280,6 +281,7 @@ class TurnSnapshotEvent(ProtocolModel):
 
 class GenericEvent(EventEnvelope):
     type: Literal[
+        "session.list",
         "session.created",
         "session.updated",
         "history.page",

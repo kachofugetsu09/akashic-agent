@@ -127,7 +127,7 @@ def _generic_frame(
 
 
 @pytest.mark.asyncio
-async def test_message_send_is_idempotent_and_session_is_device_owned(
+async def test_message_send_is_idempotent_and_session_is_shared_between_devices(
     tmp_path: Path,
 ) -> None:
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
@@ -161,7 +161,7 @@ async def test_message_send_is_idempotent_and_session_is_device_owned(
         device_id=first_device,
         frame=original.model_copy(update={"connection_epoch": 2}),
     )
-    forbidden = await channel.handle_command(
+    shared = await channel.handle_command(
         device_id=second_device,
         frame=_message_frame(
             frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAW",
@@ -171,19 +171,20 @@ async def test_message_send_is_idempotent_and_session_is_device_owned(
 
     assert first == duplicate
     assert first.type == "message.send.ok"
-    assert len(bus.inbound) == 1
-    assert forbidden.type == "message.send.error"
-    assert forbidden.payload["code"] == "session_forbidden"
+    assert len(bus.inbound) == 2
+    assert shared.type == "message.send.ok"
     storage.close()
 
 
 @pytest.mark.asyncio
-async def test_session_list_and_history_sync_only_publish_owned_mobile_sessions(
+async def test_session_list_and_history_sync_publish_all_mobile_sessions(
     tmp_path: Path,
 ) -> None:
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     device_id = uuid4().hex
+    other_device_id = uuid4().hex
     _register_device(storage, device_id)
+    _register_device(storage, other_device_id)
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
@@ -200,7 +201,11 @@ async def test_session_list_and_history_sync_only_publish_owned_mobile_sessions(
         )
     )
     session_id = f"mobile:{uuid4()}"
-    storage.claim_session(device_id=device_id, session_id=session_id, created_at=datetime.now(timezone.utc))
+    storage.claim_session(
+        device_id=other_device_id,
+        session_id=session_id,
+        created_at=datetime.now(timezone.utc),
+    )
     session = manager.get_or_create(session_id)
     session.add_message("user", "恢复这段对话", llm_context_frame="private context")
     session.add_message(
@@ -223,6 +228,9 @@ async def test_session_list_and_history_sync_only_publish_owned_mobile_sessions(
         ],
     )
     manager.save(session)
+    web_session = manager.get_or_create(f"web:{uuid4()}")
+    web_session.add_message("user", "不要同步 Web 会话")
+    manager.save(web_session)
 
     listed = await channel.handle_command(
         device_id=device_id,
@@ -242,10 +250,12 @@ async def test_session_list_and_history_sync_only_publish_owned_mobile_sessions(
     )
 
     assert listed.type == "session.list.ok"
+    assert listed.payload["total"] == 1
     session_event = runtime.events[-2]
     assert session_event["event_type"] == "session.list"
     session_payload = cast(dict[str, object], session_event["payload"])
     session_items = cast(list[dict[str, object]], session_payload["items"])
+    assert len(session_items) == 1
     assert session_items[0]["session_id"] == session_id
     assert session_items[0]["title"] == "恢复这段对话"
     assert history.type == "history.get.ok"

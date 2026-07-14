@@ -18,7 +18,7 @@ from bus.events_lifecycle import (
 )
 from infra.channels.contract import ChannelContext
 from infra.mobile_realtime.protocol import GenericCommand, MessageSendCommand
-from infra.mobile_realtime.storage import CommandReceipt, SessionOwnershipError
+from infra.mobile_realtime.storage import CommandReceipt
 
 if TYPE_CHECKING:
     from infra.mobile_realtime.gateway import MobileGatewayRuntime
@@ -133,14 +133,6 @@ class MobileRealtimeChannel:
                 session_id=frame.session_id,
                 turn_id=frame.turn_id,
             )
-        except SessionOwnershipError as error:
-            reply = CommandReply(
-                type=f"{frame.type}.error",
-                payload={"code": "session_forbidden", "message": str(error)},
-                session_id=frame.session_id,
-                turn_id=frame.turn_id,
-            )
-
         # 3. 成功副作用完成后固化回复；内部异常保持 processing 并向上暴露
         completed = self._runtime.storage.complete_command(
             device_id=device_id,
@@ -203,13 +195,17 @@ class MobileRealtimeChannel:
         device_id: str,
         frame: GenericCommand,
     ) -> CommandReply:
-        """发布设备会话索引，供手机按需分页拉取缺失历史。"""
+        """发布全部移动会话索引，供手机按需分页拉取缺失历史。"""
 
-        # 1. 会话范围只来自移动网关已建立的设备所有权
+        # 1. 所有已认证手机共享 mobile 渠道的完整会话空间
         _expect_keys(frame.payload, set())
-        session_ids = self._runtime.storage.list_device_sessions(device_id)
         ctx = self._require_ctx()
         session_rows = {item["key"]: item for item in ctx.session_manager.list_sessions()}
+        session_ids = tuple(
+            session_id
+            for session_id in session_rows
+            if session_id.startswith(f"{self.name}:")
+        )
 
         # 2. 补充抽屉标题和历史消息总数
         items: list[dict[str, object]] = []
@@ -248,7 +244,7 @@ class MobileRealtimeChannel:
         frame: GenericCommand,
     ) -> CommandReply:
         _expect_keys(frame.payload, set())
-        session_id = self._require_owned_session(device_id, frame.session_id)
+        session_id = self._require_mobile_session(frame.session_id)
         await self._runtime.publish_event(
             event_type="session.updated",
             session_id=session_id,
@@ -265,7 +261,7 @@ class MobileRealtimeChannel:
         device_id: str,
         frame: GenericCommand,
     ) -> CommandReply:
-        session_id = self._require_owned_session(device_id, frame.session_id)
+        session_id = self._require_mobile_session(frame.session_id)
         pagination = _pagination_payload(frame.payload)
         (
             items,
@@ -286,6 +282,7 @@ class MobileRealtimeChannel:
         await self._runtime.publish_event(
             event_type="history.page",
             session_id=session_id,
+            device_id=device_id,
             payload=page_payload,
         )
         return CommandReply(
@@ -611,12 +608,8 @@ class MobileRealtimeChannel:
             raise RuntimeError(f"mobile process turn 未开始: {session_id}/{turn_id}")
         return state
 
-    def _require_owned_session(self, device_id: str, value: str | None) -> str:
+    def _require_mobile_session(self, value: str | None) -> str:
         session_id = self._normalize_session_id(value)
-        self._runtime.storage.require_session_owner(
-            device_id=device_id,
-            session_id=session_id,
-        )
         if not self._require_ctx().session_manager.session_exists(session_id):
             raise MobileCommandError("session_not_found", f"会话不存在: {session_id}")
         return session_id
