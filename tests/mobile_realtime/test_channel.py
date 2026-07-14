@@ -274,6 +274,54 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
 
 
 @pytest.mark.asyncio
+async def test_turn_stop_accepts_a_shared_mobile_session(tmp_path: Path) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    owner_device = uuid4().hex
+    current_device = uuid4().hex
+    _register_device(storage, owner_device)
+    _register_device(storage, current_device)
+    runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    manager = SessionManager(tmp_path / "workspace")
+    session_id = f"mobile:{uuid4()}"
+    storage.claim_session(
+        device_id=owner_device,
+        session_id=session_id,
+        created_at=datetime.now(timezone.utc),
+    )
+    manager.save(manager.get_or_create(session_id))
+    interrupt = SimpleNamespace(
+        request_interrupt=lambda **_: SimpleNamespace(status="accepted", message="已停止"),
+    )
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=_Bus(),
+                session_manager=manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=interrupt,
+            ),
+        )
+    )
+
+    reply = await channel.handle_command(
+        device_id=current_device,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+            command_type="turn.stop",
+            session_id=session_id,
+        ),
+    )
+
+    assert reply.type == "turn.stop.ok"
+    assert runtime.events[-1]["event_type"] == "turn.interrupted"
+    manager.close()
+    storage.close()
+
+
+@pytest.mark.asyncio
 async def test_stream_deltas_batch_at_50ms_and_flush_before_tool_and_final(
     tmp_path: Path,
 ) -> None:

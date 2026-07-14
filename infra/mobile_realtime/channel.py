@@ -340,11 +340,7 @@ class MobileRealtimeChannel:
         frame: GenericCommand,
     ) -> CommandReply:
         _expect_keys(frame.payload, set())
-        session_id = self._normalize_session_id(frame.session_id)
-        self._runtime.storage.require_session_owner(
-            device_id=device_id,
-            session_id=session_id,
-        )
+        session_id = self._require_mobile_session(frame.session_id)
         interrupt = self._require_ctx().interrupt_controller
         if interrupt is None:
             raise MobileCommandError("interrupt_unavailable", "当前未启用中断功能")
