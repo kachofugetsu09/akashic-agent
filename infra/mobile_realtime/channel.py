@@ -468,6 +468,11 @@ class MobileRealtimeChannel:
         frame: MessageSendCommand,
     ) -> CommandReply:
         session_id = self._normalize_session_id(frame.session_id)
+        if frame.id != frame.payload.client_message_id:
+            raise MobileCommandError(
+                "client_message_id_mismatch",
+                "message.send 的命令 ID 必须与 client_message_id 一致",
+            )
         if not frame.payload.text.strip() and not frame.payload.media_refs:
             raise MobileCommandError("empty_message", "文字和附件不能同时为空")
         try:
@@ -642,11 +647,9 @@ class MobileRealtimeChannel:
         session_id = self._session_id(message.chat_id)
         turn_id = message.control_turn_id or self._current_turn_id(session_id)
         await self._flush_deltas(session_id, turn_id)
-        message_id = (
-            self._outbound_message_id(session_id, message)
-            if message.media
-            else None
-        )
+        message_id = message.session_message_id
+        if message.media and message_id is None:
+            raise RuntimeError("出站媒体缺少已持久化的 assistant 消息")
         metadata = dict(message.metadata)
         try:
             attachments = await self._outbound_descriptors(
@@ -671,16 +674,19 @@ class MobileRealtimeChannel:
                 "code": "media_unavailable",
                 "message": "附件源暂时不可用",
             }
+        final_payload: dict[str, object] = {
+            "content": message.content,
+            "thinking": message.thinking or "",
+            "attachments": attachments,
+            "metadata": metadata,
+        }
+        if message_id is not None:
+            final_payload["message_id"] = message_id
         await self._runtime.publish_event(
             event_type="message.final",
             session_id=session_id,
             turn_id=turn_id,
-            payload={
-                "content": message.content,
-                "thinking": message.thinking or "",
-                "attachments": attachments,
-                "metadata": metadata,
-            },
+            payload=final_payload,
         )
         _ = self._active_turn_ids.pop(session_id, None)
         _ = self._process_turns.pop((session_id, turn_id), None)
@@ -780,28 +786,6 @@ class MobileRealtimeChannel:
         finally:
             for snapshot in snapshots:
                 snapshot.path.unlink(missing_ok=True)
-
-    def _outbound_message_id(
-        self,
-        session_id: str,
-        message: OutboundMessage,
-    ) -> str:
-        """定位已先行持久化的本轮 assistant 消息。"""
-
-        session = self._require_ctx().session_manager.get_or_create(session_id)
-        if not session.messages:
-            raise RuntimeError("出站媒体缺少已持久化的 assistant 消息")
-        persisted = session.messages[-1]
-        if (
-            persisted.get("role") != "assistant"
-            or persisted.get("content") != message.content
-            or persisted.get("media") != list(message.media)
-        ):
-            raise RuntimeError("出站媒体与最新 assistant 消息不一致")
-        message_id = persisted.get("id")
-        if not isinstance(message_id, str) or not message_id:
-            raise RuntimeError("出站媒体的 assistant 消息尚未获得稳定 ID")
-        return message_id
 
     async def _buffer_delta(
         self,
@@ -1062,7 +1046,7 @@ def _mobile_history_item(item: Mapping[str, object]) -> dict[str, object]:
         if isinstance(value, (str, int, float)):
             mobile_extra[field] = value
 
-    return {
+    result: dict[str, object] = {
         "id": str(item["id"]),
         "session_key": str(item["session_key"]),
         "seq": cast(int, item["seq"]),
@@ -1072,6 +1056,10 @@ def _mobile_history_item(item: Mapping[str, object]) -> dict[str, object]:
         "extra": mobile_extra,
         "ts": str(item["timestamp"]),
     }
+    client_message_id = item.get("client_message_id")
+    if isinstance(client_message_id, str) and client_message_id:
+        result["client_message_id"] = client_message_id
+    return result
 
 
 def _mobile_tool_chain(value: object) -> list[dict[str, object]] | None:

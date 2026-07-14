@@ -171,7 +171,7 @@ class Session:
 
     def add_message(
         self, role: str, content: str, media: list[str] | None = None, **kwargs: object
-    ) -> None:
+    ) -> dict[str, object]:
         """向 session 追加一条消息并更新时间。"""
         msg: dict[str, object] = {
             "role": role,
@@ -183,6 +183,7 @@ class Session:
             msg["media"] = list(media)
         self.messages.append(msg)
         self.updated_at = datetime.now(UTC)
+        return msg
 
     def get_history(
         self,

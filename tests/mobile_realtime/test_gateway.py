@@ -1011,6 +1011,7 @@ def test_outbound_attachment_download_replays_binary_before_reply(
                 content="文件已生成",
                 media=[str(source)],
                 control_turn_id=turn_id,
+                session_message_id=str(persisted.messages[-1]["id"]),
             )
         )
     )

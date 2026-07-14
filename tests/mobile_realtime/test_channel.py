@@ -172,11 +172,18 @@ async def test_message_send_is_idempotent_and_session_is_shared_between_devices(
             session_id=session_id,
         ),
     )
+    mismatched = await channel.handle_command(
+        device_id=first_device,
+        frame=original.model_copy(update={"id": "01ARZ3NDEKTSV4RRFFQ69G5FAZ"}),
+    )
 
     assert first == duplicate
     assert first.type == "message.send.ok"
     assert len(bus.inbound) == 2
     assert shared.type == "message.send.ok"
+    assert mismatched.type == "message.send.error"
+    assert mismatched.payload["code"] == "client_message_id_mismatch"
+    assert len(bus.inbound) == 2
     storage.close()
 
 
@@ -215,7 +222,12 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
     session = manager.get_or_create(session_id)
     media_path = tmp_path / "answer.png"
     media_path.write_bytes(b"not-a-real-png-but-stable")
-    session.add_message("user", "恢复这段对话", llm_context_frame="private context")
+    session.add_message(
+        "user",
+        "恢复这段对话",
+        llm_context_frame="private context",
+        client_message_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    )
     session.add_message(
         "assistant",
         "历史回答",
@@ -272,6 +284,7 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
     history_payload = cast(dict[str, object], history_event["payload"])
     history_items = cast(list[dict[str, object]], history_payload["items"])
     assert history_items[0]["extra"] == {}
+    assert history_items[0]["client_message_id"] == "01ARZ3NDEKTSV4RRFFQ69G5FAV"
     assert "llm_context_frame" not in history_items[0]
     assert history_items[1]["extra"] == {"reasoning_content": "历史思考"}
     tool_chain = cast(list[dict[str, object]], history_items[1]["tool_chain"])
@@ -303,9 +316,11 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
             content="实时回答",
             media=[str(media_path)],
             control_turn_id=turn_id,
+            session_message_id=str(session.messages[-1]["id"]),
         )
     )
     live_payload = cast(dict[str, object], runtime.events[-1]["payload"])
+    assert live_payload["message_id"] == session.messages[-1]["id"]
     live = cast(list[dict[str, object]], live_payload["attachments"])
     assert live[0]["attachment_id"] == attachments[0]["attachment_id"]
 
@@ -433,6 +448,7 @@ async def test_remote_media_failure_keeps_final_text(
             content="文字仍应送达",
             media=media,
             control_turn_id=uuid4().hex,
+            session_message_id=str(session.messages[-1]["id"]),
         )
     )
 
@@ -442,6 +458,45 @@ async def test_remote_media_failure_keeps_final_text(
     assert payload["attachments"] == []
     metadata = cast(dict[str, object], payload["metadata"])
     assert cast(dict[str, object], metadata["media_delivery"])["status"] == "failed"
+    await channel.stop()
+    manager.close()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_control_reply_never_reuses_previous_message_id(tmp_path: Path) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    runtime = _Runtime(storage)
+    manager = SessionManager(tmp_path / "workspace")
+    session_id = f"mobile:{uuid4()}"
+    session = manager.get_or_create(session_id)
+    session.add_message("assistant", "相同的固定回复")
+    manager.save(session)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=_Bus(),
+                session_manager=manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+            ),
+        )
+    )
+
+    await channel._on_response(
+        OutboundMessage(
+            channel="mobile",
+            chat_id=session_id.removeprefix("mobile:"),
+            content="相同的固定回复",
+        )
+    )
+
+    payload = cast(dict[str, object], runtime.events[-1]["payload"])
+    assert "message_id" not in payload
     await channel.stop()
     manager.close()
     storage.close()
