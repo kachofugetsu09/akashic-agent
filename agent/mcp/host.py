@@ -1,14 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from collections.abc import Mapping
 from typing import Any
 
 from agent.mcp.client import McpClient
 from agent.mcp.tool import McpToolWrapper
 from agent.plugins.scope import PluginScope
-from agent.plugins.specs import RegisteredProactiveSource
 
 
 @dataclass(frozen=True)
@@ -34,7 +33,9 @@ class PreparedMcpCatalog:
         )
 
 
-class PluginMcpHost:
+class McpGenerationHost:
+    """准备并按代际持有 MCP catalog。"""
+
     def __init__(self) -> None:
         self._catalogs: dict[str, PreparedMcpCatalog] = {}
 
@@ -42,10 +43,13 @@ class PluginMcpHost:
         self,
         generation_id: str,
         *,
-        server_specs: dict[str, dict[str, Any]],
-        proactive_sources: tuple[RegisteredProactiveSource, ...],
+        server_specs: Mapping[str, Mapping[str, Any]],
+        required_tools: Mapping[str, tuple[str, ...]],
         scope: PluginScope,
     ) -> PreparedMcpCatalog:
+        """连接候选 MCP，并在完整校验后登记 catalog。"""
+
+        # 1. 连接全部候选 server，并立即把客户端纳入作用域清理
         servers: dict[str, PreparedMcpServer] = {}
         for server_name, spec in sorted(server_specs.items()):
             client = McpClient(
@@ -67,7 +71,9 @@ class PluginMcpHost:
                     for info in infos
                 ),
             )
-        self._validate_sources(servers, proactive_sources)
+
+        # 2. 验证上层声明依赖的远端工具，再发布不可变 catalog
+        self._validate_required_tools(servers, required_tools)
         catalog = PreparedMcpCatalog(
             generation_id=generation_id,
             servers=MappingProxyType(servers),
@@ -90,30 +96,28 @@ class PluginMcpHost:
             _ = self._catalogs.pop(generation_id, None)
         if failures:
             raise RuntimeError(
-                "MCP catalog 清理失败: "
-                + "; ".join(str(error) for error in failures)
+                "MCP catalog 清理失败: " + "; ".join(str(error) for error in failures)
             )
 
     def get(self, generation_id: str) -> PreparedMcpCatalog | None:
         return self._catalogs.get(generation_id)
 
     @staticmethod
-    def _validate_sources(
+    def _validate_required_tools(
         servers: Mapping[str, PreparedMcpServer],
-        sources: tuple[RegisteredProactiveSource, ...],
+        required_tools: Mapping[str, tuple[str, ...]],
     ) -> None:
         missing: list[str] = []
-        for source in sources:
-            server = servers.get(source.spec.server)
+        for server_name, tool_names in required_tools.items():
+            server = servers.get(server_name)
             if server is None:
-                missing.append(f"{source.spec.id}:server:{source.spec.server}")
+                missing.append(f"server:{server_name}")
                 continue
             available = set(server.remote_tool_names)
-            for role, tool_name in (
-                ("fetch", source.spec.fetch_tool),
-                ("ack", source.spec.ack_tool),
-            ):
-                if tool_name and tool_name not in available:
-                    missing.append(f"{source.spec.id}:{role}:{tool_name}")
+            missing.extend(
+                f"{server_name}:{tool_name}"
+                for tool_name in tool_names
+                if tool_name not in available
+            )
         if missing:
-            raise RuntimeError(f"proactive source MCP tool 缺失: {', '.join(missing)}")
+            raise RuntimeError(f"MCP 依赖工具缺失: {', '.join(missing)}")

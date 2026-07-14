@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from agent.plugins.specs import RegisteredProactiveSource
     from infra.channels.contract import Channel
     from agent.plugins.skill_host import PreparedSkillCatalog
-    from agent.plugins.mcp_host import PreparedMcpCatalog
+    from agent.mcp.host import PreparedMcpCatalog
     from agent.plugins.activity_host import PreparedJobCatalog, PreparedProactiveCatalog
     from agent.plugins.snapshot import RuntimeSnapshot
 

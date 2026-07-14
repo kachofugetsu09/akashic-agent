@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Literal, cast
 
 from agent.lifecycle.phase import topo_sort_modules
+from agent.mcp.generation import WorkspaceMcpGeneration
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.jobs import RegisteredPluginJob, plugin_job_key
 from agent.plugins.specs import RegisteredProactiveSource, proactive_source_key
@@ -47,6 +48,7 @@ class RuntimeSnapshot:
     channels: Mapping[str, Channel]
     skill_catalog_generation_id: str | None
     mcp_catalog_generation_ids: Mapping[str, str]
+    workspace_mcp_generation: WorkspaceMcpGeneration | None = None
     managed_services: Mapping[str, Mapping[str, object]] = field(
         default_factory=lambda: MappingProxyType({})
     )
@@ -114,6 +116,7 @@ class RuntimeSnapshotCompiler:
         *,
         catalog_generation: PluginGeneration | None = None,
         snapshot_revision: str = "",
+        workspace_mcp_generation: WorkspaceMcpGeneration | None = None,
     ) -> RuntimeSnapshot:
         ordered = [generations[key] for key in sorted(generations)]
         if any(generation.plugin_id != key for key, generation in generations.items()):
@@ -187,6 +190,11 @@ class RuntimeSnapshotCompiler:
             f"{plugin_id}:{generation_id}"
             for plugin_id, generation_id in sorted(mcp_catalogs.items())
         )
+        identity += "|workspace-mcp:" + (
+            workspace_mcp_generation.generation_id
+            if workspace_mcp_generation is not None
+            else ""
+        )
         identity += f"|snapshot:{snapshot_revision}"
         snapshot_id = hashlib.sha256(identity.encode()).hexdigest()[:16]
         return RuntimeSnapshot(
@@ -206,6 +214,7 @@ class RuntimeSnapshotCompiler:
                 else None
             ),
             mcp_catalog_generation_ids=MappingProxyType(mcp_catalogs),
+            workspace_mcp_generation=workspace_mcp_generation,
             managed_services=MappingProxyType(managed_services),
             plugin_skill_index=(
                 catalog_owner.skill_catalog.normal_plugins
@@ -390,6 +399,22 @@ class RuntimeSnapshotStore:
             for snapshot in self._snapshots.values()
         )
 
+    def workspace_mcp_is_referenced_elsewhere(
+        self,
+        generation: WorkspaceMcpGeneration,
+        *,
+        excluding_snapshot_id: str,
+    ) -> bool:
+        return any(
+            snapshot.snapshot_id != excluding_snapshot_id
+            and (
+                snapshot.state in {"published_pending", "committed"}
+                or snapshot.lease_count > 0
+            )
+            and snapshot.workspace_mcp_generation is generation
+            for snapshot in self._snapshots.values()
+        )
+
     def install(self, snapshot: RuntimeSnapshot) -> None:
         if self._current is not None or self._pending is not None:
             raise RuntimeError("RuntimeSnapshotStore 已安装初始快照")
@@ -525,6 +550,8 @@ class RuntimeSnapshotStore:
         snapshot.lease_count += 1
         for generation in snapshot.generations.values():
             generation.lease_count += 1
+        if snapshot.workspace_mcp_generation is not None:
+            snapshot.workspace_mcp_generation.lease_count += 1
         return RuntimeSnapshotLease(self, snapshot)
 
     def fork_lease(self, source: RuntimeSnapshotLease) -> RuntimeSnapshotLease:
@@ -534,6 +561,8 @@ class RuntimeSnapshotStore:
         snapshot.lease_count += 1
         for generation in snapshot.generations.values():
             generation.lease_count += 1
+        if snapshot.workspace_mcp_generation is not None:
+            snapshot.workspace_mcp_generation.lease_count += 1
         return RuntimeSnapshotLease(self, snapshot)
 
     async def release_lease(self, snapshot: RuntimeSnapshot) -> None:
@@ -542,6 +571,8 @@ class RuntimeSnapshotStore:
         snapshot.lease_count -= 1
         for generation in snapshot.generations.values():
             generation.lease_count -= 1
+        if snapshot.workspace_mcp_generation is not None:
+            snapshot.workspace_mcp_generation.lease_count -= 1
         await self._drain_if_ready(snapshot)
         async with self._condition:
             self._condition.notify_all()
