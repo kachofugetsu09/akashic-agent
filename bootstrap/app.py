@@ -184,7 +184,6 @@ class AppRuntime:
         self.scheduler = None
         self.provider = None
         self.light_provider = None
-        self.mcp_registry = None
         self.memory_runtime = None
         self.presence = None
         self.proactive_loop = None
@@ -199,6 +198,7 @@ class AppRuntime:
         self.plugin_service_host: PluginServiceHost | None = None
         self.plugin_watcher: PluginWatcher | None = None
         self.plugin_watcher_task: asyncio.Task[None] | None = None
+        self.workspace_mcp_watcher_task: asyncio.Task[None] | None = None
         self.tasks: list[Awaitable[None]] = []
         self._memory_optimizer = None
         self._shutdown = False
@@ -230,12 +230,14 @@ class AppRuntime:
             self.scheduler = self.core.scheduler
             self.provider = self.core.provider
             self.light_provider = self.core.light_provider
-            self.mcp_registry = self.core.mcp_registry
             self.memory_runtime = self.core.memory_runtime
             self.presence = self.core.presence
             self.peer_process_manager = self.core.peer_process_manager
             self.peer_poller = self.core.peer_poller
             await self.core.start()
+            self.workspace_mcp_watcher_task = (
+                self.core.workspace_mcp_watcher_task
+            )
 
             async def _execute_control_request(request: TurnRequest):
                 assert self.agent_loop is not None
@@ -466,6 +468,7 @@ class AppRuntime:
                     self.dashboard_task,
                     self.chat_task,
                     self.plugin_watcher_task,
+                    self.workspace_mcp_watcher_task,
                 )
                 if task is not None
             }
@@ -482,10 +485,16 @@ class AppRuntime:
                 elif self.chat_task is not None and self.chat_task in done:
                     watched_task = self.chat_task
                     self.chat_task = None
-                else:
-                    assert self.plugin_watcher_task is not None
+                elif (
+                    self.plugin_watcher_task is not None
+                    and self.plugin_watcher_task in done
+                ):
                     watched_task = self.plugin_watcher_task
                     self.plugin_watcher_task = None
+                else:
+                    assert self.workspace_mcp_watcher_task is not None
+                    watched_task = self.workspace_mcp_watcher_task
+                    self.workspace_mcp_watcher_task = None
                 await watched_task
         except (asyncio.CancelledError, Exception) as error:
             run_error = error

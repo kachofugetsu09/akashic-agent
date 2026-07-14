@@ -508,7 +508,7 @@ def test_build_registered_tools_respects_toolset_order_and_subset(monkeypatch, t
 
         def register(self, registry, deps):
             calls.append(self._name)
-            extras = {"mcp_registry": object()} if self._name == "mcp" else {}
+            extras = {}
             return SimpleNamespace(extras=extras)
 
     monkeypatch.setattr(
@@ -809,7 +809,7 @@ def test_build_registered_tools_without_mcp_toolset_still_returns_empty_registry
         system_prompt="s",
         wiring=WiringConfig(toolsets=["schedule"]),
     )
-    _, _, _, mcp_registry, _, _, _ = build_registered_tools(
+    _, _, _, memory_runtime, _, _ = build_registered_tools(
         config=config,
         workspace=tmp_path,
         http_resources=cast(Any, SimpleNamespace()),
@@ -822,5 +822,4 @@ def test_build_registered_tools_without_mcp_toolset_still_returns_empty_registry
         agent_loop_provider=lambda: None,
     )
 
-    assert mcp_registry is not None
-    assert mcp_registry.list_servers() == "当前没有已注册的 MCP server。"
+    assert memory_runtime is not None

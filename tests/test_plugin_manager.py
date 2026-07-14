@@ -1899,6 +1899,9 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
             startup_order.append("plugins")
             self.loaded_count = 1
 
+        def assert_no_workspace_mcp_plugin_conflicts(self) -> None:
+            return None
+
     class FakeLoop:
         def __init__(self) -> None:
             self.received_hooks: list[ToolHook] | None = None
@@ -1962,12 +1965,14 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
         def add_tool_hooks(self, hooks: list[ToolHook]) -> None:
             self.received_hooks = list(hooks)
 
-    class FakeMcpRegistry:
-        async def load_and_connect_all(self) -> None:
+    class FakeMcpWatcher:
+        async def reconcile(self) -> None:
             startup_order.append("mcp")
+        async def run(self) -> None:
             return None
-
-        async def shutdown(self) -> None:
+        def stop(self) -> None:
+            return None
+        async def wait_stopped(self) -> None:
             return None
 
     spawn_tool = FakeSpawnTool()
@@ -1991,7 +1996,8 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
         scheduler=SimpleNamespace(),  # type: ignore[arg-type]
         provider=SimpleNamespace(),  # type: ignore[arg-type]
         light_provider=None,
-        mcp_registry=FakeMcpRegistry(),  # type: ignore[arg-type]
+        workspace_mcp_watcher=FakeMcpWatcher(),  # type: ignore[arg-type]
+        workspace_mcp_watcher_task=None,
         memory_runtime=SimpleNamespace(),  # type: ignore[arg-type]
         presence=SimpleNamespace(),  # type: ignore[arg-type]
         peer_process_manager=None,
@@ -2041,7 +2047,8 @@ async def test_core_runtime_stop_closes_session_manager(tmp_path: Path):
         scheduler=SimpleNamespace(),  # type: ignore[arg-type]
         provider=SimpleNamespace(),  # type: ignore[arg-type]
         light_provider=None,
-        mcp_registry=SimpleNamespace(shutdown=_noop),  # type: ignore[arg-type]
+        workspace_mcp_watcher=SimpleNamespace(stop=lambda: None),  # type: ignore[arg-type]
+        workspace_mcp_watcher_task=None,
         memory_runtime=SimpleNamespace(),  # type: ignore[arg-type]
         presence=SimpleNamespace(),  # type: ignore[arg-type]
         peer_process_manager=None,
