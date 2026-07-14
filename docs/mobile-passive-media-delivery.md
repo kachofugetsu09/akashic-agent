@@ -122,13 +122,16 @@ better-ui：
 ### 3. 出栈媒体、meme 与历史
 
 - Commit：`71beaab0 feat(mobile): add websocket media downloads`。
+- 身份修复：`1ab49f0a fix(mobile): unify live and history message ids`。
+- 消息身份：用户消息以同一个 ULID 同时作为 command ID 与 `client_message_id`；assistant 的实时 final 直接携带 Session SQLite 回填的消息 ID，历史同步复用同一 ID，不再按文本、附件或“最后一条消息”反查。
+- 所有权：after-reasoning phase 持有本轮 user/assistant 的精确消息对象，批量持久化在原对象上回填 ID；插件追加媒体同时进入 assistant 历史与实时 descriptor。
 - 协议：`message.final/history.page` 使用统一 descriptor；客户端以 `attachment.download(offset)` 请求 128KiB binary chunk，服务端先发二进制再发 reply，同 command ID 可重放。
 - 持久化：本地媒体先复制为只读 canonical 文件，再以随机 opaque ID 注册；同会话内容身份在 SQLite 写事务内稳定复用，批次失败不留记录或孤儿文件。
 - 元数据：手机上传后再由 Agent 返回的文件，按 `session_id + local_path` 恢复原文件名和 MIME；descriptor 不含服务端路径。
 - 网络媒体：被动回复中的 HTTP(S) 资源逐跳校验 DNS 全部地址、固定公网 IP 连接并保留 TLS hostname，限制重定向和流式总字节，原子快照后再进入统一附件存储。
 - 性能：复制与 SHA-256 移到工作线程；每连接独立串行发送，弱网设备不应占用全局投递锁。
 - 保留：已进入 Session 历史、durable inbox 或完成下载 receipt 的出站附件不会按简单 TTL 删除。后续清理必须先引入显式引用表和 session/receipt 删除钩子，不能制造永久 descriptor 指向缺失文件。
-- 验证：`tests/mobile_realtime` 105 项通过；Pyright 0 error，8 个 warning 均来自 `infra/channels/base.py` 既有代码；schema 与 `git diff --check` 通过。真实认证 WSS 已验证 binary-before-reply、重复 command 重放、分页 resume、旧 epoch ACK 和慢连接隔离。
+- 验证：媒体协议提交时 `tests/mobile_realtime` 105 项通过；身份修复扩大覆盖 mobile、lifecycle、turn、control 和 AgentCore 后 189 项通过；Pyright 0 error，只有存量类型告警；schema 与 `git diff --check` 通过。真实认证 WSS 已验证 binary-before-reply、重复 command 重放、分页 resume、旧 epoch ACK 和慢连接隔离。
 
 ### 4. Material 3 预览与文件交互
 
