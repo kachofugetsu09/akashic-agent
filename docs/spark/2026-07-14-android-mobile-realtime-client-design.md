@@ -286,6 +286,7 @@ message.send
 turn.stop
 attachment.begin
 attachment.finish
+attachment.download
 device.update
 ping
 ```
@@ -453,6 +454,21 @@ M bytes   payload，最大 128KiB
 ```
 
 客户端按服务端 `attachment.begin.ok.next_offset` 串行续传；服务端按 1MiB 边界和完成点确认进度。服务端在 `attachment.finish` 时校验总大小和 SHA-256，再交给现有 `AttachmentStore`；摘要失败标记为 failed，同一声明再次 begin 时从 offset 0 重传。默认单附件上限 `50MiB`，由服务端配置收紧或放宽。
+
+Agent 出站媒体复用同一 binary frame，但由客户端按 128KiB 分片请求：
+
+```text
+message.final / message.proactive / history.page
+└── attachments[] descriptor（不含服务端路径）
+      │
+      ▼
+attachment.download({attachment_id, offset})
+      │
+      ├── binary chunk（必须先发送）
+      └── attachment.download.ok({offset, next_offset, complete})
+```
+
+客户端只有在二进制分片落盘并收到随后的 ok 后才推进持久化 offset。若二进制已到但 reply 丢失，重连使用新 command ID 从旧 offset 重取并覆盖同一位置；服务端对相同 command ID 也会重放同一分片。这样不会出现“先确认、后丢数据”的崩溃窗口。
 
 ## 12. 首次配对与缓存认证
 

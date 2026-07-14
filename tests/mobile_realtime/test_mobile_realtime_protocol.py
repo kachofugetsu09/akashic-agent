@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from infra.mobile_realtime.protocol import (
+    AttachmentDownloadCommand,
     AuthAcceptedControl,
     GenericControl,
     MessageSendCommand,
@@ -39,6 +40,29 @@ def test_message_send_rejects_mismatched_session() -> None:
     frame["session_id"] = "mobile:other"
 
     with pytest.raises(ValidationError, match="session_id 必须一致"):
+        parse_frame(json.dumps(frame))
+
+
+def test_attachment_download_validates_offset() -> None:
+    frame = {
+        "v": 1,
+        "kind": "command",
+        "type": "attachment.download",
+        "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "connection_epoch": 1,
+        "session_id": "mobile:test",
+        "payload": {
+            "attachment_id": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+            "offset": 131072,
+        },
+    }
+
+    parsed = parse_frame(json.dumps(frame))
+    assert isinstance(parsed, AttachmentDownloadCommand)
+    assert parsed.payload.offset == 131072
+
+    frame["payload"]["offset"] = -1
+    with pytest.raises(ValidationError):
         parse_frame(json.dumps(frame))
 
 

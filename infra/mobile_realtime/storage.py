@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import stat
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -791,6 +793,204 @@ class MobileRealtimeStorage:
             )
         return record
 
+    def create_or_read_outbound_attachment(
+        self,
+        record: AttachmentRecord,
+    ) -> tuple[AttachmentRecord, bool]:
+        """原子创建 outbound 附件，或返回相同内容身份的既有记录。"""
+
+        resolved = self.create_or_read_outbound_attachments((record,))[0]
+        return resolved, resolved.local_path == record.local_path
+
+    def create_or_read_outbound_attachments(
+        self,
+        records: tuple[AttachmentRecord, ...],
+        *,
+        message_id: str | None = None,
+    ) -> tuple[AttachmentRecord, ...]:
+        """在单个事务中创建附件，并可绑定稳定的历史消息槽位。"""
+
+        if not records:
+            raise ValueError("outbound 附件批次不能为空")
+        for record in records:
+            self._validate_outbound_candidate(record)
+
+        # 1. 按内容身份串行去重，任何异常都会回滚本批数据库写入
+        resolved_by_identity: dict[
+            tuple[str, str, str, str, int], AttachmentRecord
+        ] = {}
+        result: list[AttachmentRecord] = []
+        with self._lock, self._db:
+            _ = self._db.execute("BEGIN IMMEDIATE")
+            if message_id is not None:
+                bound = self._read_message_outbound_attachments(
+                    message_id=message_id,
+                    session_id=records[0].session_id,
+                )
+                if bound:
+                    if len(bound) != len(records):
+                        raise AttachmentStateError("历史消息附件槽位数量发生变化")
+                    for candidate in records:
+                        Path(candidate.local_path).unlink()
+                    return bound
+            for candidate in records:
+                identity = (
+                    candidate.session_id,
+                    candidate.filename,
+                    candidate.content_type,
+                    candidate.sha256,
+                    candidate.size_bytes,
+                )
+                resolved = resolved_by_identity.get(identity)
+                if resolved is None:
+                    resolved = self._read_outbound_for_candidate(candidate)
+                    if resolved is None:
+                        self._insert_outbound_attachment(candidate)
+                        resolved = candidate
+                    resolved_by_identity[identity] = resolved
+                if resolved.local_path != candidate.local_path:
+                    Path(candidate.local_path).unlink()
+                result.append(resolved)
+            if message_id is not None:
+                for ordinal, record in enumerate(result):
+                    _ = self._db.execute(
+                        """
+                        INSERT INTO mobile_message_attachments(
+                            message_id, ordinal, attachment_id
+                        ) VALUES(?, ?, ?)
+                        """,
+                        (_require_text(message_id, "message_id"), ordinal, record.attachment_id),
+                    )
+        return tuple(result)
+
+    def read_message_outbound_attachments(
+        self,
+        *,
+        message_id: str,
+        session_id: str,
+    ) -> tuple[AttachmentRecord, ...]:
+        """按消息槽位顺序读取已物化的 outbound 附件。"""
+
+        with self._lock:
+            return self._read_message_outbound_attachments(
+                message_id=message_id,
+                session_id=session_id,
+            )
+
+    def _read_message_outbound_attachments(
+        self,
+        *,
+        message_id: str,
+        session_id: str,
+    ) -> tuple[AttachmentRecord, ...]:
+        rows = self._db.execute(
+            """
+            SELECT attachment.*
+            FROM mobile_message_attachments AS binding
+            INNER JOIN mobile_attachments AS attachment
+                ON attachment.attachment_id = binding.attachment_id
+            WHERE binding.message_id = ? AND attachment.session_id = ?
+            ORDER BY binding.ordinal ASC
+            """,
+            (
+                _require_text(message_id, "message_id"),
+                _require_text(session_id, "session_id"),
+            ),
+        ).fetchall()
+        records = tuple(_attachment_from_row(row) for row in rows)
+        for record in records:
+            if record.direction != "outbound" or record.state != "ready":
+                raise AttachmentStateError("历史消息绑定了不可下载的附件")
+            self._require_outbound_canonical(record)
+        return records
+
+    def _validate_outbound_candidate(self, record: AttachmentRecord) -> None:
+        if (
+            record.direction != "outbound"
+            or record.device_id is not None
+            or record.state != "ready"
+            or record.transferred_bytes != record.size_bytes
+        ):
+            raise ValueError("outbound 附件必须以无设备归属的 ready 完整记录创建")
+        self._require_outbound_canonical(record)
+
+    def _read_outbound_for_candidate(
+        self,
+        candidate: AttachmentRecord,
+    ) -> AttachmentRecord | None:
+        """在当前事务中读取并校验候选内容身份。"""
+
+        row = self._db.execute(
+            """
+            SELECT * FROM mobile_attachments
+            WHERE session_id = ? AND filename = ? AND content_type = ? AND sha256 = ?
+              AND size_bytes = ? AND direction = 'outbound' AND state = 'ready'
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            (
+                _require_text(candidate.session_id, "session_id"),
+                _require_text(candidate.filename, "filename"),
+                _require_text(candidate.content_type, "content_type"),
+                _require_text(candidate.sha256, "sha256"),
+                candidate.size_bytes,
+            ),
+        ).fetchone()
+        if row is None:
+            return None
+        existing = _attachment_from_row(row)
+        if (
+            existing.direction != "outbound"
+            or existing.device_id is not None
+            or existing.state != "ready"
+            or existing.transferred_bytes != existing.size_bytes
+        ):
+            raise AttachmentStateError("outbound 内容身份命中了非法记录")
+        self._require_outbound_canonical(existing)
+        return existing
+
+    def _require_outbound_canonical(self, record: AttachmentRecord) -> None:
+        """以拒绝符号链接的同一文件描述符验证 canonical 文件。"""
+
+        flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
+        descriptor = os.open(record.local_path, flags)
+        try:
+            file_stat = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(file_stat.st_mode)
+                or file_stat.st_size != record.size_bytes
+            ):
+                raise AttachmentStateError(
+                    "既有 outbound canonical 文件不符合元数据"
+                )
+        finally:
+            os.close(descriptor)
+
+    def _insert_outbound_attachment(self, record: AttachmentRecord) -> None:
+        """在当前事务中插入完整 outbound 元数据。"""
+
+        _ = self._db.execute(
+            """
+            INSERT INTO mobile_attachments(
+                attachment_id, device_id, session_id, direction,
+                filename, content_type, size_bytes, sha256, local_path,
+                transferred_bytes, state, created_at, updated_at
+            ) VALUES(?, NULL, ?, 'outbound', ?, ?, ?, ?, ?, ?, 'ready', ?, ?)
+            """,
+            (
+                record.attachment_id,
+                _require_text(record.session_id, "session_id"),
+                _require_text(record.filename, "filename"),
+                _require_text(record.content_type, "content_type"),
+                record.size_bytes,
+                _require_text(record.sha256, "sha256"),
+                _require_text(record.local_path, "local_path"),
+                record.transferred_bytes,
+                _serialize_datetime(record.created_at, "created_at"),
+                _serialize_datetime(record.updated_at, "updated_at"),
+            ),
+        )
+
     def read_attachment(self, attachment_id: str) -> AttachmentRecord | None:
         with self._lock:
             row = self._db.execute(
@@ -798,6 +998,49 @@ class MobileRealtimeStorage:
                 (_require_text(attachment_id, "attachment_id"),),
             ).fetchone()
         return _attachment_from_row(row) if row is not None else None
+
+    def read_ready_upload_by_local_path(
+        self,
+        *,
+        session_id: str,
+        local_path: str,
+    ) -> AttachmentRecord | None:
+        """按会话和内部路径查找已就绪的原始上传元数据。"""
+
+        with self._lock:
+            row = self._db.execute(
+                """
+                SELECT * FROM mobile_attachments
+                WHERE session_id = ? AND local_path = ?
+                  AND direction = 'upload' AND state = 'ready'
+                """,
+                (
+                    _require_text(session_id, "session_id"),
+                    _require_text(local_path, "local_path"),
+                ),
+            ).fetchone()
+        return _attachment_from_row(row) if row is not None else None
+
+    def require_ready_outbound(
+        self,
+        *,
+        session_id: str,
+        attachment_id: str,
+    ) -> AttachmentRecord:
+        """返回属于指定会话且已就绪的 outbound 附件。"""
+
+        record = self.read_attachment(attachment_id)
+        if record is None:
+            raise AttachmentStateError(f"附件不存在: {attachment_id}")
+        if (
+            record.direction != "outbound"
+            or record.session_id != session_id
+            or record.state != "ready"
+        ):
+            raise AttachmentStateError(
+                f"附件未就绪或不属于当前下载会话: {attachment_id}"
+            )
+        return record
 
     def require_upload_attachment(
         self,
@@ -1221,7 +1464,7 @@ class MobileRealtimeStorage:
                     ON DELETE CASCADE
             );
 
-            -- 5. 会话由首次发消息的设备独占，禁止跨设备猜测访问
+            -- 5. 记录首次创建关系；认证设备共享 mobile 会话读取权限
             CREATE TABLE IF NOT EXISTS mobile_device_sessions (
                 device_id TEXT NOT NULL,
                 session_id TEXT NOT NULL UNIQUE,
@@ -1253,6 +1496,21 @@ class MobileRealtimeStorage:
 
             CREATE INDEX IF NOT EXISTS idx_mobile_attachments_session
             ON mobile_attachments(session_id, created_at);
+
+            DROP INDEX IF EXISTS idx_mobile_attachments_outbound_identity;
+            CREATE INDEX idx_mobile_attachments_outbound_identity
+            ON mobile_attachments(
+                session_id, direction, state, filename, content_type, sha256, size_bytes
+            );
+
+            CREATE TABLE IF NOT EXISTS mobile_message_attachments (
+                message_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+                attachment_id TEXT NOT NULL,
+                PRIMARY KEY(message_id, ordinal),
+                FOREIGN KEY(attachment_id) REFERENCES mobile_attachments(attachment_id)
+                    ON DELETE CASCADE
+            );
             """
         )
         self._db.commit()

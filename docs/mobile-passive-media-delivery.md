@@ -41,11 +41,11 @@ Agent / meme 插件输出媒体
 | 弱网续传 | 无 | 按确认 offset 恢复 | 服务端完成 |
 | 图文和纯附件消息 | 服务端拒绝 media_refs | 两者均支持 | 服务端完成 |
 | Agent 图片理解 | Web 可进入 VL 链路 | Android 上传图片等价接入 | 服务端完成 |
-| 助手图片、文件、meme | 服务端发送路径，Android 丢弃 | descriptor、下载、缓存、展示 | 待实现 |
-| 历史媒体同步 | 历史 DTO 裁掉 media | 全 mobile 会话恢复媒体 | 待实现 |
+| 助手图片、文件、meme | 服务端发送路径，Android 丢弃 | descriptor、下载、缓存、展示 | 服务端完成 |
+| 历史媒体同步 | 历史 DTO 裁掉 media | 全 mobile 会话恢复媒体 | 服务端完成 |
 | 图片预览 | 无 | Material 3 全屏预览、缩放、GIF | 待实现 |
 | 普通文件操作 | 无 | 类型、大小、进度、系统打开与分享 | 待实现 |
-| Telegram 被动媒体等价 | Telegram 支持图片入站和图片出站 | Android 覆盖同类能力 | 待实现 |
+| Telegram 被动媒体等价 | Telegram 支持本地路径与 HTTP(S) 图片出站 | Android 覆盖同类能力 | 服务端完成 |
 
 ## 设计约束
 
@@ -75,7 +75,7 @@ Agent / meme 插件输出媒体
 
 ### 1. 服务端附件协议与存储
 
-- Commit：`feat(mobile): add resumable websocket uploads`（本组提交）。
+- Commit：`028ed711 feat(mobile): add resumable websocket uploads`。
 - 协议：JSON `attachment.begin/finish` 加 WebSocket binary chunk；单片 128KiB，按绝对 byte offset 串行续传。
 - 一致性：同附件条带锁串行化 begin/chunk/finish；文件 fsync 后提交 SQLite offset；文件短于 offset 或摘要失败时进入 failed，并在相同声明再次 begin 时从 0 恢复。
 - 边界：纯文件名、MIME、大小、SHA-256、设备/会话归属、重复 media ref、单消息最多 10 个附件及总字节上限。
@@ -122,7 +122,13 @@ better-ui：
 ### 3. 出栈媒体、meme 与历史
 
 - Commit：待完成。
-- E2E：待完成。
+- 协议：`message.final/history.page` 使用统一 descriptor；客户端以 `attachment.download(offset)` 请求 128KiB binary chunk，服务端先发二进制再发 reply，同 command ID 可重放。
+- 持久化：本地媒体先复制为只读 canonical 文件，再以随机 opaque ID 注册；同会话内容身份在 SQLite 写事务内稳定复用，批次失败不留记录或孤儿文件。
+- 元数据：手机上传后再由 Agent 返回的文件，按 `session_id + local_path` 恢复原文件名和 MIME；descriptor 不含服务端路径。
+- 网络媒体：被动回复中的 HTTP(S) 资源逐跳校验 DNS 全部地址、固定公网 IP 连接并保留 TLS hostname，限制重定向和流式总字节，原子快照后再进入统一附件存储。
+- 性能：复制与 SHA-256 移到工作线程；每连接独立串行发送，弱网设备不应占用全局投递锁。
+- 保留：已进入 Session 历史、durable inbox 或完成下载 receipt 的出站附件不会按简单 TTL 删除。后续清理必须先引入显式引用表和 session/receipt 删除钩子，不能制造永久 descriptor 指向缺失文件。
+- 验证：`tests/mobile_realtime` 105 项通过；Pyright 0 error，8 个 warning 均来自 `infra/channels/base.py` 既有代码；schema 与 `git diff --check` 通过。真实认证 WSS 已验证 binary-before-reply、重复 command 重放、分页 resume、旧 epoch ACK 和慢连接隔离。
 
 ### 4. Material 3 预览与文件交互
 

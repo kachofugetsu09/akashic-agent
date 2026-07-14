@@ -28,6 +28,7 @@ COMMAND_TYPES = frozenset(
         "turn.stop",
         "attachment.begin",
         "attachment.finish",
+        "attachment.download",
         "device.update",
         "ping",
     }
@@ -132,6 +133,11 @@ class AttachmentFinishPayload(ProtocolModel):
     attachment_id: FrameId
 
 
+class AttachmentDownloadPayload(ProtocolModel):
+    attachment_id: FrameId
+    offset: int = Field(ge=0)
+
+
 class TurnSnapshotPayload(ProtocolModel):
     turn_id: NonEmptyId
     status: Literal["queued", "running", "completed", "interrupted", "failed"]
@@ -228,6 +234,17 @@ class AttachmentFinishCommand(ProtocolModel):
     payload: AttachmentFinishPayload
 
 
+class AttachmentDownloadCommand(ProtocolModel):
+    v: Literal[1]
+    kind: Literal["command"]
+    type: Literal["attachment.download"]
+    id: FrameId
+    connection_epoch: ConnectionEpoch
+    session_id: NonEmptyId
+    turn_id: None = None
+    payload: AttachmentDownloadPayload
+
+
 class GenericCommand(CommandEnvelope):
     type: Literal[
         "session.list",
@@ -244,6 +261,7 @@ ClientCommand: TypeAlias = (
     MessageSendCommand
     | AttachmentBeginCommand
     | AttachmentFinishCommand
+    | AttachmentDownloadCommand
     | GenericCommand
 )
 CommandFrame: TypeAlias = Annotated[

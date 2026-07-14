@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -26,15 +27,24 @@ from infra.mobile_realtime.attachments import (
 )
 from infra.mobile_realtime.protocol import (
     AttachmentBeginCommand,
+    AttachmentDownloadCommand,
     AttachmentFinishCommand,
     ClientCommand,
     GenericCommand,
     MessageSendCommand,
 )
+from infra.mobile_realtime.remote_media import (
+    RemoteMediaError,
+    RemoteMediaSnapshot,
+    snapshot_remote_media,
+)
 from infra.mobile_realtime.storage import AttachmentStateError, CommandReceipt
 
 if TYPE_CHECKING:
     from infra.mobile_realtime.gateway import MobileGatewayRuntime
+
+
+logger = logging.getLogger(__name__)
 
 
 class MobileCommandError(ValueError):
@@ -49,6 +59,7 @@ class CommandReply:
     payload: dict[str, object]
     session_id: str | None = None
     turn_id: str | None = None
+    binary: AttachmentChunk | None = None
 
 
 @dataclass(slots=True)
@@ -141,7 +152,13 @@ class MobileRealtimeChannel:
             created_at=_utc_now(),
         )
         if not created:
-            return _reply_from_receipt(receipt)
+            replay = _reply_from_receipt(receipt)
+            if (
+                isinstance(frame, AttachmentDownloadCommand)
+                and replay.type == "attachment.download.ok"
+            ):
+                return self._download_attachment(frame, replay)
+            return replay
 
         # 2. 只把可恢复的客户端错误写成稳定 error reply
         try:
@@ -169,7 +186,14 @@ class MobileRealtimeChannel:
             turn_id=reply.turn_id,
             completed_at=_utc_now(),
         )
-        return _reply_from_receipt(completed)
+        stored = _reply_from_receipt(completed)
+        return CommandReply(
+            type=stored.type,
+            payload=stored.payload,
+            session_id=stored.session_id,
+            turn_id=stored.turn_id,
+            binary=reply.binary,
+        )
 
     async def send(self, chat_id: str, message: str) -> None:
         self._raise_delta_failure()
@@ -179,7 +203,7 @@ class MobileRealtimeChannel:
             session_id=session_id,
             payload={
                 "content": message,
-                "media": [],
+                "attachments": [],
                 "metadata": {"source": "message_push"},
             },
         )
@@ -212,6 +236,8 @@ class MobileRealtimeChannel:
             return await self._begin_attachment(device_id, frame)
         if frame.type == "attachment.finish":
             return await self._finish_attachment(device_id, frame)
+        if frame.type == "attachment.download":
+            return self._download_attachment(frame)
         raise MobileCommandError("unsupported_command", f"尚不支持命令: {frame.type}")
 
     async def handle_attachment_chunk(
@@ -299,6 +325,42 @@ class MobileRealtimeChannel:
             payload={**attachment_descriptor(record), "state": "ready"},
         )
 
+    def _download_attachment(
+        self,
+        frame: AttachmentDownloadCommand,
+        stored: CommandReply | None = None,
+    ) -> CommandReply:
+        """读取一个出站附件分片，并让二进制帧先于确认回复发送。"""
+
+        session_id = self._normalize_session_id(frame.session_id)
+        try:
+            outbound = self._require_attachments().read_outbound_chunk(
+                session_id=session_id,
+                attachment_id=frame.payload.attachment_id,
+                offset=frame.payload.offset,
+            )
+        except (AttachmentRequestError, AttachmentStateError) as error:
+            raise MobileCommandError("attachment_download_rejected", str(error)) from error
+        next_offset = outbound.offset + len(outbound.data)
+        payload: dict[str, object] = {
+            **outbound.descriptor,
+            "offset": outbound.offset,
+            "next_offset": next_offset,
+            "complete": outbound.eof,
+        }
+        if stored is not None and stored.payload != payload:
+            raise RuntimeError("已完成的附件下载回复与当前文件状态不一致")
+        return CommandReply(
+            type="attachment.download.ok",
+            session_id=session_id,
+            payload=payload,
+            binary=AttachmentChunk(
+                attachment_id=frame.payload.attachment_id,
+                offset=outbound.offset,
+                data=outbound.data,
+            ),
+        )
+
     async def _list_sessions(
         self,
         device_id: str,
@@ -382,7 +444,7 @@ class MobileRealtimeChannel:
             sort_by="seq",
             sort_order="asc",
         )
-        mobile_items = [_mobile_history_item(item) for item in items]
+        mobile_items = [await self._mobile_history_item(item) for item in items]
         page_payload: dict[str, object] = {
             "items": cast(list[object], mobile_items),
             "total": total,
@@ -580,6 +642,35 @@ class MobileRealtimeChannel:
         session_id = self._session_id(message.chat_id)
         turn_id = message.control_turn_id or self._current_turn_id(session_id)
         await self._flush_deltas(session_id, turn_id)
+        message_id = (
+            self._outbound_message_id(session_id, message)
+            if message.media
+            else None
+        )
+        metadata = dict(message.metadata)
+        try:
+            attachments = await self._outbound_descriptors(
+                session_id,
+                list(message.media),
+                message_id=message_id,
+            )
+        except (
+            AttachmentRequestError,
+            AttachmentStateError,
+            RemoteMediaError,
+            OSError,
+        ) as error:
+            logger.warning(
+                "mobile 远程媒体快照失败，保留最终文字: session=%s error=%s",
+                session_id,
+                error,
+            )
+            attachments = []
+            metadata["media_delivery"] = {
+                "status": "failed",
+                "code": "media_unavailable",
+                "message": "附件源暂时不可用",
+            }
         await self._runtime.publish_event(
             event_type="message.final",
             session_id=session_id,
@@ -587,12 +678,130 @@ class MobileRealtimeChannel:
             payload={
                 "content": message.content,
                 "thinking": message.thinking or "",
-                "media": list(message.media),
-                "metadata": dict(message.metadata),
+                "attachments": attachments,
+                "metadata": metadata,
             },
         )
         _ = self._active_turn_ids.pop(session_id, None)
         _ = self._process_turns.pop((session_id, turn_id), None)
+
+    async def _mobile_history_item(
+        self,
+        item: Mapping[str, object],
+    ) -> dict[str, object]:
+        """裁剪内部字段，并把服务端媒体路径转换为稳定描述符。"""
+
+        result = _mobile_history_item(item)
+        media = item.get("media")
+        if media is None:
+            result["attachments"] = []
+            return result
+        if not isinstance(media, list) or not all(
+            isinstance(path, str) for path in cast(list[object], media)
+        ):
+            raise ValueError(f"历史消息 media 不是字符串数组: {item['id']}")
+        try:
+            result["attachments"] = await self._outbound_descriptors(
+                str(item["session_key"]),
+                cast(list[str], media),
+                message_id=str(item["id"]),
+            )
+        except (
+            AttachmentRequestError,
+            AttachmentStateError,
+            RemoteMediaError,
+            OSError,
+        ) as error:
+            logger.warning(
+                "mobile 历史媒体恢复失败，保留文字历史: message=%s error=%s",
+                item["id"],
+                error,
+            )
+            result["attachments"] = []
+            result["attachment_error"] = {
+                "code": "media_unavailable",
+                "message": "附件源暂时不可用",
+            }
+        return result
+
+    async def _outbound_descriptors(
+        self,
+        session_id: str,
+        media_paths: list[str],
+        *,
+        message_id: str | None = None,
+    ) -> list[dict[str, object]]:
+        """把本地媒体物化为不暴露路径的稳定附件描述符。"""
+
+        if len(media_paths) > 10:
+            raise ValueError("单条消息最多包含 10 个出站附件")
+        if not media_paths:
+            return []
+        if message_id is not None:
+            bound = await asyncio.to_thread(
+                self._require_attachments().read_message_outbound,
+                session_id=session_id,
+                message_id=message_id,
+            )
+            if bound:
+                if len(bound) != len(media_paths):
+                    raise RuntimeError("历史消息附件槽位数量与 Session 不一致")
+                return [attachment_descriptor(record) for record in bound]
+        # 1. URL 先经过 SSRF 防护下载为受限持久快照
+        snapshots: list[RemoteMediaSnapshot] = []
+        paths: list[str] = []
+        metadata: list[tuple[str, str] | None] = []
+        try:
+            for media_path in media_paths:
+                if media_path.startswith(("http://", "https://")):
+                    snapshot = await snapshot_remote_media(
+                        media_path,
+                        self._require_ctx().attachment_store,
+                        max_bytes=(
+                            self._runtime.config.max_attachment_mb * 1024 * 1024
+                        ),
+                    )
+                    snapshots.append(snapshot)
+                    paths.append(str(snapshot.path))
+                    metadata.append((snapshot.filename, snapshot.content_type))
+                else:
+                    paths.append(media_path)
+                    metadata.append(None)
+
+            # 2. 文件复制和摘要移出事件循环，整批在单事务中注册
+            records = await asyncio.to_thread(
+                self._require_attachments().register_outbound_batch,
+                session_id=session_id,
+                local_media_paths=tuple(paths),
+                metadata_overrides=tuple(metadata),
+                message_id=message_id,
+            )
+            return [attachment_descriptor(record) for record in records]
+        finally:
+            for snapshot in snapshots:
+                snapshot.path.unlink(missing_ok=True)
+
+    def _outbound_message_id(
+        self,
+        session_id: str,
+        message: OutboundMessage,
+    ) -> str:
+        """定位已先行持久化的本轮 assistant 消息。"""
+
+        session = self._require_ctx().session_manager.get_or_create(session_id)
+        if not session.messages:
+            raise RuntimeError("出站媒体缺少已持久化的 assistant 消息")
+        persisted = session.messages[-1]
+        if (
+            persisted.get("role") != "assistant"
+            or persisted.get("content") != message.content
+            or persisted.get("media") != list(message.media)
+        ):
+            raise RuntimeError("出站媒体与最新 assistant 消息不一致")
+        message_id = persisted.get("id")
+        if not isinstance(message_id, str) or not message_id:
+            raise RuntimeError("出站媒体的 assistant 消息尚未获得稳定 ID")
+        return message_id
 
     async def _buffer_delta(
         self,
