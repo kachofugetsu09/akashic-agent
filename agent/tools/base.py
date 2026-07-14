@@ -133,6 +133,10 @@ class Tool(ABC):
                     errors.extend(
                         self._validate(v, props[k], f"{path}.{k}" if path else k)
                     )
+                elif schema.get("additionalProperties") is False:
+                    errors.append(
+                        f"不允许额外字段：{path + '.' + k if path else k}"
+                    )
 
         if t == "array" and "items" in schema:
             array_value = cast(list[Any], val)

@@ -29,6 +29,7 @@ from agent.tool_runtime import (
     tool_call_batch_snapshot,
 )
 from agent.tools.base import normalize_tool_result
+from agent.tools.registry import begin_turn_search_scope, end_turn_search_scope
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
@@ -892,6 +893,7 @@ class DefaultReasoner(Reasoner):
         context: "ContextBuilder | None" = None,
         session_manager: "SessionManager | None" = None,
         event_bus: "EventBus | None" = None,
+        non_preloadable_names: Callable[[], set[str]] | None = None,
     ) -> None:
         self._llm = llm
         self._llm_config = llm_config
@@ -902,6 +904,7 @@ class DefaultReasoner(Reasoner):
         self._context = context
         self._session_manager = session_manager
         self._event_bus = event_bus
+        self._non_preloadable_names = non_preloadable_names or set
         self._prompt_render_plugin_modules: list[object] = []
         self._before_step_plugin_modules: list[object] = []
         self._after_step_plugin_modules: list[object] = []
@@ -1156,18 +1159,26 @@ class DefaultReasoner(Reasoner):
                 initial_messages
             )
             try:
-                result = await self.run(
-                    initial_messages,
-                    request_time=msg.timestamp,
-                    preloaded_tools=preloaded,
-                    preloaded_tool_order=preloaded_order,
-                    preflight_injected=True,
-                    on_content_delta=stream_sink,
-                    tool_event_session_key=session.key,
-                    tool_event_channel=msg.channel,
-                    tool_event_chat_id=msg.chat_id,
-                    disabled_tools=disabled_tools,
+                search_scope = begin_turn_search_scope(
+                    turn_id=current_turn_id.get(),
+                    session_key=session.key,
+                    attempt=attempt,
                 )
+                try:
+                    result = await self.run(
+                        initial_messages,
+                        request_time=msg.timestamp,
+                        preloaded_tools=preloaded,
+                        preloaded_tool_order=preloaded_order,
+                        preflight_injected=True,
+                        on_content_delta=stream_sink,
+                        tool_event_session_key=session.key,
+                        tool_event_channel=msg.channel,
+                        tool_event_chat_id=msg.chat_id,
+                        disabled_tools=disabled_tools,
+                    )
+                finally:
+                    end_turn_search_scope(search_scope)
                 tools_used = list(result.metadata.get("tools_used") or [])
                 tools_unlocked = list(result.metadata.get("tools_unlocked") or [])
                 tool_chain = list(result.metadata.get("tool_chain") or [])
@@ -1193,6 +1204,7 @@ class DefaultReasoner(Reasoner):
                         session.key,
                         [*tools_unlocked, *tools_used],
                         self._tools.get_always_on_names(),
+                        self._non_preloadable_names(),
                     )
                 if attempt == 0:
                     retry_trace["selected_plan"] = plan["name"]

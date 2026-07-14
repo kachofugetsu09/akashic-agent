@@ -94,7 +94,7 @@ case "$cmd" in
             echo "缺少 $CONFIG，请先运行 setup。" >&2
             exit 2
         fi
-        exec_as_host python main.py gateway \
+        exec_as_host python main.py supervise \
             --config "$CONFIG" \
             --workspace "$WORKSPACE" \
             "$@"

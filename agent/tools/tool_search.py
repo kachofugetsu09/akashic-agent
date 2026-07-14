@@ -122,6 +122,7 @@ class ToolSearchTool(Tool):
             for item in results
             if isinstance(item.get("name"), str) and item["name"]
         ]
+        self._registry.grant_current_turn_search(unlocked)
         return json.dumps(
             {
                 "matched": results,
@@ -190,6 +191,7 @@ class ToolSearchTool(Tool):
                     found.append(name)
 
         matched = self._registry.get_schemas_as_doc_results(found)
+        self._registry.grant_current_turn_search(found)
         result: dict[str, Any] = {
             "matched": matched,
             "unlocked": found,

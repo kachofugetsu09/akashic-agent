@@ -304,6 +304,7 @@ class AgentLoop:
             context=self._context,
             session_manager=self.session_manager,
             event_bus=self._event_bus,
+            non_preloadable_names=deps.tools.get_non_preloadable_names,
         )
 
         # 3. 最后串 passive prepare / execute / commit 主链。

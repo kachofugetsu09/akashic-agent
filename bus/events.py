@@ -57,6 +57,7 @@ class OutboundMessage:
     reply_to: str | None = None
     media: list[str] = field(default_factory=_empty_media)
     metadata: dict[str, Any] = field(default_factory=_empty_metadata)
+    control_turn_id: str | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass

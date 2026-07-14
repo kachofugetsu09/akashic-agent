@@ -138,6 +138,19 @@ docker compose -f docker/debug/docker-compose.yml up akashic-debug
 
 此时向调试 Telegram bot 发消息或图片，所有会话和记忆都会进入 `docker/debug/profiles/default/workspace`。
 
+调试容器现在通过固定 supervisor 启动 gateway。supervisor 只会在当前 boot 已 ready、
+`agent_restart` 的最终回复已经实际送达、child 向继承私有管道提交一次匹配证据，且 child
+以 75 退出时拉起下一代进程。普通退出、崩溃、伪造 75、断线和送达超时都不会触发重启。
+
+本机若仍由忽略版本控制的 `start.sh` 启动，应把最终执行命令迁移为：
+
+```bash
+python main.py supervise --config /absolute/config.toml --workspace /absolute/workspace
+```
+
+不要在外层脚本再做 `while`、`pgrep` 或“任意非零退出就重启”；进程唯一性、信号转发、
+readiness 和重启授权均由 supervisor 持有。
+
 ## 多套调试配置
 
 不同功能可以用不同 profile 保存配置和 workspace：

@@ -97,11 +97,17 @@ class ToolDiscoveryState:
 
         return set(self.unlock_names_from_result(result_json))
 
-    def update(self, session_key: str, tools_used: list[str], always_on: set[str]) -> None:
+    def update(
+        self,
+        session_key: str,
+        tools_used: list[str],
+        always_on: set[str],
+        non_preloadable: set[str] | None = None,
+    ) -> None:
         """更新单个 session 的工具 LRU，并跳过常驻工具。"""
 
         # 1. 过滤不应缓存的工具，避免创建空 session 项。
-        skip = always_on | {"tool_search"}
+        skip = always_on | {"tool_search"} | (non_preloadable or set())
         cacheable = [name for name in tools_used if name not in skip]
         if not cacheable:
             self._touch_session(session_key)

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Callable, cast
 
 if TYPE_CHECKING:
     from agent.plugins.manager import PluginManager
+    from agent.restart import RestartCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -323,6 +324,7 @@ def build_registered_tools(
     tools: ToolRegistry | None = None,
     event_publisher=None,
     agent_loop_provider: Callable[[], Any] | None = None,
+    restart_coordinator: "RestartCoordinator | None" = None,
 ) -> tuple[
     ToolRegistry,
     MessagePushTool,
@@ -393,6 +395,23 @@ def build_registered_tools(
                 scheduler=scheduler,
                 event_publisher=event_publisher,
             ),
+        )
+
+    # 3. 自重启只在 supervisor 与 tool_search 两个边界都成立时注册。
+    if (
+        restart_coordinator is not None
+        and restart_coordinator.supervised
+        and config.tool_search_enabled
+    ):
+        from agent.tools.agent_restart import AgentRestartTool
+
+        tools.register(
+            AgentRestartTool(restart_coordinator),
+            risk="external-side-effect",
+            always_on=False,
+            preloadable=False,
+            requires_turn_search=True,
+            search_hint="重启 akashic agent 服务 重新加载核心配置",
         )
 
     return (
@@ -488,6 +507,7 @@ def build_core_runtime(
     config: Config,
     workspace: Path,
     http_resources: SharedHttpResources,
+    restart_coordinator: "RestartCoordinator | None" = None,
 ) -> CoreRuntime:
     """构造核心运行时及其插件快照依赖。"""
 
@@ -513,6 +533,7 @@ def build_core_runtime(
             session_store=session_manager._store,
             event_publisher=event_bus,
             agent_loop_provider=lambda: loop_ref.get("loop"),
+            restart_coordinator=restart_coordinator,
         )
     )
     presence = PresenceStore(session_manager._store)
