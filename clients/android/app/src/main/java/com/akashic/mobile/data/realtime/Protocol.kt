@@ -3,8 +3,10 @@ package com.akashic.mobile.data.realtime
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.decodeFromJsonElement
 
 const val WIRE_PROTOCOL_VERSION = 1
 const val MAX_JSON_FRAME_BYTES = 256 * 1024
@@ -79,11 +81,33 @@ data class ResumePayload(
     val activeTurns: List<String>,
 )
 
+@Serializable
+data class PairPendingPayload(
+    @SerialName("pairing_id") val pairingId: String,
+    @SerialName("confirmation_code") val confirmationCode: String,
+    @SerialName("device_name") val deviceName: String,
+)
+
+@Serializable
+data class PairAcceptedPayload(
+    @SerialName("pairing_id") val pairingId: String,
+    @SerialName("device_id") val deviceId: String,
+)
+
+@Serializable
+data class ProtocolErrorPayload(
+    val code: Int,
+    val message: String,
+)
+
 object ProtocolCodec {
-    private val json = Json {
+    @PublishedApi
+    internal val json = Json {
         encodeDefaults = true
         explicitNulls = false
-        ignoreUnknownKeys = true
+        ignoreUnknownKeys = false
+        isLenient = false
+        coerceInputValues = false
     }
 
     private val knownTypes = mapOf(
@@ -120,6 +144,16 @@ object ProtocolCodec {
             "device.revoked",
         ),
         WireKind.ACK to setOf("event.ack"),
+        WireKind.CONTROL to setOf(
+            "server.challenge",
+            "device.proof",
+            "auth.accepted",
+            "resume",
+            "pair.claim",
+            "pair.pending",
+            "pair.accepted",
+            "protocol.error",
+        ),
     )
 
     /** 在 JSON 信任边界解析并校验 wire envelope。 */
@@ -148,6 +182,8 @@ object ProtocolCodec {
 
     fun json(): Json = json
 
+    inline fun <reified T> decodePayload(payload: JsonObject): T = json.decodeFromJsonElement(payload)
+
     private fun validateEnvelope(envelope: WireEnvelope) {
         require(envelope.type.isNotBlank()) { "Envelope type is required" }
         knownTypes[envelope.kind]?.let { types ->
@@ -168,6 +204,26 @@ object ProtocolCodec {
             require(envelope.eventSeq != null && envelope.eventSeq > 0) { "Event sequence must be positive" }
         } else {
             require(envelope.eventSeq == null) { "event_seq is only valid on event frames" }
+        }
+        when (envelope.kind) {
+            WireKind.COMMAND,
+            WireKind.REPLY,
+            WireKind.EVENT,
+            WireKind.ACK,
+            -> require(envelope.connectionEpoch != null && envelope.connectionEpoch > 0) {
+                "Authenticated frames require a positive connection_epoch"
+            }
+            WireKind.CONTROL -> when (envelope.type) {
+                "auth.accepted", "resume" -> require(
+                    envelope.connectionEpoch != null && envelope.connectionEpoch > 0,
+                ) { "Authenticated controls require a positive connection_epoch" }
+                else -> require(envelope.connectionEpoch == null) {
+                    "Pre-auth controls must not carry connection_epoch"
+                }
+            }
+        }
+        if (envelope.kind == WireKind.ACK || envelope.kind == WireKind.CONTROL) {
+            require(envelope.id == null) { "${envelope.kind} id is not used by protocol v1" }
         }
     }
 }

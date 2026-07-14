@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
@@ -14,6 +15,9 @@ interface ServerProfileDao {
 
     @Query("SELECT * FROM server_profiles WHERE serverId = :serverId")
     suspend fun get(serverId: String): ServerProfileEntity?
+
+    @Query("SELECT * FROM server_profiles ORDER BY createdAt LIMIT 1")
+    suspend fun first(): ServerProfileEntity?
 
     @Query("SELECT * FROM server_profiles ORDER BY createdAt")
     fun observeAll(): Flow<List<ServerProfileEntity>>
@@ -29,6 +33,9 @@ interface ConversationDao {
 
     @Query("SELECT * FROM conversations WHERE serverId = :serverId ORDER BY updatedAt DESC")
     fun observeForServer(serverId: String): Flow<List<ConversationEntity>>
+
+    @Query("SELECT * FROM conversations WHERE sessionId = :sessionId")
+    suspend fun get(sessionId: String): ConversationEntity?
 }
 
 @Dao
@@ -44,6 +51,25 @@ interface MessageDao {
 
     @Query("SELECT * FROM turn_blocks WHERE messageId = :messageId ORDER BY ordinal")
     fun observeBlocks(messageId: String): Flow<List<TurnBlockEntity>>
+
+    @Query("SELECT * FROM turn_blocks WHERE messageId = :messageId ORDER BY ordinal")
+    suspend fun getBlocks(messageId: String): List<TurnBlockEntity>
+
+    @Query("SELECT * FROM messages WHERE messageId = :messageId")
+    suspend fun get(messageId: String): MessageEntity?
+
+    @Query("SELECT * FROM turn_blocks WHERE blockId = :blockId")
+    suspend fun getBlock(blockId: String): TurnBlockEntity?
+
+    @Query("UPDATE messages SET deliveryState = :state, updatedAt = :updatedAt WHERE clientMessageId = :clientMessageId")
+    suspend fun updateDelivery(clientMessageId: String, state: String, updatedAt: Long): Int
+
+    @Query("UPDATE turn_blocks SET status = 'completed', updatedAt = :updatedAt WHERE messageId = :messageId AND status = 'running'")
+    suspend fun completeRunningBlocks(messageId: String, updatedAt: Long): Int
+
+    @Transaction
+    @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY createdAt, messageId")
+    fun observeMessageGraph(sessionId: String): Flow<List<MessageWithBlocks>>
 }
 
 @Dao
@@ -75,6 +101,12 @@ interface OutboxDao {
     @Query("DELETE FROM outbox_commands WHERE commandId = :commandId")
     suspend fun deleteAcknowledged(commandId: String): Int
 
+    @Query("SELECT * FROM outbox_commands WHERE commandId = :commandId")
+    suspend fun get(commandId: String): OutboxCommandEntity?
+
+    @Query("UPDATE outbox_commands SET state = 'retry' WHERE serverId = :serverId AND state = 'in_flight'")
+    suspend fun resetInFlight(serverId: String): Int
+
     @Query("SELECT COUNT(*) FROM outbox_commands WHERE serverId = :serverId")
     fun observeCount(serverId: String): Flow<Int>
 }
@@ -95,6 +127,9 @@ interface RealtimeCursorDao {
 
     @Query("SELECT * FROM realtime_cursors WHERE deviceId = :deviceId")
     suspend fun get(deviceId: String): RealtimeCursorEntity?
+
+    @Upsert
+    suspend fun upsert(cursor: RealtimeCursorEntity)
 
     @Query(
         """

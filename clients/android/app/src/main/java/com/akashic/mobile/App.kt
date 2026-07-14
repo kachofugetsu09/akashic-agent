@@ -5,6 +5,10 @@ import com.akashic.mobile.data.local.AppDatabase
 import com.akashic.mobile.data.local.AppPreferences
 import com.akashic.mobile.data.local.LocalDeliveryStore
 import com.akashic.mobile.data.realtime.DeviceKeyStore
+import com.akashic.mobile.data.realtime.RealtimeSession
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 class App : Application() {
     lateinit var container: AppContainer
@@ -17,8 +21,17 @@ class App : Application() {
 }
 
 class AppContainer(application: Application) {
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val database = AppDatabase.create(application)
     val deliveryStore = LocalDeliveryStore(database)
     val preferences = AppPreferences(application)
     val deviceKeyStore = DeviceKeyStore()
+    val realtimeSession = RealtimeSession(
+        database = database,
+        deliveryStore = deliveryStore,
+        preferences = preferences,
+        deviceKeys = deviceKeyStore,
+        scope = applicationScope,
+        allowInsecureTransport = BuildConfig.ALLOW_INSECURE_WS,
+    )
 }

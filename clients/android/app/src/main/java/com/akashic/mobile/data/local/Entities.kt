@@ -3,7 +3,9 @@ package com.akashic.mobile.data.local
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
+import androidx.room.Embedded
 import androidx.room.PrimaryKey
+import androidx.room.Relation
 
 @Entity(tableName = "server_profiles")
 data class ServerProfileEntity(
@@ -148,4 +150,10 @@ data class RealtimeCursorEntity(
     val lastAcknowledgedEventSeq: Long,
     val connectionEpoch: Long,
     val updatedAt: Long,
+)
+
+data class MessageWithBlocks(
+    @Embedded val message: MessageEntity,
+    @Relation(parentColumn = "messageId", entityColumn = "messageId")
+    val blocks: List<TurnBlockEntity>,
 )
