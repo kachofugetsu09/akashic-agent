@@ -34,7 +34,7 @@ Agent / meme 插件输出媒体
 | 能力 | 当前基线 | 目标 | 状态 |
 | --- | --- | --- | --- |
 | 文字、思考与工具流 | Android 已支持 | 保持现有流畅度 | 已有 |
-| 停止生成 | UI 按钮为空回调 | 接通 `turn.stop` | 待实现 |
+| 停止生成 | UI 按钮为空回调 | 接通 `turn.stop` | 完成 |
 | 文件与图片选择 | 附件按钮为空回调 | 系统多选、预览、移除 | Android 完成 |
 | 上传传输 | 协议只有 begin/finish 名称 | 全 WebSocket 二进制分片 | 服务端完成 |
 | 上传进度 | Room 有 transfer 表但未使用 | 乐观进度加服务端确认 | 服务端完成 |
@@ -44,8 +44,10 @@ Agent / meme 插件输出媒体
 | 助手图片、文件、meme | 服务端发送路径，Android 丢弃 | descriptor、下载、缓存、展示 | 完成 |
 | 历史媒体同步 | 历史 DTO 裁掉 media | 全 mobile 会话恢复媒体 | 完成 |
 | 图片预览 | 无 | Material 3 全屏预览、缩放、GIF | 完成 |
-| 普通文件操作 | 无 | 类型、大小、进度、系统打开与分享 | 打开完成，分享待补 |
+| 普通文件操作 | 无 | 类型、大小、进度、系统打开与分享 | 完成 |
 | Telegram 被动媒体等价 | Telegram 支持本地路径与 HTTP(S) 图片出站 | Android 覆盖同类能力 | 服务端完成 |
+| 长离线全量重建 | `sync.reset_required` 会卡在 event gap | 仅重建当前 server 投影并保留 outbox/draft | 完成 |
+| 后台被动送达 | 仅 Activity 可见时保持连接 | 单例 foreground service 与隐私通知 | 完成 |
 
 ## 设计约束
 
@@ -175,5 +177,21 @@ better-ui：
 
 ### 5. 弱网、模拟器与 APK 发布
 
-- Commit：待完成。
-- E2E：待完成。
+- 生命周期 Commit：`c2a9f88d feat(mobile): complete passive delivery lifecycle`。
+- 隔离 harness Commit：`ed7549e2 test(mobile): add isolated gateway harness`。
+- 停止：`turn.stop` 绑定当前 `session_id + turn_id`；客户端在重连时复用同 command ID，重复点击不产生第二次中断。
+- reset：`sync.reset_required` 在普通连续序号校验前接管，只删除当前 server 的远端投影；保留 outbox、草稿、本地发送状态和其他 server，再以新 generation 全量拉取 session/history。
+- 已发送附件：发送前原子导入 received cache，消息、附件、link、outbox 与 transfer 状态在同一 Room 事务提交；发送确认后删除草稿源但保留气泡附件。
+- 后台：`START_STICKY` foreground service 复用 `AppContainer` 唯一的 Room、RealtimeSession 和 WebSocket；Android 13+ 请求通知权限，前台当前会话不重复通知，锁屏 public version 不暴露消息、thinking、tool 或密钥。
+- 交互：已缓存文件可经受限 FileProvider 分享；READY 状态错误可关闭；流式文字和展开动画使用 stick-to-bottom，用户主动上滑后不抢位置。
+- 自动验证：`tests/mobile_realtime` 110 项通过；Android JVM、Kotlin、AndroidTest 编译、Lint 与 debug APK 构建通过；主仓库完整 `pytest tests/` 在前一提交点 2221 项通过。
+- 隔离 E2E：临时 TLS Gateway 的 17 项 gateway/isolated 测试通过，覆盖两次 history 去重、换 epoch 补发、固定 GIF 二进制/SHA 和单次 Agent 入站；真实启动可生成单次 pairing JSON/PNG 并干净退出，所有数据库与附件均位于临时根。
+- 模拟器 E2E：待执行；完成后在本节补充 Android instrumentation、弱网断开恢复与 APK 版本。
+
+#### 本组 UI skill 约束落实
+
+| Skill | Before | After |
+| --- | --- | --- |
+| better-colors | 新状态容易继续增加彩色容器 | 停止沿用主操作语义，错误只用 `errorContainer`；通知权限提示复用 M3 inverse surface，不新增色系 |
+| better-typography | 连接、错误与文件操作层级混杂 | 状态沿用现有 body/label 层级，文件元信息继续使用 `labelMedium + tnum` |
+| better-ui | 停止为空回调、错误不可见、滚动失跟 | 真实停止与分享、单一可关闭 Snackbar、尊重用户上滑的 stick-to-bottom；未增加卡片或阴影 |
