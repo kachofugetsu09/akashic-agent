@@ -42,6 +42,7 @@ import {
 } from "@/components/ai-elements/prompt-input";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { MobilePairingDialog } from "./mobile-pairing-dialog";
+import { MobileShowcase } from "./mobile-showcase";
 import "./styles.css";
 
 type ChatStatus = "idle" | "submitted" | "streaming" | "error";
@@ -1044,8 +1045,10 @@ function sessionLabel(session: SessionRow) {
   return title.length > 28 ? `${title.slice(0, 28)}...` : title;
 }
 
+const isMobileShowcase = new URLSearchParams(window.location.search).get("preview") === "mobile";
+
 createRoot(document.getElementById("root")!).render(
   <TooltipProvider>
-    <App />
+    {isMobileShowcase ? <MobileShowcase /> : <App />}
   </TooltipProvider>,
 );
