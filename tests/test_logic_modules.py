@@ -79,14 +79,28 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
     provider = MagicMock()
     provider.chat = AsyncMock(
         side_effect=[
-            LLMResponse(content="merged"),
-            LLMResponse(content="updated self"),
+            LLMResponse(
+                content=(
+                    "# 用户长期记忆\n\n"
+                    "## 用户事实\n- x\n\n"
+                    "## 用户偏好\n- y\n\n"
+                    "## 用户明确要求长期记住的关键内容\n- z"
+                )
+            ),
+            LLMResponse(
+                content=(
+                    "# Akashic 的自我认知\n\n"
+                    "## 人格与形象\n- x\n\n"
+                    "## 我对当前用户的理解\n- y\n\n"
+                    "## 我们关系的定义\n- z"
+                )
+            ),
         ]
     )
     opt = MemoryOptimizer(memory, provider, "m", max_tokens=100)
     opt._STEP_DELAY_SECONDS = 0
     await opt.optimize()
-    memory.write_long_term.assert_called_once_with("merged")
+    memory.write_long_term.assert_called_once()
     memory.write_self.assert_called_once()
 
     loop = MemoryOptimizerLoop(opt, interval_seconds=10, _now_fn=lambda: datetime(2025, 1, 1, 0, 0, 1))

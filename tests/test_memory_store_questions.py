@@ -2,6 +2,7 @@
 
 import builtins
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -37,6 +38,49 @@ def test_snapshot_and_rollback_merges_new_pending(tmp_path):
     pending = store.read_pending()
     assert "- old" in pending
     assert "- new" in pending
+
+
+def test_snapshot_rollback_replace_failure_keeps_both_recovery_files(
+    tmp_path, monkeypatch
+):
+    store = MemoryStore(tmp_path)
+    store.append_pending("- old")
+    _ = store.snapshot_pending()
+    store.append_pending("- new")
+    original_replace = Path.replace
+
+    def fail_pending_replace(path: Path, target: Path) -> Path:
+        if target == store.pending_file:
+            raise OSError("replace failed")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_pending_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        store.rollback_pending_snapshot()
+
+    assert "- old" in store._snapshot_path.read_text(encoding="utf-8")
+    assert "- new" in store.pending_file.read_text(encoding="utf-8")
+    assert not list(store.memory_dir.glob("PENDING.md.*.tmp"))
+
+
+def test_profile_replace_failure_preserves_existing_file(tmp_path, monkeypatch):
+    store = MemoryStore(tmp_path)
+    store.write_long_term("old profile")
+    original_replace = Path.replace
+
+    def fail_memory_replace(path: Path, target: Path) -> Path:
+        if target == store.memory_file:
+            raise OSError("replace failed")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_memory_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        store.write_long_term("new profile")
+
+    assert store.read_long_term() == "old profile"
+    assert not list(store.memory_dir.glob("MEMORY.md.*.tmp"))
 
 
 def test_get_memory_context_empty_and_nonempty(tmp_path):

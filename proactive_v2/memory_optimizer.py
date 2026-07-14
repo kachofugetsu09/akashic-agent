@@ -26,6 +26,10 @@ class MemoryOptimizerBusy(RuntimeError):
     pass
 
 
+class MemoryOptimizerOutputError(ValueError):
+    pass
+
+
 # ── 提示词 ──────────────────────────────────────────────────────
 
 _MERGE_SYSTEM = (
@@ -196,6 +200,72 @@ _SELF_PROMPT = """\
 {pending}
 """
 
+_MEMORY_REQUIRED_HEADINGS = (
+    "# 用户长期记忆",
+    "## 用户事实",
+    "## 用户偏好",
+    "## 用户明确要求长期记住的关键内容",
+)
+_MEMORY_OPTIONAL_HEADING = "## 助手操作上下文"
+_SELF_REQUIRED_HEADINGS = (
+    "# Akashic 的自我认知",
+    "## 人格与形象",
+    "## 我对当前用户的理解",
+    "## 我们关系的定义",
+)
+
+
+def _markdown_headings(content: str) -> tuple[str, ...]:
+    return tuple(
+        line.strip()
+        for line in content.splitlines()
+        if line.lstrip().startswith("#")
+    )
+
+
+def _validate_memory_output(content: str) -> None:
+    """拒绝不符合长期记忆完整档案契约的模型输出。"""
+    # 1. 标题只能是规定的三节，加末尾可选的操作上下文
+    headings = _markdown_headings(content)
+    valid_headings = (
+        _MEMORY_REQUIRED_HEADINGS,
+        _MEMORY_REQUIRED_HEADINGS + (_MEMORY_OPTIONAL_HEADING,),
+    )
+    first_line = content.splitlines()[0].strip() if content else ""
+    if (
+        first_line != _MEMORY_REQUIRED_HEADINGS[0]
+        or headings not in valid_headings
+        or "```" in content
+    ):
+        raise MemoryOptimizerOutputError("MEMORY.md 模型输出格式无效")
+
+    # 2. 非空输入不得被悄悄改写成只有标题的空档案
+    if not any(line.lstrip().startswith("- ") for line in content.splitlines()):
+        raise MemoryOptimizerOutputError("MEMORY.md 模型输出不包含任何记忆条目")
+
+
+def _validate_self_output(content: str) -> None:
+    """拒绝缺节、增节或空节的 SELF 模型输出。"""
+    # 1. SELF 只能保留既定标题，禁止模型扩展文档结构
+    lines = content.splitlines()
+    first_line = lines[0].strip() if lines else ""
+    if (
+        first_line != _SELF_REQUIRED_HEADINGS[0]
+        or _markdown_headings(content) != _SELF_REQUIRED_HEADINGS
+        or "```" in content
+    ):
+        raise MemoryOptimizerOutputError("SELF.md 模型输出格式无效")
+
+    # 2. 每个自我认知 section 必须保留至少一条内容
+    positions = [lines.index(heading) for heading in _SELF_REQUIRED_HEADINGS]
+    positions.append(len(lines))
+    for index in range(1, len(_SELF_REQUIRED_HEADINGS)):
+        section = lines[positions[index] + 1 : positions[index + 1]]
+        if not any(line.lstrip().startswith("- ") for line in section):
+            raise MemoryOptimizerOutputError(
+                f"SELF.md 模型输出 section 为空: {_SELF_REQUIRED_HEADINGS[index]}"
+            )
+
 # ── MemoryOptimizer ───────────────────────────────────────────────
 
 
@@ -242,6 +312,7 @@ class MemoryOptimizer:
 
             merged_memory = await self._merge_memory(current_memory, pending)
             if merged_memory:
+                _validate_memory_output(merged_memory)
                 if current_memory:
                     self._memory.backup_long_term()
                 self._memory.write_long_term(merged_memory)
@@ -294,6 +365,8 @@ class MemoryOptimizer:
             max_tokens=2048,
         )
         if updated:
+            _validate_self_output(updated)
+            self._memory.backup_self()
             self._memory.write_self(updated)
             logger.info("[memory_optimizer] SELF.md 已更新")
 

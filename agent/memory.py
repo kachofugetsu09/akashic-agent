@@ -3,6 +3,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
+from infra.persistence.json_store import atomic_write_text
 from utils.helpers import ensure_dir
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,7 @@ class MemoryStore:
         return ""
 
     def write_long_term(self, content: str) -> None:
-        self.memory_file.write_text(content, encoding="utf-8")
+        atomic_write_text(self.memory_file, content, domain="memory")
 
     # ── RECENT_CONTEXT.md（压缩后的近期语境）──────────────
 
@@ -65,7 +66,7 @@ class MemoryStore:
         return ""
 
     def write_recent_context(self, content: str) -> None:
-        self.recent_context_file.write_text(content, encoding="utf-8")
+        atomic_write_text(self.recent_context_file, content, domain="memory")
 
     # ── SELF.md（Akashic 自我模型）─────────────────────────────
 
@@ -75,7 +76,7 @@ class MemoryStore:
         return ""
 
     def write_self(self, content: str) -> None:
-        self.self_file.write_text(content, encoding="utf-8")
+        atomic_write_text(self.self_file, content, domain="memory")
 
     # ── 待处理事实（对话 → optimizer 缓冲区）───────────
 
@@ -90,8 +91,9 @@ class MemoryStore:
         """追加对话中提取的增量事实片段，不触碰 MEMORY.md。"""
         if not facts or not facts.strip():
             return
-        with open(self.pending_file, "a", encoding="utf-8") as f:
-            f.write(facts.rstrip() + "\n")
+        with self._consolidation_lock:
+            with open(self.pending_file, "a", encoding="utf-8") as f:
+                _ = f.write(facts.rstrip() + "\n")
 
     def append_pending_once(
         self,
@@ -114,7 +116,8 @@ class MemoryStore:
 
     def clear_pending(self) -> None:
         """optimizer 归档后清空 PENDING.md。"""
-        self.pending_file.write_text("", encoding="utf-8")
+        with self._consolidation_lock:
+            atomic_write_text(self.pending_file, "", domain="memory")
 
     # ── 两阶段提交（供 MemoryOptimizer 使用）──────────────────────
 
@@ -130,38 +133,43 @@ class MemoryStore:
         调用前会自动处理上次崩溃遗留的 snapshot。
         """
         self._recover_pending_snapshot()
-        if not self.pending_file.exists() or self.pending_file.stat().st_size == 0:
-            return ""
-        # POSIX rename 是原子操作：rename 完成后新追加写入全新的 PENDING.md
-        self.pending_file.rename(self._snapshot_path)
-        return self._strip_consolidation_markers(
-            self._snapshot_path.read_text(encoding="utf-8")
-        )
+        with self._consolidation_lock:
+            if not self.pending_file.exists() or self.pending_file.stat().st_size == 0:
+                return ""
+            # POSIX rename 是原子操作：rename 完成后新追加写入全新的 PENDING.md
+            _ = self.pending_file.rename(self._snapshot_path)
+            return self._strip_consolidation_markers(
+                self._snapshot_path.read_text(encoding="utf-8")
+            )
 
     def commit_pending_snapshot(self) -> None:
         """Phase-2 成功：merge 已完成，删除快照。"""
-        if self._snapshot_path.exists():
-            self._snapshot_path.unlink()
-        # 保持 PENDING.md 常驻，避免“已归档后文件消失”带来的状态歧义
-        if not self.pending_file.exists():
-            self.pending_file.touch()
+        with self._consolidation_lock:
+            if self._snapshot_path.exists():
+                self._snapshot_path.unlink()
+            # 保持 PENDING.md 常驻，避免“已归档后文件消失”带来的状态歧义
+            if not self.pending_file.exists():
+                self.pending_file.touch()
 
     def rollback_pending_snapshot(self) -> None:
         """Phase-2 失败：将快照内容合并回 PENDING.md，不丢失任何数据。
 
         快照（较旧）在前，运行期新追加（较新）在后。
         """
-        if not self._snapshot_path.exists():
-            return
-        snap_text = self._snapshot_path.read_text(encoding="utf-8")
-        new_text = (
-            self.pending_file.read_text(encoding="utf-8")
-            if self.pending_file.exists()
-            else ""
-        )
-        merged = snap_text.rstrip() + "\n" + new_text if new_text.strip() else snap_text
-        self.pending_file.write_text(merged, encoding="utf-8")
-        self._snapshot_path.unlink()
+        with self._consolidation_lock:
+            if not self._snapshot_path.exists():
+                return
+            snap_text = self._snapshot_path.read_text(encoding="utf-8")
+            new_text = (
+                self.pending_file.read_text(encoding="utf-8")
+                if self.pending_file.exists()
+                else ""
+            )
+            merged = (
+                snap_text.rstrip() + "\n" + new_text if new_text.strip() else snap_text
+            )
+            atomic_write_text(self.pending_file, merged, domain="memory")
+            self._snapshot_path.unlink()
         logger.info("[memory] PENDING snapshot 已回滚合并")
 
     def _recover_pending_snapshot(self) -> None:
