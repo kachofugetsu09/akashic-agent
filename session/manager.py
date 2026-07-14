@@ -399,9 +399,8 @@ class SessionManager:
         *,
         updated_at: datetime,
         last_consolidated: int | None = None,
-        retained_message_ids: set[str] | None = None,
     ) -> int:
-        """准备待写消息并原子追加；传保留 ID 时在同一事务内替换消息集合。"""
+        """准备待写消息并原子追加 session 元数据和消息。"""
 
         effective_last_consolidated = (
             session.last_consolidated
@@ -438,7 +437,6 @@ class SessionManager:
             last_consolidated=effective_last_consolidated,
             metadata=session.metadata,
             messages=pending_payloads,
-            retained_message_ids=retained_message_ids,
         )
         for msg, row in zip(pending_messages, rows):
             msg.update(row)
@@ -483,29 +481,23 @@ class SessionManager:
         *,
         last_consolidated: int = 0,
     ) -> None:
-        """在同一事务中裁剪 session 历史，并在成功后更新内存。"""
+        """只裁剪运行时上下文，并保留 sessions.db 中的完整历史。"""
 
         # 1. 在 session owner 的写锁内计算替换结果，避免覆盖并发追加。
         async with self._lock(session.key):
             retained = (
                 list(session.messages[-keep_count:]) if keep_count > 0 else []
             )
-            retained_ids = {
-                str(message["id"])
-                for message in retained
-                if message.get("id")
-            }
 
-            # 2. 先让 SQLite 原子提交删除、追加和 cursor 更新。
+            # 2. 只更新 session 元数据；不传 retained IDs，禁止触发历史删除。
             _ = self._persist_session(
                 session,
                 retained,
                 updated_at=datetime.now(UTC),
                 last_consolidated=last_consolidated,
-                retained_message_ids=retained_ids,
             )
 
-            # 3. 数据库成功后再提交内存视图，失败时调用方仍持有原历史。
+            # 3. 数据库成功后再提交运行时上下文视图。
             session.messages[:] = retained
             session.last_consolidated = int(last_consolidated)
             self._cache[session.key] = session

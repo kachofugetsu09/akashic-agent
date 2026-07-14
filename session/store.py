@@ -1304,9 +1304,8 @@ class SessionStore:
         last_consolidated: int,
         metadata: dict[str, Any],
         messages: list[dict[str, Any]],
-        retained_message_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """原子更新 session 元数据并追加消息，传保留 ID 时替换该 session 的消息集合。"""
+        """原子更新 session 元数据并追加新消息。"""
 
         metadata_payload = json.dumps(metadata, ensure_ascii=False)
         result_rows: list[dict[str, Any]] = []
@@ -1326,11 +1325,6 @@ class SessionStore:
                     """,
                     (key, created_at, updated_at, int(last_consolidated), metadata_payload),
                 )
-                if retained_message_ids is not None:
-                    self._delete_messages_not_retained_locked(
-                        key,
-                        retained_message_ids,
-                    )
                 if messages:
                     start_seq = self._next_seq_locked(key)
                     insert_rows, result_rows = self._prepare_message_batch(
@@ -1355,34 +1349,6 @@ class SessionStore:
                         (next_seq, next_seq, key),
                     )
         return result_rows
-
-    def _delete_messages_not_retained_locked(
-        self,
-        session_key: str,
-        retained_message_ids: set[str],
-    ) -> None:
-        """删除同一 session 中不在替换结果里的旧消息。"""
-
-        # 1. 在当前事务内确定需要移除的消息，避免删除其他 session 的记录。
-        rows = self._conn.execute(
-            "SELECT id FROM messages WHERE session_key = ?",
-            (session_key,),
-        ).fetchall()
-        removed_ids = [
-            str(row["id"])
-            for row in rows
-            if str(row["id"]) not in retained_message_ids
-        ]
-        if not removed_ids:
-            return
-
-        # 2. 同步清理消息及其 embedding，事务失败时由调用方统一回滚。
-        placeholders = ",".join("?" for _ in removed_ids)
-        self._conn.execute(
-            f"DELETE FROM messages WHERE session_key = ? AND id IN ({placeholders})",
-            (session_key, *removed_ids),
-        )
-        self._delete_message_embeddings_locked(removed_ids)
 
     def fetch_session_messages(self, session_key: str) -> list[dict[str, Any]]:
         with self._lock:

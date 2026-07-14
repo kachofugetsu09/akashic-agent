@@ -237,7 +237,7 @@ async def test_session_batch_persistence_uses_one_commit(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_session_trim_replaces_history_and_preserves_sequence_ids(
+async def test_session_trim_keeps_database_history_and_preserves_sequence_ids(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path)
@@ -265,7 +265,7 @@ async def test_session_trim_replaces_history_and_preserves_sequence_ids(
         "telegram:trim:3",
     ]
     assert session.last_consolidated == 0
-    assert manager._store.count_messages(session.key) == 2
+    assert manager._store.count_messages(session.key) == 4
     assert manager._store.get_session_meta(session.key)["last_consolidated"] == 0
     embedding_rows = {
         str(row["message_id"]): bytes(row["embedding"])
@@ -274,6 +274,8 @@ async def test_session_trim_replaces_history_and_preserves_sequence_ids(
         ).fetchall()
     }
     assert embedding_rows == {
+        "telegram:trim:0": b"embedding:telegram:trim:0",
+        "telegram:trim:1": b"embedding:telegram:trim:1",
         "telegram:trim:2": b"embedding:telegram:trim:2",
         "telegram:trim:3": b"embedding:telegram:trim:3",
         "telegram:other:0": b"embedding:telegram:other:0",
@@ -281,7 +283,7 @@ async def test_session_trim_replaces_history_and_preserves_sequence_ids(
 
     manager.invalidate(session.key)
     reloaded = manager.get_or_create(session.key)
-    assert [message["content"] for message in reloaded.messages] == ["2", "3"]
+    assert [message["content"] for message in reloaded.messages] == ["0", "1", "2", "3"]
     reloaded.add_message("assistant", "4")
     manager.save(reloaded)
     assert reloaded.messages[-1]["id"] == "telegram:trim:4"
@@ -289,7 +291,7 @@ async def test_session_trim_replaces_history_and_preserves_sequence_ids(
 
 
 @pytest.mark.asyncio
-async def test_session_trim_failure_keeps_memory_and_database_unchanged(
+async def test_session_trim_never_deletes_database_history(
     tmp_path: Path,
 ) -> None:
     manager = SessionManager(tmp_path)
@@ -300,7 +302,6 @@ async def test_session_trim_failure_keeps_memory_and_database_unchanged(
     session.last_consolidated = 2
     manager.save(session)
     original_messages = list(session.messages)
-    before_meta = manager._store.get_session_meta(session.key)
     _seed_message_embeddings(
         manager._store,
         [str(message["id"]) for message in session.messages],
@@ -315,24 +316,12 @@ async def test_session_trim_failure_keeps_memory_and_database_unchanged(
             """
         ).fetchall()
     ]
-    manager._store._conn.execute(
-        """
-        CREATE TRIGGER reject_history_trim
-        BEFORE DELETE ON messages
-        BEGIN
-            SELECT RAISE(ABORT, '测试裁剪失败');
-        END
-        """
-    )
-    manager._store._conn.commit()
+    await manager.trim_history_async(session, 2, last_consolidated=0)
 
-    with pytest.raises(sqlite3.IntegrityError, match="测试裁剪失败"):
-        await manager.trim_history_async(session, 2, last_consolidated=0)
-
-    assert session.messages == original_messages
-    assert session.last_consolidated == 2
+    assert session.messages == original_messages[-2:]
+    assert session.last_consolidated == 0
     assert manager._store.count_messages(session.key) == 4
-    assert manager._store.get_session_meta(session.key) == before_meta
+    assert manager._store.get_session_meta(session.key)["last_consolidated"] == 0
     assert [
         message["content"]
         for message in manager._store.fetch_session_messages(session.key)
