@@ -84,8 +84,39 @@ Agent / meme 插件输出媒体
 
 ### 2. Android 上传与发送
 
-- Commit：待完成。
-- E2E：待完成。
+- Commit：`feat(android): add resumable attachment sending`。
+- 文件入口：`OpenMultipleDocuments` 选择后立即复制进 app 私有目录，复制时流式计算大小和 SHA-256；不依赖重启后可能失效的 Content URI。
+- 续传：每次连接生成新的 begin command ID，以服务端 `next_offset` 覆盖本地确认值；每个 1MiB 确认窗口由 8 个 128KiB binary frame 组成，未确认字节不写入 Room offset。
+- 一致性：`attachment.progress/ready` 与 durable cursor 在同一 Room 事务提交；完整 offset 重连直接恢复 finish；消息入 outbox 时附件从 ready 原子推进 sending，reply 后转 sent 或恢复 ready。
+- 消息：支持图文和纯附件；发送确认后清理 app 私有源文件。
+- 版本：Android `0.3.0`（versionCode 3），对应本组可安装 APK。
+- 验证：Android JVM 21 项通过；`compileDebugAndroidTestKotlin`、`lintDebug`、`assembleDebug` 通过；无窗口 API 36.1 模拟器 11 项 Room、Compose、Keystore instrumentation 全部通过，随后已关闭模拟器。
+- 跨端 E2E：服务端组已独立证明认证 WSS 到 `InboundMessage.media`；Android 组已证明 1MiB 窗口、断线新 begin ID、完整 offset 恢复 finish、纯附件发送门控。真实 Android→隔离 Gateway 联合链路留在第 5 组执行。
+
+#### UI skill 约束落实
+
+better-colors：
+
+| Before | After |
+| --- | --- |
+| 附件没有颜色语义 | 上传沿用主蓝色，失败只在图标与状态文字使用 error；亮紫仍专属 agent 思考/工具运行 |
+| 容易新增一套 pastel 附件色 | 全部复用 Material `surfaceContainerLow/primary/error`，进度轨道为同色 16% state layer |
+
+better-typography：
+
+| Before | After |
+| --- | --- |
+| 没有文件名和状态层级 | 文件名用 `labelLarge` 单行省略，大小与状态用 `labelMedium` |
+| 百分比变化可能跳动 | 大小和进度使用 `tnum`，完整文件名保留在无障碍语义中 |
+
+better-ui：
+
+| Before | After |
+| --- | --- |
+| 附件按钮为空回调 | 接通系统多选、私有草稿、自动上传、失败重试；待上传、失败和已就绪草稿可移除，活动上传不伪装成可取消 |
+| 容易形成卡片墙 | 仅每个独立附件使用无 elevation 的低层 Surface，附件区不再套外层卡片 |
+| 状态突变、触控目标不明确 | 状态图标可中断交叉淡入；草稿区展开/收起；可用的重试和移除保持 48dp 与 0.96 按压反馈 |
+| 纯附件无法发送 | 仅当所有草稿 ready 时允许发送；上传中和等待网络保持禁用 |
 
 ### 3. 出栈媒体、meme 与历史
 

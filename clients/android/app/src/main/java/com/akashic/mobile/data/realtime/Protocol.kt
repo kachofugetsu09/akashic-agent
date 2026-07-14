@@ -61,6 +61,48 @@ data class MessageSendPayload(
 )
 
 @Serializable
+data class AttachmentBeginPayload(
+    @SerialName("attachment_id") val attachmentId: String,
+    val filename: String,
+    @SerialName("content_type") val contentType: String,
+    @SerialName("size_bytes") val sizeBytes: Long,
+    val sha256: String,
+)
+
+@Serializable
+data class AttachmentBeginReplyPayload(
+    @SerialName("attachment_id") val attachmentId: String,
+    val filename: String,
+    @SerialName("content_type") val contentType: String,
+    @SerialName("size_bytes") val sizeBytes: Long,
+    val sha256: String,
+    @SerialName("next_offset") val nextOffset: Long,
+    @SerialName("chunk_size") val chunkSize: Int,
+    val state: String,
+)
+
+@Serializable
+data class AttachmentProgressPayload(
+    @SerialName("attachment_id") val attachmentId: String,
+    @SerialName("transferred_bytes") val transferredBytes: Long,
+    @SerialName("size_bytes") val sizeBytes: Long,
+)
+
+@Serializable
+data class AttachmentReadyPayload(
+    @SerialName("attachment_id") val attachmentId: String,
+    val filename: String,
+    @SerialName("content_type") val contentType: String,
+    @SerialName("size_bytes") val sizeBytes: Long,
+    val sha256: String,
+)
+
+@Serializable
+data class AttachmentFinishPayload(
+    @SerialName("attachment_id") val attachmentId: String,
+)
+
+@Serializable
 data class EventAckPayload(
     @SerialName("through_event_seq")
     val throughEventSeq: Long,

@@ -3,12 +3,17 @@ package com.akashic.mobile.data.local
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import android.content.Context
 import com.akashic.mobile.data.realtime.WireEnvelope
 import com.akashic.mobile.data.realtime.WireKind
+import com.akashic.mobile.data.realtime.MessageSendPayload
+import com.akashic.mobile.data.realtime.ProtocolCodec
+import java.time.Instant
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.add
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -148,6 +153,128 @@ class LocalDeliveryStoreTest {
         assertEquals(listOf("thinking", "tool", "thinking"), blocks.map { it.kind })
         assertEquals(StoredToolBlock("shell", "读取状态", "完成"), decodeStoredToolBlock(blocks[1].content))
     }
+
+    @Test
+    fun attachmentProgressAndCursorCommitTogether() = runBlocking {
+        database.attachmentTransfers().upsert(transfer(state = "uploading", offset = 0))
+        store.applyEvent(
+            "server",
+            "device",
+            event(1, "attachment.progress", buildJsonObject {
+                put("attachment_id", "attachment")
+                put("transferred_bytes", 1_048_576)
+                put("size_bytes", 1_048_579)
+            }),
+            2,
+        )
+
+        assertEquals(1_048_576, database.attachmentTransfers().get("attachment")!!.transferredBytes)
+        assertEquals(1, database.realtimeCursors().get("device")!!.lastAcknowledgedEventSeq)
+
+        store.applyEvent(
+            "server",
+            "device",
+            event(2, "attachment.ready", buildJsonObject {
+                put("attachment_id", "attachment")
+                put("filename", "image.png")
+                put("content_type", "image/png")
+                put("size_bytes", 1_048_579)
+                put("sha256", "a".repeat(64))
+            }),
+            3,
+        )
+        assertEquals("ready", database.attachmentTransfers().get("attachment")!!.state)
+    }
+
+    @Test
+    fun attachmentMessageMovesReadyToSendingThenSent() = runBlocking {
+        database.attachmentTransfers().upsert(transfer(state = "ready", offset = 1_048_579))
+        val payload = MessageSendPayload(
+            clientMessageId = "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            sessionId = "mobile:test",
+            text = "",
+            mediaRefs = listOf("attachment"),
+            clientCreatedAt = Instant.EPOCH.toString(),
+        )
+        val command = WireEnvelope(
+            v = 1,
+            kind = WireKind.COMMAND,
+            type = "message.send",
+            id = "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+            connectionEpoch = 1,
+            sessionId = "mobile:test",
+            payload = ProtocolCodec.json().encodeToJsonElement(
+                MessageSendPayload.serializer(),
+                payload,
+            ).jsonObject,
+        )
+        store.enqueueMessage(
+            conversation = ConversationEntity("mobile:test", "server", "image.png", 2),
+            message = MessageEntity(
+                messageId = "user:${payload.clientMessageId}",
+                clientMessageId = payload.clientMessageId,
+                sessionId = "mobile:test",
+                role = "user",
+                text = "",
+                deliveryState = "pending",
+                createdAt = 2,
+                updatedAt = 2,
+            ),
+            command = OutboxCommandEntity(
+                commandId = command.id!!,
+                serverId = "server",
+                envelopeJson = ProtocolCodec.encode(command),
+                state = "pending",
+                attemptCount = 0,
+                createdAt = 2,
+                lastAttemptAt = null,
+            ),
+            attachmentIds = listOf("attachment"),
+        )
+
+        assertEquals("sending", database.attachmentTransfers().get("attachment")!!.state)
+        assertEquals(
+            listOf("attachment"),
+            store.acknowledgeOutbox(command.id, 3),
+        )
+        assertEquals("sent", database.attachmentTransfers().get("attachment")!!.state)
+    }
+
+    @Test
+    fun attachmentReconcileDeletesSentAndOrphanFiles() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val root = context.cacheDir.resolve("attachment-reconcile-${System.nanoTime()}")
+        root.mkdirs()
+        val dao = database.attachmentTransfers()
+        dao.upsert(transfer(state = "sent", offset = 1_048_579))
+        dao.upsert(transfer(id = "pending", state = "pending", offset = 0))
+        root.resolve("attachment.upload").writeText("sent")
+        root.resolve("pending.upload").writeText("pending")
+        root.resolve("orphan.upload").writeText("orphan")
+        val drafts = AttachmentDraftStore(context.contentResolver, root, dao)
+
+        drafts.reconcile()
+
+        assertEquals(null, dao.get("attachment"))
+        assertEquals(false, root.resolve("attachment.upload").exists())
+        assertEquals(false, root.resolve("orphan.upload").exists())
+        assertEquals(true, root.resolve("pending.upload").exists())
+        root.deleteRecursively()
+        Unit
+    }
+
+    private fun transfer(state: String, offset: Long, id: String = "attachment") = AttachmentTransferEntity(
+        attachmentId = id,
+        serverId = "server",
+        sessionId = "mobile:test",
+        filename = "image.png",
+        contentType = "image/png",
+        sizeBytes = 1_048_579,
+        sha256 = "a".repeat(64),
+        transferredBytes = offset,
+        state = state,
+        updatedAt = 1,
+    )
 
     private fun event(sequence: Long, type: String, payload: kotlinx.serialization.json.JsonObject) = WireEnvelope(
         v = 1,

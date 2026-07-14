@@ -7,9 +7,27 @@ data class ConversationUiState(
     val sessions: List<SessionUi>,
     val selectedSessionId: String?,
     val messages: List<MessageUi>,
+    val attachments: List<ComposerAttachmentUi>,
     val isStreaming: Boolean,
     val canSend: Boolean,
 )
+
+data class ComposerAttachmentUi(
+    val id: String,
+    val filename: String,
+    val contentType: String,
+    val sizeBytes: Long,
+    val transferredBytes: Long,
+    val state: ComposerAttachmentState,
+    val canRemove: Boolean,
+)
+
+enum class ComposerAttachmentState {
+    WAITING_FOR_CONNECTION,
+    UPLOADING,
+    READY,
+    FAILED,
+}
 
 data class SessionUi(
     val sessionId: String,
@@ -69,6 +87,7 @@ internal val EmptyConversationState = ConversationUiState(
     sessions = emptyList(),
     selectedSessionId = null,
     messages = emptyList(),
+    attachments = emptyList(),
     isStreaming = false,
     canSend = false,
 )
@@ -125,6 +144,17 @@ internal val PreviewConversationState = ConversationUiState(
             answer = "当前事件顺序保持一致；连接恢复后会从最后一次累计 ACK 继续。",
             isStreaming = true,
             durationSeconds = null,
+        ),
+    ),
+    attachments = listOf(
+        ComposerAttachmentUi(
+            id = "preview-upload",
+            filename = "network-report.png",
+            contentType = "image/png",
+            sizeBytes = 2_400_000,
+            transferredBytes = 1_008_000,
+            state = ComposerAttachmentState.UPLOADING,
+            canRemove = false,
         ),
     ),
     isStreaming = true,

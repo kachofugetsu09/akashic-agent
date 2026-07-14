@@ -125,8 +125,86 @@ interface AttachmentTransferDao {
     @Upsert
     suspend fun upsert(transfer: AttachmentTransferEntity)
 
+    @Upsert
+    suspend fun upsertAll(transfers: List<AttachmentTransferEntity>)
+
     @Query("SELECT * FROM attachment_transfers WHERE attachmentId = :attachmentId")
     suspend fun get(attachmentId: String): AttachmentTransferEntity?
+
+    @Query("SELECT * FROM attachment_transfers")
+    suspend fun all(): List<AttachmentTransferEntity>
+
+    @Query(
+        """
+        SELECT * FROM attachment_transfers
+        WHERE serverId = :serverId AND sessionId = :sessionId
+          AND state IN ('pending', 'uploading', 'finishing', 'ready', 'failed')
+        ORDER BY updatedAt ASC
+        """,
+    )
+    fun observeDrafts(serverId: String, sessionId: String): Flow<List<AttachmentTransferEntity>>
+
+    @Query(
+        """
+        SELECT * FROM attachment_transfers
+        WHERE serverId = :serverId AND sessionId = :sessionId
+          AND state IN ('pending', 'uploading', 'finishing', 'ready', 'failed')
+        ORDER BY updatedAt ASC
+        """,
+    )
+    suspend fun drafts(serverId: String, sessionId: String): List<AttachmentTransferEntity>
+
+    @Query(
+        """
+        SELECT * FROM attachment_transfers
+        WHERE serverId = :serverId AND state IN ('pending', 'uploading', 'finishing')
+        ORDER BY updatedAt ASC
+        """,
+    )
+    suspend fun pendingUploads(serverId: String): List<AttachmentTransferEntity>
+
+    @Query(
+        """
+        UPDATE attachment_transfers
+        SET state = 'uploading', updatedAt = :updatedAt
+        WHERE attachmentId = :attachmentId AND state IN ('pending', 'uploading', 'finishing')
+        """,
+    )
+    suspend fun claimUploading(attachmentId: String, updatedAt: Long): Int
+
+    @Query(
+        """
+        UPDATE attachment_transfers
+        SET transferredBytes = :transferredBytes, state = :state, updatedAt = :updatedAt
+        WHERE attachmentId = :attachmentId
+        """,
+    )
+    suspend fun updateState(
+        attachmentId: String,
+        transferredBytes: Long,
+        state: String,
+        updatedAt: Long,
+    ): Int
+
+    @Query("UPDATE attachment_transfers SET state = 'sent', updatedAt = :updatedAt WHERE attachmentId IN (:ids)")
+    suspend fun markSent(ids: List<String>, updatedAt: Long): Int
+
+    @Query("UPDATE attachment_transfers SET state = 'sending', updatedAt = :updatedAt WHERE attachmentId IN (:ids) AND state = 'ready'")
+    suspend fun markSending(ids: List<String>, updatedAt: Long): Int
+
+    @Query("UPDATE attachment_transfers SET state = 'ready', updatedAt = :updatedAt WHERE attachmentId IN (:ids) AND state = 'sending'")
+    suspend fun restoreReady(ids: List<String>, updatedAt: Long): Int
+
+    @Query(
+        """
+        DELETE FROM attachment_transfers
+        WHERE attachmentId = :attachmentId AND state IN ('pending', 'ready', 'failed')
+        """,
+    )
+    suspend fun deleteDraft(attachmentId: String): Int
+
+    @Query("DELETE FROM attachment_transfers WHERE state = 'sent'")
+    suspend fun deleteSent(): Int
 }
 
 @Dao

@@ -57,6 +57,8 @@ fun MobileConversationScaffold(
     onNewSession: () -> Unit,
     onRestartPairing: () -> Unit = {},
     onAttach: () -> Unit,
+    onRemoveAttachment: (String) -> Unit,
+    onRetryAttachment: (String) -> Unit,
     onSend: (String) -> Unit,
     onStop: () -> Unit,
 ) {
@@ -89,6 +91,8 @@ fun MobileConversationScaffold(
             ConversationScreen(
                 state = state,
                 onAttach = onAttach,
+                onRemoveAttachment = onRemoveAttachment,
+                onRetryAttachment = onRetryAttachment,
                 onSend = onSend,
                 onStop = onStop,
             )

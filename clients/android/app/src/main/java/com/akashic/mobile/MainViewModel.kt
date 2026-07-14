@@ -8,6 +8,8 @@ import com.akashic.mobile.data.local.decodeStoredToolBlock
 import com.akashic.mobile.domain.model.ConnectionPhase
 import com.akashic.mobile.domain.model.ConnectionState
 import com.akashic.mobile.ui.conversation.ConnectionStatusUi
+import com.akashic.mobile.ui.conversation.ComposerAttachmentState
+import com.akashic.mobile.ui.conversation.ComposerAttachmentUi
 import com.akashic.mobile.ui.conversation.ConversationUiState
 import com.akashic.mobile.ui.conversation.MessageUi
 import com.akashic.mobile.ui.conversation.ProcessBlockKind
@@ -36,7 +38,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         state.serverId?.let(container.database.conversations()::observeForServer) ?: flowOf(emptyList())
     }
 
-    val conversationState = combine(sessionState, messageGraph, conversations) { session, graph, conversations ->
+    private val attachmentDrafts = sessionState.flatMapLatest { state ->
+        val serverId = state.serverId
+        val sessionId = state.currentSessionId
+        if (serverId == null || sessionId == null) {
+            flowOf(emptyList())
+        } else {
+            container.database.attachmentTransfers().observeDrafts(serverId, sessionId)
+        }
+    }
+
+    val conversationState = combine(
+        sessionState,
+        messageGraph,
+        conversations,
+        attachmentDrafts,
+    ) { session, graph, conversations, attachments ->
         val messages = graph.map(::toMessageUi)
         val connection = connectionPresentation(session.connection)
         ConversationUiState(
@@ -48,6 +65,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .map { SessionUi(it.sessionId, it.title) },
             selectedSessionId = session.currentSessionId,
             messages = messages,
+            attachments = attachments.map { attachment ->
+                val waitingForConnection = session.connection.phase != ConnectionPhase.READY &&
+                    attachment.state in setOf("pending", "uploading", "finishing")
+                ComposerAttachmentUi(
+                    id = attachment.attachmentId,
+                    filename = attachment.filename,
+                    contentType = attachment.contentType,
+                    sizeBytes = attachment.sizeBytes,
+                    transferredBytes = attachment.transferredBytes,
+                    state = when {
+                        waitingForConnection -> ComposerAttachmentState.WAITING_FOR_CONNECTION
+                        attachment.state == "ready" -> ComposerAttachmentState.READY
+                        attachment.state == "failed" -> ComposerAttachmentState.FAILED
+                        else -> ComposerAttachmentState.UPLOADING
+                    },
+                    canRemove = attachment.state in setOf("pending", "ready", "failed"),
+                )
+            },
             isStreaming = graph.any { it.message.deliveryState == "streaming" },
             canSend = session.hasProfile,
         )
@@ -61,6 +96,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             sessions = emptyList(),
             selectedSessionId = null,
             messages = emptyList(),
+            attachments = emptyList(),
             isStreaming = false,
             canSend = false,
         ),
@@ -73,6 +109,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun onQrCode(value: String) = container.realtimeSession.beginPairing(value)
 
     fun sendMessage(value: String) = container.realtimeSession.sendMessage(value)
+
+    fun addAttachments(uris: List<android.net.Uri>) = container.realtimeSession.addAttachments(uris)
+
+    fun removeAttachment(attachmentId: String) = container.realtimeSession.removeAttachment(attachmentId)
+
+    fun retryAttachment(attachmentId: String) = container.realtimeSession.retryAttachment(attachmentId)
 
     fun createSession() = container.realtimeSession.createSession()
 

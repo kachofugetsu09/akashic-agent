@@ -7,6 +7,8 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -29,6 +31,11 @@ class MainActivity : ComponentActivity() {
         )
         setContent {
             AkashicTheme {
+                val attachmentPicker = rememberLauncherForActivityResult(
+                    ActivityResultContracts.OpenMultipleDocuments(),
+                ) { uris ->
+                    if (uris.isNotEmpty()) viewModel.addAttachments(uris)
+                }
                 val session by viewModel.sessionState.collectAsStateWithLifecycle()
                 val conversation by viewModel.conversationState.collectAsStateWithLifecycle()
                 if (!session.initialized) {
@@ -41,7 +48,9 @@ class MainActivity : ComponentActivity() {
                         onSelectSession = viewModel::selectSession,
                         onNewSession = viewModel::createSession,
                         onRestartPairing = viewModel::restartPairing,
-                        onAttach = {},
+                        onAttach = { attachmentPicker.launch(arrayOf("*/*")) },
+                        onRemoveAttachment = viewModel::removeAttachment,
+                        onRetryAttachment = viewModel::retryAttachment,
                         onSend = viewModel::sendMessage,
                         onStop = {},
                     )

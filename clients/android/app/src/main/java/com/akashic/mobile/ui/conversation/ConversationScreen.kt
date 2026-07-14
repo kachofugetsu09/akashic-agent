@@ -2,10 +2,14 @@ package com.akashic.mobile.ui.conversation
 
 import android.animation.ValueAnimator
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -34,6 +38,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -43,8 +49,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.Build
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.CloudUpload
+import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Phonelink
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.Warning
@@ -55,6 +66,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -81,6 +93,11 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -99,6 +116,8 @@ import kotlinx.coroutines.flow.collect
 fun ConversationScreen(
     state: ConversationUiState,
     onAttach: () -> Unit,
+    onRemoveAttachment: (String) -> Unit,
+    onRetryAttachment: (String) -> Unit,
     onSend: (String) -> Unit,
     onStop: () -> Unit,
 ) {
@@ -121,7 +140,10 @@ fun ConversationScreen(
                 connectionNotice = state.connectionNotice,
                 isStreaming = state.isStreaming,
                 enabled = state.canSend,
+                attachments = state.attachments,
                 onAttach = onAttach,
+                onRemoveAttachment = onRemoveAttachment,
+                onRetryAttachment = onRetryAttachment,
                 onSend = {
                     onSend(composerText)
                     composerText = ""
@@ -522,7 +544,10 @@ private fun ConversationBottomBar(
     connectionNotice: String?,
     isStreaming: Boolean,
     enabled: Boolean,
+    attachments: List<ComposerAttachmentUi>,
     onAttach: () -> Unit,
+    onRemoveAttachment: (String) -> Unit,
+    onRetryAttachment: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
 ) {
@@ -540,6 +565,18 @@ private fun ConversationBottomBar(
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 12.dp, bottom = 8.dp),
+            )
+        }
+        AnimatedVisibility(
+            visible = attachments.isNotEmpty(),
+            enter = expandVertically(animationSpec = tween(220)) + fadeIn(animationSpec = tween(180)),
+            exit = shrinkVertically(animationSpec = tween(180)) + fadeOut(animationSpec = tween(140)),
+        ) {
+            AttachmentDraftStrip(
+                attachments = attachments,
+                onRemove = onRemoveAttachment,
+                onRetry = onRetryAttachment,
+                modifier = Modifier.padding(bottom = 10.dp),
             )
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
@@ -584,11 +621,159 @@ private fun ConversationBottomBar(
             )
             SendStopButton(
                 showStop = isStreaming,
-                enabled = isStreaming || (enabled && text.isNotBlank()),
+                enabled = isStreaming || (
+                    enabled &&
+                        (text.isNotBlank() || attachments.isNotEmpty()) &&
+                        attachments.all { it.state == ComposerAttachmentState.READY }
+                    ),
                 onClick = if (isStreaming) onStop else onSend,
             )
         }
     }
+}
+
+@Composable
+private fun AttachmentDraftStrip(
+    attachments: List<ComposerAttachmentUi>,
+    onRemove: (String) -> Unit,
+    onRetry: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    LazyRow(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(horizontal = 2.dp),
+    ) {
+        items(attachments, key = { it.id }) { attachment ->
+            AttachmentDraftItem(attachment, onRemove, onRetry)
+        }
+    }
+}
+
+@Composable
+private fun AttachmentDraftItem(
+    attachment: ComposerAttachmentUi,
+    onRemove: (String) -> Unit,
+    onRetry: (String) -> Unit,
+) {
+    val progress = attachment.transferredBytes.toFloat() / attachment.sizeBytes.toFloat()
+    val animationsEnabled = remember { ValueAnimator.areAnimatorsEnabled() }
+    val animatedProgress by animateFloatAsState(
+        targetValue = progress,
+        animationSpec = if (animationsEnabled) tween(160) else snap(),
+        label = "attachment progress",
+    )
+    val stateLabel = when (attachment.state) {
+        ComposerAttachmentState.WAITING_FOR_CONNECTION -> "等待网络"
+        ComposerAttachmentState.UPLOADING -> "上传中 ${(animatedProgress * 100).toInt()}%"
+        ComposerAttachmentState.READY -> "已就绪"
+        ComposerAttachmentState.FAILED -> "上传失败"
+    }
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier
+            .width(280.dp)
+            .testTag("attachment-draft-${attachment.id}")
+            .semantics {
+                stateDescription = "文件 ${attachment.filename}，$stateLabel"
+                if (attachment.state == ComposerAttachmentState.UPLOADING) {
+                    progressBarRangeInfo = ProgressBarRangeInfo(animatedProgress, 0f..1f)
+                }
+            },
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 14.dp, top = 10.dp, bottom = 10.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            AnimatedContent(
+                targetState = attachment.state,
+                transitionSpec = {
+                    (fadeIn(tween(180)) + scaleIn(tween(220), initialScale = 0.25f)) togetherWith
+                        (fadeOut(tween(140)) + scaleOut(tween(180), targetScale = 0.25f))
+                },
+                label = "attachment state",
+            ) { state ->
+                val icon = when (state) {
+                    ComposerAttachmentState.WAITING_FOR_CONNECTION -> Icons.Rounded.CloudUpload
+                    ComposerAttachmentState.UPLOADING -> Icons.Rounded.CloudUpload
+                    ComposerAttachmentState.READY -> Icons.Rounded.CheckCircle
+                    ComposerAttachmentState.FAILED -> Icons.Rounded.ErrorOutline
+                }
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = when (state) {
+                        ComposerAttachmentState.FAILED -> MaterialTheme.colorScheme.error
+                        ComposerAttachmentState.READY -> MaterialTheme.colorScheme.primary
+                        else -> MaterialTheme.colorScheme.primary
+                    },
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = 10.dp),
+            ) {
+                Text(
+                    text = attachment.filename,
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = "${formatFileSize(attachment.sizeBytes)} · $stateLabel",
+                    style = MaterialTheme.typography.labelMedium.merge(
+                        TextStyle(fontFeatureSettings = "tnum"),
+                    ),
+                    color = if (attachment.state == ComposerAttachmentState.FAILED) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (attachment.state == ComposerAttachmentState.UPLOADING) {
+                    LinearProgressIndicator(
+                        progress = { animatedProgress },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 6.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                    )
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (attachment.state == ComposerAttachmentState.FAILED) {
+                    TactileIconButton(onClick = { onRetry(attachment.id) }) {
+                        Icon(Icons.Rounded.Refresh, contentDescription = "重试上传 ${attachment.filename}")
+                    }
+                }
+                if (attachment.canRemove) {
+                    TactileIconButton(onClick = { onRemove(attachment.id) }) {
+                        Icon(Icons.Rounded.Close, contentDescription = "移除附件 ${attachment.filename}")
+                    }
+                }
+                if (attachment.state in setOf(
+                        ComposerAttachmentState.WAITING_FOR_CONNECTION,
+                        ComposerAttachmentState.UPLOADING,
+                    )
+                ) {
+                    Spacer(Modifier.width(8.dp))
+                }
+            }
+        }
+    }
+}
+
+private fun formatFileSize(bytes: Long): String = when {
+    bytes >= 1024 * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024.0))
+    bytes >= 1024 -> "%.1f KB".format(bytes / 1024.0)
+    else -> "$bytes B"
 }
 
 @Composable
@@ -626,6 +811,7 @@ private fun SendStopButton(
         ),
         modifier = Modifier
             .size(48.dp)
+            .testTag("composer-send-stop")
             .pressScale(interactionSource, enabled),
     ) {
         ContextualSendStopIcon(showStop)
@@ -694,6 +880,8 @@ private fun ConversationLightPreview() {
             onSelectSession = {},
             onNewSession = {},
             onAttach = {},
+            onRemoveAttachment = {},
+            onRetryAttachment = {},
             onSend = {},
             onStop = {},
         )
@@ -709,6 +897,8 @@ private fun ConversationDarkPreview() {
             onSelectSession = {},
             onNewSession = {},
             onAttach = {},
+            onRemoveAttachment = {},
+            onRetryAttachment = {},
             onSend = {},
             onStop = {},
         )
