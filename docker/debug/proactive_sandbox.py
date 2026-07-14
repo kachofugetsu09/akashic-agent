@@ -16,7 +16,6 @@ from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from agent.mcp.registry import McpServerRegistry
 from agent.config_models import Config
 from agent.plugins.manager import PluginManager
 from agent.provider import LLMResponse, ToolCall
@@ -402,7 +401,6 @@ async def tick(
         session_manager=sessions,
         installed_cache_root=installed_cache,
     )
-    mcp = McpServerRegistry(workspace / "mcp_servers.json", tools)
     state = ProactiveStateStore(workspace / "proactive.db")
     provider: Any = SandboxProvider(mode)
     proactive_config = _config(mode, lifecycle)
@@ -445,22 +443,24 @@ async def tick(
             if source.spec.server == "feed"
         ]
         if len(feed_sources) != 1:
-            raise RuntimeError(f"Feed 主动来源数量异常: {feed_sources}")
+            raise RuntimeError(
+                f"Feed 主动来源数量异常: {feed_sources}; "
+                f"gate={plugins.latest_gate('feed@github')}"
+            )
         source = feed_sources[0]
         provider.content_item_id = (
             f"{source.plugin_id}:{source.spec.id}:{EVENT_ID}"
         )
-    connect_result = await mcp.add(
-        "feed",
-        [sys.executable, str(feed_root / "mcp" / "run_mcp.py")],
-        env={"AKA_PLUGIN_DATA_DIR": str(workspace / "feed-data")},
-        cwd=str(feed_root),
+    snapshot = plugins.current_snapshot
+    snapshot_tools = snapshot.tool_registry if snapshot is not None else None
+    registered_names = (
+        snapshot_tools.get_registered_names() if snapshot_tools is not None else set()
     )
     if not any(
         name.endswith("__get_proactive_events")
-        for name in tools.get_registered_names()
+        for name in registered_names
     ):
-        raise RuntimeError(f"Feed MCP 未连接: {connect_result}")
+        raise RuntimeError("Feed MCP 未连接")
     if len(plugins.proactive_runtime_factories) != 1:
         raise RuntimeError("主动 Runtime factory 数量异常")
     if len(plugins.proactive_module_factories) != 3:
@@ -493,13 +493,16 @@ async def tick(
             "decision": latest_tick.get("terminal_action"),
             "sent": sent,
             "model_tools": list(getattr(provider, "calls", [])),
-            "mcp_tools": sorted(tools.get_tool_names_by_source("mcp", "feed")),
+            "mcp_tools": sorted(
+                snapshot_tools.get_tool_names_by_source("mcp", "feed")
+                if snapshot_tools is not None
+                else set()
+            ),
             "lifecycle": loop._proactive_kernel.inspect(),
         }
     finally:
         await loop._proactive_kernel.stop()
         await plugins.terminate_all()
-        await mcp.shutdown()
         await event_bus.aclose()
         clear_default_shared_http_resources(http_resources)
         await http_resources.aclose()

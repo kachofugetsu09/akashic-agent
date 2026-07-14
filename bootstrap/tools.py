@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import inspect
 import os
@@ -28,7 +29,7 @@ from agent.looping.ports import (
     MemoryServices,
     SessionServices,
 )
-from agent.mcp.registry import McpServerRegistry
+from agent.mcp.watcher import WorkspaceMcpWatcher
 from agent.provider import LLMProvider
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.scheduler import SchedulerService
@@ -75,7 +76,8 @@ class CoreRuntime:
     scheduler: SchedulerService
     provider: LLMProvider
     light_provider: LLMProvider | None
-    mcp_registry: McpServerRegistry
+    workspace_mcp_watcher: WorkspaceMcpWatcher
+    workspace_mcp_watcher_task: asyncio.Task[None] | None
     memory_runtime: MemoryRuntime
     presence: PresenceStore
     peer_process_manager: PeerProcessManager | None
@@ -87,10 +89,7 @@ class CoreRuntime:
     async def start(self) -> None:
         """启动外部连接、peer 资源和插件扩展。"""
 
-        # 1. MCP 必须先完成连接，后续插件才能看到完整工具集。
-        await self.mcp_registry.load_and_connect_all()
-
-        # 2. 仅在 peer 配置真实启用时发现工具并启动轮询。
+        # 1. 仅在 peer 配置真实启用时发现工具并启动轮询。
         if (
             self.peer_poller is not None
             and self.peer_process_manager is not None
@@ -110,9 +109,13 @@ class CoreRuntime:
                 )
             self.peer_poller.start()
 
+        # 2. workspace MCP 必须先原子发布，插件同名声明随后 fail-loud
+        await self.workspace_mcp_watcher.reconcile()
+
         # 3. 加载插件后同步 skill，再绑定工具 hook。
         if self.plugin_manager is not None:
             await self.plugin_manager.load_all()
+            self.plugin_manager.assert_no_workspace_mcp_plugin_conflicts()
             if self.workspace is not None:
                 from agent.plugins.skill_links import PluginSkillLinker
 
@@ -139,6 +142,11 @@ class CoreRuntime:
                 spawn_tool = self.tools.get_tool("spawn")
                 if spawn_tool is not None and hasattr(spawn_tool, "add_tool_hooks"):
                     spawn_tool.add_tool_hooks(self.plugin_manager.tool_hooks)
+
+        # 4. 首次启动全部成功后才启动容错热重载 watcher
+        self.workspace_mcp_watcher_task = asyncio.create_task(
+            self.workspace_mcp_watcher.run(), name="workspace_mcp_watcher"
+        )
 
     async def inspect_modules(self) -> str:
         """按实际运行时依赖生成各阶段模块图。"""
@@ -265,8 +273,21 @@ class CoreRuntime:
         async def _close_session_manager() -> None:
             self.session_manager.close()
 
+        async def _stop_workspace_mcp_watcher() -> None:
+            self.workspace_mcp_watcher.stop()
+            task = self.workspace_mcp_watcher_task
+            if task is not None:
+                _ = task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            if self.plugin_manager is not None:
+                await self.plugin_manager.discard_workspace_mcp_candidate()
+
         # 2. 由统一 cleanup runner 完成全部步骤并保留失败。
         await run_cleanup_steps(
+            ("workspace_mcp_watcher.stop", _stop_workspace_mcp_watcher),
             ("spawn.shutdown", _stop_spawn),
             ("event_bus.aclose", self.event_bus.aclose),
             (
@@ -275,7 +296,6 @@ class CoreRuntime:
                 if self.plugin_manager is not None
                 else _noop_async,
             ),
-            ("mcp_registry.shutdown", self.mcp_registry.shutdown),
             (
                 "peer_poller.stop",
                 self.peer_poller.stop if self.peer_poller is not None else _noop_async,
@@ -307,7 +327,6 @@ def build_registered_tools(
     ToolRegistry,
     MessagePushTool,
     SchedulerService,
-    McpServerRegistry,
     MemoryRuntime,
     PeerProcessManager | None,
     PeerAgentPoller | None,
@@ -351,8 +370,7 @@ def build_registered_tools(
         config, bus, http_resources
     )
 
-    # 2. 保持 wiring.toolsets 顺序注册，确保 memory engine 与 MCP fallback 不变。
-    mcp_registry = None
+    # 2. 保持 wiring.toolsets 顺序注册。
     for name in wiring.toolsets:
         provider_obj = resolve_toolset_provider(
             name,
@@ -376,22 +394,11 @@ def build_registered_tools(
                 event_publisher=event_publisher,
             ),
         )
-        maybe_mcp = result.extras.get("mcp_registry")
-        if maybe_mcp is not None:
-            mcp_registry = maybe_mcp
-    if mcp_registry is None:
-        from agent.mcp.registry import McpServerRegistry
-
-        mcp_registry = McpServerRegistry(
-            config_path=workspace / "mcp_servers.json",
-            tool_registry=tools,
-        )
 
     return (
         tools,
         push_tool,
         scheduler,
-        mcp_registry,
         memory_runtime,
         peer_process_manager,
         peer_poller,
@@ -494,7 +501,7 @@ def build_core_runtime(
     loop_model = config.agent_model or config.model
     session_manager = SessionManager(workspace)
     loop_ref: dict[str, AgentLoop] = {}
-    tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_pm, peer_poller = (
+    tools, push_tool, scheduler, memory_runtime, peer_pm, peer_poller = (
         build_registered_tools(
             config,
             workspace,
@@ -562,9 +569,13 @@ def build_core_runtime(
             max_tokens=config.max_tokens,
         ),
         installed_cache_root=_resolve_installed_plugin_cache_root(),
-        user_mcp_server_names=mcp_registry.connected_server_names,
     )
     loop.bind_runtime_snapshot_store(plugin_manager.snapshot_store)
+    workspace_mcp_watcher = WorkspaceMcpWatcher(
+        plugin_manager,
+        workspace / "mcp" / "servers",
+        mcp_root=workspace / "mcp",
+    )
 
     return CoreRuntime(
         config=config,
@@ -580,7 +591,8 @@ def build_core_runtime(
         provider=provider,
         light_provider=light_provider,
         agent_provider=agent_provider,
-        mcp_registry=mcp_registry,
+        workspace_mcp_watcher=workspace_mcp_watcher,
+        workspace_mcp_watcher_task=None,
         memory_runtime=memory_runtime,
         presence=presence,
         peer_process_manager=peer_pm,

@@ -38,7 +38,7 @@ _PRESETS: dict[str, str] = {
     "deepseek": "https://api.deepseek.com/v1",
     "openai": "https://api.openai.com/v1",
 }
-_DEFAULT_TOOLSETS = ("meta_common", "spawn", "schedule", "mcp")
+_DEFAULT_TOOLSETS = ("meta_common", "spawn", "schedule")
 
 # 空值表示由 workspace 派生 app-server 端点，避免多个实例争用全局路径。
 DEFAULT_SOCKET = ""

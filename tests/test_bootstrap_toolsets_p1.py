@@ -77,7 +77,7 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
             calls.append("mcp")
             return ToolsetRegistrationResult(
                 source_name="mcp",
-                extras={"mcp_registry": object()},
+                extras={},
             )
 
     monkeypatch.setattr(
@@ -103,7 +103,7 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
         lambda *_args, **_kwargs: (None, None),
     )
 
-    tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_pm, peer_poller = (
+    tools, push_tool, scheduler, memory_runtime, peer_pm, peer_poller = (
         build_registered_tools(
             config=Config(
                 provider="openai",
@@ -112,7 +112,7 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
                 system_prompt="s",
                 spawn_enabled=False,
                 wiring=WiringConfig(
-                    toolsets=["meta_common", "spawn", "schedule", "mcp"]
+                    toolsets=["meta_common", "spawn", "schedule"]
                 ),
             ),
             workspace=tmp_path,
@@ -127,10 +127,9 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
         )
     )
 
-    assert calls == ["memory", "meta", "spawn", "schedule", "mcp"]
+    assert calls == ["memory", "meta", "spawn", "schedule"]
     assert push_tool is not None
     assert scheduler is not None
-    assert mcp_registry is not None
     assert memory_runtime.engine is not None
     assert peer_pm is None
     assert peer_poller is None

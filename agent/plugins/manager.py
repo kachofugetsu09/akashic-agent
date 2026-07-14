@@ -152,7 +152,6 @@ class PluginManager:
         memory_engine: Any = None,
         llm: PluginLlmService | None = None,
         installed_cache_root: Path | None = None,
-        user_mcp_server_names: Callable[[], set[str]] | None = None,
     ) -> None:
         self._dirs = plugin_dirs
         self._event_bus = event_bus
@@ -162,7 +161,6 @@ class PluginManager:
         self._memory_engine = memory_engine
         self._llm = llm
         self._installed_cache_root = installed_cache_root
-        self._user_mcp_server_names = user_mcp_server_names or set
         self._channel_switcher: Callable[
             [str, tuple[Channel, ...], tuple[Channel, ...]],
             Awaitable[None],
@@ -328,6 +326,28 @@ class PluginManager:
     def prepared_workspace_mcp(self) -> WorkspaceMcpGeneration | None:
         return self._prepared_workspace_mcp
 
+    def assert_no_workspace_mcp_plugin_conflicts(self) -> None:
+        """拒绝启动扫描中发现的 workspace/plugin MCP 名称冲突。"""
+
+        workspace = self._active_workspace_mcp
+        if workspace is None:
+            return
+        names = set(workspace.catalog.servers)
+        conflicts: list[str] = []
+        for plugin_id, gate in self._gate_results.items():
+            for check in gate.checks:
+                if check.check_id != "mcp_servers" or check.status != "failed":
+                    continue
+                evidence = check.evidence
+                if isinstance(evidence, list) and names.intersection(
+                    item for item in evidence if isinstance(item, str)
+                ):
+                    conflicts.append(plugin_id)
+        if conflicts:
+            raise RuntimeError(
+                "workspace MCP 与插件声明冲突: " + ", ".join(sorted(conflicts))
+            )
+
     async def prepare_workspace_mcp(
         self,
         server_specs: dict[str, dict[str, Any]],
@@ -358,7 +378,7 @@ class PluginManager:
                     lambda: self._mcp_host.close(generation_id),
                 )
             except BaseException:
-                cleanup_failures = await scope.aclose()
+                cleanup_failures, _ = await _complete_critical(scope.aclose())
                 self._cleanup_failures.extend(cleanup_failures)
                 raise
 
@@ -2323,7 +2343,6 @@ class PluginManager:
             for generation in other_generations
             for server_name in generation.contributions.mcp_servers
         }
-        occupied_servers.update(self._user_mcp_server_names())
         if self._active_workspace_mcp is not None:
             occupied_servers.update(self._active_workspace_mcp.catalog.servers)
         check(

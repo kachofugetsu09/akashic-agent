@@ -68,7 +68,6 @@ def _manager(
     *,
     tools: ToolRegistry | None = None,
     workspace: Path | None = None,
-    user_mcp_server_names=None,
 ) -> PluginManager:
     return PluginManager(
         plugin_dirs=[tmp_path / "plugins"],
@@ -76,7 +75,6 @@ def _manager(
         tool_registry=tools,
         workspace=workspace,
         installed_cache_root=tmp_path / "home" / "cache",
-        user_mcp_server_names=user_mcp_server_names,
     )
 
 
@@ -2610,50 +2608,6 @@ async def test_removed_plugin_mcp_server_releases_name_for_user_registry(
     await manager.terminate_all()
 
 
-@pytest.mark.asyncio
-async def test_plugin_mcp_server_cannot_replace_user_registry_server(
-    tmp_path: Path,
-) -> None:
-    plugin_dir = _write_plugin(
-        tmp_path / "plugins",
-        "mcp_collision",
-        "from agent.plugins import Plugin\n"
-        "class McpCollisionPlugin(Plugin):\n"
-        "    name = 'mcp_collision'\n",
-    )
-    tools = ToolRegistry()
-    manager = _manager(
-        tmp_path,
-        tools=tools,
-        user_mcp_server_names=lambda: {"user_server"},
-    )
-    await manager.load_all()
-
-    class UserMcpTool(Tool):
-        name = "mcp_user_server__value"
-        description = "user"
-        parameters = {"type": "object", "properties": {}}
-
-        async def execute(self) -> str:
-            return "user"
-
-    tools.register(UserMcpTool(), source_type="mcp", source_name="user_server")
-    _write_mcp_server(plugin_dir, ("value",))
-    _ = (plugin_dir / "plugin.py").write_text(
-        "from agent.plugins import McpServerSpec, Plugin\n"
-        "class McpCollisionPlugin(Plugin):\n"
-        "    name = 'mcp_collision'\n"
-        "    @classmethod\n"
-        "    def mcp_servers(cls):\n"
-        "        return [McpServerSpec(name='user_server', command=('python', 'server.py'))]\n",
-        encoding="utf-8",
-    )
-
-    assert await manager.prepare_candidate("mcp_collision") is None
-    assert await tools.execute("mcp_user_server__value", {}) == "user"
-    await manager.terminate_all()
-
-
 def test_tool_registry_fork_preserves_registration_order() -> None:
     registry = ToolRegistry()
 
@@ -2913,6 +2867,8 @@ async def test_workspace_mcp_and_plugin_mcp_names_conflict_both_directions(
     )
     _write_mcp_server(other_plugin, ("value",))
     assert await other.prepare_candidate("plugin_candidate") is None
+    with pytest.raises(RuntimeError, match="workspace MCP 与插件声明冲突"):
+        other.assert_no_workspace_mcp_plugin_conflicts()
     await other.terminate_all()
 
 

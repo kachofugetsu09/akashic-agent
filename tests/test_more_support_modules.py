@@ -15,7 +15,6 @@ import pytest
 
 import agent.provider as provider_module
 from agent.config_models import Config as ConfigModel
-from agent.mcp.registry import McpServerRegistry
 from agent.provider import (
     ContextLengthError,
     ContentSafetyError,
@@ -752,56 +751,7 @@ async def _collect_delta(bucket: list, chunk) -> None:
 
 
 @pytest.mark.asyncio
-async def test_mcp_registry_anyaction_and_sampler_cover_core_paths(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
-    class _Client:
-        def __init__(self, name: str, command: list[str], env=None, cwd=None):
-            self.name = name
-            self.command = command
-            self.env = env
-            self.cwd = cwd
-
-        async def connect(self):
-            return [SimpleNamespace(name="mcp_tool", description="Read remote docs")]
-
-        async def disconnect(self):
-            return None
-
-    class _Wrapper:
-        def __init__(self, client, info):
-            self.client = client
-            self.info = info
-            self.name = f"{client.name}:{info.name}"
-            self.description = info.description
-            self.parameters = {"type": "object", "properties": {}, "required": []}
-
-        def to_schema(self):
-            return {"type": "function", "function": {"name": self.name}}
-
-    monkeypatch.setattr("agent.mcp.registry.McpClient", _Client)
-    monkeypatch.setattr("agent.mcp.registry.McpToolWrapper", _Wrapper)
-    tools = MagicMock()
-    registry = McpServerRegistry(tmp_path / "mcp.json", tools)
-    added = await registry.add("docs", ["python", "srv.py"], env={"K": "V"}, cwd="/tmp")
-    assert "已连接 MCP server 'docs'" in added
-    tools.register.assert_called_once()
-    assert "docs（1 个工具）" in registry.list_servers()
-    assert "不存在" in await registry.remove("missing")
-    assert "已注销" in await registry.remove("docs")
-
-    (tmp_path / "mcp.json").write_text("{bad", encoding="utf-8")
-    with pytest.raises(RuntimeError, match=r"\[mcp\.registry\].*mcp\.json"):
-        registry._load_raw_configs()
-    (tmp_path / "mcp.json").write_text("{}", encoding="utf-8")
-    assert registry._load_raw_configs() == {}
-    (tmp_path / "mcp.json").write_text('{"servers": {}}', encoding="utf-8")
-    assert registry._load_raw_configs() == {}
-    (tmp_path / "mcp.json").write_text(
-        json.dumps({"servers": {"docs": {"command": ["x"]}}}), encoding="utf-8"
-    )
-    await registry.load_and_connect_all()
-
+async def test_anyaction_and_sampler_cover_core_paths(tmp_path: Path):
     quota = QuotaStore(tmp_path / "quota.json")
     now = datetime(2025, 6, 1, 12, tzinfo=timezone.utc)
     snap = quota.snapshot(now_utc=now, reset_hour=8, timezone_name="UTC")
@@ -862,12 +812,12 @@ async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
         scheduler=SimpleNamespace(run=lambda: "scheduler-task"),
         provider=MagicMock(),
         light_provider=MagicMock(),
-        mcp_registry=MagicMock(),
         memory_runtime=memory_runtime,
         presence=MagicMock(),
-        peer_process_manager=None,
-        peer_poller=None,
-        start=AsyncMock(),
+            peer_process_manager=None,
+            peer_poller=None,
+            workspace_mcp_watcher_task=None,
+            start=AsyncMock(),
         stop=AsyncMock(),
     )
     monkeypatch.setattr(
