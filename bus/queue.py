@@ -188,6 +188,19 @@ class MessageBus:
         ] = {}
         self._chat_lane = chat_lane or ChatLane()
         self._running = False
+        self._delivery_observer: (
+            Callable[[OutboundMessage, bool], Awaitable[None]] | None
+        ) = None
+
+    def bind_outbound_delivery_observer(
+        self,
+        callback: Callable[[OutboundMessage, bool], Awaitable[None]],
+    ) -> None:
+        """绑定唯一出站送达观察者。"""
+
+        if self._delivery_observer is not None:
+            raise RuntimeError("outbound delivery observer 已绑定")
+        self._delivery_observer = callback
 
     async def publish_inbound(self, msg: InboundItem) -> None:
         """将渠道输入交给 Agent 消费。"""
@@ -239,16 +252,22 @@ class MessageBus:
         while self._running:
             try:
                 msg = await asyncio.wait_for(self._outbound.get(), timeout=1.0)
-                await self._chat_lane.run_passive(
+                delivered = await self._chat_lane.run_passive(
                     msg.channel,
                     msg.chat_id,
                     lambda: self._send_outbound(msg),
                 )
+                if self._delivery_observer is not None:
+                    await self._delivery_observer(msg, delivered)
             except asyncio.TimeoutError:
                 continue
 
-    async def _send_outbound(self, msg: OutboundMessage) -> None:
-        for cb in tuple(self._subscribers.get(msg.channel, [])):
+    async def _send_outbound(self, msg: OutboundMessage) -> bool:
+        """发送原始消息，并区分原消息与降级文案的结果。"""
+
+        callbacks = tuple(self._subscribers.get(msg.channel, []))
+        delivered = bool(callbacks)
+        for cb in callbacks:
             try:
                 await cb(msg)
             except Exception as first_err:
@@ -259,6 +278,7 @@ class MessageBus:
                 try:
                     await cb(msg)
                 except Exception as second_err:
+                    delivered = False
                     logger.error(
                         f"分发消息到 {msg.channel} 重试仍失败，发送降级通知: {second_err}"
                     )
@@ -274,6 +294,7 @@ class MessageBus:
                             f"降级通知也失败，消息彻底丢失  channel={msg.channel} "
                             f"chat_id={msg.chat_id}"
                         )
+        return delivered
 
     def stop(self) -> None:
         self._running = False

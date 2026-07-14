@@ -1,7 +1,9 @@
+import asyncio
 import logging
 from collections.abc import Iterable, Set as AbstractSet
+from contextvars import ContextVar, Token
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, TypedDict, cast
 
 from agent.tools.base import Tool, ToolResult
@@ -71,6 +73,8 @@ def _with_progress_description(schema: dict[str, Any], tool: Tool) -> dict[str, 
 class ToolMeta:
     risk: str = "read-only"  # "read-only" | "write" | "external-side-effect"
     always_on: bool = False
+    preloadable: bool = True
+    requires_turn_search: bool = False
     # 可选：3–10 词短语，补充工具名和描述中没有的别名或口语化表达。
     # 不需要重复名称或描述里已有的词——搜索后端自动索引 name + description。
     search_hint: str | None = None
@@ -112,6 +116,40 @@ class ToolDocument:
             source_type=source_type,
             source_name=source_name,
         )
+
+
+@dataclass
+class _TurnSearchScope:
+    turn_id: str
+    session_key: str
+    attempt: int
+    granted: set[str] = field(default_factory=lambda: set[str]())
+
+
+_TURN_SEARCH_SCOPE: ContextVar[_TurnSearchScope | None] = ContextVar(
+    "akashic_turn_search_scope",
+    default=None,
+)
+
+
+def begin_turn_search_scope(
+    *,
+    turn_id: str,
+    session_key: str,
+    attempt: int,
+) -> Token[_TurnSearchScope | None]:
+    """为一次 reasoner attempt 建立独立 search 授权域。"""
+
+    if not session_key or attempt < 0:
+        raise ValueError("turn search scope 参数无效")
+    effective_turn_id = turn_id or f"local:{id(asyncio.current_task())}"
+    return _TURN_SEARCH_SCOPE.set(
+        _TurnSearchScope(effective_turn_id, session_key, attempt)
+    )
+
+
+def end_turn_search_scope(token: Token[_TurnSearchScope | None]) -> None:
+    _TURN_SEARCH_SCOPE.reset(token)
 
 
 # ── ToolRegistry ──────────────────────────────────────────────────────────────
@@ -181,12 +219,42 @@ class ToolRegistry:
             return view.get_context()
         return self._context
 
+    def begin_turn_search_scope(
+        self,
+        *,
+        turn_id: str,
+        session_key: str,
+        attempt: int,
+    ) -> Token[_TurnSearchScope | None]:
+        """为一次 reasoner attempt 建立独立 search 授权域。"""
+
+        return begin_turn_search_scope(
+            turn_id=turn_id,
+            session_key=session_key,
+            attempt=attempt,
+        )
+
+    def end_turn_search_scope(
+        self,
+        token: Token[_TurnSearchScope | None],
+    ) -> None:
+        end_turn_search_scope(token)
+
+    def grant_current_turn_search(self, names: list[str]) -> None:
+        """只在当前 attempt 内授权 tool_search 的真实结果。"""
+
+        scope = _TURN_SEARCH_SCOPE.get()
+        if scope is not None:
+            scope.granted.update(names)
+
     def register(
         self,
         tool: Tool,
         *,
         risk: str = "read-only",
         always_on: bool = False,
+        preloadable: bool = True,
+        requires_turn_search: bool = False,
         search_hint: str | None = None,
         source_type: str = "builtin",
         source_name: str = "",
@@ -195,6 +263,8 @@ class ToolRegistry:
         meta = ToolMeta(
             risk=risk,
             always_on=always_on,
+            preloadable=preloadable,
+            requires_turn_search=requires_turn_search,
             search_hint=search_hint,
         )
         self._metadata[tool.name] = meta
@@ -274,6 +344,16 @@ class ToolRegistry:
             return view.get_always_on_names()
         return {name for name, meta in self._metadata.items() if meta.always_on}
 
+    def get_non_preloadable_names(self) -> set[str]:
+        """返回每个新 turn 都必须重新发现的工具。"""
+
+        view = self._runtime_view()
+        if view is not self:
+            return view.get_non_preloadable_names()
+        return {
+            name for name, meta in self._metadata.items() if not meta.preloadable
+        }
+
     def get_documents(self) -> list[ToolDocument]:
         """返回所有已注册工具的索引文档列表。"""
         view = self._runtime_view()
@@ -339,6 +419,41 @@ class ToolRegistry:
             if raise_errors:
                 raise RuntimeError(f"工具 '{name}' 不存在")
             return f"工具 '{name}' 不存在"
+        meta = self._metadata[name]
+        if meta.requires_turn_search:
+            scope = _TURN_SEARCH_SCOPE.get()
+            from agent.control.context import current_turn_id
+            from core.error_context import current_session_key
+
+            active_turn_id = current_turn_id.get()
+            active_session_key = current_session_key.get()
+            scope_matches_caller = (
+                scope is not None
+                and bool(active_turn_id)
+                and scope.turn_id == active_turn_id
+                and scope.session_key == active_session_key
+            )
+            if (
+                not scope_matches_caller
+                or scope is None
+                or name not in scope.granted
+            ):
+                message = (
+                    f"工具 '{name}' 必须在当前 turn 的当前 attempt 中先通过 "
+                    f'tool_search(query="select:{name}") 解锁'
+                )
+                if raise_errors:
+                    raise RuntimeError(message)
+                return message
+            validation_arguments = dict(arguments)
+            if not _tool_defines_parameter(tool, _PROGRESS_DESCRIPTION_FIELD):
+                validation_arguments.pop(_PROGRESS_DESCRIPTION_FIELD, None)
+            validation_errors = tool.validate_params(validation_arguments)
+            if validation_errors:
+                message = "; ".join(validation_errors)
+                if raise_errors:
+                    raise ValueError(message)
+                return f"工具参数无效: {message}"
         try:
             # 将会话上下文（channel、chat_id）作为低优先级默认值合并进 kwargs，
             # 工具可按需读取，不感知此机制的工具会直接忽略多余的 key。

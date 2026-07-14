@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import Any, cast
 
-from agent.control.errors import ThreadBusyError
+from agent.control.errors import RuntimeClosedError, ThreadBusyError
 from agent.control.models import TurnRequest, TurnStatus
 from agent.control.runtime import ConversationRuntime
 from agent.looping.core import AgentLoop
@@ -103,6 +103,15 @@ class PassiveMessageWorker:
                     handle = await self._runtime.start_turn(request)
                 except ThreadBusyError:
                     continue
+                except RuntimeClosedError:
+                    await self._bus.publish_outbound(
+                        OutboundMessage(
+                            channel=item.channel,
+                            chat_id=item.chat_id,
+                            content="服务正在重启，请稍后重发这条消息。",
+                        )
+                    )
+                    return
                 break
             result = await handle.result()
 
@@ -120,6 +129,7 @@ class PassiveMessageWorker:
                     reply_to=cast(str | None, data.get("replyTo")),
                     media=list(cast(list[str], data.get("media", []))),
                     metadata=dict(cast(dict[str, Any], data.get("metadata", {}))),
+                    control_turn_id=handle.id,
                 )
             elif result.status is TurnStatus.FAILED:
                 outbound = OutboundMessage(

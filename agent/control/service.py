@@ -14,6 +14,7 @@ from agent.control.models import ThreadRecord, ThreadSource, TurnRequest
 from agent.control.protocol.models import InitializeParams
 from agent.control.protocol.errors import JsonRpcError, UNAUTHORIZED
 from agent.control.runtime import ConversationRuntime, TurnHandle
+from agent.restart import RestartCoordinator
 from session.manager import SessionManager
 
 
@@ -29,6 +30,9 @@ class ControlService:
         plugin_drain: Callable[[str], Awaitable[str]] | None = None,
         consolidate: Callable[[str], Awaitable[bool]] | None = None,
         workspace_token: str | None = None,
+        restart_coordinator: RestartCoordinator | None = None,
+        boot_id: str | None = None,
+        ready: Callable[[], bool] | None = None,
     ) -> None:
         self.runtime = runtime
         self.sessions = sessions
@@ -36,6 +40,9 @@ class ControlService:
         self._plugin_drain = plugin_drain
         self._consolidate = consolidate
         self._workspace_token = workspace_token
+        self._restart_coordinator = restart_coordinator
+        self._boot_id = boot_id
+        self._ready = ready
         self._operation_tasks: set[asyncio.Task[dict[str, object]]] = set()
 
     def initialize(self, params: InitializeParams) -> dict[str, object]:
@@ -56,7 +63,20 @@ class ControlService:
         }
 
     def status(self) -> dict[str, object]:
-        return {"ready": True, "workspace": str(self.workspace), "protocolVersion": "1.0"}
+        return {
+            "ready": self._ready() if self._ready is not None else True,
+            "bootId": self._boot_id,
+            "workspace": str(self.workspace),
+            "protocolVersion": "1.0",
+        }
+
+    def notify_turn_delivered(self, turn_id: str) -> None:
+        if self._restart_coordinator is not None:
+            self._restart_coordinator.mark_delivered(turn_id)
+
+    def notify_turn_delivery_failed(self, turn_id: str, reason: str) -> None:
+        if self._restart_coordinator is not None:
+            self._restart_coordinator.mark_delivery_failed(turn_id, reason)
 
     def start_thread(self, metadata: dict[str, Any]) -> dict[str, object]:
         thread_id = new_thread_id()

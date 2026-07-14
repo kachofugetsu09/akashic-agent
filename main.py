@@ -3,6 +3,7 @@
 
 主要模式：
   python main.py gateway            启动完整 agent 与 app-server
+  python main.py supervise          以固定 supervisor 托管 gateway
   python main.py app-server --stdio 启动父进程托管控制面
   python main.py exec ...           非交互执行一个 turn
 """
@@ -49,6 +50,8 @@ if __name__ == "__main__" and _run_lightweight_setup_command():
 
 from agent.config import Config, resolve_app_server_endpoint
 from agent.control.client import ControlClient, RemoteControlError
+from agent.restart import RestartCoordinator, SupervisorCommitChannel
+from agent.supervisor import RESTART_EXIT_CODE, run_supervisor
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
 from agent.plugins.install import (
     install_git_plugin,
@@ -59,6 +62,7 @@ from bootstrap.app import build_app_runtime
 from bootstrap.dashboard_api import run_dashboard_api
 from bootstrap.init_workspace import InitSummary, init_workspace
 from bootstrap.memory import build_memory_admin_runtime
+from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.workspace_token import read_workspace_token
 from bootstrap.providers import build_providers
 from core.net.http import SharedHttpResources
@@ -73,6 +77,7 @@ _HELP = """\
   setup-main                    仅切换主模型并保留其他配置
   init                          非交互初始化配置和工作区
   gateway                       启动 Agent 服务
+  supervise                     以固定 supervisor 托管 Agent 服务
   app-server --stdio            在 stdio 上运行程序化控制面
   exec --new|--thread ID PROMPT 执行一个非交互 turn
   dashboard                     单独启动 Dashboard
@@ -102,6 +107,21 @@ def _get_flag_value(args: list[str], flag: str) -> str | None:
     if idx + 1 >= len(args):
         raise ValueError(f"参数 {flag} 缺少值")
     return args[idx + 1]
+
+
+def _validate_supervise_args(args: list[str]) -> None:
+    """限制 supervise 只能接收固定 gateway 所需路径参数。"""
+
+    index = 0
+    seen: set[str] = set()
+    while index < len(args):
+        flag = args[index]
+        if flag not in {"--config", "--workspace"}:
+            raise ValueError(f"supervise 不支持参数: {flag}")
+        if flag in seen or index + 1 >= len(args):
+            raise ValueError(f"supervise 参数无效: {flag}")
+        seen.add(flag)
+        index += 2
 
 
 def _print_init_summary(summary: InitSummary) -> None:
@@ -298,11 +318,29 @@ async def inspect_modules(
 async def serve(
     config_path: str = "config.toml",
     workspace: Path | None = None,
-) -> None:
+) -> int:
     config = Config.load(config_path)
+    workspace = workspace or _default_workspace()
+    commit_channel = SupervisorCommitChannel.from_environment()
+    restart_coordinator = (
+        RestartCoordinator(
+            commit_channel.boot_id,
+            supervised=True,
+            commit=commit_channel.commit,
+        )
+        if commit_channel is not None
+        else None
+    )
+    readiness = (
+        RuntimeReadiness(workspace, commit_channel.boot_id)
+        if commit_channel is not None
+        else None
+    )
     runtime = build_app_runtime(
         config,
-        workspace=workspace or _default_workspace(),
+        workspace=workspace,
+        restart_coordinator=restart_coordinator,
+        readiness=readiness,
     )
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
@@ -321,18 +359,34 @@ async def serve(
 
     runtime_task = asyncio.create_task(runtime.run(), name="app_runtime")
     stop_task = asyncio.create_task(stop_event.wait(), name="shutdown_signal")
+    restart_task = (
+        asyncio.create_task(
+            restart_coordinator.wait_committed(),
+            name="restart_committed",
+        )
+        if restart_coordinator is not None
+        else None
+    )
     try:
+        watched = {runtime_task, stop_task}
+        if restart_task is not None:
+            watched.add(restart_task)
         done, _ = await asyncio.wait(
-            {runtime_task, stop_task},
+            watched,
             return_when=asyncio.FIRST_COMPLETED,
         )
         if runtime_task in done:
             _ = stop_task.cancel()
             await runtime_task
-            return
+            return 0
+        restart_requested = False
+        if restart_task is not None and restart_task in done:
+            await restart_task
+            restart_requested = True
         _ = runtime_task.cancel()
         with suppress(asyncio.CancelledError):
             await runtime_task
+        return RESTART_EXIT_CODE if restart_requested else 0
     finally:
         if signal_handlers_registered:
             for sig in watched_signals:
@@ -340,6 +394,10 @@ async def serve(
         _ = stop_task.cancel()
         with suppress(asyncio.CancelledError):
             await stop_task
+        if restart_task is not None:
+            _ = restart_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await restart_task
 
 
 if __name__ == "__main__":
@@ -467,9 +525,21 @@ if __name__ == "__main__":
             print(format_plugin_doctor_report(report))
         sys.exit(1 if report.get("status") == "broken" else 0)
 
+    if args and args[0] == "supervise":
+        try:
+            _validate_supervise_args(args[1:])
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(2)
+        sys.exit(
+            run_supervisor(
+                config_path=Path(config_path),
+                workspace=workspace or _default_workspace(),
+            )
+        )
+
     if args and args[0] == "gateway":
-        asyncio.run(serve(config_path, workspace))
-        sys.exit(0)
+        sys.exit(asyncio.run(serve(config_path, workspace)))
 
     if args and args[0] == "app-server":
         if "--stdio" not in args:

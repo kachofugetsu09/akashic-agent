@@ -13,6 +13,7 @@ from agent.config import resolve_app_server_endpoint
 from agent.control.models import TurnRequest
 from agent.control.runtime import ConversationRuntime
 from agent.control.service import ControlService
+from agent.restart import RestartCoordinator
 from agent.config_models import Config
 from bootstrap.channel_host import ChannelHost
 from bootstrap.channels import start_channels
@@ -21,6 +22,7 @@ from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.control_execution import execute_control_turn
 from bootstrap.dashboard_api import build_dashboard_server
 from bootstrap.proactive import build_memory_optimizer_task, build_proactive_runtime
+from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.passive_worker import PassiveMessageWorker
 from bootstrap.tools import CoreRuntime, build_core_runtime
 from bootstrap.workspace_lock import WorkspaceInstanceLock
@@ -71,6 +73,16 @@ def _release_workspace_lock(
         lock.release()
 
     return release
+
+
+def _clear_readiness(
+    readiness: RuntimeReadiness | None,
+) -> Callable[[], Awaitable[None]]:
+    async def clear() -> None:
+        if readiness is not None:
+            readiness.clear()
+
+    return clear
 
 
 def _raise_unexpected_task_errors(name: str, results: list[object]) -> None:
@@ -165,9 +177,18 @@ def _wait_server_task(
 
 
 class AppRuntime:
-    def __init__(self, config: Config, workspace: Path) -> None:
+    def __init__(
+        self,
+        config: Config,
+        workspace: Path,
+        *,
+        restart_coordinator: RestartCoordinator | None = None,
+        readiness: RuntimeReadiness | None = None,
+    ) -> None:
         self.config = config
         self.workspace = workspace
+        self.restart_coordinator = restart_coordinator
+        self.readiness = readiness
         self.http_resources = SharedHttpResources()
         self.app_server: SocketAppServer | None = None
         self.conversation_runtime: ConversationRuntime | None = None
@@ -215,10 +236,16 @@ class AppRuntime:
         self._workspace_lock.acquire()
         try:
             configure_default_shared_http_resources(self.http_resources)
+            core_kwargs = (
+                {"restart_coordinator": self.restart_coordinator}
+                if self.restart_coordinator is not None
+                else {}
+            )
             self.core = build_core_runtime(
                 self.config,
                 self.workspace,
                 self.http_resources,
+                **core_kwargs,
             )
             self.agent_loop = self.core.loop
             self.bus = self.core.bus
@@ -250,7 +277,13 @@ class AppRuntime:
             self.conversation_runtime = ConversationRuntime(
                 self.session_manager.control_store,
                 _execute_control_request,
+                restart_coordinator=self.restart_coordinator,
             )
+            if self.restart_coordinator is not None:
+                self.restart_coordinator.bind_admission(
+                    quiesce=self.conversation_runtime.quiesce_for_restart,
+                    resume=self.conversation_runtime.resume_after_restart_cancel,
+                )
             app_server_endpoint: str | None = None
             workspace_token: str | None = None
             if self.config.app_server.enabled:
@@ -271,12 +304,34 @@ class AppRuntime:
                     else None
                 ),
                 workspace_token=workspace_token,
+                restart_coordinator=self.restart_coordinator,
+                boot_id=self.readiness.boot_id if self.readiness else None,
+                ready=(lambda: self.readiness.ready) if self.readiness else None,
             )
             self.passive_worker = PassiveMessageWorker(
                 self.bus,
                 self.conversation_runtime,
                 self.agent_loop,
             )
+            if self.restart_coordinator is not None:
+                coordinator = self.restart_coordinator
+
+                async def observe_delivery(
+                    message: Any,
+                    delivered: bool,
+                ) -> None:
+                    turn_id = str(message.control_turn_id or "")
+                    if not turn_id:
+                        return
+                    if delivered:
+                        coordinator.mark_delivered(turn_id)
+                    else:
+                        coordinator.mark_delivery_failed(
+                            turn_id,
+                            "channel callback did not deliver original response",
+                        )
+
+                self.bus.bind_outbound_delivery_observer(observe_delivery)
             if self.config.app_server.enabled:
                 assert app_server_endpoint is not None
                 self.app_server = SocketAppServer(
@@ -472,10 +527,17 @@ class AppRuntime:
                 )
                 if task is not None
             }
-            done, _ = await asyncio.wait(
-                {self._primary_task, *watched_tasks},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            supervised_tasks = {self._primary_task, *watched_tasks}
+
+            # runtime task 获得一次调度机会后仍存活，才对外发布 ready。
+            done, _ = await asyncio.wait(supervised_tasks, timeout=0)
+            if not done:
+                if self.readiness is not None:
+                    self.readiness.mark_ready()
+                done, _ = await asyncio.wait(
+                    supervised_tasks,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
             if self._primary_task in done:
                 await self._primary_task
             else:
@@ -644,6 +706,10 @@ class AppRuntime:
                     else _noop_async,
                 ),
                 ("http_resources.aclose", self.http_resources.aclose),
+                (
+                    "runtime_readiness.clear",
+                    _clear_readiness(self.readiness),
+                ),
                 ("workspace_lock.release", _release_workspace_lock(self._workspace_lock)),
             )
         finally:
@@ -763,5 +829,16 @@ class AppRuntime:
             self.channel_host.commit_plugin_swap(swap)
 
 
-def build_app_runtime(config: Config, workspace: Path | None = None) -> AppRuntime:
-    return AppRuntime(config, workspace or (Path.home() / ".akashic" / "workspace"))
+def build_app_runtime(
+    config: Config,
+    workspace: Path | None = None,
+    *,
+    restart_coordinator: RestartCoordinator | None = None,
+    readiness: RuntimeReadiness | None = None,
+) -> AppRuntime:
+    return AppRuntime(
+        config,
+        workspace or (Path.home() / ".akashic" / "workspace"),
+        restart_coordinator=restart_coordinator,
+        readiness=readiness,
+    )

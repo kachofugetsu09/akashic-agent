@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 
 from agent.control.protocol.router import ConnectionRouter
 from agent.control.service import ControlService
+
+
+@dataclass(frozen=True)
+class _PendingFrame:
+    payload: bytes
+    written: asyncio.Future[None] | None
 
 
 class NdjsonConnection:
@@ -22,7 +29,9 @@ class NdjsonConnection:
     ) -> None:
         self._reader = reader
         self._writer = writer
-        self._queue: asyncio.Queue[bytes | None] = asyncio.Queue(outbound_queue_size)
+        self._queue: asyncio.Queue[_PendingFrame | None] = asyncio.Queue(
+            outbound_queue_size
+        )
         self._max_message_bytes = max_message_bytes
         self._router = ConnectionRouter(
             service,
@@ -33,11 +42,18 @@ class NdjsonConnection:
 
     async def send(self, message: dict[str, object]) -> None:
         encoded = (json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+        written = (
+            asyncio.get_running_loop().create_future()
+            if message.get("method") == "turn/completed"
+            else None
+        )
         try:
-            self._queue.put_nowait(encoded)
+            self._queue.put_nowait(_PendingFrame(encoded, written))
         except asyncio.QueueFull as exc:
             self._writer.close()
             raise ConnectionError("client outbound queue is full") from exc
+        if written is not None:
+            await asyncio.shield(written)
 
     async def run(self) -> None:
         writer_task = asyncio.create_task(self._write_loop(), name="control-writer")
@@ -82,8 +98,26 @@ class NdjsonConnection:
 
     async def _write_loop(self) -> None:
         while True:
-            payload = await self._queue.get()
-            if payload is None:
+            frame = await self._queue.get()
+            if frame is None:
                 return
-            self._writer.write(payload)
-            await self._writer.drain()
+            try:
+                self._writer.write(frame.payload)
+                await self._writer.drain()
+            except BaseException as exc:
+                if frame.written is not None and not frame.written.done():
+                    frame.written.set_exception(exc)
+                self._fail_pending_frames(exc)
+                raise
+            if frame.written is not None and not frame.written.done():
+                frame.written.set_result(None)
+
+    def _fail_pending_frames(self, error: BaseException) -> None:
+        while not self._queue.empty():
+            frame = self._queue.get_nowait()
+            if (
+                frame is not None
+                and frame.written is not None
+                and not frame.written.done()
+            ):
+                frame.written.set_exception(error)

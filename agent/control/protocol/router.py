@@ -218,9 +218,16 @@ class ConnectionRouter:
         try:
             async for event in handle.events():
                 await self._send(event.to_notification())
+                if event.method == "turn/completed":
+                    self._service.notify_turn_delivered(handle.id)
         except asyncio.CancelledError:
+            self._service.notify_turn_delivery_failed(
+                handle.id,
+                "connection closed before terminal delivery",
+            )
             raise
-        except Exception:
+        except Exception as exc:
+            self._service.notify_turn_delivery_failed(handle.id, str(exc))
             logger.exception("turn event forwarding failed turn=%s", handle.id)
 
     async def close(self) -> None:
