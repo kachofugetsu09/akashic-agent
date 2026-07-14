@@ -84,12 +84,13 @@ Agent / meme 插件输出媒体
 
 ### 2. Android 上传与发送
 
-- Commit：`feat(android): add resumable attachment sending`。
+- Commit：`bb8e9609 feat(android): add resumable attachment sending`。
 - 文件入口：`OpenMultipleDocuments` 选择后立即复制进 app 私有目录，复制时流式计算大小和 SHA-256；不依赖重启后可能失效的 Content URI。
 - 续传：每次连接生成新的 begin command ID，以服务端 `next_offset` 覆盖本地确认值；每个 1MiB 确认窗口由 8 个 128KiB binary frame 组成，未确认字节不写入 Room offset。
 - 一致性：`attachment.progress/ready` 与 durable cursor 在同一 Room 事务提交；完整 offset 重连直接恢复 finish；消息入 outbox 时附件从 ready 原子推进 sending，reply 后转 sent 或恢复 ready。
 - 消息：支持图文和纯附件；发送确认后清理 app 私有源文件。
 - 版本：Android `0.3.0`（versionCode 3），对应本组可安装 APK。
+- APK：私有 Release `kachofugetsu09/akashic-mobile-releases` 的 `v0.3.0`，本机 release 测试、Lint、R8 构建和 v2 签名验证通过。
 - 验证：Android JVM 21 项通过；`compileDebugAndroidTestKotlin`、`lintDebug`、`assembleDebug` 通过；无窗口 API 36.1 模拟器 11 项 Room、Compose、Keystore instrumentation 全部通过，随后已关闭模拟器。
 - 跨端 E2E：服务端组已独立证明认证 WSS 到 `InboundMessage.media`；Android 组已证明 1MiB 窗口、断线新 begin ID、完整 offset 恢复 finish、纯附件发送门控。真实 Android→隔离 Gateway 联合链路留在第 5 组执行。
 
