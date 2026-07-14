@@ -121,7 +121,7 @@ better-ui：
 
 ### 3. 出栈媒体、meme 与历史
 
-- Commit：待完成。
+- Commit：`71beaab0 feat(mobile): add websocket media downloads`。
 - 协议：`message.final/history.page` 使用统一 descriptor；客户端以 `attachment.download(offset)` 请求 128KiB binary chunk，服务端先发二进制再发 reply，同 command ID 可重放。
 - 持久化：本地媒体先复制为只读 canonical 文件，再以随机 opaque ID 注册；同会话内容身份在 SQLite 写事务内稳定复用，批次失败不留记录或孤儿文件。
 - 元数据：手机上传后再由 Agent 返回的文件，按 `session_id + local_path` 恢复原文件名和 MIME；descriptor 不含服务端路径。
