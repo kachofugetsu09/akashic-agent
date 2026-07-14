@@ -92,6 +92,9 @@ class FakeMemoryEngine:
     def backup_long_term(self, backup_name: str = "MEMORY.bak.md") -> None:
         return None
 
+    def backup_self(self, backup_name: str = "SELF.bak.md") -> None:
+        return None
+
     def get_memory_context(self) -> str:
         return self._store.get_memory_context() if self._store is not None else ""
 

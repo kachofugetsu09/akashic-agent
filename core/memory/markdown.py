@@ -5,7 +5,6 @@ import hashlib
 import json
 import logging
 import re
-import shutil
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -19,6 +18,7 @@ from agent.prompting import is_context_frame
 from agent.provider import LLMProvider
 from bus.events_lifecycle import TurnCommitted
 from core.memory.events import ConsolidationCommitted
+from infra.persistence.json_store import atomic_write_text
 
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
@@ -70,6 +70,8 @@ class MemoryProfileApi(Protocol):
     def write_recent_context(self, content: str) -> None: ...
 
     def backup_long_term(self, backup_name: str = "MEMORY.bak.md") -> None: ...
+
+    def backup_self(self, backup_name: str = "SELF.bak.md") -> None: ...
 
     def get_memory_context(self) -> str: ...
 
@@ -1001,11 +1003,33 @@ history_entries.emotional_weight 规则：
 
 class MarkdownMemoryStore(MemoryStore):
     def backup_long_term(self, backup_name: str = "MEMORY.bak.md") -> None:
-        if self.memory_file.exists():
-            shutil.copyfile(
-                self.memory_file,
-                self.memory_file.with_name(backup_name),
-            )
+        self._backup_profile(self.memory_file, backup_name)
+
+    def backup_self(self, backup_name: str = "SELF.bak.md") -> None:
+        self._backup_profile(self.self_file, backup_name)
+
+    def _backup_profile(self, source: Path, latest_name: str) -> None:
+        """原子保存最新备份和不可覆盖的历史版本。"""
+        if not source.exists():
+            return
+
+        # 1. 先保存唯一历史版本，保证后续优化无法覆盖恢复点
+        content = source.read_text(encoding="utf-8")
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        nanoseconds = time.time_ns() % 1_000_000_000
+        history_path = (
+            self.memory_dir
+            / "backups"
+            / f"{source.stem}.{timestamp}-{nanoseconds:09d}.bak{source.suffix}"
+        )
+        atomic_write_text(history_path, content, domain="memory_backup")
+
+        # 2. 刷新固定名称，保留现有手工恢复入口
+        atomic_write_text(
+            source.with_name(latest_name),
+            content,
+            domain="memory_backup",
+        )
 
     def has_long_term_memory(self) -> bool:
         return bool(self.read_long_term().strip())
