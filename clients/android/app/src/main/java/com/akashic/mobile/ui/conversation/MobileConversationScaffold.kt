@@ -61,6 +61,8 @@ fun MobileConversationScaffold(
     onRetryAttachment: (String) -> Unit,
     onSend: (String) -> Unit,
     onStop: () -> Unit,
+    onRetryDownloadedAttachment: (String) -> Unit,
+    onOpenDownloadedAttachment: (String) -> Unit,
 ) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -95,6 +97,8 @@ fun MobileConversationScaffold(
                 onRetryAttachment = onRetryAttachment,
                 onSend = onSend,
                 onStop = onStop,
+                onRetryDownloadedAttachment = onRetryDownloadedAttachment,
+                onOpenDownloadedAttachment = onOpenDownloadedAttachment,
             )
         }
 

@@ -103,6 +103,33 @@ data class AttachmentFinishPayload(
 )
 
 @Serializable
+data class AttachmentDescriptor(
+    @SerialName("attachment_id") val attachmentId: String,
+    val filename: String,
+    @SerialName("content_type") val contentType: String,
+    @SerialName("size_bytes") val sizeBytes: Long,
+    val sha256: String,
+)
+
+@Serializable
+data class AttachmentDownloadPayload(
+    @SerialName("attachment_id") val attachmentId: String,
+    val offset: Long,
+)
+
+@Serializable
+data class AttachmentDownloadReplyPayload(
+    @SerialName("attachment_id") val attachmentId: String,
+    val filename: String,
+    @SerialName("content_type") val contentType: String,
+    @SerialName("size_bytes") val sizeBytes: Long,
+    val sha256: String,
+    val offset: Long,
+    @SerialName("next_offset") val nextOffset: Long,
+    val complete: Boolean,
+)
+
+@Serializable
 data class EventAckPayload(
     @SerialName("through_event_seq")
     val throughEventSeq: Long,
@@ -168,6 +195,8 @@ data class RemoteHistoryMessage(
     @SerialName("tool_chain") val toolChain: JsonElement? = null,
     val extra: JsonObject,
     val ts: String,
+    @SerialName("client_message_id") val clientMessageId: String? = null,
+    val attachments: List<AttachmentDescriptor> = emptyList(),
 )
 
 @Serializable
@@ -196,6 +225,7 @@ object ProtocolCodec {
             "turn.stop",
             "attachment.begin",
             "attachment.finish",
+            "attachment.download",
             "device.update",
             "ping",
         ),
@@ -271,7 +301,9 @@ object ProtocolCodec {
             WireKind.COMMAND,
             WireKind.REPLY,
             WireKind.EVENT,
-            -> require(!envelope.id.isNullOrBlank()) { "${envelope.kind} id is required" }
+            -> require(envelope.id != null && FRAME_ID.matches(envelope.id)) {
+                "${envelope.kind} id must be a UUIDv7 or ULID"
+            }
 
             WireKind.ACK,
             WireKind.CONTROL,
@@ -302,5 +334,16 @@ object ProtocolCodec {
         if (envelope.kind == WireKind.ACK || envelope.kind == WireKind.CONTROL) {
             require(envelope.id == null) { "${envelope.kind} id is not used by protocol v1" }
         }
+        if (envelope.kind == WireKind.COMMAND && envelope.type == "message.send") {
+            val payload = json.decodeFromJsonElement<MessageSendPayload>(envelope.payload)
+            require(payload.clientMessageId == envelope.id) {
+                "message.send id must equal client_message_id"
+            }
+        }
     }
+
+    private val FRAME_ID = Regex(
+        "^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-" +
+            "7[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12})$",
+    )
 }

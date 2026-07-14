@@ -13,6 +13,10 @@ class MainViewModelTest {
         val ready = connectionPresentation(ConnectionState(phase = ConnectionPhase.READY))
         val degraded = connectionPresentation(ConnectionState(phase = ConnectionPhase.DEGRADED))
         val disconnected = connectionPresentation(ConnectionState(phase = ConnectionPhase.CLOSED))
+        val failed = connectionPresentation(
+            ConnectionState(phase = ConnectionPhase.FAILED),
+            "启动缓存检查失败：permission denied",
+        )
 
         assertEquals("连接正常", ready.label)
         assertEquals(ConnectionStatusUi.READY, ready.status)
@@ -21,6 +25,9 @@ class MainViewModelTest {
         assertEquals(ConnectionStatusUi.DEGRADED, degraded.status)
         assertEquals("连接已断开", disconnected.label)
         assertEquals(ConnectionStatusUi.DISCONNECTED, disconnected.status)
+        assertEquals("启动失败", failed.label)
+        assertEquals(ConnectionStatusUi.DISCONNECTED, failed.status)
+        assertEquals("启动缓存检查失败：permission denied", failed.notice)
     }
 
     @Test

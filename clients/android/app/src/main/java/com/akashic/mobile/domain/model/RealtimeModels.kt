@@ -20,6 +20,7 @@ enum class ConnectionPhase {
     SYNCING,
     READY,
     DEGRADED,
+    FAILED,
     CLOSED,
 }
 

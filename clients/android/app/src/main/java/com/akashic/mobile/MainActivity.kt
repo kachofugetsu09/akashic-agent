@@ -51,6 +51,8 @@ class MainActivity : ComponentActivity() {
                         onAttach = { attachmentPicker.launch(arrayOf("*/*")) },
                         onRemoveAttachment = viewModel::removeAttachment,
                         onRetryAttachment = viewModel::retryAttachment,
+                        onRetryDownloadedAttachment = viewModel::retryDownloadedAttachment,
+                        onOpenDownloadedAttachment = viewModel::touchDownloadedAttachment,
                         onSend = viewModel::sendMessage,
                         onStop = {},
                     )

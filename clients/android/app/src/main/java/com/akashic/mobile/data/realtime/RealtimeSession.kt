@@ -2,12 +2,15 @@ package com.akashic.mobile.data.realtime
 
 import android.os.Build
 import android.net.Uri
+import android.database.sqlite.SQLiteException
+import android.util.Log
 import com.akashic.mobile.data.local.AttachmentDraftStore
 import com.akashic.mobile.data.local.AppDatabase
 import com.akashic.mobile.data.local.AppPreferences
 import com.akashic.mobile.data.local.ConversationEntity
 import com.akashic.mobile.data.local.LocalDeliveryStore
 import com.akashic.mobile.data.local.MessageEntity
+import com.akashic.mobile.data.local.MediaCacheStore
 import com.akashic.mobile.data.local.OutboxCommandEntity
 import com.akashic.mobile.data.local.RealtimeCursorEntity
 import com.akashic.mobile.data.local.ServerProfileEntity
@@ -16,10 +19,12 @@ import com.akashic.mobile.domain.model.ConnectionState
 import com.akashic.mobile.domain.model.EndpointRoute
 import com.akashic.mobile.domain.model.ServerEndpoint
 import java.time.Instant
+import java.io.IOException
 import java.util.UUID
 import kotlin.math.min
 import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,6 +38,8 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 
 data class MobileSessionState(
@@ -61,11 +68,19 @@ class RealtimeSession(
     private val database: AppDatabase,
     private val deliveryStore: LocalDeliveryStore,
     private val attachmentDrafts: AttachmentDraftStore,
+    private val mediaCache: MediaCacheStore,
     private val preferences: AppPreferences,
     private val deviceKeys: DeviceKeyStore,
     private val scope: CoroutineScope,
     allowInsecureTransport: Boolean,
 ) : RealtimeSocketListener {
+    private data class PendingSyncCommand(
+        val generation: Long,
+        val type: String,
+        val sessionId: String?,
+        val page: Int?,
+    )
+
     private data class PendingPairing(
         val qr: PairingQrPayload,
         val keyAlias: String,
@@ -85,6 +100,15 @@ class RealtimeSession(
             mutableState.value = mutableState.value.copy(errorMessage = message)
         },
     )
+    private val downloads = AttachmentDownloadCoordinator(
+        dao = database.mediaAttachments(),
+        cache = mediaCache,
+        sendCommand = ::sendAttachmentCommand,
+        onTransportUnavailable = ::scheduleReconnect,
+        onDownloadFailed = { message ->
+            mutableState.value = mutableState.value.copy(errorMessage = message)
+        },
+    )
     private val mutableState = MutableStateFlow(MobileSessionState())
     val state: StateFlow<MobileSessionState> = mutableState.asStateFlow()
 
@@ -99,10 +123,25 @@ class RealtimeSession(
     private var ackJob: Job? = null
     private var pendingAckCount = 0
     private var pendingAckSeq = 0L
+    private var syncGeneration = 0L
+    private var completedSyncGeneration = 0L
+    private val pendingSyncCommands = mutableMapOf<String, PendingSyncCommand>()
+    private val requestedHistoryPages = mutableSetOf<Triple<Long, String, Int>>()
 
     fun start() {
         scope.launch {
-            attachmentDrafts.reconcile()
+            val cacheReady = try {
+                attachmentDrafts.reconcile()
+                mediaCache.reconcile()
+                true
+            } catch (error: IOException) {
+                failStartup("startup_cache_io", "启动缓存检查失败：${error.message}", error)
+                false
+            } catch (error: SecurityException) {
+                failStartup("startup_cache_security", "启动缓存路径不安全：${error.message}", error)
+                false
+            }
+            if (!cacheReady) return@launch
             mutex.withLock {
                 val settings = preferences.settings.first()
                 profile = settings.currentServerId?.let { database.serverProfiles().get(it) }
@@ -168,6 +207,7 @@ class RealtimeSession(
                 ackJob = null
                 socket.close(reason = "user requested re-pairing")
                 uploads.onDisconnected()
+                downloads.onDisconnected()
                 pendingPairing = null
                 profile = null
                 resetGenerationState()
@@ -241,6 +281,22 @@ class RealtimeSession(
         }
     }
 
+    fun retryDownloadedAttachment(attachmentId: String) {
+        scope.launch {
+            mutex.withLock {
+                downloads.retry(attachmentId)
+            }
+        }
+    }
+
+    fun touchDownloadedAttachment(attachmentId: String) {
+        scope.launch {
+            check(database.mediaAttachments().touch(attachmentId, System.currentTimeMillis()) == 1) {
+                "附件未缓存完成: $attachmentId"
+            }
+        }
+    }
+
     /** 创建本地消息和 outbox 命令，并在链路可用时立即发送。 */
     fun sendMessage(text: String) {
         scope.launch {
@@ -257,7 +313,7 @@ class RealtimeSession(
                 // 2. 持久化消息和可重放命令
                 val now = System.currentTimeMillis()
                 val commandId = Ulid.next(now)
-                val clientMessageId = Ulid.next(now)
+                val clientMessageId = commandId
                 val payload = MessageSendPayload(
                     clientMessageId = clientMessageId,
                     sessionId = sessionId,
@@ -364,15 +420,48 @@ class RealtimeSession(
     }
 
     override fun onEnvelope(candidateId: SocketCandidateId, envelope: WireEnvelope) {
-        scope.launch {
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
             mutex.withLock {
                 try {
                     handleEnvelope(candidateId, envelope)
                 } catch (error: IllegalArgumentException) {
-                    mutableState.value = mutableState.value.copy(
-                        errorMessage = "连接协议校验失败：${error.message}",
-                    )
-                    socket.reject(candidateId, 4406, "invalid authenticated server frame")
+                    failCandidateProtocol(candidateId, "连接协议校验失败：${error.message}")
+                } catch (error: IllegalStateException) {
+                    failCandidateProtocol(candidateId, "连接状态校验失败：${error.message}")
+                } catch (error: ArithmeticException) {
+                    failCandidateProtocol(candidateId, "连接协议数值溢出")
+                } catch (error: SQLiteException) {
+                    failCandidateProtocol(candidateId, "本地数据库处理失败：${error.message}")
+                } catch (error: IOException) {
+                    failCandidateProtocol(candidateId, "本地文件处理失败：${error.message}")
+                } catch (error: SecurityException) {
+                    failCandidateProtocol(candidateId, "本地缓存路径不安全：${error.message}")
+                }
+            }
+        }
+    }
+
+    override fun onBinary(candidateId: SocketCandidateId, chunk: AttachmentChunkCodec.DecodedChunk) {
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            mutex.withLock {
+                if (candidateId != activeCandidate) {
+                    socket.reject(candidateId, 4406, "binary frame before authentication")
+                    return@withLock
+                }
+                try {
+                    downloads.onBinary(chunk)
+                } catch (error: IllegalArgumentException) {
+                    failDownloadConnection("附件下载协议校验失败：${error.message}")
+                } catch (error: IllegalStateException) {
+                    failDownloadConnection("附件下载状态失败：${error.message}")
+                } catch (error: IOException) {
+                    failDownloadConnection("附件缓存写入失败：${error.message}")
+                } catch (error: SQLiteException) {
+                    failDownloadConnection("附件下载数据库失败：${error.message}")
+                } catch (error: ArithmeticException) {
+                    failDownloadConnection("附件下载长度溢出")
+                } catch (error: SecurityException) {
+                    failDownloadConnection("附件缓存路径不安全")
                 }
             }
         }
@@ -504,6 +593,10 @@ class RealtimeSession(
         if (!socket.promote(candidateId)) return
         activeCandidate = candidateId
         activeEpoch = accepted.connectionEpoch
+        syncGeneration += 1
+        completedSyncGeneration = 0
+        pendingSyncCommands.clear()
+        requestedHistoryPages.clear()
         retryCount = 0
         val cursor = requireNotNull(database.realtimeCursors().get(currentProfile.deviceId))
         check(
@@ -547,18 +640,30 @@ class RealtimeSession(
                 recordAck(eventSeq)
                 when (envelope.type) {
                     "sync.completed" -> {
+                        if (completedSyncGeneration == syncGeneration) return
+                        completedSyncGeneration = syncGeneration
                         mutableState.value = mutableState.value.copy(
                             connection = mutableState.value.connection.copy(phase = ConnectionPhase.READY),
                         )
                         requestSessionList()
                         uploads.onConnectionReady(currentProfile.serverId)
+                        downloads.onConnectionReady(currentProfile.serverId)
                         flushOutbox()
                     }
-                    "session.list" -> requestMissingHistory(envelope)
-                    "history.page" -> requestNextHistoryPage(envelope)
+                    "session.list" -> {
+                        if (hasPendingSyncCommand("session.list")) {
+                            requestAllHistory(envelope)
+                        }
+                    }
+                    "history.page" -> {
+                        requestNextHistoryPage(envelope)
+                        downloads.resumeIfIdle(currentProfile.serverId)
+                    }
                     "attachment.progress" -> uploads.onProgress(
                         ProtocolCodec.decodePayload(envelope.payload),
                     )
+                    "message.final", "message.proactive" ->
+                        downloads.resumeIfIdle(currentProfile.serverId)
                     "connection.degraded" -> mutableState.value = mutableState.value.copy(
                         connection = mutableState.value.connection.copy(phase = ConnectionPhase.DEGRADED),
                     )
@@ -568,8 +673,35 @@ class RealtimeSession(
                 }
             }
             WireKind.REPLY -> {
+                if (envelope.type.startsWith("attachment.download.")) {
+                    try {
+                        check(downloads.onReply(envelope)) { "收到未知附件下载 reply" }
+                    } catch (error: IllegalArgumentException) {
+                        failDownloadConnection("附件下载 reply 无效：${error.message}")
+                    } catch (error: IllegalStateException) {
+                        failDownloadConnection("附件下载状态失败：${error.message}")
+                    } catch (error: IOException) {
+                        failDownloadConnection("附件缓存提交失败：${error.message}")
+                    } catch (error: SQLiteException) {
+                        failDownloadConnection("附件下载数据库失败：${error.message}")
+                    } catch (error: ArithmeticException) {
+                        failDownloadConnection("附件下载长度溢出")
+                    } catch (error: SecurityException) {
+                        failDownloadConnection("附件缓存路径不安全")
+                    }
+                    return
+                }
                 if (uploads.onReply(envelope)) return
                 val id = requireNotNull(envelope.id)
+                if (id in pendingSyncCommands && envelope.type.endsWith(".error")) {
+                    val pending = requireNotNull(pendingSyncCommands.remove(id))
+                    require(pending.generation == syncGeneration) { "收到旧 generation 的历史同步错误" }
+                    require(envelope.type == "${pending.type}.error") { "历史同步错误类型不匹配" }
+                    mutableState.value = mutableState.value.copy(
+                        errorMessage = envelope.payload["message"]?.toString()?.trim('"') ?: "历史同步失败",
+                    )
+                    return
+                }
                 when (envelope.type) {
                     "message.send.ok" -> attachmentDrafts.deleteSentFiles(
                         deliveryStore.acknowledgeOutbox(id, System.currentTimeMillis()),
@@ -580,7 +712,7 @@ class RealtimeSession(
                             errorMessage = envelope.payload["message"]?.toString()?.trim('"') ?: "消息发送失败",
                         )
                     }
-                    "session.list.ok", "history.get.ok" -> Unit
+                    "session.list.ok", "history.get.ok" -> completeSyncReply(envelope)
                     else -> {
                         require(envelope.type.endsWith(".error")) { "Unexpected reply type: ${envelope.type}" }
                         mutableState.value = mutableState.value.copy(
@@ -594,27 +726,31 @@ class RealtimeSession(
     }
 
     private fun requestSessionList() {
+        if (hasPendingSyncCommand("session.list")) return
         sendSyncCommand(type = "session.list", sessionId = null, payload = buildJsonObject {})
     }
 
-    private suspend fun requestMissingHistory(envelope: WireEnvelope) {
+    private fun hasPendingSyncCommand(type: String): Boolean =
+        pendingSyncCommands.values.any { it.generation == syncGeneration && it.type == type }
+
+    private fun requestAllHistory(envelope: WireEnvelope) {
         val payload = ProtocolCodec.decodePayload<SessionListPayload>(envelope.payload)
         payload.items.forEach { session ->
-            if (session.messageCount > 0 && database.messages().countForSession(session.sessionId) == 0) {
-                requestHistoryPage(session.sessionId, page = 1)
-            }
+            if (session.messageCount > 0) requestHistoryPage(session.sessionId, page = 1)
         }
     }
 
     private fun requestNextHistoryPage(envelope: WireEnvelope) {
         val sessionId = requireNotNull(envelope.sessionId) { "History page has no session_id" }
         val payload = ProtocolCodec.decodePayload<HistoryPagePayload>(envelope.payload)
-        if (payload.page * payload.pageSize < payload.total) {
+        if (Triple(syncGeneration, sessionId, payload.page) !in requestedHistoryPages) return
+        if (Math.multiplyExact(payload.page.toLong(), payload.pageSize.toLong()) < payload.total.toLong()) {
             requestHistoryPage(sessionId, payload.page + 1)
         }
     }
 
     private fun requestHistoryPage(sessionId: String, page: Int) {
+        if (!requestedHistoryPages.add(Triple(syncGeneration, sessionId, page))) return
         sendSyncCommand(
             type = "history.get",
             sessionId = sessionId,
@@ -632,20 +768,47 @@ class RealtimeSession(
     ) {
         val epoch = requireNotNull(activeEpoch) { "History sync requires an authenticated connection" }
         val candidate = requireNotNull(activeCandidate) { "History sync requires an active endpoint" }
-        check(
+        val commandId = Ulid.next()
+        pendingSyncCommands[commandId] = PendingSyncCommand(
+            generation = syncGeneration,
+            type = type,
+            sessionId = sessionId,
+            page = payload["page"]?.jsonPrimitive?.longOrNull?.also {
+                require(it in 1..Int.MAX_VALUE) { "历史同步 page 超出范围" }
+            }?.toInt(),
+        )
+        val sent =
             socket.send(
                 candidate,
                 WireEnvelope(
                     v = WIRE_PROTOCOL_VERSION,
                     kind = WireKind.COMMAND,
                     type = type,
-                    id = Ulid.next(),
+                    id = commandId,
                     connectionEpoch = epoch,
                     sessionId = sessionId,
                     payload = payload,
                 ),
-            ),
-        )
+            )
+        if (!sent) {
+            pendingSyncCommands.remove(commandId)
+            scheduleReconnect("历史同步命令未进入 WebSocket 队列")
+        }
+    }
+
+    private fun completeSyncReply(envelope: WireEnvelope) {
+        val commandId = requireNotNull(envelope.id)
+        val pending = requireNotNull(pendingSyncCommands.remove(commandId)) {
+            "收到未知历史同步 reply: $commandId"
+        }
+        require(pending.generation == syncGeneration) { "收到旧 generation 的历史同步 reply" }
+        require(envelope.type == "${pending.type}.ok") { "历史同步 reply 类型不匹配" }
+        require(envelope.sessionId == pending.sessionId) { "历史同步 reply session 不匹配" }
+        if (pending.page != null) {
+            require(envelope.payload["page"]?.jsonPrimitive?.longOrNull == pending.page.toLong()) {
+                "历史同步 reply page 不匹配"
+            }
+        }
     }
 
     private fun sendAttachmentCommand(
@@ -778,6 +941,9 @@ class RealtimeSession(
         ackJob = null
         pendingAckCount = 0
         uploads.onDisconnected()
+        downloads.onDisconnected()
+        pendingSyncCommands.clear()
+        requestedHistoryPages.clear()
         retryCount += 1
         mutableState.value = mutableState.value.copy(
             connection = mutableState.value.connection.copy(
@@ -791,6 +957,35 @@ class RealtimeSession(
             mutex.withLock {
                 pendingPairing?.let { connectQr(it.qr) } ?: profile?.let(::connectProfile)
             }
+        }
+    }
+
+    private fun failDownloadConnection(message: String) {
+        downloads.onDisconnected()
+        mutableState.value = mutableState.value.copy(errorMessage = message)
+        socket.close(4406, "invalid attachment download state")
+        scheduleReconnect(message)
+    }
+
+    private fun failStartup(code: String, message: String, error: Throwable) {
+        Log.e(TAG, message, error)
+        mutableState.value = mutableState.value.copy(
+            initialized = true,
+            connection = mutableState.value.connection.copy(
+                phase = ConnectionPhase.FAILED,
+                lastErrorCode = code,
+            ),
+            errorMessage = message,
+        )
+    }
+
+    private fun failCandidateProtocol(candidateId: SocketCandidateId, message: String) {
+        mutableState.value = mutableState.value.copy(errorMessage = message)
+        if (candidateId == activeCandidate) {
+            socket.close(4406, "invalid authenticated server frame")
+            scheduleReconnect(message)
+        } else {
+            socket.reject(candidateId, 4406, "invalid pre-auth server frame")
         }
     }
 
@@ -819,6 +1014,7 @@ class RealtimeSession(
         map { ServerEndpoint(it, emptyList(), EndpointRoute.TUNNEL) }
 
     private companion object {
+        const val TAG = "RealtimeSession"
         val CAPABILITIES = listOf("chat", "streaming", "tools", "proactive", "attachments-v1")
         val MOBILE_SESSION = Regex("^mobile:(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$")
         const val HISTORY_PAGE_SIZE = 10

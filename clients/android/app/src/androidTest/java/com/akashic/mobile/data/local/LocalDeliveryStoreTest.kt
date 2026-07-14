@@ -20,6 +20,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.junit.Assert.assertNotNull
 
 @RunWith(AndroidJUnit4::class)
 class LocalDeliveryStoreTest {
@@ -32,7 +33,11 @@ class LocalDeliveryStoreTest {
             ApplicationProvider.getApplicationContext(),
             AppDatabase::class.java,
         ).build()
-        store = LocalDeliveryStore(database)
+        val mediaCache = MediaCacheStore(
+            ApplicationProvider.getApplicationContext<Context>().cacheDir.resolve("media-${System.nanoTime()}"),
+            database.mediaAttachments(),
+        )
+        store = LocalDeliveryStore(database, mediaCache)
         store.savePairedProfile(
             ServerProfileEntity("server", "server", "device", "alias", "pin", "[]", "[]", "[]", 1),
             RealtimeCursorEntity("device", "server", 0, 0, 1),
@@ -88,15 +93,110 @@ class LocalDeliveryStoreTest {
                 put("status", "success"); put("result_preview", "完成")
             }),
             event(4, "message.final", buildJsonObject {
+                put("message_id", "mobile:test:assistant:final")
                 put("content", "答案"); put("thinking", "先确认运行状态，再给出结论。")
             }),
         )
         events.forEach { store.applyEvent("server", "device", it, it.eventSeq!!) }
 
-        val blocks = database.messages().getBlocks("assistant:turn")
+        val blocks = database.messages().getBlocks("mobile:test:assistant:final")
         assertEquals(listOf("thinking", "tool"), blocks.map { it.kind })
         assertEquals(listOf(-1, 0), blocks.map { it.ordinal })
         assertEquals("先确认运行状态，再给出结论。", blocks.first().content)
+    }
+
+    @Test
+    fun finalWithoutMessageIdUsesFrameScopedEphemeralIdentity() = runBlocking {
+        store.applyEvent(
+            "server",
+            "device",
+            event(1, "message.final", buildJsonObject { put("content", "控制指令结果") }),
+            2,
+        )
+
+        val ephemeralId = "ephemeral:01J00000000000000000000000"
+        assertEquals("控制指令结果", database.messages().get(ephemeralId)!!.text)
+        assertEquals(null, database.messages().get("assistant:turn"))
+
+        store.applyEvent(
+            "server",
+            "device",
+            event(2, "history.page", buildJsonObject {
+                put("total", 1)
+                put("page", 1)
+                put("page_size", 10)
+                put("items", buildJsonArray {
+                    add(buildJsonObject {
+                        put("id", "mobile:test:history:canonical")
+                        put("session_key", "mobile:test")
+                        put("seq", 1)
+                        put("role", "assistant")
+                        put("content", "持久化回答")
+                        put("extra", buildJsonObject { put("reasoning_content", "历史思考") })
+                        put("ts", "2026-07-14T16:00:05Z")
+                    })
+                })
+            }),
+            3,
+        )
+
+        assertEquals(2, database.messages().countForSession("mobile:test"))
+        assertEquals("控制指令结果", database.messages().get(ephemeralId)!!.text)
+        assertEquals("持久化回答", database.messages().get("mobile:test:history:canonical")!!.text)
+        assertEquals(
+            listOf("历史思考"),
+            database.messages().getBlocks("mobile:test:history:canonical").map { it.content },
+        )
+    }
+
+    @Test
+    fun historyReplacesLiveBlocksForTheSameCanonicalMessage() = runBlocking {
+        store.applyEvent(
+            "server",
+            "device",
+            event(1, "react.thinking.delta", buildJsonObject {
+                put("block_id", "live-thinking")
+                put("ordinal", 0)
+                put("delta", "流式思考")
+            }),
+            2,
+        )
+        store.applyEvent(
+            "server",
+            "device",
+            event(2, "message.final", buildJsonObject {
+                put("message_id", "mobile:test:assistant:same")
+                put("content", "实时回答")
+            }),
+            3,
+        )
+        store.applyEvent(
+            "server",
+            "device",
+            event(3, "history.page", buildJsonObject {
+                put("total", 1)
+                put("page", 1)
+                put("page_size", 10)
+                put("items", buildJsonArray {
+                    add(buildJsonObject {
+                        put("id", "mobile:test:assistant:same")
+                        put("session_key", "mobile:test")
+                        put("seq", 1)
+                        put("role", "assistant")
+                        put("content", "历史回答")
+                        put("extra", buildJsonObject { put("reasoning_content", "历史思考") })
+                        put("ts", "2026-07-14T16:00:05Z")
+                    })
+                })
+            }),
+            4,
+        )
+
+        assertEquals(1, database.messages().countForSession("mobile:test"))
+        assertEquals("历史回答", database.messages().get("mobile:test:assistant:same")!!.text)
+        val blocks = database.messages().getBlocks("mobile:test:assistant:same")
+        assertEquals(listOf("history:mobile:test:assistant:same:0"), blocks.map { it.blockId })
+        assertEquals(listOf("历史思考"), blocks.map { it.content })
     }
 
     @Test
@@ -147,11 +247,55 @@ class LocalDeliveryStoreTest {
 
         store.applyEvent("server", "device", history, 1)
 
-        assertEquals("恢复问题", database.messages().get("history:mobile:test:0")!!.text)
-        assertEquals("恢复回答", database.messages().get("history:mobile:test:1")!!.text)
-        val blocks = database.messages().getBlocks("history:mobile:test:1")
+        assertEquals("恢复问题", database.messages().get("mobile:test:0")!!.text)
+        assertEquals("恢复回答", database.messages().get("mobile:test:1")!!.text)
+        val blocks = database.messages().getBlocks("mobile:test:1")
         assertEquals(listOf("thinking", "tool", "thinking"), blocks.map { it.kind })
         assertEquals(StoredToolBlock("shell", "读取状态", "完成"), decodeStoredToolBlock(blocks[1].content))
+    }
+
+    @Test
+    fun historyCanonicalIdReplacesOptimisticUserMessage() = runBlocking {
+        val clientId = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        database.messages().upsert(
+            MessageEntity(
+                messageId = "user:$clientId",
+                clientMessageId = clientId,
+                sessionId = "mobile:test",
+                role = "user",
+                text = "本地问题",
+                deliveryState = "sent",
+                createdAt = 1,
+                updatedAt = 1,
+            ),
+        )
+        store.applyEvent(
+            "server",
+            "device",
+            event(1, "history.page", buildJsonObject {
+                put("total", 1)
+                put("page", 1)
+                put("page_size", 10)
+                put("items", buildJsonArray {
+                    add(buildJsonObject {
+                        put("id", "mobile:test:user:canonical")
+                        put("client_message_id", clientId)
+                        put("session_key", "mobile:test")
+                        put("seq", 0)
+                        put("role", "user")
+                        put("content", "本地问题")
+                        put("extra", buildJsonObject {})
+                        put("ts", "2026-07-14T16:00:00Z")
+                    })
+                })
+            }),
+            2,
+        )
+
+        assertEquals(null, database.messages().get("user:$clientId"))
+        val canonical = database.messages().get("mobile:test:user:canonical")!!
+        assertEquals(clientId, canonical.clientMessageId)
+        assertEquals("complete", canonical.deliveryState)
     }
 
     @Test
@@ -200,7 +344,7 @@ class LocalDeliveryStoreTest {
             v = 1,
             kind = WireKind.COMMAND,
             type = "message.send",
-            id = "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+            id = payload.clientMessageId,
             connectionEpoch = 1,
             sessionId = "mobile:test",
             payload = ProtocolCodec.json().encodeToJsonElement(
@@ -238,6 +382,61 @@ class LocalDeliveryStoreTest {
             store.acknowledgeOutbox(command.id, 3),
         )
         assertEquals("sent", database.attachmentTransfers().get("attachment")!!.state)
+    }
+
+    @Test
+    fun liveAndHistoryMessagesIdempotentlyShareOutboundAttachment() = runBlocking {
+        val descriptor = buildJsonObject {
+            put("attachment_id", "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+            put("filename", "answer.png")
+            put("content_type", "image/png")
+            put("size_bytes", 3)
+            put("sha256", "a".repeat(64))
+        }
+        store.applyEvent(
+            "server",
+            "device",
+            event(1, "message.final", buildJsonObject {
+                put("message_id", "mobile:test:assistant:attachment")
+                put("content", "完成")
+                put("attachments", buildJsonArray { add(descriptor) })
+            }),
+            2,
+        )
+        store.applyEvent(
+            "server",
+            "device",
+            event(2, "history.page", buildJsonObject {
+                put("total", 1)
+                put("page", 1)
+                put("page_size", 10)
+                put("items", buildJsonArray {
+                    add(buildJsonObject {
+                        put("id", "mobile:test:1")
+                        put("session_key", "mobile:test")
+                        put("seq", 1)
+                        put("role", "assistant")
+                        put("content", "完成")
+                        put("extra", buildJsonObject {})
+                        put("ts", "2026-07-14T16:00:05Z")
+                        put("attachments", buildJsonArray { add(descriptor) })
+                    })
+                })
+            }),
+            3,
+        )
+
+        val attachment = database.mediaAttachments().get("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+        assertNotNull(attachment)
+        assertEquals("pending", attachment!!.state)
+        assertEquals(
+            listOf(attachment.attachmentId),
+            database.mediaAttachments().forMessage("mobile:test:assistant:attachment").map { it.attachmentId },
+        )
+        assertEquals(
+            listOf(attachment.attachmentId),
+            database.mediaAttachments().forMessage("mobile:test:1").map { it.attachmentId },
+        )
     }
 
     @Test

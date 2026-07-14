@@ -23,6 +23,8 @@ interface RealtimeSocketListener {
 
     fun onEnvelope(candidateId: SocketCandidateId, envelope: WireEnvelope)
 
+    fun onBinary(candidateId: SocketCandidateId, chunk: AttachmentChunkCodec.DecodedChunk)
+
     fun onClosed(candidateId: SocketCandidateId, code: Int, reason: String)
 
     fun onFailure(candidateId: SocketCandidateId, error: Throwable)
@@ -187,6 +189,15 @@ class RealtimeWebSocketClient(
                     listener.onEnvelope(candidateId, ProtocolCodec.decode(text))
                 } catch (error: SerializationException) {
                     rejectProtocol(webSocket, candidateId, IllegalArgumentException(error.message, error))
+                } catch (error: IllegalArgumentException) {
+                    rejectProtocol(webSocket, candidateId, error)
+                }
+            }
+
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                if (!isCurrent(candidateId)) return
+                try {
+                    listener.onBinary(candidateId, AttachmentChunkCodec.decode(bytes))
                 } catch (error: IllegalArgumentException) {
                     rejectProtocol(webSocket, candidateId, error)
                 }

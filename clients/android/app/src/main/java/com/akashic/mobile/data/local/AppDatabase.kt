@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [
@@ -14,8 +16,10 @@ import androidx.room.RoomDatabase
         OutboxCommandEntity::class,
         AttachmentTransferEntity::class,
         RealtimeCursorEntity::class,
+        MediaAttachmentEntity::class,
+        MessageAttachmentEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -31,11 +35,56 @@ abstract class AppDatabase : RoomDatabase() {
 
     abstract fun realtimeCursors(): RealtimeCursorDao
 
+    abstract fun mediaAttachments(): MediaAttachmentDao
+
     companion object {
         fun create(context: Context): AppDatabase = Room.databaseBuilder(
             context.applicationContext,
             AppDatabase::class.java,
             "akashic-mobile.db",
-        ).build()
+        ).addMigrations(MIGRATION_1_2).build()
+
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `media_attachments` (
+                        `attachmentId` TEXT NOT NULL,
+                        `serverId` TEXT NOT NULL,
+                        `sessionId` TEXT NOT NULL,
+                        `filename` TEXT NOT NULL,
+                        `contentType` TEXT NOT NULL,
+                        `sizeBytes` INTEGER NOT NULL,
+                        `sha256` TEXT NOT NULL,
+                        `transferredBytes` INTEGER NOT NULL,
+                        `state` TEXT NOT NULL,
+                        `cachePath` TEXT NOT NULL,
+                        `lastAccessedAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`attachmentId`),
+                        FOREIGN KEY(`serverId`) REFERENCES `server_profiles`(`serverId`) ON UPDATE NO ACTION ON DELETE CASCADE,
+                        FOREIGN KEY(`sessionId`) REFERENCES `conversations`(`sessionId`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_media_attachments_serverId` ON `media_attachments` (`serverId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_media_attachments_sessionId` ON `media_attachments` (`sessionId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_media_attachments_state` ON `media_attachments` (`state`)")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `message_attachments` (
+                        `messageId` TEXT NOT NULL,
+                        `attachmentId` TEXT NOT NULL,
+                        `ordinal` INTEGER NOT NULL,
+                        PRIMARY KEY(`messageId`, `attachmentId`),
+                        FOREIGN KEY(`messageId`) REFERENCES `messages`(`messageId`) ON UPDATE NO ACTION ON DELETE CASCADE,
+                        FOREIGN KEY(`attachmentId`) REFERENCES `media_attachments`(`attachmentId`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_message_attachments_attachmentId` ON `message_attachments` (`attachmentId`)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_message_attachments_messageId_ordinal` ON `message_attachments` (`messageId`, `ordinal`)")
+            }
+        }
     }
 }

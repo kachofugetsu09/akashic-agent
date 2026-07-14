@@ -152,8 +152,78 @@ data class RealtimeCursorEntity(
     val updatedAt: Long,
 )
 
+@Entity(
+    tableName = "media_attachments",
+    foreignKeys = [
+        ForeignKey(
+            entity = ServerProfileEntity::class,
+            parentColumns = ["serverId"],
+            childColumns = ["serverId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+        ForeignKey(
+            entity = ConversationEntity::class,
+            parentColumns = ["sessionId"],
+            childColumns = ["sessionId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index("serverId"), Index("sessionId"), Index("state")],
+)
+data class MediaAttachmentEntity(
+    @PrimaryKey val attachmentId: String,
+    val serverId: String,
+    val sessionId: String,
+    val filename: String,
+    val contentType: String,
+    val sizeBytes: Long,
+    val sha256: String,
+    val transferredBytes: Long,
+    val state: String,
+    val cachePath: String,
+    val lastAccessedAt: Long,
+    val updatedAt: Long,
+)
+
+@Entity(
+    tableName = "message_attachments",
+    primaryKeys = ["messageId", "attachmentId"],
+    foreignKeys = [
+        ForeignKey(
+            entity = MessageEntity::class,
+            parentColumns = ["messageId"],
+            childColumns = ["messageId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+        ForeignKey(
+            entity = MediaAttachmentEntity::class,
+            parentColumns = ["attachmentId"],
+            childColumns = ["attachmentId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index("attachmentId"), Index(value = ["messageId", "ordinal"], unique = true)],
+)
+data class MessageAttachmentEntity(
+    val messageId: String,
+    val attachmentId: String,
+    val ordinal: Int,
+)
+
 data class MessageWithBlocks(
     @Embedded val message: MessageEntity,
     @Relation(parentColumn = "messageId", entityColumn = "messageId")
     val blocks: List<TurnBlockEntity>,
+    @Relation(
+        entity = MessageAttachmentEntity::class,
+        parentColumn = "messageId",
+        entityColumn = "messageId",
+    )
+    val attachmentLinks: List<MessageAttachmentWithMedia>,
+)
+
+data class MessageAttachmentWithMedia(
+    @Embedded val link: MessageAttachmentEntity,
+    @Relation(parentColumn = "attachmentId", entityColumn = "attachmentId")
+    val attachment: MediaAttachmentEntity,
 )

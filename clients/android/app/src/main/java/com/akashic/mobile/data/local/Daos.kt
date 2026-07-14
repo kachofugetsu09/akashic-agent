@@ -64,6 +64,18 @@ interface MessageDao {
     @Query("SELECT * FROM turn_blocks WHERE blockId = :blockId")
     suspend fun getBlock(blockId: String): TurnBlockEntity?
 
+    @Query("DELETE FROM turn_blocks WHERE messageId = :messageId")
+    suspend fun deleteBlocks(messageId: String): Int
+
+    @Query("UPDATE turn_blocks SET messageId = :targetId WHERE messageId = :sourceId")
+    suspend fun moveBlocks(sourceId: String, targetId: String): Int
+
+    @Query("DELETE FROM messages WHERE messageId = :messageId")
+    suspend fun delete(messageId: String): Int
+
+    @Query("UPDATE messages SET clientMessageId = NULL WHERE messageId = :messageId")
+    suspend fun clearClientMessageId(messageId: String): Int
+
     @Query("UPDATE messages SET deliveryState = :state, updatedAt = :updatedAt WHERE clientMessageId = :clientMessageId")
     suspend fun updateDelivery(clientMessageId: String, state: String, updatedAt: Long): Int
 
@@ -235,4 +247,111 @@ interface RealtimeCursorDao {
         connectionEpoch: Long,
         updatedAt: Long,
     ): Int
+}
+
+@Dao
+interface MediaAttachmentDao {
+    @Upsert
+    suspend fun upsert(attachment: MediaAttachmentEntity)
+
+    @Upsert
+    suspend fun upsertAll(attachments: List<MediaAttachmentEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun linkAll(links: List<MessageAttachmentEntity>): List<Long>
+
+    @Query("DELETE FROM message_attachments WHERE messageId = :messageId")
+    suspend fun deleteLinks(messageId: String): Int
+
+    @Query("UPDATE message_attachments SET messageId = :targetId WHERE messageId = :sourceId")
+    suspend fun moveLinks(sourceId: String, targetId: String): Int
+
+    @Query("SELECT * FROM media_attachments WHERE attachmentId = :attachmentId")
+    suspend fun get(attachmentId: String): MediaAttachmentEntity?
+
+    @Query(
+        """
+        SELECT * FROM media_attachments
+        WHERE serverId = :serverId AND state IN ('pending', 'downloading')
+        ORDER BY updatedAt, attachmentId
+        """,
+    )
+    suspend fun pendingDownloads(serverId: String): List<MediaAttachmentEntity>
+
+    @Query(
+        """
+        UPDATE media_attachments
+        SET transferredBytes = :transferredBytes, state = :state, updatedAt = :updatedAt
+        WHERE attachmentId = :attachmentId
+        """,
+    )
+    suspend fun updateDownload(
+        attachmentId: String,
+        transferredBytes: Long,
+        state: String,
+        updatedAt: Long,
+    ): Int
+
+    @Query(
+        """
+        UPDATE media_attachments
+        SET state = 'pending', updatedAt = :updatedAt
+        WHERE attachmentId = :attachmentId AND state IN ('failed', 'evicted')
+        """,
+    )
+    suspend fun requestDownload(attachmentId: String, updatedAt: Long): Int
+
+    @Query("UPDATE media_attachments SET lastAccessedAt = :accessedAt WHERE attachmentId = :attachmentId AND state = 'cached'")
+    suspend fun touch(attachmentId: String, accessedAt: Long): Int
+
+    @Query(
+        """
+        UPDATE media_attachments
+        SET transferredBytes = sizeBytes, state = 'cached',
+            lastAccessedAt = :updatedAt, updatedAt = :updatedAt
+        WHERE attachmentId = :attachmentId
+          AND state IN ('pending', 'downloading', 'failed', 'cached')
+        """,
+    )
+    suspend fun markCached(attachmentId: String, updatedAt: Long): Int
+
+    @Query(
+        """
+        UPDATE media_attachments
+        SET transferredBytes = 0, state = 'evicted', updatedAt = :updatedAt
+        WHERE attachmentId = :attachmentId
+          AND state IN ('cached', 'failed', 'pending', 'downloading', 'evicted')
+        """,
+    )
+    suspend fun markEvicted(attachmentId: String, updatedAt: Long): Int
+
+    @Query("SELECT * FROM media_attachments WHERE attachmentId IN (:ids)")
+    suspend fun getAll(ids: List<String>): List<MediaAttachmentEntity>
+
+    @Query("SELECT * FROM media_attachments")
+    suspend fun all(): List<MediaAttachmentEntity>
+
+    @Query(
+        """
+        SELECT media_attachments.* FROM media_attachments
+        LEFT JOIN message_attachments
+          ON message_attachments.attachmentId = media_attachments.attachmentId
+        WHERE message_attachments.attachmentId IS NULL
+        """,
+    )
+    suspend fun unreferenced(): List<MediaAttachmentEntity>
+
+    @Query("DELETE FROM media_attachments WHERE attachmentId = :attachmentId")
+    suspend fun delete(attachmentId: String): Int
+
+    @Query(
+        """
+        SELECT media_attachments.* FROM media_attachments
+        INNER JOIN message_attachments
+          ON message_attachments.attachmentId = media_attachments.attachmentId
+        WHERE message_attachments.messageId = :messageId
+        ORDER BY message_attachments.ordinal
+        """,
+    )
+    suspend fun forMessage(messageId: String): List<MediaAttachmentEntity>
 }

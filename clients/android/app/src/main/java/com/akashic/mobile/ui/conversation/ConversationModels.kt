@@ -44,11 +44,13 @@ enum class ConnectionStatusUi {
 
 sealed interface MessageUi {
     val id: String
+    val attachments: List<MessageAttachmentUi>
 
     data class User(
         override val id: String,
         val text: String,
         val deliveryLabel: String,
+        override val attachments: List<MessageAttachmentUi> = emptyList(),
     ) : MessageUi
 
     data class AssistantTurn(
@@ -58,7 +60,26 @@ sealed interface MessageUi {
         val answer: String,
         val isStreaming: Boolean,
         val durationSeconds: Int?,
+        override val attachments: List<MessageAttachmentUi> = emptyList(),
     ) : MessageUi
+}
+
+data class MessageAttachmentUi(
+    val id: String,
+    val filename: String,
+    val contentType: String,
+    val sizeBytes: Long,
+    val transferredBytes: Long,
+    val state: MessageAttachmentState,
+    val cachePath: String,
+)
+
+enum class MessageAttachmentState {
+    PENDING,
+    DOWNLOADING,
+    CACHED,
+    FAILED,
+    EVICTED,
 }
 
 data class ProcessBlockUi(
@@ -144,6 +165,17 @@ internal val PreviewConversationState = ConversationUiState(
             answer = "当前事件顺序保持一致；连接恢复后会从最后一次累计 ACK 继续。",
             isStreaming = true,
             durationSeconds = null,
+            attachments = listOf(
+                MessageAttachmentUi(
+                    id = "preview-download",
+                    filename = "弱网恢复报告.pdf",
+                    contentType = "application/pdf",
+                    sizeBytes = 3_200_000,
+                    transferredBytes = 1_344_000,
+                    state = MessageAttachmentState.DOWNLOADING,
+                    cachePath = "/preview/弱网恢复报告.pdf",
+                ),
+            ),
         ),
     ),
     attachments = listOf(

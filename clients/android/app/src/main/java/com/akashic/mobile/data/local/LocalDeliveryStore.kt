@@ -4,6 +4,7 @@ import androidx.room.withTransaction
 import com.akashic.mobile.data.realtime.ProtocolCodec
 import com.akashic.mobile.data.realtime.AttachmentProgressPayload
 import com.akashic.mobile.data.realtime.AttachmentReadyPayload
+import com.akashic.mobile.data.realtime.AttachmentDescriptor
 import com.akashic.mobile.data.realtime.HistoryPagePayload
 import com.akashic.mobile.data.realtime.RemoteHistoryMessage
 import com.akashic.mobile.data.realtime.SessionListPayload
@@ -13,6 +14,7 @@ import java.time.Instant
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonArray
@@ -40,7 +42,10 @@ internal fun decodeStoredToolBlock(content: String): StoredToolBlock {
 private fun encodeStoredToolBlock(content: StoredToolBlock): String =
     TOOL_BLOCK_V1_PREFIX + ProtocolCodec.json().encodeToString(content)
 
-class LocalDeliveryStore(private val database: AppDatabase) {
+class LocalDeliveryStore(
+    private val database: AppDatabase,
+    private val mediaCache: MediaCacheStore,
+) {
     suspend fun savePairedProfile(profile: ServerProfileEntity, cursor: RealtimeCursorEntity) {
         database.withTransaction {
             database.serverProfiles().upsert(profile)
@@ -230,20 +235,30 @@ class LocalDeliveryStore(private val database: AppDatabase) {
             require(remote.role in setOf("user", "assistant")) { "Unsupported history role: ${remote.role}" }
             val completedAt = Instant.parse(remote.ts).toEpochMilli()
             val duration = remote.extra["turn_duration_ms"]?.jsonPrimitive?.longOrNull ?: 0L
-            val messageId = "history:${remote.id}"
-            database.messages().upsert(
-                MessageEntity(
-                    messageId = messageId,
-                    clientMessageId = null,
-                    sessionId = sessionId,
-                    role = remote.role,
-                    text = remote.content,
-                    deliveryState = "complete",
-                    createdAt = (completedAt - duration).coerceAtMost(completedAt),
-                    updatedAt = completedAt,
-                ),
+            require(remote.id.isNotBlank() && remote.id.length <= 512) { "History message id is invalid" }
+            remote.clientMessageId?.let(::requireFrameId)
+            val messageId = remote.id
+            val sourceId = remote.clientMessageId?.let { "user:$it" }
+            val canonical = MessageEntity(
+                messageId = messageId,
+                clientMessageId = remote.clientMessageId,
+                sessionId = sessionId,
+                role = remote.role,
+                text = remote.content,
+                deliveryState = "complete",
+                createdAt = (completedAt - duration).coerceAtMost(completedAt),
+                updatedAt = completedAt,
+            )
+            mergeCanonicalMessage(sourceId, canonical)
+            upsertMessageAttachments(
+                serverId = serverId,
+                sessionId = sessionId,
+                messageId = messageId,
+                descriptors = remote.attachments,
+                updatedAt = completedAt,
             )
             if (remote.role == "assistant") {
+                database.messages().deleteBlocks(messageId)
                 database.messages().upsertBlocks(historyBlocks(messageId, remote, completedAt))
             }
         }
@@ -464,14 +479,62 @@ class LocalDeliveryStore(private val database: AppDatabase) {
                 ),
             )
         }
-        database.messages().upsert(
-            current.copy(
-                text = payloadText(envelope, "text") ?: payloadText(envelope, "content") ?: current.text,
-                deliveryState = "complete",
-                updatedAt = updatedAt,
-            ),
+        val canonicalId = payloadText(envelope, "message_id")
+            ?: "ephemeral:${requireNotNull(envelope.id) { "Final event has no frame id" }}"
+        require(canonicalId.isNotBlank() && canonicalId.length <= 512) { "Canonical message id is invalid" }
+        val canonical = current.copy(
+            messageId = canonicalId,
+            text = payloadText(envelope, "text") ?: payloadText(envelope, "content") ?: current.text,
+            deliveryState = "complete",
+            updatedAt = updatedAt,
         )
-        database.messages().completeRunningBlocks(current.messageId, updatedAt)
+        mergeCanonicalMessage(current.messageId, canonical)
+        upsertMessageAttachments(
+            serverId = requireNotNull(database.conversations().get(current.sessionId)).serverId,
+            sessionId = current.sessionId,
+            messageId = canonicalId,
+            descriptors = envelope.payload["attachments"]?.let {
+                ProtocolCodec.json().decodeFromJsonElement(it)
+            } ?: emptyList(),
+            updatedAt = updatedAt,
+        )
+        database.messages().completeRunningBlocks(canonicalId, updatedAt)
+    }
+
+    /** 把流式或 optimistic 消息原子迁移到服务端 canonical identity。 */
+    private suspend fun mergeCanonicalMessage(sourceId: String?, canonical: MessageEntity) {
+        val messages = database.messages()
+        val media = database.mediaAttachments()
+        val existingCanonical = messages.get(canonical.messageId)
+        if (existingCanonical != null) {
+            require(
+                existingCanonical.sessionId == canonical.sessionId && existingCanonical.role == canonical.role
+            ) { "Canonical message identity belongs to another message" }
+        }
+        val source = sourceId?.let { messages.get(it) }
+        if (sourceId == null || sourceId == canonical.messageId || source == null) {
+            messages.upsert(canonical)
+            return
+        }
+        require(source.sessionId == canonical.sessionId && source.role == canonical.role) {
+            "Source message identity belongs to another message"
+        }
+        if (canonical.clientMessageId != null) {
+            require(source.clientMessageId == canonical.clientMessageId) { "Optimistic client id mismatch" }
+        }
+
+        // 1. 清理已同步 canonical 子项，并释放 optimistic client id 唯一约束
+        messages.deleteBlocks(canonical.messageId)
+        media.deleteLinks(canonical.messageId)
+        if (canonical.clientMessageId != null) {
+            check(messages.clearClientMessageId(sourceId) == 1) { "Optimistic message disappeared" }
+        }
+        messages.upsert(canonical)
+
+        // 2. 将流式子项迁移后删除旧身份
+        messages.moveBlocks(sourceId, canonical.messageId)
+        media.moveLinks(sourceId, canonical.messageId)
+        check(messages.delete(sourceId) == 1) { "Source message disappeared during canonical merge" }
     }
 
     private suspend fun interruptTurn(envelope: WireEnvelope, updatedAt: Long) {
@@ -482,9 +545,10 @@ class LocalDeliveryStore(private val database: AppDatabase) {
 
     private suspend fun insertProactive(envelope: WireEnvelope, updatedAt: Long) {
         val sessionId = requireNotNull(envelope.sessionId) { "Proactive event has no session_id" }
+        val messageId = "proactive:${requireNotNull(envelope.id)}"
         database.messages().upsert(
             MessageEntity(
-                messageId = "proactive:${requireNotNull(envelope.id)}",
+                messageId = messageId,
                 clientMessageId = null,
                 sessionId = sessionId,
                 role = "assistant",
@@ -494,6 +558,83 @@ class LocalDeliveryStore(private val database: AppDatabase) {
                 updatedAt = updatedAt,
             ),
         )
+        val serverId = requireNotNull(database.conversations().get(sessionId)).serverId
+        upsertMessageAttachments(
+            serverId = serverId,
+            sessionId = sessionId,
+            messageId = messageId,
+            descriptors = envelope.payload["attachments"]?.let {
+                ProtocolCodec.json().decodeFromJsonElement(it)
+            } ?: emptyList(),
+            updatedAt = updatedAt,
+        )
+    }
+
+    /** 持久化附件元数据并幂等关联消息。 */
+    private suspend fun upsertMessageAttachments(
+        serverId: String,
+        sessionId: String,
+        messageId: String,
+        descriptors: List<AttachmentDescriptor>,
+        updatedAt: Long,
+    ) {
+        val dao = database.mediaAttachments()
+        dao.deleteLinks(messageId)
+        if (descriptors.isEmpty()) return
+        require(descriptors.map { it.attachmentId }.distinct().size == descriptors.size) {
+            "消息附件不能重复"
+        }
+        val entities = descriptors.map { descriptor ->
+            requireFrameId(descriptor.attachmentId)
+            require(
+                descriptor.filename.isNotBlank() && descriptor.filename == descriptor.filename.trim() &&
+                    descriptor.filename.length <= 255 &&
+                    '/' !in descriptor.filename && '\\' !in descriptor.filename &&
+                    descriptor.filename.none { it.code < 32 || it.code == 127 }
+            ) { "附件文件名无效" }
+            require(
+                descriptor.contentType.length <= 255 && MIME_TYPE.matches(descriptor.contentType)
+            ) { "附件 content_type 无效" }
+            require(descriptor.sizeBytes in 1..MAX_ATTACHMENT_BYTES) { "附件大小超出范围" }
+            require(descriptor.sha256.matches(Regex("^[0-9a-fA-F]{64}$"))) { "附件 sha256 无效" }
+            val existing = dao.get(descriptor.attachmentId)
+            if (existing != null) {
+                require(
+                    existing.serverId == serverId &&
+                        existing.sessionId == sessionId &&
+                        existing.filename == descriptor.filename &&
+                        existing.contentType == descriptor.contentType &&
+                        existing.sizeBytes == descriptor.sizeBytes &&
+                        existing.sha256.equals(descriptor.sha256, ignoreCase = true)
+                ) { "附件描述与已缓存元数据不一致: ${descriptor.attachmentId}" }
+                existing
+            } else {
+                MediaAttachmentEntity(
+                    attachmentId = descriptor.attachmentId,
+                    serverId = serverId,
+                    sessionId = sessionId,
+                    filename = descriptor.filename,
+                    contentType = descriptor.contentType,
+                    sizeBytes = descriptor.sizeBytes,
+                    sha256 = descriptor.sha256.lowercase(),
+                    transferredBytes = 0,
+                    state = "pending",
+                    cachePath = mediaCache.cachePath(descriptor.attachmentId),
+                    lastAccessedAt = updatedAt,
+                    updatedAt = updatedAt,
+                )
+            }
+        }
+        dao.upsertAll(entities)
+        dao.linkAll(
+            descriptors.mapIndexed { ordinal, descriptor ->
+                MessageAttachmentEntity(messageId, descriptor.attachmentId, ordinal)
+            },
+        )
+    }
+
+    private fun requireFrameId(value: String) {
+        require(FRAME_ID.matches(value)) { "Frame id must be a UUIDv7 or ULID" }
     }
 
     private fun toolCallId(envelope: WireEnvelope): String =
@@ -510,4 +651,13 @@ class LocalDeliveryStore(private val database: AppDatabase) {
 
     private fun payloadLong(envelope: WireEnvelope, key: String): Long? =
         envelope.payload[key]?.jsonPrimitive?.longOrNull
+
+    private companion object {
+        const val MAX_ATTACHMENT_BYTES = 50L * 1024 * 1024
+        val MIME_TYPE = Regex("^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
+        val FRAME_ID = Regex(
+            "^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-" +
+                "7[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12})$",
+        )
+    }
 }

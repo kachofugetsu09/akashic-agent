@@ -26,6 +26,8 @@ class AttachmentComposerTest {
                     onAttach = {},
                     onRemoveAttachment = {},
                     onRetryAttachment = {},
+                    onRetryDownloadedAttachment = {},
+                    onOpenDownloadedAttachment = {},
                     onSend = {},
                     onStop = {},
                 )
@@ -48,6 +50,8 @@ class AttachmentComposerTest {
                     onAttach = {},
                     onRemoveAttachment = {},
                     onRetryAttachment = {},
+                    onRetryDownloadedAttachment = {},
+                    onOpenDownloadedAttachment = {},
                     onSend = { sends += 1 },
                     onStop = {},
                 )
@@ -67,6 +71,8 @@ class AttachmentComposerTest {
                     onAttach = {},
                     onRemoveAttachment = {},
                     onRetryAttachment = {},
+                    onRetryDownloadedAttachment = {},
+                    onOpenDownloadedAttachment = {},
                     onSend = {},
                     onStop = {},
                 )
@@ -84,6 +90,8 @@ class AttachmentComposerTest {
                     onAttach = {},
                     onRemoveAttachment = {},
                     onRetryAttachment = {},
+                    onRetryDownloadedAttachment = {},
+                    onOpenDownloadedAttachment = {},
                     onSend = {},
                     onStop = {},
                 )

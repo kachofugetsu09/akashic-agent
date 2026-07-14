@@ -7,6 +7,7 @@ import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
+import okio.ByteString.Companion.toByteString
 
 class ProtocolCodecTest {
     @Test
@@ -34,7 +35,7 @@ class ProtocolCodecTest {
               "v": 1,
               "kind": "event",
               "type": "answer.delta",
-              "id": "019event",
+              "id": "01J00000000000000000000002",
               "connection_epoch": 7,
               "event_seq": 1842,
               "session_id": "mobile:session",
@@ -75,5 +76,36 @@ class ProtocolCodecTest {
         val frame = """{"v":1,"kind":"event","type":"answer.delta","id":"event-1","payload":{}}"""
 
         assertThrows(IllegalArgumentException::class.java) { ProtocolCodec.decode(frame) }
+    }
+
+    @Test
+    fun `decodes attachment descriptor download reply and binary chunk`() {
+        val frame = AttachmentChunkCodec.encode(
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            128,
+            byteArrayOf(1, 2, 3),
+        )
+
+        val decoded = AttachmentChunkCodec.decode(frame)
+
+        assertEquals("01ARZ3NDEKTSV4RRFFQ69G5FAV", decoded.attachmentId)
+        assertEquals(128L, decoded.offset)
+        assertEquals(listOf<Byte>(1, 2, 3), decoded.payload.toList())
+    }
+
+    @Test
+    fun `rejects message command whose id differs from client message id`() {
+        val frame = requireNotNull(javaClass.getResource("/frames-v1.json")).readText()
+            .replaceFirst("01J00000000000000000000000", "01J00000000000000000000009")
+        val command = ProtocolCodec.json().parseToJsonElement(frame).jsonArray.first().toString()
+
+        assertThrows(IllegalArgumentException::class.java) { ProtocolCodec.decode(command) }
+    }
+
+    @Test
+    fun `rejects oversized binary frame before header parsing`() {
+        val frame = ByteArray(AttachmentChunkCodec.MAX_BINARY_FRAME_BYTES + 1).toByteString()
+
+        assertThrows(IllegalArgumentException::class.java) { AttachmentChunkCodec.decode(frame) }
     }
 }

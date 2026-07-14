@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.akashic.mobile.data.local.MessageWithBlocks
+import com.akashic.mobile.data.local.MessageAttachmentWithMedia
 import com.akashic.mobile.data.local.decodeStoredToolBlock
 import com.akashic.mobile.domain.model.ConnectionPhase
 import com.akashic.mobile.domain.model.ConnectionState
@@ -12,6 +13,8 @@ import com.akashic.mobile.ui.conversation.ComposerAttachmentState
 import com.akashic.mobile.ui.conversation.ComposerAttachmentUi
 import com.akashic.mobile.ui.conversation.ConversationUiState
 import com.akashic.mobile.ui.conversation.MessageUi
+import com.akashic.mobile.ui.conversation.MessageAttachmentState
+import com.akashic.mobile.ui.conversation.MessageAttachmentUi
 import com.akashic.mobile.ui.conversation.ProcessBlockKind
 import com.akashic.mobile.ui.conversation.ProcessBlockState
 import com.akashic.mobile.ui.conversation.ProcessBlockUi
@@ -55,7 +58,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         attachmentDrafts,
     ) { session, graph, conversations, attachments ->
         val messages = graph.map(::toMessageUi)
-        val connection = connectionPresentation(session.connection)
+        val connection = connectionPresentation(session.connection, session.errorMessage)
         ConversationUiState(
             connectionLabel = connection.label,
             connectionStatus = connection.status,
@@ -116,6 +119,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun retryAttachment(attachmentId: String) = container.realtimeSession.retryAttachment(attachmentId)
 
+    fun retryDownloadedAttachment(attachmentId: String) =
+        container.realtimeSession.retryDownloadedAttachment(attachmentId)
+
+    fun touchDownloadedAttachment(attachmentId: String) =
+        container.realtimeSession.touchDownloadedAttachment(attachmentId)
+
     fun createSession() = container.realtimeSession.createSession()
 
     fun selectSession(sessionId: String) = container.realtimeSession.selectSession(sessionId)
@@ -134,6 +143,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     "failed" -> "发送失败"
                     else -> message.deliveryState
                 },
+                attachments = graph.attachmentLinks.toMessageAttachmentUi(),
             )
         }
         return MessageUi.AssistantTurn(
@@ -160,9 +170,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 updatedAt = message.updatedAt,
                 isComplete = message.deliveryState == "complete",
             ),
+            attachments = graph.attachmentLinks.toMessageAttachmentUi(),
         )
     }
 }
+
+internal fun List<MessageAttachmentWithMedia>.toMessageAttachmentUi(): List<MessageAttachmentUi> =
+    sortedBy { it.link.ordinal }.map { relation ->
+        val attachment = relation.attachment
+        MessageAttachmentUi(
+            id = attachment.attachmentId,
+            filename = attachment.filename,
+            contentType = attachment.contentType,
+            sizeBytes = attachment.sizeBytes,
+            transferredBytes = attachment.transferredBytes,
+            state = when (attachment.state) {
+                "pending" -> MessageAttachmentState.PENDING
+                "downloading" -> MessageAttachmentState.DOWNLOADING
+                "cached" -> MessageAttachmentState.CACHED
+                "failed" -> MessageAttachmentState.FAILED
+                "evicted" -> MessageAttachmentState.EVICTED
+                else -> error("未知附件下载状态: ${attachment.state}")
+            },
+            cachePath = attachment.cachePath,
+        )
+    }
 
 internal data class ConnectionPresentation(
     val label: String,
@@ -171,7 +203,10 @@ internal data class ConnectionPresentation(
 )
 
 /** 把实时链路状态映射为用户可理解的连接语义。 */
-internal fun connectionPresentation(connection: ConnectionState): ConnectionPresentation {
+internal fun connectionPresentation(
+    connection: ConnectionState,
+    errorMessage: String? = null,
+): ConnectionPresentation {
     val reconnecting = connection.retryCount > 0 &&
         connection.phase in setOf(ConnectionPhase.CONNECTING, ConnectionPhase.DEGRADED)
     if (reconnecting) {
@@ -192,6 +227,11 @@ internal fun connectionPresentation(connection: ConnectionState): ConnectionPres
             "连接已断开",
             ConnectionStatusUi.DISCONNECTED,
             "连接已断开 · 消息已缓存",
+        )
+        ConnectionPhase.FAILED -> ConnectionPresentation(
+            "启动失败",
+            ConnectionStatusUi.DISCONNECTED,
+            errorMessage ?: "启动检查失败，请重新打开应用",
         )
         else -> ConnectionPresentation("正在连接", ConnectionStatusUi.CONNECTING, null)
     }

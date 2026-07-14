@@ -5,6 +5,7 @@ import com.akashic.mobile.data.local.AppDatabase
 import com.akashic.mobile.data.local.AppPreferences
 import com.akashic.mobile.data.local.AttachmentDraftStore
 import com.akashic.mobile.data.local.LocalDeliveryStore
+import com.akashic.mobile.data.local.MediaCacheStore
 import com.akashic.mobile.data.realtime.DeviceKeyStore
 import com.akashic.mobile.data.realtime.RealtimeSession
 import kotlinx.coroutines.CoroutineScope
@@ -24,7 +25,9 @@ class App : Application() {
 class AppContainer(application: Application) {
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val database = AppDatabase.create(application)
-    val deliveryStore = LocalDeliveryStore(database)
+    private val mediaCacheRoot = application.filesDir.resolve("received-attachments")
+    val mediaCacheStore = MediaCacheStore(mediaCacheRoot, database.mediaAttachments())
+    val deliveryStore = LocalDeliveryStore(database, mediaCacheStore)
     val preferences = AppPreferences(application)
     val attachmentDraftStore = AttachmentDraftStore(
         contentResolver = application.contentResolver,
@@ -36,6 +39,7 @@ class AppContainer(application: Application) {
         database = database,
         deliveryStore = deliveryStore,
         attachmentDrafts = attachmentDraftStore,
+        mediaCache = mediaCacheStore,
         preferences = preferences,
         deviceKeys = deviceKeyStore,
         scope = applicationScope,

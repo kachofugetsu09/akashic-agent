@@ -120,6 +120,8 @@ fun ConversationScreen(
     onRetryAttachment: (String) -> Unit,
     onSend: (String) -> Unit,
     onStop: () -> Unit,
+    onRetryDownloadedAttachment: (String) -> Unit,
+    onOpenDownloadedAttachment: (String) -> Unit,
 ) {
     var composerText by rememberSaveable { mutableStateOf("") }
     val focusManager = LocalFocusManager.current
@@ -159,6 +161,8 @@ fun ConversationScreen(
         } else {
             MessageList(
                 messages = state.messages,
+                onRetryDownloadedAttachment = onRetryDownloadedAttachment,
+                onOpenDownloadedAttachment = onOpenDownloadedAttachment,
                 modifier = Modifier.padding(contentPadding),
             )
         }
@@ -247,6 +251,8 @@ private fun EmptyConversation(modifier: Modifier = Modifier) {
 @Composable
 private fun MessageList(
     messages: List<MessageUi>,
+    onRetryDownloadedAttachment: (String) -> Unit,
+    onOpenDownloadedAttachment: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -288,8 +294,16 @@ private fun MessageList(
                 Spacer(Modifier.height(14.dp))
             }
             when (message) {
-                is MessageUi.User -> UserMessage(message)
-                is MessageUi.AssistantTurn -> AssistantTurn(message)
+                is MessageUi.User -> UserMessage(
+                    message,
+                    onRetryDownloadedAttachment,
+                    onOpenDownloadedAttachment,
+                )
+                is MessageUi.AssistantTurn -> AssistantTurn(
+                    message,
+                    onRetryDownloadedAttachment,
+                    onOpenDownloadedAttachment,
+                )
             }
         }
         item(key = "message-list-bottom") {
@@ -299,25 +313,41 @@ private fun MessageList(
 }
 
 @Composable
-private fun UserMessage(message: MessageUi.User) {
+private fun UserMessage(
+    message: MessageUi.User,
+    onRetryDownloadedAttachment: (String) -> Unit,
+    onOpenDownloadedAttachment: (String) -> Unit,
+) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.End,
     ) {
-        Surface(
-            color = MaterialTheme.colorScheme.primaryContainer,
-            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-            shape = RoundedCornerShape(
-                topStart = 20.dp,
-                topEnd = 4.dp,
-                bottomEnd = 20.dp,
-                bottomStart = 20.dp,
-            ),
-            modifier = Modifier.fillMaxWidth(0.86f),
-        ) {
-            MarkdownMessage(
-                content = message.text,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+        if (message.text.isNotBlank()) {
+            Surface(
+                color = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                shape = RoundedCornerShape(
+                    topStart = 20.dp,
+                    topEnd = 4.dp,
+                    bottomEnd = 20.dp,
+                    bottomStart = 20.dp,
+                ),
+                modifier = Modifier.fillMaxWidth(0.86f),
+            ) {
+                MarkdownMessage(
+                    content = message.text,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                )
+            }
+        }
+        if (message.attachments.isNotEmpty()) {
+            MessageAttachments(
+                attachments = message.attachments,
+                onRetry = onRetryDownloadedAttachment,
+                onOpen = onOpenDownloadedAttachment,
+                modifier = Modifier
+                    .fillMaxWidth(0.86f)
+                    .padding(top = if (message.text.isBlank()) 0.dp else 8.dp),
             )
         }
         Text(
@@ -330,7 +360,11 @@ private fun UserMessage(message: MessageUi.User) {
 }
 
 @Composable
-private fun AssistantTurn(message: MessageUi.AssistantTurn) {
+private fun AssistantTurn(
+    message: MessageUi.AssistantTurn,
+    onRetryDownloadedAttachment: (String) -> Unit,
+    onOpenDownloadedAttachment: (String) -> Unit,
+) {
     Column {
         message.intro?.let { intro ->
             Text(
@@ -347,6 +381,14 @@ private fun AssistantTurn(message: MessageUi.AssistantTurn) {
             MarkdownMessage(
                 content = message.answer,
                 modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+        if (message.attachments.isNotEmpty()) {
+            MessageAttachments(
+                attachments = message.attachments,
+                onRetry = onRetryDownloadedAttachment,
+                onOpen = onOpenDownloadedAttachment,
+                modifier = Modifier.padding(top = 10.dp),
             )
         }
     }
@@ -882,6 +924,8 @@ private fun ConversationLightPreview() {
             onAttach = {},
             onRemoveAttachment = {},
             onRetryAttachment = {},
+            onRetryDownloadedAttachment = {},
+            onOpenDownloadedAttachment = {},
             onSend = {},
             onStop = {},
         )
@@ -899,6 +943,8 @@ private fun ConversationDarkPreview() {
             onAttach = {},
             onRemoveAttachment = {},
             onRetryAttachment = {},
+            onRetryDownloadedAttachment = {},
+            onOpenDownloadedAttachment = {},
             onSend = {},
             onStop = {},
         )

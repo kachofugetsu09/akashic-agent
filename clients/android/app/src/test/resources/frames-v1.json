@@ -7,7 +7,7 @@
     "connection_epoch": 7,
     "session_id": "mobile:demo",
     "payload": {
-      "client_message_id": "01J00000000000000000000001",
+      "client_message_id": "01J00000000000000000000000",
       "session_id": "mobile:demo",
       "text": "你好",
       "media_refs": [],
