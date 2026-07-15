@@ -4,6 +4,10 @@
 # api_key 可以直接填字符串，也可以用 ${ENV_VAR} 引用环境变量。
 # =============================================================================
 
+[runtime]
+# 未传 --workspace 且未设置 AKASHIC_WORKSPACE 时使用；~ 会在启动时展开。
+workspace = "~/.akashic/workspace"
+
 [llm]
 main = "deepseek_main"
 fast = "qwen_fast"
@@ -111,7 +115,7 @@ max_connections = 32
 ingress_queue_size = 128
 outbound_queue_size = 512
 
-# 插件配置位于 ~/.akashic-plugin/data/<插件名>-<市场>/config.local.toml。
+# 插件配置位于 <workspace>/plugin-data/<插件名>-<市场>/config.local.toml。
 
 # =============================================================================
 # 语义记忆

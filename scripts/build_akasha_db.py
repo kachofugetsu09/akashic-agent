@@ -63,7 +63,8 @@ def _parse_args() -> argparse.Namespace:
     _ = parser.add_argument("--config", default="config.toml", help="主配置文件路径")
     _ = parser.add_argument(
         "--workspace",
-        default=str(Path.home() / ".akashic" / "workspace"),
+        type=Path,
+        required=True,
         help="Akashic workspace 路径",
     )
     _ = parser.add_argument("--sessions-db", default="", help="原始 sessions.db 路径")
@@ -80,10 +81,11 @@ def _parse_args() -> argparse.Namespace:
 # 构造 Akasha 配置，并允许命令行覆盖 db_path。
 def _load_script_config(
     *,
+    workspace: Path,
     db_path: str,
 ) -> AkashaConfig:
-    # 1. 插件配置仍从 plugins/akasha/config.local.toml 读取。
-    config = load_akasha_config()
+    # 1. 插件配置始终从目标 workspace 的 runtime 数据目录读取。
+    config = load_akasha_config(workspace=workspace)
     if db_path.strip():
         return replace(config, db_path=db_path)
     return config
@@ -268,7 +270,10 @@ def _run() -> MigrationStats:
     args = _parse_args()
     workspace = Path(str(args.workspace)).expanduser()
     sessions_db = Path(str(args.sessions_db)).expanduser() if args.sessions_db else workspace / "sessions.db"
-    akasha_config = _load_script_config(db_path=str(args.db_path or ""))
+    akasha_config = _load_script_config(
+        workspace=workspace,
+        db_path=str(args.db_path or ""),
+    )
     db_path = resolve_akasha_db_path(workspace=workspace, akasha_config=akasha_config)
     if not sessions_db.exists():
         raise FileNotFoundError(f"sessions.db 不存在: {sessions_db}")
@@ -281,7 +286,7 @@ def _run() -> MigrationStats:
     if str(args.embedding_model).strip():
         embedding_model = str(args.embedding_model).strip()  # 离线重建：免读 config
     else:
-        config = Config.load(str(args.config))
+        config = Config.load(str(args.config), workspace=workspace)
         embedding_model = config.memory.embedding.model
     run_id = store.start_migration_run(
         source_db_path=sessions_db,

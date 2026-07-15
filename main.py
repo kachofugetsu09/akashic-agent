@@ -12,10 +12,61 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import signal
 import sys
+import tomllib
 from contextlib import suppress
 from pathlib import Path
+from typing import cast
+
+
+_DEFAULT_WORKSPACE = "~/.akashic/workspace"
+
+
+def _workspace_from_config(config_path: Path) -> str:
+    """从主配置读取 workspace，并拒绝缺失或错误的边界值。"""
+
+    with config_path.open("rb") as stream:
+        data = tomllib.load(stream)
+    runtime: object = data.get("runtime")
+    if not isinstance(runtime, dict):
+        raise ValueError(f"配置文件 {config_path!s} 缺少 [runtime] table")
+    workspace: object = cast(dict[str, object], runtime).get("workspace")
+    if not isinstance(workspace, str) or not workspace.strip():
+        raise ValueError(f"配置文件 {config_path!s} 缺少 runtime.workspace")
+    return workspace
+
+
+def _workspace_from_args(
+    args: list[str],
+    config_path: Path,
+    *,
+    allow_default: bool = False,
+) -> Path:
+    """按命令行、环境变量、配置文件的顺序解析 workspace。"""
+
+    # 1. 显式启动参数拥有最高优先级
+    if "--workspace" in args:
+        index = args.index("--workspace")
+        if index + 1 >= len(args):
+            raise ValueError("参数 --workspace 缺少值")
+        value = args[index + 1]
+    else:
+        value = os.environ.get("AKASHIC_WORKSPACE", "")
+
+    # 2. 环境变量为空时读取 config.toml；首次初始化使用可移植默认值
+    if not value.strip():
+        if config_path.exists():
+            value = _workspace_from_config(config_path)
+        elif allow_default:
+            value = _DEFAULT_WORKSPACE
+        else:
+            raise ValueError(
+                f"找不到配置文件 {config_path!s}，且未指定 --workspace PATH"
+            )
+    value = value.strip()
+    return Path(value).expanduser().resolve()
 
 
 def _run_lightweight_setup_command() -> bool:
@@ -29,12 +80,16 @@ def _run_lightweight_setup_command() -> bool:
         if index + 1 >= len(args):
             raise SystemExit("参数 --config 缺少值")
         config_path = args[index + 1]
+    try:
+        workspace = _workspace_from_args(args, Path(config_path))
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     import click
 
     from bootstrap.setup_main import run_main_model_setup
 
     try:
-        run_main_model_setup(Path(config_path))
+        run_main_model_setup(Path(config_path), workspace)
     except click.ClickException as exc:
         exc.show()
         raise SystemExit(exc.exit_code) from exc
@@ -89,15 +144,11 @@ _HELP = """\
 
 通用选项:
   --config PATH                 配置文件，默认 config.toml
-  --workspace PATH              工作区，默认 ~/.akashic/workspace
+  --workspace PATH              覆盖 config.toml 中的 runtime.workspace
   -h, --help                    显示帮助
 
 无命令时启动 Agent 服务。
 """
-
-
-def _default_workspace() -> Path:
-    return Path.home() / ".akashic" / "workspace"
 
 
 def _get_flag_value(args: list[str], flag: str) -> str | None:
@@ -154,18 +205,16 @@ def _parse_csv_flag(value: str | None) -> list[str]:
 def _wait_plugin_disabled(
     config_path: str,
     plugin_id: str,
-    workspace: Path | None = None,
+    workspace: Path,
 ) -> None:
     if not Path(config_path).is_file():
         return
-    config = Config.load(config_path)
+    config = Config.load(config_path, workspace=workspace)
     endpoint = resolve_app_server_endpoint(
         config.app_server.listen,
-        workspace or _default_workspace(),
+        workspace,
     )
-    asyncio.run(
-        _request_plugin_drain(endpoint, plugin_id, workspace or _default_workspace())
-    )
+    asyncio.run(_request_plugin_drain(endpoint, plugin_id, workspace))
 
 
 async def _request_plugin_drain(
@@ -212,7 +261,7 @@ async def run_exec(args: list[str], config_path: str, workspace: Path) -> int:
         raise ValueError("exec 的 --json 与 --final-only 不能同时使用")
     endpoint = _get_flag_value(args, "--endpoint")
     if endpoint is None:
-        config = Config.load(config_path)
+        config = Config.load(config_path, workspace=workspace)
         endpoint = resolve_app_server_endpoint(config.app_server.listen, workspace)
 
     # 2. turn events 与最终文本严格按选定 stdout 模式输出。
@@ -289,20 +338,17 @@ async def run_exec(args: list[str], config_path: str, workspace: Path) -> int:
         return 1
 
 
-async def inspect_modules(
-    config_path: str = "config.toml",
-    workspace: Path | None = None,
-) -> None:
+async def inspect_modules(config_path: str, workspace: Path) -> None:
     import logging
     from bootstrap.cleanup import run_cleanup_steps
     from bootstrap.tools import build_core_runtime
 
     logging.getLogger().setLevel(logging.WARNING)
-    config = Config.load(config_path)
+    config = Config.load(config_path, workspace=workspace)
     http_resources = SharedHttpResources()
     runtime = build_core_runtime(
         config,
-        workspace or _default_workspace(),
+        workspace,
         http_resources,
     )
     try:
@@ -315,12 +361,8 @@ async def inspect_modules(
         )
 
 
-async def serve(
-    config_path: str = "config.toml",
-    workspace: Path | None = None,
-) -> int:
-    config = Config.load(config_path)
-    workspace = workspace or _default_workspace()
+async def serve(config_path: str, workspace: Path) -> int:
+    config = Config.load(config_path, workspace=workspace)
     commit_channel = SupervisorCommitChannel.from_environment()
     restart_coordinator = (
         RestartCoordinator(
@@ -406,14 +448,21 @@ if __name__ == "__main__":
         print(_HELP)
         sys.exit(0)
     config_path = "config.toml"
-    workspace: Path | None = None
+    workspace: Path
     force = "--force" in args
     dashboard_host = "0.0.0.0"
     dashboard_port = 2236
 
     try:
         config_value = _get_flag_value(args, "--config")
-        workspace_value = _get_flag_value(args, "--workspace")
+        if config_value is not None:
+            config_path = config_value
+        bootstrap_command = bool(args and args[0] in {"setup", "init"})
+        workspace = _workspace_from_args(
+            args,
+            Path(config_path),
+            allow_default=bootstrap_command,
+        )
         host_value = _get_flag_value(args, "--host")
         port_value = _get_flag_value(args, "--port")
         source_value = _get_flag_value(args, "--source")
@@ -424,10 +473,7 @@ if __name__ == "__main__":
         print(str(exc))
         sys.exit(1)
 
-    if config_value is not None:
-        config_path = config_value
-    if workspace_value is not None:
-        workspace = Path(workspace_value)
+    os.environ["AKASHIC_WORKSPACE"] = str(workspace)
     if host_value is not None:
         dashboard_host = host_value
     if port_value is not None:
@@ -437,20 +483,20 @@ if __name__ == "__main__":
         from bootstrap.setup_wizard import run_setup_wizard
         run_setup_wizard(
             config_path=Path(config_path),
-            workspace=workspace or _default_workspace(),
+            workspace=workspace,
         )
         sys.exit(0)
 
     if args and args[0] == "setup-main":
         from bootstrap.setup_main import run_main_model_setup
 
-        run_main_model_setup(Path(config_path))
+        run_main_model_setup(Path(config_path), workspace)
         sys.exit(0)
 
     if args and args[0] == "init":
         summary = init_workspace(
             config_path=config_path,
-            workspace=workspace or _default_workspace(),
+            workspace=workspace,
             force=force,
         )
         _print_init_summary(summary)
@@ -462,6 +508,7 @@ if __name__ == "__main__":
             sys.exit(1)
         marketplace = marketplace_value or "local"
         result = install_git_plugin(
+            workspace=workspace,
             source=source_value,
             marketplace=marketplace,
             ref_name=ref_value or "",
@@ -496,6 +543,7 @@ if __name__ == "__main__":
         try:
             cache_path, data_path = uninstall_plugin(
                 plugin_id,
+                workspace=workspace,
                 wait_until_disabled=lambda target: _wait_plugin_disabled(
                     config_path,
                     target,
@@ -517,7 +565,7 @@ if __name__ == "__main__":
         report = run_plugin_doctor(
             plugin_id=target_plugin_id,
             config_path=config_path,
-            workspace=workspace or _default_workspace(),
+            workspace=workspace,
         )
         if "--json" in args:
             print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -534,7 +582,7 @@ if __name__ == "__main__":
         sys.exit(
             run_supervisor(
                 config_path=Path(config_path),
-                workspace=workspace or _default_workspace(),
+                workspace=workspace,
             )
         )
 
@@ -547,14 +595,14 @@ if __name__ == "__main__":
             sys.exit(2)
         from bootstrap.app_server import run_stdio_app_server
 
-        config = Config.load(config_path)
-        asyncio.run(run_stdio_app_server(config, workspace or _default_workspace()))
+        config = Config.load(config_path, workspace=workspace)
+        asyncio.run(run_stdio_app_server(config, workspace))
         sys.exit(0)
 
     if args and args[0] == "exec":
         try:
             exit_code = asyncio.run(
-                run_exec(args, config_path, workspace or _default_workspace())
+                run_exec(args, config_path, workspace)
             )
         except (ValueError, ConnectionError, OSError, RemoteControlError) as exc:
             print(str(exc), file=sys.stderr)
@@ -562,8 +610,8 @@ if __name__ == "__main__":
         sys.exit(exit_code)
 
     if args and args[0] == "dashboard":
-        config = Config.load(config_path)
-        dashboard_workspace = workspace or _default_workspace()
+        config = Config.load(config_path, workspace=workspace)
+        dashboard_workspace = workspace
         http_resources = SharedHttpResources()
         provider, light_provider, _ = build_providers(config)
         memory_runtime = build_memory_admin_runtime(

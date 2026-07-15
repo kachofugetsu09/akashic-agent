@@ -63,6 +63,7 @@ def test_sync_manifest_migrates_legacy_proactive_members(tmp_path: Path) -> None
     manager = PluginManager(
         [root / "plugins"],
         event_bus=EventBus(),
+        workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "cache",
     )
 

@@ -831,14 +831,14 @@ class AppRuntime:
 
 def build_app_runtime(
     config: Config,
-    workspace: Path | None = None,
+    workspace: Path,
     *,
     restart_coordinator: RestartCoordinator | None = None,
     readiness: RuntimeReadiness | None = None,
 ) -> AppRuntime:
     return AppRuntime(
         config,
-        workspace or (Path.home() / ".akashic" / "workspace"),
+        workspace,
         restart_coordinator=restart_coordinator,
         readiness=readiness,
     )

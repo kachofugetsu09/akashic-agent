@@ -35,6 +35,8 @@ async def test_exec_remote_error_exits_two_without_traceback(tmp_path: Path) -> 
             "programmatic:missing",
             "--endpoint",
             str(server.endpoint),
+            "--workspace",
+            str(tmp_path),
             "hello",
             cwd=Path(__file__).resolve().parents[2],
             stdout=asyncio.subprocess.PIPE,

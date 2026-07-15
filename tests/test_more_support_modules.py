@@ -905,7 +905,11 @@ async def test_bootstrap_trigger_and_entrypoints_cover_paths(
     assert item.id == "1"
 
     monkeypatch.setattr("pathlib.Path.exists", lambda self: False)
-    monkeypatch.setattr(sys, "argv", ["main.py", "--config", "missing.json"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["main.py", "--config", "missing.json", "--workspace", str(tmp_path)],
+    )
     with pytest.raises(SystemExit) as exc:
         runpy.run_module("main", run_name="__main__")
     assert exc.value.code == 1
@@ -919,7 +923,7 @@ async def test_bootstrap_trigger_and_entrypoints_cover_paths(
     monkeypatch.setattr(
         "agent.config.Config.load",
         classmethod(
-            lambda cls, path="config.toml": SimpleNamespace(
+            lambda cls, path="config.toml", *, workspace: SimpleNamespace(
                 app_server=SimpleNamespace(listen="/tmp/control.sock")
             )
         ),
@@ -928,7 +932,11 @@ async def test_bootstrap_trigger_and_entrypoints_cover_paths(
         "bootstrap.app.build_app_runtime",
         lambda *args, **kwargs: SimpleNamespace(run=AsyncMock()),
     )
-    monkeypatch.setattr(sys, "argv", ["main.py"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["main.py", "--workspace", str(tmp_path)],
+    )
     runpy.run_module("main", run_name="__main__")
 
 

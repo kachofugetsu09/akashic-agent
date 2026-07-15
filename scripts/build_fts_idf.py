@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import argparse
 import math
 import sqlite3
 import sys
@@ -11,10 +12,6 @@ from collections import defaultdict
 from pathlib import Path
 
 import jieba
-
-AKASHA_DB = Path.home() / ".akashic" / "workspace" / "memory" / "akasha.db"
-SESSIONS_DB = Path.home() / ".akashic" / "workspace" / "sessions.db"
-
 
 def tokenize(text: str) -> set[str]:
     out: set[str] = set()
@@ -29,12 +26,17 @@ def tokenize(text: str) -> set[str]:
 
 
 def main() -> None:
-    if not AKASHA_DB.exists():
-        print(f"❌ {AKASHA_DB} 不存在"); sys.exit(1)
-    if not SESSIONS_DB.exists():
-        print(f"❌ {SESSIONS_DB} 不存在"); sys.exit(1)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--workspace", type=Path, required=True)
+    args = parser.parse_args()
+    akasha_db = args.workspace / "memory" / "akasha.db"
+    sessions_db = args.workspace / "sessions.db"
+    if not akasha_db.exists():
+        print(f"❌ {akasha_db} 不存在"); sys.exit(1)
+    if not sessions_db.exists():
+        print(f"❌ {sessions_db} 不存在"); sys.exit(1)
 
-    sconn = sqlite3.connect(SESSIONS_DB)
+    sconn = sqlite3.connect(sessions_db)
     cur = sconn.cursor()
     print("[scan] messages ...")
     df: dict[str, int] = defaultdict(int)
@@ -53,7 +55,7 @@ def main() -> None:
         idf[tok] = math.log((n_docs + 1) / (freq + 1)) + 1
 
     # 写入 akasha.db
-    aconn = sqlite3.connect(AKASHA_DB)
+    aconn = sqlite3.connect(akasha_db)
     aconn.execute("""
         CREATE TABLE IF NOT EXISTS fts_token_idf (
             token TEXT PRIMARY KEY,

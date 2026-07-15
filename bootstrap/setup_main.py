@@ -34,7 +34,7 @@ _MANAGED_KEYS = {
 }
 
 
-def run_main_model_setup(config_path: Path) -> None:
+def run_main_model_setup(config_path: Path, workspace: Path) -> None:
     """交互式切换主模型，并原子保留其余 TOML 配置。"""
 
     # 1. 只收集主模型答案和对应凭据。
@@ -55,7 +55,7 @@ def run_main_model_setup(config_path: Path) -> None:
     updated = patch_main_model_config(
         config_path.read_text(encoding="utf-8"), answers
     )
-    _validate_candidate(config_path, updated)
+    _validate_candidate(config_path, updated, workspace)
 
     # 3. 明确备份后原子替换，不触碰其他配置文件。
     _atomic_write_with_backup(
@@ -132,7 +132,7 @@ def _persist_main_api_key(answers: WizardAnswers) -> None:
     )
 
 
-def _validate_candidate(config_path: Path, content: str) -> None:
+def _validate_candidate(config_path: Path, content: str, workspace: Path) -> None:
     """在正式替换前验证 TOML 与完整配置边界。"""
     tomllib.loads(content)
     fd, temp_name = tempfile.mkstemp(
@@ -145,7 +145,7 @@ def _validate_candidate(config_path: Path, content: str) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        Config.load(temp_name)
+        Config.load(temp_name, workspace=workspace)
     finally:
         if os.path.exists(temp_name):
             os.unlink(temp_name)

@@ -32,7 +32,12 @@ def _clean_registry() -> Iterator[None]:
 
 
 def _make_manager(plugin_dirs: list[Path], *, event_bus: EventBus, tools: Any = None) -> PluginManager:
-    return PluginManager(plugin_dirs=plugin_dirs, event_bus=event_bus, tool_registry=tools)
+    return PluginManager(
+        plugin_dirs=plugin_dirs,
+        event_bus=event_bus,
+        tool_registry=tools,
+        workspace=plugin_dirs[0].parent / "workspace",
+    )
 
 
 async def _invoke(tool_name: str, arguments: dict[str, Any]) -> Any:

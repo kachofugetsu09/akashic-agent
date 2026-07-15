@@ -60,6 +60,7 @@ def _make_manager(plugin_dirs: list[Path], *, event_bus: EventBus, tools: ToolRe
         plugin_dirs=plugin_dirs,
         event_bus=event_bus,
         tool_registry=tools,
+        workspace=TEST_PLUGIN_HOME / "workspace",
         installed_cache_root=TEST_PLUGIN_HOME / "cache",
     )
 
@@ -231,6 +232,7 @@ async def test_installed_plugin_shadows_builtin_with_same_name(tmp_path: Path):
         plugin_dirs=[builtin_root],
         installed_cache_root=installed_root,
         event_bus=bus,
+        workspace=tmp_path / "workspace",
     )
     mods = mgr.discover()
     assert [mod["source_type"] for mod in mods] == ["installed"]
@@ -246,6 +248,7 @@ async def test_plugin_job_runtime_runs_event_job():
         plugin_dirs=[FIXTURES_DIR],
         event_bus=bus,
         llm=llm,
+        workspace=TEST_PLUGIN_HOME / "workspace",
         installed_cache_root=TEST_PLUGIN_HOME / "cache",
     )
     await mgr.load_all()
@@ -624,6 +627,7 @@ async def test_plugin_manager_scope_cleans_legacy_resources(tmp_path: Path):
     manager = PluginManager(
         plugin_dirs=[plugin_root],
         event_bus=bus,
+        workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "cache",
     )
     for _ in range(20):
@@ -637,7 +641,7 @@ async def test_plugin_manager_scope_cleans_legacy_resources(tmp_path: Path):
 
         assert bus.handler_count() == 0
         assert task.done()
-    data_dir = tmp_path / "data" / "scoped-builtin"
+    data_dir = tmp_path / "workspace" / "plugin-data" / "scoped-builtin"
     assert json.loads((data_dir / ".kv.json").read_text(encoding="utf-8")) == {
         "closed": True
     }
@@ -671,6 +675,7 @@ async def test_plugin_manager_consumes_scope_failures_after_terminate_cancellati
     manager = PluginManager(
         plugin_dirs=[plugin_root],
         event_bus=EventBus(),
+        workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "cache",
     )
     await manager.load_all()
@@ -718,6 +723,7 @@ async def test_plugin_initialize_failure_calls_terminate(tmp_path: Path):
     manager = PluginManager(
         plugin_dirs=[plugin_root],
         event_bus=EventBus(),
+        workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "cache",
     )
 
@@ -759,6 +765,7 @@ async def test_plugin_initialize_cancellation_rolls_back(tmp_path: Path):
     manager = PluginManager(
         plugin_dirs=[plugin_root],
         event_bus=bus,
+        workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "cache",
     )
     loading = asyncio.create_task(manager.load_all())
@@ -824,6 +831,7 @@ async def test_plugin_tool_registration_failure_rolls_back(tmp_path: Path):
         plugin_dirs=[plugin_root],
         event_bus=EventBus(),
         tool_registry=tools,
+        workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "cache",
     )
 
@@ -868,6 +876,7 @@ async def test_plugin_duplicate_tool_preserves_existing_tool(tmp_path: Path):
         plugin_dirs=[plugin_root],
         event_bus=EventBus(),
         tool_registry=tools,
+        workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "cache",
     )
 
@@ -965,7 +974,7 @@ async def test_kv_store_persists_across_manager_instances():
         result = await bus2.emit(ctx)
         assert result.extra_metadata["turn_count"] == 2
 
-        kv_path = TEST_PLUGIN_HOME / "data" / "counter-builtin" / ".kv.json"
+        kv_path = TEST_PLUGIN_HOME / "workspace" / "plugin-data" / "counter-builtin" / ".kv.json"
         assert kv_path.exists()
         data = json.loads(kv_path.read_text())
         assert data["turn_count"] == 2
@@ -1066,6 +1075,7 @@ async def test_loads_installed_programmatic_plugin():
             plugin_dirs=[],
             installed_cache_root=cache_root,
             event_bus=bus,
+            workspace=Path(tmp) / "workspace",
         )
         await mgr.load_all()
 
@@ -1106,6 +1116,7 @@ async def test_sync_manifest_covers_builtin_and_installed_plugins(tmp_path: Path
         plugin_dirs=[builtin_root],
         installed_cache_root=cache_root,
         event_bus=bus,
+        workspace=tmp_path / "workspace",
     )
     await mgr.load_all()
 
@@ -1206,7 +1217,7 @@ async def test_installed_plugin_reads_own_toml_config(tmp_path: Path):
         "        return [DemoModule(self.context.config.value)]\n",
         encoding="utf-8",
     )
-    data_dir = tmp_path / "data" / "demo-github"
+    data_dir = tmp_path / "workspace" / "plugin-data" / "demo-github"
     data_dir.mkdir(parents=True)
     (data_dir / "config.local.toml").write_text("value = 7\n", encoding="utf-8")
 
@@ -1214,6 +1225,7 @@ async def test_installed_plugin_reads_own_toml_config(tmp_path: Path):
         plugin_dirs=[],
         installed_cache_root=cache_root,
         event_bus=bus,
+        workspace=tmp_path / "workspace",
     )
     await mgr.load_all()
 
@@ -1440,7 +1452,7 @@ async def test_plugin_toml_overrides_defaults():
     bus = EventBus()
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copytree(FIXTURES_DIR / "configured", Path(tmp) / "configured")
-        data_dir = TEST_PLUGIN_HOME / "data" / "configured-builtin"
+        data_dir = TEST_PLUGIN_HOME / "workspace" / "plugin-data" / "configured-builtin"
         data_dir.mkdir(parents=True)
         (data_dir / "config.local.toml").write_text(
             'api_key = "override-key"\nenabled = false\n',

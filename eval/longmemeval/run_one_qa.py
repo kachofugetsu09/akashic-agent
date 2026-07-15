@@ -32,7 +32,7 @@ async def _run(args: argparse.Namespace) -> None:
     rt = await create_runtime(args.config, args.workspace)
     try:
         result = await run_qa_instance(rt, inst, timeout_s=args.timeout)
-        cfg = load_config(args.config)
+        cfg = load_config(args.config, workspace=args.workspace)
         result["judge_correct"] = await judge_answer(
             rt.core.provider,
             cfg.model,

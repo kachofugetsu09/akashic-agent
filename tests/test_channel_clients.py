@@ -38,7 +38,8 @@ class _Bus:
 
 
 class _SessionManager:
-    def __init__(self) -> None:
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace
         self.sessions = {}
         self.saved = []
 
@@ -341,7 +342,7 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     mod = _import_telegram_channel(monkeypatch)
     bus = _Bus()
     event_bus = EventBus()
-    session_manager = _SessionManager()
+    session_manager = _SessionManager(tmp_path)
     interrupt_controller = MagicMock()
     interrupt_controller.request_interrupt.return_value = SimpleNamespace(
         status="interrupted",
@@ -749,7 +750,7 @@ async def test_telegram_live_message_is_retained_when_delete_fails(monkeypatch):
 async def test_qq_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     mod = _import_qq_channel(monkeypatch)
     bus = _Bus()
-    session_manager = _SessionManager()
+    session_manager = _SessionManager(tmp_path)
     async def _request_get(url, **kwargs):
         if url.endswith("a.jpg") or url.endswith("a.png"):
             return SimpleNamespace(
@@ -853,7 +854,7 @@ async def test_qq_private_trace_sends_forward_then_final_and_clears_state(
 ):
     mod = _import_qq_channel(monkeypatch)
     bus = _Bus()
-    session_manager = _SessionManager()
+    session_manager = _SessionManager(tmp_path)
     event_bus = EventBus()
     channel = mod.QQChannel(
         "42",
@@ -947,10 +948,13 @@ async def test_qq_private_trace_sends_forward_then_final_and_clears_state(
 
 
 @pytest.mark.asyncio
-async def test_qq_private_trace_skips_empty_trace(monkeypatch: pytest.MonkeyPatch):
+async def test_qq_private_trace_skips_empty_trace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
     mod = _import_qq_channel(monkeypatch)
     bus = _Bus()
-    session_manager = _SessionManager()
+    session_manager = _SessionManager(tmp_path)
     event_bus = EventBus()
     channel = mod.QQChannel(
         "42",

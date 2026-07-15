@@ -6,7 +6,10 @@ from math import isfinite
 from pathlib import Path
 from typing import cast
 
-from agent.plugins.manifest import builtin_plugin_data_dir
+from agent.plugins.manifest import (
+    builtin_plugin_data_dir,
+    ensure_workspace_plugin_data_dir,
+)
 from infra.persistence.json_store import atomic_write_text
 
 
@@ -47,9 +50,10 @@ class DefaultMemoryConfig:
 
 def load_default_memory_config(
     *,
+    workspace: Path | None = None,
     plugin_dir: Path | None = None,
 ) -> DefaultMemoryConfig:
-    root = plugin_dir or builtin_plugin_data_dir("default_memory")
+    root = _config_root(workspace=workspace, plugin_dir=plugin_dir)
     payload = _read_toml(root / "config.local.toml")
     return _build_config(payload)
 
@@ -82,17 +86,22 @@ def render_default_memory_config(config: DefaultMemoryConfig | None = None) -> s
     ])
 
 
-def ensure_default_memory_config_file(*, plugin_dir: Path | None = None) -> Path:
+def ensure_default_memory_config_file(
+    *,
+    workspace: Path | None = None,
+    plugin_dir: Path | None = None,
+) -> Path:
     """迁移或创建 default memory 的用户配置。"""
 
     # 1. 已有用户配置直接复用
-    root = plugin_dir or builtin_plugin_data_dir("default_memory")
+    root = _config_root(workspace=workspace, plugin_dir=plugin_dir)
+    if plugin_dir is None:
+        ensure_workspace_plugin_data_dir(root, cast(Path, workspace))
     path = root / "config.local.toml"
     if path.exists():
         return path
 
     # 2. 首次迁移保留旧目录配置，否则写入默认配置
-    root.mkdir(parents=True, exist_ok=True)
     legacy_path = Path(__file__).resolve().parent / "config.local.toml"
     content = (
         legacy_path.read_text(encoding="utf-8")
@@ -103,15 +112,25 @@ def ensure_default_memory_config_file(*, plugin_dir: Path | None = None) -> Path
     return path
 
 
+def _config_root(*, workspace: Path | None, plugin_dir: Path | None) -> Path:
+    if plugin_dir is not None:
+        return plugin_dir
+    if workspace is None:
+        raise RuntimeError("default_memory 配置缺少 workspace")
+    return builtin_plugin_data_dir("default_memory", workspace)
+
+
 def resolve_memory_db_path(
     *,
     workspace: Path,
     default_config: DefaultMemoryConfig,
 ) -> Path:
-    if not default_config.db_path:
-        return workspace / "memory" / "memory2.db"
-    path = Path(default_config.db_path)
-    return path if path.is_absolute() else workspace / path
+    root = workspace.resolve(strict=False)
+    configured = default_config.db_path or "memory/memory2.db"
+    path = (root / configured).resolve(strict=False)
+    if not path.is_relative_to(root):
+        raise ValueError(f"default_memory.db_path 必须位于 workspace 内: {configured}")
+    return path
 
 
 def _build_config(payload: dict[str, object]) -> DefaultMemoryConfig:

@@ -89,11 +89,16 @@ def _validated_timezone(tz_name: str, *, enabled: bool) -> str:
         ) from exc
 
 
-def load_config(path: str | Path = "config.toml") -> Config:
+def load_config(
+    path: str | Path = "config.toml",
+    *,
+    workspace: str | Path,
+) -> Config:
+    workspace_path = Path(workspace)
     data = _load_config_data(path)
 
     llm = _as_dict(data.get("llm"), field="llm")
-    runtime_id, llm_main, model_runtimes = _load_llm_runtimes(llm)
+    runtime_id, llm_main, model_runtimes = _load_llm_runtimes(llm, workspace_path)
     fast_runtime_id, llm_fast = _load_role_runtime(llm, "fast", runtime_id)
     agent_runtime_id, llm_agent = _load_role_runtime(llm, "agent", runtime_id)
     vl_runtime_id, llm_vl = _load_role_runtime(llm, "vl", runtime_id)
@@ -106,10 +111,10 @@ def load_config(path: str | Path = "config.toml") -> Config:
     provider = str(llm_main.get("provider") or llm.get("provider") or data.get("provider") or "").lower()
     if not provider:
         raise ValueError("必须配置 llm provider")
-    channels = _load_channels_config(data)
+    channels = _load_channels_config(data, workspace_path)
     app_server = _load_app_server_config(data)
     proactive = _load_proactive_config(data)
-    memory = _load_memory_config(data)
+    memory = _load_memory_config(data, workspace_path)
     peer_agents = _load_peer_agents_config(data)
     wiring = _load_wiring_config(data)
 
@@ -122,6 +127,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
             else _load_api_key(
                 auth_id=str(llm_main.get("auth") or ""),
                 inline_value=str(llm_main.get("api_key") or data.get("api_key", "")),
+                workspace=workspace_path,
             )
         ),
         system_prompt=str(
@@ -162,6 +168,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         light_api_key=_load_api_key(
             auth_id=str(llm_fast.get("auth") or ""),
             inline_value=str(llm_fast.get("api_key") or data.get("light_api_key", "")),
+            workspace=workspace_path,
         ),
         light_base_url=str(
             llm_fast.get("base_url") or data.get("light_base_url", "")
@@ -170,6 +177,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         agent_api_key=_load_api_key(
             auth_id=str(llm_agent.get("auth") or ""),
             inline_value=str(llm_agent.get("api_key") or data.get("agent_api_key", "")),
+            workspace=workspace_path,
         ),
         agent_base_url=str(
             llm_agent.get("base_url") or data.get("agent_base_url", "")
@@ -198,6 +206,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         vl_api_key=_load_api_key(
             auth_id=str(llm_vl.get("auth") or ""),
             inline_value=str(llm_vl.get("api_key") or data.get("vl_api_key", "")),
+            workspace=workspace_path,
         ),
         vl_base_url=str(llm_vl.get("base_url") or data.get("vl_base_url", "")),
         peer_agents=peer_agents,
@@ -230,13 +239,15 @@ def load_config(path: str | Path = "config.toml") -> Config:
     )
 
 
-def _load_channels_config(data: dict) -> ChannelsConfig:
+def _load_channels_config(data: dict, workspace: Path) -> ChannelsConfig:
     channels_data = _as_dict(data.get("channels"), field="channels")
 
     telegram = None
     tg = _as_dict(channels_data.get("telegram"), field="channels.telegram")
     if tg:
-        token = _normalize_optional_config_text(_resolve(str(tg.get("token", ""))))
+        token = _normalize_optional_config_text(
+            _resolve(str(tg.get("token", "")), workspace)
+        )
         if _as_bool(
             tg.get("enabled", True), field="channels.telegram.enabled"
         ) and token:
@@ -333,7 +344,7 @@ def _load_proactive_config(data: dict) -> ProactiveConfig:
     return proactive
 
 
-def _load_memory_config(data: dict) -> MemoryConfig:
+def _load_memory_config(data: dict, workspace: Path) -> MemoryConfig:
     memory = _as_dict(data.get("memory"), field="memory")
     embedding = _as_dict(memory.get("embedding"), field="memory.embedding")
     raw_output_dimensionality = embedding.get("output_dimensionality")
@@ -352,6 +363,7 @@ def _load_memory_config(data: dict) -> MemoryConfig:
             api_key=_load_api_key(
                 auth_id=str(embedding.get("auth") or ""),
                 inline_value=str(embedding.get("api_key", "")),
+                workspace=workspace,
             ),
             base_url=str(embedding.get("base_url", "")),
             output_dimensionality=output_dimensionality,
@@ -430,6 +442,7 @@ def _load_extra_body(data: dict, llm_main: dict | None = None) -> dict:
 
 def _load_llm_runtimes(
     llm: dict,
+    workspace: Path,
 ) -> tuple[str, dict, dict[str, ModelRuntimeConfig]]:
     """在配置边界把新版 runtime 与旧版 llm.main 统一。"""
     main_value = llm.get("main")
@@ -458,6 +471,7 @@ def _load_llm_runtimes(
                 else _load_api_key(
                     auth_id=auth_id,
                     inline_value=str(item.get("api_key") or ""),
+                    workspace=workspace,
                 )
             ),
             base_url=_model_base_url(provider, item.get("base_url")),
@@ -533,23 +547,23 @@ def _as_dict(value: object, *, field: str) -> dict:
     return value
 
 
-def _resolve(value: str) -> str:
+def _resolve(value: str, workspace: Path) -> str:
     resolved = re.sub(
         r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), m.group(0)), value
     )
     # 若仍是未展开的占位符，尝试从 workspace/memory/<VAR_NAME> 文件读取
     m = re.fullmatch(r"\$\{(\w+)\}", resolved)
     if m:
-        key_file = Path.home() / ".akashic" / "workspace" / "memory" / m.group(1)
+        key_file = workspace / "memory" / m.group(1)
         if key_file.exists():
             resolved = key_file.read_text(encoding="utf-8").strip()
     return resolved
 
 
-def _load_api_key(*, auth_id: str, inline_value: str) -> str:
+def _load_api_key(*, auth_id: str, inline_value: str, workspace: Path) -> str:
     if auth_id:
         return CredentialStore().api_key(auth_id)
-    return _resolve(inline_value)
+    return _resolve(inline_value, workspace)
 
 
 def _model_base_url(provider: str, configured: object) -> str:

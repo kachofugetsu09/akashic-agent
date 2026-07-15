@@ -331,7 +331,7 @@ def test_named_runtime_config_and_setup_keep_secrets_out_of_toml(
     rendered = _render_config(answers)
     path = tmp_path / "config.toml"
     path.write_text(rendered, encoding="utf-8")
-    config = load_config(path)
+    config = load_config(path, workspace=tmp_path)
 
     assert "main-secret" not in rendered
     assert config.model_runtimes["main"].provider == "deepseek"
@@ -353,7 +353,7 @@ reasoning_summary = "{summary}"
 """
     path = tmp_path / "config.toml"
     path.write_text(template.format(provider="CustomAPI", summary="none"), encoding="utf-8")
-    assert load_config(path).model_runtimes["main"].provider == "customapi"
+    assert load_config(path, workspace=tmp_path).model_runtimes["main"].provider == "customapi"
 
 
 def test_usage_keeps_partial_coverage_unknown() -> None:
