@@ -138,3 +138,15 @@ ANDROID_HOME=/home/huashen/Android/Sdk clients/android/gradlew -p clients/androi
 - APK：`0.7.2`（versionCode 11），SHA-256 `f73c8c2251ae38f9a6a3579d513af2cef4af50f4127b6511acd5fd9317afaaf3`
 - 私有发布：<https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.2>
 - ADB 安装：发布时没有已连接设备，等待真机覆盖安装后确认实际 WebView 行为
+
+### 0.7.3 配对与首帧稳定性修复
+
+二维码入口只接收 JSON object，再由严格协议解码器统一校验字段、签名、有效期和证书；非对象内容会返回稳定错误。相机提高分析分辨率并启用旋转与 QR 专用提示，同时增加可滚动、适配键盘且限制为 32 KB 的手动粘贴入口。
+
+Mobile Web 首帧改用 React ready 握手和 10 秒页面代际 deadline，入口 JS/CSS 失败或脚本未挂载时显示原生重新加载页。Native snapshot 在协议边界严格校验，只有通过校验并提交 React 后才停止请求；无效快照会明确显示原因并继续等待有效状态。
+
+- 复审：两轮 Android/Web 只读 gate 后无发布 blocker
+- 验证：TypeScript、ESLint、debug/release JVM、Kotlin 编译、Lint、R8、assemble 与 APK v2 签名均通过
+- APK：`0.7.3`（versionCode 12），8,255,218 bytes，SHA-256 `3f26c1c87c40ad3c76c309274d04c1c3938104034a4ff15a7daa5973de8c35df`
+- 私有发布：<https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.3>
+- 真机验收：等待覆盖安装后验证 Pixel 7/Pixel 9 的扫码、手动粘贴和会话首帧
