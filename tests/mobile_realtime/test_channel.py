@@ -84,6 +84,7 @@ def _message_frame(
     frame_id: str,
     session_id: str,
     epoch: int = 1,
+    reply_to: dict[str, object] | None = None,
 ) -> MessageSendCommand:
     frame = parse_frame(
         json.dumps(
@@ -100,6 +101,7 @@ def _message_frame(
                     "text": "你好",
                     "media_refs": [],
                     "client_created_at": datetime.now(timezone.utc).isoformat(),
+                    **({"reply_to": reply_to} if reply_to is not None else {}),
                 },
             }
         )
@@ -192,6 +194,143 @@ async def test_message_send_is_idempotent_and_session_is_shared_between_devices(
 
 
 @pytest.mark.asyncio
+async def test_message_send_resolves_reply_into_agent_context_and_metadata(
+    tmp_path: Path,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    manager = SessionManager(tmp_path / "workspace")
+    session_id = f"mobile:{uuid4()}"
+    session = manager.get_or_create(session_id)
+    target_content = "第一行\n第二行\n" + "长" * 600
+    target = session.add_message("assistant", target_content)
+    manager.save(session)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    bus = _Bus()
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=bus,
+                session_manager=manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+            ),
+        )
+    )
+
+    reply = await channel.handle_command(
+        device_id=device_id,
+        frame=_message_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            session_id=session_id,
+            reply_to={
+                "message_id": target["id"],
+            },
+        ),
+    )
+
+    assert reply.type == "message.send.ok"
+    inbound = bus.inbound[0]
+    assert f"被回复消息（来自 Akashic）：\n{target_content}" in inbound.content
+    assert inbound.content.endswith("【你当前新消息】\n你好")
+    assert inbound.metadata["display_content"] == "你好"
+    assert inbound.metadata["reply_to_message_id"] == target["id"]
+    assert inbound.metadata["reply_role"] == "assistant"
+    assert inbound.metadata["reply_preview"] == " ".join(target_content.split())[:512]
+
+    user_target = session.add_message(
+        "user",
+        "之前的问题",
+        client_message_id="01ARZ3NDEKTSV4RRFFQ69G5FAW",
+    )
+    manager.save(session)
+    second = await channel.handle_command(
+        device_id=device_id,
+        frame=_message_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAX",
+            session_id=session_id,
+            reply_to={
+                "client_message_id": user_target["client_message_id"],
+            },
+        ),
+    )
+    assert second.type == "message.send.ok"
+    assert bus.inbound[1].metadata["reply_to_message_id"] == user_target["id"]
+    assert "被回复消息（来自 你）：\n之前的问题" in bus.inbound[1].content
+
+    media_target = session.add_message(
+        "user",
+        "",
+        media=["/tmp/photo.png"],
+        client_message_id="01ARZ3NDEKTSV4RRFFQ69G5FAY",
+    )
+    manager.save(session)
+    third = await channel.handle_command(
+        device_id=device_id,
+        frame=_message_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+            session_id=session_id,
+            reply_to={
+                "client_message_id": media_target["client_message_id"],
+            },
+        ),
+    )
+    assert third.type == "message.send.ok"
+    assert bus.inbound[2].metadata["reply_preview"] == "[附件]"
+    assert "被回复消息（来自 你）：\n[附件]" in bus.inbound[2].content
+    manager.close()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_message_send_rejects_reply_from_another_session(tmp_path: Path) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    manager = SessionManager(tmp_path / "workspace")
+    session_id = f"mobile:{uuid4()}"
+    other = manager.get_or_create(f"mobile:{uuid4()}")
+    target = other.add_message("assistant", "其他会话")
+    manager.save(other)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=_Bus(),
+                session_manager=manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+            ),
+        )
+    )
+
+    result = await channel.handle_command(
+        device_id=device_id,
+        frame=_message_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            session_id=session_id,
+            reply_to={
+                "message_id": target["id"],
+            },
+        ),
+    )
+
+    assert result.type == "message.send.error"
+    assert result.payload["code"] == "reply_target_session_mismatch"
+    manager.close()
+    storage.close()
+
+
+@pytest.mark.asyncio
 async def test_session_list_and_history_sync_publish_all_mobile_sessions(
     tmp_path: Path,
 ) -> None:
@@ -231,6 +370,9 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
         "恢复这段对话",
         llm_context_frame="private context",
         client_message_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        reply_to_message_id=f"{session_id}:0",
+        reply_role="assistant",
+        reply_preview="更早的回答",
     )
     session.add_message(
         "assistant",
@@ -289,6 +431,9 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
     history_items = cast(list[dict[str, object]], history_payload["items"])
     assert history_items[0]["extra"] == {}
     assert history_items[0]["client_message_id"] == "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    assert history_items[0]["reply_to_message_id"] == f"{session_id}:0"
+    assert history_items[0]["reply_role"] == "assistant"
+    assert history_items[0]["reply_preview"] == "更早的回答"
     assert "llm_context_frame" not in history_items[0]
     assert history_items[1]["extra"] == {"reasoning_content": "历史思考"}
     tool_chain = cast(list[dict[str, object]], history_items[1]["tool_chain"])
@@ -464,6 +609,33 @@ async def test_remote_media_failure_keeps_final_text(
     assert cast(dict[str, object], metadata["media_delivery"])["status"] == "failed"
     await channel.stop()
     manager.close()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_final_event_maps_optimistic_user_to_persisted_identity(tmp_path: Path) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    session_id = f"mobile:{uuid4()}"
+
+    await channel._on_response(
+        OutboundMessage(
+            channel="mobile",
+            chat_id=session_id.removeprefix("mobile:"),
+            content="完成",
+            metadata={
+                "client_message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                "persisted_user_message_id": f"{session_id}:0",
+            },
+            control_turn_id=uuid4().hex,
+            session_message_id=f"{session_id}:1",
+        )
+    )
+
+    payload = cast(dict[str, object], runtime.events[-1]["payload"])
+    assert payload["client_message_id"] == "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    assert payload["user_message_id"] == f"{session_id}:0"
     storage.close()
 
 

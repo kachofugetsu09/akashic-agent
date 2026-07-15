@@ -61,6 +61,9 @@ data class MessageEntity(
     val createdAt: Long,
     val updatedAt: Long,
     val serverSeq: Long? = null,
+    val replyToMessageId: String? = null,
+    val replyRole: String? = null,
+    val replyPreview: String? = null,
 )
 
 @Entity(

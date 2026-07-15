@@ -83,6 +83,72 @@ def test_message_send_rejects_duplicate_or_too_many_media_refs() -> None:
         parse_frame(json.dumps(oversized))
 
 
+def test_message_send_validates_reply_identity() -> None:
+    valid = _golden_frame(0)
+    valid["payload"]["reply_to"] = {
+        "client_message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+    }
+    parsed = parse_frame(json.dumps(valid))
+    assert isinstance(parsed, MessageSendCommand)
+    assert parsed.payload.reply_to is not None
+    assert parsed.payload.reply_to.client_message_id == "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+
+    invalid = _golden_frame(0)
+    invalid["payload"]["reply_to"] = {
+        "message_id": "mobile:test:1",
+        "client_message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+    }
+    with pytest.raises(ValidationError, match="只能提供一种"):
+        parse_frame(json.dumps(invalid))
+
+
+def test_message_send_accepts_real_client_creation_time() -> None:
+    frame = _golden_frame(0)
+    frame["payload"]["client_created_at"] = "2026-07-16T12:34:56+08:00"
+
+    parsed = parse_frame(json.dumps(frame))
+
+    assert isinstance(parsed, MessageSendCommand)
+    assert parsed.payload.client_created_at == "2026-07-16T12:34:56+08:00"
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "not-a-time",
+        "2026-07-16T12:34:56",
+        "2026-07-16 12:34:56+08:00",
+        "20260716T123456+0800",
+        "2026-07-16T12:34:56,5+08:00",
+    ),
+)
+def test_message_send_rejects_invalid_client_creation_time(value: str) -> None:
+    frame = _golden_frame(0)
+    frame["payload"]["client_created_at"] = value
+
+    with pytest.raises(ValidationError, match="client_created_at"):
+        parse_frame(json.dumps(frame))
+
+
+def test_message_send_accepts_but_drops_legacy_reply_projection() -> None:
+    frame = _golden_frame(0)
+    frame["payload"]["reply_to"] = {
+        "message_id": "mobile:test:1",
+        "role": "assistant",
+        "preview": "旧版客户端缓存的摘要",
+    }
+
+    parsed = parse_frame(json.dumps(frame))
+
+    assert isinstance(parsed, MessageSendCommand)
+    assert parsed.payload.reply_to is not None
+    assert parsed.payload.reply_to.legacy_role == "assistant"
+    assert parsed.payload.reply_to.legacy_preview == "旧版客户端缓存的摘要"
+    dumped = parsed.payload.reply_to.model_dump(by_alias=True)
+    assert "role" not in dumped
+    assert "preview" not in dumped
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     (

@@ -24,6 +24,7 @@ from agent.plugins.mobile_ui import (
     MobileUiRpcTimeout,
 )
 from infra.channels.contract import ChannelContext
+from infra.channels.reply_context import build_reply_inbound_text
 from infra.mobile_realtime.attachments import (
     AttachmentChunk,
     AttachmentRequestError,
@@ -37,6 +38,7 @@ from infra.mobile_realtime.protocol import (
     AttachmentFinishCommand,
     ClientCommand,
     GenericCommand,
+    MessageReplyReference,
     MessageSendCommand,
     MAX_JSON_FRAME_BYTES,
 )
@@ -68,6 +70,14 @@ class CommandReply:
     session_id: str | None = None
     turn_id: str | None = None
     binary: AttachmentChunk | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedReply:
+    message_id: str
+    role: str
+    content: str
+    preview: str
 
 
 @dataclass(slots=True)
@@ -595,6 +605,28 @@ class MobileRealtimeChannel:
         except (AttachmentRequestError, AttachmentStateError) as error:
             raise MobileCommandError("attachment_not_ready", str(error)) from error
         ctx = self._require_ctx()
+        reply = self._resolve_reply(session_id, frame.payload.reply_to)
+        inbound_content = frame.payload.text
+        metadata: dict[str, object] = {
+            "client_request_id": frame.id,
+            "client_message_id": frame.payload.client_message_id,
+            "client_created_at": frame.payload.client_created_at,
+            "device_id": device_id,
+        }
+        if reply is not None:
+            metadata.update(
+                {
+                    "display_content": frame.payload.text,
+                    "reply_to_message_id": reply.message_id,
+                    "reply_role": reply.role,
+                    "reply_preview": reply.preview,
+                }
+            )
+            inbound_content = build_reply_inbound_text(
+                frame.payload.text,
+                reply.content,
+                sender_label="你" if reply.role == "user" else "Akashic",
+            )
         self._runtime.storage.claim_session(
             device_id=device_id,
             session_id=session_id,
@@ -606,14 +638,9 @@ class MobileRealtimeChannel:
                 channel=self.name,
                 sender=f"device:{device_id}",
                 chat_id=self._chat_id(session_id),
-                content=frame.payload.text,
+                content=inbound_content,
                 media=media,
-                metadata={
-                    "client_request_id": frame.id,
-                    "client_message_id": frame.payload.client_message_id,
-                    "client_created_at": frame.payload.client_created_at,
-                    "device_id": device_id,
-                },
+                metadata=metadata,
             )
         )
         return CommandReply(
@@ -623,6 +650,39 @@ class MobileRealtimeChannel:
                 "accepted": True,
                 "client_message_id": frame.payload.client_message_id,
             },
+        )
+
+    def _resolve_reply(
+        self,
+        session_id: str,
+        reference: MessageReplyReference | None,
+    ) -> _ResolvedReply | None:
+        """把客户端引用解析为同会话的 canonical 消息摘要。"""
+
+        if reference is None:
+            return None
+        store = self._require_ctx().session_manager.control_store
+        target = (
+            store.get_message(reference.message_id)
+            if reference.message_id is not None
+            else store.get_message_by_client_id(
+                session_id,
+                cast(str, reference.client_message_id),
+            )
+        )
+        if target is None:
+            raise MobileCommandError("reply_target_missing", "被引用的消息不存在或尚未同步")
+        if target["session_key"] != session_id:
+            raise MobileCommandError("reply_target_session_mismatch", "不能引用其他会话的消息")
+        role = str(target["role"])
+        if role not in {"user", "assistant"}:
+            raise RuntimeError(f"被引用消息角色无效: {target['id']} {role}")
+        content = _reply_source_text(target)
+        return _ResolvedReply(
+            message_id=str(target["id"]),
+            role=role,
+            content=content,
+            preview=_reply_preview(content),
         )
 
     async def _stop_turn(
@@ -804,6 +864,13 @@ class MobileRealtimeChannel:
             "attachments": attachments,
             "metadata": metadata,
         }
+        user_message_id = metadata.get("persisted_user_message_id")
+        client_message_id = metadata.get("client_message_id")
+        if user_message_id is not None or client_message_id is not None:
+            if not isinstance(user_message_id, str) or not isinstance(client_message_id, str):
+                raise RuntimeError("mobile final 缺少完整的 user/client 消息标识")
+            final_payload["user_message_id"] = user_message_id
+            final_payload["client_message_id"] = client_message_id
         if message_id is not None:
             final_payload["message_id"] = message_id
         await self._runtime.publish_event(
@@ -1209,7 +1276,25 @@ def _mobile_history_item(item: Mapping[str, object]) -> dict[str, object]:
     client_message_id = item.get("client_message_id")
     if isinstance(client_message_id, str) and client_message_id:
         result["client_message_id"] = client_message_id
+    for field in ("reply_to_message_id", "reply_role", "reply_preview"):
+        value = item.get(field)
+        if isinstance(value, str) and value:
+            result[field] = value
     return result
+
+
+def _reply_preview(content: str) -> str:
+    return " ".join(content.split())[:512] or "[无文字消息]"
+
+
+def _reply_source_text(target: Mapping[str, object]) -> str:
+    content = str(target["content"])
+    if content.strip():
+        return content
+    media = target.get("media")
+    if isinstance(media, list) and media:
+        return "[附件]"
+    return "[无文字消息]"
 
 
 def _mobile_tool_chain(value: object) -> list[dict[str, object]] | None:

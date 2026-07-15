@@ -841,6 +841,71 @@
         "type": "object"
       },
       "JsonValue": {},
+      "MessageReplyReference": {
+        "additionalProperties": false,
+        "properties": {
+          "client_message_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "minLength": 26,
+                "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12})$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Message Id"
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Message Id"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Preview"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "enum": [
+                  "user",
+                  "assistant"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Role"
+          }
+        },
+        "title": "MessageReplyReference",
+        "type": "object"
+      },
       "MessageSendCommand": {
         "additionalProperties": false,
         "properties": {
@@ -913,6 +978,7 @@
           "client_created_at": {
             "maxLength": 64,
             "minLength": 1,
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$",
             "title": "Client Created At",
             "type": "string"
           },
@@ -932,6 +998,17 @@
             "maxItems": 10,
             "title": "Media Refs",
             "type": "array"
+          },
+          "reply_to": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/MessageReplyReference"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "session_id": {
             "maxLength": 512,

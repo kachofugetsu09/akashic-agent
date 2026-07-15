@@ -1,17 +1,27 @@
 import "./mobile-polyfills";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import {
+  animate,
+  motion,
+  useMotionValue,
+  useMotionValueEvent,
+  useReducedMotion,
+  useTransform,
+} from "motion/react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import {
   AlertCircle,
   Check,
   ChevronDown,
+  Copy,
   FileText,
   Menu,
   MessageSquarePlus,
   Paperclip,
   RefreshCw,
+  Reply,
   RotateCcw,
   SendHorizontal,
   Share2,
@@ -70,6 +80,9 @@ interface MobileMessage {
   sessionId: string;
   role: "user" | "assistant";
   content: string;
+  createdAt: number;
+  replyable: boolean;
+  reply?: MobileReply;
   deliveryLabel?: string;
   blocks: MobileProcessBlock[];
   streaming: boolean;
@@ -78,8 +91,14 @@ interface MobileMessage {
   attachments: MobileAttachment[];
 }
 
+interface MobileReply {
+  messageId: string;
+  role: "user" | "assistant";
+  preview: string;
+}
+
 export interface MobileSnapshot {
-  protocolVersion: 1;
+  protocolVersion: 2;
   connection: {
     label: string;
     status: ConnectionStatus;
@@ -117,7 +136,9 @@ interface NativeBridge {
   openDownloadedAttachment(attachmentId: string): void;
   shareDownloadedAttachment(attachmentId: string): void;
   dismissError(): void;
-  sendMessage(text: string): void;
+  sendMessage(text: string, replyToMessageId: string): void;
+  copyText(text: string): void;
+  performReplyHaptic(): void;
   sendCommand(command: string): void;
   stopTurn(): void;
   callPluginUi(
@@ -202,11 +223,19 @@ function parseMessage(value: unknown, index: number): MobileMessage {
   const raw = requireRecord(value, `messages[${index}]`);
   const role = requireString(raw.role, `messages[${index}].role`);
   if (role !== "user" && role !== "assistant") throw new Error(`messages[${index}].role 不受支持`);
+  const createdAt = requireNumber(raw.createdAt, `messages[${index}].createdAt`);
+  if (createdAt <= 0) throw new Error(`messages[${index}].createdAt 必须是正数`);
+  const reply = raw.reply === undefined || raw.reply === null
+    ? undefined
+    : parseReply(raw.reply, `messages[${index}].reply`);
   return {
     id: requireString(raw.id, `messages[${index}].id`),
     sessionId: requireString(raw.sessionId, `messages[${index}].sessionId`),
     role,
     content: requireString(raw.content, `messages[${index}].content`),
+    createdAt,
+    replyable: requireBoolean(raw.replyable, `messages[${index}].replyable`),
+    reply,
     deliveryLabel: optionalString(raw.deliveryLabel, `messages[${index}].deliveryLabel`),
     blocks: optionalArray(raw.blocks, `messages[${index}].blocks`, parseProcessBlock),
     streaming: raw.streaming === undefined ? false : requireBoolean(raw.streaming, `messages[${index}].streaming`),
@@ -216,11 +245,22 @@ function parseMessage(value: unknown, index: number): MobileMessage {
   };
 }
 
+function parseReply(value: unknown, label: string): MobileReply {
+  const raw = requireRecord(value, label);
+  const role = requireString(raw.role, `${label}.role`);
+  if (role !== "user" && role !== "assistant") throw new Error(`${label}.role 不受支持`);
+  return {
+    messageId: requireString(raw.messageId, `${label}.messageId`),
+    role,
+    preview: requireString(raw.preview, `${label}.preview`),
+  };
+}
+
 /** 在 native 协议边界校验完整快照，并只补齐 Kotlin 明确定义的默认字段。 */
 function parseMobileSnapshot(value: unknown): MobileSnapshot {
   // 1. 校验协议版本与根对象
   const raw = requireRecord(value, "snapshot");
-  if (raw.protocolVersion !== 1) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
+  if (raw.protocolVersion !== 2) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
   const connection = requireRecord(raw.connection, "connection");
   const status = requireString(connection.status, "connection.status");
   if (!["connecting", "ready", "degraded", "reconnecting", "disconnected"].includes(status)) {
@@ -245,7 +285,7 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
   // 3. 校验输入区状态并构造内部类型
   const composer = requireRecord(raw.composer, "composer");
   return {
-    protocolVersion: 1,
+    protocolVersion: 2,
     connection: {
       label: requireString(connection.label, "connection.label"),
       status: status as ConnectionStatus,
@@ -290,11 +330,14 @@ function MobileNativeApp() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [commandsOpen, setCommandsOpen] = useState(false);
   const [input, setInput] = useState("");
+  const [replyTarget, setReplyTarget] = useState<MobileMessage | null>(null);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [stopRequested, setStopRequested] = useState(false);
   const [pluginLoadError, setPluginLoadError] = useState<string | null>(null);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const drawerToggleRef = useRef<HTMLButtonElement>(null);
+  const copiedTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     let pending: MobileSnapshot | null = null;
@@ -352,6 +395,16 @@ function MobileNativeApp() {
     }
   }, [snapshot?.composer.canStop, snapshot?.composer.isStopping, snapshot?.connection.error]);
 
+  useEffect(() => {
+    if (!replyTarget) return;
+    const targetStillVisible = snapshot?.messages.some((message) => message.id === replyTarget.id) ?? false;
+    if (replyTarget.sessionId !== snapshot?.selectedSessionId || !targetStillVisible) setReplyTarget(null);
+  }, [replyTarget, snapshot?.messages, snapshot?.selectedSessionId]);
+
+  useEffect(() => () => {
+    if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+  }, []);
+
   const messages = useMemo(
     () => snapshot?.messages.map(toChatMessage) ?? [],
     [snapshot?.messages],
@@ -381,8 +434,9 @@ function MobileNativeApp() {
   const send = () => {
     const text = input.trim();
     if (!text && snapshot.composer.attachments.length === 0) return;
-    window.AkashicNative?.sendMessage(text);
+    window.AkashicNative?.sendMessage(text, replyTarget?.id ?? "");
     setInput("");
+    setReplyTarget(null);
     setCommandsOpen(false);
     textareaRef.current?.blur();
   };
@@ -407,6 +461,15 @@ function MobileNativeApp() {
     if (commandsOpen) closeCommands();
     else setCommandsOpen(true);
   };
+  const copyMessage = (message: MobileMessage) => {
+    window.AkashicNative?.copyText(message.content);
+    setCopiedMessageId(message.id);
+    if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+    copiedTimerRef.current = window.setTimeout(() => {
+      setCopiedMessageId((current) => current === message.id ? null : current);
+      copiedTimerRef.current = null;
+    }, 1600);
+  };
 
   return (
     <TooltipProvider>
@@ -424,7 +487,7 @@ function MobileNativeApp() {
           onClose={closeDrawer}
         />
 
-        <div className="mobile-main-content" inert={drawerOpen ? true : undefined}>
+        <div className={`mobile-main-content ${replyTarget ? "replying" : ""}`} inert={drawerOpen ? true : undefined}>
           {pluginLoadError ? (
             <div className="mobile-plugin-load-error" role="status">
               插件界面暂不可用 · {pluginLoadError}
@@ -438,18 +501,26 @@ function MobileNativeApp() {
                 <p>消息会通过电脑上的 Akashic 实时处理。</p>
               </ConversationEmptyState>
             ) : (
-              messages.map((message, index) => (
+              messages.map((message, index) => {
+                const source = snapshot.messages[index];
+                const previous = snapshot.messages[index - 1];
+                const startsDay = !previous || !sameLocalDay(previous.createdAt, source.createdAt);
+                const canReply = source.replyable;
+                return (
                 <React.Fragment key={message.id}>
-                  {messages[index - 1]?.role === message.role ? (
-                    <div className={`mobile-role-divider ${message.role}`} />
+                  {startsDay ? <MessageDateDivider createdAt={source.createdAt} /> : null}
+                  {!startsDay && previous?.role === source.role ? (
+                    <div className={`mobile-role-divider ${source.role}`} />
                   ) : null}
-                  <ChatMessageView
+                  <SwipeToReply disabled={!canReply} onReply={() => setReplyTarget(source)}>
+                    <ChatMessageView
                     message={message}
-                    attachmentContent={<MobileMessageAttachments attachments={snapshot.messages[index].attachments} />}
+                    leadingContent={source.reply ? <MessageReplyReference reply={source.reply} /> : undefined}
+                    attachmentContent={<MobileMessageAttachments attachments={source.attachments} />}
                     processStartContent={isPluginTurnMessage(message) ? (
                       <MobilePluginSlot
                         name="turn.before_reasoning"
-                        sessionId={snapshot.messages[index].sessionId}
+                        sessionId={source.sessionId}
                         messageId={message.id}
                         turnId={pluginTurnId(message)}
                       />
@@ -457,7 +528,7 @@ function MobileNativeApp() {
                     beforeProcessBlock={(block) => isPluginTurnMessage(message) && block.kind === "tool" ? (
                       <MobilePluginSlot
                         name="turn.before_tool"
-                        sessionId={snapshot.messages[index].sessionId}
+                        sessionId={source.sessionId}
                         messageId={message.id}
                         turnId={pluginTurnId(message)}
                         block={block}
@@ -466,15 +537,22 @@ function MobileNativeApp() {
                     answerEndContent={isPluginTurnMessage(message) ? (
                       <MobilePluginSlot
                         name="turn.after_answer"
-                        sessionId={snapshot.messages[index].sessionId}
+                        sessionId={source.sessionId}
                         messageId={message.id}
                         turnId={pluginTurnId(message)}
                       />
                     ) : undefined}
-                  />
-                  <MessageMeta source={snapshot.messages[index]} />
+                    />
+                    <MessageMeta
+                      source={source}
+                      copied={copiedMessageId === source.id}
+                      canReply={canReply}
+                      onCopy={() => copyMessage(source)}
+                      onReply={() => setReplyTarget(source)}
+                    />
+                  </SwipeToReply>
                 </React.Fragment>
-              ))
+              );})
             )}
             </ConversationContent>
             <MobileAutoScroll messages={messages} streaming={snapshot.composer.isStreaming} />
@@ -487,11 +565,13 @@ function MobileNativeApp() {
             textareaRef={textareaRef}
             commandsOpen={commandsOpen}
             stopRequested={stopRequested}
+            replyTarget={replyTarget}
             onInput={setInput}
             onToggleCommands={toggleCommands}
             onCloseCommands={closeCommands}
             onSend={send}
             onStop={stop}
+            onCancelReply={() => setReplyTarget(null)}
           />
         </div>
       </main>
@@ -586,22 +666,26 @@ function MobileComposer({
   textareaRef,
   commandsOpen,
   stopRequested,
+  replyTarget,
   onInput,
   onToggleCommands,
   onCloseCommands,
   onSend,
   onStop,
+  onCancelReply,
 }: {
   snapshot: MobileSnapshot;
   input: string;
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   commandsOpen: boolean;
   stopRequested: boolean;
+  replyTarget: MobileMessage | null;
   onInput: (value: string) => void;
   onToggleCommands: () => void;
   onCloseCommands: (restoreFocus?: boolean) => void;
   onSend: () => void;
   onStop: () => void;
+  onCancelReply: () => void;
 }) {
   const stopping = stopRequested || snapshot.composer.isStopping;
   const hasDraft = snapshot.composer.attachments.length > 0;
@@ -620,7 +704,9 @@ function MobileComposer({
       ) : null}
       {stopping ? <div className="stop-feedback" aria-live="polite">正在中止本轮处理…</div> : null}
       {hasDraft ? <DraftAttachments attachments={snapshot.composer.attachments} /> : null}
-      <div className="mobile-composer">
+      <div className={`mobile-composer-frame ${replyTarget ? "has-reply" : ""}`}>
+        {replyTarget ? <ComposerReply target={replyTarget} onCancel={onCancelReply} /> : null}
+        <div className="mobile-composer">
         <button className={`mobile-icon-button command-toggle ${commandsOpen ? "active" : ""}`} type="button" onClick={onToggleCommands} aria-label={commandsOpen ? "关闭快捷命令" : "打开快捷命令"}>
           {commandsOpen ? <X size={22} /> : <Menu size={22} />}
         </button>
@@ -650,6 +736,7 @@ function MobileComposer({
             <SendHorizontal size={22} />
           </button>
         )}
+        </div>
       </div>
     </div>
   );
@@ -787,10 +874,157 @@ function MobileMessageAttachment({ attachment }: { attachment: MobileAttachment 
   );
 }
 
-function MessageMeta({ source }: { source: MobileMessage }) {
-  if (source.role === "user") return <div className="mobile-message-meta user">{source.deliveryLabel}</div>;
-  if (source.interrupted) return <div className="interrupted-notice">本轮已中止</div>;
-  return null;
+function MessageMeta({
+  source,
+  copied,
+  canReply,
+  onCopy,
+  onReply,
+}: {
+  source: MobileMessage;
+  copied: boolean;
+  canReply: boolean;
+  onCopy: () => void;
+  onReply: () => void;
+}) {
+  return (
+    <div className={`mobile-message-meta ${source.role}`}>
+      <div className="mobile-message-meta__text">
+        <time dateTime={new Date(source.createdAt).toISOString()}>{formatMessageTime(source.createdAt)}</time>
+        {source.role === "user" && source.deliveryLabel ? <span>{source.deliveryLabel}</span> : null}
+        {source.interrupted ? <span className="interrupted-label">本轮已中止</span> : null}
+      </div>
+      <div className="mobile-message-actions">
+        {canReply ? (
+          <button type="button" onClick={onReply} aria-label="引用此消息">
+            <Reply size={16} />
+          </button>
+        ) : null}
+        {source.content ? (
+          <button type="button" className={copied ? "copied" : ""} onClick={onCopy} aria-label={copied ? "已复制" : "复制消息"}>
+            {copied ? <Check size={16} /> : <Copy size={16} />}
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function SwipeToReply({ disabled, onReply, children }: { disabled: boolean; onReply: () => void; children: ReactNode }) {
+  const x = useMotionValue(0);
+  const hapticFired = useRef(false);
+  const reduceMotion = useReducedMotion();
+  const iconOpacity = useTransform(x, [-80, -50, -12, 0], [1, 1, 0.12, 0]);
+  const iconScale = useTransform(x, [-80, -50, 0], [1, 1, 0.72]);
+
+  useMotionValueEvent(x, "change", (value) => {
+    if (value > -50) {
+      hapticFired.current = false;
+      return;
+    }
+    if (value <= -50 && !hapticFired.current) {
+      hapticFired.current = true;
+      window.AkashicNative?.performReplyHaptic();
+    }
+  });
+
+  return (
+    <div className={`swipe-reply ${disabled ? "disabled" : ""}`}>
+      <motion.div className="swipe-reply__indicator" style={{ opacity: iconOpacity, scale: iconScale }} aria-hidden="true">
+        <Reply size={20} />
+      </motion.div>
+      <motion.div
+        className="swipe-reply__content"
+        drag={disabled ? false : "x"}
+        dragConstraints={{ left: -80, right: 0 }}
+        dragElastic={0.03}
+        dragMomentum={false}
+        style={{ x }}
+        onDragStart={() => {
+          hapticFired.current = false;
+        }}
+        onDragEnd={() => {
+          const shouldReply = x.get() <= -50;
+          if (shouldReply) onReply();
+          animate(x, 0, reduceMotion ? { duration: 0 } : {
+            type: "spring",
+            stiffness: 520,
+            damping: 42,
+            mass: 0.8,
+            bounce: 0,
+          });
+        }}
+      >
+        {children}
+      </motion.div>
+    </div>
+  );
+}
+
+function MessageReplyReference({ reply }: { reply: MobileReply }) {
+  return (
+    <div className="message-reply-reference">
+      <span>{reply.role === "assistant" ? "Akashic" : "你"}</span>
+      <p>{reply.preview}</p>
+    </div>
+  );
+}
+
+function ComposerReply({ target, onCancel }: { target: MobileMessage; onCancel: () => void }) {
+  return (
+    <div className="composer-reply" aria-label={`正在回复${target.role === "assistant" ? " Akashic" : "你的消息"}`}>
+      <Reply size={18} />
+      <div>
+        <strong>回复 {target.role === "assistant" ? "Akashic" : "你"}</strong>
+        <span>{replyPreview(target)}</span>
+      </div>
+      <button type="button" onClick={onCancel} aria-label="取消引用"><X size={19} /></button>
+    </div>
+  );
+}
+
+function MessageDateDivider({ createdAt }: { createdAt: number }) {
+  return (
+    <div className="message-date-divider" role="separator">
+      <span />
+      <time dateTime={new Date(createdAt).toISOString()}>{formatMessageDate(createdAt)}</time>
+      <span />
+    </div>
+  );
+}
+
+const messageTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+const messageDateFormatter = new Intl.DateTimeFormat("zh-CN", {
+  month: "long",
+  day: "numeric",
+  weekday: "short",
+});
+
+function formatMessageTime(value: number) {
+  return messageTimeFormatter.format(new Date(value));
+}
+
+function formatMessageDate(value: number) {
+  const date = new Date(value);
+  const today = new Date();
+  if (sameLocalDay(date.getTime(), today.getTime())) return "今天";
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+  if (sameLocalDay(date.getTime(), yesterday.getTime())) return "昨天";
+  return messageDateFormatter.format(date);
+}
+
+function sameLocalDay(left: number, right: number) {
+  const a = new Date(left);
+  const b = new Date(right);
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+function replyPreview(message: MobileMessage) {
+  return message.content.trim().replace(/\s+/g, " ").slice(0, 512) || "[无文字消息]";
 }
 
 function MobileAutoScroll({ messages, streaming }: { messages: ChatMessage[]; streaming: boolean }) {
@@ -874,15 +1108,14 @@ class MobileErrorBoundary extends React.Component<React.PropsWithChildren, { mes
   }
 }
 
-// Android WebView 首帧可能把百分比和视口单位高度冻结为 0，显式像素值同时覆盖键盘和旋转变化。
+// Activity 的 adjustResize 已拥有 IME 高度；visualViewport 会在部分 Pixel WebView 上重复扣除键盘。
 function syncMobileViewportHeight() {
-  const viewportHeight = Math.max(1, Math.round(window.visualViewport?.height ?? window.innerHeight));
+  const viewportHeight = Math.max(1, Math.round(window.innerHeight));
   document.documentElement.style.setProperty("--mobile-viewport-height", `${viewportHeight}px`);
 }
 
 syncMobileViewportHeight();
 window.addEventListener("resize", syncMobileViewportHeight);
-window.visualViewport?.addEventListener("resize", syncMobileViewportHeight);
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Mobile Web root 不存在");

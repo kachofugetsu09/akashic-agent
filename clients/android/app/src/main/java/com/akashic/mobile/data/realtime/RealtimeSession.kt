@@ -84,6 +84,8 @@ internal object FullJitterBackoff {
         random.nextLong(maximumDelayMillis(retry) + 1)
 }
 
+internal fun isTerminalProtocolClose(code: Int): Boolean = code == 4400 || code == 4406
+
 class RealtimeSession(
     private val database: AppDatabase,
     private val deliveryStore: LocalDeliveryStore,
@@ -388,13 +390,17 @@ class RealtimeSession(
     }
 
     /** 创建本地消息和 outbox 命令，并在链路可用时立即发送。 */
-    fun sendMessage(text: String) {
-        enqueueMessage(text, includeDraftAttachments = true)
+    fun sendMessage(text: String, replyToMessageId: String? = null) {
+        enqueueMessage(
+            text,
+            includeDraftAttachments = true,
+            replyToMessageId = replyToMessageId,
+        )
     }
 
     /** 发送不携带或消费附件草稿的纯文本命令。 */
     fun sendCommand(command: String) {
-        enqueueMessage(command, includeDraftAttachments = false)
+        enqueueMessage(command, includeDraftAttachments = false, replyToMessageId = null)
     }
 
     /** 从 Web UI 发起一个绑定渲染槽位会话与轮次的插件请求。 */
@@ -458,7 +464,11 @@ class RealtimeSession(
         }
     }
 
-    private fun enqueueMessage(text: String, includeDraftAttachments: Boolean) {
+    private fun enqueueMessage(
+        text: String,
+        includeDraftAttachments: Boolean,
+        replyToMessageId: String?,
+    ) {
         scope.launch {
             mutex.withLock {
                 // 1. 确定当前手机会话
@@ -473,6 +483,14 @@ class RealtimeSession(
                 }
                 require(body.isNotEmpty() || attachments.isNotEmpty()) { "消息和附件不能同时为空" }
                 require(attachments.all { it.state == "ready" }) { "请等待附件上传完成" }
+                val replyTarget = replyToMessageId?.let { messageId ->
+                    val target = requireNotNull(database.messages().get(messageId)) {
+                        "被引用的本地消息不存在: $messageId"
+                    }
+                    require(target.sessionId == sessionId) { "不能引用其他会话的消息" }
+                    require(target.role in setOf("user", "assistant")) { "被引用消息角色无效" }
+                    target
+                }
 
                 // 2. 持久化消息和可重放命令
                 val now = System.currentTimeMillis()
@@ -484,6 +502,17 @@ class RealtimeSession(
                     text = body,
                     mediaRefs = attachments.map { it.attachmentId },
                     clientCreatedAt = Instant.ofEpochMilli(now).toString(),
+                    replyTo = replyTarget?.let { target ->
+                        if (target.clientMessageId != null) {
+                            MessageReplyReference(
+                                clientMessageId = target.clientMessageId,
+                            )
+                        } else {
+                            MessageReplyReference(
+                                messageId = target.messageId,
+                            )
+                        }
+                    },
                 )
                 val cachedAttachments = try {
                     attachments.map { transfer ->
@@ -538,6 +567,12 @@ class RealtimeSession(
                         deliveryState = "pending",
                         createdAt = now,
                         updatedAt = now,
+                        replyToMessageId = replyTarget?.messageId,
+                        replyRole = replyTarget?.role,
+                        replyPreview = replyTarget?.let { target ->
+                            target.text.trim().replace(Regex("\\s+"), " ").take(512)
+                                .ifBlank { "[无文字消息]" }
+                        },
                     ),
                     command = OutboxCommandEntity(
                         commandId = commandId,
@@ -685,7 +720,12 @@ class RealtimeSession(
     override fun onClosed(candidateId: SocketCandidateId, code: Int, reason: String) {
         scope.launch {
             mutex.withLock {
-                if (candidateId == activeCandidate) scheduleReconnect("连接关闭：$code $reason")
+                if (candidateId != activeCandidate) return@withLock
+                if (isTerminalProtocolClose(code)) {
+                    failProtocolConnection(code)
+                } else {
+                    scheduleReconnect("连接关闭：$code $reason")
+                }
             }
         }
     }
@@ -1467,6 +1507,37 @@ class RealtimeSession(
                 pendingPairing?.let { connectQr(it.qr) } ?: profile?.let(::connectProfile)
             }
         }
+    }
+
+    private suspend fun failProtocolConnection(code: Int) {
+        /** 停止永久协议错误的重放，并保留 outbox 等待版本恢复。 */
+
+        // 1. 收起当前连接态任务
+        reconnectJob?.cancel()
+        reconnectJob = null
+        activeCandidate = null
+        activeEpoch = null
+        ackJob?.cancel()
+        ackJob = null
+        pendingAckCount = 0
+        uploads.onDisconnected()
+        downloads.onDisconnected()
+        pendingSyncCommands.clear()
+        pendingCommandListId = null
+        resetPluginUiPending("协议不兼容")
+        requestedHistoryPages.clear()
+        resetRebuildGeneration = null
+
+        // 2. 保留可重放消息，但不再自动撞击同一个不兼容端点
+        val currentProfile = requireNotNull(profile)
+        database.outbox().resetInFlight(currentProfile.serverId)
+        mutableState.value = mutableState.value.copy(
+            connection = mutableState.value.connection.copy(
+                phase = ConnectionPhase.FAILED,
+                lastErrorCode = "protocol_$code",
+            ),
+            errorMessage = "消息协议不兼容，请确认手机与电脑端版本一致后重新连接",
+        )
     }
 
     private fun failDownloadConnection(message: String) {

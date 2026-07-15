@@ -1451,6 +1451,34 @@ class SessionStore:
             return None
         return self._row_to_message(row)
 
+    def get_message_by_client_id(
+        self,
+        session_key: str,
+        client_message_id: str,
+    ) -> dict[str, Any] | None:
+        """按会话和移动端消息 ID 解析唯一的 canonical 消息。"""
+
+        # 1. client_message_id 只存在于受校验的 extra JSON 中
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, session_key, seq, role, content, tool_chain, extra, ts
+                FROM messages
+                WHERE session_key = ?
+                  AND json_extract(extra, '$.client_message_id') = ?
+                ORDER BY seq ASC
+                LIMIT 2
+                """,
+                (session_key, client_message_id),
+            ).fetchall()
+
+        # 2. 重复标识违反移动消息幂等契约，不能静默选中其中一条
+        if len(rows) > 1:
+            raise RuntimeError(
+                f"同一会话存在重复 client_message_id: {session_key} {client_message_id}"
+            )
+        return None if not rows else self._row_to_message(rows[0])
+
     def update_message(
         self,
         message_id: str,

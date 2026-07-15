@@ -19,7 +19,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MediaAttachmentEntity::class,
         MessageAttachmentEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -42,7 +42,7 @@ abstract class AppDatabase : RoomDatabase() {
             context.applicationContext,
             AppDatabase::class.java,
             "akashic-mobile.db",
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -90,6 +90,14 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE `messages` ADD COLUMN `serverSeq` INTEGER")
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `replyToMessageId` TEXT")
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `replyRole` TEXT")
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `replyPreview` TEXT")
             }
         }
     }

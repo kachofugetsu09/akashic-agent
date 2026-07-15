@@ -9,6 +9,7 @@ import com.akashic.mobile.ui.conversation.ConversationUiState
 import com.akashic.mobile.ui.conversation.MessageAttachmentState
 import com.akashic.mobile.ui.conversation.MessageAttachmentUi
 import com.akashic.mobile.ui.conversation.MessageUi
+import com.akashic.mobile.ui.conversation.MessageReplyUi
 import com.akashic.mobile.ui.conversation.ProcessBlockKind
 import com.akashic.mobile.ui.conversation.ProcessBlockState
 import com.akashic.mobile.ui.conversation.ProcessBlockUi
@@ -74,12 +75,22 @@ data class MobileWebMessage(
     val sessionId: String,
     val role: MobileWebRole,
     val content: String,
+    val createdAt: Long,
+    val replyable: Boolean,
+    val reply: MobileWebReply? = null,
     val deliveryLabel: String? = null,
     val blocks: List<MobileWebProcessBlock> = emptyList(),
     val streaming: Boolean = false,
     val interrupted: Boolean = false,
     val durationSeconds: Int? = null,
     val attachments: List<MobileWebAttachment> = emptyList(),
+)
+
+@Serializable
+data class MobileWebReply(
+    val messageId: String,
+    val role: String,
+    val preview: String,
 )
 
 @Serializable
@@ -142,7 +153,7 @@ data class MobileWebComposer(
 
 /** 把原生持久化投影转换为版本化 WebView 快照。 */
 fun ConversationUiState.toMobileWebSnapshot(): MobileWebSnapshot = MobileWebSnapshot(
-    protocolVersion = 1,
+    protocolVersion = 2,
     connection = MobileWebConnection(
         label = connectionLabel,
         status = connectionStatus.toMobileWebStatus(),
@@ -182,6 +193,9 @@ private fun MessageUi.toMobileWebMessage(): MobileWebMessage = when (this) {
         sessionId = sessionId,
         role = MobileWebRole.USER,
         content = text,
+        createdAt = createdAtMillis,
+        replyable = replyable,
+        reply = reply?.toMobileWebReply(),
         deliveryLabel = deliveryLabel,
         attachments = attachments.map(MessageAttachmentUi::toMobileWebAttachment),
     )
@@ -190,6 +204,9 @@ private fun MessageUi.toMobileWebMessage(): MobileWebMessage = when (this) {
         sessionId = sessionId,
         role = MobileWebRole.ASSISTANT,
         content = answer,
+        createdAt = createdAtMillis,
+        replyable = status == AssistantTurnStatus.COMPLETE,
+        reply = reply?.toMobileWebReply(),
         blocks = blocks.map(ProcessBlockUi::toMobileWebProcessBlock),
         streaming = status == AssistantTurnStatus.STREAMING,
         interrupted = status == AssistantTurnStatus.INTERRUPTED,
@@ -212,6 +229,8 @@ private fun ProcessBlockUi.toMobileWebProcessBlock() = MobileWebProcessBlock(
         ProcessBlockState.FAILED -> MobileWebProcessState.FAILED
     },
 )
+
+private fun MessageReplyUi.toMobileWebReply() = MobileWebReply(messageId, role, preview)
 
 private fun ComposerAttachmentUi.toMobileWebAttachment() = MobileWebAttachment(
     id = id,

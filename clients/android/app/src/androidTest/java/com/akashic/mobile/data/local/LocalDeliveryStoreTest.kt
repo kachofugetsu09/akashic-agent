@@ -375,6 +375,55 @@ class LocalDeliveryStoreTest {
     }
 
     @Test
+    fun finalCanonicalIdReplacesReplyingOptimisticUserMessage() = runBlocking {
+        val clientId = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        val attachmentId = "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+        database.messages().upsert(
+            MessageEntity(
+                messageId = "user:$clientId",
+                clientMessageId = clientId,
+                sessionId = "mobile:test",
+                role = "user",
+                text = "继续",
+                deliveryState = "sent",
+                createdAt = 1,
+                updatedAt = 1,
+                replyToMessageId = "mobile:test:0",
+                replyRole = "assistant",
+                replyPreview = "旧回答",
+            ),
+        )
+        database.mediaAttachments().upsert(mediaAttachment(attachmentId))
+        database.mediaAttachments().linkAll(
+            listOf(MessageAttachmentEntity("user:$clientId", attachmentId, 0)),
+        )
+
+        store.applyEvent(
+            "server",
+            "device",
+            event(1, "message.final", buildJsonObject {
+                put("user_message_id", "mobile:test:user:canonical")
+                put("client_message_id", clientId)
+                put("message_id", "mobile:test:assistant:canonical")
+                put("content", "回答")
+            }),
+            2,
+        )
+
+        assertEquals(null, database.messages().get("user:$clientId"))
+        val canonical = database.messages().get("mobile:test:user:canonical")!!
+        assertEquals("complete", canonical.deliveryState)
+        assertEquals("mobile:test:0", canonical.replyToMessageId)
+        assertEquals("assistant", canonical.replyRole)
+        assertEquals("旧回答", canonical.replyPreview)
+        assertEquals(
+            listOf(attachmentId),
+            database.mediaAttachments().forMessage(canonical.messageId).map { it.attachmentId },
+        )
+        assertEquals("回答", database.messages().get("mobile:test:assistant:canonical")!!.text)
+    }
+
+    @Test
     fun legacyHistoryWithoutClientIdRepairsUniqueOptimisticUserMessage() = runBlocking {
         val clientId = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
         val sentAt = Instant.parse("2026-07-14T16:00:00Z").toEpochMilli()

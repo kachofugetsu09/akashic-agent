@@ -5,6 +5,7 @@ import com.akashic.mobile.ui.conversation.ConversationUiState
 import com.akashic.mobile.ui.conversation.AssistantTurnStatus
 import com.akashic.mobile.ui.conversation.CommandUi
 import com.akashic.mobile.ui.conversation.MessageUi
+import com.akashic.mobile.ui.conversation.MessageReplyUi
 import com.akashic.mobile.ui.conversation.ProcessBlockKind
 import com.akashic.mobile.ui.conversation.ProcessBlockState
 import com.akashic.mobile.ui.conversation.ProcessBlockUi
@@ -27,7 +28,15 @@ class MobileWebSnapshotTest {
             sessions = emptyList(),
             selectedSessionId = "mobile:test",
             messages = listOf(
-                MessageUi.User("message-1", "mobile:test", "你好", "已发送"),
+                MessageUi.User(
+                    id = "message-1",
+                    sessionId = "mobile:test",
+                    text = "你好",
+                    deliveryLabel = "已发送",
+                    replyable = true,
+                    createdAtMillis = 1_752_681_600_000,
+                    reply = MessageReplyUi("message-0", "assistant", "之前的回答"),
+                ),
                 MessageUi.AssistantTurn(
                     id = "message-2",
                     sessionId = "mobile:test",
@@ -44,6 +53,7 @@ class MobileWebSnapshotTest {
                     answer = "正在处理",
                     status = AssistantTurnStatus.STREAMING,
                     durationSeconds = null,
+                    createdAtMillis = 1_752_681_601_000,
                 ),
             ),
             attachments = emptyList(),
@@ -58,14 +68,17 @@ class MobileWebSnapshotTest {
 
         val encoded = Json.encodeToString(snapshot)
 
-        assertEquals(1, snapshot.protocolVersion)
+        assertEquals(2, snapshot.protocolVersion)
         assertEquals(MobileWebConnectionStatus.RECONNECTING, snapshot.connection.status)
         assertEquals(listOf("message-1", "message-2"), snapshot.messages.map { it.id })
         assertEquals(listOf("mobile:test", "mobile:test"), snapshot.messages.map { it.sessionId })
+        assertTrue(snapshot.messages.first().replyable)
+        assertTrue(!snapshot.messages.last().replyable)
         assertTrue(snapshot.messages.last().streaming)
         assertEquals(MobileWebProcessState.RUNNING, snapshot.messages.last().blocks.single().state)
         assertEquals("memorystatus", snapshot.composer.commands.single().command)
-        assertEquals(1, Json.parseToJsonElement(encoded).jsonObject
+        assertEquals("之前的回答", snapshot.messages.first().reply?.preview)
+        assertEquals(2, Json.parseToJsonElement(encoded).jsonObject
             .getValue("protocolVersion").jsonPrimitive.content.toInt())
         assertTrue(encoded.contains("\"status\":\"reconnecting\""))
     }

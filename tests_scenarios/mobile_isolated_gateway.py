@@ -77,15 +77,23 @@ class FixedReplyBus:
     async def publish_inbound(self, message: object) -> None:
         """持久化一轮对话，并走真实 MobileRealtimeChannel 发布回复。"""
 
-        # 1. 用客户端 canonical ID 持久化用户消息和固定回复
+        # 1. 按真实生命周期语义持久化干净正文和引用投影
         inbound = cast(InboundMessage, message)
         runtime = self._require_runtime()
         session = self._manager.get_or_create(inbound.session_key)
+        user_kwargs: dict[str, str] = {
+            "client_message_id": cast(str, inbound.metadata["client_message_id"]),
+        }
+        for field in ("reply_to_message_id", "reply_role", "reply_preview"):
+            value = inbound.metadata.get(field)
+            if isinstance(value, str) and value:
+                user_kwargs[field] = value
+        display_content = inbound.metadata.get("display_content")
         _ = session.add_message(
             "user",
-            inbound.content,
+            display_content if isinstance(display_content, str) else inbound.content,
             media=inbound.media,
-            client_message_id=cast(str, inbound.metadata["client_message_id"]),
+            **user_kwargs,
         )
         _ = session.add_message(
             "assistant",
@@ -204,6 +212,7 @@ async def run_harness(args: argparse.Namespace) -> None:
                 push_tool=PushTool(),
                 interrupt_controller=None,
                 attachment_store=AttachmentStore(root / "attachments"),
+                bot_commands=(("memorystatus", "查看隔离命令入口"),),
             ),
         )
     )

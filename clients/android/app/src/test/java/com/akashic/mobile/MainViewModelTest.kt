@@ -52,4 +52,12 @@ class MainViewModelTest {
         assertNull(turnDurationSeconds(startedAt = 1_000, updatedAt = 2_001, isTerminal = false))
         assertEquals(2, turnDurationSeconds(startedAt = 1_000, updatedAt = 2_001, isTerminal = true))
     }
+
+    @Test
+    fun userMessageBecomesReplyableOnlyAfterCanonicalCommit() {
+        assertEquals(false, userMessageCanReply("pending"))
+        assertEquals(false, userMessageCanReply("sent"))
+        assertEquals(false, userMessageCanReply("failed"))
+        assertEquals(true, userMessageCanReply("complete"))
+    }
 }

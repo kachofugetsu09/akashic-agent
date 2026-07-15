@@ -101,6 +101,7 @@ async def execute_control_turn(
                 chat_id=str(request.metadata.get("chatId") or request.thread_id),
                 sender=str(request.metadata.get("sender") or "user"),
                 media=_media_values(request.metadata.get("media")),
+                metadata=_inbound_metadata(request.metadata.get("inboundMetadata")),
                 turn_id=turn_id,
                 stream_events=True,
             )
@@ -174,6 +175,16 @@ def _media_values(value: object) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError("control metadata media 必须是字符串数组")
     return list(value)
+
+
+def _inbound_metadata(value: object) -> dict[str, object]:
+    """校验并复制渠道随入站消息提交的内部元数据。"""
+
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise ValueError("control inboundMetadata 必须是字符串键对象")
+    return dict(cast(dict[str, object], value))
 
 
 def _turn_usage(value: dict[str, Any]) -> TurnUsage | None:

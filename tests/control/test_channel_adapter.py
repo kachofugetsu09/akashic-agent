@@ -38,12 +38,19 @@ async def test_channel_adapter_uses_same_conversation_runtime(tmp_path: Path) ->
 
     async def execute(request: TurnRequest) -> str:
         assert request.metadata["channel"] == "telegram"
+        assert request.metadata["inboundMetadata"] == {"reply_to_message_id": "m1"}
         return f"channel:{request.input}"
 
     runtime = ConversationRuntime(store, execute)
     bus = _Bus()
     worker = PassiveMessageWorker(cast(Any, bus), runtime, cast(Any, object()))
-    inbound = InboundMessage("telegram", "user", "42", "hello")
+    inbound = InboundMessage(
+        "telegram",
+        "user",
+        "42",
+        "hello",
+        metadata={"reply_to_message_id": "m1"},
+    )
     await worker._run_message(inbound)
 
     assert [message.content for message in bus.outbound] == ["channel:hello"]

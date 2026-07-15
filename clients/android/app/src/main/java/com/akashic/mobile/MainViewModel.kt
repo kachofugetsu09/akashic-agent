@@ -15,6 +15,7 @@ import com.akashic.mobile.ui.conversation.ComposerAttachmentUi
 import com.akashic.mobile.ui.conversation.ConversationUiState
 import com.akashic.mobile.ui.conversation.AssistantTurnStatus
 import com.akashic.mobile.ui.conversation.MessageUi
+import com.akashic.mobile.ui.conversation.MessageReplyUi
 import com.akashic.mobile.ui.conversation.MessageAttachmentState
 import com.akashic.mobile.ui.conversation.MessageAttachmentUi
 import com.akashic.mobile.ui.conversation.ProcessBlockKind
@@ -131,7 +132,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onQrCode(value: String) = container.realtimeSession.beginPairing(value)
 
-    fun sendMessage(value: String) = container.realtimeSession.sendMessage(value)
+    fun sendMessage(value: String, replyToMessageId: String?) =
+        container.realtimeSession.sendMessage(value, replyToMessageId)
 
     fun sendCommand(value: String) = container.realtimeSession.sendCommand(value)
 
@@ -191,6 +193,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     "failed" -> "发送失败"
                     else -> error("未知用户消息状态: ${message.deliveryState}")
                 },
+                replyable = userMessageCanReply(message.deliveryState),
+                createdAtMillis = message.createdAt,
+                reply = message.toReplyUi(),
                 attachments = graph.attachmentLinks.toMessageAttachmentUi(),
             )
         }
@@ -224,7 +229,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 updatedAt = message.updatedAt,
                 isTerminal = message.deliveryState in setOf("complete", "interrupted"),
             ),
+            createdAtMillis = message.createdAt,
+            reply = message.toReplyUi(),
             attachments = graph.attachmentLinks.toMessageAttachmentUi(),
+        )
+    }
+
+    private fun com.akashic.mobile.data.local.MessageEntity.toReplyUi(): MessageReplyUi? {
+        val target = replyToMessageId ?: return null
+        return MessageReplyUi(
+            messageId = target,
+            role = requireNotNull(replyRole) { "引用消息缺少角色: $messageId" },
+            preview = requireNotNull(replyPreview) { "引用消息缺少预览: $messageId" },
         )
     }
 }
@@ -249,6 +265,8 @@ internal fun List<MessageAttachmentWithMedia>.toMessageAttachmentUi(): List<Mess
             cachePath = attachment.cachePath,
         )
     }
+
+internal fun userMessageCanReply(deliveryState: String): Boolean = deliveryState == "complete"
 
 internal data class ConnectionPresentation(
     val label: String,

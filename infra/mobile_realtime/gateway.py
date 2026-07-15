@@ -269,10 +269,19 @@ class MobileGatewayRuntime:
         except WebSocketDisconnect:
             return
         except (ProtocolDecodeError, ValidationError) as error:
+            if isinstance(error, ValidationError):
+                logger.warning(
+                    "mobile 协议帧校验失败: %s",
+                    error.errors(
+                        include_url=False,
+                        include_context=False,
+                        include_input=False,
+                    ),
+                )
             await _close_with_error(
                 websocket,
                 code=_protocol_close_code(error),
-                reason=str(error),
+                reason=_protocol_error_reason(error),
             )
 
     async def _handle_pair_claim(
@@ -1265,6 +1274,20 @@ def _protocol_close_code(error: ProtocolDecodeError | ValidationError) -> int:
             if issue["loc"] and issue["loc"][-1] == "v":
                 return _CLOSE_VERSION
     return _CLOSE_PROTOCOL
+
+
+def _protocol_error_reason(error: ProtocolDecodeError | ValidationError) -> str:
+    """把协议边界错误收敛为可展示且不泄露载荷的短原因。"""
+
+    if isinstance(error, ProtocolDecodeError):
+        return str(error)
+    issue = error.errors(
+        include_url=False,
+        include_context=False,
+        include_input=False,
+    )[0]
+    location = ".".join(str(part) for part in issue["loc"][-4:])
+    return f"协议字段无效: {location}: {issue['msg']}"
 
 
 def _pending_claim_json(claim: PendingPairingClaim) -> dict[str, object]:

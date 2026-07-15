@@ -1476,6 +1476,14 @@ async def test_after_reasoning_collects_persist_and_outbound_slots():
 
 @pytest.mark.asyncio
 async def test_after_reasoning_persists_mobile_canonical_ids(tmp_path: Path):
+    class SpoofMetadataModule:
+        slot = "test.after_reasoning.spoof_client_message_id"
+        requires = ("after_reasoning.emit", "reasoning:ctx")
+
+        async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
+            frame.slots["outbound:metadata:client_message_id"] = "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+            return frame
+
     manager = SessionManager(tmp_path / "workspace")
     session = manager.get_or_create("mobile:00000000-0000-0000-0000-000000000001")
     msg = InboundMessage(
@@ -1491,6 +1499,7 @@ async def test_after_reasoning_persists_mobile_canonical_ids(tmp_path: Path):
         default_after_reasoning_modules(
             EventBus(),
             cast(Any, SimpleNamespace(presence=None, session_manager=manager)),
+            plugin_modules=[SpoofMetadataModule()],
         ),
         frame_factory=AfterReasoningFrame,
     )
@@ -1506,7 +1515,60 @@ async def test_after_reasoning_persists_mobile_canonical_ids(tmp_path: Path):
     messages = reloaded.get_or_create(session.key).messages
 
     assert messages[0]["client_message_id"] == "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    assert result.outbound.metadata["persisted_user_message_id"] == messages[0]["id"]
+    assert result.outbound.metadata["client_message_id"] == messages[0]["client_message_id"]
     assert result.outbound.session_message_id == messages[1]["id"]
+    reloaded.close()
+
+
+@pytest.mark.asyncio
+async def test_after_reasoning_persists_clean_mobile_reply_projection(tmp_path: Path):
+    manager = SessionManager(tmp_path / "workspace")
+    session = manager.get_or_create("mobile:00000000-0000-0000-0000-000000000001")
+    merged = "【你正在回复一条历史消息】\n被回复消息：旧回答\n\n【你当前新消息】\n继续"
+    msg = InboundMessage(
+        channel="mobile",
+        sender="device:test",
+        chat_id="00000000-0000-0000-0000-000000000001",
+        content=merged,
+        metadata={
+            "client_message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "client_created_at": "2026-07-16T04:05:06+00:00",
+            "display_content": "继续",
+            "reply_to_message_id": "mobile:00000000-0000-0000-0000-000000000001:0",
+            "reply_role": "assistant",
+            "reply_preview": "旧回答",
+        },
+    )
+    state = TurnState(msg=msg, session_key=session.key, dispatch_outbound=True)
+    state.session = session
+    phase = Phase(
+        default_after_reasoning_modules(
+            EventBus(),
+            cast(Any, SimpleNamespace(presence=None, session_manager=manager)),
+        ),
+        frame_factory=AfterReasoningFrame,
+    )
+
+    await phase.run(
+        AfterReasoningInput(
+            state=state,
+            turn_result=TurnRunResult(
+                reply="reply",
+                context_retry={"llm_user_content": merged},
+            ),
+        )
+    )
+    manager.close()
+    reloaded = SessionManager(tmp_path / "workspace")
+    user = reloaded.get_or_create(session.key).messages[0]
+
+    assert user["content"] == "继续"
+    assert user["timestamp"] == "2026-07-16T04:05:06+00:00"
+    assert user["llm_user_content"] == merged
+    assert user["reply_to_message_id"].endswith(":0")
+    assert user["reply_role"] == "assistant"
+    assert user["reply_preview"] == "旧回答"
     reloaded.close()
 
 

@@ -48,6 +48,14 @@ data class WireEnvelope(
 )
 
 @Serializable
+data class MessageReplyReference(
+    @SerialName("message_id")
+    val messageId: String? = null,
+    @SerialName("client_message_id")
+    val clientMessageId: String? = null,
+)
+
+@Serializable
 data class MessageSendPayload(
     @SerialName("client_message_id")
     val clientMessageId: String,
@@ -58,6 +66,8 @@ data class MessageSendPayload(
     val mediaRefs: List<String>,
     @SerialName("client_created_at")
     val clientCreatedAt: String,
+    @SerialName("reply_to")
+    val replyTo: MessageReplyReference? = null,
 )
 
 @Serializable
@@ -226,6 +236,9 @@ data class RemoteHistoryMessage(
     val extra: JsonObject,
     val ts: String,
     @SerialName("client_message_id") val clientMessageId: String? = null,
+    @SerialName("reply_to_message_id") val replyToMessageId: String? = null,
+    @SerialName("reply_role") val replyRole: String? = null,
+    @SerialName("reply_preview") val replyPreview: String? = null,
     val attachments: List<AttachmentDescriptor> = emptyList(),
 )
 

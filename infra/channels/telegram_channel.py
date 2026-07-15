@@ -36,6 +36,7 @@ from bus.queue import MessageBus
 from agent.looping.interrupt import InterruptController
 from infra.channels.base import AttachmentStore, MessageDeduper, SessionIdentityIndex
 from infra.channels.contract import ChannelContext
+from infra.channels.reply_context import build_reply_inbound_text
 from infra.channels.telegram_utils import (
     TelegramOutboundLimiter,
     TelegramLiveEditQueue,
@@ -1027,13 +1028,11 @@ def _build_inbound_text_with_reply(
         reply_sender = from_user.username or str(from_user.id)
     sender_label = f"@{reply_sender}" if reply_sender else "未知发送者"
 
-    merged = (
-        "【你正在回复一条历史消息】\n"
-        f"被回复消息（来自 {sender_label}）：\n"
-        f"{reply_text}\n\n"
-        "【你当前新消息】\n"
-        f"{text}"
-    ).strip()
+    merged = build_reply_inbound_text(
+        text,
+        reply_text,
+        sender_label=sender_label,
+    )
     return merged, {
         "reply_to_message_id": int(reply_msg.message_id),
         "reply_to_sender": sender_label,

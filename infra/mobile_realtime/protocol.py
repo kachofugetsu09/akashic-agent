@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Annotated, Literal, TypeAlias, cast
 
 from pydantic import (
@@ -11,6 +12,7 @@ from pydantic import (
     JsonValue,
     TypeAdapter,
     ValidationError,
+    field_validator,
     model_validator,
 )
 
@@ -88,6 +90,9 @@ _FRAME_ID_PATTERN_TEXT = (
     r"7[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12})$"
 )
 _FRAME_ID_PATTERN = re.compile(_FRAME_ID_PATTERN_TEXT)
+_RFC3339_INSTANT_PATTERN_TEXT = (
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$"
+)
 _REPLY_TYPE_PATTERN = re.compile(
     r"^(?P<command>[a-z][a-z0-9]*(?:\.[a-z][a-z0-9_]*)+)\.(?:ok|error)$"
 )
@@ -110,12 +115,57 @@ class ProtocolModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
+class MessageReplyReference(ProtocolModel):
+    message_id: NonEmptyId | None = None
+    client_message_id: FrameId | None = None
+    legacy_role: Literal["user", "assistant"] | None = Field(
+        default=None,
+        alias="role",
+        exclude=True,
+    )
+    legacy_preview: str | None = Field(
+        default=None,
+        alias="preview",
+        max_length=512,
+        exclude=True,
+    )
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> MessageReplyReference:
+        """要求引用消息只携带一种稳定标识。"""
+
+        identities = (self.message_id is not None) + (self.client_message_id is not None)
+        if identities != 1:
+            raise ValueError("reply_to 必须且只能提供一种消息标识")
+        if self.client_message_id is not None:
+            _validate_frame_id(self.client_message_id, "reply_to.client_message_id")
+        return self
+
+
 class MessageSendPayload(ProtocolModel):
     client_message_id: FrameId
     session_id: NonEmptyId
     text: str = Field(max_length=65_536)
     media_refs: list[NonEmptyId] = Field(max_length=10)
-    client_created_at: str = Field(min_length=1, max_length=64)
+    client_created_at: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=_RFC3339_INSTANT_PATTERN_TEXT,
+    )
+    reply_to: MessageReplyReference | None = None
+
+    @field_validator("client_created_at")
+    @classmethod
+    def validate_client_created_at(cls, value: str) -> str:
+        """校验客户端实际创建消息的时间。"""
+
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError("client_created_at 必须是 RFC 3339 时间") from error
+        if parsed.tzinfo is None:
+            raise ValueError("client_created_at 必须包含时区")
+        return value
 
     @model_validator(mode="after")
     def validate_client_message_id(self) -> MessageSendPayload:

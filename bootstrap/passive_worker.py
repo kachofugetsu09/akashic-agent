@@ -95,6 +95,7 @@ class PassiveMessageWorker:
                     "chatId": item.chat_id,
                     "sender": item.sender,
                     "media": list(item.media),
+                    "inboundMetadata": dict(item.metadata),
                 },
             )
             while True:

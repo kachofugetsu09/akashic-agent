@@ -45,7 +45,14 @@ _PERSIST_ASSISTANT_PREFIX = "persist:assistant:"
 _OUTBOUND_METADATA_PREFIX = "outbound:metadata:"
 _OUTBOUND_MEDIA_PREFIX = "outbound:media:"
 _ASSISTANT_FIXED_FIELDS = {"tools_used", "tool_chain", "reasoning_content", "model_state"}
-_USER_FIXED_FIELDS = {"media", "client_message_id"}
+_USER_FIXED_FIELDS = {
+    "media",
+    "timestamp",
+    "client_message_id",
+    "reply_to_message_id",
+    "reply_role",
+    "reply_preview",
+}
 
 
 class _BuildAfterReasoningCtxModule:
@@ -131,9 +138,17 @@ class _PersistUserMessageModule:
         client_message_id = msg.metadata.get("client_message_id")
         if isinstance(client_message_id, str) and client_message_id:
             user_kwargs["client_message_id"] = client_message_id
+        client_created_at = msg.metadata.get("client_created_at")
+        if isinstance(client_created_at, str) and client_created_at:
+            user_kwargs["timestamp"] = client_created_at
+        for field in ("reply_to_message_id", "reply_role", "reply_preview"):
+            value = msg.metadata.get(field)
+            if isinstance(value, str) and value:
+                user_kwargs[field] = value
+        display_content = msg.metadata.get("display_content")
         frame.slots[_PERSISTED_USER_SLOT] = session.add_message(
             "user",
-            msg.content,
+            display_content if isinstance(display_content, str) else msg.content,
             media=msg.media if msg.media else None,
             **user_kwargs,
         )
@@ -236,6 +251,21 @@ class _BuildOutboundMessageModule:
         ctx = cast(AfterReasoningCtx, frame.slots[_CTX_SLOT])
         metadata = dict(ctx.outbound_metadata)
         metadata.update(collect_prefixed_slots(frame.slots, _OUTBOUND_METADATA_PREFIX))
+        if frame.input.state.persistence.persist_user:
+            persisted_user = cast(
+                dict[str, object],
+                frame.slots[_PERSISTED_USER_SLOT],
+            )
+            raw_user_message_id = persisted_user.get("id")
+            raw_client_message_id = persisted_user.get("client_message_id")
+            if isinstance(raw_user_message_id, str) and raw_user_message_id:
+                metadata["persisted_user_message_id"] = raw_user_message_id
+            elif ctx.channel == "mobile":
+                raise RuntimeError("本轮 mobile user 消息缺少稳定 ID")
+            if isinstance(raw_client_message_id, str) and raw_client_message_id:
+                metadata["client_message_id"] = raw_client_message_id
+            elif ctx.channel == "mobile":
+                raise RuntimeError("本轮 mobile user 消息缺少客户端 ID")
         media = list(ctx.media)
         _append_media(media, collect_prefixed_slots(frame.slots, _OUTBOUND_MEDIA_PREFIX))
         session_message_id: str | None = None

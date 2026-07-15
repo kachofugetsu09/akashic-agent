@@ -41,6 +41,7 @@
   --m-primary-container: #cbe0fc;
   --m-on-primary-container: #0b376a;
   --m-trace: #9b5fed;
+  --m-trace-text: #8654cc;
   --m-trace-soft: #e5dbfc;
   --m-error: #be241f;
   --m-error-container: #ffddd7;
@@ -64,6 +65,7 @@
     --m-primary-container: oklch(0.9 0.045 255);
     --m-on-primary-container: oklch(0.34 0.1 255);
     --m-trace: oklch(0.62 0.205 300);
+    --m-trace-text: oklch(0.56 0.18 300);
     --m-trace-soft: oklch(0.91 0.045 300);
     --m-error: oklch(0.52 0.19 28);
     --m-error-container: oklch(0.93 0.045 28);
@@ -251,7 +253,9 @@ button {
 .drawer-action:focus-visible,
 .new-chat-action:focus-visible,
 .command-row:focus-visible,
-.mobile-session-row:focus-visible {
+.mobile-session-row:focus-visible,
+.mobile-message-actions button:focus-visible,
+.composer-reply > button:focus-visible {
   outline: 2px solid var(--m-primary);
   outline-offset: 2px;
 }
@@ -292,6 +296,10 @@ button {
 .mobile-conversation {
   min-height: 0;
   padding-block: calc(64px + env(safe-area-inset-top)) calc(106px + env(safe-area-inset-bottom));
+}
+
+.mobile-main-content.replying .mobile-conversation {
+  padding-block-end: calc(164px + env(safe-area-inset-bottom));
 }
 
 .mobile-conversation__content {
@@ -408,7 +416,14 @@ button {
 }
 
 .mobile-message-meta {
-  margin-top: -23px;
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 44px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  margin-top: 2px;
   color: var(--m-on-surface-variant);
   font-size: 0.75rem;
   line-height: 1.4;
@@ -416,7 +431,51 @@ button {
 }
 
 .mobile-message-meta.user {
-  text-align: end;
+  margin-inline-start: auto;
+  flex-direction: row-reverse;
+}
+
+.mobile-message-meta__text {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.mobile-message-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.mobile-message-actions button,
+.composer-reply > button {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  color: var(--m-on-surface-variant);
+  background: transparent;
+  transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1), color 150ms cubic-bezier(0.2, 0, 0, 1), scale 150ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.mobile-message-actions button:active,
+.composer-reply > button:active {
+  scale: 0.96;
+  background: color-mix(in oklch, var(--m-primary) 12%, transparent);
+}
+
+.mobile-message-actions button.copied {
+  color: var(--m-primary);
+  background: color-mix(in oklch, var(--m-primary) 12%, transparent);
+}
+
+.interrupted-label {
+  color: var(--m-trace-text);
+  font-weight: 650;
 }
 
 .interrupted-notice {
@@ -424,7 +483,7 @@ button {
   min-height: 32px;
   align-items: center;
   margin-top: -18px;
-  color: var(--m-trace);
+  color: var(--m-trace-text);
   font-size: 0.8125rem;
   font-weight: 600;
 }
@@ -434,6 +493,92 @@ button {
   height: 1px;
   margin-block: -7px;
   background: var(--m-outline-variant);
+}
+
+.message-date-divider {
+  display: grid;
+  grid-template-columns: minmax(20px, 1fr) auto minmax(20px, 1fr);
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  color: var(--m-on-surface-variant);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.message-date-divider > span {
+  height: 1px;
+  background: var(--m-outline-variant);
+}
+
+.swipe-reply {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+}
+
+.swipe-reply__content {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  background: var(--m-surface);
+  touch-action: pan-y;
+}
+
+.swipe-reply.disabled .swipe-reply__content {
+  touch-action: auto;
+}
+
+.swipe-reply__indicator {
+  position: absolute;
+  z-index: 0;
+  top: 50%;
+  right: 14px;
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--m-primary);
+  background: color-mix(in oklch, var(--m-primary) 12%, transparent);
+  translate: 0 -50%;
+}
+
+.message-reply-reference {
+  position: relative;
+  display: grid;
+  gap: 2px;
+  margin: 0 0 10px;
+  padding: 7px 10px 7px 13px;
+  color: var(--m-on-surface-variant);
+  background: color-mix(in oklch, var(--m-primary) 8%, transparent);
+}
+
+.message-reply-reference::before {
+  content: "";
+  position: absolute;
+  inset: 5px auto 5px 0;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--m-primary);
+}
+
+.message-reply-reference > span {
+  color: var(--m-primary);
+  font-size: 0.75rem;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.message-reply-reference > p {
+  overflow: hidden;
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .process-trace {
@@ -632,15 +777,61 @@ button {
   background: color-mix(in oklch, var(--m-surface) 96%, transparent);
 }
 
+.mobile-composer-frame {
+  overflow: hidden;
+  border-radius: 29px;
+  background: var(--m-surface-container);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 3px 10px rgb(0 0 0 / 0.05);
+}
+
+.mobile-composer-frame.has-reply {
+  border-radius: 24px;
+}
+
 .mobile-composer {
   display: flex;
   min-height: 58px;
   align-items: flex-end;
   gap: 2px;
-  border-radius: 29px;
   padding: 7px;
-  background: var(--m-surface-container);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 3px 10px rgb(0 0 0 / 0.05);
+  background: transparent;
+}
+
+.composer-reply {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 44px;
+  min-height: 54px;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px 1px 16px;
+  color: var(--m-on-primary-container);
+  background: color-mix(in oklch, var(--m-primary-container) 48%, var(--m-surface-container));
+}
+
+.composer-reply > svg {
+  color: var(--m-primary);
+}
+
+.composer-reply > div {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.composer-reply strong {
+  color: var(--m-on-primary-container);
+  font-size: 0.75rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.composer-reply span {
+  overflow: hidden;
+  color: var(--m-on-surface-variant);
+  font-size: 0.8125rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mobile-composer textarea {
@@ -707,7 +898,7 @@ button {
 }
 
 .stop-feedback {
-  color: var(--m-trace);
+  color: var(--m-trace-text);
   font-weight: 650;
 }
 

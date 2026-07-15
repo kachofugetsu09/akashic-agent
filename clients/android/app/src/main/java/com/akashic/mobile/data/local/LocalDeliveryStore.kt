@@ -279,6 +279,9 @@ class LocalDeliveryStore(
                 createdAt = (completedAt - duration).coerceAtMost(completedAt),
                 updatedAt = completedAt,
                 serverSeq = remote.seq.toLong(),
+                replyToMessageId = remote.replyToMessageId,
+                replyRole = remote.replyRole,
+                replyPreview = remote.replyPreview,
             )
             val sourceId = remote.clientMessageId?.let { "user:$it" }
                 ?: legacyLocalSourceId(canonical)
@@ -517,6 +520,7 @@ class LocalDeliveryStore(
     }
 
     private suspend fun finalizeMessage(envelope: WireEnvelope, updatedAt: Long) {
+        canonicalizeUserMessage(envelope, updatedAt)
         val current = ensureAssistantTurn(envelope, updatedAt)
         val blocks = database.messages().getBlocks(current.messageId)
         val finalThinking = payloadText(envelope, "thinking")?.trim().orEmpty()
@@ -557,6 +561,28 @@ class LocalDeliveryStore(
             updatedAt = updatedAt,
         )
         database.messages().completeRunningBlocks(canonicalId, updatedAt)
+    }
+
+    /** 用服务端最终事件把 optimistic 用户消息迁移为 canonical identity。 */
+    private suspend fun canonicalizeUserMessage(envelope: WireEnvelope, updatedAt: Long) {
+        val clientMessageId = payloadText(envelope, "client_message_id") ?: return
+        val canonicalId = requireNotNull(payloadText(envelope, "user_message_id")) {
+            "Final event with client_message_id has no user_message_id"
+        }
+        requireFrameId(clientMessageId)
+        require(canonicalId.isNotBlank() && canonicalId.length <= 512) {
+            "Canonical user message id is invalid"
+        }
+        val sourceId = "user:$clientMessageId"
+        val source = database.messages().get(sourceId) ?: return
+        mergeCanonicalMessage(
+            sourceId,
+            source.copy(
+                messageId = canonicalId,
+                deliveryState = "complete",
+                updatedAt = updatedAt,
+            ),
+        )
     }
 
     /** 把流式或 optimistic 消息原子迁移到服务端 canonical identity。 */

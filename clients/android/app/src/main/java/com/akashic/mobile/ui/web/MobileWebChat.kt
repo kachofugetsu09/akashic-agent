@@ -1,6 +1,8 @@
 package com.akashic.mobile.ui.web
 
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -12,6 +14,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.ConsoleMessage
 import android.util.Log
+import android.view.HapticFeedbackConstants
 import android.widget.Toast
 import androidx.annotation.Keep
 import androidx.compose.foundation.layout.Box
@@ -76,7 +79,7 @@ fun MobileWebChat(
     onOpenDownloadedAttachment: (String) -> Unit,
     onShareDownloadedAttachment: (String) -> Unit,
     onDismissError: () -> Unit,
-    onSend: (String) -> Unit,
+    onSend: (String, String?) -> Unit,
     onSendCommand: (String) -> Unit,
     onPluginUiCall: (String, String?, String?, String, String, String) -> Unit,
     onPluginUiResponsesAcknowledged: (Set<String>) -> Unit,
@@ -148,6 +151,16 @@ fun MobileWebChat(
                                 pump?.request(latestState)
                             }
                         },
+                        copyText = { text ->
+                            context.getSystemService(ClipboardManager::class.java).setPrimaryClip(
+                                ClipData.newPlainText("Akashic message", text),
+                            )
+                        },
+                        performReplyHaptic = {
+                            post {
+                                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                            }
+                        },
                     ),
                     "AkashicNative",
                 )
@@ -212,7 +225,7 @@ private data class MobileWebCallbacks(
     val onOpenDownloadedAttachment: (String) -> Unit,
     val onShareDownloadedAttachment: (String) -> Unit,
     val onDismissError: () -> Unit,
-    val onSend: (String) -> Unit,
+    val onSend: (String, String?) -> Unit,
     val onSendCommand: (String) -> Unit,
     val onPluginUiCall: (String, String?, String?, String, String, String) -> Unit,
     val onPluginUiResponsesAcknowledged: (Set<String>) -> Unit,
@@ -224,6 +237,8 @@ private class MobileWebBridge(
     private val dispatch: ((MobileWebCallbacks) -> Unit) -> Unit,
     private val reportReady: () -> Unit,
     private val requestSnapshot: () -> Unit,
+    private val copyText: (String) -> Unit,
+    private val performReplyHaptic: () -> Unit,
 ) {
     @JavascriptInterface
     fun reportReady() = reportReady.invoke()
@@ -276,7 +291,15 @@ private class MobileWebBridge(
     fun dismissError() = dispatch { it.onDismissError() }
 
     @JavascriptInterface
-    fun sendMessage(text: String) = dispatch { it.onSend(text) }
+    fun sendMessage(text: String, replyToMessageId: String) = dispatch {
+        it.onSend(text, replyToMessageId.ifBlank { null })
+    }
+
+    @JavascriptInterface
+    fun copyText(text: String) = copyText.invoke(text)
+
+    @JavascriptInterface
+    fun performReplyHaptic() = performReplyHaptic.invoke()
 
     @JavascriptInterface
     fun sendCommand(command: String) = dispatch { it.onSendCommand(command) }

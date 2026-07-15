@@ -37,12 +37,14 @@ import type {
 
 export function ChatMessageView({
   message,
+  leadingContent,
   attachmentContent,
   processStartContent,
   beforeProcessBlock,
   answerEndContent,
 }: {
   message: ChatMessage;
+  leadingContent?: ReactNode;
   attachmentContent?: ReactNode;
   processStartContent?: ReactNode;
   beforeProcessBlock?: (block: AgentBlock, index: number) => ReactNode;
@@ -57,6 +59,7 @@ export function ChatMessageView({
     return (
       <Message from="user" className="message-row user-row">
         <MessageContent className="user-bubble">
+          {leadingContent}
           {attachments}
           {message.content ? <MessageResponse>{message.content}</MessageResponse> : null}
         </MessageContent>
@@ -67,6 +70,7 @@ export function ChatMessageView({
   return (
     <Message from="assistant" className="message-row agent-row">
       <MessageContent className="agent-content">
+        {leadingContent}
         {message.blocks.length ? (
           <ProcessTrace
             message={message}

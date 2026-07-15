@@ -61,6 +61,12 @@ data class CommandUi(
     val description: String,
 )
 
+data class MessageReplyUi(
+    val messageId: String,
+    val role: String,
+    val preview: String,
+)
+
 enum class ConnectionStatusUi {
     CONNECTING,
     READY,
@@ -72,6 +78,8 @@ enum class ConnectionStatusUi {
 sealed interface MessageUi {
     val id: String
     val sessionId: String
+    val createdAtMillis: Long
+    val reply: MessageReplyUi?
     val attachments: List<MessageAttachmentUi>
 
     data class User(
@@ -79,6 +87,9 @@ sealed interface MessageUi {
         override val sessionId: String,
         val text: String,
         val deliveryLabel: String,
+        val replyable: Boolean,
+        override val createdAtMillis: Long,
+        override val reply: MessageReplyUi?,
         override val attachments: List<MessageAttachmentUi> = emptyList(),
     ) : MessageUi
 
@@ -90,6 +101,8 @@ sealed interface MessageUi {
         val answer: String,
         val status: AssistantTurnStatus,
         val durationSeconds: Int?,
+        override val createdAtMillis: Long,
+        override val reply: MessageReplyUi? = null,
         override val attachments: List<MessageAttachmentUi> = emptyList(),
     ) : MessageUi {
         val isStreaming: Boolean
@@ -175,6 +188,9 @@ internal val PreviewConversationState = ConversationUiState(
             sessionId = "mobile:preview-1",
             text = "帮我检查移动端实时链路，尤其是网络抖动后的恢复。",
             deliveryLabel = "已发送",
+            replyable = true,
+            createdAtMillis = 1_752_681_600_000,
+            reply = null,
         ),
         MessageUi.AssistantTurn(
             id = "assistant-1",
@@ -213,6 +229,7 @@ internal val PreviewConversationState = ConversationUiState(
             answer = "当前事件顺序保持一致；连接恢复后会从最后一次累计 ACK 继续。",
             status = AssistantTurnStatus.STREAMING,
             durationSeconds = null,
+            createdAtMillis = 1_752_681_601_000,
             attachments = listOf(
                 MessageAttachmentUi(
                     id = "preview-download",
