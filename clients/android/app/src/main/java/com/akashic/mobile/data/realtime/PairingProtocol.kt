@@ -81,7 +81,8 @@ object PairingQrDecoder {
 
         // 2. 拒绝重复、缺失和未知顶层字段
         rejectDuplicateTopLevelKeys(raw)
-        val element = json.parseToJsonElement(raw).jsonObject
+        val element = json.parseToJsonElement(raw)
+        require(element is JsonObject) { "二维码内容不是配对对象" }
         require(element.keys == expectedKeys) { "QR fields do not match the v1 schema" }
         val payload = json.decodeFromString<PairingQrPayload>(raw)
 

@@ -1,5 +1,6 @@
 package com.akashic.mobile.data.realtime
 
+import android.util.Log
 import com.akashic.mobile.domain.model.EndpointRoute
 import com.akashic.mobile.domain.model.ServerEndpoint
 import java.net.URI
@@ -112,6 +113,7 @@ class RealtimeWebSocketClient(
 
     fun send(candidateId: SocketCandidateId, envelope: WireEnvelope): Boolean {
         val socket = synchronized(lock) { state?.sockets?.get(candidateId) } ?: return false
+        Log.d(TAG, "WebSocket send: candidate=$candidateId ${envelopeLabel(envelope)}")
         return socket.send(ProtocolCodec.encode(envelope))
     }
 
@@ -120,6 +122,7 @@ class RealtimeWebSocketClient(
             val current = state ?: return false
             current.winner?.let(current.sockets::get)
         } ?: return false
+        Log.d(TAG, "WebSocket send: winner ${envelopeLabel(envelope)}")
         return socket.send(ProtocolCodec.encode(envelope))
     }
 
@@ -204,12 +207,18 @@ class RealtimeWebSocketClient(
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                Log.w(TAG, "WebSocket closed: id=$candidateId code=$code reason=$reason")
                 val wasWinner = removeCandidate(candidateId, null)
                 if (wasWinner) listener.onClosed(candidateId, code, reason)
                 reportExhaustedIfNeeded(candidateId.generation)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                Log.e(
+                    TAG,
+                    "WebSocket candidate failed: id=$candidateId endpoint=${endpointLabel(endpoint)}",
+                    t,
+                )
                 val wasWinner = removeCandidate(candidateId, t)
                 if (wasWinner) listener.onFailure(candidateId, t)
                 reportExhaustedIfNeeded(candidateId.generation)
@@ -258,12 +267,22 @@ class RealtimeWebSocketClient(
         validateEndpointSecurity(endpoint)
     }
 
+    private fun endpointLabel(endpoint: ServerEndpoint): String {
+        val uri = URI(endpoint.url)
+        return "${endpoint.route}:${uri.host}:${uri.port.takeIf { it > 0 } ?: "default"}"
+    }
+
+    private fun envelopeLabel(envelope: WireEnvelope): String =
+        "kind=${envelope.kind} type=${envelope.type} id=${envelope.id} epoch=${envelope.connectionEpoch} " +
+            "session=${envelope.sessionId} turn=${envelope.turnId} payloadKeys=${envelope.payload.keys}"
+
     private fun closeState(previous: RaceState?, reason: String) {
         previous?.delayedTunnel?.cancel(false)
         previous?.sockets?.values?.forEach { it.close(CLOSE_REPLACED, reason) }
     }
 
     private companion object {
+        const val TAG = "AkashicRealtime"
         const val PING_INTERVAL_SECONDS = 25L
         const val TUNNEL_RACE_DELAY_MILLIS = 750L
         const val CLOSE_REPLACED = 4000

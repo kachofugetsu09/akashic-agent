@@ -81,7 +81,8 @@ html,
 body,
 #root {
   width: 100%;
-  height: 100%;
+  height: var(--mobile-viewport-height, 100vh);
+  min-height: var(--mobile-viewport-height, 100vh);
   margin: 0;
   overflow: hidden;
   background: var(--m-surface);

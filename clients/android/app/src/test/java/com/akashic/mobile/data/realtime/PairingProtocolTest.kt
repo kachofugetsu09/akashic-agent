@@ -69,6 +69,15 @@ class PairingProtocolTest {
     }
 
     @Test
+    fun `strict QR rejects a JSON literal with a stable boundary error`() {
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            PairingQrDecoder.decode("\"not-a-pairing-object\"")
+        }
+
+        assertEquals("二维码内容不是配对对象", error.message)
+    }
+
+    @Test
     fun `server challenge requires cached fingerprint and valid signature`() {
         val keys = KeyPairGenerator.getInstance("EC").run {
             initialize(ECGenParameterSpec("secp256r1"))

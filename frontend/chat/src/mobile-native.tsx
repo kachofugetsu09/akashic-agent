@@ -102,6 +102,7 @@ export interface MobileSnapshot {
 }
 
 interface NativeBridge {
+  reportReady(): void;
   requestSnapshot(): void;
   selectSession(sessionId: string): void;
   createSession(): void;
@@ -122,11 +123,154 @@ interface NativeBridge {
   acknowledgePluginUiResponses(requestIdsJson: string): void;
 }
 
+type SnapshotRecord = Record<string, unknown>;
+
+function requireRecord(value: unknown, label: string): SnapshotRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} 不是对象`);
+  return value as SnapshotRecord;
+}
+
+function requireString(value: unknown, label: string): string {
+  if (typeof value !== "string") throw new Error(`${label} 不是字符串`);
+  return value;
+}
+
+function requireBoolean(value: unknown, label: string): boolean {
+  if (typeof value !== "boolean") throw new Error(`${label} 不是布尔值`);
+  return value;
+}
+
+function requireNumber(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${label} 不是有效数字`);
+  return value;
+}
+
+function optionalString(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  return requireString(value, label);
+}
+
+function requireArray<T>(value: unknown, label: string, parse: (item: unknown, index: number) => T): T[] {
+  if (!Array.isArray(value)) throw new Error(`${label} 不是数组`);
+  return value.map(parse);
+}
+
+function optionalArray<T>(value: unknown, label: string, parse: (item: unknown, index: number) => T): T[] {
+  return value === undefined ? [] : requireArray(value, label, parse);
+}
+
+function parseAttachment(value: unknown, index: number): MobileAttachment {
+  const raw = requireRecord(value, `attachments[${index}]`);
+  return {
+    id: requireString(raw.id, `attachments[${index}].id`),
+    filename: requireString(raw.filename, `attachments[${index}].filename`),
+    contentType: requireString(raw.contentType, `attachments[${index}].contentType`),
+    sizeBytes: requireNumber(raw.sizeBytes, `attachments[${index}].sizeBytes`),
+    transferredBytes: requireNumber(raw.transferredBytes, `attachments[${index}].transferredBytes`),
+    state: requireString(raw.state, `attachments[${index}].state`),
+    canRemove: raw.canRemove === undefined ? false : requireBoolean(raw.canRemove, `attachments[${index}].canRemove`),
+    contentUrl: optionalString(raw.contentUrl, `attachments[${index}].contentUrl`),
+  };
+}
+
+function parseProcessBlock(value: unknown, index: number): MobileProcessBlock {
+  const raw = requireRecord(value, `blocks[${index}]`);
+  const kind = requireString(raw.kind, `blocks[${index}].kind`);
+  const state = requireString(raw.state, `blocks[${index}].state`);
+  if (kind !== "thinking" && kind !== "tool") throw new Error(`blocks[${index}].kind 不受支持`);
+  if (state !== "completed" && state !== "running" && state !== "failed") {
+    throw new Error(`blocks[${index}].state 不受支持`);
+  }
+  return {
+    id: requireString(raw.id, `blocks[${index}].id`),
+    kind,
+    title: requireString(raw.title, `blocks[${index}].title`),
+    detail: requireString(raw.detail, `blocks[${index}].detail`),
+    state,
+  };
+}
+
+function parseMessage(value: unknown, index: number): MobileMessage {
+  const raw = requireRecord(value, `messages[${index}]`);
+  const role = requireString(raw.role, `messages[${index}].role`);
+  if (role !== "user" && role !== "assistant") throw new Error(`messages[${index}].role 不受支持`);
+  return {
+    id: requireString(raw.id, `messages[${index}].id`),
+    role,
+    content: requireString(raw.content, `messages[${index}].content`),
+    deliveryLabel: optionalString(raw.deliveryLabel, `messages[${index}].deliveryLabel`),
+    blocks: optionalArray(raw.blocks, `messages[${index}].blocks`, parseProcessBlock),
+    streaming: raw.streaming === undefined ? false : requireBoolean(raw.streaming, `messages[${index}].streaming`),
+    interrupted: raw.interrupted === undefined ? false : requireBoolean(raw.interrupted, `messages[${index}].interrupted`),
+    durationSeconds: raw.durationSeconds === undefined ? undefined : requireNumber(raw.durationSeconds, `messages[${index}].durationSeconds`),
+    attachments: optionalArray(raw.attachments, `messages[${index}].attachments`, parseAttachment),
+  };
+}
+
+/** 在 native 协议边界校验完整快照，并只补齐 Kotlin 明确定义的默认字段。 */
+function parseMobileSnapshot(value: unknown): MobileSnapshot {
+  // 1. 校验协议版本与根对象
+  const raw = requireRecord(value, "snapshot");
+  if (raw.protocolVersion !== 1) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
+  const connection = requireRecord(raw.connection, "connection");
+  const status = requireString(connection.status, "connection.status");
+  if (!["connecting", "ready", "degraded", "reconnecting", "disconnected"].includes(status)) {
+    throw new Error(`connection.status 不受支持: ${status}`);
+  }
+
+  // 2. 校验会话、消息和插件响应
+  const sessions = requireArray(raw.sessions, "sessions", (item, index) => {
+    const session = requireRecord(item, `sessions[${index}]`);
+    return { id: requireString(session.id, `sessions[${index}].id`), title: requireString(session.title, `sessions[${index}].title`) };
+  });
+  const messages = requireArray(raw.messages, "messages", parseMessage);
+  const pluginResponses = requireArray(raw.pluginResponses, "pluginResponses", (item, index) => {
+    const response = requireRecord(item, `pluginResponses[${index}]`);
+    return {
+      requestId: requireString(response.requestId, `pluginResponses[${index}].requestId`),
+      resultJson: optionalString(response.resultJson, `pluginResponses[${index}].resultJson`),
+      error: optionalString(response.error, `pluginResponses[${index}].error`),
+    };
+  });
+
+  // 3. 校验输入区状态并构造内部类型
+  const composer = requireRecord(raw.composer, "composer");
+  return {
+    protocolVersion: 1,
+    connection: {
+      label: requireString(connection.label, "connection.label"),
+      status: status as ConnectionStatus,
+      notice: optionalString(connection.notice, "connection.notice"),
+      error: optionalString(connection.error, "connection.error"),
+    },
+    sessions,
+    selectedSessionId: optionalString(raw.selectedSessionId, "selectedSessionId"),
+    messages,
+    pluginResponses,
+    composer: {
+      attachments: requireArray(composer.attachments, "composer.attachments", parseAttachment),
+      commands: requireArray(composer.commands, "composer.commands", (item, index) => {
+        const command = requireRecord(item, `composer.commands[${index}]`);
+        return {
+          command: requireString(command.command, `composer.commands[${index}].command`),
+          description: requireString(command.description, `composer.commands[${index}].description`),
+        };
+      }),
+      isStreaming: requireBoolean(composer.isStreaming, "composer.isStreaming"),
+      isResyncing: requireBoolean(composer.isResyncing, "composer.isResyncing"),
+      canResync: requireBoolean(composer.canResync, "composer.canResync"),
+      isStopping: requireBoolean(composer.isStopping, "composer.isStopping"),
+      canStop: requireBoolean(composer.canStop, "composer.canStop"),
+      canSend: requireBoolean(composer.canSend, "composer.canSend"),
+    },
+  };
+}
+
 declare global {
   interface Window {
     AkashicNative?: NativeBridge;
     AkashicMobile?: {
-      receiveSnapshot(snapshot: MobileSnapshot): void;
+      receiveSnapshot(snapshot: unknown): void;
       receivePluginAssets(assets: MobilePluginAsset[]): void;
     };
   }
@@ -139,21 +283,39 @@ function MobileNativeApp() {
   const [input, setInput] = useState("");
   const [stopRequested, setStopRequested] = useState(false);
   const [pluginLoadError, setPluginLoadError] = useState<string | null>(null);
+  const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const drawerToggleRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     let pending: MobileSnapshot | null = null;
     let frame: number | null = null;
+    let requestTimer: number | null = null;
+    let snapshotAccepted = false;
+    const requestSnapshot = () => {
+      if (snapshotAccepted) return;
+      window.AkashicNative?.requestSnapshot();
+      requestTimer = window.setTimeout(requestSnapshot, 250);
+    };
     window.AkashicMobile = {
       receiveSnapshot(next) {
-        settleMobilePluginResponses(next.pluginResponses);
-        pending = next;
+        try {
+          const parsed = parseMobileSnapshot(next);
+          settleMobilePluginResponses(parsed.pluginResponses);
+          pending = parsed;
+          setSnapshotError(null);
+        } catch (error) {
+          console.error("[mobile] rejected native snapshot", error);
+          setSnapshotError(error instanceof Error ? error.message : "原生快照无效");
+          return;
+        }
         if (frame !== null) return;
         frame = requestAnimationFrame(() => {
           frame = null;
           setSnapshot(pending);
           pending = null;
+          snapshotAccepted = true;
+          if (requestTimer !== null) window.clearTimeout(requestTimer);
         });
       },
       receivePluginAssets(assets) {
@@ -166,9 +328,11 @@ function MobileNativeApp() {
         );
       },
     };
-    window.AkashicNative?.requestSnapshot();
+    window.AkashicNative?.reportReady();
+    requestSnapshot();
     return () => {
       if (frame !== null) cancelAnimationFrame(frame);
+      if (requestTimer !== null) window.clearTimeout(requestTimer);
       delete window.AkashicMobile;
     };
   }, []);
@@ -188,6 +352,19 @@ function MobileNativeApp() {
     .find((message) => message.role === "assistant")?.id;
 
   if (!snapshot) {
+    if (snapshotError) {
+      return (
+        <main className="mobile-fatal" role="alert">
+          <AlertCircle className="mobile-fatal__mark" size={28} />
+          <h1>会话数据没有通过校验</h1>
+          <p>{snapshotError}</p>
+          <button type="button" onClick={() => window.location.reload()}>
+            <RefreshCw size={18} />
+            重新载入
+          </button>
+        </main>
+      );
+    }
     return (
       <main className="mobile-loading" aria-live="polite">
         <span className="mobile-loading__mark" />
@@ -679,6 +856,16 @@ class MobileErrorBoundary extends React.Component<React.PropsWithChildren, { mes
     );
   }
 }
+
+// Android WebView 首帧可能把百分比和视口单位高度冻结为 0，显式像素值同时覆盖键盘和旋转变化。
+function syncMobileViewportHeight() {
+  const viewportHeight = Math.max(1, Math.round(window.visualViewport?.height ?? window.innerHeight));
+  document.documentElement.style.setProperty("--mobile-viewport-height", `${viewportHeight}px`);
+}
+
+syncMobileViewportHeight();
+window.addEventListener("resize", syncMobileViewportHeight);
+window.visualViewport?.addEventListener("resize", syncMobileViewportHeight);
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Mobile Web root 不存在");

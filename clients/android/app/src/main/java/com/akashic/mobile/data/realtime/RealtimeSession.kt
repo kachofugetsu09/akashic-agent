@@ -676,6 +676,7 @@ class RealtimeSession(
     }
 
     override fun onFailure(candidateId: SocketCandidateId, error: Throwable) {
+        Log.e(TAG, "实时连接候选失败: candidate=$candidateId", error)
         scope.launch {
             mutex.withLock {
                 if (candidateId == activeCandidate) scheduleReconnect(error.message ?: "连接失败")
@@ -692,6 +693,7 @@ class RealtimeSession(
     }
 
     override fun onRaceExhausted(generation: Long, error: Throwable) {
+        Log.e(TAG, "实时连接候选全部失败: generation=$generation", error)
         scope.launch {
             mutex.withLock {
                 if (generation == currentGeneration()) scheduleReconnect(error.message ?: "所有 endpoint 均不可用")

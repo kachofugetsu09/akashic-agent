@@ -7,8 +7,11 @@ import android.content.Intent
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
+import android.webkit.ConsoleMessage
+import android.util.Log
 import android.widget.Toast
 import androidx.annotation.Keep
 import androidx.compose.foundation.layout.Box
@@ -54,6 +57,8 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 
 private const val MOBILE_WEB_URL = "https://appassets.androidplatform.net/assets/mobile.html"
+private const val MOBILE_WEB_LOG_TAG = "AkashicMobileWeb"
+private const val MOBILE_WEB_RENDER_DEADLINE_MILLIS = 10_000L
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -123,7 +128,9 @@ fun MobileWebChat(
                 settings.mediaPlaybackRequiresUserGesture = true
                 // appassets 使用受控 HTTPS origin；外部请求由 MobileWebClient 拒绝。
                 settings.blockNetworkLoads = false
-                setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                // WebView 默认走硬件合成；强制软件层会让动态页面退回整层位图重绘。
+                setLayerType(android.view.View.LAYER_TYPE_NONE, null)
+                setBackgroundColor(android.graphics.Color.rgb(243, 247, 252))
                 webViewClient = MobileWebClient(
                     context,
                     assetLoader,
@@ -133,10 +140,26 @@ fun MobileWebChat(
                 addJavascriptInterface(
                     MobileWebBridge(
                         dispatch = { work -> post { work(callbacks) } },
-                        requestSnapshot = { post { snapshotPump?.request(latestState) } },
+                        reportReady = { post { webLoadError = null } },
+                        requestSnapshot = {
+                            post {
+                                val pump = snapshotPump
+                                Log.i(MOBILE_WEB_LOG_TAG, "bridge requestSnapshot: pumpReady=${pump != null}")
+                                pump?.request(latestState)
+                            }
+                        },
                     ),
                     "AkashicNative",
                 )
+                webChromeClient = object : WebChromeClient() {
+                    override fun onConsoleMessage(message: ConsoleMessage): Boolean {
+                        Log.e(
+                            MOBILE_WEB_LOG_TAG,
+                            "console ${message.messageLevel()} ${message.sourceId()}:${message.lineNumber()} ${message.message()}",
+                        )
+                        return true
+                    }
+                }
                 loadUrl(MOBILE_WEB_URL)
                 webView = this
                 snapshotPump = MobileSnapshotPump(this, mediaRegistry)
@@ -199,8 +222,12 @@ private data class MobileWebCallbacks(
 @Keep
 private class MobileWebBridge(
     private val dispatch: ((MobileWebCallbacks) -> Unit) -> Unit,
+    private val reportReady: () -> Unit,
     private val requestSnapshot: () -> Unit,
 ) {
+    @JavascriptInterface
+    fun reportReady() = reportReady.invoke()
+
     @JavascriptInterface
     fun requestSnapshot() = requestSnapshot.invoke()
 
@@ -282,8 +309,27 @@ private class MobileWebClient(
     private val onMainFrameStarted: WebView.() -> Unit,
     private val onMainFrameError: WebView.(String) -> Unit,
 ) : WebViewClientCompat() {
+    private var pageGeneration = 0L
+
     override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+        Log.i(MOBILE_WEB_LOG_TAG, "page started: $url")
+        pageGeneration += 1
         view.onMainFrameStarted()
+    }
+
+    override fun onPageFinished(view: WebView, url: String) {
+        Log.i(MOBILE_WEB_LOG_TAG, "page finished: $url")
+        if (url != MOBILE_WEB_URL) return
+        val generation = pageGeneration
+        view.postDelayed({
+            if (generation != pageGeneration) return@postDelayed
+            view.evaluateJavascript(
+                """document.getElementById('root')?.childElementCount > 0""",
+            ) { rendered ->
+                Log.i(MOBILE_WEB_LOG_TAG, "page deadline rendered: $rendered")
+                if (rendered != "true") view.onMainFrameError("会话脚本没有生成界面")
+            }
+        }, MOBILE_WEB_RENDER_DEADLINE_MILLIS)
     }
 
     override fun onReceivedError(
@@ -291,7 +337,10 @@ private class MobileWebClient(
         request: WebResourceRequest,
         error: WebResourceErrorCompat,
     ) {
-        if (request.isForMainFrame) view.onMainFrameError(error.description.toString())
+        Log.e(MOBILE_WEB_LOG_TAG, "resource error: ${request.url} ${error.errorCode} ${error.description}")
+        if (request.isForMainFrame || request.isCriticalAppAsset()) {
+            view.onMainFrameError("资源加载失败: ${request.url.path} (${error.description})")
+        }
     }
 
     override fun onReceivedHttpError(
@@ -299,9 +348,13 @@ private class MobileWebClient(
         request: WebResourceRequest,
         errorResponse: WebResourceResponse,
     ) {
-        if (request.isForMainFrame) {
+        if (request.isForMainFrame || request.isCriticalAppAsset()) {
+            Log.e(
+                MOBILE_WEB_LOG_TAG,
+                "critical HTTP error: ${request.url} ${errorResponse.statusCode} ${errorResponse.reasonPhrase}",
+            )
             view.onMainFrameError(
-                "HTTP ${errorResponse.statusCode} ${errorResponse.reasonPhrase}",
+                "资源加载失败: ${request.url.path} (HTTP ${errorResponse.statusCode})",
             )
         }
     }
@@ -322,6 +375,9 @@ private class MobileWebClient(
             emptyMap(),
             ByteArrayInputStream(ByteArray(0)),
         )
+
+    private fun WebResourceRequest.isCriticalAppAsset(): Boolean =
+        url.host == "appassets.androidplatform.net" && url.lastPathSegment.orEmpty().startsWith("mobile-")
 
     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
         return when (mobileNavigationAction(request.url.toString(), request.isForMainFrame)) {
@@ -390,7 +446,9 @@ private fun ConversationUiState.mediaResources(): Map<String, MobileMediaResourc
         .associate { it.id to MobileMediaResource(it.cachePath, it.contentType) }
 
 private fun WebView.pushSnapshot(snapshotJson: String) {
-    evaluateJavascript("window.AkashicMobile?.receiveSnapshot($snapshotJson)", null)
+    evaluateJavascript(
+        """(() => { if (!window.AkashicMobile?.receiveSnapshot) return 'missing'; window.AkashicMobile.receiveSnapshot($snapshotJson); return 'delivered'; })()""",
+    ) { result -> Log.d(MOBILE_WEB_LOG_TAG, "snapshot push: $result") }
 }
 
 private fun WebView.pushPluginAssets(assetsJson: String) {
