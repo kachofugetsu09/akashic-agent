@@ -122,3 +122,9 @@ ANDROID_HOME=/home/huashen/Android/Sdk clients/android/gradlew -p clients/androi
 - APK：v2 签名校验通过，证书 SHA-256 为 `49bf31ed5c54c642d6f4fdd30a5310a8cb70e67666ad25d711b5f0e084e240bc`
 - 私有发布：<https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.0>
 - ADB 安装：发布时没有已连接设备，未在本轮远程安装
+
+### 0.7.1 白屏修复
+
+`0.7.0` 错误启用了 `WebSettings.blockNetworkLoads`，连 `WebViewAssetLoader` 使用的受控 HTTPS appassets origin 也被阻止，导致 React 首帧前白屏。`0.7.1` 改由 `MobileWebClient` 精确放行 `appassets.androidplatform.net`，其他 origin 返回 403；主文档的网络错误和 HTTP 错误会显示原生错误页与重新加载入口。
+
+私有发布：<https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.1>
