@@ -198,3 +198,53 @@ better-ui：
 | better-colors | 新状态容易继续增加彩色容器 | 停止沿用主操作语义，错误只用 `errorContainer`；通知权限提示复用 M3 inverse surface，不新增色系 |
 | better-typography | 连接、错误与文件操作层级混杂 | 状态沿用现有 body/label 层级，文件元信息继续使用 `labelMedium + tnum` |
 | better-ui | 停止为空回调、错误不可见、滚动失跟 | 真实停止与分享、单一可关闭 Snackbar、尊重用户上滑的 stick-to-bottom；未增加卡片或阴影 |
+
+### 6. 中止反馈与快捷命令
+
+```text
+┌──────────────────────────────────────────────┐
+│ 对话与思考 / 工具时间线                      │
+│                                              │
+│  生成中：正在中止本轮…                       │
+│  终态：  已中止 · 7s                         │
+│          ■ 生成已中止，可继续补充             │
+├──────────────────────────────────────────────┤
+│ [命令] [输入消息………………] [附件] [发送 / 中止] │
+└──────────────────────────────────────────────┘
+                 │
+                 └── 快捷命令 ModalBottomSheet
+                     /undo          撤销上一轮对话
+                     /memorystatus  查看记忆整理状态
+                     /kvcache       查看 KVCache 状态
+```
+
+- 服务端：新增 `command.list`，命令目录直接读取 `ChannelContext.bot_commands`，因此插件增删命令后无需重新发布 APK；`/stop` 仍由生成控制按钮拥有，不混入文本命令。
+- 中止一致性：真实 interrupt 与“请求抵达时 turn 已结束”的竞态都发布 `turn.interrupted`，清除 active/process 映射；未知 controller 状态直接失败，不伪装成功。
+- 即时反馈：点击后按钮进入不可重复点击的进度态，并在输入区上方显示“正在中止本轮…”；终态保留已有的部分思考、工具与回答，显示“已中止 · Ns”和可继续补充提示。
+- 命令交互：左侧菜单打开原生 Material 3 bottom sheet；附件移到输入框右侧。点击命令只填入输入框并唤起键盘，用户确认后发送，避免 `/undo` 等破坏性命令误触执行。
+- 自动验证：服务端 mobile realtime 33 项通过；Android JVM、AndroidTest 编译通过；无窗口 API 36.1 模拟器中 31 项非外部 Gateway instrumentation 与 3 项 UI 证据测试通过。全量 instrumentation 的 2 项隔离 Gateway 测试因本轮未启动外部 harness 而按预期缺少连接参数，其余 31 项通过。
+- UI 证据：[快捷命令面板](assets/mobile-v0.5.0-command-sheet.png)、[中止请求中](assets/mobile-v0.5.0-stop-pending.png)、[中止终态](assets/mobile-v0.5.0-stop-terminal.png)。取图完成后无窗口模拟器已关闭。
+
+#### 本组 UI skill 约束落实
+
+better-colors：
+
+| Before | After |
+| --- | --- |
+| 中止点击后没有持续色彩语义 | 正在中止和中止终态统一使用现有亮紫 `tertiary`，不占用错误红色 |
+| 命令容易被做成多色功能卡 | 命令名只使用 `primary`，说明使用 `onSurfaceVariant`，sheet 复用 `surfaceContainerLow` |
+
+better-typography：
+
+| Before | After |
+| --- | --- |
+| 中止结果与普通正文无法区分 | 状态标题使用 `labelLarge`，持续时间以紧凑 `· Ns` 进入同一阅读句 |
+| 命令与说明缺少扫描锚点 | `/command` 使用 monospace 与固定列宽，说明使用 `bodyMedium`，两行内安全省略 |
+
+better-ui：
+
+| Before | After |
+| --- | --- |
+| 中止按钮只有瞬时 spinner，终态无痕 | 即时、处理中、终态三阶段反馈；保留部分结果，不制造错误卡片或假助手消息 |
+| 附件占据输入框左侧，命令无入口 | 固定为 `[命令][输入][附件][主操作]`，四个角色位置稳定 |
+| 命令可能演变成 Telegram 式浮层菜单或卡片墙 | 使用原生 ModalBottomSheet 与共享列表平面，每行 64dp、触控目标至少 48dp |
