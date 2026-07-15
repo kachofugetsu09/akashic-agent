@@ -919,7 +919,7 @@ button {
   inset: auto 0 calc(83px + env(safe-area-inset-bottom));
   z-index: 44;
   display: flex;
-  max-height: min(44vh, 420px);
+  max-height: min(calc(var(--mobile-viewport-height) * 0.44), 420px);
   flex-direction: column;
   overflow: hidden;
   border-radius: 28px 28px 0 0;
