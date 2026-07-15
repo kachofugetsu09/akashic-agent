@@ -391,6 +391,9 @@ better-ui：
 - 焦点与无障碍：打开时以命令面板替代键盘；关闭按钮或系统返回会恢复打开前的输入焦点。面板声明 `paneTitle=快捷命令`，TalkBack 可识别新出现的交互区域。
 - 自动验证：Android JVM、debug Lint/assemble 与 AndroidTest 编译通过；API 36.1 无窗口模拟器中立即发送、附件共存、双击单发、关闭恢复焦点和 20 项目录滚动路径通过。验证完成后模拟器已关闭。
 - UI 证据：[输入栏附着命令面板](assets/mobile-v0.6.2-command-panel.png)。
+- 提交：`4c956006` 输入栏附着命令面板、独立纯文本命令链路与 Android 0.6.2。
+- 版本：Android `0.6.2`（versionCode 8）；私有 Release [`v0.6.2`](https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.6.2)，资产 `Akashic-Mobile-v0.6.2.apk`（6,357,438 bytes）。
+- 发布验证：release JVM、Lint、R8 与 assemble 在 1m40s 内通过；APK v2 签名有效；本地与 GitHub 资产 SHA-256 均为 `c5b6d3fd96bee56d13867a2ac04d9b093330f3a46ec5fc2d0d745371fbfe017a`。
 
 #### 本组 UI skill 约束落实
 
