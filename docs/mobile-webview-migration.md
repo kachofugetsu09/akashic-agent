@@ -159,5 +159,6 @@ Mobile Web 宿主现在为每条普通 assistant 历史消息挂载 turn 插槽�
 
 - 验证：Akasha pytest 60 项、Pyright、TypeScript、ESLint、debug JVM、assemble 与生产 Mobile Web 构建通过
 - 生产只读验收：assistant seq `22/24/26` 分别绑定 Akasha seq `21/23/25`，返回 `4+15 / 9+9 / 10+8` 条，历史时间全部可解析
-- APK：`0.7.4`（versionCode 13）
+- APK：`0.7.4`（versionCode 13），8,255,238 bytes，SHA-256 `c153402f92b1550772053e2ab930c92d8c2d756bcb471a5bade34ecb210a5697`
 - 私有发布：<https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.4>
+- 真机验收：Pixel 7 覆盖安装成功，系统报告 versionCode 13 / versionName 0.7.4，MainActivity 正常前台运行
