@@ -224,6 +224,8 @@ better-ui：
 - 命令交互：左侧菜单打开原生 Material 3 bottom sheet；附件移到输入框右侧。点击命令只填入输入框并唤起键盘，用户确认后发送，避免 `/undo` 等破坏性命令误触执行。
 - 自动验证：服务端 mobile realtime 33 项通过；Android JVM、AndroidTest 编译通过；无窗口 API 36.1 模拟器中 31 项非外部 Gateway instrumentation 与 3 项 UI 证据测试通过。全量 instrumentation 的 2 项隔离 Gateway 测试因本轮未启动外部 harness 而按预期缺少连接参数，其余 31 项通过。
 - UI 证据：[快捷命令面板](assets/mobile-v0.5.0-command-sheet.png)、[中止请求中](assets/mobile-v0.5.0-stop-pending.png)、[中止终态](assets/mobile-v0.5.0-stop-terminal.png)。取图完成后无窗口模拟器已关闭。
+- 版本：Android `0.5.0`（versionCode 5）；私有 Release [`v0.5.0`](https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.5.0)，资产 `Akashic-Mobile-v0.5.0.apk`（5,040,174 bytes）。
+- 发布验证：release JVM、Lint、R8 与 assemble 通过；APK v2 签名有效，版本清单为 `0.5.0/5`；本地与 GitHub 资产 SHA-256 均为 `ff56ee255798e09dac5aba2784a73be4e4c22df00715a4f738aa2191784b50d1`。
 
 #### 本组 UI skill 约束落实
 
