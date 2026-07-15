@@ -2,3 +2,4 @@
 !requirements.txt
 !requirements-dev.txt
 !docker/debug/entrypoint.sh
+!docker/mobile-lab/entrypoint.sh

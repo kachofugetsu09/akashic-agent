@@ -1,0 +1,83 @@
+name: akashic-mobile-lab
+
+services:
+  agent:
+    build:
+      context: ../..
+      dockerfile: docker/mobile-lab/Dockerfile
+      args:
+        HOST_UID: ${AKASHIC_HOST_UID:-1000}
+        HOST_GID: ${AKASHIC_HOST_GID:-1000}
+    image: akashic-agent-mobile-lab:latest
+    working_dir: /app
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,mode=1777
+    environment:
+      AKASHIC_MOBILE_LAB_SOURCE_CONFIG: /source/config.toml
+      AKASHIC_MOBILE_LAB_CONFIG: /sandbox/config.toml
+      AKASHIC_MOBILE_LAB_WORKSPACE: /sandbox/workspace
+      AKASHIC_MOBILE_LAB_PUBLIC_URL: ${AKASHIC_MOBILE_LAB_PUBLIC_URL:?set the lab wss URL}
+      AKASHIC_MOBILE_LAB_LAN_HOSTNAME: ${AKASHIC_MOBILE_LAB_LAN_HOSTNAME:?set the host LAN address}
+      AKASHIC_PLUGIN_HOME: /sandbox/home/.akashic-plugin
+      AKASHIC_HOST_UID: ${AKASHIC_HOST_UID:-1000}
+      AKASHIC_HOST_GID: ${AKASHIC_HOST_GID:-1000}
+      HOME: /sandbox/home
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ../..:/app:ro
+      - ${AKASHIC_MOBILE_LAB_SOURCE_CONFIG:-../../config.toml}:/source/config.toml:ro
+      - ${AKASHIC_MOBILE_LAB_PROFILE_DIR:-../debug/profiles/mobile-lab}:/sandbox
+    ports:
+      - "127.0.0.1:16322:16322"
+      - "16323:16323"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -fsS http://127.0.0.1:16322/ >/dev/null && timeout 2 bash -c '</dev/tcp/127.0.0.1/16323'
+      interval: 5s
+      timeout: 4s
+      retries: 24
+      start_period: 20s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  chat-proxy:
+    image: alpine/socat:latest
+    network_mode: service:agent
+    command:
+      - TCP-LISTEN:16322,fork,reuseaddr,bind=0.0.0.0
+      - TCP:127.0.0.1:6322
+    depends_on:
+      agent:
+        condition: service_started
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    network_mode: service:agent
+    user: ${AKASHIC_HOST_UID:-1000}:${AKASHIC_HOST_GID:-1000}
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --protocol
+      - http2
+      - run
+      - --credentials-file
+      - /run/secrets/tunnel.json
+      - --url
+      - https://127.0.0.1:16323
+      - --no-tls-verify
+      - ${AKASHIC_MOBILE_LAB_TUNNEL_ID:?set the lab tunnel id}
+    volumes:
+      - ${AKASHIC_MOBILE_LAB_TUNNEL_CREDENTIALS:?set the lab tunnel credentials}:/run/secrets/tunnel.json:ro
+    depends_on:
+      agent:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
