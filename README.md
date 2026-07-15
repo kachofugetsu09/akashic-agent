@@ -57,6 +57,7 @@ Akashic 理想上的动作应该是：
 git clone <this-repo>
 cd akashic-agent
 uv venv && uv pip install -r requirements.txt
+export AKASHIC_WORKSPACE="$PWD/.runtime/workspace"
 ```
 
 没有 uv？先 `pip install uv`。
@@ -196,7 +197,18 @@ akashic_RUN_SCENARIOS=1 pytest -c pytest-scenarios.ini tests_scenarios/
 
 ## 工作区
 
-所有运行时数据在 `~/.akashic/workspace/`。
+所有运行时数据都在显式选择的 `$AKASHIC_WORKSPACE` 下；也可以为每条命令传入
+`--workspace /absolute/path`。不同测试环境使用不同目录，不共享会话、记忆、附件或插件数据。
+插件代码缓存和启停清单默认仍位于 `$HOME/.akashic-plugin`；需要完整隔离插件安装状态时，
+额外设置 `AKASHIC_PLUGIN_HOME=/absolute/test/plugin-home`。
+
+从旧版升级时，第一次重启前显式复制旧插件数据；命令保留旧目录，目标已存在时拒绝覆盖：
+
+```bash
+uv run python scripts/migrate_plugin_data.py \
+  --workspace "$AKASHIC_WORKSPACE" \
+  --plugins-home "$HOME/.akashic-plugin"
+```
 
 程序化客户端连接 workspace 下的 `akashic.sock`，先完成 JSON-RPC
 `initialize`/`initialized`，再使用 `thread/start`、`turn/start`、`turn/read` 和

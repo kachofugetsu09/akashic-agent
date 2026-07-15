@@ -181,10 +181,15 @@ class Config:
     vl_runtime_id: str = ""
 
     @classmethod
-    def load(cls, path: str | Path = "config.toml") -> Config:
+    def load(
+        cls,
+        path: str | Path = "config.toml",
+        *,
+        workspace: str | Path,
+    ) -> Config:
         from importlib import import_module
 
-        return import_module("agent.config").load_config(path)
+        return import_module("agent.config").load_config(path, workspace=workspace)
 
 
 __all__ = [

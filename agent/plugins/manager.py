@@ -20,8 +20,11 @@ from typing import Any, TypeVar, cast
 from pydantic import BaseModel, ValidationError
 
 from agent.plugins.manifest import (
+    ensure_workspace_plugin_data_dir,
     load_package_manifest,
     load_plugin_manifest,
+    plugins_root,
+    workspace_plugin_data_dir,
     write_package_manifest,
     write_plugin_manifest,
 )
@@ -146,8 +149,8 @@ class PluginManager:
         plugin_dirs: list[Path],
         *,
         event_bus: EventBus,
+        workspace: Path,
         tool_registry: Any = None,
-        workspace: Path | None = None,
         session_manager: Any = None,
         memory_engine: Any = None,
         llm: PluginLlmService | None = None,
@@ -567,7 +570,7 @@ class PluginManager:
             data_dir = _resolve_plugin_data_dir(
                 mod["name"],
                 mod,
-                self._installed_cache_root,
+                self._workspace,
             )
             digest.update(plugin_id.encode())
             digest.update(_source_metadata_revision(plugin_dir))
@@ -1403,7 +1406,7 @@ class PluginManager:
                     _resolve_plugin_data_dir(
                         mod["name"],
                         mod,
-                        self._installed_cache_root,
+                        self._workspace,
                     )
                     / "config.local.toml"
                 )
@@ -1580,8 +1583,9 @@ class PluginManager:
         data_dir = _resolve_plugin_data_dir(
             mod["name"],
             mod,
-            self._installed_cache_root,
+            self._workspace,
         )
+        ensure_workspace_plugin_data_dir(data_dir, self._workspace)
         config_revision = _file_revision(data_dir / "config.local.toml")
         self._generation_sequence += 1
         generation_id = (
@@ -2201,11 +2205,13 @@ class PluginManager:
             mcp_servers=_resolve_mcp_servers(
                 plugin_dir,
                 data_dir,
+                self._workspace,
                 cls.mcp_servers(),
             ),
             managed_services=_resolve_managed_services(
                 plugin_dir,
                 data_dir,
+                self._workspace,
                 cls.managed_services(),
                 source_revision=source_revision,
             ),
@@ -2802,17 +2808,20 @@ def _resolve_plugin_id(mod: dict[str, str]) -> str:
 def _resolve_plugin_data_dir(
     name: str,
     mod: dict[str, str],
-    installed_cache_root: Path | None,
+    workspace: Path,
 ) -> Path:
+    """把插件可写数据固定到当前 workspace 的独立目录。"""
+
+    # 1. 交给统一路径边界校验插件身份
     marketplace = mod.get("marketplace", "").strip()
     suffix = marketplace or "builtin"
-    return _plugins_home(installed_cache_root) / "data" / f"{name}-{suffix}"
+    return workspace_plugin_data_dir(workspace, name, suffix)
 
 
 def _plugins_home(installed_cache_root: Path | None) -> Path:
     if installed_cache_root is not None:
         return installed_cache_root.parent
-    return Path.home() / ".akashic-plugin"
+    return plugins_root()
 
 
 def _resolve_declared_roots(
@@ -2843,6 +2852,7 @@ def _resolve_dashboard_module(plugin_dir: Path, declared: str | None) -> Path | 
 def _resolve_managed_services(
     plugin_dir: Path,
     data_dir: Path,
+    workspace: Path,
     declared: list[ManagedServiceSpec],
     *,
     source_revision: str,
@@ -2886,7 +2896,11 @@ def _resolve_managed_services(
         services[spec.id] = {
             "command": command,
             "cwd": cwd,
-            "env": {**spec.env, "AKA_PLUGIN_DATA_DIR": str(data_dir)},
+            "env": {
+                **spec.env,
+                "AKA_PLUGIN_DATA_DIR": str(data_dir),
+                "AKASHIC_WORKSPACE": str(workspace),
+            },
             "readiness_url": spec.readiness_url,
             "startup_timeout_seconds": spec.startup_timeout_seconds,
             "revision": source_revision,
@@ -2897,6 +2911,7 @@ def _resolve_managed_services(
 def _resolve_mcp_servers(
     plugin_dir: Path,
     data_dir: Path,
+    workspace: Path,
     declared: list[McpServerSpec],
 ) -> dict[str, dict[str, Any]]:
     servers: dict[str, dict[str, Any]] = {}
@@ -2925,7 +2940,11 @@ def _resolve_mcp_servers(
         )
         _require_plugin_path(plugin_root, resolved_cwd, "MCP cwd")
         cwd = str(resolved_cwd)
-        env = {**spec.env, "AKA_PLUGIN_DATA_DIR": str(data_dir)}
+        env = {
+            **spec.env,
+            "AKA_PLUGIN_DATA_DIR": str(data_dir),
+            "AKASHIC_WORKSPACE": str(workspace),
+        }
         if _is_python_command(command[0]):
             runtime_root = _resolve_mcp_runtime_root(plugin_dir, cwd, command)
             if runtime_root is not None:

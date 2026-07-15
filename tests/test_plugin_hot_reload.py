@@ -73,7 +73,7 @@ def _manager(
         plugin_dirs=[tmp_path / "plugins"],
         event_bus=EventBus(),
         tool_registry=tools,
-        workspace=workspace,
+        workspace=workspace or tmp_path / "workspace",
         installed_cache_root=tmp_path / "home" / "cache",
     )
 
@@ -335,7 +335,7 @@ async def test_candidate_declaration_cannot_write_plugin_kv(tmp_path: Path):
     await manager.load_all()
 
     gate = manager.latest_gate("readonly")
-    kv_path = tmp_path / "home" / "data" / "readonly-builtin" / ".kv.json"
+    kv_path = tmp_path / "workspace" / "plugin-data" / "readonly-builtin" / ".kv.json"
     assert gate is not None and gate.status == "failed"
     assert gate.checks[0].check_id == "declarations"
     assert not kv_path.exists()
@@ -443,7 +443,7 @@ async def test_generation_module_tree_is_removed_on_config_failure_and_terminate
         "    ConfigModel = Config\n",
     )
     _ = (plugin_dir / "child.py").write_text("value = 1\n", encoding="utf-8")
-    config_dir = tmp_path / "home" / "data" / "module_tree-builtin"
+    config_dir = tmp_path / "workspace" / "plugin-data" / "module_tree-builtin"
     config_dir.mkdir(parents=True)
     _ = (config_dir / "config.local.toml").write_text("", encoding="utf-8")
     manager = _manager(tmp_path)
@@ -496,6 +496,7 @@ async def test_candidate_is_not_published_before_initialize_finishes(tmp_path: P
         plugin_dirs=[tmp_path / "plugins"],
         event_bus=event_bus,
         tool_registry=tools,
+        workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home" / "cache",
     )
 
@@ -566,7 +567,7 @@ async def test_prepare_same_plugin_keeps_active_generation_until_snapshot_publis
     assert manager.prepared_generation("replaceable") is prepared
     assert manager.latest_gate("replaceable").status == "passed"  # type: ignore[union-attr]
     assert not (
-        tmp_path / "home" / "data" / "replaceable-builtin" / ".kv.json"
+        tmp_path / "workspace" / "plugin-data" / "replaceable-builtin" / ".kv.json"
     ).exists()
     assert tools.get_tool("replaceable_tool") is not None
 
@@ -1051,7 +1052,7 @@ async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
     assert prepared_job.spec.handler.__self__ is prepared.instance  # type: ignore[attr-defined]
     assert manager.jobs == [active_job]
     assert active_job.spec.handler.__self__ is active.instance  # type: ignore[attr-defined]
-    lifecycle = tmp_path / "home" / "data" / "mcp_ready-builtin" / "mcp-lifecycle.log"
+    lifecycle = tmp_path / "workspace" / "plugin-data" / "mcp_ready-builtin" / "mcp-lifecycle.log"
     await _wait_for_log(lifecycle, ["started", "started"])
 
     await manager.discard_prepared("mcp_ready")
@@ -1141,7 +1142,7 @@ async def test_candidate_mcp_readiness_failure_closes_process(
     assert (
         "mcp_readiness" if failure == "missing_tool" else "readiness_semantic_checks"
     ) in failed_checks
-    lifecycle = tmp_path / "home" / "data" / "mcp_rejected-builtin" / "mcp-lifecycle.log"
+    lifecycle = tmp_path / "workspace" / "plugin-data" / "mcp_rejected-builtin" / "mcp-lifecycle.log"
     await _wait_for_log(lifecycle, ["started", "started", "stopped"])
     await manager.terminate_all()
 
@@ -1175,7 +1176,7 @@ async def test_candidate_mcp_handshake_failure_closes_process(tmp_path: Path) ->
     gate = manager.latest_gate("mcp_handshake")
     assert gate is not None and gate.status == "failed"
     assert gate.checks[-1].check_id == "mcp_readiness"
-    lifecycle = tmp_path / "home" / "data" / "mcp_handshake-builtin" / "mcp-lifecycle.log"
+    lifecycle = tmp_path / "workspace" / "plugin-data" / "mcp_handshake-builtin" / "mcp-lifecycle.log"
     await _wait_for_log(lifecycle, ["started", "stopped"])
     await manager.terminate_all()
 
@@ -1560,7 +1561,7 @@ async def test_snapshot_compile_failure_does_not_publish_plugin(
     assert manager.loaded_count == 1
     assert manager.generation("second_snapshot") is None
     assert plugin_registry.get_instance("akasic_plugin_plugins_second_snapshot") is None
-    state = tmp_path / "home" / "data" / "second_snapshot-builtin" / ".kv.json"
+    state = tmp_path / "workspace" / "plugin-data" / "second_snapshot-builtin" / ".kv.json"
     assert not state.exists()
     await manager.terminate_all()
 
@@ -1738,7 +1739,7 @@ async def test_publish_prepared_switches_snapshot_after_initialize(
     assert old_lease.snapshot.before_turn_modules[0].version == "v1"
     next_lease = manager.snapshot_store.lease()
     assert next_lease.snapshot.before_turn_modules[0].version == "v2"
-    state = tmp_path / "home" / "data" / "snapshot_publish-builtin" / ".kv.json"
+    state = tmp_path / "workspace" / "plugin-data" / "snapshot_publish-builtin" / ".kv.json"
     state_value: object = json.loads(state.read_text(encoding="utf-8"))
     assert isinstance(state_value, dict)
     assert state_value["initialized"] == "v2"
@@ -3072,6 +3073,7 @@ async def test_queued_event_keeps_enqueued_snapshot_generation(
     manager = PluginManager(
         plugin_dirs=[tmp_path / "plugins"],
         event_bus=event_bus,
+        workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home" / "cache",
     )
     await manager.load_all()
@@ -3091,7 +3093,7 @@ async def test_queued_event_keeps_enqueued_snapshot_generation(
         tools_used=[],
     )
     event_bus.enqueue(event)
-    state_path = tmp_path / "home" / "data" / "snapshot_event-builtin" / ".kv.json"
+    state_path = tmp_path / "workspace" / "plugin-data" / "snapshot_event-builtin" / ".kv.json"
     for _ in range(100):
         if state_path.exists():
             state: object = json.loads(state_path.read_text(encoding="utf-8"))
@@ -3140,6 +3142,7 @@ async def test_snapshot_event_subscription_close_takes_effect_immediately(
     manager = PluginManager(
         plugin_dirs=[tmp_path / "plugins"],
         event_bus=event_bus,
+        workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home" / "cache",
     )
     await manager.load_all()
@@ -3158,7 +3161,7 @@ async def test_snapshot_event_subscription_close_takes_effect_immediately(
 
     await event_bus.fanout(event)
 
-    state_path = tmp_path / "home/data/snapshot_event-builtin/.kv.json"
+    state_path = tmp_path / "workspace/plugin-data/snapshot_event-builtin/.kv.json"
     assert not state_path.exists()
     with pytest.raises(RuntimeError, match="只能在 initialize"):
         generation.instance.context.event_bus.on(TurnCommitted, lambda _: None)
@@ -3179,6 +3182,7 @@ async def test_event_bus_shutdown_drains_snapshot_lease_before_plugins(
     manager = PluginManager(
         plugin_dirs=[tmp_path / "plugins"],
         event_bus=event_bus,
+        workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home" / "cache",
     )
     await manager.load_all()
@@ -3193,7 +3197,7 @@ async def test_event_bus_shutdown_drains_snapshot_lease_before_plugins(
             tools_used=[],
         )
     )
-    state_path = tmp_path / "home/data/snapshot_event-builtin/.kv.json"
+    state_path = tmp_path / "workspace/plugin-data/snapshot_event-builtin/.kv.json"
     for _ in range(100):
         if state_path.exists() and json.loads(
             state_path.read_text(encoding="utf-8")
@@ -3325,6 +3329,7 @@ async def test_job_queue_envelope_keeps_enqueued_snapshot_generation(
         plugin_dirs=[tmp_path / "plugins"],
         event_bus=event_bus,
         llm=llm,
+        workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home/cache",
     )
     await manager.load_all()
@@ -3342,7 +3347,7 @@ async def test_job_queue_envelope_keeps_enqueued_snapshot_generation(
     result = await manager.publish_prepared("snapshot_job")
     assert result["publication_state"] == "committed"
     running = asyncio.create_task(runtime.run())
-    state_path = tmp_path / "home/data/snapshot_job-builtin/.kv.json"
+    state_path = tmp_path / "workspace/plugin-data/snapshot_job-builtin/.kv.json"
     for _ in range(100):
         if state_path.exists() and json.loads(
             state_path.read_text(encoding="utf-8")
@@ -3381,6 +3386,7 @@ async def test_job_event_trigger_uses_event_snapshot_catalog(tmp_path: Path) -> 
         plugin_dirs=[tmp_path / "plugins"],
         event_bus=event_bus,
         llm=llm,
+        workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home/cache",
     )
     await manager.load_all()
@@ -3416,7 +3422,7 @@ async def test_job_event_trigger_uses_event_snapshot_catalog(tmp_path: Path) -> 
     finally:
         reset_runtime_snapshot(token)
         await old_lease.release()
-    state_path = tmp_path / "home/data/snapshot_job-builtin/.kv.json"
+    state_path = tmp_path / "workspace/plugin-data/snapshot_job-builtin/.kv.json"
     for _ in range(100):
         if state_path.exists() and json.loads(
             state_path.read_text(encoding="utf-8")

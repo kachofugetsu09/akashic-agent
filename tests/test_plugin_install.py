@@ -14,7 +14,27 @@ from agent.plugins.install import (
     set_installed_plugin_enabled,
     uninstall_plugin,
 )
+from agent.plugins.manifest import plugins_root
 from agent.plugins.source_resolver import resolve_plugin_sources
+
+
+def test_plugins_root_honors_explicit_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "isolated-plugin-home"
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(target))
+
+    assert plugins_root() == target
+
+
+def test_plugins_root_rejects_blank_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", "   ")
+
+    with pytest.raises(ValueError, match="不能为空"):
+        plugins_root()
 
 
 def test_install_git_plugin_uses_programmatic_declaration(tmp_path: Path) -> None:
@@ -34,11 +54,17 @@ def test_install_git_plugin_uses_programmatic_declaration(tmp_path: Path) -> Non
     _commit(repo)
 
     home = tmp_path / "plugins-home"
-    data_dir = home / "data" / "feed-lab"
+    workspace = tmp_path / "workspace"
+    data_dir = workspace / "plugin-data" / "feed-lab"
     data_dir.mkdir(parents=True)
     (data_dir / "state.json").write_text('{"keep":true}\n', encoding="utf-8")
 
-    result = install_git_plugin(source=str(repo), marketplace="lab", plugins_home=home)
+    result = install_git_plugin(
+        workspace=workspace,
+        source=str(repo),
+        marketplace="lab",
+        plugins_home=home,
+    )
 
     assert result.installed_path == home / "cache" / "lab" / "feed" / "1.0.0"
     assert (result.installed_path / "plugin.py").exists()
@@ -77,6 +103,7 @@ def test_install_git_plugin_prepares_declared_mcp_runtime(
 
     monkeypatch.setattr(install_module, "_run_command", fake_run)
     result = install_git_plugin(
+        workspace=tmp_path / "workspace",
         source=str(repo),
         marketplace="lab",
         plugins_home=tmp_path / "plugins-home",
@@ -94,8 +121,9 @@ def test_install_git_plugin_prepares_declared_mcp_runtime(
 
 def test_plugin_enable_disable_and_uninstall_preserve_data(tmp_path: Path) -> None:
     home = tmp_path / "plugins-home"
+    workspace = tmp_path / "workspace"
     cache = home / "cache" / "github" / "fitbit" / "1.0.0"
-    data = home / "data" / "fitbit-github"
+    data = workspace / "plugin-data" / "fitbit-github"
     cache.mkdir(parents=True)
     data.mkdir(parents=True)
     (cache / "plugin.py").write_text("", encoding="utf-8")
@@ -133,6 +161,7 @@ def test_plugin_enable_disable_and_uninstall_preserve_data(tmp_path: Path) -> No
 
     removed_cache, retained_data = uninstall_plugin(
         "fitbit@github",
+        workspace=workspace,
         plugins_home=home,
         wait_until_disabled=wait_until_disabled,
     )
@@ -188,7 +217,12 @@ def test_install_failure_restores_previous_cache_and_manifest(
     )
     _commit(repo)
     home = tmp_path / "plugins-home"
-    first = install_git_plugin(source=str(repo), marketplace="lab", plugins_home=home)
+    first = install_git_plugin(
+        workspace=tmp_path / "workspace",
+        source=str(repo),
+        marketplace="lab",
+        plugins_home=home,
+    )
     old_content = (first.installed_path / "plugin.py").read_text(encoding="utf-8")
 
     plugin_path.write_text(
@@ -209,7 +243,12 @@ def test_install_failure_restores_previous_cache_and_manifest(
 
     monkeypatch.setattr(install_module, "_prepare_plugin_mcp_runtimes", fail_prepare)
     with pytest.raises(RuntimeError, match="prepare failed"):
-        install_git_plugin(source=str(repo), marketplace="lab", plugins_home=home)
+        install_git_plugin(
+            workspace=tmp_path / "workspace",
+            source=str(repo),
+            marketplace="lab",
+            plugins_home=home,
+        )
 
     assert (first.installed_path / "plugin.py").read_text(encoding="utf-8") == old_content
     assert tomllib.loads((home / "manifest.toml").read_text(encoding="utf-8")) == {
@@ -227,7 +266,12 @@ def test_install_failure_restores_previous_cache_and_manifest(
 
     monkeypatch.setattr(install_module, "upsert_plugin_manifest", fail_manifest)
     with pytest.raises(OSError, match="manifest write failed"):
-        install_git_plugin(source=str(repo), marketplace="lab", plugins_home=home)
+        install_git_plugin(
+            workspace=tmp_path / "workspace",
+            source=str(repo),
+            marketplace="lab",
+            plugins_home=home,
+        )
     assert (first.installed_path / "plugin.py").read_text(encoding="utf-8") == old_content
 
 
@@ -245,6 +289,7 @@ def test_install_rejects_unsafe_path_metadata(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="安全的单一路径段"):
         install_git_plugin(
+            workspace=tmp_path / "workspace",
             source=str(repo),
             marketplace="../outside",
             plugins_home=tmp_path / "plugins-home",
@@ -252,6 +297,7 @@ def test_install_rejects_unsafe_path_metadata(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="安全的单一路径段"):
         install_git_plugin(
+            workspace=tmp_path / "workspace",
             source=str(repo),
             marketplace="lab",
             plugins_home=tmp_path / "plugins-home",
@@ -275,7 +321,12 @@ def test_install_rejects_visible_nonversion_cache_entry(tmp_path: Path) -> None:
     invalid_entry.write_text("broken", encoding="utf-8")
 
     with pytest.raises(ValueError, match="cache 版本不是目录"):
-        install_git_plugin(source=str(repo), marketplace="lab", plugins_home=home)
+        install_git_plugin(
+            workspace=tmp_path / "workspace",
+            source=str(repo),
+            marketplace="lab",
+            plugins_home=home,
+        )
 
     assert invalid_entry.read_text(encoding="utf-8") == "broken"
     assert not (invalid_entry.parent / "1.0.0").exists()
@@ -296,6 +347,7 @@ def test_install_allows_internal_source_symlink(tmp_path: Path) -> None:
     _commit(repo)
 
     result = install_git_plugin(
+        workspace=tmp_path / "workspace",
         source=str(repo),
         marketplace="lab",
         plugins_home=tmp_path / "plugins-home",
@@ -323,6 +375,7 @@ def test_install_rejects_source_symlink_escape(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="符号链接越界"):
         install_git_plugin(
+            workspace=tmp_path / "workspace",
             source=str(repo),
             marketplace="lab",
             plugins_home=tmp_path / "plugins-home",
@@ -386,6 +439,7 @@ def test_install_accepts_branch_tag_and_commit_refs(tmp_path: Path) -> None:
         (initial_sha, "initial"),
     ):
         result = install_git_plugin(
+            workspace=tmp_path / "workspace",
             source=str(repo),
             marketplace="lab",
             ref_name=ref_name,
@@ -397,6 +451,7 @@ def test_install_accepts_branch_tag_and_commit_refs(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="命令选项"):
         install_git_plugin(
+            workspace=tmp_path / "workspace",
             source=str(repo),
             marketplace="lab",
             ref_name="-bad",
@@ -404,6 +459,7 @@ def test_install_accepts_branch_tag_and_commit_refs(tmp_path: Path) -> None:
         )
     with pytest.raises(ValueError, match="首尾空白"):
         install_git_plugin(
+            workspace=tmp_path / "workspace",
             source=str(repo),
             marketplace="lab",
             ref_name=" release",
@@ -413,16 +469,22 @@ def test_install_accepts_branch_tag_and_commit_refs(tmp_path: Path) -> None:
 
 def test_uninstall_converges_when_cache_is_already_missing(tmp_path: Path) -> None:
     home = tmp_path / "plugins-home"
-    data = home / "data" / "feed-github"
+    workspace = tmp_path / "workspace"
+    data = workspace / "plugin-data" / "feed-github"
     data.mkdir(parents=True)
     state = data / "state.db"
     state.write_bytes(b"keep")
+    home.mkdir(parents=True)
     (home / "manifest.toml").write_text(
         '[plugins."feed@github"]\nenabled = true\n',
         encoding="utf-8",
     )
 
-    cache, retained = uninstall_plugin("feed@github", plugins_home=home)
+    cache, retained = uninstall_plugin(
+        "feed@github",
+        workspace=workspace,
+        plugins_home=home,
+    )
 
     assert not cache.exists()
     assert retained == data

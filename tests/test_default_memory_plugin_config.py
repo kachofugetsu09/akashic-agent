@@ -12,28 +12,34 @@ from plugins.default_memory.config import (
 )
 
 
-def test_default_memory_config_reads_example_defaults() -> None:
-    cfg = load_default_memory_config()
+def test_default_memory_config_reads_example_defaults(tmp_path: Path) -> None:
+    cfg = load_default_memory_config(workspace=tmp_path)
 
     assert cfg.retrieval.top_k_history == 8
     assert cfg.retrieval.thresholds.procedure == 0.66
     assert cfg.retrieval.inject.max_chars == 6000
 
 
-def test_default_memory_config_migrates_to_user_data_dir(
+def test_default_memory_config_creates_workspace_data_dir(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    target = tmp_path / "data" / "default_memory-builtin"
-    monkeypatch.setattr(
-        "plugins.default_memory.config.builtin_plugin_data_dir",
-        lambda _name: target,
-    )
+    target = tmp_path / "plugin-data" / "default_memory-builtin"
 
-    path = ensure_default_memory_config_file()
+    path = ensure_default_memory_config_file(workspace=tmp_path)
 
     assert path == target / "config.local.toml"
-    assert load_default_memory_config().retrieval.top_k_history == 8
+    assert load_default_memory_config(workspace=tmp_path).retrieval.top_k_history == 8
+
+
+def test_default_memory_config_rejects_symlink_data_root(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_path / "plugin-data").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="符号链接"):
+        ensure_default_memory_config_file(workspace=tmp_path)
+
+    assert list(outside.iterdir()) == []
 
 
 def test_default_memory_config_local_overrides(tmp_path: Path) -> None:

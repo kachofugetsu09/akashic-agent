@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from infra.channels.base import AttachmentStore
 from infra.channels.web_chat_channel import WebChatChannel
 
 
@@ -16,6 +17,7 @@ def create_chat_app(
     workspace: Path,
     channel: WebChatChannel,
 ) -> FastAPI:
+    channel.bind_attachment_store(AttachmentStore(workspace / "uploads"))
     app = FastAPI(title="Akashic Chat API")
     app.state.workspace = workspace
     app.state.channel = channel

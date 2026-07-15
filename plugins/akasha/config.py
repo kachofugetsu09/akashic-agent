@@ -6,7 +6,10 @@ from math import isfinite
 from pathlib import Path
 from typing import cast
 
-from agent.plugins.manifest import builtin_plugin_data_dir
+from agent.plugins.manifest import (
+    builtin_plugin_data_dir,
+    ensure_workspace_plugin_data_dir,
+)
 from infra.persistence.json_store import atomic_write_text
 
 
@@ -27,10 +30,11 @@ class AkashaConfig:
 # 读取 Akasha 插件配置文件。
 def load_akasha_config(
     *,
+    workspace: Path | None = None,
     plugin_dir: Path | None = None,
 ) -> AkashaConfig:
     # 1. 读取插件目录下的本地配置。
-    root = plugin_dir or builtin_plugin_data_dir("akasha")
+    root = _config_root(workspace=workspace, plugin_dir=plugin_dir)
     payload = _read_toml(root / "config.local.toml")
 
     # 2. 把 TOML 字段收敛成强类型配置。
@@ -67,17 +71,22 @@ def render_akasha_config(config: AkashaConfig | None = None) -> str:
     ])
 
 
-def ensure_akasha_config_file(*, plugin_dir: Path | None = None) -> Path:
+def ensure_akasha_config_file(
+    *,
+    workspace: Path | None = None,
+    plugin_dir: Path | None = None,
+) -> Path:
     """迁移或创建 Akasha 的用户配置。"""
 
     # 1. 已有用户配置直接复用
-    root = plugin_dir or builtin_plugin_data_dir("akasha")
+    root = _config_root(workspace=workspace, plugin_dir=plugin_dir)
+    if plugin_dir is None:
+        ensure_workspace_plugin_data_dir(root, cast(Path, workspace))
     path = root / "config.local.toml"
     if path.exists():
         return path
 
     # 2. 首次迁移保留旧目录配置，否则写入默认配置
-    root.mkdir(parents=True, exist_ok=True)
     legacy_path = Path(__file__).resolve().parent / "config.local.toml"
     content = (
         legacy_path.read_text(encoding="utf-8")
@@ -88,19 +97,27 @@ def ensure_akasha_config_file(*, plugin_dir: Path | None = None) -> Path:
     return path
 
 
+def _config_root(*, workspace: Path | None, plugin_dir: Path | None) -> Path:
+    if plugin_dir is not None:
+        return plugin_dir
+    if workspace is None:
+        raise RuntimeError("Akasha 配置缺少 workspace")
+    return builtin_plugin_data_dir("akasha", workspace)
+
+
 # 解析 Akasha sidecar 数据库路径。
 def resolve_akasha_db_path(
     *,
     workspace: Path,
     akasha_config: AkashaConfig,
 ) -> Path:
-    # 1. 默认落在 workspace/memory/akasha.db。
-    if not akasha_config.db_path:
-        return workspace / "memory" / "akasha.db"
-
-    # 2. 相对路径以 workspace 为根，绝对路径原样使用。
-    path = Path(akasha_config.db_path)
-    return path if path.is_absolute() else workspace / path
+    # 1. 默认路径和显式路径都必须归属于当前 workspace。
+    root = workspace.resolve(strict=False)
+    configured = akasha_config.db_path or "memory/akasha.db"
+    path = (root / configured).resolve(strict=False)
+    if not path.is_relative_to(root):
+        raise ValueError(f"akasha.db_path 必须位于 workspace 内: {configured}")
+    return path
 
 
 # 读取 TOML 文件为普通 dict。

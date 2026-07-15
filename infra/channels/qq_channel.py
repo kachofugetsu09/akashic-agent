@@ -256,13 +256,12 @@ def _extract_cq_images(raw: str) -> tuple[str, list[str]]:
 async def _download_to_temp(
     urls: list[str],
     requester: HttpRequester,
-    attachments: AttachmentStore | None = None,
+    attachments: AttachmentStore,
 ) -> list[str]:
     """下载图片到临时文件，返回本地路径列表"""
     if not urls:
         return []
     paths: list[str] = []
-    attachment_store = attachments or AttachmentStore()
     ext_map = {
         "image/jpeg": ".jpg",
         "image/png": ".png",
@@ -281,7 +280,7 @@ async def _download_to_temp(
             resp.raise_for_status()
             ct = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
             ext = ext_map.get(ct, ".jpg")
-            path = attachment_store.write_bytes(
+            path = attachments.write_bytes(
                 resp.content,
                 prefix="akashic_qq_",
                 suffix=ext,
@@ -318,9 +317,8 @@ class QQChannel:
         self._allow_from: set[str] = set(allowed_users)
         self._websocket_open_timeout_seconds = float(websocket_open_timeout_seconds)
         self._interrupt_controller = interrupt_controller
-        ws = getattr(session_manager, "workspace", None)
-        self._workspace = Path(ws) if ws else None
-        self._attachments = AttachmentStore(Path(ws) / "uploads" if ws else None)
+        self._workspace = session_manager.workspace
+        self._attachments = AttachmentStore(session_manager.workspace / "uploads")
         self._trace_actor_name_cache: str | None = None
         self._identity_index = SessionIdentityIndex(
             session_manager,

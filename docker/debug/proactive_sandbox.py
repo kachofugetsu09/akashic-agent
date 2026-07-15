@@ -407,7 +407,7 @@ async def tick(
     model = "sandbox-model"
     max_tokens = 1024
     if config_path is not None:
-        app_config = Config.load(config_path)
+        app_config = Config.load(config_path, workspace=workspace)
         main_provider, _, _ = build_providers(app_config)
         provider = _build_proactive_provider(app_config, main_provider)
         proactive_config = app_config.proactive

@@ -50,12 +50,11 @@ PY
 ensure_sandbox_path "$CONFIG"
 ensure_sandbox_path "$WORKSPACE"
 ensure_sandbox_path "$SOCKET"
-mkdir -p /sandbox "$WORKSPACE" /sandbox/home/.akashic-plugin/data
+mkdir -p /sandbox "$WORKSPACE" /sandbox/home/.akashic-plugin
 chown "$HOST_UID:$HOST_GID" \
     /sandbox \
     /sandbox/home \
-    /sandbox/home/.akashic-plugin \
-    /sandbox/home/.akashic-plugin/data
+    /sandbox/home/.akashic-plugin
 chown -R "$HOST_UID:$HOST_GID" "$WORKSPACE"
 if [ -f "$WORKSPACE/replay/clock.json" ]; then
     export AKASHIC_REPLAY_CLOCK_FILE="$WORKSPACE/replay/clock.json"

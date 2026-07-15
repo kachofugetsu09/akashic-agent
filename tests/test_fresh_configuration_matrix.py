@@ -137,7 +137,7 @@ async def test_fresh_init_core_configuration_matrix(
         proactive_lifecycle=proactive_lifecycle,
         proactive_package=package,
     )
-    config = Config.load(config_path)
+    config = Config.load(config_path, workspace=workspace)
     resources = SharedHttpResources()
     runtime = build_core_runtime(config, workspace, resources)
 
@@ -202,7 +202,10 @@ async def test_fresh_init_runtime_start_stop_matrix(
         raise AssertionError("不可达")
 
     monkeypatch.setattr(ProactiveLoop, "_tick", _wait_for_cancel)
-    runtime = bootstrap_app.build_app_runtime(Config.load(config_path), workspace=workspace)
+    runtime = bootstrap_app.build_app_runtime(
+        Config.load(config_path, workspace=workspace),
+        workspace=workspace,
+    )
     task = asyncio.create_task(runtime.run())
     try:
         for _ in range(100):
@@ -223,5 +226,5 @@ async def test_fresh_init_runtime_start_stop_matrix(
 
     assert not (workspace / "akashic.sock").exists()
     plugin_name = "default_memory" if memory_name == "default" else memory_name
-    config_dir = home / ".akashic-plugin" / "data" / f"{plugin_name}-builtin"
+    config_dir = workspace / "plugin-data" / f"{plugin_name}-builtin"
     assert (config_dir / "config.local.toml").is_file()

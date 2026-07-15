@@ -60,7 +60,7 @@ ACK 工具接收 `event_ids: list[str]`，并只确认成功投递的原始 ID�
 enabled = true
 ```
 
-文件位于 `~/.akashic-plugin/data/<plugin>-<marketplace>/config.local.toml`。关闭 proactive 只移除主动 source，不关闭插件其他能力。
+文件位于 `<workspace>/plugin-data/<plugin>-<marketplace>/config.local.toml`。关闭 proactive 只移除主动 source，不关闭插件其他能力。
 
 ## 验证
 

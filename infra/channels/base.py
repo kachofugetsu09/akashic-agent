@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import os
 from collections import deque
 from pathlib import Path
@@ -9,42 +8,24 @@ from uuid import uuid4
 
 from session.manager import SessionManager
 
-_DEFAULT_UPLOAD_DIR = Path.home() / ".akashic" / "workspace" / "uploads"
 _MISSING_METADATA = object()
-logger = logging.getLogger(__name__)
 
 
 class AttachmentStore:
     """为 channel 媒体文件提供统一的持久化落盘目录。"""
 
-    def __init__(self, root: Path | None = None) -> None:
-        self.root = root or _DEFAULT_UPLOAD_DIR
+    def __init__(self, root: Path) -> None:
+        self.root = root
 
     def _resolve_root(self) -> Path:
-        reason = "目录不可写"
-        try:
-            self.root.mkdir(parents=True, exist_ok=True)
-            if os.access(self.root, os.W_OK):
-                return self.root
-        except OSError as error:
-            reason = str(error)
-        fallback = Path("/tmp/akashic_uploads")
-        fallback.mkdir(parents=True, exist_ok=True)
-        if os.access(fallback, os.W_OK):
-            logger.warning(
-                "附件目录不可用，使用降级目录 path=%s fallback=%s reason=%s",
-                self.root,
-                fallback,
-                reason,
-            )
-            return fallback
-        try:
-            test = fallback / ".write_test"
-            test.write_text("", encoding="utf-8")
-            test.unlink(missing_ok=True)
-            return fallback
-        except OSError:
-            return self.root
+        if self.root.is_symlink():
+            raise ValueError(f"附件目录不能是符号链接: {self.root}")
+        self.root.mkdir(parents=True, exist_ok=True)
+        if self.root.is_symlink():
+            raise ValueError(f"附件目录不能是符号链接: {self.root}")
+        if not os.access(self.root, os.W_OK):
+            raise PermissionError(f"附件目录不可写: {self.root}")
+        return self.root
 
     def create_path(self, prefix: str, suffix: str) -> Path:
         root = self._resolve_root()
@@ -52,21 +33,8 @@ class AttachmentStore:
 
     def write_bytes(self, data: bytes, *, prefix: str, suffix: str) -> Path:
         path = self.create_path(prefix, suffix)
-        try:
-            path.write_bytes(data)
-            return path
-        except OSError as error:
-            fallback = Path("/tmp/akashic_uploads")
-            fallback.mkdir(parents=True, exist_ok=True)
-            alt = fallback / f"{prefix}{uuid4().hex}{suffix}"
-            logger.warning(
-                "附件写入失败，使用降级目录 path=%s fallback=%s reason=%s",
-                path,
-                fallback,
-                error,
-            )
-            alt.write_bytes(data)
-            return alt
+        path.write_bytes(data)
+        return path
 
 
 class SessionIdentityIndex:

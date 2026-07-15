@@ -28,7 +28,8 @@ outbound_queue_size = 512
 ## 调用
 
 ```bash
-python main.py gateway --config config.toml --workspace ~/.akashic/workspace
+export AKASHIC_WORKSPACE=/absolute/workspace
+python main.py gateway --config config.toml
 python main.py exec --new --json "总结最近上下文"
 python main.py exec --thread programmatic:THREAD_ID --final-only - < prompt.txt
 python main.py app-server --stdio --config config.toml --workspace /isolated/workspace
