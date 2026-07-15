@@ -213,6 +213,53 @@ def test_main_help_does_not_start_runtime() -> None:
     assert "Agent 已启动" not in result.stdout
 
 
+def test_workspace_selection_prefers_cli_then_env_then_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        '[runtime]\nworkspace = "~/configured-workspace"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("AKASHIC_WORKSPACE", raising=False)
+
+    assert main._workspace_from_args([], config_path) == (
+        tmp_path / "configured-workspace"
+    ).resolve()
+
+    environment_workspace = tmp_path / "environment-workspace"
+    monkeypatch.setenv("AKASHIC_WORKSPACE", str(environment_workspace))
+    assert main._workspace_from_args(
+        [],
+        config_path,
+    ) == environment_workspace.resolve()
+
+    cli_workspace = tmp_path / "cli-workspace"
+    assert main._workspace_from_args(
+        ["--workspace", str(cli_workspace)],
+        config_path,
+    ) == cli_workspace.resolve()
+
+
+def test_workspace_selection_uses_default_only_for_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "missing.toml"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("AKASHIC_WORKSPACE", raising=False)
+
+    assert main._workspace_from_args(
+        [],
+        config_path,
+        allow_default=True,
+    ) == (tmp_path / ".akashic" / "workspace").resolve()
+    with pytest.raises(ValueError, match="找不到配置文件"):
+        main._workspace_from_args([], config_path)
+
+
 @pytest.mark.asyncio
 async def test_inspect_modules_closes_all_owned_resources(
     monkeypatch: pytest.MonkeyPatch,
@@ -780,6 +827,8 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     assert 'model = "qwen-vl-plus"' in config_text
     assert "[channels.chat]" in config_text
     assert "port = 6322" in config_text
+    assert '[runtime]\n' in config_text
+    assert 'workspace = "~/.akashic/workspace"' in config_text
     assert any("http://127.0.0.1:6322" in step for step in summary.next_steps)
     assert (workspace / "sessions.db").exists()
     assert (workspace / "observe").is_dir()

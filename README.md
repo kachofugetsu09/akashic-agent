@@ -57,7 +57,6 @@ Akashic 理想上的动作应该是：
 git clone <this-repo>
 cd akashic-agent
 uv venv && uv pip install -r requirements.txt
-export AKASHIC_WORKSPACE="$PWD/.runtime/workspace"
 ```
 
 没有 uv？先 `pip install uv`。
@@ -68,6 +67,17 @@ export AKASHIC_WORKSPACE="$PWD/.runtime/workspace"
 uv run python main.py setup    # 交互向导（推荐）
 uv run python main.py init     # 非交互，CI/自动化用
 ```
+
+`init` 生成的 `config.toml` 默认包含：
+
+```toml
+[runtime]
+workspace = "~/.akashic/workspace"
+```
+
+因此直接运行 `python main.py` 或在 PyCharm 中直接启动 `main.py` 都不需要重复填写
+workspace。临时切换隔离环境时传 `--workspace PATH`；它的优先级高于
+`AKASHIC_WORKSPACE` 和 `config.toml`。
 
 **2. 填写 config.toml**
 
@@ -197,8 +207,10 @@ akashic_RUN_SCENARIOS=1 pytest -c pytest-scenarios.ini tests_scenarios/
 
 ## 工作区
 
-所有运行时数据都在显式选择的 `$AKASHIC_WORKSPACE` 下；也可以为每条命令传入
-`--workspace /absolute/path`。不同测试环境使用不同目录，不共享会话、记忆、附件或插件数据。
+所有运行时数据都在 `[runtime].workspace` 指定的目录下。默认值是
+`~/.akashic/workspace`；可设置 `AKASHIC_WORKSPACE`，也可以为单条命令传入
+`--workspace /absolute/path`。优先级为 `--workspace`、`AKASHIC_WORKSPACE`、
+`config.toml`。不同测试环境使用不同目录，不共享会话、记忆、附件或插件数据。
 插件代码缓存和启停清单默认仍位于 `$HOME/.akashic-plugin`；需要完整隔离插件安装状态时，
 额外设置 `AKASHIC_PLUGIN_HOME=/absolute/test/plugin-home`。
 
@@ -206,7 +218,7 @@ akashic_RUN_SCENARIOS=1 pytest -c pytest-scenarios.ini tests_scenarios/
 
 ```bash
 uv run python scripts/migrate_plugin_data.py \
-  --workspace "$AKASHIC_WORKSPACE" \
+  --workspace "$HOME/.akashic/workspace" \
   --plugins-home "$HOME/.akashic-plugin"
 ```
 
