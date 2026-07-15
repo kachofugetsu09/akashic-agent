@@ -24,8 +24,8 @@ class MemoryPlugin:
     ) -> list[tuple[Path, bool]]:
         # 1. 确保插件配置存在，并按配置解析数据库路径。
         _ = config
-        _ = ensure_akasha_config_file()
-        akasha_config = load_akasha_config()
+        _ = ensure_akasha_config_file(workspace=workspace)
+        akasha_config = load_akasha_config(workspace=workspace)
         db_path = resolve_akasha_db_path(
             workspace=workspace,
             akasha_config=akasha_config,
@@ -45,8 +45,8 @@ class MemoryPlugin:
         deps: MemoryPluginBuildDeps,
     ) -> MemoryPluginRuntime:
         # 1. Akasha 是独立 memory engine，不继承 default_memory 的 store/retriever。
-        _ = ensure_akasha_config_file()
-        akasha_config = load_akasha_config()
+        _ = ensure_akasha_config_file(workspace=deps.workspace)
+        akasha_config = load_akasha_config(workspace=deps.workspace)
         engine = AkashaMemoryEngine(
             config=deps.config,
             akasha_config=akasha_config,

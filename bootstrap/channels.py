@@ -29,7 +29,7 @@ async def start_channels(
     plugin_channels: list[Channel] | None = None,
 ) -> ChannelHost:
     try:
-        attachment_store = AttachmentStore()
+        attachment_store = AttachmentStore(session_manager.workspace / "uploads")
 
         def _ctx_factory(channel: Channel) -> ChannelContext:
             return ChannelContext(

@@ -69,10 +69,13 @@ class AkashaPlugin(Plugin):
         workspace = self.context.workspace
         if workspace is None:
             return "Akasha 诊断不可用：workspace 不存在。"
+        data_dir = self.context.data_dir
+        if data_dir is None:
+            return "Akasha 诊断不可用：插件数据目录不存在。"
         store = AkashaStore(
             resolve_akasha_db_path(
                 workspace=workspace,
-                akasha_config=load_akasha_config(),
+                akasha_config=load_akasha_config(plugin_dir=data_dir),
             )
         )
         try:
@@ -113,8 +116,14 @@ class AkashaPlugin(Plugin):
         workspace = self.context.workspace
         if workspace is None:
             raise RuntimeError("Akasha workspace 不存在")
+        data_dir = self.context.data_dir
+        if data_dir is None:
+            raise RuntimeError("Akasha 插件数据目录不存在")
         store = AkashaStore(
-            resolve_akasha_db_path(workspace=workspace, akasha_config=load_akasha_config())
+            resolve_akasha_db_path(
+                workspace=workspace,
+                akasha_config=load_akasha_config(plugin_dir=data_dir),
+            )
         )
         try:
             rows, _ = store.list_query_logs(session_key=session_id, page=1, page_size=1)

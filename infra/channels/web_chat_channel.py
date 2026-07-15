@@ -27,7 +27,7 @@ class WebChatChannel:
     def __init__(self, channel_name: str = "web") -> None:
         self.name = channel_name
         self._ctx: ChannelContext | None = None
-        self._attachments = AttachmentStore()
+        self._attachments: AttachmentStore | None = None
         self._connections: dict[str, set[WebSocket]] = {}
         self._active_turn_ids: dict[str, str] = {}
         self._media_paths: set[str] = set()
@@ -54,6 +54,12 @@ class WebChatChannel:
             file=self.send_file,
             image=self.send_image,
         )
+
+    def bind_attachment_store(self, store: AttachmentStore) -> None:
+        """在 channel 启动前为独立 Chat API 绑定显式附件目录。"""
+
+        if self._attachments is None:
+            self._attachments = store
 
     async def stop(self) -> None:
         async with self._connection_lock:
@@ -92,7 +98,11 @@ class WebChatChannel:
         if not suffix:
             guessed = mimetypes.guess_extension(mimetypes.guess_type(filename)[0] or "")
             suffix = guessed or ".bin"
-        path = self._attachments.write_bytes(data, prefix="web_", suffix=suffix)
+        path = self._require_attachment_store().write_bytes(
+            data,
+            prefix="web_",
+            suffix=suffix,
+        )
         return {
             "filename": filename,
             "upload_path": str(path),
@@ -100,10 +110,12 @@ class WebChatChannel:
         }
 
     def upload_roots(self) -> list[Path]:
-        return [
-            self._attachments.root,
-            Path("/tmp") / "akashic_uploads",
-        ]
+        return [self._require_attachment_store().root]
+
+    def _require_attachment_store(self) -> AttachmentStore:
+        if self._attachments is None:
+            raise RuntimeError("WebChatChannel 尚未绑定附件目录")
+        return self._attachments
 
     def remember_media(self, paths: list[str]) -> None:
         for path in paths:

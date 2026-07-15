@@ -14,11 +14,14 @@ from pathlib import Path
 from typing import cast
 
 from agent.plugins.manifest import (
+    ensure_workspace_plugin_data_dir,
     load_package_manifest,
     load_plugin_manifest,
     remove_plugin_manifest_entry,
     set_plugin_enabled,
     upsert_plugin_manifest,
+    plugins_root,
+    workspace_plugin_data_dir,
 )
 from agent.plugins.registry import plugin_registry
 from agent.plugins.specs import McpServerSpec
@@ -59,7 +62,7 @@ class _CacheActivation:
 
 
 def aka_plugins_root() -> Path:
-    return Path.home() / ".akashic-plugin"
+    return plugins_root()
 
 
 def installed_cache_root() -> Path:
@@ -69,8 +72,10 @@ def installed_cache_root() -> Path:
 def plugin_data_root(
     plugin_name: str,
     marketplace: str,
+    *,
+    workspace: Path,
 ) -> Path:
-    return aka_plugins_root() / "data" / f"{plugin_name}-{marketplace}"
+    return workspace_plugin_data_dir(workspace, plugin_name, marketplace)
 
 
 def set_installed_plugin_enabled(
@@ -91,13 +96,14 @@ def set_installed_plugin_enabled(
 def uninstall_plugin(
     plugin_id: str,
     *,
+    workspace: Path,
     plugins_home: Path | None = None,
     wait_until_disabled: Callable[[str], None] | None = None,
 ) -> tuple[Path, Path]:
     home = plugins_home or aka_plugins_root()
     plugin_name, marketplace = _split_installed_plugin_id(plugin_id)
     cache_path = home / "cache" / marketplace / plugin_name
-    data_path = home / "data" / f"{plugin_name}-{marketplace}"
+    data_path = workspace_plugin_data_dir(workspace, plugin_name, marketplace)
     _ = set_plugin_enabled(plugin_id, enabled=False, plugins_home=home)
     if wait_until_disabled is not None:
         wait_until_disabled(plugin_id)
@@ -122,6 +128,7 @@ def _split_installed_plugin_id(plugin_id: str) -> tuple[str, str]:
 
 def install_git_plugin(
     *,
+    workspace: Path,
     source: str,
     marketplace: str,
     ref_name: str = "",
@@ -143,10 +150,8 @@ def install_git_plugin(
         raise ValueError("插件 sparse path 必须是非空字符串")
     marketplace_root = home / "marketplaces" / marketplace
     cache_root = home / "cache" / marketplace
-    data_root = home / "data"
     _ensure_directory_tree(home, marketplace_root)
     _ensure_directory_tree(home, cache_root)
-    _ensure_directory_tree(home, data_root)
 
     # 1. 在任何 cache 改动前校验 manifest，避免坏配置把安装事务推到半路
     _ = load_plugin_manifest(home)
@@ -178,7 +183,8 @@ def install_git_plugin(
             marketplace=marketplace,
             clone_root=clone_root,
             cache_root=cache_root,
-            data_root=data_root,
+            data_root=workspace.resolve(strict=False) / "plugin-data",
+            workspace=workspace,
         )
         plugin_id = f"{plugin_name}@{marketplace}"
         try:
@@ -266,12 +272,13 @@ def _activate_plugin_version(
     clone_root: Path,
     cache_root: Path,
     data_root: Path,
+    workspace: Path,
 ) -> _CacheActivation:
     """准备新版本并以可回滚的目录替换发布到 cache。"""
 
     # 1. 创建受保护的数据目录和 cache 父目录
     data_path = data_root / f"{plugin_name}-{marketplace}"
-    _ensure_directory(data_path)
+    ensure_workspace_plugin_data_dir(data_path, workspace)
     plugin_base = cache_root / plugin_name
     target_root = plugin_base / plugin_version
     _ensure_directory(plugin_base)

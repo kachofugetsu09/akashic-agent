@@ -106,7 +106,7 @@ CONVERSATION: list[dict[str, str]] = [
 
 async def main(config_path: str, workspace_str: str) -> None:
     workspace = Path(workspace_str)
-    config = Config.load(config_path)
+    config = Config.load(config_path, workspace=workspace)
     http_resources = SharedHttpResources()
     provider, light_provider, _ = build_providers(config)
     memory_runtime = build_memory_admin_runtime(

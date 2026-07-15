@@ -19,7 +19,7 @@ metadata: {"akashic": {"always": false}}
 │  └─ 全局安装清单与 enabled
 ├─ ~/.akashic-plugin/cache/<marketplace>/<plugin>/<version>/plugin.py
 │  └─ 插件能力声明与代码
-└─ ~/.akashic-plugin/data/<plugin>-<marketplace>/config.local.toml
+└─ <workspace>/plugin-data/<plugin>-<marketplace>/config.local.toml
    └─ 插件配置和持久状态
 ```
 

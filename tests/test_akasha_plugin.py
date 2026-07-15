@@ -99,20 +99,26 @@ def test_akasha_config_uses_defaults_only_for_missing_fields(tmp_path: Path) -> 
     assert config.assistant_preview_chars == AkashaConfig().assistant_preview_chars
 
 
-def test_akasha_config_migrates_to_user_data_dir(
+def test_akasha_config_creates_workspace_data_dir(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    target = tmp_path / "data" / "akasha-builtin"
-    monkeypatch.setattr(
-        "plugins.akasha.config.builtin_plugin_data_dir",
-        lambda _name: target,
-    )
+    target = tmp_path / "plugin-data" / "akasha-builtin"
 
-    path = ensure_akasha_config_file()
+    path = ensure_akasha_config_file(workspace=tmp_path)
 
     assert path == target / "config.local.toml"
-    assert load_akasha_config() == AkashaConfig()
+    assert load_akasha_config(workspace=tmp_path) == AkashaConfig()
+
+
+def test_akasha_config_rejects_symlink_data_root(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_path / "plugin-data").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="符号链接"):
+        ensure_akasha_config_file(workspace=tmp_path)
+
+    assert list(outside.iterdir()) == []
 
 
 @pytest.mark.parametrize(
@@ -143,16 +149,14 @@ def test_akasha_config_rejects_invalid_present_fields(
 
 def test_akasha_dashboard_exposes_invalid_plugin_config(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        "plugins.akasha.config.builtin_plugin_data_dir",
-        lambda _name: tmp_path,
-    )
-    (tmp_path / "config.local.toml").write_text("db_path = [", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    data_dir = workspace / "plugin-data" / "akasha-builtin"
+    data_dir.mkdir(parents=True)
+    (data_dir / "config.local.toml").write_text("db_path = [", encoding="utf-8")
 
     with pytest.raises(tomllib.TOMLDecodeError):
-        register_akasha_dashboard(FastAPI(), tmp_path, tmp_path / "workspace")
+        register_akasha_dashboard(FastAPI(), tmp_path, workspace)
 
 
 def test_graph_snapshot_distinguishes_missing_from_corruption(tmp_path: Path) -> None:

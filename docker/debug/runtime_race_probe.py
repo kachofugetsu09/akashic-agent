@@ -258,13 +258,13 @@ class RaceHarness:
                 ),
                 encoding="utf-8",
             )
-        return Config.load(self.config_path)
+        return Config.load(self.config_path, workspace=self.workspace)
 
     def load_repo_config(self) -> Config:
         path = self.config_path if self._config_explicit else Path.cwd() / "config.toml"
         if not path.exists():
             raise AssertionError(f"config.toml not found: {path}")
-        return Config.load(path)
+        return Config.load(path, workspace=self.workspace)
 
     def register_runtime_channel(
         self,

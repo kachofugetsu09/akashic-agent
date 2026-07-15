@@ -54,7 +54,8 @@ def _get_instance(name: str):
 async def test_plugin_config_model_validates_and_injects_config(tmp_path: Path):
     _write_typed_plugin(tmp_path)
     plugins_home = tmp_path / ".akashic-plugin"
-    data_dir = plugins_home / "data" / "typed-builtin"
+    workspace = tmp_path / "workspace"
+    data_dir = workspace / "plugin-data" / "typed-builtin"
     data_dir.mkdir(parents=True)
     (data_dir / "config.local.toml").write_text(
         'api_key = "secret"\nmax_results = 9\n',
@@ -63,6 +64,7 @@ async def test_plugin_config_model_validates_and_injects_config(tmp_path: Path):
     manager = PluginManager(
         plugin_dirs=[tmp_path],
         event_bus=EventBus(),
+        workspace=workspace,
         installed_cache_root=plugins_home / "cache",
     )
 
@@ -77,12 +79,14 @@ async def test_plugin_config_model_validates_and_injects_config(tmp_path: Path):
 async def test_plugin_config_model_failure_skips_plugin(tmp_path: Path):
     _write_typed_plugin(tmp_path)
     plugins_home = tmp_path / ".akashic-plugin"
-    data_dir = plugins_home / "data" / "typed-builtin"
+    workspace = tmp_path / "workspace"
+    data_dir = workspace / "plugin-data" / "typed-builtin"
     data_dir.mkdir(parents=True)
     (data_dir / "config.local.toml").write_text('max_results = "bad"\n', encoding="utf-8")
     manager = PluginManager(
         plugin_dirs=[tmp_path],
         event_bus=EventBus(),
+        workspace=workspace,
         installed_cache_root=plugins_home / "cache",
     )
 
@@ -119,6 +123,6 @@ allow_from = ["user-openid"]
     monkeypatch.setenv("PLUGIN_TOKEN", "plugin-secret")
     monkeypatch.setenv("QQBOT_SECRET", "qq-secret")
 
-    config = Config.load(config_path)
+    config = Config.load(config_path, workspace=tmp_path)
 
     assert not hasattr(config, "plugins")

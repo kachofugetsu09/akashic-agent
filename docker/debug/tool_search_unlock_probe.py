@@ -78,7 +78,7 @@ async def _run(args: argparse.Namespace) -> None:
     profile_dir = _profile_dir(args.profile)
     config_path = args.config or profile_dir / "config.toml"
     workspace = args.workspace or profile_dir / "workspace"
-    config = Config.load(config_path)
+    config = Config.load(config_path, workspace=workspace)
     if config.model != "mimo-v2.5":
         raise SystemExit(f"主模型必须是 mimo-v2.5，当前是 {config.model!r}")
     if config.light_model != "qwen-flash":

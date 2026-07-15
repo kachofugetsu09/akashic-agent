@@ -7,7 +7,7 @@ Akashic 插件采用“全局只管启停，插件自己声明能力”的模型
 │  └─ 只记录 plugin_id 与 enabled
 ├─ ~/.akashic-plugin/cache/<marketplace>/<plugin>/<version>/
 │  └─ 从 Git 仓库安装的只读代码与 MCP 虚拟环境
-└─ ~/.akashic-plugin/data/<plugin>-<marketplace>/
+└─ <workspace>/plugin-data/<plugin>-<marketplace>/
    ├─ config.local.toml
    └─ 数据库、Token、模型与日志等持久状态
 ```
@@ -109,7 +109,7 @@ class DemoPlugin(Plugin):
 对应配置：
 
 ```toml
-# ~/.akashic-plugin/data/demo-github/config.local.toml
+# <workspace>/plugin-data/demo-github/config.local.toml
 [proactive]
 enabled = false
 ```
