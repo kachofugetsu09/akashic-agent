@@ -11,6 +11,13 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.widget.Toast
 import androidx.annotation.Keep
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
@@ -20,11 +27,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.webkit.WebResourceErrorCompat
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewClientCompat
 import com.akashic.mobile.ui.conversation.ConversationUiState
 import com.akashic.mobile.ui.conversation.MessageUi
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileNotFoundException
 import java.util.concurrent.atomic.AtomicReference
@@ -71,6 +82,7 @@ fun MobileWebChat(
     val mediaRegistry = remember { MobileMediaRegistry() }
     var webView by remember { mutableStateOf<WebView?>(null) }
     var snapshotPump by remember { mutableStateOf<MobileSnapshotPump?>(null) }
+    var webLoadError by remember { mutableStateOf<String?>(null) }
 
     val callbacks by rememberUpdatedState(
         MobileWebCallbacks(
@@ -94,9 +106,10 @@ fun MobileWebChat(
         ),
     )
 
-    AndroidView(
-        modifier = modifier,
-        factory = { context ->
+    Box(modifier = modifier) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { context ->
             val assetLoader = WebViewAssetLoader.Builder()
                 .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(context))
                 .addPathHandler("/media/", mediaRegistry)
@@ -108,9 +121,15 @@ fun MobileWebChat(
                 settings.allowContentAccess = false
                 settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                 settings.mediaPlaybackRequiresUserGesture = true
-                settings.blockNetworkLoads = true
+                // appassets 使用受控 HTTPS origin；外部请求由 MobileWebClient 拒绝。
+                settings.blockNetworkLoads = false
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                webViewClient = MobileWebClient(context, assetLoader)
+                webViewClient = MobileWebClient(
+                    context,
+                    assetLoader,
+                    onMainFrameStarted = { post { webLoadError = null } },
+                    onMainFrameError = { message -> post { webLoadError = message } },
+                )
                 addJavascriptInterface(
                     MobileWebBridge(
                         dispatch = { work -> post { work(callbacks) } },
@@ -122,8 +141,30 @@ fun MobileWebChat(
                 webView = this
                 snapshotPump = MobileSnapshotPump(this, mediaRegistry)
             }
-        },
-    )
+            },
+        )
+        if (webLoadError != null) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    text = "会话界面加载失败",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(top = 96.dp),
+                )
+                Text(
+                    text = requireNotNull(webLoadError),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                TextButton(onClick = { webView?.reload() }) { Text("重新加载") }
+            }
+        }
+    }
 
     SideEffect { snapshotPump?.submit(state) }
     DisposableEffect(Unit) {
@@ -238,9 +279,49 @@ private class MobileWebBridge(
 private class MobileWebClient(
     private val context: Context,
     private val assetLoader: WebViewAssetLoader,
+    private val onMainFrameStarted: WebView.() -> Unit,
+    private val onMainFrameError: WebView.(String) -> Unit,
 ) : WebViewClientCompat() {
-    override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
-        assetLoader.shouldInterceptRequest(request.url)
+    override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+        view.onMainFrameStarted()
+    }
+
+    override fun onReceivedError(
+        view: WebView,
+        request: WebResourceRequest,
+        error: WebResourceErrorCompat,
+    ) {
+        if (request.isForMainFrame) view.onMainFrameError(error.description.toString())
+    }
+
+    override fun onReceivedHttpError(
+        view: WebView,
+        request: WebResourceRequest,
+        errorResponse: WebResourceResponse,
+    ) {
+        if (request.isForMainFrame) {
+            view.onMainFrameError(
+                "HTTP ${errorResponse.statusCode} ${errorResponse.reasonPhrase}",
+            )
+        }
+    }
+
+    override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+        if (request.url.host == "appassets.androidplatform.net") {
+            return assetLoader.shouldInterceptRequest(request.url) ?: blockedResponse(404, "Not Found")
+        }
+        return blockedResponse(403, "Blocked")
+    }
+
+    private fun blockedResponse(statusCode: Int, reason: String) =
+        WebResourceResponse(
+            "text/plain",
+            "utf-8",
+            statusCode,
+            reason,
+            emptyMap(),
+            ByteArrayInputStream(ByteArray(0)),
+        )
 
     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
         return when (mobileNavigationAction(request.url.toString(), request.isForMainFrame)) {
