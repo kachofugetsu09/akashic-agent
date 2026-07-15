@@ -1114,6 +1114,7 @@ def test_replay_writes_query_log_with_activation_items(
         assert raw["text_block_preview"]
         assert activation_items
         assert dense_items
+        assert all(item["happened_at"] for item in dense_items)
         assert isinstance(ripple_items, list)
         assert activation_items[0]["user_message"] in {
             "第一条用户消息需要完整展示",
@@ -2108,3 +2109,162 @@ def test_akashalast_renders_latest_query_log(tmp_path: Path) -> None:
     assert "分: `0.501` | 源: `Dense` | 径: `direct`" in reply
     assert "得: `0.703` | 源: `Dense`" in reply
     assert "因: `dir:0.41 st:0.18 edg:0.08 res:1.00 fan:32`" in reply
+
+
+@pytest.mark.asyncio
+async def test_mobile_recall_binds_each_assistant_to_its_context_and_keeps_all_items(
+    tmp_path: Path,
+) -> None:
+    _init_sessions_db(tmp_path / "sessions.db")
+    store = AkashaStore(tmp_path / "memory" / "akasha.db")
+
+    def insert_log(
+        *,
+        query_id: str,
+        seq: int,
+        intent: str,
+        ts: str,
+        dense_items: list[dict[str, object]],
+        ripple_items: list[dict[str, object]],
+    ) -> None:
+        store.insert_query_log(
+            query_id=query_id,
+            session_key="s",
+            seq=seq,
+            query_text=query_id,
+            intent=intent,
+            ts=ts,
+            seed_count=0,
+            pool_count=0,
+            activated_count=0,
+            activation_threshold=0.0,
+            dense_count=len(dense_items),
+            ripple_count=len(ripple_items),
+            inject_chars=0,
+            source_ref_count=0,
+            activation_items_json="[]",
+            dense_items_json=json.dumps(dense_items, ensure_ascii=False),
+            ripple_items_json=json.dumps(ripple_items, ensure_ascii=False),
+            text_block_preview="",
+        )
+
+    first_dense = [
+        {
+            "key": "s:0",
+            "user_message": "第一轮旧日志",
+            "assistant_preview": "从 sessions.db 补时间",
+            "score": 0.9,
+        }
+    ]
+    second_dense = [
+        {
+            "key": f"memory:{index}",
+            "user_message": f"左脑 {index}",
+            "assistant_preview": "",
+            "happened_at": f"2026-01-01T00:00:{index:02d}+00:00",
+            "score": index / 10,
+        }
+        for index in range(8)
+    ]
+    second_ripple = [
+        {
+            "key": f"ripple:{index}",
+            "user_message": f"右脑 {index}",
+            "assistant_preview": "",
+            "happened_at": f"2026-01-01T00:01:{index:02d}+00:00",
+            "score": index / 10,
+        }
+        for index in range(9)
+    ]
+    try:
+        insert_log(
+            query_id="s:0:context:first",
+            seq=0,
+            intent="context",
+            ts="2026-01-01T00:00:00+00:00",
+            dense_items=first_dense,
+            ripple_items=[],
+        )
+        insert_log(
+            query_id="s:2:context:second",
+            seq=2,
+            intent="context",
+            ts="2026-01-01T00:00:02+00:00",
+            dense_items=second_dense,
+            ripple_items=second_ripple,
+        )
+        insert_log(
+            query_id="s:2:answer:later",
+            seq=2,
+            intent="answer",
+            ts="2026-01-01T00:00:03+00:00",
+            dense_items=[{"user_message": "不能覆盖 context"}],
+            ripple_items=[],
+        )
+    finally:
+        store.close()
+
+    plugin = AkashaPlugin()
+    plugin.context = PluginContext(
+        event_bus=cast(Any, None),
+        tool_registry=None,
+        plugin_id="akasha",
+        plugin_dir=tmp_path,
+        data_dir=tmp_path / ".data",
+        kv_store=PluginKVStore(tmp_path / ".kv.json"),
+        workspace=tmp_path,
+        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="akasha")),
+    )
+
+    first = await plugin.mobile_ui_call(
+        "recall.current",
+        {"message_id": "s:1"},
+        session_id="s",
+        turn_id=None,
+    )
+    second = await plugin.mobile_ui_call(
+        "recall.current",
+        {"message_id": "s:3"},
+        session_id="s",
+        turn_id=None,
+    )
+    active = await plugin.mobile_ui_call(
+        "recall.current",
+        {"message_id": "assistant:turn-1"},
+        session_id="s",
+        turn_id="turn-1",
+    )
+
+    assert [item["summary"] for item in cast(list[dict[str, object]], first["left"])] == [
+        "第一轮旧日志"
+    ]
+    second_left = cast(list[dict[str, object]], second["left"])
+    second_right = cast(list[dict[str, object]], second["right"])
+    assert len(second_left) == 8
+    assert len(second_right) == 9
+    assert [item["summary"] for item in second_left] == [f"左脑 {index}" for index in reversed(range(8))]
+    assert [item["summary"] for item in second_right] == [f"右脑 {index}" for index in reversed(range(9))]
+    assert active == second
+
+
+@pytest.mark.asyncio
+async def test_mobile_recall_rejects_message_from_another_session(tmp_path: Path) -> None:
+    plugin = AkashaPlugin()
+    plugin.context = PluginContext(
+        event_bus=cast(Any, None),
+        tool_registry=None,
+        plugin_id="akasha",
+        plugin_dir=tmp_path,
+        data_dir=tmp_path / ".data",
+        kv_store=PluginKVStore(tmp_path / ".kv.json"),
+        workspace=tmp_path,
+        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="akasha")),
+    )
+
+    with pytest.raises(ValueError, match="不属于当前 session"):
+        await plugin.mobile_ui_call(
+            "recall.current",
+            {"message_id": "other:1"},
+            session_id="s",
+            turn_id=None,
+        )

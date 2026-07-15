@@ -838,6 +838,35 @@ class AkashaStore:
             "text_block_preview": str(row["text_block_preview"] or ""),
         }
 
+    def get_latest_context_query_log(
+        self,
+        session_key: str,
+        *,
+        before_seq: int | None = None,
+    ) -> dict[str, object] | None:
+        """读取会话中指定消息之前最近一次上下文召回。"""
+
+        # 1. context 才是实际注入模型的召回，answer 等显式查询不能覆盖它。
+        clauses = ["session_key = ?", "intent = 'context'"]
+        params: list[object] = [session_key]
+        if before_seq is not None:
+            clauses.append("seq < ?")
+            params.append(before_seq)
+        with self._lock:
+            row = self._db.execute(
+                f"""
+                SELECT query_id
+                FROM akasha_query_log
+                WHERE {' AND '.join(clauses)}
+                ORDER BY seq DESC, ts DESC, query_id DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        if row is None:
+            return None
+        return self.get_query_log(str(row["query_id"]))
+
 
 # 把 SQLite row 转成 AkashaNode。
 def _row_to_node(row: sqlite3.Row) -> AkashaNode:

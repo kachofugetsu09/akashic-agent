@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
+from contextlib import closing
 from datetime import datetime
+from pathlib import Path
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -102,16 +105,32 @@ class AkashaPlugin(Plugin):
         session_id: str | None,
         turn_id: str | None,
     ) -> dict[str, object]:
-        """返回当前 mobile 会话最近一次左右脑召回。"""
+        """返回 mobile 消息对应轮次的左右脑召回。"""
 
-        if method != "recall.current" or payload:
+        if method != "recall.current" or set(payload) - {"message_id"}:
             raise ValueError(f"Akasha mobile UI 方法无效: {method}")
         if session_id is None:
             raise ValueError("Akasha recall.current 需要 session_id")
-        return await asyncio.to_thread(self._load_mobile_recall, session_id)
+        message_id = payload.get("message_id")
+        if message_id is not None and not isinstance(message_id, str):
+            raise ValueError("Akasha recall.current 的 message_id 必须是字符串")
+        historical_message_id = (
+            None
+            if turn_id is not None and message_id == f"assistant:{turn_id}"
+            else message_id
+        )
+        return await asyncio.to_thread(
+            self._load_mobile_recall,
+            session_id,
+            historical_message_id,
+        )
 
-    def _load_mobile_recall(self, session_id: str) -> dict[str, object]:
-        """在线程中读取最近一次 Akasha 召回。"""
+    def _load_mobile_recall(
+        self,
+        session_id: str,
+        message_id: str | None,
+    ) -> dict[str, object]:
+        """在线程中读取指定 assistant 消息所属轮次的召回。"""
 
         workspace = self.context.workspace
         if workspace is None:
@@ -126,27 +145,98 @@ class AkashaPlugin(Plugin):
             )
         )
         try:
-            rows, _ = store.list_query_logs(session_key=session_id, page=1, page_size=1)
-            raw = store.get_query_log(str(rows[0]["query_id"])) if rows else None
+            before_seq = (
+                _assistant_message_seq(session_id, message_id)
+                if message_id is not None
+                else None
+            )
+            raw = store.get_latest_context_query_log(
+                session_id,
+                before_seq=before_seq,
+            )
         finally:
             store.close()
         if raw is None:
             return {"left": [], "right": []}
+        dense_items = _json_items(raw.get("dense_items_json"))
+        ripple_items = _json_items(raw.get("ripple_items_json"))
+        message_times = _load_message_times(
+            workspace / "sessions.db",
+            [*dense_items, *ripple_items],
+        )
         return {
-            "left": _mobile_recall_items(_json_items(raw.get("dense_items_json"))),
-            "right": _mobile_recall_items(_json_items(raw.get("ripple_items_json"))),
+            "left": _mobile_recall_items(dense_items, message_times),
+            "right": _mobile_recall_items(ripple_items, message_times),
         }
 
 
-def _mobile_recall_items(items: list[dict[str, object]]) -> list[dict[str, object]]:
-    return [
-        {
-            "summary": _clip(str(item.get("user_message") or item.get("summary") or ""), 120),
-            "preview": _clip(str(item.get("assistant_preview") or ""), 100),
-            "score": round(_float(item.get("score")), 3),
-        }
-        for item in items[:6]
+def _assistant_message_seq(session_id: str, message_id: str) -> int:
+    prefix = f"{session_id}:"
+    seq_text = message_id.removeprefix(prefix)
+    if not message_id.startswith(prefix) or not seq_text.isdigit():
+        raise ValueError("Akasha message_id 不属于当前 session")
+    return int(seq_text)
+
+
+def _load_message_times(
+    sessions_db_path: Path,
+    items: list[dict[str, object]],
+) -> dict[str, str]:
+    """为旧诊断日志从原消息库补回发生时间。"""
+
+    # 1. 新日志已携带 happened_at，只回源旧日志缺失的消息。
+    keys = {
+        str(item.get("key") or "")
+        for item in items
+        if not str(item.get("happened_at") or "").strip()
+        and str(item.get("key") or "").strip()
+    }
+    if not keys:
+        return {}
+
+    # 2. sessions.db 是消息时间的拥有层；只读查询不得修改线上库。
+    path = str(sessions_db_path)
+    placeholders = ",".join("?" for _ in keys)
+    with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as db:
+        rows = db.execute(
+            f"SELECT id, ts FROM messages WHERE id IN ({placeholders})",
+            tuple(keys),
+        ).fetchall()
+    return {str(row[0]): str(row[1] or "") for row in rows}
+
+
+def _mobile_recall_items(
+    items: list[dict[str, object]],
+    message_times: dict[str, str],
+) -> list[dict[str, object]]:
+    ranked: list[tuple[float, dict[str, object]]] = [
+        (
+            _recall_timestamp(
+                str(item.get("happened_at") or "")
+                or message_times.get(str(item.get("key") or ""), "")
+            ),
+            {
+                "summary": _clip(
+                    str(item.get("user_message") or item.get("summary") or ""),
+                    120,
+                ),
+                "preview": _clip(str(item.get("assistant_preview") or ""), 100),
+                "score": round(_float(item.get("score")), 3),
+            },
+        )
+        for item in items
     ]
+    ranked.sort(key=lambda entry: entry[0], reverse=True)
+    return [item for _, item in ranked]
+
+
+def _recall_timestamp(value: str) -> float:
+    if not value:
+        return float("-inf")
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return float("-inf")
 
 
 def _render_query_detail(raw: dict[str, object]) -> str:

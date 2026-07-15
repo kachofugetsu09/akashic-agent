@@ -347,10 +347,6 @@ function MobileNativeApp() {
     () => snapshot?.messages.map(toChatMessage) ?? [],
     [snapshot?.messages],
   );
-  const pluginTargetMessageId = [...(snapshot?.messages ?? [])]
-    .reverse()
-    .find((message) => message.role === "assistant")?.id;
-
   if (!snapshot) {
     if (snapshotError) {
       return (
@@ -441,14 +437,14 @@ function MobileNativeApp() {
                   <ChatMessageView
                     message={message}
                     attachmentContent={<MobileMessageAttachments attachments={snapshot.messages[index].attachments} />}
-                    processStartContent={message.id === pluginTargetMessageId ? (
+                    processStartContent={isPluginTurnMessage(message) ? (
                       <MobilePluginSlot
                         name="turn.before_reasoning"
                         sessionId={snapshot.selectedSessionId}
                         messageId={message.id}
                       />
                     ) : undefined}
-                    beforeProcessBlock={(block) => message.id === pluginTargetMessageId && block.kind === "tool" ? (
+                    beforeProcessBlock={(block) => isPluginTurnMessage(message) && block.kind === "tool" ? (
                       <MobilePluginSlot
                         name="turn.before_tool"
                         sessionId={snapshot.selectedSessionId}
@@ -456,7 +452,7 @@ function MobileNativeApp() {
                         block={block}
                       />
                     ) : null}
-                    answerEndContent={message.id === pluginTargetMessageId ? (
+                    answerEndContent={isPluginTurnMessage(message) ? (
                       <MobilePluginSlot
                         name="turn.after_answer"
                         sessionId={snapshot.selectedSessionId}
@@ -815,6 +811,10 @@ function toChatMessage(message: MobileMessage): ChatMessage {
     interrupted: message.interrupted,
     durationMs: message.durationSeconds !== undefined ? message.durationSeconds * 1000 : undefined,
   };
+}
+
+function isPluginTurnMessage(message: ChatMessage): boolean {
+  return message.role === "assistant" && !message.id.startsWith("proactive:");
 }
 
 function toAgentBlock(block: MobileProcessBlock): AgentBlock {
