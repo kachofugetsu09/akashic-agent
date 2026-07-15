@@ -466,6 +466,7 @@ button {
 }
 
 .process-content {
+  --process-node-center: 12px;
   position: relative;
   padding: 2px 0 2px 2px;
   overflow: hidden;
@@ -475,8 +476,8 @@ button {
 
 .process-line {
   position: absolute;
-  top: 10px;
-  bottom: 14px;
+  top: var(--process-node-center);
+  bottom: 0;
   left: 8px;
   width: 1px;
   background: #b7a4df;
@@ -499,6 +500,17 @@ button {
   align-items: start;
   column-gap: 12px;
   animation: trace-item-in 180ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+.process-item:last-child::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  top: var(--process-node-center);
+  bottom: 0;
+  left: 8px;
+  width: 1px;
+  background: var(--m-surface);
 }
 
 .process-node {
