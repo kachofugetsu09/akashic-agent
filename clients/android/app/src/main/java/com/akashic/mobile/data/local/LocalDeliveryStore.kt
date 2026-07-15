@@ -281,7 +281,7 @@ class LocalDeliveryStore(
                 serverSeq = remote.seq.toLong(),
             )
             val sourceId = remote.clientMessageId?.let { "user:$it" }
-                ?: legacyOptimisticSourceId(canonical)
+                ?: legacyLocalSourceId(canonical)
             mergeCanonicalMessage(sourceId, canonical)
             upsertMessageAttachments(
                 serverId = serverId,
@@ -297,16 +297,29 @@ class LocalDeliveryStore(
         }
     }
 
-    /** 仅在唯一匹配时修复旧版缺失 client_message_id 的本地消息身份。 */
-    private suspend fun legacyOptimisticSourceId(canonical: MessageEntity): String? {
+    /** 仅在唯一匹配时把旧版临时消息迁移到服务端 canonical identity。 */
+    private suspend fun legacyLocalSourceId(canonical: MessageEntity): String? {
+        if (canonical.role == "assistant") {
+            val candidates = database.messages().findEphemeralAssistants(
+                canonical.sessionId,
+                canonical.text,
+                canonical.updatedAt - LEGACY_IDENTITY_LOOKBACK_MS,
+                canonical.updatedAt + LEGACY_IDENTITY_LOOKBACK_MS,
+            )
+            val closestDistance = candidates.minOfOrNull {
+                kotlin.math.abs(it.updatedAt - canonical.updatedAt)
+            } ?: return null
+            return candidates.singleOrNull {
+                kotlin.math.abs(it.updatedAt - canonical.updatedAt) == closestDistance
+            }?.messageId
+        }
         if (canonical.role != "user" || canonical.clientMessageId != null) return null
-        val candidates = database.messages().findLegacyOptimisticUsers(
-            sessionId = canonical.sessionId,
-            text = canonical.text,
-            earliestCreatedAt = canonical.createdAt - LEGACY_IDENTITY_LOOKBACK_MS,
-            latestCreatedAt = canonical.updatedAt,
-        )
-        return candidates.singleOrNull()?.messageId
+        return database.messages().findLegacyOptimisticUsers(
+            canonical.sessionId,
+            canonical.text,
+            canonical.createdAt - LEGACY_IDENTITY_LOOKBACK_MS,
+            canonical.updatedAt,
+        ).singleOrNull()?.messageId
     }
 
     private fun historyBlocks(

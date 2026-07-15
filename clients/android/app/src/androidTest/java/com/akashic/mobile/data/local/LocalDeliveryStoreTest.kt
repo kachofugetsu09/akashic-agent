@@ -151,6 +151,56 @@ class LocalDeliveryStoreTest {
     }
 
     @Test
+    fun historyRepairsRepeatedEphemeralAssistantsByCompletionTime() = runBlocking {
+        val firstCompletedAt = Instant.parse("2026-07-14T16:00:05Z").toEpochMilli()
+        val secondCompletedAt = Instant.parse("2026-07-14T16:10:05Z").toEpochMilli()
+        listOf(firstCompletedAt, secondCompletedAt).forEachIndexed { index, completedAt ->
+            database.messages().upsert(
+                MessageEntity(
+                    messageId = "ephemeral:$index",
+                    clientMessageId = null,
+                    sessionId = "mobile:test",
+                    role = "assistant",
+                    text = "相同回答",
+                    deliveryState = "complete",
+                    createdAt = completedAt - 5_000,
+                    updatedAt = completedAt,
+                ),
+            )
+        }
+
+        store.applyEvent(
+            "server",
+            "device",
+            event(1, "history.page", buildJsonObject {
+                put("total", 2)
+                put("page", 1)
+                put("page_size", 10)
+                put("items", buildJsonArray {
+                    listOf(firstCompletedAt, secondCompletedAt).forEachIndexed { index, _ ->
+                        add(buildJsonObject {
+                            put("id", "mobile:test:canonical:$index")
+                            put("session_key", "mobile:test")
+                            put("seq", index)
+                            put("role", "assistant")
+                            put("content", "相同回答")
+                            put("extra", buildJsonObject {})
+                            put("ts", if (index == 0) "2026-07-14T16:00:05Z" else "2026-07-14T16:10:05Z")
+                        })
+                    }
+                })
+            }),
+            secondCompletedAt,
+        )
+
+        assertEquals(2, database.messages().countForSession("mobile:test"))
+        assertEquals(null, database.messages().get("ephemeral:0"))
+        assertEquals(null, database.messages().get("ephemeral:1"))
+        assertEquals("相同回答", database.messages().get("mobile:test:canonical:0")!!.text)
+        assertEquals("相同回答", database.messages().get("mobile:test:canonical:1")!!.text)
+    }
+
+    @Test
     fun historyReplacesLiveBlocksForTheSameCanonicalMessage() = runBlocking {
         store.applyEvent(
             "server",

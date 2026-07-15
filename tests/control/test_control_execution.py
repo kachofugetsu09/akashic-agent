@@ -67,7 +67,12 @@ async def test_tool_started_is_published_before_core_execution_finishes(tmp_path
                     turn_id=turn_id,
                 )
             )
-            return OutboundMessage("programmatic", "programmatic:live", "done")
+            return OutboundMessage(
+                "programmatic",
+                "programmatic:live",
+                "done",
+                session_message_id="programmatic:live:1",
+            )
 
     store = SessionStore(tmp_path / "sessions.db")
 
@@ -94,6 +99,7 @@ async def test_tool_started_is_published_before_core_execution_finishes(tmp_path
         TurnItemKind.TOOL_CALL,
         TurnItemKind.ASSISTANT_MESSAGE,
     ]
+    assert result.items[-1].data["sessionMessageId"] == "programmatic:live:1"
     await runtime.shutdown()
     await bus.aclose()
     store.close()

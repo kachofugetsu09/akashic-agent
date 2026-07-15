@@ -130,6 +130,7 @@ class PassiveMessageWorker:
                     media=list(cast(list[str], data.get("media", []))),
                     metadata=dict(cast(dict[str, Any], data.get("metadata", {}))),
                     control_turn_id=handle.id,
+                    session_message_id=cast(str | None, data.get("sessionMessageId")),
                 )
             elif result.status is TurnStatus.FAILED:
                 outbound = OutboundMessage(
