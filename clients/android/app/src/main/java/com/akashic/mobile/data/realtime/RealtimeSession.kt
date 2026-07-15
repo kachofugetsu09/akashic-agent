@@ -374,6 +374,15 @@ class RealtimeSession(
 
     /** 创建本地消息和 outbox 命令，并在链路可用时立即发送。 */
     fun sendMessage(text: String) {
+        enqueueMessage(text, includeDraftAttachments = true)
+    }
+
+    /** 发送不携带或消费附件草稿的纯文本命令。 */
+    fun sendCommand(command: String) {
+        enqueueMessage(command, includeDraftAttachments = false)
+    }
+
+    private fun enqueueMessage(text: String, includeDraftAttachments: Boolean) {
         scope.launch {
             mutex.withLock {
                 // 1. 确定当前手机会话
@@ -381,7 +390,11 @@ class RealtimeSession(
                 val body = text.trim()
                 val sessionId = ensureCurrentSession(currentProfile)
                 require(MOBILE_SESSION.matches(sessionId)) { "Invalid mobile session_id" }
-                val attachments = database.attachmentTransfers().drafts(currentProfile.serverId, sessionId)
+                val attachments = if (includeDraftAttachments) {
+                    database.attachmentTransfers().drafts(currentProfile.serverId, sessionId)
+                } else {
+                    emptyList()
+                }
                 require(body.isNotEmpty() || attachments.isNotEmpty()) { "消息和附件不能同时为空" }
                 require(attachments.all { it.state == "ready" }) { "请等待附件上传完成" }
 

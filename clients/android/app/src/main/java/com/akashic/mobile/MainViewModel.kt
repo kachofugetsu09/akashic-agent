@@ -125,6 +125,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendMessage(value: String) = container.realtimeSession.sendMessage(value)
 
+    fun sendCommand(value: String) = container.realtimeSession.sendCommand(value)
+
     fun stopCurrentTurn() = container.realtimeSession.stopCurrentTurn()
 
     fun dismissError() = container.realtimeSession.dismissError()

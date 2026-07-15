@@ -30,6 +30,7 @@ class AttachmentComposerTest {
                     onOpenDownloadedAttachment = {},
                     onDismissError = {},
                     onSend = {},
+                    onSendCommand = {},
                     onStop = {},
                 )
             }
@@ -55,6 +56,7 @@ class AttachmentComposerTest {
                     onOpenDownloadedAttachment = {},
                     onDismissError = {},
                     onSend = { sends += 1 },
+                    onSendCommand = {},
                     onStop = {},
                 )
             }
@@ -77,6 +79,7 @@ class AttachmentComposerTest {
                     onOpenDownloadedAttachment = {},
                     onDismissError = {},
                     onSend = {},
+                    onSendCommand = {},
                     onStop = {},
                 )
             }
@@ -97,6 +100,7 @@ class AttachmentComposerTest {
                     onOpenDownloadedAttachment = {},
                     onDismissError = {},
                     onSend = {},
+                    onSendCommand = {},
                     onStop = {},
                 )
             }

@@ -5,7 +5,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsNotFocused
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -13,7 +15,9 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.doubleClick
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.longClick
 import com.akashic.mobile.ui.design.AkashicTheme
@@ -116,25 +120,84 @@ class ConversationInteractionsTest {
     }
 
     @Test
-    fun commandMenuFillsComposerWithoutSending() {
-        var sends = 0
+    fun commandMenuSendsImmediately() {
+        val normalSends = mutableListOf<String>()
+        val commandSends = mutableListOf<String>()
         compose.setContent {
             AkashicTheme {
                 Screen(
                     state = EmptyConversationState.copy(
                         commands = listOf(CommandUi("undo", "撤销上一轮对话")),
+                        attachments = listOf(readyAttachment()),
                         canSend = true,
                     ),
-                    onSend = { sends += 1 },
+                    onSend = normalSends::add,
+                    onSendCommand = commandSends::add,
                 )
             }
         }
 
+        compose.onNodeWithTag("composer-input").performTextInput("draft")
         compose.onNodeWithContentDescription("打开快捷命令").performClick()
-        compose.onNodeWithText("快捷命令").assertIsDisplayed()
+        compose.onNodeWithTag("command-panel").assertIsDisplayed()
         compose.onNodeWithTag("command-undo").performClick()
-        compose.onNodeWithTag("composer-input").assertTextEquals("/undo ")
-        assertEquals(0, sends)
+        compose.onNodeWithTag("command-panel").assertDoesNotExist()
+        compose.onNodeWithTag("composer-input").assertTextEquals("draft")
+        compose.onNodeWithTag("attachment-draft-file").assertIsDisplayed()
+        assertEquals(emptyList<String>(), normalSends)
+        assertEquals(listOf("/undo"), commandSends)
+    }
+
+    @Test
+    fun commandDoubleTapDispatchesOnlyOnce() {
+        val sends = mutableListOf<String>()
+        show(
+            EmptyConversationState.copy(
+                commands = listOf(CommandUi("undo", "撤销上一轮对话")),
+                canSend = true,
+            ),
+            onSendCommand = sends::add,
+        )
+
+        compose.onNodeWithContentDescription("打开快捷命令").performClick()
+        compose.onNodeWithTag("command-undo").performTouchInput { doubleClick() }
+
+        assertEquals(listOf("/undo"), sends)
+    }
+
+    @Test
+    fun commandCloseRestoresComposerFocus() {
+        show(
+            EmptyConversationState.copy(
+                commands = listOf(CommandUi("undo", "撤销上一轮对话")),
+                canSend = true,
+            ),
+        )
+
+        compose.onNodeWithTag("composer-input").performTextInput("draft")
+        compose.onNodeWithTag("composer-input").assertIsFocused()
+        compose.onNodeWithContentDescription("打开快捷命令").performClick()
+        compose.onNodeWithTag("composer-input").assertIsNotFocused()
+        compose.onNodeWithContentDescription("关闭快捷命令").performClick()
+
+        compose.onNodeWithTag("composer-input").assertIsFocused().assertTextEquals("draft")
+    }
+
+    @Test
+    fun composerFocusClosesCommandPanel() {
+        show(
+            EmptyConversationState.copy(
+                commands = listOf(CommandUi("undo", "撤销上一轮对话")),
+                canSend = true,
+            ),
+        )
+
+        compose.onNodeWithTag("composer-input").performTextInput("draft")
+        compose.onNodeWithContentDescription("打开快捷命令").performClick()
+        compose.onNodeWithTag("composer-input").performClick()
+
+        compose.onNodeWithTag("command-panel").assertDoesNotExist()
+        compose.onNodeWithTag("composer-input").assertIsFocused().assertTextEquals("draft")
     }
 
     @Test
@@ -142,13 +205,17 @@ class ConversationInteractionsTest {
         val commands = (1..20).map { index ->
             CommandUi("command$index", "第 $index 个服务端命令")
         }
-        show(EmptyConversationState.copy(commands = commands, canSend = true))
+        val sends = mutableListOf<String>()
+        show(
+            EmptyConversationState.copy(commands = commands, canSend = true),
+            onSendCommand = sends::add,
+        )
 
         compose.onNodeWithContentDescription("打开快捷命令").performClick()
-        compose.onNodeWithTag("command-sheet-list").performScrollToIndex(19)
+        compose.onNodeWithTag("command-panel-list").performScrollToIndex(19)
         compose.onNodeWithTag("command-command20").performClick()
 
-        compose.onNodeWithTag("composer-input").assertTextEquals("/command20 ")
+        assertEquals(listOf("/command20"), sends)
     }
 
     @Test
@@ -233,9 +300,18 @@ class ConversationInteractionsTest {
     private fun show(
         state: ConversationUiState,
         onDismissError: () -> Unit = {},
+        onSend: (String) -> Unit = {},
+        onSendCommand: (String) -> Unit = {},
     ) {
         compose.setContent {
-            AkashicTheme { Screen(state = state, onDismissError = onDismissError) }
+            AkashicTheme {
+                Screen(
+                    state = state,
+                    onDismissError = onDismissError,
+                    onSend = onSend,
+                    onSendCommand = onSendCommand,
+                )
+            }
         }
     }
 
@@ -270,6 +346,7 @@ class ConversationInteractionsTest {
         onStop: () -> Unit = {},
         onDismissError: () -> Unit = {},
         onSend: (String) -> Unit = {},
+        onSendCommand: (String) -> Unit = {},
     ) {
         ConversationScreen(
             state = state,
@@ -280,7 +357,18 @@ class ConversationInteractionsTest {
             onOpenDownloadedAttachment = {},
             onDismissError = onDismissError,
             onSend = onSend,
+            onSendCommand = onSendCommand,
             onStop = onStop,
         )
     }
+
+    private fun readyAttachment() = ComposerAttachmentUi(
+        id = "file",
+        filename = "报告.pdf",
+        contentType = "application/pdf",
+        sizeBytes = 100,
+        transferredBytes = 100,
+        state = ComposerAttachmentState.READY,
+        canRemove = true,
+    )
 }

@@ -29,6 +29,7 @@ class MobileConversationScaffoldTest {
                     onRemoveAttachment = {},
                     onRetryAttachment = {},
                     onSend = {},
+                    onSendCommand = {},
                     onStop = {},
                     onRetryDownloadedAttachment = {},
                     onOpenDownloadedAttachment = {},

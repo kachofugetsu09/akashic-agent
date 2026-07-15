@@ -97,6 +97,7 @@ class MainActivity : ComponentActivity() {
                             onOpenDownloadedAttachment = viewModel::touchDownloadedAttachment,
                             onDismissError = viewModel::dismissError,
                             onSend = viewModel::sendMessage,
+                            onSendCommand = viewModel::sendCommand,
                             onStop = viewModel::stopCurrentTurn,
                         )
                     } else {

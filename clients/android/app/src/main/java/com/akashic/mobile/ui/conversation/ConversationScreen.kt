@@ -1,6 +1,7 @@
 package com.akashic.mobile.ui.conversation
 
 import android.animation.ValueAnimator
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.expandVertically
@@ -68,10 +69,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonColors
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -99,10 +100,12 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
@@ -134,13 +137,16 @@ fun ConversationScreen(
     onRemoveAttachment: (String) -> Unit,
     onRetryAttachment: (String) -> Unit,
     onSend: (String) -> Unit,
+    onSendCommand: (String) -> Unit,
     onStop: () -> Unit,
     onRetryDownloadedAttachment: (String) -> Unit,
     onOpenDownloadedAttachment: (String) -> Unit,
     onDismissError: () -> Unit,
 ) {
     var composerText by rememberSaveable { mutableStateOf("") }
-    var commandSheetOpen by rememberSaveable { mutableStateOf(false) }
+    var commandPanelOpen by rememberSaveable { mutableStateOf(false) }
+    var composerFocused by remember { mutableStateOf(false) }
+    var restoreComposerAfterPanel by remember { mutableStateOf(false) }
     val composerFocusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -154,31 +160,86 @@ fun ConversationScreen(
             )
         },
         bottomBar = {
-            ConversationBottomBar(
-                text = composerText,
-                onTextChange = { composerText = it },
-                connectionNotice = state.connectionNotice,
-                errorNotice = state.errorNotice,
-                isStreaming = state.isStreaming,
-                isStopping = state.isStopping,
-                canStop = state.canStop,
-                enabled = state.canSend,
-                attachments = state.attachments,
-                hasCommands = state.commands.isNotEmpty(),
-                composerFocusRequester = composerFocusRequester,
-                onShowCommands = { commandSheetOpen = true },
-                onAttach = onAttach,
-                onRemoveAttachment = onRemoveAttachment,
-                onRetryAttachment = onRetryAttachment,
-                onSend = {
-                    onSend(composerText)
-                    composerText = ""
-                    focusManager.clearFocus(force = true)
-                    keyboardController?.hide()
-                },
-                onStop = onStop,
-                onDismissError = onDismissError,
-            )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .testTag("command-composer-stack"),
+            ) {
+                AnimatedVisibility(
+                    visible = commandPanelOpen,
+                    enter = expandVertically(
+                        animationSpec = tween(220),
+                        expandFrom = Alignment.Bottom,
+                    ) + fadeIn(tween(160)),
+                    exit = shrinkVertically(
+                        animationSpec = tween(180),
+                        shrinkTowards = Alignment.Bottom,
+                    ) + fadeOut(tween(120)),
+                ) {
+                    CommandPanel(
+                        commands = state.commands,
+                        onSelect = { command ->
+                            if (commandPanelOpen) {
+                                commandPanelOpen = false
+                                restoreComposerAfterPanel = false
+                                onSendCommand("/${command.command}")
+                            }
+                        },
+                    )
+                }
+                ConversationBottomBar(
+                    text = composerText,
+                    onTextChange = { composerText = it },
+                    connectionNotice = state.connectionNotice,
+                    errorNotice = state.errorNotice,
+                    isStreaming = state.isStreaming,
+                    isStopping = state.isStopping,
+                    canStop = state.canStop,
+                    enabled = state.canSend,
+                    attachments = state.attachments,
+                    hasCommands = state.commands.isNotEmpty(),
+                    commandPanelOpen = commandPanelOpen,
+                    composerFocusRequester = composerFocusRequester,
+                    onComposerFocusChanged = { focused ->
+                        composerFocused = focused
+                        if (focused && commandPanelOpen) {
+                            commandPanelOpen = false
+                            restoreComposerAfterPanel = false
+                        }
+                    },
+                    onToggleCommands = {
+                        if (commandPanelOpen) {
+                            commandPanelOpen = false
+                            if (restoreComposerAfterPanel) {
+                                composerFocusRequester.requestFocus()
+                                keyboardController?.show()
+                            }
+                        } else {
+                            restoreComposerAfterPanel = composerFocused
+                            commandPanelOpen = true
+                            focusManager.clearFocus(force = true)
+                            keyboardController?.hide()
+                        }
+                    },
+                    onAttach = {
+                        commandPanelOpen = false
+                        restoreComposerAfterPanel = false
+                        onAttach()
+                    },
+                    onRemoveAttachment = onRemoveAttachment,
+                    onRetryAttachment = onRetryAttachment,
+                    onSend = {
+                        commandPanelOpen = false
+                        onSend(composerText)
+                        composerText = ""
+                        focusManager.clearFocus(force = true)
+                        keyboardController?.hide()
+                    },
+                    onStop = onStop,
+                    onDismissError = onDismissError,
+                )
+            }
         },
     ) { contentPadding ->
         if (state.messages.isEmpty()) {
@@ -193,89 +254,72 @@ fun ConversationScreen(
         }
     }
 
-    if (commandSheetOpen) {
-        CommandBottomSheet(
-            commands = state.commands,
-            onDismiss = { commandSheetOpen = false },
-            onSelect = { command ->
-                composerText = "/${command.command} "
-                commandSheetOpen = false
-                composerFocusRequester.requestFocus()
-                keyboardController?.show()
-            },
-        )
+    BackHandler(enabled = commandPanelOpen) {
+        commandPanelOpen = false
+        if (restoreComposerAfterPanel) {
+            composerFocusRequester.requestFocus()
+            keyboardController?.show()
+        }
+    }
+    LaunchedEffect(state.canSend, state.commands.isEmpty()) {
+        if (!state.canSend || state.commands.isEmpty()) commandPanelOpen = false
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CommandBottomSheet(
+private fun CommandPanel(
     commands: List<CommandUi>,
-    onDismiss: () -> Unit,
     onSelect: (CommandUi) -> Unit,
 ) {
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-        modifier = Modifier.height(440.dp),
+    Surface(
+        shape = RoundedCornerShape(28.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        tonalElevation = 1.dp,
+        shadowElevation = 2.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 240.dp, max = 304.dp)
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .semantics { paneTitle = "快捷命令" }
+            .testTag("command-panel"),
     ) {
-        Column(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .testTag("command-sheet"),
+                .testTag("command-panel-list"),
+            contentPadding = PaddingValues(vertical = 8.dp),
         ) {
-            Text(
-                text = "快捷命令",
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(horizontal = 24.dp),
-            )
-            Text(
-                text = "选择后填入输入框，确认后发送",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
-            )
-            Spacer(Modifier.height(12.dp))
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .testTag("command-sheet-list"),
-                contentPadding = PaddingValues(bottom = 20.dp),
-            ) {
-                items(commands, key = { it.command }) { command ->
-                    Surface(
-                        onClick = { onSelect(command) },
-                        color = Color.Transparent,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 64.dp)
-                            .testTag("command-${command.command}"),
+            items(commands, key = { it.command }) { command ->
+                Surface(
+                    onClick = { onSelect(command) },
+                    color = Color.Transparent,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 56.dp)
+                        .testTag("command-${command.command}"),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = "/${command.command}",
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.width(144.dp),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                text = command.description,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.weight(1f),
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
+                        Text(
+                            text = command.description,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = "/${command.command}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
                 }
             }
@@ -809,8 +853,10 @@ private fun ConversationBottomBar(
     enabled: Boolean,
     attachments: List<ComposerAttachmentUi>,
     hasCommands: Boolean,
+    commandPanelOpen: Boolean,
     composerFocusRequester: FocusRequester,
-    onShowCommands: () -> Unit,
+    onComposerFocusChanged: (Boolean) -> Unit,
+    onToggleCommands: () -> Unit,
     onAttach: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onRetryAttachment: (String) -> Unit,
@@ -881,10 +927,21 @@ private fun ConversationBottomBar(
                 .padding(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TactileIconButton(onClick = onShowCommands, enabled = enabled && hasCommands) {
+            TactileIconButton(
+                onClick = onToggleCommands,
+                enabled = enabled && hasCommands,
+                colors = if (commandPanelOpen) {
+                    IconButtonDefaults.filledIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                    )
+                } else {
+                    IconButtonDefaults.iconButtonColors()
+                },
+            ) {
                 Icon(
-                    Icons.Rounded.Menu,
-                    contentDescription = "打开快捷命令",
+                    imageVector = if (commandPanelOpen) Icons.Rounded.Close else Icons.Rounded.Menu,
+                    contentDescription = if (commandPanelOpen) "关闭快捷命令" else "打开快捷命令",
                     modifier = Modifier.testTag("composer-command-menu"),
                 )
             }
@@ -899,6 +956,7 @@ private fun ConversationBottomBar(
                 modifier = Modifier
                     .weight(1f)
                     .focusRequester(composerFocusRequester)
+                    .onFocusChanged { onComposerFocusChanged(it.isFocused) }
                     .testTag("composer-input")
                     .padding(horizontal = 8.dp, vertical = 10.dp),
                 decorationBox = { innerTextField ->
@@ -1123,6 +1181,7 @@ private fun formatFileSize(bytes: Long): String = when {
 private fun TactileIconButton(
     onClick: () -> Unit,
     enabled: Boolean = true,
+    colors: IconButtonColors = IconButtonDefaults.iconButtonColors(),
     content: @Composable () -> Unit,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -1130,6 +1189,7 @@ private fun TactileIconButton(
         onClick = onClick,
         enabled = enabled,
         interactionSource = interactionSource,
+        colors = colors,
         modifier = Modifier
             .size(48.dp)
             .pressScale(interactionSource, enabled),
@@ -1278,6 +1338,7 @@ private fun ConversationLightPreview() {
             onOpenDownloadedAttachment = {},
             onDismissError = {},
             onSend = {},
+            onSendCommand = {},
             onStop = {},
         )
     }
@@ -1298,6 +1359,7 @@ private fun ConversationDarkPreview() {
             onOpenDownloadedAttachment = {},
             onDismissError = {},
             onSend = {},
+            onSendCommand = {},
             onStop = {},
         )
     }
