@@ -306,3 +306,63 @@ better-ui：
 | 更新 APK 后旧 optimistic 与 canonical 同时出现 | 在 Room 事务内迁移唯一旧身份；歧义时保留数据而不是猜测 |
 | 复制功能容易演变成每条消息一个按钮 | 复用 Android 原生选择工具栏与光标，不增加卡片或常驻操作 |
 | Launcher 与通知共用一个 vector | Launcher 使用 adaptive illustration，通知使用独立单色 small icon |
+
+### 8. 历史时序、保留配对的重同步与固定命令抽屉
+
+```text
+服务端 history.page
+      │
+      ├── seq 0  user       ┐
+      ├── seq 1  assistant  ├── Room 按 serverSeq 排序
+      └── seq N  ...         ┘       │
+                                     └── createdAt 只负责计算思考耗时
+
+会话抽屉
+┌────────────────────────────────────┐
+│ 最近                               │
+│   会话 A                           │
+│   会话 B                           │
+│                                    │
+│ 连接与数据                         │
+│   ↻ 重新同步消息                   │
+│     保留连接并重新拉取历史         │
+│   ▣ 重新扫码连接                   │
+│                                    │
+│ [✎ 聊天]                           │
+└────────────────────────────────────┘
+```
+
+- 时序根因：真实 `sessions.db` 中同一轮 user/assistant 的持久化时间只差几十微秒；旧客户端为了显示 `turn_duration_ms` 把 assistant `createdAt` 回拨几十秒，又使用同一字段排序，导致回答跑到问题前面。
+- 时序修复：Room v2→v3 增加 nullable `serverSeq`；完整历史严格按服务端 `seq`，实时、pending 和 failed 消息在历史之后按本地创建时间稳定排序。`createdAt/updatedAt` 继续只承担思考耗时，两个不变量不再互相污染。
+- 手动重同步：会话抽屉的“连接与数据”区增加低频维护入口。确认后删除可从电脑恢复的 committed projection 和失去引用的附件缓存，保留 ServerProfile、cursor、Android Keystore 设备密钥、pending/failed、outbox 和附件草稿，再沿当前已认证 WebSocket 全量拉取所有 mobile 会话。
+- 终态：同步期间顶部和抽屉都显示“正在同步消息”；history error 会结束本轮重建并保留错误提示。缓存契约损坏等未捕获异常会先恢复 READY 再 fail-loud，不会永久卡在 SYNCING。
+- 命令抽屉：改为固定 `440dp` 的 Material 3 sheet；标题留在固定区域，命令使用内部 `LazyColumn` 滚动。顶层使用不透明 `surfaceContainerHighest`，不再透出背后的对话正文；点击仍只回填输入框，不直接执行命令。
+- 提交：`23adcb27` 修复时序、重同步和命令抽屉；`69da9950` 准备 Android 0.6.1。
+- 自动验证：Android JVM、AndroidTest 编译、debug Lint/assemble 通过；API 36.1 无窗口模拟器中 19 项 Room migration/history/cache 测试和 2 项命令交互测试通过。独立 reviewer 复核后批准，无阻塞项；模拟器取图后已关闭。
+- UI 证据：[固定且不透明的命令抽屉](assets/mobile-v0.6.1-command-sheet.png)。
+- 版本：Android `0.6.1`（versionCode 7）；私有 Release [`v0.6.1`](https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.6.1)，资产 `Akashic-Mobile-v0.6.1.apk`（6,373,822 bytes）。
+- 发布验证：release JVM、Lint、R8 与 assemble 在 1m54s 内通过；APK v2 签名有效；本地与 GitHub 资产 SHA-256 均为 `fc0923018573b327d93c8ef6671e3f3b93723b8e35430595297a37c4d0921f52`。
+
+#### 本组 UI skill 约束落实
+
+better-colors：
+
+| Before | After |
+| --- | --- |
+| 命令 sheet 使用带 alpha 的 `surfaceContainerLow`，背后正文穿透 | 顶层 sheet 使用完全不透明的 `surfaceContainerHighest`；命令行仍共享同一平面 |
+| 同步入口容易再造新的状态色 | 只复用现有 `primary/onSurfaceVariant` 和系统进度语义，不增加色系 |
+
+better-typography：
+
+| Before | After |
+| --- | --- |
+| 标题随命令列表一起滚走，长目录缺少固定阅读锚点 | `titleLarge + bodyMedium` 标题区固定，只有命令目录滚动 |
+| 命令数量变化会改变整个 sheet 的阅读位置 | 固定 440dp 视窗；monospace 命令列和说明列位置保持稳定 |
+
+better-ui：
+
+| Before | After |
+| --- | --- |
+| 命令数量直接撑高 sheet，内容与对话争夺层级 | 固定半高 sheet、实体背景、内部独立滚动；向下拖动仍由原生 ModalBottomSheet 关闭 |
+| 清缓存只能靠卸载或重新扫码，破坏连接状态 | 抽屉低频维护区提供带确认的“重新同步消息”，保留配对和本地未发送工作 |
+| 时序问题容易被列表 `reverse()` 暂时遮掩 | 持久化服务端序号并让 DAO 拥有排序不变量，实时与历史统一稳定 |
