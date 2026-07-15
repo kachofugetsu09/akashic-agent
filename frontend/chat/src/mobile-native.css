@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  font-family: Roboto, "Noto Sans SC", system-ui, sans-serif;
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  --mobile-surface: oklch(0.975 0.006 255);
+  --mobile-on-surface: oklch(0.255 0.018 275);
+  --mobile-on-surface-variant: oklch(0.46 0.025 275);
+  --mobile-primary: oklch(0.55 0.145 255);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: var(--mobile-surface);
+}
+
+.mobile-native-bootstrap {
+  display: grid;
+  min-height: 100%;
+  place-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--mobile-on-surface);
+  text-align: center;
+}
+
+.mobile-native-bootstrap__status {
+  color: var(--mobile-primary);
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.mobile-native-bootstrap__count {
+  color: var(--mobile-on-surface-variant);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}

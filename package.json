@@ -8,6 +8,7 @@
     "build:plugin-preset": "node scripts/build-plugin-preset.mjs",
     "build:dashboard:watch": "vite build --config frontend/dashboard/vite.config.ts --watch",
     "build:chat": "vite build --config frontend/chat/vite.config.ts",
+    "build:mobile-web": "vite build --config frontend/chat/vite.mobile.config.ts",
     "build:chat:watch": "vite build --config frontend/chat/vite.config.ts --watch",
     "build:plugins": "node scripts/build-plugins.mjs",
     "build:watch": "node scripts/build-plugins.mjs --watch",
