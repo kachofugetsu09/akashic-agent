@@ -382,6 +382,12 @@ class AppRuntime:
                     self.config.mobile_realtime,
                     self.workspace,
                 )
+                if plugin_manager is not None:
+                    from agent.plugins.mobile_ui import PluginMobileUiProvider
+
+                    self.mobile_gateway_runtime.channel.bind_mobile_ui_provider(
+                        PluginMobileUiProvider(plugin_manager)
+                    )
             plugin_channels = list(plugin_manager.channels) if plugin_manager else []
             if self.mobile_gateway_runtime is not None:
                 plugin_channels.append(self.mobile_gateway_runtime.channel)

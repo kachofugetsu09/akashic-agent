@@ -9,6 +9,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 import pytest
+import infra.mobile_realtime.channel as channel_module
 
 from agent.config_models import MobileRealtimeConfig
 from bus.events import OutboundMessage
@@ -673,6 +674,56 @@ async def test_command_list_uses_active_channel_catalog_without_stop(tmp_path: P
         ]
     }
     await channel.stop()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_plugin_ui_list_is_empty_without_plugin_manager(tmp_path: Path) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
+
+    reply = await channel.handle_command(
+        device_id=device_id,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FB0",
+            command_type="plugin.ui.list",
+        ),
+    )
+
+    assert reply.type == "plugin.ui.list.ok"
+    assert reply.payload == {"items": []}
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_plugin_ui_reply_size_is_checked_before_receipt_completion(tmp_path: Path) -> None:
+    class _OversizedProvider:
+        def catalog(self) -> list[dict[str, object]]:
+            return [{"id": "sample@github", "revision": "r", "sha256": "\\u0000" * 50_000}]
+
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
+    channel.bind_mobile_ui_provider(cast(Any, _OversizedProvider()))
+    frame = _generic_frame(
+        frame_id="01ARZ3NDEKTSV4RRFFQ69G5FB1",
+        command_type="plugin.ui.list",
+    )
+
+    with pytest.raises(RuntimeError, match="mobile reply 超过"):
+        await channel.handle_command(device_id=device_id, frame=frame)
+
+    receipt = storage.reserve_command(
+        device_id=device_id,
+        command_id=frame.id,
+        command_type=frame.type,
+        request_hash=channel_module._command_hash(frame),
+        created_at=datetime.now(timezone.utc),
+    )[0]
+    assert receipt.status == "processing"
     storage.close()
 
 

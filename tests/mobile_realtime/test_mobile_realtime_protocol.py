@@ -148,6 +148,20 @@ def test_command_list_command_and_reply_are_valid() -> None:
     assert parse_frame(json.dumps(reply)).type == "command.list.ok"
 
 
+@pytest.mark.parametrize("command_type", ("plugin.ui.list", "plugin.ui.asset", "plugin.ui.call"))
+def test_plugin_ui_commands_are_valid(command_type: str) -> None:
+    frame = {
+        "v": 1,
+        "kind": "command",
+        "type": command_type,
+        "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "connection_epoch": 1,
+        "payload": {},
+    }
+
+    assert parse_frame(json.dumps(frame)).type == command_type
+
+
 def test_delta_process_block_fields_must_appear_together() -> None:
     frame = _golden_frame(2)
     frame["type"] = "react.thinking.delta"

@@ -18,6 +18,7 @@ from bus.events_lifecycle import (
     ToolCallStarted,
     TurnStarted,
 )
+from agent.plugins.mobile_ui import MobileUiPluginUnavailable
 from infra.channels.contract import ChannelContext
 from infra.mobile_realtime.attachments import (
     AttachmentChunk,
@@ -33,6 +34,7 @@ from infra.mobile_realtime.protocol import (
     ClientCommand,
     GenericCommand,
     MessageSendCommand,
+    MAX_JSON_FRAME_BYTES,
 )
 from infra.mobile_realtime.remote_media import (
     RemoteMediaError,
@@ -42,6 +44,7 @@ from infra.mobile_realtime.remote_media import (
 from infra.mobile_realtime.storage import AttachmentStateError, CommandReceipt
 
 if TYPE_CHECKING:
+    from agent.plugins.mobile_ui import MobileUiProvider
     from infra.mobile_realtime.gateway import MobileGatewayRuntime
 
 
@@ -81,6 +84,8 @@ _DELTA_FLUSH_SECONDS = 0.05
 _DELTA_FLUSH_BYTES = 4 * 1024
 _MAX_DELTA_BATCHES = 256
 _BOT_COMMAND_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_PLUGIN_SEGMENT = r"[A-Za-z0-9][A-Za-z0-9._-]*"
+_PLUGIN_ID_PATTERN = re.compile(rf"^{_PLUGIN_SEGMENT}(?:@{_PLUGIN_SEGMENT})?$")
 
 
 class MobileRealtimeChannel:
@@ -97,6 +102,14 @@ class MobileRealtimeChannel:
         self._delta_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._delta_failure: BaseException | None = None
         self._attachments: AttachmentTransferService | None = None
+        self._mobile_ui_provider: MobileUiProvider | None = None
+
+    def bind_mobile_ui_provider(self, provider: MobileUiProvider) -> None:
+        """绑定读取当前插件快照的移动 UI 提供器。"""
+
+        if self._mobile_ui_provider is not None:
+            raise RuntimeError("Mobile UI provider 已绑定")
+        self._mobile_ui_provider = provider
 
     async def start(self, ctx: ChannelContext) -> None:
         """注册移动渠道的出站、流事件和主动推送入口。"""
@@ -173,6 +186,7 @@ class MobileRealtimeChannel:
                 turn_id=frame.turn_id,
             )
         # 3. 成功副作用完成后固化回复；内部异常保持 processing 并向上暴露
+        _validate_reply_frame_size(frame, reply)
         completed = self._runtime.storage.complete_command(
             device_id=device_id,
             command_id=frame.id,
@@ -232,6 +246,12 @@ class MobileRealtimeChannel:
             return await self._get_history(device_id, frame)
         if frame.type == "command.list":
             return self._list_commands(frame)
+        if frame.type == "plugin.ui.list":
+            return self._list_plugin_ui(frame)
+        if frame.type == "plugin.ui.asset":
+            return self._get_plugin_ui_asset(frame)
+        if frame.type == "plugin.ui.call":
+            return await self._call_plugin_ui(frame)
         if frame.type == "message.send":
             return await self._send_message(device_id, frame)
         if frame.type == "turn.stop":
@@ -265,6 +285,63 @@ class MobileRealtimeChannel:
 
         # 2. 保持插件注册顺序，便于管理高频命令的位置
         return CommandReply(type="command.list.ok", payload={"items": items})
+
+    def _list_plugin_ui(self, frame: GenericCommand) -> CommandReply:
+        """返回服务端当前启用插件的移动 UI 目录。"""
+
+        _expect_keys(frame.payload, set())
+        provider = self._mobile_ui_provider
+        items = [] if provider is None else provider.catalog()
+        return CommandReply(type="plugin.ui.list.ok", payload={"items": items})
+
+    def _get_plugin_ui_asset(self, frame: GenericCommand) -> CommandReply:
+        """返回一个目录中已声明的移动 UI 资产。"""
+
+        _expect_keys(frame.payload, {"plugin_id"})
+        plugin_id = frame.payload["plugin_id"]
+        if not isinstance(plugin_id, str) or not _PLUGIN_ID_PATTERN.fullmatch(plugin_id):
+            raise MobileCommandError("invalid_plugin", "plugin_id 无效")
+        try:
+            asset = self._require_mobile_ui_provider().asset(plugin_id)
+        except MobileUiPluginUnavailable as error:
+            raise MobileCommandError("plugin_unavailable", f"插件不可用: {plugin_id}") from error
+        return CommandReply(type="plugin.ui.asset.ok", payload=asset)
+
+    async def _call_plugin_ui(self, frame: GenericCommand) -> CommandReply:
+        """校验并转发插件移动 UI 的受控 RPC。"""
+
+        _expect_keys(frame.payload, {"plugin_id", "method", "payload"})
+        plugin_id = frame.payload["plugin_id"]
+        method = frame.payload["method"]
+        payload = frame.payload["payload"]
+        if not isinstance(plugin_id, str) or not _PLUGIN_ID_PATTERN.fullmatch(plugin_id):
+            raise MobileCommandError("invalid_plugin", "plugin_id 无效")
+        if not isinstance(method, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", method):
+            raise MobileCommandError("invalid_method", "插件方法无效")
+        if not isinstance(payload, dict):
+            raise MobileCommandError("invalid_payload", "插件参数必须是对象")
+        session_id = (
+            None
+            if frame.session_id is None
+            else self._require_mobile_session(frame.session_id)
+        )
+        try:
+            result = await self._require_mobile_ui_provider().call(
+                plugin_id,
+                method,
+                cast(dict[str, object], payload),
+                session_id=session_id,
+                turn_id=frame.turn_id,
+            )
+        except MobileUiPluginUnavailable as error:
+            raise MobileCommandError("plugin_unavailable", f"插件不可用: {plugin_id}") from error
+        return CommandReply(type="plugin.ui.call.ok", payload={"result": result})
+
+    def _require_mobile_ui_provider(self) -> MobileUiProvider:
+        provider = self._mobile_ui_provider
+        if provider is None:
+            raise MobileCommandError("plugin_unavailable", "服务端没有启用移动 UI 插件")
+        return provider
 
     async def handle_attachment_chunk(
         self,
@@ -1074,6 +1151,32 @@ def _expect_keys(payload: Mapping[str, object], allowed: set[str]) -> None:
     if unexpected:
         names = ", ".join(sorted(unexpected))
         raise MobileCommandError("invalid_payload", f"payload 包含未知字段: {names}")
+
+
+def _validate_reply_frame_size(frame: ClientCommand, reply: CommandReply) -> None:
+    """在持久化前按真实 JSON 编码校验回复可投递。"""
+
+    wire: dict[str, object] = {
+        "v": 1,
+        "kind": "reply",
+        "type": reply.type,
+        "id": frame.id,
+        "connection_epoch": frame.connection_epoch,
+        "payload": reply.payload,
+    }
+    if reply.session_id is not None:
+        wire["session_id"] = reply.session_id
+    if reply.turn_id is not None:
+        wire["turn_id"] = reply.turn_id
+    encoded = json.dumps(
+        wire,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    ).encode("utf-8")
+    if len(encoded) > MAX_JSON_FRAME_BYTES:
+        raise RuntimeError(f"mobile reply 超过 {MAX_JSON_FRAME_BYTES} bytes: {reply.type}")
 
 
 def _mobile_history_item(item: Mapping[str, object]) -> dict[str, object]:

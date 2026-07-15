@@ -19,6 +19,13 @@ GateStatus = Literal["passed", "failed"]
 
 
 @dataclass(frozen=True)
+class MobileUiAsset:
+    module: str
+    stylesheet: str
+    sha256: str
+
+
+@dataclass(frozen=True)
 class PluginSemanticCheck:
     check_id: str
     passed: bool
@@ -72,6 +79,7 @@ class PluginContributions:
     jobs: tuple[RegisteredPluginJob, ...] = ()
     channels: tuple[Channel, ...] = ()
     dashboard_module: Path | None = None
+    mobile_ui_asset: MobileUiAsset | None = None
 
 
 @dataclass

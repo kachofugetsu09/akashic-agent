@@ -56,6 +56,7 @@ from agent.plugins.scope import CleanupFailure, PluginScope, ScopedEventBus
 from agent.plugins.generation import (
     GateCheckResult,
     GateResult,
+    MobileUiAsset,
     PluginContributions,
     PluginGeneration,
     PluginReadinessContext,
@@ -2252,6 +2253,11 @@ class PluginManager:
                 plugin_dir,
                 cls.dashboard_module(),
             ),
+            mobile_ui_asset=_resolve_mobile_ui_asset(
+                plugin_dir,
+                cls.mobile_ui_module(),
+                cls.mobile_ui_stylesheet(),
+            ),
         )
 
     def _validate_candidate(
@@ -2838,6 +2844,49 @@ def _resolve_dashboard_module(plugin_dir: Path, declared: str | None) -> Path | 
     if not path.is_relative_to(root) or path.suffix != ".py" or not path.is_file():
         raise RuntimeError(f"插件 dashboard module 无效: {declared}")
     return path
+
+
+def _resolve_mobile_ui_asset(
+    plugin_dir: Path,
+    module_declared: str | None,
+    stylesheet_declared: str | None,
+) -> MobileUiAsset | None:
+    """在插件激活边界固化并校验移动 UI 资产。"""
+
+    if module_declared is None:
+        if stylesheet_declared is not None:
+            raise RuntimeError("插件不能只声明 mobile UI stylesheet")
+        return None
+    root = plugin_dir.resolve(strict=False)
+    module_path = (plugin_dir / module_declared).resolve(strict=False)
+    if not module_path.is_relative_to(root) or module_path.suffix != ".js" or not module_path.is_file():
+        raise RuntimeError(f"插件 mobile UI module 无效: {module_declared}")
+    stylesheet = ""
+    if stylesheet_declared is not None:
+        stylesheet_path = (plugin_dir / stylesheet_declared).resolve(strict=False)
+        if (
+            not stylesheet_path.is_relative_to(root)
+            or stylesheet_path.suffix != ".css"
+            or not stylesheet_path.is_file()
+        ):
+            raise RuntimeError(f"插件 mobile UI stylesheet 无效: {stylesheet_declared}")
+        stylesheet = stylesheet_path.read_text(encoding="utf-8")
+    module = module_path.read_text(encoding="utf-8")
+    digest = hashlib.sha256()
+    for value in (module, stylesheet):
+        encoded = value.encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    payload = json.dumps(
+        {"id": "x" * 129, "revision": "x" * 128, "sha256": digest.hexdigest(),
+         "module": module, "stylesheet": stylesheet},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    if len(payload) > 240 * 1024:
+        raise RuntimeError("插件 mobile UI 资产编码后超过协议安全预算")
+    return MobileUiAsset(module=module, stylesheet=stylesheet, sha256=digest.hexdigest())
 
 
 def _resolve_managed_services(

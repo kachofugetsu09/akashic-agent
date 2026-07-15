@@ -100,3 +100,21 @@ class Plugin(ABC):
     @classmethod
     def dashboard_module(cls) -> str | None:
         return None
+
+    @classmethod
+    def mobile_ui_module(cls) -> str | None:
+        return None
+
+    @classmethod
+    def mobile_ui_stylesheet(cls) -> str | None:
+        return None
+
+    async def mobile_ui_call(
+        self,
+        method: str,
+        payload: dict[str, object],
+        *,
+        session_id: str | None,
+        turn_id: str | None,
+    ) -> dict[str, object]:
+        raise RuntimeError(f"插件未实现 mobile UI RPC: {method}")
