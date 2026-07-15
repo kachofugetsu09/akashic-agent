@@ -26,6 +26,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { ChevronDown, Wrench } from "lucide-react";
+import type { ReactNode } from "react";
 import type {
   ChatMessage,
   MessageAttachment,
@@ -33,14 +34,23 @@ import type {
   ToolBlock,
 } from "./main";
 
-export function ChatMessageView({ message }: { message: ChatMessage }) {
+export function ChatMessageView({
+  message,
+  attachmentContent,
+}: {
+  message: ChatMessage;
+  attachmentContent?: ReactNode;
+}) {
+  const attachments = attachmentContent !== undefined
+    ? attachmentContent
+    : message.attachments?.length
+      ? <MessageAttachments attachments={message.attachments} />
+      : null;
   if (message.role === "user") {
     return (
       <Message from="user" className="message-row user-row">
         <MessageContent className="user-bubble">
-          {message.attachments?.length ? (
-            <MessageAttachments attachments={message.attachments} />
-          ) : null}
+          {attachments}
           {message.content ? <MessageResponse>{message.content}</MessageResponse> : null}
         </MessageContent>
       </Message>
@@ -51,9 +61,7 @@ export function ChatMessageView({ message }: { message: ChatMessage }) {
     <Message from="assistant" className="message-row agent-row">
       <MessageContent className="agent-content">
         {message.blocks.length ? <ProcessTrace message={message} /> : null}
-        {message.attachments?.length ? (
-          <MessageAttachments attachments={message.attachments} />
-        ) : null}
+        {attachments}
         {message.content ? <MessageResponse>{message.content}</MessageResponse> : null}
       </MessageContent>
     </Message>
@@ -141,7 +149,7 @@ function ProcessTrace({ message }: { message: ChatMessage }) {
       defaultOpen={!!message.streaming}
       duration={message.durationMs ? Math.max(1, Math.round(message.durationMs / 1000)) : undefined}
     >
-      <ProcessTraceTrigger />
+      <ProcessTraceTrigger interrupted={!!message.interrupted} />
       <CollapsibleContent className="process-content">
         <div className="process-line" aria-hidden="true" />
         <div className="process-items">
@@ -166,12 +174,17 @@ function ProcessTrace({ message }: { message: ChatMessage }) {
   );
 }
 
-function ProcessTraceTrigger() {
+function ProcessTraceTrigger({ interrupted }: { interrupted: boolean }) {
   const { isOpen, isStreaming, duration } = useReasoning();
+  const label = interrupted
+    ? `已中止${duration ? ` · ${duration}s` : ""}`
+    : isStreaming
+      ? "正在思考"
+      : `已思考${duration ? ` ${duration}s` : ""}`;
 
   return (
     <ReasoningTrigger className="process-trigger">
-      <span>{isStreaming ? "正在思考" : `已思考${duration ? ` ${duration}s` : ""}`}</span>
+      <span>{label}</span>
       <ChevronDown className={`process-chevron ${isOpen ? "open" : ""}`} size={15} />
     </ReasoningTrigger>
   );

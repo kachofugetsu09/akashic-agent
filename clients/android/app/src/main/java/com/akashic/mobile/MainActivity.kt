@@ -34,9 +34,12 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.akashic.mobile.ui.conversation.MobileConversationScaffold
 import com.akashic.mobile.ui.design.AkashicTheme
 import com.akashic.mobile.ui.pairing.PairingScreen
+import com.akashic.mobile.ui.web.MobileWebChat
+import com.akashic.mobile.ui.web.openCachedAttachment
+import com.akashic.mobile.ui.web.shareCachedAttachment
+import com.akashic.mobile.ui.web.withCachedAttachment
 
 class MainActivity : ComponentActivity() {
     private val viewModel by viewModels<MainViewModel>()
@@ -84,7 +87,7 @@ class MainActivity : ComponentActivity() {
                     if (!session.initialized) {
                         CircularProgressIndicator(Modifier.align(Alignment.Center))
                     } else if (session.hasProfile) {
-                        MobileConversationScaffold(
+                        MobileWebChat(
                             state = conversation,
                             onSelectSession = viewModel::selectSession,
                             onNewSession = viewModel::createSession,
@@ -94,11 +97,24 @@ class MainActivity : ComponentActivity() {
                             onRemoveAttachment = viewModel::removeAttachment,
                             onRetryAttachment = viewModel::retryAttachment,
                             onRetryDownloadedAttachment = viewModel::retryDownloadedAttachment,
-                            onOpenDownloadedAttachment = viewModel::touchDownloadedAttachment,
+                            onTouchDownloadedAttachment = viewModel::touchDownloadedAttachment,
+                            onOpenDownloadedAttachment = { attachmentId ->
+                                withCachedAttachment(this@MainActivity, conversation, attachmentId) {
+                                    viewModel.touchDownloadedAttachment(attachmentId)
+                                    openCachedAttachment(this@MainActivity, it)
+                                }
+                            },
+                            onShareDownloadedAttachment = { attachmentId ->
+                                withCachedAttachment(this@MainActivity, conversation, attachmentId) {
+                                    viewModel.touchDownloadedAttachment(attachmentId)
+                                    shareCachedAttachment(this@MainActivity, it)
+                                }
+                            },
                             onDismissError = viewModel::dismissError,
                             onSend = viewModel::sendMessage,
                             onSendCommand = viewModel::sendCommand,
                             onStop = viewModel::stopCurrentTurn,
+                            modifier = Modifier.fillMaxSize(),
                         )
                     } else {
                         PairingScreen(

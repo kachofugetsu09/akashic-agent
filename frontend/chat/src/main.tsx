@@ -108,6 +108,7 @@ export interface ChatMessage {
   attachments?: MessageAttachment[];
   blocks: AgentBlock[];
   streaming?: boolean;
+  interrupted?: boolean;
   startedAt?: number;
   durationMs?: number;
 }
