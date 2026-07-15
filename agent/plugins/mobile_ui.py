@@ -127,3 +127,7 @@ class MobileUiPluginUnavailable(LookupError):
 
 class MobileUiRpcTimeout(TimeoutError):
     pass
+
+
+class MobileUiRpcInvalidRequest(ValueError):
+    pass

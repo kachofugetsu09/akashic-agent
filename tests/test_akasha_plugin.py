@@ -2234,6 +2234,12 @@ async def test_mobile_recall_binds_each_assistant_to_its_context_and_keeps_all_i
         session_id="s",
         turn_id="turn-1",
     )
+    interrupted = await plugin.mobile_ui_call(
+        "recall.current",
+        {"message_id": "assistant:turn-1"},
+        session_id="s",
+        turn_id=None,
+    )
 
     assert [item["summary"] for item in cast(list[dict[str, object]], first["left"])] == [
         "第一轮旧日志"
@@ -2245,6 +2251,7 @@ async def test_mobile_recall_binds_each_assistant_to_its_context_and_keeps_all_i
     assert [item["summary"] for item in second_left] == [f"左脑 {index}" for index in reversed(range(8))]
     assert [item["summary"] for item in second_right] == [f"右脑 {index}" for index in reversed(range(9))]
     assert active == second
+    assert interrupted == {"left": [], "right": []}
 
 
 @pytest.mark.asyncio

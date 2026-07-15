@@ -27,9 +27,10 @@ class MobileWebSnapshotTest {
             sessions = emptyList(),
             selectedSessionId = "mobile:test",
             messages = listOf(
-                MessageUi.User("message-1", "你好", "已发送"),
+                MessageUi.User("message-1", "mobile:test", "你好", "已发送"),
                 MessageUi.AssistantTurn(
                     id = "message-2",
+                    sessionId = "mobile:test",
                     intro = null,
                     blocks = listOf(
                         ProcessBlockUi(
@@ -60,6 +61,7 @@ class MobileWebSnapshotTest {
         assertEquals(1, snapshot.protocolVersion)
         assertEquals(MobileWebConnectionStatus.RECONNECTING, snapshot.connection.status)
         assertEquals(listOf("message-1", "message-2"), snapshot.messages.map { it.id })
+        assertEquals(listOf("mobile:test", "mobile:test"), snapshot.messages.map { it.sessionId })
         assertTrue(snapshot.messages.last().streaming)
         assertEquals(MobileWebProcessState.RUNNING, snapshot.messages.last().blocks.single().state)
         assertEquals("memorystatus", snapshot.composer.commands.single().command)

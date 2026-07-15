@@ -78,7 +78,7 @@ fun MobileWebChat(
     onDismissError: () -> Unit,
     onSend: (String) -> Unit,
     onSendCommand: (String) -> Unit,
-    onPluginUiCall: (String, String, String, String) -> Unit,
+    onPluginUiCall: (String, String?, String?, String, String, String) -> Unit,
     onPluginUiResponsesAcknowledged: (Set<String>) -> Unit,
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
@@ -214,7 +214,7 @@ private data class MobileWebCallbacks(
     val onDismissError: () -> Unit,
     val onSend: (String) -> Unit,
     val onSendCommand: (String) -> Unit,
-    val onPluginUiCall: (String, String, String, String) -> Unit,
+    val onPluginUiCall: (String, String?, String?, String, String, String) -> Unit,
     val onPluginUiResponsesAcknowledged: (Set<String>) -> Unit,
     val onStop: () -> Unit,
 )
@@ -282,8 +282,14 @@ private class MobileWebBridge(
     fun sendCommand(command: String) = dispatch { it.onSendCommand(command) }
 
     @JavascriptInterface
-    fun callPluginUi(requestId: String, pluginId: String, method: String, payloadJson: String) =
-        dispatch { it.onPluginUiCall(requestId, pluginId, method, payloadJson) }
+    fun callPluginUi(
+        requestId: String,
+        sessionId: String?,
+        turnId: String?,
+        pluginId: String,
+        method: String,
+        payloadJson: String,
+    ) = dispatch { it.onPluginUiCall(requestId, sessionId, turnId, pluginId, method, payloadJson) }
 
     @JavascriptInterface
     fun acknowledgePluginUiResponses(requestIdsJson: String) {

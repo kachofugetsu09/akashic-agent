@@ -397,11 +397,26 @@ class RealtimeSession(
         enqueueMessage(command, includeDraftAttachments = false)
     }
 
-    /** 从 Web UI 发起一个绑定当前会话的插件请求。 */
-    fun callPluginUi(requestId: String, pluginId: String, method: String, payloadJson: String) {
+    /** 从 Web UI 发起一个绑定渲染槽位会话与轮次的插件请求。 */
+    fun callPluginUi(
+        requestId: String,
+        sessionId: String?,
+        turnId: String?,
+        pluginId: String,
+        method: String,
+        payloadJson: String,
+    ) {
         scope.launch {
             mutex.withLock {
                 if (requestId.length !in 1..128) return@withLock
+                if (sessionId != null && !MOBILE_SESSION.matches(sessionId)) {
+                    appendPluginUiError(requestId, "插件请求的会话无效")
+                    return@withLock
+                }
+                if (turnId != null && turnId.length !in 1..512) {
+                    appendPluginUiError(requestId, "插件请求的轮次无效")
+                    return@withLock
+                }
                 val payload = try {
                     json.parseToJsonElement(payloadJson).jsonObject
                 } catch (error: SerializationException) {
@@ -418,8 +433,8 @@ class RealtimeSession(
                         put("method", method)
                         put("payload", payload)
                     },
-                    sessionId = mutableState.value.currentSessionId,
-                    turnId = mutableState.value.activeTurnId,
+                    sessionId = sessionId,
+                    turnId = turnId,
                 ) ?: run {
                     appendPluginUiError(requestId, "连接不可用，插件请求未发送")
                     return@withLock

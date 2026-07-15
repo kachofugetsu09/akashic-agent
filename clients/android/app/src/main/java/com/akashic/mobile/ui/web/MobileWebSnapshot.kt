@@ -71,6 +71,7 @@ data class MobileWebSession(
 @Serializable
 data class MobileWebMessage(
     val id: String,
+    val sessionId: String,
     val role: MobileWebRole,
     val content: String,
     val deliveryLabel: String? = null,
@@ -178,6 +179,7 @@ private fun SessionUi.toMobileWebSession() = MobileWebSession(sessionId, title)
 private fun MessageUi.toMobileWebMessage(): MobileWebMessage = when (this) {
     is MessageUi.User -> MobileWebMessage(
         id = id,
+        sessionId = sessionId,
         role = MobileWebRole.USER,
         content = text,
         deliveryLabel = deliveryLabel,
@@ -185,6 +187,7 @@ private fun MessageUi.toMobileWebMessage(): MobileWebMessage = when (this) {
     )
     is MessageUi.AssistantTurn -> MobileWebMessage(
         id = id,
+        sessionId = sessionId,
         role = MobileWebRole.ASSISTANT,
         content = answer,
         blocks = blocks.map(ProcessBlockUi::toMobileWebProcessBlock),

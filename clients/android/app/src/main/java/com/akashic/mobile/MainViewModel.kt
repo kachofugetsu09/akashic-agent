@@ -135,8 +135,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendCommand(value: String) = container.realtimeSession.sendCommand(value)
 
-    fun callPluginUi(requestId: String, pluginId: String, method: String, payloadJson: String) =
-        container.realtimeSession.callPluginUi(requestId, pluginId, method, payloadJson)
+    fun callPluginUi(
+        requestId: String,
+        sessionId: String?,
+        turnId: String?,
+        pluginId: String,
+        method: String,
+        payloadJson: String,
+    ) = container.realtimeSession.callPluginUi(
+        requestId,
+        sessionId,
+        turnId,
+        pluginId,
+        method,
+        payloadJson,
+    )
 
     fun acknowledgePluginUiResponses(requestIds: Set<String>) =
         container.realtimeSession.acknowledgePluginUiResponses(requestIds)
@@ -170,6 +183,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (message.role == "user") {
             return MessageUi.User(
                 id = message.messageId,
+                sessionId = message.sessionId,
                 text = message.text,
                 deliveryLabel = when (message.deliveryState) {
                     "pending" -> "待发送"
@@ -182,6 +196,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         return MessageUi.AssistantTurn(
             id = message.messageId,
+            sessionId = message.sessionId,
             intro = null,
             blocks = graph.blocks.sortedBy { it.ordinal }.map { block ->
                 val storedTool = if (block.kind == "tool") decodeStoredToolBlock(block.content) else null

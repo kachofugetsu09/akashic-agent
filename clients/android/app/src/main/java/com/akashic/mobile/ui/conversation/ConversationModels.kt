@@ -71,10 +71,12 @@ enum class ConnectionStatusUi {
 
 sealed interface MessageUi {
     val id: String
+    val sessionId: String
     val attachments: List<MessageAttachmentUi>
 
     data class User(
         override val id: String,
+        override val sessionId: String,
         val text: String,
         val deliveryLabel: String,
         override val attachments: List<MessageAttachmentUi> = emptyList(),
@@ -82,6 +84,7 @@ sealed interface MessageUi {
 
     data class AssistantTurn(
         override val id: String,
+        override val sessionId: String,
         val intro: String?,
         val blocks: List<ProcessBlockUi>,
         val answer: String,
@@ -169,11 +172,13 @@ internal val PreviewConversationState = ConversationUiState(
     messages = listOf(
         MessageUi.User(
             id = "user-1",
+            sessionId = "mobile:preview-1",
             text = "帮我检查移动端实时链路，尤其是网络抖动后的恢复。",
             deliveryLabel = "已发送",
         ),
         MessageUi.AssistantTurn(
             id = "assistant-1",
+            sessionId = "mobile:preview-1",
             intro = "我先沿着协议和恢复链路检查。",
             blocks = listOf(
                 ProcessBlockUi(

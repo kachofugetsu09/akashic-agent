@@ -67,6 +67,7 @@ interface MobileProcessBlock {
 
 interface MobileMessage {
   id: string;
+  sessionId: string;
   role: "user" | "assistant";
   content: string;
   deliveryLabel?: string;
@@ -119,7 +120,14 @@ interface NativeBridge {
   sendMessage(text: string): void;
   sendCommand(command: string): void;
   stopTurn(): void;
-  callPluginUi(requestId: string, pluginId: string, method: string, payloadJson: string): void;
+  callPluginUi(
+    requestId: string,
+    sessionId: string | null,
+    turnId: string | null,
+    pluginId: string,
+    method: string,
+    payloadJson: string,
+  ): void;
   acknowledgePluginUiResponses(requestIdsJson: string): void;
 }
 
@@ -196,6 +204,7 @@ function parseMessage(value: unknown, index: number): MobileMessage {
   if (role !== "user" && role !== "assistant") throw new Error(`messages[${index}].role 不受支持`);
   return {
     id: requireString(raw.id, `messages[${index}].id`),
+    sessionId: requireString(raw.sessionId, `messages[${index}].sessionId`),
     role,
     content: requireString(raw.content, `messages[${index}].content`),
     deliveryLabel: optionalString(raw.deliveryLabel, `messages[${index}].deliveryLabel`),
@@ -440,23 +449,26 @@ function MobileNativeApp() {
                     processStartContent={isPluginTurnMessage(message) ? (
                       <MobilePluginSlot
                         name="turn.before_reasoning"
-                        sessionId={snapshot.selectedSessionId}
+                        sessionId={snapshot.messages[index].sessionId}
                         messageId={message.id}
+                        turnId={pluginTurnId(message)}
                       />
                     ) : undefined}
                     beforeProcessBlock={(block) => isPluginTurnMessage(message) && block.kind === "tool" ? (
                       <MobilePluginSlot
                         name="turn.before_tool"
-                        sessionId={snapshot.selectedSessionId}
+                        sessionId={snapshot.messages[index].sessionId}
                         messageId={message.id}
+                        turnId={pluginTurnId(message)}
                         block={block}
                       />
                     ) : null}
                     answerEndContent={isPluginTurnMessage(message) ? (
                       <MobilePluginSlot
                         name="turn.after_answer"
-                        sessionId={snapshot.selectedSessionId}
+                        sessionId={snapshot.messages[index].sessionId}
                         messageId={message.id}
+                        turnId={pluginTurnId(message)}
                       />
                     ) : undefined}
                   />
@@ -815,6 +827,11 @@ function toChatMessage(message: MobileMessage): ChatMessage {
 
 function isPluginTurnMessage(message: ChatMessage): boolean {
   return message.role === "assistant" && !message.id.startsWith("proactive:");
+}
+
+function pluginTurnId(message: ChatMessage): string | undefined {
+  if (!message.streaming || !message.id.startsWith("assistant:")) return undefined;
+  return message.id.slice("assistant:".length);
 }
 
 function toAgentBlock(block: MobileProcessBlock): AgentBlock {

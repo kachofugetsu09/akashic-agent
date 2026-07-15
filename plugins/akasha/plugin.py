@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from agent.lifecycle.types import BeforeTurnCtx, TurnState
 from agent.plugins import Plugin
+from agent.plugins.mobile_ui import MobileUiRpcInvalidRequest
 from plugins.akasha.config import load_akasha_config, resolve_akasha_db_path
 from plugins.akasha.store import AkashaStore
 
@@ -108,17 +109,18 @@ class AkashaPlugin(Plugin):
         """返回 mobile 消息对应轮次的左右脑召回。"""
 
         if method != "recall.current" or set(payload) - {"message_id"}:
-            raise ValueError(f"Akasha mobile UI 方法无效: {method}")
+            raise MobileUiRpcInvalidRequest(f"Akasha mobile UI 方法无效: {method}")
         if session_id is None:
-            raise ValueError("Akasha recall.current 需要 session_id")
+            raise MobileUiRpcInvalidRequest("Akasha recall.current 需要 session_id")
         message_id = payload.get("message_id")
         if message_id is not None and not isinstance(message_id, str):
-            raise ValueError("Akasha recall.current 的 message_id 必须是字符串")
-        historical_message_id = (
-            None
-            if turn_id is not None and message_id == f"assistant:{turn_id}"
-            else message_id
-        )
+            raise MobileUiRpcInvalidRequest("Akasha recall.current 的 message_id 必须是字符串")
+        if message_id is not None and message_id.startswith("assistant:"):
+            if turn_id is None or message_id != f"assistant:{turn_id}":
+                return {"left": [], "right": []}
+            historical_message_id = None
+        else:
+            historical_message_id = message_id
         return await asyncio.to_thread(
             self._load_mobile_recall,
             session_id,
@@ -174,7 +176,7 @@ def _assistant_message_seq(session_id: str, message_id: str) -> int:
     prefix = f"{session_id}:"
     seq_text = message_id.removeprefix(prefix)
     if not message_id.startswith(prefix) or not seq_text.isdigit():
-        raise ValueError("Akasha message_id 不属于当前 session")
+        raise MobileUiRpcInvalidRequest("Akasha message_id 不属于当前 session")
     return int(seq_text)
 
 
