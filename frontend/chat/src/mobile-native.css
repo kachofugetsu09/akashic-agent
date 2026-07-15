@@ -903,8 +903,9 @@ button {
 }
 
 .command-sheet {
-  position: absolute;
-  inset: auto 0 calc(100% - 1px);
+  position: fixed;
+  inset: auto 0 calc(83px + env(safe-area-inset-bottom));
+  z-index: 44;
   display: flex;
   max-height: min(44vh, 420px);
   flex-direction: column;
