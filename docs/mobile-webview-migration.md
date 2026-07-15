@@ -162,3 +162,12 @@ Mobile Web 宿主现在为每条普通 assistant 历史消息挂载 turn 插槽�
 - APK：`0.7.4`（versionCode 13），8,255,238 bytes，SHA-256 `c153402f92b1550772053e2ab930c92d8c2d756bcb471a5bade34ecb210a5697`
 - 私有发布：<https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.4>
 - 真机验收：Pixel 7 覆盖安装成功，系统报告 versionCode 13 / versionName 0.7.4，MainActivity 正常前台运行
+
+### 0.7.5 Akasha 插件会话绑定修复
+
+Mobile Web 插件 RPC 现在沿渲染槽位显式传递 `session_id` 与活动 `turn_id`，不再由原生异步任务读取可能已经切换的当前会话。历史消息与 Akasha 查询日志因此保持同一会话身份，左右脑面板加载不会再制造跨会话请求。
+
+插件明确拒绝参数时，服务端返回持久化的 `plugin_invalid_request` RPC 错误；该错误只影响对应插件面板，不再穿透 ASGI 并关闭整条 WebSocket。
+
+- APK：`0.7.5`（versionCode 14），8,255,242 bytes，SHA-256 `fcfdf17741d5e64c435c2df69343fdfb511fbb71690c7d48901e01ea148e8a4f`
+- 真机验收：Pixel 9 Pro XL 覆盖安装成功并保留配对数据，系统报告 versionCode 14 / versionName 0.7.5；重新连接后完成全量历史同步，连接状态正常，旧消息不再显示跨 session 错误
