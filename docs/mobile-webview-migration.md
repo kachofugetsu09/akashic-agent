@@ -172,3 +172,12 @@ Mobile Web 插件 RPC 现在沿渲染槽位显式传递 `session_id` 与活动 `
 - APK：`0.7.5`（versionCode 14），8,255,242 bytes，SHA-256 `fcfdf17741d5e64c435c2df69343fdfb511fbb71690c7d48901e01ea148e8a4f`
 - 私有发布：<https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.5>
 - 真机验收：Pixel 9 Pro XL 覆盖安装成功并保留配对数据，系统报告 versionCode 14 / versionName 0.7.5；重新连接后完成全量历史同步，连接状态正常，旧消息不再显示跨 session 错误
+
+### 0.7.6 Mobile WebView 交互修复
+
+快捷命令面板改为相对 Android WebView 可视视口定位，键盘和底部安全区变化时不再被 composer 父容器裁切。思考与工具时间线从首节点中心开始，并在末节点中心结束；长思考文本不再让轴线伸到最后一个节点下方。
+
+- 验证：TypeScript、ESLint、release JVM、Lint、R8、assemble 与 APK v2 签名均通过
+- APK：`0.7.6`（versionCode 15），8,255,330 bytes，SHA-256 `1f287beae92e0dfb30d24866d4e4776dad1c912c93211ae88d3b6a4d40694ad9`
+- 私有发布：<https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.6>
+- 真机验收：Pixel 7 与 Pixel 9 Pro XL 均覆盖安装成功并保留应用数据，系统报告 versionCode 15 / versionName 0.7.6；MainActivity 正常前台运行，启动阶段没有 AndroidRuntime 或 Mobile Web 错误
