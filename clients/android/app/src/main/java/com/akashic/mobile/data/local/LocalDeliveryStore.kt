@@ -24,6 +24,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
 private const val TOOL_BLOCK_V1_PREFIX = "tool.v1:"
+private const val LEGACY_IDENTITY_LOOKBACK_MS = 60 * 60 * 1_000L
 
 @Serializable
 internal data class StoredToolBlock(
@@ -256,7 +257,6 @@ class LocalDeliveryStore(
             require(remote.id.isNotBlank() && remote.id.length <= 512) { "History message id is invalid" }
             remote.clientMessageId?.let(::requireFrameId)
             val messageId = remote.id
-            val sourceId = remote.clientMessageId?.let { "user:$it" }
             val canonical = MessageEntity(
                 messageId = messageId,
                 clientMessageId = remote.clientMessageId,
@@ -267,6 +267,8 @@ class LocalDeliveryStore(
                 createdAt = (completedAt - duration).coerceAtMost(completedAt),
                 updatedAt = completedAt,
             )
+            val sourceId = remote.clientMessageId?.let { "user:$it" }
+                ?: legacyOptimisticSourceId(canonical)
             mergeCanonicalMessage(sourceId, canonical)
             upsertMessageAttachments(
                 serverId = serverId,
@@ -280,6 +282,18 @@ class LocalDeliveryStore(
                 database.messages().upsertBlocks(historyBlocks(messageId, remote, completedAt))
             }
         }
+    }
+
+    /** 仅在唯一匹配时修复旧版缺失 client_message_id 的本地消息身份。 */
+    private suspend fun legacyOptimisticSourceId(canonical: MessageEntity): String? {
+        if (canonical.role != "user" || canonical.clientMessageId != null) return null
+        val candidates = database.messages().findLegacyOptimisticUsers(
+            sessionId = canonical.sessionId,
+            text = canonical.text,
+            earliestCreatedAt = canonical.createdAt - LEGACY_IDENTITY_LOOKBACK_MS,
+            latestCreatedAt = canonical.updatedAt,
+        )
+        return candidates.singleOrNull()?.messageId
     }
 
     private fun historyBlocks(

@@ -317,6 +317,137 @@ class LocalDeliveryStoreTest {
     }
 
     @Test
+    fun legacyHistoryWithoutClientIdRepairsUniqueOptimisticUserMessage() = runBlocking {
+        val clientId = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        val sentAt = Instant.parse("2026-07-14T16:00:00Z").toEpochMilli()
+        database.messages().upsert(
+            MessageEntity(
+                messageId = "user:$clientId",
+                clientMessageId = clientId,
+                sessionId = "mobile:test",
+                role = "user",
+                text = "旧版问题",
+                deliveryState = "sent",
+                createdAt = sentAt,
+                updatedAt = sentAt,
+            ),
+        )
+
+        store.applyEvent(
+            "server",
+            "device",
+            event(1, "history.page", buildJsonObject {
+                put("total", 1)
+                put("page", 1)
+                put("page_size", 10)
+                put("items", buildJsonArray {
+                    add(buildJsonObject {
+                        put("id", "mobile:test:user:canonical")
+                        put("session_key", "mobile:test")
+                        put("seq", 0)
+                        put("role", "user")
+                        put("content", "旧版问题")
+                        put("extra", buildJsonObject {})
+                        put("ts", "2026-07-14T16:00:09Z")
+                    })
+                })
+            }),
+            sentAt + 10_000,
+        )
+
+        assertEquals(1, database.messages().countForSession("mobile:test"))
+        assertEquals(null, database.messages().get("user:$clientId"))
+        assertEquals("旧版问题", database.messages().get("mobile:test:user:canonical")!!.text)
+    }
+
+    @Test
+    fun legacyHistoryDoesNotGuessBetweenRepeatedIdenticalMessages() = runBlocking {
+        val sentAt = Instant.parse("2026-07-14T16:00:00Z").toEpochMilli()
+        listOf("01ARZ3NDEKTSV4RRFFQ69G5FAV", "01ARZ3NDEKTSV4RRFFQ69G5FAW").forEachIndexed { index, clientId ->
+            database.messages().upsert(
+                MessageEntity(
+                    messageId = "user:$clientId",
+                    clientMessageId = clientId,
+                    sessionId = "mobile:test",
+                    role = "user",
+                    text = "重复问题",
+                    deliveryState = "sent",
+                    createdAt = sentAt + index,
+                    updatedAt = sentAt + index,
+                ),
+            )
+        }
+
+        store.applyEvent(
+            "server",
+            "device",
+            event(1, "history.page", buildJsonObject {
+                put("total", 1)
+                put("page", 1)
+                put("page_size", 10)
+                put("items", buildJsonArray {
+                    add(buildJsonObject {
+                        put("id", "mobile:test:user:canonical")
+                        put("session_key", "mobile:test")
+                        put("seq", 0)
+                        put("role", "user")
+                        put("content", "重复问题")
+                        put("extra", buildJsonObject {})
+                        put("ts", "2026-07-14T16:00:09Z")
+                    })
+                })
+            }),
+            sentAt + 10_000,
+        )
+
+        assertEquals(3, database.messages().countForSession("mobile:test"))
+    }
+
+    @Test
+    fun legacyHistoryDoesNotConsumeANewerIdenticalUserMessage() = runBlocking {
+        val clientId = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        val historyAt = Instant.parse("2026-07-14T16:00:00Z").toEpochMilli()
+        database.messages().upsert(
+            MessageEntity(
+                messageId = "user:$clientId",
+                clientMessageId = clientId,
+                sessionId = "mobile:test",
+                role = "user",
+                text = "稍后又问的相同问题",
+                deliveryState = "sent",
+                createdAt = historyAt + 30 * 60 * 1_000,
+                updatedAt = historyAt + 30 * 60 * 1_000,
+            ),
+        )
+
+        store.applyEvent(
+            "server",
+            "device",
+            event(1, "history.page", buildJsonObject {
+                put("total", 1)
+                put("page", 1)
+                put("page_size", 10)
+                put("items", buildJsonArray {
+                    add(buildJsonObject {
+                        put("id", "mobile:test:user:old-canonical")
+                        put("session_key", "mobile:test")
+                        put("seq", 0)
+                        put("role", "user")
+                        put("content", "稍后又问的相同问题")
+                        put("extra", buildJsonObject {})
+                        put("ts", "2026-07-14T16:00:00Z")
+                    })
+                })
+            }),
+            historyAt + 30 * 60 * 1_000,
+        )
+
+        assertEquals(2, database.messages().countForSession("mobile:test"))
+        assertNotNull(database.messages().get("user:$clientId"))
+        assertNotNull(database.messages().get("mobile:test:user:old-canonical"))
+    }
+
+    @Test
     fun gapResetClearsOnlyServerProjectionAndPreservesLocalWork() = runBlocking {
         val clientId = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
         database.messages().upsert(

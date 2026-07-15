@@ -151,9 +151,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 text = message.text,
                 deliveryLabel = when (message.deliveryState) {
                     "pending" -> "待发送"
-                    "sent" -> "已发送"
+                    "sent", "complete" -> "已发送"
                     "failed" -> "发送失败"
-                    else -> message.deliveryState
+                    else -> error("未知用户消息状态: ${message.deliveryState}")
                 },
                 attachments = graph.attachmentLinks.toMessageAttachmentUi(),
             )

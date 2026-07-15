@@ -73,6 +73,26 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE messageId = :messageId")
     suspend fun get(messageId: String): MessageEntity?
 
+    @Query(
+        """
+        SELECT * FROM messages
+        WHERE sessionId = :sessionId
+          AND role = 'user'
+          AND text = :text
+          AND messageId LIKE 'user:%'
+          AND clientMessageId IS NOT NULL
+          AND deliveryState IN ('sent', 'complete')
+          AND createdAt BETWEEN :earliestCreatedAt AND :latestCreatedAt
+        ORDER BY createdAt, messageId
+        """,
+    )
+    suspend fun findLegacyOptimisticUsers(
+        sessionId: String,
+        text: String,
+        earliestCreatedAt: Long,
+        latestCreatedAt: Long,
+    ): List<MessageEntity>
+
     @Query("SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId")
     suspend fun countForSession(sessionId: String): Int
 
