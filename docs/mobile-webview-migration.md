@@ -113,3 +113,12 @@ ANDROID_HOME=/home/huashen/Android/Sdk clients/android/gradlew -p clients/androi
 ```
 
 历史原生实现可由标签 `archive/mobile-native-0.6.2-20260715` 恢复。
+
+## 0.7.0 发布结果
+
+- 完整服务端测试：`2238 passed`
+- 前端：typecheck、lint、dashboard/chat/plugin production build 通过
+- Android：release unit、lint、R8、assemble 通过
+- APK：v2 签名校验通过，证书 SHA-256 为 `49bf31ed5c54c642d6f4fdd30a5310a8cb70e67666ad25d711b5f0e084e240bc`
+- 私有发布：<https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.0>
+- ADB 安装：发布时没有已连接设备，未在本轮远程安装
