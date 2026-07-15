@@ -170,4 +170,5 @@ Mobile Web 插件 RPC 现在沿渲染槽位显式传递 `session_id` 与活动 `
 插件明确拒绝参数时，服务端返回持久化的 `plugin_invalid_request` RPC 错误；该错误只影响对应插件面板，不再穿透 ASGI 并关闭整条 WebSocket。
 
 - APK：`0.7.5`（versionCode 14），8,255,242 bytes，SHA-256 `fcfdf17741d5e64c435c2df69343fdfb511fbb71690c7d48901e01ea148e8a4f`
+- 私有发布：<https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.5>
 - 真机验收：Pixel 9 Pro XL 覆盖安装成功并保留配对数据，系统报告 versionCode 14 / versionName 0.7.5；重新连接后完成全量历史同步，连接状态正常，旧消息不再显示跨 session 错误
