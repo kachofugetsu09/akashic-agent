@@ -12,6 +12,8 @@ import com.akashic.mobile.ui.conversation.MessageUi
 import com.akashic.mobile.ui.conversation.ProcessBlockKind
 import com.akashic.mobile.ui.conversation.ProcessBlockState
 import com.akashic.mobile.ui.conversation.ProcessBlockUi
+import com.akashic.mobile.ui.conversation.PluginUiAssetUi
+import com.akashic.mobile.ui.conversation.PluginUiResponseUi
 import com.akashic.mobile.ui.conversation.SessionUi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -23,7 +25,24 @@ data class MobileWebSnapshot(
     val sessions: List<MobileWebSession>,
     val selectedSessionId: String?,
     val messages: List<MobileWebMessage>,
+    val pluginResponses: List<MobileWebPluginResponse>,
     val composer: MobileWebComposer,
+)
+
+@Serializable
+data class MobileWebPluginAsset(
+    val id: String,
+    val revision: String,
+    val sha256: String,
+    val module: String,
+    val stylesheet: String,
+)
+
+@Serializable
+data class MobileWebPluginResponse(
+    val requestId: String,
+    val resultJson: String?,
+    val error: String?,
 )
 
 @Serializable
@@ -132,6 +151,7 @@ fun ConversationUiState.toMobileWebSnapshot(): MobileWebSnapshot = MobileWebSnap
     sessions = sessions.map(SessionUi::toMobileWebSession),
     selectedSessionId = selectedSessionId,
     messages = messages.map(MessageUi::toMobileWebMessage),
+    pluginResponses = pluginUiResponses.map(PluginUiResponseUi::toMobileWebPluginResponse),
     composer = MobileWebComposer(
         attachments = attachments.map(ComposerAttachmentUi::toMobileWebAttachment),
         commands = commands.map(CommandUi::toMobileWebCommand),
@@ -143,6 +163,15 @@ fun ConversationUiState.toMobileWebSnapshot(): MobileWebSnapshot = MobileWebSnap
         canSend = canSend,
     ),
 )
+
+private fun PluginUiAssetUi.toMobileWebPluginAsset() =
+    MobileWebPluginAsset(id, revision, sha256, module, stylesheet)
+
+fun ConversationUiState.toMobileWebPluginAssets(): List<MobileWebPluginAsset> =
+    pluginUiAssets.map(PluginUiAssetUi::toMobileWebPluginAsset)
+
+private fun PluginUiResponseUi.toMobileWebPluginResponse() =
+    MobileWebPluginResponse(requestId, resultJson, error)
 
 private fun SessionUi.toMobileWebSession() = MobileWebSession(sessionId, title)
 

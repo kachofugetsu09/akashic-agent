@@ -18,7 +18,7 @@ from bus.events_lifecycle import (
     ToolCallStarted,
     TurnStarted,
 )
-from agent.plugins.mobile_ui import MobileUiPluginUnavailable
+from agent.plugins.mobile_ui import MobileUiPluginUnavailable, MobileUiRpcTimeout
 from infra.channels.contract import ChannelContext
 from infra.mobile_realtime.attachments import (
     AttachmentChunk,
@@ -335,6 +335,8 @@ class MobileRealtimeChannel:
             )
         except MobileUiPluginUnavailable as error:
             raise MobileCommandError("plugin_unavailable", f"插件不可用: {plugin_id}") from error
+        except MobileUiRpcTimeout as error:
+            raise MobileCommandError("plugin_timeout", str(error)) from error
         return CommandReply(type="plugin.ui.call.ok", payload={"result": result})
 
     def _require_mobile_ui_provider(self) -> MobileUiProvider:

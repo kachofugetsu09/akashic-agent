@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from typing import Any, cast
@@ -43,6 +44,14 @@ class AkashaPlugin(Plugin):
     def dashboard_module(cls) -> str | None:
         return "dashboard.py"
 
+    @classmethod
+    def mobile_ui_module(cls) -> str | None:
+        return "mobile_ui.js"
+
+    @classmethod
+    def mobile_ui_stylesheet(cls) -> str | None:
+        return "mobile_ui.css"
+
     name = "akasha"
 
     def telegram_bot_commands(self) -> list[tuple[str, str]]:
@@ -81,6 +90,54 @@ class AkashaPlugin(Plugin):
         if raw is None:
             return "暂无 Akasha 检索诊断记录。"
         return _render_query_detail(raw)
+
+    async def mobile_ui_call(
+        self,
+        method: str,
+        payload: dict[str, object],
+        *,
+        session_id: str | None,
+        turn_id: str | None,
+    ) -> dict[str, object]:
+        """返回当前 mobile 会话最近一次左右脑召回。"""
+
+        if method != "recall.current" or payload:
+            raise ValueError(f"Akasha mobile UI 方法无效: {method}")
+        if session_id is None:
+            raise ValueError("Akasha recall.current 需要 session_id")
+        return await asyncio.to_thread(self._load_mobile_recall, session_id)
+
+    def _load_mobile_recall(self, session_id: str) -> dict[str, object]:
+        """在线程中读取最近一次 Akasha 召回。"""
+
+        workspace = self.context.workspace
+        if workspace is None:
+            raise RuntimeError("Akasha workspace 不存在")
+        store = AkashaStore(
+            resolve_akasha_db_path(workspace=workspace, akasha_config=load_akasha_config())
+        )
+        try:
+            rows, _ = store.list_query_logs(session_key=session_id, page=1, page_size=1)
+            raw = store.get_query_log(str(rows[0]["query_id"])) if rows else None
+        finally:
+            store.close()
+        if raw is None:
+            return {"left": [], "right": []}
+        return {
+            "left": _mobile_recall_items(_json_items(raw.get("dense_items_json"))),
+            "right": _mobile_recall_items(_json_items(raw.get("ripple_items_json"))),
+        }
+
+
+def _mobile_recall_items(items: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [
+        {
+            "summary": _clip(str(item.get("user_message") or item.get("summary") or ""), 120),
+            "preview": _clip(str(item.get("assistant_preview") or ""), 100),
+            "score": round(_float(item.get("score")), 3),
+        }
+        for item in items[:6]
+    ]
 
 
 def _render_query_detail(raw: dict[str, object]) -> str:

@@ -20,6 +20,8 @@ import com.akashic.mobile.ui.conversation.MessageAttachmentUi
 import com.akashic.mobile.ui.conversation.ProcessBlockKind
 import com.akashic.mobile.ui.conversation.ProcessBlockState
 import com.akashic.mobile.ui.conversation.ProcessBlockUi
+import com.akashic.mobile.ui.conversation.PluginUiAssetUi
+import com.akashic.mobile.ui.conversation.PluginUiResponseUi
 import com.akashic.mobile.ui.conversation.SessionUi
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.SharingStarted
@@ -90,6 +92,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             },
             commands = session.commands.map { CommandUi(it.command, it.description) },
+            pluginUiAssets = session.pluginUiAssets.map {
+                PluginUiAssetUi(it.id, it.revision, it.sha256, it.module, it.stylesheet)
+            },
+            pluginUiResponses = session.pluginUiResponses.map {
+                PluginUiResponseUi(it.requestId, it.result?.toString(), it.error)
+            },
             isStreaming = graph.any { it.message.deliveryState == "streaming" },
             isResyncing = session.connection.phase == ConnectionPhase.SYNCING,
             canResync = session.connection.phase == ConnectionPhase.READY && session.activeTurnId == null,
@@ -126,6 +134,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun sendMessage(value: String) = container.realtimeSession.sendMessage(value)
 
     fun sendCommand(value: String) = container.realtimeSession.sendCommand(value)
+
+    fun callPluginUi(requestId: String, pluginId: String, method: String, payloadJson: String) =
+        container.realtimeSession.callPluginUi(requestId, pluginId, method, payloadJson)
+
+    fun acknowledgePluginUiResponses(requestIds: Set<String>) =
+        container.realtimeSession.acknowledgePluginUiResponses(requestIds)
 
     fun stopCurrentTurn() = container.realtimeSession.stopCurrentTurn()
 

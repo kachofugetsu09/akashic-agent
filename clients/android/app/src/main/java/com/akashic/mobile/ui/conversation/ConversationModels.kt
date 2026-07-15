@@ -10,12 +10,28 @@ data class ConversationUiState(
     val messages: List<MessageUi>,
     val attachments: List<ComposerAttachmentUi>,
     val commands: List<CommandUi>,
+    val pluginUiAssets: List<PluginUiAssetUi> = emptyList(),
+    val pluginUiResponses: List<PluginUiResponseUi> = emptyList(),
     val isStreaming: Boolean,
     val isResyncing: Boolean,
     val canResync: Boolean,
     val isStopping: Boolean,
     val canStop: Boolean,
     val canSend: Boolean,
+)
+
+data class PluginUiAssetUi(
+    val id: String,
+    val revision: String,
+    val sha256: String,
+    val module: String,
+    val stylesheet: String,
+)
+
+data class PluginUiResponseUi(
+    val requestId: String,
+    val resultJson: String?,
+    val error: String?,
 )
 
 data class ComposerAttachmentUi(

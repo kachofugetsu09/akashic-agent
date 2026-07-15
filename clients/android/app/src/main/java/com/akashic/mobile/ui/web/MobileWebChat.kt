@@ -28,6 +28,7 @@ import com.akashic.mobile.ui.conversation.MessageUi
 import java.io.File
 import java.io.FileNotFoundException
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -37,6 +38,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 
 private const val MOBILE_WEB_URL = "https://appassets.androidplatform.net/assets/mobile.html"
@@ -59,6 +62,8 @@ fun MobileWebChat(
     onDismissError: () -> Unit,
     onSend: (String) -> Unit,
     onSendCommand: (String) -> Unit,
+    onPluginUiCall: (String, String, String, String) -> Unit,
+    onPluginUiResponsesAcknowledged: (Set<String>) -> Unit,
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -83,6 +88,8 @@ fun MobileWebChat(
             onDismissError = onDismissError,
             onSend = onSend,
             onSendCommand = onSendCommand,
+            onPluginUiCall = onPluginUiCall,
+            onPluginUiResponsesAcknowledged = onPluginUiResponsesAcknowledged,
             onStop = onStop,
         ),
     )
@@ -107,7 +114,7 @@ fun MobileWebChat(
                 addJavascriptInterface(
                     MobileWebBridge(
                         dispatch = { work -> post { work(callbacks) } },
-                        requestSnapshot = { post { snapshotPump?.submit(latestState) } },
+                        requestSnapshot = { post { snapshotPump?.request(latestState) } },
                     ),
                     "AkashicNative",
                 )
@@ -143,6 +150,8 @@ private data class MobileWebCallbacks(
     val onDismissError: () -> Unit,
     val onSend: (String) -> Unit,
     val onSendCommand: (String) -> Unit,
+    val onPluginUiCall: (String, String, String, String) -> Unit,
+    val onPluginUiResponsesAcknowledged: (Set<String>) -> Unit,
     val onStop: () -> Unit,
 )
 
@@ -203,6 +212,24 @@ private class MobileWebBridge(
 
     @JavascriptInterface
     fun sendCommand(command: String) = dispatch { it.onSendCommand(command) }
+
+    @JavascriptInterface
+    fun callPluginUi(requestId: String, pluginId: String, method: String, payloadJson: String) =
+        dispatch { it.onPluginUiCall(requestId, pluginId, method, payloadJson) }
+
+    @JavascriptInterface
+    fun acknowledgePluginUiResponses(requestIdsJson: String) {
+        if (requestIdsJson.toByteArray(Charsets.UTF_8).size > 64 * 1024) return
+        val requestIds = try {
+            Json.decodeFromString<List<String>>(requestIdsJson).toSet()
+        } catch (_: SerializationException) {
+            return
+        } catch (_: IllegalArgumentException) {
+            return
+        }
+        if (requestIds.size > 512 || requestIds.any { it.length !in 1..128 }) return
+        dispatch { it.onPluginUiResponsesAcknowledged(requestIds) }
+    }
 
     @JavascriptInterface
     fun stopTurn() = dispatch { it.onStop() }
@@ -285,6 +312,10 @@ private fun WebView.pushSnapshot(snapshotJson: String) {
     evaluateJavascript("window.AkashicMobile?.receiveSnapshot($snapshotJson)", null)
 }
 
+private fun WebView.pushPluginAssets(assetsJson: String) {
+    evaluateJavascript("window.AkashicMobile?.receivePluginAssets($assetsJson)", null)
+}
+
 private class MobileSnapshotPump(
     private val webView: WebView,
     private val mediaRegistry: MobileMediaRegistry,
@@ -292,6 +323,8 @@ private class MobileSnapshotPump(
     private val json = Json { explicitNulls = false }
     private val states = Channel<ConversationUiState>(Channel.CONFLATED)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var pluginSignature: String? = null
+    private val forcePluginAssets = AtomicBoolean(false)
 
     init {
         scope.launch {
@@ -302,8 +335,20 @@ private class MobileSnapshotPump(
                     latest = states.tryReceive().getOrNull() ?: break
                 }
                 val snapshotJson = json.encodeToString(latest.toMobileWebSnapshot())
+                val nextPluginSignature = latest.pluginUiAssets.joinToString("|") { "${it.id}:${it.sha256}" }
+                val pluginAssetsJson = if (
+                    forcePluginAssets.getAndSet(false) || nextPluginSignature != pluginSignature
+                ) {
+                    json.encodeToString(latest.toMobileWebPluginAssets())
+                } else {
+                    null
+                }
                 mediaRegistry.replace(latest.mediaResources())
                 withContext(Dispatchers.Main.immediate) {
+                    if (pluginAssetsJson != null) {
+                        webView.pushPluginAssets(pluginAssetsJson)
+                        pluginSignature = nextPluginSignature
+                    }
                     webView.pushSnapshot(snapshotJson)
                 }
             }
@@ -312,6 +357,11 @@ private class MobileSnapshotPump(
 
     fun submit(state: ConversationUiState) {
         states.trySend(state).getOrThrow()
+    }
+
+    fun request(state: ConversationUiState) {
+        forcePluginAssets.set(true)
+        submit(state)
     }
 
     fun cancel() {

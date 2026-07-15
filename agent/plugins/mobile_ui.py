@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping
 from typing import Protocol, cast
@@ -8,6 +9,8 @@ from agent.plugins.base import Plugin
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import RuntimeSnapshot
+
+MOBILE_UI_RPC_TIMEOUT_SECONDS = 20.0
 
 
 class MobileUiProvider(Protocol):
@@ -70,12 +73,16 @@ class PluginMobileUiProvider:
             if generation.contributions.mobile_ui_asset is None:
                 raise MobileUiPluginUnavailable(plugin_id)
             plugin = cast(Plugin, generation.instance)
-            result = await plugin.mobile_ui_call(
-                method,
-                payload,
-                session_id=session_id,
-                turn_id=turn_id,
-            )
+            try:
+                async with asyncio.timeout(MOBILE_UI_RPC_TIMEOUT_SECONDS):
+                    result = await plugin.mobile_ui_call(
+                        method,
+                        payload,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                    )
+            except TimeoutError as error:
+                raise MobileUiRpcTimeout(f"插件 mobile UI RPC 超时: {plugin_id}.{method}") from error
             if not isinstance(result, Mapping):
                 raise RuntimeError(f"插件 mobile UI RPC 必须返回对象: {plugin_id}.{method}")
             normalized = cast(dict[str, object], dict(result))
@@ -115,4 +122,8 @@ class PluginMobileUiProvider:
 
 
 class MobileUiPluginUnavailable(LookupError):
+    pass
+
+
+class MobileUiRpcTimeout(TimeoutError):
     pass

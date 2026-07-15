@@ -2,11 +2,17 @@ from __future__ import annotations
 
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, cast
+import asyncio
 
 import pytest
 
-from agent.plugins.mobile_ui import MobileUiPluginUnavailable, PluginMobileUiProvider
+from agent.plugins.mobile_ui import (
+    MobileUiPluginUnavailable,
+    MobileUiRpcTimeout,
+    PluginMobileUiProvider,
+)
 from agent.plugins.generation import MobileUiAsset
+import agent.plugins.mobile_ui as mobile_ui_module
 
 
 class _MobilePlugin:
@@ -108,3 +114,27 @@ def test_mobile_ui_rejects_inactive_plugin() -> None:
 
     with pytest.raises(MobileUiPluginUnavailable, match="sample"):
         provider.asset("sample@github")
+
+
+@pytest.mark.asyncio
+async def test_mobile_ui_rpc_timeout_releases_snapshot_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = _provider()
+    blocker = asyncio.Event()
+
+    async def never_returns(*args: object, **kwargs: object) -> dict[str, object]:
+        await blocker.wait()
+        return {}
+
+    cast(Any, provider)._manager.current_snapshot.generations[
+        "sample@github"
+    ].instance.mobile_ui_call = never_returns
+    monkeypatch.setattr(mobile_ui_module, "MOBILE_UI_RPC_TIMEOUT_SECONDS", 0.01)
+
+    with pytest.raises(MobileUiRpcTimeout):
+        await provider.call(
+            "sample@github",
+            "recall.current",
+            {},
+            session_id="mobile:test",
+            turn_id="turn-1",
+        )

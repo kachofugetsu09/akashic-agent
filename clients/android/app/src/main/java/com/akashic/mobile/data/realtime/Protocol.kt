@@ -181,6 +181,25 @@ data class RemoteCommandItem(
 )
 
 @Serializable
+data class MobileUiCatalogPayload(val items: List<MobileUiCatalogItem>)
+
+@Serializable
+data class MobileUiCatalogItem(
+    val id: String,
+    val revision: String,
+    val sha256: String,
+)
+
+@Serializable
+data class MobileUiAssetPayload(
+    val id: String,
+    val revision: String,
+    val sha256: String,
+    val module: String,
+    val stylesheet: String,
+)
+
+@Serializable
 data class RemoteSessionSummary(
     @SerialName("session_id") val sessionId: String,
     val title: String,
@@ -238,6 +257,9 @@ object ProtocolCodec {
             "attachment.finish",
             "attachment.download",
             "command.list",
+            "plugin.ui.list",
+            "plugin.ui.asset",
+            "plugin.ui.call",
             "device.update",
             "ping",
         ),

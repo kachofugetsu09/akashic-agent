@@ -728,6 +728,30 @@ async def test_plugin_ui_reply_size_is_checked_before_receipt_completion(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_plugin_ui_timeout_becomes_durable_error_reply(tmp_path: Path) -> None:
+    class _TimeoutProvider:
+        async def call(self, *args: object, **kwargs: object) -> dict[str, object]:
+            raise channel_module.MobileUiRpcTimeout("插件 mobile UI RPC 超时")
+
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
+    channel.bind_mobile_ui_provider(cast(Any, _TimeoutProvider()))
+    frame = _generic_frame(
+        frame_id="01ARZ3NDEKTSV4RRFFQ69G5FB2",
+        command_type="plugin.ui.call",
+        payload={"plugin_id": "sample@github", "method": "recall.current", "payload": {}},
+    )
+
+    reply = await channel.handle_command(device_id=device_id, frame=frame)
+
+    assert reply.type == "plugin.ui.call.error"
+    assert reply.payload["code"] == "plugin_timeout"
+    storage.close()
+
+
+@pytest.mark.asyncio
 async def test_turn_stop_rejects_missing_or_stale_turn_identity(tmp_path: Path) -> None:
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     device_id = uuid4().hex

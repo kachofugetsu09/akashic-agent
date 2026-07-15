@@ -26,8 +26,9 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { ChevronDown, Wrench } from "lucide-react";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import type {
+  AgentBlock,
   ChatMessage,
   MessageAttachment,
   ThinkingBlock,
@@ -37,9 +38,15 @@ import type {
 export function ChatMessageView({
   message,
   attachmentContent,
+  processStartContent,
+  beforeProcessBlock,
+  answerEndContent,
 }: {
   message: ChatMessage;
   attachmentContent?: ReactNode;
+  processStartContent?: ReactNode;
+  beforeProcessBlock?: (block: AgentBlock, index: number) => ReactNode;
+  answerEndContent?: ReactNode;
 }) {
   const attachments = attachmentContent !== undefined
     ? attachmentContent
@@ -60,9 +67,16 @@ export function ChatMessageView({
   return (
     <Message from="assistant" className="message-row agent-row">
       <MessageContent className="agent-content">
-        {message.blocks.length ? <ProcessTrace message={message} /> : null}
+        {message.blocks.length ? (
+          <ProcessTrace
+            message={message}
+            startContent={processStartContent}
+            beforeBlock={beforeProcessBlock}
+          />
+        ) : null}
         {attachments}
         {message.content ? <MessageResponse>{message.content}</MessageResponse> : null}
+        {answerEndContent}
       </MessageContent>
     </Message>
   );
@@ -141,7 +155,15 @@ function AttachmentHover({ attachment }: { attachment: MessageAttachment }) {
   );
 }
 
-function ProcessTrace({ message }: { message: ChatMessage }) {
+function ProcessTrace({
+  message,
+  startContent,
+  beforeBlock,
+}: {
+  message: ChatMessage;
+  startContent?: ReactNode;
+  beforeBlock?: (block: AgentBlock, index: number) => ReactNode;
+}) {
   return (
     <Reasoning
       className="process-trace"
@@ -153,20 +175,22 @@ function ProcessTrace({ message }: { message: ChatMessage }) {
       <CollapsibleContent className="process-content">
         <div className="process-line" aria-hidden="true" />
         <div className="process-items">
+          {startContent}
           {message.blocks.map((block, index) => (
-            block.kind === "thinking" ? (
-              <ThinkingStep
-                key={`thinking-${index}`}
-                block={block}
-                active={!!message.streaming && index === message.blocks.length - 1}
-              />
-            ) : (
-              <ToolStep
-                key={block.callId}
-                block={block}
-                active={block.status === "input-available"}
-              />
-            )
+            <Fragment key={block.kind === "thinking" ? `thinking-${index}` : block.callId}>
+              {beforeBlock?.(block, index)}
+              {block.kind === "thinking" ? (
+                <ThinkingStep
+                  block={block}
+                  active={!!message.streaming && index === message.blocks.length - 1}
+                />
+              ) : (
+                <ToolStep
+                  block={block}
+                  active={block.status === "input-available"}
+                />
+              )}
+            </Fragment>
           ))}
         </div>
       </CollapsibleContent>

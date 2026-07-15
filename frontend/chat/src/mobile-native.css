@@ -140,6 +140,21 @@ button {
   display: contents;
 }
 
+.mobile-plugin-load-error {
+  padding: 8px 20px;
+  color: var(--m-error);
+  background: var(--m-error-container);
+  font-size: .8125rem;
+  line-height: 1.35;
+}
+
+.mobile-plugin-host--error {
+  padding: 8px 0;
+  color: var(--m-error);
+  font-size: .8125rem;
+  line-height: 1.4;
+}
+
 .mobile-icon-button {
   display: grid;
   width: 44px;

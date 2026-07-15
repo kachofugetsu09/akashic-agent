@@ -32,6 +32,12 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { ChatMessageView } from "./message-view";
+import {
+  MobilePluginSlot,
+  receiveMobilePluginAssets,
+  settleMobilePluginResponses,
+  type MobilePluginAsset,
+} from "./mobile-plugin-runtime";
 import type { AgentBlock, ChatMessage } from "./main";
 import "./mobile-native.css";
 
@@ -80,6 +86,7 @@ export interface MobileSnapshot {
   sessions: { id: string; title: string }[];
   selectedSessionId?: string;
   messages: MobileMessage[];
+  pluginResponses: { requestId: string; resultJson?: string; error?: string }[];
   composer: {
     attachments: MobileAttachment[];
     commands: { command: string; description: string }[];
@@ -109,6 +116,8 @@ interface NativeBridge {
   sendMessage(text: string): void;
   sendCommand(command: string): void;
   stopTurn(): void;
+  callPluginUi(requestId: string, pluginId: string, method: string, payloadJson: string): void;
+  acknowledgePluginUiResponses(requestIdsJson: string): void;
 }
 
 declare global {
@@ -116,6 +125,7 @@ declare global {
     AkashicNative?: NativeBridge;
     AkashicMobile?: {
       receiveSnapshot(snapshot: MobileSnapshot): void;
+      receivePluginAssets(assets: MobilePluginAsset[]): void;
     };
   }
 }
@@ -126,6 +136,7 @@ function MobileNativeApp() {
   const [commandsOpen, setCommandsOpen] = useState(false);
   const [input, setInput] = useState("");
   const [stopRequested, setStopRequested] = useState(false);
+  const [pluginLoadError, setPluginLoadError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const drawerToggleRef = useRef<HTMLButtonElement>(null);
 
@@ -134,6 +145,7 @@ function MobileNativeApp() {
     let frame: number | null = null;
     window.AkashicMobile = {
       receiveSnapshot(next) {
+        settleMobilePluginResponses(next.pluginResponses);
         pending = next;
         if (frame !== null) return;
         frame = requestAnimationFrame(() => {
@@ -141,6 +153,15 @@ function MobileNativeApp() {
           setSnapshot(pending);
           pending = null;
         });
+      },
+      receivePluginAssets(assets) {
+        void receiveMobilePluginAssets(assets).then(
+          () => setPluginLoadError(null),
+          (error: unknown) => {
+            console.error("[mobile] failed to load plugin assets", error);
+            setPluginLoadError(error instanceof Error ? error.message : "插件界面加载失败");
+          },
+        );
       },
     };
     window.AkashicNative?.requestSnapshot();
@@ -160,6 +181,9 @@ function MobileNativeApp() {
     () => snapshot?.messages.map(toChatMessage) ?? [],
     [snapshot?.messages],
   );
+  const pluginTargetMessageId = [...(snapshot?.messages ?? [])]
+    .reverse()
+    .find((message) => message.role === "assistant")?.id;
 
   if (!snapshot) {
     return (
@@ -217,6 +241,11 @@ function MobileNativeApp() {
         />
 
         <div className="mobile-main-content" inert={drawerOpen ? true : undefined}>
+          {pluginLoadError ? (
+            <div className="mobile-plugin-load-error" role="status">
+              插件界面暂不可用 · {pluginLoadError}
+            </div>
+          ) : null}
           <Conversation className="mobile-conversation">
             <ConversationContent className="mobile-conversation__content">
             {messages.length === 0 ? (
@@ -233,6 +262,28 @@ function MobileNativeApp() {
                   <ChatMessageView
                     message={message}
                     attachmentContent={<MobileMessageAttachments attachments={snapshot.messages[index].attachments} />}
+                    processStartContent={message.id === pluginTargetMessageId ? (
+                      <MobilePluginSlot
+                        name="turn.before_reasoning"
+                        sessionId={snapshot.selectedSessionId}
+                        messageId={message.id}
+                      />
+                    ) : undefined}
+                    beforeProcessBlock={(block) => message.id === pluginTargetMessageId && block.kind === "tool" ? (
+                      <MobilePluginSlot
+                        name="turn.before_tool"
+                        sessionId={snapshot.selectedSessionId}
+                        messageId={message.id}
+                        block={block}
+                      />
+                    ) : null}
+                    answerEndContent={message.id === pluginTargetMessageId ? (
+                      <MobilePluginSlot
+                        name="turn.after_answer"
+                        sessionId={snapshot.selectedSessionId}
+                        messageId={message.id}
+                      />
+                    ) : undefined}
                   />
                   <MessageMeta source={snapshot.messages[index]} />
                 </React.Fragment>
@@ -314,6 +365,7 @@ function MobileDrawer({ open, snapshot, onClose }: { open: boolean; snapshot: Mo
             </button>
           ))}
         </nav>
+        <MobilePluginSlot name="drawer.panel" sessionId={snapshot.selectedSessionId} />
         <div className="mobile-drawer__actions">
           <button className="drawer-action" type="button" disabled={!snapshot.composer.canResync} onClick={() => {
             if (window.confirm("清除本机已同步消息和附件缓存，并从电脑重新拉取？连接状态会保留。")) {

@@ -113,6 +113,8 @@ class MainActivity : ComponentActivity() {
                             onDismissError = viewModel::dismissError,
                             onSend = viewModel::sendMessage,
                             onSendCommand = viewModel::sendCommand,
+                            onPluginUiCall = viewModel::callPluginUi,
+                            onPluginUiResponsesAcknowledged = viewModel::acknowledgePluginUiResponses,
                             onStop = viewModel::stopCurrentTurn,
                             modifier = Modifier.fillMaxSize(),
                         )
