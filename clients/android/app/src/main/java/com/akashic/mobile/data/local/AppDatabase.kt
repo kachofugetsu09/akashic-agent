@@ -19,7 +19,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MediaAttachmentEntity::class,
         MessageAttachmentEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -42,7 +42,7 @@ abstract class AppDatabase : RoomDatabase() {
             context.applicationContext,
             AppDatabase::class.java,
             "akashic-mobile.db",
-        ).addMigrations(MIGRATION_1_2).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -84,6 +84,12 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_message_attachments_attachmentId` ON `message_attachments` (`attachmentId`)")
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_message_attachments_messageId_ordinal` ON `message_attachments` (`messageId`, `ordinal`)")
+            }
+        }
+
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `serverSeq` INTEGER")
             }
         }
     }

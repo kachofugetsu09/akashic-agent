@@ -89,6 +89,7 @@ class MainActivity : ComponentActivity() {
                             onSelectSession = viewModel::selectSession,
                             onNewSession = viewModel::createSession,
                             onRestartPairing = viewModel::restartPairing,
+                            onReloadFromServer = viewModel::reloadFromServer,
                             onAttach = { attachmentPicker.launch(arrayOf("*/*")) },
                             onRemoveAttachment = viewModel::removeAttachment,
                             onRetryAttachment = viewModel::retryAttachment,

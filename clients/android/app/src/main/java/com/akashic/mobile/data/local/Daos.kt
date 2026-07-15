@@ -61,7 +61,10 @@ interface MessageDao {
     @Upsert
     suspend fun upsertBlocks(blocks: List<TurnBlockEntity>)
 
-    @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY createdAt, messageId")
+    @Query(
+        "SELECT * FROM messages WHERE sessionId = :sessionId " +
+            "ORDER BY CASE WHEN serverSeq IS NULL THEN 1 ELSE 0 END, serverSeq, createdAt, messageId",
+    )
     fun observeMessages(sessionId: String): Flow<List<MessageEntity>>
 
     @Query("SELECT * FROM turn_blocks WHERE messageId = :messageId ORDER BY ordinal")
@@ -123,6 +126,18 @@ interface MessageDao {
     )
     suspend fun deleteServerProjection(serverId: String): Int
 
+    @Query(
+        """
+        DELETE FROM messages
+        WHERE sessionId IN (SELECT sessionId FROM conversations WHERE serverId = :serverId)
+          AND NOT (
+            clientMessageId IS NOT NULL
+            AND deliveryState IN ('pending', 'failed')
+          )
+        """,
+    )
+    suspend fun deleteReloadableServerCache(serverId: String): Int
+
     @Query("UPDATE messages SET deliveryState = :state, updatedAt = :updatedAt WHERE clientMessageId = :clientMessageId")
     suspend fun updateDelivery(clientMessageId: String, state: String, updatedAt: Long): Int
 
@@ -136,7 +151,10 @@ interface MessageDao {
     suspend fun completeRunningThinking(messageId: String, updatedAt: Long): Int
 
     @Transaction
-    @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY createdAt, messageId")
+    @Query(
+        "SELECT * FROM messages WHERE sessionId = :sessionId " +
+            "ORDER BY CASE WHEN serverSeq IS NULL THEN 1 ELSE 0 END, serverSeq, createdAt, messageId",
+    )
     fun observeMessageGraph(sessionId: String): Flow<List<MessageWithBlocks>>
 }
 

@@ -246,6 +246,56 @@ class RealtimeSession(
         }
     }
 
+    /** 保留配对身份，清除服务端投影后重新拉取全部手机会话。 */
+    fun reloadFromServer() {
+        scope.launch {
+            mutex.withLock {
+                // 1. 只允许稳定空闲连接发起重建
+                val currentProfile = requireNotNull(profile) { "Pair a server before reloading history" }
+                check(mutableState.value.connection.phase == ConnectionPhase.READY) {
+                    "History reload requires a ready connection"
+                }
+                check(mutableState.value.activeTurnId == null) { "History reload cannot interrupt an active turn" }
+                mutableState.value = mutableState.value.copy(
+                    connection = mutableState.value.connection.copy(phase = ConnectionPhase.SYNCING),
+                    errorMessage = null,
+                )
+
+                // 2. 清理本地投影；即使附件文件清理失败，也继续恢复消息视图
+                var cleanupHandled = false
+                val cleanupError = try {
+                    deliveryStore.clearReloadableCache(
+                        serverId = currentProfile.serverId,
+                        preservedSessionId = mutableState.value.currentSessionId,
+                    )
+                    cleanupHandled = true
+                    null
+                } catch (error: IOException) {
+                    cleanupHandled = true
+                    "部分附件缓存未清理：${error.message}"
+                } catch (error: SecurityException) {
+                    cleanupHandled = true
+                    "附件缓存路径不安全：${error.message}"
+                } catch (error: SQLiteException) {
+                    cleanupHandled = true
+                    "本地消息缓存清理失败：${error.message}"
+                } finally {
+                    if (!cleanupHandled) {
+                        mutableState.value = mutableState.value.copy(
+                            connection = mutableState.value.connection.copy(phase = ConnectionPhase.READY),
+                        )
+                    }
+                }
+
+                // 3. 沿现有认证连接重新获取会话目录和完整历史
+                beginResetRebuild()
+                if (cleanupError != null) {
+                    mutableState.value = mutableState.value.copy(errorMessage = cleanupError)
+                }
+            }
+        }
+    }
+
     /** 把系统文档复制为可跨重启续传的附件草稿。 */
     fun addAttachments(uris: List<Uri>) {
         scope.launch {
@@ -812,6 +862,7 @@ class RealtimeSession(
                     mutableState.value = mutableState.value.copy(
                         errorMessage = envelope.payload["message"]?.toString()?.trim('"') ?: "历史同步失败",
                     )
+                    finishResetRebuildIfComplete()
                     return
                 }
                 when (envelope.type) {

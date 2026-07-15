@@ -12,7 +12,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.longClick
@@ -145,7 +145,8 @@ class ConversationInteractionsTest {
         show(EmptyConversationState.copy(commands = commands, canSend = true))
 
         compose.onNodeWithContentDescription("打开快捷命令").performClick()
-        compose.onNodeWithTag("command-command20").performScrollTo().performClick()
+        compose.onNodeWithTag("command-sheet-list").performScrollToIndex(19)
+        compose.onNodeWithTag("command-command20").performClick()
 
         compose.onNodeWithTag("composer-input").assertTextEquals("/command20 ")
     }

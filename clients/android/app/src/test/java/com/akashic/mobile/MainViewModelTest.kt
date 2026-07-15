@@ -11,6 +11,7 @@ class MainViewModelTest {
     @Test
     fun connectionPresentationUsesLinkHealthInsteadOfAuthenticationState() {
         val ready = connectionPresentation(ConnectionState(phase = ConnectionPhase.READY))
+        val syncing = connectionPresentation(ConnectionState(phase = ConnectionPhase.SYNCING))
         val degraded = connectionPresentation(ConnectionState(phase = ConnectionPhase.DEGRADED))
         val disconnected = connectionPresentation(ConnectionState(phase = ConnectionPhase.CLOSED))
         val failed = connectionPresentation(
@@ -19,6 +20,8 @@ class MainViewModelTest {
         )
 
         assertEquals("连接正常", ready.label)
+        assertEquals("正在同步消息", syncing.label)
+        assertEquals("正在从电脑更新本地消息", syncing.notice)
         assertEquals(ConnectionStatusUi.READY, ready.status)
         assertNull(ready.notice)
         assertEquals("网络不稳 · 正在续传", degraded.label)

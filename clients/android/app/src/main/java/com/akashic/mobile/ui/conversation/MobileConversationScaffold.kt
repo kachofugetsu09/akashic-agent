@@ -24,7 +24,10 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.QrCodeScanner
+import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -36,16 +39,24 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.semantics
 import com.akashic.mobile.ui.design.pressScale
 import kotlinx.coroutines.launch
 
@@ -56,6 +67,7 @@ fun MobileConversationScaffold(
     onSelectSession: (String) -> Unit,
     onNewSession: () -> Unit,
     onRestartPairing: () -> Unit = {},
+    onReloadFromServer: () -> Unit = {},
     onAttach: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onRetryAttachment: (String) -> Unit,
@@ -86,6 +98,7 @@ fun MobileConversationScaffold(
                         onRestartPairing()
                         scope.launch { drawerState.close() }
                     },
+                    onReloadFromServer = onReloadFromServer,
                 )
             },
             scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.56f),
@@ -125,7 +138,10 @@ private fun MobileSessionDrawer(
     onSelectSession: (String) -> Unit,
     onNewSession: () -> Unit,
     onRestartPairing: () -> Unit,
+    onReloadFromServer: () -> Unit,
 ) {
+    var confirmReload by rememberSaveable { mutableStateOf(false) }
+
     ModalDrawerSheet(
         modifier = Modifier
             .width(336.dp)
@@ -193,6 +209,56 @@ private fun MobileSessionDrawer(
                 }
             }
 
+            Text(
+                text = "连接与数据",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 28.dp, top = 10.dp, bottom = 4.dp),
+            )
+
+            NavigationDrawerItem(
+                icon = {
+                    if (state.isResyncing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Icon(
+                            Icons.Rounded.Sync,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                },
+                label = {
+                    Column {
+                        Text(if (state.isResyncing) "正在同步消息" else "重新同步消息")
+                        Text(
+                            text = "保留连接并重新拉取历史",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+                selected = false,
+                onClick = {
+                    if (state.canResync && !state.isResyncing) confirmReload = true
+                },
+                shape = RoundedCornerShape(28.dp),
+                colors = NavigationDrawerItemDefaults.colors(
+                    unselectedContainerColor = MaterialTheme.colorScheme.surface,
+                    unselectedTextColor = MaterialTheme.colorScheme.onSurface,
+                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                ),
+                modifier = Modifier
+                    .padding(horizontal = 12.dp)
+                    .alpha(if (state.canResync || state.isResyncing) 1f else 0.38f)
+                    .semantics {
+                        if (!state.canResync || state.isResyncing) disabled()
+                    },
+            )
+
             NavigationDrawerItem(
                 icon = {
                     Icon(
@@ -233,6 +299,31 @@ private fun MobileSessionDrawer(
                 }
             }
         }
+    }
+
+    if (confirmReload) {
+        AlertDialog(
+            onDismissRequest = { confirmReload = false },
+            title = { Text("重新同步消息？") },
+            text = {
+                Text("应用会清除本机已同步的消息和附件缓存，再从电脑重新拉取。连接密钥、当前配对和待发送内容都会保留。")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmReload = false
+                        onReloadFromServer()
+                    },
+                ) {
+                    Text("清理并重新同步")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmReload = false }) {
+                    Text("取消")
+                }
+            },
+        )
     }
 }
 

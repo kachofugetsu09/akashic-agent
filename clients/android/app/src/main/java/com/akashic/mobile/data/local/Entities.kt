@@ -60,6 +60,7 @@ data class MessageEntity(
     val deliveryState: String,
     val createdAt: Long,
     val updatedAt: Long,
+    val serverSeq: Long? = null,
 )
 
 @Entity(

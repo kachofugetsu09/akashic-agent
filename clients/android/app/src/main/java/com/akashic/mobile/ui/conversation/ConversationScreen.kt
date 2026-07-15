@@ -216,63 +216,66 @@ private fun CommandBottomSheet(
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+        modifier = Modifier.height(440.dp),
     ) {
-        LazyColumn(
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 560.dp)
+                .fillMaxSize()
                 .testTag("command-sheet"),
-            contentPadding = PaddingValues(bottom = 20.dp),
         ) {
-            item(key = "command-sheet-header") {
-                Column {
-                    Text(
-                        text = "快捷命令",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(horizontal = 24.dp),
-                    )
-                    Text(
-                        text = "选择后填入输入框，确认后发送",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
-                    )
-                    Spacer(Modifier.height(12.dp))
-                }
-            }
-            items(commands, key = { it.command }) { command ->
-                Surface(
-                    onClick = { onSelect(command) },
-                    color = Color.Transparent,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 64.dp)
-                        .testTag("command-${command.command}"),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+            Text(
+                text = "快捷命令",
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(horizontal = 24.dp),
+            )
+            Text(
+                text = "选择后填入输入框，确认后发送",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+            )
+            Spacer(Modifier.height(12.dp))
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .testTag("command-sheet-list"),
+                contentPadding = PaddingValues(bottom = 20.dp),
+            ) {
+                items(commands, key = { it.command }) { command ->
+                    Surface(
+                        onClick = { onSelect(command) },
+                        color = Color.Transparent,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 64.dp)
+                            .testTag("command-${command.command}"),
                     ) {
-                        Text(
-                            text = "/${command.command}",
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.width(144.dp),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            text = command.description,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "/${command.command}",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.width(144.dp),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = command.description,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
                 }
             }
