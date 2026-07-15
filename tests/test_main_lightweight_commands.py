@@ -16,6 +16,8 @@ def test_setup_main_does_not_import_agent_runtime(tmp_path: Path) -> None:
             "setup-main",
             "--config",
             str(missing_config),
+            "--workspace",
+            str(tmp_path / "workspace"),
         ],
         capture_output=True,
         text=True,
