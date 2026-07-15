@@ -150,3 +150,14 @@ Mobile Web 首帧改用 React ready 握手和 10 秒页面代际 deadline，入�
 - APK：`0.7.3`（versionCode 12），8,255,218 bytes，SHA-256 `3f26c1c87c40ad3c76c309274d04c1c3938104034a4ff15a7daa5973de8c35df`
 - 私有发布：<https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.3>
 - 真机验收：等待覆盖安装后验证 Pixel 7/Pixel 9 的扫码、手动粘贴和会话首帧
+
+### 0.7.4 Akasha 历史召回恢复
+
+Mobile Web 宿主现在为每条普通 assistant 历史消息挂载 turn 插槽，插件可以按消息身份恢复对应轮次的数据；主动推送消息不会挂载 turn 插件。Akasha mobile UI 会用 `session_id + message_id` 定位该轮真正注入模型的 `context` 查询日志，完整展示 Dense / Ripple，不再截成各 6 条，也不会用最近一轮覆盖旧轮。
+
+召回项按 `happened_at` 从新到旧排列。新查询日志会直接保存该字段；旧日志缺失时，从服务端 `sessions.db` 按原消息 ID 只读补齐。因此清理手机缓存、重新安装或换机后，只要服务端仍保留 mobile 消息和 Akasha 查询日志，历史轮次同步完成后会重新显示对应召回；没有 Akasha 日志的轮次保持为空。
+
+- 验证：Akasha pytest 60 项、Pyright、TypeScript、ESLint、debug JVM、assemble 与生产 Mobile Web 构建通过
+- 生产只读验收：assistant seq `22/24/26` 分别绑定 Akasha seq `21/23/25`，返回 `4+15 / 9+9 / 10+8` 条，历史时间全部可解析
+- APK：`0.7.4`（versionCode 13）
+- 私有发布：<https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.4>
