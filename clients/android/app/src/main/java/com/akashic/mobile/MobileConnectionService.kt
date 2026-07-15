@@ -140,7 +140,7 @@ class MobileConnectionService : Service() {
             else -> "正在连接"
         }
         return NotificationCompat.Builder(this, CONNECTION_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(getString(R.string.notification_connection_title))
             .setContentText(status)
             .setContentIntent(openAppIntent(sessionId = null))
@@ -155,7 +155,7 @@ class MobileConnectionService : Service() {
 
     private fun messageNotification(event: FinalMessageEvent): Notification =
         NotificationCompat.Builder(this, MESSAGE_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(getString(R.string.notification_message_title))
             .setContentText(MessageNotificationPolicy.preview(event))
             .setContentIntent(openAppIntent(event.sessionId))
@@ -167,7 +167,7 @@ class MobileConnectionService : Service() {
 
     private fun privatePublicNotification(): Notification =
         NotificationCompat.Builder(this, MESSAGE_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(getString(R.string.notification_private_title))
             .setContentText(getString(R.string.notification_private_text))
             .build()
