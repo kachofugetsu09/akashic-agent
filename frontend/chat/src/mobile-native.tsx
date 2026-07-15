@@ -1,3 +1,5 @@
+import "./mobile-polyfills";
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useStickToBottomContext } from "use-stick-to-bottom";
@@ -609,8 +611,8 @@ function MessageMeta({ source }: { source: MobileMessage }) {
 function MobileAutoScroll({ messages, streaming }: { messages: ChatMessage[]; streaming: boolean }) {
   const { escapedFromLock, isAtBottom, scrollToBottom } = useStickToBottomContext();
   const lastMessageCountRef = useRef(messages.length);
-  const lastMessage = messages.at(-1);
-  const lastBlock = lastMessage?.blocks.at(-1);
+  const lastMessage = messages[messages.length - 1];
+  const lastBlock = lastMessage?.blocks[lastMessage.blocks.length - 1];
   const scrollKey = `${messages.length}:${lastMessage?.id}:${lastMessage?.content.length}:${lastMessage?.blocks.length}:${lastBlock?.kind === "thinking" ? lastBlock.content.length : ""}`;
 
   useEffect(() => {
@@ -651,6 +653,37 @@ function toAgentBlock(block: MobileProcessBlock): AgentBlock {
   };
 }
 
+class MobileErrorBoundary extends React.Component<React.PropsWithChildren, { message: string | null }> {
+  state: { message: string | null } = { message: null };
+
+  static getDerivedStateFromError(error: unknown) {
+    return { message: error instanceof Error ? error.message : "会话界面发生未知错误" };
+  }
+
+  componentDidCatch(error: unknown) {
+    console.error("[mobile] render failed", error);
+  }
+
+  render() {
+    if (!this.state.message) return this.props.children;
+    return (
+      <main className="mobile-fatal" role="alert">
+        <AlertCircle className="mobile-fatal__mark" size={28} />
+        <h1>会话界面没有正常载入</h1>
+        <p>{this.state.message}</p>
+        <button type="button" onClick={() => window.location.reload()}>
+          <RefreshCw size={18} />
+          重新载入
+        </button>
+      </main>
+    );
+  }
+}
+
 const root = document.getElementById("root");
 if (!root) throw new Error("Mobile Web root 不存在");
-createRoot(root).render(<MobileNativeApp />);
+createRoot(root).render(
+  <MobileErrorBoundary>
+    <MobileNativeApp />
+  </MobileErrorBoundary>,
+);
