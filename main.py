@@ -15,13 +15,38 @@ import json
 import os
 import signal
 import sys
+import tomllib
 from contextlib import suppress
 from pathlib import Path
+from typing import cast
 
 
-def _workspace_from_args(args: list[str]) -> Path:
-    """解析显式 workspace，缺失时直接拒绝运行。"""
+_DEFAULT_WORKSPACE = "~/.akashic/workspace"
 
+
+def _workspace_from_config(config_path: Path) -> str:
+    """从主配置读取 workspace，并拒绝缺失或错误的边界值。"""
+
+    with config_path.open("rb") as stream:
+        data = tomllib.load(stream)
+    runtime: object = data.get("runtime")
+    if not isinstance(runtime, dict):
+        raise ValueError(f"配置文件 {config_path!s} 缺少 [runtime] table")
+    workspace: object = cast(dict[str, object], runtime).get("workspace")
+    if not isinstance(workspace, str) or not workspace.strip():
+        raise ValueError(f"配置文件 {config_path!s} 缺少 runtime.workspace")
+    return workspace
+
+
+def _workspace_from_args(
+    args: list[str],
+    config_path: Path,
+    *,
+    allow_default: bool = False,
+) -> Path:
+    """按命令行、环境变量、配置文件的顺序解析 workspace。"""
+
+    # 1. 显式启动参数拥有最高优先级
     if "--workspace" in args:
         index = args.index("--workspace")
         if index + 1 >= len(args):
@@ -29,9 +54,18 @@ def _workspace_from_args(args: list[str]) -> Path:
         value = args[index + 1]
     else:
         value = os.environ.get("AKASHIC_WORKSPACE", "")
+
+    # 2. 环境变量为空时读取 config.toml；首次初始化使用可移植默认值
+    if not value.strip():
+        if config_path.exists():
+            value = _workspace_from_config(config_path)
+        elif allow_default:
+            value = _DEFAULT_WORKSPACE
+        else:
+            raise ValueError(
+                f"找不到配置文件 {config_path!s}，且未指定 --workspace PATH"
+            )
     value = value.strip()
-    if not value:
-        raise ValueError("缺少 --workspace PATH（或 AKASHIC_WORKSPACE）")
     return Path(value).expanduser().resolve()
 
 
@@ -47,7 +81,7 @@ def _run_lightweight_setup_command() -> bool:
             raise SystemExit("参数 --config 缺少值")
         config_path = args[index + 1]
     try:
-        workspace = _workspace_from_args(args)
+        workspace = _workspace_from_args(args, Path(config_path))
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     import click
@@ -110,7 +144,7 @@ _HELP = """\
 
 通用选项:
   --config PATH                 配置文件，默认 config.toml
-  --workspace PATH              工作区；也可设置 AKASHIC_WORKSPACE
+  --workspace PATH              覆盖 config.toml 中的 runtime.workspace
   -h, --help                    显示帮助
 
 无命令时启动 Agent 服务。
@@ -421,7 +455,14 @@ if __name__ == "__main__":
 
     try:
         config_value = _get_flag_value(args, "--config")
-        workspace = _workspace_from_args(args)
+        if config_value is not None:
+            config_path = config_value
+        bootstrap_command = bool(args and args[0] in {"setup", "init"})
+        workspace = _workspace_from_args(
+            args,
+            Path(config_path),
+            allow_default=bootstrap_command,
+        )
         host_value = _get_flag_value(args, "--host")
         port_value = _get_flag_value(args, "--port")
         source_value = _get_flag_value(args, "--source")
@@ -433,8 +474,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     os.environ["AKASHIC_WORKSPACE"] = str(workspace)
-    if config_value is not None:
-        config_path = config_value
     if host_value is not None:
         dashboard_host = host_value
     if port_value is not None:
