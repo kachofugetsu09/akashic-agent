@@ -250,3 +250,59 @@ better-ui：
 | 中止按钮只有瞬时 spinner，终态无痕 | 即时、处理中、终态三阶段反馈；保留部分结果，不制造错误卡片或假助手消息 |
 | 附件占据输入框左侧，命令无入口 | 固定为 `[命令][输入][附件][主操作]`，四个角色位置稳定 |
 | 命令可能演变成 Telegram 式浮层菜单或卡片墙 | 使用原生 ModalBottomSheet 与共享列表平面，每行 64dp、触控目标至少 48dp |
+
+### 7. 历史身份、原生选词与富文本阅读
+
+```text
+服务端 canonical 历史消息
+          │
+          ├── 有 client_message_id ── 精确合并 optimistic identity
+          │
+          └── 旧消息缺 client_message_id
+                 │
+                 └── 同 session + 同正文 + 已发送 + 仅一个候选
+                     + 本地时间不晚于 canonical 完成时间
+                          │
+                          ├── 成立：迁移附件/块并删除旧 identity
+                          └── 不成立：保留两条，不猜测、不丢消息
+
+消息正文
+  ├── Markdown：原生 SelectionContainer，可拖动选区并复制
+  └── display math：识别 \[ ... \] / $$ ... $$，交给 Compose LaTeX
+```
+
+- 历史重复根因：真实 `sessions.db` 中截图对应的用户消息只有一条；旧 APK 的本地 optimistic message 没有服务端可回传的 `client_message_id`，更新后全量历史又插入 canonical identity，造成手机 Room 中双份投影。
+- 兼容修复：只在唯一、同文、同 session、已发送且发生在 canonical 完成时间之前的一小时候选上迁移身份。相同问题稍后再次发送、同时存在多个候选或时间不成立时均不合并。
+- 文本选择：用户与助手正文进入 Compose `SelectionContainer`；长按显示系统浮动选择栏，可拖动原生光标做局部复制，不给每条消息增加复制卡片或操作按钮。
+- Markdown：正文、列表、表格继续使用现有 renderer；标题改为 22/20/18/16sp 的递减层级，避免 `第一步`、`第二步` 抢占整屏。块级公式使用独立的原生 LaTeX renderer，覆盖真实历史里的单行 `\[ formula \]`、多行公式、代码围栏和流式未闭合状态。
+- 图标：用户提供的 Akashic 插画裁成 adaptive launcher icon，并提供各 density fallback；通知栏继续使用职责独立的单色 small icon。
+- 提交：`9ada3cec` 历史身份修复；`e12270c9` 选择、Markdown 与 LaTeX；`10762cd4` adaptive icon；`eff1c032` 选择交互测试；`3ca4a7c3` 通知图标分离；`dba5b70c` Android 0.6.0。
+- 自动验证：Android JVM 51 项通过；API 36.1 无窗口模拟器的 16 项 `LocalDeliveryStoreTest`、真实单行公式/标题和长按选择路径通过。取图与验证完成后模拟器已关闭。
+- UI 证据：[长按原生选词](assets/mobile-v0.6.0-text-selection.png)、[紧凑标题与 LaTeX](assets/mobile-v0.6.0-markdown-latex.png)、[真实 Launcher 图标](assets/mobile-v0.6.0-launcher-icon.png)。
+- 版本：Android `0.6.0`（versionCode 6）；私有 Release [`v0.6.0`](https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.6.0)，资产 `Akashic-Mobile-v0.6.0.apk`（6,373,822 bytes）。
+- 发布验证：release JVM、Lint、R8 与 assemble 在 1m58s 内通过；APK v2 签名有效，版本清单为 `0.6.0/6`；本地与 GitHub 资产 SHA-256 均为 `72311e89acbb38757da02a6c1801c4b6054f181bd929c10c8d29e2f7365ee2ab`。
+
+#### 本组 UI skill 约束落实
+
+better-colors：
+
+| Before | After |
+| --- | --- |
+| Launcher 使用通用蓝 `#2463AE` 勾选 vector | 使用插画本身的深紫、薄荷绿、叶绿与玫红语义；adaptive 底色为 `#251334` |
+| 阅读页容易因公式再增加彩色容器 | 正文、公式和选区沿用现有 Material 3 scheme，不新增状态色或卡片色 |
+
+better-typography：
+
+| Before | After |
+| --- | --- |
+| renderer 默认标题使 `### 第一步` 接近 display 尺寸 | H1/H2/H3/H4 收敛为 22/20/18/16sp，正文保持 16sp |
+| 公式以反斜杠原文混入段落 | 数学内容使用原生数学字形、自动换行与 TalkBack 描述 |
+| 正文只能整体观看 | 长按后可拖动系统选区，复制需要的局部文字 |
+
+better-ui：
+
+| Before | After |
+| --- | --- |
+| 更新 APK 后旧 optimistic 与 canonical 同时出现 | 在 Room 事务内迁移唯一旧身份；歧义时保留数据而不是猜测 |
+| 复制功能容易演变成每条消息一个按钮 | 复用 Android 原生选择工具栏与光标，不增加卡片或常驻操作 |
+| Launcher 与通知共用一个 vector | Launcher 使用 adaptive illustration，通知使用独立单色 small icon |
