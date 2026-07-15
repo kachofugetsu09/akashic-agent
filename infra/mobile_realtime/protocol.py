@@ -29,6 +29,7 @@ COMMAND_TYPES = frozenset(
         "attachment.begin",
         "attachment.finish",
         "attachment.download",
+        "command.list",
         "device.update",
         "ping",
     }
@@ -251,6 +252,7 @@ class GenericCommand(CommandEnvelope):
         "session.create",
         "session.open",
         "history.get",
+        "command.list",
         "turn.stop",
         "device.update",
         "ping",

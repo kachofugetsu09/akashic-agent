@@ -45,8 +45,8 @@ class MainViewModelTest {
     }
 
     @Test
-    fun turnDurationRoundsUpOnlyAfterFinalMessage() {
-        assertNull(turnDurationSeconds(startedAt = 1_000, updatedAt = 2_001, isComplete = false))
-        assertEquals(2, turnDurationSeconds(startedAt = 1_000, updatedAt = 2_001, isComplete = true))
+    fun turnDurationRoundsUpOnlyAfterTerminalMessage() {
+        assertNull(turnDurationSeconds(startedAt = 1_000, updatedAt = 2_001, isTerminal = false))
+        assertEquals(2, turnDurationSeconds(startedAt = 1_000, updatedAt = 2_001, isTerminal = true))
     }
 }

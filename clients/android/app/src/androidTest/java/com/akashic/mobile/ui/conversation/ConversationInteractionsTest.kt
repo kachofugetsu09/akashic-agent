@@ -6,11 +6,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
 import com.akashic.mobile.ui.design.AkashicTheme
@@ -59,7 +61,92 @@ class ConversationInteractionsTest {
         compose.onNodeWithTag("composer-send-stop").assertIsEnabled().performClick()
         compose.runOnIdle { state = state.copy(isStopping = true, canStop = false) }
         compose.onNodeWithTag("composer-send-stop").assertIsNotEnabled()
+        compose.onNodeWithTag("turn-stop-pending").assertIsDisplayed()
         assertEquals(1, stops)
+    }
+
+    @Test
+    fun sendStopButtonExposesOnlyCurrentAction() {
+        var state by mutableStateOf(EmptyConversationState.copy(canSend = true))
+        compose.setContent { AkashicTheme { Screen(state) } }
+
+        compose.onNodeWithContentDescription("发送消息").assertIsDisplayed()
+        compose.onNodeWithContentDescription("停止生成").assertDoesNotExist()
+
+        compose.runOnIdle {
+            state = state.copy(
+                isStreaming = true,
+                canStop = true,
+            )
+        }
+        compose.onNodeWithContentDescription("停止生成").assertIsDisplayed()
+        compose.onNodeWithContentDescription("发送消息").assertDoesNotExist()
+    }
+
+    @Test
+    fun interruptedTurnKeepsTerminalFeedbackInConversation() {
+        show(
+            EmptyConversationState.copy(
+                messages = listOf(
+                    MessageUi.AssistantTurn(
+                        id = "interrupted",
+                        intro = null,
+                        blocks = listOf(
+                            ProcessBlockUi(
+                                id = "thinking",
+                                kind = ProcessBlockKind.THINKING,
+                                title = "思考",
+                                detail = "正在检查链路",
+                                state = ProcessBlockState.COMPLETED,
+                            ),
+                        ),
+                        answer = "已经完成的部分会保留。",
+                        status = AssistantTurnStatus.INTERRUPTED,
+                        durationSeconds = 2,
+                    ),
+                ),
+                canSend = true,
+            ),
+        )
+
+        compose.onNodeWithText("已中止 · 2s").assertIsDisplayed()
+        compose.onNodeWithTag("turn-interrupted-interrupted").assertIsDisplayed()
+        compose.onNodeWithText("生成已中止，可继续补充").assertIsDisplayed()
+    }
+
+    @Test
+    fun commandMenuFillsComposerWithoutSending() {
+        var sends = 0
+        compose.setContent {
+            AkashicTheme {
+                Screen(
+                    state = EmptyConversationState.copy(
+                        commands = listOf(CommandUi("undo", "撤销上一轮对话")),
+                        canSend = true,
+                    ),
+                    onSend = { sends += 1 },
+                )
+            }
+        }
+
+        compose.onNodeWithContentDescription("打开快捷命令").performClick()
+        compose.onNodeWithText("快捷命令").assertIsDisplayed()
+        compose.onNodeWithTag("command-undo").performClick()
+        compose.onNodeWithTag("composer-input").assertTextEquals("/undo ")
+        assertEquals(0, sends)
+    }
+
+    @Test
+    fun longCommandCatalogRemainsScrollable() {
+        val commands = (1..20).map { index ->
+            CommandUi("command$index", "第 $index 个服务端命令")
+        }
+        show(EmptyConversationState.copy(commands = commands, canSend = true))
+
+        compose.onNodeWithContentDescription("打开快捷命令").performClick()
+        compose.onNodeWithTag("command-command20").performScrollTo().performClick()
+
+        compose.onNodeWithTag("composer-input").assertTextEquals("/command20 ")
     }
 
     @Test
@@ -108,7 +195,7 @@ class ConversationInteractionsTest {
                     intro = null,
                     blocks = emptyList(),
                     answer = lastAnswer,
-                    isStreaming = true,
+                    status = AssistantTurnStatus.STREAMING,
                     durationSeconds = null,
                 ),
             )
@@ -121,6 +208,7 @@ class ConversationInteractionsTest {
         state: ConversationUiState,
         onStop: () -> Unit = {},
         onDismissError: () -> Unit = {},
+        onSend: (String) -> Unit = {},
     ) {
         ConversationScreen(
             state = state,
@@ -130,7 +218,7 @@ class ConversationInteractionsTest {
             onRetryDownloadedAttachment = {},
             onOpenDownloadedAttachment = {},
             onDismissError = onDismissError,
-            onSend = {},
+            onSend = onSend,
             onStop = onStop,
         )
     }

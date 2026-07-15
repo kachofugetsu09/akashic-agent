@@ -81,6 +81,26 @@ class ProtocolCodecTest {
     }
 
     @Test
+    fun `decodes command catalog reply`() {
+        val frame = """
+            {
+              "v": 1,
+              "kind": "reply",
+              "type": "command.list.ok",
+              "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+              "connection_epoch": 7,
+              "payload": {"items": [{"command": "undo", "description": "撤销上一轮对话"}]}
+            }
+        """.trimIndent()
+
+        val envelope = ProtocolCodec.decode(frame)
+        val payload = ProtocolCodec.decodePayload<CommandListPayload>(envelope.payload)
+
+        assertEquals("undo", payload.items.single().command)
+        assertEquals("撤销上一轮对话", payload.items.single().description)
+    }
+
+    @Test
     fun `rejects unsupported version at boundary`() {
         val frame = """{"v":2,"kind":"control","type":"server.challenge","payload":{}}"""
 

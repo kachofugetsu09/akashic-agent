@@ -58,6 +58,7 @@ data class MobileSessionState(
     val currentSessionId: String? = null,
     val activeTurnId: String? = null,
     val isStopping: Boolean = false,
+    val commands: List<RemoteCommandItem> = emptyList(),
     val errorMessage: String? = null,
 )
 
@@ -147,6 +148,7 @@ class RealtimeSession(
     private var resetRebuildGeneration: Long? = null
     private val pendingSyncCommands = mutableMapOf<String, PendingSyncCommand>()
     private val requestedHistoryPages = mutableSetOf<Triple<Long, String, Int>>()
+    private var pendingCommandListId: String? = null
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
@@ -743,6 +745,7 @@ class RealtimeSession(
                             connection = mutableState.value.connection.copy(phase = ConnectionPhase.READY),
                         )
                         requestSessionList()
+                        requestCommandList()
                         uploads.onConnectionReady(currentProfile.serverId)
                         downloads.onConnectionReady(currentProfile.serverId)
                         stops.onConnectionReady()
@@ -790,6 +793,18 @@ class RealtimeSession(
                 }
                 if (uploads.onReply(envelope)) return
                 val id = requireNotNull(envelope.id)
+                if (envelope.type == "command.list.ok") {
+                    applyCommandListReply(envelope)
+                    return
+                }
+                if (envelope.type == "command.list.error" && id == pendingCommandListId) {
+                    pendingCommandListId = null
+                    mutableState.value = mutableState.value.copy(
+                        errorMessage = envelope.payload["message"]?.jsonPrimitive?.content
+                            ?: "加载快捷命令失败",
+                    )
+                    return
+                }
                 if (id in pendingSyncCommands && envelope.type.endsWith(".error")) {
                     val pending = requireNotNull(pendingSyncCommands.remove(id))
                     require(pending.generation == syncGeneration) { "收到旧 generation 的历史同步错误" }
@@ -825,6 +840,47 @@ class RealtimeSession(
     private fun requestSessionList() {
         if (hasPendingSyncCommand("session.list")) return
         sendSyncCommand(type = "session.list", sessionId = null, payload = buildJsonObject {})
+    }
+
+    private fun requestCommandList() {
+        if (pendingCommandListId != null) return
+        val epoch = requireNotNull(activeEpoch) { "快捷命令同步需要认证连接" }
+        val candidate = requireNotNull(activeCandidate) { "快捷命令同步需要可用 endpoint" }
+        val commandId = Ulid.next()
+        pendingCommandListId = commandId
+        val sent = socket.send(
+            candidate,
+            WireEnvelope(
+                v = WIRE_PROTOCOL_VERSION,
+                kind = WireKind.COMMAND,
+                type = "command.list",
+                id = commandId,
+                connectionEpoch = epoch,
+                payload = buildJsonObject {},
+            ),
+        )
+        if (!sent) {
+            pendingCommandListId = null
+            scheduleReconnect("快捷命令未进入 WebSocket 队列")
+        }
+    }
+
+    /** 校验服务端命令目录并发布给界面。 */
+    private fun applyCommandListReply(envelope: WireEnvelope) {
+        val commandId = requireNotNull(envelope.id)
+        require(commandId == pendingCommandListId) { "收到未知快捷命令 reply: $commandId" }
+        val payload = ProtocolCodec.decodePayload<CommandListPayload>(envelope.payload)
+        val commands = payload.items.map { item ->
+            require(COMMAND_NAME.matches(item.command)) { "快捷命令名称无效: ${item.command}" }
+            require(item.description.isNotBlank() && item.description.length <= 256) {
+                "快捷命令说明无效: ${item.command}"
+            }
+            require(item.command != "stop") { "stop 由生成中止控件拥有" }
+            item
+        }
+        require(commands.map { it.command }.distinct().size == commands.size) { "快捷命令名称重复" }
+        pendingCommandListId = null
+        mutableState.value = mutableState.value.copy(commands = commands)
     }
 
     private fun hasPendingSyncCommand(type: String): Boolean =
@@ -932,6 +988,7 @@ class RealtimeSession(
         completedSyncGeneration = syncGeneration
         resetRebuildGeneration = syncGeneration
         pendingSyncCommands.clear()
+        pendingCommandListId = null
         requestedHistoryPages.clear()
         mutableState.value = mutableState.value.copy(
             connection = mutableState.value.connection.copy(phase = ConnectionPhase.SYNCING),
@@ -947,6 +1004,7 @@ class RealtimeSession(
         mutableState.value = mutableState.value.copy(
             connection = mutableState.value.connection.copy(phase = ConnectionPhase.READY),
         )
+        requestCommandList()
         uploads.onConnectionReady(currentProfile.serverId)
         downloads.onConnectionReady(currentProfile.serverId)
         flushOutbox()
@@ -1102,6 +1160,7 @@ class RealtimeSession(
         uploads.onDisconnected()
         downloads.onDisconnected()
         pendingSyncCommands.clear()
+        pendingCommandListId = null
         requestedHistoryPages.clear()
         resetRebuildGeneration = null
         retryCount += 1
@@ -1154,6 +1213,7 @@ class RealtimeSession(
         candidateEndpoints.clear()
         activeCandidate = null
         activeEpoch = null
+        pendingCommandListId = null
     }
 
     private fun publishTurnState() {
@@ -1185,6 +1245,7 @@ class RealtimeSession(
         const val TAG = "RealtimeSession"
         val CAPABILITIES = listOf("chat", "streaming", "tools", "proactive", "attachments-v1")
         val MOBILE_SESSION = Regex("^mobile:(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$")
+        val COMMAND_NAME = Regex("^[a-z][a-z0-9_]{0,31}$")
         const val HISTORY_PAGE_SIZE = 10
         const val ACK_DELAY_MILLIS = 100L
         const val ACK_EVENT_LIMIT = 32

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -79,6 +80,7 @@ class _ProcessTurnState:
 _DELTA_FLUSH_SECONDS = 0.05
 _DELTA_FLUSH_BYTES = 4 * 1024
 _MAX_DELTA_BATCHES = 256
+_BOT_COMMAND_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 
 
 class MobileRealtimeChannel:
@@ -228,6 +230,8 @@ class MobileRealtimeChannel:
             return await self._open_session(device_id, frame)
         if frame.type == "history.get":
             return await self._get_history(device_id, frame)
+        if frame.type == "command.list":
+            return self._list_commands(frame)
         if frame.type == "message.send":
             return await self._send_message(device_id, frame)
         if frame.type == "turn.stop":
@@ -239,6 +243,28 @@ class MobileRealtimeChannel:
         if frame.type == "attachment.download":
             return self._download_attachment(frame)
         raise MobileCommandError("unsupported_command", f"尚不支持命令: {frame.type}")
+
+    def _list_commands(self, frame: GenericCommand) -> CommandReply:
+        """返回当前已启用插件的快捷命令目录。"""
+
+        # 1. 命令目录由 ChannelContext 统一提供
+        _expect_keys(frame.payload, set())
+        items: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for raw_command, raw_description in self._require_ctx().bot_commands:
+            command = raw_command.strip().removeprefix("/")
+            description = raw_description.strip()
+            if not _BOT_COMMAND_PATTERN.fullmatch(command):
+                raise RuntimeError(f"插件命令名无效: {raw_command!r}")
+            if not description or len(description) > 256:
+                raise RuntimeError(f"插件命令描述无效: {command}")
+            if command == "stop" or command in seen:
+                continue
+            seen.add(command)
+            items.append({"command": command, "description": description})
+
+        # 2. 保持插件注册顺序，便于管理高频命令的位置
+        return CommandReply(type="command.list.ok", payload={"items": items})
 
     async def handle_attachment_chunk(
         self,
@@ -538,15 +564,16 @@ class MobileRealtimeChannel:
             sender=f"device:{device_id}",
             command="/stop",
         )
-        if result.status == "interrupted":
-            await self._runtime.publish_event(
-                event_type="turn.interrupted",
-                session_id=session_id,
-                turn_id=turn_id,
-                payload={"status": result.status, "message": result.message},
-            )
-            _ = self._active_turn_ids.pop(session_id, None)
-            _ = self._process_turns.pop((session_id, turn_id), None)
+        if result.status not in {"interrupted", "idle"}:
+            raise RuntimeError(f"中断控制器返回未知状态: {result.status}")
+        await self._runtime.publish_event(
+            event_type="turn.interrupted",
+            session_id=session_id,
+            turn_id=turn_id,
+            payload={"status": result.status, "message": result.message},
+        )
+        _ = self._active_turn_ids.pop(session_id, None)
+        _ = self._process_turns.pop((session_id, turn_id), None)
         return CommandReply(
             type="turn.stop.ok",
             session_id=session_id,

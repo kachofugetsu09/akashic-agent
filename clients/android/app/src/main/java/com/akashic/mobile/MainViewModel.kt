@@ -9,9 +9,11 @@ import com.akashic.mobile.data.local.decodeStoredToolBlock
 import com.akashic.mobile.domain.model.ConnectionPhase
 import com.akashic.mobile.domain.model.ConnectionState
 import com.akashic.mobile.ui.conversation.ConnectionStatusUi
+import com.akashic.mobile.ui.conversation.CommandUi
 import com.akashic.mobile.ui.conversation.ComposerAttachmentState
 import com.akashic.mobile.ui.conversation.ComposerAttachmentUi
 import com.akashic.mobile.ui.conversation.ConversationUiState
+import com.akashic.mobile.ui.conversation.AssistantTurnStatus
 import com.akashic.mobile.ui.conversation.MessageUi
 import com.akashic.mobile.ui.conversation.MessageAttachmentState
 import com.akashic.mobile.ui.conversation.MessageAttachmentUi
@@ -87,6 +89,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     canRemove = attachment.state in setOf("pending", "ready", "failed"),
                 )
             },
+            commands = session.commands.map { CommandUi(it.command, it.description) },
             isStreaming = graph.any { it.message.deliveryState == "streaming" },
             isStopping = session.isStopping,
             canStop = session.activeTurnId != null &&
@@ -106,6 +109,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             selectedSessionId = null,
             messages = emptyList(),
             attachments = emptyList(),
+            commands = emptyList(),
             isStreaming = false,
             isStopping = false,
             canStop = false,
@@ -172,11 +176,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             },
             answer = message.text,
-            isStreaming = message.deliveryState == "streaming",
+            status = when (message.deliveryState) {
+                "streaming" -> AssistantTurnStatus.STREAMING
+                "complete" -> AssistantTurnStatus.COMPLETE
+                "interrupted" -> AssistantTurnStatus.INTERRUPTED
+                else -> error("未知助手消息状态: ${message.deliveryState}")
+            },
             durationSeconds = turnDurationSeconds(
                 startedAt = message.createdAt,
                 updatedAt = message.updatedAt,
-                isComplete = message.deliveryState == "complete",
+                isTerminal = message.deliveryState in setOf("complete", "interrupted"),
             ),
             attachments = graph.attachmentLinks.toMessageAttachmentUi(),
         )
@@ -245,7 +254,7 @@ internal fun connectionPresentation(
     }
 }
 
-internal fun turnDurationSeconds(startedAt: Long, updatedAt: Long, isComplete: Boolean): Int? {
-    if (!isComplete) return null
+internal fun turnDurationSeconds(startedAt: Long, updatedAt: Long, isTerminal: Boolean): Int? {
+    if (!isTerminal) return null
     return ceil((updatedAt - startedAt).coerceAtLeast(1) / 1_000.0).toInt()
 }

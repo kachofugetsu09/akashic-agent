@@ -9,6 +9,7 @@ data class ConversationUiState(
     val selectedSessionId: String?,
     val messages: List<MessageUi>,
     val attachments: List<ComposerAttachmentUi>,
+    val commands: List<CommandUi>,
     val isStreaming: Boolean,
     val isStopping: Boolean,
     val canStop: Boolean,
@@ -37,6 +38,11 @@ data class SessionUi(
     val title: String,
 )
 
+data class CommandUi(
+    val command: String,
+    val description: String,
+)
+
 enum class ConnectionStatusUi {
     CONNECTING,
     READY,
@@ -61,10 +67,19 @@ sealed interface MessageUi {
         val intro: String?,
         val blocks: List<ProcessBlockUi>,
         val answer: String,
-        val isStreaming: Boolean,
+        val status: AssistantTurnStatus,
         val durationSeconds: Int?,
         override val attachments: List<MessageAttachmentUi> = emptyList(),
-    ) : MessageUi
+    ) : MessageUi {
+        val isStreaming: Boolean
+            get() = status == AssistantTurnStatus.STREAMING
+    }
+}
+
+enum class AssistantTurnStatus {
+    STREAMING,
+    COMPLETE,
+    INTERRUPTED,
 }
 
 data class MessageAttachmentUi(
@@ -113,6 +128,7 @@ internal val EmptyConversationState = ConversationUiState(
     selectedSessionId = null,
     messages = emptyList(),
     attachments = emptyList(),
+    commands = emptyList(),
     isStreaming = false,
     isStopping = false,
     canStop = false,
@@ -170,7 +186,7 @@ internal val PreviewConversationState = ConversationUiState(
                 ),
             ),
             answer = "当前事件顺序保持一致；连接恢复后会从最后一次累计 ACK 继续。",
-            isStreaming = true,
+            status = AssistantTurnStatus.STREAMING,
             durationSeconds = null,
             attachments = listOf(
                 MessageAttachmentUi(
@@ -195,6 +211,11 @@ internal val PreviewConversationState = ConversationUiState(
             state = ComposerAttachmentState.UPLOADING,
             canRemove = false,
         ),
+    ),
+    commands = listOf(
+        CommandUi("undo", "撤销上一轮对话"),
+        CommandUi("memorystatus", "查看记忆整理状态"),
+        CommandUi("kvcache", "查看 KVCache 状态"),
     ),
     isStreaming = true,
     isStopping = false,

@@ -567,6 +567,116 @@ async def test_turn_stop_accepts_a_shared_mobile_session(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_turn_stop_idle_result_still_closes_stale_mobile_turn(tmp_path: Path) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    manager = SessionManager(tmp_path / "workspace")
+    session_id = f"mobile:{uuid4()}"
+    storage.claim_session(
+        device_id=device_id,
+        session_id=session_id,
+        created_at=datetime.now(timezone.utc),
+    )
+    manager.save(manager.get_or_create(session_id))
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=_Bus(),
+                session_manager=manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=SimpleNamespace(
+                    request_interrupt=lambda **_: SimpleNamespace(
+                        status="idle",
+                        message="当前没有正在执行的任务。",
+                    ),
+                ),
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+                bot_commands=[],
+            ),
+        )
+    )
+    turn_id = "01ARZ3NDEKTSV4RRFFQ69G5FAY"
+    await channel._on_turn_started(
+        TurnStarted(
+            session_key=session_id,
+            channel="mobile",
+            chat_id=session_id.removeprefix("mobile:"),
+            content="正在生成",
+            timestamp=datetime.now(timezone.utc),
+            turn_id=turn_id,
+        )
+    )
+
+    reply = await channel.handle_command(
+        device_id=device_id,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+            command_type="turn.stop",
+            session_id=session_id,
+            turn_id=turn_id,
+        ),
+    )
+
+    assert reply.type == "turn.stop.ok"
+    assert reply.payload["status"] == "idle"
+    assert runtime.events[-1]["event_type"] == "turn.interrupted"
+    assert session_id not in channel._active_turn_ids
+    await channel.stop()
+    manager.close()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_command_list_uses_active_channel_catalog_without_stop(tmp_path: Path) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=_Bus(),
+                session_manager=SessionManager(tmp_path / "workspace"),
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+                bot_commands=[
+                    ("undo", "撤销上一轮对话"),
+                    ("/memorystatus", "查看记忆整理状态"),
+                    ("stop", "中断当前回复"),
+                ],
+            ),
+        )
+    )
+
+    reply = await channel.handle_command(
+        device_id=device_id,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+            command_type="command.list",
+        ),
+    )
+
+    assert reply.type == "command.list.ok"
+    assert reply.payload == {
+        "items": [
+            {"command": "undo", "description": "撤销上一轮对话"},
+            {"command": "memorystatus", "description": "查看记忆整理状态"},
+        ]
+    }
+    await channel.stop()
+    storage.close()
+
+
+@pytest.mark.asyncio
 async def test_turn_stop_rejects_missing_or_stale_turn_identity(tmp_path: Path) -> None:
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     device_id = uuid4().hex

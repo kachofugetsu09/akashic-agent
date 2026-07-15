@@ -124,6 +124,30 @@ def test_session_list_is_a_valid_server_event() -> None:
     assert parse_frame(json.dumps(frame)).type == "session.list"
 
 
+def test_command_list_command_and_reply_are_valid() -> None:
+    command = {
+        "v": 1,
+        "kind": "command",
+        "type": "command.list",
+        "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "connection_epoch": 1,
+        "payload": {},
+    }
+    reply = {
+        **command,
+        "kind": "reply",
+        "type": "command.list.ok",
+        "payload": {
+            "items": [
+                {"command": "memorystatus", "description": "查看记忆整理状态"},
+            ],
+        },
+    }
+
+    assert parse_frame(json.dumps(command)).type == "command.list"
+    assert parse_frame(json.dumps(reply)).type == "command.list.ok"
+
+
 def test_delta_process_block_fields_must_appear_together() -> None:
     frame = _golden_frame(2)
     frame["type"] = "react.thinking.delta"

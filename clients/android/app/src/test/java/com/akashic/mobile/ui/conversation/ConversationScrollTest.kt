@@ -36,7 +36,7 @@ class ConversationScrollTest {
                 ),
             ),
             answer = answer,
-            isStreaming = true,
+            status = AssistantTurnStatus.STREAMING,
             durationSeconds = null,
         ),
     )

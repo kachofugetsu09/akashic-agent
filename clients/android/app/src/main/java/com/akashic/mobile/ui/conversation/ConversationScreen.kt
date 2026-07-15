@@ -45,6 +45,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.AttachFile
@@ -57,6 +58,7 @@ import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Phonelink
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.StopCircle
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material.icons.rounded.Wifi
@@ -68,6 +70,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -93,8 +96,11 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.stateDescription
@@ -128,6 +134,8 @@ fun ConversationScreen(
     onDismissError: () -> Unit,
 ) {
     var composerText by rememberSaveable { mutableStateOf("") }
+    var commandSheetOpen by rememberSaveable { mutableStateOf(false) }
+    val composerFocusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
 
@@ -150,6 +158,9 @@ fun ConversationScreen(
                 canStop = state.canStop,
                 enabled = state.canSend,
                 attachments = state.attachments,
+                hasCommands = state.commands.isNotEmpty(),
+                composerFocusRequester = composerFocusRequester,
+                onShowCommands = { commandSheetOpen = true },
                 onAttach = onAttach,
                 onRemoveAttachment = onRemoveAttachment,
                 onRetryAttachment = onRetryAttachment,
@@ -173,6 +184,92 @@ fun ConversationScreen(
                 onOpenDownloadedAttachment = onOpenDownloadedAttachment,
                 modifier = Modifier.padding(contentPadding),
             )
+        }
+    }
+
+    if (commandSheetOpen) {
+        CommandBottomSheet(
+            commands = state.commands,
+            onDismiss = { commandSheetOpen = false },
+            onSelect = { command ->
+                composerText = "/${command.command} "
+                commandSheetOpen = false
+                composerFocusRequester.requestFocus()
+                keyboardController?.show()
+            },
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CommandBottomSheet(
+    commands: List<CommandUi>,
+    onDismiss: () -> Unit,
+    onSelect: (CommandUi) -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+    ) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 560.dp)
+                .testTag("command-sheet"),
+            contentPadding = PaddingValues(bottom = 20.dp),
+        ) {
+            item(key = "command-sheet-header") {
+                Column {
+                    Text(
+                        text = "快捷命令",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 24.dp),
+                    )
+                    Text(
+                        text = "选择后填入输入框，确认后发送",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                }
+            }
+            items(commands, key = { it.command }) { command ->
+                Surface(
+                    onClick = { onSelect(command) },
+                    color = Color.Transparent,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 64.dp)
+                        .testTag("command-${command.command}"),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "/${command.command}",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.width(144.dp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = command.description,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -428,6 +525,28 @@ private fun AssistantTurn(
                 modifier = Modifier.padding(top = 10.dp),
             )
         }
+        if (message.status == AssistantTurnStatus.INTERRUPTED) {
+            Row(
+                modifier = Modifier
+                    .padding(top = 12.dp)
+                    .semantics { liveRegion = LiveRegionMode.Polite }
+                    .testTag("turn-interrupted-${message.id}"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.StopCircle,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = "生成已中止，可继续补充",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 
@@ -475,10 +594,14 @@ private fun ProcessDisclosure(message: MessageUi.AssistantTurn) {
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text(
-                text = if (message.isStreaming) {
-                    "正在思考"
-                } else {
-                    "已思考${message.durationSeconds?.let { " ${it}s" } ?: ""}"
+                text = when (message.status) {
+                    AssistantTurnStatus.STREAMING -> "正在思考"
+                    AssistantTurnStatus.COMPLETE -> {
+                        "已思考${message.durationSeconds?.let { " ${it}s" } ?: ""}"
+                    }
+                    AssistantTurnStatus.INTERRUPTED -> {
+                        "已中止${message.durationSeconds?.let { " · ${it}s" } ?: ""}"
+                    }
                 },
                 style = MaterialTheme.typography.labelLarge,
                 modifier = Modifier.weight(1f),
@@ -627,6 +750,9 @@ private fun ConversationBottomBar(
     canStop: Boolean,
     enabled: Boolean,
     attachments: List<ComposerAttachmentUi>,
+    hasCommands: Boolean,
+    composerFocusRequester: FocusRequester,
+    onShowCommands: () -> Unit,
     onAttach: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onRetryAttachment: (String) -> Unit,
@@ -658,6 +784,21 @@ private fun ConversationBottomBar(
             )
         }
         AnimatedVisibility(
+            visible = isStopping,
+            enter = fadeIn(tween(120)),
+            exit = fadeOut(tween(120)),
+        ) {
+            Text(
+                text = "正在中止本轮…",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier
+                    .padding(start = 12.dp, bottom = 8.dp)
+                    .semantics { liveRegion = LiveRegionMode.Polite }
+                    .testTag("turn-stop-pending"),
+            )
+        }
+        AnimatedVisibility(
             visible = attachments.isNotEmpty(),
             enter = expandVertically(animationSpec = tween(220)) + fadeIn(animationSpec = tween(180)),
             exit = shrinkVertically(animationSpec = tween(180)) + fadeOut(animationSpec = tween(140)),
@@ -682,8 +823,12 @@ private fun ConversationBottomBar(
                 .padding(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TactileIconButton(onClick = onAttach, enabled = enabled) {
-                Icon(Icons.Rounded.AttachFile, contentDescription = "添加附件")
+            TactileIconButton(onClick = onShowCommands, enabled = enabled && hasCommands) {
+                Icon(
+                    Icons.Rounded.Menu,
+                    contentDescription = "打开快捷命令",
+                    modifier = Modifier.testTag("composer-command-menu"),
+                )
             }
             BasicTextField(
                 value = text,
@@ -695,6 +840,8 @@ private fun ConversationBottomBar(
                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                 modifier = Modifier
                     .weight(1f)
+                    .focusRequester(composerFocusRequester)
+                    .testTag("composer-input")
                     .padding(horizontal = 8.dp, vertical = 10.dp),
                 decorationBox = { innerTextField ->
                     Box(contentAlignment = Alignment.CenterStart) {
@@ -709,6 +856,13 @@ private fun ConversationBottomBar(
                     }
                 },
             )
+            TactileIconButton(onClick = onAttach, enabled = enabled) {
+                Icon(
+                    Icons.Rounded.AttachFile,
+                    contentDescription = "添加附件",
+                    modifier = Modifier.testTag("composer-attachment"),
+                )
+            }
             SendStopButton(
                 showStop = isStreaming,
                 isStopping = isStopping,
@@ -944,6 +1098,13 @@ private fun SendStopButton(
         modifier = Modifier
             .size(48.dp)
             .testTag("composer-send-stop")
+            .semantics {
+                contentDescription = when {
+                    isStopping -> "正在停止生成"
+                    showStop -> "停止生成"
+                    else -> "发送消息"
+                }
+            }
             .pressScale(interactionSource, enabled),
     ) {
         if (isStopping) {
@@ -1021,7 +1182,7 @@ private fun ContextualSendStopIcon(showStop: Boolean) {
     Box(contentAlignment = Alignment.Center) {
         Icon(
             imageVector = Icons.Rounded.Stop,
-            contentDescription = "停止生成",
+            contentDescription = null,
             modifier = Modifier
                 .graphicsLayer {
                     alpha = stopProgress
@@ -1032,7 +1193,7 @@ private fun ContextualSendStopIcon(showStop: Boolean) {
         )
         Icon(
             imageVector = Icons.AutoMirrored.Rounded.Send,
-            contentDescription = "发送消息",
+            contentDescription = null,
             modifier = Modifier
                 .graphicsLayer {
                     alpha = sendProgress
