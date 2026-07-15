@@ -128,3 +128,13 @@ ANDROID_HOME=/home/huashen/Android/Sdk clients/android/gradlew -p clients/androi
 `0.7.0` 错误启用了 `WebSettings.blockNetworkLoads`，连 `WebViewAssetLoader` 使用的受控 HTTPS appassets origin 也被阻止，导致 React 首帧前白屏。`0.7.1` 改由 `MobileWebClient` 精确放行 `appassets.androidplatform.net`，其他 origin 返回 403；主文档的网络错误和 HTTP 错误会显示原生错误页与重新加载入口。
 
 私有发布：<https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.1>
+
+### 0.7.2 旧 WebView 兼容修复
+
+静态复现确认旧 WebView 缺少 `Array.prototype.at` 时，Markdown 依赖会在 React 首帧期间抛错并留下空根节点。移动入口现在通过 `core-js` 在应用模块执行前补齐 `Array.prototype.at`、`Object.hasOwn` 和 `structuredClone`；Material 颜色令牌同时增加 sRGB fallback，支持 OKLCH 的 WebView 继续使用原色。React 渲染异常会显示可重新载入的错误状态，不再直接白屏。
+
+- 兼容门禁：产物加载前删除三项原生 API，Kotlin 形状的 snapshot、Markdown 和公式文本仍完整渲染
+- 验证：TypeScript、ESLint、release JVM、Lint、R8、assemble 与 APK v2 签名均通过
+- APK：`0.7.2`（versionCode 11），SHA-256 `f73c8c2251ae38f9a6a3579d513af2cef4af50f4127b6511acd5fd9317afaaf3`
+- 私有发布：<https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.2>
+- ADB 安装：发布时没有已连接设备，等待真机覆盖安装后确认实际 WebView 行为
