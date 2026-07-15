@@ -117,6 +117,9 @@ dependencies {
     implementation(libs.androidx.camera.view)
     implementation(libs.zxing.core)
     implementation(libs.markdown.renderer.m3)
+    implementation(libs.latex.base)
+    implementation(libs.latex.parser)
+    implementation(libs.latex.renderer)
     implementation(libs.coil.compose)
     implementation(libs.coil.gif)
 

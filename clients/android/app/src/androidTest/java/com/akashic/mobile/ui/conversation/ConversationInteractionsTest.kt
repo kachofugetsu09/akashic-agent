@@ -15,7 +15,14 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
+import androidx.compose.ui.test.longClick
+import androidx.test.espresso.Espresso.onView
+import androidx.test.espresso.assertion.ViewAssertions.matches
+import androidx.test.espresso.matcher.ViewMatchers.isDisplayed
+import androidx.test.espresso.matcher.ViewMatchers.withText
 import com.akashic.mobile.ui.design.AkashicTheme
+import org.hamcrest.Matchers.anyOf
+import org.hamcrest.Matchers.equalTo
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -167,6 +174,66 @@ class ConversationInteractionsTest {
         compose.onNodeWithText("bottom-after").assertDoesNotExist()
         compose.runOnIdle { state = messageState("bottom-final") }
         compose.onNodeWithText("bottom-final").assertDoesNotExist()
+    }
+
+    @Test
+    fun messageTextSupportsNativeSelectionAndCopy() {
+        show(
+            EmptyConversationState.copy(
+                messages = listOf(
+                    MessageUi.AssistantTurn(
+                        id = "selectable",
+                        intro = null,
+                        blocks = emptyList(),
+                        answer = "这段正文可以局部选择并复制。",
+                        status = AssistantTurnStatus.COMPLETE,
+                        durationSeconds = 1,
+                    ),
+                ),
+                canSend = true,
+            ),
+        )
+
+        compose.onNodeWithText("这段正文可以局部选择并复制。")
+            .performTouchInput { longClick() }
+        onView(withText(anyOf(equalTo("Copy"), equalTo("复制"))))
+            .check(matches(isDisplayed()))
+    }
+
+    @Test
+    fun markdownUsesCompactHeadingsAndNativeDisplayMath() {
+        show(
+            EmptyConversationState.copy(
+                messages = listOf(
+                    MessageUi.AssistantTurn(
+                        id = "rich-markdown",
+                        intro = null,
+                        blocks = emptyList(),
+                        answer = """
+                            ## 核心思路：两步握手
+
+                            ### 第一步：RID — 共鸣兴趣提炼
+
+                            评分器使用余弦相似度：
+                            \[ s_\phi(u, h_t) = \cos(\mathbf{u}, \mathbf{z}_t) \]
+
+                            - **u** 是用户特征向量
+                            - **z_t** 是会话摘要向量
+
+                            ### 第二步：ISG — 互动式开场生成
+                        """.trimIndent(),
+                        status = AssistantTurnStatus.COMPLETE,
+                        durationSeconds = 9,
+                    ),
+                ),
+                canSend = true,
+            ),
+        )
+
+        compose.onNodeWithText("核心思路：两步握手").assertIsDisplayed()
+        compose.onNodeWithText("第一步：RID — 共鸣兴趣提炼").assertIsDisplayed()
+        compose.onNodeWithTag("message-math-1").assertIsDisplayed()
+        compose.onNodeWithText("第二步：ISG — 互动式开场生成").assertIsDisplayed()
     }
 
     private fun show(

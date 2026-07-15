@@ -45,6 +45,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
@@ -112,9 +113,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.akashic.mobile.ui.design.AkashicTheme
 import com.akashic.mobile.ui.design.pressScale
+import com.hrm.latex.renderer.LatexAutoWrap
+import com.hrm.latex.renderer.model.LatexConfig
+import com.hrm.latex.renderer.model.LatexTheme
 import com.mikepenz.markdown.m3.Markdown
+import com.mikepenz.markdown.m3.markdownTypography
 import com.mikepenz.markdown.model.rememberMarkdownState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
@@ -552,8 +558,57 @@ private fun AssistantTurn(
 
 @Composable
 private fun MarkdownMessage(content: String, modifier: Modifier = Modifier) {
-    val markdownState = rememberMarkdownState(content, retainState = true)
-    Markdown(markdownState = markdownState, modifier = modifier)
+    val segments = remember(content) { richMessageSegments(content) }
+    val typography = markdownTypography(
+        h1 = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
+        h2 = MaterialTheme.typography.titleLarge.copy(
+            fontSize = 20.sp,
+            lineHeight = 26.sp,
+            fontWeight = FontWeight.SemiBold,
+        ),
+        h3 = MaterialTheme.typography.titleMedium.copy(
+            fontSize = 18.sp,
+            lineHeight = 24.sp,
+            fontWeight = FontWeight.SemiBold,
+        ),
+        h4 = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+        h5 = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+        h6 = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+        text = MaterialTheme.typography.bodyLarge,
+        paragraph = MaterialTheme.typography.bodyLarge,
+        ordered = MaterialTheme.typography.bodyLarge,
+        bullet = MaterialTheme.typography.bodyLarge,
+        list = MaterialTheme.typography.bodyLarge,
+        table = MaterialTheme.typography.bodyMedium,
+    )
+    SelectionContainer(modifier = modifier) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            segments.forEachIndexed { index, segment ->
+                when (segment) {
+                    is RichMessageSegment.Markdown -> {
+                        val markdownState = rememberMarkdownState(segment.content, retainState = true)
+                        Markdown(
+                            markdownState = markdownState,
+                            typography = typography,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    is RichMessageSegment.BlockMath -> LatexAutoWrap(
+                        latex = segment.content,
+                        config = LatexConfig(
+                            fontSize = 18.sp,
+                            theme = LatexTheme.material3(),
+                            accessibilityEnabled = true,
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .testTag("message-math-$index"),
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable

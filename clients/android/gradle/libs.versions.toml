@@ -15,6 +15,7 @@ material = "1.14.0"
 camerax = "1.5.3"
 zxing = "3.5.4"
 markdownRenderer = "0.41.0"
+latex = "1.4.7"
 coil = "3.5.0"
 junit = "4.13.2"
 androidxJunit = "1.3.0"
@@ -49,6 +50,9 @@ androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycl
 androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "camerax" }
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
 markdown-renderer-m3 = { group = "com.mikepenz", name = "multiplatform-markdown-renderer-m3", version.ref = "markdownRenderer" }
+latex-base = { group = "io.github.huarangmeng", name = "latex-base", version.ref = "latex" }
+latex-parser = { group = "io.github.huarangmeng", name = "latex-parser", version.ref = "latex" }
+latex-renderer = { group = "io.github.huarangmeng", name = "latex-renderer", version.ref = "latex" }
 coil-compose = { group = "io.coil-kt.coil3", name = "coil-compose", version.ref = "coil" }
 coil-gif = { group = "io.coil-kt.coil3", name = "coil-gif", version.ref = "coil" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
