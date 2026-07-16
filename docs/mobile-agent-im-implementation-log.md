@@ -356,3 +356,5 @@ Pixel 7 真实回合验证得到 `model_output_tokens=51`，同一消息尾部�
 - 错误提示改为 Material snackbar：聊天页固定在输入栏之上，插件页固定在底部；连接错误可关闭，插件加载错误可重试，错误详情保持单行且不遮挡主要任务。
 - Pixel 7 已验证 `OBSERVEOUTPUT` 历史 Turn 显示“输出 51 tokens”，插件目录与 KV 看板返回栈正常。截图为 `/tmp/pixel7-chat-token-tail.png`、`/tmp/pixel7-md3-plugin-directory-v3.png`、`/tmp/pixel7-md3-cache-v3.png`。
 - 自动验证通过 `npm run typecheck`、`npm run lint`、Observe 的 2 项移动面板测试与 6 项插件测试、`./scripts/verify-mobile-agent-native.sh`、可靠性门禁和媒体门禁。
+- `0.7.9 (18)` 已发布到 GitHub。签名 APK 为 8,306,626 bytes，SHA-256 `be39b2bcb62f4d5f25b8df3869d45953249c0b49dc75e4d71f04e7d055f070d6`；GitHub 资产摘要、本地产物和 Pixel 7 内 `base.apk` 三者一致。
+- Pixel 7 无损安装签名 release 后系统报告 versionCode 18 / versionName 0.7.9，首次权限页和配对页均正常渲染，没有白屏或应用进程内的 FATAL、RenderProcessGone、event gap、协议校验错误。发布地址为 `https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.9`。

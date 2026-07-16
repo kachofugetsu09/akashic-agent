@@ -148,3 +148,4 @@ node --check mobile_panel.js
 - 形状按组件职责分级：snackbar 4dp、列表标识 12dp、指标组 20dp、触控胶囊使用 full shape；层级主要依靠 state layer、排版和留白，不增加装饰阴影。
 - 新增界面统一使用 500/700 的可用字重、12px 以上辅助文字和 tabular numerals；没有为了视觉统一批量改写既有聊天排版。
 - Pixel 7 在隔离 Mobile Lab 中验证插件目录、看板返回栈、真实空态与 `OBSERVEOUTPUT` 的 51-token 尾注。最终发布门禁包含 Web 类型检查、ESLint、15 项状态测试、Android 单元与 androidTest 构建、可靠性门禁及媒体门禁。
+- 签名 `0.7.9 (18)` 已发布。APK 为 8,306,626 bytes，SHA-256 `be39b2bcb62f4d5f25b8df3869d45953249c0b49dc75e4d71f04e7d055f070d6`；GitHub 资产、本地产物和 Pixel 7 内安装包哈希一致。首次权限与配对界面启动正常，应用进程日志没有 FATAL、WebView render loss、event gap 或协议反序列化错误。
