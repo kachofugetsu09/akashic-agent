@@ -425,3 +425,10 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - `npm run typecheck`、`npm run lint`、20 项 mobile web state 测试、`git diff --check` 和 `clients/android/scripts/build-release.sh` 通过；release unit、Lint、R8、assemble 与 v2 签名验证成功，最终验收 APK SHA-256 为 `885366a6…cf22`。
 - Pixel 7 已用最终签名 APK 无损安装并验证：单选截图 `/tmp/pixel7-selection-final-one.png`；单选引用进入 composer 的截图 `/tmp/pixel7-selection-final-reply3.png`；双选截图 `/tmp/pixel7-selection-final-two3.png`；Android 剪贴板预览显示按顺序复制的两条消息，截图 `/tmp/pixel7-selection-final-copy.png`；返回键恢复常态输入区，截图 `/tmp/pixel7-selection-final-back2.png`。对应 logcat 无 FATAL、RenderProcessGone 或 event sequence gap。
 - Kill AI Slop 扫描为 38 个文件、10 组、58 个机械命中；相对本组实施前只多出 `-webkit-touch-callout: none` 被“left-border callout”规则按字符串误报，实际没有新增 callout、渐变、玻璃拟态、发光点、卡片墙或胶囊堆叠。完整批次记录见 `docs/mobile-batches/2026-07-17-message-selection.md`。
+
+## 2026-07-17 主动反馈插件移动面板
+
+- `proactive_feedback` 通过既有移动 UI 生命周期注册插件自有看板；核心没有新增插件业务、数据库路径或专用样式。移动端复用既有 Dashboard reader，只把“主动消息是否被继续”投影成任务优先的概览和关联链路。
+- 主概览用青绿表达继续率、紫色表达明确引用、蓝色表达高可信信号；最近回应保持平面列表，筛选是单一 segmented control，展开后才显示“主动发出 → 用户回应 → 助手继续”。
+- Pixel 7 真实空态、707 条只读样本、三种筛选和展开/收起均通过。真机发现折叠详情仍泄漏到 Android 无障碍树后补齐 `inert + aria-hidden`；复测确认折叠、展开、再次收起的可访问树与视觉状态一致。
+- 插件 Python `12 passed`、Node `5 passed`、Pyright 0 错误；源码 PR #2 已合入，Docker Mobile Lab 最终缓存 HEAD 为 `3fa085e`。完整设计、备份和截图证据见 `docs/mobile-batches/2026-07-17-proactive-feedback-panel.md`。
