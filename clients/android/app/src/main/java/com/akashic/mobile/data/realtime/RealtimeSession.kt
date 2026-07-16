@@ -128,6 +128,7 @@ class RealtimeSession(
 
     private val json = Json { encodeDefaults = true; explicitNulls = false }
     private val mutex = Mutex()
+    private val attachmentOperations = AttachmentOperationOwner()
     private val socket = RealtimeWebSocketClient(this, allowInsecureTransport)
     private val uploads = AttachmentUploadCoordinator(
         dao = database.attachmentTransfers(),
@@ -348,12 +349,14 @@ class RealtimeSession(
                     val currentProfile = requireNotNull(profile) { "Pair a server before attaching" }
                     currentProfile.serverId to ensureCurrentSession(currentProfile)
                 }
-                attachmentDrafts.import(
-                    serverId = target.first,
-                    sessionId = target.second,
-                    uris = uris,
-                    now = System.currentTimeMillis(),
-                )
+                attachmentOperations.perform {
+                    attachmentDrafts.import(
+                        serverId = target.first,
+                        sessionId = target.second,
+                        uris = uris,
+                        now = System.currentTimeMillis(),
+                    )
+                }
                 mutex.withLock {
                     if (mutableState.value.connection.phase == ConnectionPhase.READY) {
                         uploads.resumeIfIdle(target.first)
@@ -378,7 +381,7 @@ class RealtimeSession(
     fun removeAttachment(attachmentId: String) {
         scope.launch {
             try {
-                attachmentDrafts.remove(attachmentId)
+                attachmentOperations.perform { attachmentDrafts.remove(attachmentId) }
             } catch (error: IllegalStateException) {
                 mutex.withLock {
                     mutableState.value = mutableState.value.copy(errorMessage = error.message)
@@ -389,7 +392,9 @@ class RealtimeSession(
 
     fun retryAttachment(attachmentId: String) {
         scope.launch {
-            attachmentDrafts.retry(attachmentId, System.currentTimeMillis())
+            attachmentOperations.perform {
+                attachmentDrafts.retry(attachmentId, System.currentTimeMillis())
+            }
             mutex.withLock {
                 profile?.serverId?.let { serverId ->
                     if (mutableState.value.connection.phase == ConnectionPhase.READY) {
@@ -450,6 +455,7 @@ class RealtimeSession(
     fun sendMessage(
         text: String,
         replyToMessageId: String? = null,
+        expectedAttachmentIds: List<String> = emptyList(),
         onPersisted: (Boolean) -> Unit = {},
     ) {
         enqueueMessage(
@@ -457,6 +463,7 @@ class RealtimeSession(
             includeDraftAttachments = true,
             replyToMessageId = replyToMessageId,
             targetSessionId = null,
+            expectedAttachmentIds = expectedAttachmentIds,
             onPersisted = onPersisted,
         )
     }
@@ -547,14 +554,17 @@ class RealtimeSession(
         includeDraftAttachments: Boolean,
         replyToMessageId: String?,
         targetSessionId: String?,
+        expectedAttachmentIds: List<String> = emptyList(),
         onPersisted: (Boolean) -> Unit = {},
-    ) {
+) {
         scope.launch {
-            mutex.withLock {
+            withSendResult(onPersisted) { reportResult ->
+                attachmentOperations.perform {
+                    mutex.withLock {
                 // 1. 确定当前手机会话
                 val currentProfile = profile ?: run {
                     mutableState.value = mutableState.value.copy(errorMessage = "请先连接电脑")
-                    onPersisted(false)
+                    reportResult(false)
                     return@withLock
                 }
                 val body = text.trim()
@@ -573,26 +583,35 @@ class RealtimeSession(
                 } else {
                     emptyList()
                 }
+                if (includeDraftAttachments && !attachmentDraftMatchesExpected(
+                        attachments.map { it.attachmentId },
+                        expectedAttachmentIds,
+                    )
+                ) {
+                    mutableState.value = mutableState.value.copy(errorMessage = "附件草稿已变化，请确认后重试")
+                    reportResult(false)
+                    return@withLock
+                }
                 if (body.isEmpty() && attachments.isEmpty()) {
                     mutableState.value = mutableState.value.copy(errorMessage = "消息和附件不能同时为空")
-                    onPersisted(false)
+                    reportResult(false)
                     return@withLock
                 }
                 if (attachments.any { it.state != "ready" }) {
                     mutableState.value = mutableState.value.copy(errorMessage = "请等待附件上传完成")
-                    onPersisted(false)
+                    reportResult(false)
                     return@withLock
                 }
                 val replyTarget = replyToMessageId?.let { messageId ->
                     val target = database.messages().get(messageId)
                     if (target == null) {
                         mutableState.value = mutableState.value.copy(errorMessage = "被引用的消息已不可用")
-                        onPersisted(false)
+                        reportResult(false)
                         return@withLock
                     }
                     if (target.sessionId != sessionId || target.role !in setOf("user", "assistant")) {
                         mutableState.value = mutableState.value.copy(errorMessage = "被引用的消息已不可用")
-                        onPersisted(false)
+                        reportResult(false)
                         return@withLock
                     }
                     target
@@ -632,23 +651,23 @@ class RealtimeSession(
                     mutableState.value = mutableState.value.copy(
                         errorMessage = "保存已发送附件失败：${error.message}",
                     )
-                    onPersisted(false)
+                    reportResult(false)
                     return@withLock
                 } catch (error: SecurityException) {
                     mutableState.value = mutableState.value.copy(errorMessage = "附件缓存路径不安全")
-                    onPersisted(false)
+                    reportResult(false)
                     return@withLock
                 } catch (error: IllegalArgumentException) {
                     mutableState.value = mutableState.value.copy(errorMessage = error.message)
-                    onPersisted(false)
+                    reportResult(false)
                     return@withLock
                 } catch (error: IllegalStateException) {
                     mutableState.value = mutableState.value.copy(errorMessage = error.message)
-                    onPersisted(false)
+                    reportResult(false)
                     return@withLock
                 } catch (error: ArithmeticException) {
                     mutableState.value = mutableState.value.copy(errorMessage = "附件缓存配额计算溢出")
-                    onPersisted(false)
+                    reportResult(false)
                     return@withLock
                 }
                 val envelope = WireEnvelope(
@@ -696,8 +715,10 @@ class RealtimeSession(
                     ),
                     attachments = cachedAttachments,
                 )
-                onPersisted(true)
+                reportResult(true)
                 if (mutableState.value.connection.phase == ConnectionPhase.READY) flushOutbox()
+                    }
+                }
             }
         }
     }

@@ -87,7 +87,7 @@ fun MobileWebChat(
     onShareDownloadedAttachment: (String) -> Unit,
     onSaveDownloadedAttachment: (String) -> Unit,
     onDismissError: () -> Unit,
-    onSend: (String, String?, (Boolean) -> Unit) -> Unit,
+    onSend: (String, String?, List<String>, (Boolean) -> Unit) -> Unit,
     onSendCommand: (String) -> Unit,
     onPluginUiCall: (String, String?, String?, String, String, String) -> Unit,
     onPluginUiResponsesAcknowledged: (Set<String>) -> Unit,
@@ -262,7 +262,7 @@ private data class MobileWebCallbacks(
     val onShareDownloadedAttachment: (String) -> Unit,
     val onSaveDownloadedAttachment: (String) -> Unit,
     val onDismissError: () -> Unit,
-    val onSend: (String, String?, (Boolean) -> Unit) -> Unit,
+    val onSend: (String, String?, List<String>, (Boolean) -> Unit) -> Unit,
     val onSendCommand: (String) -> Unit,
     val onPluginUiCall: (String, String?, String?, String, String, String) -> Unit,
     val onPluginUiResponsesAcknowledged: (Set<String>) -> Unit,
@@ -359,8 +359,23 @@ private class MobileWebBridge(
     fun dismissError() = dispatch { it.onDismissError() }
 
     @JavascriptInterface
-    fun sendMessage(requestId: String, text: String, replyToMessageId: String) = dispatch {
-        it.onSend(text, replyToMessageId.ifBlank { null }) { accepted ->
+    fun sendMessage(
+        requestId: String,
+        text: String,
+        replyToMessageId: String,
+        attachmentIdsJson: String,
+    ) = dispatch {
+        val attachmentIds = try {
+            Json.decodeFromString<List<String>>(attachmentIdsJson)
+        } catch (_: SerializationException) {
+            reportSendResult(requestId, false)
+            return@dispatch
+        }
+        if (attachmentIds.distinct().size != attachmentIds.size) {
+            reportSendResult(requestId, false)
+            return@dispatch
+        }
+        it.onSend(text, replyToMessageId.ifBlank { null }, attachmentIds) { accepted ->
             reportSendResult(requestId, accepted)
         }
     }

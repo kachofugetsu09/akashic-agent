@@ -4,7 +4,11 @@ import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.akashic.mobile.data.realtime.AttachmentOperationOwner
+import com.akashic.mobile.data.realtime.attachmentDraftMatchesExpected
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -64,6 +68,71 @@ class AttachmentDraftStoreTest {
         val persisted = database.attachmentTransfers().get(transfer.attachmentId)!!
         assertEquals("pending", persisted.state)
         assertEquals(2, persisted.updatedAt)
+    }
+
+    @Test
+    fun sendWinningOwnershipPreventsReadyDraftRemoval() = runBlocking {
+        val transfer = transfer("send-wins", "ready")
+        database.attachmentTransfers().upsert(transfer)
+        store.fileFor(transfer.attachmentId).apply {
+            parentFile!!.mkdirs()
+            writeText("payload")
+        }
+        val owner = AttachmentOperationOwner()
+        val sendEntered = CompletableDeferred<Unit>()
+        val releaseSend = CompletableDeferred<Unit>()
+        val send = async {
+            owner.perform {
+                val drafts = database.attachmentTransfers().drafts("server", "mobile:test")
+                assertTrue(attachmentDraftMatchesExpected(drafts.map { it.attachmentId }, listOf(transfer.attachmentId)))
+                sendEntered.complete(Unit)
+                releaseSend.await()
+                assertEquals(1, database.attachmentTransfers().markSending(listOf(transfer.attachmentId), 2))
+            }
+        }
+        sendEntered.await()
+        val remove = async { owner.perform { store.remove(transfer.attachmentId) } }
+
+        releaseSend.complete(Unit)
+        send.await()
+
+        assertFalse(remove.await())
+        assertEquals("sending", database.attachmentTransfers().get(transfer.attachmentId)?.state)
+        assertTrue(store.fileFor(transfer.attachmentId).exists())
+    }
+
+    @Test
+    fun removeWinningOwnershipMakesSendRejectTheStaleDraftSet() = runBlocking {
+        val transfer = transfer("remove-wins", "ready")
+        database.attachmentTransfers().upsert(transfer)
+        store.fileFor(transfer.attachmentId).apply {
+            parentFile!!.mkdirs()
+            writeText("payload")
+        }
+        val owner = AttachmentOperationOwner()
+        val removeEntered = CompletableDeferred<Unit>()
+        val releaseRemove = CompletableDeferred<Unit>()
+        val remove = async {
+            owner.perform {
+                removeEntered.complete(Unit)
+                releaseRemove.await()
+                store.remove(transfer.attachmentId)
+            }
+        }
+        removeEntered.await()
+        val sendAccepted = async {
+            owner.perform {
+                val actual = database.attachmentTransfers().drafts("server", "mobile:test")
+                attachmentDraftMatchesExpected(actual.map { it.attachmentId }, listOf(transfer.attachmentId))
+            }
+        }
+
+        releaseRemove.complete(Unit)
+
+        assertTrue(remove.await())
+        assertFalse(sendAccepted.await())
+        assertNull(database.attachmentTransfers().get(transfer.attachmentId))
+        assertFalse(store.fileFor(transfer.attachmentId).exists())
     }
 
     private fun transfer(id: String, state: String) = AttachmentTransferEntity(

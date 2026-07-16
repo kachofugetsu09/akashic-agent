@@ -246,6 +246,11 @@ button {
   transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
+.mobile-icon-button:disabled {
+  color: var(--m-on-surface-variant);
+  opacity: 0.56;
+}
+
 .mobile-icon-button:active:not(:disabled),
 .mobile-send-button:active:not(:disabled),
 .drawer-action:active:not(:disabled),

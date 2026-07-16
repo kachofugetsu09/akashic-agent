@@ -204,7 +204,7 @@ interface NativeBridge {
   saveDownloadedAttachment(attachmentId: string): void;
   setWebHistoryActive(active: boolean): void;
   dismissError(): void;
-  sendMessage(requestId: string, text: string, replyToMessageId: string): void;
+  sendMessage(requestId: string, text: string, replyToMessageId: string, attachmentIdsJson: string): void;
   copyText(text: string): void;
   performActionHaptic(): void;
   sendCommand(command: string): void;
@@ -753,7 +753,12 @@ function MobileNativeApp() {
     const requestId = `send-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     pendingSendRequestRef.current = requestId;
     setSendPending(true);
-    native.sendMessage(requestId, text, replyTarget?.id ?? "");
+    native.sendMessage(
+      requestId,
+      text,
+      replyTarget?.id ?? "",
+      JSON.stringify(snapshot.composer.attachments.map((attachment) => attachment.id)),
+    );
   };
   const stop = () => {
     if (!snapshot.composer.canStop || stopRequested) return;
@@ -1222,7 +1227,7 @@ function MobileComposer({
       ) : null}
       {stopping ? <div className="stop-feedback" aria-live="polite">正在中止本轮处理…</div> : null}
       {snapshot.composer.transferStatus ? <TransferBanner status={snapshot.composer.transferStatus} /> : null}
-      {hasDraft ? <DraftAttachments attachments={snapshot.composer.attachments} /> : null}
+      {hasDraft ? <DraftAttachments attachments={snapshot.composer.attachments} disabled={sendPending} /> : null}
       <div className={`mobile-composer-frame ${replyTarget ? "has-reply" : ""}`}>
         {snapshot.composer.pendingMessages.length > 1 ? (
           <PendingQueue
@@ -1250,7 +1255,7 @@ function MobileComposer({
             }
           }}
         />
-        <button className="mobile-icon-button" type="button" onClick={() => window.AkashicNative?.chooseAttachments()} aria-label="添加附件">
+        <button className="mobile-icon-button" type="button" disabled={sendPending} onClick={() => window.AkashicNative?.chooseAttachments()} aria-label="添加附件">
           <Paperclip size={22} />
         </button>
         {snapshot.composer.canStop || stopping ? (
@@ -1346,7 +1351,7 @@ function CommandSheet({ open, commands, onClose }: { open: boolean; commands: Mo
   );
 }
 
-function DraftAttachments({ attachments }: { attachments: MobileAttachment[] }) {
+function DraftAttachments({ attachments, disabled }: { attachments: MobileAttachment[]; disabled: boolean }) {
   const [operations, setOperations] = useState(new Map<string, "retry" | "remove">());
   const operationsRef = useRef(operations);
 
@@ -1380,7 +1385,7 @@ function DraftAttachments({ attachments }: { attachments: MobileAttachment[] }) 
         const progress = attachment.sizeBytes > 0
           ? Math.min(100, Math.round(attachment.transferredBytes / attachment.sizeBytes * 100))
           : 0;
-        const busy = operations.has(attachment.id);
+        const busy = disabled || operations.has(attachment.id);
         return (
           <div className="draft-attachment" key={attachment.id} aria-busy={busy}>
             <FileText size={19} />

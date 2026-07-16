@@ -204,8 +204,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onQrCode(value: String) = container.realtimeSession.beginPairing(value)
 
-    fun sendMessage(value: String, replyToMessageId: String?, onPersisted: (Boolean) -> Unit) =
-        container.realtimeSession.sendMessage(value, replyToMessageId, onPersisted)
+    fun sendMessage(
+        value: String,
+        replyToMessageId: String?,
+        expectedAttachmentIds: List<String>,
+        onPersisted: (Boolean) -> Unit,
+    ) = container.realtimeSession.sendMessage(
+        value,
+        replyToMessageId,
+        expectedAttachmentIds,
+        onPersisted,
+    )
 
     fun sendCommand(value: String) = container.realtimeSession.sendCommand(value)
 
