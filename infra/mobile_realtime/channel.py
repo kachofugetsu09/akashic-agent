@@ -157,6 +157,7 @@ class MobileRealtimeChannel:
         self._delta_failure: BaseException | None = None
         self._attachments: AttachmentTransferService | None = None
         self._mobile_ui_provider: MobileUiProvider | None = None
+        self._mobile_ui_catalog_identity: tuple[tuple[object, object, object], ...] = ()
 
     def bind_mobile_ui_provider(self, provider: MobileUiProvider) -> None:
         """绑定读取当前插件快照的移动 UI 提供器。"""
@@ -164,6 +165,19 @@ class MobileRealtimeChannel:
         if self._mobile_ui_provider is not None:
             raise RuntimeError("Mobile UI provider 已绑定")
         self._mobile_ui_provider = provider
+        self._mobile_ui_catalog_identity = _mobile_ui_catalog_identity(provider.catalog())
+
+    async def refresh_mobile_ui_catalog(self) -> None:
+        """目录内容变化时通知所有手机重新拉取插件 UI。"""
+
+        provider = self._mobile_ui_provider
+        if provider is None:
+            return
+        identity = _mobile_ui_catalog_identity(provider.catalog())
+        if identity == self._mobile_ui_catalog_identity:
+            return
+        await self._runtime.publish_event(event_type="plugin.ui.changed", payload={})
+        self._mobile_ui_catalog_identity = identity
 
     async def start(self, ctx: ChannelContext) -> None:
         """注册移动渠道的出站、流事件和主动推送入口。"""
@@ -1659,6 +1673,12 @@ def _mobile_tool_argument_encoded_size(value: Mapping[str, object]) -> int:
             allow_nan=False,
         ).encode("utf-8")
     )
+
+
+def _mobile_ui_catalog_identity(
+    items: list[dict[str, object]],
+) -> tuple[tuple[object, object, object], ...]:
+    return tuple((item["id"], item["revision"], item["sha256"]) for item in items)
 
 
 def _utc_now() -> datetime:

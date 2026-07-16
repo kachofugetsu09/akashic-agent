@@ -290,6 +290,7 @@ object ProtocolCodec {
             "message.final",
             "turn.interrupted",
             "message.proactive",
+            "plugin.ui.changed",
             "attachment.progress",
             "attachment.ready",
             "connection.degraded",

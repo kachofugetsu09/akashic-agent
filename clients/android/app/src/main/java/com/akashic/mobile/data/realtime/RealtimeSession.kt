@@ -188,6 +188,7 @@ class RealtimeSession(
     private var pendingPluginUiListId: String? = null
     private val pendingPluginUiAssets = mutableMapOf<String, MobileUiCatalogItem>()
     private val stagedPluginUiAssets = mutableMapOf<String, MobileUiAssetPayload>()
+    private var pluginUiRefreshQueued = false
     private val pendingPluginUiCalls = mutableMapOf<String, String>()
 
     fun start() {
@@ -1083,6 +1084,7 @@ class RealtimeSession(
                     )
                     "message.proactive" ->
                         downloads.resumeIfIdle(currentProfile.serverId)
+                    "plugin.ui.changed" -> requestPluginUiList()
                     "connection.degraded" -> mutableState.value = mutableState.value.copy(
                         connection = mutableState.value.connection.copy(phase = ConnectionPhase.DEGRADED),
                     )
@@ -1247,7 +1249,11 @@ class RealtimeSession(
     }
 
     private fun requestPluginUiList() {
-        if (pendingPluginUiListId != null) return
+        if (pendingPluginUiListId != null || pendingPluginUiAssets.isNotEmpty()) {
+            pluginUiRefreshQueued = true
+            return
+        }
+        pluginUiRefreshQueued = false
         pendingPluginUiListId = sendPluginUiCommand(
             type = "plugin.ui.list",
             payload = buildJsonObject {},
@@ -1264,6 +1270,7 @@ class RealtimeSession(
         stagedPluginUiAssets.clear()
         if (catalog.items.isEmpty()) {
             mutableState.value = mutableState.value.copy(pluginUiAssets = emptyList())
+            requestQueuedPluginUiRefresh()
             return
         }
         for (item in catalog.items) {
@@ -1293,7 +1300,14 @@ class RealtimeSession(
             mutableState.value = mutableState.value.copy(
                 pluginUiAssets = stagedPluginUiAssets.values.sortedBy { it.id },
             )
+            requestQueuedPluginUiRefresh()
         }
+    }
+
+    private fun requestQueuedPluginUiRefresh() {
+        if (!pluginUiRefreshQueued) return
+        pluginUiRefreshQueued = false
+        requestPluginUiList()
     }
 
     private fun applyPluginUiCallReply(envelope: WireEnvelope) {
@@ -1755,6 +1769,7 @@ class RealtimeSession(
         pendingPluginUiListId = null
         pendingPluginUiAssets.clear()
         stagedPluginUiAssets.clear()
+        pluginUiRefreshQueued = false
         pendingPluginUiCalls.clear()
     }
 

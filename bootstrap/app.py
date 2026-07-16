@@ -540,7 +540,15 @@ class AppRuntime:
                     )
 
             if plugin_manager is not None:
-                self.plugin_watcher = PluginWatcher(plugin_manager)
+                mobile_ui_refresh = (
+                    self.mobile_gateway_runtime.channel.refresh_mobile_ui_catalog
+                    if self.mobile_gateway_runtime is not None
+                    else None
+                )
+                self.plugin_watcher = PluginWatcher(
+                    plugin_manager,
+                    after_reconcile=mobile_ui_refresh,
+                )
                 self.plugin_watcher_task = asyncio.create_task(
                     self.plugin_watcher.run(),
                     name="plugin_watcher",

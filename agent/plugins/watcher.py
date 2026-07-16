@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 
 from agent.plugins.manager import PluginManager
 
@@ -9,9 +10,16 @@ logger = logging.getLogger(__name__)
 
 
 class PluginWatcher:
-    def __init__(self, manager: PluginManager, *, interval_seconds: float = 1.0) -> None:
+    def __init__(
+        self,
+        manager: PluginManager,
+        *,
+        interval_seconds: float = 1.0,
+        after_reconcile: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         self._manager = manager
         self._interval_seconds = interval_seconds
+        self._after_reconcile = after_reconcile
         self._wake = asyncio.Event()
         self._forced = False
         self._running = True
@@ -62,6 +70,13 @@ class PluginWatcher:
                     _ = await self._manager.reconcile_changed()
                 except Exception:
                     logger.exception("插件热重载失败")
+                else:
+                    try:
+                        if self._after_reconcile is not None:
+                            await self._after_reconcile()
+                    except Exception:
+                        self._forced = True
+                        logger.exception("插件热重载后置通知失败")
                 revision = current_revision
         finally:
             self._stopped.set()
