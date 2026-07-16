@@ -37,3 +37,4 @@
 - Android 定向 debug unit 通过；release unit、Lint、R8、assemble 和 APK v2 签名通过。
 - Pixel 7 真机执行完整 `LocalDeliveryStoreTest`：25 passed。边界用例断言 `10 MiB - 1 byte` 自动排队、`10 MiB` 保持 remote；`MediaCacheStore.reconcile()` 后仍保持 remote；快速连续请求两次只发送一条 `attachment.download`。
 - 隔离 Mobile Lab 注入真实 11.0 MiB 历史附件后，Pixel 7 先保持“尚未下载”；连续点按后只运行一条 offset 分片链，界面原位显示 32%→69%，最终变为“已下载”并出现分享操作。证据为 `/tmp/pixel7-release-reconnected.png`、`/tmp/pixel7-large-download-progress2.png`、`/tmp/pixel7-large-download-finished2.png`、`/tmp/pixel7-large-download-complete.png`；应用日志无 FATAL、AndroidRuntime 或 RenderProcessGone。
+- `0.7.11 (20)` 已发布到 `https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.11`。远端唯一 APK 资产为 8,306,622 bytes，SHA-256 `1dbe8ad21b9a171a53b0a44ff673773108422dca2f951743a8090d4621f76b91`，与真机验收包一致。
