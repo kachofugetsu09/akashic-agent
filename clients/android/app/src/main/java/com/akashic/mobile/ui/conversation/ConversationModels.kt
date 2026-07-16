@@ -15,6 +15,7 @@ data class ConversationUiState(
     val messages: List<MessageUi>,
     val attachments: List<ComposerAttachmentUi>,
     val pendingMessages: List<PendingMessageUi>,
+    val transferStatus: TransferStatusUi? = null,
     val commands: List<CommandUi>,
     val pluginUiAssets: List<PluginUiAssetUi> = emptyList(),
     val pluginUiResponses: List<PluginUiResponseUi> = emptyList(),
@@ -24,6 +25,13 @@ data class ConversationUiState(
     val isStopping: Boolean,
     val canStop: Boolean,
     val canSend: Boolean,
+)
+
+data class TransferStatusUi(
+    val title: String,
+    val detail: String,
+    val progressPercent: Int,
+    val requiresMeteredApproval: Boolean,
 )
 
 data class PluginUiAssetUi(
@@ -52,6 +60,7 @@ data class ComposerAttachmentUi(
 
 enum class ComposerAttachmentState {
     WAITING_FOR_CONNECTION,
+    WAITING_FOR_METERED_APPROVAL,
     UPLOADING,
     READY,
     FAILED,

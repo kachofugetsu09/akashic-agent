@@ -8,6 +8,7 @@ import com.akashic.mobile.data.local.LocalDeliveryStore
 import com.akashic.mobile.data.local.MediaCacheStore
 import com.akashic.mobile.data.realtime.DeviceKeyStore
 import com.akashic.mobile.data.realtime.RealtimeSession
+import com.akashic.mobile.data.realtime.TransferNetworkMonitor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -37,6 +38,7 @@ class AppContainer(application: Application) {
         dao = database.attachmentTransfers(),
     )
     val deviceKeyStore = DeviceKeyStore()
+    val transferNetwork = TransferNetworkMonitor(application)
     val realtimeSession = RealtimeSession(
         database = database,
         deliveryStore = deliveryStore,
@@ -44,6 +46,7 @@ class AppContainer(application: Application) {
         mediaCache = mediaCacheStore,
         preferences = preferences,
         deviceKeys = deviceKeyStore,
+        transferNetwork = transferNetwork.state,
         scope = applicationScope,
         allowInsecureTransport = BuildConfig.ALLOW_INSECURE_WS,
     )

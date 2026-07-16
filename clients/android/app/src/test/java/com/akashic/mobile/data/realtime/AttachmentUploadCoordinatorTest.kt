@@ -96,11 +96,57 @@ class AttachmentUploadCoordinatorTest {
         assertEquals(listOf("attachment.begin", "attachment.finish"), commands.map { it.type })
     }
 
+    @Test
+    fun `metered policy pauses the persisted queue until approval`() = runBlocking {
+        val attachmentId = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        val dao = FakeAttachmentDao(transfer(attachmentId, 0, "pending"))
+        val source = temporary.newFile("$attachmentId.upload").apply {
+            writeBytes(ByteArray(1024 * 1024 + 3))
+        }
+        val commands = mutableListOf<SentCommand>()
+        var approved = false
+        val coordinator = coordinator(dao, source, commands, mutableListOf()) { approved }
+
+        coordinator.onConnectionReady("server")
+        assertTrue(commands.isEmpty())
+        assertEquals("pending", dao.get(attachmentId)!!.state)
+
+        approved = true
+        coordinator.resumeIfIdle("server")
+        assertEquals("attachment.begin", commands.single().type)
+        assertEquals("uploading", dao.get(attachmentId)!!.state)
+    }
+
+    @Test
+    fun `network policy change pauses at the confirmed window offset`() = runBlocking {
+        val attachmentId = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        val dao = FakeAttachmentDao(transfer(attachmentId, 0, "pending"))
+        val source = temporary.newFile("$attachmentId.upload").apply {
+            writeBytes(ByteArray(1024 * 1024 + 3))
+        }
+        val commands = mutableListOf<SentCommand>()
+        val chunks = mutableListOf<ByteString>()
+        var allowed = true
+        val coordinator = coordinator(dao, source, commands, chunks) { allowed }
+
+        coordinator.onConnectionReady("server")
+        coordinator.onReply(beginReply(commands.single().id, attachmentId, nextOffset = 0))
+        allowed = false
+        coordinator.onProgress(
+            AttachmentProgressPayload(attachmentId, 1024 * 1024L, 1024 * 1024L + 3),
+        )
+
+        assertEquals("pending", dao.get(attachmentId)!!.state)
+        assertEquals(1024 * 1024L, dao.get(attachmentId)!!.transferredBytes)
+        assertEquals(listOf("attachment.begin"), commands.map { it.type })
+    }
+
     private fun coordinator(
         dao: FakeAttachmentDao,
         source: File,
         commands: MutableList<SentCommand>,
         chunks: MutableList<ByteString>,
+        canTransfer: (AttachmentTransferEntity) -> Boolean = { true },
     ) = AttachmentUploadCoordinator(
         dao = dao,
         sourceFile = { source },
@@ -111,6 +157,7 @@ class AttachmentUploadCoordinatorTest {
         sendBinary = { chunks += it; true },
         onTransportUnavailable = { error(it) },
         onUploadFailed = { error(it) },
+        canTransfer = canTransfer,
     )
 
     private fun beginReply(id: String, attachmentId: String, nextOffset: Long) = WireEnvelope(
@@ -187,6 +234,9 @@ class AttachmentUploadCoordinatorTest {
 
         override suspend fun pendingUploads(serverId: String): List<AttachmentTransferEntity> =
             listOf(value).filter { it.state in setOf("pending", "uploading", "finishing") }
+
+        override fun observeActiveUploads(serverId: String): Flow<List<AttachmentTransferEntity>> =
+            flowOf(listOf(value).filter { it.state in setOf("pending", "uploading", "finishing") })
 
         override suspend fun claimUploading(attachmentId: String, updatedAt: Long): Int {
             if (value.attachmentId != attachmentId || value.state !in setOf("pending", "uploading", "finishing")) return 0

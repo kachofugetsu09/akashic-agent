@@ -20,6 +20,7 @@ import com.akashic.mobile.ui.conversation.PendingMessageUi
 import com.akashic.mobile.ui.conversation.ReadingPositionUi
 import com.akashic.mobile.ui.conversation.NavigationTargetUi
 import com.akashic.mobile.ui.conversation.SessionUi
+import com.akashic.mobile.ui.conversation.TransferStatusUi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
@@ -185,6 +186,7 @@ data class MobileWebCommand(
 data class MobileWebComposer(
     val attachments: List<MobileWebAttachment>,
     val pendingMessages: List<MobileWebPendingMessage>,
+    val transferStatus: MobileWebTransferStatus?,
     val commands: List<MobileWebCommand>,
     val isStreaming: Boolean,
     val isResyncing: Boolean,
@@ -192,6 +194,14 @@ data class MobileWebComposer(
     val isStopping: Boolean,
     val canStop: Boolean,
     val canSend: Boolean,
+)
+
+@Serializable
+data class MobileWebTransferStatus(
+    val title: String,
+    val detail: String,
+    val progressPercent: Int,
+    val requiresMeteredApproval: Boolean,
 )
 
 /** 把原生持久化投影转换为版本化 WebView 快照。 */
@@ -213,6 +223,7 @@ fun ConversationUiState.toMobileWebSnapshot(): MobileWebSnapshot = MobileWebSnap
     composer = MobileWebComposer(
         attachments = attachments.map(ComposerAttachmentUi::toMobileWebAttachment),
         pendingMessages = pendingMessages.map(PendingMessageUi::toMobileWebPendingMessage),
+        transferStatus = transferStatus?.toMobileWebTransferStatus(),
         commands = commands.map(CommandUi::toMobileWebCommand),
         isStreaming = isStreaming,
         isResyncing = isResyncing,
@@ -221,6 +232,13 @@ fun ConversationUiState.toMobileWebSnapshot(): MobileWebSnapshot = MobileWebSnap
         canStop = canStop,
         canSend = canSend,
     ),
+)
+
+private fun TransferStatusUi.toMobileWebTransferStatus() = MobileWebTransferStatus(
+    title = title,
+    detail = detail,
+    progressPercent = progressPercent,
+    requiresMeteredApproval = requiresMeteredApproval,
 )
 
 private fun PluginUiAssetUi.toMobileWebPluginAsset() =
@@ -314,6 +332,7 @@ private fun ComposerAttachmentUi.toMobileWebAttachment() = MobileWebAttachment(
     transferredBytes = transferredBytes,
     state = when (state) {
         ComposerAttachmentState.WAITING_FOR_CONNECTION -> "waiting"
+        ComposerAttachmentState.WAITING_FOR_METERED_APPROVAL -> "metered_paused"
         ComposerAttachmentState.UPLOADING -> "uploading"
         ComposerAttachmentState.READY -> "ready"
         ComposerAttachmentState.FAILED -> "failed"

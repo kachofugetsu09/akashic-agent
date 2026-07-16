@@ -5,6 +5,7 @@ import android.net.Uri
 import android.database.sqlite.SQLiteException
 import android.util.Log
 import com.akashic.mobile.data.local.AttachmentDraftStore
+import com.akashic.mobile.data.local.AttachmentTransferEntity
 import com.akashic.mobile.data.local.AppDatabase
 import com.akashic.mobile.data.local.AppPreferences
 import com.akashic.mobile.data.local.ConversationEntity
@@ -36,6 +37,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -62,6 +64,8 @@ data class MobileSessionState(
     val currentSessionId: String? = null,
     val activeTurnId: String? = null,
     val hasActiveAttachmentDownload: Boolean = false,
+    val transferNetwork: TransferNetworkState = TransferNetworkState(TransferNetworkKind.UNAVAILABLE, false),
+    val meteredLargeTransferApproved: Boolean = false,
     val isStopping: Boolean = false,
     val commands: List<RemoteCommandItem> = emptyList(),
     val pluginUiAssets: List<MobileUiAssetPayload> = emptyList(),
@@ -105,6 +109,7 @@ class RealtimeSession(
     private val mediaCache: MediaCacheStore,
     private val preferences: AppPreferences,
     private val deviceKeys: DeviceKeyStore,
+    private val transferNetwork: StateFlow<TransferNetworkState>,
     private val scope: CoroutineScope,
     allowInsecureTransport: Boolean,
 ) : RealtimeSocketListener {
@@ -133,6 +138,7 @@ class RealtimeSession(
         onUploadFailed = { message ->
             mutableState.value = mutableState.value.copy(errorMessage = message)
         },
+        canTransfer = ::canUploadAttachment,
     )
     private val downloads = AttachmentDownloadCoordinator(
         dao = database.mediaAttachments(),
@@ -158,6 +164,7 @@ class RealtimeSession(
     val finalMessages: Flow<FinalMessageEvent> = finalMessageEvents.receiveAsFlow()
 
     private val started = AtomicBoolean(false)
+    private var meteredLargeTransferApproved = false
     private var profile: ServerProfileEntity? = null
     private var pendingPairing: PendingPairing? = null
     private val challengedCandidates = mutableSetOf<SocketCandidateId>()
@@ -183,6 +190,9 @@ class RealtimeSession(
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
+        scope.launch {
+            transferNetwork.collectLatest(::applyTransferNetwork)
+        }
         scope.launch {
             val cacheReady = try {
                 attachmentDrafts.reconcile()
@@ -381,6 +391,24 @@ class RealtimeSession(
         scope.launch {
             attachmentDrafts.retry(attachmentId, System.currentTimeMillis())
             mutex.withLock {
+                profile?.serverId?.let { serverId ->
+                    if (mutableState.value.connection.phase == ConnectionPhase.READY) {
+                        uploads.resumeIfIdle(serverId)
+                    }
+                }
+            }
+        }
+    }
+
+    /** 用户确认本次运行允许大附件使用计费网络，并恢复原上传队列。 */
+    fun continueLargeTransfersOnMeteredNetwork() {
+        scope.launch {
+            mutex.withLock {
+                check(transferNetwork.value.kind == TransferNetworkKind.METERED) {
+                    "当前网络不是按流量计费网络"
+                }
+                meteredLargeTransferApproved = true
+                mutableState.value = mutableState.value.copy(meteredLargeTransferApproved = true)
                 profile?.serverId?.let { serverId ->
                     if (mutableState.value.connection.phase == ConnectionPhase.READY) {
                         uploads.resumeIfIdle(serverId)
@@ -1689,6 +1717,32 @@ class RealtimeSession(
         mutableState.value = mutableState.value.copy(hasActiveAttachmentDownload = active)
     }
 
+    /** 应用网络计费变化，并在策略允许时恢复同一持久化上传队列。 */
+    private suspend fun applyTransferNetwork(next: TransferNetworkState) {
+        mutex.withLock {
+            // 1. 离开计费网络后撤销一次性授权
+            if (next.kind != TransferNetworkKind.METERED) {
+                meteredLargeTransferApproved = false
+            }
+            mutableState.value = mutableState.value.copy(
+                transferNetwork = next,
+                meteredLargeTransferApproved = meteredLargeTransferApproved,
+            )
+
+            // 2. 网络策略放行后继续既有可断点队列
+            profile?.serverId?.let { serverId ->
+                if (mutableState.value.connection.phase == ConnectionPhase.READY) {
+                    uploads.resumeIfIdle(serverId)
+                }
+            }
+        }
+    }
+
+    private fun canUploadAttachment(transfer: AttachmentTransferEntity): Boolean =
+        transfer.sizeBytes < LARGE_TRANSFER_BYTES ||
+            transferNetwork.value.kind != TransferNetworkKind.METERED ||
+            meteredLargeTransferApproved
+
     private fun control(type: String, payload: kotlinx.serialization.json.JsonObject) = WireEnvelope(
         v = WIRE_PROTOCOL_VERSION,
         kind = WireKind.CONTROL,
@@ -1714,5 +1768,6 @@ class RealtimeSession(
         const val HISTORY_PAGE_SIZE = 10
         const val ACK_DELAY_MILLIS = 100L
         const val ACK_EVENT_LIMIT = 32
+        const val LARGE_TRANSFER_BYTES = 10L * 1024 * 1024
     }
 }

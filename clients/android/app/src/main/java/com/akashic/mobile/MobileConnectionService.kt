@@ -16,14 +16,19 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import com.akashic.mobile.data.realtime.FinalMessageEvent
+import com.akashic.mobile.data.local.AttachmentTransferEntity
+import com.akashic.mobile.data.realtime.MobileSessionState
+import com.akashic.mobile.data.realtime.TransferNetworkKind
 import com.akashic.mobile.domain.model.ConnectionPhase
-import com.akashic.mobile.domain.model.ConnectionState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.util.Base64
 
@@ -47,7 +52,10 @@ class MobileConnectionService : Service() {
         app = application as App
         notificationManager = NotificationManagerCompat.from(this)
         createNotificationChannels()
-        startForeground(CONNECTION_NOTIFICATION_ID, connectionNotification(app.container.realtimeSession.state.value.connection))
+        startForeground(
+            CONNECTION_NOTIFICATION_ID,
+            connectionNotification(app.container.realtimeSession.state.value, emptyList()),
+        )
         app.container.realtimeSession.start()
         observeConnection()
         observeFinalMessages()
@@ -86,7 +94,12 @@ class MobileConnectionService : Service() {
 
     private fun observeConnection() {
         stateJob = serviceScope.launch {
-            app.container.realtimeSession.state.collectLatest { state ->
+            app.container.realtimeSession.state.flatMapLatest { state ->
+                state.serverId?.let { serverId ->
+                    app.container.database.attachmentTransfers().observeActiveUploads(serverId)
+                        .map { state to it }
+                } ?: flowOf(state to emptyList())
+            }.collectLatest { (state, uploads) ->
                 if (
                     Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
                     ContextCompat.checkSelfPermission(
@@ -96,7 +109,7 @@ class MobileConnectionService : Service() {
                 ) {
                     notificationManager.notify(
                         CONNECTION_NOTIFICATION_ID,
-                        connectionNotification(state.connection),
+                        connectionNotification(state, uploads),
                     )
                 }
             }
@@ -153,17 +166,35 @@ class MobileConnectionService : Service() {
         )
     }
 
-    private fun connectionNotification(connection: ConnectionState): Notification {
-        val status = when (connection.phase) {
-            ConnectionPhase.READY -> "连接正常"
-            ConnectionPhase.DEGRADED -> "网络不稳，正在重连"
-            ConnectionPhase.CLOSED -> "连接已断开"
-            ConnectionPhase.FAILED -> "连接启动失败"
-            else -> "正在连接"
+    private fun connectionNotification(
+        state: MobileSessionState,
+        uploads: List<AttachmentTransferEntity>,
+    ): Notification {
+        val connection = state.connection
+        val transfer = uploads.firstOrNull()
+        val transferProgress = transfer?.let {
+            (it.transferredBytes * 100 / it.sizeBytes).toInt().coerceIn(0, 100)
         }
-        return NotificationCompat.Builder(this, CONNECTION_CHANNEL_ID)
+        val status = when {
+            transfer != null &&
+                transfer.sizeBytes >= LARGE_TRANSFER_BYTES &&
+                state.transferNetwork.kind == TransferNetworkKind.METERED &&
+                !state.meteredLargeTransferApproved -> "大文件等待确认当前计费网络"
+            transfer != null -> "${transfer.filename} · ${transferProgress}% · 后台继续"
+            else -> when (connection.phase) {
+                ConnectionPhase.READY -> "连接正常"
+                ConnectionPhase.DEGRADED -> "网络不稳，正在重连"
+                ConnectionPhase.CLOSED -> "连接已断开"
+                ConnectionPhase.FAILED -> "连接启动失败"
+                else -> "正在连接"
+            }
+        }
+        val builder = NotificationCompat.Builder(this, CONNECTION_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(getString(R.string.notification_connection_title))
+            .setContentTitle(
+                if (transfer == null) getString(R.string.notification_connection_title)
+                else "正在传输 ${uploads.size} 个附件",
+            )
             .setContentText(status)
             .setContentIntent(openAppIntent(sessionId = null))
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
@@ -172,7 +203,8 @@ class MobileConnectionService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setSilent(true)
-            .build()
+        if (transferProgress != null) builder.setProgress(100, transferProgress, false)
+        return builder.build()
     }
 
     private fun messageNotification(event: FinalMessageEvent): Notification =
@@ -245,6 +277,7 @@ class MobileConnectionService : Service() {
         private const val CONNECTION_CHANNEL_ID = "mobile_connection"
         private const val MESSAGE_CHANNEL_ID = "mobile_messages"
         private const val CONNECTION_NOTIFICATION_ID = 1_001
+        private const val LARGE_TRANSFER_BYTES = 10L * 1024 * 1024
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(

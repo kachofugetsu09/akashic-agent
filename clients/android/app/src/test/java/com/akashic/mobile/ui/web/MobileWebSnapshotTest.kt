@@ -13,6 +13,7 @@ import com.akashic.mobile.ui.conversation.ProcessBlockUi
 import com.akashic.mobile.ui.conversation.PendingMessageUi
 import com.akashic.mobile.ui.conversation.ReadingPositionUi
 import com.akashic.mobile.ui.conversation.NavigationTargetUi
+import com.akashic.mobile.ui.conversation.TransferStatusUi
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
@@ -75,6 +76,12 @@ class MobileWebSnapshotTest {
             ),
             attachments = emptyList(),
             pendingMessages = listOf(PendingMessageUi("message-1", "你好", 1_752_681_600_000)),
+            transferStatus = TransferStatusUi(
+                title = "大文件上传已暂停",
+                detail = "当前为移动网络，确认后会从 42% 继续",
+                progressPercent = 42,
+                requiresMeteredApproval = true,
+            ),
             commands = listOf(CommandUi("memorystatus", "查看记忆整理状态")),
             isStreaming = true,
             isResyncing = false,
@@ -105,6 +112,8 @@ class MobileWebSnapshotTest {
         assertEquals("读取完成", tool.resultPreview)
         assertEquals(840L, tool.durationMillis)
         assertEquals("memorystatus", snapshot.composer.commands.single().command)
+        assertEquals(42, snapshot.composer.transferStatus?.progressPercent)
+        assertTrue(snapshot.composer.transferStatus?.requiresMeteredApproval == true)
         assertEquals("之前的回答", snapshot.messages.first().reply?.preview)
         assertEquals(-18, snapshot.readingPosition?.offsetPx)
         assertEquals("message-2", snapshot.navigationTarget?.messageId)

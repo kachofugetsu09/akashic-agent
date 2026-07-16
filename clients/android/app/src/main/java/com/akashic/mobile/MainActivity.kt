@@ -144,6 +144,7 @@ class MainActivity : ComponentActivity() {
                             onAttach = { attachmentPicker.launch(arrayOf("*/*")) },
                             onRemoveAttachment = viewModel::removeAttachment,
                             onRetryAttachment = viewModel::retryAttachment,
+                            onContinueMeteredTransfer = viewModel::continueLargeTransfersOnMeteredNetwork,
                             onRetryFailedMessage = viewModel::retryFailedMessage,
                             onSaveReadingPosition = viewModel::saveReadingPosition,
                             onMarkSessionReadThrough = viewModel::markSessionReadThrough,

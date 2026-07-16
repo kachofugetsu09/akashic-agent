@@ -413,6 +413,15 @@ interface AttachmentTransferDao {
 
     @Query(
         """
+        SELECT * FROM attachment_transfers
+        WHERE serverId = :serverId AND state IN ('pending', 'uploading', 'finishing')
+        ORDER BY updatedAt ASC
+        """,
+    )
+    fun observeActiveUploads(serverId: String): Flow<List<AttachmentTransferEntity>>
+
+    @Query(
+        """
         UPDATE attachment_transfers
         SET state = 'uploading', updatedAt = :updatedAt
         WHERE attachmentId = :attachmentId AND state IN ('pending', 'uploading', 'finishing')

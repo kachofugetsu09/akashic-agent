@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.akashic.mobile.data.local.MessageWithBlocks
 import com.akashic.mobile.data.local.MessageAttachmentWithMedia
 import com.akashic.mobile.data.local.decodeStoredToolBlock
+import com.akashic.mobile.data.realtime.TransferNetworkKind
 import com.akashic.mobile.domain.model.ConnectionPhase
 import com.akashic.mobile.domain.model.ConnectionState
 import com.akashic.mobile.ui.conversation.ConnectionStatusUi
@@ -28,6 +29,7 @@ import com.akashic.mobile.ui.conversation.PluginUiAssetUi
 import com.akashic.mobile.ui.conversation.PluginUiResponseUi
 import com.akashic.mobile.ui.conversation.PendingMessageUi
 import com.akashic.mobile.ui.conversation.SessionUi
+import com.akashic.mobile.ui.conversation.TransferStatusUi
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.SharingStarted
@@ -38,6 +40,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlin.math.ceil
+
+private const val LARGE_TRANSFER_BYTES = 10L * 1024 * 1024
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -73,6 +77,49 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val scopedGraph = graph.filter { it.message.sessionId == session.currentSessionId }
         val messages = scopedGraph.map(::toMessageUi)
         val connection = connectionPresentation(session.connection, session.errorMessage)
+        val composerAttachments = attachments.map { attachment ->
+            val waitingForConnection = session.connection.phase != ConnectionPhase.READY &&
+                attachment.state in setOf("pending", "uploading", "finishing")
+            val waitingForMeteredApproval = attachment.sizeBytes >= LARGE_TRANSFER_BYTES &&
+                session.transferNetwork.kind == TransferNetworkKind.METERED &&
+                !session.meteredLargeTransferApproved &&
+                attachment.state in setOf("pending", "uploading", "finishing")
+            ComposerAttachmentUi(
+                id = attachment.attachmentId,
+                filename = attachment.filename,
+                contentType = attachment.contentType,
+                sizeBytes = attachment.sizeBytes,
+                transferredBytes = attachment.transferredBytes,
+                state = when {
+                    waitingForConnection -> ComposerAttachmentState.WAITING_FOR_CONNECTION
+                    waitingForMeteredApproval -> ComposerAttachmentState.WAITING_FOR_METERED_APPROVAL
+                    attachment.state == "ready" -> ComposerAttachmentState.READY
+                    attachment.state == "failed" -> ComposerAttachmentState.FAILED
+                    else -> ComposerAttachmentState.UPLOADING
+                },
+                canRemove = attachment.state in setOf("pending", "ready", "failed"),
+            )
+        }
+        val largeTransfer = composerAttachments.firstOrNull {
+            it.sizeBytes >= LARGE_TRANSFER_BYTES &&
+                it.state !in setOf(ComposerAttachmentState.READY, ComposerAttachmentState.FAILED)
+        }
+        val transferStatus = largeTransfer?.let { transfer ->
+            val requiresApproval = session.transferNetwork.kind == TransferNetworkKind.METERED &&
+                !session.meteredLargeTransferApproved
+            val progress = (transfer.transferredBytes * 100 / transfer.sizeBytes).toInt().coerceIn(0, 100)
+            TransferStatusUi(
+                title = if (requiresApproval) "大文件上传已暂停" else "大文件正在后台上传",
+                detail = when {
+                    requiresApproval && session.transferNetwork.cellular -> "当前为移动网络，确认后会从 $progress% 继续"
+                    requiresApproval -> "当前网络按流量计费，确认后会从 $progress% 继续"
+                    session.transferNetwork.cellular -> "移动网络 · 离开会话仍会继续"
+                    else -> "切换会话或进入后台仍会继续"
+                },
+                progressPercent = progress,
+                requiresMeteredApproval = requiresApproval,
+            )
+        }
         ConversationUiState(
             connectionLabel = connection.label,
             connectionStatus = connection.status,
@@ -109,24 +156,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         createdAtMillis = it.createdAtMillis,
                     )
                 },
-            attachments = attachments.map { attachment ->
-                val waitingForConnection = session.connection.phase != ConnectionPhase.READY &&
-                    attachment.state in setOf("pending", "uploading", "finishing")
-                ComposerAttachmentUi(
-                    id = attachment.attachmentId,
-                    filename = attachment.filename,
-                    contentType = attachment.contentType,
-                    sizeBytes = attachment.sizeBytes,
-                    transferredBytes = attachment.transferredBytes,
-                    state = when {
-                        waitingForConnection -> ComposerAttachmentState.WAITING_FOR_CONNECTION
-                        attachment.state == "ready" -> ComposerAttachmentState.READY
-                        attachment.state == "failed" -> ComposerAttachmentState.FAILED
-                        else -> ComposerAttachmentState.UPLOADING
-                    },
-                    canRemove = attachment.state in setOf("pending", "ready", "failed"),
-                )
-            },
+            attachments = composerAttachments,
+            transferStatus = transferStatus,
             commands = session.commands.map { CommandUi(it.command, it.description) },
             pluginUiAssets = session.pluginUiAssets.map {
                 PluginUiAssetUi(it.id, it.revision, it.sha256, it.module, it.stylesheet)
@@ -206,6 +237,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun removeAttachment(attachmentId: String) = container.realtimeSession.removeAttachment(attachmentId)
 
     fun retryAttachment(attachmentId: String) = container.realtimeSession.retryAttachment(attachmentId)
+
+    fun continueLargeTransfersOnMeteredNetwork() =
+        container.realtimeSession.continueLargeTransfersOnMeteredNetwork()
 
     fun retryFailedMessage(messageId: String) = container.realtimeSession.retryFailedMessage(messageId)
 

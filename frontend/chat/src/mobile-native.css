@@ -1503,6 +1503,81 @@ button.tool-step-summary:active {
   overflow-x: auto;
 }
 
+.transfer-banner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 12px;
+  margin: 0 2px 8px;
+  border-radius: 18px;
+  padding: 12px 14px;
+  color: var(--m-on-primary-container);
+  background: var(--m-primary-container);
+}
+
+.transfer-banner > div:first-child {
+  display: grid;
+  min-width: 0;
+}
+
+.transfer-banner strong {
+  font-size: 0.875rem;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.transfer-banner span {
+  margin-top: 2px;
+  color: var(--m-on-surface-variant);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+.transfer-banner .transfer-banner__percent {
+  color: currentColor;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.transfer-banner__track {
+  grid-column: 1 / -1;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: color-mix(in oklch, var(--m-primary) 18%, transparent);
+}
+
+.transfer-banner__track span {
+  display: block;
+  height: 100%;
+  margin: 0;
+  border-radius: inherit;
+  background: var(--m-primary);
+  transition-property: inline-size;
+  transition-duration: 180ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.transfer-banner > button {
+  min-height: 44px;
+  grid-column: 1 / -1;
+  border: 0;
+  border-radius: 22px;
+  padding: 0 18px;
+  color: var(--m-on-primary);
+  background: var(--m-primary);
+  font-size: 0.875rem;
+  font-weight: 650;
+  transition-property: scale;
+  transition-duration: 160ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.transfer-banner > button:active {
+  scale: 0.96;
+}
+
 .draft-attachment {
   display: flex;
   min-width: min(90vw, 356px);

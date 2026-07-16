@@ -79,6 +79,13 @@ interface MobileAttachment {
   contentUrl?: string;
 }
 
+interface MobileTransferStatus {
+  title: string;
+  detail: string;
+  progressPercent: number;
+  requiresMeteredApproval: boolean;
+}
+
 interface MobileProcessBlock {
   id: string;
   kind: "thinking" | "tool";
@@ -163,6 +170,7 @@ export interface MobileSnapshot {
   composer: {
     attachments: MobileAttachment[];
     pendingMessages: MobilePendingMessage[];
+    transferStatus?: MobileTransferStatus;
     commands: { command: string; description: string }[];
     isStreaming: boolean;
     isResyncing: boolean;
@@ -183,6 +191,7 @@ interface NativeBridge {
   chooseAttachments(): void;
   removeAttachment(attachmentId: string): void;
   retryAttachment(attachmentId: string): void;
+  continueMeteredTransfer(): void;
   retryFailedMessage(messageId: string): void;
   saveReadingPosition(sessionId: string, messageId: string, offsetPx: number): void;
   markSessionReadThrough(sessionId: string, readAtMillis: number): void;
@@ -345,6 +354,23 @@ function parseReply(value: unknown, label: string): MobileReply {
   };
 }
 
+function parseTransferStatus(value: unknown): MobileTransferStatus {
+  const raw = requireRecord(value, "composer.transferStatus");
+  const progressPercent = requireNumber(raw.progressPercent, "composer.transferStatus.progressPercent");
+  if (!Number.isInteger(progressPercent) || progressPercent < 0 || progressPercent > 100) {
+    throw new Error("composer.transferStatus.progressPercent 必须是 0..100 的整数");
+  }
+  return {
+    title: requireString(raw.title, "composer.transferStatus.title"),
+    detail: requireString(raw.detail, "composer.transferStatus.detail"),
+    progressPercent,
+    requiresMeteredApproval: requireBoolean(
+      raw.requiresMeteredApproval,
+      "composer.transferStatus.requiresMeteredApproval",
+    ),
+  };
+}
+
 /** 在 native 协议边界校验完整快照，并只补齐 Kotlin 明确定义的默认字段。 */
 function parseMobileSnapshot(value: unknown): MobileSnapshot {
   // 1. 校验协议版本与根对象
@@ -430,6 +456,9 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
           createdAt: requireNonNegativeInteger(pending.createdAt, `composer.pendingMessages[${index}].createdAt`),
         };
       }),
+      transferStatus: composer.transferStatus === null || composer.transferStatus === undefined
+        ? undefined
+        : parseTransferStatus(composer.transferStatus),
       commands: requireArray(composer.commands, "composer.commands", (item, index) => {
         const command = requireRecord(item, `composer.commands[${index}]`);
         return {
@@ -1170,6 +1199,7 @@ function MobileComposer({
         </button>
       ) : null}
       {stopping ? <div className="stop-feedback" aria-live="polite">正在中止本轮处理…</div> : null}
+      {snapshot.composer.transferStatus ? <TransferBanner status={snapshot.composer.transferStatus} /> : null}
       {hasDraft ? <DraftAttachments attachments={snapshot.composer.attachments} /> : null}
       <div className={`mobile-composer-frame ${replyTarget ? "has-reply" : ""}`}>
         {snapshot.composer.pendingMessages.length > 1 ? (
@@ -1246,6 +1276,22 @@ function PendingQueue({
   );
 }
 
+function TransferBanner({ status }: { status: MobileTransferStatus }) {
+  return (
+    <section className={`transfer-banner ${status.requiresMeteredApproval ? "paused" : ""}`} aria-live="polite">
+      <div>
+        <strong>{status.title}</strong>
+        <span>{status.detail}</span>
+      </div>
+      <span className="transfer-banner__percent">{status.progressPercent}%</span>
+      <div className="transfer-banner__track"><span style={{ inlineSize: `${status.progressPercent}%` }} /></div>
+      {status.requiresMeteredApproval ? (
+        <button type="button" onClick={() => window.AkashicNative?.continueMeteredTransfer()}>使用当前网络继续</button>
+      ) : null}
+    </section>
+  );
+}
+
 function CommandSheet({ open, commands, onClose }: { open: boolean; commands: MobileSnapshot["composer"]["commands"]; onClose: (restoreFocus?: boolean) => void }) {
   const dispatchedRef = useRef(false);
   useEffect(() => {
@@ -1297,6 +1343,8 @@ function DraftAttachments({ attachments }: { attachments: MobileAttachment[] }) 
                     ? `上传失败 · 已保留 ${formatBytes(attachment.transferredBytes)}`
                     : attachment.state === "waiting"
                       ? `等待连接 · ${progress}%`
+                      : attachment.state === "metered_paused"
+                        ? `等待网络许可 · 已完成 ${progress}%`
                       : `上传中 ${progress}% · ${formatBytes(attachment.transferredBytes)} / ${formatBytes(attachment.sizeBytes)}`}
               </div>
               <div className="draft-attachment__track"><span style={{ inlineSize: `${progress}%` }} /></div>

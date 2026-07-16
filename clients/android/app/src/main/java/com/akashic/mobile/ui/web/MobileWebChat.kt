@@ -74,6 +74,7 @@ fun MobileWebChat(
     onAttach: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onRetryAttachment: (String) -> Unit,
+    onContinueMeteredTransfer: () -> Unit,
     onRetryFailedMessage: (String) -> Unit,
     onSaveReadingPosition: (String, String, Int) -> Unit,
     onMarkSessionReadThrough: (String, Long) -> Unit,
@@ -106,6 +107,7 @@ fun MobileWebChat(
             onAttach = onAttach,
             onRemoveAttachment = onRemoveAttachment,
             onRetryAttachment = onRetryAttachment,
+            onContinueMeteredTransfer = onContinueMeteredTransfer,
             onRetryFailedMessage = onRetryFailedMessage,
             onSaveReadingPosition = onSaveReadingPosition,
             onMarkSessionReadThrough = onMarkSessionReadThrough,
@@ -230,6 +232,7 @@ private data class MobileWebCallbacks(
     val onAttach: () -> Unit,
     val onRemoveAttachment: (String) -> Unit,
     val onRetryAttachment: (String) -> Unit,
+    val onContinueMeteredTransfer: () -> Unit,
     val onRetryFailedMessage: (String) -> Unit,
     val onSaveReadingPosition: (String, String, Int) -> Unit,
     val onMarkSessionReadThrough: (String, Long) -> Unit,
@@ -281,6 +284,9 @@ private class MobileWebBridge(
 
     @JavascriptInterface
     fun retryAttachment(attachmentId: String) = dispatch { it.onRetryAttachment(attachmentId) }
+
+    @JavascriptInterface
+    fun continueMeteredTransfer() = dispatch { it.onContinueMeteredTransfer() }
 
     @JavascriptInterface
     fun retryFailedMessage(messageId: String) = dispatch { it.onRetryFailedMessage(messageId) }
