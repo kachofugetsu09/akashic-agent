@@ -70,7 +70,7 @@ class LocalDeliveryStoreCursorTest {
             runBlocking { store.applyEvent("server-1", "device-1", envelope, updatedAt = 2) }
         }
         assertEquals(
-            4,
+            4L,
             runBlocking { database.realtimeCursors().get("device-1")?.lastAcknowledgedEventSeq },
         )
     }
