@@ -326,3 +326,15 @@ fallback 主色文字/页面对比为 `4.52:1`，on-primary-container/primary-co
 
 - 失败消息重试不能只在 UI 重发：当前 terminal `message.send.error` 会删除 outbox，附件也不再保留为草稿；在服务端提供 retryable/duplicate-safe 语义前不新增可能重复执行 Agent turn 的按钮。
 - 历史工具链没有每次调用的起止时间，破坏性重建后省略单工具耗时；如果未来服务端正式持久化 call duration，再直接扩展同一投影字段，不从结果文本猜测。
+
+## Cycle 4–6：可靠性、媒体与 Agent-native 扩展
+
+状态：三批均已合入 `feature/im-phone`，在独立 Docker Mobile Lab 和 Pixel 7 上完成交叉回归；详细契约与逐项证据见：
+
+- `docs/mobile-batches/2026-07-16-reliability.md`
+- `docs/mobile-batches/2026-07-16-media.md`
+- `docs/mobile-batches/2026-07-16-agent-native.md`
+
+本轮形成的完整日用链路是：会话预览/时间/未读与阅读锚点、离线多消息 exactly-once 队列、通知精确消息导航和快捷回复、多附件同消息发送、后台大文件进度、图片整屏查看、后台 Agent 运行状态、显式确认通知，以及运行中插件目录与 KV Cache 试点看板。三批没有各造一套状态：会话活跃态来自真实 turn，附件继续由 Room transfer owner 持有，确认语义只由 `request_user_confirmation` 产生，插件数据只通过 `plugin.ui.call` 读取 canonical 插件 reader。
+
+最终交叉门禁同时运行 Agent-native gate 与 media gate；Pixel 7 再验证插件返回栈和图片 history 共存。真机发现并修复两项自动构建未暴露的问题：缺少 `ACCESS_NETWORK_STATE` 导致 instrumentation 启动失败，以及 cursor 测试的 `Int`/`Long` 断言类型不一致。修复后对应真机测试均通过，应用和隔离网关日志无 FATAL、WebView render error、event gap 或协议反序列化错误。

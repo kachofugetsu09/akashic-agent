@@ -6,7 +6,7 @@
 
 | 能力 | 本批结果 | 语义边界 |
 | --- | --- | --- |
-| C3 后台任务状态 | 顶栏显示运行任务数；抽屉在对应会话下显示“Agent 正在运行” | 复用 `TurnStopCoordinator` 的真实活跃 turn，不新增第二套任务状态 |
+| C3 后台任务状态 | 顶栏显示运行任务数；抽屉在对应会话旁显示紫色运行点 | 复用 `TurnStopCoordinator` 的真实活跃 turn，不新增第二套任务状态 |
 | C7 完成与确认通知 | 完成通知与等待确认通知使用不同标题和动作；点击回到原会话 | runtime 的 `request_user_confirmation` 工具显式产生确认态，不从问号或文案猜测 |
 | C8 插件入口 | 抽屉提供一个紧凑“插件”入口；只列出当前运行且声明移动看板的插件 | 插件目录和完整看板是两级页面，看板左上角始终可返回 |
 | C9 KV Cache 试点 | 状态插件提供真实 KV Cache 总览、被动/主动命中率和 turn 明细 | 查询和字段投影复用桌面 Dashboard reader，不伪造容量、清理等不存在的指标 |
@@ -109,3 +109,13 @@ node --check mobile_panel.js
 7. 在看板按 Android 系统返回：第一次回到插件目录，第二次回到聊天；Activity 不应退出，聊天输入和会话状态保持不变。
 
 每轮先修复真实失败并重新跑自动门禁，再进入下一轮。正式 workspace 与 Pixel 7 的安装、ADB 操作由主联调流程统一执行。
+
+## 2026-07-17 集成与真机结果
+
+- `./scripts/verify-mobile-agent-native.sh` 完整通过：Web 类型检查、ESLint、15 项移动状态测试、生产构建、8 项服务端/协议定向测试，以及 Android JVM 与 androidTest APK 构建均成功。
+- `status_commands` canonical 仓库的 `main` 已包含 `8dba7f1`、`cf74658`，6 项插件测试、生产代码 Pyright、JS 语法和 compileall 通过；随后只安装到 Docker Mobile Lab 的 `/sandbox/home/.akashic-plugin`，没有写正式插件缓存。
+- Docker Mobile Lab 使用独立 `/sandbox/workspace` 和插件目录。Agent 重建后旧 chat-proxy/tunnel 仍占用旧 network namespace，导致 healthcheck 失败；把三个服务作为一组重建后恢复 healthy，正式实例未被操作。
+- Pixel 7 无损覆盖安装 `0.7.8-debug (17)`。抽屉显示“插件 1”，目录只列出运行中的 `KV Cache`，真实 `plugin.ui.call` 返回 0 轮空数据；看板没有使用假指标。
+- Android 系统返回实测为 `KV Cache 看板 → 插件目录 → 聊天 → Launcher`；聊天状态保留，logcat 没有 FATAL 或 WebView error。截图为 `/tmp/pixel7-kvcache-dashboard.png`、`/tmp/pixel7-back-plugin-directory.png`、`/tmp/pixel7-back-chat.png`。
+- 真实长 turn 在顶栏显示亮紫“运行 1”和停止动作；Agent 确实调用 `request_user_confirmation`，后台通知显示“Akashic 等待确认”及“查看并确认”，点击后落到对应最终消息。截图为 `/tmp/pixel7-confirm-actually-sent.png`、`/tmp/pixel7-confirmation-background-real.png`、`/tmp/pixel7-confirmation-deeplink.png`。
+- 真机 `LocalDeliveryStoreCursorTest` 首轮暴露断言把 Room 的 `Long(4)` 与 `Int(4)` 比较；改为 `4L` 后重编 androidTest APK，Pixel 7 复跑 `1/1` 通过。该测试确认无效 confirmation metadata 不会推进 cursor。
