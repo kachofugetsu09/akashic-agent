@@ -12,6 +12,37 @@ Akashic 插件采用“全局只管启停，插件自己声明能力”的模型
    └─ 数据库、Token、模型与日志等持久状态
 ```
 
+插件代码缓存与插件数据是两个独立生命周期：安装或升级插件只替换 cache；运行时通过
+`AKA_PLUGIN_DATA_DIR` 把配置、凭据和数据库绑定到当前 workspace。切换 workspace 不会自动
+共享这些状态。
+
+## 迁移旧插件数据
+
+从全局插件数据目录升级到 workspace 隔离布局时，应在第一次启动新 runtime 前，从仓库根目录
+执行一次全量迁移。源目录会保留，目标已经存在时命令会拒绝覆盖：
+
+```bash
+uv run python -m scripts.migrate_plugin_data \
+  --workspace "$HOME/.akashic/workspace" \
+  --plugins-home "$HOME/.akashic-plugin"
+```
+
+如果新版已经启动并创建了空目录，只能在停止该 workspace 的 runtime 后，显式选择经过核对的
+插件进行恢复。不要把旧目录整棵覆盖回去，因为其他插件可能已经在新 workspace 中产生更新状态：
+
+```bash
+uv run python -m scripts.migrate_plugin_data \
+  --workspace "$HOME/.akashic/workspace" \
+  --plugins-home "$HOME/.akashic-plugin" \
+  --replace-plugin feed-github \
+  --replace-plugin fitbit-github
+```
+
+替换前的 workspace 数据保存在 `<workspace>/backups/plugin-data-before-replace-*`。可捕获的失败
+会自动回滚；如果进程被强制终止或机器断电，保持 runtime 停止，并按备份目录中的
+`selection.txt` 重新执行相同选择。SQLite 主库使用在线 backup 复制，WAL、SHM 和 journal
+sidecar 不会带入新目录。
+
 ## 最小插件
 
 ```python
