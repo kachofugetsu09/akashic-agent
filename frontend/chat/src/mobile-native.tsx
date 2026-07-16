@@ -883,7 +883,7 @@ function MobileNativeApp() {
 
   return (
     <TooltipProvider>
-      <main className="mobile-shell">
+      <main className={`mobile-shell surface-${surface.kind}`}>
         {surface.kind === "chat" ? (
           <MobileTopBar
             status={snapshot.connection.status}
@@ -924,18 +924,24 @@ function MobileNativeApp() {
         {(snapshot.connection.error || pluginLoadError) ? (
           <div className="mobile-surface-errors" aria-live="assertive">
             {snapshot.connection.error ? (
-              <button className="mobile-error" type="button" onClick={() => window.AkashicNative?.dismissError()}>
-                <AlertCircle size={17} />
-                <span>{snapshot.connection.error}</span>
-                <X size={16} />
-              </button>
+              <div className="mobile-snackbar" role="alert">
+                <AlertCircle className="mobile-snackbar__mark" size={19} />
+                <span>
+                  <strong>连接出现问题</strong>
+                  <small>{snapshot.connection.error}</small>
+                </span>
+                <button type="button" onClick={() => window.AkashicNative?.dismissError()}>关闭</button>
+              </div>
             ) : null}
             {pluginLoadError ? (
-              <button className="mobile-error" type="button" onClick={() => setPluginLoadError("")}>
-                <AlertCircle size={17} />
-                <span>插件界面暂不可用 · {pluginLoadError}</span>
-                <X size={16} />
-              </button>
+              <div className="mobile-snackbar" role="alert">
+                <AlertCircle className="mobile-snackbar__mark" size={19} />
+                <span>
+                  <strong>插件暂时无法读取</strong>
+                  <small>{pluginLoadError}</small>
+                </span>
+                <button type="button" onClick={() => window.location.reload()}>重试</button>
+              </div>
             ) : null}
           </div>
         ) : null}
@@ -1110,15 +1116,16 @@ function MobilePluginDirectory({
 }) {
   return (
     <section className="mobile-plugin-directory" aria-labelledby="mobile-plugin-directory-title">
-      <div className="mobile-plugin-directory__heading">
-        <h2 id="mobile-plugin-directory-title">运行中的看板</h2>
-        <span>{plugins.length}</span>
-      </div>
+      <h2 className="mobile-plugin-directory__status" id="mobile-plugin-directory-title">
+        运行中 · {plugins.length}
+      </h2>
       {plugins.length ? (
         <div className="mobile-plugin-directory__list">
           {plugins.map((plugin) => (
             <button type="button" key={plugin.id} onClick={() => onOpen(plugin.id)}>
-              <Puzzle size={21} aria-hidden="true" />
+              <span className="mobile-plugin-directory__mark" aria-hidden="true">
+                {plugin.label.replaceAll(" ", "").slice(0, 2).toUpperCase()}
+              </span>
               <span>
                 <strong>{plugin.label}</strong>
                 <small>{plugin.description}</small>
