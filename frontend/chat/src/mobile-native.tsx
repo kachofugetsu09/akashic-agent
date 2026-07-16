@@ -989,6 +989,7 @@ function MobileNativeApp() {
                         <SwipeToReply disabled={!canReply} onReply={() => setReplyTarget(source)}>
                           <ChatMessageView
                             message={message}
+                            onCopyToolDetail={copyToolDetail}
                             leadingContent={source.reply ? <MessageReplyReference reply={source.reply} /> : undefined}
                             attachmentContent={<MobileMessageAttachments attachments={source.attachments} />}
                             processStartContent={isPluginTurnMessage(message) ? (
@@ -1094,6 +1095,10 @@ function MobileNativeApp() {
       </main>
     </TooltipProvider>
   );
+}
+
+function copyToolDetail(text: string) {
+  window.AkashicNative?.copyText(text);
 }
 
 function MobilePluginTopBar({ title, onBack }: { title: string; onBack: () => void }) {

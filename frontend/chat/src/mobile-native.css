@@ -1195,11 +1195,60 @@ button.tool-step-summary:active {
   background: var(--m-surface-container-low);
 }
 
+.tool-detail-heading {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -8px 0 1px;
+}
+
 .tool-detail-section h4 {
-  margin: 0 0 7px;
+  margin: 0;
   color: var(--m-on-surface-variant);
   font-size: 0.6875rem;
   letter-spacing: 0.045em;
+}
+
+.tool-detail-copy {
+  display: inline-flex;
+  min-width: 68px;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-inline-end: -10px;
+  border: 0;
+  border-radius: var(--m-shape-full);
+  padding: 0 10px;
+  color: var(--m-primary);
+  background: transparent;
+  font-size: 0.75rem;
+  font-weight: 650;
+  transition-property: scale, color, background-color;
+  transition-duration: 180ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.tool-detail-copy:active {
+  scale: 0.96;
+  background: color-mix(in oklch, var(--m-primary) 10%, transparent);
+}
+
+.tool-detail-copy.copied {
+  color: var(--m-primary);
+}
+
+.tool-detail-copy:focus-visible {
+  outline: 2px solid var(--m-primary);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-detail-copy {
+    transition-duration: 0ms;
+  }
 }
 
 .tool-parameter-list {

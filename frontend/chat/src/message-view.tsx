@@ -25,8 +25,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { ChevronDown, Wrench } from "lucide-react";
-import { Fragment, type ReactNode, useMemo, useState } from "react";
+import { Check, ChevronDown, Copy, Wrench } from "lucide-react";
+import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
 import type {
   AgentBlock,
   ChatMessage,
@@ -42,6 +42,7 @@ export function ChatMessageView({
   processStartContent,
   beforeProcessBlock,
   answerEndContent,
+  onCopyToolDetail,
 }: {
   message: ChatMessage;
   leadingContent?: ReactNode;
@@ -49,6 +50,7 @@ export function ChatMessageView({
   processStartContent?: ReactNode;
   beforeProcessBlock?: (block: AgentBlock, index: number) => ReactNode;
   answerEndContent?: ReactNode;
+  onCopyToolDetail?: (text: string) => void;
 }) {
   const attachments = attachmentContent !== undefined
     ? attachmentContent
@@ -76,6 +78,7 @@ export function ChatMessageView({
             message={message}
             startContent={processStartContent}
             beforeBlock={beforeProcessBlock}
+            onCopyToolDetail={onCopyToolDetail}
           />
         ) : null}
         {attachments}
@@ -163,10 +166,12 @@ function ProcessTrace({
   message,
   startContent,
   beforeBlock,
+  onCopyToolDetail,
 }: {
   message: ChatMessage;
   startContent?: ReactNode;
   beforeBlock?: (block: AgentBlock, index: number) => ReactNode;
+  onCopyToolDetail?: (text: string) => void;
 }) {
   return (
     <Reasoning
@@ -192,6 +197,7 @@ function ProcessTrace({
                 <ToolStep
                   block={block}
                   active={block.status === "input-available"}
+                  onCopyDetail={onCopyToolDetail}
                 />
               )}
             </Fragment>
@@ -227,7 +233,15 @@ function ThinkingStep({ block, active }: { block: ThinkingBlock; active: boolean
   );
 }
 
-function ToolStep({ block, active }: { block: ToolBlock; active: boolean }) {
+function ToolStep({
+  block,
+  active,
+  onCopyDetail,
+}: {
+  block: ToolBlock;
+  active: boolean;
+  onCopyDetail?: (text: string) => void;
+}) {
   const description = toolDescription(block.input);
   const resultValue = block.status === "output-error" ? block.errorText : block.output;
   const hasDetails = toolHasParameters(block.input) || toolHasValue(resultValue);
@@ -240,6 +254,23 @@ function ToolStep({ block, active }: { block: ToolBlock; active: boolean }) {
     () => open ? toolValue(resultValue) : "",
     [open, resultValue],
   );
+  const parameterCopyText = useMemo(
+    () => open ? toolParameterCopyText(block.input) : "",
+    [block.input, open],
+  );
+  const [copiedDetail, setCopiedDetail] = useState<{
+    section: "parameters" | "result";
+    text: string;
+  } | null>(null);
+  useEffect(() => {
+    if (copiedDetail === null) return;
+    const timer = window.setTimeout(() => setCopiedDetail(null), 1600);
+    return () => window.clearTimeout(timer);
+  }, [copiedDetail]);
+  const copyDetail = (section: "parameters" | "result", text: string) => {
+    onCopyDetail?.(text);
+    setCopiedDetail({ section, text });
+  };
   const stateLabel = block.status === "input-available"
     ? "运行中"
     : block.status === "output-error"
@@ -281,12 +312,20 @@ function ToolStep({ block, active }: { block: ToolBlock; active: boolean }) {
           </div>
         )}
         {hasDetails ? (
-          <div className={`tool-step-disclosure ${open ? "open" : ""}`} aria-hidden={!open}>
+          <div
+            className={`tool-step-disclosure ${open ? "open" : ""}`}
+            aria-hidden={!open}
+            inert={!open ? true : undefined}
+          >
             <div className="tool-step-disclosure-inner">
               <div className="tool-detail-surface">
                 {parameters.length > 0 ? (
                   <section className="tool-detail-section" aria-label="工具参数">
-                    <h4>参数</h4>
+                    <ToolDetailHeading
+                      label="参数"
+                      copied={copiedDetail?.section === "parameters" && copiedDetail.text === parameterCopyText}
+                      onCopy={onCopyDetail ? () => copyDetail("parameters", parameterCopyText) : undefined}
+                    />
                     <dl className="tool-parameter-list">
                       {parameters.map(([name, value]) => (
                         <div className="tool-parameter" key={name}>
@@ -299,7 +338,11 @@ function ToolStep({ block, active }: { block: ToolBlock; active: boolean }) {
                 ) : null}
                 {result ? (
                   <section className="tool-detail-section" aria-label={block.status === "output-error" ? "工具错误" : "工具结果"}>
-                    <h4>{block.status === "output-error" ? "错误" : "结果"}</h4>
+                    <ToolDetailHeading
+                      label={block.status === "output-error" ? "错误" : "结果"}
+                      copied={copiedDetail?.section === "result" && copiedDetail.text === result}
+                      onCopy={onCopyDetail ? () => copyDetail("result", result) : undefined}
+                    />
                     <pre className={block.status === "output-error" ? "tool-result error" : "tool-result"}>{result}</pre>
                   </section>
                 ) : null}
@@ -308,6 +351,33 @@ function ToolStep({ block, active }: { block: ToolBlock; active: boolean }) {
           </div>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function ToolDetailHeading({
+  label,
+  copied,
+  onCopy,
+}: {
+  label: string;
+  copied: boolean;
+  onCopy?: () => void;
+}) {
+  return (
+    <div className="tool-detail-heading">
+      <h4>{label}</h4>
+      {onCopy ? (
+        <button
+          className={copied ? "tool-detail-copy copied" : "tool-detail-copy"}
+          type="button"
+          aria-label={copied ? `${label}已复制` : `复制工具${label}`}
+          onClick={onCopy}
+        >
+          {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+          <span aria-live="polite">{copied ? "已复制" : "复制"}</span>
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -354,6 +424,14 @@ function toolParameters(input: unknown): [string, string][] {
   return Object.entries(input as Record<string, unknown>)
     .filter(([name]) => name !== "description")
     .map(([name, value]) => [name, toolValue(value)]);
+}
+
+function toolParameterCopyText(input: unknown): string {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return "";
+  const parameters = Object.fromEntries(
+    Object.entries(input as Record<string, unknown>).filter(([name]) => name !== "description"),
+  );
+  return JSON.stringify(parameters, null, 2);
 }
 
 function toolHasParameters(input: unknown): boolean {

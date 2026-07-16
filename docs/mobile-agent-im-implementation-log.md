@@ -6,13 +6,13 @@
 
 | 领域 | 当前基线 | 下一闭环 |
 |---|---|---|
-| 消息基本功 | 已有真实时间、日期分组、双向引用、复制、搜索、跳转和未读；缺失败重试 | 失败重试与乱序合并 |
-| 实时 Agent | 有流式回答、思考/工具时间线、停止和可展开的安全工具详情 | 失败态语义与结构化结果动作 |
-| 媒体 | 有上传、进度、缓存、预览、下载和分享基础链路 | GIF/meme、重试与大文件体验 |
+| 消息基本功 | 已有真实时间、日期分组、双向引用、复制、搜索、跳转、未读、失败重试和乱序归位 | 消息选择、批量动作与删除语义 |
+| 实时 Agent | 有流式回答、思考/工具时间线、停止、可展开的安全工具详情和结构化复制 | 失败态解释与长结果二次操作 |
+| 媒体 | 有上传、进度、缓存、预览、GIF/meme、重试、按需大文件下载和分享 | 相机/系统分享入口与媒体发送一致性 |
 | 网络 | 有认证、resume、durable inbox、连接状态 | 抖动场景矩阵和用户可恢复动作 |
-| 会话 | 有 mobile 全量同步、抽屉、切换、新建和当前会话搜索 | 失效解释与会话内阅读位置 |
-| 扩展 | 已有受控 `plugin.ui.*` 和渲染插槽 | KVCache 移动 Dashboard 试点 |
-| 质量 | 有 Android 测试和隔离 Gateway | 每组固定 Pixel 7 真机闭环 |
+| 会话 | 有 mobile 全量同步、抽屉、切换、新建、当前会话搜索和阅读位置恢复 | 失效会话解释与本地清理 |
+| 扩展 | 已有受控 `plugin.ui.*`、热更新和 Observe/KV Cache 移动 Dashboard 试点 | 第二个任务型插件试点与跨插件导航 |
+| 质量 | 有 Android 测试、隔离 Gateway、签名 release 与 Pixel 7 闭环 | 可复用的 release WebView 交互驱动 |
 
 ## Cycle 1：时间、滑动引用与复制
 
@@ -394,3 +394,15 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - 验证通过：gateway `23 passed`、Pyright 无错误、Web typecheck 与 ESLint、Android release unit/Lint/R8/assemble 和 v2 签名；Pixel 7 定向 instrumentation 为 `1/1`，其中边界用例确认 `10 MiB - 1 byte` 自动排队、`10 MiB` 保持 remote，缓存对账不改变 remote，连续点按只复用同一下载队列。
 - Pixel 7 隔离 Mobile Lab 收到真实 11.0 MiB 历史附件后原位显示“尚未下载”和“下载”，历史同步阶段未主动发下载命令；连续点按后只运行一条分片链，界面原位显示 32%→69%，最终经 SHA-256 校验变为“已下载”并出现分享操作。截图为 `/tmp/pixel7-release-reconnected.png`、`/tmp/pixel7-large-download-progress2.png`、`/tmp/pixel7-large-download-finished2.png`、`/tmp/pixel7-large-download-complete.png`；日志无 FATAL、AndroidRuntime 或 RenderProcessGone。
 - 签名 `0.7.11 (20)` 已发布到私有 GitHub Releases，APK 为 8,306,622 bytes，SHA-256 `1dbe8ad21b9a171a53b0a44ff673773108422dca2f951743a8090d4621f76b91`；远端资产摘要、本地产物和 Pixel 7 验收包一致。发布地址为 `https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.11`。
+
+## 2026-07-17 工具详情结构化复制
+
+- 工具详情的“参数 / 结果 / 错误”标题行附着一个 Material 3 文字动作，不增加详情卡、弹窗或浮动菜单；参数复制为保留真实类型的格式化 JSON，继续排除只用于摘要的顶层 `description`，结果复制与屏幕显示使用同一字符串。
+- 复制复用既有 Android `AkashicNative.copyText` 桥，不增加协议、Room 字段、依赖或第二套剪贴板实现；shared WebChat 的 `ChatMessageView` 只增加可选回调，没有承担 Android 所有权。
+- 动作使用既有 primary token 和 state layer，触控高度为 48dp；成功在原位切换为“已复制”和 check 图标，1.6 秒后恢复。流式结果变化后，只有当前文本仍等于剪贴板版本才保持成功状态，避免把旧结果标为已复制。
+- 折叠详情增加 `inert`，复制按钮不会留在键盘焦点树或无障碍树；焦点轮廓、`prefers-reduced-motion` 和可访问名称保持完整。
+- `npm run typecheck`、`npm run lint`、15 项 mobile web state 测试、`npm run build:mobile-web`、`git diff --check` 和 `clients/android/scripts/build-release.sh` 全部通过；release unit、Lint、R8、assemble 与 v2 签名校验通过。
+- Kill AI Slop 前后均为 38 个文件、9 组、57 个机械命中，差异只有新增 CSS 造成的既有命中行号移动；没有新增渐变、玻璃拟态、发光点、状态卡或胶囊堆叠。
+- Pixel 7 在隔离 Mobile Lab 真实发送 `use shell tool to run printf toolcopyresult and report`，服务端记录新的 `message.send`；真机时间线按顺序流式出现 thinking、`shell 完成 · 9ms` 和最终 `toolcopyresult`。证据为 `/tmp/pixel7-send-enter2.png`、`/tmp/pixel7-tool-copy-final-collapsed.png`。
+- 最终 review 修复了三个真实问题：折叠交互元素仍可聚焦、流式结果更新后成功状态可能过期、44dp 未达到本项目 Material 3 48dp 基线。修复后的签名 APK 已无损安装到 Pixel 7，应用 PID 日志没有 FATAL、RenderProcessGone、event gap 或协议校验错误。
+- release WebView 未开放调试，ADB 的 TAB 焦点会越出 WebView 并误启动系统应用，因此本轮不把自动化焦点副作用伪装成复制点击验收；剪贴板桥本身已由消息复制闭环验证，本组仍保留一次人工点击“参数 / 结果 → 粘贴比对”作为下个真机交互驱动的首个验收样例。完整批次记录见 `docs/mobile-batches/2026-07-17-tool-detail-actions.md`。
