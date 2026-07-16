@@ -46,12 +46,6 @@
   --m-error: #be241f;
   --m-error-container: #ffddd7;
   --m-warning: #a45f00;
-  --m-cache-current: #2769d7;
-  --m-cache-current-ink: #fbfcff;
-  --m-cache-passive: #5fc9cb;
-  --m-cache-passive-ink: #123b43;
-  --m-cache-proactive: #cf9de3;
-  --m-cache-proactive-ink: #452452;
   --m-shadow: rgb(0 0 0 / 0.16);
   --m-image-outline: rgb(0 0 0 / 0.1);
 }
@@ -76,12 +70,6 @@
     --m-error: oklch(0.52 0.19 28);
     --m-error-container: oklch(0.93 0.045 28);
     --m-warning: oklch(0.56 0.14 72);
-    --m-cache-current: oklch(0.58 0.19 255);
-    --m-cache-current-ink: oklch(0.985 0.006 255);
-    --m-cache-passive: oklch(0.78 0.12 195);
-    --m-cache-passive-ink: oklch(0.27 0.055 210);
-    --m-cache-proactive: oklch(0.76 0.12 310);
-    --m-cache-proactive-ink: oklch(0.3 0.065 305);
     --m-shadow: oklch(0 0 0 / 0.16);
     --m-image-outline: oklch(0 0 0 / 0.1);
   }
@@ -228,12 +216,17 @@ button {
   display: contents;
 }
 
-.mobile-plugin-load-error {
-  padding: 8px 20px;
-  color: var(--m-error);
-  background: var(--m-error-container);
-  font-size: .8125rem;
-  line-height: 1.35;
+.mobile-surface-errors {
+  position: absolute;
+  inset: calc(64px + env(safe-area-inset-top)) 14px auto;
+  z-index: 45;
+  display: grid;
+  gap: 6px;
+}
+
+.mobile-surface-errors .mobile-error {
+  width: 100%;
+  margin: 0;
 }
 
 .mobile-plugin-host--error {

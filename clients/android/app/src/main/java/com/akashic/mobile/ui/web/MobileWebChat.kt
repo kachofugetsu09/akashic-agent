@@ -18,7 +18,6 @@ import android.view.HapticFeedbackConstants
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.annotation.Keep
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize

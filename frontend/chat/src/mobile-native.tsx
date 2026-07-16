@@ -921,9 +921,22 @@ function MobileNativeApp() {
           }}
           onClose={closeDrawer}
         />
-        {pluginLoadError ? (
-          <div className="mobile-plugin-load-error" role="status">
-            插件界面暂不可用 · {pluginLoadError}
+        {(snapshot.connection.error || pluginLoadError) ? (
+          <div className="mobile-surface-errors" aria-live="assertive">
+            {snapshot.connection.error ? (
+              <button className="mobile-error" type="button" onClick={() => window.AkashicNative?.dismissError()}>
+                <AlertCircle size={17} />
+                <span>{snapshot.connection.error}</span>
+                <X size={16} />
+              </button>
+            ) : null}
+            {pluginLoadError ? (
+              <button className="mobile-error" type="button" onClick={() => setPluginLoadError("")}>
+                <AlertCircle size={17} />
+                <span>插件界面暂不可用 · {pluginLoadError}</span>
+                <X size={16} />
+              </button>
+            ) : null}
           </div>
         ) : null}
 
@@ -1363,13 +1376,6 @@ function MobileComposer({
     <div className="mobile-composer-zone">
       <CommandSheet open={commandsOpen} commands={snapshot.composer.commands} onClose={onCloseCommands} />
       {snapshot.connection.notice ? <div className="connection-notice">{snapshot.connection.notice}</div> : null}
-      {snapshot.connection.error ? (
-        <button className="mobile-error" type="button" onClick={() => window.AkashicNative?.dismissError()}>
-          <AlertCircle size={17} />
-          <span>{snapshot.connection.error}</span>
-          <X size={16} />
-        </button>
-      ) : null}
       {stopping ? <div className="stop-feedback" aria-live="polite">正在中止本轮处理…</div> : null}
       {snapshot.composer.transferStatus ? <TransferBanner status={snapshot.composer.transferStatus} /> : null}
       {hasDraft ? <DraftAttachments attachments={snapshot.composer.attachments} disabled={sendPending} /> : null}
