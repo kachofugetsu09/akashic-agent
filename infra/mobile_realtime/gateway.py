@@ -84,6 +84,7 @@ _CLOSE_COMMAND = 4410
 _MAX_PENDING_CONNECTION_EVENTS = 64
 _CLOSE_VERSION = 4406
 _CONNECTION_CONTROL_SEND_TIMEOUT_SECONDS = 3.0
+_CONNECTION_CONTROL_LOCK_TIMEOUT_SECONDS = 30.0
 _CROCKFORD32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 logger = logging.getLogger(__name__)
@@ -789,12 +790,16 @@ class MobileGatewayRuntime:
             ):
                 return
         try:
-            async with asyncio.timeout(_CONNECTION_CONTROL_SEND_TIMEOUT_SECONDS):
-                async with connection.send_lock:
-                    async with self._delivery_lock:
-                        if self._connections.get(device_id) is not connection:
-                            return
+            async with asyncio.timeout(_CONNECTION_CONTROL_LOCK_TIMEOUT_SECONDS):
+                _ = await connection.send_lock.acquire()
+            try:
+                async with self._delivery_lock:
+                    if self._connections.get(device_id) is not connection:
+                        return
+                async with asyncio.timeout(_CONNECTION_CONTROL_SEND_TIMEOUT_SECONDS):
                     await connection.websocket.send_text(frame_to_json(wire))
+            finally:
+                connection.send_lock.release()
         except (WebSocketDisconnect, RuntimeError, OSError, TimeoutError) as error:
             logger.warning(
                 "mobile 连接控制帧投递失败: device=%s error=%s",

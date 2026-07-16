@@ -65,6 +65,7 @@ class _ControlledWebSocket:
         self.bytes_started = asyncio.Event()
         self.sent_text: list[str] = []
         self.wire_order: list[str] = []
+        self.close_calls: list[tuple[int, str]] = []
 
     async def send_text(self, text: str) -> None:
         self.send_started.set()
@@ -84,6 +85,7 @@ class _ControlledWebSocket:
 
     async def close(self, *, code: int, reason: str) -> None:
         self.close_started.set()
+        self.close_calls.append((code, reason))
         if self.close_gate is not None:
             await self.close_gate.wait()
 
@@ -1389,7 +1391,115 @@ def test_connection_control_timeout_only_removes_slow_connection(
 
         assert device_id not in runtime._connections
         await asyncio.wait_for(socket.close_started.wait(), timeout=1)
+        assert socket.close_calls == [
+            (4408, "连接控制帧投递失败，请重新连接恢复"),
+        ]
         assert runtime.storage.read_cursor(device_id).next_event_seq == 1
+        runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_connection_control_waits_for_inflight_frame_without_removing_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证正常在途帧占锁超过控制帧超时也不会被误判为慢连接。"""
+
+    async def scenario() -> None:
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        device_id = uuid4().hex
+        _register_test_device(runtime, device_id)
+        socket = _ControlledWebSocket()
+        send_lock = asyncio.Lock()
+        await send_lock.acquire()
+        connection = ActiveMobileConnection(
+            websocket=cast(Any, socket),
+            connection_epoch=1,
+            send_lock=send_lock,
+            pending_events=deque(),
+            ready=True,
+            delivery_task=None,
+        )
+        runtime._connections[device_id] = connection
+        monkeypatch.setattr(
+            gateway_module,
+            "_CONNECTION_CONTROL_SEND_TIMEOUT_SECONDS",
+            0.01,
+        )
+
+        delivery = asyncio.create_task(
+            runtime.publish_connection_control(
+                device_id=device_id,
+                connection_epoch=1,
+                control_type="plugin.ui.changed",
+                payload={},
+            )
+        )
+        await asyncio.sleep(0.03)
+
+        assert not delivery.done()
+        assert runtime._connections[device_id] is connection
+        assert socket.close_calls == []
+
+        send_lock.release()
+        await asyncio.wait_for(delivery, timeout=1)
+        assert runtime._connections[device_id] is connection
+        assert len(socket.sent_text) == 1
+        runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_connection_control_lock_timeout_removes_stalled_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证长期持锁的失活连接不会永久阻塞插件目录刷新。"""
+
+    async def scenario() -> None:
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        device_id = uuid4().hex
+        _register_test_device(runtime, device_id)
+        socket = _ControlledWebSocket()
+        send_lock = asyncio.Lock()
+        await send_lock.acquire()
+        runtime._connections[device_id] = ActiveMobileConnection(
+            websocket=cast(Any, socket),
+            connection_epoch=1,
+            send_lock=send_lock,
+            pending_events=deque(),
+            ready=True,
+            delivery_task=None,
+        )
+        monkeypatch.setattr(
+            gateway_module,
+            "_CONNECTION_CONTROL_LOCK_TIMEOUT_SECONDS",
+            0.01,
+        )
+
+        await runtime.publish_connection_control(
+            device_id=device_id,
+            connection_epoch=1,
+            control_type="plugin.ui.changed",
+            payload={},
+        )
+
+        assert device_id not in runtime._connections
+        assert socket.sent_text == []
+        send_lock.release()
+        await asyncio.wait_for(socket.close_started.wait(), timeout=1)
+        assert socket.close_calls == [
+            (4408, "连接控制帧投递失败，请重新连接恢复"),
+        ]
         runtime.close()
 
     asyncio.run(scenario())
