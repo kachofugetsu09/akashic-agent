@@ -79,6 +79,9 @@ workspace = "~/.akashic/workspace"
 workspace。临时切换隔离环境时传 `--workspace PATH`；它的优先级高于
 `AKASHIC_WORKSPACE` 和 `config.toml`。
 
+需要由 supervisor 托管长期运行时执行 `./start.sh`。脚本使用同一套 workspace
+优先级，并将 PID 和运行日志写入所选 workspace。
+
 **2. 填写 config.toml**
 
 推荐配置：DeepSeek 主模型 + Qwen 轻量/视觉/向量：

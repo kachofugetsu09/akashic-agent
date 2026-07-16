@@ -70,4 +70,3 @@ lme_error_log_*.txt
 /locks/reviewer.receive.lock
 /locks/worker.receive.lock
 /locks/
-/start.sh
