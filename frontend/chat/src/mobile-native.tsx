@@ -15,6 +15,7 @@ import {
   AlertCircle,
   ArrowLeft,
   Check,
+  ChevronRight,
   ChevronDown,
   ChevronUp,
   Copy,
@@ -23,6 +24,7 @@ import {
   Menu,
   MessageSquarePlus,
   Paperclip,
+  Puzzle,
   RefreshCw,
   Reply,
   RotateCcw,
@@ -49,10 +51,13 @@ import {
 } from "@/components/ui/dialog";
 import { ChatMessageView } from "./message-view";
 import {
+  MobilePluginDashboard,
   MobilePluginSlot,
   receiveMobilePluginAssets,
   settleMobilePluginResponses,
   type MobilePluginAsset,
+  type MobilePluginDashboardEntry,
+  useMobilePluginDashboards,
 } from "./mobile-plugin-runtime";
 import {
   advanceMobileProjectionBaseline,
@@ -152,6 +157,11 @@ interface MobilePendingMessage {
   preview: string;
   createdAt: number;
 }
+
+type MobileSurface =
+  | { kind: "chat" }
+  | { kind: "plugins" }
+  | { kind: "dashboard"; pluginId: string };
 
 export interface MobileSnapshot {
   protocolVersion: 3;
@@ -490,7 +500,9 @@ declare global {
 }
 
 function MobileNativeApp() {
+  const pluginDashboards = useMobilePluginDashboards();
   const [snapshot, setSnapshot] = useState<MobileSnapshot | null>(null);
+  const [surface, setSurface] = useState<MobileSurface>({ kind: "chat" });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [commandsOpen, setCommandsOpen] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
@@ -616,6 +628,13 @@ function MobileNativeApp() {
       return next.size === current.size ? current : next;
     });
   }, [snapshot?.messages]);
+
+  useEffect(() => {
+    if (surface.kind !== "dashboard") return;
+    if (!pluginDashboards.some((plugin) => plugin.id === surface.pluginId)) {
+      setSurface({ kind: "plugins" });
+    }
+  }, [pluginDashboards, surface]);
 
   useEffect(() => () => {
     if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
@@ -835,29 +854,53 @@ function MobileNativeApp() {
   return (
     <TooltipProvider>
       <main className="mobile-shell">
-        <MobileTopBar
-          status={snapshot.connection.status}
-          label={snapshot.connection.label}
-          drawerOpen={drawerOpen}
-          searchOpen={searchOpen}
-          searchQuery={searchQuery}
-          toggleRef={drawerToggleRef}
-          searchButtonRef={searchButtonRef}
-          searchInputRef={searchInputRef}
-          onToggleDrawer={toggleDrawer}
-          onOpenSearch={openSearch}
-          onCloseSearch={closeSearch}
-          onSearchQuery={updateSearchQuery}
-          onSearchSubmit={() => {
-            if (searchTargetId !== null) jumpToMessage(searchTargetId, true);
-          }}
-        />
+        {surface.kind === "chat" ? (
+          <MobileTopBar
+            status={snapshot.connection.status}
+            label={snapshot.connection.label}
+            drawerOpen={drawerOpen}
+            searchOpen={searchOpen}
+            searchQuery={searchQuery}
+            toggleRef={drawerToggleRef}
+            searchButtonRef={searchButtonRef}
+            searchInputRef={searchInputRef}
+            onToggleDrawer={toggleDrawer}
+            onOpenSearch={openSearch}
+            onCloseSearch={closeSearch}
+            onSearchQuery={updateSearchQuery}
+            onSearchSubmit={() => {
+              if (searchTargetId !== null) jumpToMessage(searchTargetId, true);
+            }}
+          />
+        ) : (
+          <MobilePluginTopBar
+            title={surface.kind === "plugins"
+              ? "插件"
+              : pluginDashboards.find((plugin) => plugin.id === surface.pluginId)?.label ?? "插件看板"}
+            onBack={() => setSurface(surface.kind === "dashboard" ? { kind: "plugins" } : { kind: "chat" })}
+          />
+        )}
         <MobileDrawer
           open={drawerOpen}
           snapshot={snapshot}
+          pluginCount={pluginDashboards.length}
+          onOpenPlugins={() => {
+            setSurface({ kind: "plugins" });
+            closeDrawer();
+          }}
           onClose={closeDrawer}
         />
 
+        {surface.kind === "plugins" ? (
+          <MobilePluginDirectory
+            plugins={pluginDashboards}
+            onOpen={(pluginId) => setSurface({ kind: "dashboard", pluginId })}
+          />
+        ) : surface.kind === "dashboard" ? (
+          <section className="mobile-plugin-dashboard" aria-label="插件看板">
+            <MobilePluginDashboard pluginId={surface.pluginId} />
+          </section>
+        ) : (
         <div className={`mobile-main-content ${replyTarget ? "replying" : ""} ${searchOpen ? "searching" : ""} ${queueOpen && snapshot.composer.pendingMessages.length > 1 ? "queueing" : ""}`} inert={drawerOpen ? true : undefined}>
           {pluginLoadError ? (
             <div className="mobile-plugin-load-error" role="status">
@@ -997,8 +1040,53 @@ function MobileNativeApp() {
             />
           )}
         </div>
+        )}
       </main>
     </TooltipProvider>
+  );
+}
+
+function MobilePluginTopBar({ title, onBack }: { title: string; onBack: () => void }) {
+  return (
+    <header className="mobile-topbar mobile-plugin-topbar">
+      <button className="mobile-icon-button" type="button" onClick={onBack} aria-label="返回">
+        <ArrowLeft size={24} />
+      </button>
+      <h1>{title}</h1>
+    </header>
+  );
+}
+
+function MobilePluginDirectory({
+  plugins,
+  onOpen,
+}: {
+  plugins: MobilePluginDashboardEntry[];
+  onOpen: (pluginId: string) => void;
+}) {
+  return (
+    <section className="mobile-plugin-directory" aria-labelledby="mobile-plugin-directory-title">
+      <div className="mobile-plugin-directory__heading">
+        <h2 id="mobile-plugin-directory-title">运行中的看板</h2>
+        <span>{plugins.length}</span>
+      </div>
+      {plugins.length ? (
+        <div className="mobile-plugin-directory__list">
+          {plugins.map((plugin) => (
+            <button type="button" key={plugin.id} onClick={() => onOpen(plugin.id)}>
+              <Puzzle size={21} aria-hidden="true" />
+              <span>
+                <strong>{plugin.label}</strong>
+                <small>{plugin.description}</small>
+              </span>
+              <ChevronRight size={20} aria-hidden="true" />
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p className="mobile-plugin-directory__empty">当前没有声明移动看板的运行中插件。</p>
+      )}
+    </section>
   );
 }
 
@@ -1109,7 +1197,19 @@ function MobileSearchNavigator({
   );
 }
 
-function MobileDrawer({ open, snapshot, onClose }: { open: boolean; snapshot: MobileSnapshot; onClose: () => void }) {
+function MobileDrawer({
+  open,
+  snapshot,
+  pluginCount,
+  onOpenPlugins,
+  onClose,
+}: {
+  open: boolean;
+  snapshot: MobileSnapshot;
+  pluginCount: number;
+  onOpenPlugins: () => void;
+  onClose: () => void;
+}) {
   const drawerRef = useRef<HTMLElement>(null);
   useEffect(() => {
     if (open) requestAnimationFrame(() => drawerRef.current?.focus());
@@ -1119,6 +1219,12 @@ function MobileDrawer({ open, snapshot, onClose }: { open: boolean; snapshot: Mo
       <button className="mobile-drawer-scrim" type="button" onClick={onClose} aria-label="关闭会话抽屉" tabIndex={open ? 0 : -1} />
       <aside ref={drawerRef} className="mobile-drawer" role="dialog" aria-modal="true" aria-label="会话列表" tabIndex={-1}>
         <div className="mobile-drawer__heading">会话</div>
+        <button className="mobile-plugin-destination" type="button" onClick={onOpenPlugins}>
+          <Puzzle size={20} aria-hidden="true" />
+          <span>插件</span>
+          <small>{pluginCount}</small>
+          <ChevronRight size={18} aria-hidden="true" />
+        </button>
         <nav className="mobile-session-list">
           {snapshot.sessions.map((session) => (
             <button

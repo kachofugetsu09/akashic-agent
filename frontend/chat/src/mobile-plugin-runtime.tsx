@@ -4,7 +4,8 @@ export type MobilePluginSlotName =
   | "turn.before_reasoning"
   | "turn.before_tool"
   | "turn.after_answer"
-  | "drawer.panel";
+  | "drawer.panel"
+  | "dashboard.main";
 
 export interface MobilePluginContext {
   slot: MobilePluginSlotName;
@@ -21,6 +22,17 @@ export interface MobilePluginRenderer {
 
 export interface MobilePluginDefinition {
   slots: Partial<Record<MobilePluginSlotName, MobilePluginRenderer>>;
+  navigation?: {
+    label: string;
+    description: string;
+  };
+  dashboard?: MobilePluginRenderer;
+}
+
+export interface MobilePluginDashboardEntry {
+  id: string;
+  label: string;
+  description: string;
 }
 
 export interface MobilePluginAsset {
@@ -137,10 +149,9 @@ function parseDefinition(value: unknown, pluginId: string): MobilePluginDefiniti
   if (!value || typeof value !== "object") {
     throw new Error(`移动插件必须默认导出定义对象: ${pluginId}`);
   }
-  const slots = (value as { slots?: unknown }).slots;
-  if (!slots || typeof slots !== "object") {
-    throw new Error(`移动插件缺少 slots: ${pluginId}`);
-  }
+  const raw = value as { slots?: unknown; navigation?: unknown; dashboard?: unknown };
+  const slots = raw.slots ?? {};
+  if (typeof slots !== "object") throw new Error(`移动插件 slots 无效: ${pluginId}`);
   for (const [name, renderer] of Object.entries(slots)) {
     if (!SLOT_NAMES.has(name as MobilePluginSlotName)) {
       throw new Error(`移动插件 slot 无效: ${pluginId}.${name}`);
@@ -150,7 +161,62 @@ function parseDefinition(value: unknown, pluginId: string): MobilePluginDefiniti
       throw new Error(`移动插件 renderer 无效: ${pluginId}.${name}`);
     }
   }
-  return { slots: slots as MobilePluginDefinition["slots"] };
+  const dashboard = raw.dashboard;
+  if (dashboard !== undefined && !isRenderer(dashboard)) {
+    throw new Error(`移动插件 dashboard renderer 无效: ${pluginId}`);
+  }
+  let navigation: MobilePluginDefinition["navigation"];
+  if (dashboard !== undefined) {
+    if (!raw.navigation || typeof raw.navigation !== "object") {
+      throw new Error(`移动插件 dashboard 缺少 navigation: ${pluginId}`);
+    }
+    const candidate = raw.navigation as { label?: unknown; description?: unknown };
+    if (typeof candidate.label !== "string" || !candidate.label.trim() || candidate.label.length > 64) {
+      throw new Error(`移动插件 navigation.label 无效: ${pluginId}`);
+    }
+    if (typeof candidate.description !== "string" || !candidate.description.trim() || candidate.description.length > 160) {
+      throw new Error(`移动插件 navigation.description 无效: ${pluginId}`);
+    }
+    navigation = { label: candidate.label.trim(), description: candidate.description.trim() };
+  } else if (raw.navigation !== undefined) {
+    throw new Error(`移动插件 navigation 没有对应 dashboard: ${pluginId}`);
+  }
+  return {
+    slots: slots as MobilePluginDefinition["slots"],
+    navigation,
+    dashboard: dashboard as MobilePluginRenderer | undefined,
+  };
+}
+
+function isRenderer(value: unknown): value is MobilePluginRenderer {
+  return !!value && typeof value === "object" && typeof (value as { mount?: unknown }).mount === "function";
+}
+
+export function useMobilePluginDashboards(): MobilePluginDashboardEntry[] {
+  useSyncExternalStore(
+    (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
+    () => registryVersion,
+  );
+  return Array.from(definitions.entries()).flatMap(([id, definition]) => {
+    if (!definition.dashboard || !definition.navigation) return [];
+    return [{ id, ...definition.navigation }];
+  });
+}
+
+export function MobilePluginDashboard({ pluginId }: { pluginId: string }) {
+  useSyncExternalStore(
+    (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
+    () => registryVersion,
+  );
+  const definition = definitions.get(pluginId);
+  if (!definition?.dashboard) return null;
+  return (
+    <MountedPlugin
+      pluginId={pluginId}
+      renderer={definition.dashboard}
+      context={{ slot: "dashboard.main" }}
+    />
+  );
 }
 
 export function settleMobilePluginResponses(
