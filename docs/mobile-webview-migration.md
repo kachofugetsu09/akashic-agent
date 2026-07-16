@@ -181,3 +181,14 @@ Mobile Web 插件 RPC 现在沿渲染槽位显式传递 `session_id` 与活动 `
 - APK：`0.7.6`（versionCode 15），8,255,330 bytes，SHA-256 `1f287beae92e0dfb30d24866d4e4776dad1c912c93211ae88d3b6a4d40694ad9`
 - 私有发布：<https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.6>
 - 真机验收：Pixel 7 与 Pixel 9 Pro XL 均覆盖安装成功并保留应用数据，系统报告 versionCode 15 / versionName 0.7.6；MainActivity 正常前台运行，启动阶段没有 AndroidRuntime 或 Mobile Web 错误
+
+### 0.7.7 双向引用与实时链路自愈
+
+用户消息与 Agent 最终回答都支持左滑引用，消息时间、日期分隔和独立复制动作随历史同步恢复。引用目标由服务端按同会话 canonical 消息重新解析，并进入 Agent 的真实模型上下文。
+
+坏 `message.send` 使用 `4410` 隔离当前 outbox 命令，后续消息在重连后继续发送；一般协议错误与版本不兼容保留待发内容。服务端 resume 发现 durable event 缺号时发送 `sync.reset_required`，复用现有全量重建协议恢复，不再让客户端陷入永久重连。
+
+- 验证：Python `2269 passed`；TypeScript、ESLint、release JVM、Lint、R8、assemble 与 APK v2 签名均通过
+- APK：`0.7.7`（versionCode 16），8,260,170 bytes，SHA-256 `4dbcba376dd0c63ca49c5d9d389c168af5f06632efd43b44c254d4d75b6c0cde`
+- 私有发布：<https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.7>
+- 真机验收：Pixel 7 覆盖安装成功并保留应用数据，系统报告 versionCode 16 / versionName 0.7.7，MainActivity 正常前台运行且 logcat 无 FATAL；正式 Pixel 9 的缺号 cursor 已通过 reset 推进，durable inbox 清零并停止重连风暴
