@@ -144,6 +144,8 @@ interface ConversationReadStateDao {
         ) VALUES (:sessionId, :readAt, NULL, 0, :updatedAt)
         ON CONFLICT(sessionId) DO UPDATE SET
           lastReadAt = MAX(lastReadAt, excluded.lastReadAt),
+          anchorMessageId = NULL,
+          anchorOffsetPx = 0,
           updatedAt = excluded.updatedAt
         """,
     )

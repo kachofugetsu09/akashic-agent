@@ -378,11 +378,18 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - mobile channel 比较插件 ID、source revision 与资产 SHA-256，只有目录真实变化才向当前连接中明确声明支持热更新的设备并发发送有超时上限的非持久化控制帧；断线重连由既有首次目录同步取得最新内容。新版 Android 仍能消费并 ACK `0.7.10` 可能留下的 legacy durable event，升级不会形成重连循环。
 - Android 若在旧目录或资产批次尚未结束时收到通知，会排队一次刷新，当前批次完整收束后再拉新目录，不清空进行中的请求，也不会产生未知 reply。
 - 目录列出插件后、资产拉取前插件被移除时，`plugin_unavailable` 被视为目录已过期；客户端等待同批其余 reply 收束后只重拉一次目录，不显示伪错误也不触发断线重连。
+
 - `0.7.10 (19)` 已发布，APK 为 8,306,622 bytes，SHA-256 `a02c4da4333ae9e135cf874609afb50c2a28611c550757d3eeab709b041397bd`。后续验收发现该版本尚未完成客户端 capability 订阅；本轮补上协商、旧服务端 fallback 与连接 epoch 隔离后，才把热更新视为可用能力。
 - 线上核心已重启一次以加载新协议，Observe `5c7442f`、writer 与 mobile channel 均正常启动。完成 capability 修复后，支持热更新的客户端不再需要重启 runtime 或手机；旧 Android 客户端继续使用首次同步，不会收到 `plugin.ui.changed`。
 - Pixel 7 使用隔离 Mobile Lab 验证最终契约：Observe 禁用时抽屉显示“插件 0”，运行中直接启用后原位变为“插件 1”，没有重启手机、Android 服务或 runtime。
 - 同一 Pixel 7 连接在切换前后的 durable cursor 均为 `next_event_seq=10 / sent=9 / acknowledged=9`，`mobile_device_inbox` 保持为空；这证明 `plugin.ui.changed` 没有进入持久化序列，也没有产生 4406 或 event sequence gap。
 - 隔离 tunnel 曾因本机透明代理路由中断返回 Cloudflare 1033/HTTP 530；重启 tunnel connector 后恢复。该故障发生在配对 WebSocket 建立前，与插件热更新协议无关，验收只在 tunnel 恢复并完成真实 WSS 配对后计入。
+
+## 2026-07-17 阅读位置闭环
+
+- 会话恢复从“一次定位”改为同一投影代次同步期间持续校准；原生明确结束重同步后再等待 320ms DOM 稳定。用户 touch/wheel 会立即取得视口所有权，插件看板返回和 WebView history 不再覆盖阅读位置。
+- 锚点按真实 DOM 几何选择；回到底部清理 Room 锚点。`LocalDeliveryStore` 统一串行保存、清除、投影重建和 canonical identity 迁移，WebView 不再维护会覆盖原生迁移结果的第二份 Map；effect 卸载也不再用旧 session 读取共享的新会话 DOM。
+- Pixel 7 隔离真机覆盖中段进程重启、插件往返、回到底部后重启、IME 开合、真实模型流式跟随、流式期间手动上滑与同会话清缓存重同步；真机发现并修复空投影误清锚点后复跑通过。完整设计、截图和验证命令见 `docs/mobile-batches/2026-07-17-reading-position.md`。
 
 ## 2026-07-17 大附件按需下载与抖动保护
 

@@ -53,6 +53,31 @@ class LocalDeliveryStoreTest {
     fun tearDown() = database.close()
 
     @Test
+    fun reachingConversationTailClearsPersistedReadingAnchor() = runBlocking {
+        database.messages().upsert(
+            MessageEntity("message-in-history", null, "mobile:test", "assistant", "历史", "complete", 1, 1),
+        )
+        assertTrue(store.saveReadingPosition(
+            sessionId = "mobile:test",
+            messageId = "message-in-history",
+            offsetPx = -24,
+            expectedServerId = "server",
+            updatedAt = 2,
+        ))
+
+        store.markSessionReadThrough(
+            sessionId = "mobile:test",
+            readAt = 3,
+            expectedServerId = "server",
+            updatedAt = 3,
+        )
+
+        val summary = database.conversations().observeSummaries("server").first().single()
+        assertEquals(null, summary.anchorMessageId)
+        assertEquals(0, summary.anchorOffsetPx)
+    }
+
+    @Test
     fun reducerPreservesThinkingToolThinkingOrder() = runBlocking {
         val events = listOf(
             event(1, "turn.started", buildJsonObject {}),
@@ -1056,7 +1081,7 @@ class LocalDeliveryStoreTest {
                 1,
             ),
         )
-        database.conversationReadStates().savePosition("mobile:test", optimisticId, -12, 2)
+        assertTrue(store.saveReadingPosition("mobile:test", optimisticId, -12, "server", 2))
         store.applyEvent(
             "server",
             "device",
@@ -1082,10 +1107,14 @@ class LocalDeliveryStoreTest {
         var summary = database.conversations().observeSummaries("server").first().single()
         assertEquals("mobile:test:user:canonical", summary.anchorMessageId)
         assertEquals(-12, summary.anchorOffsetPx)
+        assertTrue(store.saveReadingPosition("mobile:test", optimisticId, -30, "server", 4))
+        summary = database.conversations().observeSummaries("server").first().single()
+        assertEquals("mobile:test:user:canonical", summary.anchorMessageId)
+        assertEquals(-30, summary.anchorOffsetPx)
 
         // 2. 最终事件将 streaming 助手消息与阅读锚点一起迁移
         store.applyEvent("server", "device", event(2, "turn.started", buildJsonObject {}), 4)
-        database.conversationReadStates().savePosition("mobile:test", "assistant:turn", -20, 5)
+        assertTrue(store.saveReadingPosition("mobile:test", "assistant:turn", -20, "server", 5))
         store.applyEvent(
             "server",
             "device",
@@ -1098,6 +1127,67 @@ class LocalDeliveryStoreTest {
         summary = database.conversations().observeSummaries("server").first().single()
         assertEquals("mobile:test:assistant:canonical", summary.anchorMessageId)
         assertEquals(-20, summary.anchorOffsetPx)
+        assertTrue(store.saveReadingPosition("mobile:test", "assistant:turn", -40, "server", 7))
+        summary = database.conversations().observeSummaries("server").first().single()
+        assertEquals("mobile:test:assistant:canonical", summary.anchorMessageId)
+        assertEquals(-40, summary.anchorOffsetPx)
+    }
+
+    @Test
+    fun lateFirstReadingSaveResolvesCanonicalAlias() = runBlocking {
+        store.applyEvent("server", "device", event(1, "turn.started", buildJsonObject {}), 2)
+        store.applyEvent(
+            "server",
+            "device",
+            event(2, "message.final", buildJsonObject {
+                put("message_id", "mobile:test:assistant:canonical")
+                put("content", "最终回答")
+            }),
+            3,
+        )
+
+        assertTrue(store.saveReadingPosition("mobile:test", "assistant:turn", -18, "server", 4))
+        val summary = database.conversations().observeSummaries("server").first().single()
+        assertEquals("mobile:test:assistant:canonical", summary.anchorMessageId)
+        assertEquals(-18, summary.anchorOffsetPx)
+    }
+
+    @Test
+    fun lateReadingSaveResolvesTwoStageCanonicalAlias() = runBlocking {
+        val completedAt = Instant.parse("2026-07-14T16:00:05Z").toEpochMilli()
+        store.applyEvent("server", "device", event(1, "turn.started", buildJsonObject {}), completedAt - 100)
+        store.applyEvent(
+            "server",
+            "device",
+            event(2, "message.final", buildJsonObject { put("content", "两段迁移回答") }),
+            completedAt,
+        )
+        store.applyEvent(
+            "server",
+            "device",
+            event(3, "history.page", buildJsonObject {
+                put("total", 1)
+                put("page", 1)
+                put("page_size", 10)
+                put("items", buildJsonArray {
+                    add(buildJsonObject {
+                        put("id", "mobile:test:assistant:history-canonical")
+                        put("session_key", "mobile:test")
+                        put("seq", 1)
+                        put("role", "assistant")
+                        put("content", "两段迁移回答")
+                        put("extra", buildJsonObject {})
+                        put("ts", "2026-07-14T16:00:05Z")
+                    })
+                })
+            }),
+            completedAt + 1,
+        )
+
+        assertTrue(store.saveReadingPosition("mobile:test", "assistant:turn", -22, "server", completedAt + 2))
+        val summary = database.conversations().observeSummaries("server").first().single()
+        assertEquals("mobile:test:assistant:history-canonical", summary.anchorMessageId)
+        assertEquals(-22, summary.anchorOffsetPx)
     }
 
     private fun transfer(state: String, offset: Long, id: String = "attachment") = AttachmentTransferEntity(

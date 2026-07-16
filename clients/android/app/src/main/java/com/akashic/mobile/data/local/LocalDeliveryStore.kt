@@ -23,9 +23,12 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 private const val TOOL_BLOCK_V1_PREFIX = "tool.v1:"
 private const val LEGACY_IDENTITY_LOOKBACK_MS = 60 * 60 * 1_000L
+private const val MAX_CANONICAL_MESSAGE_ALIASES = 256
 
 @Serializable
 internal data class StoredToolBlock(
@@ -50,6 +53,50 @@ class LocalDeliveryStore(
     private val database: AppDatabase,
     private val mediaCache: MediaCacheStore,
 ) {
+    private val readingStateMutex = Mutex()
+    private val canonicalMessageAliases = linkedMapOf<String, String>()
+
+    /** 串行校验并保存 WebView 当前可见消息锚点。 */
+    suspend fun saveReadingPosition(
+        sessionId: String,
+        messageId: String,
+        offsetPx: Int,
+        expectedServerId: String?,
+        updatedAt: Long,
+    ): Boolean = readingStateMutex.withLock {
+        // 1. 校验当前投影边界；canonical 迁移后的旧 UI 写入已失效
+        require(offsetPx in -10_000..10_000) { "阅读锚点偏移超出范围" }
+        val conversation = requireNotNull(database.conversations().get(sessionId)) {
+            "阅读位置会话不存在: $sessionId"
+        }
+        require(conversation.serverId == expectedServerId) { "阅读位置会话不属于当前电脑" }
+        val resolvedMessageId = canonicalMessageAliases[messageId] ?: messageId
+        val message = database.messages().get(resolvedMessageId) ?: return@withLock false
+        require(message.sessionId == sessionId) { "阅读锚点不属于当前会话" }
+
+        // 2. 在 canonical 迁移共用的锁内持久化，避免写回已删除身份
+        database.conversationReadStates().savePosition(sessionId, resolvedMessageId, offsetPx, updatedAt)
+        true
+    }
+
+    /** 串行推进已读水位并清除旧阅读锚点。 */
+    suspend fun markSessionReadThrough(
+        sessionId: String,
+        readAt: Long,
+        expectedServerId: String?,
+        updatedAt: Long,
+    ) = readingStateMutex.withLock {
+        // 1. 校验 WebView 边界输入与当前电脑身份
+        require(readAt >= 0) { "已读水位不能为负数" }
+        val conversation = requireNotNull(database.conversations().get(sessionId)) {
+            "已读水位会话不存在: $sessionId"
+        }
+        require(conversation.serverId == expectedServerId) { "已读水位会话不属于当前电脑" }
+
+        // 2. 与保存及 canonical 迁移共用同一写序
+        database.conversationReadStates().markReadThrough(sessionId, readAt, updatedAt)
+    }
+
     suspend fun savePairedProfile(profile: ServerProfileEntity, cursor: RealtimeCursorEntity) {
         database.withTransaction {
             database.serverProfiles().upsert(profile)
@@ -85,9 +132,11 @@ class LocalDeliveryStore(
     /** 清除可从服务端恢复的投影与附件缓存，同时保留配对和未发送工作。 */
     suspend fun clearReloadableCache(serverId: String, preservedSessionId: String?) {
         // 1. 原子移除已提交消息，保留待发送消息、草稿和连接身份
-        database.withTransaction {
-            database.messages().deleteReloadableServerCache(serverId)
-            database.conversations().deleteEmptyProjection(serverId, preservedSessionId)
+        readingStateMutex.withLock {
+            database.withTransaction {
+                database.messages().deleteReloadableServerCache(serverId)
+                database.conversations().deleteEmptyProjection(serverId, preservedSessionId)
+            }
         }
 
         // 2. 删除失去消息引用的附件文件和描述符
@@ -101,11 +150,11 @@ class LocalDeliveryStore(
         envelope: WireEnvelope,
         updatedAt: Long,
         preservedSessionId: String? = null,
-    ): Long {
+    ): Long = readingStateMutex.withLock {
         require(envelope.kind == WireKind.EVENT) { "Only event envelopes can advance the cursor" }
         val eventSeq = requireNotNull(envelope.eventSeq)
         val connectionEpoch = requireNotNull(envelope.connectionEpoch)
-        return database.withTransaction {
+        database.withTransaction {
             val cursor = requireNotNull(database.realtimeCursors().get(deviceId)) {
                 "Realtime cursor is missing for device $deviceId"
             }
@@ -723,6 +772,13 @@ class LocalDeliveryStore(
         messages.moveBlocks(sourceId, canonical.messageId)
         media.moveLinks(sourceId, canonical.messageId)
         check(messages.delete(sourceId) == 1) { "Source message disappeared during canonical merge" }
+        canonicalMessageAliases.entries.forEach { alias ->
+            if (alias.value == sourceId) alias.setValue(canonical.messageId)
+        }
+        canonicalMessageAliases[sourceId] = canonical.messageId
+        if (canonicalMessageAliases.size > MAX_CANONICAL_MESSAGE_ALIASES) {
+            canonicalMessageAliases.remove(canonicalMessageAliases.keys.first())
+        }
     }
 
     private suspend fun interruptTurn(envelope: WireEnvelope, updatedAt: Long) {

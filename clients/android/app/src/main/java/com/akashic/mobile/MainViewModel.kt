@@ -30,6 +30,7 @@ import com.akashic.mobile.ui.conversation.PluginUiResponseUi
 import com.akashic.mobile.ui.conversation.PendingMessageUi
 import com.akashic.mobile.ui.conversation.SessionUi
 import com.akashic.mobile.ui.conversation.TransferStatusUi
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.SharingStarted
@@ -262,36 +263,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectSession(sessionId: String) = container.realtimeSession.selectSession(sessionId)
 
+    /** 按桥接调用顺序校验并保存会话阅读锚点。 */
     fun saveReadingPosition(sessionId: String, messageId: String, offsetPx: Int) {
-        viewModelScope.launch {
-            require(offsetPx in -10_000..10_000) { "阅读锚点偏移超出范围" }
-            val conversation = requireNotNull(container.database.conversations().get(sessionId)) {
-                "阅读位置会话不存在: $sessionId"
-            }
-            require(conversation.serverId == sessionState.value.serverId) { "阅读位置会话不属于当前电脑" }
-            val message = requireNotNull(container.database.messages().get(messageId)) {
-                "阅读锚点消息不存在: $messageId"
-            }
-            require(message.sessionId == sessionId) { "阅读锚点不属于当前会话" }
-            container.database.conversationReadStates().savePosition(
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            container.deliveryStore.saveReadingPosition(
                 sessionId = sessionId,
                 messageId = messageId,
                 offsetPx = offsetPx,
+                expectedServerId = sessionState.value.serverId,
                 updatedAt = System.currentTimeMillis(),
             )
         }
     }
 
+    /** 按桥接调用顺序推进已读水位并清除旧锚点。 */
     fun markSessionReadThrough(sessionId: String, readAtMillis: Long) {
-        viewModelScope.launch {
-            require(readAtMillis >= 0) { "已读水位不能为负数" }
-            val conversation = requireNotNull(container.database.conversations().get(sessionId)) {
-                "已读水位会话不存在: $sessionId"
-            }
-            require(conversation.serverId == sessionState.value.serverId) { "已读水位会话不属于当前电脑" }
-            container.database.conversationReadStates().markReadThrough(
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            container.deliveryStore.markSessionReadThrough(
                 sessionId = sessionId,
                 readAt = readAtMillis,
+                expectedServerId = sessionState.value.serverId,
                 updatedAt = System.currentTimeMillis(),
             )
         }
