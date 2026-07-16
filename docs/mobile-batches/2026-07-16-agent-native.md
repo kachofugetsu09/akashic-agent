@@ -149,3 +149,12 @@ node --check mobile_panel.js
 - 新增界面统一使用 500/700 的可用字重、12px 以上辅助文字和 tabular numerals；没有为了视觉统一批量改写既有聊天排版。
 - Pixel 7 在隔离 Mobile Lab 中验证插件目录、看板返回栈、真实空态与 `OBSERVEOUTPUT` 的 51-token 尾注。最终发布门禁包含 Web 类型检查、ESLint、15 项状态测试、Android 单元与 androidTest 构建、可靠性门禁及媒体门禁。
 - 签名 `0.7.9 (18)` 已发布。APK 为 8,306,626 bytes，SHA-256 `be39b2bcb62f4d5f25b8df3869d45953249c0b49dc75e4d71f04e7d055f070d6`；GitHub 资产、本地产物和 Pixel 7 内安装包哈希一致。首次权限与配对界面启动正常，应用进程日志没有 FATAL、WebView render loss、event gap 或协议反序列化错误。
+
+## 0.7.11 插件 UI 热更新契约
+
+- 插件 watcher 在每次 reconcile 尝试后读取当前移动 UI 目录；即使批次后段失败，前段已提交的插件变化仍会被发现。只有 `(plugin_id, source_revision, asset_sha256)` 集合变化时才发送 `plugin.ui.changed`。
+- 该通知只作为 connection-scoped control 发给通过 `plugin.ui.list {hot_updates:true}` 明确订阅的当前连接，不写 durable inbox。离线设备重连后先走既有目录同步，因此无需补发断线期间的变化；通知本身不携带模块正文，Android 仍通过 `plugin.ui.list` 和 `plugin.ui.asset` 边界取回并校验内容。
+- Android 同一时刻只拥有一个目录/资产批次。热更新与旧批次重叠时只记录一次 queued refresh，旧批次完成后立刻请求最新目录，避免清空 pending map 后收到旧 reply 导致协议失败。
+- 目录与资产请求之间插件被移除时，`plugin_unavailable` 只让当前批次失效并排队重拉目录，不断开 WebSocket；watcher 的通知重试也与插件 reconcile 分离，不会因移动通知失败每秒重载全部插件。
+- WebView 已有的资产签名队列负责原位切换 JS/CSS；新资产全部解析成功后才替换旧 definitions 和 stylesheet，加载失败仍保留旧界面并显示可重试错误。
+- `0.7.10 (19)` 只包含初版事件处理，尚未完成 capability 订阅；后续修复版才启用可靠热更新。新客户端连接旧服务端时会在首个目录请求被拒后自动退回旧 payload。服务端部署本功能时需要一次核心重启；此后单独安装、升级、禁用或移除带移动 UI 的插件均不要求 runtime 或手机重启。

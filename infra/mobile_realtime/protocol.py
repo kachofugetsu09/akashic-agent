@@ -69,6 +69,7 @@ CONTROL_TYPES = frozenset(
         "device.proof",
         "auth.accepted",
         "resume",
+        "plugin.ui.changed",
         "pair.claim",
         "pair.pending",
         "pair.accepted",
@@ -478,6 +479,10 @@ class ResumeControl(AuthenticatedControlEnvelope):
     payload: ResumePayload
 
 
+class PluginUiChangedControl(AuthenticatedControlEnvelope):
+    type: Literal["plugin.ui.changed"]
+
+
 class GenericControl(ControlEnvelope):
     type: Literal[
         "server.challenge",
@@ -490,7 +495,7 @@ class GenericControl(ControlEnvelope):
 
 
 ControlFrame: TypeAlias = Annotated[
-    AuthAcceptedControl | ResumeControl | GenericControl,
+    AuthAcceptedControl | ResumeControl | PluginUiChangedControl | GenericControl,
     Field(discriminator="type"),
 ]
 

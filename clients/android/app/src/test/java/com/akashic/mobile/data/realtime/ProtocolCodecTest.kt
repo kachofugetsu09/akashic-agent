@@ -101,6 +101,24 @@ class ProtocolCodecTest {
     }
 
     @Test
+    fun `decodes plugin ui change as authenticated control`() {
+        val frame = """
+            {
+              "v": 1,
+              "kind": "control",
+              "type": "plugin.ui.changed",
+              "connection_epoch": 7,
+              "payload": {}
+            }
+        """.trimIndent()
+
+        val envelope = ProtocolCodec.decode(frame)
+
+        assertEquals(WireKind.CONTROL, envelope.kind)
+        assertEquals(7L, envelope.connectionEpoch)
+    }
+
+    @Test
     fun `rejects unsupported version at boundary`() {
         val frame = """{"v":2,"kind":"control","type":"server.challenge","payload":{}}"""
 

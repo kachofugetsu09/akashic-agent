@@ -52,6 +52,7 @@
     "pair.accepted",
     "pair.claim",
     "pair.pending",
+    "plugin.ui.changed",
     "protocol.error",
     "resume",
     "server.challenge"
@@ -65,6 +66,7 @@
     "history.page",
     "message.final",
     "message.proactive",
+    "plugin.ui.changed",
     "react.thinking.delta",
     "react.tool.completed",
     "react.tool.started",
@@ -812,6 +814,7 @@
               "message.final",
               "turn.interrupted",
               "message.proactive",
+              "plugin.ui.changed",
               "attachment.progress",
               "attachment.ready",
               "connection.degraded",
@@ -1030,6 +1033,62 @@
           "client_created_at"
         ],
         "title": "MessageSendPayload",
+        "type": "object"
+      },
+      "PluginUiChangedControl": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_epoch": {
+            "minimum": 1,
+            "title": "Connection Epoch",
+            "type": "integer"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "minLength": 26,
+                "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12})$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Id"
+          },
+          "kind": {
+            "const": "control",
+            "title": "Kind",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": {
+              "$ref": "#/$defs/JsonValue"
+            },
+            "title": "Payload",
+            "type": "object"
+          },
+          "type": {
+            "const": "plugin.ui.changed",
+            "title": "Type",
+            "type": "string"
+          },
+          "v": {
+            "const": 1,
+            "title": "V",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "v",
+          "kind",
+          "type",
+          "connection_epoch",
+          "payload"
+        ],
+        "title": "PluginUiChangedControl",
         "type": "object"
       },
       "ReplyFrame": {
@@ -1449,6 +1508,7 @@
               "pair.accepted": "#/$defs/GenericControl",
               "pair.claim": "#/$defs/GenericControl",
               "pair.pending": "#/$defs/GenericControl",
+              "plugin.ui.changed": "#/$defs/PluginUiChangedControl",
               "protocol.error": "#/$defs/GenericControl",
               "resume": "#/$defs/ResumeControl",
               "server.challenge": "#/$defs/GenericControl"
@@ -1461,6 +1521,9 @@
             },
             {
               "$ref": "#/$defs/ResumeControl"
+            },
+            {
+              "$ref": "#/$defs/PluginUiChangedControl"
             },
             {
               "$ref": "#/$defs/GenericControl"
@@ -1478,6 +1541,7 @@
               "history.page": "#/$defs/GenericEvent",
               "message.final": "#/$defs/GenericEvent",
               "message.proactive": "#/$defs/GenericEvent",
+              "plugin.ui.changed": "#/$defs/GenericEvent",
               "react.thinking.delta": "#/$defs/ThinkingDeltaEvent",
               "react.tool.completed": "#/$defs/GenericEvent",
               "react.tool.started": "#/$defs/GenericEvent",
@@ -1565,6 +1629,7 @@
             "history.page": "#/$defs/GenericEvent",
             "message.final": "#/$defs/GenericEvent",
             "message.proactive": "#/$defs/GenericEvent",
+            "plugin.ui.changed": "#/$defs/GenericEvent",
             "react.thinking.delta": "#/$defs/ThinkingDeltaEvent",
             "react.tool.completed": "#/$defs/GenericEvent",
             "react.tool.started": "#/$defs/GenericEvent",
@@ -1605,6 +1670,7 @@
             "pair.accepted": "#/$defs/GenericControl",
             "pair.claim": "#/$defs/GenericControl",
             "pair.pending": "#/$defs/GenericControl",
+            "plugin.ui.changed": "#/$defs/PluginUiChangedControl",
             "protocol.error": "#/$defs/GenericControl",
             "resume": "#/$defs/ResumeControl",
             "server.challenge": "#/$defs/GenericControl"
@@ -1617,6 +1683,9 @@
           },
           {
             "$ref": "#/$defs/ResumeControl"
+          },
+          {
+            "$ref": "#/$defs/PluginUiChangedControl"
           },
           {
             "$ref": "#/$defs/GenericControl"

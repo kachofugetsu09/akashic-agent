@@ -22,6 +22,7 @@ class PluginWatcher:
         self._after_reconcile = after_reconcile
         self._wake = asyncio.Event()
         self._forced = False
+        self._notification_pending = False
         self._running = True
         self._run_started = False
         self._stopped = asyncio.Event()
@@ -63,21 +64,25 @@ class PluginWatcher:
                 if revision is None:
                     revision = current_revision
                     forced = True
-                if not forced and current_revision == revision:
+                changed = forced or current_revision != revision
+                if not changed and not self._notification_pending:
                     continue
-                # 4. 失败版本只尝试一次，后续文件变化仍可恢复热重载
-                try:
-                    _ = await self._manager.reconcile_changed()
-                except Exception:
-                    logger.exception("插件热重载失败")
-                else:
+                # 4. 插件版本只协调一次，通知失败仅重试通知
+                if changed:
                     try:
-                        if self._after_reconcile is not None:
-                            await self._after_reconcile()
+                        _ = await self._manager.reconcile_changed()
                     except Exception:
-                        self._forced = True
+                        logger.exception("插件热重载失败")
+                    revision = current_revision
+                    self._notification_pending = self._after_reconcile is not None
+                if self._notification_pending:
+                    try:
+                        assert self._after_reconcile is not None
+                        await self._after_reconcile()
+                    except Exception:
                         logger.exception("插件热重载后置通知失败")
-                revision = current_revision
+                    else:
+                        self._notification_pending = False
         finally:
             self._stopped.set()
 

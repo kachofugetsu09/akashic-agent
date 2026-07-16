@@ -280,6 +280,16 @@ def test_control_rejects_unknown_type() -> None:
         parse_frame('{"v":1,"kind":"control","type":"auth.skipped","payload":{}}')
 
 
+def test_plugin_ui_changed_is_authenticated_connection_control() -> None:
+    frame = parse_frame(
+        '{"v":1,"kind":"control","type":"plugin.ui.changed",'
+        '"connection_epoch":7,"payload":{}}'
+    )
+
+    assert frame.type == "plugin.ui.changed"
+    assert frame.connection_epoch == 7
+
+
 def test_decoder_rejects_ambiguous_or_non_object_json() -> None:
     with pytest.raises(ProtocolDecodeError, match="重复字段"):
         parse_frame('{"v":1,"v":1}')

@@ -158,6 +158,7 @@ class MobileRealtimeChannel:
         self._attachments: AttachmentTransferService | None = None
         self._mobile_ui_provider: MobileUiProvider | None = None
         self._mobile_ui_catalog_identity: tuple[tuple[object, object, object], ...] = ()
+        self._mobile_ui_hot_connections: dict[str, int] = {}
 
     def bind_mobile_ui_provider(self, provider: MobileUiProvider) -> None:
         """绑定读取当前插件快照的移动 UI 提供器。"""
@@ -176,7 +177,19 @@ class MobileRealtimeChannel:
         identity = _mobile_ui_catalog_identity(provider.catalog())
         if identity == self._mobile_ui_catalog_identity:
             return
-        await self._runtime.publish_event(event_type="plugin.ui.changed", payload={})
+        _ = await asyncio.gather(
+            *(
+                self._runtime.publish_connection_control(
+                    control_type="plugin.ui.changed",
+                    payload={},
+                    device_id=device_id,
+                    connection_epoch=connection_epoch,
+                )
+                for device_id, connection_epoch in tuple(
+                    self._mobile_ui_hot_connections.items()
+                )
+            )
+        )
         self._mobile_ui_catalog_identity = identity
 
     async def start(self, ctx: ChannelContext) -> None:
@@ -410,7 +423,7 @@ class MobileRealtimeChannel:
         if frame.type == "command.list":
             return self._list_commands(frame)
         if frame.type == "plugin.ui.list":
-            return self._list_plugin_ui(frame)
+            return self._list_plugin_ui(device_id, frame)
         if frame.type == "plugin.ui.asset":
             return self._get_plugin_ui_asset(frame)
         if frame.type == "plugin.ui.call":
@@ -449,10 +462,17 @@ class MobileRealtimeChannel:
         # 2. 保持插件注册顺序，便于管理高频命令的位置
         return CommandReply(type="command.list.ok", payload={"items": items})
 
-    def _list_plugin_ui(self, frame: GenericCommand) -> CommandReply:
+    def _list_plugin_ui(self, device_id: str, frame: GenericCommand) -> CommandReply:
         """返回服务端当前启用插件的移动 UI 目录。"""
 
-        _expect_keys(frame.payload, set())
+        _expect_keys(frame.payload, {"hot_updates"})
+        hot_updates = frame.payload.get("hot_updates", False)
+        if not isinstance(hot_updates, bool):
+            raise MobileCommandError("invalid_payload", "hot_updates 必须是布尔值")
+        if hot_updates:
+            self._mobile_ui_hot_connections[device_id] = frame.connection_epoch
+        else:
+            _ = self._mobile_ui_hot_connections.pop(device_id, None)
         provider = self._mobile_ui_provider
         items = [] if provider is None else provider.catalog()
         return CommandReply(type="plugin.ui.list.ok", payload={"items": items})

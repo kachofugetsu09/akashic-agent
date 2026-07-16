@@ -2395,13 +2395,24 @@ async def test_plugin_watcher_recovers_after_reconcile_failure() -> None:
             return []
 
     manager = Manager()
-    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    reconciled = 0
+
+    async def after_reconcile() -> None:
+        nonlocal reconciled
+        reconciled += 1
+
+    watcher = PluginWatcher(
+        manager,
+        interval_seconds=0.01,
+        after_reconcile=after_reconcile,
+    )  # type: ignore[arg-type]
     task = asyncio.create_task(watcher.run())
     await asyncio.sleep(0)
     manager.revision = "broken"
     await asyncio.wait_for(manager.failed.wait(), timeout=1)
     await asyncio.sleep(0.03)
     assert manager.calls == 1
+    assert reconciled == 1
     assert not task.done()
 
     manager.revision = "fixed"
@@ -2409,6 +2420,48 @@ async def test_plugin_watcher_recovers_after_reconcile_failure() -> None:
     watcher.stop()
     await task
     assert manager.calls == 2
+    assert reconciled == 2
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_retries_notification_without_reconciling_again() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.revision = "stable"
+            self.calls = 0
+
+        def watch_revision(self) -> str:
+            return self.revision
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            return []
+
+    manager = Manager()
+    notification_calls = 0
+    notified = asyncio.Event()
+
+    async def after_reconcile() -> None:
+        nonlocal notification_calls
+        notification_calls += 1
+        if notification_calls == 1:
+            raise RuntimeError("transient notification failure")
+        notified.set()
+
+    watcher = PluginWatcher(
+        manager,
+        interval_seconds=0.01,
+        after_reconcile=after_reconcile,
+    )  # type: ignore[arg-type]
+    task = asyncio.create_task(watcher.run())
+    await asyncio.sleep(0)
+    manager.revision = "changed"
+    await asyncio.wait_for(notified.wait(), timeout=1)
+
+    watcher.stop()
+    await task
+    assert manager.calls == 1
+    assert notification_calls == 2
 
 
 @pytest.mark.asyncio

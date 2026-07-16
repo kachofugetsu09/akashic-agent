@@ -358,3 +358,25 @@ Pixel 7 真实回合验证得到 `model_output_tokens=51`，同一消息尾部�
 - 自动验证通过 `npm run typecheck`、`npm run lint`、Observe 的 2 项移动面板测试与 6 项插件测试、`./scripts/verify-mobile-agent-native.sh`、可靠性门禁和媒体门禁。
 - `0.7.9 (18)` 已发布到 GitHub。签名 APK 为 8,306,626 bytes，SHA-256 `be39b2bcb62f4d5f25b8df3869d45953249c0b49dc75e4d71f04e7d055f070d6`；GitHub 资产摘要、本地产物和 Pixel 7 内 `base.apk` 三者一致。
 - Pixel 7 无损安装签名 release 后系统报告 versionCode 18 / versionName 0.7.9，首次权限页和配对页均正常渲染，没有白屏或应用进程内的 FATAL、RenderProcessGone、event gap、协议校验错误。发布地址为 `https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.9`。
+
+## 2026-07-17 插件 UI 热更新
+
+正式环境首次安装新版 Observe 后，服务端 generation 已热加载，但已经完成同步的 Android 仍保留启动时取得的空插件目录。根因不是插件加载失败，而是客户端只在 `sync.completed` 或重建后请求 `plugin.ui.list`，插件快照提交没有对应的移动事件。
+
+本轮补齐完整链路：
+
+```text
+插件 snapshot committed
+          │ 移动 UI 目录摘要确实变化
+          ▼
+  plugin.ui.changed（connection control）
+          ▼
+Android 重新请求 list → asset → WebView 按 sha256 原位替换
+```
+
+- watcher 在每次 reconcile 尝试后调用目录刷新器，因为同一批次中较早插件可能已提交、较晚插件才失败；通知失败只重试通知，不会再次 reconcile 并重载全部插件。
+- mobile channel 比较插件 ID、source revision 与资产 SHA-256，只有目录真实变化才向当前连接中明确声明支持热更新的设备并发发送有超时上限的非持久化控制帧；断线重连由既有首次目录同步取得最新内容。新版 Android 仍能消费并 ACK `0.7.10` 可能留下的 legacy durable event，升级不会形成重连循环。
+- Android 若在旧目录或资产批次尚未结束时收到通知，会排队一次刷新，当前批次完整收束后再拉新目录，不清空进行中的请求，也不会产生未知 reply。
+- 目录列出插件后、资产拉取前插件被移除时，`plugin_unavailable` 被视为目录已过期；客户端等待同批其余 reply 收束后只重拉一次目录，不显示伪错误也不触发断线重连。
+- `0.7.10 (19)` 已发布，APK 为 8,306,622 bytes，SHA-256 `a02c4da4333ae9e135cf874609afb50c2a28611c550757d3eeab709b041397bd`。后续验收发现该版本尚未完成客户端 capability 订阅；本轮补上协商、旧服务端 fallback 与连接 epoch 隔离后，才把热更新视为可用能力。
+- 线上核心已重启一次以加载新协议，Observe `5c7442f`、writer 与 mobile channel 均正常启动。完成 capability 修复后，支持热更新的客户端不再需要重启 runtime 或手机；旧 Android 客户端继续使用首次同步，不会收到 `plugin.ui.changed`。

@@ -15,6 +15,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 import pytest
+import infra.mobile_realtime.gateway as gateway_module
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
@@ -1294,6 +1295,100 @@ def test_slow_device_delivery_does_not_block_other_device(tmp_path: Path) -> Non
         assert len(slow_socket.sent_text) == 1
         assert runtime.storage.read_cursor(slow_id).sent_event_seq == 1
         assert runtime.storage.read_cursor(fast_id).sent_event_seq == 1
+        runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_connection_control_only_reaches_matching_current_connection(tmp_path: Path) -> None:
+    """验证临时控制帧不入箱，且只投递给匹配的当前 epoch。"""
+
+    async def scenario() -> None:
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        device_id = uuid4().hex
+        _register_test_device(runtime, device_id)
+        socket = _ControlledWebSocket()
+        runtime._connections[device_id] = ActiveMobileConnection(
+            websocket=cast(Any, socket),
+            connection_epoch=2,
+            send_lock=asyncio.Lock(),
+            pending_events=deque(),
+            ready=True,
+            delivery_task=None,
+        )
+
+        await runtime.publish_connection_control(
+            device_id=device_id,
+            connection_epoch=1,
+            control_type="plugin.ui.changed",
+            payload={},
+        )
+
+        assert runtime.storage.read_cursor(device_id).next_event_seq == 1
+        assert socket.sent_text == []
+
+        await runtime.publish_connection_control(
+            device_id=device_id,
+            connection_epoch=2,
+            control_type="plugin.ui.changed",
+            payload={},
+        )
+
+        assert runtime.storage.read_cursor(device_id).next_event_seq == 1
+        assert json.loads(socket.sent_text[0]) == {
+            "connection_epoch": 2,
+            "kind": "control",
+            "payload": {},
+            "type": "plugin.ui.changed",
+            "v": 1,
+        }
+        runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_connection_control_timeout_only_removes_slow_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证控制帧写超时不会卡住调用方或污染 durable cursor。"""
+
+    async def scenario() -> None:
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        device_id = uuid4().hex
+        _register_test_device(runtime, device_id)
+        socket = _ControlledWebSocket(send_gate=asyncio.Event())
+        runtime._connections[device_id] = ActiveMobileConnection(
+            websocket=cast(Any, socket),
+            connection_epoch=1,
+            send_lock=asyncio.Lock(),
+            pending_events=deque(),
+            ready=True,
+            delivery_task=None,
+        )
+        monkeypatch.setattr(
+            gateway_module,
+            "_CONNECTION_CONTROL_SEND_TIMEOUT_SECONDS",
+            0.01,
+        )
+
+        await runtime.publish_connection_control(
+            device_id=device_id,
+            connection_epoch=1,
+            control_type="plugin.ui.changed",
+            payload={},
+        )
+
+        assert device_id not in runtime._connections
+        assert runtime.storage.read_cursor(device_id).next_event_seq == 1
         runtime.close()
 
     asyncio.run(scenario())

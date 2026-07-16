@@ -38,6 +38,9 @@ class _Runtime:
     async def publish_event(self, **event: object) -> None:
         self.events.append(dict(event))
 
+    async def publish_connection_control(self, **control: object) -> None:
+        self.events.append(dict(control))
+
 
 class _Bus:
     def __init__(self) -> None:
@@ -1239,6 +1242,57 @@ async def test_plugin_ui_list_is_empty_without_plugin_manager(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_plugin_ui_hot_update_only_targets_opted_in_connection(tmp_path: Path) -> None:
+    class _MutableProvider:
+        def __init__(self) -> None:
+            self.revision = "v1"
+
+        def catalog(self) -> list[dict[str, object]]:
+            return [{"id": "sample@github", "revision": self.revision, "sha256": "a" * 64}]
+
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    provider = _MutableProvider()
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    channel.bind_mobile_ui_provider(cast(Any, provider))
+
+    await channel.handle_command(
+        device_id=device_id,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FA0",
+            command_type="plugin.ui.list",
+            payload={"hot_updates": True},
+        ),
+    )
+    provider.revision = "v2"
+    await channel.refresh_mobile_ui_catalog()
+
+    assert runtime.events == [
+        {
+            "control_type": "plugin.ui.changed",
+            "payload": {},
+            "device_id": device_id,
+            "connection_epoch": 1,
+        }
+    ]
+
+    await channel.handle_command(
+        device_id=device_id,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FA1",
+            command_type="plugin.ui.list",
+        ),
+    )
+    provider.revision = "v3"
+    await channel.refresh_mobile_ui_catalog()
+
+    assert len(runtime.events) == 1
+    storage.close()
+
+
+@pytest.mark.asyncio
 async def test_plugin_ui_reply_size_is_checked_before_receipt_completion(tmp_path: Path) -> None:
     class _OversizedProvider:
         def catalog(self) -> list[dict[str, object]]:
@@ -1271,6 +1325,9 @@ async def test_plugin_ui_reply_size_is_checked_before_receipt_completion(tmp_pat
 @pytest.mark.asyncio
 async def test_plugin_ui_timeout_becomes_durable_error_reply(tmp_path: Path) -> None:
     class _TimeoutProvider:
+        def catalog(self) -> list[dict[str, object]]:
+            return []
+
         async def call(self, *args: object, **kwargs: object) -> dict[str, object]:
             raise channel_module.MobileUiRpcTimeout("插件 mobile UI RPC 超时")
 
@@ -1295,6 +1352,9 @@ async def test_plugin_ui_timeout_becomes_durable_error_reply(tmp_path: Path) -> 
 @pytest.mark.asyncio
 async def test_plugin_ui_invalid_request_becomes_durable_error_reply(tmp_path: Path) -> None:
     class _InvalidRequestProvider:
+        def catalog(self) -> list[dict[str, object]]:
+            return []
+
         async def call(self, *args: object, **kwargs: object) -> dict[str, object]:
             raise channel_module.MobileUiRpcInvalidRequest("消息不属于请求会话")
 

@@ -186,6 +186,8 @@ class RealtimeSession(
     private val requestedHistoryPages = mutableSetOf<Triple<Long, String, Int>>()
     private var pendingCommandListId: String? = null
     private var pendingPluginUiListId: String? = null
+    private var pendingPluginUiListUsesHotUpdates = false
+    private var pluginUiHotUpdatesEnabled = true
     private val pendingPluginUiAssets = mutableMapOf<String, MobileUiCatalogItem>()
     private val stagedPluginUiAssets = mutableMapOf<String, MobileUiAssetPayload>()
     private var pluginUiRefreshQueued = false
@@ -1130,14 +1132,29 @@ class RealtimeSession(
                 }
                 if (envelope.type == "plugin.ui.list.error" && id == pendingPluginUiListId) {
                     pendingPluginUiListId = null
+                    val errorCode = envelope.payload["code"]?.jsonPrimitive?.content
+                    if (pendingPluginUiListUsesHotUpdates && errorCode == "invalid_payload") {
+                        pendingPluginUiListUsesHotUpdates = false
+                        pluginUiHotUpdatesEnabled = false
+                        pluginUiRefreshQueued = false
+                        requestPluginUiList()
+                        return
+                    }
                     mutableState.value = mutableState.value.copy(
                         errorMessage = envelope.payload["message"]?.jsonPrimitive?.content
                             ?: "加载插件界面失败",
                     )
+                    requestQueuedPluginUiRefresh()
                     return
                 }
                 if (envelope.type == "plugin.ui.asset.error" && id in pendingPluginUiAssets) {
                     val failed = requireNotNull(pendingPluginUiAssets.remove(id))
+                    if (envelope.payload["code"]?.jsonPrimitive?.content == "plugin_unavailable") {
+                        stagedPluginUiAssets.clear()
+                        pluginUiRefreshQueued = true
+                        if (pendingPluginUiAssets.isEmpty()) requestQueuedPluginUiRefresh()
+                        return
+                    }
                     mutableState.value = mutableState.value.copy(
                         errorMessage = "加载插件界面失败：${failed.id}",
                     )
@@ -1198,6 +1215,12 @@ class RealtimeSession(
                     }
                 }
             }
+            WireKind.CONTROL -> {
+                require(envelope.type == "plugin.ui.changed") {
+                    "Unexpected authenticated control: ${envelope.type}"
+                }
+                requestPluginUiList()
+            }
             else -> error("Unexpected authenticated server frame: ${envelope.kind}")
         }
     }
@@ -1254,9 +1277,12 @@ class RealtimeSession(
             return
         }
         pluginUiRefreshQueued = false
+        pendingPluginUiListUsesHotUpdates = pluginUiHotUpdatesEnabled
         pendingPluginUiListId = sendPluginUiCommand(
             type = "plugin.ui.list",
-            payload = buildJsonObject {},
+            payload = buildJsonObject {
+                if (pluginUiHotUpdatesEnabled) put("hot_updates", true)
+            },
         )
     }
 
@@ -1289,14 +1315,23 @@ class RealtimeSession(
             "收到未知插件 UI 资产 reply"
         }
         val asset = ProtocolCodec.decodePayload<MobileUiAssetPayload>(envelope.payload)
-        require(asset.id == expected.id && asset.revision == expected.revision && asset.sha256 == expected.sha256) {
-            "插件 UI 资产身份与目录不一致"
+        require(asset.id == expected.id) { "插件 UI 资产 ID 与目录不一致" }
+        if (asset.revision != expected.revision || asset.sha256 != expected.sha256) {
+            stagedPluginUiAssets.clear()
+            pluginUiRefreshQueued = true
+            if (pendingPluginUiAssets.isEmpty()) requestQueuedPluginUiRefresh()
+            return
         }
         require(mobileUiDigest(asset.module, asset.stylesheet) == asset.sha256) {
             "插件 UI 资产内容摘要不一致: ${asset.id}"
         }
         stagedPluginUiAssets[asset.id] = asset
         if (pendingPluginUiAssets.isEmpty()) {
+            if (pluginUiRefreshQueued) {
+                stagedPluginUiAssets.clear()
+                requestQueuedPluginUiRefresh()
+                return
+            }
             mutableState.value = mutableState.value.copy(
                 pluginUiAssets = stagedPluginUiAssets.values.sortedBy { it.id },
             )
@@ -1767,6 +1802,8 @@ class RealtimeSession(
             )
         }
         pendingPluginUiListId = null
+        pendingPluginUiListUsesHotUpdates = false
+        pluginUiHotUpdatesEnabled = true
         pendingPluginUiAssets.clear()
         stagedPluginUiAssets.clear()
         pluginUiRefreshQueued = false

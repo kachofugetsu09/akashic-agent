@@ -304,6 +304,7 @@ object ProtocolCodec {
             "device.proof",
             "auth.accepted",
             "resume",
+            "plugin.ui.changed",
             "pair.claim",
             "pair.pending",
             "pair.accepted",
@@ -371,7 +372,7 @@ object ProtocolCodec {
                 "Authenticated frames require a positive connection_epoch"
             }
             WireKind.CONTROL -> when (envelope.type) {
-                "auth.accepted", "resume" -> require(
+                "auth.accepted", "resume", "plugin.ui.changed" -> require(
                     envelope.connectionEpoch != null && envelope.connectionEpoch > 0,
                 ) { "Authenticated controls require a positive connection_epoch" }
                 else -> require(envelope.connectionEpoch == null) {

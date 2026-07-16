@@ -83,6 +83,7 @@ _CLOSE_SLOW_CONSUMER = 4408
 _CLOSE_COMMAND = 4410
 _MAX_PENDING_CONNECTION_EVENTS = 64
 _CLOSE_VERSION = 4406
+_CONNECTION_CONTROL_SEND_TIMEOUT_SECONDS = 3.0
 _CROCKFORD32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 logger = logging.getLogger(__name__)
@@ -696,6 +697,7 @@ class MobileGatewayRuntime:
         session_id: str | None = None,
         turn_id: str | None = None,
         device_id: str | None = None,
+        connection_epoch: int | None = None,
     ) -> None:
         """把 P0 事件写入每个设备 inbox，并向在线连接即时投递。"""
 
@@ -712,8 +714,14 @@ class MobileGatewayRuntime:
         # 2. 临界区只负责持久化和排队，不等待任何设备网络 I/O
         async with self._delivery_lock:
             if device_id is not None:
+                if connection_epoch is not None:
+                    connection = self._connections.get(device_id)
+                    if connection is None or connection.connection_epoch != connection_epoch:
+                        return
                 target_device_ids = (device_id,)
             else:
+                if connection_epoch is not None:
+                    raise ValueError("广播事件不能指定 connection_epoch")
                 target_device_ids = tuple(
                     device.device_id for device in self.storage.list_active_devices()
                 )
@@ -743,6 +751,59 @@ class MobileGatewayRuntime:
                     continue
                 connection.pending_events.append(event)
                 self._schedule_delivery_locked(target_device_id, connection)
+
+    async def publish_connection_control(
+        self,
+        *,
+        control_type: str,
+        payload: dict[str, object],
+        device_id: str,
+        connection_epoch: int,
+    ) -> None:
+        """仅向指定的当前连接发送非持久化控制帧。"""
+
+        # 1. 在协议边界构造并验证控制帧
+        wire = parse_frame(
+            json.dumps(
+                {
+                    "v": 1,
+                    "kind": "control",
+                    "type": control_type,
+                    "connection_epoch": connection_epoch,
+                    "payload": payload,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+                allow_nan=False,
+            )
+        )
+
+        # 2. 只捕获订阅时的同一条在线连接，不进入 durable inbox
+        async with self._delivery_lock:
+            connection = self._connections.get(device_id)
+            if (
+                connection is None
+                or connection.connection_epoch != connection_epoch
+                or not connection.ready
+            ):
+                return
+        try:
+            async with asyncio.timeout(_CONNECTION_CONTROL_SEND_TIMEOUT_SECONDS):
+                async with connection.send_lock:
+                    async with self._delivery_lock:
+                        if self._connections.get(device_id) is not connection:
+                            return
+                    await connection.websocket.send_text(frame_to_json(wire))
+        except (WebSocketDisconnect, RuntimeError, OSError, TimeoutError) as error:
+            logger.warning(
+                "mobile 连接控制帧投递失败: device=%s error=%s",
+                device_id,
+                error,
+            )
+            async with self._delivery_lock:
+                if self._connections.get(device_id) is connection:
+                    _ = self._connections.pop(device_id)
 
     def _schedule_delivery_locked(
         self,
