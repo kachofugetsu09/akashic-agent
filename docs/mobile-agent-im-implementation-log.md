@@ -6,7 +6,7 @@
 
 | 领域 | 当前基线 | 下一闭环 |
 |---|---|---|
-| 消息基本功 | 已有真实时间、日期分组、双向引用、复制、搜索、跳转、未读、失败重试和乱序归位 | 消息选择、批量动作与删除语义 |
+| 消息基本功 | 已有真实时间、日期分组、双向引用、单条/批量复制、消息选择、搜索、跳转、未读、失败重试和乱序归位 | 删除/转发的服务端所有权与协议语义 |
 | 实时 Agent | 有流式回答、思考/工具时间线、停止、可展开的安全工具详情和结构化复制 | 失败态解释与长结果二次操作 |
 | 媒体 | 有上传、进度、缓存、预览、GIF/meme、重试、按需大文件下载和分享 | 相机/系统分享入口与媒体发送一致性 |
 | 网络 | 有认证、resume、durable inbox、连接状态 | 抖动场景矩阵和用户可恢复动作 |
@@ -406,3 +406,15 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - Pixel 7 在隔离 Mobile Lab 真实发送 `use shell tool to run printf toolcopyresult and report`，服务端记录新的 `message.send`；真机时间线按顺序流式出现 thinking、`shell 完成 · 9ms` 和最终 `toolcopyresult`。证据为 `/tmp/pixel7-send-enter2.png`、`/tmp/pixel7-tool-copy-final-collapsed.png`。
 - 最终 review 修复了三个真实问题：折叠交互元素仍可聚焦、流式结果更新后成功状态可能过期、44dp 未达到本项目 Material 3 48dp 基线。修复后的签名 APK 已无损安装到 Pixel 7，应用 PID 日志没有 FATAL、RenderProcessGone、event gap 或协议校验错误。
 - release WebView 未开放调试，ADB 的 TAB 焦点会越出 WebView 并误启动系统应用，因此本轮不把自动化焦点副作用伪装成复制点击验收；剪贴板桥本身已由消息复制闭环验证，本组仍保留一次人工点击“参数 / 结果 → 粘贴比对”作为下个真机交互驱动的首个验收样例。完整批次记录见 `docs/mobile-batches/2026-07-17-tool-detail-actions.md`。
+
+## 2026-07-17 消息选择与批量复制
+
+- 长按任意已完成的用户或 Agent 消息进入排他的消息选择模式；后续点击同一消息取消，点击其他消息追加。流式临时消息不参与选择，快照删除、消息重新进入流式态或切换会话时会按稳定消息 ID 对账并清理选择。
+- 选择态用 Material 3 contextual top app bar 替换常态顶栏，显示“已选择 N 条”；单选且属于当前发送会话时提供引用，多选只保留复制。Android 返回键先退出选择，不离开应用。
+- 批量复制按真实对话顺序输出“角色 · 日期时间 + 正文 + 附件名”，单条复制保持原文，不强加 transcript 标签；复用既有 Android 剪贴板与触觉桥，不增加协议、Room 字段或第二套复制实现。
+- merged mobile 历史虽然全量可读，但 `RealtimeSession` 明确只允许引用当前发送会话内的消息。界面能力判断现与该既有 owner 对齐，不再为旧 mobile 会话展示一个发送层必然拒绝的引用动作；没有放宽服务端校验。
+- 选择态把整条消息作为 checkbox 语义平面，消息内部复制、引用、展开和下载动作进入 `inert`，不会继续抢焦点或读屏；长按使用 touch-first 事件，鼠标/触控笔路径捕获 pointer，移动超过 9px 立即取消。
+- 视觉上没有新增消息卡片或弹窗：选中态是覆盖消息语义区的 11% primary state layer，顶部使用 `surface-container-high`；主蓝表达选择和动作，紫色继续只表达 Agent thinking/tool 过程。
+- `npm run typecheck`、`npm run lint`、20 项 mobile web state 测试、`git diff --check` 和 `clients/android/scripts/build-release.sh` 通过；release unit、Lint、R8、assemble 与 v2 签名验证成功，最终验收 APK SHA-256 为 `885366a6…cf22`。
+- Pixel 7 已用最终签名 APK 无损安装并验证：单选截图 `/tmp/pixel7-selection-final-one.png`；单选引用进入 composer 的截图 `/tmp/pixel7-selection-final-reply3.png`；双选截图 `/tmp/pixel7-selection-final-two3.png`；Android 剪贴板预览显示按顺序复制的两条消息，截图 `/tmp/pixel7-selection-final-copy.png`；返回键恢复常态输入区，截图 `/tmp/pixel7-selection-final-back2.png`。对应 logcat 无 FATAL、RenderProcessGone 或 event sequence gap。
+- Kill AI Slop 扫描为 38 个文件、10 组、58 个机械命中；相对本组实施前只多出 `-webkit-touch-callout: none` 被“left-border callout”规则按字符串误报，实际没有新增 callout、渐变、玻璃拟态、发光点、卡片墙或胶囊堆叠。完整批次记录见 `docs/mobile-batches/2026-07-17-message-selection.md`。

@@ -18,6 +18,17 @@ export interface MobileSearchIndexEntry {
   matches: boolean;
 }
 
+export interface MobileSelectableMessage {
+  id: string;
+  sessionId: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: number;
+  streaming: boolean;
+  replyable: boolean;
+  attachments: { filename: string }[];
+}
+
 export interface MobileUnreadViewportState {
   isAtBottom: boolean;
   escapedFromLock: boolean;
@@ -46,6 +57,53 @@ export function isMobileImageViewerHistoryState(state: unknown, attachmentId: st
 
 export function normalizeMobileSearchText(value: string) {
   return value.toLocaleLowerCase("zh-CN");
+}
+
+export function selectableMobileMessages<T extends MobileSelectableMessage>(
+  messages: readonly T[],
+  selectedIds: ReadonlySet<string>,
+) {
+  return messages.filter((message) => selectedIds.has(message.id) && !message.streaming);
+}
+
+export function reconcileMobileMessageSelection<T extends MobileSelectableMessage>(
+  selectedIds: ReadonlySet<string>,
+  messages: readonly T[],
+) {
+  const visibleIds = new Set(
+    messages.filter((message) => !message.streaming).map((message) => message.id),
+  );
+  return new Set([...selectedIds].filter((messageId) => visibleIds.has(messageId)));
+}
+
+export function mobileMessageHasCopyContent(message: MobileSelectableMessage) {
+  return Boolean(message.content.trim()) || message.attachments.length > 0;
+}
+
+export function mobileMessageCanReply(
+  message: MobileSelectableMessage,
+  selectedSessionId: string | null | undefined,
+) {
+  return message.replyable && message.sessionId === selectedSessionId;
+}
+
+export function formatMobileSelectionCopyText(
+  messages: readonly MobileSelectableMessage[],
+  formatTimestamp: (createdAt: number) => string,
+) {
+  const copyable = messages.filter(mobileMessageHasCopyContent);
+  if (copyable.length === 1) return mobileMessageCopyBody(copyable[0]);
+  return copyable.map((message) => [
+    `${message.role === "assistant" ? "Akashic" : "你"} · ${formatTimestamp(message.createdAt)}`,
+    mobileMessageCopyBody(message),
+  ].join("\n")).join("\n\n");
+}
+
+function mobileMessageCopyBody(message: MobileSelectableMessage) {
+  return [
+    message.content.trim(),
+    ...message.attachments.map((attachment) => `[附件] ${attachment.filename}`),
+  ].filter(Boolean).join("\n");
 }
 
 /** 只重算查询变化或原生修订号发生变化的消息搜索项。 */

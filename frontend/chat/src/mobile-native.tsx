@@ -63,8 +63,13 @@ import {
   advanceMobileProjectionBaseline,
   advanceMobileUnreadTracking,
   allMobileAttachmentsReady,
+  formatMobileSelectionCopyText,
   isMobileImageViewerHistoryState,
+  mobileMessageCanReply,
+  mobileMessageHasCopyContent,
   normalizeMobileSearchText,
+  reconcileMobileMessageSelection,
+  selectableMobileMessages,
   updateMobileSearchIndex,
   type MobileSearchIndexEntry,
 } from "./mobile-message-state";
@@ -517,6 +522,7 @@ function MobileNativeApp() {
   const [input, setInput] = useState("");
   const [replyTarget, setReplyTarget] = useState<MobileMessage | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(() => new Set());
   const [recoveringMessageIds, setRecoveringMessageIds] = useState<Set<string>>(() => new Set());
   const [stopRequested, setStopRequested] = useState(false);
   const [sendPending, setSendPending] = useState(false);
@@ -538,6 +544,7 @@ function MobileNativeApp() {
   const handledNavigationTargetRef = useRef<string | undefined>(undefined);
   const pendingSendRequestRef = useRef<string | null>(null);
   const surfaceRef = useRef<MobileSurface>({ kind: "chat" });
+  const selectionActiveRef = useRef(false);
 
   useEffect(() => {
     let pending: MobileSnapshot | null = null;
@@ -608,6 +615,11 @@ function MobileNativeApp() {
         textareaRef.current?.blur();
       },
       navigateBack() {
+        if (selectionActiveRef.current) {
+          selectionActiveRef.current = false;
+          setSelectedMessageIds(new Set());
+          return true;
+        }
         const historyState = window.history.state;
         if (
           typeof historyState === "object" &&
@@ -651,6 +663,16 @@ function MobileNativeApp() {
     setRecoveringMessageIds((current) => {
       const next = new Set([...current].filter((messageId) => actionable.has(messageId)));
       return next.size === current.size ? current : next;
+    });
+  }, [snapshot?.messages]);
+
+  useEffect(() => {
+    setSelectedMessageIds((current) => {
+      if (current.size === 0) return current;
+      const next = reconcileMobileMessageSelection(current, snapshot?.messages ?? []);
+      selectionActiveRef.current = next.size > 0;
+      if (next.size === current.size && [...next].every((messageId) => current.has(messageId))) return current;
+      return next;
     });
   }, [snapshot?.messages]);
 
@@ -760,6 +782,8 @@ function MobileNativeApp() {
     setSearchTargetId(null);
     setUnreadState({ count: 0 });
     setQueueOpen(false);
+    selectionActiveRef.current = false;
+    setSelectedMessageIds(new Set());
   }, [snapshot?.selectedSessionId]);
 
   useEffect(() => {
@@ -875,6 +899,53 @@ function MobileNativeApp() {
       copiedTimerRef.current = null;
     }, 1600);
   };
+  const selectedMessages = selectableMobileMessages(snapshot.messages, selectedMessageIds);
+  const selectionActive = selectedMessages.length > 0;
+  const clearSelection = () => {
+    selectionActiveRef.current = false;
+    setSelectedMessageIds(new Set());
+  };
+  const enterSelection = (messageId: string) => {
+    setDrawerOpen(false);
+    setSearchOpen(false);
+    searchOpenRef.current = false;
+    setSearchQuery("");
+    normalizedSearchQueryRef.current = "";
+    setSearchIndex(new Map());
+    setSearchTargetId(null);
+    setHighlightedMessageId(null);
+    setCommandsOpen(false);
+    setQueueOpen(false);
+    setReplyTarget(null);
+    textareaRef.current?.blur();
+    selectionActiveRef.current = true;
+    setSelectedMessageIds(new Set([messageId]));
+  };
+  const toggleSelection = (messageId: string) => {
+    setSelectedMessageIds((current) => {
+      const next = new Set(current);
+      if (next.has(messageId)) next.delete(messageId);
+      else next.add(messageId);
+      selectionActiveRef.current = next.size > 0;
+      return next;
+    });
+  };
+  const copySelection = () => {
+    const text = formatMobileSelectionCopyText(
+      selectedMessages,
+      (createdAt) => `${formatMessageDate(createdAt)} ${formatMessageTime(createdAt)}`,
+    );
+    window.AkashicNative?.copyText(text);
+    window.AkashicNative?.performActionHaptic();
+    clearSelection();
+  };
+  const replyToSelection = () => {
+    const target = selectedMessages.length === 1 ? selectedMessages[0] : undefined;
+    if (!target || !mobileMessageCanReply(target, snapshot.selectedSessionId)) return;
+    clearSelection();
+    setReplyTarget(target);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  };
   const navigateToSurface = (next: Exclude<MobileSurface, { kind: "chat" }>) => {
     pushMobileSurface(window.history, next);
     surfaceRef.current = next;
@@ -895,6 +966,9 @@ function MobileNativeApp() {
             toggleRef={drawerToggleRef}
             searchButtonRef={searchButtonRef}
             searchInputRef={searchInputRef}
+            selectionCount={selectedMessages.length}
+            canCopySelection={selectedMessages.some(mobileMessageHasCopyContent)}
+            canReplyToSelection={selectedMessages.length === 1 && mobileMessageCanReply(selectedMessages[0], snapshot.selectedSessionId)}
             onToggleDrawer={toggleDrawer}
             onOpenSearch={openSearch}
             onCloseSearch={closeSearch}
@@ -902,6 +976,9 @@ function MobileNativeApp() {
             onSearchSubmit={() => {
               if (searchTargetId !== null) jumpToMessage(searchTargetId, true);
             }}
+            onCloseSelection={clearSelection}
+            onCopySelection={copySelection}
+            onReplyToSelection={replyToSelection}
           />
         ) : (
           <MobilePluginTopBar
@@ -956,7 +1033,7 @@ function MobileNativeApp() {
             <MobilePluginDashboard pluginId={surface.pluginId} />
           </section>
         ) : (
-        <div className={`mobile-main-content ${replyTarget ? "replying" : ""} ${searchOpen ? "searching" : ""} ${queueOpen && snapshot.composer.pendingMessages.length > 1 ? "queueing" : ""}`} inert={drawerOpen ? true : undefined}>
+        <div className={`mobile-main-content ${replyTarget ? "replying" : ""} ${searchOpen ? "searching" : ""} ${selectionActive ? "selecting" : ""} ${queueOpen && snapshot.composer.pendingMessages.length > 1 ? "queueing" : ""}`} inert={drawerOpen ? true : undefined}>
           <Conversation key={snapshot.selectedSessionId ?? "empty"} className="mobile-conversation">
             <ConversationContent className="mobile-conversation__content">
               {messages.length === 0 ? (
@@ -969,7 +1046,7 @@ function MobileNativeApp() {
                   const source = snapshot.messages[index];
                   const previous = snapshot.messages[index - 1];
                   const startsDay = !previous || !sameLocalDay(previous.createdAt, source.createdAt);
-                  const canReply = source.replyable;
+                  const canReply = mobileMessageCanReply(source, snapshot.selectedSessionId);
                   return (
                     <React.Fragment key={message.id}>
                       {startsDay ? <MessageDateDivider createdAt={source.createdAt} /> : null}
@@ -977,16 +1054,21 @@ function MobileNativeApp() {
                       {!startsDay && previous?.role === source.role ? (
                         <div className={`mobile-role-divider ${source.role}`} />
                       ) : null}
-                      <div
+                      <MessageSelectionTarget
                         ref={(element) => {
                           if (element) messageElementsRef.current.set(source.id, element);
                           else messageElementsRef.current.delete(source.id);
                         }}
-                        className={`mobile-message-anchor ${source.role} ${highlightedMessageId === source.id ? "search-target" : ""}`}
+                        className={`mobile-message-anchor ${source.role} ${highlightedMessageId === source.id ? "search-target" : ""} ${selectedMessageIds.has(source.id) ? "selected" : ""}`}
                         data-message-id={source.id}
                         tabIndex={-1}
+                        selectable={!source.streaming}
+                        selectionActive={selectionActive}
+                        selected={selectedMessageIds.has(source.id)}
+                        onEnterSelection={() => enterSelection(source.id)}
+                        onToggleSelection={() => toggleSelection(source.id)}
                       >
-                        <SwipeToReply disabled={!canReply} onReply={() => setReplyTarget(source)}>
+                        <SwipeToReply disabled={!canReply || selectionActive} onReply={() => setReplyTarget(source)}>
                           <ChatMessageView
                             message={message}
                             onCopyToolDetail={copyToolDetail}
@@ -1032,7 +1114,7 @@ function MobileNativeApp() {
                             }}
                           />
                         </SwipeToReply>
-                      </div>
+                      </MessageSelectionTarget>
                     </React.Fragment>
                   );
                 })
@@ -1045,7 +1127,7 @@ function MobileNativeApp() {
               streaming={snapshot.composer.isStreaming}
               projectionGeneration={snapshot.projectionGeneration}
               resyncing={snapshot.composer.isResyncing}
-              suspended={searchOpen}
+              suspended={searchOpen || selectionActive}
               forceScrollToken={sendScrollRequest}
               readingPosition={snapshot.readingPosition}
               messageElementsRef={messageElementsRef}
@@ -1071,7 +1153,7 @@ function MobileNativeApp() {
               onPrevious={() => moveSearch(-1)}
               onNext={() => moveSearch(1)}
             />
-          ) : (
+          ) : selectionActive ? null : (
             <MobileComposer
               snapshot={snapshot}
               input={input}
@@ -1156,11 +1238,17 @@ function MobileTopBar({
   toggleRef,
   searchButtonRef,
   searchInputRef,
+  selectionCount,
+  canCopySelection,
+  canReplyToSelection,
   onToggleDrawer,
   onOpenSearch,
   onCloseSearch,
   onSearchQuery,
   onSearchSubmit,
+  onCloseSelection,
+  onCopySelection,
+  onReplyToSelection,
 }: {
   status: ConnectionStatus;
   label: string;
@@ -1171,12 +1259,38 @@ function MobileTopBar({
   toggleRef: React.RefObject<HTMLButtonElement | null>;
   searchButtonRef: React.RefObject<HTMLButtonElement | null>;
   searchInputRef: React.RefObject<HTMLInputElement | null>;
+  selectionCount: number;
+  canCopySelection: boolean;
+  canReplyToSelection: boolean;
   onToggleDrawer: () => void;
   onOpenSearch: () => void;
   onCloseSearch: () => void;
   onSearchQuery: (query: string) => void;
   onSearchSubmit: () => void;
+  onCloseSelection: () => void;
+  onCopySelection: () => void;
+  onReplyToSelection: () => void;
 }) {
+  if (selectionCount > 0) {
+    return (
+      <header className="mobile-topbar selection-mode">
+        <button className="mobile-icon-button" type="button" onClick={onCloseSelection} aria-label="退出消息选择">
+          <X size={24} />
+        </button>
+        <strong aria-live="polite">已选择 {selectionCount} 条</strong>
+        {canReplyToSelection ? (
+          <button className="mobile-icon-button" type="button" onClick={onReplyToSelection} aria-label="引用选中的消息">
+            <Reply size={21} />
+          </button>
+        ) : null}
+        {canCopySelection ? (
+          <button className="mobile-icon-button" type="button" onClick={onCopySelection} aria-label="复制选中的消息">
+            <Copy size={21} />
+          </button>
+        ) : null}
+      </header>
+    );
+  }
   if (searchOpen) {
     return (
       <header className="mobile-topbar search-mode">
@@ -1884,12 +1998,161 @@ function MessageMeta({
   );
 }
 
+const MessageSelectionTarget = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement> & {
+    selectable: boolean;
+    selectionActive: boolean;
+    selected: boolean;
+    onEnterSelection: () => void;
+    onToggleSelection: () => void;
+  }
+>(function MessageSelectionTarget({
+  selectable,
+  selectionActive,
+  selected,
+  onEnterSelection,
+  onToggleSelection,
+  children,
+  ...props
+}, ref) {
+  const timerRef = useRef<number | null>(null);
+  const suppressClickTimerRef = useRef<number | null>(null);
+  const capturedPointerRef = useRef<number | null>(null);
+  const originRef = useRef({ x: 0, y: 0 });
+  const suppressClickRef = useRef(false);
+  const cancelLongPress = () => {
+    if (timerRef.current === null) return;
+    window.clearTimeout(timerRef.current);
+    timerRef.current = null;
+  };
+  const suppressNextClick = () => {
+    suppressClickRef.current = true;
+    if (suppressClickTimerRef.current !== null) window.clearTimeout(suppressClickTimerRef.current);
+    suppressClickTimerRef.current = window.setTimeout(() => {
+      suppressClickRef.current = false;
+      suppressClickTimerRef.current = null;
+    }, 700);
+  };
+  useEffect(() => () => {
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    if (suppressClickTimerRef.current !== null) window.clearTimeout(suppressClickTimerRef.current);
+  }, []);
+  const startLongPress = (clientX: number, clientY: number) => {
+    suppressClickRef.current = false;
+    originRef.current = { x: clientX, y: clientY };
+    cancelLongPress();
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = null;
+      suppressNextClick();
+      window.AkashicNative?.performActionHaptic();
+      onEnterSelection();
+    }, 420);
+  };
+  const cancelMovedLongPress = (clientX: number, clientY: number) => {
+    if (timerRef.current === null) return;
+    if (Math.hypot(clientX - originRef.current.x, clientY - originRef.current.y) > 9) cancelLongPress();
+  };
+
+  return (
+    <div
+      {...props}
+      ref={ref}
+      role={selectionActive && selectable ? "checkbox" : undefined}
+      aria-checked={selectionActive && selectable ? selected : undefined}
+      aria-label={selectionActive && selectable ? `${selected ? "取消选择" : "选择"}此消息` : undefined}
+      tabIndex={selectionActive && selectable ? 0 : props.tabIndex}
+      onPointerDown={(event) => {
+        if (!selectable || selectionActive || event.pointerType === "touch" || event.button !== 0 || isMessageInteractiveTarget(event.target)) return;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        capturedPointerRef.current = event.pointerId;
+        startLongPress(event.clientX, event.clientY);
+      }}
+      onPointerMove={(event) => {
+        if (event.pointerType !== "touch") cancelMovedLongPress(event.clientX, event.clientY);
+      }}
+      onPointerUp={(event) => {
+        cancelLongPress();
+        if (capturedPointerRef.current === event.pointerId && event.currentTarget.hasPointerCapture(event.pointerId)) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+        capturedPointerRef.current = null;
+      }}
+      onPointerCancel={(event) => {
+        cancelLongPress();
+        if (capturedPointerRef.current === event.pointerId && event.currentTarget.hasPointerCapture(event.pointerId)) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+        capturedPointerRef.current = null;
+      }}
+      onTouchStart={(event) => {
+        if (!selectable || selectionActive || event.touches.length !== 1 || isMessageInteractiveTarget(event.target)) return;
+        const touch = event.touches[0];
+        startLongPress(touch.clientX, touch.clientY);
+      }}
+      onTouchMove={(event) => {
+        if (event.touches.length !== 1) {
+          cancelLongPress();
+          return;
+        }
+        const touch = event.touches[0];
+        cancelMovedLongPress(touch.clientX, touch.clientY);
+      }}
+      onTouchEnd={cancelLongPress}
+      onTouchCancel={cancelLongPress}
+      onContextMenu={(event) => {
+        if (!selectable || isMessageInteractiveTarget(event.target)) return;
+        event.preventDefault();
+        if (suppressClickRef.current) return;
+        if (!selectionActive) {
+          suppressNextClick();
+          window.AkashicNative?.performActionHaptic();
+          onEnterSelection();
+        }
+      }}
+      onClickCapture={(event) => {
+        if (suppressClickRef.current) {
+          suppressClickRef.current = false;
+          if (suppressClickTimerRef.current !== null) {
+            window.clearTimeout(suppressClickTimerRef.current);
+            suppressClickTimerRef.current = null;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        if (!selectionActive || !selectable) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onToggleSelection();
+      }}
+      onKeyDown={(event) => {
+        if (!selectionActive || !selectable || (event.key !== "Enter" && event.key !== " ")) return;
+        event.preventDefault();
+        onToggleSelection();
+      }}
+    >
+      <div className="message-selection-content" inert={selectionActive ? true : undefined}>
+        {children}
+      </div>
+    </div>
+  );
+});
+
+function isMessageInteractiveTarget(target: EventTarget | null) {
+  return target instanceof Element && target.closest("button, a, input, textarea, [role='button']") !== null;
+}
+
 function SwipeToReply({ disabled, onReply, children }: { disabled: boolean; onReply: () => void; children: ReactNode }) {
   const x = useMotionValue(0);
   const hapticFired = useRef(false);
   const reduceMotion = useReducedMotion();
+  const disabledRef = useRef(disabled);
   const iconOpacity = useTransform(x, [-80, -50, -12, 0], [1, 1, 0.12, 0]);
   const iconScale = useTransform(x, [-80, -50, 0], [1, 1, 0.72]);
+  useEffect(() => {
+    disabledRef.current = disabled;
+  }, [disabled]);
 
   useMotionValueEvent(x, "change", (value) => {
     if (value > -50) {
@@ -1918,7 +2181,7 @@ function SwipeToReply({ disabled, onReply, children }: { disabled: boolean; onRe
           hapticFired.current = false;
         }}
         onDragEnd={() => {
-          const shouldReply = x.get() <= -50;
+          const shouldReply = !disabledRef.current && x.get() <= -50;
           if (shouldReply) onReply();
           animate(x, 0, reduceMotion ? { duration: 0 } : {
             type: "spring",

@@ -218,6 +218,29 @@ button {
   padding-inline-end: 12px;
 }
 
+.mobile-topbar.selection-mode {
+  gap: 4px;
+  color: var(--m-on-surface);
+  background: var(--m-surface-container-high);
+}
+
+.mobile-topbar.selection-mode > strong {
+  min-width: 0;
+  flex: 1;
+  padding-inline: 8px;
+  overflow: hidden;
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-topbar.selection-mode > .mobile-icon-button:not(:first-child) {
+  color: var(--m-primary);
+}
+
 .mobile-main-content {
   display: contents;
 }
@@ -590,6 +613,10 @@ button {
   padding-block-end: calc(78px + env(safe-area-inset-bottom));
 }
 
+.mobile-main-content.selecting .mobile-conversation {
+  padding-block-end: calc(30px + env(safe-area-inset-bottom));
+}
+
 .mobile-main-content.queueing .mobile-conversation {
   padding-block-end: calc(276px + env(safe-area-inset-bottom));
 }
@@ -834,6 +861,16 @@ button {
   position: relative;
   isolation: isolate;
   outline: none;
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+
+.mobile-message-anchor .agent-content {
+  user-select: none;
+}
+
+.message-selection-content {
+  width: 100%;
 }
 
 .mobile-message-anchor::before {
@@ -850,6 +887,22 @@ button {
 .mobile-message-anchor.search-target::before {
   background: color-mix(in oklch, var(--m-primary) 10%, transparent);
   animation: message-search-target 1s cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+.mobile-message-anchor.selected::before {
+  inset: -14px -20px;
+  border-radius: 0;
+  background: color-mix(in oklch, var(--m-primary) 11%, transparent);
+  transition-duration: 150ms;
+}
+
+.mobile-message-anchor[role="checkbox"] {
+  cursor: default;
+}
+
+.mobile-message-anchor[role="checkbox"]:focus-visible::before {
+  outline: 2px solid var(--m-primary);
+  outline-offset: 2px;
 }
 
 .message-date-divider {
@@ -1456,6 +1509,10 @@ button.tool-step-summary:active {
 
 .mobile-main-content.searching .mobile-scroll-button {
   bottom: calc(78px + env(safe-area-inset-bottom));
+}
+
+.mobile-main-content.selecting .mobile-scroll-button {
+  bottom: calc(18px + env(safe-area-inset-bottom));
 }
 
 .mobile-scroll-button:active {

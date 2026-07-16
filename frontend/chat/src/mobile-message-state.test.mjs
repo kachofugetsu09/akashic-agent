@@ -5,11 +5,85 @@ import {
   advanceMobileProjectionBaseline,
   advanceMobileUnreadTracking,
   allMobileAttachmentsReady,
+  formatMobileSelectionCopyText,
   isMobileImageViewerHistoryState,
+  mobileMessageCanReply,
+  reconcileMobileMessageSelection,
   reconcileAssistantMessageIds,
+  selectableMobileMessages,
   updateMobileUnreadMessageIds,
   updateMobileSearchIndex,
 } from "./mobile-message-state.ts";
+
+function selectableMessage(id, role, content, streaming = false) {
+  return {
+    id,
+    sessionId: "mobile-current",
+    role,
+    content,
+    streaming,
+    replyable: true,
+    createdAt: 1_000,
+    attachments: [],
+  };
+}
+
+test("message selection preserves conversation order and excludes streaming turns", () => {
+  const first = selectableMessage("first", "user", "第一条");
+  const streaming = selectableMessage("streaming", "assistant", "还在生成", true);
+  const last = selectableMessage("last", "assistant", "最后一条");
+
+  const selected = selectableMobileMessages(
+    [first, streaming, last],
+    new Set(["last", "streaming", "first"]),
+  );
+
+  assert.deepEqual(selected.map((item) => item.id), ["first", "last"]);
+});
+
+test("message selection drops vanished and newly streaming identities", () => {
+  const selected = new Set(["kept", "vanished", "became-streaming"]);
+  const reconciled = reconcileMobileMessageSelection(selected, [
+    selectableMessage("kept", "user", "保留"),
+    selectableMessage("became-streaming", "assistant", "变化中", true),
+  ]);
+
+  assert.deepEqual([...reconciled], ["kept"]);
+});
+
+test("single selection copies exact body and attachment names without transcript labels", () => {
+  const source = {
+    ...selectableMessage("one", "user", "  正文  "),
+    attachments: [{ filename: "report.csv" }],
+  };
+
+  assert.equal(
+    formatMobileSelectionCopyText([source], () => "不应出现"),
+    "正文\n[附件] report.csv",
+  );
+});
+
+test("multiple selection copies only copyable messages in conversation order", () => {
+  const messages = [
+    selectableMessage("first", "user", "问题"),
+    selectableMessage("empty", "assistant", ""),
+    selectableMessage("last", "assistant", "回答"),
+  ];
+
+  assert.equal(
+    formatMobileSelectionCopyText(messages, () => "昨天 11:02"),
+    "你 · 昨天 11:02\n问题\n\nAkashic · 昨天 11:02\n回答",
+  );
+});
+
+test("reply actions only target messages owned by the selected mobile session", () => {
+  const current = selectableMessage("current", "assistant", "当前会话");
+  const historical = { ...current, id: "historical", sessionId: "mobile-previous" };
+
+  assert.equal(mobileMessageCanReply(current, "mobile-current"), true);
+  assert.equal(mobileMessageCanReply(historical, "mobile-current"), false);
+  assert.equal(mobileMessageCanReply({ ...current, replyable: false }, "mobile-current"), false);
+});
 
 test("composer waits until every attachment is ready", () => {
   assert.equal(allMobileAttachmentsReady([]), true);
