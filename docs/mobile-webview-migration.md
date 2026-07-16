@@ -192,3 +192,16 @@ Mobile Web 插件 RPC 现在沿渲染槽位显式传递 `session_id` 与活动 `
 - APK：`0.7.7`（versionCode 16），8,260,170 bytes，SHA-256 `4dbcba376dd0c63ca49c5d9d389c168af5f06632efd43b44c254d4d75b6c0cde`
 - 私有发布：<https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.7>
 - 真机验收：Pixel 7 覆盖安装成功并保留应用数据，系统报告 versionCode 16 / versionName 0.7.7，MainActivity 正常前台运行且 logcat 无 FATAL；正式 Pixel 9 的缺号 cursor 已通过 reset 推进，durable inbox 清零并停止重连风暴
+
+### 0.7.8 会话搜索、未读锚点与工具详情
+
+会话顶栏新增本地搜索，支持从用户正文、Agent 回答和附件名跳转前后结果；流式输出期间保持当前阅读位置。离开底部后按逻辑 Agent turn 记录未读，首次点击回到底部动作会先定位首条未读，再回到真正底部。普通重连保留未读和滚动语义，只有明确的破坏性投影重建才建立新的已读基线。
+
+思考时间线内的工具节点可原位展开最终参数、结果摘要或失败内容。实时耗时由服务端 monotonic clock 计算，不使用手机收帧间隔；历史没有可靠单工具时间戳时省略耗时。参数投影会隐藏常见敏感键、Authorization/Bearer、环境变量赋值和 argv 凭据，并按结构与 UTF-8 字节收敛到单调用 8 KiB，避免参数随完整会话热快照反复放大。
+
+- 独立 Review：经过 UTF-8 帧预算、凭据字符串/argv、最终参数、服务端耗时、非成功状态、旧桌面历史、WebView 快照性能和无障碍语义复核，最终 no findings
+- 验证：mobile channel/gateway `40 passed`、Pyright 零错误、Mobile Web 状态 `11 passed`、TypeScript、ESLint、Android 定向 JVM 与 23 条不依赖外部 pairing 参数的真机 instrumentation 通过
+- 构建：release unit、Lint、R8、assemble 与 APK v2 签名通过；签名证书 SHA-256 `49bf31ed5c54c642d6f4fdd30a5310a8cb70e67666ad25d711b5f0e084e240bc`
+- APK：`0.7.8`（versionCode 17），8,281,638 bytes，SHA-256 `2d8b3f6b64eaa955a4034885153fb0070e0a5d8dab90949f2b3f4ad3bf05c45e`
+- 私有发布：<https://github.com/kachofugetsu09/akashic-mobile-releases/releases/tag/v0.7.8>
+- 真机验收：Pixel 7 无损覆盖安装并保留配对和历史；系统报告 versionCode 17 / versionName 0.7.8，手机 `base.apk` 与构建产物哈希一致。MainActivity 正常前台运行，工具详情可展开，logcat 无 FATAL、WebView render crash、event gap、4406 或协议错误

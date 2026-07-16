@@ -305,6 +305,7 @@ fallback 主色文字/页面对比为 `4.52:1`，on-primary-container/primary-co
 - `npm run typecheck && npm run lint`：通过；移动快照边界拒绝负数、非安全整数工具耗时和非对象参数。
 - `ANDROID_HOME="$HOME/Android/Sdk" ./gradlew :app:testDebugUnitTest --tests com.akashic.mobile.data.local.StoredToolBlockTest --tests com.akashic.mobile.ui.web.MobileWebSnapshotTest`：通过；覆盖旧工具块兼容、安全参数/服务端耗时解码和 WebView 快照字段。
 - 通过 release 签名注入构建 debug + androidTest APK；Pixel 7 上 `LocalDeliveryStoreTest` 为 `19/19`，再运行所有不依赖外部 pairing 参数的 Room migration、store 与 keystore instrumentation 为 `23/23`。另 2 条 `IsolatedGatewayDeviceTest` 需要显式 `pairingOfferBase64`、`historySessionId`，未把缺少外部参数的失败伪装成应用回归。
+- 最终 `0.7.8 (17)` 重新执行 `clients/android/scripts/build-release.sh`：release unit、Lint、R8、assemble 和 APK v2 签名通过；66 个任务中 33 个真实执行。APK 为 8,281,638 bytes，SHA-256 `2d8b3f6b64eaa955a4034885153fb0070e0a5d8dab90949f2b3f4ad3bf05c45e`，不是复用修复前产物。
 - kill-ai-slop 扫描 `frontend/chat/src` 为 36 个文件、9 组、52 个命中；新增两处命中均是工具名与参数值的语义等宽字体。本组没有新增渐变、玻璃拟态、发光点、悬浮详情卡或胶囊状态。
 
 ### 独立 Review
@@ -319,6 +320,7 @@ fallback 主色文字/页面对比为 `4.52:1`，on-primary-container/primary-co
 - 真实 `shell` 执行 `sleep 3 && echo CYCLE3FINAL`：服务端完成事件给出 `duration_ms=3000+`，完成行显示 `完成 · 3s`，展开后显示 command 和结构化结果摘要；截图为 `/tmp/pixel7-cycle3-server-duration-trace.png`、`/tmp/pixel7-cycle3-server-duration-expanded.png`。
 - 真实 `shell` 执行 8 秒期间，菱形、扳手、`运行中`和 chevron 同时点亮亮紫；截图为 `/tmp/pixel7-cycle3-tool-running-row.png`。
 - 真机确认“清理缓存并同步”后，客户端重新发送 `session.list` 和 `history.get`；无 event gap、4406、协议反序列化或 FATAL。历史工具仍能展开 command 与 result，但按契约不伪造单工具耗时；截图为 `/tmp/pixel7-cycle3-final-resync-done.png`、`/tmp/pixel7-cycle3-final-resync-expanded.png`。
+- 最终签名 `0.7.8` 无损覆盖安装到 Pixel 7，系统报告 versionCode 17 / versionName 0.7.8；手机内 `base.apk` 与发布产物 SHA-256 完全一致。最终工具展开截图为 `/tmp/pixel7-v0.7.8-tool-details-open.png`，logcat 无 FATAL、RenderProcessGone、event gap、4406 或协议校验错误。
 
 ### 已知边界
 
