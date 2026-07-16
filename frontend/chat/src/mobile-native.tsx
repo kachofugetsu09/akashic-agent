@@ -921,6 +921,11 @@ function MobileNativeApp() {
           }}
           onClose={closeDrawer}
         />
+        {pluginLoadError ? (
+          <div className="mobile-plugin-load-error" role="status">
+            插件界面暂不可用 · {pluginLoadError}
+          </div>
+        ) : null}
 
         {surface.kind === "plugins" ? (
           <MobilePluginDirectory
@@ -933,11 +938,6 @@ function MobileNativeApp() {
           </section>
         ) : (
         <div className={`mobile-main-content ${replyTarget ? "replying" : ""} ${searchOpen ? "searching" : ""} ${queueOpen && snapshot.composer.pendingMessages.length > 1 ? "queueing" : ""}`} inert={drawerOpen ? true : undefined}>
-          {pluginLoadError ? (
-            <div className="mobile-plugin-load-error" role="status">
-              插件界面暂不可用 · {pluginLoadError}
-            </div>
-          ) : null}
           <Conversation key={snapshot.selectedSessionId ?? "empty"} className="mobile-conversation">
             <ConversationContent className="mobile-conversation__content">
               {messages.length === 0 ? (
