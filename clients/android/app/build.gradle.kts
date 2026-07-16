@@ -64,6 +64,8 @@ android {
 
     buildTypes {
         debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
             buildConfigField("boolean", "ALLOW_INSECURE_WS", "true")
         }
         release {
