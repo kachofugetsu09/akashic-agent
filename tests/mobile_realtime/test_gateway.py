@@ -1495,11 +1495,12 @@ def test_connection_control_lock_timeout_removes_stalled_connection(
 
         assert device_id not in runtime._connections
         assert socket.sent_text == []
-        send_lock.release()
         await asyncio.wait_for(socket.close_started.wait(), timeout=1)
         assert socket.close_calls == [
             (4408, "连接控制帧投递失败，请重新连接恢复"),
         ]
+        assert send_lock.locked()
+        send_lock.release()
         runtime.close()
 
     asyncio.run(scenario())

@@ -792,6 +792,15 @@ class MobileGatewayRuntime:
         try:
             async with asyncio.timeout(_CONNECTION_CONTROL_LOCK_TIMEOUT_SECONDS):
                 _ = await connection.send_lock.acquire()
+        except TimeoutError as error:
+            await self._evict_failed_control_connection(
+                device_id=device_id,
+                connection=connection,
+                error=error,
+                force_close=True,
+            )
+            return
+        try:
             try:
                 async with self._delivery_lock:
                     if self._connections.get(device_id) is not connection:
@@ -801,25 +810,41 @@ class MobileGatewayRuntime:
             finally:
                 connection.send_lock.release()
         except (WebSocketDisconnect, RuntimeError, OSError, TimeoutError) as error:
-            logger.warning(
-                "mobile 连接控制帧投递失败: device=%s error=%s",
-                device_id,
-                error,
+            await self._evict_failed_control_connection(
+                device_id=device_id,
+                connection=connection,
+                error=error,
+                force_close=False,
             )
-            removed = False
-            async with self._delivery_lock:
-                if self._connections.get(device_id) is connection:
-                    _ = self._connections.pop(device_id)
-                    removed = True
-            if removed:
-                _ = asyncio.create_task(
-                    self._close_connection(
-                        device_id,
-                        connection,
-                        code=_CLOSE_SLOW_CONSUMER,
-                        reason="连接控制帧投递失败，请重新连接恢复",
-                    )
-                )
+
+    async def _evict_failed_control_connection(
+        self,
+        *,
+        device_id: str,
+        connection: ActiveMobileConnection,
+        error: BaseException,
+        force_close: bool,
+    ) -> None:
+        """移除控制帧投递失败的当前连接，并触发有界清退。"""
+
+        logger.warning(
+            "mobile 连接控制帧投递失败: device=%s error=%s",
+            device_id,
+            error,
+        )
+        async with self._delivery_lock:
+            if self._connections.get(device_id) is not connection:
+                return
+            _ = self._connections.pop(device_id)
+        _ = asyncio.create_task(
+            self._close_connection(
+                device_id,
+                connection,
+                code=_CLOSE_SLOW_CONSUMER,
+                reason="连接控制帧投递失败，请重新连接恢复",
+                force=force_close,
+            )
+        )
 
     def _schedule_delivery_locked(
         self,
@@ -901,10 +926,14 @@ class MobileGatewayRuntime:
         *,
         code: int,
         reason: str,
+        force: bool = False,
     ) -> None:
-        """在连接私有写锁内关闭已退出活动表的 WebSocket。"""
+        """关闭已退出活动表的 WebSocket，锁失活时强制中断。"""
 
         try:
+            if force:
+                await connection.websocket.close(code=code, reason=reason)
+                return
             async with connection.send_lock:
                 await connection.websocket.close(
                     code=code,
