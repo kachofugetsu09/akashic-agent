@@ -176,6 +176,7 @@ class MainActivity : ComponentActivity() {
                             onPluginUiCall = viewModel::callPluginUi,
                             onPluginUiResponsesAcknowledged = viewModel::acknowledgePluginUiResponses,
                             onStop = viewModel::stopCurrentTurn,
+                            onBackAtRoot = ::finish,
                             modifier = Modifier.fillMaxSize(),
                         )
                     } else {

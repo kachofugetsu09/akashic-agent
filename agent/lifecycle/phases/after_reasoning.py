@@ -64,6 +64,8 @@ class _BuildAfterReasoningCtxModule:
         input = frame.input
         msg = input.state.msg
         turn_result = input.turn_result
+        inbound_metadata = dict(msg.metadata or {})
+        inbound_metadata.pop("mobile_attention", None)
         raw_reply = turn_result.reply
         if raw_reply is None:
             raw_reply = "I've completed processing but have no response to give."
@@ -82,12 +84,17 @@ class _BuildAfterReasoningCtxModule:
             streamed=turn_result.streamed,
             context_retry=dict(turn_result.context_retry),
             outbound_metadata={
-                **(msg.metadata or {}),
+                **inbound_metadata,
                 **input.state.extra_metadata,
                 "tools_used": list(turn_result.tools_used),
                 "tool_chain": list(tool_chain),
                 "context_retry": dict(turn_result.context_retry),
                 "streamed_reply": turn_result.streamed,
+                **(
+                    {"mobile_attention": turn_result.mobile_attention}
+                    if turn_result.mobile_attention is not None
+                    else {}
+                ),
             },
         )
         return frame

@@ -7,7 +7,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, cast
 
 import agent.core.passive_support as support
 from agent.control.context import current_turn_id
@@ -1218,6 +1218,9 @@ class DefaultReasoner(Reasoner):
                     retry_trace["llm_context_frame"] = llm_context_frame
                 retry_trace["react_stats"] = dict(result.metadata.get("react_stats") or {})
                 raw_model_state = result.metadata.get("model_state")
+                raw_mobile_attention = result.metadata.get("mobile_attention")
+                if raw_mobile_attention not in (None, "confirmation"):
+                    raise RuntimeError("reasoner 返回了无效 mobile_attention")
                 return TurnRunResult(
                     reply=result.reply,
                     tools_used=tools_used,
@@ -1230,6 +1233,10 @@ class DefaultReasoner(Reasoner):
                         cast(dict[str, object], raw_model_state)
                         if isinstance(raw_model_state, dict)
                         else None
+                    ),
+                    mobile_attention=cast(
+                        Literal["confirmation"] | None,
+                        raw_mobile_attention,
                     ),
                 )
             except ContentSafetyError:
@@ -1292,6 +1299,7 @@ class DefaultReasoner(Reasoner):
         tools_unlocked: list[str] = []
         tool_chain: list[dict[str, Any]] = []
         outbound_media: list[str] = []
+        mobile_attention: Literal["confirmation"] | None = None
         # 2. 初始化本轮可见工具集合。
         visible_names: set[str] | None = None
         visible_order: list[str] | None = None
@@ -1358,6 +1366,7 @@ class DefaultReasoner(Reasoner):
                     cache_seen=react_cache_seen,
                     tools_unlocked=tools_unlocked,
                     model_usages=react_usages,
+                    mobile_attention=mobile_attention,
                 )
             # 4. 调用 LLM，带上当前可见工具 schema。
             react_input_samples.append(step_ctx.input_tokens_estimate)
@@ -1544,6 +1553,7 @@ class DefaultReasoner(Reasoner):
                                 cache_seen=react_cache_seen,
                                 tools_unlocked=tools_unlocked,
                                 model_usages=react_usages,
+                                mobile_attention=mobile_attention,
                             )
                         logger.warning(
                             "[工具未解锁] LLM 尝试调用 '%s'，但该工具 schema 不可见，引导模型先 tool_search",
@@ -1643,6 +1653,10 @@ class DefaultReasoner(Reasoner):
                         status=exec_result.status,
                     ))
                     normalized = normalize_tool_result(result)
+                    if normalized.mobile_attention is not None:
+                        if exec_result.status != "success":
+                            raise RuntimeError("失败工具不能声明 mobile_attention")
+                        mobile_attention = normalized.mobile_attention
                     _result_preview = support.log_preview(normalized.preview())
                     _result_len = len(normalized.preview() or "")
                     await self._observe_tool_call_completed(
@@ -1768,6 +1782,7 @@ class DefaultReasoner(Reasoner):
                             cache_seen=react_cache_seen,
                             tools_unlocked=tools_unlocked,
                             model_usages=react_usages,
+                            mobile_attention=mobile_attention,
                         )
 
                 # 7. 本轮工具执行完后，记录 tool_chain。
@@ -1820,6 +1835,7 @@ class DefaultReasoner(Reasoner):
                         cache_seen=react_cache_seen,
                         tools_unlocked=tools_unlocked,
                         model_usages=react_usages,
+                        mobile_attention=mobile_attention,
                     )
                 continue
 
@@ -1895,6 +1911,7 @@ class DefaultReasoner(Reasoner):
                 cache_seen=react_cache_seen,
                 tools_unlocked=tools_unlocked,
                 model_usages=react_usages,
+                mobile_attention=mobile_attention,
                 model_state=(
                     cast(dict[str, object], response.provider_fields["model_state"])
                     if isinstance(response.provider_fields.get("model_state"), dict)
@@ -1928,6 +1945,7 @@ class DefaultReasoner(Reasoner):
             cache_seen=react_cache_seen,
             tools_unlocked=tools_unlocked,
             model_usages=react_usages,
+            mobile_attention=mobile_attention,
         )
 
     async def _observe_tool_call_started(
@@ -2049,6 +2067,7 @@ class DefaultReasoner(Reasoner):
         tools_unlocked: list[str] | None = None,
         model_state: dict[str, object] | None = None,
         model_usages: list[ModelUsage] | None = None,
+        mobile_attention: Literal["confirmation"] | None = None,
     ) -> ReasonerResult:
         # 1. 先把 tool_chain 扁平化成 invocations。
         invocations: list[LLMToolCall] = []
@@ -2102,6 +2121,7 @@ class DefaultReasoner(Reasoner):
             "visible_names": set(visible_names) if visible_names is not None else None,
             "react_stats": react_stats,
             "model_state": model_state,
+            "mobile_attention": mobile_attention,
         }
 
         # 3. 最后返回标准 ReasonerResult。

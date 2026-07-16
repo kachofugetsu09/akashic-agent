@@ -87,6 +87,7 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
                 tool_chain=[{"text": "done", "calls": []}],
                 thinking="think",
                 context_retry={"selected_plan": "full"},
+                mobile_attention="confirmation",
             )
         ),
     )
@@ -120,6 +121,7 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
     out = await agent_core.process(msg, "telegram:123")
 
     assert out.content == "final <meme:shy>\n§cited:[mem_1]§"
+    assert out.metadata["mobile_attention"] == "confirmation"
     assert order == ["prepare", "tool_context", "render", "run"]
     assert context_store.prepare.await_args.kwargs["session_key"] == "telegram:123"
     render_request = context.render.call_args.args[0]
@@ -181,11 +183,18 @@ async def test_agent_core_process_coerces_empty_reply_before_commit():
             ),
         )
     )
-    msg = InboundMessage(channel="cli", sender="hua", chat_id="1", content="hi")
+    msg = InboundMessage(
+        channel="cli",
+        sender="hua",
+        chat_id="1",
+        content="hi",
+        metadata={"mobile_attention": "confirmation"},
+    )
 
     out = await agent_core.process(msg, "cli:1")
 
     assert "no response to give" in out.content
+    assert "mobile_attention" not in out.metadata
 
 
 @pytest.mark.asyncio

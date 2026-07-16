@@ -5,7 +5,7 @@ import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from agent.lifecycle.types import PromptRenderInput, PromptRenderResult
 
@@ -188,6 +188,7 @@ class TurnRunResult:
     streamed: bool = False
     context_retry: dict[str, object] = field(default_factory=dict[str, object])
     model_state: dict[str, object] | None = None
+    mobile_attention: Literal["confirmation"] | None = None
 
 
 class AgentLoopRunner(Protocol):

@@ -16,6 +16,7 @@ import android.webkit.ConsoleMessage
 import android.util.Log
 import android.view.HapticFeedbackConstants
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.annotation.Keep
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
@@ -92,6 +93,7 @@ fun MobileWebChat(
     onPluginUiCall: (String, String?, String?, String, String, String) -> Unit,
     onPluginUiResponsesAcknowledged: (Set<String>) -> Unit,
     onStop: () -> Unit,
+    onBackAtRoot: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val latestState by rememberUpdatedState(state)
@@ -223,6 +225,19 @@ fun MobileWebChat(
                     modifier = Modifier.padding(top = 8.dp),
                 )
                 TextButton(onClick = { webView?.reload() }) { Text("重新加载") }
+            }
+        }
+    }
+
+    BackHandler {
+        val current = webView
+        if (current == null) {
+            onBackAtRoot()
+        } else {
+            current.evaluateJavascript(
+                "window.AkashicMobile?.navigateBack?.() ?? false",
+            ) { result ->
+                if (!mobileWebBackHandled(result)) current.post(onBackAtRoot)
             }
         }
     }
@@ -510,6 +525,8 @@ private class MobileWebClient(
 }
 
 internal enum class MobileNavigationAction { ALLOW_INTERNAL, OPEN_EXTERNAL, BLOCK }
+
+internal fun mobileWebBackHandled(javascriptResult: String?): Boolean = javascriptResult == "true"
 
 /** 只允许应用主页面留在 WebView，普通网页交给系统浏览器。 */
 internal fun mobileNavigationAction(url: String, isMainFrame: Boolean): MobileNavigationAction {

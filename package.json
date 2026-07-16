@@ -14,7 +14,7 @@
     "build:watch": "node scripts/build-plugins.mjs --watch",
     "dev": "vite --config frontend/dashboard/vite.config.ts",
     "lint": "eslint \"frontend/dashboard/src/**/*.{ts,tsx}\" \"frontend/chat/src/**/*.{ts,tsx}\" \"plugins/**/*.ts\" \"types/**/*.d.ts\"",
-    "test:mobile-web-state": "node --experimental-strip-types --test frontend/chat/src/mobile-message-state.test.mjs",
+    "test:mobile-web-state": "node --experimental-strip-types --test frontend/chat/src/mobile-message-state.test.mjs frontend/chat/src/mobile-surface-history.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

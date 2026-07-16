@@ -14,6 +14,7 @@ META_TOOLBOX_GROUPS: tuple[MetaToolGroup, ...] = (
         title="Meta",
         tools=(
             ("tool_search", "搜索并解锁其他工具"),
+            ("request_user_confirmation", "标记本轮必须等待用户明确确认"),
         ),
     ),
     MetaToolGroup(

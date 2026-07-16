@@ -1518,6 +1518,7 @@ async def test_stream_deltas_batch_at_50ms_and_flush_before_tool_and_final(
             chat_id=session_id.removeprefix("mobile:"),
             content="完成",
             thinking="思考中",
+            metadata={"mobile_attention": "confirmation"},
             control_turn_id=turn_id,
         )
     )
@@ -1534,10 +1535,12 @@ async def test_stream_deltas_batch_at_50ms_and_flush_before_tool_and_final(
     tool_started = cast(dict[str, object], runtime.events[3]["payload"])
     tool_completed = cast(dict[str, object], runtime.events[4]["payload"])
     second_thinking = cast(dict[str, object], runtime.events[5]["payload"])
+    final_metadata = cast(dict[str, object], runtime.events[6]["payload"])["metadata"]
     assert tool_started["block_id"] == tool_completed["block_id"]
     assert tool_started["ordinal"] == tool_completed["ordinal"] == 1
     assert second_thinking["ordinal"] == 2
     assert second_thinking["block_id"] != first_thinking["block_id"]
+    assert cast(dict[str, object], final_metadata)["mobile_attention"] == "confirmation"
     await channel.stop()
     storage.close()
 

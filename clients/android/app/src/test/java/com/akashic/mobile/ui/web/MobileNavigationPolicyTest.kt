@@ -5,6 +5,13 @@ import org.junit.Test
 
 class MobileNavigationPolicyTest {
     @Test
+    fun androidBackOnlyStaysInActivityWhenWebSurfaceConsumedIt() {
+        assertEquals(true, mobileWebBackHandled("true"))
+        assertEquals(false, mobileWebBackHandled("false"))
+        assertEquals(false, mobileWebBackHandled(null))
+    }
+
+    @Test
     fun onlyAllowsBundledEntryPageInsideWebView() {
         assertEquals(
             MobileNavigationAction.ALLOW_INTERNAL,

@@ -69,6 +69,12 @@ import {
   type MobileSearchIndexEntry,
 } from "./mobile-message-state";
 import type { AgentBlock, ChatMessage } from "./main";
+import {
+  pushMobileSurface,
+  readMobileSurfaceHistoryState,
+  replaceMobileSurface,
+  type MobileSurface,
+} from "./mobile-surface-history";
 import "./mobile-native.css";
 
 type ConnectionStatus = "connecting" | "ready" | "degraded" | "reconnecting" | "disconnected";
@@ -157,11 +163,6 @@ interface MobilePendingMessage {
   preview: string;
   createdAt: number;
 }
-
-type MobileSurface =
-  | { kind: "chat" }
-  | { kind: "plugins" }
-  | { kind: "dashboard"; pluginId: string };
 
 export interface MobileSnapshot {
   protocolVersion: 3;
@@ -495,6 +496,7 @@ declare global {
       receiveSnapshot(snapshot: unknown): void;
       receivePluginAssets(assets: MobilePluginAsset[]): void;
       receiveSendResult(requestId: string, accepted: boolean): void;
+      navigateBack(): boolean;
     };
   }
 }
@@ -535,6 +537,7 @@ function MobileNativeApp() {
   const previousSessionIdRef = useRef<string | undefined>(undefined);
   const handledNavigationTargetRef = useRef<string | undefined>(undefined);
   const pendingSendRequestRef = useRef<string | null>(null);
+  const surfaceRef = useRef<MobileSurface>({ kind: "chat" });
 
   useEffect(() => {
     let pending: MobileSnapshot | null = null;
@@ -546,6 +549,13 @@ function MobileNativeApp() {
       window.AkashicNative?.requestSnapshot();
       requestTimer = window.setTimeout(requestSnapshot, 250);
     };
+    replaceMobileSurface(window.history, { kind: "chat" });
+    const handlePopState = (event: PopStateEvent) => {
+      const next = readMobileSurfaceHistoryState(event.state);
+      surfaceRef.current = next;
+      setSurface(next);
+    };
+    window.addEventListener("popstate", handlePopState);
     window.AkashicMobile = {
       receiveSnapshot(next) {
         try {
@@ -597,12 +607,27 @@ function MobileNativeApp() {
         setCommandsOpen(false);
         textareaRef.current?.blur();
       },
+      navigateBack() {
+        const historyState = window.history.state;
+        if (
+          typeof historyState === "object" &&
+          historyState !== null &&
+          "akashicImageViewer" in historyState
+        ) {
+          window.history.back();
+          return true;
+        }
+        if (surfaceRef.current.kind === "chat") return false;
+        window.history.back();
+        return true;
+      },
     };
     window.AkashicNative?.reportReady();
     requestSnapshot();
     return () => {
       if (frame !== null) cancelAnimationFrame(frame);
       if (requestTimer !== null) window.clearTimeout(requestTimer);
+      window.removeEventListener("popstate", handlePopState);
       delete window.AkashicMobile;
     };
   }, []);
@@ -850,6 +875,11 @@ function MobileNativeApp() {
       copiedTimerRef.current = null;
     }, 1600);
   };
+  const navigateToSurface = (next: Exclude<MobileSurface, { kind: "chat" }>) => {
+    pushMobileSurface(window.history, next);
+    surfaceRef.current = next;
+    setSurface(next);
+  };
 
   return (
     <TooltipProvider>
@@ -878,7 +908,7 @@ function MobileNativeApp() {
             title={surface.kind === "plugins"
               ? "插件"
               : pluginDashboards.find((plugin) => plugin.id === surface.pluginId)?.label ?? "插件看板"}
-            onBack={() => setSurface(surface.kind === "dashboard" ? { kind: "plugins" } : { kind: "chat" })}
+            onBack={() => window.history.back()}
           />
         )}
         <MobileDrawer
@@ -886,7 +916,7 @@ function MobileNativeApp() {
           snapshot={snapshot}
           pluginCount={pluginDashboards.length}
           onOpenPlugins={() => {
-            setSurface({ kind: "plugins" });
+            navigateToSurface({ kind: "plugins" });
             closeDrawer();
           }}
           onClose={closeDrawer}
@@ -895,7 +925,7 @@ function MobileNativeApp() {
         {surface.kind === "plugins" ? (
           <MobilePluginDirectory
             plugins={pluginDashboards}
-            onOpen={(pluginId) => setSurface({ kind: "dashboard", pluginId })}
+            onOpen={(pluginId) => navigateToSurface({ kind: "dashboard", pluginId })}
           />
         ) : surface.kind === "dashboard" ? (
           <section className="mobile-plugin-dashboard" aria-label="插件看板">

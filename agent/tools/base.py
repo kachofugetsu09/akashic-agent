@@ -2,13 +2,14 @@ import asyncio
 import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 
 @dataclass
 class ToolResult:
     text: str = ""
     content_blocks: list[dict[str, Any]] = field(default_factory=list)
+    mobile_attention: Literal["confirmation"] | None = None
 
     def preview(self) -> str:
         if self.text:

@@ -7,7 +7,7 @@
 | 能力 | 本批结果 | 语义边界 |
 | --- | --- | --- |
 | C3 后台任务状态 | 顶栏显示运行任务数；抽屉在对应会话下显示“Agent 正在运行” | 复用 `TurnStopCoordinator` 的真实活跃 turn，不新增第二套任务状态 |
-| C7 完成与确认通知 | 完成通知与等待确认通知使用不同标题和动作；点击回到原会话 | 等待确认只接受 `message.final.metadata.mobile_attention=confirmation`，不从问号或文案猜测 |
+| C7 完成与确认通知 | 完成通知与等待确认通知使用不同标题和动作；点击回到原会话 | runtime 的 `request_user_confirmation` 工具显式产生确认态，不从问号或文案猜测 |
 | C8 插件入口 | 抽屉提供一个紧凑“插件”入口；只列出当前运行且声明移动看板的插件 | 插件目录和完整看板是两级页面，看板左上角始终可返回 |
 | C9 KV Cache 试点 | 状态插件提供真实 KV Cache 总览、被动/主动命中率和 turn 明细 | 查询和字段投影复用桌面 Dashboard reader，不伪造容量、清理等不存在的指标 |
 | C10 门禁 | 提供一条自动验证命令和两轮 Pixel 7 验收步骤 | 自动测试不代替通知落点、触觉和窄屏布局的真机观察 |
@@ -56,7 +56,7 @@
 
 移动快照协议从 v2 升至 v3，会话增加必需字段 `isRunning`。这是协议边界的结构变化，旧快照不会被静默当作新结构使用。
 
-等待确认通知必须由消息生产者显式声明：
+等待确认通知由 runtime 工具显式声明。模型只有在任务必须等待用户授权、选择或确认时调用 `request_user_confirmation`；Reasoner 持有该状态并写入最终事件：
 
 ```json
 {
@@ -66,7 +66,7 @@
 }
 ```
 
-缺少该字段表示普通完成；未知枚举或非对象 `metadata` 会在协议边界明确失败。当前实现不根据问号、按钮文案或模型措辞猜测“等待确认”。
+缺少该字段表示普通完成；未知枚举或非对象 `metadata` 会在持久化事件和推进 cursor 前明确失败。入站消息中的同名 metadata 会被移除，不能由客户端伪造确认通知。当前实现不根据问号、按钮文案或模型措辞猜测“等待确认”。
 
 KV Cache 看板只展示插件数据库的真实字段：跟踪 turn 数、prompt token、hit、miss、hit rate、source、session、用户预览和时间。移动端 RPC 使用同一 reader 和分页约束，避免桌面、手机出现两套统计口径。
 
@@ -78,7 +78,7 @@ KV Cache 看板只展示插件数据库的真实字段：跟踪 turn 数、promp
 ./scripts/verify-mobile-agent-native.sh
 ```
 
-门禁依次运行 TypeScript 类型检查、ESLint、移动 Web 构建、插件 UI 通道测试，以及带全局锁、单 worker 的 Android 单元测试。
+门禁依次运行 TypeScript 类型检查、ESLint、Web surface history 测试、移动 Web 构建、插件 UI 通道测试，以及带全局锁、单 worker 的 Android 单元测试和 instrumentation APK 编译。
 
 状态插件仓库执行：
 
@@ -96,7 +96,7 @@ node --check mobile_panel.js
 2. 切换到会话 B，确认顶栏仍显示“运行 1”，抽屉中只有会话 A 显示“Agent 正在运行”。
 3. 熄屏等待任务完成，确认系统通知标题是“Akashic 已完成”。
 4. 点击通知，确认应用打开并落到会话 A，而不是当前会话 B。
-5. 用显式 `mobile_attention=confirmation` 的测试消息验证“Akashic 等待确认”；未准备该生产者时，本项只算自动契约通过，不算真机闭环。
+5. 发起一个必须明确授权才能继续的请求，确认 Agent 调用 `request_user_confirmation`，系统通知显示“Akashic 等待确认”。
 
 ### 第二轮：C8 / C9
 
@@ -106,5 +106,6 @@ node --check mobile_panel.js
 4. 打开 KV Cache，看板左上角返回箭头必须始终可见。
 5. 对照桌面 Dashboard，核对总 turn、hit、miss、被动/主动命中率和一条 turn 明细。
 6. 点击 turn 行，确认参数在原位置展开；再次点击收起，列表位置不应跳变。
+7. 在看板按 Android 系统返回：第一次回到插件目录，第二次回到聊天；Activity 不应退出，聊天输入和会话状态保持不变。
 
 每轮先修复真实失败并重新跑自动门禁，再进入下一轮。正式 workspace 与 Pixel 7 的安装、ADB 操作由主联调流程统一执行。

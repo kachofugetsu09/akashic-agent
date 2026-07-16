@@ -10,6 +10,7 @@ import com.akashic.mobile.data.realtime.RemoteHistoryMessage
 import com.akashic.mobile.data.realtime.SessionListPayload
 import com.akashic.mobile.data.realtime.WireEnvelope
 import com.akashic.mobile.data.realtime.WireKind
+import com.akashic.mobile.data.realtime.finalMessageAttention
 import java.time.Instant
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -123,6 +124,7 @@ class LocalDeliveryStore(
                 "Event sequence gap: expected ${cursor.lastAcknowledgedEventSeq + 1}, got $eventSeq"
             }
 
+            if (envelope.type == "message.final") finalMessageAttention(envelope.payload)
             applyEventContent(serverId, envelope, updatedAt)
             val changed = database.realtimeCursors().advance(
                 deviceId = deviceId,
