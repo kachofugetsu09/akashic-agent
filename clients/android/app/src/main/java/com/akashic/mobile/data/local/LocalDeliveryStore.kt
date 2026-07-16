@@ -716,7 +716,8 @@ class LocalDeliveryStore(
         }
         messages.upsert(canonical)
 
-        // 2. 将流式子项迁移后删除旧身份
+        // 2. 将阅读位置与流式子项迁移后删除旧身份
+        database.conversationReadStates().moveAnchor(source.sessionId, sourceId, canonical.messageId)
         messages.moveBlocks(sourceId, canonical.messageId)
         media.moveLinks(sourceId, canonical.messageId)
         check(messages.delete(sourceId) == 1) { "Source message disappeared during canonical merge" }

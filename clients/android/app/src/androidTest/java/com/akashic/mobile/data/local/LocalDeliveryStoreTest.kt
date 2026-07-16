@@ -985,6 +985,67 @@ class LocalDeliveryStoreTest {
         assertEquals(-14, summary.anchorOffsetPx)
     }
 
+    @Test
+    fun canonicalMergeMigratesOptimisticAndStreamingReadingAnchors() = runBlocking {
+        // 1. 历史同步将 optimistic 用户消息与阅读锚点一起迁移
+        val clientId = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        val optimisticId = "user:$clientId"
+        database.messages().upsert(
+            MessageEntity(
+                optimisticId,
+                clientId,
+                "mobile:test",
+                "user",
+                "本地问题",
+                "sent",
+                1,
+                1,
+            ),
+        )
+        database.conversationReadStates().savePosition("mobile:test", optimisticId, -12, 2)
+        store.applyEvent(
+            "server",
+            "device",
+            event(1, "history.page", buildJsonObject {
+                put("total", 1)
+                put("page", 1)
+                put("page_size", 10)
+                put("items", buildJsonArray {
+                    add(buildJsonObject {
+                        put("id", "mobile:test:user:canonical")
+                        put("client_message_id", clientId)
+                        put("session_key", "mobile:test")
+                        put("seq", 0)
+                        put("role", "user")
+                        put("content", "本地问题")
+                        put("extra", buildJsonObject {})
+                        put("ts", "2026-07-14T16:00:00Z")
+                    })
+                })
+            }),
+            3,
+        )
+        var summary = database.conversations().observeSummaries("server").first().single()
+        assertEquals("mobile:test:user:canonical", summary.anchorMessageId)
+        assertEquals(-12, summary.anchorOffsetPx)
+
+        // 2. 最终事件将 streaming 助手消息与阅读锚点一起迁移
+        store.applyEvent("server", "device", event(2, "turn.started", buildJsonObject {}), 4)
+        database.conversationReadStates().savePosition("mobile:test", "assistant:turn", -20, 5)
+        store.applyEvent(
+            "server",
+            "device",
+            event(3, "message.final", buildJsonObject {
+                put("message_id", "mobile:test:assistant:canonical")
+                put("content", "最终回答")
+            }),
+            6,
+        )
+        summary = database.conversations().observeSummaries("server").first().single()
+        assertEquals("mobile:test:assistant:canonical", summary.anchorMessageId)
+        assertEquals(-20, summary.anchorOffsetPx)
+    }
+
     private fun transfer(state: String, offset: Long, id: String = "attachment") = AttachmentTransferEntity(
         attachmentId = id,
         serverId = "server",

@@ -3,6 +3,7 @@ package com.akashic.mobile
 import com.akashic.mobile.data.realtime.FinalMessageEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -54,5 +55,14 @@ class MessageNotificationPolicyTest {
             "收到一条新回复",
             MessageNotificationPolicy.preview(event.copy(content = "", hasAttachments = false)),
         )
+    }
+
+    @Test
+    fun notificationTapIdentitySeparatesMessagesInTheSameSession() {
+        val first = notificationIntentData("mobile:session-a", "message-1")
+        val second = notificationIntentData("mobile:session-a", "message-2")
+
+        assertNotEquals(first, second)
+        assertEquals(first, notificationIntentData("mobile:session-a", "message-1"))
     }
 }

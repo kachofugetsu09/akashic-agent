@@ -25,6 +25,15 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import java.util.Base64
+
+internal fun notificationIntentData(sessionId: String?, messageId: String?): String {
+    fun encode(value: String?): String = value?.let {
+        "1" + Base64.getUrlEncoder().withoutPadding().encodeToString(it.toByteArray(Charsets.UTF_8))
+    } ?: "0"
+
+    return "akashic://notification/open/${encode(sessionId)}/${encode(messageId)}"
+}
 
 class MobileConnectionService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -199,6 +208,7 @@ class MobileConnectionService : Service() {
     private fun openAppIntent(sessionId: String?, messageId: String? = null): PendingIntent {
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            data = android.net.Uri.parse(notificationIntentData(sessionId, messageId))
             if (sessionId != null) putExtra(EXTRA_SESSION_ID, sessionId)
             if (messageId != null) putExtra(EXTRA_MESSAGE_ID, messageId)
         }

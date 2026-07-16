@@ -108,6 +108,15 @@ interface ConversationDao {
 interface ConversationReadStateDao {
     @Query(
         """
+        UPDATE conversation_read_states
+        SET anchorMessageId = :targetMessageId
+        WHERE sessionId = :sessionId AND anchorMessageId = :sourceMessageId
+        """,
+    )
+    suspend fun moveAnchor(sessionId: String, sourceMessageId: String, targetMessageId: String): Int
+
+    @Query(
+        """
         INSERT INTO conversation_read_states (
           sessionId, lastReadAt, anchorMessageId, anchorOffsetPx, updatedAt
         ) VALUES (
