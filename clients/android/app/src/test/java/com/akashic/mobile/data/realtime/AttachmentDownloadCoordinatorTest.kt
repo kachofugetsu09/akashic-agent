@@ -73,6 +73,45 @@ class AttachmentDownloadCoordinatorTest {
     }
 
     @Test
+    fun `same connection ready transition keeps the in-flight command`() = runBlocking {
+        val content = byteArrayOf(1, 2, 3)
+        val transfer = transfer(content)
+        val dao = FakeMediaAttachmentDao(transfer)
+        val commands = mutableListOf<SentCommand>()
+        val activeStates = mutableListOf<Boolean>()
+        val coordinator = coordinator(dao, commands, mutableListOf(), activeStates)
+
+        coordinator.onConnectionReady("server")
+        coordinator.onConnectionReady("server")
+
+        assertEquals(1, commands.size)
+        assertEquals(listOf(true), activeStates)
+        coordinator.onBinary(chunk(transfer, 0, content))
+        coordinator.onReply(reply(commands.single(), transfer, content.size.toLong(), complete = true))
+        assertEquals("cached", dao.get(transfer.attachmentId)!!.state)
+        assertEquals(listOf(true, false), activeStates)
+    }
+
+    @Test
+    fun `reconnect publishes a fully fsynced chunk before its missing reply`() = runBlocking {
+        val content = byteArrayOf(1, 2, 3)
+        val transfer = transfer(content)
+        val dao = FakeMediaAttachmentDao(transfer)
+        val first = coordinator(dao, mutableListOf(), mutableListOf())
+
+        first.onConnectionReady("server")
+        first.onBinary(chunk(transfer, 0, content))
+        first.onDisconnected()
+
+        val resumedCommands = mutableListOf<SentCommand>()
+        coordinator(dao, resumedCommands, mutableListOf()).onConnectionReady("server")
+
+        assertTrue(resumedCommands.isEmpty())
+        assertEquals("cached", dao.get(transfer.attachmentId)!!.state)
+        assertEquals(content.toList(), File(transfer.cachePath).readBytes().toList())
+    }
+
+    @Test
     fun `checksum failure remains retryable and never publishes final file`() = runBlocking {
         val content = byteArrayOf(1, 2, 3)
         val transfer = transfer(content).copy(sha256 = "0".repeat(64))
@@ -108,6 +147,7 @@ class AttachmentDownloadCoordinatorTest {
         dao: FakeMediaAttachmentDao,
         commands: MutableList<SentCommand>,
         failures: MutableList<String>,
+        activeStates: MutableList<Boolean>? = null,
     ) = AttachmentDownloadCoordinator(
         dao = dao,
         cache = MediaCacheStore(temporary.root, dao),
@@ -117,6 +157,7 @@ class AttachmentDownloadCoordinatorTest {
         },
         onTransportUnavailable = { error(it) },
         onDownloadFailed = failures::add,
+        onStateChanged = { active -> activeStates?.add(active) },
     )
 
     private fun transfer(content: ByteArray): MediaAttachmentEntity {

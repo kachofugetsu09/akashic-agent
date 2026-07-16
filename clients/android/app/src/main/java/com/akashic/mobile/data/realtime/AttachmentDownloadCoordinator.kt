@@ -15,6 +15,7 @@ class AttachmentDownloadCoordinator(
     private val sendCommand: (String, String, String, JsonObject) -> Boolean,
     private val onTransportUnavailable: (String) -> Unit,
     private val onDownloadFailed: (String) -> Unit,
+    private val onStateChanged: (Boolean) -> Unit = {},
 ) {
     private data class ActiveDownload(
         val commandId: String,
@@ -26,14 +27,16 @@ class AttachmentDownloadCoordinator(
     private var active: ActiveDownload? = null
 
     suspend fun onConnectionReady(currentServerId: String) {
-        serverId = currentServerId
-        active = null
+        if (serverId != currentServerId) {
+            serverId = currentServerId
+            updateActive(null)
+        }
         startNext()
     }
 
     fun onDisconnected() {
         serverId = null
-        active = null
+        updateActive(null)
     }
 
     suspend fun resumeIfIdle(currentServerId: String) {
@@ -76,7 +79,7 @@ class AttachmentDownloadCoordinator(
                 updatedAt = System.currentTimeMillis(),
             ) == 1,
         ) { "下载记录已消失: ${current.transfer.attachmentId}" }
-        active = current.copy(received = chunk)
+        updateActive(current.copy(received = chunk))
     }
 
     /** 消费 attachment.download reply；其他 reply 返回 false。 */
@@ -92,7 +95,7 @@ class AttachmentDownloadCoordinator(
         val reply = ProtocolCodec.decodePayload<AttachmentDownloadReplyPayload>(envelope.payload)
         validateReply(current.transfer, chunk, reply)
         val nextOffset = Math.addExact(chunk.offset, chunk.payload.size.toLong())
-        active = null
+        updateActive(null)
         if (reply.complete) finish(current.transfer, nextOffset) else startNext()
         return true
     }
@@ -105,6 +108,10 @@ class AttachmentDownloadCoordinator(
             val transfer = dao.pendingDownloads(currentServerId).firstOrNull() ?: return
             try {
                 reconciled = reconcilePartial(transfer)
+                if (reconciled.transferredBytes == reconciled.sizeBytes) {
+                    finish(reconciled, reconciled.transferredBytes)
+                    return
+                }
                 cache.reserve(reconciled)
                 break
             } catch (error: IllegalArgumentException) {
@@ -118,7 +125,7 @@ class AttachmentDownloadCoordinator(
             }
         }
         val commandId = Ulid.next()
-        active = ActiveDownload(commandId, reconciled)
+        updateActive(ActiveDownload(commandId, reconciled))
         val sent = sendCommand(
             "attachment.download",
             commandId,
@@ -210,7 +217,7 @@ class AttachmentDownloadCoordinator(
                 System.currentTimeMillis(),
             ) == 1,
         ) { "下载记录已消失: ${transfer.attachmentId}" }
-        active = null
+        updateActive(null)
         onDownloadFailed(message)
         startNext()
     }
@@ -218,6 +225,12 @@ class AttachmentDownloadCoordinator(
     private fun transportUnavailable(message: String) {
         onDisconnected()
         onTransportUnavailable(message)
+    }
+
+    private fun updateActive(next: ActiveDownload?) {
+        val changed = (active == null) != (next == null)
+        active = next
+        if (changed) onStateChanged(next != null)
     }
 
     private fun replyMessage(envelope: WireEnvelope): String =

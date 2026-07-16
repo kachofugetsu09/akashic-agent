@@ -27,6 +27,7 @@ class MobileWebSnapshotTest {
             errorNotice = null,
             sessions = emptyList(),
             selectedSessionId = "mobile:test",
+            projectionGeneration = 7,
             messages = listOf(
                 MessageUi.User(
                     id = "message-1",
@@ -35,6 +36,7 @@ class MobileWebSnapshotTest {
                     deliveryLabel = "已发送",
                     replyable = true,
                     createdAtMillis = 1_752_681_600_000,
+                    updatedAtMillis = 1_752_681_600_100,
                     reply = MessageReplyUi("message-0", "assistant", "之前的回答"),
                 ),
                 MessageUi.AssistantTurn(
@@ -54,6 +56,7 @@ class MobileWebSnapshotTest {
                     status = AssistantTurnStatus.STREAMING,
                     durationSeconds = null,
                     createdAtMillis = 1_752_681_601_000,
+                    updatedAtMillis = 1_752_681_601_200,
                 ),
             ),
             attachments = emptyList(),
@@ -69,8 +72,13 @@ class MobileWebSnapshotTest {
         val encoded = Json.encodeToString(snapshot)
 
         assertEquals(2, snapshot.protocolVersion)
+        assertEquals(7, snapshot.projectionGeneration)
         assertEquals(MobileWebConnectionStatus.RECONNECTING, snapshot.connection.status)
         assertEquals(listOf("message-1", "message-2"), snapshot.messages.map { it.id })
+        assertEquals(
+            listOf(1_752_681_600_100, 1_752_681_601_200),
+            snapshot.messages.map { it.searchRevision },
+        )
         assertEquals(listOf("mobile:test", "mobile:test"), snapshot.messages.map { it.sessionId })
         assertTrue(snapshot.messages.first().replyable)
         assertTrue(!snapshot.messages.last().replyable)

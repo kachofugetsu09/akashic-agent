@@ -73,6 +73,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .filter { it.sessionId.startsWith("mobile:") }
                 .map { SessionUi(it.sessionId, it.title) },
             selectedSessionId = session.currentSessionId,
+            projectionGeneration = session.projectionGeneration,
             messages = messages,
             attachments = attachments.map { attachment ->
                 val waitingForConnection = session.connection.phase != ConnectionPhase.READY &&
@@ -101,7 +102,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             },
             isStreaming = graph.any { it.message.deliveryState == "streaming" },
             isResyncing = session.connection.phase == ConnectionPhase.SYNCING,
-            canResync = session.connection.phase == ConnectionPhase.READY && session.activeTurnId == null,
+            canResync = session.connection.phase == ConnectionPhase.READY &&
+                session.activeTurnId == null &&
+                !session.hasActiveAttachmentDownload,
             isStopping = session.isStopping,
             canStop = session.activeTurnId != null &&
                 session.connection.phase == ConnectionPhase.READY &&
@@ -118,6 +121,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             errorNotice = null,
             sessions = emptyList(),
             selectedSessionId = null,
+            projectionGeneration = 0,
             messages = emptyList(),
             attachments = emptyList(),
             commands = emptyList(),
@@ -197,6 +201,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 createdAtMillis = message.createdAt,
                 reply = message.toReplyUi(),
                 attachments = graph.attachmentLinks.toMessageAttachmentUi(),
+                updatedAtMillis = message.updatedAt,
             )
         }
         return MessageUi.AssistantTurn(
@@ -232,6 +237,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             createdAtMillis = message.createdAt,
             reply = message.toReplyUi(),
             attachments = graph.attachmentLinks.toMessageAttachmentUi(),
+            updatedAtMillis = message.updatedAt,
         )
     }
 

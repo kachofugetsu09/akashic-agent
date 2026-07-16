@@ -6,11 +6,11 @@
 
 | 领域 | 当前基线 | 下一闭环 |
 |---|---|---|
-| 消息基本功 | 已有真实时间、日期分组、双向引用和独立复制；缺搜索、跳转、未读与失败重试 | 搜索 + 跳转 + 未读锚点 |
+| 消息基本功 | 已有真实时间、日期分组、双向引用、复制、搜索、跳转和未读；缺失败重试 | 失败重试与乱序合并 |
 | 实时 Agent | 有流式回答、思考/工具时间线和停止 | 工具参数/结果/错误/耗时详情 |
 | 媒体 | 有上传、进度、缓存、预览、下载和分享基础链路 | GIF/meme、重试与大文件体验 |
 | 网络 | 有认证、resume、durable inbox、连接状态 | 抖动场景矩阵和用户可恢复动作 |
-| 会话 | 有 mobile 全量同步、抽屉、切换和新建 | 搜索、未读锚点、失效解释 |
+| 会话 | 有 mobile 全量同步、抽屉、切换、新建和当前会话搜索 | 失效解释与会话内阅读位置 |
 | 扩展 | 已有受控 `plugin.ui.*` 和渲染插槽 | KVCache 移动 Dashboard 试点 |
 | 质量 | 有 Android 测试和隔离 Gateway | 每组固定 Pixel 7 真机闭环 |
 
@@ -131,3 +131,99 @@
 #### 已知问题与下一闭环
 
 - Pixel 7 上一条修复前产生的本地失败消息会附加在较新的服务端历史之后，没有按创建时间归位；这不影响本轮成功引用的持久化与恢复，但应在“失败重试与乱序合并”闭环统一修复，避免在引用功能里顺手引入第二套消息排序规则。
+
+## Cycle 2：会话搜索、消息跳转与未读锚点
+
+状态：已实施，通过 Pixel 7 隔离环境搜索、弱网恢复、未读、会话切换、附件和破坏性重建闭环。
+
+### 缺口与任务
+
+- 长会话只能手动滚动，不能从用户提问、Agent 最终回答或附件名定位目标。
+- 用户离开底部后，新的 Agent turn 没有稳定未读边界；token、thinking 和 tool 增量又不能被误算成多条消息。
+- 既有回到底部按钮位于中间，没有成熟 IM 的阅读锚点和计数语义。
+- 搜索期间流式输出仍可能抢回底部，导致正在阅读的旧消息失去位置。
+
+### 交互结构
+
+```text
+┌─ 顶栏 ──────────────────────────────────┐
+│ 常态：会话抽屉  连接状态        搜索    │
+│ 搜索：返回  [ 搜索这段对话 · 清除 ]     │
+├─────────────────────────────────────────┤
+│ 日期分隔                                │
+│ ───────────── 3 条新消息 ─────────────  │
+│ 消息语义区 ← 跳转后短暂 state layer     │
+│                                  ↓  3   │
+├─────────────────────────────────────────┤
+│ 2 / 7                         ↑   ↓     │
+└─────────────────────────────────────────┘
+```
+
+搜索模式用顶栏输入和底部导航平面替换输入区，不新增搜索卡片或结果卡片。首版复用 Android 已同步到 Room、再完整投影给 WebView 的当前会话历史，不提前增加服务端搜索协议；开始虚拟化历史后再下沉到 Room FTS。
+
+### Better UI
+
+| Before | After |
+|---|---|
+| 只能连续手动滚动 | 顶栏 44dp 搜索入口；按稳定消息 ID 导航结果，近距离平滑居中，超过两个 viewport 直接定位，避免长时间飞屏 |
+| 流式更新一直拥有滚动锁 | 进入搜索的 layout 阶段调用现有 `use-stick-to-bottom.stopScroll()`；退出时只有“原本在底部、没有跳转、没有手动滚动”才恢复底部 |
+| 居中通用回底按钮 | 右下 48dp 圆形动作紧邻输入区；未读计数附着在按钮上，第一次点击到首条未读，之后才到底部 |
+| 新内容没有阅读边界 | 日期、未读、角色分隔和正文按语义顺序直接落在消息平面，不把未读塞进消息或时间线 |
+
+### Better Colors
+
+| Before | After |
+|---|---|
+| 紫色同时面临过程与选中语义竞争 | 紫色继续只表达 Agent thinking/tool 过程；搜索目标、结果命中和未读统一使用主蓝色 |
+| 跳转位置只能靠滚动猜测 | 目标消息使用 1 秒主蓝 state layer，命中文字使用 primary container；不增加边框或永久色块 |
+| 未读可能被做成状态卡 | 一条同色浅线与主色文字表达未读边界，计数只附着在回底动作上 |
+
+fallback 主色文字/页面对比为 `4.52:1`，on-primary-container/primary-container 为 `8.82:1`；12px 未读标签与 11px 按钮计数均使用中粗或粗字重。
+
+### Better Typography
+
+| Before | After |
+|---|---|
+| 无搜索输入层级 | 搜索输入保持 16px，避免 Android WebView 输入缩放；placeholder 使用 on-surface-variant |
+| 结果位置和未读数无稳定数字排版 | `2 / 7`、`99+` 与未读标签使用 tabular figures，分别为 13px 与 11–12px |
+| 搜索命中依赖整块染色 | 正文尺度和行高不变，只用浏览器原生 CSS Highlight 标记当前目标内的命中词 |
+
+### Pixel 7 可复用验收标准
+
+1. 搜索用户提问、Agent 最终回答和附件名，结果总数、当前位置和上下边界正确；连续改查询不会残留旧结果。
+2. 输入第一个命中字符后搜索框不失焦、键盘不收起；只有键盘明确提交搜索时才把无障碍焦点交给目标消息。
+3. 近距离结果平滑居中，远距离结果直接居中；目标 state layer 保持约 1 秒并平滑退场。
+4. 搜索期间让 Agent 持续流式输出，屏幕不被 ResizeObserver 或自定义 auto-scroll 拉回底部；关闭后保留已跳转位置。
+5. 从会话 A 的旧位置切到长会话 B，B 重新建立独立滚动上下文并落在最新消息，不继承 A 的 `scrollTop`。
+6. 离开底部后产生一个新 Agent turn，未读只增加 `1`；后续 thinking/tool/token 更新不重复增加。
+7. 首条未读跨日期时顺序固定为“日期 → 未读 → 角色 → 正文”；到达真正底部后才清空未读。
+8. 搜索、清除、上下结果和回底动作的触控区均不小于 44dp；TalkBack 能读出搜索、结果位置、未读数量和回底动作。
+9. 长会话滚动与流式回答无明显掉帧；截图确认回底按钮不遮时间、工具时间线或输入区，logcat 无 WebView console error。
+
+### 当前验证记录
+
+- `npm run typecheck`、`npm run lint -- --max-warnings=0`、`git diff --check`：通过。
+- `npm run test:mobile-web-state`：`11 passed`；覆盖 streaming → canonical ID 迁移、thinking/tool 增量不重复计数、下一 turn 只新增一次、脱离底部后的滚动锁、附件名搜索、搜索增量索引、普通 reconnect 保留未读，以及破坏性投影重建建立已读基线。
+- `npm run build:mobile-web`：5267 个模块完成生产构建；只有仓库既有 bundle size warning。
+- `ANDROID_HOME="$HOME/Android/Sdk" ./gradlew :app:testDebugUnitTest --tests com.akashic.mobile.data.realtime.AttachmentDownloadCoordinatorTest --tests com.akashic.mobile.ui.web.MobileWebSnapshotTest`：通过；覆盖投影重建代际序列化、同连接重复 ready 不重复下载、断线从 fsync offset 续传、末分片 reply 丢失后的本地校验发布，以及下载占用状态只发生一次 `true → false` 迁移。
+- `clients/android/scripts/build-release.sh`：release unit、lint、R8、签名 APK 构建和证书校验通过。
+- 最终修复后重新执行 `clients/android/scripts/build-release.sh`：`66 actionable tasks`，构建成功；`apksigner` 确认 v2 签名和证书 SHA-256 `49bf31ed…40bc`。
+- 最新签名 release APK 已用 `adb install -r` 无损覆盖 Pixel 7；未卸载应用、未清除数据。版本仍为 `0.7.7 (16)`，手机内 `base.apk` 与构建产物 SHA-256 均为 `afb2a436…bc0e7`。
+- 隔离 `docker/mobile-lab` 的 Agent、chat proxy 和 Cloudflare tunnel 已连续运行约 4 小时；Agent health 为 healthy，独立 workspace 加载 `akasha` 与 `default_memory`，未启用主动推送。
+- kill-ai-slop 最终扫描 `frontend/chat/src` 为 36 个文件、9 组、50 个命中；命中的是既有 shimmer、工具错误/脉冲、showcase、语义圆形图标动作、代码等宽字体和 24px 半径。本轮没有新增渐变、玻璃拟态、发光状态点、卡片墙或胶囊堆叠。搜索输入的胶囊形状属于单一任务容器，回底和导航按钮属于圆形动作类别。
+- 独立 Review 首轮发现并修复：自动搜索跳转抢走输入焦点、切会话继承旧滚动上下文、搜索期间未解除 `ResizeObserver` 底部锁、NFKC 搜索与 DOM Range 无法共享位置、清除动作只有 36dp。
+- 独立 Review 复核继续发现并修复：公开 `isAtBottom` 合并了 near-bottom 状态，不能表示库内部是否重新锁定；现改用 `escapedFromLock` 监听真实锁状态，搜索期间每次重新锁定只纠正一次，不形成 effect 循环。
+- 后续独立 Review 发现并修复：streaming 助手 ID 在 `message.final` 后迁移为 canonical ID 导致同一 turn 重复未读；16ms 快照合并导致发送后回底漏判；搜索期间每个 token 全量扫描长历史；目标 state layer 被不透明消息平面遮挡。当前 canonical 对齐已有独立回归测试，发送动作显式产生一次性回底 token；搜索索引只在搜索模式存在，查询变化才全量匹配，后续快照只重算 revision 变化的消息；state layer 位于消息内容上层。
+- 最终边界 Review 又发现普通 reconnect 和破坏性重建共用 `SYNCING`、下载中允许清缓存、`sessionId + createdAt` 锚点可能同毫秒碰撞。现由原生 `projectionGeneration` 明确标记破坏性重建；下载协调器上报真实 active 状态并同时在 UI 与 `RealtimeSession` 边界禁止重载；未读锚点改为每个逻辑消息生成身份，只在明确的 old ID → canonical ID 迁移时转移已访问状态。
+- 上述三项修复经同一 Reviewer 强制重跑 Web 11 条状态测试、typecheck、lint、diff-check 和 Android 两组测试后复核通过，最终无 blocker、high、medium 或 low finding。
+
+### 真机证据
+
+- 流式对话 `cycle2alpha`：发送后输入法自动收起，thinking 逐 token 生长、时间线跟随，最终折叠为“已思考 8s”；截图为 `/tmp/pixel7-cycle2-stream-early.png`、`/tmp/pixel7-cycle2-stream-mid.png`、`/tmp/pixel7-cycle2-stream-final.png`。
+- 搜索用户正文、Agent 回答和附件名均得到正确结果数和跳转位置；键盘与输入焦点保持，前后结果可从 `1/2` 切到 `2/2`。截图为 `/tmp/pixel7-cycle2-search-user.png`、`/tmp/pixel7-cycle2-search-assistant.png`、`/tmp/pixel7-cycle2-search-prev.png`、`/tmp/pixel7-cycle2-search-attachment-keyboard.png`。
+- Wi-Fi 关闭后消息进入缓存队列，离开底部再恢复 Wi-Fi：认证、`resume`、queued send、history 和 ACK 完成，助手只产生 1 条未读；首次点击定位未读锚点，回到真正底部后计数清零。截图为 `/tmp/pixel7-cycle2-offline-queued-away.png`、`/tmp/pixel7-cycle2-offline-unread-arrived.png`、`/tmp/pixel7-cycle2-unread-anchor.png`、`/tmp/pixel7-cycle2-unread-cleared.png`。
+- 最新 APK 再次关闭/恢复 Wi-Fi后，logcat 显示 `resume epoch=26`，随后 `message.send`、流式事件和 ACK 正常完成；历史没有被普通 reconnect 当成破坏性重建清空。截图为 `/tmp/pixel7-cycle2-reconnect-offline.png`、`/tmp/pixel7-cycle2-ordinary-reconnect-response.png`。
+- 会话抽屉在 `cycle2alpha` 与 `quote_user_source` 间切换并返回；搜索、未读和滚动上下文没有跨会话泄漏。截图为 `/tmp/pixel7-cycle2-drawer.png`、`/tmp/pixel7-cycle2-session-switch.png`、`/tmp/pixel7-cycle2-session-return.png`。
+- 真实选择 `/sdcard/Download/cycle2-file-probe.md`，先显示上传进度再完成 attachment-only send；Agent 调用 `read_file` 并返回结果，附件名可被搜索。截图为 `/tmp/pixel7-cycle2-attachment-staged.png`、`/tmp/pixel7-cycle2-attachment-sent.png`、`/tmp/pixel7-cycle2-attachment-final.png`。
+- 真机首次破坏性重建暴露同一连接重复 `attachment.download`，服务端以 4406 关闭；修复后重建只发送一次下载命令，不再出现 close/error/fatal，完整 fsync 但缺 reply 的末分片会先做 SHA-256 再原子发布。
+- 最终 APK 再次执行“清理缓存并同步”：历史恢复时没有巨量未读，附件最终显示“已下载”，logcat 只有一个 `attachment.download`，没有 4406、`invalid attachment download state` 或 FATAL。截图为 `/tmp/pixel7-cycle2-final-resync-confirmed-early.png`、`/tmp/pixel7-cycle2-final-resync-done.png`、`/tmp/pixel7-cycle2-final-resync-attachment.png`。

@@ -7,6 +7,7 @@ data class ConversationUiState(
     val errorNotice: String?,
     val sessions: List<SessionUi>,
     val selectedSessionId: String?,
+    val projectionGeneration: Long,
     val messages: List<MessageUi>,
     val attachments: List<ComposerAttachmentUi>,
     val commands: List<CommandUi>,
@@ -79,6 +80,7 @@ sealed interface MessageUi {
     val id: String
     val sessionId: String
     val createdAtMillis: Long
+    val updatedAtMillis: Long
     val reply: MessageReplyUi?
     val attachments: List<MessageAttachmentUi>
 
@@ -91,6 +93,7 @@ sealed interface MessageUi {
         override val createdAtMillis: Long,
         override val reply: MessageReplyUi?,
         override val attachments: List<MessageAttachmentUi> = emptyList(),
+        override val updatedAtMillis: Long = createdAtMillis,
     ) : MessageUi
 
     data class AssistantTurn(
@@ -104,6 +107,7 @@ sealed interface MessageUi {
         override val createdAtMillis: Long,
         override val reply: MessageReplyUi? = null,
         override val attachments: List<MessageAttachmentUi> = emptyList(),
+        override val updatedAtMillis: Long = createdAtMillis,
     ) : MessageUi {
         val isStreaming: Boolean
             get() = status == AssistantTurnStatus.STREAMING
@@ -160,6 +164,7 @@ internal val EmptyConversationState = ConversationUiState(
     errorNotice = null,
     sessions = emptyList(),
     selectedSessionId = null,
+    projectionGeneration = 0,
     messages = emptyList(),
     attachments = emptyList(),
     commands = emptyList(),
@@ -182,6 +187,7 @@ internal val PreviewConversationState = ConversationUiState(
         SessionUi("mobile:preview-3", "Material 3 交互细节"),
     ),
     selectedSessionId = "mobile:preview-1",
+    projectionGeneration = 0,
     messages = listOf(
         MessageUi.User(
             id = "user-1",

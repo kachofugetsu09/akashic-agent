@@ -54,12 +54,14 @@ import kotlinx.serialization.json.put
 data class MobileSessionState(
     val initialized: Boolean = false,
     val scanGeneration: Long = 0,
+    val projectionGeneration: Long = 0,
     val connection: ConnectionState = ConnectionState(),
     val hasProfile: Boolean = false,
     val serverId: String? = null,
     val pairingConfirmationCode: String? = null,
     val currentSessionId: String? = null,
     val activeTurnId: String? = null,
+    val hasActiveAttachmentDownload: Boolean = false,
     val isStopping: Boolean = false,
     val commands: List<RemoteCommandItem> = emptyList(),
     val pluginUiAssets: List<MobileUiAssetPayload> = emptyList(),
@@ -140,6 +142,7 @@ class RealtimeSession(
         onDownloadFailed = { message ->
             mutableState.value = mutableState.value.copy(errorMessage = message)
         },
+        onStateChanged = ::publishDownloadState,
     )
     private val stops = TurnStopCoordinator(
         send = ::sendTurnStopCommand,
@@ -284,6 +287,9 @@ class RealtimeSession(
                     "History reload requires a ready connection"
                 }
                 check(mutableState.value.activeTurnId == null) { "History reload cannot interrupt an active turn" }
+                check(!mutableState.value.hasActiveAttachmentDownload) {
+                    "History reload cannot interrupt an attachment download"
+                }
                 mutableState.value = mutableState.value.copy(
                     connection = mutableState.value.connection.copy(phase = ConnectionPhase.SYNCING),
                     errorMessage = null,
@@ -1338,6 +1344,7 @@ class RealtimeSession(
         resetPluginUiPending("服务端要求重新同步")
         requestedHistoryPages.clear()
         mutableState.value = mutableState.value.copy(
+            projectionGeneration = mutableState.value.projectionGeneration + 1,
             connection = mutableState.value.connection.copy(phase = ConnectionPhase.SYNCING),
             errorMessage = null,
         )
@@ -1629,6 +1636,10 @@ class RealtimeSession(
             activeTurnId = stops.activeTurnId(sessionId),
             isStopping = stops.isStopping(sessionId),
         )
+    }
+
+    private fun publishDownloadState(active: Boolean) {
+        mutableState.value = mutableState.value.copy(hasActiveAttachmentDownload = active)
     }
 
     private fun control(type: String, payload: kotlinx.serialization.json.JsonObject) = WireEnvelope(
