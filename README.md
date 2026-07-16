@@ -217,10 +217,26 @@ akashic_RUN_SCENARIOS=1 pytest -c pytest-scenarios.ini tests_scenarios/
 从旧版升级时，第一次重启前显式复制旧插件数据；命令保留旧目录，目标已存在时拒绝覆盖：
 
 ```bash
-uv run python scripts/migrate_plugin_data.py \
+uv run python -m scripts.migrate_plugin_data \
   --workspace "$HOME/.akashic/workspace" \
   --plugins-home "$HOME/.akashic-plugin"
 ```
+
+如果已经启动过新版、`plugin-data` 已产生空目录或错误状态，先停止该 workspace 的 runtime，
+再显式选择确认需要恢复的插件。命令会逐个替换所选目录，并把原 workspace 状态保存在
+`<workspace>/backups/plugin-data-before-replace-*`；未选择的插件不会改变。命令需要从仓库
+根目录运行：
+
+```bash
+uv run python -m scripts.migrate_plugin_data \
+  --workspace "$HOME/.akashic/workspace" \
+  --plugins-home "$HOME/.akashic-plugin" \
+  --replace-plugin feed-github \
+  --replace-plugin fitbit-github
+```
+
+可正常捕获的失败会自动回滚。如果进程被 `SIGKILL` 或机器断电，不要先启动 runtime；旧全局
+源数据不会被删除，按备份目录内 `selection.txt` 记录的列表重新执行同一条命令即可完成收敛。
 
 程序化客户端连接 workspace 下的 `akashic.sock`，先完成 JSON-RPC
 `initialize`/`initialized`，再使用 `thread/start`、`turn/start`、`turn/read` 和
