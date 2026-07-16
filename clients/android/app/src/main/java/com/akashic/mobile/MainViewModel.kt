@@ -134,7 +134,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         lastMessagePreview = it.lastMessagePreview?.take(160),
                         lastMessageAtMillis = it.lastMessageAt,
                         unreadCount = it.unreadCount,
-                        isRunning = it.isRunning,
+                        isRunning = it.sessionId in session.activeSessionIds,
                     )
                 },
             selectedSessionId = session.currentSessionId,

@@ -63,6 +63,7 @@ data class MobileSessionState(
     val pairingConfirmationCode: String? = null,
     val currentSessionId: String? = null,
     val activeTurnId: String? = null,
+    val activeSessionIds: Set<String> = emptySet(),
     val hasActiveAttachmentDownload: Boolean = false,
     val transferNetwork: TransferNetworkState = TransferNetworkState(TransferNetworkKind.UNAVAILABLE, false),
     val meteredLargeTransferApproved: Boolean = false,
@@ -1454,6 +1455,7 @@ class RealtimeSession(
             messageId = messageId,
             content = content,
             hasAttachments = envelope.payload["attachments"]?.jsonArray?.isNotEmpty() == true,
+            attention = finalMessageAttention(envelope.payload),
         )
         check(finalMessageEvents.trySend(event).isSuccess) {
             "Final message notification queue is full"
@@ -1760,6 +1762,7 @@ class RealtimeSession(
         val sessionId = mutableState.value.currentSessionId
         mutableState.value = mutableState.value.copy(
             activeTurnId = stops.activeTurnId(sessionId),
+            activeSessionIds = stops.activeSessionIds(),
             isStopping = stops.isStopping(sessionId),
         )
     }

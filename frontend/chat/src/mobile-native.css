@@ -421,6 +421,12 @@ button {
   transition-duration: 140ms;
 }
 
+.connection-state span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .mobile-search-field {
   display: flex;
   height: 44px;
@@ -489,6 +495,26 @@ button {
 
 .connection-state.disconnected {
   color: var(--m-error);
+}
+
+.agent-task-state {
+  display: flex;
+  min-height: 44px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  color: var(--m-trace-text);
+  font-size: 0.75rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.agent-task-state i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--m-trace);
 }
 
 .connection-spinner {
@@ -2173,6 +2199,7 @@ button.tool-step-summary:active {
   min-width: 28px;
   min-height: 44px;
   place-items: center;
+  gap: 3px;
 }
 
 .session-running {
@@ -2194,7 +2221,6 @@ button.tool-step-summary:active {
   font-size: 0.6875rem;
   font-variant-numeric: tabular-nums;
 }
-
 .mobile-session-row.active {
   color: var(--m-on-primary-container);
   background: var(--m-primary-container);

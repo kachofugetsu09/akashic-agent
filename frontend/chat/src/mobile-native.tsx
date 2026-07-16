@@ -858,6 +858,7 @@ function MobileNativeApp() {
           <MobileTopBar
             status={snapshot.connection.status}
             label={snapshot.connection.label}
+            activeTaskCount={snapshot.sessions.filter((session) => session.isRunning).length}
             drawerOpen={drawerOpen}
             searchOpen={searchOpen}
             searchQuery={searchQuery}
@@ -1093,6 +1094,7 @@ function MobilePluginDirectory({
 function MobileTopBar({
   status,
   label,
+  activeTaskCount,
   drawerOpen,
   searchOpen,
   searchQuery,
@@ -1107,6 +1109,7 @@ function MobileTopBar({
 }: {
   status: ConnectionStatus;
   label: string;
+  activeTaskCount: number;
   drawerOpen: boolean;
   searchOpen: boolean;
   searchQuery: string;
@@ -1159,6 +1162,12 @@ function MobileTopBar({
         {online ? <Wifi size={19} /> : status === "disconnected" ? <WifiOff size={19} /> : <RefreshCw className="connection-spinner" size={18} />}
         <span>{label}</span>
       </div>
+      {activeTaskCount > 0 ? (
+        <div className="agent-task-state" aria-live="polite">
+          <i />
+          <span>运行 {activeTaskCount}</span>
+        </div>
+      ) : null}
       <button ref={searchButtonRef} className="mobile-icon-button" type="button" onClick={onOpenSearch} aria-label="搜索消息">
         <Search size={22} />
       </button>

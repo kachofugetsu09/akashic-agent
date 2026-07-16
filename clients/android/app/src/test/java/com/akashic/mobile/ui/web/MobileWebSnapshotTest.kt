@@ -14,6 +14,7 @@ import com.akashic.mobile.ui.conversation.PendingMessageUi
 import com.akashic.mobile.ui.conversation.ReadingPositionUi
 import com.akashic.mobile.ui.conversation.NavigationTargetUi
 import com.akashic.mobile.ui.conversation.TransferStatusUi
+import com.akashic.mobile.ui.conversation.SessionUi
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
@@ -32,7 +33,16 @@ class MobileWebSnapshotTest {
             connectionStatus = ConnectionStatusUi.RECONNECTING,
             connectionNotice = "消息已缓存",
             errorNotice = null,
-            sessions = emptyList(),
+            sessions = listOf(
+                SessionUi(
+                    sessionId = "mobile:test",
+                    title = "正在执行",
+                    lastMessagePreview = "后台任务仍在处理",
+                    lastMessageAtMillis = 1_752_681_601_000,
+                    unreadCount = 1,
+                    isRunning = true,
+                ),
+            ),
             selectedSessionId = "mobile:test",
             readingPosition = ReadingPositionUi("message-1", -18),
             navigationTarget = NavigationTargetUi("mobile:test", "message-2"),
@@ -96,6 +106,7 @@ class MobileWebSnapshotTest {
         assertEquals(3, snapshot.protocolVersion)
         assertEquals(7, snapshot.projectionGeneration)
         assertEquals(MobileWebConnectionStatus.RECONNECTING, snapshot.connection.status)
+        assertTrue(snapshot.sessions.single().isRunning)
         assertEquals(listOf("message-1", "message-2"), snapshot.messages.map { it.id })
         assertEquals(
             listOf(1_752_681_600_100, 1_752_681_601_200),

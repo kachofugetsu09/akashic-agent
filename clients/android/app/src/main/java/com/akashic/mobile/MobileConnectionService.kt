@@ -17,6 +17,7 @@ import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import com.akashic.mobile.data.realtime.FinalMessageEvent
 import com.akashic.mobile.data.local.AttachmentTransferEntity
+import com.akashic.mobile.data.realtime.FinalMessageAttention
 import com.akashic.mobile.data.realtime.MobileSessionState
 import com.akashic.mobile.data.realtime.TransferNetworkKind
 import com.akashic.mobile.domain.model.ConnectionPhase
@@ -175,20 +176,24 @@ class MobileConnectionService : Service() {
         val transferProgress = transfer?.let {
             (it.transferredBytes * 100 / it.sizeBytes).toInt().coerceIn(0, 100)
         }
-        val status = when {
+        val transferStatus = when {
             transfer != null &&
                 transfer.sizeBytes >= LARGE_TRANSFER_BYTES &&
                 state.transferNetwork.kind == TransferNetworkKind.METERED &&
                 !state.meteredLargeTransferApproved -> "大文件等待确认当前计费网络"
             transfer != null -> "${transfer.filename} · ${transferProgress}% · 后台继续"
-            else -> when (connection.phase) {
+            else -> null
+        }
+        val connectionStatus = when (connection.phase) {
                 ConnectionPhase.READY -> "连接正常"
                 ConnectionPhase.DEGRADED -> "网络不稳，正在重连"
                 ConnectionPhase.CLOSED -> "连接已断开"
                 ConnectionPhase.FAILED -> "连接启动失败"
                 else -> "正在连接"
-            }
         }
+        val taskStatus = state.activeSessionIds.size.takeIf { it > 0 }
+            ?.let { "$it 个任务运行中" }
+        val status = transferStatus ?: listOfNotNull(connectionStatus, taskStatus).joinToString(" · ")
         val builder = NotificationCompat.Builder(this, CONNECTION_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(
@@ -207,13 +212,27 @@ class MobileConnectionService : Service() {
         return builder.build()
     }
 
-    private fun messageNotification(event: FinalMessageEvent): Notification =
-        NotificationCompat.Builder(this, MESSAGE_CHANNEL_ID)
+    private fun messageNotification(event: FinalMessageEvent): Notification {
+        val confirmation = event.attention == FinalMessageAttention.CONFIRMATION
+        val intent = openAppIntent(event.sessionId, event.messageId)
+        val builder = NotificationCompat.Builder(this, MESSAGE_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(getString(R.string.notification_message_title))
+            .setContentTitle(
+                getString(
+                    if (confirmation) R.string.notification_confirmation_title
+                    else R.string.notification_completion_title,
+                ),
+            )
             .setContentText(MessageNotificationPolicy.preview(event))
-            .setContentIntent(openAppIntent(event.sessionId, event.messageId))
-            .addAction(
+            .setContentIntent(intent)
+        if (confirmation) {
+            builder.addAction(
+                0,
+                getString(R.string.notification_confirmation_action),
+                intent,
+            )
+        } else {
+            builder.addAction(
                 NotificationCompat.Action.Builder(
                     0,
                     getString(R.string.notification_reply_action),
@@ -224,11 +243,13 @@ class MobileConnectionService : Service() {
                         .build(),
                 ).build(),
             )
-            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+        }
+        return builder.setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(privatePublicNotification())
             .setAutoCancel(true)
             .build()
+    }
 
     private fun privatePublicNotification(): Notification =
         NotificationCompat.Builder(this, MESSAGE_CHANNEL_ID)

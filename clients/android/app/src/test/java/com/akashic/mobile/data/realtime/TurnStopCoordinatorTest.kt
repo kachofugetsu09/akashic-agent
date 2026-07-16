@@ -26,6 +26,18 @@ class TurnStopCoordinatorTest {
     }
 
     @Test
+    fun activeSessionsRemainVisibleWhenCurrentConversationChanges() {
+        val coordinator = coordinator()
+        coordinator.onTurnStarted("mobile:one", "turn-1")
+        coordinator.onTurnStarted("mobile:two", "turn-2")
+
+        assertEquals(setOf("mobile:one", "mobile:two"), coordinator.activeSessionIds())
+
+        coordinator.onTurnTerminal("mobile:one", "turn-1")
+        assertEquals(setOf("mobile:two"), coordinator.activeSessionIds())
+    }
+
+    @Test
     fun stopReplyClearsPendingAndProtocolErrorIsVisible() {
         val sent = mutableListOf<TurnStopRequest>()
         val errors = mutableListOf<String>()
