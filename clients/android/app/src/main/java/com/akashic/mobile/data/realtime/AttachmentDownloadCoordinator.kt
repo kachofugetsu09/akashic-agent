@@ -44,8 +44,12 @@ class AttachmentDownloadCoordinator(
     }
 
     suspend fun retry(attachmentId: String) {
-        check(dao.requestDownload(attachmentId, System.currentTimeMillis()) == 1) {
-            "附件不处于失败或已驱逐状态: $attachmentId"
+        val changed = dao.requestDownload(attachmentId, System.currentTimeMillis())
+        if (changed == 0) {
+            val current = requireNotNull(dao.get(attachmentId)) { "附件不存在: $attachmentId" }
+            check(current.state in setOf("pending", "downloading", "cached")) {
+                "附件当前不可开始下载: $attachmentId"
+            }
         }
         startNext()
     }

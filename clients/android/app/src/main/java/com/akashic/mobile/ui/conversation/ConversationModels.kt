@@ -171,6 +171,7 @@ data class MessageAttachmentUi(
 )
 
 enum class MessageAttachmentState {
+    REMOTE,
     PENDING,
     DOWNLOADING,
     CACHED,

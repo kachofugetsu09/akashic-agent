@@ -1639,6 +1639,8 @@ function MobileMessageAttachment({ attachment }: { attachment: MobileAttachment 
     ? "等待下载"
     : attachment.state === "downloading"
       ? `下载中 ${progress}%`
+      : attachment.state === "remote"
+        ? `${formatBytes(attachment.sizeBytes)} · 尚未下载`
       : attachment.state === "failed"
         ? "下载失败"
         : attachment.state === "evicted"
@@ -1679,8 +1681,15 @@ function MobileMessageAttachment({ attachment }: { attachment: MobileAttachment 
       {attachment.state === "downloading" ? (
         <div className="message-attachment-progress" aria-label={status}><span style={{ inlineSize: `${progress}%` }} /></div>
       ) : null}
-      {attachment.state === "failed" || attachment.state === "evicted" ? (
-        <button className="message-attachment-action" type="button" onClick={() => window.AkashicNative?.retryDownloadedAttachment(attachment.id)}>重试</button>
+      {attachment.state === "remote" || attachment.state === "failed" || attachment.state === "evicted" ? (
+        <button
+          aria-label={`${attachment.state === "remote" ? "下载" : "重试"} ${attachment.filename}`}
+          className="message-attachment-action"
+          type="button"
+          onClick={() => window.AkashicNative?.retryDownloadedAttachment(attachment.id)}
+        >
+          {attachment.state === "remote" ? "下载" : "重试"}
+        </button>
       ) : cached ? (
         <button className="message-attachment-action icon" type="button" onClick={() => window.AkashicNative?.shareDownloadedAttachment(attachment.id)} aria-label={`分享 ${attachment.filename}`}><Share2 size={18} /></button>
       ) : null}

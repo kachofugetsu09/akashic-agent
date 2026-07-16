@@ -397,6 +397,7 @@ internal fun List<MessageAttachmentWithMedia>.toMessageAttachmentUi(): List<Mess
             sizeBytes = attachment.sizeBytes,
             transferredBytes = attachment.transferredBytes,
             state = when (attachment.state) {
+                "remote" -> MessageAttachmentState.REMOTE
                 "pending" -> MessageAttachmentState.PENDING
                 "downloading" -> MessageAttachmentState.DOWNLOADING
                 "cached" -> MessageAttachmentState.CACHED

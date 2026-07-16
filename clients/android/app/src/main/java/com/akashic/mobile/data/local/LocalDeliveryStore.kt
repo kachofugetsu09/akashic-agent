@@ -806,7 +806,7 @@ class LocalDeliveryStore(
                     sizeBytes = descriptor.sizeBytes,
                     sha256 = descriptor.sha256.lowercase(),
                     transferredBytes = 0,
-                    state = "pending",
+                    state = if (descriptor.sizeBytes >= AUTO_DOWNLOAD_LIMIT_BYTES) "remote" else "pending",
                     cachePath = mediaCache.cachePath(descriptor.attachmentId),
                     lastAccessedAt = updatedAt,
                     updatedAt = updatedAt,
@@ -842,6 +842,7 @@ class LocalDeliveryStore(
 
     private companion object {
         const val MAX_ATTACHMENT_BYTES = 50L * 1024 * 1024
+        const val AUTO_DOWNLOAD_LIMIT_BYTES = 10L * 1024 * 1024
         val MIME_TYPE = Regex("^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
         val FRAME_ID = Regex(
             "^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-" +

@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import android.content.Context
 import com.akashic.mobile.data.realtime.WireEnvelope
 import com.akashic.mobile.data.realtime.WireKind
+import com.akashic.mobile.data.realtime.AttachmentDownloadCoordinator
 import com.akashic.mobile.data.realtime.MessageSendPayload
 import com.akashic.mobile.data.realtime.ProtocolCodec
 import java.time.Instant
@@ -27,6 +28,7 @@ import org.junit.Assert.assertTrue
 @RunWith(AndroidJUnit4::class)
 class LocalDeliveryStoreTest {
     private lateinit var database: AppDatabase
+    private lateinit var mediaCache: MediaCacheStore
     private lateinit var store: LocalDeliveryStore
 
     @Before
@@ -35,7 +37,7 @@ class LocalDeliveryStoreTest {
             ApplicationProvider.getApplicationContext(),
             AppDatabase::class.java,
         ).build()
-        val mediaCache = MediaCacheStore(
+        mediaCache = MediaCacheStore(
             ApplicationProvider.getApplicationContext<Context>().cacheDir.resolve("media-${System.nanoTime()}"),
             database.mediaAttachments(),
         )
@@ -934,6 +936,58 @@ class LocalDeliveryStoreTest {
         assertEquals(
             listOf(attachment.attachmentId),
             database.mediaAttachments().forMessage("mobile:test:1").map { it.attachmentId },
+        )
+    }
+
+    @Test
+    fun largeMessageAttachmentWaitsForExplicitDownload() = runBlocking {
+        val smallId = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        val largeId = "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+        fun descriptor(id: String, sizeBytes: Long) = buildJsonObject {
+            put("attachment_id", id)
+            put("filename", "$id.pdf")
+            put("content_type", "application/pdf")
+            put("size_bytes", sizeBytes)
+            put("sha256", "a".repeat(64))
+        }
+        store.applyEvent(
+            "server",
+            "device",
+            event(1, "message.final", buildJsonObject {
+                put("message_id", "mobile:test:assistant:large-attachment")
+                put("content", "附件")
+                put("attachments", buildJsonArray {
+                    add(descriptor(smallId, 10L * 1024 * 1024 - 1))
+                    add(descriptor(largeId, 10L * 1024 * 1024))
+                })
+            }),
+            2,
+        )
+
+        assertEquals("pending", database.mediaAttachments().get(smallId)!!.state)
+        assertEquals("remote", database.mediaAttachments().get(largeId)!!.state)
+        assertEquals(listOf(smallId), database.mediaAttachments().pendingDownloads("server").map { it.attachmentId })
+
+        mediaCache.reconcile()
+        assertEquals("remote", database.mediaAttachments().get(largeId)!!.state)
+
+        assertEquals(1, database.mediaAttachments().updateDownload(smallId, 0, "failed", 3))
+        val sentTypes = mutableListOf<String>()
+        val downloads = AttachmentDownloadCoordinator(
+            database.mediaAttachments(),
+            mediaCache,
+            sendCommand = { type, _, _, _ -> sentTypes += type; true },
+            onTransportUnavailable = {},
+            onDownloadFailed = {},
+        )
+        downloads.retry(largeId)
+        downloads.retry(largeId)
+        downloads.onConnectionReady("server")
+
+        assertEquals(listOf("attachment.download"), sentTypes)
+        assertEquals(
+            listOf(largeId),
+            database.mediaAttachments().pendingDownloads("server").map { it.attachmentId },
         )
     }
 

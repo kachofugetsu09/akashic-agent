@@ -172,4 +172,4 @@ Observe disabled       connection control       Observe enabled
 - 隔离 Mobile Lab 的 Observe 初始处于禁用状态；Pixel 7 完成真实 WSS 配对后，抽屉显示“插件 0”。
 - 运行中执行 `plugin-enable observe@mobile-lab`，不重启 runtime、Android 服务或 Activity；6 秒内同一抽屉原位显示“插件 1”。
 - 设备 `3cdf264b0b144af3844fb94aeb8b3818` 在切换前后均为 `next_event_seq=10 / sent_event_seq=9 / acknowledged_event_seq=9`，持久化 inbox 为空，因此该能力没有占用 durable event 序列。
-- 截图证据为 `/tmp/hot-control-disabled.png`、`/tmp/hot-control-enabled.png`；Python 定向测试 `180 passed`，Pyright 无错误，Android `testDebugUnitTest` 与 `assembleDebug` 串行构建通过。
+- Python 定向测试 `180 passed`，Pyright 无错误，Android `testDebugUnitTest` 与 `assembleDebug` 串行构建通过。

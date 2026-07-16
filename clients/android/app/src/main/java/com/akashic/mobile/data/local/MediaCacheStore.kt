@@ -132,6 +132,12 @@ class MediaCacheStore(
         val partial = rawFile(transfer, ".bin.part")
         if (Files.isSymbolicLink(final.toPath())) deleteIfExists(final)
         if (Files.isSymbolicLink(partial.toPath())) deleteIfExists(partial)
+        if (transfer.state == "remote") {
+            check(transfer.transferredBytes == 0L && !final.exists() && !partial.exists()) {
+                "未请求附件不能持有本地内容: ${transfer.attachmentId}"
+            }
+            return
+        }
         if (transfer.state == "evicted") {
             deleteIfExists(final)
             deleteIfExists(partial)

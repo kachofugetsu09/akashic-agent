@@ -14,12 +14,14 @@ class MessageAttachmentPresentationTest {
             relation(id = "second", ordinal = 1, state = "cached"),
             relation(id = "first", ordinal = 0, state = "downloading", transferredBytes = 25),
             relation(id = "evicted", ordinal = 2, state = "evicted"),
+            relation(id = "remote", ordinal = 3, state = "remote", transferredBytes = 0),
         ).toMessageAttachmentUi()
 
-        assertEquals(listOf("first", "second", "evicted"), mapped.map { it.id })
+        assertEquals(listOf("first", "second", "evicted", "remote"), mapped.map { it.id })
         assertEquals(MessageAttachmentState.DOWNLOADING, mapped.first().state)
         assertEquals(MessageAttachmentState.CACHED, mapped[1].state)
-        assertEquals(MessageAttachmentState.EVICTED, mapped.last().state)
+        assertEquals(MessageAttachmentState.EVICTED, mapped[2].state)
+        assertEquals(MessageAttachmentState.REMOTE, mapped[3].state)
         assertEquals("/cache/first", mapped.first().cachePath)
     }
 

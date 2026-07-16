@@ -380,6 +380,23 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - 目录列出插件后、资产拉取前插件被移除时，`plugin_unavailable` 被视为目录已过期；客户端等待同批其余 reply 收束后只重拉一次目录，不显示伪错误也不触发断线重连。
 - `0.7.10 (19)` 已发布，APK 为 8,306,622 bytes，SHA-256 `a02c4da4333ae9e135cf874609afb50c2a28611c550757d3eeab709b041397bd`。后续验收发现该版本尚未完成客户端 capability 订阅；本轮补上协商、旧服务端 fallback 与连接 epoch 隔离后，才把热更新视为可用能力。
 - 线上核心已重启一次以加载新协议，Observe `5c7442f`、writer 与 mobile channel 均正常启动。完成 capability 修复后，支持热更新的客户端不再需要重启 runtime 或手机；旧 Android 客户端继续使用首次同步，不会收到 `plugin.ui.changed`。
-- Pixel 7 使用隔离 Mobile Lab 验证最终契约：Observe 禁用时抽屉显示“插件 0”，运行中直接启用后原位变为“插件 1”，没有重启手机、Android 服务或 runtime。对应截图为 `/tmp/hot-control-disabled.png`、`/tmp/hot-control-enabled.png`。
+- Pixel 7 使用隔离 Mobile Lab 验证最终契约：Observe 禁用时抽屉显示“插件 0”，运行中直接启用后原位变为“插件 1”，没有重启手机、Android 服务或 runtime。
 - 同一 Pixel 7 连接在切换前后的 durable cursor 均为 `next_event_seq=10 / sent=9 / acknowledged=9`，`mobile_device_inbox` 保持为空；这证明 `plugin.ui.changed` 没有进入持久化序列，也没有产生 4406 或 event sequence gap。
 - 隔离 tunnel 曾因本机透明代理路由中断返回 Cloudflare 1033/HTTP 530；重启 tunnel connector 后恢复。该故障发生在配对 WebSocket 建立前，与插件热更新协议无关，验收只在 tunnel 恢复并完成真实 WSS 配对后计入。
+
+## 2026-07-17 按需接收大附件与控制帧公平性
+
+- 收到的附件小于 10 MiB 时继续自动下载；大于等于 10 MiB 时只保存服务端描述符，消息原位显示文件大小、`尚未下载` 和明确的“下载”操作。它不会进入下载队列，也不会在移动网络或后台悄悄占用流量。
+- 用户点“下载”后复用既有 `requestDownload`、分片 fsync、SHA-256 校验和原子发布链路，没有新增第二套传输协议或持久化 owner。失败和缓存驱逐仍使用同一位置的“重试”。
+- `remote` 是 Room 附件状态机的一部分，并通过 Kotlin 快照投影给 WebView；状态层级靠文字、进度和既有附件表面表达，没有为它再造一张提示卡。
+- 连接控制帧的超时只覆盖实际 WebSocket 写入，不把等待同连接上一帧完成的排队时间算成慢连接。真实写入超时仍以 4408 关闭旧连接并触发重连，不能让健康连接因正常串行化被误杀。
+- 自动验证：Gateway 控制帧定向测试 `3 passed`；Android 附件展示单测通过。Pixel 7 验收使用隔离 Mobile Lab：覆盖小附件自动接收、大附件保持未下载、显式下载后完成，以及日志无 4406、event sequence gap、协议反序列化和 FATAL。
+
+## 2026-07-17 大附件按需下载与抖动保护
+
+- 隔离 Mobile Lab 的历史同步暴露一条真实 47,381,751-byte 文档：Android 会在建立历史投影时立即把所有服务端附件置为 `pending`，随后按分片完整下载。连续的 `attachment.download` 是正常断点传输，不是重试死循环，但它会无意义占用移动网络和消息同步时延。
+- 新发现的小于 10 MiB 附件仍自动进入下载队列；达到 10 MiB 的附件保存为 `remote`，消息附件行原位显示文件大小与“尚未下载”，只有用户点击同一行右侧“下载”后才进入既有 `pending → downloading → cached` 断点链路。
+- UI 没有增加外层卡片或新颜色：附件仍是原有 Material 3 行，主信息保持文件名，低强调文字承担大小/状态语义，唯一主色文字按钮表达显式下载动作；44dp 触控区域和原有进度条保持不变。
+- connection-scoped 控制帧的 3 秒超时现只覆盖真正的 WebSocket 写入，不再覆盖等待同连接合法附件帧占用写锁的时间。正常在途帧可在 30 秒窗口内完成；超过窗口说明连接已无法释放发送权，或拿到锁后仍写超时，服务端才移除连接并以 4408 关闭。
+- “下载 / 重试”原生入口允许 `pending`、`downloading` 和已经完成的 `cached` 重入，快速双击只复用同一下载队列，不会在后台协程抛异常；多附件的读屏名称包含文件名。
+- 验证通过：gateway `22 passed`、Pyright 无错误、Web typecheck 与 ESLint、Android 全量 debug unit、androidTest APK 构建；Pixel 7 真机定向执行 `largeMessageAttachmentWaitsForExplicitDownload` 为 `1/1`，确认 10 MiB 边界与显式点击入队语义。

@@ -347,6 +347,7 @@ private fun MessageAttachmentUi.toMobileWebAttachment() = MobileWebAttachment(
     sizeBytes = sizeBytes,
     transferredBytes = transferredBytes,
     state = when (state) {
+        MessageAttachmentState.REMOTE -> "remote"
         MessageAttachmentState.PENDING -> "pending"
         MessageAttachmentState.DOWNLOADING -> "downloading"
         MessageAttachmentState.CACHED -> "cached"

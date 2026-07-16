@@ -568,7 +568,7 @@ interface MediaAttachmentDao {
         """
         UPDATE media_attachments
         SET state = 'pending', updatedAt = :updatedAt
-        WHERE attachmentId = :attachmentId AND state IN ('failed', 'evicted')
+        WHERE attachmentId = :attachmentId AND state IN ('remote', 'failed', 'evicted')
         """,
     )
     suspend fun requestDownload(attachmentId: String, updatedAt: Long): Int
