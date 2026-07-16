@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -25,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -34,12 +36,17 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import com.akashic.mobile.ui.design.AkashicTheme
+import com.akashic.mobile.ui.conversation.MessageAttachmentUi
 import com.akashic.mobile.ui.pairing.PairingScreen
 import com.akashic.mobile.ui.web.MobileWebChat
 import com.akashic.mobile.ui.web.openCachedAttachment
 import com.akashic.mobile.ui.web.shareCachedAttachment
+import com.akashic.mobile.ui.web.saveCachedAttachment
 import com.akashic.mobile.ui.web.withCachedAttachment
+import java.io.IOException
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val viewModel by viewModels<MainViewModel>()
@@ -66,6 +73,37 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.OpenMultipleDocuments(),
                 ) { uris ->
                     if (uris.isNotEmpty()) viewModel.addAttachments(uris)
+                }
+                val pendingSave = remember { mutableStateOf<MessageAttachmentUi?>(null) }
+                val attachmentSaver = rememberLauncherForActivityResult(
+                    ActivityResultContracts.CreateDocument("application/octet-stream"),
+                ) { destination ->
+                    val attachment = pendingSave.value
+                    pendingSave.value = null
+                    if (destination != null && attachment != null) {
+                        lifecycleScope.launch {
+                            try {
+                                saveCachedAttachment(this@MainActivity, attachment, destination)
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "已保存 ${attachment.filename}",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            } catch (error: IOException) {
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "保存失败：${error.message}",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            } catch (error: SecurityException) {
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "没有写入所选位置的权限",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            }
+                        }
+                    }
                 }
                 val session by viewModel.sessionState.collectAsStateWithLifecycle()
                 val conversation by viewModel.conversationState.collectAsStateWithLifecycle()
@@ -122,6 +160,13 @@ class MainActivity : ComponentActivity() {
                                 withCachedAttachment(this@MainActivity, conversation, attachmentId) {
                                     viewModel.touchDownloadedAttachment(attachmentId)
                                     shareCachedAttachment(this@MainActivity, it)
+                                }
+                            },
+                            onSaveDownloadedAttachment = { attachmentId ->
+                                withCachedAttachment(this@MainActivity, conversation, attachmentId) {
+                                    viewModel.touchDownloadedAttachment(attachmentId)
+                                    pendingSave.value = it
+                                    attachmentSaver.launch(it.filename)
                                 }
                             },
                             onDismissError = viewModel::dismissError,

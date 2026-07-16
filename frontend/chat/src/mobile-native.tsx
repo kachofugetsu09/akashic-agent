@@ -18,6 +18,7 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  Download,
   FileText,
   Menu,
   MessageSquarePlus,
@@ -42,6 +43,7 @@ import {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogTitle,
   DialogTrigger,
@@ -189,6 +191,7 @@ interface NativeBridge {
   touchDownloadedAttachment(attachmentId: string): void;
   openDownloadedAttachment(attachmentId: string): void;
   shareDownloadedAttachment(attachmentId: string): void;
+  saveDownloadedAttachment(attachmentId: string): void;
   dismissError(): void;
   sendMessage(text: string, replyToMessageId: string): void;
   copyText(text: string): void;
@@ -1287,14 +1290,25 @@ function DraftAttachments({ attachments }: { attachments: MobileAttachment[] }) 
             <FileText size={19} />
             <div className="draft-attachment__body">
               <div className="draft-attachment__name">{attachment.filename}</div>
-              <div className="draft-attachment__status">{attachment.state === "ready" ? "上传完成" : attachment.state === "failed" ? "上传失败" : `${progress}%`}</div>
+              <div className={`draft-attachment__status ${attachment.state === "failed" ? "error" : ""}`}>
+                {attachment.state === "ready"
+                  ? "上传完成"
+                  : attachment.state === "failed"
+                    ? `上传失败 · 已保留 ${formatBytes(attachment.transferredBytes)}`
+                    : attachment.state === "waiting"
+                      ? `等待连接 · ${progress}%`
+                      : `上传中 ${progress}% · ${formatBytes(attachment.transferredBytes)} / ${formatBytes(attachment.sizeBytes)}`}
+              </div>
               <div className="draft-attachment__track"><span style={{ inlineSize: `${progress}%` }} /></div>
             </div>
-            {attachment.state === "failed" ? (
-              <button type="button" onClick={() => window.AkashicNative?.retryAttachment(attachment.id)}>重试</button>
-            ) : attachment.canRemove ? (
-              <button type="button" onClick={() => window.AkashicNative?.removeAttachment(attachment.id)} aria-label={`移除 ${attachment.filename}`}><X size={18} /></button>
-            ) : null}
+            <div className="draft-attachment__actions">
+              {attachment.state === "failed" ? (
+                <button type="button" onClick={() => window.AkashicNative?.retryAttachment(attachment.id)}>重试</button>
+              ) : null}
+              {attachment.canRemove ? (
+                <button type="button" onClick={() => window.AkashicNative?.removeAttachment(attachment.id)} aria-label={`移除 ${attachment.filename}`}><X size={18} /></button>
+              ) : null}
+            </div>
           </div>
         );
       })}
@@ -1338,10 +1352,7 @@ function MobileMessageAttachment({ attachment }: { attachment: MobileAttachment 
               <img alt="" src={attachment.contentUrl} />
             </button>
           </DialogTrigger>
-          <DialogContent className="image-preview-dialog">
-            <DialogTitle className="sr-only">{attachment.filename}</DialogTitle>
-            <img alt={attachment.filename} className="image-preview-full" src={attachment.contentUrl} />
-          </DialogContent>
+          <ImageViewer attachment={attachment} />
         </Dialog>
       ) : (
         <button
@@ -1373,6 +1384,127 @@ function MobileMessageAttachment({ attachment }: { attachment: MobileAttachment 
       ) : null}
     </div>
   );
+}
+
+interface ViewerTransform {
+  scale: number;
+  x: number;
+  y: number;
+}
+
+function ImageViewer({ attachment }: { attachment: MobileAttachment }) {
+  const [transform, setTransform] = useState<ViewerTransform>({ scale: 1, x: 0, y: 0 });
+  const pointers = useRef(new Map<number, { x: number; y: number }>());
+  const gesture = useRef({ distance: 1, centerX: 0, centerY: 0, transform });
+
+  const beginGesture = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    gesture.current = gestureSnapshot(pointers.current, transform);
+  };
+
+  const moveGesture = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!pointers.current.has(event.pointerId)) return;
+    pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const points = [...pointers.current.values()];
+    const start = gesture.current;
+    if (points.length >= 2) {
+      const currentDistance = pointDistance(points[0], points[1]);
+      const currentCenter = pointCenter(points[0], points[1]);
+      const nextScale = clampScale(start.transform.scale * currentDistance / start.distance);
+      setTransform({
+        scale: nextScale,
+        x: start.transform.x + currentCenter.x - start.centerX,
+        y: start.transform.y + currentCenter.y - start.centerY,
+      });
+    } else if (start.transform.scale > 1) {
+      setTransform({
+        ...start.transform,
+        x: start.transform.x + points[0].x - start.centerX,
+        y: start.transform.y + points[0].y - start.centerY,
+      });
+    }
+  };
+
+  const endGesture = (event: React.PointerEvent<HTMLDivElement>) => {
+    pointers.current.delete(event.pointerId);
+    gesture.current = gestureSnapshot(pointers.current, transform);
+  };
+
+  const zoomTo = (scale: number) => {
+    const next = clampScale(scale);
+    setTransform(next === 1 ? { scale: 1, x: 0, y: 0 } : { ...transform, scale: next });
+  };
+
+  return (
+    <DialogContent className="image-viewer-dialog" showCloseButton={false}>
+      <DialogTitle className="sr-only">{attachment.filename}</DialogTitle>
+      <header className="image-viewer-toolbar">
+        <DialogClose asChild>
+          <button type="button" aria-label="返回会话"><ArrowLeft size={22} /></button>
+        </DialogClose>
+        <strong title={attachment.filename}>{attachment.filename}</strong>
+        <button type="button" onClick={() => window.AkashicNative?.saveDownloadedAttachment(attachment.id)} aria-label={`保存 ${attachment.filename}`}><Download size={21} /></button>
+        <button type="button" onClick={() => window.AkashicNative?.shareDownloadedAttachment(attachment.id)} aria-label={`分享 ${attachment.filename}`}><Share2 size={21} /></button>
+      </header>
+      <div
+        className="image-viewer-stage"
+        onDoubleClick={() => zoomTo(transform.scale > 1 ? 1 : 2)}
+        onPointerDown={beginGesture}
+        onPointerMove={moveGesture}
+        onPointerUp={endGesture}
+        onPointerCancel={endGesture}
+      >
+        <img
+          alt={attachment.filename}
+          draggable={false}
+          src={attachment.contentUrl}
+          style={{ transform: `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})` }}
+        />
+      </div>
+      <div className="image-viewer-zoom" aria-label={`缩放 ${Math.round(transform.scale * 100)}%`}>
+        <button type="button" onClick={() => zoomTo(transform.scale - 0.5)} aria-label="缩小">−</button>
+        <span>{Math.round(transform.scale * 100)}%</span>
+        <button type="button" onClick={() => zoomTo(transform.scale + 0.5)} aria-label="放大">＋</button>
+      </div>
+    </DialogContent>
+  );
+}
+
+function gestureSnapshot(
+  pointers: Map<number, { x: number; y: number }>,
+  transform: ViewerTransform,
+) {
+  const points = [...pointers.values()];
+  if (points.length >= 2) {
+    const center = pointCenter(points[0], points[1]);
+    return {
+      distance: pointDistance(points[0], points[1]),
+      centerX: center.x,
+      centerY: center.y,
+      transform,
+    };
+  }
+  const point = points[0] ?? { x: 0, y: 0 };
+  return { distance: 1, centerX: point.x, centerY: point.y, transform };
+}
+
+function pointDistance(first: { x: number; y: number }, second: { x: number; y: number }) {
+  return Math.hypot(second.x - first.x, second.y - first.y);
+}
+
+function pointCenter(first: { x: number; y: number }, second: { x: number; y: number }) {
+  return { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+}
+
+function clampScale(scale: number) {
+  return Math.min(4, Math.max(1, scale));
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 }
 
 function MessageMeta({

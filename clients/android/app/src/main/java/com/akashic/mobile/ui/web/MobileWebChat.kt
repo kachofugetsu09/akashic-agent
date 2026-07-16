@@ -82,6 +82,7 @@ fun MobileWebChat(
     onTouchDownloadedAttachment: (String) -> Unit,
     onOpenDownloadedAttachment: (String) -> Unit,
     onShareDownloadedAttachment: (String) -> Unit,
+    onSaveDownloadedAttachment: (String) -> Unit,
     onDismissError: () -> Unit,
     onSend: (String, String?) -> Unit,
     onSendCommand: (String) -> Unit,
@@ -113,6 +114,7 @@ fun MobileWebChat(
             onTouchDownloadedAttachment = onTouchDownloadedAttachment,
             onOpenDownloadedAttachment = onOpenDownloadedAttachment,
             onShareDownloadedAttachment = onShareDownloadedAttachment,
+            onSaveDownloadedAttachment = onSaveDownloadedAttachment,
             onDismissError = onDismissError,
             onSend = onSend,
             onSendCommand = onSendCommand,
@@ -236,6 +238,7 @@ private data class MobileWebCallbacks(
     val onTouchDownloadedAttachment: (String) -> Unit,
     val onOpenDownloadedAttachment: (String) -> Unit,
     val onShareDownloadedAttachment: (String) -> Unit,
+    val onSaveDownloadedAttachment: (String) -> Unit,
     val onDismissError: () -> Unit,
     val onSend: (String, String?) -> Unit,
     val onSendCommand: (String) -> Unit,
@@ -315,6 +318,11 @@ private class MobileWebBridge(
     @JavascriptInterface
     fun shareDownloadedAttachment(attachmentId: String) = dispatch {
         it.onShareDownloadedAttachment(attachmentId)
+    }
+
+    @JavascriptInterface
+    fun saveDownloadedAttachment(attachmentId: String) = dispatch {
+        it.onSaveDownloadedAttachment(attachmentId)
     }
 
     @JavascriptInterface
