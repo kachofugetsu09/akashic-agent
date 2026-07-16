@@ -343,6 +343,16 @@ fallback 主色文字/页面对比为 `4.52:1`，on-primary-container/primary-co
 
 隔离环境暴露出一个真实架构错误：只安装 `status_commands` 时仍会注册 KV Cache 空看板，而 token 数据实际由 `observe` 写入。现已把导航、看板、样式、RPC 和 Turn 尾部输出 token 全部迁入 `observe`；核心仅保留插件资产注册、上下文 RPC 和通用消息 ID 关联。未启用 `observe` 时，插件目录不再出现 KV Cache，回答尾部也不会保留空插槽或伪造统计。
 
-Pixel 7 真实回合验证得到 `model_output_tokens=51`，同一消息尾部显示“本轮输出 51 tokens”；插件目录只有一个 Observe 提供的 KV Cache 入口，看板同步显示真实 92.6% 命中率。首次查库早于异步 writer 的竞态使用有限退避重试闭环，partial/unavailable usage 不显示为完整统计。
+Pixel 7 真实回合验证得到 `model_output_tokens=51`，同一消息尾部显示“输出 51 tokens”；插件目录只有一个 Observe 提供的 KV Cache 入口，看板同步显示真实 92.6% 命中率。首次查库早于异步 writer 的竞态使用有限退避重试闭环，partial/unavailable usage 不显示为完整统计。
 
 反向验收临时禁用 Observe 后，Pixel 7 的插件数量归零，KV Cache 入口和回答尾部 token 均消失；恢复插件后真实看板重新出现。最终 Agent-native、可靠性和媒体三条门禁全部通过，说明该能力确实由插件按启用状态动态提供。
+
+## 2026-07-17 Material 3 发布收口
+
+- 使用 Material 3、Better UI、Better Colors、Better Typography 和 Kill AI Slop 对新增移动界面做最终审阅，只调整本批新增表面，没有把既有聊天界面重写成另一套设计系统。
+- 插件目录移除重复标题，保留“运行中 · N”状态和一个平面列表；插件自身提供 40dp 标识，颜色只表达当前可进入的运行能力。
+- Observe 看板把“近期被动复用”“被动总览”“主动链路”组织成同一指标组；没有主动数据时使用中性 surface 并写明“暂无记录”，不再用紫色暗示并不存在的数据。
+- Turn 尾注收敛为“输出 N tokens”，只在 Observe 提供真实 `model_output_tokens` 时出现；核心不创建空插槽，也不拥有 KV Cache 样式。
+- 错误提示改为 Material snackbar：聊天页固定在输入栏之上，插件页固定在底部；连接错误可关闭，插件加载错误可重试，错误详情保持单行且不遮挡主要任务。
+- Pixel 7 已验证 `OBSERVEOUTPUT` 历史 Turn 显示“输出 51 tokens”，插件目录与 KV 看板返回栈正常。截图为 `/tmp/pixel7-chat-token-tail.png`、`/tmp/pixel7-md3-plugin-directory-v3.png`、`/tmp/pixel7-md3-cache-v3.png`。
+- 自动验证通过 `npm run typecheck`、`npm run lint`、Observe 的 2 项移动面板测试与 6 项插件测试、`./scripts/verify-mobile-agent-native.sh`、可靠性门禁和媒体门禁。

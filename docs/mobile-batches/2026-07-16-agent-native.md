@@ -9,7 +9,7 @@
 | C3 后台任务状态 | 顶栏显示运行任务数；抽屉在对应会话旁显示紫色运行点 | 复用 `TurnStopCoordinator` 的真实活跃 turn，不新增第二套任务状态 |
 | C7 完成与确认通知 | 完成通知与等待确认通知使用不同标题和动作；点击回到原会话 | runtime 的 `request_user_confirmation` 工具显式产生确认态，不从问号或文案猜测 |
 | C8 插件入口 | 抽屉提供一个紧凑“插件”入口；只列出当前运行且声明移动看板的插件 | 插件目录和完整看板是两级页面，看板左上角始终可返回 |
-| C9 KV Cache 试点 | `observe` 插件提供真实 KV Cache 总览、被动/主动命中率、turn 明细与本轮输出 token | 数据生产、查询和界面由同一插件拥有；未启用 `observe` 时不注册入口 |
+| C9 KV Cache 试点 | `observe` 插件提供真实 KV Cache 总览、被动/主动命中率、turn 明细与输出 token | 数据生产、查询和界面由同一插件拥有；未启用 `observe` 时不注册入口 |
 | C10 门禁 | 提供一条自动验证命令和两轮 Pixel 7 验收步骤 | 自动测试不代替通知落点、触觉和窄屏布局的真机观察 |
 
 ## 信息与调用路径
@@ -68,7 +68,7 @@
 
 缺少该字段表示普通完成；未知枚举或非对象 `metadata` 会在持久化事件和推进 cursor 前明确失败。入站消息中的同名 metadata 会被移除，不能由客户端伪造确认通知。当前实现不根据问号、按钮文案或模型措辞猜测“等待确认”。
 
-KV Cache 看板只展示 `observe` 数据库的真实字段：跟踪 turn 数、prompt token、hit、miss、hit rate、source、session、用户预览和时间。助手回答尾部只在存在真实 `model_usage.output_tokens` 时显示“本轮输出 N tokens”。移动端核心只注册插件资产并转发上下文 RPC；看板、样式、查询和 Turn 插入组件都由 `observe` 自己提供。
+KV Cache 看板只展示 `observe` 数据库的真实字段：跟踪 turn 数、prompt token、hit、miss、hit rate、source、session、用户预览和时间。助手回答尾部只在存在真实 `model_usage.output_tokens` 时显示“输出 N tokens”。移动端核心只注册插件资产并转发上下文 RPC；看板、样式、查询和 Turn 插入组件都由 `observe` 自己提供。
 
 ## 自动门禁
 
@@ -127,7 +127,24 @@ node --check mobile_panel.js
 - 核心只在通用 `TurnCommitted` 事件里暴露已持久化的助手消息 ID，使插件能把历史消息稳定关联到真实 Turn；没有加入任何 KV Cache 专用协议或样式。
 - Turn 尾部不展示输入量、命中率或会话累计，只显示真实聚合的本轮模型输出 token；缺少 provider usage 时不伪造估算值，也不渲染占位。
 - `status_commands` 所有权修正已发布为 `e424b3e`；`observe` 的界面迁移与竞态修复已发布为 `b6fb879`、`c3d952c`。隔离插件缓存通过 `plugin-install` 重装，没有修改正式插件缓存。
-- Pixel 7 真实发送一轮对话后，`observe.db` 记录 `assistant_message_id=mobile:...:47`、`model_output_tokens=51`，手机同一回答尾部显示“本轮输出 51 tokens”；数据库与 UI 一致。插件目录只列 1 个由 `observe` 注册的 KV Cache 看板，看板显示同一轮 92.6% 命中率和 29,696 / 32,071 token。截图为 `/tmp/pixel7-output-token-result.png`、`/tmp/pixel7-observe-plugin-directory.png`、`/tmp/pixel7-observe-dashboard-real.png`。
+- Pixel 7 真实发送一轮对话后，`observe.db` 记录 `assistant_message_id=mobile:...:47`、`model_output_tokens=51`，手机同一回答尾部显示“输出 51 tokens”；数据库与 UI 一致。插件目录只列 1 个由 `observe` 注册的 KV Cache 看板，看板显示同一轮 92.6% 命中率和 29,696 / 32,071 token。截图为 `/tmp/pixel7-output-token-result.png`、`/tmp/pixel7-observe-plugin-directory.png`、`/tmp/pixel7-observe-dashboard-real.png`。
 - 独立复核发现并修复四项发布前问题：KV 专用颜色仍在核心、异步 writer 首次查询竞态、partial usage 被当成完整统计、空 `turn_id` 唯一索引丢遥测。修复后核心已无 KV 专用 token；插件使用 scoped OKLCH token；RPC 按 0/100/300/700ms 有限重试；只展示 `coverage=exact`；旧唯一索引在迁移时删除。
 - 反向验收临时禁用隔离环境的 `observe` 后，服务端日志明确记录插件被 manifest 禁用；Pixel 7 抽屉显示“插件 0”，KV Cache 入口和回答尾部 token 同时消失。恢复插件并重启隔离服务后，入口与真实数据恢复，证明界面没有残留在核心或 `status_commands`。
 - 最终自动门禁通过 `./scripts/verify-mobile-agent-native.sh`、`clients/android/scripts/verify-reliability-gate.sh` 和 `clients/android/scripts/media-gate.sh`；Pixel 7 最新调试包未出现 FATAL、WebView render error、event gap 或 `plugin.ui` 错误。
+
+## Material 3 收口与 0.7.9 验收
+
+```text
+插件目录                  Observe 看板                 回答尾部
+┌─────────────────┐      ┌─────────────────────┐     ┌──────────────┐
+│ 运行中 · 1       │      │ 近期被动复用  92.6% │     │ 最终回答正文  │
+│ [KV] KV Cache  › │  →   │ 被动总览      1 轮  │  →  │ 输出 51 tokens│
+└─────────────────┘      │ 主动链路      暂无记录│     └──────────────┘
+                         └─────────────────────┘
+```
+
+- 插件目录是运行能力选择器，不再重复显示页面标题，也不使用等权卡片墙。
+- 看板指标属于一个语义组：蓝色表示当前缓存窗口，青色表示被动链路，紫色只在真实主动数据存在时出现；空主动链路回到中性 surface。
+- 形状按组件职责分级：snackbar 4dp、列表标识 12dp、指标组 20dp、触控胶囊使用 full shape；层级主要依靠 state layer、排版和留白，不增加装饰阴影。
+- 新增界面统一使用 500/700 的可用字重、12px 以上辅助文字和 tabular numerals；没有为了视觉统一批量改写既有聊天排版。
+- Pixel 7 在隔离 Mobile Lab 中验证插件目录、看板返回栈、真实空态与 `OBSERVEOUTPUT` 的 51-token 尾注。最终发布门禁包含 Web 类型检查、ESLint、15 项状态测试、Android 单元与 androidTest 构建、可靠性门禁及媒体门禁。
