@@ -2465,6 +2465,131 @@ async def test_plugin_watcher_retries_notification_without_reconciling_again() -
 
 
 @pytest.mark.asyncio
+async def test_plugin_watcher_confirms_disabled_result_against_stable_revision() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def watch_revision(self) -> str:
+            return "stable"
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            if self.calls == 1:
+                return [{"plugin_id": "observe", "publication_state": "disabled"}]
+            return [{"plugin_id": "observe", "publication_state": "committed"}]
+
+    manager = Manager()
+    notification_calls = 0
+
+    async def notify() -> None:
+        nonlocal notification_calls
+        notification_calls += 1
+
+    watcher = PluginWatcher(  # type: ignore[arg-type]
+        manager,
+        interval_seconds=0.01,
+        after_reconcile=notify,
+    )
+    task = asyncio.create_task(watcher.run())
+    await asyncio.sleep(0)
+    watcher.wake()
+    for _ in range(100):
+        if manager.calls >= 2:
+            break
+        await asyncio.sleep(0.01)
+
+    watcher.stop()
+    await task
+    assert manager.calls == 2
+    assert notification_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_notifies_explicit_disable_after_confirmation() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def watch_revision(self) -> str:
+            return "stable"
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            if self.calls == 1:
+                return [{"plugin_id": "observe", "publication_state": "disabled"}]
+            return []
+
+    manager = Manager()
+    notification_calls = 0
+
+    async def notify() -> None:
+        nonlocal notification_calls
+        notification_calls += 1
+
+    watcher = PluginWatcher(  # type: ignore[arg-type]
+        manager,
+        interval_seconds=0.01,
+        after_reconcile=notify,
+    )
+    task = asyncio.create_task(watcher.run())
+    await asyncio.sleep(0)
+    watcher.wake()
+    for _ in range(100):
+        if manager.calls >= 2 and notification_calls == 1:
+            break
+        await asyncio.sleep(0.01)
+
+    watcher.stop()
+    await task
+    assert manager.calls == 2
+    assert notification_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_retries_failed_disabled_confirmation() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def watch_revision(self) -> str:
+            return "stable"
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            if self.calls == 1:
+                return [{"plugin_id": "observe", "publication_state": "disabled"}]
+            if self.calls == 2:
+                raise RuntimeError("temporary scan failure")
+            return []
+
+    manager = Manager()
+    notification_calls = 0
+
+    async def notify() -> None:
+        nonlocal notification_calls
+        notification_calls += 1
+
+    watcher = PluginWatcher(  # type: ignore[arg-type]
+        manager,
+        interval_seconds=0.01,
+        after_reconcile=notify,
+    )
+    task = asyncio.create_task(watcher.run())
+    await asyncio.sleep(0)
+    watcher.wake()
+    for _ in range(100):
+        if manager.calls >= 3 and notification_calls == 1:
+            break
+        await asyncio.sleep(0.01)
+
+    watcher.stop()
+    await task
+    assert manager.calls == 3
+    assert notification_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_plugin_watcher_propagates_cancellation_and_marks_stopped() -> None:
     class Manager:
         def __init__(self) -> None:

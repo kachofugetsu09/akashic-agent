@@ -22,6 +22,7 @@ class PluginWatcher:
         self._after_reconcile = after_reconcile
         self._wake = asyncio.Event()
         self._forced = False
+        self._confirmation_pending = False
         self._notification_pending = False
         self._running = True
         self._run_started = False
@@ -68,13 +69,32 @@ class PluginWatcher:
                 if not changed and not self._notification_pending:
                     continue
                 # 4. 插件版本只协调一次，通知失败仅重试通知
+                confirming = self._confirmation_pending
+                needs_confirmation = False
                 if changed:
                     try:
-                        _ = await self._manager.reconcile_changed()
+                        results = await self._manager.reconcile_changed()
                     except Exception:
                         logger.exception("插件热重载失败")
+                        if confirming:
+                            self._forced = True
+                            continue
+                    else:
+                        # 安装器原子替换目录时，单次 discover 可能只看到短暂缺口。
+                        # 禁用结果先确认一次，只向移动端发布稳定后的最终目录。
+                        needs_confirmation = any(
+                            result.get("publication_state") == "disabled"
+                            for result in results
+                        )
+                        if needs_confirmation:
+                            self._confirmation_pending = True
+                            self._forced = True
+                        elif confirming:
+                            self._confirmation_pending = False
                     revision = current_revision
                     self._notification_pending = self._after_reconcile is not None
+                if needs_confirmation:
+                    continue
                 if self._notification_pending:
                     try:
                         assert self._after_reconcile is not None

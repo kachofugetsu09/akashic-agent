@@ -1388,6 +1388,7 @@ def test_connection_control_timeout_only_removes_slow_connection(
         )
 
         assert device_id not in runtime._connections
+        await asyncio.wait_for(socket.close_started.wait(), timeout=1)
         assert runtime.storage.read_cursor(device_id).next_event_seq == 1
         runtime.close()
 

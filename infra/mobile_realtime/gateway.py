@@ -801,9 +801,20 @@ class MobileGatewayRuntime:
                 device_id,
                 error,
             )
+            removed = False
             async with self._delivery_lock:
                 if self._connections.get(device_id) is connection:
                     _ = self._connections.pop(device_id)
+                    removed = True
+            if removed:
+                _ = asyncio.create_task(
+                    self._close_connection(
+                        device_id,
+                        connection,
+                        code=_CLOSE_SLOW_CONSUMER,
+                        reason="连接控制帧投递失败，请重新连接恢复",
+                    )
+                )
 
     def _schedule_delivery_locked(
         self,
