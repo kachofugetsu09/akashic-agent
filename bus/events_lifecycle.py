@@ -72,6 +72,7 @@ class TurnCommitted:
     assistant_response: str
     tools_used: list[str]
     turn_id: str = ""
+    assistant_message_id: str | None = None
     thinking: str | None = None
     raw_reply: str | None = None
     meme_tag: str | None = None

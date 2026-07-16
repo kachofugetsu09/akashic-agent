@@ -1575,6 +1575,7 @@ async def test_after_reasoning_persists_clean_mobile_reply_projection(tmp_path: 
 @pytest.mark.asyncio
 async def test_after_turn_collects_extra_and_telemetry_slots():
     committed_extra: list[dict[str, object]] = []
+    committed_events: list[TurnCommitted] = []
     after_turn_metadata: list[dict[str, object]] = []
     bus = EventBus()
 
@@ -1595,6 +1596,7 @@ async def test_after_turn_collects_extra_and_telemetry_slots():
             return frame
 
     async def committed_handler(event: TurnCommitted) -> None:
+        committed_events.append(event)
         committed_extra.append(dict(event.extra))
 
     async def after_turn_handler(ctx: AfterTurnCtx) -> None:
@@ -1634,10 +1636,16 @@ async def test_after_turn_collects_extra_and_telemetry_slots():
     await phase.run(
         TurnSnapshot(
             state=state,
-            outbound=OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content="reply"),
+            outbound=OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="reply",
+                session_message_id="telegram:123:1",
+            ),
             ctx=ctx,
         )
     )
 
     assert committed_extra[0]["plugin_flag"] == "extra"
+    assert committed_events[0].assistant_message_id == "telegram:123:1"
     assert after_turn_metadata == [{"plugin_flag": "telemetry"}]
