@@ -531,6 +531,36 @@ class MobileRealtimeStorage:
             ).fetchall()
         return tuple(_inbox_event_from_row(row) for row in rows)
 
+    def durable_event_range_is_contiguous(
+        self,
+        device_id: str,
+        *,
+        after_event_seq: int,
+        through_event_seq: int,
+    ) -> bool:
+        """确认指定待重放窗口包含每一个已分配序号。"""
+
+        if after_event_seq < 0:
+            raise ValueError("after_event_seq 不能为负数")
+        if through_event_seq < after_event_seq:
+            raise ValueError("through_event_seq 不能小于 after_event_seq")
+        expected_count = through_event_seq - after_event_seq
+        with self._lock:
+            self._require_device_cursor(device_id)
+            row = self._db.execute(
+                """
+                SELECT COUNT(*) AS event_count
+                FROM mobile_device_inbox
+                WHERE device_id = ?
+                  AND event_seq > ?
+                  AND event_seq <= ?
+                """,
+                (device_id, after_event_seq, through_event_seq),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("mobile_device_inbox COUNT 查询未返回结果行")
+        return _row_nonnegative_int(row, "event_count") == expected_count
+
     def mark_events_sent(self, device_id: str, *, through_event_seq: int) -> DeviceCursor:
         """推进持久化的已发送上限，供累计 ACK 做越界判断。"""
 

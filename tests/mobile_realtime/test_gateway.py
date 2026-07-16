@@ -5,7 +5,9 @@ import base64
 import hashlib
 import json
 import secrets
+import sqlite3
 from collections import deque
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -289,6 +291,59 @@ def test_resume_reset_terminal_explicitly_bridges_client_sequence_gap(
         stored = json.loads(terminal.envelope_json)
         assert stored["type"] == "sync.reset_required"
         assert stored["payload"]["reason"] == "client_ack_behind_server_cursor"
+    finally:
+        runtime.close()
+
+
+def test_resume_resets_when_durable_inbox_has_sequence_gap(
+    tmp_path: Path,
+) -> None:
+    """持久化窗口缺号时直接重建，避免客户端永久重连。"""
+
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    runtime, _ = asyncio.run(build())
+    device_id = uuid4().hex
+    _register_test_device(runtime, device_id)
+    try:
+        for index in range(3):
+            runtime._enqueue_event(
+                device_id=device_id,
+                event_type="message.final",
+                payload={"content": f"message-{index}"},
+            )
+        with closing(sqlite3.connect(runtime.storage.db_path)) as db, db:
+            db.execute(
+                "DELETE FROM mobile_device_inbox WHERE device_id = ? AND event_seq = ?",
+                (device_id, 1),
+            )
+
+        replay_after, replay_through, terminal = runtime._prepare_resume(
+            device_id=device_id,
+            last_ack=0,
+        )
+
+        assert (replay_after, replay_through) == (0, 0)
+        assert terminal.event_seq == 4
+        stored = json.loads(terminal.envelope_json)
+        assert stored["type"] == "sync.reset_required"
+        assert stored["payload"]["reason"] == "inbox_sequence_gap"
+        assert runtime.storage.count_durable_events(device_id) == 3
+
+        runtime.inbox.mark_sent(device_id, through_event_seq=terminal.event_seq)
+        runtime.inbox.acknowledge(device_id, through_event_seq=terminal.event_seq)
+        replay_after, replay_through, completed = runtime._prepare_resume(
+            device_id=device_id,
+            last_ack=terminal.event_seq,
+        )
+
+        assert (replay_after, replay_through) == (4, 4)
+        assert json.loads(completed.envelope_json)["type"] == "sync.completed"
     finally:
         runtime.close()
 

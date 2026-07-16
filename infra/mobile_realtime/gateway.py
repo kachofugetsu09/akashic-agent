@@ -615,7 +615,20 @@ class MobileGatewayRuntime:
             return last_ack, last_ack, terminal
         replay_through = cursor.next_event_seq - 1
 
-        # 3. 终止帧先占号，随后并发 publish 只能排在它之后
+        # 3. 持久化窗口已有缺口时必须重建，不能把后续事件伪装成连续重放
+        if not self.storage.durable_event_range_is_contiguous(
+            device_id,
+            after_event_seq=last_ack,
+            through_event_seq=replay_through,
+        ):
+            terminal = self._enqueue_event(
+                device_id=device_id,
+                event_type="sync.reset_required",
+                payload={"reason": "inbox_sequence_gap"},
+            )
+            return last_ack, last_ack, terminal
+
+        # 4. 终止帧先占号，随后并发 publish 只能排在它之后
         terminal = self._enqueue_event(
             device_id=device_id,
             event_type="sync.completed",

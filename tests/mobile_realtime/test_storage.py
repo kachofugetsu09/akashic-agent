@@ -94,6 +94,35 @@ def test_database_uses_wal_and_keeps_server_identity_stable(
         )
 
 
+def test_durable_event_range_detects_missing_sequence(
+    storage: MobileRealtimeStorage,
+) -> None:
+    storage.register_device(_device())
+    for index in range(3):
+        storage.append_durable_event(
+            device_id="device-1",
+            event_id=f"event-{index + 1}",
+            envelope_json=_event_json(f"event-{index + 1}"),
+            created_at=NOW,
+        )
+
+    assert storage.durable_event_range_is_contiguous(
+        "device-1",
+        after_event_seq=0,
+        through_event_seq=3,
+    )
+    with closing(sqlite3.connect(storage.db_path)) as db, db:
+        db.execute(
+            "DELETE FROM mobile_device_inbox WHERE device_id = ? AND event_seq = ?",
+            ("device-1", 2),
+        )
+    assert not storage.durable_event_range_is_contiguous(
+        "device-1",
+        after_event_seq=0,
+        through_event_seq=3,
+    )
+
+
 def test_pairing_confirmation_and_consumption_are_one_time(
     storage: MobileRealtimeStorage,
 ) -> None:

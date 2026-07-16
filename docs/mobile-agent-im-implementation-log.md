@@ -79,6 +79,7 @@
 - 过程紫色继续用于活动节点；另设同色相、较低明度的 `trace-text`，保证小字号状态文本在 surface 上达到 4.70:1，不牺牲点亮节点的明亮感。
 - 协议拒绝按可恢复性分流：outbox 改为逐条单飞，Gateway 用 `4410` 明确标记坏 `message.send`，客户端只隔离当前命令并自动恢复后续队列；无法归因的 `4400` 和版本错误 `4406` 保留待发内容，不再伪装成网络抖动循环重连。
 - Gateway 对手机和 WebSocket close reason 只返回静态协议原因；Pydantic 字段位置、判别值和用户正文仅留在受控服务端诊断边界，不回显到客户端。
+- resume 会核对冻结的 durable inbox 是否逐号连续；缺号时只发送 `sync.reset_required`，由既有 Android reset 协议跳过损坏区间、清理可重建投影并全量同步，不放宽客户端严格顺序校验。
 
 #### 自动化验证
 
@@ -90,6 +91,7 @@
 - `ANDROID_HOME="$HOME/Android/Sdk" ./gradlew :app:assembleDebugAndroidTest`：通过，Room 迁移与 LocalDeliveryStore instrumentation 源码完成真实编译。
 - `ANDROID_HOME="$HOME/Android/Sdk" ./gradlew testDebugUnitTest`：通过；协议关闭策略区分坏命令与版本不兼容。
 - Gateway 回归用例真实完成认证、resume、坏 `reply_to` 投递、`protocol.error` 和 WebSocket close，确认控制帧与 close reason 均不包含用户载荷。
+- durable inbox 回归覆盖首条缺失、中间缺失、reset ACK 后再次正常 resume；既有用例继续覆盖 600 条分页和 resume 期间并发事件位于 terminal 之后。
 - 用 v3 Room schema 创建临时 SQLite，执行迁移 fixture 和 `MIGRATION_3_4` 三条 SQL：原消息结果为 `保留我|||`，证明正文保留且新增引用列为空。
 - WCAG fallback 色值检查：正文/surface `14.72:1`，次要文字/surface `6.66:1`，引用文字/container `8.82:1`，白色/primary `4.87:1`，error/container `4.79:1`，trace-text/surface `4.70:1`。
 
@@ -105,6 +107,13 @@
 - 引用该用户消息发送 `quote_user_canonical_reply_0503`：落库目标为 `:12`，`reply_role=user`；随后引用 Agent 回答“嗯。”发送 `quote_agent_canonical_reply_0506`：落库目标为 `:15`，`reply_role=assistant`。
 - 两次新探针均在真实模型请求中分别呈现“来自 你”和“来自 Akashic”；截图为 `/tmp/akashic-pixel7-probe-0501-final2.png`、`/tmp/akashic-pixel7-quote-user-sent-0503b.png`、`/tmp/akashic-pixel7-quote-agent-sent-0506.png`。
 - Pixel 7 使用签名 release APK；重启应用、断开并恢复 WebSocket 后引用关系仍由服务端历史恢复，logcat 无 FATAL、Room、协议反序列化或证书链错误。
+
+#### 正式网关序列缺口恢复
+
+- Pixel 9 的真实 cursor 为 `ack=1994`，durable inbox 首条却是 `1996`；客户端按协议等待 `1995`，旧服务端每次重连又追加 `sync.completed`，最终把序号推到 2.7 万并形成永久重连。
+- 重启前使用 SQLite online backup 保存 `mobile_realtime.db` 和 runtime 日志，备份位于 `workspace/backups/mobile-sequence-gap-before-fix-20260716-0855/`，`integrity_check=ok`。
+- 新 Gateway 首次 resume 发出 `sync.reset_required` 后，Pixel 9 cursor 推进到 `ack=27789`，durable inbox 清为 `0`；3 秒复查 cursor 和 inbox 均保持不变，重连风暴停止。
+- 重启同时发现 2 条已无消息本体的 embedding 缓存阻塞 Akasha fail-fast 启动；先备份完整 `sessions.db` 到 `workspace/backups/sessions-orphan-embeddings-before-repair-20260716-0859/`，再只删除 2 条孤儿缓存。修复后 `integrity_check=ok`、孤儿数为 `0`，未删除消息或会话。
 
 #### 独立 Review
 
