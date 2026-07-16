@@ -338,3 +338,11 @@ fallback 主色文字/页面对比为 `4.52:1`，on-primary-container/primary-co
 本轮形成的完整日用链路是：会话预览/时间/未读与阅读锚点、离线多消息 exactly-once 队列、通知精确消息导航和快捷回复、多附件同消息发送、后台大文件进度、图片整屏查看、后台 Agent 运行状态、显式确认通知，以及运行中插件目录与 KV Cache 试点看板。三批没有各造一套状态：会话活跃态来自真实 turn，附件继续由 Room transfer owner 持有，确认语义只由 `request_user_confirmation` 产生，插件数据只通过 `plugin.ui.call` 读取 canonical 插件 reader。
 
 最终交叉门禁同时运行 Agent-native gate 与 media gate；Pixel 7 再验证插件返回栈和图片 history 共存。真机发现并修复两项自动构建未暴露的问题：缺少 `ACCESS_NETWORK_STATE` 导致 instrumentation 启动失败，以及 cursor 测试的 `Int`/`Long` 断言类型不一致。修复后对应真机测试均通过，应用和隔离网关日志无 FATAL、WebView render error、event gap 或协议反序列化错误。
+
+### Cycle 6 所有权修正：Observe 自有移动看板
+
+隔离环境暴露出一个真实架构错误：只安装 `status_commands` 时仍会注册 KV Cache 空看板，而 token 数据实际由 `observe` 写入。现已把导航、看板、样式、RPC 和 Turn 尾部输出 token 全部迁入 `observe`；核心仅保留插件资产注册、上下文 RPC 和通用消息 ID 关联。未启用 `observe` 时，插件目录不再出现 KV Cache，回答尾部也不会保留空插槽或伪造统计。
+
+Pixel 7 真实回合验证得到 `model_output_tokens=51`，同一消息尾部显示“本轮输出 51 tokens”；插件目录只有一个 Observe 提供的 KV Cache 入口，看板同步显示真实 92.6% 命中率。首次查库早于异步 writer 的竞态使用有限退避重试闭环，partial/unavailable usage 不显示为完整统计。
+
+反向验收临时禁用 Observe 后，Pixel 7 的插件数量归零，KV Cache 入口和回答尾部 token 均消失；恢复插件后真实看板重新出现。最终 Agent-native、可靠性和媒体三条门禁全部通过，说明该能力确实由插件按启用状态动态提供。
