@@ -70,7 +70,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         attachmentDrafts,
         navigationTarget,
     ) { session, graph, conversations, attachments, target ->
-        val messages = graph.map(::toMessageUi)
+        val scopedGraph = graph.filter { it.message.sessionId == session.currentSessionId }
+        val messages = scopedGraph.map(::toMessageUi)
         val connection = connectionPresentation(session.connection, session.errorMessage)
         ConversationUiState(
             connectionLabel = connection.label,
@@ -133,7 +134,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             pluginUiResponses = session.pluginUiResponses.map {
                 PluginUiResponseUi(it.requestId, it.result?.toString(), it.error)
             },
-            isStreaming = graph.any { it.message.deliveryState == "streaming" },
+            isStreaming = scopedGraph.any { it.message.deliveryState == "streaming" },
             isResyncing = session.connection.phase == ConnectionPhase.SYNCING,
             canResync = session.connection.phase == ConnectionPhase.READY &&
                 session.activeTurnId == null &&

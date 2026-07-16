@@ -1629,11 +1629,14 @@ function useMobileReadingPosition(
   useLayoutEffect(() => {
     // 1. 每次进入会话只恢复一次已持久化锚点
     if (!sessionId || restoredSessionRef.current === sessionId || messages.length === 0) return;
-    restoredSessionRef.current = sessionId;
-    if (!readingPosition) return;
+    if (!readingPosition) {
+      restoredSessionRef.current = sessionId;
+      return;
+    }
     const element = messageElementsRef.current.get(readingPosition.messageId);
     const scrollElement = scrollRef.current;
     if (!element || !scrollElement) return;
+    restoredSessionRef.current = sessionId;
     stopScroll();
     element.scrollIntoView({ block: "start", behavior: "auto" });
     scrollElement.scrollTop -= readingPosition.offsetPx;
@@ -1673,7 +1676,10 @@ function useMobileReadingPosition(
 
   useEffect(() => {
     // 3. 真正回到底部时推进该会话的持久化已读水位
-    if (!sessionId || !isAtBottom || suspended) return;
+    const scrollElement = scrollRef.current;
+    if (!sessionId || !isAtBottom || suspended || !scrollElement) return;
+    const distanceFromBottom = scrollElement.scrollHeight - scrollElement.scrollTop - scrollElement.clientHeight;
+    if (distanceFromBottom > 2) return;
     const readAt = messages.reduce(
       (latest, message) => message.role === "assistant" ? Math.max(latest, message.createdAt) : latest,
       0,
@@ -1681,7 +1687,7 @@ function useMobileReadingPosition(
     if (readAt <= lastReadAtRef.current) return;
     lastReadAtRef.current = readAt;
     window.AkashicNative?.markSessionReadThrough(sessionId, readAt);
-  }, [isAtBottom, messages, sessionId, suspended]);
+  }, [isAtBottom, messages, scrollRef, sessionId, suspended]);
 }
 
 /** 按顶层助手消息追踪当前阅读位置之后的未读集合。 */
