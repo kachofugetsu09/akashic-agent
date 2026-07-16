@@ -7,6 +7,7 @@ export ANDROID_HOME
 
 cd "$ROOT"
 test -x node_modules/.bin/tsc
+rg -q 'android.permission.ACCESS_NETWORK_STATE' clients/android/app/src/main/AndroidManifest.xml
 APKSIGNER="$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner -print | sort -V | tail -n 1)"
 test -x "$APKSIGNER"
 npm run typecheck
