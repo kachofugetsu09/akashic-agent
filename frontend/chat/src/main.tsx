@@ -80,6 +80,7 @@ export interface ToolBlock {
   input: unknown;
   output: unknown;
   errorText: string | undefined;
+  durationMs?: number;
 }
 
 export type AgentBlock = ThinkingBlock | ToolBlock;
@@ -737,10 +738,11 @@ function handleFrame(
     return;
   }
   if (frame.type === "react.tool.completed") {
+    const succeeded = frame.status === "success";
     ctx.setMessages((messages) => updateTool(messages, frame.call_id, {
-      status: frame.status === "error" ? "output-error" : "output-available",
+      status: succeeded ? "output-available" : "output-error",
       output: frame.result_preview,
-      errorText: frame.status === "error" ? frame.result_preview : undefined,
+      errorText: succeeded ? undefined : frame.result_preview,
     }));
     return;
   }
@@ -939,7 +941,8 @@ function toolCallToBlock(call: unknown, groupIndex: number, callIndex: number): 
   if (!item) return null;
   const name = stringValue(item.name);
   if (!name) return null;
-  const status = stringValue(item.status) === "error" ? "output-error" : "output-available";
+  const rawStatus = stringValue(item.status);
+  const status = !rawStatus || rawStatus === "success" ? "output-available" : "output-error";
   return {
     kind: "tool",
     callId: stringValue(item.call_id) || `${groupIndex}-${callIndex}-${name}`,

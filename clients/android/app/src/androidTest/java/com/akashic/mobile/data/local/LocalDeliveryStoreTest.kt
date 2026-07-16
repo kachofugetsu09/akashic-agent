@@ -62,7 +62,8 @@ class LocalDeliveryStoreTest {
             }),
             event(4, "react.tool.completed", buildJsonObject {
                 put("block_id", "tool-1"); put("call_id", "call-1"); put("ordinal", 1); put("tool_name", "shell")
-                put("status", "success"); put("result_preview", "完成")
+                put("status", "success"); put("result_preview", "完成"); put("duration_ms", 615)
+                put("arguments", buildJsonObject { put("description", "读取实际运行日志") })
             }),
             event(5, "react.thinking.delta", buildJsonObject {
                 put("block_id", "think-2"); put("ordinal", 2); put("delta", "再判断")
@@ -75,7 +76,13 @@ class LocalDeliveryStoreTest {
         assertEquals(listOf("think-1", "tool-1", "think-2"), blocks.map { it.blockId })
         assertEquals(listOf("completed", "completed", "running"), blocks.map { it.status })
         assertEquals(
-            StoredToolBlock("shell", "读取运行日志", "完成"),
+            StoredToolBlock(
+                name = "shell",
+                description = "读取实际运行日志",
+                resultPreview = "完成",
+                arguments = buildJsonObject { put("description", "读取实际运行日志") },
+                durationMillis = 615,
+            ),
             decodeStoredToolBlock(blocks[1].content),
         )
         assertEquals("答案", database.messages().get("assistant:turn")!!.text)
@@ -91,7 +98,8 @@ class LocalDeliveryStoreTest {
             }),
             event(3, "react.tool.completed", buildJsonObject {
                 put("block_id", "tool-1"); put("call_id", "call-1"); put("ordinal", 0); put("tool_name", "shell")
-                put("status", "success"); put("result_preview", "完成")
+                put("status", "denied"); put("result_preview", "策略拒绝"); put("duration_ms", 20)
+                put("arguments", buildJsonObject { put("description", "检查实际进程") })
             }),
             event(4, "message.final", buildJsonObject {
                 put("message_id", "mobile:test:assistant:final")
@@ -103,6 +111,7 @@ class LocalDeliveryStoreTest {
         val blocks = database.messages().getBlocks("mobile:test:assistant:final")
         assertEquals(listOf("thinking", "tool"), blocks.map { it.kind })
         assertEquals(listOf(-1, 0), blocks.map { it.ordinal })
+        assertEquals("failed", blocks.last().status)
         assertEquals("先确认运行状态，再给出结论。", blocks.first().content)
     }
 
@@ -282,9 +291,9 @@ class LocalDeliveryStoreTest {
                                     add(buildJsonObject {
                                         put("call_id", "call-1")
                                         put("name", "shell")
-                                        put("status", "success")
+                                        put("status", "blocked")
                                         put("description", "读取状态")
-                                        put("result_preview", "完成")
+                                        put("result_preview", "未执行")
                                     })
                                 })
                             })
@@ -309,7 +318,8 @@ class LocalDeliveryStoreTest {
         )
         val blocks = database.messages().getBlocks("mobile:test:1")
         assertEquals(listOf("thinking", "tool", "thinking"), blocks.map { it.kind })
-        assertEquals(StoredToolBlock("shell", "读取状态", "完成"), decodeStoredToolBlock(blocks[1].content))
+        assertEquals("failed", blocks[1].status)
+        assertEquals(StoredToolBlock("shell", "读取状态", "未执行"), decodeStoredToolBlock(blocks[1].content))
     }
 
     @Test

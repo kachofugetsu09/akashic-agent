@@ -451,6 +451,34 @@ input {
   min-width: 0;
 }
 
+.tool-step-summary {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-step-summary-static {
+  cursor: default;
+}
+
+.tool-step-summary:focus-visible {
+  outline: 2px solid #8b5cf6;
+  outline-offset: 3px;
+}
+
+.tool-step-heading {
+  display: grid;
+  grid-template-columns: minmax(0, auto) 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+
 .tool-step-title {
   display: flex;
   align-items: center;
@@ -473,6 +501,93 @@ input {
   margin-top: 2px;
   color: #777;
   font-size: 13px;
+}
+
+.tool-step-state {
+  color: #717171;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tool-step-chevron {
+  color: #777;
+  transition: transform 180ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.tool-step-chevron.open {
+  transform: rotate(180deg);
+}
+
+.tool-step-disclosure {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.tool-step-disclosure.open {
+  grid-template-rows: 1fr;
+}
+
+.tool-step-disclosure-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tool-detail-surface {
+  display: grid;
+  gap: 12px;
+  margin-top: 8px;
+  border-left: 1px solid #333;
+  padding: 10px 12px;
+  background: #111;
+}
+
+.tool-detail-section h4 {
+  margin: 0 0 6px;
+  color: #858585;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
+.tool-parameter-list {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.tool-parameter {
+  display: grid;
+  grid-template-columns: minmax(72px, auto) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.tool-parameter dt {
+  color: #777;
+  font-size: 12px;
+}
+
+.tool-parameter dd,
+.tool-result {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: #bdbdbd;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+.tool-result.error {
+  color: #e19a9a;
+}
+
+.tool-result {
+  max-height: 11rem;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 @keyframes trace-open {
@@ -1023,7 +1138,9 @@ form.composer:focus-within [data-slot="input-group"] {
   .mobile-connect-trigger,
   .mobile-pairing-dialog,
   .mobile-pairing-dialog > button,
-  .mobile-pairing-button {
+  .mobile-pairing-button,
+  .tool-step-disclosure,
+  .tool-step-chevron {
     transition-duration: 0.01ms;
   }
 }

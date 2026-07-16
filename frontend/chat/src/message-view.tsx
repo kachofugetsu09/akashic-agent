@@ -26,7 +26,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { ChevronDown, Wrench } from "lucide-react";
-import { Fragment, type ReactNode } from "react";
+import { Fragment, type ReactNode, useMemo, useState } from "react";
 import type {
   AgentBlock,
   ChatMessage,
@@ -229,6 +229,24 @@ function ThinkingStep({ block, active }: { block: ThinkingBlock; active: boolean
 
 function ToolStep({ block, active }: { block: ToolBlock; active: boolean }) {
   const description = toolDescription(block.input);
+  const resultValue = block.status === "output-error" ? block.errorText : block.output;
+  const hasDetails = toolHasParameters(block.input) || toolHasValue(resultValue);
+  const [open, setOpen] = useState(false);
+  const parameters = useMemo(
+    () => open ? toolParameters(block.input) : [],
+    [block.input, open],
+  );
+  const result = useMemo(
+    () => open ? toolValue(resultValue) : "",
+    [open, resultValue],
+  );
+  const stateLabel = block.status === "input-available"
+    ? "运行中"
+    : block.status === "output-error"
+      ? "失败"
+      : block.durationMs === undefined
+        ? "完成"
+        : `完成 · ${formatToolDuration(block.durationMs)}`;
 
   return (
     <div
@@ -236,13 +254,89 @@ function ToolStep({ block, active }: { block: ToolBlock; active: boolean }) {
     >
       <span className="process-node diamond" />
       <div className="tool-step-body">
-        <div className="tool-step-title">
-          <Wrench className="tool-step-icon" size={14} />
-          <span>{block.name}</span>
-        </div>
-        {description ? <div className="tool-step-description">{description}</div> : null}
+        {hasDetails ? (
+          <button
+            className="tool-step-summary"
+            type="button"
+            aria-expanded={open}
+            onClick={() => setOpen((current) => !current)}
+          >
+            <ToolStepSummary
+              block={block}
+              description={description}
+              stateLabel={stateLabel}
+              expandable
+              open={open}
+            />
+          </button>
+        ) : (
+          <div className="tool-step-summary tool-step-summary-static">
+            <ToolStepSummary
+              block={block}
+              description={description}
+              stateLabel={stateLabel}
+              expandable={false}
+              open={false}
+            />
+          </div>
+        )}
+        {hasDetails ? (
+          <div className={`tool-step-disclosure ${open ? "open" : ""}`} aria-hidden={!open}>
+            <div className="tool-step-disclosure-inner">
+              <div className="tool-detail-surface">
+                {parameters.length > 0 ? (
+                  <section className="tool-detail-section" aria-label="工具参数">
+                    <h4>参数</h4>
+                    <dl className="tool-parameter-list">
+                      {parameters.map(([name, value]) => (
+                        <div className="tool-parameter" key={name}>
+                          <dt>{name}</dt>
+                          <dd>{value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </section>
+                ) : null}
+                {result ? (
+                  <section className="tool-detail-section" aria-label={block.status === "output-error" ? "工具错误" : "工具结果"}>
+                    <h4>{block.status === "output-error" ? "错误" : "结果"}</h4>
+                    <pre className={block.status === "output-error" ? "tool-result error" : "tool-result"}>{result}</pre>
+                  </section>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
+  );
+}
+
+function ToolStepSummary({
+  block,
+  description,
+  stateLabel,
+  expandable,
+  open,
+}: {
+  block: ToolBlock;
+  description: string;
+  stateLabel: string;
+  expandable: boolean;
+  open: boolean;
+}) {
+  return (
+    <>
+          <span className="tool-step-heading">
+            <span className="tool-step-title">
+              <Wrench className="tool-step-icon" size={14} />
+              <span>{block.name}</span>
+            </span>
+            <span className="tool-step-state">{stateLabel}</span>
+            {expandable ? <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={15} /> : null}
+          </span>
+          {description ? <span className="tool-step-description">{description}</span> : null}
+    </>
   );
 }
 
@@ -253,4 +347,34 @@ function toolDescription(input: unknown) {
 
   const description = (input as Record<string, unknown>).description;
   return typeof description === "string" ? description.trim() : "";
+}
+
+function toolParameters(input: unknown): [string, string][] {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return [];
+  return Object.entries(input as Record<string, unknown>)
+    .filter(([name]) => name !== "description")
+    .map(([name, value]) => [name, toolValue(value)]);
+}
+
+function toolHasParameters(input: unknown): boolean {
+  return typeof input === "object"
+    && input !== null
+    && !Array.isArray(input)
+    && Object.keys(input).some((name) => name !== "description");
+}
+
+function toolHasValue(value: unknown): boolean {
+  return value !== undefined && value !== null && (typeof value !== "string" || value.length > 0);
+}
+
+function toolValue(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value, null, 2) ?? String(value);
+}
+
+function formatToolDuration(durationMs: number): string {
+  if (durationMs < 1_000) return `${Math.max(1, Math.round(durationMs))}ms`;
+  return `${(durationMs / 1_000).toFixed(durationMs < 10_000 ? 1 : 0).replace(/\.0$/, "")}s`;
 }

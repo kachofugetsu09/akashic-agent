@@ -31,6 +31,8 @@ internal data class StoredToolBlock(
     val name: String,
     val description: String? = null,
     val resultPreview: String? = null,
+    val arguments: JsonObject? = null,
+    val durationMillis: Long? = null,
 )
 
 internal fun decodeStoredToolBlock(content: String): StoredToolBlock {
@@ -354,6 +356,7 @@ class LocalDeliveryStore(
             (group["calls"] as? JsonArray)?.forEach { rawCall ->
                 val call = rawCall.jsonObject
                 val name = jsonText(call, "name") ?: return@forEach
+                val arguments = (call["final_arguments"] ?: call["arguments"]) as? JsonObject
                 val ordinal = blocks.size
                 blocks += TurnBlockEntity(
                     blockId = "history:$turnId:$ordinal",
@@ -361,11 +364,13 @@ class LocalDeliveryStore(
                     turnId = turnId,
                     ordinal = ordinal,
                     kind = "tool",
-                    status = if (jsonText(call, "status") == "error") "failed" else "completed",
+                    status = if (jsonText(call, "status") == "success") "completed" else "failed",
                     content = encodeStoredToolBlock(
                         StoredToolBlock(
                             name = name,
-                            description = jsonText(call, "description"),
+                            description = arguments?.let { jsonText(it, "description") }
+                                ?: jsonText(call, "description"),
+                            arguments = arguments,
                             resultPreview = jsonText(call, "result_preview"),
                         ),
                     ),
@@ -468,6 +473,7 @@ class LocalDeliveryStore(
                         StoredToolBlock(
                             name = toolName,
                             description = payloadText(arguments, "description"),
+                            arguments = arguments,
                         ),
                     ),
                     updatedAt = updatedAt,
@@ -489,7 +495,20 @@ class LocalDeliveryStore(
             "Tool completion has no tool_name"
         }
         require(toolName == stored.name) { "Tool completion name mismatch: $toolName != ${stored.name}" }
-        val failed = payloadText(envelope, "status") == "error"
+        val finalArguments = when (val value = envelope.payload["arguments"]) {
+            null -> stored.arguments
+            is JsonObject -> value
+            else -> error("Tool completion arguments must be an object")
+        }
+        val succeeded = payloadText(envelope, "status") == "success"
+        val durationMillis = envelope.payload["duration_ms"]?.let {
+            requireNotNull(payloadLong(envelope, "duration_ms")) {
+                "Tool completion duration_ms must be an integer"
+            }
+        }
+        require(durationMillis == null || durationMillis >= 0) {
+            "Tool completion duration_ms must be non-negative"
+        }
         database.messages().upsertBlocks(
             listOf(
                 TurnBlockEntity(
@@ -498,9 +517,15 @@ class LocalDeliveryStore(
                     turnId = turnId,
                     ordinal = previous.ordinal,
                     kind = "tool",
-                    status = if (failed) "failed" else "completed",
+                    status = if (succeeded) "completed" else "failed",
                     content = encodeStoredToolBlock(
-                        stored.copy(resultPreview = payloadText(envelope, "result_preview")),
+                        stored.copy(
+                            description = finalArguments?.let { payloadText(it, "description") }
+                                ?: stored.description,
+                            resultPreview = payloadText(envelope, "result_preview"),
+                            arguments = finalArguments,
+                            durationMillis = durationMillis,
+                        ),
                     ),
                     updatedAt = updatedAt,
                 ),

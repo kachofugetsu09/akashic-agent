@@ -18,6 +18,7 @@ import com.akashic.mobile.ui.conversation.PluginUiResponseUi
 import com.akashic.mobile.ui.conversation.SessionUi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 @Serializable
 data class MobileWebSnapshot(
@@ -108,6 +109,9 @@ data class MobileWebProcessBlock(
     val title: String,
     val detail: String,
     val state: MobileWebProcessState,
+    val arguments: JsonObject? = null,
+    val resultPreview: String? = null,
+    val durationMillis: Long? = null,
 )
 
 @Serializable
@@ -233,6 +237,9 @@ private fun ProcessBlockUi.toMobileWebProcessBlock() = MobileWebProcessBlock(
         ProcessBlockState.RUNNING -> MobileWebProcessState.RUNNING
         ProcessBlockState.FAILED -> MobileWebProcessState.FAILED
     },
+    arguments = arguments,
+    resultPreview = resultPreview,
+    durationMillis = durationMillis,
 )
 
 private fun MessageReplyUi.toMobileWebReply() = MobileWebReply(messageId, role, preview)

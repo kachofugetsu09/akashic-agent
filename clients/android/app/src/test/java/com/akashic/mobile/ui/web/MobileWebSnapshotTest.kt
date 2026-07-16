@@ -11,8 +11,10 @@ import com.akashic.mobile.ui.conversation.ProcessBlockState
 import com.akashic.mobile.ui.conversation.ProcessBlockUi
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -45,11 +47,16 @@ class MobileWebSnapshotTest {
                     intro = null,
                     blocks = listOf(
                         ProcessBlockUi(
-                            id = "thinking-1",
-                            kind = ProcessBlockKind.THINKING,
-                            title = "思考",
-                            detail = "正在检查上下文",
-                            state = ProcessBlockState.RUNNING,
+                            id = "tool-1",
+                            kind = ProcessBlockKind.TOOL,
+                            title = "read_file",
+                            detail = "读取上下文",
+                            state = ProcessBlockState.COMPLETED,
+                            arguments = buildJsonObject {
+                                put("path", "/sandbox/context.md")
+                            },
+                            resultPreview = "读取完成",
+                            durationMillis = 840,
                         ),
                     ),
                     answer = "正在处理",
@@ -83,7 +90,11 @@ class MobileWebSnapshotTest {
         assertTrue(snapshot.messages.first().replyable)
         assertTrue(!snapshot.messages.last().replyable)
         assertTrue(snapshot.messages.last().streaming)
-        assertEquals(MobileWebProcessState.RUNNING, snapshot.messages.last().blocks.single().state)
+        val tool = snapshot.messages.last().blocks.single()
+        assertEquals(MobileWebProcessState.COMPLETED, tool.state)
+        assertEquals("/sandbox/context.md", tool.arguments?.get("path")?.jsonPrimitive?.content)
+        assertEquals("读取完成", tool.resultPreview)
+        assertEquals(840L, tool.durationMillis)
         assertEquals("memorystatus", snapshot.composer.commands.single().command)
         assertEquals("之前的回答", snapshot.messages.first().reply?.preview)
         assertEquals(2, Json.parseToJsonElement(encoded).jsonObject

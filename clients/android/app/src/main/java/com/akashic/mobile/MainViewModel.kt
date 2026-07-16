@@ -214,12 +214,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     id = block.blockId,
                     kind = if (block.kind == "thinking") ProcessBlockKind.THINKING else ProcessBlockKind.TOOL,
                     title = storedTool?.name ?: "思考",
-                    detail = storedTool?.description ?: storedTool?.resultPreview ?: block.content,
+                    detail = storedTool?.description ?: if (storedTool == null) block.content else "",
                     state = when (block.status) {
                         "running" -> ProcessBlockState.RUNNING
                         "failed" -> ProcessBlockState.FAILED
                         else -> ProcessBlockState.COMPLETED
                     },
+                    arguments = storedTool?.arguments,
+                    resultPreview = storedTool?.resultPreview,
+                    durationMillis = storedTool?.durationMillis,
                 )
             },
             answer = message.text,

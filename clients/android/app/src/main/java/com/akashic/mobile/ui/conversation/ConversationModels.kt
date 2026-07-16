@@ -1,5 +1,7 @@
 package com.akashic.mobile.ui.conversation
 
+import kotlinx.serialization.json.JsonObject
+
 data class ConversationUiState(
     val connectionLabel: String,
     val connectionStatus: ConnectionStatusUi,
@@ -144,6 +146,9 @@ data class ProcessBlockUi(
     val title: String,
     val detail: String,
     val state: ProcessBlockState,
+    val arguments: JsonObject? = null,
+    val resultPreview: String? = null,
+    val durationMillis: Long? = null,
 )
 
 enum class ProcessBlockKind {

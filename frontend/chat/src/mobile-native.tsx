@@ -82,6 +82,9 @@ interface MobileProcessBlock {
   title: string;
   detail: string;
   state: ProcessState;
+  arguments?: SnapshotRecord;
+  resultPreview?: string;
+  durationMillis?: number;
 }
 
 interface MobileMessage {
@@ -196,6 +199,11 @@ function optionalString(value: unknown, label: string): string | undefined {
   return requireString(value, label);
 }
 
+function optionalRecord(value: unknown, label: string): SnapshotRecord | undefined {
+  if (value === undefined || value === null) return undefined;
+  return requireRecord(value, label);
+}
+
 function requireArray<T>(value: unknown, label: string, parse: (item: unknown, index: number) => T): T[] {
   if (!Array.isArray(value)) throw new Error(`${label} 不是数组`);
   return value.map(parse);
@@ -227,12 +235,21 @@ function parseProcessBlock(value: unknown, index: number): MobileProcessBlock {
   if (state !== "completed" && state !== "running" && state !== "failed") {
     throw new Error(`blocks[${index}].state 不受支持`);
   }
+  const durationMillis = raw.durationMillis === undefined || raw.durationMillis === null
+    ? undefined
+    : requireNumber(raw.durationMillis, `blocks[${index}].durationMillis`);
+  if (durationMillis !== undefined && (!Number.isSafeInteger(durationMillis) || durationMillis < 0)) {
+    throw new Error(`blocks[${index}].durationMillis 必须是非负安全整数`);
+  }
   return {
     id: requireString(raw.id, `blocks[${index}].id`),
     kind,
     title: requireString(raw.title, `blocks[${index}].title`),
     detail: requireString(raw.detail, `blocks[${index}].detail`),
     state,
+    arguments: optionalRecord(raw.arguments, `blocks[${index}].arguments`),
+    resultPreview: optionalString(raw.resultPreview, `blocks[${index}].resultPreview`),
+    durationMillis,
   };
 }
 
@@ -1650,14 +1667,20 @@ function pluginTurnId(message: ChatMessage): string | undefined {
 
 function toAgentBlock(block: MobileProcessBlock): AgentBlock {
   if (block.kind === "thinking") return { kind: "thinking", content: block.detail || block.title };
+  const input = block.arguments === undefined
+    ? (block.detail ? { description: block.detail } : {})
+    : (block.detail && typeof block.arguments.description !== "string"
+        ? { description: block.detail, ...block.arguments }
+        : block.arguments);
   return {
     kind: "tool",
     callId: block.id,
     name: block.title,
     status: block.state === "running" ? "input-available" : block.state === "failed" ? "output-error" : "output-available",
-    input: block.detail ? { description: block.detail } : {},
-    output: null,
-    errorText: block.state === "failed" ? block.detail : undefined,
+    input,
+    output: block.resultPreview ?? null,
+    errorText: block.state === "failed" ? block.resultPreview ?? block.detail : undefined,
+    durationMs: block.durationMillis,
   };
 }
 

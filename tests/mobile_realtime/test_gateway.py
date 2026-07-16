@@ -716,7 +716,7 @@ def test_authenticated_message_send_reaches_agent_event_path_once(
                     tool_name="shell",
                     arguments={"command": "pwd"},
                     final_arguments={"command": "pwd"},
-                    status="completed",
+                    status="success",
                     result_preview="ok",
                     turn_id=turn_id,
                 )

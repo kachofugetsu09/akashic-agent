@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import pytest
 import infra.mobile_realtime.channel as channel_module
+import infra.mobile_realtime.gateway as gateway_module
 
 from agent.config_models import MobileRealtimeConfig
 from bus.events import OutboundMessage
@@ -77,6 +78,158 @@ def _register_device(storage: MobileRealtimeStorage, device_id: str) -> None:
             capabilities=("stream-v1",),
         )
     )
+
+
+def test_mobile_tool_arguments_are_bounded_for_phone_storage() -> None:
+    nested: dict[str, object] = {"value": "visible"}
+    for _ in range(7):
+        nested = {"child": nested}
+
+    projected = channel_module._mobile_tool_arguments(
+        {
+            "long_text": "x" * 2_001,
+            "items": list(range(65)),
+            "nested": nested,
+        }
+    )
+
+    assert projected["long_text"] == "x" * 2_000 + "…"
+    assert cast(list[object], projected["items"])[-1] == "[已截断]"
+    level = cast(dict[str, object], projected["nested"])
+    for _ in range(4):
+        level = cast(dict[str, object], level["child"])
+    assert level["child"] == "[已截断]"
+
+    sensitive = channel_module._mobile_tool_arguments(
+        {
+            "openai_api_key": "LEAK",
+            "x-api-key": "LEAK",
+            "client_credentials_file": "/tmp/credentials.json",
+            "command": 'curl -H "Authorization: Bearer sk-private-value"',
+            "env_command": "GH_TOKEN=ghp_private AWS_SECRET_ACCESS_KEY=private tool",
+            "argv_header": ["curl", "-H", "Authorization: Bearer sk-private-value"],
+            "argv_flag": ["curl", "--api-key", "sk-private-value"],
+            "argv_assignment": ["tool", "--token=ghp_private"],
+        }
+    )
+    assert sensitive == {
+        "openai_api_key": "[已隐藏]",
+        "x-api-key": "[已隐藏]",
+        "client_credentials_file": "[已隐藏]",
+        "command": "[已隐藏]",
+        "env_command": "[已隐藏]",
+        "argv_header": ["curl", "-H", "[已隐藏]"],
+        "argv_flag": ["curl", "--api-key", "[已隐藏]"],
+        "argv_assignment": ["tool", "[已隐藏]"],
+    }
+    assert channel_module._mobile_tool_arguments(
+        {"note": "token budget is 1000; keep this text"}
+    ) == {"note": "token budget is 1000; keep this text"}
+
+    emoji_arguments = channel_module._mobile_tool_arguments(
+        {f"field_{index}": "😀" * 2_000 for index in range(64)}
+    )
+    assert channel_module._mobile_tool_argument_encoded_size(emoji_arguments) <= 8 * 1024
+    encoded = gateway_module._encode_stored_event(
+        event_id="01J00000000000000000000000",
+        event_type="react.tool.started",
+        session_id="mobile:test",
+        turn_id="turn-1",
+        payload={
+            "call_id": "call-1",
+            "block_id": "tool:call-1",
+            "ordinal": 0,
+            "tool_name": "shell",
+            "arguments": emoji_arguments,
+        },
+    )
+    assert len(encoded.encode("utf-8")) < 256 * 1024
+
+
+def test_mobile_history_tool_arguments_fit_real_event_frame() -> None:
+    calls = [
+        {
+            "call_id": f"call-{index}",
+            "name": "shell",
+            "status": "success",
+            "arguments": channel_module._mobile_tool_arguments(
+                {"command": "😀" * 2_000},
+                max_bytes=8 * 1024,
+            ),
+            "result_preview": "ok",
+        }
+        for index in range(40)
+    ]
+    payload: dict[str, object] = {
+        "items": [
+            {
+                "id": "message-1",
+                "session_key": "mobile:test",
+                "seq": 1,
+                "role": "assistant",
+                "content": "done",
+                "tool_chain": [{"calls": calls}],
+                "extra": {},
+                "ts": "2026-07-16T00:00:00Z",
+            }
+        ],
+        "total": 1,
+        "page": 1,
+        "page_size": 50,
+    }
+
+    channel_module._fit_mobile_history_payload(payload)
+    encoded = gateway_module._encode_stored_event(
+        event_id="01J00000000000000000000000",
+        event_type="history.page",
+        session_id="mobile:test",
+        payload=payload,
+    )
+
+    assert len(encoded.encode("utf-8")) < 256 * 1024
+    assert any("arguments" not in call for call in calls)
+
+
+def test_mobile_history_tool_descriptions_fit_real_event_frame() -> None:
+    calls = [
+        {
+            "call_id": f"call-{index}",
+            "name": "shell",
+            "status": "success",
+            "description": "😀" * 2_000,
+            "arguments": {"description": "😀" * 2_000},
+            "result_preview": "ok",
+        }
+        for index in range(40)
+    ]
+    payload: dict[str, object] = {
+        "items": [
+            {
+                "id": "message-1",
+                "session_key": "mobile:test",
+                "seq": 1,
+                "role": "assistant",
+                "content": "done",
+                "tool_chain": [{"calls": calls}],
+                "extra": {},
+                "ts": "2026-07-16T00:00:00Z",
+            }
+        ],
+        "total": 1,
+        "page": 1,
+        "page_size": 50,
+    }
+
+    channel_module._fit_mobile_history_payload(payload)
+    encoded = gateway_module._encode_stored_event(
+        event_id="01J00000000000000000000000",
+        event_type="history.page",
+        session_id="mobile:test",
+        payload=payload,
+    )
+
+    assert len(encoded.encode("utf-8")) < 256 * 1024
+    assert any("description" not in call for call in calls)
 
 
 def _message_frame(
@@ -387,7 +540,12 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
                         "call_id": "call-1",
                         "name": "shell",
                         "status": "success",
-                        "arguments": {"description": "读取状态", "secret": "hidden"},
+                        "arguments": {
+                            "description": "读取状态",
+                            "path": "/sandbox/workspace/status.json",
+                            "secret": "hidden",
+                            "nested": {"access_token": "hidden", "page": 2},
+                        },
                         "result": "完成",
                     }
                 ],
@@ -440,6 +598,10 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
     calls = cast(list[dict[str, object]], tool_chain[0]["calls"])
     assert calls[0]["description"] == "读取状态"
     assert "secret" not in calls[0]
+    projected_arguments = cast(dict[str, object], calls[0]["arguments"])
+    assert projected_arguments["path"] == "/sandbox/workspace/status.json"
+    assert projected_arguments["secret"] == "[已隐藏]"
+    assert projected_arguments["nested"] == {"access_token": "[已隐藏]", "page": 2}
     attachments = cast(list[dict[str, object]], history_items[1]["attachments"])
     assert len(attachments) == 1
     assert attachments[0]["filename"] == "answer.png"
@@ -1025,7 +1187,10 @@ async def test_turn_stop_rejects_missing_or_stale_turn_identity(tmp_path: Path) 
 @pytest.mark.asyncio
 async def test_stream_deltas_batch_at_50ms_and_flush_before_tool_and_final(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    ticks = iter((100.0, 105.125))
+    monkeypatch.setattr(channel_module, "monotonic", lambda: next(ticks))
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     device_id = uuid4().hex
     _register_device(storage, device_id)
@@ -1099,7 +1264,11 @@ async def test_stream_deltas_batch_at_50ms_and_flush_before_tool_and_final(
             iteration=1,
             call_id="call-1",
             tool_name="shell",
-            arguments={"command": "pwd"},
+            arguments={
+                "command": "pwd",
+                "authorization": "Bearer private",
+                "nested": {"client_secret": "private", "page": 1},
+            },
             turn_id=turn_id,
         )
     )
@@ -1112,12 +1281,21 @@ async def test_stream_deltas_batch_at_50ms_and_flush_before_tool_and_final(
             call_id="call-1",
             tool_name="shell",
             arguments={"command": "pwd"},
-            final_arguments={"command": "pwd"},
-            status="completed",
+            final_arguments={"command": "pwd -P"},
+            status="success",
             result_preview="ok",
             turn_id=turn_id,
         )
     )
+    started_payload = cast(dict[str, object], runtime.events[-2]["payload"])
+    assert started_payload["arguments"] == {
+        "command": "pwd",
+        "authorization": "[已隐藏]",
+        "nested": {"client_secret": "[已隐藏]", "page": 1},
+    }
+    completed_payload = cast(dict[str, object], runtime.events[-1]["payload"])
+    assert completed_payload["arguments"] == {"command": "pwd -P"}
+    assert completed_payload["duration_ms"] == 5_125
     await channel._on_stream_delta(
         StreamDeltaReady(
             session_key=session_id,

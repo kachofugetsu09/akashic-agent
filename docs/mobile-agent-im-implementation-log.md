@@ -7,7 +7,7 @@
 | 领域 | 当前基线 | 下一闭环 |
 |---|---|---|
 | 消息基本功 | 已有真实时间、日期分组、双向引用、复制、搜索、跳转和未读；缺失败重试 | 失败重试与乱序合并 |
-| 实时 Agent | 有流式回答、思考/工具时间线和停止 | 工具参数/结果/错误/耗时详情 |
+| 实时 Agent | 有流式回答、思考/工具时间线、停止和可展开的安全工具详情 | 失败态语义与结构化结果动作 |
 | 媒体 | 有上传、进度、缓存、预览、下载和分享基础链路 | GIF/meme、重试与大文件体验 |
 | 网络 | 有认证、resume、durable inbox、连接状态 | 抖动场景矩阵和用户可恢复动作 |
 | 会话 | 有 mobile 全量同步、抽屉、切换、新建和当前会话搜索 | 失效解释与会话内阅读位置 |
@@ -227,3 +227,100 @@ fallback 主色文字/页面对比为 `4.52:1`，on-primary-container/primary-co
 - 真实选择 `/sdcard/Download/cycle2-file-probe.md`，先显示上传进度再完成 attachment-only send；Agent 调用 `read_file` 并返回结果，附件名可被搜索。截图为 `/tmp/pixel7-cycle2-attachment-staged.png`、`/tmp/pixel7-cycle2-attachment-sent.png`、`/tmp/pixel7-cycle2-attachment-final.png`。
 - 真机首次破坏性重建暴露同一连接重复 `attachment.download`，服务端以 4406 关闭；修复后重建只发送一次下载命令，不再出现 close/error/fatal，完整 fsync 但缺 reply 的末分片会先做 SHA-256 再原子发布。
 - 最终 APK 再次执行“清理缓存并同步”：历史恢复时没有巨量未读，附件最终显示“已下载”，logcat 只有一个 `attachment.download`，没有 4406、`invalid attachment download state` 或 FATAL。截图为 `/tmp/pixel7-cycle2-final-resync-confirmed-early.png`、`/tmp/pixel7-cycle2-final-resync-done.png`、`/tmp/pixel7-cycle2-final-resync-attachment.png`。
+
+## Cycle 3：工具调用详情与安全历史投影
+
+状态：已实施，通过 Pixel 7 隔离环境实时调用、展开/收起和破坏性历史重建闭环。
+
+### 缺口与任务
+
+- 时间线只显示工具名称和一句描述，不能核对真实参数、结果摘要、失败内容或单次耗时。
+- 实时 `react.tool.started` 原本携带完整参数，历史同步却只保留描述；同一工具在重连前后语义不一致。
+- 直接把工具参数持久化到手机会把 token、cookie、authorization 等凭据留在 Room，且无界参数会放大 WebSocket、数据库和 WebView 压力。
+- 长工具结果如果跟正文一样完整铺开，会把当前任务和最终回答推离视口。
+
+### 交互结构
+
+```text
+○  思考内容
+│
+◇  shell                   完成 · 5.1s  ⌄
+│  sleep 5秒然后echo
+│  ├─ 参数
+│  │  command    sleep 5 && echo LIVEDETAILOK
+│  └─ 结果             ← 局部结果区，长内容内部滚动
+│     { "exit_code": 0, "output": "LIVEDETAILOK" }
+│
+○  后续思考
+```
+
+工具详情仍属于 Agent 生长时间线，不另起详情页，也不把每个调用改成独立卡片。菱形继续表达工具节点，圆形继续表达思考节点；展开层只是附着在当前节点上的 state layer。
+
+### Better UI
+
+| Before | After |
+|---|---|
+| 工具行只能阅读名称和描述 | 整行形成至少 44dp 的 disclosure 触控目标；状态、耗时和 chevron 位于同一视觉行 |
+| 参数和结果不可见 | 点击同一行在时间线内展开参数与结果；不跳页、不弹 modal、不打断上下文 |
+| 长结果可能形成整屏文本 | 结果区最多约 11rem，高度之外内部滚动；工具标题、前后思考和最终回答仍可建立相对位置 |
+| 运行与完成只靠节点猜测 | `运行中`、`完成 · 5.1s`、`失败`直接写出；展开/收起使用 180–200ms Material easing |
+
+### Better Colors
+
+| Before | After |
+|---|---|
+| 紫色只点亮节点，工具行缺少状态映射 | 活动菱形、扳手、`运行中`和 chevron 共用高亮紫；完成态回到中性 on-surface-variant |
+| 详情容易被做成有边框的第二张卡 | 使用 surface-container-low 与一条低色度紫色附着线形成 state layer，不增加阴影和外围边框 |
+| 错误可能继续沿用活动紫 | 失败节点、状态和错误文本只使用 Material error；蓝色仍只属于连接、搜索和普通主操作 |
+
+### Better Typography
+
+| Before | After |
+|---|---|
+| 名称、描述和状态层级不完整 | 工具名 14px 等宽、描述 13px 正文字体、状态 12px tabular figures；一眼先读任务再读元信息 |
+| 复杂参数可能被压成一段 JSON | 顶层键使用 12px 正文字体，值使用 12px 等宽并保留换行；`description` 不在参数区重复显示 |
+| 耗时只能从整轮“已思考 Ns”推断 | 实时工具完成后按 `ms / 0.1s` 精度显示单次耗时；历史没有可靠起止时间时明确省略，不伪造 |
+
+### 数据与安全边界
+
+- 服务端在 mobile 协议投影 owner 统一处理实时事件和历史 `tool_chain`，两条路径都发送相同的 `arguments`。
+- 参数按键名递归隐藏 `secret`、`token`、`authorization`、`cookie`、`apiKey`、`privateKey`、凭据等字段；字符串值和 argv 列表中的常见 Authorization、Bearer、API key、password 等形式也在统一边界隐藏，显示值固定为 `[已隐藏]`。
+- 投影限制为最多 5 层、256 个节点、每容器 64 项、单字符串 2000 字符，并按真实 UTF-8 JSON 字节把实时与历史的单次调用参数统一限制为 8 KiB；越界位置显式写入 `[已截断]`，不静默伪装完整数据。当前 Android 热快照仍按当前会话整体投影，8 KiB 上限避免已完成参数在后续流式帧中反复放大；更大详情应通过未来的按需协议获取，不进入热快照。
+- 历史页以 240 KiB 为安全目标；只有页面逼近帧上限时，才从末尾依次移除完整参数和参数派生描述，保留消息正文、工具身份和既有结果摘要。该策略同时覆盖多字节 emoji，不用字符数冒充 WebSocket 字节数。
+- Android 继续复用既有 `tool.v1:` 内容编码，不增加 Room 表或迁移；新增字段带默认值，旧记录仍可解码。
+- 单工具耗时由服务端在 `react.tool.started` 使用 monotonic clock 记录，并随 `react.tool.completed` 发送；Android 只持久化服务端给出的 `duration_ms`，不把手机收帧间隔伪装成执行时间。服务端历史没有单工具时间戳，因此重建后只恢复参数和结果。
+
+### Pixel 7 可复用验收标准
+
+1. 真实触发 `list_dir`、`shell` 等工具：运行中节点使用亮紫和文字状态，完成后回到中性色并显示真实耗时。
+2. 点击工具整行可展开/收起；参数名称、值、结果和错误属于同一时间线节点，44dp 目标不需要精确点击小 chevron。
+3. 长结果不会把工具标题顶出屏幕，结果区可局部滚动；时间线主滚动仍能查看前后思考与最终回答。
+4. 执行“清理缓存并同步”后，再展开同一历史工具仍能看到安全参数和结果；缺少单工具时间戳时不显示伪造耗时。
+5. 服务端单测确认嵌套敏感字段、字符串内凭据和 argv 成对参数被隐藏，字符串/深度/项目数/UTF-8 字节数被裁剪；常见凭据形式不会进入手机参数投影。结果摘要沿用既有投影边界，不在本轮宣称通用 secret scanner。
+6. 实时、应用重启和破坏性重建均无白屏、WebView render error、event sequence gap、4406 或协议反序列化错误。
+
+### 自动化验证
+
+- `.venv/bin/pytest -q tests/mobile_realtime/test_channel.py tests/mobile_realtime/test_gateway.py`：`40 passed`；覆盖实时工具事件、服务端 monotonic 耗时、最终参数、历史同步、非成功状态、常见敏感参数隐藏，以及真实 event encoder 的 UTF-8 帧预算。新增有界投影用例覆盖字符串、容器项数、深度和 40 个 emoji 工具调用的历史降载。
+- `npm run typecheck && npm run lint`：通过；移动快照边界拒绝负数、非安全整数工具耗时和非对象参数。
+- `ANDROID_HOME="$HOME/Android/Sdk" ./gradlew :app:testDebugUnitTest --tests com.akashic.mobile.data.local.StoredToolBlockTest --tests com.akashic.mobile.ui.web.MobileWebSnapshotTest`：通过；覆盖旧工具块兼容、安全参数/服务端耗时解码和 WebView 快照字段。
+- 通过 release 签名注入构建 debug + androidTest APK；Pixel 7 上 `LocalDeliveryStoreTest` 为 `19/19`，再运行所有不依赖外部 pairing 参数的 Room migration、store 与 keystore instrumentation 为 `23/23`。另 2 条 `IsolatedGatewayDeviceTest` 需要显式 `pairingOfferBase64`、`historySessionId`，未把缺少外部参数的失败伪装成应用回归。
+- kill-ai-slop 扫描 `frontend/chat/src` 为 36 个文件、9 组、52 个命中；新增两处命中均是工具名与参数值的语义等宽字体。本组没有新增渐变、玻璃拟态、发光点、悬浮详情卡或胶囊状态。
+
+### 独立 Review
+
+- 首轮发现并修复：非 ASCII 参数按字符而非 UTF-8 字节计预算、字段后缀和命令字符串可泄露凭据、完成事件没有覆盖最终参数、耗时取客户端收帧间隔、`blocked/denied` 被当成成功、忽略目录下 instrumentation fixture 仍使用旧协议、关闭详情时每个 token 都序列化参数、桌面长结果无局部滚动、无详情工具行仍暴露禁用 button 语义。
+- 复核继续用真实反例发现：list/tuple 内 Authorization 和成对 `--api-key value` 仍可能泄露；40 个带 2000 emoji 描述的历史工具在删完参数后仍超帧；桌面旧历史缺少 `status` 时被错误标红。当前已统一字符串与 argv 脱敏、按参数后描述的顺序回收历史预算，并仅把明确的非成功状态映射为失败。
+- 最终性能复核发现当前会话会在每个流式快照中重新序列化已完成参数；将实时参数从 48 KiB 收敛为与历史一致的 8 KiB，保留人类核对所需信息，同时避免多个工具调用把热快照推向 MiB 级。按需完整详情属于后续协议，不在首版引入第二套存储和拉取抽象。
+
+### 真机证据
+
+- Pixel 7 使用隔离 `docker/mobile-lab` 与签名 release APK；真实 `list_dir` 调用的收起态与历史展开态为 `/tmp/pixel7-cycle3-fixed-trace-open.png`、`/tmp/pixel7-cycle3-fixed-tool-expanded-history.png`。
+- 真实 `shell` 执行 `sleep 3 && echo CYCLE3FINAL`：服务端完成事件给出 `duration_ms=3000+`，完成行显示 `完成 · 3s`，展开后显示 command 和结构化结果摘要；截图为 `/tmp/pixel7-cycle3-server-duration-trace.png`、`/tmp/pixel7-cycle3-server-duration-expanded.png`。
+- 真实 `shell` 执行 8 秒期间，菱形、扳手、`运行中`和 chevron 同时点亮亮紫；截图为 `/tmp/pixel7-cycle3-tool-running-row.png`。
+- 真机确认“清理缓存并同步”后，客户端重新发送 `session.list` 和 `history.get`；无 event gap、4406、协议反序列化或 FATAL。历史工具仍能展开 command 与 result，但按契约不伪造单工具耗时；截图为 `/tmp/pixel7-cycle3-final-resync-done.png`、`/tmp/pixel7-cycle3-final-resync-expanded.png`。
+
+### 已知边界
+
+- 失败消息重试不能只在 UI 重发：当前 terminal `message.send.error` 会删除 outbox，附件也不再保留为草稿；在服务端提供 retryable/duplicate-safe 语义前不新增可能重复执行 Agent turn 的按钮。
+- 历史工具链没有每次调用的起止时间，破坏性重建后省略单工具耗时；如果未来服务端正式持久化 call duration，再直接扩展同一投影字段，不从结果文本猜测。

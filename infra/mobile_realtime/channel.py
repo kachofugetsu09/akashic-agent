@@ -8,6 +8,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from time import monotonic
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
@@ -91,7 +92,7 @@ class _DeltaBatch:
 class _ProcessTurnState:
     next_ordinal: int
     thinking_block: tuple[str, int] | None
-    tool_blocks: dict[str, tuple[str, int]]
+    tool_blocks: dict[str, tuple[str, int, float]]
 
 
 _DELTA_FLUSH_SECONDS = 0.05
@@ -100,6 +101,44 @@ _MAX_DELTA_BATCHES = 256
 _BOT_COMMAND_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _PLUGIN_SEGMENT = r"[A-Za-z0-9][A-Za-z0-9._-]*"
 _PLUGIN_ID_PATTERN = re.compile(rf"^{_PLUGIN_SEGMENT}(?:@{_PLUGIN_SEGMENT})?$")
+_MOBILE_TOOL_ARGUMENT_MAX_DEPTH = 5
+_MOBILE_TOOL_ARGUMENT_MAX_ITEMS = 256
+_MOBILE_TOOL_ARGUMENT_MAX_CONTAINER_ITEMS = 64
+_MOBILE_TOOL_ARGUMENT_MAX_STRING_CHARS = 2_000
+_MOBILE_TOOL_ARGUMENT_MAX_BYTES = 8 * 1024
+_MOBILE_HISTORY_TOOL_ARGUMENT_MAX_BYTES = 8 * 1024
+_MOBILE_HISTORY_PAYLOAD_MAX_BYTES = 240 * 1024
+_MOBILE_TOOL_ARGUMENT_REDACTED = "[已隐藏]"
+_MOBILE_TOOL_ARGUMENT_TRUNCATED = "[已截断]"
+_MOBILE_TOOL_SECRET_KEYS = frozenset(
+    {
+        "secret",
+        "auth",
+        "token",
+        "password",
+        "passwd",
+        "authorization",
+        "cookie",
+        "apikey",
+        "privatekey",
+        "secretaccesskey",
+        "accesstoken",
+        "refreshtoken",
+        "clientsecret",
+        "credential",
+        "credentials",
+    }
+)
+_MOBILE_TOOL_SECRET_TEXT_PATTERN = re.compile(
+    r"(?ix)"
+    r"(?<![a-z0-9_])(?:[a-z][a-z0-9]*[-_])*(?:authorization|"
+    r"proxy[-_ ]?authorization|secret[-_ ]?access[-_ ]?key|api[-_ ]?key|"
+    r"access[-_ ]?token|refresh[-_ ]?token|client[-_ ]?secret|token|secret|"
+    r"password|passwd|cookie)\s*[:=]"
+    r"|--?(?:api[-_]?key|access[-_]?token|refresh[-_]?token|client[-_]?secret|"
+    r"password|passwd|cookie|token)\s+(?:[^\s]|$)"
+    r"|\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"
+)
 
 
 class MobileRealtimeChannel:
@@ -571,6 +610,7 @@ class MobileRealtimeChannel:
             "total": total,
             **pagination,
         }
+        _fit_mobile_history_payload(page_payload)
         await self._runtime.publish_event(
             event_type="history.page",
             session_id=session_id,
@@ -787,7 +827,7 @@ class MobileRealtimeChannel:
         ordinal = state.next_ordinal
         state.next_ordinal += 1
         block_id = f"tool:{event.call_id}"
-        state.tool_blocks[event.call_id] = (block_id, ordinal)
+        state.tool_blocks[event.call_id] = (block_id, ordinal, monotonic())
         await self._runtime.publish_event(
             event_type="react.tool.started",
             session_id=event.session_key,
@@ -797,7 +837,7 @@ class MobileRealtimeChannel:
                 "block_id": block_id,
                 "ordinal": ordinal,
                 "tool_name": event.tool_name,
-                "arguments": cast(dict[str, object], event.arguments),
+                "arguments": _mobile_tool_arguments(event.arguments),
             },
         )
 
@@ -811,7 +851,7 @@ class MobileRealtimeChannel:
         block = state.tool_blocks.get(event.call_id)
         if block is None:
             raise RuntimeError(f"mobile tool completed 缺少 started: {event.call_id}")
-        block_id, ordinal = block
+        block_id, ordinal, started_at = block
         await self._runtime.publish_event(
             event_type="react.tool.completed",
             session_id=event.session_key,
@@ -822,7 +862,11 @@ class MobileRealtimeChannel:
                 "ordinal": ordinal,
                 "tool_name": event.tool_name,
                 "status": event.status,
+                "arguments": _mobile_tool_arguments(
+                    event.final_arguments,
+                ),
                 "result_preview": event.result_preview,
+                "duration_ms": max(0, round((monotonic() - started_at) * 1_000)),
             },
         )
 
@@ -1322,12 +1366,20 @@ def _mobile_tool_chain(value: object) -> list[dict[str, object]] | None:
                     continue
                 arguments = call_record.get("final_arguments", call_record.get("arguments"))
                 arguments_record = cast(dict[str, object], arguments) if isinstance(arguments, dict) else None
-                description = arguments_record.get("description") if arguments_record is not None else None
                 call: dict[str, object] = {
                     "call_id": str(call_record.get("call_id") or ""),
                     "name": name,
                     "status": str(call_record.get("status") or "success"),
                 }
+                if arguments_record is not None:
+                    projected_arguments = _mobile_tool_arguments(
+                        arguments_record,
+                        max_bytes=_MOBILE_HISTORY_TOOL_ARGUMENT_MAX_BYTES,
+                    )
+                    call["arguments"] = projected_arguments
+                    description = projected_arguments.get("description")
+                else:
+                    description = None
                 if isinstance(description, str) and description:
                     call["description"] = description
                 result = call_record.get("result")
@@ -1337,6 +1389,180 @@ def _mobile_tool_chain(value: object) -> list[dict[str, object]] | None:
         group["calls"] = calls
         groups.append(group)
     return groups
+
+
+def _fit_mobile_history_payload(payload: dict[str, object]) -> None:
+    """在历史事件接近帧上限时回收工具详情预算。"""
+
+    # 1. 正常页面直接保留全部安全参数
+    if _mobile_tool_argument_encoded_size(payload) <= _MOBILE_HISTORY_PAYLOAD_MAX_BYTES:
+        return
+
+    # 2. 从页面末尾先回收完整参数，再回收参数派生的描述
+    items = cast(list[dict[str, object]], payload["items"])
+    for item in reversed(items):
+        chain = cast(list[dict[str, object]] | None, item["tool_chain"])
+        if chain is None:
+            continue
+        for group in reversed(chain):
+            calls = cast(list[dict[str, object]], group["calls"])
+            for call in reversed(calls):
+                if "arguments" not in call:
+                    continue
+                del call["arguments"]
+                if (
+                    _mobile_tool_argument_encoded_size(payload)
+                    <= _MOBILE_HISTORY_PAYLOAD_MAX_BYTES
+                ):
+                    return
+    for item in reversed(items):
+        chain = cast(list[dict[str, object]] | None, item["tool_chain"])
+        if chain is None:
+            continue
+        for group in reversed(chain):
+            calls = cast(list[dict[str, object]], group["calls"])
+            for call in reversed(calls):
+                if "description" not in call:
+                    continue
+                del call["description"]
+                if (
+                    _mobile_tool_argument_encoded_size(payload)
+                    <= _MOBILE_HISTORY_PAYLOAD_MAX_BYTES
+                ):
+                    return
+
+
+def _mobile_tool_arguments(
+    arguments: Mapping[str, object],
+    *,
+    max_bytes: int = _MOBILE_TOOL_ARGUMENT_MAX_BYTES,
+) -> dict[str, object]:
+    """生成可安全持久化到手机端的有界工具参数投影。"""
+
+    # 1. 先按结构、字段和值建立安全投影
+    remaining = [_MOBILE_TOOL_ARGUMENT_MAX_ITEMS]
+    projected = _mobile_tool_argument_value(arguments, depth=0, remaining=remaining)
+    projected_record = cast(dict[str, object], projected)
+
+    # 2. 再按真实 UTF-8 JSON 字节预算保留前导参数
+    bounded: dict[str, object] = {}
+    for key, value in projected_record.items():
+        candidate = {**bounded, key: value}
+        if _mobile_tool_argument_encoded_size(candidate) <= max_bytes:
+            bounded[key] = value
+            continue
+        while bounded and _mobile_tool_argument_encoded_size(
+            {**bounded, "…": _MOBILE_TOOL_ARGUMENT_TRUNCATED}
+        ) > max_bytes:
+            _ = bounded.popitem()
+        bounded["…"] = _MOBILE_TOOL_ARGUMENT_TRUNCATED
+        break
+    return bounded
+
+
+def _mobile_tool_argument_value(
+    value: object,
+    *,
+    depth: int,
+    remaining: list[int],
+) -> object:
+    """递归脱敏并裁剪单个 JSON 参数值。"""
+
+    # 1. 在协议边界限制递归深度和总节点数
+    if depth > _MOBILE_TOOL_ARGUMENT_MAX_DEPTH or remaining[0] <= 0:
+        return _MOBILE_TOOL_ARGUMENT_TRUNCATED
+    remaining[0] -= 1
+
+    # 2. 统一隐藏字符串中的凭据，再限制可展示文本长度
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        if _mobile_tool_argument_contains_secret(value):
+            return _MOBILE_TOOL_ARGUMENT_REDACTED
+        if len(value) <= _MOBILE_TOOL_ARGUMENT_MAX_STRING_CHARS:
+            return value
+        return value[:_MOBILE_TOOL_ARGUMENT_MAX_STRING_CHARS] + "…"
+
+    # 3. 对容器递归投影，在键名所有权层隐藏凭据
+    if isinstance(value, Mapping):
+        mapping = cast(Mapping[object, object], value)
+        result: dict[str, object] = {}
+        for index, (key, item) in enumerate(mapping.items()):
+            if not isinstance(key, str):
+                raise TypeError("mobile 工具参数对象键必须是字符串")
+            if index >= _MOBILE_TOOL_ARGUMENT_MAX_CONTAINER_ITEMS or remaining[0] <= 0:
+                result["…"] = _MOBILE_TOOL_ARGUMENT_TRUNCATED
+                break
+            if _mobile_tool_argument_is_secret(key):
+                result[key] = _MOBILE_TOOL_ARGUMENT_REDACTED
+                continue
+            result[key] = _mobile_tool_argument_value(
+                item,
+                depth=depth + 1,
+                remaining=remaining,
+            )
+        return result
+    if isinstance(value, (list, tuple)):
+        sequence = cast(list[object] | tuple[object, ...], value)
+        result_list: list[object] = []
+        redact_next = False
+        for index, item in enumerate(sequence):
+            if index >= _MOBILE_TOOL_ARGUMENT_MAX_CONTAINER_ITEMS or remaining[0] <= 0:
+                result_list.append(_MOBILE_TOOL_ARGUMENT_TRUNCATED)
+                break
+            if redact_next:
+                result_list.append(_MOBILE_TOOL_ARGUMENT_REDACTED)
+                redact_next = False
+                continue
+            result_list.append(
+                _mobile_tool_argument_value(
+                    item,
+                    depth=depth + 1,
+                    remaining=remaining,
+                )
+            )
+            redact_next = isinstance(item, str) and _mobile_tool_argument_is_secret_flag(item)
+        return result_list
+    raise TypeError(f"mobile 工具参数包含非 JSON 类型: {type(value).__name__}")
+
+
+def _mobile_tool_argument_is_secret(key: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", key.lower())
+    return normalized in _MOBILE_TOOL_SECRET_KEYS or normalized.endswith(
+        (
+            "secret",
+            "password",
+            "passwd",
+            "cookie",
+            "privatekey",
+            "secretaccesskey",
+            "token",
+            "apikey",
+            "credentialfile",
+            "credentialsfile",
+        )
+    )
+
+
+def _mobile_tool_argument_contains_secret(value: str) -> bool:
+    return _MOBILE_TOOL_SECRET_TEXT_PATTERN.search(value) is not None
+
+
+def _mobile_tool_argument_is_secret_flag(value: str) -> bool:
+    normalized = value.strip().lstrip("-").lower()
+    return _mobile_tool_argument_is_secret(normalized)
+
+
+def _mobile_tool_argument_encoded_size(value: Mapping[str, object]) -> int:
+    return len(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    )
 
 
 def _utc_now() -> datetime:
