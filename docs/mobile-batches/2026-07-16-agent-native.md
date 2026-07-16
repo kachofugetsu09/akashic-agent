@@ -158,3 +158,18 @@ node --check mobile_panel.js
 - 目录与资产请求之间插件被移除时，`plugin_unavailable` 只让当前批次失效并排队重拉目录，不断开 WebSocket；watcher 的通知重试也与插件 reconcile 分离，不会因移动通知失败每秒重载全部插件。
 - WebView 已有的资产签名队列负责原位切换 JS/CSS；新资产全部解析成功后才替换旧 definitions 和 stylesheet，加载失败仍保留旧界面并显示可重试错误。
 - `0.7.10 (19)` 只包含初版事件处理，尚未完成 capability 订阅；后续修复版才启用可靠热更新。新客户端连接旧服务端时会在首个目录请求被拒后自动退回旧 payload。服务端部署本功能时需要一次核心重启；此后单独安装、升级、禁用或移除带移动 UI 的插件均不要求 runtime 或手机重启。
+
+### Pixel 7 热更新验收
+
+```text
+Observe disabled       connection control       Observe enabled
+┌──────────────┐      plugin.ui.changed         ┌──────────────┐
+│ 插件       0 │ ─────────────────────────────→ │ 插件       1 │
+└──────────────┘     list → asset → replace     └──────────────┘
+          durable cursor 与 inbox 全程不变
+```
+
+- 隔离 Mobile Lab 的 Observe 初始处于禁用状态；Pixel 7 完成真实 WSS 配对后，抽屉显示“插件 0”。
+- 运行中执行 `plugin-enable observe@mobile-lab`，不重启 runtime、Android 服务或 Activity；6 秒内同一抽屉原位显示“插件 1”。
+- 设备 `3cdf264b0b144af3844fb94aeb8b3818` 在切换前后均为 `next_event_seq=10 / sent_event_seq=9 / acknowledged_event_seq=9`，持久化 inbox 为空，因此该能力没有占用 durable event 序列。
+- 截图证据为 `/tmp/hot-control-disabled.png`、`/tmp/hot-control-enabled.png`；Python 定向测试 `180 passed`，Pyright 无错误，Android `testDebugUnitTest` 与 `assembleDebug` 串行构建通过。

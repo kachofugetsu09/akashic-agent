@@ -380,3 +380,6 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - 目录列出插件后、资产拉取前插件被移除时，`plugin_unavailable` 被视为目录已过期；客户端等待同批其余 reply 收束后只重拉一次目录，不显示伪错误也不触发断线重连。
 - `0.7.10 (19)` 已发布，APK 为 8,306,622 bytes，SHA-256 `a02c4da4333ae9e135cf874609afb50c2a28611c550757d3eeab709b041397bd`。后续验收发现该版本尚未完成客户端 capability 订阅；本轮补上协商、旧服务端 fallback 与连接 epoch 隔离后，才把热更新视为可用能力。
 - 线上核心已重启一次以加载新协议，Observe `5c7442f`、writer 与 mobile channel 均正常启动。完成 capability 修复后，支持热更新的客户端不再需要重启 runtime 或手机；旧 Android 客户端继续使用首次同步，不会收到 `plugin.ui.changed`。
+- Pixel 7 使用隔离 Mobile Lab 验证最终契约：Observe 禁用时抽屉显示“插件 0”，运行中直接启用后原位变为“插件 1”，没有重启手机、Android 服务或 runtime。对应截图为 `/tmp/hot-control-disabled.png`、`/tmp/hot-control-enabled.png`。
+- 同一 Pixel 7 连接在切换前后的 durable cursor 均为 `next_event_seq=10 / sent=9 / acknowledged=9`，`mobile_device_inbox` 保持为空；这证明 `plugin.ui.changed` 没有进入持久化序列，也没有产生 4406 或 event sequence gap。
+- 隔离 tunnel 曾因本机透明代理路由中断返回 Cloudflare 1033/HTTP 530；重启 tunnel connector 后恢复。该故障发生在配对 WebSocket 建立前，与插件热更新协议无关，验收只在 tunnel 恢复并完成真实 WSS 配对后计入。
