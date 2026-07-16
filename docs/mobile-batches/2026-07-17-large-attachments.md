@@ -31,9 +31,9 @@
 
 ## 验证记录
 
-- `pytest -q tests/mobile_realtime/test_gateway.py`：22 passed。
+- `pytest -q tests/mobile_realtime/test_gateway.py`：23 passed。
 - `pyright infra/mobile_realtime/gateway.py`：0 errors。
 - `npm run typecheck && npm run lint`：通过。
-- Android `testDebugUnitTest`：通过；`assembleDebugAndroidTest`：通过。
-- Pixel 7 真机执行 `LocalDeliveryStoreTest#largeMessageAttachmentWaitsForExplicitDownload`：1 passed。
-- 真机用例断言：`10 MiB - 1 byte` 自动排队，`10 MiB` 保持 remote；`MediaCacheStore.reconcile()` 后仍保持 remote；快速连续请求两次只发送一条 `attachment.download`。
+- Android 定向 debug unit 通过；release unit、Lint、R8、assemble 和 APK v2 签名通过。
+- Pixel 7 真机执行完整 `LocalDeliveryStoreTest`：25 passed。边界用例断言 `10 MiB - 1 byte` 自动排队、`10 MiB` 保持 remote；`MediaCacheStore.reconcile()` 后仍保持 remote；快速连续请求两次只发送一条 `attachment.download`。
+- 隔离 Mobile Lab 注入真实 11.0 MiB 历史附件后，Pixel 7 先保持“尚未下载”；连续点按后只运行一条 offset 分片链，界面原位显示 32%→69%，最终变为“已下载”并出现分享操作。证据为 `/tmp/pixel7-release-reconnected.png`、`/tmp/pixel7-large-download-progress2.png`、`/tmp/pixel7-large-download-finished2.png`、`/tmp/pixel7-large-download-complete.png`；应用日志无 FATAL、AndroidRuntime 或 RenderProcessGone。

@@ -384,14 +384,6 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - 同一 Pixel 7 连接在切换前后的 durable cursor 均为 `next_event_seq=10 / sent=9 / acknowledged=9`，`mobile_device_inbox` 保持为空；这证明 `plugin.ui.changed` 没有进入持久化序列，也没有产生 4406 或 event sequence gap。
 - 隔离 tunnel 曾因本机透明代理路由中断返回 Cloudflare 1033/HTTP 530；重启 tunnel connector 后恢复。该故障发生在配对 WebSocket 建立前，与插件热更新协议无关，验收只在 tunnel 恢复并完成真实 WSS 配对后计入。
 
-## 2026-07-17 按需接收大附件与控制帧公平性
-
-- 收到的附件小于 10 MiB 时继续自动下载；大于等于 10 MiB 时只保存服务端描述符，消息原位显示文件大小、`尚未下载` 和明确的“下载”操作。它不会进入下载队列，也不会在移动网络或后台悄悄占用流量。
-- 用户点“下载”后复用既有 `requestDownload`、分片 fsync、SHA-256 校验和原子发布链路，没有新增第二套传输协议或持久化 owner。失败和缓存驱逐仍使用同一位置的“重试”。
-- `remote` 是 Room 附件状态机的一部分，并通过 Kotlin 快照投影给 WebView；状态层级靠文字、进度和既有附件表面表达，没有为它再造一张提示卡。
-- 连接控制帧的超时只覆盖实际 WebSocket 写入，不把等待同连接上一帧完成的排队时间算成慢连接。真实写入超时仍以 4408 关闭旧连接并触发重连，不能让健康连接因正常串行化被误杀。
-- 自动验证：Gateway 控制帧定向测试 `3 passed`；Android 附件展示单测通过。Pixel 7 验收使用隔离 Mobile Lab：覆盖小附件自动接收、大附件保持未下载、显式下载后完成，以及日志无 4406、event sequence gap、协议反序列化和 FATAL。
-
 ## 2026-07-17 大附件按需下载与抖动保护
 
 - 隔离 Mobile Lab 的历史同步暴露一条真实 47,381,751-byte 文档：Android 会在建立历史投影时立即把所有服务端附件置为 `pending`，随后按分片完整下载。连续的 `attachment.download` 是正常断点传输，不是重试死循环，但它会无意义占用移动网络和消息同步时延。
@@ -399,4 +391,5 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - UI 没有增加外层卡片或新颜色：附件仍是原有 Material 3 行，主信息保持文件名，低强调文字承担大小/状态语义，唯一主色文字按钮表达显式下载动作；44dp 触控区域和原有进度条保持不变。
 - connection-scoped 控制帧的 3 秒超时现只覆盖真正的 WebSocket 写入，不再覆盖等待同连接合法附件帧占用写锁的时间。正常在途帧可在 30 秒窗口内完成；超过窗口说明连接已无法释放发送权，或拿到锁后仍写超时，服务端才移除连接并以 4408 关闭。
 - “下载 / 重试”原生入口允许 `pending`、`downloading` 和已经完成的 `cached` 重入，快速双击只复用同一下载队列，不会在后台协程抛异常；多附件的读屏名称包含文件名。
-- 验证通过：gateway `22 passed`、Pyright 无错误、Web typecheck 与 ESLint、Android 全量 debug unit、androidTest APK 构建；Pixel 7 真机定向执行 `largeMessageAttachmentWaitsForExplicitDownload` 为 `1/1`，确认 10 MiB 边界与显式点击入队语义。
+- 验证通过：gateway `23 passed`、Pyright 无错误、Web typecheck 与 ESLint、Android release unit/Lint/R8/assemble 和 v2 签名；Pixel 7 定向 instrumentation 为 `1/1`，其中边界用例确认 `10 MiB - 1 byte` 自动排队、`10 MiB` 保持 remote，缓存对账不改变 remote，连续点按只复用同一下载队列。
+- Pixel 7 隔离 Mobile Lab 收到真实 11.0 MiB 历史附件后原位显示“尚未下载”和“下载”，历史同步阶段未主动发下载命令；连续点按后只运行一条分片链，界面原位显示 32%→69%，最终经 SHA-256 校验变为“已下载”并出现分享操作。截图为 `/tmp/pixel7-release-reconnected.png`、`/tmp/pixel7-large-download-progress2.png`、`/tmp/pixel7-large-download-finished2.png`、`/tmp/pixel7-large-download-complete.png`；日志无 FATAL、AndroidRuntime 或 RenderProcessGone。
