@@ -43,7 +43,6 @@ import {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   Dialog,
-  DialogClose,
   DialogContent,
   DialogTitle,
   DialogTrigger,
@@ -58,6 +57,8 @@ import {
 import {
   advanceMobileProjectionBaseline,
   advanceMobileUnreadTracking,
+  allMobileAttachmentsReady,
+  isMobileImageViewerHistoryState,
   normalizeMobileSearchText,
   updateMobileSearchIndex,
   type MobileSearchIndexEntry,
@@ -201,8 +202,9 @@ interface NativeBridge {
   openDownloadedAttachment(attachmentId: string): void;
   shareDownloadedAttachment(attachmentId: string): void;
   saveDownloadedAttachment(attachmentId: string): void;
+  setWebHistoryActive(active: boolean): void;
   dismissError(): void;
-  sendMessage(text: string, replyToMessageId: string): void;
+  sendMessage(requestId: string, text: string, replyToMessageId: string): void;
   copyText(text: string): void;
   performActionHaptic(): void;
   sendCommand(command: string): void;
@@ -482,6 +484,7 @@ declare global {
     AkashicMobile?: {
       receiveSnapshot(snapshot: unknown): void;
       receivePluginAssets(assets: MobilePluginAsset[]): void;
+      receiveSendResult(requestId: string, accepted: boolean): void;
     };
   }
 }
@@ -502,6 +505,7 @@ function MobileNativeApp() {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [recoveringMessageIds, setRecoveringMessageIds] = useState<Set<string>>(() => new Set());
   const [stopRequested, setStopRequested] = useState(false);
+  const [sendPending, setSendPending] = useState(false);
   const [sendScrollRequest, setSendScrollRequest] = useState(0);
   const [pluginLoadError, setPluginLoadError] = useState<string | null>(null);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
@@ -518,6 +522,7 @@ function MobileNativeApp() {
   const searchHighlightTimerRef = useRef<number | null>(null);
   const previousSessionIdRef = useRef<string | undefined>(undefined);
   const handledNavigationTargetRef = useRef<string | undefined>(undefined);
+  const pendingSendRequestRef = useRef<string | null>(null);
 
   useEffect(() => {
     let pending: MobileSnapshot | null = null;
@@ -568,6 +573,17 @@ function MobileNativeApp() {
             setPluginLoadError(error instanceof Error ? error.message : "插件界面加载失败");
           },
         );
+      },
+      receiveSendResult(requestId, accepted) {
+        if (pendingSendRequestRef.current !== requestId) return;
+        pendingSendRequestRef.current = null;
+        setSendPending(false);
+        if (!accepted) return;
+        setSendScrollRequest((current) => current + 1);
+        setInput("");
+        setReplyTarget(null);
+        setCommandsOpen(false);
+        textareaRef.current?.blur();
       },
     };
     window.AkashicNative?.reportReady();
@@ -729,13 +745,15 @@ function MobileNativeApp() {
 
   const send = () => {
     const text = input.trim();
+    const attachmentsReady = allMobileAttachmentsReady(snapshot.composer.attachments);
+    if (sendPending || !snapshot.composer.canSend || !attachmentsReady) return;
     if (!text && snapshot.composer.attachments.length === 0) return;
-    window.AkashicNative?.sendMessage(text, replyTarget?.id ?? "");
-    setSendScrollRequest((current) => current + 1);
-    setInput("");
-    setReplyTarget(null);
-    setCommandsOpen(false);
-    textareaRef.current?.blur();
+    const native = window.AkashicNative;
+    if (!native) return;
+    const requestId = `send-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    pendingSendRequestRef.current = requestId;
+    setSendPending(true);
+    native.sendMessage(requestId, text, replyTarget?.id ?? "");
   };
   const stop = () => {
     if (!snapshot.composer.canStop || stopRequested) return;
@@ -962,6 +980,7 @@ function MobileNativeApp() {
               commandsOpen={commandsOpen}
               queueOpen={queueOpen}
               stopRequested={stopRequested}
+              sendPending={sendPending}
               replyTarget={replyTarget}
               onInput={setInput}
               onToggleCommands={toggleCommands}
@@ -1159,6 +1178,7 @@ function MobileComposer({
   commandsOpen,
   queueOpen,
   stopRequested,
+  sendPending,
   replyTarget,
   onInput,
   onToggleCommands,
@@ -1174,6 +1194,7 @@ function MobileComposer({
   commandsOpen: boolean;
   queueOpen: boolean;
   stopRequested: boolean;
+  sendPending: boolean;
   replyTarget: MobileMessage | null;
   onInput: (value: string) => void;
   onToggleCommands: () => void;
@@ -1185,7 +1206,8 @@ function MobileComposer({
 }) {
   const stopping = stopRequested || snapshot.composer.isStopping;
   const hasDraft = snapshot.composer.attachments.length > 0;
-  const canSubmit = snapshot.composer.canSend && (!!input.trim() || hasDraft);
+  const attachmentsReady = allMobileAttachmentsReady(snapshot.composer.attachments);
+  const canSubmit = snapshot.composer.canSend && attachmentsReady && !sendPending && (!!input.trim() || hasDraft);
 
   return (
     <div className="mobile-composer-zone">
@@ -1236,7 +1258,7 @@ function MobileComposer({
             <Square size={17} fill="currentColor" />
           </button>
         ) : (
-          <button className="mobile-send-button" type="button" onClick={onSend} aria-label="发送消息" disabled={!canSubmit}>
+          <button className="mobile-send-button" type="button" onClick={onSend} aria-label={sendPending ? "正在保存消息" : "发送消息"} disabled={!canSubmit}>
             <SendHorizontal size={22} />
           </button>
         )}
@@ -1325,14 +1347,42 @@ function CommandSheet({ open, commands, onClose }: { open: boolean; commands: Mo
 }
 
 function DraftAttachments({ attachments }: { attachments: MobileAttachment[] }) {
+  const [operations, setOperations] = useState(new Map<string, "retry" | "remove">());
+  const operationsRef = useRef(operations);
+
+  useEffect(() => {
+    setOperations((current) => {
+      const next = new Map(current);
+      current.forEach((operation, attachmentId) => {
+        const attachment = attachments.find((item) => item.id === attachmentId);
+        const completed = !attachment ||
+          (operation === "retry" && attachment.state !== "failed") ||
+          (operation === "remove" && !attachment.canRemove);
+        if (completed) next.delete(attachmentId);
+      });
+      operationsRef.current = next;
+      return next.size === current.size ? current : next;
+    });
+  }, [attachments]);
+
+  const dispatch = (attachmentId: string, operation: "retry" | "remove") => {
+    if (operationsRef.current.has(attachmentId)) return;
+    const next = new Map(operationsRef.current).set(attachmentId, operation);
+    operationsRef.current = next;
+    setOperations(next);
+    if (operation === "retry") window.AkashicNative?.retryAttachment(attachmentId);
+    else window.AkashicNative?.removeAttachment(attachmentId);
+  };
+
   return (
     <div className="draft-attachments">
       {attachments.map((attachment) => {
         const progress = attachment.sizeBytes > 0
           ? Math.min(100, Math.round(attachment.transferredBytes / attachment.sizeBytes * 100))
           : 0;
+        const busy = operations.has(attachment.id);
         return (
-          <div className="draft-attachment" key={attachment.id}>
+          <div className="draft-attachment" key={attachment.id} aria-busy={busy}>
             <FileText size={19} />
             <div className="draft-attachment__body">
               <div className="draft-attachment__name">{attachment.filename}</div>
@@ -1351,10 +1401,10 @@ function DraftAttachments({ attachments }: { attachments: MobileAttachment[] }) 
             </div>
             <div className="draft-attachment__actions">
               {attachment.state === "failed" ? (
-                <button type="button" onClick={() => window.AkashicNative?.retryAttachment(attachment.id)}>重试</button>
+                <button type="button" disabled={busy} onClick={() => dispatch(attachment.id, "retry")}>重试</button>
               ) : null}
               {attachment.canRemove ? (
-                <button type="button" onClick={() => window.AkashicNative?.removeAttachment(attachment.id)} aria-label={`移除 ${attachment.filename}`}><X size={18} /></button>
+                <button type="button" disabled={busy} onClick={() => dispatch(attachment.id, "remove")} aria-label={`移除 ${attachment.filename}`}><X size={18} /></button>
               ) : null}
             </div>
           </div>
@@ -1381,6 +1431,47 @@ function MobileMessageAttachment({ attachment }: { attachment: MobileAttachment 
     : 0;
   const cached = attachment.state === "cached";
   const image = cached && attachment.contentType.startsWith("image/") && attachment.contentUrl;
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const viewerOpenRef = useRef(false);
+
+  useEffect(() => {
+    const closeFromHistory = () => {
+      if (!viewerOpenRef.current) return;
+      viewerOpenRef.current = false;
+      setViewerOpen(false);
+      window.AkashicNative?.setWebHistoryActive(false);
+    };
+    window.addEventListener("popstate", closeFromHistory);
+    return () => {
+      window.removeEventListener("popstate", closeFromHistory);
+      if (!viewerOpenRef.current) return;
+      viewerOpenRef.current = false;
+      window.AkashicNative?.setWebHistoryActive(false);
+      if (isMobileImageViewerHistoryState(window.history.state, attachment.id)) window.history.back();
+    };
+  }, [attachment.id]);
+
+  const changeViewer = (open: boolean) => {
+    if (open) {
+      if (viewerOpenRef.current) return;
+      window.history.pushState({ akashicImageViewer: attachment.id }, "");
+      viewerOpenRef.current = true;
+      setViewerOpen(true);
+      window.AkashicNative?.setWebHistoryActive(true);
+      window.AkashicNative?.touchDownloadedAttachment(attachment.id);
+      return;
+    }
+    if (isMobileImageViewerHistoryState(window.history.state, attachment.id)) {
+      viewerOpenRef.current = false;
+      setViewerOpen(false);
+      window.AkashicNative?.setWebHistoryActive(false);
+      window.history.back();
+      return;
+    }
+    viewerOpenRef.current = false;
+    setViewerOpen(false);
+    window.AkashicNative?.setWebHistoryActive(false);
+  };
   const status = attachment.state === "pending"
     ? "等待下载"
     : attachment.state === "downloading"
@@ -1394,13 +1485,13 @@ function MobileMessageAttachment({ attachment }: { attachment: MobileAttachment 
   return (
     <div className={`mobile-message-attachment ${attachment.state}`}>
       {image ? (
-        <Dialog onOpenChange={(open) => open && window.AkashicNative?.touchDownloadedAttachment(attachment.id)}>
+        <Dialog open={viewerOpen} onOpenChange={changeViewer}>
           <DialogTrigger asChild>
             <button className="message-attachment-preview" type="button" aria-label={`预览 ${attachment.filename}`}>
               <img alt="" src={attachment.contentUrl} />
             </button>
           </DialogTrigger>
-          <ImageViewer attachment={attachment} />
+          <ImageViewer attachment={attachment} onClose={() => changeViewer(false)} />
         </Dialog>
       ) : (
         <button
@@ -1440,7 +1531,7 @@ interface ViewerTransform {
   y: number;
 }
 
-function ImageViewer({ attachment }: { attachment: MobileAttachment }) {
+function ImageViewer({ attachment, onClose }: { attachment: MobileAttachment; onClose: () => void }) {
   const [transform, setTransform] = useState<ViewerTransform>({ scale: 1, x: 0, y: 0 });
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const gesture = useRef({ distance: 1, centerX: 0, centerY: 0, transform });
@@ -1488,9 +1579,7 @@ function ImageViewer({ attachment }: { attachment: MobileAttachment }) {
     <DialogContent className="image-viewer-dialog" showCloseButton={false}>
       <DialogTitle className="sr-only">{attachment.filename}</DialogTitle>
       <header className="image-viewer-toolbar">
-        <DialogClose asChild>
-          <button type="button" aria-label="返回会话"><ArrowLeft size={22} /></button>
-        </DialogClose>
+        <button type="button" onClick={onClose} aria-label="返回会话"><ArrowLeft size={22} /></button>
         <strong title={attachment.filename}>{attachment.filename}</strong>
         <button type="button" onClick={() => window.AkashicNative?.saveDownloadedAttachment(attachment.id)} aria-label={`保存 ${attachment.filename}`}><Download size={21} /></button>
         <button type="button" onClick={() => window.AkashicNative?.shareDownloadedAttachment(attachment.id)} aria-label={`分享 ${attachment.filename}`}><Share2 size={21} /></button>

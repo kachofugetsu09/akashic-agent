@@ -447,12 +447,17 @@ class RealtimeSession(
     }
 
     /** 创建本地消息和 outbox 命令，并在链路可用时立即发送。 */
-    fun sendMessage(text: String, replyToMessageId: String? = null) {
+    fun sendMessage(
+        text: String,
+        replyToMessageId: String? = null,
+        onPersisted: (Boolean) -> Unit = {},
+    ) {
         enqueueMessage(
             text,
             includeDraftAttachments = true,
             replyToMessageId = replyToMessageId,
             targetSessionId = null,
+            onPersisted = onPersisted,
         )
     }
 
@@ -542,11 +547,16 @@ class RealtimeSession(
         includeDraftAttachments: Boolean,
         replyToMessageId: String?,
         targetSessionId: String?,
+        onPersisted: (Boolean) -> Unit = {},
     ) {
         scope.launch {
             mutex.withLock {
                 // 1. 确定当前手机会话
-                val currentProfile = requireNotNull(profile) { "Pair a server before sending" }
+                val currentProfile = profile ?: run {
+                    mutableState.value = mutableState.value.copy(errorMessage = "请先连接电脑")
+                    onPersisted(false)
+                    return@withLock
+                }
                 val body = text.trim()
                 val sessionId = targetSessionId ?: ensureCurrentSession(currentProfile)
                 require(MOBILE_SESSION.matches(sessionId)) { "Invalid mobile session_id" }
@@ -563,14 +573,28 @@ class RealtimeSession(
                 } else {
                     emptyList()
                 }
-                require(body.isNotEmpty() || attachments.isNotEmpty()) { "消息和附件不能同时为空" }
-                require(attachments.all { it.state == "ready" }) { "请等待附件上传完成" }
+                if (body.isEmpty() && attachments.isEmpty()) {
+                    mutableState.value = mutableState.value.copy(errorMessage = "消息和附件不能同时为空")
+                    onPersisted(false)
+                    return@withLock
+                }
+                if (attachments.any { it.state != "ready" }) {
+                    mutableState.value = mutableState.value.copy(errorMessage = "请等待附件上传完成")
+                    onPersisted(false)
+                    return@withLock
+                }
                 val replyTarget = replyToMessageId?.let { messageId ->
-                    val target = requireNotNull(database.messages().get(messageId)) {
-                        "被引用的本地消息不存在: $messageId"
+                    val target = database.messages().get(messageId)
+                    if (target == null) {
+                        mutableState.value = mutableState.value.copy(errorMessage = "被引用的消息已不可用")
+                        onPersisted(false)
+                        return@withLock
                     }
-                    require(target.sessionId == sessionId) { "不能引用其他会话的消息" }
-                    require(target.role in setOf("user", "assistant")) { "被引用消息角色无效" }
+                    if (target.sessionId != sessionId || target.role !in setOf("user", "assistant")) {
+                        mutableState.value = mutableState.value.copy(errorMessage = "被引用的消息已不可用")
+                        onPersisted(false)
+                        return@withLock
+                    }
                     target
                 }
 
@@ -608,18 +632,23 @@ class RealtimeSession(
                     mutableState.value = mutableState.value.copy(
                         errorMessage = "保存已发送附件失败：${error.message}",
                     )
+                    onPersisted(false)
                     return@withLock
                 } catch (error: SecurityException) {
                     mutableState.value = mutableState.value.copy(errorMessage = "附件缓存路径不安全")
+                    onPersisted(false)
                     return@withLock
                 } catch (error: IllegalArgumentException) {
                     mutableState.value = mutableState.value.copy(errorMessage = error.message)
+                    onPersisted(false)
                     return@withLock
                 } catch (error: IllegalStateException) {
                     mutableState.value = mutableState.value.copy(errorMessage = error.message)
+                    onPersisted(false)
                     return@withLock
                 } catch (error: ArithmeticException) {
                     mutableState.value = mutableState.value.copy(errorMessage = "附件缓存配额计算溢出")
+                    onPersisted(false)
                     return@withLock
                 }
                 val envelope = WireEnvelope(
@@ -667,6 +696,7 @@ class RealtimeSession(
                     ),
                     attachments = cachedAttachments,
                 )
+                onPersisted(true)
                 if (mutableState.value.connection.phase == ConnectionPhase.READY) flushOutbox()
             }
         }

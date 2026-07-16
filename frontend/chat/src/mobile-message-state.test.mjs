@@ -4,10 +4,25 @@ import test from "node:test";
 import {
   advanceMobileProjectionBaseline,
   advanceMobileUnreadTracking,
+  allMobileAttachmentsReady,
+  isMobileImageViewerHistoryState,
   reconcileAssistantMessageIds,
   updateMobileUnreadMessageIds,
   updateMobileSearchIndex,
 } from "./mobile-message-state.ts";
+
+test("composer waits until every attachment is ready", () => {
+  assert.equal(allMobileAttachmentsReady([]), true);
+  assert.equal(allMobileAttachmentsReady([{ state: "ready" }, { state: "ready" }]), true);
+  assert.equal(allMobileAttachmentsReady([{ state: "ready" }, { state: "failed" }]), false);
+  assert.equal(allMobileAttachmentsReady([{ state: "ready" }, { state: "uploading" }]), false);
+});
+
+test("image viewer owns only its matching history entry", () => {
+  assert.equal(isMobileImageViewerHistoryState({ akashicImageViewer: "image-1" }, "image-1"), true);
+  assert.equal(isMobileImageViewerHistoryState({ akashicImageViewer: "image-2" }, "image-1"), false);
+  assert.equal(isMobileImageViewerHistoryState(null, "image-1"), false);
+});
 
 function message(id, role, createdAt) {
   return { id, role, createdAt, sessionId: "mobile:test" };

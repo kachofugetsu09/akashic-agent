@@ -17,6 +17,7 @@ import android.util.Log
 import android.view.HapticFeedbackConstants
 import android.widget.Toast
 import androidx.annotation.Keep
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -58,6 +59,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import org.json.JSONObject
 
 private const val MOBILE_WEB_URL = "https://appassets.androidplatform.net/assets/mobile.html"
 private const val MOBILE_WEB_LOG_TAG = "AkashicMobileWeb"
@@ -85,7 +87,7 @@ fun MobileWebChat(
     onShareDownloadedAttachment: (String) -> Unit,
     onSaveDownloadedAttachment: (String) -> Unit,
     onDismissError: () -> Unit,
-    onSend: (String, String?) -> Unit,
+    onSend: (String, String?, (Boolean) -> Unit) -> Unit,
     onSendCommand: (String) -> Unit,
     onPluginUiCall: (String, String?, String?, String, String, String) -> Unit,
     onPluginUiResponsesAcknowledged: (Set<String>) -> Unit,
@@ -97,6 +99,7 @@ fun MobileWebChat(
     var webView by remember { mutableStateOf<WebView?>(null) }
     var snapshotPump by remember { mutableStateOf<MobileSnapshotPump?>(null) }
     var webLoadError by remember { mutableStateOf<String?>(null) }
+    var webHistoryActive by remember { mutableStateOf(false) }
 
     val callbacks by rememberUpdatedState(
         MobileWebCallbacks(
@@ -173,6 +176,16 @@ fun MobileWebChat(
                                 performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                             }
                         },
+                        setWebHistoryActive = { active -> post { webHistoryActive = active } },
+                        reportSendResult = { requestId, accepted ->
+                            post {
+                                evaluateJavascript(
+                                    "window.AkashicMobile?.receiveSendResult(" +
+                                        "${JSONObject.quote(requestId)},$accepted)",
+                                    null,
+                                )
+                            }
+                        },
                     ),
                     "AkashicNative",
                 )
@@ -215,6 +228,12 @@ fun MobileWebChat(
     }
 
     SideEffect { snapshotPump?.submit(state) }
+    BackHandler(enabled = webHistoryActive) {
+        val current = requireNotNull(webView) { "Web history owner is unavailable" }
+        check(current.canGoBack()) { "Web history active without a back entry" }
+        webHistoryActive = false
+        current.goBack()
+    }
     DisposableEffect(Unit) {
         onDispose {
             snapshotPump?.cancel()
@@ -243,7 +262,7 @@ private data class MobileWebCallbacks(
     val onShareDownloadedAttachment: (String) -> Unit,
     val onSaveDownloadedAttachment: (String) -> Unit,
     val onDismissError: () -> Unit,
-    val onSend: (String, String?) -> Unit,
+    val onSend: (String, String?, (Boolean) -> Unit) -> Unit,
     val onSendCommand: (String) -> Unit,
     val onPluginUiCall: (String, String?, String?, String, String, String) -> Unit,
     val onPluginUiResponsesAcknowledged: (Set<String>) -> Unit,
@@ -257,6 +276,8 @@ private class MobileWebBridge(
     private val requestSnapshot: () -> Unit,
     private val copyText: (String) -> Unit,
     private val performActionHaptic: () -> Unit,
+    private val setWebHistoryActive: (Boolean) -> Unit,
+    private val reportSendResult: (String, Boolean) -> Unit,
 ) {
     @JavascriptInterface
     fun reportReady() = reportReady.invoke()
@@ -332,11 +353,16 @@ private class MobileWebBridge(
     }
 
     @JavascriptInterface
+    fun setWebHistoryActive(active: Boolean) = setWebHistoryActive.invoke(active)
+
+    @JavascriptInterface
     fun dismissError() = dispatch { it.onDismissError() }
 
     @JavascriptInterface
-    fun sendMessage(text: String, replyToMessageId: String) = dispatch {
-        it.onSend(text, replyToMessageId.ifBlank { null })
+    fun sendMessage(requestId: String, text: String, replyToMessageId: String) = dispatch {
+        it.onSend(text, replyToMessageId.ifBlank { null }) { accepted ->
+            reportSendResult(requestId, accepted)
+        }
     }
 
     @JavascriptInterface

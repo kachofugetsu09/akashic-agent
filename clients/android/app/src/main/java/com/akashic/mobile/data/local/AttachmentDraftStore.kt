@@ -72,23 +72,17 @@ class AttachmentDraftStore(
         staged
     }
 
-    suspend fun remove(attachmentId: String) = mutex.withLock {
-        val transfer = requireNotNull(dao.get(attachmentId)) { "附件草稿不存在：$attachmentId" }
-        check(dao.deleteDraft(attachmentId) == 1) { "上传中的附件不能移除" }
+    /** 以草稿仓库为幂等所有者，至多删除一次记录和私有文件。 */
+    suspend fun remove(attachmentId: String): Boolean = mutex.withLock {
+        val transfer = dao.get(attachmentId) ?: return@withLock false
+        if (dao.deleteDraft(attachmentId) != 1) return@withLock false
         deleteFile(fileFor(transfer.attachmentId))
+        true
     }
 
-    suspend fun retry(attachmentId: String, now: Long) = mutex.withLock {
-        val transfer = requireNotNull(dao.get(attachmentId)) { "附件草稿不存在：$attachmentId" }
-        check(transfer.state == "failed") { "只有失败附件可以重试" }
-        check(
-            dao.updateState(
-                attachmentId = attachmentId,
-                transferredBytes = transfer.transferredBytes,
-                state = "pending",
-                updatedAt = now,
-            ) == 1,
-        )
+    /** 只认领一次 failed→pending 迁移，重复操作返回 false。 */
+    suspend fun retry(attachmentId: String, now: Long): Boolean = mutex.withLock {
+        dao.retryFailed(attachmentId, now) == 1
     }
 
     suspend fun deleteSentFiles(attachmentIds: List<String>) = mutex.withLock {

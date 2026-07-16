@@ -443,6 +443,15 @@ interface AttachmentTransferDao {
         updatedAt: Long,
     ): Int
 
+    @Query(
+        """
+        UPDATE attachment_transfers
+        SET state = 'pending', updatedAt = :updatedAt
+        WHERE attachmentId = :attachmentId AND state = 'failed'
+        """,
+    )
+    suspend fun retryFailed(attachmentId: String, updatedAt: Long): Int
+
     @Query("UPDATE attachment_transfers SET state = 'sent', updatedAt = :updatedAt WHERE attachmentId IN (:ids)")
     suspend fun markSent(ids: List<String>, updatedAt: Long): Int
 

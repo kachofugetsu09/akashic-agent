@@ -77,6 +77,7 @@ class AttachmentUploadCoordinator(
         } else if (!canTransfer(current.transfer)) {
             update(current.transfer, payload.transferredBytes, "pending")
             active = null
+            startNext()
         } else {
             sendWindow(current.transfer.copy(transferredBytes = payload.transferredBytes))
         }
@@ -126,8 +127,7 @@ class AttachmentUploadCoordinator(
         if (active != null || pendingCommands.isNotEmpty()) return
         var transfer: AttachmentTransferEntity
         while (true) {
-            transfer = dao.pendingUploads(currentServer).firstOrNull() ?: return
-            if (!canTransfer(transfer)) return
+            transfer = dao.pendingUploads(currentServer).firstOrNull(canTransfer) ?: return
             if (dao.claimUploading(transfer.attachmentId, System.currentTimeMillis()) == 1) break
         }
         val commandId = Ulid.next()

@@ -174,7 +174,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             canStop = session.activeTurnId != null &&
                 session.connection.phase == ConnectionPhase.READY &&
                 !session.isStopping,
-            canSend = session.hasProfile,
+            canSend = session.hasProfile && composerAttachments.all { it.state == ComposerAttachmentState.READY },
         )
     }.stateIn(
         viewModelScope,
@@ -204,8 +204,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onQrCode(value: String) = container.realtimeSession.beginPairing(value)
 
-    fun sendMessage(value: String, replyToMessageId: String?) =
-        container.realtimeSession.sendMessage(value, replyToMessageId)
+    fun sendMessage(value: String, replyToMessageId: String?, onPersisted: (Boolean) -> Unit) =
+        container.realtimeSession.sendMessage(value, replyToMessageId, onPersisted)
 
     fun sendCommand(value: String) = container.realtimeSession.sendCommand(value)
 

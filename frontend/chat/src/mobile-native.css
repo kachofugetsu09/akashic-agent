@@ -1654,6 +1654,11 @@ button.tool-step-summary:active {
   scale: 0.96;
 }
 
+.draft-attachment__actions > button:disabled {
+  color: var(--m-on-surface-variant);
+  opacity: 0.56;
+}
+
 .mobile-message-attachments {
   display: grid;
   gap: 8px;

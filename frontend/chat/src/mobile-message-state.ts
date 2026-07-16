@@ -35,6 +35,15 @@ export interface MobileProjectionBaselineState {
   rebuilding: boolean;
 }
 
+export function allMobileAttachmentsReady(attachments: readonly { state: string }[]) {
+  return attachments.every((attachment) => attachment.state === "ready");
+}
+
+export function isMobileImageViewerHistoryState(state: unknown, attachmentId: string) {
+  if (typeof state !== "object" || state === null) return false;
+  return "akashicImageViewer" in state && state.akashicImageViewer === attachmentId;
+}
+
 export function normalizeMobileSearchText(value: string) {
   return value.toLocaleLowerCase("zh-CN");
 }
