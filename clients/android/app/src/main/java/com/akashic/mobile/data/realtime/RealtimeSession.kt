@@ -84,7 +84,17 @@ internal object FullJitterBackoff {
         random.nextLong(maximumDelayMillis(retry) + 1)
 }
 
-internal fun isTerminalProtocolClose(code: Int): Boolean = code == 4400 || code == 4406
+internal enum class TerminalProtocolAction {
+    FAIL_ACTIVE_COMMAND,
+    PRESERVE_OUTBOX,
+}
+
+internal fun terminalProtocolAction(code: Int): TerminalProtocolAction? = when (code) {
+    4400 -> TerminalProtocolAction.PRESERVE_OUTBOX
+    4406 -> TerminalProtocolAction.PRESERVE_OUTBOX
+    4410 -> TerminalProtocolAction.FAIL_ACTIVE_COMMAND
+    else -> null
+}
 
 class RealtimeSession(
     private val database: AppDatabase,
@@ -156,6 +166,7 @@ class RealtimeSession(
     private var ackJob: Job? = null
     private var pendingAckCount = 0
     private var pendingAckSeq = 0L
+    private var activeOutboxCommandId: String? = null
     private var syncGeneration = 0L
     private var completedSyncGeneration = 0L
     private var resetRebuildGeneration: Long? = null
@@ -721,8 +732,9 @@ class RealtimeSession(
         scope.launch {
             mutex.withLock {
                 if (candidateId != activeCandidate) return@withLock
-                if (isTerminalProtocolClose(code)) {
-                    failProtocolConnection(code)
+                val action = terminalProtocolAction(code)
+                if (action != null) {
+                    failProtocolConnection(code, action)
                 } else {
                     scheduleReconnect("连接关闭：$code $reason")
                 }
@@ -1026,14 +1038,21 @@ class RealtimeSession(
                     return
                 }
                 when (envelope.type) {
-                    "message.send.ok" -> attachmentDrafts.deleteSentFiles(
-                        deliveryStore.acknowledgeOutbox(id, System.currentTimeMillis()),
-                    )
+                    "message.send.ok" -> {
+                        require(id == activeOutboxCommandId) { "收到非活动 outbox 命令的 ACK: $id" }
+                        val sentFiles = deliveryStore.acknowledgeOutbox(id, System.currentTimeMillis())
+                        activeOutboxCommandId = null
+                        attachmentDrafts.deleteSentFiles(sentFiles)
+                        flushOutbox()
+                    }
                     "message.send.error" -> {
+                        require(id == activeOutboxCommandId) { "收到非活动 outbox 命令的错误: $id" }
                         deliveryStore.failOutbox(id, System.currentTimeMillis())
+                        activeOutboxCommandId = null
                         mutableState.value = mutableState.value.copy(
                             errorMessage = envelope.payload["message"]?.toString()?.trim('"') ?: "消息发送失败",
                         )
+                        flushOutbox()
                     }
                     "session.list.ok", "history.get.ok" -> completeSyncReply(envelope)
                     else -> {
@@ -1380,17 +1399,18 @@ class RealtimeSession(
     }
 
     private suspend fun flushOutbox() {
+        if (activeOutboxCommandId != null) return
         val currentProfile = requireNotNull(profile)
         val epoch = activeEpoch ?: return
         val candidate = activeCandidate ?: return
-        database.outbox().pending(currentProfile.serverId).forEach { command ->
-            val stored = ProtocolCodec.decode(command.envelopeJson)
-            val wire = stored.copy(connectionEpoch = epoch)
-            deliveryStore.markOutboxAttempt(command.commandId, System.currentTimeMillis())
-            if (!socket.send(candidate, wire)) {
-                deliveryStore.retryOutbox(command.commandId)
-                return
-            }
+        val command = database.outbox().pending(currentProfile.serverId).firstOrNull() ?: return
+        val stored = ProtocolCodec.decode(command.envelopeJson)
+        val wire = stored.copy(connectionEpoch = epoch)
+        deliveryStore.markOutboxAttempt(command.commandId, System.currentTimeMillis())
+        activeOutboxCommandId = command.commandId
+        if (!socket.send(candidate, wire)) {
+            activeOutboxCommandId = null
+            deliveryStore.retryOutbox(command.commandId)
         }
     }
 
@@ -1483,6 +1503,7 @@ class RealtimeSession(
         if (reconnectJob?.isActive == true) return
         activeCandidate = null
         activeEpoch = null
+        activeOutboxCommandId = null
         ackJob?.cancel()
         ackJob = null
         pendingAckCount = 0
@@ -1509,9 +1530,8 @@ class RealtimeSession(
         }
     }
 
-    private suspend fun failProtocolConnection(code: Int) {
-        /** 停止永久协议错误的重放，并保留 outbox 等待版本恢复。 */
-
+    /** 停止永久协议错误，并按错误类型隔离或保留当前 outbox。 */
+    private suspend fun failProtocolConnection(code: Int, action: TerminalProtocolAction) {
         // 1. 收起当前连接态任务
         reconnectJob?.cancel()
         reconnectJob = null
@@ -1528,9 +1548,18 @@ class RealtimeSession(
         requestedHistoryPages.clear()
         resetRebuildGeneration = null
 
-        // 2. 保留可重放消息，但不再自动撞击同一个不兼容端点
+        // 2. 隔离坏命令；只有版本不兼容时才保留等待升级
         val currentProfile = requireNotNull(profile)
-        database.outbox().resetInFlight(currentProfile.serverId)
+        val commandId = activeOutboxCommandId
+        if (action == TerminalProtocolAction.FAIL_ACTIVE_COMMAND && commandId != null) {
+            deliveryStore.failOutbox(commandId, System.currentTimeMillis())
+            activeOutboxCommandId = null
+            scheduleReconnect("消息格式无效，已标记发送失败")
+            return
+        } else {
+            database.outbox().resetInFlight(currentProfile.serverId)
+        }
+        activeOutboxCommandId = null
         mutableState.value = mutableState.value.copy(
             connection = mutableState.value.connection.copy(
                 phase = ConnectionPhase.FAILED,
@@ -1574,6 +1603,7 @@ class RealtimeSession(
         candidateEndpoints.clear()
         activeCandidate = null
         activeEpoch = null
+        activeOutboxCommandId = null
         pendingCommandListId = null
         resetPluginUiPending("连接已重置")
     }

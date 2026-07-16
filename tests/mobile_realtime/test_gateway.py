@@ -16,6 +16,7 @@ import pytest
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from agent.config_models import MobileKeyEncryptionConfig, MobileRealtimeConfig
 from bus.events import OutboundMessage
@@ -434,6 +435,85 @@ def test_authenticated_gateway_rejects_malformed_attachment_binary(
 
     assert error["type"] == "protocol.error"
     assert error["payload"]["code"] == 4400
+    runtime.close()
+
+
+def test_authenticated_gateway_reports_validation_without_echoing_payload(
+    tmp_path: Path,
+) -> None:
+    """验证协议字段错误可定位，但不会把用户载荷写回手机或关闭原因。"""
+
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    runtime, _ = asyncio.run(build())
+    device_key = ec.generate_private_key(ec.SECP256R1())
+    device_id = uuid4().hex
+    runtime.storage.register_device(
+        DeviceRecord(
+            device_id=device_id,
+            public_key=_device_public_key(device_key),
+            display_name="Pixel Emulator",
+            created_at=datetime.now(timezone.utc),
+            revoked_at=None,
+            capabilities=("stream-v1",),
+        )
+    )
+    session_id = f"mobile:{uuid4()}"
+
+    with TestClient(create_mobile_gateway_app(runtime)).websocket_connect("/ws") as ws:
+        challenge = ws.receive_json()
+        ws.send_json(
+            _device_proof(
+                challenge=challenge["payload"],
+                device_id=device_id,
+                device_key=device_key,
+            )
+        )
+        epoch = ws.receive_json()["connection_epoch"]
+        ws.send_json(
+            {
+                "v": 1,
+                "kind": "control",
+                "type": "resume",
+                "connection_epoch": epoch,
+                "payload": {"last_ack": 0, "active_turns": []},
+            }
+        )
+        assert ws.receive_json()["type"] == "sync.completed"
+        ws.send_json(
+            {
+                "v": 1,
+                "kind": "command",
+                "type": "message.send",
+                "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                "connection_epoch": epoch,
+                "session_id": session_id,
+                "payload": {
+                    "client_message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                    "session_id": session_id,
+                    "text": "private-message-body",
+                    "media_refs": [],
+                    "client_created_at": datetime.now(timezone.utc).isoformat(),
+                    "reply_to": "private-reference-body",
+                },
+            }
+        )
+        error = ws.receive_json()
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+
+    assert error["type"] == "protocol.error"
+    assert error["payload"]["code"] == 4410
+    assert error["payload"]["message"] == "协议字段无效"
+    assert "private-message-body" not in error["payload"]["message"]
+    assert "private-reference-body" not in error["payload"]["message"]
+    assert closed.value.code == 4410
+    assert closed.value.reason == "协议字段无效"
     runtime.close()
 
 

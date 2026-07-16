@@ -80,6 +80,7 @@ _CLOSE_PROTOCOL = 4400
 _CLOSE_UNAUTHENTICATED = 4401
 _CLOSE_REVOKED = 4403
 _CLOSE_SLOW_CONSUMER = 4408
+_CLOSE_COMMAND = 4410
 _MAX_PENDING_CONNECTION_EVENTS = 64
 _CLOSE_VERSION = 4406
 _CROCKFORD32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -1273,6 +1274,8 @@ def _protocol_close_code(error: ProtocolDecodeError | ValidationError) -> int:
         for issue in error.errors(include_url=False):
             if issue["loc"] and issue["loc"][-1] == "v":
                 return _CLOSE_VERSION
+            if issue["loc"][:2] == ("command", "message.send"):
+                return _CLOSE_COMMAND
     return _CLOSE_PROTOCOL
 
 
@@ -1280,14 +1283,10 @@ def _protocol_error_reason(error: ProtocolDecodeError | ValidationError) -> str:
     """把协议边界错误收敛为可展示且不泄露载荷的短原因。"""
 
     if isinstance(error, ProtocolDecodeError):
-        return str(error)
-    issue = error.errors(
-        include_url=False,
-        include_context=False,
-        include_input=False,
-    )[0]
-    location = ".".join(str(part) for part in issue["loc"][-4:])
-    return f"协议字段无效: {location}: {issue['msg']}"
+        return "协议帧无法解析"
+    if _protocol_close_code(error) == _CLOSE_VERSION:
+        return "协议版本不兼容"
+    return "协议字段无效"
 
 
 def _pending_claim_json(claim: PendingPairingClaim) -> dict[str, object]:

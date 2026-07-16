@@ -77,15 +77,19 @@
 - 引用预览限制为 512 字符，但模型上下文保留目标消息全文；UI 截断不再损失 Agent 实际理解所需的内容。
 - 仅附件消息使用 `[附件]` 作为引用语义文本，避免 UI 显示可引用但服务端拒绝空正文。
 - 过程紫色继续用于活动节点；另设同色相、较低明度的 `trace-text`，保证小字号状态文本在 surface 上达到 4.70:1，不牺牲点亮节点的明亮感。
+- 协议拒绝按可恢复性分流：outbox 改为逐条单飞，Gateway 用 `4410` 明确标记坏 `message.send`，客户端只隔离当前命令并自动恢复后续队列；无法归因的 `4400` 和版本错误 `4406` 保留待发内容，不再伪装成网络抖动循环重连。
+- Gateway 对手机和 WebSocket close reason 只返回静态协议原因；Pydantic 字段位置、判别值和用户正文仅留在受控服务端诊断边界，不回显到客户端。
 
 #### 自动化验证
 
-- `.venv/bin/pytest -q tests/`：`2266 passed`。
+- `.venv/bin/pytest -q tests/`：`2269 passed`。
 - `.venv/bin/pytest -q tests/control/test_channel_adapter.py tests/control/test_control_execution.py tests/mobile_realtime/test_channel.py tests/mobile_realtime/test_mobile_realtime_protocol.py tests/test_lifecycle_phases.py`：`89 passed`。
 - `npm run typecheck && npm run lint`：通过。
 - `pyright`（本组改动 Python 文件）：`0 errors, 136 warnings`；warning 为仓库既有类型债务。
 - `clients/android/scripts/build-release.sh`：release unit test、lint、R8、签名 APK 构建和 `apksigner` 校验通过；签名证书 SHA-256 为 `49bf31ed…40bc`。
 - `ANDROID_HOME="$HOME/Android/Sdk" ./gradlew :app:assembleDebugAndroidTest`：通过，Room 迁移与 LocalDeliveryStore instrumentation 源码完成真实编译。
+- `ANDROID_HOME="$HOME/Android/Sdk" ./gradlew testDebugUnitTest`：通过；协议关闭策略区分坏命令与版本不兼容。
+- Gateway 回归用例真实完成认证、resume、坏 `reply_to` 投递、`protocol.error` 和 WebSocket close，确认控制帧与 close reason 均不包含用户载荷。
 - 用 v3 Room schema 创建临时 SQLite，执行迁移 fixture 和 `MIGRATION_3_4` 三条 SQL：原消息结果为 `保留我|||`，证明正文保留且新增引用列为空。
 - WCAG fallback 色值检查：正文/surface `14.72:1`，次要文字/surface `6.66:1`，引用文字/container `8.82:1`，白色/primary `4.87:1`，error/container `4.79:1`，trace-text/surface `4.70:1`。
 
