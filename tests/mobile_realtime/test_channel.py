@@ -347,6 +347,213 @@ async def test_message_send_is_idempotent_and_session_is_shared_between_devices(
 
 
 @pytest.mark.asyncio
+async def test_message_send_recovers_processing_receipt_from_persisted_user(
+    tmp_path: Path,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    manager = SessionManager(tmp_path / "workspace")
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    bus = _Bus()
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=bus,
+                session_manager=manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+            ),
+        )
+    )
+    session_id = f"mobile:{uuid4()}"
+    frame = _message_frame(
+        frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        session_id=session_id,
+    )
+    _, created = storage.reserve_command(
+        device_id=device_id,
+        command_id=frame.id,
+        command_type=frame.type,
+        request_hash=channel_module._command_hash(frame),
+        created_at=datetime.now(timezone.utc),
+    )
+    assert created
+    session = manager.get_or_create(session_id)
+    session.add_message(
+        "user",
+        "你好",
+        client_message_id=frame.payload.client_message_id,
+    )
+    manager.save(session)
+
+    recovered = await channel.handle_command(device_id=device_id, frame=frame)
+    replayed = await channel.handle_command(
+        device_id=device_id,
+        frame=frame.model_copy(update={"connection_epoch": 2}),
+    )
+
+    assert recovered == replayed
+    assert recovered.type == "message.send.ok"
+    assert recovered.payload == {
+        "accepted": True,
+        "client_message_id": frame.payload.client_message_id,
+    }
+    assert bus.inbound == []
+    manager.close()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_message_send_keeps_unknown_outcome_without_persisted_user(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    bus = _Bus()
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=bus,
+                session_manager=SessionManager(tmp_path / "workspace"),
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+            ),
+        )
+    )
+    session_id = f"mobile:{uuid4()}"
+    frame = _message_frame(
+        frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        session_id=session_id,
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def execute_slowly(*, device_id: str, frame: object) -> channel_module.CommandReply:
+        started.set()
+        await release.wait()
+        return channel_module.CommandReply(
+            type="message.send.ok",
+            payload={"accepted": True},
+            session_id=session_id,
+        )
+
+    monkeypatch.setattr(channel, "_execute_command", execute_slowly)
+    original = asyncio.create_task(channel.handle_command(device_id=device_id, frame=frame))
+    await started.wait()
+
+    result = await channel.handle_command(device_id=device_id, frame=frame)
+
+    assert result.type == "message.send.error"
+    assert result.payload["code"] == "command_outcome_unknown"
+    assert bus.inbound == []
+    release.set()
+    completed = await original
+    assert completed.type == "message.send.ok"
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_message_send_keeps_current_owner_when_receipt_completion_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    bus = _Bus()
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=bus,
+                session_manager=SessionManager(tmp_path / "workspace"),
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+            ),
+        )
+    )
+    frame = _message_frame(
+        frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        session_id=f"mobile:{uuid4()}",
+    )
+
+    def fail_completion(**_: object) -> object:
+        raise OSError("receipt write failed")
+
+    monkeypatch.setattr(storage, "complete_command", fail_completion)
+    with pytest.raises(OSError, match="receipt write failed"):
+        await channel.handle_command(device_id=device_id, frame=frame)
+
+    assert len(bus.inbound) == 1
+    replay = await channel.handle_command(device_id=device_id, frame=frame)
+    assert replay.type == "message.send.error"
+    assert replay.payload["code"] == "command_outcome_unknown"
+    assert len(bus.inbound) == 1
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_message_send_marks_prestart_processing_receipt_retryable(
+    tmp_path: Path,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    session_id = f"mobile:{uuid4()}"
+    frame = _message_frame(
+        frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        session_id=session_id,
+    )
+    _, created = storage.reserve_command(
+        device_id=device_id,
+        command_id=frame.id,
+        command_type=frame.type,
+        request_hash=channel_module._command_hash(frame),
+        created_at=datetime.now(timezone.utc),
+    )
+    assert created
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=_Bus(),
+                session_manager=SessionManager(tmp_path / "workspace"),
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+            ),
+        )
+    )
+
+    result = await channel.handle_command(device_id=device_id, frame=frame)
+    replayed = await channel.handle_command(device_id=device_id, frame=frame)
+
+    assert result == replayed
+    assert result.type == "message.send.error"
+    assert result.payload["code"] == "command_interrupted"
+    storage.close()
+
+
+@pytest.mark.asyncio
 async def test_message_send_resolves_reply_into_agent_context_and_metadata(
     tmp_path: Path,
 ) -> None:

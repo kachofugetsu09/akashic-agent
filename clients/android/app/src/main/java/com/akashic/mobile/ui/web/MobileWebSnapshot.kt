@@ -9,6 +9,7 @@ import com.akashic.mobile.ui.conversation.ConversationUiState
 import com.akashic.mobile.ui.conversation.MessageAttachmentState
 import com.akashic.mobile.ui.conversation.MessageAttachmentUi
 import com.akashic.mobile.ui.conversation.MessageUi
+import com.akashic.mobile.ui.conversation.MessageDeliveryActionUi
 import com.akashic.mobile.ui.conversation.MessageReplyUi
 import com.akashic.mobile.ui.conversation.ProcessBlockKind
 import com.akashic.mobile.ui.conversation.ProcessBlockState
@@ -82,12 +83,19 @@ data class MobileWebMessage(
     val replyable: Boolean,
     val reply: MobileWebReply? = null,
     val deliveryLabel: String? = null,
+    val deliveryAction: MobileWebDeliveryAction? = null,
     val blocks: List<MobileWebProcessBlock> = emptyList(),
     val streaming: Boolean = false,
     val interrupted: Boolean = false,
     val durationSeconds: Int? = null,
     val attachments: List<MobileWebAttachment> = emptyList(),
 )
+
+@Serializable
+enum class MobileWebDeliveryAction {
+    @SerialName("retry") RETRY,
+    @SerialName("verify") VERIFY,
+}
 
 @Serializable
 data class MobileWebReply(
@@ -205,6 +213,7 @@ private fun MessageUi.toMobileWebMessage(): MobileWebMessage = when (this) {
         replyable = replyable,
         reply = reply?.toMobileWebReply(),
         deliveryLabel = deliveryLabel,
+        deliveryAction = deliveryAction?.toMobileWebDeliveryAction(),
         attachments = attachments.map(MessageAttachmentUi::toMobileWebAttachment),
     )
     is MessageUi.AssistantTurn -> MobileWebMessage(
@@ -222,6 +231,11 @@ private fun MessageUi.toMobileWebMessage(): MobileWebMessage = when (this) {
         durationSeconds = durationSeconds,
         attachments = attachments.map(MessageAttachmentUi::toMobileWebAttachment),
     )
+}
+
+private fun MessageDeliveryActionUi.toMobileWebDeliveryAction() = when (this) {
+    MessageDeliveryActionUi.RETRY -> MobileWebDeliveryAction.RETRY
+    MessageDeliveryActionUi.VERIFY -> MobileWebDeliveryAction.VERIFY
 }
 
 private fun ProcessBlockUi.toMobileWebProcessBlock() = MobileWebProcessBlock(

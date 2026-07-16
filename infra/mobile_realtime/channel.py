@@ -149,6 +149,7 @@ class MobileRealtimeChannel:
     def __init__(self, runtime: MobileGatewayRuntime) -> None:
         self._runtime = runtime
         self._ctx: ChannelContext | None = None
+        self._processing_commands: set[tuple[str, str]] = set()
         self._active_turn_ids: dict[str, str] = {}
         self._process_turns: dict[tuple[str, str], _ProcessTurnState] = {}
         self._delta_batches: dict[tuple[str, str], _DeltaBatch] = {}
@@ -201,6 +202,7 @@ class MobileRealtimeChannel:
         self._ctx = None
         self._active_turn_ids.clear()
         self._process_turns.clear()
+        self._processing_commands.clear()
 
     async def handle_command(
         self,
@@ -220,7 +222,11 @@ class MobileRealtimeChannel:
             created_at=_utc_now(),
         )
         if not created:
-            replay = _reply_from_receipt(receipt)
+            replay = self._recover_message_send_receipt(
+                device_id=device_id,
+                frame=frame,
+                receipt=receipt,
+            )
             if (
                 isinstance(frame, AttachmentDownloadCommand)
                 and replay.type == "attachment.download.ok"
@@ -228,7 +234,9 @@ class MobileRealtimeChannel:
                 return self._download_attachment(frame, replay)
             return replay
 
-        # 2. 只把可恢复的客户端错误写成稳定 error reply
+        # 2. 当前实例只在命令实际执行期间拥有 processing 收据
+        command_key = (device_id, frame.id)
+        self._processing_commands.add(command_key)
         try:
             reply = await self._execute_command(device_id=device_id, frame=frame)
         except MobileCommandError as error:
@@ -238,7 +246,8 @@ class MobileRealtimeChannel:
                 session_id=frame.session_id,
                 turn_id=frame.turn_id,
             )
-        # 3. 成功副作用完成后固化回复；内部异常保持 processing 并向上暴露
+
+        # 3. 只有收据完成后才释放当前进程对未决副作用的所有权
         _validate_reply_frame_size(frame, reply)
         completed = self._runtime.storage.complete_command(
             device_id=device_id,
@@ -255,6 +264,7 @@ class MobileRealtimeChannel:
             turn_id=reply.turn_id,
             completed_at=_utc_now(),
         )
+        self._processing_commands.discard(command_key)
         stored = _reply_from_receipt(completed)
         return CommandReply(
             type=stored.type,
@@ -263,6 +273,92 @@ class MobileRealtimeChannel:
             turn_id=stored.turn_id,
             binary=reply.binary,
         )
+
+    def _recover_message_send_receipt(
+        self,
+        *,
+        device_id: str,
+        frame: ClientCommand,
+        receipt: CommandReceipt,
+    ) -> CommandReply:
+        """从已持久化消息修复中断的 message.send 收据。"""
+
+        # 1. 已完成或非消息命令继续复用稳定回复
+        if receipt.status == "completed":
+            self._processing_commands.discard((device_id, frame.id))
+            return _reply_from_receipt(receipt)
+        if not isinstance(frame, MessageSendCommand):
+            return _reply_from_receipt(receipt)
+
+        # 2. 只有同一 client_message_id 已落库时，才能确认副作用已完成
+        session_id = self._normalize_session_id(frame.session_id)
+        message = self._require_ctx().session_manager.control_store.get_message_by_client_id(
+            session_id,
+            frame.payload.client_message_id,
+        )
+        if message is None:
+            if (device_id, frame.id) in self._processing_commands:
+                return _reply_from_receipt(receipt)
+            return self._complete_interrupted_message_send(
+                device_id=device_id,
+                frame=frame,
+                session_id=session_id,
+            )
+        if message["role"] != "user":
+            raise RuntimeError(
+                f"client_message_id 绑定了非用户消息: {frame.payload.client_message_id}"
+            )
+
+        # 3. 原子补写成功收据，后续重放继续得到相同 ACK
+        completed = self._runtime.storage.complete_command(
+            device_id=device_id,
+            command_id=frame.id,
+            reply_type="message.send.ok",
+            reply_payload_json=json.dumps(
+                {
+                    "accepted": True,
+                    "client_message_id": frame.payload.client_message_id,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+                allow_nan=False,
+            ),
+            session_id=session_id,
+            turn_id=None,
+            completed_at=_utc_now(),
+        )
+        self._processing_commands.discard((device_id, frame.id))
+        return _reply_from_receipt(completed)
+
+    def _complete_interrupted_message_send(
+        self,
+        *,
+        device_id: str,
+        frame: MessageSendCommand,
+        session_id: str,
+    ) -> CommandReply:
+        """把服务重启前未落库的发送收据收束为可安全重试。"""
+
+        completed = self._runtime.storage.complete_command(
+            device_id=device_id,
+            command_id=frame.id,
+            reply_type="message.send.error",
+            reply_payload_json=json.dumps(
+                {
+                    "code": "command_interrupted",
+                    "message": "上次发送在服务重启时中断，可以安全重试",
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+                allow_nan=False,
+            ),
+            session_id=session_id,
+            turn_id=None,
+            completed_at=_utc_now(),
+        )
+        return _reply_from_receipt(completed)
 
     async def send(self, chat_id: str, message: str) -> None:
         self._raise_delta_failure()
@@ -1215,7 +1311,7 @@ def _reply_from_receipt(receipt: CommandReceipt) -> CommandReply:
             type=f"{receipt.command_type}.error",
             payload={
                 "code": "command_outcome_unknown",
-                "message": "该命令上次执行时中断，请使用新的命令 ID 核对状态",
+                "message": "该命令上次执行时中断，请使用原命令 ID 核对状态",
             },
         )
     if receipt.reply_type is None or receipt.reply_payload_json is None:

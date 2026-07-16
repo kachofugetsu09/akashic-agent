@@ -15,6 +15,7 @@ import com.akashic.mobile.ui.conversation.ComposerAttachmentUi
 import com.akashic.mobile.ui.conversation.ConversationUiState
 import com.akashic.mobile.ui.conversation.AssistantTurnStatus
 import com.akashic.mobile.ui.conversation.MessageUi
+import com.akashic.mobile.ui.conversation.MessageDeliveryActionUi
 import com.akashic.mobile.ui.conversation.MessageReplyUi
 import com.akashic.mobile.ui.conversation.MessageAttachmentState
 import com.akashic.mobile.ui.conversation.MessageAttachmentUi
@@ -170,6 +171,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun retryAttachment(attachmentId: String) = container.realtimeSession.retryAttachment(attachmentId)
 
+    fun retryFailedMessage(messageId: String) = container.realtimeSession.retryFailedMessage(messageId)
+
     fun retryDownloadedAttachment(attachmentId: String) =
         container.realtimeSession.retryDownloadedAttachment(attachmentId)
 
@@ -195,7 +198,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     "pending" -> "待发送"
                     "sent", "complete" -> "已发送"
                     "failed" -> "发送失败"
+                    "failed_retryable" -> "发送失败"
+                    "outcome_unknown" -> "结果待确认"
                     else -> error("未知用户消息状态: ${message.deliveryState}")
+                },
+                deliveryAction = when (message.deliveryState) {
+                    "failed_retryable" -> MessageDeliveryActionUi.RETRY
+                    "outcome_unknown" -> MessageDeliveryActionUi.VERIFY
+                    else -> null
                 },
                 replyable = userMessageCanReply(message.deliveryState),
                 createdAtMillis = message.createdAt,

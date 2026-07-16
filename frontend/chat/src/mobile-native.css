@@ -516,6 +516,49 @@ button {
   white-space: nowrap;
 }
 
+.delivery-state.retry,
+.mobile-delivery-action.retry {
+  color: var(--m-error);
+}
+
+.delivery-state.verify,
+.mobile-delivery-action.verify {
+  color: var(--m-primary);
+}
+
+.mobile-delivery-action {
+  display: inline-flex;
+  min-width: 44px;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-block: -12px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 5px 0 7px;
+  background: transparent;
+  font-size: inherit;
+  font-weight: 650;
+  line-height: 1;
+  transition-property: background-color, scale;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.mobile-delivery-action:active {
+  scale: 0.96;
+  background: color-mix(in oklch, currentColor 12%, transparent);
+}
+
+.mobile-delivery-action:disabled {
+  opacity: 0.64;
+}
+
+.mobile-delivery-action svg {
+  flex: 0 0 auto;
+}
+
 .mobile-message-actions {
   display: flex;
   align-items: center;

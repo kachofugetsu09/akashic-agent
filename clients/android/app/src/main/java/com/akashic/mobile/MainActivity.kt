@@ -96,6 +96,7 @@ class MainActivity : ComponentActivity() {
                             onAttach = { attachmentPicker.launch(arrayOf("*/*")) },
                             onRemoveAttachment = viewModel::removeAttachment,
                             onRetryAttachment = viewModel::retryAttachment,
+                            onRetryFailedMessage = viewModel::retryFailedMessage,
                             onRetryDownloadedAttachment = viewModel::retryDownloadedAttachment,
                             onTouchDownloadedAttachment = viewModel::touchDownloadedAttachment,
                             onOpenDownloadedAttachment = { attachmentId ->

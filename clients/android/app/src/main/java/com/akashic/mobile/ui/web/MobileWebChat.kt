@@ -74,6 +74,7 @@ fun MobileWebChat(
     onAttach: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onRetryAttachment: (String) -> Unit,
+    onRetryFailedMessage: (String) -> Unit,
     onRetryDownloadedAttachment: (String) -> Unit,
     onTouchDownloadedAttachment: (String) -> Unit,
     onOpenDownloadedAttachment: (String) -> Unit,
@@ -101,6 +102,7 @@ fun MobileWebChat(
             onAttach = onAttach,
             onRemoveAttachment = onRemoveAttachment,
             onRetryAttachment = onRetryAttachment,
+            onRetryFailedMessage = onRetryFailedMessage,
             onRetryDownloadedAttachment = onRetryDownloadedAttachment,
             onTouchDownloadedAttachment = onTouchDownloadedAttachment,
             onOpenDownloadedAttachment = onOpenDownloadedAttachment,
@@ -156,7 +158,7 @@ fun MobileWebChat(
                                 ClipData.newPlainText("Akashic message", text),
                             )
                         },
-                        performReplyHaptic = {
+                        performActionHaptic = {
                             post {
                                 performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                             }
@@ -220,6 +222,7 @@ private data class MobileWebCallbacks(
     val onAttach: () -> Unit,
     val onRemoveAttachment: (String) -> Unit,
     val onRetryAttachment: (String) -> Unit,
+    val onRetryFailedMessage: (String) -> Unit,
     val onRetryDownloadedAttachment: (String) -> Unit,
     val onTouchDownloadedAttachment: (String) -> Unit,
     val onOpenDownloadedAttachment: (String) -> Unit,
@@ -238,7 +241,7 @@ private class MobileWebBridge(
     private val reportReady: () -> Unit,
     private val requestSnapshot: () -> Unit,
     private val copyText: (String) -> Unit,
-    private val performReplyHaptic: () -> Unit,
+    private val performActionHaptic: () -> Unit,
 ) {
     @JavascriptInterface
     fun reportReady() = reportReady.invoke()
@@ -266,6 +269,9 @@ private class MobileWebBridge(
 
     @JavascriptInterface
     fun retryAttachment(attachmentId: String) = dispatch { it.onRetryAttachment(attachmentId) }
+
+    @JavascriptInterface
+    fun retryFailedMessage(messageId: String) = dispatch { it.onRetryFailedMessage(messageId) }
 
     @JavascriptInterface
     fun retryDownloadedAttachment(attachmentId: String) = dispatch {
@@ -299,7 +305,7 @@ private class MobileWebBridge(
     fun copyText(text: String) = copyText.invoke(text)
 
     @JavascriptInterface
-    fun performReplyHaptic() = performReplyHaptic.invoke()
+    fun performActionHaptic() = performActionHaptic.invoke()
 
     @JavascriptInterface
     fun sendCommand(command: String) = dispatch { it.onSendCommand(command) }

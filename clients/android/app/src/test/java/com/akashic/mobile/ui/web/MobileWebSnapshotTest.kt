@@ -5,6 +5,7 @@ import com.akashic.mobile.ui.conversation.ConversationUiState
 import com.akashic.mobile.ui.conversation.AssistantTurnStatus
 import com.akashic.mobile.ui.conversation.CommandUi
 import com.akashic.mobile.ui.conversation.MessageUi
+import com.akashic.mobile.ui.conversation.MessageDeliveryActionUi
 import com.akashic.mobile.ui.conversation.MessageReplyUi
 import com.akashic.mobile.ui.conversation.ProcessBlockKind
 import com.akashic.mobile.ui.conversation.ProcessBlockState
@@ -35,8 +36,9 @@ class MobileWebSnapshotTest {
                     id = "message-1",
                     sessionId = "mobile:test",
                     text = "你好",
-                    deliveryLabel = "已发送",
-                    replyable = true,
+                    deliveryLabel = "发送失败",
+                    replyable = false,
+                    deliveryAction = MessageDeliveryActionUi.RETRY,
                     createdAtMillis = 1_752_681_600_000,
                     updatedAtMillis = 1_752_681_600_100,
                     reply = MessageReplyUi("message-0", "assistant", "之前的回答"),
@@ -87,7 +89,8 @@ class MobileWebSnapshotTest {
             snapshot.messages.map { it.searchRevision },
         )
         assertEquals(listOf("mobile:test", "mobile:test"), snapshot.messages.map { it.sessionId })
-        assertTrue(snapshot.messages.first().replyable)
+        assertTrue(!snapshot.messages.first().replyable)
+        assertEquals(MobileWebDeliveryAction.RETRY, snapshot.messages.first().deliveryAction)
         assertTrue(!snapshot.messages.last().replyable)
         assertTrue(snapshot.messages.last().streaming)
         val tool = snapshot.messages.last().blocks.single()
@@ -100,5 +103,6 @@ class MobileWebSnapshotTest {
         assertEquals(2, Json.parseToJsonElement(encoded).jsonObject
             .getValue("protocolVersion").jsonPrimitive.content.toInt())
         assertTrue(encoded.contains("\"status\":\"reconnecting\""))
+        assertTrue(encoded.contains("\"deliveryAction\":\"retry\""))
     }
 }

@@ -62,8 +62,23 @@ interface MessageDao {
     suspend fun upsertBlocks(blocks: List<TurnBlockEntity>)
 
     @Query(
-        "SELECT * FROM messages WHERE sessionId = :sessionId " +
-            "ORDER BY CASE WHEN serverSeq IS NULL THEN 1 ELSE 0 END, serverSeq, createdAt, messageId",
+        """
+        SELECT * FROM messages AS local
+        WHERE local.sessionId = :sessionId
+        ORDER BY
+          CASE WHEN local.serverSeq IS NOT NULL THEN local.serverSeq ELSE COALESCE(
+            (
+              SELECT MIN(remote.serverSeq) FROM messages AS remote
+              WHERE remote.sessionId = local.sessionId
+                AND remote.serverSeq IS NOT NULL
+                AND remote.createdAt >= local.createdAt
+            ),
+            9223372036854775807
+          ) END,
+          CASE WHEN local.serverSeq IS NULL THEN 0 ELSE 1 END,
+          local.createdAt,
+          local.messageId
+        """,
     )
     fun observeMessages(sessionId: String): Flow<List<MessageEntity>>
 
@@ -75,6 +90,9 @@ interface MessageDao {
 
     @Query("SELECT * FROM messages WHERE messageId = :messageId")
     suspend fun get(messageId: String): MessageEntity?
+
+    @Query("SELECT * FROM messages WHERE clientMessageId = :clientMessageId")
+    suspend fun getByClientMessageId(clientMessageId: String): MessageEntity?
 
     @Query(
         """
@@ -139,7 +157,7 @@ interface MessageDao {
         WHERE sessionId IN (SELECT sessionId FROM conversations WHERE serverId = :serverId)
           AND NOT (
             clientMessageId IS NOT NULL
-            AND deliveryState IN ('pending', 'sent', 'failed')
+            AND deliveryState IN ('pending', 'sent', 'failed', 'failed_retryable', 'outcome_unknown')
           )
         """,
     )
@@ -151,7 +169,7 @@ interface MessageDao {
         WHERE sessionId IN (SELECT sessionId FROM conversations WHERE serverId = :serverId)
           AND NOT (
             clientMessageId IS NOT NULL
-            AND deliveryState IN ('pending', 'failed')
+            AND deliveryState IN ('pending', 'failed', 'failed_retryable', 'outcome_unknown')
           )
         """,
     )
@@ -159,6 +177,22 @@ interface MessageDao {
 
     @Query("UPDATE messages SET deliveryState = :state, updatedAt = :updatedAt WHERE clientMessageId = :clientMessageId")
     suspend fun updateDelivery(clientMessageId: String, state: String, updatedAt: Long): Int
+
+    @Query(
+        """
+        UPDATE messages
+        SET clientMessageId = :newClientMessageId, deliveryState = 'pending', updatedAt = :updatedAt
+        WHERE messageId = :messageId
+          AND clientMessageId = :oldClientMessageId
+          AND deliveryState = 'failed_retryable'
+        """,
+    )
+    suspend fun replaceRetryIdentity(
+        messageId: String,
+        oldClientMessageId: String,
+        newClientMessageId: String,
+        updatedAt: Long,
+    ): Int
 
     @Query("UPDATE turn_blocks SET status = 'completed', updatedAt = :updatedAt WHERE messageId = :messageId AND status = 'running'")
     suspend fun completeRunningBlocks(messageId: String, updatedAt: Long): Int
@@ -171,8 +205,23 @@ interface MessageDao {
 
     @Transaction
     @Query(
-        "SELECT * FROM messages WHERE sessionId = :sessionId " +
-            "ORDER BY CASE WHEN serverSeq IS NULL THEN 1 ELSE 0 END, serverSeq, createdAt, messageId",
+        """
+        SELECT * FROM messages AS local
+        WHERE local.sessionId = :sessionId
+        ORDER BY
+          CASE WHEN local.serverSeq IS NOT NULL THEN local.serverSeq ELSE COALESCE(
+            (
+              SELECT MIN(remote.serverSeq) FROM messages AS remote
+              WHERE remote.sessionId = local.sessionId
+                AND remote.serverSeq IS NOT NULL
+                AND remote.createdAt >= local.createdAt
+            ),
+            9223372036854775807
+          ) END,
+          CASE WHEN local.serverSeq IS NULL THEN 0 ELSE 1 END,
+          local.createdAt,
+          local.messageId
+        """,
     )
     fun observeMessageGraph(sessionId: String): Flow<List<MessageWithBlocks>>
 }
@@ -202,6 +251,12 @@ interface OutboxDao {
 
     @Query("UPDATE outbox_commands SET state = 'retry' WHERE commandId = :commandId AND state = 'in_flight'")
     suspend fun markForRetry(commandId: String): Int
+
+    @Query("UPDATE outbox_commands SET state = :failureState WHERE commandId = :commandId AND state = 'in_flight'")
+    suspend fun markFailed(commandId: String, failureState: String): Int
+
+    @Query("UPDATE outbox_commands SET state = 'retry' WHERE commandId = :commandId AND state = 'outcome_unknown'")
+    suspend fun recheckUnknown(commandId: String): Int
 
     @Query("DELETE FROM outbox_commands WHERE commandId = :commandId")
     suspend fun deleteAcknowledged(commandId: String): Int

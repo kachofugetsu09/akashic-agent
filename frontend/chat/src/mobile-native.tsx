@@ -97,6 +97,7 @@ interface MobileMessage {
   replyable: boolean;
   reply?: MobileReply;
   deliveryLabel?: string;
+  deliveryAction?: "retry" | "verify";
   blocks: MobileProcessBlock[];
   streaming: boolean;
   interrupted: boolean;
@@ -151,6 +152,7 @@ interface NativeBridge {
   chooseAttachments(): void;
   removeAttachment(attachmentId: string): void;
   retryAttachment(attachmentId: string): void;
+  retryFailedMessage(messageId: string): void;
   retryDownloadedAttachment(attachmentId: string): void;
   touchDownloadedAttachment(attachmentId: string): void;
   openDownloadedAttachment(attachmentId: string): void;
@@ -158,7 +160,7 @@ interface NativeBridge {
   dismissError(): void;
   sendMessage(text: string, replyToMessageId: string): void;
   copyText(text: string): void;
-  performReplyHaptic(): void;
+  performActionHaptic(): void;
   sendCommand(command: string): void;
   stopTurn(): void;
   callPluginUi(
@@ -262,6 +264,10 @@ function parseMessage(value: unknown, index: number): MobileMessage {
   const reply = raw.reply === undefined || raw.reply === null
     ? undefined
     : parseReply(raw.reply, `messages[${index}].reply`);
+  const deliveryAction = optionalString(raw.deliveryAction, `messages[${index}].deliveryAction`);
+  if (deliveryAction !== undefined && deliveryAction !== "retry" && deliveryAction !== "verify") {
+    throw new Error(`messages[${index}].deliveryAction 不受支持`);
+  }
   return {
     id: requireString(raw.id, `messages[${index}].id`),
     sessionId: requireString(raw.sessionId, `messages[${index}].sessionId`),
@@ -272,6 +278,7 @@ function parseMessage(value: unknown, index: number): MobileMessage {
     replyable: requireBoolean(raw.replyable, `messages[${index}].replyable`),
     reply,
     deliveryLabel: optionalString(raw.deliveryLabel, `messages[${index}].deliveryLabel`),
+    deliveryAction,
     blocks: optionalArray(raw.blocks, `messages[${index}].blocks`, parseProcessBlock),
     streaming: raw.streaming === undefined ? false : requireBoolean(raw.streaming, `messages[${index}].streaming`),
     interrupted: raw.interrupted === undefined ? false : requireBoolean(raw.interrupted, `messages[${index}].interrupted`),
@@ -378,6 +385,7 @@ function MobileNativeApp() {
   const [input, setInput] = useState("");
   const [replyTarget, setReplyTarget] = useState<MobileMessage | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [recoveringMessageIds, setRecoveringMessageIds] = useState<Set<string>>(() => new Set());
   const [stopRequested, setStopRequested] = useState(false);
   const [sendScrollRequest, setSendScrollRequest] = useState(0);
   const [pluginLoadError, setPluginLoadError] = useState<string | null>(null);
@@ -466,6 +474,16 @@ function MobileNativeApp() {
     const targetStillVisible = snapshot?.messages.some((message) => message.id === replyTarget.id) ?? false;
     if (replyTarget.sessionId !== snapshot?.selectedSessionId || !targetStillVisible) setReplyTarget(null);
   }, [replyTarget, snapshot?.messages, snapshot?.selectedSessionId]);
+
+  useEffect(() => {
+    const actionable = new Set(
+      snapshot?.messages.filter((message) => message.deliveryAction).map((message) => message.id) ?? [],
+    );
+    setRecoveringMessageIds((current) => {
+      const next = new Set([...current].filter((messageId) => actionable.has(messageId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [snapshot?.messages]);
 
   useEffect(() => () => {
     if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
@@ -761,6 +779,12 @@ function MobileNativeApp() {
                             canReply={canReply}
                             onCopy={() => copyMessage(source)}
                             onReply={() => setReplyTarget(source)}
+                            deliveryActionBusy={recoveringMessageIds.has(source.id)}
+                            onDeliveryAction={() => {
+                              setRecoveringMessageIds((current) => new Set(current).add(source.id));
+                              window.AkashicNative?.performActionHaptic();
+                              window.AkashicNative?.retryFailedMessage(source.id);
+                            }}
                           />
                         </SwipeToReply>
                       </div>
@@ -1201,20 +1225,47 @@ function MessageMeta({
   source,
   copied,
   canReply,
+  deliveryActionBusy,
   onCopy,
   onReply,
+  onDeliveryAction,
 }: {
   source: MobileMessage;
   copied: boolean;
   canReply: boolean;
+  deliveryActionBusy: boolean;
   onCopy: () => void;
   onReply: () => void;
+  onDeliveryAction: () => void;
 }) {
+  const deliveryActionLabel = deliveryActionBusy
+    ? "处理中"
+    : source.deliveryAction === "retry" ? "重试" : "核对";
+  const deliveryActionAria = source.deliveryAction === "retry"
+    ? "发送失败，重试消息"
+    : "结果待确认，核对消息状态";
   return (
     <div className={`mobile-message-meta ${source.role}`}>
       <div className="mobile-message-meta__text">
         <time dateTime={new Date(source.createdAt).toISOString()}>{formatMessageTime(source.createdAt)}</time>
-        {source.role === "user" && source.deliveryLabel ? <span>{source.deliveryLabel}</span> : null}
+        {source.role === "user" && source.deliveryLabel ? (
+          <span className={source.deliveryAction ? `delivery-state ${source.deliveryAction}` : undefined}>
+            {source.deliveryLabel}
+          </span>
+        ) : null}
+        {source.role === "user" && source.deliveryAction ? (
+          <button
+            className={`mobile-delivery-action ${source.deliveryAction}`}
+            type="button"
+            onClick={onDeliveryAction}
+            aria-label={deliveryActionAria}
+            aria-busy={deliveryActionBusy}
+            disabled={deliveryActionBusy}
+          >
+            <RotateCcw size={14} aria-hidden="true" />
+            <span>{deliveryActionLabel}</span>
+          </button>
+        ) : null}
         {source.interrupted ? <span className="interrupted-label">本轮已中止</span> : null}
       </div>
       <div className="mobile-message-actions">
@@ -1247,7 +1298,7 @@ function SwipeToReply({ disabled, onReply, children }: { disabled: boolean; onRe
     }
     if (value <= -50 && !hapticFired.current) {
       hapticFired.current = true;
-      window.AkashicNative?.performReplyHaptic();
+      window.AkashicNative?.performActionHaptic();
     }
   });
 

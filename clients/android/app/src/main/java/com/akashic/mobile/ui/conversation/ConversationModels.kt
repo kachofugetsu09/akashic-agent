@@ -70,6 +70,11 @@ data class MessageReplyUi(
     val preview: String,
 )
 
+enum class MessageDeliveryActionUi {
+    RETRY,
+    VERIFY,
+}
+
 enum class ConnectionStatusUi {
     CONNECTING,
     READY,
@@ -92,6 +97,7 @@ sealed interface MessageUi {
         val text: String,
         val deliveryLabel: String,
         val replyable: Boolean,
+        val deliveryAction: MessageDeliveryActionUi? = null,
         override val createdAtMillis: Long,
         override val reply: MessageReplyUi?,
         override val attachments: List<MessageAttachmentUi> = emptyList(),

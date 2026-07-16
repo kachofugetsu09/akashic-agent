@@ -792,6 +792,58 @@ class LocalDeliveryStoreTest {
     }
 
     @Test
+    fun retryDefiniteFailureKeepsVisualMessageAndCreatesNewIdempotencyKey() = runBlocking {
+        val oldCommandId = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        val newCommandId = "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+        enqueueRetryableMessage(oldCommandId, createdAt = 2_000)
+        store.markOutboxAttempt(oldCommandId, attemptedAt = 2_100)
+        store.retainFailedOutbox(oldCommandId, outcomeUnknown = false, updatedAt = 2_200)
+
+        assertTrue(store.retryFailedMessage("visual-message", newCommandId, updatedAt = 2_300))
+        assertTrue(!store.retryFailedMessage("visual-message", newCommandId, updatedAt = 2_301))
+
+        val message = requireNotNull(database.messages().get("visual-message"))
+        val command = requireNotNull(database.outbox().get(newCommandId))
+        val payload = ProtocolCodec.decodePayload<MessageSendPayload>(ProtocolCodec.decode(command.envelopeJson).payload)
+        assertEquals(newCommandId, message.clientMessageId)
+        assertEquals("pending", message.deliveryState)
+        assertEquals(newCommandId, payload.clientMessageId)
+        assertEquals(2_000, command.createdAt)
+        assertEquals(null, database.outbox().get(oldCommandId))
+        assertEquals(1, database.messages().countForSession("mobile:test"))
+    }
+
+    @Test
+    fun verifyUnknownOutcomeReusesOriginalIdempotencyKey() = runBlocking {
+        val oldCommandId = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        val unusedCommandId = "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+        enqueueRetryableMessage(oldCommandId, createdAt = 2_000)
+        store.markOutboxAttempt(oldCommandId, attemptedAt = 2_100)
+        store.retainFailedOutbox(oldCommandId, outcomeUnknown = true, updatedAt = 2_200)
+
+        assertTrue(store.retryFailedMessage("visual-message", unusedCommandId, updatedAt = 2_300))
+        assertTrue(!store.retryFailedMessage("visual-message", unusedCommandId, updatedAt = 2_301))
+
+        val message = requireNotNull(database.messages().get("visual-message"))
+        val command = requireNotNull(database.outbox().get(oldCommandId))
+        assertEquals(oldCommandId, message.clientMessageId)
+        assertEquals("pending", message.deliveryState)
+        assertEquals("retry", command.state)
+        assertEquals(null, database.outbox().get(unusedCommandId))
+    }
+
+    @Test
+    fun failedLocalMessageKeepsChronologicalPositionAmongServerMessages() = runBlocking {
+        database.messages().upsert(retryMessage("server-before", null, 1_000, 1))
+        database.messages().upsert(retryMessage("failed-local", "failed-command", 2_000, null, "failed_retryable"))
+        database.messages().upsert(retryMessage("server-after", null, 3_000, 2))
+
+        val ordered = database.messages().observeMessages("mobile:test").first()
+
+        assertEquals(listOf("server-before", "failed-local", "server-after"), ordered.map { it.messageId })
+    }
+
+    @Test
     fun sentAttachmentLinkAndCachePathSurviveDatabaseRestart() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val name = "sent-media-${System.nanoTime()}.db"
@@ -933,6 +985,49 @@ class LocalDeliveryStoreTest {
         cachePath = "cache/$id.bin",
         lastAccessedAt = 1,
         updatedAt = 1,
+    )
+
+    private suspend fun enqueueRetryableMessage(commandId: String, createdAt: Long) {
+        val payload = MessageSendPayload(
+            clientMessageId = commandId,
+            sessionId = "mobile:test",
+            text = "需要恢复的消息",
+            mediaRefs = emptyList(),
+            clientCreatedAt = "2026-07-16T08:00:00Z",
+        )
+        val envelope = WireEnvelope(
+            v = 1,
+            kind = WireKind.COMMAND,
+            type = "message.send",
+            id = commandId,
+            connectionEpoch = 1,
+            sessionId = "mobile:test",
+            payload = ProtocolCodec.json().encodeToJsonElement(MessageSendPayload.serializer(), payload).jsonObject,
+        )
+        store.enqueueMessage(
+            ConversationEntity("mobile:test", "server", "test", 1),
+            retryMessage("visual-message", commandId, createdAt, null, "pending"),
+            OutboxCommandEntity(commandId, "server", ProtocolCodec.encode(envelope), "pending", 0, createdAt, null),
+            emptyList(),
+        )
+    }
+
+    private fun retryMessage(
+        messageId: String,
+        clientMessageId: String?,
+        createdAt: Long,
+        serverSeq: Long?,
+        state: String = "complete",
+    ) = MessageEntity(
+        messageId = messageId,
+        clientMessageId = clientMessageId,
+        sessionId = "mobile:test",
+        role = "user",
+        text = messageId,
+        deliveryState = state,
+        createdAt = createdAt,
+        updatedAt = createdAt,
+        serverSeq = serverSeq,
     )
 
     private fun event(sequence: Long, type: String, payload: kotlinx.serialization.json.JsonObject) = WireEnvelope(

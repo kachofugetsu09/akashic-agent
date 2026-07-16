@@ -390,6 +390,18 @@ class RealtimeSession(
         }
     }
 
+    /** 原位恢复一条失败用户消息。 */
+    fun retryFailedMessage(messageId: String) {
+        scope.launch {
+            mutex.withLock {
+                val now = System.currentTimeMillis()
+                deliveryStore.retryFailedMessage(messageId, Ulid.next(now), now)
+                mutableState.value = mutableState.value.copy(errorMessage = null)
+                if (mutableState.value.connection.phase == ConnectionPhase.READY) flushOutbox()
+            }
+        }
+    }
+
     fun retryDownloadedAttachment(attachmentId: String) {
         scope.launch {
             mutex.withLock {
@@ -1053,10 +1065,20 @@ class RealtimeSession(
                     }
                     "message.send.error" -> {
                         require(id == activeOutboxCommandId) { "收到非活动 outbox 命令的错误: $id" }
-                        deliveryStore.failOutbox(id, System.currentTimeMillis())
+                        val code = envelope.payload["code"]?.jsonPrimitive?.content
+                            ?: error("message.send.error 缺少 code")
+                        deliveryStore.retainFailedOutbox(
+                            id,
+                            outcomeUnknown = code == "command_outcome_unknown",
+                            updatedAt = System.currentTimeMillis(),
+                        )
                         activeOutboxCommandId = null
                         mutableState.value = mutableState.value.copy(
-                            errorMessage = envelope.payload["message"]?.toString()?.trim('"') ?: "消息发送失败",
+                            errorMessage = if (code == "command_outcome_unknown") {
+                                "消息结果待确认，请在原消息下方核对"
+                            } else {
+                                envelope.payload["message"]?.jsonPrimitive?.content ?: "消息发送失败"
+                            },
                         )
                         flushOutbox()
                     }
@@ -1559,7 +1581,7 @@ class RealtimeSession(
         val currentProfile = requireNotNull(profile)
         val commandId = activeOutboxCommandId
         if (action == TerminalProtocolAction.FAIL_ACTIVE_COMMAND && commandId != null) {
-            deliveryStore.failOutbox(commandId, System.currentTimeMillis())
+            deliveryStore.discardFailedOutbox(commandId, System.currentTimeMillis())
             activeOutboxCommandId = null
             scheduleReconnect("消息格式无效，已标记发送失败")
             return
