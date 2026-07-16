@@ -22,6 +22,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 
 @RunWith(AndroidJUnit4::class)
 class LocalDeliveryStoreTest {
@@ -957,6 +958,31 @@ class LocalDeliveryStoreTest {
         assertEquals(true, root.resolve("pending.upload").exists())
         root.deleteRecursively()
         Unit
+    }
+
+    @Test
+    fun reliabilityGateOrdersLocalFailureAndTracksDurableReadingState() = runBlocking {
+        // 1. 模拟断网消息先于稍后到达的服务端消息创建
+        database.messages().upsert(retryMessage("remote-before", null, 1_000, 10))
+        database.messages().upsert(retryMessage("local-failed", "client-failed", 2_000, null, "failed_retryable"))
+        database.messages().upsert(retryMessage("remote-after", null, 3_000, 11))
+        val ordered = database.messages().observeMessages("mobile:test").first()
+        assertEquals(listOf("remote-before", "local-failed", "remote-after"), ordered.map { it.messageId })
+
+        // 2. 阅读水位只统计之后完成的助手消息，锚点独立保存
+        database.messages().upsert(
+            MessageEntity("assistant-old", null, "mobile:test", "assistant", "旧回答", "complete", 4_000, 4_000, 12),
+        )
+        database.conversationReadStates().markReadThrough("mobile:test", 4_000, 4_100)
+        database.conversationReadStates().savePosition("mobile:test", "local-failed", -14, 4_200)
+        database.messages().upsert(
+            MessageEntity("assistant-new", null, "mobile:test", "assistant", "新回答", "complete", 5_000, 5_000, 13),
+        )
+        val summary = database.conversations().observeSummaries("server").first().single()
+        assertEquals(1, summary.unreadCount)
+        assertEquals("新回答", summary.lastMessagePreview)
+        assertEquals("local-failed", summary.anchorMessageId)
+        assertEquals(-14, summary.anchorOffsetPx)
     }
 
     private fun transfer(state: String, offset: Long, id: String = "attachment") = AttachmentTransferEntity(

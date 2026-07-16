@@ -20,7 +20,7 @@ class AppDatabaseMigrationTest {
     @After
     fun removeTestDatabases() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        listOf(DATABASE_1_2, DATABASE_2_3, DATABASE_3_4).forEach(context::deleteDatabase)
+        listOf(DATABASE_1_2, DATABASE_2_3, DATABASE_3_4, DATABASE_4_5).forEach(context::deleteDatabase)
     }
 
     @Test
@@ -120,9 +120,40 @@ class AppDatabaseMigrationTest {
         }
     }
 
+    @Test
+    fun migrate4To5AddsConversationReadingState() {
+        helper.createDatabase(DATABASE_4_5, 4).apply {
+            execSQL(
+                "INSERT INTO server_profiles VALUES('server', '电脑', 'device', 'alias', 'pin', '[]', '[]', '[]', 1)",
+            )
+            execSQL("INSERT INTO conversations VALUES('mobile:test', 'server', '旧会话', 2)")
+            close()
+        }
+
+        helper.runMigrationsAndValidate(
+            DATABASE_4_5,
+            5,
+            true,
+            AppDatabase.MIGRATION_4_5,
+        ).use { database ->
+            database.execSQL(
+                "INSERT INTO conversation_read_states VALUES('mobile:test', 3, 'message-1', -12, 4)",
+            )
+            database.query(
+                "SELECT lastReadAt, anchorMessageId, anchorOffsetPx FROM conversation_read_states",
+            ).use { cursor ->
+                check(cursor.moveToFirst())
+                assertEquals(3L, cursor.getLong(0))
+                assertEquals("message-1", cursor.getString(1))
+                assertEquals(-12, cursor.getInt(2))
+            }
+        }
+    }
+
     private companion object {
         const val DATABASE_1_2 = "migration-1-2"
         const val DATABASE_2_3 = "migration-2-3"
         const val DATABASE_3_4 = "migration-3-4"
+        const val DATABASE_4_5 = "migration-4-5"
     }
 }
