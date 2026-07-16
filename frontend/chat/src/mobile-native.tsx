@@ -29,6 +29,7 @@ import {
   SendHorizontal,
   Share2,
   Square,
+  TimerReset,
   Wifi,
   WifiOff,
   X,
@@ -117,21 +118,49 @@ interface MobileUnreadState {
   count: number;
 }
 
+interface MobileSession {
+  id: string;
+  title: string;
+  lastMessagePreview?: string;
+  lastMessageAt?: number;
+  unreadCount: number;
+  isRunning: boolean;
+}
+
+interface MobileReadingPosition {
+  messageId: string;
+  offsetPx: number;
+}
+
+interface MobileNavigationTarget {
+  sessionId: string;
+  messageId: string;
+}
+
+interface MobilePendingMessage {
+  messageId: string;
+  preview: string;
+  createdAt: number;
+}
+
 export interface MobileSnapshot {
-  protocolVersion: 2;
+  protocolVersion: 3;
   connection: {
     label: string;
     status: ConnectionStatus;
     notice?: string;
     error?: string;
   };
-  sessions: { id: string; title: string }[];
+  sessions: MobileSession[];
   selectedSessionId?: string;
+  readingPosition?: MobileReadingPosition;
+  navigationTarget?: MobileNavigationTarget;
   projectionGeneration: number;
   messages: MobileMessage[];
   pluginResponses: { requestId: string; resultJson?: string; error?: string }[];
   composer: {
     attachments: MobileAttachment[];
+    pendingMessages: MobilePendingMessage[];
     commands: { command: string; description: string }[];
     isStreaming: boolean;
     isResyncing: boolean;
@@ -153,6 +182,9 @@ interface NativeBridge {
   removeAttachment(attachmentId: string): void;
   retryAttachment(attachmentId: string): void;
   retryFailedMessage(messageId: string): void;
+  saveReadingPosition(sessionId: string, messageId: string, offsetPx: number): void;
+  markSessionReadThrough(sessionId: string, readAtMillis: number): void;
+  navigationTargetHandled(messageId: string): void;
   retryDownloadedAttachment(attachmentId: string): void;
   touchDownloadedAttachment(attachmentId: string): void;
   openDownloadedAttachment(attachmentId: string): void;
@@ -194,6 +226,18 @@ function requireBoolean(value: unknown, label: string): boolean {
 function requireNumber(value: unknown, label: string): number {
   if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${label} 不是有效数字`);
   return value;
+}
+
+function requireNonNegativeInteger(value: unknown, label: string): number {
+  const parsed = requireNumber(value, label);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`${label} 必须是非负安全整数`);
+  return parsed;
+}
+
+function requireInteger(value: unknown, label: string): number {
+  const parsed = requireNumber(value, label);
+  if (!Number.isSafeInteger(parsed)) throw new Error(`${label} 必须是安全整数`);
+  return parsed;
 }
 
 function optionalString(value: unknown, label: string): string | undefined {
@@ -302,7 +346,7 @@ function parseReply(value: unknown, label: string): MobileReply {
 function parseMobileSnapshot(value: unknown): MobileSnapshot {
   // 1. 校验协议版本与根对象
   const raw = requireRecord(value, "snapshot");
-  if (raw.protocolVersion !== 2) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
+  if (raw.protocolVersion !== 3) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
   const connection = requireRecord(raw.connection, "connection");
   const status = requireString(connection.status, "connection.status");
   if (!["connecting", "ready", "degraded", "reconnecting", "disconnected"].includes(status)) {
@@ -312,7 +356,17 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
   // 2. 校验会话、消息和插件响应
   const sessions = requireArray(raw.sessions, "sessions", (item, index) => {
     const session = requireRecord(item, `sessions[${index}]`);
-    return { id: requireString(session.id, `sessions[${index}].id`), title: requireString(session.title, `sessions[${index}].title`) };
+    const lastMessageAt = session.lastMessageAt === undefined || session.lastMessageAt === null
+      ? undefined
+      : requireNonNegativeInteger(session.lastMessageAt, `sessions[${index}].lastMessageAt`);
+    return {
+      id: requireString(session.id, `sessions[${index}].id`),
+      title: requireString(session.title, `sessions[${index}].title`),
+      lastMessagePreview: optionalString(session.lastMessagePreview, `sessions[${index}].lastMessagePreview`),
+      lastMessageAt,
+      unreadCount: requireNonNegativeInteger(session.unreadCount, `sessions[${index}].unreadCount`),
+      isRunning: requireBoolean(session.isRunning, `sessions[${index}].isRunning`),
+    };
   });
   const messages = requireArray(raw.messages, "messages", parseMessage);
   const pluginResponses = requireArray(raw.pluginResponses, "pluginResponses", (item, index) => {
@@ -330,8 +384,26 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
   if (!Number.isSafeInteger(projectionGeneration) || projectionGeneration < 0) {
     throw new Error("projectionGeneration 必须是非负安全整数");
   }
+  const readingPosition = raw.readingPosition === undefined || raw.readingPosition === null
+    ? undefined
+    : (() => {
+      const position = requireRecord(raw.readingPosition, "readingPosition");
+      return {
+        messageId: requireString(position.messageId, "readingPosition.messageId"),
+        offsetPx: requireInteger(position.offsetPx, "readingPosition.offsetPx"),
+      };
+    })();
+  const navigationTarget = raw.navigationTarget === undefined || raw.navigationTarget === null
+    ? undefined
+    : (() => {
+      const target = requireRecord(raw.navigationTarget, "navigationTarget");
+      return {
+        sessionId: requireString(target.sessionId, "navigationTarget.sessionId"),
+        messageId: requireString(target.messageId, "navigationTarget.messageId"),
+      };
+    })();
   return {
-    protocolVersion: 2,
+    protocolVersion: 3,
     connection: {
       label: requireString(connection.label, "connection.label"),
       status: status as ConnectionStatus,
@@ -340,11 +412,21 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
     },
     sessions,
     selectedSessionId: optionalString(raw.selectedSessionId, "selectedSessionId"),
+    readingPosition,
+    navigationTarget,
     projectionGeneration,
     messages,
     pluginResponses,
     composer: {
       attachments: requireArray(composer.attachments, "composer.attachments", parseAttachment),
+      pendingMessages: requireArray(composer.pendingMessages, "composer.pendingMessages", (item, index) => {
+        const pending = requireRecord(item, `composer.pendingMessages[${index}]`);
+        return {
+          messageId: requireString(pending.messageId, `composer.pendingMessages[${index}].messageId`),
+          preview: requireString(pending.preview, `composer.pendingMessages[${index}].preview`),
+          createdAt: requireNonNegativeInteger(pending.createdAt, `composer.pendingMessages[${index}].createdAt`),
+        };
+      }),
       commands: requireArray(composer.commands, "composer.commands", (item, index) => {
         const command = requireRecord(item, `composer.commands[${index}]`);
         return {
@@ -376,6 +458,7 @@ function MobileNativeApp() {
   const [snapshot, setSnapshot] = useState<MobileSnapshot | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [commandsOpen, setCommandsOpen] = useState(false);
+  const [queueOpen, setQueueOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchTargetId, setSearchTargetId] = useState<string | null>(null);
@@ -402,6 +485,7 @@ function MobileNativeApp() {
   const searchFocusTimerRef = useRef<number | null>(null);
   const searchHighlightTimerRef = useRef<number | null>(null);
   const previousSessionIdRef = useRef<string | undefined>(undefined);
+  const handledNavigationTargetRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     let pending: MobileSnapshot | null = null;
@@ -541,6 +625,17 @@ function MobileNativeApp() {
   }, []);
 
   useEffect(() => {
+    const target = snapshot?.navigationTarget;
+    if (!target || target.sessionId !== snapshot.selectedSessionId) return;
+    const key = `${target.sessionId}\u001f${target.messageId}`;
+    if (handledNavigationTargetRef.current === key) return;
+    if (!snapshot.messages.some((message) => message.id === target.messageId)) return;
+    handledNavigationTargetRef.current = key;
+    jumpToMessage(target.messageId, true);
+    window.AkashicNative?.navigationTargetHandled(target.messageId);
+  }, [jumpToMessage, snapshot?.messages, snapshot?.navigationTarget, snapshot?.selectedSessionId]);
+
+  useEffect(() => {
     if (!searchOpen || !normalizedSearchQuery || searchResults.length === 0) {
       setSearchTargetId(null);
       return;
@@ -572,6 +667,7 @@ function MobileNativeApp() {
     setSearchIndex(new Map());
     setSearchTargetId(null);
     setUnreadState({ count: 0 });
+    setQueueOpen(false);
   }, [snapshot?.selectedSessionId]);
 
   useEffect(() => {
@@ -707,7 +803,7 @@ function MobileNativeApp() {
           onClose={closeDrawer}
         />
 
-        <div className={`mobile-main-content ${replyTarget ? "replying" : ""} ${searchOpen ? "searching" : ""}`} inert={drawerOpen ? true : undefined}>
+        <div className={`mobile-main-content ${replyTarget ? "replying" : ""} ${searchOpen ? "searching" : ""} ${queueOpen && snapshot.composer.pendingMessages.length > 1 ? "queueing" : ""}`} inert={drawerOpen ? true : undefined}>
           {pluginLoadError ? (
             <div className="mobile-plugin-load-error" role="status">
               插件界面暂不可用 · {pluginLoadError}
@@ -802,6 +898,8 @@ function MobileNativeApp() {
               resyncing={snapshot.composer.isResyncing}
               suspended={searchOpen}
               forceScrollToken={sendScrollRequest}
+              readingPosition={snapshot.readingPosition}
+              messageElementsRef={messageElementsRef}
               onUnreadChange={setUnreadState}
             />
             <MobileSearchScrollBehavior active={searchOpen} targetMessageId={searchTargetId} />
@@ -830,10 +928,12 @@ function MobileNativeApp() {
               input={input}
               textareaRef={textareaRef}
               commandsOpen={commandsOpen}
+              queueOpen={queueOpen}
               stopRequested={stopRequested}
               replyTarget={replyTarget}
               onInput={setInput}
               onToggleCommands={toggleCommands}
+              onToggleQueue={() => setQueueOpen((current) => !current)}
               onCloseCommands={closeCommands}
               onSend={send}
               onStop={stop}
@@ -974,8 +1074,21 @@ function MobileDrawer({ open, snapshot, onClose }: { open: boolean; snapshot: Mo
                 onClose();
               }}
             >
-              <span>{session.title || "未命名会话"}</span>
-              {session.id === snapshot.selectedSessionId ? <Check size={18} /> : null}
+              <span className="mobile-session-row__copy">
+                <span className="mobile-session-row__title">
+                  <strong>{session.title || "未命名会话"}</strong>
+                  {session.lastMessageAt ? <time>{formatDrawerTime(session.lastMessageAt)}</time> : null}
+                </span>
+                <small>{session.lastMessagePreview || "还没有消息"}</small>
+              </span>
+              <span className="mobile-session-row__state">
+                {session.isRunning ? <span className="session-running" aria-label="Agent 正在处理" /> : null}
+                {session.unreadCount > 0 ? (
+                  <strong className="session-unread" aria-label={`${session.unreadCount} 条未读`}>
+                    {session.unreadCount > 99 ? "99+" : session.unreadCount}
+                  </strong>
+                ) : session.id === snapshot.selectedSessionId ? <Check size={18} /> : null}
+              </span>
             </button>
           ))}
         </nav>
@@ -1012,10 +1125,12 @@ function MobileComposer({
   input,
   textareaRef,
   commandsOpen,
+  queueOpen,
   stopRequested,
   replyTarget,
   onInput,
   onToggleCommands,
+  onToggleQueue,
   onCloseCommands,
   onSend,
   onStop,
@@ -1025,10 +1140,12 @@ function MobileComposer({
   input: string;
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   commandsOpen: boolean;
+  queueOpen: boolean;
   stopRequested: boolean;
   replyTarget: MobileMessage | null;
   onInput: (value: string) => void;
   onToggleCommands: () => void;
+  onToggleQueue: () => void;
   onCloseCommands: (restoreFocus?: boolean) => void;
   onSend: () => void;
   onStop: () => void;
@@ -1052,6 +1169,13 @@ function MobileComposer({
       {stopping ? <div className="stop-feedback" aria-live="polite">正在中止本轮处理…</div> : null}
       {hasDraft ? <DraftAttachments attachments={snapshot.composer.attachments} /> : null}
       <div className={`mobile-composer-frame ${replyTarget ? "has-reply" : ""}`}>
+        {snapshot.composer.pendingMessages.length > 1 ? (
+          <PendingQueue
+            open={queueOpen}
+            messages={snapshot.composer.pendingMessages}
+            onToggle={onToggleQueue}
+          />
+        ) : null}
         {replyTarget ? <ComposerReply target={replyTarget} onCancel={onCancelReply} /> : null}
         <div className="mobile-composer">
         <button className={`mobile-icon-button command-toggle ${commandsOpen ? "active" : ""}`} type="button" onClick={onToggleCommands} aria-label={commandsOpen ? "关闭快捷命令" : "打开快捷命令"}>
@@ -1086,6 +1210,36 @@ function MobileComposer({
         </div>
       </div>
     </div>
+  );
+}
+
+function PendingQueue({
+  open,
+  messages,
+  onToggle,
+}: {
+  open: boolean;
+  messages: MobilePendingMessage[];
+  onToggle: () => void;
+}) {
+  return (
+    <section className={`composer-queue ${open ? "open" : ""}`} aria-label="待发送消息">
+      <button type="button" onClick={onToggle} aria-expanded={open}>
+        <TimerReset size={18} />
+        <span>{messages.length} 条消息等待连接</span>
+        <ChevronDown className={open ? "open" : ""} size={18} />
+      </button>
+      <div className="composer-queue__disclosure">
+        <div>
+          {messages.map((message) => (
+            <div className="composer-queue__item" key={message.messageId}>
+              <span>{message.preview}</span>
+              <time>{formatMessageTime(message.createdAt)}</time>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -1392,6 +1546,15 @@ function formatMessageTime(value: number) {
   return messageTimeFormatter.format(new Date(value));
 }
 
+function formatDrawerTime(value: number) {
+  const date = new Date(value);
+  const now = new Date();
+  if (sameLocalDay(value, now.getTime())) return formatMessageTime(value);
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  if (sameLocalDay(value, yesterday.getTime())) return "昨天";
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+}
+
 function formatMessageDate(value: number) {
   const date = new Date(value);
   const today = new Date();
@@ -1420,6 +1583,8 @@ function MobileConversationBehavior({
   resyncing,
   suspended,
   forceScrollToken,
+  readingPosition,
+  messageElementsRef,
   onUnreadChange,
 }: {
   sessionId?: string;
@@ -1430,6 +1595,8 @@ function MobileConversationBehavior({
   resyncing: boolean;
   suspended: boolean;
   forceScrollToken: number;
+  readingPosition?: MobileReadingPosition;
+  messageElementsRef: React.RefObject<Map<string, HTMLDivElement>>;
   onUnreadChange: (state: MobileUnreadState) => void;
 }) {
   useMobileUnreadTracking(
@@ -1441,7 +1608,80 @@ function MobileConversationBehavior({
     onUnreadChange,
   );
   useMobileAutoScroll(sessionId, chatMessages, streaming, suspended, forceScrollToken);
+  useMobileReadingPosition(sessionId, sourceMessages, readingPosition, messageElementsRef, suspended);
   return null;
+}
+
+/** 以可见消息为锚点持久化每个会话的阅读位置，并在回到会话时恢复。 */
+function useMobileReadingPosition(
+  sessionId: string | undefined,
+  messages: MobileMessage[],
+  readingPosition: MobileReadingPosition | undefined,
+  messageElementsRef: React.RefObject<Map<string, HTMLDivElement>>,
+  suspended: boolean,
+) {
+  const { isAtBottom, scrollRef, stopScroll } = useStickToBottomContext();
+  const restoredSessionRef = useRef<string | undefined>(undefined);
+  const saveTimerRef = useRef<number | null>(null);
+  const lastSavedRef = useRef("");
+  const lastReadAtRef = useRef(0);
+
+  useLayoutEffect(() => {
+    // 1. 每次进入会话只恢复一次已持久化锚点
+    if (!sessionId || restoredSessionRef.current === sessionId || messages.length === 0) return;
+    restoredSessionRef.current = sessionId;
+    if (!readingPosition) return;
+    const element = messageElementsRef.current.get(readingPosition.messageId);
+    const scrollElement = scrollRef.current;
+    if (!element || !scrollElement) return;
+    stopScroll();
+    element.scrollIntoView({ block: "start", behavior: "auto" });
+    scrollElement.scrollTop -= readingPosition.offsetPx;
+  }, [messageElementsRef, messages.length, readingPosition, scrollRef, sessionId, stopScroll]);
+
+  useEffect(() => {
+    // 2. 滚动停止后记录首个可见消息和相对偏移，避免按绝对 scrollTop 恢复后被乱序归位破坏
+    const scrollElement = scrollRef.current;
+    if (!sessionId || !scrollElement || suspended) return;
+    const persist = () => {
+      saveTimerRef.current = null;
+      const viewportTop = scrollElement.getBoundingClientRect().top;
+      const anchor = messages.find((message) => {
+        const element = messageElementsRef.current.get(message.id);
+        return element ? element.getBoundingClientRect().bottom > viewportTop + 1 : false;
+      });
+      if (!anchor) return;
+      const element = messageElementsRef.current.get(anchor.id);
+      if (!element) return;
+      const offsetPx = Math.round(element.getBoundingClientRect().top - viewportTop);
+      const key = `${sessionId}\u001f${anchor.id}\u001f${offsetPx}`;
+      if (key === lastSavedRef.current) return;
+      lastSavedRef.current = key;
+      window.AkashicNative?.saveReadingPosition(sessionId, anchor.id, offsetPx);
+    };
+    const schedulePersist = () => {
+      if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = window.setTimeout(persist, 180);
+    };
+    scrollElement.addEventListener("scroll", schedulePersist, { passive: true });
+    schedulePersist();
+    return () => {
+      scrollElement.removeEventListener("scroll", schedulePersist);
+      if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
+    };
+  }, [messageElementsRef, messages, scrollRef, sessionId, suspended]);
+
+  useEffect(() => {
+    // 3. 真正回到底部时推进该会话的持久化已读水位
+    if (!sessionId || !isAtBottom || suspended) return;
+    const readAt = messages.reduce(
+      (latest, message) => message.role === "assistant" ? Math.max(latest, message.createdAt) : latest,
+      0,
+    );
+    if (readAt <= lastReadAtRef.current) return;
+    lastReadAtRef.current = readAt;
+    window.AkashicNative?.markSessionReadThrough(sessionId, readAt);
+  }, [isAtBottom, messages, sessionId, suspended]);
 }
 
 /** 按顶层助手消息追踪当前阅读位置之后的未读集合。 */

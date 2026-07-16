@@ -22,15 +22,20 @@ import com.akashic.mobile.ui.conversation.MessageAttachmentUi
 import com.akashic.mobile.ui.conversation.ProcessBlockKind
 import com.akashic.mobile.ui.conversation.ProcessBlockState
 import com.akashic.mobile.ui.conversation.ProcessBlockUi
+import com.akashic.mobile.ui.conversation.ReadingPositionUi
+import com.akashic.mobile.ui.conversation.NavigationTargetUi
 import com.akashic.mobile.ui.conversation.PluginUiAssetUi
 import com.akashic.mobile.ui.conversation.PluginUiResponseUi
+import com.akashic.mobile.ui.conversation.PendingMessageUi
 import com.akashic.mobile.ui.conversation.SessionUi
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlin.math.ceil
 
@@ -38,13 +43,14 @@ import kotlin.math.ceil
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val container = (application as App).container
     val sessionState = container.realtimeSession.state
+    private val navigationTarget = MutableStateFlow<NavigationTargetUi?>(null)
 
     private val messageGraph = sessionState.flatMapLatest { state ->
         state.currentSessionId?.let(container.database.messages()::observeMessageGraph) ?: flowOf(emptyList())
     }
 
     private val conversations = sessionState.flatMapLatest { state ->
-        state.serverId?.let(container.database.conversations()::observeForServer) ?: flowOf(emptyList())
+        state.serverId?.let(container.database.conversations()::observeSummaries) ?: flowOf(emptyList())
     }
 
     private val attachmentDrafts = sessionState.flatMapLatest { state ->
@@ -62,7 +68,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         messageGraph,
         conversations,
         attachmentDrafts,
-    ) { session, graph, conversations, attachments ->
+        navigationTarget,
+    ) { session, graph, conversations, attachments, target ->
         val messages = graph.map(::toMessageUi)
         val connection = connectionPresentation(session.connection, session.errorMessage)
         ConversationUiState(
@@ -72,10 +79,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             errorNotice = session.errorMessage,
             sessions = conversations
                 .filter { it.sessionId.startsWith("mobile:") }
-                .map { SessionUi(it.sessionId, it.title) },
+                .map {
+                    SessionUi(
+                        sessionId = it.sessionId,
+                        title = it.title,
+                        lastMessagePreview = it.lastMessagePreview?.take(160),
+                        lastMessageAtMillis = it.lastMessageAt,
+                        unreadCount = it.unreadCount,
+                        isRunning = it.isRunning,
+                    )
+                },
             selectedSessionId = session.currentSessionId,
+            readingPosition = conversations
+                .firstOrNull { it.sessionId == session.currentSessionId }
+                ?.let { summary ->
+                    summary.anchorMessageId?.let { ReadingPositionUi(it, summary.anchorOffsetPx) }
+                },
+            navigationTarget = target,
             projectionGeneration = session.projectionGeneration,
             messages = messages,
+            pendingMessages = messages.filterIsInstance<MessageUi.User>()
+                .filter { it.deliveryLabel == "待发送" }
+                .map {
+                    PendingMessageUi(
+                        messageId = it.id,
+                        preview = it.text.trim().replace(Regex("\\s+"), " ").take(120)
+                            .ifBlank { "[附件]" },
+                        createdAtMillis = it.createdAtMillis,
+                    )
+                },
             attachments = attachments.map { attachment ->
                 val waitingForConnection = session.connection.phase != ConnectionPhase.READY &&
                     attachment.state in setOf("pending", "uploading", "finishing")
@@ -122,9 +154,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             errorNotice = null,
             sessions = emptyList(),
             selectedSessionId = null,
+            readingPosition = null,
+            navigationTarget = null,
             projectionGeneration = 0,
             messages = emptyList(),
             attachments = emptyList(),
+            pendingMessages = emptyList(),
             commands = emptyList(),
             isStreaming = false,
             isResyncing = false,
@@ -182,6 +217,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun createSession() = container.realtimeSession.createSession()
 
     fun selectSession(sessionId: String) = container.realtimeSession.selectSession(sessionId)
+
+    fun saveReadingPosition(sessionId: String, messageId: String, offsetPx: Int) {
+        viewModelScope.launch {
+            require(offsetPx in -10_000..10_000) { "阅读锚点偏移超出范围" }
+            val conversation = requireNotNull(container.database.conversations().get(sessionId)) {
+                "阅读位置会话不存在: $sessionId"
+            }
+            require(conversation.serverId == sessionState.value.serverId) { "阅读位置会话不属于当前电脑" }
+            val message = requireNotNull(container.database.messages().get(messageId)) {
+                "阅读锚点消息不存在: $messageId"
+            }
+            require(message.sessionId == sessionId) { "阅读锚点不属于当前会话" }
+            container.database.conversationReadStates().savePosition(
+                sessionId = sessionId,
+                messageId = messageId,
+                offsetPx = offsetPx,
+                updatedAt = System.currentTimeMillis(),
+            )
+        }
+    }
+
+    fun markSessionReadThrough(sessionId: String, readAtMillis: Long) {
+        viewModelScope.launch {
+            require(readAtMillis >= 0) { "已读水位不能为负数" }
+            val conversation = requireNotNull(container.database.conversations().get(sessionId)) {
+                "已读水位会话不存在: $sessionId"
+            }
+            require(conversation.serverId == sessionState.value.serverId) { "已读水位会话不属于当前电脑" }
+            container.database.conversationReadStates().markReadThrough(
+                sessionId = sessionId,
+                readAt = readAtMillis,
+                updatedAt = System.currentTimeMillis(),
+            )
+        }
+    }
+
+    fun openNotificationTarget(sessionId: String, messageId: String) {
+        container.realtimeSession.selectSession(sessionId)
+        navigationTarget.value = NavigationTargetUi(sessionId, messageId)
+    }
+
+    fun acknowledgeNavigationTarget(messageId: String) {
+        if (navigationTarget.value?.messageId == messageId) navigationTarget.value = null
+    }
 
     fun restartPairing() = MobileConnectionService.disconnect(getApplication())
 

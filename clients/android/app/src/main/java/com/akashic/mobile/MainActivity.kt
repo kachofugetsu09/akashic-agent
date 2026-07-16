@@ -44,11 +44,13 @@ import com.akashic.mobile.ui.web.withCachedAttachment
 class MainActivity : ComponentActivity() {
     private val viewModel by viewModels<MainViewModel>()
     private val requestedSessionId = mutableStateOf<String?>(null)
+    private val requestedMessageId = mutableStateOf<String?>(null)
     private val notificationsEnabled = mutableStateOf(true)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestedSessionId.value = intent.getStringExtra(MobileConnectionService.EXTRA_SESSION_ID)
+        requestedMessageId.value = intent.getStringExtra(MobileConnectionService.EXTRA_MESSAGE_ID)
         notificationsEnabled.value = NotificationManagerCompat.from(this).areNotificationsEnabled()
         MobileConnectionService.start(this)
         enableEdgeToEdge(
@@ -76,11 +78,19 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(session.hasProfile) {
                     if (session.hasProfile) MobileConnectionService.start(this@MainActivity)
                 }
-                LaunchedEffect(session.initialized, session.hasProfile, requestedSessionId.value) {
+                LaunchedEffect(
+                    session.initialized,
+                    session.hasProfile,
+                    requestedSessionId.value,
+                    requestedMessageId.value,
+                ) {
                     val sessionId = requestedSessionId.value
                     if (session.initialized && session.hasProfile && sessionId != null) {
-                        viewModel.selectSession(sessionId)
+                        val messageId = requestedMessageId.value
+                        if (messageId == null) viewModel.selectSession(sessionId)
+                        else viewModel.openNotificationTarget(sessionId, messageId)
                         requestedSessionId.value = null
+                        requestedMessageId.value = null
                     }
                 }
                 Box(Modifier.fillMaxSize()) {
@@ -97,6 +107,9 @@ class MainActivity : ComponentActivity() {
                             onRemoveAttachment = viewModel::removeAttachment,
                             onRetryAttachment = viewModel::retryAttachment,
                             onRetryFailedMessage = viewModel::retryFailedMessage,
+                            onSaveReadingPosition = viewModel::saveReadingPosition,
+                            onMarkSessionReadThrough = viewModel::markSessionReadThrough,
+                            onNavigationTargetHandled = viewModel::acknowledgeNavigationTarget,
                             onRetryDownloadedAttachment = viewModel::retryDownloadedAttachment,
                             onTouchDownloadedAttachment = viewModel::touchDownloadedAttachment,
                             onOpenDownloadedAttachment = { attachmentId ->
@@ -143,6 +156,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         requestedSessionId.value = intent.getStringExtra(MobileConnectionService.EXTRA_SESSION_ID)
+        requestedMessageId.value = intent.getStringExtra(MobileConnectionService.EXTRA_MESSAGE_ID)
     }
 
     override fun onResume() {

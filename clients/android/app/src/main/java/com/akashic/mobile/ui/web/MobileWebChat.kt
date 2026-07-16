@@ -75,6 +75,9 @@ fun MobileWebChat(
     onRemoveAttachment: (String) -> Unit,
     onRetryAttachment: (String) -> Unit,
     onRetryFailedMessage: (String) -> Unit,
+    onSaveReadingPosition: (String, String, Int) -> Unit,
+    onMarkSessionReadThrough: (String, Long) -> Unit,
+    onNavigationTargetHandled: (String) -> Unit,
     onRetryDownloadedAttachment: (String) -> Unit,
     onTouchDownloadedAttachment: (String) -> Unit,
     onOpenDownloadedAttachment: (String) -> Unit,
@@ -103,6 +106,9 @@ fun MobileWebChat(
             onRemoveAttachment = onRemoveAttachment,
             onRetryAttachment = onRetryAttachment,
             onRetryFailedMessage = onRetryFailedMessage,
+            onSaveReadingPosition = onSaveReadingPosition,
+            onMarkSessionReadThrough = onMarkSessionReadThrough,
+            onNavigationTargetHandled = onNavigationTargetHandled,
             onRetryDownloadedAttachment = onRetryDownloadedAttachment,
             onTouchDownloadedAttachment = onTouchDownloadedAttachment,
             onOpenDownloadedAttachment = onOpenDownloadedAttachment,
@@ -223,6 +229,9 @@ private data class MobileWebCallbacks(
     val onRemoveAttachment: (String) -> Unit,
     val onRetryAttachment: (String) -> Unit,
     val onRetryFailedMessage: (String) -> Unit,
+    val onSaveReadingPosition: (String, String, Int) -> Unit,
+    val onMarkSessionReadThrough: (String, Long) -> Unit,
+    val onNavigationTargetHandled: (String) -> Unit,
     val onRetryDownloadedAttachment: (String) -> Unit,
     val onTouchDownloadedAttachment: (String) -> Unit,
     val onOpenDownloadedAttachment: (String) -> Unit,
@@ -272,6 +281,21 @@ private class MobileWebBridge(
 
     @JavascriptInterface
     fun retryFailedMessage(messageId: String) = dispatch { it.onRetryFailedMessage(messageId) }
+
+    @JavascriptInterface
+    fun saveReadingPosition(sessionId: String, messageId: String, offsetPx: Int) = dispatch {
+        it.onSaveReadingPosition(sessionId, messageId, offsetPx)
+    }
+
+    @JavascriptInterface
+    fun markSessionReadThrough(sessionId: String, readAtMillis: Long) = dispatch {
+        it.onMarkSessionReadThrough(sessionId, readAtMillis)
+    }
+
+    @JavascriptInterface
+    fun navigationTargetHandled(messageId: String) = dispatch {
+        it.onNavigationTargetHandled(messageId)
+    }
 
     @JavascriptInterface
     fun retryDownloadedAttachment(attachmentId: String) = dispatch {

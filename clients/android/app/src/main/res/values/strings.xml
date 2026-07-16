@@ -8,6 +8,8 @@
     <string name="notification_message_title">Akashic 新回复</string>
     <string name="notification_private_title">Akashic</string>
     <string name="notification_private_text">解锁后查看新消息</string>
+    <string name="notification_reply_action">回复</string>
+    <string name="notification_reply_hint">输入回复</string>
     <string name="notification_permission_notice">允许通知后，离开应用也能收到最终回复</string>
     <string name="notification_permission_action">开启</string>
 </resources>

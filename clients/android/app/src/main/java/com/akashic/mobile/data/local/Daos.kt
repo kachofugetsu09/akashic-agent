@@ -34,6 +34,57 @@ interface ConversationDao {
     @Query("SELECT * FROM conversations WHERE serverId = :serverId ORDER BY updatedAt DESC")
     fun observeForServer(serverId: String): Flow<List<ConversationEntity>>
 
+    @Query(
+        """
+        SELECT
+          conversation.sessionId AS sessionId,
+          conversation.title AS title,
+          (
+            SELECT CASE
+              WHEN TRIM(message.text) != '' THEN REPLACE(REPLACE(TRIM(message.text), CHAR(10), ' '), CHAR(13), ' ')
+              WHEN EXISTS (
+                SELECT 1 FROM message_attachments AS relation
+                WHERE relation.messageId = message.messageId
+              ) THEN '[附件]'
+              ELSE NULL
+            END
+            FROM messages AS message
+            WHERE message.sessionId = conversation.sessionId
+            ORDER BY message.createdAt DESC, message.messageId DESC
+            LIMIT 1
+          ) AS lastMessagePreview,
+          (
+            SELECT message.createdAt
+            FROM messages AS message
+            WHERE message.sessionId = conversation.sessionId
+            ORDER BY message.createdAt DESC, message.messageId DESC
+            LIMIT 1
+          ) AS lastMessageAt,
+          CASE WHEN read_state.sessionId IS NULL THEN 0 ELSE (
+            SELECT COUNT(*)
+            FROM messages AS message
+            WHERE message.sessionId = conversation.sessionId
+              AND message.role = 'assistant'
+              AND message.deliveryState = 'complete'
+              AND message.createdAt > read_state.lastReadAt
+          ) END AS unreadCount,
+          EXISTS (
+            SELECT 1 FROM messages AS message
+            WHERE message.sessionId = conversation.sessionId
+              AND message.role = 'assistant'
+              AND message.deliveryState = 'streaming'
+          ) AS isRunning,
+          read_state.anchorMessageId AS anchorMessageId,
+          COALESCE(read_state.anchorOffsetPx, 0) AS anchorOffsetPx
+        FROM conversations AS conversation
+        LEFT JOIN conversation_read_states AS read_state
+          ON read_state.sessionId = conversation.sessionId
+        WHERE conversation.serverId = :serverId
+        ORDER BY COALESCE(lastMessageAt, conversation.updatedAt) DESC, conversation.sessionId
+        """,
+    )
+    fun observeSummaries(serverId: String): Flow<List<ConversationSummary>>
+
     @Query("SELECT * FROM conversations WHERE sessionId = :sessionId")
     suspend fun get(sessionId: String): ConversationEntity?
 
@@ -51,6 +102,43 @@ interface ConversationDao {
         """,
     )
     suspend fun deleteEmptyProjection(serverId: String, preservedSessionId: String?): Int
+}
+
+@Dao
+interface ConversationReadStateDao {
+    @Query(
+        """
+        INSERT INTO conversation_read_states (
+          sessionId, lastReadAt, anchorMessageId, anchorOffsetPx, updatedAt
+        ) VALUES (
+          :sessionId,
+          COALESCE((
+            SELECT MAX(createdAt) FROM messages
+            WHERE sessionId = :sessionId AND role = 'assistant'
+          ), 0),
+          :messageId,
+          :offsetPx,
+          :updatedAt
+        )
+        ON CONFLICT(sessionId) DO UPDATE SET
+          anchorMessageId = excluded.anchorMessageId,
+          anchorOffsetPx = excluded.anchorOffsetPx,
+          updatedAt = excluded.updatedAt
+        """,
+    )
+    suspend fun savePosition(sessionId: String, messageId: String, offsetPx: Int, updatedAt: Long)
+
+    @Query(
+        """
+        INSERT INTO conversation_read_states (
+          sessionId, lastReadAt, anchorMessageId, anchorOffsetPx, updatedAt
+        ) VALUES (:sessionId, :readAt, NULL, 0, :updatedAt)
+        ON CONFLICT(sessionId) DO UPDATE SET
+          lastReadAt = MAX(lastReadAt, excluded.lastReadAt),
+          updatedAt = excluded.updatedAt
+        """,
+    )
+    suspend fun markReadThrough(sessionId: String, readAt: Long, updatedAt: Long)
 }
 
 @Dao

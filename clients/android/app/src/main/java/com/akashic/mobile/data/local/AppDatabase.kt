@@ -18,14 +18,17 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         RealtimeCursorEntity::class,
         MediaAttachmentEntity::class,
         MessageAttachmentEntity::class,
+        ConversationReadStateEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun serverProfiles(): ServerProfileDao
 
     abstract fun conversations(): ConversationDao
+
+    abstract fun conversationReadStates(): ConversationReadStateDao
 
     abstract fun messages(): MessageDao
 
@@ -42,7 +45,7 @@ abstract class AppDatabase : RoomDatabase() {
             context.applicationContext,
             AppDatabase::class.java,
             "akashic-mobile.db",
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build()
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -98,6 +101,24 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE `messages` ADD COLUMN `replyToMessageId` TEXT")
                 db.execSQL("ALTER TABLE `messages` ADD COLUMN `replyRole` TEXT")
                 db.execSQL("ALTER TABLE `messages` ADD COLUMN `replyPreview` TEXT")
+            }
+        }
+
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `conversation_read_states` (
+                        `sessionId` TEXT NOT NULL,
+                        `lastReadAt` INTEGER NOT NULL,
+                        `anchorMessageId` TEXT,
+                        `anchorOffsetPx` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`sessionId`),
+                        FOREIGN KEY(`sessionId`) REFERENCES `conversations`(`sessionId`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
             }
         }
     }

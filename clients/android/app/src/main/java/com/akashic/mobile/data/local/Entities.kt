@@ -40,6 +40,36 @@ data class ConversationEntity(
 )
 
 @Entity(
+    tableName = "conversation_read_states",
+    foreignKeys = [
+        ForeignKey(
+            entity = ConversationEntity::class,
+            parentColumns = ["sessionId"],
+            childColumns = ["sessionId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+)
+data class ConversationReadStateEntity(
+    @PrimaryKey val sessionId: String,
+    val lastReadAt: Long,
+    val anchorMessageId: String?,
+    val anchorOffsetPx: Int,
+    val updatedAt: Long,
+)
+
+data class ConversationSummary(
+    val sessionId: String,
+    val title: String,
+    val lastMessagePreview: String?,
+    val lastMessageAt: Long?,
+    val unreadCount: Int,
+    val isRunning: Boolean,
+    val anchorMessageId: String?,
+    val anchorOffsetPx: Int,
+)
+
+@Entity(
     tableName = "messages",
     foreignKeys = [
         ForeignKey(

@@ -424,12 +424,28 @@ class RealtimeSession(
             text,
             includeDraftAttachments = true,
             replyToMessageId = replyToMessageId,
+            targetSessionId = null,
+        )
+    }
+
+    /** 从系统通知向指定手机会话发送纯文本回复。 */
+    fun sendNotificationReply(sessionId: String, text: String) {
+        enqueueMessage(
+            text,
+            includeDraftAttachments = false,
+            replyToMessageId = null,
+            targetSessionId = sessionId,
         )
     }
 
     /** 发送不携带或消费附件草稿的纯文本命令。 */
     fun sendCommand(command: String) {
-        enqueueMessage(command, includeDraftAttachments = false, replyToMessageId = null)
+        enqueueMessage(
+            command,
+            includeDraftAttachments = false,
+            replyToMessageId = null,
+            targetSessionId = null,
+        )
     }
 
     /** 从 Web UI 发起一个绑定渲染槽位会话与轮次的插件请求。 */
@@ -497,14 +513,23 @@ class RealtimeSession(
         text: String,
         includeDraftAttachments: Boolean,
         replyToMessageId: String?,
+        targetSessionId: String?,
     ) {
         scope.launch {
             mutex.withLock {
                 // 1. 确定当前手机会话
                 val currentProfile = requireNotNull(profile) { "Pair a server before sending" }
                 val body = text.trim()
-                val sessionId = ensureCurrentSession(currentProfile)
+                val sessionId = targetSessionId ?: ensureCurrentSession(currentProfile)
                 require(MOBILE_SESSION.matches(sessionId)) { "Invalid mobile session_id" }
+                if (targetSessionId != null) {
+                    val conversation = requireNotNull(database.conversations().get(sessionId)) {
+                        "Unknown notification session: $sessionId"
+                    }
+                    require(conversation.serverId == currentProfile.serverId) {
+                        "Notification session belongs to another server"
+                    }
+                }
                 val attachments = if (includeDraftAttachments) {
                     database.attachmentTransfers().drafts(currentProfile.serverId, sessionId)
                 } else {

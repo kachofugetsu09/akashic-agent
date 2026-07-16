@@ -9,9 +9,12 @@ data class ConversationUiState(
     val errorNotice: String?,
     val sessions: List<SessionUi>,
     val selectedSessionId: String?,
+    val readingPosition: ReadingPositionUi?,
+    val navigationTarget: NavigationTargetUi?,
     val projectionGeneration: Long,
     val messages: List<MessageUi>,
     val attachments: List<ComposerAttachmentUi>,
+    val pendingMessages: List<PendingMessageUi>,
     val commands: List<CommandUi>,
     val pluginUiAssets: List<PluginUiAssetUi> = emptyList(),
     val pluginUiResponses: List<PluginUiResponseUi> = emptyList(),
@@ -57,6 +60,26 @@ enum class ComposerAttachmentState {
 data class SessionUi(
     val sessionId: String,
     val title: String,
+    val lastMessagePreview: String?,
+    val lastMessageAtMillis: Long?,
+    val unreadCount: Int,
+    val isRunning: Boolean,
+)
+
+data class ReadingPositionUi(
+    val messageId: String,
+    val offsetPx: Int,
+)
+
+data class NavigationTargetUi(
+    val sessionId: String,
+    val messageId: String,
+)
+
+data class PendingMessageUi(
+    val messageId: String,
+    val preview: String,
+    val createdAtMillis: Long,
 )
 
 data class CommandUi(
@@ -175,9 +198,12 @@ internal val EmptyConversationState = ConversationUiState(
     errorNotice = null,
     sessions = emptyList(),
     selectedSessionId = null,
+    readingPosition = null,
+    navigationTarget = null,
     projectionGeneration = 0,
     messages = emptyList(),
     attachments = emptyList(),
+    pendingMessages = emptyList(),
     commands = emptyList(),
     isStreaming = false,
     isResyncing = false,
@@ -193,11 +219,13 @@ internal val PreviewConversationState = ConversationUiState(
     connectionNotice = "网络不稳 · 消息已缓存，正在续传",
     errorNotice = "附件读取失败，请重新选择文件。",
     sessions = listOf(
-        SessionUi("mobile:preview-1", "Android 会话设计"),
-        SessionUi("mobile:preview-2", "网络抖动恢复策略"),
-        SessionUi("mobile:preview-3", "Material 3 交互细节"),
+        SessionUi("mobile:preview-1", "Android 会话设计", "正在检查实时链路", 1_752_681_601_000, 0, true),
+        SessionUi("mobile:preview-2", "网络抖动恢复策略", "恢复窗口已经确认", 1_752_681_500_000, 2, false),
+        SessionUi("mobile:preview-3", "Material 3 交互细节", null, null, 0, false),
     ),
     selectedSessionId = "mobile:preview-1",
+    readingPosition = null,
+    navigationTarget = null,
     projectionGeneration = 0,
     messages = listOf(
         MessageUi.User(
@@ -271,6 +299,7 @@ internal val PreviewConversationState = ConversationUiState(
             canRemove = false,
         ),
     ),
+    pendingMessages = emptyList(),
     commands = listOf(
         CommandUi("undo", "撤销上一轮对话"),
         CommandUi("memorystatus", "查看记忆整理状态"),

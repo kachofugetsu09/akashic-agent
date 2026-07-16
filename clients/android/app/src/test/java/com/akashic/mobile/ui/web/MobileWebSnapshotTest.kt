@@ -10,6 +10,9 @@ import com.akashic.mobile.ui.conversation.MessageReplyUi
 import com.akashic.mobile.ui.conversation.ProcessBlockKind
 import com.akashic.mobile.ui.conversation.ProcessBlockState
 import com.akashic.mobile.ui.conversation.ProcessBlockUi
+import com.akashic.mobile.ui.conversation.PendingMessageUi
+import com.akashic.mobile.ui.conversation.ReadingPositionUi
+import com.akashic.mobile.ui.conversation.NavigationTargetUi
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
@@ -30,6 +33,8 @@ class MobileWebSnapshotTest {
             errorNotice = null,
             sessions = emptyList(),
             selectedSessionId = "mobile:test",
+            readingPosition = ReadingPositionUi("message-1", -18),
+            navigationTarget = NavigationTargetUi("mobile:test", "message-2"),
             projectionGeneration = 7,
             messages = listOf(
                 MessageUi.User(
@@ -69,6 +74,7 @@ class MobileWebSnapshotTest {
                 ),
             ),
             attachments = emptyList(),
+            pendingMessages = listOf(PendingMessageUi("message-1", "你好", 1_752_681_600_000)),
             commands = listOf(CommandUi("memorystatus", "查看记忆整理状态")),
             isStreaming = true,
             isResyncing = false,
@@ -80,7 +86,7 @@ class MobileWebSnapshotTest {
 
         val encoded = Json.encodeToString(snapshot)
 
-        assertEquals(2, snapshot.protocolVersion)
+        assertEquals(3, snapshot.protocolVersion)
         assertEquals(7, snapshot.projectionGeneration)
         assertEquals(MobileWebConnectionStatus.RECONNECTING, snapshot.connection.status)
         assertEquals(listOf("message-1", "message-2"), snapshot.messages.map { it.id })
@@ -100,7 +106,10 @@ class MobileWebSnapshotTest {
         assertEquals(840L, tool.durationMillis)
         assertEquals("memorystatus", snapshot.composer.commands.single().command)
         assertEquals("之前的回答", snapshot.messages.first().reply?.preview)
-        assertEquals(2, Json.parseToJsonElement(encoded).jsonObject
+        assertEquals(-18, snapshot.readingPosition?.offsetPx)
+        assertEquals("message-2", snapshot.navigationTarget?.messageId)
+        assertEquals("message-1", snapshot.composer.pendingMessages.single().messageId)
+        assertEquals(3, Json.parseToJsonElement(encoded).jsonObject
             .getValue("protocolVersion").jsonPrimitive.content.toInt())
         assertTrue(encoded.contains("\"status\":\"reconnecting\""))
         assertTrue(encoded.contains("\"deliveryAction\":\"retry\""))
