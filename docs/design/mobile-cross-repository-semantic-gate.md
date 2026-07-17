@@ -101,7 +101,7 @@ matching attachment.download.ok
 
 进程在 binary fsync 后、matching ok 前死亡时，启动恢复把 `.part` 截断到 DB confirmed offset，再从该 offset 请求。full-size `.part` 没有 matching ok 时也不能直接发布；DB offset 提前推进、文件长度自动成为 offset、或只靠最终 SHA-256 都是错误 mutant。
 
-**F：** 移动端最终候选 `dbd0e58165b0a98adafa47f0aac20aeb327188ee` 已传播 PR5 最终状态，并在栈顶重新运行附件与累计测试。这个 commit 是当前实现证据，不是协议真源；后续 head 变化仍需重跑。
+**F：** 移动端最终候选 `069a7df1dc9cd1d6cca6f0665d5804dd801d2e85` 已传播 PR5 最终状态，并在栈顶重新运行附件、累计测试和设备 Gate。这个 commit 是当前实现证据，不是协议真源；后续 head 变化仍需重跑。
 
 ### 2.5 Room schema lineage 与汇合迁移
 
@@ -118,7 +118,7 @@ public PR6 v3: media + server sequence
 
 每条已知 lineage 先核对表、列、索引和外键，再只增加目标版本缺少的结构。迁移后的保留集合取所有上游已批准状态的并集；例如加入 server sequence 不能丢失 remote pairing、pending notification 或 durable stop。只命中部分特征的未知 v4 必须 fail-loud，不能被当成“最接近”的已知版本。
 
-**F：** `dbd0e58` 的 schema v5 迁移矩阵实际覆盖 final PR5 v4、reviewed PR6 v4、original public PR6 v3 和 canonical 1→5，并分别证明 partial v3 与 partial v4 fail-loud。这个矩阵是本次分叉的实现证据；MOB-004 要求后续任何新 lineage 继续显式登记。
+**F：** `069a7df` 继承并重新验证的 schema v5 迁移矩阵覆盖 final PR5 v4、reviewed PR6 v4、original public PR6 v3 和 canonical 1→5，并分别证明 partial v3 与 partial v4 fail-loud。这个矩阵是本次分叉的实现证据；MOB-004 要求后续任何新 lineage 继续显式登记。
 
 ## 3. 协议与外部仓库版本固定
 
@@ -249,9 +249,9 @@ Observe 属于独立插件仓库，所以报告同时绑定 core consumer SHA、
 
 **F（设备数据事故）：** 在 run-specific Gate 落地前，旧 raw connected task 曾以正式 application ID `com.akashic.mobile` 安装测试候选，覆盖 Pixel 7 上的正式 v0.8.0/code21。维护者后来从预先保存的 `base.apk` 恢复了 APK 与权限，但当时没有 app data 备份，且应用声明 `allowBackup=false`，所以被覆盖的数据无法恢复。这次事故有实际数据损失，不能因后续 binary 恢复或新 Gate 通过而写成“无影响”。
 
-**F（当前隔离互操作证据）：** 当前移动端 PR6 head 为 `dbd0e58165b0a98adafa47f0aac20aeb327188ee`；设备 Gate 固定核心 PR #134 commit `f37a42826d9ad5e0988d8b26eba5dd7a20fb29b8` 与 tree `88365c13369b592290fd69918642b7166fc57c55`。run `rpr6dbd0f37` 从生成后的 APK 读取 app/test identity 和 instrumentation target，得到 `com.akashic.mobile.review.rpr6dbd0f37` 与 `com.akashic.mobile.review.rpr6dbd0f37.test`，再以 `pm list packages -u` 得到 `collision_result=clear` 后安装。app APK SHA-256 为 `c225b87c287848fa8c08de1f9316518561ce48b68e1c6b264d83378633fbc151`，test APK SHA-256 为 `3d3328b56ea5ec327bd4e26db2d192367c7058cd5127fe313d7d74a74072fd41`。CI 另外用 fake device 证明 collision、0 test 和 assertion failure 均被拒绝，只有恰好一个 `OK (1 test)` 且 instrumentation 成功的 phase 可以通过。
+**F（当前隔离互操作证据）：** 当前移动端 PR6 head 为 `069a7df1dc9cd1d6cca6f0665d5804dd801d2e85`，tree 为 `50a05ba56e385628ebbb55e2d300226a90f212d1`；设备 Gate 固定核心 PR #134 commit `f37a42826d9ad5e0988d8b26eba5dd7a20fb29b8` 与 tree `88365c13369b592290fd69918642b7166fc57c55`。run `rpr6069af37` 从生成后的 APK 读取 app/test identity 和 instrumentation target，得到 `com.akashic.mobile.review.rpr6069af37` 与 `com.akashic.mobile.review.rpr6069af37.test`，再以 `pm list packages -u` 得到 `collision_result=clear` 后安装。app APK SHA-256 为 `0bbf9affde1b9ecfdc382d7674425eb8c74f052bb67a889430756a5088132828`，test APK SHA-256 为 `578cdf00c85373160b219487a9650981792f86b59a327030ca9a20ca925e23af`。CI 的 fake device 固定覆盖 app collision、test package collision、app install failure、test APK install failure、0 test、assertion failure、process crash、成功、cleanup failure 和非法 runner argument，分别要求 `gate_result=failed_setup`、`failed_test`、`failed_cleanup` 或 `passed`；只有恰好一个目标方法、`OK (1 test)` 且 instrumentation 成功的 phase 可以通过。
 
-设备先运行 `pairSendAndReceiveFixedMedia`，显式 force-stop 后再运行 `processRestartResumesWithoutHistoryDuplicates`，两个 instrumentation phase 均通过。正式 package 在运行前后都只有 `com.akashic.mobile` v0.8.0/code21，`firstInstallTime/lastUpdateTime` 均为 `2026-07-18 05:16:55`，`ceDataInode=2589746`，本轮没有变化；run-specific app/test package、ADB reverse 与容器均已清理，`cleanup_exit=0`。维护者本机审计 bundle 名为 `mobile-device-gate-f37-dbd0e58-20260718`，其中 `run/` 是隔离运行根，`rpr6dbd0f37/` 保存报告副本；这个名称是本次事实定位，不是协作者必须使用的绝对路径。
+设备先运行 `pairSendAndReceiveFixedMedia`，显式 force-stop 后再运行 `processRestartResumesWithoutHistoryDuplicates`，两个 instrumentation phase 均通过，最终 `test_result=passed`、`test_exit=0`、`cleanup_exit=0`、`gate_result=passed`。正式 package 在运行前后都只有 `com.akashic.mobile` v0.8.0/code21，`firstInstallTime/lastUpdateTime` 均为 `2026-07-18 05:16:55`，`ceDataInode=2589746`，本轮没有变化；run-specific app/test package、ADB reverse 与容器均已清理。维护者本机审计 bundle 名为 `mobile-device-gate-f37-069a7df-20260718`，其中 `run/` 是隔离运行根，`device-gate/` 保存报告副本；这个名称是本次事实定位，不是协作者必须使用的绝对路径。
 
 **I：** 在控制器支持 run-specific profile 前，复用固定 `mobile-lab` profile 必须先停止旧容器，备份现有测试 profile，并在报告中记录备份、启动时间、core SHA、APK SHA 和 cleanup。任何路径解析到正式 workspace 时立即停止。
 
@@ -388,7 +388,7 @@ Deliver
 
 ## 10. 当前实施边界
 
-**F：** 公开 Gate 已有 diff 选择、一次性 Docker sandbox 和报告入口。private companion 已有 Feed/Observe 的远端 ref 解析、固定 SHA 安装和单场景 runner；它们仍是 G2 pilot，不等于统一 controller 或完整 required check。Mobile Lab 的隔离实现只存在于上文固定的 PR #129 revision，不是当前 main 事实。
+**F：** 公开 Gate 已有 diff 选择、一次性 Docker sandbox 和报告入口。private companion 已为当前 catalog 的 20/20 provider 固定完整远端 branch ref，并把每个 `repository/requestedRef/resolvedCommit` 纳入计划摘要；只有 Feed/Observe 已有固定 SHA 安装和独立语义 scenario，它们仍是 G2 pilot，不等于统一 controller 或完整 required check。Mobile Lab 的隔离实现只存在于上文固定的 PR #129 revision，不是当前 main 事实。
 
 **F（本次跨仓库审计）：** Gate 开跑前解析并冻结的插件身份如下。`change_source_pr_head` 只说明变更从哪里进入 canonical branch，不能代替 `requested_ref` 当时解析出的 `resolved_sha`。
 
@@ -405,6 +405,6 @@ Observe 的移动端 turn identity seam、status_commands 的公开 session look
 
 **F（固定组合结果）：** 在最终 `core 83ca96e` 上，Observe `b434fa7` 的 13 个测试和真实 turn identity 链通过，`missing_assistant_message_id` mutant 被杀死；status_commands `cee5bef` 的 9 个测试、proactive_feedback `d522724` 的 13 个测试和 Feed `520ba10` 的 18 个 MCP 测试通过。Feed 从远端固定提交正式安装后的 background refresh、call finality 与 restart persistence 通过，`async_accepted_before_visible` 和 `poller_stopped_stale_payload` 两个 mutant 被杀死。当前 public plan 仍选中 20 个 provider，但只有 Feed 和 Observe 拥有独立语义 scenario；status_commands、proactive_feedback 和其余 selected provider 的统一可执行结果仍按 `NOW.md` 保持未完成，不能把 import/test 结果升级成完整 G2 passed。
 
-**I：** 下一步把现有 Feed 与 Observe remote-revision 场景接入同一个 G2 Docker controller，再为所有会被 private plan 选中的 provider 补完整 ref 与可执行结果，并建立始终返回 `passed`、`failed` 或 `not_affected` 的外部状态。完成前不能把“本机脚本可运行”或两个 provider pilot 描述成完整 required Gate。
+**I：** 下一步把现有 Feed 与 Observe remote-revision 场景接入同一个 G2 Docker controller，再为其余会被 private plan 选中的 provider 补独立语义 scenario 和可执行结果，并建立始终返回 `passed`、`failed` 或 `not_affected` 的外部状态。完整 ref 已固定，但 ref identity 不能代替语义 oracle；完成前不能把“本机脚本可运行”或两个 provider pilot 描述成完整 required Gate。
 
 **U：** G2 外部状态由哪一个受保护 runner/仓库发布，以及 Pixel 手工证据是否作为 release promotion 的必需项，仍取决于仓库权限和发布策略；它们不影响本设计中的数据保护和版本固定合同。

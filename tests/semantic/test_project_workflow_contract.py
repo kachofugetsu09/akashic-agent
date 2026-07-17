@@ -164,13 +164,15 @@ def test_mobile_device_gate_evidence_records_incident_and_current_run() -> None:
     ).read_text(encoding="utf-8")
 
     for evidence in (
-        "dbd0e58165b0a98adafa47f0aac20aeb327188ee",
+        "069a7df1dc9cd1d6cca6f0665d5804dd801d2e85",
+        "50a05ba56e385628ebbb55e2d300226a90f212d1",
         "f37a42826d9ad5e0988d8b26eba5dd7a20fb29b8",
         "88365c13369b592290fd69918642b7166fc57c55",
-        "com.akashic.mobile.review.rpr6dbd0f37",
-        "com.akashic.mobile.review.rpr6dbd0f37.test",
-        "c225b87c287848fa8c08de1f9316518561ce48b68e1c6b264d83378633fbc151",
-        "3d3328b56ea5ec327bd4e26db2d192367c7058cd5127fe313d7d74a74072fd41",
+        "com.akashic.mobile.review.rpr6069af37",
+        "com.akashic.mobile.review.rpr6069af37.test",
+        "0bbf9affde1b9ecfdc382d7674425eb8c74f052bb67a889430756a5088132828",
+        "578cdf00c85373160b219487a9650981792f86b59a327030ca9a20ca925e23af",
+        "gate_result=passed",
         "OK (0 tests)",
         "pairSendAndReceiveFixedMedia",
         "processRestartResumesWithoutHistoryDuplicates",
