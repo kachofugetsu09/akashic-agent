@@ -69,6 +69,13 @@ from scripts.build_akasha_db import _iter_replay_turns, _load_embeddings_from_ca
 QUERY_TS = datetime(2026, 1, 2, tzinfo=timezone.utc)
 
 
+def test_akasha_mobile_ui_is_message_slot_only() -> None:
+    contribution = AkashaPlugin.mobile_ui()
+
+    assert contribution.navigation is None
+    assert contribution.slots == ("turn.before_reasoning",)
+
+
 def test_akasha_config_does_not_expose_dynamic_budget_limits(tmp_path: Path) -> None:
     (tmp_path / "config.local.toml").write_text(
         "dense_top_k = 99\nripple_top_k = 99\nactivate_limit = 99\n",
