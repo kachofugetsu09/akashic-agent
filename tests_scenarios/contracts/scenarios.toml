@@ -1,0 +1,89 @@
+version = 1
+
+[mutant_tests]
+async_accepted_before_visible = "tests/semantic/test_contract_oracles.py::test_call_finality_rejects_background_refresh_mutant"
+candidate_visible_before_activation = "tests/semantic/test_contract_oracles.py::test_plugin_publication_oracle_rejects_early_switch_mutant"
+derived_state_overwrites_session_source = "tests/semantic/test_contract_oracles.py::test_memory_oracle_rejects_derived_state_overwrite_mutant"
+historical_session_delete = "tests/semantic/test_context_history_contract.py::test_history_oracle_rejects_historical_delete_mutant"
+missing_p0_mutant = "tests/semantic/test_change_gate.py::test_every_p0_oracle_declares_a_known_wrong_mutant"
+official_workspace_path = "tests/semantic/test_contract_oracles.py::test_workspace_oracle_rejects_official_path_mutant"
+plugin_uninstall_deletes_data = "tests/semantic/test_contract_oracles.py::test_plugin_data_oracle_rejects_uninstall_delete_mutant"
+unmapped_executable_file = "tests/semantic/test_change_gate.py::test_unknown_executable_file_is_not_silently_accepted"
+
+[scenarios.contract_catalog]
+requirements = ["GOV-001", "GOV-003", "TST-001", "TST-006"]
+groups = ["tooling"]
+environment = "public_clean_workspace"
+timeout_seconds = 60
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_change_gate.py"]
+observes = ["requirements", "path_owners", "scenario_references", "p0_mutants"]
+mutants = ["unmapped_executable_file", "missing_p0_mutant"]
+
+[scenarios.workspace_bootstrap]
+requirements = ["WSP-001", "WSP-004", "TST-005"]
+groups = ["runtime", "tooling"]
+environment = "public_clean_workspace"
+timeout_seconds = 120
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_gate_workspace_contract.py"]
+observes = ["workspace_path", "plugin_home_path", "fresh_config"]
+mutants = ["official_workspace_path"]
+
+[scenarios.context_history_nondestructive]
+requirements = ["CTX-001", "SES-002", "SES-003", "SES-005", "TST-002", "TST-003"]
+groups = ["context_projection", "session_persistence"]
+environment = "public_clean_workspace"
+timeout_seconds = 120
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_context_history_contract.py"]
+observes = ["retry_history_windows", "messages_full_snapshot", "message_embeddings_full_snapshot", "sqlite_write_set", "restart_sequence"]
+mutants = ["historical_session_delete"]
+
+[scenarios.mcp_call_finality]
+requirements = ["PLG-004", "PLG-008", "TST-001", "TST-003"]
+groups = ["mcp"]
+environment = "public_clean_workspace"
+timeout_seconds = 60
+command = [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "tests/semantic/test_contract_oracles.py",
+  "tests/test_mcp_declarations.py",
+  "tests/test_mcp_sources_async.py",
+]
+observes = ["call_return", "immediate_read_after_call"]
+mutants = ["async_accepted_before_visible"]
+
+[scenarios.plugin_generation_contract]
+requirements = ["PLG-001", "PLG-004"]
+groups = ["plugin"]
+environment = "public_clean_workspace"
+timeout_seconds = 60
+command = [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "tests/semantic/test_contract_oracles.py::test_plugin_publication_oracle_rejects_early_switch_mutant",
+  "tests/test_plugin_hot_reload.py",
+  "tests/test_plugin_install.py",
+]
+observes = ["candidate_generation", "active_generation", "rollback"]
+mutants = ["candidate_visible_before_activation", "plugin_uninstall_deletes_data"]
+
+[scenarios.memory_persistence_contract]
+requirements = ["MEM-001", "MEM-002", "SES-005"]
+groups = ["memory"]
+environment = "public_clean_workspace"
+timeout_seconds = 60
+command = [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "tests/semantic/test_contract_oracles.py::test_memory_oracle_rejects_derived_state_overwrite_mutant",
+  "tests/test_default_memory_plugin_config.py",
+  "tests/test_session_store.py",
+]
+observes = ["long_term_owner", "session_source"]
+mutants = ["derived_state_overwrites_session_source"]

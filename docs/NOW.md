@@ -9,12 +9,13 @@
 
 ## P0 · 独立语义验收
 
+- 将 CTX-001 当前的 trace、完整状态快照和 fixture `DELETE` pilot 升级为 SQLite authorizer 与一次性候选真实 retry seam mutant；导入失败、fixture 失败或超时不得计为 mutant kill。
 - 建立受保护路径 policy：`semantic_delta: none` 的普通实现改动不能同时修改 P0 oracle、mutant 或 coverage baseline 来获得全绿。
 - 建立轻量 `change-intent` 校验，检查实际 diff、允许路径、受保护状态和副作用是否超出声明。
 
 ## P0 · 私有跨仓库 Gate
 
-- 把 Feed 与 Observe 的远端 revision、真实 seam 和 mutant 场景接入 G2 Docker controller；再按相同结构迁移其他被选中的 provider，所有场景使用空 plugin home/独立 workspace，禁止读取正式 config、workspace 或安装缓存。
+- 把 Feed 与 Observe 的远端 revision、真实 seam 和 mutant 场景接入统一 G2 Docker controller；再按相同结构迁移其他被选中的 provider，为所有 selected provider 固定完整 revision 并产出可执行结果。所有场景使用空 plugin home/独立 workspace，禁止读取正式 config、workspace 或安装缓存。
 - 建立始终返回 `passed`、`failed` 或 `not_affected` 的 `private-contract-gate` 外部状态；不受信任 PR 不接触 private source、provider ID、凭据或私有报告。
 
 ## P1 · 工作流扩展

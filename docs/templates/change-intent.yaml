@@ -1,0 +1,49 @@
+# 复制到任务分支后填写；删除不适用的示例值。
+change_type: refactor
+semantic_delta: none
+capability_owner: not_applicable
+consumer_scope: []
+runtime_patch: none
+runtime_patch_reason: ""
+authoritative_state_owner: ""
+client_only_alternative: ""
+
+workspace:
+  target_branch: main
+  base_commit: ""
+  worktree: ""
+  owner: ""
+
+goal: ""
+success_criteria: []
+
+invariants: []
+protected_state: []
+
+allowed_paths: []
+forbidden_paths:
+  - docs/projectneed.md
+  - tests/semantic/**
+  - migrations/**
+
+allowed_effects:
+  read: []
+  write: []
+forbidden_effects:
+  write: []
+  delete: []
+  external: []
+
+evidence:
+  required_reads: []
+  verified: []
+  unknowns: []
+  assumptions: []
+
+validation: []
+rollback: ""
+
+stop_rules:
+  success: []
+  ask_when: []
+  abort_when: []

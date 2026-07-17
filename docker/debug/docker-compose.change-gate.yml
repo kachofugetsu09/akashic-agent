@@ -1,0 +1,24 @@
+services:
+  change-gate:
+    build:
+      context: ../..
+      dockerfile: docker/debug/Dockerfile
+    image: akashic-agent-change-gate:latest
+    working_dir: /app
+    read_only: true
+    environment:
+      AKASHIC_DEBUG_CONFIG: /sandbox/config.toml
+      AKASHIC_DEBUG_WORKSPACE: /sandbox/workspace
+      AKASHIC_HOST_GID: "${GID:?set by gate.py}"
+      AKASHIC_HOST_UID: "${UID:?set by gate.py}"
+      AKASHIC_GATE_INVENTORY: /sandbox/source-inventory.json
+      AKASHIC_PLUGIN_HOME: /sandbox/plugin-home
+      HOME: /sandbox/home
+      PYTEST_ADDOPTS: "-p no:cacheprovider"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ${AKASHIC_CHANGE_GATE_SANDBOX:?set by gate.py}/app:/app:ro
+      - ${AKASHIC_CHANGE_GATE_SANDBOX:?set by gate.py}:/sandbox
+      - ${AKASHIC_CHANGE_GATE_SANDBOX:?set by gate.py}/static:/app/static
+    tmpfs:
+      - /tmp

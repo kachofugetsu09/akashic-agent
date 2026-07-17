@@ -52,7 +52,7 @@
 | Room 中的服务端 session/message/turn 投影 | C：可重建投影 | 收到已校验事件或历史页后写入 | ack、delivery、turn 终态和 cursor 按协议推进 | 只由服务端权威删除或显式投影重建减少；不能扩大成核心历史删除 | reset 后由服务端重建；不得反向写 core SessionDB |
 | outbox command 与本地待发送消息 | C：客户端连续性状态 | 用户提交动作时与本地展示状态原子创建 | `pending → in_flight → retry/acked/failed` | 只有服务端 ack、明确不可重试终态或用户取消协议允许减少 | projection reset、断线和进程重启后仍可恢复 |
 | 附件 draft / upload transfer | C：客户端连续性状态 | 用户选择文件并完成受控复制后创建 | offset、上传状态和失败原因按传输协议更新 | 上传提交完成后的清理、用户明确移除或明确账户删除协议 | projection reset 不清除 pending/ready/failed draft；重启可继续或明确失败 |
-| pending notification | C：持久交付快照 | 消息与 cursor 提交时在同一事务创建 | 通知投递尝试可以更新必要状态 | 只有系统通知已经成功交付、用户明确移除对应服务端，或另有已批准终止协议 | projection reset 后仍存在；进程被杀后仍能继续投递 |
+| pending notification | C：持久交付快照 | 消息与 cursor 提交时在同一事务创建 | 通知投递尝试可以更新必要状态 | 系统通知成功交付后可以按提交协议消费；服务端、账户或会话的破坏性删除是否终止待投递通知仍是 U，未确认前不得隐式 cascade | projection reset 后仍存在；进程被杀后仍能继续投递 |
 | received attachment cache | C：可驱逐内容，描述符仍受消息引用保护 | 下载确认或本地已上传附件导入后创建 | LRU 时间、下载状态和确认 offset | 配额可驱逐内容；被消息引用的描述符与重新下载能力不能随意删除 | 重启先对账文件和 DB；不得把未确认字节发布成完整文件 |
 | 文本 draft 是否需要新增独立持久表 | U | 未决定 | 未决定 | 未决定 | 不能从“附件 draft 要保留”推导出新文本草稿功能 |
 
@@ -74,7 +74,9 @@ receive final/proactive message
 
 进程在事务提交后、`notify()` 前死亡时，重启必须再次看到 pending notification。进程在 `notify()` 后、消费前死亡时，稳定 notification ID 与 `onlyAlertOnce` 等平台机制负责幂等展示；不能为避免重复而在通知外部效果发生前删除快照。
 
-服务端投影重建不是通知已交付证据，所以不能通过 message 外键 cascade 删除 pending notification。用户明确删除服务器、账户或会话时是否同时终止尚未投递通知，必须由对应 destructive command 明确写出 cascade，而不是依赖 Room 表结构偶然决定。
+服务端投影重建不是通知已交付证据，所以不能通过 message 外键 cascade 删除 pending notification。
+
+**U：** 用户明确删除服务端、账户或会话时，是否同时终止尚未投递通知仍未决定。维护者确认前，destructive command 必须保持 pending notification，不得依赖 Room 表结构偶然 cascade；确认后再把终止条件、影响预览和恢复方式写入命令合同。
 
 ### 2.4 下载 offset 的确认点
 
@@ -184,6 +186,10 @@ G1/G2 每次创建独立目录：
 
 mutant job 必须因对应 invariant 的状态差异失败。导入失败、fixture 未启动或超时不能算“成功杀死 mutant”。
 
+**F（当前公开 pilot）：** context 场景已经穿过真实 `DefaultReasoner.run_turn` retry，并用 SQLite trace、完整消息/embedding 快照、重启和 seq 续接观察持久状态。当前 fault injection 在测试 fixture 中直接执行历史 DELETE，再确认同一组快照与 write-set oracle 拒绝该状态；它不是 SQLite authorizer，也不是把错误 patch 注入真实 retry seam 的完整 mutant job。
+
+**I：** 下一阶段用 SQLite authorizer 记录所有受保护写入尝试，并在一次性候选副本中把 DELETE/UPDATE mutant 注入真实 retry seam。只有健康路径通过、mutant 因 CTX-001/SES-005 状态差异失败，且导入错误、fixture 错误和超时均不能被计作 kill，才能把这部分从 pilot 提升为完整 P0 oracle。
+
 ### 4.3 Observe 真实链
 
 **F：** 当前审查中的 Observe 候选使用以下链路保护移动端 message identity：
@@ -215,7 +221,7 @@ Observe 属于独立插件仓库，所以报告同时绑定 core consumer SHA、
 | L3 | Mobile Lab | 独立 WSS、独立 workspace/plugin home 下的 core ↔ Android 互操作 | 正式线上状态；不得读取线上数据 |
 | L4 | Pixel 7 + ADB | Room migration、进程杀死/恢复、后台连接、通知展示、附件文件系统和真实 Android 限制 | 普通贡献者 CI 可重复性 |
 
-**F：** 当前 Mobile Lab 位于 `docker/mobile-lab/`，运行数据写入忽略版本控制的 `docker/debug/profiles/mobile-lab/`，不挂载正式 workspace，也不启动 Telegram、QQ 和 proactive。它适合 L3，不是正式环境。
+**F（限定到候选 revision）：** [核心 PR #129](https://github.com/kachofugetsu09/akashic-agent/pull/129) 的仓库是 `https://github.com/kachofugetsu09/akashic-agent`，完整 ref 是 `refs/heads/feature/im-phone`；本次核对的 head 为 `d3a019d79bd5b65c3761e17a6bfde5ad9c4a3da7`。该 revision 含 `docker/mobile-lab/`，其 README 与 Compose 把运行数据写入忽略版本控制的 `docker/debug/profiles/mobile-lab/`，不挂载正式 workspace，也不启动 Telegram、QQ 和 proactive。当前设计分支的 `origin/main@6a0616c82267c2045f89539ae3b1b204655f5d57` 不含该目录，所以在 PR #129 合入或准确 commit 被传播前，它只是跨分支候选事实，不能写成 main 已有能力。
 
 **I：** 在控制器支持 run-specific profile 前，复用固定 `mobile-lab` profile 必须先停止旧容器，备份现有测试 profile，并在报告中记录备份、启动时间、core SHA、APK SHA 和 cleanup。任何路径解析到正式 workspace 时立即停止。
 
@@ -296,13 +302,16 @@ PR6 interactions  ← 累计构建、迁移、Mobile Lab、Pixel 验收
 
 1. **U：大附件历史加载。** 历史中大于等于 10 MiB 的附件应该 eager 下载、按需下载还是只显示描述符，属于带宽、缓存和体验策略。任何选项都不能削弱附件身份、摘要和显式下载错误。
 2. **U：内部 durable inbox gap。** 由损坏或不一致数据库副本造成的本地 seq 缺口，产品是否承诺自动恢复，还是 fail-loud 后要求重新配对/重建，需要单独决定损坏恢复边界。
-3. **U：旧消息编辑。** 核心 `update_message` 应保留原位 UPDATE，还是追加 correction/revision，仍由持久化状态地图跟踪；移动端不得自行定义。
-4. **U：功能提案。** failed-message 手动重试、后台大文件续传、全新的文本 composer draft、搜索和 WebView/plugin UI 是独立 feature，不能作为当前修复的附带验收条件。
+3. **U：服务端撤销 session 后的本地连续性。** 服务端撤销或删除 session、但客户端仍有 pending/failed/outbox/附件时，是保留服务端历史为只读并附着本地未完成状态，还是删除 server projection 只保留 unresolved local shell，仍未决定。两种答案会改变用户可见历史、session 列表和后续重试目标；客户端不得用当前 Room schema 或候选实现反向定义。
+4. **U：破坏性删除与 pending notification。** 用户删除服务端、账户或会话时，尚未交给 Android 的 pending notification 是继续投递、显式取消，还是随目标一起终止，仍未决定。确认前 destructive command 不得隐式 cascade。
+5. **U：旧消息编辑。** 核心 `update_message` 应保留原位 UPDATE，还是追加 correction/revision，仍由持久化状态地图跟踪；移动端不得自行定义。
+6. **U：功能提案。** failed-message 手动重试、后台大文件续传、全新的文本 composer draft、搜索和 WebView/plugin UI 是独立 feature，不能作为当前修复的附带验收条件。
 
 实现中发现以下任一情况立即停止，不用测试结果替代产品决定：
 
 - 需要删除或覆盖 core SessionDB 正文才能让移动端同步成立。
 - projection reset 无法在不删除 local continuity state 的情况下实现。
+- 服务端撤销 session 时必须在“保留只读历史”和“只保留本地 unresolved shell”之间作选择。
 - 一个协议字段在 core、mobile 或 plugin 中存在两种合理但不同的完成/删除语义。
 - 需要把 Android、Room、通知或界面概念加入中立核心协议。
 - 设备验收要求卸载、清数据、使用正式 workspace 或连接正式 gateway。
@@ -343,8 +352,8 @@ Deliver
 
 ## 10. 当前实施边界
 
-**F：** 公开 Gate 已有 diff 选择、一次性 Docker sandbox 和报告入口；private companion 已能保存 GitHub provider revision 与真实 seam 场景。Mobile Lab 已与正式 workspace 隔离。
+**F：** 公开 Gate 已有 diff 选择、一次性 Docker sandbox 和报告入口。private companion 已有 Feed/Observe 的远端 ref 解析、固定 SHA 安装和单场景 runner；它们仍是 G2 pilot，不等于统一 controller 或完整 required check。Mobile Lab 的隔离实现只存在于上文固定的 PR #129 revision，不是当前 main 事实。
 
-**I：** 下一步只把现有 Feed 与 Observe remote-revision 场景接入同一个 G2 Docker controller，并建立始终返回 `passed`、`failed` 或 `not_affected` 的外部状态。完成前不能把“本机脚本可运行”描述成完整 required Gate。
+**I：** 下一步把现有 Feed 与 Observe remote-revision 场景接入同一个 G2 Docker controller，再为所有会被 private plan 选中的 provider 补完整 ref 与可执行结果，并建立始终返回 `passed`、`failed` 或 `not_affected` 的外部状态。完成前不能把“本机脚本可运行”或两个 provider pilot 描述成完整 required Gate。
 
 **U：** G2 外部状态由哪一个受保护 runner/仓库发布，以及 Pixel 手工证据是否作为 release promotion 的必需项，仍取决于仓库权限和发布策略；它们不影响本设计中的数据保护和版本固定合同。

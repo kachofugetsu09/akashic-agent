@@ -50,6 +50,21 @@ plugins/**/.data/
 /tests/regression/
 /config.backup.20260301-063714.json
 /docs/
+!/docs/
+/docs/*
+!/docs/INDEX.md
+!/docs/WORKFLOW.md
+!/docs/projectneed.md
+!/docs/NOW.md
+!/docs/writing-rules.md
+!/docs/decisions/
+!/docs/decisions/**
+!/docs/design/
+!/docs/design/**
+!/docs/templates/
+!/docs/templates/**
+!/docs/spark/
+!/docs/spark/**
 /.pytest_artifacts/
 /rss/
 
@@ -63,7 +78,7 @@ lme_error_log_*.txt
 
 # Local AI assistant docs
 /CLAUDE.md
-/AGENTS.md
+!/AGENTS.md
 /memory_annotation_from_*.json
 .squad/
 /akashic-plugin

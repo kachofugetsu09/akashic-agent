@@ -1,5 +1,39 @@
 # Docker 调试沙盒
 
+## 统一变更影响 Gate
+
+实现者只需运行一个公开入口：
+
+```bash
+python docker/debug/gate.py run --base origin/main
+```
+
+Gate 先用 `tests_scenarios/contracts/impact.toml` 解释 Git diff，再运行所选公开语义场景。每个场景都使用新的 `/tmp/akashic-change-gate-*` sandbox，容器只读挂载候选源码，只允许写本次 `/sandbox` 与 tmpfs `/tmp`。`workspace`、`plugin-home`、`HOME` 和 config 都从空目录建立；Gate 不接收正式运行路径。
+
+```text
+Git diff
+   │
+   ▼
+公开 capability/state/scenario catalog
+   │
+   ├── G1：公开 Docker 场景（所有贡献者可运行）
+   └── plan.json：group + digest，不含 provider 身份
+                         │
+                         ▼
+               G2：private runtime 维护者验证
+```
+
+常用维护命令：
+
+```bash
+python docker/debug/gate.py audit
+python docker/debug/gate.py plan --base origin/main
+```
+
+`init` 只用于仓库第一次建立 coverage baseline。baseline 已存在时再次执行会失败，不能覆盖人工合同。新增未映射可执行文件会先运行全量公开语义场景，最终仍以 `unmapped_change` 失败。报告位于 `docker/debug/reports/change-gate/<run-id>/`。
+
+公开 Gate 不安装也不枚举私有插件。`privateGateRequired=true` 表示公开部分已经给出受影响能力组，维护者还需用 private companion 消费同一 `planDigest`；普通贡献者不需要私有仓库、插件或凭据。
+
 ## 程序化控制面验收门
 
 `programmatic_control_probe.py` 拥有独立 Compose project、隔离 sandbox、证据收集、
