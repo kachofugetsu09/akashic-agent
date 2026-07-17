@@ -61,6 +61,20 @@ export interface MobileComposerDraftResolution<T extends MobileSelectableMessage
   cleanedDraft?: MobileComposerDraft;
 }
 
+export const MOBILE_COMPOSER_DRAFT_MAX_LENGTH = 65_536;
+
+export function normalizeMobileComposerDraftText(text: string) {
+  return text.slice(0, MOBILE_COMPOSER_DRAFT_MAX_LENGTH);
+}
+
+export function flushMobileComposerBeforePairing(
+  flush: () => void,
+  restartPairing: () => void,
+) {
+  flush();
+  restartPairing();
+}
+
 export function allMobileAttachmentsReady(attachments: readonly { state: string }[]) {
   return attachments.every((attachment) => attachment.state === "ready");
 }
@@ -143,6 +157,19 @@ export function mobileComposerDraftMatches(
 ) {
   return draft.text === expected.text
     && (draft.replyToMessageId ?? undefined) === (expected.replyToMessageId ?? undefined);
+}
+
+/** 在原生确认写入前保持乐观草稿，避免旧快照复活已发送内容。 */
+export function mobileComposerDraftHydration(
+  owner: MobileComposerDraft,
+  optimistic: MobileComposerDraftWrite | undefined,
+) {
+  const ownerAcknowledged = optimistic !== undefined
+    && mobileComposerDraftMatches(owner, optimistic);
+  return {
+    draft: optimistic !== undefined && !ownerAcknowledged ? optimistic : owner,
+    ownerAcknowledged,
+  };
 }
 
 export function shouldClearAcceptedMobileComposerDraft(
