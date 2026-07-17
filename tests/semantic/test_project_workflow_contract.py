@@ -108,15 +108,95 @@ def test_cross_repository_review_pins_lineage_and_evidence_layers() -> None:
         "schema lineage",
         "runtime commit/tree",
         "scenario profile/hash",
-        "debug application ID",
+        "requested_ref/resolved_sha/change_source_pr_head",
+        "run-specific application ID",
+        "pm list packages -u",
+        "force-stop",
     ):
         assert requirement in workflow, f"工作流缺少跨仓库评审要求: {requirement}"
 
     for evidence in (
         "worktree_writers",
+        "repository",
+        "worktree",
+        "branch",
+        "owner",
+        "base_head",
+        "allowed_paths",
+        "status",
+        "handoff_head",
+        "dirty_state",
         "schema lineage",
         "runtime commit/tree",
         "scenario profile/hash",
-        "debug application ID",
+        "requested_ref",
+        "resolved_sha",
+        "change_source_pr_head",
+        "candidate_application_id",
+        "candidate_test_application_id",
+        "app_apk_sha256",
+        "test_apk_sha256",
+        "pm list packages -u",
+        "collision_result",
+        "protected_packages_before",
+        "protected_packages_after",
+        "test_phases",
+        "phase_boundary",
+        "instrumentation_oracle",
+        "cleanup_result",
     ):
         assert evidence in review, f"Review 合同缺少证据字段: {evidence}"
+
+    for device_rule in (
+        "run-specific application ID",
+        "pm list packages -u",
+        "collision",
+        "base.apk",
+        "app data",
+        "0 test",
+    ):
+        assert device_rule in projectneed, f"TST-008 缺少设备保护规则: {device_rule}"
+
+
+def test_mobile_device_gate_evidence_records_incident_and_current_run() -> None:
+    design = (
+        ROOT / "docs" / "design" / "mobile-cross-repository-semantic-gate.md"
+    ).read_text(encoding="utf-8")
+
+    for evidence in (
+        "dbd0e58165b0a98adafa47f0aac20aeb327188ee",
+        "f37a42826d9ad5e0988d8b26eba5dd7a20fb29b8",
+        "88365c13369b592290fd69918642b7166fc57c55",
+        "com.akashic.mobile.review.rpr6dbd0f37",
+        "com.akashic.mobile.review.rpr6dbd0f37.test",
+        "c225b87c287848fa8c08de1f9316518561ce48b68e1c6b264d83378633fbc151",
+        "3d3328b56ea5ec327bd4e26db2d192367c7058cd5127fe313d7d74a74072fd41",
+        "OK (0 tests)",
+        "pairSendAndReceiveFixedMedia",
+        "processRestartResumesWithoutHistoryDuplicates",
+        "allowBackup=false",
+        "ceDataInode=2589746",
+        "正式 v0.8.0/code21",
+        "无法恢复",
+    ):
+        assert evidence in design, f"设备 Gate 设计缺少固定证据: {evidence}"
+
+
+def test_plugin_gate_evidence_separates_ref_resolution_and_change_source() -> None:
+    design = (
+        ROOT / "docs" / "design" / "mobile-cross-repository-semantic-gate.md"
+    ).read_text(encoding="utf-8")
+
+    for field in ("requested_ref", "resolved_sha", "change_source_pr_head"):
+        assert field in design, f"插件 Gate 证据缺少身份字段: {field}"
+
+    for revision in (
+        "b434fa74b370fafcd0c64129fe1f641f73f0dbcf",
+        "b7f9d4ecee877d22b5452651d9abf699b2d30b7b",
+        "cee5bef98e6271c9eb069a6498b4ca072e85c878",
+        "5c1d4009bee04af271627819fd5731e1978b5dfe",
+        "d5227249f5ad195ab7693ae8c72690ee7db32e28",
+        "520ba10032089b1e056a9eecc5f2c1f459c75e5c",
+        "334276c4e972f1d80b0a353605d068abc5135b18",
+    ):
+        assert revision in design, f"插件 Gate 设计缺少固定 revision: {revision}"

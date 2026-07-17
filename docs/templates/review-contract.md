@@ -11,7 +11,16 @@ stack:
   target_branch: ""
   layers: []
 final_head: ""
-worktree_writers: []
+worktree_writers:
+  - repository: ""
+    worktree: ""
+    branch: ""
+    owner: ""
+    base_head: ""
+    allowed_paths: []
+    status: active|handoff_ready|released
+    handoff_head: ""
+    dirty_state: clean
 ```
 
 ## Semantic intent
@@ -36,11 +45,43 @@ protected_state: []
 - 最终累计 diff：
 - 持久化增加、更新、逻辑失效和物理删除：
 - 外部仓库、协议快照与固定 commit：
-- runtime commit/tree、provider resolved commit、scenario profile/hash：
+- runtime commit/tree、scenario profile/hash：
+- provider revisions：
+
+```yaml
+provider_revisions:
+  - repository: ""
+    requested_ref: ""
+    resolved_sha: ""
+    change_source_pr_head: ""
+```
+
 - 已知数据库 schema lineage、迁移矩阵与最终 schema identity：
 - 本地验证：
 - 远端 checks：
-- 真实设备、debug application ID 与隔离数据状态：
+- 真实设备：
+
+```yaml
+device_gate:
+  run_id: ""
+  source_commit: ""
+  runtime_commit: ""
+  runtime_tree: ""
+  candidate_application_id: ""
+  candidate_test_application_id: ""
+  app_apk_sha256: ""
+  test_apk_sha256: ""
+  package_inventory_command: "pm list packages -u"
+  collision_result: clear|blocked
+  protected_packages_before: []
+  protected_packages_after: []
+  test_phases: []
+  phase_boundary: ""
+  instrumentation_oracle: ""
+  cleanup_result: ""
+  evidence_bundle: ""
+```
+
 - 未验证项：
 
 ## Review order

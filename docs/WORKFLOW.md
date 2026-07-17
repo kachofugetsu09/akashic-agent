@@ -69,7 +69,7 @@ git fetch origin main
 git worktree add -b feature/<task> ../akasic-agent-worktrees/<task> origin/main
 ```
 
-每个 worktree 同一时刻只有一个 writer。并行 subagent 默认只读审查各自的 commit/diff；需要修复时，为每个 writer 分配独立 worktree 和分支。Writer 交接必须先提交允许范围内的修改，或恢复 clean HEAD，再记录 `worktree + branch + HEAD + dirty state + next owner`。没有交接完成的后台任务不得继续提交。
+每个 worktree 同一时刻只有一个 writer。并行 subagent 默认只读审查各自的 commit/diff；需要修复时，为每个 writer 分配独立 worktree 和分支，并按 Review 合同记录 `repository + worktree + branch + owner + base_head + allowed_paths + status`。产生修改的 writer 必须先提交允许范围内的修改，再记录 `handoff_head + dirty_state + next owner`；没有产生修改时只能交接已经核对的 clean HEAD。不得用 reset、checkout 或清理未跟踪文件制造 clean 状态。旧 writer 完成或被明确中断前不得转移 owner，交接后的旧后台任务不得继续写入或提交。
 
 Git worktree 保存源码、测试和项目文档。Akashic `<workspace>` 保存会话、记忆、附件、调度和 plugin-data。测试使用一次性 workspace、plugin home、config 和 HOME。修改持久化文件前创建名称清楚的备份。
 
@@ -112,7 +112,9 @@ Gate 根据 Git diff 选择场景，并把报告写入 `docker/debug/reports/cha
 
 Stacked PR 先确认依赖链，每张只审查自己的相邻 `base..head`；最后对栈顶 head 做累计协议、持久化、构建和用户行为审查。数据库评审不能只比较 `user_version`，还要列出所有已知 schema lineage、每条迁移路径和最终 schema identity；未知的同版本异构 schema 必须 fail-loud。
 
-跨仓库协议和插件报告分别固定协议 source commit/path/hash、实际 runtime commit/tree、provider requested ref/resolved SHA 和 scenario profile/hash。手工构建、Docker、隔离互操作和 Pixel/ADB 记录与远端 CI checks 分开报告，没有 check 就写未验证，不能用 PR 描述中的成功声明代替。Pixel 测试必须使用独立 debug application ID 和 app data，不能覆盖正式应用。
+跨仓库协议和插件报告分别固定协议 source commit/path/hash、实际 runtime commit/tree、provider `requested_ref/resolved_sha/change_source_pr_head` 和 scenario profile/hash。手工构建、Docker、隔离互操作和 Pixel/ADB 记录与远端 CI checks 分开报告，没有 check 就写未验证，不能用 PR 描述中的成功声明代替。
+
+Pixel/ADB 在安装前必须从 app/test APK 读取真实 application ID 与 instrumentation target，为本次 run 使用唯一的 run-specific application ID，再用 `pm list packages -u` 检查 app/test package collision。任一 collision 都必须 blocked，禁止安装、clear 或 uninstall；签名一致和 `adb install -r` 不构成覆盖许可。测试按声明的阶段执行，需要验证进程恢复时在阶段间显式 force-stop；instrumentation 还要核对实际执行数量、成功终态和失败标记，不能把 shell 退出码 0 或 0 test 当作通过。结束后核对正式 package 状态未变，并证明临时 app/test package、ADB reverse、容器和测试 workspace 已 cleanup。
 
 评审移动端或其他客户端时按 MOB-001 区分平台实现、产品体验、中立协议和核心权威状态。核心 runtime patch 缺少既有不变量、权威 owner 或客户端替代分析时停止并询问维护者。
 

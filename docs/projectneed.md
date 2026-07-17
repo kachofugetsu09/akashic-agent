@@ -493,7 +493,9 @@ P0 不变量必须由受保护的 semantic test、policy 或黑盒观察器验�
 
 确定性单测、构建、Docker Gate、隔离互操作和真实设备分别证明不同边界。CI 没有 Pixel 或 Android 虚拟设备时，不能把维护者本机 ADB 结果伪装成所有贡献者可运行的 required check；设备结果必须记录设备/API、应用 ID、APK 与源码身份、测试 profile 和实际场景。
 
-设备测试使用独立 debug application ID、独立 app data 和测试 workspace，不覆盖、卸载、清空或连接正式应用状态。CI 继续承担固定逻辑的可重复 Gate，维护者设备只补充 OS lifecycle、Room migration、通知、文件系统和真实 Compose 交互证据。
+设备 Gate 在任何安装、清数据或卸载之前，必须从本次生成的 app/test APK 读取实际 application ID 与 instrumentation target，并为本次 run 生成唯一的 run-specific application ID。随后用 `pm list packages -u` 核对设备上已安装和保留数据的 package；app 或 test package 任一 collision 都必须 fail-loud 并标记 blocked，不能用签名相同、版本较旧、`adb install -r` 或“只是 debug 包”推断可以覆盖。`adb shell am instrument` 的进程退出码不能单独充当 oracle；Gate 必须核对声明的测试数量、明确的成功终态和失败标记，0 test、crash、aborted 或 assertion failure 都不能记为通过。
+
+正式应用及设备上既有 package 属于受保护状态。Gate 必须记录测试前后的 package、版本、安装身份和可观察数据身份，且不得覆盖、卸载、清空或连接正式应用状态。`base.apk` 只能恢复 binary，不能代替 app data 备份；若任务确实需要触碰既有 package，必须另获授权并先取得经过恢复演练的数据级备份，否则 blocked。测试结束还要证明 run-specific app/test package、ADB reverse、容器和测试 workspace 已清理。CI 继续承担固定逻辑的可重复 Gate，维护者设备只补充 OS lifecycle、Room migration、通知、文件系统和真实 Compose 交互证据。
 
 ## 14. 需求变更流程
 

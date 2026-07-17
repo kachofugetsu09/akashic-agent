@@ -16,8 +16,8 @@
 2. 协议历史源和当前 runtime 可以是不同 commit。核心保留已发布协议归档，使旧客户端的 `source_repository + source_commit + source_path + hash` 始终可重建。
 3. Provider 的 GitHub ref 在 Gate 开始时解析成 commit SHA；ref 后续移动不会抹掉旧报告，但新组合不能复用旧通过状态。
 4. 数据库迁移按真实表、列、索引和外键识别已知 schema lineage，不只读取 `user_version`。已知 lineage 汇合到唯一目标 schema，未知或部分匹配形状 fail-loud。
-5. 每个 worktree 同时只有一个 writer。并行审查默认只读；writer 交接通过 clean HEAD 或提交后的 commit 完成。
-6. CI、Docker、隔离互操作和 Pixel/ADB 是不同证据层。设备证据使用独立 debug application ID 和 app data，不冒充 CI required check。
+5. 每个 worktree 同时只有一个 writer。并行审查默认只读；writer lease 记录 repository、worktree、branch、owner、base HEAD、允许路径和状态。产生修改后只能用提交后的 commit 交接；旧 writer 完成或被明确中断前不能转移 owner。
+6. CI、Docker、隔离互操作和 Pixel/ADB 是不同证据层。设备 Gate 从 APK 读取实际 app/test identity，使用 run-specific application ID，并在安装前以 `pm list packages -u` 拒绝任何 collision；instrumentation 必须核对执行数量与成功终态，不能只信 shell 退出码。设备结果不冒充 CI required check。
 
 ## 理由
 
@@ -29,12 +29,12 @@
 - Stacked PR 的栈顶运行累计迁移矩阵和最终 schema identity 检查。
 - Observe 等插件由 canonical GitHub revision 安装到空 plugin home 后验证，不直接使用正式 cache。
 - Subagent 可以并行给出 findings；被主 agent 接受的修复在独立 writer worktree 完成，再以 commit 传播。
-- Pixel 7 结果只补充 Android OS、Room、通知、文件和 Compose 真实行为。
+- Pixel 7 结果只补充 Android OS、Room、通知、文件和 Compose 真实行为；run-specific app/test package 在测试后清理，正式 package 前后身份必须相同。
 
 ## 验收
 
 - 任一跨仓库报告能唯一定位 consumer、协议、runtime、provider 和 scenario 输入。
 - Provider ref 或任一 source digest 改变后，旧报告不会被复用为新组合通过。
 - 同一 `user_version` 的多个已知 schema 都有显式迁移测试；未知形状不会 destructive fallback。
-- Worktree handoff 能指出唯一 writer、交接 HEAD 和 dirty state。
-- PR 将 CI 与设备结果分开列出，设备安装不会覆盖正式应用数据。
+- Worktree handoff 能指出唯一 writer、允许路径、交接 HEAD 和 dirty state，且旧 writer 已停止写入。
+- PR 将 CI 与设备结果分开列出；APK identity、`pm list packages -u` inventory、collision 结果、正式 package 前后状态和 cleanup 均有证据。

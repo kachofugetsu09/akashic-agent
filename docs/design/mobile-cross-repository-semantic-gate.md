@@ -101,7 +101,7 @@ matching attachment.download.ok
 
 进程在 binary fsync 后、matching ok 前死亡时，启动恢复把 `.part` 截断到 DB confirmed offset，再从该 offset 请求。full-size `.part` 没有 matching ok 时也不能直接发布；DB offset 提前推进、文件长度自动成为 offset、或只靠最终 SHA-256 都是错误 mutant。
 
-**F：** 移动端最终候选 `a707b9b0b6f3e3630d39a0786b57cd96c4b12c84` 已传播 PR5 最终状态，并在栈顶重新运行附件与累计测试。这个 commit 是当前实现证据，不是协议真源；后续 head 变化仍需重跑。
+**F：** 移动端最终候选 `dbd0e58165b0a98adafa47f0aac20aeb327188ee` 已传播 PR5 最终状态，并在栈顶重新运行附件与累计测试。这个 commit 是当前实现证据，不是协议真源；后续 head 变化仍需重跑。
 
 ### 2.5 Room schema lineage 与汇合迁移
 
@@ -118,7 +118,7 @@ public PR6 v3: media + server sequence
 
 每条已知 lineage 先核对表、列、索引和外键，再只增加目标版本缺少的结构。迁移后的保留集合取所有上游已批准状态的并集；例如加入 server sequence 不能丢失 remote pairing、pending notification 或 durable stop。只命中部分特征的未知 v4 必须 fail-loud，不能被当成“最接近”的已知版本。
 
-**F：** `a707b9b` 的 schema v5 迁移矩阵实际覆盖 final PR5 v4、reviewed PR6 v4、original public PR6 v3 和 canonical 1→5，并分别证明 partial v3 与 partial v4 fail-loud。这个矩阵是本次分叉的实现证据；MOB-004 要求后续任何新 lineage 继续显式登记。
+**F：** `dbd0e58` 的 schema v5 迁移矩阵实际覆盖 final PR5 v4、reviewed PR6 v4、original public PR6 v3 和 canonical 1→5，并分别证明 partial v3 与 partial v4 fail-loud。这个矩阵是本次分叉的实现证据；MOB-004 要求后续任何新 lineage 继续显式登记。
 
 ## 3. 协议与外部仓库版本固定
 
@@ -245,18 +245,26 @@ Observe 属于独立插件仓库，所以报告同时绑定 core consumer SHA、
 
 **F（限定到候选 revision）：** [核心 PR #129](https://github.com/kachofugetsu09/akashic-agent/pull/129) 的仓库是 `https://github.com/kachofugetsu09/akashic-agent`，完整 ref 是 `refs/heads/feature/im-phone`；本次核对的 head 为 `83ca96ed70298d507a412fb3416914200acea2de`，tree 为 `954533025d6a18693bd0361db24289439ddfad5a`。该 revision 把 Unicode catalog 语义与 mobile command scope 两条同源分支合成一个 runtime；24 个移动场景映射到 26 个 provider test node，在无网络、源码只读、空 workspace/plugin home 的 Docker Gate 中通过。该 revision 还含 `docker/mobile-lab/`，其 README 与 Compose 把运行数据写入忽略版本控制的 `docker/debug/profiles/mobile-lab/`，不挂载正式 workspace，也不启动 Telegram、QQ 和 proactive。当前设计分支的 `origin/main@6a0616c82267c2045f89539ae3b1b204655f5d57` 不含该目录，所以在 PR #129 合入或准确 commit 被传播前，它只是跨分支候选事实，不能写成 main 已有能力。
 
-**F（本次设备证据）：** 移动端栈顶为 `a707b9b0b6f3e3630d39a0786b57cd96c4b12c84`，debug 变体使用 `com.akashic.mobile.debug` 独立 application ID。在 Pixel 7 / Android 16 上，排除需要一次性 `pairingOfferBase64/historySessionId` 的 2 个 live Gateway 场景后，64 个本地确定性 instrumentation tests 全部通过；那 2 项没有参数时按设计 fail-loud，不能计为通过或改成假 skip。此前运行发现并修复了 AndroidTest 名称导致的 D8 失败，以及 `snapshotFlow` 在 measure/layout 期间同步 `scrollToItem` 导致的 Compose 重入崩溃。它们是 L4 证据，不替代 GitHub CI。
+**F（历史确定性设备证据）：** 移动端 `a707b9b0b6f3e3630d39a0786b57cd96c4b12c84` 的 debug 变体使用固定 `com.akashic.mobile.debug`。在 Pixel 7 / Android 16 上，排除需要一次性 `pairingOfferBase64/historySessionId` 的 2 个 live Gateway 场景后，64 个本地确定性 instrumentation tests 全部通过；那 2 项没有参数时按设计 fail-loud，不能计为通过或改成假 skip。这组历史结果还发现并修复了 AndroidTest 名称导致的 D8 失败，以及 `snapshotFlow` 在 measure/layout 期间同步 `scrollToItem` 导致的 Compose 重入崩溃。固定 `.debug` 只能隔离 release，不能证明它不会与设备上已有 debug package 冲突，因此这组结果不是当前 run-specific 安装 Gate 的证据。
+
+**F（设备数据事故）：** 在 run-specific Gate 落地前，旧 raw connected task 曾以正式 application ID `com.akashic.mobile` 安装测试候选，覆盖 Pixel 7 上的正式 v0.8.0/code21。维护者后来从预先保存的 `base.apk` 恢复了 APK 与权限，但当时没有 app data 备份，且应用声明 `allowBackup=false`，所以被覆盖的数据无法恢复。这次事故有实际数据损失，不能因后续 binary 恢复或新 Gate 通过而写成“无影响”。
+
+**F（当前隔离互操作证据）：** 当前移动端 PR6 head 为 `dbd0e58165b0a98adafa47f0aac20aeb327188ee`；设备 Gate 固定核心 PR #134 commit `f37a42826d9ad5e0988d8b26eba5dd7a20fb29b8` 与 tree `88365c13369b592290fd69918642b7166fc57c55`。run `rpr6dbd0f37` 从生成后的 APK 读取 app/test identity 和 instrumentation target，得到 `com.akashic.mobile.review.rpr6dbd0f37` 与 `com.akashic.mobile.review.rpr6dbd0f37.test`，再以 `pm list packages -u` 得到 `collision_result=clear` 后安装。app APK SHA-256 为 `c225b87c287848fa8c08de1f9316518561ce48b68e1c6b264d83378633fbc151`，test APK SHA-256 为 `3d3328b56ea5ec327bd4e26db2d192367c7058cd5127fe313d7d74a74072fd41`。CI 另外用 fake device 证明 collision、0 test 和 assertion failure 均被拒绝，只有恰好一个 `OK (1 test)` 且 instrumentation 成功的 phase 可以通过。
+
+设备先运行 `pairSendAndReceiveFixedMedia`，显式 force-stop 后再运行 `processRestartResumesWithoutHistoryDuplicates`，两个 instrumentation phase 均通过。正式 package 在运行前后都只有 `com.akashic.mobile` v0.8.0/code21，`firstInstallTime/lastUpdateTime` 均为 `2026-07-18 05:16:55`，`ceDataInode=2589746`，本轮没有变化；run-specific app/test package、ADB reverse 与容器均已清理，`cleanup_exit=0`。维护者本机审计 bundle 名为 `mobile-device-gate-f37-dbd0e58-20260718`，其中 `run/` 是隔离运行根，`rpr6dbd0f37/` 保存报告副本；这个名称是本次事实定位，不是协作者必须使用的绝对路径。
 
 **I：** 在控制器支持 run-specific profile 前，复用固定 `mobile-lab` profile 必须先停止旧容器，备份现有测试 profile，并在报告中记录备份、启动时间、core SHA、APK SHA 和 cleanup。任何路径解析到正式 workspace 时立即停止。
 
 Pixel 验收固定遵守：
 
 1. `adb devices` 核对唯一目标和设备序列，不对其他设备执行命令。
-2. 读取已安装 package、version、signer 和 debuggable 状态；签名不兼容时不得卸载、清数据或覆盖用户现有 app。
-3. 优先使用可保留数据的 `adb install -r` 或独立测试 application ID；没有安全安装路径就把设备项标记为 blocked。
-4. 只连接 Mobile Lab 域名和测试配对，不连接正式 gateway。
-5. 场景至少覆盖进程 kill/restart、Room migration、projection reset、本地未完成工作保留、notification delivery 和附件断点恢复。
-6. 保存命令、设备/API 版本、APK digest、截图或 logcat、Mobile Lab report；测试后停止容器并审计残留。
+2. 为本次 run 生成唯一 app/test application ID；从实际 APK 读取两者和 instrumentation target，不根据 Gradle 配置或文件名猜测。
+3. 安装前保存正式 package 的 version、signer、install time 和可观察数据身份，并用 `pm list packages -u` 检查 app/test ID。任一 collision 都标记 blocked，不执行 install、clear 或 uninstall；签名相同、版本较旧和 `adb install -r` 都不是覆盖许可。
+4. 若任务确实需要触碰既有 package，先取得额外授权和经过恢复演练的数据级备份。只备份 `base.apk` 不能恢复 app data；无法备份时 blocked。
+5. 只连接 Mobile Lab 域名和测试配对，不连接正式 gateway。需要验证进程恢复的多个 phase 之间显式 force-stop，不能把同一进程里的两个断言称为 restart。
+6. 场景至少覆盖进程 kill/restart、Room migration、projection reset、本地未完成工作保留、notification delivery 和附件断点恢复；未覆盖项单独写未验证。
+7. instrumentation oracle 核对每个 phase 的实际测试数量、明确成功终态、crash/aborted/assertion failure 标记；shell 退出码 0 或 `OK (0 tests)` 都不能通过。
+8. 保存命令、设备/API 版本、源码和 runtime identity、APK digest、package inventory、collision 结果、正式 package 前后快照、测试 phase、截图或 logcat、Mobile Lab report 与 cleanup 结果。测试后移除 run-specific app/test package，停止容器，清理 ADB reverse，并审计残留。
 
 Pixel 证据是当前维护者机器上的手工 L4 结果。CI 没有 Pixel 或 Android 虚拟设备时，PR 必须把 L0～L3 与 L4 分开报告，不能把“本机测过”伪装成每位协作者都能运行的 required check。
 
@@ -382,9 +390,18 @@ Deliver
 
 **F：** 公开 Gate 已有 diff 选择、一次性 Docker sandbox 和报告入口。private companion 已有 Feed/Observe 的远端 ref 解析、固定 SHA 安装和单场景 runner；它们仍是 G2 pilot，不等于统一 controller 或完整 required check。Mobile Lab 的隔离实现只存在于上文固定的 PR #129 revision，不是当前 main 事实。
 
-**F（本次跨仓库审计）：** Observe `main@b434fa7` 的移动端 turn identity seam、status_commands `main@cee5bef` 的公开 session lookup，以及 proactive_feedback `main@d522724` 的 mobile UI v2 都被核心移动协议变化触达，且修复位于各自 canonical plugin repository。移动端协议归档固定在核心 `5615b7df1cbc5092b2f28c9e321ebdf21c16c79a` 的 `schema/archive/mobile-realtime-v1-mobile-pr6.json`，SHA-256 为 `18f8f907c11b66df174699e8ff1d38adb598114e0caf6b25b6823b64cad1fcca`；实际 Gate runtime 另固定为上文 `83ca96e`。这组记录说明插件影响必须由远端 revision 和真实 seam 证明，不能只搜主仓库 import。
+**F（本次跨仓库审计）：** Gate 开跑前解析并冻结的插件身份如下。`change_source_pr_head` 只说明变更从哪里进入 canonical branch，不能代替 `requested_ref` 当时解析出的 `resolved_sha`。
 
-**F（Gate 反向发现）：** 同一份 private plan 在 Feed `main@e1aa198` 上发现 lifespan poller 与首个 MCP 调用并发初始化 SQLite 时重复 `ADD COLUMN interest_scored_at`。这不是 freshness mutant 的预期失败，因此 Gate 拒绝通过。Feed PR [#2](https://github.com/akashic-plugins/feed-mcp/pull/2) 把 schema 初始化放进 `BEGIN IMMEDIATE` 并用旧 schema 并发测试覆盖；canonical `master@520ba10032089b1e056a9eecc5f2c1f459c75e5c` 重跑后，background refresh、call finality、restart persistence 通过，两个 freshness mutant 都因目标不变量被杀死。
+| repository | requested_ref | resolved_sha | change_source_pr_head |
+|---|---|---|---|
+| `https://github.com/akashic-plugins/observe` | `refs/heads/main` | `b434fa74b370fafcd0c64129fe1f641f73f0dbcf` | `b7f9d4ecee877d22b5452651d9abf699b2d30b7b` |
+| `https://github.com/akashic-plugins/status_commands` | `refs/heads/main` | `cee5bef98e6271c9eb069a6498b4ca072e85c878` | `5c1d4009bee04af271627819fd5731e1978b5dfe` |
+| `https://github.com/akashic-plugins/proactive_feedback` | `refs/heads/main` | `d5227249f5ad195ab7693ae8c72690ee7db32e28` | `not_applicable`（直接进入 main 的 commit） |
+| `https://github.com/akashic-plugins/feed-mcp` | `refs/heads/master` | `520ba10032089b1e056a9eecc5f2c1f459c75e5c` | `334276c4e972f1d80b0a353605d068abc5135b18` |
+
+Observe 的移动端 turn identity seam、status_commands 的公开 session lookup、proactive_feedback 的 mobile UI v2 和 Feed freshness 都被核心移动协议变化触达，且修复位于各自 canonical plugin repository。移动端协议归档固定在核心 `5615b7df1cbc5092b2f28c9e321ebdf21c16c79a` 的 `schema/archive/mobile-realtime-v1-mobile-pr6.json`，SHA-256 为 `18f8f907c11b66df174699e8ff1d38adb598114e0caf6b25b6823b64cad1fcca`；实际插件 Gate runtime 另固定为上文 `83ca96e`。这组记录说明插件影响必须由远端 revision 和真实 seam 证明，不能只搜主仓库 import。
+
+**F（Gate 反向发现）：** 同一份 private plan 在 Feed `master@e1aa198` 上发现 lifespan poller 与首个 MCP 调用并发初始化 SQLite 时重复 `ADD COLUMN interest_scored_at`。这不是 freshness mutant 的预期失败，因此 Gate 拒绝通过。Feed PR [#2](https://github.com/akashic-plugins/feed-mcp/pull/2) 把 schema 初始化放进 `BEGIN IMMEDIATE` 并用旧 schema 并发测试覆盖；上表固定的 canonical revision 重跑后，background refresh、call finality、restart persistence 通过，两个 freshness mutant 都因目标不变量被杀死。
 
 **F（固定组合结果）：** 在最终 `core 83ca96e` 上，Observe `b434fa7` 的 13 个测试和真实 turn identity 链通过，`missing_assistant_message_id` mutant 被杀死；status_commands `cee5bef` 的 9 个测试、proactive_feedback `d522724` 的 13 个测试和 Feed `520ba10` 的 18 个 MCP 测试通过。Feed 从远端固定提交正式安装后的 background refresh、call finality 与 restart persistence 通过，`async_accepted_before_visible` 和 `poller_stopped_stale_payload` 两个 mutant 被杀死。当前 public plan 仍选中 20 个 provider，但只有 Feed 和 Observe 拥有独立语义 scenario；status_commands、proactive_feedback 和其余 selected provider 的统一可执行结果仍按 `NOW.md` 保持未完成，不能把 import/test 结果升级成完整 G2 passed。
 
