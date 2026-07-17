@@ -356,11 +356,12 @@ def test_agent_loop_fanouts_turn_committed_from_passive_turn(tmp_path: Path):
     session.messages = []
     session.metadata = {}
     session.get_history = MagicMock(return_value=[])
-    session.add_message = MagicMock(
-        side_effect=lambda role, content, **kwargs: session.messages.append(
-            {"role": role, "content": content, **kwargs}
-        )
-    )
+    def add_message(role, content, **kwargs):
+        message = {"role": role, "content": content, **kwargs}
+        session.messages.append(message)
+        return message
+
+    session.add_message = MagicMock(side_effect=add_message)
     loop.session_manager.get_or_create.return_value = session
     loop.session_manager.append_messages = AsyncMock(return_value=None)
     loop._reasoner.run_turn = AsyncMock(

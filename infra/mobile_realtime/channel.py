@@ -18,7 +18,7 @@ from bus.events_lifecycle import (
 )
 from infra.channels.contract import ChannelContext
 from infra.mobile_realtime.protocol import GenericCommand, MessageSendCommand
-from infra.mobile_realtime.storage import CommandReceipt, SessionOwnershipError
+from infra.mobile_realtime.storage import CommandReceipt
 
 if TYPE_CHECKING:
     from infra.mobile_realtime.gateway import MobileGatewayRuntime
@@ -133,14 +133,6 @@ class MobileRealtimeChannel:
                 session_id=frame.session_id,
                 turn_id=frame.turn_id,
             )
-        except SessionOwnershipError as error:
-            reply = CommandReply(
-                type=f"{frame.type}.error",
-                payload={"code": "session_forbidden", "message": str(error)},
-                session_id=frame.session_id,
-                turn_id=frame.turn_id,
-            )
-
         # 3. 成功副作用完成后固化回复；内部异常保持 processing 并向上暴露
         completed = self._runtime.storage.complete_command(
             device_id=device_id,
@@ -182,10 +174,7 @@ class MobileRealtimeChannel:
         frame: GenericCommand | MessageSendCommand,
     ) -> CommandReply:
         if frame.type == "session.list":
-            raise MobileCommandError(
-                "unsupported_command",
-                "当前版本由手机本地维护会话列表",
-            )
+            return await self._list_sessions(device_id, frame)
         if frame.type == "session.create":
             raise MobileCommandError(
                 "unsupported_command",
@@ -201,13 +190,57 @@ class MobileRealtimeChannel:
             return await self._stop_turn(device_id, frame)
         raise MobileCommandError("unsupported_command", f"尚不支持命令: {frame.type}")
 
+    async def _list_sessions(
+        self,
+        device_id: str,
+        frame: GenericCommand,
+    ) -> CommandReply:
+        """发布服务端移动会话索引，供客户端重建本地投影。"""
+
+        # 1. 会话目录只暴露 mobile channel 的持久化会话
+        _expect_keys(frame.payload, set())
+        ctx = self._require_ctx()
+        session_rows = {
+            item["key"]: item
+            for item in ctx.session_manager.list_sessions()
+            if str(item["key"]).startswith(f"{self.name}:")
+        }
+
+        # 2. 标题和消息总数均从服务端权威持久化读取
+        items: list[dict[str, object]] = []
+        for session_id, session in session_rows.items():
+            messages, total = ctx.session_manager.control_store.list_messages_for_dashboard(
+                session_key=session_id,
+                page=1,
+                page_size=1,
+                sort_by="seq",
+                sort_order="asc",
+            )
+            first_content = str(messages[0]["content"]).strip() if messages else ""
+            items.append(
+                {
+                    "session_id": session_id,
+                    "title": first_content.splitlines()[0][:32] or "新对话",
+                    "updated_at": str(session["updated_at"]),
+                    "message_count": total,
+                }
+            )
+
+        # 3. 目录事件进入当前设备 durable inbox，reply 只确认命令完成
+        await self._runtime.publish_event(
+            event_type="session.list",
+            device_id=device_id,
+            payload={"items": cast(list[object], items)},
+        )
+        return CommandReply(type="session.list.ok", payload={"total": len(items)})
+
     async def _open_session(
         self,
         device_id: str,
         frame: GenericCommand,
     ) -> CommandReply:
         _expect_keys(frame.payload, set())
-        session_id = self._require_owned_session(device_id, frame.session_id)
+        session_id = self._require_mobile_session(frame.session_id)
         await self._runtime.publish_event(
             event_type="session.updated",
             session_id=session_id,
@@ -224,7 +257,7 @@ class MobileRealtimeChannel:
         device_id: str,
         frame: GenericCommand,
     ) -> CommandReply:
-        session_id = self._require_owned_session(device_id, frame.session_id)
+        session_id = self._require_mobile_session(frame.session_id)
         pagination = _pagination_payload(frame.payload)
         (
             items,
@@ -237,13 +270,14 @@ class MobileRealtimeChannel:
             sort_order="asc",
         )
         page_payload: dict[str, object] = {
-            "items": cast(list[object], items),
+            "items": cast(list[object], [_mobile_history_item(item) for item in items]),
             "total": total,
             **pagination,
         }
         await self._runtime.publish_event(
             event_type="history.page",
             session_id=session_id,
+            device_id=device_id,
             payload=page_payload,
         )
         return CommandReply(
@@ -258,6 +292,11 @@ class MobileRealtimeChannel:
         frame: MessageSendCommand,
     ) -> CommandReply:
         session_id = self._normalize_session_id(frame.session_id)
+        if frame.id != frame.payload.client_message_id:
+            raise MobileCommandError(
+                "client_message_id_mismatch",
+                "message.send 的命令 ID 必须与 client_message_id 一致",
+            )
         if frame.payload.media_refs:
             raise MobileCommandError(
                 "attachments_not_ready",
@@ -266,26 +305,45 @@ class MobileRealtimeChannel:
         if not frame.payload.text.strip():
             raise MobileCommandError("empty_message", "消息内容不能为空")
         ctx = self._require_ctx()
+        claimed_session = self._runtime.storage.has_session_claim(session_id)
+        if claimed_session and not ctx.session_manager.session_exists(session_id):
+            raise MobileCommandError(
+                "session_not_found",
+                "会话已从电脑端删除，请在手机上新建会话后继续",
+            )
+        if not claimed_session:
+            _ = ctx.session_manager.get_or_create(session_id)
         self._runtime.storage.claim_session(
             device_id=device_id,
             session_id=session_id,
             created_at=_utc_now(),
         )
-        _ = ctx.session_manager.get_or_create(session_id)
-        await ctx.bus.publish_inbound(
-            InboundMessage(
-                channel=self.name,
-                sender=f"device:{device_id}",
-                chat_id=self._chat_id(session_id),
-                content=frame.payload.text,
-                metadata={
-                    "client_request_id": frame.id,
-                    "client_message_id": frame.payload.client_message_id,
-                    "client_created_at": frame.payload.client_created_at,
-                    "device_id": device_id,
-                },
-            )
+        try:
+            _, admission_id = ctx.session_manager.admit_existing(session_id)
+        except KeyError as error:
+            raise MobileCommandError(
+                "session_not_found",
+                "会话已从电脑端删除，请在手机上新建会话后继续",
+            ) from error
+        inbound = InboundMessage(
+            channel=self.name,
+            sender=f"device:{device_id}",
+            chat_id=self._chat_id(session_id),
+            content=frame.payload.text,
+            metadata={
+                "client_request_id": frame.id,
+                "client_message_id": frame.payload.client_message_id,
+                "client_created_at": frame.payload.client_created_at,
+                "device_id": device_id,
+                "require_existing_session": True,
+            },
+            session_admission_id=admission_id,
         )
+        try:
+            await ctx.bus.publish_inbound(inbound)
+        except BaseException:
+            ctx.session_manager.release_admission(admission_id)
+            raise
         return CommandReply(
             type="message.send.ok",
             session_id=session_id,
@@ -432,16 +490,19 @@ class MobileRealtimeChannel:
         session_id = self._session_id(message.chat_id)
         turn_id = message.control_turn_id or self._current_turn_id(session_id)
         await self._flush_deltas(session_id, turn_id)
+        payload: dict[str, object] = {
+            "content": message.content,
+            "thinking": message.thinking or "",
+            "media": list(message.media),
+            "metadata": dict(message.metadata),
+        }
+        if message.session_message_id is not None:
+            payload["message_id"] = message.session_message_id
         await self._runtime.publish_event(
             event_type="message.final",
             session_id=session_id,
             turn_id=turn_id,
-            payload={
-                "content": message.content,
-                "thinking": message.thinking or "",
-                "media": list(message.media),
-                "metadata": dict(message.metadata),
-            },
+            payload=payload,
         )
         _ = self._active_turn_ids.pop(session_id, None)
         _ = self._process_turns.pop((session_id, turn_id), None)
@@ -569,12 +630,8 @@ class MobileRealtimeChannel:
             raise RuntimeError(f"mobile process turn 未开始: {session_id}/{turn_id}")
         return state
 
-    def _require_owned_session(self, device_id: str, value: str | None) -> str:
+    def _require_mobile_session(self, value: str | None) -> str:
         session_id = self._normalize_session_id(value)
-        self._runtime.storage.require_session_owner(
-            device_id=device_id,
-            session_id=session_id,
-        )
         if not self._require_ctx().session_manager.session_exists(session_id):
             raise MobileCommandError("session_not_found", f"会话不存在: {session_id}")
         return session_id
@@ -693,6 +750,83 @@ def _expect_keys(payload: Mapping[str, object], allowed: set[str]) -> None:
     if unexpected:
         names = ", ".join(sorted(unexpected))
         raise MobileCommandError("invalid_payload", f"payload 包含未知字段: {names}")
+
+
+def _mobile_history_item(item: Mapping[str, object]) -> dict[str, object]:
+    """裁剪服务端内部字段，只同步客户端可展示的稳定历史。"""
+
+    mobile_extra: dict[str, object] = {}
+    for field in ("reasoning_content", "turn_duration_ms"):
+        value = item.get(field)
+        if isinstance(value, (str, int, float)):
+            mobile_extra[field] = value
+    result: dict[str, object] = {
+        "id": str(item["id"]),
+        "session_key": str(item["session_key"]),
+        "seq": cast(int, item["seq"]),
+        "role": str(item["role"]),
+        "content": str(item["content"]),
+        "tool_chain": _mobile_tool_chain(item.get("tool_chain")),
+        "extra": mobile_extra,
+        "ts": str(item["timestamp"]),
+    }
+    client_message_id = item.get("client_message_id")
+    if isinstance(client_message_id, str) and client_message_id:
+        result["client_message_id"] = client_message_id
+    return result
+
+
+def _mobile_tool_chain(value: object) -> list[dict[str, object]] | None:
+    if not isinstance(value, list):
+        return None
+    groups: list[dict[str, object]] = []
+    for raw_group in cast(list[object], value):
+        if not isinstance(raw_group, dict):
+            continue
+        group_record = cast(dict[str, object], raw_group)
+        group: dict[str, object] = {}
+        for field in ("reasoning_content", "text"):
+            group_text = group_record.get(field)
+            if isinstance(group_text, str) and group_text:
+                group[field] = group_text
+        calls: list[dict[str, object]] = []
+        raw_calls = group_record.get("calls")
+        if isinstance(raw_calls, list):
+            for raw_call in cast(list[object], raw_calls):
+                if not isinstance(raw_call, dict):
+                    continue
+                call_record = cast(dict[str, object], raw_call)
+                name = call_record.get("name")
+                if not isinstance(name, str) or not name:
+                    continue
+                arguments = call_record.get(
+                    "final_arguments",
+                    call_record.get("arguments"),
+                )
+                arguments_record = (
+                    cast(dict[str, object], arguments)
+                    if isinstance(arguments, dict)
+                    else None
+                )
+                description = (
+                    arguments_record.get("description")
+                    if arguments_record is not None
+                    else None
+                )
+                call: dict[str, object] = {
+                    "call_id": str(call_record.get("call_id") or ""),
+                    "name": name,
+                    "status": str(call_record.get("status") or "success"),
+                }
+                if isinstance(description, str) and description:
+                    call["description"] = description
+                result = call_record.get("result")
+                if result is not None:
+                    call["result_preview"] = str(result)[:2000]
+                calls.append(call)
+        group["calls"] = calls
+        groups.append(group)
+    return groups
 
 
 def _utc_now() -> datetime:

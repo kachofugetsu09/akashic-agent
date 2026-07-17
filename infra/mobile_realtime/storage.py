@@ -10,6 +10,7 @@ from typing import Literal, cast
 
 
 PairingStatus = Literal["pending", "confirmed", "consumed", "expired"]
+_MAX_REBASE_ACK = 1 << 62
 
 
 class MobileStorageError(RuntimeError):
@@ -383,6 +384,74 @@ class MobileRealtimeStorage:
             raise UnknownDeviceError(f"设备不存在或缺少 cursor: {device_id}")
         return _cursor_from_row(row)
 
+    def rebase_cursor_with_durable_event(
+        self,
+        device_id: str,
+        *,
+        through_event_seq: int,
+        event_id: str,
+        envelope_json: str,
+        created_at: datetime,
+    ) -> DurableInboxEvent:
+        """原子重定位回退游标，并写入要求客户端重建的 durable 事件。"""
+
+        # 1. 只允许向前跨过服务端当前已分配范围
+        device_key = _require_text(device_id, "device_id")
+        event_key = _require_text(event_id, "event_id")
+        envelope = _require_text(envelope_json, "envelope_json")
+        timestamp = _serialize_datetime(created_at, "created_at")
+        if not 0 <= through_event_seq <= _MAX_REBASE_ACK:
+            raise ValueError("through_event_seq 超出可恢复的 SQLite 序号范围")
+        with self._lock, self._db:
+            _ = self._db.execute("BEGIN IMMEDIATE")
+            row = self._db.execute(
+                """
+                SELECT device_id, next_event_seq, sent_event_seq,
+                       acknowledged_event_seq
+                FROM mobile_device_cursors
+                WHERE device_id = ?
+                """,
+                (device_key,),
+            ).fetchone()
+            if row is None:
+                raise UnknownDeviceError(f"设备不存在或缺少 cursor: {device_key}")
+            cursor = _cursor_from_row(row)
+            if through_event_seq < cursor.next_event_seq:
+                raise ValueError("客户端 ACK 没有领先服务端 cursor")
+
+            # 2. 丢弃回退窗口，并紧接客户端 ACK 写入 reset
+            event_seq = through_event_seq + 1
+            _ = self._db.execute(
+                "DELETE FROM mobile_device_inbox WHERE device_id = ?",
+                (device_key,),
+            )
+            _ = self._db.execute(
+                """
+                INSERT INTO mobile_device_inbox(
+                    device_id, event_seq, event_id, priority,
+                    envelope_json, created_at
+                ) VALUES(?, ?, ?, 'P0', ?, ?)
+                """,
+                (device_key, event_seq, event_key, envelope, timestamp),
+            )
+            _ = self._db.execute(
+                """
+                UPDATE mobile_device_cursors
+                SET next_event_seq = ?, sent_event_seq = ?, acknowledged_event_seq = ?
+                WHERE device_id = ?
+                """,
+                (event_seq + 1, through_event_seq, through_event_seq, device_key),
+            )
+
+        return DurableInboxEvent(
+            device_id=device_key,
+            event_seq=event_seq,
+            event_id=event_key,
+            priority="P0",
+            envelope_json=envelope,
+            created_at=_parse_datetime(timestamp, "created_at"),
+        )
+
     def append_durable_event(
         self,
         *,
@@ -644,39 +713,34 @@ class MobileRealtimeStorage:
         session_id: str,
         created_at: datetime,
     ) -> None:
-        """首次绑定设备会话，后续只允许原设备继续使用。"""
+        """记录移动会话的首次创建设备，不限制其他已认证设备使用。"""
 
-        # 1. 在写事务内读取会话当前 owner
+        # 1. 设备身份只负责认证，会话空间由同一用户的设备共享
         device_key = _require_text(device_id, "device_id")
         session_key = _require_text(session_id, "session_id")
         timestamp = _serialize_datetime(created_at, "created_at")
         with self._lock, self._db:
             _ = self._db.execute("BEGIN IMMEDIATE")
             _ = self._read_device_row(device_key)
-            row = self._db.execute(
-                """
-                SELECT device_id
-                FROM mobile_device_sessions
-                WHERE session_id = ?
-                """,
-                (session_key,),
-            ).fetchone()
-            if row is not None:
-                owner = _row_text(row, "device_id")
-                if owner != device_key:
-                    raise SessionOwnershipError(
-                        f"移动会话属于其他设备: {session_key}"
-                    )
-                return
-
-            # 2. 新会话只在没有 owner 时完成首次绑定
             _ = self._db.execute(
                 """
                 INSERT INTO mobile_device_sessions(device_id, session_id, created_at)
                 VALUES(?, ?, ?)
+                ON CONFLICT(session_id) DO NOTHING
                 """,
                 (device_key, session_key, timestamp),
             )
+
+    def has_session_claim(self, session_id: str) -> bool:
+        """判断移动会话是否曾在服务端建立过持久化身份。"""
+
+        session_key = _require_text(session_id, "session_id")
+        with self._lock:
+            row = self._db.execute(
+                "SELECT 1 FROM mobile_device_sessions WHERE session_id = ?",
+                (session_key,),
+            ).fetchone()
+        return row is not None
 
     def require_session_owner(self, *, device_id: str, session_id: str) -> None:
         device_key = _require_text(device_id, "device_id")

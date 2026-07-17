@@ -35,6 +35,7 @@
     "react.tool.completed",
     "react.tool.started",
     "session.created",
+    "session.list",
     "session.updated",
     "sync.completed",
     "sync.reset_required",
@@ -511,6 +512,7 @@
           },
           "type": {
             "enum": [
+              "session.list",
               "session.created",
               "session.updated",
               "history.page",
@@ -807,6 +809,7 @@
             "type": "array"
           },
           "last_ack": {
+            "maximum": 4611686018427387904,
             "minimum": 0,
             "title": "Last Ack",
             "type": "integer"
@@ -1099,6 +1102,7 @@
               "react.tool.completed": "#/$defs/GenericEvent",
               "react.tool.started": "#/$defs/GenericEvent",
               "session.created": "#/$defs/GenericEvent",
+              "session.list": "#/$defs/GenericEvent",
               "session.updated": "#/$defs/GenericEvent",
               "sync.completed": "#/$defs/GenericEvent",
               "sync.reset_required": "#/$defs/GenericEvent",
@@ -1171,6 +1175,7 @@
             "react.tool.completed": "#/$defs/GenericEvent",
             "react.tool.started": "#/$defs/GenericEvent",
             "session.created": "#/$defs/GenericEvent",
+            "session.list": "#/$defs/GenericEvent",
             "session.updated": "#/$defs/GenericEvent",
             "sync.completed": "#/$defs/GenericEvent",
             "sync.reset_required": "#/$defs/GenericEvent",

@@ -144,6 +144,7 @@ async def execute_control_turn(
             "replyTo": outbound.reply_to,
             "media": list(outbound.media),
             "metadata": dict(outbound.metadata),
+            "sessionMessageId": outbound.session_message_id,
         },
         items=completed_items,
         deltas=deltas,

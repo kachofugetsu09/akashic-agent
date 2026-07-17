@@ -438,6 +438,30 @@ class MobileGatewayRuntime:
         """重放未确认 P0，并以新的 connection epoch 重建 wire envelope。"""
 
         cursor = self.storage.read_cursor(device_id)
+        allocated_event_seq = cursor.next_event_seq - 1
+        if last_ack > allocated_event_seq:
+            event_id = _new_ulid()
+            reset = self.inbox.rebase_with_event(
+                device_id=device_id,
+                through_event_seq=last_ack,
+                event_id=event_id,
+                envelope_json=_encode_stored_event(
+                    event_id=event_id,
+                    event_type="sync.reset_required",
+                    payload={"reason": "client_ack_ahead_of_server_cursor"},
+                ),
+            )
+            await _send_stored_event(
+                websocket,
+                reset.envelope_json,
+                reset.event_seq,
+                connection_epoch,
+            )
+            _ = self.inbox.mark_sent(
+                device_id,
+                through_event_seq=reset.event_seq,
+            )
+            return
         if last_ack < cursor.acknowledged_event_seq:
             await self._enqueue_and_send_event(
                 websocket,
@@ -521,8 +545,6 @@ class MobileGatewayRuntime:
         async with self._delivery_lock:
             if device_id is not None:
                 target_device_ids = (device_id,)
-            elif session_id is not None:
-                target_device_ids = (self.storage.session_owner(session_id),)
             else:
                 target_device_ids = tuple(
                     device.device_id for device in self.storage.list_active_devices()

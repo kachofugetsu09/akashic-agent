@@ -137,6 +137,7 @@ async def test_channel_adapter_preserves_full_outbound_projection(tmp_path: Path
                 "replyTo": "message-1",
                 "media": ["image.png"],
                 "metadata": {"render": "card"},
+                "sessionMessageId": "telegram:42:2",
             },
         )
 
@@ -155,7 +156,9 @@ async def test_channel_adapter_preserves_full_outbound_projection(tmp_path: Path
             reply_to="message-1",
             media=["image.png"],
             metadata={"render": "card"},
+            session_message_id="telegram:42:2",
         )
     ]
+    assert bus.outbound[0].session_message_id == "telegram:42:2"
     await runtime.shutdown()
     store.close()

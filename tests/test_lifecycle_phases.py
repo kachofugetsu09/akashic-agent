@@ -278,12 +278,19 @@ class _DummySession:
     def get_history(self, max_messages: int = 500, *, start_index: int | None = None) -> list[dict[str, object]]:
         return list(self.messages)
 
-    def add_message(self, role: str, content: str, media=None, **kwargs: object) -> None:
+    def add_message(
+        self,
+        role: str,
+        content: str,
+        media=None,
+        **kwargs: object,
+    ) -> dict[str, object]:
         msg: dict[str, object] = {"role": role, "content": content}
         if media:
             msg["media"] = list(media)
         msg.update(kwargs)
         self.messages.append(msg)
+        return msg
 
 
 # ── BeforeTurn ──
@@ -1454,10 +1461,46 @@ async def test_after_reasoning_collects_persist_and_outbound_slots():
 
     assert session.messages[0]["user_flag"] == "u"
     assert session.messages[1]["assistant_flag"] == "a"
-    assert session.messages[1]["media"] == ["/tmp/from-turn.png"]
+    assert session.messages[1]["media"] == ["/tmp/from-turn.png", "/tmp/a.png"]
     assert result.outbound.metadata["before_turn_flag"] == "bt"
     assert result.outbound.metadata["plugin_flag"] == "m"
     assert result.outbound.media == ["/tmp/from-turn.png", "/tmp/a.png"]
+
+
+@pytest.mark.asyncio
+async def test_after_reasoning_persists_mobile_canonical_ids(tmp_path: Path):
+    manager = SessionManager(tmp_path / "workspace")
+    session = manager.get_or_create("mobile:00000000-0000-0000-0000-000000000001")
+    msg = InboundMessage(
+        channel="mobile",
+        sender="device:test",
+        chat_id="00000000-0000-0000-0000-000000000001",
+        content="hello",
+        metadata={"client_message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+    )
+    state = TurnState(msg=msg, session_key=session.key, dispatch_outbound=True)
+    state.session = session
+    phase = Phase(
+        default_after_reasoning_modules(
+            EventBus(),
+            cast(Any, SimpleNamespace(presence=None, session_manager=manager)),
+        ),
+        frame_factory=AfterReasoningFrame,
+    )
+
+    result = await phase.run(
+        AfterReasoningInput(
+            state=state,
+            turn_result=TurnRunResult(reply="reply"),
+        )
+    )
+    manager.close()
+    reloaded = SessionManager(tmp_path / "workspace")
+    messages = reloaded.get_or_create(session.key).messages
+
+    assert messages[0]["client_message_id"] == "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    assert result.outbound.session_message_id == messages[1]["id"]
+    reloaded.close()
 
 
 @pytest.mark.asyncio

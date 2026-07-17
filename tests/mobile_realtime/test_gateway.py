@@ -356,6 +356,75 @@ def test_authenticated_gateway_closes_poison_message_command(
     runtime.close()
 
 
+def test_resume_atomically_rebases_when_client_ack_is_ahead(
+    tmp_path: Path,
+) -> None:
+    """验证服务端 DB 回退后以客户端序号续写 durable reset。"""
+
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    import asyncio
+    import json
+
+    runtime, _ = asyncio.run(build())
+    device_key = ec.generate_private_key(ec.SECP256R1())
+    device_id = uuid4().hex
+    runtime.storage.register_device(
+        DeviceRecord(
+            device_id=device_id,
+            public_key=_device_public_key(device_key),
+            display_name="Pixel Emulator",
+            created_at=datetime.now(timezone.utc),
+            revoked_at=None,
+            capabilities=("stream-v1",),
+        )
+    )
+
+    with TestClient(create_mobile_gateway_app(runtime)).websocket_connect("/ws") as ws:
+        challenge = ws.receive_json()
+        ws.send_json(
+            _device_proof(
+                challenge=challenge["payload"],
+                device_id=device_id,
+                device_key=device_key,
+            )
+        )
+        epoch = ws.receive_json()["connection_epoch"]
+        ws.send_json(
+            {
+                "v": 1,
+                "kind": "control",
+                "type": "resume",
+                "connection_epoch": epoch,
+                "payload": {"last_ack": 5, "active_turns": []},
+            }
+        )
+        reset = ws.receive_json()
+
+    assert reset["type"] == "sync.reset_required"
+    assert reset["event_seq"] == 6
+    assert reset["payload"]["reason"] == "client_ack_ahead_of_server_cursor"
+    cursor = runtime.storage.read_cursor(device_id)
+    assert (cursor.next_event_seq, cursor.sent_event_seq, cursor.acknowledged_event_seq) == (
+        7,
+        6,
+        5,
+    )
+    events = runtime.storage.read_durable_events(
+        device_id,
+        after_event_seq=5,
+        limit=10,
+    )
+    assert [event.event_seq for event in events] == [6]
+    assert json.loads(events[0].envelope_json)["type"] == "sync.reset_required"
+    runtime.close()
+
+
 def test_offline_proactive_event_is_durable_and_replayed_with_session(
     tmp_path: Path,
 ) -> None:

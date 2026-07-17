@@ -45,10 +45,12 @@ class _DummySession:
         content: str,
         media=None,
         **kwargs: object,
-    ) -> None:
+    ) -> dict[str, object]:
         if media is not None:
             kwargs["media"] = media
-        self.messages.append({"role": role, "content": content, **kwargs})
+        message = {"role": role, "content": content, **kwargs}
+        self.messages.append(message)
+        return message
 
 
 @pytest.mark.asyncio

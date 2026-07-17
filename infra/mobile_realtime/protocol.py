@@ -17,6 +17,7 @@ from pydantic import (
 
 PROTOCOL_VERSION = 1
 MAX_JSON_FRAME_BYTES = 256 * 1024
+_MAX_REBASE_ACK = 1 << 62
 
 COMMAND_TYPES = frozenset(
     {
@@ -34,6 +35,7 @@ COMMAND_TYPES = frozenset(
 )
 EVENT_TYPES = frozenset(
     {
+        "session.list",
         "session.created",
         "session.updated",
         "history.page",
@@ -153,7 +155,7 @@ class AuthAcceptedPayload(ProtocolModel):
 
 
 class ResumePayload(ProtocolModel):
-    last_ack: int = Field(ge=0)
+    last_ack: int = Field(ge=0, le=_MAX_REBASE_ACK)
     active_turns: list[NonEmptyId] = Field(max_length=128)
 
 
@@ -280,6 +282,7 @@ class TurnSnapshotEvent(ProtocolModel):
 
 class GenericEvent(EventEnvelope):
     type: Literal[
+        "session.list",
         "session.created",
         "session.updated",
         "history.page",

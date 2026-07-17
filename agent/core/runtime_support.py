@@ -173,7 +173,7 @@ class SessionLike(Protocol):
         content: str,
         media: list[str] | None = None,
         **kwargs: object,
-    ) -> None: ...
+    ) -> dict[str, object]: ...
 
 
 @dataclass

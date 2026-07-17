@@ -52,6 +52,24 @@ class DurableInboxManager:
             created_at=self._now(),
         )
 
+    def rebase_with_event(
+        self,
+        *,
+        device_id: str,
+        through_event_seq: int,
+        event_id: str,
+        envelope_json: str,
+    ) -> DurableInboxEvent:
+        """原子重定位回退游标，并持久化下一条重建事件。"""
+
+        return self._storage.rebase_cursor_with_durable_event(
+            device_id,
+            through_event_seq=through_event_seq,
+            event_id=event_id,
+            envelope_json=envelope_json,
+            created_at=self._now(),
+        )
+
     def replay(
         self,
         device_id: str,
