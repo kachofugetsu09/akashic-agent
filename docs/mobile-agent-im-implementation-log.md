@@ -522,3 +522,10 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - 通知 small icon 从无品牌语义的圆形勾号替换为五档密度的单色女孩剪影。短发、叶饰、脸部、脖颈和肩线共同承担小尺寸识别；颜色继续完全交给 Android 系统明暗着色，不新增状态色。
 - `0.8.1 (22)` release unit、Lint、R8、assemble 与 v2 签名通过。最终 APK 为 8,370,246 bytes，SHA-256 `27c2874b0d360575e43c70ca7b934839c58f62789e8a51615d89880bb85bb22a`；Pixel 7 覆盖安装后的 `base.apk` 哈希一致。
 - 真机截图为 `/tmp/pixel7-v081-status-icon.png` 与 `/tmp/pixel7-v081-notification-shade.png`；应用日志无 FATAL、RenderProcessGone 或协议错误。
+
+## 2026-07-17：v0.8.2 去除通知图标脖颈
+
+- 真机复核发现 v0.8.1 的矩形脖颈和半圆肩膀会把女孩头像读成奖杯底座；这不是用户确认的设计。v0.8.2 直接以确认过的女孩大头图为唯一视觉源，只做单色 alpha、留白和五档密度缩放。
+- 最终图标止于原图下巴弧线，没有脖子、肩膀或身体。24dp 明暗预览与 Pixel 7 通知折叠区域均能读成带叶饰的女孩头像。
+- `0.8.2 (23)` release unit、Lint、R8、assemble 与 v2 签名通过。最终 APK 为 8,370,762 bytes，SHA-256 `21d768903512e65603355bec1f69758bbe67e69b5439d89945088e8bbe50772f`；Pixel 7 覆盖安装后的 `base.apk` 哈希一致。
+- 真机截图为 `/tmp/pixel7-v082-head-only-notification.png`；应用日志无 FATAL、RenderProcessGone 或协议错误。
