@@ -452,3 +452,10 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - 自动门禁通过 Web typecheck、ESLint、20 项 mobile state、Android JVM/debug/androidTest/release 构建、Pyright、131 项 Python realtime/protocol/lifecycle 定向测试和 v2 签名；Pixel 7 Room instrumentation 为 `39/39`。
 - 独立复核进一步收口 pending outbox 的状态 owner、失效会话对其他附件下载的阻塞、首次 claim 排队后删除与所有 mobile admission 的 existing-only 约束。隔离数据库回滚时又真实触发客户端 ACK 高于 durable cursor；Gateway 现先于 retention 检查处理 ACK 超前，把 cursor 前移与精确下一序号的 `sync.reset_required` 在同一 SQLite 事务落盘，并把恢复 ACK 限在 SQLite 64 位空间的一半。进程在提交后立即退出、回退事件同时超过保留期，或使用最大合法 ACK 完成下一次 resume，都不会形成 ASGI 异常重连环或误报同步完成。
 - Pixel 7 在隔离 Mobile Lab 中覆盖无本地工作移除闭环，以及“待发消息/附件 + tunnel 502 → 重连完成目录同步 → 不发送旧 outbox → 服务端不重建”的弱网闭环。最终画面保持“连接正常”，不再出现误导性的 Turn token 插件错误；服务端读回 `sessions=0 / messages=0`，正式 workspace 未读写。完整设计和证据见 `docs/mobile-batches/2026-07-17-unavailable-sessions.md`。
+
+## 2026-07-17 显式进入会话的阅读位置
+
+- 冷启动与主动选择现在拥有不同语义：冷启动恢复上次阅读锚点；用户从抽屉明确进入另一个会话时直接打开最新消息。
+- 原生只清除阅读锚点，不推进已读水位；React 恢复流程同时接受原生把在途锚点明确清空，解决 Room 已到底但 WebView 仍按旧锚点定位的竞态。
+- 没有增加按钮、提示、协议字段、migration 或 Agent 核心改动。21 项移动 Web 状态测试、TypeScript、ESLint、移动 Web 生产构建和 Android release 全链通过。
+- Pixel 7 使用最终签名 APK 验证：停在旧位置后冷启动仍恢复；抽屉切走再切回后最新一轮完整可见且没有“到底部”按钮。完整记录见 `docs/mobile-batches/2026-07-17-session-entry-position.md`。

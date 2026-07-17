@@ -46,6 +46,11 @@ export interface MobileProjectionBaselineState {
   rebuilding: boolean;
 }
 
+export interface MobileReadingAnchor {
+  messageId: string;
+  offsetPx: number;
+}
+
 export function allMobileAttachmentsReady(attachments: readonly { state: string }[]) {
   return attachments.every((attachment) => attachment.state === "ready");
 }
@@ -53,6 +58,19 @@ export function allMobileAttachmentsReady(attachments: readonly { state: string 
 export function isMobileImageViewerHistoryState(state: unknown, attachmentId: string) {
   if (typeof state !== "object" || state === null) return false;
   return "akashicImageViewer" in state && state.akashicImageViewer === attachmentId;
+}
+
+/** 同步原生阅读锚点，并把明确清除锚点解释为回到会话末尾。 */
+export function updateMobileReadingRestoreTarget<T extends MobileReadingAnchor>(
+  current: T | null | undefined,
+  next: T | undefined,
+) {
+  const normalized = next ?? null;
+  if (
+    current?.messageId === normalized?.messageId
+    && current?.offsetPx === normalized?.offsetPx
+  ) return current ?? null;
+  return normalized;
 }
 
 export function normalizeMobileSearchText(value: string) {

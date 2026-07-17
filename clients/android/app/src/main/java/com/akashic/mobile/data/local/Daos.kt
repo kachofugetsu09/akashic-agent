@@ -161,6 +161,17 @@ interface ConversationReadStateDao {
 
     @Query(
         """
+        UPDATE conversation_read_states
+        SET anchorMessageId = NULL,
+            anchorOffsetPx = 0,
+            updatedAt = :updatedAt
+        WHERE sessionId = :sessionId
+        """,
+    )
+    suspend fun clearPosition(sessionId: String, updatedAt: Long): Int
+
+    @Query(
+        """
         INSERT INTO conversation_read_states (
           sessionId, lastReadAt, anchorMessageId, anchorOffsetPx, updatedAt
         ) VALUES (:sessionId, :readAt, NULL, 0, :updatedAt)

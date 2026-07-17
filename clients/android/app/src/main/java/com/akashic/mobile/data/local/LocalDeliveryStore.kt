@@ -85,6 +85,19 @@ class LocalDeliveryStore(
         true
     }
 
+    /** 用户主动进入会话时清除旧锚点，但不提前推进已读水位。 */
+    suspend fun clearReadingPosition(
+        sessionId: String,
+        expectedServerId: String?,
+        updatedAt: Long,
+    ) = readingStateMutex.withLock {
+        val conversation = requireNotNull(database.conversations().get(sessionId)) {
+            "阅读位置会话不存在: $sessionId"
+        }
+        require(conversation.serverId == expectedServerId) { "阅读位置会话不属于当前电脑" }
+        database.conversationReadStates().clearPosition(sessionId, updatedAt)
+    }
+
     /** 串行推进已读水位并清除旧阅读锚点。 */
     suspend fun markSessionReadThrough(
         sessionId: String,

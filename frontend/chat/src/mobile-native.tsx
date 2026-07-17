@@ -74,6 +74,7 @@ import {
   normalizeMobileSearchText,
   reconcileMobileMessageSelection,
   selectableMobileMessages,
+  updateMobileReadingRestoreTarget,
   updateMobileSearchIndex,
   type MobileSearchIndexEntry,
 } from "./mobile-message-state";
@@ -2455,14 +2456,11 @@ function useMobileReadingPosition(
       if (restoreFrameRef.current !== null) window.cancelAnimationFrame(restoreFrameRef.current);
       restoringProjectionRef.current = projectionKey;
       restoreTargetRef.current = readingPosition ?? null;
-    } else if (
-      readingPosition
-      && (
-        restoreTargetRef.current?.messageId !== readingPosition.messageId
-        || restoreTargetRef.current.offsetPx !== readingPosition.offsetPx
-      )
-    ) {
-      restoreTargetRef.current = readingPosition;
+    } else {
+      restoreTargetRef.current = updateMobileReadingRestoreTarget(
+        restoreTargetRef.current,
+        readingPosition,
+      );
     }
     if (messages.length === 0) return;
     const scrollElement = scrollRef.current;
