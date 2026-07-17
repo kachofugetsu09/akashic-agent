@@ -107,7 +107,7 @@ def test_config_load_reads_wiring_block(tmp_path: Path):
         },
     )
 
-    cfg = Config.load(cfg_path)
+    cfg = Config.load(cfg_path, workspace=tmp_path)
 
     assert cfg.wiring.context == "default"
     assert cfg.wiring.memory == "default"
@@ -123,14 +123,14 @@ def test_config_load_rejects_invalid_wiring_toolsets(
     _write_wiring_config(cfg_path, {"toolsets": toolsets})
 
     with pytest.raises(ValueError, match="agent.wiring.toolsets 必须是字符串数组"):
-        Config.load(cfg_path)
+        Config.load(cfg_path, workspace=tmp_path)
 
 
 def test_config_load_preserves_empty_wiring_toolsets(tmp_path: Path):
     cfg_path = tmp_path / "config.toml"
     _write_wiring_config(cfg_path, {"toolsets": []})
 
-    assert Config.load(cfg_path).wiring.toolsets == []
+    assert Config.load(cfg_path, workspace=tmp_path).wiring.toolsets == []
 
 
 def test_config_load_rejects_invalid_wiring_table(tmp_path: Path):
@@ -138,7 +138,7 @@ def test_config_load_rejects_invalid_wiring_table(tmp_path: Path):
     _write_wiring_config(cfg_path, "invalid")
 
     with pytest.raises(ValueError, match="agent.wiring 必须是 TOML table"):
-        Config.load(cfg_path)
+        Config.load(cfg_path, workspace=tmp_path)
 
 
 def test_config_load_reads_memory_engine_selector(tmp_path: Path):
@@ -161,7 +161,7 @@ def test_config_load_reads_memory_engine_selector(tmp_path: Path):
         },
     )
 
-    cfg = Config.load(cfg_path)
+    cfg = Config.load(cfg_path, workspace=tmp_path)
 
     assert cfg.memory.enabled is True
     assert cfg.memory.engine == "memu"
@@ -191,7 +191,7 @@ def test_config_load_ignores_wiring_memory_engine(tmp_path: Path):
         },
     )
 
-    cfg = Config.load(cfg_path)
+    cfg = Config.load(cfg_path, workspace=tmp_path)
 
     assert cfg.memory.enabled is True
     assert cfg.memory.engine == ""
@@ -216,7 +216,7 @@ def test_config_load_ignores_legacy_memory_v2_enabled(tmp_path: Path):
         },
     )
 
-    cfg = Config.load(cfg_path)
+    cfg = Config.load(cfg_path, workspace=tmp_path)
 
     assert not hasattr(cfg, "memory_v2")
     assert cfg.memory.enabled is False
@@ -253,7 +253,7 @@ def test_config_load_reads_embedding_and_ignores_private_memory_sections(tmp_pat
         },
     )
 
-    cfg = Config.load(cfg_path)
+    cfg = Config.load(cfg_path, workspace=tmp_path)
 
     assert cfg.memory.enabled is True
     assert cfg.memory.engine == ""
@@ -286,7 +286,7 @@ def test_config_load_reads_memory_window_and_app_server(tmp_path: Path):
         },
     )
 
-    cfg = Config.load(cfg_path)
+    cfg = Config.load(cfg_path, workspace=tmp_path)
 
     assert cfg.memory_window == 20
     assert cfg.app_server.listen == "/tmp/dev-akashic.sock"
@@ -311,7 +311,7 @@ def test_config_load_reads_agent_dev_mode(tmp_path: Path):
         },
     )
 
-    cfg = Config.load(cfg_path)
+    cfg = Config.load(cfg_path, workspace=tmp_path)
 
     assert cfg.dev_mode is True
 
@@ -335,7 +335,7 @@ def test_config_load_accepts_dev_model_alias(tmp_path: Path):
         },
     )
 
-    cfg = Config.load(cfg_path)
+    cfg = Config.load(cfg_path, workspace=tmp_path)
 
     assert cfg.dev_mode is True
 
@@ -368,7 +368,7 @@ def test_config_load_skips_unfilled_channels(tmp_path: Path):
         },
     )
 
-    cfg = Config.load(cfg_path)
+    cfg = Config.load(cfg_path, workspace=tmp_path)
 
     assert cfg.channels.telegram is None
     assert cfg.channels.qq is None
@@ -401,7 +401,7 @@ listen = "/tmp/toml-akashic.sock"
         encoding="utf-8",
     )
 
-    cfg = Config.load(cfg_path)
+    cfg = Config.load(cfg_path, workspace=tmp_path)
 
     assert cfg.provider == "openai"
     assert cfg.model == "m"
@@ -425,7 +425,7 @@ def test_config_rejects_legacy_cli_socket(tmp_path: Path):
         },
     )
     with pytest.raises(ValueError, match="app_server"):
-        _ = Config.load(cfg_path)
+        _ = Config.load(cfg_path, workspace=tmp_path)
 
 
 def test_config_load_reads_qq_websocket_timeout(tmp_path: Path):
@@ -453,7 +453,7 @@ def test_config_load_reads_qq_websocket_timeout(tmp_path: Path):
         },
     )
 
-    cfg = Config.load(cfg_path)
+    cfg = Config.load(cfg_path, workspace=tmp_path)
 
     assert cfg.channels.qq is not None
     assert cfg.channels.qq.websocket_open_timeout_seconds == 9.5
@@ -485,7 +485,7 @@ def test_config_load_reads_web_chat_config(tmp_path: Path):
         },
     )
 
-    cfg = Config.load(cfg_path)
+    cfg = Config.load(cfg_path, workspace=tmp_path)
 
     assert cfg.channels.chat.enabled is True
     assert cfg.channels.chat.host == "127.0.0.2"

@@ -19,7 +19,11 @@ from pathlib import Path
 from typing import cast
 
 import click
-from agent.plugins.manifest import builtin_plugin_data_dir
+from agent.plugins.manifest import (
+    builtin_plugin_data_dir,
+    ensure_workspace_plugin_data_dir,
+    workspace_plugin_data_dir,
+)
 from plugins.default_memory.config import render_default_memory_config
 
 
@@ -236,25 +240,25 @@ def run_setup_wizard(config_path: Path, workspace: Path) -> None:
     toml_str = _render_config(answers)
     _atomic_write_with_backup(config_path, toml_str, mode=0o600)
     _ok(f"{config_path} 已生成")
-    memory_config_path = _default_memory_local_config_path()
-    memory_config_path.parent.mkdir(parents=True, exist_ok=True)
+    memory_config_path = _default_memory_local_config_path(workspace)
+    ensure_workspace_plugin_data_dir(memory_config_path.parent, workspace)
     _atomic_write_with_backup(
         memory_config_path,
         _render_default_memory_config(),
     )
     _ok(f"{memory_config_path} 已生成")
-    qqbot_config_path = _qqbot_local_config_path()
-    qqbot_config_path.parent.mkdir(parents=True, exist_ok=True)
+    qqbot_config_path = _qqbot_local_config_path(workspace)
+    ensure_workspace_plugin_data_dir(qqbot_config_path.parent, workspace)
     _atomic_write_with_backup(qqbot_config_path, _render_qqbot_config(answers), mode=0o600)
     _ok(f"{qqbot_config_path} 已生成")
 
-    _validate_config(config_path)
+    _validate_config(config_path, workspace)
 
     from bootstrap.init_workspace import init_workspace
     _ = init_workspace(config_path=config_path, workspace=workspace)
     _ok(f"{workspace} 已初始化")
 
-    _print_completion(answers)
+    _print_completion(answers, workspace)
 
 
 # ---------------------------------------------------------------------------
@@ -795,10 +799,10 @@ async def _async_fetch_qqbot_openid(
 # Config 验证
 # ---------------------------------------------------------------------------
 
-def _validate_config(config_path: Path) -> None:
+def _validate_config(config_path: Path, workspace: Path) -> None:
     try:
         from agent.config import Config
-        _ = Config.load(config_path)
+        _ = Config.load(config_path, workspace=workspace)
         _ok("配置验证通过")
     except KeyError as e:
         _err(f"配置缺少必填字段：{e}")
@@ -1027,8 +1031,8 @@ def _render_qqbot_config(a: WizardAnswers) -> str:
     ])
 
 
-def _qqbot_local_config_path() -> Path:
-    return Path.home() / ".akashic-plugin" / "data" / "qqbot-github" / "config.local.toml"
+def _qqbot_local_config_path(workspace: Path) -> Path:
+    return workspace_plugin_data_dir(workspace, "qqbot", "github") / "config.local.toml"
 
 
 def _render_memory(a: WizardAnswers) -> str:
@@ -1053,8 +1057,8 @@ def _render_default_memory_config() -> str:
     return render_default_memory_config()
 
 
-def _default_memory_local_config_path() -> Path:
-    return builtin_plugin_data_dir("default_memory") / "config.local.toml"
+def _default_memory_local_config_path(workspace: Path) -> Path:
+    return builtin_plugin_data_dir("default_memory", workspace) / "config.local.toml"
 
 
 def _render_proactive(a: WizardAnswers) -> str:
@@ -1102,7 +1106,7 @@ def _render_integrations() -> str:
 # 完成提示
 # ---------------------------------------------------------------------------
 
-def _print_completion(a: WizardAnswers) -> None:
+def _print_completion(a: WizardAnswers, workspace: Path) -> None:
     click.echo(click.style("\n══ 配置完成 ══\n", bold=True))
     click.echo("启动 agent：")
     click.echo(click.style("  uv run python main.py", bold=True))
@@ -1113,7 +1117,7 @@ def _print_completion(a: WizardAnswers) -> None:
         if a.proactive_channel == "qqbot" or (not a.tg_token and a.qqbot_app_id):
             _hint("启动后向 bot 发任意消息，日志中会出现 user_openid")
             _hint("将其填入 config.toml：")
-            _hint("~/.akashic-plugin/data/qqbot-github/config.local.toml")
+            _hint(str(_qqbot_local_config_path(workspace)))
             _hint('allow_from = ["<user_openid>"]')
             _hint("[proactive.target]")
             _hint('channel = "qqbot"')
@@ -1131,5 +1135,5 @@ def _print_completion(a: WizardAnswers) -> None:
         click.echo()
         _warn("QQBot allow_from 为空，启动后所有私聊请求会被拒绝")
         _hint("向 bot 发一条消息，日志里找到 user_openid，填入 config.toml：")
-        _hint("~/.akashic-plugin/data/qqbot-github/config.local.toml")
+        _hint(str(_qqbot_local_config_path(workspace)))
         _hint('allow_from = ["<user_openid>"]')

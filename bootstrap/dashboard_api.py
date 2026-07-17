@@ -22,7 +22,11 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from agent.plugins.manifest import load_package_manifest, load_plugin_manifest
+from agent.plugins.manifest import (
+    load_package_manifest,
+    load_plugin_manifest,
+    plugins_root as resolve_plugins_root,
+)
 from agent.plugins.packages import enabled_plugin_packages
 from agent.plugins.source_resolver import resolve_plugin_sources
 from bootstrap.cleanup import run_cleanup_steps
@@ -40,9 +44,9 @@ _DASHBOARD_ACCESS_PREFIXES = ("/api/dashboard", "/assets", "/plugins/")
 def _dashboard_plugin_dirs(project_root: Path) -> dict[str, Path]:
     result: dict[str, Path] = {}
     manifest = load_plugin_manifest()
-    plugins_root = project_root / "plugins"
-    if plugins_root.is_dir():
-        for plugin_dir in sorted(plugins_root.iterdir()):
+    builtin_root = project_root / "plugins"
+    if builtin_root.is_dir():
+        for plugin_dir in sorted(builtin_root.iterdir()):
             if (
                 not plugin_dir.is_dir()
                 or manifest.get(plugin_dir.name, True) is False
@@ -50,7 +54,7 @@ def _dashboard_plugin_dirs(project_root: Path) -> dict[str, Path]:
                 continue
             result[plugin_dir.name] = plugin_dir
 
-    cache_root = Path.home() / ".akashic-plugin" / "cache"
+    cache_root = resolve_plugins_root() / "cache"
     for source in resolve_plugin_sources([], installed_cache_root=cache_root):
         plugin_name = source.plugin_root.parent.name
         plugin_id = f"{plugin_name}@{source.marketplace}"

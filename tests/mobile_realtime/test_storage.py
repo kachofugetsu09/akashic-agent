@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterator
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -50,7 +51,7 @@ def _event_json(event_id: str) -> str:
 
 
 @pytest.fixture
-def storage(tmp_path: Path) -> MobileRealtimeStorage:
+def storage(tmp_path: Path) -> Iterator[MobileRealtimeStorage]:
     value = MobileRealtimeStorage(tmp_path / "mobile.db")
     try:
         yield value

@@ -1,0 +1,13 @@
+# 通用滚动备份配置。路径支持 ~ 展开，快照内 name 必须是相对安全路径。
+destination = "~/backups/rolling"
+retention = 14
+
+[[sources]]
+name = "documents/important.md"
+kind = "file"
+path = "~/documents/important.md"
+
+[[sources]]
+name = "databases/app.db"
+kind = "sqlite"
+path = "~/data/app.db"

@@ -80,7 +80,7 @@ async def create_runtime(config_path: Path, workspace: Path) -> BenchmarkRuntime
     from core.net.http import SharedHttpResources
     from memory2.profile_extractor import ProfileFactExtractor
 
-    config = load_config(config_path)
+    config = load_config(config_path, workspace=workspace)
 
     # 1. Initialise workspace files (empty memory/SELF.md etc.).
     #    force=False so repeated calls on same workspace are idempotent.

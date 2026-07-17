@@ -61,7 +61,7 @@ class SourcePlugin(Plugin):
 ## 插件内关闭主动链路
 
 ```toml
-# ~/.akashic-plugin/data/source-github/config.local.toml
+# <workspace>/plugin-data/source-github/config.local.toml
 [proactive]
 enabled = false
 ```
