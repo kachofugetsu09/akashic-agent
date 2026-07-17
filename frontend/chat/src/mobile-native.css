@@ -630,6 +630,10 @@ button {
   padding-block-end: calc(122px + env(safe-area-inset-bottom));
 }
 
+.mobile-main-content.session-unavailable .mobile-conversation {
+  padding-block-end: calc(122px + env(safe-area-inset-bottom));
+}
+
 .mobile-conversation__content {
   width: 100%;
   max-width: 48rem;
