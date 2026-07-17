@@ -69,6 +69,7 @@ import {
   allMobileAttachmentsReady,
   captureMobileComposerDraftWrite,
   formatMobileReplyNavigationAnnouncement,
+  flushMobileComposerBeforePairing,
   formatMobileSelectionCopyText,
   isMobileImageViewerHistoryState,
   mobileMessageCanReply,
@@ -76,6 +77,9 @@ import {
   mobileSelectionActionAvailability,
   mobileComposerDraftMatches,
   mobileComposerTextareaMetrics,
+  mobileComposerDraftHydration,
+  MOBILE_COMPOSER_DRAFT_MAX_LENGTH,
+  normalizeMobileComposerDraftText,
   normalizeMobileSearchText,
   reconcileMobileMessageSelection,
   resolveMobileComposerDraft,
@@ -589,10 +593,11 @@ function MobileNativeApp() {
   const selectionActiveRef = useRef(false);
   const activeComposerDraftRef = useRef<MobileComposerDraftWrite | null>(null);
   const pendingComposerDraftRef = useRef<MobileComposerDraftWrite | null>(null);
-  const awaitingComposerDraftRef = useRef<MobileComposerDraftWrite | null>(null);
+  const optimisticComposerDraftsRef = useRef(new Map<string, MobileComposerDraftWrite>());
   const composerDraftTimerRef = useRef<number | null>(null);
 
   const saveComposerDraft = useCallback((draft: MobileComposerDraftWrite) => {
+    optimisticComposerDraftsRef.current.set(draft.sessionId, draft);
     window.AkashicNative?.saveComposerDraft(
       draft.sessionId,
       draft.text,
@@ -623,12 +628,13 @@ function MobileNativeApp() {
 
   const updateComposerDraft = useCallback((text: string, target: MobileMessage | null) => {
     const current = activeComposerDraftRef.current;
-    const draft = captureMobileComposerDraftWrite(current?.sessionId, text, target?.id);
-    setInput(text);
+    const normalizedText = normalizeMobileComposerDraftText(text);
+    const draft = captureMobileComposerDraftWrite(current?.sessionId, normalizedText, target?.id);
+    setInput(normalizedText);
     setReplyTarget(target);
     if (!draft) return;
     activeComposerDraftRef.current = draft;
-    awaitingComposerDraftRef.current = null;
+    optimisticComposerDraftsRef.current.delete(draft.sessionId);
     scheduleComposerDraft(draft);
   }, [scheduleComposerDraft]);
 
@@ -644,7 +650,6 @@ function MobileNativeApp() {
       composerDraftTimerRef.current = null;
     }
     pendingComposerDraftRef.current = null;
-    awaitingComposerDraftRef.current = cleared;
     saveComposerDraft(cleared);
   }, [saveComposerDraft]);
 
@@ -782,7 +787,6 @@ function MobileNativeApp() {
     if (!snapshot || !sessionId) {
       if (previous) flushComposerDraft();
       activeComposerDraftRef.current = null;
-      awaitingComposerDraftRef.current = null;
       setInput("");
       setReplyTarget(null);
       return;
@@ -790,15 +794,15 @@ function MobileNativeApp() {
 
     // 1. 切换会话或原生确认 owner 写入时，成对恢复文字与引用
     const sessionChanged = previous?.sessionId !== sessionId;
-    const awaiting = awaitingComposerDraftRef.current;
-    const ownerAcknowledged = awaiting?.sessionId === sessionId
-      && mobileComposerDraftMatches(snapshot.composer.draft, awaiting);
+    const optimistic = optimisticComposerDraftsRef.current.get(sessionId);
+    const hydration = mobileComposerDraftHydration(snapshot.composer.draft, optimistic);
+    const ownerAcknowledged = hydration.ownerAcknowledged;
     if (sessionChanged) flushComposerDraft();
-    if (awaiting?.sessionId === sessionId && !ownerAcknowledged && !sessionChanged) return;
+    if (optimistic && !ownerAcknowledged && !sessionChanged) return;
     if (sessionChanged || ownerAcknowledged) {
-      if (ownerAcknowledged) awaitingComposerDraftRef.current = null;
+      if (ownerAcknowledged) optimisticComposerDraftsRef.current.delete(sessionId);
       const resolved = resolveMobileComposerDraft(
-        snapshot.composer.draft,
+        hydration.draft,
         snapshot.messages,
         sessionId,
       );
@@ -1244,6 +1248,12 @@ function MobileNativeApp() {
             navigateToSurface({ kind: "plugins" });
             closeDrawer();
           }}
+          onRestartPairing={() => {
+            flushMobileComposerBeforePairing(
+              flushComposerDraft,
+              () => window.AkashicNative?.restartPairing(),
+            );
+          }}
           onClose={closeDrawer}
         />
         <span className="mobile-a11y-announcement" aria-live="polite" aria-atomic="true">
@@ -1661,12 +1671,14 @@ function MobileDrawer({
   snapshot,
   pluginCount,
   onOpenPlugins,
+  onRestartPairing,
   onClose,
 }: {
   open: boolean;
   snapshot: MobileSnapshot;
   pluginCount: number;
   onOpenPlugins: () => void;
+  onRestartPairing: () => void;
   onClose: () => void;
 }) {
   const drawerRef = useRef<HTMLElement>(null);
@@ -1728,7 +1740,7 @@ function MobileDrawer({
             <RotateCcw size={18} />
             <span>{snapshot.composer.isResyncing ? "正在重新同步" : "清理缓存并同步"}</span>
           </button>
-          <button className="drawer-action" type="button" onClick={() => window.AkashicNative?.restartPairing()}>
+          <button className="drawer-action" type="button" onClick={onRestartPairing}>
             <RefreshCw size={18} />
             <span>重新扫码</span>
           </button>
@@ -1899,6 +1911,7 @@ function MobileComposer({
         <textarea
           ref={textareaRef}
           rows={1}
+          maxLength={MOBILE_COMPOSER_DRAFT_MAX_LENGTH}
           value={input}
           placeholder="输入消息"
           onChange={(event) => onInput(event.target.value)}

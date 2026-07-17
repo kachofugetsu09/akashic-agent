@@ -7,12 +7,16 @@ import {
   allMobileAttachmentsReady,
   captureMobileComposerDraftWrite,
   formatMobileReplyNavigationAnnouncement,
+  flushMobileComposerBeforePairing,
   formatMobileSelectionCopyText,
   isMobileImageViewerHistoryState,
   mobileMessageCanReply,
   mobileSelectionActionAvailability,
   mobileComposerDraftMatches,
   mobileComposerTextareaMetrics,
+  mobileComposerDraftHydration,
+  MOBILE_COMPOSER_DRAFT_MAX_LENGTH,
+  normalizeMobileComposerDraftText,
   reconcileMobileMessageSelection,
   reconcileAssistantMessageIds,
   resolveMobileComposerDraft,
@@ -168,6 +172,38 @@ test("snapshot owner acknowledgement compares text and reply identity", () => {
     ),
     false,
   );
+});
+
+test("composer text is bounded at the native persistence boundary", () => {
+  const oversized = "x".repeat(MOBILE_COMPOSER_DRAFT_MAX_LENGTH + 1);
+  assert.equal(normalizeMobileComposerDraftText(oversized).length, MOBILE_COMPOSER_DRAFT_MAX_LENGTH);
+  assert.equal(
+    normalizeMobileComposerDraftText("保留原文"),
+    "保留原文",
+  );
+});
+
+test("optimistic clear wins until the native owner acknowledges it", () => {
+  const staleOwner = { text: "已经发送" };
+  const optimistic = { sessionId: "mobile-current", text: "" };
+
+  assert.deepEqual(mobileComposerDraftHydration(staleOwner, optimistic), {
+    draft: optimistic,
+    ownerAcknowledged: false,
+  });
+  assert.deepEqual(mobileComposerDraftHydration({ text: "" }, optimistic), {
+    draft: { text: "" },
+    ownerAcknowledged: true,
+  });
+});
+
+test("pairing restart is enqueued only after the pending draft flush", () => {
+  const calls = [];
+  flushMobileComposerBeforePairing(
+    () => calls.push("flush"),
+    () => calls.push("restart"),
+  );
+  assert.deepEqual(calls, ["flush", "restart"]);
 });
 
 test("accepted send clears its inactive session or the unchanged active draft", () => {

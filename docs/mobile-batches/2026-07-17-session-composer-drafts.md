@@ -29,11 +29,11 @@ WebView 隐藏 / 进程重启 ┘                         └─ 发送成功才
 
 ## 自动验证
 
-- 移动 Web 状态：`25 passed`，覆盖会话捕获、缺失引用清理、发送接受/拒绝与确认期间继续输入。
+- 移动 Web 状态：`26 passed`，覆盖会话捕获、缺失引用清理、发送接受/拒绝、确认期间继续输入、超长粘贴与重新配对前写入顺序。
 - `npm run typecheck`、`npm run lint -- --max-warnings=0`、`npm run build:mobile-web`：通过。
 - Android JVM：`:app:testDebugUnitTest` 通过。
 - Pixel 7 Room instrumentation：迁移、草稿 DAO 与完整 `LocalDeliveryStoreTest` 共 `47 passed`。首轮真实发现旧 ID 写入未跟随两段 canonical alias，修复后整组复跑通过。
-- release 门禁：`testReleaseUnitTest lintRelease assembleRelease`、R8 与 APK v2 签名通过；最终验收 APK SHA-256 为 `a91d63b8718c57656a1356ca56ebb69f642103974869f1ad88950398b6266fcf`。
+- release 门禁：`testReleaseUnitTest lintRelease assembleRelease`、R8 与 APK v2 签名通过；最终验收 APK SHA-256 为 `f30d0242c3c5c4a2d080d174a6db64ee40531ffd39bbeb3d094b2e1c30c4b0c8`，设备回读 APK hash 一致。
 
 ## Pixel 7 / 隔离 Mobile Lab
 
@@ -52,7 +52,10 @@ WebView 隐藏 / 进程重启 ┘                         └─ 发送成功才
 - High：发送成功前切到 B 时，原逻辑只 flush B 而不清 A。现在 accepted 始终清理 sent-session 的持久化副本；只有仍在 A 且已继续编辑时才保留新内容。状态测试与上述 Pixel 7 真实回合共同覆盖。
 - High：独立的 Room 子流可能组成“B composer + A message graph”中间帧，进而把有效引用误判为消失。现在同一 session projection 原子切换，并在真机 A/B 往返中复测。
 - Medium：strict snapshot v5 配合固定 appassets URL 可能复用旧 bundle。现在入口按 app version cache-bust，WebView 禁止读取缓存；单元测试覆盖版本 URL 与导航白名单。
-- 修复后复核无剩余 Blocker、High 或 Medium；Room schema、DAO、canonical 两段迁移与跨会话 fail-loud 边界未发现额外问题。
+- High：输入框未限制长度时，超过原生 65,536 字符边界会触发 fail-fast。现在 textarea 与状态归一化形成同值双边界，原生 `require` 继续守住 WebView 信任边界。
+- Medium：清空写入尚未被 owner 确认时，A → B → A 可能短暂恢复旧快照。现在 optimistic 草稿按 session 保存，owner 确认前始终显示已提交的新值，用户继续输入会显式接管该值。
+- Medium：重新配对可能先清空 profile，再让 250 ms 待写草稿失去 server owner。现在点击入口同步 flush，两个 JS bridge 调用按队列顺序先保存、后断开。
+- 第二轮独立复核确认上述问题全部关闭，无剩余 Blocker、High 或 Medium；Room schema、DAO、canonical 两段迁移与跨会话 fail-loud 边界未发现额外问题。
 
 ## 不扩大的边界
 
