@@ -368,8 +368,8 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
     original_build_core_runtime = bootstrap_app.build_core_runtime
     observed: dict[str, object] = {}
 
-    def _patched_build_core_runtime(config, workspace, http_resources):
-        runtime = original_build_core_runtime(config, workspace, http_resources)
+    def _patched_build_core_runtime(config, workspace, http_resources, **kwargs):
+        runtime = original_build_core_runtime(config, workspace, http_resources, **kwargs)
         agent_loop = runtime.loop
         bus = runtime.bus
         scheduler = runtime.scheduler
