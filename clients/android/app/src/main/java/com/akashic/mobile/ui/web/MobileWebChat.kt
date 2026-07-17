@@ -40,6 +40,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.webkit.WebResourceErrorCompat
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewClientCompat
+import com.akashic.mobile.BuildConfig
 import com.akashic.mobile.ui.conversation.ConversationUiState
 import com.akashic.mobile.ui.conversation.MessageUi
 import java.io.ByteArrayInputStream
@@ -79,6 +80,7 @@ fun MobileWebChat(
     onRetryAttachment: (String) -> Unit,
     onContinueMeteredTransfer: () -> Unit,
     onRetryFailedMessage: (String) -> Unit,
+    onSaveComposerDraft: (String, String, String?) -> Unit,
     onSaveReadingPosition: (String, String, Int) -> Unit,
     onMarkSessionReadThrough: (String, Long) -> Unit,
     onNavigationTargetHandled: (String) -> Unit,
@@ -115,6 +117,7 @@ fun MobileWebChat(
             onRetryAttachment = onRetryAttachment,
             onContinueMeteredTransfer = onContinueMeteredTransfer,
             onRetryFailedMessage = onRetryFailedMessage,
+            onSaveComposerDraft = onSaveComposerDraft,
             onSaveReadingPosition = onSaveReadingPosition,
             onMarkSessionReadThrough = onMarkSessionReadThrough,
             onNavigationTargetHandled = onNavigationTargetHandled,
@@ -143,6 +146,7 @@ fun MobileWebChat(
             WebView(context).apply {
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = false
+                settings.cacheMode = WebSettings.LOAD_NO_CACHE
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
                 settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
@@ -201,7 +205,7 @@ fun MobileWebChat(
                         return true
                     }
                 }
-                loadUrl(MOBILE_WEB_URL)
+                loadUrl(mobileWebUrl(BuildConfig.VERSION_CODE))
                 webView = this
                 snapshotPump = MobileSnapshotPump(this, mediaRegistry)
             }
@@ -270,6 +274,7 @@ private data class MobileWebCallbacks(
     val onRetryAttachment: (String) -> Unit,
     val onContinueMeteredTransfer: () -> Unit,
     val onRetryFailedMessage: (String) -> Unit,
+    val onSaveComposerDraft: (String, String, String?) -> Unit,
     val onSaveReadingPosition: (String, String, Int) -> Unit,
     val onMarkSessionReadThrough: (String, Long) -> Unit,
     val onNavigationTargetHandled: (String) -> Unit,
@@ -333,6 +338,11 @@ private class MobileWebBridge(
 
     @JavascriptInterface
     fun retryFailedMessage(messageId: String) = dispatch { it.onRetryFailedMessage(messageId) }
+
+    @JavascriptInterface
+    fun saveComposerDraft(sessionId: String, text: String, replyToMessageId: String) = dispatch {
+        it.onSaveComposerDraft(sessionId, text, replyToMessageId.ifBlank { null })
+    }
 
     @JavascriptInterface
     fun saveReadingPosition(sessionId: String, messageId: String, offsetPx: Int) = dispatch {
@@ -455,7 +465,7 @@ private class MobileWebClient(
 
     override fun onPageFinished(view: WebView, url: String) {
         Log.i(MOBILE_WEB_LOG_TAG, "page finished: $url")
-        if (url != MOBILE_WEB_URL) return
+        if (!isMobileWebUrl(url)) return
         val generation = pageGeneration
         view.postDelayed({
             if (generation != pageGeneration) return@postDelayed
@@ -535,10 +545,17 @@ internal enum class MobileNavigationAction { ALLOW_INTERNAL, OPEN_EXTERNAL, BLOC
 
 internal fun mobileWebBackHandled(javascriptResult: String?): Boolean = javascriptResult == "true"
 
+internal fun mobileWebUrl(versionCode: Int): String {
+    require(versionCode > 0) { "应用版本号必须为正数" }
+    return "$MOBILE_WEB_URL?appVersion=$versionCode"
+}
+
+private fun isMobileWebUrl(url: String): Boolean = url.substringBefore('?') == MOBILE_WEB_URL
+
 /** 只允许应用主页面留在 WebView，普通网页交给系统浏览器。 */
 internal fun mobileNavigationAction(url: String, isMainFrame: Boolean): MobileNavigationAction {
     if (!isMainFrame) return MobileNavigationAction.BLOCK
-    if (url == MOBILE_WEB_URL) return MobileNavigationAction.ALLOW_INTERNAL
+    if (isMobileWebUrl(url)) return MobileNavigationAction.ALLOW_INTERNAL
     if (url.startsWith("https://appassets.androidplatform.net/")) {
         return MobileNavigationAction.BLOCK
     }

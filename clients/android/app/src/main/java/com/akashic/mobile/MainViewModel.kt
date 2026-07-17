@@ -4,17 +4,22 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.akashic.mobile.data.local.MessageWithBlocks
+import com.akashic.mobile.data.local.AttachmentTransferEntity
+import com.akashic.mobile.data.local.ComposerDraftEntity
+import com.akashic.mobile.data.local.ConversationSummary
 import com.akashic.mobile.data.local.canRemoveFrom
 import com.akashic.mobile.data.local.isRemoteMissingIn
 import com.akashic.mobile.data.local.MessageAttachmentWithMedia
 import com.akashic.mobile.data.local.decodeStoredToolBlock
 import com.akashic.mobile.data.realtime.TransferNetworkKind
+import com.akashic.mobile.data.realtime.MobileSessionState
 import com.akashic.mobile.domain.model.ConnectionPhase
 import com.akashic.mobile.domain.model.ConnectionState
 import com.akashic.mobile.ui.conversation.ConnectionStatusUi
 import com.akashic.mobile.ui.conversation.CommandUi
 import com.akashic.mobile.ui.conversation.ComposerAttachmentState
 import com.akashic.mobile.ui.conversation.ComposerAttachmentUi
+import com.akashic.mobile.ui.conversation.ComposerDraftUi
 import com.akashic.mobile.ui.conversation.ConversationUiState
 import com.akashic.mobile.ui.conversation.AssistantTurnStatus
 import com.akashic.mobile.ui.conversation.MessageUi
@@ -46,37 +51,54 @@ import kotlin.math.ceil
 
 private const val LARGE_TRANSFER_BYTES = 10L * 1024 * 1024
 
+private data class ComposerLocalState(
+    val attachments: List<AttachmentTransferEntity>,
+    val draft: ComposerDraftEntity?,
+)
+
+private data class ConversationProjection(
+    val session: MobileSessionState,
+    val graph: List<MessageWithBlocks>,
+    val conversations: List<ConversationSummary>,
+    val composer: ComposerLocalState,
+)
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val container = (application as App).container
     val sessionState = container.realtimeSession.state
     private val navigationTarget = MutableStateFlow<NavigationTargetUi?>(null)
 
-    private val messageGraph = sessionState.flatMapLatest { state ->
-        state.currentSessionId?.let(container.database.messages()::observeMessageGraph) ?: flowOf(emptyList())
-    }
-
-    private val conversations = sessionState.flatMapLatest { state ->
-        state.serverId?.let(container.database.conversations()::observeSummaries) ?: flowOf(emptyList())
-    }
-
-    private val attachmentDrafts = sessionState.flatMapLatest { state ->
+    private val conversationProjection = sessionState.flatMapLatest { state ->
         val serverId = state.serverId
         val sessionId = state.currentSessionId
-        if (serverId == null || sessionId == null) {
-            flowOf(emptyList())
+        val graph = sessionId?.let(container.database.messages()::observeMessageGraph) ?: flowOf(emptyList())
+        val conversations = serverId?.let(container.database.conversations()::observeSummaries) ?: flowOf(emptyList())
+        val composer = if (serverId == null || sessionId == null) {
+            flowOf(ComposerLocalState(emptyList(), null))
         } else {
-            container.database.attachmentTransfers().observeDrafts(serverId, sessionId)
+            combine(
+                container.database.attachmentTransfers().observeDrafts(serverId, sessionId),
+                container.database.composerDrafts().observe(serverId, sessionId),
+            ) { attachments, draft ->
+                ComposerLocalState(attachments, draft)
+            }
+        }
+        combine(graph, conversations, composer) { currentGraph, currentConversations, currentComposer ->
+            ConversationProjection(state, currentGraph, currentConversations, currentComposer)
         }
     }
 
     val conversationState = combine(
-        sessionState,
-        messageGraph,
-        conversations,
-        attachmentDrafts,
+        conversationProjection,
         navigationTarget,
-    ) { session, graph, conversations, attachments, target ->
+    ) { projection, target ->
+        val session = projection.session
+        val graph = projection.graph
+        val conversations = projection.conversations
+        val composerLocal = projection.composer
+        val attachments = composerLocal.attachments
+        val draft = composerLocal.draft
         val scopedGraph = graph.filter { it.message.sessionId == session.currentSessionId }
         val messages = scopedGraph.map(::toMessageUi)
         val connection = connectionPresentation(session.connection, session.errorMessage)
@@ -154,6 +176,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             navigationTarget = target,
             projectionGeneration = session.projectionGeneration,
             messages = messages,
+            composerDraft = ComposerDraftUi(
+                text = draft?.text.orEmpty(),
+                replyToMessageId = draft?.replyToMessageId,
+            ),
             pendingMessages = messages.filterIsInstance<MessageUi.User>()
                 .filter { it.deliveryLabel == "待发送" }
                 .map {
@@ -201,6 +227,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             projectionGeneration = 0,
             messages = emptyList(),
             attachments = emptyList(),
+            composerDraft = ComposerDraftUi("", null),
             pendingMessages = emptyList(),
             commands = emptyList(),
             isStreaming = false,
@@ -261,6 +288,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         container.realtimeSession.continueLargeTransfersOnMeteredNetwork()
 
     fun retryFailedMessage(messageId: String) = container.realtimeSession.retryFailedMessage(messageId)
+
+    /** 按桥接调用顺序保存当前电脑的一份会话草稿。 */
+    fun saveComposerDraft(sessionId: String, text: String, replyToMessageId: String?) {
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            container.deliveryStore.saveComposerDraft(
+                sessionId = sessionId,
+                text = text,
+                replyToMessageId = replyToMessageId,
+                expectedServerId = sessionState.value.serverId,
+                updatedAt = System.currentTimeMillis(),
+            )
+        }
+    }
 
     fun retryDownloadedAttachment(attachmentId: String) =
         container.realtimeSession.retryDownloadedAttachment(attachmentId)

@@ -46,6 +46,21 @@ export interface MobileProjectionBaselineState {
   rebuilding: boolean;
 }
 
+export interface MobileComposerDraft {
+  text: string;
+  replyToMessageId?: string;
+}
+
+export interface MobileComposerDraftWrite extends MobileComposerDraft {
+  sessionId: string;
+}
+
+export interface MobileComposerDraftResolution<T extends MobileSelectableMessage> {
+  text: string;
+  replyTarget: T | null;
+  cleanedDraft?: MobileComposerDraft;
+}
+
 export function allMobileAttachmentsReady(attachments: readonly { state: string }[]) {
   return attachments.every((attachment) => attachment.state === "ready");
 }
@@ -85,6 +100,57 @@ export function mobileMessageCanReply(
   selectedSessionId: string | null | undefined,
 ) {
   return message.replyable && message.sessionId === selectedSessionId;
+}
+
+/** 把原生草稿解析为当前会话可展示的文字与引用。 */
+export function resolveMobileComposerDraft<T extends MobileSelectableMessage>(
+  draft: MobileComposerDraft,
+  messages: readonly T[],
+  selectedSessionId: string | null | undefined,
+): MobileComposerDraftResolution<T> {
+  // 1. 没有引用时直接使用原生 owner 的文字
+  if (!draft.replyToMessageId) return { text: draft.text, replyTarget: null };
+
+  // 2. 只恢复仍属于当前会话且允许引用的目标
+  const target = messages.find((message) => message.id === draft.replyToMessageId);
+  if (target && mobileMessageCanReply(target, selectedSessionId)) {
+    return { text: draft.text, replyTarget: target };
+  }
+  return {
+    text: draft.text,
+    replyTarget: null,
+    cleanedDraft: { text: draft.text },
+  };
+}
+
+/** 在调度时捕获会话身份，避免延迟写入落到后续选中的会话。 */
+export function captureMobileComposerDraftWrite(
+  sessionId: string | null | undefined,
+  text: string,
+  replyToMessageId?: string,
+): MobileComposerDraftWrite | null {
+  if (!sessionId) return null;
+  return {
+    sessionId,
+    text,
+    ...(replyToMessageId ? { replyToMessageId } : {}),
+  };
+}
+
+export function mobileComposerDraftMatches(
+  draft: MobileComposerDraft,
+  expected: MobileComposerDraft,
+) {
+  return draft.text === expected.text
+    && (draft.replyToMessageId ?? undefined) === (expected.replyToMessageId ?? undefined);
+}
+
+export function shouldClearAcceptedMobileComposerDraft(
+  active: MobileComposerDraftWrite | null,
+  sent: MobileComposerDraftWrite,
+) {
+  if (active?.sessionId !== sent.sessionId) return true;
+  return mobileComposerDraftMatches(active, sent);
 }
 
 export function formatMobileSelectionCopyText(

@@ -19,8 +19,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MediaAttachmentEntity::class,
         MessageAttachmentEntity::class,
         ConversationReadStateEntity::class,
+        ComposerDraftEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -29,6 +30,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun conversations(): ConversationDao
 
     abstract fun conversationReadStates(): ConversationReadStateDao
+
+    abstract fun composerDrafts(): ComposerDraftDao
 
     abstract fun messages(): MessageDao
 
@@ -51,6 +54,7 @@ abstract class AppDatabase : RoomDatabase() {
             MIGRATION_3_4,
             MIGRATION_4_5,
             MIGRATION_5_6,
+            MIGRATION_6_7,
         ).build()
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -153,6 +157,28 @@ abstract class AppDatabase : RoomDatabase() {
                           )
                     )
                     """.trimIndent(),
+                )
+            }
+        }
+
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `composer_drafts` (
+                        `sessionId` TEXT NOT NULL,
+                        `serverId` TEXT NOT NULL,
+                        `text` TEXT NOT NULL,
+                        `replyToMessageId` TEXT,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`sessionId`),
+                        FOREIGN KEY(`serverId`) REFERENCES `server_profiles`(`serverId`) ON UPDATE NO ACTION ON DELETE CASCADE,
+                        FOREIGN KEY(`sessionId`) REFERENCES `conversations`(`sessionId`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_composer_drafts_serverId` ON `composer_drafts` (`serverId`)",
                 )
             }
         }

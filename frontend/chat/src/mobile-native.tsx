@@ -67,15 +67,21 @@ import {
   advanceMobileProjectionBaseline,
   advanceMobileUnreadTracking,
   allMobileAttachmentsReady,
+  captureMobileComposerDraftWrite,
   formatMobileSelectionCopyText,
   isMobileImageViewerHistoryState,
   mobileMessageCanReply,
   mobileMessageHasCopyContent,
+  mobileComposerDraftMatches,
   normalizeMobileSearchText,
   reconcileMobileMessageSelection,
+  resolveMobileComposerDraft,
   selectableMobileMessages,
+  shouldClearAcceptedMobileComposerDraft,
   updateMobileSearchIndex,
   type MobileSearchIndexEntry,
+  type MobileComposerDraft,
+  type MobileComposerDraftWrite,
 } from "./mobile-message-state";
 import type { AgentBlock, ChatMessage } from "./main";
 import {
@@ -176,7 +182,7 @@ interface MobilePendingMessage {
 }
 
 export interface MobileSnapshot {
-  protocolVersion: 4;
+  protocolVersion: 5;
   connection: {
     label: string;
     status: ConnectionStatus;
@@ -191,6 +197,7 @@ export interface MobileSnapshot {
   messages: MobileMessage[];
   pluginResponses: { requestId: string; resultJson?: string; error?: string }[];
   composer: {
+    draft: MobileComposerDraft;
     attachments: MobileAttachment[];
     pendingMessages: MobilePendingMessage[];
     transferStatus?: MobileTransferStatus;
@@ -227,6 +234,7 @@ interface NativeBridge {
   saveDownloadedAttachment(attachmentId: string): void;
   setWebHistoryActive(active: boolean): void;
   dismissError(): void;
+  saveComposerDraft(sessionId: string, text: string, replyToMessageId: string): void;
   sendMessage(requestId: string, text: string, replyToMessageId: string, attachmentIdsJson: string): void;
   copyText(text: string): void;
   performActionHaptic(): void;
@@ -400,7 +408,7 @@ function parseTransferStatus(value: unknown): MobileTransferStatus {
 function parseMobileSnapshot(value: unknown): MobileSnapshot {
   // 1. 校验协议版本与根对象
   const raw = requireRecord(value, "snapshot");
-  if (raw.protocolVersion !== 4) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
+  if (raw.protocolVersion !== 5) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
   const connection = requireRecord(raw.connection, "connection");
   const status = requireString(connection.status, "connection.status");
   if (!["connecting", "ready", "degraded", "reconnecting", "disconnected"].includes(status)) {
@@ -459,7 +467,7 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
       };
     })();
   return {
-    protocolVersion: 4,
+    protocolVersion: 5,
     connection: {
       label: requireString(connection.label, "connection.label"),
       status: status as ConnectionStatus,
@@ -474,6 +482,13 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
     messages,
     pluginResponses,
     composer: {
+      draft: (() => {
+        const draft = requireRecord(composer.draft, "composer.draft");
+        return {
+          text: requireString(draft.text, "composer.draft.text"),
+          replyToMessageId: optionalString(draft.replyToMessageId, "composer.draft.replyToMessageId"),
+        };
+      })(),
       attachments: requireArray(composer.attachments, "composer.attachments", parseAttachment),
       pendingMessages: requireArray(composer.pendingMessages, "composer.pendingMessages", (item, index) => {
         const pending = requireRecord(item, `composer.pendingMessages[${index}]`);
@@ -551,9 +566,72 @@ function MobileNativeApp() {
   const searchHighlightTimerRef = useRef<number | null>(null);
   const previousSessionIdRef = useRef<string | undefined>(undefined);
   const handledNavigationTargetRef = useRef<string | undefined>(undefined);
-  const pendingSendRequestRef = useRef<string | null>(null);
+  const pendingSendRequestRef = useRef<{
+    requestId: string;
+    draft: MobileComposerDraftWrite;
+  } | null>(null);
   const surfaceRef = useRef<MobileSurface>({ kind: "chat" });
   const selectionActiveRef = useRef(false);
+  const activeComposerDraftRef = useRef<MobileComposerDraftWrite | null>(null);
+  const pendingComposerDraftRef = useRef<MobileComposerDraftWrite | null>(null);
+  const awaitingComposerDraftRef = useRef<MobileComposerDraftWrite | null>(null);
+  const composerDraftTimerRef = useRef<number | null>(null);
+
+  const saveComposerDraft = useCallback((draft: MobileComposerDraftWrite) => {
+    window.AkashicNative?.saveComposerDraft(
+      draft.sessionId,
+      draft.text,
+      draft.replyToMessageId ?? "",
+    );
+  }, []);
+
+  const flushComposerDraft = useCallback(() => {
+    if (composerDraftTimerRef.current !== null) {
+      window.clearTimeout(composerDraftTimerRef.current);
+      composerDraftTimerRef.current = null;
+    }
+    const pending = pendingComposerDraftRef.current;
+    pendingComposerDraftRef.current = null;
+    if (pending) saveComposerDraft(pending);
+  }, [saveComposerDraft]);
+
+  const scheduleComposerDraft = useCallback((draft: MobileComposerDraftWrite) => {
+    pendingComposerDraftRef.current = draft;
+    if (composerDraftTimerRef.current !== null) window.clearTimeout(composerDraftTimerRef.current);
+    composerDraftTimerRef.current = window.setTimeout(() => {
+      composerDraftTimerRef.current = null;
+      const pending = pendingComposerDraftRef.current;
+      pendingComposerDraftRef.current = null;
+      if (pending) saveComposerDraft(pending);
+    }, 250);
+  }, [saveComposerDraft]);
+
+  const updateComposerDraft = useCallback((text: string, target: MobileMessage | null) => {
+    const current = activeComposerDraftRef.current;
+    const draft = captureMobileComposerDraftWrite(current?.sessionId, text, target?.id);
+    setInput(text);
+    setReplyTarget(target);
+    if (!draft) return;
+    activeComposerDraftRef.current = draft;
+    awaitingComposerDraftRef.current = null;
+    scheduleComposerDraft(draft);
+  }, [scheduleComposerDraft]);
+
+  const clearAcceptedComposerDraft = useCallback((sessionId: string) => {
+    const current = activeComposerDraftRef.current;
+    const cleared = { sessionId, text: "" };
+    if (current?.sessionId !== sessionId) {
+      saveComposerDraft(cleared);
+      return;
+    }
+    if (composerDraftTimerRef.current !== null) {
+      window.clearTimeout(composerDraftTimerRef.current);
+      composerDraftTimerRef.current = null;
+    }
+    pendingComposerDraftRef.current = null;
+    awaitingComposerDraftRef.current = cleared;
+    saveComposerDraft(cleared);
+  }, [saveComposerDraft]);
 
   useEffect(() => {
     let pending: MobileSnapshot | null = null;
@@ -615,13 +693,17 @@ function MobileNativeApp() {
         );
       },
       receiveSendResult(requestId, accepted) {
-        if (pendingSendRequestRef.current !== requestId) return;
+        const pendingSend = pendingSendRequestRef.current;
+        if (pendingSend?.requestId !== requestId) return;
         pendingSendRequestRef.current = null;
         setSendPending(false);
         if (!accepted) return;
         setSendScrollRequest((current) => current + 1);
-        setInput("");
-        setReplyTarget(null);
+        if (shouldClearAcceptedMobileComposerDraft(activeComposerDraftRef.current, pendingSend.draft)) {
+          clearAcceptedComposerDraft(pendingSend.draft.sessionId);
+        } else {
+          flushComposerDraft();
+        }
         setCommandsOpen(false);
         textareaRef.current?.blur();
       },
@@ -654,7 +736,7 @@ function MobileNativeApp() {
       window.history.scrollRestoration = previousScrollRestoration;
       delete window.AkashicMobile;
     };
-  }, []);
+  }, [clearAcceptedComposerDraft, flushComposerDraft]);
 
   useEffect(() => {
     if (snapshot?.composer.isStopping || !snapshot?.composer.canStop || snapshot?.connection.error) {
@@ -662,11 +744,78 @@ function MobileNativeApp() {
     }
   }, [snapshot?.composer.canStop, snapshot?.composer.isStopping, snapshot?.connection.error]);
 
+  useLayoutEffect(() => {
+    const sessionId = snapshot?.selectedSessionId;
+    const previous = activeComposerDraftRef.current;
+    if (!snapshot || !sessionId) {
+      if (previous) flushComposerDraft();
+      activeComposerDraftRef.current = null;
+      awaitingComposerDraftRef.current = null;
+      setInput("");
+      setReplyTarget(null);
+      return;
+    }
+
+    // 1. 切换会话或原生确认 owner 写入时，成对恢复文字与引用
+    const sessionChanged = previous?.sessionId !== sessionId;
+    const awaiting = awaitingComposerDraftRef.current;
+    const ownerAcknowledged = awaiting?.sessionId === sessionId
+      && mobileComposerDraftMatches(snapshot.composer.draft, awaiting);
+    if (sessionChanged) flushComposerDraft();
+    if (awaiting?.sessionId === sessionId && !ownerAcknowledged && !sessionChanged) return;
+    if (sessionChanged || ownerAcknowledged) {
+      if (ownerAcknowledged) awaitingComposerDraftRef.current = null;
+      const resolved = resolveMobileComposerDraft(
+        snapshot.composer.draft,
+        snapshot.messages,
+        sessionId,
+      );
+      const hydrated = captureMobileComposerDraftWrite(
+        sessionId,
+        resolved.text,
+        resolved.replyTarget?.id,
+      );
+      if (!hydrated) throw new Error("已选会话无法建立输入草稿");
+      activeComposerDraftRef.current = hydrated;
+      setInput(resolved.text);
+      setReplyTarget(resolved.replyTarget);
+      if (resolved.cleanedDraft) {
+        const cleaned = { sessionId, ...resolved.cleanedDraft };
+        activeComposerDraftRef.current = cleaned;
+        saveComposerDraft(cleaned);
+      }
+      return;
+    }
+
+    // 2. 当前引用目标消失时立即隐藏，并让原生 owner 清理悬空 ID
+    if (!previous?.replyToMessageId) return;
+    const resolved = resolveMobileComposerDraft(previous, snapshot.messages, sessionId);
+    if (!resolved.cleanedDraft) return;
+    const cleaned = { sessionId, ...resolved.cleanedDraft };
+    activeComposerDraftRef.current = cleaned;
+    setReplyTarget(null);
+    if (composerDraftTimerRef.current !== null) {
+      window.clearTimeout(composerDraftTimerRef.current);
+      composerDraftTimerRef.current = null;
+    }
+    pendingComposerDraftRef.current = null;
+    saveComposerDraft(cleaned);
+  }, [
+    flushComposerDraft,
+    saveComposerDraft,
+    snapshot,
+  ]);
+
   useEffect(() => {
-    if (!replyTarget) return;
-    const targetStillVisible = snapshot?.messages.some((message) => message.id === replyTarget.id) ?? false;
-    if (replyTarget.sessionId !== snapshot?.selectedSessionId || !targetStillVisible) setReplyTarget(null);
-  }, [replyTarget, snapshot?.messages, snapshot?.selectedSessionId]);
+    const flushWhenHidden = () => {
+      if (document.visibilityState === "hidden") flushComposerDraft();
+    };
+    document.addEventListener("visibilitychange", flushWhenHidden);
+    return () => {
+      document.removeEventListener("visibilitychange", flushWhenHidden);
+      flushComposerDraft();
+    };
+  }, [flushComposerDraft]);
 
   useEffect(() => {
     const actionable = new Set(
@@ -831,9 +980,12 @@ function MobileNativeApp() {
     if (sendPending || !snapshot.composer.canSend || !attachmentsReady) return;
     if (!text && snapshot.composer.attachments.length === 0) return;
     const native = window.AkashicNative;
-    if (!native) return;
+    const sessionId = snapshot.selectedSessionId;
+    if (!native || !sessionId) return;
     const requestId = `send-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    pendingSendRequestRef.current = requestId;
+    const sentDraft = captureMobileComposerDraftWrite(sessionId, input, replyTarget?.id);
+    if (!sentDraft) throw new Error("发送消息无法捕获当前会话草稿");
+    pendingSendRequestRef.current = { requestId, draft: sentDraft };
     setSendPending(true);
     native.sendMessage(
       requestId,
@@ -930,7 +1082,7 @@ function MobileNativeApp() {
     setHighlightedMessageId(null);
     setCommandsOpen(false);
     setQueueOpen(false);
-    setReplyTarget(null);
+    updateComposerDraft(input, null);
     textareaRef.current?.blur();
     selectionActiveRef.current = true;
     setSelectedMessageIds(new Set([messageId]));
@@ -957,7 +1109,7 @@ function MobileNativeApp() {
     const target = selectedMessages.length === 1 ? selectedMessages[0] : undefined;
     if (!target || !mobileMessageCanReply(target, snapshot.selectedSessionId)) return;
     clearSelection();
-    setReplyTarget(target);
+    updateComposerDraft(input, target);
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
   const navigateToSurface = (next: Exclude<MobileSurface, { kind: "chat" }>) => {
@@ -1086,7 +1238,7 @@ function MobileNativeApp() {
                         onEnterSelection={() => enterSelection(source.id)}
                         onToggleSelection={() => toggleSelection(source.id)}
                       >
-                        <SwipeToReply disabled={!canReply || selectionActive} onReply={() => setReplyTarget(source)}>
+                        <SwipeToReply disabled={!canReply || selectionActive} onReply={() => updateComposerDraft(input, source)}>
                           <ChatMessageView
                             message={message}
                             onCopyToolDetail={copyToolDetail}
@@ -1123,7 +1275,7 @@ function MobileNativeApp() {
                             copied={copiedMessageId === source.id}
                             canReply={canReply}
                             onCopy={() => copyMessage(source)}
-                            onReply={() => setReplyTarget(source)}
+                            onReply={() => updateComposerDraft(input, source)}
                             deliveryActionBusy={recoveringMessageIds.has(source.id)}
                             onDeliveryAction={() => {
                               setRecoveringMessageIds((current) => new Set(current).add(source.id));
@@ -1183,13 +1335,13 @@ function MobileNativeApp() {
               stopRequested={stopRequested}
               sendPending={sendPending}
               replyTarget={replyTarget}
-              onInput={setInput}
+              onInput={(value) => updateComposerDraft(value, replyTarget)}
               onToggleCommands={toggleCommands}
               onToggleQueue={() => setQueueOpen((current) => !current)}
               onCloseCommands={closeCommands}
               onSend={send}
               onStop={stop}
-              onCancelReply={() => setReplyTarget(null)}
+              onCancelReply={() => updateComposerDraft(input, null)}
             />
           )}
         </div>

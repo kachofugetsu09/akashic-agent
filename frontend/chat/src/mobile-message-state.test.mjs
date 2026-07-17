@@ -5,12 +5,16 @@ import {
   advanceMobileProjectionBaseline,
   advanceMobileUnreadTracking,
   allMobileAttachmentsReady,
+  captureMobileComposerDraftWrite,
   formatMobileSelectionCopyText,
   isMobileImageViewerHistoryState,
   mobileMessageCanReply,
+  mobileComposerDraftMatches,
   reconcileMobileMessageSelection,
   reconcileAssistantMessageIds,
+  resolveMobileComposerDraft,
   selectableMobileMessages,
+  shouldClearAcceptedMobileComposerDraft,
   updateMobileUnreadMessageIds,
   updateMobileSearchIndex,
 } from "./mobile-message-state.ts";
@@ -90,6 +94,77 @@ test("composer waits until every attachment is ready", () => {
   assert.equal(allMobileAttachmentsReady([{ state: "ready" }, { state: "ready" }]), true);
   assert.equal(allMobileAttachmentsReady([{ state: "ready" }, { state: "failed" }]), false);
   assert.equal(allMobileAttachmentsReady([{ state: "ready" }, { state: "uploading" }]), false);
+});
+
+test("session draft restores text and its visible reply target together", () => {
+  const target = selectableMessage("answer", "assistant", "回答");
+
+  const resolved = resolveMobileComposerDraft(
+    { text: "继续追问", replyToMessageId: target.id },
+    [target],
+    "mobile-current",
+  );
+
+  assert.equal(resolved.text, "继续追问");
+  assert.equal(resolved.replyTarget, target);
+  assert.equal(resolved.cleanedDraft, undefined);
+});
+
+test("missing draft reply stays hidden and asks the owner to preserve only text", () => {
+  const resolved = resolveMobileComposerDraft(
+    { text: "仍需保留", replyToMessageId: "vanished" },
+    [],
+    "mobile-current",
+  );
+
+  assert.equal(resolved.replyTarget, null);
+  assert.deepEqual(resolved.cleanedDraft, { text: "仍需保留" });
+});
+
+test("debounced draft write keeps the session captured when it was scheduled", () => {
+  const scheduled = captureMobileComposerDraftWrite("mobile-old", "旧会话草稿", "message-old");
+  const selectedSessionId = "mobile-new";
+
+  assert.equal(selectedSessionId, "mobile-new");
+  assert.deepEqual(scheduled, {
+    sessionId: "mobile-old",
+    text: "旧会话草稿",
+    replyToMessageId: "message-old",
+  });
+});
+
+test("snapshot owner acknowledgement compares text and reply identity", () => {
+  assert.equal(mobileComposerDraftMatches({ text: "" }, { text: "" }), true);
+  assert.equal(
+    mobileComposerDraftMatches(
+      { text: "继续", replyToMessageId: "one" },
+      { text: "继续", replyToMessageId: "two" },
+    ),
+    false,
+  );
+});
+
+test("accepted send clears its inactive session or the unchanged active draft", () => {
+  const sent = {
+    sessionId: "mobile-current",
+    text: "发送内容",
+    replyToMessageId: "answer",
+  };
+
+  assert.equal(shouldClearAcceptedMobileComposerDraft({ ...sent }, sent), true);
+  assert.equal(
+    shouldClearAcceptedMobileComposerDraft({ ...sent, text: "发送后新输入" }, sent),
+    false,
+  );
+  assert.equal(
+    shouldClearAcceptedMobileComposerDraft({ ...sent, replyToMessageId: undefined }, sent),
+    false,
+  );
+  assert.equal(
+    shouldClearAcceptedMobileComposerDraft({ ...sent, sessionId: "mobile-other" }, sent),
+    true,
+  );
+  assert.equal(shouldClearAcceptedMobileComposerDraft(null, sent), true);
 });
 
 test("image viewer owns only its matching history entry", () => {

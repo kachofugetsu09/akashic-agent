@@ -20,7 +20,14 @@ class AppDatabaseMigrationTest {
     @After
     fun removeTestDatabases() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        listOf(DATABASE_1_2, DATABASE_2_3, DATABASE_3_4, DATABASE_4_5, DATABASE_5_6)
+        listOf(
+            DATABASE_1_2,
+            DATABASE_2_3,
+            DATABASE_3_4,
+            DATABASE_4_5,
+            DATABASE_5_6,
+            DATABASE_6_7,
+        )
             .forEach(context::deleteDatabase)
     }
 
@@ -231,11 +238,47 @@ class AppDatabaseMigrationTest {
         }
     }
 
+    @Test
+    fun migrate6To7CreatesConversationOwnedComposerDrafts() {
+        helper.createDatabase(DATABASE_6_7, 6).apply {
+            execSQL(
+                "INSERT INTO server_profiles VALUES('server', '电脑', 'device', 'alias', 'pin', '[]', '[]', '[]', 1)",
+            )
+            execSQL("INSERT INTO conversations VALUES('mobile:test', 'server', '旧会话', 2, 1)")
+            close()
+        }
+
+        helper.runMigrationsAndValidate(
+            DATABASE_6_7,
+            7,
+            true,
+            AppDatabase.MIGRATION_6_7,
+        ).use { database ->
+            database.execSQL(
+                """
+                INSERT INTO composer_drafts(
+                    sessionId, serverId, text, replyToMessageId, updatedAt
+                ) VALUES('mobile:test', 'server', '保留草稿', 'missing-message', 3)
+                """.trimIndent(),
+            )
+            database.query(
+                "SELECT text, replyToMessageId, updatedAt FROM composer_drafts WHERE sessionId = 'mobile:test'",
+            ).use { cursor ->
+                check(cursor.moveToFirst())
+                assertEquals("保留草稿", cursor.getString(0))
+                assertEquals("missing-message", cursor.getString(1))
+                assertEquals(3L, cursor.getLong(2))
+            }
+
+        }
+    }
+
     private companion object {
         const val DATABASE_1_2 = "migration-1-2"
         const val DATABASE_2_3 = "migration-2-3"
         const val DATABASE_3_4 = "migration-3-4"
         const val DATABASE_4_5 = "migration-4-5"
         const val DATABASE_5_6 = "migration-5-6"
+        const val DATABASE_6_7 = "migration-6-7"
     }
 }

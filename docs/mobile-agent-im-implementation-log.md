@@ -479,3 +479,12 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - kill-ai-slop 扫描未在新增 `mobile_ui.js` / `mobile_ui.css` 中发现渐变、阴影、玻璃拟态、卡片墙或胶囊堆叠；语义色只落在左脑圆点/区域和右脑菱形/区域。
 - 自动验证：定向 Python `73 passed`、Node `3 passed`、Pyright `0 errors / 0 warnings`、移动 Web 生产构建成功、完整 `tests/` `2329 passed`，diff check 通过。
 - 完整设计、只读边界、Pixel 7 操作路径与最终截图见 `docs/mobile-batches/2026-07-17-akasha-recall-inspector.md`。
+
+## 2026-07-17 会话级输入与引用草稿
+
+- 输入文字和回复目标现在由 Android Room 按电脑与会话持有；切换会话、WebView 隐藏和进程重启都会恢复，发送拒绝保留，服务端接受后只清除未被继续编辑的那一份。
+- Room schema v7 把草稿纳入会话生命周期、失效会话本地工作判断和 optimistic / streaming canonical ID 迁移；没有增加 Agent 核心或云端草稿协议。
+- Pixel 7 首轮真实发现 Android Flow 把 A 的旧 composer 投影短暂配给 B；最终按 `(serverId, sessionId)` 阻止混合 snapshot，附件草稿同时获得相同隔离。
+- 独立 Review 进一步把消息图、会话目录与 composer 收进同一个 session projection，修复 accepted 前切换会话后旧草稿复活，并为 strict v5 appassets 入口增加 app-version cache bust 与 no-cache。
+- 自动验证通过移动 Web `25 passed`、TypeScript、ESLint、生产构建、Android JVM、release/R8/v2 签名；Pixel 7 Room instrumentation `47 passed`。
+- Pixel 7 隔离 Mobile Lab 已验证 A/B 独立、force-stop 后文字与回复恢复、A 发送成功只清 A 且 B 保留，以及 accepted 前切到 B 后返回 A 不会复活已发送草稿；完整设计与证据见 `docs/mobile-batches/2026-07-17-session-composer-drafts.md`。

@@ -59,6 +59,32 @@ data class ConversationReadStateEntity(
     val updatedAt: Long,
 )
 
+@Entity(
+    tableName = "composer_drafts",
+    foreignKeys = [
+        ForeignKey(
+            entity = ServerProfileEntity::class,
+            parentColumns = ["serverId"],
+            childColumns = ["serverId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+        ForeignKey(
+            entity = ConversationEntity::class,
+            parentColumns = ["sessionId"],
+            childColumns = ["sessionId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index("serverId")],
+)
+data class ComposerDraftEntity(
+    @PrimaryKey val sessionId: String,
+    val serverId: String,
+    val text: String,
+    val replyToMessageId: String?,
+    val updatedAt: Long,
+)
+
 data class ConversationSummary(
     val sessionId: String,
     val title: String,

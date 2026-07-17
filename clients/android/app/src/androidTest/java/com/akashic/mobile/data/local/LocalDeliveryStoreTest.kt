@@ -176,6 +176,65 @@ class LocalDeliveryStoreTest {
     }
 
     @Test
+    fun persistsComposerDraftAndClearsOnlyTheEmptyState() = runBlocking {
+        database.messages().upsert(
+            MessageEntity(
+                "assistant:answer",
+                null,
+                "mobile:test",
+                "assistant",
+                "历史回答",
+                "complete",
+                1,
+                1,
+            ),
+        )
+
+        store.saveComposerDraft(
+            sessionId = "mobile:test",
+            text = "继续追问",
+            replyToMessageId = "assistant:answer",
+            expectedServerId = "server",
+            updatedAt = 2,
+        )
+
+        val persisted = database.composerDrafts().get("server", "mobile:test")
+        assertEquals("继续追问", persisted?.text)
+        assertEquals("assistant:answer", persisted?.replyToMessageId)
+        assertTrue(database.conversations().observeSummaries("server").first().single().hasLocalWork)
+
+        store.saveComposerDraft("mobile:test", "", null, "server", 3)
+        assertEquals(null, database.composerDrafts().get("server", "mobile:test"))
+    }
+
+    @Test
+    fun dropsMissingReplyIdentityButPreservesDraftText() = runBlocking {
+        store.saveComposerDraft(
+            sessionId = "mobile:test",
+            text = "目标消失后文字仍在",
+            replyToMessageId = "assistant:missing",
+            expectedServerId = "server",
+            updatedAt = 2,
+        )
+
+        val persisted = database.composerDrafts().get("server", "mobile:test")
+        assertEquals("目标消失后文字仍在", persisted?.text)
+        assertEquals(null, persisted?.replyToMessageId)
+    }
+
+    @Test
+    fun keepsUnavailableConversationWithComposerDraft() = runBlocking {
+        assertEquals(1, database.conversations().markRemoteKnown("mobile:test"))
+        store.saveComposerDraft("mobile:test", "稍后继续", null, "server", 2)
+
+        assertEquals(
+            RemoveUnavailableConversationResult.HAS_LOCAL_WORK,
+            store.removeUnavailableConversation("server", "mobile:test"),
+        )
+        assertNotNull(database.conversations().get("mobile:test"))
+    }
+
+    @Test
     fun conversationSummarySeparatesRemoteHistoryFromLocalWork() = runBlocking {
         assertEquals(1, database.conversations().markRemoteKnown("mobile:test"))
         database.messages().upsert(
@@ -1364,6 +1423,13 @@ class LocalDeliveryStoreTest {
             event(2, "message.final", buildJsonObject { put("content", "两段迁移回答") }),
             completedAt,
         )
+        store.saveComposerDraft(
+            "mobile:test",
+            "沿着这条回答继续",
+            "assistant:turn",
+            "server",
+            completedAt,
+        )
         store.applyEvent(
             "server",
             "device",
@@ -1390,6 +1456,10 @@ class LocalDeliveryStoreTest {
         val summary = database.conversations().observeSummaries("server").first().single()
         assertEquals("mobile:test:assistant:history-canonical", summary.anchorMessageId)
         assertEquals(-22, summary.anchorOffsetPx)
+        assertEquals(
+            "mobile:test:assistant:history-canonical",
+            database.composerDrafts().get("server", "mobile:test")?.replyToMessageId,
+        )
     }
 
     private fun transfer(state: String, offset: Long, id: String = "attachment") = AttachmentTransferEntity(

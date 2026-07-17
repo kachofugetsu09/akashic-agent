@@ -14,6 +14,7 @@ data class ConversationUiState(
     val projectionGeneration: Long,
     val messages: List<MessageUi>,
     val attachments: List<ComposerAttachmentUi>,
+    val composerDraft: ComposerDraftUi,
     val pendingMessages: List<PendingMessageUi>,
     val transferStatus: TransferStatusUi? = null,
     val commands: List<CommandUi>,
@@ -56,6 +57,11 @@ data class ComposerAttachmentUi(
     val transferredBytes: Long,
     val state: ComposerAttachmentState,
     val canRemove: Boolean,
+)
+
+data class ComposerDraftUi(
+    val text: String,
+    val replyToMessageId: String?,
 )
 
 enum class ComposerAttachmentState {
@@ -215,6 +221,7 @@ internal val EmptyConversationState = ConversationUiState(
     projectionGeneration = 0,
     messages = emptyList(),
     attachments = emptyList(),
+    composerDraft = ComposerDraftUi("", null),
     pendingMessages = emptyList(),
     commands = emptyList(),
     isStreaming = false,
@@ -311,6 +318,7 @@ internal val PreviewConversationState = ConversationUiState(
             canRemove = false,
         ),
     ),
+    composerDraft = ComposerDraftUi("", null),
     pendingMessages = emptyList(),
     commands = listOf(
         CommandUi("undo", "撤销上一轮对话"),

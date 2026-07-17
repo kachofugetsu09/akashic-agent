@@ -90,6 +90,10 @@ interface ConversationDao {
               WHERE transfer.serverId = conversation.serverId
                 AND transfer.sessionId = conversation.sessionId
                 AND transfer.state IN ('pending', 'uploading', 'finishing', 'ready', 'failed')
+            ) OR EXISTS (
+              SELECT 1 FROM composer_drafts AS draft
+              WHERE draft.serverId = conversation.serverId
+                AND draft.sessionId = conversation.sessionId
             )
           ) AS hasLocalWork
         FROM conversations AS conversation
@@ -120,6 +124,11 @@ interface ConversationDao {
             SELECT 1 FROM attachment_transfers
             WHERE attachment_transfers.sessionId = conversations.sessionId
               AND attachment_transfers.serverId = :serverId
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM composer_drafts
+            WHERE composer_drafts.sessionId = conversations.sessionId
+              AND composer_drafts.serverId = :serverId
           )
         """,
     )
@@ -172,6 +181,40 @@ interface ConversationReadStateDao {
         """,
     )
     suspend fun markReadThrough(sessionId: String, readAt: Long, updatedAt: Long)
+}
+
+@Dao
+interface ComposerDraftDao {
+    @Query(
+        """
+        UPDATE composer_drafts
+        SET replyToMessageId = :targetMessageId
+        WHERE sessionId = :sessionId AND replyToMessageId = :sourceMessageId
+        """,
+    )
+    suspend fun moveReplyTarget(
+        sessionId: String,
+        sourceMessageId: String,
+        targetMessageId: String,
+    ): Int
+
+    @Query(
+        "SELECT * FROM composer_drafts WHERE serverId = :serverId AND sessionId = :sessionId",
+    )
+    fun observe(serverId: String, sessionId: String): Flow<ComposerDraftEntity?>
+
+    @Query(
+        "SELECT * FROM composer_drafts WHERE serverId = :serverId AND sessionId = :sessionId",
+    )
+    suspend fun get(serverId: String, sessionId: String): ComposerDraftEntity?
+
+    @Upsert
+    suspend fun upsert(draft: ComposerDraftEntity)
+
+    @Query(
+        "DELETE FROM composer_drafts WHERE serverId = :serverId AND sessionId = :sessionId",
+    )
+    suspend fun delete(serverId: String, sessionId: String): Int
 }
 
 @Dao

@@ -59,8 +59,48 @@ class LocalDeliveryStore(
     private val database: AppDatabase,
     private val mediaCache: MediaCacheStore,
 ) {
-    private val readingStateMutex = Mutex()
+    private val projectionStateMutex = Mutex()
     private val canonicalMessageAliases = linkedMapOf<String, String>()
+
+    /** 串行校验并保存当前电脑的一份会话草稿。 */
+    suspend fun saveComposerDraft(
+        sessionId: String,
+        text: String,
+        replyToMessageId: String?,
+        expectedServerId: String?,
+        updatedAt: Long,
+    ) = projectionStateMutex.withLock {
+        // 1. 在 WebView 边界限制消息大小并确认会话归属
+        require(text.length <= 65_536) { "会话草稿超过消息长度上限" }
+        val conversation = requireNotNull(database.conversations().get(sessionId)) {
+            "会话草稿对应的会话不存在: $sessionId"
+        }
+        require(conversation.serverId == expectedServerId) { "会话草稿不属于当前电脑" }
+
+        // 2. 引用目标消失属于可恢复状态；跨会话目标仍然是协议错误
+        val resolvedReplyId = replyToMessageId?.let { messageId ->
+            require(messageId.length in 1..512) { "会话草稿引用 ID 无效" }
+            val resolvedMessageId = canonicalMessageAliases[messageId] ?: messageId
+            val target = database.messages().get(resolvedMessageId) ?: return@let null
+            require(target.sessionId == sessionId) { "会话草稿引用不属于当前会话" }
+            resolvedMessageId
+        }
+
+        // 3. 空草稿删除实体，其余状态原样保存供进程重启恢复
+        if (text.isEmpty() && resolvedReplyId == null) {
+            database.composerDrafts().delete(conversation.serverId, sessionId)
+        } else {
+            database.composerDrafts().upsert(
+                ComposerDraftEntity(
+                    sessionId = sessionId,
+                    serverId = conversation.serverId,
+                    text = text,
+                    replyToMessageId = resolvedReplyId,
+                    updatedAt = updatedAt,
+                ),
+            )
+        }
+    }
 
     /** 串行校验并保存 WebView 当前可见消息锚点。 */
     suspend fun saveReadingPosition(
@@ -69,7 +109,7 @@ class LocalDeliveryStore(
         offsetPx: Int,
         expectedServerId: String?,
         updatedAt: Long,
-    ): Boolean = readingStateMutex.withLock {
+    ): Boolean = projectionStateMutex.withLock {
         // 1. 校验当前投影边界；canonical 迁移后的旧 UI 写入已失效
         require(offsetPx in -10_000..10_000) { "阅读锚点偏移超出范围" }
         val conversation = requireNotNull(database.conversations().get(sessionId)) {
@@ -91,7 +131,7 @@ class LocalDeliveryStore(
         readAt: Long,
         expectedServerId: String?,
         updatedAt: Long,
-    ) = readingStateMutex.withLock {
+    ) = projectionStateMutex.withLock {
         // 1. 校验 WebView 边界输入与当前电脑身份
         require(readAt >= 0) { "已读水位不能为负数" }
         val conversation = requireNotNull(database.conversations().get(sessionId)) {
@@ -138,7 +178,7 @@ class LocalDeliveryStore(
     /** 清除可从服务端恢复的投影与附件缓存，同时保留配对和未发送工作。 */
     suspend fun clearReloadableCache(serverId: String, preservedSessionId: String?) {
         // 1. 原子移除已提交消息，保留待发送消息、草稿和连接身份
-        readingStateMutex.withLock {
+        projectionStateMutex.withLock {
             database.withTransaction {
                 database.messages().deleteReloadableServerCache(serverId)
                 database.conversations().deleteEmptyProjection(serverId, preservedSessionId)
@@ -153,7 +193,7 @@ class LocalDeliveryStore(
     suspend fun removeUnavailableConversation(
         serverId: String,
         sessionId: String,
-    ): RemoveUnavailableConversationResult = readingStateMutex.withLock {
+    ): RemoveUnavailableConversationResult = projectionStateMutex.withLock {
         // 1. 在持久化边界重新确认会话归属和可删除状态
         val result = database.withTransaction {
             val conversation = requireNotNull(database.conversations().get(sessionId)) {
@@ -165,7 +205,8 @@ class LocalDeliveryStore(
             }
             if (
                 database.messages().countLocalWorkForSession(sessionId) > 0 ||
-                database.attachmentTransfers().drafts(serverId, sessionId).isNotEmpty()
+                database.attachmentTransfers().drafts(serverId, sessionId).isNotEmpty() ||
+                database.composerDrafts().get(serverId, sessionId) != null
             ) {
                 return@withTransaction RemoveUnavailableConversationResult.HAS_LOCAL_WORK
             }
@@ -188,7 +229,7 @@ class LocalDeliveryStore(
         envelope: WireEnvelope,
         updatedAt: Long,
         preservedSessionId: String? = null,
-    ): Long = readingStateMutex.withLock {
+    ): Long = projectionStateMutex.withLock {
         require(envelope.kind == WireKind.EVENT) { "Only event envelopes can advance the cursor" }
         val eventSeq = requireNotNull(envelope.eventSeq)
         val connectionEpoch = requireNotNull(envelope.connectionEpoch)
@@ -853,6 +894,7 @@ class LocalDeliveryStore(
 
         // 2. 将阅读位置与流式子项迁移后删除旧身份
         database.conversationReadStates().moveAnchor(source.sessionId, sourceId, canonical.messageId)
+        database.composerDrafts().moveReplyTarget(source.sessionId, sourceId, canonical.messageId)
         messages.moveBlocks(sourceId, canonical.messageId)
         media.moveLinks(sourceId, canonical.messageId)
         check(messages.delete(sourceId) == 1) { "Source message disappeared during canonical merge" }

@@ -147,6 +147,7 @@ class MainActivity : ComponentActivity() {
                             onRetryAttachment = viewModel::retryAttachment,
                             onContinueMeteredTransfer = viewModel::continueLargeTransfersOnMeteredNetwork,
                             onRetryFailedMessage = viewModel::retryFailedMessage,
+                            onSaveComposerDraft = viewModel::saveComposerDraft,
                             onSaveReadingPosition = viewModel::saveReadingPosition,
                             onMarkSessionReadThrough = viewModel::markSessionReadThrough,
                             onNavigationTargetHandled = viewModel::acknowledgeNavigationTarget,

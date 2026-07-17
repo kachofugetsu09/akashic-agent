@@ -16,9 +16,13 @@ class MobileNavigationPolicyTest {
         assertEquals(
             MobileNavigationAction.ALLOW_INTERNAL,
             mobileNavigationAction(
-                "https://appassets.androidplatform.net/assets/mobile.html",
+                mobileWebUrl(20),
                 isMainFrame = true,
             ),
+        )
+        assertEquals(
+            "https://appassets.androidplatform.net/assets/mobile.html?appVersion=20",
+            mobileWebUrl(20),
         )
         assertEquals(
             MobileNavigationAction.BLOCK,
