@@ -223,6 +223,58 @@ class LocalDeliveryStoreTest {
     }
 
     @Test
+    fun persistsMoreThanOneInMemoryQueueOfProactiveNotifications() = runBlocking {
+        repeat(65) { index ->
+            val sequence = index + 1L
+            store.applyEvent(
+                serverId = "server",
+                deviceId = "device",
+                envelope = WireEnvelope(
+                    v = 1,
+                    kind = WireKind.EVENT,
+                    type = "message.proactive",
+                    id = "proactive-$sequence",
+                    connectionEpoch = 0,
+                    eventSeq = sequence,
+                    sessionId = "mobile:test",
+                    payload = buildJsonObject { put("content", "主动消息 $sequence") },
+                ),
+                updatedAt = sequence,
+            )
+        }
+
+        val pending = database.pendingMessageNotifications().observeForServer("server").first()
+        assertEquals(65, pending.size)
+        assertEquals("主动消息 1", pending.first().content)
+        assertEquals("主动消息 65", pending.last().content)
+        assertEquals(65L, database.realtimeCursors().get("device")?.lastAcknowledgedEventSeq)
+    }
+
+    @Test
+    fun notificationConsumptionToleratesMessageCascadeCleanup() = runBlocking {
+        store.applyEvent(
+            serverId = "server",
+            deviceId = "device",
+            envelope = WireEnvelope(
+                v = 1,
+                kind = WireKind.EVENT,
+                type = "message.proactive",
+                id = "proactive-cascade",
+                connectionEpoch = 0,
+                eventSeq = 1,
+                sessionId = "mobile:test",
+                payload = buildJsonObject { put("content", "稍后会被投影清理") },
+            ),
+            updatedAt = 1,
+        )
+        val messageId = "proactive:proactive-cascade"
+        assertEquals(1, database.messages().delete(messageId))
+
+        assertEquals(0, database.pendingMessageNotifications().delete(messageId))
+        assertTrue(database.pendingMessageNotifications().observeForServer("server").first().isEmpty())
+    }
+
+    @Test
     fun keepsUnavailableConversationWithComposerDraft() = runBlocking {
         assertEquals(1, database.conversations().markRemoteKnown("mobile:test"))
         store.saveComposerDraft("mobile:test", "稍后继续", null, "server", 2)

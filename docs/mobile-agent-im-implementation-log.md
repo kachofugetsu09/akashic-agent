@@ -488,3 +488,10 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - 独立 Review 进一步把消息图、会话目录与 composer 收进同一个 session projection，修复 accepted 前切换会话后旧草稿复活，并为 strict v5 appassets 入口增加 app-version cache bust 与 no-cache。
 - 自动验证通过移动 Web `25 passed`、TypeScript、ESLint、生产构建、Android JVM、release/R8/v2 签名；Pixel 7 Room instrumentation `47 passed`。
 - Pixel 7 隔离 Mobile Lab 已验证 A/B 独立、force-stop 后文字与回复恢复、A 发送成功只清 A 且 B 保留，以及 accepted 前切到 B 后返回 A 不会复活已发送草稿；完整设计与证据见 `docs/mobile-batches/2026-07-17-session-composer-drafts.md`。
+
+## 2026-07-17：主动消息后台通知与 durable 补发
+
+- 保留 Akashic 既有 `message_push → MobileRealtimeChannel → durable inbox` 所有权，只让 Android 的 `message.proactive` 进入既有最终消息通知流；普通最终回答与主动消息的 Room、通知和导航 identity 统一。
+- Pixel 7 真机完成后台通知、点击定位、RemoteInput 快捷回复和强停后的离线补发；服务端 cursor 从离线 pending 收束到完全 ACK，正式 workspace 未读写。
+- 通知待办已纳入 Room schema v8：消息、cursor、待通知同事务提交，系统通知成功或明确抑制后消费；移除容量 64 的进程内队列，进程死亡与大批积压都可重放。
+- Android release 单测、Lint、R8、签名、Pixel 7 `47/47` Room instrumentation 和真实强停离线补发门禁通过；完整证据见 `docs/mobile-batches/2026-07-17-proactive-notifications.md`。

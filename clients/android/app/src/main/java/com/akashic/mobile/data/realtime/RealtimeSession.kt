@@ -33,15 +33,12 @@ import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -267,9 +264,6 @@ class RealtimeSession(
     )
     private val mutableState = MutableStateFlow(MobileSessionState())
     val state: StateFlow<MobileSessionState> = mutableState.asStateFlow()
-    private val finalMessageEvents = Channel<FinalMessageEvent>(capacity = 64)
-    val finalMessages: Flow<FinalMessageEvent> = finalMessageEvents.receiveAsFlow()
-
     private val started = AtomicBoolean(false)
     private var meteredLargeTransferApproved = false
     private var profile: ServerProfileEntity? = null
@@ -1311,7 +1305,6 @@ class RealtimeSession(
                             requireNotNull(envelope.turnId),
                         )
                         downloads.resumeIfIdle(currentProfile.serverId)
-                        publishFinalMessage(envelope)
                     }
                     "sync.completed" -> {
                         if (completedSyncGeneration == syncGeneration) return
@@ -1772,24 +1765,6 @@ class RealtimeSession(
             }
         }
         finishSessionSyncIfComplete()
-    }
-
-    private fun publishFinalMessage(envelope: WireEnvelope) {
-        val content = envelope.payload["content"]?.jsonPrimitive?.content
-            ?: envelope.payload["text"]?.jsonPrimitive?.content
-            ?: ""
-        val messageId = envelope.payload["message_id"]?.jsonPrimitive?.content
-            ?: requireNotNull(envelope.id) { "Final event has no message identity" }
-        val event = FinalMessageEvent(
-            sessionId = requireNotNull(envelope.sessionId),
-            messageId = messageId,
-            content = content,
-            hasAttachments = envelope.payload["attachments"]?.jsonArray?.isNotEmpty() == true,
-            attention = finalMessageAttention(envelope.payload),
-        )
-        check(finalMessageEvents.trySend(event).isSuccess) {
-            "Final message notification queue is full"
-        }
     }
 
     /** 从 reset event 的新 cursor 开始重建当前服务端投影视图。 */

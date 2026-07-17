@@ -20,8 +20,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MessageAttachmentEntity::class,
         ConversationReadStateEntity::class,
         ComposerDraftEntity::class,
+        PendingMessageNotificationEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -43,6 +44,8 @@ abstract class AppDatabase : RoomDatabase() {
 
     abstract fun mediaAttachments(): MediaAttachmentDao
 
+    abstract fun pendingMessageNotifications(): PendingMessageNotificationDao
+
     companion object {
         fun create(context: Context): AppDatabase = Room.databaseBuilder(
             context.applicationContext,
@@ -55,6 +58,7 @@ abstract class AppDatabase : RoomDatabase() {
             MIGRATION_4_5,
             MIGRATION_5_6,
             MIGRATION_6_7,
+            MIGRATION_7_8,
         ).build()
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -179,6 +183,33 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_composer_drafts_serverId` ON `composer_drafts` (`serverId`)",
+                )
+            }
+        }
+
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `pending_message_notifications` (
+                        `messageId` TEXT NOT NULL,
+                        `serverId` TEXT NOT NULL,
+                        `sessionId` TEXT NOT NULL,
+                        `content` TEXT NOT NULL,
+                        `hasAttachments` INTEGER NOT NULL,
+                        `attention` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`messageId`),
+                        FOREIGN KEY(`serverId`) REFERENCES `server_profiles`(`serverId`) ON UPDATE NO ACTION ON DELETE CASCADE,
+                        FOREIGN KEY(`messageId`) REFERENCES `messages`(`messageId`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_pending_message_notifications_serverId` ON `pending_message_notifications` (`serverId`)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_pending_message_notifications_createdAt` ON `pending_message_notifications` (`createdAt`)",
                 )
             }
         }
