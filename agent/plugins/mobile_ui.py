@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Mapping
 from typing import Protocol, cast
 
@@ -11,6 +12,7 @@ from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import RuntimeSnapshot
 
 MOBILE_UI_RPC_TIMEOUT_SECONDS = 20.0
+logger = logging.getLogger(__name__)
 
 
 class MobileUiProvider(Protocol):
@@ -83,17 +85,22 @@ class PluginMobileUiProvider:
                     )
             except TimeoutError as error:
                 raise MobileUiRpcTimeout(f"插件 mobile UI RPC 超时: {plugin_id}.{method}") from error
-            if not isinstance(result, Mapping):
-                raise RuntimeError(f"插件 mobile UI RPC 必须返回对象: {plugin_id}.{method}")
-            normalized = cast(dict[str, object], dict(result))
-            encoded = json.dumps(
-                normalized,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                allow_nan=False,
-            )
-            if len(encoded.encode("utf-8")) > 192 * 1024:
-                raise RuntimeError(f"插件 mobile UI RPC 返回超过 192 KiB: {plugin_id}.{method}")
+            except MobileUiRpcInvalidRequest as error:
+                raise MobileUiRpcInvalidRequest(
+                    f"插件 mobile UI RPC 参数无效: {plugin_id}.{method}"
+                ) from error
+            except Exception as error:
+                logger.exception("插件 mobile UI RPC 执行失败: %s.%s", plugin_id, method)
+                raise MobileUiRpcExecutionError(
+                    f"插件 mobile UI RPC 执行失败: {plugin_id}.{method}"
+                ) from error
+            try:
+                normalized = _normalize_rpc_result(result, plugin_id=plugin_id, method=method)
+            except Exception as error:
+                logger.exception("插件 mobile UI RPC 返回无效: %s.%s", plugin_id, method)
+                raise MobileUiRpcExecutionError(
+                    f"插件 mobile UI RPC 返回无效: {plugin_id}.{method}"
+                ) from error
             return normalized
 
     def _require_snapshot(self) -> RuntimeSnapshot:
@@ -131,3 +138,35 @@ class MobileUiRpcTimeout(TimeoutError):
 
 class MobileUiRpcInvalidRequest(ValueError):
     pass
+
+
+class MobileUiRpcExecutionError(RuntimeError):
+    pass
+
+
+def _normalize_rpc_result(
+    result: object,
+    *,
+    plugin_id: str,
+    method: str,
+) -> dict[str, object]:
+    """校验并规范化插件 RPC 返回对象。"""
+
+    # 1. 校验返回结构和 JSON 可编码性
+    if not isinstance(result, Mapping):
+        raise TypeError(f"插件 mobile UI RPC 必须返回对象: {plugin_id}.{method}")
+    mapping = cast(Mapping[object, object], result)
+    if any(not isinstance(key, str) for key in mapping):
+        raise TypeError(f"插件 mobile UI RPC 返回键必须是字符串: {plugin_id}.{method}")
+    normalized = {cast(str, key): value for key, value in mapping.items()}
+    encoded = json.dumps(
+        normalized,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+    # 2. 限制移动端单次响应体积
+    if len(encoded.encode("utf-8")) > 192 * 1024:
+        raise ValueError(f"插件 mobile UI RPC 返回超过 192 KiB: {plugin_id}.{method}")
+    return normalized

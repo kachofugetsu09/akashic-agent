@@ -459,3 +459,9 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - 原生只清除阅读锚点，不推进已读水位；React 恢复流程同时接受原生把在途锚点明确清空，解决 Room 已到底但 WebView 仍按旧锚点定位的竞态。
 - 没有增加按钮、提示、协议字段、migration 或 Agent 核心改动。21 项移动 Web 状态测试、TypeScript、ESLint、移动 Web 生产构建和 Android release 全链通过。
 - Pixel 7 使用最终签名 APK 验证：停在旧位置后冷启动仍恢复；抽屉切走再切回后最新一轮完整可见且没有“到底部”按钮。完整记录见 `docs/mobile-batches/2026-07-17-session-entry-position.md`。
+
+## 2026-07-17 插件移动 UI 失败隔离
+
+- Fitbit 真机验收暴露插件异常会越过命令边界并关闭整条 WebSocket；宿主现在在插件调用边界记录 traceback，并把执行异常和返回契约错误转换为可持久化的 `plugin_failed` reply。
+- 输入错误、超时、执行失败继续拥有不同错误码；输入错误文案由宿主重建，插件的超长文本或非法 Unicode 不会进入回复帧。插件内部细节不发给手机，宿主取消也不会被吞掉。
+- 33 项插件 UI provider 与 mobile channel 测试通过，Pyright 0 错误、0 警告。Pixel7 在 generation 1、epoch 275 的同一 WebSocket 中真实触发 Fitbit 401，收到 `plugin_failed` 后恢复令牌并原位重试成功；期间没有 `device.proof`、`resume` 或历史重拉。正式 workspace 未读写，完整契约与截图见 `docs/mobile-batches/2026-07-17-plugin-ui-failure-isolation.md`。

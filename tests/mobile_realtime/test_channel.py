@@ -1431,6 +1431,38 @@ async def test_plugin_ui_invalid_request_becomes_durable_error_reply(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_plugin_ui_execution_failure_becomes_durable_error_reply(tmp_path: Path) -> None:
+    class _FailedProvider:
+        def catalog(self) -> list[dict[str, object]]:
+            return []
+
+        async def call(self, *args: object, **kwargs: object) -> dict[str, object]:
+            raise channel_module.MobileUiRpcExecutionError(
+                "插件 mobile UI RPC 执行失败: sample@github.recall.current"
+            )
+
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
+    channel.bind_mobile_ui_provider(cast(Any, _FailedProvider()))
+    frame = _generic_frame(
+        frame_id="01ARZ3NDEKTSV4RRFFQ69G5FB4",
+        command_type="plugin.ui.call",
+        payload={"plugin_id": "sample@github", "method": "recall.current", "payload": {}},
+    )
+
+    reply = await channel.handle_command(device_id=device_id, frame=frame)
+
+    assert reply.type == "plugin.ui.call.error"
+    assert reply.payload == {
+        "code": "plugin_failed",
+        "message": "插件 mobile UI RPC 执行失败: sample@github.recall.current",
+    }
+    storage.close()
+
+
+@pytest.mark.asyncio
 async def test_turn_stop_rejects_missing_or_stale_turn_identity(tmp_path: Path) -> None:
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     device_id = uuid4().hex

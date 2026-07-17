@@ -21,6 +21,7 @@ from bus.events_lifecycle import (
 )
 from agent.plugins.mobile_ui import (
     MobileUiPluginUnavailable,
+    MobileUiRpcExecutionError,
     MobileUiRpcInvalidRequest,
     MobileUiRpcTimeout,
 )
@@ -522,6 +523,8 @@ class MobileRealtimeChannel:
             raise MobileCommandError("plugin_invalid_request", str(error)) from error
         except MobileUiRpcTimeout as error:
             raise MobileCommandError("plugin_timeout", str(error)) from error
+        except MobileUiRpcExecutionError as error:
+            raise MobileCommandError("plugin_failed", str(error)) from error
         return CommandReply(type="plugin.ui.call.ok", payload={"result": result})
 
     def _require_mobile_ui_provider(self) -> MobileUiProvider:
