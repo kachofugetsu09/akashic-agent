@@ -80,3 +80,14 @@ cd clients/android
 3. 配对确认页断线后，新 generation 仍有 challenge/auth deadline；旧 generation 的确认等待不屏蔽新连接。
 4. LAN/Tunnel loser 的迟到 `onOpen` 不消费恢复 latch，不改变活动 endpoint 或连接阶段。
 5. 恢复前留在 durable outbox 的消息最终只发送一次，历史和最终回复均不重复。
+
+## Pixel 7 集成验收结果
+
+隔离 Mobile Lab 被外部流程停止后，容器明确收到 SIGTERM，并在 10 秒后被 SIGKILL，退出码为 137；`docker inspect` 的 `OOMKilled=false`，内核日志无 OOM 记录，因此不能把这次中断归因于内存不足。
+
+- Pixel 7 的连接 generation 17–30 在 tunnel 返回 Cloudflare 530 时持续失败，但没有白屏、崩溃或清除本地状态。
+- 使用同一隔离 profile 重启 Mobile Lab 后，generation 31 依次完成 device proof、resume、session list、history、command list 和插件资产同步，最终回到“连接正常”。
+- 重连后 7 行会话草稿仍在，历史、引用和插件目录可继续使用；证据为 `/tmp/pixel7-after-lab-external-stop-recovery.png`。
+- 应用日志没有 FATAL、RenderProcessGone、event sequence gap 或协议反序列化错误。
+
+这次真机验证覆盖了真实 tunnel outage 与恢复，不等同于精确卡死在 challenge/auth/sync 三个阶段。阶段级 10/10/20 秒截止时间仍由 `stall_before_challenge`、`stall_after_auth` 和状态机自动测试负责，二者不混写为同一项证据。

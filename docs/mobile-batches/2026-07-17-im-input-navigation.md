@@ -65,4 +65,13 @@
 5. 长按后选择一条及多条消息，点击分享；系统 chooser 出现后选择模式关闭，分享文本与复制文本格式一致。制造 chooser 无法启动的场景时，选择仍保留并显示“分享未打开，请重试”。另以超过 64 KiB 的文本确认 chooser 收到 `.txt` 文件而非发生 Binder 崩溃；过期分享文件在下一次分享或页面启动时清理。
 6. 切换会话并返回，文字与引用草稿恢复后输入框高度立即匹配内容；横竖屏切换后不截断文本。
 
-真机验收需在汇总分支构建 APK 后执行，本 worktree 不并行运行完整 Release 构建。
+## Pixel 7 验收结果
+
+- 使用汇总分支的 schema v8 签名 APK 无损覆盖安装，没有卸载应用或清理数据；APK SHA-256 为 `8a35d365034aecda9935c88c8afada318c0866acd884c0e918bac17b3de45306`。
+- 在真实历史会话中点按引用后，视口滚到目标消息并显示短暂 state layer 高亮；证据为 `/tmp/pixel7-reply-reference-jump.png`。
+- Gboard 连续输入 7 行时，前 6 行推动 composer 生长，第 7 行开始只滚动输入框内部；普通回车没有发送消息。证据为 `/tmp/pixel7-composer-seven-lines.png`。
+- 停止并重启隔离 Mobile Lab 后，7 行草稿仍按原会话恢复，连接最终回到“连接正常”；证据为 `/tmp/pixel7-after-lab-external-stop-recovery.png`。
+- 长按消息进入选择态后，点击分享成功打开 Android 系统 chooser；返回应用后选择态清除。证据为 `/tmp/pixel7-selection-after-longpress.png`、`/tmp/pixel7-after-share-tap-second.png` 和 `/tmp/pixel7-after-share-return.png`。
+- 应用进程日志没有 FATAL、RenderProcessGone、event sequence gap 或 JSON 反序列化错误。
+
+TalkBack 播报、外接键盘快捷发送、目标缺失引用和超过 64 KiB 的真实文件 chooser 仍由自动测试覆盖，未把未执行的真机手工项写成已通过。

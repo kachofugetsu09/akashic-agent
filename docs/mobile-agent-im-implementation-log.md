@@ -495,3 +495,12 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - Pixel 7 真机完成后台通知、点击定位、RemoteInput 快捷回复和强停后的离线补发；服务端 cursor 从离线 pending 收束到完全 ACK，正式 workspace 未读写。
 - 通知待办已纳入 Room schema v8：消息、cursor、待通知同事务提交，系统通知成功或明确抑制后消费；移除容量 64 的进程内队列，进程死亡与大批积压都可重放。
 - Android release 单测、Lint、R8、签名、Pixel 7 `47/47` Room instrumentation 和真实强停离线补发门禁通过；完整证据见 `docs/mobile-batches/2026-07-17-proactive-notifications.md`。
+
+## 2026-07-17：日用 IM 输入、引用导航与弱网恢复汇总
+
+- 点击用户或 Akashic 消息中的引用会在当前投影内跳到目标并短暂高亮；目标缺失时只在引用原位反馈，不猜测跨会话目标。输入框按真实内容从 1 行长到 6 行，Gboard 回车只换行，超过上限后内部滚动。
+- 消息选择态复用既有 transcript formatter 增加 Android 系统分享：小文本走 `ACTION_SEND`，超过 64 KiB 才转 FileProvider 临时文本；chooser 成功启动后才退出选择。
+- WebSocket 每个 generation 只持有一个协议阶段 deadline：challenge/auth 各 10 秒，sync 以 20 秒无进展为界；有效同步帧续期，READY、重配对和新 generation 取消旧 deadline。
+- Pixel 7 真机完成引用跳转、7 行 Gboard 输入、进程外服务中断后的草稿恢复、系统 chooser 分享和真实 tunnel outage 恢复。服务重启后 generation 31 完整恢复协议与插件同步，应用日志无 FATAL、RenderProcessGone、event sequence gap 或 JSON 错误。
+- 移动 Web 状态测试 `34/34`、TypeScript、ESLint、隔离 Gateway `33 passed`、定向 Pyright、Android release unit/Lint/R8/assemble 与 v2 签名全部通过。验收 APK SHA-256 为 `8a35d365034aecda9935c88c8afada318c0866acd884c0e918bac17b3de45306`。
+- 完整交互与真机证据见 `docs/mobile-batches/2026-07-17-im-input-navigation.md` 和 `docs/mobile-batches/2026-07-17-network-recovery.md`。
