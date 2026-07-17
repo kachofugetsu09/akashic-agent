@@ -61,6 +61,30 @@ export interface MobileComposerDraftResolution<T extends MobileSelectableMessage
   cleanedDraft?: MobileComposerDraft;
 }
 
+export interface MobileComposerKeyboardEvent {
+  key: string;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  isComposing: boolean;
+}
+
+export interface MobileComposerTextareaMetrics {
+  height: number;
+  overflowY: "auto" | "hidden";
+}
+
+export interface MobileReplyNavigationMessage {
+  role: "user" | "assistant";
+  createdAt: number;
+}
+
+export interface MobileSelectionActionAvailability {
+  exit: boolean;
+  reply: boolean;
+  copy: boolean;
+  share: boolean;
+}
+
 export function allMobileAttachmentsReady(attachments: readonly { state: string }[]) {
   return attachments.every((attachment) => attachment.state === "ready");
 }
@@ -100,6 +124,21 @@ export function mobileMessageCanReply(
   selectedSessionId: string | null | undefined,
 ) {
   return message.replyable && message.sessionId === selectedSessionId;
+}
+
+/** 只在当前投影中解析引用目标，避免跳到别的会话或过期历史。 */
+export function resolveMobileReplyNavigationTarget<T extends { id: string }>(
+  replyMessageId: string,
+  messages: readonly T[],
+) {
+  return messages.find((message) => message.id === replyMessageId) ?? null;
+}
+
+export function formatMobileReplyNavigationAnnouncement(
+  message: MobileReplyNavigationMessage,
+  formatTime: (createdAt: number) => string,
+) {
+  return `已跳到${message.role === "assistant" ? "Akashic" : "你"} ${formatTime(message.createdAt)} 的消息`;
 }
 
 /** 把原生草稿解析为当前会话可展示的文字与引用。 */
@@ -151,6 +190,38 @@ export function shouldClearAcceptedMobileComposerDraft(
 ) {
   if (active?.sessionId !== sent.sessionId) return true;
   return mobileComposerDraftMatches(active, sent);
+}
+
+/** 只把显式桌面快捷键解释为发送，普通回车始终留给输入法换行。 */
+export function shouldSubmitMobileComposerKey(event: MobileComposerKeyboardEvent) {
+  return event.key === "Enter"
+    && !event.isComposing
+    && (event.ctrlKey || event.metaKey);
+}
+
+export function shouldClearMobileSelectionAfterShare(
+  pendingRequestId: string | null,
+  resultRequestId: string,
+  launched: boolean,
+) {
+  return pendingRequestId === resultRequestId && launched;
+}
+
+export function mobileSelectionActionAvailability(
+  sharePending: boolean,
+  capabilities: Omit<MobileSelectionActionAvailability, "exit">,
+): MobileSelectionActionAvailability {
+  if (sharePending) return { exit: false, reply: false, copy: false, share: false };
+  return { exit: true, ...capabilities };
+}
+
+/** 把输入内容高度限制在一至六行之间，超过后交给 textarea 内部滚动。 */
+export function mobileComposerTextareaMetrics(scrollHeight: number): MobileComposerTextareaMetrics {
+  const height = Math.min(164, Math.max(44, Math.ceil(scrollHeight)));
+  return {
+    height,
+    overflowY: scrollHeight > 164 ? "auto" : "hidden",
+  };
 }
 
 export function formatMobileSelectionCopyText(
