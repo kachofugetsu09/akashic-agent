@@ -493,7 +493,7 @@ P0 不变量必须由受保护的 semantic test、policy 或黑盒观察器验�
 
 确定性单测、构建、Docker Gate、隔离互操作和真实设备分别证明不同边界。CI 没有 Pixel 或 Android 虚拟设备时，不能把维护者本机 ADB 结果伪装成所有贡献者可运行的 required check；设备结果必须记录设备/API、应用 ID、APK 与源码身份、测试 profile 和实际场景。
 
-设备 Gate 只接受干净 source commit/tree，同一 Android worktree 同时只运行一个 Gate。在任何安装、清数据或卸载之前，必须从本次生成的 app/test APK 读取实际 application ID 与 instrumentation target，并为本次 run 生成唯一的 run-specific application ID。随后用 `pm list packages -u` 核对设备上已安装和保留数据的 package；app 或 test package 任一 collision 都必须 fail-loud 并标记 blocked，不能用签名相同、版本较旧、`adb install -r` 或“只是 debug 包”推断可以覆盖。安装不得 replace；只有本进程确认安装成功的 package 才取得清理所有权，部分安装失败不得卸载未拥有的 package。
+设备 Gate 只接受干净 source commit/tree，同一 Android worktree 同时只运行一个 Gate。候选构建完成后、首次 ADB 调用前必须再次核对 worktree clean、HEAD 和 tree 与起始值相同；任一漂移必须以 `failed_setup` 且零设备调用结束，不能把构建期间产生的未提交 APK 归因到旧 commit。在任何安装、清数据或卸载之前，必须从本次生成的 app/test APK 读取实际 application ID 与 instrumentation target，并为本次 run 生成唯一的 run-specific application ID。随后用 `pm list packages -u` 核对设备上已安装和保留数据的 package；app 或 test package 任一 collision 都必须 fail-loud 并标记 blocked，不能用签名相同、版本较旧、`adb install -r` 或“只是 debug 包”推断可以覆盖。安装不得 replace；只有本进程确认安装成功的 package 才取得清理所有权，部分安装失败不得卸载未拥有的 package。
 
 `adb shell am instrument` 的进程退出码不能单独充当 oracle；Gate 必须核对声明的测试数量、指定方法、开始/成功状态和失败标记，0 test、crash、aborted 或 assertion failure 都不能记为通过。测试阶段通过后仍不能提前声明 Gate 通过；清理完成后才能写唯一终态。清理失败必须非零退出、标记 `gate_result=failed_cleanup` 并列出残留 package。
 

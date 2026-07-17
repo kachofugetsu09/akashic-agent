@@ -67,6 +67,7 @@ device_gate:
   source_commit: ""
   source_tree: ""
   source_worktree_clean: true
+  source_state_after_build: verified|failed
   runtime_commit: ""
   runtime_tree: ""
   candidate_application_id: ""

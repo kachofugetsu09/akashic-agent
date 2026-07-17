@@ -145,6 +145,7 @@ def test_cross_repository_review_pins_lineage_and_evidence_layers() -> None:
         "instrumentation_oracle",
         "source_tree",
         "source_worktree_clean",
+        "source_state_after_build",
         "install_mode",
         "owned_packages",
         "test_result",
@@ -165,6 +166,7 @@ def test_cross_repository_review_pins_lineage_and_evidence_layers() -> None:
         "app data",
         "0 test",
         "干净 source commit/tree",
+        "首次 ADB 调用前",
         "清理所有权",
         "gate_result=failed_cleanup",
     ):
@@ -177,23 +179,24 @@ def test_mobile_device_gate_evidence_records_incident_and_current_run() -> None:
     ).read_text(encoding="utf-8")
 
     for evidence in (
-        "069a7df1dc9cd1d6cca6f0665d5804dd801d2e85",
-        "50a05ba56e385628ebbb55e2d300226a90f212d1",
+        "3f81275a52b0b87438f5d31041a71997edbac267",
+        "e51f111064dcceef358557f856dcf758f4d08ef1",
         "83ca96ed70298d507a412fb3416914200acea2de",
         "954533025d6a18693bd0361db24289439ddfad5a",
         "f37a42826d9ad5e0988d8b26eba5dd7a20fb29b8",
         "88365c13369b592290fd69918642b7166fc57c55",
-        "com.akashic.mobile.review.rpr6069af37",
-        "com.akashic.mobile.review.rpr6069af37.test",
-        "0bbf9affde1b9ecfdc382d7674425eb8c74f052bb67a889430756a5088132828",
-        "578cdf00c85373160b219487a9650981792f86b59a327030ca9a20ca925e23af",
+        "com.akashic.mobile.review.rpr6live3f81275",
+        "com.akashic.mobile.review.rpr6live3f81275.test",
+        "bc79e1314d61dd90356da919368f3190e496857e32e9eddba2279d3ff0dbe977",
+        "b6629ef4eb23ef831d9430608bafdee664afaff7ddbd0a463831c9206f244c42",
+        "rpr6det3f81275",
+        "64 个非网络 instrumentation",
+        "source_state_after_build=verified",
         "gate_result=passed",
         "OK (0 tests)",
-        "rpr6zero069a",
+        "rpr6zero3f81275",
         "gate_result=failed_test",
-        "rpr6pass069a",
-        "35de61bdc44e7bc96e3a93a51027769bf29150738de39d9d64b0602abdc6b127",
-        "a255bb90e333c9dc3d625384ab10d6391e3a5e1c8c1e7bb54a1f634863008a79",
+        "rpr6pass3f81275",
         "pairSendAndReceiveFixedMedia",
         "processRestartResumesWithoutHistoryDuplicates",
         "allowBackup=false",
@@ -213,6 +216,7 @@ def test_plugin_gate_evidence_separates_ref_resolution_and_change_source() -> No
         assert field in design, f"插件 Gate 证据缺少身份字段: {field}"
 
     for revision in (
+        "cac9582e41de45446374a85d06311f33dc4bad0e",
         "b434fa74b370fafcd0c64129fe1f641f73f0dbcf",
         "b7f9d4ecee877d22b5452651d9abf699b2d30b7b",
         "cee5bef98e6271c9eb069a6498b4ca072e85c878",
@@ -222,3 +226,15 @@ def test_plugin_gate_evidence_separates_ref_resolution_and_change_source() -> No
         "334276c4e972f1d80b0a353605d068abc5135b18",
     ):
         assert revision in design, f"插件 Gate 设计缺少固定 revision: {revision}"
+
+    for evidence in (
+        "4b6b7d432c8ea7006038cb1f114ce46c22d4b0d79d9a0f6ba8d64ca59837d54f",
+        "830860d642b56188a0b8e57093e7fd0080c2f9c9cec5ae56479d6d33488bd6bf",
+        "5f82ccef0c3f3f1e89b8a4fc25a37e1548ca48fe6ff49d6f32842041b6e2cb90",
+        "86018e7225c36d47112a8fe64ad26c001eddd06c6cac70c438192100e3c9b4bb",
+        "77a9e4740033c636978d4be303ece41ddd5390d22daf17a0e7ba7ef0fada672c",
+        "c4f7b10f3afac0f1f7d450c98dd3a46c4e1b64ad1ae79c5d767687b56b66ae7f",
+        "febaf022f39b0fe63eb23377d8d61e13008780abb59b122095d5b14b4ec51431",
+        "除 Feed/Observe 外的 18 个 provider",
+    ):
+        assert evidence in design, f"插件 Gate 设计缺少正式组合证据: {evidence}"
