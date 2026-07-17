@@ -33,6 +33,12 @@ enum class RemoveUnavailableConversationResult {
     NOT_REMOTE,
 }
 
+enum class PreparedComposerDraftResult {
+    COMMITTED,
+    ALREADY_COMMITTED,
+    CONFLICT,
+}
+
 private const val TOOL_BLOCK_V1_PREFIX = "tool.v1:"
 private const val LEGACY_IDENTITY_LOOKBACK_MS = 60 * 60 * 1_000L
 private const val MAX_CANONICAL_MESSAGE_ALIASES = 256
@@ -79,13 +85,7 @@ class LocalDeliveryStore(
         require(conversation.serverId == expectedServerId) { "会话草稿不属于当前电脑" }
 
         // 2. 引用目标消失属于可恢复状态；跨会话目标仍然是协议错误
-        val resolvedReplyId = replyToMessageId?.let { messageId ->
-            require(messageId.length in 1..512) { "会话草稿引用 ID 无效" }
-            val resolvedMessageId = canonicalMessageAliases[messageId] ?: messageId
-            val target = database.messages().get(resolvedMessageId) ?: return@let null
-            require(target.sessionId == sessionId) { "会话草稿引用不属于当前会话" }
-            resolvedMessageId
-        }
+        val resolvedReplyId = resolveComposerReply(sessionId, replyToMessageId)
 
         // 3. 空草稿删除实体，其余状态原样保存供进程重启恢复
         if (text.isEmpty() && resolvedReplyId == null) {
@@ -102,6 +102,65 @@ class LocalDeliveryStore(
             )
         }
     }
+
+    /** 在草稿唯一写序内比较基线并提交分享结果，拒绝覆盖较新的用户输入。 */
+    suspend fun commitPreparedComposerDraft(
+        sessionId: String,
+        text: String,
+        replyToMessageId: String?,
+        baseText: String?,
+        baseReplyToMessageId: String?,
+        baseUpdatedAt: Long?,
+        expectedServerId: String?,
+        updatedAt: Long,
+    ): PreparedComposerDraftResult = projectionStateMutex.withLock {
+        database.withTransaction {
+            // 1. 在同一锁内解析当前引用身份与会话 owner
+            require(text.length <= 65_536) { "会话草稿超过消息长度上限" }
+            val conversation = requireNotNull(database.conversations().get(sessionId)) {
+                "会话草稿对应的会话不存在: $sessionId"
+            }
+            require(conversation.serverId == expectedServerId) { "会话草稿不属于当前电脑" }
+            val resolvedReplyId = resolveComposerReply(sessionId, replyToMessageId)
+            val current = database.composerDrafts().get(conversation.serverId, sessionId)
+
+            // 2. 已是目标值只确认消费；只有基线未变化时才允许写入
+            if (current != null && current.text == text && current.replyToMessageId == resolvedReplyId) {
+                return@withTransaction PreparedComposerDraftResult.ALREADY_COMMITTED
+            }
+            val baseUnchanged = if (baseUpdatedAt == null) {
+                current == null
+            } else {
+                current?.run {
+                    this.text == baseText &&
+                        this.replyToMessageId == baseReplyToMessageId &&
+                        this.updatedAt == baseUpdatedAt
+                } == true
+            }
+            if (!baseUnchanged) return@withTransaction PreparedComposerDraftResult.CONFLICT
+
+            // 3. prepared 分享不会为空，原样保存解析后的 canonical reply
+            database.composerDrafts().upsert(
+                ComposerDraftEntity(
+                    sessionId = sessionId,
+                    serverId = conversation.serverId,
+                    text = text,
+                    replyToMessageId = resolvedReplyId,
+                    updatedAt = updatedAt,
+                ),
+            )
+            PreparedComposerDraftResult.COMMITTED
+        }
+    }
+
+    private suspend fun resolveComposerReply(sessionId: String, replyToMessageId: String?): String? =
+        replyToMessageId?.let { messageId ->
+            require(messageId.length in 1..512) { "会话草稿引用 ID 无效" }
+            val resolvedMessageId = canonicalMessageAliases[messageId] ?: messageId
+            val target = database.messages().get(resolvedMessageId) ?: return@let null
+            require(target.sessionId == sessionId) { "会话草稿引用不属于当前会话" }
+            resolvedMessageId
+        }
 
     /** 串行校验并保存 WebView 当前可见消息锚点。 */
     suspend fun saveReadingPosition(

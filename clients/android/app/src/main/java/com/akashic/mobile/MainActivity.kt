@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
+import android.os.BadParcelableException
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.Toast
@@ -41,6 +42,7 @@ import com.akashic.mobile.ui.design.AkashicTheme
 import com.akashic.mobile.ui.conversation.MessageAttachmentUi
 import com.akashic.mobile.ui.pairing.PairingScreen
 import com.akashic.mobile.ui.web.MobileWebChat
+import com.akashic.mobile.ui.web.MobileSharedTextDraft
 import com.akashic.mobile.ui.web.openCachedAttachment
 import com.akashic.mobile.ui.web.shareCachedAttachment
 import com.akashic.mobile.ui.web.saveCachedAttachment
@@ -56,6 +58,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        consumeIncomingShare(intent)
         requestedSessionId.value = intent.getStringExtra(MobileConnectionService.EXTRA_SESSION_ID)
         requestedMessageId.value = intent.getStringExtra(MobileConnectionService.EXTRA_MESSAGE_ID)
         notificationsEnabled.value = NotificationManagerCompat.from(this).areNotificationsEnabled()
@@ -107,6 +110,7 @@ class MainActivity : ComponentActivity() {
                 }
                 val session by viewModel.sessionState.collectAsStateWithLifecycle()
                 val conversation by viewModel.conversationState.collectAsStateWithLifecycle()
+                val incomingShare by viewModel.incomingShare.collectAsStateWithLifecycle()
                 LaunchedEffect(Unit) {
                     if (shouldRequestNotificationPermission()) {
                         markNotificationPermissionRequested()
@@ -115,6 +119,52 @@ class MainActivity : ComponentActivity() {
                 }
                 LaunchedEffect(session.hasProfile) {
                     if (session.hasProfile) MobileConnectionService.start(this@MainActivity)
+                }
+                LaunchedEffect(
+                    session.initialized,
+                    session.hasProfile,
+                    session.currentSessionId,
+                    incomingShare?.id,
+                    incomingShare?.targetSessionId,
+                ) {
+                    val share = incomingShare
+                    if (
+                        session.initialized && session.hasProfile &&
+                        session.currentSessionId != null && share != null &&
+                        share.targetSessionId == null
+                    ) {
+                        viewModel.claimIncomingShareTarget(share.id)
+                    }
+                }
+                LaunchedEffect(
+                    incomingShare?.id,
+                    incomingShare?.targetSessionId,
+                    incomingShare?.hasPreparedText,
+                    incomingShare?.errorMessage,
+                ) {
+                    val share = incomingShare
+                    if (
+                        share?.targetSessionId != null && share.hasPreparedText &&
+                        share.errorMessage == null
+                    ) {
+                        viewModel.resumePreparedIncomingShareText(share.id)
+                    }
+                }
+                LaunchedEffect(
+                    incomingShare?.id,
+                    incomingShare?.targetSessionId,
+                    incomingShare?.hasPendingAttachments,
+                    incomingShare?.text,
+                    incomingShare?.revision,
+                    incomingShare?.errorMessage,
+                ) {
+                    val share = incomingShare
+                    if (
+                        share?.targetSessionId != null && share.hasPendingAttachments &&
+                        share.text == null && share.errorMessage == null
+                    ) {
+                        viewModel.dispatchIncomingShareAttachments(share.id)
+                    }
                 }
                 LaunchedEffect(
                     session.initialized,
@@ -137,6 +187,14 @@ class MainActivity : ComponentActivity() {
                     } else if (session.hasProfile) {
                         MobileWebChat(
                             state = conversation,
+                            sharedTextDraft = incomingShare?.text?.let { text ->
+                                val share = requireNotNull(incomingShare)
+                                share.targetSessionId?.let { sessionId ->
+                                    MobileSharedTextDraft(share.id, sessionId, text, share.revision)
+                                }
+                            },
+                            onCommitSharedText = viewModel::commitIncomingShareText,
+                            onSharedTextRejected = viewModel::reportIncomingShareError,
                             onSelectSession = viewModel::selectSession,
                             onRemoveUnavailableSession = viewModel::removeUnavailableSession,
                             onNewSession = viewModel::createSession,
@@ -189,7 +247,17 @@ class MainActivity : ComponentActivity() {
                             onQrCode = viewModel::onQrCode,
                         )
                     }
-                    if (!notificationsEnabled.value && notificationPermissionWasRequested()) {
+                    val shareError = incomingShare?.errorMessage
+                    if (shareError != null) {
+                        IncomingShareNotice(
+                            message = shareError,
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(horizontal = 16.dp, vertical = 20.dp),
+                            onRetry = { viewModel.retryIncomingShare(requireNotNull(incomingShare).id) },
+                            onDiscard = { viewModel.discardIncomingShare(requireNotNull(incomingShare).id) },
+                        )
+                    } else if (!notificationsEnabled.value && notificationPermissionWasRequested()) {
                         NotificationPermissionNotice(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
@@ -204,6 +272,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
+        consumeIncomingShare(intent)
         requestedSessionId.value = intent.getStringExtra(MobileConnectionService.EXTRA_SESSION_ID)
         requestedMessageId.value = intent.getStringExtra(MobileConnectionService.EXTRA_MESSAGE_ID)
     }
@@ -211,6 +281,33 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         notificationsEnabled.value = NotificationManagerCompat.from(this).areNotificationsEnabled()
+    }
+
+    private fun consumeIncomingShare(intent: Intent) {
+        val incoming = try {
+            parseIncomingShare(intent)
+        } catch (error: IllegalArgumentException) {
+            Toast.makeText(this, error.message, Toast.LENGTH_SHORT).show()
+            intent.action = null
+            return
+        } catch (_: BadParcelableException) {
+            Toast.makeText(this, "分享内容无法读取", Toast.LENGTH_SHORT).show()
+            intent.action = null
+            return
+        }
+        if (incoming == null) return
+        lifecycleScope.launch {
+            try {
+                viewModel.acceptIncomingShare(incoming)
+                intent.action = null
+            } catch (error: IllegalArgumentException) {
+                Toast.makeText(this@MainActivity, error.message, Toast.LENGTH_SHORT).show()
+            } catch (_: IOException) {
+                Toast.makeText(this@MainActivity, "共享内容暂存失败", Toast.LENGTH_SHORT).show()
+            } catch (_: SecurityException) {
+                Toast.makeText(this@MainActivity, "没有读取共享内容的权限", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     private fun shouldRequestNotificationPermission(): Boolean =
@@ -240,6 +337,22 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val PERMISSION_PREFERENCES = "notification_permission"
         const val KEY_NOTIFICATION_PERMISSION_REQUESTED = "requested"
+    }
+}
+
+@Composable
+private fun IncomingShareNotice(
+    message: String,
+    modifier: Modifier = Modifier,
+    onRetry: () -> Unit,
+    onDiscard: () -> Unit,
+) {
+    Snackbar(
+        modifier = modifier,
+        action = { TextButton(onClick = onRetry) { Text("重试") } },
+        dismissAction = { TextButton(onClick = onDiscard) { Text("放弃") } },
+    ) {
+        Text(message)
     }
 }
 

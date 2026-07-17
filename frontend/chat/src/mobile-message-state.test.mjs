@@ -10,6 +10,7 @@ import {
   flushMobileComposerBeforePairing,
   formatMobileSelectionCopyText,
   isMobileImageViewerHistoryState,
+  mergeMobileComposerDraft,
   mobileMessageCanReply,
   mobileSelectionActionAvailability,
   mobileComposerDraftMatches,
@@ -36,6 +37,16 @@ test("clearing a persisted reading anchor changes an in-flight restore to the co
   assert.equal(updateMobileReadingRestoreTarget(anchor, undefined), null);
   assert.deepEqual(updateMobileReadingRestoreTarget(null, anchor), anchor);
   assert.equal(updateMobileReadingRestoreTarget(anchor, { ...anchor }), anchor);
+});
+
+test("shared text appends without silently truncating at the durable limit", () => {
+  assert.equal(mergeMobileComposerDraft("", "共享内容"), "共享内容");
+  assert.equal(mergeMobileComposerDraft("已有草稿", "共享内容"), "已有草稿\n共享内容");
+  assert.equal(mergeMobileComposerDraft("a".repeat(MOBILE_COMPOSER_DRAFT_MAX_LENGTH), "不会越界"), null);
+  assert.equal(
+    mergeMobileComposerDraft("a".repeat(MOBILE_COMPOSER_DRAFT_MAX_LENGTH - 2), "b"),
+    `${"a".repeat(MOBILE_COMPOSER_DRAFT_MAX_LENGTH - 2)}\nb`,
+  );
 });
 
 function selectableMessage(id, role, content, streaming = false) {

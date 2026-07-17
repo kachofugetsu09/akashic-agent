@@ -74,6 +74,7 @@ import {
   isMobileImageViewerHistoryState,
   mobileMessageCanReply,
   mobileMessageHasCopyContent,
+  mergeMobileComposerDraft,
   mobileSelectionActionAvailability,
   mobileComposerTextareaMetrics,
   mobileComposerDraftHydration,
@@ -246,6 +247,13 @@ interface NativeBridge {
   dismissError(): void;
   shareText(requestId: string, text: string): void;
   saveComposerDraft(sessionId: string, text: string, replyToMessageId: string): void;
+  commitSharedText(
+    draftId: string,
+    sessionId: string,
+    text: string,
+    replyToMessageId: string,
+  ): void;
+  rejectSharedText(draftId: string, message: string): void;
   sendMessage(requestId: string, text: string, replyToMessageId: string, attachmentIdsJson: string): void;
   copyText(text: string): void;
   performActionHaptic(): void;
@@ -537,6 +545,7 @@ declare global {
       receivePluginAssets(assets: MobilePluginAsset[]): void;
       receiveSendResult(requestId: string, accepted: boolean): void;
       receiveShareResult(requestId: string, launched: boolean): void;
+      receiveSharedText(draftId: string, sessionId: string, text: string): void;
       navigateBack(): boolean;
     };
   }
@@ -591,6 +600,8 @@ function MobileNativeApp() {
   const pendingShareRequestRef = useRef<string | null>(null);
   const surfaceRef = useRef<MobileSurface>({ kind: "chat" });
   const selectionActiveRef = useRef(false);
+  const appliedSharedTextIdsRef = useRef(new Set<string>());
+  const pendingSharedTextRef = useRef<{ id: string; sessionId: string; text: string } | null>(null);
   const activeComposerDraftRef = useRef<MobileComposerDraftWrite | null>(null);
   const pendingComposerDraftRef = useRef<MobileComposerDraftWrite | null>(null);
   const optimisticComposerDraftsRef = useRef(new Map<string, MobileComposerDraftWrite>());
@@ -652,6 +663,65 @@ function MobileNativeApp() {
     pendingComposerDraftRef.current = null;
     saveComposerDraft(cleared);
   }, [saveComposerDraft]);
+
+  const applySharedText = useCallback((draftId: string, sessionId: string, text: string) => {
+    const current = activeComposerDraftRef.current;
+    if (!current || current.sessionId !== sessionId) return false;
+
+    if (appliedSharedTextIdsRef.current.has(draftId)) {
+      window.AkashicNative?.commitSharedText(
+        draftId,
+        sessionId,
+        current.text,
+        current.replyToMessageId ?? "",
+      );
+      return true;
+    }
+
+    // 1. 复用当前会话草稿 owner，并保留已有引用目标
+    const merged = mergeMobileComposerDraft(current.text, text);
+    if (merged === null) {
+      window.AkashicNative?.rejectSharedText(draftId, "当前输入空间不足，请精简草稿后重试");
+      return true;
+    }
+    const next = { ...current, text: merged };
+    if (composerDraftTimerRef.current !== null) {
+      window.clearTimeout(composerDraftTimerRef.current);
+      composerDraftTimerRef.current = null;
+    }
+    pendingComposerDraftRef.current = null;
+    activeComposerDraftRef.current = next;
+    setInput(next.text);
+    optimisticComposerDraftsRef.current.set(next.sessionId, next);
+
+    // 2. 回到对话任务面并在持久化请求发出后确认消费
+    if (surfaceRef.current.kind !== "chat") {
+      replaceMobileSurface(window.history, { kind: "chat" });
+      surfaceRef.current = { kind: "chat" };
+      setSurface({ kind: "chat" });
+    }
+    setDrawerOpen(false);
+    setSearchOpen(false);
+    searchOpenRef.current = false;
+    setSearchQuery("");
+    normalizedSearchQueryRef.current = "";
+    setSearchIndex(new Map());
+    setSearchTargetId(null);
+    setHighlightedMessageId(null);
+    setCommandsOpen(false);
+    setQueueOpen(false);
+    selectionActiveRef.current = false;
+    setSelectedMessageIds(new Set());
+    appliedSharedTextIdsRef.current.add(draftId);
+    window.AkashicNative?.commitSharedText(
+      draftId,
+      sessionId,
+      next.text,
+      next.replyToMessageId ?? "",
+    );
+    requestAnimationFrame(() => textareaRef.current?.focus());
+    return true;
+  }, []);
 
   useEffect(() => {
     let pending: MobileSnapshot | null = null;
@@ -740,6 +810,11 @@ function MobileNativeApp() {
         }
         setShareStatus("分享未打开，请重试");
       },
+      receiveSharedText(draftId, sessionId, text) {
+        if (!applySharedText(draftId, sessionId, text)) {
+          pendingSharedTextRef.current = { id: draftId, sessionId, text };
+        }
+      },
       navigateBack() {
         if (selectionActiveRef.current) {
           if (pendingShareRequestRef.current !== null) return true;
@@ -773,7 +848,7 @@ function MobileNativeApp() {
       window.history.scrollRestoration = previousScrollRestoration;
       delete window.AkashicMobile;
     };
-  }, [clearAcceptedComposerDraft, flushComposerDraft]);
+  }, [applySharedText, clearAcceptedComposerDraft, flushComposerDraft]);
 
   useEffect(() => {
     if (snapshot?.composer.isStopping || !snapshot?.composer.canStop || snapshot?.connection.error) {
@@ -841,6 +916,13 @@ function MobileNativeApp() {
     saveComposerDraft,
     snapshot,
   ]);
+
+  useLayoutEffect(() => {
+    const pending = pendingSharedTextRef.current;
+    if (pending && applySharedText(pending.id, pending.sessionId, pending.text)) {
+      pendingSharedTextRef.current = null;
+    }
+  }, [applySharedText, snapshot?.composer.draft, snapshot?.selectedSessionId]);
 
   useEffect(() => {
     const flushWhenHidden = () => {

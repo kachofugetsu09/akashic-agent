@@ -242,6 +242,57 @@ class LocalDeliveryStoreTest {
     }
 
     @Test
+    fun preparedShareCommitsOnlyAgainstItsExactDraftBase() = runBlocking {
+        store.saveComposerDraft("mobile:test", "原草稿", null, "server", 2)
+
+        assertEquals(
+            PreparedComposerDraftResult.COMMITTED,
+            store.commitPreparedComposerDraft(
+                "mobile:test",
+                "原草稿\n共享文字",
+                "assistant:missing",
+                "原草稿",
+                null,
+                2,
+                "server",
+                3,
+            ),
+        )
+        assertEquals(
+            PreparedComposerDraftResult.ALREADY_COMMITTED,
+            store.commitPreparedComposerDraft(
+                "mobile:test",
+                "原草稿\n共享文字",
+                "assistant:missing",
+                "原草稿",
+                null,
+                2,
+                "server",
+                4,
+            ),
+        )
+
+        store.saveComposerDraft("mobile:test", "用户继续编辑", null, "server", 5)
+        assertEquals(
+            PreparedComposerDraftResult.CONFLICT,
+            store.commitPreparedComposerDraft(
+                "mobile:test",
+                "旧的 prepared",
+                null,
+                "原草稿\n共享文字",
+                null,
+                3,
+                "server",
+                6,
+            ),
+        )
+        assertEquals(
+            "用户继续编辑",
+            database.composerDrafts().get("server", "mobile:test")?.text,
+        )
+    }
+
+    @Test
     fun persistsMoreThanOneInMemoryQueueOfProactiveNotifications() = runBlocking {
         repeat(65) { index ->
             val sequence = index + 1L

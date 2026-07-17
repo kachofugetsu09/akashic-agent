@@ -109,6 +109,12 @@ export function normalizeMobileComposerDraftText(text: string) {
   return text.slice(0, MOBILE_COMPOSER_DRAFT_MAX_LENGTH);
 }
 
+export function mergeMobileComposerDraft(current: string, incoming: string) {
+  const separator = current && incoming ? "\n" : "";
+  const merged = `${current}${separator}${incoming}`;
+  return merged.length <= MOBILE_COMPOSER_DRAFT_MAX_LENGTH ? merged : null;
+}
+
 export function flushMobileComposerBeforePairing(
   flush: () => void,
   restartPairing: () => void,
