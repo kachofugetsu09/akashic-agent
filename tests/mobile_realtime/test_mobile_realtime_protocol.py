@@ -288,6 +288,17 @@ def test_reply_requires_known_command_suffix(reply_type: str) -> None:
         parse_frame(json.dumps(frame))
 
 
+def test_plugin_ui_catalog_accepts_not_modified_reply() -> None:
+    frame = _golden_frame(1)
+    frame["type"] = "plugin.ui.catalog.not_modified"
+    frame["payload"] = {"catalog_revision": "a" * 64}
+
+    parsed = parse_frame(json.dumps(frame))
+
+    assert isinstance(parsed, ReplyFrame)
+    assert parsed.type == "plugin.ui.catalog.not_modified"
+
+
 def test_auth_accepted_rejects_epoch_mismatch() -> None:
     frame = _golden_frame(4)
     frame["payload"]["connection_epoch"] = 8

@@ -99,6 +99,7 @@ _RFC3339_INSTANT_PATTERN_TEXT = (
 _REPLY_TYPE_PATTERN = re.compile(
     r"^(?P<command>[a-z][a-z0-9]*(?:\.[a-z][a-z0-9_]*)+)\.(?:ok|error)$"
 )
+_SPECIAL_REPLY_TYPES = frozenset({"plugin.ui.catalog.not_modified"})
 
 FrameId: TypeAlias = Annotated[
     str,
@@ -345,10 +346,12 @@ class ReplyFrame(ProtocolModel):
     @model_validator(mode="after")
     def validate_reply(self) -> ReplyFrame:
         _validate_frame_id(self.id, "id")
+        if self.type in _SPECIAL_REPLY_TYPES:
+            return self
         match = _REPLY_TYPE_PATTERN.fullmatch(self.type)
         if match is None or match.group("command") not in COMMAND_TYPES:
             raise ValueError(
-                "reply type 必须为已知 command 的 <command>.ok 或 <command>.error"
+                "reply type 必须为已知 command 的标准或显式扩展结果"
             )
         return self
 
