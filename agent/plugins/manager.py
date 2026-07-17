@@ -2171,7 +2171,8 @@ class PluginManager:
         module_path: str,
         source_revision: str,
     ) -> PluginContributions:
-        cls = type(instance)
+        cls = cast(type[Any], type(instance))
+        _reject_legacy_mobile_ui_api(cls, plugin_id)
         sources: list[RegisteredProactiveSource] = []
         for source in _load_module_list(instance, "proactive_sources"):
             if not isinstance(source, ProactiveSourceSpec):
@@ -2853,6 +2854,25 @@ def _resolve_dashboard_module(plugin_dir: Path, declared: str | None) -> Path | 
     if not path.is_relative_to(root) or path.suffix != ".py" or not path.is_file():
         raise RuntimeError(f"插件 dashboard module 无效: {declared}")
     return path
+
+
+def _reject_legacy_mobile_ui_api(cls: type[Any], plugin_id: str) -> None:
+    """拒绝已移除的移动 UI v1 声明，避免插件被静默降级。"""
+
+    legacy_methods = tuple(
+        name
+        for name in (
+            "mobile_ui_module",
+            "mobile_ui_stylesheet",
+            "mobile_ui_call",
+        )
+        if inspect.getattr_static(cls, name, None) is not None
+    )
+    if legacy_methods:
+        raise RuntimeError(
+            f"插件 {plugin_id} 使用已移除的 Mobile UI v1 API: "
+            f"{', '.join(legacy_methods)}；请迁移到 mobile_ui 和 mobile_ui_query"
+        )
 
 
 def _resolve_mobile_ui_asset(

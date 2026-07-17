@@ -295,6 +295,69 @@ async def test_candidate_declarations_are_collected_once(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("legacy_method", "legacy_declaration"),
+    [
+        (
+            "mobile_ui_module",
+            "    @classmethod\n"
+            "    def mobile_ui_module(cls): return 'legacy.js'\n",
+        ),
+        (
+            "mobile_ui_stylesheet",
+            "    @classmethod\n"
+            "    def mobile_ui_stylesheet(cls): return 'legacy.css'\n",
+        ),
+        (
+            "mobile_ui_call",
+            "    async def mobile_ui_call(self, method, payload): return {}\n",
+        ),
+    ],
+)
+async def test_legacy_mobile_ui_candidate_keeps_active_snapshot(
+    tmp_path: Path,
+    legacy_method: str,
+    legacy_declaration: str,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "mobile_contract",
+        "from agent.plugins import MobileUiContribution, Plugin\n"
+        "class MobileContractPlugin(Plugin):\n"
+        "    name = 'mobile_contract'\n"
+        "    @classmethod\n"
+        "    def mobile_ui(cls):\n"
+        "        return MobileUiContribution(module='mobile.js', slots=('drawer.panel',))\n",
+    )
+    _ = (plugin_dir / "mobile.js").write_text("export const version = 'v2';\n", encoding="utf-8")
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("mobile_contract")
+    active_snapshot = manager.current_snapshot
+    assert active is not None and active_snapshot is not None
+
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class MobileContractPlugin(Plugin):\n"
+        "    name = 'mobile_contract'\n"
+        + legacy_declaration,
+        encoding="utf-8",
+    )
+    prepared = await manager.prepare_candidate("mobile_contract")
+
+    gate = manager.latest_gate("mobile_contract")
+    assert prepared is None
+    assert gate is not None and gate.status == "failed"
+    assert gate.checks[0].check_id == "declarations"
+    assert legacy_method in gate.failure_reason
+    assert manager.generation("mobile_contract") is active
+    assert manager.current_snapshot is active_snapshot
+    assert active_snapshot.generations["mobile_contract"] is active
+    assert active.contributions.mobile_ui_asset is not None
+    assert active.contributions.mobile_ui_asset.module == "export const version = 'v2';\n"
+
+
+@pytest.mark.asyncio
 async def test_same_source_gets_new_generation_namespace_after_restart(tmp_path: Path):
     _write_plugin(
         tmp_path / "plugins",
