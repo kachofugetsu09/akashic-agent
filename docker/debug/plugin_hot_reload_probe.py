@@ -118,7 +118,7 @@ def _mounted_tree_digest(root: Path, *, excluded_roots: set[Path] | None = None)
         names[:] = sorted(
             name
             for name in names
-            if name not in {".git", "__pycache__"}
+            if name not in {".codegraph", ".git", "__pycache__"}
             and (current / name).resolve() not in excluded
         )
         for name in sorted(files):
@@ -129,6 +129,8 @@ def _mounted_tree_digest(root: Path, *, excluded_roots: set[Path] | None = None)
             digest.update(os.fsencode(relative))
             if path.is_symlink():
                 digest.update(b"symlink\0" + os.fsencode(os.readlink(path)))
+                continue
+            if not path.is_file():
                 continue
             with path.open("rb") as file:
                 for chunk in iter(lambda: file.read(1024 * 1024), b""):
@@ -191,7 +193,11 @@ def _path_check(check_id: str, actual: Path, expected: Path) -> CheckResult:
 
 def _sandbox_integrity() -> GateResult:
     repositories = _repositories()
-    excluded = {Path("/app/static").resolve()}
+    excluded = {
+        Path("/app/docker/debug/profiles").resolve(),
+        Path("/app/logs").resolve(),
+        Path("/app/static").resolve(),
+    }
     before = {
         str(repo): _mounted_tree_digest(
             repo,
@@ -511,7 +517,7 @@ def _install_scope_plugin(sandbox: Path) -> Path:
         "HTTPServer(('127.0.0.1', 18766), Handler).serve_forever()\n",
         encoding="utf-8",
     )
-    return sandbox / "home/.akashic-plugin/data/scope_gate-gate/.kv.json"
+    return sandbox / "workspace/plugin-data/scope_gate-gate/.kv.json"
 
 
 def _install_fitbit_plugin(sandbox: Path, plugin_root: Path) -> Path:
@@ -522,12 +528,12 @@ def _install_fitbit_plugin(sandbox: Path, plugin_root: Path) -> Path:
         target,
         ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__", ".pytest_cache"),
     )
-    return sandbox / "home/.akashic-plugin/data/fitbit-gate"
+    return sandbox / "workspace/plugin-data/fitbit-gate"
 
 
 def _install_management_plugin(sandbox: Path) -> tuple[Path, Path, Path]:
     cache = sandbox / "home/.akashic-plugin/cache/gate/management/1.0.0"
-    data = sandbox / "home/.akashic-plugin/data/management-gate"
+    data = sandbox / "workspace/plugin-data/management-gate"
     manifest = sandbox / "home/.akashic-plugin/manifest.toml"
     cache.mkdir(parents=True, exist_ok=True)
     data.mkdir(parents=True, exist_ok=True)
@@ -572,7 +578,7 @@ def _install_management_plugin(sandbox: Path) -> tuple[Path, Path, Path]:
 
 def _install_proactive_fetch_plugin(sandbox: Path) -> Path:
     cache = sandbox / "home/.akashic-plugin/cache/gate/proactive_fetch/1.0.0"
-    data = sandbox / "home/.akashic-plugin/data/proactive_fetch-gate"
+    data = sandbox / "workspace/plugin-data/proactive_fetch-gate"
     manifest = sandbox / "home/.akashic-plugin/manifest.toml"
     cache.mkdir(parents=True, exist_ok=True)
     data.mkdir(parents=True, exist_ok=True)
@@ -884,7 +890,7 @@ def _install_candidate_plugins(
         encoding="utf-8",
     )
     _ = reload_source.write_text(_candidate_reload_source("v1"), encoding="utf-8")
-    data = sandbox / "home/.akashic-plugin/data"
+    data = sandbox / "workspace/plugin-data"
     (data / "candidate_reload-gate").mkdir(parents=True, exist_ok=True)
     return (
         data / "candidate_valid-gate/.kv.json",
@@ -1224,7 +1230,7 @@ def _exercise_migrated_plugins(
         "SELECT count(*) FROM proactive_feedback_events",
     )
     driver_state = _read_json_object(
-        sandbox / "home/.akashic-plugin/data/zz_gate_driver-gate/.kv.json"
+        sandbox / "workspace/plugin-data/zz_gate_driver-gate/.kv.json"
     )
     raw_slots = driver_state.get("phase_slots", [])
     lifecycle_slots = (
@@ -1665,7 +1671,7 @@ def _exercise_topology_watch(
         encoding="utf-8",
     )
     added_state_path = (
-        sandbox / "home/.akashic-plugin/data/topology_added-gate/.kv.json"
+        sandbox / "workspace/plugin-data/topology_added-gate/.kv.json"
     )
     added_state: dict[str, object] = {}
     deadline = time.monotonic() + 10

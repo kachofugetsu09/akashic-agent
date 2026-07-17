@@ -11,7 +11,7 @@ def main() -> None:
     _ = parser.add_argument(
         "--workspace",
         type=Path,
-        default=Path.home() / ".akashic" / "workspace",
+        required=True,
     )
     _ = parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()

@@ -16,20 +16,25 @@ def test_attachment_store_writes_under_configured_root(tmp_path: Path):
     assert path.read_bytes() == b"hello"
 
 
-def test_attachment_store_logs_fallback_reason(tmp_path: Path, caplog):
+def test_attachment_store_fails_when_root_is_not_a_directory(tmp_path: Path):
     root = tmp_path / "not-a-directory"
     root.write_text("occupied", encoding="utf-8")
     store = AttachmentStore(root)
 
-    with caplog.at_level("WARNING", logger="infra.channels.base"):
-        path = store.write_bytes(b"hello", prefix="img_", suffix=".png")
+    with pytest.raises(FileExistsError):
+        store.write_bytes(b"hello", prefix="img_", suffix=".png")
 
-    try:
-        assert path.parent == Path("/tmp/akashic_uploads")
-        assert str(root) in caplog.text
-        assert "使用降级目录" in caplog.text
-    finally:
-        path.unlink(missing_ok=True)
+
+def test_attachment_store_rejects_symlink_root(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "uploads"
+    root.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="符号链接"):
+        AttachmentStore(root).write_bytes(b"hello", prefix="img_", suffix=".png")
+
+    assert list(outside.iterdir()) == []
 
 
 def test_message_deduper_evicts_oldest_keys():

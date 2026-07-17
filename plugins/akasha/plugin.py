@@ -60,10 +60,13 @@ class AkashaPlugin(Plugin):
         workspace = self.context.workspace
         if workspace is None:
             return "Akasha 诊断不可用：workspace 不存在。"
+        data_dir = self.context.data_dir
+        if data_dir is None:
+            return "Akasha 诊断不可用：插件数据目录不存在。"
         store = AkashaStore(
             resolve_akasha_db_path(
                 workspace=workspace,
-                akasha_config=load_akasha_config(),
+                akasha_config=load_akasha_config(plugin_dir=data_dir),
             )
         )
         try:
@@ -81,7 +84,6 @@ class AkashaPlugin(Plugin):
         if raw is None:
             return "暂无 Akasha 检索诊断记录。"
         return _render_query_detail(raw)
-
 
 def _render_query_detail(raw: dict[str, object]) -> str:
     activation_items = _json_items(raw.get("activation_items_json"))

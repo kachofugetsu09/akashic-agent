@@ -88,8 +88,7 @@ class TelegramChannel:
         self.name = channel_name
         self._allow_from: set[str] = set(allow_from) if allow_from else set()
         self._message_deduper = MessageDeduper(_SEEN_MSG_MAXSIZE)
-        ws = getattr(session_manager, "workspace", None)
-        self._attachments = AttachmentStore(Path(ws) / "uploads" if ws else None)
+        self._attachments = AttachmentStore(session_manager.workspace / "uploads")
         self._identity_index = SessionIdentityIndex(
             session_manager,
             channel=channel_name,

@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 from agent.config_models import Config
+from agent.plugins.manifest import plugins_root
 from agent.context import ContextBuilder
 from agent.peer_agent.process_manager import PeerProcessManager
 from agent.peer_agent.poller import PeerAgentPoller
@@ -666,4 +667,4 @@ def _resolve_plugin_dirs(workspace: Path) -> list[Path]:
 
 
 def _resolve_installed_plugin_cache_root() -> Path:
-    return Path.home() / ".akashic-plugin" / "cache"
+    return plugins_root() / "cache"
