@@ -515,3 +515,10 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - UI 只复用现有 Material 3 输入 surface 和附件行，没有新增页面、卡片、颜色或确认弹窗；五技能检查没有发现新增 AI slop。
 - 自动门禁通过 mobile state `35/35`、TypeScript、ESLint、Android unit/androidTest 编译、Pixel 7 定向 instrumentation `54/54`、release unit/Lint/R8/assemble 与 v2 签名。Pixel 7 已验证标题 + URL 的追加与强停恢复、持久 Store 重建、保留引用的长草稿、连续文字分享、失效 URI 的单一恢复 Snackbar，以及从真实系统分享面板导入 `akashic-share-file-final.txt` 后显示“上传完成”并可移除；应用日志无崩溃、event gap 或 WebView 协议错误。
 - 完整边界、验收证据和 APK 哈希见 `docs/mobile-batches/2026-07-17-android-share-entry.md`。
+
+## 2026-07-17：v0.8.1 系统分享与状态栏品牌图标
+
+- 系统分享批次以 `b9c44381` 合入移动集成分支；Android 只接收系统 `ACTION_SEND` / `ACTION_SEND_MULTIPLE`，复用既有草稿、引用、附件和上传链路，没有新增消息协议或自动发送路径。
+- 通知 small icon 从无品牌语义的圆形勾号替换为五档密度的单色女孩剪影。短发、叶饰、脸部、脖颈和肩线共同承担小尺寸识别；颜色继续完全交给 Android 系统明暗着色，不新增状态色。
+- `0.8.1 (22)` release unit、Lint、R8、assemble 与 v2 签名通过。最终 APK 为 8,370,246 bytes，SHA-256 `27c2874b0d360575e43c70ca7b934839c58f62789e8a51615d89880bb85bb22a`；Pixel 7 覆盖安装后的 `base.apk` 哈希一致。
+- 真机截图为 `/tmp/pixel7-v081-status-icon.png` 与 `/tmp/pixel7-v081-notification-shade.png`；应用日志无 FATAL、RenderProcessGone 或协议错误。
