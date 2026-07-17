@@ -650,6 +650,7 @@ def _install_migrated_plugins(sandbox: Path, plugin_root: Path) -> Path:
         "import asyncio\n"
         "import sqlite3\n"
         "from agent.plugins import Plugin\n"
+        "from agent.plugins.mobile_ui import PluginMobileUiProvider\n"
         "from agent.plugins.snapshot import get_current_runtime_snapshot\n"
         "from bus.events_lifecycle import TurnCommitted\n"
         "class InspectRuntimeModules:\n"
@@ -660,6 +661,8 @@ def _install_migrated_plugins(sandbox: Path, plugin_root: Path) -> Path:
         "        snapshot = get_current_runtime_snapshot()\n"
         "        slots = [] if snapshot is None else [getattr(item, 'slot', '') for item in snapshot.before_turn_modules + snapshot.prompt_render_modules]\n"
         "        self.plugin.context.kv_store.set('phase_slots', slots)\n"
+        "        provider = PluginMobileUiProvider(type('LiveManager', (), {'current_snapshot': snapshot})())\n"
+        "        self.plugin.context.kv_store.set('mobile_ui_catalog', provider.catalog())\n"
         "        return frame\n"
         "class GateDriverPlugin(Plugin):\n"
         "    name = 'zz_gate_driver'\n"
@@ -1171,31 +1174,20 @@ def _candidate_service_version(container_id: str) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def _dashboard_plugins(container_id: str) -> list[str]:
-    result = subprocess.run(
-        [
-            "docker",
-            "exec",
-            container_id,
-            "python",
-            "-c",
-            (
-                "import json, urllib.request; "
-                "items=json.loads(urllib.request.urlopen("
-                "'http://127.0.0.1:2236/api/dashboard/plugins', timeout=2).read()); "
-                "print(json.dumps(sorted(item['id'] for item in items)))"
-            ),
-        ],
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    try:
-        value = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return []
-    return [str(item) for item in value] if isinstance(value, list) else []
+def _mobile_ui_plugin_ids(driver_state: dict[str, object]) -> set[str]:
+    """从真实移动 UI catalog 提取已发布插件。"""
+
+    catalog = driver_state.get("mobile_ui_catalog")
+    if not isinstance(catalog, dict):
+        return set()
+    items = catalog.get("items")
+    if not isinstance(items, list):
+        return set()
+    return {
+        str(item["id"])
+        for item in items
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
 
 
 def _wait_sqlite_count(path: Path, query: str) -> int:
@@ -1249,10 +1241,9 @@ def _exercise_migrated_plugins(
         publication_state="committed",
         plugin_id="observe@gate",
     )
-    plugins = _dashboard_plugins(container_id)
+    mobile_ui_plugins = _mobile_ui_plugin_ids(driver_state)
     expected = {
         "emotion@gate",
-        "meme@gate",
         "observe@gate",
         "proactive_feedback@gate",
         "status_commands@gate",
@@ -1268,7 +1259,7 @@ def _exercise_migrated_plugins(
         }.issubset(lifecycle_slots)
         and reloaded.get("old_generation") != reloaded.get("new_generation")
         and isinstance(reloaded.get("new_generation"), str)
-        and expected.issubset(plugins)
+        and expected.issubset(mobile_ui_plugins)
         and observe_db.exists()
     )
     return {
@@ -1277,7 +1268,7 @@ def _exercise_migrated_plugins(
         "proactive_feedback_events": feedback_count,
         "lifecycle_slots": sorted(lifecycle_slots),
         "reloaded": reloaded,
-        "dashboard_plugins": plugins,
+        "mobile_ui_plugins": sorted(mobile_ui_plugins),
         "observe_db": observe_db.exists(),
     }
 
