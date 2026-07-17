@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite it using the metadata below."
+title: "Akashic Agent"
+authors:
+  - family-names: "Wang"
+    given-names: "Yuanzhe"
+    alias: "kachofugetsu09"
+    orcid: ""
+    email: "2494946888@qq.com"
+version: "v0.1.1"
+date-released: 2026-06-14
+doi: ""
+repository-code: "https://github.com/kachofugetsu09/akashic-agent"
+license: "MIT"
+keywords:
+  - "AI agent"
+  - "memory system"
+  - "proactive perception"
+  - "conversational AI"
+  - "open source"
+preferred-citation:
+  type: software
+  authors:
+    - family-names: "Wang"
+      given-names: "Yuanzhe"
+      alias: "kachofugetsu09"
+  title: "Akashic Agent: An Extensible Agent Framework with Persistent Memory and Proactive Perception"
+  version: "v0.1.1"
+  year: 2026
+  publisher: "GitHub"
+  url: "https://github.com/kachofugetsu09/akashic-agent"
