@@ -27,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -67,10 +68,20 @@ private const val MOBILE_WEB_URL = "https://appassets.androidplatform.net/assets
 private const val MOBILE_WEB_LOG_TAG = "AkashicMobileWeb"
 private const val MOBILE_WEB_RENDER_DEADLINE_MILLIS = 10_000L
 
+data class MobileSharedTextDraft(
+    val id: String,
+    val sessionId: String,
+    val text: String,
+    val revision: Int,
+)
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun MobileWebChat(
     state: ConversationUiState,
+    sharedTextDraft: MobileSharedTextDraft?,
+    onCommitSharedText: (String, String, String, String?) -> Unit,
+    onSharedTextRejected: (String, String) -> Unit,
     onSelectSession: (String) -> Unit,
     onRemoveUnavailableSession: (String) -> Unit,
     onNewSession: () -> Unit,
@@ -100,15 +111,19 @@ fun MobileWebChat(
     modifier: Modifier = Modifier,
 ) {
     val latestState by rememberUpdatedState(state)
+    val latestSharedTextDraft by rememberUpdatedState(sharedTextDraft)
     val mediaRegistry = remember { MobileMediaRegistry() }
     val shareScope = remember { CoroutineScope(SupervisorJob() + Dispatchers.IO) }
     var webView by remember { mutableStateOf<WebView?>(null) }
     var snapshotPump by remember { mutableStateOf<MobileSnapshotPump?>(null) }
     var webLoadError by remember { mutableStateOf<String?>(null) }
     var webHistoryActive by remember { mutableStateOf(false) }
+    var webReady by remember { mutableStateOf(false) }
 
     val callbacks by rememberUpdatedState(
         MobileWebCallbacks(
+            onCommitSharedText = onCommitSharedText,
+            onSharedTextRejected = onSharedTextRejected,
             onSelectSession = onSelectSession,
             onRemoveUnavailableSession = onRemoveUnavailableSession,
             onNewSession = onNewSession,
@@ -162,13 +177,19 @@ fun MobileWebChat(
                 webViewClient = MobileWebClient(
                     context,
                     assetLoader,
-                    onMainFrameStarted = { post { webLoadError = null } },
+                    onMainFrameStarted = { post {
+                        webLoadError = null
+                        webReady = false
+                    } },
                     onMainFrameError = { message -> post { webLoadError = message } },
                 )
                 addJavascriptInterface(
                     MobileWebBridge(
                         dispatch = { work -> post { work(callbacks) } },
-                        reportReady = { post { webLoadError = null } },
+                        reportReady = { post {
+                            webLoadError = null
+                            webReady = true
+                        } },
                         requestSnapshot = {
                             post {
                                 val pump = snapshotPump
@@ -275,6 +296,11 @@ fun MobileWebChat(
     }
 
     SideEffect { snapshotPump?.submit(state) }
+    LaunchedEffect(webReady, sharedTextDraft?.id, sharedTextDraft?.revision, webView) {
+        val current = webView
+        val draft = latestSharedTextDraft
+        if (webReady && current != null && draft != null) current.pushSharedTextDraft(draft)
+    }
     BackHandler(enabled = webHistoryActive) {
         val current = requireNotNull(webView) { "Web history owner is unavailable" }
         check(current.canGoBack()) { "Web history active without a back entry" }
@@ -292,6 +318,8 @@ fun MobileWebChat(
 }
 
 private data class MobileWebCallbacks(
+    val onCommitSharedText: (String, String, String, String?) -> Unit,
+    val onSharedTextRejected: (String, String) -> Unit,
     val onSelectSession: (String) -> Unit,
     val onRemoveUnavailableSession: (String) -> Unit,
     val onNewSession: () -> Unit,
@@ -335,6 +363,21 @@ private class MobileWebBridge(
 
     @JavascriptInterface
     fun requestSnapshot() = requestSnapshot.invoke()
+
+    @JavascriptInterface
+    fun commitSharedText(
+        draftId: String,
+        sessionId: String,
+        text: String,
+        replyToMessageId: String,
+    ) = dispatch {
+        it.onCommitSharedText(draftId, sessionId, text, replyToMessageId.ifBlank { null })
+    }
+
+    @JavascriptInterface
+    fun rejectSharedText(draftId: String, message: String) = dispatch {
+        it.onSharedTextRejected(draftId, message)
+    }
 
     @JavascriptInterface
     fun selectSession(sessionId: String) = dispatch { it.onSelectSession(sessionId) }
@@ -640,6 +683,15 @@ private fun WebView.pushSnapshot(snapshotJson: String) {
 
 private fun WebView.pushPluginAssets(assetsJson: String) {
     evaluateJavascript("window.AkashicMobile?.receivePluginAssets($assetsJson)", null)
+}
+
+private fun WebView.pushSharedTextDraft(draft: MobileSharedTextDraft) {
+    evaluateJavascript(
+        "window.AkashicMobile?.receiveSharedText(" +
+            "${JSONObject.quote(draft.id)},${JSONObject.quote(draft.sessionId)}," +
+            "${JSONObject.quote(draft.text)})",
+        null,
+    )
 }
 
 private class MobileSnapshotPump(

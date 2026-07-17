@@ -504,3 +504,14 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - Pixel 7 真机完成引用跳转、7 行 Gboard 输入、进程外服务中断后的草稿恢复、系统 chooser 分享和真实 tunnel outage 恢复。服务重启后 generation 31 完整恢复协议与插件同步，应用日志无 FATAL、RenderProcessGone、event sequence gap 或 JSON 错误。
 - 移动 Web 状态测试 `34/34`、TypeScript、ESLint、隔离 Gateway `33 passed`、定向 Pyright、Android release unit/Lint/R8/assemble 与 v2 签名全部通过。验收 APK SHA-256 为 `8a35d365034aecda9935c88c8afada318c0866acd884c0e918bac17b3de45306`。
 - 完整交互与真机证据见 `docs/mobile-batches/2026-07-17-im-input-navigation.md` 和 `docs/mobile-batches/2026-07-17-network-recovery.md`。
+
+## 2026-07-17：Android 系统分享进入现有输入任务面
+
+- 浏览器、Files 和其他 Android 应用现在可以通过系统 `SEND` / `SEND_MULTIPLE` 把文字或文件交给 Akashic；共享内容进入当前 mobile 会话的既有草稿和附件队列，保留已有文字与引用，由用户确认后发送。
+- Intent 只在 Android 外部边界解析：忽略任务历史恢复的旧分享、合并并去重 `ClipData` / `EXTRA_STREAM`、拒绝 `file://`，缺失文件名时按 MIME 生成安全名称。没有增加 Agent 消息协议、服务端字段或第二套上传实现。
+- Android 接收边界先把文字写入持久 FIFO，并在外部授权期内把 URI 复制到私有 staging；进程重建后恢复队列、目标 session 和文件。共享内容首次处理时一次绑定目标 session；文字在目标 Web composer owner 就绪后合并，Room 真正提交成功才消费，附件随后向同一 session 导入。
+- 同一次 Intent 重放由规范 UUID 与短时 receipt 去重；prepared 文字使用同一草稿写锁内的 compare-and-set，稳定 attachment ID 让 Room 已提交后的恢复不重复复制。伪造 ID、用户后续编辑和 canonical reply 都不会被静默覆盖或误认。
+- 草稿空间不足不会静默截断；附件容量、权限或 IO 失败也不会提前出队。两者都保留原分享，并用 Material 3 Snackbar 提供“重试 / 放弃”。文件继续复用私有复制、SHA-256、50 MiB 上限、上传进度与失败恢复。
+- UI 只复用现有 Material 3 输入 surface 和附件行，没有新增页面、卡片、颜色或确认弹窗；五技能检查没有发现新增 AI slop。
+- 自动门禁通过 mobile state `35/35`、TypeScript、ESLint、Android unit/androidTest 编译、Pixel 7 定向 instrumentation `54/54`、release unit/Lint/R8/assemble 与 v2 签名。Pixel 7 已验证标题 + URL 的追加与强停恢复、持久 Store 重建、保留引用的长草稿、连续文字分享、失效 URI 的单一恢复 Snackbar，以及从真实系统分享面板导入 `akashic-share-file-final.txt` 后显示“上传完成”并可移除；应用日志无崩溃、event gap 或 WebView 协议错误。
+- 完整边界、验收证据和 APK 哈希见 `docs/mobile-batches/2026-07-17-android-share-entry.md`。

@@ -3,6 +3,7 @@ package com.akashic.mobile.data.local
 import android.content.ContentResolver
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.webkit.MimeTypeMap
 import com.akashic.mobile.data.realtime.Ulid
 import java.io.File
 import java.security.MessageDigest
@@ -22,27 +23,41 @@ class AttachmentDraftStore(
         sessionId: String,
         uris: List<Uri>,
         now: Long,
+        attachmentIds: List<String>? = null,
     ): List<AttachmentTransferEntity> = mutex.withLock {
-        // 1. 在文档边界限制数量和整条消息大小
+        // 1. 稳定 ID 已完整提交时直接返回，跨进程重试不重复导入
         require(uris.isNotEmpty()) { "没有选择文件" }
+        require(attachmentIds == null || attachmentIds.size == uris.size) {
+            "附件 ID 数量与共享文件不匹配"
+        }
+        val committed = attachmentIds?.mapNotNull { dao.get(it) }.orEmpty()
+        if (committed.isNotEmpty()) {
+            check(committed.size == uris.size) { "系统分享附件只提交了部分记录" }
+            check(committed.all { it.serverId == serverId && it.sessionId == sessionId }) {
+                "系统分享附件已被其他会话认领"
+            }
+            return@withLock committed
+        }
+
+        // 2. 在文档边界限制数量和整条消息大小
         val existing = dao.drafts(serverId, sessionId)
         require(existing.size + uris.size <= MAX_ATTACHMENTS_PER_MESSAGE) {
             "单条消息最多添加 $MAX_ATTACHMENTS_PER_MESSAGE 个附件"
         }
 
-        // 2. 先完整复制整批文件，避免上传协调器观察到半批草稿
+        // 3. 先完整复制整批文件，避免上传协调器观察到半批草稿
         val staged = mutableListOf<AttachmentTransferEntity>()
         val createdFiles = mutableListOf<File>()
         var totalBytes = existing.sumOf { it.sizeBytes }
         try {
             uris.forEachIndexed { index, uri ->
-                val attachmentId = Ulid.next(now + index)
-                val filename = queryFilename(uri)
-                validateFilename(filename)
+                val attachmentId = attachmentIds?.get(index) ?: Ulid.next(now + index)
                 val contentType = contentResolver.getType(uri) ?: "application/octet-stream"
                 require(contentType.length <= 255 && MIME_TYPE.matches(contentType)) {
                     "文件 MIME type 无效：$contentType"
                 }
+                val filename = queryFilename(uri) ?: fallbackAttachmentFilename(attachmentId, contentType)
+                validateFilename(filename)
                 val file = fileFor(attachmentId)
                 val copied = copyAndDigest(uri, file)
                 createdFiles += file
@@ -107,13 +122,14 @@ class AttachmentDraftStore(
             .forEach(::deleteFile)
     }
 
-    private fun queryFilename(uri: Uri): String {
+    /** 读取 provider 可选的显示名；缺失时由草稿 owner 生成安全文件名。 */
+    private fun queryFilename(uri: Uri): String? {
         val projection = arrayOf(OpenableColumns.DISPLAY_NAME)
         contentResolver.query(uri, projection, null, null, null).use { cursor ->
-            requireNotNull(cursor) { "无法读取文件信息" }
-            require(cursor.moveToFirst()) { "文件信息为空" }
-            val index = cursor.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME)
-            return requireNotNull(cursor.getString(index)) { "文件名为空" }
+            if (cursor == null || !cursor.moveToFirst()) return null
+            val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (index < 0) return null
+            return cursor.getString(index)?.takeIf(String::isNotBlank)
         }
     }
 
@@ -172,4 +188,9 @@ class AttachmentDraftStore(
         const val COPY_BUFFER_BYTES = 64 * 1024
         val MIME_TYPE = Regex("^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
     }
+}
+
+internal fun fallbackAttachmentFilename(attachmentId: String, contentType: String): String {
+    val extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(contentType)
+    return "shared-$attachmentId" + extension?.let { ".$it" }.orEmpty()
 }

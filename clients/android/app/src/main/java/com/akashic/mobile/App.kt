@@ -6,6 +6,7 @@ import com.akashic.mobile.data.local.AppPreferences
 import com.akashic.mobile.data.local.AttachmentDraftStore
 import com.akashic.mobile.data.local.LocalDeliveryStore
 import com.akashic.mobile.data.local.MediaCacheStore
+import com.akashic.mobile.data.local.IncomingShareStore
 import com.akashic.mobile.data.realtime.DeviceKeyStore
 import com.akashic.mobile.data.realtime.RealtimeSession
 import com.akashic.mobile.data.realtime.TransferNetworkMonitor
@@ -36,6 +37,10 @@ class AppContainer(application: Application) {
         contentResolver = application.contentResolver,
         root = application.filesDir.resolve("pending-attachments"),
         dao = database.attachmentTransfers(),
+    )
+    val incomingShareStore = IncomingShareStore(
+        context = application,
+        root = application.filesDir.resolve("incoming-shares"),
     )
     val deviceKeyStore = DeviceKeyStore()
     val transferNetwork = TransferNetworkMonitor(application)

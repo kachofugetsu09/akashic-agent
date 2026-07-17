@@ -3,6 +3,9 @@
     <files-path
         name="received_attachments"
         path="received-attachments/" />
+    <files-path
+        name="incoming_shares"
+        path="incoming-shares/" />
     <cache-path
         name="shared_text"
         path="shared-text/" />

@@ -456,40 +456,85 @@ class RealtimeSession(
     fun addAttachments(uris: List<Uri>) {
         scope.launch {
             try {
-                val target = mutex.withLock {
-                    val currentProfile = requireNotNull(profile) { "Pair a server before attaching" }
-                    val sessionId = ensureCurrentSession(currentProfile)
-                    require(!isRemoteMissingSession(currentProfile.serverId, sessionId)) {
-                        "这段会话已不在电脑上，请新建会话后添加附件"
-                    }
-                    currentProfile.serverId to sessionId
-                }
-                attachmentOperations.perform {
-                    attachmentDrafts.import(
-                        serverId = target.first,
-                        sessionId = target.second,
-                        uris = uris,
-                        now = System.currentTimeMillis(),
-                    )
-                }
-                mutex.withLock {
-                    if (mutableState.value.connection.phase == ConnectionPhase.READY) {
-                        uploads.resumeIfIdle(target.first)
-                    }
-                }
+                importAttachments(uris, targetSessionId = null)
             } catch (error: IllegalArgumentException) {
-                mutex.withLock {
-                    mutableState.value = mutableState.value.copy(errorMessage = error.message)
-                }
+                publishAttachmentError(error.message)
             } catch (error: java.io.IOException) {
-                mutex.withLock {
-                    mutableState.value = mutableState.value.copy(errorMessage = "读取附件失败：${error.message}")
-                }
+                publishAttachmentError("读取附件失败：${error.message}")
             } catch (error: SecurityException) {
-                mutex.withLock {
-                    mutableState.value = mutableState.value.copy(errorMessage = "没有读取附件的权限")
-                }
+                publishAttachmentError("没有读取附件的权限")
             }
+        }
+    }
+
+    /** 把分享附件固定导入指定会话，并把真实结果返回给分享队列 owner。 */
+    fun addSharedAttachments(
+        sessionId: String,
+        uris: List<Uri>,
+        attachmentIds: List<String>,
+        onComplete: (String?) -> Unit,
+    ) {
+        scope.launch {
+            val errorMessage = try {
+                importAttachments(
+                    uris,
+                    targetSessionId = sessionId,
+                    attachmentIds = attachmentIds,
+                )
+                null
+            } catch (error: IllegalArgumentException) {
+                error.message ?: "共享附件无法加入当前会话"
+            } catch (_: java.io.IOException) {
+                "读取附件失败，请确认来源仍可访问"
+            } catch (error: SecurityException) {
+                "没有读取附件的权限"
+            } catch (_: android.database.sqlite.SQLiteException) {
+                "本地附件记录失败，请重试"
+            }
+            onComplete(errorMessage)
+        }
+    }
+
+    /** 解析目标会话、复制附件并恢复既有上传协调器。 */
+    private suspend fun importAttachments(
+        uris: List<Uri>,
+        targetSessionId: String?,
+        attachmentIds: List<String>? = null,
+    ) {
+        // 1. 在连接 owner 内确认目标仍属于当前电脑
+        val target = mutex.withLock {
+            val currentProfile = requireNotNull(profile) { "Pair a server before attaching" }
+            val sessionId = targetSessionId ?: ensureCurrentSession(currentProfile)
+            val conversation = requireNotNull(database.conversations().get(sessionId)) {
+                "附件对应的会话不存在: $sessionId"
+            }
+            require(conversation.serverId == currentProfile.serverId) { "附件会话不属于当前电脑" }
+            require(!isRemoteMissingSession(currentProfile.serverId, sessionId)) {
+                "这段会话已不在电脑上，请新建会话后添加附件"
+            }
+            currentProfile.serverId to sessionId
+        }
+
+        // 2. 复用唯一附件仓库完成私有复制，再唤醒上传队列
+        attachmentOperations.perform {
+            attachmentDrafts.import(
+                serverId = target.first,
+                sessionId = target.second,
+                uris = uris,
+                now = System.currentTimeMillis(),
+                attachmentIds = attachmentIds,
+            )
+        }
+        mutex.withLock {
+            if (mutableState.value.connection.phase == ConnectionPhase.READY) {
+                uploads.resumeIfIdle(target.first)
+            }
+        }
+    }
+
+    private suspend fun publishAttachmentError(message: String?) {
+        mutex.withLock {
+            mutableState.value = mutableState.value.copy(errorMessage = message)
         }
     }
 

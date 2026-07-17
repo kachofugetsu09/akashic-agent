@@ -1,9 +1,11 @@
 package com.akashic.mobile.data.local
 
 import android.content.Context
+import androidx.core.content.FileProvider
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.akashic.mobile.BuildConfig
 import com.akashic.mobile.data.realtime.AttachmentOperationOwner
 import com.akashic.mobile.data.realtime.attachmentDraftMatchesExpected
 import java.io.File
@@ -21,13 +23,14 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class AttachmentDraftStoreTest {
+    private lateinit var context: Context
     private lateinit var database: AppDatabase
     private lateinit var root: File
     private lateinit var store: AttachmentDraftStore
 
     @Before
     fun setUp() = runBlocking {
-        val context = ApplicationProvider.getApplicationContext<Context>()
+        context = ApplicationProvider.getApplicationContext()
         database = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java).build()
         root = context.cacheDir.resolve("attachment-drafts-${System.nanoTime()}")
         store = AttachmentDraftStore(context.contentResolver, root, database.attachmentTransfers())
@@ -133,6 +136,39 @@ class AttachmentDraftStoreTest {
         assertFalse(sendAccepted.await())
         assertNull(database.attachmentTransfers().get(transfer.attachmentId))
         assertFalse(store.fileFor(transfer.attachmentId).exists())
+    }
+
+    @Test
+    fun stableShareIdsMakeImportIdempotentAcrossRetries() = runBlocking {
+        val source = context.cacheDir.resolve("shared-text/idempotent-share.txt").apply {
+            parentFile!!.mkdirs()
+            writeText("stable payload")
+        }
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${BuildConfig.APPLICATION_ID}.files",
+            source,
+        )
+
+        val first = store.import(
+            serverId = "server",
+            sessionId = "mobile:test",
+            uris = listOf(uri),
+            now = 2,
+            attachmentIds = listOf("01STABLESHAREATTACHMENT00"),
+        )
+        val second = store.import(
+            serverId = "server",
+            sessionId = "mobile:test",
+            uris = listOf(uri),
+            now = 3,
+            attachmentIds = listOf("01STABLESHAREATTACHMENT00"),
+        )
+
+        assertEquals(first, second)
+        assertEquals(1, database.attachmentTransfers().all().size)
+        source.delete()
+        Unit
     }
 
     private fun transfer(id: String, state: String) = AttachmentTransferEntity(

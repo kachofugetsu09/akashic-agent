@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.akashic.mobile.data.local.MessageWithBlocks
+import com.akashic.mobile.data.local.PreparedComposerDraftResult
 import com.akashic.mobile.data.local.AttachmentTransferEntity
 import com.akashic.mobile.data.local.ComposerDraftEntity
 import com.akashic.mobile.data.local.ConversationSummary
@@ -51,6 +52,30 @@ import kotlin.math.ceil
 
 private const val LARGE_TRANSFER_BYTES = 10L * 1024 * 1024
 
+data class IncomingShareUi(
+    val id: String,
+    val text: String?,
+    val targetSessionId: String?,
+    val hasPendingAttachments: Boolean,
+    val hasPreparedText: Boolean,
+    val revision: Int,
+    val errorMessage: String?,
+)
+
+private data class QueuedIncomingShare(
+    val content: IncomingShare,
+    val targetSessionId: String? = null,
+    val preparedText: String? = null,
+    val preparedReplyToMessageId: String? = null,
+    val preparedBaseText: String? = null,
+    val preparedBaseReplyToMessageId: String? = null,
+    val preparedBaseUpdatedAt: Long? = null,
+    val attachmentInFlight: Boolean = false,
+    val textInFlight: Boolean = false,
+    val revision: Int = 0,
+    val errorMessage: String? = null,
+)
+
 private data class ComposerLocalState(
     val attachments: List<AttachmentTransferEntity>,
     val draft: ComposerDraftEntity?,
@@ -68,6 +93,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val container = (application as App).container
     val sessionState = container.realtimeSession.state
     private val navigationTarget = MutableStateFlow<NavigationTargetUi?>(null)
+    private val incomingShareQueue = MutableStateFlow<List<QueuedIncomingShare>>(emptyList())
+    val incomingShare = incomingShareQueue.map { queue ->
+        queue.firstOrNull()?.let { share ->
+            IncomingShareUi(
+                id = share.content.id,
+                text = share.content.text,
+                targetSessionId = share.targetSessionId,
+                hasPendingAttachments = share.content.uris.isNotEmpty(),
+                hasPreparedText = share.preparedText != null,
+                revision = share.revision,
+                errorMessage = share.errorMessage,
+            )
+        }
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.Eagerly,
+        null,
+    )
+
+    init {
+        viewModelScope.launch {
+            val restored = container.incomingShareStore.load().map { persisted ->
+                QueuedIncomingShare(
+                    content = persisted.content,
+                    targetSessionId = persisted.targetSessionId,
+                    preparedText = persisted.preparedText,
+                    preparedReplyToMessageId = persisted.preparedReplyToMessageId,
+                    preparedBaseText = persisted.preparedBaseText,
+                    preparedBaseReplyToMessageId = persisted.preparedBaseReplyToMessageId,
+                    preparedBaseUpdatedAt = persisted.preparedBaseUpdatedAt,
+                )
+            }
+            val restoredIds = restored.mapTo(mutableSetOf()) { it.content.id }
+            incomingShareQueue.value = restored + incomingShareQueue.value.filterNot {
+                it.content.id in restoredIds
+            }
+        }
+    }
 
     private val conversationProjection = sessionState.flatMapLatest { state ->
         val serverId = state.serverId
@@ -279,6 +342,225 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun dismissError() = container.realtimeSession.dismissError()
 
     fun addAttachments(uris: List<android.net.Uri>) = container.realtimeSession.addAttachments(uris)
+
+    /** 先持久接收系统分享，再把它交给进程内 UI 队列。 */
+    suspend fun acceptIncomingShare(incoming: IncomingShare) {
+        val persisted = container.incomingShareStore.enqueue(incoming)
+        if (incomingShareQueue.value.none { it.content.id == incoming.id }) {
+            incomingShareQueue.value = incomingShareQueue.value + QueuedIncomingShare(
+                persisted.content,
+                persisted.targetSessionId,
+            )
+        }
+    }
+
+    /** 首次处理时绑定当前会话，文字和文件共用同一个 owner。 */
+    fun claimIncomingShareTarget(shareId: String) {
+        val sessionId = requireNotNull(sessionState.value.currentSessionId) { "系统分享没有目标会话" }
+        viewModelScope.launch {
+            container.incomingShareStore.claimTarget(shareId, sessionId)
+            incomingShareQueue.value = incomingShareQueue.value.map { share ->
+                if (share.content.id != shareId || share.targetSessionId != null) share
+                else share.copy(targetSessionId = sessionId)
+            }
+        }
+    }
+
+    /** 成功导入后才消费共享 URI；失败保留原请求供用户重试。 */
+    fun dispatchIncomingShareAttachments(shareId: String) {
+        val share = incomingShareQueue.value.firstOrNull { it.content.id == shareId } ?: return
+        if (share.content.uris.isEmpty() || share.attachmentInFlight || share.errorMessage != null) return
+        val sessionId = requireNotNull(share.targetSessionId) { "系统分享尚未绑定目标会话" }
+        incomingShareQueue.value = incomingShareQueue.value.map { current ->
+            if (current.content.id == shareId) current.copy(attachmentInFlight = true) else current
+        }
+        container.realtimeSession.addSharedAttachments(
+            sessionId,
+            share.content.uris,
+            requireNotNull(share.content.attachmentIds) { "系统分享缺少稳定附件 ID" },
+        ) { errorMessage ->
+            viewModelScope.launch {
+                completeIncomingShareAttachments(shareId, errorMessage)
+            }
+        }
+    }
+
+    /** Room 提交成功后才消费共享文字。 */
+    fun commitIncomingShareText(
+        shareId: String,
+        sessionId: String,
+        text: String,
+        replyToMessageId: String?,
+    ) {
+        val share = incomingShareQueue.value.firstOrNull { it.content.id == shareId } ?: return
+        require(share.targetSessionId == sessionId) { "系统分享目标会话已变化" }
+        if (share.textInFlight) return
+        incomingShareQueue.value = incomingShareQueue.value.map { current ->
+            if (current.content.id == shareId) current.copy(textInFlight = true) else current
+        }
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                val serverId = requireNotNull(sessionState.value.serverId) { "系统分享没有电脑 owner" }
+                val base = container.database.composerDrafts().get(serverId, sessionId)
+                container.incomingShareStore.prepareText(
+                    shareId,
+                    text,
+                    replyToMessageId,
+                    base?.text,
+                    base?.replyToMessageId,
+                    base?.updatedAt,
+                )
+                incomingShareQueue.value = incomingShareQueue.value.map { current ->
+                    if (current.content.id != shareId) current
+                    else current.copy(
+                        content = current.content.copy(text = null),
+                        preparedText = text,
+                        preparedReplyToMessageId = replyToMessageId,
+                        preparedBaseText = base?.text,
+                        preparedBaseReplyToMessageId = base?.replyToMessageId,
+                        preparedBaseUpdatedAt = base?.updatedAt,
+                    )
+                }
+                persistIncomingShareText(
+                    shareId,
+                    sessionId,
+                    text,
+                    replyToMessageId,
+                    base?.text,
+                    base?.replyToMessageId,
+                    base?.updatedAt,
+                )
+            } catch (error: IllegalArgumentException) {
+                failIncomingShare(shareId, error.message ?: "共享文字无法写入当前会话")
+            } catch (_: android.database.sqlite.SQLiteException) {
+                failIncomingShare(shareId, "本地草稿记录失败，请重试")
+            }
+        }
+    }
+
+    /** 进程恢复后重放已冻结的最终草稿，不再次经过 Web 合并。 */
+    fun resumePreparedIncomingShareText(shareId: String) {
+        val share = incomingShareQueue.value.firstOrNull { it.content.id == shareId } ?: return
+        val text = share.preparedText ?: return
+        if (share.textInFlight || share.errorMessage != null) return
+        val sessionId = requireNotNull(share.targetSessionId) { "系统分享没有目标会话" }
+        incomingShareQueue.value = incomingShareQueue.value.map { current ->
+            if (current.content.id == shareId) current.copy(textInFlight = true) else current
+        }
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                persistIncomingShareText(
+                    shareId,
+                    sessionId,
+                    text,
+                    share.preparedReplyToMessageId,
+                    share.preparedBaseText,
+                    share.preparedBaseReplyToMessageId,
+                    share.preparedBaseUpdatedAt,
+                )
+            } catch (error: IllegalArgumentException) {
+                failIncomingShare(shareId, error.message ?: "共享文字无法写入当前会话")
+            } catch (_: android.database.sqlite.SQLiteException) {
+                failIncomingShare(shareId, "本地草稿记录失败，请重试")
+            }
+        }
+    }
+
+    fun reportIncomingShareError(shareId: String, message: String) = failIncomingShare(shareId, message)
+
+    fun retryIncomingShare(shareId: String) {
+        val current = incomingShareQueue.value.firstOrNull { it.content.id == shareId } ?: return
+        val targetSessionId = requireNotNull(current.targetSessionId) { "系统分享没有目标会话" }
+        if (conversationState.value.sessions.none { it.sessionId == targetSessionId }) {
+            failIncomingShare(shareId, "原会话已不可用，请放弃后重新分享")
+            return
+        }
+        selectSession(targetSessionId)
+        incomingShareQueue.value = incomingShareQueue.value.map { share ->
+            if (share.content.id == shareId) share.copy(
+                attachmentInFlight = false,
+                textInFlight = false,
+                revision = share.revision + 1,
+                errorMessage = null,
+            ) else share
+        }
+    }
+
+    fun discardIncomingShare(shareId: String) {
+        incomingShareQueue.value = incomingShareQueue.value.filterNot { it.content.id == shareId }
+        viewModelScope.launch {
+            container.incomingShareStore.discard(shareId)
+        }
+    }
+
+    private fun completeIncomingShareAttachments(shareId: String, errorMessage: String?) {
+        if (errorMessage != null) {
+            failIncomingShare(shareId, errorMessage)
+            return
+        }
+        viewModelScope.launch {
+            container.incomingShareStore.consumeFiles(shareId)
+            incomingShareQueue.value = incomingShareQueue.value.mapNotNull { share ->
+                if (share.content.id != shareId) return@mapNotNull share
+                share.copy(
+                    content = share.content.copy(uris = emptyList()),
+                    attachmentInFlight = false,
+                ).takeIf { it.content.text != null || it.preparedText != null }
+            }
+        }
+    }
+
+    private fun consumeIncomingShareText(shareId: String) {
+        incomingShareQueue.value = incomingShareQueue.value.mapNotNull { share ->
+            if (share.content.id != shareId) return@mapNotNull share
+            share.copy(
+                content = share.content.copy(text = null),
+                preparedText = null,
+                preparedReplyToMessageId = null,
+                preparedBaseText = null,
+                preparedBaseReplyToMessageId = null,
+                preparedBaseUpdatedAt = null,
+                textInFlight = false,
+            ).takeIf { it.content.uris.isNotEmpty() }
+        }
+    }
+
+    private suspend fun persistIncomingShareText(
+        shareId: String,
+        sessionId: String,
+        text: String,
+        replyToMessageId: String?,
+        baseText: String?,
+        baseReplyToMessageId: String?,
+        baseUpdatedAt: Long?,
+    ) {
+        val serverId = requireNotNull(sessionState.value.serverId) { "系统分享没有电脑 owner" }
+        val result = container.deliveryStore.commitPreparedComposerDraft(
+            sessionId = sessionId,
+            text = text,
+            replyToMessageId = replyToMessageId,
+            baseText = baseText,
+            baseReplyToMessageId = baseReplyToMessageId,
+            baseUpdatedAt = baseUpdatedAt,
+            expectedServerId = serverId,
+            updatedAt = System.currentTimeMillis(),
+        )
+        require(result != PreparedComposerDraftResult.CONFLICT) {
+            "当前草稿已变化，请确认内容后放弃本次分享"
+        }
+        container.incomingShareStore.consumeText(shareId)
+        consumeIncomingShareText(shareId)
+    }
+
+    private fun failIncomingShare(shareId: String, message: String) {
+        incomingShareQueue.value = incomingShareQueue.value.map { share ->
+            if (share.content.id == shareId) share.copy(
+                attachmentInFlight = false,
+                textInFlight = false,
+                errorMessage = message,
+            ) else share
+        }
+    }
 
     fun removeAttachment(attachmentId: String) = container.realtimeSession.removeAttachment(attachmentId)
 
