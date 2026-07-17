@@ -50,7 +50,7 @@
 |---|---|---|
 | Read | 每个新会话先读 [`INDEX.md`](INDEX.md)，再按索引读相关需求、NOW、决策、设计和真实实现 | 已确认事实、未知项和文档冲突已经列出 |
 | Ownership | 对跨仓库、客户端、插件和协议任务声明 `capability_owner`、`consumer_scope`、`runtime_patch`、`runtime_patch_reason`、`authoritative_state_owner` 与 `client_only_alternative` | 核心改动能引用已批准语义；“未来可能复用”没有被当作 owner 证据 |
-| Isolate | 核对目标分支、base commit、worktree、用户未提交改动和恢复点 | 改动不会写进用户当前 checkout 或正式 Akashic workspace |
+| Isolate | 核对目标分支、base commit、worktree、唯一 writer、用户未提交改动和恢复点 | 改动不会写进用户当前 checkout、其他 agent 的 worktree 或正式 Akashic workspace |
 | Contract | 声明目标、成功标准、`change_type`、`semantic_delta`、受保护状态、允许副作用、验证和回滚 | 高风险歧义已获确认，或任务停止等待确认 |
 | Implement | 只改合同允许的路径和行为；持久化语义从数据库、文件、事件或外部边界观察 | Diff 没有新增未声明副作用 |
 | Verify | 运行相关测试、类型或前端检查，再运行 change-impact Gate | 测试与报告来自当前源码；未运行项有明确状态 |
@@ -68,6 +68,8 @@
 git fetch origin main
 git worktree add -b feature/<task> ../akasic-agent-worktrees/<task> origin/main
 ```
+
+每个 worktree 同一时刻只有一个 writer。并行 subagent 默认只读审查各自的 commit/diff；需要修复时，为每个 writer 分配独立 worktree 和分支。Writer 交接必须先提交允许范围内的修改，或恢复 clean HEAD，再记录 `worktree + branch + HEAD + dirty state + next owner`。没有交接完成的后台任务不得继续提交。
 
 Git worktree 保存源码、测试和项目文档。Akashic `<workspace>` 保存会话、记忆、附件、调度和 plugin-data。测试使用一次性 workspace、plugin home、config 和 HOME。修改持久化文件前创建名称清楚的备份。
 
@@ -108,7 +110,9 @@ Gate 根据 Git diff 选择场景，并把报告写入 `docker/debug/reports/cha
 
 纯评审任务走 `Read → Ownership → Review → Deliver`，默认只读，不创建实现分支、不修改候选代码，也不把发现自动写入 GitHub。用户要求修复、发表评论或更新工作手册时，重新建立相应写入合同。
 
-Stacked PR 先确认依赖链，每张只审查自己的相邻 `base..head`；最后对栈顶 head 做累计协议、持久化、构建和用户行为审查。手工构建记录与远端 CI checks 分开报告，没有 check 就写未验证，不能用 PR 描述中的成功声明代替。
+Stacked PR 先确认依赖链，每张只审查自己的相邻 `base..head`；最后对栈顶 head 做累计协议、持久化、构建和用户行为审查。数据库评审不能只比较 `user_version`，还要列出所有已知 schema lineage、每条迁移路径和最终 schema identity；未知的同版本异构 schema 必须 fail-loud。
+
+跨仓库协议和插件报告分别固定协议 source commit/path/hash、实际 runtime commit/tree、provider requested ref/resolved SHA 和 scenario profile/hash。手工构建、Docker、隔离互操作和 Pixel/ADB 记录与远端 CI checks 分开报告，没有 check 就写未验证，不能用 PR 描述中的成功声明代替。Pixel 测试必须使用独立 debug application ID 和 app data，不能覆盖正式应用。
 
 评审移动端或其他客户端时按 MOB-001 区分平台实现、产品体验、中立协议和核心权威状态。核心 runtime patch 缺少既有不变量、权威 owner 或客户端替代分析时停止并询问维护者。
 

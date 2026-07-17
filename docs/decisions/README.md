@@ -9,6 +9,7 @@
 | [0001](0001-project-workbook-is-shared-reality.md) | accepted | 项目工作手册是协作共享现实 | WBK-001～WBK-006、COM-001～COM-004 |
 | [0002](0002-context-reduction-is-a-nondestructive-projection.md) | accepted | 上下文缩减是非破坏性投影 | CTX-001～CTX-005、SES-003 |
 | [0003](0003-core-capability-ownership-is-semantic.md) | accepted | 核心能力归属由权威语义决定 | MOB-001、GOV-001～GOV-005 |
+| [0004](0004-cross-repository-evidence-is-an-immutable-combination.md) | accepted | 跨仓库证据绑定不可变组合 | GOV-005、MOB-002～MOB-004、TST-006～TST-008 |
 
 ## 新增规则
 

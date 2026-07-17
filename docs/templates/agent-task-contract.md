@@ -43,6 +43,10 @@ allowed_effects: []
 forbidden_effects: []
 validation: []
 rollback: ""
+worktree_writer: ""
+handoff_head: ""
+external_revisions: []
+schema_lineages: []
 ```
 
 `runtime_patch: required` 必须引用既有或已批准的不变量，并说明客户端实现为什么会复制、猜测或破坏权威语义。“未来可能复用”不是充分理由。

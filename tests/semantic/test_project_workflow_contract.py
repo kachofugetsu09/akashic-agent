@@ -91,3 +91,32 @@ def test_mobile_ownership_and_review_are_workflow_gates() -> None:
 
     assert "base..head" in workflow
     assert "最终 head" in workflow
+
+
+def test_cross_repository_review_pins_lineage_and_evidence_layers() -> None:
+    projectneed = (ROOT / "docs" / "projectneed.md").read_text(encoding="utf-8")
+    workflow = (ROOT / "docs" / "WORKFLOW.md").read_text(encoding="utf-8")
+    review = (ROOT / "docs" / "templates" / "review-contract.md").read_text(
+        encoding="utf-8"
+    )
+
+    for invariant in ("MOB-002", "MOB-003", "MOB-004", "TST-007", "TST-008"):
+        assert invariant in projectneed, f"缺少跨仓库不变量: {invariant}"
+
+    for requirement in (
+        "唯一 writer",
+        "schema lineage",
+        "runtime commit/tree",
+        "scenario profile/hash",
+        "debug application ID",
+    ):
+        assert requirement in workflow, f"工作流缺少跨仓库评审要求: {requirement}"
+
+    for evidence in (
+        "worktree_writers",
+        "schema lineage",
+        "runtime commit/tree",
+        "scenario profile/hash",
+        "debug application ID",
+    ):
+        assert evidence in review, f"Review 合同缺少证据字段: {evidence}"

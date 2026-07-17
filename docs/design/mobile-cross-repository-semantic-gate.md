@@ -3,8 +3,8 @@
 - 状态：working design；已确认边界可执行，业务未知项不得由实现反向定义
 - 日期：2026-07-18
 - 目标读者：核心维护者、移动端维护者、插件维护者、评审者、Gate 实现者
-- 关联条款：MOB-001、STA-001～STA-003、CTX-001、SES-001～SES-006、PLG-001、PLG-004、PLG-008～PLG-009、WSP-004、TST-001～TST-006
-- 相关决策：[0002](../decisions/0002-context-reduction-is-a-nondestructive-projection.md)、[0003](../decisions/0003-core-capability-ownership-is-semantic.md)
+- 关联条款：GOV-005、MOB-001～MOB-004、STA-001～STA-003、CTX-001、SES-001～SES-006、PLG-001、PLG-004、PLG-008～PLG-009、WSP-004、TST-001～TST-008
+- 相关决策：[0002](../decisions/0002-context-reduction-is-a-nondestructive-projection.md)、[0003](../decisions/0003-core-capability-ownership-is-semantic.md)、[0004](../decisions/0004-cross-repository-evidence-is-an-immutable-combination.md)
 - Gate 总体设计：[变更影响与跨仓库契约 Gate](../spark/2026-07-16-change-impact-contract-gate.md)
 
 ## 1. 目的与证据标签
@@ -101,7 +101,24 @@ matching attachment.download.ok
 
 进程在 binary fsync 后、matching ok 前死亡时，启动恢复把 `.part` 截断到 DB confirmed offset，再从该 offset 请求。full-size `.part` 没有 matching ok 时也不能直接发布；DB offset 提前推进、文件长度自动成为 offset、或只靠最终 SHA-256 都是错误 mutant。
 
-**F：** 移动端候选提交 `1c7ed8a` 已把 offset 推进移到 matching ok 之后，并增加未确认尾部截断测试。这个提交是实现证据，不是协议真源；stack 中每个 downstream head 仍需实际包含并重跑该场景。
+**F：** 移动端最终候选 `90a5f8dc94f4e0e8a4d055c1a7e08efa6aab9289` 已包含该提交，并在栈顶重新运行附件与累计测试。这个 commit 是当前实现证据，不是协议真源；后续 head 变化仍需重跑。
+
+### 2.5 Room schema lineage 与汇合迁移
+
+**C：** Room `user_version` 不是 schema identity。相邻 PR、已评审分支或早期公开候选可能使用同一个版本号，却拥有不同的列、外键和持久对象。迁移不能根据版本号猜来源，也不能用 destructive fallback 把分叉抹平。
+
+```text
+final PR5 v4: remote + media + notification + durable stop
+                                   ┐
+reviewed PR6 v4: media + notification + server sequence
+                                   ├─ identify exact lineage ─→ canonical v5
+public PR6 v3: media + server sequence
+                                   ┘
+```
+
+每条已知 lineage 先核对表、列、索引和外键，再只增加目标版本缺少的结构。迁移后的保留集合取所有上游已批准状态的并集；例如加入 server sequence 不能丢失 remote pairing、pending notification 或 durable stop。只命中部分特征的未知 v4 必须 fail-loud，不能被当成“最接近”的已知版本。
+
+**F：** `90a5f8d` 的 schema v5 迁移矩阵实际覆盖 final PR5 v4、reviewed PR6 v4、original public PR6 v3 和 canonical 1→5，并提交 Room schema identity。这个矩阵是本次分叉的实现证据；MOB-004 要求后续任何新 lineage 继续显式登记。
 
 ## 3. 协议与外部仓库版本固定
 
@@ -122,6 +139,8 @@ matching attachment.download.ok
 ```
 
 Gate 必须从 `source_repository + source_commit + source_path` 读取原文，重算 SHA-256，并与客户端 snapshot 比较。分支名、PR URL、remote-tracking ref、本机 core checkout 和注释里的 commit 都不能代替 40 位 commit 与内容 hash。
+
+协议 source pin 与实际 runtime pin 是两个身份。旧客户端可以固定核心仓库中的归档 schema commit，而互操作 Gate 同时记录本次运行的 core commit/tree。两者不同不表示漂移；缺少任一身份才表示报告无法复现。
 
 协议新增能力时固定顺序为：
 
@@ -183,6 +202,9 @@ G1/G2 每次创建独立目录：
 | mobile projection reset | 协议 reset event → Room transaction → history rebuild → reconnect | server projection 重建；outbox/pending/failed/draft/notification 保持 | `clearAllTables`、错误 FK cascade、destructive migration |
 | attachment download | binary socket frame → `.part` fsync → matching ok → Room offset → restart | 只有 matching ok 推进 confirmed offset；未确认尾部重启被截断 | binary 到达即推进 DB offset、full `.part` 自动发布 |
 | Observe turn identity | core lifecycle → EventBus → Observe SQLite → mobile RPC/display | 同一 assistant message 的稳定 ID 和 usage 可由移动端查询 | 在任一 seam 清空、重建或换掉 message ID |
+| Room lineage merge | 各已知旧 schema → migration → canonical schema export → DAO readback | 每条 lineage 的状态并集完整保留，未知形状 fail-loud | 只看 `user_version`、drop/recreate、遗漏某一分支列 |
+| command catalog | request tracker → `command.list` → reconnect/reset/close → Compose filtering | 当前请求获胜；已取消迟到响应忽略；未知 ID 失败；目录在 source 变化后清空 | 旧响应覆盖新目录、断线后继续展示 stale catalog |
+| cross-language bounds | Python provider → JSON schema → Kotlin codec → UI | Unicode code point、终态和错误分类在各端一致 | Python `len` 与 Kotlin UTF-16 `length` 分别定义协议 |
 
 mutant job 必须因对应 invariant 的状态差异失败。导入失败、fixture 未启动或超时不能算“成功杀死 mutant”。
 
@@ -192,7 +214,7 @@ mutant job 必须因对应 invariant 的状态差异失败。导入失败、fixt
 
 ### 4.3 Observe 真实链
 
-**F：** 当前审查中的 Observe 候选使用以下链路保护移动端 message identity：
+**F：** Observe PR [#1](https://github.com/akashic-plugins/observe/pull/1) 的修复 commit 为 `b7f9d4ecee877d22b5452651d9abf699b2d30b7b`，canonical `main` 已解析为 merge commit `b434fa74b370fafcd0c64129fe1f641f73f0dbcf`，使用以下链路保护移动端 message identity：
 
 ```text
 SessionManager 分配并持久化 assistant message ID
@@ -221,7 +243,9 @@ Observe 属于独立插件仓库，所以报告同时绑定 core consumer SHA、
 | L3 | Mobile Lab | 独立 WSS、独立 workspace/plugin home 下的 core ↔ Android 互操作 | 正式线上状态；不得读取线上数据 |
 | L4 | Pixel 7 + ADB | Room migration、进程杀死/恢复、后台连接、通知展示、附件文件系统和真实 Android 限制 | 普通贡献者 CI 可重复性 |
 
-**F（限定到候选 revision）：** [核心 PR #129](https://github.com/kachofugetsu09/akashic-agent/pull/129) 的仓库是 `https://github.com/kachofugetsu09/akashic-agent`，完整 ref 是 `refs/heads/feature/im-phone`；本次核对的 head 为 `d3a019d79bd5b65c3761e17a6bfde5ad9c4a3da7`。该 revision 含 `docker/mobile-lab/`，其 README 与 Compose 把运行数据写入忽略版本控制的 `docker/debug/profiles/mobile-lab/`，不挂载正式 workspace，也不启动 Telegram、QQ 和 proactive。当前设计分支的 `origin/main@6a0616c82267c2045f89539ae3b1b204655f5d57` 不含该目录，所以在 PR #129 合入或准确 commit 被传播前，它只是跨分支候选事实，不能写成 main 已有能力。
+**F（限定到候选 revision）：** [核心 PR #129](https://github.com/kachofugetsu09/akashic-agent/pull/129) 的仓库是 `https://github.com/kachofugetsu09/akashic-agent`，完整 ref 是 `refs/heads/feature/im-phone`；本次核对的 head 为 `8b8b281869188c098830b8bc0d752b07e0f4c2ec`，tree 为 `15ea343dfbdfa92ac2745fc13e528fb644040932`。该 revision 含 `docker/mobile-lab/`，其 README 与 Compose 把运行数据写入忽略版本控制的 `docker/debug/profiles/mobile-lab/`，不挂载正式 workspace，也不启动 Telegram、QQ 和 proactive。当前设计分支的 `origin/main@6a0616c82267c2045f89539ae3b1b204655f5d57` 不含该目录，所以在 PR #129 合入或准确 commit 被传播前，它只是跨分支候选事实，不能写成 main 已有能力。
+
+**F（本次设备证据）：** 移动端栈顶为 `90a5f8dc94f4e0e8a4d055c1a7e08efa6aab9289`，debug 变体使用 `com.akashic.mobile.debug` 独立 application ID。在 Pixel 7 / Android 16 上，36 个 Room migration/持久化 instrumentation tests 与 18 个 Compose interaction tests 通过。首次运行实际发现并修复了 AndroidTest 名称导致的 D8 失败，以及 `snapshotFlow` 在 measure/layout 期间同步 `scrollToItem` 导致的 Compose 重入崩溃。它们是 L4 证据，不替代 GitHub CI。
 
 **I：** 在控制器支持 run-specific profile 前，复用固定 `mobile-lab` profile 必须先停止旧容器，备份现有测试 profile，并在报告中记录备份、启动时间、core SHA、APK SHA 和 cleanup。任何路径解析到正式 workspace 时立即停止。
 
@@ -239,6 +263,8 @@ Pixel 证据是当前维护者机器上的手工 L4 结果。CI 没有 Pixel 或
 ## 6. Stacked PR 的传播与评审
 
 每张 PR 只拥有相邻 `base..head` 的新增语义；最终 head 拥有整个 stack 的累计行为。上游修复没有传播到 downstream，就不能说最终产品已修复。
+
+并行评审时，每个 subagent 可以读取同一份固定工作手册和 commit，但每个 writer 必须拥有独立 worktree。主 agent 接受 finding 后再分配修复 owner；交接记录 worktree、branch、HEAD 和 dirty state。没有交接的 agent 不得在共享 worktree 中 commit 或 merge。本次评审中出现的来源不明 merge commit 证明“共享目录里大家都小心”不是可审计协议，必须用独占 writer 和 commit handoff 代替。
 
 ```text
 PR1 protocol/base
@@ -344,15 +370,23 @@ Deliver
 - capability owner、consumer scope、runtime patch 理由和客户端替代方案；
 - core/mobile/plugin 的 repository、base、head、requested ref、resolved SHA；
 - protocol path、source commit、snapshot SHA-256；
+- runtime commit/tree、scenario profile/catalog hash，以及协议 source 与 runtime pin 的关系；
 - sandbox 路径策略、workspace/plugin-home 是否为空、正式路径不可达证据；
 - 运行的 seam、mutant、L0～L4 结果和未运行理由；
-- Room/SQLite/文件 write set，尤其是 reset、notification 和 attachment offset；
+- Room/SQLite/文件 write set，所有已知 schema lineage、最终 schema identity，尤其是 reset、notification 和 attachment offset；
+- 每个写入 worktree 的唯一 owner、交接 HEAD 和 dirty state；
 - stack 传播关系与最终累计 head；
 - 仍为 U 的业务问题，不把它们写成已完成或默认方案。
 
 ## 10. 当前实施边界
 
 **F：** 公开 Gate 已有 diff 选择、一次性 Docker sandbox 和报告入口。private companion 已有 Feed/Observe 的远端 ref 解析、固定 SHA 安装和单场景 runner；它们仍是 G2 pilot，不等于统一 controller 或完整 required check。Mobile Lab 的隔离实现只存在于上文固定的 PR #129 revision，不是当前 main 事实。
+
+**F（本次跨仓库审计）：** Observe `main@b434fa7` 的移动端 turn identity seam、status_commands `main@cee5bef` 的公开 session lookup，以及 proactive_feedback `main@d522724` 的 mobile UI v2 都被核心移动协议变化触达，且修复位于各自 canonical plugin repository。移动端协议归档固定在核心 `5615b7df1cbc5092b2f28c9e321ebdf21c16c79a` 的 `schema/archive/mobile-realtime-v1-mobile-pr6.json`，SHA-256 为 `18f8f907c11b66df174699e8ff1d38adb598114e0caf6b25b6823b64cad1fcca`；实际 Gate runtime 另固定为上文 `8b8b281`。这组记录说明插件影响必须由远端 revision 和真实 seam 证明，不能只搜主仓库 import。
+
+**F（Gate 反向发现）：** 同一份 private plan 在 Feed `main@e1aa198` 上发现 lifespan poller 与首个 MCP 调用并发初始化 SQLite 时重复 `ADD COLUMN interest_scored_at`。这不是 freshness mutant 的预期失败，因此 Gate 拒绝通过。Feed PR [#2](https://github.com/akashic-plugins/feed-mcp/pull/2) 把 schema 初始化放进 `BEGIN IMMEDIATE` 并用旧 schema 并发测试覆盖；canonical `master@520ba10032089b1e056a9eecc5f2c1f459c75e5c` 重跑后，background refresh、call finality、restart persistence 通过，两个 freshness mutant 都因目标不变量被杀死。
+
+**F（固定组合结果）：** `core 8b8b281 × Observe b434fa7` 的真实 turn identity 链通过，`missing_assistant_message_id` mutant 被杀死；status_commands `cee5bef` 的 9 个测试和 proactive_feedback `d522724` 的 13 个测试在同一 core 候选上通过。当前 public plan 仍选中 20 个 provider，但只有 Feed 和 Observe 拥有独立语义 scenario；status_commands、proactive_feedback 和其余 selected provider 的统一可执行结果仍按 `NOW.md` 保持未完成，不能把 import/test 结果升级成完整 G2 passed。
 
 **I：** 下一步把现有 Feed 与 Observe remote-revision 场景接入同一个 G2 Docker controller，再为所有会被 private plan 选中的 provider 补完整 ref 与可执行结果，并建立始终返回 `passed`、`failed` 或 `not_affected` 的外部状态。完成前不能把“本机脚本可运行”或两个 provider pilot 描述成完整 required Gate。
 

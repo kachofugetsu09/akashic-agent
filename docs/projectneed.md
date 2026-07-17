@@ -127,7 +127,9 @@ Akashic Agent 必须在多轮会话、进程重启、插件换代和工作区切
 
 ### GOV-005 Worktree 不得制造私有现实
 
-独立 worktree 必须记录目标分支和基线提交。开工前读取该基线中的工作手册，验收前同步目标分支并检查工作手册差异。同一份权威文档或语义契约同一时刻只允许一个 owner 修改。
+独立 worktree 必须记录目标分支和基线提交。开工前读取该基线中的工作手册，验收前同步目标分支并检查工作手册差异。同一份权威文档、语义契约、分支或 worktree 同一时刻只允许一个 writer；其他 agent 可以并行只读评审，但不得在同一 worktree 写文件、提交或切换分支。
+
+Writer 交接前必须把允许范围内的修改提交成可引用 commit，或恢复到明确的 clean HEAD，再记录 worktree、分支、HEAD、dirty state 和下一位 owner。共享文件系统不等于共享写权限；没有完成交接的后台 agent 不得继续提交，接手者也不得把来源不明的 merge 或文件变化当成自己的结果。
 
 ### MOB-001 核心按权威语义演进，不按客户端便利性扩张
 
@@ -136,6 +138,22 @@ Akashic Agent 必须在多轮会话、进程重启、插件换代和工作区切
 “未来可能复用”“所有移动端可能都需要”“放在核心更方便”不能单独成为 runtime patch 的理由。平台普遍能力仍由平台层拥有，例如 Android 前台服务、通知、Room、缓存、图标和手势；Akashic 移动端专属交互仍由移动端产品拥有，例如命令面板和富文本展示。只有 session、turn、ack、resume、附件传输确认、取消终态等需要服务端权威状态或跨客户端一致语义的能力，才进入核心或中立协议边界。
 
 跨仓库客户端任务必须在开工和评审时记录 `capability_owner`、`consumer_scope`、`runtime_patch`、`runtime_patch_reason`、`authoritative_state_owner` 和 `client_only_alternative`。存在核心改动却无法填写这些字段时停止并等待维护者确认，不得用候选实现反向证明核心本来就应拥有该能力。
+
+### MOB-002 投影重建只减少可重建服务端投影
+
+移动端从服务端 session、message、turn、事件和历史页得到的本地行属于可重建投影；`sync.reset_required`、cursor 回退或历史重拉只能清理正向白名单中的服务端投影和对应 cursor。它们不得删除 outbox、pending/failed 本地消息、附件 draft 与 transfer、待投递通知、持久 stop 或其他尚未完成的本地工作。
+
+服务端明确删除 session 不属于投影重建。它与本地未完成工作如何共同展示、阻止或减少仍需独立产品决定；确认前不得借 reset、外键 cascade、`clearAllTables()` 或 destructive migration 偶然删除本地连续性对象。
+
+### MOB-003 协议语义不能由语言原生类型偷偷改写
+
+跨语言协议的长度、顺序、终态、取消和迟到响应由协议定义，不由 Python、Kotlin、JavaScript 或数据库的默认 primitive 定义。协议说 Unicode code point 时，各端都按 code point 验证；协议说请求已取消时，已知取消请求的迟到响应可以忽略，未知 response ID 仍须 fail-loud。临时命令目录等连接级投影在 reconnect、reset、source 变化或 terminal close 后失效，不能伪装成持久权威状态。
+
+### MOB-004 数据库迁移识别真实 schema lineage
+
+数据库 `user_version` 只表示版本号，不能单独证明表、列、索引和外键形状。若多个已发布或已评审分支曾使用同一版本号但 schema 不同，迁移必须识别每一种已知 lineage，逐一验证保留集合并汇合到唯一目标 schema；未知或部分匹配的形状 fail-loud，不得猜测、清库或用 destructive fallback 获得启动成功。
+
+迁移验收至少覆盖每个已知来源 schema 到最终版本的真实建库与数据保留，并提交当前目标 schema identity。Stacked PR 的最终 head 必须同时保留所有上游持久状态，不能只证明其中一条相邻迁移路径。
 
 ## 5. Agent 任务合同
 
@@ -464,6 +482,18 @@ P0 不变量必须由受保护的 semantic test、policy 或黑盒观察器验�
 公开 Gate 只输出能力组、场景和 plan/source/catalog digest，不要求贡献者安装私有插件，也不得暴露 provider 身份。private runtime 用同一 plan digest 把能力组映射到真实 provider；`privateGateRequired=true` 时，公开 Gate 通过只表示 G1 完成，跨仓库总体验收在 G2 明确返回 `passed`、`failed` 或 `not_affected` 前仍属待验证。
 
 跨仓库 Gate 必须从私有 catalog 的 GitHub `repository + 完整 ref` 查询远端当前 revision，并在开跑前冻结成 commit SHA。安装、验收和报告都绑定该 SHA；本地 checkout、remote-tracking ref、开发者机器上的插件 cache 或手工传入路径不能满足 required check。这样主仓库候选始终与 Gate 启动时远端真实插件版本组成一个明确、可复现的验收组合。
+
+### TST-007 跨仓库证据绑定不可变组合
+
+跨仓库报告必须同时绑定 consumer commit、协议 source repository/commit/path/hash、运行时 commit/tree、provider repository/requested ref/resolved commit、scenario catalog/profile/hash 和 Gate 版本。协议历史源与当前运行时可以来自不同 commit，但两者都必须单独固定；分支名、PR URL、浮动 GitHub 链接、本机 checkout 和已安装 cache 不能代替不可变身份。
+
+任一输入变化都会形成新的验收组合，旧报告仍可作为历史证据，但不能复用为新组合通过。客户端离线快照的源文件必须存在于固定 commit；核心需要保留已发布协议的归档来源，不能让后续 schema 演进使旧客户端的 source pin 失效。
+
+### TST-008 CI 与真实设备证据分层报告
+
+确定性单测、构建、Docker Gate、隔离互操作和真实设备分别证明不同边界。CI 没有 Pixel 或 Android 虚拟设备时，不能把维护者本机 ADB 结果伪装成所有贡献者可运行的 required check；设备结果必须记录设备/API、应用 ID、APK 与源码身份、测试 profile 和实际场景。
+
+设备测试使用独立 debug application ID、独立 app data 和测试 workspace，不覆盖、卸载、清空或连接正式应用状态。CI 继续承担固定逻辑的可重复 Gate，维护者设备只补充 OS lifecycle、Room migration、通知、文件系统和真实 Compose 交互证据。
 
 ## 14. 需求变更流程
 

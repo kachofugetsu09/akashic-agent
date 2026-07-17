@@ -11,6 +11,7 @@ stack:
   target_branch: ""
   layers: []
 final_head: ""
+worktree_writers: []
 ```
 
 ## Semantic intent
@@ -35,8 +36,11 @@ protected_state: []
 - 最终累计 diff：
 - 持久化增加、更新、逻辑失效和物理删除：
 - 外部仓库、协议快照与固定 commit：
+- runtime commit/tree、provider resolved commit、scenario profile/hash：
+- 已知数据库 schema lineage、迁移矩阵与最终 schema identity：
 - 本地验证：
 - 远端 checks：
+- 真实设备、debug application ID 与隔离数据状态：
 - 未验证项：
 
 ## Review order
@@ -44,8 +48,9 @@ protected_state: []
 1. 确认 stacked PR 的目标分支、相邻 base/head 和依赖顺序。
 2. 逐层检查本 PR 新增的语义、owner、write set、权限和错误路径。
 3. 在最终 head 检查累计协议、数据库迁移、恢复、构建和用户可见行为。
-4. 区分客户端平台实现、产品体验、中立协议和核心权威状态。
-5. Findings 按严重度排序，写明文件位置、触发条件、影响和最小修复方向。
+4. 核对协议长度、取消、迟到响应和临时目录等跨语言语义，没有被各语言 primitive 改写。
+5. 区分客户端平台实现、产品体验、中立协议和核心权威状态。
+6. Findings 按严重度排序，写明文件位置、触发条件、影响和最小修复方向。
 
 ## Stop rules
 

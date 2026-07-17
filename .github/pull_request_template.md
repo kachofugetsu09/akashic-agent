@@ -23,6 +23,8 @@
 
 - 主要文件：
 - 配置或迁移影响：
+- 已知 schema lineage 与最终 schema identity：
+- 协议 source、runtime、provider 与 scenario 的不可变 revision：
 - 回滚方式：
 
 ## 验证
@@ -33,6 +35,7 @@
 - `sourceDigest`：
 - `planDigest`：
 - `private-contract-gate`：`not_required | pending_maintainer | passed`
+- 真实设备证据（设备/API、debug application ID、源码/APK 身份；不适用时说明）：
 - 未运行项与原因：
 
 ## 工作手册
