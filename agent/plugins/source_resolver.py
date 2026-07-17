@@ -99,6 +99,8 @@ def _require_cache_directory(path: Path, label: str) -> None:
     if path.is_symlink():
         raise ValueError(f"installed cache {label} 不能是符号链接: {path}")
     if not path.is_dir():
+        if not path.exists():
+            raise FileNotFoundError(f"installed cache {label} 扫描期间已变化: {path}")
         raise ValueError(f"installed cache {label} 不是目录: {path}")
 
 
@@ -112,6 +114,8 @@ def _require_plugin_root(path: Path) -> None:
     if plugin_file.is_symlink():
         raise ValueError(f"installed cache plugin.py 不能是符号链接: {plugin_file}")
     if not plugin_file.is_file():
+        if not path.exists():
+            raise FileNotFoundError(f"installed cache 版本扫描期间已变化: {path}")
         raise ValueError(f"installed cache 缺少 plugin.py: {plugin_file}")
 
 
