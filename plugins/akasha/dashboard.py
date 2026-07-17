@@ -404,7 +404,7 @@ class AkashaGraphReader:
 
 
 def register(app: FastAPI, _plugin_dir: Path, workspace: Path) -> list[object]:
-    akasha_config = load_akasha_config()
+    akasha_config = load_akasha_config(workspace=workspace)
     akasha_db_path = resolve_akasha_db_path(workspace=workspace, akasha_config=akasha_config)
     store = AkashaStore(akasha_db_path)
     reader = AkashaInspectorReader(store)

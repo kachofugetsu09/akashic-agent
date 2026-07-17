@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from infra.channels.base import AttachmentStore
 from infra.channels.web_chat_channel import WebChatChannel
 from infra.mobile_realtime.pairing import PairingError
 from infra.mobile_realtime.storage import PairingStateError
@@ -29,6 +30,7 @@ def create_chat_app(
     channel: WebChatChannel,
     mobile_pairing_admin: MobilePairingAdmin | None = None,
 ) -> FastAPI:
+    channel.bind_attachment_store(AttachmentStore(workspace / "uploads"))
     app = FastAPI(title="Akashic Chat API")
     app.state.workspace = workspace
     app.state.channel = channel

@@ -388,7 +388,7 @@ async def _run(args: argparse.Namespace) -> None:
     base_workspace = args.workspace
     base_workspace.mkdir(parents=True, exist_ok=True)
 
-    bench_config = load_config(args.config)
+    bench_config = load_config(args.config, workspace=base_workspace)
     judge_model = bench_config.model
 
     console = Console()

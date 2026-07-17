@@ -182,7 +182,7 @@ def test_turn_projection_compares_domain_fields_without_random_ids() -> None:
     }
 
 
-def test_turn_projection_removes_volatile_duration_metadata() -> None:
+def test_turn_projection_normalizes_transport_identity_metadata() -> None:
     turn = {
         "status": "completed",
         "finalResponse": "done",
@@ -193,10 +193,13 @@ def test_turn_projection_removes_volatile_duration_metadata() -> None:
                     "content": "done",
                     "thinking": "reasoning",
                     "media": [],
+                    "sessionMessageId": "web:random:1",
                     "metadata": {
+                        "client_request_id": "request-random",
                         "control_turn_id": "turn:random",
                         "turn_duration_ms": 17,
                         "context_retry": {"request_time": "random"},
+                        "persisted_user_message_id": "web:random:0",
                         "render": "card",
                     },
                 },
@@ -213,7 +216,11 @@ def test_turn_projection_removes_volatile_duration_metadata() -> None:
                 "content": "done",
                 "thinking": "reasoning",
                 "media": [],
-                "metadata": {"render": "card"},
+                "sessionMessageId": "<session-message-id>",
+                "metadata": {
+                    "persisted_user_message_id": "<persisted-user-message-id>",
+                    "render": "card",
+                },
             },
         }
     ]

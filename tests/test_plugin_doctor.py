@@ -55,6 +55,7 @@ def test_plugin_doctor_reports_broken_declaration(tmp_path: Path) -> None:
         plugin_id="demo@github",
         config_path=str(_init_config(tmp_path)),
         plugins_home=plugins_home,
+        workspace=tmp_path / "workspace",
     )
 
     assert report["status"] == "broken"

@@ -120,7 +120,7 @@ system_prompt = "test"
         encoding="utf-8",
     )
 
-    cfg = load_config(config_path)
+    cfg = load_config(config_path, workspace=tmp_path)
 
     assert cfg.max_iterations == 10
 
@@ -143,10 +143,52 @@ system_prompt = "test"
         encoding="utf-8",
     )
 
-    cfg = load_config(config_path)
+    cfg = load_config(config_path, workspace=tmp_path)
 
     assert cfg.memory_window == 40
     assert cfg.memory_optimizer_interval_seconds == 64800
+
+
+def test_config_load_resolves_secrets_from_explicit_workspace(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    first_workspace = tmp_path / "first"
+    second_workspace = tmp_path / "second"
+    for workspace, api_key, token in (
+        (first_workspace, "first-key", "first-token"),
+        (second_workspace, "second-key", "second-token"),
+    ):
+        memory = workspace / "memory"
+        memory.mkdir(parents=True)
+        (memory / "API_KEY").write_text(api_key, encoding="utf-8")
+        (memory / "TG_TOKEN").write_text(token, encoding="utf-8")
+    config_path.write_text(
+        """
+[llm]
+provider = "openai"
+
+[llm.main]
+model = "test-model"
+api_key = "${API_KEY}"
+
+[agent]
+system_prompt = "test"
+
+[channels.telegram]
+token = "${TG_TOKEN}"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    first = load_config(config_path, workspace=first_workspace)
+    second = Config.load(config_path, workspace=second_workspace)
+
+    assert first.api_key == "first-key"
+    assert first.channels.telegram is not None
+    assert first.channels.telegram.token == "first-token"
+    assert second.api_key == "second-key"
+    assert second.channels.telegram is not None
+    assert second.channels.telegram.token == "second-token"
 
 
 def test_default_socket_is_derived_from_workspace(tmp_path: Path) -> None:
@@ -171,9 +213,57 @@ def test_main_help_does_not_start_runtime() -> None:
     assert "Agent 已启动" not in result.stdout
 
 
+def test_workspace_selection_prefers_cli_then_env_then_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        '[runtime]\nworkspace = "~/configured-workspace"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("AKASHIC_WORKSPACE", raising=False)
+
+    assert main._workspace_from_args([], config_path) == (
+        tmp_path / "configured-workspace"
+    ).resolve()
+
+    environment_workspace = tmp_path / "environment-workspace"
+    monkeypatch.setenv("AKASHIC_WORKSPACE", str(environment_workspace))
+    assert main._workspace_from_args(
+        [],
+        config_path,
+    ) == environment_workspace.resolve()
+
+    cli_workspace = tmp_path / "cli-workspace"
+    assert main._workspace_from_args(
+        ["--workspace", str(cli_workspace)],
+        config_path,
+    ) == cli_workspace.resolve()
+
+
+def test_workspace_selection_uses_default_only_for_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "missing.toml"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("AKASHIC_WORKSPACE", raising=False)
+
+    assert main._workspace_from_args(
+        [],
+        config_path,
+        allow_default=True,
+    ) == (tmp_path / ".akashic" / "workspace").resolve()
+    with pytest.raises(ValueError, match="找不到配置文件"):
+        main._workspace_from_args([], config_path)
+
+
 @pytest.mark.asyncio
 async def test_inspect_modules_closes_all_owned_resources(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     closed: list[str] = []
 
@@ -194,14 +284,18 @@ async def test_inspect_modules_closes_all_owned_resources(
         async def aclose(self) -> None:
             closed.append("http")
 
-    monkeypatch.setattr(main.Config, "load", lambda _path: object())
+    monkeypatch.setattr(
+        main.Config,
+        "load",
+        lambda _path, **_kwargs: object(),
+    )
     monkeypatch.setattr(main, "SharedHttpResources", _Resources)
     monkeypatch.setattr(
         "bootstrap.tools.build_core_runtime",
         lambda *_args: _Runtime(),
     )
 
-    await main.inspect_modules()
+    await main.inspect_modules("config.toml", tmp_path)
 
     assert closed == ["core", "memory", "http"]
 
@@ -230,7 +324,7 @@ def test_load_config_rejects_non_table_sections(
     )
 
     with pytest.raises(ValueError, match="必须是 TOML table") as exc_info:
-        load_config(config_path)
+        load_config(config_path, workspace=tmp_path)
 
     assert field in str(exc_info.value)
 
@@ -256,7 +350,7 @@ def test_load_config_rejects_string_booleans(
     )
 
     with pytest.raises(ValueError, match=field.replace(".", r"\.")):
-        load_config(config_path)
+        load_config(config_path, workspace=tmp_path)
 
 
 @pytest.mark.parametrize("tz_name", ["", "Not/AZone"])
@@ -328,7 +422,7 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
     monkeypatch.setattr(bootstrap_app, "PluginJobRuntime", _FakePluginJobRuntime)
     monkeypatch.setattr(main.Path, "home", lambda: tmp_path)
 
-    await main.serve(str(config_path))
+    await main.serve(str(config_path), tmp_path)
 
     assert socket_path.exists() is False
     assert "scheduler" in observed
@@ -733,6 +827,8 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     assert 'model = "qwen-vl-plus"' in config_text
     assert "[channels.chat]" in config_text
     assert "port = 6322" in config_text
+    assert '[runtime]\n' in config_text
+    assert 'workspace = "~/.akashic/workspace"' in config_text
     assert any("http://127.0.0.1:6322" in step for step in summary.next_steps)
     assert (workspace / "sessions.db").exists()
     assert (workspace / "observe").is_dir()
@@ -780,9 +876,11 @@ def test_init_workspace_respects_force_for_text_assets(tmp_path):
 @pytest.mark.asyncio
 async def test_start_channels_wires_telegram_qq_and_plugin(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     starts: list[str] = []
     registrations: list[tuple[str, list[str]]] = []
+    attachment_roots: list[Path] = []
     fake_telegram = types.ModuleType("infra.channels.telegram_channel")
     fake_qq = types.ModuleType("infra.channels.qq_channel")
 
@@ -848,6 +946,7 @@ async def test_start_channels_wires_telegram_qq_and_plugin(
 
         async def start(self, ctx: Any) -> None:
             starts.append("plugin")
+            attachment_roots.append(ctx.attachment_store.root)
             ctx.push_tool.register_channel(self.name, text=self.send)
 
         async def stop(self) -> None:
@@ -885,7 +984,7 @@ async def test_start_channels_wires_telegram_qq_and_plugin(
     host = await start_channels(
         config,
         bus=cast(Any, object()),
-        session_manager=cast(Any, object()),
+        session_manager=cast(Any, types.SimpleNamespace(workspace=tmp_path)),
         push_tool=cast(Any, _PushTool()),
         http_resources=resources,
         event_bus=event_bus,
@@ -906,13 +1005,14 @@ async def test_start_channels_wires_telegram_qq_and_plugin(
         assert telegram.kwargs["interrupt_controller"] is controller
         assert qq.kwargs["interrupt_controller"] is controller
         assert plugin.name == "plugin"
+        assert attachment_roots == [tmp_path / "uploads"]
     finally:
         await host.stop_all()
         await resources.aclose()
 
 
 @pytest.mark.asyncio
-async def test_start_channels_skips_unfilled_optional_channels() -> None:
+async def test_start_channels_skips_unfilled_optional_channels(tmp_path: Path) -> None:
     config = Config(
         provider="openai",
         model="m",
@@ -925,7 +1025,7 @@ async def test_start_channels_skips_unfilled_optional_channels() -> None:
         host = await start_channels(
             config,
             bus=cast(Any, object()),
-            session_manager=cast(Any, object()),
+            session_manager=cast(Any, types.SimpleNamespace(workspace=tmp_path)),
             push_tool=cast(Any, object()),
             http_resources=resources,
             event_bus=EventBus(),

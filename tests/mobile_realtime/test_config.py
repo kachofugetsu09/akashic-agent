@@ -32,7 +32,7 @@ def _write_config(tmp_path: Path, mobile: str) -> Path:
 
 
 def test_mobile_realtime_defaults_to_disabled(tmp_path: Path) -> None:
-    config = load_config(_write_config(tmp_path, ""))
+    config = load_config(_write_config(tmp_path, ""), workspace=tmp_path)
 
     assert config.mobile_realtime.enabled is False
     assert config.mobile_realtime.port == 6323
@@ -61,7 +61,8 @@ provider = "secret_service"
 master_key_namespace = "akasic/mobile-test"
 keyset_manifest = "data/mobile/keys/current.json"
 """,
-        )
+        ),
+        workspace=tmp_path,
     )
 
     assert config.mobile_realtime.enabled is True
@@ -106,7 +107,7 @@ def test_mobile_realtime_rejects_unsafe_configuration(
     message: str,
 ) -> None:
     with pytest.raises(ValueError, match=message):
-        load_config(_write_config(tmp_path, mobile))
+        load_config(_write_config(tmp_path, mobile), workspace=tmp_path)
 
 
 def test_mobile_realtime_requires_loopback_webchat_pairing_entry(
@@ -123,4 +124,4 @@ enabled = true
     )
 
     with pytest.raises(ValueError, match="loopback"):
-        load_config(path)
+        load_config(path, workspace=tmp_path)

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run generic rolling backup every 12 hours
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=12h
+Persistent=true
+Unit=rolling-backup.service
+
+[Install]
+WantedBy=timers.target

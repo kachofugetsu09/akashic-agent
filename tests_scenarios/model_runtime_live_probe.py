@@ -81,11 +81,15 @@ def _usage(response: LLMResponse) -> dict[str, int | str | None]:
     }
 
 
-async def run_probe(config_path: Path, expected_provider: str) -> dict[str, object]:
+async def run_probe(
+    config_path: Path,
+    workspace: Path,
+    expected_provider: str,
+) -> dict[str, object]:
     """实测文本、推理、流式、工具续接、缓存和图片矩阵。"""
 
     # 1. 由真实配置构建统一 provider。
-    config = Config.load(config_path)
+    config = Config.load(config_path, workspace=workspace)
     if config.provider != expected_provider:
         raise ValueError(
             f"provider 不匹配: expected={expected_provider} actual={config.provider}"
@@ -171,10 +175,11 @@ async def run_probe(config_path: Path, expected_provider: str) -> dict[str, obje
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--provider", required=True)
     args = parser.parse_args()
     print(json.dumps(
-        asyncio.run(run_probe(args.config, args.provider)),
+        asyncio.run(run_probe(args.config, args.workspace, args.provider)),
         ensure_ascii=False,
         indent=2,
     ))

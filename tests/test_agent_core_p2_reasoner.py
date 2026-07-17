@@ -824,8 +824,8 @@ def test_get_history_since_consolidated_passes_session_cursor():
             content: str,
             media: list[str] | None = None,
             **kwargs: object,
-        ) -> None:
-            pass
+        ) -> dict[str, object]:
+            return {"role": role, "content": content}
 
     history = get_history_since_consolidated(Session(), 40)
 

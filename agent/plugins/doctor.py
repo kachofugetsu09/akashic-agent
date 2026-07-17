@@ -17,11 +17,11 @@ def run_plugin_doctor(
     *,
     plugin_id: str = "",
     config_path: str = "config.toml",
-    workspace: Path | None = None,
+    workspace: Path,
     plugins_home: Path | None = None,
 ) -> dict[str, Any]:
-    resolved_workspace = workspace or Path.home() / ".akashic" / "workspace"
-    config = Config.load(config_path)
+    resolved_workspace = workspace
+    config = Config.load(config_path, workspace=resolved_workspace)
     memory_engine = (config.memory.engine or "").strip() or "default"
     manifest = load_plugin_manifest(plugins_home)
     selected = [plugin_id] if plugin_id else sorted(manifest)

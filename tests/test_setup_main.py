@@ -80,10 +80,11 @@ def test_setup_main_backs_up_config_and_persists_credential(
         target.__dict__.update(_answers().__dict__)
 
     monkeypatch.setattr("bootstrap.setup_main._phase_main_llm", fill)
-    run_main_model_setup(path)
+    workspace = tmp_path / "workspace"
+    run_main_model_setup(path, workspace)
 
     assert path.with_name("config.toml.before-setup-main.bak").read_text() == _CONFIG
-    config = load_config(path)
+    config = load_config(path, workspace=workspace)
     assert (config.model, config.fast_runtime_id) == ("new-main", "fast")
     assert CredentialStore().get("main_default").access_token == "new-secret"
 
