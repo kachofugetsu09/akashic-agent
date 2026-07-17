@@ -6,15 +6,21 @@ import {
   advanceMobileUnreadTracking,
   allMobileAttachmentsReady,
   captureMobileComposerDraftWrite,
+  formatMobileReplyNavigationAnnouncement,
   formatMobileSelectionCopyText,
   isMobileImageViewerHistoryState,
   mobileMessageCanReply,
+  mobileSelectionActionAvailability,
   mobileComposerDraftMatches,
+  mobileComposerTextareaMetrics,
   reconcileMobileMessageSelection,
   reconcileAssistantMessageIds,
   resolveMobileComposerDraft,
+  resolveMobileReplyNavigationTarget,
   selectableMobileMessages,
   shouldClearAcceptedMobileComposerDraft,
+  shouldClearMobileSelectionAfterShare,
+  shouldSubmitMobileComposerKey,
   updateMobileUnreadMessageIds,
   updateMobileSearchIndex,
 } from "./mobile-message-state.ts";
@@ -87,6 +93,26 @@ test("reply actions only target messages owned by the selected mobile session", 
   assert.equal(mobileMessageCanReply(current, "mobile-current"), true);
   assert.equal(mobileMessageCanReply(historical, "mobile-current"), false);
   assert.equal(mobileMessageCanReply({ ...current, replyable: false }, "mobile-current"), false);
+});
+
+test("reply navigation only resolves a target from the current message projection", () => {
+  const user = selectableMessage("question", "user", "问题");
+  const assistant = selectableMessage("answer", "assistant", "回答");
+
+  assert.equal(resolveMobileReplyNavigationTarget("question", [user, assistant]), user);
+  assert.equal(resolveMobileReplyNavigationTarget("answer", [user, assistant]), assistant);
+  assert.equal(resolveMobileReplyNavigationTarget("old-history", [user, assistant]), null);
+});
+
+test("reply navigation announces user and assistant identity with message time", () => {
+  assert.equal(
+    formatMobileReplyNavigationAnnouncement(selectableMessage("question", "user", "问题"), () => "10:21"),
+    "已跳到你 10:21 的消息",
+  );
+  assert.equal(
+    formatMobileReplyNavigationAnnouncement(selectableMessage("answer", "assistant", "回答"), () => "10:22"),
+    "已跳到Akashic 10:22 的消息",
+  );
 });
 
 test("composer waits until every attachment is ready", () => {
@@ -165,6 +191,58 @@ test("accepted send clears its inactive session or the unchanged active draft", 
     true,
   );
   assert.equal(shouldClearAcceptedMobileComposerDraft(null, sent), true);
+});
+
+test("composer only submits explicit desktop shortcut outside IME composition", () => {
+  assert.equal(shouldSubmitMobileComposerKey({
+    key: "Enter",
+    ctrlKey: false,
+    metaKey: false,
+    isComposing: false,
+  }), false);
+  assert.equal(shouldSubmitMobileComposerKey({
+    key: "Enter",
+    ctrlKey: true,
+    metaKey: false,
+    isComposing: false,
+  }), true);
+  assert.equal(shouldSubmitMobileComposerKey({
+    key: "Enter",
+    ctrlKey: false,
+    metaKey: true,
+    isComposing: false,
+  }), true);
+  assert.equal(shouldSubmitMobileComposerKey({
+    key: "Enter",
+    ctrlKey: true,
+    metaKey: false,
+    isComposing: true,
+  }), false);
+});
+
+test("composer grows from one line and scrolls only above six-line cap", () => {
+  assert.deepEqual(mobileComposerTextareaMetrics(20), { height: 44, overflowY: "hidden" });
+  assert.deepEqual(mobileComposerTextareaMetrics(96.2), { height: 97, overflowY: "hidden" });
+  assert.deepEqual(mobileComposerTextareaMetrics(164), { height: 164, overflowY: "hidden" });
+  assert.deepEqual(mobileComposerTextareaMetrics(165), { height: 164, overflowY: "auto" });
+});
+
+test("selection only clears for its matching successfully launched share request", () => {
+  assert.equal(shouldClearMobileSelectionAfterShare("share-1", "share-1", true), true);
+  assert.equal(shouldClearMobileSelectionAfterShare("share-1", "share-1", false), false);
+  assert.equal(shouldClearMobileSelectionAfterShare("share-2", "share-1", true), false);
+  assert.equal(shouldClearMobileSelectionAfterShare(null, "share-1", true), false);
+});
+
+test("pending native share freezes the complete selection action group", () => {
+  assert.deepEqual(
+    mobileSelectionActionAvailability(true, { reply: true, copy: true, share: true }),
+    { exit: false, reply: false, copy: false, share: false },
+  );
+  assert.deepEqual(
+    mobileSelectionActionAvailability(false, { reply: false, copy: true, share: true }),
+    { exit: true, reply: false, copy: true, share: true },
+  );
 });
 
 test("image viewer owns only its matching history entry", () => {

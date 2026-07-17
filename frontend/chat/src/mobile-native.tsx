@@ -68,16 +68,22 @@ import {
   advanceMobileUnreadTracking,
   allMobileAttachmentsReady,
   captureMobileComposerDraftWrite,
+  formatMobileReplyNavigationAnnouncement,
   formatMobileSelectionCopyText,
   isMobileImageViewerHistoryState,
   mobileMessageCanReply,
   mobileMessageHasCopyContent,
+  mobileSelectionActionAvailability,
   mobileComposerDraftMatches,
+  mobileComposerTextareaMetrics,
   normalizeMobileSearchText,
   reconcileMobileMessageSelection,
   resolveMobileComposerDraft,
+  resolveMobileReplyNavigationTarget,
   selectableMobileMessages,
   shouldClearAcceptedMobileComposerDraft,
+  shouldClearMobileSelectionAfterShare,
+  shouldSubmitMobileComposerKey,
   updateMobileSearchIndex,
   type MobileSearchIndexEntry,
   type MobileComposerDraft,
@@ -234,6 +240,7 @@ interface NativeBridge {
   saveDownloadedAttachment(attachmentId: string): void;
   setWebHistoryActive(active: boolean): void;
   dismissError(): void;
+  shareText(requestId: string, text: string): void;
   saveComposerDraft(sessionId: string, text: string, replyToMessageId: string): void;
   sendMessage(requestId: string, text: string, replyToMessageId: string, attachmentIdsJson: string): void;
   copyText(text: string): void;
@@ -525,6 +532,7 @@ declare global {
       receiveSnapshot(snapshot: unknown): void;
       receivePluginAssets(assets: MobilePluginAsset[]): void;
       receiveSendResult(requestId: string, accepted: boolean): void;
+      receiveShareResult(requestId: string, launched: boolean): void;
       navigateBack(): boolean;
     };
   }
@@ -546,6 +554,10 @@ function MobileNativeApp() {
   const [input, setInput] = useState("");
   const [replyTarget, setReplyTarget] = useState<MobileMessage | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [missingReplySourceId, setMissingReplySourceId] = useState<string | null>(null);
+  const [replyNavigationAnnouncement, setReplyNavigationAnnouncement] = useState("");
+  const [sharePending, setSharePending] = useState(false);
+  const [shareStatus, setShareStatus] = useState<string | null>(null);
   const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(() => new Set());
   const [recoveringMessageIds, setRecoveringMessageIds] = useState<Set<string>>(() => new Set());
   const [stopRequested, setStopRequested] = useState(false);
@@ -562,6 +574,8 @@ function MobileNativeApp() {
   const normalizedSearchQueryRef = useRef("");
   const messageElementsRef = useRef(new Map<string, HTMLDivElement>());
   const copiedTimerRef = useRef<number | null>(null);
+  const missingReplyTimerRef = useRef<number | null>(null);
+  const replyAnnouncementTimerRef = useRef<number | null>(null);
   const searchFocusTimerRef = useRef<number | null>(null);
   const searchHighlightTimerRef = useRef<number | null>(null);
   const previousSessionIdRef = useRef<string | undefined>(undefined);
@@ -570,6 +584,7 @@ function MobileNativeApp() {
     requestId: string;
     draft: MobileComposerDraftWrite;
   } | null>(null);
+  const pendingShareRequestRef = useRef<string | null>(null);
   const surfaceRef = useRef<MobileSurface>({ kind: "chat" });
   const selectionActiveRef = useRef(false);
   const activeComposerDraftRef = useRef<MobileComposerDraftWrite | null>(null);
@@ -707,8 +722,25 @@ function MobileNativeApp() {
         setCommandsOpen(false);
         textareaRef.current?.blur();
       },
+      receiveShareResult(requestId, launched) {
+        const pendingRequestId = pendingShareRequestRef.current;
+        if (pendingRequestId !== requestId) return;
+        pendingShareRequestRef.current = null;
+        setSharePending(false);
+        if (shouldClearMobileSelectionAfterShare(pendingRequestId, requestId, launched)) {
+          selectionActiveRef.current = false;
+          setSelectedMessageIds(new Set());
+          setShareStatus(null);
+          return;
+        }
+        setShareStatus("分享未打开，请重试");
+      },
       navigateBack() {
         if (selectionActiveRef.current) {
+          if (pendingShareRequestRef.current !== null) return true;
+          pendingShareRequestRef.current = null;
+          setSharePending(false);
+          setShareStatus(null);
           selectionActiveRef.current = false;
           setSelectedMessageIds(new Set());
           return true;
@@ -846,6 +878,8 @@ function MobileNativeApp() {
 
   useEffect(() => () => {
     if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+    if (missingReplyTimerRef.current !== null) window.clearTimeout(missingReplyTimerRef.current);
+    if (replyAnnouncementTimerRef.current !== null) window.clearTimeout(replyAnnouncementTimerRef.current);
     if (searchFocusTimerRef.current !== null) window.clearTimeout(searchFocusTimerRef.current);
     if (searchHighlightTimerRef.current !== null) window.clearTimeout(searchHighlightTimerRef.current);
   }, []);
@@ -943,6 +977,9 @@ function MobileNativeApp() {
     setSearchTargetId(null);
     setUnreadState({ count: 0 });
     setQueueOpen(false);
+    pendingShareRequestRef.current = null;
+    setSharePending(false);
+    setShareStatus(null);
     selectionActiveRef.current = false;
     setSelectedMessageIds(new Set());
   }, [snapshot?.selectedSessionId]);
@@ -1068,10 +1105,14 @@ function MobileNativeApp() {
   const selectedMessages = selectableMobileMessages(snapshot.messages, selectedMessageIds);
   const selectionActive = selectedMessages.length > 0;
   const clearSelection = () => {
+    pendingShareRequestRef.current = null;
+    setSharePending(false);
+    setShareStatus(null);
     selectionActiveRef.current = false;
     setSelectedMessageIds(new Set());
   };
   const enterSelection = (messageId: string) => {
+    if (pendingShareRequestRef.current !== null) return;
     setDrawerOpen(false);
     setSearchOpen(false);
     searchOpenRef.current = false;
@@ -1084,10 +1125,15 @@ function MobileNativeApp() {
     setQueueOpen(false);
     updateComposerDraft(input, null);
     textareaRef.current?.blur();
+    pendingShareRequestRef.current = null;
+    setSharePending(false);
+    setShareStatus(null);
     selectionActiveRef.current = true;
     setSelectedMessageIds(new Set([messageId]));
   };
   const toggleSelection = (messageId: string) => {
+    if (pendingShareRequestRef.current !== null) return;
+    setShareStatus(null);
     setSelectedMessageIds((current) => {
       const next = new Set(current);
       if (next.has(messageId)) next.delete(messageId);
@@ -1105,12 +1151,44 @@ function MobileNativeApp() {
     window.AkashicNative?.performActionHaptic();
     clearSelection();
   };
+  const shareSelection = () => {
+    const text = formatMobileSelectionCopyText(
+      selectedMessages,
+      (createdAt) => `${formatMessageDate(createdAt)} ${formatMessageTime(createdAt)}`,
+    );
+    const requestId = crypto.randomUUID();
+    pendingShareRequestRef.current = requestId;
+    setSharePending(true);
+    setShareStatus("正在打开系统分享");
+    window.AkashicNative?.shareText(requestId, text);
+  };
   const replyToSelection = () => {
     const target = selectedMessages.length === 1 ? selectedMessages[0] : undefined;
     if (!target || !mobileMessageCanReply(target, snapshot.selectedSessionId)) return;
     clearSelection();
     updateComposerDraft(input, target);
     requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+  const navigateToReply = (sourceMessageId: string, reply: MobileReply) => {
+    const target = resolveMobileReplyNavigationTarget(reply.messageId, snapshot.messages);
+    if (target) {
+      setMissingReplySourceId(null);
+      const announcement = formatMobileReplyNavigationAnnouncement(target, formatMessageTime);
+      setReplyNavigationAnnouncement("");
+      if (replyAnnouncementTimerRef.current !== null) window.clearTimeout(replyAnnouncementTimerRef.current);
+      replyAnnouncementTimerRef.current = window.setTimeout(() => {
+        setReplyNavigationAnnouncement(announcement);
+        replyAnnouncementTimerRef.current = null;
+      }, 40);
+      jumpToMessage(target.id, true);
+      return;
+    }
+    setMissingReplySourceId(sourceMessageId);
+    if (missingReplyTimerRef.current !== null) window.clearTimeout(missingReplyTimerRef.current);
+    missingReplyTimerRef.current = window.setTimeout(() => {
+      setMissingReplySourceId((current) => current === sourceMessageId ? null : current);
+      missingReplyTimerRef.current = null;
+    }, 1800);
   };
   const navigateToSurface = (next: Exclude<MobileSurface, { kind: "chat" }>) => {
     pushMobileSurface(window.history, next);
@@ -1134,6 +1212,9 @@ function MobileNativeApp() {
             searchInputRef={searchInputRef}
             selectionCount={selectedMessages.length}
             canCopySelection={selectedMessages.some(mobileMessageHasCopyContent)}
+            canShareSelection={selectedMessages.some(mobileMessageHasCopyContent)}
+            sharePending={sharePending}
+            shareStatus={shareStatus}
             canReplyToSelection={selectedMessages.length === 1 && mobileMessageCanReply(selectedMessages[0], snapshot.selectedSessionId)}
             onToggleDrawer={toggleDrawer}
             onOpenSearch={openSearch}
@@ -1144,6 +1225,7 @@ function MobileNativeApp() {
             }}
             onCloseSelection={clearSelection}
             onCopySelection={copySelection}
+            onShareSelection={shareSelection}
             onReplyToSelection={replyToSelection}
           />
         ) : (
@@ -1164,6 +1246,9 @@ function MobileNativeApp() {
           }}
           onClose={closeDrawer}
         />
+        <span className="mobile-a11y-announcement" aria-live="polite" aria-atomic="true">
+          {replyNavigationAnnouncement}
+        </span>
         {(snapshot.connection.error || pluginLoadError) ? (
           <div className="mobile-surface-errors" aria-live="assertive">
             {snapshot.connection.error ? (
@@ -1242,7 +1327,13 @@ function MobileNativeApp() {
                           <ChatMessageView
                             message={message}
                             onCopyToolDetail={copyToolDetail}
-                            leadingContent={source.reply ? <MessageReplyReference reply={source.reply} /> : undefined}
+                            leadingContent={source.reply ? (
+                              <MessageReplyReference
+                                reply={source.reply}
+                                unavailable={missingReplySourceId === source.id}
+                                onNavigate={() => navigateToReply(source.id, source.reply!)}
+                              />
+                            ) : undefined}
                             attachmentContent={<MobileMessageAttachments attachments={source.attachments} />}
                             processStartContent={!selectedSessionUnavailable && isPluginTurnMessage(message) ? (
                               <MobilePluginSlot
@@ -1412,6 +1503,9 @@ function MobileTopBar({
   searchInputRef,
   selectionCount,
   canCopySelection,
+  canShareSelection,
+  sharePending,
+  shareStatus,
   canReplyToSelection,
   onToggleDrawer,
   onOpenSearch,
@@ -1420,6 +1514,7 @@ function MobileTopBar({
   onSearchSubmit,
   onCloseSelection,
   onCopySelection,
+  onShareSelection,
   onReplyToSelection,
 }: {
   status: ConnectionStatus;
@@ -1433,6 +1528,9 @@ function MobileTopBar({
   searchInputRef: React.RefObject<HTMLInputElement | null>;
   selectionCount: number;
   canCopySelection: boolean;
+  canShareSelection: boolean;
+  sharePending: boolean;
+  shareStatus: string | null;
   canReplyToSelection: boolean;
   onToggleDrawer: () => void;
   onOpenSearch: () => void;
@@ -1441,23 +1539,34 @@ function MobileTopBar({
   onSearchSubmit: () => void;
   onCloseSelection: () => void;
   onCopySelection: () => void;
+  onShareSelection: () => void;
   onReplyToSelection: () => void;
 }) {
   if (selectionCount > 0) {
+    const actions = mobileSelectionActionAvailability(sharePending, {
+      reply: canReplyToSelection,
+      copy: canCopySelection,
+      share: canShareSelection,
+    });
     return (
-      <header className="mobile-topbar selection-mode">
-        <button className="mobile-icon-button" type="button" onClick={onCloseSelection} aria-label="退出消息选择">
+      <header className="mobile-topbar selection-mode" aria-busy={sharePending}>
+        <button className="mobile-icon-button" type="button" onClick={onCloseSelection} aria-label="退出消息选择" disabled={!actions.exit}>
           <X size={24} />
         </button>
-        <strong aria-live="polite">已选择 {selectionCount} 条</strong>
+        <strong aria-live="polite">{shareStatus ?? `已选择 ${selectionCount} 条`}</strong>
         {canReplyToSelection ? (
-          <button className="mobile-icon-button" type="button" onClick={onReplyToSelection} aria-label="引用选中的消息">
+          <button className="mobile-icon-button" type="button" onClick={onReplyToSelection} aria-label="引用选中的消息" disabled={!actions.reply}>
             <Reply size={21} />
           </button>
         ) : null}
         {canCopySelection ? (
-          <button className="mobile-icon-button" type="button" onClick={onCopySelection} aria-label="复制选中的消息">
+          <button className="mobile-icon-button" type="button" onClick={onCopySelection} aria-label="复制选中的消息" disabled={!actions.copy}>
             <Copy size={21} />
+          </button>
+        ) : null}
+        {canShareSelection ? (
+          <button className="mobile-icon-button" type="button" onClick={onShareSelection} aria-label="分享选中的消息" disabled={!actions.share}>
+            <Share2 size={21} />
           </button>
         ) : null}
       </header>
@@ -1729,9 +1838,46 @@ function MobileComposer({
   const hasDraft = snapshot.composer.attachments.length > 0;
   const attachmentsReady = allMobileAttachmentsReady(snapshot.composer.attachments);
   const canSubmit = snapshot.composer.canSend && attachmentsReady && !sendPending && (!!input.trim() || hasDraft);
+  const zoneRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (textarea) resizeMobileComposerTextarea(textarea);
+  }, [input, textareaRef]);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    const widthOwner = textarea?.parentElement;
+    if (!textarea || !widthOwner) return;
+    let lastWidth = widthOwner.clientWidth;
+    const observer = new ResizeObserver(() => {
+      const nextWidth = widthOwner.clientWidth;
+      if (nextWidth === lastWidth) return;
+      lastWidth = nextWidth;
+      resizeMobileComposerTextarea(textarea);
+    });
+    observer.observe(widthOwner);
+    return () => observer.disconnect();
+  }, [textareaRef]);
+
+  useLayoutEffect(() => {
+    const zone = zoneRef.current;
+    const content = zone?.closest<HTMLElement>(".mobile-main-content");
+    if (!zone || !content) return;
+    const updateInset = () => {
+      content.style.setProperty("--mobile-composer-height", `${zone.offsetHeight}px`);
+    };
+    updateInset();
+    const observer = new ResizeObserver(updateInset);
+    observer.observe(zone);
+    return () => {
+      observer.disconnect();
+      content.style.removeProperty("--mobile-composer-height");
+    };
+  }, []);
 
   return (
-    <div className="mobile-composer-zone">
+    <div ref={zoneRef} className="mobile-composer-zone">
       <CommandSheet open={commandsOpen} commands={snapshot.composer.commands} onClose={onCloseCommands} />
       {snapshot.connection.notice ? <div className="connection-notice">{snapshot.connection.notice}</div> : null}
       {stopping ? <div className="stop-feedback" aria-live="polite">正在中止本轮处理…</div> : null}
@@ -1758,7 +1904,12 @@ function MobileComposer({
           onChange={(event) => onInput(event.target.value)}
           onFocus={() => commandsOpen && onCloseCommands(false)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
+            if (shouldSubmitMobileComposerKey({
+              key: event.key,
+              ctrlKey: event.ctrlKey,
+              metaKey: event.metaKey,
+              isComposing: event.nativeEvent.isComposing,
+            })) {
               event.preventDefault();
               onSend();
             }
@@ -1780,6 +1931,13 @@ function MobileComposer({
       </div>
     </div>
   );
+}
+
+function resizeMobileComposerTextarea(textarea: HTMLTextAreaElement) {
+  textarea.style.height = "0px";
+  const metrics = mobileComposerTextareaMetrics(textarea.scrollHeight);
+  textarea.style.height = `${metrics.height}px`;
+  textarea.style.overflowY = metrics.overflowY;
 }
 
 function PendingQueue({
@@ -2430,12 +2588,25 @@ function SwipeToReply({ disabled, onReply, children }: { disabled: boolean; onRe
   );
 }
 
-function MessageReplyReference({ reply }: { reply: MobileReply }) {
+function MessageReplyReference({
+  reply,
+  unavailable,
+  onNavigate,
+}: {
+  reply: MobileReply;
+  unavailable: boolean;
+  onNavigate: () => void;
+}) {
   return (
-    <div className="message-reply-reference">
+    <button
+      className={`message-reply-reference ${unavailable ? "unavailable" : ""}`}
+      type="button"
+      onClick={onNavigate}
+      aria-label={reply.role === "assistant" ? "查看引用的 Akashic 消息" : "查看引用的你的消息"}
+    >
       <span>{reply.role === "assistant" ? "Akashic" : "你"}</span>
-      <p>{reply.preview}</p>
-    </div>
+      <p aria-live="polite">{unavailable ? "原消息不在当前记录中" : reply.preview}</p>
+    </button>
   );
 }
 

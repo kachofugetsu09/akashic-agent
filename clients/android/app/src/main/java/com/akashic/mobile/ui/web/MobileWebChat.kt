@@ -46,6 +46,7 @@ import com.akashic.mobile.ui.conversation.MessageUi
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileNotFoundException
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
@@ -100,6 +101,7 @@ fun MobileWebChat(
 ) {
     val latestState by rememberUpdatedState(state)
     val mediaRegistry = remember { MobileMediaRegistry() }
+    val shareScope = remember { CoroutineScope(SupervisorJob() + Dispatchers.IO) }
     var webView by remember { mutableStateOf<WebView?>(null) }
     var snapshotPump by remember { mutableStateOf<MobileSnapshotPump?>(null) }
     var webLoadError by remember { mutableStateOf<String?>(null) }
@@ -139,6 +141,7 @@ fun MobileWebChat(
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { context ->
+            shareScope.launch { pruneMobileTextShareCache(mobileTextShareDirectory(context)) }
             val assetLoader = WebViewAssetLoader.Builder()
                 .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(context))
                 .addPathHandler("/media/", mediaRegistry)
@@ -177,6 +180,30 @@ fun MobileWebChat(
                             context.getSystemService(ClipboardManager::class.java).setPrimaryClip(
                                 ClipData.newPlainText("Akashic message", text),
                             )
+                        },
+                        shareText = { requestId, text ->
+                            shareScope.launch {
+                                val prepared = try {
+                                    preparePlainTextShare(context, text)
+                                } catch (_: IOException) {
+                                    null
+                                }
+                                val launched = withContext(Dispatchers.Main) {
+                                    if (prepared === null) {
+                                        Toast.makeText(context, "分享文件准备失败，请重试", Toast.LENGTH_SHORT).show()
+                                        false
+                                    } else {
+                                        launchPlainTextShare(context, prepared)
+                                    }
+                                }
+                                post {
+                                    evaluateJavascript(
+                                        "window.AkashicMobile?.receiveShareResult(" +
+                                            "${JSONObject.quote(requestId)},$launched)",
+                                        null,
+                                    )
+                                }
+                            }
                         },
                         performActionHaptic = {
                             post {
@@ -256,6 +283,7 @@ fun MobileWebChat(
     }
     DisposableEffect(Unit) {
         onDispose {
+            shareScope.cancel()
             snapshotPump?.cancel()
             webView?.removeJavascriptInterface("AkashicNative")
             webView?.destroy()
@@ -297,6 +325,7 @@ private class MobileWebBridge(
     private val reportReady: () -> Unit,
     private val requestSnapshot: () -> Unit,
     private val copyText: (String) -> Unit,
+    private val shareText: (String, String) -> Unit,
     private val performActionHaptic: () -> Unit,
     private val setWebHistoryActive: (Boolean) -> Unit,
     private val reportSendResult: (String, Boolean) -> Unit,
@@ -414,6 +443,9 @@ private class MobileWebBridge(
 
     @JavascriptInterface
     fun copyText(text: String) = copyText.invoke(text)
+
+    @JavascriptInterface
+    fun shareText(requestId: String, text: String) = shareText.invoke(requestId, text)
 
     @JavascriptInterface
     fun performActionHaptic() = performActionHaptic.invoke()

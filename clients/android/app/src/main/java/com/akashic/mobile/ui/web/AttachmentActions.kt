@@ -73,6 +73,105 @@ internal fun shareCachedAttachment(context: Context, attachment: MessageAttachme
     }
 }
 
+internal data class MobileTextSharePayload(
+    val mimeType: String,
+    val text: String,
+    val chooserTitle: String,
+)
+
+internal enum class MobileTextShareMode {
+    INLINE,
+    CACHE_FILE,
+}
+
+internal const val MOBILE_INLINE_SHARE_MAX_UTF8_BYTES = 64 * 1024
+internal const val MOBILE_TEXT_SHARE_CACHE_TTL_MILLIS = 24 * 60 * 60 * 1_000L
+internal const val MOBILE_TEXT_SHARE_FILE_PREFIX = "akashic-message-"
+internal const val MOBILE_TEXT_SHARE_CHOOSER_TITLE = "分享消息"
+
+internal fun mobileTextShareMode(text: String) = if (
+    text.toByteArray(Charsets.UTF_8).size <= MOBILE_INLINE_SHARE_MAX_UTF8_BYTES
+) {
+    MobileTextShareMode.INLINE
+} else {
+    MobileTextShareMode.CACHE_FILE
+}
+
+internal fun mobileTextSharePayload(text: String) = MobileTextSharePayload(
+    mimeType = "text/plain",
+    text = text,
+    chooserTitle = MOBILE_TEXT_SHARE_CHOOSER_TITLE,
+)
+
+internal data class PreparedMobileTextShare(
+    val intent: Intent,
+    val cacheFile: File?,
+)
+
+internal fun mobileTextShareDirectory(context: Context) = File(context.cacheDir, "shared-text")
+
+/** 只清理分享专用目录中过期且属于本功能的缓存文件。 */
+internal fun pruneMobileTextShareCache(
+    directory: File,
+    nowMillis: Long = System.currentTimeMillis(),
+) {
+    directory.listFiles()?.forEach { file ->
+        if (
+            file.isFile &&
+            file.name.startsWith(MOBILE_TEXT_SHARE_FILE_PREFIX) &&
+            nowMillis - file.lastModified() >= MOBILE_TEXT_SHARE_CACHE_TTL_MILLIS
+        ) {
+            file.delete()
+        }
+    }
+}
+
+/** 把短文本放进 Intent，长文本改用 FileProvider 缓存文件。 */
+internal fun preparePlainTextShare(context: Context, text: String): PreparedMobileTextShare {
+    val payload = mobileTextSharePayload(text)
+    val directory = mobileTextShareDirectory(context).apply {
+        mkdirs()
+        pruneMobileTextShareCache(this)
+    }
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = payload.mimeType
+    }
+    if (mobileTextShareMode(text) == MobileTextShareMode.INLINE) {
+        return PreparedMobileTextShare(
+            intent = send.apply { putExtra(Intent.EXTRA_TEXT, payload.text) },
+            cacheFile = null,
+        )
+    }
+
+    val file = File.createTempFile(MOBILE_TEXT_SHARE_FILE_PREFIX, ".txt", directory)
+    try {
+        file.writeText(payload.text, Charsets.UTF_8)
+    } catch (error: IOException) {
+        file.delete()
+        throw error
+    }
+    val uri = FileProvider.getUriForFile(context, "${BuildConfig.APPLICATION_ID}.files", file)
+    return PreparedMobileTextShare(
+        intent = send.apply {
+            putExtra(Intent.EXTRA_STREAM, uri)
+            clipData = ClipData.newUri(context.contentResolver, file.name, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        },
+        cacheFile = file,
+    )
+}
+
+internal fun launchPlainTextShare(context: Context, prepared: PreparedMobileTextShare): Boolean {
+    try {
+        context.startActivity(Intent.createChooser(prepared.intent, MOBILE_TEXT_SHARE_CHOOSER_TITLE))
+        return true
+    } catch (_: ActivityNotFoundException) {
+        prepared.cacheFile?.delete()
+        Toast.makeText(context, "没有可分享消息的应用", Toast.LENGTH_SHORT).show()
+        return false
+    }
+}
+
 /** 把已校验的私有缓存复制到用户通过系统文件选择器确定的位置。 */
 internal suspend fun saveCachedAttachment(
     context: Context,

@@ -241,6 +241,11 @@ button {
   color: var(--m-primary);
 }
 
+.mobile-topbar.selection-mode > .mobile-icon-button:disabled {
+  color: var(--m-on-surface-variant);
+  opacity: 0.38;
+}
+
 .mobile-main-content {
   display: contents;
 }
@@ -602,11 +607,11 @@ button {
 
 .mobile-conversation {
   min-height: 0;
-  padding-block: calc(64px + env(safe-area-inset-top)) calc(106px + env(safe-area-inset-bottom));
+  padding-block: calc(64px + env(safe-area-inset-top)) calc(var(--mobile-composer-height, 76px) + 30px);
 }
 
 .mobile-main-content.replying .mobile-conversation {
-  padding-block-end: calc(164px + env(safe-area-inset-bottom));
+  padding-block-end: calc(var(--mobile-composer-height, 134px) + 30px);
 }
 
 .mobile-main-content.searching .mobile-conversation {
@@ -618,7 +623,7 @@ button {
 }
 
 .mobile-main-content.queueing .mobile-conversation {
-  padding-block-end: calc(276px + env(safe-area-inset-bottom));
+  padding-block-end: calc(var(--mobile-composer-height, 246px) + 30px);
 }
 
 .mobile-main-content.session-unavailable .mobile-conversation {
@@ -989,11 +994,29 @@ button {
 .message-reply-reference {
   position: relative;
   display: grid;
+  width: 100%;
   gap: 2px;
   margin: 0 0 10px;
+  border: 0;
   padding: 7px 10px 7px 13px;
   color: var(--m-on-surface-variant);
   background: color-mix(in oklch, var(--m-primary) 8%, transparent);
+  font: inherit;
+  text-align: start;
+  transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.message-reply-reference:active {
+  background: color-mix(in oklch, var(--m-primary) 14%, transparent);
+}
+
+.message-reply-reference:focus-visible {
+  outline: 2px solid var(--m-primary);
+  outline-offset: 2px;
+}
+
+.message-reply-reference.unavailable > p {
+  color: var(--m-primary);
 }
 
 .message-reply-reference::before {
@@ -1486,7 +1509,7 @@ button.tool-step-summary:active {
   position: absolute;
   z-index: 32;
   right: 16px;
-  bottom: calc(112px + env(safe-area-inset-bottom));
+  bottom: calc(var(--mobile-composer-height, 76px) + 6px);
   display: grid;
   width: 48px;
   height: 48px;
@@ -1857,7 +1880,7 @@ button.tool-step-summary:active {
 .mobile-composer textarea {
   min-width: 0;
   min-height: 44px;
-  max-height: 132px;
+  max-height: 164px;
   flex: 1;
   resize: none;
   border: 0;
@@ -1868,6 +1891,15 @@ button.tool-step-summary:active {
   line-height: 1.5;
   outline: none;
   caret-color: var(--m-primary);
+}
+
+.mobile-a11y-announcement {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .mobile-composer textarea::placeholder {

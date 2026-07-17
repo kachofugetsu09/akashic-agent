@@ -3,4 +3,7 @@
     <files-path
         name="received_attachments"
         path="received-attachments/" />
+    <cache-path
+        name="shared_text"
+        path="shared-text/" />
 </paths>
