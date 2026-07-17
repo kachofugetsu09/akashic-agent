@@ -107,6 +107,106 @@ internal fun terminalProtocolAction(code: Int): TerminalProtocolAction? = when (
     else -> null
 }
 
+internal enum class ConnectionDeadlinePhase {
+    CHALLENGE,
+    AUTHENTICATION,
+    SYNC,
+}
+
+internal fun ConnectionDeadlinePhase.deadlineMillis(): Long = when (this) {
+    ConnectionDeadlinePhase.CHALLENGE,
+    ConnectionDeadlinePhase.AUTHENTICATION -> 10_000L
+    ConnectionDeadlinePhase.SYNC -> 20_000L
+}
+
+internal fun ConnectionDeadlinePhase.timeoutMessage(): String = when (this) {
+    ConnectionDeadlinePhase.CHALLENGE -> "等待电脑握手超时，正在重新连接"
+    ConnectionDeadlinePhase.AUTHENTICATION -> "设备认证超时，正在重新连接"
+    ConnectionDeadlinePhase.SYNC -> "消息同步长时间无进展，正在重新连接"
+}
+
+internal data class ConnectionPhaseDeadline(
+    val generation: Long,
+    val phase: ConnectionDeadlinePhase,
+)
+
+internal fun shouldReplacePhaseDeadline(
+    current: ConnectionPhaseDeadline?,
+    generation: Long,
+    next: ConnectionDeadlinePhase,
+): Boolean = current == null ||
+    current.generation != generation ||
+    current.phase.ordinal <= next.ordinal
+
+internal fun shouldApplyCandidateOpen(
+    connectionPhase: ConnectionPhase,
+    hasActiveCandidate: Boolean,
+    candidateGeneration: Long,
+    pairingConfirmationGeneration: Long?,
+): Boolean = !hasActiveCandidate &&
+    pairingConfirmationGeneration != candidateGeneration &&
+    (
+        connectionPhase == ConnectionPhase.CONNECTING ||
+            connectionPhase == ConnectionPhase.SERVER_CHALLENGE ||
+            connectionPhase == ConnectionPhase.DEGRADED
+    )
+
+internal fun shouldRefreshSyncDeadline(
+    phaseBeforeFrame: ConnectionPhase,
+    phaseAfterFrame: ConnectionPhase,
+): Boolean = phaseBeforeFrame == ConnectionPhase.SYNCING &&
+    phaseAfterFrame == ConnectionPhase.SYNCING
+
+internal class NetworkRecoveryLatch {
+    private var unavailableGeneration: Long? = null
+    private var recoveredGeneration: Long? = null
+
+    /** 记录网络边沿，并把一次恢复绑定到当时的连接代际。 */
+    fun onNetworkState(
+        generation: Long,
+        previous: TransferNetworkState,
+        next: TransferNetworkState,
+        hasConnectionTarget: Boolean,
+    ) {
+        if (!hasConnectionTarget) {
+            reset()
+            return
+        }
+        if (next.kind == TransferNetworkKind.UNAVAILABLE) {
+            unavailableGeneration = generation
+            recoveredGeneration = null
+            return
+        }
+        if (
+            previous.kind == TransferNetworkKind.UNAVAILABLE &&
+            unavailableGeneration == generation
+        ) {
+            unavailableGeneration = null
+            recoveredGeneration = generation
+        }
+    }
+
+    fun onGenerationStarted(generation: Long, network: TransferNetworkState) {
+        recoveredGeneration = null
+        unavailableGeneration = if (network.kind == TransferNetworkKind.UNAVAILABLE) generation else null
+    }
+
+    fun consume(generation: Long): Boolean {
+        if (recoveredGeneration != generation) return false
+        recoveredGeneration = null
+        return true
+    }
+
+    fun onConnectionProgress(generation: Long) {
+        if (recoveredGeneration == generation) recoveredGeneration = null
+    }
+
+    fun reset() {
+        unavailableGeneration = null
+        recoveredGeneration = null
+    }
+}
+
 class RealtimeSession(
     private val database: AppDatabase,
     private val deliveryStore: LocalDeliveryStore,
@@ -174,12 +274,16 @@ class RealtimeSession(
     private var meteredLargeTransferApproved = false
     private var profile: ServerProfileEntity? = null
     private var pendingPairing: PendingPairing? = null
+    private var pairingConfirmationGeneration: Long? = null
     private val challengedCandidates = mutableSetOf<SocketCandidateId>()
     private val candidateEndpoints = mutableMapOf<SocketCandidateId, ServerEndpoint>()
     private var activeCandidate: SocketCandidateId? = null
     private var activeEpoch: Long? = null
     private var retryCount = 0
     private var reconnectJob: Job? = null
+    private val networkRecovery = NetworkRecoveryLatch()
+    private var phaseDeadlineJob: Job? = null
+    private var phaseDeadline: ConnectionPhaseDeadline? = null
     private var ackJob: Job? = null
     private var pendingAckCount = 0
     private var pendingAckSeq = 0L
@@ -253,6 +357,7 @@ class RealtimeSession(
                         signer = { deviceKeys.sign(alias, it) },
                     )
                     pendingPairing = PendingPairing(qr, alias, claim)
+                    pairingConfirmationGeneration = null
                     mutableState.value = MobileSessionState(
                         initialized = true,
                         connection = ConnectionState(phase = ConnectionPhase.CONNECTING),
@@ -278,14 +383,17 @@ class RealtimeSession(
             mutex.withLock {
                 reconnectJob?.cancel()
                 reconnectJob = null
+                cancelPhaseDeadline()
                 ackJob?.cancel()
                 ackJob = null
                 socket.close(reason = "user requested re-pairing")
                 uploads.onDisconnected()
                 downloads.onDisconnected()
                 pendingPairing = null
+                pairingConfirmationGeneration = null
                 profile = null
                 resetGenerationState()
+                networkRecovery.reset()
                 stops.reset()
                 preferences.selectServer(null)
                 mutableState.value = MobileSessionState(
@@ -903,6 +1011,18 @@ class RealtimeSession(
             mutex.withLock {
                 if (candidateId.generation != currentGeneration()) return@withLock
                 candidateEndpoints[candidateId] = endpoint
+                if (
+                    !shouldApplyCandidateOpen(
+                        connectionPhase = mutableState.value.connection.phase,
+                        hasActiveCandidate = activeCandidate != null,
+                        candidateGeneration = candidateId.generation,
+                        pairingConfirmationGeneration = pairingConfirmationGeneration,
+                    )
+                ) {
+                    return@withLock
+                }
+                networkRecovery.onConnectionProgress(candidateId.generation)
+                armPhaseDeadline(candidateId.generation, ConnectionDeadlinePhase.CHALLENGE)
                 mutableState.value = mutableState.value.copy(
                     connection = mutableState.value.connection.copy(
                         phase = ConnectionPhase.SERVER_CHALLENGE,
@@ -1003,6 +1123,8 @@ class RealtimeSession(
     }
 
     private suspend fun handleEnvelope(candidateId: SocketCandidateId, envelope: WireEnvelope) {
+        if (candidateId.generation != currentGeneration()) return
+        if (activeCandidate != null && candidateId != activeCandidate) return
         when (envelope.type) {
             "server.challenge" -> handleChallenge(candidateId, envelope)
             "pair.pending" -> handlePairPending(candidateId, envelope)
@@ -1027,6 +1149,7 @@ class RealtimeSession(
         challengedCandidates += candidateId
         if (pairing != null) {
             check(socket.send(candidateId, control("pair.claim", pairing.claim.payload)))
+            armPhaseDeadline(candidateId.generation, ConnectionDeadlinePhase.AUTHENTICATION)
             return
         }
         val currentProfile = requireNotNull(profile)
@@ -1037,6 +1160,7 @@ class RealtimeSession(
             signer = { deviceKeys.sign(currentProfile.keyAlias, it) },
         )
         check(socket.send(candidateId, control("device.proof", proof)))
+        armPhaseDeadline(candidateId.generation, ConnectionDeadlinePhase.AUTHENTICATION)
         mutableState.value = mutableState.value.copy(
             connection = mutableState.value.connection.copy(phase = ConnectionPhase.DEVICE_PROOF),
         )
@@ -1048,6 +1172,8 @@ class RealtimeSession(
         val pending = ProtocolCodec.decodePayload<PairPendingPayload>(envelope.payload)
         require(pending.pairingId == pairing.qr.pairingId) { "pair.pending pairing_id mismatch" }
         require(pending.confirmationCode == pairing.claim.confirmationCode) { "Pairing confirmation code mismatch" }
+        pairingConfirmationGeneration = candidateId.generation
+        cancelPhaseDeadline()
         mutableState.value = mutableState.value.copy(pairingConfirmationCode = pending.confirmationCode)
     }
 
@@ -1075,6 +1201,7 @@ class RealtimeSession(
         preferences.selectServer(saved.serverId)
         profile = saved
         pendingPairing = null
+        pairingConfirmationGeneration = null
         mutableState.value = MobileSessionState(
             initialized = true,
             connection = ConnectionState(phase = ConnectionPhase.CONNECTING),
@@ -1132,12 +1259,28 @@ class RealtimeSession(
             remoteSessionIds = null,
             errorMessage = null,
         )
+        armPhaseDeadline(candidateId.generation, ConnectionDeadlinePhase.SYNC)
         database.outbox().resetInFlight(currentProfile.serverId)
     }
 
     private suspend fun handleAuthenticatedFrame(candidateId: SocketCandidateId, envelope: WireEnvelope) {
         if (candidateId != activeCandidate) return
         require(envelope.connectionEpoch == activeEpoch) { "Authenticated frame epoch mismatch" }
+        val phaseBeforeFrame = mutableState.value.connection.phase
+        applyAuthenticatedFrame(envelope)
+        if (
+            shouldRefreshSyncDeadline(
+                phaseBeforeFrame = phaseBeforeFrame,
+                phaseAfterFrame = mutableState.value.connection.phase,
+            )
+        ) {
+            refreshSyncDeadline()
+        }
+        networkRecovery.onConnectionProgress(candidateId.generation)
+    }
+
+    /** 应用一个已通过候选与 epoch 校验的服务端帧。 */
+    private suspend fun applyAuthenticatedFrame(envelope: WireEnvelope) {
         when (envelope.kind) {
             WireKind.EVENT -> {
                 val currentProfile = requireNotNull(profile)
@@ -1664,6 +1807,7 @@ class RealtimeSession(
             remoteSessionIds = null,
             errorMessage = null,
         )
+        armPhaseDeadline(currentGeneration(), ConnectionDeadlinePhase.SYNC)
         requestSessionList()
     }
 
@@ -1677,6 +1821,7 @@ class RealtimeSession(
         mutableState.value = mutableState.value.copy(
             connection = mutableState.value.connection.copy(phase = ConnectionPhase.READY),
         )
+        cancelPhaseDeadline()
         requestCommandList()
         requestPluginUiList()
         uploads.onConnectionReady(currentProfile.serverId)
@@ -1797,6 +1942,8 @@ class RealtimeSession(
             qr.lanEndpoints.lanEndpoints(qr.tlsSpkiPins),
             qr.tunnelEndpoints.tunnelEndpoints(),
         )
+        networkRecovery.onGenerationStarted(currentGenerationValue, mutableState.value.transferNetwork)
+        armPhaseDeadline(currentGenerationValue, ConnectionDeadlinePhase.CHALLENGE)
     }
 
     private fun connectProfile(value: ServerProfileEntity) {
@@ -1806,6 +1953,8 @@ class RealtimeSession(
         val lan = json.decodeFromString<List<String>>(value.lanEndpointsJson).lanEndpoints(pins)
         val tunnel = json.decodeFromString<List<String>>(value.tunnelEndpointsJson).tunnelEndpoints()
         currentGenerationValue = socket.connectRace(lan, tunnel)
+        networkRecovery.onGenerationStarted(currentGenerationValue, mutableState.value.transferNetwork)
+        armPhaseDeadline(currentGenerationValue, ConnectionDeadlinePhase.CHALLENGE)
         mutableState.value = mutableState.value.copy(
             connection = ConnectionState(phase = ConnectionPhase.CONNECTING, retryCount = retryCount),
             hasProfile = true,
@@ -1859,8 +2008,48 @@ class RealtimeSession(
         return conversation.remoteKnown
     }
 
+    /** 为当前连接代际设置唯一的应用层阶段截止时间。 */
+    private fun armPhaseDeadline(generation: Long, phase: ConnectionDeadlinePhase) {
+        require(generation == currentGeneration()) { "连接阶段截止时间属于旧代际" }
+        if (
+            phase != ConnectionDeadlinePhase.SYNC &&
+            pairingConfirmationGeneration == generation
+        ) {
+            return
+        }
+        if (!shouldReplacePhaseDeadline(phaseDeadline, generation, phase)) return
+        phaseDeadlineJob?.cancel()
+        val deadline = ConnectionPhaseDeadline(generation, phase)
+        phaseDeadline = deadline
+        phaseDeadlineJob = scope.launch {
+            delay(phase.deadlineMillis())
+            mutex.withLock {
+                if (phaseDeadline != deadline || currentGeneration() != generation) return@withLock
+                phaseDeadline = null
+                phaseDeadlineJob = null
+                val message = phase.timeoutMessage()
+                socket.close(reason = message)
+                scheduleReconnect(message)
+            }
+        }
+    }
+
+    private fun refreshSyncDeadline() {
+        if (mutableState.value.connection.phase == ConnectionPhase.SYNCING) {
+            armPhaseDeadline(currentGeneration(), ConnectionDeadlinePhase.SYNC)
+        }
+    }
+
+    private fun cancelPhaseDeadline() {
+        phaseDeadlineJob?.cancel()
+        phaseDeadlineJob = null
+        phaseDeadline = null
+    }
+
     private fun scheduleReconnect(message: String) {
+        cancelPhaseDeadline()
         if (reconnectJob?.isActive == true) return
+        val reconnectImmediately = networkRecovery.consume(currentGeneration())
         activeCandidate = null
         activeEpoch = null
         activeOutboxCommandId = null
@@ -1882,6 +2071,10 @@ class RealtimeSession(
             ),
             errorMessage = message,
         )
+        if (reconnectImmediately) {
+            pendingPairing?.let { connectQr(it.qr) } ?: profile?.let(::connectProfile)
+            return
+        }
         reconnectJob = scope.launch {
             delay(FullJitterBackoff.nextDelayMillis(retryCount))
             mutex.withLock {
@@ -1895,6 +2088,7 @@ class RealtimeSession(
         // 1. 收起当前连接态任务
         reconnectJob?.cancel()
         reconnectJob = null
+        cancelPhaseDeadline()
         activeCandidate = null
         activeEpoch = null
         ackJob?.cancel()
@@ -1959,6 +2153,7 @@ class RealtimeSession(
     }
 
     private fun resetGenerationState() {
+        cancelPhaseDeadline()
         challengedCandidates.clear()
         candidateEndpoints.clear()
         activeCandidate = null
@@ -2002,6 +2197,14 @@ class RealtimeSession(
     /** 应用网络计费变化，并在策略允许时恢复同一持久化上传队列。 */
     private suspend fun applyTransferNetwork(next: TransferNetworkState) {
         mutex.withLock {
+            val previous = mutableState.value.transferNetwork
+            networkRecovery.onNetworkState(
+                generation = currentGeneration(),
+                previous = previous,
+                next = next,
+                hasConnectionTarget = pendingPairing != null || profile != null,
+            )
+
             // 1. 离开计费网络后撤销一次性授权
             if (next.kind != TransferNetworkKind.METERED) {
                 meteredLargeTransferApproved = false
@@ -2011,7 +2214,18 @@ class RealtimeSession(
                 meteredLargeTransferApproved = meteredLargeTransferApproved,
             )
 
-            // 2. 网络策略放行后继续既有可断点队列
+            // 2. 网络恢复时立即替换退避任务，避免可用链路继续空等
+            if (
+                mutableState.value.connection.phase == ConnectionPhase.DEGRADED &&
+                reconnectJob?.isActive == true &&
+                networkRecovery.consume(currentGeneration())
+            ) {
+                reconnectJob?.cancel()
+                reconnectJob = null
+                pendingPairing?.let { connectQr(it.qr) } ?: profile?.let(::connectProfile)
+            }
+
+            // 3. 网络策略放行后继续既有可断点队列
             profile?.serverId?.let { serverId ->
                 if (mutableState.value.connection.phase == ConnectionPhase.READY) {
                     uploads.resumeIfIdle(serverId)

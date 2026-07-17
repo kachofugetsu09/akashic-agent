@@ -50,6 +50,22 @@ adb install -r clients/android/app/build/outputs/apk/debug/app-debug.apk
 
 打开输出的 `pairing-offer.png`，用 Android 客户端扫码。脚本只会自动批准本进程创建的单次 pairing，不接受其他 Gateway 或 pairing ID。
 
+要复现“WebSocket 已连但应用协议停滞”，可在首次配对后注入一次性故障：
+
+```bash
+uv run python -m tests_scenarios.mobile_isolated_gateway \
+  --root /tmp/akashic-mobile-device-e2e \
+  --port 16323 \
+  --fault-mode stall_before_challenge
+
+uv run python -m tests_scenarios.mobile_isolated_gateway \
+  --root /tmp/akashic-mobile-device-e2e \
+  --port 16323 \
+  --fault-mode stall_after_auth
+```
+
+前者不发送 `server.challenge`，后者在 `auth.accepted` 后不产生同步进展。两种模式都只触发一次，方便确认 Android 超时后自动重连并恢复 READY。
+
 设备侧验收顺序：
 
 1. 首次连接后出现 `mobile:isolated-history`，其中两条历史消息各出现一次。
