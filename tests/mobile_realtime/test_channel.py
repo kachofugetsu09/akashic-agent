@@ -1386,33 +1386,36 @@ async def test_command_list_uses_active_channel_catalog_without_stop(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_plugin_ui_list_is_empty_without_plugin_manager(tmp_path: Path) -> None:
+async def test_plugin_ui_catalog_is_empty_without_plugin_manager(tmp_path: Path) -> None:
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     device_id = uuid4().hex
     _register_device(storage, device_id)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
 
-    reply = await channel.handle_command(
+    reply = await channel.handle_plugin_ui_command(
         device_id=device_id,
         frame=_generic_frame(
             frame_id="01ARZ3NDEKTSV4RRFFQ69G5FB0",
-            command_type="plugin.ui.list",
+            command_type="plugin.ui.catalog",
         ),
     )
 
-    assert reply.type == "plugin.ui.list.ok"
-    assert reply.payload == {"items": []}
+    assert reply.type == "plugin.ui.catalog.ok"
+    assert reply.payload == {
+        "catalog_revision": channel_module.hashlib.sha256(b"[]").hexdigest(),
+        "items": [],
+    }
     storage.close()
 
 
 @pytest.mark.asyncio
-async def test_plugin_ui_hot_update_only_targets_opted_in_connection(tmp_path: Path) -> None:
+async def test_plugin_ui_hot_update_only_targets_subscribed_connection(tmp_path: Path) -> None:
     class _MutableProvider:
         def __init__(self) -> None:
-            self.revision = "v1"
+            self.revision = "a" * 64
 
-        def catalog(self) -> list[dict[str, object]]:
-            return [{"id": "sample@github", "revision": self.revision, "sha256": "a" * 64}]
+        def catalog(self) -> dict[str, object]:
+            return {"catalog_revision": self.revision, "items": []}
 
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     device_id = uuid4().hex
@@ -1422,34 +1425,35 @@ async def test_plugin_ui_hot_update_only_targets_opted_in_connection(tmp_path: P
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     channel.bind_mobile_ui_provider(cast(Any, provider))
 
-    await channel.handle_command(
+    await channel.handle_plugin_ui_command(
         device_id=device_id,
         frame=_generic_frame(
             frame_id="01ARZ3NDEKTSV4RRFFQ69G5FA0",
-            command_type="plugin.ui.list",
-            payload={"hot_updates": True},
+            command_type="plugin.ui.catalog",
+            payload={"subscribe": True},
         ),
     )
-    provider.revision = "v2"
+    provider.revision = "b" * 64
     await channel.refresh_mobile_ui_catalog()
 
     assert runtime.events == [
         {
             "control_type": "plugin.ui.changed",
-            "payload": {},
+            "payload": {"catalog_revision": "b" * 64},
             "device_id": device_id,
             "connection_epoch": 1,
         }
     ]
 
-    await channel.handle_command(
+    await channel.handle_plugin_ui_command(
         device_id=device_id,
         frame=_generic_frame(
             frame_id="01ARZ3NDEKTSV4RRFFQ69G5FA1",
-            command_type="plugin.ui.list",
+            command_type="plugin.ui.catalog",
+            payload={"subscribe": False},
         ),
     )
-    provider.revision = "v3"
+    provider.revision = "c" * 64
     await channel.refresh_mobile_ui_catalog()
 
     assert len(runtime.events) == 1
@@ -1457,69 +1461,73 @@ async def test_plugin_ui_hot_update_only_targets_opted_in_connection(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_plugin_ui_reply_size_is_checked_before_receipt_completion(tmp_path: Path) -> None:
-    class _OversizedProvider:
-        def catalog(self) -> list[dict[str, object]]:
-            return [{"id": "sample@github", "revision": "r", "sha256": "\\u0000" * 50_000}]
-
+async def test_plugin_ui_catalog_does_not_create_durable_receipt(tmp_path: Path) -> None:
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     device_id = uuid4().hex
     _register_device(storage, device_id)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
-    channel.bind_mobile_ui_provider(cast(Any, _OversizedProvider()))
     frame = _generic_frame(
         frame_id="01ARZ3NDEKTSV4RRFFQ69G5FB1",
-        command_type="plugin.ui.list",
+        command_type="plugin.ui.catalog",
     )
 
-    with pytest.raises(RuntimeError, match="mobile reply 超过"):
-        await channel.handle_command(device_id=device_id, frame=frame)
+    reply = await channel.handle_plugin_ui_command(device_id=device_id, frame=frame)
 
-    receipt = storage.reserve_command(
-        device_id=device_id,
-        command_id=frame.id,
-        command_type=frame.type,
-        request_hash=channel_module._command_hash(frame),
-        created_at=datetime.now(timezone.utc),
-    )[0]
-    assert receipt.status == "processing"
+    assert reply.type == "plugin.ui.catalog.ok"
+    count = storage._db.execute(
+        "SELECT COUNT(*) FROM mobile_command_receipts WHERE command_id = ?",
+        (frame.id,),
+    ).fetchone()[0]
+    assert count == 0
     storage.close()
 
 
-@pytest.mark.asyncio
-async def test_plugin_ui_timeout_becomes_durable_error_reply(tmp_path: Path) -> None:
-    class _TimeoutProvider:
-        def catalog(self) -> list[dict[str, object]]:
-            return []
+def _plugin_ui_query_frame(frame_id: str) -> GenericCommand:
+    return _generic_frame(
+        frame_id=frame_id,
+        command_type="plugin.ui.query",
+        payload={
+            "owner_id": "dashboard:sample",
+            "plugin_id": "sample@github",
+            "plugin_revision": "revision-1",
+            "method": "recall.current",
+            "payload": {},
+            "slot": "dashboard.main",
+        },
+    )
 
-        async def call(self, *args: object, **kwargs: object) -> dict[str, object]:
-            raise channel_module.MobileUiRpcTimeout("插件 mobile UI RPC 超时")
+
+@pytest.mark.asyncio
+async def test_plugin_ui_timeout_becomes_transient_command_error(tmp_path: Path) -> None:
+    class _TimeoutProvider:
+        def catalog(self) -> dict[str, object]:
+            return {"catalog_revision": "a" * 64, "items": []}
+
+        async def query(self, *args: object, **kwargs: object) -> dict[str, object]:
+            raise channel_module.MobileUiQueryTimeout("插件 mobile UI query 超时")
 
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     device_id = uuid4().hex
     _register_device(storage, device_id)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
     channel.bind_mobile_ui_provider(cast(Any, _TimeoutProvider()))
-    frame = _generic_frame(
-        frame_id="01ARZ3NDEKTSV4RRFFQ69G5FB2",
-        command_type="plugin.ui.call",
-        payload={"plugin_id": "sample@github", "method": "recall.current", "payload": {}},
-    )
 
-    reply = await channel.handle_command(device_id=device_id, frame=frame)
-
-    assert reply.type == "plugin.ui.call.error"
-    assert reply.payload["code"] == "plugin_timeout"
+    with pytest.raises(channel_module.MobileCommandError) as caught:
+        await channel.handle_plugin_ui_command(
+            device_id=device_id,
+            frame=_plugin_ui_query_frame("01ARZ3NDEKTSV4RRFFQ69G5FB2"),
+        )
+    assert caught.value.code == "plugin_timeout"
     storage.close()
 
 
 @pytest.mark.asyncio
-async def test_plugin_ui_invalid_request_becomes_durable_error_reply(tmp_path: Path) -> None:
+async def test_plugin_ui_invalid_request_becomes_transient_command_error(tmp_path: Path) -> None:
     class _InvalidRequestProvider:
-        def catalog(self) -> list[dict[str, object]]:
-            return []
+        def catalog(self) -> dict[str, object]:
+            return {"catalog_revision": "a" * 64, "items": []}
 
-        async def call(self, *args: object, **kwargs: object) -> dict[str, object]:
+        async def query(self, *args: object, **kwargs: object) -> dict[str, object]:
             raise channel_module.MobileUiRpcInvalidRequest("消息不属于请求会话")
 
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
@@ -1527,32 +1535,27 @@ async def test_plugin_ui_invalid_request_becomes_durable_error_reply(tmp_path: P
     _register_device(storage, device_id)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
     channel.bind_mobile_ui_provider(cast(Any, _InvalidRequestProvider()))
-    frame = _generic_frame(
-        frame_id="01ARZ3NDEKTSV4RRFFQ69G5FB3",
-        command_type="plugin.ui.call",
-        payload={"plugin_id": "sample@github", "method": "recall.current", "payload": {}},
-    )
 
-    reply = await channel.handle_command(device_id=device_id, frame=frame)
-
-    assert reply.type == "plugin.ui.call.error"
-    assert reply.payload == {
-        "code": "plugin_invalid_request",
-        "message": "消息不属于请求会话",
-    }
+    with pytest.raises(channel_module.MobileCommandError) as caught:
+        await channel.handle_plugin_ui_command(
+            device_id=device_id,
+            frame=_plugin_ui_query_frame("01ARZ3NDEKTSV4RRFFQ69G5FB3"),
+        )
+    assert caught.value.code == "plugin_invalid_request"
+    assert str(caught.value) == "消息不属于请求会话"
     storage.close()
 
 
 @pytest.mark.asyncio
-async def test_plugin_ui_execution_failure_becomes_durable_error_reply(tmp_path: Path) -> None:
+async def test_plugin_ui_execution_failure_becomes_transient_command_error(tmp_path: Path) -> None:
     class _FailedProvider:
         def __init__(self) -> None:
             self.calls = 0
 
-        def catalog(self) -> list[dict[str, object]]:
-            return []
+        def catalog(self) -> dict[str, object]:
+            return {"catalog_revision": "a" * 64, "items": []}
 
-        async def call(self, *args: object, **kwargs: object) -> dict[str, object]:
+        async def query(self, *args: object, **kwargs: object) -> dict[str, object]:
             self.calls += 1
             raise channel_module.MobileUiRpcExecutionError(
                 "插件 mobile UI RPC 执行失败: sample@github.recall.current"
@@ -1564,21 +1567,14 @@ async def test_plugin_ui_execution_failure_becomes_durable_error_reply(tmp_path:
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
     provider = _FailedProvider()
     channel.bind_mobile_ui_provider(cast(Any, provider))
-    frame = _generic_frame(
-        frame_id="01ARZ3NDEKTSV4RRFFQ69G5FB4",
-        command_type="plugin.ui.call",
-        payload={"plugin_id": "sample@github", "method": "recall.current", "payload": {}},
-    )
+    with pytest.raises(channel_module.MobileCommandError) as caught:
+        await channel.handle_plugin_ui_command(
+            device_id=device_id,
+            frame=_plugin_ui_query_frame("01ARZ3NDEKTSV4RRFFQ69G5FB4"),
+        )
 
-    reply = await channel.handle_command(device_id=device_id, frame=frame)
-    replay = await channel.handle_command(device_id=device_id, frame=frame)
-
-    assert reply.type == "plugin.ui.call.error"
-    assert reply.payload == {
-        "code": "plugin_failed",
-        "message": "插件 mobile UI RPC 执行失败: sample@github.recall.current",
-    }
-    assert replay == reply
+    assert caught.value.code == "plugin_failed"
+    assert str(caught.value) == "插件 mobile UI RPC 执行失败: sample@github.recall.current"
     assert provider.calls == 1
     storage.close()
 

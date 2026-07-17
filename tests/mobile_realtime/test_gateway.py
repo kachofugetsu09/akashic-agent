@@ -1125,10 +1125,10 @@ def test_plugin_ui_failure_keeps_authenticated_websocket_available(
     """插件面板失败后，同一连接仍能继续处理命令。"""
 
     class FailedMobileUiProvider:
-        def catalog(self) -> list[dict[str, object]]:
-            return []
+        def catalog(self) -> dict[str, object]:
+            return {"catalog_revision": "a" * 64, "items": []}
 
-        async def call(self, *args: object, **kwargs: object) -> dict[str, object]:
+        async def query(self, *args: object, **kwargs: object) -> dict[str, object]:
             raise MobileUiRpcExecutionError(
                 "插件 mobile UI RPC 执行失败: fitbit@mobile-lab.fitbit.overview"
             )
@@ -1182,18 +1182,21 @@ def test_plugin_ui_failure_keeps_authenticated_websocket_available(
             {
                 "v": 1,
                 "kind": "command",
-                "type": "plugin.ui.call",
+                "type": "plugin.ui.query",
                 "id": "01ARZ3NDEKTSV4RRFFQ69G5FB5",
                 "connection_epoch": epoch,
                 "payload": {
+                    "owner_id": "dashboard:fitbit",
                     "plugin_id": "fitbit@mobile-lab",
+                    "plugin_revision": "revision-1",
                     "method": "fitbit.overview",
                     "payload": {},
+                    "slot": "dashboard.main",
                 },
             }
         )
         failed = websocket.receive_json()
-        assert failed["type"] == "plugin.ui.call.error"
+        assert failed["type"] == "plugin.ui.query.error"
         assert failed["payload"]["code"] == "plugin_failed"
 
         # 2. 错误回复不能改变 epoch，也不能阻断后续命令

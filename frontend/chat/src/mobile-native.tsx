@@ -57,9 +57,9 @@ import { ChatMessageView } from "./message-view";
 import {
   MobilePluginDashboard,
   MobilePluginSlot,
-  receiveMobilePluginAssets,
-  settleMobilePluginResponses,
-  type MobilePluginAsset,
+  receiveMobilePluginCatalog,
+  receiveMobilePluginResult,
+  type MobilePluginCatalog,
   type MobilePluginDashboardEntry,
   useMobilePluginDashboards,
 } from "./mobile-plugin-runtime";
@@ -206,7 +206,6 @@ export interface MobileSnapshot {
   navigationTarget?: MobileNavigationTarget;
   projectionGeneration: number;
   messages: MobileMessage[];
-  pluginResponses: { requestId: string; resultJson?: string; error?: string }[];
   composer: {
     draft: MobileComposerDraft;
     attachments: MobileAttachment[];
@@ -259,15 +258,17 @@ interface NativeBridge {
   performActionHaptic(): void;
   sendCommand(command: string): void;
   stopTurn(): void;
-  callPluginUi(
+  queryPluginUi(
     requestId: string,
+    ownerId: string,
+    slot: string,
     sessionId: string | null,
     turnId: string | null,
     pluginId: string,
     method: string,
     payloadJson: string,
   ): void;
-  acknowledgePluginUiResponses(requestIdsJson: string): void;
+  cancelPluginUiOwner(ownerId: string): void;
 }
 
 type SnapshotRecord = Record<string, unknown>;
@@ -434,7 +435,7 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
     throw new Error(`connection.status 不受支持: ${status}`);
   }
 
-  // 2. 校验会话、消息和插件响应
+  // 2. 校验会话和消息
   const sessions = requireArray(raw.sessions, "sessions", (item, index) => {
     const session = requireRecord(item, `sessions[${index}]`);
     const lastMessageAt = session.lastMessageAt === undefined || session.lastMessageAt === null
@@ -452,14 +453,6 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
     };
   });
   const messages = requireArray(raw.messages, "messages", parseMessage);
-  const pluginResponses = requireArray(raw.pluginResponses, "pluginResponses", (item, index) => {
-    const response = requireRecord(item, `pluginResponses[${index}]`);
-    return {
-      requestId: requireString(response.requestId, `pluginResponses[${index}].requestId`),
-      resultJson: optionalString(response.resultJson, `pluginResponses[${index}].resultJson`),
-      error: optionalString(response.error, `pluginResponses[${index}].error`),
-    };
-  });
 
   // 3. 校验输入区状态并构造内部类型
   const composer = requireRecord(raw.composer, "composer");
@@ -499,7 +492,6 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
     navigationTarget,
     projectionGeneration,
     messages,
-    pluginResponses,
     composer: {
       draft: (() => {
         const draft = requireRecord(composer.draft, "composer.draft");
@@ -537,12 +529,73 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
   };
 }
 
+function parseMobilePluginCatalog(value: unknown): MobilePluginCatalog {
+  const raw = requireRecord(value, "pluginCatalog");
+  const revision = requireString(raw.catalogRevision, "pluginCatalog.catalogRevision");
+  if (revision && !/^[0-9a-f]{64}$/.test(revision)) {
+    throw new Error("pluginCatalog.catalogRevision 无效");
+  }
+  const plugins = requireArray(raw.plugins, "pluginCatalog.plugins", (item, index) => {
+    const plugin = requireRecord(item, `pluginCatalog.plugins[${index}]`);
+    const moduleUrl = requireString(plugin.moduleUrl, `pluginCatalog.plugins[${index}].moduleUrl`);
+    const stylesheetUrl = optionalString(
+      plugin.stylesheetUrl,
+      `pluginCatalog.plugins[${index}].stylesheetUrl`,
+    );
+    for (const url of [moduleUrl, stylesheetUrl]) {
+      if (url !== undefined && !url.startsWith("https://appassets.androidplatform.net/plugin-ui/")) {
+        throw new Error(`pluginCatalog.plugins[${index}] 资源 URL 越界`);
+      }
+    }
+    const navigation = optionalRecord(plugin.navigation, `pluginCatalog.plugins[${index}].navigation`);
+    return {
+      id: requireString(plugin.id, `pluginCatalog.plugins[${index}].id`),
+      revision: requireString(plugin.revision, `pluginCatalog.plugins[${index}].revision`),
+      moduleUrl,
+      stylesheetUrl,
+      navigation: navigation ? {
+        label: requireString(navigation.label, `pluginCatalog.plugins[${index}].navigation.label`),
+        description: requireString(
+          navigation.description,
+          `pluginCatalog.plugins[${index}].navigation.description`,
+        ),
+      } : undefined,
+      slots: requireArray(plugin.slots, `pluginCatalog.plugins[${index}].slots`, (slot, slotIndex) => {
+        const parsed = requireString(slot, `pluginCatalog.plugins[${index}].slots[${slotIndex}]`);
+        if (!new Set(["turn.before_reasoning", "turn.before_tool", "turn.after_answer", "drawer.panel"]).has(parsed)) {
+          throw new Error(`pluginCatalog.plugins[${index}] slot 无效`);
+        }
+        return parsed as "turn.before_reasoning" | "turn.before_tool" | "turn.after_answer" | "drawer.panel";
+      }),
+    };
+  });
+  if (new Set(plugins.map((plugin) => plugin.id)).size !== plugins.length) {
+    throw new Error("pluginCatalog 插件 ID 重复");
+  }
+  return {
+    catalogRevision: revision,
+    updating: requireBoolean(raw.updating, "pluginCatalog.updating"),
+    error: optionalString(raw.error, "pluginCatalog.error"),
+    plugins,
+  };
+}
+
+function parseMobilePluginResult(value: unknown) {
+  const raw = requireRecord(value, "pluginResult");
+  return {
+    requestId: requireString(raw.requestId, "pluginResult.requestId"),
+    resultJson: optionalString(raw.resultJson, "pluginResult.resultJson"),
+    error: optionalString(raw.error, "pluginResult.error"),
+  };
+}
+
 declare global {
   interface Window {
     AkashicNative?: NativeBridge;
     AkashicMobile?: {
       receiveSnapshot(snapshot: unknown): void;
-      receivePluginAssets(assets: MobilePluginAsset[]): void;
+      receivePluginCatalog(catalog: unknown): void;
+      receivePluginUiResult(result: unknown): void;
       receiveSendResult(requestId: string, accepted: boolean): void;
       receiveShareResult(requestId: string, launched: boolean): void;
       receiveSharedText(draftId: string, sessionId: string, text: string): void;
@@ -746,7 +799,6 @@ function MobileNativeApp() {
       receiveSnapshot(next) {
         try {
           const parsed = parseMobileSnapshot(next);
-          settleMobilePluginResponses(parsed.pluginResponses);
           pending = parsed;
           setSnapshotError(null);
         } catch (error) {
@@ -773,14 +825,29 @@ function MobileNativeApp() {
           if (requestTimer !== null) window.clearTimeout(requestTimer);
         });
       },
-      receivePluginAssets(assets) {
-        void receiveMobilePluginAssets(assets).then(
+      receivePluginCatalog(nextCatalog) {
+        let parsed: MobilePluginCatalog;
+        try {
+          parsed = parseMobilePluginCatalog(nextCatalog);
+        } catch (error) {
+          console.error("[mobile] rejected plugin catalog", error);
+          setPluginLoadError(error instanceof Error ? error.message : "插件目录无效");
+          return;
+        }
+        void receiveMobilePluginCatalog(parsed).then(
           () => setPluginLoadError(null),
           (error: unknown) => {
-            console.error("[mobile] failed to load plugin assets", error);
+            console.error("[mobile] failed to activate plugin catalog", error);
             setPluginLoadError(error instanceof Error ? error.message : "插件界面加载失败");
           },
         );
+      },
+      receivePluginUiResult(result) {
+        try {
+          receiveMobilePluginResult(parseMobilePluginResult(result));
+        } catch (error) {
+          console.error("[mobile] rejected plugin result", error);
+        }
       },
       receiveSendResult(requestId, accepted) {
         const pendingSend = pendingSendRequestRef.current;

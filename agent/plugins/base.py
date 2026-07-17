@@ -8,7 +8,12 @@ if TYPE_CHECKING:
     from infra.channels.contract import Channel
     from agent.plugins.context import PluginContext
     from agent.plugins.jobs import PluginJobSpec
-    from agent.plugins.specs import ManagedServiceSpec, McpServerSpec, ProactiveSourceSpec
+    from agent.plugins.specs import (
+        ManagedServiceSpec,
+        McpServerSpec,
+        MobileUiContribution,
+        ProactiveSourceSpec,
+    )
     from agent.plugins.generation import PluginSemanticCheck
     from agent.plugins.generation import PluginReadinessContext
 
@@ -102,14 +107,10 @@ class Plugin(ABC):
         return None
 
     @classmethod
-    def mobile_ui_module(cls) -> str | None:
+    def mobile_ui(cls) -> "MobileUiContribution | None":
         return None
 
-    @classmethod
-    def mobile_ui_stylesheet(cls) -> str | None:
-        return None
-
-    async def mobile_ui_call(
+    def mobile_ui_query(
         self,
         method: str,
         payload: dict[str, object],
@@ -117,4 +118,4 @@ class Plugin(ABC):
         session_id: str | None,
         turn_id: str | None,
     ) -> dict[str, object]:
-        raise RuntimeError(f"插件未实现 mobile UI RPC: {method}")
+        raise RuntimeError(f"插件未实现 mobile UI query: {method}")

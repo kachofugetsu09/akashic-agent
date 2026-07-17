@@ -33,8 +33,6 @@ import com.akashic.mobile.ui.conversation.ProcessBlockState
 import com.akashic.mobile.ui.conversation.ProcessBlockUi
 import com.akashic.mobile.ui.conversation.ReadingPositionUi
 import com.akashic.mobile.ui.conversation.NavigationTargetUi
-import com.akashic.mobile.ui.conversation.PluginUiAssetUi
-import com.akashic.mobile.ui.conversation.PluginUiResponseUi
 import com.akashic.mobile.ui.conversation.PendingMessageUi
 import com.akashic.mobile.ui.conversation.SessionUi
 import com.akashic.mobile.ui.conversation.TransferStatusUi
@@ -92,6 +90,9 @@ private data class ConversationProjection(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val container = (application as App).container
     val sessionState = container.realtimeSession.state
+    val pluginUiCatalog = container.realtimeSession.pluginUi.catalog
+    val pluginUiResults = container.realtimeSession.pluginUi.results
+    val pluginUiAssetStore = container.pluginUiAssetStore
     private val navigationTarget = MutableStateFlow<NavigationTargetUi?>(null)
     private val incomingShareQueue = MutableStateFlow<List<QueuedIncomingShare>>(emptyList())
     val incomingShare = incomingShareQueue.map { queue ->
@@ -256,12 +257,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             attachments = composerAttachments,
             transferStatus = transferStatus,
             commands = session.commands.map { CommandUi(it.command, it.description) },
-            pluginUiAssets = session.pluginUiAssets.map {
-                PluginUiAssetUi(it.id, it.revision, it.sha256, it.module, it.stylesheet)
-            },
-            pluginUiResponses = session.pluginUiResponses.map {
-                PluginUiResponseUi(it.requestId, it.result?.toString(), it.error)
-            },
             isStreaming = scopedGraph.any { it.message.deliveryState == "streaming" },
             isResyncing = session.connection.phase == ConnectionPhase.SYNCING,
             canResync = session.connection.phase == ConnectionPhase.READY &&
@@ -318,15 +313,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendCommand(value: String) = container.realtimeSession.sendCommand(value)
 
-    fun callPluginUi(
+    fun queryPluginUi(
         requestId: String,
+        ownerId: String,
+        slot: String,
         sessionId: String?,
         turnId: String?,
         pluginId: String,
         method: String,
         payloadJson: String,
-    ) = container.realtimeSession.callPluginUi(
+    ) = container.realtimeSession.queryPluginUi(
         requestId,
+        ownerId,
+        slot,
         sessionId,
         turnId,
         pluginId,
@@ -334,8 +333,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         payloadJson,
     )
 
-    fun acknowledgePluginUiResponses(requestIds: Set<String>) =
-        container.realtimeSession.acknowledgePluginUiResponses(requestIds)
+    fun cancelPluginUiOwner(ownerId: String) =
+        container.realtimeSession.cancelPluginUiOwner(ownerId)
+
+    fun disposePluginUiWebView() = container.realtimeSession.pluginUi.onWebViewDisposed()
 
     fun stopCurrentTurn() = container.realtimeSession.stopCurrentTurn()
 

@@ -21,9 +21,11 @@ from bus.events_lifecycle import (
 )
 from agent.plugins.mobile_ui import (
     MobileUiPluginUnavailable,
+    MobileUiQueryOverloaded,
+    MobileUiQueryTimeout,
     MobileUiRpcExecutionError,
     MobileUiRpcInvalidRequest,
-    MobileUiRpcTimeout,
+    MobileUiStaleRevision,
 )
 from infra.channels.contract import ChannelContext
 from infra.channels.reply_context import build_reply_inbound_text
@@ -44,6 +46,7 @@ from infra.mobile_realtime.protocol import (
     MessageSendCommand,
     MAX_JSON_FRAME_BYTES,
 )
+from infra.mobile_realtime.plugin_ui import PluginUiQuery, PluginUiQueryScheduler
 from infra.mobile_realtime.remote_media import (
     RemoteMediaError,
     RemoteMediaSnapshot,
@@ -158,7 +161,8 @@ class MobileRealtimeChannel:
         self._delta_failure: BaseException | None = None
         self._attachments: AttachmentTransferService | None = None
         self._mobile_ui_provider: MobileUiProvider | None = None
-        self._mobile_ui_catalog_identity: tuple[tuple[object, object, object], ...] = ()
+        self._mobile_ui_scheduler: PluginUiQueryScheduler | None = None
+        self._mobile_ui_catalog_identity = ""
         self._mobile_ui_hot_connections: dict[str, int] = {}
 
     def bind_mobile_ui_provider(self, provider: MobileUiProvider) -> None:
@@ -167,6 +171,7 @@ class MobileRealtimeChannel:
         if self._mobile_ui_provider is not None:
             raise RuntimeError("Mobile UI provider 已绑定")
         self._mobile_ui_provider = provider
+        self._mobile_ui_scheduler = PluginUiQueryScheduler(provider)
         self._mobile_ui_catalog_identity = _mobile_ui_catalog_identity(provider.catalog())
 
     async def refresh_mobile_ui_catalog(self) -> None:
@@ -175,14 +180,15 @@ class MobileRealtimeChannel:
         provider = self._mobile_ui_provider
         if provider is None:
             return
-        identity = _mobile_ui_catalog_identity(provider.catalog())
+        catalog = provider.catalog()
+        identity = _mobile_ui_catalog_identity(catalog)
         if identity == self._mobile_ui_catalog_identity:
             return
         _ = await asyncio.gather(
             *(
                 self._runtime.publish_connection_control(
                     control_type="plugin.ui.changed",
-                    payload={},
+                    payload={"catalog_revision": identity},
                     device_id=device_id,
                     connection_epoch=connection_epoch,
                 )
@@ -301,6 +307,45 @@ class MobileRealtimeChannel:
             turn_id=stored.turn_id,
             binary=reply.binary,
         )
+
+    async def handle_plugin_ui_command(
+        self,
+        *,
+        device_id: str,
+        frame: GenericCommand,
+    ) -> CommandReply:
+        """执行不写 command receipt 的 Mobile Plugin UI v2 临时请求。"""
+
+        try:
+            if frame.type == "plugin.ui.catalog":
+                return self._plugin_ui_catalog(device_id, frame)
+            if frame.type == "plugin.ui.asset.get":
+                return self._plugin_ui_asset(frame)
+            if frame.type == "plugin.ui.query":
+                return await self._plugin_ui_query(device_id, frame)
+            if frame.type == "plugin.ui.cancel":
+                return await self._cancel_plugin_ui(device_id, frame)
+        except MobileUiPluginUnavailable as error:
+            raise MobileCommandError("plugin_unavailable", str(error)) from error
+        except MobileUiStaleRevision as error:
+            raise MobileCommandError("stale_revision", str(error)) from error
+        except MobileUiRpcInvalidRequest as error:
+            raise MobileCommandError("plugin_invalid_request", str(error)) from error
+        except MobileUiRpcExecutionError as error:
+            raise MobileCommandError("plugin_failed", str(error)) from error
+        except MobileUiQueryTimeout as error:
+            raise MobileCommandError("plugin_timeout", str(error)) from error
+        except MobileUiQueryOverloaded as error:
+            raise MobileCommandError("plugin_overloaded", str(error)) from error
+        raise MobileCommandError("unsupported_command", f"尚不支持命令: {frame.type}")
+
+    async def cancel_plugin_ui_device(self, device_id: str) -> None:
+        """断线时取消设备的全部临时插件查询。"""
+
+        scheduler = self._mobile_ui_scheduler
+        if scheduler is not None:
+            await scheduler.cancel_device(device_id)
+        _ = self._mobile_ui_hot_connections.pop(device_id, None)
 
     def _recover_message_send_receipt(
         self,
@@ -423,12 +468,6 @@ class MobileRealtimeChannel:
             return await self._get_history(device_id, frame)
         if frame.type == "command.list":
             return self._list_commands(frame)
-        if frame.type == "plugin.ui.list":
-            return self._list_plugin_ui(device_id, frame)
-        if frame.type == "plugin.ui.asset":
-            return self._get_plugin_ui_asset(frame)
-        if frame.type == "plugin.ui.call":
-            return await self._call_plugin_ui(frame)
         if frame.type == "message.send":
             return await self._send_message(device_id, frame)
         if frame.type == "turn.stop":
@@ -463,75 +502,145 @@ class MobileRealtimeChannel:
         # 2. 保持插件注册顺序，便于管理高频命令的位置
         return CommandReply(type="command.list.ok", payload={"items": items})
 
-    def _list_plugin_ui(self, device_id: str, frame: GenericCommand) -> CommandReply:
-        """返回服务端当前启用插件的移动 UI 目录。"""
+    def _plugin_ui_catalog(self, device_id: str, frame: GenericCommand) -> CommandReply:
+        """返回不含源码的 Mobile Plugin UI v2 catalog。"""
 
-        _expect_keys(frame.payload, {"hot_updates"})
-        hot_updates = frame.payload.get("hot_updates", False)
-        if not isinstance(hot_updates, bool):
-            raise MobileCommandError("invalid_payload", "hot_updates 必须是布尔值")
-        if hot_updates:
+        _expect_keys(frame.payload, {"subscribe"})
+        subscribe = frame.payload.get("subscribe", False)
+        if not isinstance(subscribe, bool):
+            raise MobileCommandError("invalid_payload", "subscribe 必须是布尔值")
+        if subscribe:
             self._mobile_ui_hot_connections[device_id] = frame.connection_epoch
         else:
             _ = self._mobile_ui_hot_connections.pop(device_id, None)
         provider = self._mobile_ui_provider
-        items = [] if provider is None else provider.catalog()
-        return CommandReply(type="plugin.ui.list.ok", payload={"items": items})
+        catalog: dict[str, object]
+        if provider is None:
+            catalog = {
+                "catalog_revision": hashlib.sha256(b"[]").hexdigest(),
+                "items": [],
+            }
+        else:
+            catalog = provider.catalog()
+        return CommandReply(type="plugin.ui.catalog.ok", payload=catalog)
 
-    def _get_plugin_ui_asset(self, frame: GenericCommand) -> CommandReply:
-        """返回一个目录中已声明的移动 UI 资产。"""
+    def _plugin_ui_asset(self, frame: GenericCommand) -> CommandReply:
+        """按 revision 和摘要返回一个未缓存资源。"""
 
-        _expect_keys(frame.payload, {"plugin_id"})
+        _expect_keys(
+            frame.payload,
+            {"plugin_id", "plugin_revision", "kind", "sha256"},
+        )
         plugin_id = frame.payload["plugin_id"]
+        plugin_revision = frame.payload["plugin_revision"]
+        kind = frame.payload["kind"]
+        sha256 = frame.payload["sha256"]
         if not isinstance(plugin_id, str) or not _PLUGIN_ID_PATTERN.fullmatch(plugin_id):
             raise MobileCommandError("invalid_plugin", "plugin_id 无效")
-        try:
-            asset = self._require_mobile_ui_provider().asset(plugin_id)
-        except MobileUiPluginUnavailable as error:
-            raise MobileCommandError("plugin_unavailable", f"插件不可用: {plugin_id}") from error
-        return CommandReply(type="plugin.ui.asset.ok", payload=asset)
+        if not isinstance(plugin_revision, str) or not 1 <= len(plugin_revision) <= 128:
+            raise MobileCommandError("invalid_revision", "plugin_revision 无效")
+        if kind not in {"module", "stylesheet"}:
+            raise MobileCommandError("invalid_asset", "kind 无效")
+        if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+            raise MobileCommandError("invalid_asset", "sha256 无效")
+        asset = self._require_mobile_ui_provider().asset(
+            plugin_id,
+            plugin_revision,
+            cast(str, kind),
+            sha256,
+        )
+        return CommandReply(type="plugin.ui.asset.get.ok", payload=asset)
 
-    async def _call_plugin_ui(self, frame: GenericCommand) -> CommandReply:
-        """校验并转发插件移动 UI 的受控 RPC。"""
+    async def _plugin_ui_query(
+        self,
+        device_id: str,
+        frame: GenericCommand,
+    ) -> CommandReply:
+        """校验并调度一个有 owner 的只读插件查询。"""
 
-        _expect_keys(frame.payload, {"plugin_id", "method", "payload"})
+        _expect_keys(
+            frame.payload,
+            {"owner_id", "plugin_id", "plugin_revision", "method", "payload", "slot"},
+        )
+        owner_id = frame.payload["owner_id"]
         plugin_id = frame.payload["plugin_id"]
+        plugin_revision = frame.payload["plugin_revision"]
         method = frame.payload["method"]
         payload = frame.payload["payload"]
+        slot = frame.payload["slot"]
+        if not isinstance(owner_id, str) or not 1 <= len(owner_id) <= 128:
+            raise MobileCommandError("invalid_owner", "owner_id 无效")
         if not isinstance(plugin_id, str) or not _PLUGIN_ID_PATTERN.fullmatch(plugin_id):
             raise MobileCommandError("invalid_plugin", "plugin_id 无效")
+        if not isinstance(plugin_revision, str) or not 1 <= len(plugin_revision) <= 128:
+            raise MobileCommandError("invalid_revision", "plugin_revision 无效")
         if not isinstance(method, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", method):
             raise MobileCommandError("invalid_method", "插件方法无效")
         if not isinstance(payload, dict):
             raise MobileCommandError("invalid_payload", "插件参数必须是对象")
+        if _mobile_tool_argument_encoded_size(cast(dict[str, object], payload)) > 64 * 1024:
+            raise MobileCommandError("invalid_payload", "插件参数超过 64 KiB")
+        if slot not in {
+            "dashboard.main",
+            "turn.before_reasoning",
+            "turn.before_tool",
+            "turn.after_answer",
+            "drawer.panel",
+        }:
+            raise MobileCommandError("invalid_slot", "插件 slot 无效")
         session_id = (
             None
             if frame.session_id is None
             else self._require_mobile_session(frame.session_id)
         )
-        try:
-            result = await self._require_mobile_ui_provider().call(
-                plugin_id,
-                method,
-                cast(dict[str, object], payload),
+        scheduler = self._require_mobile_ui_scheduler()
+        result = await scheduler.execute(
+            device_id,
+            PluginUiQuery(
+                request_id=frame.id,
+                owner_id=owner_id,
+                plugin_id=plugin_id,
+                plugin_revision=plugin_revision,
+                method=method,
+                payload=cast(dict[str, object], payload),
+                slot=cast(str, slot),
                 session_id=session_id,
                 turn_id=frame.turn_id,
-            )
-        except MobileUiPluginUnavailable as error:
-            raise MobileCommandError("plugin_unavailable", f"插件不可用: {plugin_id}") from error
-        except MobileUiRpcInvalidRequest as error:
-            raise MobileCommandError("plugin_invalid_request", str(error)) from error
-        except MobileUiRpcTimeout as error:
-            raise MobileCommandError("plugin_timeout", str(error)) from error
-        except MobileUiRpcExecutionError as error:
-            raise MobileCommandError("plugin_failed", str(error)) from error
-        return CommandReply(type="plugin.ui.call.ok", payload={"result": result})
+            ),
+        )
+        return CommandReply(type="plugin.ui.query.ok", payload={"result": result})
+
+    async def _cancel_plugin_ui(
+        self,
+        device_id: str,
+        frame: GenericCommand,
+    ) -> CommandReply:
+        """取消一个已卸载 owner 的全部查询。"""
+
+        _expect_keys(frame.payload, {"owner_id"})
+        owner_id = frame.payload["owner_id"]
+        if not isinstance(owner_id, str) or not 1 <= len(owner_id) <= 128:
+            raise MobileCommandError("invalid_owner", "owner_id 无效")
+        cancelled = await self._require_mobile_ui_scheduler().cancel_owner(
+            device_id,
+            owner_id,
+        )
+        return CommandReply(
+            type="plugin.ui.cancel.ok",
+            payload={"cancelled": cancelled},
+        )
 
     def _require_mobile_ui_provider(self) -> MobileUiProvider:
         provider = self._mobile_ui_provider
         if provider is None:
             raise MobileCommandError("plugin_unavailable", "服务端没有启用移动 UI 插件")
         return provider
+
+    def _require_mobile_ui_scheduler(self) -> PluginUiQueryScheduler:
+        scheduler = self._mobile_ui_scheduler
+        if scheduler is None:
+            raise MobileCommandError("plugin_unavailable", "服务端没有启用移动 UI 插件")
+        return scheduler
 
     async def handle_attachment_chunk(
         self,
@@ -1718,9 +1827,12 @@ def _mobile_tool_argument_encoded_size(value: Mapping[str, object]) -> int:
 
 
 def _mobile_ui_catalog_identity(
-    items: list[dict[str, object]],
-) -> tuple[tuple[object, object, object], ...]:
-    return tuple((item["id"], item["revision"], item["sha256"]) for item in items)
+    catalog: dict[str, object],
+) -> str:
+    revision = catalog.get("catalog_revision")
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{64}", revision):
+        raise RuntimeError("mobile UI catalog_revision 无效")
+    return revision
 
 
 def _utc_now() -> datetime:

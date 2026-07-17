@@ -2216,25 +2216,25 @@ async def test_mobile_recall_binds_each_assistant_to_its_context_and_keeps_all_i
         memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="akasha")),
     )
 
-    first = await plugin.mobile_ui_call(
+    first = plugin.mobile_ui_query(
         "recall.current",
         {"message_id": "s:1"},
         session_id="s",
         turn_id=None,
     )
-    second = await plugin.mobile_ui_call(
+    second = plugin.mobile_ui_query(
         "recall.current",
         {"message_id": "s:3"},
         session_id="s",
         turn_id=None,
     )
-    active = await plugin.mobile_ui_call(
+    active = plugin.mobile_ui_query(
         "recall.current",
         {"message_id": "assistant:turn-1"},
         session_id="s",
         turn_id="turn-1",
     )
-    interrupted = await plugin.mobile_ui_call(
+    interrupted = plugin.mobile_ui_query(
         "recall.current",
         {"message_id": "assistant:turn-1"},
         session_id="s",
@@ -2269,7 +2269,7 @@ async def test_mobile_recall_rejects_message_from_another_session(tmp_path: Path
     )
 
     with pytest.raises(ValueError, match="不属于当前 session"):
-        await plugin.mobile_ui_call(
+        plugin.mobile_ui_query(
             "recall.current",
             {"message_id": "other:1"},
             session_id="s",
@@ -2277,8 +2277,7 @@ async def test_mobile_recall_rejects_message_from_another_session(tmp_path: Path
         )
 
 
-@pytest.mark.asyncio
-async def test_mobile_inspector_lists_and_expands_existing_query_logs_read_only(
+def test_mobile_inspector_lists_and_expands_existing_query_logs_read_only(
     tmp_path: Path,
 ) -> None:
     _init_sessions_db(tmp_path / "sessions.db")
@@ -2335,14 +2334,14 @@ async def test_mobile_inspector_lists_and_expands_existing_query_logs_read_only(
         memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="akasha")),
     )
 
-    recent = await plugin.mobile_ui_call(
+    recent = plugin.mobile_ui_query(
         "inspector.recent",
         {},
         session_id=None,
         turn_id=None,
     )
     items = cast(list[dict[str, object]], recent["items"])
-    detail = await plugin.mobile_ui_call(
+    detail = plugin.mobile_ui_query(
         "inspector.detail",
         {"query_id": items[0]["query_id"]},
         session_id=None,
@@ -2365,8 +2364,7 @@ async def test_mobile_inspector_lists_and_expands_existing_query_logs_read_only(
     assert db_path.read_bytes() == before_bytes
 
 
-@pytest.mark.asyncio
-async def test_mobile_inspector_rejects_invalid_or_missing_query(tmp_path: Path) -> None:
+def test_mobile_inspector_rejects_invalid_or_missing_query(tmp_path: Path) -> None:
     store = AkashaStore(tmp_path / "memory" / "akasha.db")
     store.close()
     plugin = AkashaPlugin()
@@ -2382,21 +2380,21 @@ async def test_mobile_inspector_rejects_invalid_or_missing_query(tmp_path: Path)
     )
 
     with pytest.raises(ValueError, match="不接受参数"):
-        await plugin.mobile_ui_call(
+        plugin.mobile_ui_query(
             "inspector.recent",
             {"page": 2},
             session_id=None,
             turn_id=None,
         )
     with pytest.raises(ValueError, match="非空字符串"):
-        await plugin.mobile_ui_call(
+        plugin.mobile_ui_query(
             "inspector.detail",
             {"query_id": ""},
             session_id=None,
             turn_id=None,
         )
     with pytest.raises(ValueError, match="不存在"):
-        await plugin.mobile_ui_call(
+        plugin.mobile_ui_query(
             "inspector.detail",
             {"query_id": "missing"},
             session_id=None,

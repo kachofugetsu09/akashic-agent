@@ -191,22 +191,36 @@ data class RemoteCommandItem(
 )
 
 @Serializable
-data class MobileUiCatalogPayload(val items: List<MobileUiCatalogItem>)
+data class MobileUiCatalogPayload(
+    @SerialName("catalog_revision") val catalogRevision: String,
+    val items: List<MobileUiCatalogItem>,
+)
+
+@Serializable
+data class MobileUiNavigationPayload(
+    val label: String,
+    val description: String,
+)
 
 @Serializable
 data class MobileUiCatalogItem(
     val id: String,
     val revision: String,
-    val sha256: String,
+    @SerialName("module_sha256") val moduleSha256: String,
+    @SerialName("module_bytes") val moduleBytes: Int,
+    @SerialName("stylesheet_sha256") val stylesheetSha256: String? = null,
+    @SerialName("stylesheet_bytes") val stylesheetBytes: Int = 0,
+    val navigation: MobileUiNavigationPayload? = null,
+    val slots: List<String> = emptyList(),
 )
 
 @Serializable
 data class MobileUiAssetPayload(
-    val id: String,
-    val revision: String,
+    @SerialName("plugin_id") val pluginId: String,
+    @SerialName("plugin_revision") val pluginRevision: String,
+    val kind: String,
     val sha256: String,
-    val module: String,
-    val stylesheet: String,
+    val content: String,
 )
 
 @Serializable
@@ -270,9 +284,10 @@ object ProtocolCodec {
             "attachment.finish",
             "attachment.download",
             "command.list",
-            "plugin.ui.list",
-            "plugin.ui.asset",
-            "plugin.ui.call",
+            "plugin.ui.catalog",
+            "plugin.ui.asset.get",
+            "plugin.ui.query",
+            "plugin.ui.cancel",
             "device.update",
             "ping",
         ),
@@ -290,7 +305,6 @@ object ProtocolCodec {
             "message.final",
             "turn.interrupted",
             "message.proactive",
-            "plugin.ui.changed",
             "attachment.progress",
             "attachment.ready",
             "connection.degraded",

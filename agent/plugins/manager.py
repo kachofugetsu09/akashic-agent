@@ -32,6 +32,7 @@ from agent.plugins.packages import discover_plugin_packages, enabled_plugin_pack
 from agent.plugins.specs import (
     ManagedServiceSpec,
     McpServerSpec,
+    MobileUiContribution,
     ProactiveSourceSpec,
     RegisteredProactiveSource,
 )
@@ -2261,8 +2262,7 @@ class PluginManager:
             ),
             mobile_ui_asset=_resolve_mobile_ui_asset(
                 plugin_dir,
-                cls.mobile_ui_module(),
-                cls.mobile_ui_stylesheet(),
+                cls.mobile_ui(),
             ),
         )
 
@@ -2857,45 +2857,66 @@ def _resolve_dashboard_module(plugin_dir: Path, declared: str | None) -> Path | 
 
 def _resolve_mobile_ui_asset(
     plugin_dir: Path,
-    module_declared: str | None,
-    stylesheet_declared: str | None,
+    declared: MobileUiContribution | None,
 ) -> MobileUiAsset | None:
     """在插件激活边界固化并校验移动 UI 资产。"""
 
-    if module_declared is None:
-        if stylesheet_declared is not None:
-            raise RuntimeError("插件不能只声明 mobile UI stylesheet")
+    if declared is None:
         return None
+    if not isinstance(declared, MobileUiContribution):
+        raise RuntimeError("插件 mobile UI 声明必须是 MobileUiContribution")
     root = plugin_dir.resolve(strict=False)
-    module_path = (plugin_dir / module_declared).resolve(strict=False)
+    module_path = (plugin_dir / declared.module).resolve(strict=False)
     if not module_path.is_relative_to(root) or module_path.suffix != ".js" or not module_path.is_file():
-        raise RuntimeError(f"插件 mobile UI module 无效: {module_declared}")
+        raise RuntimeError(f"插件 mobile UI module 无效: {declared.module}")
+    allowed_slots = {
+        "turn.before_reasoning",
+        "turn.before_tool",
+        "turn.after_answer",
+        "drawer.panel",
+    }
+    if len(set(declared.slots)) != len(declared.slots) or any(
+        slot not in allowed_slots for slot in declared.slots
+    ):
+        raise RuntimeError("插件 mobile UI slots 无效")
+    navigation = declared.navigation
+    if navigation is not None and (
+        not navigation.label.strip()
+        or len(navigation.label) > 64
+        or not navigation.description.strip()
+        or len(navigation.description) > 160
+    ):
+        raise RuntimeError("插件 mobile UI navigation 无效")
     stylesheet = ""
-    if stylesheet_declared is not None:
-        stylesheet_path = (plugin_dir / stylesheet_declared).resolve(strict=False)
+    if declared.stylesheet is not None:
+        stylesheet_path = (plugin_dir / declared.stylesheet).resolve(strict=False)
         if (
             not stylesheet_path.is_relative_to(root)
             or stylesheet_path.suffix != ".css"
             or not stylesheet_path.is_file()
         ):
-            raise RuntimeError(f"插件 mobile UI stylesheet 无效: {stylesheet_declared}")
+            raise RuntimeError(f"插件 mobile UI stylesheet 无效: {declared.stylesheet}")
         stylesheet = stylesheet_path.read_text(encoding="utf-8")
     module = module_path.read_text(encoding="utf-8")
-    digest = hashlib.sha256()
-    for value in (module, stylesheet):
-        encoded = value.encode("utf-8")
-        digest.update(len(encoded).to_bytes(8, "big"))
-        digest.update(encoded)
-    payload = json.dumps(
-        {"id": "x" * 129, "revision": "x" * 128, "sha256": digest.hexdigest(),
-         "module": module, "stylesheet": stylesheet},
-        ensure_ascii=False,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    if len(payload) > 240 * 1024:
-        raise RuntimeError("插件 mobile UI 资产编码后超过协议安全预算")
-    return MobileUiAsset(module=module, stylesheet=stylesheet, sha256=digest.hexdigest())
+    module_encoded = module.encode("utf-8")
+    stylesheet_encoded = stylesheet.encode("utf-8")
+    if len(module_encoded) + len(stylesheet_encoded) > 240 * 1024:
+        raise RuntimeError("插件 mobile UI 资产超过协议安全预算")
+    return MobileUiAsset(
+        module=module,
+        module_sha256=hashlib.sha256(module_encoded).hexdigest(),
+        module_bytes=len(module_encoded),
+        stylesheet=stylesheet,
+        stylesheet_sha256=(
+            hashlib.sha256(stylesheet_encoded).hexdigest() if stylesheet else None
+        ),
+        stylesheet_bytes=len(stylesheet_encoded),
+        navigation_label=None if navigation is None else navigation.label.strip(),
+        navigation_description=(
+            None if navigation is None else navigation.description.strip()
+        ),
+        slots=tuple(declared.slots),
+    )
 
 
 def _resolve_managed_services(

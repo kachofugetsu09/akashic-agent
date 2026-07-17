@@ -4,6 +4,28 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 
+MobileUiSlot = Literal[
+    "turn.before_reasoning",
+    "turn.before_tool",
+    "turn.after_answer",
+    "drawer.panel",
+]
+
+
+@dataclass(frozen=True)
+class MobileUiNavigation:
+    label: str
+    description: str
+
+
+@dataclass(frozen=True)
+class MobileUiContribution:
+    module: str
+    stylesheet: str | None = None
+    navigation: MobileUiNavigation | None = None
+    slots: tuple[MobileUiSlot, ...] = ()
+
+
 @dataclass(frozen=True)
 class McpServerSpec:
     name: str

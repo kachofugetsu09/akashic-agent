@@ -111,6 +111,7 @@ class MainActivity : ComponentActivity() {
                 val session by viewModel.sessionState.collectAsStateWithLifecycle()
                 val conversation by viewModel.conversationState.collectAsStateWithLifecycle()
                 val incomingShare by viewModel.incomingShare.collectAsStateWithLifecycle()
+                val pluginUiCatalog by viewModel.pluginUiCatalog.collectAsStateWithLifecycle()
                 LaunchedEffect(Unit) {
                     if (shouldRequestNotificationPermission()) {
                         markNotificationPermissionRequested()
@@ -195,6 +196,9 @@ class MainActivity : ComponentActivity() {
                             },
                             onCommitSharedText = viewModel::commitIncomingShareText,
                             onSharedTextRejected = viewModel::reportIncomingShareError,
+                            pluginUiCatalog = pluginUiCatalog,
+                            pluginUiResults = viewModel.pluginUiResults,
+                            pluginUiAssetStore = viewModel.pluginUiAssetStore,
                             onSelectSession = viewModel::selectSession,
                             onRemoveUnavailableSession = viewModel::removeUnavailableSession,
                             onNewSession = viewModel::createSession,
@@ -233,8 +237,9 @@ class MainActivity : ComponentActivity() {
                             onDismissError = viewModel::dismissError,
                             onSend = viewModel::sendMessage,
                             onSendCommand = viewModel::sendCommand,
-                            onPluginUiCall = viewModel::callPluginUi,
-                            onPluginUiResponsesAcknowledged = viewModel::acknowledgePluginUiResponses,
+                            onPluginUiQuery = viewModel::queryPluginUi,
+                            onPluginUiOwnerCancelled = viewModel::cancelPluginUiOwner,
+                            onPluginUiWebViewDisposed = viewModel::disposePluginUiWebView,
                             onStop = viewModel::stopCurrentTurn,
                             onBackAtRoot = ::finish,
                             modifier = Modifier.fillMaxSize(),

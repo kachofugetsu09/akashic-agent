@@ -1,24 +1,27 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
+import asyncio
+import hashlib
+import threading
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, cast
-import asyncio
 
 import pytest
 
+import agent.plugins.mobile_ui as mobile_ui_module
+from agent.plugins.generation import MobileUiAsset
 from agent.plugins.mobile_ui import (
     MobileUiPluginUnavailable,
+    MobileUiQueryTimeout,
     MobileUiRpcExecutionError,
-    MobileUiRpcTimeout,
+    MobileUiStaleRevision,
     PluginMobileUiProvider,
 )
-from agent.plugins.generation import MobileUiAsset
-import agent.plugins.mobile_ui as mobile_ui_module
 
 
 class _MobilePlugin:
-    async def mobile_ui_call(
+    def mobile_ui_query(
         self,
         method: str,
         payload: dict[str, object],
@@ -35,22 +38,26 @@ class _MobilePlugin:
 
 
 class _Lease:
-    def __init__(self, snapshot: object) -> None:
+    def __init__(self, store: "_Store", snapshot: object) -> None:
+        self._store = store
         self.snapshot = snapshot
 
     async def __aenter__(self):
+        self._store.entered += 1
         return self.snapshot
 
     async def __aexit__(self, *args: object) -> None:
-        return None
+        self._store.exited += 1
 
 
 class _Store:
     def __init__(self, snapshot: object) -> None:
         self.snapshot = snapshot
+        self.entered = 0
+        self.exited = 0
 
     async def acquire(self) -> _Lease:
-        return _Lease(self.snapshot)
+        return _Lease(self, self.snapshot)
 
 
 class _ExplodingMapping(Mapping[str, object]):
@@ -65,18 +72,24 @@ class _ExplodingMapping(Mapping[str, object]):
 
 
 def _provider() -> PluginMobileUiProvider:
+    module = "export default 1;"
+    stylesheet = ":host { color: red; }"
     asset = MobileUiAsset(
-        module="export default 1;",
-        stylesheet=":host { color: red; }",
-        sha256="a" * 64,
+        module=module,
+        module_sha256=hashlib.sha256(module.encode()).hexdigest(),
+        module_bytes=len(module.encode()),
+        stylesheet=stylesheet,
+        stylesheet_sha256=hashlib.sha256(stylesheet.encode()).hexdigest(),
+        stylesheet_bytes=len(stylesheet.encode()),
+        navigation_label="Sample",
+        navigation_description="Sample dashboard",
+        slots=("turn.after_answer",),
     )
     generation = SimpleNamespace(
         plugin_id="sample@github",
         source_revision="revision-1",
         instance=_MobilePlugin(),
-        contributions=SimpleNamespace(
-            mobile_ui_asset=asset,
-        ),
+        contributions=SimpleNamespace(mobile_ui_asset=asset),
     )
     snapshot = SimpleNamespace(
         generations=MappingProxyType({"sample@github": generation}),
@@ -86,27 +99,42 @@ def _provider() -> PluginMobileUiProvider:
     return PluginMobileUiProvider(cast(Any, manager))
 
 
-def test_mobile_ui_catalog_separates_metadata_from_asset() -> None:
+def test_mobile_ui_catalog_separates_metadata_from_content_addressed_assets() -> None:
     provider = _provider()
 
     catalog = provider.catalog()
-    asset = provider.asset("sample@github")
+    item = cast(list[dict[str, object]], catalog["items"])[0]
+    module = provider.asset(
+        "sample@github",
+        "revision-1",
+        "module",
+        cast(str, item["module_sha256"]),
+    )
+    stylesheet = provider.asset(
+        "sample@github",
+        "revision-1",
+        "stylesheet",
+        cast(str, item["stylesheet_sha256"]),
+    )
 
-    assert catalog == [{
-        "id": "sample@github",
-        "revision": "revision-1",
-        "sha256": "a" * 64,
-    }]
-    assert asset["module"] == "export default 1;"
-    assert asset["stylesheet"] == ":host { color: red; }"
+    assert isinstance(catalog["catalog_revision"], str)
+    assert "content" not in item
+    assert item["navigation"] == {
+        "label": "Sample",
+        "description": "Sample dashboard",
+    }
+    assert item["slots"] == ["turn.after_answer"]
+    assert module["content"] == "export default 1;"
+    assert stylesheet["content"] == ":host { color: red; }"
 
 
 @pytest.mark.asyncio
-async def test_mobile_ui_rpc_receives_turn_context() -> None:
+async def test_mobile_ui_query_receives_revision_and_turn_context() -> None:
     provider = _provider()
 
-    result = await provider.call(
+    result = await provider.query(
         "sample@github",
+        "revision-1",
         "recall.current",
         {"limit": 4},
         session_id="mobile:test",
@@ -121,52 +149,80 @@ async def test_mobile_ui_rpc_receives_turn_context() -> None:
     }
 
 
-def test_mobile_ui_rejects_inactive_plugin() -> None:
+def test_mobile_ui_rejects_inactive_or_stale_plugin_assets() -> None:
     provider = _provider()
-    cast(Any, provider)._manager.current_snapshot.active_generations = lambda: ()
+    item = cast(list[dict[str, object]], provider.catalog()["items"])[0]
 
+    with pytest.raises(MobileUiStaleRevision, match="sample"):
+        provider.asset(
+            "sample@github",
+            "old-revision",
+            "module",
+            cast(str, item["module_sha256"]),
+        )
+
+    cast(Any, provider)._manager.current_snapshot.active_generations = lambda: ()
     with pytest.raises(MobileUiPluginUnavailable, match="sample"):
-        provider.asset("sample@github")
+        provider.asset(
+            "sample@github",
+            "revision-1",
+            "module",
+            cast(str, item["module_sha256"]),
+        )
 
 
 @pytest.mark.asyncio
-async def test_mobile_ui_rpc_timeout_releases_snapshot_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_mobile_ui_timeout_keeps_snapshot_lease_until_worker_exits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     provider = _provider()
-    blocker = asyncio.Event()
+    blocker = threading.Event()
 
-    async def never_returns(*args: object, **kwargs: object) -> dict[str, object]:
-        await blocker.wait()
+    def block(*args: object, **kwargs: object) -> dict[str, object]:
+        blocker.wait(timeout=1)
         return {}
 
-    cast(Any, provider)._manager.current_snapshot.generations[
+    generation = cast(Any, provider)._manager.current_snapshot.generations[
         "sample@github"
-    ].instance.mobile_ui_call = never_returns
-    monkeypatch.setattr(mobile_ui_module, "MOBILE_UI_RPC_TIMEOUT_SECONDS", 0.01)
+    ]
+    generation.instance.mobile_ui_query = block
+    store = cast(Any, provider)._manager.snapshot_store
+    monkeypatch.setattr(mobile_ui_module, "MOBILE_UI_QUERY_TIMEOUT_SECONDS", 0.01)
 
-    with pytest.raises(MobileUiRpcTimeout):
-        await provider.call(
+    with pytest.raises(MobileUiQueryTimeout):
+        await provider.query(
             "sample@github",
+            "revision-1",
             "recall.current",
             {},
             session_id="mobile:test",
             turn_id="turn-1",
         )
 
+    assert store.entered == 1
+    assert store.exited == 0
+    blocker.set()
+    for _ in range(20):
+        if store.exited == 1:
+            break
+        await asyncio.sleep(0.01)
+    assert store.exited == 1
 
 @pytest.mark.asyncio
 async def test_mobile_ui_rpc_failure_isolated_from_transport() -> None:
     provider = _provider()
 
-    async def fails(*args: object, **kwargs: object) -> dict[str, object]:
+    def fails(*args: object, **kwargs: object) -> dict[str, object]:
         raise RuntimeError("plugin bug detail")
 
     cast(Any, provider)._manager.current_snapshot.generations[
         "sample@github"
-    ].instance.mobile_ui_call = fails
+    ].instance.mobile_ui_query = fails
 
     with pytest.raises(MobileUiRpcExecutionError, match="sample@github.recall.current"):
-        await provider.call(
+        await provider.query(
             "sample@github",
+            "revision-1",
             "recall.current",
             {},
             session_id="mobile:test",
@@ -190,16 +246,17 @@ async def test_mobile_ui_rpc_invalid_result_isolated_from_transport(
 ) -> None:
     provider = _provider()
 
-    async def returns_invalid(*args: object, **kwargs: object) -> object:
+    def returns_invalid(*args: object, **kwargs: object) -> object:
         return invalid_result
 
     cast(Any, provider)._manager.current_snapshot.generations[
         "sample@github"
-    ].instance.mobile_ui_call = returns_invalid
+    ].instance.mobile_ui_query = returns_invalid
 
     with pytest.raises(MobileUiRpcExecutionError, match="sample@github.recall.current"):
-        await provider.call(
+        await provider.query(
             "sample@github",
+            "revision-1",
             "recall.current",
             {},
             session_id="mobile:test",

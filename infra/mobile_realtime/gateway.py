@@ -90,6 +90,10 @@ _CROCKFORD32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 logger = logging.getLogger(__name__)
 
 
+def _plugin_ui_task_set() -> set[asyncio.Task[None]]:
+    return set()
+
+
 class MobileGatewayError(RuntimeError):
     pass
 
@@ -108,6 +112,7 @@ class ActiveMobileConnection:
     pending_events: deque[DurableInboxEvent]
     ready: bool
     delivery_task: asyncio.Task[None] | None
+    plugin_ui_tasks: set[asyncio.Task[None]] = field(default_factory=_plugin_ui_task_set)
     sent_condition: asyncio.Condition = field(default_factory=asyncio.Condition)
     reply_barrier: int | None = None
 
@@ -465,6 +470,22 @@ class MobileGatewayRuntime:
                         connection_epoch=connection_epoch,
                     ):
                         return
+                    if isinstance(frame, GenericCommand) and _is_plugin_ui_command(frame):
+                        if frame.type == "plugin.ui.query":
+                            self._start_plugin_ui_command(
+                                websocket,
+                                frame,
+                                connection_epoch,
+                                device_id,
+                            )
+                        else:
+                            await self._handle_plugin_ui_command(
+                                websocket,
+                                frame,
+                                connection_epoch,
+                                device_id,
+                            )
+                        continue
                     await self._handle_command(
                         websocket,
                         frame,
@@ -475,10 +496,27 @@ class MobileGatewayRuntime:
                 raise AssertionError("已验证客户端帧没有对应处理分支")
         finally:
             if resumed:
+                connection = self._connections.get(device_id)
+                if connection is not None and connection.websocket is websocket:
+                    await self._cancel_plugin_ui_connection(device_id, connection)
                 await self._remove_connection(
                     device_id=device_id,
                     websocket=websocket,
                 )
+
+    async def _cancel_plugin_ui_connection(
+        self,
+        device_id: str,
+        connection: ActiveMobileConnection,
+    ) -> None:
+        """取消单个连接代际的临时插件查询并释放设备调度状态。"""
+
+        tasks = tuple(connection.plugin_ui_tasks)
+        for task in tasks:
+            _ = task.cancel()
+        if tasks:
+            _ = await asyncio.gather(*tasks, return_exceptions=True)
+        await self.channel.cancel_plugin_ui_device(device_id)
 
     async def _is_active_connection(
         self,
@@ -550,6 +588,7 @@ class MobileGatewayRuntime:
 
         # 2. 旧连接关闭和新连接重放都不占用全局投递锁
         if previous is not None and previous.websocket is not websocket:
+            await self._cancel_plugin_ui_connection(device_id, previous)
             async with previous.sent_condition:
                 previous.sent_condition.notify_all()
             _ = asyncio.create_task(
@@ -1107,6 +1146,94 @@ class MobileGatewayRuntime:
                     if self._connections.get(device_id) is connection:
                         self._schedule_delivery_locked(device_id, connection)
 
+    def _start_plugin_ui_command(
+        self,
+        websocket: WebSocket,
+        frame: GenericCommand,
+        connection_epoch: int,
+        device_id: str,
+    ) -> None:
+        """让只读插件查询离开 WebSocket 接收循环并跟随连接取消。"""
+
+        connection = self._connections.get(device_id)
+        if connection is None or connection.websocket is not websocket:
+            raise RuntimeError("plugin UI query 缺少活动连接")
+        task = asyncio.create_task(
+            self._handle_plugin_ui_command(
+                websocket,
+                frame,
+                connection_epoch,
+                device_id,
+            ),
+            name=f"mobile_plugin_ui:{device_id}:{frame.id}",
+        )
+        connection.plugin_ui_tasks.add(task)
+
+        def remove(completed: asyncio.Task[None]) -> None:
+            connection.plugin_ui_tasks.discard(completed)
+            if not completed.cancelled():
+                error = completed.exception()
+                if error is not None:
+                    logger.error(
+                        "plugin UI query task 失败 device=%s request=%s",
+                        device_id,
+                        frame.id,
+                        exc_info=(type(error), error, error.__traceback__),
+                    )
+
+        task.add_done_callback(remove)
+
+    async def _handle_plugin_ui_command(
+        self,
+        websocket: WebSocket,
+        frame: GenericCommand,
+        connection_epoch: int,
+        device_id: str,
+    ) -> None:
+        """执行临时插件请求并直接回包，不经过 durable receipt 和事件屏障。"""
+
+        from infra.mobile_realtime.channel import MobileCommandError
+
+        connection = self._connections.get(device_id)
+        if connection is None or connection.websocket is not websocket:
+            return
+        try:
+            reply = await self.channel.handle_plugin_ui_command(
+                device_id=device_id,
+                frame=frame,
+            )
+        except asyncio.CancelledError:
+            return
+        except MobileCommandError as error:
+            reply_type = f"{frame.type}.error"
+            payload: dict[str, object] = {
+                "code": error.code,
+                "message": str(error),
+            }
+        except Exception as error:
+            logger.exception(
+                "plugin UI query 执行失败 device=%s plugin_request=%s",
+                device_id,
+                frame.id,
+            )
+            reply_type = f"{frame.type}.error"
+            payload = {"code": "plugin_error", "message": str(error)}
+        else:
+            reply_type = reply.type
+            payload = reply.payload
+        if self._connections.get(device_id) is not connection:
+            return
+        async with connection.send_lock:
+            await _send_reply(
+                websocket,
+                frame_id=frame.id,
+                connection_epoch=connection_epoch,
+                reply_type=reply_type,
+                payload=payload,
+                session_id=frame.session_id,
+                turn_id=frame.turn_id,
+            )
+
     async def _flush_connection_delivery(
         self,
         device_id: str,
@@ -1493,6 +1620,15 @@ def _new_ulid() -> str:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _is_plugin_ui_command(frame: object) -> bool:
+    return isinstance(frame, GenericCommand) and frame.type in {
+        "plugin.ui.catalog",
+        "plugin.ui.asset.get",
+        "plugin.ui.query",
+        "plugin.ui.cancel",
+    }
 
 
 __all__ = [

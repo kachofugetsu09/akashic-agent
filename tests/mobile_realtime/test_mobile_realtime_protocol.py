@@ -222,7 +222,15 @@ def test_command_list_command_and_reply_are_valid() -> None:
     assert parse_frame(json.dumps(reply)).type == "command.list.ok"
 
 
-@pytest.mark.parametrize("command_type", ("plugin.ui.list", "plugin.ui.asset", "plugin.ui.call"))
+@pytest.mark.parametrize(
+    "command_type",
+    (
+        "plugin.ui.catalog",
+        "plugin.ui.asset.get",
+        "plugin.ui.query",
+        "plugin.ui.cancel",
+    ),
+)
 def test_plugin_ui_commands_are_valid(command_type: str) -> None:
     frame = {
         "v": 1,
@@ -234,6 +242,21 @@ def test_plugin_ui_commands_are_valid(command_type: str) -> None:
     }
 
     assert parse_frame(json.dumps(frame)).type == command_type
+
+
+@pytest.mark.parametrize("command_type", ("plugin.ui.list", "plugin.ui.asset", "plugin.ui.call"))
+def test_plugin_ui_v1_commands_are_rejected(command_type: str) -> None:
+    frame = {
+        "v": 1,
+        "kind": "command",
+        "type": command_type,
+        "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "connection_epoch": 1,
+        "payload": {},
+    }
+
+    with pytest.raises(ValueError):
+        parse_frame(json.dumps(frame))
 
 
 def test_delta_process_block_fields_must_appear_together() -> None:

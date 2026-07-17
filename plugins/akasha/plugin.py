@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import sqlite3
 from contextlib import closing
@@ -10,7 +9,7 @@ from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from agent.lifecycle.types import BeforeTurnCtx, TurnState
-from agent.plugins import Plugin
+from agent.plugins import MobileUiContribution, Plugin
 from agent.plugins.mobile_ui import MobileUiRpcInvalidRequest
 from plugins.akasha.config import load_akasha_config, resolve_akasha_db_path
 from plugins.akasha.store import AkashaStore
@@ -49,12 +48,12 @@ class AkashaPlugin(Plugin):
         return "dashboard.py"
 
     @classmethod
-    def mobile_ui_module(cls) -> str | None:
-        return "mobile_ui.js"
-
-    @classmethod
-    def mobile_ui_stylesheet(cls) -> str | None:
-        return "mobile_ui.css"
+    def mobile_ui(cls) -> MobileUiContribution:
+        return MobileUiContribution(
+            module="mobile_ui.js",
+            stylesheet="mobile_ui.css",
+            slots=("turn.before_reasoning",),
+        )
 
     name = "akasha"
 
@@ -93,7 +92,7 @@ class AkashaPlugin(Plugin):
             return "暂无 Akasha 检索诊断记录。"
         return _render_query_detail(raw)
 
-    async def mobile_ui_call(
+    def mobile_ui_query(
         self,
         method: str,
         payload: dict[str, object],
@@ -118,27 +117,20 @@ class AkashaPlugin(Plugin):
                 historical_message_id = None
             else:
                 historical_message_id = message_id
-            return await asyncio.to_thread(
-                self._load_mobile_recall,
-                session_id,
-                historical_message_id,
-            )
+            return self._load_mobile_recall(session_id, historical_message_id)
 
         # 2. 看板只读取既有诊断日志，不改变 Akasha 状态。
         if method == "inspector.recent":
             if payload:
                 raise MobileUiRpcInvalidRequest("Akasha inspector.recent 不接受参数")
-            return await asyncio.to_thread(self._load_mobile_inspections)
+            return self._load_mobile_inspections()
         if method == "inspector.detail":
             if set(payload) != {"query_id"}:
                 raise MobileUiRpcInvalidRequest("Akasha inspector.detail 需要 query_id")
             query_id = payload["query_id"]
             if not isinstance(query_id, str) or not query_id.strip():
                 raise MobileUiRpcInvalidRequest("Akasha inspector.detail 的 query_id 必须是非空字符串")
-            return await asyncio.to_thread(
-                self._load_mobile_inspection,
-                query_id.strip(),
-            )
+            return self._load_mobile_inspection(query_id.strip())
         raise MobileUiRpcInvalidRequest(f"Akasha mobile UI 方法无效: {method}")
 
     def _load_mobile_recall(

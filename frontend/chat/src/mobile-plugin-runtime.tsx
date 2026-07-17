@@ -13,7 +13,7 @@ export interface MobilePluginContext {
   messageId?: string;
   turnId?: string;
   block?: unknown;
-  request(method: string, payload?: Record<string, unknown>): Promise<Record<string, unknown>>;
+  query(method: string, payload?: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
 
 export interface MobilePluginRenderer {
@@ -21,12 +21,33 @@ export interface MobilePluginRenderer {
 }
 
 export interface MobilePluginDefinition {
-  slots: Partial<Record<MobilePluginSlotName, MobilePluginRenderer>>;
+  slots: Partial<Record<Exclude<MobilePluginSlotName, "dashboard.main">, MobilePluginRenderer>>;
+  dashboard?: MobilePluginRenderer;
+}
+
+export interface MobilePluginCatalog {
+  catalogRevision: string;
+  updating: boolean;
+  error?: string;
+  plugins: MobilePluginCatalogItem[];
+}
+
+export interface MobilePluginCatalogItem {
+  id: string;
+  revision: string;
+  moduleUrl: string;
+  stylesheetUrl?: string;
   navigation?: {
     label: string;
     description: string;
   };
-  dashboard?: MobilePluginRenderer;
+  slots: Exclude<MobilePluginSlotName, "dashboard.main">[];
+}
+
+export interface MobilePluginResult {
+  requestId: string;
+  resultJson?: string;
+  error?: string;
 }
 
 export interface MobilePluginDashboardEntry {
@@ -35,30 +56,29 @@ export interface MobilePluginDashboardEntry {
   description: string;
 }
 
-export interface MobilePluginAsset {
-  id: string;
+const definitions = new Map<string, {
   revision: string;
-  sha256: string;
-  module: string;
-  stylesheet: string;
-}
-
-const definitions = new Map<string, MobilePluginDefinition>();
-const styleUrls = new Map<string, { url: string; node: HTMLLinkElement }>();
+  definition: MobilePluginDefinition;
+}>();
+const styleNodes = new Map<string, HTMLLinkElement>();
 const listeners = new Set<() => void>();
 const pending = new Map<string, {
   resolve: (value: Record<string, unknown>) => void;
   reject: (error: Error) => void;
-  owner: symbol;
+  ownerId: string;
   timeout: number;
 }>();
+let catalog: MobilePluginCatalog = {
+  catalogRevision: "",
+  updating: true,
+  plugins: [],
+};
 let registryVersion = 0;
-let assetQueue: Promise<void> = Promise.resolve();
-let queuedSignature: string | null = null;
-let activeSignature: string | null = null;
-const quarantinedSignatures = new Map<string, Error>();
+let activeRevision = "";
+let activation: Promise<void> = Promise.resolve();
+const quarantinedRevisions = new Map<string, Error>();
 const MODULE_LOAD_TIMEOUT_MS = 5_000;
-const SLOT_NAMES = new Set<MobilePluginSlotName>([
+const SLOT_NAMES = new Set<Exclude<MobilePluginSlotName, "dashboard.main">>([
   "turn.before_reasoning",
   "turn.before_tool",
   "turn.after_answer",
@@ -70,69 +90,68 @@ function emitChange() {
   listeners.forEach((listener) => listener());
 }
 
-export function receiveMobilePluginAssets(assets: MobilePluginAsset[]): Promise<void> {
-  const signature = assets.map((asset) => `${asset.id}:${asset.sha256}`).join("|");
-  if (signature === activeSignature) return Promise.resolve();
-  if (signature === queuedSignature) return assetQueue;
-  const quarantined = quarantinedSignatures.get(signature);
+export function receiveMobilePluginCatalog(next: MobilePluginCatalog): Promise<void> {
+  const revisionChanged = next.catalogRevision !== catalog.catalogRevision;
+  catalog = next;
+  if (next.updating || revisionChanged) rejectAllPending("插件界面正在更新");
+  emitChange();
+  if (next.updating || next.error || next.catalogRevision === activeRevision) {
+    return Promise.resolve();
+  }
+  const quarantined = quarantinedRevisions.get(next.catalogRevision);
   if (quarantined) return Promise.reject(quarantined);
-  queuedSignature = signature;
-  assetQueue = assetQueue.catch(() => undefined).then(async () => {
+  activation = activation.catch(() => undefined).then(async () => {
     try {
-      await activateMobilePluginAssets(assets);
-      activeSignature = signature;
+      if (await activateCatalog(next)) activeRevision = next.catalogRevision;
     } catch (error) {
       const normalized = error instanceof Error ? error : new Error("移动插件加载失败");
-      quarantinedSignatures.set(signature, normalized);
+      quarantinedRevisions.set(next.catalogRevision, normalized);
+      if (catalog.catalogRevision === next.catalogRevision) {
+        catalog = { ...catalog, error: normalized.message };
+        emitChange();
+      }
       throw normalized;
-    } finally {
-      if (queuedSignature === signature) queuedSignature = null;
     }
   });
-  return assetQueue;
+  return activation;
 }
 
-async function activateMobilePluginAssets(assets: MobilePluginAsset[]) {
-  const nextDefinitions = new Map<string, MobilePluginDefinition>();
-  const nextStyles = new Map<string, { url: string; node: HTMLLinkElement }>();
-  try {
-    for (const asset of assets) {
-      if (asset.stylesheet) {
-        const url = URL.createObjectURL(new Blob([asset.stylesheet], { type: "text/css" }));
-        const node = document.createElement("link");
-        node.rel = "stylesheet";
-        node.href = url;
-        node.dataset.mobilePlugin = asset.id;
-        nextStyles.set(asset.id, { url, node });
-      }
-      const sourceUrl = URL.createObjectURL(new Blob([asset.module], { type: "text/javascript" }));
-      try {
-        const module = await withDeadline(
-          import(/* @vite-ignore */ sourceUrl) as Promise<{ default?: unknown }>,
-          MODULE_LOAD_TIMEOUT_MS,
-          `移动插件加载超时: ${asset.id}`,
-        );
-        nextDefinitions.set(asset.id, parseDefinition(module.default, asset.id));
-      } finally {
-        URL.revokeObjectURL(sourceUrl);
-      }
+async function activateCatalog(next: MobilePluginCatalog): Promise<boolean> {
+  const loaded = await Promise.all(next.plugins.map(async (plugin) => {
+    const module = await withDeadline(
+      import(/* @vite-ignore */ plugin.moduleUrl) as Promise<{ default?: unknown }>,
+      MODULE_LOAD_TIMEOUT_MS,
+      `移动插件加载超时: ${plugin.id}`,
+    );
+    return [plugin, parseDefinition(module.default, plugin)] as const;
+  }));
+  if (catalog.catalogRevision !== next.catalogRevision || catalog.updating) return false;
+
+  const nextDefinitions = new Map<string, {
+    revision: string;
+    definition: MobilePluginDefinition;
+  }>();
+  const nextStyles = new Map<string, HTMLLinkElement>();
+  for (const [plugin, definition] of loaded) {
+    nextDefinitions.set(plugin.id, { revision: plugin.revision, definition });
+    if (plugin.stylesheetUrl) {
+      const node = document.createElement("link");
+      node.rel = "stylesheet";
+      node.href = plugin.stylesheetUrl;
+      node.dataset.mobilePlugin = plugin.id;
+      nextStyles.set(plugin.id, node);
     }
-  } catch (error) {
-    nextStyles.forEach((style) => URL.revokeObjectURL(style.url));
-    throw error;
   }
-  styleUrls.forEach((style) => {
-    style.node.remove();
-    URL.revokeObjectURL(style.url);
-  });
+  styleNodes.forEach((node) => node.remove());
   definitions.clear();
   nextDefinitions.forEach((definition, id) => definitions.set(id, definition));
-  styleUrls.clear();
-  nextStyles.forEach((style, id) => {
-    document.head.appendChild(style.node);
-    styleUrls.set(id, style);
+  styleNodes.clear();
+  nextStyles.forEach((node, id) => {
+    document.head.appendChild(node);
+    styleNodes.set(id, node);
   });
   emitChange();
+  return true;
 }
 
 function withDeadline<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
@@ -145,45 +164,34 @@ function withDeadline<T>(promise: Promise<T>, timeoutMs: number, message: string
   });
 }
 
-function parseDefinition(value: unknown, pluginId: string): MobilePluginDefinition {
+function parseDefinition(value: unknown, plugin: MobilePluginCatalogItem): MobilePluginDefinition {
   if (!value || typeof value !== "object") {
-    throw new Error(`移动插件必须默认导出定义对象: ${pluginId}`);
+    throw new Error(`移动插件必须默认导出定义对象: ${plugin.id}`);
   }
-  const raw = value as { slots?: unknown; navigation?: unknown; dashboard?: unknown };
+  const raw = value as { slots?: unknown; dashboard?: unknown };
   const slots = raw.slots ?? {};
-  if (typeof slots !== "object") throw new Error(`移动插件 slots 无效: ${pluginId}`);
+  if (!slots || typeof slots !== "object" || Array.isArray(slots)) {
+    throw new Error(`移动插件 slots 无效: ${plugin.id}`);
+  }
   for (const [name, renderer] of Object.entries(slots)) {
-    if (!SLOT_NAMES.has(name as MobilePluginSlotName)) {
-      throw new Error(`移动插件 slot 无效: ${pluginId}.${name}`);
+    if (!SLOT_NAMES.has(name as Exclude<MobilePluginSlotName, "dashboard.main">)) {
+      throw new Error(`移动插件 slot 无效: ${plugin.id}.${name}`);
     }
-    if (!renderer || typeof renderer !== "object" ||
-      typeof (renderer as { mount?: unknown }).mount !== "function") {
-      throw new Error(`移动插件 renderer 无效: ${pluginId}.${name}`);
-    }
+    if (!isRenderer(renderer)) throw new Error(`移动插件 renderer 无效: ${plugin.id}.${name}`);
+  }
+  const declaredSlots = Object.keys(slots).sort().join("|");
+  if (declaredSlots !== [...plugin.slots].sort().join("|")) {
+    throw new Error(`移动插件 slots 与 catalog 不一致: ${plugin.id}`);
   }
   const dashboard = raw.dashboard;
   if (dashboard !== undefined && !isRenderer(dashboard)) {
-    throw new Error(`移动插件 dashboard renderer 无效: ${pluginId}`);
+    throw new Error(`移动插件 dashboard renderer 无效: ${plugin.id}`);
   }
-  let navigation: MobilePluginDefinition["navigation"];
-  if (dashboard !== undefined) {
-    if (!raw.navigation || typeof raw.navigation !== "object") {
-      throw new Error(`移动插件 dashboard 缺少 navigation: ${pluginId}`);
-    }
-    const candidate = raw.navigation as { label?: unknown; description?: unknown };
-    if (typeof candidate.label !== "string" || !candidate.label.trim() || candidate.label.length > 64) {
-      throw new Error(`移动插件 navigation.label 无效: ${pluginId}`);
-    }
-    if (typeof candidate.description !== "string" || !candidate.description.trim() || candidate.description.length > 160) {
-      throw new Error(`移动插件 navigation.description 无效: ${pluginId}`);
-    }
-    navigation = { label: candidate.label.trim(), description: candidate.description.trim() };
-  } else if (raw.navigation !== undefined) {
-    throw new Error(`移动插件 navigation 没有对应 dashboard: ${pluginId}`);
+  if ((dashboard !== undefined) !== (plugin.navigation !== undefined)) {
+    throw new Error(`移动插件 dashboard 与 catalog navigation 不一致: ${plugin.id}`);
   }
   return {
     slots: slots as MobilePluginDefinition["slots"],
-    navigation,
     dashboard: dashboard as MobilePluginRenderer | undefined,
   };
 }
@@ -197,10 +205,9 @@ export function useMobilePluginDashboards(): MobilePluginDashboardEntry[] {
     (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
     () => registryVersion,
   );
-  return Array.from(definitions.entries()).flatMap(([id, definition]) => {
-    if (!definition.dashboard || !definition.navigation) return [];
-    return [{ id, ...definition.navigation }];
-  });
+  return catalog.plugins.flatMap((plugin) => plugin.navigation
+    ? [{ id: plugin.id, ...plugin.navigation }]
+    : []);
 }
 
 export function MobilePluginDashboard({ pluginId }: { pluginId: string }) {
@@ -208,41 +215,37 @@ export function MobilePluginDashboard({ pluginId }: { pluginId: string }) {
     (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
     () => registryVersion,
   );
-  const definition = definitions.get(pluginId);
-  if (!definition?.dashboard) return null;
+  const plugin = catalog.plugins.find((item) => item.id === pluginId);
+  if (!plugin?.navigation) return null;
+  if (catalog.error) return <div className="mobile-plugin-host mobile-plugin-host--error">{catalog.error}</div>;
+  const loaded = definitions.get(pluginId);
+  const definition = loaded?.revision === plugin.revision ? loaded.definition : undefined;
+  if (!definition?.dashboard) {
+    return <div className="mobile-plugin-host mobile-plugin-host--loading">正在加载插件界面…</div>;
+  }
   return (
     <MountedPlugin
       pluginId={pluginId}
+      pluginRevision={plugin.revision}
       renderer={definition.dashboard}
       context={{ slot: "dashboard.main" }}
     />
   );
 }
 
-export function settleMobilePluginResponses(
-  responses: { requestId: string; resultJson?: string; error?: string }[],
-) {
-  for (const response of responses) {
-    const request = pending.get(response.requestId);
-    if (!request) continue;
-    pending.delete(response.requestId);
-    window.clearTimeout(request.timeout);
-    if (response.error) request.reject(new Error(response.error));
-    else {
-      try {
-        request.resolve(JSON.parse(response.resultJson ?? "{}") as Record<string, unknown>);
-      } catch (error) {
-        request.reject(error instanceof Error ? error : new Error("插件响应 JSON 无效"));
-      }
-    }
+export function receiveMobilePluginResult(response: MobilePluginResult) {
+  const request = pending.get(response.requestId);
+  if (!request) return;
+  pending.delete(response.requestId);
+  window.clearTimeout(request.timeout);
+  if (response.error) {
+    request.reject(new Error(response.error));
+    return;
   }
-  if (responses.length) {
-    const requestIds = responses.map((response) => response.requestId);
-    for (let offset = 0; offset < requestIds.length; offset += 256) {
-      window.AkashicNative?.acknowledgePluginUiResponses(
-        JSON.stringify(requestIds.slice(offset, offset + 256)),
-      );
-    }
+  try {
+    request.resolve(JSON.parse(response.resultJson ?? "{}") as Record<string, unknown>);
+  } catch (error) {
+    request.reject(error instanceof Error ? error : new Error("插件响应 JSON 无效"));
   }
 }
 
@@ -253,7 +256,7 @@ export function MobilePluginSlot({
   turnId,
   block,
 }: {
-  name: MobilePluginSlotName;
+  name: Exclude<MobilePluginSlotName, "dashboard.main">;
   sessionId?: string;
   messageId?: string;
   turnId?: string;
@@ -263,15 +266,21 @@ export function MobilePluginSlot({
     (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
     () => registryVersion,
   );
-  const renderers = Array.from(definitions.entries())
-    .flatMap(([pluginId, plugin]) => plugin.slots[name] ? [{ pluginId, renderer: plugin.slots[name] }] : []);
+  const renderers = catalog.plugins.flatMap((plugin) => {
+    const loaded = definitions.get(plugin.id);
+    const renderer = loaded?.revision === plugin.revision
+      ? loaded.definition.slots[name]
+      : undefined;
+    return renderer ? [{ plugin, renderer }] : [];
+  });
   return renderers.length ? (
     <div className="mobile-plugin-slot" data-slot={name} data-version={version}>
-      {renderers.map(({ pluginId, renderer }) => (
+      {renderers.map(({ plugin, renderer }) => (
         <MountedPlugin
-          key={`${pluginId}:${name}`}
-          pluginId={pluginId}
-          renderer={renderer!}
+          key={`${plugin.id}:${plugin.revision}:${name}`}
+          pluginId={plugin.id}
+          pluginRevision={plugin.revision}
+          renderer={renderer}
           context={{ slot: name, sessionId, messageId, turnId, block }}
         />
       ))}
@@ -281,15 +290,17 @@ export function MobilePluginSlot({
 
 function MountedPlugin({
   pluginId,
+  pluginRevision,
   renderer,
   context,
 }: {
   pluginId: string;
+  pluginRevision: string;
   renderer: MobilePluginRenderer;
-  context: Omit<MobilePluginContext, "request">;
+  context: Omit<MobilePluginContext, "query">;
 }) {
   const hostRef = React.useRef<HTMLDivElement>(null);
-  const ownerRef = React.useRef(Symbol(pluginId));
+  const ownerIdRef = React.useRef(createOwnerId());
   const { block, messageId, sessionId, slot, turnId } = context;
   const blockRevision = block === undefined ? undefined : JSON.stringify(block);
   const stableBlock = useMemo(
@@ -299,7 +310,7 @@ function MountedPlugin({
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    const owner = ownerRef.current;
+    const ownerId = ownerIdRef.current;
     let cleanup: void | (() => void);
     try {
       cleanup = renderer.mount(host, {
@@ -308,7 +319,7 @@ function MountedPlugin({
         messageId,
         turnId,
         block: stableBlock,
-        request(method, payload = {}) {
+        query(method, payload = {}) {
           const requestId = createRequestId();
           return new Promise((resolve, reject) => {
             if (!window.AkashicNative) {
@@ -330,10 +341,12 @@ function MountedPlugin({
               pending.delete(requestId);
               reject(new Error("插件请求超时"));
             }, 30_000);
-            pending.set(requestId, { resolve, reject, owner, timeout });
+            pending.set(requestId, { resolve, reject, ownerId, timeout });
             try {
-              window.AkashicNative.callPluginUi(
+              window.AkashicNative.queryPluginUi(
                 requestId,
+                ownerId,
+                slot,
                 sessionId ?? null,
                 turnId ?? null,
                 pluginId,
@@ -353,12 +366,8 @@ function MountedPlugin({
       host.classList.add("mobile-plugin-host--error");
     }
     return () => {
-      for (const [requestId, request] of pending) {
-        if (request.owner !== owner) continue;
-        window.clearTimeout(request.timeout);
-        request.reject(new Error("插件界面已卸载"));
-        pending.delete(requestId);
-      }
+      window.AkashicNative?.cancelPluginUiOwner(ownerId);
+      rejectOwnerPending(ownerId, "插件界面已卸载");
       try {
         cleanup?.();
       } catch (error) {
@@ -366,8 +375,29 @@ function MountedPlugin({
       }
       host.replaceChildren();
     };
-  }, [messageId, pluginId, renderer, sessionId, slot, stableBlock, turnId]);
+  }, [messageId, pluginId, pluginRevision, renderer, sessionId, slot, stableBlock, turnId]);
   return <div ref={hostRef} className="mobile-plugin-host" data-plugin={pluginId} />;
+}
+
+function rejectOwnerPending(ownerId: string, message: string) {
+  for (const [requestId, request] of pending) {
+    if (request.ownerId !== ownerId) continue;
+    window.clearTimeout(request.timeout);
+    request.reject(new Error(message));
+    pending.delete(requestId);
+  }
+}
+
+function rejectAllPending(message: string) {
+  for (const [requestId, request] of pending) {
+    window.clearTimeout(request.timeout);
+    request.reject(new Error(message));
+    pending.delete(requestId);
+  }
+}
+
+function createOwnerId(): string {
+  return `owner:${createRequestId()}`;
 }
 
 function createRequestId(): string {

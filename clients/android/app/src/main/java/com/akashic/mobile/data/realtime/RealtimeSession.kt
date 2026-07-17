@@ -22,10 +22,10 @@ import com.akashic.mobile.domain.model.ConnectionPhase
 import com.akashic.mobile.domain.model.ConnectionState
 import com.akashic.mobile.domain.model.EndpointRoute
 import com.akashic.mobile.domain.model.ServerEndpoint
+import com.akashic.mobile.data.realtime.pluginui.PluginUiAssetStore
+import com.akashic.mobile.data.realtime.pluginui.PluginUiCoordinator
 import java.time.Instant
 import java.io.IOException
-import java.nio.ByteBuffer
-import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
@@ -43,11 +43,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.encodeToString
-import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
@@ -70,15 +68,7 @@ data class MobileSessionState(
     val meteredLargeTransferApproved: Boolean = false,
     val isStopping: Boolean = false,
     val commands: List<RemoteCommandItem> = emptyList(),
-    val pluginUiAssets: List<MobileUiAssetPayload> = emptyList(),
-    val pluginUiResponses: List<MobileUiResponse> = emptyList(),
     val errorMessage: String? = null,
-)
-
-data class MobileUiResponse(
-    val requestId: String,
-    val result: kotlinx.serialization.json.JsonObject? = null,
-    val error: String? = null,
 )
 
 internal object FullJitterBackoff {
@@ -212,6 +202,7 @@ class RealtimeSession(
     private val preferences: AppPreferences,
     private val deviceKeys: DeviceKeyStore,
     private val transferNetwork: StateFlow<TransferNetworkState>,
+    pluginUiAssetStore: PluginUiAssetStore,
     private val scope: CoroutineScope,
     allowInsecureTransport: Boolean,
 ) : RealtimeSocketListener {
@@ -264,6 +255,7 @@ class RealtimeSession(
     )
     private val mutableState = MutableStateFlow(MobileSessionState())
     val state: StateFlow<MobileSessionState> = mutableState.asStateFlow()
+    val pluginUi = PluginUiCoordinator(pluginUiAssetStore, ::sendPluginUiCommand)
     private val started = AtomicBoolean(false)
     private var meteredLargeTransferApproved = false
     private var profile: ServerProfileEntity? = null
@@ -288,13 +280,6 @@ class RealtimeSession(
     private val pendingSyncCommands = mutableMapOf<String, PendingSyncCommand>()
     private val requestedHistoryPages = mutableSetOf<Triple<Long, String, Int>>()
     private var pendingCommandListId: String? = null
-    private var pendingPluginUiListId: String? = null
-    private var pendingPluginUiListUsesHotUpdates = false
-    private var pluginUiHotUpdatesEnabled = true
-    private val pendingPluginUiAssets = mutableMapOf<String, MobileUiCatalogItem>()
-    private val stagedPluginUiAssets = mutableMapOf<String, MobileUiAssetPayload>()
-    private var pluginUiRefreshQueued = false
-    private val pendingPluginUiCalls = mutableMapOf<String, String>()
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
@@ -676,9 +661,11 @@ class RealtimeSession(
         )
     }
 
-    /** 从 Web UI 发起一个绑定渲染槽位会话与轮次的插件请求。 */
-    fun callPluginUi(
+    /** 从 Web UI 发起一个绑定 owner、槽位、会话和轮次的插件查询。 */
+    fun queryPluginUi(
         requestId: String,
+        ownerId: String,
+        slot: String,
         sessionId: String?,
         turnId: String?,
         pluginId: String,
@@ -687,9 +674,8 @@ class RealtimeSession(
     ) {
         scope.launch {
             mutex.withLock {
-                if (requestId.length !in 1..128) return@withLock
                 if (sessionId != null && !MOBILE_SESSION.matches(sessionId)) {
-                    appendPluginUiError(requestId, "插件请求的会话无效")
+                    pluginUi.reject(requestId, "插件请求的会话无效")
                     return@withLock
                 }
                 val currentProfile = profile
@@ -697,50 +683,31 @@ class RealtimeSession(
                     sessionId != null && currentProfile != null &&
                     isRemoteMissingSession(currentProfile.serverId, sessionId)
                 ) {
-                    appendPluginUiError(requestId, "会话已不在电脑上")
+                    pluginUi.reject(requestId, "会话已不在电脑上")
                     return@withLock
                 }
                 if (turnId != null && turnId.length !in 1..512) {
-                    appendPluginUiError(requestId, "插件请求的轮次无效")
+                    pluginUi.reject(requestId, "插件请求的轮次无效")
                     return@withLock
                 }
-                val payload = try {
-                    json.parseToJsonElement(payloadJson).jsonObject
-                } catch (error: SerializationException) {
-                    appendPluginUiError(requestId, "插件参数不是有效 JSON：${error.message}")
-                    return@withLock
-                } catch (error: IllegalArgumentException) {
-                    appendPluginUiError(requestId, "插件参数必须是 JSON 对象")
-                    return@withLock
-                }
-                val commandId = sendPluginUiCommand(
-                    type = "plugin.ui.call",
-                    payload = buildJsonObject {
-                        put("plugin_id", pluginId)
-                        put("method", method)
-                        put("payload", payload)
-                    },
+                pluginUi.query(
+                    requestId = requestId,
+                    ownerId = ownerId,
+                    slot = slot,
                     sessionId = sessionId,
                     turnId = turnId,
-                ) ?: run {
-                    appendPluginUiError(requestId, "连接不可用，插件请求未发送")
-                    return@withLock
-                }
-                pendingPluginUiCalls[commandId] = requestId
+                    pluginId = pluginId,
+                    method = method,
+                    payloadJson = payloadJson,
+                )
             }
         }
     }
 
-    /** 移除 Web UI 已确认接收的插件回包。 */
-    fun acknowledgePluginUiResponses(requestIds: Set<String>) {
-        if (requestIds.isEmpty()) return
+    fun cancelPluginUiOwner(ownerId: String) {
         scope.launch {
             mutex.withLock {
-                mutableState.value = mutableState.value.copy(
-                    pluginUiResponses = mutableState.value.pluginUiResponses.filterNot {
-                        it.requestId in requestIds
-                    },
-                )
+                pluginUi.cancelOwner(ownerId)
             }
         }
     }
@@ -1386,7 +1353,6 @@ class RealtimeSession(
                     }
                     "session.created", "session.updated" ->
                         rememberRemoteSession(requireNotNull(envelope.sessionId))
-                    "plugin.ui.changed" -> requestPluginUiList()
                     "connection.degraded" -> mutableState.value = mutableState.value.copy(
                         connection = mutableState.value.connection.copy(phase = ConnectionPhase.DEGRADED),
                     )
@@ -1413,52 +1379,10 @@ class RealtimeSession(
                     return
                 }
                 if (uploads.onReply(envelope)) return
+                if (pluginUi.onReply(envelope)) return
                 val id = requireNotNull(envelope.id)
                 if (envelope.type == "command.list.ok") {
                     applyCommandListReply(envelope)
-                    return
-                }
-                if (envelope.type == "plugin.ui.list.ok") {
-                    applyPluginUiListReply(envelope)
-                    return
-                }
-                if (envelope.type == "plugin.ui.asset.ok") {
-                    applyPluginUiAssetReply(envelope)
-                    return
-                }
-                if (envelope.type in setOf("plugin.ui.call.ok", "plugin.ui.call.error")) {
-                    applyPluginUiCallReply(envelope)
-                    return
-                }
-                if (envelope.type == "plugin.ui.list.error" && id == pendingPluginUiListId) {
-                    pendingPluginUiListId = null
-                    val errorCode = envelope.payload["code"]?.jsonPrimitive?.content
-                    if (pendingPluginUiListUsesHotUpdates && errorCode == "invalid_payload") {
-                        pendingPluginUiListUsesHotUpdates = false
-                        pluginUiHotUpdatesEnabled = false
-                        pluginUiRefreshQueued = false
-                        requestPluginUiList()
-                        return
-                    }
-                    mutableState.value = mutableState.value.copy(
-                        errorMessage = envelope.payload["message"]?.jsonPrimitive?.content
-                            ?: "加载插件界面失败",
-                    )
-                    requestQueuedPluginUiRefresh()
-                    return
-                }
-                if (envelope.type == "plugin.ui.asset.error" && id in pendingPluginUiAssets) {
-                    val failed = requireNotNull(pendingPluginUiAssets.remove(id))
-                    if (envelope.payload["code"]?.jsonPrimitive?.content == "plugin_unavailable") {
-                        stagedPluginUiAssets.clear()
-                        pluginUiRefreshQueued = true
-                        if (pendingPluginUiAssets.isEmpty()) requestQueuedPluginUiRefresh()
-                        return
-                    }
-                    mutableState.value = mutableState.value.copy(
-                        errorMessage = "加载插件界面失败：${failed.id}",
-                    )
-                    scheduleReconnect("插件 UI 资产批次失败：${failed.id}")
                     return
                 }
                 if (envelope.type == "command.list.error" && id == pendingCommandListId) {
@@ -1534,7 +1458,7 @@ class RealtimeSession(
                 require(envelope.type == "plugin.ui.changed") {
                     "Unexpected authenticated control: ${envelope.type}"
                 }
-                requestPluginUiList()
+                pluginUi.onCatalogChanged()
             }
             else -> error("Unexpected authenticated server frame: ${envelope.kind}")
         }
@@ -1586,100 +1510,6 @@ class RealtimeSession(
         mutableState.value = mutableState.value.copy(commands = commands)
     }
 
-    private fun requestPluginUiList() {
-        if (pendingPluginUiListId != null || pendingPluginUiAssets.isNotEmpty()) {
-            pluginUiRefreshQueued = true
-            return
-        }
-        pluginUiRefreshQueued = false
-        pendingPluginUiListUsesHotUpdates = pluginUiHotUpdatesEnabled
-        pendingPluginUiListId = sendPluginUiCommand(
-            type = "plugin.ui.list",
-            payload = buildJsonObject {
-                if (pluginUiHotUpdatesEnabled) put("hot_updates", true)
-            },
-        )
-    }
-
-    private fun applyPluginUiListReply(envelope: WireEnvelope) {
-        val commandId = requireNotNull(envelope.id)
-        require(commandId == pendingPluginUiListId) { "收到未知插件 UI 目录 reply" }
-        val catalog = ProtocolCodec.decodePayload<MobileUiCatalogPayload>(envelope.payload)
-        require(catalog.items.map { it.id }.distinct().size == catalog.items.size) { "插件 UI 目录 ID 重复" }
-        pendingPluginUiListId = null
-        pendingPluginUiAssets.clear()
-        stagedPluginUiAssets.clear()
-        if (catalog.items.isEmpty()) {
-            mutableState.value = mutableState.value.copy(pluginUiAssets = emptyList())
-            requestQueuedPluginUiRefresh()
-            return
-        }
-        for (item in catalog.items) {
-            require(item.sha256.matches(Regex("^[0-9a-f]{64}$"))) { "插件 UI 摘要无效: ${item.id}" }
-            val id = sendPluginUiCommand(
-                type = "plugin.ui.asset",
-                payload = buildJsonObject { put("plugin_id", item.id) },
-            ) ?: return
-            pendingPluginUiAssets[id] = item
-        }
-    }
-
-    private fun applyPluginUiAssetReply(envelope: WireEnvelope) {
-        val commandId = requireNotNull(envelope.id)
-        val expected = requireNotNull(pendingPluginUiAssets.remove(commandId)) {
-            "收到未知插件 UI 资产 reply"
-        }
-        val asset = ProtocolCodec.decodePayload<MobileUiAssetPayload>(envelope.payload)
-        require(asset.id == expected.id) { "插件 UI 资产 ID 与目录不一致" }
-        if (asset.revision != expected.revision || asset.sha256 != expected.sha256) {
-            stagedPluginUiAssets.clear()
-            pluginUiRefreshQueued = true
-            if (pendingPluginUiAssets.isEmpty()) requestQueuedPluginUiRefresh()
-            return
-        }
-        require(mobileUiDigest(asset.module, asset.stylesheet) == asset.sha256) {
-            "插件 UI 资产内容摘要不一致: ${asset.id}"
-        }
-        stagedPluginUiAssets[asset.id] = asset
-        if (pendingPluginUiAssets.isEmpty()) {
-            if (pluginUiRefreshQueued) {
-                stagedPluginUiAssets.clear()
-                requestQueuedPluginUiRefresh()
-                return
-            }
-            mutableState.value = mutableState.value.copy(
-                pluginUiAssets = stagedPluginUiAssets.values.sortedBy { it.id },
-            )
-            requestQueuedPluginUiRefresh()
-        }
-    }
-
-    private fun requestQueuedPluginUiRefresh() {
-        if (!pluginUiRefreshQueued) return
-        pluginUiRefreshQueued = false
-        requestPluginUiList()
-    }
-
-    private fun applyPluginUiCallReply(envelope: WireEnvelope) {
-        val requestId = requireNotNull(pendingPluginUiCalls.remove(requireNotNull(envelope.id))) {
-            "收到未知插件 UI RPC reply"
-        }
-        val response = if (envelope.type.endsWith(".ok")) {
-            MobileUiResponse(
-                requestId = requestId,
-                result = requireNotNull(envelope.payload["result"]?.jsonObject),
-            )
-        } else {
-            MobileUiResponse(
-                requestId = requestId,
-                error = envelope.payload["message"]?.jsonPrimitive?.content ?: "插件请求失败",
-            )
-        }
-        mutableState.value = mutableState.value.copy(
-            pluginUiResponses = mutableState.value.pluginUiResponses + response,
-        )
-    }
-
     private fun sendPluginUiCommand(
         type: String,
         payload: kotlinx.serialization.json.JsonObject,
@@ -1707,23 +1537,6 @@ class RealtimeSession(
             return null
         }
         return commandId
-    }
-
-    private fun appendPluginUiError(requestId: String, message: String) {
-        mutableState.value = mutableState.value.copy(
-            pluginUiResponses = mutableState.value.pluginUiResponses +
-                MobileUiResponse(requestId, error = message),
-        )
-    }
-
-    private fun mobileUiDigest(module: String, stylesheet: String): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        for (value in listOf(module, stylesheet)) {
-            val encoded = value.toByteArray(Charsets.UTF_8)
-            digest.update(ByteBuffer.allocate(Long.SIZE_BYTES).putLong(encoded.size.toLong()).array())
-            digest.update(encoded)
-        }
-        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     private fun hasPendingSyncCommand(type: String): Boolean =
@@ -1828,7 +1641,7 @@ class RealtimeSession(
         resetRebuildGeneration = syncGeneration
         pendingSyncCommands.clear()
         pendingCommandListId = null
-        resetPluginUiPending("服务端要求重新同步")
+        pluginUi.onDisconnected("服务端要求重新同步")
         requestedHistoryPages.clear()
         mutableState.value = mutableState.value.copy(
             projectionGeneration = mutableState.value.projectionGeneration + 1,
@@ -1852,7 +1665,7 @@ class RealtimeSession(
         )
         cancelPhaseDeadline()
         requestCommandList()
-        requestPluginUiList()
+        pluginUi.onConnectionReady()
         uploads.onConnectionReady(currentProfile.serverId)
         downloads.onConnectionReady(currentProfile.serverId)
         stops.onConnectionReady()
@@ -2089,7 +1902,7 @@ class RealtimeSession(
         downloads.onDisconnected()
         pendingSyncCommands.clear()
         pendingCommandListId = null
-        resetPluginUiPending("连接已中断")
+        pluginUi.onDisconnected("连接已中断")
         requestedHistoryPages.clear()
         resetRebuildGeneration = null
         retryCount += 1
@@ -2127,7 +1940,7 @@ class RealtimeSession(
         downloads.onDisconnected()
         pendingSyncCommands.clear()
         pendingCommandListId = null
-        resetPluginUiPending("协议不兼容")
+        pluginUi.onDisconnected("协议不兼容")
         requestedHistoryPages.clear()
         resetRebuildGeneration = null
 
@@ -2189,25 +2002,7 @@ class RealtimeSession(
         activeEpoch = null
         activeOutboxCommandId = null
         pendingCommandListId = null
-        resetPluginUiPending("连接已重置")
-    }
-
-    private fun resetPluginUiPending(reason: String) {
-        val interrupted = pendingPluginUiCalls.values.map {
-            MobileUiResponse(requestId = it, error = reason)
-        }
-        if (interrupted.isNotEmpty()) {
-            mutableState.value = mutableState.value.copy(
-                pluginUiResponses = mutableState.value.pluginUiResponses + interrupted,
-            )
-        }
-        pendingPluginUiListId = null
-        pendingPluginUiListUsesHotUpdates = false
-        pluginUiHotUpdatesEnabled = true
-        pendingPluginUiAssets.clear()
-        stagedPluginUiAssets.clear()
-        pluginUiRefreshQueued = false
-        pendingPluginUiCalls.clear()
+        pluginUi.onDisconnected("连接已重置")
     }
 
     private fun publishTurnState() {

@@ -18,8 +18,6 @@ data class ConversationUiState(
     val pendingMessages: List<PendingMessageUi>,
     val transferStatus: TransferStatusUi? = null,
     val commands: List<CommandUi>,
-    val pluginUiAssets: List<PluginUiAssetUi> = emptyList(),
-    val pluginUiResponses: List<PluginUiResponseUi> = emptyList(),
     val isStreaming: Boolean,
     val isResyncing: Boolean,
     val canResync: Boolean,
@@ -33,20 +31,6 @@ data class TransferStatusUi(
     val detail: String,
     val progressPercent: Int,
     val requiresMeteredApproval: Boolean,
-)
-
-data class PluginUiAssetUi(
-    val id: String,
-    val revision: String,
-    val sha256: String,
-    val module: String,
-    val stylesheet: String,
-)
-
-data class PluginUiResponseUi(
-    val requestId: String,
-    val resultJson: String?,
-    val error: String?,
 )
 
 data class ComposerAttachmentUi(

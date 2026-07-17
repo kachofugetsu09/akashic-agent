@@ -10,6 +10,7 @@ import com.akashic.mobile.data.local.IncomingShareStore
 import com.akashic.mobile.data.realtime.DeviceKeyStore
 import com.akashic.mobile.data.realtime.RealtimeSession
 import com.akashic.mobile.data.realtime.TransferNetworkMonitor
+import com.akashic.mobile.data.realtime.pluginui.PluginUiAssetStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -44,6 +45,9 @@ class AppContainer(application: Application) {
     )
     val deviceKeyStore = DeviceKeyStore()
     val transferNetwork = TransferNetworkMonitor(application)
+    val pluginUiAssetStore = PluginUiAssetStore(
+        application.filesDir.resolve("plugin-ui-cache/v2"),
+    )
     val realtimeSession = RealtimeSession(
         database = database,
         deliveryStore = deliveryStore,
@@ -52,6 +56,7 @@ class AppContainer(application: Application) {
         preferences = preferences,
         deviceKeys = deviceKeyStore,
         transferNetwork = transferNetwork.state,
+        pluginUiAssetStore = pluginUiAssetStore,
         scope = applicationScope,
         allowInsecureTransport = BuildConfig.ALLOW_INSECURE_WS,
     )

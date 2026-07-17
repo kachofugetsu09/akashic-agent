@@ -44,18 +44,22 @@ import androidx.webkit.WebViewClientCompat
 import com.akashic.mobile.BuildConfig
 import com.akashic.mobile.ui.conversation.ConversationUiState
 import com.akashic.mobile.ui.conversation.MessageUi
+import com.akashic.mobile.data.realtime.pluginui.PluginUiAssetStore
+import com.akashic.mobile.data.realtime.pluginui.PluginUiWebBridge
+import com.akashic.mobile.data.realtime.pluginui.PluginUiWebCatalog
+import com.akashic.mobile.data.realtime.pluginui.PluginUiWebResult
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicReference
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -82,6 +86,9 @@ fun MobileWebChat(
     sharedTextDraft: MobileSharedTextDraft?,
     onCommitSharedText: (String, String, String, String?) -> Unit,
     onSharedTextRejected: (String, String) -> Unit,
+    pluginUiCatalog: PluginUiWebCatalog,
+    pluginUiResults: Flow<PluginUiWebResult>,
+    pluginUiAssetStore: PluginUiAssetStore,
     onSelectSession: (String) -> Unit,
     onRemoveUnavailableSession: (String) -> Unit,
     onNewSession: () -> Unit,
@@ -104,18 +111,21 @@ fun MobileWebChat(
     onDismissError: () -> Unit,
     onSend: (String, String?, List<String>, (Boolean) -> Unit) -> Unit,
     onSendCommand: (String) -> Unit,
-    onPluginUiCall: (String, String?, String?, String, String, String) -> Unit,
-    onPluginUiResponsesAcknowledged: (Set<String>) -> Unit,
+    onPluginUiQuery: (String, String, String, String?, String?, String, String, String) -> Unit,
+    onPluginUiOwnerCancelled: (String) -> Unit,
+    onPluginUiWebViewDisposed: () -> Unit,
     onStop: () -> Unit,
     onBackAtRoot: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val latestState by rememberUpdatedState(state)
     val latestSharedTextDraft by rememberUpdatedState(sharedTextDraft)
+    val latestPluginUiCatalog by rememberUpdatedState(pluginUiCatalog)
     val mediaRegistry = remember { MobileMediaRegistry() }
     val shareScope = remember { CoroutineScope(SupervisorJob() + Dispatchers.IO) }
     var webView by remember { mutableStateOf<WebView?>(null) }
     var snapshotPump by remember { mutableStateOf<MobileSnapshotPump?>(null) }
+    var pluginUiBridge by remember { mutableStateOf<PluginUiWebBridge?>(null) }
     var webLoadError by remember { mutableStateOf<String?>(null) }
     var webHistoryActive by remember { mutableStateOf(false) }
     var webReady by remember { mutableStateOf(false) }
@@ -146,8 +156,8 @@ fun MobileWebChat(
             onDismissError = onDismissError,
             onSend = onSend,
             onSendCommand = onSendCommand,
-            onPluginUiCall = onPluginUiCall,
-            onPluginUiResponsesAcknowledged = onPluginUiResponsesAcknowledged,
+            onPluginUiQuery = onPluginUiQuery,
+            onPluginUiOwnerCancelled = onPluginUiOwnerCancelled,
             onStop = onStop,
         ),
     )
@@ -160,6 +170,7 @@ fun MobileWebChat(
             val assetLoader = WebViewAssetLoader.Builder()
                 .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(context))
                 .addPathHandler("/media/", mediaRegistry)
+                .addPathHandler("/plugin-ui/", pluginUiAssetStore)
                 .build()
             WebView(context).apply {
                 settings.javaScriptEnabled = true
@@ -195,6 +206,7 @@ fun MobileWebChat(
                                 val pump = snapshotPump
                                 Log.i(MOBILE_WEB_LOG_TAG, "bridge requestSnapshot: pumpReady=${pump != null}")
                                 pump?.request(latestState)
+                                pluginUiBridge?.publishCatalog(latestPluginUiCatalog)
                             }
                         },
                         copyText = { text ->
@@ -256,6 +268,7 @@ fun MobileWebChat(
                 loadUrl(mobileWebUrl(BuildConfig.VERSION_CODE))
                 webView = this
                 snapshotPump = MobileSnapshotPump(this, mediaRegistry)
+                pluginUiBridge = PluginUiWebBridge(this)
             }
             },
         )
@@ -282,6 +295,13 @@ fun MobileWebChat(
         }
     }
 
+    LaunchedEffect(webView, pluginUiCatalog) {
+        pluginUiBridge?.publishCatalog(pluginUiCatalog)
+    }
+    LaunchedEffect(webView, pluginUiResults) {
+        val bridge = pluginUiBridge ?: return@LaunchedEffect
+        pluginUiResults.collect(bridge::publishResult)
+    }
     BackHandler {
         val current = webView
         if (current == null) {
@@ -311,6 +331,8 @@ fun MobileWebChat(
         onDispose {
             shareScope.cancel()
             snapshotPump?.cancel()
+            onPluginUiWebViewDisposed()
+            pluginUiBridge = null
             webView?.removeJavascriptInterface("AkashicNative")
             webView?.destroy()
         }
@@ -342,8 +364,8 @@ private data class MobileWebCallbacks(
     val onDismissError: () -> Unit,
     val onSend: (String, String?, List<String>, (Boolean) -> Unit) -> Unit,
     val onSendCommand: (String) -> Unit,
-    val onPluginUiCall: (String, String?, String?, String, String, String) -> Unit,
-    val onPluginUiResponsesAcknowledged: (Set<String>) -> Unit,
+    val onPluginUiQuery: (String, String, String, String?, String?, String, String, String) -> Unit,
+    val onPluginUiOwnerCancelled: (String) -> Unit,
     val onStop: () -> Unit,
 )
 
@@ -497,28 +519,30 @@ private class MobileWebBridge(
     fun sendCommand(command: String) = dispatch { it.onSendCommand(command) }
 
     @JavascriptInterface
-    fun callPluginUi(
+    fun queryPluginUi(
         requestId: String,
+        ownerId: String,
+        slot: String,
         sessionId: String?,
         turnId: String?,
         pluginId: String,
         method: String,
         payloadJson: String,
-    ) = dispatch { it.onPluginUiCall(requestId, sessionId, turnId, pluginId, method, payloadJson) }
+    ) = dispatch {
+        it.onPluginUiQuery(
+            requestId,
+            ownerId,
+            slot,
+            sessionId,
+            turnId,
+            pluginId,
+            method,
+            payloadJson,
+        )
+    }
 
     @JavascriptInterface
-    fun acknowledgePluginUiResponses(requestIdsJson: String) {
-        if (requestIdsJson.toByteArray(Charsets.UTF_8).size > 64 * 1024) return
-        val requestIds = try {
-            Json.decodeFromString<List<String>>(requestIdsJson).toSet()
-        } catch (_: SerializationException) {
-            return
-        } catch (_: IllegalArgumentException) {
-            return
-        }
-        if (requestIds.size > 512 || requestIds.any { it.length !in 1..128 }) return
-        dispatch { it.onPluginUiResponsesAcknowledged(requestIds) }
-    }
+    fun cancelPluginUiOwner(ownerId: String) = dispatch { it.onPluginUiOwnerCancelled(ownerId) }
 
     @JavascriptInterface
     fun stopTurn() = dispatch { it.onStop() }
@@ -681,10 +705,6 @@ private fun WebView.pushSnapshot(snapshotJson: String) {
     ) { result -> Log.d(MOBILE_WEB_LOG_TAG, "snapshot push: $result") }
 }
 
-private fun WebView.pushPluginAssets(assetsJson: String) {
-    evaluateJavascript("window.AkashicMobile?.receivePluginAssets($assetsJson)", null)
-}
-
 private fun WebView.pushSharedTextDraft(draft: MobileSharedTextDraft) {
     evaluateJavascript(
         "window.AkashicMobile?.receiveSharedText(" +
@@ -701,8 +721,6 @@ private class MobileSnapshotPump(
     private val json = Json { explicitNulls = false }
     private val states = Channel<ConversationUiState>(Channel.CONFLATED)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private var pluginSignature: String? = null
-    private val forcePluginAssets = AtomicBoolean(false)
 
     init {
         scope.launch {
@@ -713,20 +731,8 @@ private class MobileSnapshotPump(
                     latest = states.tryReceive().getOrNull() ?: break
                 }
                 val snapshotJson = json.encodeToString(latest.toMobileWebSnapshot())
-                val nextPluginSignature = latest.pluginUiAssets.joinToString("|") { "${it.id}:${it.sha256}" }
-                val pluginAssetsJson = if (
-                    forcePluginAssets.getAndSet(false) || nextPluginSignature != pluginSignature
-                ) {
-                    json.encodeToString(latest.toMobileWebPluginAssets())
-                } else {
-                    null
-                }
                 mediaRegistry.replace(latest.mediaResources())
                 withContext(Dispatchers.Main.immediate) {
-                    if (pluginAssetsJson != null) {
-                        webView.pushPluginAssets(pluginAssetsJson)
-                        pluginSignature = nextPluginSignature
-                    }
                     webView.pushSnapshot(snapshotJson)
                 }
             }
@@ -738,7 +744,6 @@ private class MobileSnapshotPump(
     }
 
     fun request(state: ConversationUiState) {
-        forcePluginAssets.set(true)
         submit(state)
     }
 
