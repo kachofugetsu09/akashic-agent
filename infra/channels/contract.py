@@ -29,5 +29,5 @@ class ChannelContext:
     attachment_store: AttachmentStore
     http_resources: SharedHttpResources
     interrupt_controller: InterruptController | None
-    bot_commands: list[tuple[str, str]]
+    mobile_bot_commands: list[tuple[str, str]]
     log: logging.Logger

@@ -2031,8 +2031,10 @@ def test_akashalast_command_only_exposes_for_akasha_engine(tmp_path: Path) -> No
     )
 
     assert akasha.telegram_bot_commands() == [("akashalast", "查看上一轮 Akasha 检索诊断")]
+    assert akasha.mobile_bot_commands() == [("akashalast", "查看上一轮 Akasha 检索诊断")]
     assert len(akasha.before_turn_modules()) == 1
     assert default.telegram_bot_commands() == []
+    assert default.mobile_bot_commands() == []
     assert len(default.before_turn_modules()) == 1
 
 

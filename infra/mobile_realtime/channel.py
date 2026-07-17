@@ -487,7 +487,7 @@ class MobileRealtimeChannel:
         _expect_keys(frame.payload, set())
         items: list[dict[str, str]] = []
         seen: set[str] = set()
-        for raw_command, raw_description in self._require_ctx().bot_commands:
+        for raw_command, raw_description in self._require_ctx().mobile_bot_commands:
             command = raw_command.strip().removeprefix("/")
             description = raw_description.strip()
             if not _BOT_COMMAND_PATTERN.fullmatch(command):

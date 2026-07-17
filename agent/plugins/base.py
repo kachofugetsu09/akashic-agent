@@ -102,6 +102,12 @@ class Plugin(ABC):
     def channels(self) -> list["Channel"]:
         return []
 
+    def telegram_bot_commands(self) -> list[tuple[str, str]]:
+        return []
+
+    def mobile_bot_commands(self) -> list[tuple[str, str]]:
+        return []
+
     @classmethod
     def dashboard_module(cls) -> str | None:
         return None

@@ -246,6 +246,7 @@ def _message_frame(
     session_id: str,
     epoch: int = 1,
     reply_to: dict[str, object] | None = None,
+    text: str = "你好",
 ) -> MessageSendCommand:
     frame = parse_frame(
         json.dumps(
@@ -259,7 +260,7 @@ def _message_frame(
                 "payload": {
                     "client_message_id": frame_id,
                     "session_id": session_id,
-                    "text": "你好",
+                    "text": text,
                     "media_refs": [],
                     "client_created_at": datetime.now(timezone.utc).isoformat(),
                     **({"reply_to": reply_to} if reply_to is not None else {}),
@@ -1305,7 +1306,7 @@ async def test_turn_stop_idle_result_still_closes_stale_mobile_turn(tmp_path: Pa
                     ),
                 ),
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
-                bot_commands=[],
+                mobile_bot_commands=[],
             ),
         )
     )
@@ -1357,7 +1358,7 @@ async def test_command_list_uses_active_channel_catalog_without_stop(tmp_path: P
                 push_tool=_PushTool(),
                 interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
-                bot_commands=[
+                mobile_bot_commands=[
                     ("undo", "撤销上一轮对话"),
                     ("/memorystatus", "查看记忆整理状态"),
                     ("emoji", "😀" * 129),
@@ -1384,6 +1385,48 @@ async def test_command_list_uses_active_channel_catalog_without_stop(tmp_path: P
         ]
     }
     await channel.stop()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_message_send_preserves_mobile_slash_command_for_bus(tmp_path: Path) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    manager = SessionManager(tmp_path / "workspace")
+    bus = _Bus()
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=bus,
+                session_manager=manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+                mobile_bot_commands=[("undo", "撤销上一轮对话")],
+            ),
+        )
+    )
+    session_id = f"mobile:{uuid4()}"
+
+    reply = await channel.handle_command(
+        device_id=device_id,
+        frame=_message_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAY",
+            session_id=session_id,
+            text="/undo",
+        ),
+    )
+
+    assert reply.type == "message.send.ok"
+    assert len(bus.inbound) == 1
+    assert cast(Any, bus.inbound[0]).content == "/undo"
+    await channel.stop()
+    manager.close()
     storage.close()
 
 
