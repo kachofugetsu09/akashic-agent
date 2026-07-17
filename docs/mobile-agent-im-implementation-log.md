@@ -432,3 +432,12 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - 主概览用青绿表达继续率、紫色表达明确引用、蓝色表达高可信信号；最近回应保持平面列表，筛选是单一 segmented control，展开后才显示“主动发出 → 用户回应 → 助手继续”。
 - Pixel 7 真实空态、707 条只读样本、三种筛选和展开/收起均通过。真机发现折叠详情仍泄漏到 Android 无障碍树后补齐 `inert + aria-hidden`；复测确认折叠、展开、再次收起的可访问树与视觉状态一致。
 - 插件 Python `12 passed`、Node `5 passed`、Pyright 0 错误；源码 PR #2 已合入，Docker Mobile Lab 最终缓存 HEAD 为 `3fa085e`。完整设计、备份和截图证据见 `docs/mobile-batches/2026-07-17-proactive-feedback-panel.md`。
+
+## 2026-07-17 Emotion 主动状态移动面板
+
+- `emotion` 通过既有移动 UI 生命周期注册插件自有“主动状态”看板；核心没有新增插件名、数据库路径、阈值规则或专用样式。
+- 手机只回答“当前会怎么表现”和“哪些反馈真正改变了它”：当前语气、主动门槛、有效影响组成一个指标组，VAD 默认折叠，最近影响保持平面列表。
+- 领域层新增唯一 `describe_behavior()` owner，主动 effect 和移动 overview 共同复用；移动端不再用可能过期的 last effect 冒充当前状态。
+- Pixel 7 使用只读正式快照验证：`3630` 条周期 effect 没有进入列表，`28` 条反馈中只显示 `26` 条非零影响；真实状态为“自然 / 保持门槛”。
+- 真机展开指标后可读愉悦度、活跃度和主动把握，收起后原始指标从 Android 无障碍树消失；服务端与应用日志无 FATAL、RenderProcessGone、event gap 或插件 RPC 异常。
+- 插件 Python `3 passed`、Node `4 passed`、Pyright 0 错误；源码 PR #2 已合入，Docker Mobile Lab 最终缓存 HEAD 为 `0db706f`。完整设计、隔离、备份和截图证据见 `docs/mobile-batches/2026-07-17-emotion-state-panel.md`。
