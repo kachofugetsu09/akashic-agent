@@ -1360,6 +1360,7 @@ async def test_command_list_uses_active_channel_catalog_without_stop(tmp_path: P
                 bot_commands=[
                     ("undo", "撤销上一轮对话"),
                     ("/memorystatus", "查看记忆整理状态"),
+                    ("emoji", "😀" * 129),
                     ("stop", "中断当前回复"),
                 ],
             ),
@@ -1379,6 +1380,7 @@ async def test_command_list_uses_active_channel_catalog_without_stop(tmp_path: P
         "items": [
             {"command": "undo", "description": "撤销上一轮对话"},
             {"command": "memorystatus", "description": "查看记忆整理状态"},
+            {"command": "emoji", "description": "😀" * 129},
         ]
     }
     await channel.stop()
