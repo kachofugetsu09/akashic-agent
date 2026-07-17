@@ -274,7 +274,13 @@ async def _resolve_addresses(host: str, port: int) -> tuple[str, ...]:
         type=socket.SOCK_STREAM,
         proto=socket.IPPROTO_TCP,
     )
-    return tuple(dict.fromkeys(record[4][0] for record in records))
+    addresses: list[str] = []
+    for record in records:
+        address = record[4][0]
+        if not isinstance(address, str):
+            raise RemoteMediaError(f"DNS 返回了非文本地址: {address!r}")
+        addresses.append(address)
+    return tuple(dict.fromkeys(addresses))
 
 
 def _create_pinned_backend(host: str, address: str) -> httpcore.AsyncNetworkBackend:
