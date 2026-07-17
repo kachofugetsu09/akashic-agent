@@ -2359,7 +2359,7 @@ async def test_plugin_watcher_reconciles_change_arriving_during_scan() -> None:
             return []
 
     manager = Manager()
-    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    watcher = PluginWatcher(cast(PluginManager, manager), interval_seconds=0.01)
     task = asyncio.create_task(watcher.run())
     await asyncio.sleep(0)
     manager.revision = "b"
@@ -2394,7 +2394,7 @@ async def test_plugin_watcher_recovers_after_revision_scan_error() -> None:
             return []
 
     manager = Manager()
-    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    watcher = PluginWatcher(cast(PluginManager, manager), interval_seconds=0.01)
     task = asyncio.create_task(watcher.run())
     for _ in range(100):
         if manager.calls:
@@ -2424,7 +2424,7 @@ async def test_plugin_watcher_does_not_reconcile_after_recovered_scan_error() ->
             return []
 
     manager = Manager()
-    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    watcher = PluginWatcher(cast(PluginManager, manager), interval_seconds=0.01)
     task = asyncio.create_task(watcher.run())
     for _ in range(100):
         if manager.scans >= 3:
@@ -2465,10 +2465,10 @@ async def test_plugin_watcher_recovers_after_reconcile_failure() -> None:
         reconciled += 1
 
     watcher = PluginWatcher(
-        manager,
+        cast(PluginManager, manager),
         interval_seconds=0.01,
         after_reconcile=after_reconcile,
-    )  # type: ignore[arg-type]
+    )
     task = asyncio.create_task(watcher.run())
     await asyncio.sleep(0)
     manager.revision = "broken"
@@ -2512,10 +2512,10 @@ async def test_plugin_watcher_retries_notification_without_reconciling_again() -
         notified.set()
 
     watcher = PluginWatcher(
-        manager,
+        cast(PluginManager, manager),
         interval_seconds=0.01,
         after_reconcile=after_reconcile,
-    )  # type: ignore[arg-type]
+    )
     task = asyncio.create_task(watcher.run())
     await asyncio.sleep(0)
     manager.revision = "changed"
@@ -2549,8 +2549,8 @@ async def test_plugin_watcher_confirms_disabled_result_against_stable_revision()
         nonlocal notification_calls
         notification_calls += 1
 
-    watcher = PluginWatcher(  # type: ignore[arg-type]
-        manager,
+    watcher = PluginWatcher(
+        cast(PluginManager, manager),
         interval_seconds=0.01,
         after_reconcile=notify,
     )
@@ -2590,8 +2590,8 @@ async def test_plugin_watcher_notifies_explicit_disable_after_confirmation() -> 
         nonlocal notification_calls
         notification_calls += 1
 
-    watcher = PluginWatcher(  # type: ignore[arg-type]
-        manager,
+    watcher = PluginWatcher(
+        cast(PluginManager, manager),
         interval_seconds=0.01,
         after_reconcile=notify,
     )
@@ -2633,8 +2633,8 @@ async def test_plugin_watcher_retries_failed_disabled_confirmation() -> None:
         nonlocal notification_calls
         notification_calls += 1
 
-    watcher = PluginWatcher(  # type: ignore[arg-type]
-        manager,
+    watcher = PluginWatcher(
+        cast(PluginManager, manager),
         interval_seconds=0.01,
         after_reconcile=notify,
     )
@@ -2670,7 +2670,7 @@ async def test_plugin_watcher_propagates_cancellation_and_marks_stopped() -> Non
             return []
 
     manager = Manager()
-    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    watcher = PluginWatcher(cast(PluginManager, manager), interval_seconds=0.01)
     task = asyncio.create_task(watcher.run())
     await asyncio.sleep(0)
     manager.revision = "changed"
@@ -2694,7 +2694,7 @@ async def test_plugin_watcher_stop_before_run_skips_initial_scan() -> None:
             return "stable"
 
     manager = Manager()
-    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    watcher = PluginWatcher(cast(PluginManager, manager), interval_seconds=0.01)
     watcher.stop()
 
     await watcher.run()
@@ -2708,7 +2708,7 @@ async def test_plugin_watcher_cancellation_before_start_does_not_leak_waiter() -
         def watch_revision(self) -> str:
             raise AssertionError("未启动的 watcher 不应扫描")
 
-    watcher = PluginWatcher(Manager(), interval_seconds=0.01)  # type: ignore[arg-type]
+    watcher = PluginWatcher(cast(PluginManager, Manager()), interval_seconds=0.01)
     task = asyncio.create_task(watcher.run())
     watcher.stop()
     task.cancel()

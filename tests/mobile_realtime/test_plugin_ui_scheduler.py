@@ -16,6 +16,18 @@ class _BlockingProvider:
         self.max_active = 0
         self.calls: list[str] = []
 
+    def catalog(self) -> dict[str, object]:
+        raise AssertionError("调度测试不应读取插件目录")
+
+    def asset(
+        self,
+        plugin_id: str,
+        plugin_revision: str,
+        kind: str,
+        sha256: str,
+    ) -> dict[str, object]:
+        raise AssertionError("调度测试不应读取插件资源")
+
     async def query(
         self,
         plugin_id: str,

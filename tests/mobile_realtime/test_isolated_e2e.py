@@ -128,7 +128,7 @@ def _config(root: Path) -> MobileRealtimeConfig:
         enabled=True,
         database=root / "gateway" / "mobile.db",
         lan_hostname="isolated-mobile.test",
-        public_url=None,
+        public_url="",
         key_encryption=MobileKeyEncryptionConfig(
             keyset_manifest=root / "gateway" / "keys" / "current.json"
         ),

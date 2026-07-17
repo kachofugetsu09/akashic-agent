@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,7 +30,7 @@ ATTACHMENT_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 
 
 @pytest.fixture
-def storage(tmp_path: Path) -> MobileRealtimeStorage:
+def storage(tmp_path: Path) -> Iterator[MobileRealtimeStorage]:
     value = MobileRealtimeStorage(tmp_path / "mobile.db")
     value.register_device(
         DeviceRecord(
@@ -510,7 +511,7 @@ def test_outbound_batch_is_atomic_and_enforces_message_limits(
     with pytest.raises(AttachmentRequestError, match="1..10"):
         service.register_outbound_batch(
             session_id=session_id,
-            local_media_paths=[first_source] * 11,
+            local_media_paths=(first_source,) * 11,
         )
 
 

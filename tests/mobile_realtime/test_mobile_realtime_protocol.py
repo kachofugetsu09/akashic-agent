@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -356,6 +357,6 @@ def test_generated_schema_matches_checked_in_file() -> None:
     assert OUTPUT.read_text(encoding="utf-8") == encoded
 
 
-def _golden_frame(index: int) -> dict[str, object]:
+def _golden_frame(index: int) -> dict[str, Any]:
     frames = json.loads(FIXTURES.read_text(encoding="utf-8"))
     return frames[index]
