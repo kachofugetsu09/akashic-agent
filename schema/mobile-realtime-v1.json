@@ -31,6 +31,7 @@
   },
   "commandTypes": [
     "attachment.begin",
+    "attachment.download",
     "attachment.finish",
     "device.update",
     "history.get",
@@ -303,6 +304,86 @@
           "sha256"
         ],
         "title": "AttachmentBeginPayload",
+        "type": "object"
+      },
+      "AttachmentDownloadCommand": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_epoch": {
+            "minimum": 1,
+            "title": "Connection Epoch",
+            "type": "integer"
+          },
+          "id": {
+            "maxLength": 36,
+            "minLength": 26,
+            "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12})$",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "command",
+            "title": "Kind",
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/$defs/AttachmentDownloadPayload"
+          },
+          "session_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          },
+          "turn_id": {
+            "default": null,
+            "title": "Turn Id",
+            "type": "null"
+          },
+          "type": {
+            "const": "attachment.download",
+            "title": "Type",
+            "type": "string"
+          },
+          "v": {
+            "const": 1,
+            "title": "V",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "v",
+          "kind",
+          "type",
+          "id",
+          "connection_epoch",
+          "session_id",
+          "payload"
+        ],
+        "title": "AttachmentDownloadCommand",
+        "type": "object"
+      },
+      "AttachmentDownloadPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment_id": {
+            "maxLength": 36,
+            "minLength": 26,
+            "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12})$",
+            "title": "Attachment Id",
+            "type": "string"
+          },
+          "offset": {
+            "minimum": 0,
+            "title": "Offset",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attachment_id",
+          "offset"
+        ],
+        "title": "AttachmentDownloadPayload",
         "type": "object"
       },
       "AttachmentFinishCommand": {
@@ -1241,6 +1322,7 @@
           "discriminator": {
             "mapping": {
               "attachment.begin": "#/$defs/AttachmentBeginCommand",
+              "attachment.download": "#/$defs/AttachmentDownloadCommand",
               "attachment.finish": "#/$defs/AttachmentFinishCommand",
               "device.update": "#/$defs/GenericCommand",
               "history.get": "#/$defs/GenericCommand",
@@ -1262,6 +1344,9 @@
             },
             {
               "$ref": "#/$defs/AttachmentFinishCommand"
+            },
+            {
+              "$ref": "#/$defs/AttachmentDownloadCommand"
             },
             {
               "$ref": "#/$defs/GenericCommand"
@@ -1343,6 +1428,7 @@
         "discriminator": {
           "mapping": {
             "attachment.begin": "#/$defs/AttachmentBeginCommand",
+            "attachment.download": "#/$defs/AttachmentDownloadCommand",
             "attachment.finish": "#/$defs/AttachmentFinishCommand",
             "device.update": "#/$defs/GenericCommand",
             "history.get": "#/$defs/GenericCommand",
@@ -1364,6 +1450,9 @@
           },
           {
             "$ref": "#/$defs/AttachmentFinishCommand"
+          },
+          {
+            "$ref": "#/$defs/AttachmentDownloadCommand"
           },
           {
             "$ref": "#/$defs/GenericCommand"

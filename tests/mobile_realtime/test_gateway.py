@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
+import json
 import secrets
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,16 +27,76 @@ from bus.events_lifecycle import (
     TurnStarted,
 )
 from infra.channels.base import AttachmentStore
-from infra.mobile_realtime.attachments import AttachmentChunk, encode_attachment_chunk
+from infra.mobile_realtime.attachments import (
+    AttachmentChunk,
+    MAX_ATTACHMENT_CHUNK_BYTES,
+    decode_attachment_chunk,
+    encode_attachment_chunk,
+)
 from infra.mobile_realtime.auth import device_proof_signing_bytes
 from infra.mobile_realtime.gateway import (
+    ActiveMobileConnection,
     build_mobile_gateway_runtime,
     build_mobile_gateway_server,
     create_mobile_gateway_app,
 )
 from infra.mobile_realtime.key_protection import KeyProtectionError
+from infra.mobile_realtime.protocol import AttachmentDownloadCommand, parse_frame
 from infra.mobile_realtime.storage import DeviceRecord
 from session.manager import SessionManager
+
+
+class _ControlledWebSocket:
+    def __init__(
+        self,
+        *,
+        send_gate: asyncio.Event | None = None,
+        close_gate: asyncio.Event | None = None,
+        bytes_gate: asyncio.Event | None = None,
+    ) -> None:
+        self.send_gate = send_gate
+        self.close_gate = close_gate
+        self.bytes_gate = bytes_gate
+        self.send_started = asyncio.Event()
+        self.close_started = asyncio.Event()
+        self.bytes_started = asyncio.Event()
+        self.sent_text: list[str] = []
+        self.wire_order: list[str] = []
+
+    async def send_text(self, text: str) -> None:
+        self.send_started.set()
+        if self.send_gate is not None:
+            await self.send_gate.wait()
+        self.sent_text.append(text)
+        self.wire_order.append(str(json.loads(text)["kind"]))
+
+    async def send_bytes(self, data: bytes) -> None:
+        self.bytes_started.set()
+        self.wire_order.append("bytes")
+        if self.bytes_gate is not None:
+            await self.bytes_gate.wait()
+
+    async def send_json(self, data: object) -> None:
+        self.wire_order.append("reply")
+
+    async def close(self, *, code: int, reason: str) -> None:
+        self.close_started.set()
+        if self.close_gate is not None:
+            await self.close_gate.wait()
+
+
+def _register_test_device(runtime: Any, device_id: str) -> None:
+    device_key = ec.generate_private_key(ec.SECP256R1())
+    runtime.storage.register_device(
+        DeviceRecord(
+            device_id=device_id,
+            public_key=_device_public_key(device_key),
+            display_name=f"Device {device_id}",
+            created_at=datetime.now(timezone.utc),
+            revoked_at=None,
+            capabilities=("stream-v1",),
+        )
+    )
 
 
 class _EphemeralMasterKeys:
@@ -992,3 +1055,642 @@ def test_attachment_upload_resumes_and_reaches_agent_media(
     assert bus.inbound[0].content == ""
     assert len(bus.inbound[0].media) == 1
     assert Path(bus.inbound[0].media[0]).read_bytes() == content
+
+
+def test_outbound_attachment_download_replays_binary_before_reply(
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+) -> None:
+    """验证出站附件只暴露描述符，并以可重复 offset 下载二进制。"""
+
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    class CapturePushTool:
+        def register_channel(self, channel: str, **senders: object) -> None:
+            assert channel == "mobile"
+
+    import asyncio
+
+    runtime, _ = asyncio.run(build())
+    request.addfinalizer(runtime.close)
+    push = CapturePushTool()
+    asyncio.run(
+        runtime.channel.start(
+            cast(
+                Any,
+                SimpleNamespace(
+                    bus=SimpleNamespace(subscribe_outbound=lambda *_: None),
+                    session_manager=SessionManager(tmp_path / "sessions"),
+                    event_bus=SimpleNamespace(on=lambda *_: None),
+                    push_tool=push,
+                    interrupt_controller=None,
+                    attachment_store=AttachmentStore(tmp_path / "uploads"),
+                ),
+            )
+        )
+    )
+    request.addfinalizer(lambda: asyncio.run(runtime.channel.stop()))
+    device_key = ec.generate_private_key(ec.SECP256R1())
+    device_id = uuid4().hex
+    runtime.storage.register_device(
+        DeviceRecord(
+            device_id=device_id,
+            public_key=_device_public_key(device_key),
+            display_name="Pixel Emulator",
+            created_at=datetime.now(timezone.utc),
+            revoked_at=None,
+            capabilities=("attachments-v1",),
+        )
+    )
+    chat_id = str(uuid4())
+    session_id = f"mobile:{chat_id}"
+    runtime.storage.claim_session(
+        device_id=device_id,
+        session_id=session_id,
+        created_at=datetime.now(timezone.utc),
+    )
+    content = b"outbound" * 20_000
+    source = tmp_path / "agent-result.bin"
+    source.write_bytes(content)
+    turn_id = uuid4().hex
+    persisted = runtime.channel._require_ctx().session_manager.get_or_create(session_id)
+    persisted.add_message(
+        "assistant",
+        "文件已生成",
+        media=[str(source)],
+    )
+    runtime.channel._require_ctx().session_manager.save(persisted)
+    message_id = str(persisted.messages[-1]["id"])
+    asyncio.run(
+        runtime.channel._on_turn_started(
+            TurnStarted(
+                session_key=session_id,
+                channel="mobile",
+                chat_id=chat_id,
+                content="生成文件",
+                timestamp=datetime.now(timezone.utc),
+                turn_id=turn_id,
+            )
+        )
+    )
+    asyncio.run(
+        runtime.channel._on_response(
+            OutboundMessage(
+                channel="mobile",
+                chat_id=chat_id,
+                content="文件已生成",
+                media=[str(source)],
+                control_turn_id=turn_id,
+                session_message_id=message_id,
+            )
+        )
+    )
+
+    client = TestClient(create_mobile_gateway_app(runtime))
+    with client.websocket_connect("/ws") as websocket:
+        challenge = websocket.receive_json()
+        websocket.send_json(
+            _device_proof(
+                challenge=challenge["payload"],
+                device_id=device_id,
+                device_key=device_key,
+            )
+        )
+        epoch = websocket.receive_json()["connection_epoch"]
+        websocket.send_json(
+            {
+                "v": 1,
+                "kind": "control",
+                "type": "resume",
+                "connection_epoch": epoch,
+                "payload": {"last_ack": 0, "active_turns": []},
+            }
+        )
+        assert websocket.receive_json()["type"] == "turn.started"
+        final = websocket.receive_json()
+        assert final["type"] == "message.final"
+        descriptor = final["payload"]["attachments"][0]
+        assert "local_path" not in descriptor
+        assert websocket.receive_json()["type"] == "sync.completed"
+
+        command = {
+            "v": 1,
+            "kind": "command",
+            "type": "attachment.download",
+            "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "connection_epoch": epoch,
+            "session_id": session_id,
+            "payload": {
+                "attachment_id": descriptor["attachment_id"],
+                "offset": 0,
+            },
+        }
+        websocket.send_json(command)
+        first = decode_attachment_chunk(websocket.receive_bytes())
+        reply = websocket.receive_json()
+        assert first.data == content[:MAX_ATTACHMENT_CHUNK_BYTES]
+        assert reply["type"] == "attachment.download.ok"
+        assert reply["payload"]["next_offset"] == len(first.data)
+
+        websocket.send_json(command)
+        duplicate = decode_attachment_chunk(websocket.receive_bytes())
+        assert duplicate == first
+        assert websocket.receive_json() == reply
+
+
+def test_slow_device_delivery_does_not_block_other_device(tmp_path: Path) -> None:
+    """验证慢设备只阻塞自身队列，其他设备仍能实时收到事件。"""
+
+    async def scenario() -> None:
+        # 1. 注册两个在线设备，其中一个 socket 人为阻塞
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        slow_id = uuid4().hex
+        fast_id = uuid4().hex
+        _register_test_device(runtime, slow_id)
+        _register_test_device(runtime, fast_id)
+        slow_gate = asyncio.Event()
+        slow_socket = _ControlledWebSocket(send_gate=slow_gate)
+        fast_socket = _ControlledWebSocket()
+        slow_connection = ActiveMobileConnection(
+            websocket=cast(Any, slow_socket),
+            connection_epoch=1,
+            send_lock=asyncio.Lock(),
+            pending_events=deque(),
+            ready=True,
+            delivery_task=None,
+        )
+        fast_connection = ActiveMobileConnection(
+            websocket=cast(Any, fast_socket),
+            connection_epoch=2,
+            send_lock=asyncio.Lock(),
+            pending_events=deque(),
+            ready=True,
+            delivery_task=None,
+        )
+        runtime._connections[slow_id] = slow_connection
+        runtime._connections[fast_id] = fast_connection
+
+        # 2. fanout 返回后，快设备应在慢设备解除阻塞前完成写入
+        await runtime.publish_event(
+            event_type="connection.degraded",
+            payload={"reason": "fanout-test"},
+        )
+        await asyncio.wait_for(slow_socket.send_started.wait(), timeout=1)
+        await asyncio.wait_for(fast_socket.send_started.wait(), timeout=1)
+        assert len(fast_socket.sent_text) == 1
+        assert slow_socket.sent_text == []
+
+        # 3. 解除慢设备后，其 durable 序号仍按顺序推进
+        slow_task = slow_connection.delivery_task
+        assert slow_task is not None
+        slow_gate.set()
+        await asyncio.wait_for(slow_task, timeout=1)
+        assert len(slow_socket.sent_text) == 1
+        assert runtime.storage.read_cursor(slow_id).sent_event_seq == 1
+        assert runtime.storage.read_cursor(fast_id).sent_event_seq == 1
+        runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_resume_window_queues_concurrent_event_after_sync_terminal(
+    tmp_path: Path,
+) -> None:
+    """验证 resume 阻塞期间发布的事件不会漏发、重发或越过终止帧。"""
+
+    async def scenario() -> None:
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        device_id = uuid4().hex
+        _register_test_device(runtime, device_id)
+        await runtime.publish_event(
+            device_id=device_id,
+            event_type="connection.degraded",
+            payload={"reason": "before-resume"},
+        )
+        send_gate = asyncio.Event()
+        websocket = _ControlledWebSocket(send_gate=send_gate)
+
+        # 1. 卡住历史事件写入，并在 resume 窗口发布实时事件
+        resume_task = asyncio.create_task(
+            runtime._resume_and_register(
+                cast(Any, websocket),
+                device_id=device_id,
+                connection_epoch=1,
+                last_ack=0,
+            )
+        )
+        await asyncio.wait_for(websocket.send_started.wait(), timeout=1)
+        await runtime.publish_event(
+            device_id=device_id,
+            event_type="connection.degraded",
+            payload={"reason": "during-resume"},
+        )
+        send_gate.set()
+        await asyncio.wait_for(resume_task, timeout=1)
+
+        # 2. 等待独立投递任务排空重放期间的实时事件
+        connection = runtime._connections[device_id]
+        delivery_task = connection.delivery_task
+        if delivery_task is not None:
+            await asyncio.wait_for(delivery_task, timeout=1)
+        frames = [json.loads(text) for text in websocket.sent_text]
+        assert [frame["type"] for frame in frames] == [
+            "connection.degraded",
+            "sync.completed",
+            "connection.degraded",
+        ]
+        assert frames[0]["payload"]["reason"] == "before-resume"
+        assert frames[2]["payload"]["reason"] == "during-resume"
+        assert [frame["event_seq"] for frame in frames] == [1, 2, 3]
+        assert runtime.storage.read_cursor(device_id).sent_event_seq == 3
+        runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_replaced_socket_close_does_not_block_other_device(
+    tmp_path: Path,
+) -> None:
+    """验证旧连接关闭卡住时，不会占用其他设备的投递路径。"""
+
+    async def scenario() -> None:
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        replaced_id = uuid4().hex
+        other_id = uuid4().hex
+        _register_test_device(runtime, replaced_id)
+        _register_test_device(runtime, other_id)
+        close_gate = asyncio.Event()
+        old_socket = _ControlledWebSocket(close_gate=close_gate)
+        runtime._connections[replaced_id] = ActiveMobileConnection(
+            websocket=cast(Any, old_socket),
+            connection_epoch=1,
+            send_lock=asyncio.Lock(),
+            pending_events=deque(),
+            ready=True,
+            delivery_task=None,
+        )
+        other_socket = _ControlledWebSocket()
+        runtime._connections[other_id] = ActiveMobileConnection(
+            websocket=cast(Any, other_socket),
+            connection_epoch=1,
+            send_lock=asyncio.Lock(),
+            pending_events=deque(),
+            ready=True,
+            delivery_task=None,
+        )
+
+        # 1. 新连接完成 resume，但旧 socket 的 close 持续阻塞
+        new_socket = _ControlledWebSocket()
+        await runtime._resume_and_register(
+            cast(Any, new_socket),
+            device_id=replaced_id,
+            connection_epoch=2,
+            last_ack=0,
+        )
+        await asyncio.wait_for(old_socket.close_started.wait(), timeout=1)
+
+        # 2. 另一设备仍能收到实时事件
+        await runtime.publish_event(
+            device_id=other_id,
+            event_type="connection.degraded",
+            payload={"reason": "other-device"},
+        )
+        await asyncio.wait_for(other_socket.send_started.wait(), timeout=1)
+        assert len(other_socket.sent_text) == 1
+        close_gate.set()
+        await asyncio.sleep(0)
+        runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_binary_reply_is_atomic_against_event_delivery(tmp_path: Path) -> None:
+    """验证下载二进制与 reply 之间不会插入实时事件。"""
+
+    async def scenario() -> None:
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        device_id = uuid4().hex
+        _register_test_device(runtime, device_id)
+        bytes_gate = asyncio.Event()
+        websocket = _ControlledWebSocket(bytes_gate=bytes_gate)
+        connection = ActiveMobileConnection(
+            websocket=cast(Any, websocket),
+            connection_epoch=1,
+            send_lock=asyncio.Lock(),
+            pending_events=deque(),
+            ready=True,
+            delivery_task=None,
+        )
+        runtime._connections[device_id] = connection
+
+        class BinaryReplyChannel:
+            async def handle_command(self, **_: object) -> object:
+                return SimpleNamespace(
+                    binary=AttachmentChunk("01ARZ3NDEKTSV4RRFFQ69G5FAV", 0, b"data"),
+                    type="attachment.download.ok",
+                    payload={"next_offset": 4},
+                    session_id=None,
+                    turn_id=None,
+                )
+
+        runtime._channel = cast(Any, BinaryReplyChannel())
+        frame = parse_frame(
+            json.dumps(
+                {
+                    "v": 1,
+                    "kind": "command",
+                    "type": "attachment.download",
+                    "id": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+                    "connection_epoch": 1,
+                    "session_id": f"mobile:{uuid4()}",
+                    "payload": {
+                        "attachment_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                        "offset": 0,
+                    },
+                }
+            )
+        )
+        assert isinstance(frame, AttachmentDownloadCommand)
+
+        # 1. 二进制写入持锁期间发布事件，事件任务只能等待
+        command_task = asyncio.create_task(
+            runtime._handle_command(
+                cast(Any, websocket),
+                frame,
+                connection_epoch=1,
+                device_id=device_id,
+            )
+        )
+        await asyncio.wait_for(websocket.bytes_started.wait(), timeout=1)
+        await runtime.publish_event(
+            device_id=device_id,
+            event_type="connection.degraded",
+            payload={"reason": "atomic-order"},
+        )
+        await asyncio.sleep(0)
+        assert websocket.wire_order == ["bytes"]
+
+        # 2. 解锁后必须先 reply，再发送排队事件
+        bytes_gate.set()
+        await asyncio.wait_for(command_task, timeout=1)
+        for _ in range(20):
+            if len(websocket.wire_order) == 3:
+                break
+            await asyncio.sleep(0)
+        assert websocket.wire_order == ["bytes", "reply", "event"]
+        runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_slow_connection_queue_overflow_keeps_durable_events(
+    tmp_path: Path,
+) -> None:
+    """验证实时队列超限会断开慢连接，但 durable inbox 完整保留。"""
+
+    async def scenario() -> None:
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        device_id = uuid4().hex
+        _register_test_device(runtime, device_id)
+        websocket = _ControlledWebSocket()
+        connection = ActiveMobileConnection(
+            websocket=cast(Any, websocket),
+            connection_epoch=1,
+            send_lock=asyncio.Lock(),
+            pending_events=deque(),
+            ready=False,
+            delivery_task=None,
+        )
+        runtime._connections[device_id] = connection
+
+        # 1. resume 尚未 ready 时持续排队，第 65 个事件触发慢消费者降级
+        for index in range(65):
+            await runtime.publish_event(
+                device_id=device_id,
+                event_type="connection.degraded",
+                payload={"reason": f"queued-{index}"},
+            )
+        await asyncio.wait_for(websocket.close_started.wait(), timeout=1)
+        assert device_id not in runtime._connections
+
+        # 2. 网络队列被丢弃，但 65 个事件仍可从 durable inbox 恢复
+        durable = runtime.storage.read_durable_events(
+            device_id,
+            after_event_seq=0,
+            limit=100,
+        )
+        assert len(durable) == 65
+        assert [event.event_seq for event in durable] == list(range(1, 66))
+        assert runtime.storage.read_cursor(device_id).sent_event_seq == 0
+        runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_command_reply_stops_at_causal_event_barrier(tmp_path: Path) -> None:
+    """验证后续高频事件不会让当前命令 reply 等到整队列排空。"""
+
+    async def scenario() -> None:
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        device_id = uuid4().hex
+        _register_test_device(runtime, device_id)
+        send_gate = asyncio.Event()
+        websocket = _ControlledWebSocket(send_gate=send_gate)
+        connection = ActiveMobileConnection(
+            websocket=cast(Any, websocket),
+            connection_epoch=1,
+            send_lock=asyncio.Lock(),
+            pending_events=deque(),
+            ready=True,
+            delivery_task=None,
+        )
+        runtime._connections[device_id] = connection
+
+        class CausalEventChannel:
+            async def handle_command(self, **_: object) -> object:
+                await runtime.publish_event(
+                    device_id=device_id,
+                    event_type="connection.degraded",
+                    payload={"reason": "causal"},
+                )
+                return SimpleNamespace(
+                    binary=None,
+                    type="session.list.ok",
+                    payload={"sessions": []},
+                    session_id=None,
+                    turn_id=None,
+                )
+
+        runtime._channel = cast(Any, CausalEventChannel())
+        frame = parse_frame(
+            json.dumps(
+                {
+                    "v": 1,
+                    "kind": "command",
+                    "type": "session.list",
+                    "id": "01ARZ3NDEKTSV4RRFFQ69G5FAX",
+                    "connection_epoch": 1,
+                    "payload": {},
+                }
+            )
+        )
+
+        # 1. 命令因果事件卡在 socket，同时追加一批后续事件
+        command_task = asyncio.create_task(
+            runtime._handle_command(
+                cast(Any, websocket),
+                cast(Any, frame),
+                connection_epoch=1,
+                device_id=device_id,
+            )
+        )
+        await asyncio.wait_for(websocket.send_started.wait(), timeout=1)
+        for index in range(20):
+            await runtime.publish_event(
+                device_id=device_id,
+                event_type="connection.degraded",
+                payload={"reason": f"later-{index}"},
+            )
+
+        # 2. 放行后 reply 紧跟因果事件，不等待后续 20 个事件排空
+        send_gate.set()
+        await asyncio.wait_for(command_task, timeout=1)
+        assert websocket.wire_order[:2] == ["event", "reply"]
+        for _ in range(100):
+            if len(websocket.wire_order) == 22:
+                break
+            await asyncio.sleep(0)
+        assert websocket.wire_order == ["event", "reply"] + ["event"] * 20
+        runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_resume_pages_only_to_frozen_high_watermark(tmp_path: Path) -> None:
+    """验证大于单页的 backlog 分页重放，并在冻结上限后发送 terminal。"""
+
+    async def scenario() -> None:
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        device_id = uuid4().hex
+        _register_test_device(runtime, device_id)
+        for index in range(600):
+            await runtime.publish_event(
+                device_id=device_id,
+                event_type="connection.degraded",
+                payload={"reason": f"backlog-{index}"},
+            )
+        websocket = _ControlledWebSocket()
+
+        await runtime._resume_and_register(
+            cast(Any, websocket),
+            device_id=device_id,
+            connection_epoch=1,
+            last_ack=0,
+        )
+        frames = [json.loads(text) for text in websocket.sent_text]
+        assert len(frames) == 601
+        assert frames[-1]["type"] == "sync.completed"
+        assert frames[-1]["payload"]["replayed_events"] == 600
+        assert [frame["event_seq"] for frame in frames] == list(range(1, 602))
+        runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_replaced_connection_ack_cannot_delete_new_resume_window(
+    tmp_path: Path,
+) -> None:
+    """验证旧 epoch 的迟到 ACK 不能删除新连接需要重放的 durable 前缀。"""
+
+    async def scenario() -> None:
+        runtime, _ = build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+        device_id = uuid4().hex
+        _register_test_device(runtime, device_id)
+        await runtime.publish_event(
+            device_id=device_id,
+            event_type="connection.degraded",
+            payload={"reason": "must-replay"},
+        )
+        _ = runtime.inbox.mark_sent(device_id, through_event_seq=1)
+        old_socket = _ControlledWebSocket()
+        new_socket = _ControlledWebSocket()
+        runtime._connections[device_id] = ActiveMobileConnection(
+            websocket=cast(Any, new_socket),
+            connection_epoch=2,
+            send_lock=asyncio.Lock(),
+            pending_events=deque(),
+            ready=False,
+            delivery_task=None,
+        )
+
+        # 1. 新连接已占住活动代际后，旧连接 ACK 必须被拒绝
+        acknowledged = await runtime._acknowledge_active_connection(
+            device_id=device_id,
+            websocket=cast(Any, old_socket),
+            connection_epoch=1,
+            through_event_seq=1,
+        )
+        assert acknowledged is False
+        assert runtime.storage.read_cursor(device_id).acknowledged_event_seq == 0
+        assert len(
+            runtime.storage.read_durable_events(
+                device_id,
+                after_event_seq=0,
+                limit=10,
+            )
+        ) == 1
+
+        # 2. 只有当前 websocket 与 epoch 的 ACK 可以删除该前缀
+        acknowledged = await runtime._acknowledge_active_connection(
+            device_id=device_id,
+            websocket=cast(Any, new_socket),
+            connection_epoch=2,
+            through_event_seq=1,
+        )
+        assert acknowledged is True
+        assert runtime.storage.read_cursor(device_id).acknowledged_event_seq == 1
+        assert runtime.storage.read_durable_events(
+            device_id,
+            after_event_seq=0,
+            limit=10,
+        ) == ()
+        runtime.close()
+
+    asyncio.run(scenario())

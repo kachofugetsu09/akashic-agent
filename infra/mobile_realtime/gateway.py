@@ -5,7 +5,8 @@ import json
 import logging
 import secrets
 import time
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, cast
@@ -23,7 +24,11 @@ from infra.mobile_realtime.auth import (
     DeviceRevokedError,
     UnknownAuthenticationChallenge,
 )
-from infra.mobile_realtime.attachments import AttachmentChunk, decode_attachment_chunk
+from infra.mobile_realtime.attachments import (
+    AttachmentChunk,
+    decode_attachment_chunk,
+    encode_attachment_chunk,
+)
 from infra.mobile_realtime.inbox import DurableInboxManager, InboxResetRequired
 from infra.mobile_realtime.key_protection import (
     KeyProtectionError,
@@ -43,6 +48,7 @@ from infra.mobile_realtime.pairing import (
 from infra.mobile_realtime.protocol import (
     AckFrame,
     AttachmentBeginCommand,
+    AttachmentDownloadCommand,
     AttachmentFinishCommand,
     AuthAcceptedControl,
     AuthAcceptedPayload,
@@ -60,6 +66,7 @@ from infra.mobile_realtime.storage import (
     AckRollbackError,
     CommandConflictError,
     DeviceRecord,
+    DurableInboxEvent,
     MobileRealtimeStorage,
     PairingStateError,
     ServerIdentityReference,
@@ -72,6 +79,8 @@ if TYPE_CHECKING:
 _CLOSE_PROTOCOL = 4400
 _CLOSE_UNAUTHENTICATED = 4401
 _CLOSE_REVOKED = 4403
+_CLOSE_SLOW_CONSUMER = 4408
+_MAX_PENDING_CONNECTION_EVENTS = 64
 _CLOSE_VERSION = 4406
 _CLOSE_COMMAND = 4410
 _CROCKFORD32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -89,10 +98,16 @@ class PairingApproval:
     device_id: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class ActiveMobileConnection:
     websocket: WebSocket
     connection_epoch: int
+    send_lock: asyncio.Lock
+    pending_events: deque[DurableInboxEvent]
+    ready: bool
+    delivery_task: asyncio.Task[None] | None
+    sent_condition: asyncio.Condition = field(default_factory=asyncio.Condition)
+    reply_barrier: int | None = None
 
 
 class PairingApprovalRegistry:
@@ -336,6 +351,12 @@ class MobileGatewayRuntime:
                             reason="auth.accepted 后必须先 resume",
                         )
                         return
+                    if not await self._is_active_connection(
+                        device_id=device_id,
+                        websocket=websocket,
+                        connection_epoch=connection_epoch,
+                    ):
+                        return
                     try:
                         await self.channel.handle_attachment_chunk(
                             device_id=device_id,
@@ -359,6 +380,7 @@ class MobileGatewayRuntime:
                         MessageSendCommand,
                         AttachmentBeginCommand,
                         AttachmentFinishCommand,
+                        AttachmentDownloadCommand,
                     ),
                 ):
                     await _close_with_error(
@@ -400,8 +422,10 @@ class MobileGatewayRuntime:
                     return
                 if isinstance(frame, AckFrame):
                     try:
-                        _ = self.inbox.acknowledge(
-                            device_id,
+                        acknowledged = await self._acknowledge_active_connection(
+                            device_id=device_id,
+                            websocket=websocket,
+                            connection_epoch=connection_epoch,
                             through_event_seq=frame.payload.through_event_seq,
                         )
                     except (AckRollbackError, AckOverflowError) as error:
@@ -411,6 +435,8 @@ class MobileGatewayRuntime:
                             reason=str(error),
                         )
                         return
+                    if not acknowledged:
+                        return
                     continue
                 if isinstance(
                     frame,
@@ -419,8 +445,15 @@ class MobileGatewayRuntime:
                         MessageSendCommand,
                         AttachmentBeginCommand,
                         AttachmentFinishCommand,
+                        AttachmentDownloadCommand,
                     ),
                 ):
+                    if not await self._is_active_connection(
+                        device_id=device_id,
+                        websocket=websocket,
+                        connection_epoch=connection_epoch,
+                    ):
+                        return
                     await self._handle_command(
                         websocket,
                         frame,
@@ -436,6 +469,47 @@ class MobileGatewayRuntime:
                     websocket=websocket,
                 )
 
+    async def _is_active_connection(
+        self,
+        *,
+        device_id: str,
+        websocket: WebSocket,
+        connection_epoch: int,
+    ) -> bool:
+        """确认帧仍属于当前设备的活动连接代际。"""
+
+        async with self._delivery_lock:
+            connection = self._connections.get(device_id)
+            return (
+                connection is not None
+                and connection.websocket is websocket
+                and connection.connection_epoch == connection_epoch
+            )
+
+    async def _acknowledge_active_connection(
+        self,
+        *,
+        device_id: str,
+        websocket: WebSocket,
+        connection_epoch: int,
+        through_event_seq: int,
+    ) -> bool:
+        """仅允许当前连接代际在同一临界区推进 ACK cursor。"""
+
+        async with self._delivery_lock:
+            connection = self._connections.get(device_id)
+            if (
+                connection is None
+                or connection.websocket is not websocket
+                or connection.connection_epoch != connection_epoch
+            ):
+                return False
+            _ = self.inbox.acknowledge(
+                device_id,
+                through_event_seq=through_event_seq,
+            )
+            return True
+
     async def _resume_and_register(
         self,
         websocket: WebSocket,
@@ -444,39 +518,69 @@ class MobileGatewayRuntime:
         connection_epoch: int,
         last_ack: int,
     ) -> None:
-        """在全局投递锁内完成重放并注册当前设备连接。"""
+        """先占住设备投递槽，再在锁外重放并切换为实时投递。"""
 
+        # 1. 在短临界区内冻结重放窗口，并让并发新事件进入新连接队列
         async with self._delivery_lock:
-            await self._resume(
-                websocket,
+            replay_after, replay_through, terminal = self._prepare_resume(
                 device_id=device_id,
-                connection_epoch=connection_epoch,
                 last_ack=last_ack,
             )
             previous = self._connections.get(device_id)
-            if previous is not None and previous.websocket is not websocket:
-                try:
-                    await previous.websocket.close(
-                        code=4001,
-                        reason="设备已在新连接上线",
-                    )
-                except (RuntimeError, OSError):
-                    logger.info("旧 mobile WebSocket 已先于新连接关闭: %s", device_id)
-            self._connections[device_id] = ActiveMobileConnection(
+            connection = ActiveMobileConnection(
                 websocket=websocket,
                 connection_epoch=connection_epoch,
+                send_lock=asyncio.Lock(),
+                pending_events=deque(),
+                ready=False,
+                delivery_task=None,
             )
+            self._connections[device_id] = connection
 
-    async def _resume(
+        # 2. 旧连接关闭和新连接重放都不占用全局投递锁
+        if previous is not None and previous.websocket is not websocket:
+            async with previous.sent_condition:
+                previous.sent_condition.notify_all()
+            _ = asyncio.create_task(
+                self._close_connection(
+                    device_id,
+                    previous,
+                    code=4001,
+                    reason="设备已在新连接上线",
+                )
+            )
+        resume_completed = False
+        try:
+            await self._send_resume_window(
+                device_id=device_id,
+                connection=connection,
+                replay_after=replay_after,
+                replay_through=replay_through,
+                terminal=terminal,
+            )
+            resume_completed = True
+        finally:
+            if not resume_completed:
+                async with self._delivery_lock:
+                    if self._connections.get(device_id) is connection:
+                        _ = self._connections.pop(device_id)
+
+        # 3. 原子切换 ready；重放期间积累的事件由同一设备任务顺序发送
+        async with self._delivery_lock:
+            if self._connections.get(device_id) is not connection:
+                return
+            connection.ready = True
+            self._schedule_delivery_locked(device_id, connection)
+
+    def _prepare_resume(
         self,
-        websocket: WebSocket,
         *,
         device_id: str,
-        connection_epoch: int,
         last_ack: int,
-    ) -> None:
-        """重放未确认 P0，并以新的 connection epoch 重建 wire envelope。"""
+    ) -> tuple[int, int, DurableInboxEvent]:
+        """冻结重放事件，并预先分配终止帧的 event_seq。"""
 
+        # 1. cursor 已落后时只发送 reset，避免伪造可恢复历史
         cursor = self.storage.read_cursor(device_id)
         allocated_event_seq = cursor.next_event_seq - 1
         if last_ack > allocated_event_seq:
@@ -491,74 +595,90 @@ class MobileGatewayRuntime:
                     payload={"reason": "client_ack_ahead_of_server_cursor"},
                 ),
             )
-            await _send_stored_event(
-                websocket,
-                reset.envelope_json,
-                reset.event_seq,
-                connection_epoch,
-            )
-            _ = self.inbox.mark_sent(
-                device_id,
-                through_event_seq=reset.event_seq,
-            )
-            return
+            return last_ack, last_ack, reset
         if last_ack < cursor.acknowledged_event_seq:
-            await self._enqueue_and_send_event(
-                websocket,
+            terminal = self._enqueue_event(
                 device_id=device_id,
-                connection_epoch=connection_epoch,
                 event_type="sync.reset_required",
                 payload={"reason": "client_ack_behind_server_cursor"},
             )
-            return
+            return last_ack, last_ack, terminal
+
+        # 2. 验证保留窗口并冻结当前已分配序号上限
         try:
-            replay = self.inbox.replay(
+            _ = self.inbox.replay(
                 device_id,
                 after_event_seq=last_ack,
-                limit=512,
+                limit=1,
             )
         except InboxResetRequired:
-            await self._enqueue_and_send_event(
-                websocket,
+            terminal = self._enqueue_event(
                 device_id=device_id,
-                connection_epoch=connection_epoch,
                 event_type="sync.reset_required",
                 payload={"reason": "inbox_retention_exceeded"},
             )
-            return
-        replayed_events = 0
-        highest_sent = cursor.sent_event_seq
-        after_event_seq = last_ack
-        while True:
-            replay = self.inbox.replay(
-                device_id,
-                after_event_seq=after_event_seq,
-                limit=512,
-            )
-            for event in replay.events:
-                await _send_stored_event(
-                    websocket,
-                    event.envelope_json,
-                    event.event_seq,
-                    connection_epoch,
+            return last_ack, last_ack, terminal
+        replay_through = cursor.next_event_seq - 1
+
+        # 3. 终止帧先占号，随后并发 publish 只能排在它之后
+        terminal = self._enqueue_event(
+            device_id=device_id,
+            event_type="sync.completed",
+            payload={
+                "mode": "replay",
+                "replayed_events": max(0, replay_through - last_ack),
+            },
+        )
+        return last_ack, replay_through, terminal
+
+    async def _send_resume_window(
+        self,
+        *,
+        device_id: str,
+        connection: ActiveMobileConnection,
+        replay_after: int,
+        replay_through: int,
+        terminal: DurableInboxEvent,
+    ) -> None:
+        """在单连接写锁内连续发送重放窗口与终止帧。"""
+
+        # 1. 同一连接的重放帧不可被 command 或二进制回复穿插
+        async with connection.send_lock:
+            after_event_seq = replay_after
+            while after_event_seq < replay_through:
+                page = self.storage.read_durable_events(
+                    device_id,
+                    after_event_seq=after_event_seq,
+                    limit=512,
                 )
-                highest_sent = max(highest_sent, event.event_seq)
-                after_event_seq = event.event_seq
-                replayed_events += 1
-            if len(replay.events) < 512:
-                break
-        if highest_sent > cursor.sent_event_seq:
+                replay = tuple(
+                    event for event in page if event.event_seq <= replay_through
+                )
+                if not replay:
+                    raise RuntimeError("mobile resume 冻结窗口出现 event_seq 缺口")
+                for event in replay:
+                    await _send_stored_event(
+                        connection.websocket,
+                        event.envelope_json,
+                        event.event_seq,
+                        connection.connection_epoch,
+                    )
+                after_event_seq = replay[-1].event_seq
+            await _send_stored_event(
+                connection.websocket,
+                terminal.envelope_json,
+                terminal.event_seq,
+                connection.connection_epoch,
+            )
+
+        # 2. 仅当前 epoch 可以推进 sent cursor
+        async with self._delivery_lock:
+            if self._connections.get(device_id) is not connection:
+                return
             _ = self.inbox.mark_sent(
                 device_id,
-                through_event_seq=highest_sent,
+                through_event_seq=terminal.event_seq,
             )
-        await self._enqueue_and_send_event(
-            websocket,
-            device_id=device_id,
-            connection_epoch=connection_epoch,
-            event_type="sync.completed",
-            payload={"mode": "replay", "replayed_events": replayed_events},
-        )
 
     async def publish_event(
         self,
@@ -581,7 +701,7 @@ class MobileGatewayRuntime:
             turn_id=turn_id,
         )
 
-        # 2. 串行化 resume 与 fanout，避免重放窗口漏掉并发事件
+        # 2. 临界区只负责持久化和排队，不等待任何设备网络 I/O
         async with self._delivery_lock:
             if device_id is not None:
                 target_device_ids = (device_id,)
@@ -598,27 +718,130 @@ class MobileGatewayRuntime:
                 connection = self._connections.get(target_device_id)
                 if connection is None:
                     continue
-                try:
-                    await _send_stored_event(
-                        connection.websocket,
-                        event.envelope_json,
-                        event.event_seq,
-                        connection.connection_epoch,
+                if len(connection.pending_events) >= _MAX_PENDING_CONNECTION_EVENTS:
+                    _ = self._connections.pop(target_device_id)
+                    _ = asyncio.create_task(
+                        self._close_connection(
+                            target_device_id,
+                            connection,
+                            code=_CLOSE_SLOW_CONSUMER,
+                            reason="设备实时投递队列已满，请重新连接恢复",
+                        )
                     )
+                    logger.warning(
+                        "mobile 设备投递队列已满，转为下次 resume: device=%s",
+                        target_device_id,
+                    )
+                    continue
+                connection.pending_events.append(event)
+                self._schedule_delivery_locked(target_device_id, connection)
+
+    def _schedule_delivery_locked(
+        self,
+        device_id: str,
+        connection: ActiveMobileConnection,
+    ) -> None:
+        """为 ready 连接启动唯一的有序投递任务。"""
+
+        if not connection.ready or not connection.pending_events:
+            return
+        if connection.delivery_task is not None and not connection.delivery_task.done():
+            return
+        task = asyncio.create_task(self._drain_connection(device_id, connection))
+        connection.delivery_task = task
+        task.add_done_callback(
+            lambda completed: self._report_delivery_failure(device_id, completed)
+        )
+
+    async def _drain_connection(
+        self,
+        device_id: str,
+        connection: ActiveMobileConnection,
+    ) -> None:
+        """按 event_seq 排空单设备队列，慢设备只阻塞自己的任务。"""
+
+        try:
+            while True:
+                # 1. 在短临界区领取一个事件
+                async with self._delivery_lock:
+                    if self._connections.get(device_id) is not connection:
+                        return
+                    if not connection.pending_events:
+                        connection.delivery_task = None
+                        return
+                    event = connection.pending_events.popleft()
+
+                # 2. WebSocket 写入仅占用本连接写锁
+                try:
+                    async with connection.send_lock:
+                        await _send_stored_event(
+                            connection.websocket,
+                            event.envelope_json,
+                            event.event_seq,
+                            connection.connection_epoch,
+                        )
                 except (WebSocketDisconnect, RuntimeError, OSError) as error:
                     logger.warning(
-                        "mobile 在线投递失败，事件保留到下次 resume: device=%s seq=%s error=%s",
-                        target_device_id,
-                        event.event_seq,
+                        "mobile 在线投递失败，事件保留到下次 resume: device=%s error=%s",
+                        device_id,
                         error,
                     )
-                    if self._connections.get(target_device_id) is connection:
-                        _ = self._connections.pop(target_device_id)
-                    continue
-                _ = self.inbox.mark_sent(
-                    target_device_id,
-                    through_event_seq=event.event_seq,
+                    async with self._delivery_lock:
+                        if self._connections.get(device_id) is connection:
+                            _ = self._connections.pop(device_id)
+                    return
+                # 3. 连接仍是当前 epoch 时才推进 sent cursor
+                async with self._delivery_lock:
+                    if self._connections.get(device_id) is connection:
+                        _ = self.inbox.mark_sent(
+                            device_id,
+                            through_event_seq=event.event_seq,
+                        )
+                        if (
+                            connection.reply_barrier is not None
+                            and event.event_seq >= connection.reply_barrier
+                        ):
+                            connection.delivery_task = None
+                            return
+                async with connection.sent_condition:
+                    connection.sent_condition.notify_all()
+        finally:
+            async with connection.sent_condition:
+                connection.sent_condition.notify_all()
+
+    async def _close_connection(
+        self,
+        device_id: str,
+        connection: ActiveMobileConnection,
+        *,
+        code: int,
+        reason: str,
+    ) -> None:
+        """在连接私有写锁内关闭已退出活动表的 WebSocket。"""
+
+        try:
+            async with connection.send_lock:
+                await connection.websocket.close(
+                    code=code,
+                    reason=reason,
                 )
+        except (WebSocketDisconnect, RuntimeError, OSError):
+            logger.info("mobile WebSocket 已先于服务端关闭: %s", device_id)
+
+    @staticmethod
+    def _report_delivery_failure(
+        device_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "mobile 设备投递任务异常退出: %s",
+                device_id,
+                exc_info=(type(error), error, error.__traceback__),
+            )
 
     async def _remove_connection(
         self,
@@ -631,35 +854,23 @@ class MobileGatewayRuntime:
             if connection is not None and connection.websocket is websocket:
                 _ = self._connections.pop(device_id)
 
-    async def _enqueue_and_send_event(
+    def _enqueue_event(
         self,
-        websocket: WebSocket,
         *,
         device_id: str,
-        connection_epoch: int,
         event_type: str,
         payload: dict[str, object],
-    ) -> None:
+    ) -> DurableInboxEvent:
         event_id = _new_ulid()
         stored = _encode_stored_event(
             event_id=event_id,
             event_type=event_type,
             payload=payload,
         )
-        event = self.inbox.enqueue(
+        return self.inbox.enqueue(
             device_id=device_id,
             event_id=event_id,
             envelope_json=stored,
-        )
-        await _send_stored_event(
-            websocket,
-            event.envelope_json,
-            event.event_seq,
-            connection_epoch,
-        )
-        _ = self.inbox.mark_sent(
-            device_id,
-            through_event_seq=event.event_seq,
         )
 
     async def _handle_command(
@@ -670,21 +881,26 @@ class MobileGatewayRuntime:
             | MessageSendCommand
             | AttachmentBeginCommand
             | AttachmentFinishCommand
+            | AttachmentDownloadCommand
         ),
         connection_epoch: int,
         device_id: str,
     ) -> None:
+        connection = self._connections.get(device_id)
+        if connection is None or connection.websocket is not websocket:
+            raise RuntimeError("mobile command reply 缺少活动连接")
         if frame.type == "ping":
-            await websocket.send_json(
-                {
-                    "v": 1,
-                    "kind": "reply",
-                    "type": "ping.ok",
-                    "id": frame.id,
-                    "connection_epoch": connection_epoch,
-                    "payload": {"server_time": _utc_now().isoformat()},
-                }
-            )
+            async with connection.send_lock:
+                await websocket.send_json(
+                    {
+                        "v": 1,
+                        "kind": "reply",
+                        "type": "ping.ok",
+                        "id": frame.id,
+                        "connection_epoch": connection_epoch,
+                        "payload": {"server_time": _utc_now().isoformat()},
+                    }
+                )
             return
         try:
             reply = await self.channel.handle_command(
@@ -692,25 +908,77 @@ class MobileGatewayRuntime:
                 frame=frame,
             )
         except CommandConflictError as error:
-            await _send_reply(
-                websocket,
-                frame_id=frame.id,
-                connection_epoch=connection_epoch,
-                reply_type=f"{frame.type}.error",
-                payload={"code": "command_id_conflict", "message": str(error)},
-                session_id=frame.session_id,
-                turn_id=frame.turn_id,
-            )
+            async with connection.send_lock:
+                await _send_reply(
+                    websocket,
+                    frame_id=frame.id,
+                    connection_epoch=connection_epoch,
+                    reply_type=f"{frame.type}.error",
+                    payload={"code": "command_id_conflict", "message": str(error)},
+                    session_id=frame.session_id,
+                    turn_id=frame.turn_id,
+                )
             return
-        await _send_reply(
-            websocket,
-            frame_id=frame.id,
-            connection_epoch=connection_epoch,
-            reply_type=reply.type,
-            payload=reply.payload,
-            session_id=reply.session_id,
-            turn_id=reply.turn_id,
+        async with self._delivery_lock:
+            if self._connections.get(device_id) is not connection:
+                raise RuntimeError("mobile command 连接已被新 epoch 替换")
+            delivery_barrier = self.storage.read_cursor(device_id).next_event_seq - 1
+            if (
+                self.storage.read_cursor(device_id).sent_event_seq
+                < delivery_barrier
+            ):
+                connection.reply_barrier = delivery_barrier
+        await self._flush_connection_delivery(
+            device_id,
+            connection,
+            through_event_seq=delivery_barrier,
         )
+        try:
+            async with connection.send_lock:
+                if reply.binary is not None:
+                    await websocket.send_bytes(encode_attachment_chunk(reply.binary))
+                await _send_reply(
+                    websocket,
+                    frame_id=frame.id,
+                    connection_epoch=connection_epoch,
+                    reply_type=reply.type,
+                    payload=reply.payload,
+                    session_id=reply.session_id,
+                    turn_id=reply.turn_id,
+                )
+        finally:
+            async with self._delivery_lock:
+                if connection.reply_barrier == delivery_barrier:
+                    connection.reply_barrier = None
+                    if self._connections.get(device_id) is connection:
+                        self._schedule_delivery_locked(device_id, connection)
+
+    async def _flush_connection_delivery(
+        self,
+        device_id: str,
+        connection: ActiveMobileConnection,
+        *,
+        through_event_seq: int,
+    ) -> None:
+        """等待命令完成时已分配的本设备事件发送到指定屏障。"""
+
+        while True:
+            # 1. 在连接状态边界检查 epoch 与已发送序号
+            async with self._delivery_lock:
+                if self._connections.get(device_id) is not connection:
+                    raise RuntimeError("mobile command 连接已被新 epoch 替换")
+                cursor = self.storage.read_cursor(device_id)
+                if cursor.sent_event_seq >= through_event_seq:
+                    return
+                if connection.delivery_task is None:
+                    raise RuntimeError("mobile command 投递屏障缺少活动任务")
+
+            # 2. 条件通知只表示 sent cursor 可能前进，醒来后重新校验
+            async with connection.sent_condition:
+                cursor = self.storage.read_cursor(device_id)
+                if cursor.sent_event_seq >= through_event_seq:
+                    return
+                _ = await connection.sent_condition.wait()
 
     def close(self) -> None:
         self.storage.close()

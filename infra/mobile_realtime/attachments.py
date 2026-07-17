@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mimetypes
 import os
 import re
+import secrets
+import stat
 import struct
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import BinaryIO
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -49,6 +54,14 @@ class AttachmentChunk:
     data: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class OutboundAttachmentChunk:
+    descriptor: dict[str, object]
+    offset: int
+    data: bytes
+    eof: bool
+
+
 class AttachmentTransferService:
     """持久化上传分片，并在完成时校验文件摘要。"""
 
@@ -86,19 +99,8 @@ class AttachmentTransferService:
             raise AttachmentRequestError(
                 f"附件大小必须在 1..{self._max_attachment_bytes} 字节"
             )
-        safe_filename = filename.strip()
-        if (
-            not safe_filename
-            or safe_filename != filename
-            or len(safe_filename) > 255
-            or "/" in safe_filename
-            or "\\" in safe_filename
-            or "\x00" in safe_filename
-            or any(ord(char) < 32 or ord(char) == 127 for char in safe_filename)
-        ):
-            raise AttachmentRequestError("filename 必须是 1..255 字符的纯文件名")
-        if len(content_type) > 255 or _CONTENT_TYPE_PATTERN.fullmatch(content_type) is None:
-            raise AttachmentRequestError("content_type 必须是合法 MIME type")
+        safe_filename = _validate_filename(filename)
+        _ = _validate_content_type(content_type)
         digest = sha256.lower()
         if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
             raise AttachmentRequestError("sha256 必须是 64 位十六进制摘要")
@@ -242,6 +244,222 @@ class AttachmentTransferService:
                 f"单条消息附件总量不能超过 {self._max_attachment_bytes} 字节"
             )
         return [record.local_path for record in records]
+
+    def register_outbound(
+        self,
+        *,
+        session_id: str,
+        local_media_path: str | Path,
+    ) -> AttachmentRecord:
+        """复制本地媒体为不可变服务端附件，并稳定注册内容身份。"""
+
+        return self.register_outbound_batch(
+            session_id=session_id,
+            local_media_paths=(local_media_path,),
+        )[0]
+
+    def register_outbound_batch(
+        self,
+        *,
+        session_id: str,
+        local_media_paths: tuple[str | Path, ...] | list[str | Path],
+        metadata_overrides: tuple[tuple[str, str] | None, ...] | None = None,
+        message_id: str | None = None,
+    ) -> tuple[AttachmentRecord, ...]:
+        """先完整快照一批媒体，再以单个事务注册全部附件。"""
+
+        sources = tuple(Path(value) for value in local_media_paths)
+        if not 1 <= len(sources) <= 10:
+            raise AttachmentRequestError("单条消息附件数量必须在 1..10")
+        overrides = metadata_overrides or (None,) * len(sources)
+        if len(overrides) != len(sources):
+            raise ValueError("出站附件元数据数量必须与路径数量一致")
+
+        # 1. 全批复制和校验完成前不写数据库
+        candidates: list[AttachmentRecord] = []
+        total_bytes = 0
+        try:
+            for source, metadata in zip(sources, overrides, strict=True):
+                candidate = self._snapshot_outbound_candidate(
+                    session_id,
+                    source,
+                    metadata,
+                )
+                candidates.append(candidate)
+                total_bytes += candidate.size_bytes
+                if total_bytes > self._max_attachment_bytes:
+                    raise AttachmentRequestError(
+                        "单条消息附件总量不能超过 "
+                        f"{self._max_attachment_bytes} 字节"
+                    )
+
+            # 2. 存储层在一个 SQLite 事务内完成整批创建或复用
+            return self._storage.create_or_read_outbound_attachments(
+                tuple(candidates),
+                message_id=message_id,
+            )
+        except BaseException:
+            _remove_paths([Path(record.local_path) for record in candidates])
+            raise
+
+    def read_message_outbound(
+        self,
+        *,
+        session_id: str,
+        message_id: str,
+    ) -> tuple[AttachmentRecord, ...]:
+        """读取历史消息已绑定的稳定附件，不再访问原始媒体。"""
+
+        return self._storage.read_message_outbound_attachments(
+            message_id=message_id,
+            session_id=session_id,
+        )
+
+    def _snapshot_outbound_candidate(
+        self,
+        session_id: str,
+        source: Path,
+        metadata_override: tuple[str, str] | None = None,
+    ) -> AttachmentRecord:
+        """创建一个已校验的 outbound canonical 候选记录。"""
+
+        if metadata_override is None:
+            filename, content_type = self._outbound_metadata(session_id, source)
+        else:
+            filename = _validate_filename(metadata_override[0])
+            content_type = _validate_content_type(metadata_override[1])
+        suffix = Path(filename).suffix
+        if not suffix or len(suffix) > 16:
+            suffix = ".bin"
+        canonical_path = self._attachment_store.create_persistent_path(
+            "mobile_outbound_",
+            suffix,
+        )
+        try:
+            size_bytes, digest = self._copy_outbound_snapshot(
+                source=source,
+                destination=canonical_path,
+            )
+        except BaseException:
+            canonical_path.unlink(missing_ok=True)
+            raise
+        now = _utc_now()
+        return AttachmentRecord(
+            attachment_id=_new_outbound_attachment_id(),
+            device_id=None,
+            session_id=session_id,
+            direction="outbound",
+            filename=filename,
+            content_type=content_type,
+            size_bytes=size_bytes,
+            sha256=digest,
+            local_path=str(canonical_path),
+            transferred_bytes=size_bytes,
+            state="ready",
+            created_at=now,
+            updated_at=now,
+        )
+
+    def _outbound_metadata(
+        self,
+        session_id: str,
+        source: Path,
+    ) -> tuple[str, str]:
+        """优先沿用同会话 ready upload 的用户可见元数据。"""
+
+        if source.is_symlink():
+            raise AttachmentRequestError("outbound 媒体不能是符号链接")
+        upload = self._storage.read_ready_upload_by_local_path(
+            session_id=session_id,
+            local_path=str(source),
+        )
+        if upload is not None:
+            return (
+                _validate_filename(upload.filename),
+                _validate_content_type(upload.content_type),
+            )
+        filename = _validate_filename(source.name)
+        guessed_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        return filename, _validate_content_type(guessed_type)
+
+    def read_outbound_chunk(
+        self,
+        *,
+        session_id: str,
+        attachment_id: str,
+        offset: int,
+    ) -> OutboundAttachmentChunk:
+        """读取指定会话 outbound 附件的单个固定上限分片。"""
+
+        if offset < 0:
+            raise AttachmentRequestError("附件下载 offset 不能为负数")
+        record = self._storage.require_ready_outbound(
+            session_id=session_id,
+            attachment_id=attachment_id,
+        )
+        if offset >= record.size_bytes:
+            raise AttachmentRequestError("附件下载 offset 必须小于文件大小")
+
+        # 1. 用拒绝符号链接的同一文件描述符校验并读取 canonical 副本
+        data = _read_canonical_chunk(record, offset)
+        next_offset = offset + len(data)
+        return OutboundAttachmentChunk(
+            descriptor=attachment_descriptor(record),
+            offset=offset,
+            data=data,
+            eof=next_offset == record.size_bytes,
+        )
+
+    def _copy_outbound_snapshot(
+        self,
+        *,
+        source: Path,
+        destination: Path,
+    ) -> tuple[int, str]:
+        """复制一个普通文件，并返回已落盘快照的大小和摘要。"""
+
+        source_flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
+        destination_flags = (
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
+        source_descriptor = os.open(source, source_flags)
+        try:
+            source_stat = os.fstat(source_descriptor)
+            if not stat.S_ISREG(source_stat.st_mode):
+                raise AttachmentRequestError("outbound 媒体必须是普通文件")
+            if not 1 <= source_stat.st_size <= self._max_attachment_bytes:
+                raise AttachmentRequestError(
+                    f"附件大小必须在 1..{self._max_attachment_bytes} 字节"
+                )
+            destination_descriptor = os.open(
+                destination,
+                destination_flags,
+                0o600,
+            )
+            try:
+                destination_stat = os.fstat(destination_descriptor)
+                if not stat.S_ISREG(destination_stat.st_mode):
+                    raise AttachmentStateError("outbound canonical 必须是普通文件")
+                with os.fdopen(source_descriptor, "rb", closefd=False) as reader, os.fdopen(
+                    destination_descriptor,
+                    "wb",
+                    closefd=False,
+                ) as writer:
+                    size_bytes, digest = _copy_limited(
+                        reader,
+                        writer,
+                        self._max_attachment_bytes,
+                    )
+                    writer.flush()
+                    os.fsync(destination_descriptor)
+            finally:
+                os.close(destination_descriptor)
+        finally:
+            os.close(source_descriptor)
+        if size_bytes != source_stat.st_size:
+            raise AttachmentStateError("outbound 源文件在复制期间发生变化")
+        destination.chmod(0o444)
+        return size_bytes, digest
 
     def _lock_for(self, attachment_id: str) -> threading.Lock:
         index = int.from_bytes(
@@ -395,6 +613,90 @@ def attachment_descriptor(record: AttachmentRecord) -> dict[str, object]:
         "size_bytes": record.size_bytes,
         "sha256": record.sha256,
     }
+
+
+def _validate_filename(filename: str) -> str:
+    safe_filename = filename.strip()
+    if (
+        not safe_filename
+        or safe_filename != filename
+        or len(safe_filename) > 255
+        or "/" in safe_filename
+        or "\\" in safe_filename
+        or "\x00" in safe_filename
+        or any(ord(char) < 32 or ord(char) == 127 for char in safe_filename)
+    ):
+        raise AttachmentRequestError("filename 必须是 1..255 字符的纯文件名")
+    return safe_filename
+
+
+def _validate_content_type(content_type: str) -> str:
+    if len(content_type) > 255 or _CONTENT_TYPE_PATTERN.fullmatch(content_type) is None:
+        raise AttachmentRequestError("content_type 必须是合法 MIME type")
+    return content_type
+
+
+def _new_outbound_attachment_id() -> str:
+    """生成带 80 位随机量的 opaque ULID。"""
+
+    value = (int(time.time() * 1000) << 80) | secrets.randbits(80)
+    alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+    chars = ["0"] * 26
+    for index in range(25, -1, -1):
+        chars[index] = alphabet[value & 31]
+        value >>= 5
+    return "".join(chars)
+
+
+def _read_canonical_chunk(record: AttachmentRecord, offset: int) -> bytes:
+    """以同一文件描述符校验并读取一个 canonical 分片。"""
+
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open(record.local_path, flags)
+    try:
+        file_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size != record.size_bytes:
+            raise RuntimeError(
+                f"outbound canonical 文件不符合元数据: {record.attachment_id}"
+            )
+        _ = os.lseek(descriptor, offset, os.SEEK_SET)
+        return os.read(descriptor, MAX_ATTACHMENT_CHUNK_BYTES)
+    finally:
+        os.close(descriptor)
+
+
+def _copy_limited(
+    reader: BinaryIO,
+    writer: BinaryIO,
+    max_bytes: int,
+) -> tuple[int, str]:
+    """复制有限长度的字节流，并返回大小和 SHA-256。"""
+
+    digest = hashlib.sha256()
+    size_bytes = 0
+    for block in iter(lambda: reader.read(1024 * 1024), b""):
+        size_bytes += len(block)
+        if size_bytes > max_bytes:
+            raise AttachmentRequestError(f"附件大小不能超过 {max_bytes} 字节")
+        digest.update(block)
+        written = writer.write(block)
+        if written != len(block):
+            raise OSError(f"outbound 附件写入不完整: {written}/{len(block)}")
+    return size_bytes, digest.hexdigest()
+
+
+def _remove_paths(paths: list[Path]) -> None:
+    """尽量删除整批临时文件，并在清理不完整时明确失败。"""
+
+    first_error: OSError | None = None
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as error:
+            if first_error is None:
+                first_error = error
+    if first_error is not None:
+        raise first_error
 
 
 def _utc_now() -> datetime:
