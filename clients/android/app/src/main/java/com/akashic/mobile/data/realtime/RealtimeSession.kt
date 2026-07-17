@@ -11,10 +11,13 @@ import com.akashic.mobile.data.local.AppPreferences
 import com.akashic.mobile.data.local.ConversationEntity
 import com.akashic.mobile.data.local.LocalDeliveryStore
 import com.akashic.mobile.data.local.MessageEntity
+import com.akashic.mobile.data.local.MediaAttachmentEntity
 import com.akashic.mobile.data.local.MediaCacheStore
 import com.akashic.mobile.data.local.OutboxCommandEntity
 import com.akashic.mobile.data.local.RealtimeCursorEntity
+import com.akashic.mobile.data.local.RemoveUnavailableConversationResult
 import com.akashic.mobile.data.local.ServerProfileEntity
+import com.akashic.mobile.data.local.isRemoteMissingIn
 import com.akashic.mobile.domain.model.ConnectionPhase
 import com.akashic.mobile.domain.model.ConnectionState
 import com.akashic.mobile.domain.model.EndpointRoute
@@ -62,6 +65,7 @@ data class MobileSessionState(
     val serverId: String? = null,
     val pairingConfirmationCode: String? = null,
     val currentSessionId: String? = null,
+    val remoteSessionIds: Set<String>? = null,
     val activeTurnId: String? = null,
     val activeSessionIds: Set<String> = emptySet(),
     val hasActiveAttachmentDownload: Boolean = false,
@@ -151,6 +155,7 @@ class RealtimeSession(
             mutableState.value = mutableState.value.copy(errorMessage = message)
         },
         onStateChanged = ::publishDownloadState,
+        canTransfer = ::canDownloadAttachment,
     )
     private val stops = TurnStopCoordinator(
         send = ::sendTurnStopCommand,
@@ -351,7 +356,11 @@ class RealtimeSession(
             try {
                 val target = mutex.withLock {
                     val currentProfile = requireNotNull(profile) { "Pair a server before attaching" }
-                    currentProfile.serverId to ensureCurrentSession(currentProfile)
+                    val sessionId = ensureCurrentSession(currentProfile)
+                    require(!isRemoteMissingSession(currentProfile.serverId, sessionId)) {
+                        "这段会话已不在电脑上，请新建会话后添加附件"
+                    }
+                    currentProfile.serverId to sessionId
                 }
                 attachmentOperations.perform {
                     attachmentDrafts.import(
@@ -396,14 +405,26 @@ class RealtimeSession(
 
     fun retryAttachment(attachmentId: String) {
         scope.launch {
-            attachmentOperations.perform {
-                attachmentDrafts.retry(attachmentId, System.currentTimeMillis())
-            }
-            mutex.withLock {
-                profile?.serverId?.let { serverId ->
-                    if (mutableState.value.connection.phase == ConnectionPhase.READY) {
-                        uploads.resumeIfIdle(serverId)
+            try {
+                attachmentOperations.perform {
+                    val transfer = requireNotNull(database.attachmentTransfers().get(attachmentId)) {
+                        "Unknown attachment: $attachmentId"
                     }
+                    require(!isRemoteMissingSession(transfer.serverId, transfer.sessionId)) {
+                        "这段会话已不在电脑上，请新建会话后添加附件"
+                    }
+                    attachmentDrafts.retry(attachmentId, System.currentTimeMillis())
+                }
+                mutex.withLock {
+                    profile?.serverId?.let { serverId ->
+                        if (mutableState.value.connection.phase == ConnectionPhase.READY) {
+                            uploads.resumeIfIdle(serverId)
+                        }
+                    }
+                }
+            } catch (error: IllegalArgumentException) {
+                mutex.withLock {
+                    mutableState.value = mutableState.value.copy(errorMessage = error.message)
                 }
             }
         }
@@ -431,6 +452,16 @@ class RealtimeSession(
     fun retryFailedMessage(messageId: String) {
         scope.launch {
             mutex.withLock {
+                val message = requireNotNull(database.messages().get(messageId)) {
+                    "Unknown failed message: $messageId"
+                }
+                val currentProfile = requireNotNull(profile) { "Pair a server before retrying" }
+                if (isRemoteMissingSession(currentProfile.serverId, message.sessionId)) {
+                    mutableState.value = mutableState.value.copy(
+                        errorMessage = "这段会话已不在电脑上，请新建会话后继续",
+                    )
+                    return@withLock
+                }
                 val now = System.currentTimeMillis()
                 deliveryStore.retryFailedMessage(messageId, Ulid.next(now), now)
                 mutableState.value = mutableState.value.copy(errorMessage = null)
@@ -441,8 +472,14 @@ class RealtimeSession(
 
     fun retryDownloadedAttachment(attachmentId: String) {
         scope.launch {
-            mutex.withLock {
-                downloads.retry(attachmentId)
+            try {
+                mutex.withLock {
+                    downloads.retry(attachmentId)
+                }
+            } catch (error: IllegalArgumentException) {
+                mutex.withLock {
+                    mutableState.value = mutableState.value.copy(errorMessage = error.message)
+                }
             }
         }
     }
@@ -506,6 +543,14 @@ class RealtimeSession(
                 if (requestId.length !in 1..128) return@withLock
                 if (sessionId != null && !MOBILE_SESSION.matches(sessionId)) {
                     appendPluginUiError(requestId, "插件请求的会话无效")
+                    return@withLock
+                }
+                val currentProfile = profile
+                if (
+                    sessionId != null && currentProfile != null &&
+                    isRemoteMissingSession(currentProfile.serverId, sessionId)
+                ) {
+                    appendPluginUiError(requestId, "会话已不在电脑上")
                     return@withLock
                 }
                 if (turnId != null && turnId.length !in 1..512) {
@@ -581,6 +626,13 @@ class RealtimeSession(
                     require(conversation.serverId == currentProfile.serverId) {
                         "Notification session belongs to another server"
                     }
+                }
+                if (isRemoteMissingSession(currentProfile.serverId, sessionId)) {
+                    mutableState.value = mutableState.value.copy(
+                        errorMessage = "这段会话已不在电脑上，请新建会话后继续",
+                    )
+                    reportResult(false)
+                    return@withLock
                 }
                 val attachments = if (includeDraftAttachments) {
                     database.attachmentTransfers().drafts(currentProfile.serverId, sessionId)
@@ -733,16 +785,72 @@ class RealtimeSession(
             mutex.withLock {
                 // 1. 创建本地会话
                 val currentProfile = requireNotNull(profile) { "Pair a server before creating a session" }
-                val now = System.currentTimeMillis()
-                val sessionId = "mobile:${UUID.randomUUID()}"
-                database.conversations().upsert(
-                    ConversationEntity(sessionId, currentProfile.serverId, "新对话", now),
-                )
+                val sessionId = createLocalSession(currentProfile)
 
                 // 2. 切换当前会话
                 preferences.selectSession(sessionId)
                 mutableState.value = mutableState.value.copy(currentSessionId = sessionId)
                 publishTurnState()
+            }
+        }
+    }
+
+    /** 删除电脑端已不存在的本机会话副本，并选择下一段可用会话。 */
+    fun removeUnavailableSession(sessionId: String) {
+        scope.launch {
+            mutex.withLock {
+                // 1. 重新核对服务端目录，避免删除刚恢复的会话
+                require(MOBILE_SESSION.matches(sessionId)) { "Invalid mobile session_id" }
+                val currentProfile = requireNotNull(profile) { "Pair a server before removing a session" }
+                val remoteSessionIds = mutableState.value.remoteSessionIds
+                if (remoteSessionIds == null || sessionId in remoteSessionIds) {
+                    mutableState.value = mutableState.value.copy(
+                        errorMessage = "会话状态已经更新，请重新打开会话列表",
+                    )
+                    return@withLock
+                }
+                if (sessionId in stops.activeSessionIds()) {
+                    mutableState.value = mutableState.value.copy(errorMessage = "会话仍在运行，暂时不能移除")
+                    return@withLock
+                }
+
+                // 2. 删除无待发送工作的本地投影
+                val result = try {
+                    deliveryStore.removeUnavailableConversation(currentProfile.serverId, sessionId)
+                } catch (error: IOException) {
+                    mutableState.value = mutableState.value.copy(
+                        errorMessage = "清理会话缓存失败：${error.message}",
+                    )
+                    return@withLock
+                } catch (error: SecurityException) {
+                    mutableState.value = mutableState.value.copy(errorMessage = "会话缓存路径不安全")
+                    return@withLock
+                }
+                if (result != RemoveUnavailableConversationResult.REMOVED) {
+                    mutableState.value = mutableState.value.copy(
+                        errorMessage = when (result) {
+                            RemoveUnavailableConversationResult.HAS_LOCAL_WORK ->
+                                "会话还有未发送的消息或附件，暂时不能移除"
+                            RemoveUnavailableConversationResult.NOT_REMOTE ->
+                                "这是本机新建的会话，不需要清理"
+                            RemoveUnavailableConversationResult.REMOVED -> error("unreachable")
+                        },
+                    )
+                    return@withLock
+                }
+
+                // 3. 当前会话被移除时，切到最近可用会话；没有则创建新会话
+                if (mutableState.value.currentSessionId == sessionId) {
+                    val nextSessionId = database.conversations()
+                        .observeSummaries(currentProfile.serverId)
+                        .first()
+                        .firstOrNull { !it.isRemoteMissingIn(remoteSessionIds) }
+                        ?.sessionId
+                        ?: createLocalSession(currentProfile)
+                    preferences.selectSession(nextSessionId)
+                    mutableState.value = mutableState.value.copy(currentSessionId = nextSessionId)
+                    publishTurnState()
+                }
             }
         }
     }
@@ -1021,6 +1129,7 @@ class RealtimeSession(
                 endpoint = candidateEndpoints[candidateId],
                 connectionEpoch = accepted.connectionEpoch,
             ),
+            remoteSessionIds = null,
             errorMessage = null,
         )
         database.outbox().resetInFlight(currentProfile.serverId)
@@ -1041,15 +1150,19 @@ class RealtimeSession(
                 )
                 recordAck(eventSeq)
                 when (envelope.type) {
-                    "turn.started" -> stops.onTurnStarted(
-                        requireNotNull(envelope.sessionId),
-                        requireNotNull(envelope.turnId),
-                    )
+                    "turn.started" -> {
+                        rememberRemoteSession(requireNotNull(envelope.sessionId))
+                        stops.onTurnStarted(
+                            requireNotNull(envelope.sessionId),
+                            requireNotNull(envelope.turnId),
+                        )
+                    }
                     "turn.interrupted" -> stops.onTurnTerminal(
                         requireNotNull(envelope.sessionId),
                         requireNotNull(envelope.turnId),
                     )
                     "message.final" -> {
+                        rememberRemoteSession(requireNotNull(envelope.sessionId))
                         stops.onTurnTerminal(
                             requireNotNull(envelope.sessionId),
                             requireNotNull(envelope.turnId),
@@ -1060,32 +1173,29 @@ class RealtimeSession(
                     "sync.completed" -> {
                         if (completedSyncGeneration == syncGeneration) return
                         completedSyncGeneration = syncGeneration
-                        mutableState.value = mutableState.value.copy(
-                            connection = mutableState.value.connection.copy(phase = ConnectionPhase.READY),
-                        )
                         requestSessionList()
-                        requestCommandList()
-                        requestPluginUiList()
-                        uploads.onConnectionReady(currentProfile.serverId)
-                        downloads.onConnectionReady(currentProfile.serverId)
-                        stops.onConnectionReady()
-                        flushOutbox()
                     }
                     "sync.reset_required" -> beginResetRebuild()
                     "session.list" -> {
+                        applyRemoteSessionList(envelope)
                         if (hasPendingSyncCommand("session.list")) {
                             requestAllHistory(envelope)
                         }
                     }
                     "history.page" -> {
+                        rememberRemoteSession(requireNotNull(envelope.sessionId))
                         requestNextHistoryPage(envelope)
                         downloads.resumeIfIdle(currentProfile.serverId)
                     }
                     "attachment.progress" -> uploads.onProgress(
                         ProtocolCodec.decodePayload(envelope.payload),
                     )
-                    "message.proactive" ->
+                    "message.proactive" -> {
+                        rememberRemoteSession(requireNotNull(envelope.sessionId))
                         downloads.resumeIfIdle(currentProfile.serverId)
+                    }
+                    "session.created", "session.updated" ->
+                        rememberRemoteSession(requireNotNull(envelope.sessionId))
                     "plugin.ui.changed" -> requestPluginUiList()
                     "connection.degraded" -> mutableState.value = mutableState.value.copy(
                         connection = mutableState.value.connection.copy(phase = ConnectionPhase.DEGRADED),
@@ -1176,7 +1286,8 @@ class RealtimeSession(
                     mutableState.value = mutableState.value.copy(
                         errorMessage = envelope.payload["message"]?.toString()?.trim('"') ?: "历史同步失败",
                     )
-                    finishResetRebuildIfComplete()
+                    socket.close(reason = "history sync rejected")
+                    scheduleReconnect("历史同步失败，正在重新连接")
                     return
                 }
                 when (envelope.type) {
@@ -1191,6 +1302,20 @@ class RealtimeSession(
                         require(id == activeOutboxCommandId) { "收到非活动 outbox 命令的错误: $id" }
                         val code = envelope.payload["code"]?.jsonPrimitive?.content
                             ?: error("message.send.error 缺少 code")
+                        if (code == "session_not_found") {
+                            val sessionId = requireNotNull(envelope.sessionId) {
+                                "session_not_found 缺少 session_id"
+                            }
+                            check(database.conversations().markRemoteKnown(sessionId) == 1) {
+                                "session_not_found 对应的会话投影不存在: $sessionId"
+                            }
+                            val remoteIds = requireNotNull(mutableState.value.remoteSessionIds) {
+                                "session_not_found 发生在会话目录同步完成前"
+                            }
+                            mutableState.value = mutableState.value.copy(
+                                remoteSessionIds = remoteIds - sessionId,
+                            )
+                        }
                         deliveryStore.retainFailedOutbox(
                             id,
                             outcomeUnknown = code == "command_outcome_unknown",
@@ -1421,6 +1546,19 @@ class RealtimeSession(
         }
     }
 
+    private fun applyRemoteSessionList(envelope: WireEnvelope) {
+        val payload = ProtocolCodec.decodePayload<SessionListPayload>(envelope.payload)
+        mutableState.value = mutableState.value.copy(
+            remoteSessionIds = payload.items.mapTo(linkedSetOf()) { it.sessionId },
+        )
+    }
+
+    private fun rememberRemoteSession(sessionId: String) {
+        val remoteSessionIds = mutableState.value.remoteSessionIds ?: return
+        if (sessionId in remoteSessionIds) return
+        mutableState.value = mutableState.value.copy(remoteSessionIds = remoteSessionIds + sessionId)
+    }
+
     private fun requestNextHistoryPage(envelope: WireEnvelope) {
         val sessionId = requireNotNull(envelope.sessionId) { "History page has no session_id" }
         val payload = ProtocolCodec.decodePayload<HistoryPagePayload>(envelope.payload)
@@ -1490,7 +1628,7 @@ class RealtimeSession(
                 "历史同步 reply page 不匹配"
             }
         }
-        finishResetRebuildIfComplete()
+        finishSessionSyncIfComplete()
     }
 
     private fun publishFinalMessage(envelope: WireEnvelope) {
@@ -1523,14 +1661,18 @@ class RealtimeSession(
         mutableState.value = mutableState.value.copy(
             projectionGeneration = mutableState.value.projectionGeneration + 1,
             connection = mutableState.value.connection.copy(phase = ConnectionPhase.SYNCING),
+            remoteSessionIds = null,
             errorMessage = null,
         )
         requestSessionList()
     }
 
-    private suspend fun finishResetRebuildIfComplete() {
-        if (resetRebuildGeneration != syncGeneration || pendingSyncCommands.isNotEmpty()) return
-        resetRebuildGeneration = null
+    /** 最新代际目录和历史完整落地后，才恢复上传、停止命令与 outbox。 */
+    private suspend fun finishSessionSyncIfComplete() {
+        if (completedSyncGeneration != syncGeneration) return
+        if (mutableState.value.remoteSessionIds == null || pendingSyncCommands.isNotEmpty()) return
+        if (mutableState.value.connection.phase == ConnectionPhase.READY) return
+        if (resetRebuildGeneration == syncGeneration) resetRebuildGeneration = null
         val currentProfile = requireNotNull(profile)
         mutableState.value = mutableState.value.copy(
             connection = mutableState.value.connection.copy(phase = ConnectionPhase.READY),
@@ -1539,6 +1681,7 @@ class RealtimeSession(
         requestPluginUiList()
         uploads.onConnectionReady(currentProfile.serverId)
         downloads.onConnectionReady(currentProfile.serverId)
+        stops.onConnectionReady()
         flushOutbox()
     }
 
@@ -1587,14 +1730,29 @@ class RealtimeSession(
         val currentProfile = requireNotNull(profile)
         val epoch = activeEpoch ?: return
         val candidate = activeCandidate ?: return
-        val command = database.outbox().pending(currentProfile.serverId).firstOrNull() ?: return
-        val stored = ProtocolCodec.decode(command.envelopeJson)
-        val wire = stored.copy(connectionEpoch = epoch)
-        deliveryStore.markOutboxAttempt(command.commandId, System.currentTimeMillis())
-        activeOutboxCommandId = command.commandId
-        if (!socket.send(candidate, wire)) {
-            activeOutboxCommandId = null
-            deliveryStore.retryOutbox(command.commandId)
+        while (true) {
+            val command = database.outbox().pending(currentProfile.serverId).firstOrNull() ?: return
+            val stored = ProtocolCodec.decode(command.envelopeJson)
+            val sessionId = stored.sessionId
+            if (
+                stored.type == "message.send" &&
+                sessionId != null &&
+                isRemoteMissingSession(currentProfile.serverId, sessionId)
+            ) {
+                deliveryStore.retainUnsentOutbox(command.commandId, System.currentTimeMillis())
+                mutableState.value = mutableState.value.copy(
+                    errorMessage = "电脑端已删除一段会话，未发送内容仍保留在本机",
+                )
+                continue
+            }
+            val wire = stored.copy(connectionEpoch = epoch)
+            deliveryStore.markOutboxAttempt(command.commandId, System.currentTimeMillis())
+            activeOutboxCommandId = command.commandId
+            if (!socket.send(candidate, wire)) {
+                activeOutboxCommandId = null
+                deliveryStore.retryOutbox(command.commandId)
+            }
+            return
         }
     }
 
@@ -1667,20 +1825,38 @@ class RealtimeSession(
         } else {
             current.title
         }
-        return ConversationEntity(sessionId, currentProfile.serverId, title, now)
+        return ConversationEntity(
+            sessionId,
+            currentProfile.serverId,
+            title,
+            now,
+            remoteKnown = current?.remoteKnown ?: false,
+        )
     }
 
     private suspend fun ensureCurrentSession(currentProfile: ServerProfileEntity): String {
         val existing = mutableState.value.currentSessionId
         if (existing != null) return existing
-        val sessionId = "mobile:${UUID.randomUUID()}"
-        val now = System.currentTimeMillis()
-        database.conversations().upsert(
-            ConversationEntity(sessionId, currentProfile.serverId, "新对话", now),
-        )
+        val sessionId = createLocalSession(currentProfile)
         preferences.selectSession(sessionId)
         mutableState.value = mutableState.value.copy(currentSessionId = sessionId)
         return sessionId
+    }
+
+    private suspend fun createLocalSession(currentProfile: ServerProfileEntity): String {
+        val sessionId = "mobile:${UUID.randomUUID()}"
+        database.conversations().upsert(
+            ConversationEntity(sessionId, currentProfile.serverId, "新对话", System.currentTimeMillis()),
+        )
+        return sessionId
+    }
+
+    private suspend fun isRemoteMissingSession(serverId: String, sessionId: String): Boolean {
+        val remoteSessionIds = mutableState.value.remoteSessionIds ?: return false
+        if (sessionId in remoteSessionIds) return false
+        val conversation = database.conversations().get(sessionId) ?: return false
+        require(conversation.serverId == serverId) { "Conversation belongs to another server" }
+        return conversation.remoteKnown
     }
 
     private fun scheduleReconnect(message: String) {
@@ -1844,10 +2020,16 @@ class RealtimeSession(
         }
     }
 
-    private fun canUploadAttachment(transfer: AttachmentTransferEntity): Boolean =
-        transfer.sizeBytes < LARGE_TRANSFER_BYTES ||
-            transferNetwork.value.kind != TransferNetworkKind.METERED ||
-            meteredLargeTransferApproved
+    private suspend fun canUploadAttachment(transfer: AttachmentTransferEntity): Boolean =
+        !isRemoteMissingSession(transfer.serverId, transfer.sessionId) &&
+            (
+                transfer.sizeBytes < LARGE_TRANSFER_BYTES ||
+                    transferNetwork.value.kind != TransferNetworkKind.METERED ||
+                    meteredLargeTransferApproved
+                )
+
+    private suspend fun canDownloadAttachment(transfer: MediaAttachmentEntity): Boolean =
+        !isRemoteMissingSession(transfer.serverId, transfer.sessionId)
 
     private fun control(type: String, payload: kotlinx.serialization.json.JsonObject) = WireEnvelope(
         v = WIRE_PROTOCOL_VERSION,

@@ -78,6 +78,141 @@ class LocalDeliveryStoreTest {
     }
 
     @Test
+    fun removesUnavailableRemoteProjectionAndKeepsLocalWork() = runBlocking {
+        assertEquals(1, database.conversations().markRemoteKnown("mobile:test"))
+        database.messages().upsert(
+            MessageEntity(
+                "remote-history",
+                null,
+                "mobile:test",
+                "assistant",
+                "历史",
+                "complete",
+                1,
+                1,
+                serverSeq = 1,
+            ),
+        )
+
+        assertEquals(
+            RemoveUnavailableConversationResult.REMOVED,
+            store.removeUnavailableConversation("server", "mobile:test"),
+        )
+        assertEquals(null, database.conversations().get("mobile:test"))
+        assertEquals(0, database.messages().countForSession("mobile:test"))
+
+        database.conversations().upsert(
+            ConversationEntity("mobile:pending", "server", "待发送", 2, remoteKnown = true),
+        )
+        database.messages().upsert(
+            MessageEntity(
+                "remote-pending",
+                null,
+                "mobile:pending",
+                "assistant",
+                "历史",
+                "complete",
+                2,
+                2,
+                serverSeq = 1,
+            ),
+        )
+        database.messages().upsert(
+            MessageEntity(
+                "user:pending",
+                "pending",
+                "mobile:pending",
+                "user",
+                "尚未发送",
+                "pending",
+                3,
+                3,
+            ),
+        )
+
+        assertEquals(
+            RemoveUnavailableConversationResult.HAS_LOCAL_WORK,
+            store.removeUnavailableConversation("server", "mobile:pending"),
+        )
+        assertNotNull(database.conversations().get("mobile:pending"))
+    }
+
+    @Test
+    fun keepsUnavailableConversationWithAttachmentDraft() = runBlocking {
+        assertEquals(1, database.conversations().markRemoteKnown("mobile:test"))
+        database.messages().upsert(
+            MessageEntity(
+                "remote-history",
+                null,
+                "mobile:test",
+                "assistant",
+                "历史",
+                "complete",
+                1,
+                1,
+                serverSeq = 1,
+            ),
+        )
+        database.attachmentTransfers().upsert(
+            AttachmentTransferEntity(
+                attachmentId = "draft",
+                serverId = "server",
+                sessionId = "mobile:test",
+                filename = "draft.txt",
+                contentType = "text/plain",
+                sizeBytes = 4,
+                sha256 = "a".repeat(64),
+                transferredBytes = 0,
+                state = "ready",
+                updatedAt = 2,
+            ),
+        )
+
+        assertEquals(
+            RemoveUnavailableConversationResult.HAS_LOCAL_WORK,
+            store.removeUnavailableConversation("server", "mobile:test"),
+        )
+        assertNotNull(database.conversations().get("mobile:test"))
+    }
+
+    @Test
+    fun conversationSummarySeparatesRemoteHistoryFromLocalWork() = runBlocking {
+        assertEquals(1, database.conversations().markRemoteKnown("mobile:test"))
+        database.messages().upsert(
+            MessageEntity(
+                "remote-history",
+                null,
+                "mobile:test",
+                "assistant",
+                "历史",
+                "complete",
+                1,
+                1,
+                serverSeq = 1,
+            ),
+        )
+        val remote = database.conversations().observeSummaries("server").first().single()
+        assertTrue(remote.remoteKnown)
+        assertEquals(false, remote.hasLocalWork)
+
+        database.messages().upsert(
+            MessageEntity(
+                "user:failed",
+                "failed",
+                "mobile:test",
+                "user",
+                "失败草稿",
+                "failed_retryable",
+                2,
+                2,
+            ),
+        )
+        val pending = database.conversations().observeSummaries("server").first().single()
+        assertTrue(pending.remoteKnown)
+        assertTrue(pending.hasLocalWork)
+    }
+
+    @Test
     fun reducerPreservesThinkingToolThinkingOrder() = runBlocking {
         val events = listOf(
             event(1, "turn.started", buildJsonObject {}),
@@ -100,6 +235,7 @@ class LocalDeliveryStoreTest {
         )
         events.forEach { store.applyEvent("server", "device", it, it.eventSeq!!) }
 
+        assertTrue(requireNotNull(database.conversations().get("mobile:test")).remoteKnown)
         val blocks = database.messages().getBlocks("assistant:turn")
         assertEquals(listOf("think-1", "tool-1", "think-2"), blocks.map { it.blockId })
         assertEquals(listOf("completed", "completed", "running"), blocks.map { it.status })
@@ -114,6 +250,18 @@ class LocalDeliveryStoreTest {
             decodeStoredToolBlock(blocks[1].content),
         )
         assertEquals("答案", database.messages().get("assistant:turn")!!.text)
+    }
+
+    @Test
+    fun firstRemoteTurnCreatesConversationBeforeAssistantProjection() = runBlocking {
+        assertEquals(1, database.conversations().delete("server", "mobile:test"))
+
+        store.applyEvent("server", "device", event(1, "turn.started", buildJsonObject {}), 2)
+
+        val conversation = requireNotNull(database.conversations().get("mobile:test"))
+        assertTrue(conversation.remoteKnown)
+        assertEquals("streaming", database.messages().get("assistant:turn")!!.deliveryState)
+        assertEquals(1, database.realtimeCursors().get("device")!!.lastAcknowledgedEventSeq)
     }
 
     @Test
@@ -813,6 +961,7 @@ class LocalDeliveryStoreTest {
             store.acknowledgeOutbox(command.id, 3),
         )
         assertEquals("sent", database.attachmentTransfers().get("attachment")!!.state)
+        assertTrue(database.conversations().get("mobile:test")!!.remoteKnown)
         assertEquals(
             listOf("attachment"),
             database.mediaAttachments().forMessage("user:${payload.clientMessageId}").map { it.attachmentId },
@@ -839,6 +988,17 @@ class LocalDeliveryStoreTest {
         assertEquals(2_000, command.createdAt)
         assertEquals(null, database.outbox().get(oldCommandId))
         assertEquals(1, database.messages().countForSession("mobile:test"))
+    }
+
+    @Test
+    fun unavailableSessionRetainsPendingOutboxBeforeTransportAttempt() = runBlocking {
+        val commandId = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        enqueueRetryableMessage(commandId, createdAt = 2_000)
+
+        store.retainUnsentOutbox(commandId, updatedAt = 2_100)
+
+        assertEquals("failed_retryable", database.messages().get("visual-message")!!.deliveryState)
+        assertEquals("failed_retryable", database.outbox().get(commandId)!!.state)
     }
 
     @Test
@@ -1014,6 +1174,48 @@ class LocalDeliveryStoreTest {
             listOf(largeId),
             database.mediaAttachments().pendingDownloads("server").map { it.attachmentId },
         )
+    }
+
+    @Test
+    fun unavailableSessionDownloadDoesNotBlockAnotherConversation() = runBlocking {
+        val unavailableId = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        val availableId = "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+        database.conversations().upsert(
+            ConversationEntity("mobile:stale", "server", "stale", 2, remoteKnown = true),
+        )
+        database.mediaAttachments().upsertAll(
+            listOf(
+                mediaAttachment(unavailableId).copy(
+                    sessionId = "mobile:stale",
+                    sizeBytes = 1,
+                    transferredBytes = 0,
+                    state = "pending",
+                    cachePath = mediaCache.cachePath(unavailableId),
+                    updatedAt = 1,
+                ),
+                mediaAttachment(availableId).copy(
+                    sizeBytes = 1,
+                    transferredBytes = 0,
+                    state = "pending",
+                    cachePath = mediaCache.cachePath(availableId),
+                    updatedAt = 2,
+                ),
+            ),
+        )
+        val sentSessions = mutableListOf<String>()
+        val downloads = AttachmentDownloadCoordinator(
+            database.mediaAttachments(),
+            mediaCache,
+            sendCommand = { _, _, sessionId, _ -> sentSessions += sessionId; true },
+            onTransportUnavailable = {},
+            onDownloadFailed = {},
+            canTransfer = { it.sessionId != "mobile:stale" },
+        )
+
+        downloads.onConnectionReady("server")
+
+        assertEquals(listOf("mobile:test"), sentSessions)
+        assertEquals("pending", database.mediaAttachments().get(unavailableId)!!.state)
     }
 
     @Test

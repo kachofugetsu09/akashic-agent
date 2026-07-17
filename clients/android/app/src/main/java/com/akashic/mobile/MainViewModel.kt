@@ -4,6 +4,8 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.akashic.mobile.data.local.MessageWithBlocks
+import com.akashic.mobile.data.local.canRemoveFrom
+import com.akashic.mobile.data.local.isRemoteMissingIn
 import com.akashic.mobile.data.local.MessageAttachmentWithMedia
 import com.akashic.mobile.data.local.decodeStoredToolBlock
 import com.akashic.mobile.data.realtime.TransferNetworkKind
@@ -121,13 +123,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 requiresMeteredApproval = requiresApproval,
             )
         }
+        val mobileConversations = conversations.filter { it.sessionId.startsWith("mobile:") }
+        val selectedRemoteMissing = mobileConversations
+            .firstOrNull { it.sessionId == session.currentSessionId }
+            ?.isRemoteMissingIn(session.remoteSessionIds) == true
         ConversationUiState(
             connectionLabel = connection.label,
             connectionStatus = connection.status,
             connectionNotice = connection.notice,
             errorNotice = session.errorMessage,
-            sessions = conversations
-                .filter { it.sessionId.startsWith("mobile:") }
+            sessions = mobileConversations
                 .map {
                     SessionUi(
                         sessionId = it.sessionId,
@@ -136,6 +141,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         lastMessageAtMillis = it.lastMessageAt,
                         unreadCount = it.unreadCount,
                         isRunning = it.sessionId in session.activeSessionIds,
+                        isAvailable = !it.isRemoteMissingIn(session.remoteSessionIds),
+                        canRemove = it.canRemoveFrom(session.remoteSessionIds),
                     )
                 },
             selectedSessionId = session.currentSessionId,
@@ -175,7 +182,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             canStop = session.activeTurnId != null &&
                 session.connection.phase == ConnectionPhase.READY &&
                 !session.isStopping,
-            canSend = session.hasProfile && composerAttachments.all { it.state == ComposerAttachmentState.READY },
+            canSend = session.hasProfile &&
+                !selectedRemoteMissing &&
+                composerAttachments.all { it.state == ComposerAttachmentState.READY },
         )
     }.stateIn(
         viewModelScope,
@@ -262,6 +271,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun createSession() = container.realtimeSession.createSession()
 
     fun selectSession(sessionId: String) = container.realtimeSession.selectSession(sessionId)
+
+    fun removeUnavailableSession(sessionId: String) =
+        container.realtimeSession.removeUnavailableSession(sessionId)
 
     /** 按桥接调用顺序校验并保存会话阅读锚点。 */
     fun saveReadingPosition(sessionId: String, messageId: String, offsetPx: Int) {

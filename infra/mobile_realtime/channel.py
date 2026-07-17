@@ -766,6 +766,13 @@ class MobileRealtimeChannel:
             )
         if not frame.payload.text.strip() and not frame.payload.media_refs:
             raise MobileCommandError("empty_message", "文字和附件不能同时为空")
+        ctx = self._require_ctx()
+        claimed_session = self._runtime.storage.has_session_claim(session_id)
+        if claimed_session and not ctx.session_manager.session_exists(session_id):
+            raise MobileCommandError(
+                "session_not_found",
+                "会话已从电脑端删除，请在手机上新建会话后继续",
+            )
         try:
             media = self._require_attachments().resolve_uploads(
                 device_id=device_id,
@@ -774,7 +781,6 @@ class MobileRealtimeChannel:
             )
         except (AttachmentRequestError, AttachmentStateError) as error:
             raise MobileCommandError("attachment_not_ready", str(error)) from error
-        ctx = self._require_ctx()
         reply = self._resolve_reply(session_id, frame.payload.reply_to)
         inbound_content = frame.payload.text
         metadata: dict[str, object] = {
@@ -782,6 +788,7 @@ class MobileRealtimeChannel:
             "client_message_id": frame.payload.client_message_id,
             "client_created_at": frame.payload.client_created_at,
             "device_id": device_id,
+            "require_existing_session": True,
         }
         if reply is not None:
             metadata.update(
@@ -802,7 +809,8 @@ class MobileRealtimeChannel:
             session_id=session_id,
             created_at=_utc_now(),
         )
-        _ = ctx.session_manager.get_or_create(session_id)
+        if not claimed_session:
+            _ = ctx.session_manager.get_or_create(session_id)
         await ctx.bus.publish_inbound(
             InboundMessage(
                 channel=self.name,

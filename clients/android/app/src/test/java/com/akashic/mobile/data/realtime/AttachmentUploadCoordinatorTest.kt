@@ -340,6 +340,8 @@ class AttachmentUploadCoordinatorTest {
 
         override suspend fun deleteSent(): Int = 0
 
+        override suspend fun deleteSentForSession(serverId: String, sessionId: String): Int = 0
+
         private fun updateMany(ids: List<String>, state: String, updatedAt: Long): Int {
             var changed = 0
             ids.forEach { id ->

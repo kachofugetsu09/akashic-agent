@@ -70,6 +70,7 @@ private const val MOBILE_WEB_RENDER_DEADLINE_MILLIS = 10_000L
 fun MobileWebChat(
     state: ConversationUiState,
     onSelectSession: (String) -> Unit,
+    onRemoveUnavailableSession: (String) -> Unit,
     onNewSession: () -> Unit,
     onRestartPairing: () -> Unit,
     onReloadFromServer: () -> Unit,
@@ -105,6 +106,7 @@ fun MobileWebChat(
     val callbacks by rememberUpdatedState(
         MobileWebCallbacks(
             onSelectSession = onSelectSession,
+            onRemoveUnavailableSession = onRemoveUnavailableSession,
             onNewSession = onNewSession,
             onRestartPairing = onRestartPairing,
             onReloadFromServer = onReloadFromServer,
@@ -259,6 +261,7 @@ fun MobileWebChat(
 
 private data class MobileWebCallbacks(
     val onSelectSession: (String) -> Unit,
+    val onRemoveUnavailableSession: (String) -> Unit,
     val onNewSession: () -> Unit,
     val onRestartPairing: () -> Unit,
     val onReloadFromServer: () -> Unit,
@@ -301,6 +304,11 @@ private class MobileWebBridge(
 
     @JavascriptInterface
     fun selectSession(sessionId: String) = dispatch { it.onSelectSession(sessionId) }
+
+    @JavascriptInterface
+    fun removeUnavailableSession(sessionId: String) = dispatch {
+        it.onRemoveUnavailableSession(sessionId)
+    }
 
     @JavascriptInterface
     fun createSession() = dispatch { it.onNewSession() }

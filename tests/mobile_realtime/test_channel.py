@@ -350,6 +350,55 @@ async def test_message_send_is_idempotent_and_session_is_shared_between_devices(
 
 
 @pytest.mark.asyncio
+async def test_message_send_does_not_recreate_a_deleted_claimed_session(
+    tmp_path: Path,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    manager = SessionManager(tmp_path / "workspace")
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    bus = _Bus()
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=bus,
+                session_manager=manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+            ),
+        )
+    )
+    session_id = f"mobile:{uuid4()}"
+    manager.save(manager.get_or_create(session_id))
+    storage.claim_session(
+        device_id=device_id,
+        session_id=session_id,
+        created_at=datetime.now(timezone.utc),
+    )
+    assert manager.delete_session(session_id)
+
+    reply = await channel.handle_command(
+        device_id=device_id,
+        frame=_message_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FBA",
+            session_id=session_id,
+        ),
+    )
+
+    assert reply.type == "message.send.error"
+    assert reply.payload["code"] == "session_not_found"
+    assert not manager.session_exists(session_id)
+    assert bus.inbound == []
+    manager.close()
+    storage.close()
+
+
+@pytest.mark.asyncio
 async def test_message_send_recovers_processing_receipt_from_persisted_user(
     tmp_path: Path,
 ) -> None:
@@ -605,6 +654,7 @@ async def test_message_send_resolves_reply_into_agent_context_and_metadata(
     assert inbound.metadata["reply_to_message_id"] == target["id"]
     assert inbound.metadata["reply_role"] == "assistant"
     assert inbound.metadata["reply_preview"] == " ".join(target_content.split())[:512]
+    assert inbound.metadata["require_existing_session"] is True
 
     user_target = session.add_message(
         "user",
@@ -623,6 +673,7 @@ async def test_message_send_resolves_reply_into_agent_context_and_metadata(
         ),
     )
     assert second.type == "message.send.ok"
+    assert bus.inbound[1].metadata["require_existing_session"] is True
     assert bus.inbound[1].metadata["reply_to_message_id"] == user_target["id"]
     assert "被回复消息（来自 你）：\n之前的问题" in bus.inbound[1].content
 

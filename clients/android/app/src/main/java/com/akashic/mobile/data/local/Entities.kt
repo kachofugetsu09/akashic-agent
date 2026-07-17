@@ -37,6 +37,7 @@ data class ConversationEntity(
     val serverId: String,
     val title: String,
     val updatedAt: Long,
+    val remoteKnown: Boolean = false,
 )
 
 @Entity(
@@ -67,7 +68,17 @@ data class ConversationSummary(
     val isRunning: Boolean,
     val anchorMessageId: String?,
     val anchorOffsetPx: Int,
+    val remoteKnown: Boolean,
+    val hasLocalWork: Boolean,
 )
+
+fun ConversationSummary.isRemoteMissingIn(remoteSessionIds: Set<String>?): Boolean =
+    remoteSessionIds != null &&
+        sessionId !in remoteSessionIds &&
+        remoteKnown
+
+fun ConversationSummary.canRemoveFrom(remoteSessionIds: Set<String>?): Boolean =
+    isRemoteMissingIn(remoteSessionIds) && !hasLocalWork
 
 @Entity(
     tableName = "messages",

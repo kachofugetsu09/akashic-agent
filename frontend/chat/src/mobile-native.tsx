@@ -13,6 +13,7 @@ import {
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import {
   AlertCircle,
+  ArchiveX,
   ArrowLeft,
   Check,
   ChevronRight,
@@ -45,7 +46,10 @@ import {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
@@ -151,6 +155,8 @@ interface MobileSession {
   lastMessageAt?: number;
   unreadCount: number;
   isRunning: boolean;
+  isAvailable: boolean;
+  canRemove: boolean;
 }
 
 interface MobileReadingPosition {
@@ -170,7 +176,7 @@ interface MobilePendingMessage {
 }
 
 export interface MobileSnapshot {
-  protocolVersion: 3;
+  protocolVersion: 4;
   connection: {
     label: string;
     status: ConnectionStatus;
@@ -202,6 +208,7 @@ interface NativeBridge {
   reportReady(): void;
   requestSnapshot(): void;
   selectSession(sessionId: string): void;
+  removeUnavailableSession(sessionId: string): void;
   createSession(): void;
   restartPairing(): void;
   reloadFromServer(): void;
@@ -393,7 +400,7 @@ function parseTransferStatus(value: unknown): MobileTransferStatus {
 function parseMobileSnapshot(value: unknown): MobileSnapshot {
   // 1. 校验协议版本与根对象
   const raw = requireRecord(value, "snapshot");
-  if (raw.protocolVersion !== 3) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
+  if (raw.protocolVersion !== 4) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
   const connection = requireRecord(raw.connection, "connection");
   const status = requireString(connection.status, "connection.status");
   if (!["connecting", "ready", "degraded", "reconnecting", "disconnected"].includes(status)) {
@@ -413,6 +420,8 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
       lastMessageAt,
       unreadCount: requireNonNegativeInteger(session.unreadCount, `sessions[${index}].unreadCount`),
       isRunning: requireBoolean(session.isRunning, `sessions[${index}].isRunning`),
+      isAvailable: requireBoolean(session.isAvailable, `sessions[${index}].isAvailable`),
+      canRemove: requireBoolean(session.canRemove, `sessions[${index}].canRemove`),
     };
   });
   const messages = requireArray(raw.messages, "messages", parseMessage);
@@ -450,7 +459,7 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
       };
     })();
   return {
-    protocolVersion: 3,
+    protocolVersion: 4,
     connection: {
       label: requireString(connection.label, "connection.label"),
       status: status as ConnectionStatus,
@@ -813,6 +822,8 @@ function MobileNativeApp() {
       </main>
     );
   }
+  const selectedSession = snapshot.sessions.find((session) => session.id === snapshot.selectedSessionId);
+  const selectedSessionUnavailable = selectedSession?.isAvailable === false;
 
   const send = () => {
     const text = input.trim();
@@ -1036,7 +1047,7 @@ function MobileNativeApp() {
             <MobilePluginDashboard pluginId={surface.pluginId} />
           </section>
         ) : (
-        <div className={`mobile-main-content ${replyTarget ? "replying" : ""} ${searchOpen ? "searching" : ""} ${selectionActive ? "selecting" : ""} ${queueOpen && snapshot.composer.pendingMessages.length > 1 ? "queueing" : ""}`} inert={drawerOpen ? true : undefined}>
+        <div className={`mobile-main-content ${replyTarget ? "replying" : ""} ${searchOpen ? "searching" : ""} ${selectionActive ? "selecting" : ""} ${queueOpen && snapshot.composer.pendingMessages.length > 1 ? "queueing" : ""} ${selectedSessionUnavailable ? "session-unavailable" : ""}`} inert={drawerOpen ? true : undefined}>
           <Conversation
             key={snapshot.selectedSessionId ?? "empty"}
             className="mobile-conversation"
@@ -1081,7 +1092,7 @@ function MobileNativeApp() {
                             onCopyToolDetail={copyToolDetail}
                             leadingContent={source.reply ? <MessageReplyReference reply={source.reply} /> : undefined}
                             attachmentContent={<MobileMessageAttachments attachments={source.attachments} />}
-                            processStartContent={isPluginTurnMessage(message) ? (
+                            processStartContent={!selectedSessionUnavailable && isPluginTurnMessage(message) ? (
                               <MobilePluginSlot
                                 name="turn.before_reasoning"
                                 sessionId={source.sessionId}
@@ -1089,7 +1100,7 @@ function MobileNativeApp() {
                                 turnId={pluginTurnId(message)}
                               />
                             ) : undefined}
-                            beforeProcessBlock={(block) => isPluginTurnMessage(message) && block.kind === "tool" ? (
+                            beforeProcessBlock={(block) => !selectedSessionUnavailable && isPluginTurnMessage(message) && block.kind === "tool" ? (
                               <MobilePluginSlot
                                 name="turn.before_tool"
                                 sessionId={source.sessionId}
@@ -1098,7 +1109,7 @@ function MobileNativeApp() {
                                 block={block}
                               />
                             ) : null}
-                            answerEndContent={isPluginTurnMessage(message) ? (
+                            answerEndContent={!selectedSessionUnavailable && isPluginTurnMessage(message) ? (
                               <MobilePluginSlot
                                 name="turn.after_answer"
                                 sessionId={source.sessionId}
@@ -1160,7 +1171,9 @@ function MobileNativeApp() {
               onPrevious={() => moveSearch(-1)}
               onNext={() => moveSearch(1)}
             />
-          ) : selectionActive ? null : (
+          ) : selectionActive ? null : selectedSessionUnavailable && selectedSession ? (
+            <UnavailableSessionFooter key={selectedSession.id} session={selectedSession} />
+          ) : (
             <MobileComposer
               snapshot={snapshot}
               input={input}
@@ -1413,7 +1426,7 @@ function MobileDrawer({
         <nav className="mobile-session-list">
           {snapshot.sessions.map((session) => (
             <button
-              className={`mobile-session-row ${session.id === snapshot.selectedSessionId ? "active" : ""}`}
+              className={`mobile-session-row ${session.id === snapshot.selectedSessionId ? "active" : ""} ${session.isAvailable ? "" : "unavailable"}`}
               type="button"
               key={session.id}
               onClick={() => {
@@ -1426,15 +1439,19 @@ function MobileDrawer({
                   <strong>{session.title || "未命名会话"}</strong>
                   {session.lastMessageAt ? <time>{formatDrawerTime(session.lastMessageAt)}</time> : null}
                 </span>
-                <small>{session.lastMessagePreview || "还没有消息"}</small>
+                <small>{session.isAvailable
+                  ? session.lastMessagePreview || "还没有消息"
+                  : "电脑端已不存在 · 本机保留历史"}</small>
               </span>
               <span className="mobile-session-row__state">
-                {session.isRunning ? <span className="session-running" aria-label="Agent 正在处理" /> : null}
-                {session.unreadCount > 0 ? (
+                {!session.isAvailable ? (
+                  <ArchiveX size={19} aria-label="电脑端已不存在" />
+                ) : session.isRunning ? <span className="session-running" aria-label="Agent 正在处理" /> : null}
+                {session.isAvailable && session.unreadCount > 0 ? (
                   <strong className="session-unread" aria-label={`${session.unreadCount} 条未读`}>
                     {session.unreadCount > 99 ? "99+" : session.unreadCount}
                   </strong>
-                ) : session.id === snapshot.selectedSessionId ? <Check size={18} /> : null}
+                ) : session.isAvailable && session.id === snapshot.selectedSessionId ? <Check size={18} /> : null}
               </span>
             </button>
           ))}
@@ -1463,6 +1480,62 @@ function MobileDrawer({
           </button>
         </div>
       </aside>
+    </div>
+  );
+}
+
+function UnavailableSessionFooter({ session }: { session: MobileSession }) {
+  if (!session.canRemove) {
+    return (
+      <div className="mobile-unavailable-session" role="status">
+        <span>
+          <strong>电脑端已不存在</strong>
+          <small>未发送的消息或附件仍保留在本机；已停止发送，避免重新创建会话。</small>
+        </span>
+        <button className="new-session" type="button" onClick={() => window.AkashicNative?.createSession()}>
+          新聊天
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="mobile-unavailable-session" role="status">
+      <span>
+        <strong>电脑端已不存在</strong>
+        <small>历史仍保存在这台手机上，但不能继续发送。</small>
+      </span>
+      <Dialog>
+        <DialogTrigger asChild>
+          <button type="button">从本机移除</button>
+        </DialogTrigger>
+        <DialogContent
+          className="mobile-session-remove-dialog"
+          overlayClassName="mobile-session-remove-overlay"
+          showCloseButton={false}
+        >
+          <DialogTitle>移除本机会话？</DialogTitle>
+          <DialogDescription>
+            “{session.title || "未命名会话"}”的本地历史和已缓存附件会被删除，电脑端数据不会受到影响。
+          </DialogDescription>
+          <DialogFooter className="mobile-session-remove-dialog__actions">
+            <DialogClose asChild>
+              <button type="button">取消</button>
+            </DialogClose>
+            <DialogClose asChild>
+              <button
+                className="destructive"
+                type="button"
+                onClick={() => {
+                  window.AkashicNative?.performActionHaptic();
+                  window.AkashicNative?.removeUnavailableSession(session.id);
+                }}
+              >
+                移除
+              </button>
+            </DialogClose>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

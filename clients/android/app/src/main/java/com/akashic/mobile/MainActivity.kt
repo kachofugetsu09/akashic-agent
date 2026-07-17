@@ -138,6 +138,7 @@ class MainActivity : ComponentActivity() {
                         MobileWebChat(
                             state = conversation,
                             onSelectSession = viewModel::selectSession,
+                            onRemoveUnavailableSession = viewModel::removeUnavailableSession,
                             onNewSession = viewModel::createSession,
                             onRestartPairing = viewModel::restartPairing,
                             onReloadFromServer = viewModel::reloadFromServer,

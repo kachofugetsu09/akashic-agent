@@ -441,3 +441,14 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - Pixel 7 使用只读正式快照验证：`3630` 条周期 effect 没有进入列表，`28` 条反馈中只显示 `26` 条非零影响；真实状态为“自然 / 保持门槛”。
 - 真机展开指标后可读愉悦度、活跃度和主动把握，收起后原始指标从 Android 无障碍树消失；服务端与应用日志无 FATAL、RenderProcessGone、event gap 或插件 RPC 异常。
 - 插件 Python `3 passed`、Node `4 passed`、Pyright 0 错误；源码 PR #2 已合入，Docker Mobile Lab 最终缓存 HEAD 为 `0db706f`。完整设计、隔离、备份和截图证据见 `docs/mobile-batches/2026-07-17-emotion-state-panel.md`。
+
+## 2026-07-17 电脑端已不存在会话的本地收口
+
+- Room schema v6 用持久化 `remoteKnown` 区分“服务端确认过的会话”和纯本地新会话；migration 同时识别历史序号与可证明的 live-only 投影，首个跨设备 `turn.started` 也会先建立 conversation。收到完整 `session.list` 后，远端缺失会话立即停止消息、附件和 Turn 插件请求，本地工作只决定能否删除。
+- 重连必须完成当前 generation 的 `session.list` 和全部 history reply 才进入 READY、恢复附件和 flush outbox；同步失败直接重连。服务端 mobile 边界同时拒绝已有 claim 但 canonical session 已删除的发送，避免 `get_or_create` 复活旧会话。
+- 抽屉用 warning 状态替换普通预览；进入后历史保持可读。有待发消息或附件时原 composer 位置解释“已停止发送”并提供“新聊天”，没有本地工作时才提供“从本机移除”。确认删除只清理本机投影和缓存。
+- 已失效会话不挂载本轮插件 slot，Observe 等插件不会再对不存在的服务端 Turn 请求数据；插件目录与全局看板不受影响。
+- UI 复用 Radix Dialog 与现有原生桥，采用 Material 3 状态面、28dp modal、32% scrim 和 48dp 文字动作；没有增加 warning 卡、badge 或新的业务色。warning 在浅容器上的对比度由约 `4.18:1` 提升到 `4.55:1`。
+- 自动门禁通过 Web typecheck、ESLint、20 项 mobile state、Android JVM/debug/androidTest/release 构建、Pyright、131 项 Python realtime/protocol/lifecycle 定向测试和 v2 签名；Pixel 7 Room instrumentation 为 `39/39`。
+- 独立复核进一步收口 pending outbox 的状态 owner、失效会话对其他附件下载的阻塞、首次 claim 排队后删除与所有 mobile admission 的 existing-only 约束。隔离数据库回滚时又真实触发客户端 ACK 高于 durable cursor；Gateway 现先于 retention 检查处理 ACK 超前，把 cursor 前移与精确下一序号的 `sync.reset_required` 在同一 SQLite 事务落盘，并把恢复 ACK 限在 SQLite 64 位空间的一半。进程在提交后立即退出、回退事件同时超过保留期，或使用最大合法 ACK 完成下一次 resume，都不会形成 ASGI 异常重连环或误报同步完成。
+- Pixel 7 在隔离 Mobile Lab 中覆盖无本地工作移除闭环，以及“待发消息/附件 + tunnel 502 → 重连完成目录同步 → 不发送旧 outbox → 服务端不重建”的弱网闭环。最终画面保持“连接正常”，不再出现误导性的 Turn token 插件错误；服务端读回 `sessions=0 / messages=0`，正式 workspace 未读写。完整设计和证据见 `docs/mobile-batches/2026-07-17-unavailable-sessions.md`。

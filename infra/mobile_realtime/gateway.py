@@ -601,9 +601,25 @@ class MobileGatewayRuntime:
             )
             return last_ack, last_ack, terminal
 
-        # 2. 验证保留窗口并冻结当前已分配序号上限
+        # 2. 先冻结当前已分配上限；服务端回退必须早于旧窗口保留期判断
+        replay_through = cursor.next_event_seq - 1
+        if last_ack > replay_through:
+            event_id = _new_ulid()
+            terminal = self.inbox.rebase_with_event(
+                device_id=device_id,
+                through_event_seq=last_ack,
+                event_id=event_id,
+                envelope_json=_encode_stored_event(
+                    event_id=event_id,
+                    event_type="sync.reset_required",
+                    payload={"reason": "client_ack_ahead_of_server_cursor"},
+                ),
+            )
+            return last_ack, last_ack, terminal
+
+        # 3. 验证保留窗口；回退恢复之外不能重放已经过期的 durable 事件
         try:
-            _ = self.inbox.replay(
+            replay = self.inbox.replay(
                 device_id,
                 after_event_seq=last_ack,
                 limit=1,
@@ -615,9 +631,12 @@ class MobileGatewayRuntime:
                 payload={"reason": "inbox_retention_exceeded"},
             )
             return last_ack, last_ack, terminal
-        replay_through = cursor.next_event_seq - 1
 
-        # 3. 持久化窗口已有缺口时必须重建，不能把后续事件伪装成连续重放
+        # 已原子落盘但尚未送达的 reset 仍是唯一终止帧，不能追加完成帧掩盖它
+        if replay.events and _stored_event_type(replay.events[0]) == "sync.reset_required":
+            return last_ack, last_ack, replay.events[0]
+
+        # 4. 持久化窗口已有缺口时必须重建，不能把后续事件伪装成连续重放
         if not self.storage.durable_event_range_is_contiguous(
             device_id,
             after_event_seq=last_ack,
@@ -630,7 +649,7 @@ class MobileGatewayRuntime:
             )
             return last_ack, last_ack, terminal
 
-        # 4. 终止帧先占号，随后并发 publish 只能排在它之后
+        # 5. 终止帧先占号，随后并发 publish 只能排在它之后
         terminal = self._enqueue_event(
             device_id=device_id,
             event_type="sync.completed",
@@ -1325,6 +1344,16 @@ def _encode_stored_event(
     )
     _ = _stored_event_to_wire(encoded, event_seq=1, connection_epoch=1)
     return encoded
+
+
+def _stored_event_type(event: DurableInboxEvent) -> str:
+    """读取已经过入箱校验的 durable 事件类型。"""
+
+    body = json.loads(event.envelope_json)
+    event_type = body["type"]
+    if not isinstance(event_type, str):
+        raise TypeError("durable event type 必须为文本")
+    return event_type
 
 
 def _stored_event_to_wire(

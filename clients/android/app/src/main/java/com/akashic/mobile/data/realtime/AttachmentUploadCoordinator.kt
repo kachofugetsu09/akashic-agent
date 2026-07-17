@@ -17,7 +17,7 @@ class AttachmentUploadCoordinator(
     private val sendBinary: (okio.ByteString) -> Boolean,
     private val onTransportUnavailable: (String) -> Unit,
     private val onUploadFailed: (String) -> Unit,
-    private val canTransfer: (AttachmentTransferEntity) -> Boolean = { true },
+    private val canTransfer: suspend (AttachmentTransferEntity) -> Boolean = { true },
 ) {
     private data class PendingCommand(val type: String, val attachmentId: String)
 
@@ -127,7 +127,7 @@ class AttachmentUploadCoordinator(
         if (active != null || pendingCommands.isNotEmpty()) return
         var transfer: AttachmentTransferEntity
         while (true) {
-            transfer = dao.pendingUploads(currentServer).firstOrNull(canTransfer) ?: return
+            transfer = dao.pendingUploads(currentServer).firstOrNull { canTransfer(it) } ?: return
             if (dao.claimUploading(transfer.attachmentId, System.currentTimeMillis()) == 1) break
         }
         val commandId = Ulid.next()
