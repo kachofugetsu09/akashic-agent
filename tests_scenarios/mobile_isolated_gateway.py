@@ -29,6 +29,91 @@ _FIXED_GIF = bytes.fromhex(
     "47494638396101000100800000000000ffffff21f90401000000002c00000000010001000002024401003b"
 )
 _HISTORY_SESSION_ID = "mobile:00000000-0000-7000-8000-000000000001"
+_FAULT_MODES = ("none", "stall_before_challenge", "stall_after_auth")
+
+
+class GatewayFaultController:
+    """为一次真机重连注入一个确定性的单次停滞点。"""
+
+    def __init__(self, mode: str) -> None:
+        if mode not in _FAULT_MODES:
+            raise ValueError(f"未知隔离 Gateway 故障模式: {mode}")
+        self.mode = mode
+        self.triggered = False
+
+    def claim_before_challenge(self, *, has_paired_device: bool) -> bool:
+        if (
+            self.triggered
+            or not has_paired_device
+            or self.mode != "stall_before_challenge"
+        ):
+            return False
+        self.triggered = True
+        return True
+
+    def claim_after_auth(self) -> bool:
+        if self.triggered or self.mode != "stall_after_auth":
+            return False
+        self.triggered = True
+        return True
+
+
+async def _stall_websocket(websocket: Any, *, accept: bool) -> None:
+    """保持连接但不发送协议进展，直到客户端主动关闭。"""
+
+    if accept:
+        await websocket.accept()
+    while True:
+        message = await websocket.receive()
+        if message["type"] == "websocket.disconnect":
+            return
+
+
+def install_fault_mode(
+    runtime: MobileGatewayRuntime,
+    mode: str,
+) -> GatewayFaultController:
+    """在隔离 runtime 上安装一次性握手或同步停滞。"""
+
+    controller = GatewayFaultController(mode)
+    if mode == "none":
+        return controller
+
+    # 1. challenge 前停滞只在首次配对完成后触发，不阻塞扫码流程
+    original_handle = runtime.handle_websocket
+
+    async def handle_websocket(websocket: Any) -> None:
+        if controller.claim_before_challenge(
+            has_paired_device=bool(runtime.storage.list_active_devices()),
+        ):
+            print("fault_triggered=stall_before_challenge", flush=True)
+            await _stall_websocket(websocket, accept=True)
+            return
+        await original_handle(websocket)
+
+    runtime.handle_websocket = handle_websocket  # type: ignore[method-assign]
+
+    # 2. auth 后停滞保留真实 challenge/proof，只阻断 resume 后的同步进展
+    original_authenticated_loop = runtime._authenticated_loop  # pyright: ignore[reportPrivateUsage]
+
+    async def authenticated_loop(
+        websocket: Any,
+        *,
+        device_id: str,
+        connection_epoch: int,
+    ) -> None:
+        if controller.claim_after_auth():
+            print("fault_triggered=stall_after_auth", flush=True)
+            await _stall_websocket(websocket, accept=False)
+            return
+        await original_authenticated_loop(
+            websocket,
+            device_id=device_id,
+            connection_epoch=connection_epoch,
+        )
+
+    runtime._authenticated_loop = authenticated_loop  # type: ignore[method-assign]  # pyright: ignore[reportPrivateUsage]
+    return controller
 
 
 class EphemeralMasterKeys:
@@ -200,6 +285,7 @@ async def run_harness(args: argparse.Namespace) -> None:
         root,
         master_keys=EphemeralMasterKeys(),
     )
+    fault_controller = install_fault_mode(runtime, args.fault_mode)
     bus = FixedReplyBus(manager, media)
     bus.bind(runtime)
     await runtime.channel.start(
@@ -229,6 +315,7 @@ async def run_harness(args: argparse.Namespace) -> None:
     print(f"isolated_root={root}", flush=True)
     print(f"history_session={_HISTORY_SESSION_ID}", flush=True)
     print(f"adb_reverse=adb reverse tcp:{args.port} tcp:{args.port}", flush=True)
+    print(f"fault_mode={fault_controller.mode}", flush=True)
 
     # 2. 启动真实 TLS WebSocket，并自动批准唯一的隔离配对请求
     server = build_mobile_gateway_server(runtime, keyset)
@@ -256,6 +343,12 @@ def parse_args() -> argparse.Namespace:
     _ = parser.add_argument("--root", type=Path, help="显式隔离根目录；指定后不会自动删除")
     _ = parser.add_argument("--host", default="127.0.0.1")
     _ = parser.add_argument("--port", type=int, default=16323)
+    _ = parser.add_argument(
+        "--fault-mode",
+        choices=_FAULT_MODES,
+        default="none",
+        help="配对后仅注入一次指定阶段停滞，用于验证手机自动恢复",
+    )
     _ = parser.add_argument(
         "--keep",
         action="store_true",
