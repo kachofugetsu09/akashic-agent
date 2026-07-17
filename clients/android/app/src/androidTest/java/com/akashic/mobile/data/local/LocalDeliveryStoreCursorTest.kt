@@ -59,10 +59,33 @@ class LocalDeliveryStoreCursorTest {
             v = WIRE_PROTOCOL_VERSION,
             kind = WireKind.EVENT,
             type = "message.final",
+            id = "final-frame",
             connectionEpoch = 1,
             eventSeq = 5,
             sessionId = "mobile:test",
             turnId = "turn-1",
+            payload = buildJsonObject { put("metadata", JsonPrimitive("broken")) },
+        )
+
+        assertThrows(IllegalStateException::class.java) {
+            runBlocking { store.applyEvent("server-1", "device-1", envelope, updatedAt = 2) }
+        }
+        assertEquals(
+            4L,
+            runBlocking { database.realtimeCursors().get("device-1")?.lastAcknowledgedEventSeq },
+        )
+    }
+
+    @Test
+    fun invalidProactiveAttentionDoesNotAdvanceCursor() {
+        val envelope = WireEnvelope(
+            v = WIRE_PROTOCOL_VERSION,
+            kind = WireKind.EVENT,
+            type = "message.proactive",
+            id = "proactive-frame",
+            connectionEpoch = 1,
+            eventSeq = 5,
+            sessionId = "mobile:test",
             payload = buildJsonObject { put("metadata", JsonPrimitive("broken")) },
         )
 

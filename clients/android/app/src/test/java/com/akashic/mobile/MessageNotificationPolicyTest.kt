@@ -1,6 +1,12 @@
 package com.akashic.mobile
 
 import com.akashic.mobile.data.realtime.FinalMessageEvent
+import com.akashic.mobile.data.realtime.WireEnvelope
+import com.akashic.mobile.data.realtime.WireKind
+import com.akashic.mobile.data.realtime.deliveredFinalMessageEvent
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -64,5 +70,28 @@ class MessageNotificationPolicyTest {
 
         assertNotEquals(first, second)
         assertEquals(first, notificationIntentData("mobile:session-a", "message-1"))
+    }
+
+    @Test
+    fun proactiveNotificationUsesThePersistedLocalMessageIdentity() {
+        val event = deliveredFinalMessageEvent(
+            WireEnvelope(
+                v = 1,
+                kind = WireKind.EVENT,
+                type = "message.proactive",
+                id = "event-42",
+                sessionId = "mobile:session-a",
+                payload = JsonObject(
+                    mapOf(
+                        "content" to JsonPrimitive("后台任务完成"),
+                        "attachments" to JsonArray(emptyList()),
+                    ),
+                ),
+            ),
+        )
+
+        assertEquals("proactive:event-42", event.messageId)
+        assertEquals("后台任务完成", event.content)
+        assertFalse(event.hasAttachments)
     }
 }

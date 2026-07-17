@@ -17,6 +17,7 @@ import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import com.akashic.mobile.data.realtime.FinalMessageEvent
 import com.akashic.mobile.data.local.AttachmentTransferEntity
+import com.akashic.mobile.data.local.PendingMessageNotificationEntity
 import com.akashic.mobile.data.realtime.FinalMessageAttention
 import com.akashic.mobile.data.realtime.MobileSessionState
 import com.akashic.mobile.data.realtime.TransferNetworkKind
@@ -27,6 +28,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -57,9 +60,9 @@ class MobileConnectionService : Service() {
             CONNECTION_NOTIFICATION_ID,
             connectionNotification(app.container.realtimeSession.state.value, emptyList()),
         )
-        app.container.realtimeSession.start()
         observeConnection()
         observeFinalMessages()
+        app.container.realtimeSession.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -119,27 +122,53 @@ class MobileConnectionService : Service() {
 
     private fun observeFinalMessages() {
         messageJob = serviceScope.launch {
-            app.container.realtimeSession.finalMessages.collect { event ->
-                val currentSessionId = app.container.realtimeSession.state.value.currentSessionId
-                if (
-                    (
-                        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-                            ContextCompat.checkSelfPermission(
-                                this@MobileConnectionService,
-                                Manifest.permission.POST_NOTIFICATIONS,
-                            ) == PackageManager.PERMISSION_GRANTED
-                    ) &&
-                    notificationManager.areNotificationsEnabled() &&
-                    MessageNotificationPolicy.shouldNotify(
-                        appVisible = app.visibility.isVisible,
-                        currentSessionId = currentSessionId,
-                        event = event,
-                    )
-                ) {
-                    notificationManager.notify(messageNotificationId(event), messageNotification(event))
+            app.container.realtimeSession.state
+                .map { it.serverId }
+                .distinctUntilChanged()
+                .flatMapLatest { serverId ->
+                    serverId?.let {
+                        app.container.database.pendingMessageNotifications().observeForServer(it)
+                    } ?: flowOf(emptyList())
                 }
-            }
+                .collect { pending ->
+                    pending.forEach { notification ->
+                        consumePendingNotification(notification)
+                    }
+                }
         }
+    }
+
+    /** 发布或明确抑制一条持久通知，成功后消费待办。 */
+    private suspend fun consumePendingNotification(notification: PendingMessageNotificationEntity) {
+        // 1. 从 Room 边界恢复已校验的通知语义
+        val event = FinalMessageEvent(
+            sessionId = notification.sessionId,
+            messageId = notification.messageId,
+            content = notification.content,
+            hasAttachments = notification.hasAttachments,
+            attention = FinalMessageAttention.valueOf(notification.attention),
+        )
+
+        // 2. 权限或前台策略明确抑制；其余通知使用稳定 ID 幂等覆盖
+        val canPost = (
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS,
+                ) == PackageManager.PERMISSION_GRANTED
+            ) && notificationManager.areNotificationsEnabled()
+        if (
+            canPost && MessageNotificationPolicy.shouldNotify(
+                appVisible = app.visibility.isVisible,
+                currentSessionId = app.container.realtimeSession.state.value.currentSessionId,
+                event = event,
+            )
+        ) {
+            notificationManager.notify(messageNotificationId(event), messageNotification(event))
+        }
+
+        // 3. 仅在系统调用成功或策略明确抑制后删除；进程中断会安全重放
+        app.container.database.pendingMessageNotifications().delete(event.messageId)
     }
 
     private fun createNotificationChannels() {
@@ -248,6 +277,7 @@ class MobileConnectionService : Service() {
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(privatePublicNotification())
             .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
             .build()
     }
 
