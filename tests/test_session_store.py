@@ -12,6 +12,7 @@ from agent.control.models import (
     TurnStatus,
     TurnUsage,
 )
+from session.manager import SessionManager
 from session.store import SessionStore
 
 NOW = datetime(2026, 7, 14, 8, 0, tzinfo=UTC)
@@ -229,6 +230,21 @@ def test_session_admission_blocks_delete_from_another_connection(tmp_path) -> No
     assert dashboard_store.delete_session("mobile:one", cascade=True)
     runtime_store.close()
     dashboard_store.close()
+
+
+def test_session_manager_only_clears_admissions_when_runtime_owns_workspace(tmp_path) -> None:
+    runtime = SessionManager(tmp_path)
+    runtime._store.create_session(key="mobile:one")
+    assert runtime._store.acquire_session_admission("mobile:one", "admission:one")
+
+    inspector = SessionManager(tmp_path)
+    with pytest.raises(ValueError, match="正在处理消息"):
+        inspector._store.delete_session("mobile:one", cascade=True)
+
+    inspector.clear_stale_admissions()
+    assert inspector._store.delete_session("mobile:one", cascade=True)
+    runtime._store.close()
+    inspector._store.close()
 
 
 @pytest.mark.parametrize("batch", [False, True])

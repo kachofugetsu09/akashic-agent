@@ -776,7 +776,7 @@ async def test_app_runtime_start_preserves_startup_error_when_rollback_fails(
         start=_start,
         stop=_stop,
     )
-    monkeypatch.setattr(bootstrap_app, "build_core_runtime", lambda *_: core)
+    monkeypatch.setattr(bootstrap_app, "build_core_runtime", lambda *_, **__: core)
     runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
 
     with pytest.raises(RuntimeError, match="startup failed") as caught:

@@ -78,6 +78,25 @@ class LocalDeliveryStoreTest {
     }
 
     @Test
+    fun deliberateConversationEntryClearsAnchorWithoutAdvancingReadWatermark() = runBlocking {
+        database.messages().upsert(
+            MessageEntity("already-read", null, "mobile:test", "assistant", "已读", "complete", 10, 10),
+        )
+        database.messages().upsert(
+            MessageEntity("still-unread", null, "mobile:test", "assistant", "未读", "complete", 20, 20),
+        )
+        store.markSessionReadThrough("mobile:test", 10, "server", 21)
+        assertTrue(store.saveReadingPosition("mobile:test", "already-read", -24, "server", 22))
+
+        store.clearReadingPosition("mobile:test", "server", 23)
+
+        val summary = database.conversations().observeSummaries("server").first().single()
+        assertEquals(null, summary.anchorMessageId)
+        assertEquals(0, summary.anchorOffsetPx)
+        assertEquals(1, summary.unreadCount)
+    }
+
+    @Test
     fun removesUnavailableRemoteProjectionAndKeepsLocalWork() = runBlocking {
         assertEquals(1, database.conversations().markRemoteKnown("mobile:test"))
         database.messages().upsert(

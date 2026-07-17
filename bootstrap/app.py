@@ -257,6 +257,7 @@ class AppRuntime:
                 self.workspace,
                 self.http_resources,
                 **core_kwargs,
+                clear_stale_session_admissions=True,
             )
             self.agent_loop = self.core.loop
             self.bus = self.core.bus

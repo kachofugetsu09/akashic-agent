@@ -992,7 +992,16 @@ class RealtimeSession(
                 }
                 require(conversation.serverId == currentProfile.serverId) { "Mobile session belongs to another server" }
 
-                // 2. 持久化选择
+                // 2. 用户从列表主动进入时从最新消息开始，应用重启仍保留原阅读恢复语义
+                if (mutableState.value.currentSessionId != sessionId) {
+                    deliveryStore.clearReadingPosition(
+                        sessionId = sessionId,
+                        expectedServerId = currentProfile.serverId,
+                        updatedAt = System.currentTimeMillis(),
+                    )
+                }
+
+                // 3. 持久化选择
                 preferences.selectSession(sessionId)
                 mutableState.value = mutableState.value.copy(currentSessionId = sessionId)
                 publishTurnState()

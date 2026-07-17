@@ -329,7 +329,6 @@ class SessionManager:
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = workspace / "sessions.db"
         self._store = SessionStore(self.db_path)
-        self._store.clear_session_admissions()
         self._cache: dict[str, Session] = {}
         self._write_locks: dict[str, asyncio.Lock] = {}
 
@@ -337,6 +336,10 @@ class SessionManager:
         if key not in self._write_locks:
             self._write_locks[key] = asyncio.Lock()
         return self._write_locks[key]
+
+    def clear_stale_admissions(self) -> None:
+        """由持有 workspace 独占锁的 runtime 清理上次进程遗留租约。"""
+        self._store.clear_session_admissions()
 
     def get_or_create(self, key: str) -> Session:
         if key in self._cache:

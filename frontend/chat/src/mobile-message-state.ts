@@ -46,6 +46,24 @@ export interface MobileProjectionBaselineState {
   rebuilding: boolean;
 }
 
+export interface MobileReadingAnchor {
+  messageId: string;
+  offsetPx: number;
+}
+
+/** 同步原生阅读锚点，并把明确清除锚点解释为回到会话末尾。 */
+export function updateMobileReadingRestoreTarget<T extends MobileReadingAnchor>(
+  current: T | null | undefined,
+  next: T | undefined,
+) {
+  const normalized = next ?? null;
+  if (
+    current?.messageId === normalized?.messageId
+    && current?.offsetPx === normalized?.offsetPx
+  ) return current ?? null;
+  return normalized;
+}
+
 export interface MobileComposerDraft {
   text: string;
   replyToMessageId?: string;
