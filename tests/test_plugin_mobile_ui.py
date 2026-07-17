@@ -8,6 +8,7 @@ import pytest
 
 from agent.plugins.mobile_ui import (
     MobileUiPluginUnavailable,
+    MobileUiRpcExecutionError,
     MobileUiRpcTimeout,
     PluginMobileUiProvider,
 )
@@ -131,6 +132,27 @@ async def test_mobile_ui_rpc_timeout_releases_snapshot_lease(monkeypatch: pytest
     monkeypatch.setattr(mobile_ui_module, "MOBILE_UI_RPC_TIMEOUT_SECONDS", 0.01)
 
     with pytest.raises(MobileUiRpcTimeout):
+        await provider.call(
+            "sample@github",
+            "recall.current",
+            {},
+            session_id="mobile:test",
+            turn_id="turn-1",
+        )
+
+
+@pytest.mark.asyncio
+async def test_mobile_ui_rpc_failure_isolated_from_transport() -> None:
+    provider = _provider()
+
+    async def fails(*args: object, **kwargs: object) -> dict[str, object]:
+        raise RuntimeError("plugin bug detail")
+
+    cast(Any, provider)._manager.current_snapshot.generations[
+        "sample@github"
+    ].instance.mobile_ui_call = fails
+
+    with pytest.raises(MobileUiRpcExecutionError, match="sample@github.recall.current"):
         await provider.call(
             "sample@github",
             "recall.current",
