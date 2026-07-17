@@ -75,7 +75,23 @@ interface ConversationDao {
               AND message.deliveryState = 'streaming'
           ) AS isRunning,
           read_state.anchorMessageId AS anchorMessageId,
-          COALESCE(read_state.anchorOffsetPx, 0) AS anchorOffsetPx
+          COALESCE(read_state.anchorOffsetPx, 0) AS anchorOffsetPx,
+          conversation.remoteKnown AS remoteKnown,
+          (
+            EXISTS (
+              SELECT 1 FROM messages AS message
+              WHERE message.sessionId = conversation.sessionId
+                AND message.clientMessageId IS NOT NULL
+                AND message.deliveryState IN (
+                  'pending', 'sent', 'failed', 'failed_retryable', 'outcome_unknown'
+                )
+            ) OR EXISTS (
+              SELECT 1 FROM attachment_transfers AS transfer
+              WHERE transfer.serverId = conversation.serverId
+                AND transfer.sessionId = conversation.sessionId
+                AND transfer.state IN ('pending', 'uploading', 'finishing', 'ready', 'failed')
+            )
+          ) AS hasLocalWork
         FROM conversations AS conversation
         LEFT JOIN conversation_read_states AS read_state
           ON read_state.sessionId = conversation.sessionId
@@ -87,6 +103,12 @@ interface ConversationDao {
 
     @Query("SELECT * FROM conversations WHERE sessionId = :sessionId")
     suspend fun get(sessionId: String): ConversationEntity?
+
+    @Query("UPDATE conversations SET remoteKnown = 1 WHERE sessionId = :sessionId")
+    suspend fun markRemoteKnown(sessionId: String): Int
+
+    @Query("DELETE FROM conversations WHERE serverId = :serverId AND sessionId = :sessionId")
+    suspend fun delete(serverId: String, sessionId: String): Int
 
     @Query(
         """
@@ -139,11 +161,24 @@ interface ConversationReadStateDao {
 
     @Query(
         """
+        UPDATE conversation_read_states
+        SET anchorMessageId = NULL,
+            anchorOffsetPx = 0,
+            updatedAt = :updatedAt
+        WHERE sessionId = :sessionId
+        """,
+    )
+    suspend fun clearPosition(sessionId: String, updatedAt: Long): Int
+
+    @Query(
+        """
         INSERT INTO conversation_read_states (
           sessionId, lastReadAt, anchorMessageId, anchorOffsetPx, updatedAt
         ) VALUES (:sessionId, :readAt, NULL, 0, :updatedAt)
         ON CONFLICT(sessionId) DO UPDATE SET
           lastReadAt = MAX(lastReadAt, excluded.lastReadAt),
+          anchorMessageId = NULL,
+          anchorOffsetPx = 0,
           updatedAt = excluded.updatedAt
         """,
     )
@@ -232,6 +267,16 @@ interface MessageDao {
 
     @Query("SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId")
     suspend fun countForSession(sessionId: String): Int
+
+    @Query(
+        """
+        SELECT COUNT(*) FROM messages
+        WHERE sessionId = :sessionId
+          AND clientMessageId IS NOT NULL
+          AND deliveryState IN ('pending', 'sent', 'failed', 'failed_retryable', 'outcome_unknown')
+        """,
+    )
+    suspend fun countLocalWorkForSession(sessionId: String): Int
 
     @Query("SELECT * FROM turn_blocks WHERE blockId = :blockId")
     suspend fun getBlock(blockId: String): TurnBlockEntity?
@@ -352,6 +397,15 @@ interface OutboxDao {
     @Query("UPDATE outbox_commands SET state = :failureState WHERE commandId = :commandId AND state = 'in_flight'")
     suspend fun markFailed(commandId: String, failureState: String): Int
 
+    @Query(
+        """
+        UPDATE outbox_commands
+        SET state = 'failed_retryable'
+        WHERE commandId = :commandId AND state IN ('pending', 'retry')
+        """,
+    )
+    suspend fun markUnsentFailed(commandId: String): Int
+
     @Query("UPDATE outbox_commands SET state = 'retry' WHERE commandId = :commandId AND state = 'outcome_unknown'")
     suspend fun recheckUnknown(commandId: String): Int
 
@@ -471,6 +525,9 @@ interface AttachmentTransferDao {
 
     @Query("DELETE FROM attachment_transfers WHERE state = 'sent'")
     suspend fun deleteSent(): Int
+
+    @Query("DELETE FROM attachment_transfers WHERE serverId = :serverId AND sessionId = :sessionId AND state = 'sent'")
+    suspend fun deleteSentForSession(serverId: String, sessionId: String): Int
 }
 
 @Dao

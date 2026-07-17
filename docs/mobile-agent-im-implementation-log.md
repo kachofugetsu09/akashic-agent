@@ -378,11 +378,18 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - mobile channel 比较插件 ID、source revision 与资产 SHA-256，只有目录真实变化才向当前连接中明确声明支持热更新的设备并发发送有超时上限的非持久化控制帧；断线重连由既有首次目录同步取得最新内容。新版 Android 仍能消费并 ACK `0.7.10` 可能留下的 legacy durable event，升级不会形成重连循环。
 - Android 若在旧目录或资产批次尚未结束时收到通知，会排队一次刷新，当前批次完整收束后再拉新目录，不清空进行中的请求，也不会产生未知 reply。
 - 目录列出插件后、资产拉取前插件被移除时，`plugin_unavailable` 被视为目录已过期；客户端等待同批其余 reply 收束后只重拉一次目录，不显示伪错误也不触发断线重连。
+
 - `0.7.10 (19)` 已发布，APK 为 8,306,622 bytes，SHA-256 `a02c4da4333ae9e135cf874609afb50c2a28611c550757d3eeab709b041397bd`。后续验收发现该版本尚未完成客户端 capability 订阅；本轮补上协商、旧服务端 fallback 与连接 epoch 隔离后，才把热更新视为可用能力。
 - 线上核心已重启一次以加载新协议，Observe `5c7442f`、writer 与 mobile channel 均正常启动。完成 capability 修复后，支持热更新的客户端不再需要重启 runtime 或手机；旧 Android 客户端继续使用首次同步，不会收到 `plugin.ui.changed`。
 - Pixel 7 使用隔离 Mobile Lab 验证最终契约：Observe 禁用时抽屉显示“插件 0”，运行中直接启用后原位变为“插件 1”，没有重启手机、Android 服务或 runtime。
 - 同一 Pixel 7 连接在切换前后的 durable cursor 均为 `next_event_seq=10 / sent=9 / acknowledged=9`，`mobile_device_inbox` 保持为空；这证明 `plugin.ui.changed` 没有进入持久化序列，也没有产生 4406 或 event sequence gap。
 - 隔离 tunnel 曾因本机透明代理路由中断返回 Cloudflare 1033/HTTP 530；重启 tunnel connector 后恢复。该故障发生在配对 WebSocket 建立前，与插件热更新协议无关，验收只在 tunnel 恢复并完成真实 WSS 配对后计入。
+
+## 2026-07-17 阅读位置闭环
+
+- 会话恢复从“一次定位”改为同一投影代次同步期间持续校准；原生明确结束重同步后再等待 320ms DOM 稳定。用户 touch/wheel 会立即取得视口所有权，插件看板返回和 WebView history 不再覆盖阅读位置。
+- 锚点按真实 DOM 几何选择；回到底部清理 Room 锚点。`LocalDeliveryStore` 统一串行保存、清除、投影重建和 canonical identity 迁移，WebView 不再维护会覆盖原生迁移结果的第二份 Map；effect 卸载也不再用旧 session 读取共享的新会话 DOM。
+- Pixel 7 隔离真机覆盖中段进程重启、插件往返、回到底部后重启、IME 开合、真实模型流式跟随、流式期间手动上滑与同会话清缓存重同步；真机发现并修复空投影误清锚点后复跑通过。完整设计、截图和验证命令见 `docs/mobile-batches/2026-07-17-reading-position.md`。
 
 ## 2026-07-17 大附件按需下载与抖动保护
 
@@ -418,3 +425,43 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - `npm run typecheck`、`npm run lint`、20 项 mobile web state 测试、`git diff --check` 和 `clients/android/scripts/build-release.sh` 通过；release unit、Lint、R8、assemble 与 v2 签名验证成功，最终验收 APK SHA-256 为 `885366a6…cf22`。
 - Pixel 7 已用最终签名 APK 无损安装并验证：单选截图 `/tmp/pixel7-selection-final-one.png`；单选引用进入 composer 的截图 `/tmp/pixel7-selection-final-reply3.png`；双选截图 `/tmp/pixel7-selection-final-two3.png`；Android 剪贴板预览显示按顺序复制的两条消息，截图 `/tmp/pixel7-selection-final-copy.png`；返回键恢复常态输入区，截图 `/tmp/pixel7-selection-final-back2.png`。对应 logcat 无 FATAL、RenderProcessGone 或 event sequence gap。
 - Kill AI Slop 扫描为 38 个文件、10 组、58 个机械命中；相对本组实施前只多出 `-webkit-touch-callout: none` 被“left-border callout”规则按字符串误报，实际没有新增 callout、渐变、玻璃拟态、发光点、卡片墙或胶囊堆叠。完整批次记录见 `docs/mobile-batches/2026-07-17-message-selection.md`。
+
+## 2026-07-17 主动反馈插件移动面板
+
+- `proactive_feedback` 通过既有移动 UI 生命周期注册插件自有看板；核心没有新增插件业务、数据库路径或专用样式。移动端复用既有 Dashboard reader，只把“主动消息是否被继续”投影成任务优先的概览和关联链路。
+- 主概览用青绿表达继续率、紫色表达明确引用、蓝色表达高可信信号；最近回应保持平面列表，筛选是单一 segmented control，展开后才显示“主动发出 → 用户回应 → 助手继续”。
+- Pixel 7 真实空态、707 条只读样本、三种筛选和展开/收起均通过。真机发现折叠详情仍泄漏到 Android 无障碍树后补齐 `inert + aria-hidden`；复测确认折叠、展开、再次收起的可访问树与视觉状态一致。
+- 插件 Python `12 passed`、Node `5 passed`、Pyright 0 错误；源码 PR #2 已合入，Docker Mobile Lab 最终缓存 HEAD 为 `3fa085e`。完整设计、备份和截图证据见 `docs/mobile-batches/2026-07-17-proactive-feedback-panel.md`。
+
+## 2026-07-17 Emotion 主动状态移动面板
+
+- `emotion` 通过既有移动 UI 生命周期注册插件自有“主动状态”看板；核心没有新增插件名、数据库路径、阈值规则或专用样式。
+- 手机只回答“当前会怎么表现”和“哪些反馈真正改变了它”：当前语气、主动门槛、有效影响组成一个指标组，VAD 默认折叠，最近影响保持平面列表。
+- 领域层新增唯一 `describe_behavior()` owner，主动 effect 和移动 overview 共同复用；移动端不再用可能过期的 last effect 冒充当前状态。
+- Pixel 7 使用只读正式快照验证：`3630` 条周期 effect 没有进入列表，`28` 条反馈中只显示 `26` 条非零影响；真实状态为“自然 / 保持门槛”。
+- 真机展开指标后可读愉悦度、活跃度和主动把握，收起后原始指标从 Android 无障碍树消失；服务端与应用日志无 FATAL、RenderProcessGone、event gap 或插件 RPC 异常。
+- 插件 Python `3 passed`、Node `4 passed`、Pyright 0 错误；源码 PR #2 已合入，Docker Mobile Lab 最终缓存 HEAD 为 `0db706f`。完整设计、隔离、备份和截图证据见 `docs/mobile-batches/2026-07-17-emotion-state-panel.md`。
+
+## 2026-07-17 电脑端已不存在会话的本地收口
+
+- Room schema v6 用持久化 `remoteKnown` 区分“服务端确认过的会话”和纯本地新会话；migration 同时识别历史序号与可证明的 live-only 投影，首个跨设备 `turn.started` 也会先建立 conversation。收到完整 `session.list` 后，远端缺失会话立即停止消息、附件和 Turn 插件请求，本地工作只决定能否删除。
+- 重连必须完成当前 generation 的 `session.list` 和全部 history reply 才进入 READY、恢复附件和 flush outbox；同步失败直接重连。服务端 mobile 边界同时拒绝已有 claim 但 canonical session 已删除的发送，避免 `get_or_create` 复活旧会话。
+- 抽屉用 warning 状态替换普通预览；进入后历史保持可读。有待发消息或附件时原 composer 位置解释“已停止发送”并提供“新聊天”，没有本地工作时才提供“从本机移除”。确认删除只清理本机投影和缓存。
+- 已失效会话不挂载本轮插件 slot，Observe 等插件不会再对不存在的服务端 Turn 请求数据；插件目录与全局看板不受影响。
+- UI 复用 Radix Dialog 与现有原生桥，采用 Material 3 状态面、28dp modal、32% scrim 和 48dp 文字动作；没有增加 warning 卡、badge 或新的业务色。warning 在浅容器上的对比度由约 `4.18:1` 提升到 `4.55:1`。
+- 自动门禁通过 Web typecheck、ESLint、20 项 mobile state、Android JVM/debug/androidTest/release 构建、Pyright、131 项 Python realtime/protocol/lifecycle 定向测试和 v2 签名；Pixel 7 Room instrumentation 为 `39/39`。
+- 独立复核进一步收口 pending outbox 的状态 owner、失效会话对其他附件下载的阻塞、首次 claim 排队后删除与所有 mobile admission 的 existing-only 约束。隔离数据库回滚时又真实触发客户端 ACK 高于 durable cursor；Gateway 现先于 retention 检查处理 ACK 超前，把 cursor 前移与精确下一序号的 `sync.reset_required` 在同一 SQLite 事务落盘，并把恢复 ACK 限在 SQLite 64 位空间的一半。进程在提交后立即退出、回退事件同时超过保留期，或使用最大合法 ACK 完成下一次 resume，都不会形成 ASGI 异常重连环或误报同步完成。
+- Pixel 7 在隔离 Mobile Lab 中覆盖无本地工作移除闭环，以及“待发消息/附件 + tunnel 502 → 重连完成目录同步 → 不发送旧 outbox → 服务端不重建”的弱网闭环。最终画面保持“连接正常”，不再出现误导性的 Turn token 插件错误；服务端读回 `sessions=0 / messages=0`，正式 workspace 未读写。完整设计和证据见 `docs/mobile-batches/2026-07-17-unavailable-sessions.md`。
+
+## 2026-07-17 显式进入会话的阅读位置
+
+- 冷启动与主动选择现在拥有不同语义：冷启动恢复上次阅读锚点；用户从抽屉明确进入另一个会话时直接打开最新消息。
+- 原生只清除阅读锚点，不推进已读水位；React 恢复流程同时接受原生把在途锚点明确清空，解决 Room 已到底但 WebView 仍按旧锚点定位的竞态。
+- 没有增加按钮、提示、协议字段、migration 或 Agent 核心改动。21 项移动 Web 状态测试、TypeScript、ESLint、移动 Web 生产构建和 Android release 全链通过。
+- Pixel 7 使用最终签名 APK 验证：停在旧位置后冷启动仍恢复；抽屉切走再切回后最新一轮完整可见且没有“到底部”按钮。完整记录见 `docs/mobile-batches/2026-07-17-session-entry-position.md`。
+
+## 2026-07-17 插件移动 UI 失败隔离
+
+- Fitbit 真机验收暴露插件异常会越过命令边界并关闭整条 WebSocket；宿主现在在插件调用边界记录 traceback，并把执行异常和返回契约错误转换为可持久化的 `plugin_failed` reply。
+- 输入错误、超时、执行失败继续拥有不同错误码；输入错误文案由宿主重建，插件的超长文本或非法 Unicode 不会进入回复帧。插件内部细节不发给手机，宿主取消也不会被吞掉。
+- 33 项插件 UI provider 与 mobile channel 测试通过，Pyright 0 错误、0 警告。Pixel7 在 generation 1、epoch 275 的同一 WebSocket 中真实触发 Fitbit 401，收到 `plugin_failed` 后恢复令牌并原位重试成功；期间没有 `device.proof`、`resume` 或历史重拉。正式 workspace 未读写，完整契约与截图见 `docs/mobile-batches/2026-07-17-plugin-ui-failure-isolation.md`。

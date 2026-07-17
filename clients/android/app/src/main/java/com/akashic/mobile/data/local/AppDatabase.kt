@@ -20,7 +20,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MessageAttachmentEntity::class,
         ConversationReadStateEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -45,7 +45,13 @@ abstract class AppDatabase : RoomDatabase() {
             context.applicationContext,
             AppDatabase::class.java,
             "akashic-mobile.db",
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build()
+        ).addMigrations(
+            MIGRATION_1_2,
+            MIGRATION_2_3,
+            MIGRATION_3_4,
+            MIGRATION_4_5,
+            MIGRATION_5_6,
+        ).build()
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -116,6 +122,35 @@ abstract class AppDatabase : RoomDatabase() {
                         `updatedAt` INTEGER NOT NULL,
                         PRIMARY KEY(`sessionId`),
                         FOREIGN KEY(`sessionId`) REFERENCES `conversations`(`sessionId`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
+
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `conversations` ADD COLUMN `remoteKnown` INTEGER NOT NULL DEFAULT 0",
+                )
+                db.execSQL(
+                    """
+                    UPDATE conversations
+                    SET remoteKnown = 1
+                    WHERE EXISTS (
+                        SELECT 1 FROM messages
+                        WHERE messages.sessionId = conversations.sessionId
+                          AND (
+                              messages.serverSeq IS NOT NULL
+                              OR (
+                                  messages.role = 'assistant'
+                                  AND messages.deliveryState IN ('streaming', 'complete', 'interrupted')
+                              )
+                              OR (
+                                  messages.role = 'user'
+                                  AND messages.deliveryState = 'sent'
+                              )
+                          )
                     )
                     """.trimIndent(),
                 )

@@ -73,6 +73,8 @@ data class SessionUi(
     val lastMessageAtMillis: Long?,
     val unreadCount: Int,
     val isRunning: Boolean,
+    val isAvailable: Boolean,
+    val canRemove: Boolean = false,
 )
 
 data class ReadingPositionUi(
@@ -229,9 +231,9 @@ internal val PreviewConversationState = ConversationUiState(
     connectionNotice = "网络不稳 · 消息已缓存，正在续传",
     errorNotice = "附件读取失败，请重新选择文件。",
     sessions = listOf(
-        SessionUi("mobile:preview-1", "Android 会话设计", "正在检查实时链路", 1_752_681_601_000, 0, true),
-        SessionUi("mobile:preview-2", "网络抖动恢复策略", "恢复窗口已经确认", 1_752_681_500_000, 2, false),
-        SessionUi("mobile:preview-3", "Material 3 交互细节", null, null, 0, false),
+        SessionUi("mobile:preview-1", "Android 会话设计", "正在检查实时链路", 1_752_681_601_000, 0, true, true),
+        SessionUi("mobile:preview-2", "网络抖动恢复策略", "恢复窗口已经确认", 1_752_681_500_000, 2, false, true),
+        SessionUi("mobile:preview-3", "Material 3 交互细节", null, null, 0, false, true),
     ),
     selectedSessionId = "mobile:preview-1",
     readingPosition = null,

@@ -35,6 +35,14 @@ def test_golden_frames_round_trip() -> None:
     assert [json.loads(frame_to_json(frame)) for frame in parsed] == frames
 
 
+def test_resume_rejects_ack_that_cannot_fit_sqlite_sequence() -> None:
+    frame = _golden_frame(5)
+    frame["payload"]["last_ack"] = (1 << 63) - 2
+
+    with pytest.raises(ValidationError, match="less than or equal"):
+        parse_frame(json.dumps(frame))
+
+
 def test_message_send_rejects_mismatched_session() -> None:
     frame = _golden_frame(0)
     frame["session_id"] = "mobile:other"

@@ -347,6 +347,25 @@ class SessionManager:
         self._cache[key] = session
         return session
 
+    def get_existing(self, key: str) -> Session:
+        """读取仍存在的会话，禁止把已删除身份重新创建。"""
+
+        # 1. 先以持久化 owner 核对身份，缓存不能覆盖删除事实
+        if not self._store.session_exists(key):
+            self.invalidate(key)
+            raise KeyError(f"session 不存在: {key}")
+
+        # 2. 复用缓存或装载持久化会话，不进入创建路径
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        session = self._load(key)
+        if session is None:
+            raise KeyError(f"session 不存在: {key}")
+        self._cache[key] = session
+        return session
+
+
     def peek_next_message_id(self, session_key: str) -> str:
         next_seq = self._store.next_seq(session_key)
         return f"{session_key}:{next_seq}"

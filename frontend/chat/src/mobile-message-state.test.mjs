@@ -11,9 +11,18 @@ import {
   reconcileMobileMessageSelection,
   reconcileAssistantMessageIds,
   selectableMobileMessages,
+  updateMobileReadingRestoreTarget,
   updateMobileUnreadMessageIds,
   updateMobileSearchIndex,
 } from "./mobile-message-state.ts";
+
+test("clearing a persisted reading anchor changes an in-flight restore to the conversation tail", () => {
+  const anchor = { messageId: "message-1", offsetPx: -18 };
+
+  assert.equal(updateMobileReadingRestoreTarget(anchor, undefined), null);
+  assert.deepEqual(updateMobileReadingRestoreTarget(null, anchor), anchor);
+  assert.equal(updateMobileReadingRestoreTarget(anchor, { ...anchor }), anchor);
+});
 
 function selectableMessage(id, role, content, streaming = false) {
   return {

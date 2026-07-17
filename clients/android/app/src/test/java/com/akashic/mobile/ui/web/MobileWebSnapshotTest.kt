@@ -41,6 +41,7 @@ class MobileWebSnapshotTest {
                     lastMessageAtMillis = 1_752_681_601_000,
                     unreadCount = 1,
                     isRunning = true,
+                    isAvailable = false,
                 ),
             ),
             selectedSessionId = "mobile:test",
@@ -103,10 +104,11 @@ class MobileWebSnapshotTest {
 
         val encoded = Json.encodeToString(snapshot)
 
-        assertEquals(3, snapshot.protocolVersion)
+        assertEquals(4, snapshot.protocolVersion)
         assertEquals(7, snapshot.projectionGeneration)
         assertEquals(MobileWebConnectionStatus.RECONNECTING, snapshot.connection.status)
         assertTrue(snapshot.sessions.single().isRunning)
+        assertTrue(!snapshot.sessions.single().isAvailable)
         assertEquals(listOf("message-1", "message-2"), snapshot.messages.map { it.id })
         assertEquals(
             listOf(1_752_681_600_100, 1_752_681_601_200),
@@ -129,7 +131,7 @@ class MobileWebSnapshotTest {
         assertEquals(-18, snapshot.readingPosition?.offsetPx)
         assertEquals("message-2", snapshot.navigationTarget?.messageId)
         assertEquals("message-1", snapshot.composer.pendingMessages.single().messageId)
-        assertEquals(3, Json.parseToJsonElement(encoded).jsonObject
+        assertEquals(4, Json.parseToJsonElement(encoded).jsonObject
             .getValue("protocolVersion").jsonPrimitive.content.toInt())
         assertTrue(encoded.contains("\"status\":\"reconnecting\""))
         assertTrue(encoded.contains("\"deliveryAction\":\"retry\""))

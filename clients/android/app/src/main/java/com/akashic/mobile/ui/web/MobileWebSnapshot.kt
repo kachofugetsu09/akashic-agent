@@ -80,6 +80,8 @@ data class MobileWebSession(
     val lastMessageAt: Long?,
     val unreadCount: Int,
     val isRunning: Boolean,
+    val isAvailable: Boolean,
+    val canRemove: Boolean,
 )
 
 @Serializable
@@ -206,7 +208,7 @@ data class MobileWebTransferStatus(
 
 /** 把原生持久化投影转换为版本化 WebView 快照。 */
 fun ConversationUiState.toMobileWebSnapshot(): MobileWebSnapshot = MobileWebSnapshot(
-    protocolVersion = 3,
+    protocolVersion = 4,
     connection = MobileWebConnection(
         label = connectionLabel,
         status = connectionStatus.toMobileWebStatus(),
@@ -257,6 +259,8 @@ private fun SessionUi.toMobileWebSession() = MobileWebSession(
     lastMessageAt = lastMessageAtMillis,
     unreadCount = unreadCount,
     isRunning = isRunning,
+    isAvailable = isAvailable,
+    canRemove = canRemove,
 )
 
 private fun ReadingPositionUi.toMobileWebReadingPosition() =

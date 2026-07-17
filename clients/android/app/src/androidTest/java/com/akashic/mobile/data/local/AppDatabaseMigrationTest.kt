@@ -20,7 +20,8 @@ class AppDatabaseMigrationTest {
     @After
     fun removeTestDatabases() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        listOf(DATABASE_1_2, DATABASE_2_3, DATABASE_3_4, DATABASE_4_5).forEach(context::deleteDatabase)
+        listOf(DATABASE_1_2, DATABASE_2_3, DATABASE_3_4, DATABASE_4_5, DATABASE_5_6)
+            .forEach(context::deleteDatabase)
     }
 
     @Test
@@ -150,10 +151,91 @@ class AppDatabaseMigrationTest {
         }
     }
 
+    @Test
+    fun migrate5To6PersistsKnownRemoteConversationIdentity() {
+        helper.createDatabase(DATABASE_5_6, 5).apply {
+            execSQL(
+                "INSERT INTO server_profiles VALUES('server', '电脑', 'device', 'alias', 'pin', '[]', '[]', '[]', 1)",
+            )
+            execSQL("INSERT INTO conversations VALUES('mobile:remote', 'server', '远端会话', 2)")
+            execSQL("INSERT INTO conversations VALUES('mobile:live', 'server', '实时会话', 3)")
+            execSQL("INSERT INTO conversations VALUES('mobile:local', 'server', '本机会话', 3)")
+            execSQL("INSERT INTO conversations VALUES('mobile:failed', 'server', '失败草稿', 3)")
+            execSQL(
+                """
+                INSERT INTO messages(
+                    messageId, clientMessageId, sessionId, role, text, deliveryState,
+                    createdAt, updatedAt, serverSeq, replyToMessageId, replyRole, replyPreview
+                ) VALUES(
+                    'remote-message', NULL, 'mobile:remote', 'assistant', '旧消息', 'complete',
+                    4, 4, 1, NULL, NULL, NULL
+                )
+                """.trimIndent(),
+            )
+            execSQL(
+                """
+                INSERT INTO messages(
+                    messageId, clientMessageId, sessionId, role, text, deliveryState,
+                    createdAt, updatedAt, serverSeq, replyToMessageId, replyRole, replyPreview
+                ) VALUES(
+                    'live-final', NULL, 'mobile:live', 'assistant', '刚完成的回答', 'complete',
+                    5, 5, NULL, NULL, NULL, NULL
+                )
+                """.trimIndent(),
+            )
+            execSQL(
+                """
+                INSERT INTO messages(
+                    messageId, clientMessageId, sessionId, role, text, deliveryState,
+                    createdAt, updatedAt, serverSeq, replyToMessageId, replyRole, replyPreview
+                ) VALUES(
+                    'local-pending', 'local-client', 'mobile:local', 'user', '还没发送', 'pending',
+                    6, 6, NULL, NULL, NULL, NULL
+                )
+                """.trimIndent(),
+            )
+            execSQL(
+                """
+                INSERT INTO messages(
+                    messageId, clientMessageId, sessionId, role, text, deliveryState,
+                    createdAt, updatedAt, serverSeq, replyToMessageId, replyRole, replyPreview
+                ) VALUES(
+                    'failed-assistant', NULL, 'mobile:failed', 'assistant', '', 'failed',
+                    7, 7, NULL, NULL, NULL, NULL
+                )
+                """.trimIndent(),
+            )
+            close()
+        }
+
+        helper.runMigrationsAndValidate(
+            DATABASE_5_6,
+            6,
+            true,
+            AppDatabase.MIGRATION_5_6,
+        ).use { database ->
+            database.query("SELECT sessionId, remoteKnown FROM conversations ORDER BY sessionId").use { cursor ->
+                check(cursor.moveToFirst())
+                assertEquals("mobile:failed", cursor.getString(0))
+                assertEquals(0, cursor.getInt(1))
+                check(cursor.moveToNext())
+                assertEquals("mobile:live", cursor.getString(0))
+                assertEquals(1, cursor.getInt(1))
+                check(cursor.moveToNext())
+                assertEquals("mobile:local", cursor.getString(0))
+                assertEquals(0, cursor.getInt(1))
+                check(cursor.moveToNext())
+                assertEquals("mobile:remote", cursor.getString(0))
+                assertEquals(1, cursor.getInt(1))
+            }
+        }
+    }
+
     private companion object {
         const val DATABASE_1_2 = "migration-1-2"
         const val DATABASE_2_3 = "migration-2-3"
         const val DATABASE_3_4 = "migration-3-4"
         const val DATABASE_4_5 = "migration-4-5"
+        const val DATABASE_5_6 = "migration-5-6"
     }
 }

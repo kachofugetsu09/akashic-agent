@@ -8,6 +8,8 @@ import pytest
 
 from agent.plugins.mobile_ui import (
     MobileUiPluginUnavailable,
+    MobileUiRpcExecutionError,
+    MobileUiRpcInvalidRequest,
     MobileUiRpcTimeout,
     PluginMobileUiProvider,
 )
@@ -35,20 +37,24 @@ class _MobilePlugin:
 class _Lease:
     def __init__(self, snapshot: object) -> None:
         self.snapshot = snapshot
+        self.released = False
 
     async def __aenter__(self):
         return self.snapshot
 
     async def __aexit__(self, *args: object) -> None:
+        self.released = True
         return None
 
 
 class _Store:
     def __init__(self, snapshot: object) -> None:
         self.snapshot = snapshot
+        self.last_lease: _Lease | None = None
 
     async def acquire(self) -> _Lease:
-        return _Lease(self.snapshot)
+        self.last_lease = _Lease(self.snapshot)
+        return self.last_lease
 
 
 def _provider() -> PluginMobileUiProvider:
@@ -131,6 +137,113 @@ async def test_mobile_ui_rpc_timeout_releases_snapshot_lease(monkeypatch: pytest
     monkeypatch.setattr(mobile_ui_module, "MOBILE_UI_RPC_TIMEOUT_SECONDS", 0.01)
 
     with pytest.raises(MobileUiRpcTimeout):
+        await provider.call(
+            "sample@github",
+            "recall.current",
+            {},
+            session_id="mobile:test",
+            turn_id="turn-1",
+        )
+    assert cast(Any, provider)._manager.snapshot_store.last_lease.released is True
+
+
+@pytest.mark.asyncio
+async def test_mobile_ui_rpc_external_cancellation_propagates_and_releases_lease() -> None:
+    provider = _provider()
+    entered = asyncio.Event()
+
+    async def waits(*args: object, **kwargs: object) -> dict[str, object]:
+        entered.set()
+        await asyncio.Event().wait()
+        return {}
+
+    cast(Any, provider)._manager.current_snapshot.generations[
+        "sample@github"
+    ].instance.mobile_ui_call = waits
+    task = asyncio.create_task(
+        provider.call(
+            "sample@github",
+            "recall.current",
+            {},
+            session_id="mobile:test",
+            turn_id="turn-1",
+        )
+    )
+    await entered.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cast(Any, provider)._manager.snapshot_store.last_lease.released is True
+
+
+@pytest.mark.asyncio
+async def test_mobile_ui_rpc_failure_isolated_from_transport() -> None:
+    provider = _provider()
+
+    async def fails(*args: object, **kwargs: object) -> dict[str, object]:
+        raise RuntimeError("plugin bug detail")
+
+    cast(Any, provider)._manager.current_snapshot.generations[
+        "sample@github"
+    ].instance.mobile_ui_call = fails
+
+    with pytest.raises(MobileUiRpcExecutionError, match="sample@github.recall.current"):
+        await provider.call(
+            "sample@github",
+            "recall.current",
+            {},
+            session_id="mobile:test",
+            turn_id="turn-1",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", ["x" * 300_000, "\ud800"])
+async def test_mobile_ui_invalid_request_message_is_owned_by_host(message: str) -> None:
+    provider = _provider()
+
+    async def rejects(*args: object, **kwargs: object) -> dict[str, object]:
+        raise MobileUiRpcInvalidRequest(message)
+
+    cast(Any, provider)._manager.current_snapshot.generations[
+        "sample@github"
+    ].instance.mobile_ui_call = rejects
+
+    with pytest.raises(
+        MobileUiRpcInvalidRequest,
+        match=r"^插件 mobile UI RPC 参数无效: sample@github\.recall\.current$",
+    ) as captured:
+        await provider.call(
+            "sample@github",
+            "recall.current",
+            {},
+            session_id="mobile:test",
+            turn_id="turn-1",
+        )
+    assert captured.value.args == (
+        "插件 mobile UI RPC 参数无效: sample@github.recall.current",
+    )
+
+
+@pytest.mark.asyncio
+async def test_mobile_ui_rpc_recursive_result_isolated_from_transport() -> None:
+    provider = _provider()
+    recursive: dict[str, object] = {}
+    cursor = recursive
+    for _ in range(20_000):
+        nested: dict[str, object] = {}
+        cursor["nested"] = nested
+        cursor = nested
+
+    async def returns_recursive(*args: object, **kwargs: object) -> dict[str, object]:
+        return recursive
+
+    cast(Any, provider)._manager.current_snapshot.generations[
+        "sample@github"
+    ].instance.mobile_ui_call = returns_recursive
+
+    with pytest.raises(MobileUiRpcExecutionError, match="sample@github.recall.current"):
         await provider.call(
             "sample@github",
             "recall.current",

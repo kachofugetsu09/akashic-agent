@@ -13,6 +13,7 @@ import {
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import {
   AlertCircle,
+  ArchiveX,
   ArrowLeft,
   Check,
   ChevronRight,
@@ -45,7 +46,10 @@ import {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
@@ -70,6 +74,7 @@ import {
   normalizeMobileSearchText,
   reconcileMobileMessageSelection,
   selectableMobileMessages,
+  updateMobileReadingRestoreTarget,
   updateMobileSearchIndex,
   type MobileSearchIndexEntry,
 } from "./mobile-message-state";
@@ -151,6 +156,8 @@ interface MobileSession {
   lastMessageAt?: number;
   unreadCount: number;
   isRunning: boolean;
+  isAvailable: boolean;
+  canRemove: boolean;
 }
 
 interface MobileReadingPosition {
@@ -170,7 +177,7 @@ interface MobilePendingMessage {
 }
 
 export interface MobileSnapshot {
-  protocolVersion: 3;
+  protocolVersion: 4;
   connection: {
     label: string;
     status: ConnectionStatus;
@@ -202,6 +209,7 @@ interface NativeBridge {
   reportReady(): void;
   requestSnapshot(): void;
   selectSession(sessionId: string): void;
+  removeUnavailableSession(sessionId: string): void;
   createSession(): void;
   restartPairing(): void;
   reloadFromServer(): void;
@@ -393,7 +401,7 @@ function parseTransferStatus(value: unknown): MobileTransferStatus {
 function parseMobileSnapshot(value: unknown): MobileSnapshot {
   // 1. 校验协议版本与根对象
   const raw = requireRecord(value, "snapshot");
-  if (raw.protocolVersion !== 3) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
+  if (raw.protocolVersion !== 4) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
   const connection = requireRecord(raw.connection, "connection");
   const status = requireString(connection.status, "connection.status");
   if (!["connecting", "ready", "degraded", "reconnecting", "disconnected"].includes(status)) {
@@ -413,6 +421,8 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
       lastMessageAt,
       unreadCount: requireNonNegativeInteger(session.unreadCount, `sessions[${index}].unreadCount`),
       isRunning: requireBoolean(session.isRunning, `sessions[${index}].isRunning`),
+      isAvailable: requireBoolean(session.isAvailable, `sessions[${index}].isAvailable`),
+      canRemove: requireBoolean(session.canRemove, `sessions[${index}].canRemove`),
     };
   });
   const messages = requireArray(raw.messages, "messages", parseMessage);
@@ -450,7 +460,7 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
       };
     })();
   return {
-    protocolVersion: 3,
+    protocolVersion: 4,
     connection: {
       label: requireString(connection.label, "connection.label"),
       status: status as ConnectionStatus,
@@ -556,6 +566,8 @@ function MobileNativeApp() {
       window.AkashicNative?.requestSnapshot();
       requestTimer = window.setTimeout(requestSnapshot, 250);
     };
+    const previousScrollRestoration = window.history.scrollRestoration;
+    window.history.scrollRestoration = "manual";
     replaceMobileSurface(window.history, { kind: "chat" });
     const handlePopState = (event: PopStateEvent) => {
       const next = readMobileSurfaceHistoryState(event.state);
@@ -640,6 +652,7 @@ function MobileNativeApp() {
       if (frame !== null) cancelAnimationFrame(frame);
       if (requestTimer !== null) window.clearTimeout(requestTimer);
       window.removeEventListener("popstate", handlePopState);
+      window.history.scrollRestoration = previousScrollRestoration;
       delete window.AkashicMobile;
     };
   }, []);
@@ -810,6 +823,8 @@ function MobileNativeApp() {
       </main>
     );
   }
+  const selectedSession = snapshot.sessions.find((session) => session.id === snapshot.selectedSessionId);
+  const selectedSessionUnavailable = selectedSession?.isAvailable === false;
 
   const send = () => {
     const text = input.trim();
@@ -1033,8 +1048,12 @@ function MobileNativeApp() {
             <MobilePluginDashboard pluginId={surface.pluginId} />
           </section>
         ) : (
-        <div className={`mobile-main-content ${replyTarget ? "replying" : ""} ${searchOpen ? "searching" : ""} ${selectionActive ? "selecting" : ""} ${queueOpen && snapshot.composer.pendingMessages.length > 1 ? "queueing" : ""}`} inert={drawerOpen ? true : undefined}>
-          <Conversation key={snapshot.selectedSessionId ?? "empty"} className="mobile-conversation">
+        <div className={`mobile-main-content ${replyTarget ? "replying" : ""} ${searchOpen ? "searching" : ""} ${selectionActive ? "selecting" : ""} ${queueOpen && snapshot.composer.pendingMessages.length > 1 ? "queueing" : ""} ${selectedSessionUnavailable ? "session-unavailable" : ""}`} inert={drawerOpen ? true : undefined}>
+          <Conversation
+            key={snapshot.selectedSessionId ?? "empty"}
+            className="mobile-conversation"
+            initial="instant"
+          >
             <ConversationContent className="mobile-conversation__content">
               {messages.length === 0 ? (
                 <ConversationEmptyState className="mobile-empty">
@@ -1074,7 +1093,7 @@ function MobileNativeApp() {
                             onCopyToolDetail={copyToolDetail}
                             leadingContent={source.reply ? <MessageReplyReference reply={source.reply} /> : undefined}
                             attachmentContent={<MobileMessageAttachments attachments={source.attachments} />}
-                            processStartContent={isPluginTurnMessage(message) ? (
+                            processStartContent={!selectedSessionUnavailable && isPluginTurnMessage(message) ? (
                               <MobilePluginSlot
                                 name="turn.before_reasoning"
                                 sessionId={source.sessionId}
@@ -1082,7 +1101,7 @@ function MobileNativeApp() {
                                 turnId={pluginTurnId(message)}
                               />
                             ) : undefined}
-                            beforeProcessBlock={(block) => isPluginTurnMessage(message) && block.kind === "tool" ? (
+                            beforeProcessBlock={(block) => !selectedSessionUnavailable && isPluginTurnMessage(message) && block.kind === "tool" ? (
                               <MobilePluginSlot
                                 name="turn.before_tool"
                                 sessionId={source.sessionId}
@@ -1091,7 +1110,7 @@ function MobileNativeApp() {
                                 block={block}
                               />
                             ) : null}
-                            answerEndContent={isPluginTurnMessage(message) ? (
+                            answerEndContent={!selectedSessionUnavailable && isPluginTurnMessage(message) ? (
                               <MobilePluginSlot
                                 name="turn.after_answer"
                                 sessionId={source.sessionId}
@@ -1153,7 +1172,9 @@ function MobileNativeApp() {
               onPrevious={() => moveSearch(-1)}
               onNext={() => moveSearch(1)}
             />
-          ) : selectionActive ? null : (
+          ) : selectionActive ? null : selectedSessionUnavailable && selectedSession ? (
+            <UnavailableSessionFooter key={selectedSession.id} session={selectedSession} />
+          ) : (
             <MobileComposer
               snapshot={snapshot}
               input={input}
@@ -1406,7 +1427,7 @@ function MobileDrawer({
         <nav className="mobile-session-list">
           {snapshot.sessions.map((session) => (
             <button
-              className={`mobile-session-row ${session.id === snapshot.selectedSessionId ? "active" : ""}`}
+              className={`mobile-session-row ${session.id === snapshot.selectedSessionId ? "active" : ""} ${session.isAvailable ? "" : "unavailable"}`}
               type="button"
               key={session.id}
               onClick={() => {
@@ -1419,15 +1440,19 @@ function MobileDrawer({
                   <strong>{session.title || "未命名会话"}</strong>
                   {session.lastMessageAt ? <time>{formatDrawerTime(session.lastMessageAt)}</time> : null}
                 </span>
-                <small>{session.lastMessagePreview || "还没有消息"}</small>
+                <small>{session.isAvailable
+                  ? session.lastMessagePreview || "还没有消息"
+                  : "电脑端已不存在 · 本机保留历史"}</small>
               </span>
               <span className="mobile-session-row__state">
-                {session.isRunning ? <span className="session-running" aria-label="Agent 正在处理" /> : null}
-                {session.unreadCount > 0 ? (
+                {!session.isAvailable ? (
+                  <ArchiveX size={19} aria-label="电脑端已不存在" />
+                ) : session.isRunning ? <span className="session-running" aria-label="Agent 正在处理" /> : null}
+                {session.isAvailable && session.unreadCount > 0 ? (
                   <strong className="session-unread" aria-label={`${session.unreadCount} 条未读`}>
                     {session.unreadCount > 99 ? "99+" : session.unreadCount}
                   </strong>
-                ) : session.id === snapshot.selectedSessionId ? <Check size={18} /> : null}
+                ) : session.isAvailable && session.id === snapshot.selectedSessionId ? <Check size={18} /> : null}
               </span>
             </button>
           ))}
@@ -1456,6 +1481,62 @@ function MobileDrawer({
           </button>
         </div>
       </aside>
+    </div>
+  );
+}
+
+function UnavailableSessionFooter({ session }: { session: MobileSession }) {
+  if (!session.canRemove) {
+    return (
+      <div className="mobile-unavailable-session" role="status">
+        <span>
+          <strong>电脑端已不存在</strong>
+          <small>未发送的消息或附件仍保留在本机；已停止发送，避免重新创建会话。</small>
+        </span>
+        <button className="new-session" type="button" onClick={() => window.AkashicNative?.createSession()}>
+          新聊天
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="mobile-unavailable-session" role="status">
+      <span>
+        <strong>电脑端已不存在</strong>
+        <small>历史仍保存在这台手机上，但不能继续发送。</small>
+      </span>
+      <Dialog>
+        <DialogTrigger asChild>
+          <button type="button">从本机移除</button>
+        </DialogTrigger>
+        <DialogContent
+          className="mobile-session-remove-dialog"
+          overlayClassName="mobile-session-remove-overlay"
+          showCloseButton={false}
+        >
+          <DialogTitle>移除本机会话？</DialogTitle>
+          <DialogDescription>
+            “{session.title || "未命名会话"}”的本地历史和已缓存附件会被删除，电脑端数据不会受到影响。
+          </DialogDescription>
+          <DialogFooter className="mobile-session-remove-dialog__actions">
+            <DialogClose asChild>
+              <button type="button">取消</button>
+            </DialogClose>
+            <DialogClose asChild>
+              <button
+                className="destructive"
+                type="button"
+                onClick={() => {
+                  window.AkashicNative?.performActionHaptic();
+                  window.AkashicNative?.removeUnavailableSession(session.id);
+                }}
+              >
+                移除
+              </button>
+            </DialogClose>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -2317,7 +2398,15 @@ function MobileConversationBehavior({
     onUnreadChange,
   );
   useMobileAutoScroll(sessionId, chatMessages, streaming, suspended, forceScrollToken);
-  useMobileReadingPosition(sessionId, sourceMessages, readingPosition, messageElementsRef, suspended);
+  useMobileReadingPosition(
+    sessionId,
+    sourceMessages,
+    projectionGeneration,
+    resyncing,
+    readingPosition,
+    messageElementsRef,
+    suspended,
+  );
   return null;
 }
 
@@ -2325,51 +2414,170 @@ function MobileConversationBehavior({
 function useMobileReadingPosition(
   sessionId: string | undefined,
   messages: MobileMessage[],
+  projectionGeneration: number,
+  resyncing: boolean,
   readingPosition: MobileReadingPosition | undefined,
   messageElementsRef: React.RefObject<Map<string, HTMLDivElement>>,
   suspended: boolean,
 ) {
-  const { isAtBottom, scrollRef, stopScroll } = useStickToBottomContext();
-  const restoredSessionRef = useRef<string | undefined>(undefined);
+  const { isAtBottom, scrollRef, scrollToBottom, stopScroll } = useStickToBottomContext();
+  const restoredProjectionRef = useRef<string | undefined>(undefined);
+  const restoringProjectionRef = useRef<string | undefined>(undefined);
+  const restoreTargetRef = useRef<MobileReadingPosition | null | undefined>(undefined);
+  const restoreTimerRef = useRef<number | null>(null);
+  const restoreFrameRef = useRef<number | null>(null);
+  const syncPhaseRef = useRef<{ projectionKey?: string; active: boolean }>({ active: false });
   const saveTimerRef = useRef<number | null>(null);
   const lastSavedRef = useRef("");
   const lastReadAtRef = useRef(0);
-
-  useLayoutEffect(() => {
-    // 1. 每次进入会话只恢复一次已持久化锚点
-    if (!sessionId || restoredSessionRef.current === sessionId || messages.length === 0) return;
-    if (!readingPosition) {
-      restoredSessionRef.current = sessionId;
-      return;
-    }
-    const element = messageElementsRef.current.get(readingPosition.messageId);
-    const scrollElement = scrollRef.current;
-    if (!element || !scrollElement) return;
-    restoredSessionRef.current = sessionId;
-    stopScroll();
-    element.scrollIntoView({ block: "start", behavior: "auto" });
-    scrollElement.scrollTop -= readingPosition.offsetPx;
-  }, [messageElementsRef, messages.length, readingPosition, scrollRef, sessionId, stopScroll]);
+  const messagesRef = useRef(messages);
 
   useEffect(() => {
-    // 2. 滚动停止后记录首个可见消息和相对偏移，避免按绝对 scrollTop 恢复后被乱序归位破坏
+    messagesRef.current = messages;
+  }, [messages]);
+  useLayoutEffect(() => {
+    // 1. 同一投影代次同步完成前持续校准，避免网络分页把视口推走
+    if (!sessionId) return;
+    const projectionKey = `${sessionId}\u001f${projectionGeneration}`;
+    const syncStarting = resyncing && (
+      syncPhaseRef.current.projectionKey !== projectionKey || !syncPhaseRef.current.active
+    );
+    syncPhaseRef.current = { projectionKey, active: resyncing };
+    if (syncStarting) {
+      if (restoreTimerRef.current !== null) window.clearTimeout(restoreTimerRef.current);
+      if (restoreFrameRef.current !== null) window.cancelAnimationFrame(restoreFrameRef.current);
+      restoreTimerRef.current = null;
+      restoreFrameRef.current = null;
+      if (restoredProjectionRef.current === projectionKey) restoredProjectionRef.current = undefined;
+    }
+    if (restoredProjectionRef.current === projectionKey) return;
+    if (restoringProjectionRef.current !== projectionKey) {
+      if (restoreTimerRef.current !== null) window.clearTimeout(restoreTimerRef.current);
+      if (restoreFrameRef.current !== null) window.cancelAnimationFrame(restoreFrameRef.current);
+      restoringProjectionRef.current = projectionKey;
+      restoreTargetRef.current = readingPosition ?? null;
+    } else {
+      restoreTargetRef.current = updateMobileReadingRestoreTarget(
+        restoreTargetRef.current,
+        readingPosition,
+      );
+    }
+    if (messages.length === 0) return;
     const scrollElement = scrollRef.current;
-    if (!sessionId || !scrollElement || suspended) return;
+    const target = restoreTargetRef.current;
+    if (!scrollElement || target === undefined) return;
+    if (target) {
+      const element = messageElementsRef.current.get(target.messageId);
+      if (element) {
+        stopScroll();
+        element.scrollIntoView({ block: "start", behavior: "auto" });
+        scrollElement.scrollTop -= target.offsetPx;
+      }
+    }
+    if (resyncing) return;
+    if (restoreTimerRef.current !== null) window.clearTimeout(restoreTimerRef.current);
+    restoreTimerRef.current = window.setTimeout(() => {
+      const settle = () => {
+        if (restoringProjectionRef.current !== projectionKey) return;
+        restoredProjectionRef.current = projectionKey;
+        restoringProjectionRef.current = undefined;
+        restoreTargetRef.current = undefined;
+        restoreTimerRef.current = null;
+        restoreFrameRef.current = null;
+        scrollElement.dispatchEvent(new Event("scroll"));
+      };
+      if (restoringProjectionRef.current !== projectionKey) return;
+      if (target) {
+        const element = messageElementsRef.current.get(target.messageId);
+        if (element) {
+          stopScroll();
+          element.scrollIntoView({ block: "start", behavior: "auto" });
+          scrollElement.scrollTop -= target.offsetPx;
+          restoreFrameRef.current = requestAnimationFrame(settle);
+          return;
+        }
+      }
+      void Promise.resolve(scrollToBottom({ animation: "instant", ignoreEscapes: true })).then(() => {
+        if (restoringProjectionRef.current === projectionKey) settle();
+      });
+    }, 320);
+  }, [
+    messageElementsRef,
+    messages.length,
+    projectionGeneration,
+    readingPosition,
+    resyncing,
+    scrollRef,
+    scrollToBottom,
+    sessionId,
+    stopScroll,
+  ]);
+
+  useEffect(() => {
+    // 2. 历史装载期间若用户主动触摸，立即把视口所有权交还给用户
+    const scrollElement = scrollRef.current;
+    if (!sessionId || !scrollElement) return;
+    const projectionKey = `${sessionId}\u001f${projectionGeneration}`;
+    const interruptRestore = () => {
+      if (restoringProjectionRef.current !== projectionKey) return;
+      if (restoreTimerRef.current !== null) window.clearTimeout(restoreTimerRef.current);
+      if (restoreFrameRef.current !== null) window.cancelAnimationFrame(restoreFrameRef.current);
+      restoredProjectionRef.current = projectionKey;
+      restoringProjectionRef.current = undefined;
+      restoreTargetRef.current = undefined;
+      restoreTimerRef.current = null;
+      restoreFrameRef.current = null;
+    };
+    scrollElement.addEventListener("touchstart", interruptRestore, { passive: true });
+    scrollElement.addEventListener("wheel", interruptRestore, { passive: true });
+    return () => {
+      scrollElement.removeEventListener("touchstart", interruptRestore);
+      scrollElement.removeEventListener("wheel", interruptRestore);
+      if (restoringProjectionRef.current === projectionKey && restoreTimerRef.current !== null) {
+        window.clearTimeout(restoreTimerRef.current);
+      }
+      if (restoringProjectionRef.current === projectionKey && restoreFrameRef.current !== null) {
+        window.cancelAnimationFrame(restoreFrameRef.current);
+      }
+    };
+  }, [projectionGeneration, scrollRef, sessionId]);
+
+  useEffect(() => {
+    // 3. 滚动停止后记录首个可见消息和相对偏移，避免按绝对 scrollTop 恢复后被乱序归位破坏
+    const scrollElement = scrollRef.current;
+    if (!sessionId || !scrollElement || resyncing || suspended) return;
     const persist = () => {
       saveTimerRef.current = null;
+      const projectionKey = `${sessionId}\u001f${projectionGeneration}`;
+      if (restoringProjectionRef.current === projectionKey) return;
+      const distanceFromBottom = scrollElement.scrollHeight - scrollElement.scrollTop - scrollElement.clientHeight;
+      if (distanceFromBottom <= 2) {
+        const readAt = messagesRef.current.reduce(
+          (latest, message) => message.role === "assistant" ? Math.max(latest, message.createdAt) : latest,
+          0,
+        );
+        const tailKey = `${sessionId}\u001ftail\u001f${readAt}`;
+        if (tailKey !== lastSavedRef.current) {
+          lastSavedRef.current = tailKey;
+          lastReadAtRef.current = Math.max(lastReadAtRef.current, readAt);
+          window.AkashicNative?.markSessionReadThrough(sessionId, readAt);
+        }
+        return;
+      }
       const viewportTop = scrollElement.getBoundingClientRect().top;
-      const anchor = messages.find((message) => {
-        const element = messageElementsRef.current.get(message.id);
-        return element ? element.getBoundingClientRect().bottom > viewportTop + 1 : false;
-      });
+      let anchor: { messageId: string; element: HTMLDivElement; top: number } | undefined;
+      for (const [messageId, element] of messageElementsRef.current) {
+        const rect = element.getBoundingClientRect();
+        if (rect.bottom <= viewportTop + 1 || (anchor && rect.top >= anchor.top)) continue;
+        anchor = { messageId, element, top: rect.top };
+      }
       if (!anchor) return;
-      const element = messageElementsRef.current.get(anchor.id);
-      if (!element) return;
+      const { element, messageId } = anchor;
       const offsetPx = Math.round(element.getBoundingClientRect().top - viewportTop);
-      const key = `${sessionId}\u001f${anchor.id}\u001f${offsetPx}`;
+      const key = `${sessionId}\u001f${messageId}\u001f${offsetPx}`;
       if (key === lastSavedRef.current) return;
       lastSavedRef.current = key;
-      window.AkashicNative?.saveReadingPosition(sessionId, anchor.id, offsetPx);
+      window.AkashicNative?.saveReadingPosition(sessionId, messageId, offsetPx);
     };
     const schedulePersist = () => {
       if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
@@ -2381,22 +2589,28 @@ function useMobileReadingPosition(
       scrollElement.removeEventListener("scroll", schedulePersist);
       if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
     };
-  }, [messageElementsRef, messages, scrollRef, sessionId, suspended]);
+  }, [messageElementsRef, projectionGeneration, resyncing, scrollRef, sessionId, suspended]);
 
   useEffect(() => {
-    // 3. 真正回到底部时推进该会话的持久化已读水位
+    // 4. 真正回到底部时推进该会话的持久化已读水位
     const scrollElement = scrollRef.current;
-    if (!sessionId || !isAtBottom || suspended || !scrollElement) return;
+    if (!sessionId || resyncing || suspended || !scrollElement) return;
+    const projectionKey = `${sessionId}\u001f${projectionGeneration}`;
+    if (restoringProjectionRef.current === projectionKey) return;
     const distanceFromBottom = scrollElement.scrollHeight - scrollElement.scrollTop - scrollElement.clientHeight;
-    if (distanceFromBottom > 2) return;
+    if (!isAtBottom || distanceFromBottom > 2) {
+      return;
+    }
     const readAt = messages.reduce(
       (latest, message) => message.role === "assistant" ? Math.max(latest, message.createdAt) : latest,
       0,
     );
-    if (readAt <= lastReadAtRef.current) return;
-    lastReadAtRef.current = readAt;
+    const tailKey = `${sessionId}\u001ftail\u001f${readAt}`;
+    if (tailKey === lastSavedRef.current && readAt <= lastReadAtRef.current) return;
+    lastSavedRef.current = tailKey;
+    lastReadAtRef.current = Math.max(lastReadAtRef.current, readAt);
     window.AkashicNative?.markSessionReadThrough(sessionId, readAt);
-  }, [isAtBottom, messages, scrollRef, sessionId, suspended]);
+  }, [isAtBottom, messages, projectionGeneration, resyncing, scrollRef, sessionId, suspended]);
 }
 
 /** 按顶层助手消息追踪当前阅读位置之后的未读集合。 */

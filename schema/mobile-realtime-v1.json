@@ -1235,6 +1235,7 @@
             "type": "array"
           },
           "last_ack": {
+            "maximum": 4611686018427387904,
             "minimum": 0,
             "title": "Last Ack",
             "type": "integer"

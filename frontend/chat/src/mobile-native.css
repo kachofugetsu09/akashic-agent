@@ -45,7 +45,7 @@
   --m-trace-soft: #e5dbfc;
   --m-error: #be241f;
   --m-error-container: #ffddd7;
-  --m-warning: #a45f00;
+  --m-warning: #9f5d00;
   --m-shape-extra-small: 4px;
   --m-shape-small: 8px;
   --m-shape-medium: 12px;
@@ -75,7 +75,7 @@
     --m-trace-soft: oklch(0.91 0.045 300);
     --m-error: oklch(0.52 0.19 28);
     --m-error-container: oklch(0.93 0.045 28);
-    --m-warning: oklch(0.56 0.14 72);
+    --m-warning: oklch(0.54 0.14 72);
     --m-shadow: oklch(0 0 0 / 0.16);
     --m-image-outline: oklch(0 0 0 / 0.1);
   }
@@ -619,6 +619,10 @@ button {
 
 .mobile-main-content.queueing .mobile-conversation {
   padding-block-end: calc(276px + env(safe-area-inset-bottom));
+}
+
+.mobile-main-content.session-unavailable .mobile-conversation {
+  padding-block-end: calc(122px + env(safe-area-inset-bottom));
 }
 
 .mobile-conversation__content {
@@ -1597,6 +1601,129 @@ button.tool-step-summary:active {
   background: color-mix(in oklch, var(--m-surface) 96%, transparent);
 }
 
+.mobile-unavailable-session {
+  position: absolute;
+  inset: auto 0 0;
+  z-index: 35;
+  display: flex;
+  min-height: 86px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid var(--m-outline-variant);
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom)) 20px;
+  color: var(--m-on-surface);
+  background: color-mix(in oklch, var(--m-surface-container-low) 96%, transparent);
+}
+
+.mobile-unavailable-session > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.mobile-unavailable-session strong {
+  font-size: 0.875rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.mobile-unavailable-session small {
+  color: var(--m-on-surface-variant);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+.mobile-unavailable-session > button {
+  flex: 0 0 auto;
+}
+
+.mobile-unavailable-session button {
+  min-height: 48px;
+  border: 0;
+  border-radius: 999px;
+  padding-inline: 16px;
+  color: var(--m-warning);
+  background: transparent;
+  font-size: 0.875rem;
+  font-weight: 650;
+  white-space: nowrap;
+  transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1), scale 150ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.mobile-unavailable-session button:active {
+  scale: 0.97;
+  background: color-mix(in oklch, var(--m-warning) 12%, transparent);
+}
+
+.mobile-unavailable-session button.new-session {
+  color: var(--m-primary);
+}
+
+.mobile-unavailable-session button.new-session:active {
+  background: color-mix(in oklch, var(--m-primary) 12%, transparent);
+}
+
+.mobile-session-remove-overlay {
+  background: rgb(0 0 0 / 0.32);
+}
+
+.mobile-session-remove-dialog {
+  width: calc(100% - 48px);
+  max-width: 360px;
+  gap: 14px;
+  border: 0;
+  border-radius: 28px;
+  padding: 24px;
+  color: var(--m-on-surface);
+  background: var(--m-surface-container-high);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
+}
+
+.mobile-session-remove-dialog > h2 {
+  font-size: 1.5rem;
+  font-weight: 500;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+
+.mobile-session-remove-dialog > p {
+  margin: 0;
+  color: var(--m-on-surface-variant);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.mobile-session-remove-dialog__actions {
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.mobile-session-remove-dialog__actions button {
+  min-height: 48px;
+  border: 0;
+  border-radius: 999px;
+  padding-inline: 18px;
+  color: var(--m-primary);
+  background: transparent;
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+
+.mobile-session-remove-dialog__actions button.destructive {
+  color: var(--m-error);
+}
+
+.mobile-session-remove-dialog__actions button:active {
+  background: color-mix(in oklch, currentColor 12%, transparent);
+}
+
 .mobile-composer-frame {
   overflow: hidden;
   border-radius: 29px;
@@ -2341,6 +2468,11 @@ button.tool-step-summary:active {
   min-height: 44px;
   place-items: center;
   gap: 3px;
+}
+
+.mobile-session-row.unavailable .mobile-session-row__copy small,
+.mobile-session-row.unavailable .mobile-session-row__state {
+  color: var(--m-warning);
 }
 
 .session-running {

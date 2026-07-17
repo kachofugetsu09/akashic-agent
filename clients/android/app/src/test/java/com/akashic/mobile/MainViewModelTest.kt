@@ -1,5 +1,8 @@
 package com.akashic.mobile
 
+import com.akashic.mobile.data.local.ConversationSummary
+import com.akashic.mobile.data.local.canRemoveFrom
+import com.akashic.mobile.data.local.isRemoteMissingIn
 import com.akashic.mobile.domain.model.ConnectionPhase
 import com.akashic.mobile.domain.model.ConnectionState
 import com.akashic.mobile.ui.conversation.ConnectionStatusUi
@@ -59,5 +62,31 @@ class MainViewModelTest {
         assertEquals(false, userMessageCanReply("sent"))
         assertEquals(false, userMessageCanReply("failed"))
         assertEquals(true, userMessageCanReply("complete"))
+    }
+
+    @Test
+    fun remoteMissingBlocksSendingWhileLocalWorkOnlyBlocksRemoval() {
+        val remote = ConversationSummary(
+            sessionId = "mobile:remote",
+            title = "旧会话",
+            lastMessagePreview = "历史",
+            lastMessageAt = 1,
+            unreadCount = 0,
+            isRunning = false,
+            anchorMessageId = null,
+            anchorOffsetPx = 0,
+            remoteKnown = true,
+            hasLocalWork = false,
+        )
+        val local = remote.copy(sessionId = "mobile:local", remoteKnown = false)
+        val pending = remote.copy(sessionId = "mobile:pending", hasLocalWork = true)
+
+        assertEquals(false, remote.isRemoteMissingIn(null))
+        assertEquals(false, remote.isRemoteMissingIn(setOf("mobile:remote")))
+        assertEquals(true, remote.isRemoteMissingIn(emptySet()))
+        assertEquals(false, local.isRemoteMissingIn(emptySet()))
+        assertEquals(true, pending.isRemoteMissingIn(emptySet()))
+        assertEquals(true, remote.canRemoveFrom(emptySet()))
+        assertEquals(false, pending.canRemoveFrom(emptySet()))
     }
 }

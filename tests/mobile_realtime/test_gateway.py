@@ -8,7 +8,7 @@ import secrets
 import sqlite3
 from collections import deque
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -294,6 +294,193 @@ def test_resume_reset_terminal_explicitly_bridges_client_sequence_gap(
         stored = json.loads(terminal.envelope_json)
         assert stored["type"] == "sync.reset_required"
         assert stored["payload"]["reason"] == "client_ack_behind_server_cursor"
+    finally:
+        runtime.close()
+
+
+def test_resume_rebases_when_authenticated_client_ack_is_ahead(
+    tmp_path: Path,
+) -> None:
+    """服务端 durable DB 回退后，下一帧继续客户端序号并要求全量重建。"""
+
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    runtime, _ = asyncio.run(build())
+    device_id = uuid4().hex
+    _register_test_device(runtime, device_id)
+    try:
+        runtime._enqueue_event(
+            device_id=device_id,
+            event_type="message.final",
+            payload={"content": "rolled-back"},
+        )
+
+        replay_after, replay_through, terminal = runtime._prepare_resume(
+            device_id=device_id,
+            last_ack=5,
+        )
+
+        assert (replay_after, replay_through) == (5, 5)
+        assert terminal.event_seq == 6
+        stored = json.loads(terminal.envelope_json)
+        assert stored["type"] == "sync.reset_required"
+        assert stored["payload"]["reason"] == "client_ack_ahead_of_server_cursor"
+        cursor = runtime.storage.read_cursor(device_id)
+        assert cursor.next_event_seq == 7
+        assert cursor.sent_event_seq == 5
+        assert cursor.acknowledged_event_seq == 5
+        assert [event.event_seq for event in runtime.storage.read_durable_events(
+            device_id,
+            after_event_seq=5,
+            limit=10,
+        )] == [6]
+    finally:
+        runtime.close()
+
+
+def test_rebased_reset_survives_runtime_restart(tmp_path: Path) -> None:
+    """游标重定位提交后即使进程退出，重连也只能先收到已落盘 reset。"""
+
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=master_keys,
+        )
+
+    master_keys = _EphemeralMasterKeys()
+    device_id = uuid4().hex
+    runtime, _ = asyncio.run(build())
+    _register_test_device(runtime, device_id)
+    runtime._enqueue_event(
+        device_id=device_id,
+        event_type="message.final",
+        payload={"content": "rolled-back"},
+    )
+    _, _, reset = runtime._prepare_resume(device_id=device_id, last_ack=5)
+    assert reset.event_seq == 6
+    runtime.close()
+
+    restarted, _ = asyncio.run(build())
+    try:
+        replay_after, replay_through, terminal = restarted._prepare_resume(
+            device_id=device_id,
+            last_ack=5,
+        )
+
+        assert (replay_after, replay_through) == (5, 5)
+        assert terminal.event_seq == 6
+        assert json.loads(terminal.envelope_json)["type"] == "sync.reset_required"
+        assert restarted.storage.read_cursor(device_id).next_event_seq == 7
+    finally:
+        restarted.close()
+
+
+def test_rebase_storage_rejects_ack_outside_sqlite_range(tmp_path: Path) -> None:
+    """存储 owner 不接受无法继续分配 reset 的客户端序号。"""
+
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    runtime, _ = asyncio.run(build())
+    device_id = uuid4().hex
+    _register_test_device(runtime, device_id)
+    try:
+        with pytest.raises(ValueError, match="SQLite 序号范围"):
+            runtime.storage.rebase_cursor_with_durable_event(
+                device_id,
+                through_event_seq=(1 << 63) - 2,
+                event_id=uuid4().hex,
+                envelope_json='{"type":"sync.reset_required"}',
+                created_at=datetime.now(timezone.utc),
+            )
+    finally:
+        runtime.close()
+
+
+def test_maximum_rebase_ack_can_complete_next_resume(tmp_path: Path) -> None:
+    """最大合法恢复 ACK 仍为 reset 确认后的完成帧保留充足序号空间。"""
+
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    runtime, _ = asyncio.run(build())
+    device_id = uuid4().hex
+    _register_test_device(runtime, device_id)
+    maximum_ack = 1 << 62
+    try:
+        _, _, reset = runtime._prepare_resume(
+            device_id=device_id,
+            last_ack=maximum_ack,
+        )
+        assert reset.event_seq == maximum_ack + 1
+        runtime.storage.mark_events_sent(
+            device_id,
+            through_event_seq=reset.event_seq,
+        )
+        runtime.storage.acknowledge_durable_events(
+            device_id,
+            through_event_seq=reset.event_seq,
+        )
+
+        replay_after, replay_through, completed = runtime._prepare_resume(
+            device_id=device_id,
+            last_ack=reset.event_seq,
+        )
+
+        assert (replay_after, replay_through) == (reset.event_seq, reset.event_seq)
+        assert completed.event_seq == maximum_ack + 2
+        assert json.loads(completed.envelope_json)["type"] == "sync.completed"
+    finally:
+        runtime.close()
+
+
+def test_ahead_ack_rebases_before_expired_inbox_check(tmp_path: Path) -> None:
+    """服务端回退与旧事件过期并存时，仍按客户端下一序号原子 reset。"""
+
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    runtime, _ = asyncio.run(build())
+    device_id = uuid4().hex
+    _register_test_device(runtime, device_id)
+    runtime.storage.append_durable_event(
+        device_id=device_id,
+        event_id=uuid4().hex,
+        envelope_json='{"type":"message.final"}',
+        created_at=datetime.now(timezone.utc) - timedelta(days=8),
+    )
+    try:
+        replay_after, replay_through, terminal = runtime._prepare_resume(
+            device_id=device_id,
+            last_ack=5,
+        )
+
+        assert (replay_after, replay_through) == (5, 5)
+        assert terminal.event_seq == 6
+        assert json.loads(terminal.envelope_json)["type"] == "sync.reset_required"
+        assert [event.event_seq for event in runtime.storage.read_durable_events(
+            device_id,
+            after_event_seq=5,
+            limit=10,
+        )] == [6]
     finally:
         runtime.close()
 

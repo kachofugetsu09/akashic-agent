@@ -16,6 +16,7 @@ class AttachmentDownloadCoordinator(
     private val onTransportUnavailable: (String) -> Unit,
     private val onDownloadFailed: (String) -> Unit,
     private val onStateChanged: (Boolean) -> Unit = {},
+    private val canTransfer: suspend (MediaAttachmentEntity) -> Boolean = { true },
 ) {
     private data class ActiveDownload(
         val commandId: String,
@@ -44,9 +45,10 @@ class AttachmentDownloadCoordinator(
     }
 
     suspend fun retry(attachmentId: String) {
+        val current = requireNotNull(dao.get(attachmentId)) { "附件不存在: $attachmentId" }
+        require(canTransfer(current)) { "这段会话已不在电脑上，无法下载附件" }
         val changed = dao.requestDownload(attachmentId, System.currentTimeMillis())
         if (changed == 0) {
-            val current = requireNotNull(dao.get(attachmentId)) { "附件不存在: $attachmentId" }
             check(current.state in setOf("pending", "downloading", "cached")) {
                 "附件当前不可开始下载: $attachmentId"
             }
@@ -109,7 +111,7 @@ class AttachmentDownloadCoordinator(
         if (active != null) return
         var reconciled: MediaAttachmentEntity
         while (true) {
-            val transfer = dao.pendingDownloads(currentServerId).firstOrNull() ?: return
+            val transfer = dao.pendingDownloads(currentServerId).firstOrNull { canTransfer(it) } ?: return
             try {
                 reconciled = reconcilePartial(transfer)
                 if (reconciled.transferredBytes == reconciled.sizeBytes) {

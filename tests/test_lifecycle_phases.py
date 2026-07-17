@@ -335,6 +335,33 @@ async def test_before_turn_setup_fills_turn_state():
 
 
 @pytest.mark.asyncio
+async def test_before_turn_existing_admission_never_creates_deleted_session():
+    bus = EventBus()
+    session = _DummySession("mobile:deleted")
+    get_existing = Mock(return_value=session)
+    get_or_create = Mock(side_effect=AssertionError("不得重建已删除会话"))
+    session_mgr = SimpleNamespace(get_existing=get_existing, get_or_create=get_or_create)
+    ctx_store = SimpleNamespace(prepare=AsyncMock(return_value=ContextBundle()))
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+        ),
+        frame_factory=BeforeTurnFrame,
+    )
+    msg = _inbound()
+    msg.metadata = {"require_existing_session": True}
+    state = TurnState(msg=msg, session_key="mobile:deleted", dispatch_outbound=True)
+
+    await phase.run(state)
+
+    get_existing.assert_called_once_with("mobile:deleted")
+    get_or_create.assert_not_called()
+    assert "require_existing_session" not in msg.metadata
+
+
+@pytest.mark.asyncio
 async def test_before_turn_uses_cli_session_override_context():
     bus = EventBus()
     session = _DummySession("telegram:7674283004")
