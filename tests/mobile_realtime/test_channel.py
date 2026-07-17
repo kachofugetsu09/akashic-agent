@@ -54,6 +54,11 @@ class _Bus:
         self.outbound[channel] = callback
 
 
+class _FailingBus(_Bus):
+    async def publish_inbound(self, message: object) -> None:
+        raise RuntimeError("bus unavailable")
+
+
 class _EventBus:
     def __init__(self) -> None:
         self.handlers: dict[type[object], object] = {}
@@ -303,12 +308,13 @@ async def test_message_send_is_idempotent_and_session_is_shared_between_devices(
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     bus = _Bus()
+    manager = SessionManager(tmp_path / "workspace")
     await channel.start(
         cast(
             Any,
             SimpleNamespace(
                 bus=bus,
-                session_manager=SessionManager(tmp_path / "workspace"),
+                session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
                 interrupt_controller=None,
@@ -346,6 +352,16 @@ async def test_message_send_is_idempotent_and_session_is_shared_between_devices(
     assert mismatched.type == "message.send.error"
     assert mismatched.payload["code"] == "client_message_id_mismatch"
     assert len(bus.inbound) == 2
+    assert all(item.metadata["require_existing_session"] is True for item in bus.inbound)
+    with pytest.raises(ValueError, match="正在处理消息"):
+        manager.delete_session(session_id)
+    for item in bus.inbound:
+        assert item.session_admission_id is not None
+        manager.release_admission(item.session_admission_id)
+    assert manager.delete_session(session_id)
+    with pytest.raises(KeyError, match="session 不存在"):
+        manager.get_existing(session_id)
+    manager.close()
     storage.close()
 
 
@@ -394,6 +410,103 @@ async def test_message_send_does_not_recreate_a_deleted_claimed_session(
     assert reply.payload["code"] == "session_not_found"
     assert not manager.session_exists(session_id)
     assert bus.inbound == []
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_message_send_releases_admission_when_bus_publish_fails(
+    tmp_path: Path,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    manager = SessionManager(tmp_path / "workspace")
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=_FailingBus(),
+                session_manager=manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+            ),
+        )
+    )
+    session_id = f"mobile:{uuid4()}"
+
+    with pytest.raises(RuntimeError, match="bus unavailable"):
+        await channel.handle_command(
+            device_id=device_id,
+            frame=_message_frame(
+                frame_id="01ARZ3NDEKTSV4RRFFQ69G5FBA",
+                session_id=session_id,
+            ),
+        )
+
+    assert manager.delete_session(session_id)
+    manager.close()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_claimed_message_admission_does_not_recreate_after_exists_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    manager = SessionManager(tmp_path / "workspace")
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    bus = _Bus()
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=bus,
+                session_manager=manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+            ),
+        )
+    )
+    session_id = f"mobile:{uuid4()}"
+    manager.save(manager.get_or_create(session_id))
+    storage.claim_session(
+        device_id=device_id,
+        session_id=session_id,
+        created_at=datetime.now(timezone.utc),
+    )
+    original_exists = manager.session_exists
+
+    def delete_after_exists_check(key: str) -> bool:
+        exists = original_exists(key)
+        assert manager.delete_session(key)
+        return exists
+
+    monkeypatch.setattr(manager, "session_exists", delete_after_exists_check)
+
+    reply = await channel.handle_command(
+        device_id=device_id,
+        frame=_message_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FBA",
+            session_id=session_id,
+        ),
+    )
+
+    assert reply.type == "message.send.error"
+    assert reply.payload["code"] == "session_not_found"
+    assert not original_exists(session_id)
+    assert bus.inbound == []
+    with pytest.raises(KeyError, match="session 不存在"):
+        manager.get_existing(session_id)
     manager.close()
     storage.close()
 

@@ -381,6 +381,70 @@ def test_rebased_reset_survives_runtime_restart(tmp_path: Path) -> None:
         restarted.close()
 
 
+@pytest.mark.asyncio
+async def test_rebased_reset_replays_events_written_before_reconnect(
+    tmp_path: Path,
+) -> None:
+    """reset 后离线写入的事件必须随首次重连连续送达。"""
+
+    def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=master_keys,
+        )
+
+    master_keys = _EphemeralMasterKeys()
+    device_id = uuid4().hex
+    runtime, _ = build()
+    _register_test_device(runtime, device_id)
+    runtime._enqueue_event(
+        device_id=device_id,
+        event_type="message.final",
+        payload={"content": "rolled-back"},
+    )
+    _, _, reset = runtime._prepare_resume(device_id=device_id, last_ack=5)
+    assert reset.event_seq == 6
+    runtime.close()
+
+    restarted, _ = build()
+    try:
+        offline = restarted._enqueue_event(
+            device_id=device_id,
+            event_type="message.final",
+            payload={"content": "offline-after-reset"},
+        )
+        assert offline.event_seq == 7
+        websocket = _ControlledWebSocket()
+
+        await restarted._resume_and_register(
+            cast(Any, websocket),
+            device_id=device_id,
+            connection_epoch=1,
+            last_ack=5,
+        )
+        await restarted.publish_event(
+            event_type="message.final",
+            payload={"content": "live-after-resume"},
+            device_id=device_id,
+        )
+
+        async def wait_for_live_event() -> None:
+            while len(websocket.sent_text) < 3:
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(wait_for_live_event(), timeout=1)
+        frames = [json.loads(text) for text in websocket.sent_text]
+        assert [frame["event_seq"] for frame in frames] == [6, 7, 8]
+        assert [frame["type"] for frame in frames] == [
+            "sync.reset_required",
+            "message.final",
+            "message.final",
+        ]
+    finally:
+        restarted.close()
+
+
 def test_rebase_storage_rejects_ack_outside_sqlite_range(tmp_path: Path) -> None:
     """存储 owner 不接受无法继续分配 reset 的客户端序号。"""
 

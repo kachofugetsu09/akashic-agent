@@ -143,7 +143,13 @@ class PassiveMessageWorker:
                 return
             await self._bus.publish_outbound(outbound)
         finally:
-            await self._bus.complete_inbound(item)
+            try:
+                await self._bus.complete_inbound(item)
+            finally:
+                if item.session_admission_id is not None:
+                    self._legacy_loop.session_manager.release_admission(
+                        item.session_admission_id
+                    )
 
     def stop(self) -> None:
         self._running = False

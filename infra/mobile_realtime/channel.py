@@ -811,16 +811,27 @@ class MobileRealtimeChannel:
         )
         if not claimed_session:
             _ = ctx.session_manager.get_or_create(session_id)
-        await ctx.bus.publish_inbound(
-            InboundMessage(
-                channel=self.name,
-                sender=f"device:{device_id}",
-                chat_id=self._chat_id(session_id),
-                content=inbound_content,
-                media=media,
-                metadata=metadata,
-            )
+        try:
+            _, admission_id = ctx.session_manager.admit_existing(session_id)
+        except KeyError as error:
+            raise MobileCommandError(
+                "session_not_found",
+                "会话已从电脑端删除，请在手机上新建会话后继续",
+            ) from error
+        inbound = InboundMessage(
+            channel=self.name,
+            sender=f"device:{device_id}",
+            chat_id=self._chat_id(session_id),
+            content=inbound_content,
+            media=media,
+            metadata=metadata,
+            session_admission_id=admission_id,
         )
+        try:
+            await ctx.bus.publish_inbound(inbound)
+        except BaseException:
+            ctx.session_manager.release_admission(admission_id)
+            raise
         return CommandReply(
             type="message.send.ok",
             session_id=session_id,

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
+from uuid import uuid4
 
 from agent.prompting import (
     PromptSectionRender,
@@ -328,6 +329,7 @@ class SessionManager:
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = workspace / "sessions.db"
         self._store = SessionStore(self.db_path)
+        self._store.clear_session_admissions()
         self._cache: dict[str, Session] = {}
         self._write_locks: dict[str, asyncio.Lock] = {}
 
@@ -365,6 +367,24 @@ class SessionManager:
         self._cache[key] = session
         return session
 
+    def admit_existing(self, key: str) -> tuple[Session, str]:
+        """为仍存在的会话建立跨连接处理租约并返回会话。"""
+
+        # 1. 持久化 owner 原子核对身份并建立租约
+        admission_id = uuid4().hex
+        if not self._store.acquire_session_admission(key, admission_id):
+            self.invalidate(key)
+            raise KeyError(f"session 不存在: {key}")
+
+        # 2. 租约覆盖装载窗口；失败时立即回收
+        try:
+            return self.get_existing(key), admission_id
+        except BaseException:
+            self._store.release_session_admission(admission_id)
+            raise
+
+    def release_admission(self, admission_id: str) -> None:
+        self._store.release_session_admission(admission_id)
 
     def peek_next_message_id(self, session_key: str) -> str:
         next_seq = self._store.next_seq(session_key)

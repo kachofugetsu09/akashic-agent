@@ -45,9 +45,9 @@
 - `RealtimeSession` 在每个连接 generation 内先获取 `session.list` 和所有历史页，完成前不进入 READY；重连后不恢复上传、下载、stop 和 outbox 队列，READY 前不 flush outbox。目录同步失败直接重连，不拿旧目录继续发送。
 - send、retry、附件导入/重试、通知快捷回复、Turn 插件 RPC 和 outbox 都在同一个 Android owner 上核对目录。outbox 遇到旧会话时用独立的 pending/retry 状态迁移把该消息标记为可重试并跳过，不借用 in-flight 失败路径，也不阻塞其他会话；下载队列会跳过失效会话，继续处理其他会话的附件。
 - WebView snapshot v4 显式携带 `isAvailable` 与 `canRemove`；React 只表达状态、确认和任务动作，不自行推断服务端目录。
-- 服务端主要在 mobile 边界保护：已有 mobile claim 但 canonical `SessionManager` 中不存在的会话返回 `session_not_found`。Agent 生命周期只增加可复用的 existing-only admission，不增加移动端 tombstone，也不改变 session 持久化和插件协议。
+- 服务端主要在 mobile 边界保护：已有 mobile claim 但 canonical `SessionManager` 中不存在的会话返回 `session_not_found`。可复用的 `session_admissions` 租约把“会话仍存在”覆盖到入站消息处理完成；Dashboard 的单删和批删与租约获取都用 SQLite 写事务串行化，不会在手机收到成功 ACK 后才删除 owner。Agent 生命周期不增加移动端 tombstone，也不改变插件协议。
 - 多设备首次看到另一台手机的新会话时，Android 在同一 Room 事务先建立 `remoteKnown` conversation，再应用 `turn.started` 并推进 cursor，避免外键失败后无限重放。发送 ACK、history、实时事件和 `session_not_found` 都由同一 Room owner 确认该持久身份；已进入 mobile channel 的入站消息统一携带“必须已存在”不变量，before-turn 消费后只走 `SessionManager.get_existing`，首次 claim 排队后或检查后并发删除都不会进入创建路径。
-- 隔离数据库回滚可能让客户端 `last_ack` 高于服务端 durable cursor。检测到已认证客户端 ACK 高于服务端 cursor 时，Gateway 选择以客户端已应用序号为恢复基准，原子清理回退 inbox、前移 cursor，并在下一个精确序号持久化 `sync.reset_required`；协议与存储边界把恢复 ACK 限在 SQLite 64 位序号空间的一半，为 reset、completed 和后续日常事件保留充足余量。普通 resume 和服务端领先客户端的路径不变。
+- 隔离数据库回滚可能让客户端 `last_ack` 高于服务端 durable cursor。检测到已认证客户端 ACK 高于服务端 cursor 时，Gateway 选择以客户端已应用序号为恢复基准，原子清理回退 inbox、前移 cursor，并在下一个精确序号持久化 `sync.reset_required`；协议与存储边界把恢复 ACK 限在 SQLite 64 位序号空间的一半。若 reset 落盘后进程退出、重启期间又产生离线事件，reset 会作为恢复窗口起点，与离线事件和随后实时事件连续送达，不再形成第二次 sequence gap。普通 resume 和服务端领先客户端的路径不变。
 
 ## 验证
 
@@ -58,7 +58,7 @@
 - Kill AI Slop 扫描 `frontend/chat/src` 为 38 个文件、10 组、58 个机械命中；本组没有新增渐变、玻璃拟态、发光点、卡片墙或胶囊状态，命中均来自既有组件、圆形图标按钮、代码等宽字体和 `touch-callout` 误报。
 - Android `:app:testDebugUnitTest`、`assembleDebug`、`assembleDebugAndroidTest`：通过。
 - Pixel 7 Room instrumentation：39 passed，包含 schema 5→6 live-only 回填、首个远端 Turn 建立 conversation、持久化 `remoteKnown` 和本地工作分流。
-- Pyright 0 error/0 warning；mobile gateway、channel、storage、protocol 与 lifecycle 定向测试合计 131 passed，包含首次 claim 排队后删除、检查后并发删除、客户端 ACK 超前的原子恢复、进程重启、过期 inbox 组合、最大合法 ACK 完整恢复和 existing-only lifecycle。
+- Pyright 0 error；最终 session admission、mobile gateway、channel、storage、protocol 与 lifecycle 独立定向复核为 116 passed，完整 `tests/` 为 2317 passed。覆盖单删/批删反向竞态、发布失败和 worker 完成释放、客户端 ACK 超前的原子恢复、reset 后离线事件、进程重启、过期 inbox 组合、最大合法 ACK 完整恢复和 existing-only lifecycle。
 - `clients/android/scripts/build-release.sh`：release unit、Lint、R8、assemble 与 APK v2 签名通过；最终 `0.7.11 (20)` APK 为 8,326,778 bytes，SHA-256 `fca7ad58fe9880543116b4e12386b33643445cdc35edc0d127f5c27f015dc000`。
 
 ### Pixel 7 / 隔离 Mobile Lab
@@ -70,6 +70,7 @@
 5. 恢复隔离数据库时真实触发“客户端 ACK 高于服务端 durable cursor”；旧循环断线被 `sync.reset_required` 收口，Pixel 7 回到“连接正常”，截图 `/tmp/pixel7-stale-session-final-rebased-healthy.png`。独立复核随后要求把 cursor 前移与 reset 入箱合并为同一事务，并补齐提交后立即进程退出、重启仍只先发送 reset，以及回退事件同时超过保留期的组合回归。
 6. 再次删除服务端会话后，最终 APK 冷启动保持连接正常，Turn 级 Observe slot 已隐藏，不再出现“Token 统计不可用：会话不存在”；最终截图 `/tmp/pixel7-stale-session-final-reviewed-v2.png`。随后 Mobile Lab 明确改挂本 worktree 最新代码并重建三个容器，Pixel 7 再次冷启动仍保持同一状态，截图 `/tmp/pixel7-stale-session-latest-server.png`；容器内外 gateway/storage SHA-256 一致，服务端再次读回 `sessions=0 / messages=0`。应用 PID 与容器日志无 FATAL、RenderProcessGone、event gap、协议校验、ASGI 异常或旧会话 `message.send`。
 7. 无本地工作的另一条隔离会话完成“抽屉提示 → 保留历史 → Material 3 确认 → 从本机移除 → 自动切换 → 服务端恢复后重新同步”闭环，证据为 `/tmp/pixel7-stale-drawer-detected.png`、`/tmp/pixel7-stale-session-dialog-final.png`、`/tmp/pixel7-stale-session-drawer-after-remove2.png` 和 `/tmp/pixel7-stale-session-restored-server.png`。
+8. 最终代码重新挂载 Mobile Lab 并恢复已知完好的隔离 `sessions.db` 后，Pixel 7 冷启动完成 reset/目录/全历史同步并回到“连接正常”，截图 `/tmp/pixel7-stale-session-final-restored-ready.png`。随后真机发送 `reply only OK`，服务端实际持久化 user/assistant `OK`，界面显示“已发送 / 已思考 5s / 输出 23 tokens”，截图 `/tmp/pixel7-final-live-send-result.png`；消息完成后 `session_admissions=0`，两端日志无 FATAL、RenderProcessGone、sequence gap 或协议异常。
 
 ## 五项 UI 审阅结论
 
@@ -79,4 +80,4 @@
 - Material 3：复用 dialog、state layer、48dp action 和既有 surface 层级，返回与焦点语义由成熟组件承担。
 - Kill AI Slop：没有新增渐变、玻璃拟态、发光点、圆角卡片墙、图标彩色方块或胶囊堆叠。
 
-状态：独立复核发现的 crash-consistency 与整数边界已修复并重新送审。本组已修复 live-only migration、多设备首事件外键、pending outbox 状态所有权、下载队列阻塞、所有 mobile admission 的 existing-only 约束、claimed-session 并发删除和 durable cursor 回滚边界，并通过自动门禁、隔离弱网重连和 Pixel 7 签名 release 验收。
+状态：独立复核最终未发现 Blocker、High 或 Medium。本组已修复 live-only migration、多设备首事件外键、pending outbox 状态所有权、下载队列阻塞、所有 mobile admission 的 existing-only 约束、claimed-session 并发删除和 durable cursor 回滚边界，并通过自动门禁、隔离弱网重连和 Pixel 7 签名 release 验收。

@@ -589,7 +589,7 @@ class MobileGatewayRuntime:
         device_id: str,
         last_ack: int,
     ) -> tuple[int, int, DurableInboxEvent]:
-        """冻结重放事件，并预先分配终止帧的 event_seq。"""
+        """冻结重放窗口，并返回需要最后发送的尾帧。"""
 
         # 1. cursor 已落后时只发送 reset，避免伪造可恢复历史
         cursor = self.storage.read_cursor(device_id)
@@ -632,9 +632,30 @@ class MobileGatewayRuntime:
             )
             return last_ack, last_ack, terminal
 
-        # 已原子落盘但尚未送达的 reset 仍是唯一终止帧，不能追加完成帧掩盖它
+        # 已落盘 reset 是重建起点；重启后新写入的事件必须在同一冻结窗口续发
         if replay.events and _stored_event_type(replay.events[0]) == "sync.reset_required":
-            return last_ack, last_ack, replay.events[0]
+            reset = replay.events[0]
+            if not self.storage.durable_event_range_is_contiguous(
+                device_id,
+                after_event_seq=reset.event_seq,
+                through_event_seq=replay_through,
+            ):
+                terminal = self._enqueue_event(
+                    device_id=device_id,
+                    event_type="sync.reset_required",
+                    payload={"reason": "inbox_sequence_gap_after_reset"},
+                )
+                return last_ack, last_ack, terminal
+            if replay_through == reset.event_seq:
+                return last_ack, last_ack, reset
+            tail = self.storage.read_durable_events(
+                device_id,
+                after_event_seq=replay_through - 1,
+                limit=1,
+            )
+            if not tail or tail[0].event_seq != replay_through:
+                raise RuntimeError("mobile resume 冻结窗口末尾事件不存在")
+            return reset.event_seq - 1, replay_through - 1, tail[0]
 
         # 4. 持久化窗口已有缺口时必须重建，不能把后续事件伪装成连续重放
         if not self.storage.durable_event_range_is_contiguous(
@@ -669,7 +690,7 @@ class MobileGatewayRuntime:
         replay_through: int,
         terminal: DurableInboxEvent,
     ) -> None:
-        """在单连接写锁内连续发送重放窗口与终止帧。"""
+        """在单连接写锁内连续发送重放窗口与尾帧。"""
 
         # 1. 同一连接的重放帧不可被 command 或二进制回复穿插
         async with connection.send_lock:

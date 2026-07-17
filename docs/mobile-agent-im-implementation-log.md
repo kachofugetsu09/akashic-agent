@@ -449,6 +449,7 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - 抽屉用 warning 状态替换普通预览；进入后历史保持可读。有待发消息或附件时原 composer 位置解释“已停止发送”并提供“新聊天”，没有本地工作时才提供“从本机移除”。确认删除只清理本机投影和缓存。
 - 已失效会话不挂载本轮插件 slot，Observe 等插件不会再对不存在的服务端 Turn 请求数据；插件目录与全局看板不受影响。
 - UI 复用 Radix Dialog 与现有原生桥，采用 Material 3 状态面、28dp modal、32% scrim 和 48dp 文字动作；没有增加 warning 卡、badge 或新的业务色。warning 在浅容器上的对比度由约 `4.18:1` 提升到 `4.55:1`。
-- 自动门禁通过 Web typecheck、ESLint、20 项 mobile state、Android JVM/debug/androidTest/release 构建、Pyright、131 项 Python realtime/protocol/lifecycle 定向测试和 v2 签名；Pixel 7 Room instrumentation 为 `39/39`。
-- 独立复核进一步收口 pending outbox 的状态 owner、失效会话对其他附件下载的阻塞、首次 claim 排队后删除与所有 mobile admission 的 existing-only 约束。隔离数据库回滚时又真实触发客户端 ACK 高于 durable cursor；Gateway 现先于 retention 检查处理 ACK 超前，把 cursor 前移与精确下一序号的 `sync.reset_required` 在同一 SQLite 事务落盘，并把恢复 ACK 限在 SQLite 64 位空间的一半。进程在提交后立即退出、回退事件同时超过保留期，或使用最大合法 ACK 完成下一次 resume，都不会形成 ASGI 异常重连环或误报同步完成。
+- 自动门禁通过 Web typecheck、ESLint、20 项 mobile state、Android JVM/debug/androidTest/release 构建、Pyright、116 项 Python 独立定向复核、完整 `tests/` 2317 项和 v2 签名；Pixel 7 Room instrumentation 为 `39/39`。
+- 独立复核进一步收口 pending outbox 的状态 owner、失效会话对其他附件下载的阻塞、首次 claim 排队后删除与所有 mobile admission 的 existing-only 约束。处理租约现跨 SQLite 连接持久化，单删、批删与租约获取使用写事务串行化，消息发布失败和 worker 终态都会释放，异常退出则由下一次唯一 runtime 启动清理。隔离数据库回滚时又真实触发客户端 ACK 高于 durable cursor；Gateway 现先于 retention 检查处理 ACK 超前，把 cursor 前移与精确下一序号的 `sync.reset_required` 在同一 SQLite 事务落盘。reset 落盘后即使进程退出并在离线期间产生新事件，首次重连也会连续收到 reset、离线事件和后续实时事件，不会再次形成 sequence gap。
 - Pixel 7 在隔离 Mobile Lab 中覆盖无本地工作移除闭环，以及“待发消息/附件 + tunnel 502 → 重连完成目录同步 → 不发送旧 outbox → 服务端不重建”的弱网闭环。最终画面保持“连接正常”，不再出现误导性的 Turn token 插件错误；服务端读回 `sessions=0 / messages=0`，正式 workspace 未读写。完整设计和证据见 `docs/mobile-batches/2026-07-17-unavailable-sessions.md`。
+- 恢复隔离会话数据并挂载最终代码后，Pixel 7 冷启动完成目录与历史同步，再真实发送 `reply only OK` 并收到 `OK`；服务端处理租约归零，两端日志无 sequence gap、协议异常或进程错误。
