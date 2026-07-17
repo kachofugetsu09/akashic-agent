@@ -465,4 +465,5 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 
 - Fitbit 真机验收暴露插件异常会越过命令边界并关闭整条 WebSocket；宿主现在在插件调用边界记录 traceback，并把执行异常和返回契约错误转换为可持久化的 `plugin_failed` reply。
 - 输入错误、超时、执行失败继续拥有不同错误码；插件内部细节不发给手机，宿主取消也不会被吞掉。
-- 33 项插件 UI provider 与 mobile channel 测试通过，Pyright 0 错误、0 警告。Pixel7 同连接失败后重试的最终证据待隔离运行副本载入本提交后补记；完整契约见 `docs/mobile-batches/2026-07-17-plugin-ui-failure-isolation.md`。
+- 插件 UI provider、durable command 与 Gateway 连接测试覆盖插件抛错、非对象、非字符串键、不可 JSON、超限返回和失败命令重放；Pyright 0 错误、0 警告。
+- Pixel7 在隔离 Mobile Lab 暂停 Fitbit monitor 后收到原位 `plugin_failed`，恢复 monitor 并点击重试后原位返回健康总览；失败和成功请求始终使用 generation 14 / connection epoch 276，中间没有 proof、resume、EOF 或历史重同步。截图为 `/tmp/pixel7-fitbit-plugin-failure-isolated-final.png`、`/tmp/pixel7-fitbit-plugin-recovered-same-connection-final.png`；完整契约见 `docs/mobile-batches/2026-07-17-plugin-ui-failure-isolation.md`。

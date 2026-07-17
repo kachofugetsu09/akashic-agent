@@ -1546,10 +1546,14 @@ async def test_plugin_ui_invalid_request_becomes_durable_error_reply(tmp_path: P
 @pytest.mark.asyncio
 async def test_plugin_ui_execution_failure_becomes_durable_error_reply(tmp_path: Path) -> None:
     class _FailedProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
         def catalog(self) -> list[dict[str, object]]:
             return []
 
         async def call(self, *args: object, **kwargs: object) -> dict[str, object]:
+            self.calls += 1
             raise channel_module.MobileUiRpcExecutionError(
                 "插件 mobile UI RPC 执行失败: sample@github.recall.current"
             )
@@ -1558,7 +1562,8 @@ async def test_plugin_ui_execution_failure_becomes_durable_error_reply(tmp_path:
     device_id = uuid4().hex
     _register_device(storage, device_id)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
-    channel.bind_mobile_ui_provider(cast(Any, _FailedProvider()))
+    provider = _FailedProvider()
+    channel.bind_mobile_ui_provider(cast(Any, provider))
     frame = _generic_frame(
         frame_id="01ARZ3NDEKTSV4RRFFQ69G5FB4",
         command_type="plugin.ui.call",
@@ -1566,12 +1571,15 @@ async def test_plugin_ui_execution_failure_becomes_durable_error_reply(tmp_path:
     )
 
     reply = await channel.handle_command(device_id=device_id, frame=frame)
+    replay = await channel.handle_command(device_id=device_id, frame=frame)
 
     assert reply.type == "plugin.ui.call.error"
     assert reply.payload == {
         "code": "plugin_failed",
         "message": "插件 mobile UI RPC 执行失败: sample@github.recall.current",
     }
+    assert replay == reply
+    assert provider.calls == 1
     storage.close()
 
 

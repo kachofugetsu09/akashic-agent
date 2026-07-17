@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from agent.config_models import MobileKeyEncryptionConfig, MobileRealtimeConfig
+from agent.plugins.mobile_ui import MobileUiRpcExecutionError
 from bus.events import OutboundMessage
 from bus.events_lifecycle import (
     StreamDeltaReady,
@@ -1115,6 +1116,99 @@ def test_authenticated_message_send_reaches_agent_event_path_once(
 
     assert len(bus.inbound) == 1
     asyncio.run(runtime.channel.stop())
+    runtime.close()
+
+
+def test_plugin_ui_failure_keeps_authenticated_websocket_available(
+    tmp_path: Path,
+) -> None:
+    """插件面板失败后，同一连接仍能继续处理命令。"""
+
+    class FailedMobileUiProvider:
+        def catalog(self) -> list[dict[str, object]]:
+            return []
+
+        async def call(self, *args: object, **kwargs: object) -> dict[str, object]:
+            raise MobileUiRpcExecutionError(
+                "插件 mobile UI RPC 执行失败: fitbit@mobile-lab.fitbit.overview"
+            )
+
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    runtime, _ = asyncio.run(build())
+    runtime.channel.bind_mobile_ui_provider(cast(Any, FailedMobileUiProvider()))
+    device_key = ec.generate_private_key(ec.SECP256R1())
+    device_id = uuid4().hex
+    runtime.storage.register_device(
+        DeviceRecord(
+            device_id=device_id,
+            public_key=_device_public_key(device_key),
+            display_name="Pixel7",
+            created_at=datetime.now(timezone.utc),
+            revoked_at=None,
+            capabilities=("stream-v1",),
+        )
+    )
+
+    # 1. 完成认证，并在活动连接上触发插件失败
+    client = TestClient(create_mobile_gateway_app(runtime))
+    with client.websocket_connect("/ws") as websocket:
+        challenge = websocket.receive_json()
+        websocket.send_json(
+            _device_proof(
+                challenge=challenge["payload"],
+                device_id=device_id,
+                device_key=device_key,
+            )
+        )
+        accepted = websocket.receive_json()
+        epoch = accepted["connection_epoch"]
+        websocket.send_json(
+            {
+                "v": 1,
+                "kind": "control",
+                "type": "resume",
+                "connection_epoch": epoch,
+                "payload": {"last_ack": 0, "active_turns": []},
+            }
+        )
+        assert websocket.receive_json()["type"] == "sync.completed"
+        websocket.send_json(
+            {
+                "v": 1,
+                "kind": "command",
+                "type": "plugin.ui.call",
+                "id": "01ARZ3NDEKTSV4RRFFQ69G5FB5",
+                "connection_epoch": epoch,
+                "payload": {
+                    "plugin_id": "fitbit@mobile-lab",
+                    "method": "fitbit.overview",
+                    "payload": {},
+                },
+            }
+        )
+        failed = websocket.receive_json()
+        assert failed["type"] == "plugin.ui.call.error"
+        assert failed["payload"]["code"] == "plugin_failed"
+
+        # 2. 错误回复不能改变 epoch，也不能阻断后续命令
+        websocket.send_json(
+            {
+                "v": 1,
+                "kind": "command",
+                "type": "ping",
+                "id": "01ARZ3NDEKTSV4RRFFQ69G5FB6",
+                "connection_epoch": epoch,
+                "payload": {},
+            }
+        )
+        assert websocket.receive_json()["type"] == "ping.ok"
+
     runtime.close()
 
 

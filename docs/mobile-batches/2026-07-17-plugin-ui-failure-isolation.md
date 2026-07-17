@@ -23,9 +23,14 @@ plugin.ui.call
 
 ```bash
 /mnt/data/coding/akasic-agent/.venv/bin/python -m pytest -q \
-  tests/test_plugin_mobile_ui.py tests/mobile_realtime/test_channel.py
+  tests/test_plugin_mobile_ui.py tests/mobile_realtime/test_channel.py \
+  tests/mobile_realtime/test_gateway.py -k 'plugin_ui or mobile_ui_rpc'
 /mnt/data/coding/akasic-agent/.venv/bin/pyright \
   agent/plugins/mobile_ui.py infra/mobile_realtime/channel.py
 ```
 
-Pixel7 端到端标准：构造插件执行异常后，应收到可重试错误，连接 epoch 不变化，后续 `plugin.ui.call` 能在同一 WebSocket 上成功；不得出现 ASGI traceback、EOF 或重新拉取全部历史。
+自动化覆盖插件抛错、非对象返回、非字符串键、不可 JSON 编码和超限响应；同一失败命令重放不重复调用插件。Gateway 级测试随后发送 `ping`，证明错误回复后仍使用原 connection epoch。
+
+Pixel7 端到端通过：在隔离 Mobile Lab 暂停 Fitbit monitor 后打开“健康状态”，请求 `01KXQ1XW3YZ53BC62H1R7ZFN21` 完成为 `plugin.ui.call.error / plugin_failed`，面板原位显示错误和“重试”。恢复 monitor 后点击重试，请求 `01KXQ1ZZMM0C43PDE2B9EDBGDP` 完成为 `plugin.ui.call.ok`，健康总览原位恢复。
+
+两次请求均由 `SocketCandidateId(generation=14, ordinal=0)` 以 `connection_epoch=276` 发出；中间没有 `device.proof`、`resume`、EOF 或目录/历史重同步。截图为 `/tmp/pixel7-fitbit-plugin-failure-isolated-final.png` 和 `/tmp/pixel7-fitbit-plugin-recovered-same-connection-final.png`，数据库与 Android wire 日志摘录为 `/tmp/pixel7-plugin-ui-failure-e2e.txt`。

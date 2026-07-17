@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, cast
 import asyncio
@@ -50,6 +51,17 @@ class _Store:
 
     async def acquire(self) -> _Lease:
         return _Lease(self.snapshot)
+
+
+class _ExplodingMapping(Mapping[str, object]):
+    def __getitem__(self, key: str) -> object:
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        raise RuntimeError("mapping iteration failed")
+
+    def __len__(self) -> int:
+        return 1
 
 
 def _provider() -> PluginMobileUiProvider:
@@ -151,6 +163,39 @@ async def test_mobile_ui_rpc_failure_isolated_from_transport() -> None:
     cast(Any, provider)._manager.current_snapshot.generations[
         "sample@github"
     ].instance.mobile_ui_call = fails
+
+    with pytest.raises(MobileUiRpcExecutionError, match="sample@github.recall.current"):
+        await provider.call(
+            "sample@github",
+            "recall.current",
+            {},
+            session_id="mobile:test",
+            turn_id="turn-1",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_result",
+    (
+        [],
+        {1: "value"},
+        {"value": object()},
+        {"value": "x" * (193 * 1024)},
+        _ExplodingMapping(),
+    ),
+)
+async def test_mobile_ui_rpc_invalid_result_isolated_from_transport(
+    invalid_result: object,
+) -> None:
+    provider = _provider()
+
+    async def returns_invalid(*args: object, **kwargs: object) -> object:
+        return invalid_result
+
+    cast(Any, provider)._manager.current_snapshot.generations[
+        "sample@github"
+    ].instance.mobile_ui_call = returns_invalid
 
     with pytest.raises(MobileUiRpcExecutionError, match="sample@github.recall.current"):
         await provider.call(

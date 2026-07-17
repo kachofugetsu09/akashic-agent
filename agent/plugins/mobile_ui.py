@@ -94,7 +94,7 @@ class PluginMobileUiProvider:
                 ) from error
             try:
                 normalized = _normalize_rpc_result(result, plugin_id=plugin_id, method=method)
-            except (TypeError, ValueError) as error:
+            except Exception as error:
                 logger.exception("插件 mobile UI RPC 返回无效: %s.%s", plugin_id, method)
                 raise MobileUiRpcExecutionError(
                     f"插件 mobile UI RPC 返回无效: {plugin_id}.{method}"
