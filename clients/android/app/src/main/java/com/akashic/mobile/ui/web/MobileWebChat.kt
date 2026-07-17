@@ -111,7 +111,7 @@ fun MobileWebChat(
     onDismissError: () -> Unit,
     onSend: (String, String?, List<String>, (Boolean) -> Unit) -> Unit,
     onSendCommand: (String) -> Unit,
-    onPluginUiQuery: (String, String, String, String?, String?, String, String, String) -> Unit,
+    onPluginUiQuery: (String, String, String, String?, String?, String, String, String, String) -> Unit,
     onPluginUiOwnerCancelled: (String) -> Unit,
     onPluginUiWebViewDisposed: () -> Unit,
     onStop: () -> Unit,
@@ -364,7 +364,7 @@ private data class MobileWebCallbacks(
     val onDismissError: () -> Unit,
     val onSend: (String, String?, List<String>, (Boolean) -> Unit) -> Unit,
     val onSendCommand: (String) -> Unit,
-    val onPluginUiQuery: (String, String, String, String?, String?, String, String, String) -> Unit,
+    val onPluginUiQuery: (String, String, String, String?, String?, String, String, String, String) -> Unit,
     val onPluginUiOwnerCancelled: (String) -> Unit,
     val onStop: () -> Unit,
 )
@@ -528,6 +528,7 @@ private class MobileWebBridge(
         pluginId: String,
         method: String,
         payloadJson: String,
+        cacheMode: String,
     ) = dispatch {
         it.onPluginUiQuery(
             requestId,
@@ -538,6 +539,7 @@ private class MobileWebBridge(
             pluginId,
             method,
             payloadJson,
+            cacheMode,
         )
     }
 

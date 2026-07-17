@@ -26,7 +26,11 @@ export default {
       mount(host, context) {
         host.innerHTML = '<div class="akasha-recall-loading">正在读取本轮记忆…</div>';
         let active = true;
-        context.query("recall.current", { message_id: context.messageId }).then((result) => {
+        context.query(
+          "recall.current",
+          { message_id: context.messageId },
+          { cache: "immutable" },
+        ).then((result) => {
           if (!active) return;
           const left = Array.isArray(result.left) ? result.left : [];
           const right = Array.isArray(result.right) ? result.right : [];

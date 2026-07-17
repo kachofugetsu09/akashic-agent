@@ -322,6 +322,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         pluginId: String,
         method: String,
         payloadJson: String,
+        cacheMode: String,
     ) = container.realtimeSession.queryPluginUi(
         requestId,
         ownerId,
@@ -331,6 +332,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         pluginId,
         method,
         payloadJson,
+        cacheMode,
     )
 
     fun cancelPluginUiOwner(ownerId: String) =

@@ -23,6 +23,8 @@ import com.akashic.mobile.domain.model.ConnectionState
 import com.akashic.mobile.domain.model.EndpointRoute
 import com.akashic.mobile.domain.model.ServerEndpoint
 import com.akashic.mobile.data.realtime.pluginui.PluginUiAssetStore
+import com.akashic.mobile.data.realtime.pluginui.PluginUiCatalogStore
+import com.akashic.mobile.data.realtime.pluginui.PluginUiResultStore
 import com.akashic.mobile.data.realtime.pluginui.PluginUiCoordinator
 import java.time.Instant
 import java.io.IOException
@@ -203,6 +205,8 @@ class RealtimeSession(
     private val deviceKeys: DeviceKeyStore,
     private val transferNetwork: StateFlow<TransferNetworkState>,
     pluginUiAssetStore: PluginUiAssetStore,
+    pluginUiCatalogStore: PluginUiCatalogStore,
+    pluginUiResultStore: PluginUiResultStore,
     private val scope: CoroutineScope,
     allowInsecureTransport: Boolean,
 ) : RealtimeSocketListener {
@@ -255,7 +259,12 @@ class RealtimeSession(
     )
     private val mutableState = MutableStateFlow(MobileSessionState())
     val state: StateFlow<MobileSessionState> = mutableState.asStateFlow()
-    val pluginUi = PluginUiCoordinator(pluginUiAssetStore, ::sendPluginUiCommand)
+    val pluginUi = PluginUiCoordinator(
+        pluginUiAssetStore,
+        pluginUiCatalogStore,
+        pluginUiResultStore,
+        ::sendPluginUiCommand,
+    )
     private val started = AtomicBoolean(false)
     private var meteredLargeTransferApproved = false
     private var profile: ServerProfileEntity? = null
@@ -671,6 +680,7 @@ class RealtimeSession(
         pluginId: String,
         method: String,
         payloadJson: String,
+        cacheMode: String,
     ) {
         scope.launch {
             mutex.withLock {
@@ -699,6 +709,8 @@ class RealtimeSession(
                     pluginId = pluginId,
                     method = method,
                     payloadJson = payloadJson,
+                    cacheMode = cacheMode,
+                    cacheScope = requireNotNull(currentProfile).serverId,
                 )
             }
         }
@@ -1665,7 +1677,7 @@ class RealtimeSession(
         )
         cancelPhaseDeadline()
         requestCommandList()
-        pluginUi.onConnectionReady()
+        pluginUi.onConnectionReady(currentProfile.serverId)
         uploads.onConnectionReady(currentProfile.serverId)
         downloads.onConnectionReady(currentProfile.serverId)
         stops.onConnectionReady()

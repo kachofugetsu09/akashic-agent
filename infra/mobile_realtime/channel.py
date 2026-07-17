@@ -505,7 +505,7 @@ class MobileRealtimeChannel:
     def _plugin_ui_catalog(self, device_id: str, frame: GenericCommand) -> CommandReply:
         """返回不含源码的 Mobile Plugin UI v2 catalog。"""
 
-        _expect_keys(frame.payload, {"subscribe"})
+        _expect_keys(frame.payload, {"subscribe", "if_revision"})
         subscribe = frame.payload.get("subscribe", False)
         if not isinstance(subscribe, bool):
             raise MobileCommandError("invalid_payload", "subscribe 必须是布尔值")
@@ -513,6 +513,12 @@ class MobileRealtimeChannel:
             self._mobile_ui_hot_connections[device_id] = frame.connection_epoch
         else:
             _ = self._mobile_ui_hot_connections.pop(device_id, None)
+        if_revision = frame.payload.get("if_revision")
+        if if_revision is not None and (
+            not isinstance(if_revision, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", if_revision)
+        ):
+            raise MobileCommandError("invalid_revision", "if_revision 无效")
         provider = self._mobile_ui_provider
         catalog: dict[str, object]
         if provider is None:
@@ -522,6 +528,11 @@ class MobileRealtimeChannel:
             }
         else:
             catalog = provider.catalog()
+        if catalog["catalog_revision"] == if_revision:
+            return CommandReply(
+                type="plugin.ui.catalog.not_modified",
+                payload={"catalog_revision": if_revision},
+            )
         return CommandReply(type="plugin.ui.catalog.ok", payload=catalog)
 
     def _plugin_ui_asset(self, frame: GenericCommand) -> CommandReply:

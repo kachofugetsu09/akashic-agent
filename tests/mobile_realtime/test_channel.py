@@ -1409,6 +1409,30 @@ async def test_plugin_ui_catalog_is_empty_without_plugin_manager(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_plugin_ui_catalog_returns_not_modified_for_matching_revision(
+    tmp_path: Path,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
+    revision = channel_module.hashlib.sha256(b"[]").hexdigest()
+
+    reply = await channel.handle_plugin_ui_command(
+        device_id=device_id,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FB9",
+            command_type="plugin.ui.catalog",
+            payload={"subscribe": True, "if_revision": revision},
+        ),
+    )
+
+    assert reply.type == "plugin.ui.catalog.not_modified"
+    assert reply.payload == {"catalog_revision": revision}
+    storage.close()
+
+
+@pytest.mark.asyncio
 async def test_plugin_ui_hot_update_only_targets_subscribed_connection(tmp_path: Path) -> None:
     class _MutableProvider:
         def __init__(self) -> None:

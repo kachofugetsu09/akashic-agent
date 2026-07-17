@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from agent.plugins.mobile_ui import MobileUiProvider, MobileUiQueryOverloaded
 
 _MAX_DEVICE_QUERIES = 4
-_MAX_REGULAR_DEVICE_QUERIES = 3
+_MAX_BACKGROUND_DEVICE_QUERIES = 2
 _MAX_PLUGIN_QUERIES = 2
 _MAX_DEVICE_OUTSTANDING = 32
 
@@ -33,7 +33,7 @@ class _TrackedQuery:
 @dataclass(slots=True)
 class _DeviceGates:
     total: asyncio.Semaphore
-    regular: asyncio.Semaphore
+    background: asyncio.Semaphore
 
 
 class PluginUiQueryScheduler:
@@ -74,7 +74,7 @@ class PluginUiQueryScheduler:
                 device_id,
                 _DeviceGates(
                     total=asyncio.Semaphore(_MAX_DEVICE_QUERIES),
-                    regular=asyncio.Semaphore(_MAX_REGULAR_DEVICE_QUERIES),
+                    background=asyncio.Semaphore(_MAX_BACKGROUND_DEVICE_QUERIES),
                 ),
             )
             plugin_gate = self._plugins.setdefault(
@@ -82,13 +82,13 @@ class PluginUiQueryScheduler:
                 asyncio.Semaphore(_MAX_PLUGIN_QUERIES),
             )
 
-        # 2. dashboard.main 不占 regular gate，始终保留一个交互槽
+        # 2. dashboard 和 drawer 不占后台 gate，始终保留两个交互槽
         try:
             async with plugin_gate:
-                if query.slot == "dashboard.main":
+                if query.slot in {"dashboard.main", "drawer.panel"}:
                     async with device_gates.total:
                         return await self._run(query)
-                async with device_gates.regular:
+                async with device_gates.background:
                     async with device_gates.total:
                         return await self._run(query)
         finally:

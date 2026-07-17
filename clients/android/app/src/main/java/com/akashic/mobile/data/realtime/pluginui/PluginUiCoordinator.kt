@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -21,6 +22,8 @@ import kotlinx.serialization.json.put
 
 class PluginUiCoordinator(
     val assetStore: PluginUiAssetStore,
+    private val catalogStore: PluginUiCatalogStore,
+    private val resultStore: PluginUiResultStore,
     private val send: (String, JsonObject, String?, String?) -> String?,
 ) {
     private data class PendingAsset(
@@ -30,9 +33,15 @@ class PluginUiCoordinator(
         val bytes: Int,
     )
 
-    private data class PendingQuery(
+    private data class QuerySubscriber(
         val requestId: String,
         val ownerId: String,
+    )
+
+    private data class PendingQuery(
+        val wireOwnerId: String,
+        val cacheKey: String?,
+        val subscribers: MutableList<QuerySubscriber>,
     )
 
     private val json = Json { ignoreUnknownKeys = false; explicitNulls = false }
@@ -46,36 +55,74 @@ class PluginUiCoordinator(
     private var stagedCatalog: MobileUiCatalogPayload? = null
     private var refreshQueued = false
     private var acceptsQueries = false
+    private var activeScope: String? = null
     private val pendingAssets = mutableMapOf<String, PendingAsset>()
     private val pendingQueries = mutableMapOf<String, PendingQuery>()
+    private val pendingByCacheKey = mutableMapOf<String, String>()
     private val ignoredQueries = linkedSetOf<String>()
     private val pendingCancels = mutableSetOf<String>()
 
-    fun onConnectionReady() = requestCatalog()
+    /** 先激活当前服务端的最后成功快照，再增量检查远端目录。 */
+    fun onConnectionReady(scope: String) {
+
+        // 1. 切换服务端时绝不沿用上一台电脑的目录
+        if (activeScope != scope) {
+            activeScope = scope
+            acceptsQueries = false
+            mutableCatalog.value = PluginUiWebCatalog(
+                catalogRevision = "",
+                updating = true,
+                plugins = emptyList(),
+            )
+            val cached = catalogStore.read(scope)
+            if (cached != null) {
+                try {
+                    validateCatalog(cached)
+                    if (cachedAssetsAvailable(cached)) {
+                        stagedCatalog = cached
+                        activateStagedCatalog()
+                    }
+                } catch (error: IllegalArgumentException) {
+                    catalogStore.discard(scope, error)
+                }
+            }
+        } else if (mutableCatalog.value.catalogRevision.isNotBlank()) {
+            acceptsQueries = true
+        }
+
+        // 2. 快照只负责首帧，连接恢复后仍检查最新 revision
+        requestCatalog()
+    }
 
     /** 停止旧 generation 查询并启动完整 catalog 切换。 */
     fun onCatalogChanged() {
 
         acceptsQueries = false
         mutableCatalog.value = mutableCatalog.value.copy(updating = true, error = null)
-        val owners = pendingQueries.values.map { it.ownerId }.toSet()
+        val owners = pendingQueries.values.map { it.wireOwnerId }.toSet()
         for (pending in pendingQueries.values) {
-            publishResult(PluginUiWebResult(pending.requestId, error = "插件界面正在更新"))
+            pending.subscribers.forEach {
+                publishResult(PluginUiWebResult(it.requestId, error = "插件界面正在更新"))
+            }
         }
         rememberIgnoredQueries(pendingQueries.keys)
         pendingQueries.clear()
+        pendingByCacheKey.clear()
         owners.forEach(::sendCancel)
         requestCatalog()
     }
 
     fun onDisconnected(reason: String) {
-        pendingQueries.values.forEach {
-            publishResult(PluginUiWebResult(it.requestId, error = reason))
+        pendingQueries.values.forEach { pending ->
+            pending.subscribers.forEach {
+                publishResult(PluginUiWebResult(it.requestId, error = reason))
+            }
         }
         pendingCatalogId = null
         stagedCatalog = null
         pendingAssets.clear()
         pendingQueries.clear()
+        pendingByCacheKey.clear()
         ignoredQueries.clear()
         pendingCancels.clear()
         refreshQueued = false
@@ -93,6 +140,8 @@ class PluginUiCoordinator(
         pluginId: String,
         method: String,
         payloadJson: String,
+        cacheMode: String,
+        cacheScope: String,
     ) {
         // 1. WebView 是外部输入边界
         if (requestId.length !in 1..128 || ownerId.length !in 1..128) return
@@ -100,8 +149,16 @@ class PluginUiCoordinator(
             publishResult(PluginUiWebResult(requestId, error = "插件 slot 无效"))
             return
         }
+        if (cacheMode !in CACHE_MODES) {
+            publishResult(PluginUiWebResult(requestId, error = "插件缓存模式无效"))
+            return
+        }
+        if (cacheMode == "immutable" && (!slot.startsWith("turn.") || turnId == null)) {
+            publishResult(PluginUiWebResult(requestId, error = "不可变缓存只能用于轮次投影"))
+            return
+        }
         val plugin = mutableCatalog.value.plugins.firstOrNull { it.id == pluginId }
-        if (!acceptsQueries || plugin == null) {
+        if (plugin == null) {
             publishResult(PluginUiWebResult(requestId, error = "插件界面尚未就绪"))
             return
         }
@@ -119,7 +176,43 @@ class PluginUiCoordinator(
             return
         }
 
-        // 2. command id 只用于 wire，WebView request id 直接映射回结果
+        // 2. 不可变轮次投影优先从设备缓存读取
+        val cacheKey = if (cacheMode == "immutable") {
+            resultStore.identity(
+                cacheScope,
+                plugin.id,
+                plugin.revision,
+                method,
+                payloadJson,
+                sessionId.orEmpty(),
+                turnId.orEmpty(),
+            )
+        } else {
+            null
+        }
+        val cached = cacheKey?.let(resultStore::read)
+        if (cached != null) {
+            try {
+                json.parseToJsonElement(cached).jsonObject
+                publishResult(PluginUiWebResult(requestId, resultJson = cached))
+                return
+            } catch (_: SerializationException) {
+                resultStore.discard(cacheKey)
+            } catch (_: IllegalArgumentException) {
+                resultStore.discard(cacheKey)
+            }
+        }
+        if (!acceptsQueries) {
+            publishResult(PluginUiWebResult(requestId, error = "插件界面尚未就绪"))
+            return
+        }
+        val sharedCommandId = cacheKey?.let(pendingByCacheKey::get)
+        if (sharedCommandId != null) {
+            pendingQueries.getValue(sharedCommandId).subscribers += QuerySubscriber(requestId, ownerId)
+            return
+        }
+
+        // 3. command id 只用于 wire，WebView request id 直接映射回结果
         val commandId = send(
             "plugin.ui.query",
             buildJsonObject {
@@ -137,22 +230,36 @@ class PluginUiCoordinator(
             publishResult(PluginUiWebResult(requestId, error = "连接不可用，插件请求未发送"))
             return
         }
-        pendingQueries[commandId] = PendingQuery(requestId, ownerId)
+        pendingQueries[commandId] = PendingQuery(
+            wireOwnerId = ownerId,
+            cacheKey = cacheKey,
+            subscribers = mutableListOf(QuerySubscriber(requestId, ownerId)),
+        )
+        if (cacheKey != null) pendingByCacheKey[cacheKey] = commandId
     }
 
     fun cancelOwner(ownerId: String) {
         if (ownerId.length !in 1..128) return
-        val cancelled = pendingQueries.filterValues { it.ownerId == ownerId }
-        rememberIgnoredQueries(cancelled.keys)
-        cancelled.keys.forEach(pendingQueries::remove)
-        sendCancel(ownerId)
+        val abandoned = mutableListOf<Pair<String, PendingQuery>>()
+        for ((commandId, pending) in pendingQueries) {
+            pending.subscribers.removeAll { it.ownerId == ownerId }
+            if (pending.subscribers.isEmpty()) abandoned += commandId to pending
+        }
+        if (abandoned.isEmpty()) return
+        rememberIgnoredQueries(abandoned.map { it.first })
+        abandoned.forEach { (commandId, pending) ->
+            pendingQueries.remove(commandId)
+            pending.cacheKey?.let(pendingByCacheKey::remove)
+            sendCancel(pending.wireOwnerId)
+        }
     }
 
     /** WebView 销毁时取消全部 owner，并丢弃只属于旧页面的缓冲结果。 */
     fun onWebViewDisposed() {
-        val owners = pendingQueries.values.map { it.ownerId }.toSet()
+        val owners = pendingQueries.values.map { it.wireOwnerId }.toSet()
         rememberIgnoredQueries(pendingQueries.keys)
         pendingQueries.clear()
+        pendingByCacheKey.clear()
         owners.forEach(::sendCancel)
         while (resultChannel.tryReceive().isSuccess) {
             // resultChannel 只承载瞬时 WebView 结果，旧页面销毁后没有恢复语义。
@@ -176,6 +283,7 @@ class PluginUiCoordinator(
         }
         val pendingQuery = pendingQueries.remove(id)
         if (pendingQuery != null) {
+            pendingQuery.cacheKey?.let(pendingByCacheKey::remove)
             applyQueryReply(envelope, pendingQuery)
             return true
         }
@@ -192,7 +300,11 @@ class PluginUiCoordinator(
         refreshQueued = false
         pendingCatalogId = send(
             "plugin.ui.catalog",
-            buildJsonObject { put("subscribe", true) },
+            buildJsonObject {
+                put("subscribe", true)
+                val revision = mutableCatalog.value.catalogRevision
+                if (revision.isNotBlank()) put("if_revision", revision)
+            },
             null,
             null,
         )
@@ -203,6 +315,16 @@ class PluginUiCoordinator(
         pendingCatalogId = null
         if (envelope.type.endsWith(".error")) {
             failCatalog(envelope.payload["message"]?.jsonPrimitive?.content ?: "插件目录加载失败")
+            return
+        }
+        if (envelope.type == "plugin.ui.catalog.not_modified") {
+            val revision = envelope.payload["catalog_revision"]?.jsonPrimitive?.content
+            require(revision == mutableCatalog.value.catalogRevision) {
+                "插件目录 not_modified revision 不匹配"
+            }
+            acceptsQueries = true
+            mutableCatalog.value = mutableCatalog.value.copy(updating = false, error = null)
+            if (refreshQueued) requestCatalog()
             return
         }
         require(envelope.type == "plugin.ui.catalog.ok") { "插件目录 reply 类型不匹配" }
@@ -292,6 +414,15 @@ class PluginUiCoordinator(
             error = null,
             plugins = plugins,
         )
+        catalogStore.store(requireNotNull(activeScope) { "插件目录激活缺少服务端 scope" }, next)
+    }
+
+    private fun cachedAssetsAvailable(catalog: MobileUiCatalogPayload): Boolean = catalog.items.all { item ->
+        assetStore.contains(item.moduleSha256, "module", item.moduleBytes) &&
+            (
+                item.stylesheetSha256 == null ||
+                    assetStore.contains(item.stylesheetSha256, "stylesheet", item.stylesheetBytes)
+            )
     }
 
     private fun applyQueryReply(envelope: WireEnvelope, pending: PendingQuery) {
@@ -299,16 +430,20 @@ class PluginUiCoordinator(
             val result = requireNotNull(envelope.payload["result"]?.jsonObject) {
                 "插件查询成功 reply 缺少 result"
             }
-            publishResult(PluginUiWebResult(pending.requestId, resultJson = result.toString()))
+            val resultJson = result.toString()
+            if (pending.cacheKey != null && result.values.any { it !== JsonNull }) {
+                resultStore.store(pending.cacheKey, resultJson)
+            }
+            pending.subscribers.forEach {
+                publishResult(PluginUiWebResult(it.requestId, resultJson = resultJson))
+            }
             return
         }
         require(envelope.type == "plugin.ui.query.error") { "插件查询 reply 类型不匹配" }
-        publishResult(
-            PluginUiWebResult(
-                pending.requestId,
-                error = envelope.payload["message"]?.jsonPrimitive?.content ?: "插件请求失败",
-            ),
-        )
+        val message = envelope.payload["message"]?.jsonPrimitive?.content ?: "插件请求失败"
+        pending.subscribers.forEach {
+            publishResult(PluginUiWebResult(it.requestId, error = message))
+        }
     }
 
     private fun sendCancel(ownerId: String) {
@@ -324,10 +459,11 @@ class PluginUiCoordinator(
     private fun failCatalog(message: String) {
         stagedCatalog = null
         pendingAssets.clear()
-        acceptsQueries = false
+        val hasSnapshot = mutableCatalog.value.catalogRevision.isNotBlank()
+        acceptsQueries = hasSnapshot
         mutableCatalog.value = mutableCatalog.value.copy(
             updating = false,
-            error = message,
+            error = if (hasSnapshot) null else message,
         )
     }
 
@@ -384,5 +520,6 @@ class PluginUiCoordinator(
             "turn.after_answer",
             "drawer.panel",
         )
+        val CACHE_MODES = setOf("none", "immutable")
     }
 }

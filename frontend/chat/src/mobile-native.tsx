@@ -267,6 +267,7 @@ interface NativeBridge {
     pluginId: string,
     method: string,
     payloadJson: string,
+    cacheMode: string,
   ): void;
   cancelPluginUiOwner(ownerId: string): void;
 }

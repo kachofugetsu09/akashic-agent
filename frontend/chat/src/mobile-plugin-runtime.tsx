@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useSyncExternalStore } from "react";
+import React, { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 export type MobilePluginSlotName =
   | "turn.before_reasoning"
@@ -13,7 +13,15 @@ export interface MobilePluginContext {
   messageId?: string;
   turnId?: string;
   block?: unknown;
-  query(method: string, payload?: Record<string, unknown>): Promise<Record<string, unknown>>;
+  query(
+    method: string,
+    payload?: Record<string, unknown>,
+    options?: MobilePluginQueryOptions,
+  ): Promise<Record<string, unknown>>;
+}
+
+export interface MobilePluginQueryOptions {
+  cache?: "none" | "immutable";
 }
 
 export interface MobilePluginRenderer {
@@ -62,12 +70,24 @@ const definitions = new Map<string, {
 }>();
 const styleNodes = new Map<string, HTMLLinkElement>();
 const listeners = new Set<() => void>();
-const pending = new Map<string, {
+interface PendingQuery {
   resolve: (value: Record<string, unknown>) => void;
   reject: (error: Error) => void;
   ownerId: string;
   timeout: number;
-}>();
+  cacheKey?: string;
+  slot: MobilePluginSlotName;
+  started: boolean;
+  send: () => void;
+}
+
+const pending = new Map<string, PendingQuery>();
+const immutableResults = new Map<string, Record<string, unknown>>();
+const queryQueue: string[] = [];
+let activeQueries = 0;
+let activeBackgroundQueries = 0;
+const MAX_ACTIVE_QUERIES = 4;
+const MAX_BACKGROUND_QUERIES = 2;
 let catalog: MobilePluginCatalog = {
   catalogRevision: "",
   updating: true,
@@ -92,6 +112,7 @@ function emitChange() {
 
 export function receiveMobilePluginCatalog(next: MobilePluginCatalog): Promise<void> {
   const revisionChanged = next.catalogRevision !== catalog.catalogRevision;
+  if (revisionChanged) immutableResults.clear();
   catalog = next;
   if (next.updating || revisionChanged) rejectAllPending("插件界面正在更新");
   emitChange();
@@ -236,14 +257,18 @@ export function MobilePluginDashboard({ pluginId }: { pluginId: string }) {
 export function receiveMobilePluginResult(response: MobilePluginResult) {
   const request = pending.get(response.requestId);
   if (!request) return;
-  pending.delete(response.requestId);
+  completePending(response.requestId, request);
   window.clearTimeout(request.timeout);
   if (response.error) {
     request.reject(new Error(response.error));
     return;
   }
   try {
-    request.resolve(JSON.parse(response.resultJson ?? "{}") as Record<string, unknown>);
+    const result = JSON.parse(response.resultJson ?? "{}") as Record<string, unknown>;
+    if (request.cacheKey && Object.values(result).some((value) => value !== null)) {
+      immutableResults.set(request.cacheKey, result);
+    }
+    request.resolve(result);
   } catch (error) {
     request.reject(error instanceof Error ? error : new Error("插件响应 JSON 无效"));
   }
@@ -276,7 +301,7 @@ export function MobilePluginSlot({
   return renderers.length ? (
     <div className="mobile-plugin-slot" data-slot={name} data-version={version}>
       {renderers.map(({ plugin, renderer }) => (
-        <MountedPlugin
+        <ViewportMountedPlugin
           key={`${plugin.id}:${plugin.revision}:${name}`}
           pluginId={plugin.id}
           pluginRevision={plugin.revision}
@@ -286,6 +311,22 @@ export function MobilePluginSlot({
       ))}
     </div>
   ) : null;
+}
+
+function ViewportMountedPlugin(props: React.ComponentProps<typeof MountedPlugin>) {
+  const [visible, setVisible] = useState(false);
+  const markerRef = React.useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const marker = markerRef.current;
+    if (!marker || visible) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) setVisible(true);
+    }, { rootMargin: "100% 0px" });
+    observer.observe(marker);
+    return () => observer.disconnect();
+  }, [visible]);
+  if (visible) return <MountedPlugin {...props} />;
+  return <div ref={markerRef} className="mobile-plugin-host" data-plugin={props.pluginId} />;
 }
 
 function MountedPlugin({
@@ -319,7 +360,7 @@ function MountedPlugin({
         messageId,
         turnId,
         block: stableBlock,
-        query(method, payload = {}) {
+        query(method, payload = {}, options = {}) {
           const requestId = createRequestId();
           return new Promise((resolve, reject) => {
             if (!window.AkashicNative) {
@@ -337,13 +378,28 @@ function MountedPlugin({
               reject(new Error("插件参数超过 64 KiB"));
               return;
             }
+            const cacheKey = options.cache === "immutable"
+              ? pluginQueryCacheKey(pluginId, pluginRevision, method, encoded, sessionId, turnId)
+              : undefined;
+            const cached = cacheKey === undefined ? undefined : immutableResults.get(cacheKey);
+            if (cached !== undefined) {
+              resolve(cached);
+              return;
+            }
             const timeout = window.setTimeout(() => {
-              pending.delete(requestId);
+              const request = pending.get(requestId);
+              if (request) completePending(requestId, request);
               reject(new Error("插件请求超时"));
             }, 30_000);
-            pending.set(requestId, { resolve, reject, ownerId, timeout });
-            try {
-              window.AkashicNative.queryPluginUi(
+            pending.set(requestId, {
+              resolve,
+              reject,
+              ownerId,
+              timeout,
+              cacheKey,
+              slot,
+              started: false,
+              send: () => window.AkashicNative!.queryPluginUi(
                 requestId,
                 ownerId,
                 slot,
@@ -352,12 +408,11 @@ function MountedPlugin({
                 pluginId,
                 method,
                 encoded,
-              );
-            } catch (error) {
-              window.clearTimeout(timeout);
-              pending.delete(requestId);
-              reject(error instanceof Error ? error : new Error("原生插件桥调用失败"));
-            }
+                options.cache ?? "none",
+              ),
+            });
+            queryQueue.push(requestId);
+            drainQueryQueue();
           });
         },
       });
@@ -379,21 +434,74 @@ function MountedPlugin({
   return <div ref={hostRef} className="mobile-plugin-host" data-plugin={pluginId} />;
 }
 
+function pluginQueryCacheKey(
+  pluginId: string,
+  pluginRevision: string,
+  method: string,
+  payloadJson: string,
+  sessionId?: string,
+  turnId?: string,
+): string {
+  return [pluginId, pluginRevision, method, sessionId ?? "", turnId ?? "", payloadJson].join("\n");
+}
+
 function rejectOwnerPending(ownerId: string, message: string) {
-  for (const [requestId, request] of pending) {
-    if (request.ownerId !== ownerId) continue;
-    window.clearTimeout(request.timeout);
+  const owned = [...pending].filter(([, request]) => request.ownerId === ownerId);
+  for (const [requestId, request] of owned) {
+    completePending(requestId, request, false);
     request.reject(new Error(message));
-    pending.delete(requestId);
   }
+  drainQueryQueue();
 }
 
 function rejectAllPending(message: string) {
-  for (const [requestId, request] of pending) {
-    window.clearTimeout(request.timeout);
+  const requests = [...pending];
+  for (const [requestId, request] of requests) {
+    completePending(requestId, request, false);
     request.reject(new Error(message));
-    pending.delete(requestId);
   }
+  drainQueryQueue();
+}
+
+function drainQueryQueue() {
+  while (activeQueries < MAX_ACTIVE_QUERIES) {
+    const interactiveIndex = queryQueue.findIndex((requestId) => {
+      const request = pending.get(requestId);
+      return request && isInteractiveSlot(request.slot);
+    });
+    const nextIndex = interactiveIndex >= 0
+      ? interactiveIndex
+      : activeBackgroundQueries < MAX_BACKGROUND_QUERIES ? 0 : -1;
+    if (nextIndex < 0 || nextIndex >= queryQueue.length) return;
+    const [requestId] = queryQueue.splice(nextIndex, 1);
+    const request = pending.get(requestId);
+    if (!request) continue;
+    request.started = true;
+    activeQueries += 1;
+    if (!isInteractiveSlot(request.slot)) activeBackgroundQueries += 1;
+    try {
+      request.send();
+    } catch (error) {
+      completePending(requestId, request);
+      request.reject(error instanceof Error ? error : new Error("原生插件桥调用失败"));
+    }
+  }
+}
+
+function completePending(requestId: string, request: PendingQuery, shouldDrain = true) {
+  pending.delete(requestId);
+  window.clearTimeout(request.timeout);
+  const queuedIndex = queryQueue.indexOf(requestId);
+  if (queuedIndex >= 0) queryQueue.splice(queuedIndex, 1);
+  if (request.started) {
+    activeQueries -= 1;
+    if (!isInteractiveSlot(request.slot)) activeBackgroundQueries -= 1;
+  }
+  if (shouldDrain) drainQueryQueue();
+}
+
+function isInteractiveSlot(slot: MobilePluginSlotName): boolean {
+  return slot === "dashboard.main" || slot === "drawer.panel";
 }
 
 function createOwnerId(): string {

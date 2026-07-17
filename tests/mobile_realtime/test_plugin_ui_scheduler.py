@@ -60,39 +60,36 @@ async def _wait_until(predicate: Callable[[], bool]) -> None:
 
 
 @pytest.mark.asyncio
-async def test_dashboard_query_uses_reserved_fourth_device_slot() -> None:
+async def test_interactive_queries_use_two_reserved_device_slots() -> None:
     provider = _BlockingProvider()
     scheduler = PluginUiQueryScheduler(provider)
     regular = [
         asyncio.create_task(
             scheduler.execute(
                 "device",
-                _query(index, plugin_id=f"plugin-{index}", slot="drawer.panel"),
+                _query(index, plugin_id=f"plugin-{index}", slot="turn.after_answer"),
             )
         )
-        for index in range(3)
+        for index in range(2)
     ]
-    await _wait_until(lambda: provider.active == 3)
+    await _wait_until(lambda: provider.active == 2)
 
     dashboard = asyncio.create_task(
         scheduler.execute(
             "device",
-            _query(3, plugin_id="dashboard", slot="dashboard.main"),
+            _query(2, plugin_id="dashboard", slot="dashboard.main"),
         )
     )
-    queued = asyncio.create_task(
+    drawer = asyncio.create_task(
         scheduler.execute(
             "device",
-            _query(4, plugin_id="queued", slot="dashboard.main"),
+            _query(3, plugin_id="drawer", slot="drawer.panel"),
         )
     )
     await _wait_until(lambda: provider.active == 4)
-    await asyncio.sleep(0.02)
-    assert provider.active == 4
-    assert not queued.done()
 
     provider.release.set()
-    await asyncio.gather(*regular, dashboard, queued)
+    await asyncio.gather(*regular, dashboard, drawer)
     assert provider.max_active == 4
 
 
