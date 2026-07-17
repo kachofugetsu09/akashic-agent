@@ -2275,3 +2275,154 @@ async def test_mobile_recall_rejects_message_from_another_session(tmp_path: Path
             session_id="s",
             turn_id=None,
         )
+
+
+@pytest.mark.asyncio
+async def test_mobile_inspector_lists_and_expands_existing_query_logs_read_only(
+    tmp_path: Path,
+) -> None:
+    _init_sessions_db(tmp_path / "sessions.db")
+    db_path = tmp_path / "memory" / "akasha.db"
+    store = AkashaStore(db_path)
+    long_query = "为什么想起这轮：" + "很长的问题原文" * 40
+    try:
+        for index in range(2):
+            store.insert_query_log(
+                query_id=f"s:{index * 2}:context:q{index}",
+                session_key="s",
+                seq=index * 2,
+                query_text=long_query if index == 1 else "为什么想起第 0 轮",
+                intent="context",
+                ts=f"2026-07-17T0{index}:00:00+00:00",
+                seed_count=2,
+                pool_count=4,
+                activated_count=3,
+                activation_threshold=0.2,
+                dense_count=1,
+                ripple_count=1,
+                inject_chars=1200 + index,
+                source_ref_count=2,
+                activation_items_json="[]",
+                dense_items_json=json.dumps([{
+                    "key": f"dense:{index}",
+                    "user_message": f"精确记忆 {index}",
+                    "assistant_preview": "精确回答",
+                    "happened_at": f"2026-07-16T0{index}:00:00+00:00",
+                    "score": 0.8,
+                }], ensure_ascii=False),
+                ripple_items_json=json.dumps([{
+                    "key": f"ripple:{index}",
+                    "user_message": f"联想记忆 {index}",
+                    "assistant_preview": "联想回答",
+                    "happened_at": f"2026-07-15T0{index}:00:00+00:00",
+                    "score": 0.6,
+                }], ensure_ascii=False),
+                text_block_preview="",
+            )
+    finally:
+        store.close()
+    before_bytes = db_path.read_bytes()
+
+    plugin = AkashaPlugin()
+    plugin.context = PluginContext(
+        event_bus=cast(Any, None),
+        tool_registry=None,
+        plugin_id="akasha",
+        plugin_dir=tmp_path,
+        data_dir=tmp_path / ".data",
+        kv_store=PluginKVStore(tmp_path / ".kv.json"),
+        workspace=tmp_path,
+        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="akasha")),
+    )
+
+    recent = await plugin.mobile_ui_call(
+        "inspector.recent",
+        {},
+        session_id=None,
+        turn_id=None,
+    )
+    items = cast(list[dict[str, object]], recent["items"])
+    detail = await plugin.mobile_ui_call(
+        "inspector.detail",
+        {"query_id": items[0]["query_id"]},
+        session_id=None,
+        turn_id=None,
+    )
+
+    assert recent["total"] == 2
+    assert [item["query_preview"] for item in items] == [
+        long_query[:180] + "...",
+        "为什么想起第 0 轮",
+    ]
+    assert detail["query_text"] == long_query
+    assert detail["left_count"] == 1
+    assert detail["right_count"] == 1
+    assert cast(list[dict[str, object]], detail["left"])[0]["summary"] == "精确记忆 1"
+    assert cast(list[dict[str, object]], detail["right"])[0]["summary"] == "联想记忆 1"
+    with closing(sqlite3.connect(db_path)) as db:
+        assert db.total_changes == 0
+        assert db.execute("SELECT COUNT(1) FROM akasha_query_log").fetchone()[0] == 2
+    assert db_path.read_bytes() == before_bytes
+
+
+@pytest.mark.asyncio
+async def test_mobile_inspector_rejects_invalid_or_missing_query(tmp_path: Path) -> None:
+    store = AkashaStore(tmp_path / "memory" / "akasha.db")
+    store.close()
+    plugin = AkashaPlugin()
+    plugin.context = PluginContext(
+        event_bus=cast(Any, None),
+        tool_registry=None,
+        plugin_id="akasha",
+        plugin_dir=tmp_path,
+        data_dir=tmp_path / ".data",
+        kv_store=PluginKVStore(tmp_path / ".kv.json"),
+        workspace=tmp_path,
+        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="akasha")),
+    )
+
+    with pytest.raises(ValueError, match="不接受参数"):
+        await plugin.mobile_ui_call(
+            "inspector.recent",
+            {"page": 2},
+            session_id=None,
+            turn_id=None,
+        )
+    with pytest.raises(ValueError, match="非空字符串"):
+        await plugin.mobile_ui_call(
+            "inspector.detail",
+            {"query_id": ""},
+            session_id=None,
+            turn_id=None,
+        )
+    with pytest.raises(ValueError, match="不存在"):
+        await plugin.mobile_ui_call(
+            "inspector.detail",
+            {"query_id": "missing"},
+            session_id=None,
+            turn_id=None,
+        )
+
+
+def test_akasha_store_read_only_mode_never_creates_or_writes_database(tmp_path: Path) -> None:
+    missing = tmp_path / "missing" / "akasha.db"
+    with pytest.raises(sqlite3.OperationalError, match="unable to open"):
+        AkashaStore(missing, read_only=True)
+    assert not missing.parent.exists()
+
+    db_path = tmp_path / "memory" / "akasha.db"
+    writer = AkashaStore(db_path)
+    writer.close()
+    before_bytes = db_path.read_bytes()
+    reader = AkashaStore(db_path, read_only=True)
+    try:
+        assert reader.db.execute("PRAGMA query_only").fetchone()[0] == 1
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            reader.db.execute(
+                "INSERT INTO akasha_query_log "
+                "(query_id, session_key, seq, query_text, intent, ts) "
+                "VALUES ('q', 's', 0, 'x', 'context', '2026-07-17')"
+            )
+    finally:
+        reader.close()
+    assert db_path.read_bytes() == before_bytes

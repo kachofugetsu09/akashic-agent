@@ -76,12 +76,7 @@ class AkashaPlugin(Plugin):
         data_dir = self.context.data_dir
         if data_dir is None:
             return "Akasha 诊断不可用：插件数据目录不存在。"
-        store = AkashaStore(
-            resolve_akasha_db_path(
-                workspace=workspace,
-                akasha_config=load_akasha_config(plugin_dir=data_dir),
-            )
-        )
+        store, _workspace = self._open_mobile_store()
         try:
             rows, _ = store.list_query_logs(
                 session_key=session_key,
@@ -106,26 +101,45 @@ class AkashaPlugin(Plugin):
         session_id: str | None,
         turn_id: str | None,
     ) -> dict[str, object]:
-        """返回 mobile 消息对应轮次的左右脑召回。"""
+        """返回 mobile 消息召回或最近检索检查数据。"""
 
-        if method != "recall.current" or set(payload) - {"message_id"}:
-            raise MobileUiRpcInvalidRequest(f"Akasha mobile UI 方法无效: {method}")
-        if session_id is None:
-            raise MobileUiRpcInvalidRequest("Akasha recall.current 需要 session_id")
-        message_id = payload.get("message_id")
-        if message_id is not None and not isinstance(message_id, str):
-            raise MobileUiRpcInvalidRequest("Akasha recall.current 的 message_id 必须是字符串")
-        if message_id is not None and message_id.startswith("assistant:"):
-            if turn_id is None or message_id != f"assistant:{turn_id}":
-                return {"left": [], "right": []}
-            historical_message_id = None
-        else:
-            historical_message_id = message_id
-        return await asyncio.to_thread(
-            self._load_mobile_recall,
-            session_id,
-            historical_message_id,
-        )
+        # 1. 消息内召回严格绑定当前 session 和 turn。
+        if method == "recall.current":
+            if set(payload) - {"message_id"}:
+                raise MobileUiRpcInvalidRequest("Akasha recall.current 参数无效")
+            if session_id is None:
+                raise MobileUiRpcInvalidRequest("Akasha recall.current 需要 session_id")
+            message_id = payload.get("message_id")
+            if message_id is not None and not isinstance(message_id, str):
+                raise MobileUiRpcInvalidRequest("Akasha recall.current 的 message_id 必须是字符串")
+            if message_id is not None and message_id.startswith("assistant:"):
+                if turn_id is None or message_id != f"assistant:{turn_id}":
+                    return {"left": [], "right": []}
+                historical_message_id = None
+            else:
+                historical_message_id = message_id
+            return await asyncio.to_thread(
+                self._load_mobile_recall,
+                session_id,
+                historical_message_id,
+            )
+
+        # 2. 看板只读取既有诊断日志，不改变 Akasha 状态。
+        if method == "inspector.recent":
+            if payload:
+                raise MobileUiRpcInvalidRequest("Akasha inspector.recent 不接受参数")
+            return await asyncio.to_thread(self._load_mobile_inspections)
+        if method == "inspector.detail":
+            if set(payload) != {"query_id"}:
+                raise MobileUiRpcInvalidRequest("Akasha inspector.detail 需要 query_id")
+            query_id = payload["query_id"]
+            if not isinstance(query_id, str) or not query_id.strip():
+                raise MobileUiRpcInvalidRequest("Akasha inspector.detail 的 query_id 必须是非空字符串")
+            return await asyncio.to_thread(
+                self._load_mobile_inspection,
+                query_id.strip(),
+            )
+        raise MobileUiRpcInvalidRequest(f"Akasha mobile UI 方法无效: {method}")
 
     def _load_mobile_recall(
         self,
@@ -134,24 +148,16 @@ class AkashaPlugin(Plugin):
     ) -> dict[str, object]:
         """在线程中读取指定 assistant 消息所属轮次的召回。"""
 
-        workspace = self.context.workspace
-        if workspace is None:
-            raise RuntimeError("Akasha workspace 不存在")
-        data_dir = self.context.data_dir
-        if data_dir is None:
-            raise RuntimeError("Akasha 插件数据目录不存在")
-        store = AkashaStore(
-            resolve_akasha_db_path(
-                workspace=workspace,
-                akasha_config=load_akasha_config(plugin_dir=data_dir),
-            )
+        # 1. message_id 属于 RPC 输入，必须先于数据库边界完成归属校验。
+        before_seq = (
+            _assistant_message_seq(session_id, message_id)
+            if message_id is not None
+            else None
         )
+
+        # 2. 校验完成后才打开只读 store 并读取对应 context 记录。
+        store, workspace = self._open_mobile_store()
         try:
-            before_seq = (
-                _assistant_message_seq(session_id, message_id)
-                if message_id is not None
-                else None
-            )
             raw = store.get_latest_context_query_log(
                 session_id,
                 before_seq=before_seq,
@@ -171,6 +177,66 @@ class AkashaPlugin(Plugin):
             "right": _mobile_recall_items(ripple_items, message_times),
         }
 
+    def _load_mobile_inspections(self) -> dict[str, object]:
+        """读取最近检索的移动端轻量摘要。"""
+
+        # 1. 看板固定读取最近 30 轮，避免把桌面诊断全集搬上手机。
+        store, _workspace = self._open_mobile_store()
+        try:
+            rows, total = store.list_query_logs(page=1, page_size=30)
+        finally:
+            store.close()
+        return {
+            "items": [_mobile_inspection_summary(row) for row in rows],
+            "total": total,
+        }
+
+    def _load_mobile_inspection(self, query_id: str) -> dict[str, object]:
+        """读取一轮检索实际注入的左右脑记忆。"""
+
+        # 1. 完整诊断只在用户展开对应轮次时按需读取。
+        store, workspace = self._open_mobile_store()
+        try:
+            raw = store.get_query_log(query_id)
+        finally:
+            store.close()
+        if raw is None:
+            raise MobileUiRpcInvalidRequest("Akasha 检索记录不存在")
+
+        # 2. 复用消息内召回的排序和时间补全语义。
+        dense_items = _json_items(raw.get("dense_items_json"))
+        ripple_items = _json_items(raw.get("ripple_items_json"))
+        message_times = _load_message_times(
+            workspace / "sessions.db",
+            [*dense_items, *ripple_items],
+        )
+        return {
+            **_mobile_inspection_summary(raw),
+            "query_text": str(raw.get("query_text") or ""),
+            "left": _mobile_recall_items(dense_items, message_times),
+            "right": _mobile_recall_items(ripple_items, message_times),
+        }
+
+    def _open_mobile_store(self) -> tuple[AkashaStore, Path]:
+        """解析当前插件数据目录并打开 Akasha store。"""
+
+        workspace = self.context.workspace
+        if workspace is None:
+            raise RuntimeError("Akasha workspace 不存在")
+        data_dir = self.context.data_dir
+        if data_dir is None:
+            raise RuntimeError("Akasha 插件数据目录不存在")
+        return (
+            AkashaStore(
+                resolve_akasha_db_path(
+                    workspace=workspace,
+                    akasha_config=load_akasha_config(plugin_dir=data_dir),
+                ),
+                read_only=True,
+            ),
+            workspace,
+        )
+
 
 def _assistant_message_seq(session_id: str, message_id: str) -> int:
     prefix = f"{session_id}:"
@@ -178,6 +244,17 @@ def _assistant_message_seq(session_id: str, message_id: str) -> int:
     if not message_id.startswith(prefix) or not seq_text.isdigit():
         raise MobileUiRpcInvalidRequest("Akasha message_id 不属于当前 session")
     return int(seq_text)
+
+
+def _mobile_inspection_summary(raw: dict[str, object]) -> dict[str, object]:
+    return {
+        "query_id": str(raw.get("query_id") or ""),
+        "query_preview": _clip(str(raw.get("query_text") or ""), 180),
+        "ts": str(raw.get("ts") or ""),
+        "left_count": int(_float(raw.get("dense_count"))),
+        "right_count": int(_float(raw.get("ripple_count"))),
+        "inject_chars": int(_float(raw.get("inject_chars"))),
+    }
 
 
 def _load_message_times(

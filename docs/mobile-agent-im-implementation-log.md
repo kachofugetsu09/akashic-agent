@@ -11,7 +11,7 @@
 | 媒体 | 有上传、进度、缓存、预览、GIF/meme、重试、按需大文件下载和分享 | 相机/系统分享入口与媒体发送一致性 |
 | 网络 | 有认证、resume、durable inbox、连接状态 | 抖动场景矩阵和用户可恢复动作 |
 | 会话 | 有 mobile 全量同步、抽屉、切换、新建、当前会话搜索和阅读位置恢复 | 失效会话解释与本地清理 |
-| 扩展 | 已有受控 `plugin.ui.*`、热更新和 Observe/KV Cache 移动 Dashboard 试点 | 第二个任务型插件试点与跨插件导航 |
+| 扩展 | 已有受控 `plugin.ui.*`、热更新、Observe/KV Cache 与 Akasha 回忆检查移动看板 | 插件看板的跨入口一致性与更多任务型试点 |
 | 质量 | 有 Android 测试、隔离 Gateway、签名 release 与 Pixel 7 闭环 | 可复用的 release WebView 交互驱动 |
 
 ## Cycle 1：时间、滑动引用与复制
@@ -467,3 +467,15 @@ Android 重新请求 list → asset → WebView 按 sha256 原位替换
 - 输入错误、超时、执行失败继续拥有不同错误码；插件内部细节不发给手机，宿主取消也不会被吞掉。
 - 插件 UI provider、durable command 与 Gateway 连接测试覆盖插件抛错、非对象、非字符串键、不可 JSON、超限返回和失败命令重放；Pyright 0 错误、0 警告。
 - Pixel7 在隔离 Mobile Lab 暂停 Fitbit monitor 后收到原位 `plugin_failed`，恢复 monitor 并点击重试后原位返回健康总览；失败和成功请求始终使用 generation 14 / connection epoch 276，中间没有 proof、resume、EOF 或历史重同步。截图为 `/tmp/pixel7-fitbit-plugin-failure-isolated-final.png`、`/tmp/pixel7-fitbit-plugin-recovered-same-connection-final.png`；完整契约见 `docs/mobile-batches/2026-07-17-plugin-ui-failure-isolation.md`。
+
+## 2026-07-17 Akasha 回忆检查移动看板
+
+- Akasha 通过既有插件目录和全屏看板生命周期提供“为什么这轮想起这些”任务面；宿主、Android、数据库 schema 和检索核心均未增加 Akasha 专用代码。
+- 看板复用既有 `AkashaStore` 检索日志与消息内左右脑投影：最近一次检索是唯一主状态区，更早轮次为平面列表，点击父行按需读取并原位展开精确/联想明细。
+- 蓝色圆点只表达左脑精确召回，亮紫菱形只表达右脑联想召回；没有迁移桌面全局图、卡片墙、装饰渐变、阴影或胶囊状态。
+- 手机读取统一走 SQLite `mode=ro` 与 `PRAGMA query_only=ON`；不会创建目录/数据库、执行 migration 或写入正式数据。自动测试覆盖只读拒写、缺库不创建和调用前后数据库字节不变。
+- 独立 Review 首轮发现并修复：看板读取误走可迁移 Store、长问题无法完整查看、小字号语义色对比不足以及重试触控区只有 40px；复核后无 blocker/high/medium finding。
+- Pixel 7 在隔离 Mobile Lab 读取真实 34 轮数据；最新轮、旧轮单展开、左右脑明细、长连续文本换行与系统返回均通过。两次 RPC 前后数据库 SHA256、mtime、大小和日志数完全不变，logcat 无 FATAL、WebView render、event gap 或协议错误。
+- kill-ai-slop 扫描未在新增 `mobile_ui.js` / `mobile_ui.css` 中发现渐变、阴影、玻璃拟态、卡片墙或胶囊堆叠；语义色只落在左脑圆点/区域和右脑菱形/区域。
+- 自动验证：定向 Python `73 passed`、Node `3 passed`、Pyright `0 errors / 0 warnings`、移动 Web 生产构建成功、完整 `tests/` `2329 passed`，diff check 通过。
+- 完整设计、只读边界、Pixel 7 操作路径与最终截图见 `docs/mobile-batches/2026-07-17-akasha-recall-inspector.md`。

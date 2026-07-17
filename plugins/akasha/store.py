@@ -164,15 +164,28 @@ def _table_columns(db: sqlite3.Connection, table: str) -> set[str]:
 
 
 class AkashaStore:
-    def __init__(self, db_path: str | Path) -> None:
-        # 1. 初始化 sidecar 数据库和 schema。
+    def __init__(self, db_path: str | Path, *, read_only: bool = False) -> None:
+        """打开 Akasha sidecar，并只在写模式初始化 schema。"""
+
+        # 1. 只读 reader 必须由 SQLite 边界拒绝建库、迁移和业务写入。
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        if read_only:
+            self._db = sqlite3.connect(
+                f"{self.db_path.resolve().as_uri()}?mode=ro",
+                uri=True,
+                check_same_thread=False,
+            )
+            _ = self._db.execute("PRAGMA query_only = ON")
+        else:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._db = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         self._closed = False
-        self.ensure_schema()
+
+        # 2. schema 初始化和迁移只属于显式写模式。
+        if not read_only:
+            self.ensure_schema()
 
     @property
     def db(self) -> sqlite3.Connection:
