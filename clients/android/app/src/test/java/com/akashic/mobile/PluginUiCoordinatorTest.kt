@@ -50,12 +50,12 @@ class PluginUiCoordinatorTest {
             coordinator.onReply(catalogReply(sent.single().second, catalog))
 
             coordinator.query(
-                "request-1", "owner-1", "turn.after_answer", "mobile:one", "turn-1",
+                "request-1", "owner-1", "turn.after_answer", "mobile:one", null,
                 "observe", "kvcache.message_usage", "{\"message_id\":\"message-1\"}",
                 "immutable", "mobile-lab",
             )
             coordinator.query(
-                "request-2", "owner-2", "turn.after_answer", "mobile:one", "turn-1",
+                "request-2", "owner-2", "turn.after_answer", "mobile:one", null,
                 "observe", "kvcache.message_usage", "{\"message_id\":\"message-1\"}",
                 "immutable", "mobile-lab",
             )
@@ -74,7 +74,7 @@ class PluginUiCoordinatorTest {
             }
             restored.onConnectionReady("mobile-lab")
             restored.query(
-                "request-3", "owner-3", "turn.after_answer", "mobile:one", "turn-1",
+                "request-3", "owner-3", "turn.after_answer", "mobile:one", null,
                 "observe", "kvcache.message_usage", "{\"message_id\":\"message-1\"}",
                 "immutable", "mobile-lab",
             )

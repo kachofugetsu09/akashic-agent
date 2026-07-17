@@ -153,7 +153,7 @@ class PluginUiCoordinator(
             publishResult(PluginUiWebResult(requestId, error = "插件缓存模式无效"))
             return
         }
-        if (cacheMode == "immutable" && (!slot.startsWith("turn.") || turnId == null)) {
+        if (cacheMode == "immutable" && !slot.startsWith("turn.")) {
             publishResult(PluginUiWebResult(requestId, error = "不可变缓存只能用于轮次投影"))
             return
         }
