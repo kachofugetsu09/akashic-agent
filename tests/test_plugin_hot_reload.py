@@ -2207,6 +2207,7 @@ async def test_current_plugin_views_ignore_retained_old_generation(
     assert len(active) == 1
     assert active[0].manifest["version"] == "v2"
     assert manager.telegram_bot_commands == [("view-v2", "v2")]
+    assert manager.mobile_bot_commands == []
 
     write_plugin_manifest(
         {"current_view": False},
@@ -2215,8 +2216,45 @@ async def test_current_plugin_views_ignore_retained_old_generation(
     await manager.reconcile_changed()
     assert manager.active_plugins() == []
     assert manager.telegram_bot_commands == []
+    assert manager.mobile_bot_commands == []
 
     await retained.release()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_bot_command_catalogs_require_explicit_channel_declarations(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "a_telegram_only",
+        "from agent.plugins import Plugin\n"
+        "class TelegramOnlyPlugin(Plugin):\n"
+        "    name = 'a_telegram_only'\n"
+        "    def telegram_bot_commands(self):\n"
+        "        return [('telegram_only', '仅 Telegram')]\n",
+    )
+    _write_plugin(
+        tmp_path / "plugins",
+        "b_shared",
+        "from agent.plugins import Plugin\n"
+        "class SharedCommandPlugin(Plugin):\n"
+        "    name = 'b_shared'\n"
+        "    def telegram_bot_commands(self):\n"
+        "        return [('shared', '共享命令')]\n"
+        "    def mobile_bot_commands(self):\n"
+        "        return [('shared', '共享命令')]\n",
+    )
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    assert manager.telegram_bot_commands == [
+        ("telegram_only", "仅 Telegram"),
+        ("shared", "共享命令"),
+    ]
+    assert manager.mobile_bot_commands == [("shared", "共享命令")]
     await manager.terminate_all()
 
 

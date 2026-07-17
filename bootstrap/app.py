@@ -406,8 +406,13 @@ class AppRuntime:
                 push_tool=self.push_tool,
                 http_resources=self.http_resources,
                 event_bus=event_bus,
-                bot_commands=(
+                telegram_bot_commands=(
                     plugin_manager.telegram_bot_commands
+                    if plugin_manager
+                    else None
+                ),
+                mobile_bot_commands=(
+                    plugin_manager.mobile_bot_commands
                     if plugin_manager
                     else None
                 ),

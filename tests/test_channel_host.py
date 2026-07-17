@@ -99,7 +99,7 @@ def _context(channel: _Channel) -> SimpleNamespace:
         attachment_store=None,
         http_resources=None,
         interrupt_controller=None,
-        bot_commands=[],
+        mobile_bot_commands=[],
         log=f"ctx:{channel.name}",
     )
 
@@ -263,7 +263,7 @@ async def test_channel_host_revokes_shared_registrations_on_stop():
         attachment_store=None,
         http_resources=None,
         interrupt_controller=None,
-        bot_commands=[],
+        mobile_bot_commands=[],
         log="ctx:registered",
     )
     host = ChannelHost(lambda _channel: context)  # type: ignore[arg-type]
@@ -305,7 +305,7 @@ async def test_channel_host_restores_shared_registrations_after_failed_swap():
         attachment_store=None,
         http_resources=None,
         interrupt_controller=None,
-        bot_commands=[],
+        mobile_bot_commands=[],
         log="ctx:registered",
     )
     host = ChannelHost(lambda _channel: context)  # type: ignore[arg-type]

@@ -589,12 +589,21 @@ class PluginManager:
 
     @property
     def telegram_bot_commands(self) -> list[tuple[str, str]]:
+        return self._declared_bot_commands("telegram_bot_commands")
+
+    @property
+    def mobile_bot_commands(self) -> list[tuple[str, str]]:
+        return self._declared_bot_commands("mobile_bot_commands")
+
+    def _declared_bot_commands(self, getter_name: str) -> list[tuple[str, str]]:
+        """聚合当前插件代际为指定渠道显式声明的命令。"""
+
         commands: list[tuple[str, str]] = []
         for generation in self._active_generations.values():
             if not self._registry_active(generation.module_path):
                 continue
             instance = generation.instance
-            getter = getattr(instance, "telegram_bot_commands", None)
+            getter = getattr(instance, getter_name, None)
             if getter is None:
                 continue
             typed_getter = cast(Callable[[], list[tuple[str, str]]], getter)

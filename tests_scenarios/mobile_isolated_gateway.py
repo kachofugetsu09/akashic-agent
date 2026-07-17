@@ -298,7 +298,7 @@ async def run_harness(args: argparse.Namespace) -> None:
                 push_tool=PushTool(),
                 interrupt_controller=None,
                 attachment_store=AttachmentStore(root / "attachments"),
-                bot_commands=(("memorystatus", "查看隔离命令入口"),),
+                mobile_bot_commands=(("memorystatus", "查看隔离命令入口"),),
             ),
         )
     )

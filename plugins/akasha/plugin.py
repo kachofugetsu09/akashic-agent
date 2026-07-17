@@ -62,6 +62,11 @@ class AkashaPlugin(Plugin):
             return []
         return [("akashalast", "查看上一轮 Akasha 检索诊断")]
 
+    def mobile_bot_commands(self) -> list[tuple[str, str]]:
+        if not self.is_active():
+            return []
+        return [("akashalast", "查看上一轮 Akasha 检索诊断")]
+
     def before_turn_modules(self) -> list[object]:
         return [AkashaLastCommandModule(self)]
 
