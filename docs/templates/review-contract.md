@@ -65,6 +65,8 @@ provider_revisions:
 device_gate:
   run_id: ""
   source_commit: ""
+  source_tree: ""
+  source_worktree_clean: true
   runtime_commit: ""
   runtime_tree: ""
   candidate_application_id: ""
@@ -73,12 +75,20 @@ device_gate:
   test_apk_sha256: ""
   package_inventory_command: "pm list packages -u"
   collision_result: clear|blocked
+  install_mode: no_replace
+  owned_packages: []
   protected_packages_before: []
   protected_packages_after: []
   test_phases: []
   phase_boundary: ""
   instrumentation_oracle: ""
-  cleanup_result: ""
+  test_result: passed|failed|not_run
+  cleanup_exit: 0
+  gate_result: passed|failed_setup|failed_test|failed_cleanup
+  residual_packages: []
+  mobile_lab_provenance: verified|operator_asserted|not_applicable
+  mobile_lab_core_commit: ""
+  mobile_lab_run_id: ""
   evidence_bundle: ""
 ```
 

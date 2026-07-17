@@ -249,9 +249,13 @@ Observe 属于独立插件仓库，所以报告同时绑定 core consumer SHA、
 
 **F（设备数据事故）：** 在 run-specific Gate 落地前，旧 raw connected task 曾以正式 application ID `com.akashic.mobile` 安装测试候选，覆盖 Pixel 7 上的正式 v0.8.0/code21。维护者后来从预先保存的 `base.apk` 恢复了 APK 与权限，但当时没有 app data 备份，且应用声明 `allowBackup=false`，所以被覆盖的数据无法恢复。这次事故有实际数据损失，不能因后续 binary 恢复或新 Gate 通过而写成“无影响”。
 
-**F（当前隔离互操作证据）：** 当前移动端 PR6 head 为 `069a7df1dc9cd1d6cca6f0665d5804dd801d2e85`，tree 为 `50a05ba56e385628ebbb55e2d300226a90f212d1`；设备 Gate 固定核心 PR #134 commit `f37a42826d9ad5e0988d8b26eba5dd7a20fb29b8` 与 tree `88365c13369b592290fd69918642b7166fc57c55`。run `rpr6069af37` 从生成后的 APK 读取 app/test identity 和 instrumentation target，得到 `com.akashic.mobile.review.rpr6069af37` 与 `com.akashic.mobile.review.rpr6069af37.test`，再以 `pm list packages -u` 得到 `collision_result=clear` 后安装。app APK SHA-256 为 `0bbf9affde1b9ecfdc382d7674425eb8c74f052bb67a889430756a5088132828`，test APK SHA-256 为 `578cdf00c85373160b219487a9650981792f86b59a327030ca9a20ca925e23af`。CI 的 fake device 固定覆盖 app collision、test package collision、app install failure、test APK install failure、0 test、assertion failure、process crash、成功、cleanup failure 和非法 runner argument，分别要求 `gate_result=failed_setup`、`failed_test`、`failed_cleanup` 或 `passed`；只有恰好一个目标方法、`OK (1 test)` 且 instrumentation 成功的 phase 可以通过。
+**F（隔离互操作组合证据）：** 当前移动端 PR6 head 为 `069a7df1dc9cd1d6cca6f0665d5804dd801d2e85`，tree 为 `50a05ba56e385628ebbb55e2d300226a90f212d1`；这一次 Mobile Lab 设备运行固定核心 commit `f37a42826d9ad5e0988d8b26eba5dd7a20fb29b8` 与 tree `88365c13369b592290fd69918642b7166fc57c55`。run `rpr6069af37` 从生成后的 APK 读取 app/test identity 和 instrumentation target，得到 `com.akashic.mobile.review.rpr6069af37` 与 `com.akashic.mobile.review.rpr6069af37.test`，再以 `pm list packages -u` 得到 `collision_result=clear` 后安装。app APK SHA-256 为 `0bbf9affde1b9ecfdc382d7674425eb8c74f052bb67a889430756a5088132828`，test APK SHA-256 为 `578cdf00c85373160b219487a9650981792f86b59a327030ca9a20ca925e23af`。
 
 设备先运行 `pairSendAndReceiveFixedMedia`，显式 force-stop 后再运行 `processRestartResumesWithoutHistoryDuplicates`，两个 instrumentation phase 均通过，最终 `test_result=passed`、`test_exit=0`、`cleanup_exit=0`、`gate_result=passed`。正式 package 在运行前后都只有 `com.akashic.mobile` v0.8.0/code21，`firstInstallTime/lastUpdateTime` 均为 `2026-07-18 05:16:55`，`ceDataInode=2589746`，本轮没有变化；run-specific app/test package、ADB reverse 与容器均已清理。维护者本机审计 bundle 名为 `mobile-device-gate-f37-069a7df-20260718`，其中 `run/` 是隔离运行根，`device-gate/` 保存报告副本；这个名称是本次事实定位，不是协作者必须使用的绝对路径。
+
+**F（最终锁与设备 Gate oracle）：** PR6 的 runtime lock 固定核心 `83ca96ed70298d507a412fb3416914200acea2de` / tree `954533025d6a18693bd0361db24289439ddfad5a`。24 个移动语义场景映射到 26 个 core provider nodes，Docker Gate 通过；完整 Android 单测、AndroidTest 编译、lint 和 assemble 通过。fake-device Gate 覆盖 app/test collision、app 安装失败、test APK 部分安装失败、0 test、assertion failure、process crash、成功、cleanup failure 和非法 runner argument，并验证只清理由本进程成功安装的 package。
+
+Pixel 7 / Android 16 上，故意请求不存在的 `LocalDeliveryStoreTest#methodThatDoesNotExist` 得到 `OK (0 tests)`；run `rpr6zero069a` 正确以 `gate_result=failed_test`、`cleanup_exit=0` 失败，修复前同一输出曾被错误记录为 passed。随后 run `rpr6pass069a` 执行真实 `LocalDeliveryStoreTest#finalWithoutMessageIdFailsLoudly`，得到唯一测试开始/成功状态、`OK (1 test)`、`gate_result=passed` 和 `cleanup_exit=0`。正向 app/test APK SHA-256 分别为 `35de61bdc44e7bc96e3a93a51027769bf29150738de39d9d64b0602abdc6b127`、`a255bb90e333c9dc3d625384ab10d6391e3a5e1c8c1e7bb54a1f634863008a79`；两个 run 的临时 package 均已清理。`rpr6069af37` 证明 `069a7df × f37a428` 的实时互操作，Docker Gate 证明 `069a7df × 83ca96e` 的协议/插件语义；二者不能合写成最终 runtime 已完成同一次 Pixel 实时互操作。
 
 **I：** 在控制器支持 run-specific profile 前，复用固定 `mobile-lab` profile 必须先停止旧容器，备份现有测试 profile，并在报告中记录备份、启动时间、core SHA、APK SHA 和 cleanup。任何路径解析到正式 workspace 时立即停止。
 
@@ -259,12 +263,13 @@ Pixel 验收固定遵守：
 
 1. `adb devices` 核对唯一目标和设备序列，不对其他设备执行命令。
 2. 为本次 run 生成唯一 app/test application ID；从实际 APK 读取两者和 instrumentation target，不根据 Gradle 配置或文件名猜测。
-3. 安装前保存正式 package 的 version、signer、install time 和可观察数据身份，并用 `pm list packages -u` 检查 app/test ID。任一 collision 都标记 blocked，不执行 install、clear 或 uninstall；签名相同、版本较旧和 `adb install -r` 都不是覆盖许可。
+3. 从干净 source commit/tree 构建，同一 Android worktree 同时只运行一个 Gate。安装前保存正式 package 的 version、signer、install time 和可观察数据身份，并用 `pm list packages -u` 检查 app/test ID。任一 collision 都标记 blocked，不执行 install、clear 或 uninstall；安装禁止 replace，签名相同、版本较旧和 `adb install -r` 都不是覆盖许可。只有本进程成功安装的 package 才取得清理所有权。
 4. 若任务确实需要触碰既有 package，先取得额外授权和经过恢复演练的数据级备份。只备份 `base.apk` 不能恢复 app data；无法备份时 blocked。
 5. 只连接 Mobile Lab 域名和测试配对，不连接正式 gateway。需要验证进程恢复的多个 phase 之间显式 force-stop，不能把同一进程里的两个断言称为 restart。
 6. 场景至少覆盖进程 kill/restart、Room migration、projection reset、本地未完成工作保留、notification delivery 和附件断点恢复；未覆盖项单独写未验证。
-7. instrumentation oracle 核对每个 phase 的实际测试数量、明确成功终态、crash/aborted/assertion failure 标记；shell 退出码 0 或 `OK (0 tests)` 都不能通过。
-8. 保存命令、设备/API 版本、源码和 runtime identity、APK digest、package inventory、collision 结果、正式 package 前后快照、测试 phase、截图或 logcat、Mobile Lab report 与 cleanup 结果。测试后移除 run-specific app/test package，停止容器，清理 ADB reverse，并审计残留。
+7. instrumentation oracle 核对每个 phase 的实际测试数量、指定方法、开始/成功状态、crash/aborted/assertion failure 标记；shell 退出码 0 或 `OK (0 tests)` 都不能通过。
+8. 测试成功不提前写 Gate passed。cleanup 完成后写唯一 `gate_result`；清理失败非零退出并列出残留 package。
+9. 保存命令、设备/API 版本、源码和 runtime identity、APK digest、package inventory、collision 结果、安装所有权、正式 package 前后快照、测试 phase、截图或 logcat、Mobile Lab core SHA/run ID/配对来源与 cleanup 结果。测试后移除 run-specific app/test package，停止容器，清理 ADB reverse，并审计残留。
 
 Pixel 证据是当前维护者机器上的手工 L4 结果。CI 没有 Pixel 或 Android 虚拟设备时，PR 必须把 L0～L3 与 L4 分开报告，不能把“本机测过”伪装成每位协作者都能运行的 required check。
 

@@ -143,7 +143,17 @@ def test_cross_repository_review_pins_lineage_and_evidence_layers() -> None:
         "test_phases",
         "phase_boundary",
         "instrumentation_oracle",
-        "cleanup_result",
+        "source_tree",
+        "source_worktree_clean",
+        "install_mode",
+        "owned_packages",
+        "test_result",
+        "cleanup_exit",
+        "gate_result",
+        "residual_packages",
+        "mobile_lab_provenance",
+        "mobile_lab_core_commit",
+        "mobile_lab_run_id",
     ):
         assert evidence in review, f"Review 合同缺少证据字段: {evidence}"
 
@@ -154,6 +164,9 @@ def test_cross_repository_review_pins_lineage_and_evidence_layers() -> None:
         "base.apk",
         "app data",
         "0 test",
+        "干净 source commit/tree",
+        "清理所有权",
+        "gate_result=failed_cleanup",
     ):
         assert device_rule in projectneed, f"TST-008 缺少设备保护规则: {device_rule}"
 
@@ -166,6 +179,8 @@ def test_mobile_device_gate_evidence_records_incident_and_current_run() -> None:
     for evidence in (
         "069a7df1dc9cd1d6cca6f0665d5804dd801d2e85",
         "50a05ba56e385628ebbb55e2d300226a90f212d1",
+        "83ca96ed70298d507a412fb3416914200acea2de",
+        "954533025d6a18693bd0361db24289439ddfad5a",
         "f37a42826d9ad5e0988d8b26eba5dd7a20fb29b8",
         "88365c13369b592290fd69918642b7166fc57c55",
         "com.akashic.mobile.review.rpr6069af37",
@@ -174,6 +189,11 @@ def test_mobile_device_gate_evidence_records_incident_and_current_run() -> None:
         "578cdf00c85373160b219487a9650981792f86b59a327030ca9a20ca925e23af",
         "gate_result=passed",
         "OK (0 tests)",
+        "rpr6zero069a",
+        "gate_result=failed_test",
+        "rpr6pass069a",
+        "35de61bdc44e7bc96e3a93a51027769bf29150738de39d9d64b0602abdc6b127",
+        "a255bb90e333c9dc3d625384ab10d6391e3a5e1c8c1e7bb54a1f634863008a79",
         "pairSendAndReceiveFixedMedia",
         "processRestartResumesWithoutHistoryDuplicates",
         "allowBackup=false",

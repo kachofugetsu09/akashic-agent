@@ -17,7 +17,7 @@
 3. Provider 的 GitHub ref 在 Gate 开始时解析成 commit SHA；ref 后续移动不会抹掉旧报告，但新组合不能复用旧通过状态。
 4. 数据库迁移按真实表、列、索引和外键识别已知 schema lineage，不只读取 `user_version`。已知 lineage 汇合到唯一目标 schema，未知或部分匹配形状 fail-loud。
 5. 每个 worktree 同时只有一个 writer。并行审查默认只读；writer lease 记录 repository、worktree、branch、owner、base HEAD、允许路径和状态。产生修改后只能用提交后的 commit 交接；旧 writer 完成或被明确中断前不能转移 owner。
-6. CI、Docker、隔离互操作和 Pixel/ADB 是不同证据层。设备 Gate 从 APK 读取实际 app/test identity，使用 run-specific application ID，并在安装前以 `pm list packages -u` 拒绝任何 collision；instrumentation 必须核对执行数量与成功终态，不能只信 shell 退出码。设备结果不冒充 CI required check。
+6. CI、Docker、隔离互操作和 Pixel/ADB 是不同证据层。设备 Gate 从干净 source commit/tree 构建，从 APK 读取实际 app/test identity，使用 run-specific application ID，并在安装前以 `pm list packages -u` 拒绝任何 collision。安装禁止 replace，清理权只属于本进程成功安装的 package；instrumentation 必须核对执行数量、指定方法与成功终态，cleanup 后才写唯一 Gate 终态。设备结果不冒充 CI required check，客户端隔离也不冒充 Mobile Lab workspace 隔离。
 
 ## 理由
 
@@ -37,4 +37,4 @@
 - Provider ref 或任一 source digest 改变后，旧报告不会被复用为新组合通过。
 - 同一 `user_version` 的多个已知 schema 都有显式迁移测试；未知形状不会 destructive fallback。
 - Worktree handoff 能指出唯一 writer、允许路径、交接 HEAD 和 dirty state，且旧 writer 已停止写入。
-- PR 将 CI 与设备结果分开列出；APK identity、`pm list packages -u` inventory、collision 结果、正式 package 前后状态和 cleanup 均有证据。
+- PR 将 CI 与设备结果分开列出；source commit/tree、APK identity、`pm list packages -u` inventory、collision、安装所有权、instrumentation oracle、正式 package 前后状态、cleanup 和唯一 Gate 终态均有证据。
