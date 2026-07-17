@@ -269,15 +269,24 @@ def _turn_projection(turn: dict[str, Any]) -> dict[str, object]:
         data = raw_item.get("data")
         if raw_item.get("type") == "assistantMessage" and isinstance(data, dict):
             data = dict(data)
+            session_message_id = data.get("sessionMessageId")
+            if isinstance(session_message_id, str):
+                data["sessionMessageId"] = "<session-message-id>"
             metadata = data.get("metadata")
             if isinstance(metadata, dict):
                 stable_metadata = dict(metadata)
                 for volatile_key in (
+                    "client_request_id",
                     "control_turn_id",
                     "turn_duration_ms",
                     "context_retry",
                 ):
                     stable_metadata.pop(volatile_key, None)
+                persisted_id = stable_metadata.get("persisted_user_message_id")
+                if isinstance(persisted_id, str):
+                    stable_metadata["persisted_user_message_id"] = (
+                        "<persisted-user-message-id>"
+                    )
                 data["metadata"] = stable_metadata
         items.append({"type": raw_item.get("type"), "data": data})
     error = turn.get("error")
