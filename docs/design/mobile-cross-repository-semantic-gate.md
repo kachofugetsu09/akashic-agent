@@ -101,7 +101,7 @@ matching attachment.download.ok
 
 进程在 binary fsync 后、matching ok 前死亡时，启动恢复把 `.part` 截断到 DB confirmed offset，再从该 offset 请求。full-size `.part` 没有 matching ok 时也不能直接发布；DB offset 提前推进、文件长度自动成为 offset、或只靠最终 SHA-256 都是错误 mutant。
 
-**F：** 移动端最终候选 `3f81275a52b0b87438f5d31041a71997edbac267` 已传播 PR5 最终状态，并在栈顶重新运行附件、累计测试和设备 Gate。这个 commit 是当前实现证据，不是协议真源；后续 head 变化仍需重跑。
+**F（历史 PR6 候选）：** `3f81275a52b0b87438f5d31041a71997edbac267` 已传播当时 PR5 的最终状态，并在栈顶重新运行附件、累计测试和设备 Gate。这个 commit 是历史实现证据，不是当前发布 head 或协议真源。
 
 ### 2.5 Room schema lineage 与汇合迁移
 
@@ -118,7 +118,7 @@ public PR6 v3: media + server sequence
 
 每条已知 lineage 先核对表、列、索引和外键，再只增加目标版本缺少的结构。迁移后的保留集合取所有上游已批准状态的并集；例如加入 server sequence 不能丢失 remote pairing、pending notification 或 durable stop。只命中部分特征的未知 v4 必须 fail-loud，不能被当成“最接近”的已知版本。
 
-**F：** `3f81275` 在 Pixel 7 上逐条重跑的 schema v5 迁移矩阵覆盖 final PR5 v4、reviewed PR6 v4、original public PR6 v3 和 canonical 1→5，并分别证明 partial v3 与 partial v4 fail-loud。这个矩阵是本次分叉的实现证据；MOB-004 要求后续任何新 lineage 继续显式登记。
+**F（历史 PR6 迁移证据）：** `3f81275` 在 Pixel 7 上逐条重跑的 schema v5 迁移矩阵覆盖 final PR5 v4、reviewed PR6 v4、original public PR6 v3 和 canonical 1→5，并分别证明 partial v3 与 partial v4 fail-loud。当前独立移动仓库已演进到 schema v10；这组证据只负责旧分叉的汇合，后续 5→10 仍由当前仓库的逐版本 migration tests 负责。
 
 ## 3. 协议与外部仓库版本固定
 
@@ -258,6 +258,16 @@ Observe 属于独立插件仓库，所以报告同时绑定 core consumer SHA、
 Pixel 7 / Android 16 的 run `rpr6det3f81275` 在同一最终 head 上逐方法执行全部 64 个非网络 instrumentation，包含 9 条 Room 分叉迁移、session/history/projection reset、本地工作保留、附件、持久通知状态、密钥和 Compose 交互；64 个 phase 都是唯一 `OK (1 test)`，最终 `source_state_after_build=verified`、`cleanup_exit=0`、`gate_result=passed`。这补足当前候选的 L4 数据与交互证据，但不把 Pixel 结果冒充普通贡献者 CI，也不把持久通知状态测试写成真实通知栏展示或 OS 后台投递已经验证。
 
 同一 head 上，run `rpr6zero3f81275` 请求不存在的 `LocalDeliveryStoreTest#methodThatDoesNotExist` 并得到 `OK (0 tests)`，正确以 `gate_result=failed_test`、`cleanup_exit=0` 失败；run `rpr6pass3f81275` 执行真实 `LocalDeliveryStoreTest#finalWithoutMessageIdFailsLoudly`，得到唯一测试开始/成功状态、`OK (1 test)`、`gate_result=passed` 和 `cleanup_exit=0`。两个 run 均有 `source_state_after_build=verified`，临时 package 均已清理。`rpr6live3f81275` 证明 `3f81275 × f37a428` 的实时互操作，Docker Gate 证明 `3f81275 × 83ca96e` 的协议与核心 provider 语义；二者不能合写成同一次 runtime 组合。
+
+**F（当前独立仓库发布候选）：** [移动端 PR #30](https://github.com/kachofugetsu09/akashic-mobile/pull/30) 把 #7～#29 的拆分历史累计到 `1e95222a5c6aacd19dea25ebd0703dca6d3f6f37`，tree 为 `87df3459ee9b8bacfab0c004912986c36f261d96`。候选为 v0.8.5/code26；签名 APK SHA-256 为 `b5550e69ac80d26334be1cebfb1638073fc9bbff8a662d0a713e75a5d1c711bb`，APK Signature Scheme v2 通过，signer certificate SHA-256 仍为 `49bf31ed5c54c642d6f4fdd30a5310a8cb70e67666ad25d711b5f0e084e240bc`。该 release 层只恢复丢失的 Gate、修复确定性回归和收紧可重建缓存边界，不新增主题、布局、会话保留或数据库 schema。
+
+**F（当前协议与 runtime 组合）：** 第二次重拆分曾漏掉旧 PR6 已有的 `protocol/`、`runtime-gate/` 和设备 Gate；当前 head 已恢复这些流程资产。协议快照固定核心 `5615b7df1cbc5092b2f28c9e321ebdf21c16c79a` 的 `schema/archive/mobile-realtime-v1-mobile-pr6.json`，SHA-256 为 `18f8f907c11b66df174699e8ff1d38adb598114e0caf6b25b6823b64cad1fcca`；实际 runtime 固定 `83ca96ed70298d507a412fb3416914200acea2de` / tree `954533025d6a18693bd0361db24289439ddfad5a`。profile `mobile-v0.8.5-release-v1` 把 24 个移动语义场景映射到 26 个 provider node；本机无网络、核心源码只读、tmpfs workspace/plugin home 的 Docker Gate 为 26/26 通过，同一 head 的 GitHub `runtime-contract` 也通过。
+
+恢复场景映射时发现移动端把快捷命令说明上限实现为 Kotlin UTF-16 `length`，与核心 Unicode code point 合同不一致。`2481ad7` 改为按 code point 校验，并以 256 个 supplementary-plane emoji 通过、257 个拒绝以及 `/undo` 文本 round-trip 锁定两端语义；这是一条被 Gate 发现的兼容性修复，不是新命令功能。
+
+**F（当前 Pixel 隔离证据）：** Pixel 7 run `rrel1e95222` 从干净 source commit/tree 构建 `com.akashic.mobile.review.rrel1e95222` 及其 test package，安装前 collision 为空。两个 incoming-share 持久化边界和 schema 9→10 durable stop 迁移各自得到唯一 `OK (1 test)`；最终 `source_state_after_build=verified`、`test_exit=0`、`cleanup_exit=0`、`gate_result=passed`，run-specific package 均已清理。该 run 不连接 Gateway，所以只属于 L4 本地持久化证据，不能替代上面的 Docker runtime 组合或历史 L3 实时互操作。
+
+**F（本次流程偏差）：** 在恢复 run-specific Gate 之前，维护者虽已授权测试发布包，但执行者在无法通过 `run-as` 取得 app data 备份后，仍用 `adb install -r` 把 Pixel 上的 v0.8.0/code21 更新为当时的 v0.8.5/code26 候选。安装、签名和冷启动成功，之后只观察到配对页；由于没有安装前的私有数据库快照，数据影响只能记为 unknown，不能写成“数据未变”，这次安装也不能计入 TST-008 Gate。发现流程冲突后正式 package 不再被设备 Gate 触碰；后续 `rrel1e95222` 只证明以偏差后的 v0.8.5/package 时间为基线时，run-specific Gate 没有再次改变正式包。
 
 **I：** 在控制器支持 run-specific profile 前，复用固定 `mobile-lab` profile 必须先停止旧容器，备份现有测试 profile，并在报告中记录备份、启动时间、core SHA、APK SHA 和 cleanup。任何路径解析到正式 workspace 时立即停止。
 
@@ -407,6 +417,8 @@ Deliver
 | `https://github.com/akashic-plugins/feed-mcp` | `refs/heads/master` | `520ba10032089b1e056a9eecc5f2c1f459c75e5c` | `334276c4e972f1d80b0a353605d068abc5135b18` |
 
 Observe 的移动端 turn identity seam、status_commands 的公开 session lookup、proactive_feedback 的 mobile UI v2 和 Feed freshness 都被核心移动协议变化触达，且修复位于各自 canonical plugin repository。移动端协议归档固定在核心 `5615b7df1cbc5092b2f28c9e321ebdf21c16c79a` 的 `schema/archive/mobile-realtime-v1-mobile-pr6.json`，SHA-256 为 `18f8f907c11b66df174699e8ff1d38adb598114e0caf6b25b6823b64cad1fcca`；实际插件 Gate runtime 另固定为上文 `83ca96e`。这组记录说明插件影响必须由远端 revision 和真实 seam 证明，不能只搜主仓库 import。
+
+**F（当前公开插件发布锁）：** [核心 PR #135](https://github.com/kachofugetsu09/akashic-agent/pull/135) 的 head 为 `a196915f`，已把 Observe 更新到 `b434fa74`、status_commands 更新到 `cee5bef9`，并继续固定 proactive_feedback `d5227249`、fitbit-mcp `b95ec281` 与 emotion `0924217e`。干净 core head 上的插件合同 Gate 运行五个固定远端 checkout，共 31/31 个移动 UI 行为测试通过；GitHub `mobile-plugin-contract-gate` 通过。它锁定公开移动插件 ABI，仍不等于本节下方尚未完成的 20-provider private G2 终态。
 
 **F（Gate 反向发现）：** 同一份 private plan 在 Feed `master@e1aa198` 上发现 lifespan poller 与首个 MCP 调用并发初始化 SQLite 时重复 `ADD COLUMN interest_scored_at`。这不是 freshness mutant 的预期失败，因此 Gate 拒绝通过。Feed PR [#2](https://github.com/akashic-plugins/feed-mcp/pull/2) 把 schema 初始化放进 `BEGIN IMMEDIATE` 并用旧 schema 并发测试覆盖；上表固定的 canonical revision 重跑后，background refresh、call finality、restart persistence 通过，两个 freshness mutant 都因目标不变量被杀死。
 
