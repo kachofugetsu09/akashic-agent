@@ -134,6 +134,17 @@ channel_name = "web"
 uv run python main.py
 ```
 
+从终端或 supervisor 切换到 PyCharm 前，先优雅停止当前 workspace 的 runtime：
+
+```bash
+./scripts/stop-runtime.sh
+```
+
+脚本遵循 `--workspace`、`AKASHIC_WORKSPACE`、`config.toml` 的 workspace
+优先级，优先停止 supervisor，并等待 runtime 真正释放实例锁。它不会删除锁文件，
+也不会在超时后自动强制终止进程。PyCharm 仍直接运行 `main.py`；也可以把
+`scripts/stop-runtime.sh` 配置为 Run Configuration 的 Before Launch external tool。
+
 打开 `http://127.0.0.1:6322` 可以使用 Web Chatbox；如果配置了 Telegram / QQ，也可以直接给 bot 发一条消息开始对话。
 
 ---
