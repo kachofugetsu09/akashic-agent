@@ -327,7 +327,7 @@ async def test_content_vertical_slice_filters_investigates_and_shares(
     assert "preprocess_score" not in first_prompt
     assert "scratchpad" not in system_prompt
     assert "scratchpad" in llm_input[2]["content"]
-    assert "宁可少选" in llm_input[2]["content"]
+    assert "自行决定调查范围" in llm_input[2]["content"]
     assert "当前 ContextEvent" in first_prompt
     assert "没有有效 ContextEvent" in first_prompt
     final_prompt = provider.chat.await_args_list[1].kwargs["messages"][0]["content"]
@@ -484,7 +484,8 @@ async def test_shared_ack_route_keeps_original_source_grouping_and_order(
         ctx=WakeContext(content_events=unread),
         memory_text="",
         proactive_context="",
-        recent_session="",
+        recent_passive_conversation="",
+        recent_proactive_messages="",
     )[1]["content"]
 
     assert prompt.index("来源：source-a") < prompt.index("来源：source-b")
@@ -516,13 +517,24 @@ def test_prompt_exposes_current_context_and_only_selected_mode(mode) -> None:
         ctx=ctx,
         memory_text="memory",
         proactive_context="proactive context",
-        recent_session="recent session",
+        recent_passive_conversation="recent passive conversation",
+        recent_proactive_messages=(
+            "2026-07-12T00:00:00+00:00 | session=mobile:owner | "
+            "assistant(proactive): recent proactive message"
+        ),
         current_context="presence=active | confidence=0.90",
         mode=cast(Any, mode),
         event=event,
     )
 
     assert "【当前 ContextEvent】" in messages[1]["content"]
+    assert "【截至当前时间的最近被动对话】" in messages[1]["content"]
+    assert "recent passive conversation" in messages[1]["content"]
+    assert "【截至当前时间已经发送的主动消息】" in messages[1]["content"]
+    assert "理解你最近主动和用户聊过什么" in messages[1]["content"]
+    assert "不是内容价值的扣分表" in messages[1]["content"]
+    assert "话题、结论或事件相近都不自动禁止再次分享" in messages[1]["content"]
+    assert "recent proactive message" in messages[1]["content"]
     assert "presence=active | confidence=0.90" in messages[1]["content"]
     assert f"mode={mode}" in messages[1]["content"]
     assert "mode=content" not in messages[0]["content"]
@@ -536,8 +548,29 @@ def test_prompt_exposes_current_context_and_only_selected_mode(mode) -> None:
     if mode == "content":
         assert "已有 content 标题" in messages[1]["content"]
         assert "scratchpad" in messages[2]["content"]
+        assert "<example>" in messages[2]["content"]
+        assert "主题 X" in messages[2]["content"]
+        assert "内容形态 Y" in messages[2]["content"]
+        assert "自行决定调查范围" in messages[2]["content"]
     else:
         assert "本轮单条事件" in messages[1]["content"]
+
+
+def test_content_final_prompt_has_no_default_share_or_skip_tendency() -> None:
+    messages = build_messages(
+        ctx=WakeContext(content_events=[]),
+        memory_text="",
+        proactive_context="",
+        recent_passive_conversation="",
+        recent_proactive_messages="",
+        content_phase="final",
+    )
+
+    assert "没有默认的 share 或 skip 倾向" in messages[2]["content"]
+    assert "每次都重新判断这件事此刻对用户意味着什么" in messages[2]["content"]
+    assert "发送次数本身不是用户的态度" in messages[2]["content"]
+    assert "始终对用户本人和他在意的一切保持真诚好奇" in messages[0]["content"]
+    assert "这种好奇不会因为一个话题已经聊过" in messages[0]["content"]
 
 
 def test_legacy_reservoir_migrates_ack_and_original_sources(tmp_path) -> None:
@@ -1049,10 +1082,97 @@ def test_future_message_embeddings_do_not_affect_current_interest(tmp_path, requ
 
     assert current_event["_wake_interest_score"] == pytest.approx(0.1)
     assert future_event["_wake_interest_score"] > 0.99
-    recent = runtime._read_recent_session("s", datetime(2026, 7, 12, tzinfo=UTC))
+    now = datetime(2026, 7, 12, tzinfo=UTC)
+    recent = runtime._read_recent_passive_conversation("s", now)
     assert "主动推送" not in recent
     assert "过去用户" in recent
     assert "未来用户" not in recent
+    proactive = runtime._read_recent_proactive_messages(now)
+    assert "2026-07-09T00:01:00+00:00" in proactive
+    assert "session=s" in proactive
+    assert "主动推送" in proactive
+    assert "未来助手" not in proactive
+
+
+def test_recent_proactive_messages_are_workspace_wide_and_bounded(tmp_path, request):
+    session_db = tmp_path / "sessions.db"
+    now = datetime(2026, 7, 12, tzinfo=UTC)
+    recent_rows = [
+        (
+            f"p{index}",
+            f"mobile:{index % 2}",
+            index,
+            "assistant",
+            f"最近主动消息 {index}",
+            '{"proactive": true}',
+            (now - timedelta(hours=32 - index)).isoformat(),
+        )
+        for index in range(32)
+    ]
+    boundary_rows = [
+        (
+            "old",
+            "telegram:old",
+            1,
+            "assistant",
+            "窗口外主动消息",
+            '{"proactive": true}',
+            (now - timedelta(days=8)).isoformat(),
+        ),
+        (
+            "future",
+            "telegram:future",
+            1,
+            "assistant",
+            "未来主动消息",
+            '{"proactive": true}',
+            (now + timedelta(minutes=1)).isoformat(),
+        ),
+    ]
+    with closing(sqlite3.connect(session_db)) as db:
+        db.execute(
+            """
+            CREATE TABLE messages (
+                id TEXT PRIMARY KEY,
+                session_key TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                extra TEXT,
+                ts TEXT NOT NULL
+            )
+            """
+        )
+        db.executemany(
+            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [*recent_rows, *boundary_rows],
+        )
+        db.commit()
+
+    runtime = WakeRuntime(
+        _scope(
+            tmp_path,
+            FakeGateway([]),
+            SimpleNamespace(chat=AsyncMock()),
+            FakeOrchestrator(),
+            _source("content"),
+        ),
+        clock=FixedClock(now),
+    )
+    request.addfinalizer(runtime.close)
+
+    proactive = runtime._read_recent_proactive_messages(now)
+    proactive_lines = proactive.splitlines()
+
+    assert len(proactive_lines) == 30
+    assert not any(line.endswith("最近主动消息 0") for line in proactive_lines)
+    assert not any(line.endswith("最近主动消息 1") for line in proactive_lines)
+    assert any(line.endswith("最近主动消息 2") for line in proactive_lines)
+    assert any(line.endswith("最近主动消息 31") for line in proactive_lines)
+    assert "session=mobile:0" in proactive
+    assert "session=mobile:1" in proactive
+    assert "窗口外主动消息" not in proactive
+    assert "未来主动消息" not in proactive
 
 
 def test_semantic_interest_keeps_moderate_match_meaningful(tmp_path, request):

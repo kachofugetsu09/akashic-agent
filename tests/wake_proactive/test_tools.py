@@ -41,9 +41,13 @@ def _plan() -> dict:
                 "item_id": "candidate_1",
                 "initial_interest": "uncertain",
                 "question": "是否有可复用的唤醒方法",
-                "recall_query": "用户是否关心主动唤醒架构",
             },
-        ]
+        ],
+        "preference_probe": {
+            "candidate_ids": ["candidate_1"],
+            "topic": "主动唤醒架构",
+            "query": "用户对主动唤醒架构类消息的真实兴趣和打扰价值评价",
+        },
     }
 
 
@@ -91,7 +95,13 @@ async def test_scratchpad_records_only_candidates_without_training_side_effect()
     ctx = WakeContext(content_events=_events())
     deps = ToolDeps()
     result = json.loads(await execute("scratchpad", _plan(), ctx, deps))
-    assert result == {"ok": True, "screened": 2, "planned": 1, "to_investigate": 1}
+    assert result == {
+        "ok": True,
+        "screened": 2,
+        "planned": 1,
+        "to_investigate": 1,
+        "preference_probe": True,
+    }
     assert ctx.terminal_action is None
     assert ctx.cited_item_ids == []
 
@@ -229,7 +239,7 @@ async def test_empty_scratchpad_can_investigate_then_skip():
     )
 
     assert result["screened"] == 2
-    assert investigation == {"items": {}, "count": 0}
+    assert investigation == {"items": {}, "count": 0, "preference_evidence": {}}
     assert skipped["decision"] == "skip"
 
 
@@ -245,7 +255,6 @@ async def test_scratchpad_rejects_invalid_interest():
                     {
                         "item_id": "candidate_1",
                         "initial_interest": "maybe",
-                        "recall_query": "query",
                     }
                 ]
             },
@@ -255,7 +264,7 @@ async def test_scratchpad_rejects_invalid_interest():
 
 
 @pytest.mark.asyncio
-async def test_scratchpad_derives_investigation_and_recall_query():
+async def test_scratchpad_keeps_uncertain_candidate_for_content_investigation():
     ctx = WakeContext(content_events=[{"id": "feed:a", "title": "Agent memory"}])
 
     await execute(
@@ -265,8 +274,58 @@ async def test_scratchpad_derives_investigation_and_recall_query():
         ToolDeps(),
     )
 
-    assert ctx.scratchpad["feed:a"].investigate == "both"
-    assert ctx.scratchpad["feed:a"].recall_query == "Agent memory"
+    assert ctx.scratchpad["feed:a"].initial_interest == "uncertain"
+    assert ctx.preference_probe is None
+
+
+@pytest.mark.asyncio
+async def test_preference_probe_only_accepts_shortlisted_candidates():
+    ctx = WakeContext(content_events=_events())
+
+    with pytest.raises(ValueError, match="unplanned candidate_id"):
+        await execute(
+            "scratchpad",
+            {
+                "items": [
+                    {
+                        "item_id": "candidate_1",
+                        "initial_interest": "uncertain",
+                    }
+                ],
+                "preference_probe": {
+                    "candidate_ids": ["candidate_2"],
+                    "topic": "benchmark",
+                    "query": "用户对 benchmark 类主动消息的真实评价",
+                },
+            },
+            ctx,
+            ToolDeps(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_preference_probe_rejects_discarded_candidate():
+    ctx = WakeContext(content_events=_events())
+
+    with pytest.raises(ValueError, match="unplanned candidate_id"):
+        await execute(
+            "scratchpad",
+            {
+                "items": [
+                    {
+                        "item_id": "candidate_1",
+                        "initial_interest": "not_interesting",
+                    }
+                ],
+                "preference_probe": {
+                    "candidate_ids": ["candidate_1"],
+                    "topic": "benchmark",
+                    "query": "用户对 benchmark 类主动消息的真实评价",
+                },
+            },
+            ctx,
+            ToolDeps(),
+        )
 
 
 @pytest.mark.asyncio
@@ -289,7 +348,7 @@ async def test_scratchpad_ignores_explicit_not_interesting_item():
 
 
 @pytest.mark.asyncio
-async def test_investigate_candidates_fetches_and_recalls_concurrently():
+async def test_investigate_candidates_fetches_and_recalls_once_concurrently():
     active = 0
     peak = 0
 
@@ -308,7 +367,14 @@ async def test_investigate_candidates_fetches_and_recalls_concurrently():
         await asyncio.sleep(0)
         active -= 1
         return SimpleNamespace(
-            records=[SimpleNamespace(summary="用户关心 agent 架构")]
+            records=[
+                SimpleNamespace(
+                    id="m1",
+                    summary="用户关心 agent 架构",
+                    engine_kind="test",
+                )
+            ],
+            trace={"engine": "test", "relevance_floor": "strong"},
         )
 
     web = MagicMock()
@@ -323,10 +389,16 @@ async def test_investigate_candidates_fetches_and_recalls_concurrently():
 
     assert result["count"] == 1
     assert result["items"]["candidate_1"]["content"]["text"] == "正文"
-    assert result["items"]["candidate_1"]["memory"]["hits"] == 1
+    assert result["preference_evidence"]["hits"] == 1
+    assert result["preference_evidence"]["records"][0]["id"] == "m1"
     assert peak == 2
     web.execute.assert_awaited_once()
     memory.query.assert_awaited_once()
+    request = memory.query.await_args.args[0]
+    assert request.effect == "read_only"
+    assert request.intent == "interest"
+    assert request.filters.relevance_floor == "strong"
+    assert request.limit == 12
 
 
 @pytest.mark.asyncio
@@ -367,6 +439,10 @@ async def test_share_content_renders_one_message_and_stable_mapping(tmp_path):
     saved = store.get(ctx.wake_id)
     assert saved is not None
     assert json.loads(saved["display_event_map_json"]) == {"1": "feed:a"}
+    saved_scratchpad = json.loads(saved["scratchpad_json"])
+    assert saved_scratchpad["preference_probe"]["candidate_ids"] == ["feed:a"]
+    saved_investigations = json.loads(saved["investigations_json"])
+    assert saved_investigations["preference_evidence"]["topic"] == "主动唤醒架构"
     store.close()
 
 
@@ -401,17 +477,18 @@ async def test_investigate_failure_is_evidence_gap_not_negative_label():
     web = MagicMock()
     web.execute = AsyncMock(side_effect=RuntimeError("timeout"))
     memory = MagicMock()
-    memory.query = AsyncMock(return_value=SimpleNamespace(records=[]))
+    memory.query = AsyncMock(return_value=SimpleNamespace(records=[], trace={}))
     ctx = WakeContext(content_events=_events())
     deps = ToolDeps(web_fetch_tool=web, memory=memory)
     await execute("scratchpad", _plan(), ctx, deps)
 
     result = json.loads(await execute("investigate_candidates", {}, ctx, deps))
 
-    assert result == {"items": {}, "count": 0}
+    assert result["items"] == {}
+    assert result["count"] == 0
+    assert result["preference_evidence"]["hits"] == 0
     item = ctx.investigation_results["feed:a"]
     assert item["content"]["error"] == "timeout"
-    assert item["memory"]["hits"] == 0
     assert ctx.terminal_action is None
     assert ctx.cited_item_ids == []
 

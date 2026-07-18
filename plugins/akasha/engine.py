@@ -330,18 +330,26 @@ class AkashaMemoryEngine:
             limit=dense_limit,
             cutoff=datetime.fromtimestamp(now_ts, timezone.utc).isoformat(),
         )
-        dense_keys = {card.key for card in dense_cards}
-        dense_pairs = {_card_dedupe_key(card) for card in dense_cards}
-        ripple_cards = self._cards_from_keys(
-            [
-                (item.key, item.score, "ripple", _candidate_signals(item))
-                for item in result.ripple_items
-                if item.key not in dense_keys
-            ],
-            limit=ripple_limit,
-            skip_pairs=dense_pairs,
-            cutoff=datetime.fromtimestamp(now_ts, timezone.utc).isoformat(),
-        )
+        if request.filters.relevance_floor == "strong":
+            dense_cards = [
+                card
+                for card in dense_cards
+                if card.score >= self._akasha_config.dense_seed_threshold
+            ]
+            ripple_cards = []
+        else:
+            dense_keys = {card.key for card in dense_cards}
+            dense_pairs = {_card_dedupe_key(card) for card in dense_cards}
+            ripple_cards = self._cards_from_keys(
+                [
+                    (item.key, item.score, "ripple", _candidate_signals(item))
+                    for item in result.ripple_items
+                    if item.key not in dense_keys
+                ],
+                limit=ripple_limit,
+                skip_pairs=dense_pairs,
+                cutoff=datetime.fromtimestamp(now_ts, timezone.utc).isoformat(),
+            )
         text_block = (
             self._format_context_block(dense_cards, ripple_cards, now_ts=now_ts)
             if request.intent == "context"
@@ -368,6 +376,12 @@ class AkashaMemoryEngine:
                 "profile": self.DESCRIPTOR.profile.value,
                 "intent": request.intent,
                 "effect": request.effect,
+                "relevance_floor": request.filters.relevance_floor,
+                "native_dense_threshold": (
+                    self._akasha_config.dense_seed_threshold
+                    if request.filters.relevance_floor == "strong"
+                    else None
+                ),
                 "dense_count": len(dense_cards),
                 "ripple_count": len(ripple_cards),
                 "activation_count": len(result.activation_items),

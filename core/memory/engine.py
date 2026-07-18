@@ -9,6 +9,7 @@ from typing import Literal, Protocol, runtime_checkable
 
 MemoryQueryIntent = Literal["context", "answer", "timeline", "interest", "procedure"]
 MemoryQueryEffect = Literal["stateful", "read_only"]
+MemoryRelevanceFloor = Literal["engine_default", "strong"]
 
 
 class EngineProfile(str, Enum):
@@ -90,9 +91,14 @@ class MemoryQueryFilters:
     kinds: tuple[str, ...] = ()
     time_start: datetime | None = None
     time_end: datetime | None = None
+    relevance_floor: MemoryRelevanceFloor = "engine_default"
     hints: Mapping[str, object] = field(default_factory=lambda: MappingProxyType({}))
 
     def __post_init__(self) -> None:
+        if self.relevance_floor not in {"engine_default", "strong"}:
+            raise ValueError(
+                f"unsupported memory relevance floor: {self.relevance_floor}"
+            )
         object.__setattr__(
             self,
             "kinds",
