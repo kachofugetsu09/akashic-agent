@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from agent.turns.result import TurnResult, TurnSideEffect
@@ -43,6 +44,7 @@ class TurnOrchestrator:
 
         content = result.outbound.content
         media = list(result.outbound.media or [])
+        delivery_id = uuid4().hex
         sent = False
         try:
             # 2. 先执行发送前 side_effects，再真正 dispatch 到 outbound。
@@ -52,7 +54,7 @@ class TurnOrchestrator:
                     channel=channel,
                     chat_id=chat_id,
                     content=content,
-                    metadata={},
+                    metadata={"delivery_id": delivery_id},
                     media=media,
                 )
             )
@@ -67,6 +69,7 @@ class TurnOrchestrator:
                 content=content,
                 media=media,
                 result=result,
+                delivery_id=delivery_id,
             )
             await self._session.session_manager.append_messages(
                 session, session.messages[-1:]
@@ -96,6 +99,7 @@ class TurnOrchestrator:
         content: str,
         media: list[str],
         result: TurnResult,
+        delivery_id: str,
     ) -> None:
         source_refs = []
         state_summary_tag = "none"
@@ -104,11 +108,12 @@ class TurnOrchestrator:
             if isinstance(raw_refs, list):
                 source_refs = [ref for ref in raw_refs if isinstance(ref, dict)]
             state_summary_tag = str(result.trace.extra.get("state_summary_tag", "none"))
-        session.add_message(
+        _ = session.add_message(
             "assistant",
             content,
             media=media if media else None,
             proactive=True,
+            delivery_id=delivery_id,
             tools_used=["message_push"],
             evidence_item_ids=[str(item_id) for item_id in result.evidence],
             source_refs=source_refs,

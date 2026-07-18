@@ -57,6 +57,7 @@ class PushToolOutboundPort:
             chat_id=chat_id,
             message=message,
             image=media[0] if media else None,
+            _outbound_metadata=dict(outbound.metadata),
         )
         for image in media[1:]:
             result = await self._push.execute(

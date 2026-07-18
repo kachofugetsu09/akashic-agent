@@ -73,6 +73,7 @@ async def test_orchestrator_skip_runs_side_effects_without_dispatch():
 async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success_effects():
     order: list[str] = []
     session = _DummySession("telegram:123")
+    dispatched_delivery_ids: list[str] = []
 
     class _Effect:
         def __init__(self, name: str) -> None:
@@ -85,6 +86,10 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
         async def dispatch(self, outbound: OutboundDispatch) -> bool:
             order.append("dispatch")
             assert outbound.content == "hello"
+            delivery_id = outbound.metadata["delivery_id"]
+            assert isinstance(delivery_id, str)
+            assert len(delivery_id) == 32
+            dispatched_delivery_ids.append(delivery_id)
             return True
 
     presence = SimpleNamespace(record_proactive_sent=lambda _key: order.append("presence"))
@@ -124,6 +129,7 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
     assert sent is True
     assert session.messages[0]["proactive"] is True
     assert session.messages[0]["content"] == "hello"
+    assert session.messages[0]["delivery_id"] == dispatched_delivery_ids[0]
     assert order == ["side_effect", "dispatch", "persist", "presence", "success_effect"]
 
 
@@ -175,6 +181,30 @@ async def test_push_outbound_port_propagates_unexpected_tool_error():
                 content="hello",
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_push_outbound_port_forwards_internal_metadata():
+    push_tool = SimpleNamespace(execute=AsyncMock(return_value="文本已发送"))
+    port = PushToolOutboundPort(push_tool)
+
+    sent = await port.dispatch(
+        OutboundDispatch(
+            channel="mobile",
+            chat_id="123",
+            content="hello",
+            metadata={"delivery_id": "delivery-1"},
+        )
+    )
+
+    assert sent is True
+    push_tool.execute.assert_awaited_once_with(
+        channel="mobile",
+        chat_id="123",
+        message="hello",
+        image=None,
+        _outbound_metadata={"delivery_id": "delivery-1"},
+    )
 
 
 @pytest.mark.asyncio

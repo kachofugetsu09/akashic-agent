@@ -219,6 +219,7 @@ class MobileRealtimeChannel:
             self.name,
             text=self.send,
             stream_text=self.send_stream,
+            text_with_metadata=self.send_with_metadata,
         )
 
     async def stop(self) -> None:
@@ -434,16 +435,47 @@ class MobileRealtimeChannel:
         return _reply_from_receipt(completed)
 
     async def send(self, chat_id: str, message: str) -> None:
+        await self._send_proactive(chat_id, message, delivery_id=None)
+
+    async def send_with_metadata(
+        self,
+        chat_id: str,
+        message: str,
+        metadata: dict[str, object],
+    ) -> None:
+        """发送携带核心主动投递身份的消息。"""
+
+        delivery_id = metadata.get("delivery_id")
+        if (
+            not isinstance(delivery_id, str)
+            or not delivery_id
+            or len(delivery_id) > 128
+        ):
+            raise ValueError("mobile proactive delivery_id 无效")
+        await self._send_proactive(chat_id, message, delivery_id=delivery_id)
+
+    async def _send_proactive(
+        self,
+        chat_id: str,
+        message: str,
+        *,
+        delivery_id: str | None,
+    ) -> None:
+        """把主动文字发布为移动端持久事件。"""
+
         self._raise_delta_failure()
         session_id = self._session_id(chat_id)
+        payload: dict[str, object] = {
+            "content": message,
+            "attachments": [],
+            "metadata": {"source": "message_push"},
+        }
+        if delivery_id is not None:
+            payload["delivery_id"] = delivery_id
         await self._runtime.publish_event(
             event_type="message.proactive",
             session_id=session_id,
-            payload={
-                "content": message,
-                "attachments": [],
-                "metadata": {"source": "message_push"},
-            },
+            payload=payload,
         )
 
     async def send_stream(self, chat_id: str, message: str) -> None:
@@ -1574,9 +1606,9 @@ def _mobile_history_item(item: Mapping[str, object]) -> dict[str, object]:
     """裁剪服务端内部字段，只向手机同步可展示历史。"""
 
     mobile_extra: dict[str, object] = {}
-    for field in ("reasoning_content", "turn_duration_ms"):
+    for field in ("reasoning_content", "turn_duration_ms", "proactive", "delivery_id"):
         value = item.get(field)
-        if isinstance(value, (str, int, float)):
+        if isinstance(value, (str, int, float, bool)):
             mobile_extra[field] = value
 
     result: dict[str, object] = {

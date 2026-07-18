@@ -343,9 +343,11 @@ session、channel、chat、source_ref 和预算在每次 post-response run 创�
 
 AgentLoop 唯一拥有活动 turn task 的取消和 cleanup。无论成功、失败或取消，都恢复临时 session context。terminal event、inbound complete 和 delivery ack 各自由一个层提交，保证恰好一次。
 
-### OUT-001 未送达内容不得进入可见历史
+### OUT-001 被动按 Turn 提交，主动按送达提交
 
-dispatch 明确成功是写入用户可见历史、presence、dedupe 和 success 状态的前置条件。部分送达必须有独立状态，不能冒充成功或完全失败。
+被动消息以完整 Turn 为权威提交单位。推理和持久化成功后，user 与 assistant 消息共同进入会话历史；随后 dispatch 失败不得回滚已经提交的 Turn。主动消息没有对应的用户 Turn，只有 dispatch 明确成功后才进入会话历史、presence、dedupe 和 success 状态；未发送内容不得让 Agent 误认为自己已经说过。
+
+同一条主动消息的实时事件与发送成功后的历史投影必须携带同一个稳定投递身份。客户端优先用该身份精确合并；内容与时间匹配只能兼容缺少稳定身份的旧消息。部分送达和结果不明必须有独立状态，不能冒充成功或完全失败。
 
 ### OUT-002 回合副作用的顺序和分支确定
 

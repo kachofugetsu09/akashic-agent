@@ -4,7 +4,7 @@
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 from agent.tools.base import Tool
 from bus.queue import ChatLane
@@ -71,6 +71,9 @@ class MessagePushTool(Tool):
         channel: str,
         text: Callable[[str, str], Awaitable[None]] | None = None,
         stream_text: Callable[[str, str], Awaitable[None]] | None = None,
+        text_with_metadata: (
+            Callable[[str, str, dict[str, object]], Awaitable[None]] | None
+        ) = None,
         file: Callable[[str, str, str | None], Awaitable[None]] | None = None,
         image: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> ChannelRegistration:
@@ -89,6 +92,8 @@ class MessagePushTool(Tool):
             self._senders[channel]["text"] = text
         if stream_text:
             self._senders[channel]["stream_text"] = stream_text
+        if text_with_metadata:
+            self._senders[channel]["text_with_metadata"] = text_with_metadata
         if file:
             self._senders[channel]["file"] = file
         if image:
@@ -111,6 +116,13 @@ class MessagePushTool(Tool):
         file: str | None = kwargs.get("file")
         image: str | None = kwargs.get("image")
         commit_role = str(kwargs.get("_commit_role") or "").strip()
+        raw_outbound_metadata = kwargs.get("_outbound_metadata", {})
+        if not isinstance(raw_outbound_metadata, dict):
+            raise TypeError("message_push _outbound_metadata 必须是字符串键对象")
+        metadata_object = cast(dict[object, object], raw_outbound_metadata)
+        if not all(isinstance(key, str) for key in metadata_object):
+            raise TypeError("message_push _outbound_metadata 必须是字符串键对象")
+        outbound_metadata = cast(dict[str, object], metadata_object)
 
         if not message and not file and not image:
             return "错误：message、file、image 至少提供一个"
@@ -127,6 +139,7 @@ class MessagePushTool(Tool):
                 file=file,
                 image=image,
                 senders=senders,
+                outbound_metadata=outbound_metadata,
             )
 
         if self._chat_lane is not None and commit_role != "passive":
@@ -142,13 +155,21 @@ class MessagePushTool(Tool):
         file: str | None,
         image: str | None,
         senders: dict[str, Callable[..., Awaitable[None]]],
+        outbound_metadata: dict[str, object],
     ) -> str:
 
         results: list[str] = []
         try:
             if message and "text" in senders:
-                sender_name = "stream_text" if "stream_text" in senders else "text"
-                await senders[sender_name](chat_id, message)
+                if outbound_metadata and "text_with_metadata" in senders:
+                    await senders["text_with_metadata"](
+                        chat_id,
+                        message,
+                        dict(outbound_metadata),
+                    )
+                else:
+                    sender_name = "stream_text" if "stream_text" in senders else "text"
+                    await senders[sender_name](chat_id, message)
                 preview = message[:60] + "..." if len(message) > 60 else message
                 logger.info(f"[message_push] {channel}:{chat_id} ← text: {preview!r}")
                 results.append("文本已发送")
