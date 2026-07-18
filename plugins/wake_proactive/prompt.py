@@ -8,7 +8,7 @@ from agent.prompting import (
     build_context_frame_content,
     build_context_frame_message,
 )
-from plugins.wake_proactive.context import WakeContext
+from plugins.wake_proactive.context import WakeContext, content_candidate_map
 
 
 PromptMode = Literal["content", "alert", "context"]
@@ -119,33 +119,37 @@ def build_messages(
 
 
 def _render_content_window(ctx: WakeContext) -> str:
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for event in ctx.content_events:
+    grouped: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    for candidate_ref, event in content_candidate_map(ctx).items():
         source_id = str(
             event.get("_reservoir_original_source_id")
             or event.get("source_id")
             or event.get("source")
             or "unknown"
         )
-        grouped.setdefault(source_id, []).append(event)
+        grouped.setdefault(source_id, []).append((candidate_ref, event))
 
     lines: list[str] = []
-    for source_id, events in grouped.items():
+    for source_id, candidates in grouped.items():
         source_name = str(
-            events[0].get("source_name") or events[0].get("source") or source_id
+            candidates[0][1].get("source_name")
+            or candidates[0][1].get("source")
+            or source_id
         )
         lines.append(f"来源：{source_name}")
-        for event in sorted(
-            events,
+        for candidate_ref, event in sorted(
+            candidates,
             key=lambda item: str(
-                item.get("published_at") or item.get("first_seen_at") or ""
+                item[1].get("published_at")
+                or item[1].get("first_seen_at")
+                or ""
             ),
             reverse=True,
         ):
             lines.append(
                 " | ".join(
                     (
-                        f"id={event['id']}",
+                        f"item_id={candidate_ref}",
                         f"published_at={event.get('published_at') or event.get('first_seen_at') or ''}",
                         f"title={event.get('title') or ''}",
                         f"source_name={event.get('source_name') or event.get('source') or ''}",

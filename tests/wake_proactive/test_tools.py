@@ -38,7 +38,7 @@ def _plan() -> dict:
     return {
         "items": [
             {
-                "item_id": "feed:a",
+                "item_id": "candidate_1",
                 "initial_interest": "uncertain",
                 "question": "是否有可复用的唤醒方法",
                 "recall_query": "用户是否关心主动唤醒架构",
@@ -75,10 +75,10 @@ async def test_scratchpad_rejects_too_many_candidates():
             {
                 "items": [
                     {
-                        "item_id": event["id"],
+                        "item_id": f"candidate_{index}",
                         "initial_interest": "likely_interesting",
                     }
-                    for event in events
+                    for index, _event in enumerate(events, 1)
                 ]
             },
             ctx,
@@ -94,6 +94,127 @@ async def test_scratchpad_records_only_candidates_without_training_side_effect()
     assert result == {"ok": True, "screened": 2, "planned": 1, "to_investigate": 1}
     assert ctx.terminal_action is None
     assert ctx.cited_item_ids == []
+
+
+@pytest.mark.asyncio
+async def test_wake_candidate_ref_is_canonicalized_before_consumption():
+    canonical_id = "feed@github:subscriptions:fmcp_ab9a"
+    source_event_id = "fmcp_ab9a"
+    ctx = WakeContext(
+        content_events=[
+            {
+                "id": canonical_id,
+                "_reservoir_source_event_id": source_event_id,
+                "title": "GPT-Red",
+                "url": "https://example.com/gpt-red",
+            }
+        ]
+    )
+    web = MagicMock()
+    web.execute = AsyncMock(return_value=json.dumps({"text": "正文", "url": ""}))
+    deps = ToolDeps(web_fetch_tool=web)
+
+    await execute(
+        "scratchpad",
+        {
+            "items": [
+                {
+                    "item_id": "candidate_1",
+                    "initial_interest": "likely_interesting",
+                }
+            ]
+        },
+        ctx,
+        deps,
+    )
+    await execute("investigate_candidates", {}, ctx, deps)
+    await execute(
+        "share_content",
+        {
+            "message": "GPT-Red 发布了。",
+            "items": [{"item_id": "candidate_1", "summary": "GPT-Red"}],
+        },
+        ctx,
+        deps,
+    )
+
+    assert list(ctx.scratchpad) == [canonical_id]
+    assert ctx.cited_item_ids == [canonical_id]
+    assert ctx.display_event_map == {1: canonical_id}
+    assert ctx.source_refs[0]["event_id"] == canonical_id
+
+
+@pytest.mark.asyncio
+async def test_candidate_refs_disambiguate_equal_source_event_ids():
+    github_id = "feed@github:subscriptions:fmcp_same"
+    lab_id = "feed@lab:subscriptions:fmcp_same"
+    ctx = WakeContext(
+        content_events=[
+            {
+                "id": github_id,
+                "_reservoir_source_event_id": "fmcp_same",
+                "title": "GitHub Feed",
+                "content": "github 正文",
+            },
+            {
+                "id": lab_id,
+                "_reservoir_source_event_id": "fmcp_same",
+                "title": "Lab Feed",
+                "content": "lab 正文",
+            },
+        ]
+    )
+    deps = ToolDeps()
+
+    await execute(
+        "scratchpad",
+        {
+            "items": [
+                {
+                    "item_id": "candidate_2",
+                    "initial_interest": "likely_interesting",
+                }
+            ]
+        },
+        ctx,
+        deps,
+    )
+    investigation = json.loads(
+        await execute("investigate_candidates", {}, ctx, deps)
+    )
+    await execute(
+        "share_content",
+        {
+            "message": "Lab Feed 发布了。",
+            "items": [{"item_id": "candidate_2", "summary": "Lab Feed"}],
+        },
+        ctx,
+        deps,
+    )
+
+    assert list(ctx.scratchpad) == [lab_id]
+    assert list(investigation["items"]) == ["candidate_2"]
+    assert ctx.cited_item_ids == [lab_id]
+
+
+@pytest.mark.asyncio
+async def test_source_event_id_is_not_accepted_as_candidate_ref():
+    ctx = WakeContext(content_events=_events())
+
+    with pytest.raises(ValueError, match="unknown item_id"):
+        await execute(
+            "scratchpad",
+            {
+                "items": [
+                    {
+                        "item_id": "feed:a",
+                        "initial_interest": "likely_interesting",
+                    }
+                ]
+            },
+            ctx,
+            ToolDeps(),
+        )
 
 
 @pytest.mark.asyncio
@@ -122,7 +243,7 @@ async def test_scratchpad_rejects_invalid_interest():
             {
                 "items": [
                     {
-                        "item_id": "feed:a",
+                        "item_id": "candidate_1",
                         "initial_interest": "maybe",
                         "recall_query": "query",
                     }
@@ -139,7 +260,7 @@ async def test_scratchpad_derives_investigation_and_recall_query():
 
     await execute(
         "scratchpad",
-        {"items": [{"item_id": "feed:a", "initial_interest": "uncertain"}]},
+        {"items": [{"item_id": "candidate_1", "initial_interest": "uncertain"}]},
         ctx,
         ToolDeps(),
     )
@@ -156,7 +277,7 @@ async def test_scratchpad_ignores_explicit_not_interesting_item():
         "scratchpad",
         {
             "items": [
-                {"item_id": "feed:a", "initial_interest": "not_interesting"}
+                {"item_id": "candidate_1", "initial_interest": "not_interesting"}
             ]
         },
         ctx,
@@ -201,8 +322,8 @@ async def test_investigate_candidates_fetches_and_recalls_concurrently():
     result = json.loads(await execute("investigate_candidates", {}, ctx, deps))
 
     assert result["count"] == 1
-    assert result["items"]["feed:a"]["content"]["text"] == "正文"
-    assert result["items"]["feed:a"]["memory"]["hits"] == 1
+    assert result["items"]["candidate_1"]["content"]["text"] == "正文"
+    assert result["items"]["candidate_1"]["memory"]["hits"] == 1
     assert peak == 2
     web.execute.assert_awaited_once()
     memory.query.assert_awaited_once()
@@ -225,7 +346,7 @@ async def test_share_content_renders_one_message_and_stable_mapping(tmp_path):
                 "opening": "我挑出两条里真正值得看的一条。",
                 "items": [
                     {
-                        "item_id": "feed:a",
+                        "item_id": "candidate_1",
                         "summary": "它把时间因素放进了唤醒判断。",
                         "why_it_matters": "可以直接用于现在的主动 agent。",
                     }
@@ -263,7 +384,7 @@ async def test_share_content_accepts_natural_message_with_evidence_sources():
             "share_content",
             {
                 "message": "刚看到一个挺对你胃口的设计：它把时间本身放进了唤醒判断。",
-                "items": [{"item_id": "feed:a", "summary": "不会显示的模板摘要"}],
+                "items": [{"item_id": "candidate_1", "summary": "不会显示的模板摘要"}],
             },
             ctx,
             deps,
@@ -300,7 +421,7 @@ async def test_investigate_failure_is_evidence_gap_not_negative_label():
             {
                 "items": [
                     {
-                        "item_id": "feed:a",
+                        "item_id": "candidate_1",
                         "summary": "没有正文证据时不能分享",
                     }
                 ]

@@ -505,6 +505,10 @@ class WakeRuntime:
             for event in state.contents
             if str(event.get("id") or "") in selected_ids
         ]
+        if len(selected_events) != len(selected_ids):
+            raise RuntimeError(
+                "wake proactive cited content does not match canonical candidates"
+            )
         effect = AsyncEffect(
             lambda: self._consume_events(selected_events, state.ctx.now_utc)
         )

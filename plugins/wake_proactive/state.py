@@ -413,15 +413,21 @@ class WakeStateStore:
     def consume(self, item_ids: list[str], now: datetime) -> None:
         if not item_ids:
             return
-        placeholders = ",".join("?" for _ in item_ids)
-        _ = self._conn.execute(
+        unique_item_ids = list(dict.fromkeys(item_ids))
+        placeholders = ",".join("?" for _ in unique_item_ids)
+        cursor = self._conn.execute(
             f"""
             UPDATE reservoir_events
             SET status = 'consumed', consumed_at = ?
             WHERE item_id IN ({placeholders})
             """,
-            (now.isoformat(), *item_ids),
+            (now.isoformat(), *unique_item_ids),
         )
+        if cursor.rowcount != len(unique_item_ids):
+            self._conn.rollback()
+            raise RuntimeError(
+                "wake reservoir consume did not match every canonical item_id"
+            )
         self._conn.commit()
 
     def expire(self, item_ids: list[str], now: datetime) -> None:

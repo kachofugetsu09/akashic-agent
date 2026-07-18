@@ -473,7 +473,7 @@ AKASHIC_RACE_WORKSPACE 指定临时 workspace；不指定时使用临时目录
    └─ state
       ├─ proactive.db
       ├─ sessions.db
-      ├─ feed-data/feed_mcp.sqlite3
+      ├─ plugin-data/feed-github/feed_mcp.sqlite3
       └─ drift/drift.db
 ```
 

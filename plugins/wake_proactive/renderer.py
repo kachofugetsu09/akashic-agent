@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from plugins.wake_proactive.context import event_item_aliases
+from plugins.wake_proactive.context import content_event_map
 
 
 @dataclass(slots=True)
@@ -22,11 +22,7 @@ def render_share(
     closing: str,
     events: list[dict[str, Any]],
 ) -> RenderedShare:
-    event_map = {
-        alias: event
-        for event in events
-        for alias in event_item_aliases(event)
-    }
+    event_map = content_event_map(events)
     blocks: list[str] = []
     opening = opening.strip()
     closing = closing.strip()

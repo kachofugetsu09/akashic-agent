@@ -147,6 +147,10 @@ def _assert_sandbox_path(path: Path) -> None:
         raise RuntimeError(f"沙盒路径必须位于 /sandbox: {resolved}")
 
 
+def _feed_db_path(workspace: Path) -> Path:
+    return workspace / "plugin-data" / "feed-github" / "feed_mcp.sqlite3"
+
+
 def reset(workspace: Path) -> None:
     _assert_sandbox_path(workspace)
     shutil.rmtree(workspace, ignore_errors=True)
@@ -171,7 +175,7 @@ def reset(workspace: Path) -> None:
 
 def inject_content(workspace: Path) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
-    db_path = workspace / "feed-data" / "feed_mcp.sqlite3"
+    db_path = _feed_db_path(workspace)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
@@ -224,7 +228,7 @@ def inject_content(workspace: Path) -> None:
 
 
 def clear_content(workspace: Path) -> None:
-    db_path = workspace / "feed-data" / "feed_mcp.sqlite3"
+    db_path = _feed_db_path(workspace)
     if not db_path.exists():
         return
     with sqlite3.connect(db_path) as conn:
@@ -436,6 +440,7 @@ async def tick(
 
     push.register_channel("sandbox", text=send_text)
     await plugins.load_all()
+    runtime_sources = plugins.proactive_sources
     if isinstance(provider, SandboxProvider):
         feed_sources = [
             source
@@ -449,8 +454,11 @@ async def tick(
             )
         source = feed_sources[0]
         provider.content_item_id = (
-            f"{source.plugin_id}:{source.spec.id}:{EVENT_ID}"
+            "candidate_1"
+            if lifecycle == "wake"
+            else f"{source.plugin_id}:{source.spec.id}:{EVENT_ID}"
         )
+        runtime_sources = feed_sources
     snapshot = plugins.current_snapshot
     snapshot_tools = snapshot.tool_registry if snapshot is not None else None
     registered_names = (
@@ -474,14 +482,14 @@ async def tick(
         model=model,
         max_tokens=max_tokens,
         state_store=state,
-        rng=random.Random(0),
-        shared_tools=tools,
+        rng=random.Random(1 if lifecycle == "wake" else 0),
+        shared_tools=snapshot_tools or tools,
         event_bus=event_bus,
         proactive_modules=plugins.proactive_modules,
         proactive_lifecycles=plugins.proactive_lifecycles,
         proactive_module_factories=plugins.proactive_module_factories,
         proactive_runtime_factories=plugins.proactive_runtime_factories,
-        proactive_sources=plugins.proactive_sources,
+        proactive_sources=runtime_sources,
     )
     try:
         await loop._proactive_kernel.start()
@@ -513,13 +521,21 @@ async def tick(
 def status(workspace: Path) -> dict[str, Any]:
     return {
         "feed": _query_one(
-            workspace / "feed-data" / "feed_mcp.sqlite3",
+            _feed_db_path(workspace),
             "SELECT event_id, interest_ok, interest_scored_at FROM items WHERE event_id = ?",
             (EVENT_ID,),
         ),
         "feed_ack": _query_one(
-            workspace / "feed-data" / "feed_mcp.sqlite3",
+            _feed_db_path(workspace),
             "SELECT event_id, acked_at FROM acked_items WHERE event_id = ?",
+            (EVENT_ID,),
+        ),
+        "wake_reservoir": _query_one(
+            workspace / "wake_proactive.db",
+            """
+            SELECT item_id, source_event_id, status, consumed_at
+            FROM reservoir_events WHERE source_event_id = ?
+            """,
             (EVENT_ID,),
         ),
         "tick": _query_one(
@@ -606,6 +622,9 @@ async def run_all(
     if lifecycle == "wake":
         if not content_status["feed_ack"]:
             raise AssertionError("Wake content ACK 未写回 Feed MCP")
+        reservoir = content_status["wake_reservoir"] or {}
+        if reservoir.get("status") != "consumed" or not reservoir.get("consumed_at"):
+            raise AssertionError(f"Wake content 未按 canonical ID 消费: {reservoir}")
     else:
         if content_result["decision"] != "reply":
             raise AssertionError("default content 未以 reply 收尾")
