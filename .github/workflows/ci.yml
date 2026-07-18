@@ -6,6 +6,29 @@ on:
       - main
 
 jobs:
+  change-impact-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out full repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Show public impact plan
+        continue-on-error: true
+        run: python docker/debug/gate.py plan --base origin/main
+
+      - name: Run public semantic gate
+        run: python docker/debug/gate.py run --base origin/main
+
+      - name: Upload change gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: change-impact-gate
+          path: docker/debug/reports/change-gate/
+
   check-and-test:
     runs-on: ubuntu-latest
     steps:

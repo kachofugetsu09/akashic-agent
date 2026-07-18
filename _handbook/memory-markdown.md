@@ -1,5 +1,7 @@
 # 记忆系统——Markdown 文件层
 
+> **历史说明，不能作为当前实现的状态清单。** 当前主线只初始化并维护 `MEMORY.md`、`SELF.md`、`PENDING.md` 和 `RECENT_CONTEXT.md`；`history_entries` 通过 `ConsolidationCommitted` 交给语义记忆引擎，当前代码不再写 `HISTORY.md` 或 `memory/journal/`。新会话请以 [`docs/INDEX.md`](../docs/INDEX.md) 和 [`docs/design/persistence-state-map.md`](../docs/design/persistence-state-map.md) 为入口，再核对当前代码。
+
 akashic 的记忆分为两层：**Markdown 文件层**（人类可读，LLM 直接写入）和**向量数据库层**（`memory2.db`，语义检索）。本文档只讲 Markdown 层——哪几个文件、各自干什么、consolidation 怎么把对话变成记忆。
 
 ---

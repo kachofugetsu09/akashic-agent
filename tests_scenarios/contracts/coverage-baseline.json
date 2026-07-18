@@ -1,0 +1,23 @@
+{
+  "acceptedGaps": [],
+  "base": "6a0616c82267c2045f89539ae3b1b204655f5d57",
+  "catalogDigest": "42c7e060142e8750c6351655eab105e48721943fdbd2e051ecce7fbd45c00096",
+  "coveredP0": {
+    "context_projection": [
+      "context_history_nondestructive"
+    ],
+    "mcp": [
+      "mcp_call_finality"
+    ],
+    "memory": [
+      "memory_persistence_contract"
+    ],
+    "plugin": [
+      "plugin_generation_contract"
+    ],
+    "session_persistence": [
+      "context_history_nondestructive"
+    ]
+  },
+  "version": 1
+}

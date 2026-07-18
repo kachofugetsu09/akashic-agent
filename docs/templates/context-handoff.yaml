@@ -1,0 +1,35 @@
+# 只在主要里程碑压缩上下文；不得把本文件解释成新的项目需求。
+goal: ""
+success_criteria: []
+
+semantic_guard:
+  invariants: []
+  protected_state: []
+  allowed_effects: []
+  forbidden_effects: []
+
+authoritative_refs:
+  requirements: []
+  decisions: []
+  code: []
+  evidence: []
+
+verified_facts: []
+# assumptions item: {statement: "", risk: low|high, verification: ""}
+assumptions: []
+
+decisions: []
+changed_files: []
+completed_milestones: []
+remaining_work: []
+
+validation:
+  passed: []
+  pending: []
+  failed: []
+
+# 已压缩的工具结果、diff 或日志只按引用再次读取，不能从摘要补写细节。
+opaque_artifacts: []
+
+next_action: ""
+stop_or_ask_when: []

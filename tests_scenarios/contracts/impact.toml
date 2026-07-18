@@ -1,0 +1,236 @@
+version = 1
+
+[defaults]
+baseline_scenarios = ["contract_catalog", "workspace_bootstrap"]
+executable_suffixes = [
+  ".cjs",
+  ".js",
+  ".json",
+  ".mjs",
+  ".py",
+  ".sh",
+  ".sql",
+  ".toml",
+  ".ts",
+  ".tsx",
+  ".yaml",
+  ".yml",
+]
+executable_names = ["Dockerfile"]
+private_groups = ["channel", "events", "jobs", "lifecycle", "mcp", "memory", "plugin", "proactive"]
+always_full_paths = [
+  ".github/workflows/**",
+  "AGENTS.md",
+  "docker/debug/gate.py",
+  "docker/debug/docker-compose.change-gate.yml",
+  "docs/projectneed.md",
+  "tests/semantic/**",
+  "tests_scenarios/contracts/**",
+]
+
+[groups.context_projection]
+priority = "p0"
+requirements = ["CTX-001", "CTX-002", "SES-003", "SES-005", "TST-001", "TST-003"]
+paths = [
+  "agent/core/passive_turn.py",
+  "agent/policies/history_route.py",
+  "agent/prompting/**",
+  "agent/retrieval/**",
+]
+depends_on = ["session_persistence"]
+scenarios = ["context_history_nondestructive"]
+
+[groups.session_persistence]
+priority = "p0"
+requirements = ["SES-002", "SES-003", "SES-005", "TST-002", "TST-005"]
+paths = ["session/**", "infra/persistence/**"]
+depends_on = []
+scenarios = ["context_history_nondestructive"]
+
+[groups.mcp]
+priority = "p0"
+requirements = ["PLG-004", "PLG-008", "PLG-009", "TST-001", "TST-003"]
+paths = [
+  "agent/mcp/**",
+  "agent/tools/workspace_mcp.py",
+  "bootstrap/toolsets/protocol.py",
+  "proactive_v2/mcp_sources.py",
+  "tests/test_mcp_declarations.py",
+  "tests/test_mcp_sources_async.py",
+  "tests/test_workspace_mcp_admin.py",
+  "tests/test_workspace_mcp_reload_probe.py",
+]
+depends_on = ["plugin", "lifecycle"]
+scenarios = ["mcp_call_finality"]
+
+[groups.plugin]
+priority = "p0"
+requirements = ["PLG-001", "PLG-004", "PLG-009"]
+paths = [
+  "agent/plugins/**",
+  "plugin_packages/**",
+  "plugins/**",
+  "bootstrap/tools.py",
+  "bootstrap/wiring.py",
+  "tests/fixtures/plugins/**",
+  "tests/test_plugin_*.py",
+]
+depends_on = ["lifecycle"]
+scenarios = ["plugin_generation_contract"]
+
+[groups.lifecycle]
+priority = "p1"
+requirements = ["RUN-001", "RUN-002", "PLG-001"]
+paths = ["agent/lifecycle/**", "bootstrap/runtime_readiness.py"]
+depends_on = ["events"]
+scenarios = ["contract_catalog"]
+
+[groups.events]
+priority = "p1"
+requirements = ["RUN-001", "OUT-001"]
+paths = ["bus/**", "agent/tool_hooks/**"]
+depends_on = []
+scenarios = ["contract_catalog"]
+
+[groups.channel]
+priority = "p1"
+requirements = ["OUT-001", "OUT-002", "COM-001"]
+paths = ["infra/channels/**", "bootstrap/channel_host.py", "bootstrap/channels.py"]
+depends_on = ["events"]
+scenarios = ["contract_catalog"]
+
+[groups.proactive]
+priority = "p1"
+requirements = ["PRO-001", "PRO-002", "OUT-001"]
+paths = [
+  "proactive_v2/**",
+  "agent/core/proactive_kernel.py",
+  "bootstrap/proactive.py",
+  "tests/proactive_v2/**",
+  "tests/wake_proactive/**",
+]
+depends_on = ["events", "mcp"]
+scenarios = ["contract_catalog"]
+
+[groups.memory]
+priority = "p0"
+requirements = ["MEM-001", "MEM-002", "MEM-003", "SES-005", "WSP-004"]
+paths = [
+  "core/memory/**",
+  "memory2/**",
+  "agent/memory.py",
+  "agent/tools/forget_memory.py",
+  "agent/tools/memorize.py",
+  "agent/tools/recall_memory.py",
+  "bootstrap/memory.py",
+  "bootstrap/toolsets/memory.py",
+]
+depends_on = ["session_persistence"]
+scenarios = ["memory_persistence_contract"]
+
+[groups.jobs]
+priority = "p1"
+requirements = ["SCH-001", "SCH-002"]
+paths = ["agent/scheduler.py", "agent/plugins/jobs.py", "agent/tools/schedule.py", "bootstrap/toolsets/schedule.py"]
+depends_on = ["plugin"]
+scenarios = ["contract_catalog"]
+
+[groups.control]
+priority = "p1"
+requirements = ["COM-001", "COM-002", "ERR-001"]
+paths = [
+  "agent/control/**",
+  "agent/looping/**",
+  "agent/turns/**",
+  "bootstrap/app_server.py",
+  "bootstrap/control_execution.py",
+  "infra/control/**",
+  "tests/control/**",
+]
+depends_on = ["events", "session_persistence"]
+scenarios = ["contract_catalog"]
+
+[groups.runtime]
+priority = "p1"
+requirements = ["OBJ-003", "RUN-001", "ERR-001"]
+paths = [
+  "agent/background/**",
+  "agent/config.py",
+  "agent/config_models.py",
+  "agent/context.py",
+  "agent/core/**",
+  "agent/llm_json.py",
+  "agent/model_runtime/**",
+  "agent/peer_agent/**",
+  "agent/persona.py",
+  "agent/policies/**",
+  "agent/provider.py",
+  "agent/restart.py",
+  "agent/skills.py",
+  "agent/subagent.py",
+  "agent/supervisor.py",
+  "agent/tool_bundles.py",
+  "agent/tool_runtime.py",
+  "agent/tools/**",
+  "bootstrap/**",
+  "core/__init__.py",
+  "core/clock.py",
+  "core/common/**",
+  "core/error_context.py",
+  "core/net/**",
+  "infra/providers/**",
+  "infra/__init__.py",
+  "main.py",
+  "prompts/**",
+  "utils/**",
+]
+depends_on = ["events", "session_persistence"]
+scenarios = ["contract_catalog"]
+
+[groups.frontend]
+priority = "p2"
+requirements = ["COM-001", "COM-004"]
+paths = ["frontend/**", "eslint.config.js"]
+depends_on = ["control"]
+scenarios = ["contract_catalog"]
+
+[groups.sdk]
+priority = "p2"
+requirements = ["COM-002", "PLG-009"]
+paths = ["sdk/**", "schema/**", "types/**"]
+depends_on = []
+scenarios = ["contract_catalog"]
+
+[groups.evaluation]
+priority = "p2"
+requirements = ["TST-001", "TST-002"]
+paths = ["eval/**"]
+depends_on = ["runtime"]
+scenarios = ["contract_catalog"]
+
+[groups.tooling]
+priority = "p1"
+requirements = ["GOV-001", "GOV-003", "TST-001", "TST-006", "WSP-004"]
+paths = [
+  ".claude/**",
+  ".github/**",
+  ".gitmodules",
+  "components.json",
+  "config.example.toml",
+  "docker/**",
+  "docs/templates/**",
+  "package.json",
+  "pytest.ini",
+  "pyproject.toml",
+  "pyrightconfig*.json",
+  "requirements*.txt",
+  "private_runtime",
+  "scripts/**",
+  "skills/**",
+  "systemd/**",
+  "tests/**",
+  "tests_scenarios/**",
+  "tsconfig.json",
+]
+depends_on = []
+scenarios = ["contract_catalog", "workspace_bootstrap"]

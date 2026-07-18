@@ -1,0 +1,45 @@
+version = 1
+
+[states.session_messages]
+priority = "p0"
+requirements = ["SES-002", "SES-003", "SES-005"]
+owner = "session.store"
+normal_change = "insert_only"
+destructive_owner = "explicit_user_data_management"
+writers = ["session_persistence"]
+consumers = ["context_projection", "memory"]
+protected_tables = ["messages", "message_embeddings"]
+oracles = ["context_history_nondestructive"]
+
+[states.session_metadata]
+priority = "p0"
+requirements = ["SES-001", "SES-004"]
+owner = "session.store"
+normal_change = "metadata_upsert"
+destructive_owner = "explicit_user_data_management"
+writers = ["session_persistence"]
+consumers = ["context_projection", "runtime"]
+protected_tables = ["sessions"]
+oracles = ["context_history_nondestructive"]
+
+[states.runtime_workspace_boundary]
+priority = "p0"
+requirements = ["WSP-001", "WSP-002", "WSP-004"]
+owner = "runtime.workspace_selection"
+normal_change = "select_isolated_root"
+destructive_owner = "not_applicable"
+writers = ["runtime"]
+consumers = ["runtime", "memory", "plugin"]
+protected_tables = []
+oracles = ["workspace_bootstrap"]
+
+[states.plugin_data]
+priority = "p0"
+requirements = ["PLG-001", "PLG-004", "PLG-009", "PLG-010"]
+owner = "plugin.data"
+normal_change = "plugin_owned_update"
+destructive_owner = "explicit_plugin_data_deletion"
+writers = ["plugin"]
+consumers = ["plugin", "mcp", "proactive"]
+protected_tables = []
+oracles = ["plugin_generation_contract"]
