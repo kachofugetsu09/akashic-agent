@@ -4,7 +4,7 @@
     {
       "id": "observe",
       "repository": "https://github.com/akashic-plugins/observe",
-      "commit": "c3e5a2ce4f42a1048ebc61abc7788ba1b74f2e93",
+      "commit": "b434fa74b370fafcd0c64129fe1f641f73f0dbcf",
       "plugin_class": "ObservePlugin",
       "module": "mobile_panel.js",
       "stylesheet": "mobile_panel.css",
@@ -71,7 +71,7 @@
     {
       "id": "status_commands",
       "repository": "https://github.com/akashic-plugins/status_commands",
-      "commit": "7a3e8b35169a94274a7507c44b9271e13a4aa162",
+      "commit": "cee5bef98e6271c9eb069a6498b4ca072e85c878",
       "plugin_class": "StatusCommands",
       "module": "mobile_panel.js",
       "stylesheet": "mobile_panel.css",
