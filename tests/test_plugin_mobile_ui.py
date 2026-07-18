@@ -149,6 +149,40 @@ async def test_mobile_ui_query_receives_revision_and_turn_context() -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_mobile_ui_sync_query_never_blocks_event_loop() -> None:
+    provider = _provider()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def block(*args: object, **kwargs: object) -> dict[str, object]:
+        entered.set()
+        release.wait(timeout=1)
+        return {"status": "ready"}
+
+    generation = cast(Any, provider)._manager.current_snapshot.generations[
+        "sample@github"
+    ]
+    generation.instance.mobile_ui_query = block
+    query = asyncio.create_task(
+        provider.query(
+            "sample@github",
+            "revision-1",
+            "health.snapshot",
+            {},
+            session_id="mobile:test",
+            turn_id="turn-1",
+        )
+    )
+
+    assert await asyncio.to_thread(entered.wait, 1)
+    heartbeat = asyncio.create_task(asyncio.sleep(0))
+    await asyncio.wait_for(heartbeat, timeout=0.1)
+    assert not query.done()
+    release.set()
+    assert await query == {"status": "ready"}
+
+
 def test_mobile_ui_rejects_inactive_or_stale_plugin_assets() -> None:
     provider = _provider()
     item = cast(list[dict[str, object]], provider.catalog()["items"])[0]
