@@ -368,8 +368,8 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
     original_build_core_runtime = bootstrap_app.build_core_runtime
     observed: dict[str, object] = {}
 
-    def _patched_build_core_runtime(config, workspace, http_resources):
-        runtime = original_build_core_runtime(config, workspace, http_resources)
+    def _patched_build_core_runtime(config, workspace, http_resources, **kwargs):
+        runtime = original_build_core_runtime(config, workspace, http_resources, **kwargs)
         agent_loop = runtime.loop
         bus = runtime.bus
         scheduler = runtime.scheduler
@@ -776,7 +776,7 @@ async def test_app_runtime_start_preserves_startup_error_when_rollback_fails(
         start=_start,
         stop=_stop,
     )
-    monkeypatch.setattr(bootstrap_app, "build_core_runtime", lambda *_: core)
+    monkeypatch.setattr(bootstrap_app, "build_core_runtime", lambda *_, **__: core)
     runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
 
     with pytest.raises(RuntimeError, match="startup failed") as caught:
@@ -881,6 +881,7 @@ async def test_start_channels_wires_telegram_qq_and_plugin(
     starts: list[str] = []
     registrations: list[tuple[str, list[str]]] = []
     attachment_roots: list[Path] = []
+    mobile_catalogs: list[list[tuple[str, str]]] = []
     fake_telegram = types.ModuleType("infra.channels.telegram_channel")
     fake_qq = types.ModuleType("infra.channels.qq_channel")
 
@@ -947,6 +948,7 @@ async def test_start_channels_wires_telegram_qq_and_plugin(
         async def start(self, ctx: Any) -> None:
             starts.append("plugin")
             attachment_roots.append(ctx.attachment_store.root)
+            mobile_catalogs.append(ctx.mobile_bot_commands)
             ctx.push_tool.register_channel(self.name, text=self.send)
 
         async def stop(self) -> None:
@@ -988,6 +990,8 @@ async def test_start_channels_wires_telegram_qq_and_plugin(
         push_tool=cast(Any, _PushTool()),
         http_resources=resources,
         event_bus=event_bus,
+        telegram_bot_commands=[("telegram_only", "仅 Telegram")],
+        mobile_bot_commands=[("mobile_only", "仅 mobile")],
         interrupt_controller=cast(Any, controller),
         plugin_channels=[cast(Any, _PluginChannel())],
     )
@@ -1003,9 +1007,11 @@ async def test_start_channels_wires_telegram_qq_and_plugin(
         ]
         assert telegram.kwargs["event_bus"] is event_bus
         assert telegram.kwargs["interrupt_controller"] is controller
+        assert telegram.kwargs["bot_commands"] == [("telegram_only", "仅 Telegram")]
         assert qq.kwargs["interrupt_controller"] is controller
         assert plugin.name == "plugin"
         assert attachment_roots == [tmp_path / "uploads"]
+        assert mobile_catalogs == [[("mobile_only", "仅 mobile")]]
     finally:
         await host.stop_all()
         await resources.aclose()

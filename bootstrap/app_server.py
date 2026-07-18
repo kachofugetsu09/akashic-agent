@@ -25,7 +25,12 @@ async def run_stdio_app_server(config: Config, workspace: Path) -> None:
     service: ControlService | None = None
     try:
         # 1. 使用正式 core/provider wiring 建立应用服务。
-        core = build_core_runtime(config, workspace, http_resources)
+        core = build_core_runtime(
+            config,
+            workspace,
+            http_resources,
+            clear_stale_session_admissions=True,
+        )
         await core.start()
 
         async def execute(request: TurnRequest):

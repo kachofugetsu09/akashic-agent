@@ -30,7 +30,9 @@ class _DummySession:
     def get_history(self, max_messages: int = 500) -> list[dict[str, object]]:
         return self.messages[-max_messages:]
 
-    def add_message(self, role: str, content: str, media=None, **kwargs) -> None:
+    def add_message(
+        self, role: str, content: str, media=None, **kwargs
+    ) -> dict[str, object]:
         msg: dict[str, object] = {
             "role": role,
             "content": content,
@@ -40,6 +42,7 @@ class _DummySession:
             msg["media"] = list(media)
         msg.update(kwargs)
         self.messages.append(msg)
+        return msg
 
 
 @pytest.mark.asyncio
@@ -241,4 +244,3 @@ def test_response_parser_keeps_reply_protocols_for_plugins():
 
 
 # ── 新链 (AfterReasoning + AfterTurn) 端到端测试 ──
-

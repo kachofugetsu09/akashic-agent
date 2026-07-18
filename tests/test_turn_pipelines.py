@@ -95,10 +95,12 @@ class _FakeMemoryEngine:
         return None
 
 
-def test_stream_events_only_support_telegram_private_chat():
+def test_stream_events_support_realtime_private_channels():
     assert _supports_stream_events("telegram", "123")
     assert not _supports_stream_events("telegram", "-1001")
     assert not _supports_stream_events("telegram", "@alice")
+    assert _supports_stream_events("web", "desktop-chat")
+    assert _supports_stream_events("mobile", "b2b817df-2d23-4a8f-af01-415f4faf0f9b")
     assert not _supports_stream_events("qq", "123")
     assert not _supports_stream_events("cli", "direct")
 
@@ -356,11 +358,12 @@ def test_agent_loop_fanouts_turn_committed_from_passive_turn(tmp_path: Path):
     session.messages = []
     session.metadata = {}
     session.get_history = MagicMock(return_value=[])
-    session.add_message = MagicMock(
-        side_effect=lambda role, content, **kwargs: session.messages.append(
-            {"role": role, "content": content, **kwargs}
-        )
-    )
+    def add_message(role: str, content: str, **kwargs: object) -> dict[str, object]:
+        message = {"role": role, "content": content, **kwargs}
+        session.messages.append(message)
+        return message
+
+    session.add_message = MagicMock(side_effect=add_message)
     loop.session_manager.get_or_create.return_value = session
     loop.session_manager.append_messages = AsyncMock(return_value=None)
     loop._reasoner.run_turn = AsyncMock(

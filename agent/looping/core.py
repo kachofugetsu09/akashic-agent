@@ -87,6 +87,7 @@ _STREAM_SUPPORT_POLICIES: dict[str, StreamSupportPolicy] = {
     "programmatic": _is_nonempty,
     "telegram": _is_positive_int,
     "web": _is_nonempty,
+    "mobile": _is_nonempty,
     # 飞书私聊渠道：chat_id 形如 oc_xxx，全程支持流式预览（卡片 PATCH 消费 StreamDeltaReady）。
     "feishu": _is_nonempty,
 }
@@ -785,30 +786,31 @@ class AgentLoop:
         disabled_tools: list[str] | None = None,
         sender: str = "user",
         media: list[str] | None = None,
+        metadata: dict[str, object] | None = None,
         turn_id: str = "",
     ) -> OutboundMessage:
         """执行直接消息并保留渠道可观察的完整输出。"""
 
-        metadata: dict[str, object] = {}
+        inbound_metadata = dict(metadata or {})
         if omit_user_turn:
-            metadata["omit_user_turn"] = True
+            inbound_metadata["omit_user_turn"] = True
         if skip_post_memory:
-            metadata["skip_post_memory"] = True
+            inbound_metadata["skip_post_memory"] = True
         if skip_memory_retrieval:
-            metadata["skip_memory_retrieval"] = True
+            inbound_metadata["skip_memory_retrieval"] = True
         if not stream_events:
-            metadata["suppress_stream_events"] = True
+            inbound_metadata["suppress_stream_events"] = True
         if disabled_tools:
-            metadata["disabled_tools"] = list(disabled_tools)
+            inbound_metadata["disabled_tools"] = list(disabled_tools)
         if turn_id:
-            metadata["control_turn_id"] = turn_id
+            inbound_metadata["control_turn_id"] = turn_id
         msg = InboundMessage(
             channel=channel,
             sender=sender,
             chat_id=chat_id,
             content=content,
             media=list(media or []),
-            metadata=metadata,
+            metadata=inbound_metadata,
         )
         response = await self._process_with_runtime_admission(
             msg,

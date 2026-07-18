@@ -164,15 +164,28 @@ def _table_columns(db: sqlite3.Connection, table: str) -> set[str]:
 
 
 class AkashaStore:
-    def __init__(self, db_path: str | Path) -> None:
-        # 1. 初始化 sidecar 数据库和 schema。
+    def __init__(self, db_path: str | Path, *, read_only: bool = False) -> None:
+        """打开 Akasha sidecar，并只在写模式初始化 schema。"""
+
+        # 1. 只读 reader 必须由 SQLite 边界拒绝建库、迁移和业务写入。
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        if read_only:
+            self._db = sqlite3.connect(
+                f"{self.db_path.resolve().as_uri()}?mode=ro",
+                uri=True,
+                check_same_thread=False,
+            )
+            _ = self._db.execute("PRAGMA query_only = ON")
+        else:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._db = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         self._closed = False
-        self.ensure_schema()
+
+        # 2. schema 初始化和迁移只属于显式写模式。
+        if not read_only:
+            self.ensure_schema()
 
     @property
     def db(self) -> sqlite3.Connection:
@@ -837,6 +850,35 @@ class AkashaStore:
             "ripple_items_json": str(row["ripple_items"] or "[]"),
             "text_block_preview": str(row["text_block_preview"] or ""),
         }
+
+    def get_latest_context_query_log(
+        self,
+        session_key: str,
+        *,
+        before_seq: int | None = None,
+    ) -> dict[str, object] | None:
+        """读取会话中指定消息之前最近一次上下文召回。"""
+
+        # 1. context 才是实际注入模型的召回，answer 等显式查询不能覆盖它。
+        clauses = ["session_key = ?", "intent = 'context'"]
+        params: list[object] = [session_key]
+        if before_seq is not None:
+            clauses.append("seq < ?")
+            params.append(before_seq)
+        with self._lock:
+            row = self._db.execute(
+                f"""
+                SELECT query_id
+                FROM akasha_query_log
+                WHERE {' AND '.join(clauses)}
+                ORDER BY seq DESC, ts DESC, query_id DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        if row is None:
+            return None
+        return self.get_query_log(str(row["query_id"]))
 
 
 # 把 SQLite row 转成 AkashaNode。

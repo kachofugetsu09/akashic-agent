@@ -31,6 +31,12 @@ class AttachmentStore:
         root = self._resolve_root()
         return root / f"{prefix}{uuid4().hex}{suffix}"
 
+    def create_persistent_path(self, prefix: str, suffix: str) -> Path:
+        """只在配置的持久目录中分配路径，目录不可用时直接失败。"""
+
+        root = self._resolve_root()
+        return root / f"{prefix}{uuid4().hex}{suffix}"
+
     def write_bytes(self, data: bytes, *, prefix: str, suffix: str) -> Path:
         path = self.create_path(prefix, suffix)
         path.write_bytes(data)

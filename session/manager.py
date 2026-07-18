@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
+from uuid import uuid4
 
 from agent.prompting import (
     PromptSectionRender,
@@ -171,7 +172,7 @@ class Session:
 
     def add_message(
         self, role: str, content: str, media: list[str] | None = None, **kwargs: object
-    ) -> None:
+    ) -> dict[str, object]:
         """向 session 追加一条消息并更新时间。"""
         msg: dict[str, object] = {
             "role": role,
@@ -183,6 +184,7 @@ class Session:
             msg["media"] = list(media)
         self.messages.append(msg)
         self.updated_at = datetime.now(UTC)
+        return msg
 
     def get_history(
         self,
@@ -335,6 +337,10 @@ class SessionManager:
             self._write_locks[key] = asyncio.Lock()
         return self._write_locks[key]
 
+    def clear_stale_admissions(self) -> None:
+        """由持有 workspace 独占锁的 runtime 清理上次进程遗留租约。"""
+        self._store.clear_session_admissions()
+
     def get_or_create(self, key: str) -> Session:
         if key in self._cache:
             return self._cache[key]
@@ -345,6 +351,43 @@ class SessionManager:
             self._ensure_session_meta(session)
         self._cache[key] = session
         return session
+
+    def get_existing(self, key: str) -> Session:
+        """读取仍存在的会话，禁止把已删除身份重新创建。"""
+
+        # 1. 先以持久化 owner 核对身份，缓存不能覆盖删除事实
+        if not self._store.session_exists(key):
+            self.invalidate(key)
+            raise KeyError(f"session 不存在: {key}")
+
+        # 2. 复用缓存或装载持久化会话，不进入创建路径
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        session = self._load(key)
+        if session is None:
+            raise KeyError(f"session 不存在: {key}")
+        self._cache[key] = session
+        return session
+
+    def admit_existing(self, key: str) -> tuple[Session, str]:
+        """为仍存在的会话建立跨连接处理租约并返回会话。"""
+
+        # 1. 持久化 owner 原子核对身份并建立租约
+        admission_id = uuid4().hex
+        if not self._store.acquire_session_admission(key, admission_id):
+            self.invalidate(key)
+            raise KeyError(f"session 不存在: {key}")
+
+        # 2. 租约覆盖装载窗口；失败时立即回收
+        try:
+            return self.get_existing(key), admission_id
+        except BaseException:
+            self._store.release_session_admission(admission_id)
+            raise
+
+    def release_admission(self, admission_id: str) -> None:
+        self._store.release_session_admission(admission_id)
 
     def peek_next_message_id(self, session_key: str) -> str:
         next_seq = self._store.next_seq(session_key)

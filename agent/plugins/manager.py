@@ -32,6 +32,7 @@ from agent.plugins.packages import discover_plugin_packages, enabled_plugin_pack
 from agent.plugins.specs import (
     ManagedServiceSpec,
     McpServerSpec,
+    MobileUiContribution,
     ProactiveSourceSpec,
     RegisteredProactiveSource,
 )
@@ -59,6 +60,7 @@ from agent.plugins.scope import CleanupFailure, PluginScope, ScopedEventBus
 from agent.plugins.generation import (
     GateCheckResult,
     GateResult,
+    MobileUiAsset,
     PluginContributions,
     PluginGeneration,
     PluginReadinessContext,
@@ -587,12 +589,21 @@ class PluginManager:
 
     @property
     def telegram_bot_commands(self) -> list[tuple[str, str]]:
+        return self._declared_bot_commands("telegram_bot_commands")
+
+    @property
+    def mobile_bot_commands(self) -> list[tuple[str, str]]:
+        return self._declared_bot_commands("mobile_bot_commands")
+
+    def _declared_bot_commands(self, getter_name: str) -> list[tuple[str, str]]:
+        """聚合当前插件代际为指定渠道显式声明的命令。"""
+
         commands: list[tuple[str, str]] = []
         for generation in self._active_generations.values():
             if not self._registry_active(generation.module_path):
                 continue
             instance = generation.instance
-            getter = getattr(instance, "telegram_bot_commands", None)
+            getter = getattr(instance, getter_name, None)
             if getter is None:
                 continue
             typed_getter = cast(Callable[[], list[tuple[str, str]]], getter)
@@ -2169,7 +2180,8 @@ class PluginManager:
         module_path: str,
         source_revision: str,
     ) -> PluginContributions:
-        cls = type(instance)
+        cls = cast(type[Any], type(instance))
+        _reject_legacy_mobile_ui_api(cls, plugin_id)
         sources: list[RegisteredProactiveSource] = []
         for source in _load_module_list(instance, "proactive_sources"):
             if not isinstance(source, ProactiveSourceSpec):
@@ -2257,6 +2269,10 @@ class PluginManager:
             dashboard_module=_resolve_dashboard_module(
                 plugin_dir,
                 cls.dashboard_module(),
+            ),
+            mobile_ui_asset=_resolve_mobile_ui_asset(
+                plugin_dir,
+                cls.mobile_ui(),
             ),
         )
 
@@ -2847,6 +2863,89 @@ def _resolve_dashboard_module(plugin_dir: Path, declared: str | None) -> Path | 
     if not path.is_relative_to(root) or path.suffix != ".py" or not path.is_file():
         raise RuntimeError(f"插件 dashboard module 无效: {declared}")
     return path
+
+
+def _reject_legacy_mobile_ui_api(cls: type[Any], plugin_id: str) -> None:
+    """拒绝已移除的移动 UI v1 声明，避免插件被静默降级。"""
+
+    legacy_methods = tuple(
+        name
+        for name in (
+            "mobile_ui_module",
+            "mobile_ui_stylesheet",
+            "mobile_ui_call",
+        )
+        if inspect.getattr_static(cls, name, None) is not None
+    )
+    if legacy_methods:
+        raise RuntimeError(
+            f"插件 {plugin_id} 使用已移除的 Mobile UI v1 API: "
+            f"{', '.join(legacy_methods)}；请迁移到 mobile_ui 和 mobile_ui_query"
+        )
+
+
+def _resolve_mobile_ui_asset(
+    plugin_dir: Path,
+    declared: MobileUiContribution | None,
+) -> MobileUiAsset | None:
+    """在插件激活边界固化并校验移动 UI 资产。"""
+
+    if declared is None:
+        return None
+    if not isinstance(declared, MobileUiContribution):
+        raise RuntimeError("插件 mobile UI 声明必须是 MobileUiContribution")
+    root = plugin_dir.resolve(strict=False)
+    module_path = (plugin_dir / declared.module).resolve(strict=False)
+    if not module_path.is_relative_to(root) or module_path.suffix != ".js" or not module_path.is_file():
+        raise RuntimeError(f"插件 mobile UI module 无效: {declared.module}")
+    allowed_slots = {
+        "turn.before_reasoning",
+        "turn.before_tool",
+        "turn.after_answer",
+        "drawer.panel",
+    }
+    if len(set(declared.slots)) != len(declared.slots) or any(
+        slot not in allowed_slots for slot in declared.slots
+    ):
+        raise RuntimeError("插件 mobile UI slots 无效")
+    navigation = declared.navigation
+    if navigation is not None and (
+        not navigation.label.strip()
+        or len(navigation.label) > 64
+        or not navigation.description.strip()
+        or len(navigation.description) > 160
+    ):
+        raise RuntimeError("插件 mobile UI navigation 无效")
+    stylesheet = ""
+    if declared.stylesheet is not None:
+        stylesheet_path = (plugin_dir / declared.stylesheet).resolve(strict=False)
+        if (
+            not stylesheet_path.is_relative_to(root)
+            or stylesheet_path.suffix != ".css"
+            or not stylesheet_path.is_file()
+        ):
+            raise RuntimeError(f"插件 mobile UI stylesheet 无效: {declared.stylesheet}")
+        stylesheet = stylesheet_path.read_text(encoding="utf-8")
+    module = module_path.read_text(encoding="utf-8")
+    module_encoded = module.encode("utf-8")
+    stylesheet_encoded = stylesheet.encode("utf-8")
+    if len(module_encoded) + len(stylesheet_encoded) > 240 * 1024:
+        raise RuntimeError("插件 mobile UI 资产超过协议安全预算")
+    return MobileUiAsset(
+        module=module,
+        module_sha256=hashlib.sha256(module_encoded).hexdigest(),
+        module_bytes=len(module_encoded),
+        stylesheet=stylesheet,
+        stylesheet_sha256=(
+            hashlib.sha256(stylesheet_encoded).hexdigest() if stylesheet else None
+        ),
+        stylesheet_bytes=len(stylesheet_encoded),
+        navigation_label=None if navigation is None else navigation.label.strip(),
+        navigation_description=(
+            None if navigation is None else navigation.description.strip()
+        ),
+        slots=tuple(declared.slots),
+    )
 
 
 def _resolve_managed_services(

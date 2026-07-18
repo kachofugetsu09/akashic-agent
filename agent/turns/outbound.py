@@ -15,6 +15,7 @@ class OutboundDispatch:
     thinking: str | None = None
     metadata: dict[str, object] = field(default_factory=dict[str, object])
     media: list[str] = field(default_factory=list[str])
+    session_message_id: str | None = None
 
 
 class OutboundPort(Protocol):
@@ -34,6 +35,7 @@ class BusOutboundPort:
                 thinking=outbound.thinking,
                 metadata=dict(outbound.metadata),
                 media=list(outbound.media),
+                session_message_id=outbound.session_message_id,
             )
         )
         return True

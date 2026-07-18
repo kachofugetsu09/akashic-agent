@@ -467,7 +467,7 @@ async def test_app_start_bad_batch_releases_workspace_lock(
         async def stop(self) -> None:
             await manager.terminate_all()
 
-    monkeypatch.setattr("bootstrap.app.build_core_runtime", lambda *_: Core())
+    monkeypatch.setattr("bootstrap.app.build_core_runtime", lambda *_, **__: Core())
     runtime = AppRuntime(object(), tmp_path)  # type: ignore[arg-type]
     with pytest.raises(ConnectionError):
         await runtime.start()

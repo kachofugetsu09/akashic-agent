@@ -1153,6 +1153,7 @@ class AkashaMemoryEngine:
                 "key": card.key,
                 "user_message": card.user_message,
                 "assistant_preview": card.assistant_preview,
+                "happened_at": card.happened_at,
                 "score": card.score,
                 "source_ref": card.source_ref,
             }

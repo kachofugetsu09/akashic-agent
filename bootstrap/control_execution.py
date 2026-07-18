@@ -19,6 +19,7 @@ from agent.model_runtime.errors import (
 )
 from agent.provider import ContentSafetyError, ContextLengthError, LLMNetworkTimeoutError
 from bus.event_bus import EventBus
+from bus.events import TurnDisposition
 from bus.events_lifecycle import (
     StreamDeltaReady,
     ToolCallCompleted,
@@ -100,6 +101,7 @@ async def execute_control_turn(
                 chat_id=str(request.metadata.get("chatId") or request.thread_id),
                 sender=str(request.metadata.get("sender") or "user"),
                 media=_media_values(request.metadata.get("media")),
+                metadata=_inbound_metadata(request.metadata.get("inboundMetadata")),
                 turn_id=turn_id,
                 stream_events=True,
             )
@@ -129,8 +131,9 @@ async def execute_control_turn(
         tool_started_subscription.close()
         tool_subscription.close()
 
-    # 2. 核心成功后 TurnCommitted 必须已同步 fanout，否则属于内部契约错误。
-    if committed is None:
+    # 2. 插件命令可在推理前合法短路；普通 turn 仍必须完成正式提交。
+    short_circuited = outbound.turn_disposition is TurnDisposition.SHORT_CIRCUITED
+    if committed is None and not short_circuited:
         raise RuntimeError(f"turn 缺少 TurnCommitted 事件: {turn_id}")
     if tool_item_ids or invalid_tool_events:
         raise RuntimeError(
@@ -144,10 +147,11 @@ async def execute_control_turn(
             "replyTo": outbound.reply_to,
             "media": list(outbound.media),
             "metadata": dict(outbound.metadata),
+            "sessionMessageId": outbound.session_message_id,
         },
         items=completed_items,
         deltas=deltas,
-        usage=_turn_usage(committed.model_usage),
+        usage=_turn_usage(committed.model_usage) if committed is not None else None,
     )
 
 
@@ -171,6 +175,16 @@ def _media_values(value: object) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError("control metadata media 必须是字符串数组")
     return list(value)
+
+
+def _inbound_metadata(value: object) -> dict[str, object]:
+    """校验并复制渠道随入站消息提交的内部元数据。"""
+
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise ValueError("control inboundMetadata 必须是字符串键对象")
+    return dict(cast(dict[str, object], value))
 
 
 def _turn_usage(value: dict[str, Any]) -> TurnUsage | None:

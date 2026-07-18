@@ -853,6 +853,7 @@ async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
             SimpleNamespace(
                 app_server=SimpleNamespace(enabled=False),
                 channels=SimpleNamespace(chat=SimpleNamespace(enabled=False)),
+                mobile_realtime=SimpleNamespace(enabled=False),
             ),
         ),
         workspace=tmp_path,

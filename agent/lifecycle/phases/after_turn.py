@@ -131,6 +131,7 @@ class _BuildTurnCommittedModule:
             assistant_response=snap.ctx.reply,
             tools_used=list(snap.ctx.tools_used),
             turn_id=current_turn_id.get(),
+            assistant_message_id=snap.outbound.session_message_id,
             thinking=snap.ctx.thinking,
             raw_reply=snap.ctx.response_metadata.raw_text,
             meme_tag=snap.ctx.meme_tag,
@@ -254,6 +255,7 @@ class _DispatchOutboundModule:
                     thinking=outbound.thinking,
                     metadata=outbound.metadata,
                     media=outbound.media,
+                    session_message_id=outbound.session_message_id,
                 )
             )
         return frame

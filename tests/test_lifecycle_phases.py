@@ -278,12 +278,15 @@ class _DummySession:
     def get_history(self, max_messages: int = 500, *, start_index: int | None = None) -> list[dict[str, object]]:
         return list(self.messages)
 
-    def add_message(self, role: str, content: str, media=None, **kwargs: object) -> None:
+    def add_message(
+        self, role: str, content: str, media=None, **kwargs: object
+    ) -> dict[str, object]:
         msg: dict[str, object] = {"role": role, "content": content}
         if media:
             msg["media"] = list(media)
         msg.update(kwargs)
         self.messages.append(msg)
+        return msg
 
 
 # ── BeforeTurn ──
@@ -329,6 +332,33 @@ async def test_before_turn_setup_fills_turn_state():
     assert ctx.retrieval_trace_raw == {"trace": 1}
     assert ctx.history_messages == ({"role": "user", "content": "prev"},)
     assert ctx.abort is False
+
+
+@pytest.mark.asyncio
+async def test_before_turn_existing_admission_never_creates_deleted_session():
+    bus = EventBus()
+    session = _DummySession("mobile:deleted")
+    get_existing = Mock(return_value=session)
+    get_or_create = Mock(side_effect=AssertionError("不得重建已删除会话"))
+    session_mgr = SimpleNamespace(get_existing=get_existing, get_or_create=get_or_create)
+    ctx_store = SimpleNamespace(prepare=AsyncMock(return_value=ContextBundle()))
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+        ),
+        frame_factory=BeforeTurnFrame,
+    )
+    msg = _inbound()
+    msg.metadata = {"require_existing_session": True}
+    state = TurnState(msg=msg, session_key="mobile:deleted", dispatch_outbound=True)
+
+    await phase.run(state)
+
+    get_existing.assert_called_once_with("mobile:deleted")
+    get_or_create.assert_not_called()
+    assert "require_existing_session" not in msg.metadata
 
 
 @pytest.mark.asyncio
@@ -1425,12 +1455,21 @@ async def test_after_reasoning_collects_persist_and_outbound_slots():
 
     session = _DummySession("telegram:123")
     msg = _inbound()
+    msg.metadata["client_message_id"] = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
     state = TurnState(msg=msg, session_key=session.key, dispatch_outbound=True)
     state.session = session
     state.extra_metadata["before_turn_flag"] = "bt"
+
+    async def append_messages(
+        current: _DummySession,
+        messages: list[dict[str, object]],
+    ) -> None:
+        for index, persisted in enumerate(messages):
+            persisted["id"] = f"{current.key}:{index}"
+
     services = SimpleNamespace(
         presence=Mock(),
-        session_manager=SimpleNamespace(append_messages=AsyncMock()),
+        session_manager=SimpleNamespace(append_messages=append_messages),
     )
     turn_result = TurnRunResult(
         reply="reply",
@@ -1453,16 +1492,117 @@ async def test_after_reasoning_collects_persist_and_outbound_slots():
     result = await phase.run(AfterReasoningInput(state=state, turn_result=turn_result))
 
     assert session.messages[0]["user_flag"] == "u"
+    assert session.messages[0]["client_message_id"] == "01ARZ3NDEKTSV4RRFFQ69G5FAV"
     assert session.messages[1]["assistant_flag"] == "a"
-    assert session.messages[1]["media"] == ["/tmp/from-turn.png"]
+    assert session.messages[1]["media"] == ["/tmp/from-turn.png", "/tmp/a.png"]
     assert result.outbound.metadata["before_turn_flag"] == "bt"
     assert result.outbound.metadata["plugin_flag"] == "m"
     assert result.outbound.media == ["/tmp/from-turn.png", "/tmp/a.png"]
+    assert result.outbound.session_message_id == "telegram:123:1"
+
+
+@pytest.mark.asyncio
+async def test_after_reasoning_persists_mobile_canonical_ids(tmp_path: Path):
+    class SpoofMetadataModule:
+        slot = "test.after_reasoning.spoof_client_message_id"
+        requires = ("after_reasoning.emit", "reasoning:ctx")
+
+        async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
+            frame.slots["outbound:metadata:client_message_id"] = "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+            return frame
+
+    manager = SessionManager(tmp_path / "workspace")
+    session = manager.get_or_create("mobile:00000000-0000-0000-0000-000000000001")
+    msg = InboundMessage(
+        channel="mobile",
+        sender="device:test",
+        chat_id="00000000-0000-0000-0000-000000000001",
+        content="hello",
+        metadata={"client_message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+    )
+    state = TurnState(msg=msg, session_key=session.key, dispatch_outbound=True)
+    state.session = session
+    phase = Phase(
+        default_after_reasoning_modules(
+            EventBus(),
+            cast(Any, SimpleNamespace(presence=None, session_manager=manager)),
+            plugin_modules=[SpoofMetadataModule()],
+        ),
+        frame_factory=AfterReasoningFrame,
+    )
+
+    result = await phase.run(
+        AfterReasoningInput(
+            state=state,
+            turn_result=TurnRunResult(reply="reply"),
+        )
+    )
+    manager.close()
+    reloaded = SessionManager(tmp_path / "workspace")
+    messages = reloaded.get_or_create(session.key).messages
+
+    assert messages[0]["client_message_id"] == "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    assert result.outbound.metadata["persisted_user_message_id"] == messages[0]["id"]
+    assert result.outbound.metadata["client_message_id"] == messages[0]["client_message_id"]
+    assert result.outbound.session_message_id == messages[1]["id"]
+    reloaded.close()
+
+
+@pytest.mark.asyncio
+async def test_after_reasoning_persists_clean_mobile_reply_projection(tmp_path: Path):
+    manager = SessionManager(tmp_path / "workspace")
+    session = manager.get_or_create("mobile:00000000-0000-0000-0000-000000000001")
+    merged = "【你正在回复一条历史消息】\n被回复消息：旧回答\n\n【你当前新消息】\n继续"
+    msg = InboundMessage(
+        channel="mobile",
+        sender="device:test",
+        chat_id="00000000-0000-0000-0000-000000000001",
+        content=merged,
+        metadata={
+            "client_message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "client_created_at": "2026-07-16T04:05:06+00:00",
+            "display_content": "继续",
+            "reply_to_message_id": "mobile:00000000-0000-0000-0000-000000000001:0",
+            "reply_role": "assistant",
+            "reply_preview": "旧回答",
+        },
+    )
+    state = TurnState(msg=msg, session_key=session.key, dispatch_outbound=True)
+    state.session = session
+    phase = Phase(
+        default_after_reasoning_modules(
+            EventBus(),
+            cast(Any, SimpleNamespace(presence=None, session_manager=manager)),
+        ),
+        frame_factory=AfterReasoningFrame,
+    )
+
+    await phase.run(
+        AfterReasoningInput(
+            state=state,
+            turn_result=TurnRunResult(
+                reply="reply",
+                context_retry={"llm_user_content": merged},
+            ),
+        )
+    )
+    manager.close()
+    reloaded = SessionManager(tmp_path / "workspace")
+    user = reloaded.get_or_create(session.key).messages[0]
+
+    assert user["content"] == "继续"
+    assert user["timestamp"] == "2026-07-16T04:05:06+00:00"
+    assert user["llm_user_content"] == merged
+    assert user["reply_to_message_id"].endswith(":0")
+    assert user["reply_role"] == "assistant"
+    assert user["reply_preview"] == "旧回答"
+    reloaded.close()
 
 
 @pytest.mark.asyncio
 async def test_after_turn_collects_extra_and_telemetry_slots():
     committed_extra: list[dict[str, object]] = []
+    committed_events: list[TurnCommitted] = []
     after_turn_metadata: list[dict[str, object]] = []
     bus = EventBus()
 
@@ -1483,6 +1623,7 @@ async def test_after_turn_collects_extra_and_telemetry_slots():
             return frame
 
     async def committed_handler(event: TurnCommitted) -> None:
+        committed_events.append(event)
         committed_extra.append(dict(event.extra))
 
     async def after_turn_handler(ctx: AfterTurnCtx) -> None:
@@ -1522,10 +1663,16 @@ async def test_after_turn_collects_extra_and_telemetry_slots():
     await phase.run(
         TurnSnapshot(
             state=state,
-            outbound=OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content="reply"),
+            outbound=OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="reply",
+                session_message_id="telegram:123:1",
+            ),
             ctx=ctx,
         )
     )
 
     assert committed_extra[0]["plugin_flag"] == "extra"
+    assert committed_events[0].assistant_message_id == "telegram:123:1"
     assert after_turn_metadata == [{"plugin_flag": "telemetry"}]

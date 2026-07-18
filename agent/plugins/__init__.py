@@ -31,6 +31,8 @@ from agent.plugins.jobs import (
 from agent.plugins.specs import (
     ManagedServiceSpec,
     McpServerSpec,
+    MobileUiContribution,
+    MobileUiNavigation,
     ProactiveSourceSpec,
     RegisteredProactiveSource,
 )
@@ -53,6 +55,8 @@ __all__ = [
     "PluginJobSpec",
     "McpServerSpec",
     "ManagedServiceSpec",
+    "MobileUiContribution",
+    "MobileUiNavigation",
     "ProactiveSourceSpec",
     "RegisteredProactiveSource",
     "on_before_turn",

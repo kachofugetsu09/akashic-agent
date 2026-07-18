@@ -58,7 +58,12 @@ class _AcquireSessionModule:
 
     async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
         state = frame.input
-        session = self._session_manager.get_or_create(state.session_key)
+        require_existing = state.msg.metadata.pop("require_existing_session", False) is True
+        session = (
+            self._session_manager.get_existing(state.session_key)
+            if require_existing
+            else self._session_manager.get_or_create(state.session_key)
+        )
         state.session = session
         frame.slots[_SESSION_SLOT] = session
         return frame
