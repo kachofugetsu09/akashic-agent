@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from core.memory.engine import MemoryQuery
-from plugins.wake_proactive.context import ScratchItem, WakeContext, event_item_aliases
+from plugins.wake_proactive.context import (
+    ScratchItem,
+    WakeContext,
+    content_candidate_map,
+    content_event_map,
+    event_item_id,
+)
 from plugins.wake_proactive.renderer import render_share
 
 if TYPE_CHECKING:
@@ -53,7 +59,10 @@ TOOL_SCHEMAS = [
                     "items": {
                         "type": "object",
                         "properties": {
-                            "item_id": {"type": "string"},
+                            "item_id": {
+                                "type": "string",
+                                "description": "本轮标题页中的 candidate_N 引用。",
+                            },
                             "initial_interest": {
                                 "type": "string",
                                 "enum": ["likely_interesting", "uncertain"],
@@ -90,7 +99,10 @@ TOOL_SCHEMAS = [
                     "items": {
                         "type": "object",
                         "properties": {
-                            "item_id": {"type": "string"},
+                            "item_id": {
+                                "type": "string",
+                                "description": "本轮标题页中的 candidate_N 引用。",
+                            },
                             "summary": {"type": "string"},
                             "why_it_matters": {"type": "string"},
                         },
@@ -114,12 +126,10 @@ TOOL_SCHEMAS = [
 ]
 
 
-def _event_map(ctx: WakeContext) -> dict[str, dict[str, Any]]:
-    return {
-        alias: event
-        for event in ctx.content_events
-        for alias in event_item_aliases(event)
-    }
+def _canonical_item_id(
+    candidate_map: dict[str, dict[str, Any]], candidate_ref: str
+) -> str:
+    return event_item_id(candidate_map[candidate_ref])
 
 
 def _save(ctx: WakeContext, deps: ToolDeps) -> None:
@@ -130,23 +140,28 @@ def _save(ctx: WakeContext, deps: ToolDeps) -> None:
 def _scratchpad(ctx: WakeContext, args: dict[str, Any], deps: ToolDeps) -> str:
     if ctx.screening_completed:
         raise ValueError("scratchpad already recorded for this wake")
-    valid_ids = set(_event_map(ctx))
-    raw_items = list(args.get("items") or [])
+    candidate_map = content_candidate_map(ctx)
+    valid_ids = set(candidate_map)
+    raw_items = cast(list[dict[str, Any]], list(args.get("items") or []))
     if len(raw_items) > MAX_INVESTIGATION_CANDIDATES:
         raise ValueError(
             f"scratchpad supports at most {MAX_INVESTIGATION_CANDIDATES} candidates"
         )
-    item_ids = [str(item.get("item_id") or "").strip() for item in raw_items]
-    if len(item_ids) != len(set(item_ids)):
-        raise ValueError("scratchpad contains duplicate item_id")
-    unknown = sorted(set(item_ids) - valid_ids)
+    raw_item_ids = [str(item.get("item_id") or "").strip() for item in raw_items]
+    unknown = sorted(set(raw_item_ids) - valid_ids)
     if unknown:
         raise ValueError(f"scratchpad contains unknown item_id: {unknown}")
+    item_ids = [
+        _canonical_item_id(candidate_map, raw_item_id) for raw_item_id in raw_item_ids
+    ]
+    if len(item_ids) != len(set(item_ids)):
+        raise ValueError("scratchpad contains duplicate item_id")
 
     allowed_interest = {"likely_interesting", "uncertain"}
     planned: dict[str, ScratchItem] = {}
-    for raw in raw_items:
-        item_id = str(raw["item_id"]).strip()
+    for raw, candidate_ref, item_id in zip(
+        raw_items, raw_item_ids, item_ids, strict=True
+    ):
         interest = str(raw["initial_interest"])
         if interest == "not_interesting":
             continue
@@ -154,7 +169,7 @@ def _scratchpad(ctx: WakeContext, args: dict[str, Any], deps: ToolDeps) -> str:
             raise ValueError(f"invalid scratchpad decision for {item_id}")
         recall_query = str(raw.get("recall_query") or "").strip()
         if interest == "uncertain" and not recall_query:
-            recall_query = str(_event_map(ctx)[item_id].get("title") or item_id)
+            recall_query = str(candidate_map[candidate_ref].get("title") or item_id)
         planned[item_id] = ScratchItem(
             item_id=item_id,
             initial_interest=cast(Any, interest),
@@ -233,7 +248,11 @@ async def _investigate_candidates(ctx: WakeContext, deps: ToolDeps) -> str:
         raise ValueError("investigate_candidates requires scratchpad first")
     if ctx.investigation_completed:
         raise ValueError("investigate_candidates already called this wake")
-    events = _event_map(ctx)
+    events = content_event_map(ctx.content_events)
+    candidate_refs = {
+        event_item_id(event): candidate_ref
+        for candidate_ref, event in content_candidate_map(ctx).items()
+    }
     semaphore = asyncio.Semaphore(max(1, deps.max_concurrency))
 
     async def investigate(item: ScratchItem) -> tuple[str, dict[str, Any]]:
@@ -256,7 +275,7 @@ async def _investigate_candidates(ctx: WakeContext, deps: ToolDeps) -> str:
     ctx.investigation_completed = True
     _save(ctx, deps)
     verified_results = {
-        item_id: result
+        candidate_refs[item_id]: result
         for item_id, result in ctx.investigation_results.items()
         if isinstance(result.get("content"), dict)
         and not result["content"].get("error")
@@ -273,18 +292,28 @@ def _share_content(ctx: WakeContext, args: dict[str, Any], deps: ToolDeps) -> st
         raise ValueError("wake already finished")
     if not ctx.screening_completed or not ctx.investigation_completed:
         raise ValueError("share_content requires scratchpad and investigate_candidates first")
-    items = list(args.get("items") or [])
-    if not items:
+    raw_items = cast(list[dict[str, Any]], list(args.get("items") or []))
+    if not raw_items:
         raise ValueError("share_content requires at least one item")
-    if len(items) > MAX_SHARE_ITEMS:
+    if len(raw_items) > MAX_SHARE_ITEMS:
         raise ValueError("share_content supports at most 5 items")
-    valid_ids = set(_event_map(ctx))
-    item_ids = [str(item.get("item_id") or "").strip() for item in items]
-    if len(item_ids) != len(set(item_ids)):
-        raise ValueError("share_content contains duplicate item_id")
-    unknown = sorted(set(item_ids) - valid_ids)
+    candidate_map = content_candidate_map(ctx)
+    raw_item_ids = [
+        str(item.get("item_id") or "").strip() for item in raw_items
+    ]
+    unknown = sorted(set(raw_item_ids) - set(candidate_map))
     if unknown:
         raise ValueError(f"share_content contains unknown item_id: {unknown}")
+    item_ids = [
+        _canonical_item_id(candidate_map, raw_item_id) for raw_item_id in raw_item_ids
+    ]
+    if len(item_ids) != len(set(item_ids)):
+        raise ValueError("share_content contains duplicate item_id")
+    items: list[dict[str, Any]] = []
+    for raw_item, item_id in zip(raw_items, item_ids, strict=True):
+        item = dict(raw_item)
+        item["item_id"] = item_id
+        items.append(item)
     with_evidence: list[dict[str, Any]] = []
     for item_id in item_ids:
         planned = ctx.scratchpad[item_id]

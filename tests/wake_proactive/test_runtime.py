@@ -140,6 +140,29 @@ class FixedClock:
         self._now += delta
 
 
+def test_consume_rejects_unknown_item_without_partial_update(tmp_path):
+    now = datetime(2026, 7, 18, tzinfo=UTC)
+    store = WakeStateStore(tmp_path / "wake.db")
+    store.ingest_with_ids(
+        "content",
+        [
+            {
+                "event_id": "known",
+                "source_id": "source-a",
+                "ack_server": "feed_plugin:main",
+                "published_at": now.isoformat(),
+            }
+        ],
+        now,
+    )
+
+    with pytest.raises(RuntimeError, match="every canonical item_id"):
+        store.consume(["feed_plugin:main:known", "feed_plugin:main:missing"], now)
+
+    assert store.unread("content")[0]["id"] == "feed_plugin:main:known"
+    store.close()
+
+
 def _source(channel: Literal["alert", "content", "context"]) -> RegisteredProactiveSource:
     return RegisteredProactiveSource(
         plugin_id="feed_plugin",
@@ -233,7 +256,7 @@ async def test_content_vertical_slice_filters_investigates_and_shares(
                             {
                                 "items": [
                                     {
-                                        "item_id": ids[0],
+                                        "item_id": "candidate_1",
                                         "initial_interest": "likely_interesting",
                                     }
                                 ]
@@ -251,7 +274,7 @@ async def test_content_vertical_slice_filters_investigates_and_shares(
                                 "opening": "这个变化值得留意。",
                                 "items": [
                                     {
-                                        "item_id": ids[0],
+                                        "item_id": "candidate_1",
                                         "summary": "新内容已经发布。",
                                         "why_it_matters": "符合你最近关注的方向",
                                     }
@@ -290,6 +313,7 @@ async def test_content_vertical_slice_filters_investigates_and_shares(
     assert provider.chat.await_count == 2
     assert len(orchestrator.results) == 1
     assert orchestrator.results[0].decision == "reply"
+    assert orchestrator.results[0].evidence == [ids[0]]
     assert "符合你最近关注的方向" in orchestrator.results[0].outbound.content
     observations = runtime._state.observations("content")
     assert len(observations) == 1
@@ -465,6 +489,8 @@ async def test_shared_ack_route_keeps_original_source_grouping_and_order(
 
     assert prompt.index("来源：source-a") < prompt.index("来源：source-b")
     assert prompt.index("A新") < prompt.index("A旧")
+    assert "item_id=candidate_1" in prompt
+    assert "feed_plugin:main:" not in prompt
     await runtime._ack_and_consume(unread, now)
     assert gateway.acks == [{"event_ids": ["a-new", "a-old", "b-new"]}]
 
@@ -751,7 +777,7 @@ async def test_replay_content_only_draws_again_when_a_new_event_arrives(
                             {
                                 "items": [
                                     {
-                                        "item_id": item_id,
+                                        "item_id": "candidate_2",
                                         "initial_interest": "likely_interesting",
                                     }
                                 ]
@@ -769,7 +795,7 @@ async def test_replay_content_only_draws_again_when_a_new_event_arrives(
                                 "opening": "时间推进后，这条达到了唤醒阈值。",
                                 "items": [
                                     {
-                                        "item_id": item_id,
+                                        "item_id": "candidate_2",
                                         "summary": "回放 hazard 已跨 tick 累积。",
                                         "why_it_matters": "验证模拟时间有效",
                                     }

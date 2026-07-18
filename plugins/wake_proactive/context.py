@@ -70,12 +70,16 @@ def event_item_id(event: dict[str, Any]) -> str:
     return item_id
 
 
-def event_item_aliases(event: dict[str, Any]) -> set[str]:
+def content_candidate_map(ctx: WakeContext) -> dict[str, dict[str, Any]]:
+    """为本轮内容候选分配只在当前 Wake 内有效的模型引用。"""
+
     return {
-        value
-        for value in (
-            event_item_id(event),
-            str(event.get("_reservoir_source_event_id") or "").strip(),
-        )
-        if value
+        f"candidate_{index}": event
+        for index, event in enumerate(ctx.content_events, 1)
     }
+
+
+def content_event_map(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """按 reservoir canonical ID 索引已验证的内部事件。"""
+
+    return {event_item_id(event): event for event in events}
