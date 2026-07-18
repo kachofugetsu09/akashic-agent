@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 config_path="$project_root/config.toml"
 workspace_override=""
 
 usage() {
     cat <<'EOF'
-Usage: ./stop.sh [--config PATH] [--workspace PATH]
+Usage: ./scripts/stop-runtime.sh [--config PATH] [--workspace PATH]
 
 Gracefully stop the supervisor or runtime that owns the selected workspace.
 EOF
 }
 
 die() {
-    printf 'stop.sh: %s\n' "$*" >&2
+    printf 'stop-runtime.sh: %s\n' "$*" >&2
     exit 1
 }
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-STOP_SCRIPT = PROJECT_ROOT / "stop.sh"
+STOP_SCRIPT = PROJECT_ROOT / "scripts" / "stop-runtime.sh"
 LOCK_HOLDER_CODE = """
 import fcntl
 import signal
