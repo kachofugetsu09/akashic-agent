@@ -1,7 +1,7 @@
 {
   "acceptedGaps": [],
-  "base": "6a0616c82267c2045f89539ae3b1b204655f5d57",
-  "catalogDigest": "42c7e060142e8750c6351655eab105e48721943fdbd2e051ecce7fbd45c00096",
+  "base": "d627fa600781855770a5ede752f268982b68ebf9",
+  "catalogDigest": "d5c1d3c113510eb7f98e71f01f912a86e8b627ca3a09e5de68d5b2e1d2664125",
   "coveredP0": {
     "context_projection": [
       "context_history_nondestructive"
@@ -11,6 +11,9 @@
     ],
     "memory": [
       "memory_persistence_contract"
+    ],
+    "mobile_realtime": [
+      "mobile_realtime_contract"
     ],
     "plugin": [
       "plugin_generation_contract"

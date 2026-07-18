@@ -47,6 +47,38 @@ paths = ["session/**", "infra/persistence/**"]
 depends_on = []
 scenarios = ["context_history_nondestructive"]
 
+[groups.mobile_realtime]
+priority = "p0"
+requirements = ["OUT-001", "OUT-002", "PLG-003", "PLG-008", "SES-002", "SES-005", "SES-006", "TST-001", "TST-003"]
+paths = [
+  "infra/mobile_realtime/**",
+  "agent/plugins/**",
+  "agent/tools/request_user_confirmation.py",
+  "agent/turns/outbound.py",
+  "agent/lifecycle/phases/after_reasoning.py",
+  "agent/lifecycle/phases/after_turn.py",
+  "agent/lifecycle/phases/before_turn.py",
+  "bootstrap/app.py",
+  "bootstrap/app_server.py",
+  "bootstrap/channel_host.py",
+  "bootstrap/channels.py",
+  "bootstrap/chat_api.py",
+  "bootstrap/control_execution.py",
+  "bootstrap/passive_worker.py",
+  "bus/events.py",
+  "bus/events_lifecycle.py",
+  "plugins/akasha/**",
+  "plugins/wake_proactive/**",
+  "schema/mobile-realtime-v1.json",
+  "schema/archive/mobile-realtime-v1-mobile-pr6.json",
+  "scripts/generate_mobile_realtime_schema.py",
+  "tests/mobile_realtime/**",
+  "tests/test_plugin_mobile_ui.py",
+  "tests_scenarios/mobile_isolated_gateway.py",
+]
+depends_on = ["channel", "plugin", "session_persistence"]
+scenarios = ["mobile_realtime_contract"]
+
 [groups.mcp]
 priority = "p0"
 requirements = ["PLG-004", "PLG-008", "PLG-009", "TST-001", "TST-003"]
