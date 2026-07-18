@@ -120,6 +120,25 @@ public PR6 v3: media + server sequence
 
 **F（历史 PR6 迁移证据）：** `3f81275` 在 Pixel 7 上逐条重跑的 schema v5 迁移矩阵覆盖 final PR5 v4、reviewed PR6 v4、original public PR6 v3 和 canonical 1→5，并分别证明 partial v3 与 partial v4 fail-loud。当前独立移动仓库已演进到 schema v10；这组证据只负责旧分叉的汇合，后续 5→10 仍由当前仓库的逐版本 migration tests 负责。
 
+### 2.6 主动消息的实时与历史身份
+
+**C：** 被动消息按完整 Turn 提交，主动消息只在 dispatch 明确成功后追加到 SessionDB。主动实时事件不是第二条会话事实，而是同一条已发送消息的客户端投影。
+
+```text
+Core proactive delivery_id
+          ├─ message.proactive payload
+          └─ SessionDB message extra → history.page extra
+                                │
+                                ▼
+                    Android 精确合并为一条消息
+```
+
+**I：** Core 在一次主动发送尝试开始时生成 `delivery_id`，通过只对内部出站调用开放的 metadata 通道交给支持该能力的 channel；dispatch 成功后把同一值随 assistant 消息追加到 SessionDB。该字段不改变 SessionDB message ID，也不提前创建会话消息。
+
+**C：** Android 收到两种投影时优先按 `delivery_id` 合并。只有旧事件或旧历史没有该字段时，才允许使用带 `proactive=true`、相同文本、限定时间窗且唯一最近候选的兼容规则；候选不唯一时保留两条，不能猜测身份。
+
+当前接受的边缘窗口是：Mobile 已接收后 Core 在追加历史前崩溃，该主动消息可能只保留在手机投影中。当前方案不为这个窗口新增 outbox、重试状态机或 SessionDB 表。
+
 ## 3. 协议与外部仓库版本固定
 
 ### 3.1 客户端协议快照

@@ -146,6 +146,38 @@ async def test_message_push_tool_covers_success_failure_and_fallbacks():
 
 
 @pytest.mark.asyncio
+async def test_message_push_routes_internal_metadata_only_to_capable_sender():
+    tool = MessagePushTool()
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    async def text(_chat_id: str, _message: str) -> None:
+        raise AssertionError("metadata-capable sender should own this dispatch")
+
+    async def text_with_metadata(
+        chat_id: str,
+        message: str,
+        metadata: dict[str, object],
+    ) -> None:
+        calls.append((chat_id, message, metadata))
+
+    tool.register_channel(
+        "mobile",
+        text=text,
+        text_with_metadata=text_with_metadata,
+    )
+
+    result = await tool.execute(
+        channel="mobile",
+        chat_id="123",
+        message="hello",
+        _outbound_metadata={"delivery_id": "delivery-1"},
+    )
+
+    assert result == "文本已发送"
+    assert calls == [("123", "hello", {"delivery_id": "delivery-1"})]
+
+
+@pytest.mark.asyncio
 async def test_message_push_non_passive_waits_for_passive_reply():
     bus = MessageBus()
     tool = MessagePushTool(chat_lane=bus.chat_lane)

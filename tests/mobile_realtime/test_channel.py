@@ -154,6 +154,26 @@ def test_mobile_tool_arguments_are_bounded_for_phone_storage() -> None:
     assert len(encoded.encode("utf-8")) < 256 * 1024
 
 
+def test_mobile_history_projects_proactive_delivery_identity() -> None:
+    projected = channel_module._mobile_history_item(
+        {
+            "id": "mobile:test:1",
+            "session_key": "mobile:test",
+            "seq": 1,
+            "role": "assistant",
+            "content": "主动提醒",
+            "timestamp": "2026-07-19T00:00:00+00:00",
+            "proactive": True,
+            "delivery_id": "delivery-1",
+        }
+    )
+
+    assert projected["extra"] == {
+        "proactive": True,
+        "delivery_id": "delivery-1",
+    }
+
+
 def test_mobile_history_tool_arguments_fit_real_event_frame() -> None:
     calls = [
         {
@@ -1916,5 +1936,39 @@ async def test_proactive_sender_uses_mobile_event_path(tmp_path: Path) -> None:
             },
         }
     ]
+    await channel.stop()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_proactive_metadata_sender_forwards_delivery_id(tmp_path: Path) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    push = _PushTool()
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=_Bus(),
+                session_manager=SessionManager(tmp_path / "workspace"),
+                event_bus=_EventBus(),
+                push_tool=push,
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+            ),
+        )
+    )
+    chat_id = str(uuid4())
+    sender = cast(Any, push.registered["mobile"]["text_with_metadata"])
+
+    await sender(chat_id, "该休息一下了", {"delivery_id": "delivery-1"})
+
+    assert runtime.events[-1]["payload"] == {
+        "content": "该休息一下了",
+        "attachments": [],
+        "metadata": {"source": "message_push"},
+        "delivery_id": "delivery-1",
+    }
     await channel.stop()
     storage.close()
