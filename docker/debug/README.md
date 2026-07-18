@@ -190,6 +190,38 @@ python docker/debug/plugin_hot_reload_probe.py \
   --scenario full-runtime --phase candidate
 ```
 
+### 移动插件发布组合 Gate
+
+`mobile-plugin-release.lock.json` 固定核心仓库这次发布实际配套的公开插件提交。协作者不需要
+安装插件，也不会读取宿主的 `~/.akashic-plugin`：Gate 在 `/tmp` 创建全新 Git checkout，
+从锁内的 GitHub HTTPS 地址只取精确 SHA。
+
+```text
+┌─ 移动端异步 query
+│  └─ 核心 PluginMobileUiProvider
+│     └─ ThreadPoolExecutor
+│        └─ 插件同步 mobile_ui_query
+├─ 核心拥有的 JS ABI runner
+│  ├─ default export / dashboard / slots / mount
+│  └─ catalog navigation 与插件导出一致
+└─ 插件仓库自己的 UI 行为测试
+   └─ 固定方法、交互、可访问性和错误状态
+```
+
+本地运行：
+
+```bash
+python docker/debug/mobile_plugin_contract_gate.py
+```
+
+CI 额外使用 `--require-clean-core`，防止报告对应的不是可复核源码。Gate 会验证核心仍是
+“异步 provider 在线程池调度同步插件 handler”，并检查每个插件的 Python 签名、方法集合、
+资源预算、JS 导出形态与仓库自带测试。Fitbit 的移动查询是插件同步调用其托管 monitor 的
+本地 HTTP 投影；Fitbit MCP 与 skills 仍由插件安装，不会被错误地解释成 UI query 本身。
+
+远端默认分支更新不会自动否定旧报告；只有主动修改发布锁，或修改核心合同后重新运行，
+才产生新的发布组合。这保证一次通过对应一组不可变源码，同时避免协作者被本地插件状态影响。
+
 ## 第一次配置
 
 ```bash

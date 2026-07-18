@@ -17,7 +17,7 @@ from agent.looping.ports import SessionServices
 from agent.tools.registry import ToolRegistry
 from agent.turns.outbound import OutboundPort
 from bus.event_bus import EventBus
-from bus.events import InboundMessage, OutboundMessage
+from bus.events import InboundMessage, OutboundMessage, TurnDisposition
 from agent.lifecycle.types import BeforeReasoningCtx, BeforeTurnCtx
 from session.manager import SessionManager
 
@@ -45,10 +45,12 @@ class _DummySession:
         content: str,
         media=None,
         **kwargs: object,
-    ) -> None:
+    ) -> dict[str, object]:
         if media is not None:
             kwargs["media"] = media
-        self.messages.append({"role": role, "content": content, **kwargs})
+        message = {"role": role, "content": content, **kwargs}
+        self.messages.append(message)
+        return message
 
 
 @pytest.mark.asyncio
@@ -85,6 +87,7 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
                 tool_chain=[{"text": "done", "calls": []}],
                 thinking="think",
                 context_retry={"selected_plan": "full"},
+                mobile_attention="confirmation",
             )
         ),
     )
@@ -118,6 +121,7 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
     out = await agent_core.process(msg, "telegram:123")
 
     assert out.content == "final <meme:shy>\n§cited:[mem_1]§"
+    assert out.metadata["mobile_attention"] == "confirmation"
     assert order == ["prepare", "tool_context", "render", "run"]
     assert context_store.prepare.await_args.kwargs["session_key"] == "telegram:123"
     render_request = context.render.call_args.args[0]
@@ -179,11 +183,18 @@ async def test_agent_core_process_coerces_empty_reply_before_commit():
             ),
         )
     )
-    msg = InboundMessage(channel="cli", sender="hua", chat_id="1", content="hi")
+    msg = InboundMessage(
+        channel="cli",
+        sender="hua",
+        chat_id="1",
+        content="hi",
+        metadata={"mobile_attention": "confirmation"},
+    )
 
     out = await agent_core.process(msg, "cli:1")
 
     assert "no response to give" in out.content
+    assert "mobile_attention" not in out.metadata
 
 
 @pytest.mark.asyncio
@@ -305,6 +316,7 @@ async def test_before_turn_abort_skips_reasoner_and_commit_and_dispatches():
     out = await agent_core.process(msg, "telegram:123", dispatch_outbound=True)
 
     assert out.content == "blocked by policy"
+    assert out.turn_disposition is TurnDisposition.SHORT_CIRCUITED
     # 不经过 reasoner 和持久化
     reasoner.run_turn.assert_not_called()
     # 通过 outbound_port 实际 dispatch
@@ -357,6 +369,7 @@ async def test_before_reasoning_abort_skips_reasoner_and_commit_and_dispatches()
     out = await agent_core.process(msg, "telegram:123", dispatch_outbound=True)
 
     assert out.content == "rate limited"
+    assert out.turn_disposition is TurnDisposition.SHORT_CIRCUITED
     reasoner.run_turn.assert_not_called()
     dispatch_port.dispatch.assert_awaited_once()
     dispatched = dispatch_port.dispatch.await_args.args[0]

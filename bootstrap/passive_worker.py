@@ -95,6 +95,7 @@ class PassiveMessageWorker:
                     "chatId": item.chat_id,
                     "sender": item.sender,
                     "media": list(item.media),
+                    "inboundMetadata": dict(item.metadata),
                 },
             )
             while True:
@@ -130,6 +131,7 @@ class PassiveMessageWorker:
                     media=list(cast(list[str], data.get("media", []))),
                     metadata=dict(cast(dict[str, Any], data.get("metadata", {}))),
                     control_turn_id=handle.id,
+                    session_message_id=cast(str | None, data.get("sessionMessageId")),
                 )
             elif result.status is TurnStatus.FAILED:
                 outbound = OutboundMessage(
@@ -141,7 +143,13 @@ class PassiveMessageWorker:
                 return
             await self._bus.publish_outbound(outbound)
         finally:
-            await self._bus.complete_inbound(item)
+            try:
+                await self._bus.complete_inbound(item)
+            finally:
+                if item.session_admission_id is not None:
+                    self._legacy_loop.session_manager.release_admission(
+                        item.session_admission_id
+                    )
 
     def stop(self) -> None:
         self._running = False

@@ -8,7 +8,12 @@ if TYPE_CHECKING:
     from infra.channels.contract import Channel
     from agent.plugins.context import PluginContext
     from agent.plugins.jobs import PluginJobSpec
-    from agent.plugins.specs import ManagedServiceSpec, McpServerSpec, ProactiveSourceSpec
+    from agent.plugins.specs import (
+        ManagedServiceSpec,
+        McpServerSpec,
+        MobileUiContribution,
+        ProactiveSourceSpec,
+    )
     from agent.plugins.generation import PluginSemanticCheck
     from agent.plugins.generation import PluginReadinessContext
 
@@ -97,6 +102,26 @@ class Plugin(ABC):
     def channels(self) -> list["Channel"]:
         return []
 
+    def telegram_bot_commands(self) -> list[tuple[str, str]]:
+        return []
+
+    def mobile_bot_commands(self) -> list[tuple[str, str]]:
+        return []
+
     @classmethod
     def dashboard_module(cls) -> str | None:
         return None
+
+    @classmethod
+    def mobile_ui(cls) -> "MobileUiContribution | None":
+        return None
+
+    def mobile_ui_query(
+        self,
+        method: str,
+        payload: dict[str, object],
+        *,
+        session_id: str | None,
+        turn_id: str | None,
+    ) -> dict[str, object]:
+        raise RuntimeError(f"插件未实现 mobile UI query: {method}")

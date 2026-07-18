@@ -1,0 +1,50 @@
+.akasha-recall-group {
+  --akasha-left: var(--m-primary);
+  --akasha-left-container: var(--m-primary-container);
+  --akasha-right: var(--m-trace-text);
+  --akasha-right-container: var(--m-trace-soft);
+  display: grid;
+  gap: 8px;
+  margin: 2px 0 14px;
+}
+
+.akasha-recall {
+  overflow: hidden;
+  border-radius: var(--m-shape-large, 16px);
+  color: var(--m-on-surface);
+  background: var(--akasha-container);
+}
+
+.akasha-recall.left {
+  --akasha-accent: var(--akasha-left);
+  --akasha-container: var(--akasha-left-container);
+}
+
+.akasha-recall.right {
+  --akasha-accent: var(--akasha-right);
+  --akasha-container: var(--akasha-right-container);
+}
+
+.akasha-recall summary {
+  display: grid;
+  min-height: 44px;
+  grid-template-columns: 10px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.akasha-recall summary::-webkit-details-marker { display: none; }
+.akasha-recall summary > span:last-child { color: var(--m-on-surface-variant); font-size: .75rem; }
+.akasha-recall-mark { width: 8px; height: 8px; border-radius: 50%; background: var(--akasha-accent); }
+.akasha-recall.right .akasha-recall-mark { border-radius: 2px; rotate: 45deg; }
+.akasha-recall ol { display: grid; gap: 0; margin: 0; padding: 0 12px 10px 30px; }
+.akasha-recall li { position: relative; display: grid; gap: 2px; padding: 9px 44px 9px 0; border-top: 1px solid color-mix(in oklch, var(--akasha-accent) 18%, transparent); }
+.akasha-recall li span { line-height: 1.45; }
+.akasha-recall li small { color: var(--m-on-surface-variant); line-height: 1.4; }
+.akasha-recall li b { position: absolute; top: 10px; right: 0; color: var(--m-on-surface); font-size: .72rem; font-weight: 650; line-height: 1; font-variant-numeric: tabular-nums; }
+.akasha-recall-empty, .akasha-recall-loading, .akasha-recall-error { color: var(--m-on-surface-variant); font-size: .82rem; }
+.akasha-recall-loading, .akasha-recall-error { padding: 8px 2px 14px; }
+.akasha-recall-error { color: var(--m-error); }

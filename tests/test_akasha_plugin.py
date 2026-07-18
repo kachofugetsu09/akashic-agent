@@ -69,6 +69,13 @@ from scripts.build_akasha_db import _iter_replay_turns, _load_embeddings_from_ca
 QUERY_TS = datetime(2026, 1, 2, tzinfo=timezone.utc)
 
 
+def test_akasha_mobile_ui_is_message_slot_only() -> None:
+    contribution = AkashaPlugin.mobile_ui()
+
+    assert contribution.navigation is None
+    assert contribution.slots == ("turn.before_reasoning",)
+
+
 def test_akasha_config_does_not_expose_dynamic_budget_limits(tmp_path: Path) -> None:
     (tmp_path / "config.local.toml").write_text(
         "dense_top_k = 99\nripple_top_k = 99\nactivate_limit = 99\n",
@@ -1114,6 +1121,7 @@ def test_replay_writes_query_log_with_activation_items(
         assert raw["text_block_preview"]
         assert activation_items
         assert dense_items
+        assert all(item["happened_at"] for item in dense_items)
         assert isinstance(ripple_items, list)
         assert activation_items[0]["user_message"] in {
             "第一条用户消息需要完整展示",
@@ -2023,8 +2031,10 @@ def test_akashalast_command_only_exposes_for_akasha_engine(tmp_path: Path) -> No
     )
 
     assert akasha.telegram_bot_commands() == [("akashalast", "查看上一轮 Akasha 检索诊断")]
+    assert akasha.mobile_bot_commands() == [("akashalast", "查看上一轮 Akasha 检索诊断")]
     assert len(akasha.before_turn_modules()) == 1
     assert default.telegram_bot_commands() == []
+    assert default.mobile_bot_commands() == []
     assert len(default.before_turn_modules()) == 1
 
 
@@ -2108,3 +2118,318 @@ def test_akashalast_renders_latest_query_log(tmp_path: Path) -> None:
     assert "分: `0.501` | 源: `Dense` | 径: `direct`" in reply
     assert "得: `0.703` | 源: `Dense`" in reply
     assert "因: `dir:0.41 st:0.18 edg:0.08 res:1.00 fan:32`" in reply
+
+
+@pytest.mark.asyncio
+async def test_mobile_recall_binds_each_assistant_to_its_context_and_keeps_all_items(
+    tmp_path: Path,
+) -> None:
+    _init_sessions_db(tmp_path / "sessions.db")
+    store = AkashaStore(tmp_path / "memory" / "akasha.db")
+
+    def insert_log(
+        *,
+        query_id: str,
+        seq: int,
+        intent: str,
+        ts: str,
+        dense_items: list[dict[str, object]],
+        ripple_items: list[dict[str, object]],
+    ) -> None:
+        store.insert_query_log(
+            query_id=query_id,
+            session_key="s",
+            seq=seq,
+            query_text=query_id,
+            intent=intent,
+            ts=ts,
+            seed_count=0,
+            pool_count=0,
+            activated_count=0,
+            activation_threshold=0.0,
+            dense_count=len(dense_items),
+            ripple_count=len(ripple_items),
+            inject_chars=0,
+            source_ref_count=0,
+            activation_items_json="[]",
+            dense_items_json=json.dumps(dense_items, ensure_ascii=False),
+            ripple_items_json=json.dumps(ripple_items, ensure_ascii=False),
+            text_block_preview="",
+        )
+
+    first_dense = [
+        {
+            "key": "s:0",
+            "user_message": "第一轮旧日志",
+            "assistant_preview": "从 sessions.db 补时间",
+            "score": 0.9,
+        }
+    ]
+    second_dense = [
+        {
+            "key": f"memory:{index}",
+            "user_message": f"左脑 {index}",
+            "assistant_preview": "",
+            "happened_at": f"2026-01-01T00:00:{index:02d}+00:00",
+            "score": index / 10,
+        }
+        for index in range(8)
+    ]
+    second_ripple = [
+        {
+            "key": f"ripple:{index}",
+            "user_message": f"右脑 {index}",
+            "assistant_preview": "",
+            "happened_at": f"2026-01-01T00:01:{index:02d}+00:00",
+            "score": index / 10,
+        }
+        for index in range(9)
+    ]
+    try:
+        insert_log(
+            query_id="s:0:context:first",
+            seq=0,
+            intent="context",
+            ts="2026-01-01T00:00:00+00:00",
+            dense_items=first_dense,
+            ripple_items=[],
+        )
+        insert_log(
+            query_id="s:2:context:second",
+            seq=2,
+            intent="context",
+            ts="2026-01-01T00:00:02+00:00",
+            dense_items=second_dense,
+            ripple_items=second_ripple,
+        )
+        insert_log(
+            query_id="s:2:answer:later",
+            seq=2,
+            intent="answer",
+            ts="2026-01-01T00:00:03+00:00",
+            dense_items=[{"user_message": "不能覆盖 context"}],
+            ripple_items=[],
+        )
+    finally:
+        store.close()
+
+    plugin = AkashaPlugin()
+    plugin.context = PluginContext(
+        event_bus=cast(Any, None),
+        tool_registry=None,
+        plugin_id="akasha",
+        plugin_dir=tmp_path,
+        data_dir=tmp_path / ".data",
+        kv_store=PluginKVStore(tmp_path / ".kv.json"),
+        workspace=tmp_path,
+        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="akasha")),
+    )
+
+    first = plugin.mobile_ui_query(
+        "recall.current",
+        {"message_id": "s:1"},
+        session_id="s",
+        turn_id=None,
+    )
+    second = plugin.mobile_ui_query(
+        "recall.current",
+        {"message_id": "s:3"},
+        session_id="s",
+        turn_id=None,
+    )
+    active = plugin.mobile_ui_query(
+        "recall.current",
+        {"message_id": "assistant:turn-1"},
+        session_id="s",
+        turn_id="turn-1",
+    )
+    interrupted = plugin.mobile_ui_query(
+        "recall.current",
+        {"message_id": "assistant:turn-1"},
+        session_id="s",
+        turn_id=None,
+    )
+
+    assert [item["summary"] for item in cast(list[dict[str, object]], first["left"])] == [
+        "第一轮旧日志"
+    ]
+    second_left = cast(list[dict[str, object]], second["left"])
+    second_right = cast(list[dict[str, object]], second["right"])
+    assert len(second_left) == 8
+    assert len(second_right) == 9
+    assert [item["summary"] for item in second_left] == [f"左脑 {index}" for index in reversed(range(8))]
+    assert [item["summary"] for item in second_right] == [f"右脑 {index}" for index in reversed(range(9))]
+    assert active == second
+    assert interrupted == {"left": [], "right": []}
+
+
+@pytest.mark.asyncio
+async def test_mobile_recall_rejects_message_from_another_session(tmp_path: Path) -> None:
+    plugin = AkashaPlugin()
+    plugin.context = PluginContext(
+        event_bus=cast(Any, None),
+        tool_registry=None,
+        plugin_id="akasha",
+        plugin_dir=tmp_path,
+        data_dir=tmp_path / ".data",
+        kv_store=PluginKVStore(tmp_path / ".kv.json"),
+        workspace=tmp_path,
+        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="akasha")),
+    )
+
+    with pytest.raises(ValueError, match="不属于当前 session"):
+        plugin.mobile_ui_query(
+            "recall.current",
+            {"message_id": "other:1"},
+            session_id="s",
+            turn_id=None,
+        )
+
+
+def test_mobile_inspector_lists_and_expands_existing_query_logs_read_only(
+    tmp_path: Path,
+) -> None:
+    _init_sessions_db(tmp_path / "sessions.db")
+    db_path = tmp_path / "memory" / "akasha.db"
+    store = AkashaStore(db_path)
+    long_query = "为什么想起这轮：" + "很长的问题原文" * 40
+    try:
+        for index in range(2):
+            store.insert_query_log(
+                query_id=f"s:{index * 2}:context:q{index}",
+                session_key="s",
+                seq=index * 2,
+                query_text=long_query if index == 1 else "为什么想起第 0 轮",
+                intent="context",
+                ts=f"2026-07-17T0{index}:00:00+00:00",
+                seed_count=2,
+                pool_count=4,
+                activated_count=3,
+                activation_threshold=0.2,
+                dense_count=1,
+                ripple_count=1,
+                inject_chars=1200 + index,
+                source_ref_count=2,
+                activation_items_json="[]",
+                dense_items_json=json.dumps([{
+                    "key": f"dense:{index}",
+                    "user_message": f"精确记忆 {index}",
+                    "assistant_preview": "精确回答",
+                    "happened_at": f"2026-07-16T0{index}:00:00+00:00",
+                    "score": 0.8,
+                }], ensure_ascii=False),
+                ripple_items_json=json.dumps([{
+                    "key": f"ripple:{index}",
+                    "user_message": f"联想记忆 {index}",
+                    "assistant_preview": "联想回答",
+                    "happened_at": f"2026-07-15T0{index}:00:00+00:00",
+                    "score": 0.6,
+                }], ensure_ascii=False),
+                text_block_preview="",
+            )
+    finally:
+        store.close()
+    before_bytes = db_path.read_bytes()
+
+    plugin = AkashaPlugin()
+    plugin.context = PluginContext(
+        event_bus=cast(Any, None),
+        tool_registry=None,
+        plugin_id="akasha",
+        plugin_dir=tmp_path,
+        data_dir=tmp_path / ".data",
+        kv_store=PluginKVStore(tmp_path / ".kv.json"),
+        workspace=tmp_path,
+        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="akasha")),
+    )
+
+    recent = plugin.mobile_ui_query(
+        "inspector.recent",
+        {},
+        session_id=None,
+        turn_id=None,
+    )
+    items = cast(list[dict[str, object]], recent["items"])
+    detail = plugin.mobile_ui_query(
+        "inspector.detail",
+        {"query_id": items[0]["query_id"]},
+        session_id=None,
+        turn_id=None,
+    )
+
+    assert recent["total"] == 2
+    assert [item["query_preview"] for item in items] == [
+        long_query[:180] + "...",
+        "为什么想起第 0 轮",
+    ]
+    assert detail["query_text"] == long_query
+    assert detail["left_count"] == 1
+    assert detail["right_count"] == 1
+    assert cast(list[dict[str, object]], detail["left"])[0]["summary"] == "精确记忆 1"
+    assert cast(list[dict[str, object]], detail["right"])[0]["summary"] == "联想记忆 1"
+    with closing(sqlite3.connect(db_path)) as db:
+        assert db.total_changes == 0
+        assert db.execute("SELECT COUNT(1) FROM akasha_query_log").fetchone()[0] == 2
+    assert db_path.read_bytes() == before_bytes
+
+
+def test_mobile_inspector_rejects_invalid_or_missing_query(tmp_path: Path) -> None:
+    store = AkashaStore(tmp_path / "memory" / "akasha.db")
+    store.close()
+    plugin = AkashaPlugin()
+    plugin.context = PluginContext(
+        event_bus=cast(Any, None),
+        tool_registry=None,
+        plugin_id="akasha",
+        plugin_dir=tmp_path,
+        data_dir=tmp_path / ".data",
+        kv_store=PluginKVStore(tmp_path / ".kv.json"),
+        workspace=tmp_path,
+        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="akasha")),
+    )
+
+    with pytest.raises(ValueError, match="不接受参数"):
+        plugin.mobile_ui_query(
+            "inspector.recent",
+            {"page": 2},
+            session_id=None,
+            turn_id=None,
+        )
+    with pytest.raises(ValueError, match="非空字符串"):
+        plugin.mobile_ui_query(
+            "inspector.detail",
+            {"query_id": ""},
+            session_id=None,
+            turn_id=None,
+        )
+    with pytest.raises(ValueError, match="不存在"):
+        plugin.mobile_ui_query(
+            "inspector.detail",
+            {"query_id": "missing"},
+            session_id=None,
+            turn_id=None,
+        )
+
+
+def test_akasha_store_read_only_mode_never_creates_or_writes_database(tmp_path: Path) -> None:
+    missing = tmp_path / "missing" / "akasha.db"
+    with pytest.raises(sqlite3.OperationalError, match="unable to open"):
+        AkashaStore(missing, read_only=True)
+    assert not missing.parent.exists()
+
+    db_path = tmp_path / "memory" / "akasha.db"
+    writer = AkashaStore(db_path)
+    writer.close()
+    before_bytes = db_path.read_bytes()
+    reader = AkashaStore(db_path, read_only=True)
+    try:
+        assert reader.db.execute("PRAGMA query_only").fetchone()[0] == 1
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            reader.db.execute(
+                "INSERT INTO akasha_query_log "
+                "(query_id, session_key, seq, query_text, intent, ts) "
+                "VALUES ('q', 's', 0, 'x', 'context', '2026-07-17')"
+            )
+    finally:
+        reader.close()
+    assert db_path.read_bytes() == before_bytes

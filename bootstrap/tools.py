@@ -509,6 +509,8 @@ def build_core_runtime(
     workspace: Path,
     http_resources: SharedHttpResources,
     restart_coordinator: "RestartCoordinator | None" = None,
+    *,
+    clear_stale_session_admissions: bool = False,
 ) -> CoreRuntime:
     """构造核心运行时及其插件快照依赖。"""
 
@@ -521,6 +523,8 @@ def build_core_runtime(
     loop_provider = agent_provider or provider
     loop_model = config.agent_model or config.model
     session_manager = SessionManager(workspace)
+    if clear_stale_session_admissions:
+        session_manager.clear_stale_admissions()
     loop_ref: dict[str, AgentLoop] = {}
     tools, push_tool, scheduler, memory_runtime, peer_pm, peer_poller = (
         build_registered_tools(

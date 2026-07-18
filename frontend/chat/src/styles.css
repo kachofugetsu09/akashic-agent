@@ -24,6 +24,27 @@
   --input: 0 0% 18%;
   --ring: 132 42% 37%;
   --radius: 0.75rem;
+  --pairing-surface: oklch(0.205 0.006 145);
+  --pairing-surface-container-low: oklch(0.238 0.02 145);
+  --pairing-surface-container: oklch(0.245 0.007 145);
+  --pairing-surface-container-high: oklch(0.29 0.008 145);
+  --pairing-on-surface: oklch(0.95 0.006 145);
+  --pairing-on-surface-variant: oklch(0.73 0.009 145);
+  --pairing-on-surface-muted: oklch(0.62 0.009 145);
+  --pairing-primary: oklch(0.81 0.105 145);
+  --pairing-primary-hover: oklch(0.85 0.095 145);
+  --pairing-primary-container: oklch(0.39 0.07 145);
+  --pairing-primary-container-high: oklch(0.45 0.085 145);
+  --pairing-on-primary: oklch(0.18 0.035 145);
+  --pairing-on-primary-container: oklch(0.93 0.05 145);
+  --pairing-error-container: oklch(0.43 0.085 28);
+  --pairing-on-error-container: oklch(0.9 0.04 28);
+  --pairing-outline: oklch(1 0 0 / 0.08);
+  --pairing-outline-strong: oklch(1 0 0 / 0.1);
+  --pairing-qr-surface: oklch(1 0 0);
+  --pairing-qr-outline: oklch(0 0 0 / 0.1);
+  --pairing-shadow: oklch(0 0 0 / 0.56);
+  --pairing-shadow-soft: oklch(0 0 0 / 0.3);
 }
 
 * {
@@ -65,6 +86,55 @@ input {
   flex-direction: column;
   border-right: 1px solid #171717;
   background: #050505;
+}
+
+.sidebar-mobile-action {
+  padding: 12px;
+  border-top: 1px solid var(--pairing-outline);
+}
+
+.mobile-connect-trigger {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  gap: 11px;
+  border: 0;
+  border-radius: 12px;
+  padding: 6px 14px 6px 10px;
+  color: var(--pairing-on-primary-container);
+  background: var(--pairing-surface-container-low);
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+  transition-property: scale, background-color, color;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.mobile-connect-trigger:hover {
+  color: var(--pairing-on-surface);
+  background: var(--pairing-surface-container-high);
+}
+
+.mobile-connect-trigger:active {
+  scale: 0.96;
+}
+
+.mobile-connect-trigger:focus-visible {
+  outline: 2px solid var(--pairing-primary);
+  outline-offset: 2px;
+}
+
+.mobile-connect-icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  color: var(--pairing-on-primary-container);
+  background: var(--pairing-primary-container);
 }
 
 .icon-button,
@@ -593,6 +663,371 @@ form.composer:focus-within [data-slot="input-group"] {
   font-size: 13px;
 }
 
+.mobile-pairing-dialog {
+  width: min(calc(100vw - 32px), 760px);
+  max-width: 760px;
+  max-height: min(880px, calc(100vh - 32px));
+  gap: 0;
+  overflow-y: auto;
+  border: 0;
+  border-radius: 28px;
+  padding: 0;
+  color: var(--pairing-on-surface);
+  background: var(--pairing-surface);
+  box-shadow:
+    0 0 0 1px var(--pairing-outline),
+    0 24px 68px var(--pairing-shadow);
+  transition-property: opacity, transform;
+  transition-duration: 180ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.mobile-pairing-dialog > button {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--pairing-on-surface-variant);
+  transition-property: scale, opacity, background-color;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.mobile-pairing-dialog > button:hover {
+  color: var(--pairing-on-surface);
+  background: var(--pairing-surface-container-high);
+}
+
+.mobile-pairing-dialog > button:active {
+  scale: 0.96;
+}
+
+.mobile-pairing-header {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 16px;
+  padding: 28px 76px 22px 28px;
+  text-align: left;
+}
+
+.mobile-pairing-header h2 {
+  margin-top: 1px;
+  color: var(--pairing-on-surface);
+  font-size: 21px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.mobile-pairing-header p {
+  max-width: 58ch;
+  margin-top: 8px;
+  color: var(--pairing-on-surface-variant);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.mobile-pairing-symbol {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: 15px;
+  color: var(--pairing-on-primary-container);
+  background: var(--pairing-primary-container);
+}
+
+.mobile-pairing-stage {
+  min-height: 338px;
+  padding: 0 28px 28px;
+}
+
+.mobile-pairing-centered {
+  display: flex;
+  min-height: 338px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 12px;
+  color: var(--pairing-on-surface-variant);
+  text-align: center;
+}
+
+.mobile-pairing-centered h3 {
+  margin: 8px 0 0;
+  color: var(--pairing-on-surface);
+  font-size: 22px;
+  font-weight: 650;
+}
+
+.mobile-pairing-centered p {
+  max-width: 42ch;
+  margin: 0;
+  line-height: 1.55;
+}
+
+.mobile-pairing-centered.success .mobile-pairing-result-icon {
+  color: var(--pairing-on-primary-container);
+  background: var(--pairing-primary-container-high);
+}
+
+.mobile-pairing-centered.error .mobile-pairing-result-icon {
+  color: var(--pairing-on-error-container);
+  background: var(--pairing-error-container);
+}
+
+.mobile-pairing-result-icon {
+  display: grid;
+  width: 64px;
+  height: 64px;
+  place-items: center;
+  border-radius: 50%;
+}
+
+.mobile-pairing-spinner {
+  animation: mobile-pairing-spin 900ms linear infinite;
+}
+
+.mobile-pairing-waiting {
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) minmax(220px, 1fr);
+  gap: 30px;
+  align-items: center;
+}
+
+.mobile-pairing-qr-wrap {
+  padding: 14px;
+  border-radius: 24px;
+  background: var(--pairing-qr-surface);
+  box-shadow:
+    0 0 0 1px var(--pairing-outline-strong),
+    0 10px 30px var(--pairing-shadow-soft);
+}
+
+.mobile-pairing-qr {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 10px;
+  outline: 1px solid var(--pairing-qr-outline);
+  outline-offset: -1px;
+}
+
+.mobile-pairing-instructions {
+  display: grid;
+  gap: 22px;
+}
+
+.mobile-pairing-step {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 12px;
+  color: var(--pairing-on-surface-muted);
+}
+
+.mobile-pairing-step.active {
+  color: var(--pairing-primary);
+}
+
+.mobile-pairing-step-node {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--pairing-on-surface-muted);
+  background: var(--pairing-surface-container-high);
+}
+
+.mobile-pairing-step.active .mobile-pairing-step-node {
+  color: var(--pairing-on-primary-container);
+  background: var(--pairing-primary-container-high);
+}
+
+.mobile-pairing-step strong,
+.mobile-pairing-step span {
+  display: block;
+}
+
+.mobile-pairing-step strong {
+  margin: 1px 0 4px;
+  color: var(--pairing-on-surface);
+  font-size: 14px;
+}
+
+.mobile-pairing-step div > span {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.mobile-pairing-countdown {
+  margin: 4px 0 0 46px;
+  color: var(--pairing-on-surface-muted);
+  font-size: 13px;
+}
+
+.mobile-pairing-countdown strong {
+  color: var(--pairing-on-surface-variant);
+  font-variant-numeric: tabular-nums;
+}
+
+.mobile-pairing-confirm {
+  display: flex;
+  min-height: 338px;
+  align-items: center;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.mobile-pairing-device-row {
+  display: grid;
+  min-width: min(100%, 360px);
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 13px;
+  align-items: center;
+  margin-bottom: 30px;
+}
+
+.mobile-pairing-device-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border-radius: 14px;
+  color: var(--pairing-on-primary-container);
+  background: var(--pairing-primary-container);
+}
+
+.mobile-pairing-device-row span,
+.mobile-pairing-device-row strong {
+  display: block;
+}
+
+.mobile-pairing-device-row div > span {
+  margin-bottom: 3px;
+  color: var(--pairing-on-surface-muted);
+  font-size: 12px;
+}
+
+.mobile-pairing-device-row strong {
+  color: var(--pairing-on-surface);
+  font-size: 16px;
+  font-weight: 620;
+}
+
+.mobile-pairing-code-label {
+  margin: 0 0 14px;
+  color: var(--pairing-on-surface-variant);
+  font-size: 13px;
+}
+
+.mobile-pairing-code {
+  display: flex;
+  gap: 8px;
+}
+
+.mobile-pairing-code span {
+  display: grid;
+  width: 52px;
+  height: 64px;
+  place-items: center;
+  border-radius: 15px;
+  color: var(--pairing-on-primary-container);
+  background: var(--pairing-primary-container);
+  font-size: 31px;
+  font-weight: 680;
+  font-variant-numeric: tabular-nums;
+}
+
+.mobile-pairing-security-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 24px 0 0;
+  color: var(--pairing-on-surface-variant);
+  font-size: 13px;
+}
+
+.mobile-pairing-security-note svg {
+  flex: 0 0 auto;
+  color: var(--pairing-primary);
+}
+
+.mobile-pairing-footer {
+  min-height: 80px;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 28px 20px;
+  background: var(--pairing-surface-container);
+}
+
+.mobile-pairing-button {
+  display: inline-flex;
+  min-width: 104px;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 999px;
+  padding: 0 20px;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+  transition-property: scale, color, background-color, opacity;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.mobile-pairing-button:active {
+  scale: 0.96;
+}
+
+.mobile-pairing-button:focus-visible {
+  outline: 2px solid var(--pairing-primary);
+  outline-offset: 2px;
+}
+
+.mobile-pairing-button:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+.mobile-pairing-button.primary {
+  color: var(--pairing-on-primary);
+  background: var(--pairing-primary);
+}
+
+.mobile-pairing-button.primary:hover:not(:disabled) {
+  background: var(--pairing-primary-hover);
+}
+
+.mobile-pairing-button.quiet {
+  color: var(--pairing-on-surface);
+  background: transparent;
+}
+
+.mobile-pairing-button.quiet:hover {
+  background: var(--pairing-surface-container-high);
+}
+
+@keyframes mobile-pairing-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mobile-pairing-spinner {
+    animation-duration: 1.8s;
+  }
+
+  .mobile-connect-trigger,
+  .mobile-pairing-dialog,
+  .mobile-pairing-dialog > button,
+  .mobile-pairing-button {
+    transition-duration: 0.01ms;
+  }
+}
+
 @media (max-width: 820px) {
   .chat-shell {
     grid-template-columns: 1fr;
@@ -618,5 +1053,52 @@ form.composer:focus-within [data-slot="input-group"] {
 
   .agent-content {
     font-size: 16px;
+  }
+
+  .mobile-pairing-dialog {
+    width: min(calc(100vw - 20px), 760px);
+    max-height: calc(100vh - 20px);
+    border-radius: 24px;
+  }
+
+  .mobile-pairing-header {
+    padding: 24px 66px 20px 20px;
+  }
+
+  .mobile-pairing-stage {
+    padding: 0 20px 22px;
+  }
+
+  .mobile-pairing-waiting {
+    grid-template-columns: 1fr;
+    gap: 22px;
+  }
+
+  .mobile-pairing-qr-wrap {
+    width: min(100%, 360px);
+    justify-self: center;
+  }
+
+  .mobile-pairing-instructions {
+    width: min(100%, 420px);
+    justify-self: center;
+  }
+
+  .mobile-pairing-code {
+    gap: 5px;
+  }
+
+  .mobile-pairing-code span {
+    width: clamp(39px, 12vw, 52px);
+    height: 58px;
+    font-size: 27px;
+  }
+
+  .mobile-pairing-security-note {
+    align-items: flex-start;
+  }
+
+  .mobile-pairing-footer {
+    padding-inline: 20px;
   }
 }

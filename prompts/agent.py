@@ -204,7 +204,22 @@ def build_skills_catalog_prompt(skills_summary: str) -> str:
 
 
 def build_current_session_prompt(*, channel: str, chat_id: str) -> str:
-    return f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
+    surface, device_context = _client_surface(channel)
+    return (
+        "\n\n## Current Session\n"
+        f"Channel: {channel}\n"
+        f"Chat ID: {chat_id}\n"
+        f"Client Surface: {surface}\n"
+        f"Client Device Context: {device_context}"
+    )
+
+
+def _client_surface(channel: str) -> tuple[str, str]:
+    if channel == "web":
+        return "WebChat", "电脑网页端"
+    if channel == "mobile":
+        return "Akashic Android", "Android 手机端"
+    return "Unknown", "Unknown"
 
 
 def build_telegram_rendering_prompt() -> str:

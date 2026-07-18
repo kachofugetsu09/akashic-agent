@@ -301,13 +301,22 @@ async def test_content_vertical_slice_filters_investigates_and_shares(
     assert first_prompt.index("新标题") < first_prompt.index("旧标题")
     assert "来源：Research" in first_prompt
     assert "preprocess_score" not in first_prompt
-    assert "scratchpad" in system_prompt
-    assert "宁可少选" in system_prompt
+    assert "scratchpad" not in system_prompt
+    assert "scratchpad" in llm_input[2]["content"]
+    assert "宁可少选" in llm_input[2]["content"]
     assert "当前 ContextEvent" in first_prompt
     assert "没有有效 ContextEvent" in first_prompt
     final_prompt = provider.chat.await_args_list[1].kwargs["messages"][0]["content"]
     assert "unknown 时保持中性" in final_prompt
     assert "敏感经历" in final_prompt
+    assert "scratchpad" not in final_prompt
+    first_messages = provider.chat.await_args_list[0].kwargs["messages"]
+    final_messages = provider.chat.await_args_list[1].kwargs["messages"]
+    assert first_messages[:2] == final_messages[:2]
+    assert "scratchpad" in first_messages[-1]["content"]
+    assert "scratchpad" not in final_messages[-1]["content"]
+    assert "share_content" in final_messages[-1]["content"]
+    assert "skip_content" in final_messages[-1]["content"]
     assert gateway.acks == [{"event_ids": ["new", "old"]}]
     assert [event["id"] for event in runtime._state.unread("content")] == [ids[1]]
 
@@ -461,7 +470,7 @@ async def test_shared_ack_route_keeps_original_source_grouping_and_order(
 
 
 @pytest.mark.parametrize("mode", ["content", "alert", "context"])
-def test_unified_prompt_always_exposes_current_context(mode) -> None:
+def test_prompt_exposes_current_context_and_only_selected_mode(mode) -> None:
     ctx = WakeContext(
         content_events=[
             {
@@ -490,13 +499,17 @@ def test_unified_prompt_always_exposes_current_context(mode) -> None:
     assert "【当前 ContextEvent】" in messages[1]["content"]
     assert "presence=active | confidence=0.90" in messages[1]["content"]
     assert f"mode={mode}" in messages[1]["content"]
+    assert "mode=content" not in messages[0]["content"]
+    assert "mode=alert" not in messages[0]["content"]
+    assert "mode=context" not in messages[0]["content"]
+    assert f"mode={mode}" in messages[2]["content"]
     assert all(
-        marker in messages[0]["content"]
-        for marker in ("mode=content", "mode=alert", "mode=context")
+        f"mode={other_mode}" not in messages[2]["content"]
+        for other_mode in {"content", "alert", "context"} - {mode}
     )
     if mode == "content":
         assert "已有 content 标题" in messages[1]["content"]
-        assert "scratchpad" in messages[0]["content"]
+        assert "scratchpad" in messages[2]["content"]
     else:
         assert "本轮单条事件" in messages[1]["content"]
 

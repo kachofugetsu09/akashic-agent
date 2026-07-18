@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "id": "observe",
+      "repository": "https://github.com/akashic-plugins/observe",
+      "commit": "b434fa74b370fafcd0c64129fe1f641f73f0dbcf",
+      "plugin_class": "ObservePlugin",
+      "module": "mobile_panel.js",
+      "stylesheet": "mobile_panel.css",
+      "navigation": true,
+      "slots": [
+        "turn.after_answer"
+      ],
+      "query_methods": [
+        "kvcache.bootstrap",
+        "kvcache.message_usage",
+        "health.snapshot",
+        "health.error_detail"
+      ],
+      "node_test": "tests/test_mobile_panel.mjs",
+      "node_setup": "none"
+    },
+    {
+      "id": "fitbit",
+      "repository": "https://github.com/akashic-plugins/fitbit-mcp",
+      "commit": "b95ec281c232c77b4103271a52a7e3173b358269",
+      "plugin_class": "FitbitPlugin",
+      "module": "mobile_panel.js",
+      "stylesheet": "mobile_panel.css",
+      "navigation": true,
+      "slots": [],
+      "query_methods": [
+        "fitbit.current",
+        "fitbit.sleep_history"
+      ],
+      "node_test": "tests/test_mobile_panel.mjs",
+      "node_setup": "npm-ci"
+    },
+    {
+      "id": "proactive_feedback",
+      "repository": "https://github.com/akashic-plugins/proactive_feedback",
+      "commit": "d5227249f5ad195ab7693ae8c72690ee7db32e28",
+      "plugin_class": "ProactiveFeedbackPlugin",
+      "module": "mobile_panel.js",
+      "stylesheet": "mobile_panel.css",
+      "navigation": true,
+      "slots": [],
+      "query_methods": [
+        "feedback.overview",
+        "feedback.events"
+      ],
+      "node_test": "tests/test_mobile_panel.mjs",
+      "node_setup": "none"
+    },
+    {
+      "id": "emotion",
+      "repository": "https://github.com/akashic-plugins/emotion",
+      "commit": "0924217ea29008936b8e9b48f7a053791761934a",
+      "plugin_class": "EmotionPlugin",
+      "module": "mobile_panel.js",
+      "stylesheet": "mobile_panel.css",
+      "navigation": true,
+      "slots": [],
+      "query_methods": [
+        "emotion.bootstrap"
+      ],
+      "node_test": "tests/test_mobile_panel.mjs",
+      "node_setup": "none"
+    },
+    {
+      "id": "status_commands",
+      "repository": "https://github.com/akashic-plugins/status_commands",
+      "commit": "cee5bef98e6271c9eb069a6498b4ca072e85c878",
+      "plugin_class": "StatusCommands",
+      "module": "mobile_panel.js",
+      "stylesheet": "mobile_panel.css",
+      "navigation": false,
+      "slots": [
+        "drawer.panel"
+      ],
+      "query_methods": [
+        "memory.status"
+      ],
+      "node_test": "tests/test_mobile_panel.mjs",
+      "node_setup": "none"
+    }
+  ]
+}

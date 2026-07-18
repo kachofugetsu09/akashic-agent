@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -17,6 +18,12 @@ def _empty_metadata() -> dict[str, Any]:
     return {}
 
 
+class TurnDisposition(StrEnum):
+    """标识无需进入完整提交阶段的合法 turn 结果。"""
+
+    SHORT_CIRCUITED = "short_circuited"
+
+
 @dataclass
 class InboundMessage:
     """从 channel 传入的消息"""
@@ -28,6 +35,7 @@ class InboundMessage:
     timestamp: datetime = field(default_factory=datetime.now)
     media: list[str] = field(default_factory=_empty_media)
     metadata: dict[str, Any] = field(default_factory=_empty_metadata)
+    session_admission_id: str | None = field(default=None, repr=False, compare=False)
 
     @property
     def session_key(self) -> str:
@@ -58,6 +66,12 @@ class OutboundMessage:
     media: list[str] = field(default_factory=_empty_media)
     metadata: dict[str, Any] = field(default_factory=_empty_metadata)
     control_turn_id: str | None = field(default=None, repr=False, compare=False)
+    session_message_id: str | None = field(default=None, repr=False, compare=False)
+    turn_disposition: TurnDisposition | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass

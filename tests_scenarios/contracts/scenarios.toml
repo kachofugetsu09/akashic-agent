@@ -8,6 +8,7 @@ historical_session_delete = "tests/semantic/test_context_history_contract.py::te
 missing_p0_mutant = "tests/semantic/test_change_gate.py::test_every_p0_oracle_declares_a_known_wrong_mutant"
 official_workspace_path = "tests/semantic/test_contract_oracles.py::test_workspace_oracle_rejects_official_path_mutant"
 plugin_uninstall_deletes_data = "tests/semantic/test_contract_oracles.py::test_plugin_data_oracle_rejects_uninstall_delete_mutant"
+unicode_utf16_command_length = "tests/mobile_realtime/test_channel.py::test_command_list_uses_active_channel_catalog_without_stop"
 unmapped_executable_file = "tests/semantic/test_change_gate.py::test_unknown_executable_file_is_not_silently_accepted"
 
 [scenarios.contract_catalog]
@@ -36,6 +37,24 @@ timeout_seconds = 120
 command = ["python", "-m", "pytest", "-q", "tests/semantic/test_context_history_contract.py"]
 observes = ["retry_history_windows", "messages_full_snapshot", "message_embeddings_full_snapshot", "sqlite_write_set", "restart_sequence"]
 mutants = ["historical_session_delete"]
+
+[scenarios.mobile_realtime_contract]
+requirements = ["OUT-001", "OUT-002", "PLG-003", "PLG-008", "SES-002", "SES-005", "SES-006", "TST-001", "TST-003"]
+groups = ["mobile_realtime"]
+environment = "public_clean_workspace"
+timeout_seconds = 180
+command = [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "tests/mobile_realtime",
+  "tests/test_plugin_mobile_ui.py",
+  "tests/test_app_server.py",
+  "tests/test_channel_host.py",
+]
+observes = ["protocol_frames", "session_identity", "durable_delivery", "resume_cursor", "attachment_finality", "plugin_ui_snapshot"]
+mutants = ["unicode_utf16_command_length"]
 
 [scenarios.mcp_call_finality]
 requirements = ["PLG-004", "PLG-008", "TST-001", "TST-003"]

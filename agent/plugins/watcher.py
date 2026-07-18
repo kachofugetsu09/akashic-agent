@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 
 from agent.plugins.manager import PluginManager
 
@@ -9,11 +10,20 @@ logger = logging.getLogger(__name__)
 
 
 class PluginWatcher:
-    def __init__(self, manager: PluginManager, *, interval_seconds: float = 1.0) -> None:
+    def __init__(
+        self,
+        manager: PluginManager,
+        *,
+        interval_seconds: float = 1.0,
+        after_reconcile: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         self._manager = manager
         self._interval_seconds = interval_seconds
+        self._after_reconcile = after_reconcile
         self._wake = asyncio.Event()
         self._forced = False
+        self._confirmation_pending = False
+        self._notification_pending = False
         self._running = True
         self._run_started = False
         self._stopped = asyncio.Event()
@@ -55,14 +65,44 @@ class PluginWatcher:
                 if revision is None:
                     revision = current_revision
                     forced = True
-                if not forced and current_revision == revision:
+                changed = forced or current_revision != revision
+                if not changed and not self._notification_pending:
                     continue
-                # 4. 失败版本只尝试一次，后续文件变化仍可恢复热重载
-                try:
-                    _ = await self._manager.reconcile_changed()
-                except Exception:
-                    logger.exception("插件热重载失败")
-                revision = current_revision
+                # 4. 插件版本只协调一次，通知失败仅重试通知
+                confirming = self._confirmation_pending
+                needs_confirmation = False
+                if changed:
+                    try:
+                        results = await self._manager.reconcile_changed()
+                    except Exception:
+                        logger.exception("插件热重载失败")
+                        if confirming:
+                            self._forced = True
+                            continue
+                    else:
+                        # 安装器原子替换目录时，单次 discover 可能只看到短暂缺口。
+                        # 禁用结果先确认一次，只向移动端发布稳定后的最终目录。
+                        needs_confirmation = any(
+                            result.get("publication_state") == "disabled"
+                            for result in results
+                        )
+                        if needs_confirmation:
+                            self._confirmation_pending = True
+                            self._forced = True
+                        elif confirming:
+                            self._confirmation_pending = False
+                    revision = current_revision
+                    self._notification_pending = self._after_reconcile is not None
+                if needs_confirmation:
+                    continue
+                if self._notification_pending:
+                    try:
+                        assert self._after_reconcile is not None
+                        await self._after_reconcile()
+                    except Exception:
+                        logger.exception("插件热重载后置通知失败")
+                    else:
+                        self._notification_pending = False
         finally:
             self._stopped.set()
 

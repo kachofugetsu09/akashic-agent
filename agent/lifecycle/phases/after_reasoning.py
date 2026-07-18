@@ -38,12 +38,21 @@ AfterReasoningModules: TypeAlias = list[PhaseModule[AfterReasoningFrame]]
 
 _CTX_SLOT = "reasoning:ctx"
 _OUTBOUND_SLOT = "reasoning:outbound"
+_PERSISTED_USER_SLOT = "reasoning:persisted_user"
+_PERSISTED_ASSISTANT_SLOT = "reasoning:persisted_assistant"
 _PERSIST_USER_PREFIX = "persist:user:"
 _PERSIST_ASSISTANT_PREFIX = "persist:assistant:"
 _OUTBOUND_METADATA_PREFIX = "outbound:metadata:"
 _OUTBOUND_MEDIA_PREFIX = "outbound:media:"
 _ASSISTANT_FIXED_FIELDS = {"tools_used", "tool_chain", "reasoning_content", "model_state"}
-_USER_FIXED_FIELDS = {"media"}
+_USER_FIXED_FIELDS = {
+    "media",
+    "timestamp",
+    "client_message_id",
+    "reply_to_message_id",
+    "reply_role",
+    "reply_preview",
+}
 
 
 class _BuildAfterReasoningCtxModule:
@@ -55,6 +64,8 @@ class _BuildAfterReasoningCtxModule:
         input = frame.input
         msg = input.state.msg
         turn_result = input.turn_result
+        inbound_metadata = dict(msg.metadata or {})
+        inbound_metadata.pop("mobile_attention", None)
         raw_reply = turn_result.reply
         if raw_reply is None:
             raw_reply = "I've completed processing but have no response to give."
@@ -73,12 +84,17 @@ class _BuildAfterReasoningCtxModule:
             streamed=turn_result.streamed,
             context_retry=dict(turn_result.context_retry),
             outbound_metadata={
-                **(msg.metadata or {}),
+                **inbound_metadata,
                 **input.state.extra_metadata,
                 "tools_used": list(turn_result.tools_used),
                 "tool_chain": list(tool_chain),
                 "context_retry": dict(turn_result.context_retry),
                 "streamed_reply": turn_result.streamed,
+                **(
+                    {"mobile_attention": turn_result.mobile_attention}
+                    if turn_result.mobile_attention is not None
+                    else {}
+                ),
             },
         )
         return frame
@@ -101,6 +117,7 @@ class _EmitAfterReasoningCtxModule:
 class _PersistUserMessageModule:
     slot = "after_reasoning.persist_user"
     requires = ("after_reasoning.emit", _CTX_SLOT)
+    produces = (_PERSISTED_USER_SLOT,)
 
     def __init__(self, session_services: SessionServices) -> None:
         self._session_services = session_services
@@ -125,9 +142,20 @@ class _PersistUserMessageModule:
         if isinstance(llm_context_frame, str) and llm_context_frame.strip():
             user_kwargs["llm_context_frame"] = llm_context_frame
         user_kwargs.update(_collect_persist_user_slots(frame.slots))
-        session.add_message(
+        client_message_id = msg.metadata.get("client_message_id")
+        if isinstance(client_message_id, str) and client_message_id:
+            user_kwargs["client_message_id"] = client_message_id
+        client_created_at = msg.metadata.get("client_created_at")
+        if isinstance(client_created_at, str) and client_created_at:
+            user_kwargs["timestamp"] = client_created_at
+        for field in ("reply_to_message_id", "reply_role", "reply_preview"):
+            value = msg.metadata.get(field)
+            if isinstance(value, str) and value:
+                user_kwargs[field] = value
+        display_content = msg.metadata.get("display_content")
+        frame.slots[_PERSISTED_USER_SLOT] = session.add_message(
             "user",
-            msg.content,
+            display_content if isinstance(display_content, str) else msg.content,
             media=msg.media if msg.media else None,
             **user_kwargs,
         )
@@ -137,6 +165,7 @@ class _PersistUserMessageModule:
 class _PersistAssistantMessageModule:
     slot = "after_reasoning.persist_asst"
     requires = ("after_reasoning.persist_user", _CTX_SLOT)
+    produces = (_PERSISTED_ASSISTANT_SLOT,)
 
     async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
         ctx = cast(AfterReasoningCtx, frame.slots[_CTX_SLOT])
@@ -157,10 +186,15 @@ class _PersistAssistantMessageModule:
             assistant_kwargs["model_state"] = frame.input.turn_result.model_state
         assistant_kwargs.update(_collect_persist_assistant_slots(frame.slots))
         if frame.input.state.persistence.persist_assistant:
-            session.add_message(
+            media = list(ctx.media)
+            _append_media(
+                media,
+                collect_prefixed_slots(frame.slots, _OUTBOUND_MEDIA_PREFIX),
+            )
+            frame.slots[_PERSISTED_ASSISTANT_SLOT] = session.add_message(
                 "assistant",
                 ctx.reply,
-                media=ctx.media if ctx.media else None,
+                media=media if media else None,
                 **assistant_kwargs,
             )
         return frame
@@ -197,14 +231,20 @@ class _AppendMessagesModule:
         if raw_session is None:
             raise RuntimeError("AfterReasoning requires TurnState.session")
         session = cast("Session", raw_session)
-        persist_count = int(state.persistence.persist_user) + int(
-            state.persistence.persist_assistant
-        )
-        if persist_count == 0:
+        messages: list[dict[str, Any]] = []
+        if state.persistence.persist_user:
+            messages.append(
+                cast(dict[str, Any], frame.slots[_PERSISTED_USER_SLOT])
+            )
+        if state.persistence.persist_assistant:
+            messages.append(
+                cast(dict[str, Any], frame.slots[_PERSISTED_ASSISTANT_SLOT])
+            )
+        if not messages:
             return frame
         await self._session_services.session_manager.append_messages(
             session,
-            cast(list[dict[str, Any]], session.messages[-persist_count:]),
+            messages,
         )
         return frame
 
@@ -218,8 +258,34 @@ class _BuildOutboundMessageModule:
         ctx = cast(AfterReasoningCtx, frame.slots[_CTX_SLOT])
         metadata = dict(ctx.outbound_metadata)
         metadata.update(collect_prefixed_slots(frame.slots, _OUTBOUND_METADATA_PREFIX))
+        if frame.input.state.persistence.persist_user:
+            persisted_user = cast(
+                dict[str, object],
+                frame.slots[_PERSISTED_USER_SLOT],
+            )
+            raw_user_message_id = persisted_user.get("id")
+            raw_client_message_id = persisted_user.get("client_message_id")
+            if isinstance(raw_user_message_id, str) and raw_user_message_id:
+                metadata["persisted_user_message_id"] = raw_user_message_id
+            elif ctx.channel == "mobile":
+                raise RuntimeError("本轮 mobile user 消息缺少稳定 ID")
+            if isinstance(raw_client_message_id, str) and raw_client_message_id:
+                metadata["client_message_id"] = raw_client_message_id
+            elif ctx.channel == "mobile":
+                raise RuntimeError("本轮 mobile user 消息缺少客户端 ID")
         media = list(ctx.media)
         _append_media(media, collect_prefixed_slots(frame.slots, _OUTBOUND_MEDIA_PREFIX))
+        session_message_id: str | None = None
+        if frame.input.state.persistence.persist_assistant:
+            persisted = cast(
+                dict[str, object],
+                frame.slots[_PERSISTED_ASSISTANT_SLOT],
+            )
+            raw_message_id = persisted.get("id")
+            if isinstance(raw_message_id, str) and raw_message_id:
+                session_message_id = raw_message_id
+            elif ctx.channel == "mobile":
+                raise RuntimeError("本轮 assistant 消息缺少稳定 ID")
         frame.slots[_OUTBOUND_SLOT] = OutboundMessage(
             channel=ctx.channel,
             chat_id=ctx.chat_id,
@@ -227,6 +293,7 @@ class _BuildOutboundMessageModule:
             thinking=ctx.thinking,
             media=media,
             metadata=metadata,
+            session_message_id=session_message_id,
         )
         return frame
 

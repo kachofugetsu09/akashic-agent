@@ -24,7 +24,8 @@ async def start_channels(
     push_tool: MessagePushTool,
     http_resources: SharedHttpResources,
     event_bus: EventBus,
-    bot_commands: list[tuple[str, str]] | None = None,
+    telegram_bot_commands: list[tuple[str, str]] | None = None,
+    mobile_bot_commands: list[tuple[str, str]] | None = None,
     interrupt_controller: InterruptController | None = None,
     plugin_channels: list[Channel] | None = None,
 ) -> ChannelHost:
@@ -40,7 +41,7 @@ async def start_channels(
                 attachment_store=attachment_store,
                 http_resources=http_resources,
                 interrupt_controller=interrupt_controller,
-                bot_commands=bot_commands or [],
+                mobile_bot_commands=mobile_bot_commands or [],
                 log=logging.getLogger(f"channels.{channel.name}"),
             )
 
@@ -55,7 +56,7 @@ async def start_channels(
                 bus=bus,
                 session_manager=session_manager,
                 allow_from=tg.allow_from,
-                bot_commands=bot_commands,
+                bot_commands=telegram_bot_commands,
                 event_bus=event_bus,
                 interrupt_controller=interrupt_controller,
                 channel_name=tg.channel_name,

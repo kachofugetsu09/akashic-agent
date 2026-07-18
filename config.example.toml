@@ -72,6 +72,23 @@ host = "127.0.0.1"
 port = 6322
 channel_name = "web"
 
+# Android Mobile Realtime 默认关闭；启用后独立监听 WSS :6323。
+# Cloudflare Tunnel 只映射这个端口，不要映射上面的本机 WebChat。
+[mobile_realtime]
+enabled = false
+host = "0.0.0.0"
+port = 6323
+database = "data/mobile_realtime.db"
+lan_hostname = "akashic.local"
+public_url = ""
+max_attachment_mb = 50
+inbox_retention_days = 7
+
+[mobile_realtime.key_encryption]
+provider = "secret_service"
+master_key_namespace = "akasic/mobile-realtime"
+keyset_manifest = "data/mobile/keys/current.json"
+
 # 可选：长期记忆整理任务（默认已启用，通常无需修改）
 # [agent.maintenance]
 # memory_optimizer_enabled = true

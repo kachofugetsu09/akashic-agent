@@ -77,3 +77,61 @@ def test_smoke_config_uses_app_server_control_endpoint(tmp_path: Path) -> None:
     assert "[app_server]" in config
     assert 'listen = "/sandbox/akashic.sock"' in config
     assert "[channels]" not in config
+
+
+def test_migrated_plugin_gate_uses_mobile_catalog_not_dashboard(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    observe_source = tmp_path / "observe.py"
+    observe_source.write_text("# observe\n")
+    observe_db = tmp_path / "workspace/observe/observe.db"
+    observe_db.parent.mkdir(parents=True)
+    observe_db.touch()
+    expected_plugins = [
+        "emotion@gate",
+        "observe@gate",
+        "proactive_feedback@gate",
+        "status_commands@gate",
+    ]
+    monkeypatch.setattr(
+        probe,
+        "_control_roundtrip",
+        lambda *_: {"content": "🧠 记忆整理状态：已同步"},
+    )
+    monkeypatch.setattr(probe, "_wait_sqlite_count", lambda *_: 1)
+    monkeypatch.setattr(
+        probe,
+        "_read_json_object",
+        lambda *_: {
+            "phase_slots": [
+                "meme.prompt",
+                "status_commands.memory_status",
+                "gate_driver.inspect_runtime_modules",
+            ],
+            "mobile_ui_catalog": {
+                "catalog_revision": "revision",
+                "items": [{"id": plugin_id} for plugin_id in expected_plugins],
+            },
+        },
+    )
+    monkeypatch.setattr(probe, "_snapshot_statuses", lambda *_: [])
+    monkeypatch.setattr(
+        probe,
+        "_wait_snapshot_status",
+        lambda *_, **__: (
+            [],
+            {"old_generation": "observe:old", "new_generation": "observe:new"},
+        ),
+    )
+    monkeypatch.setattr(
+        probe,
+        "_dashboard_plugins",
+        lambda *_: (_ for _ in ()).throw(AssertionError("不得使用桌面端目录")),
+        raising=False,
+    )
+
+    result = probe._exercise_migrated_plugins("container", observe_source, tmp_path)
+
+    assert result["passed"] is True
+    assert result["mobile_ui_plugins"] == expected_plugins

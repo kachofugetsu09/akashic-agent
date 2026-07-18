@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import asyncio
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -11,6 +12,7 @@ from agent.control.ports import ControlExecutionResult
 from agent.control.runtime import ConversationRuntime
 from bootstrap.passive_worker import PassiveMessageWorker
 from bus.events import InboundMessage, OutboundMessage
+from session.manager import SessionManager
 from session.store import SessionStore
 
 
@@ -38,12 +40,19 @@ async def test_channel_adapter_uses_same_conversation_runtime(tmp_path: Path) ->
 
     async def execute(request: TurnRequest) -> str:
         assert request.metadata["channel"] == "telegram"
+        assert request.metadata["inboundMetadata"] == {"reply_to_message_id": "m1"}
         return f"channel:{request.input}"
 
     runtime = ConversationRuntime(store, execute)
     bus = _Bus()
     worker = PassiveMessageWorker(cast(Any, bus), runtime, cast(Any, object()))
-    inbound = InboundMessage("telegram", "user", "42", "hello")
+    inbound = InboundMessage(
+        "telegram",
+        "user",
+        "42",
+        "hello",
+        metadata={"reply_to_message_id": "m1"},
+    )
     await worker._run_message(inbound)
 
     assert [message.content for message in bus.outbound] == ["channel:hello"]
@@ -53,6 +62,43 @@ async def test_channel_adapter_uses_same_conversation_runtime(tmp_path: Path) ->
     assert turns[0].final_response == "channel:hello"
     await runtime.shutdown()
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_channel_adapter_releases_session_admission_after_completion(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path / "workspace")
+    session_key = "mobile:one"
+    manager.save(manager.get_or_create(session_key))
+    _, admission_id = manager.admit_existing(session_key)
+
+    async def execute(request: TurnRequest) -> str:
+        return request.input
+
+    runtime = ConversationRuntime(manager.control_store, execute)
+    bus = _Bus()
+    worker = PassiveMessageWorker(
+        cast(Any, bus),
+        runtime,
+        cast(Any, SimpleNamespace(session_manager=manager)),
+    )
+    inbound = InboundMessage(
+        "mobile",
+        "device",
+        "one",
+        "hello",
+        metadata={"session_key_override": session_key},
+        session_admission_id=admission_id,
+    )
+
+    await worker._run_message(inbound)
+
+    dashboard_store = SessionStore(manager.db_path)
+    assert dashboard_store.delete_session(session_key, cascade=True)
+    dashboard_store.close()
+    await runtime.shutdown()
+    manager.close()
 
 
 @pytest.mark.asyncio
@@ -137,6 +183,7 @@ async def test_channel_adapter_preserves_full_outbound_projection(tmp_path: Path
                 "replyTo": "message-1",
                 "media": ["image.png"],
                 "metadata": {"render": "card"},
+                "sessionMessageId": "telegram:42:2",
             },
         )
 
@@ -155,7 +202,9 @@ async def test_channel_adapter_preserves_full_outbound_projection(tmp_path: Path
             reply_to="message-1",
             media=["image.png"],
             metadata={"render": "card"},
+            session_message_id="telegram:42:2",
         )
     ]
+    assert bus.outbound[0].session_message_id == "telegram:42:2"
     await runtime.shutdown()
     store.close()

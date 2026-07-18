@@ -320,6 +320,17 @@ class SessionStore:
                 """)
             self._ensure_session_columns()
             self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS session_admissions (
+                    admission_id TEXT PRIMARY KEY,
+                    session_key  TEXT NOT NULL,
+                    created_at   TEXT NOT NULL
+                )
+                """)
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_session_admissions_session
+                ON session_admissions(session_key)
+                """)
+            self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
                     id          TEXT PRIMARY KEY,
                     session_key TEXT NOT NULL,
@@ -982,42 +993,50 @@ class SessionStore:
 
     def delete_session(self, key: str, *, cascade: bool = False) -> bool:
         with self._lock:
-            if not cascade:
-                row = self._conn.execute(
-                    """
-                    SELECT
-                        (SELECT COUNT(1) FROM messages WHERE session_key = ?) +
-                        (SELECT COUNT(1) FROM turns WHERE session_key = ?) AS c
-                    """,
-                    (key, key),
-                ).fetchone()
-                count = int((row["c"] if row else 0) or 0)
-                if count > 0:
-                    raise ValueError("session 下仍有 messages 或 turns，需使用 cascade 删除")
-            else:
-                if self._has_message_embeddings_locked():
-                    self._conn.execute(
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._require_sessions_not_admitted_locked([key])
+                if not cascade:
+                    row = self._conn.execute(
                         """
-                        DELETE FROM message_embeddings
-                        WHERE message_id IN (
-                            SELECT id FROM messages WHERE session_key = ?
-                        )
+                        SELECT
+                            (SELECT COUNT(1) FROM messages WHERE session_key = ?) +
+                            (SELECT COUNT(1) FROM turns WHERE session_key = ?) AS c
                         """,
+                        (key, key),
+                    ).fetchone()
+                    count = int((row["c"] if row else 0) or 0)
+                    if count > 0:
+                        raise ValueError(
+                            "session 下仍有 messages 或 turns，需使用 cascade 删除"
+                        )
+                else:
+                    if self._has_message_embeddings_locked():
+                        self._conn.execute(
+                            """
+                            DELETE FROM message_embeddings
+                            WHERE message_id IN (
+                                SELECT id FROM messages WHERE session_key = ?
+                            )
+                            """,
+                            (key,),
+                        )
+                    self._conn.execute(
+                        "DELETE FROM messages WHERE session_key = ?",
                         (key,),
                     )
-                self._conn.execute(
-                    "DELETE FROM messages WHERE session_key = ?",
+                    self._conn.execute(
+                        "DELETE FROM turns WHERE session_key = ?",
+                        (key,),
+                    )
+                cur = self._conn.execute(
+                    "DELETE FROM sessions WHERE key = ?",
                     (key,),
                 )
-                self._conn.execute(
-                    "DELETE FROM turns WHERE session_key = ?",
-                    (key,),
-                )
-            cur = self._conn.execute(
-                "DELETE FROM sessions WHERE key = ?",
-                (key,),
-            )
-            self._conn.commit()
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
         return cur.rowcount > 0
 
     def delete_sessions_batch(self, keys: list[str], *, cascade: bool = False) -> int:
@@ -1026,49 +1045,119 @@ class SessionStore:
             return 0
         placeholders = ",".join("?" for _ in clean_keys)
         with self._lock:
-            if not cascade:
-                row = self._conn.execute(
-                    f"""
-                    SELECT
-                        (SELECT COUNT(1) FROM messages
-                         WHERE session_key IN ({placeholders})) +
-                        (SELECT COUNT(1) FROM turns
-                         WHERE session_key IN ({placeholders})) AS c
-                    """,
-                    tuple([*clean_keys, *clean_keys]),
-                ).fetchone()
-                count = int((row["c"] if row else 0) or 0)
-                if count > 0:
-                    raise ValueError(
-                        "选中的 session 中仍有 messages 或 turns，需使用 cascade 删除"
-                    )
-            else:
-                if self._has_message_embeddings_locked():
-                    self._conn.execute(
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._require_sessions_not_admitted_locked(clean_keys)
+                if not cascade:
+                    row = self._conn.execute(
                         f"""
-                        DELETE FROM message_embeddings
-                        WHERE message_id IN (
-                            SELECT id
-                            FROM messages
-                            WHERE session_key IN ({placeholders})
-                        )
+                        SELECT
+                            (SELECT COUNT(1) FROM messages
+                             WHERE session_key IN ({placeholders})) +
+                            (SELECT COUNT(1) FROM turns
+                             WHERE session_key IN ({placeholders})) AS c
                         """,
+                        tuple([*clean_keys, *clean_keys]),
+                    ).fetchone()
+                    count = int((row["c"] if row else 0) or 0)
+                    if count > 0:
+                        raise ValueError(
+                            "选中的 session 中仍有 messages 或 turns，需使用 cascade 删除"
+                        )
+                else:
+                    if self._has_message_embeddings_locked():
+                        self._conn.execute(
+                            f"""
+                            DELETE FROM message_embeddings
+                            WHERE message_id IN (
+                                SELECT id
+                                FROM messages
+                                WHERE session_key IN ({placeholders})
+                            )
+                            """,
+                            tuple(clean_keys),
+                        )
+                    self._conn.execute(
+                        f"DELETE FROM messages WHERE session_key IN ({placeholders})",
                         tuple(clean_keys),
                     )
-                self._conn.execute(
-                    f"DELETE FROM messages WHERE session_key IN ({placeholders})",
+                    self._conn.execute(
+                        f"DELETE FROM turns WHERE session_key IN ({placeholders})",
+                        tuple(clean_keys),
+                    )
+                cur = self._conn.execute(
+                    f"DELETE FROM sessions WHERE key IN ({placeholders})",
                     tuple(clean_keys),
                 )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+        return int(cur.rowcount or 0)
+
+    def acquire_session_admission(self, key: str, admission_id: str) -> bool:
+        """仅在会话仍存在时创建处理租约，并阻止并发删除。"""
+
+        # 1. 用写事务串行化“存在校验”和租约创建
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT 1 FROM sessions WHERE key = ?",
+                    (key,),
+                ).fetchone()
+                if row is None:
+                    self._conn.rollback()
+                    return False
+
+                # 2. 租约落库后，其他连接的删除操作才能继续竞争写锁
                 self._conn.execute(
-                    f"DELETE FROM turns WHERE session_key IN ({placeholders})",
-                    tuple(clean_keys),
+                    """
+                    INSERT INTO session_admissions(admission_id, session_key, created_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (admission_id, key, datetime.now(UTC).isoformat()),
                 )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+        return True
+
+    def release_session_admission(self, admission_id: str) -> None:
+        """释放已完成入站消息持有的会话处理租约。"""
+
+        with self._lock:
             cur = self._conn.execute(
-                f"DELETE FROM sessions WHERE key IN ({placeholders})",
-                tuple(clean_keys),
+                "DELETE FROM session_admissions WHERE admission_id = ?",
+                (admission_id,),
             )
             self._conn.commit()
-        return int(cur.rowcount or 0)
+        if cur.rowcount != 1:
+            raise RuntimeError(f"session admission 不存在: {admission_id}")
+
+    def clear_session_admissions(self) -> None:
+        """在唯一 runtime 启动时清理上次异常退出遗留的处理租约。"""
+
+        with self._lock:
+            self._conn.execute("DELETE FROM session_admissions")
+            self._conn.commit()
+
+    def _require_sessions_not_admitted_locked(self, keys: list[str]) -> None:
+        placeholders = ",".join("?" for _ in keys)
+        row = self._conn.execute(
+            f"""
+            SELECT session_key
+            FROM session_admissions
+            WHERE session_key IN ({placeholders})
+            LIMIT 1
+            """,
+            tuple(keys),
+        ).fetchone()
+        if row is not None:
+            raise ValueError(
+                f"session 正在处理消息，暂时不能删除: {row['session_key']}"
+            )
 
     def update_presence(
         self,
@@ -1450,6 +1539,34 @@ class SessionStore:
         if row is None:
             return None
         return self._row_to_message(row)
+
+    def get_message_by_client_id(
+        self,
+        session_key: str,
+        client_message_id: str,
+    ) -> dict[str, Any] | None:
+        """按会话和移动端消息 ID 解析唯一的 canonical 消息。"""
+
+        # 1. client_message_id 只存在于受校验的 extra JSON 中
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, session_key, seq, role, content, tool_chain, extra, ts
+                FROM messages
+                WHERE session_key = ?
+                  AND json_extract(extra, '$.client_message_id') = ?
+                ORDER BY seq ASC
+                LIMIT 2
+                """,
+                (session_key, client_message_id),
+            ).fetchall()
+
+        # 2. 重复标识违反移动消息幂等契约，不能静默选中其中一条
+        if len(rows) > 1:
+            raise RuntimeError(
+                f"同一会话存在重复 client_message_id: {session_key} {client_message_id}"
+            )
+        return None if not rows else self._row_to_message(rows[0])
 
     def update_message(
         self,

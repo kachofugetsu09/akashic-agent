@@ -6,6 +6,7 @@ beautifulsoup4>=4.14.0
 certifi
 charset-normalizer
 click
+cryptography>=46.0.0
 curl_cffi>=0.14.0
 ddgs>=9.10.0
 distro
@@ -16,6 +17,7 @@ fastapi>=0.134.0
 ftfy>=6.3.1
 html2text>=2025.4.0
 httpx[socks]>=0.28.0
+httpcore>=1.0,<2
 json_repair>=0.58.0
 jieba>=0.42.1
 lark-oapi>=1.6.8
@@ -36,6 +38,7 @@ rich>=14.0.0
 schedule>=1.2.0
 scikit-learn>=1.8.0
 scipy>=1.17.0
+SecretStorage>=3.4.0
 SQLAlchemy>=2.0.0
 starlette>=0.52.0
 telegramify-markdown

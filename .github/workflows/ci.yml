@@ -29,6 +29,33 @@ jobs:
           name: change-impact-gate
           path: docker/debug/reports/change-gate/
 
+  mobile-plugin-contract-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Verify locked mobile plugin contract
+        run: python docker/debug/mobile_plugin_contract_gate.py --require-clean-core
+
+      - name: Upload mobile plugin contract evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-plugin-contract-gate
+          path: docker/debug/reports/mobile-plugin-contract/
+
   check-and-test:
     runs-on: ubuntu-latest
     steps:

@@ -176,6 +176,14 @@ def _wait_server_task(
     return wait
 
 
+def _close_mobile_gateway(runtime: Any | None) -> Callable[[], Awaitable[None]]:
+    async def close() -> None:
+        if runtime is not None:
+            await asyncio.to_thread(runtime.close)
+
+    return close
+
+
 class AppRuntime:
     def __init__(
         self,
@@ -215,6 +223,9 @@ class AppRuntime:
         self.chat_server = None
         self.chat_task: asyncio.Task[None] | None = None
         self.web_chat_channel = None
+        self.mobile_gateway_runtime = None
+        self.mobile_gateway_server = None
+        self.mobile_gateway_task: asyncio.Task[None] | None = None
         self.plugin_job_runtime: PluginJobRuntime | None = None
         self.plugin_service_host: PluginServiceHost | None = None
         self.plugin_watcher: PluginWatcher | None = None
@@ -246,6 +257,7 @@ class AppRuntime:
                 self.workspace,
                 self.http_resources,
                 **core_kwargs,
+                clear_stale_session_admissions=True,
             )
             self.agent_loop = self.core.loop
             self.bus = self.core.bus
@@ -362,7 +374,24 @@ class AppRuntime:
                 plugin_manager.bind_service_switcher(
                     self.plugin_service_host.swap_plugin_services
                 )
+            if self.config.mobile_realtime.enabled:
+                from infra.mobile_realtime.gateway import (
+                    build_mobile_gateway_runtime,
+                )
+
+                self.mobile_gateway_runtime, _ = build_mobile_gateway_runtime(
+                    self.config.mobile_realtime,
+                    self.workspace,
+                )
+                if plugin_manager is not None:
+                    from agent.plugins.mobile_ui import PluginMobileUiProvider
+
+                    self.mobile_gateway_runtime.channel.bind_mobile_ui_provider(
+                        PluginMobileUiProvider(plugin_manager)
+                    )
             plugin_channels = list(plugin_manager.channels) if plugin_manager else []
+            if self.mobile_gateway_runtime is not None:
+                plugin_channels.append(self.mobile_gateway_runtime.channel)
             if self.config.channels.chat.enabled:
                 from infra.channels.web_chat_channel import WebChatChannel
 
@@ -377,8 +406,13 @@ class AppRuntime:
                 push_tool=self.push_tool,
                 http_resources=self.http_resources,
                 event_bus=event_bus,
-                bot_commands=(
+                telegram_bot_commands=(
                     plugin_manager.telegram_bot_commands
+                    if plugin_manager
+                    else None
+                ),
+                mobile_bot_commands=(
+                    plugin_manager.mobile_bot_commands
                     if plugin_manager
                     else None
                 ),
@@ -432,12 +466,32 @@ class AppRuntime:
                 self.dashboard_server.serve(),
                 name="dashboard_server",
             )
+            if self.config.mobile_realtime.enabled:
+                from infra.mobile_realtime.gateway import (
+                    build_mobile_gateway_server,
+                )
+
+                assert self.mobile_gateway_runtime is not None
+                mobile_keyset = self.mobile_gateway_runtime.keyset
+                self.mobile_gateway_server = build_mobile_gateway_server(
+                    self.mobile_gateway_runtime,
+                    mobile_keyset,
+                )
+                self.mobile_gateway_task = asyncio.create_task(
+                    self.mobile_gateway_server.serve(),
+                    name="mobile_gateway_server",
+                )
             if self.web_chat_channel is not None:
                 self.chat_server = build_chat_server(
                     workspace=self.workspace,
                     channel=self.web_chat_channel,
                     host=self.config.channels.chat.host,
                     port=self.config.channels.chat.port,
+                    mobile_pairing_admin=(
+                        self.mobile_gateway_runtime.admin
+                        if self.mobile_gateway_runtime is not None
+                        else None
+                    ),
                 )
                 self.chat_task = asyncio.create_task(
                     self.chat_server.serve(),
@@ -492,7 +546,15 @@ class AppRuntime:
                     )
 
             if plugin_manager is not None:
-                self.plugin_watcher = PluginWatcher(plugin_manager)
+                mobile_ui_refresh = (
+                    self.mobile_gateway_runtime.channel.refresh_mobile_ui_catalog
+                    if self.mobile_gateway_runtime is not None
+                    else None
+                )
+                self.plugin_watcher = PluginWatcher(
+                    plugin_manager,
+                    after_reconcile=mobile_ui_refresh,
+                )
                 self.plugin_watcher_task = asyncio.create_task(
                     self.plugin_watcher.run(),
                     name="plugin_watcher",
@@ -522,6 +584,7 @@ class AppRuntime:
                 for task in (
                     self.dashboard_task,
                     self.chat_task,
+                    self.mobile_gateway_task,
                     self.plugin_watcher_task,
                     self.workspace_mcp_watcher_task,
                 )
@@ -547,6 +610,12 @@ class AppRuntime:
                 elif self.chat_task is not None and self.chat_task in done:
                     watched_task = self.chat_task
                     self.chat_task = None
+                elif (
+                    self.mobile_gateway_task is not None
+                    and self.mobile_gateway_task in done
+                ):
+                    watched_task = self.mobile_gateway_task
+                    self.mobile_gateway_task = None
                 elif (
                     self.plugin_watcher_task is not None
                     and self.plugin_watcher_task in done
@@ -638,6 +707,8 @@ class AppRuntime:
             self.dashboard_server.should_exit = True
         if self.chat_server is not None:
             self.chat_server.should_exit = True
+        if self.mobile_gateway_server is not None:
+            self.mobile_gateway_server.should_exit = True
 
     async def shutdown(self) -> None:
         if self._shutdown:
@@ -656,6 +727,14 @@ class AppRuntime:
                 (
                     "chat_server.wait",
                     _wait_server_task(self.chat_task),
+                ),
+                (
+                    "mobile_gateway_server.wait",
+                    _wait_server_task(self.mobile_gateway_task),
+                ),
+                (
+                    "mobile_gateway.close",
+                    _close_mobile_gateway(self.mobile_gateway_runtime),
                 ),
                 (
                     "plugin_watcher.stop",

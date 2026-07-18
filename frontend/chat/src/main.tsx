@@ -7,6 +7,7 @@ import {
   Pencil,
   Plus,
   SendHorizontal,
+  Smartphone,
 } from "lucide-react";
 import {
   Attachment,
@@ -40,6 +41,7 @@ import {
   usePromptInputAttachments,
 } from "@/components/ai-elements/prompt-input";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { MobilePairingDialog } from "./mobile-pairing-dialog";
 import "./styles.css";
 
 type ChatStatus = "idle" | "submitted" | "streaming" | "error";
@@ -203,6 +205,7 @@ function App() {
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<ChatStatus>("idle");
   const [error, setError] = useState("");
+  const [mobilePairingOpen, setMobilePairingOpen] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const activeSessionRef = useRef("");
   const statusRef = useRef<ChatStatus>("idle");
@@ -400,6 +403,12 @@ function App() {
             ))}
           </div>
         </section>
+        <div className="sidebar-mobile-action">
+          <button className="mobile-connect-trigger" type="button" onClick={() => setMobilePairingOpen(true)}>
+            <span className="mobile-connect-icon" aria-hidden="true"><Smartphone size={19} /></span>
+            <span>连接手机</span>
+          </button>
+        </div>
       </aside>
 
       <section className="chat-main">
@@ -459,6 +468,7 @@ function App() {
           {error && <div className="error-line">{error}</div>}
         </div>
       </section>
+      <MobilePairingDialog open={mobilePairingOpen} onOpenChange={setMobilePairingOpen} />
     </main>
   );
 }

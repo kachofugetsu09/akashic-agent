@@ -11,6 +11,7 @@ from agent.looping.ports import LLMConfig
 from agent.provider import LLMResponse, ToolCall
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
+from agent.tools.request_user_confirmation import RequestUserConfirmationTool
 from agent.tools.tool_search import ToolSearchTool
 from bus.event_bus import EventBus
 from bus.events_lifecycle import ToolCallCompleted, ToolCallStarted
@@ -139,6 +140,39 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     assert react_stats["cache_hit_tokens"] == 100
     first_messages = provider.calls[0]["messages"]
     assert not any("未加载工具目录" in str(m.get("content", "")) for m in first_messages)
+
+
+def test_request_confirmation_tool_produces_explicit_runtime_attention():
+    provider = _Provider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        "confirm-1",
+                        "request_user_confirmation",
+                        {"prompt": "允许覆盖远端配置吗？"},
+                    )
+                ],
+            ),
+            LLMResponse(content="请确认是否允许覆盖远端配置。", tool_calls=[]),
+        ]
+    )
+    tools = ToolRegistry()
+    tools.register(RequestUserConfirmationTool(), always_on=True, risk="read-only")
+    reasoner = DefaultReasoner(
+        llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=40,
+    )
+
+    result = asyncio.run(reasoner.run([{"role": "user", "content": "覆盖配置"}]))
+
+    assert result.metadata["mobile_attention"] == "confirmation"
+    assert result.metadata["tools_used"] == ["request_user_confirmation"]
 
 
 def test_default_reasoner_blocks_disabled_tool_even_if_model_calls_it():
@@ -824,8 +858,8 @@ def test_get_history_since_consolidated_passes_session_cursor():
             content: str,
             media: list[str] | None = None,
             **kwargs: object,
-        ) -> None:
-            pass
+        ) -> dict[str, object]:
+            return {"role": role, "content": content}
 
     history = get_history_since_consolidated(Session(), 40)
 

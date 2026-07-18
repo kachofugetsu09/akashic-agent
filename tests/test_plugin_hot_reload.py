@@ -295,6 +295,69 @@ async def test_candidate_declarations_are_collected_once(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("legacy_method", "legacy_declaration"),
+    [
+        (
+            "mobile_ui_module",
+            "    @classmethod\n"
+            "    def mobile_ui_module(cls): return 'legacy.js'\n",
+        ),
+        (
+            "mobile_ui_stylesheet",
+            "    @classmethod\n"
+            "    def mobile_ui_stylesheet(cls): return 'legacy.css'\n",
+        ),
+        (
+            "mobile_ui_call",
+            "    async def mobile_ui_call(self, method, payload): return {}\n",
+        ),
+    ],
+)
+async def test_legacy_mobile_ui_candidate_keeps_active_snapshot(
+    tmp_path: Path,
+    legacy_method: str,
+    legacy_declaration: str,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "mobile_contract",
+        "from agent.plugins import MobileUiContribution, Plugin\n"
+        "class MobileContractPlugin(Plugin):\n"
+        "    name = 'mobile_contract'\n"
+        "    @classmethod\n"
+        "    def mobile_ui(cls):\n"
+        "        return MobileUiContribution(module='mobile.js', slots=('drawer.panel',))\n",
+    )
+    _ = (plugin_dir / "mobile.js").write_text("export const version = 'v2';\n", encoding="utf-8")
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("mobile_contract")
+    active_snapshot = manager.current_snapshot
+    assert active is not None and active_snapshot is not None
+
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class MobileContractPlugin(Plugin):\n"
+        "    name = 'mobile_contract'\n"
+        + legacy_declaration,
+        encoding="utf-8",
+    )
+    prepared = await manager.prepare_candidate("mobile_contract")
+
+    gate = manager.latest_gate("mobile_contract")
+    assert prepared is None
+    assert gate is not None and gate.status == "failed"
+    assert gate.checks[0].check_id == "declarations"
+    assert legacy_method in gate.failure_reason
+    assert manager.generation("mobile_contract") is active
+    assert manager.current_snapshot is active_snapshot
+    assert active_snapshot.generations["mobile_contract"] is active
+    assert active.contributions.mobile_ui_asset is not None
+    assert active.contributions.mobile_ui_asset.module == "export const version = 'v2';\n"
+
+
+@pytest.mark.asyncio
 async def test_same_source_gets_new_generation_namespace_after_restart(tmp_path: Path):
     _write_plugin(
         tmp_path / "plugins",
@@ -2144,6 +2207,7 @@ async def test_current_plugin_views_ignore_retained_old_generation(
     assert len(active) == 1
     assert active[0].manifest["version"] == "v2"
     assert manager.telegram_bot_commands == [("view-v2", "v2")]
+    assert manager.mobile_bot_commands == []
 
     write_plugin_manifest(
         {"current_view": False},
@@ -2152,8 +2216,45 @@ async def test_current_plugin_views_ignore_retained_old_generation(
     await manager.reconcile_changed()
     assert manager.active_plugins() == []
     assert manager.telegram_bot_commands == []
+    assert manager.mobile_bot_commands == []
 
     await retained.release()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_bot_command_catalogs_require_explicit_channel_declarations(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "a_telegram_only",
+        "from agent.plugins import Plugin\n"
+        "class TelegramOnlyPlugin(Plugin):\n"
+        "    name = 'a_telegram_only'\n"
+        "    def telegram_bot_commands(self):\n"
+        "        return [('telegram_only', '仅 Telegram')]\n",
+    )
+    _write_plugin(
+        tmp_path / "plugins",
+        "b_shared",
+        "from agent.plugins import Plugin\n"
+        "class SharedCommandPlugin(Plugin):\n"
+        "    name = 'b_shared'\n"
+        "    def telegram_bot_commands(self):\n"
+        "        return [('shared', '共享命令')]\n"
+        "    def mobile_bot_commands(self):\n"
+        "        return [('shared', '共享命令')]\n",
+    )
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    assert manager.telegram_bot_commands == [
+        ("telegram_only", "仅 Telegram"),
+        ("shared", "共享命令"),
+    ]
+    assert manager.mobile_bot_commands == [("shared", "共享命令")]
     await manager.terminate_all()
 
 
@@ -2296,7 +2397,7 @@ async def test_plugin_watcher_reconciles_change_arriving_during_scan() -> None:
             return []
 
     manager = Manager()
-    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    watcher = PluginWatcher(cast(PluginManager, manager), interval_seconds=0.01)
     task = asyncio.create_task(watcher.run())
     await asyncio.sleep(0)
     manager.revision = "b"
@@ -2331,7 +2432,7 @@ async def test_plugin_watcher_recovers_after_revision_scan_error() -> None:
             return []
 
     manager = Manager()
-    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    watcher = PluginWatcher(cast(PluginManager, manager), interval_seconds=0.01)
     task = asyncio.create_task(watcher.run())
     for _ in range(100):
         if manager.calls:
@@ -2361,7 +2462,7 @@ async def test_plugin_watcher_does_not_reconcile_after_recovered_scan_error() ->
             return []
 
     manager = Manager()
-    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    watcher = PluginWatcher(cast(PluginManager, manager), interval_seconds=0.01)
     task = asyncio.create_task(watcher.run())
     for _ in range(100):
         if manager.scans >= 3:
@@ -2395,13 +2496,24 @@ async def test_plugin_watcher_recovers_after_reconcile_failure() -> None:
             return []
 
     manager = Manager()
-    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    reconciled = 0
+
+    async def after_reconcile() -> None:
+        nonlocal reconciled
+        reconciled += 1
+
+    watcher = PluginWatcher(
+        cast(PluginManager, manager),
+        interval_seconds=0.01,
+        after_reconcile=after_reconcile,
+    )
     task = asyncio.create_task(watcher.run())
     await asyncio.sleep(0)
     manager.revision = "broken"
     await asyncio.wait_for(manager.failed.wait(), timeout=1)
     await asyncio.sleep(0.03)
     assert manager.calls == 1
+    assert reconciled == 1
     assert not task.done()
 
     manager.revision = "fixed"
@@ -2409,6 +2521,173 @@ async def test_plugin_watcher_recovers_after_reconcile_failure() -> None:
     watcher.stop()
     await task
     assert manager.calls == 2
+    assert reconciled == 2
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_retries_notification_without_reconciling_again() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.revision = "stable"
+            self.calls = 0
+
+        def watch_revision(self) -> str:
+            return self.revision
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            return []
+
+    manager = Manager()
+    notification_calls = 0
+    notified = asyncio.Event()
+
+    async def after_reconcile() -> None:
+        nonlocal notification_calls
+        notification_calls += 1
+        if notification_calls == 1:
+            raise RuntimeError("transient notification failure")
+        notified.set()
+
+    watcher = PluginWatcher(
+        cast(PluginManager, manager),
+        interval_seconds=0.01,
+        after_reconcile=after_reconcile,
+    )
+    task = asyncio.create_task(watcher.run())
+    await asyncio.sleep(0)
+    manager.revision = "changed"
+    await asyncio.wait_for(notified.wait(), timeout=1)
+
+    watcher.stop()
+    await task
+    assert manager.calls == 1
+    assert notification_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_confirms_disabled_result_against_stable_revision() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def watch_revision(self) -> str:
+            return "stable"
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            if self.calls == 1:
+                return [{"plugin_id": "observe", "publication_state": "disabled"}]
+            return [{"plugin_id": "observe", "publication_state": "committed"}]
+
+    manager = Manager()
+    notification_calls = 0
+
+    async def notify() -> None:
+        nonlocal notification_calls
+        notification_calls += 1
+
+    watcher = PluginWatcher(
+        cast(PluginManager, manager),
+        interval_seconds=0.01,
+        after_reconcile=notify,
+    )
+    task = asyncio.create_task(watcher.run())
+    await asyncio.sleep(0)
+    watcher.wake()
+    for _ in range(100):
+        if manager.calls >= 2:
+            break
+        await asyncio.sleep(0.01)
+
+    watcher.stop()
+    await task
+    assert manager.calls == 2
+    assert notification_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_notifies_explicit_disable_after_confirmation() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def watch_revision(self) -> str:
+            return "stable"
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            if self.calls == 1:
+                return [{"plugin_id": "observe", "publication_state": "disabled"}]
+            return []
+
+    manager = Manager()
+    notification_calls = 0
+
+    async def notify() -> None:
+        nonlocal notification_calls
+        notification_calls += 1
+
+    watcher = PluginWatcher(
+        cast(PluginManager, manager),
+        interval_seconds=0.01,
+        after_reconcile=notify,
+    )
+    task = asyncio.create_task(watcher.run())
+    await asyncio.sleep(0)
+    watcher.wake()
+    for _ in range(100):
+        if manager.calls >= 2 and notification_calls == 1:
+            break
+        await asyncio.sleep(0.01)
+
+    watcher.stop()
+    await task
+    assert manager.calls == 2
+    assert notification_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_retries_failed_disabled_confirmation() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def watch_revision(self) -> str:
+            return "stable"
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            if self.calls == 1:
+                return [{"plugin_id": "observe", "publication_state": "disabled"}]
+            if self.calls == 2:
+                raise RuntimeError("temporary scan failure")
+            return []
+
+    manager = Manager()
+    notification_calls = 0
+
+    async def notify() -> None:
+        nonlocal notification_calls
+        notification_calls += 1
+
+    watcher = PluginWatcher(
+        cast(PluginManager, manager),
+        interval_seconds=0.01,
+        after_reconcile=notify,
+    )
+    task = asyncio.create_task(watcher.run())
+    await asyncio.sleep(0)
+    watcher.wake()
+    for _ in range(100):
+        if manager.calls >= 3 and notification_calls == 1:
+            break
+        await asyncio.sleep(0.01)
+
+    watcher.stop()
+    await task
+    assert manager.calls == 3
+    assert notification_calls == 1
 
 
 @pytest.mark.asyncio
@@ -2429,7 +2708,7 @@ async def test_plugin_watcher_propagates_cancellation_and_marks_stopped() -> Non
             return []
 
     manager = Manager()
-    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    watcher = PluginWatcher(cast(PluginManager, manager), interval_seconds=0.01)
     task = asyncio.create_task(watcher.run())
     await asyncio.sleep(0)
     manager.revision = "changed"
@@ -2453,7 +2732,7 @@ async def test_plugin_watcher_stop_before_run_skips_initial_scan() -> None:
             return "stable"
 
     manager = Manager()
-    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    watcher = PluginWatcher(cast(PluginManager, manager), interval_seconds=0.01)
     watcher.stop()
 
     await watcher.run()
@@ -2467,7 +2746,7 @@ async def test_plugin_watcher_cancellation_before_start_does_not_leak_waiter() -
         def watch_revision(self) -> str:
             raise AssertionError("未启动的 watcher 不应扫描")
 
-    watcher = PluginWatcher(Manager(), interval_seconds=0.01)  # type: ignore[arg-type]
+    watcher = PluginWatcher(cast(PluginManager, Manager()), interval_seconds=0.01)
     task = asyncio.create_task(watcher.run())
     watcher.stop()
     task.cancel()

@@ -51,3 +51,25 @@ def test_installed_resolver_rejects_missing_plugin_file(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="缺少 plugin.py"):
         resolve_plugin_sources([], installed_cache_root=tmp_path / "cache")
+
+
+def test_installed_resolver_retries_version_moved_during_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    version_root = tmp_path / "cache" / "lab" / "feed" / "1.0.0"
+    version_root.mkdir(parents=True)
+    plugin_file = version_root / "plugin.py"
+    plugin_file.write_text("", encoding="utf-8")
+    moved_root = tmp_path / "moved-version"
+    original_is_file = Path.is_file
+
+    def move_before_file_check(path: Path) -> bool:
+        if path == plugin_file:
+            version_root.rename(moved_root)
+        return original_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", move_before_file_check)
+
+    with pytest.raises(FileNotFoundError, match="扫描期间已变化"):
+        resolve_plugin_sources([], installed_cache_root=tmp_path / "cache")

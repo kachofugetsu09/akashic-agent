@@ -12,6 +12,7 @@ import tomllib
 import zlib
 from pathlib import Path
 from typing import cast
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent.config_models import (
@@ -20,6 +21,8 @@ from agent.config_models import (
     Config,
     MemoryConfig,
     MemoryEmbeddingConfig,
+    MobileKeyEncryptionConfig,
+    MobileRealtimeConfig,
     ModelRuntimeConfig,
     PeerAgentConfig,
     QQChannelConfig,
@@ -113,6 +116,14 @@ def load_config(
         raise ValueError("必须配置 llm provider")
     channels = _load_channels_config(data, workspace_path)
     app_server = _load_app_server_config(data)
+    mobile_realtime = _load_mobile_realtime_config(data)
+    if mobile_realtime.enabled and (
+        not channels.chat.enabled
+        or channels.chat.host not in {"127.0.0.1", "localhost", "::1"}
+    ):
+        raise ValueError(
+            "mobile_realtime 启用时，本机配对入口 channels.chat 必须监听 loopback"
+        )
     proactive = _load_proactive_config(data)
     memory = _load_memory_config(data, workspace_path)
     peer_agents = _load_peer_agents_config(data)
@@ -150,6 +161,7 @@ def load_config(
         extra_body=_load_extra_body(data, llm_main),
         channels=channels,
         app_server=app_server,
+        mobile_realtime=mobile_realtime,
         proactive=proactive,
         memory_optimizer_enabled=_as_bool(
             agent_maintenance.get(
@@ -331,6 +343,92 @@ def _load_app_server_config(data: dict) -> AppServerConfig:
         if getattr(config, name) <= 0:
             raise ValueError(f"app_server.{name} 必须大于 0")
     return config
+
+
+def _load_mobile_realtime_config(data: dict) -> MobileRealtimeConfig:
+    """在配置边界建立只允许 WSS 和加密 keyset 的移动网关配置。"""
+
+    # 1. 解析主网关与密钥保护配置
+    raw = _as_dict(data.get("mobile_realtime"), field="mobile_realtime")
+    key_raw = _as_dict(
+        raw.get("key_encryption"),
+        field="mobile_realtime.key_encryption",
+    )
+    provider = str(key_raw.get("provider", "secret_service") or "")
+    namespace = str(
+        key_raw.get("master_key_namespace", "akasic/mobile-realtime") or ""
+    ).strip()
+    keyset_manifest = _relative_data_path(
+        key_raw.get("keyset_manifest", "data/mobile/keys/current.json"),
+        field="mobile_realtime.key_encryption.keyset_manifest",
+    )
+    config = MobileRealtimeConfig(
+        enabled=_as_bool(raw.get("enabled", False), field="mobile_realtime.enabled"),
+        host=str(raw.get("host", "0.0.0.0") or "").strip(),
+        port=int(raw.get("port", 6323)),
+        database=_relative_data_path(
+            raw.get("database", "data/mobile_realtime.db"),
+            field="mobile_realtime.database",
+        ),
+        lan_hostname=str(raw.get("lan_hostname", "akashic.local") or "").strip(),
+        public_url=str(raw.get("public_url", "") or "").strip(),
+        max_attachment_mb=int(raw.get("max_attachment_mb", 50)),
+        inbox_retention_days=int(raw.get("inbox_retention_days", 7)),
+        key_encryption=MobileKeyEncryptionConfig(
+            provider=provider,
+            master_key_namespace=namespace,
+            keyset_manifest=keyset_manifest,
+        ),
+    )
+
+    # 2. 拒绝会弱化认证、TLS 或资源边界的配置
+    if not config.host:
+        raise ValueError("mobile_realtime.host 不能为空")
+    if not 1 <= config.port <= 65535:
+        raise ValueError("mobile_realtime.port 必须在 1..65535")
+    if not config.lan_hostname or any(
+        token in config.lan_hostname for token in ("/", "\\", " ")
+    ):
+        raise ValueError("mobile_realtime.lan_hostname 格式无效")
+    if config.max_attachment_mb <= 0:
+        raise ValueError("mobile_realtime.max_attachment_mb 必须大于 0")
+    if config.inbox_retention_days <= 0:
+        raise ValueError("mobile_realtime.inbox_retention_days 必须大于 0")
+    if config.key_encryption.provider != "secret_service":
+        raise ValueError(
+            "mobile_realtime.key_encryption.provider 只支持 secret_service"
+        )
+    if not config.key_encryption.master_key_namespace:
+        raise ValueError("mobile_realtime.key_encryption.master_key_namespace 不能为空")
+    if config.key_encryption.keyset_manifest.name != "current.json":
+        raise ValueError(
+            "mobile_realtime.key_encryption.keyset_manifest 必须指向 current.json"
+        )
+    if config.public_url:
+        public = urlsplit(config.public_url)
+        if (
+            public.scheme != "wss"
+            or not public.netloc
+            or public.path != "/ws"
+            or public.query
+            or public.fragment
+            or public.username
+            or public.password
+        ):
+            raise ValueError("mobile_realtime.public_url 必须是无凭据的 wss://.../ws")
+    return config
+
+
+def _relative_data_path(value: object, *, field: str) -> Path:
+    text = str(value or "").strip()
+    path = Path(text)
+    if (
+        not text
+        or path.is_absolute()
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise ValueError(f"{field} 必须是 workspace 内的安全相对路径")
+    return path
 
 
 def _load_proactive_config(data: dict) -> ProactiveConfig:
