@@ -28,6 +28,7 @@ REPORT_ROOT = ROOT / "docker" / "debug" / "reports" / "change-gate"
 COMPOSE_PATH = ROOT / "docker" / "debug" / "docker-compose.change-gate.yml"
 REQUIREMENT_PATTERN = re.compile(r"\b[A-Z]{3}-[0-9]{3}\b")
 ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+IMAGE_BUILD_TIMEOUT_SECONDS = 600
 
 
 class GateError(RuntimeError):
@@ -891,6 +892,47 @@ def _prepare_sandbox(run_id: str, scenario_id: str) -> Path:
     return sandbox
 
 
+def _build_change_gate_image(run_id: str, report_dir: Path) -> dict[str, object]:
+    """构建一次 Gate 镜像，并把构建失败作为可审计结果返回。"""
+
+    # 1. Compose 解析配置需要隔离路径，但构建阶段不会挂载或运行它。
+    with tempfile.TemporaryDirectory(
+        prefix=f"akashic-change-gate-{run_id}-image-build-",
+        dir="/tmp",
+    ) as sandbox_name:
+        project = f"akashic-change-gate-build-{uuid.uuid4().hex[:12]}"
+        env = _compose_env(Path(sandbox_name))
+        started = time.monotonic()
+        result: subprocess.CompletedProcess[str] | None = None
+        timeout_error = ""
+
+        # 2. 镜像构建不占用场景自己的执行超时。
+        try:
+            result = subprocess.run(
+                _compose_command(project, "build", "change-gate"),
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=IMAGE_BUILD_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            timeout_error = f"Gate 镜像构建超过 {IMAGE_BUILD_TIMEOUT_SECONDS}s"
+
+    status = "passed"
+    if timeout_error or result is None or result.returncode != 0:
+        status = "failed"
+    record: dict[str, object] = {
+        "status": status,
+        "durationSeconds": round(time.monotonic() - started, 3),
+        "exitCode": None if result is None else result.returncode,
+        "stdout": "" if result is None else result.stdout,
+        "stderr": timeout_error if result is None else result.stderr,
+    }
+    _atomic_json(report_dir / "image-build.json", record)
+    return record
+
+
 def _run_scenario(
     scenario: Scenario, *, run_id: str, report_dir: Path
 ) -> dict[str, object]:
@@ -912,7 +954,6 @@ def _run_scenario(
                 _compose_command(
                     project,
                     "run",
-                    "--build",
                     "--rm",
                     "--no-deps",
                     "change-gate",
@@ -970,18 +1011,28 @@ def command_run(args: argparse.Namespace) -> int:
     _atomic_json(report_dir / "plan.json", plan)
     _print_plan(plan)
 
-    # 2. 场景各自使用全新 sandbox；未知映射和 baseline gap 即使测试绿也失败。
-    checks = [
-        _run_scenario(
-            catalog.scenarios[scenario_id], run_id=run_id, report_dir=report_dir
-        )
-        for scenario_id in cast(list[str], plan["selectedScenarios"])
-    ]
+    # 2. 镜像只构建一次；每个场景的超时只约束场景本身。
+    selected_scenarios = cast(list[str], plan["selectedScenarios"])
+    image_build: dict[str, object] | None = None
+    if selected_scenarios:
+        image_build = _build_change_gate_image(run_id, report_dir)
+    checks = []
+    if image_build is None or image_build["status"] == "passed":
+        checks = [
+            _run_scenario(
+                catalog.scenarios[scenario_id], run_id=run_id, report_dir=report_dir
+            )
+            for scenario_id in selected_scenarios
+        ]
+
+    # 3. 未知映射、baseline gap、构建失败或场景失败都必须阻断。
     status = "passed"
     if plan["status"] == "not_affected":
         status = "not_affected"
     elif plan["status"] in {"unmapped_change", "baseline_gap_touched"}:
         status = cast(str, plan["status"])
+    elif image_build is not None and image_build["status"] != "passed":
+        status = "failed"
     elif any(check["status"] != "passed" for check in checks):
         status = "failed"
     residual = {
@@ -1008,6 +1059,7 @@ def command_run(args: argparse.Namespace) -> int:
         "affectedGroups": plan["affectedGroups"],
         "selectedScenarios": plan["selectedScenarios"],
         "privateGateRequired": plan["privateGateRequired"],
+        "imageBuild": image_build,
         "checks": checks,
         "residualResources": residual,
     }

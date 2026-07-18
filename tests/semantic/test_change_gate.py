@@ -95,3 +95,49 @@ def test_state_contract_rejects_plugin_uninstall_as_data_owner() -> None:
     issues = gate._validate_state_contracts(catalog, gate._requirement_ids())
 
     assert any("普通卸载不得拥有 plugin-data 删除权" in issue for issue in issues)
+
+
+def test_gate_build_and_scenario_have_independent_timeouts(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    gate = _gate_module()
+    commands: list[tuple[list[str], int | None]] = []
+
+    def run(command: list[str], **kwargs: Any) -> Any:
+        commands.append((command, kwargs.get("timeout")))
+        return gate.subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(gate.subprocess, "run", run)
+    build_report = tmp_path / "build-report"
+    build_report.mkdir()
+
+    build = gate._build_change_gate_image("test-run", build_report)
+
+    sandbox = tmp_path / "scenario"
+    sandbox.mkdir()
+    monkeypatch.setattr(gate, "_prepare_sandbox", lambda *_args, **_kwargs: sandbox)
+    scenario = gate.Scenario(
+        id="timeout_contract",
+        requirements=("TST-001",),
+        groups=("tooling",),
+        environment="public_clean_workspace",
+        timeout_seconds=17,
+        command=("python", "-V"),
+        observes=("process_exit",),
+        mutants=(),
+    )
+
+    result = gate._run_scenario(
+        scenario,
+        run_id="test-run",
+        report_dir=tmp_path / "scenario-report",
+    )
+
+    build_command, build_timeout = commands[0]
+    scenario_command, scenario_timeout = commands[1]
+    assert build["status"] == result["status"] == "passed"
+    assert build_command[-2:] == ["build", "change-gate"]
+    assert build_timeout == gate.IMAGE_BUILD_TIMEOUT_SECONDS
+    assert "--build" not in scenario_command
+    assert scenario_command[-4:-1] == ["--no-deps", "change-gate", "python"]
+    assert scenario_timeout == scenario.timeout_seconds
