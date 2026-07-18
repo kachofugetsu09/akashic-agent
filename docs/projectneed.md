@@ -441,6 +441,10 @@ sensor、session、context 和 store 故障不得伪装成“无事件”。deci
 
 `proactive.db`、`wake_proactive.db` 和 `drift/drift.db` 中影响 delivery dedupe、cooldown、pending ack、reservoir consumption、hazard timer、cursor、journal 和下一轮选择的内容属于运行连续性。启用对应功能时，备份和恢复必须保留这些状态；日志表与连续性表可以制定不同 retention，但不得把整库按诊断日志清空。
 
+### PRO-003 Wake 用主动历史保持连续性而不预设重复惩罚
+
+Wake 判断内容时必须把最近被动对话与已经送达的主动消息作为两个明确区分的运行时区块；主动消息保留实际发送时间，不能伪装成用户陈述或本轮候选。模型把主动历史作为理解近期连续性的背景，并保持对用户及其关注事项的开放好奇；话题聊过、结论相同、事件反复发生或发送次数较多，都不能单独推导出用户疲劳、不感兴趣或禁止再次分享。当前事件是否值得主动告诉用户仍由模型结合正文证据、长期偏好、真实用户反馈、最近上下文和时机自主判断，不增加按主题、URL、相似度或次数硬编码的 share/skip 规则。
+
 ### BAK-001 备份必须能验证和恢复
 
 普通文件完整复制，SQLite 使用 backup API 与 integrity check；临时 snapshot、manifest 和 hash 全部完成后原子发布，新快照成功后才 prune。必须定期恢复到隔离 workspace 并运行应用级只读 smoke。

@@ -7,7 +7,6 @@ from uuid import uuid4
 
 
 InitialInterest = Literal["likely_interesting", "not_interesting", "uncertain"]
-InvestigationKind = Literal["none", "content", "recall", "both"]
 
 
 def _event_list() -> list[dict[str, Any]]:
@@ -38,9 +37,14 @@ def _source_ref_list() -> list[dict[str, Any]]:
 class ScratchItem:
     item_id: str
     initial_interest: InitialInterest
-    investigate: InvestigationKind
     question: str = ""
-    recall_query: str = ""
+
+
+@dataclass(slots=True)
+class PreferenceProbe:
+    candidate_ids: tuple[str, ...]
+    topic: str
+    query: str
 
 
 @dataclass(slots=True)
@@ -51,8 +55,10 @@ class WakeContext:
     content_events: list[dict[str, Any]] = field(default_factory=_event_list)
     content_backlog_count: int = 0
     scratchpad: dict[str, ScratchItem] = field(default_factory=_scratch_dict)
+    preference_probe: PreferenceProbe | None = None
     screening_completed: bool = False
     investigation_results: dict[str, dict[str, Any]] = field(default_factory=_result_dict)
+    preference_evidence: dict[str, Any] = field(default_factory=dict[str, Any])
     investigation_completed: bool = False
     final_message: str = ""
     cited_item_ids: list[str] = field(default_factory=_string_list)

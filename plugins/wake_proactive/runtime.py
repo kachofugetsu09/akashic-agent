@@ -52,6 +52,9 @@ _MAX_TITLES_PER_WAKE = 120
 _SEMANTIC_CALIBRATION_POWER = 4
 _CONTENT_MIN_RESIDENCE = timedelta(hours=24)
 _CONTENT_MAX_AGE = timedelta(days=14)
+_RECENT_PROACTIVE_WINDOW = timedelta(days=7)
+_RECENT_PROACTIVE_LIMIT = 30
+_RECENT_PROACTIVE_CHAR_BUDGET = 8_000
 _SCHEMA_BY_NAME = {
     schema["function"]["name"]: schema
     for schema in [*TOOL_SCHEMAS, *EVENT_TOOL_SCHEMAS]
@@ -347,7 +350,12 @@ class WakeRuntime:
             ctx=ctx,
             memory_text=self._read_memory(),
             proactive_context=str(self._scope.workspace_context_fn() or ""),
-            recent_session=self._read_recent_session(ctx.session_key, ctx.now_utc),
+            recent_passive_conversation=self._read_recent_passive_conversation(
+                ctx.session_key, ctx.now_utc
+            ),
+            recent_proactive_messages=self._read_recent_proactive_messages(
+                ctx.now_utc
+            ),
             current_context=self._current_context_text(ctx.now_utc),
         )
         candidates = [
@@ -386,13 +394,17 @@ class WakeRuntime:
         # 1. 固定本轮上下文，避免两个 LLM 阶段读取到不同快照
         memory_text = self._read_memory()
         proactive_context = str(self._scope.workspace_context_fn() or "")
-        recent_session = self._read_recent_session(ctx.session_key, ctx.now_utc)
+        recent_passive_conversation = self._read_recent_passive_conversation(
+            ctx.session_key, ctx.now_utc
+        )
+        recent_proactive_messages = self._read_recent_proactive_messages(ctx.now_utc)
         current_context = self._current_context_text(ctx.now_utc)
         base_messages = build_messages(
             ctx=ctx,
             memory_text=memory_text,
             proactive_context=proactive_context,
-            recent_session=recent_session,
+            recent_passive_conversation=recent_passive_conversation,
+            recent_proactive_messages=recent_proactive_messages,
             current_context=current_context,
         )
 
@@ -408,7 +420,8 @@ class WakeRuntime:
             ctx=ctx,
             memory_text=memory_text,
             proactive_context=proactive_context,
-            recent_session=recent_session,
+            recent_passive_conversation=recent_passive_conversation,
+            recent_proactive_messages=recent_proactive_messages,
             current_context=current_context,
             content_phase="final",
         )
@@ -686,8 +699,11 @@ class WakeRuntime:
             ctx=state.ctx,
             memory_text=self._read_memory(),
             proactive_context=str(self._scope.workspace_context_fn() or ""),
-            recent_session=self._read_recent_session(
+            recent_passive_conversation=self._read_recent_passive_conversation(
                 state.ctx.session_key, state.ctx.now_utc
+            ),
+            recent_proactive_messages=self._read_recent_proactive_messages(
+                state.ctx.now_utc
             ),
             current_context=self._current_context_text(state.ctx.now_utc),
             mode=kind,
@@ -1023,12 +1039,10 @@ class WakeRuntime:
         reader = getattr(self._scope.memory, "read_long_term", None)
         return str(reader() or "") if callable(reader) else ""
 
-    def _read_recent_session(
+    def _read_recent_passive_conversation(
         self,
         session_key: str,
         now: datetime,
-        *,
-        include_proactive: bool = False,
     ) -> str:
         if not self._session_db_path.exists():
             return ""
@@ -1048,11 +1062,51 @@ class WakeRuntime:
             proactive = role == "assistant" and _is_proactive_message(extra_json)
             if role != "user" and role != "assistant":
                 continue
-            if proactive and not include_proactive:
+            if proactive:
                 continue
-            label = "assistant(proactive)" if proactive else role
-            lines.append(f"{label}: {str(content or '')[:300]}")
+            lines.append(f"{role}: {str(content or '')[:300]}")
         return "\n".join(lines)[:3_000]
+
+    def _read_recent_proactive_messages(self, now: datetime) -> str:
+        """读取整个 workspace 最近已发送的主动消息，并保留最新记录。"""
+
+        # 1. 在权威消息表上建立带时间边界的只读视图
+        if not self._session_db_path.exists():
+            return ""
+        cutoff = now - _RECENT_PROACTIVE_WINDOW
+        with closing(sqlite3.connect(str(self._session_db_path))) as db:
+            rows = db.execute(
+                """
+                SELECT session_key, content, ts
+                FROM messages
+                WHERE role = 'assistant'
+                  AND json_extract(extra, '$.proactive') = 1
+                  AND julianday(ts) >= julianday(?)
+                  AND julianday(ts) <= julianday(?)
+                ORDER BY julianday(ts) DESC, session_key DESC, seq DESC
+                LIMIT ?
+                """,
+                (cutoff.isoformat(), now.isoformat(), _RECENT_PROACTIVE_LIMIT),
+            ).fetchall()
+
+        # 2. 从最新消息向前占用预算，再按时间正序交给模型
+        selected: list[str] = []
+        used_chars = 0
+        for session_key, content, ts in rows:
+            line = (
+                f"{ts} | session={session_key} | "
+                f"assistant(proactive): {str(content or '')[:500]}"
+            )
+            remaining = _RECENT_PROACTIVE_CHAR_BUDGET - used_chars
+            if remaining <= 0:
+                break
+            if len(line) > remaining:
+                if selected:
+                    break
+                line = line[:remaining]
+            selected.append(line)
+            used_chars += len(line) + 1
+        return "\n".join(reversed(selected))
 
     def _require_orchestrator(self) -> Any:
         if self._scope.turn_orchestrator is None:

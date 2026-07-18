@@ -19,7 +19,12 @@ from fastapi import FastAPI
 
 from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
-from core.memory.engine import MemoryQuery, MemoryQueryIntent, MemoryScope
+from core.memory.engine import (
+    MemoryQuery,
+    MemoryQueryFilters,
+    MemoryQueryIntent,
+    MemoryScope,
+)
 from agent.plugins.context import PluginContext, PluginKVStore
 from agent.config_models import Config, MemoryConfig, MemoryEmbeddingConfig
 from plugins.akasha.config import (
@@ -1899,6 +1904,67 @@ async def test_read_only_query_skips_akasha_state_effects(tmp_path: Path) -> Non
 
     assert update_state_values == [False, False]
     assert side_effects == []
+
+
+@pytest.mark.asyncio
+async def test_strong_interest_query_keeps_only_native_dense_hits(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+    _init_sessions_db(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "s:4",
+                "s",
+                4,
+                "user",
+                "第三条较弱的用户消息",
+                QUERY_TS.isoformat(),
+            ),
+        )
+
+    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+    engine._akasha_config = AkashaConfig()
+    engine._session_db_path = db_path
+    engine._embedder = FakeEmbedder()
+
+    def fake_retrieve(
+        query: str,
+        query_vec: np.ndarray,
+        request: MemoryQuery,
+        *,
+        now_ts: float,
+        update_state: bool,
+    ) -> _AkashaRetrieval:
+        _ = (query, query_vec, request, now_ts, update_state)
+        return _AkashaRetrieval(
+            dense_items=[_candidate("s:0", 0.8), _candidate("s:4", 0.6)],
+            ripple_items=[_candidate("s:2", 0.95)],
+            activation_items=[],
+            trace=ActivationTrace(seed_count=2, pool_count=3),
+            seq=5,
+        )
+
+    engine._retrieve = fake_retrieve
+    engine._remember_pending_activation = lambda *_, **__: None
+    engine._write_query_log = lambda *_, **__: None
+
+    result = await engine.query(
+        MemoryQuery(
+            text="用户对 benchmark 类主动消息的真实评价",
+            intent="interest",
+            effect="read_only",
+            filters=MemoryQueryFilters(relevance_floor="strong"),
+            limit=12,
+            scope=MemoryScope(session_key="s"),
+            timestamp=QUERY_TS,
+        )
+    )
+
+    assert [record.id for record in result.records] == ["s:0"]
+    assert result.trace["dense_count"] == 1
+    assert result.trace["ripple_count"] == 0
+    assert result.trace["native_dense_threshold"] == 0.675
 
 
 def test_undo_removes_akasha_turn_state_after_session_delete(tmp_path: Path) -> None:

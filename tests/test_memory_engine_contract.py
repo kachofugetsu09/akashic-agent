@@ -13,6 +13,7 @@ from bus.events_lifecycle import TurnCommitted
 from agent.config_models import Config, MemoryConfig
 from agent.tools.registry import ToolRegistry
 from bootstrap.memory import build_memory_runtime
+from plugins.default_memory.config import DefaultMemoryConfig
 from plugins.default_memory.engine import DefaultMemoryEngine
 from core.memory.engine import (
     EngineProfile,
@@ -50,6 +51,7 @@ def _make_default_engine(
 ):
     engine = DefaultMemoryEngine.__new__(DefaultMemoryEngine)
     engine._config = config or SimpleNamespace(model="lm")
+    engine._default_config = DefaultMemoryConfig()
     engine._workspace = Path(".")
     engine._provider = provider
     engine._light_provider = None
@@ -188,6 +190,27 @@ async def test_default_memory_engine_interest_preserves_read_only_effect():
     assert result.trace["effect"] == "read_only"
     assert result.records[0].id == "p1"
     retriever.retrieve.assert_awaited_once()
+
+
+async def test_default_memory_engine_strong_interest_uses_native_threshold():
+    retriever = SimpleNamespace(
+        retrieve=AsyncMock(return_value=[]),
+        build_injection_block=lambda items: ("", []),
+    )
+    engine = _make_default_engine(retriever=cast(Any, retriever))
+
+    result = await engine.query(
+        MemoryQuery(
+            text="用户对 benchmark 类主动消息的真实评价",
+            intent="interest",
+            effect="read_only",
+            filters=MemoryQueryFilters(relevance_floor="strong"),
+        )
+    )
+
+    assert retriever.retrieve.await_args.kwargs["score_threshold"] == 0.5
+    assert result.trace["relevance_floor"] == "strong"
+    assert result.trace["native_score_threshold"] == 0.5
 
 
 async def test_default_memory_engine_retrieve_falls_back_to_session_scope():

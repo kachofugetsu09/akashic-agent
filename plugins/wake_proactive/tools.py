@@ -6,8 +6,9 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from core.memory.engine import MemoryQuery
+from core.memory.engine import MemoryQuery, MemoryQueryFilters
 from plugins.wake_proactive.context import (
+    PreferenceProbe,
     ScratchItem,
     WakeContext,
     content_candidate_map,
@@ -68,18 +69,36 @@ TOOL_SCHEMAS = [
                                 "enum": ["likely_interesting", "uncertain"],
                             },
                             "question": {"type": "string"},
-                            "recall_query": {"type": "string"},
                         },
                         "required": ["item_id", "initial_interest"],
                     },
-                }
+                },
+                "preference_probe": {
+                    "type": "object",
+                    "description": (
+                        "可选且每轮最多一个。入选候选的价值取决于用户对一种内容形态或打扰"
+                        "类型的态度，且固定上下文没有直接证据时可以填写。主题兴趣和内容形态"
+                        "偏好是不同维度；query 查询真实态度和打扰价值，不复述新闻标题。"
+                    ),
+                    "properties": {
+                        "candidate_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                            "maxItems": MAX_INVESTIGATION_CANDIDATES,
+                        },
+                        "topic": {"type": "string"},
+                        "query": {"type": "string"},
+                    },
+                    "required": ["candidate_ids", "topic", "query"],
+                },
             },
             "required": ["items"],
         },
     ),
     _schema(
         "investigate_candidates",
-        "按 scratchpad 一次并发完成全部正文抓取和兴趣记忆查询，结果按 item_id 合并。",
+        "按 scratchpad 并发抓取全部正文，并在存在 preference_probe 时只执行一次只读兴趣查询。",
         {"type": "object", "properties": {}, "required": []},
     ),
     _schema(
@@ -167,17 +186,22 @@ def _scratchpad(ctx: WakeContext, args: dict[str, Any], deps: ToolDeps) -> str:
             continue
         if interest not in allowed_interest:
             raise ValueError(f"invalid scratchpad decision for {item_id}")
-        recall_query = str(raw.get("recall_query") or "").strip()
-        if interest == "uncertain" and not recall_query:
-            recall_query = str(candidate_map[candidate_ref].get("title") or item_id)
         planned[item_id] = ScratchItem(
             item_id=item_id,
             initial_interest=cast(Any, interest),
-            investigate="content" if interest == "likely_interesting" else "both",
             question=str(raw.get("question") or "").strip(),
-            recall_query=recall_query,
         )
     ctx.scratchpad = planned
+    planned_candidate_refs = {
+        candidate_ref
+        for candidate_ref, item_id in zip(raw_item_ids, item_ids, strict=True)
+        if item_id in planned
+    }
+    ctx.preference_probe = _preference_probe(
+        args.get("preference_probe"),
+        planned_candidate_refs=planned_candidate_refs,
+        candidate_map=candidate_map,
+    )
     ctx.screening_completed = True
     _save(ctx, deps)
     return json.dumps(
@@ -186,6 +210,7 @@ def _scratchpad(ctx: WakeContext, args: dict[str, Any], deps: ToolDeps) -> str:
             "screened": len(valid_ids),
             "planned": len(ctx.scratchpad),
             "to_investigate": len(ctx.scratchpad),
+            "preference_probe": ctx.preference_probe is not None,
         },
         ensure_ascii=False,
     )
@@ -215,11 +240,60 @@ async def _fetch_content(
         return {"error": str(exc), "url": url}
 
 
-async def _recall(
+def _preference_probe(
+    raw_probe: object,
+    *,
+    planned_candidate_refs: set[str],
+    candidate_map: dict[str, dict[str, Any]],
+) -> PreferenceProbe | None:
+    """校验一次批次级偏好探针，并转换候选引用。"""
+
+    # 1. 没有关键偏好歧义时不触发任何记忆查询
+    if raw_probe is None:
+        return None
+    if not isinstance(raw_probe, dict):
+        raise ValueError("preference_probe must be an object")
+    probe_payload = cast(dict[str, object], raw_probe)
+
+    # 2. 探针只能引用本轮已经入选调查的候选
+    raw_candidate_ids = probe_payload.get("candidate_ids")
+    if not isinstance(raw_candidate_ids, list):
+        raise ValueError("preference_probe candidate_ids must be an array")
+    raw_ids = [
+        str(item).strip()
+        for item in cast(list[object], raw_candidate_ids)
+    ]
+    if not raw_ids or len(raw_ids) != len(set(raw_ids)):
+        raise ValueError("preference_probe candidate_ids must be unique and non-empty")
+    unknown = sorted(set(raw_ids) - planned_candidate_refs)
+    if unknown:
+        raise ValueError(
+            f"preference_probe contains unplanned candidate_id: {unknown}"
+        )
+    topic = str(probe_payload.get("topic") or "").strip()
+    query = str(probe_payload.get("query") or "").strip()
+    if not topic or not query:
+        raise ValueError("preference_probe requires topic and query")
+    return PreferenceProbe(
+        candidate_ids=tuple(
+            _canonical_item_id(candidate_map, candidate_id)
+            for candidate_id in raw_ids
+        ),
+        topic=topic,
+        query=query,
+    )
+
+
+async def _recall_preference(
     query: str, *, ctx: WakeContext, deps: ToolDeps, semaphore: asyncio.Semaphore
 ) -> dict[str, Any]:
     if deps.memory is None:
-        return {"hits": 0, "result": ""}
+        return {
+            "hits": 0,
+            "records": [],
+            "trace": {},
+            "error": "memory not configured",
+        }
     try:
         async with semaphore:
             result = await deps.memory.query(
@@ -227,20 +301,37 @@ async def _recall(
                     text=query,
                     intent="interest",
                     effect="read_only",
-                    limit=2,
+                    filters=MemoryQueryFilters(relevance_floor="strong"),
+                    limit=12,
                     timestamp=ctx.now_utc,
                 )
             )
         records = list(result.records)
         return {
             "hits": len(records),
-            "result": "\n---\n".join(
-                str(record.summary) for record in records if str(record.summary).strip()
-            ),
+            "records": [
+                {
+                    "id": record.id,
+                    "summary": str(record.summary)[:600],
+                    "engine": record.engine_kind,
+                }
+                for record in records
+                if str(record.summary).strip()
+            ],
+            "trace": {
+                key: result.trace.get(key)
+                for key in (
+                    "engine",
+                    "relevance_floor",
+                    "native_dense_threshold",
+                    "native_score_threshold",
+                )
+                if key in result.trace
+            },
         }
     except Exception as exc:
         logger.warning("wake proactive recall failed query=%r error=%s", query, exc)
-        return {"hits": 0, "result": "", "error": str(exc)}
+        return {"hits": 0, "records": [], "trace": {}, "error": str(exc)}
 
 
 async def _investigate_candidates(ctx: WakeContext, deps: ToolDeps) -> str:
@@ -260,17 +351,32 @@ async def _investigate_candidates(ctx: WakeContext, deps: ToolDeps) -> str:
             "initial_interest": item.initial_interest,
             "question": item.question,
         }
-        operations: list[tuple[str, Any]] = []
-        if item.investigate in {"content", "both"}:
-            operations.append(("content", _fetch_content(events[item.item_id], deps=deps, semaphore=semaphore)))
-        if item.investigate in {"recall", "both"}:
-            operations.append(("memory", _recall(item.recall_query, ctx=ctx, deps=deps, semaphore=semaphore)))
-        if operations:
-            values = await asyncio.gather(*(operation for _, operation in operations))
-            result.update({name: value for (name, _), value in zip(operations, values)})
+        result["content"] = await _fetch_content(
+            events[item.item_id], deps=deps, semaphore=semaphore
+        )
         return item.item_id, result
 
-    pairs = await asyncio.gather(*(investigate(item) for item in ctx.scratchpad.values()))
+    item_task = asyncio.gather(*(investigate(item) for item in ctx.scratchpad.values()))
+    probe = ctx.preference_probe
+    if probe is None:
+        pairs = await item_task
+        ctx.preference_evidence = {}
+    else:
+        pairs, evidence = await asyncio.gather(
+            item_task,
+            _recall_preference(
+                probe.query,
+                ctx=ctx,
+                deps=deps,
+                semaphore=semaphore,
+            ),
+        )
+        ctx.preference_evidence = {
+            "topic": probe.topic,
+            "candidate_ids": list(probe.candidate_ids),
+            "query": probe.query,
+            **evidence,
+        }
     ctx.investigation_results = dict(pairs)
     ctx.investigation_completed = True
     _save(ctx, deps)
@@ -282,7 +388,11 @@ async def _investigate_candidates(ctx: WakeContext, deps: ToolDeps) -> str:
         and str(result["content"].get("text") or "").strip()
     }
     return json.dumps(
-        {"items": verified_results, "count": len(verified_results)},
+        {
+            "items": verified_results,
+            "count": len(verified_results),
+            "preference_evidence": ctx.preference_evidence,
+        },
         ensure_ascii=False,
     )
 

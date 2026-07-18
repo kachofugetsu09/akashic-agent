@@ -16,6 +16,10 @@ ContentPhase = Literal["screen", "final"]
 
 _SYSTEM_PROMPT = (
     "你正在处理一次主动唤醒。运行时会明确给出 mode，并且只开放当前 mode 可用的工具。"
+    "你始终对用户本人和他在意的一切保持真诚好奇，始终想更了解他。这种好奇不会因为一个"
+    "话题已经聊过、结论相同或事件反复发生而耗尽；不要急着假定你已经知道用户会怎么看，"
+    "先重新理解这一次对他意味着什么。把好奇用于理解用户，而不是把用户当成画像、为了收集"
+    "信息强行提问，或仅凭好奇就打扰他。"
     "不要在输出中提及记忆、画像、分数或筛选流程。长期记忆不只影响是否分享，也可以让表达"
     "带有自然的理解和共情：可以顺着用户稳定的喜好、期待和经历说话，但不要列档案、逐句"
     "复述旧对话，或用‘你之前说过’来证明自己记得。涉及焦虑、健康、财务或私密关系时，"
@@ -38,8 +42,18 @@ _CONTEXT_PROMPT = (
 _CONTENT_SCREEN_PROMPT = (
     "mode=content：候选按来源分组，来源内部按 published_at 倒序。先快速阅读全部标题，再调用"
     "一次 scratchpad，只记录最多八条确实值得查正文或需要确认用户兴趣的候选。"
-    "likely_interesting 用于已有明确兴趣依据的内容；uncertain 用于需要 RecallMemory 确认的"
-    "内容。宁可少选，不要为了覆盖资讯而选择，也不要把预测当成用户反馈。"
+    "likely_interesting 用于已有明确兴趣依据的内容；uncertain 用于仍需正文或偏好证据确认的"
+    "内容。初筛完成后，如果入选候选的最终价值取决于用户对一种内容形态或打扰类型的态度，"
+    "而固定 MEMORY 和最近上下文没有直接证据，可以填写一个覆盖相关候选的 preference_probe。"
+    "主题兴趣和内容形态偏好是两个可分别参考的维度，不能从其中一个直接推定另一个。query "
+    "应查询用户对"
+    "内容形态和打扰价值的真实态度，不要复述新闻标题，也不要为了每个候选分别查询；正文事实"
+    "足以解决歧义或上下文已有直接证据时不要查询。"
+    "<example>固定上下文只说明用户长期关注主题 X，本轮候选属于 X 下的内容形态 Y；如果最终"
+    "决策取决于 Y 是否值得主动打扰，可以查询用户过去对 Y 类主动消息的真实反馈，而不是再次"
+    "查询用户是否关注 X。</example>"
+    "根据本轮候选自行决定调查范围，不要把候选与历史消息的差异大小当成筛选条件，也不要把"
+    "预测当成用户反馈。"
 )
 
 _CONTENT_FINAL_PROMPT = (
@@ -55,7 +69,10 @@ _CONTENT_FINAL_PROMPT = (
     "敏感经历时允许共情，但必须与当前事实直接相关、轻柔且有帮助，不能替用户定义感受或把"
     "焦虑当作推送理由。不要制造紧迫感，不强行提问。只有当前 ContextEvent 明确支持时，才能"
     "描述用户正在睡眠、忙碌、离线或游戏；unknown 时保持中性。唤醒只代表允许判断，不代表"
-    "必须分享；缺少新事实、用户已经知道、只有营销或泛泛观点时应调用 skip_content。"
+    "必须分享，也没有默认的 share 或 skip 倾向。每次都重新判断这件事此刻对用户意味着什么，"
+    "再综合实用价值、用户偏好、最近已送达内容和当前时机自行决定。熟悉的话题、相同结论或"
+    "反复发生的事情可以再次分享，也可以保持安静；发送次数本身不是用户的态度，不要据此"
+    "假定疲劳或不感兴趣。"
 )
 
 
@@ -64,7 +81,8 @@ def build_messages(
     ctx: WakeContext,
     memory_text: str,
     proactive_context: str,
-    recent_session: str,
+    recent_passive_conversation: str,
+    recent_proactive_messages: str,
     current_context: str = "unknown（没有可靠 ContextEvent）",
     mode: PromptMode = "content",
     event: dict[str, Any] | None = None,
@@ -76,7 +94,16 @@ def build_messages(
     sections = [
         f"【固定 MEMORY.md】\n{memory_text}",
         f"【固定 PROACTIVE_CONTEXT.md】\n{proactive_context}",
-        f"【截至当前时间的最近对话】\n{recent_session}",
+        f"【截至当前时间的最近被动对话】\n{recent_passive_conversation}",
+        (
+            "【截至当前时间已经发送的主动消息】\n"
+            "以下内容已经由 assistant 主动发送给用户，并标明了当时的发送时间；它们不是"
+            "用户陈述，也不是本轮候选。请用它们理解你最近主动和用户聊过什么，再判断本轮"
+            "是否还值得主动找他。请把这些记录用于保持对话连续性：每次事件都按它此刻对用户"
+            "的意义重新理解；曾经聊过什么只是事实背景，不是内容价值的扣分表。话题、结论或"
+            "事件相近都不自动禁止再次分享。\n"
+            f"{recent_proactive_messages}"
+        ),
         f"【当前 ContextEvent】\n{current_context}",
         f"【本轮任务】\nmode={mode}",
     ]

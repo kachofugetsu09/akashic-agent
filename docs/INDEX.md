@@ -99,10 +99,10 @@
 | 任务 | 必读顺序 | 随后检查的真实入口 |
 |---|---|---|
 | 任何会修改仓库文件的任务 | 本索引 → [`WORKFLOW.md`](WORKFLOW.md) → 下方对应领域 | 当前分支、目标分支、完整 diff、验证报告 |
-| Prompt、上下文窗口、历史裁切、重试 | `projectneed` 第 5～7、13 节 → [0002](decisions/0002-context-reduction-is-a-nondestructive-projection.md) → [上下文事故设计](design/project-workbook-and-semantic-safety.md) | `agent/core/passive_turn.py`、`agent/prompting/`、`session/manager.py`、`session/store.py` |
+| Prompt、上下文窗口、历史裁切、重试 | `projectneed` 第 5～7、13 节 → [0002](decisions/0002-context-reduction-is-a-nondestructive-projection.md) → [上下文事故设计](design/project-workbook-and-semantic-safety.md) → [Wake 最近主动消息上下文](design/wake-recent-delivery-context.md) | `agent/core/passive_turn.py`、`agent/prompting/`、`session/manager.py`、`session/store.py` |
 | 会话、消息、turn、附件、删除或恢复 | `projectneed` 第 6～7、11～13 节 → [持久化状态地图](design/persistence-state-map.md) | `session/`、`infra/channels/base.py`、`bootstrap/channels.py`、`bootstrap/chat_api.py` |
 | Markdown 记忆、Memory2、Akasha | `projectneed` 第 6、8、11～13 节 → [持久化状态地图](design/persistence-state-map.md) | `agent/memory.py`、`core/memory/markdown.py`、`memory2/store.py`、`plugins/default_memory/`、`plugins/akasha/` |
-| 主动流程、Wake、Drift、调度 | `projectneed` 第 6、9、12～13 节 → [持久化状态地图](design/persistence-state-map.md) | `bootstrap/proactive.py`、`proactive_v2/`、`plugins/default_proactive/`、`plugins/wake_proactive/`、`plugins/drift_flow/`、`agent/scheduler.py` |
+| 主动流程、Wake、Drift、调度 | `projectneed` 第 6、9、12～13 节 → [持久化状态地图](design/persistence-state-map.md) → [Wake 最近主动消息上下文](design/wake-recent-delivery-context.md) | `bootstrap/proactive.py`、`proactive_v2/`、`plugins/default_proactive/`、`plugins/wake_proactive/`、`plugins/drift_flow/`、`agent/scheduler.py` |
 | 插件安装、热重载、plugin-data、Skill、Drift skill、MCP | `projectneed` 第 6、10～13 节 → [持久化状态地图](design/persistence-state-map.md) | `agent/plugins/base.py`、`agent/plugins/install.py`、`agent/plugins/manager.py`、`agent/plugins/skill_links.py`、`agent/mcp/host.py` |
 | Workspace、配置、凭据、迁移、备份 | `projectneed` 第 6、11～13 节 → [持久化状态地图](design/persistence-state-map.md) | `main.py`、`bootstrap/init_workspace.py`、`agent/config.py`、`agent/model_runtime/auth/store.py`、`scripts/rolling_backup.py` |
 | 高风险 refactor、语义不变重构、CI oracle | `projectneed` 第 4～6、13～14 节 → [上下文事故设计](design/project-workbook-and-semantic-safety.md) → 相关决策 | 改动前后的完整 diff、semantic tests、write set、故障注入 |
@@ -185,7 +185,8 @@ docs/
 ├── design/
 │   ├── mobile-cross-repository-semantic-gate.md
 │   ├── project-workbook-and-semantic-safety.md
-│   └── persistence-state-map.md
+│   ├── persistence-state-map.md
+│   └── wake-recent-delivery-context.md
 ├── spark/
 │   └── 2026-07-16-change-impact-contract-gate.md
 └── templates/

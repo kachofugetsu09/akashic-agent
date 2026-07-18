@@ -219,14 +219,27 @@ class WakeStateStore:
             )
 
     def save(self, ctx: WakeContext) -> None:
-        scratchpad = {
-            item_id: {
-                "initial_interest": item.initial_interest,
-                "investigate": item.investigate,
-                "question": item.question,
-                "recall_query": item.recall_query,
-            }
-            for item_id, item in ctx.scratchpad.items()
+        scratchpad: dict[str, Any] = {
+            "items": {
+                item_id: {
+                    "initial_interest": item.initial_interest,
+                    "question": item.question,
+                }
+                for item_id, item in ctx.scratchpad.items()
+            },
+            "preference_probe": (
+                {
+                    "candidate_ids": list(ctx.preference_probe.candidate_ids),
+                    "topic": ctx.preference_probe.topic,
+                    "query": ctx.preference_probe.query,
+                }
+                if ctx.preference_probe is not None
+                else None
+            ),
+        }
+        investigations: dict[str, Any] = {
+            "items": ctx.investigation_results,
+            "preference_evidence": ctx.preference_evidence,
         }
         _ = self._conn.execute(
             """
@@ -251,7 +264,7 @@ class WakeStateStore:
                 ctx.session_key,
                 ctx.now_utc.isoformat(),
                 json.dumps(scratchpad, ensure_ascii=False),
-                json.dumps(ctx.investigation_results, ensure_ascii=False),
+                json.dumps(investigations, ensure_ascii=False),
                 ctx.final_message,
                 json.dumps(ctx.cited_item_ids, ensure_ascii=False),
                 json.dumps(ctx.display_event_map, ensure_ascii=False),
