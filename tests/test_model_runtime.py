@@ -103,13 +103,13 @@ def test_opencode_go_profile_is_dynamic_and_rejects_wrong_wire() -> None:
             model="qwen3.5-plus",
             context_window=64_000,
         )
-    with pytest.raises(ValueError, match="不属于已支持"):
-        ModelRuntimeConfig(
-            runtime_id="main",
-            provider="opencode-go",
-            model="future-model-1",
-            context_window=64_000,
-        )
+    future = ModelRuntimeConfig(
+        runtime_id="main",
+        provider="opencode-go",
+        model="future-model-1",
+        context_window=64_000,
+    )
+    assert future.model == "future-model-1"
     with pytest.raises(ValueError, match="仅支持 input_modalities"):
         ModelRuntimeConfig(
             runtime_id="vl",
@@ -161,7 +161,11 @@ async def test_opencode_go_catalog_uses_http_boundary_and_filters_protocols() ->
         server.server_close()
         thread.join()
 
-    assert [model.slug for model in models] == ["glm-5.99", "kimi-k3"]
+    assert [model.slug for model in models] == [
+        "glm-5.99",
+        "kimi-k3",
+        "future-model-1",
+    ]
     assert requests == [("/v1/models", "Bearer secret")]
 
 

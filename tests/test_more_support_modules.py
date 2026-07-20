@@ -507,6 +507,43 @@ async def test_provider_chat_stream_extracts_openai_cached_tokens(
 
 
 @pytest.mark.asyncio
+async def test_opencode_go_stream_requests_usage_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    stream = _FakeStream(
+        [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(delta=SimpleNamespace(content="好", tool_calls=[]))
+                ]
+            ),
+            SimpleNamespace(
+                choices=[],
+                usage=SimpleNamespace(
+                    prompt_tokens=100,
+                    prompt_tokens_details={"cached_tokens": 80},
+                ),
+            ),
+        ]
+    )
+    fake = _FakeClient([stream])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    provider = LLMProvider(api_key="k", provider_name="opencode-go")
+
+    result = await provider.chat(
+        messages=[],
+        tools=[],
+        model="kimi-k3",
+        max_tokens=10,
+        on_content_delta=lambda chunk: _collect_delta([], chunk),
+    )
+
+    assert fake.calls[0]["stream_options"] == {"include_usage": True}
+    assert result.cache_prompt_tokens == 100
+    assert result.cache_hit_tokens == 80
+
+
+@pytest.mark.asyncio
 async def test_provider_chat_stream_propagates_sdk_read_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -998,6 +1035,18 @@ async def test_bootstrap_trigger_and_entrypoints_cover_paths(
     )
     assert item.id == "1"
 
+    supervisor_calls: list[tuple[Path, Path]] = []
+
+    def _fake_supervisor(
+        *,
+        config_path: Path,
+        workspace: Path,
+        readiness_timeout_s: float = 15.0,
+    ) -> int:
+        supervisor_calls.append((config_path, workspace))
+        return 0
+
+    monkeypatch.setattr("agent.supervisor.run_supervisor", _fake_supervisor)
     monkeypatch.setattr("pathlib.Path.exists", lambda self: False)
     monkeypatch.setattr(
         sys,
@@ -1006,16 +1055,11 @@ async def test_bootstrap_trigger_and_entrypoints_cover_paths(
     )
     with pytest.raises(SystemExit) as exc:
         runpy.run_module("main", run_name="__main__")
-    assert exc.value.code == 1
+    assert exc.value.code == 0
+    assert supervisor_calls == [(Path("missing.json"), tmp_path)]
 
     monkeypatch.setattr("pathlib.Path.exists", lambda self: True)
-    supervisor_calls: list[tuple[Path, Path]] = []
-
-    def _fake_supervisor(*, config_path: Path, workspace: Path) -> int:
-        supervisor_calls.append((config_path, workspace))
-        return 0
-
-    monkeypatch.setattr("agent.supervisor.run_supervisor", _fake_supervisor)
+    supervisor_calls.clear()
     monkeypatch.setattr(
         sys,
         "argv",

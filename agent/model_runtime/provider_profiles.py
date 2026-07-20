@@ -9,24 +9,22 @@ OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
 class ProviderProfile:
     provider_id: str
     default_base_url: str
-    chat_model_prefixes: tuple[str, ...]
     messages_model_prefixes: tuple[str, ...]
     input_modalities: tuple[str, ...] = ("text",)
 
     def classify_model(self, model: str) -> str:
-        """按稳定模型家族判断 OpenAI Chat Completions 兼容性。"""
+        """排除已知 Messages 家族，其余模型默认走 Chat Completions。"""
         normalized = model.strip().lower()
-        if normalized.startswith(self.chat_model_prefixes):
-            return "chat_completions"
+        if not normalized:
+            return "unknown"
         if normalized.startswith(self.messages_model_prefixes):
             return "messages"
-        return "unknown"
+        return "chat_completions"
 
 
 OPENCODE_GO_PROFILE = ProviderProfile(
     provider_id="opencode-go",
     default_base_url=OPENCODE_GO_BASE_URL,
-    chat_model_prefixes=("grok-", "glm-", "kimi-", "deepseek-", "mimo-"),
     messages_model_prefixes=("minimax-", "qwen"),
 )
 
@@ -50,7 +48,7 @@ def validate_profile_runtime(
     if profile is None:
         return
 
-    # 1. 模型家族决定 wire protocol；Messages 和未知家族都不得误发到 Chat。
+    # 1. 已知 Messages 家族不得误发到 Chat；新家族由真实请求继续验证。
     protocol = profile.classify_model(model)
     if protocol == "messages":
         raise ValueError(
@@ -58,10 +56,7 @@ def validate_profile_runtime(
             "当前仅支持 Chat Completions 模型"
         )
     if protocol == "unknown":
-        raise ValueError(
-            f"provider {profile.provider_id} 的模型 {model} 不属于已支持的 "
-            "Chat Completions 家族"
-        )
+        raise ValueError(f"provider {profile.provider_id} 的模型 ID 不能为空")
 
     # 2. OpenCode Go profile 只声明文本输入能力。
     if input_modalities != profile.input_modalities:

@@ -4,7 +4,6 @@ import os
 import tempfile
 import tomllib
 from collections.abc import MutableMapping
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +11,6 @@ import click
 import tomlkit
 
 from agent.config import Config
-from agent.model_runtime.auth.store import Credential, CredentialStore
 from bootstrap.setup_wizard import WizardAnswers, _atomic_write_with_backup, _phase_main_llm
 
 _MANAGED_KEYS = {
@@ -48,9 +46,6 @@ def run_main_model_setup(config_path: Path, workspace: Path) -> None:
         prompt_memory_window=False,
         reuse_codex_auth=True,
     )
-    if answers.provider != "codex":
-        _persist_main_api_key(answers)
-
     # 2. 由保留注释的 TOML 文档模型定点更新并验证。
     updated = patch_main_model_config(
         config_path.read_text(encoding="utf-8"), answers
@@ -72,15 +67,15 @@ def patch_main_model_config(original: str, answers: WizardAnswers) -> str:
     document = tomlkit.parse(original)
     llm = _table(document, "llm")
     runtimes = _table(llm, "runtimes")
-    runtime_id = "codex_main" if answers.provider == "codex" else "api_main"
+    runtime_id = _main_runtime_id(answers.provider)
     runtime = _table(runtimes, runtime_id)
+    existing_api_key = str(runtime.get("api_key") or "")
 
     # 1. 清除旧后端字段，避免切换认证后残留明文或不兼容参数。
     for key in _MANAGED_KEYS:
         runtime.pop(key, None)
     values: dict[str, object] = {
         "provider": answers.provider,
-        "auth": answers.auth_id,
         "model": answers.model,
         "base_url": answers.base_url,
         "context_window": answers.context_window,
@@ -88,6 +83,13 @@ def patch_main_model_config(original: str, answers: WizardAnswers) -> str:
         "max_output_tokens": answers.max_output_tokens,
         "input_modalities": ["text", "image"] if answers.multimodal else ["text"],
     }
+    if answers.provider == "codex":
+        values["auth"] = answers.auth_id
+    else:
+        api_key = answers.api_key or existing_api_key
+        if not api_key:
+            raise ValueError(f"provider {answers.provider!r} 缺少 API key")
+        values["api_key"] = api_key
     runtime.update(values)
     if answers.reasoning_effort:
         runtime["reasoning_effort"] = answers.reasoning_effort
@@ -108,6 +110,14 @@ def patch_main_model_config(original: str, answers: WizardAnswers) -> str:
     return tomlkit.dumps(document)
 
 
+def _main_runtime_id(provider: str) -> str:
+    """为内建 Provider 生成稳定、可并存的主 runtime ID。"""
+    normalized = provider.strip().lower().replace("-", "_")
+    if not normalized or not normalized.replace("_", "").isalnum():
+        raise ValueError(f"provider 无法生成 runtime ID: {provider!r}")
+    return f"{normalized}_main"
+
+
 def _table(
     parent: MutableMapping[str, Any], key: str
 ) -> MutableMapping[str, Any]:
@@ -117,19 +127,6 @@ def _table(
     table = tomlkit.table()
     parent[key] = table
     return table
-
-
-def _persist_main_api_key(answers: WizardAnswers) -> None:
-    if not answers.auth_id or not answers.api_key:
-        raise click.BadParameter("主模型 API key 不能为空")
-    CredentialStore().put(
-        answers.auth_id,
-        Credential(
-            driver="api_key",
-            access_token=answers.api_key,
-            updated_at=datetime.now(timezone.utc).isoformat(),
-        ),
-    )
 
 
 def _validate_candidate(config_path: Path, content: str, workspace: Path) -> None:

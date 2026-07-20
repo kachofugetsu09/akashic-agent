@@ -54,22 +54,22 @@ def _answers() -> WizardAnswers:
     )
 
 
-def test_patch_main_is_scoped_secret_free_and_idempotent() -> None:
+def test_patch_main_is_scoped_inline_key_and_idempotent() -> None:
     once = patch_main_model_config(_CONFIG, _answers())
     parsed = tomllib.loads(once)
 
-    assert parsed["llm"]["main"] == "api_main"
+    assert parsed["llm"]["main"] == "deepseek_main"
     assert parsed["llm"]["fast"] == "fast"
-    assert parsed["llm"]["runtimes"]["api_main"]["model"] == "new-main"
-    assert "api_key" not in parsed["llm"]["runtimes"]["api_main"]
+    assert parsed["llm"]["runtimes"]["deepseek_main"]["model"] == "new-main"
+    assert parsed["llm"]["runtimes"]["deepseek_main"]["api_key"] == "new-secret"
     assert parsed["agent"]["context"]["memory_window"] == 40
     assert "# fast 注释必须保留" in once
     assert "[plugins.custom]" in once
-    assert "new-secret" not in once
+    assert "new-secret" in once
     assert patch_main_model_config(once, _answers()) == once
 
 
-def test_setup_main_backs_up_config_and_persists_credential(
+def test_setup_main_backs_up_config_and_persists_inline_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -86,7 +86,18 @@ def test_setup_main_backs_up_config_and_persists_credential(
     assert path.with_name("config.toml.before-setup-main.bak").read_text() == _CONFIG
     config = load_config(path, workspace=workspace)
     assert (config.model, config.fast_runtime_id) == ("new-main", "fast")
-    assert CredentialStore().get("main_default").access_token == "new-secret"
+    parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert parsed["llm"]["runtimes"]["deepseek_main"]["api_key"] == "new-secret"
+
+
+def test_patch_main_reuses_saved_inline_key() -> None:
+    first = patch_main_model_config(_CONFIG, _answers())
+    answers = _answers()
+    answers.api_key = ""
+
+    second = patch_main_model_config(first, answers)
+
+    assert tomllib.loads(second)["llm"]["runtimes"]["deepseek_main"]["api_key"] == "new-secret"
 
 
 def test_codex_setup_reuses_existing_login_and_catalog(

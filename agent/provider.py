@@ -204,6 +204,13 @@ class DashScopeStrategy(ProviderStrategy):
 
 
 class OpenCodeGoStrategy(ProviderStrategy):
+    def prepare_stream_request(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        stream_kwargs = {**kwargs, "stream": True}
+        stream_options = dict(stream_kwargs.get("stream_options") or {})
+        stream_options["include_usage"] = True
+        stream_kwargs["stream_options"] = stream_options
+        return stream_kwargs
+
     def extract_message(
         self,
         msg: Any,
@@ -423,13 +430,12 @@ class ChatCompletionsRuntime:
                     if not self._is_network_timeout(exc):
                         raise
                     raise LLMNetworkTimeoutError("LLM 流读取网络超时") from exc
-                prompt_tokens, hit_tokens = _extract_cache_usage(
-                    getattr(chunk, "usage", None)
-                )
+                raw_usage = getattr(chunk, "usage", None)
+                prompt_tokens, hit_tokens = _extract_cache_usage(raw_usage)
                 if prompt_tokens is not None:
                     cache_prompt_tokens = prompt_tokens
                     cache_hit_tokens = hit_tokens
-                    usage = _extract_model_usage(getattr(chunk, "usage", None))
+                    usage = _extract_model_usage(raw_usage)
                 choices = getattr(chunk, "choices", None) or []
                 if not choices:
                     continue

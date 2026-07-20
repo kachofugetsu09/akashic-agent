@@ -58,6 +58,19 @@ class CredentialStore:
                 data["credentials"][credential_id] = asdict(credential)
             self._write_document(data)
 
+    def metadata(self) -> dict[str, dict[str, str]]:
+        """返回不含 token 的凭据状态，供本机设置边界展示。"""
+        data = self._read_document()
+        result: dict[str, dict[str, str]] = {}
+        for credential_id, raw in data["credentials"].items():
+            if not isinstance(raw, dict):
+                raise AuthenticationError(f"凭据结构无效: {credential_id}")
+            result[credential_id] = {
+                "driver": str(raw.get("driver") or ""),
+                "updated_at": str(raw.get("updated_at") or ""),
+            }
+        return result
+
     def replace_locked(self, credential_id: str, credential: Credential) -> None:
         """调用方持有 store 锁时替换一条凭据。"""
         data = self._read_document()
