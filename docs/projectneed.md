@@ -155,6 +155,10 @@ Writer 交接前必须把允许范围内的修改提交成可引用 commit，或
 
 迁移验收至少覆盖每个已知来源 schema 到最终版本的真实建库与数据保留，并提交当前目标 schema identity。Stacked PR 的最终 head 必须同时保留所有上游持久状态，不能只证明其中一条相邻迁移路径。
 
+### MOB-005 实时投影使用 Core 拥有的稳定引用身份
+
+服务端消息先以实时投影到达客户端、后进入会话历史时，客户端可以使用 Core 提供的稳定投递身份引用它，不得把本地临时 ID 冒充 SessionDB message ID。Core 只在同一 session 中把唯一的主动 assistant 投递身份解析为 canonical 消息；历史同步完成后，客户端继续使用 canonical message ID。投递尚未进入 SessionDB 时保持明确失败，不为该边缘窗口提前写消息、伪造引用正文或新增隐式重试状态机。
+
 ## 5. Agent 任务合同
 
 本节参考 [OpenAI · Prompting guidance for GPT-5.6](https://developers.openai.com/api/docs/guides/prompt-guidance-gpt-5p6)，并按本项目的数据与权限边界收窄。外部指南提供设计依据，不会自动覆盖本文件条款；指南更新需要评审后再修改 PRM 条款。

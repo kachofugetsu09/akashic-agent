@@ -122,6 +122,7 @@ class ProtocolModel(BaseModel):
 class MessageReplyReference(ProtocolModel):
     message_id: NonEmptyId | None = None
     client_message_id: FrameId | None = None
+    delivery_id: Annotated[str, Field(min_length=1, max_length=128)] | None = None
     legacy_role: Literal["user", "assistant"] | None = Field(
         default=None,
         alias="role",
@@ -138,7 +139,14 @@ class MessageReplyReference(ProtocolModel):
     def validate_identity(self) -> MessageReplyReference:
         """要求引用消息只携带一种稳定标识。"""
 
-        identities = (self.message_id is not None) + (self.client_message_id is not None)
+        identities = sum(
+            identity is not None
+            for identity in (
+                self.message_id,
+                self.client_message_id,
+                self.delivery_id,
+            )
+        )
         if identities != 1:
             raise ValueError("reply_to 必须且只能提供一种消息标识")
         if self.client_message_id is not None:

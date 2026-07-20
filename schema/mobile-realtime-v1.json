@@ -862,6 +862,20 @@
             "default": null,
             "title": "Client Message Id"
           },
+          "delivery_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Delivery Id"
+          },
           "message_id": {
             "anyOf": [
               {

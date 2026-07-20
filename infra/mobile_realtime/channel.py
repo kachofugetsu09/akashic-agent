@@ -1006,14 +1006,18 @@ class MobileRealtimeChannel:
         if reference is None:
             return None
         store = self._require_ctx().session_manager.control_store
-        target = (
-            store.get_message(reference.message_id)
-            if reference.message_id is not None
-            else store.get_message_by_client_id(
+        if reference.message_id is not None:
+            target = store.get_message(reference.message_id)
+        elif reference.client_message_id is not None:
+            target = store.get_message_by_client_id(
                 session_id,
-                cast(str, reference.client_message_id),
+                reference.client_message_id,
             )
-        )
+        else:
+            target = store.get_message_by_delivery_id(
+                session_id,
+                cast(str, reference.delivery_id),
+            )
         if target is None:
             raise MobileCommandError("reply_target_missing", "被引用的消息不存在或尚未同步")
         if target["session_key"] != session_id:
