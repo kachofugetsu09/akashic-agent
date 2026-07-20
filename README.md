@@ -134,6 +134,11 @@ channel_name = "web"
 uv run python main.py
 ```
 
+无参数启动会先进入内置 supervisor，再由它启动正式 gateway。这样核心代码或主配置
+确需完整重载时，Agent 可以通过当轮 `tool_search` 解锁 `agent_restart`，并在回复持久化、
+送达和私有提交证据全部完成后安全拉起下一代进程。需要让调试器直接附着未托管 gateway
+时，显式运行 `uv run python main.py gateway`；该模式不会注册自重启工具。
+
 从终端或 supervisor 切换到 PyCharm 前，先优雅停止当前 workspace 的 runtime：
 
 ```bash
@@ -142,7 +147,8 @@ uv run python main.py
 
 脚本遵循 `--workspace`、`AKASHIC_WORKSPACE`、`config.toml` 的 workspace
 优先级，优先停止 supervisor，并等待 runtime 真正释放实例锁。它不会删除锁文件，
-也不会在超时后自动强制终止进程。PyCharm 仍直接运行 `main.py`；也可以把
+也不会在超时后自动强制终止进程。PyCharm 仍直接运行 `main.py`，默认同样进入
+supervisor；需要直接调试 child 时把程序参数设为 `gateway`。也可以把
 `scripts/stop-runtime.sh` 配置为 Run Configuration 的 Before Launch external tool。
 
 打开 `http://127.0.0.1:6322` 可以使用 Web Chatbox；如果配置了 Telegram / QQ，也可以直接给 bot 发一条消息开始对话。

@@ -915,30 +915,23 @@ async def test_bootstrap_trigger_and_entrypoints_cover_paths(
         runpy.run_module("main", run_name="__main__")
     assert exc.value.code == 1
 
-    def _fake_asyncio_run(coro):
-        coro.close()
-        return None
-
     monkeypatch.setattr("pathlib.Path.exists", lambda self: True)
-    monkeypatch.setattr("asyncio.run", _fake_asyncio_run)
-    monkeypatch.setattr(
-        "agent.config.Config.load",
-        classmethod(
-            lambda cls, path="config.toml", *, workspace: SimpleNamespace(
-                app_server=SimpleNamespace(listen="/tmp/control.sock")
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        "bootstrap.app.build_app_runtime",
-        lambda *args, **kwargs: SimpleNamespace(run=AsyncMock()),
-    )
+    supervisor_calls: list[tuple[Path, Path]] = []
+
+    def _fake_supervisor(*, config_path: Path, workspace: Path) -> int:
+        supervisor_calls.append((config_path, workspace))
+        return 0
+
+    monkeypatch.setattr("agent.supervisor.run_supervisor", _fake_supervisor)
     monkeypatch.setattr(
         sys,
         "argv",
         ["main.py", "--workspace", str(tmp_path)],
     )
-    runpy.run_module("main", run_name="__main__")
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_module("main", run_name="__main__")
+    assert exc.value.code == 0
+    assert supervisor_calls == [(Path("config.toml"), tmp_path)]
 
 
 def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(

@@ -2,8 +2,9 @@
 入口
 
 主要模式：
-  python main.py gateway            启动完整 agent 与 app-server
-  python main.py supervise          以固定 supervisor 托管 gateway
+  python main.py                    默认以固定 supervisor 托管 gateway
+  python main.py gateway            显式启动未托管 gateway（调试）
+  python main.py supervise          显式进入 supervisor（兼容别名）
   python main.py app-server --stdio 启动父进程托管控制面
   python main.py exec ...           非交互执行一个 turn
 """
@@ -131,8 +132,8 @@ _HELP = """\
   setup                         运行交互式初始化向导
   setup-main                    仅切换主模型并保留其他配置
   init                          非交互初始化配置和工作区
-  gateway                       启动 Agent 服务
-  supervise                     以固定 supervisor 托管 Agent 服务
+  gateway                       启动未托管 Agent 服务（调试）
+  supervise                     显式进入 supervisor（兼容别名）
   app-server --stdio            在 stdio 上运行程序化控制面
   exec --new|--thread ID PROMPT 执行一个非交互 turn
   dashboard                     单独启动 Dashboard
@@ -641,4 +642,9 @@ if __name__ == "__main__":
     if "--inspect-modules" in args:
         asyncio.run(inspect_modules(config_path, workspace))
     else:
-        asyncio.run(serve(config_path, workspace))
+        sys.exit(
+            run_supervisor(
+                config_path=Path(config_path),
+                workspace=workspace,
+            )
+        )

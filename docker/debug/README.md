@@ -242,11 +242,14 @@ docker compose -f docker/debug/docker-compose.yml up akashic-debug
 `agent_restart` 的最终回复已经实际送达、child 向继承私有管道提交一次匹配证据，且 child
 以 75 退出时拉起下一代进程。普通退出、崩溃、伪造 75、断线和送达超时都不会触发重启。
 
-本机若仍由忽略版本控制的 `start.sh` 启动，应把最终执行命令迁移为：
+本机若仍由忽略版本控制的 `start.sh` 启动，应让它调用正式默认入口：
 
 ```bash
-python main.py supervise --config /absolute/config.toml --workspace /absolute/workspace
+python main.py --config /absolute/config.toml --workspace /absolute/workspace
 ```
+
+`supervise` 子命令保留为兼容别名。只有需要让调试器直接附着未托管 child 时才显式使用
+`python main.py gateway`；该入口不注册 `agent_restart`。
 
 不要在外层脚本再做 `while`、`pgrep` 或“任意非零退出就重启”；进程唯一性、信号转发、
 readiness 和重启授权均由 supervisor 持有。
