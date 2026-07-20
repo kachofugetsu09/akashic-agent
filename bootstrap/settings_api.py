@@ -266,18 +266,29 @@ def _read_settings_state(
         }
     llm = raw.get("llm") if isinstance(raw.get("llm"), dict) else {}
     active = llm.get("main")
-    if isinstance(active, str):
-        runtimes_raw = llm.get("runtimes") if isinstance(llm.get("runtimes"), dict) else {}
-        runtimes = [
-            _runtime_summary(runtime_id, value, credential_meta)
-            for runtime_id, value in runtimes_raw.items()
-            if isinstance(value, dict)
-        ]
-        mode = "ready"
-    else:
-        runtimes = [_runtime_summary("legacy_main", active, credential_meta)] if isinstance(active, dict) else []
-        active = "legacy_main" if runtimes else None
-        mode = "needs_repair" if runtimes else "needs_setup"
+    try:
+        if isinstance(active, str):
+            runtimes_raw = llm.get("runtimes") if isinstance(llm.get("runtimes"), dict) else {}
+            runtimes = [
+                _runtime_summary(runtime_id, value, credential_meta)
+                for runtime_id, value in runtimes_raw.items()
+                if isinstance(runtime_id, str) and isinstance(value, dict)
+            ]
+            mode = "ready"
+        else:
+            runtimes = [_runtime_summary("legacy_main", active, credential_meta)] if isinstance(active, dict) else []
+            active = "legacy_main" if runtimes else None
+            mode = "needs_repair" if runtimes else "needs_setup"
+    except ValueError as exc:
+        return {
+            "mode": "needs_repair",
+            "workspace": str(workspace),
+            "error": str(exc),
+            "activeRuntime": None,
+            "runtimes": [],
+            "codexConfigured": "codex_default" in credential_meta,
+            "localOpenCodeConfigured": local_opencode,
+        }
     return {
         "mode": mode,
         "workspace": str(workspace),
@@ -293,6 +304,17 @@ def _runtime_summary(
     raw: dict[str, object],
     credential_meta: dict[str, dict[str, str]],
 ) -> dict[str, object]:
+    context_window = raw.get("context_window", 0)
+    max_output_tokens = raw.get("max_output_tokens", 0)
+    input_modalities = raw.get("input_modalities", ["text"])
+    if isinstance(context_window, bool) or not isinstance(context_window, int):
+        raise ValueError(f"runtime {runtime_id} 的 context_window 必须是整数")
+    if isinstance(max_output_tokens, bool) or not isinstance(max_output_tokens, int):
+        raise ValueError(f"runtime {runtime_id} 的 max_output_tokens 必须是整数")
+    if not isinstance(input_modalities, list) or not all(
+        isinstance(item, str) for item in input_modalities
+    ):
+        raise ValueError(f"runtime {runtime_id} 的 input_modalities 必须是字符串数组")
     auth = str(raw.get("auth") or "")
     inline = str(raw.get("api_key") or "")
     source = "credential_store" if auth else ("environment" if inline.startswith("${") else "inline" if inline else "none")
@@ -301,9 +323,9 @@ def _runtime_summary(
         "provider": str(raw.get("provider") or ""),
         "model": str(raw.get("model") or ""),
         "baseUrl": str(raw.get("base_url") or ""),
-        "contextWindow": int(raw.get("context_window") or 0),
-        "maxOutputTokens": int(raw.get("max_output_tokens") or 0),
-        "inputModalities": list(raw.get("input_modalities") or ["text"]),
+        "contextWindow": context_window,
+        "maxOutputTokens": max_output_tokens,
+        "inputModalities": input_modalities,
         "credential": {
             "id": auth,
             "configured": bool(auth and auth in credential_meta) or bool(inline),

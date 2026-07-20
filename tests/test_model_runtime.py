@@ -151,7 +151,8 @@ async def test_opencode_go_catalog_uses_http_boundary_and_filters_protocols() ->
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        host, port = server.server_address
+        host = server.server_address[0]
+        port = server.server_address[1]
         models = await OpenCodeGoModelCatalog(
             "secret",
             base_url=f"http://{host}:{port}/v1",

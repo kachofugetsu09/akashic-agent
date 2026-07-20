@@ -140,7 +140,8 @@ async def test_opencode_go_request_mappings_cross_real_http_boundary() -> None:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        host, port = server.server_address
+        host = server.server_address[0]
+        port = server.server_address[1]
         base_url = f"http://{host}:{port}/v1"
         cases = [
             ("glm-5.99", {"reasoning_effort": "xhigh"}, 200_000),

@@ -54,6 +54,26 @@ def test_state_never_returns_saved_api_key(tmp_path: Path) -> None:
     }
 
 
+def test_state_marks_invalid_runtime_fields_for_repair(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        _config().replace("context_window = 64000", 'context_window = "large"'),
+        encoding="utf-8",
+    )
+    app = create_settings_app(
+        config_path,
+        tmp_path / "workspace",
+        credential_store=CredentialStore(tmp_path / "auth" / "auth.json"),
+    )
+
+    response = TestClient(app).get("/api/settings/state")
+
+    assert response.status_code == 200
+    assert response.json()["mode"] == "needs_repair"
+    assert response.json()["runtimes"] == []
+    assert response.json()["error"] == "runtime deepseek_main 的 context_window 必须是整数"
+
+
 def test_apply_writes_inline_key_and_preserves_other_config(
     tmp_path: Path,
     monkeypatch,
