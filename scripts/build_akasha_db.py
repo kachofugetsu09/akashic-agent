@@ -204,6 +204,10 @@ def _skip_message(message: SourceMessage, skip_message_ids: set[str]) -> bool:
     )
 
 
+def _is_interrupted_turn(assistant: SourceMessage | None) -> bool:
+    return assistant is not None and assistant.content.strip() == "[interrupted]"
+
+
 # 备份已有 Akasha sidecar。
 def _backup_existing_db(db_path: Path) -> Path | None:
     # 1. 重建前保留旧库，避免迁移脚本误覆盖唯一状态。
@@ -215,7 +219,7 @@ def _backup_existing_db(db_path: Path) -> Path | None:
     return backup_path
 
 
-# 从 cache 读取回放需要的 embedding，缺失时跳过对应消息。
+# 从固定 cache 读取回放需要的 embedding。
 def _load_embeddings_from_cache(
     *,
     store: MessageEmbeddingStore,
@@ -239,11 +243,33 @@ def _load_embeddings_from_cache(
     return embedding_map, cache_hits, cache_misses
 
 
+def _require_complete_embedding_cache(
+    *,
+    messages: list[SourceMessage],
+    embedding_map: dict[str, list[float]],
+    model: str,
+) -> None:
+    """校验完整重建所需的消息向量全部存在。"""
+
+    # 1. 缺失属于重建输入不完整，不能降级成残缺图。
+    missing_ids = [message.id for message in messages if message.id not in embedding_map]
+    if not missing_ids:
+        return
+    preview = ", ".join(missing_ids[:5])
+    raise RuntimeError(
+        "Akasha 完整重建缺少消息向量: "
+        f"model={model} count={len(missing_ids)} ids=[{preview}]"
+    )
+
+
 # 按 user turn 聚合回放输入，assistant 归入前一个 user turn。
 def _iter_replay_turns(
     messages: list[SourceMessage],
     skip_message_ids: set[str],
 ) -> Iterator[list[SourceMessage]]:
+    """生成完整语义 turn，并保留纯媒体轮次的 assistant。"""
+
+    # 1. 建立可参与 replay 的同会话消息索引。
     by_turn = {
         (message.session_key, message.seq, message.role): message
         for message in messages
@@ -255,12 +281,23 @@ def _iter_replay_turns(
             continue
         if message.role != "user":
             continue
-        turn = [message]
         used.add(message.id)
         assistant = by_turn.get((message.session_key, message.seq + 1, "assistant"))
         if assistant is not None and assistant.id not in used:
-            turn.append(assistant)
             used.add(assistant.id)
+
+        # 2. 中断轮次没有完整回答，不进入派生记忆图。
+        if _is_interrupted_turn(assistant):
+            continue
+
+        # 3. 纯媒体 user 没有可嵌入正文；保留 assistant 作为同一 turn 的语义节点。
+        if not message.content.strip():
+            if assistant is not None:
+                yield [assistant]
+            continue
+        turn = [message]
+        if assistant is not None:
+            turn.append(assistant)
         yield turn
 
 
@@ -282,7 +319,6 @@ def _run() -> MigrationStats:
     backup_path = _backup_existing_db(db_path)
     store = AkashaStore(db_path)
     embedding_store = MessageEmbeddingStore(sessions_db)
-    _ = embedding_store.import_legacy_rows_once(store.list_cached_embedding_rows())
     if str(args.embedding_model).strip():
         embedding_model = str(args.embedding_model).strip()  # 离线重建：免读 config
     else:
@@ -294,7 +330,6 @@ def _run() -> MigrationStats:
     )
     snapshots = _load_session_snapshots(sessions_db)
     store.insert_session_snapshots(run_id=run_id, snapshots=snapshots)
-    store.reset_schema()
 
     # 2b. 用内存图重放，末尾一次性落库；AkashaStore 只负责图、迁移记录和 dump 连接。
     mem = CapturingMemoryStore()
@@ -325,6 +360,14 @@ def _run() -> MigrationStats:
             model=embedding_model,
             messages=replay_messages,
         )
+        _require_complete_embedding_cache(
+            messages=replay_messages,
+            embedding_map=embedding_map,
+            model=embedding_model,
+        )
+
+        # 4. 全部输入通过预检后才清理并重算派生图。
+        store.reset_schema()
         message_embeddings = {
             message_id: np.array(embedding, dtype=np.float32)
             for message_id, embedding in embedding_map.items()
@@ -347,15 +390,11 @@ def _run() -> MigrationStats:
             for raw_turn in replay_turns:
                 replay_items: list[ReplayMessage] = []
                 for raw_message in raw_turn:
-                    embedding = embedding_map.get(raw_message.id)
-                    if embedding is None:
-                        continue
+                    embedding = embedding_map[raw_message.id]
                     replay_items.append(ReplayMessage(
                         message=raw_message,
                         embedding=embedding,
                     ))
-                if not any(item.message.role == "user" for item in replay_items):
-                    continue
                 result = runtime.replay_turn(replay_items)
                 activations += len(result.activation_items)
                 messages += len(replay_items)
