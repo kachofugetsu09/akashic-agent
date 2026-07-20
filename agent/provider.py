@@ -203,6 +203,88 @@ class DashScopeStrategy(ProviderStrategy):
             kwargs["extra_body"] = extra_body
 
 
+class OpenCodeGoStrategy(ProviderStrategy):
+    def extract_message(
+        self,
+        msg: Any,
+        raw: str | None,
+    ) -> tuple[str | None, str | None, dict[str, Any]]:
+        reasoning = _get_field(msg, "reasoning_content")
+        if reasoning is None:
+            return super().extract_message(msg, raw)
+        text = str(reasoning)
+        return raw, text, {"reasoning_content": text}
+
+
+class OpenCodeGoGLMStrategy(OpenCodeGoStrategy):
+    def prepare_request(
+        self,
+        kwargs: dict[str, Any],
+        extra_body: dict[str, Any],
+        *,
+        disable_thinking: bool,
+    ) -> None:
+        thinking_enabled = extra_body.pop("enable_thinking", None)
+        reasoning_effort = extra_body.pop("reasoning_effort", None)
+        if (
+            disable_thinking
+            or thinking_enabled is False
+            or _deepseek_thinking_disabled(extra_body)
+        ):
+            _drop_thinking_keys(extra_body)
+        elif reasoning_effort or thinking_enabled:
+            effort = str(reasoning_effort or "high").strip().lower()
+            kwargs["reasoning_effort"] = (
+                "max" if effort in {"xhigh", "max", "ultra"} else "high"
+            )
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+
+
+class OpenCodeGoKimiStrategy(OpenCodeGoStrategy):
+    def prepare_request(
+        self,
+        kwargs: dict[str, Any],
+        extra_body: dict[str, Any],
+        *,
+        disable_thinking: bool,
+    ) -> None:
+        thinking_enabled = extra_body.pop("enable_thinking", None)
+        reasoning_effort = extra_body.pop("reasoning_effort", None)
+        if (
+            disable_thinking
+            or thinking_enabled is False
+            or _deepseek_thinking_disabled(extra_body)
+        ):
+            extra_body["thinking"] = {"type": "disabled"}
+        elif reasoning_effort:
+            extra_body.pop("thinking", None)
+            effort = str(reasoning_effort).strip().lower()
+            kwargs["reasoning_effort"] = (
+                "high" if effort in {"xhigh", "max", "ultra"} else effort
+            )
+        elif thinking_enabled is True and "thinking" not in extra_body:
+            extra_body["thinking"] = {"type": "enabled"}
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+
+
+class OpenCodeGoMiMoStrategy(OpenCodeGoStrategy):
+    def prepare_request(
+        self,
+        kwargs: dict[str, Any],
+        extra_body: dict[str, Any],
+        *,
+        disable_thinking: bool,
+    ) -> None:
+        kwargs["max_tokens"] = min(int(kwargs["max_tokens"]), 131_072)
+        super().prepare_request(
+            kwargs,
+            extra_body,
+            disable_thinking=disable_thinking,
+        )
+
+
 class ChatCompletionsRuntime:
     def __init__(
         self,
@@ -868,6 +950,17 @@ def _select_provider_strategy(
     base_url: str,
     model: str,
 ) -> ProviderStrategy:
+    if provider_name.strip().lower() == "opencode-go":
+        normalized_model = model.strip().lower()
+        if normalized_model.startswith("deepseek-"):
+            return DeepSeekStrategy()
+        if normalized_model.startswith("glm-"):
+            return OpenCodeGoGLMStrategy()
+        if normalized_model.startswith("kimi-"):
+            return OpenCodeGoKimiStrategy()
+        if normalized_model.startswith("mimo-v2.5-pro"):
+            return OpenCodeGoMiMoStrategy()
+        return OpenCodeGoStrategy()
     provider_text = f"{provider_name} {base_url} {model}".lower()
     if "deepseek" in provider_text:
         return DeepSeekStrategy()

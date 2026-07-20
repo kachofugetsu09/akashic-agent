@@ -35,6 +35,7 @@ from proactive_v2.config import ProactiveConfig
 from proactive_v2.config_loader import ProactiveConfigError, load_proactive_config
 from agent.model_runtime.auth.store import CredentialStore
 from agent.model_runtime.context_policy import recommended_context_settings
+from agent.model_runtime.provider_profiles import get_provider_profile
 
 _PRESETS: dict[str, str] = {
     "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -665,9 +666,11 @@ def _load_api_key(*, auth_id: str, inline_value: str, workspace: Path) -> str:
 
 
 def _model_base_url(provider: str, configured: object) -> str:
+    profile = get_provider_profile(provider)
     return str(
         configured
         or ("https://chatgpt.com/backend-api/codex" if provider == "codex" else "")
+        or (profile.default_base_url if profile is not None else "")
         or _PRESETS.get(provider)
         or ""
     )

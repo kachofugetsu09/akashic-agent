@@ -6,7 +6,9 @@ import httpx
 import json
 import runpy
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -91,6 +93,97 @@ class _FakeStream:
 
     async def close(self) -> None:
         self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_opencode_go_request_mappings_cross_real_http_boundary() -> None:
+    payloads: list[dict[str, Any]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers["Content-Length"])
+            payloads.append(json.loads(self.rfile.read(length)))
+            body = json.dumps(
+                {
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": payloads[-1]["model"],
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": "ok",
+                                "reasoning_content": "thought",
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        base_url = f"http://{host}:{port}/v1"
+        cases = [
+            ("glm-5.99", {"reasoning_effort": "xhigh"}, 200_000),
+            (
+                "glm-5.98",
+                {"reasoning_effort": "high", "thinking": {"type": "disabled"}},
+                200_000,
+            ),
+            ("kimi-k3", {"enable_thinking": True}, 200_000),
+            (
+                "kimi-k2.6",
+                {"reasoning_effort": "high", "thinking": {"type": "disabled"}},
+                200_000,
+            ),
+            ("deepseek-v4-pro", {"reasoning_effort": "xhigh"}, 200_000),
+            ("mimo-v2.5-pro", {}, 200_000),
+            ("grok-4.5", {}, 200_000),
+        ]
+        for model, extra_body, max_tokens in cases:
+            result = await LLMProvider(
+                api_key="secret",
+                base_url=base_url,
+                provider_name="opencode-go",
+                extra_body=extra_body,
+                max_retries=0,
+            ).chat([], [], model, max_tokens)
+            assert result.content == "ok"
+            assert result.thinking == "thought"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+    by_model = {payload["model"]: payload for payload in payloads}
+    assert by_model["glm-5.99"]["reasoning_effort"] == "max"
+    assert "reasoning_effort" not in by_model["glm-5.98"]
+    assert "thinking" not in by_model["glm-5.98"]
+    assert by_model["kimi-k3"]["thinking"] == {"type": "enabled"}
+    assert "reasoning_effort" not in by_model["kimi-k3"]
+    assert by_model["kimi-k2.6"]["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in by_model["kimi-k2.6"]
+    assert by_model["deepseek-v4-pro"]["reasoning_effort"] == "max"
+    assert by_model["mimo-v2.5-pro"]["max_tokens"] == 131_072
 
 
 @pytest.mark.asyncio

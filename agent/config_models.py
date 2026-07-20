@@ -139,6 +139,8 @@ class ModelRuntimeConfig:
     reasoning_summary: str = "none"
 
     def __post_init__(self) -> None:
+        from agent.model_runtime.provider_profiles import validate_profile_runtime
+
         if not self.provider or not self.model:
             raise ValueError(f"runtime {self.runtime_id} 必须配置 provider 和 model")
         if self.provider == "codex" and not self.auth:
@@ -149,6 +151,11 @@ class ModelRuntimeConfig:
             raise ValueError(f"runtime {self.runtime_id} 的 max_output_tokens 必须大于 0")
         if "text" not in self.input_modalities:
             raise ValueError(f"runtime {self.runtime_id} 的 input_modalities 必须包含 text")
+        validate_profile_runtime(
+            provider=self.provider,
+            model=self.model,
+            input_modalities=self.input_modalities,
+        )
         if not 0 < self.effective_context_percent <= 1:
             raise ValueError(
                 f"runtime {self.runtime_id} 的 effective_context_percent 必须在 (0, 1] 内"

@@ -9,7 +9,7 @@ import pytest
 from agent.config import load_config
 from agent.model_runtime.auth.store import Credential, CredentialStore
 from bootstrap.setup_main import patch_main_model_config, run_main_model_setup
-from bootstrap.setup_wizard import WizardAnswers, _phase_codex_llm
+from bootstrap.setup_wizard import WizardAnswers, _phase_api_key_llm, _phase_codex_llm
 
 
 _CONFIG = """\
@@ -145,3 +145,43 @@ def test_codex_setup_reuses_existing_login_and_catalog(
 
     assert (answers.model, answers.context_window) == ("gpt-test", 128_000)
     assert answers.reasoning_summary == "auto"
+
+
+def test_opencode_go_setup_uses_dynamic_catalog_and_forces_text_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Catalog:
+        def __init__(self, api_key: str, *, base_url: str) -> None:
+            assert api_key == "secret"
+            assert base_url == "https://opencode.ai/zen/go/v1"
+
+        async def list_models(self) -> list[SimpleNamespace]:
+            return [SimpleNamespace(slug="glm-5.99")]
+
+    confirms: list[str] = []
+
+    def prompt(text: str, **kwargs: object) -> object:
+        if text == "服务商":
+            return "opencode-go"
+        return kwargs.get("default", "")
+
+    def confirm(text: str, *, default: bool = False) -> bool:
+        confirms.append(text)
+        return default
+
+    monkeypatch.setattr(
+        "agent.model_runtime.catalog.opencode_go.OpenCodeGoModelCatalog",
+        Catalog,
+    )
+    monkeypatch.setattr("bootstrap.setup_wizard.click.prompt", prompt)
+    monkeypatch.setattr("bootstrap.setup_wizard.click.confirm", confirm)
+    monkeypatch.setattr("bootstrap.setup_wizard._secret_prompt", lambda _text: "secret")
+    answers = WizardAnswers()
+
+    _phase_api_key_llm(answers)
+
+    assert answers.provider == "opencode-go"
+    assert answers.model == "glm-5.99"
+    assert answers.base_url == "https://opencode.ai/zen/go/v1"
+    assert answers.multimodal is False
+    assert "主模型原生支持图片输入？" not in confirms

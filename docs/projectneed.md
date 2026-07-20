@@ -351,6 +351,10 @@ AgentLoop 唯一拥有活动 turn task 的取消和 cleanup。无论成功、失
 
 无子命令执行 `python main.py` 是正式服务入口，必须先进入 workspace 唯一的 Supervisor，再由 Supervisor 以固定参数启动 gateway child。`supervise` 只作为兼容别名；显式 `gateway` 只用于未托管调试，并且不得注册 `agent_restart`。自重启仍须经过当轮 ToolSearch 授权、回复持久化与送达、boot-scoped 私有提交证据和约定退出码，普通退出、崩溃或伪造退出码不得拉起下一代进程。
 
+### RUN-005 内建模型端点按 profile 拥有协议边界
+
+内建 provider 的默认端点、输入模态、模型家族协议和请求字段映射由 core runtime 的 provider profile 拥有。模型目录可以在初始化时动态读取；同一已知 Chat Completions 家族的新版本无需维护静态型号表。使用其他 wire protocol 的家族和未知家族必须在配置边界 fail-closed，不能试发、静默 fallback 或把目录结果持久化成新的权威状态。
+
 ### OUT-001 被动按 Turn 提交，主动按送达提交
 
 被动消息以完整 Turn 为权威提交单位。推理和持久化成功后，user 与 assistant 消息共同进入会话历史；随后 dispatch 失败不得回滚已经提交的 Turn。主动消息没有对应的用户 Turn，只有 dispatch 明确成功后才进入会话历史、presence、dedupe 和 success 状态；未发送内容不得让 Agent 误认为自己已经说过。
