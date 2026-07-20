@@ -1573,6 +1573,36 @@ class SessionStore:
             )
         return None if not rows else self._row_to_message(rows[0])
 
+    def get_message_by_delivery_id(
+        self,
+        session_key: str,
+        delivery_id: str,
+    ) -> dict[str, Any] | None:
+        """按会话和主动投递 ID 解析唯一的 canonical 消息。"""
+
+        # 1. 只允许主动 assistant 消息拥有可引用的投递身份
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, session_key, seq, role, content, tool_chain, extra, ts
+                FROM messages
+                WHERE session_key = ?
+                  AND role = 'assistant'
+                  AND json_extract(extra, '$.proactive') = 1
+                  AND json_extract(extra, '$.delivery_id') = ?
+                ORDER BY seq ASC
+                LIMIT 2
+                """,
+                (session_key, delivery_id),
+            ).fetchall()
+
+        # 2. 重复身份违反一次主动投递只产生一条消息的契约
+        if len(rows) > 1:
+            raise RuntimeError(
+                f"同一会话存在重复 delivery_id: {session_key} {delivery_id}"
+            )
+        return None if not rows else self._row_to_message(rows[0])
+
     def update_message(
         self,
         message_id: str,

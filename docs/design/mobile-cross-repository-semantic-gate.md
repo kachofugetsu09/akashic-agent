@@ -137,6 +137,8 @@ Core proactive delivery_id
 
 **C：** Android 收到两种投影时优先按 `delivery_id` 合并。只有旧事件或旧历史没有该字段时，才允许使用带 `proactive=true`、相同文本、限定时间窗且唯一最近候选的兼容规则；候选不唯一时保留两条，不能猜测身份。
 
+**C：** 历史页尚未到达时，Android 使用 `reply_to.delivery_id` 引用主动实时投影；Core 在同一 session 的主动 assistant 消息中唯一解析该身份，并把 canonical message ID 写进入站引用 metadata。历史页完成投影迁移后，Android 恢复使用 `reply_to.message_id`。`delivery_id`、`client_message_id` 与 `message_id` 是三个互斥协议身份，本地 `proactive:` 前缀不得越过客户端编码边界。
+
 当前接受的边缘窗口是：Mobile 已接收后 Core 在追加历史前崩溃，该主动消息可能只保留在手机投影中。当前方案不为这个窗口新增 outbox、重试状态机或 SessionDB 表。
 
 ## 3. 协议与外部仓库版本固定

@@ -102,10 +102,17 @@ def test_message_send_validates_reply_identity() -> None:
     assert parsed.payload.reply_to is not None
     assert parsed.payload.reply_to.client_message_id == "01ARZ3NDEKTSV4RRFFQ69G5FAW"
 
+    delivery = _golden_frame(0)
+    delivery["payload"]["reply_to"] = {"delivery_id": "delivery-1"}
+    parsed_delivery = parse_frame(json.dumps(delivery))
+    assert isinstance(parsed_delivery, MessageSendCommand)
+    assert parsed_delivery.payload.reply_to is not None
+    assert parsed_delivery.payload.reply_to.delivery_id == "delivery-1"
+
     invalid = _golden_frame(0)
     invalid["payload"]["reply_to"] = {
         "message_id": "mobile:test:1",
-        "client_message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+        "delivery_id": "delivery-1",
     }
     with pytest.raises(ValidationError, match="只能提供一种"):
         parse_frame(json.dumps(invalid))

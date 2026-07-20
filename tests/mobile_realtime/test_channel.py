@@ -831,6 +831,25 @@ async def test_message_send_resolves_reply_into_agent_context_and_metadata(
     assert third.type == "message.send.ok"
     assert bus.inbound[2].metadata["reply_preview"] == "[附件]"
     assert "被回复消息（来自 你）：\n[附件]" in bus.inbound[2].content
+
+    proactive_target = session.add_message(
+        "assistant",
+        "尚未同步历史的主动消息",
+        proactive=True,
+        delivery_id="delivery-1",
+    )
+    manager.save(session)
+    fourth = await channel.handle_command(
+        device_id=device_id,
+        frame=_message_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FB0",
+            session_id=session_id,
+            reply_to={"delivery_id": "delivery-1"},
+        ),
+    )
+    assert fourth.type == "message.send.ok"
+    assert bus.inbound[3].metadata["reply_to_message_id"] == proactive_target["id"]
+    assert "被回复消息（来自 Akashic）：\n尚未同步历史的主动消息" in bus.inbound[3].content
     manager.close()
     storage.close()
 

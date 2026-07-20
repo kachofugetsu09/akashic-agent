@@ -169,6 +169,56 @@ def test_read_missing_turn_returns_none_and_transition_raises(tmp_path) -> None:
         )
 
 
+def test_delivery_id_resolves_only_unique_proactive_assistant(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    session_key = "mobile:test"
+    expected = store.insert_message(
+        session_key,
+        role="assistant",
+        content="主动消息",
+        ts=NOW.isoformat(),
+        seq=0,
+        extra={"proactive": True, "delivery_id": "delivery-1"},
+    )
+    _ = store.insert_message(
+        session_key,
+        role="user",
+        content="不能占用投递身份",
+        ts=NOW.isoformat(),
+        seq=1,
+        extra={"delivery_id": "delivery-user"},
+    )
+    _ = store.insert_message(
+        session_key,
+        role="assistant",
+        content="非主动消息",
+        ts=NOW.isoformat(),
+        seq=2,
+        extra={"delivery_id": "delivery-passive"},
+    )
+
+    assert store.get_message_by_delivery_id(session_key, "delivery-1") == expected
+    assert store.get_message_by_delivery_id(session_key, "delivery-user") is None
+    assert store.get_message_by_delivery_id(session_key, "delivery-passive") is None
+    assert store.get_message_by_delivery_id("mobile:other", "delivery-1") is None
+
+
+def test_duplicate_proactive_delivery_id_fails_loud(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    for seq in range(2):
+        _ = store.insert_message(
+            "mobile:test",
+            role="assistant",
+            content=f"主动消息 {seq}",
+            ts=NOW.isoformat(),
+            seq=seq,
+            extra={"proactive": True, "delivery_id": "delivery-1"},
+        )
+
+    with pytest.raises(RuntimeError, match="重复 delivery_id"):
+        store.get_message_by_delivery_id("mobile:test", "delivery-1")
+
+
 def test_list_turns_is_thread_scoped_and_stable(tmp_path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     store.create_turn(_queued("turn:1"))
