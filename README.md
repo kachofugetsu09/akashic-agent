@@ -153,8 +153,9 @@ port = 6322
 channel_name = "web"
 ```
 
-旧式 inline `[llm.main]` 不会在本版本中自动迁移；请先通过设置中心生成 named runtime，
-或参考 [`config.example.toml`](./config.example.toml) 手动调整。迁移器会作为独立变更提供。
+旧式 inline `[llm.main]` 仍可由 runtime 加载和运行，但设置中心不会自动迁移或编辑它；
+需要网页切换 Provider 时，请先通过设置中心生成 named runtime，或参考
+[`config.example.toml`](./config.example.toml) 手动调整。迁移器会作为独立变更提供。
 
 `workspace` 默认是 `~/.akashic/workspace`。临时切换隔离环境时传
 `--workspace PATH`；它的优先级高于 `AKASHIC_WORKSPACE` 和 `config.toml`。
