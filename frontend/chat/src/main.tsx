@@ -42,6 +42,7 @@ import {
 } from "@/components/ai-elements/prompt-input";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { MobilePairingDialog } from "./mobile-pairing-dialog";
+import { SettingsApp } from "./settings-app";
 import "./styles.css";
 
 type ChatStatus = "idle" | "submitted" | "streaming" | "error";
@@ -1044,8 +1045,10 @@ function sessionLabel(session: SessionRow) {
   return title.length > 28 ? `${title.slice(0, 28)}...` : title;
 }
 
+const rootApp = window.location.port === "6321" ? <SettingsApp /> : <App />;
+
 createRoot(document.getElementById("root")!).render(
   <TooltipProvider>
-    <App />
+    {rootApp}
   </TooltipProvider>,
 );

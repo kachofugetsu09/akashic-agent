@@ -35,6 +35,7 @@ from proactive_v2.config import ProactiveConfig
 from proactive_v2.config_loader import ProactiveConfigError, load_proactive_config
 from agent.model_runtime.auth.store import CredentialStore
 from agent.model_runtime.context_policy import recommended_context_settings
+from agent.model_runtime.provider_profiles import get_provider_profile
 
 _PRESETS: dict[str, str] = {
     "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -111,7 +112,7 @@ def load_config(
     agent_maintenance = _as_dict(
         agent_cfg.get("maintenance"), field="agent.maintenance"
     )
-    provider = str(llm_main.get("provider") or llm.get("provider") or data.get("provider") or "").lower()
+    provider = str(llm_main.get("provider") or "").lower()
     if not provider:
         raise ValueError("必须配置 llm provider")
     channels = _load_channels_config(data, workspace_path)
@@ -131,13 +132,13 @@ def load_config(
 
     return Config(
         provider=provider,
-        model=str(llm_main.get("model") or data.get("model") or ""),
+        model=str(llm_main.get("model") or ""),
         api_key=(
             ""
             if provider == "codex"
             else _load_api_key(
                 auth_id=str(llm_main.get("auth") or ""),
-                inline_value=str(llm_main.get("api_key") or data.get("api_key", "")),
+                inline_value=str(llm_main.get("api_key") or ""),
                 workspace=workspace_path,
             )
         ),
@@ -156,7 +157,7 @@ def load_config(
         ),
         memory_window=_load_memory_window(data, agent_context, llm_main),
         base_url=_model_base_url(
-            provider, llm_main.get("base_url") or data.get("base_url")
+            provider, llm_main.get("base_url")
         ),
         extra_body=_load_extra_body(data, llm_main),
         channels=channels,
@@ -176,23 +177,23 @@ def load_config(
                 data.get("memory_optimizer_interval_seconds", 64800),
             )
         ),
-        light_model=str(llm_fast.get("model") or data.get("light_model", "")),
+        light_model=str(llm_fast.get("model") or ""),
         light_api_key=_load_api_key(
             auth_id=str(llm_fast.get("auth") or ""),
-            inline_value=str(llm_fast.get("api_key") or data.get("light_api_key", "")),
+            inline_value=str(llm_fast.get("api_key") or ""),
             workspace=workspace_path,
         ),
         light_base_url=str(
-            llm_fast.get("base_url") or data.get("light_base_url", "")
+            llm_fast.get("base_url") or ""
         ),
-        agent_model=str(llm_agent.get("model") or data.get("agent_model", "")),
+        agent_model=str(llm_agent.get("model") or ""),
         agent_api_key=_load_api_key(
             auth_id=str(llm_agent.get("auth") or ""),
-            inline_value=str(llm_agent.get("api_key") or data.get("agent_api_key", "")),
+            inline_value=str(llm_agent.get("api_key") or ""),
             workspace=workspace_path,
         ),
         agent_base_url=str(
-            llm_agent.get("base_url") or data.get("agent_base_url", "")
+            llm_agent.get("base_url") or ""
         ),
         memory=memory,
         tool_search_enabled=_as_bool(
@@ -214,13 +215,13 @@ def load_config(
             field="agent.dev_mode",
         ),
         multimodal=_load_multimodal(llm_main),
-        vl_model=str(llm_vl.get("model") or data.get("vl_model", "")),
+        vl_model=str(llm_vl.get("model") or ""),
         vl_api_key=_load_api_key(
             auth_id=str(llm_vl.get("auth") or ""),
-            inline_value=str(llm_vl.get("api_key") or data.get("vl_api_key", "")),
+            inline_value=str(llm_vl.get("api_key") or ""),
             workspace=workspace_path,
         ),
-        vl_base_url=str(llm_vl.get("base_url") or data.get("vl_base_url", "")),
+        vl_base_url=str(llm_vl.get("base_url") or ""),
         peer_agents=peer_agents,
         wiring=wiring,
         runtime_id=runtime_id,
@@ -542,10 +543,10 @@ def _load_llm_runtimes(
     llm: dict,
     workspace: Path,
 ) -> tuple[str, dict, dict[str, ModelRuntimeConfig]]:
-    """在配置边界把新版 runtime 与旧版 llm.main 统一。"""
+    """在配置边界解析 named runtimes，并拒绝未迁移的旧结构。"""
     main_value = llm.get("main")
     if not isinstance(main_value, str):
-        return "main", _as_dict(main_value, field="llm.main"), {}
+        raise ValueError("llm.main 必须引用 named runtime；请先执行启动迁移")
     runtimes = _as_dict(llm.get("runtimes"), field="llm.runtimes")
     raw_main = _as_dict(runtimes.get(main_value), field=f"llm.runtimes.{main_value}")
     if not raw_main:
@@ -619,15 +620,17 @@ def _load_multimodal(llm_main: dict) -> bool:
         if not isinstance(modalities, list) or not all(isinstance(v, str) for v in modalities):
             raise ValueError("llm.main.input_modalities 必须是字符串数组")
         return "image" in modalities
-    return _as_bool(llm_main.get("multimodal", True), field="llm.main.multimodal")
+    return False
 
 
 def _load_role_runtime(
     llm: dict, role: str, main_runtime_id: str
 ) -> tuple[str, dict]:
     value = llm.get(role)
+    if value is None:
+        return "", {}
     if not isinstance(value, str):
-        return "", _as_dict(value, field=f"llm.{role}")
+        raise ValueError(f"llm.{role} 必须引用 named runtime；请先执行启动迁移")
     if value == main_runtime_id:
         return value, {}
     runtimes = _as_dict(llm.get("runtimes"), field="llm.runtimes")
@@ -665,9 +668,11 @@ def _load_api_key(*, auth_id: str, inline_value: str, workspace: Path) -> str:
 
 
 def _model_base_url(provider: str, configured: object) -> str:
+    profile = get_provider_profile(provider)
     return str(
         configured
         or ("https://chatgpt.com/backend-api/codex" if provider == "codex" else "")
+        or (profile.default_base_url if profile is not None else "")
         or _PRESETS.get(provider)
         or ""
     )

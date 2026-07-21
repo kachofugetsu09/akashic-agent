@@ -413,6 +413,13 @@ class ConversationRuntime:
     def is_thread_active(self, thread_id: str) -> bool:
         return thread_id in self._active_by_thread
 
+    async def quiesce_and_drain(self) -> None:
+        """停止接收新 turn，并等待已经持久化的 turn 自然结束。"""
+        self._accepting_turns = False
+        tasks = tuple(self._tasks.values())
+        if tasks:
+            await asyncio.gather(*tasks)
+
     def quiesce_for_restart(self, caller_turn_id: str) -> None:
         """仅在 caller 是唯一 turn 时冻结新的 turn 准入。"""
 

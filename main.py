@@ -20,9 +20,14 @@ import tomllib
 from contextlib import suppress
 from pathlib import Path
 from typing import cast
+from uuid import uuid4
 
 
 _DEFAULT_WORKSPACE = "~/.akashic/workspace"
+
+
+def _supervisor_readiness_timeout() -> float:
+    return float(os.environ.get("AKASHIC_READINESS_TIMEOUT_S", "15"))
 
 
 def _workspace_from_config(config_path: Path) -> str:
@@ -87,9 +92,11 @@ def _run_lightweight_setup_command() -> bool:
         raise SystemExit(str(exc)) from exc
     import click
 
+    from agent.migrations import migrate_installation
     from bootstrap.setup_main import run_main_model_setup
 
     try:
+        _ = migrate_installation(Path(config_path), workspace)
         run_main_model_setup(Path(config_path), workspace)
     except click.ClickException as exc:
         exc.show()
@@ -97,6 +104,8 @@ def _run_lightweight_setup_command() -> bool:
     except click.Abort as exc:
         click.echo("已取消。", err=True)
         raise SystemExit(1) from exc
+    except RuntimeError as exc:
+        raise SystemExit(f"启动迁移失败: {exc}") from exc
     return True
 
 
@@ -106,6 +115,11 @@ if __name__ == "__main__" and _run_lightweight_setup_command():
 
 from agent.config import Config, resolve_app_server_endpoint
 from agent.control.client import ControlClient, RemoteControlError
+from agent.migrations import (
+    MigrationOutcome,
+    mark_fresh_installation_current,
+    migrate_installation,
+)
 from agent.restart import RestartCoordinator, SupervisorCommitChannel
 from agent.supervisor import RESTART_EXIT_CODE, run_supervisor
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
@@ -195,6 +209,22 @@ def _print_init_summary(summary: InitSummary) -> None:
         print("\n下一步：")
         for step in summary.next_steps:
             print(f"  {step}")
+
+
+def _prepare_startup_migrations(
+    args: list[str],
+    config_path: Path,
+    workspace: Path,
+) -> MigrationOutcome | None:
+    """只为会加载本地 runtime 的命令执行启动迁移。"""
+
+    command = args[0] if args and not args[0].startswith("--") else ""
+    if command not in {"", "setup", "init", "supervise", "gateway", "app-server", "dashboard"}:
+        return None
+    outcome = migrate_installation(config_path, workspace)
+    if outcome.state == "migrated" and outcome.commits:
+        print(f"启动迁移完成: commits={len(outcome.commits)} head={outcome.head[:12]}")
+    return outcome
 
 
 def _parse_csv_flag(value: str | None) -> list[str]:
@@ -387,6 +417,7 @@ async def serve(config_path: str, workspace: Path) -> int:
     )
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
+    settings_restart_event = asyncio.Event()
     watched_signals = (signal.SIGINT, signal.SIGTERM)
     signal_handlers_registered = False
     for sig in watched_signals:
@@ -399,6 +430,16 @@ async def serve(config_path: str, workspace: Path) -> int:
                 sig,
                 lambda _sig, _frame: loop.call_soon_threadsafe(stop_event.set),
             )
+    if commit_channel is not None and hasattr(signal, "SIGUSR2"):
+        loop.add_signal_handler(signal.SIGUSR2, settings_restart_event.set)
+
+    async def commit_settings_restart() -> None:
+        await settings_restart_event.wait()
+        while runtime.conversation_runtime is None:
+            await asyncio.sleep(0.05)
+        await runtime.conversation_runtime.quiesce_and_drain()
+        assert commit_channel is not None
+        commit_channel.commit_settings(f"settings_{uuid4().hex}")
 
     runtime_task = asyncio.create_task(runtime.run(), name="app_runtime")
     stop_task = asyncio.create_task(stop_event.wait(), name="shutdown_signal")
@@ -410,10 +451,17 @@ async def serve(config_path: str, workspace: Path) -> int:
         if restart_coordinator is not None
         else None
     )
+    settings_restart_task = (
+        asyncio.create_task(commit_settings_restart(), name="settings_restart")
+        if commit_channel is not None and hasattr(signal, "SIGUSR2")
+        else None
+    )
     try:
         watched = {runtime_task, stop_task}
         if restart_task is not None:
             watched.add(restart_task)
+        if settings_restart_task is not None:
+            watched.add(settings_restart_task)
         done, _ = await asyncio.wait(
             watched,
             return_when=asyncio.FIRST_COMPLETED,
@@ -426,6 +474,9 @@ async def serve(config_path: str, workspace: Path) -> int:
         if restart_task is not None and restart_task in done:
             await restart_task
             restart_requested = True
+        if settings_restart_task is not None and settings_restart_task in done:
+            await settings_restart_task
+            restart_requested = True
         _ = runtime_task.cancel()
         with suppress(asyncio.CancelledError):
             await runtime_task
@@ -434,6 +485,8 @@ async def serve(config_path: str, workspace: Path) -> int:
         if signal_handlers_registered:
             for sig in watched_signals:
                 _ = loop.remove_signal_handler(sig)
+        if commit_channel is not None and hasattr(signal, "SIGUSR2"):
+            _ = loop.remove_signal_handler(signal.SIGUSR2)
         _ = stop_task.cancel()
         with suppress(asyncio.CancelledError):
             await stop_task
@@ -441,6 +494,10 @@ async def serve(config_path: str, workspace: Path) -> int:
             _ = restart_task.cancel()
             with suppress(asyncio.CancelledError):
                 await restart_task
+        if settings_restart_task is not None:
+            _ = settings_restart_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await settings_restart_task
 
 
 if __name__ == "__main__":
@@ -459,10 +516,11 @@ if __name__ == "__main__":
         if config_value is not None:
             config_path = config_value
         bootstrap_command = bool(args and args[0] in {"setup", "init"})
+        supervisor_command = not args or args[0] == "supervise"
         workspace = _workspace_from_args(
             args,
             Path(config_path),
-            allow_default=bootstrap_command,
+            allow_default=bootstrap_command or supervisor_command,
         )
         host_value = _get_flag_value(args, "--host")
         port_value = _get_flag_value(args, "--port")
@@ -480,12 +538,24 @@ if __name__ == "__main__":
     if port_value is not None:
         dashboard_port = int(port_value)
 
+    try:
+        migration_outcome = _prepare_startup_migrations(
+            args,
+            Path(config_path),
+            workspace,
+        )
+    except RuntimeError as exc:
+        print(f"启动迁移失败: {exc}", file=sys.stderr)
+        sys.exit(1)
+
     if args and args[0] == "setup":
         from bootstrap.setup_wizard import run_setup_wizard
         run_setup_wizard(
             config_path=Path(config_path),
             workspace=workspace,
         )
+        if migration_outcome is not None and migration_outcome.state == "fresh":
+            _ = mark_fresh_installation_current(Path(config_path), workspace)
         sys.exit(0)
 
     if args and args[0] == "setup-main":
@@ -500,6 +570,8 @@ if __name__ == "__main__":
             workspace=workspace,
             force=force,
         )
+        if migration_outcome is not None and migration_outcome.state == "fresh":
+            _ = mark_fresh_installation_current(Path(config_path), workspace)
         _print_init_summary(summary)
         sys.exit(0)
 
@@ -584,6 +656,7 @@ if __name__ == "__main__":
             run_supervisor(
                 config_path=Path(config_path),
                 workspace=workspace,
+                readiness_timeout_s=_supervisor_readiness_timeout(),
             )
         )
 
@@ -633,12 +706,6 @@ if __name__ == "__main__":
             asyncio.run(memory_runtime.aclose())
         sys.exit(0)
 
-    if not Path(config_path).exists():
-        print(
-            f"找不到配置文件 {config_path!r}，请先复制 config.example.toml 为 config.toml。"
-        )
-        sys.exit(1)
-
     if "--inspect-modules" in args:
         asyncio.run(inspect_modules(config_path, workspace))
     else:
@@ -646,5 +713,6 @@ if __name__ == "__main__":
             run_supervisor(
                 config_path=Path(config_path),
                 workspace=workspace,
+                readiness_timeout_s=_supervisor_readiness_timeout(),
             )
         )

@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -488,6 +489,17 @@ async def test_runtime_publishes_ready_only_after_tasks_survive_gate(
         await run_task
 
 
+@pytest.fixture
+def no_settings_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    server = SimpleNamespace(should_exit=False)
+    thread = SimpleNamespace(join=lambda timeout=None: None)
+    monkeypatch.setattr(
+        supervisor_module,
+        "_start_settings_server",
+        lambda *_args, **_kwargs: (server, thread),
+    )
+
+
 class _FakeSupervisorChild:
     def __init__(self, exit_code: int) -> None:
         self.pid = 4242
@@ -535,7 +547,9 @@ def test_supervisor_exit_code_contract(
     monkeypatch: pytest.MonkeyPatch,
     child_result: supervisor_module._ChildResult,
     expected: int,
+    no_settings_server: None,
 ) -> None:
+    (tmp_path / "config.toml").write_text("", encoding="utf-8")
     child = _FakeSupervisorChild(child_result.exit_code)
     monkeypatch.setattr(
         supervisor_module.subprocess,
@@ -555,10 +569,60 @@ def test_supervisor_exit_code_contract(
     ) == expected
 
 
+def test_supervisor_without_config_waits_for_settings_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_settings_server: None,
+) -> None:
+    class DelayedRequestEvent:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def wait(self, _timeout: float) -> bool:
+            self.calls += 1
+            return self.calls == 3
+
+    request_event = DelayedRequestEvent()
+    bridge = SimpleNamespace(
+        request_event=request_event,
+        take_request=lambda: 1,
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "_SettingsRestartBridge",
+        lambda _timeout: bridge,
+    )
+    child = _FakeSupervisorChild(0)
+    monkeypatch.setattr(supervisor_module.subprocess, "Popen", lambda *_args, **_kwargs: child)
+    observed: list[int] = []
+
+    def wait_child(
+        _child: Any,
+        *,
+        read_fd: int,
+        report_settings_generation: int,
+        **_kwargs: Any,
+    ):
+        os.close(read_fd)
+        observed.append(report_settings_generation)
+        return supervisor_module._ChildResult(0, True, True)
+
+    monkeypatch.setattr(supervisor_module, "_wait_child", wait_child)
+
+    assert run_supervisor(
+        config_path=tmp_path / "missing.toml",
+        workspace=tmp_path,
+    ) == 0
+    assert request_event.calls == 3
+    assert observed == [1]
+
+
 def test_supervisor_stop_between_generations_does_not_spawn_child_two(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    no_settings_server: None,
 ) -> None:
+    (tmp_path / "config.toml").write_text("", encoding="utf-8")
     child = _FakeSupervisorChild(RESTART_EXIT_CODE)
     spawns: list[_FakeSupervisorChild] = []
 
@@ -598,7 +662,9 @@ def test_supervisor_stop_between_generations_does_not_spawn_child_two(
 def test_supervisor_signal_inside_popen_waits_for_child_ownership(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    no_settings_server: None,
 ) -> None:
+    (tmp_path / "config.toml").write_text("", encoding="utf-8")
     child = _RunningSupervisorChild()
     handler_ran_inside_popen = False
 
@@ -627,7 +693,9 @@ def test_supervisor_signal_inside_popen_waits_for_child_ownership(
 def test_supervisor_child_does_not_inherit_blocked_stop_signals(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    no_settings_server: None,
 ) -> None:
+    (tmp_path / "config.toml").write_text("", encoding="utf-8")
     real_popen = subprocess.Popen
     probe_path = tmp_path / "child-status.txt"
     observed: dict[str, int] = {}
@@ -676,6 +744,42 @@ time.sleep(30)
     ) == 128 + signal.SIGTERM
     stop_mask = (1 << (signal.SIGINT - 1)) | (1 << (signal.SIGTERM - 1))
     assert observed["blocked"] & stop_mask == 0
+
+
+def test_settings_restart_bridge_waits_for_matching_ready_generation() -> None:
+    bridge = supervisor_module._SettingsRestartBridge(1)
+    completed: list[bool] = []
+
+    thread = threading.Thread(
+        target=lambda: (bridge.request_and_wait(), completed.append(True)),
+    )
+    thread.start()
+    assert bridge.request_event.wait(1)
+    generation = bridge.take_request()
+    assert generation == 1
+    bridge.complete(generation, True)
+    thread.join(timeout=1)
+
+    assert completed == [True]
+
+
+@pytest.mark.asyncio
+async def test_settings_drain_waits_for_existing_turn_without_cancelling() -> None:
+    runtime = object.__new__(ConversationRuntime)
+    runtime._accepting_turns = True
+    finished = asyncio.Event()
+
+    async def existing_turn() -> None:
+        await asyncio.sleep(0)
+        finished.set()
+
+    task = asyncio.create_task(existing_turn())
+    runtime._tasks = {"turn-1": task}
+
+    await runtime.quiesce_and_drain()
+
+    assert runtime._accepting_turns is False
+    assert finished.is_set()
 
 
 class _DrainWriter:

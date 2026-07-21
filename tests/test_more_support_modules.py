@@ -6,7 +6,9 @@ import httpx
 import json
 import runpy
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -91,6 +93,98 @@ class _FakeStream:
 
     async def close(self) -> None:
         self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_opencode_go_request_mappings_cross_real_http_boundary() -> None:
+    payloads: list[dict[str, Any]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers["Content-Length"])
+            payloads.append(json.loads(self.rfile.read(length)))
+            body = json.dumps(
+                {
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": payloads[-1]["model"],
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": "ok",
+                                "reasoning_content": "thought",
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host = server.server_address[0]
+        port = server.server_address[1]
+        base_url = f"http://{host}:{port}/v1"
+        cases = [
+            ("glm-5.99", {"reasoning_effort": "xhigh"}, 200_000),
+            (
+                "glm-5.98",
+                {"reasoning_effort": "high", "thinking": {"type": "disabled"}},
+                200_000,
+            ),
+            ("kimi-k3", {"enable_thinking": True}, 200_000),
+            (
+                "kimi-k2.6",
+                {"reasoning_effort": "high", "thinking": {"type": "disabled"}},
+                200_000,
+            ),
+            ("deepseek-v4-pro", {"reasoning_effort": "xhigh"}, 200_000),
+            ("mimo-v2.5-pro", {}, 200_000),
+            ("grok-4.5", {}, 200_000),
+        ]
+        for model, extra_body, max_tokens in cases:
+            result = await LLMProvider(
+                api_key="secret",
+                base_url=base_url,
+                provider_name="opencode-go",
+                extra_body=extra_body,
+                max_retries=0,
+            ).chat([], [], model, max_tokens)
+            assert result.content == "ok"
+            assert result.thinking == "thought"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+    by_model = {payload["model"]: payload for payload in payloads}
+    assert by_model["glm-5.99"]["reasoning_effort"] == "max"
+    assert "reasoning_effort" not in by_model["glm-5.98"]
+    assert "thinking" not in by_model["glm-5.98"]
+    assert by_model["kimi-k3"]["thinking"] == {"type": "enabled"}
+    assert "reasoning_effort" not in by_model["kimi-k3"]
+    assert by_model["kimi-k2.6"]["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in by_model["kimi-k2.6"]
+    assert by_model["deepseek-v4-pro"]["reasoning_effort"] == "max"
+    assert by_model["mimo-v2.5-pro"]["max_tokens"] == 131_072
 
 
 @pytest.mark.asyncio
@@ -409,6 +503,43 @@ async def test_provider_chat_stream_extracts_openai_cached_tokens(
     )
 
     assert result.content == "好"
+    assert result.cache_prompt_tokens == 100
+    assert result.cache_hit_tokens == 80
+
+
+@pytest.mark.asyncio
+async def test_opencode_go_stream_requests_usage_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    stream = _FakeStream(
+        [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(delta=SimpleNamespace(content="好", tool_calls=[]))
+                ]
+            ),
+            SimpleNamespace(
+                choices=[],
+                usage=SimpleNamespace(
+                    prompt_tokens=100,
+                    prompt_tokens_details={"cached_tokens": 80},
+                ),
+            ),
+        ]
+    )
+    fake = _FakeClient([stream])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    provider = LLMProvider(api_key="k", provider_name="opencode-go")
+
+    result = await provider.chat(
+        messages=[],
+        tools=[],
+        model="kimi-k3",
+        max_tokens=10,
+        on_content_delta=lambda chunk: _collect_delta([], chunk),
+    )
+
+    assert fake.calls[0]["stream_options"] == {"include_usage": True}
     assert result.cache_prompt_tokens == 100
     assert result.cache_hit_tokens == 80
 
@@ -890,6 +1021,8 @@ async def test_group_filter_paths() -> None:
 async def test_bootstrap_trigger_and_entrypoints_cover_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
+    from agent.migrations import MigrationOutcome
+
     item = MemoryItem(
         id="1",
         memory_type="procedure",
@@ -905,6 +1038,22 @@ async def test_bootstrap_trigger_and_entrypoints_cover_paths(
     )
     assert item.id == "1"
 
+    supervisor_calls: list[tuple[Path, Path]] = []
+
+    def _fake_supervisor(
+        *,
+        config_path: Path,
+        workspace: Path,
+        readiness_timeout_s: float = 15.0,
+    ) -> int:
+        supervisor_calls.append((config_path, workspace))
+        return 0
+
+    def _fake_migration(config_path: Path, workspace: Path) -> MigrationOutcome:
+        return MigrationOutcome(state="current", head="test-head")
+
+    monkeypatch.setattr("agent.supervisor.run_supervisor", _fake_supervisor)
+    monkeypatch.setattr("agent.migrations.migrate_installation", _fake_migration)
     monkeypatch.setattr("pathlib.Path.exists", lambda self: False)
     monkeypatch.setattr(
         sys,
@@ -913,16 +1062,11 @@ async def test_bootstrap_trigger_and_entrypoints_cover_paths(
     )
     with pytest.raises(SystemExit) as exc:
         runpy.run_module("main", run_name="__main__")
-    assert exc.value.code == 1
+    assert exc.value.code == 0
+    assert supervisor_calls == [(Path("missing.json"), tmp_path)]
 
     monkeypatch.setattr("pathlib.Path.exists", lambda self: True)
-    supervisor_calls: list[tuple[Path, Path]] = []
-
-    def _fake_supervisor(*, config_path: Path, workspace: Path) -> int:
-        supervisor_calls.append((config_path, workspace))
-        return 0
-
-    monkeypatch.setattr("agent.supervisor.run_supervisor", _fake_supervisor)
+    supervisor_calls.clear()
     monkeypatch.setattr(
         sys,
         "argv",

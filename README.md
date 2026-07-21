@@ -61,48 +61,77 @@ uv venv && uv pip install -r requirements.txt
 
 没有 uv？先 `pip install uv`。
 
-**1. 初始化**
+**1. 启动设置中心**
 
 ```bash
-uv run python main.py setup    # 交互向导（推荐）
+uv run python main.py
+```
+
+Supervisor 会始终提供本机设置中心：
+
+- 设置中心：<http://127.0.0.1:6321>
+- Web Chat：<http://127.0.0.1:6322>
+
+第一次运行不需要先创建 `config.toml`。打开设置中心，选择一种认证方式：
+
+| 认证方式 | 适用场景 |
+|---|---|
+| API Key | 任意 OpenAI Chat Completions 兼容端点 |
+| OpenCode Go | 粘贴 OpenCode Go Key，或复用本机已有的 OpenCode Go 登录 |
+| Codex Auth | 复用本机 Codex 登录，未登录时按页面提示完成设备授权 |
+
+```text
+打开 6321
+   │
+   ├── 选择 Provider 与认证
+   ├── 读取或填写模型
+   ├── 发送最小真实请求验证
+   └── 保存配置 → 启动 Gateway → 打开 6322 对话
+```
+
+API Key 会直接写入本机 `config.toml`，文件权限为 `0600`；设置 API 和页面不会回显
+已经保存的密钥。切换 Provider 时，旧 runtime 会保留，切回来无需重新输入密钥。
+
+OpenCode Go 会动态读取订阅当前提供的模型，隐藏已知走 Messages API 的型号，其余型号
+默认按 Chat Completions 验证。因此新增 Chat Completions 型号通常不需要更新 Akashic。
+
+**2. 可选：使用终端初始化或手动配置**
+
+仍然可以使用原有命令：
+
+```bash
+uv run python main.py setup    # 交互向导
 uv run python main.py init     # 非交互，CI/自动化用
 ```
 
-`init` 生成的 `config.toml` 默认包含：
+当前主模型配置使用 named runtime。手动配置的最小示例：
 
 ```toml
 [runtime]
 workspace = "~/.akashic/workspace"
-```
 
-因此直接运行 `python main.py` 或在 PyCharm 中直接启动 `main.py` 都不需要重复填写
-workspace。临时切换隔离环境时传 `--workspace PATH`；它的优先级高于
-`AKASHIC_WORKSPACE` 和 `config.toml`。
-
-**2. 填写 config.toml**
-
-推荐配置：DeepSeek 主模型 + Qwen 轻量/视觉/向量：
-
-```toml
 [llm]
-provider = "deepseek"
+main = "deepseek_main"
 
-[llm.main]
+[llm.runtimes.deepseek_main]
+provider = "deepseek"
 model = "deepseek-v4-flash"     # 主模型：推理强、速度快、价格低
 api_key = "sk-..."
 base_url = "https://api.deepseek.com/v1"
 enable_thinking = true          # 开启 reasoning
-multimodal = false              # DeepSeek 不支持图片，用 VL 工具补
+context_window = 128000
+effective_context_percent = 0.9
+max_output_tokens = 8192
+input_modalities = ["text"]
 
-[llm.fast]
+[llm.runtimes.qwen_fast]
+provider = "qwen"
 model = "qwen-flash"            # 轻量模型：memory gate / query rewrite / HyDE
 api_key = "sk-..."
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-
-[llm.vl]
-model = "qwen-vl-plus"          # 视觉：主模型 multimodal=false 时自动启用
-api_key = "sk-..."
-base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+context_window = 128000
+max_output_tokens = 4096
+input_modalities = ["text"]
 
 [memory]
 enabled = true
@@ -124,20 +153,34 @@ port = 6322
 channel_name = "web"
 ```
 
-**个人推荐**：
-这个项目和 deepseekv4flash 以及 qwen 相性比较好，其他模型不保证效果。特别是一些连 xml 输出都做不好的国产模型。
-通信渠道推荐 telegram，提供了丰富好看的流式输出。只想先本机试用的话，`channels.chat` 默认开启，启动后直接打开 `http://127.0.0.1:6322`。
+旧式 inline `[llm.main]` 会在代码更新后的第一次启动中自动迁移为 named runtime，已有
+main/fast/agent/vl 字段和密钥都会保留。迁移前会在 `config.toml.migration-backups/`
+创建权限受限的备份；配置或 Akasha 重建验证失败时，runtime 不会带着半迁移状态启动。
 
-**3. 启动**
+迁移使用固定 Git baseline 和 `config.toml.migration-cursor`，同一个源码 `HEAD` 的后续
+启动只比较 cursor，不重复扫描或执行脚本。新 clone 且没有配置和 workspace 数据时直接
+初始化最新结构，不回放历史迁移。旧安装使用 shallow clone、缺少 baseline 历史时会明确
+失败，需要先补齐 Git 历史再启动；启动过程不会自动访问网络或执行 `git fetch`。
 
-```bash
-uv run python main.py
-```
+后续开发者新增兼容逻辑时，请先阅读[Git 一次性迁移维护手册](./docs/design/git-migration-authoring.md)：
+历史状态转换应放入只追加 bundle，核心配置与 runtime 只接受当前规范形状。
+
+`workspace` 默认是 `~/.akashic/workspace`。临时切换隔离环境时传
+`--workspace PATH`；它的优先级高于 `AKASHIC_WORKSPACE` 和 `config.toml`。
+
+**个人推荐**：主模型使用 DeepSeek，轻量和视觉任务使用 Qwen。通信渠道推荐
+Telegram；只想先本机试用时，完成 6321 设置后直接打开 6322 即可。
+
+**3. 运行与安全切换**
 
 无参数启动会先进入内置 supervisor，再由它启动正式 gateway。这样核心代码或主配置
 确需完整重载时，Agent 可以通过当轮 `tool_search` 解锁 `agent_restart`，并在回复持久化、
 送达和私有提交证据全部完成后安全拉起下一代进程。需要让调试器直接附着未托管 gateway
 时，显式运行 `uv run python main.py gateway`；该模式不会注册自重启工具。
+
+在 6321 切换 Provider 时，Supervisor 会停止接收新 turn、等待已经接收的 turn 自然完成，
+再启动候选 Gateway。候选未通过 readiness 时会恢复配置并重新启动原 Gateway；设置中心在
+整个过程中保持可用。
 
 从终端或 supervisor 切换到 PyCharm 前，先优雅停止当前 workspace 的 runtime：
 
@@ -151,7 +194,7 @@ uv run python main.py
 supervisor；需要直接调试 child 时把程序参数设为 `gateway`。也可以把
 `scripts/stop-runtime.sh` 配置为 Run Configuration 的 Before Launch external tool。
 
-打开 `http://127.0.0.1:6322` 可以使用 Web Chatbox；如果配置了 Telegram / QQ，也可以直接给 bot 发一条消息开始对话。
+如果配置了 Telegram / QQ，也可以直接给 bot 发一条消息开始对话。
 
 ---
 
@@ -171,6 +214,7 @@ supervisor；需要直接调试 child 时把程序参数设为 `gateway`。也�
 
 | 想看什么 | 文档 |
 |---------|------|
+| 怎么首次配置或切换 Provider | 启动后访问 `http://127.0.0.1:6321`，支持 API Key、OpenCode Go 和 Codex Auth |
 | 怎么打开本机 Web Chatbox | 启动后访问 `http://127.0.0.1:6322`，配置见 `config.toml` 的 `[channels.chat]` |
 | 怎么让 agent 主动推送消息、怎么配数据源 | [_handbook/proactive-guide.md](./_handbook/proactive-guide.md) |
 | 怎么写后台任务让 agent 空闲时自动干活 | [_handbook/drift-guide.md](./_handbook/drift-guide.md) |

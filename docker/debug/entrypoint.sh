@@ -81,10 +81,6 @@ case "$cmd" in
         ensure_app_server_config
         ;;
     run|serve)
-        if [ ! -f "$CONFIG" ]; then
-            echo "缺少 $CONFIG，请先运行：docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug setup" >&2
-            exit 2
-        fi
         ensure_app_server_config
         exec_as_host python main.py --config "$CONFIG" --workspace "$WORKSPACE" "$@"
         ;;

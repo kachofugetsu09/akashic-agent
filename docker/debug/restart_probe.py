@@ -676,6 +676,7 @@ def _unsupervised_tool_absence_check(report_dir: Path) -> CheckResult:
     workspace = Path("/sandbox/unsupervised-workspace")
     endpoint = Path("/sandbox/unsupervised.sock")
     config_path.write_text(config, encoding="utf-8")
+    _copy_gate_migration_cursor(config_path)
     workspace.mkdir(exist_ok=True)
     process = subprocess.Popen(
         [
@@ -872,6 +873,12 @@ def _inside_unsupervised(report_dir: Path) -> int:
     return 0 if check.passed else 1
 
 
+def _copy_gate_migration_cursor(config_path: Path) -> None:
+    source = Path("/sandbox/config.toml.migration-cursor")
+    target = config_path.with_name(f"{config_path.name}.migration-cursor")
+    shutil.copyfile(source, target)
+
+
 def _isolated_config(name: str) -> tuple[Path, Path, Path]:
     source = Path("/sandbox/config.toml").read_text(encoding="utf-8")
     endpoint = Path(f"/sandbox/{name}.sock")
@@ -885,6 +892,7 @@ def _isolated_config(name: str) -> tuple[Path, Path, Path]:
     config = Path(f"/sandbox/{name}.toml")
     workspace = Path(f"/sandbox/{name}-workspace")
     config.write_text(source, encoding="utf-8")
+    _copy_gate_migration_cursor(config)
     workspace.mkdir(exist_ok=True)
     return config, workspace, endpoint
 

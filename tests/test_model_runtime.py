@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import json
 import os
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,7 @@ from agent.config_models import ModelRuntimeConfig
 from agent.model_runtime.auth.codex import CODEX_CLIENT_VERSION, CodexAuthDriver
 from agent.model_runtime.auth.store import Credential, CredentialStore
 from agent.model_runtime.catalog.codex import CodexModelCatalog
+from agent.model_runtime.catalog.opencode_go import OpenCodeGoModelCatalog
 from agent.model_runtime.context_policy import (
     build_runtime_context_budget,
     recommended_context_settings,
@@ -82,6 +85,89 @@ def test_context_budget_and_runtime_config_share_the_same_boundary() -> None:
             effective_context_percent=0.8,
             max_output_tokens=8_000,
         )
+
+
+def test_opencode_go_profile_is_dynamic_and_rejects_wrong_wire() -> None:
+    runtime = ModelRuntimeConfig(
+        runtime_id="main",
+        provider="opencode-go",
+        model="glm-5.99",
+        context_window=64_000,
+    )
+    assert runtime.model == "glm-5.99"
+
+    with pytest.raises(ValueError, match="Messages API"):
+        ModelRuntimeConfig(
+            runtime_id="main",
+            provider="opencode-go",
+            model="qwen3.5-plus",
+            context_window=64_000,
+        )
+    future = ModelRuntimeConfig(
+        runtime_id="main",
+        provider="opencode-go",
+        model="future-model-1",
+        context_window=64_000,
+    )
+    assert future.model == "future-model-1"
+    with pytest.raises(ValueError, match="仅支持 input_modalities"):
+        ModelRuntimeConfig(
+            runtime_id="vl",
+            provider="opencode-go",
+            model="grok-4.5",
+            context_window=64_000,
+            input_modalities=("text", "image"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_opencode_go_catalog_uses_http_boundary_and_filters_protocols() -> None:
+    requests: list[tuple[str, str | None]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            requests.append((self.path, self.headers.get("Authorization")))
+            body = json.dumps(
+                {
+                    "object": "list",
+                    "data": [
+                        {"id": "glm-5.99", "object": "model"},
+                        {"id": "kimi-k3", "object": "model"},
+                        {"id": "qwen3.5-plus", "object": "model"},
+                        {"id": "future-model-1", "object": "model"},
+                    ],
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host = server.server_address[0]
+        port = server.server_address[1]
+        models = await OpenCodeGoModelCatalog(
+            "secret",
+            base_url=f"http://{host}:{port}/v1",
+        ).list_models()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+    assert [model.slug for model in models] == [
+        "glm-5.99",
+        "kimi-k3",
+        "future-model-1",
+    ]
+    assert requests == [("/v1/models", "Bearer secret")]
 
 
 def test_credential_store_is_atomic_private_and_fail_loud(tmp_path: Path) -> None:

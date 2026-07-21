@@ -6,6 +6,7 @@ import secrets
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +68,52 @@ class _ChildResult:
     exit_code: int
     ready: bool
     commit_valid: bool
+    settings_generation: int = 0
+
+
+class _SettingsRestartBridge:
+    """在设置 HTTP 线程与 supervisor owner 之间交接一次可等待重启。"""
+
+    def __init__(self, timeout_s: float) -> None:
+        self.timeout_s = timeout_s
+        self.request_event = threading.Event()
+        self._condition = threading.Condition()
+        self._next_generation = 0
+        self._requested_generation = 0
+        self._completed: dict[int, bool] = {}
+
+    def request_and_wait(self) -> None:
+        with self._condition:
+            self._next_generation += 1
+            generation = self._next_generation
+            self._requested_generation = generation
+            self.request_event.set()
+            completed = self._condition.wait_for(
+                lambda: generation in self._completed,
+                timeout=self.timeout_s,
+            )
+            if not completed:
+                raise RuntimeError("Gateway 重启等待超时")
+            if not self._completed.pop(generation):
+                raise RuntimeError("Gateway 使用候选配置启动失败")
+
+    def take_request(self) -> int:
+        with self._condition:
+            if not self.request_event.is_set():
+                return 0
+            generation = self._requested_generation
+            self.request_event.clear()
+            return generation
+
+    def wait_request(self) -> int:
+        if not self.request_event.wait(self.timeout_s):
+            return 0
+        return self.take_request()
+
+    def complete(self, generation: int, success: bool) -> None:
+        with self._condition:
+            self._completed[generation] = success
+            self._condition.notify_all()
 
 
 def run_supervisor(
@@ -85,6 +132,16 @@ def run_supervisor(
     workspace = workspace.expanduser().resolve()
     lock = _SupervisorLock(workspace)
     lock.acquire()
+    settings_bridge = _SettingsRestartBridge(max(30.0, readiness_timeout_s * 2))
+    try:
+        settings_server, settings_thread = _start_settings_server(
+            config_path,
+            workspace,
+            settings_bridge,
+        )
+    except BaseException:
+        lock.release()
+        raise
     stopping_signal: int | None = None
     child: subprocess.Popen[bytes] | None = None
     forwarded_stop: tuple[subprocess.Popen[bytes], int] | None = None
@@ -102,10 +159,17 @@ def run_supervisor(
         for sig in stop_signals
     }
     try:
+        report_settings_generation = 0
         while True:
             # 1. child 代际之间收到停止信号时，禁止创建下一代进程。
             if stopping_signal is not None:
                 return 0
+            if not config_path.exists():
+                while report_settings_generation == 0 and stopping_signal is None:
+                    if settings_bridge.request_event.wait(0.2):
+                        report_settings_generation = settings_bridge.take_request()
+                if stopping_signal is not None:
+                    return 0
             boot_id = uuid4().hex
             nonce = secrets.token_hex(32)
             read_fd, write_fd = os.pipe()
@@ -186,17 +250,36 @@ def run_supervisor(
                 boot_id=boot_id,
                 nonce=nonce,
                 readiness_timeout_s=readiness_timeout_s,
+                settings_bridge=settings_bridge,
+                report_settings_generation=report_settings_generation,
             )
+            if report_settings_generation:
+                report_settings_generation = 0
             child = None
             if stopping_signal is not None:
                 return 0
             if result.exit_code != RESTART_EXIT_CODE:
+                if result.settings_generation:
+                    settings_bridge.complete(result.settings_generation, False)
+                    rollback_generation = settings_bridge.wait_request()
+                    if rollback_generation:
+                        report_settings_generation = rollback_generation
+                        continue
                 return _portable_exit_code(result.exit_code)
             if not result.ready or not result.commit_valid:
+                if result.settings_generation:
+                    settings_bridge.complete(result.settings_generation, False)
+                    rollback_generation = settings_bridge.wait_request()
+                    if rollback_generation:
+                        report_settings_generation = rollback_generation
+                        continue
                 return SUPERVISOR_FAILURE_EXIT_CODE
+            report_settings_generation = result.settings_generation
     finally:
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)
+        settings_server.should_exit = True
+        settings_thread.join(timeout=5)
         lock.release()
 
 
@@ -208,12 +291,16 @@ def _wait_child(
     boot_id: str,
     nonce: str,
     readiness_timeout_s: float,
+    settings_bridge: _SettingsRestartBridge | None = None,
+    report_settings_generation: int = 0,
 ) -> _ChildResult:
     """等待 child 退出，同时验证 readiness 与唯一 commit frame。"""
 
+    settings_bridge = settings_bridge or _SettingsRestartBridge(readiness_timeout_s)
     readiness_path = workspace / ".runtime-ready.json"
     deadline = time.monotonic() + readiness_timeout_s
     ready = False
+    settings_generation = 0
     buffer = bytearray()
     try:
         while child.poll() is None:
@@ -231,11 +318,20 @@ def _wait_child(
                     except subprocess.TimeoutExpired:
                         child.kill()
                         child.wait(timeout=5)
+                    if report_settings_generation:
+                        settings_bridge.complete(report_settings_generation, False)
                     return _ChildResult(
                         SUPERVISOR_FAILURE_EXIT_CODE,
                         False,
                         False,
+                        report_settings_generation,
                     )
+            if ready and report_settings_generation:
+                settings_bridge.complete(report_settings_generation, True)
+                report_settings_generation = 0
+            if ready and settings_generation == 0 and settings_bridge.request_event.is_set():
+                settings_generation = settings_bridge.take_request()
+                child.send_signal(signal.SIGUSR2)
             time.sleep(0.02)
         _read_available(read_fd, buffer)
         if not ready:
@@ -244,10 +340,13 @@ def _wait_child(
                 boot_id=boot_id,
                 pid=child.pid,
             )
+        if report_settings_generation:
+            settings_bridge.complete(report_settings_generation, False)
         return _ChildResult(
             child.returncode,
             ready,
             _valid_commit(bytes(buffer), boot_id=boot_id, nonce=nonce),
+            settings_generation or report_settings_generation,
         )
     finally:
         os.close(read_fd)
@@ -287,7 +386,7 @@ def _valid_commit(payload: bytes, *, boot_id: str, nonce: str) -> bool:
         and frame.get("type") == "restart_commit"
         and frame.get("bootId") == boot_id
         and secrets.compare_digest(str(frame.get("nonce") or ""), nonce)
-        and str(frame.get("requestId") or "").startswith("restart_")
+        and str(frame.get("requestId") or "").startswith(("restart_", "settings_"))
     )
 
 
@@ -295,3 +394,35 @@ def _portable_exit_code(code: int) -> int:
     if code >= 0:
         return code
     return 128 + abs(code)
+
+
+def _start_settings_server(
+    config_path: Path,
+    workspace: Path,
+    bridge: _SettingsRestartBridge,
+):
+    """在 supervisor 内启动固定设置服务，并确认端口实际进入监听。"""
+    import asyncio
+
+    from bootstrap.settings_api import create_settings_server
+
+    server = create_settings_server(
+        config_path,
+        workspace,
+        host=os.environ.get("AKASHIC_SETTINGS_HOST", "127.0.0.1"),
+        on_applied=bridge.request_and_wait,
+    )
+    thread = threading.Thread(
+        target=lambda: asyncio.run(server.serve()),
+        name="settings-server",
+        daemon=True,
+    )
+    thread.start()
+    deadline = time.monotonic() + 5
+    while not server.started and thread.is_alive() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    if not server.started:
+        server.should_exit = True
+        thread.join(timeout=1)
+        raise RuntimeError("设置服务无法监听 127.0.0.1:6321")
+    return server, thread

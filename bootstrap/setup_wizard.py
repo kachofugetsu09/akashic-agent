@@ -317,12 +317,25 @@ def _phase_api_key_llm(a: WizardAnswers) -> None:
 
     a.provider = click.prompt(
         "服务商",
-        type=click.Choice(["deepseek", "qwen", "openai"], case_sensitive=False),
+        type=click.Choice(
+            ["deepseek", "qwen", "openai", "opencode-go"],
+            case_sensitive=False,
+        ),
         default="deepseek",
     ).lower()
-    a.model = click.prompt("模型名")
-    a.base_url = click.prompt("base_url（OpenAI 兼容格式）")
-    a.api_key = _secret_prompt("API key")
+    if a.provider == "opencode-go":
+        from agent.model_runtime.provider_profiles import OPENCODE_GO_BASE_URL
+
+        a.base_url = click.prompt(
+            "base_url（OpenAI 兼容格式）",
+            default=OPENCODE_GO_BASE_URL,
+        )
+        a.api_key = _secret_prompt("API key")
+        a.model = _choose_api_key_model(a.provider, a.base_url, a.api_key)
+    else:
+        a.model = click.prompt("模型名")
+        a.base_url = click.prompt("base_url（OpenAI 兼容格式）")
+        a.api_key = _secret_prompt("API key")
     a.auth_id = "main_default"
     a.enable_thinking = click.confirm("开启 thinking 模式？", default=False)
     a.reasoning_effort = (
@@ -340,7 +353,31 @@ def _phase_api_key_llm(a: WizardAnswers) -> None:
     )
     if a.max_output_tokens <= 0:
         raise click.BadParameter("最大输出 tokens 必须大于 0")
-    a.multimodal = click.confirm("主模型原生支持图片输入？", default=False)
+    a.multimodal = (
+        False
+        if a.provider == "opencode-go"
+        else click.confirm("主模型原生支持图片输入？", default=False)
+    )
+
+
+def _choose_api_key_model(provider: str, base_url: str, api_key: str) -> str:
+    """为内建目录 provider 选择模型，其余 provider 保持手工输入。"""
+    if provider != "opencode-go":
+        return click.prompt("模型名")
+
+    from agent.model_runtime.catalog.opencode_go import OpenCodeGoModelCatalog
+    from agent.model_runtime.errors import AuthenticationError, TransportError
+
+    try:
+        models = asyncio.run(
+            OpenCodeGoModelCatalog(api_key, base_url=base_url).list_models()
+        )
+    except (AuthenticationError, TransportError) as exc:
+        raise click.ClickException(f"OpenCode Go 模型目录加载失败：{exc}") from exc
+    if not models:
+        raise click.ClickException("OpenCode Go 目录中没有可用的 Chat Completions 模型")
+    slugs = [model.slug for model in models]
+    return click.prompt("模型", type=click.Choice(slugs), default=slugs[0])
 
 
 def _phase_codex_llm(
@@ -432,7 +469,10 @@ def _phase_vl_model(a: WizardAnswers) -> None:
     if not click.confirm("配置独立视觉模型？", default=False):
         return
     a.vl_model = click.prompt("视觉模型名")
-    a.vl_provider, a.vl_base_url, a.vl_api_key = _phase_role_endpoint(a)
+    a.vl_provider, a.vl_base_url, a.vl_api_key = _phase_role_endpoint(
+        a,
+        allow_opencode_go=False,
+    )
     a.vl_auth_id = "vl_default"
     a.vl_context_window = click.prompt(
         "视觉模型上下文大小（tokens）",
@@ -453,8 +493,16 @@ def _phase_fast_model(a: WizardAnswers) -> None:
     if not click.confirm("配置独立轻量模型？", default=False):
         return
 
-    a.fast_model = click.prompt("模型名")
-    a.fast_provider, a.fast_base_url, a.fast_api_key = _phase_role_endpoint(a)
+    if a.provider in {"codex", "opencode-go"}:
+        a.fast_provider, a.fast_base_url, a.fast_api_key = _phase_role_endpoint(a)
+        a.fast_model = _choose_api_key_model(
+            a.fast_provider,
+            a.fast_base_url,
+            a.fast_api_key,
+        )
+    else:
+        a.fast_model = click.prompt("模型名")
+        a.fast_provider, a.fast_base_url, a.fast_api_key = _phase_role_endpoint(a)
     a.fast_auth_id = "fast_default"
     a.fast_context_window = click.prompt(
         "轻量模型上下文大小（tokens）",
@@ -468,15 +516,33 @@ def _phase_fast_model(a: WizardAnswers) -> None:
     )
 
 
-def _phase_role_endpoint(a: WizardAnswers) -> tuple[str, str, str]:
+def _phase_role_endpoint(
+    a: WizardAnswers,
+    *,
+    allow_opencode_go: bool = True,
+) -> tuple[str, str, str]:
     """收集独立角色的兼容端点；API-key 主模型默认复用连接。"""
-    if a.provider == "codex":
+    if a.provider == "codex" or (
+        a.provider == "opencode-go" and not allow_opencode_go
+    ):
+        providers = ["deepseek", "qwen", "openai"]
+        if allow_opencode_go:
+            providers.append("opencode-go")
         provider = click.prompt(
             "服务商",
-            type=click.Choice(["deepseek", "qwen", "openai"], case_sensitive=False),
+            type=click.Choice(providers, case_sensitive=False),
             default="openai",
         ).lower()
-        return provider, click.prompt("OpenAI-compatible base_url"), _secret_prompt("API key")
+        if provider == "opencode-go":
+            from agent.model_runtime.provider_profiles import OPENCODE_GO_BASE_URL
+
+            base_url = click.prompt(
+                "OpenAI-compatible base_url",
+                default=OPENCODE_GO_BASE_URL,
+            )
+        else:
+            base_url = click.prompt("OpenAI-compatible base_url")
+        return provider, base_url, _secret_prompt("API key")
     base_url = click.prompt(
         "base_url（回车 = 复用主模型 base_url）",
         default="",

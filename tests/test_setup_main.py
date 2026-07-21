@@ -9,7 +9,7 @@ import pytest
 from agent.config import load_config
 from agent.model_runtime.auth.store import Credential, CredentialStore
 from bootstrap.setup_main import patch_main_model_config, run_main_model_setup
-from bootstrap.setup_wizard import WizardAnswers, _phase_codex_llm
+from bootstrap.setup_wizard import WizardAnswers, _phase_api_key_llm, _phase_codex_llm
 
 
 _CONFIG = """\
@@ -54,22 +54,22 @@ def _answers() -> WizardAnswers:
     )
 
 
-def test_patch_main_is_scoped_secret_free_and_idempotent() -> None:
+def test_patch_main_is_scoped_inline_key_and_idempotent() -> None:
     once = patch_main_model_config(_CONFIG, _answers())
     parsed = tomllib.loads(once)
 
-    assert parsed["llm"]["main"] == "api_main"
+    assert parsed["llm"]["main"] == "deepseek_main"
     assert parsed["llm"]["fast"] == "fast"
-    assert parsed["llm"]["runtimes"]["api_main"]["model"] == "new-main"
-    assert "api_key" not in parsed["llm"]["runtimes"]["api_main"]
+    assert parsed["llm"]["runtimes"]["deepseek_main"]["model"] == "new-main"
+    assert parsed["llm"]["runtimes"]["deepseek_main"]["api_key"] == "new-secret"
     assert parsed["agent"]["context"]["memory_window"] == 40
     assert "# fast 注释必须保留" in once
     assert "[plugins.custom]" in once
-    assert "new-secret" not in once
+    assert "new-secret" in once
     assert patch_main_model_config(once, _answers()) == once
 
 
-def test_setup_main_backs_up_config_and_persists_credential(
+def test_setup_main_backs_up_config_and_persists_inline_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -86,7 +86,18 @@ def test_setup_main_backs_up_config_and_persists_credential(
     assert path.with_name("config.toml.before-setup-main.bak").read_text() == _CONFIG
     config = load_config(path, workspace=workspace)
     assert (config.model, config.fast_runtime_id) == ("new-main", "fast")
-    assert CredentialStore().get("main_default").access_token == "new-secret"
+    parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert parsed["llm"]["runtimes"]["deepseek_main"]["api_key"] == "new-secret"
+
+
+def test_patch_main_reuses_saved_inline_key() -> None:
+    first = patch_main_model_config(_CONFIG, _answers())
+    answers = _answers()
+    answers.api_key = ""
+
+    second = patch_main_model_config(first, answers)
+
+    assert tomllib.loads(second)["llm"]["runtimes"]["deepseek_main"]["api_key"] == "new-secret"
 
 
 def test_codex_setup_reuses_existing_login_and_catalog(
@@ -145,3 +156,43 @@ def test_codex_setup_reuses_existing_login_and_catalog(
 
     assert (answers.model, answers.context_window) == ("gpt-test", 128_000)
     assert answers.reasoning_summary == "auto"
+
+
+def test_opencode_go_setup_uses_dynamic_catalog_and_forces_text_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Catalog:
+        def __init__(self, api_key: str, *, base_url: str) -> None:
+            assert api_key == "secret"
+            assert base_url == "https://opencode.ai/zen/go/v1"
+
+        async def list_models(self) -> list[SimpleNamespace]:
+            return [SimpleNamespace(slug="glm-5.99")]
+
+    confirms: list[str] = []
+
+    def prompt(text: str, **kwargs: object) -> object:
+        if text == "服务商":
+            return "opencode-go"
+        return kwargs.get("default", "")
+
+    def confirm(text: str, *, default: bool = False) -> bool:
+        confirms.append(text)
+        return default
+
+    monkeypatch.setattr(
+        "agent.model_runtime.catalog.opencode_go.OpenCodeGoModelCatalog",
+        Catalog,
+    )
+    monkeypatch.setattr("bootstrap.setup_wizard.click.prompt", prompt)
+    monkeypatch.setattr("bootstrap.setup_wizard.click.confirm", confirm)
+    monkeypatch.setattr("bootstrap.setup_wizard._secret_prompt", lambda _text: "secret")
+    answers = WizardAnswers()
+
+    _phase_api_key_llm(answers)
+
+    assert answers.provider == "opencode-go"
+    assert answers.model == "glm-5.99"
+    assert answers.base_url == "https://opencode.ai/zen/go/v1"
+    assert answers.multimodal is False
+    assert "主模型原生支持图片输入？" not in confirms

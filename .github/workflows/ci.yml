@@ -19,6 +19,9 @@ jobs:
         continue-on-error: true
         run: python docker/debug/gate.py plan --base origin/main
 
+      - name: Enforce append-only migrations
+        run: python scripts/check_migrations_append_only.py --base origin/main
+
       - name: Run public semantic gate
         run: python docker/debug/gate.py run --base origin/main
 

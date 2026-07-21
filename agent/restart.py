@@ -70,13 +70,22 @@ class SupervisorCommitChannel:
 
         if request.boot_id != self.boot_id:
             raise RuntimeError("restart request boot_id 与 commit channel 不匹配")
+        self._write_commit(request.id)
+
+    def commit_settings(self, request_id: str) -> None:
+        """提交来自 supervisor 设置服务的排空重启证据。"""
+        if not request_id.startswith("settings_"):
+            raise ValueError("settings restart request id 无效")
+        self._write_commit(request_id)
+
+    def _write_commit(self, request_id: str) -> None:
         payload = (
             json.dumps(
                 {
                     "type": "restart_commit",
                     "bootId": self.boot_id,
                     "nonce": self.nonce,
-                    "requestId": request.id,
+                    "requestId": request_id,
                 },
                 separators=(",", ":"),
             )

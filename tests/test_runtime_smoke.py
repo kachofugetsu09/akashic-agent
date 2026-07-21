@@ -77,10 +77,14 @@ def _dump_toml(data: dict, prefix: tuple[str, ...] = ()) -> list[str]:
 def _write_config(path: Path, socket_path: Path) -> None:
     payload = {
         "llm": {
-            "provider": "openai",
-            "main": {
-                "model": "test-model",
-                "api_key": "test-key",
+            "main": "test_main",
+            "runtimes": {
+                "test_main": {
+                    "provider": "openai",
+                    "model": "test-model",
+                    "api_key": "test-key",
+                    "context_window": 64000,
+                },
             },
         },
         "agent": {
@@ -107,11 +111,13 @@ def test_load_config_keeps_internal_max_iterations_default(tmp_path: Path):
     config_path.write_text(
         """
 [llm]
-provider = "openai"
+main = "test_main"
 
-[llm.main]
+[llm.runtimes.test_main]
+provider = "openai"
 model = "test-model"
 api_key = "test-key"
+context_window = 64000
 
 [agent]
 system_prompt = "test"
@@ -130,11 +136,13 @@ def test_load_config_defaults_memory_window_and_optimizer_interval(tmp_path: Pat
     config_path.write_text(
         """
 [llm]
-provider = "openai"
+main = "test_main"
 
-[llm.main]
+[llm.runtimes.test_main]
+provider = "openai"
 model = "test-model"
 api_key = "test-key"
+context_window = 64000
 
 [agent]
 system_prompt = "test"
@@ -145,7 +153,7 @@ system_prompt = "test"
 
     cfg = load_config(config_path, workspace=tmp_path)
 
-    assert cfg.memory_window == 40
+    assert cfg.memory_window == 20
     assert cfg.memory_optimizer_interval_seconds == 64800
 
 
@@ -164,11 +172,13 @@ def test_config_load_resolves_secrets_from_explicit_workspace(tmp_path: Path) ->
     config_path.write_text(
         """
 [llm]
-provider = "openai"
+main = "test_main"
 
-[llm.main]
+[llm.runtimes.test_main]
+provider = "openai"
 model = "test-model"
 api_key = "${API_KEY}"
+context_window = 64000
 
 [agent]
 system_prompt = "test"
@@ -317,13 +327,19 @@ def test_load_config_rejects_non_table_sections(
     snippet: str,
 ):
     config_path = tmp_path / "config.toml"
-    config_path.write_text(
-        "provider = \"openai\"\nmodel = \"test-model\"\n"
-        f"{snippet}\n",
-        encoding="utf-8",
-    )
+    if field in {"llm", "llm.main"}:
+        contents = f"{snippet}\n"
+    else:
+        contents = (
+            f'{snippet}\n\n[llm]\nmain = "test_main"\n\n'
+            '[llm.runtimes.test_main]\nprovider = "openai"\n'
+            'model = "test-model"\napi_key = "test-key"\n'
+            'context_window = 64000\n'
+        )
+    config_path.write_text(contents, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="必须是 TOML table") as exc_info:
+    message = "必须引用 named runtime" if field == "llm.main" else "必须是 TOML table"
+    with pytest.raises(ValueError, match=message) as exc_info:
         load_config(config_path, workspace=tmp_path)
 
     assert field in str(exc_info.value)
@@ -333,7 +349,10 @@ def test_load_config_rejects_non_table_sections(
     ("field", "snippet"),
     [
         ("agent.dev_mode", '[agent]\ndev_mode = "false"'),
-        ("llm.main.enable_thinking", '[llm.main]\nenable_thinking = "true"'),
+        (
+            "llm.main.enable_thinking",
+            '[llm.runtimes.test_main]\nenable_thinking = "true"',
+        ),
         ("channels.chat.enabled", '[channels.chat]\nenabled = "false"'),
         ("memory.enabled", '[memory]\nenabled = "false"'),
     ],
@@ -344,10 +363,21 @@ def test_load_config_rejects_string_booleans(
     snippet: str,
 ):
     config_path = tmp_path / "config.toml"
-    config_path.write_text(
-        'provider = "openai"\nmodel = "test-model"\n' + snippet + "\n",
-        encoding="utf-8",
-    )
+    if field == "llm.main.enable_thinking":
+        contents = (
+            '[llm]\nmain = "test_main"\n\n'
+            '[llm.runtimes.test_main]\nprovider = "openai"\n'
+            'model = "test-model"\napi_key = "test-key"\n'
+            f'context_window = 64000\n{snippet.split(chr(10), 1)[1]}\n'
+        )
+    else:
+        contents = (
+            '[llm]\nmain = "test_main"\n\n'
+            '[llm.runtimes.test_main]\nprovider = "openai"\n'
+            'model = "test-model"\napi_key = "test-key"\n'
+            f'context_window = 64000\n\n{snippet}\n'
+        )
+    config_path.write_text(contents, encoding="utf-8")
 
     with pytest.raises(ValueError, match=field.replace(".", r"\.")):
         load_config(config_path, workspace=tmp_path)
