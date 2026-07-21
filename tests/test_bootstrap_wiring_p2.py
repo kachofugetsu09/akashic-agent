@@ -1,4 +1,5 @@
 from __future__ import annotations
+from copy import deepcopy
 from typing import Any, cast
 
 import json
@@ -67,7 +68,15 @@ def _dump_toml(data: dict, prefix: tuple[str, ...] = ()) -> list[str]:
 
 
 def _write_toml(path: Path, payload: dict) -> None:
-    path.write_text("\n".join(_dump_toml(payload)).strip() + "\n", encoding="utf-8")
+    normalized = deepcopy(payload)
+    llm = normalized.get("llm")
+    if isinstance(llm, dict) and isinstance(llm.get("main"), dict):
+        runtime = llm["main"]
+        runtime["provider"] = llm.pop("provider", "openai")
+        runtime.setdefault("context_window", 64000)
+        llm["main"] = "test_main"
+        llm["runtimes"] = {"test_main": runtime}
+    path.write_text("\n".join(_dump_toml(normalized)).strip() + "\n", encoding="utf-8")
 
 
 def _write_wiring_config(path: Path, wiring: object) -> None:
@@ -380,11 +389,13 @@ def test_config_load_reads_toml_layout(tmp_path: Path):
     cfg_path.write_text(
         """
 [llm]
-provider = "openai"
+main = "test_main"
 
-[llm.main]
+[llm.runtimes.test_main]
+provider = "openai"
 model = "m"
 api_key = "k"
+context_window = 64000
 
 [agent]
 system_prompt = "s"

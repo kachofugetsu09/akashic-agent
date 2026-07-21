@@ -92,10 +92,14 @@ def _run_lightweight_setup_command() -> bool:
         raise SystemExit(str(exc)) from exc
     import click
 
+    from agent.migrations import migrate_installation
     from bootstrap.setup_main import run_main_model_setup
 
     try:
+        _ = migrate_installation(Path(config_path), workspace)
         run_main_model_setup(Path(config_path), workspace)
+    except RuntimeError as exc:
+        raise SystemExit(f"启动迁移失败: {exc}") from exc
     except click.ClickException as exc:
         exc.show()
         raise SystemExit(exc.exit_code) from exc
@@ -111,6 +115,11 @@ if __name__ == "__main__" and _run_lightweight_setup_command():
 
 from agent.config import Config, resolve_app_server_endpoint
 from agent.control.client import ControlClient, RemoteControlError
+from agent.migrations import (
+    MigrationOutcome,
+    mark_fresh_installation_current,
+    migrate_installation,
+)
 from agent.restart import RestartCoordinator, SupervisorCommitChannel
 from agent.supervisor import RESTART_EXIT_CODE, run_supervisor
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
@@ -200,6 +209,22 @@ def _print_init_summary(summary: InitSummary) -> None:
         print("\n下一步：")
         for step in summary.next_steps:
             print(f"  {step}")
+
+
+def _prepare_startup_migrations(
+    args: list[str],
+    config_path: Path,
+    workspace: Path,
+) -> MigrationOutcome | None:
+    """只为会加载本地 runtime 的命令执行启动迁移。"""
+
+    command = args[0] if args and not args[0].startswith("--") else ""
+    if command not in {"", "setup", "init", "supervise", "gateway", "app-server", "dashboard"}:
+        return None
+    outcome = migrate_installation(config_path, workspace)
+    if outcome.state == "migrated" and outcome.commits:
+        print(f"启动迁移完成: commits={len(outcome.commits)} head={outcome.head[:12]}")
+    return outcome
 
 
 def _parse_csv_flag(value: str | None) -> list[str]:
@@ -513,12 +538,24 @@ if __name__ == "__main__":
     if port_value is not None:
         dashboard_port = int(port_value)
 
+    try:
+        migration_outcome = _prepare_startup_migrations(
+            args,
+            Path(config_path),
+            workspace,
+        )
+    except RuntimeError as exc:
+        print(f"启动迁移失败: {exc}", file=sys.stderr)
+        sys.exit(1)
+
     if args and args[0] == "setup":
         from bootstrap.setup_wizard import run_setup_wizard
         run_setup_wizard(
             config_path=Path(config_path),
             workspace=workspace,
         )
+        if migration_outcome is not None and migration_outcome.state == "fresh":
+            _ = mark_fresh_installation_current(Path(config_path), workspace)
         sys.exit(0)
 
     if args and args[0] == "setup-main":
@@ -533,6 +570,8 @@ if __name__ == "__main__":
             workspace=workspace,
             force=force,
         )
+        if migration_outcome is not None and migration_outcome.state == "fresh":
+            _ = mark_fresh_installation_current(Path(config_path), workspace)
         _print_init_summary(summary)
         sys.exit(0)
 

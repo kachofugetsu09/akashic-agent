@@ -100,11 +100,13 @@ def test_config_load_ignores_plugin_owned_sections(tmp_path: Path, monkeypatch):
     config_path.write_text(
         """
 [llm]
-provider = "openai"
+main = "test_main"
 
-[llm.main]
+[llm.runtimes.test_main]
+provider = "openai"
 model = "m"
 api_key = "k"
+context_window = 64000
 
 [agent]
 system_prompt = "s"

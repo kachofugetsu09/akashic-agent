@@ -153,9 +153,14 @@ port = 6322
 channel_name = "web"
 ```
 
-旧式 inline `[llm.main]` 仍可由 runtime 加载和运行，但设置中心不会自动迁移或编辑它；
-需要网页切换 Provider 时，请先通过设置中心生成 named runtime，或参考
-[`config.example.toml`](./config.example.toml) 手动调整。迁移器会作为独立变更提供。
+旧式 inline `[llm.main]` 会在代码更新后的第一次启动中自动迁移为 named runtime，已有
+main/fast/agent/vl 字段和密钥都会保留。迁移前会在 `config.toml.migration-backups/`
+创建权限受限的备份；配置或 Akasha 重建验证失败时，runtime 不会带着半迁移状态启动。
+
+迁移使用固定 Git baseline 和 `config.toml.migration-cursor`，同一个源码 `HEAD` 的后续
+启动只比较 cursor，不重复扫描或执行脚本。新 clone 且没有配置和 workspace 数据时直接
+初始化最新结构，不回放历史迁移。旧安装使用 shallow clone、缺少 baseline 历史时会明确
+失败，需要先补齐 Git 历史再启动；启动过程不会自动访问网络或执行 `git fetch`。
 
 `workspace` 默认是 `~/.akashic/workspace`。临时切换隔离环境时传
 `--workspace PATH`；它的优先级高于 `AKASHIC_WORKSPACE` 和 `config.toml`。
