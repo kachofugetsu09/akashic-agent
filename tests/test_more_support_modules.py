@@ -1021,6 +1021,8 @@ async def test_group_filter_paths() -> None:
 async def test_bootstrap_trigger_and_entrypoints_cover_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
+    from agent.migrations import MigrationOutcome
+
     item = MemoryItem(
         id="1",
         memory_type="procedure",
@@ -1047,7 +1049,11 @@ async def test_bootstrap_trigger_and_entrypoints_cover_paths(
         supervisor_calls.append((config_path, workspace))
         return 0
 
+    def _fake_migration(config_path: Path, workspace: Path) -> MigrationOutcome:
+        return MigrationOutcome(state="current", head="test-head")
+
     monkeypatch.setattr("agent.supervisor.run_supervisor", _fake_supervisor)
+    monkeypatch.setattr("agent.migrations.migrate_installation", _fake_migration)
     monkeypatch.setattr("pathlib.Path.exists", lambda self: False)
     monkeypatch.setattr(
         sys,
