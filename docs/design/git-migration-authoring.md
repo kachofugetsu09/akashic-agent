@@ -73,6 +73,8 @@
 7. `apply` 必须可重试：发布后、cursor 前崩溃时，下次 `assess` 应识别已完成效果，`verify` 成功后推进，而不是重复产生业务变化。
 8. 不在迁移脚本中调用网络、LLM、provider 或易变的 runtime/UI 内部实现。历史迁移必须能在未来 checkout 中离线执行。
 
+如果已合入的 bundle 本身会在 correction 运行前产生不可接受的副作用，修正原脚本是唯一可恢复方案。此时必须新增 `migrations/repairs/<语义名称>.toml`，用 `path`、`base_sha256` 和 `head_sha256` 锁定唯一允许的字节变化，并记录 `reason`。repair 声明本身仍只追加；hash 不匹配或未实际修改目标都会使 Gate 失败。不得用 repair 变更已经成功发布的业务语义。
+
 ## 4. 代码评审检查表
 
 评审每个迁移时逐项回答：
@@ -126,7 +128,7 @@ Docker probe 复用 runtime control Gate 镜像，把候选源码只读挂载到
 | nested legacy provider 配置 | role、字段、secret 和未知配置无损进入 named runtimes |
 | root-level legacy 模型字段 | 一次迁移为 named runtimes |
 | legacy 与 named runtime 混杂 | blocked，不猜测合并 |
-| 旧 Akasha DB | staging rebuild、原库备份、marker/integrity 通过，sessions 消息不变 |
+| 现存 Akasha DB | provider 配置迁移不读写、不备份、不重建 Akasha 状态 |
 | 人工 revert | 从对应 backup 精确恢复旧配置字节 |
 | append-only policy | 允许新 bundle，拒绝修改旧 bundle 或追加 helper |
 

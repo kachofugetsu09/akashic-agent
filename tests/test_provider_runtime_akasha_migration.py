@@ -2,23 +2,17 @@
 
 from __future__ import annotations
 
-import sqlite3
 import tomllib
-from contextlib import closing
 from pathlib import Path
 
 from agent.config import Config
 from migrations.provider_runtimes_and_akasha.migration import (
     MigrationContext,
-    _akasha_db_path,
-    _akasha_has_marker,
     _apply,
     _config_assessment,
     _verify,
     _revert,
 )
-from plugins.akasha.store import AkashaStore
-from session.store import SessionStore
 
 _LEGACY_CONFIG = """\
 [runtime]
@@ -148,27 +142,16 @@ def test_explicit_revert_restores_exact_legacy_config(tmp_path: Path) -> None:
     assert _config_assessment(context.config_path).state == "legacy"
 
 
-def test_akasha_rebuild_uses_staging_and_marks_completed(tmp_path: Path) -> None:
+def test_config_migration_does_not_touch_akasha_state(tmp_path: Path) -> None:
     context = _context(tmp_path)
     context.config_path.write_text(_LEGACY_CONFIG, encoding="utf-8")
-    context.workspace.mkdir(parents=True)
-    session_store = SessionStore(context.workspace / "sessions.db")
-    session_store.close()
-    db_path = _akasha_db_path(context.workspace)
+    db_path = context.workspace / "memory" / "akasha.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    AkashaStore(db_path).close()
-    with closing(sqlite3.connect(context.workspace / "sessions.db")) as database:
-        before_messages = database.execute(
-            "SELECT id, session_key, seq, role, content FROM messages ORDER BY id"
-        ).fetchall()
+    original = b"akasha-state-must-remain-opaque"
+    db_path.write_bytes(original)
 
     _apply(context)
     _verify(context)
 
-    assert _akasha_has_marker(db_path)
-    assert (context.backup_dir / "akasha.db").exists()
-    with closing(sqlite3.connect(context.workspace / "sessions.db")) as database:
-        after_messages = database.execute(
-            "SELECT id, session_key, seq, role, content FROM messages ORDER BY id"
-        ).fetchall()
-    assert after_messages == before_messages
+    assert db_path.read_bytes() == original
+    assert not (context.backup_dir / "akasha.db").exists()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from pathlib import Path
 
@@ -75,3 +76,54 @@ def test_existing_bundle_cannot_gain_helper(
 
     assert len(violations) == 1
     assert "migrations/existing/helper.py" in violations[0]
+
+
+def test_exact_hash_repair_can_change_existing_bundle(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    repo, base = _repository(tmp_path)
+    migration = repo / "migrations" / "existing" / "migration.py"
+    before = hashlib.sha256(migration.read_bytes()).hexdigest()
+    migration.write_text("print('repaired')\n", encoding="utf-8")
+    after = hashlib.sha256(migration.read_bytes()).hexdigest()
+    repairs = repo / "migrations" / "repairs"
+    repairs.mkdir()
+    (repairs / "existing-config-only.toml").write_text(
+        f'''path = "migrations/existing/migration.py"
+base_sha256 = "{before}"
+head_sha256 = "{after}"
+reason = "Remove an unintended workspace side effect."
+''',
+        encoding="utf-8",
+    )
+    _ = _git(repo, "add", "migrations")
+    _ = _git(repo, "commit", "-m", "repair migration")
+    monkeypatch.chdir(repo)
+
+    assert check_append_only(base) == []
+
+
+def test_repair_hash_mismatch_is_rejected(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    repo, base = _repository(tmp_path)
+    migration = repo / "migrations" / "existing" / "migration.py"
+    before = hashlib.sha256(migration.read_bytes()).hexdigest()
+    migration.write_text("print('unreviewed')\n", encoding="utf-8")
+    repairs = repo / "migrations" / "repairs"
+    repairs.mkdir()
+    (repairs / "bad.toml").write_text(
+        f'''path = "migrations/existing/migration.py"
+base_sha256 = "{before}"
+head_sha256 = "{'0' * 64}"
+reason = "Incorrect digest."
+''',
+        encoding="utf-8",
+    )
+    _ = _git(repo, "add", "migrations")
+    _ = _git(repo, "commit", "-m", "bad repair")
+    monkeypatch.chdir(repo)
+
+    violations = check_append_only(base)
+
+    assert any("migrations/existing/migration.py" in item for item in violations)

@@ -260,8 +260,8 @@ runner 在 runtime 初始化和 provider 构造之前运行。配置迁移完成
 |---|---|---|---|
 | `config.toml` | 经 bundle 声明的字段映射，原子替换，保留未迁移字段 | 静默删除未知字段、泄露 API key、用模板覆盖旧配置 | 权限受限的原文件备份、前后结构摘要、最终 Config load |
 | cursor sidecar | 首次创建；成功后原子推进 SHA | verify 前越过提交、失败时写成 `HEAD`、自动删除 | cursor 文件及 Git ancestry |
-| `sessions.db`/消息 | 首批迁移默认只读 | UPDATE/DELETE 历史消息、因派生重建改变正文 | SQLite backup、integrity check、规范化 write set |
-| `akasha.db` | 由固定 sessions/embedding 输入重建并原子替换 | embedding 缺失时跳过后声称成功；直接清空正式库再重建 | 旧库 backup、新库 integrity/parity、原子 swap manifest |
+| `sessions.db`/消息 | 本 bundle 不读写 | 任何 UPDATE/DELETE 或派生重建 | 迁移前后文件摘要 |
+| `akasha.db` | 本 bundle 不读写 | 备份、重建、marker、替换或删除 | 迁移前后文件摘要 |
 | migration backups | 每次实际 apply 前增加唯一快照 | 自动按启动次数或年龄删除 | manifest、hash、SQLite integrity check、隔离恢复 smoke |
 
 备份目录和包含 secret 的临时文件使用目录模式 `0700`、文件模式 `0600`。自动迁移不 prune 历史备份；清理由以后独立、显式的数据管理操作负责。
@@ -278,15 +278,7 @@ runner 在 runtime 初始化和 provider 构造之前运行。配置迁移完成
 - legacy 与新结构混杂且无法确定优先级时返回 `BLOCKED`，不猜测覆盖。
 - 发布后使用当前配置边界重新加载，并证明角色都能解析到预期 runtime。
 
-### 11.2 Akasha 派生库重建
-
-- `sessions.db/messages` 和已有 `message_embeddings` 是固定输入，迁移不得调用 LLM 或重新解释历史。
-- 没有 `akasha.db` 时返回 `SATISFIED`；现存库需要按新 turn 语义重建。
-- 先备份原库，再在唯一 staging 路径调用重建逻辑。
-- 任一 embedding miss、模型不匹配、SQLite integrity 失败或图 parity 失败都中止发布。
-- staging 验证完成后原子替换 `akasha.db`；旧库保留在 migration backup 中。
-
-两个阶段中任何一个失败，首个 migration commit 的 cursor 都不推进。重试时已成功发布的前一阶段通过 `assess`/`verify` 识别，不重复产生有效变化。
+Akasha 派生库与 provider runtime 配置没有同一个不变量，不属于本 bundle。需要重建时必须由独立、显式的数据管理操作发起，不得阻塞常规 runtime 启动。
 
 ## 12. 性能模型
 
