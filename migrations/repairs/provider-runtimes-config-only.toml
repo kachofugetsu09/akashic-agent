@@ -1,0 +1,4 @@
+path = "migrations/provider_runtimes_and_akasha/migration.py"
+base_sha256 = "9ae54327438a55cfaecf62ac6d7a3bc4d7385eedb0ca6ec8a47fcc6d5aa5cd29"
+head_sha256 = "01c2394aa2e8bda5c0839b44537d052dba849e20ac01319296f85c6947d30fcf"
+reason = "Provider runtime adoption must not rebuild or mutate Akasha state."

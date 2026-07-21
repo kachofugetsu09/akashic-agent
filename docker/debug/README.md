@@ -65,7 +65,7 @@ python docker/debug/migration_probe.py
 
 它覆盖 fresh/legacy 分类、固定 baseline、快速路径、顺序执行、merge、纯代码提交、
 blocked/apply/verify/cursor 写入失败与安全重试、分支分叉、shallow history、并发锁、
-两类旧 provider 配置、显式恢复、Akasha staging 重建和 append-only policy。每个 pytest
+两类旧 provider 配置、显式恢复、Akasha 状态零读写和 append-only policy。每个 pytest
 case 及源码不变性、Compose cleanup 结果记录在
 `docker/debug/reports/migrations/<run-id>/gate.json`。新增 migration bundle 前先按
 [迁移维护手册](../../docs/design/git-migration-authoring.md)补齐来源 lineage 和相应 case。

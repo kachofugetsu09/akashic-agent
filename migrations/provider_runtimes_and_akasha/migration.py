@@ -6,12 +6,8 @@ import json
 import os
 import re
 import shutil
-import sqlite3
-import subprocess
-import sys
 import tempfile
 from collections.abc import MutableMapping
-from contextlib import closing
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,12 +17,8 @@ from uuid import uuid4
 import tomlkit
 
 from agent.config import Config
-from plugins.akasha.config import load_akasha_config, resolve_akasha_db_path
 
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_AKASHA_MARKER = "012e37c8-akasha-complete-turns-v1"
-_MARKER_TABLE = "akashic_migration_markers"
 _ROLE_NAMES = ("main", "fast", "agent", "vl")
 _RUNTIME_ID_RE = re.compile(r"[^a-z0-9_]+")
 _ROOT_ROLE_FIELDS = {
@@ -275,134 +267,6 @@ def _backup_file(source: Path, destination: Path) -> dict[str, str]:
     }
 
 
-def _backup_sqlite(source: Path, destination: Path) -> dict[str, str]:
-    with closing(sqlite3.connect(source)) as source_db, closing(
-        sqlite3.connect(destination)
-    ) as backup_db:
-        _ = source_db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-        source_db.backup(backup_db)
-        integrity = backup_db.execute("PRAGMA integrity_check").fetchone()
-    if integrity != ("ok",):
-        raise RuntimeError(f"SQLite 备份完整性检查失败: {destination}")
-    os.chmod(destination, 0o600)
-    return {
-        "source": str(source),
-        "backup": str(destination),
-        "sha256": _sha256(destination),
-    }
-
-
-def _akasha_db_path(workspace: Path) -> Path:
-    config = load_akasha_config(workspace=workspace)
-    return resolve_akasha_db_path(workspace=workspace, akasha_config=config)
-
-
-def _akasha_has_marker(db_path: Path) -> bool:
-    if not db_path.exists():
-        return True
-    with closing(
-        sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    ) as database:
-        table = database.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-            (_MARKER_TABLE,),
-        ).fetchone()
-        if table is None:
-            return False
-        row = database.execute(
-            f"SELECT 1 FROM {_MARKER_TABLE} WHERE migration_id = ?",
-            (_AKASHA_MARKER,),
-        ).fetchone()
-    return row is not None
-
-
-def _embedding_model(context: MigrationContext, db_path: Path) -> str:
-    if context.config_path.exists():
-        return Config.load(
-            context.config_path, workspace=context.workspace
-        ).memory.embedding.model
-    with closing(
-        sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    ) as database:
-        row = database.execute(
-            """
-            SELECT embedding_model
-            FROM akasha_migration_runs
-            WHERE embedding_model != ''
-            ORDER BY started_at DESC
-            LIMIT 1
-            """
-        ).fetchone()
-    if row is None:
-        raise RuntimeError("缺少 config.toml，且旧 Akasha 库没有 embedding model 记录")
-    return str(row[0])
-
-
-def _rebuild_akasha(
-    context: MigrationContext,
-    db_path: Path,
-    records: list[dict[str, str]],
-) -> None:
-    assert context.backup_dir is not None
-    backup_path = context.backup_dir / "akasha.db"
-    records.append(_backup_sqlite(db_path, backup_path))
-    staging = db_path.with_name(f".{db_path.name}.migration-{uuid4().hex}.tmp")
-    command = [
-        sys.executable,
-        str(_PROJECT_ROOT / "scripts" / "build_akasha_db.py"),
-        "--config",
-        str(context.config_path),
-        "--workspace",
-        str(context.workspace),
-        "--db-path",
-        str(staging),
-        "--embedding-model",
-        _embedding_model(context, db_path),
-    ]
-    try:
-        result = subprocess.run(
-            command,
-            cwd=_PROJECT_ROOT,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip()
-            raise RuntimeError(f"Akasha staging 重建失败: {detail[-4000:]}")
-        with closing(sqlite3.connect(staging)) as database:
-            _ = database.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {_MARKER_TABLE} (
-                    migration_id TEXT PRIMARY KEY,
-                    migration_commit TEXT NOT NULL
-                )
-                """
-            )
-            _ = database.execute(
-                f"INSERT OR REPLACE INTO {_MARKER_TABLE} VALUES (?, ?)",
-                (_AKASHA_MARKER, context.migration_commit),
-            )
-            database.commit()
-            integrity = database.execute("PRAGMA integrity_check").fetchone()
-        if integrity != ("ok",):
-            raise RuntimeError(f"Akasha staging 完整性检查失败: {staging}")
-        os.replace(staging, db_path)
-        for suffix in ("-wal", "-shm"):
-            sidecar = Path(f"{db_path}{suffix}")
-            if sidecar.exists():
-                sidecar.unlink()
-        _fsync_directory(db_path.parent)
-    finally:
-        if staging.exists():
-            staging.unlink()
-        for suffix in ("-wal", "-shm"):
-            sidecar = Path(f"{staging}{suffix}")
-            if sidecar.exists():
-                sidecar.unlink()
-
-
 def _apply(context: MigrationContext) -> None:
     if context.backup_dir is None:
         raise RuntimeError("apply 缺少 --backup-dir")
@@ -429,11 +293,6 @@ def _apply(context: MigrationContext) -> None:
             if candidate.exists():
                 candidate.unlink()
 
-    # 2. Akasha 只从 sessions 和 embedding cache 构建 staging 后原子发布。
-    db_path = _akasha_db_path(context.workspace)
-    if db_path.exists() and not _akasha_has_marker(db_path):
-        _rebuild_akasha(context, db_path, records)
-
     manifest = {
         "migrationCommit": context.migration_commit,
         "files": records,
@@ -450,17 +309,6 @@ def _verify(context: MigrationContext) -> None:
         raise RuntimeError(f"配置迁移验证失败: {assessment.reason or assessment.state}")
     if assessment.state == "current":
         _ = Config.load(context.config_path, workspace=context.workspace)
-    db_path = _akasha_db_path(context.workspace)
-    if not db_path.exists():
-        return
-    if not _akasha_has_marker(db_path):
-        raise RuntimeError(f"Akasha 迁移 marker 缺失: {db_path}")
-    with closing(
-        sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    ) as database:
-        integrity = database.execute("PRAGMA integrity_check").fetchone()
-    if integrity != ("ok",):
-        raise RuntimeError(f"Akasha 完整性检查失败: {db_path}")
 
 
 def _restore_file(backup: Path, target: Path) -> None:
@@ -473,18 +321,13 @@ def _revert(context: MigrationContext) -> None:
     config_backup = context.backup_dir / "config.toml"
     if config_backup.exists():
         _restore_file(config_backup, context.config_path)
-    akasha_backup = context.backup_dir / "akasha.db"
-    if akasha_backup.exists():
-        _restore_file(akasha_backup, _akasha_db_path(context.workspace))
 
 
 def _assess(context: MigrationContext) -> dict[str, str]:
     assessment = _config_assessment(context.config_path)
     if assessment.state == "blocked":
         return {"status": "blocked", "reason": assessment.reason}
-    db_path = _akasha_db_path(context.workspace)
-    akasha_needed = db_path.exists() and not _akasha_has_marker(db_path)
-    if assessment.state == "legacy" or akasha_needed:
+    if assessment.state == "legacy":
         return {"status": "needed"}
     return {"status": "satisfied"}
 
