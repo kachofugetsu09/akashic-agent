@@ -55,6 +55,21 @@ failure，并检查 RSS、fd、线程与 DB 非终态阈值。
 每次运行的证据位于
 `docker/debug/reports/programmatic-control/<run-id>/`。
 
+## 一次性迁移验收门
+
+迁移专用 Gate 在与 runtime control Gate 相同的只读容器边界内运行完整 case matrix：
+
+```bash
+python docker/debug/migration_probe.py
+```
+
+它覆盖 fresh/legacy 分类、固定 baseline、快速路径、顺序执行、merge、纯代码提交、
+blocked/apply/verify/cursor 写入失败与安全重试、分支分叉、shallow history、并发锁、
+两类旧 provider 配置、显式恢复、Akasha staging 重建和 append-only policy。每个 pytest
+case 及源码不变性、Compose cleanup 结果记录在
+`docker/debug/reports/migrations/<run-id>/gate.json`。新增 migration bundle 前先按
+[迁移维护手册](../../docs/design/git-migration-authoring.md)补齐来源 lineage 和相应 case。
+
 ## Runtime 扩展生命周期验收门
 
 workspace MCP 和 agent restart 共用 `docker-compose.control-gate.yml`，但每次运行都会创建

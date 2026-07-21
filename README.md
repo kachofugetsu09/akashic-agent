@@ -162,6 +162,9 @@ main/fast/agent/vl 字段和密钥都会保留。迁移前会在 `config.toml.mi
 初始化最新结构，不回放历史迁移。旧安装使用 shallow clone、缺少 baseline 历史时会明确
 失败，需要先补齐 Git 历史再启动；启动过程不会自动访问网络或执行 `git fetch`。
 
+后续开发者新增兼容逻辑时，请先阅读[Git 一次性迁移维护手册](./docs/design/git-migration-authoring.md)：
+历史状态转换应放入只追加 bundle，核心配置与 runtime 只接受当前规范形状。
+
 `workspace` 默认是 `~/.akashic/workspace`。临时切换隔离环境时传
 `--workspace PATH`；它的优先级高于 `AKASHIC_WORKSPACE` 和 `config.toml`。
 
