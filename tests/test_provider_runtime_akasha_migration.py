@@ -109,6 +109,35 @@ model = "existing"
     assert "混杂" in assessment.reason
 
 
+def test_root_level_legacy_model_fields_migrate_once(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    context.config_path.write_text(
+        '''\
+provider = "openai"
+model = "legacy-main"
+api_key = "main-secret"
+base_url = "https://example.com/v1"
+light_model = "legacy-fast"
+light_api_key = "fast-secret"
+system_prompt = "legacy"
+''',
+        encoding="utf-8",
+    )
+
+    _apply(context)
+    _verify(context)
+
+    parsed = tomllib.loads(context.config_path.read_text(encoding="utf-8"))
+    assert parsed["llm"]["main"] == "openai_main"
+    assert parsed["llm"]["fast"] == "openai_fast"
+    assert parsed["llm"]["runtimes"]["openai_main"]["model"] == "legacy-main"
+    assert parsed["llm"]["runtimes"]["openai_fast"]["model"] == "legacy-fast"
+    assert "model" not in parsed
+    assert Config.load(context.config_path, workspace=context.workspace).light_model == (
+        "legacy-fast"
+    )
+
+
 def test_akasha_rebuild_uses_staging_and_marks_completed(tmp_path: Path) -> None:
     context = _context(tmp_path)
     context.config_path.write_text(_LEGACY_CONFIG, encoding="utf-8")

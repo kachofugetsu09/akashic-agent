@@ -29,6 +29,29 @@ _AKASHA_MARKER = "012e37c8-akasha-complete-turns-v1"
 _MARKER_TABLE = "akashic_migration_markers"
 _ROLE_NAMES = ("main", "fast", "agent", "vl")
 _RUNTIME_ID_RE = re.compile(r"[^a-z0-9_]+")
+_ROOT_ROLE_FIELDS = {
+    "main": {
+        "provider": "provider",
+        "model": "model",
+        "api_key": "api_key",
+        "base_url": "base_url",
+    },
+    "fast": {
+        "model": "light_model",
+        "api_key": "light_api_key",
+        "base_url": "light_base_url",
+    },
+    "agent": {
+        "model": "agent_model",
+        "api_key": "agent_api_key",
+        "base_url": "agent_base_url",
+    },
+    "vl": {
+        "model": "vl_model",
+        "api_key": "vl_api_key",
+        "base_url": "vl_base_url",
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -67,14 +90,20 @@ def _config_assessment(config_path: Path) -> ConfigAssessment:
     document = tomlkit.parse(config_path.read_text(encoding="utf-8"))
     llm = document.get("llm")
     if not isinstance(llm, MutableMapping):
-        return ConfigAssessment("blocked", "配置缺少 [llm] table")
+        if isinstance(document.get("provider"), str) and isinstance(
+            document.get("model"), str
+        ):
+            return ConfigAssessment("legacy")
+        return ConfigAssessment("blocked", "配置缺少可迁移的 LLM 字段")
     main = llm.get("main")
     runtimes = llm.get("runtimes")
     if isinstance(main, str):
         if not isinstance(runtimes, MutableMapping) or main not in runtimes:
             return ConfigAssessment("blocked", "llm.main 未指向有效 runtime")
         return ConfigAssessment("current")
-    if not isinstance(main, MutableMapping):
+    if not isinstance(main, MutableMapping) and not isinstance(
+        document.get("model"), str
+    ):
         return ConfigAssessment("blocked", "llm.main 既不是旧 table 也不是 runtime ID")
     if isinstance(runtimes, MutableMapping) and len(runtimes) > 0:
         return ConfigAssessment("blocked", "旧 llm.main 与 named runtimes 混杂")
@@ -124,10 +153,36 @@ def _runtime_table(
     return runtime
 
 
+def _legacy_role_source(
+    document: MutableMapping[str, Any],
+    llm: MutableMapping[str, Any],
+    role: str,
+) -> MutableMapping[str, Any] | None:
+    source = cast(MutableMapping[str, Any], tomlkit.table())
+    nested = llm.get(role)
+    if isinstance(nested, MutableMapping):
+        for key, value in nested.items():
+            source[key] = deepcopy(value)
+    for target, root_key in _ROOT_ROLE_FIELDS[role].items():
+        root_value = document.get(root_key)
+        if target not in source and root_value is not None and root_value != "":
+            source[target] = deepcopy(root_value)
+    if not source.get("model"):
+        return None
+    return source
+
+
 def _render_migrated_config(config_path: Path) -> str:
     document = tomlkit.parse(config_path.read_text(encoding="utf-8"))
-    llm = cast(MutableMapping[str, Any], document["llm"])
-    main_source = cast(MutableMapping[str, Any], llm["main"])
+    raw_llm = document.get("llm")
+    if isinstance(raw_llm, MutableMapping):
+        llm = cast(MutableMapping[str, Any], raw_llm)
+    else:
+        llm = cast(MutableMapping[str, Any], tomlkit.table())
+        document["llm"] = llm
+    main_source = _legacy_role_source(document, llm, "main")
+    if main_source is None:
+        raise RuntimeError("旧配置缺少 main model")
     main_provider = str(
         main_source.get("provider")
         or llm.get("provider")
@@ -137,7 +192,7 @@ def _render_migrated_config(config_path: Path) -> str:
     main_context_window = int(
         main_source.get("context_window")
         or main_source.get("max_context_window")
-        or 64000
+        or 128000
     )
     runtimes = cast(MutableMapping[str, Any], tomlkit.table())
     role_ids: dict[str, str] = {}
@@ -146,12 +201,12 @@ def _render_migrated_config(config_path: Path) -> str:
 
     # 1. 逐个保留旧角色 table，并产生稳定的 named runtime 引用。
     for role in _ROLE_NAMES:
-        source = llm.get(role)
-        if not isinstance(source, MutableMapping):
+        source = _legacy_role_source(document, llm, role)
+        if source is None:
             continue
         runtime = _runtime_table(
             role,
-            cast(MutableMapping[str, Any], source),
+            source,
             main_provider=main_provider,
             main_runtime=main_runtime,
             main_context_window=main_context_window,
@@ -167,6 +222,9 @@ def _render_migrated_config(config_path: Path) -> str:
     for role, runtime_id in role_ids.items():
         llm[role] = runtime_id
     llm.pop("provider", None)
+    for fields in _ROOT_ROLE_FIELDS.values():
+        for root_key in fields.values():
+            document.pop(root_key, None)
     return tomlkit.dumps(document)
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
+import subprocess
 import threading
 from pathlib import Path
 
@@ -38,6 +39,13 @@ def test_control_gate_prepares_external_static_mount_without_repo_static(
     assert (sandbox / "static/chat").is_dir()
     assert (sandbox / "app/main.py").read_text(encoding="utf-8") == "print('clean')\n"
     assert (sandbox / "app/static").is_dir()
+    head = subprocess.run(
+        ["git", "-C", str(sandbox / "app"), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert (sandbox / "config.toml.migration-cursor").read_text().strip() == head
     assert "read_only: true" in compose
     assert (
         "${AKASHIC_CONTROL_SANDBOX:?set by programmatic_control_probe.py}"

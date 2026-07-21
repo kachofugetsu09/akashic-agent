@@ -98,14 +98,14 @@ def _run_lightweight_setup_command() -> bool:
     try:
         _ = migrate_installation(Path(config_path), workspace)
         run_main_model_setup(Path(config_path), workspace)
-    except RuntimeError as exc:
-        raise SystemExit(f"启动迁移失败: {exc}") from exc
     except click.ClickException as exc:
         exc.show()
         raise SystemExit(exc.exit_code) from exc
     except click.Abort as exc:
         click.echo("已取消。", err=True)
         raise SystemExit(1) from exc
+    except RuntimeError as exc:
+        raise SystemExit(f"启动迁移失败: {exc}") from exc
     return True
 
 
