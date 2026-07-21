@@ -16,9 +16,15 @@ import tomllib
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NoReturn, Sequence, cast
+from typing import Iterable, NoReturn, Sequence, cast
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.measure_production_sloc import is_production_source_path  # noqa: E402
+
+
 CONTRACTS_DIR = ROOT / "tests_scenarios" / "contracts"
 IMPACT_PATH = CONTRACTS_DIR / "impact.toml"
 STATE_PATH = CONTRACTS_DIR / "state-contracts.toml"
@@ -29,6 +35,16 @@ COMPOSE_PATH = ROOT / "docker" / "debug" / "docker-compose.change-gate.yml"
 REQUIREMENT_PATTERN = re.compile(r"\b[A-Z]{3}-[0-9]{3}\b")
 ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 IMAGE_BUILD_TIMEOUT_SECONDS = 600
+PROTECTED_CONTRACT_PATHS = (
+    "docs/projectneed.md",
+    "docs/decisions/**",
+    "tests/semantic/**",
+    "tests_scenarios/contracts/**",
+    "docker/debug/gate.py",
+    "scripts/measure_production_sloc.py",
+    "scripts/check_migrations_append_only.py",
+    ".github/workflows/**",
+)
 
 
 class GateError(RuntimeError):
@@ -317,6 +333,29 @@ def _tracked_and_untracked_files() -> list[str]:
 
 def _matches(path: str, pattern: str) -> bool:
     return fnmatch.fnmatchcase(path, pattern)
+
+
+def is_protected_contract_path(path: str) -> bool:
+    """判断路径是否拥有受保护的合同或策略。"""
+
+    return any(_matches(path, pattern) for pattern in PROTECTED_CONTRACT_PATHS)
+
+
+def _path_sort(paths: Iterable[str]) -> list[str]:
+    return sorted(paths, key=lambda path: path.encode("utf-8"))
+
+
+def classify_change_paths(changed: Sequence[str]) -> dict[str, list[str]]:
+    """把变更路径分成生产源码与受保护合同两组。"""
+
+    return {
+        "productionSourcePaths": _path_sort(
+            path for path in changed if is_production_source_path(path)
+        ),
+        "protectedContractPaths": _path_sort(
+            path for path in changed if is_protected_contract_path(path)
+        ),
+    }
 
 
 def _groups_for_path(path: str, catalog: Catalog) -> set[str]:
@@ -729,6 +768,10 @@ def build_plan(base: str, *, full: bool = False) -> dict[str, object]:
     baseline = _load_baseline()
     base_commit = _resolve_commit(base)
     changed = _changed_paths(base_commit)
+    change_classes = classify_change_paths(changed)
+    production_paths = change_classes["productionSourcePaths"]
+    protected_paths = change_classes["protectedContractPaths"]
+    protected_contract_mixed = bool(production_paths and protected_paths)
 
     # 2. 计算直接命中、依赖闭包和未知可执行改动。
     direct: set[str] = set()
@@ -760,7 +803,9 @@ def build_plan(base: str, *, full: bool = False) -> dict[str, object]:
 
     # 3. 公开计划只暴露能力分组，provider 选择留给 private companion。
     status = "planned"
-    if not changed and not full:
+    if protected_contract_mixed:
+        status = "protected_contract_mixed"
+    elif not changed and not full:
         status = "not_affected"
     elif unmapped:
         status = "unmapped_change"
@@ -775,6 +820,8 @@ def build_plan(base: str, *, full: bool = False) -> dict[str, object]:
         "sourceDigest": source_digest(),
         "impactCatalogDigest": catalog_digest(),
         "changedPaths": changed,
+        "productionSourcePaths": production_paths,
+        "protectedContractPaths": protected_paths,
         "affectedGroups": sorted(affected),
         "selectedScenarios": sorted(selected),
         "privateGateRequired": bool(affected.intersection(catalog.private_groups)),
@@ -789,8 +836,15 @@ def build_plan(base: str, *, full: bool = False) -> dict[str, object]:
 
 
 def _print_plan(plan: dict[str, object]) -> None:
+    print(f"Status: {plan['status']}")
     print("Changed:")
     for path in cast(list[str], plan["changedPaths"]):
+        print(f"  {path}")
+    print("Production source paths:")
+    for path in cast(list[str], plan["productionSourcePaths"]):
+        print(f"  {path}")
+    print("Protected contract/policy paths:")
+    for path in cast(list[str], plan["protectedContractPaths"]):
         print(f"  {path}")
     print("Affected groups:")
     for group in cast(list[str], plan["affectedGroups"]):
@@ -808,7 +862,12 @@ def command_plan(args: argparse.Namespace) -> int:
     _atomic_json(report_dir / "plan.json", plan)
     _print_plan(plan)
     print(f"report={report_dir.relative_to(ROOT)}")
-    return 1 if plan["status"] in {"unmapped_change", "baseline_gap_touched"} else 0
+    return (
+        1
+        if plan["status"]
+        in {"unmapped_change", "baseline_gap_touched", "protected_contract_mixed"}
+        else 0
+    )
 
 
 def _copy_candidate_source(destination: Path) -> None:
@@ -1014,10 +1073,12 @@ def command_run(args: argparse.Namespace) -> int:
     # 2. 镜像只构建一次；每个场景的超时只约束场景本身。
     selected_scenarios = cast(list[str], plan["selectedScenarios"])
     image_build: dict[str, object] | None = None
-    if selected_scenarios:
+    if selected_scenarios and plan["status"] != "protected_contract_mixed":
         image_build = _build_change_gate_image(run_id, report_dir)
     checks = []
-    if image_build is None or image_build["status"] == "passed":
+    if plan["status"] != "protected_contract_mixed" and (
+        image_build is None or image_build["status"] == "passed"
+    ):
         checks = [
             _run_scenario(
                 catalog.scenarios[scenario_id], run_id=run_id, report_dir=report_dir
@@ -1029,7 +1090,11 @@ def command_run(args: argparse.Namespace) -> int:
     status = "passed"
     if plan["status"] == "not_affected":
         status = "not_affected"
-    elif plan["status"] in {"unmapped_change", "baseline_gap_touched"}:
+    elif plan["status"] in {
+        "unmapped_change",
+        "baseline_gap_touched",
+        "protected_contract_mixed",
+    }:
         status = cast(str, plan["status"])
     elif image_build is not None and image_build["status"] != "passed":
         status = "failed"
@@ -1056,6 +1121,8 @@ def command_run(args: argparse.Namespace) -> int:
         "sourceDigest": plan["sourceDigest"],
         "impactCatalogDigest": plan["impactCatalogDigest"],
         "planDigest": plan["planDigest"],
+        "productionSourcePaths": plan["productionSourcePaths"],
+        "protectedContractPaths": plan["protectedContractPaths"],
         "affectedGroups": plan["affectedGroups"],
         "selectedScenarios": plan["selectedScenarios"],
         "privateGateRequired": plan["privateGateRequired"],

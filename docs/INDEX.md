@@ -106,7 +106,7 @@
 | 正式启动、Supervisor、自重启、停止信号 | `projectneed` RUN-001～RUN-004 → [`docker/debug/README.md`](../docker/debug/README.md) | `main.py`、`agent/supervisor.py`、`agent/restart.py`、`agent/tools/agent_restart.py`、`scripts/stop-runtime.sh`、restart Gate 报告 |
 | 插件安装、热重载、plugin-data、Skill、Drift skill、MCP | `projectneed` 第 6、10～13 节 → [持久化状态地图](design/persistence-state-map.md) | `agent/plugins/base.py`、`agent/plugins/install.py`、`agent/plugins/manager.py`、`agent/plugins/skill_links.py`、`agent/mcp/host.py` |
 | Workspace、配置、凭据、迁移、备份 | `projectneed` 第 6、11～13 节 → [持久化状态地图](design/persistence-state-map.md) → [0005](decisions/0005-git-cursor-drives-one-shot-migrations.md) → [迁移维护手册](design/git-migration-authoring.md) → [Git 一次性迁移设计](spark/2026-07-21-git-backed-one-shot-migrations-design.md) | `main.py`、`bootstrap/init_workspace.py`、`agent/config.py`、`agent/migrations/`、`migrations/`、`agent/model_runtime/auth/store.py`、`scripts/rolling_backup.py` |
-| 高风险 refactor、语义不变重构、CI oracle | `projectneed` 第 4～6、13～14 节 → [上下文事故设计](design/project-workbook-and-semantic-safety.md) → 相关决策 | 改动前后的完整 diff、semantic tests、write set、故障注入 |
+| 高风险 refactor、语义不变重构、CI oracle | `projectneed` 第 4～6、13～14 节 → [综合重构账本](refactor/clean-code-ledger.md) → [上下文事故设计](design/project-workbook-and-semantic-safety.md) → 相关决策 | 改动前后的完整 diff、semantic tests、write set、故障注入 |
 | 变更影响 Gate、跨仓库插件契约 | `projectneed` 第 10、13～14 节 → [0004](decisions/0004-cross-repository-evidence-is-an-immutable-combination.md) → [移动端与跨仓库 Gate](design/mobile-cross-repository-semantic-gate.md) → [Gate 总体设计](spark/2026-07-16-change-impact-contract-gate.md) → [持久化状态地图](design/persistence-state-map.md) | `tests_scenarios/contracts/`、`docker/debug/gate.py`、`private_runtime/` |
 | 移动端、客户端协议、跨仓库 runtime patch 或 stacked PR 评审 | `projectneed` MOB-001～MOB-005、GOV-001～GOV-005、TST-001～TST-008 → [0003](decisions/0003-core-capability-ownership-is-semantic.md) → [0004](decisions/0004-cross-repository-evidence-is-an-immutable-combination.md) → [移动端与跨仓库 Gate](design/mobile-cross-repository-semantic-gate.md) → [`templates/review-contract.md`](templates/review-contract.md) | 每层 `base..head`、最终累计 diff、所有 schema lineage、协议 source、runtime/provider/scenario identity 和设备隔离证据 |
 | 新增或修改项目文档 | 本索引 → [`writing-rules.md`](writing-rules.md) → 目标文档的权威上游 | 所有相对链接、重复规则、过时入口和 Git diff |
@@ -193,6 +193,8 @@ docs/
 │   ├── 2026-07-16-change-impact-contract-gate.md
 │   ├── 2026-07-21-web-settings-provider-switching-design.md
 │   └── 2026-07-21-git-backed-one-shot-migrations-design.md
+├── refactor/
+│   └── clean-code-ledger.md
 └── templates/
     ├── agent-task-contract.md
     ├── change-intent.yaml

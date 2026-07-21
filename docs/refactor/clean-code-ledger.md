@@ -2,6 +2,67 @@
 
 本文档记录 `refactor/code-clean` 系列重构的决策依据、能力变化、性能数据和测试调整。每个被接受的提交都必须补充一条记录；没有测量或调用链证据的“优化”不得合并。
 
+## 2026-07-22 less-is-more 续轮：PR0 已批准合同
+
+### 合同边界
+
+- `change_type`：计量器、统一 Gate 分类和账本基线模板；`semantic_delta: none`。
+- PR0 不改变生产运行行为、持久化结果、迁移内容、正式 workspace、数据库、远端或 Git refs。
+- 计量器只读 Git 跟踪的生产 source set，使用纯标准库，不写仓库文件；统一 Gate 只新增 protected-contract 分离与报告字段。
+- 30% 是在语义不变和阅读成本可接受前提下的尽力目标，不是以行数压过 owner、状态机边界或可读性的硬门禁。
+
+### Redis 式 God file 原则
+
+紧密耦合的状态机、边界和不变量可以保留在同一文件中，像 Redis 源码一样优先按职责和阶段整理；不以文件行数单独触发拆分。只有拆分后能降低阅读成本、明确 owner、减少跨文件跳转且不隐藏弱类型数据流时，才允许拆分。
+
+### 迁移允许条件
+
+`migrations/**` 不属于 protected-contract/policy path 集合，继续由 append-only/repair Gate 管理。新 migration bundle 只能把谱系已知、真实发布过的旧形态转换成当前 canonical shape，并提供 `assess → apply → verify`、显式 `revert`、锁、原子候选、备份和可重试证据；混合或未知形态必须阻断，历史迁移不得调用网络、LLM 或 provider，cursor 只能在全部 verify 成功后推进。既有 bundle 的修改、移动或删除必须被 Gate 阻断；获得精确 path/base/head hash repair 声明并通过 `scripts/check_migrations_append_only.py` 的修复才是例外。PR0 本身不改迁移文件。
+
+### 精确计量口径
+
+`scripts/measure_production_sloc.py` 按 UTF-8 字节序处理 Git 跟踪路径，并对路径与文件内容计算 `sourceSetDigest`。Python source set 只含 `main.py`、`agent/**`、`bootstrap/**`、`bus/**`、`core/**`、`infra/**`、`memory2/**`、`migrations/**`、`plugins/**`、`proactive_v2/**`、`prompts/**`、`session/**`、`utils/**`、`plugin_packages/**/*.py` 和 `sdk/python/src/**/*.py`；TypeScript source set 只含 `frontend/*/src/**` 与 `plugin_packages/**/*.ts(x)`。tests、tests_scenarios、eval、docker、scripts、vendor、生成 bundle、配置、CSS、声明文件不计入。
+
+SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达式范围，再由 `tokenize` 排除该范围、空行和纯注释；同一行位于 docstring 表达式之后的真实代码仍保留，多行真实字符串占用的每一行也保留。TS/TSX 使用逐字符 comment/string/template-interpolation 状态栈，排除空行和纯注释，字符串中的注释符号不切换状态，模板插值中的纯注释仍排除，模板字符串内容占用的每一行保留。输出固定包含版本、source-set digest、文件数、按语言和 source root 的 SLOC 及总数；默认人读格式，`--json` 输出稳定 JSON。
+
+### PR0 新基线
+
+- 基准提交：`origin/main@6b731a901afb67ae800a9dd574cac9a3617f077f`
+- source-set digest：`9ade919edae8ca6fb7f0a7b778f367111f7a09b129b8d0dbab14ddede5e9f049`
+- production source file count：`385`
+- Python SLOC：`78,896`
+- TypeScript/TSX SLOC：`8,644`
+- total production SLOC：`87,540`；30% 参考量是净减少 `26,262` SLOC，但安全停止条件优先。
+- source-root 明细：`agent 28,876`、`bootstrap 6,309`、`bus 926`、`core 2,052`、`frontend/chat/src 5,934`、`frontend/dashboard/src 2,471`、`infra 11,394`、`main.py 621`、`memory2 4,884`、`migrations 296`、`plugin_packages 422`、`plugins 17,262`、`proactive_v2 2,777`、`prompts 465`、`sdk/python/src 318`、`session 2,529`、`utils 4`。
+
+### PR0 `chore(refactor): 建立 less-is-more 计量与门禁`
+
+- 范围：新增 production SLOC 计量器；统一 Gate 区分生产实现与 protected contract/policy；补齐文档入口和回归测试。
+- `semantic_delta`：`none`。生产运行入口、持久化、provider、协议、状态机和外部效果均未修改。
+- baseline/candidate：`origin/main@6b731a901afb67ae800a9dd574cac9a3617f077f`，source-set digest 均为 `9ade919edae8ca6fb7f0a7b778f367111f7a09b129b8d0dbab14ddede5e9f049`，`385` 文件，`87,540` SLOC。
+- 目标与实际 SLOC 变化：本 PR 只建立计量与分离门禁，production SLOC 净变化 `0`；30% 参考量仍为 `26,262`。
+- Redis 式 God file 判断：不拆文件。`gate.py` 继续集中拥有 catalog、plan、执行和报告生命周期；新增分类仅复用计量器的唯一 production source-set owner，避免复制路径规则。
+- Gate：`passed`，报告 `docker/debug/reports/change-gate/20260722-021717-7fe6fb8d`；`sourceDigest=47d1e0a4b7b9e80ea6a8370e776eec190033d90f50d388b1177781a767f0f1cb`，`planDigest=85a11698180651baf137089b9d30ff8e7ce00809266323c5d1461b326a6d0b96`；production paths 为空，protected paths 为 `docker/debug/gate.py`、`scripts/measure_production_sloc.py`、`tests/semantic/test_change_gate.py`，7 个公开场景全部通过，private Gate 标记为 required。该报告在本记录对账前生成；后续只改变本段账本文字。
+- 测试与真实验证：定向 pytest `27 passed`；修改文件 pyright `0 errors`，`gate.py` 的 `20 warnings` 为既有告警；migration append-only、`git diff --check`、catalog audit 均通过。
+- 独立 Review：`gpt-5.6-luna`、`xhigh`、read-only。接受并修复计量器未纳入 protected 集合和拼接式 docstring 误计；`audit` 只拥有 catalog 自检且没有 diff/base 契约，混合变更由公开入口 `plan/run` fail closed，因此未扩展 `audit` 的既有职责。
+- 迁移/持久化/运行 workspace 变化：`none`。未修改 migration bundle、正式 workspace、数据库、服务、远端数据或 Git cursor。
+- 残余风险与回滚点：TS/TSX 使用项目内覆盖足够的轻量状态机而非完整 parser；每个生产 PR 都要比较同一计量器并由 Gate/语义测试兜底。回滚点为分支 `backup/less-is-more-baseline-20260722`。
+
+### 后续 PR 记录模板
+
+#### `<commit-or-pr>` `<title>`
+
+- 范围：`PENDING`
+- `semantic_delta`：`none` / `PENDING`
+- baseline：source-set digest `PENDING`，文件数 `PENDING`，总 SLOC `PENDING`
+- candidate：source-set digest `PENDING`，文件数 `PENDING`，总 SLOC `PENDING`
+- 目标与实际 SLOC 变化：`PENDING`
+- Redis 式 God file 判断：保留/拆分及其阅读成本证据，`PENDING`
+- Gate：`PENDING`（必须记录 `status`、`sourceDigest`、`planDigest` 与 protected/production 路径分组）
+- 测试与真实验证：`PENDING`
+- 迁移/持久化/运行 workspace 变化：`none` / `PENDING`
+- 残余风险与回滚点：`PENDING`
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）

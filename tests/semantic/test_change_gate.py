@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from argparse import Namespace
 from dataclasses import replace
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -42,6 +43,150 @@ def test_unknown_executable_file_is_not_silently_accepted() -> None:
 
     assert gate._is_executable(mutant_path, catalog)
     assert gate._groups_for_path(mutant_path, catalog) == set()
+
+
+def test_change_classes_allow_single_class_and_reject_mixed_contract_changes() -> None:
+    gate = _gate_module()
+
+    protected_only = gate.classify_change_paths(
+        [
+            "docs/projectneed.md",
+            "scripts/measure_production_sloc.py",
+            "tests_scenarios/contracts/impact.toml",
+        ]
+    )
+    production_only = gate.classify_change_paths(
+        ["agent/core/passive_turn.py", "migrations/20260722_example/migration.py"]
+    )
+    mixed = gate.classify_change_paths(
+        ["agent/core/passive_turn.py", "tests/semantic/test_change_gate.py"]
+    )
+    production_with_test = gate.classify_change_paths(
+        ["agent/core/passive_turn.py", "tests/test_agent_core_foundation.py"]
+    )
+    migration_with_test = gate.classify_change_paths(
+        ["migrations/20260722_example/migration.py", "tests/test_migration_runner.py"]
+    )
+
+    assert protected_only == {
+        "productionSourcePaths": [],
+        "protectedContractPaths": [
+            "docs/projectneed.md",
+            "scripts/measure_production_sloc.py",
+            "tests_scenarios/contracts/impact.toml",
+        ],
+    }
+    assert production_only == {
+        "productionSourcePaths": [
+            "agent/core/passive_turn.py",
+            "migrations/20260722_example/migration.py",
+        ],
+        "protectedContractPaths": [],
+    }
+    assert mixed["productionSourcePaths"] == ["agent/core/passive_turn.py"]
+    assert mixed["protectedContractPaths"] == [
+        "tests/semantic/test_change_gate.py"
+    ]
+    assert production_with_test["protectedContractPaths"] == []
+    assert migration_with_test["protectedContractPaths"] == []
+    assert not gate.is_protected_contract_path(
+        "migrations/20260722_example/migration.py"
+    )
+
+
+def test_build_plan_marks_production_and_protected_contract_mixes(
+    monkeypatch: Any,
+) -> None:
+    gate = _gate_module()
+    monkeypatch.setattr(
+        gate,
+        "_changed_paths",
+        lambda _base: [
+            "agent/core/passive_turn.py",
+            "tests/semantic/test_change_gate.py",
+        ],
+    )
+    monkeypatch.setattr(gate, "_resolve_commit", lambda _base: "base-commit")
+    monkeypatch.setattr(gate, "_dirty_status", lambda: [])
+    monkeypatch.setattr(gate, "_load_baseline", lambda: {"acceptedGaps": []})
+    monkeypatch.setattr(gate, "source_digest", lambda: "source-digest")
+    monkeypatch.setattr(gate, "catalog_digest", lambda: "catalog-digest")
+    monkeypatch.setattr(
+        gate,
+        "audit_catalog",
+        lambda *_args, **_kwargs: {"status": "passed"},
+    )
+    monkeypatch.setattr(
+        gate,
+        "_run_git",
+        lambda *args, **_kwargs: gate.subprocess.CompletedProcess(
+            ["git", *args], 0, b"head-commit\n", b""
+        ),
+    )
+
+    plan = gate.build_plan("origin/main")
+
+    assert plan["status"] == "protected_contract_mixed"
+    assert plan["productionSourcePaths"] == ["agent/core/passive_turn.py"]
+    assert plan["protectedContractPaths"] == [
+        "tests/semantic/test_change_gate.py"
+    ]
+
+
+def test_mixed_commands_fail_without_building_or_running_scenarios(
+    monkeypatch: Any,
+) -> None:
+    gate = _gate_module()
+    plan = {
+        "status": "protected_contract_mixed",
+        "base": "base",
+        "head": "head",
+        "dirtyStatus": [],
+        "sourceDigest": "source",
+        "impactCatalogDigest": "catalog",
+        "planDigest": "plan",
+        "changedPaths": [
+            "agent/core/passive_turn.py",
+            "tests/semantic/test_change_gate.py",
+        ],
+        "productionSourcePaths": ["agent/core/passive_turn.py"],
+        "protectedContractPaths": ["tests/semantic/test_change_gate.py"],
+        "affectedGroups": ["runtime"],
+        "selectedScenarios": ["expensive"],
+        "privateGateRequired": True,
+    }
+    writes: list[dict[str, object]] = []
+    monkeypatch.setattr(gate, "build_plan", lambda *_args, **_kwargs: plan)
+    monkeypatch.setattr(gate, "load_catalog", lambda: SimpleNamespace(scenarios={}))
+    monkeypatch.setattr(gate, "_new_run_id", lambda: "run")
+    report_dir = gate.ROOT / "docker" / "debug" / "reports" / "change-gate" / "test"
+    monkeypatch.setattr(gate, "_report_dir", lambda _run_id: report_dir)
+    monkeypatch.setattr(gate, "_print_plan", lambda _plan: None)
+    monkeypatch.setattr(
+        gate,
+        "_atomic_json",
+        lambda _path, payload: writes.append(payload),
+    )
+    monkeypatch.setattr(
+        gate,
+        "_build_change_gate_image",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("mixed Gate 不得构建镜像")
+        ),
+    )
+    monkeypatch.setattr(
+        gate,
+        "_run_scenario",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("mixed Gate 不得运行场景")
+        ),
+    )
+    args = Namespace(base="origin/main", full=False)
+
+    assert gate.command_plan(args) == 1
+    assert gate.command_run(args) == 1
+    assert writes[-1]["status"] == "protected_contract_mixed"
+    assert writes[-1]["checks"] == []
 
 
 def test_every_p0_oracle_declares_a_known_wrong_mutant() -> None:
