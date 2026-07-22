@@ -297,6 +297,22 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event 或 Git refs。执行前备份：`/tmp/less-is-more-pr13-backup-QPS3Qt/`；回滚点为本 PR 单提交 revert。
 - 残余风险：wall-time 仅覆盖同步 discovery/parser；若未来 discovery map 跨 round 共享或 package schema 改为有状态解析，必须重新核对 PLG-002 的 round snapshot 与错误 owner，不应把本 helper 变成跨轮缓存。
 
+## 2026-07-23 less-is-more PR14：删除失效的 post-judge prompt helper
+
+### `PR14` `refactor(prompts): remove dead post-judge helper`
+
+- base：PR13 commit `b3614d6a38931bc264ce8135ea525753255edb61`，分支 `refactor/less-is-more-pr14-remove-dead-post-judge-prompt`。
+- allowed_paths：`prompts/proactive.py`、`docs/refactor/clean-code-ledger.md`；`capability_owner`：主动 prompt facade；未修改 active `ProactiveJudge`、`TOOL_SCHEMAS`、插件 manifest、runtime、generation、snapshot、lease、event 或 persistence。
+- 历史与可达性：`build_post_judge_prompt_messages` 在 `909212b9` 随旧 compose/judge 链路引入；历史最后 caller 是 `proactive_v2/judge.py`，后续 `3eafe1ab` 删除旧 Judge 实现，`f91cf993` 将主动链路迁入插件并删除旧模块。当前 production/test/docs/sdk/plugin 全库精确搜索及动态 import/getattr 扫描均为零；当前 active judge 由 `plugins/proactive_flow/judge.py` 直接使用 `TOOL_SCHEMAS`，不再消费该 prompt。
+- 范围与能力：仅删除 module-private `build_post_judge_prompt_messages`（prompt SLOC `465 → 420`）；保留 `build_compose_prompt_messages`、`plugins/proactive_flow/prompt.py` 的 active compose facade 与所有调用链。删除函数没有独立错误分支、日志、注释或持久化副作用；错误类型、外部调用、prompt schema、工具可见性和发送语义均不变。
+- baseline：source-set digest `e49e6f60681efe5b7dcfca789b5c4767b12f4b357ce20647d2517442802abf99`，文件数 `384`，Python SLOC `78,633`，TypeScript/TSX SLOC `8,451`，total production SLOC `87,084`。
+- candidate：source-set digest `c26d08dd0bdbddd13c971a5a26aef22a9cfa522dc3ec61ad61be61a6f7dae1d2`，文件数 `384`，Python SLOC `78,588`，TypeScript/TSX SLOC `8,451`，total production SLOC `87,039`；`prompts` 从 `465` 降至 `420`，production 净减少 `45` 行。
+- 测试调整：无测试删除、无脆弱 symbol-absence 测试；保留 active compose prompt oracle；`pytest -q tests/test_proactive_prompts.py tests/test_proactive_facade_phase4.py tests/test_proactive_agent_tick_factory.py` 为 `15 passed in 0.88s`，相关 compileall 通过。
+- 静态与边界验证：`prompts/proactive.py` pyright `0 errors, 0 warnings`；精确 symbol 搜索与 production/test/docs/sdk/plugin 动态 consumer 扫描均为零；migration append-only 与 `git diff --check` 通过。
+- Gate：按 WORKFLOW 以 PR13 base 运行 committed-head 公开 Gate；private Gate 状态 `pending_maintainer`。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event 或 Git refs。执行前备份：`/tmp/less-is-more-pr14-backup-eKfusa/`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 或外部未跟踪副本仍可能保留旧 symbol 文本，但当前 Git source、插件、SDK、docs 和动态调用面已证实无 consumer；若未来恢复旧 judge 链路，应从 active plugin prompt owner 重新设计，不应复活该 helper。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
