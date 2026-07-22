@@ -676,11 +676,6 @@ class TelegramChannel:
         if message is not None and await message.delete():
             self._live_messages.pop(session_key, None)
 
-    async def _drain_live_tasks(self) -> None:
-        tasks = [task for task in self._live_tasks if not task.done()]
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-
     def _final_thinking_text(
         self,
         session_key: str,
