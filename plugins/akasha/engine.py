@@ -1407,54 +1407,54 @@ def _load_committed_turn_messages(
     session_db_path: Path,
     event: TurnCommitted,
 ) -> list[SourceMessage]:
-    # 1. after-turn 发生在 append_messages 后，这里用内容和相邻 seq 反查稳定 id。
-    if not session_db_path.exists() or not (event.persisted_user_message or event.input_message):
+    """按权威持久化消息 ID 读取已提交的一轮消息。"""
+
+    # 1. 不持久化 user 的系统轮次没有可写入 Akasha 的消息。
+    if event.persisted_user_message is None:
         return []
-    user_text = event.persisted_user_message or event.input_message
+    if not session_db_path.exists():
+        raise FileNotFoundError(session_db_path)
+    if not event.persisted_user_message_id:
+        raise ValueError("TurnCommitted 缺少 persisted_user_message_id")
+    if not event.assistant_message_id:
+        raise ValueError("TurnCommitted 缺少 assistant_message_id")
+
+    # 2. 稳定 ID 是提交边界拥有的不变量；正文可能是引用回复增强后的运行时视图。
     with closing(sqlite3.connect(str(session_db_path))) as db:
         db.row_factory = sqlite3.Row
-        row = db.execute(
+        rows = db.execute(
             """
-            SELECT
-                u.id AS user_id, u.session_key AS session_key, u.seq AS user_seq,
-                u.content AS user_content, u.ts AS user_ts,
-                a.id AS assistant_id, a.seq AS assistant_seq,
-                a.content AS assistant_content, a.ts AS assistant_ts
-            FROM messages u
-            LEFT JOIN messages a
-                ON a.session_key = u.session_key
-               AND a.seq = u.seq + 1
-               AND a.role = 'assistant'
-               AND a.content = ?
-            WHERE u.session_key = ?
-              AND u.role = 'user'
-              AND u.content = ?
-            ORDER BY u.seq DESC
-            LIMIT 1
+            SELECT id, session_key, seq, role, content, ts
+            FROM messages
+            WHERE id IN (?, ?)
             """,
-            (event.assistant_response, event.session_key, user_text),
-        ).fetchone()
-    if row is None:
-        return []
-    messages = [
-        SourceMessage(
-            id=str(row["user_id"]),
-            session_key=str(row["session_key"]),
-            seq=int(row["user_seq"]),
-            role="user",
-            content=str(row["user_content"] or ""),
-            ts=str(row["user_ts"] or ""),
-        )
-    ]
-    if row["assistant_id"] is not None:
+            (event.persisted_user_message_id, event.assistant_message_id),
+        ).fetchall()
+    by_id = {str(row["id"]): row for row in rows}
+
+    # 3. ID 已声明持久化成功，缺行或身份错位属于内部契约违反。
+    expected = (
+        (event.persisted_user_message_id, "user"),
+        (event.assistant_message_id, "assistant"),
+    )
+    messages: list[SourceMessage] = []
+    for message_id, role in expected:
+        row = by_id.get(message_id)
+        if row is None:
+            raise ValueError(f"TurnCommitted 消息不存在: {message_id}")
+        if row["session_key"] != event.session_key or row["role"] != role:
+            raise ValueError(
+                "TurnCommitted 消息身份不匹配: "
+                f"id={message_id} session={row['session_key']} role={row['role']}"
+            )
         messages.append(
             SourceMessage(
-                id=str(row["assistant_id"]),
+                id=message_id,
                 session_key=str(row["session_key"]),
-                seq=int(row["assistant_seq"]),
-                role="assistant",
-                content=str(row["assistant_content"] or ""),
-                ts=str(row["assistant_ts"] or ""),
+                seq=int(row["seq"]),
+                role=role,
+                content=str(row["content"] or ""),
+                ts=str(row["ts"] or ""),
             )
         )
     return messages

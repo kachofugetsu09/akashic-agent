@@ -1667,6 +1667,7 @@ async def test_after_turn_collects_extra_and_telemetry_slots():
                 channel=msg.channel,
                 chat_id=msg.chat_id,
                 content="reply",
+                metadata={"persisted_user_message_id": "telegram:123:0"},
                 session_message_id="telegram:123:1",
             ),
             ctx=ctx,
@@ -1674,5 +1675,6 @@ async def test_after_turn_collects_extra_and_telemetry_slots():
     )
 
     assert committed_extra[0]["plugin_flag"] == "extra"
+    assert committed_events[0].persisted_user_message_id == "telegram:123:0"
     assert committed_events[0].assistant_message_id == "telegram:123:1"
     assert after_turn_metadata == [{"plugin_flag": "telemetry"}]

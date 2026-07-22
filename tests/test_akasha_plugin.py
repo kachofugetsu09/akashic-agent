@@ -47,6 +47,7 @@ from plugins.akasha.engine import (
     PendingActivation,
     _AkashaRetrieval,
     _compute_candidates,
+    _load_committed_turn_messages,
     _load_turn_card,
 )
 from plugins.akasha.core import (
@@ -1274,16 +1275,22 @@ async def test_runtime_writes_message_embeddings_to_sessions_db(tmp_path: Path) 
     engine._message_turn_keys = {}
     engine._message_timestamps = {}
     engine._message_index = build_dense_message_index({})
+    enriched_input = (
+        "【你正在回复一条历史消息】\n旧回答\n\n"
+        "【你当前新消息】\n第一条用户消息需要完整展示"
+    )
     try:
         await engine._on_turn_committed(
             TurnCommitted(
                 session_key="s",
                 channel="telegram",
                 chat_id="1",
-                input_message="第一条用户消息需要完整展示",
-                persisted_user_message="第一条用户消息需要完整展示",
+                input_message=enriched_input,
+                persisted_user_message=enriched_input,
                 assistant_response="第一条助手回复会被截断展示并保留引用",
                 tools_used=[],
+                persisted_user_message_id="s:0",
+                assistant_message_id="s:1",
             )
         )
 
@@ -1334,6 +1341,8 @@ async def test_runtime_rejects_partial_embedding_batch(tmp_path: Path) -> None:
                     persisted_user_message="第一条用户消息需要完整展示",
                     assistant_response="第一条助手回复会被截断展示并保留引用",
                     tools_used=[],
+                    persisted_user_message_id="s:0",
+                    assistant_message_id="s:1",
                 )
             )
 
@@ -1345,6 +1354,25 @@ async def test_runtime_rejects_partial_embedding_batch(tmp_path: Path) -> None:
     finally:
         embedding_store.close()
         graph_store.close()
+
+
+def test_load_committed_turn_messages_requires_stable_ids(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+    _init_sessions_db(db_path)
+
+    with pytest.raises(ValueError, match="persisted_user_message_id"):
+        _load_committed_turn_messages(
+            db_path,
+            TurnCommitted(
+                session_key="s",
+                channel="mobile",
+                chat_id="1",
+                input_message="增强后的运行时输入",
+                persisted_user_message="增强后的运行时输入",
+                assistant_response="第一条助手回复会被截断展示并保留引用",
+                tools_used=[],
+            ),
+        )
 
 
 def test_load_turn_card_uses_full_user_and_short_assistant(tmp_path: Path) -> None:
