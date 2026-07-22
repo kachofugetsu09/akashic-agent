@@ -57,10 +57,6 @@ class CommandConflictError(MobileStorageError):
     """表示同一命令 ID 被用于不同请求。"""
 
 
-class SessionOwnershipError(MobileStorageError):
-    """表示移动会话不属于当前设备。"""
-
-
 class AttachmentStateError(MobileStorageError):
     """表示附件不存在、归属错误或传输状态不允许当前操作。"""
 
@@ -832,27 +828,6 @@ class MobileRealtimeStorage:
                 (session_key,),
             ).fetchone()
         return row is not None
-
-    def require_session_owner(self, *, device_id: str, session_id: str) -> None:
-        device_key = _require_text(device_id, "device_id")
-        owner = self.session_owner(session_id)
-        if owner != device_key:
-            raise SessionOwnershipError(f"移动会话不属于当前设备: {session_id}")
-
-    def session_owner(self, session_id: str) -> str:
-        session_key = _require_text(session_id, "session_id")
-        with self._lock:
-            row = self._db.execute(
-                """
-                SELECT device_id
-                FROM mobile_device_sessions
-                WHERE session_id = ?
-                """,
-                (session_key,),
-            ).fetchone()
-        if row is None:
-            raise SessionOwnershipError(f"移动会话尚未绑定设备: {session_key}")
-        return _row_text(row, "device_id")
 
     def list_device_sessions(self, device_id: str) -> tuple[str, ...]:
         """按最近绑定顺序列出设备拥有的移动会话。"""
