@@ -181,6 +181,22 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、外部网络或 Git refs；保留 `cmdk` package dependency 供后续独立治理。
 - 残余风险与回滚点：若未来发现 command adapter 通过未检出的动态入口被依赖，应停止并补充真实迁移证据，不恢复兼容层；执行前备份为 `/tmp/less-is-more-pr6-finish-2iGCHh`；提交后可用单提交 revert `refactor(chat): remove dead command adapters` 回滚。
 
+## 2026-07-23 less-is-more PR7：移除未使用的 cmdk 根依赖
+
+### `PR7` `chore(chat): remove unused cmdk dependency`
+
+- base：PR6 commit `631fc199c6e8fe2ce7d1b3d4f2b9152efe4ca1fb`，分支 `refactor/less-is-more-pr7-remove-unused-cmdk`。
+- allowed_paths：`package.json`、`docs/refactor/clean-code-ledger.md`；`capability_owner`：core chat dependency manifest；根包为 private 且无 exports，未修改 lockfile、CSS、source、mobile repo 或生成 bundle。
+- 范围：删除根 `package.json` dependencies 中唯一的 `"cmdk": "^1.1.1"` 声明。PR6 后 core source 已无 `cmdk` import、command module 或 `PromptInputCommand` consumer；`frontend/chat/src/styles.css` 的 incidental `[cmdk-root]` selector 保留，因为它不是 package consumer。plugins 无 manifest consumer；mobile stable 是独立仓库，保留其自身 source/lock 与依赖边界。
+- 语义与状态核对：`change_type: dependency cleanup`，`semantic_delta: none`；运行时模块解析、DOM/a11y、事件、网络、storage、stream 顺序、持久化 write set、CSS 和输出 bundle 均保持不变。此次只改变根包 install graph，不新增 fallback 或兼容层；共享 Radix 依赖仍由其他包使用。
+- baseline/candidate：production source-set 与 PR6 完全相同，文件数 `384`，Python SLOC `78,736`，TypeScript/TSX SLOC `8,451`，total production SLOC `87,187`，source-set digest `57450e582acc0b3ac1076049a19c0c341e2b8960a2fd68c702256d4ba8c04c78`；production SLOC 净变化 `0`。Git tracked 中无 package-lock/pnpm-lock/yarn.lock，未宣称精确 clean-install bytes delta。
+- footprint 观察：当前主 repo 已安装 `node_modules/cmdk` 的 `du -sB1` 观察值为 `126,976` bytes、`13` files；该值仅说明本机现有安装 footprint，不等同于无 lock/floating range 下的可复现 clean-install 节省量。
+- 构建对账：以 PR6 相同 workload 运行 `npm run build:chat -- --outDir <temporary> --logLevel error`；候选应与 PR6 构建 byte-identical（`367` files、raw `14,147,448` bytes、per-file gzip `3,167,344` bytes、entry `573,145` bytes、digest `293c6b1eab1572e4d22598af1fcf69a9d01de021bc69dce37ac0faac305d57d0`），仅验证未使用依赖移除没有影响构建产物。
+- 测试与真实验证：`jq empty package.json` 通过；精确 source/package consumer 搜索在 ledger 外零残留（CSS `[cmdk-root]` 保留且未改）；`npm run typecheck`、`npm run lint`、chat build、production SLOC、migration append-only 与 `git diff --check` 均通过。Gate 不回填 digest，提交后绑定 committed HEAD 重跑。
+- Gate：按 WORKFLOW 在本候选提交前以 base `refactor/less-is-more-pr6-chat-dead-command-adapters` 运行 preflight；private contract 状态单独记录，不把 public Gate 当作 private pass。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、消息或 Git refs。
+- 残余风险与回滚点：无 tracked lockfile 时无法把本次变化解释为精确安装字节收益；若后续新增真实 `cmdk` consumer，应恢复依赖并先走调用链证据。执行前备份为 `/tmp/less-is-more-pr7-finish-mmpaHV`；提交后可用单提交 revert `chore(chat): remove unused cmdk dependency` 回滚。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
