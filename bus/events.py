@@ -10,14 +10,6 @@ if TYPE_CHECKING:
     from bus.internal_events import SpawnCompletionEvent
 
 
-def _empty_media() -> list[str]:
-    return []
-
-
-def _empty_metadata() -> dict[str, Any]:
-    return {}
-
-
 class TurnDisposition(StrEnum):
     """标识无需进入完整提交阶段的合法 turn 结果。"""
 
@@ -33,8 +25,8 @@ class InboundMessage:
     chat_id: str  # 会话 ID（用于路由回复）
     content: str
     timestamp: datetime = field(default_factory=datetime.now)
-    media: list[str] = field(default_factory=_empty_media)
-    metadata: dict[str, Any] = field(default_factory=_empty_metadata)
+    media: list[str] = field(default_factory=list[str])
+    metadata: dict[str, Any] = field(default_factory=dict[str, Any])
     session_admission_id: str | None = field(default=None, repr=False, compare=False)
 
     @property
@@ -63,8 +55,8 @@ class OutboundMessage:
     content: str
     thinking: str | None = None
     reply_to: str | None = None
-    media: list[str] = field(default_factory=_empty_media)
-    metadata: dict[str, Any] = field(default_factory=_empty_metadata)
+    media: list[str] = field(default_factory=list[str])
+    metadata: dict[str, Any] = field(default_factory=dict[str, Any])
     control_turn_id: str | None = field(default=None, repr=False, compare=False)
     session_message_id: str | None = field(default=None, repr=False, compare=False)
     turn_disposition: TurnDisposition | None = field(

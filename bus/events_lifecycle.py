@@ -8,26 +8,6 @@ if TYPE_CHECKING:
     from agent.core.types import ToolCallGroup
 
 
-def _empty_media() -> list[str]:
-    return []
-
-
-def _empty_metadata() -> dict[str, Any]:
-    return {}
-
-
-def _empty_int_metadata() -> dict[str, int]:
-    return {}
-
-
-def _empty_tool_chain() -> list[dict[str, Any]]:
-    return []
-
-
-def _empty_tool_call_groups() -> list["ToolCallGroup"]:
-    return []
-
-
 @dataclass(frozen=True)
 class TurnStarted:
     session_key: str
@@ -64,15 +44,15 @@ class TurnCommitted:
     raw_reply: str | None = None
     meme_tag: str | None = None
     meme_media_count: int | None = None
-    tool_chain_raw: list[dict[str, Any]] = field(default_factory=_empty_tool_chain)
+    tool_chain_raw: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     tool_call_groups: list["ToolCallGroup"] = field(
-        default_factory=_empty_tool_call_groups
+        default_factory=list["ToolCallGroup"]
     )
     timestamp: datetime | None = None
-    post_reply_budget: dict[str, int] = field(default_factory=_empty_int_metadata)
-    react_stats: dict[str, int] = field(default_factory=_empty_int_metadata)
-    extra: dict[str, Any] = field(default_factory=_empty_metadata)
-    model_usage: dict[str, Any] = field(default_factory=_empty_metadata)
+    post_reply_budget: dict[str, int] = field(default_factory=dict[str, int])
+    react_stats: dict[str, int] = field(default_factory=dict[str, int])
+    extra: dict[str, Any] = field(default_factory=dict[str, Any])
+    model_usage: dict[str, Any] = field(default_factory=dict[str, Any])
 
 
 @dataclass(frozen=True)
