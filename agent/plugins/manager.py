@@ -2599,24 +2599,6 @@ class PluginManager:
             )
             logger.info("插件工具已注册: %s (来自 %s)", tool_name, plugin_name)
 
-    def _bind_handlers(
-        self,
-        instance: Any,
-        module_path: str,
-        scope: PluginScope,
-    ) -> None:
-        for md in plugin_registry.get_handlers_by_module_path(module_path):
-            # 1. Phase 1 只绑定生命周期 handler，TOOL 类型留给后续 phase
-            if md.kind != MetadataKind.LIFECYCLE:
-                continue
-            # 2. 跳过当前 phase 尚未支持的事件类型
-            ctx_type = _EVENT_TYPE_MAP.get(md.event_type)  # type: ignore[arg-type]
-            if ctx_type is None:
-                continue
-            # 3. 绑定 instance 为第一个参数，EventBus 已处理 sync/async，直接注册
-            bound = functools.partial(md.handler, instance)
-            _ = scope.subscribe(self._event_bus, ctx_type, bound)
-
     def _bind_tool_hooks(self, instance: Any, module_path: str) -> None:
         for md in plugin_registry.get_handlers_by_module_path(module_path):
             if md.kind != MetadataKind.TOOL_HOOK:
@@ -3106,22 +3088,6 @@ def _venv_python(venv_dir: Path) -> Path:
     if os.name == "nt":
         return venv_dir / "Scripts" / "python.exe"
     return venv_dir / "bin" / "python"
-
-
-def _collect_skill_names(skill_roots: tuple[Path, ...]) -> list[str]:
-    names: list[str] = []
-    seen: set[str] = set()
-    for root in skill_roots:
-        if not root.is_dir():
-            continue
-        for child in sorted(root.iterdir()):
-            if not child.is_dir() or not (child / "SKILL.md").exists():
-                continue
-            if child.name in seen:
-                continue
-            seen.add(child.name)
-            names.append(child.name)
-    return names
 
 
 def _build_plugin_tool(instance: Any, metadata: Any) -> Any:

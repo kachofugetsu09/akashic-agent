@@ -135,6 +135,34 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、网络、外部发送或 Git refs。
 - 残余风险与回滚点：若未来出现外部反射依赖，应停止并补充真实迁移证据，不恢复兼容 helper；执行前备份为 `/tmp/less-is-more-pr4-finish-Jdazid`；提交后可用单提交 revert `refactor(provider): remove dead diagnostics helpers` 回滚。
 
+## 2026-07-23 less-is-more PR5：删除 PluginManager 不可达旧 helper
+
+### `PR5` `refactor(plugins): remove dead manager helpers`
+
+- base：PR4 commit `521db7f19bbfe02122578c620ec7040c31c89975`，分支 `refactor/less-is-more-pr5-plugin-manager-dead-helpers`。
+- allowed_paths：`agent/plugins/manager.py`、`docs/refactor/clean-code-ledger.md`；`capability_owner`：PluginManager 的 event snapshot 与 skill catalog 迁移边界。
+- 范围：只删除 `_bind_handlers` 与 `_collect_skill_names` 两个完整不可达定义及相邻空行；未修改 `_bind_tool_hooks`、`_compile_snapshot_event_handlers`、`ScopedEventBus.staged_handlers`、`RuntimeSnapshot.event_handlers`、`PluginSkillHost`、`PreparedSkillCatalog`、`SkillsLoader`、`sync_manifest`、测试或 import。
+
+#### 子项 A：`PluginManager._bind_handlers`
+
+- 独立历史与当前 owner：`57a3cee5`（#105 全能力热重载/代际迁移）移除旧 caller，并以 `_compile_snapshot_event_handlers` 汇总静态 lifecycle metadata 与 staged `ScopedEventBus.staged_handlers`，写入 `RuntimeSnapshot.event_handlers`；当前事件 handler owner 为 snapshot compiler + staged event bus，旧方法仅保留定义。
+- 不变量与证据：全库 source/string/AST/`getattr`/reflection/export/plugin/external-test 搜索只见定义、零调用；删除不改变事件顺序、错误传播、hot-reload/generation/lease/rollback、静态事件注册、staged event bus 或 snapshot publish/write set；无 persistence、manifest、network 或外部发送变化。复活 helper 反而会绕过 staging 并重复 handler，故不加兼容层。
+
+#### 子项 B：`_collect_skill_names`
+
+- 独立历史与当前 owner：`7d9f4c15`（#104 程序化能力声明迁移）删除 `sync_global_registry` caller；当前 skill owner 为 `PluginSkillHost`、`PreparedSkillCatalog` 与 `SkillsLoader`，`sync_manifest` 只维护 enabled manifest。该 helper 仅保留定义，不能与子项 A 合称同一迁移。
+- 不变量与证据：全库 source/string/AST/`getattr`/reflection/export/plugin/external-test 搜索只见定义、零调用；删除不改变 skill roots、catalog generation/readiness、workspace skill 投影、manifest 写入、hot-reload/generation/lease/rollback、错误传播或 write set；无 persistence、network 或外部发送变化，不改可达 skill host/manifest 路径。
+
+- 语义与状态核对：两项均为旧迁移后的不可达定义，`semantic_delta: none`；事件、skill、错误、hot-reload、generation、lease、rollback、manifest、持久化、网络和 write set 均保持不变。
+- baseline：source-set digest `ad3078aab802bb5021f413348ced99899feaca742325bdaf666a22eece8f86fd`，文件数 `385`，Python SLOC `78,764`，TypeScript/TSX SLOC `8,644`，total production SLOC `87,408`。
+- candidate：source-set digest `6586123102dce5eb3f460c0b90d12c82990bf4ea1b323dcf5fc7ee53ae4b4ba6`，文件数 `385`，Python SLOC `78,736`，TypeScript/TSX SLOC `8,644`，total production SLOC `87,380`。
+- 目标与实际 SLOC 变化：`agent` 生产 SLOC 从 `28,845` 降至 `28,817`，production 净减少 `28` 行（`manager.py` raw diff 为 34 deletions，含相邻空行）。
+- 性能影响：只减少 module/class definition 对象；两个 helper 不进入请求或热重载热路径，没有新增调用、分配、等待或 I/O，不宣称 benchmark 收益。
+- 测试与真实验证：项目 venv `pytest -q tests/test_plugin_manager.py tests/test_plugin_hot_reload.py tests/test_plugin_skill_links.py tests/test_plugin_packages.py` 为 `188 passed in 9.88s`；修改文件 Pyright `--level error`：base/candidate 均 `0 errors, 0 warnings`；默认级别：base/candidate 均 `0 errors, 14 warnings`，六类诊断计数一致、无新增告警；legacy names 精确搜索在本账本之外零残留；`scripts/check_migrations_append_only.py --base refactor/less-is-more-pr4-provider-dead-diagnostics` 与 `git diff --check` 均通过。
+- Gate：按 WORKFLOW 在本候选提交前以 base `refactor/less-is-more-pr4-provider-dead-diagnostics` 运行 preflight；本条不回填运行产生的 `sourceDigest`/`planDigest`，避免账本自引用使报告失效，最终 committed-head digest 与 private 状态由主 Agent 在提交后重跑并写入 PR。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migrations、数据库、正式 workspace、服务、网络、外部发送或 Git refs。
+- 残余风险与回滚点：两个旧 helper 若未来出现外部反射依赖，应停止并分别补充对应迁移证据，不恢复兼容层；执行前备份为 `/tmp/less-is-more-pr5-finish-MSn37L`；提交后可用单提交 revert `refactor(plugins): remove dead manager helpers` 回滚。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
