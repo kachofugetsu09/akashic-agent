@@ -122,6 +122,7 @@ class _BuildTurnCommittedModule:
             if isinstance(raw_react_stats, dict)
             else None
         )
+        raw_user_message_id = snap.outbound.metadata.get("persisted_user_message_id")
         frame.slots[_TURN_COMMITTED_SLOT] = TurnCommitted(
             session_key=state.session_key,
             channel=msg.channel,
@@ -131,6 +132,11 @@ class _BuildTurnCommittedModule:
             assistant_response=snap.ctx.reply,
             tools_used=list(snap.ctx.tools_used),
             turn_id=current_turn_id.get(),
+            persisted_user_message_id=(
+                raw_user_message_id
+                if isinstance(raw_user_message_id, str) and raw_user_message_id
+                else None
+            ),
             assistant_message_id=snap.outbound.session_message_id,
             thinking=snap.ctx.thinking,
             raw_reply=snap.ctx.response_metadata.raw_text,
