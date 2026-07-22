@@ -91,7 +91,10 @@ class TelegramOutboundLimiter:
         if kind == "typing":
             return await self._run_typing(cid, label=label, action=action)
         attempts = max_attempts or self._max_attempts
-        lock = self._chat_locks.setdefault(cid, asyncio.Lock())
+        lock = self._chat_locks.get(cid)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._chat_locks[cid] = lock
         async with lock:
             last_err: Exception | None = None
             for attempt in range(1, attempts + 1):
@@ -142,7 +145,10 @@ class TelegramOutboundLimiter:
         label: str,
         action: Callable[[], Awaitable[_T]],
     ) -> _T:
-        lock = self._typing_locks.setdefault(chat_id, asyncio.Lock())
+        lock = self._typing_locks.get(chat_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._typing_locks[chat_id] = lock
         async with lock:
             now = asyncio.get_running_loop().time()
             wait_s = self._next_typing_at.get(chat_id, 0.0) - now
@@ -488,7 +494,10 @@ class TelegramLiveEditQueue:
         self._current_interval_s: dict[int, float] = {}
 
     async def reserve(self, chat_id: int, *, label: str) -> None:
-        lock = self._locks.setdefault(chat_id, asyncio.Lock())
+        lock = self._locks.get(chat_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[chat_id] = lock
         async with lock:
             await self._wait_for_slot(chat_id)
             self._mark_used(chat_id)
@@ -535,7 +544,10 @@ class TelegramLiveEditQueue:
             except (TimedOut, NetworkError) as e:
                 logger.warning("[telegram] %s live 更新失败，已跳过: %s", label, e)
                 return None
-        lock = self._locks.setdefault(chat_id, asyncio.Lock())
+        lock = self._locks.get(chat_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[chat_id] = lock
         async with lock:
             strikes = self._flood_strikes.get(chat_id, 0)
             if strikes >= _LIVE_MAX_FLOOD_STRIKES and not force:

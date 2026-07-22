@@ -274,6 +274,48 @@ async def test_outbound_limiter_typing_does_not_delay_send(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_lock_maps_allocate_only_for_missing_keys(monkeypatch):
+    original_lock = telegram_utils_module.asyncio.Lock
+    constructions = 0
+
+    def counting_lock():
+        nonlocal constructions
+        constructions += 1
+        return original_lock()
+
+    limiter = TelegramOutboundLimiter(
+        send_interval_s=0.0,
+        typing_interval_s=0.0,
+        global_interval_s=0.0,
+    )
+    existing_chat_lock = original_lock()
+    existing_typing_lock = original_lock()
+    limiter._chat_locks[123] = existing_chat_lock
+    limiter._typing_locks[123] = existing_typing_lock
+    queue = TelegramLiveEditQueue(min_interval_s=0.0)
+    existing_queue_lock = original_lock()
+    queue._locks[123] = existing_queue_lock
+
+    monkeypatch.setattr(telegram_utils_module.asyncio, "Lock", counting_lock)
+    await limiter.run(123, kind="send", label="send", action=AsyncMock(return_value=True))
+    await limiter.run(123, kind="typing", label="typing", action=AsyncMock(return_value=True))
+    await queue.reserve(123, label="existing")
+    await queue.run(123, label="existing", action=AsyncMock(return_value=True))
+
+    assert constructions == 0
+
+    await limiter.run(456, kind="send", label="send", action=AsyncMock(return_value=True))
+    await limiter.run(456, kind="typing", label="typing", action=AsyncMock(return_value=True))
+    await queue.reserve(456, label="missing")
+    await queue.run(789, label="missing", action=AsyncMock(return_value=True))
+
+    assert constructions == 4
+    assert limiter._chat_locks[123] is existing_chat_lock
+    assert limiter._typing_locks[123] is existing_typing_lock
+    assert queue._locks[123] is existing_queue_lock
+
+
+@pytest.mark.asyncio
 async def test_outbound_limiter_global_slot_covers_action():
     limiter = TelegramOutboundLimiter(
         send_interval_s=0.0,
