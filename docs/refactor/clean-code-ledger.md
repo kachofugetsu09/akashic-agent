@@ -197,6 +197,23 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、消息或 Git refs。
 - 残余风险与回滚点：无 tracked lockfile 时无法把本次变化解释为精确安装字节收益；若后续新增真实 `cmdk` consumer，应恢复依赖并先走调用链证据。执行前备份为 `/tmp/less-is-more-pr7-finish-mmpaHV`；提交后可用单提交 revert `chore(chat): remove unused cmdk dependency` 回滚。
 
+## 2026-07-23 less-is-more PR8：避免 mobile delta 锁的 eager 分配
+
+### `PR8` `perf(mobile): avoid eager delta lock allocation`
+
+- base：PR7 commit `b9bf20a10c1e6b7c826348cb90af20488806794d`，分支 `refactor/less-is-more-pr8-mobile-delta-lock-allocation`。
+- allowed_paths：`infra/mobile_realtime/channel.py`、`tests/mobile_realtime/test_channel.py`、`docs/refactor/clean-code-ledger.md`；`capability_owner`：core mobile realtime delta batching；没有 mobile 仓库、协议 schema 或其他权威文档改动。
+- 范围：仅将 `_delta_locks` 改为以 `asyncio.Lock` 为 factory 的 `defaultdict`，并让 `_buffer_delta`、`_flush_deltas` 直接按 key 取锁；未抽 helper，未修改 lock 生命周期、timer、batch、顺序、SQLite、event、network、cleanup 或 error semantics。existing key 只做一次映射查找，缺失 key 才由 factory 创建并写回同一 map。
+- 真实违反路径与不变量：Python 会先求值 `setdefault` 的默认参数，因此每次已有 key 的 delta 也会构造并丢弃新的 `asyncio.Lock`；当前 lock map 由 channel 拥有，batch flush 后仍按原逻辑 pop。窄回归预置 existing key、把 map factory 换成计数函数并提交 4KiB delta，证明 `_buffer_delta → _flush_deltas` 整条路径分配数为 `0`、事件仍只追加原有一次。
+- 语义与状态核对：`change_type: performance`，`semantic_delta: none`；同一 key 的互斥、delta 合并、4KiB/50ms flush、timer cancel、事件 payload/order、SQLite durable state、网络发送、失败传播和 stop cleanup 均保持不变。测试仅观察 fake runtime 的 append，不修改生产 write set。
+- baseline：source-set digest `57450e582acc0b3ac1076049a19c0c341e2b8960a2fd68c702256d4ba8c04c78`，文件数 `384`，Python SLOC `78,736`，TypeScript/TSX SLOC `8,451`，infra SLOC `11,352`，total production SLOC `87,187`。
+- candidate：source-set digest `d1c327a2598d8b8ce5e44d43fc33290720e0ed294ae0ae50546a1de20e3bc6e8`，文件数 `384`，Python SLOC `78,737`，TypeScript/TSX SLOC `8,451`，infra SLOC `11,353`，total production SLOC `87,188`；production 净增加 `1` 行，属于该性能修复允许的最小 manifest，不倒算前序删除收益。
+- 性能回放：base 与 candidate 均使用 `/mnt/data/coding/akasic-agent/.venv/bin/python`（Python `3.13.7`）、`taskset -c 0`，分别在各自 checkout cwd 中先预热 3 次，再运行 30 次相同的 10,000 个一字符 stream delta；fake runtime 只 append 事件（每次 3 个事件），不触碰 DB、SQLite、网络或真实 gateway。base median/p95 为 `8.465644/8.954338 ms`，candidate 为 `7.3659155/7.669912 ms`，相对变化分别为 `-12.99%/-14.34%`；同 workload 的 Lock 构造数从 `10,003` 降至 `3`，事件数保持 `3`。这是锁对象分配微基准，不宣称端到端 DB/network 性能收益。
+- 测试与真实验证：窄锁分配回归与原 delta batching 回归 `2 passed`；`pytest -q tests/mobile_realtime/test_channel.py tests/mobile_realtime/test_gateway.py tests/mobile_realtime/test_storage.py` 为 `75 passed in 1.04s`；`pyright --venvpath /mnt/data/coding/akasic-agent infra/mobile_realtime/channel.py` 为 `0 errors, 0 warnings, 0 informations`；migration append-only 与 `git diff --check` 通过。
+- Gate：按 WORKFLOW 在本候选提交前以 base `refactor/less-is-more-pr7-remove-unused-cmdk` 运行 preflight；本条不回填运行产生的 `sourceDigest`/`planDigest`，提交后绑定 committed HEAD 重跑，private 状态按报告记录。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、协议、网络或外部发送；测试临时对象只在一次性 pytest/benchmark 进程内存中存在。
+- 残余风险与回滚点：基准只覆盖 fake append 与 lock/batch 逻辑，真实 SQLite/network latency 未测量；若后续发现 lock map 需要跨调用持有，应停止并重新核对 owner/生命周期，不恢复 eager 分配。执行前备份为 `/tmp/less-is-more-pr8-finish-Dmxutr`；提交后可用单提交 revert `perf(mobile): avoid eager delta lock allocation` 回滚。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）

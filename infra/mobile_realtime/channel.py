@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import re
+from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -157,7 +158,7 @@ class MobileRealtimeChannel:
         self._active_turn_ids: dict[str, str] = {}
         self._process_turns: dict[tuple[str, str], _ProcessTurnState] = {}
         self._delta_batches: dict[tuple[str, str], _DeltaBatch] = {}
-        self._delta_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._delta_locks = defaultdict[tuple[str, str], asyncio.Lock](asyncio.Lock)
         self._delta_failure: BaseException | None = None
         self._attachments: AttachmentTransferService | None = None
         self._mobile_ui_provider: MobileUiProvider | None = None
@@ -1343,7 +1344,7 @@ class MobileRealtimeChannel:
         """按 50ms 或 4KiB 合并连续 delta，限制 SQLite 写入频率。"""
 
         key = (session_id, turn_id)
-        lock = self._delta_locks.setdefault(key, asyncio.Lock())
+        lock = self._delta_locks[key]
         flush_now = False
         async with lock:
             batch = self._delta_batches.get(key)
@@ -1391,7 +1392,7 @@ class MobileRealtimeChannel:
         """按原始顺序发布一个 turn 当前已聚合的 delta 段。"""
 
         key = (session_id, turn_id)
-        lock = self._delta_locks.setdefault(key, asyncio.Lock())
+        lock = self._delta_locks[key]
         async with lock:
             batch = self._delta_batches.pop(key, None)
             if batch is None:

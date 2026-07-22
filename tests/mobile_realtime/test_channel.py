@@ -1760,6 +1760,44 @@ async def test_turn_stop_rejects_missing_or_stale_turn_identity(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_delta_paths_reuse_existing_lock_without_allocating_lock() -> None:
+    runtime = _Runtime(cast(MobileRealtimeStorage, object()))
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    key = ("mobile:test", "turn-1")
+    existing_lock = asyncio.Lock()
+    channel._delta_locks[key] = existing_lock
+
+    real_lock = channel_module.asyncio.Lock
+    allocations = 0
+
+    def counting_lock() -> asyncio.Lock:
+        nonlocal allocations
+        allocations += 1
+        return real_lock()
+
+    channel._delta_locks.default_factory = counting_lock
+    await channel._buffer_delta(
+        session_id=key[0],
+        turn_id=key[1],
+        event_type="answer.delta",
+        delta="x" * 4096,
+        block_id=None,
+        ordinal=None,
+    )
+
+    assert allocations == 0
+    assert channel._delta_locks == {}
+    assert runtime.events == [
+        {
+            "event_type": "answer.delta",
+            "session_id": key[0],
+            "turn_id": key[1],
+            "payload": {"delta": "x" * 4096},
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_stream_deltas_batch_at_50ms_and_flush_before_tool_and_final(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
