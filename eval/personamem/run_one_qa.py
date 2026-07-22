@@ -5,10 +5,11 @@ import asyncio
 import json
 from pathlib import Path
 
+from eval.longmemeval.runtime import close_runtime, create_runtime
+
 from .dataset import load_dataset
 from .metrics import extract_option_label
 from .qa_runner import format_tool_trace, run_qa_instance
-from .runtime import close_runtime, create_runtime
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -28,7 +29,7 @@ async def _run(args: argparse.Namespace) -> None:
     if inst is None:
         raise SystemExit(f"question_id not found: {args.question_id}")
 
-    rt = await create_runtime(args.config, args.workspace, inst.persona_profile)
+    rt = await create_runtime(args.config, args.workspace)
     try:
         result = await run_qa_instance(rt, inst, timeout_s=args.timeout)
         result["predicted_label"] = extract_option_label(
