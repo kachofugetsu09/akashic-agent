@@ -514,6 +514,21 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、外部网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-pr27-backup-1784758748/`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 可能保留旧 wrapper 文本，但 current canonical source、调用面与外部 plugin cache 没有 consumer；若未来 PersonaMem 需要把 persona profile 注入 runtime，应在 benchmark owner 中设计显式参数与语义合同，不恢复无效转发层。
 
+## 2026-07-23 less-is-more PR28：删除 Akasha core 中四个不可达 DB helper
+
+### `PR28` `refactor(akasha): remove dead core database helpers`
+
+- base：PR27 committed HEAD `e229001bdf9983e07410cf6dbcdad7343baab7aa`，分支 `refactor/less-is-more-pr28-remove-dead-akasha-core-helpers`。
+- allowed_paths：`plugins/akasha/core.py` 仅删除 `message_id_to_key_from_db`、`open_source_db`、`get_turn_context`、`load_state` 四个 exact-zero 顶层函数；本账本；`capability_owner`：Akasha active engine/store/replay 的核心算法与读取 owner。未修改 active `engine._affected_turn_keys`/`_load_turn_card`、`replay._turn_messages`、`AkashaStore.list_nodes`/`load_edges_with_meta`/`_load_graph_cache`、共享 `sqlite3`/`turn_key`/`deserialize_f32` imports、SQL、embedding/cache、错误处理、schema、migration、manifest、tests 或 canonical 外部仓库。
+- 历史与不可达性：四个 helper 在首次引入 `6310c87e` 后的 Git 历史中只保留定义，`git log -S` 与初始提交源码核对未发现生产 caller。当前 PR27 worktree 的 CodeGraph、AST call/attribute/import scan、精确文本/动态 `getattr`/export/reflection scan 仅命中待删定义；`engine.py`、`store.py`、`replay.py` 的 active owner 使用各自现有读取路径。只读扫描 `/mnt/data/coding/akasha`（当前有维护者未提交改动）及 `/home/huashen/.akashic-plugin/cache` 未发现四个名称的 consumer；缓存中无对应 enabled plugin owner。
+- 语义与错误边界：这些函数分别是旧 message-id 反查（含未命中时返回原 ID 的降级）、sqlite-vec 源库开启、展示用 user/assistant 文本裁切和旧 sidecar 全量状态读取；当前没有调用者、导出或反射 owner，因此删除不会改变 active turn identity、replay card、节点/边加载、向量反序列化、SQL/write set、错误传播或持久化结果。`change_type: refactor`，`semantic_delta: none`；不删除仍被 `engine/store/replay` 使用的共享数据库和算法 helper，不新增 fallback、try/except、兼容层、absence oracle 或 mock success 路径。
+- 范围与计量：删除 `plugins/akasha/core.py` 107 个物理行、97 个非空非注释行；按 `scripts/measure_production_sloc.py`，删除前 source-set digest `b4ac1af9d07d23f933ef471f8bfad26befa8db18834faa0b78bfe758f2a159eb`、文件数 `378`、Python SLOC `77,525`、`plugins` SLOC `17,229`、total production SLOC `85,976`；删除后 digest `8dc2e7c38387a8ae910ea75a87765c5ab8b525627e263aab93095b894d3e4a86`、文件数 `378`、Python SLOC `77,432`、`plugins` SLOC `17,136`、total `85,883`；production 净减少 `93` SLOC。无测试源码变更。
+- 性能与状态：模块导入时少创建四个不可达函数对象；旧 helper 的 sqlite connection、cursor、查询和向量扩展加载路径不再可从当前代码触发。没有新增模型调用、SQL、I/O、等待、持久化、网络、事件、write set 或 schema 变化，不宣称端到端性能收益；正式 workspace、数据库和缓存均未写入。
+- 测试与静态验证：项目 venv `pytest -q -W error tests/test_akasha_plugin.py tests/test_fast_rebuild_parity.py` 为 `68 passed in 1.02s`；相关 replay/full-run/provider migration 回归 `29 passed in 1.48s`；`tests/test_production_sloc.py tests/semantic/test_change_gate.py tests/test_migration_append_only.py` 为 `24 passed in 2.07s`；`plugins/akasha` 与相关 tests `compileall` 通过；修改文件 `plugins/akasha/core.py` pyright `0 errors, 0 warnings`，engine/store/replay 联合检查 `0 errors, 2 warnings`（replay.py:291/294 既有 unknown-type warnings）；AST/精确 consumer/dynamic/export/plugin-cache scan、protected-path/migration/SLOC、`git diff --check` 通过。
+- Gate：待提交后以 committed HEAD 对 PR27 base `e229001bdf9983e07410cf6dbcdad7343baab7aa` 运行公开 Gate；private required 状态记录为 `pending_maintainer`，不把运行后 source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-pr28-backup-1784759365/`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint、`/mnt/data/coding/akasha` 的未提交副本或外部运行日志可能保留旧 helper 文本，但 current PR27 source、历史 Git consumer scan 与 plugin cache 没有 owner；若未来需要 message-id 映射、展示卡片或 sidecar loader，应在 active engine/store/replay owner 中重新设计显式合同，不恢复这些无调用的旧 helper。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）

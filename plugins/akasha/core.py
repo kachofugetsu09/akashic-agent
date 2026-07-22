@@ -598,30 +598,7 @@ def parse_ts_unix(value: str) -> float:
         raise ValueError(f"无效时间戳: {value}") from exc
 
 
-def message_id_to_key_from_db(cursor: sqlite3.Cursor, message_id: str) -> str:
-    """从 messages 表反查 message id 对应的 turn key。"""
-    _ = cursor.execute(
-        "SELECT session_key, seq, role FROM messages WHERE id = ?",
-        (message_id,),
-    )
-    row = cursor.fetchone()
-    if row:
-        _, _, key = turn_key(str(row[0]), int(row[1]), str(row[2] or ""))
-        return key
-    return message_id  # 降级返回
-
-
 # ── DB 工具函数 ───────────────────────────────────────────────────────
-
-
-def open_source_db(path: str) -> sqlite3.Connection:
-    """打开带 sqlite-vec 的源数据库。"""
-    import sqlite_vec
-    db = sqlite3.connect(path)
-    db.enable_load_extension(True)
-    sqlite_vec.load(db)
-    db.enable_load_extension(False)
-    return db
 
 
 def has_user_turn(cursor: sqlite3.Cursor | None, key: str) -> bool:
@@ -637,90 +614,6 @@ def has_user_turn(cursor: sqlite3.Cursor | None, key: str) -> bool:
         (session_key, seq),
     )
     return cursor.fetchone() is not None
-
-
-def get_turn_context(cursor: sqlite3.Cursor, key: str) -> tuple[str, str]:
-    """从 messages 表读取 user/assistant 消息内容（用于展示）。"""
-    parsed = parse_turn_key(key)
-    if parsed is None:
-        return "", ""
-    session_key, seq = parsed
-    _ = cursor.execute(
-        "SELECT content FROM messages WHERE session_key = ? AND seq = ? AND role = 'user'",
-        (session_key, seq),
-    )
-    user_row = cursor.fetchone()
-    _ = cursor.execute(
-        "SELECT content FROM messages WHERE session_key = ? AND seq = ? AND role = 'assistant'",
-        (session_key, seq + 1),
-    )
-    assistant_row = cursor.fetchone()
-    user_text = (user_row[0] if user_row else "") or ""
-    assistant_text = (assistant_row[0] if assistant_row else "") or ""
-    user_text = user_text.replace("\n", " ").strip()
-    assistant_text = assistant_text.replace("\n", " ").strip()
-    if len(user_text) > 58:
-        user_text = user_text[:55] + "..."
-    if len(assistant_text) > 58:
-        assistant_text = assistant_text[:55] + "..."
-    return user_text, assistant_text
-
-
-def load_state(
-    path: str,
-) -> tuple[dict[str, AkashaNode], dict[tuple[str, str], float], dict[str, tuple[int, int]]]:
-    """从 sidecar DB 加载全部节点、边和激活统计。"""
-    db = sqlite3.connect(path)
-    cursor = db.cursor()
-    _ = cursor.execute(
-        """
-        SELECT key, anchor_id, session_key, turn_seq, first_ts_unix, salience,
-               strength, resource, recall_count, last_activated_ts,
-               last_strength_ts, last_resource_ts, embedding, emb_count
-        FROM akasha_nodes
-        """
-    )
-    nodes: dict[str, AkashaNode] = {}
-    for row in cursor.fetchall():
-        (
-            key, anchor_id, session_key, turn_seq, first_ts_unix,
-            salience, strength, resource, recall_count,
-            last_activated_ts, last_strength_ts, last_resource_ts,
-            embedding_blob, emb_count,
-        ) = row
-        embedding = deserialize_f32(embedding_blob)
-        if embedding.size == 0:
-            continue
-        nodes[key] = AkashaNode(
-            key=key,
-            anchor_id=anchor_id,
-            session_key=session_key,
-            turn_seq=turn_seq,
-            first_ts_unix=first_ts_unix,
-            salience=salience,
-            strength=strength,
-            resource=resource,
-            recall_count=recall_count,
-            last_activated_ts=last_activated_ts,
-            last_strength_ts=last_strength_ts,
-            last_resource_ts=last_resource_ts,
-            embedding=embedding,
-            emb_count=emb_count,
-        )
-
-    _ = cursor.execute("SELECT src_key, dst_key, weight FROM akasha_edges")
-    edges = {(str(src_key), str(dst_key)): float(weight) for src_key, dst_key, weight in cursor.fetchall()}
-
-    _ = cursor.execute(
-        """
-        SELECT activated_key, COUNT(*) AS c, MAX(seq) AS last_seq
-        FROM akasha_activation_events
-        GROUP BY activated_key
-        """
-    )
-    activation_stats = {str(key): (int(count), int(last_seq)) for key, count, last_seq in cursor.fetchall()}
-    db.close()
-    return nodes, edges, activation_stats
 
 
 # ── 状态计算辅助函数 ──────────────────────────────────────────────────
