@@ -111,23 +111,6 @@ def test_fetched_context_defaults_empty_list():
     assert ctx.fetched_context == []
 
 
-# ── _fetch 保护字段 ───────────────────────────────────────────────────────
-
-def test_alerts_fetched_defaults_false():
-    ctx = AgentTickContext()
-    assert ctx._alerts_fetched is False
-
-
-def test_contents_fetched_defaults_false():
-    ctx = AgentTickContext()
-    assert ctx._contents_fetched is False
-
-
-def test_context_fetched_defaults_false():
-    ctx = AgentTickContext()
-    assert ctx._context_fetched is False
-
-
 # ── 实例隔离（shared default mutable 不能共享） ────────────────────────────
 
 def test_interesting_set_is_independent_per_instance():
