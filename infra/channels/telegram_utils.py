@@ -234,50 +234,6 @@ async def _run_outbound(
     return await _send_with_retry_result(action, label=label)
 
 
-async def _send_with_retry(
-    send_coro_factory,
-    *,
-    label: str,
-    max_attempts: int = 3,
-    base_delay: float = 0.8,
-) -> None:
-    last_err: Exception | None = None
-    for attempt in range(1, max_attempts + 1):
-        try:
-            await send_coro_factory()
-            return
-        except RetryAfter as e:
-            last_err = e
-            if attempt >= max_attempts:
-                break
-            delay = max(float(getattr(e, "retry_after", 1.0) or 1.0), base_delay)
-            logger.warning(
-                "[telegram] %s 命中限流，准备重试 attempt=%d/%d delay=%.1fs err=%s",
-                label,
-                attempt,
-                max_attempts,
-                delay,
-                e,
-            )
-            await asyncio.sleep(delay)
-        except (TimedOut, NetworkError) as e:
-            last_err = e
-            if attempt >= max_attempts:
-                break
-            delay = base_delay * (2 ** (attempt - 1))
-            logger.warning(
-                "[telegram] %s 发送失败，准备重试 attempt=%d/%d delay=%.1fs err=%s",
-                label,
-                attempt,
-                max_attempts,
-                delay,
-                e,
-            )
-            await asyncio.sleep(delay)
-    if last_err is not None:
-        raise last_err
-
-
 def _serialize_entities(entities: list[MessageEntity]) -> list[dict] | None:
     return [entity.to_dict() for entity in entities] if entities else None
 

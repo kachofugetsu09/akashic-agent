@@ -83,6 +83,23 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、schema、数据库、正式 workspace、服务、远端数据或 Git refs。
 - 残余风险与回滚点：private contract 仍需维护者按最终 plan digest 完成或明确状态；合并前可把 stacked 分支恢复到基线 `c294db8c20a3766baa5cb069bb62caa265ff06ac`，合并后使用单提交 revert。执行前备份为 `/tmp/less-is-more-pr1-finish-OK1QvV`，主审对账前备份为 `/tmp/less-is-more-pr1-main-review-VDPIcO`。
 
+## 2026-07-23 less-is-more PR2：删除 Telegram 不可达重试 helper
+
+### `PR2` `refactor(telegram): remove unreachable retry helper`
+
+- 范围：`infra/channels/telegram_utils.py` 中历史遗留的私有重试 helper；未修改发送、编辑、stream、`TelegramOutboundLimiter`、测试或 Gate catalog。
+- `change_type`：`refactor`；`semantic_delta`：`none`。
+- 历史与调用链：helper 最初随 Telegram 基础发送代码引入（`d7209415d4672`）；限流改造（`99ca25959def6`）后，生产入口统一经过 `_run_outbound`，有 limiter 时进入 `TelegramOutboundLimiter.run`，无 limiter 时进入现存的结果型 retry helper。全库静态搜索确认旧 helper 只有历史定义、无调用、无导出或动态反射读取，因此删除不改变任何可达路径。
+- 错误处理与不变量：可达路径的 `RetryAfter`、`TimedOut`、`NetworkError` 重试次数、backoff、日志、最后异常重抛和 fallback 均由原有结果型 helper/limiter 继续拥有；发送、编辑、stream、thinking block 的调用顺序和外部效果不变。删除的旧 helper 本身不可达，未移除任何能力。
+- baseline：source-set digest `d3fae9c398b6a61e1a540af489726c41329926415f46b3a625e4911e7ce55a4e`，文件数 `385`，Python SLOC `78,867`，TypeScript/TSX SLOC `8,644`，total production SLOC `87,511`。
+- candidate：source-set digest `91dd82e44398bc153bda147c9d175a3bd0299396228c370c13113e4395f371ac`，文件数 `385`，Python SLOC `78,825`，TypeScript/TSX SLOC `8,644`，total production SLOC `87,469`。
+- 目标与实际 SLOC 变化：`infra` 生产 SLOC 从 `11,394` 降至 `11,352`，总 production SLOC 净减少 `42`（raw diff `44 deletions`）；满足相对 PR1 基线至少减少 30 行的验收目标。运行时调用次数、重试等待和发送结果没有变化，不宣称额外性能收益。
+- Redis 式 God file 判断：保留 `infra/channels/telegram_utils.py`；删除不可达定义降低阅读成本，不拆分 Telegram 状态机、发送边界或错误 owner。
+- 测试与真实验证：项目 venv `pytest -q tests/test_telegram_utils.py tests/test_channel_clients.py` 为 `29 passed`；修改文件 pyright `0 errors, 18 warnings`；`python scripts/check_migrations_append_only.py --base refactor/less-is-more-pr1` 通过；`git diff --check` 通过；全库搜索确认旧 helper 名称零残留，且没有动态导出/反射命中。
+- Gate：候选代码完成后的 preflight `python docker/debug/gate.py run --base refactor/less-is-more-pr1` 为 `passed`，公开场景按 `channel` 变更选择并要求 private Gate；账本不回填该次 source/plan digest，避免提交账本后产生 sourceDigest 自引用。最终 committed-head Gate、digest 和 private 状态由主 Agent 在提交后重跑并写入 PR。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送或 Git refs。
+- 残余风险与回滚点：仅保留结果型 retry helper 与 limiter 两套既有实现的职责边界；若后续发现外部反射依赖，应停止而非恢复兼容层。执行前备份为 `/tmp/less-is-more-pr2-finish-pW1LgA`；提交后可用单提交 revert `refactor(telegram): remove unreachable retry helper` 回滚。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
