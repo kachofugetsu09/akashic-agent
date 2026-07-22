@@ -281,6 +281,22 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改数据库、正式 workspace、服务、网络、外部发送或 Git refs。备份：`/tmp/less-is-more-pr12-backup/`。回滚点：本 PR 单提交 revert。
 - 残余风险：取消 oracle 启动真实 `sleep`，依赖当前 POSIX/Windows shell 可执行环境；测试等待 options/pump instrumentation 后再取消，未放宽取消或进程组合同。
 
+## 2026-07-23 less-is-more PR13：复用插件包 discovery 映射
+
+### `PR13` `perf(plugins): reuse discovered package map`
+
+- base：PR12 commit `9ad4daff3b1f79150e6007727f60846ab40a784b`，分支 `perf/less-is-more-pr13-reuse-plugin-package-discovery`。
+- allowed_paths：`agent/plugins/packages.py`、`agent/plugins/manager.py`、`tests/test_plugin_packages.py`、`docs/refactor/clean-code-ledger.md`；`capability_owner`：插件包 discovery 与 manager 同轮 enable 选择；未修改 dashboard public API/generation/snapshot/lease/event、插件 manifest schema 或 hot-reload 生命周期。
+- 原问题与实现：`PluginManager.discover()` 已得到完整 package map，却再次从 project root 读取并解析每个 `package.toml`。保留 public `enabled_plugin_packages(project_root, entries)`，新增接收 `Mapping` 的私有 `_select_enabled_plugin_packages`，manager 将同轮 discovery map 直接传入；不跨轮缓存、不重复校验、不新增 catch/fallback。
+- 不变量与错误语义：启用筛选的 insertion order、disabled member 过滤、原 capability conflict 文本与 fail-fast 传播保持不变；`Mapping` 接受只读视图但本轮 map 仍由 discovery 唯一拥有。插件 topology/order、package_id、manifest/provides schema、dashboard 调用路径均未改动。
+- baseline：source-set digest `b86f87caa1b51f15c040fdfb3009c4f9f5eeef38d4a76cd09baecea370d098dd`，文件数 `384`，Python SLOC `78,622`，TypeScript/TSX SLOC `8,451`，total production SLOC `87,073`。
+- candidate：source-set digest `e49e6f60681efe5b7dcfca789b5c4767b12f4b357ce20647d2517442802abf99`，文件数 `384`，Python SLOC `78,633`，TypeScript/TSX SLOC `8,451`，total production SLOC `87,084`；`agent` 从 `28,747` 增至 `28,758`，production 净增加 `11` 行，属于保留 public wrapper、Mapping helper 和类型边界的最小实现。
+- 性能回放：同一 cwd fixture、同一 `.venv` 与临时 workspace/cache，500 轮 `PluginManager.discover()`；package.toml reads/parses 从 `4 → 2`/round（总计 `2,000 → 1,000`），两条路径各保持每轮一次读取；观察性 wall-time `219.672 → 171.849 ms`（约 `-21.77%`），仅作为本机 parser/discovery 观测，不宣称端到端 runtime 提速。
+- 测试与静态验证：`pytest -q tests/test_plugin_packages.py tests/test_plugin_manager.py tests/test_plugin_hot_reload.py tests/test_plugin_skill_links.py` 为 `189 passed in 10.78s`；新增真实 manager `package.toml` 每路径一次读取 oracle，并断言默认 manifest 下 package members 被过滤且非包插件 topology/order/identity 保持；保留 public conflict/malformed/disabled 覆盖；目标文件 pyright `0 errors, 14 warnings`，与 base warning 数一致；migration append-only、`git diff --check` 与 production SLOC 通过。
+- Gate：按 WORKFLOW 以 PR12 base 运行 committed-head 公开 Gate 并通过；private Gate 状态 `pending_maintainer`。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event 或 Git refs。执行前备份：`/tmp/less-is-more-pr13-backup-QPS3Qt/`；回滚点为本 PR 单提交 revert。
+- 残余风险：wall-time 仅覆盖同步 discovery/parser；若未来 discovery map 跨 round 共享或 package schema 改为有状态解析，必须重新核对 PLG-002 的 round snapshot 与错误 owner，不应把本 helper 变成跨轮缓存。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
