@@ -26,7 +26,6 @@ from agent.provider import (
 )
 from agent.tool_runtime import append_assistant_tool_calls
 from infra.channels.group_filter import DefaultGroupFilter, strip_at_segments
-from memory2.models import MemoryItem
 from plugins.default_proactive.anyaction import AnyActionGate, QuotaStore
 from bootstrap.app import AppRuntime
 from bootstrap.providers import build_providers, build_vl_provider
@@ -1022,21 +1021,6 @@ async def test_bootstrap_trigger_and_entrypoints_cover_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
     from agent.migrations import MigrationOutcome
-
-    item = MemoryItem(
-        id="1",
-        memory_type="procedure",
-        summary="s",
-        content_hash="h",
-        embedding=[0.1],
-        reinforcement=1,
-        extra_json={},
-        source_ref=None,
-        happened_at=None,
-        created_at="2025-01-01T00:00:00+00:00",
-        updated_at="2025-01-01T00:00:00+00:00",
-    )
-    assert item.id == "1"
 
     supervisor_calls: list[tuple[Path, Path]] = []
 

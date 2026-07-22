@@ -436,6 +436,22 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/less-is-more-pr22-backup-20260723-053803/`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧 enhancer 文本，但 current Git source 与动态调用面已证实无 consumer；旧 raw+second retrieve+union_dedup 与 active 双 hypothesis auxiliary/RRF 不同，若未来需要 HyDE 增强，应在 active retrieval owner 中重新设计并补独立合同，不复活该 dead enhancer。
 
+## 2026-07-23 less-is-more PR23：删除不可达的 MemoryItem 模型
+
+### `PR23` `refactor(memory2): remove dead MemoryItem model`
+
+- base：PR22 committed HEAD `9e422e045025ac23e798abd3821a2b763abf7a3e`，分支 `refactor/less-is-more-pr23-remove-dead-memory-item`。
+- allowed_paths：`memory2/models.py`（严格删除）、`tests/test_more_support_modules.py`（删除唯一专属 import 与构造测试块）、`docs/refactor/clean-code-ledger.md`；`capability_owner`：Memory2 active `MemoryHit`/`MemoryStore2` model boundary；未修改 `MemoryHit`、`MemoryStore2`、active default-memory engine、schema、migration、manifest、plugin 或 cache。
+- 历史与不可达性：`MemoryItem` 随 Memory2 初始提交 `4c6cf0d1` 引入；生产层唯一 import 在 `9ce0155b` 的 store migration 中移除，当前 committed source 的精确静态、AST/字符串、动态 import/getattr/export/reflection、tests、SDK、plugin、manifest、eval/script 与 `/home/huashen/.akashic-plugin/cache` 扫描仅命中待删模块和 `tests/test_more_support_modules.py` 的专属 import/构造块；当前 production exact-zero consumer。active `MemoryHit` 是现有检索与 post-response owner，不能由同名旧 dataclass 推断为替代迁移。
+- 语义与错误边界：`MemoryItem` 只保存未使用的 dataclass 字段，没有持久化、schema、事务、事件、错误或外部调用 owner；删除不改变 active `MemoryHit`/`MemoryStore2` 的字段、SQL、序列化、检索、写入和错误传播。`semantic_delta: none`，不新增 fallback、兼容层、absence oracle 或 mock success 路径。
+- 范围与测试：删除 `memory2/models.py` 全文件 17 个物理行/15 个 production SLOC，并删除测试中唯一专属 import 与 15 行构造断言；其余 `test_bootstrap_trigger_and_entrypoints_cover_paths` 仍覆盖真实 supervisor、migration 和 CLI 入口，不因旧模型 fixture 继续耦合。
+- 计量：删除前 source-set digest `734b0df2222b000ec0a0f7dc02ba20e2440c55f7a7111b73a59e381f7d88c9ed`，文件数 `379`，Python SLOC `77,567`，`memory2` SLOC `3,845`，total production SLOC `86,018`；删除后 source-set digest `3c7c839f7ce8119cc8a681fe939caee818e100a944a19629acd35fed3a8c1b39`，文件数 `378`，Python SLOC `77,552`，`memory2` SLOC `3,830`，total production SLOC `86,003`；production 净减少 `15` SLOC。
+- 性能与状态：仅减少一个不可达模块导入时的 dataclass/type 对象和对应测试构造；无新增调用、分配、等待、I/O、持久化、网络、事件、write set 或 schema 变化，不宣称端到端性能收益。
+- 测试与静态验证：项目 venv `pytest -q -W error tests/test_more_support_modules.py tests/test_memory_engine_contract.py tests/test_recall_memory_tool.py tests/test_memory2_retrieval_baseline.py tests/test_memory2_consolidation_idempotency.py tests/test_memory2_dedup_baseline.py` 为 `105 passed in 1.63s`；production/active memory compileall 通过；pyright 为 `0 errors, 152 warnings`（均为既有 memory2/default-engine 动态类型告警）；`tests/test_production_sloc.py tests/semantic/test_change_gate.py` 为 `19 passed`；精确 consumer/dynamic/export/plugin-cache scan、migration append-only 与 `git diff --check` 通过。
+- Gate：在 committed HEAD 对 PR22 base `refactor/less-is-more-pr22-remove-dead-hyde-enhancer` 运行公开 Gate；private required 状态记录为 `pending_maintainer`，不把运行后的 source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/less-is-more-pr23-backup-d5KZO3/`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧模型文本，但当前 Git source、历史生产迁移与外部 plugin cache 没有 consumer；若未来需要新的 persisted memory DTO，应在 active storage owner 中重新设计并补独立合同，不复活 dead `MemoryItem`。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
