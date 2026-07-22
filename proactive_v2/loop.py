@@ -477,20 +477,6 @@ class ProactiveLoop:
             finally:
                 reset_runtime_snapshot(token)
 
-    async def _tick_admitted(self) -> float | None:
-        if self._runtime_snapshot_store is not None:
-            lease = await self._runtime_snapshot_store.acquire()
-            from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
-
-            async with lease:
-                token = bind_runtime_snapshot(lease)
-                try:
-                    await self._switch_snapshot(lease.snapshot)
-                    return await self._tick_bound()
-                finally:
-                    reset_runtime_snapshot(token)
-        return await self._tick_bound()
-
     async def quiesce_for_reload(self) -> None:
         async with self._reload_lock:
             await self._stop_active_kernel()
