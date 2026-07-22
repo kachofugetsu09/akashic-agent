@@ -605,6 +605,21 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema 或 manifest。执行前备份：`/tmp/akashic-agent-less-is-more-pr33-backup/`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint、日志或外部未跟踪副本可能保留旧 alias 文本，但当前 canonical source、生产调用面与 enabled plugin cache 没有 owner；若未来需要公开预取状态 API，应在 `AgentTickContext` 的公开字段/方法合同中重新设计，不恢复 module-private aliases。
 
+## 2026-07-23 less-is-more PR34：合并 Telegram 限流等待的重复实现
+
+### `PR34` `refactor(telegram): reuse chat-slot wait helper`
+
+- base：PR33 committed HEAD `8e481f0b5074ac64131ea162728db07387b2dc06`，分支 `refactor/less-is-more-pr34-dedupe-telegram-limiter-wait`。
+- allowed_paths：`infra/channels/telegram_utils.py` 删除与 `_wait_for_chat_slot` AST body 完全相同的 `_sleep_until_ready`，将唯一重试调用改为 `_wait_for_chat_slot(cid)`；本账本。`capability_owner`：`TelegramOutboundLimiter` 的 chat-slot deadline；未修改 limiter 的锁、重试次数、cooldown、全局 slot、异常分类、公开 `run`/send API、Telegram channel、测试、schema、manifest、迁移或正式 workspace。
+- 历史与不可达性：两个 private async helper 自 `99ca2595` 同时引入，当前 `_sleep_until_ready` 只有 `run` 的一处调用；PR33 基线的 AST body、精确文本、`getattr`/`setattr`/`import_module`/动态文件加载、导出/反射、tests、SDK、plugin manifest 与 `/home/huashen/.akashic-plugin/cache` 扫描未发现 private monkeypatch 或外部 consumer。候选与保留 helper 的函数体逐 AST 节点相等；删除后 `_sleep_until_ready` 在当前 source、tests、plugin cache 中为零残留。
+- 语义与错误边界：`change_type: refactor`，`semantic_delta: none`。首次尝试和每次 RetryAfter/TimedOut/NetworkError 重试前都继续等待同一 `_next_chat_at[chat_id]` deadline；`asyncio.sleep` 的正等待条件、时间读取、锁持有、cooldown 更新、日志和原异常传播完全不变。删除只转移到已有 owner，不新增 fallback、try/except、默认值、兼容层、动态查找或 mock success 路径。
+- 范围与计量：删除 6 个物理行、5 个 production SLOC；PR33 base source-set digest `8cb775f6ef590183c2008116e3dbfc02d73c72f968548d3cb264da63e8a8adf3`、文件数 `378`、Python SLOC `77,366`、`infra` SLOC `11,303`、total production SLOC `85,817`；candidate source-set digest `65f75da5cd20738193099c8b4ba736ced1457ef71d5bdf393d3492621043614c`、文件数 `378`、Python SLOC `77,361`、`infra` SLOC `11,298`、total `85,812`；production 净减少 `5` SLOC。测试源码无改动。
+- 性能、错误与注释：模块导入少创建一个不可达 async 函数对象；可达等待次数和 sleep deadline 不变，retry 热路径只保留一个 chat-slot owner，不宣称端到端性能收益。未新增注释、日志、异常捕获或降级。
+- 测试与静态验证：Telegram utility/channel/client/host/base/mobile-channel 定向回归 `92 passed in 3.73s`；候选 Python compileall 通过；`telegram_utils.py` Pyright `0 errors, 16 warnings`，与 PR33 base 相同；AST body equality、行为探针（两次 action、三次同 chat-id wait 调用）、精确 consumer/dynamic/export/plugin-cache scan、migration append-only、production SLOC 与 `git diff --check` 通过。未修改测试或实时 workspace。
+- Gate：已在 committed HEAD 对 PR33 base `8e481f0b5074ac64131ea162728db07387b2dc06` 运行公开 Gate；private required 状态记录为 `pending_maintainer`，不把运行后的 source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema 或 manifest。执行前备份：`/tmp/akashic-less-is-more-pr34-backup.*`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧 helper 文本，但当前 canonical source、动态调用面与 enabled plugin cache 没有 owner；若未来需要不同的等待策略，应在 `TelegramOutboundLimiter` 的 chat-slot owner 中重新设计显式合同，不恢复重复 private helper。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）

@@ -133,7 +133,7 @@ class TelegramOutboundLimiter:
                     )
                 if attempt >= attempts:
                     break
-                await self._sleep_until_ready(cid)
+                await self._wait_for_chat_slot(cid)
             if last_err is not None:
                 raise last_err
             raise RuntimeError(f"{label} failed without exception")
@@ -189,12 +189,6 @@ class TelegramOutboundLimiter:
                 self._next_global_at = (
                     asyncio.get_running_loop().time() + self._global_interval_s
                 )
-
-    async def _sleep_until_ready(self, chat_id: int) -> None:
-        now = asyncio.get_running_loop().time()
-        wait_s = self._next_chat_at.get(chat_id, 0.0) - now
-        if wait_s > 0:
-            await asyncio.sleep(wait_s)
 
     def _mark_used(self, chat_id: int, kind: str) -> None:
         now = asyncio.get_running_loop().time()
