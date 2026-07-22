@@ -360,6 +360,21 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、外部网络或 Git refs。执行前备份：`/tmp/less-is-more-pr17-backup-GxyTZW/`；回滚点为本 PR 单提交 revert。
 - 残余风险：microbench 只覆盖 map lookup 与锁对象分配；若未来把 map 访问跨线程化或在 get/insert 之间引入 await，必须重新核对并发身份语义，不恢复 eager 分配作为同步手段。
 
+## 2026-07-23 less-is-more PR18：删除不可达的 Memory2 injection planner
+
+### `PR18` `refactor(memory2): remove dead injection planner`
+
+- base：PR17 committed HEAD `0f1c8c132f65a1cae71b8d84f26f97a92256fd9c`，分支 `refactor/less-is-more-pr18-remove-dead-injection-planner`。
+- allowed_paths：`memory2/injection_planner.py`（删除）、`tests/test_procedure_multi_query_retrieval.py`（删除）、`tests/test_hyde_enhancer.py`（删除 planner import、3 个 planner integration tests 及其专属夹具/import/过时注释）、`docs/refactor/clean-code-ledger.md`；`capability_owner`：Memory2 active default engine/retriever；未修改 active engine、retriever、default pipeline、query builder、HyDE module、schema、manifest 或 runtime。
+- 历史与可达性：planner 在 `9c566dd5` 引入真实 procedure 多 query 规划，在 `ed0fe4b3` 接入 HyDE history/scoped fallback，`459a310c` 的 retrieval protocol 迁移后仅部分保留，`5801862b` 插件化记忆引擎后 active production caller 已迁入 `plugins/default_memory/engine.py` 与 `memory2/retriever.py`。当前 production、tests、docs、SDK、plugin、manifest、eval、script、dynamic import/getattr/export 与 reflection 搜索仅命中待删 planner 专属测试和定义，无其他 consumer。
+- active replacement 与边界：active engine 已覆盖 procedure/preference 类型、`memory2/query_builder.py` 的原始+改写多 query、retriever 的 vector lane max-pool 和 keyword/vector RRF，以及 answer path 的双 hypothesis auxiliary query；它不完全复现旧 planner 的 scoped→global fallback 与 `scope_mode`/`+hyde` 标记。因此本次删除基于不可达 caller，不宣称旧 planner 与 active engine 语义完全相同；正常 active retrieval、scope、RRF、hypothesis、schema、write set 和 error propagation 保持不变。
+- 范围与语义：`change_type: refactor`，`semantic_delta: none`。只删除无 owner、无 production caller 的 planner module 与 planner-only tests；保留四个独立 `HyDEEnhancer`/`_union_dedup` tests（timeout fallback、raw preservation、HyDE append、HyDE no-op），不新增 absence test、fallback、兼容层或 mock success 路径。
+- 计量：删除前 source-set digest `8d5219c387c8b77a6619c1eca82087194a8cf5c8649380f5778b316f8b29442a`，文件数 `383`，Python SLOC `78,330`，`memory2` SLOC `4,597`，total production SLOC `86,781`；删除后 source-set digest `95ba009ac11ac3541546e2d48176fe7424d29b3dfa4f85ef3706125a53f81a2a`，文件数 `382`，Python SLOC `78,182`，`memory2` SLOC `4,449`，total production SLOC `86,633`；production 净减少 `148` SLOC。删除的测试源码不计入 production SLOC 或 30% 参考量，单独如实记录为一个 planner-only procedure retrieval 测试文件和 HyDE 文件中的三个 planner integration tests。
+- 测试与静态验证：保留并运行 `tests/test_hyde_enhancer.py`、`tests/test_procedure_query_builder.py`、`tests/test_recall_memory_tool.py`、`tests/test_memory_engine_contract.py` 及 default retrieval/engine 相关回归；compileall active modules、pyright、exact/dynamic scan、migration append-only、production SLOC、`git diff --check` 与 committed-head Gate 作为提交验收项记录。
+- Gate：按 WORKFLOW 以 committed HEAD 对 PR17 base `0f1c8c132f65a1cae71b8d84f26f97a92256fd9c` 运行公开 Gate；private required 状态记录为 `pending_maintainer`，不把运行后 digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、外部网络、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/less-is-more-pr18-backup-20260723-050115/`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧 planner 文本；当前 Git source 与动态调用面没有 consumer。若未来需要 scoped fallback 或 HyDE scope metadata，应在 active retrieval owner 中重新设计并补独立合同，不复活 dead planner。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）

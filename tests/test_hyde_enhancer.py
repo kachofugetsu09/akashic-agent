@@ -4,52 +4,18 @@ HyDE 检索增强单元测试。
 覆盖：
   1. hypothesis 生成超时 → 降级返回 raw 结果，无异常
   2. raw 结果完整保留（union_dedup：id 不丢，score 不改）
-  3. used_hyde / scope_mode 标记只在 HyDE 实际追加条目时才加 +hyde 后缀
-  4. retrieve_history_items 在 hyde_enhancer=None 时走原有路径
+  3. used_hyde 只在 HyDE 实际追加条目时标记为 True
 """
 
 import asyncio
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from agent.provider import LLMResponse
-from agent.tools.base import Tool
 from memory2.hyde_enhancer import HyDEEnhancer, _union_dedup
-from memory2.injection_planner import retrieve_history_items
-
-# ── 测试工具 ──────────────────────────────────────────────────────────────────
-
-
-class _NoopTool(Tool):
-    @property
-    def name(self) -> str:
-        return "noop"
-
-    @property
-    def description(self) -> str:
-        return "noop"
-
-    @property
-    def parameters(self) -> dict:
-        return {"type": "object", "properties": {}, "required": []}
-
-    async def execute(self, **kwargs) -> str:
-        return "ok"
-
-
-class _FakeProvider:
-    def __init__(self, response: str = "") -> None:
-        self._response = response
-
-    async def chat(self, **kwargs):
-        return LLMResponse(content=self._response, tool_calls=[])
 
 
 def test_hypothesis_timeout_falls_back_to_raw():
-    import asyncio
-
     raw_items = [{"id": "a", "score": 0.7}, {"id": "b", "score": 0.6}]
 
     async def slow_chat(**kwargs):
@@ -81,7 +47,7 @@ def test_hypothesis_timeout_falls_back_to_raw():
     assert used_hyde is False
 
 
-# ── 4. raw 结果完整保留（id 不丢，score 不变）────────────────────────────────
+# ── 2. raw 结果完整保留（id 不丢，score 不变）────────────────────────────────
 
 
 def test_union_dedup_raw_preserved():
@@ -108,7 +74,7 @@ def test_union_dedup_raw_preserved():
     assert result[1]["id"] == "b"
 
 
-# ── 5. used_hyde / scope_mode 标记 ────────────────────────────────────────────
+# ── 3. used_hyde 标记 ─────────────────────────────────────────────────────────
 
 
 def test_used_hyde_true_when_hyde_appended_new_item():
@@ -176,112 +142,3 @@ def test_used_hyde_false_when_hyde_adds_nothing_new():
 
     assert used_hyde is False
     assert len(cast(Any, results)) == 1
-
-
-# ── 6. retrieve_history_items scope_mode 标记 ─────────────────────────────────
-
-
-def test_scope_mode_no_hyde_suffix_when_enhancer_none():
-    """hyde_enhancer=None 时 scope_mode 为 'global'，无 +hyde 后缀。"""
-    raw_items = [{"id": "a", "score": 0.7}]
-
-    memory = MagicMock()
-    memory.retrieve_related = AsyncMock(return_value=raw_items)
-
-    items, scope_mode = asyncio.run(
-        retrieve_history_items(
-            memory,
-            "测试",
-            memory_types=["event"],
-            top_k=6,
-            hyde_enhancer=None,
-        )
-    )
-
-    assert scope_mode == "global"
-    assert items == raw_items
-
-
-def test_scope_mode_has_hyde_suffix_when_hyde_appended():
-    """HyDE 实际追加条目时 scope_mode 为 'global+hyde'。"""
-    raw_items = [{"id": "a", "score": 0.7}]
-    hyde_items = [{"id": "b", "score": 0.8}]
-
-    async def fake_chat(**kwargs):
-        return LLMResponse(content="假想条目", tool_calls=[])
-
-    call_count = 0
-
-    async def fake_retrieve(query, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return raw_items
-        return hyde_items
-
-    provider = MagicMock()
-    provider.chat = fake_chat
-
-    enhancer = HyDEEnhancer(
-        light_provider=cast(Any, provider),
-        light_model="qwen-flash",
-        timeout_s=2.0,
-    )
-
-    memory = MagicMock()
-    memory.retrieve_related = fake_retrieve
-
-    items, scope_mode = asyncio.run(
-        retrieve_history_items(
-            memory,
-            "测试",
-            memory_types=["event"],
-            top_k=6,
-            context="近期对话内容",
-            hyde_enhancer=enhancer,
-        )
-    )
-
-    assert scope_mode == "global+hyde"
-    assert len(items) == 2
-
-
-def test_scope_mode_global_fallback_without_hyde_suffix_in_scoped_fast_path():
-    """prefer_scoped=True 的快速路径下，global fallback 不走 HyDE 增强。"""
-    provider = MagicMock()
-    provider.chat = AsyncMock(
-        return_value=LLMResponse(content="不会被使用的假想条目", tool_calls=[])
-    )
-    enhancer = HyDEEnhancer(
-        light_provider=cast(Any, provider),
-        light_model="qwen-flash",
-        timeout_s=2.0,
-    )
-
-    memory = MagicMock()
-    memory.embed_query = AsyncMock(return_value=[0.1, 0.2, 0.3])
-    memory.retrieve_related_vec = AsyncMock(
-        side_effect=[
-            [],
-            [{"id": "g1", "score": 0.8}],
-        ]
-    )
-
-    items, scope_mode = asyncio.run(
-        retrieve_history_items(
-            memory,
-            "测试",
-            memory_types=["event"],
-            top_k=6,
-            prefer_scoped=True,
-            scope_channel="telegram",
-            scope_chat_id="123",
-            allow_global=True,
-            context="近期对话内容",
-            hyde_enhancer=enhancer,
-        )
-    )
-
-    assert scope_mode == "global-fallback"
-    assert items == [{"id": "g1", "score": 0.8}]
-    provider.chat.assert_not_called()
