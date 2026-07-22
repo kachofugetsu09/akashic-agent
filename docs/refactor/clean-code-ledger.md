@@ -666,6 +666,22 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改数据库、文件状态、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-backups/pr37-agent-mcp-client.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr37-test-io-modules.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr37-ledger.md.bak-20260723`；回滚点为本 PR 单提交 revert。
 - 残余风险：基准只覆盖 JSON CPU 与 fake pipe；真实 MCP server 的调度、OS pipe backpressure 和子进程退出仍由既有测试/Gate 覆盖。若未来 debug 与 wire 需要不同序列化选项，应在该 owner 明确拆分协议，而不是恢复无证据重复 dumps。
 
+## 2026-07-23 less-is-more PR38：复用 shell 命令解析结果
+
+### `PR38` `perf(shell): reuse parsed command tokens`
+
+- base：PR37 committed HEAD `2a360df0e8dc41825c8d8fc6cbe36b4ca158e4bf`，分支 `refactor/less-is-more-pr38-reuse-shell-tokens`。
+- allowed_paths：`agent/tools/shell.py` 的 `_validate_command`/`_validate_network_command`、`tests/test_shell_tool.py` 的解析调用次数 oracle、本账本；`capability_owner`：shell 命令解析与网络安全护栏。未修改命令白名单、受限目录校验、URL 目标校验、超时/后台执行、子进程参数、schema、manifest、迁移或正式 runtime workspace。
+- 原问题与证据：`_validate_command` 已完成 `_split_command` 后，将原始命令交给 `_validate_network_command`；后者为识别网络命令再次解析同一字符串。CodeGraph/源码调用链确认所有 `ShellTool.execute` 校验都经过该 owner；候选将首次解析得到的 `tokens` 显式传入，既有 private helper 的一参数调用面仍走原有独立解析路径。
+- 语义与错误边界：`change_type: performance`，`semantic_delta: none`。空命令、未闭合引号、命令 basename、网络开关、受限路径、FTP/缺 URL、写入/上传参数、私网 URL、返回错误文本与检查顺序保持不变；生产有效命令由两次 split 降为一次，raw command 仍原样传给执行器。`tokens is None` 区分“未提供”与空列表，不新增 `try/except`、fallback、默认值、动态兼容层或 mock success。
+- 范围与计量：候选仅增加可选 token 参数；PR37 base source-set digest `cae774b4ad3044f6131d77f74f59ef926fbd31c1ba7a7c73f4c7bf08bc1b6441`、文件数 `378`、Python SLOC `77,347`、`agent` `28,745`、total production SLOC `85,798`；candidate source-set digest `75d1cadaefac41bda06d0eee28e805450cf964adddc2cb20be8fc8469bdb73fd`、文件数 `378`、Python SLOC `77,352`、`agent` `28,750`、total `85,803`。生产 SLOC 增加 `5`，是保留公开 private helper 一参兼容路径与显式 token 合同的必要实现成本；本 PR 的收益来自重复解析消除，不宣称代码行减少。
+- 字节/调用 parity：base/candidate 场景矩阵覆盖 Unicode、未闭合引号、网络关闭、FTP、写入参数、私网 URL、受限父级路径和有效 HTTP(S)；校验结果 JSON 完全相等，所有允许执行的原始命令字符串完全相等。候选 `_validate_command("curl 'https://example.com/中文'")` 的 `_split_command` 调用次数为 `1`；直接一参 `_validate_network_command("curl https://example.com")` 仍为 `1` 次。
+- 性能回放：同一进程、同一有效命令 `curl 'https://example.com/中文'`，预热后每次 `30,000` 次、`9` 次重复；base 中位数 `27.310 µs/call`，candidate `19.541 µs/call`，中位数变化 `-28.45%`。这是命令解析/网络护栏 CPU 微基准，不宣称真实 shell 子进程端到端收益。
+- 测试与静态验证：shell/mid-modules 定向回归 `37 passed in 2.12s`；相关源码与测试 `compileall` 通过；候选 `agent/tools/shell.py` Pyright `0 errors, 36 warnings`，直接相关测试 Pyright `0 errors, 307 warnings`（均为现有动态/私有测试诊断）；base/candidate 语义与执行参数矩阵、migration append-only、`git diff --check` 通过。未修改测试以外的运行状态。
+- Gate：已在 committed HEAD 对 PR37 base `2a360df0e8dc41825c8d8fc6cbe36b4ca158e4bf` 运行公开 Gate 并通过；private contract 状态为 `pending_maintainer`，不把运行后的 source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、文件状态、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-backups/pr38-agent-tools-shell.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr38-test-shell-tool.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr38-test-mid-modules.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr38-ledger.md.bak-20260723`；回滚点为本 PR 单提交 revert。
+- 残余风险：微基准只覆盖本地 tokenization 与护栏 CPU；真实 shell 调度、OS 进程、超时、后台生命周期仍由既有测试/Gate 覆盖。若未来网络护栏需要不同 token 视图，应在该 owner 明确新的解析合同，不恢复无证据的重复 split。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
