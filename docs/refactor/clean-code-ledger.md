@@ -313,6 +313,21 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event 或 Git refs。执行前备份：`/tmp/less-is-more-pr14-backup-eKfusa/`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 或外部未跟踪副本仍可能保留旧 symbol 文本，但当前 Git source、插件、SDK、docs 和动态调用面已证实无 consumer；若未来恢复旧 judge 链路，应从 active plugin prompt owner 重新设计，不应复活该 helper。
 
+## 2026-07-23 less-is-more PR15：删除不可达的 Memory2 去重决策器
+
+### `PR15` `refactor(memory2): remove dead dedup decider`
+
+- base：PR14 commit `b4c1176be8339680b3c2c8d964506cbc25c38ba3`，分支 `refactor/less-is-more-pr15-remove-dead-dedup-decider`。
+- allowed_paths：`memory2/dedup_decider.py`、`docs/refactor/clean-code-ledger.md`；`capability_owner`：Memory2 默认记忆合并与检索链；未修改 `memory2/store.py`、`memory2/memorizer.py`、`plugins/default_memory/engine.py`、schema、manifest、测试或 SDK。
+- 历史与可达性：`DedupDecider` 及其 `DedupDecision`、`MemoryAction`、`ExistingAction`、`DedupResult` 类型和两阶段向量/LLM 去重实现已由旧 Memory2 ingest 链路遗留。最后生产 caller 在 `1e19ce78` 已删除，当前 active replacement 是 `plugins/default_memory/engine.py → memory2/memorizer.py`；精确 import/symbol、production/test/docs/SDK/plugin/manifest/eval/script、dynamic import/getattr/export 与 cache consumer 扫描均无命中。该模块当前无 production、test、docs、SDK、plugin、manifest、eval、script、dynamic 或 cache consumer。
+- 范围与语义：`change_type: refactor`，`semantic_delta: none`。仅删除不可达模块；正常记忆合并、supersede、reinforcement、semantic dedup、forget/undo、SQLite schema、write set、错误传播和 active engine 调用链保持不变。不添加 catch、fallback、兼容层或 symbol-absence 测试。
+- 计量：模块删除前 source-set digest `c26d08dd0bdbddd13c971a5a26aef22a9cfa522dc3ec61ad61be61a6f7dae1d2`，文件数 `384`，Python SLOC `78,588`，`memory2` SLOC `4,855`，total production SLOC `87,039`；删除后 source-set digest `a363d259fddd0a1680d01ae641c3612eb184c67bfa0b673c80fa1928fd1d7fa6`，文件数 `383`，Python SLOC `78,330`，`memory2` SLOC `4,597`，total `86,781`。仓库脚本实际 production 净减少 `258` SLOC；删除文件内 `DedupDecider` class span 为 `189` SLOC（物理行 49–272）。
+- Redis 式 God file 判断：不拆分 active `memory2/store.py`、`memory2/memorizer.py` 或 `plugins/default_memory/engine.py`；本 PR 仅移除无 owner、无调用且无状态写入的 dead module，不改变现有合并与持久化边界。
+- 测试与真实验证：按调用面保留并运行 Memory2 baseline、semantic dedup、consolidation idempotency、memory engine contract 及 retrieval/forget/undo 相关回归；不修改测试。编译 active modules、修改范围 pyright、精确 consumer/dynamic scan、migration append-only、production SLOC 与 `git diff --check` 均作为提交验收项记录。
+- Gate：按 WORKFLOW 以 PR14 base `b4c1176be8339680b3c2c8d964506cbc25c38ba3` 运行 committed-head 公开 Gate；本条不回填运行后的 `sourceDigest`/`planDigest`，避免账本自引用，最终报告摘要与 private 状态由交付报告记录。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event 或 Git refs。执行前备份：`/tmp/less-is-more-pr15-backup-T5mNK8/`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧模块文本，但当前 Git source 与动态调用面没有 consumer；若未来恢复旧 ingest 链路，应从 active `memorizer` owner 重新设计，不复活该 dead decider。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
