@@ -405,6 +405,22 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、外部网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/less-is-more-pr20-backup-Wh6Tpp/`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧 checker 文本；当前 Git source 与动态调用面没有 consumer。若未来恢复 sufficiency/retry lane，应在 active retrieval owner 中重新设计并补独立合同，不复活 dead checker。
 
+## 2026-07-23 less-is-more PR21：删除不可达的 source-ref 反投影 helper
+
+### `PR21` `refactor(memory): remove dead source-ref helper`
+
+- base：PR20 committed HEAD `224a4b7ccdfea1e68462aa34150aa41345aaf248`，分支 `refactor/less-is-more-pr21-remove-dead-source-ref-helper`。
+- allowed_paths：`core/memory/utils.py`（删除）、`docs/refactor/clean-code-ledger.md`；`capability_owner`：core memory utility projections；未修改 engine/schema/events/plugins/tests。
+- 历史与不可达性：`source_ref_from_evidence` 由 `62fbcf8a` 引入，后续 `a99437d4`、`ebc4ecf8` 仅保留其定义；当前仓库静态/字符串/动态导出搜索、Git 历史调用面和外部 plugin cache 均无 caller。`RetrievalCompleted` 及 enabled observe 外部插件 consumer 不在本次范围，继续保留。
+- active owner 与边界：`evidence_from_source_ref`、`resolve_memory_scope`、`should_require_scope_match` 和 `EvidenceRef`/`MemoryQuery`/`MemoryScope` imports 保持不变；当前 default engine 只使用前三者，删除项没有状态、写入或错误 owner。
+- 范围与语义：`change_type: refactor`，`semantic_delta: none`。删除 11 个 production SLOC 的纯 projection helper；不新增 absence test、fallback、兼容层或 mock success 路径。
+- 计量：删除前 source-set digest `e83c7ebea48eed3c08331defcff923ca32880e2f48fbca0f48754cc52888608c`，文件数 `380`，Python SLOC `77,702`，`core` SLOC `2,052`，total production SLOC `86,153`；删除后 source-set digest `03fef4862f9847229a890962632eac945fdc30cb7f53d93015c5103c45c2d10f`，文件数 `380`，Python SLOC `77,691`，`core` SLOC `2,041`，total production SLOC `86,142`；production 净减少 `11` SLOC。
+- 性能与状态：仅减少模块导入时创建的一个不可达函数对象；无新增调用、分配、等待、I/O、持久化、网络、事件或 write set，不声明端到端性能收益。
+- 测试与静态验证：项目 venv `pytest -q -W error tests/test_memory_engine_contract.py tests/test_recall_memory_tool.py tests/test_memory2_retrieval_baseline.py tests/test_memory2_consolidation_idempotency.py tests/test_memory2_dedup_baseline.py` 为 `79 passed`；修改文件 pyright `0 errors, 0 warnings`，相关 default engine 为 `0 errors, 43 warnings`（既有）；core memory/default engine/recall/memory contract compileall、精确 source/history/plugin-cache scan、migration append-only、`git diff --check` 均通过。
+- Gate：按 WORKFLOW 在 committed HEAD 以 PR20 base `224a4b7ccdfea1e68462aa34150aa41345aaf248` 运行公开 Gate；private required 状态为 `pending_maintainer`，不把运行后的 source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、外部网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/less-is-more-pr21-backup-20260723-053123/`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧 helper 文本；当前 Git source、历史调用面与外部 plugin cache 没有 consumer。若未来需要从 `EvidenceRef` 反投影 source ref，应在 active memory owner 中重新设计并补独立合同，不复活 dead helper。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）

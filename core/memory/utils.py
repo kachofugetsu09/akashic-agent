@@ -10,19 +10,6 @@ def evidence_from_source_ref(source_ref: str) -> list[EvidenceRef]:
     return [EvidenceRef(refs=[value], source_ref=value)]
 
 
-def source_ref_from_evidence(
-    evidence: list[EvidenceRef],
-    *,
-    fallback: str = "",
-) -> str:
-    for item in evidence:
-        if item.source_ref.strip():
-            return item.source_ref.strip()
-        if item.refs:
-            return item.refs[0]
-    return fallback
-
-
 def resolve_memory_scope(scope: MemoryScope) -> MemoryScope:
     if scope.channel and scope.chat_id:
         return scope
