@@ -709,27 +709,13 @@ class WakeStateStore:
             "SELECT * FROM context_state WHERE source_id = ?",
             (source_id,),
         ).fetchone()
-        if row is None:
-            return None
-        return NormalizedContext(
-            presence=cast(Presence, row["presence"]),
-            interruptibility=float(row["interruptibility"]),
-            confidence=float(row["confidence"]),
-            transition=str(row["transition_name"]),
-            observed_at=_parse_optional_time(row["observed_at"]),
-            expires_at=_parse_optional_time(row["expires_at"]),
-            raw=cast(dict[str, Any], json.loads(str(row["payload_json"]))),
-        )
+        return _decode_context_row(row) if row is not None else None
 
     def list_contexts(self) -> list[NormalizedContext]:
         rows = self._conn.execute(
-            "SELECT source_id FROM context_state ORDER BY source_id"
+            "SELECT * FROM context_state ORDER BY source_id"
         ).fetchall()
-        return [
-            context
-            for row in rows
-            if (context := self.load_context(str(row["source_id"]))) is not None
-        ]
+        return [_decode_context_row(row) for row in rows]
 
     def claim_context_reevaluation(
         self,
@@ -912,3 +898,17 @@ def _parse_optional_time(value: object) -> datetime | None:
     if value is None or not str(value).strip():
         return None
     return datetime.fromisoformat(str(value))
+
+
+def _decode_context_row(row: sqlite3.Row) -> NormalizedContext:
+    """解码一行 context_state，并保留原有持久化错误。"""
+
+    return NormalizedContext(
+        presence=cast(Presence, row["presence"]),
+        interruptibility=float(row["interruptibility"]),
+        confidence=float(row["confidence"]),
+        transition=str(row["transition_name"]),
+        observed_at=_parse_optional_time(row["observed_at"]),
+        expires_at=_parse_optional_time(row["expires_at"]),
+        raw=cast(dict[str, Any], json.loads(str(row["payload_json"]))),
+    )
