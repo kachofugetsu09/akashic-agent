@@ -214,6 +214,23 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、协议、网络或外部发送；测试临时对象只在一次性 pytest/benchmark 进程内存中存在。
 - 残余风险与回滚点：基准只覆盖 fake append 与 lock/batch 逻辑，真实 SQLite/network latency 未测量；若后续发现 lock map 需要跨调用持有，应停止并重新核对 owner/生命周期，不恢复 eager 分配。执行前备份为 `/tmp/less-is-more-pr8-finish-Dmxutr`；提交后可用单提交 revert `perf(mobile): avoid eager delta lock allocation` 回滚。
 
+## 2026-07-23 less-is-more PR9：复用默认记忆摘要解析结果
+
+### `PR9` `perf(default-memory): parse summary metadata once`
+
+- base：PR8 commit `f070f09149e634c72b4e53bddb460fd8a55f9de3`，分支 `perf/less-is-more-pr9-default-memory-summary-parse`。
+- allowed_paths：`plugins/default_memory/plugin.py`、`tests/test_recall_inspector_plugin.py`、`docs/refactor/clean-code-ledger.md`；`capability_owner`：default memory inspector JSONL record parser；未修改 Memory2 canonical store、dashboard API schema、workspace 数据或外部插件。
+- 范围：`_items_from_block` 对每个 summary 只调用一次 `_split_summary_meta`，将返回的清理文本和标签解包后复用；补充直接 oracle，验证每个 item 只解析一次且完整输出逐项相等。未修改 JSONL 字段、标签顺序、记录顺序、写入集合、错误传播、日志、fallback 或调用链。
+- 真实调用链与不变量：active `DefaultMemoryInspector.record_context_prepare` 在每个 before-turn 通过 `_items_from_block` 记录注入视图；`_split_summary_meta` 是无状态纯解析器，返回值由当前 record parser 唯一消费。每个输入 item 必须保留相同 `id`、清理后的 `summary`、metadata `tags`、section 和 `injected=True`。
+- 语义与状态核对：`change_type: performance`，`semantic_delta: none`；只减少同一解析结果的重复计算，不改变 `observe/recall_inspector.jsonl` 的 durable write set、schema、事件顺序或错误语义。
+- baseline：source-set digest `d1c327a2598d8b8ce5e44d43fc33290720e0ed294ae0ae50546a1de20e3bc6e8`，文件数 `384`，Python SLOC `78,737`，TypeScript/TSX SLOC `8,451`，plugins SLOC `17,232`，total production SLOC `87,188`。
+- candidate：source-set digest `9a8dd2535342f38ded0c6f4016d9838743137cb5cbc4cdb43b60d99d05c20f85`，文件数 `384`，Python SLOC `78,738`，TypeScript/TSX SLOC `8,451`，plugins SLOC `17,233`，total production SLOC `87,189`；production 净增加 `1` 行，仅为显式解包赋值，不扩展运行时能力。
+- 性能回放：同一 cwd、同一 Python 进程内将 base `f070f091` 的 `_items_from_block` 与 candidate 当前函数加载为可调用函数，输入均为 metadata-rich summaries，预热不参与计量；每种规模 `2000 calls/repeat × 7 repeats`，只测 parser microbenchmark，不含文件 I/O/JSONL 写入。n=8：base raw `0.039063,0.040108,0.040440,0.040510,0.040652,0.040651,0.041119`，candidate raw `0.024958,0.025409,0.026081,0.034540,0.026720,0.023878,0.024057`，median `0.040510 → 0.025409s`（`-37.28%`）；n=40：base `0.188550,0.190675,0.189952,0.189686,0.189028,0.189443,0.196048`，candidate `0.120203,0.121178,0.120315,0.119864,0.126648,0.121127,0.120967`，median `0.189686 → 0.120967s`（`-36.23%`）；n=100：base `0.564673,0.515514,0.504761,0.510649,0.593235,0.575341,0.539586`，candidate `0.342459,0.321077,0.321924,0.305007,0.301139,0.300263,0.302883`，median `0.539586 → 0.305007s`（`-43.47%`）。三种规模均先断言 base/candidate 输出完全相等。
+- 测试与真实验证：`pytest -q tests/test_recall_inspector_plugin.py tests/test_default_memory_plugin_config.py tests/test_memory_engine_contract.py` 为 `54 passed`；新增 oracle 用真实 parser wrapper 计数，确认两个 item 恰好两次调用且每 item 一次；修改文件 pyright 为 `0 errors`（plugin 的 11 个 warning 为既有诊断）；migration append-only、`git diff --check`、production SLOC 与 committed-head Gate 均通过。
+- Gate：按 WORKFLOW 在本候选提交前以 base `refactor/less-is-more-pr8-mobile-delta-lock-allocation` 运行；本条不回填运行产生的 `sourceDigest`/`planDigest`，避免账本自引用，最终 committed-head digest 与 private 状态由交付报告记录。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 memory2.db、observe JSONL、migration、正式 workspace、服务、网络、外部发送或 Git refs。
+- 残余风险与回滚点：benchmark 只覆盖 parser CPU，不宣称端到端日志 I/O 提速；若未来 parser 改为有状态或 metadata 解析需要独立副作用，必须恢复单一 owner 语义并重新核对调用次数。执行前备份为 `/tmp/less-is-more-pr9-finish-5v9PHx`；提交后可用单提交 revert `perf(default-memory): parse summary metadata once` 回滚。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）

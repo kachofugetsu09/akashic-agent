@@ -173,11 +173,12 @@ def _items_from_block(block: str) -> list[dict[str, Any]]:
         if not match:
             continue
         item_id, summary = match.groups()
+        clean_summary, tags = _split_summary_meta(summary)
         items.append(
             {
                 "id": item_id.strip(),
-                "summary": _split_summary_meta(summary)[0],
-                "tags": _split_summary_meta(summary)[1],
+                "summary": clean_summary,
+                "tags": tags,
                 "section": section,
                 "injected": True,
             }
