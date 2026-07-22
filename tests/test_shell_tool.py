@@ -15,7 +15,6 @@ from agent.tools.shell import (
     _BG_REGISTRY,
     _MAX_OUTPUT,
     _validate_command,
-    _run,
 )
 
 _KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
@@ -251,32 +250,6 @@ async def test_shell_tool_truncates_to_tail_and_persists_full_output(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_run_streams_stdout_and_stderr(monkeypatch):
-    proc = _FakeProc(stdout="hello", stderr="world", returncode=0)
-
-    async def _fake_create_subprocess_shell(command, **kwargs):
-        return proc
-
-    monkeypatch.setattr(
-        "agent.tools.shell.asyncio.create_subprocess_shell",
-        _fake_create_subprocess_shell,
-    )
-
-    chunks: list[str] = []
-    stdout, stderr, exit_code, interrupted = await _run(
-        "echo hi",
-        5,
-        on_data=chunks.append,
-    )
-
-    assert stdout == "hello"
-    assert stderr == "world"
-    assert exit_code == 0
-    assert interrupted is False
-    assert chunks == ["hello", "world"]
-
-
-@pytest.mark.asyncio
 async def test_restricted_shell_blocks_network_and_outside_paths(tmp_path: Path):
     tool = ShellTool(
         allow_network=False,
@@ -362,61 +335,66 @@ def test_shell_policy_checks_use_command_basename(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_shell_tool_cancel_kills_process_group(monkeypatch):
-    proc = _FakeProc(stdout="", stderr="")
-    observed: dict[str, object] = {}
+    import agent.tools.shell as shell_mod
 
-    async def _fake_create_subprocess_shell(command, **kwargs):
-        observed["kwargs"] = kwargs
-        return proc
+    options_ready = asyncio.Event()
+    pump_started = asyncio.Event()
+    observed_options: dict[str, object] = {}
+    kill_calls: list[tuple[int, signal.Signals]] = []
+    pump_cancelled: list[bool] = []
 
-    async def _fake_wait_for(awaitable, timeout):
-        coro = awaitable
-        coro.close()
-        raise asyncio.CancelledError
+    original_options = shell_mod._subprocess_options
 
-    monkeypatch.setattr(
-        "agent.tools.shell.asyncio.create_subprocess_shell",
-        _fake_create_subprocess_shell,
+    def _observe_options(cwd, env):
+        options = original_options(cwd, env)
+        observed_options.update(options)
+        options_ready.set()
+        return options
+
+    original_kill_process_tree = shell_mod._kill_process_tree
+
+    def _observe_kill_process_tree(proc):
+        kill_calls.append((proc.pid, _KILL_SIGNAL))
+        return original_kill_process_tree(proc)
+
+    original_pump = shell_mod._bg_pump
+
+    async def _observe_pump(*args, **kwargs):
+        pump_started.set()
+        try:
+            return await original_pump(*args, **kwargs)
+        except asyncio.CancelledError:
+            pump_cancelled.append(True)
+            raise
+
+    monkeypatch.setattr(shell_mod, "_subprocess_options", _observe_options)
+    monkeypatch.setattr(shell_mod, "_kill_process_tree", _observe_kill_process_tree)
+    monkeypatch.setattr(shell_mod, "_bg_pump", _observe_pump)
+
+    tool = ShellTool()
+    task = asyncio.create_task(
+        tool.execute(
+            command="sleep 10",
+            description="cancel",
+            timeout=5,
+            auto_promote=False,
+        )
     )
-    monkeypatch.setattr("agent.tools.shell.asyncio.wait_for", _fake_wait_for)
-    killpg_mock = []
-
-    def _fake_kill_process_tree(proc):
-        killpg_mock.append((proc.pid, _KILL_SIGNAL))
-
-    monkeypatch.setattr("agent.tools.shell._kill_process_tree", _fake_kill_process_tree)
+    await asyncio.wait_for(options_ready.wait(), timeout=1)
+    await asyncio.wait_for(pump_started.wait(), timeout=1)
+    task.cancel()
 
     with pytest.raises(asyncio.CancelledError):
-        await __import__("agent.tools.shell", fromlist=["_run"])._run("sleep 10", 5)
+        await task
 
-    observed_kwargs = cast(dict[str, object], observed["kwargs"])
     if os.name == "nt":
-        assert "creationflags" in observed_kwargs
+        assert "creationflags" in observed_options
     else:
-        assert observed_kwargs["start_new_session"] is True
-    assert killpg_mock == [(proc.pid, _KILL_SIGNAL)]
-
-
-@pytest.mark.asyncio
-async def test_run_does_not_hang_when_pipe_never_closes_after_exit(monkeypatch):
-    proc = _FakeProc(stdout="", stderr="", returncode=7)
-    proc.stdout = _BlockingPipe()
-    proc.stderr = _BlockingPipe()
-
-    async def _fake_create_subprocess_shell(command, **kwargs):
-        return proc
-
-    monkeypatch.setattr(
-        "agent.tools.shell.asyncio.create_subprocess_shell",
-        _fake_create_subprocess_shell,
-    )
-
-    stdout, stderr, exit_code, interrupted = await _run("false", 5)
-
-    assert stdout == ""
-    assert stderr == ""
-    assert exit_code == 7
-    assert interrupted is False
+        assert observed_options["start_new_session"] is True
+    assert len(kill_calls) == 1
+    assert kill_calls[0][0] > 0
+    assert kill_calls[0][1] == _KILL_SIGNAL
+    assert pump_cancelled == [True]
 
 
 # ── 后台任务测试 ──────────────────────────────────────────────────────
