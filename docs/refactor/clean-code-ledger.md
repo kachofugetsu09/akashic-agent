@@ -452,6 +452,22 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/less-is-more-pr23-backup-d5KZO3/`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧模型文本，但当前 Git source、历史生产迁移与外部 plugin cache 没有 consumer；若未来需要新的 persisted memory DTO，应在 active storage owner 中重新设计并补独立合同，不复活 dead `MemoryItem`。
 
+## 2026-07-23 less-is-more PR24：删除 DB 迁移后遗留的 safe-filename helper
+
+### `PR24` `refactor(session): remove dead safe filename helper`
+
+- base：PR23 committed HEAD `5b5a27531899f445f9a4e8248e67e513bfa3ec4a`，分支 `refactor/less-is-more-pr24-remove-dead-safe-filename`。
+- allowed_paths：`session/manager.py`（删除旧 JSONL 路径迁移后孤儿 `_safe_filename` 与不再使用的 `re` import）、`tests/test_logic_modules.py`（删除该 helper 的唯一 import 与专属断言）、`docs/refactor/clean-code-ledger.md`；`capability_owner`：`SessionStore`/`SessionManager` SQLite session persistence；未修改 `SessionStore`、`session_dir`、数据库 schema/migration、public API、`plugin_undo` 或 active session paths。
+- 历史与不可达性：`_safe_filename` 及其 `_get_session_path` JSONL consumer 属旧文件会话实现；提交 `708d6f25` 已将 `SessionManager` 切换到同一 `sessions.db` 的 `SessionStore`，并移除 `_get_session_path`、JSONL glob/list/load/write 路径，当前 `session/manager.py` 只剩无调用 helper。当前 committed source 的 CodeGraph、AST、精确字符串/动态 import/getattr/export/reflection、tests、SDK、plugin、manifest、eval/script 与 `/home/huashen/.akashic-plugin/cache` 扫描无 production consumer；外部 workspace subagent-run 旧副本不属于 canonical source/cache，未作为 owner 证据。
+- 语义与错误边界：SQLite session key 直接作为 `SessionStore` 查询键；删除 helper 不改变 session key 校验、`sessions.db` 写入/读取、metadata、消息顺序、错误传播或文件路径。`semantic_delta: none`，不新增 fallback、兼容层、absence oracle 或 mock success 路径。旧 JSONL 文件不会被迁移、删除或重新解释。
+- 范围与测试：删除 helper 5 个物理行及 `re` import 1 行；删除 `tests/test_logic_modules.py` 中唯一专属 import 1 行与断言/空行 2 行。保留该测试中的真实 `SessionManager` SQLite save/load/list/channel metadata 覆盖，不因历史 helper 继续耦合。
+- 计量：删除前 source-set digest `3c7c839f7ce8119cc8a681fe939caee818e100a944a19629acd35fed3a8c1b39`，文件数 `378`，Python SLOC `77,552`，`session` SLOC `2,529`，total production SLOC `86,003`；删除后 source-set digest `a62e24b567959b49a7d8cd412c3555c8996ccbeeb156e1d61d5bf5ed1ed34ab1`，文件数 `378`，Python SLOC `77,549`，`session` SLOC `2,526`，total production SLOC `86,000`；production 净减少 `3` SLOC。测试源码不计入 production SLOC。
+- 性能与状态：仅减少 `session.manager` 导入时的一个不可达正则函数对象与 `re` 模块引用；无新增调用、分配、等待、I/O、持久化、网络、事件、write set 或 schema 变化，不宣称端到端性能收益。
+- 测试与静态验证：项目 venv `pytest -q -W error tests/test_logic_modules.py tests/test_session_store.py tests/test_message_lookup_tool.py tests/test_migration_append_only.py tests/test_migration_runner.py` 为 `105 passed in 2.06s`；`compileall` session/相关 tests 通过；`pyright --venvpath /mnt/data/coding/akasic-agent session/manager.py tests/test_logic_modules.py` 为 `0 errors, 0 warnings`；精确 consumer/dynamic/export/plugin-cache scan、AST parse、migration/protected-path guard、production SLOC 与 `git diff --check` 通过。`session/store.py` 全文件 pyright 仍有 54 条既有 warnings、0 errors，未修改该文件。
+- Gate：按 WORKFLOW 在 committed HEAD 对 PR23 base `5b5a27531899f445f9a4e8248e67e513bfa3ec4a` 运行公开 Gate；private required 状态记录为 `pending_maintainer`，不把运行后的 source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akasic-agent-pr24-session-manager.py.bak-20260723`、`/tmp/akasic-agent-pr24-test-logic-modules.py.bak-20260723`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 与外部 workspace subagent-run 可能保留旧 helper 文本，但当前 Git source、708d6f25 后的迁移路径与外部 plugin cache 没有 consumer；若未来恢复 JSONL session storage，应在持久化 owner 中重新设计 key/path 合同并补独立迁移，不复活 dead helper。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
