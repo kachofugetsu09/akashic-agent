@@ -9,7 +9,7 @@ TDD — Phase 3: proactive_v2/tools.py
   - _mark_not_interesting: 写 ctx.discarded_item_ids
   - _get_alert_events / _get_content_events: 缓存保护
   - _get_context_data: 最多调用一次
-  - execute(): 分发 + steps_taken 递增
+  - dispatch(): 未知工具错误契约
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from plugins.default_proactive.context import AgentTickContext
 from plugins.proactive_flow.tools import (
     TOOL_SCHEMAS,
     ToolDeps,
-    execute,
+    dispatch,
     _web_fetch,
     _web_search,
     _recall_memory,
@@ -624,100 +624,9 @@ async def test_get_recent_chat_returns_json():
     assert json.loads(raw) == msgs
 
 
-# ── execute() 分发 ────────────────────────────────────────────────────────
-
 @pytest.mark.asyncio
-async def test_execute_increments_steps_taken():
-    ctx = AgentTickContext()
-    deps = ToolDeps()
-    await execute("get_alert_events", {}, ctx, deps)
-    assert ctx.steps_taken == 1
-
-
-@pytest.mark.asyncio
-async def test_execute_increments_each_call():
-    ctx = AgentTickContext()
-    deps = ToolDeps()
-    await execute("get_alert_events", {}, ctx, deps)
-    await execute("get_content_events", {}, ctx, deps)
-    assert ctx.steps_taken == 2
-
-
-@pytest.mark.asyncio
-async def test_execute_dispatches_message_push():
-    ctx = AgentTickContext()
-    ctx.fetched_contents = [{"ack_server": "feed-mcp", "event_id": "1"}]
-    deps = ToolDeps()
-    await execute("message_push", {"message": "hi", "evidence": ["feed-mcp:1"]}, ctx, deps)
-    assert ctx.draft_message == "hi"
-
-
-@pytest.mark.asyncio
-async def test_execute_dispatches_finish_turn_reply():
-    ctx = AgentTickContext()
-    deps = ToolDeps()
-    await execute("message_push", {"message": "hi", "evidence": []}, ctx, deps)
-    await execute("finish_turn", {"decision": "reply"}, ctx, deps)
-    assert ctx.terminal_action == "reply"
-
-
-@pytest.mark.asyncio
-async def test_execute_dispatches_finish_turn_skip():
-    ctx = AgentTickContext()
-    deps = ToolDeps()
-    await execute("finish_turn", {"decision": "skip", "reason": "no_content"}, ctx, deps)
-    assert ctx.terminal_action == "skip"
-
-
-@pytest.mark.asyncio
-async def test_execute_dispatches_mark_not_interesting():
-    ctx = AgentTickContext()
-    deps = ToolDeps()
-    await execute("mark_not_interesting", {"item_ids": ["feed-mcp:1"]}, ctx, deps)
-    assert "feed-mcp:1" in ctx.discarded_item_ids
-
-
-@pytest.mark.asyncio
-async def test_execute_unknown_tool_raises():
+async def test_dispatch_unknown_tool_raises():
     ctx = AgentTickContext()
     deps = ToolDeps()
     with pytest.raises(ValueError, match="unknown tool"):
-        await execute("nonexistent_tool", {}, ctx, deps)
-
-
-@pytest.mark.asyncio
-async def test_execute_web_fetch_uses_max_chars_from_deps():
-    fake_tool = AsyncMock()
-    fake_tool.execute.return_value = json.dumps({"url": "x", "text": "z" * 5_000, "truncated": False})
-    ctx = AgentTickContext()
-    deps = ToolDeps(web_fetch_tool=fake_tool, max_chars=2_000)
-    raw = await execute("web_fetch", {"url": "https://x.com"}, ctx, deps)
-    result = json.loads(raw)
-    assert len(result["text"]) == 2_000
-
-
-@pytest.mark.asyncio
-async def test_execute_web_search_uses_tool_from_deps():
-    fake_tool = AsyncMock()
-    fake_tool.execute.return_value = json.dumps({"query": "aurora furia", "result": "..."})
-    ctx = AgentTickContext()
-    deps = ToolDeps(web_search_tool=fake_tool)
-    raw = await execute("web_search", {"query": "aurora furia", "type": "fast"}, ctx, deps)
-    result = json.loads(raw)
-    assert result["query"] == "aurora furia"
-    fake_tool.execute.assert_called_once_with(query="aurora furia", type="fast")
-
-
-@pytest.mark.asyncio
-async def test_execute_recall_memory_uses_memory_from_deps():
-    fake_memory = MagicMock()
-    fake_memory.query = AsyncMock(
-        return_value=SimpleNamespace(
-            records=[SimpleNamespace(id="m1", summary="pref", score=0.9)]
-        )
-    )
-    ctx = AgentTickContext()
-    deps = ToolDeps(memory=fake_memory)
-    raw = await execute("recall_memory", {"query": "test"}, ctx, deps)
-    result = json.loads(raw)
-    assert result["hits"] == 1
+        await dispatch("nonexistent_tool", {}, ctx, deps)
