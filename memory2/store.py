@@ -1086,6 +1086,47 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         filtered = [item for item in results if item.get("id") != item_id]
         return filtered[: max(1, top_k)]
 
+    @staticmethod
+    def _decode_embedding_row(row: tuple[object, ...]) -> _EmbeddingRow:
+        """将 embedding 查询行解码为统一的检索行。"""
+
+        # 1. 解包 embedding 查询所需的存储列
+        (
+            row_id,
+            mtype,
+            summary,
+            emb_json,
+            extra_json,
+            happened_at,
+            reinforcement,
+            updated_at,
+            source_ref,
+            emotional_weight,
+        ) = row
+
+        # 2. 在存储边界解析 JSON，保留原有错误上下文
+        emb = _json_embedding(
+            emb_json,
+            context=f"memory item {row_id} embedding",
+        )
+        extra = _json_object(
+            extra_json, context=f"memory item {row_id} extra_json"
+        )
+
+        # 3. 注入内部 metadata 并构造统一结果
+        extra["_reinforcement"] = _coerce_int(reinforcement, 1)
+        extra["_updated_at"] = str(updated_at) if updated_at else ""
+        extra["_emotional_weight"] = _coerce_emotional_weight(emotional_weight)
+        return (
+            str(row_id),
+            str(mtype),
+            str(summary),
+            emb,
+            extra,
+            str(happened_at) if happened_at else None,
+            str(source_ref) if source_ref else None,
+        )
+
     @_synchronized
     def get_all_with_embedding(self, include_superseded: bool = False) -> list[_EmbeddingRow]:
         """返回 [(id, memory_type, summary, embedding_list, extra_json_dict, happened_at, source_ref)]
@@ -1099,40 +1140,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             f"FROM memory_items WHERE embedding IS NOT NULL {where}"
         ).fetchall())
         result: list[_EmbeddingRow] = []
+        decode_row = self._decode_embedding_row
         for row in rows:
-            (
-                row_id,
-                mtype,
-                summary,
-                emb_json,
-                extra_json,
-                happened_at,
-                reinforcement,
-                updated_at,
-                source_ref,
-                emotional_weight,
-            ) = row
-            emb = _json_embedding(
-                emb_json,
-                context=f"memory item {row_id} embedding",
-            )
-            extra = _json_object(
-                extra_json, context=f"memory item {row_id} extra_json"
-            )
-            extra["_reinforcement"] = _coerce_int(reinforcement, 1)
-            extra["_updated_at"] = str(updated_at) if updated_at else ""
-            extra["_emotional_weight"] = _coerce_emotional_weight(emotional_weight)
-            result.append(
-                (
-                    str(row_id),
-                    str(mtype),
-                    str(summary),
-                    emb,
-                    extra,
-                    str(happened_at) if happened_at else None,
-                    str(source_ref) if source_ref else None,
-                )
-            )
+            result.append(decode_row(row))
         return result
 
     def _get_embedding_rows_by_time_filter(
@@ -1175,42 +1185,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             tuple(params),
         ).fetchall())
         result: list[_EmbeddingRow] = []
+        decode_row = self._decode_embedding_row
         for row in rows:
-            (
-                row_id,
-                mtype,
-                summary,
-                emb_json,
-                extra_json,
-                happened_at,
-                reinforcement,
-                updated_at,
-                source_ref,
-                emotional_weight,
-            ) = row
-            if not _is_memory_time_in_range(happened_at, time_start, time_end):
+            if not _is_memory_time_in_range(row[5], time_start, time_end):
                 continue
-            emb = _json_embedding(
-                emb_json,
-                context=f"memory item {row_id} embedding",
-            )
-            extra = _json_object(
-                extra_json, context=f"memory item {row_id} extra_json"
-            )
-            extra["_reinforcement"] = _coerce_int(reinforcement, 1)
-            extra["_updated_at"] = str(updated_at) if updated_at else ""
-            extra["_emotional_weight"] = _coerce_emotional_weight(emotional_weight)
-            result.append(
-                (
-                    str(row_id),
-                    str(mtype),
-                    str(summary),
-                    emb,
-                    extra,
-                    str(happened_at) if happened_at else None,
-                    str(source_ref) if source_ref else None,
-                )
-            )
+            result.append(decode_row(row))
         return result
 
     @_synchronized
