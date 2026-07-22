@@ -375,6 +375,21 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、外部网络、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/less-is-more-pr18-backup-20260723-050115/`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧 planner 文本；当前 Git source 与动态调用面没有 consumer。若未来需要 scoped fallback 或 HyDE scope metadata，应在 active retrieval owner 中重新设计并补独立合同，不复活 dead planner。
 
+## 2026-07-23 less-is-more PR19：删除不可达的 Memory2 query rewriter
+
+### `PR19` `refactor(memory2): remove dead query rewriter`
+
+- base：PR18 committed HEAD `c6ae4254ab2ab647246fd9815a2fa2ea4b7d5f79`，分支 `refactor/less-is-more-pr19-remove-dead-query-rewriter`。
+- allowed_paths：`memory2/query_rewriter.py`（删除）、`tests/test_query_rewriter.py`（删除）、`tests/test_query_rewriter_implicit_intent.py`（删除）、`docs/refactor/clean-code-ledger.md`；`capability_owner`：Memory2 active default engine/retriever；未修改 `memory2/query_builder.py`、`memory2/retriever.py`、`plugins/default_memory/engine.py`、`agent/retrieval/default_pipeline.py`、config/eval stale comments、schema、manifest 或 active runtime。
+- 历史与不可达性：旧 rewriter 及其 `RETRIEVE`/`NO_RETRIEVE` XML、procedure lane 和 LLM timeout/fallback 逻辑来自旧 bootstrap wiring；`5801862b` 插件化记忆引擎后，`bootstrap/tools.py` 删除 QueryRewriter 构造、`MemoryServices` gate 字段和旧 facade，active pipeline 直接由 `MemoryQuery` 进入 `DefaultMemoryEngine`，当前 production、tests、docs、SDK、plugin、manifest、eval、script、动态 import/getattr/export 与 reflection 搜索仅命中待删模块和专属旧测试。
+- active replacement 与边界：active engine 已覆盖正常 context/answer retrieval、procedure queries、原始+改写 query builder、scope、vector/keyword RRF、hypothesis auxiliary query、schema/write/error contracts；它不 1:1 复现旧 rewriter 的 RETRIEVE/NO_RETRIEVE/XML、procedure 改写、隐式意图和降级 lane，因此本次删除基于不可达 caller，不宣称旧 lane 与 active engine 语义等价，不修改 active retrieval 逻辑。
+- 范围与语义：`change_type: refactor`，`semantic_delta: none`。只删除无 owner、无 production caller 的 rewriter module 与两份 planner-era/mock-LLM 专属测试；不加 absence test、fallback、兼容层或 mock success 路径。正常 context/answer retrieval、procedure queries、scope/RRF/hypothesis/schema/write/error 行为保持不变。
+- 计量：删除前 source-set digest `95ba009ac11ac3541546e2d48176fe7424d29b3dfa4f85ef3706125a53f81a2a`，文件数 `382`，Python SLOC `78,182`，`memory2` SLOC `4,449`，total production SLOC `86,633`；删除后 source-set digest `0871a21ec224fb3f42852a25cd45889d7b37a0c7b27e8722e273ff01c3ccc770`，文件数 `381`，Python SLOC `77,864`，`memory2` SLOC `4,131`，total production SLOC `86,315`；production 净减少 `318` SLOC。删除的测试源码不计入 production SLOC，单独如实记录为两份 query-rewriter 专属测试文件，共 `299` 行测试源码。
+- 测试与静态验证：运行 active `tests/test_procedure_query_builder.py`、`tests/test_memory_engine_contract.py`、`tests/test_recall_memory_tool.py`、`tests/test_turn_pipelines.py`、`tests/test_agent_core_p3_context_store.py` 及必要 default retrieval 回归；compileall active modules、pyright、exact/dynamic scan、migration append-only、production SLOC、`git diff --check` 与 committed-head Gate 作为提交验收项记录。不修改 active tests 或 absence oracle。
+- Gate：按 WORKFLOW 在提交后以 committed HEAD 对 PR18 base `c6ae4254ab2ab647246fd9815a2fa2ea4b7d5f79` 运行公开 Gate；private required 状态记录为 `pending_maintainer`，不把运行后 digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、外部网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/less-is-more-pr19-backup-KjlHId/`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧 rewriter 文本；当前 Git source 与动态调用面没有 consumer。若未来恢复 XML gate、隐式意图或 procedure rewrite lane，应在 active retrieval owner 中重新设计并补独立合同，不复活 dead rewriter。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
