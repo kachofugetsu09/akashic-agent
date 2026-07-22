@@ -153,13 +153,13 @@ class ProactivePromptBuilder:
         ]
 
         # 2. 读取用户画像与近期上下文
-        self_content = _read_self_text(self._memory).strip()
-        memory_block = _read_long_term_text(self._memory).strip()
-        recent_context_block = (
-            str(self._memory.read_recent_context() or "").strip()
-            if self._memory is not None
-            else ""
-        )
+        memory = self._memory
+        if memory is None:
+            self_content = memory_block = recent_context_block = ""
+        else:
+            self_content = str(memory.read_self() or "").strip()
+            memory_block = str(memory.read_long_term() or "").strip()
+            recent_context_block = str(memory.read_recent_context() or "").strip()
 
         # 3. 追加本轮所有非空动态区块
         for name, content in (
@@ -250,15 +250,3 @@ class ProactivePromptBuilder:
             + json.dumps(annotated_context, ensure_ascii=False)[:900]
             + "\n\n"
         )
-
-
-def _read_long_term_text(memory: MemoryProfileApi | None) -> str:
-    if memory is not None:
-        return str(memory.read_long_term() or "")
-    return ""
-
-
-def _read_self_text(memory: MemoryProfileApi | None) -> str:
-    if memory is not None:
-        return str(memory.read_self() or "")
-    return ""
