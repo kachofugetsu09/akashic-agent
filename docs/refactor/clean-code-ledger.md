@@ -545,6 +545,21 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-pr29-backup-qj4rUK/`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧 schema/wrapper 文本，但 current source、迁移历史、dynamic scan 与 external plugin cache 没有 consumer；若未来需要 terminal-only schema projection，应由 judge/registry owner 重新设计显式公开合同，不恢复无调用 surface。
 
+## 2026-07-23 less-is-more PR30：删除 looping constants 的不可达配置残片
+
+### `PR30` `refactor(loop): remove dead constants from looping module`
+
+- base：PR29 committed HEAD `12abbe5e6754283ea9f616cc7dd64c8f784be118`，分支 `refactor/less-is-more-pr30-remove-dead-looping-constants`。
+- allowed_paths：`agent/looping/constants.py` 仅删除 `_tool_call_signature` import、`_SAFETY_RETRY_RATIOS`、`_MAX_TOOL_RESULT_CHARS`、`_TOOL_LOOP_REPEAT_LIMIT`、`_SUMMARY_MAX_TOKENS`、`_RETRIEVE_TRACE_SUMMARY_MAX`、`_INCOMPLETE_SUMMARY_PROMPT` 及其专属注释/空白；本账本；`capability_owner`：looping history-route 常量 owner。保留 `_FLOW_TRIGGER_WORDS`、`_FLOW_SEQUENCE_PATTERN` 及 `agent/policies/history_route.py` 的现有导入和行为；未修改 `passive_turn`/`subagent` 中同名 active 常量、core 兼容 re-export、history_route P0、retry/trim/tool-loop/stream。
+- 历史与不可达性：这些残片在 `constants.py` 中只有定义/import，仓库 AST、精确文本、CodeGraph、`getattr`/`import_module`/动态文件加载、导出/re-export、测试、SDK、插件 manifest 与 `/home/huashen/.akashic-plugin/cache` 扫描均无 consumer；Git 历史显示它们来自旧 looping/runtime prompt 搬迁，当前安全重试、工具结果截断和不完整摘要分别由 `agent/core/passive_turn.py` 与 `agent/subagent.py` 的 active owner 定义。唯一现存 `agent.looping.constants` import 仍精确读取 flow-route 两个保留符号。
+- 语义与错误边界：`semantic_delta: none`。删除不可达定义不改变 history-route 的关键词/正则判定、route decision、LLM 调用、超时、fallback、异常传播或任何工具循环/重试/裁切行为；没有新增 fallback、try/except、动态兼容层或默认值。正常 import 少创建七个无消费者对象/字符串常量，未改变可达路径和持久化、网络、事件或 write set。
+- 范围与计量：删除 `agent/looping/constants.py` 16 个物理行；PR29 base source-set digest `21bf798339056cdabe75da06f5b6ca6ba3cd9dd267f36359f91ee375cf20c104`、文件数 `378`、Python SLOC `77,424`、total production SLOC `85,875`；candidate source-set digest `47bccf4f112ea8e0ac0212f88298406bd1a9975a23be2de1fc175973dfa18435`、文件数 `378`、Python SLOC `77,412`、total `85,863`；production 净减少 `12` SLOC。
+- 性能与注释：模块导入不再创建不可达函数依赖、tuple/int/字符串和多行 prompt；保留 flow-route 需要的简洁常量，删除其余 stale 注释，不宣称端到端性能收益。
+- 测试与静态验证：定向 history-route、delegation、internal-events、spawn-completion/spawn-tool 回归与 active import smoke 通过；`agent/looping/constants.py`、`agent/policies/history_route.py`、相关 loop/reasoner 文件 compileall 与 Pyright 通过；全库精确 symbol/dynamic/cache scan、production SLOC、migration append-only 与 `git diff --check` 通过。无测试源码变更。
+- Gate：按 WORKFLOW 在 committed HEAD 对 PR29 base `12abbe5e6754283ea9f616cc7dd64c8f784be118` 运行公开 Gate；private required 状态记录为 `pending_maintainer`，不把运行后的 source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-agent-pr30-constants.py.bak`、`/tmp/akashic-agent-pr30-ledger.md.bak`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧常量文本，但 current source 与 enabled plugin cache 没有 consumer；若未来需要新的 loop owner，应在 active `passive_turn`/`subagent` 或明确新模块中设计合同，不恢复无调用残片。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
