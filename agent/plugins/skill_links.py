@@ -42,7 +42,6 @@ class PluginSkillLinker:
             expected=self._build_expected_links(
                 active_plugins,
                 plugin_subpath=("skills",),
-                manifest_key="skills",
             ),
             managed_subpath=("skills",),
         )
@@ -51,7 +50,6 @@ class PluginSkillLinker:
             expected=self._build_expected_links(
                 active_plugins,
                 plugin_subpath=("drift", "skills"),
-                manifest_key="drift_skills",
             ),
             managed_subpath=("drift", "skills"),
         )
@@ -105,7 +103,6 @@ class PluginSkillLinker:
         active_plugins: Sequence[ActivePluginInfo],
         *,
         plugin_subpath: Sequence[str],
-        manifest_key: str,
     ) -> dict[str, Path]:
         expected: dict[str, Path] = {}
         for plugin in active_plugins:
