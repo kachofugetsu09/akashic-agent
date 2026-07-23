@@ -240,7 +240,7 @@ def run_setup_wizard(config_path: Path, workspace: Path) -> None:
     ensure_workspace_plugin_data_dir(memory_config_path.parent, workspace)
     _atomic_write_with_backup(
         memory_config_path,
-        _render_default_memory_config(),
+        render_default_memory_config(),
     )
     _ok(f"{memory_config_path} 已生成")
     qqbot_config_path = _qqbot_local_config_path(workspace)
@@ -1113,10 +1113,6 @@ def _render_memory(a: WizardAnswers) -> str:
         f'base_url = "{a.embed_base_url}"',
         "",
     ])
-
-
-def _render_default_memory_config() -> str:
-    return render_default_memory_config()
 
 
 def _default_memory_local_config_path(workspace: Path) -> Path:
