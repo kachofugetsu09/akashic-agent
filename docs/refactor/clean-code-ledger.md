@@ -714,6 +714,22 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、database rows/schema、服务、网络、外部发送、generation/snapshot/lease/event、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-backups/pr40-agent-config.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr40-test-model-runtime.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr40-test-fresh-config.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr40-ledger.md.bak-20260723`；回滚点为本 PR 单提交 revert。
 - 残余风险：微基准使用 monkeypatched parsed config，真实 TOML 读取、凭据边界、provider profile 与 runtime startup 仍由既有 tests/Gate 覆盖；若未来 `ModelRuntimeConfig.input_modalities` 合同变化，应在 runtime config owner 更新字段校验与 Config projection，而不是恢复重复 raw dict guard。
 
+## 2026-07-23 less-is-more PR42：简化工具搜索解释热路径
+
+### `PR42` `perf(tool-search): remove redundant explanation dedupe`
+
+- base：PR40 committed HEAD `94f18387e517a1818eba1ed1cd1715f6ded902fa`，分支 `refactor/less-is-more-pr42-simplify-search-explain`。PR41 的重复 API-key 读取候选因凭据边界可变而判定 `REJECT`，未修改代码、未占用 production 变更。
+- allowed_paths：`agent/tools/search_backend.py` 的 `_score`/`_explain`、`tests/test_tool_search.py` 的 live-document oracle、本账本；`capability_owner`：`KeywordSearchBackend` 的实时评分、解释与排序。未修改 registry、tool schema、snapshot/fork、risk、exact select、top-k、manifest、迁移或正式 runtime workspace。
+- 原问题与证据：`keywords` 是已去重的 `set[str]`；同一 keyword 的名称解释只会命中 `if/elif` 三分支之一，且名称、提示、描述 reason 使用不同前缀，因此 `_explain` 的 `seen`/嵌套 `_add` 没有可达重复项。`_score` 与 `_explain` 还分别对同一 `doc.name` 调用两次 `lower()`；候选先计算 `name_lower` 再 split。
+- 语义与错误边界：`change_type: performance`，`semantic_delta: none`。score、名称 tie-break、result list/dict、`why_matched` 字符串与顺序、exact fast path、正/零/负 `top_k`、risk/excluded 行为保持；没有新增 catch、fallback、缓存、默认值或兼容层。`ToolDocument` 仍在每次搜索读取，description/search_hint 运行时变更可立即观察。
+- 范围与计量：PR40 base source-set digest `16471ad673a0b2ef81069577db7cd64f2483513d8b83a19d077c5ec87a5531e8`、文件数 `378`、Python SLOC `77,335`、`agent` `28,743`、total production SLOC `85,786`；candidate source-set digest `651479e168200238e5b75ff471d15e8baec318599fec62c13520de23f2d6713b`、文件数 `378`、Python SLOC `77,330`、`agent` `28,738`、total `85,781`；production 净减少 `5` SLOC。
+- parity：固定 `PYTHONHASHSEED=0` 的 base/candidate 共 `10,002` 次 search 回放逐项相等，覆盖 CJK、空串、MCP、None hint、exact/nonmatch、top-k、risk/excluded 与 live `ToolDocument` mutation；返回顺序、字段和 why list 完全相同。
+- 性能回放：同一 2,000 docs/4 keywords workload，预热后 `_score` 全量中位数 `5.000025 → 4.898831 ms`（`-2.02%`），单项 `_explain` 中位数 `3.551934 → 2.672931 µs`（`-24.75%`）。完整 search 微基准受本机调度噪声影响未形成稳定收益，因此不声明端到端搜索延迟变化。
+- 测试与静态验证：tool search、plugin hot reload/manager、support、loop visibility 与 discovery routing 定向回归 `266 passed in 6.61s`；相关源码/测试 `compileall`、Pyright `0 errors`、migration append-only 与 `git diff --check` 通过。未删除保护活跃合同的测试。
+- Gate：已在 committed HEAD 对 PR40 base `94f18387e517a1818eba1ed1cd1715f6ded902fa` 运行公开 Gate 并通过；private contract 状态为 `pending_maintainer`，不把运行后的 source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改数据库、文件状态、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-backups/pr42-search_backend.py.bak-20260723`、`pr42-test_tool_search.py.bak-20260723`、`pr42-ledger.md.bak-20260723`、`pr42-ledger-before-root-entry-20260723.bak`；回滚点为本 PR 单提交 revert。
+- 残余风险：`ToolDocument` 是可变对象，不能把 normalized fields 缓存到 backend 或 snapshot 外；本 PR 刻意只删除不可达 dedupe 并复用单次 lower。若未来 `keywords` 改为保留重复的 sequence，必须重新建立 why 去重合同，不能直接复用当前证明。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）

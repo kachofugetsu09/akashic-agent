@@ -180,8 +180,8 @@ def _score(doc: "ToolDocument", keywords: set[str]) -> int:
       search_hint → +4
       description → +2
     """
-    name_parts = [p for p in doc.name.lower().split("_") if p]
     name_lower = doc.name.lower()
+    name_parts = [p for p in name_lower.split("_") if p]
     hint_lower = (doc.search_hint or "").lower()
     desc_lower = doc.description.lower()
     is_mcp = doc.source_type == "mcp"
@@ -207,30 +207,24 @@ def _score(doc: "ToolDocument", keywords: set[str]) -> int:
 
 def _explain(doc: "ToolDocument", keywords: set[str]) -> list[str]:
     """生成 why_matched 解释（与 _score 解耦）。"""
-    name_parts = [p for p in doc.name.lower().split("_") if p]
     name_lower = doc.name.lower()
+    name_parts = [p for p in name_lower.split("_") if p]
     hint_lower = (doc.search_hint or "").lower()
     desc_lower = doc.description.lower()
 
     reasons: list[str] = []
-    seen: set[str] = set()
-
-    def _add(r: str) -> None:
-        if r not in seen:
-            seen.add(r)
-            reasons.append(r)
 
     for kw in keywords:
         if kw in name_parts:
-            _add(f"名称精确:{kw}")
+            reasons.append(f"名称精确:{kw}")
         elif any(kw in part or part in kw for part in name_parts):
-            _add(f"名称部分:{kw}")
+            reasons.append(f"名称部分:{kw}")
         elif kw in name_lower:
-            _add(f"名称:{kw}")
+            reasons.append(f"名称:{kw}")
 
         if hint_lower and kw in hint_lower:
-            _add(f"提示:{kw}")
+            reasons.append(f"提示:{kw}")
         if kw in desc_lower:
-            _add(f"描述:{kw}")
+            reasons.append(f"描述:{kw}")
 
     return reasons
