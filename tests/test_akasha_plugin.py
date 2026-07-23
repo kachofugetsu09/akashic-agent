@@ -61,7 +61,7 @@ from plugins.akasha.core import (
 )
 import plugins.akasha.graph_snapshot as graph_snapshot
 from plugins.akasha.plugin import AkashaPlugin
-from plugins.akasha.replay import AkashaReplayRuntime, ReplayMessage, _turn_messages
+from plugins.akasha.replay import AkashaReplayRuntime, ReplayMessage
 from plugins.akasha.store import (
     ActivationEventRow,
     AkashaStore,
@@ -1173,7 +1173,7 @@ def test_replay_empty_query_commits_without_activation_or_query_log(tmp_path: Pa
         replay_store.close()
 
 
-def test_query_log_content_loader_allows_empty_user_message(tmp_path: Path) -> None:
+def test_load_turn_card_allows_empty_user_message(tmp_path: Path) -> None:
     db_path = tmp_path / "sessions.db"
     with closing(sqlite3.connect(str(db_path))) as db:
         db.execute(
@@ -1196,14 +1196,18 @@ def test_query_log_content_loader_allows_empty_user_message(tmp_path: Path) -> N
             ],
         )
         db.commit()
-        user_message, assistant_preview = _turn_messages(
-            db.cursor(),
+        card = _load_turn_card(
+            db_path,
             "s:0",
             assistant_preview_chars=9,
+            score=0.8,
+            lane="dense",
+            signals={},
         )
 
-    assert user_message == ""
-    assert assistant_preview == "assistant..."
+    assert card is not None
+    assert card.user_message == ""
+    assert card.assistant_preview == "assistant..."
 
 
 def test_akasha_rebuild_skips_scheduler_messages() -> None:
