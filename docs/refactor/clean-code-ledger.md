@@ -876,6 +876,24 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 备份与回滚：执行前备份为 `/tmp/akashic-less-is-more-backups/pr51/engine.py.base-b2c0bf3d`（SHA-256 `6aa57f36da2a0482aaa8a2151f50b045fbe8e899a12bc641a980cba230a4df11`）与 `/tmp/akashic-less-is-more-backups/pr51/clean-code-ledger.md.base-b2c0bf3d`（SHA-256 `9f95cd330cbfbeafbf8f6fd4eb05ae31b3622505974f68f3bd749a90bd92228b`）；Gate 对账前账本备份为 `/tmp/akashic-less-is-more-backups/pr51/clean-code-ledger.md.pre-final-gate-287c65c4`（SHA-256 `88c09d7d43060b44f548399401cc6abfe955431af3e07d27d02642e6c1324b2a`）。提交后可用单提交 revert `refactor(akasha): inline reinforce boost alias` 回滚。
 - 残余风险：若未来 committed-turn boost 需要独立输入协议、审计或错误转换，应在真实 owner 边界重新引入有职责的函数；不能仅为保留额外 traceback frame 恢复纯转发别名。
 
+## 2026-07-24 less-is-more PR52：内联 mobile 初始帧接收私有别名
+
+### `PR52` `refactor(mobile): inline initial frame receive alias`
+
+- base：PR51 committed HEAD `77d0fc1dee76049156aa313f5cf927ef695f8335`，分支 `refactor/less-is-more-pr51-inline-reinforce-boost-alias`；本 PR 分支 `refactor/less-is-more-pr52-inline-mobile-receive-frame`，唯一 writer 为本任务 agent。
+- allowed_paths：`infra/mobile_realtime/gateway.py` 的 `_receive_frame` 唯一 caller 与私有 helper、本账本；`capability_owner`：`infra.mobile_realtime.protocol.parse_frame` 拥有 wire text 到 `MobileFrame` 的协议反序列化和校验。未修改 import、注释、测试、协议 schema、storage、migration、NOW、projectneed 或正式 runtime workspace。
+- 历史与消费者：`a8d7a6e4` 在恢复 mobile realtime server 时同时创建 `_receive_frame` 及其唯一 caller，helper 从引入起始终只有 `return parse_frame(await websocket.receive_text())`，没有独立校验、转换、恢复、日志或副作用。全仓生产源码、测试、SDK、export/re-export、动态属性/import、monkeypatch、cache 与 `/home/huashen/.akashic-plugin/cache` 扫描确认旧 symbol 无第二消费者、替换缝或已安装缓存引用。
+- 求值、协程与错误边界：`change_type: refactor`，`semantic_delta: none`。base helper 与 candidate caller RHS 都先捕获同一 module-global `parse_frame`，再调用并 await 同一 `websocket.receive_text()`；base helper coroutine 被 caller 立即 await，在执行到首个真实 suspension 前不会让出事件循环。exact-base/candidate AST 的 `dis` 指令序列对账相同，参数求值次数、收帧与 parser 调用次数、返回对象身份和异常对象、类型、cause/context 保持不变。唯一诊断差异是删除一个 coroutine frame，traceback、`sys.settrace`/`sys.setprofile` 等调试观测不再出现 `_receive_frame`；生产源码及安装缓存均无 profiler 或 `parse_frame` runtime writer。
+- 外部效果与持久化：`server.challenge` 仍在初始收帧前发送，之后仍恰好执行一次 `receive_text` 和一次 `parse_frame`。`WebSocketDisconnect`、`ProtocolDecodeError` 与 `ValidationError` 仍由同一 `handle_websocket` 边界处理并保持原关闭码、reason 和日志；认证、配对、连接状态、SQLite、文件、事件、网络发送次数与顺序均未改变。持久化 write set 为 `none`。
+- 性能、注释与 God file：仅移除初始连接路径的一次 Python 私有 coroutine 创建与转发，不宣称端到端性能收益。删除的 helper 没有 docstring、约束或 workaround 注释；`gateway.py` 继续集中拥有 challenge、认证和已认证协议循环，删除无职责别名减少同一协议状态机内跳转，不为行数目标拆文件。
+- baseline：source-set digest `a13e92ccf141b9f0ab668898913ade7b7db0b6042b04484e2fc723cceb9e3b22`，文件数 `378`，Python SLOC `77,303`，TypeScript/TSX SLOC `8,451`，`infra` SLOC `11,285`，total production SLOC `85,754`。
+- candidate：source-set digest `92fe8f346580f3416f8635a7145fb8f5d2229ebd35f2a11fbbe33becfebba019`，文件数 `378`，Python SLOC `77,301`，TypeScript/TSX SLOC `8,451`，`infra` SLOC `11,283`，total production SLOC `85,752`；production 净减少 `2` SLOC，系列相对 PR0 累计净减少 `1,788` SLOC。
+- parity：一次性脚本从 exact base AST 提取 `_receive_frame`，从 candidate AST 提取 caller RHS，覆盖正常返回、`receive_text` 抛错和 `parse_frame` 抛错；两侧调用轨迹、次数、参数、返回/异常对象身份及 cause/context 逐项相同，规范化结果 digest 为 `a4790b78f47ddc6d45d31ecb9ce6c28a3de102c7694dfbf6c31fca87412f0c4e`，过滤协程框架指令后的 bytecode opcode/arg 序列相同。脚本未提交。
+- 测试与静态验证：完整 `tests/mobile_realtime/test_gateway.py` 为 `30 passed`；与 production SLOC、migration append-only 合并回归为 `44 passed`。未修改、新增或删除测试。目标源码与直接测试 `compileall` 通过，目标 Pyright `0 errors, 0 warnings`；migration append-only 脚本、consumer/export/dynamic/cache/profiler/runtime-writer scan、production SLOC 计量和 `git diff --check` 通过。
+- Gate：已在 committed HEAD 对 PR51 base `77d0fc1dee76049156aa313f5cf927ef695f8335` 运行公开 Gate，7 个场景全部通过；private contract 状态为 `pending_maintainer`，不把运行后的 report/source/plan digest 回填到账本以避免 source 自引用。
+- 备份与回滚：执行前备份为 `/tmp/akashic-less-is-more-backups/pr52/gateway.py.base-77d0fc1d`（SHA-256 `e4368dcf98ca1cf2e377beffb7a61894da25b188de7bec087faf46cfb4e5f2b4`）与 `/tmp/akashic-less-is-more-backups/pr52/clean-code-ledger.md.base-77d0fc1d`（SHA-256 `1be68dc5a6761f5e89fd37213fb722b02820f907d609bef8536d3327a4b820b7`）；Gate 对账前账本备份为 `/tmp/akashic-less-is-more-backups/pr52/clean-code-ledger.md.pre-final-gate-1727e7c5`（SHA-256 `61d7ffbafd33cbdd6a2c9cff1a301e8d45da21b3f3c2ff5574480c6fe318e337`）。提交后可用单提交 revert `refactor(mobile): inline initial frame receive alias` 回滚。
+- 残余风险：若未来初始握手需要独立收帧协议、超时、审计或错误转换，应在 mobile gateway 边界重新引入有职责的函数；不能仅为保留额外 coroutine/traceback frame 恢复纯转发别名。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
