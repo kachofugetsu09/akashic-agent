@@ -894,6 +894,25 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 备份与回滚：执行前备份为 `/tmp/akashic-less-is-more-backups/pr52/gateway.py.base-77d0fc1d`（SHA-256 `e4368dcf98ca1cf2e377beffb7a61894da25b188de7bec087faf46cfb4e5f2b4`）与 `/tmp/akashic-less-is-more-backups/pr52/clean-code-ledger.md.base-77d0fc1d`（SHA-256 `1be68dc5a6761f5e89fd37213fb722b02820f907d609bef8536d3327a4b820b7`）；Gate 对账前账本备份为 `/tmp/akashic-less-is-more-backups/pr52/clean-code-ledger.md.pre-final-gate-1727e7c5`（SHA-256 `61d7ffbafd33cbdd6a2c9cff1a301e8d45da21b3f3c2ff5574480c6fe318e337`）。提交后可用单提交 revert `refactor(mobile): inline initial frame receive alias` 回滚。
 - 残余风险：若未来初始握手需要独立收帧协议、超时、审计或错误转换，应在 mobile gateway 边界重新引入有职责的函数；不能仅为保留额外 coroutine/traceback frame 恢复纯转发别名。
 
+## 2026-07-24 less-is-more PR53：内联 Akasha replay query preview 私有别名
+
+### `PR53` `refactor(akasha): inline replay preview alias`
+
+- base：PR52 final HEAD `a6a47b6b8d1ae2cc14aa56ec3a7865a286b12539`，分支 `refactor/less-is-more-pr52-inline-mobile-receive-frame`；本 PR 分支 `refactor/less-is-more-pr53-inline-akasha-replay-preview`，唯一 writer 为本任务 agent。
+- allowed_paths：`plugins/akasha/replay.py` 的 `_preview_text_block` 唯一 caller 与私有 helper、本账本；`capability_owner`：`AkashaReplayRuntime._write_query_log` 拥有 replay query log 的完整 payload，包括 500 字符 `text_block_preview` 投影策略。未修改测试、store、schema、migration、session truth、NOW、projectneed 或正式 runtime workspace。
+- 候选拒绝与选择：拒绝 `_create_pinned_backend`，因为把 wrapper 替换为 `PinnedNetworkBackend` 会让 class 捕获从逐跳 DNS await 后提前到下载开始前，跨越真实 suspension；lambda 只会把具名别名改成更隐晦的匿名别名。所选 `_preview_text_block` 由 `6310c87e` 与唯一 caller 同时引入，此后始终只是 `text_block[:500].rstrip() + ("..." if len(text_block) > 500 else "")`，没有独立校验、恢复、日志或副作用。
+- 历史与消费者：全仓生产源码、测试、SDK、plugin package、export/re-export、动态属性/import、monkeypatch、字符串引用与 `/home/huashen/.akashic-plugin/cache` 扫描确认旧 symbol 只有一处静态 caller，没有函数身份、名称、缓存或热替换消费者。500 字符 preview policy 现在由原 `insert_query_log` caller 就地持有，不迁移到 store、dashboard 或第二个 owner。
+- 输入、求值与错误边界：`change_type: refactor`，`semantic_delta: none`。`text_block` 仍由 `_format_context_block` 构造成普通 `str`；slice、`rstrip`、`len`、条件选择和字符串加法的次序、次数与参数保持不变。`text_block_preview` 仍是 `insert_query_log` 的最后一个 keyword，外层 bound method 与此前所有 keyword 仍按相同顺序求值；只有已删除 helper 的 global lookup/call/frame 消失。正常返回类型和值不变，异常对象、类型、cause/context 与 DB 调用前传播时机不变；traceback、trace/profile 只少 `_preview_text_block` frame。
+- 持久化与外部效果：`AkashaStore.insert_query_log` 仍对同一 `query_id` 执行一次 `INSERT OR REPLACE` 并 commit，18 个参数、字段顺序和值逐项不变；preview 计算失败时两侧都不会尝试 DB 写入。`akasha_query_log` 的正常增加/同 ID replace、其他 graph/node/edge/activation 写入及调用顺序均未改变，没有 DELETE、文件写入、事件、网络、消息发送或服务状态变化，正式 workspace write set 为 `none`。
+- 性能、注释与 God file：仅移除 replay query-log 路径的一次 Python 私有函数转发，不宣称端到端性能收益。删除的 helper 没有 docstring、约束或 workaround 注释；500 字符规则在唯一使用点更直接可见。`replay.py` 继续集中拥有 replay 激活、提交和诊断日志，删除无职责别名减少同一高内聚流程内跳转，不为行数目标拆文件。
+- baseline：source-set digest `92fe8f346580f3416f8635a7145fb8f5d2229ebd35f2a11fbbe33becfebba019`，文件数 `378`，Python SLOC `77,301`，TypeScript/TSX SLOC `8,451`，plugins SLOC `17,095`，total production SLOC `85,752`。
+- candidate：格式化后的 caller expression 为 `2` 个 production SLOC，替代原 caller 的 `1` 行并删除 helper 的 `2` 行；source-set digest `fe85be21772a637d35c30bdd834426c8cbe9ac1687791d0f6acbdba6c1ec9123`，文件数 `378`，Python SLOC `77,300`，TypeScript/TSX SLOC `8,451`，plugins SLOC `17,094`，total production SLOC `85,751`；production 真净减少 `1` SLOC，系列相对 PR0 累计净减少 `1,789` SLOC。
+- parity：一次性脚本从 exact base AST 提取 `_preview_text_block`，从 candidate AST 提取 `text_block_preview` keyword RHS；覆盖空串、短串、尾部空白、恰好/超过 500 字符、Unicode 与换行边界，并用 probe 覆盖 slice、`rstrip`、`len`、add 的操作轨迹和逐阶段异常。结果、类型、调用轨迹、异常对象身份及 cause/context 逐项相同，规范化 digest 为 `8979bb0c431bf5b8254047139f99cac8c0723b17e674f9b35a893e03b606fce5`，过滤函数框架指令后的 bytecode opcode/arg 序列相同；脚本未提交。
+- 测试与静态验证：完整 `tests/test_akasha_plugin.py` 为 `65 passed`，与 production SLOC、migration append-only 合并回归为 `79 passed`；真实临时 Akasha DB 测试覆盖 query log 写入与读取。未修改、新增或删除测试。目标源码与直接测试 `compileall` 通过；目标 Pyright candidate/base 均为 `0 errors, 2 warnings`（相同的 NumPy unknown-type 既有诊断）；migration append-only 脚本、consumer/export/dynamic/cache scan、production SLOC 计量和 `git diff --check` 通过。
+- Gate：已在 committed HEAD 对 PR52 base `a6a47b6b8d1ae2cc14aa56ec3a7865a286b12539` 运行公开 Gate，7 个场景全部通过；private contract 状态为 `pending_maintainer`，不把运行后的 report/source/plan digest 回填到账本以避免 source 自引用。
+- 备份与回滚：执行前备份为 `/tmp/akashic-less-is-more-backups/pr53/replay.py.base-a6a47b6b`（SHA-256 `a69cef18a3a81de054a66e1df1261a0cc105c178489292f7939eff0a54a2120c`）与 `/tmp/akashic-less-is-more-backups/pr53/clean-code-ledger.md.base-a6a47b6b`（SHA-256 `a15374b5c62f6addb25054a2dc2a119c9b25ff3c1e8282a4b249dbd994dd9c4b`）；Gate 对账前账本备份为 `/tmp/akashic-less-is-more-backups/pr53/clean-code-ledger.md.pre-final-gate-7d65b41d`（SHA-256 `fa69b520d351c05978b9b2a083ed3d1015abc5c9c7a4cb690bbb53f7ef00e9fe`）。提交后可用单提交 revert `refactor(akasha): inline replay preview alias` 回滚。
+- 残余风险：若以后 replay preview 需要独立复用、不同长度策略、审计或错误转换，应在 query-log payload owner 边界重新引入有职责的函数；不能仅为保留额外 traceback frame 恢复纯转发别名。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
