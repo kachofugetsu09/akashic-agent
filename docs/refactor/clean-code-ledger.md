@@ -759,6 +759,21 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；执行前备份：`/tmp/akashic-less-is-more-backups/pr44-dashboard-api-before-change-20260723.py`、`/tmp/akashic-less-is-more-backups/pr44-clean-code-ledger-before-change-20260723.md`；回滚点为本 PR 单提交 revert。
 - 残余风险：无已知风险；若未来重新引入 preview 格式化，应由实际消费者就近拥有，不恢复零调用的 Dashboard 全局 helper。
 
+## 2026-07-23 less-is-more PR45：删除 Channel 启动遗留异常空壳
+
+### `PR45` `refactor(channels): remove empty startup exception wrapper`
+
+- base：PR44 committed HEAD `edb5fb6b8700a24907de6099e72c06019f066160`，分支 `refactor/less-is-more-pr45-remove-empty-channel-catch`。
+- allowed_paths：`bootstrap/channels.py` 与本账本；`capability_owner`：ChannelHost 构造以及内建/插件 Channel 注册。未修改 Channel start/stop、runtime caller、测试、schema、manifest、迁移或正式 runtime workspace。
+- 历史与不可达性：`9f0faeee` 引入的 `try/except` 原本在 Channel 启动失败时调用 `run_cleanup_steps` 清理 IPC；`89ceaf29` 移除 IPC、start await 与清理逻辑后，只留下捕获 `CancelledError`/`Exception` 再原样 `raise` 的空壳，以及仅由空壳引用的 `asyncio` 和已完全未使用的 `run_cleanup_steps` import。CodeGraph、精确/dynamic/export/plugin-cache 扫描均未发现模块属性 consumer。
+- 语义与错误边界：`change_type: refactor`，`semantic_delta: none`。候选只取消函数主体缩进并删除空壳/import；普通异常和取消仍以同一对象、类型、参数、cause、context、suppress-context 与 traceback 函数帧向上传播。`start_channels` 当前没有 await，也没有在异常时需要回滚的已取得资源；AttachmentStore 只保存路径，Channel 构造失败前未启动 Channel。
+- 范围与计量：base source-set digest `ea1ce757552ff59c11048dd8ecdbbb53177a86c24c4fb7eb18787e76f2c39b86`，文件数 `378`，Python SLOC `77,321`，`bootstrap` `6,304`，total production SLOC `85,772`；candidate digest `3050a573e13b6734b402011897d04a61449657feff39c6a8b777d6e881a9c4a9`，文件数 `378`，Python SLOC `77,316`，`bootstrap` `6,299`，total `85,767`；production 净减少 `5` SLOC，系列相对 PR0 累计净减少 `1,773` SLOC。
+- 差分回放：对 `RuntimeError` 与 `asyncio.CancelledError` 在首个 workspace 读取处注入同一异常对象；base/candidate 的对象身份、类型、args、cause、context、suppress-context 和 traceback 函数名序列完全相等。focused microbenchmark 噪声大且未显示稳定收益，因此不宣称端到端性能提升。
+- 测试与静态验证：`tests/test_runtime_smoke.py tests/test_more_support_modules.py tests/test_channel_host.py` 完整文件级回归为 `76 passed in 2.60s`；production SLOC 与 migration append-only 为 `14 passed`；相关源码 `compileall` 通过，Pyright `0 errors, 0 warnings`；动态/module-attribute consumer scan 与 `git diff --check` 通过。
+- Gate：已在 committed HEAD 对 PR44 base `edb5fb6b8700a24907de6099e72c06019f066160` 运行公开 Gate 并通过；private contract 状态为 `pending_maintainer`，不把运行后的 report/source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；执行前备份：`/tmp/akashic-less-is-more-backups/pr45-channels-before-change-20260723.py`、`/tmp/akashic-less-is-more-backups/pr45-clean-code-ledger-before-change-20260723.md`；回滚点为本 PR 单提交 revert。
+- 残余风险：删除两个 incidental module attributes；它们没有 `__all__`、文档、caller、动态读取或插件依赖证据，不属于已记录静态语义。后续若重新引入启动期资源，清理必须由实际资源 owner 明确实现，不能恢复空 catch。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
