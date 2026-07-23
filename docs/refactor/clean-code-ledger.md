@@ -839,6 +839,24 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - Redis 式 God file 判断：保留 `agent/tools/recall_memory.py`；intent canonicalization 与 `RecallMemoryTool` 构造 `MemoryQuery` 同属工具边界，删除 helper 并把 immutable table 放在模块顶部降低热路径分配和跨函数跳转，不拆文件。
 - 残余风险与回滚点：只读 map 的构造从调用期提前到 import 期；若以后 intent 协议新增值，必须同时修改 `MemoryQueryIntent` 与此 canonical table。提交后可用单提交 revert `perf(recall): reuse read-only intent map` 回滚。
 
+## 2026-07-24 less-is-more PR50：内联 Akasha message parser 私有别名
+
+### `PR50` `refactor(akasha): inline message parser alias`
+
+- base：PR49 committed HEAD `782ae3fd85f452539319bd008c1261453ff99dfc`，分支 `perf/less-is-more-pr49-reuse-readonly-intent-map`；本 PR 分支 `refactor/less-is-more-pr50-inline-akasha-message-parser`，唯一 writer 为本任务 agent。
+- allowed_paths：`plugins/akasha/engine.py` 的 `_parse_message_id` 唯一 caller 与私有 helper、本账本；`capability_owner`：`AkashaMemoryEngine.undo_by_message_sources` 的 message ID → affected turn key 映射。未修改测试、oracle、`_parse_turn_key`、`_possible_turn_keys`、store、schema、migration、NOW、projectneed 或正式 runtime workspace。
+- 历史与消费者：`6310c87e` 在接入 Akasha 引擎时直接把 `_parse_message_id` 建成 `_parse_turn_key(message_id)` 的无状态转发，此后没有独立语义演进。同模块已在 undo 删除、turn card 回源和 batch load 路径直接使用 `_parse_turn_key`；全仓精确 consumer、export/re-export、动态属性/import 与已安装 plugin cache 扫描确认旧 helper 只有一处静态 caller，没有外部 seam。
+- 语义与错误边界：`change_type: refactor`，`semantic_delta: none`。caller 在相同循环位置直接执行同一 module-global `_parse_turn_key(message_id)` lookup；参数求值次数、global parser lookup 次数、tuple/`None` 返回对象、无分隔符和非整数 suffix 的 `None` 分类保持不变。`undo_by_message_sources` 已先用 `str(item).strip()` 把输入规范化为普通 `str`，因此 parser 不接收带自定义 `rpartition` 的 `str` subclass。唯一诊断差异是恶意 monkeypatch 让 canonical parser 抛错时，traceback 少一个已删除的 alias frame；异常对象、类型、参数、cause/context 与传播时机不变。
+- 持久化与 write set：`none`。affected turn key 集合保持相同，`delete_items_batch`、query state、`message_embeddings`、内存 nodes/edges/cache 的调用条件、参数、顺序和 dry-run 行为均未修改；没有数据库、文件、事件、网络、服务或外部发送变化。
+- 性能、注释与 God file：仅减少 uncached undo fallback 的一次 Python 私有 helper 跳转，不做端到端性能宣称。删除的 helper 没有 docstring、约束或 workaround 注释；保留 affected-turn、undo 与 parser owner 的现有注释。`engine.py` 内的 undo、turn-key 解析与相邻 key 推导属于同一高内聚状态映射，删除别名比拆分文件更少跨文件跳转，符合 Redis 式 God file 原则。
+- baseline：source-set digest `7c1e257cc42facb2dd9a7190d0ab665a46d9b2fcd3a1536f90ffaa33851d016d`，文件数 `378`，Python SLOC `77,310`，TypeScript/TSX SLOC `8,451`，plugins SLOC `17,102`，total production SLOC `85,761`。
+- candidate：source-set digest `162b04642ed2734a0b2a7c9b8a1e51a51e74a3632995a13f85a3b677478386f0`，文件数 `378`，Python SLOC `77,308`，TypeScript/TSX SLOC `8,451`，plugins SLOC `17,100`，total production SLOC `85,759`；production 净减少 `2` SLOC，系列相对 PR0 累计净减少 `1,781` SLOC。
+- parity：一次性 base/candidate 脚本覆盖 uncached 合法 ID、多冒号 session key、非法 suffix、相邻删除 ID 与 cached mapping 五组输入，结果逐项相同；module-global spy 确认 parser 参数与调用次数相同；`str` subclass 经 undo 边界规范化后的结果和 `__str__` 调用次数相同；异常注入确认对象身份、类型和参数相同，traceback 仅移除 `_parse_message_id` frame。脚本未提交。
+- 测试与静态验证：既有 Akasha undo 定向测试 `1 passed`，完整 `tests/test_akasha_plugin.py` 为 `65 passed`；未修改、新增或删除测试。目标文件 `compileall` 通过，Pyright `0 errors, 0 warnings`；migration append-only 脚本与 `tests/test_migration_append_only.py`（`5 passed`）通过；生产源码、测试、SDK、plugin consumer/export/dynamic scan 除本账本历史记录外零残留，installed plugin cache 旧 symbol 扫描零残留，production SLOC 和 `git diff --check` 通过。
+- Gate：已在 committed HEAD 对 PR49 base `782ae3fd85f452539319bd008c1261453ff99dfc` 运行公开 Gate，7 个场景全部通过；private contract 状态为 `pending_maintainer`，不把运行后的 report/source/plan digest 回填到账本以避免 source 自引用。
+- 备份与回滚：执行前备份为 `/tmp/akashic-less-is-more-backups/pr50/engine.py.base-782ae3fd`（SHA-256 `1e6b40c25fe8e1ef514b612785d866efd69a6c0ec43877362d6e2ece109f2b6f`）与 `/tmp/akashic-less-is-more-backups/pr50/clean-code-ledger.md.base-782ae3fd`（SHA-256 `4ff24e3f939af69944f853639b6e4bd55e4fa56c4fc7c725d17d6de58edf4773`）；Gate 对账前账本备份为 `/tmp/akashic-less-is-more-backups/pr50/clean-code-ledger.md.pre-final-gate-06a2b9e6`（SHA-256 `751182d9af315cc6f4cfd900bd269ecffb622082e2b1ce057ba96c64d54b9890`）。提交后可用单提交 revert `refactor(akasha): inline message parser alias` 回滚。
+- 残余风险：若未来 `_parse_message_id` 需要独立输入协议、审计或错误转换，应在真实 owner 边界重新引入有职责的函数；不能仅为保留额外 traceback frame 恢复纯转发别名。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）

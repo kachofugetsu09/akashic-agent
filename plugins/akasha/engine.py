@@ -1073,7 +1073,7 @@ class AkashaMemoryEngine:
             if cached and cached in existing_keys:
                 affected.add(cached)
                 continue
-            parsed = _parse_message_id(message_id)
+            parsed = _parse_turn_key(message_id)
             if parsed is None:
                 continue
             session_key, seq = parsed
@@ -1521,10 +1521,6 @@ def _load_turn_card(
         lane=lane,
         signals=signals,
     )
-
-
-def _parse_message_id(message_id: str) -> tuple[str, int] | None:
-    return _parse_turn_key(message_id)
 
 
 def _possible_turn_keys(
