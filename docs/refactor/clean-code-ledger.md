@@ -682,6 +682,22 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、文件状态、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-backups/pr38-agent-tools-shell.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr38-test-shell-tool.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr38-test-mid-modules.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr38-ledger.md.bak-20260723`；回滚点为本 PR 单提交 revert。
 - 残余风险：微基准只覆盖本地 tokenization 与护栏 CPU；真实 shell 调度、OS 进程、超时、后台生命周期仍由既有测试/Gate 覆盖。若未来网络护栏需要不同 token 视图，应在该 owner 明确新的解析合同，不恢复无证据的重复 split。
 
+## 2026-07-23 less-is-more PR39：内联 session extra 提取
+
+### `PR39` `refactor(session): inline message extra extraction`
+
+- base：PR38 committed HEAD `13d7e2d2a76dff8e5483ce49cdcbc9a2c4d043cc`，分支 `refactor/less-is-more-pr39-inline-session-extra`。
+- allowed_paths：`session/manager.py` 的 `_persist_session` 与消息 extra skip keys、`tests/test_logic_modules.py` 的最小 DB payload/order oracle、本账本；`capability_owner`：SessionManager 会话消息 payload 组装。未修改 `SessionStore` 事务、SQLite schema、消息/turn/附件、metadata、seq/cursor、迁移或正式 runtime workspace。
+- 历史与不可达性：`_extract_extra` 由 `708d6f25` 的 session phase2 迁移引入；CodeGraph、AST/精确文本、`getattr`/`setattr`/`import_module`、export/re-export、测试、SDK、plugin manifest 与 `/home/huashen/.akashic-plugin/cache` 扫描确认当前只有 `_persist_session` 一处 caller，未发现 helper monkeypatch 或外部 owner。候选删除 helper，在模块级 `_MSG_KEYS` 与唯一 caller 内联 comprehension。
+- 语义与错误边界：`change_type: refactor`，`semantic_delta: none`。skip keys、key/value 选择、dict 插入顺序、metadata payload、每条 pending message 的收集顺序、`SessionStore.persist_session` 入参、同一事务/append-only/seq/cursor、异常传播与数据库 write set 完全保持；`pending_messages.append(msg)` 仍先于 extra 计算。没有新增 `try/except`、fallback、默认值、动态兼容层或 mock success；模块级 `_MSG_KEYS` 没有生产 mutation path。
+- 范围与计量：PR38 base source-set digest `75d1cadaefac41bda06d0eee28e805450cf964adddc2cb20be8fc8469bdb73fd`、文件数 `378`、Python SLOC `77,352`、`session` `2,526`、total production SLOC `85,803`；candidate source-set digest `57c649022745f485bffbbae8b3bdfb63ef0fe0481673bb5dd4deb76eb6fea235`、文件数 `378`、Python SLOC `77,342`、`session` `2,516`、total `85,793`；production 净减少 `10` SLOC（helper 物理删除，单一 caller 保留同等 comprehension）。
+- payload/row/DB parity：base/candidate 在固定时间、metadata、Unicode/non-string content、所有 skip keys、ordered custom extras、tool_chain、proactive、media、reasoning/model_state 和两次 persist 的回放中，`persist_session` 捕获 payload、`sessions`/`messages` 真实 SQLite rows、行数与 raw `extra` JSON 完全相等；`Trace(dict subclass)` oracle 固定 `get:id → get:timestamp → get:content → get:role → get:tool_chain → items` 字段求值顺序与 base 一致；最小测试固定检查 `extra` JSON 的 key 顺序与 stable role/content/seq。
+- 性能与分配回放：同一 fake store、16 条消息、固定 CPU 核心预热后每次 `100,000` 次、7 次重复的 `_persist_session` CPU 微基准，base 中位数 `10.600 µs/call`，candidate `9.399 µs/call`，中位数变化 `-11.33%`；同一热循环 `5,000` 次、7 次的 tracemalloc 峰值中位数 `1,010 B → 665 B`（`-34.16%`）。这是本地 payload 组装 CPU/短暂分配微基准，不宣称 SQLite/端到端收益。
+- 测试与静态验证：session manager/store 定向回归 `69 passed in 0.57s`；相关源码/测试 `compileall` 通过；`session/manager.py` Pyright `0 errors, 0 warnings`，直接相关测试 Pyright `0 errors, 279 warnings`（既有测试动态/unused-call 诊断）；base/candidate payload/row/DB parity、Trace evaluation order、migration append-only、`git diff --check` 通过。未删除保护活跃合同的测试，未修改正式 runtime workspace。
+- Gate：已在 committed HEAD 对 PR38 base `13d7e2d2a76dff8e5483ce49cdcbc9a2c4d043cc` 运行公开 Gate 并通过；private contract 状态为 `pending_maintainer`，不把运行后的 report、source 或 plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、database rows/schema、服务、网络、外部发送、generation/snapshot/lease/event、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-backups/pr39-session-manager.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr39-test-logic-modules.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr39-test-session-store.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr39-ledger.md.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr39-session-manager-before-order-fix-20260723`、`/tmp/akashic-less-is-more-backups/pr39-test-logic-before-order-fix-20260723`、`/tmp/akashic-less-is-more-backups/pr39-ledger-before-order-fix-20260723`；回滚点为本 PR 单提交 revert。
+- 残余风险：微基准使用 fake store，真实 SQLite lock、transaction、FTS、触发器与并发 seq 仍由既有 session tests/Gate 覆盖；若未来消息核心字段变化，应在 SessionStore payload 合同 owner 中同步更新 `_MSG_KEYS` 与独立 row oracle，而不是恢复 private wrapper。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）

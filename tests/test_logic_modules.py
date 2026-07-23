@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 import asyncio
+import json
 import logging
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
@@ -245,6 +246,73 @@ async def test_session_batch_persistence_uses_one_commit(tmp_path: Path) -> None
     await manager.append_messages(session, session.messages)
 
     assert statements.count("COMMIT") == 1
+
+
+def test_session_manager_preserves_message_extra_payload_order(tmp_path: Path) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("telegram:extra-order")
+    session.messages.append(
+        {
+            "role": "user",
+            "custom_first": "先",
+            "session_key": "must-skip",
+            "content": "正文",
+            "custom_second": {"nested": "值"},
+            "seq": 999,
+            "timestamp": "2026-07-23T00:00:00+00:00",
+            "tool_chain": None,
+        }
+    )
+
+    manager.save(session)
+
+    row = manager._store._conn.execute(
+        "SELECT role, content, seq, extra FROM messages WHERE session_key = ?",
+        (session.key,),
+    ).fetchone()
+    assert row is not None
+    assert tuple(row[:3]) == ("user", "正文", 0)
+    assert row[3] == json.dumps(
+        {"custom_first": "先", "custom_second": {"nested": "值"}},
+        ensure_ascii=False,
+    )
+
+
+def test_session_manager_preserves_message_field_evaluation_order(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+
+    class TraceMessage(dict[str, object]):
+        def get(self, key: str, default: object = None) -> object:
+            events.append(f"get:{key}")
+            return super().get(key, default)
+
+        def items(self):
+            events.append("items")
+            return super().items()
+
+    manager = SessionManager(tmp_path)
+    manager._store.persist_session = lambda *args, **kwargs: []
+    fixed = datetime(2026, 7, 23, tzinfo=timezone.utc)
+    session = Session("telegram:extra-order", created_at=fixed, updated_at=fixed)
+    message = TraceMessage(
+        role="user",
+        content="正文",
+        timestamp=fixed.isoformat(),
+        custom="extra",
+    )
+
+    manager._persist_session(session, [message], updated_at=fixed)
+
+    assert events == [
+        "get:id",
+        "get:timestamp",
+        "get:content",
+        "get:role",
+        "get:tool_chain",
+        "items",
+    ]
 
 
 @pytest.mark.asyncio
