@@ -745,6 +745,20 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；执行前备份：`/tmp/akashic-less-is-more-backups/pr43-filesystem-before-change-20260723`、`/tmp/akashic-less-is-more-backups/pr43-clean-code-ledger-before-change-20260723`；回滚点为本 PR 单提交 revert。
 - 残余风险：无已知风险；后续文本换行行为仍由现有 `_supports_crlf_compat`/`_restore_utf8_bom` 所有者维护，图片识别仍由 supported helper 维护。
 
+## 2026-07-23 less-is-more PR44：删除 dashboard 遗留 preview helper
+
+### `PR44` `refactor(dashboard): remove dead preview helper`
+
+- base：PR43 committed HEAD `a1649300396312f8bdc3e3b5954c26963e2ef125`，分支 `refactor/less-is-more-pr44-remove-dashboard-preview`。
+- allowed_paths：`bootstrap/dashboard_api.py` 与本账本；`capability_owner`：Dashboard API 的 HTTP 路由、FastAPI lifespan 与插件面板装载。未修改测试、路由、schema、manifest、迁移或正式 runtime workspace。
+- 历史与不可达性：`_preview_text` 随已废弃的 `ObserveDashboardReader` 于 `a9a4c740` 引入；`a47fcfcf` 把 Observe 迁到插件并删除 reader、cache/summary 路由和全部 caller，只遗留 helper。CodeGraph、全仓 AST/精确字符串、动态 import/getattr、export/re-export、SDK、plugin manifest 与已安装 plugin cache 扫描均未发现 consumer。
+- 语义与错误边界：`change_type: refactor`，`semantic_delta: none`。删除只减少未执行的私有定义；Dashboard HTTP payload、状态码、路由、lifespan、插件协议、持久化结果和异常传播不变。没有新增 catch、fallback、默认值、缓存或兼容层。
+- 范围与计量：base source-set digest `628ecdd588117331002999c211a0c94d10c7c27994d5fc46f940bc707ba38c70`，文件数 `378`，Python SLOC `77,326`，`bootstrap` `6,309`，total production SLOC `85,777`；candidate digest `ea1ce757552ff59c11048dd8ecdbbb53177a86c24c4fb7eb18787e76f2c39b86`，文件数 `378`，Python SLOC `77,321`，`bootstrap` `6,304`，total `85,772`；production 净减少 `5` SLOC，系列相对 PR0 累计净减少 `1,768` SLOC。
+- 测试与静态验证：`tests/test_dashboard_api.py tests/test_plugin_hot_reload.py` 为 `135 passed in 11.01s`；相关源码 `compileall` 通过，Pyright `0 errors, 24 warnings`（既有 unknown/unused-call warnings）；AST、动态调用、export/re-export、SDK、plugin-cache 扫描无残留；`git diff --check` 通过。
+- Gate：已在 committed HEAD 对 PR43 base `a1649300396312f8bdc3e3b5954c26963e2ef125` 运行公开 Gate 并通过；private contract 状态为 `pending_maintainer`，不把运行后的 report/source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；执行前备份：`/tmp/akashic-less-is-more-backups/pr44-dashboard-api-before-change-20260723.py`、`/tmp/akashic-less-is-more-backups/pr44-clean-code-ledger-before-change-20260723.md`；回滚点为本 PR 单提交 revert。
+- 残余风险：无已知风险；若未来重新引入 preview 格式化，应由实际消费者就近拥有，不恢复零调用的 Dashboard 全局 helper。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）

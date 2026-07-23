@@ -710,13 +710,6 @@ async def _close_dashboard_value(value: object) -> None:
             await result
 
 
-def _preview_text(value: Any, limit: int) -> str:
-    text = str(value or "").replace("\n", " ").strip()
-    if len(text) <= limit:
-        return text
-    return text[:limit].rstrip() + "..."
-
-
 def create_dashboard_app(
     workspace: Path,
     *,
