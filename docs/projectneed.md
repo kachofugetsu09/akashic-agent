@@ -455,6 +455,10 @@ old text 不存在时失败；多次匹配而未声明 replace-all 时拒绝猜�
 
 add、cancel 和 reschedule 先构造 candidate，持久化成功后才替换内存。stop 后不再产生新 tick；关闭回收 in-flight，停止期间周期任务不重排。
 
+### SCH-003 Soft 调度任务是无状态原子执行
+
+每次 soft job 只使用当前 prompt、系统能力和工具完成一次独立推理，不读取同一 job 的历史窗口，不把内部 user 或 assistant turn 写入会话历史，也不把内部 turn 事件发布到目标 channel。目标 channel 只负责调度时的 busy admission 与最终发送；推理成功且结果非空时只产生一次外部推送，失败或空结果不得伪装成已送达。
+
 ### PRO-001 主动流程的空、跳过和失败可区分
 
 sensor、session、context 和 store 故障不得伪装成“无事件”。decision、dedupe、presence 和成功状态只在真实送达后提交；合法 skip 带 reason，内部错误可观察。

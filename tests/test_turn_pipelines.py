@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.core.passive_turn import _persistence_from_metadata
 from agent.core.runtime_support import SessionLike, TurnRunResult
 from agent.looping.core import AgentLoop, _supports_stream_events
 from agent.looping.interrupt import TurnInterruptState
@@ -154,6 +155,43 @@ async def test_process_direct_suppresses_stream_and_memory_when_requested():
         "disabled_tools": ["message_push"],
     }
     assert loop._process.await_args.kwargs["dispatch_outbound"] is False
+
+
+@pytest.mark.asyncio
+async def test_process_direct_stateless_turn_has_no_history_or_persistence():
+    loop = object.__new__(AgentLoop)
+    loop._passive_runtime_lock = asyncio.Lock()
+    loop._runtime_snapshot_store = None
+    loop._process = AsyncMock(
+        return_value=OutboundMessage(
+            channel="scheduler",
+            chat_id="job-1",
+            content="ok",
+        )
+    )
+
+    await AgentLoop.process_direct(
+        loop,
+        content="天气",
+        session_key="scheduler:job-1",
+        channel="scheduler",
+        chat_id="job-1",
+        stateless=True,
+    )
+
+    msg = loop._process.await_args.args[0]
+    assert msg.metadata == {
+        "omit_user_turn": True,
+        "omit_assistant_turn": True,
+        "skip_session_history": True,
+        "skip_memory_context_guard": True,
+        "skip_post_memory": True,
+        "skip_memory_retrieval": True,
+        "suppress_stream_events": True,
+    }
+    persistence = _persistence_from_metadata(msg.metadata)
+    assert persistence.persist_user is False
+    assert persistence.persist_assistant is False
 
 
 @pytest.mark.asyncio

@@ -754,6 +754,7 @@ class AgentLoop:
         sender: str = "user",
         media: list[str] | None = None,
         turn_id: str = "",
+        stateless: bool = False,
     ) -> str:
         response = await self.process_direct_message(
             content,
@@ -769,6 +770,7 @@ class AgentLoop:
             sender=sender,
             media=media,
             turn_id=turn_id,
+            stateless=stateless,
         )
         return response.content
 
@@ -788,10 +790,22 @@ class AgentLoop:
         media: list[str] | None = None,
         metadata: dict[str, object] | None = None,
         turn_id: str = "",
+        stateless: bool = False,
     ) -> OutboundMessage:
-        """执行直接消息并保留渠道可观察的完整输出。"""
+        """执行直接消息，并按需隔离会话历史与持久化。"""
 
         inbound_metadata = dict(metadata or {})
+        if stateless:
+            inbound_metadata.update(
+                {
+                    "omit_user_turn": True,
+                    "omit_assistant_turn": True,
+                    "skip_session_history": True,
+                    "skip_memory_context_guard": True,
+                    "skip_post_memory": True,
+                    "skip_memory_retrieval": True,
+                }
+            )
         if omit_user_turn:
             inbound_metadata["omit_user_turn"] = True
         if skip_post_memory:

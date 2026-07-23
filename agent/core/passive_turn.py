@@ -94,7 +94,7 @@ logger = logging.getLogger(__name__)
 def _persistence_from_metadata(metadata: dict[str, Any] | None) -> TurnPersistencePolicy:
     return TurnPersistencePolicy(
         persist_user=not bool((metadata or {}).get("omit_user_turn")),
-        persist_assistant=True,
+        persist_assistant=not bool((metadata or {}).get("omit_assistant_turn")),
     )
 
 
@@ -777,7 +777,11 @@ class DefaultContextStore(ContextStore):
         session: "SessionLike",
     ) -> ContextBundle:
         # 1. 先读取 session history，并转换成 retrieval pipeline 需要的结构。
-        raw_history = list(session.get_history())
+        raw_history = (
+            []
+            if bool((msg.metadata or {}).get("skip_session_history"))
+            else list(session.get_history())
+        )
         history_messages = support.to_history_messages(raw_history)
 
         # 2. 系统轮次可显式跳过预检索，避免污染检索诊断和激活状态。

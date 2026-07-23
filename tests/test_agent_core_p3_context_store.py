@@ -162,6 +162,36 @@ async def test_default_context_store_prepare_skips_retrieval_when_requested():
 
 
 @pytest.mark.asyncio
+async def test_default_context_store_prepare_skips_session_history_when_requested():
+    retrieval = SimpleNamespace(retrieve=AsyncMock())
+    context = SimpleNamespace(
+        skills=SimpleNamespace(list_skill_records=MagicMock(return_value=[]))
+    )
+    store = DefaultContextStore(retrieval=cast(Any, retrieval), context=cast(Any, context))
+    session = _DummySession()
+    msg = InboundMessage(
+        channel="scheduler",
+        sender="scheduler",
+        chat_id="job-1",
+        content="查询北京天气",
+        metadata={
+            "skip_session_history": True,
+            "skip_memory_retrieval": True,
+        },
+    )
+
+    bundle = await store.prepare(
+        msg=msg,
+        session_key="scheduler:job-1",
+        session=cast(Any, session),
+    )
+
+    retrieval.retrieve.assert_not_awaited()
+    assert bundle.history == []
+    assert bundle.history_messages == []
+
+
+@pytest.mark.asyncio
 async def test_default_context_store_uses_cli_context_override_for_retrieval():
     retrieval = SimpleNamespace(
         retrieve=AsyncMock(
