@@ -41,7 +41,6 @@ from plugins.akasha.core import (
     activation_edge_updates as _activation_edge_updates,
     local_residual as _local_residual,
     activation_updates as _activation_updates,
-    compute_candidates as _core_compute_candidates,
     compute_candidates_from_snapshot as _core_compute_candidates_from_snapshot,
     dense_message_candidates as _dense_message_candidates,
     edges_by_src as _edges_by_src,
@@ -1259,39 +1258,6 @@ def _core_config(config: AkashaConfig) -> CoreConfig:
         nearby_dense_threshold=config.nearby_dense_threshold,
         soft_recall_threshold=config.soft_recall_threshold,
         soft_recall_direct_floor=config.soft_recall_direct_floor,
-    )
-
-
-def _compute_candidates(
-    query: str,
-    query_vec: np.ndarray,
-    nodes: dict[str, AkashaNode],
-    edges: dict[tuple[str, str], float],
-    now_ts: float,
-    *,
-    config: AkashaConfig,
-    fan: dict[str, int],
-    source_cursor: sqlite3.Cursor | None = None,
-    edges_by_src: dict[str, dict[str, float]] | None = None,
-    edges_meta: dict[tuple[str, str], float] | None = None,
-    soft_recall: bool = False,
-    return_limit: int | None = None,
-    graph_seed_keys: list[str] | None = None,
-) -> tuple[list[AkashaCandidate], list[AkashaCandidate], ActivationTrace]:
-    return _core_compute_candidates(
-        query,
-        query_vec,
-        nodes,
-        edges,
-        now_ts,
-        config=_core_config(config),
-        fan=fan,
-        source_cursor=source_cursor,
-        edges_by_src=edges_by_src,
-        edges_meta=edges_meta,
-        soft_recall=soft_recall,
-        return_limit=return_limit,
-        graph_seed_keys=graph_seed_keys,
     )
 
 

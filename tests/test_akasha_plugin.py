@@ -46,7 +46,7 @@ from plugins.akasha.engine import (
     AkashaMemoryEngine,
     PendingActivation,
     _AkashaRetrieval,
-    _compute_candidates,
+    _compute_candidates_from_snapshot,
     _load_committed_turn_messages,
     _load_turn_card,
 )
@@ -1763,14 +1763,21 @@ def test_compute_candidates_uses_activation_limit_for_stateful_replay(tmp_path: 
     finally:
         store.close()
 
-    candidates, suppressed, trace = _compute_candidates(
+    snapshot = AkashaActivationSnapshot(
+        nodes=nodes,
+        edges={},
+        edges_meta={},
+        fan={},
+        edges_by_src={},
+        message_embeddings={},
+        message_turn_keys={},
+    )
+    candidates, suppressed, trace = _compute_candidates_from_snapshot(
         "消息",
         np.array([1.0, 0.0], dtype=np.float32),
-        nodes,
-        {},
         100,
+        snapshot=snapshot,
         config=AkashaConfig(),
-        fan={},
         soft_recall=False,
         return_limit=8,
     )
