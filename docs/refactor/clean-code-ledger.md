@@ -822,6 +822,23 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改数据库、文件状态、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-pr48-backup-20260723213421/setup_wizard.py`、`/tmp/akashic-pr48-backup-20260723213421/clean-code-ledger.md`；回滚点为本 PR 单提交 revert。
 - 残余风险：无已知风险；若未来默认记忆 renderer 需要参数、审计副作用或独立错误转换，应由 canonical renderer owner 重新建立命名边界，不能恢复纯转发别名。
 
+## 2026-07-23 less-is-more PR49：复用只读 intent 映射
+
+### `PR49` `perf(recall): reuse read-only intent map`
+
+- base：PR48 committed HEAD `fb37e37b3e5f955a52d2e9044bd5a2b92da8b577`，分支 `refactor/less-is-more-pr48-inline-memory-config-renderer`；本 PR 分支 `perf/less-is-more-pr49-reuse-readonly-intent-map`，唯一 writer 为本任务 agent。
+- 范围：`agent/tools/recall_memory.py` 的 `_normalize_intent`；每次调用原地构造的五项 intent dict 改为模块私有 `MappingProxyType`，`RecallMemoryTool.execute` 唯一调用方直接执行 `_INTENTS.get(intent, "answer")`，删除 helper；未修改测试 oracle、query、scope、filters、limit、timestamp、memory engine、持久化、网络或插件导出。
+- `semantic_delta`：`none`。五个合法 intent、未知/空/`None` 默认值、不可哈希 list/dict 的 `TypeError`、`str` 子类的 hash/equality 调用顺序与 canonical base `str` 返回值保持不变；静态映射底层 dict 不泄露，`MappingProxyType` 不可赋值。诊断差异仅为 traceback 不再包含已删除的私有 helper frame；模块导入时多一次静态构造，极端 OOM 的失败时机提前，除此之外没有新的可观察副作用。
+- 不变量与拥有层：`MemoryQueryIntent` 仍由 `core.memory.engine` 的 `Literal` 定义；`_INTENTS` 只保存该类型的 canonical 字符串，`RecallMemoryTool.execute` 继续在构造 `MemoryQuery` 前归一化 intent。内部错误不新增 fallback：不可哈希值仍由映射 lookup fail-fast。
+- baseline：source-set digest `12cd4dc6dbdf434bedc9fd95b1aac486aa8cee017836766c413b250d4a9faf32`，文件数 `378`，Python SLOC `77,310`，TypeScript/TSX SLOC `8,451`，total production SLOC `85,761`。
+- candidate：source-set digest `7c1e257cc42facb2dd9a7190d0ab665a46d9b2fcd3a1536f90ffaa33851d016d`，文件数 `378`，Python SLOC `77,310`，TypeScript/TSX SLOC `8,451`，total production SLOC `85,761`（模块级映射初始化抵消了已删除 helper 的 source lines；运行时每次调用不再分配 intent dict）。
+- 性能：固定六种输入（五个命中与一个未知）共 60 万次 lookup，交错 9 轮中位 CPU 由 `75.622 ms` 降至 `31.865 ms`，局部 lookup 约 `-57.86%`；该结果只代表 intent lookup 热点，不外推为端到端 recall/search 提速。
+- 测试新增/删除：无；现有 recall 与 memory-engine oracle 未改动。一次性 parity 脚本额外核对五个合法 intent、未知/空/`None`、不可哈希 list/dict、`str` 子类 hash/equality side effects、canonical base `str` 返回值和 `MappingProxyType` 不可赋值。
+- 验证结果：recall 定向 `27 passed`；`tests/test_memory_engine_contract.py` + recall 组合 `57 passed`；修改文件 `compileall` 通过；Pyright `0 errors, 0 warnings`；migration append-only、consumer/export/dynamic/cache scan 和 `git diff --check` 通过。已在 committed HEAD 对 PR48 base 运行公开 Gate 并通过；private contract 状态为 `pending_maintainer`，report/source/plan digest 不回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；执行前备份为 `/tmp/akashic-pr49-recall_memory.py.RlbTf4` 与 `/tmp/akashic-pr49-clean-code-ledger.md.0r3Qc1`，未修改 migration、数据库、正式 workspace、服务、远端数据或 Git refs。
+- Redis 式 God file 判断：保留 `agent/tools/recall_memory.py`；intent canonicalization 与 `RecallMemoryTool` 构造 `MemoryQuery` 同属工具边界，删除 helper 并把 immutable table 放在模块顶部降低热路径分配和跨函数跳转，不拆文件。
+- 残余风险与回滚点：只读 map 的构造从调用期提前到 import 期；若以后 intent 协议新增值，必须同时修改 `MemoryQueryIntent` 与此 canonical table。提交后可用单提交 revert `perf(recall): reuse read-only intent map` 回滚。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）

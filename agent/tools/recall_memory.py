@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import datetime, timedelta
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
@@ -25,6 +27,15 @@ _RECENT_PRESETS = {
     "recent_7d": 7,
     "recent_30d": 30,
 }
+_INTENTS: Mapping[str, MemoryQueryIntent] = MappingProxyType(
+    {
+        "context": "context",
+        "answer": "answer",
+        "timeline": "timeline",
+        "interest": "interest",
+        "procedure": "procedure",
+    }
+)
 
 class RecallMemoryTool(Tool):
     name = "recall_memory"
@@ -65,7 +76,7 @@ class RecallMemoryTool(Tool):
         result = await self._memory.query(
             MemoryQuery(
                 text=text,
-                intent=_normalize_intent(intent),
+                intent=_INTENTS.get(intent, "answer"),
                 scope=MemoryScope(
                     session_key=f"{channel}:{chat_id}" if channel and chat_id else "",
                     channel=channel or "",
@@ -145,19 +156,6 @@ def _first_source_ref(evidence: list[dict[str, object]]) -> str:
                 if text:
                     return text
     return ""
-
-
-def _normalize_intent(
-    value: str,
-) -> MemoryQueryIntent:
-    intents: dict[str, MemoryQueryIntent] = {
-        "context": "context",
-        "answer": "answer",
-        "timeline": "timeline",
-        "interest": "interest",
-        "procedure": "procedure",
-    }
-    return intents.get(value, "answer")
 
 
 def _memory_kinds(memory_kind: str) -> tuple[str, ...]:
