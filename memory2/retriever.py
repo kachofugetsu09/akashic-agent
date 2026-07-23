@@ -267,10 +267,6 @@ class Retriever:
         parts = self._build_section_parts(forced, norms, events)
         return self._apply_char_budget(parts, has_forced=bool(forced))
 
-    def _select_for_injection(self, items: list[MemoryHit]) -> list[MemoryHit]:
-        selected, _forced, _norms, _events = self._select_injection_sections(items)
-        return selected
-
     def _select_injection_sections(
         self,
         items: list[MemoryHit],
