@@ -85,11 +85,11 @@ async def test_soft_calls_process_direct_not_push_directly(
     mock_loop.process_direct.assert_called_once()
     call_kwargs = mock_loop.process_direct.call_args
     assert call_kwargs.kwargs["content"] == "查询北京天气"
-    assert call_kwargs.kwargs["channel"] == "telegram"
-    assert call_kwargs.kwargs["chat_id"] == "123"
+    assert call_kwargs.kwargs["channel"] == "scheduler"
+    assert call_kwargs.kwargs["chat_id"] == job.id
+    assert call_kwargs.kwargs["session_key"] == f"scheduler:{job.id}"
     assert call_kwargs.kwargs["busy_session_key"] == "telegram:123"
-    assert call_kwargs.kwargs["skip_post_memory"] is True
-    assert call_kwargs.kwargs["skip_memory_retrieval"] is True
+    assert call_kwargs.kwargs["stateless"] is True
     assert call_kwargs.kwargs["disabled_tools"] == [
         "message_push",
         "recall_memory",

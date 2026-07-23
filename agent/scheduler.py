@@ -34,6 +34,7 @@ from core.common.timekit import parse_iso as _parse_iso
 from infra.persistence.json_store import atomic_save_json
 
 logger = logging.getLogger(__name__)
+_SCHEDULER_EXECUTION_CHANNEL = "scheduler"
 
 
 # ── LatencyTracker ───────────────────────────────────────────────
@@ -663,13 +664,11 @@ class SchedulerService:
             t0 = time.monotonic()
             content = await loop.process_direct(
                 content=job.prompt,
-                channel=job.channel,
-                chat_id=job.chat_id,
+                channel=_SCHEDULER_EXECUTION_CHANNEL,
+                chat_id=job.id,
                 session_key=f"scheduler:{job.id}",
                 busy_session_key=f"{job.channel}:{job.chat_id}",
-                omit_user_turn=True,
-                skip_post_memory=True,
-                skip_memory_retrieval=True,
+                stateless=True,
                 disabled_tools=[
                     "message_push",
                     "recall_memory",
