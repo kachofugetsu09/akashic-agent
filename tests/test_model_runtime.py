@@ -425,6 +425,72 @@ def test_named_runtime_config_and_setup_keep_secrets_out_of_toml(
     assert config.memory_window == 40
 
 
+def test_config_multimodal_uses_main_runtime_and_keeps_other_runtime_isolated(
+    tmp_path: Path,
+) -> None:
+    template = """
+[llm]
+main = "{main}"
+
+[llm.runtimes.main]
+provider = "openai"
+model = "text-model"
+api_key = "key"
+context_window = 64000
+max_output_tokens = 4096
+
+[llm.runtimes.vl]
+provider = "openai"
+model = "vision-model"
+api_key = "key"
+context_window = 64000
+max_output_tokens = 4096
+input_modalities = ["text", "image"]
+"""
+
+    text_path = tmp_path / "text.toml"
+    text_path.write_text(template.format(main="main"), encoding="utf-8")
+    text_config = load_config(text_path, workspace=tmp_path)
+    assert text_config.multimodal is False
+    assert text_config.model_runtimes["vl"].input_modalities == ("text", "image")
+
+    image_path = tmp_path / "image.toml"
+    image_path.write_text(template.format(main="vl"), encoding="utf-8")
+    image_config = load_config(image_path, workspace=tmp_path)
+    assert image_config.multimodal is True
+    assert image_config.provider == "openai"
+    assert image_config.model == "vision-model"
+
+
+@pytest.mark.parametrize("modalities", ['"image"', "[1]"])
+def test_config_rejects_invalid_runtime_modalities_before_config_build(
+    tmp_path: Path,
+    modalities: str,
+) -> None:
+    path = tmp_path / "invalid.toml"
+    path.write_text(
+        f"""
+[llm]
+main = "main"
+
+[llm.runtimes.main]
+provider = "openai"
+model = "model"
+api_key = "key"
+context_window = 64000
+max_output_tokens = 4096
+input_modalities = {modalities}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="llm\\.runtimes\\.main\\.input_modalities 必须是字符串数组",
+    ):
+        load_config(path, workspace=tmp_path)
+
+
 def test_config_accepts_api_compatible_provider(tmp_path: Path) -> None:
     template = """
 [llm]
