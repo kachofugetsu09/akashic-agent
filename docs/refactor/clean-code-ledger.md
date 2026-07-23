@@ -1004,6 +1004,26 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 备份与回滚：执行前备份为 `/tmp/akashic-less-is-more-backups/pr58/skill_links.py.base-ebe2a70e`（SHA-256 `96f0da0e699ead1b9b2f4f9e9abfa85a794c7aa258af31e8b1264b3c4f52cd7b`）与 `/tmp/akashic-less-is-more-backups/pr58/clean-code-ledger.md.base-ebe2a70e`（SHA-256 `d48c9afe22a1131ce63ca04056f4570b7723fb96b67a985584296ce0aad97382`）；主审对账前账本备份为 `/tmp/akashic-less-is-more-backups/pr58/clean-code-ledger.md.pre-final-gate-9f34e576`（SHA-256 `a27854726ea8473ffc2b369b8138f6b417c6a8e19c26b02fab2b5a4344000957`）。提交后可用单提交 revert `refactor(plugins): remove dead skill manifest key` 回滚。
 - 残余风险：若未来重新引入 manifest policy，必须由插件声明 owner、generation readiness 与明确迁移重新建立行为和测试；不能仅恢复当前无人读取的字符串参数。
 
+## 2026-07-24 less-is-more PR59：删除 Akasha 图快照死 wrapper
+
+### `PR59` `refactor(akasha): remove dead graph snapshot wrapper`
+
+- base：exact base `a63a113cf9f0ccc4fe5ba7f9359e40966aeb40af`（PR58 final HEAD）；本 PR 分支 `refactor/less-is-more-pr59-luna-candidate`，唯一 writer 为本任务 agent。
+- allowed_paths：`plugins/akasha/engine.py` 与本账本。`capability_owner`：`AkashaMemoryEngine` 继续拥有图缓存初始化、锁内快照复制和按时间可见性过滤；本次只删除未被任何 consumer 读取的私有 wrapper，不修改 Akasha core 算法、dashboard 派生快照、sessions.db、akasha.db、plugin-data、正式 workspace 或测试 oracle。
+- 历史与消费者：`6310c87e` 初始引入 `_graph_snapshot()`；后续 `3b456e7b` 引入带时间过滤的 `_graph_snapshot_at()`，`9f0faeee` 将可达路径统一为 `_graph_snapshot_at()` → `_graph_snapshot_locked()`，但旧 wrapper 仍只保留定义。exact-base 的 production、tests、文档字符串、动态字符串/`getattr`/`inspect`、`__all__`/导出入口和 `/home/huashen/.akashic`、`.akashic-plugin`、workspace plugin-data 中的 Python/JSON/TOML cache 扫描均未发现 `_graph_snapshot` 的读取；真实 consumer 只有 `_retrieve()` 调用 `_graph_snapshot_at()`，直接测试也调用 `_graph_snapshot_at()`。
+- 实现与求值顺序：删除 `plugins/akasha/engine.py` 原 `829-832` 的注释和 `_graph_snapshot()` 定义。删除项不可达，因此不跳过任何可达函数、属性、锁、转换或可能失败的表达式；可达 `_retrieve()`、`_graph_snapshot_at()`、`_ensure_graph_cache()` 和 `_graph_snapshot_locked()` 的调用顺序与实现保持不变。
+- 不变量、错误与副作用：`AkashaMemoryEngine` 仍拥有 `_graph_lock`、缓存字段、snapshot copy、未来时间节点过滤、embedding 合并、edge 过滤和 `_fan_counts`/`_edges_by_src` 重建；正常与损坏缓存的异常对象、cause/context、日志、数据库读取、状态更新、持久化 write set、网络、事件、消息和外部发送均不变。内部私有契约保持 fail-fast/fail-loud，未新增 fallback、异常捕获、兼容层或动态分派。
+- 日志与注释：只删除死 wrapper 的配套注释；没有改动任何可达日志文本、日志顺序、注释中的 owner/约束或 workaround。
+- parity：Luna 使用 exact-base 备份与 candidate 加载同一 `AkashaMemoryEngine._graph_snapshot_at()` workload，固定包含一个已可见节点、一个未来节点、双向 edge、embedding、turn key 和两个 cutoff（`10.0`、`25.0`）；规范化 nodes/edges/metadata/fan/embedding/index 输出逐项相同，base/candidate SHA-256 均为 `1f1f9cfa6fe46d36890115366eeec34e17c1703d66e6a96bd44a420133ca5662`。主审另写独立脚本，覆盖稳定节点、状态时间晚于 cutoff 的回退节点、未来节点、按时间过滤的双向 edge、embedding/index、快照容器隔离；base/candidate 输出逐字节相同，SHA-256 为 `29a437a48e6875ac0f99ea76f9df35cd4aaeb83f4e18836ee2c2996dffce0175`。两份脚本均未提交。
+- 性能：删除不可达定义和其模块代码对象，不增加任何可达调用、分配、等待、I/O 或模型调用；没有可归因的热路径收益，故不作端到端性能声明，也未运行 benchmark。
+- baseline：source-set digest `d1400a5b7935d88aeed81a67b5f709df6a34318739e9486535ee19295fcdbe90`，文件数 `378`，Python SLOC `77,210`，TypeScript/TSX SLOC `8,451`，total production SLOC `85,661`；`plugins` SLOC `17,021`。
+- candidate：source-set digest `963be2f372146d84247d761b797d598b264882f6b625f670846c4e6f44367f97`，文件数 `378`，Python SLOC `77,206`，TypeScript/TSX SLOC `8,451`，total production SLOC `85,657`；`plugins` SLOC `17,017`。production 真净减少 `4` SLOC；raw diff 为 `6 deletions`，测试源码无改动；系列相对 PR0 累计净减少 `1,883` SLOC。
+- 测试与静态验证：Luna 对 exact base 与 candidate 各自执行 `pytest -q -W error tests/test_akasha_plugin.py`，均为 `65 passed`（base `0.65s`，candidate `0.74s`）；主审独立复跑为 base `65 passed in 2.05s`、candidate `65 passed in 2.03s`，并追加 `tests/test_memory_engine_contract.py tests/test_provider_runtime_akasha_migration.py` 为 `35 passed in 3.05s`、production SLOC 与 migration tests 为 `14 passed in 1.64s`，migration append-only 脚本通过。两侧目标 Pyright 均为 `0 errors, 0 warnings`；两侧目标 compileall 通过；candidate `python scripts/measure_production_sloc.py --json`、`git diff --check`、精确 consumer/dynamic/export/cache scan 均通过，备份 SHA 与允许路径核对通过。
+- Gate：实现提交 `68ef5085` 的 preflight 对 PR58 exact base 运行公开 Gate，7 个场景全部通过，dirty 与 residual resources 为空；report `docker/debug/reports/change-gate/20260724-044329-81ccc0e2`，`sourceDigest=4875d8b415d0fbe9b986cdff18ed7879e59eb4033229bbc84f6e4695d1ce45ac`，`planDigest=7337b92e0ad84b5e82fd6a68abef89c18a2181cc7f30945436aefdc7299366d5`，`impactCatalogDigest=1132a1b767f3589936af0491c8cead1c628eb1e1115be68c8ecae107d83476e7`；private contract 状态为 `pending_maintainer`。本段对账会改变 source digest，最终 Gate 必须在对账提交后重跑，绑定最终 report 的路径与 digest 记录到 PR 描述，不回填本账本制造自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；没有修改数据库、文件状态、schema、migration、plugin cache、正式 workspace、服务、网络、事件、消息或 Git refs。
+- 备份与回滚：修改前备份为 `/tmp/akashic-less-is-more-backups/pr59/engine.py.base-a63a113c`（SHA-256 `b160ba31139432d86630d2b00397997b26d641a91dd990631314f8ff2ad8031d`）与 `/tmp/akashic-less-is-more-backups/pr59/clean-code-ledger.md.base-a63a113c`（SHA-256 `4e9b057e84c1e98bf2d0395be425b94f69d05001dec20e5974b81fadeae8fd09`）；SHA 清单为 `/tmp/akashic-less-is-more-backups/pr59/sha256-before.txt`。主审对账前账本备份为 `/tmp/akashic-less-is-more-backups/pr59/clean-code-ledger.md.pre-final-gate-68ef5085`（SHA-256 `0953550211f572b7967a32b02473d12602b053a11f031bf5090aee457d10f30c`）。提交后可用本 PR 唯一提交的 `git revert` 回滚。
+- 残余风险：若未来需要公开图快照能力，必须由明确的 exported API、consumer 和测试合同重新建立，不能依赖已删除的私有 wrapper；本候选无其他已知语义风险。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）

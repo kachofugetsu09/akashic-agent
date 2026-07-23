@@ -825,12 +825,6 @@ class AkashaMemoryEngine:
             self._message_timestamps = message_timestamps
             self._message_index = message_index
 
-    # 取查询使用的内存图快照。
-    def _graph_snapshot(self) -> AkashaActivationSnapshot:
-        self._ensure_graph_cache()
-        with self._graph_lock:
-            return self._graph_snapshot_locked()
-
     def _ensure_graph_cache(self) -> None:
         """初始化延迟加载的内存图缓存。"""
 
