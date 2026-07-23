@@ -790,6 +790,22 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；执行前备份：`/tmp/akashic-less-is-more-backups/pr46-setup_wizard.py.bak`、`/tmp/akashic-less-is-more-backups/pr46-clean-code-ledger.md.bak`；回滚点为本 PR 单提交 revert。
 - 残余风险：无已知风险；若未来 `WizardAnswers` 默认工厂承担非空初始化或审计副作用，必须恢复有实际职责的命名工厂并重新建立语义证明，不能仅因名称偏好恢复别名。
 
+## 2026-07-23 less-is-more PR47：内联已安装插件缓存根路径别名
+
+### `PR47` `refactor(bootstrap): inline installed plugin cache root`
+
+- base：PR46 committed HEAD `652abf785a32ad0ee9cf9a4d12161302adfdc8dc`，分支 `refactor/less-is-more-pr46-inline-empty-list-factory`；本 PR 分支 `refactor/less-is-more-pr47-inline-plugin-cache-root`，唯一 writer 为本任务 agent。
+- allowed_paths：`bootstrap/tools.py` 的 `_resolve_installed_plugin_cache_root` 唯一 caller 与私有 helper、本账本；`capability_owner`：`build_core_runtime` 的 PluginManager installed-cache 路径装配。未修改 manifest、plugin manager、source resolver、install、测试、schema、迁移或正式 runtime workspace。
+- 历史与不可达性：`_resolve_installed_plugin_cache_root` 由 `61c1d051` 引入，`6a0616c8` 已将 canonical 路径固定为 `plugins_root() / "cache"`；AST、精确文本、动态 `getattr`/`setattr`/`import_module`、导出/re-export、测试、SDK、plugin manifest 与 `/home/huashen/.akashic-plugin/cache` 扫描确认只有 `build_core_runtime` 一处静态 caller，没有 underscore consumer。
+- 语义与错误边界：`change_type: refactor`，`semantic_delta: none`。caller 直接保留同一 `plugins_root() / "cache"` 表达式；`plugins_root()` 的调用次数、返回路径、`ValueError` 类型/对象身份/抛出时机不变，唯一区别是 traceback 不再包含已删除的私有转发 helper frame；PluginManager、source resolver、安装和热重载观察到的 installed cache root 不变。没有新增 `try/except`、fallback、默认值、动态兼容层或错误吞隐。
+- 性能与注释：删除一次无状态 Python helper 跳转，并把 canonical 路径表达式放回唯一 owner 的装配点；这是启动期常数项优化，不宣称端到端启动收益。删除的 helper 无独立注释价值，保留 `build_core_runtime` 阶段注释和现有 manifest/path owner 说明。
+- 范围与计量：PR46 base source-set digest `6033e52d4112249d1826eb88ae1ab7d14911b188782137074c20a14853af7d3f`，文件数 `378`，Python SLOC `77,314`，TypeScript/TSX SLOC `8,451`，`bootstrap` `6,297`，total production SLOC `85,765`；candidate digest `22a1c93f0d66dd6a6cd86640c953d5e9854fa73c184a6c0a0dc96a22ea3a14e4`，文件数 `378`，Python SLOC `77,312`，TypeScript/TSX SLOC `8,451`，`bootstrap` `6,295`，total `85,763`；production 净减少 `2` SLOC，系列相对 PR0 累计净减少 `1,777` SLOC。
+- parity：固定 `plugins_root()` 返回值的 monkeypatch 回放确认 candidate 只调用一次并得到同一 `Path / "cache"`；`ValueError` 注入保留同一异常对象与失败时序。base helper AST body 与 candidate caller expression 均为 canonical `plugins_root() / "cache"`，未改变求值顺序。
+- 测试与静态验证：plugin install/source resolver/manager/packages/config schema 与 fresh configuration matrix 定向回归 `106 passed in 3.60s`；相关源码 `compileall` 通过；修改范围 Pyright `0 errors, 44 warnings`（均为既有动态插件/工具类型诊断）；legacy symbol AST/精确 consumer/export/dynamic/plugin-cache scan 无残留，migration append-only、production SLOC 与 `git diff --check` 通过。未删除测试。
+- Gate：已在 committed HEAD 对 PR46 base `652abf785a32ad0ee9cf9a4d12161302adfdc8dc` 运行公开 Gate 并通过；private contract 状态为 `pending_maintainer`，不把运行后的 report/source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、database rows/schema、服务、网络、外部发送、generation/snapshot/lease/event、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-backups/pr47/tools.py.base-652abf78`、`/tmp/akashic-less-is-more-backups/pr47/clean-code-ledger.md.base-652abf78`；回滚点为本 PR 单提交 revert。
+- 残余风险：无已知风险；若未来 installed cache root 需要携带非 canonical 解析、租约或诊断副作用，应由实际路径 owner 重新引入命名函数并建立独立语义合同，不能恢复纯转发别名。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
