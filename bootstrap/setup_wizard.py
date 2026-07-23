@@ -27,10 +27,6 @@ from agent.plugins.manifest import (
 from plugins.default_memory.config import render_default_memory_config
 
 
-def _empty_str_list() -> list[str]:
-    return []
-
-
 # ---------------------------------------------------------------------------
 # 数据结构
 # ---------------------------------------------------------------------------
@@ -67,7 +63,7 @@ class WizardAnswers:
     fast_context_window: int = 0
     fast_max_output_tokens: int = 0
     tg_token: str = ""
-    tg_allow_from: list[str] = field(default_factory=_empty_str_list)
+    tg_allow_from: list[str] = field(default_factory=list)
     proactive_enabled: bool = False
     proactive_chat_id: str = ""
     proactive_channel: str = ""
