@@ -857,6 +857,25 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 备份与回滚：执行前备份为 `/tmp/akashic-less-is-more-backups/pr50/engine.py.base-782ae3fd`（SHA-256 `1e6b40c25fe8e1ef514b612785d866efd69a6c0ec43877362d6e2ece109f2b6f`）与 `/tmp/akashic-less-is-more-backups/pr50/clean-code-ledger.md.base-782ae3fd`（SHA-256 `4ff24e3f939af69944f853639b6e4bd55e4fa56c4fc7c725d17d6de58edf4773`）；Gate 对账前账本备份为 `/tmp/akashic-less-is-more-backups/pr50/clean-code-ledger.md.pre-final-gate-06a2b9e6`（SHA-256 `751182d9af315cc6f4cfd900bd269ecffb622082e2b1ce057ba96c64d54b9890`）。提交后可用单提交 revert `refactor(akasha): inline message parser alias` 回滚。
 - 残余风险：若未来 `_parse_message_id` 需要独立输入协议、审计或错误转换，应在真实 owner 边界重新引入有职责的函数；不能仅为保留额外 traceback frame 恢复纯转发别名。
 
+## 2026-07-24 less-is-more PR51：内联 Akasha reinforce boost 私有别名
+
+### `PR51` `refactor(akasha): inline reinforce boost alias`
+
+- base：PR50 committed HEAD `b2c0bf3d4f125e981c1da029ddfbf6f600be3c72`，分支 `refactor/less-is-more-pr50-inline-akasha-message-parser`；本 PR 分支 `refactor/less-is-more-pr51-inline-reinforce-boost-alias`，唯一 writer 为本任务 agent。
+- allowed_paths：`plugins/akasha/engine.py` 的 `_reinforce_boost_for_turn` 唯一 caller 与私有 helper、本账本；`capability_owner`：`plugins.akasha.core.reinforce_boost_from_payload` 拥有 `TurnCommitted.extra` 与 `tool_chain_raw` 到 reinforce boost 的纯计算。未修改 import、注释、测试、oracle、store、schema、migration、NOW、projectneed 或正式 runtime workspace。
+- 历史与消费者：`92cf0ca3` 在接入 reinforce 闭环时创建 `_reinforce_boost_for_turn`，其函数体从引入起始终只转发同一 module-global `_reinforce_boost_from_payload`，没有独立校验、转换、恢复或副作用。全仓生产源码、测试、SDK、plugin package、export/re-export、动态属性/import 与 `/home/huashen/.akashic-plugin/cache` 扫描确认旧 helper 只有一处静态 caller，没有 monkeypatch、外部 seam 或已安装缓存消费者。
+- 输入与纯计算边界：`change_type: refactor`，`semantic_delta: none`。正常 owner `_BuildTurnCommittedModule` 把 `extra` 构造成普通 `dict`，把 `tool_chain_raw` 构造成 `copy.deepcopy` 后的 `list[dict]`；canonical 函数只解析这两个 payload、计算 extra/tool-chain boost 的 `max` 并返回结果，不读取或写入数据库、文件、事件、网络或运行时状态。契约外的 `None`、JSON string、坏 JSON 与非目标 tool call 仍由同一 canonical 函数按原规则处理，没有新增或删除 fallback。
+- 求值与错误边界：caller 在相同位置直接调用 `_reinforce_boost_from_payload(event.extra, event.tool_chain_raw)`；两个字段仍按从左到右顺序各求值一次，参数对象身份、位置、canonical 调用次数和返回对象身份保持不变。异常对象、类型、参数、cause、context 与传播时机保持不变；唯一诊断差异是异常 traceback 少一个已删除的 `_reinforce_boost_for_turn` frame。
+- 持久化与 write set：boost 仍在 message/embedding sidecar 写入和 message index 重建之后、`_pending_by_session.pop` 之前计算；`current_key and pending is not None` 提交条件不变。传入 `_reinforced_activation_items` 与 `_activation_edge_updates` 的 boost、`upsert_edges`、内存 edge 更新、previous activation cluster、activation events 及其顺序和参数均不变；没有 INSERT、UPDATE、DELETE、文件写入、事件、外部发送或服务状态差异。
+- 性能、注释与 God file：仅移除 committed-turn 路径的一次 Python 私有转发调用，不宣称端到端性能收益。删除的 helper 没有 docstring、约束或 workaround 注释；caller 上方关于 tool-chain/extra 来源和 live/replay 一致性的现有注释完整保留。`engine.py` 继续集中拥有 Akasha ingest、图更新和持久化阶段；删除无职责别名减少同一高内聚 God file 内的跳转，不为行数目标拆文件。
+- baseline：source-set digest `162b04642ed2734a0b2a7c9b8a1e51a51e74a3632995a13f85a3b677478386f0`，文件数 `378`，Python SLOC `77,308`，TypeScript/TSX SLOC `8,451`，plugins SLOC `17,100`，total production SLOC `85,759`。
+- candidate：source-set digest `a13e92ccf141b9f0ab668898913ade7b7db0b6042b04484e2fc723cceb9e3b22`，文件数 `378`，Python SLOC `77,303`，TypeScript/TSX SLOC `8,451`，plugins SLOC `17,095`，total production SLOC `85,754`；production 净减少 `5` SLOC，系列相对 PR0 累计净减少 `1,786` SLOC。
+- parity：一次性 base/candidate 脚本覆盖 `extra` 的 `None`、dict 与 JSON string，`tool_chain` 的 list 与 JSON string，共 `16` 组组合；规范化结果 digest 为 `3529c0952394b39e3bd2959cf3152696a6f7238d73ae329f18800048ea754e32`。module-global spy 确认参数对象身份、求值顺序、调用次数和返回对象身份相同；异常注入确认异常对象、类型、参数、cause/context 相同，traceback 仅移除 wrapper frame。脚本未提交。
+- 测试与静态验证：三项 Akasha 定向回归 `3 passed`，完整 `tests/test_akasha_plugin.py` 为 `65 passed`；未修改、新增或删除测试。目标文件 `compileall` 通过，目标 Pyright `0 errors, 0 warnings`；migration append-only 脚本与 `tests/test_migration_append_only.py`（`5 passed`）通过；consumer/export/dynamic/cache scan、production SLOC 计量和 `git diff --check` 通过。
+- Gate：已在 committed HEAD 对 PR50 base `b2c0bf3d4f125e981c1da029ddfbf6f600be3c72` 运行公开 Gate，7 个场景全部通过；private contract 状态为 `pending_maintainer`，不把运行后的 report/source/plan digest 回填到账本以避免 source 自引用。
+- 备份与回滚：执行前备份为 `/tmp/akashic-less-is-more-backups/pr51/engine.py.base-b2c0bf3d`（SHA-256 `6aa57f36da2a0482aaa8a2151f50b045fbe8e899a12bc641a980cba230a4df11`）与 `/tmp/akashic-less-is-more-backups/pr51/clean-code-ledger.md.base-b2c0bf3d`（SHA-256 `9f95cd330cbfbeafbf8f6fd4eb05ae31b3622505974f68f3bd749a90bd92228b`）；Gate 对账前账本备份为 `/tmp/akashic-less-is-more-backups/pr51/clean-code-ledger.md.pre-final-gate-287c65c4`（SHA-256 `88c09d7d43060b44f548399401cc6abfe955431af3e07d27d02642e6c1324b2a`）。提交后可用单提交 revert `refactor(akasha): inline reinforce boost alias` 回滚。
+- 残余风险：若未来 committed-turn boost 需要独立输入协议、审计或错误转换，应在真实 owner 边界重新引入有职责的函数；不能仅为保留额外 traceback frame 恢复纯转发别名。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）

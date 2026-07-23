@@ -716,7 +716,7 @@ class AkashaMemoryEngine:
         # 3. 用真实 current_key 建边，并记录激活诊断。
         #    reinforce 标记 = 本轮调用了 reinforce_memory 工具(记在 tool_chain)或 extra 回填；
         #    与离线重建(build._load_reinforce_boosts)读同一来源，live 与重放一致。
-        reinforce_boost = _reinforce_boost_for_turn(
+        reinforce_boost = _reinforce_boost_from_payload(
             event.extra,
             event.tool_chain_raw,
         )
@@ -1248,13 +1248,6 @@ class _AkashaRetrieval:
     trace: ActivationTrace
     seq: int
     budget: RecallBudget = RecallBudget(10, 10, 8, 0.0, 0, 0.0)
-
-
-def _reinforce_boost_for_turn(
-    event_extra: dict[str, object] | None,
-    tool_chain: list[dict[str, object]],
-) -> float:
-    return _reinforce_boost_from_payload(event_extra, tool_chain)
 
 
 def _core_config(config: AkashaConfig) -> CoreConfig:
