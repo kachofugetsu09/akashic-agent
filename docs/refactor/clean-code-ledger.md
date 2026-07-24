@@ -248,6 +248,23 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 `wake_proactive.db`、`sessions.db`、schema/migration、正式 workspace、服务、网络、ACK、消息或外部发送；测试只使用一次性 temp SQLite。
 - 残余风险与回滚点：benchmark 仅覆盖 state read path；若未来允许同一 store 跨线程或在列表读取中插入 await，必须重新核对 snapshot/locking 语义，不恢复 N+1 作为隐式一致性机制。执行前备份为 `/tmp/less-is-more-pr10-finish-P4kmur`；提交后可用单提交 revert `perf(wake): eliminate context list N+1 query` 回滚。
 
+## 2026-07-23 less-is-more PR11：收敛 Telegram HTML 消息 helper
+
+### `PR11` `refactor(telegram): unify HTML message helpers`
+
+- base：PR10 commit `9897e77ced5d01cd8d9f91c2cdc0b2df04fd52ca`，分支 `refactor/less-is-more-pr11-telegram-html-helpers`。
+- allowed_paths：`infra/channels/telegram_utils.py`、`tests/test_telegram_utils.py`、`docs/refactor/clean-code-ledger.md`；`capability_owner`：Telegram live/preview HTML send/edit 边界；未修改 limiter、queue、retry、channel runtime、媒体、文件或持久化。
+- 范围：将四个本模块私有 `_send/_edit_live/preview_message` 收敛为 `_send_html_message` 与 `_edit_html_message`，调用点通过 `Literal["live", "preview"]` 保留渠道策略；helper production SLOC 从 `101` 降至 `51`，加入类型与调用参数后 `telegram_utils.py` 从 `1,098` 降至 `1,056`。
+- 调用链与不变量：`TelegramLiveTextMessage.update` 和 `TelegramStreamMessage._send_or_edit/_try_edit_preview_message` 继续通过既有 queue/limiter 发起同样的 Telegram API 调用；HTML kwargs、HTML→plain 调用顺序、send Message 返回、edit live `True`/preview `None`、message-id 更新和外层 retry 状态不变。
+- 错误与日志语义：只在 `_is_telegram_html_parse_error` 为真时执行一次纯文本降级；所有非解析异常原样传播。not-modified 仍由 live 静默返回、preview 输出原 debug 后返回；四条 live/preview send/edit warning 渲染文本保持不变，没有新增 catch、fallback 或假成功路径。
+- 语义与状态核对：`change_type: refactor`，`semantic_delta: none`；网络发送次数/顺序、RetryAfter/TimedOut/NetworkError owner、stream 状态、消息内容、日志级别、外部发送与 write set 均不变。
+- baseline：source-set digest `72c2547763ee40f090e516be6e0438a847d1c1216b18d9f9f962b76e22e2a1d4`，文件数 `384`，Python SLOC `78,734`，TypeScript/TSX SLOC `8,451`，infra SLOC `11,353`，total production SLOC `87,185`。
+- candidate：source-set digest `e330b219d28313c506271787ca200d3c03eb0c0d725faf0cfab81d9c616eb2fb`，文件数 `384`，Python SLOC `78,692`，TypeScript/TSX SLOC `8,451`，infra SLOC `11,311`，total production SLOC `87,143`；production 净减少 `42` 行，不宣称独立端到端性能收益。
+- 测试与真实验证：新增 live/preview send parse fallback、send 非解析异常、edit parse fallback/渠道返回、edit 非解析异常、not-modified no-plain-retry 与日志 oracle；`pytest -q tests/test_telegram_utils.py tests/test_channel_clients.py` 为 `39 passed`；范围 pyright `0 errors`，warning 从 base `18` 降至 candidate `16`；legacy helper 全库零残留，migration append-only、`git diff --check` 与 production SLOC 均通过。
+- Gate：按 WORKFLOW 以 base `perf/less-is-more-pr10-wake-context-single-query` 运行；本条不回填运行产生的 source/plan digest，最终 committed-head 与 private 状态由交付报告记录。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改数据库、正式 workspace、服务、配置、协议、媒体文件、消息记录或 Git refs；测试 fake bot 只记录内存中的调用参数。
+- 残余风险与回滚点：渠道差异显式受 `Literal` 和直接 oracle 约束；若 Telegram 新增第三种 HTML 策略，应扩展明确合同而非依赖默认 fallback。主 Agent收尾前备份 `/tmp/less-is-more-pr11-root-finish-gx1INm`；提交后可用单提交 revert `refactor(telegram): unify HTML message helpers` 回滚。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
