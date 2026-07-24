@@ -390,6 +390,21 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、外部网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/less-is-more-pr19-backup-KjlHId/`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧 rewriter 文本；当前 Git source 与动态调用面没有 consumer。若未来恢复 XML gate、隐式意图或 procedure rewrite lane，应在 active retrieval owner 中重新设计并补独立合同，不复活 dead rewriter。
 
+## 2026-07-23 less-is-more PR20：删除不可达的 Memory2 sufficiency checker
+
+### `PR20` `refactor(memory2): remove dead sufficiency checker`
+
+- base：PR19 committed HEAD `c5865ac547928e702e4136971aace6d6c29c8ec8`，分支 `refactor/less-is-more-pr20-remove-dead-sufficiency-checker`。
+- allowed_paths：`memory2/sufficiency_checker.py`（删除）、`tests/test_sufficiency_checker.py`（删除）、`docs/refactor/clean-code-ledger.md`；`capability_owner`：Memory2 active default engine/retriever；未修改 config/eval stale comments、engine/retriever/default pipeline/schema/manifest 或 active runtime。
+- 历史与不可达性：旧 `SufficiencyChecker` 及其 `SufficiencyResult`、XML 判定和 refined-query retry 由 `core/memory/default_runtime_facade.py` 的 `_retry_empty_episodic_block` 消费；`5801862b` 插件化记忆引擎后 facade/wiring 已移除，当前 production、tests、docs、SDK、plugin、manifest、eval、script、动态 import/getattr/export 与 reflection 搜索仅命中待删模块和专属测试。当前 engine 直接由 `MemoryQuery` 进入 `_query_context`/`Retriever.retrieve`，不存在同一 sufficiency retry consumer。
+- active replacement 与边界：active engine/retriever 继续负责 procedure/context/answer 检索、原始与辅助 query、scope、vector/keyword RRF、注入块、空结果和错误传播；它没有同旧 checker 一样的 sufficiency retry。本次删除基于不可达 caller，不宣称 replacement 或旧语义等价；不改变正常 active retrieval/result emptiness/error/schema/write set。
+- 范围与语义：`change_type: refactor`，`semantic_delta: none`。严格删除无 owner、无 runtime caller 的 checker module 与专属 mock 测试；删除测试文件共 `203` 行，含 `14` 个测试，其中 `13` 个为 checker/LLM mock 测试，另 1 个为结果 dataclass 字段测试。不新增 absence/fallback、兼容层或 mock success 路径。
+- 计量：删除前 source-set digest `0871a21ec224fb3f42852a25cd45889d7b37a0c7b27e8722e273ff01c3ccc770`，文件数 `381`，Python SLOC `77,864`，`memory2` SLOC `4,131`，total production SLOC `86,315`；删除后 source-set digest `e83c7ebea48eed3c08331defcff923ca32880e2f48fbca0f48754cc52888608c`，文件数 `380`，Python SLOC `77,702`，`memory2` SLOC `3,969`，total production SLOC `86,153`；production 净减少 `162` SLOC。删除的测试源码不计入 production SLOC。
+- 测试与静态验证：运行 active `tests/test_memory_engine_contract.py`、`tests/test_recall_memory_tool.py`、`tests/test_turn_pipelines.py`、`tests/test_agent_core_p3_context_store.py`、`tests/memory2_retrieval_baseline.py` 及必要 empty-result/active retrieval 回归；compileall active modules、pyright、exact/dynamic scan、migration append-only、production SLOC、`git diff --check` 与 committed-head Gate 作为提交验收项记录。不修改 active tests 或 absence oracle。
+- Gate：按 WORKFLOW 在提交后以 committed HEAD 对 PR19 base `c5865ac547928e702e4136971aace6d6c29c8ec8` 运行公开 Gate；private required 状态记录为 `pending_maintainer`，不把运行后 digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、外部网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/less-is-more-pr20-backup-Wh6Tpp/`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧 checker 文本；当前 Git source 与动态调用面没有 consumer。若未来恢复 sufficiency/retry lane，应在 active retrieval owner 中重新设计并补独立合同，不复活 dead checker。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
