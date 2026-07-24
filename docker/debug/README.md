@@ -30,6 +30,8 @@ python docker/debug/gate.py audit
 python docker/debug/gate.py plan --base origin/main
 ```
 
+如果同一 diff 同时包含生产 source set 与 protected contract/policy paths，`plan` 和 `run` 都会报告 `status=protected_contract_mixed`、分别列出两组路径并以非零退出；仅合同/Gate，或生产源码加普通测试，仍按正常 Gate 处理。`migrations/**` 本身不在该 protected 集合内，继续由 append-only/repair Gate 管理。
+
 `init` 只用于仓库第一次建立 coverage baseline。baseline 已存在时再次执行会失败，不能覆盖人工合同。新增未映射可执行文件会先运行全量公开语义场景，最终仍以 `unmapped_change` 失败。报告位于 `docker/debug/reports/change-gate/<run-id>/`。
 
 公开 Gate 不安装也不枚举私有插件。`privateGateRequired=true` 表示公开部分已经给出受影响能力组，维护者还需用 private companion 消费同一 `planDigest`；普通贡献者不需要私有仓库、插件或凭据。
