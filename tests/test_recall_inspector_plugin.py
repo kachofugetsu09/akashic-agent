@@ -11,6 +11,7 @@ from agent.lifecycle.types import AfterToolResultCtx, BeforeTurnCtx
 from agent.plugins.context import PluginContext, PluginKVStore
 from plugins.default_memory.dashboard import RecallInspectorDashboardReader
 from plugins.default_memory.engine import DefaultMemoryEngine
+from plugins.default_memory import plugin as default_memory_plugin
 from plugins.default_memory.plugin import DefaultMemoryInspector
 
 
@@ -77,6 +78,46 @@ async def test_recall_inspector_records_context_and_recall(tmp_path: Path) -> No
     assert items[0]["recall_memory_count"] == 1
     assert items[0]["context_prepare"]["items"][0]["id"] == "m1"
     assert items[0]["recall_memory_calls"][0]["items"][0]["id"] == "m3"
+
+
+def test_items_from_block_parses_each_summary_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    original = default_memory_plugin._split_summary_meta
+
+    def record_call(summary: str) -> tuple[str, list[str]]:
+        calls.append(summary)
+        return original(summary)
+
+    monkeypatch.setattr(default_memory_plugin, "_split_summary_meta", record_call)
+
+    block = (
+        "## 【相关历史】\n"
+        "- [m1] 用户偏好中文回复（证据: 可回源原文；src: [m1]；有印象）\n"
+        "- [m2] 用户喜欢短答案（证据: 记忆摘要；不确定）\n"
+    )
+
+    assert default_memory_plugin._items_from_block(block) == [
+        {
+            "id": "m1",
+            "summary": "用户偏好中文回复",
+            "tags": ["可回源原文", "有印象"],
+            "section": "【相关历史】",
+            "injected": True,
+        },
+        {
+            "id": "m2",
+            "summary": "用户喜欢短答案",
+            "tags": ["记忆摘要", "不确定"],
+            "section": "【相关历史】",
+            "injected": True,
+        },
+    ]
+    assert calls == [
+        "用户偏好中文回复（证据: 可回源原文；src: [m1]；有印象）",
+        "用户喜欢短答案（证据: 记忆摘要；不确定）",
+    ]
 
 
 @pytest.mark.asyncio
