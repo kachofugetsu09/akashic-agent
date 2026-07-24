@@ -163,6 +163,24 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migrations、数据库、正式 workspace、服务、网络、外部发送或 Git refs。
 - 残余风险与回滚点：两个旧 helper 若未来出现外部反射依赖，应停止并分别补充对应迁移证据，不恢复兼容层；执行前备份为 `/tmp/less-is-more-pr5-finish-MSn37L`；提交后可用单提交 revert `refactor(plugins): remove dead manager helpers` 回滚。
 
+## 2026-07-23 less-is-more PR6：删除 chat command 死适配层
+
+### `PR6` `refactor(chat): remove dead command adapters`
+
+- base：PR5 commit `650ddf0ac0a61ff352d0a0569197684bb567453e`，分支 `refactor/less-is-more-pr6-chat-dead-command-adapters`。
+- allowed_paths：`frontend/chat/src/components/ai-elements/prompt-input.tsx`、`frontend/chat/src/components/ui/command.tsx`（删除）、`docs/refactor/clean-code-ledger.md`；`capability_owner`：chat composer UI；core-only，mobile client 保持现有独立仓库与固定快照。
+- 范围：删除 `prompt-input.tsx` 对已无消费者的 `Command` import 和七个 `PromptInputCommand*` 转接包装器，并删除只被该 import 引用的 `ui/command.tsx`（`cmdk`/Dialog/Search 封装）；未修改现有 PromptInput/Attachments/Menu/Body/Footer/Submit/Textarea/Tools、`styles.css`、package dependency、移动端仓库、生成 bundle 或命令协议。
+- 历史与调用链：`frontend/chat/index.html → src/main.tsx → 现有 PromptInput` 是当前 Vite 入口；静态、AST、字符串、动态导出、CSS/HTML 与 mobile repo 搜索确认 `command.tsx` 仅由该 prompt import 到达，`PromptInputCommand*` 仅有定义、零消费者，删除不切断任何当前调用链。`cmdk` 依赖及 composer 的 incidental CSS selector 保留，避免把依赖治理混入本 PR。
+- 语义与状态核对：`semantic_delta: none`；现有 composer DOM、可访问性属性、键盘/鼠标事件、网络请求、stream/提交顺序、storage、持久化和 write set 均不变；删除只减少不可达定义和 import，不新增 fallback、兼容层或运行时检查。mobile-specific interaction 仍由客户端 owner 持有，本 PR 没有 core runtime/mobile 协议改动。
+- baseline：source-set digest `6586123102dce5eb3f460c0b90d12c82990bf4ea1b323dcf5fc7ee53ae4b4ba6`，文件数 `385`，Python SLOC `78,736`，TypeScript/TSX SLOC `8,644`，total production SLOC `87,380`。
+- candidate：source-set digest `57450e582acc0b3ac1076049a19c0c341e2b8960a2fd68c702256d4ba8c04c78`，文件数 `384`，Python SLOC `78,736`，TypeScript/TSX SLOC `8,451`，`frontend/chat/src` 从 `5,934` 降至 `5,741`，total production SLOC `87,187`。
+- 目标与实际 SLOC 变化：production 净减少 `193` 行；raw diff 为 `223 deletions`（prompt adapter 72 行、command source 151 行），达到并超过本 PR 的净减少目标。未改变可达 composer 运行路径，不宣称额外端到端性能收益。
+- 构建对账：同一 `npm run build:chat -- --outDir` workload，base `367` files / raw `14,163,499` bytes / per-file `gzip -c` sum `3,171,311` bytes / entry `index-Dk9_Leak.js` `587,613` bytes / build digest `01eabe523427335ab7c02e6b6adf6752eac99321f90ebdf99b616129e750957a`；candidate `367` files / raw `14,147,448` bytes / gzip `3,167,344` bytes / entry `index-DV8aJw6_.js` `573,145` bytes / build digest `293c6b1eab1572e4d22598af1fcf69a9d01de021bc69dce37ac0faac305d57d0`。差异来自删除不可达 chat module，未改 CSS 或 dependency；Vite 仅保留既有大 chunk warning。
+- 测试与真实验证：`npm run typecheck` exit 0；`npm run lint` exit 0（本次无新增 lint 输出）；`npm run build:chat -- --outDir /tmp/less-is-more-pr6-chat-build-vnZnam` exit 0（Vite 5160 modules transformed）；legacy import/wrapper/source path 在 ledger 外零残留；`git diff --check`、migration append-only 和 Gate 需按下述 base 在提交前完成。
+- Gate：按 WORKFLOW 在本候选提交前以 base `refactor/less-is-more-pr5-plugin-manager-dead-helpers` 运行 preflight；本条不回填运行产生的 `sourceDigest`/`planDigest`，避免账本自引用，最终 committed-head Gate、digest 与 private 状态由主 Agent 在提交后重跑并写入 PR。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、外部网络或 Git refs；保留 `cmdk` package dependency 供后续独立治理。
+- 残余风险与回滚点：若未来发现 command adapter 通过未检出的动态入口被依赖，应停止并补充真实迁移证据，不恢复兼容层；执行前备份为 `/tmp/less-is-more-pr6-finish-2iGCHh`；提交后可用单提交 revert `refactor(chat): remove dead command adapters` 回滚。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
