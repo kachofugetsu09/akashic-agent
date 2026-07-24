@@ -32,7 +32,6 @@ from plugins.akasha.core import (
     edges_by_src,
     fan_counts,
     graph_seed_keys_from_snapshot,
-    parse_turn_key,
     parse_ts_unix,
     recall_budget_from_dense,
     reinforced_activation_items,
@@ -508,45 +507,3 @@ def _card_to_log_item(card: AkashaCard) -> dict[str, object]:
     }
     item.update(card.signals)
     return item
-
-
-def _turn_messages(
-    cursor: sqlite3.Cursor,
-    key: str,
-    *,
-    assistant_preview_chars: int,
-) -> tuple[str, str]:
-    parsed = parse_turn_key(key)
-    if parsed is None:
-        raise ValueError(f"Akasha turn key 无法解析: {key}")
-    session_key, turn_seq = parsed
-    rows = cursor.execute(
-        """
-        SELECT seq, role, content
-        FROM messages
-        WHERE session_key = ? AND seq IN (?, ?)
-        ORDER BY seq
-        """,
-        (session_key, turn_seq, turn_seq + 1),
-    ).fetchall()
-    user_message = ""
-    assistant_preview = ""
-    has_user = False
-    for row in rows:
-        seq = int(row[0])
-        role = str(row[1] or "")
-        content = str(row[2] or "")
-        if seq == turn_seq and role == "user":
-            has_user = True
-            user_message = content
-        elif seq == turn_seq + 1 and role == "assistant":
-            assistant_preview = _clip_text(content, assistant_preview_chars)
-    if not has_user:
-        raise LookupError(f"Akasha replay 找不到 turn 内容: {key}")
-    return user_message, assistant_preview
-
-
-def _clip_text(text: str, limit: int) -> str:
-    if limit <= 0 or len(text) <= limit:
-        return text
-    return text[:limit].rstrip() + "..."
