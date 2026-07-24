@@ -606,12 +606,10 @@ class DefaultMemoryEngine:
                 "event": retrieval.thresholds.event,
                 "profile": retrieval.thresholds.profile,
             },
-            relative_delta=retrieval.relative_delta,
             inject_max_chars=retrieval.inject.max_chars,
             inject_max_forced=retrieval.inject.forced,
             inject_max_procedure_preference=retrieval.inject.procedure_preference,
             inject_max_event_profile=retrieval.inject.event_profile,
-            inject_line_max=retrieval.inject.line_max,
             procedure_guard_enabled=retrieval.procedure_guard_enabled,
             hotness_alpha=0.20,
         )

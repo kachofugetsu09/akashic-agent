@@ -44,12 +44,10 @@ class Retriever:
         top_k: int = 8,
         score_threshold: float = 0.45,
         score_thresholds: dict[str, float] | None = None,
-        relative_delta: float = 0.06,
         inject_max_chars: int = 1200,
         inject_max_forced: int = 3,
         inject_max_procedure_preference: int = 4,
         inject_max_event_profile: int = 2,
-        inject_line_max: int = 180,
         procedure_guard_enabled: bool = True,
         high_inject_delta: float = 0.15,
         hotness_alpha: float = 0.20,
@@ -66,14 +64,12 @@ class Retriever:
             "event": float(thresholds.get("event", score_threshold)),
             "profile": float(thresholds.get("profile", score_threshold)),
         }
-        self._relative_delta = max(0.0, float(relative_delta))
         self._inject_max_chars = max(200, int(inject_max_chars))
         self._inject_max_forced = max(1, int(inject_max_forced))
         self._inject_max_procedure_preference = max(
             1, int(inject_max_procedure_preference)
         )
         self._inject_max_event_profile = max(0, int(inject_max_event_profile))
-        self._inject_line_max = max(60, int(inject_line_max))
         self._procedure_guard_enabled = bool(procedure_guard_enabled)
         self._high_inject_delta = max(0.0, float(high_inject_delta))
         self._hotness_alpha = max(0.0, min(1.0, float(hotness_alpha)))
