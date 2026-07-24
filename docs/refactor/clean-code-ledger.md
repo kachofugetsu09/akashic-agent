@@ -343,6 +343,23 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event 或 Git refs。执行前备份：`/tmp/less-is-more-pr16-backup-20260723-043500/`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧 helper 文本，但当前 Git source 与动态调用面没有 consumer；若未来恢复旧 admission 链路，应从 active `_tick` owner 重新设计，不复活该 dead helper。
 
+## 2026-07-23 less-is-more PR17：避免 Telegram 锁的命中路径 eager 分配
+
+### `PR17` `perf(telegram): avoid eager lock allocation`
+
+- base：PR16 committed HEAD `9d37ce7ea21540564baa86fd519c0d266dea620c`，分支 `perf/less-is-more-pr17-telegram-lock-allocation`。
+- allowed_paths：`infra/channels/telegram_utils.py`、`tests/test_telegram_utils.py`、`docs/refactor/clean-code-ledger.md`；`capability_owner`：Telegram 出站 limiter 与 live edit queue 的 per-chat 锁；未修改 retry/flood/clock/cleanup/API、锁 map 声明、数据库、网络或正式 workspace。
+- 原问题与真实路径：Python 会先求值 `mapping.setdefault(key, asyncio.Lock())` 的默认参数，即使 key 已命中也构造并丢弃一个 `Lock`。四处命中分别是 `TelegramOutboundLimiter._chat_locks`、`_typing_locks`（`WeakValueDictionary`）以及 `TelegramLiveEditQueue._locks` 的 `reserve`/无 limiter `run` 分支（普通 `dict`）。
+- 范围与语义：四处统一为 `lock = mapping.get(key)`，仅在 `None` 时构造并写回；没有改用 `defaultdict`，也未抽兼容 helper。`get` 与插入之间无 `await`，单事件循环下的 identity、同 chat 串行、RetryAfter/cooldown/backoff、flood/clock/cleanup 和外部发送顺序保持不变。`WeakValueDictionary` 弱生命周期与普通 dict 的具体类型均保持。
+- 真实 oracle：新增测试用计数 Lock factory 预置 existing key，先执行 limiter send/typing 与 queue reserve/run 四条命中路径并断言 `constructions == 0`，再执行四条 miss 路径并断言总构造数为 `4`，同时保留 existing lock identity。未新增 absence、fallback 或 fake success 测试。
+- baseline：source-set digest `483b61c61b7c5a1377a198ff4ea6e2ff98c062df41a3b72ff1780aa533c7b137`，文件数 `383`，Python SLOC `78,318`，`infra` SLOC `11,311`，total production SLOC `86,769`。
+- candidate：source-set digest `8d5219c387c8b77a6619c1eca82087194a8cf5c8649380f5778b316f8b29442a`，文件数 `383`，Python SLOC `78,330`，`infra` SLOC `11,323`，total production SLOC `86,781`；production 净增加 `12` 行，均为四处显式 miss 分支。
+- 同 workload microbench：使用相同 Python `3.13.7`、同一进程脚本，每个 map 跑 `10,000` 个 existing-key hit 加 `1` 个 miss，并计数 map lookup/hit/miss 与 Lock 构造；Weak chat/typing 两张 map 各为 `lookups 10,001 / hits 10,000 / misses 1 / constructions 10,001 → 1`，普通 dict 的 `reserve`/`run` 两张 map 同样为 `10,001 / 10,000 / 1 / 10,001 → 1`。聚合构造数：Weak `20,002 → 2`，普通 `20,002 → 2`。这是 lookup/allocation microbench，仅声明锁对象分配变化，不宣称网络吞吐或端到端 Telegram 延迟。
+- 测试与静态验证：`pytest -q tests/test_telegram_utils.py tests/test_channel_clients.py` 为 `40 passed`；`python -m compileall -q infra/channels/telegram_utils.py tests/test_telegram_utils.py` 通过；`pyright --venvpath /mnt/data/coding/akasic-agent infra/channels/telegram_utils.py tests/test_telegram_utils.py` 为 `0 errors, 16 warnings`（均为 telegram_utils 既有第三方/动态类型告警，测试文件无诊断）；精确 `setdefault(... asyncio.Lock())` 搜索为零，consumer/type/Weak-map allocation/concurrency preservation oracle、migration append-only、`git diff --check` 均通过。
+- Gate：按 WORKFLOW 在提交后以 committed HEAD 对 PR16 base `9d37ce7ea21540564baa86fd519c0d266dea620c` 运行公开 Gate；private required 状态记录为 `pending_maintainer`，不把运行后 digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、外部网络或 Git refs。执行前备份：`/tmp/less-is-more-pr17-backup-GxyTZW/`；回滚点为本 PR 单提交 revert。
+- 残余风险：microbench 只覆盖 map lookup 与锁对象分配；若未来把 map 访问跨线程化或在 get/insert 之间引入 await，必须重新核对并发身份语义，不恢复 eager 分配作为同步手段。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
