@@ -1,29 +1,12 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from collections.abc import Sequence
 from typing import Any, cast
 
 from agent.tools.base import Tool, ToolResult, normalize_tool_result
 
 _TOOL_LOOP_EXCLUDED = frozenset({"task_output", "task_stop"})
-
-
-@dataclass(frozen=True)
-class PreparedToolset:
-    tools: list[Tool]
-    schemas: list[dict[str, Any]]
-    tool_map: dict[str, Tool]
-
-
-def prepare_toolset(tools: list[Tool]) -> PreparedToolset:
-    return PreparedToolset(
-        tools=list(tools),
-        schemas=build_tool_schemas(tools),
-        tool_map=build_tool_map(tools),
-    )
-
 
 def build_tool_schemas(tools: list[Tool]) -> list[dict[str, Any]]:
     return [

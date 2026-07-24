@@ -9,7 +9,8 @@ from agent.tool_hooks.base import ToolHook
 from agent.tool_runtime import (
     append_assistant_tool_calls,
     append_tool_result,
-    prepare_toolset,
+    build_tool_map,
+    build_tool_schemas,
     tool_call_batch_snapshot,
 )
 from agent.tool_hooks.types import ToolExecutionResult
@@ -115,9 +116,10 @@ class SubAgent:
         self.iterations_used: int = 0
         self.tools_called: list[str] = []
         self._run_seq = 0
-        prepared = prepare_toolset(tools)
-        self._tool_map: dict[str, Tool] = prepared.tool_map
-        self._tool_schemas: list[dict[str, Any]] = prepared.schemas
+        tool_schemas = build_tool_schemas(tools)
+        tool_map = build_tool_map(tools)
+        self._tool_map: dict[str, Tool] = tool_map
+        self._tool_schemas: list[dict[str, Any]] = tool_schemas
         self._tool_executor = ToolExecutor([])
 
     def add_tool_hooks(self, hooks: list[ToolHook]) -> None:
