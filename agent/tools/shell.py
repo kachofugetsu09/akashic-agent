@@ -982,15 +982,20 @@ def _validate_command(
         if restricted_err:
             return restricted_err
 
-    return _validate_network_command(command)
+    return _validate_network_command(command, tokens=tokens)
 
 
-def _validate_network_command(command: str) -> str | None:
+def _validate_network_command(
+    command: str,
+    *,
+    tokens: list[str] | None = None,
+) -> str | None:
     """网络命令护栏：仅允许 HTTP(S) 且禁止内网目标与写入类参数。"""
-    try:
-        tokens = _split_command(command)
-    except ValueError:
-        return "命令解析失败，请检查引号是否匹配"
+    if tokens is None:
+        try:
+            tokens = _split_command(command)
+        except ValueError:
+            return "命令解析失败，请检查引号是否匹配"
     if not tokens:
         return None
 

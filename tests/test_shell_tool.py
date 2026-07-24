@@ -15,6 +15,7 @@ from agent.tools.shell import (
     _BG_REGISTRY,
     _MAX_OUTPUT,
     _validate_command,
+    _validate_network_command,
 )
 
 _KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
@@ -331,6 +332,30 @@ def test_shell_policy_checks_use_command_basename(tmp_path: Path):
     assert network_err == "当前 shell 配置禁止网络访问"
     assert banned_err == "命令 'nc' 不被允许（安全限制）"
     assert "二级 shell" in (runner_err or "")
+
+
+def test_shell_validation_reuses_parsed_tokens(monkeypatch: pytest.MonkeyPatch):
+    import agent.tools.shell as shell_mod
+
+    original_split = shell_mod._split_command
+    observed: list[str] = []
+
+    def _observe_split(command: str) -> list[str]:
+        observed.append(command)
+        return original_split(command)
+
+    monkeypatch.setattr(shell_mod, "_split_command", _observe_split)
+
+    assert _validate_command(
+        "curl 'https://example.com/中文'",
+        allow_network=True,
+        restricted_dir=None,
+    ) is None
+    assert observed == ["curl 'https://example.com/中文'"]
+
+    observed.clear()
+    assert _validate_network_command("curl https://example.com") is None
+    assert observed == ["curl https://example.com"]
 
 
 @pytest.mark.asyncio
