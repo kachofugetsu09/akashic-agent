@@ -328,6 +328,21 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event 或 Git refs。执行前备份：`/tmp/less-is-more-pr15-backup-T5mNK8/`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧模块文本，但当前 Git source 与动态调用面没有 consumer；若未来恢复旧 ingest 链路，应从 active `memorizer` owner 重新设计，不复活该 dead decider。
 
+## 2026-07-23 less-is-more PR16：删除不可达的 admitted tick helper
+
+### `PR16` `refactor(proactive): remove dead admitted tick helper`
+
+- base：PR15 commit `93c19ae4d6b3c831f500aea3f53a512ff90ff3b0`，分支 `refactor/less-is-more-pr16-remove-dead-tick-admitted`。
+- allowed_paths：`proactive_v2/loop.py`、`docs/refactor/clean-code-ledger.md`；`capability_owner`：ProactiveLoop snapshot admission、reload quiesce 与 kernel lease 生命周期；未修改 proactive tests、plugin manifest、runtime、snapshot/lease、event 或 SDK。
+- 历史与可达性：`_tick_admitted` 在 `794db57d` 由 `_tick` 持有 `_reload_lock` 时引入；`9bb5aad6` 为避免 snapshot admission/reload quiesce 死锁，将 store lease acquire 移到锁外并把 admission/snapshot bind/reset/finally 逻辑内联到 `_tick`，helper 遂成为遗留定义。当前 production、tests、docs、SDK、plugin、manifest、eval、scripts、dynamic import/getattr/export 与 reflection 扫描均无 consumer，仅保留定义。
+- 范围与语义：`change_type: refactor`，`semantic_delta: none`；仅删除不可达 module-private helper。当前 `_tick` 的 no-store reload lock、store lease acquire 在 lock 外、bind/reset finally、snapshot switch、quiesce 不死锁、active kernel lease/error fail-loud 与 tick 结果均保持不变。不添加 absence test、catch、fallback 或兼容层。
+- 计量：删除前 source-set digest `a363d259fddd0a1680d01ae641c3612eb184c67bfa0b673c80fa1928fd1d7fa6`，文件数 `383`，Python SLOC `78,330`，`proactive_v2` SLOC `2,777`，total production SLOC `86,781`；删除后 source-set digest、SLOC 与总量由 committed-head Gate/交付报告记录，删除仅影响 `proactive_v2/loop.py`。
+- Redis 式 God file 判断：保留 `proactive_v2/loop.py`；删除无 owner、无调用且无状态写入的 dead helper，不拆分 `_tick`、`_switch_snapshot`、kernel lease 或 reload lock 状态机。
+- 测试与真实验证：运行 `tests/proactive_v2/test_integration.py`、`tests/test_plugin_hot_reload.py::test_proactive_quiesce_does_not_deadlock_with_paused_tick`、`tests/test_plugin_hot_reload.py::test_proactive_tick_keeps_one_snapshot_generation` 及必要 proactive loop 回归；compileall、loop pyright、全仓 symbol/dynamic scan、migration append-only、production SLOC、`git diff --check` 与 committed-head Gate 均作为提交验收项记录。不修改测试或 absence oracle。
+- Gate：按 WORKFLOW 以 PR15 committed HEAD `93c19ae4d6b3c831f500aea3f53a512ff90ff3b0` 运行；最终报告记录 `status`、`sourceDigest`、`planDigest`、production/protected 路径分组与 private Gate `pending_maintainer` 状态，不将运行后 digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event 或 Git refs。执行前备份：`/tmp/less-is-more-pr16-backup-20260723-043500/`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧 helper 文本，但当前 Git source 与动态调用面没有 consumer；若未来恢复旧 admission 链路，应从 active `_tick` owner 重新设计，不复活该 dead helper。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
