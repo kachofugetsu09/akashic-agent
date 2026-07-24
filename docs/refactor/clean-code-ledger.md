@@ -100,6 +100,23 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送或 Git refs。
 - 残余风险与回滚点：仅保留结果型 retry helper 与 limiter 两套既有实现的职责边界；若后续发现外部反射依赖，应停止而非恢复兼容层。执行前备份为 `/tmp/less-is-more-pr2-finish-pW1LgA`；提交后可用单提交 revert `refactor(telegram): remove unreachable retry helper` 回滚。
 
+## 2026-07-23 less-is-more PR3：删除 proactive 不可达终止 helper
+
+### `PR3` `refactor(proactive): remove unreachable terminal helpers`
+
+- base：PR2 commit `5760cd1899a968e2afdcb15a3f4b59f4274cbfe7`，分支 `refactor/less-is-more-pr3-proactive-dead-terminals`。
+- allowed_paths：`plugins/proactive_flow/tools.py`、`docs/refactor/clean-code-ledger.md`；`capability_owner`：`proactive terminal protocol`。
+- 范围：删除 `tools.py` 中私有 `_finish_reply` 与 `_finish_skip` 两个完整不可达定义；未修改 `_finish_turn`、`message_push`、`TOOL_SCHEMAS`、dispatcher、prompt 或测试。
+- 删除原因与历史迁移：旧公开 `finish_reply`/`finish_skip` 在 commit `f15a06ed` 已由 `message_push + finish_turn` 的 schema/dispatch 完整替代，终止语义已内联到现有路径；本次精确 source/AST/dynamic/export/cross-repo 搜索确认两个私有符号只有定义、零调用和零导出，删除不影响可达链路。
+- 语义与状态核对：静态语义、能力、错误传播、状态 mutation 和 write set 均无变化；可达终止协议仍由 `message_push`/`_finish_turn` 拥有，未新增 fallback、兼容层或检查。无迁移、持久化、数据库、workspace、网络或外部发送变化。
+- baseline：source-set digest `91dd82e44398bc153bda147c9d175a3bd0299396228c370c13113e4395f371ac`，文件数 `385`，Python SLOC `78,825`，TypeScript/TSX SLOC `8,644`，total production SLOC `87,469`。
+- candidate：source-set digest `283be083ac6021a1249d772333dbaa44b26b6d0637d94b787f03cd09f2e6bbc8`，文件数 `385`，Python SLOC `78,795`，TypeScript/TSX SLOC `8,644`，total production SLOC `87,439`。
+- 目标与实际 SLOC 变化：`plugins` 生产 SLOC 从 `17,262` 降至 `17,232`，总 production SLOC 净减少 `30`（删除函数本体 32 个物理源码行，含边界空行 raw diff 为 34 行）；按计量器实际结果记录，不把预估的 `32` 计量 SLOC 当作事实。
+- 性能影响：删除不可达定义，不改变 import 或运行热路径；没有新增调用、分配、等待或 I/O，不宣称可测性能收益。
+- 测试与真实验证：项目已有 venv（PR3 worktree 未带 `.venv`，未安装依赖）执行三组 proactive 回归共 `165 passed in 0.81s`；修改文件 Pyright `--level error` 为 `0 errors`，默认级别为 `0 errors, 132 warnings`，相对 base 的 `148 warnings` 减少 `16` 且无新增告警；两次命令都通过现有 venv 加 `--venvpath /mnt/data/coding/akasic-agent`；`python scripts/check_migrations_append_only.py --base refactor/less-is-more-pr2-telegram-dead-retry` 通过；`git diff --check` 通过；legacy symbol 精确搜索在账本之外零残留。
+- Gate：按 WORKFLOW 在本候选提交前运行 `python docker/debug/gate.py run --base refactor/less-is-more-pr2-telegram-dead-retry`；本条不回填运行产生的 `sourceDigest`/`planDigest`，避免账本自引用使报告失效，结果与 private 状态在交付报告记录。
+- 残余风险与回滚点：若未来出现外部反射依赖，应停止并补充真实迁移证据，不恢复兼容 helper；执行前备份为 `/tmp/less-is-more-pr3-finish-GxaGYq`，提交后可用单提交 revert `refactor(proactive): remove unreachable terminal helpers` 回滚。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
