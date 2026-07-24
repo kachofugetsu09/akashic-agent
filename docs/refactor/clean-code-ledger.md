@@ -484,6 +484,21 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-pr25-before-reasoning-events-lifecycle.py.bak`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 或外部 workspace subagent-run 可能保留旧事件文本，但当前 Git source、6759d288 后的 active lifecycle 迁移路径与外部 plugin cache 没有 consumer；若未来恢复旧事件总线契约，应在 active lifecycle owner 中重新设计并补独立迁移，不恢复该 dead dataclass。
 
+## 2026-07-23 less-is-more PR26：内联事件 dataclass 的空容器工厂
+
+### `PR26` `refactor(bus): inline builtin event default factories`
+
+- base：PR25 committed HEAD `58a5763992367c735eb3114b49b9be87bb8e031d`，分支 `refactor/less-is-more-pr26-inline-empty-factories`。
+- allowed_paths：`bus/events.py`、`bus/events_lifecycle.py`、`docs/refactor/clean-code-ledger.md`；`capability_owner`：bus 事件 dataclass 的实例默认容器；未修改字段名、字段顺序、类型注解、事件类、EventBus、插件事件映射、schema、manifest 或 tests。
+- 原问题与可达性：七个 `_empty_*` 函数只作为 dataclass `Field.default_factory` 的唯一 consumer；`bus/events.py` 的 `_empty_media`/`_empty_metadata` 各被两个字段引用，`bus/events_lifecycle.py` 的 `_empty_media` 无字段 consumer（PR25 已删除其唯一 `BeforeReasoning` consumer），其余四个 factory 各只被 `TurnCommitted` 字段引用。仓库、AST、动态 import/getattr/export、reflection、SDK、tests、插件 manifest 与 `/home/huashen/.akashic-plugin/cache` 精确扫描没有 private factory consumer；外部插件只读取事件公开字段。
+- 范围与语义：`change_type: refactor`，`semantic_delta: none`。删除 private wrappers，将 `default_factory` 直接改为带精确类型参数的 builtin `list[...]`/`dict[...]` GenericAlias；每次 dataclass 构造仍创建独立的空 list/dict，字段名、顺序、注解、repr/compare/frozen、事件发布与消费保持不变。唯一可观察的 reflection 变化是 `dataclasses.fields(...).default_factory` 从 module-private function 变为 builtin-origin `list[...]`/`dict[...]`；没有发现对 factory identity 的真实 consumer，故不引入兼容别名或 fallback。
+- 性能与错误/注释变化：删除七个不可达或仅转发空容器的函数对象及其调用层；模块导入少创建七个函数对象，实例化仍为同阶 builtin 容器分配，不声明端到端提速。没有新增异常捕获、默认值归一化、日志或注释；内部契约继续 fail-fast。
+- 计量：删除前 source-set digest `65d0d478690fd3457af8847887e4560392256a35bd70d5eb60be0527fb9e21c4`，文件数 `378`，Python SLOC `77,539`，`bus` SLOC `916`，total production SLOC `85,990`；删除后 source-set digest `b4ac1af9d07d23f933ef471f8bfad26befa8db18834faa0b78bfe758f2a159eb`，文件数 `378`，Python SLOC `77,525`，`bus` SLOC `902`，total `85,976`；production 净减少 `14` SLOC（GenericAlias 改写不增加 production SLOC）。
+- 测试与静态验证：事件、support、lifecycle、plugin、mobile channel 定向回归 `326 passed in 14.31s`；`tests/test_production_sloc.py tests/semantic/test_change_gate.py tests/test_migration_append_only.py` 为 `24 passed`；相关 `compileall` 通过；精确类型参数后的修改文件 pyright `0 errors, 0 warnings`；AST/private consumer scan、外部 plugin-cache scan、独立实例容器 identity 隔离与 builtin-origin factory reflection 均通过，`git diff --check` 通过。
+- Gate：按 WORKFLOW 在 committed HEAD 对 PR25 base `58a5763992367c735eb3114b49b9be87bb8e031d` 运行公开 Gate；private required 状态记录为 `pending_maintainer`，不把运行后 source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-pr26/`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 或外部 workspace subagent-run 可能保留旧 private helper 文本，但当前 canonical source、dynamic consumer、reflection consumer 与外部 plugin cache 没有依赖；若未来需要对外承诺 factory identity，应在公开事件契约层另行设计，而不恢复 module-private wrappers。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
