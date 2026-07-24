@@ -223,7 +223,7 @@ class MobileGatewayRuntime:
         challenge = self.authenticator.create_challenge(connection_id)
         await _send_control(websocket, "server.challenge", challenge.payload())
         try:
-            first = await _receive_frame(websocket)
+            first = parse_frame(await websocket.receive_text())
             if isinstance(first, GenericControl) and first.type == "pair.claim":
                 await self._handle_pair_claim(websocket, first)
                 return
@@ -1364,10 +1364,6 @@ def build_mobile_gateway_server(
     config.ssl_certfile = keyset.tls_certificate_path
     config.ssl = create_server_ssl_context(keyset)
     return uvicorn.Server(config)
-
-
-async def _receive_frame(websocket: WebSocket) -> MobileFrame:
-    return parse_frame(await websocket.receive_text())
 
 
 async def _receive_authenticated_item(
