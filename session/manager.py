@@ -18,6 +18,7 @@ from session.store import SessionStore
 _TOOL_RESULT_CHAR_BUDGET = 10000
 _PROACTIVE_HISTORY_CHAR_BUDGET = 360
 _PROACTIVE_META_HISTORY_CHAR_BUDGET = 1200
+_MSG_KEYS = {"id", "session_key", "seq", "role", "content", "timestamp", "tool_chain"}
 
 
 def _truncate_tool_result(content: object) -> str:
@@ -417,18 +418,6 @@ class SessionManager:
             metadata=session.metadata,
         )
 
-    def _extract_extra(self, msg: dict[str, object]) -> dict[str, object]:
-        skip = {
-            "id",
-            "session_key",
-            "seq",
-            "role",
-            "content",
-            "timestamp",
-            "tool_chain",
-        }
-        return {k: v for k, v in msg.items() if k not in skip}
-
     def _persist_session(
         self,
         session: Session,
@@ -462,7 +451,7 @@ class SessionManager:
                     "content": content,
                     "timestamp": ts,
                     "tool_chain": msg.get("tool_chain"),
-                    "extra": self._extract_extra(msg),
+                    "extra": {k: v for k, v in msg.items() if k not in _MSG_KEYS},
                 }
             )
 
