@@ -214,7 +214,7 @@ def load_config(
             ),
             field="agent.dev_mode",
         ),
-        multimodal=_load_multimodal(llm_main),
+        multimodal="image" in model_runtimes[runtime_id].input_modalities,
         vl_model=str(llm_vl.get("model") or ""),
         vl_api_key=_load_api_key(
             auth_id=str(llm_vl.get("auth") or ""),
@@ -612,15 +612,6 @@ def _load_memory_window(data: dict, agent_context: dict, llm_main: dict) -> int:
         return 40
     effective_percent = float(llm_main.get("effective_context_percent", 0.9))
     return recommended_context_settings(context_window, effective_percent).memory_window
-
-
-def _load_multimodal(llm_main: dict) -> bool:
-    modalities = llm_main.get("input_modalities")
-    if modalities is not None:
-        if not isinstance(modalities, list) or not all(isinstance(v, str) for v in modalities):
-            raise ValueError("llm.main.input_modalities 必须是字符串数组")
-        return "image" in modalities
-    return False
 
 
 def _load_role_runtime(

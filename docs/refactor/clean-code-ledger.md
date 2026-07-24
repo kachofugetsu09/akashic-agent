@@ -698,6 +698,22 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、database rows/schema、服务、网络、外部发送、generation/snapshot/lease/event、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-backups/pr39-session-manager.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr39-test-logic-modules.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr39-test-session-store.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr39-ledger.md.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr39-session-manager-before-order-fix-20260723`、`/tmp/akashic-less-is-more-backups/pr39-test-logic-before-order-fix-20260723`、`/tmp/akashic-less-is-more-backups/pr39-ledger-before-order-fix-20260723`；回滚点为本 PR 单提交 revert。
 - 残余风险：微基准使用 fake store，真实 SQLite lock、transaction、FTS、触发器与并发 seq 仍由既有 session tests/Gate 覆盖；若未来消息核心字段变化，应在 SessionStore payload 合同 owner 中同步更新 `_MSG_KEYS` 与独立 row oracle，而不是恢复 private wrapper。
 
+## 2026-07-23 less-is-more PR40：复用主 runtime 模态校验结果
+
+### `PR40` `perf(config): reuse validated runtime modalities`
+
+- base：PR39 committed HEAD `4659afdbbc0420d6cd626cdd0acb5b00d3fa2b72`，分支 `refactor/less-is-more-pr40-dedupe-multimodal`。
+- allowed_paths：`agent/config.py` 的 `load_config` multimodal 赋值与 `_load_multimodal` 删除、`tests/test_model_runtime.py` 的 Config/error parity oracle、本账本；`capability_owner`：`_load_llm_runtimes` 的 named runtime 配置边界。未修改 API key 解析、provider/model/base_url、runtime 角色、schema、manifest、迁移或正式 runtime workspace。
+- 历史与不可达性：`_load_multimodal` 由 `59788ffe` runtime 统一迁移引入，当前只有 `load_config` 一处 caller；AST/精确文本、`getattr`/`setattr`/`import_module`、export/re-export、测试、SDK、plugin manifest 与 `/home/huashen/.akashic-plugin/cache` 扫描确认没有其他 consumer。`_load_llm_runtimes` 已为每个 runtime 构造 `ModelRuntimeConfig` 并拥有 `input_modalities` 类型/元素校验，候选直接读取 `model_runtimes[runtime_id].input_modalities`。
+- 语义与错误边界：`change_type: performance`，`semantic_delta: none`。默认缺省仍为 `("text",)`；image 只由 named main runtime 决定，多 runtime 的非 main 模态不影响 `Config.multimodal`；provider/model/config fields 与公开 Config static semantics 不变。非法非 list、非 string 列表仍在 `_load_llm_runtimes` 以原 `ValueError` 类型、消息和时机失败，未新增 `try/except`、fallback、默认值、动态兼容层或 API key 候选逻辑。
+- 范围与计量：PR39 base source-set digest `57c649022745f485bffbbae8b3bdfb63ef0fe0481673bb5dd4deb76eb6fea235`、文件数 `378`、Python SLOC `77,342`、`agent` `28,750`、total production SLOC `85,793`；candidate source-set digest `16471ad673a0b2ef81069577db7cd64f2483513d8b83a19d077c5ec87a5531e8`、文件数 `378`、Python SLOC `77,335`、`agent` `28,743`、total `85,786`；production 净减少 `7` SLOC。
+- Config/error parity：base/candidate 固定 TOML 回放覆盖默认 text、image main、非 main image、provider/model/base_url/API key fields 及 main/non-main 非法 modalities；Config 选定字段 JSON、异常类型、消息和抛出阶段完全相等。未触碰 API key 候选 B。
+- 性能回放：同一进程、固定 CPU 核心、monkeypatched 同一 parsed config，预热后每次 `20,000` 次、7 次重复 `load_config`；base 中位数 `39.514 µs/call`，candidate `39.315 µs/call`，中位数变化 `-0.50%`。这是配置对象构造 CPU 微基准，不宣称 TOML I/O、凭据读取或端到端启动收益。
+- 测试与静态验证：`pytest -q tests/test_model_runtime.py tests/test_fresh_configuration_matrix.py -k 'test_model_runtime or test_fresh_init_core_configuration_matrix and not akasha'` 为 `32 passed, 9 deselected in 2.13s`；完整 fresh matrix 另外运行结果为 `35 passed, 6 failed`，6 个失败均为环境中 jieba 0.42.1 在 CPython 3.13 的 `SyntaxError: invalid escape sequence '\\.'`，不经过 PR40 配置改动；相关源码/测试 `compileall` 通过；候选 config source Pyright `0 errors`（384 warnings，base 389 warnings）；base/candidate Config/error parity、migration append-only、`git diff --check` 通过。未删除保护 runtime/provider 测试，未修改正式 runtime workspace。
+- Gate：已在 committed HEAD 对 PR39 base `4659afdbbc0420d6cd626cdd0acb5b00d3fa2b72` 运行公开 Gate 并通过；private contract 状态为 `pending_maintainer`，不把运行后的 source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、database rows/schema、服务、网络、外部发送、generation/snapshot/lease/event、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-backups/pr40-agent-config.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr40-test-model-runtime.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr40-test-fresh-config.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr40-ledger.md.bak-20260723`；回滚点为本 PR 单提交 revert。
+- 残余风险：微基准使用 monkeypatched parsed config，真实 TOML 读取、凭据边界、provider profile 与 runtime startup 仍由既有 tests/Gate 覆盖；若未来 `ModelRuntimeConfig.input_modalities` 合同变化，应在 runtime config owner 更新字段校验与 Config projection，而不是恢复重复 raw dict guard。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
