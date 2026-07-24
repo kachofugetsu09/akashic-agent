@@ -560,6 +560,21 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-agent-pr30-constants.py.bak`、`/tmp/akashic-agent-pr30-ledger.md.bak`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧常量文本，但 current source 与 enabled plugin cache 没有 consumer；若未来需要新的 loop owner，应在 active `passive_turn`/`subagent` 或明确新模块中设计合同，不恢复无调用残片。
 
+## 2026-07-23 less-is-more PR31：内联主动上下文的记忆读取
+
+### `PR31` `refactor(proactive): inline prompt memory reads`
+
+- base：PR30 committed HEAD `c98849813a954b5383b96bfd4af3bab9fb8b262d`，分支 `refactor/less-is-more-pr31-inline-proactive-prompt-memory-reads`。
+- allowed_paths：`plugins/proactive_flow/prompt.py` 仅将 `_read_self_text`、`_read_long_term_text` 内联到唯一 caller `ProactivePromptBuilder.build_runtime_context_message`，删除两个 module-private helper；本账本。未修改 prompt 文本、区块顺序、`MemoryProfileApi`、active proactive engine/judge、plugin lifecycle、schema、manifest、缓存或 tests。
+- 历史与唯一 caller：CodeGraph 与 AST/精确调用扫描确认两个 helper 各只有 `build_runtime_context_message` 的一处调用；仓库字符串扫描、动态 import/getattr/export/reflection 与 `/home/huashen/.akashic-plugin/cache` 扫描无其他 consumer；`git log -S` 只显示旧定义迁移提交 `f91cf993`、`869260b8`，未发现额外生产 caller。删除后两个 helper 名称在当前源（账本外）为零残留。
+- 语义与错误边界：`memory = self._memory` 后，`None` 分支仍将 self/long/recent 三个区块置空；非空分支严格按 self→long→recent 顺序执行 `str(value or "").strip()`，异常原样传播。内联不改变 prompt section 名称、内容、顺序、时钟、workspace 或 gateway 数据；`semantic_delta: none`，不新增 fallback、try/except、默认值、兼容层或 mock success 路径。
+- 性能与注释：删除两个无独立 owner 的 module-private forwarding frame 与函数对象；active caller 少一层 Python call/return，读取调用数、分配、等待、I/O、持久化、网络、事件和 write set 不变，不宣称端到端提速。保留阶段 2 注释，不新增冗余注释或错误处理。
+- 范围与计量：删除前 source-set digest `47bccf4f112ea8e0ac0212f88298406bd1a9975a23be2de1fc175973dfa18435`，文件数 `378`，Python SLOC `77,412`，`plugins` SLOC `17,128`，total production SLOC `85,863`；删除后 digest `5ffee260c8a177bb2c5dfed4e7ec90e6a91993acb1415d20f51ce0d44a09adbe`，文件数 `378`，Python SLOC `77,404`，`plugins` SLOC `17,120`，total `85,855`；production 净减少 `8` SLOC。
+- 测试与静态验证：prompt/proactive context、judge/tool、plugin lifecycle 与 agent loop 定向回归 `172 passed in 1.60s`，lifecycle builder/kernel/factory `22 passed in 1.11s`；production SLOC、migration append-only 与 change-gate 选择 `24 passed in 1.73s`；prompt/相关测试 compileall 通过；pyright `0 errors, 12 warnings`，与 PR30 base 完全一致；`git diff --check` 通过。对 PR30 base 与 candidate 使用相同固定 tick/gateway/memory 输入，`None`、普通值、falsey 值的完整 prompt output 字节相同；调用序列均为 `self → long → recent`，self 失败时只调用 self 且原异常文本相同。Black diff 仅报告 base 已存在的其他三处格式差异，PR31 新增区块无需重排。
+- Gate：待 committed HEAD 对 PR30 base `c98849813a954b5383b96bfd4af3bab9fb8b262d` 运行公开 Gate；private required 状态记录为 `pending_maintainer`，不把运行后的 source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/less-is-more-pr31-prompt.py.bak`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 可能保留旧 helper 文本，但当前 canonical source、CodeGraph/AST、历史调用面与 enabled plugin cache 无 consumer；若未来需要独立复用记忆读取，应在 active memory owner 中重新设计明确合同，不恢复无调用 wrapper。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
