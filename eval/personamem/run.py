@@ -148,10 +148,10 @@ async def _process_instance(
     t_start: float,
 ) -> None:
     from eval.longmemeval.ingest import ingest_instance
+    from eval.longmemeval.runtime import close_runtime, create_runtime
 
     from .metrics import extract_option_label
     from .qa_runner import format_tool_trace, run_qa_instance
-    from .runtime import close_runtime, create_runtime
 
     async with sem:
         inst_workspace = args.workspace / inst.question_id
@@ -174,7 +174,7 @@ async def _process_instance(
             if should_ingest and _workspace_has_partial_data(inst_workspace, inst.question_id):
                 _reset_instance_workspace(inst_workspace)
 
-        rt = await create_runtime(args.config, inst_workspace, inst.persona_profile)
+        rt = await create_runtime(args.config, inst_workspace)
         try:
             if should_ingest:
                 n_sessions = len(inst.haystack_sessions)

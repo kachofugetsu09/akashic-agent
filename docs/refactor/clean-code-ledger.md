@@ -499,6 +499,21 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-pr26/`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 或外部 workspace subagent-run 可能保留旧 private helper 文本，但当前 canonical source、dynamic consumer、reflection consumer 与外部 plugin cache 没有依赖；若未来需要对外承诺 factory identity，应在公开事件契约层另行设计，而不恢复 module-private wrappers。
 
+## 2026-07-23 less-is-more PR27：删除 PersonaMem runtime 转发 wrapper
+
+### `PR27` `refactor(eval): remove PersonaMem runtime forwarding wrapper`
+
+- base：PR26 committed HEAD `3766dda949802391b97be656d3aea9efc020d544`，分支 `refactor/less-is-more-pr27-remove-personamem-runtime-wrapper`。
+- allowed_paths：删除 `eval/personamem/runtime.py`；修改 `eval/personamem/run.py`、`eval/personamem/run_one_case.py`、`eval/personamem/run_one_qa.py` 与本账本；`capability_owner`：PersonaMem benchmark runner 的 runtime wiring；未修改 CLI 参数、`persona_profile` 数据集字段/加载、结果 schema、`eval/longmemeval/runtime.py`、ingest/QA、错误关闭语义、schema、manifest 或 tests。
+- 原问题与可达性：`eval/personamem/runtime.py` 只有一个七个 SLOC 的 async forwarding function：接收 `persona_profile` 后立即丢弃，再以相同的两个参数调用 `eval.longmemeval.runtime.create_runtime`，并转发 `close_runtime`。三个 PersonaMem 入口是其全部 caller；CodeGraph、AST、精确字符串、动态 import/getattr/export/reflection、SDK、plugin、manifest、eval 与外部 plugin cache 扫描确认没有其他 wrapper consumer。`persona_profile` 仍由 `dataset.py` 解析并保留在 `PersonaMemInstance`，但不再穿过已知无副作用的 wrapper；三个调用实参均等价为 `(config_path, workspace)`。
+- 语义与错误边界：`create_runtime`/`close_runtime` 直接绑定 LongMemEval 的 canonical owner；初始化、SELF.md、provider、consolidation、workspace、资源关闭、日志和异常传播保持原函数实现。删除 wrapper 不增加 fallback、try/except、默认值、兼容层或 mock success；CLI 参数、persona profile 解析、ingest/QA 调用顺序、result JSON 字段与输出保持不变，`semantic_delta: none`。
+- 范围与计量：删除 wrapper 的七个 eval SLOC，并把三个 caller 切换为 canonical 两参 API；raw diff 为 `7 insertions(+), 16 deletions(-)`，`eval/personamem` 逻辑 SLOC 从 `864` 降至 `857`（净减少 `7`）。项目 canonical production source-set 按 `scripts/measure_production_sloc.py` 排除 `eval/**`，因此总 production SLOC、文件数与 digest 保持 PR26 的 `85,976`、`378`、`b4ac1af9d07d23f933ef471f8bfad26befa8db18834faa0b78bfe758f2a159eb`；本 PR 的七行减少属于 benchmark runner 代码，另行记录避免混淆计量口径。
+- 性能与状态：PersonaMem 运行路径少一层 async forwarding/call frame 和一个被丢弃参数绑定；没有新增模型调用、SQL、I/O、等待、持久化、网络、事件、write set 或 schema 变化，不宣称端到端 benchmark 提速。
+- 测试与静态验证：项目 venv `pytest -q -W error tests/test_personamem_eval.py` 为 `4 passed`；`eval/personamem` 与 `eval/longmemeval` `compileall` 通过；修改入口及 canonical runtime Pyright 为 `0 errors, 0 warnings`；CLI parser/import smoke、AST caller contract（3 个 direct imports，所有 `create_runtime` 均为两参）、精确 wrapper/persona_profile runtime scan、migration append-only 与 `git diff --check` 通过。仓库没有 LongMemEval runtime 专属测试文件，故以 compile/import smoke 覆盖该 canonical owner；未修改 `tests/test_personamem_eval.py`。
+- Gate：按 WORKFLOW 在 committed HEAD 对 PR26 base `3766dda949802391b97be656d3aea9efc020d544` 运行公开 Gate；private required 状态记录为 `pending_maintainer`，不把运行后的 source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、外部网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-pr27-backup-1784758748/`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 可能保留旧 wrapper 文本，但 current canonical source、调用面与外部 plugin cache 没有 consumer；若未来 PersonaMem 需要把 persona profile 注入 runtime，应在 benchmark owner 中设计显式参数与语义合同，不恢复无效转发层。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）

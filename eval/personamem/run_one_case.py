@@ -7,11 +7,11 @@ import time
 from pathlib import Path
 
 from eval.longmemeval.ingest import ingest_instance
+from eval.longmemeval.runtime import close_runtime, create_runtime
 
 from .dataset import load_dataset
 from .metrics import extract_option_label
 from .qa_runner import format_tool_trace, run_qa_instance
-from .runtime import close_runtime, create_runtime
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -39,7 +39,7 @@ async def _run(args: argparse.Namespace) -> None:
     session_turns = [len(session) for session in inst.haystack_sessions]
     t0 = time.monotonic()
 
-    rt = await create_runtime(args.config, args.workspace, inst.persona_profile)
+    rt = await create_runtime(args.config, args.workspace)
     try:
         if not args.qa_only:
             print(
