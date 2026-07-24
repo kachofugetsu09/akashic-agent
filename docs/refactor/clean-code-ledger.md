@@ -421,6 +421,21 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、外部网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/less-is-more-pr21-backup-20260723-053123/`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧 helper 文本；当前 Git source、历史调用面与外部 plugin cache 没有 consumer。若未来需要从 `EvidenceRef` 反投影 source ref，应在 active memory owner 中重新设计并补独立合同，不复活 dead helper。
 
+## 2026-07-23 less-is-more PR22：删除不可达的 Memory2 HyDE enhancer
+
+### `PR22` `refactor(memory2): remove dead HyDE enhancer`
+
+- base：PR21 committed HEAD `4146b3ce62e25800256379467102f2afc0da8ae4`，分支 `refactor/less-is-more-pr22-remove-dead-hyde-enhancer`。
+- allowed_paths：`memory2/hyde_enhancer.py`（严格删除）、`tests/test_hyde_enhancer.py`（严格删除）、`docs/refactor/clean-code-ledger.md`；`capability_owner`：Memory2 active default engine/retriever；未修改 active `plugins/default_memory/engine.py::_query_answer/_gen_hypothesis`、`memory2/retriever.py`、`memory2/query_builder.py`、generic HyDE README/config/setup wizard/proactive tool/eval text、schema、manifest 或 cache。
+- 历史与不可达性：旧 enhancer 的 raw 检索、LLM hypothesis、第二次检索与 union-dedup 由旧 injection planner 消费；插件化记忆引擎提交 `5801862b` 已移除 AgentLoop 构造与 wiring，PR18 又删除最后 planner consumer。当前 production、tests、docs、SDK、plugin、manifest、eval、script、dynamic import/getattr/export、reflection 与外部 plugin cache 的精确扫描仅命中待删模块、专属测试和历史 ledger 文本，current exact zero production consumer。
+- active replacement 与边界：active engine 的 `_query_answer`/`_gen_hypothesis` 与 retriever/query builder 使用双 hypothesis auxiliary query、vector/keyword RRF 和现有 trace/schema/write/error contracts；旧 enhancer 的 raw+second retrieve+union_dedup 语义不同。本次删除严格基于 current exact zero production consumer，不宣称替代等价；正常 active hypothesis/retrieval/trace/schema/write/error 行为保持不变。
+- 范围与语义：`change_type: refactor`，`semantic_delta: none`。只删除无 owner、无 production caller 的 enhancer module 与其专属测试全文件；不新增 absence/fallback、兼容层或 mock success 路径。
+- 计量：删除前 source-set digest `03fef4862f9847229a890962632eac945fdc30cb7f53d93015c5103c45c2d10f`，文件数 `380`，Python SLOC `77,691`，`memory2` SLOC `3,969`，total production SLOC `86,142`；删除后 source-set digest `734b0df2222b000ec0a0f7dc02ba20e2440c55f7a7111b73a59e381f7d88c9ed`，文件数 `379`，Python SLOC `77,567`，`memory2` SLOC `3,845`，total production SLOC `86,018`；production 净减少 `124` SLOC。删除的专属测试源码为 `144` 物理行、`92` test SLOC，单独记账，不计入 production SLOC。
+- 测试与静态验证：项目 `.venv` 的 active procedure/query/engine/recall/turn/context/retrieval 回归（10 个测试入口）为 `112 passed in 2.14s`；相关 active modules/tests compileall 通过；`plugins/default_memory/engine.py`、`memory2/retriever.py`、`memory2/query_builder.py` pyright 为 `0 errors, 43 warnings`（engine 既有告警）；精确 consumer/dynamic import/getattr/export 与外部 plugin cache scan 为零，migration/protected-path guard、production SLOC 与 `git diff --check` 通过。不修改 active tests 或 absence oracle。
+- Gate：按 WORKFLOW 在提交后以 committed HEAD 对 PR21 base `4146b3ce62e25800256379467102f2afc0da8ae4` 运行公开 Gate；private required 状态记录为 `pending_maintainer`，不把运行后 digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/less-is-more-pr22-backup-20260723-053803/`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧 enhancer 文本，但 current Git source 与动态调用面已证实无 consumer；旧 raw+second retrieve+union_dedup 与 active 双 hypothesis auxiliary/RRF 不同，若未来需要 HyDE 增强，应在 active retrieval owner 中重新设计并补独立合同，不复活该 dead enhancer。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
