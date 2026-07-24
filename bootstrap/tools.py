@@ -594,7 +594,7 @@ def build_core_runtime(
             model=config.model,
             max_tokens=config.max_tokens,
         ),
-        installed_cache_root=_resolve_installed_plugin_cache_root(),
+        installed_cache_root=plugins_root() / "cache",
     )
     loop.bind_runtime_snapshot_store(plugin_manager.snapshot_store)
     workspace_mcp_watcher = WorkspaceMcpWatcher(
@@ -668,7 +668,3 @@ def _resolve_plugin_dirs(workspace: Path) -> list[Path]:
         if item.strip()
     )
     return roots
-
-
-def _resolve_installed_plugin_cache_root() -> Path:
-    return plugins_root() / "cache"
