@@ -60,10 +60,6 @@ def _strip_utf8_bom(text: str) -> tuple[str, bool]:
     return text, False
 
 
-def _normalize_to_lf(text: str) -> str:
-    return text.replace("\r\n", "\n").replace("\r", "\n")
-
-
 def _restore_utf8_bom(text: str, has_bom: bool) -> str:
     if has_bom:
         return "\ufeff" + text
@@ -188,10 +184,6 @@ def _read_image(file_path: Path, detected_mime: str | None = None) -> ToolResult
             }
         ],
     )
-
-
-def _detect_image_mime_from_header(head: bytes) -> str | None:
-    return _detect_supported_image_mime_from_header(head)
 
 
 def _detect_supported_image_mime_from_header(head: bytes) -> str | None:
@@ -352,7 +344,7 @@ class ReadFileTool(Tool):
 
             with builtins.open(file_path, "rb") as fh:
                 head = fh.read(_READ_PROBE_BYTES)
-            image_mime = _detect_image_mime_from_header(head)
+            image_mime = _detect_supported_image_mime_from_header(head)
             if image_mime:
                 if self._multimodal:
                     return _read_image(file_path, image_mime)

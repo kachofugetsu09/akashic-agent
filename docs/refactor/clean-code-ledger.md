@@ -730,6 +730,21 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改数据库、文件状态、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-backups/pr42-search_backend.py.bak-20260723`、`pr42-test_tool_search.py.bak-20260723`、`pr42-ledger.md.bak-20260723`、`pr42-ledger-before-root-entry-20260723.bak`；回滚点为本 PR 单提交 revert。
 - 残余风险：`ToolDocument` 是可变对象，不能把 normalized fields 缓存到 backend 或 snapshot 外；本 PR 刻意只删除不可达 dedupe 并复用单次 lower。若未来 `keywords` 改为保留重复的 sequence，必须重新建立 why 去重合同，不能直接复用当前证明。
 
+## 2026-07-23 less-is-more PR43：删除 filesystem 不可达 helper/转发别名
+
+### `PR43` `refactor(filesystem): remove dead normalization and mime alias`
+
+- base：PR42 committed HEAD `67bb7cf4bd08d233160aa079def6a4dae20fcd8b`，分支 `refactor/less-is-more-pr43-remove-filesystem-aliases`。
+- allowed_paths：`agent/tools/filesystem.py` 与本账本；`capability_owner`：filesystem tools 的 `ReadFileTool` 文本读取、图片头识别和编辑写回。未修改测试、其他 helper、schema、manifest、迁移或正式 runtime workspace。
+- 历史与不可达性：`_normalize_to_lf` 来自历史 `7a60828b editfile`，当前只有定义；`_detect_image_mime_from_header` 来自 `47931246 readfile`，唯一 caller 只转发 `_detect_supported_image_mime_from_header`。精确文本/AST、动态 `getattr`/`setattr`/`import_module`、export/re-export、测试、SDK、plugin manifest 与 `/home/huashen/.akashic-plugin/cache` 扫描均未发现 consumer。
+- 语义与错误边界：`change_type: refactor`，`semantic_delta: none`。候选直接调用已拥有 PNG/JPEG/GIF/BMP/WebP 头识别的 supported helper；ReadFileTool 文本、图片、无效头、BOM/CRLF/混合换行、权限、原子写回、异常类型与传播不变。没有新增 catch、fallback、默认值、缓存或兼容层。
+- 范围与计量：base source-set digest `651479e168200238e5b75ff471d15e8baec318599fec62c13520de23f2d6713b`，文件数 `378`，Python SLOC `77,330`，`agent` `28,738`，`session` `2,516`，total production SLOC `85,781`；candidate digest `628ecdd588117331002999c211a0c94d10c7c27994d5fc46f940bc707ba38c70`，文件数 `378`，Python SLOC `77,326`，`agent` `28,734`，`session` `2,516`，total `85,777`；production 净减少 `4` SLOC。
+- text/PNG parity：固定临时输入覆盖 UTF-8 BOM、CRLF、offset/limit、有效 PNG、无效头、缺失文件和 helper `None`；base/candidate 返回 payload 完全相等，SHA-256 `299185046d46d6ad85bfaf8be60510ff62e4652624c88c5ba2cb95ce9556a710`。
+- 测试与静态验证：`tests/test_io_modules.py` 为 `47 passed in 3.41s`；与 spawn/meta 相关回归为 `55 passed in 3.62s`；相关源码/测试 `compileall` 通过，filesystem Pyright `0 errors, 0 warnings`，IO 测试 Pyright `0 errors, 141 warnings`（既有 test private-use/unknown-call warnings）；AST、动态调用、export/re-export、SDK、plugin-cache 扫描无残留；迁移 diff 为空，`git diff --check` 通过。
+- Gate：已在 committed HEAD 对 PR42 base `67bb7cf4bd08d233160aa079def6a4dae20fcd8b` 运行公开 Gate 并通过；private contract 状态为 `pending_maintainer`，不把运行后的 report/source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；执行前备份：`/tmp/akashic-less-is-more-backups/pr43-filesystem-before-change-20260723`、`/tmp/akashic-less-is-more-backups/pr43-clean-code-ledger-before-change-20260723`；回滚点为本 PR 单提交 revert。
+- 残余风险：无已知风险；后续文本换行行为仍由现有 `_supports_crlf_compat`/`_restore_utf8_bom` 所有者维护，图片识别仍由 supported helper 维护。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
