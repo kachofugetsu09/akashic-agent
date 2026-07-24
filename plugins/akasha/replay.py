@@ -370,7 +370,8 @@ class AkashaReplayRuntime:
                 [_card_to_log_item(card) for card in ripple_cards],
                 ensure_ascii=False,
             ),
-            text_block_preview=_preview_text_block(text_block),
+            text_block_preview=text_block[:500].rstrip()
+            + ("..." if len(text_block) > 500 else ""),
         )
 
 
@@ -507,10 +508,6 @@ def _card_to_log_item(card: AkashaCard) -> dict[str, object]:
     }
     item.update(card.signals)
     return item
-
-
-def _preview_text_block(text_block: str) -> str:
-    return text_block[:500].rstrip() + ("..." if len(text_block) > 500 else "")
 
 
 def _turn_messages(
