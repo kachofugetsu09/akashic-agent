@@ -774,6 +774,22 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；执行前备份：`/tmp/akashic-less-is-more-backups/pr45-channels-before-change-20260723.py`、`/tmp/akashic-less-is-more-backups/pr45-clean-code-ledger-before-change-20260723.md`；回滚点为本 PR 单提交 revert。
 - 残余风险：删除两个 incidental module attributes；它们没有 `__all__`、文档、caller、动态读取或插件依赖证据，不属于已记录静态语义。后续若重新引入启动期资源，清理必须由实际资源 owner 明确实现，不能恢复空 catch。
 
+## 2026-07-23 less-is-more PR46：内联 setup wizard 空列表工厂
+
+### `PR46` `refactor(bootstrap): inline empty list factory`
+
+- base：PR45 committed HEAD `b86dec53f4af90695f0ad105a801a50f59e518e0`，分支 `refactor/less-is-more-pr45-remove-empty-channel-catch`；本 PR 分支 `refactor/less-is-more-pr46-inline-empty-list-factory`，唯一 writer 为本任务 agent。
+- allowed_paths：`bootstrap/setup_wizard.py` 的 `WizardAnswers.tg_allow_from` 默认工厂与其私有 helper、本账本；`capability_owner`：setup wizard 的 `WizardAnswers` 数据结构。未修改公开 dataclass 字段、Telegram 配置渲染、setup main、model runtime、测试、schema、manifest、迁移或正式 runtime workspace。
+- 历史与不可达性：`7135950c` 的父提交 `e55b03c` 已让 `WizardAnswers.tg_allow_from` 使用 `field(default_factory=list)`；`7135950c`（等价变更 `8c53c274`）在同次 QQBot 兼容改动中新增纯函数 `return []` 并把字段切到该私有 helper，没有记录独立行为需求。当前 CodeGraph/精确文本、AST、动态属性、导出/re-export 与模块消费者扫描确认 `_empty_str_list` 只有本字段一个静态 caller，无其他 setup wizard consumer。
+- 语义与错误边界：`change_type: refactor`，`semantic_delta: none`。`tg_allow_from` 仍是 `list[str]`，每个 `WizardAnswers()` 仍得到独立空 list；Telegram 用户名收集、TOML 渲染、`WizardAnswers` 构造/序列化字段顺序与错误传播不变。删除纯别名不新增 `try/except`、fallback、默认归一化、动态兼容层或错误吞隐。
+- 性能与注释：默认构造直接调用内建 `list`，删除一次无状态 Python helper 跳转；这是局部对象构造常数项优化，不宣称端到端 setup 启动收益。仅删除无解释价值的 helper，保留现有结构注释与 docstring，不改变注释语义。
+- 范围与计量：base source-set digest `3050a573e13b6734b402011897d04a61449657feff39c6a8b777d6e881a9c4a9`，文件数 `378`，Python SLOC `77,316`，TypeScript/TSX SLOC `8,451`，`bootstrap` `6,299`，total production SLOC `85,767`；candidate source-set digest `6033e52d4112249d1826eb88ae1ab7d14911b188782137074c20a14853af7d3f`，文件数 `378`，Python SLOC `77,314`，TypeScript/TSX SLOC `8,451`，`bootstrap` `6,297`，total production SLOC `85,765`；production 净减少 `2` SLOC。
+- parity：独立 Python 回放确认两个新实例的 `tg_allow_from` 均为空且对象身份不同，修改一个实例不会影响另一个；字段仍保持 `list[str]`，现有渲染/构造回归保持原结果。
+- 测试与静态验证：`.venv/bin/pytest -q -W error tests/test_setup_wizard.py tests/test_setup_main.py tests/test_model_runtime.py` 为 `33 passed in 2.03s`；`tests/test_production_sloc.py tests/test_migration_append_only.py` 为 `14 passed in 1.57s`；相关源码与测试 `compileall` 通过；修改范围 Pyright `0 errors`（既有 warnings）；helper AST/精确 consumer/export/dynamic scan 无残留，migration 无 diff，`git diff --check` 通过。未删除测试。
+- Gate：已在 committed HEAD 对 PR45 base 运行公开 Gate 并通过；private contract 状态为 `pending_maintainer`，不把运行后的 report/source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；执行前备份：`/tmp/akashic-less-is-more-backups/pr46-setup_wizard.py.bak`、`/tmp/akashic-less-is-more-backups/pr46-clean-code-ledger.md.bak`；回滚点为本 PR 单提交 revert。
+- 残余风险：无已知风险；若未来 `WizardAnswers` 默认工厂承担非空初始化或审计副作用，必须恢复有实际职责的命名工厂并重新建立语义证明，不能仅因名称偏好恢复别名。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
