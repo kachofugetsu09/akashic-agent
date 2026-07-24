@@ -650,6 +650,22 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-pr36-telegram_channel.py.bak-20260723`、`/tmp/akashic-less-is-more-pr36-clean-code-ledger.md.bak-20260723`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 或外部未跟踪副本可能保留 helper 文本，但当前 canonical source、测试、动态调用面与 enabled plugin cache 没有 consumer；若未来需要独立 final-thinking policy，应在 `_on_response` 或 `send_thinking_block` owner 中重新设计显式合同，不恢复无调用 wrapper。
 
+## 2026-07-23 less-is-more PR37：复用 MCP 出站 JSON 序列化
+
+### `PR37` `perf(mcp): reuse serialized outbound payload`
+
+- base：PR36 committed HEAD `f1ac8fb34cc37021238de41af0f3470c57466444`，分支 `refactor/less-is-more-pr37-reuse-mcp-serialization`。
+- allowed_paths：`agent/mcp/client.py` 的 `McpClient._send`、`tests/test_io_modules.py` 的直接 oracle、本账本；`capability_owner`：MCP stdio client 出站 JSON-RPC 帧。没有 Content-Length header；未修改协议字段、子进程、锁、stdout/stderr、超时、连接生命周期、重试、schema、manifest、迁移或正式 workspace。
+- 原问题与证据：PR36 基线 `_send` 对同一 payload 分别为 debug preview 与 wire body 调用两次 `json.dumps(payload, ensure_ascii=False)`；CodeGraph/源码调用链确认该重复只在 `McpClient._send`，所有 `McpClient` request/call/initialize/tools/list 路径都经过同一 owner。候选先计算一次 `serialized`，再复用其 `[:400]` 和 `(serialized + "\\n").encode()`。
+- 语义与错误边界：`change_type: performance`，`semantic_delta: none`。序列化仍发生在 logger 与 stdin write 之前；Unicode、默认 JSON separators、末尾 newline、UTF-8 字节、debug 预览、write→drain 顺序和所有异常传播保持不变。unsupported object 仍在序列化边界抛出 `TypeError`，不会调用 logger 或产生任何 write；没有新增 catch、fallback、默认值、兼容层或 mock success。
+- 范围与计量：候选仅将两次序列化收敛为一次，生产代码净减少 `1` SLOC。PR36 base source-set digest `b2f5c29d4452a05b78211047a5cc137538547e0296e7660210f0eac5491b672b`，文件数 `378`，Python SLOC `77,348`，`infra` `11,285`，total production SLOC `85,799`；candidate source-set digest `cae774b4ad3044f6131d77f74f59ef926fbd31c1ba7a7c73f4c7bf08bc1b6441`，文件数 `378`，Python SLOC `77,347`，`infra` `11,285`，total production SLOC `85,798`。
+- 字节/日志 parity：同一 Unicode payload 在 base/candidate 的 wire bytes 完全相等，长度 `354`，SHA-256 `c3a5d61a5233db4731ff24c2d2a9c3d33a94ccc0014eddeaddfede1e17348577`；长 Unicode payload 的 logger 参数与 wire 解码前 `400` 字符前缀完全相等，预览长度保持 `400`，newline 只出现在 wire frame。
+- 性能回放：相同 fake stdin、同一进程、logger no-op、同一 payload，预热后每次 `3,000` 次 `_send`、`7` 次重复；base 样本中位数 `0.021347s`，candidate `0.011584s`，中位数变化 `-45.73%`。这是 JSON 序列化/内存 pipe 微基准，不宣称真实子进程或网络端到端收益。
+- 测试与静态验证：MCP/IO 定向 `70 passed in 8.45s`（含单次 dumps、wire/log parity、write→drain 顺序和 unsupported object no-write oracle）；相关源码与测试 compileall、pyright、migration append-only、`git diff --check` 与 committed-head Gate 均通过。未修改正式 runtime workspace。
+- Gate：已在最终 committed HEAD 对 PR36 base 运行公开 Gate，公开结果 `passed`；private contract 状态为 `pending_maintainer`，不把 provider identity 当作公开证据。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改数据库、文件状态、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-backups/pr37-agent-mcp-client.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr37-test-io-modules.py.bak-20260723`、`/tmp/akashic-less-is-more-backups/pr37-ledger.md.bak-20260723`；回滚点为本 PR 单提交 revert。
+- 残余风险：基准只覆盖 JSON CPU 与 fake pipe；真实 MCP server 的调度、OS pipe backpressure 和子进程退出仍由既有测试/Gate 覆盖。若未来 debug 与 wire 需要不同序列化选项，应在该 owner 明确拆分协议，而不是恢复无证据重复 dumps。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）

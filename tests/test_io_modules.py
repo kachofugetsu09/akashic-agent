@@ -509,6 +509,62 @@ async def test_mcp_client_and_loop_factory_cover_core_paths(
 
 
 @pytest.mark.asyncio
+async def test_mcp_send_serializes_once_before_logging_and_writing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class TrackingPipe(_Pipe):
+        def __init__(self) -> None:
+            super().__init__()
+            self.events: list[tuple[str, bytes | None]] = []
+
+        def write(self, data: bytes) -> None:
+            self.events.append(("write", data))
+            super().write(data)
+
+        async def drain(self) -> None:
+            self.events.append(("drain", None))
+            await super().drain()
+
+    proc = _Proc([])
+    proc.stdin = TrackingPipe()
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "测试",
+        "params": {"text": "🙂中文" * 200},
+    }
+    original_dumps = mcp_client_module.json.dumps
+    dump_calls: list[dict[str, object]] = []
+
+    def counting_dumps(value, *args, **kwargs):
+        if value is payload:
+            dump_calls.append(kwargs)
+        return original_dumps(value, *args, **kwargs)
+
+    debug = MagicMock()
+    monkeypatch.setattr(mcp_client_module.json, "dumps", counting_dumps)
+    monkeypatch.setattr(mcp_client_module.logger, "debug", debug)
+
+    await client._send(payload)
+
+    serialized = original_dumps(payload, ensure_ascii=False)
+    assert dump_calls == [{"ensure_ascii": False}]
+    assert proc.stdin.writes == [(serialized + "\n").encode()]
+    assert proc.stdin.events == [("write", proc.stdin.writes[0]), ("drain", None)]
+    debug.assert_called_once_with("[mcp:%s] -> %s", "docs", serialized[:400])
+
+    unsupported = _Proc([])
+    unsupported_client = McpClient("docs", ["python", "server.py"])
+    unsupported_client._process = unsupported
+    debug.reset_mock()
+    with pytest.raises(TypeError):
+        await unsupported_client._send({"unsupported": object()})
+    assert unsupported.stdin.writes == []
+    debug.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_mcp_client_rejects_unsupported_protocol_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

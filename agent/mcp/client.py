@@ -387,14 +387,13 @@ class McpClient:
 
     async def _send(self, payload: dict[str, Any]) -> None:
         assert self._process and self._process.stdin
+        serialized = json.dumps(payload, ensure_ascii=False)
         logger.debug(
             "[mcp:%s] -> %s",
             self.name,
-            json.dumps(payload, ensure_ascii=False)[:400],
+            serialized[:400],
         )
-        self._process.stdin.write(
-            (json.dumps(payload, ensure_ascii=False) + "\n").encode()
-        )
+        self._process.stdin.write((serialized + "\n").encode())
         await self._process.stdin.drain()
 
     async def _recv(
