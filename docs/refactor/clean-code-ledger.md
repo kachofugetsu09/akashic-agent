@@ -529,6 +529,22 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-pr28-backup-1784759365/`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint、`/mnt/data/coding/akasha` 的未提交副本或外部运行日志可能保留旧 helper 文本，但 current PR27 source、历史 Git consumer scan 与 plugin cache 没有 owner；若未来需要 message-id 映射、展示卡片或 sidecar loader，应在 active engine/store/replay owner 中重新设计显式合同，不恢复这些无调用的旧 helper。
 
+## 2026-07-23 less-is-more PR29：删除 proactive tools 的不可达终止 schema 与 execute wrapper
+
+### `PR29` `refactor(proactive): remove dead tools surface`
+
+- base：PR28 committed HEAD `56232addfb7364f849140f7af6c0dc41cc00e2e9`，分支 `refactor/less-is-more-pr29-remove-dead-proactive-tools-surface`。
+- allowed_paths：`plugins/proactive_flow/tools.py` 仅删除 exact-zero `TERMINAL_TOOL_SCHEMAS` 与顶层 `execute()` 转发 wrapper；`tests/proactive_v2/test_tools.py` 删除 `execute` 专属测试 9 项并将未知工具错误测试直接绑定 `dispatch`；本账本；`capability_owner`：proactive judge 的 `ToolExecutionRequest`→`dispatch` 工具执行边界。未修改 `TOOL_SCHEMAS`、`dispatch` 分支、judge/tool executor、工具参数/结果、步骤计数 owner、plugin manifest、schema 或运行 workspace。
+- 历史与不可达性：`TERMINAL_TOOL_SCHEMAS` 与 `execute()` 随迁移提交 `f91cf993` 保留，但当前生产 judge 在 `plugins/proactive_flow/judge.py:150-158` 由 `ToolExecutor.execute` 直接回调 `dispatch`；CodeGraph、AST、精确 import/attribute、动态 `getattr`/`import_module`/export/reflection、tests、SDK、plugin/manifest 与 `/home/huashen/.akashic-plugin/cache`、`/mnt/data/coding/akasha` 扫描均未发现旧 schema/wrapper consumer。`git log -S` 复核确认迁移后只剩定义与专属测试；wake 的同名 `execute` 属独立插件工具，不在本次范围。
+- active owner 与语义：`TOOL_SCHEMAS` 仍由 ProactiveJudge 发送给 LLM；`dispatch` 仍拥有 12 个工具的分支、unknown-tool `ValueError` 和真实工具错误传播；`ctx.steps_taken` 仍由 judge 在构造 `ToolExecutionRequest` 前递增，不依赖已删除 wrapper。`TERMINAL_TOOL_SCHEMAS` 没有 registry/count/manifest owner。`change_type: refactor`，`semantic_delta: none`；不新增 fallback、try/except、默认值、兼容层或 mock success。
+- 范围与测试：删除 `TERMINAL_TOOL_SCHEMAS` 5 个 production SLOC 与 `execute()` wrapper 3 个 production SLOC；删除 9 个仅验证 wrapper 转发/计数的测试，保留并改为直接验证 `dispatch` unknown-tool fail-fast 的测试及其余真实 helper/schema/tool contract 测试。生产逻辑、步骤计数、schema 数量、错误路径与外部副作用均不变。
+- 计量：删除前 source-set digest `8dc2e7c38387a8ae910ea75a87765c5ab8b525627e263aab93095b894d3e4a86`，文件数 `378`，Python SLOC `77,432`，`plugins` SLOC `17,136`，total production SLOC `85,883`；删除后 source-set digest、SLOC 与 total 由 committed-head Gate 绑定记录，预期 `plugins` SLOC `17,128`、total `85,875`，production 净减少 `8` SLOC。测试删除的 wrapper 专属源码不计入 production SLOC。
+- 性能、错误与注释：模块导入少创建一个无调用 schema 列表和一个 async 转发函数；judge 热路径不增加调用、分配、等待、I/O、持久化、网络或事件，避免一层无效 await/call frame，不宣称端到端提速。删除 stale `execute` 注释并保留 `dispatch` 阶段注释；没有放宽错误处理，unknown tool 继续 fail-fast。
+- 测试与静态验证：项目 venv `pytest -q tests/proactive_v2/test_tools.py` 为 `60 passed in 0.18s`；judge/proactive tick/plugin lifecycle 定向回归 `127 passed in 3.35s`；相关 compileall 通过；`plugins/proactive_flow/tools.py`、`judge.py` pyright `0 errors, 164 warnings`（既有动态 dict warnings，base 同范围 171 warnings，无新增 error）；精确 consumer/dynamic/export/plugin-cache scan、migration append-only 与 `git diff --check` 通过。未删除真实 `dispatch`/schema/工具 contract 覆盖。
+- Gate：在 committed HEAD 对 PR28 base `56232addfb7364f849140f7af6c0dc41cc00e2e9` 运行公开 Gate；private required 状态记录为 `pending_maintainer`，不把运行后的 source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-pr29-backup-qj4rUK/`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧 schema/wrapper 文本，但 current source、迁移历史、dynamic scan 与 external plugin cache 没有 consumer；若未来需要 terminal-only schema projection，应由 judge/registry owner 重新设计显式公开合同，不恢复无调用 surface。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）

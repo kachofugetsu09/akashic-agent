@@ -1,5 +1,5 @@
 """
-proactive_v2/tools.py — Tool schemas + execute dispatcher
+proactive_v2/tools.py — Tool schemas + dispatch dispatcher
 
 数据层已由 DataGateway 预取，agent 只需：
   recall_memory  — 检索偏好记忆（HyDE 正/负假设）
@@ -193,13 +193,6 @@ TOOL_SCHEMAS: list[dict] = [
                 }
             ]}),
 ]
-
-TERMINAL_TOOL_SCHEMAS: list[dict] = [
-    schema
-    for schema in TOOL_SCHEMAS
-    if schema.get("function", {}).get("name") in {"finish_turn"}
-]
-
 
 # ── 工具实现 ──────────────────────────────────────────────────────────────
 
@@ -434,7 +427,7 @@ def _message_push(ctx: AgentTickContext, args: dict) -> str:
     return json.dumps({"ok": True}, ensure_ascii=False)
 
 
-# ── execute 分发 ──────────────────────────────────────────────────────────
+# ── 工具分发 ──────────────────────────────────────────────────────────────
 
 async def dispatch(tool_name: str, args: dict, ctx: AgentTickContext, deps: ToolDeps) -> str:
     if tool_name == "get_alert_events":
@@ -474,8 +467,3 @@ async def dispatch(tool_name: str, args: dict, ctx: AgentTickContext, deps: Tool
         return _finish_turn(ctx, args)
 
     raise ValueError(f"unknown tool: {tool_name!r}")
-
-
-async def execute(tool_name: str, args: dict, ctx: AgentTickContext, deps: ToolDeps) -> str:
-    ctx.steps_taken += 1
-    return await dispatch(tool_name, args, ctx, deps)
