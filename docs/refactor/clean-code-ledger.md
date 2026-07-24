@@ -575,6 +575,21 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/less-is-more-pr31-prompt.py.bak`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 可能保留旧 helper 文本，但当前 canonical source、CodeGraph/AST、历史调用面与 enabled plugin cache 无 consumer；若未来需要独立复用记忆读取，应在 active memory owner 中重新设计明确合同，不恢复无调用 wrapper。
 
+## 2026-07-23 less-is-more PR32：删除失效的移动会话归属检查
+
+### `PR32` `refactor(mobile): remove dead session ownership checks`
+
+- base：PR31 committed HEAD `b1e99dcb6496b0d42005b6adca5dc767f86c0018`，分支 `refactor/less-is-more-pr32-remove-dead-mobile-session-ownership`。
+- allowed_paths：`infra/mobile_realtime/storage.py` 仅删除 `SessionOwnershipError`、`MobileRealtimeStorage.require_session_owner` 与 `MobileRealtimeStorage.session_owner`；本账本。`capability_owner`：移动实时会话共享访问语义；未修改 `claim_session`、`has_session_claim`、`list_device_sessions`、`mobile_device_sessions` 表、channel/gateway/auth/protocol、附件、测试或 schema 文件。
+- 历史与不可达性：最初的设备归属拒绝逻辑由 `253658a9` 引入；`35d3150f` 的共享历史迁移移除 channel 的 `SessionOwnershipError` 导入和所有权调用，`a99f4f20` 又移除 shared-session stop 的最后业务检查。当前 `claim_session` 注释明确“会话归属不再作为访问边界”。PR31 基线的 CodeGraph、AST、精确文本、`getattr`/`import_module`/动态文件加载、导出/re-export、测试、SDK、插件 manifest 和 `/home/huashen/.akashic-plugin/cache` 扫描只命中待删定义及其自调用；删除后 legacy 名称在 source、tests、plugin cache 中为零残留，没有公共或外部 owner 证据。
+- 语义与错误边界：`semantic_delta: none`。删除的检查已经没有可达调用，故不改变共享会话的认证、session claim 首次记录、历史列表、消息/turn/附件、协议帧、错误分类、持久化写集合、迁移或外部效果；现有 `UnknownDeviceError`、`AttachmentStateError` 和 `claim_session` 的输入/事务边界继续由 storage 拥有。未新增 fallback、try/except、动态兼容层或默认值。
+- 范围与计量：PR31 base source-set digest `5ffee260c8a177bb2c5dfed4e7ec90e6a91993acb1415d20f51ce0d44a09adbe`，文件数 `378`，Python SLOC `77,404`，`infra` SLOC `11,323`，total production SLOC `85,855`；candidate source-set digest `69eb782867e5bbf19fcbd2497dc273121da828985cff15da4c29edaaf3704cb0`，文件数 `378`，Python SLOC `77,384`，`infra` SLOC `11,303`，total production SLOC `85,835`；production 净减少 `20` SLOC（raw diff `25 deletions`）。
+- 性能与注释：模块导入不再创建一个不可达异常类和三个无消费者方法；移动 realtime storage 热路径不再保留死的 ownership 查询定义，但可达 SQL、锁、事务和 list/claim 查询次数不变，不宣称端到端性能收益。删除与所有权访问边界冲突的旧注释/代码，不新增冗余注释。
+- 测试与静态验证：移动 realtime storage/attachments/channel/gateway/pairing-auth/protocol 定向回归 `140 passed in 1.29s`；`infra/mobile_realtime` Pyright（`--venvpath /mnt/data/coding/akasic-agent`）`0 errors, 0 warnings`；相关包与测试 `compileall`、`git diff --check`、migration append-only、AST/文本/cache exact scan 均通过。协议 schema `scripts/generate_mobile_realtime_schema.py --check` 通过，`schema/mobile-realtime-v1.json` SHA-256 为 `d525e5155c4fe6e49b8cbf279b17fb971bada420c4656a08f3c35dae62d56d40`；临时 SQLite 的 15 条 mobile storage schema identity SHA-256 为 `b183a1aac7331a42b7385b5f714daf784aacf7997ed080ee7d4ede1364fd6f48`，与 PR31 base 完全一致。
+- Gate：按 WORKFLOW 对 PR31 base 运行 preflight，公开 Gate `passed`（selected public scenarios 包含 `mobile_realtime_contract`，private required）；本条不回填运行后的 source/plan digest，避免 ledger 自引用，最终 committed-head Gate 与 private Gate 状态由主 Agent 在提交后记录；private contract 状态为 `pending_maintainer`。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、database rows/schema、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、manifest 或 Git refs。执行前备份：`/tmp/less-is-more-pr32-storage.py.before`、`/tmp/less-is-more-pr32-ledger.md.before`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧 ownership 名称，但当前 canonical source、历史迁移后的生产调用面与 enabled plugin cache 没有 owner；若未来引入真正的会话授权边界，应在认证/协议 owner 中设计新的显式合同，不恢复这三个无调用存储 API。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
