@@ -620,6 +620,21 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema 或 manifest。执行前备份：`/tmp/akashic-less-is-more-pr34-backup.*`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧 helper 文本，但当前 canonical source、动态调用面与 enabled plugin cache 没有 owner；若未来需要不同的等待策略，应在 `TelegramOutboundLimiter` 的 chat-slot owner 中重新设计显式合同，不恢复重复 private helper。
 
+## 2026-07-23 less-is-more PR35：删除 Telegram 不可达 live task drain helper
+
+### `PR35` `refactor(telegram): remove dead live task drain helper`
+
+- base：PR34 committed HEAD `b153bfc4495914b086439e003a942fcb5762e5c1`，分支 `refactor/less-is-more-pr35-remove-dead-telegram-drain`。
+- allowed_paths：`infra/channels/telegram_channel.py` 仅删除 `_drain_live_tasks`；本账本。`capability_owner`：TelegramChannel live task lifecycle；未修改 `_live_tasks` 索引/创建/取消/stop、`TelegramLiveEditQueue`、其他 channel、public API、测试、schema、manifest、迁移或正式 workspace。
+- 历史与不可达性：当前 canonical TelegramChannel 中 `_drain_live_tasks` 只有一个私有定义、无调用、无导出或反射命中；`stop()` 及响应/终止路径仍通过按 session 的 `_cancel_live_tasks()` 取消并等待任务。CodeGraph、AST、精确字符串、`getattr`/`setattr`/`import_module`/动态文件加载、导出/反射与仓库测试扫描均确认零 caller。启用的外部 `feishu@github` 与 `qqbot@github` cache 各自定义独立的 `FeishuChannel`/`QQBotChannel`，仍有自己的 `_drain_live_tasks` caller；它们不导入或继承 `TelegramChannel`，本 PR 不触碰外部 plugin cache。
+- 语义与错误边界：`change_type: refactor`，`semantic_delta: none`。删除的 helper 不在当前 production path，故不改变 live task 创建、session 索引回收、取消、等待、错误日志、Telegram API 调用、消息状态、持久化、事件或外部效果；可达 cleanup 继续由 `_cancel_live_tasks` 拥有。未新增 `try/except`、默认值、fallback、兼容层或 mock success 路径。
+- 范围与计量：PR34 base source-set digest `65f75da5cd20738193099c8b4ba736ced1457ef71d5bdf393d3492621043614c`，文件数 `378`，Python SLOC `77,361`，`infra` SLOC `11,298`，total production SLOC `85,812`；candidate source-set digest `14ce051648906cd87d04ec3328acfb6c110206e58afaef3cf31f89e690f3673d`，文件数 `378`，Python SLOC `77,357`，`infra` SLOC `11,294`，total production SLOC `85,808`；production 净减少 `4` SLOC（raw diff `5 deletions`）。
+- 性能、错误与注释：模块导入不再创建一个不可达 async 函数对象；可达 task index、cancel/gather、stop 等待与异常日志没有新增调用、分配、等待或 I/O，不宣称端到端性能收益。删除 stale helper 本身没有有效注释，不新增冗余注释或错误处理。
+- 测试与静态验证：Telegram channel/client、channel host/base、mobile realtime channel 定向回归 `59 passed in 1.38s`；相关源码与测试 `compileall` 通过；`telegram_channel.py` Pyright `0 errors, 51 warnings`（均为 PR34 基线既有动态 Telegram/stub 诊断）；legacy symbol 的 repo exact/AST scan 为零残留，外部 Feishu/QQBot cache 的同名 helper 仍保留且有独立 caller；migration append-only、`git diff --check` 与 production SLOC 计量通过。未修改测试或正式 runtime workspace。
+- Gate：待本提交 committed HEAD 对 PR34 base 运行公开 Gate；private contract 状态为 `pending_maintainer`，不将运行后的 source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-backups/pr35-telegram_channel.py.bak-20260723`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 与外部插件 cache 可能继续保留同名 helper，但当前 canonical Telegram source 没有 consumer；若未来需要全局 drain 语义，应在各 channel 自己的 lifecycle owner 中建立明确合同，不从 Telegram private helper 恢复跨 channel 兼容层。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
