@@ -265,6 +265,22 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改数据库、正式 workspace、服务、配置、协议、媒体文件、消息记录或 Git refs；测试 fake bot 只记录内存中的调用参数。
 - 残余风险与回滚点：渠道差异显式受 `Literal` 和直接 oracle 约束；若 Telegram 新增第三种 HTML 策略，应扩展明确合同而非依赖默认 fallback。主 Agent收尾前备份 `/tmp/less-is-more-pr11-root-finish-gx1INm`；提交后可用单提交 revert `refactor(telegram): unify HTML message helpers` 回滚。
 
+## 2026-07-23 less-is-more PR12：删除 Shell 旧前台执行 helper
+
+### `PR12` `refactor(shell): remove dead foreground runner`
+
+- base：PR11 commit `08c4af2739e53801c7ad7db3fe5f90adea6f4ab0`，分支 `refactor/less-is-more-pr12-remove-dead-shell`。
+- allowed_paths：`agent/tools/shell.py`、`tests/test_shell_tool.py`、`docs/refactor/clean-code-ledger.md`；`capability_owner`：ShellTool 前台/进程组生命周期；未修改 active shell/PTY/process/security/timeout/output/truncation/callback 实现。
+- 历史与调用链：`d03fb7d6` 将生产前台入口从历史 `_run` 迁移到 `ShellTool._execute_with_auto_promote`，但保留了约 80 行 module-private `_run` 和 import 仅供旧 direct tests 使用；当前生产无 `_run` 引用。删除 helper 与 import 后，active `ShellTool.execute` 仍是唯一前台入口。
+- 范围与语义：`change_type: refactor`，`semantic_delta: none`。删除不可达 helper；取消测试改为真实 `ShellTool.execute(command="sleep 10", description="cancel", timeout=5, auto_promote=False)`。测试 instrumentation 只包装 `_subprocess_options`、`_bg_pump` 和 `_kill_process_tree` 观察 active branch，并调用真实 kill，未伪造成功。
+- 进程与错误不变量：保留 POSIX `start_new_session=True`、Windows `CREATE_NEW_PROCESS_GROUP`；取消继续传播 `asyncio.CancelledError`，active branch 继续调用 `_kill_process_tree` 并取消 pump、删除临时日志；观察到 `(pid, SIGKILL)`，pump cleanup 断言保留。未改变 `_kill_process_tree`、进程树终止、错误、日志、超时和输出语义。
+- 测试调整：删除 `test_run_streams_stdout_and_stderr`（active `test_shell_tool_supports_spawn_hook_and_streaming` 已覆盖真实前台输出/回调）及 `test_run_does_not_hang_when_pipe_never_closes_after_exit`（active `_bg_pump` 生命周期测试已覆盖 pipe drain grace）；取消测试迁移到 active oracle。测试从 35 项减至 33 项。
+- baseline：source-set digest `e330b219d28313c506271787ca200d3c03eb0c0d725faf0cfab81d9c616eb2fb`，文件数 `384`，Python SLOC `78,692`，total `87,143`。
+- candidate：source-set digest `b86f87caa1b51f15c040fdfb3009c4f9f5eeef38d4a76cd09baecea370d098dd`，文件数 `384`，Python SLOC `78,622`，total `87,073`；production 净减少 `70` 行，全部来自不可达 `_run` 与 import。
+- 测试与静态验证：`pytest -q tests/test_shell_tool.py` 为 `33 passed in 1.50s`；base/candidate pyright 均 `0 errors`，warnings `52 → 36`；`_run` 在 shell 生产文件和直接测试中零残留；migration append-only、`git diff --check` 与 committed-head Gate 均通过；private Gate 状态 `pending_maintainer`。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改数据库、正式 workspace、服务、网络、外部发送或 Git refs。备份：`/tmp/less-is-more-pr12-backup/`。回滚点：本 PR 单提交 revert。
+- 残余风险：取消 oracle 启动真实 `sleep`，依赖当前 POSIX/Windows shell 可执行环境；测试等待 options/pump instrumentation 后再取消，未放宽取消或进程组合同。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
