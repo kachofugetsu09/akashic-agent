@@ -590,6 +590,21 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、database rows/schema、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、manifest 或 Git refs。执行前备份：`/tmp/less-is-more-pr32-storage.py.before`、`/tmp/less-is-more-pr32-ledger.md.before`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 或外部未跟踪副本可能保留旧 ownership 名称，但当前 canonical source、历史迁移后的生产调用面与 enabled plugin cache 没有 owner；若未来引入真正的会话授权边界，应在认证/协议 owner 中设计新的显式合同，不恢复这三个无调用存储 API。
 
+## 2026-07-23 less-is-more PR33：删除主动上下文的私有预取别名
+
+### `PR33` `refactor(proactive): remove private fetch aliases`
+
+- base：PR32 committed HEAD `ce534155d3e0a2d7d70fe0cb5eefc3dd938f8b70`，分支 `refactor/less-is-more-pr33-remove-private-proactive-fetch-aliases`。
+- allowed_paths：`plugins/default_proactive/context.py` 删除 `_alerts_fetched`、`_contents_fetched`、`_context_fetched` 三组 private property/setter aliases；`tests/proactive_v2/test_context.py` 删除三个仅验证 aliases 默认值的专属测试；本账本。`capability_owner`：`AgentTickContext` 预取完成状态；未修改公开 `alerts_fetched`/`contents_fetched`/`context_fetched` 字段、`mark_*_prefetched` 方法、tools/runtime/wake 调用、schema、manifest、迁移或正式 workspace。
+- 历史与不可达性：aliases 由 `1f8df5e1` 为旧 `proactive_v2` 路径引入，随 `869260b8` 迁移到 `plugins/default_proactive/context.py` 后未出现生产调用。PR32 基线的 CodeGraph、AST attribute/name、精确文本、`getattr`/`setattr`/`import_module`/动态文件加载、export/reflection、tests、SDK、plugin manifest 与 `/home/huashen/.akashic-plugin/cache` 扫描仅命中待删定义和其三项专属测试；外部 plugin cache 没有 underscore consumer。内部 underscore 名称不属于公开 API，且没有发现可达迁移 owner；删除后 source/tests/plugin cache 中为零残留。
+- 语义与错误边界：`change_type: refactor`，`semantic_delta: none`。删除的 aliases 只转发到对应公开 bool 字段，当前生产路径由 `mark_*_prefetched` 直接设置公开字段；正常 fetch、skip、runtime/wake、错误传播、持久化、事件和外部发送均不变。未新增 `try/except`、默认值、fallback、动态兼容层或 mock success；内部契约继续 fail-fast。
+- 范围与计量：删除 `plugins/default_proactive/context.py` 18 个 production SLOC、24 个物理行；删除 17 个测试物理行。PR32 base source-set digest `69eb782867e5bbf19fcbd2497dc273121da828985cff15da4c29edaaf3704cb0`、文件数 `378`、Python SLOC `77,384`、`plugins` SLOC `17,120`、total production SLOC `85,835`；candidate source-set digest `8cb775f6ef590183c2008116e3dbfc02d73c72f968548d3cb264da63e8a8adf3`、文件数 `378`、Python SLOC `77,366`、`plugins` SLOC `17,102`、total `85,817`；production 净减少 `18` SLOC。
+- 性能与注释：模块导入不再创建三个不可达 property descriptor/getter/setter 组；主动预取热路径的字段读取、写入、调用次数、分配、等待、I/O、SQL、网络、事件和 write set 不变，不宣称端到端提速。删除与内部 aliases 绑定的 stale 测试注释，不新增冗余注释或错误处理。
+- 测试与静态验证：context/source/gateway/proactive runtime/tools/lifecycle 与 wake context/runtime 定向回归 `181 passed in 1.30s`；`plugins/default_proactive`、`tests/proactive_v2`、`tests/wake_proactive` `compileall` 通过；修改文件 Pyright `0 errors, 18 warnings`（与 PR32 base 相同的既有 `dict`/unknown container warnings）；exact source/AST/dynamic/export/reflection/plugin-cache alias scan、migration append-only、production SLOC 与 `git diff --check` 通过。未修改真实 runtime workspace。
+- Gate：已在 committed HEAD 对 PR32 base `ce534155d3e0a2d7d70fe0cb5eefc3dd938f8b70` 运行公开 Gate；private required 状态记录为 `pending_maintainer`，不把运行后的 source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema 或 manifest。执行前备份：`/tmp/akashic-agent-less-is-more-pr33-backup/`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint、日志或外部未跟踪副本可能保留旧 alias 文本，但当前 canonical source、生产调用面与 enabled plugin cache 没有 owner；若未来需要公开预取状态 API，应在 `AgentTickContext` 的公开字段/方法合同中重新设计，不恢复 module-private aliases。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
