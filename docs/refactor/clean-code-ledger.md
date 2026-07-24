@@ -231,6 +231,23 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 memory2.db、observe JSONL、migration、正式 workspace、服务、网络、外部发送或 Git refs。
 - 残余风险与回滚点：benchmark 只覆盖 parser CPU，不宣称端到端日志 I/O 提速；若未来 parser 改为有状态或 metadata 解析需要独立副作用，必须恢复单一 owner 语义并重新核对调用次数。执行前备份为 `/tmp/less-is-more-pr9-finish-5v9PHx`；提交后可用单提交 revert `perf(default-memory): parse summary metadata once` 回滚。
 
+## 2026-07-23 less-is-more PR10：Wake context 列表复用单次查询
+
+### `PR10` `perf(wake): eliminate context list N+1 query`
+
+- base：PR9 commit `ab2dcd9f7986816c8d3e1f9ad9d4d0d8d6a752ad`，分支 `perf/less-is-more-pr10-wake-context-single-query`。
+- allowed_paths：`plugins/wake_proactive/state.py`、`tests/wake_proactive/test_state.py`、`docs/refactor/clean-code-ledger.md`；`capability_owner`：WakeStateStore context_state read path；未修改 wake runtime/prompt、ACK 状态机、schema、migration、协议或外部发送。
+- 范围：`list_contexts()` 改为一次 `SELECT * FROM context_state ORDER BY source_id`，新增最小 `_decode_context_row(sqlite3.Row)`，由 `load_context()` 与列表路径共同复用；保留缺失行 `None`、source_id 升序、float/optional time/JSON/presence 解码及原异常传播。新增空表、排序/roundtrip、missing、JSON/time 损坏 fail-loud 和 SQLite trace oracle。
+- 连接与并发边界：`WakeStateStore` 使用默认 `sqlite3.connect(..., check_same_thread=True)`，没有线程/`to_thread`/executor 调用；`WakeRuntime._active_contexts()` 是同步消费，`list_contexts()` 内没有 await 或外部交错点。旧路径的首个 source-id SELECT 与后续 load SELECT 不能在同一调用内被并发插入；单语句读取因此不引入新的可观察并发 snapshot 语义。
+- 语义与状态核对：`change_type: performance`，`semantic_delta: none`；`context_state` canonical 行、提交/写集、schema、排序、runtime active/expired filter、错误类型与传播均保持不变。读路径仍不写 `wake_proactive.db`。
+- baseline：source-set digest `9a8dd2535342f38ded0c6f4016d9838743137cb5cbc4cdb43b60d99d05c20f85`，文件数 `384`，Python SLOC `78,738`，TypeScript/TSX SLOC `8,451`，plugins SLOC `17,233`，total production SLOC `87,189`。
+- candidate：source-set digest `72c2547763ee40f090e516be6e0438a847d1c1216b18d9f9f962b76e22e2a1d4`，文件数 `384`，Python SLOC `78,734`，TypeScript/TSX SLOC `8,451`，plugins SLOC `17,229`，total production SLOC `87,185`；production 净减少 `4` 行，全部来自重复 row decode 收敛。
+- 数据库读回放：base 与 candidate 分别在各自 cwd、同一 Python `3.13.7`/`.venv`、`taskset -c 0` 下对临时 SQLite，预热 15 次后计时 60 次；每次预置 N 行、只测 `list_contexts()` DB read，不含初始化/写入。N=64：查询数 `65 → 1`，输出 `64` 条，output SHA-256 `07c14be65ccb350d9da749b077bc8866e382f6fc35543177f06831c2b20fb55c` 相同，median `0.700603 → 0.271058 ms`（`-61.18%`），p95 `0.870249 → 0.309028 ms`（`-64.49%`）；N=256：查询数 `257 → 1`，输出 `256` 条，output SHA-256 `d0f28c2e0b21d45d7a2f5f138ae4465dcb92c8f6c735b51c90c8a122a78b0c42` 相同，median `2.895594 → 1.055964 ms`（`-63.53%`），p95 `3.393665 → 1.166783 ms`（`-65.63%`）。这是 SQLite read microbenchmark，不宣称端到端 wake latency。
+- 测试与真实验证：`pytest -q tests/wake_proactive` 为 `63 passed in 0.56s`；修改文件与直接 state oracle pyright `0 errors, 0 warnings, 0 informations`；migration append-only、`git diff --check`、production SLOC 与 committed-head Gate 均通过。
+- Gate：按 WORKFLOW 在本候选提交前以 base `perf/less-is-more-pr9-default-memory-summary-parse` 运行；本条不回填 Gate 产生的 source/plan digest，最终 committed-head 与 private 状态由交付报告记录。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 `wake_proactive.db`、`sessions.db`、schema/migration、正式 workspace、服务、网络、ACK、消息或外部发送；测试只使用一次性 temp SQLite。
+- 残余风险与回滚点：benchmark 仅覆盖 state read path；若未来允许同一 store 跨线程或在列表读取中插入 await，必须重新核对 snapshot/locking 语义，不恢复 N+1 作为隐式一致性机制。执行前备份为 `/tmp/less-is-more-pr10-finish-P4kmur`；提交后可用单提交 revert `perf(wake): eliminate context list N+1 query` 回滚。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
