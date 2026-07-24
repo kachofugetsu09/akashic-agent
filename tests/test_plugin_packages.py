@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -27,6 +28,39 @@ def test_repository_declares_two_proactive_packages() -> None:
         "wake_proactive_flow",
         "wake_drift_flow",
     )
+
+
+def test_manager_discover_reads_each_package_file_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    manager = PluginManager(
+        [root / "plugins"],
+        event_bus=EventBus(),
+        workspace=tmp_path / "workspace",
+        installed_cache_root=tmp_path / "cache",
+    )
+    original_read_text = Path.read_text
+    reads: list[Path] = []
+
+    def record_read(path: Path, *args: Any, **kwargs: Any) -> str:
+        if path.name == "package.toml":
+            reads.append(path)
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", record_read)
+
+    mods = manager.discover()
+
+    assert reads == [
+        root / "plugin_packages" / "default-proactive" / "package.toml",
+        root / "plugin_packages" / "wake-proactive" / "package.toml",
+    ]
+    assert [(mod["name"], mod["package_id"], mod["source_type"]) for mod in mods] == [
+        ("akasha", "", "builtin"),
+        ("default_memory", "", "builtin"),
+    ]
 
 
 def test_proactive_runtime_is_exclusive(tmp_path: Path) -> None:

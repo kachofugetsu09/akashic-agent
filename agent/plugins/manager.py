@@ -28,7 +28,10 @@ from agent.plugins.manifest import (
     write_package_manifest,
     write_plugin_manifest,
 )
-from agent.plugins.packages import discover_plugin_packages, enabled_plugin_packages
+from agent.plugins.packages import (
+    _select_enabled_plugin_packages,  # pyright: ignore[reportPrivateUsage]
+    discover_plugin_packages,
+)
 from agent.plugins.specs import (
     ManagedServiceSpec,
     McpServerSpec,
@@ -618,8 +621,8 @@ class PluginManager:
         project_root = _package_project_root(self._dirs)
         packages = discover_plugin_packages(project_root) if project_root else {}
         enabled_packages = (
-            enabled_plugin_packages(
-                project_root,
+            _select_enabled_plugin_packages(
+                packages,
                 load_package_manifest(_plugins_home(self._installed_cache_root)),
             )
             if project_root

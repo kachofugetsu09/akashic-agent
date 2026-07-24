@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -63,7 +64,16 @@ def enabled_plugin_packages(
     project_root: Path,
     entries: dict[str, bool],
 ) -> dict[str, PluginPackage]:
-    packages = discover_plugin_packages(project_root)
+    return _select_enabled_plugin_packages(
+        discover_plugin_packages(project_root),
+        entries,
+    )
+
+
+def _select_enabled_plugin_packages(
+    packages: Mapping[str, PluginPackage],
+    entries: Mapping[str, bool],
+) -> dict[str, PluginPackage]:
     enabled = {
         package_id: package
         for package_id, package in packages.items()
