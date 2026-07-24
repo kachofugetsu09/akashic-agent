@@ -806,6 +806,22 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、database rows/schema、服务、网络、外部发送、generation/snapshot/lease/event、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-backups/pr47/tools.py.base-652abf78`、`/tmp/akashic-less-is-more-backups/pr47/clean-code-ledger.md.base-652abf78`；回滚点为本 PR 单提交 revert。
 - 残余风险：无已知风险；若未来 installed cache root 需要携带非 canonical 解析、租约或诊断副作用，应由实际路径 owner 重新引入命名函数并建立独立语义合同，不能恢复纯转发别名。
 
+## 2026-07-23 less-is-more PR48：内联默认记忆配置渲染转发
+
+### `PR48` `refactor(bootstrap): inline default memory config renderer`
+
+- base：PR47 committed HEAD `1add2563551e5456ee499977dd683b8be8b036e9`，分支 `refactor/less-is-more-pr47-inline-plugin-cache-root`；本 PR 分支 `refactor/less-is-more-pr48-inline-memory-config-renderer`，唯一 writer 为本任务 agent。
+- allowed_paths：`bootstrap/setup_wizard.py` 的 `_render_default_memory_config` 唯一 caller 与私有 helper、本账本；`capability_owner`：setup wizard 默认记忆配置生成与 `_default_memory_local_config_path` 的 workspace→builtin plugin writable config 路径。未修改后者、`plugins/default_memory/config.py` canonical renderer、setup main、schema、manifest、迁移或正式 runtime workspace。
+- 历史与不可达性：`_render_default_memory_config` 仅把已导入的 `render_default_memory_config()` 原样转发；当前 AST、精确文本、动态 `getattr`/`setattr`/`import_module`、导出/re-export、测试、SDK、plugin manifest 与 `/home/huashen/.akashic-plugin/cache` 扫描确认只有 `run_setup_wizard` 一处静态调用。`_default_memory_local_config_path` 仍是 workspace 作用域路径 owner，不能随本 helper 一并删除。
+- 语义与错误边界：`change_type: refactor`，`semantic_delta: none`。caller 直接执行同一 module-global `render_default_memory_config()` lookup，调用次数、309-byte 默认 TOML 输出、异常对象/类型/参数/cause/context/suppress-context 与失败时机不变；差异仅为 traceback 少一个不可达私有 helper frame。未新增 `try/except`、fallback、默认值、动态兼容层或错误吞隐。
+- 性能与注释：删除一次启动期无状态 Python 转发跳转与函数对象；不宣称端到端启动收益。helper 无独立约束或 workaround 注释价值，保留 canonical renderer 与路径 owner 的现有注释/docstring，不改静态语义记录。
+- 范围与计量：PR47 base source-set digest `22a1c93f0d66dd6a6cd86640c953d5e9854fa73c184a6c0a0dc96a22ea3a14e4`，文件数 `378`，Python SLOC `77,312`，TypeScript/TSX SLOC `8,451`，`bootstrap` `6,295`，total production SLOC `85,763`；candidate source-set digest `12cd4dc6dbdf434bedc9fd95b1aac486aa8cee017836766c413b250d4a9faf32`，文件数 `378`，Python SLOC `77,310`，TypeScript/TSX SLOC `8,451`，`bootstrap` `6,293`，total `85,761`；production 净减少 `2` SLOC，系列相对 PR0 累计净减少 `1,779` SLOC。
+- parity：base/candidate 的 module-global monkeypatch 均只调用 renderer 一次并返回相同 sentinel；canonical renderer 默认输出均为 `309` bytes；同一 `RuntimeError` 注入均保留对象身份、类型、args，traceback 仅按预期移除私有 helper frame。
+- 测试与静态验证：`.venv/bin/pytest -q -W error tests/test_setup_wizard.py tests/test_setup_main.py tests/test_model_runtime.py tests/test_default_memory_plugin_config.py` 为 `49 passed in 1.99s`；相关源码与测试 `compileall` 通过；`bootstrap/setup_wizard.py` Pyright `0 errors, 3 warnings`（均为既有告警）；精确 consumer/AST/dynamic/export/plugin-cache scan 无 legacy symbol 残留；migration append-only 与 `git diff --check` 通过。未删除测试。
+- Gate：按 WORKFLOW 对 PR47 base 的 7 个公开场景均 `passed`；private contract 状态为 `pending_maintainer`，不把运行后的 report/source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改数据库、文件状态、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-pr48-backup-20260723213421/setup_wizard.py`、`/tmp/akashic-pr48-backup-20260723213421/clean-code-ledger.md`；回滚点为本 PR 单提交 revert。
+- 残余风险：无已知风险；若未来默认记忆 renderer 需要参数、审计副作用或独立错误转换，应由 canonical renderer owner 重新建立命名边界，不能恢复纯转发别名。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
