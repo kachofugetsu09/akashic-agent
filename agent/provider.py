@@ -898,43 +898,6 @@ def _iter_tool_call_deltas(delta: Any) -> list[dict[str, str | int]]:
     return result
 
 
-def _summarize_roles(messages: list[dict]) -> str:
-    roles = [str(msg.get("role", "?")) for msg in messages]
-    if len(roles) <= 12:
-        return ",".join(roles)
-    head = ",".join(roles[:6])
-    tail = ",".join(roles[-3:])
-    return f"{head},...,{tail}"
-
-
-def _summarize_message_shapes(messages: list[dict]) -> str:
-    shapes: list[str] = []
-    for msg in messages[:8]:
-        keys = sorted(k for k in msg.keys() if k != "content")
-        content = msg.get("content")
-        if isinstance(content, str):
-            content_kind = "str"
-        elif isinstance(content, list):
-            content_kind = "list"
-        elif content is None:
-            content_kind = "none"
-        else:
-            content_kind = type(content).__name__
-        role = str(msg.get("role", "?"))
-        extra = ",".join(keys) if keys else "-"
-        shapes.append(f"{role}[content={content_kind};keys={extra}]")
-    if len(messages) > 8:
-        shapes.append("...")
-    return " | ".join(shapes)
-
-
-def _summarize_tool_names(tools: list[dict]) -> str:
-    names = [str((tool.get("function") or {}).get("name", "?")) for tool in tools[:8]]
-    if len(tools) > 8:
-        names.append("...")
-    return ",".join(names)
-
-
 def _merge_leading_system_messages(messages: list[dict]) -> list[dict]:
     merged: list[dict] = []
     system_contents: list[str] = []

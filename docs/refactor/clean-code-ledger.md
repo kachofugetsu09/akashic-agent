@@ -117,6 +117,24 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - Gate：按 WORKFLOW 在本候选提交前运行 `python docker/debug/gate.py run --base refactor/less-is-more-pr2-telegram-dead-retry`；本条不回填运行产生的 `sourceDigest`/`planDigest`，避免账本自引用使报告失效，结果与 private 状态在交付报告记录。
 - 残余风险与回滚点：若未来出现外部反射依赖，应停止并补充真实迁移证据，不恢复兼容 helper；执行前备份为 `/tmp/less-is-more-pr3-finish-GxaGYq`，提交后可用单提交 revert `refactor(proactive): remove unreachable terminal helpers` 回滚。
 
+## 2026-07-23 less-is-more PR4：删除 provider 不可达诊断 helper
+
+### `PR4` `refactor(provider): remove dead diagnostics helpers`
+
+- base：PR3 commit `907eae1c2dd001c657cc04ef5b5e8aace169db80`，分支 `refactor/less-is-more-pr4-provider-dead-diagnostics`。
+- allowed_paths：`agent/provider.py`、`docs/refactor/clean-code-ledger.md`；`capability_owner`：provider diagnostics。
+- 范围：删除 `agent/provider.py` 中私有 `_summarize_roles`、`_summarize_message_shapes`、`_summarize_tool_names` 三个完整定义；未修改发送、payload snapshot、usage、stream、retry、close、异常分类、日志或测试。
+- 历史与调用链：三者由 `857a7969`（`minimax`）同时引入；`2e631977` 只调整 `_save_llm_payload_snapshot` 的快照 owner，未接线三者。全库静态、字符串、`getattr`/反射、export/re-export 搜索只见定义，零调用、零导出；provider 无 `__all__` 暴露，infra re-export 不含它们。
+- 语义与状态核对：删除的是不可达诊断定义，不改变静态语义、外部能力、错误传播/分类、日志、payload、usage、stream、retry、network 或 write set；当前 payload snapshot 仍由 `_save_llm_payload_snapshot` 拥有，其余 provider 路径保持原 owner。无迁移、持久化、数据库、workspace、服务或外部发送变化。
+- baseline：source-set digest `283be083ac6021a1249d772333dbaa44b26b6d0637d94b787f03cd09f2e6bbc8`，文件数 `385`，Python SLOC `78,795`，TypeScript/TSX SLOC `8,644`，total production SLOC `87,439`。
+- candidate：source-set digest `ad3078aab802bb5021f413348ced99899feaca742325bdaf666a22eece8f86fd`，文件数 `385`，Python SLOC `78,764`，TypeScript/TSX SLOC `8,644`，total production SLOC `87,408`。
+- 目标与实际 SLOC 变化：`agent` 生产 SLOC 从 `28,876` 降至 `28,845`，production 净减少 `31` 行（raw diff 为 37 deletions，含相邻空行）。
+- 性能影响：只减少 import 时创建的三个函数定义对象；三者不进入请求热路径，没有新增调用、分配、等待或 I/O，不宣称 benchmark 收益。
+- 测试与真实验证：项目 venv `/mnt/data/coding/akasic-agent/.venv/bin/pytest -q tests/test_more_support_modules.py` 为 `26 passed in 1.72s`；修改文件 Pyright `--level error`：base/candidate 均 `0 errors, 0 warnings`；默认级别：base `0 errors, 271 warnings`、candidate `0 errors, 246 warnings`，六类诊断计数均不增加；legacy symbol 精确搜索在本账本之外零残留；`git diff --check` 通过；`scripts/check_migrations_append_only.py --base refactor/less-is-more-pr3-proactive-dead-terminals` 通过。
+- Gate：按 WORKFLOW 在本候选提交前以 base `refactor/less-is-more-pr3-proactive-dead-terminals` 运行 preflight；本条不回填运行产生的 `sourceDigest`/`planDigest`，避免账本自引用使报告失效，最终 committed-head digest 与 private 状态由主 Agent 在提交后重跑并写入 PR。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、网络、外部发送或 Git refs。
+- 残余风险与回滚点：若未来出现外部反射依赖，应停止并补充真实迁移证据，不恢复兼容 helper；执行前备份为 `/tmp/less-is-more-pr4-finish-Jdazid`；提交后可用单提交 revert `refactor(provider): remove dead diagnostics helpers` 回滚。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
