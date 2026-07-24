@@ -63,6 +63,26 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none` / `PENDING`
 - 残余风险与回滚点：`PENDING`
 
+## 2026-07-22 less-is-more PR1：收敛 Memory2 embedding row 解码
+
+### `PR1` `refactor(memory2): deduplicate embedding row decoding`
+
+- 范围：`memory2/store.py` 中 `MemoryStore2.get_all_with_embedding` 与 `_get_embedding_rows_by_time_filter` 的 embedding DB row → `_EmbeddingRow` 解码；未修改测试文件。
+- `change_type`：`refactor`；`semantic_delta`：`none`。
+- 不变量与拥有层：`MemoryStore2` 继续拥有 SQL 行到 `_EmbeddingRow` 的解码、持久化 JSON/embedding 错误传播和内部 metadata 注入；查询 SQL 的 active/superseded、scope/time 过滤、vector dispatch/fallback、打分、写入、事务和 schema 仍由原有路径拥有。time-filter 路径仍先执行 `_is_memory_time_in_range`，范围外行不会进入 JSON 解码。
+- 实现：新增单一私有 `_decode_embedding_row` helper，合并原来重复的十列解包、embedding/extra JSON 解码、三项内部 metadata 注入和 tuple 构造；不增加动态 getattr、fallback 或新的抽象边界。
+- 错误语义：`_json_embedding` 与 `_json_object` 的异常类型及 `memory item <id> embedding/extra_json` context 文本保持不变；损坏数据继续 fail-fast。
+- baseline：source-set digest `9ade919edae8ca6fb7f0a7b778f367111f7a09b129b8d0dbab14ddede5e9f049`，文件数 `385`，Python SLOC `78,896`，memory2 SLOC `4,884`，total production SLOC `87,540`。
+- candidate：source-set digest `d3fae9c398b6a61e1a540af489726c41329926415f46b3a625e4911e7ce55a4e`，文件数 `385`，Python SLOC `78,867`，memory2 SLOC `4,855`，total production SLOC `87,511`。
+- 目标与实际 SLOC 变化：production 净减少 `29` 行；raw diff 为 `46 insertions(+), 67 deletions(-)`。未达到净减少则停止的条件已满足。
+- Redis 式 God file 判断：保留 `memory2/store.py`；解码 helper 与 SQL 查询、范围过滤和存储错误 owner 同属 `MemoryStore2`，拆到其他文件会增加跨文件跳转且没有新的 owner 边界。
+- 测试与真实验证：项目 venv 的 Memory2/recall/检索/持久化相关选择共 `73 passed`；覆盖两个 batch reuse、extra_json corruption、embedding corruption、time range、scope、候选上限、共享连接写入、consolidation idempotency 和 retrieval baseline；Pyright（正确 venvPath）为 `0 errors, 64 warnings`，无 helper 新诊断；`python scripts/measure_production_sloc.py --json` 与上述候选计量一致；`git diff --check` 通过。系统 Python 因缺少 `apscheduler` 无法收集测试，未将该环境失败计为代码失败。
+- 性能回放：同一临时 SQLite workload（2,000 rows、`vec_dim=2`、15 次预热、60 轮、CPU 固定、3 个交错 batch）分别覆盖 `get_all_with_embedding`、`_get_embedding_rows_by_time_filter` 和公开 `vector_search(time_start/time_end)`。candidate/base 中位数相对变化分别为 `+0.38%`（各 batch `+0.29%～+1.30%`）、`+0.64%`（`+0.08%～+0.84%`）和 `-0.08%`（`-0.17%～+0.55%`）；各场景 p10/p90 与 stdev 重叠，无稳定且实质性回退。
+- 测试调整：无；现有四个点名回归和直接相关 MemoryStore 测试已覆盖本次调用路径，未修改受保护 semantic tests。
+- Gate：Luna 交接前的候选 Gate 为 7 个公开场景全部通过、`privateGateRequired=true`，但其后发生了本段证据对账，因此只作为 preflight。最终 Gate 必须在本条目固化并提交后绑定 committed HEAD 重跑；为避免把运行后生成的 `sourceDigest` 回填到源文件、再次使报告失效，最终 report path、digest 和 private Gate 状态只记录在对应 PR 描述与 CI，不回写本账本。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、schema、数据库、正式 workspace、服务、远端数据或 Git refs。
+- 残余风险与回滚点：private contract 仍需维护者按最终 plan digest 完成或明确状态；合并前可把 stacked 分支恢复到基线 `c294db8c20a3766baa5cb069bb62caa265ff06ac`，合并后使用单提交 revert。执行前备份为 `/tmp/less-is-more-pr1-finish-OK1QvV`，主审对账前备份为 `/tmp/less-is-more-pr1-main-review-VDPIcO`。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
