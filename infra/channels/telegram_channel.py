@@ -691,21 +691,6 @@ class TelegramChannel:
             return f"{streamed}\n\n{final}"
         return streamed or final
 
-    async def _send_final_thinking(
-        self,
-        chat_id: int,
-        original_chat_id: str,
-        thinking: str,
-    ) -> None:
-        if not thinking:
-            return
-        await send_thinking_block(
-            self._app.bot,
-            original_chat_id,
-            thinking,
-            self._telegram_outbound_limiter,
-        )
-
     async def _send_final_tool_snapshot(
         self,
         session_key: str,
@@ -776,7 +761,7 @@ class TelegramChannel:
     async def _on_response(self, msg: OutboundMessage) -> None:
         preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
         logger.info(f"[telegram] 发送回复  chat_id={msg.chat_id}  内容: {preview!r}")
-        cid = int(self._resolve_chat_id(msg.chat_id))
+        _ = int(self._resolve_chat_id(msg.chat_id))
         session_key = f"{self._channel}:{msg.chat_id}"
         had_live = self._has_live_messages(session_key)
         has_live_tasks = bool(self._live_tasks_by_session.get(session_key))
@@ -815,7 +800,12 @@ class TelegramChannel:
                     self._telegram_outbound_limiter,
                 )
         if final_thinking and not had_live:
-            await self._send_final_thinking(cid, msg.chat_id, final_thinking)
+            await send_thinking_block(
+                self._app.bot,
+                msg.chat_id,
+                final_thinking,
+                self._telegram_outbound_limiter,
+            )
         self._reply_buffers.pop(session_key, None)
         self._thinking_buffers.pop(session_key, None)
         _ = self._thinking_live_next_at.pop(session_key, None)

@@ -635,6 +635,21 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-backups/pr35-telegram_channel.py.bak-20260723`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 与外部插件 cache 可能继续保留同名 helper，但当前 canonical Telegram source 没有 consumer；若未来需要全局 drain 语义，应在各 channel 自己的 lifecycle owner 中建立明确合同，不从 Telegram private helper 恢复跨 channel 兼容层。
 
+## 2026-07-23 less-is-more PR36：内联 Telegram final thinking 发送
+
+### `PR36` `refactor(telegram): inline final thinking send`
+
+- base：PR35 committed HEAD `7c06599bb757a361228349416e1aeab0c77e935a`，分支 `refactor/less-is-more-pr36-inline-final-thinking`。
+- allowed_paths：`infra/channels/telegram_channel.py`（删除 `_send_final_thinking`，将其唯一 caller 的 guard 与 `send_thinking_block` 原位内联）、本账本；`capability_owner`：`TelegramChannel._on_response` final thinking 出站阶段。未修改 `send_thinking_block`、limiter、reply/stream/live-edit/error 路径、public API、测试、schema、manifest、迁移或正式 workspace。
+- 历史与不可达性：PR35 基线的 CodeGraph、AST、精确源码/测试/SDK/plugin manifest、动态 `getattr`/`setattr`/`import_module`/导出/反射与 `/home/huashen/.akashic-plugin/cache` 扫描确认 `_send_final_thinking` 只有一个私有定义和 `_on_response` 唯一 caller；候选源码与测试中该 symbol 为零残留。helper 的 `chat_id` 参数只被接收、不参与发送；内联保留顶部 `_resolve_chat_id` 的 fail-fast 校验，并继续将原始 `msg.chat_id` 传给 `send_thinking_block`。
+- 语义与错误边界：`change_type: refactor`，`semantic_delta: none`。`final_thinking` 的 truthy guard、`send_thinking_block` 的 bot/chat/text/limiter 参数顺序、`had_live` 分支与正文/工具快照/stream/media 顺序保持不变；未知 alias 仍在 `_resolve_chat_id` 边界抛出原 `ValueError`，发送 helper 抛出的异常在 base/candidate 均原样向上传播（同一 RuntimeError sentinel 回归均 `1 passed`）。没有新增 catch、fallback、默认值、兼容层或 mock success。
+- 范围与计量：删除 helper 17 个 production SLOC，内联 6 行并保留一行 canonical chat-id fail-fast 校验；PR35 base source-set digest `14ce051648906cd87d04ec3328acfb6c110206e58afaef3cf31f89e690f3673d`，文件数 `378`，Python SLOC `77,357`，`infra` SLOC `11,294`，total production SLOC `85,808`；candidate source-set digest `b2f5c29d4452a05b78211047a5cc137538547e0296e7660210f0eac5491b672b`，文件数 `378`，Python SLOC `77,348`，`infra` SLOC `11,285`，total production SLOC `85,799`；production 净减少 `9` SLOC（代码 raw diff `17 deletions`/`7 insertions`，另加 ledger `15 insertions`）。
+- 性能与调用轨迹：删除一次不可达 helper coroutine 调用；不移除既有 chat-id 解析、校验或发送参数。临时 oracle 对 `thinking="trace"` 与空 thinking 两次独立 `_on_response` 调用逐次记录 resolver：base/candidate 每次恰好一次；合并输出为 `['123', '123']` 只是两种输入各一次的串联结果。两者 thinking send 均为 `[('123', 'trace', limiter)]`，空 thinking 均不发送 thinking block。该回放只证明调用序列与发送参数，不宣称端到端 Telegram latency 收益。
+- 测试与静态验证：Telegram channel/client、channel host/base、Telegram utility、mobile realtime channel/gateway 定向回归 `122 passed in 4.21s`；base/candidate 调用轨迹和异常传播临时 oracle 各 `1 passed`；相关源码与测试 `compileall` 通过；候选 pyright `0 errors, 67 warnings`（`telegram_channel.py` 51、`telegram_utils.py` 16，均为 PR35 基线既有诊断）；exact/AST/dynamic/export/plugin-cache scan、migration append-only 与 `git diff --check` 通过。未修改正式 runtime workspace。
+- Gate：已在 committed HEAD 对 PR35 base `7c06599bb757a361228349416e1aeab0c77e935a` 运行公开 Gate并通过；private contract 状态为 `pending_maintainer`，不把 source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-pr36-telegram_channel.py.bak-20260723`、`/tmp/akashic-less-is-more-pr36-clean-code-ledger.md.bak-20260723`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 或外部未跟踪副本可能保留 helper 文本，但当前 canonical source、测试、动态调用面与 enabled plugin cache 没有 consumer；若未来需要独立 final-thinking policy，应在 `_on_response` 或 `send_thinking_block` owner 中重新设计显式合同，不恢复无调用 wrapper。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
