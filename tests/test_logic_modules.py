@@ -23,7 +23,6 @@ from session.manager import (
     Session,
     SessionManager,
     _TOOL_RESULT_CHAR_BUDGET,
-    _safe_filename,
 )
 from session.store import SessionStore
 
@@ -128,8 +127,6 @@ async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
     assert history[1] == {"role": "assistant", "content": "[主动推送] reply"}
     assert history[2]["role"] == "user"
     assert is_context_frame(str(history[2]["content"]))
-    assert _safe_filename("telegram:1") == "telegram_1"
-
     manager = SessionManager(tmp_path)
     manager.save(session)
     loaded = manager.get_or_create("telegram:1")

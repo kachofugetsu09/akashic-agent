@@ -2,7 +2,6 @@ import asyncio
 import base64
 import json
 import mimetypes
-import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -149,11 +148,6 @@ def _align_to_user_boundary(
         ):
             return messages[i:]
     return []
-
-
-def _safe_filename(key: str) -> str:
-    """Convert a session key to a safe filename."""
-    return re.sub(r"[^\w\-]", "_", key)
 
 
 @dataclass
