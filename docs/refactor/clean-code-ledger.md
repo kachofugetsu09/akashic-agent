@@ -468,6 +468,22 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akasic-agent-pr24-session-manager.py.bak-20260723`、`/tmp/akasic-agent-pr24-test-logic-modules.py.bak-20260723`；回滚点为本 PR 单提交 revert。
 - 残余风险：历史 checkpoint 与外部 workspace subagent-run 可能保留旧 helper 文本，但当前 Git source、708d6f25 后的迁移路径与外部 plugin cache 没有 consumer；若未来恢复 JSONL session storage，应在持久化 owner 中重新设计 key/path 合同并补独立迁移，不复活 dead helper。
 
+## 2026-07-23 less-is-more PR25：删除迁移后遗留的 BeforeReasoning lifecycle event
+
+### `PR25` `refactor(lifecycle): remove dead BeforeReasoning event`
+
+- base：PR24 committed HEAD `565bbe66a27914996a384c7c4374df3214b55075`，分支 `refactor/less-is-more-pr25-remove-dead-before-reasoning-event`。
+- allowed_paths：`bus/events_lifecycle.py`（删除孤儿 `BeforeReasoning` dataclass 与其专属 `_empty_skill_names` factory）、`docs/refactor/clean-code-ledger.md`；`capability_owner`：agent lifecycle 的 `BeforeReasoningCtx` phase；未修改 `agent.lifecycle.types.BeforeReasoningCtx`、BeforeReasoning phase/module chain、EventBus、插件事件映射、其他 lifecycle events、schema、manifest、runtime 或 tests。
+- 历史与不可达性：`BeforeReasoning` 是旧被动 turn 事件；提交 `6759d288` 将被动 turn 迁移到 `agent.lifecycle.types.BeforeReasoningCtx` 与 phase chain，并从 `passive_turn.py` 移除旧事件 import/emit。当前 committed source 的 CodeGraph、AST、精确字符串、动态 import/getattr/export/reflection、tests、SDK、plugin、manifest、eval/script 与 `/home/huashen/.akashic-plugin/cache` 扫描无 `bus.events_lifecycle.BeforeReasoning` consumer；现有同名文本均指向 active `BeforeReasoningCtx` phase 或错误消息，不是待删 dataclass。
+- 语义与错误边界：旧 dataclass 只承载 session/channel/chat/content/skills/retrieved block，已没有事件总线 owner、生产发布者或订阅者；active `BeforeReasoningCtx` 继续由 `BeforeReasoningPhase` 构造、允许插件修改并经 `EventBus` 发送。删除不改变 active phase 的字段、插件回调、abort 传播、prompt warmup、工具上下文同步、生命周期顺序或错误暴露。`semantic_delta: none`，不新增 absence test、fallback、兼容层或 mock success 路径。
+- 范围与测试：删除 `_empty_skill_names` 4 个物理行与 `BeforeReasoning` dataclass 10 个物理行；没有 dedicated test 或仅针对该旧类的 import，保留所有 `BeforeReasoningCtx` phase、agent-core、plugin-manager 和 internal event 回归。
+- 计量：删除前 source-set digest `a62e24b567959b49a7d8cd412c3555c8996ccbeeb156e1d61d5bf5ed1ed34ab1`，文件数 `378`，Python SLOC `77,549`，`bus` SLOC `926`，total production SLOC `86,000`；删除后 source-set digest `65d0d478690fd3457af8847887e4560392256a35bd70d5eb60be0527fb9e21c4`，文件数 `378`，Python SLOC `77,539`，`bus` SLOC `916`，total production SLOC `85,990`；production 净减少 `10` SLOC。
+- 性能与状态：模块导入时不再创建一个不可达 dataclass 类型与其 list factory；无新增调用、分配、等待、I/O、持久化、网络、事件、write set 或 schema 变化，不宣称端到端性能收益。
+- 测试与静态验证：项目 venv `pytest -q -W error tests/test_internal_events.py tests/test_more_support_modules.py tests/test_support_modules.py tests/test_lifecycle_phase.py tests/test_lifecycle_phases.py tests/test_agent_core_p5_agent_core.py tests/test_plugin_manager.py` 为 `173 passed in 5.23s`；相关 bus/agent lifecycle/core/tests `compileall` 通过；pyright 为 `0 errors, 144 warnings`（均为 agent/passive 与 lifecycle 的既有动态类型告警）；`tests/test_production_sloc.py tests/semantic/test_change_gate.py` 为 `19 passed`；migration append-only、exact consumer/dynamic/export/plugin-cache scan、AST parse、production SLOC 与 `git diff --check` 通过。
+- Gate：按 WORKFLOW 在 committed HEAD 对 PR24 base `565bbe66a27914996a384c7c4374df3214b55075` 运行公开 Gate；private required 状态记录为 `pending_maintainer`，不把运行后的 source/plan digest 回填到账本以避免 source 自引用。
+- 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、数据库、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event、schema、manifest 或 Git refs。执行前备份：`/tmp/akashic-less-is-more-pr25-before-reasoning-events-lifecycle.py.bak`；回滚点为本 PR 单提交 revert。
+- 残余风险：历史 checkpoint 或外部 workspace subagent-run 可能保留旧事件文本，但当前 Git source、6759d288 后的 active lifecycle 迁移路径与外部 plugin cache 没有 consumer；若未来恢复旧事件总线契约，应在 active lifecycle owner 中重新设计并补独立迁移，不恢复该 dead dataclass。
+
 ## 基线
 
 - 基准提交：`3b456e7b`（PR #109 合并后）
