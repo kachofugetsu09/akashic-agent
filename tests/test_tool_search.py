@@ -22,8 +22,8 @@ import pytest
 from agent.mcp.client import McpToolInfo
 from agent.mcp.tool import McpToolWrapper
 from agent.tools.base import Tool
-from agent.tools.registry import ToolRegistry
-from agent.tools.search_backend import _default_normalize
+from agent.tools.registry import ToolDocument, ToolRegistry
+from agent.tools.search_backend import KeywordSearchBackend, _default_normalize
 from agent.tools.tool_search import ToolSearchTool
 
 # ── 辅助工具桩 ────────────────────────────────────────────────────────────────
@@ -201,6 +201,29 @@ async def test_registry_keeps_real_description_parameter() -> None:
     )
 
     assert result == "业务描述"
+
+
+def test_search_reads_live_tool_document_fields_after_mutation() -> None:
+    backend = KeywordSearchBackend()
+    document = ToolDocument(
+        name="mutable_tool",
+        description="legacyalpha",
+        risk="read-only",
+        always_on=False,
+        search_hint=None,
+        source_type="builtin",
+        source_name="",
+    )
+    backend.add(document)
+
+    assert backend.search("legacyalpha")[0]["name"] == "mutable_tool"
+
+    document.description = "freshbeta"
+    document.search_hint = "aliasomega"
+
+    assert backend.search("legacyalpha") == []
+    assert backend.search("freshbeta")[0]["summary"] == "freshbeta"
+    assert backend.search("aliasomega")[0]["why_matched"] == ["提示:aliasomega"]
 
 
 # ── _default_normalize 单元测试 ───────────────────────────────────────────────
