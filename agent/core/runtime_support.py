@@ -5,7 +5,7 @@ import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from agent.lifecycle.types import PromptRenderInput, PromptRenderResult
 
@@ -111,7 +111,7 @@ class TurnRunResult:
     tool_chain: list[dict] = field(default_factory=list)
     thinking: str | None = None
     streamed: bool = False
-    context_retry: dict[str, object] = field(default_factory=dict)
+    context_retry: dict[str, Any] = field(default_factory=dict)
     non_lru_tools: set[str] = field(default_factory=set)
 
 

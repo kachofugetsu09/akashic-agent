@@ -120,7 +120,7 @@ class TestVisibilityGuard:
         → 不执行，返回 select: 引导错误，模型收到后给出最终回复。"""
         reg = _base_registry()
         hidden = _DummyTool("hidden_tool")
-        reg.register(hidden)  # 不设 always_on → deferred
+        reg.register(hidden, risk="read-only")  # 不设 always_on → deferred
 
         provider = _FakeProvider(
             [
@@ -148,7 +148,7 @@ class TestVisibilityGuard:
         """tool_search_enabled=False 时全量暴露，hidden tool 直接可用。"""
         reg = _base_registry()
         hidden = _DummyTool("hidden_tool")
-        reg.register(hidden)
+        reg.register(hidden, risk="read-only")
 
         provider = _FakeProvider(
             [
@@ -168,7 +168,7 @@ class TestVisibilityGuard:
         """调用 tool_search 后，返回结果里的工具名加入 visible_names。"""
         reg = _base_registry()
         target = _DummyTool("target_tool")
-        reg.register(target)
+        reg.register(target, risk="read-only")
 
         # tool_search 直接返回匹配结果（模拟 registry.search 找到了 target_tool）
         tool_search_result = json.dumps(
@@ -214,7 +214,7 @@ class TestVisibilityGuard:
         """tool_search_enabled=True 时，第一次 LLM 调用只传 always_on 工具 schema。"""
         reg = _base_registry()
         hidden = _DummyTool("hidden_tool")
-        reg.register(hidden)
+        reg.register(hidden, risk="read-only")
 
         schemas_seen: list[list[str]] = []
 
@@ -245,7 +245,7 @@ class TestLRUCache:
         reg = _base_registry()
         # 注册 10 个非核心工具
         for i in range(10):
-            reg.register(_DummyTool(f"tool_{i}"))
+            reg.register(_DummyTool(f"tool_{i}"), risk="read-only")
         return _make_loop(tmp_path, cast(Any, _FakeProvider([])), reg)
 
     def test_lru_capacity_5(self, tmp_path):
@@ -289,8 +289,8 @@ class TestLRUCache:
     def test_always_on_tools_not_in_lru(self, tmp_path):
         """always_on 工具不应写入 LRU。"""
         reg = _base_registry()
-        reg.register(_DummyTool("always_tool"), always_on=True)
-        reg.register(_DummyTool("normal_tool"))
+        reg.register(_DummyTool("always_tool"), always_on=True, risk="read-only")
+        reg.register(_DummyTool("normal_tool"), risk="read-only")
         loop = _make_loop(tmp_path, cast(Any, _FakeProvider([])), reg)
 
         loop._tool_discovery.update("s1", ["always_tool", "tool_search", "normal_tool"], loop.tools.get_always_on_names())
@@ -304,7 +304,7 @@ class TestLRUCache:
         """上一请求写入 LRU 的工具，下一请求应出现在 preloaded 中。"""
         reg = _base_registry()
         target = _DummyTool("remembered_tool")
-        reg.register(target)
+        reg.register(target, risk="read-only")
 
         # 第一请求：调用 remembered_tool（触发 auto-unlock + LRU 写入）
         provider1 = _FakeProvider(

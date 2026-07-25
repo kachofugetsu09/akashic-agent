@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -16,7 +18,7 @@ from agent.task_plan.store import TaskPlanStore
 
 
 @pytest.fixture
-def execution_service(tmp_path: pytest.TempPathFactory) -> TaskExecutionService:
+def execution_service(tmp_path: Path) -> TaskExecutionService:
     store = TaskPlanStore(tmp_path / "task_execution.db")
     return TaskExecutionService(
         store=store,
@@ -339,7 +341,7 @@ def test_record_event_rejects_untrusted_mapping(execution_service: TaskExecution
         execution_service.record_tool_event(  # type: ignore[arg-type]
             session_key="cli:s1",
             attempt_id=claimed.attempt.attempt_id,
-            event={"event_type": "tool_finished"},
+            event=cast(Any, {"event_type": "tool_finished"}),
         )
 
 
@@ -446,7 +448,7 @@ def test_active_attempt_rejects_manual_update_completion_cancellation_and_replac
 
 
 def test_start_and_event_mutations_reject_expired_or_foreign_owner(
-    tmp_path: pytest.TempPathFactory,
+    tmp_path: Path,
 ) -> None:
     now = datetime(2030, 7, 15, tzinfo=UTC)
     store = TaskPlanStore(tmp_path / "cas.db")

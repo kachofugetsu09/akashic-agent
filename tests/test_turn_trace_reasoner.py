@@ -43,12 +43,16 @@ def _make_reasoner(provider: _Provider, observe_db) -> DefaultReasoner:
     tools = ToolRegistry()
     tools.set_context(session_key="cli:1", _session_key="cli:1")
     tools.register(ToolSearchTool(tools), always_on=True, risk="read-only")
-    tools.register(_RecordingTool("search_docs"))
-    tools.register(_RecordingTool("fetch_doc_chunk"))
-    tools.register(_RecordingTool("read_file"), always_on=True)
-    tools.register(_RecordingTool("shell"), always_on=True)
-    tools.register(_RecordingTool("list_dir"), always_on=True)
-    tools.register(InspectTurnTraceTool(TurnTraceQueryService(observe_db)), always_on=False)
+    tools.register(_RecordingTool("search_docs"), risk="read-only")
+    tools.register(_RecordingTool("fetch_doc_chunk"), risk="read-only")
+    tools.register(_RecordingTool("read_file"), always_on=True, risk="read-only")
+    tools.register(_RecordingTool("shell"), always_on=True, risk="read-only")
+    tools.register(_RecordingTool("list_dir"), always_on=True, risk="read-only")
+    tools.register(
+        InspectTurnTraceTool(TurnTraceQueryService(observe_db)),
+        always_on=False,
+        risk="read-only",
+    )
 
     def _render(request: ContextRequest, **_kwargs: object) -> ContextRenderResult:
         return ContextRenderResult(
@@ -135,6 +139,7 @@ async def test_tool_history_answer_uses_structured_turn_trace(tmp_path) -> None:
     assert "inspect_turn_trace" in result.tools_used
     assert "search_docs" not in result.tools_used
     assert "fetch_doc_chunk" not in result.tools_used
+    assert result.reply is not None
     assert "read_file x3" in result.reply
     tool_call = result.tool_chain[0]["calls"][0]
     assert tool_call["name"] == "inspect_turn_trace"

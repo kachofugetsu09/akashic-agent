@@ -3,13 +3,17 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
 
 from agent.policies.tool_approval import canonical_args_hash, summarize_arguments
-from agent.policies.tool_approval_decision import ToolApprovalDecision
+from agent.policies.tool_approval_decision import (
+    ApprovalDecisionAction,
+    ToolApprovalDecision,
+)
 
 ApprovalStatus = Literal[
     "pending",
@@ -71,7 +75,7 @@ class ToolApprovalRequestRecord:
     approval_scope: str
     policy_reason: str
     args_hash: str
-    args_summary: dict[str, object] = field(default_factory=dict)
+    args_summary: dict[str, Any] = field(default_factory=dict)
     status: ApprovalStatus = "pending"
     requested_by: str = "model"
     decided_by: str = ""
@@ -102,7 +106,7 @@ class ToolApprovalStore:
         risk: str,
         approval_scope: str,
         policy_reason: str,
-        arguments: dict[str, object],
+        arguments: Mapping[str, object],
         now: datetime,
         ttl: timedelta,
     ) -> ToolApprovalRequestRecord:
@@ -648,7 +652,7 @@ def _decision_from_record(
     executed_at: str = "",
 ) -> ToolApprovalDecision:
     return ToolApprovalDecision(
-        action=action or record.status,
+        action=cast(ApprovalDecisionAction, action or record.status),
         reason=reason,
         approval_request_id=record.approval_request_id,
         request_id=record.request_id,

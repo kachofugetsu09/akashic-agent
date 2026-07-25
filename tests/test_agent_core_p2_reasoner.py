@@ -87,7 +87,7 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
         ]
     )
     tools = ToolRegistry()
-    tools.register(_DummyTool(), always_on=True)
+    tools.register(_DummyTool(), always_on=True, risk="read-only")
     reasoner = DefaultReasoner(
         llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
@@ -210,7 +210,7 @@ def test_default_reasoner_zero_max_iterations_is_unlimited():
     )
     tool = _DummyTool()
     tools = ToolRegistry()
-    tools.register(tool, always_on=True)
+    tools.register(tool, always_on=True, risk="read-only")
     reasoner = DefaultReasoner(
         llm=cast(
             Any,
@@ -241,7 +241,7 @@ def test_default_reasoner_stops_on_context_pressure_after_tool_batch(monkeypatch
         ]
     )
     tools = ToolRegistry()
-    tools.register(_InflateTool(), always_on=True)
+    tools.register(_InflateTool(), always_on=True, risk="read-only")
     reasoner = DefaultReasoner(
         llm=cast(
             Any,
@@ -285,7 +285,7 @@ def test_default_reasoner_context_pressure_policy_lives_in_after_step_plugin(mon
         ]
     )
     tools = ToolRegistry()
-    tools.register(_InflateTool(), always_on=True)
+    tools.register(_InflateTool(), always_on=True, risk="read-only")
     reasoner = DefaultReasoner(
         llm=cast(
             Any,
@@ -321,7 +321,7 @@ def test_default_reasoner_observes_tool_lifecycle_events():
     )
     tools = ToolRegistry()
     tool = _DummyTool()
-    tools.register(tool, always_on=True)
+    tools.register(tool, always_on=True, risk="read-only")
     event_bus = EventBus()
     order: list[str] = []
     started_events: list[ToolCallStarted] = []
@@ -393,7 +393,7 @@ def test_default_reasoner_observes_blocked_tool_lifecycle_events():
     tools = ToolRegistry()
     tools.register(ToolSearchTool(tools), always_on=True, risk="read-only")
     hidden = _DummyTool("hidden_tool")
-    tools.register(hidden)
+    tools.register(hidden, risk="read-only")
     event_bus = EventBus()
     order: list[str] = []
     started_events: list[ToolCallStarted] = []
@@ -451,7 +451,7 @@ def test_default_reasoner_unlocks_tool_search_visibility():
     tools = ToolRegistry()
     tools.register(ToolSearchTool(tools), always_on=True, risk="read-only")
     hidden = _DummyTool("hidden_tool")
-    tools.register(hidden)
+    tools.register(hidden, risk="read-only")
     reasoner = DefaultReasoner(
         llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
@@ -482,7 +482,7 @@ def test_default_reasoner_preflight_includes_deferred_tool_names():
         ]
     )
     tools = ToolRegistry()
-    tools.register(_DummyTool(), always_on=True)
+    tools.register(_DummyTool(), always_on=True, risk="read-only")
     tools.register(
         _DummyTool("mcp_github__list_commits"),
         source_type="mcp",
@@ -531,7 +531,7 @@ def test_default_reasoner_deferred_tool_direct_call_requires_select():
         ]
     )
     tools = ToolRegistry()
-    tools.register(_DummyTool(), always_on=True)
+    tools.register(_DummyTool(), always_on=True, risk="read-only")
     tools.register(_DummyTool("schedule"))
     reasoner = DefaultReasoner(
         llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
@@ -557,7 +557,7 @@ def test_default_reasoner_deferred_tool_direct_call_requires_select():
 def test_default_reasoner_preloaded_tool_not_in_deferred_list():
     provider = _Provider([LLMResponse(content="done", tool_calls=[])])
     tools = ToolRegistry()
-    tools.register(_DummyTool(), always_on=True)
+    tools.register(_DummyTool(), always_on=True, risk="read-only")
     tools.register(_DummyTool("schedule"))
     reasoner = DefaultReasoner(
         llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
@@ -582,7 +582,7 @@ def test_default_reasoner_preloaded_tool_not_in_deferred_list():
 def test_default_reasoner_run_turn_uses_context_render():
     provider = _Provider([LLMResponse(content="done", tool_calls=[])])
     tools = ToolRegistry()
-    tools.register(_DummyTool(), always_on=True)
+    tools.register(_DummyTool(), always_on=True, risk="read-only")
     reasoner = DefaultReasoner(
         llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
@@ -622,7 +622,7 @@ def test_default_reasoner_run_turn_uses_context_render():
 def test_default_reasoner_run_turn_reports_llm_timeout():
     provider = _TimeoutProvider()
     tools = ToolRegistry()
-    tools.register(_DummyTool(), always_on=True)
+    tools.register(_DummyTool(), always_on=True, risk="read-only")
     reasoner = DefaultReasoner(
         llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
@@ -665,7 +665,7 @@ def test_empty_content_with_thinking_triggers_retry_and_succeeds():
         ]
     )
     tools = ToolRegistry()
-    tools.register(_DummyTool(), always_on=True)
+    tools.register(_DummyTool(), always_on=True, risk="read-only")
     reasoner = DefaultReasoner(
         llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
@@ -692,7 +692,7 @@ def test_empty_content_with_thinking_retry_still_empty_falls_back():
         ]
     )
     tools = ToolRegistry()
-    tools.register(_DummyTool(), always_on=True)
+    tools.register(_DummyTool(), always_on=True, risk="read-only")
     reasoner = DefaultReasoner(
         llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
@@ -716,7 +716,7 @@ def test_empty_content_without_thinking_no_retry():
         ]
     )
     tools = ToolRegistry()
-    tools.register(_DummyTool(), always_on=True)
+    tools.register(_DummyTool(), always_on=True, risk="read-only")
     reasoner = DefaultReasoner(
         llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),

@@ -30,7 +30,7 @@ def canonical_args_hash(arguments: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def summarize_arguments(arguments: Mapping[str, Any]) -> dict[str, object]:
+def summarize_arguments(arguments: Mapping[str, Any]) -> dict[str, Any]:
     return {
         str(key): summarize_argument_value(str(key), value)
         for key, value in sorted(arguments.items(), key=lambda item: str(item[0]))
@@ -82,10 +82,10 @@ def build_approval_payload(
     approval_scope: str,
     approval_request_id: str = "",
     expires_at: str = "",
-) -> dict[str, object]:
+) -> dict[str, Any]:
     args_hash = canonical_args_hash(arguments)
     args_summary = summarize_arguments(arguments)
-    approval_request: dict[str, object] = {
+    approval_request: dict[str, Any] = {
         "tool_name": tool_name,
         "risk": risk,
         "reason": reason,

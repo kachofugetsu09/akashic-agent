@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from agent.policies.resource_policy import (
     ResourcePolicyContext,
@@ -69,7 +69,7 @@ class ToolInvocationContext:
     user_text: str = ""
     task_execution_active: bool = False
     task_execution_phase: ToolInvocationTaskExecutionPhase = ""
-    metadata: Mapping[str, object] = field(default_factory=dict)
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.source not in _SOURCES:
@@ -87,7 +87,7 @@ class ToolInvocationDecision:
     reason: str
     risk: str
     policy_name: str = "ToolInvocationPolicyEngine"
-    metadata: Mapping[str, object] = field(default_factory=dict)
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.action not in _ACTIONS:
@@ -98,7 +98,7 @@ class ToolInvocationDecision:
     def allowed(self) -> bool:
         return self.action == "allow"
 
-    def to_trace_metadata(self) -> dict[str, object]:
+    def to_trace_metadata(self) -> dict[str, Any]:
         return {
             "action": self.action,
             "reason": self.reason,
@@ -149,7 +149,7 @@ class ToolInvocationPolicyEngine:
         )
         if resource_decision.action in {"deny", "defer"}:
             return ToolInvocationDecision(
-                action=resource_decision.action,
+                action=cast(ToolInvocationAction, resource_decision.action),
                 reason=resource_decision.reason,
                 risk=risk,
                 policy_name=self.policy_name,
@@ -182,7 +182,7 @@ class ToolInvocationPolicyEngine:
         )
         if strategy_decision.effective:
             return ToolInvocationDecision(
-                action=strategy_decision.action,
+                action=cast(ToolInvocationAction, strategy_decision.action),
                 reason=strategy_decision.reason,
                 risk=risk,
                 policy_name=self.policy_name,

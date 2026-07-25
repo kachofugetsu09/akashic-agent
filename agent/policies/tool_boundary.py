@@ -183,7 +183,7 @@ class TurnToolBoundaryManager:
         updated_plan = self._access.observe_tool_result(
             previous_plan,
             tool_name,
-            result_text,
+            normalize_tool_result(result_text).preview(),
             execution_status=execution_status,
         )
         context.access_plan = updated_plan
@@ -458,7 +458,7 @@ class TurnToolBoundaryManager:
             return None
         return context.pending_hints.pop(0)
 
-    def trace(self, context: ToolBoundaryContext) -> dict[str, object]:
+    def trace(self, context: ToolBoundaryContext) -> dict[str, Any]:
         contract = context.task_plan_contract
         context_consumed_count = 0
         if contract is not None and contract.context_requirement != "none":

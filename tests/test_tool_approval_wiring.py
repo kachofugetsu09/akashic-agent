@@ -144,7 +144,7 @@ async def test_reasoner_untrusted_model_approval_id_does_not_resume(
     assert pending[0].approval_request_id != original.approval_request_id
 
 
-def _last_tool_payload(provider: _Provider) -> dict[str, object]:
+def _last_tool_payload(provider: _Provider) -> dict[str, Any]:
     messages = provider.calls[-1]["messages"]
     tool_messages = [
         message for message in messages if message.get("role") == "tool"

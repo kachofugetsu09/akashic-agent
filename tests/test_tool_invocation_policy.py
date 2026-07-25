@@ -16,7 +16,7 @@ def test_context_normalizes_capabilities_arguments_and_metadata() -> None:
         tool_name="read_file",
         arguments={"path": "README.md"},
         registry_risk="read-only",
-        capabilities={"filesystem.read"},
+        capabilities=frozenset({"filesystem.read"}),
         source="passive",
         metadata={"origin": "unit"},
     )

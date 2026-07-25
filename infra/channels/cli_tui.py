@@ -309,7 +309,8 @@ class CLITextualApp(App[None]):
 
     def _write_tool_summary(self, summary: dict) -> None:
         log = self.query_one(RichLog)
-        names = summary.get("names") if isinstance(summary.get("names"), list) else []
+        raw_names = summary.get("names")
+        names: list[object] = raw_names if isinstance(raw_names, list) else []
         for raw_name in names:
             name = str(raw_name or "unknown")
             self.stats.tool_calls += 1

@@ -53,7 +53,7 @@ def _make_loop(
     tool: Tool,
 ) -> AgentLoop:
     tools = ToolRegistry()
-    tools.register(tool)
+    tools.register(tool, risk="read-only")
     return AgentLoop(
         AgentLoopDeps(
             bus=MagicMock(),

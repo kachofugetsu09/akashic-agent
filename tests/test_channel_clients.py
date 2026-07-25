@@ -6,6 +6,7 @@ import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -250,7 +251,7 @@ async def test_basic_cli_assigns_a_distinct_uuid_to_each_user_payload(
     await CLIClient("/tmp/test.sock").run()
 
     payloads = [
-        await read_frame(_FrameReaderFromBytes(payload))
+        await read_frame(cast(Any, _FrameReaderFromBytes(payload)))
         for payload in writer.payloads[1:]
     ]
     assert [payload["content"] for payload in payloads] == ["one", "two"]

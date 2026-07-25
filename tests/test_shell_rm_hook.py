@@ -11,6 +11,10 @@ from typing import Any
 
 import pytest
 
+from agent.policies.tool_invocation_policy import (
+    ToolInvocationContext,
+    ToolInvocationDecision,
+)
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from bus.event_bus import EventBus
 from agent.plugins.manager import PluginManager
@@ -18,6 +22,15 @@ from agent.plugins.registry import plugin_registry
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "plugins"
+
+
+class _AllowToolPolicy:
+    def evaluate(self, context: ToolInvocationContext) -> ToolInvocationDecision:
+        return ToolInvocationDecision(
+            action="allow",
+            reason="test_policy_allow",
+            risk=context.registry_risk,
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -50,7 +63,7 @@ def test_shell_rm_hook_rewrites_rm_and_creates_restore_dir(tmp_path: Path) -> No
         bus = EventBus()
         mgr = _make_manager([FIXTURES_DIR], event_bus=bus)
         _run(mgr.load_all())
-        executor = ToolExecutor(mgr.tool_hooks)
+        executor = ToolExecutor(mgr.tool_hooks, policy_engine=_AllowToolPolicy())
 
         result = _run(
             executor.execute(
@@ -96,7 +109,7 @@ def test_shell_rm_hook_rewrites_sudo_rm(tmp_path: Path) -> None:
         _run(mgr.load_all())
 
         result = _run(
-            ToolExecutor(mgr.tool_hooks).execute(
+            ToolExecutor(mgr.tool_hooks, policy_engine=_AllowToolPolicy()).execute(
                 ToolExecutionRequest(
                     call_id="c1",
                     tool_name="shell",
@@ -131,7 +144,7 @@ def test_shell_rm_hook_skips_non_rm_command(tmp_path: Path) -> None:
         _run(mgr.load_all())
 
         result = _run(
-            ToolExecutor(mgr.tool_hooks).execute(
+            ToolExecutor(mgr.tool_hooks, policy_engine=_AllowToolPolicy()).execute(
                 ToolExecutionRequest(
                     call_id="c1",
                     tool_name="shell",

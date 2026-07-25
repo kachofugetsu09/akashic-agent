@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from agent.policies.task_execution_boundary import TaskExecutionRiskPolicy
 from agent.policies.task_execution_budget import (
     TaskExecutionBudgetPolicy,
@@ -33,7 +35,7 @@ def _work_contract(*, work_call_budget: int = 3) -> TaskExecutionTurnContract:
     )
 
 
-def _work_record(name: str, arguments: dict[str, object], index: int) -> ToolCallRecord:
+def _work_record(name: str, arguments: Mapping[str, object], index: int) -> ToolCallRecord:
     return ToolCallRecord(
         tool_name=name,
         tool_class="local_file",

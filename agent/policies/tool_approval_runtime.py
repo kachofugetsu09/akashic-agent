@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -52,7 +52,7 @@ class ToolApprovalRuntime:
         risk: str,
         approval_scope: str,
         policy_reason: str,
-        arguments: dict[str, object],
+        arguments: Mapping[str, object],
     ) -> ToolApprovalRequestRecord:
         return self._store.create_or_get_pending_request(
             request_id=request_id,
@@ -77,7 +77,7 @@ class ToolApprovalRuntime:
         session_key: str,
         tool_name: str,
         approval_scope: str,
-        arguments: dict[str, object],
+        arguments: Mapping[str, object],
     ) -> ToolApprovalDecision:
         if trusted_context is None:
             return ToolApprovalDecision(
@@ -108,7 +108,7 @@ class ToolApprovalRuntime:
         session_key: str,
         tool_name: str,
         approval_scope: str,
-        arguments: dict[str, object],
+        arguments: Mapping[str, object],
         execution_status: str,
     ) -> ToolApprovalDecision:
         return self._store.finalize_consumed_request(

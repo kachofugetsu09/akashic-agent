@@ -921,7 +921,7 @@ class DefaultReasoner(Reasoner):
         disabled_tools = _disabled_tools_from_msg(msg)
         get_registered_names = getattr(self._tools, "get_registered_names", None)
         registered_tools = (
-            frozenset(get_registered_names())
+            frozenset(cast("set[str]", get_registered_names()))
             if callable(get_registered_names)
             else frozenset()
         )
@@ -930,13 +930,17 @@ class DefaultReasoner(Reasoner):
             "get_capabilities_by_name",
             None,
         )
-        tool_capabilities = (
-            get_tool_capabilities()
+        tool_capabilities: Mapping[str, frozenset[str]] = (
+            cast(Mapping[str, frozenset[str]], get_tool_capabilities())
             if callable(get_tool_capabilities)
             else {}
         )
         get_tool_risks = getattr(self._tools, "get_risks_by_name", None)
-        tool_risks = get_tool_risks() if callable(get_tool_risks) else {}
+        tool_risks: Mapping[str, str] = (
+            cast(Mapping[str, str], get_tool_risks())
+            if callable(get_tool_risks)
+            else {}
+        )
         preloaded: set[str] | None = None
         tool_boundary_context: ToolBoundaryContext | None = None
         visible_names: set[str] | None = None
@@ -1112,7 +1116,9 @@ class DefaultReasoner(Reasoner):
                 if self._tool_search_enabled and tools_used:
                     get_non_lru_names = getattr(self._tools, "get_non_lru_names", None)
                     non_lru_names = (
-                        get_non_lru_names() if callable(get_non_lru_names) else set()
+                        cast("set[str]", get_non_lru_names())
+                        if callable(get_non_lru_names)
+                        else set()
                     )
                     self._discovery.update(
                         session.key,
@@ -1921,8 +1927,8 @@ class DefaultReasoner(Reasoner):
                         "get_invocation_metadata",
                         None,
                     )
-                    invocation_metadata = (
-                        metadata_getter(tool_call.name)
+                    invocation_metadata: Mapping[str, object] = (
+                        cast(Mapping[str, object], metadata_getter(tool_call.name))
                         if callable(metadata_getter)
                         else {
                             "registered": self._tools.has_tool(tool_call.name),
@@ -1955,10 +1961,12 @@ class DefaultReasoner(Reasoner):
                         request_text=user_text,
                         tool_batch=tool_batch,
                         tool_batch_index=tool_batch_index,
-                        registered=bool(invocation_metadata["registered"]),
-                        registry_risk=str(invocation_metadata["registry_risk"]),
+                        registered=bool(invocation_metadata.get("registered")),
+                        registry_risk=str(
+                            invocation_metadata.get("registry_risk", "unknown")
+                        ),
                         registry_capabilities=_invocation_capabilities(
-                            invocation_metadata["registry_capabilities"]
+                            invocation_metadata.get("registry_capabilities", ())
                         ),
                         task_execution_active=bool(
                             execution_contract is not None

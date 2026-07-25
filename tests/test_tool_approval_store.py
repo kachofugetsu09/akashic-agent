@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, cast
 
 from agent.policies.tool_approval import canonical_args_hash
 from agent.policies.tool_approval_store import ToolApprovalStore
@@ -27,7 +29,7 @@ def _create_pending(
     session_key: str = "cli:session-1",
     tool_name: str = "write_file",
     approval_scope: str = "tool_call",
-    arguments: dict[str, object] | None = None,
+    arguments: Mapping[str, object] | None = None,
     now: datetime | None = None,
     ttl: timedelta = timedelta(minutes=5),
 ):
@@ -70,7 +72,8 @@ def test_create_or_get_pending_request_is_idempotent_and_sanitized(
     assert second.approval_request_id == first.approval_request_id
     assert second.args_hash == canonical_args_hash(arguments)
     assert second.args_summary["path"] == "notes.md"
-    assert second.args_summary["content"]["kind"] == "text"
+    content_summary = cast(dict[str, Any], second.args_summary["content"])
+    assert content_summary["kind"] == "text"
     persisted = _raw_args_summary_json(tmp_path / "approvals.db")
     assert "raw-secret-content" not in persisted
     assert "content" in persisted

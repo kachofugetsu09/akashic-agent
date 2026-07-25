@@ -42,6 +42,7 @@ def _insert_turn(
         ),
     )
     conn.commit()
+    assert cur.lastrowid is not None
     turn_id = int(cur.lastrowid)
     conn.close()
     return turn_id

@@ -79,11 +79,14 @@ def _make_reasoner(
 ) -> DefaultReasoner:
     tools = ToolRegistry()
     tools.register(ToolSearchTool(tools), always_on=True, risk="read-only")
-    tools.register(search_docs or _RecordingTool("search_docs"))
-    tools.register(fetch_doc_chunk or _RecordingTool("fetch_doc_chunk"))
-    tools.register(_RecordingTool("read_file"), always_on=True)
-    tools.register(_RecordingTool("shell"), always_on=True)
-    tools.register(_RecordingTool("list_dir"), always_on=True)
+    tools.register(search_docs or _RecordingTool("search_docs"), risk="read-only")
+    tools.register(
+        fetch_doc_chunk or _RecordingTool("fetch_doc_chunk"),
+        risk="read-only",
+    )
+    tools.register(_RecordingTool("read_file"), always_on=True, risk="read-only")
+    tools.register(_RecordingTool("shell"), always_on=True, risk="read-only")
+    tools.register(_RecordingTool("list_dir"), always_on=True, risk="read-only")
 
     def _render(request: ContextRequest, **_kwargs: object) -> ContextRenderResult:
         return ContextRenderResult(

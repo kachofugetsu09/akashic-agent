@@ -614,7 +614,9 @@ async def _run_tool_approval_command(
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            plugin_modules=[ToolApprovalCommandModule("status_commands", store)],
+            plugin_modules=cast(
+                Any, [ToolApprovalCommandModule("status_commands", store)]
+            ),
         ),
         frame_factory=BeforeTurnFrame,
     )

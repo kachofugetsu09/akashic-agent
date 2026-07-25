@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
 TaskPlanAction = Literal[
     "none",
@@ -469,8 +469,8 @@ def _active_contract(
     return TaskPlanTurnContract(
         action=action,
         context_requirement=context_requirement,
-        required_capabilities=required,
-        allowed_capabilities=frozenset(allowed),
+        required_capabilities=frozenset(item for item in required if item is not None),
+        allowed_capabilities=frozenset(item for item in allowed if item is not None),
         retrieval_budget=retrieval_budget,
         completion_capability=_COMPLETION_BY_ACTION[action],
         matched_terms=_dedupe_terms((*action_terms, *context_terms)),
@@ -513,7 +513,9 @@ def _infer_background_mode(
                 )
             )
         if matched:
-            return mode, _dedupe_terms((*anchors, *matched))
+            return cast(BackgroundPassthroughMode, mode), _dedupe_terms(
+                (*anchors, *matched)
+            )
     return "observe", anchors
 
 

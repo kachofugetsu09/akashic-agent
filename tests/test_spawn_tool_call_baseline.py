@@ -33,7 +33,7 @@ def _make_loop(
 ) -> AgentLoop:
     tools = ToolRegistry()
     tools.register(SpawnTool(manager, tools), risk="external-side-effect")
-    tools.register(ReadFileTool(allowed_dir=tmp_path))
+    tools.register(ReadFileTool(allowed_dir=tmp_path), risk="read-only")
     return AgentLoop(
         AgentLoopDeps(
             bus=MagicMock(),
@@ -48,7 +48,7 @@ def _make_loop(
 
 
 @pytest.mark.asyncio
-async def test_baseline_multistep_research_prefers_spawn(tmp_path: Path):
+async def test_baseline_multistep_research_spawn_requires_approval(tmp_path: Path):
     manager = AsyncMock()
     manager.spawn = AsyncMock(return_value="已创建后台任务")
     manager.spawn_sync = AsyncMock(return_value="[子任务结果]\n结论：三个文件差异已整理")
@@ -80,19 +80,18 @@ async def test_baseline_multistep_research_prefers_spawn(tmp_path: Path):
     )
     loop = _make_loop(tmp_path, provider=provider, manager=manager)
 
-    final, tools_used, _, _, _ = await loop._run_agent_loop(
+    final, tools_used, tool_chain, _, _ = await loop._run_agent_loop(
         [{"role": "user", "content": "请调查 3 个文件的实现差异并汇总结论"}]
     )
 
     assert final == "已整理成结论，下面直接汇报。"
-    assert tools_used == ["spawn"]
-    manager.spawn_sync.assert_awaited_once()
+    assert tools_used == []
+    manager.spawn_sync.assert_not_awaited()
     manager.spawn.assert_not_called()
-    spawn_kwargs = manager.spawn_sync.await_args.kwargs
-    assert spawn_kwargs["profile"] == "research"
-    assert "任务目标" in spawn_kwargs["task"]
-    assert "关键约束" in spawn_kwargs["task"]
-    assert "期望输出格式" in spawn_kwargs["task"]
+    spawn_call = tool_chain[0]["calls"][0]
+    assert spawn_call["name"] == "spawn"
+    assert spawn_call["status"] == "deferred"
+    assert "risk_strategy_external_side_effect_requires_approval" in spawn_call["result"]
 
 
 @pytest.mark.asyncio

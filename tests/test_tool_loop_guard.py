@@ -137,7 +137,7 @@ def _make_agent_loop_with_tools(
 ) -> AgentLoop:
     tools = ToolRegistry()
     for tool in tools_to_register:
-        tools.register(tool)
+        tools.register(tool, risk="read-only")
     loop = AgentLoop(
         AgentLoopDeps(
             bus=MagicMock(),
@@ -610,8 +610,8 @@ def test_agent_loop_does_not_false_positive_when_tool_order_changes(tmp_path):
     )
 
     tools = ToolRegistry()
-    tools.register(t1)
-    tools.register(t2)
+    tools.register(t1, risk="read-only")
+    tools.register(t2, risk="read-only")
     loop = AgentLoop(
         AgentLoopDeps(
             bus=MagicMock(),

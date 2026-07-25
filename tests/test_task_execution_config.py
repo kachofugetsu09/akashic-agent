@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -36,7 +37,7 @@ def test_task_execution_config_rejects_unsafe_auto_risk() -> None:
     ],
 )
 def test_task_execution_config_rejects_unsafe_limits(
-    kwargs: dict[str, int], message: str
+    kwargs: dict[str, Any], message: str
 ) -> None:
     with pytest.raises(ValueError, match=message):
         TaskExecutionConfig(**kwargs)

@@ -34,7 +34,7 @@ class ToolAccessPlan:
     policies: tuple[str, ...] = ()
     filter_error: bool = False
     local_source_allowed: bool = False
-    policy_metadata: Mapping[str, object] = field(default_factory=dict)
+    policy_metadata: Mapping[str, Any] = field(default_factory=dict)
     task_plan_contract: TaskPlanTurnContract | None = None
     task_execution_contract: TaskExecutionTurnContract | None = None
     strict_capability_scope: bool = False

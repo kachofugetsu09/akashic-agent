@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -203,7 +204,12 @@ class TaskPlanAccessPolicy:
                 "more retrieval tools."
             )
         metadata = dict(plan.policy_metadata)
-        task_plan_metadata = dict(metadata.get("task_plan", {}))
+        raw_task_plan_metadata = metadata.get("task_plan")
+        task_plan_metadata = (
+            dict(raw_task_plan_metadata)
+            if isinstance(raw_task_plan_metadata, Mapping)
+            else {}
+        )
         task_plan_metadata.update(
             {
                 "context_retrieval_consumed": True,

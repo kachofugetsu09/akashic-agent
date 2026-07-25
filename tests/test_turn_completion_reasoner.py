@@ -81,11 +81,15 @@ def _make_reasoner(
 ) -> DefaultReasoner:
     tools = ToolRegistry()
     tools.register(ToolSearchTool(tools), always_on=True, risk="read-only")
-    tools.register(search_docs)
-    tools.register(fetch_doc_chunk)
-    tools.register(read_file or _RecordingTool("read_file"), always_on=True)
-    tools.register(_RecordingTool("shell"), always_on=True)
-    tools.register(_RecordingTool("list_dir"), always_on=True)
+    tools.register(search_docs, risk="read-only")
+    tools.register(fetch_doc_chunk, risk="read-only")
+    tools.register(
+        read_file or _RecordingTool("read_file"),
+        always_on=True,
+        risk="read-only",
+    )
+    tools.register(_RecordingTool("shell"), always_on=True, risk="read-only")
+    tools.register(_RecordingTool("list_dir"), always_on=True, risk="read-only")
 
     def _render(request: ContextRequest, **_kwargs: object) -> ContextRenderResult:
         return ContextRenderResult(
@@ -541,6 +545,7 @@ def test_final_only_ignores_tool_calls_returned_by_provider() -> None:
     assert len(search_docs.calls) == 1
     assert len(fetch_doc_chunk.calls) == 1
     assert result.context_retry["turn_completion"]["action"] == "final_only"
+    assert result.reply is not None
     assert "final_only_tool_call" in result.reply
     assert provider.calls[2]["tools"] == []
     assert provider.calls[3]["tools"] == []

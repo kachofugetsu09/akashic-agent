@@ -134,7 +134,7 @@ class TaskExecutionLeaseGuard:
         *,
         session_key: str,
         attempt_id: str,
-        lease_seconds: int,
+        lease_seconds: float,
         clock: Callable[[], datetime],
     ) -> None:
         self._service = service

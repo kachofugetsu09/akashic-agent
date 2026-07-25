@@ -23,6 +23,10 @@ from agent.lifecycle.types import (
     BeforeToolCallCtx,
     BeforeTurnCtx,
 )
+from agent.policies.tool_invocation_policy import (
+    ToolInvocationContext,
+    ToolInvocationDecision,
+)
 from agent.plugins.manager import PluginManager
 from agent.plugins.registry import plugin_registry
 from agent.tool_hooks import ToolHook
@@ -33,6 +37,15 @@ from core.memory.events import MemoryWritten, RetrievalCompleted, RetrievalHitSu
 
 _observe_db = importlib.import_module("plugins.observe.db")
 open_db = cast(Callable[[Path], sqlite3.Connection], getattr(_observe_db, "open_db"))
+
+
+class _AllowToolPolicy:
+    def evaluate(self, context: ToolInvocationContext) -> ToolInvocationDecision:
+        return ToolInvocationDecision(
+            action="allow",
+            reason="test_policy_allow",
+            risk=context.registry_risk,
+        )
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -765,7 +778,7 @@ async def test_on_tool_pre_rewrites_rm_to_mv():
         from agent.tool_hooks.executor import ToolExecutor
         from agent.tool_hooks.types import ToolExecutionRequest
 
-        executor = ToolExecutor(mgr.tool_hooks)
+        executor = ToolExecutor(mgr.tool_hooks, policy_engine=_AllowToolPolicy())
 
         captured: dict[str, Any] = {}
 
@@ -805,7 +818,7 @@ async def test_on_tool_pre_skips_non_shell_tool():
         from agent.tool_hooks.executor import ToolExecutor
         from agent.tool_hooks.types import ToolExecutionRequest
 
-        executor = ToolExecutor(mgr.tool_hooks)
+        executor = ToolExecutor(mgr.tool_hooks, policy_engine=_AllowToolPolicy())
 
         captured: dict[str, Any] = {}
 
@@ -836,7 +849,7 @@ async def test_on_tool_pre_skips_non_rm_command():
         from agent.tool_hooks.executor import ToolExecutor
         from agent.tool_hooks.types import ToolExecutionRequest
 
-        executor = ToolExecutor(mgr.tool_hooks)
+        executor = ToolExecutor(mgr.tool_hooks, policy_engine=_AllowToolPolicy())
 
         captured: dict[str, Any] = {}
 
@@ -867,7 +880,7 @@ async def test_on_tool_pre_rewrites_rm_rf():
         from agent.tool_hooks.executor import ToolExecutor
         from agent.tool_hooks.types import ToolExecutionRequest
 
-        executor = ToolExecutor(mgr.tool_hooks)
+        executor = ToolExecutor(mgr.tool_hooks, policy_engine=_AllowToolPolicy())
 
         captured: dict[str, Any] = {}
 
@@ -899,7 +912,7 @@ async def test_on_tool_pre_rewrites_sudo_rm():
         from agent.tool_hooks.executor import ToolExecutor
         from agent.tool_hooks.types import ToolExecutionRequest
 
-        executor = ToolExecutor(mgr.tool_hooks)
+        executor = ToolExecutor(mgr.tool_hooks, policy_engine=_AllowToolPolicy())
 
         captured: dict[str, Any] = {}
 
@@ -984,7 +997,10 @@ async def test_on_tool_pre_fires_through_real_reasoner():
             event_bus=bus,
         )
         # 替换默认空 hook executor，仅用插件 hook
-        reasoner._tool_executor = ToolExecutor(mgr.tool_hooks)
+        reasoner._tool_executor = ToolExecutor(
+            mgr.tool_hooks,
+            policy_engine=_AllowToolPolicy(),
+        )
 
         await reasoner.run(
             [{"role": "user", "content": "delete /tmp/a.txt"}],

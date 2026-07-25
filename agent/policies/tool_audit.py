@@ -23,11 +23,11 @@ class ToolAuditEvent:
     policy_action: str
     policy_reason: str
     args_hash: str
-    args_summary: dict[str, object] = field(default_factory=dict)
+    args_summary: dict[str, Any] = field(default_factory=dict)
     invoker_reached: bool = False
     invoker_succeeded: bool = False
 
-    def to_trace_metadata(self) -> dict[str, object]:
+    def to_trace_metadata(self) -> dict[str, Any]:
         return {
             "event_type": self.event_type,
             "request_id": self.request_id,
@@ -98,7 +98,7 @@ class ToolApprovalAuditEvent:
     consumed_at: str = ""
     executed_at: str = ""
 
-    def to_trace_metadata(self) -> dict[str, object]:
+    def to_trace_metadata(self) -> dict[str, Any]:
         return {
             "event_type": self.event_type,
             "approval_request_id": self.approval_request_id,

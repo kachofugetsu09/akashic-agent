@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from agent.policies.tool_approval_context import trusted_approval_from_runtime
+from agent.policies.tool_approval_context import (
+    TrustedApprovalContext,
+    trusted_approval_from_runtime,
+)
 from agent.policies.tool_approval_decision import ToolApprovalDecision
 from agent.policies.tool_approval_runtime import ToolApprovalRuntime
 from agent.policies.tool_approval_store import ToolApprovalStore
@@ -64,14 +68,14 @@ def _runtime(
 def _write_request(
     *,
     call_id: str = "p3-call",
-    arguments: dict[str, object] | None = None,
-    trusted_approval_context: object | None = None,
+    arguments: Mapping[str, object] | None = None,
+    trusted_approval_context: TrustedApprovalContext | None = None,
     resource_roots: tuple[str, ...] = (),
 ) -> ToolExecutionRequest:
     return ToolExecutionRequest(
         call_id=call_id,
         tool_name="write_file",
-        arguments=arguments
+        arguments=dict(arguments)
         if arguments is not None
         else {"path": "notes.md", "content": "private"},
         source="passive",

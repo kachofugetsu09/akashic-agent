@@ -7,6 +7,7 @@ import pytest
 
 from agent.task_plan.service import TaskPlanService
 from agent.task_plan.store import TaskPlanStore
+from agent.tools.base import normalize_tool_result
 from agent.tools.registry import ToolRegistry
 from agent.tools.task_plan import (
     CreateTaskPlanTool,
@@ -53,7 +54,7 @@ async def test_create_task_plan_requires_session_context(tmp_path: Path) -> None
     tool = CreateTaskPlanTool(_service(tmp_path))
 
     raw = await tool.execute(title="Fix RAG", steps=["Read logs"])
-    payload = json.loads(raw)
+    payload = json.loads(normalize_tool_result(raw).preview())
 
     assert payload["ok"] is False
     assert payload["error_code"] == "missing_session_context"
@@ -104,7 +105,7 @@ async def test_update_task_step_accepts_step_index(tmp_path: Path) -> None:
         result_summary="Logs reviewed",
         tool_names=["inspect_turn_trace"],
     )
-    payload = json.loads(raw)
+    payload = json.loads(normalize_tool_result(raw).preview())
 
     assert payload["ok"] is True
     assert payload["task"]["steps"][0]["status"] == "completed"
@@ -127,7 +128,7 @@ async def test_registry_protected_context_overrides_model_session(
             "steps": ["Read logs"],
         },
     )
-    payload = json.loads(raw)
+    payload = json.loads(normalize_tool_result(raw).preview())
 
     assert payload["ok"] is True
     assert service.get_active_task_plan(session_key="cli:real") is not None
