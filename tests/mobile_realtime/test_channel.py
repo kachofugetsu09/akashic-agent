@@ -1798,7 +1798,7 @@ async def test_delta_paths_reuse_existing_lock_without_allocating_lock() -> None
 
 
 @pytest.mark.asyncio
-async def test_stream_deltas_batch_at_30fps_and_flush_before_tool_and_final(
+async def test_stream_deltas_batch_within_one_event_loop_turn_and_flush_before_tool_and_final(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1851,7 +1851,7 @@ async def test_stream_deltas_batch_at_30fps_and_flush_before_tool_and_final(
             )
         )
     assert [event["event_type"] for event in runtime.events] == ["turn.started"]
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0.01)
     assert [event["event_type"] for event in runtime.events] == [
         "turn.started",
         "react.thinking.delta",

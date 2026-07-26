@@ -100,7 +100,6 @@ class _ProcessTurnState:
     tool_blocks: dict[str, tuple[str, int, float]]
 
 
-_DELTA_FLUSH_SECONDS = 1 / 30
 _DELTA_FLUSH_BYTES = 4 * 1024
 _MAX_DELTA_BATCHES = 256
 _BOT_COMMAND_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
@@ -1341,7 +1340,7 @@ class MobileRealtimeChannel:
         block_id: str | None,
         ordinal: int | None,
     ) -> None:
-        """按一帧或 4KiB 合并连续 delta，兼顾视觉连续性与 SQLite 写入频率。"""
+        """在下一个事件循环轮次或 4KiB 时发布连续 delta。"""
 
         key = (session_id, turn_id)
         lock = self._delta_locks[key]
@@ -1352,7 +1351,7 @@ class MobileRealtimeChannel:
                 if len(self._delta_batches) >= _MAX_DELTA_BATCHES:
                     raise RuntimeError("mobile delta batch 已达到 256 个活跃 turn 上限")
                 timer = asyncio.create_task(
-                    self._flush_after_delay(key),
+                    self._flush_next_loop(key),
                     name=f"mobile-delta-flush:{turn_id}",
                 )
                 timer.add_done_callback(self._on_delta_timer_done)
@@ -1384,8 +1383,8 @@ class MobileRealtimeChannel:
         if flush_now:
             await self._flush_deltas(session_id, turn_id)
 
-    async def _flush_after_delay(self, key: tuple[str, str]) -> None:
-        await asyncio.sleep(_DELTA_FLUSH_SECONDS)
+    async def _flush_next_loop(self, key: tuple[str, str]) -> None:
+        await asyncio.sleep(0)
         await self._flush_deltas(*key)
 
     async def _flush_deltas(self, session_id: str, turn_id: str) -> None:
