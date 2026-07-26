@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 
 from infra.mobile_realtime.inbox import DurableInboxManager, InboxResetRequired
-from infra.mobile_realtime.storage import DeviceRecord, MobileRealtimeStorage
+from infra.mobile_realtime.storage import (
+    DeviceRecord,
+    MobileRealtimeStorage,
+    UnknownDeviceError,
+)
 
 
 NOW = datetime(2026, 7, 14, 9, 30, tzinfo=timezone.utc)
@@ -63,6 +67,53 @@ def test_inbox_replays_in_sequence_and_acknowledges_p0(tmp_path: Path) -> None:
         ack = manager.acknowledge("device-1", through_event_seq=2)
         assert ack.deleted_events == 2
         assert storage.count_durable_events("device-1") == 0
+    finally:
+        storage.close()
+
+
+def test_inbox_enqueues_broadcast_in_one_atomic_write(tmp_path: Path) -> None:
+    storage = _build_storage(tmp_path)
+    storage.register_device(
+        DeviceRecord(
+            device_id="device-2",
+            public_key="public-key-2",
+            display_name="Tablet",
+            created_at=NOW,
+            revoked_at=None,
+            capabilities=("chat",),
+        )
+    )
+    try:
+        manager = DurableInboxManager(storage, clock=lambda: NOW)
+        events = manager.enqueue_many(
+            device_ids=("device-1", "device-2"),
+            event_id="event-shared",
+            envelope_json=_envelope("event-shared"),
+        )
+
+        assert [event.device_id for event in events] == ["device-1", "device-2"]
+        assert [event.event_seq for event in events] == [1, 1]
+        assert events[0].created_at == events[1].created_at == NOW
+        assert storage.read_cursor("device-1").next_event_seq == 2
+        assert storage.read_cursor("device-2").next_event_seq == 2
+    finally:
+        storage.close()
+
+
+def test_inbox_broadcast_rolls_back_all_devices_when_one_is_unknown(tmp_path: Path) -> None:
+    storage = _build_storage(tmp_path)
+    try:
+        manager = DurableInboxManager(storage, clock=lambda: NOW)
+
+        with pytest.raises(UnknownDeviceError, match="设备不存在或缺少 cursor"):
+            manager.enqueue_many(
+                device_ids=("device-1", "missing-device"),
+                event_id="event-shared",
+                envelope_json=_envelope("event-shared"),
+            )
+
+        assert storage.count_durable_events("device-1") == 0
+        assert storage.read_cursor("device-1").next_event_seq == 1
     finally:
         storage.close()
 

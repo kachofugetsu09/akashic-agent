@@ -52,6 +52,22 @@ class DurableInboxManager:
             created_at=self._now(),
         )
 
+    def enqueue_many(
+        self,
+        *,
+        device_ids: tuple[str, ...],
+        event_id: str,
+        envelope_json: str,
+    ) -> tuple[DurableInboxEvent, ...]:
+        """用同一提交时间原子写入一个事件的全部设备副本。"""
+
+        return self._storage.append_durable_events(
+            device_ids=device_ids,
+            event_id=event_id,
+            envelope_json=envelope_json,
+            created_at=self._now(),
+        )
+
     def rebase_with_event(
         self,
         *,

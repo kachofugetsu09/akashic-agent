@@ -805,12 +805,13 @@ class MobileGatewayRuntime:
                 target_device_ids = tuple(
                     device.device_id for device in self.storage.list_active_devices()
                 )
-            for target_device_id in target_device_ids:
-                event = self.inbox.enqueue(
-                    device_id=target_device_id,
-                    event_id=event_id,
-                    envelope_json=stored,
-                )
+            events = self.inbox.enqueue_many(
+                device_ids=target_device_ids,
+                event_id=event_id,
+                envelope_json=stored,
+            )
+            for event in events:
+                target_device_id = event.device_id
                 connection = self._connections.get(target_device_id)
                 if connection is None:
                     continue
