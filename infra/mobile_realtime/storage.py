@@ -519,55 +519,85 @@ class MobileRealtimeStorage:
     ) -> DurableInboxEvent:
         """在同一写事务分配 event_seq 并插入 P0 durable event。"""
 
-        # 1. 固化内部已验证的事件字段
-        device_key = _require_text(device_id, "device_id")
+        return self.append_durable_events(
+            device_ids=(device_id,),
+            event_id=event_id,
+            envelope_json=envelope_json,
+            created_at=created_at,
+        )[0]
+
+    def append_durable_events(
+        self,
+        *,
+        device_ids: tuple[str, ...],
+        event_id: str,
+        envelope_json: str,
+        created_at: datetime,
+    ) -> tuple[DurableInboxEvent, ...]:
+        """在一个写事务中为多个设备分配序号并插入同一 P0 事件。"""
+
+        # 1. 固化内部已验证的广播目标和事件字段
+        device_keys = tuple(
+            _require_text(device_id, "device_id") for device_id in device_ids
+        )
+        if len(set(device_keys)) != len(device_keys):
+            raise ValueError("durable event 广播设备不能重复")
         event_key = _require_text(event_id, "event_id")
         envelope = _require_text(envelope_json, "envelope_json")
         timestamp = _serialize_datetime(created_at, "created_at")
+        if not device_keys:
+            return ()
 
-        # 2. 锁定 cursor 并分配严格递增序号
+        # 2. 锁定全部 cursor，并为每个设备分配自己的严格递增序号
+        allocated: list[tuple[str, int]] = []
         with self._lock, self._db:
             _ = self._db.execute("BEGIN IMMEDIATE")
-            row = self._db.execute(
-                """
-                SELECT next_event_seq
-                FROM mobile_device_cursors
-                WHERE device_id = ?
-                """,
-                (device_key,),
-            ).fetchone()
-            if row is None:
-                raise UnknownDeviceError(f"设备不存在或缺少 cursor: {device_key}")
-            event_seq = _row_positive_int(row, "next_event_seq")
+            for device_key in device_keys:
+                row = self._db.execute(
+                    """
+                    SELECT next_event_seq
+                    FROM mobile_device_cursors
+                    WHERE device_id = ?
+                    """,
+                    (device_key,),
+                ).fetchone()
+                if row is None:
+                    raise UnknownDeviceError(f"设备不存在或缺少 cursor: {device_key}")
+                allocated.append((device_key, _row_positive_int(row, "next_event_seq")))
 
-            # 3. 同事务写入 durable event 后推进 cursor
-            _ = self._db.execute(
-                """
-                INSERT INTO mobile_device_inbox(
-                    device_id, event_seq, event_id, priority,
-                    envelope_json, created_at
-                ) VALUES(?, ?, ?, 'P0', ?, ?)
-                """,
-                (device_key, event_seq, event_key, envelope, timestamp),
-            )
-            updated = self._db.execute(
-                """
-                UPDATE mobile_device_cursors
-                SET next_event_seq = ?
-                WHERE device_id = ? AND next_event_seq = ?
-                """,
-                (event_seq + 1, device_key, event_seq),
-            )
-            if updated.rowcount != 1:
-                raise RuntimeError(f"设备 event_seq 分配发生并发冲突: {device_key}")
+            # 3. 同事务写入全部 durable event 后推进各设备 cursor
+            for device_key, event_seq in allocated:
+                _ = self._db.execute(
+                    """
+                    INSERT INTO mobile_device_inbox(
+                        device_id, event_seq, event_id, priority,
+                        envelope_json, created_at
+                    ) VALUES(?, ?, ?, 'P0', ?, ?)
+                    """,
+                    (device_key, event_seq, event_key, envelope, timestamp),
+                )
+                updated = self._db.execute(
+                    """
+                    UPDATE mobile_device_cursors
+                    SET next_event_seq = ?
+                    WHERE device_id = ? AND next_event_seq = ?
+                    """,
+                    (event_seq + 1, device_key, event_seq),
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError(f"设备 event_seq 分配发生并发冲突: {device_key}")
 
-        return DurableInboxEvent(
-            device_id=device_key,
-            event_seq=event_seq,
-            event_id=event_key,
-            priority="P0",
-            envelope_json=envelope,
-            created_at=_parse_datetime(timestamp, "created_at"),
+        created = _parse_datetime(timestamp, "created_at")
+        return tuple(
+            DurableInboxEvent(
+                device_id=device_key,
+                event_seq=event_seq,
+                event_id=event_key,
+                priority="P0",
+                envelope_json=envelope,
+                created_at=created,
+            )
+            for device_key, event_seq in allocated
         )
 
     def read_durable_events(

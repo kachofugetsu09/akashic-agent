@@ -100,7 +100,7 @@ class _ProcessTurnState:
     tool_blocks: dict[str, tuple[str, int, float]]
 
 
-_DELTA_FLUSH_SECONDS = 0.05
+_DELTA_FLUSH_SECONDS = 1 / 30
 _DELTA_FLUSH_BYTES = 4 * 1024
 _MAX_DELTA_BATCHES = 256
 _BOT_COMMAND_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
@@ -1341,7 +1341,7 @@ class MobileRealtimeChannel:
         block_id: str | None,
         ordinal: int | None,
     ) -> None:
-        """按 50ms 或 4KiB 合并连续 delta，限制 SQLite 写入频率。"""
+        """按一帧或 4KiB 合并连续 delta，兼顾视觉连续性与 SQLite 写入频率。"""
 
         key = (session_id, turn_id)
         lock = self._delta_locks[key]
