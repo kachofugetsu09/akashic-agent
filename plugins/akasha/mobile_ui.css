@@ -7,40 +7,90 @@
   --akasha-mobile-accent: var(--m-primary);
   --akasha-mobile-accent-soft:
     color-mix(in oklch, var(--m-primary) 11%, var(--m-surface));
+  --akasha-mobile-precise: var(--m-primary);
+  --akasha-mobile-precise-container:
+    color-mix(in oklch, var(--m-primary) 14%, var(--m-surface-container));
+  --akasha-mobile-precise-on-container:
+    var(--m-on-primary-container, oklch(0.34 0.1 255));
+  --akasha-mobile-completion:
+    var(--m-trace, oklch(0.56 0.18 300));
+  --akasha-mobile-completion-container:
+    color-mix(
+      in oklch,
+      var(--m-trace, oklch(0.56 0.18 300)) 14%,
+      var(--m-surface-container)
+    );
+  --akasha-mobile-completion-on-container:
+    color-mix(
+      in oklch,
+      var(--m-trace, oklch(0.56 0.18 300)) 64%,
+      var(--m-on-surface)
+    );
   --akasha-mobile-shadow:
-    0 0 0 1px color-mix(in oklch, var(--m-on-surface) 7%, transparent),
-    0 1px 2px color-mix(in oklch, oklch(0 0 0) 12%, transparent);
+    0 1px 2px color-mix(in oklch, oklch(0 0 0) 14%, transparent),
+    0 3px 8px color-mix(in oklch, oklch(0 0 0) 7%, transparent);
   color: var(--m-on-surface);
 }
 
 .akasha-mobile-recall-group {
   display: grid;
-  gap: 8px;
+  min-width: 0;
+  gap: 10px;
   margin: 2px 0 14px;
 }
 
 .akasha-mobile-recall {
+  --akasha-mobile-lane: var(--akasha-mobile-precise);
+  --akasha-mobile-lane-container: var(--akasha-mobile-precise-container);
+  --akasha-mobile-lane-on-container:
+    var(--akasha-mobile-precise-on-container);
   overflow: hidden;
-  border-radius: 12px;
-  background: var(--m-surface-container);
+  border-radius: var(--m-shape-medium, 12px);
+  background:
+    color-mix(
+      in oklch,
+      var(--akasha-mobile-lane) 4%,
+      var(--m-surface-container-low)
+    );
   box-shadow: var(--akasha-mobile-shadow);
 }
 
+.akasha-mobile-recall--completion {
+  --akasha-mobile-lane: var(--akasha-mobile-completion);
+  --akasha-mobile-lane-container: var(--akasha-mobile-completion-container);
+  --akasha-mobile-lane-on-container:
+    var(--akasha-mobile-completion-on-container);
+}
+
 .akasha-mobile-recall summary {
-  display: flex;
+  display: grid;
   min-height: 44px;
+  grid-template-columns: 4px minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 0 13px;
+  gap: 10px;
+  padding: 0 10px 0 12px;
   color: var(--m-on-surface);
+  background:
+    color-mix(
+      in oklch,
+      var(--akasha-mobile-lane) 7%,
+      var(--m-surface-container)
+    );
   cursor: pointer;
   font-size: 0.84rem;
-  font-weight: 620;
+  font-weight: 650;
   list-style: none;
   transition-property: color, background-color;
-  transition-duration: 150ms;
-  transition-timing-function: ease-out;
+  transition-duration: 160ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.akasha-mobile-recall summary::before {
+  width: 4px;
+  height: 20px;
+  border-radius: var(--m-shape-full, 9999px);
+  background: var(--akasha-mobile-lane);
+  content: "";
 }
 
 .akasha-mobile-recall summary::-webkit-details-marker {
@@ -48,14 +98,39 @@
 }
 
 .akasha-mobile-recall summary:hover {
-  background: var(--akasha-mobile-accent-soft);
+  background:
+    color-mix(
+      in oklch,
+      var(--akasha-mobile-lane) 12%,
+      var(--m-surface-container)
+    );
+}
+
+.akasha-mobile-recall summary:active {
+  background:
+    color-mix(
+      in oklch,
+      var(--akasha-mobile-lane) 17%,
+      var(--m-surface-container)
+    );
+}
+
+.akasha-mobile-recall summary:focus-visible {
+  outline: 2px solid var(--akasha-mobile-lane);
+  outline-offset: -2px;
 }
 
 .akasha-mobile-recall summary b {
   display: inline-flex;
+  min-width: 36px;
+  min-height: 28px;
   align-items: center;
+  justify-content: center;
   gap: 7px;
-  color: var(--akasha-mobile-accent);
+  border-radius: var(--m-shape-full, 9999px);
+  padding: 0 8px;
+  color: var(--akasha-mobile-lane-on-container);
+  background: var(--akasha-mobile-lane-container);
   font-size: 0.78rem;
   font-variant-numeric: tabular-nums;
 }
@@ -76,6 +151,12 @@
   margin: 0;
   padding: 0;
   border-top: 1px solid var(--akasha-mobile-rule);
+  background:
+    color-mix(
+      in oklch,
+      var(--akasha-mobile-lane) 3%,
+      var(--m-surface-container-low)
+    );
   list-style: none;
 }
 
@@ -301,6 +382,10 @@
   .akasha-mobile-recall summary,
   .akasha-mobile-turns button,
   .akasha-mobile-back {
+    transition-duration: 0ms;
+  }
+
+  .akasha-mobile-recall summary b::after {
     transition-duration: 0ms;
   }
 }

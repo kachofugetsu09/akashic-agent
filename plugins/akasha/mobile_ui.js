@@ -42,13 +42,13 @@ function memoryList(items, empty) {
   `;
 }
 
-function recallSection(title, items, captureAvailable = true) {
+function recallSection(title, items, lane, captureAvailable = true) {
   const count = captureAvailable ? items.length : "未记录";
   const empty = captureAvailable
     ? "本轮没有命中"
     : "这一轮没有保存模式补全读出";
   return `
-    <details class="akasha-mobile-recall" ${items.length ? "open" : ""}>
+    <details class="akasha-mobile-recall akasha-mobile-recall--${escapeHtml(lane)}" ${items.length ? "open" : ""}>
       <summary>
         <span>${escapeHtml(title)}</span>
         <b>${escapeHtml(count)}</b>
@@ -106,10 +106,10 @@ function renderDetail(item) {
         </dl>
       </header>
       <div class="akasha-mobile-detail-lanes">
-        ${recallSection("左脑 · 精确回忆", left)}
-        ${recallSection("右脑 · 模式补全", right, recallCaptured)}
-        ${toolLeft.length ? recallSection("工具回忆 · 精确回忆", toolLeft) : ""}
-        ${toolRight.length ? recallSection("工具回忆 · 模式补全", toolRight) : ""}
+        ${recallSection("左脑 · 精确回忆", left, "precise")}
+        ${recallSection("右脑 · 模式补全", right, "completion", recallCaptured)}
+        ${toolLeft.length ? recallSection("工具回忆 · 精确回忆", toolLeft, "precise") : ""}
+        ${toolRight.length ? recallSection("工具回忆 · 模式补全", toolRight, "completion") : ""}
       </div>
       <p class="akasha-mobile-convergence">${Number(item.pushes || 0)} 次扩散，残余 ${Number(item.residual_l1 || 0).toExponential(2)}</p>
     </section>
@@ -132,10 +132,10 @@ function mountRecall(host, context) {
     const recallCaptured = result.recall_capture_available !== false;
     host.innerHTML = `
       <div class="akasha-mobile-recall-group">
-        ${recallSection("左脑 · 精确回忆", left)}
-        ${recallSection("右脑 · 模式补全", right, recallCaptured)}
-        ${toolLeft.length ? recallSection("工具回忆 · 精确回忆", toolLeft) : ""}
-        ${toolRight.length ? recallSection("工具回忆 · 模式补全", toolRight) : ""}
+        ${recallSection("左脑 · 精确回忆", left, "precise")}
+        ${recallSection("右脑 · 模式补全", right, "completion", recallCaptured)}
+        ${toolLeft.length ? recallSection("工具回忆 · 精确回忆", toolLeft, "precise") : ""}
+        ${toolRight.length ? recallSection("工具回忆 · 模式补全", toolRight, "completion") : ""}
       </div>
     `;
   }).catch((error) => {
