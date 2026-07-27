@@ -112,6 +112,7 @@ jobs:
         run: |
           python docker/debug/programmatic_control_probe.py --gate smoke
           python docker/debug/programmatic_control_probe.py --gate failure-matrix
+          python docker/debug/programmatic_control_probe.py --gate memory-context
 
       - name: Upload control gate evidence
         if: always()

@@ -47,7 +47,7 @@ Destructive session port ─────► 只供用户主动撤销或删除使
 - `semantic_delta: none` 的上下文重构不能修改数据库历史或降低 CTX-001 oracle。
 - 对话归档、用户删除和索引重建另设明确入口，不能复用上下文预算函数。
 
-迁移采用 expand/migrate/contract 三阶段：先让受保护 oracle 同时识别旧的 runtime 裁切结果和新的只读投影结果；实现切换并取得 Docker 证据后，立即收紧 oracle，只接受 `session.messages` 与 `last_consolidated` 均不变。过渡 oracle 不作为最终合同。
+expand/migrate/contract 迁移已由 PR #220 和 PR #221 完成。受保护 oracle 只接受 `session.messages` 与 `last_consolidated` 均不变；旧的 runtime 裁切结果不再属于兼容行为。
 
 ## 验收
 
