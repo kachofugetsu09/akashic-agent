@@ -32,7 +32,7 @@ PR #111 的一次重构把“上下文超限后缩小模型窗口”解释成“
 Destructive session port ─────► 只供用户主动撤销或删除使用
 ```
 
-Runtime history view 是进程内派生值。选中的 history window 变小时可以缩短 `session.messages`；只移除动态区块时不能改写它。预算不足只影响后两层。正常收发只向 `sessions.db/messages` 追加新行；完整会话历史、消息身份、序列和受保护派生索引保持不变。只有用户主动撤销消息或删除会话时，独立数据管理命令才可以减少持久对话，并携带权限、cascade、备份和审计语义。旧消息编辑采用原位 UPDATE 还是追加 revision，留待独立决策。
+`session.messages` 是当前 session owner 持有的权威进程内镜像，不是一次请求的临时投影。选中的 prompt history window 变小时只能缩短本次 render 输入，不能反向改写 `session.messages` 或 `last_consolidated`。预算不足只影响后两层。正常收发只向 `sessions.db/messages` 追加新行；完整会话历史、消息身份、序列和受保护派生索引保持不变。只有用户主动撤销消息或删除会话时，独立数据管理命令才可以减少持久对话，并携带权限、cascade、备份和审计语义。旧消息编辑采用原位 UPDATE 还是追加 revision，留待独立决策。
 
 ## 理由
 
@@ -47,10 +47,12 @@ Runtime history view 是进程内派生值。选中的 history window 变小时�
 - `semantic_delta: none` 的上下文重构不能修改数据库历史或降低 CTX-001 oracle。
 - 对话归档、用户删除和索引重建另设明确入口，不能复用上下文预算函数。
 
+迁移采用 expand/migrate/contract 三阶段：先让受保护 oracle 同时识别旧的 runtime 裁切结果和新的只读投影结果；实现切换并取得 Docker 证据后，立即收紧 oracle，只接受 `session.messages` 与 `last_consolidated` 均不变。过渡 oracle 不作为最终合同。
+
 ## 验收
 
 - 上下文超限重试前后，`messages` 和 `message_embeddings` 规范化快照一致。
 - SQLite authorizer 没有观察到针对受保护表的 INSERT、DELETE 或 UPDATE 尝试。
-- 单次请求的 prompt history 可以变短；runtime `session.messages` 只在 history window 变小时同步缩短；关闭并再次加载后完整历史仍然可见。
+- 单次请求的 prompt history 可以变短；runtime `session.messages` 与 `last_consolidated` 保持不变；关闭并再次加载后完整历史仍然可见。
 - 后续消息 seq 从裁切前最大值继续。
 - 注入已知删除实现时，semantic gate 稳定失败。
