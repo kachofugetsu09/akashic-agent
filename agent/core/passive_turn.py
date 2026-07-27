@@ -2144,7 +2144,24 @@ class DefaultReasoner(Reasoner):
             return []
         if window >= total_history:
             return source_history
-        return source_history[-window:]
+
+        # 1. 先按 provider 消息预算取得候选后缀。
+        candidate = source_history[-window:]
+        if candidate[0].get("role") != "tool":
+            return candidate
+
+        # 2. 若切在工具结果中间，则丢弃残缺工具链并前移到合法回合。
+        for index, message in enumerate(candidate):
+            if message.get("role") == "user":
+                return candidate[index:]
+            content = message.get("content")
+            if (
+                message.get("role") == "assistant"
+                and isinstance(content, str)
+                and content.startswith("[主动推送]")
+            ):
+                return candidate[index:]
+        return []
 
     @staticmethod
     def _build_attempt_plans(total_history: int) -> list[dict]:
