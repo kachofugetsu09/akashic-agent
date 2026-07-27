@@ -18,7 +18,6 @@ from ..infrastructure.lease import WriterLease
 from ..infrastructure.persistence import (
     load_memory_state,
     memory_turn_count,
-    sha256_file,
     write_memory_database,
 )
 from ..infrastructure.sparse_index import BuildConfig, build_sparse_index
@@ -202,11 +201,6 @@ class OnlineMemoryRuntime:
                 "memory snapshot contains more turns than sessions source"
             )
         prefix = turns[:persisted]
-        exact_hash = (
-            sha256_file(self.index_path)
-            if persisted == len(turns)
-            else None
-        )
         (
             graph,
             events,
@@ -218,7 +212,7 @@ class OnlineMemoryRuntime:
             self.memory_path,
             turns=prefix,
             config=self.config,
-            source_index_sha256=exact_hash,
+            source_index_sha256=None,
         )
         cycle = MemoryCycle.restore(
             config=self.config,
