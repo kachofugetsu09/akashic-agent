@@ -24,6 +24,7 @@ interface InspectorRow {
   query_text: string;
   seed_count: number;
   activation_capture_available: boolean;
+  recall_capture_available: boolean;
   activation_count: number;
   completion_count: number;
   pushes: number;
@@ -44,8 +45,12 @@ interface InspectorDetail extends InspectorRow {
   activation_items: InspectorItem[];
   left: InspectorItem[];
   right: InspectorItem[];
+  tool_left: InspectorItem[];
+  tool_right: InspectorItem[];
   left_count: number;
   right_count: number;
+  tool_left_count: number;
+  tool_right_count: number;
   inject_chars: number;
   text_block_preview: string;
 }
@@ -184,7 +189,13 @@ function renderDetail(item: InspectorDetail, closePane?: () => void): string {
             ? `${item.graph_only_count} 个仅由图关系抵达`
             : "这一轮没有保存逐节点扩散路径",
         )}
-        ${metric("模式补全", item.right_count, `${item.basin_count} 个活跃情景 basin`)}
+        ${metric(
+          "模式补全",
+          item.recall_capture_available ? item.right_count : "未记录",
+          item.recall_capture_available
+            ? `${item.basin_count} 个活跃情景 basin`
+            : "旧重放没有保存这一轮的补全读出",
+        )}
         ${metric("残余", fixed(item.residual_l1, 6), `${item.pushes} 次 residual push`)}
       </dl>
 
@@ -217,6 +228,30 @@ function renderDetail(item: InspectorDetail, closePane?: () => void): string {
         </header>
         ${renderItems(item.right, "没有产生模式补全。")}
       </section>
+
+      ${item.tool_left_count
+        ? `
+          <section class="akasha-section akasha-lane">
+            <header>
+              <div><h3>工具精确回忆</h3><p>本轮 recall_memory 的 Dense 结果</p></div>
+              <span>${item.tool_left_count}</span>
+            </header>
+            ${renderItems(item.tool_left, "工具没有产生 Dense 命中。")}
+          </section>
+        `
+        : ""}
+
+      ${item.tool_right_count
+        ? `
+          <section class="akasha-section akasha-lane">
+            <header>
+              <div><h3>工具模式补全</h3><p>本轮 recall_memory 的显式图结果</p></div>
+              <span>${item.tool_right_count}</span>
+            </header>
+            ${renderItems(item.tool_right, "工具没有产生模式补全。")}
+          </section>
+        `
+        : ""}
 
       <details class="akasha-learning">
         <summary>本轮如何改变记忆</summary>

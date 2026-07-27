@@ -173,6 +173,8 @@ class AkashaInspectorReader:
                         AS residual_l1,
                     COALESCE(recall.active_basin_count, 0)
                         AS basin_count,
+                    recall.query_turn_node_id IS NOT NULL
+                        AS recall_capture_available,
                     (
                         SELECT COUNT(*)
                         FROM recall_items AS item
@@ -193,7 +195,12 @@ class AkashaInspectorReader:
                 """,
                 [*values, page_size, (page - 1) * page_size],
             ).fetchall()
-        return [dict(row) for row in rows], total
+        items = [dict(row) for row in rows]
+        for item in items:
+            item["recall_capture_available"] = bool(
+                item["recall_capture_available"]
+            )
+        return items, total
 
     def get_turn(self, query_id: str) -> dict[str, object] | None:
         """Return one retrieval with seeds, paths, prompt lanes, and learning."""
@@ -207,6 +214,9 @@ class AkashaInspectorReader:
             seeds = self._load_seeds(connection, node_id)
             activations = self._load_activations(connection, node_id)
             completions = self._load_completions(connection, node_id)
+        tool_left, tool_right = _tool_recall_lanes(
+            run.pop("tool_chain_json")
+        )
 
         # 2. Reconstruct the host-visible lanes from frozen prior turns.
         dense = self._dense_items(node_id)
@@ -237,6 +247,10 @@ class AkashaInspectorReader:
             "right": right,
             "left_count": len(dense),
             "right_count": len(right),
+            "tool_left": tool_left,
+            "tool_right": tool_right,
+            "tool_left_count": len(tool_left),
+            "tool_right_count": len(tool_right),
             "inject_chars": len(text_block),
             "text_block_preview": text_block,
         }
@@ -295,6 +309,10 @@ class AkashaInspectorReader:
             "ATTACH DATABASE ? AS sparse",
             (f"file:{self.paths.index}?mode=ro",),
         )
+        _ = connection.execute(
+            "ATTACH DATABASE ? AS sessions",
+            (f"file:{self.workspace / 'sessions.db'}?mode=ro",),
+        )
         _ = connection.execute("PRAGMA query_only = ON")
         return connection
 
@@ -315,6 +333,7 @@ class AkashaInspectorReader:
                 turn.started_at AS ts,
                 sparse_turn.user_text AS query_text,
                 sparse_turn.assistant_text,
+                assistant.tool_chain AS tool_chain_json,
                 event.time_prior,
                 event.continuation,
                 COALESCE(activation.pushes, event.pushes) AS pushes,
@@ -323,6 +342,8 @@ class AkashaInspectorReader:
                 event.seed_support AS seed_count,
                 activation.query_turn_node_id IS NOT NULL
                     AS activation_capture_available,
+                recall.query_turn_node_id IS NOT NULL
+                    AS recall_capture_available,
                 COALESCE(
                     activation.completion_support,
                     (
@@ -366,6 +387,8 @@ class AkashaInspectorReader:
               ON turn.node_id = event.current_turn_node_id
             JOIN sparse.sparse_turns AS sparse_turn
               ON sparse_turn.turn_id = turn.turn_id
+            LEFT JOIN sessions.messages AS assistant
+              ON assistant.id = turn.assistant_message_id
             LEFT JOIN activation_runs AS activation
               ON activation.query_turn_node_id = turn.node_id
             LEFT JOIN recall_runs AS recall
@@ -379,6 +402,9 @@ class AkashaInspectorReader:
         item = dict(row)
         item["activation_capture_available"] = bool(
             item["activation_capture_available"]
+        )
+        item["recall_capture_available"] = bool(
+            item["recall_capture_available"]
         )
         return item
 
@@ -660,6 +686,9 @@ def mobile_summary(item: dict[str, object]) -> dict[str, object]:
         "activation_capture_available": item[
             "activation_capture_available"
         ],
+        "recall_capture_available": item[
+            "recall_capture_available"
+        ],
         "activation_count": item["activation_count"],
         "left_count": item["left_count"],
         "right_count": item["right_count"],
@@ -667,7 +696,97 @@ def mobile_summary(item: dict[str, object]) -> dict[str, object]:
         "residual_l1": item["residual_l1"],
         "left": item["left"],
         "right": item["right"],
+        "tool_left_count": item["tool_left_count"],
+        "tool_right_count": item["tool_right_count"],
+        "tool_left": item["tool_left"],
+        "tool_right": item["tool_right"],
     }
+
+
+def _tool_recall_lanes(
+    raw_tool_chain: object,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Project persisted recall_memory results without changing graph state."""
+
+    # 1. Decode only successful recall_memory tool results.
+    if raw_tool_chain is None:
+        return [], []
+    chain = json.loads(str(raw_tool_chain))
+    if not isinstance(chain, list):
+        raise ValueError("assistant tool_chain must encode a JSON array")
+    items: list[dict[str, object]] = []
+    for step in chain:
+        if not isinstance(step, dict):
+            raise ValueError("assistant tool_chain step must be an object")
+        calls = step.get("calls", [])
+        if not isinstance(calls, list):
+            raise ValueError("assistant tool_chain calls must be an array")
+        for call in calls:
+            if not isinstance(call, dict):
+                raise ValueError("assistant tool call must be an object")
+            if call.get("name") != "recall_memory":
+                continue
+            if call.get("status") != "success":
+                continue
+            result = call.get("result")
+            if not isinstance(result, str):
+                raise ValueError("recall_memory result must be JSON text")
+            payload = json.loads(result)
+            if not isinstance(payload, dict):
+                raise ValueError("recall_memory result must encode an object")
+            recalled = payload.get("items")
+            if not isinstance(recalled, list):
+                raise ValueError("recall_memory items must be an array")
+            items.extend(_tool_recall_item(item) for item in recalled)
+
+    # 2. Keep the first stable occurrence in each visible lane.
+    left = _dedupe_tool_lane(items, "dense")
+    right = _dedupe_tool_lane(items, "completion")
+    return left, right
+
+
+def _tool_recall_item(raw: object) -> dict[str, object]:
+    if not isinstance(raw, dict):
+        raise ValueError("recall_memory item must be an object")
+    signals = raw.get("signals")
+    if not isinstance(signals, dict):
+        raise ValueError("recall_memory item signals must be an object")
+    lane = signals.get("lane")
+    if lane not in {"dense", "completion"}:
+        raise ValueError(f"recall_memory item lane is invalid: {lane}")
+    item_id = raw.get("id")
+    if not isinstance(item_id, str) or not item_id:
+        raise ValueError("recall_memory item id must be non-empty")
+    sources = signals.get("sources", [])
+    if not isinstance(sources, list):
+        raise ValueError("recall_memory item sources must be an array")
+    return {
+        "query_id": item_id,
+        "session_key": raw.get("source_ref", ""),
+        "ts": signals.get("started_at", ""),
+        "user_text": signals.get("user_text", ""),
+        "assistant_preview": signals.get("assistant_preview", ""),
+        "score": raw.get("score"),
+        "sources": sources,
+        "lane": lane,
+    }
+
+
+def _dedupe_tool_lane(
+    items: list[dict[str, object]],
+    lane: str,
+) -> list[dict[str, object]]:
+    seen: set[str] = set()
+    result: list[dict[str, object]] = []
+    for item in items:
+        if item["lane"] != lane:
+            continue
+        item_id = str(item["query_id"])
+        if item_id in seen:
+            continue
+        seen.add(item_id)
+        result.append(item)
+    return result
 
 
 def _dense_matrix(

@@ -42,14 +42,18 @@ function memoryList(items, empty) {
   `;
 }
 
-function recallSection(title, items) {
+function recallSection(title, items, captureAvailable = true) {
+  const count = captureAvailable ? items.length : "未记录";
+  const empty = captureAvailable
+    ? "本轮没有命中"
+    : "这一轮没有保存模式补全读出";
   return `
-    <details class="akasha-mobile-recall">
+    <details class="akasha-mobile-recall" ${items.length ? "open" : ""}>
       <summary>
         <span>${escapeHtml(title)}</span>
-        <b>${items.length}</b>
+        <b>${escapeHtml(count)}</b>
       </summary>
-      ${memoryList(items, "本轮没有命中")}
+      ${memoryList(items, empty)}
     </details>
   `;
 }
@@ -73,7 +77,7 @@ function renderRecent(items, total) {
           <li>
             <button type="button" data-akasha-query="${escapeHtml(item.query_id)}">
               <span>${escapeHtml(item.query_preview || item.query_text || "（空消息）")}</span>
-              <small>${escapeHtml(shortTime(item.ts))} · ${Number(item.seed_count || 0)} seeds · ${Number(item.completion_count || 0)} recall</small>
+              <small>${escapeHtml(shortTime(item.ts))} · ${Number(item.seed_count || 0)} seeds · ${item.recall_capture_available === false ? "未记录 recall" : `${Number(item.completion_count || 0)} recall`}</small>
             </button>
           </li>
         `).join("")}
@@ -85,6 +89,9 @@ function renderRecent(items, total) {
 function renderDetail(item) {
   const left = Array.isArray(item.left) ? item.left : [];
   const right = Array.isArray(item.right) ? item.right : [];
+  const toolLeft = Array.isArray(item.tool_left) ? item.tool_left : [];
+  const toolRight = Array.isArray(item.tool_right) ? item.tool_right : [];
+  const recallCaptured = item.recall_capture_available !== false;
   return `
     <section class="akasha-mobile-inspector">
       <button class="akasha-mobile-back" type="button" data-akasha-back>返回检索列表</button>
@@ -95,12 +102,14 @@ function renderDetail(item) {
           <div><dt>线索</dt><dd>${Number(item.seed_count || 0)}</dd></div>
           <div><dt>补全</dt><dd>${Number(item.activation_count || 0)}</dd></div>
           <div><dt>左脑</dt><dd>${left.length}</dd></div>
-          <div><dt>右脑</dt><dd>${right.length}</dd></div>
+          <div><dt>右脑</dt><dd>${recallCaptured ? right.length : "—"}</dd></div>
         </dl>
       </header>
       <div class="akasha-mobile-detail-lanes">
         ${recallSection("左脑 · 精确回忆", left)}
-        ${recallSection("右脑 · 模式补全", right)}
+        ${recallSection("右脑 · 模式补全", right, recallCaptured)}
+        ${toolLeft.length ? recallSection("工具回忆 · 精确回忆", toolLeft) : ""}
+        ${toolRight.length ? recallSection("工具回忆 · 模式补全", toolRight) : ""}
       </div>
       <p class="akasha-mobile-convergence">${Number(item.pushes || 0)} 次扩散，残余 ${Number(item.residual_l1 || 0).toExponential(2)}</p>
     </section>
@@ -118,10 +127,15 @@ function mountRecall(host, context) {
     if (!active) return;
     const left = Array.isArray(result.left) ? result.left : [];
     const right = Array.isArray(result.right) ? result.right : [];
+    const toolLeft = Array.isArray(result.tool_left) ? result.tool_left : [];
+    const toolRight = Array.isArray(result.tool_right) ? result.tool_right : [];
+    const recallCaptured = result.recall_capture_available !== false;
     host.innerHTML = `
       <div class="akasha-mobile-recall-group">
         ${recallSection("左脑 · 精确回忆", left)}
-        ${recallSection("右脑 · 模式补全", right)}
+        ${recallSection("右脑 · 模式补全", right, recallCaptured)}
+        ${toolLeft.length ? recallSection("工具回忆 · 精确回忆", toolLeft) : ""}
+        ${toolRight.length ? recallSection("工具回忆 · 模式补全", toolRight) : ""}
       </div>
     `;
   }).catch((error) => {

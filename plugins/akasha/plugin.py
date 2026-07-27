@@ -136,8 +136,13 @@ class AkashaPlugin(Plugin):
             return {"left": [], "right": []}
         return {
             "query_id": item["query_id"],
+            "recall_capture_available": item[
+                "recall_capture_available"
+            ],
             "left": item["left"],
             "right": item["right"],
+            "tool_left": item["tool_left"],
+            "tool_right": item["tool_right"],
         }
 
     def _inspector(self) -> AkashaInspectorReader:

@@ -52,9 +52,24 @@
 }
 
 .akasha-mobile-recall summary b {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   color: var(--akasha-mobile-accent);
   font-size: 0.78rem;
   font-variant-numeric: tabular-nums;
+}
+
+.akasha-mobile-recall summary b::after {
+  display: inline-block;
+  color: var(--m-on-surface-variant);
+  content: "⌄";
+  font-size: 0.9rem;
+  transition: rotate 150ms ease-out;
+}
+
+.akasha-mobile-recall[open] summary b::after {
+  rotate: 180deg;
 }
 
 .akasha-mobile-memories {
