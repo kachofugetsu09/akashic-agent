@@ -144,6 +144,35 @@ async def test_online_turn_recall_and_replay_share_one_state(
     assert context.text_block.startswith("# Akasha memory now=07-06")
     assert "## 左脑记忆：精确回忆" in context.text_block
     assert f'assistant="{"A" * 50}..."' in context.text_block
+    tool_payload = dict(rendered)
+    tool_payload["items"] = [
+        *cast(list[dict[str, object]], rendered["items"]),
+        {
+            "id": "tool:completion",
+            "score": 0.25,
+            "source_ref": "test:one",
+            "signals": {
+                "lane": "completion",
+                "sources": ["basin_completion"],
+                "started_at": started.isoformat(),
+                "user_text": "associated memory",
+                "assistant_preview": "associated answer",
+            },
+        },
+    ]
+    tool_chain = json.dumps(
+        [
+            {
+                "calls": [
+                    {
+                        "name": "recall_memory",
+                        "status": "success",
+                        "result": json.dumps(tool_payload),
+                    }
+                ]
+            }
+        ]
+    )
 
     # 4. Commit the second turn and compare online learned state with replay.
     _append_turn(
@@ -152,6 +181,7 @@ async def test_online_turn_recall_and_replay_share_one_state(
         user="alpha follow",
         assistant="second answer",
         started=next_time,
+        assistant_tool_chain=tool_chain,
     )
     await engine._on_turn_committed(  # noqa: SLF001
         _event(
@@ -170,6 +200,15 @@ async def test_online_turn_recall_and_replay_share_one_state(
     assert logical_state_sha256(
         tmp_path / "memory" / "akasha.db"
     ) == logical_state_sha256(replay)
+    with closing(
+        sqlite3.connect(tmp_path / "memory" / "akasha.db")
+    ) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM recall_runs"
+        ).fetchone() == (2,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM activation_runs"
+        ).fetchone() == (0,)
 
     # 5. Inspector reconstructs the exact prior-only lanes without writes.
     _write_inspector_config(tmp_path)
@@ -184,7 +223,10 @@ async def test_online_turn_recall_and_replay_share_one_state(
     assert total == 1
     assert detail is not None
     assert detail["query_text"] == "alpha follow"
+    assert detail["recall_capture_available"] is True
     assert detail["left_count"] == 1
+    assert detail["tool_left_count"] == 1
+    assert detail["tool_right_count"] == 1
     assert cast(list[dict[str, object]], detail["left"])[0][
         "user_text"
     ] == "alpha start"
@@ -244,6 +286,8 @@ async def test_online_turn_recall_and_replay_share_one_state(
         turn_id=None,
     )
     assert len(cast(list[object], mobile["left"])) == 1
+    assert len(cast(list[object], mobile["tool_left"])) == 1
+    assert len(cast(list[object], mobile["tool_right"])) == 1
     assert recent["total"] == 2
     assert mobile_detail["query_text"] == "alpha follow"
     _close_engine(engine)
@@ -430,6 +474,7 @@ def _append_turn(
     started: datetime,
     session_key: str = "test:one",
     with_embeddings: bool = False,
+    assistant_tool_chain: str | None = None,
 ) -> None:
     assistant_time = started + timedelta(seconds=10)
     with closing(sqlite3.connect(path)) as connection, connection:
@@ -456,7 +501,7 @@ def _append_turn(
                     sequence + 1,
                     "assistant",
                     assistant,
-                    None,
+                    assistant_tool_chain,
                     None,
                     assistant_time.isoformat(),
                 ),

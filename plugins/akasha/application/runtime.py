@@ -243,7 +243,6 @@ class OnlineMemoryRuntime:
                 turn,
                 cycle.retrieve(
                     turn,
-                    include_completion=False,
                     isolate_graph=False,
                 ),
             )

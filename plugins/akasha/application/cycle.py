@@ -222,7 +222,6 @@ class MemoryCycle:
         if recomputed:
             selected = self.retrieve(
                 causal_turn,
-                include_completion=False,
             )
         else:
             if ticket is None:
