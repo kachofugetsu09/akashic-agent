@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import types
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
@@ -101,7 +102,9 @@ def _load_memory_plugin_from_dir(name: str) -> MemoryPlugin | None:
     plugin_path = _PROJECT_ROOT / "plugins" / name / "memory_plugin.py"
     if not plugin_path.exists():
         return None
-    module_name = f"akasic_memory_plugin_{name}"
+    package_name = f"_akasic_memory_plugins.{name}"
+    _ensure_memory_plugin_package(package_name, plugin_path.parent)
+    module_name = f"{package_name}.memory_plugin"
     spec = importlib.util.spec_from_file_location(module_name, plugin_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load {plugin_path}")
@@ -117,6 +120,23 @@ def _load_memory_plugin_from_dir(name: str) -> MemoryPlugin | None:
     if not isinstance(plugin, MemoryPlugin):
         raise TypeError(f"{plugin_path} 未返回 MemoryPlugin")
     return plugin
+
+
+def _ensure_memory_plugin_package(package_name: str, directory: Path) -> None:
+    """Create the isolated package namespace used by file-based memory plugins."""
+
+    # 1. Own a private namespace instead of colliding with importable plugins.
+    root_name = package_name.partition(".")[0]
+    if root_name not in sys.modules:
+        root = types.ModuleType(root_name)
+        root.__path__ = []  # type: ignore[attr-defined]
+        sys.modules[root_name] = root
+
+    # 2. Give relative imports one explicit sibling search path.
+    package = types.ModuleType(package_name)
+    package.__path__ = [str(directory)]  # type: ignore[attr-defined]
+    package.__package__ = package_name
+    sys.modules[package_name] = package
 
 
 def resolve_context_factory(name: str) -> ContextFactory:

@@ -747,6 +747,36 @@ def test_memory_plugin_resolver_loads_plugin_directory(monkeypatch, tmp_path: Pa
     assert resolve_memory_plugin("demo_memory").plugin_id == "demo_memory"
 
 
+def test_memory_plugin_resolver_supports_relative_imports(
+    monkeypatch,
+    tmp_path: Path,
+):
+    plugin_dir = tmp_path / "plugins" / "relative_memory"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "engine.py").write_text(
+        "PLUGIN_ID = 'relative_memory'\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "memory_plugin.py").write_text(
+        "\n".join(
+            [
+                "from .engine import PLUGIN_ID",
+                "",
+                "class MemoryPlugin:",
+                "    plugin_id = PLUGIN_ID",
+                "    def build(self, deps):",
+                "        raise AssertionError('not used')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    import bootstrap.wiring as wiring
+
+    monkeypatch.setattr(wiring, "_PROJECT_ROOT", tmp_path)
+
+    assert resolve_memory_plugin("relative_memory").plugin_id == "relative_memory"
+
+
 @pytest.mark.asyncio
 async def test_wire_turn_lifecycle_registers_afterstep_progress_handler():
     bus = EventBus()

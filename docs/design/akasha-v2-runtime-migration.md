@@ -1,6 +1,6 @@
 # Akasha V2 在线运行与确定性重放设计
 
-- 状态：accepted；实现在 stacked follow-up，正式 workspace 尚未部署
+- 状态：implemented；正式 workspace 尚未部署
 - 日期：2026-07-27
 - 决策：[0006](../decisions/0006-akasha-v2-is-the-canonical-explicit-memory-engine.md)
 - 需求：MEM-009、SES-003、GOV-005、TST-002、TST-005
@@ -276,3 +276,26 @@ PYTHONHASHSEED=987654321 .venv/bin/python scripts/build_akasha_db.py \
 # public runtime gate
 python docker/debug/gate.py run --base origin/main
 ```
+
+## 12. 2026-07-27 隔离验收结果
+
+正式 workspace 在 Gate 前后保持相同 SHA256、size 和 mtime。隔离 SQLite backup 中
+共有 4800 个合法对话 turn、9568 条必须存在的 message embedding；源快照最初有
+12 条真实对话向量缺口，测试只在 `/tmp` 副本中通过正式 embedding provider 补齐，
+未修改正式 `sessions.db`。
+
+全量重放得到 4640 个 hub 和 21290 条关系，单次约 170 秒。两种
+`PYTHONHASHSEED` 使用相同 11 个冻结 query 产生相同 canonical logical state；
+SQLite 文件摘要因物理页布局不同而不同，不作为语义等价判据。每个 query 的显式召回数依次为：
+
+| user seq | 3011 | 4740 | 5294 | 7877 | 8464 | 8566 | 9224 | 9624 | 9710 | 9892 | 10306 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| recall turns | 6 | 18 | 8 | 15 | 9 | 20 | 5 | 15 | 15 | 27 | 11 |
+
+所有 query 都低于既定的 40 条上下文舒适范围；详细私有正文只保存在调用者选择的
+隔离报告中，不提交到公开仓库。
+
+Docker Gate `AKV2-01` 至 `AKV2-06` 全部通过：第二轮 provider payload 确认包含自动
+Akasha 上下文；`recall_memory` 调用前后 logical state 相同；第二轮持久化后状态改变；
+停机 replay 与 online logical state 相同；Compose 无残留；正式 workspace 与仓库摘要
+不变。

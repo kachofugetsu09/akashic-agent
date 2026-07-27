@@ -57,6 +57,26 @@ failure，并检查 RSS、fd、线程与 DB 非终态阈值。
 每次运行的证据位于
 `docker/debug/reports/programmatic-control/<run-id>/`。
 
+## Akasha V2 在线与重放等价 Gate
+
+Akasha 专用 Gate 复用同一个只读 runtime 容器，但开启 `memory.engine = "akasha"`。
+scripted model-gate 只控制模型回复和 `recall_memory` 工具选择；embedding 使用显式
+`--source-config` 中的真实 provider。配置及凭据只进入权限为 `0600` 的唯一 `/tmp`
+sandbox，运行结束后删除，不写日志和报告。
+
+```bash
+python docker/debug/akasha_v2_runtime_probe.py \
+  --source-config /path/to/debug-config.toml \
+  --formal-workspace /path/to/formal-workspace
+```
+
+Gate 完成两个真实 turn，检查第二轮 provider payload 已收到自动 Akasha 上下文，
+在 final response barrier 处证明 `recall_memory` 前后逻辑状态不变，再证明第二轮提交
+会改变状态。停止在线 gateway 后，它从同一隔离 `sessions.db` 严格重放，要求 online
+与 replay canonical logical hash 相同。最后核对正式 `sessions.db`、正式 `akasha.db`
+和仓库摘要未改变，Compose 无残留。证据位于
+`docker/debug/reports/akasha-v2-runtime/<run-id>/`。
+
 ## 一次性迁移验收门
 
 迁移专用 Gate 在与 runtime control Gate 相同的只读容器边界内运行完整 case matrix：

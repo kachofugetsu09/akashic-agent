@@ -1,176 +1,107 @@
+"""Load the versioned Akasha V2 plugin configuration."""
+
 from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass
-from math import isfinite
 from pathlib import Path
-from typing import cast
 
-from agent.plugins.manifest import (
-    builtin_plugin_data_dir,
-    ensure_workspace_plugin_data_dir,
-)
-from infra.persistence.json_store import atomic_write_text
+from .domain.model import MemoryConfig
 
 
 @dataclass(frozen=True)
 class AkashaConfig:
-    db_path: str = ""
-    inject_max_chars: int = 6000
-    assistant_preview_chars: int = 0
-    dense_seed_threshold: float = 0.675
-    nearby_time_seconds: int = 1800
-    nearby_dense_threshold: float = 0.28
-    activation_threshold: float = 0.22
-    soft_recall_threshold: float = 0.165
-    soft_recall_direct_floor: float = 0.45
-    cross_boost: float = 36.0
+    """Configure storage, output budget, and graph-forming dynamics."""
+
+    db_path: str = "memory/akasha.db"
+    index_path: str = "memory/akasha-v2-index.db"
+    inject_max_chars: int = 12_000
+    context_recall_limit: int = 40
+    restart: float = 0.25
+    tolerance: float = 1e-7
+    learning_rate: float = 0.5
+    activation_power: float = 2.0
+    recurrent_budget: float = 1.0
+    reverse_temporal_ratio: float = 0.25
+    forgetting_enabled: bool = True
+
+    def validate(self) -> None:
+        """Reject invalid adapter and dynamics values at config load."""
+
+        if not self.db_path or not self.index_path:
+            raise ValueError("Akasha storage paths cannot be empty")
+        if self.inject_max_chars <= 0:
+            raise ValueError("inject_max_chars must be positive")
+        if not 1 <= self.context_recall_limit <= 40:
+            raise ValueError("context_recall_limit must be in [1, 40]")
+        self.memory_config()
+
+    def memory_config(self) -> MemoryConfig:
+        config = MemoryConfig(
+            restart=self.restart,
+            tolerance=self.tolerance,
+            learning_rate=self.learning_rate,
+            activation_power=self.activation_power,
+            recurrent_budget=self.recurrent_budget,
+            reverse_temporal_ratio=self.reverse_temporal_ratio,
+            forgetting_enabled=self.forgetting_enabled,
+        )
+        config.validate()
+        return config
 
 
-# 读取 Akasha 插件配置文件。
-def load_akasha_config(
-    *,
-    workspace: Path | None = None,
-    plugin_dir: Path | None = None,
-) -> AkashaConfig:
-    # 1. 读取插件目录下的本地配置。
-    root = _config_root(workspace=workspace, plugin_dir=plugin_dir)
-    payload = _read_toml(root / "config.local.toml")
+def load_akasha_config(path: Path) -> AkashaConfig:
+    """Read one strict TOML config or return documented defaults."""
 
-    # 2. 把 TOML 字段收敛成强类型配置。
-    return AkashaConfig(
-        db_path=_string_value(payload, "db_path", ""),
-        inject_max_chars=_int_value(payload, "inject_max_chars", 6000),
-        assistant_preview_chars=_int_value(payload, "assistant_preview_chars", 0),
-        dense_seed_threshold=_float_value(payload, "dense_seed_threshold", 0.675),
-        nearby_time_seconds=_int_value(payload, "nearby_time_seconds", 1800),
-        nearby_dense_threshold=_float_value(payload, "nearby_dense_threshold", 0.28),
-        activation_threshold=_float_value(payload, "activation_threshold", 0.22),
-        soft_recall_threshold=_float_value(payload, "soft_recall_threshold", 0.165),
-        soft_recall_direct_floor=_float_value(payload, "soft_recall_direct_floor", 0.45),
-        cross_boost=_float_value(payload, "cross_boost", 36.0),
+    if not path.exists():
+        return AkashaConfig()
+    payload = tomllib.loads(path.read_text(encoding="utf-8"))
+    allowed = set(AkashaConfig.__dataclass_fields__)
+    unknown = sorted(set(payload) - allowed)
+    if unknown:
+        raise ValueError(f"unknown Akasha V2 config fields: {unknown}")
+    config = AkashaConfig(**payload)
+    config.validate()
+    return config
+
+
+def render_akasha_config(config: AkashaConfig = AkashaConfig()) -> str:
+    """Render a complete deterministic local configuration."""
+
+    return "\n".join(
+        [
+            f'db_path = "{config.db_path}"',
+            f'index_path = "{config.index_path}"',
+            f"inject_max_chars = {config.inject_max_chars}",
+            f"context_recall_limit = {config.context_recall_limit}",
+            f"restart = {config.restart}",
+            f"tolerance = {config.tolerance}",
+            f"learning_rate = {config.learning_rate}",
+            f"activation_power = {config.activation_power}",
+            f"recurrent_budget = {config.recurrent_budget}",
+            (
+                "reverse_temporal_ratio = "
+                f"{config.reverse_temporal_ratio}"
+            ),
+            (
+                "forgetting_enabled = "
+                f"{str(config.forgetting_enabled).lower()}"
+            ),
+            "",
+        ]
     )
 
 
-# 渲染默认 Akasha 配置。
-def render_akasha_config(config: AkashaConfig | None = None) -> str:
-    # 1. 使用传入配置或默认配置生成本地配置文本。
-    cfg = config or AkashaConfig()
-    return "\n".join([
-        f'db_path = "{cfg.db_path}"',
-        f"inject_max_chars = {cfg.inject_max_chars}",
-        f"assistant_preview_chars = {cfg.assistant_preview_chars}",
-        f"dense_seed_threshold = {cfg.dense_seed_threshold}",
-        f"nearby_time_seconds = {cfg.nearby_time_seconds}",
-        f"nearby_dense_threshold = {cfg.nearby_dense_threshold}",
-        f"activation_threshold = {cfg.activation_threshold}",
-        f"soft_recall_threshold = {cfg.soft_recall_threshold}",
-        f"soft_recall_direct_floor = {cfg.soft_recall_direct_floor}",
-        f"cross_boost = {cfg.cross_boost}",
-        "",
-    ])
-
-
-def ensure_akasha_config_file(
-    *,
-    workspace: Path | None = None,
-    plugin_dir: Path | None = None,
-) -> Path:
-    """迁移或创建 Akasha 的用户配置。"""
-
-    # 1. 已有用户配置直接复用
-    root = _config_root(workspace=workspace, plugin_dir=plugin_dir)
-    if plugin_dir is None:
-        ensure_workspace_plugin_data_dir(root, cast(Path, workspace))
-    path = root / "config.local.toml"
-    if path.exists():
-        return path
-
-    # 2. 首次迁移保留旧目录配置，否则写入默认配置
-    legacy_path = Path(__file__).resolve().parent / "config.local.toml"
-    content = (
-        legacy_path.read_text(encoding="utf-8")
-        if legacy_path.exists()
-        else render_akasha_config()
-    )
-    atomic_write_text(path, content, domain="akasha.config")
-    return path
-
-
-def _config_root(*, workspace: Path | None, plugin_dir: Path | None) -> Path:
-    if plugin_dir is not None:
-        return plugin_dir
-    if workspace is None:
-        raise RuntimeError("Akasha 配置缺少 workspace")
-    return builtin_plugin_data_dir("akasha", workspace)
-
-
-# 解析 Akasha sidecar 数据库路径。
-def resolve_akasha_db_path(
-    *,
+def resolve_workspace_path(
     workspace: Path,
-    akasha_config: AkashaConfig,
+    configured: str,
 ) -> Path:
-    # 1. 默认路径和显式路径都必须归属于当前 workspace。
+    """Resolve one configured path and keep it inside the workspace."""
+
     root = workspace.resolve(strict=False)
-    configured = akasha_config.db_path or "memory/akasha.db"
     path = (root / configured).resolve(strict=False)
     if not path.is_relative_to(root):
-        raise ValueError(f"akasha.db_path 必须位于 workspace 内: {configured}")
+        raise ValueError(
+            f"Akasha V2 storage path must stay in workspace: {configured}"
+        )
     return path
-
-
-# 读取 TOML 文件为普通 dict。
-def _read_toml(path: Path) -> dict[str, object]:
-    # 1. 配置不存在时回到默认值。
-    if not path.exists():
-        return {}
-    return cast(dict[str, object], tomllib.loads(path.read_text(encoding="utf-8")))
-
-
-# 读取字符串配置，缺失字段使用默认值。
-def _string_value(payload: dict[str, object], key: str, default: str) -> str:
-    if key not in payload:
-        return default
-    value = payload[key]
-    if isinstance(value, str):
-        return value
-    raise ValueError(f"Akasha 配置 {key} 必须是字符串，实际为 {value!r}")
-
-
-# 读取整数配置，缺失字段使用默认值。
-def _int_value(payload: dict[str, object], key: str, default: int) -> int:
-    if key not in payload:
-        return default
-    value = payload[key]
-    if isinstance(value, bool):
-        raise ValueError(f"Akasha 配置 {key} 必须是整数，实际为 {value!r}")
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        if isfinite(value) and value.is_integer():
-            return int(value)
-    elif isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            pass
-    raise ValueError(f"Akasha 配置 {key} 必须是整数，实际为 {value!r}")
-
-
-# 读取浮点配置，缺失字段使用默认值。
-def _float_value(payload: dict[str, object], key: str, default: float) -> float:
-    if key not in payload:
-        return default
-    value = payload[key]
-    if isinstance(value, bool):
-        raise ValueError(f"Akasha 配置 {key} 必须是数字，实际为 {value!r}")
-    if isinstance(value, int | float | str):
-        try:
-            parsed = float(value)
-        except ValueError:
-            pass
-        else:
-            if isfinite(parsed):
-                return parsed
-    raise ValueError(f"Akasha 配置 {key} 必须是有限数字，实际为 {value!r}")
