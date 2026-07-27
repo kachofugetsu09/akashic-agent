@@ -37,7 +37,7 @@ class LLMConfig:
 
 @dataclass
 class MemoryConfig:
-    window: int = 40
+    window: int = 20
 
     @property
     def keep_count(self) -> int:
