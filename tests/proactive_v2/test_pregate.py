@@ -376,6 +376,7 @@ async def test_drift_interval_allows_after_window():
                         drift_dir=tmp_path,
                         store=DriftStateStore(tmp_path),
                     ),
+                    veda_fn=lambda: "test veda",
                     max_steps=5,
                 )
             ),

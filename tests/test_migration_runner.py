@@ -128,6 +128,21 @@ def test_durable_workspace_without_config_uses_legacy_adoption(tmp_path: Path) -
     assert (state / "config.toml.migration-cursor").read_text().strip() == head
 
 
+def test_veda_only_workspace_without_config_uses_legacy_adoption(
+    tmp_path: Path,
+) -> None:
+    repo, _, head = _repository(tmp_path)
+    state = tmp_path / "state"
+    veda = state / "workspace/memory/veda.md"
+    veda.parent.mkdir(parents=True)
+    veda.write_text("custom veda\n", encoding="utf-8")
+
+    outcome = _runner(repo, state).run()
+
+    assert outcome.state == "migrated"
+    assert (state / "config.toml.migration-cursor").read_text().strip() == head
+
+
 def test_current_cursor_does_not_scan_migration_history(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

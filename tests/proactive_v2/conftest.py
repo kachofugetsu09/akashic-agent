@@ -289,6 +289,7 @@ def make_proactive_pipeline(
             deduper=deduper,
             tool_deps=tool_deps,
             gateway_deps=gateway_deps,
+            veda_fn=lambda: "test veda",
             llm_fn=llm_fn,
             rng=rng,
             recent_proactive_fn=recent_proactive_fn,

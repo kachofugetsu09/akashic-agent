@@ -29,6 +29,7 @@ from docker.debug.programmatic_control_probe import (
     _event_turn,
     _extract_id,
     _http_json,
+    _initialize_current_workspace,
     _model_requests,
     _prepare_host_sandbox,
     _recorded_turn_notifications,
@@ -677,7 +678,7 @@ def _unsupervised_tool_absence_check(report_dir: Path) -> CheckResult:
     endpoint = Path("/sandbox/unsupervised.sock")
     config_path.write_text(config, encoding="utf-8")
     _copy_gate_migration_cursor(config_path)
-    workspace.mkdir(exist_ok=True)
+    _initialize_current_workspace(workspace, Path("/app"))
     process = subprocess.Popen(
         [
             sys.executable,
@@ -893,7 +894,7 @@ def _isolated_config(name: str) -> tuple[Path, Path, Path]:
     workspace = Path(f"/sandbox/{name}-workspace")
     config.write_text(source, encoding="utf-8")
     _copy_gate_migration_cursor(config)
-    workspace.mkdir(exist_ok=True)
+    _initialize_current_workspace(workspace, Path("/app"))
     return config, workspace, endpoint
 
 

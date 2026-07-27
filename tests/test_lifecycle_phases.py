@@ -64,6 +64,7 @@ from agent.lifecycle.phases.prompt_render import (
     default_prompt_render_modules,
 )
 from agent.prompting import PromptSectionRender
+from agent.persona import reset_veda
 from agent.turns.outbound import OutboundDispatch
 from session.manager import SessionManager
 
@@ -1117,6 +1118,7 @@ async def test_before_step_setup_records_token_estimate():
 @pytest.mark.asyncio
 async def test_prompt_render_chain_appends_bottom_section(tmp_path):
     bus = EventBus()
+    _ = reset_veda(tmp_path)
 
     async def append_section(ctx: PromptRenderCtx) -> PromptRenderCtx:
         ctx.system_sections_bottom.append(
@@ -1162,6 +1164,8 @@ async def test_prompt_render_chain_appends_bottom_section(tmp_path):
 
 @pytest.mark.asyncio
 async def test_prompt_render_chain_respects_disabled_sections(tmp_path):
+    _ = reset_veda(tmp_path)
+
     class BottomModule:
         slot = "test.prompt.bottom"
         requires = ("prompt_render.emit", "prompt:ctx")
@@ -1215,6 +1219,8 @@ async def test_prompt_render_chain_respects_disabled_sections(tmp_path):
 
 @pytest.mark.asyncio
 async def test_prompt_render_collects_export_slots(tmp_path):
+    _ = reset_veda(tmp_path)
+
     class SlotModule:
         slot = "test.prompt.slot"
         requires = ("prompt_render.emit", "prompt:ctx")

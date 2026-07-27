@@ -6,6 +6,7 @@ from pathlib import Path
 
 from agent.config import Config
 from agent.memory import DEFAULT_SELF_MD, MemoryStore
+from agent.persona import VEDA_RELATIVE_PATH, read_default_veda
 from bootstrap.memory import ensure_memory_plugin_storage
 from infra.persistence.json_store import save_json
 from proactive_v2.loop import ProactiveLoop
@@ -20,6 +21,7 @@ _EMPTY_FILES: dict[str, str] = {
 
 _TEXT_FILES: dict[str, str] = {
     **_EMPTY_FILES,
+    VEDA_RELATIVE_PATH.as_posix(): read_default_veda() + "\n",
     "memory/SELF.md": DEFAULT_SELF_MD,
     "PROACTIVE_CONTEXT.md": ProactiveLoop._PROACTIVE_CONTEXT_TEMPLATE,
 }
@@ -94,7 +96,12 @@ def _ensure_workspace_text_assets(
 ) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
     for rel_path, content in _TEXT_FILES.items():
-        _write_text_file(workspace / rel_path, content, force=force, summary=summary)
+        _write_text_file(
+            workspace / rel_path,
+            content,
+            force=force and rel_path != VEDA_RELATIVE_PATH.as_posix(),
+            summary=summary,
+        )
 
 
 def _ensure_workspace_json_assets(

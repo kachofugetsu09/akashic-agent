@@ -176,3 +176,56 @@ def test_reasoner_run_turn_context_length_trims_dynamic_sections_before_history(
     assert calls[0]["disabled_sections"] == set()
     assert calls[1]["history_len"] == 6
     assert calls[1]["disabled_sections"] == {"skills_catalog"}
+
+
+def test_context_retry_starts_after_long_tool_chain_boundary():
+    history: list[dict] = [
+        {"role": "user", "content": "older-user"},
+        {"role": "assistant", "content": "older-answer"},
+        {"role": "user", "content": "tool-heavy-user"},
+    ]
+    for index in range(13):
+        call_id = f"call-{index}"
+        history.extend(
+            [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": "lookup", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": f"result-{index}",
+                },
+            ]
+        )
+    history.extend(
+        [
+            {"role": "assistant", "content": "tool-heavy-answer"},
+            {"role": "user", "content": "recent-user"},
+            {"role": "assistant", "content": "recent-answer"},
+        ]
+    )
+
+    reduced_plan = next(
+        plan
+        for plan in DefaultReasoner._build_attempt_plans(len(history))
+        if plan["history_window"] < len(history)
+    )
+    window = cast(int, reduced_plan["history_window"])
+    assert window == 16
+    assert history[-window]["role"] == "tool"
+
+    projected = DefaultReasoner._slice_history(history, window)
+
+    assert projected == [
+        {"role": "user", "content": "recent-user"},
+        {"role": "assistant", "content": "recent-answer"},
+    ]

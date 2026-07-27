@@ -20,6 +20,7 @@ from agent.core.prompt_block import (
     SystemPromptBuildResult,
     SystemPromptBuilder,
     TurnContext,
+    VedaPromptBlock,
 )
 from agent.prompting import (
     PromptAssembler,
@@ -244,6 +245,7 @@ class ContextBuilder:
         self.memory = memory
         self._system_prompt_builder = SystemPromptBuilder(
             [
+                VedaPromptBlock(),
                 IdentityPromptBlock(render_fn=build_agent_static_identity_prompt),
                 BehaviorRulesPromptBlock(),
                 MemoryBlockPromptBlock(),

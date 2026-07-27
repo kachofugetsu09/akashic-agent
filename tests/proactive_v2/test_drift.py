@@ -196,9 +196,30 @@ def _make_drift_pipeline(
         DriftTurnPipelineDeps(
             store=store,
             tool_deps=tool_deps,
+            veda_fn=lambda: "test veda",
             max_steps=max_steps,
         )
     )
+
+
+def test_drift_system_prompt_reloads_veda(tmp_path: Path) -> None:
+    current = ["first veda"]
+    store = DriftStateStore(tmp_path)
+    pipeline = DriftTurnPipeline(
+        DriftTurnPipelineDeps(
+            store=store,
+            tool_deps=DriftToolDeps(drift_dir=tmp_path, store=store),
+            veda_fn=lambda: current[0],
+        )
+    )
+
+    first = pipeline._build_system_prompt()
+    current[0] = "second veda"
+    second = pipeline._build_system_prompt()
+
+    assert "first veda" in first
+    assert "first veda" not in second
+    assert "second veda" in second
 
 
 def test_drift_tool_schemas_include_reused_tools(tmp_path: Path):
@@ -1552,6 +1573,7 @@ async def test_agent_tick_drift_emits_delivery_result(
                 feed_fn=AsyncMock(return_value=[]),
                 context_fn=AsyncMock(return_value=[]),
             ),
+            veda_fn=lambda: "test veda",
             workspace_context_fn=None,
             llm_fn=llm,
             rng=FakeRng(value=1.0),

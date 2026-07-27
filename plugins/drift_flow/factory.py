@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from agent.persona import read_veda
 from plugins.drift_flow.runtime import DriftTurnPipeline, DriftTurnPipelineDeps
 from plugins.drift_flow.state import DriftStateStore
 from plugins.drift_flow.tools import DriftToolDeps
@@ -112,6 +113,7 @@ def build_drift_pipeline(
                 shared_tools=scope.shared_tools,
                 event_bus=scope.event_bus,
             ),
+            veda_fn=lambda: read_veda(workspace),
             max_steps=scope.cfg.drift_max_steps,
             tool_hooks=scope.tool_hooks,
         )

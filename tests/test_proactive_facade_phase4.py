@@ -114,6 +114,7 @@ def test_agent_tick_prompt_keeps_self_block_with_facade():
                 feed_fn=MagicMock(),
                 context_fn=MagicMock(),
             ),
+            veda_fn=lambda: "test veda",
             workspace_context_fn=None,
             llm_fn=None,
             rng=None,
@@ -151,6 +152,7 @@ def test_agent_tick_prompt_propagates_memory_profile_failure(
     builder = ProactivePromptBuilder(
         cfg=ProactiveConfig(),
         memory=cast(MemoryProfileApi, SimpleNamespace(**methods)),
+        veda_fn=lambda: "test veda",
         workspace_context_fn=None,
     )
 
@@ -168,6 +170,7 @@ def test_agent_tick_prompt_propagates_workspace_context_failure() -> None:
     builder = ProactivePromptBuilder(
         cfg=ProactiveConfig(),
         memory=None,
+        veda_fn=lambda: "test veda",
         workspace_context_fn=fail,
     )
 
@@ -176,3 +179,21 @@ def test_agent_tick_prompt_propagates_workspace_context_failure() -> None:
             AgentTickContext(session_key="test"),
             GatewayResult(),
         )
+
+
+def test_agent_tick_system_prompt_reloads_veda() -> None:
+    current = ["first veda"]
+    builder = ProactivePromptBuilder(
+        cfg=ProactiveConfig(),
+        memory=None,
+        veda_fn=lambda: current[0],
+        workspace_context_fn=None,
+    )
+
+    first = builder.build_system_prompt()
+    current[0] = "second veda"
+    second = builder.build_system_prompt()
+
+    assert "first veda" in first
+    assert "first veda" not in second
+    assert "second veda" in second

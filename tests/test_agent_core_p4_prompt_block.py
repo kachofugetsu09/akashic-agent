@@ -16,6 +16,7 @@ from agent.core.prompt_block import (
     SkillsCatalogPromptBlock,
     SystemPromptBuilder,
     TurnContext,
+    VedaPromptBlock,
 )
 from prompts.agent import (
     build_agent_static_identity_prompt,
@@ -90,11 +91,36 @@ def test_system_prompt_builder_respects_disabled_sections(tmp_path: Path):
     assert [item.name for item in built.system_sections] == ["identity"]
 
 
-def test_static_identity_prompt_is_not_hardcoded_to_specific_user(tmp_path: Path):
+def test_static_identity_prompt_exposes_veda_edit_boundary(tmp_path: Path):
     prompt = build_agent_static_identity_prompt(workspace=tmp_path)
 
-    assert "花月的长期 AI 伙伴" not in prompt
-    assert "用户的长期 AI 伙伴" in prompt
+    assert f"{tmp_path.resolve()}/memory/veda.md" in prompt
+    assert "只有用户明确要求修改人格或 Veda 时" in prompt
+    assert "用户的长期 AI 伙伴" not in prompt
+
+
+def test_veda_prompt_block_reloads_after_each_turn_build(tmp_path: Path):
+    path = tmp_path / "memory/veda.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("first veda", encoding="utf-8")
+    builder = SystemPromptBuilder([VedaPromptBlock()])
+    ctx = TurnContext(
+        workspace=tmp_path,
+        memory=cast(Any, _Memory()),
+        skills=cast(Any, _Skills()),
+        skill_names=[],
+        channel=None,
+        chat_id=None,
+        retrieved_memory_block="",
+    )
+
+    first = builder.build(ctx)
+    path.write_text("second veda", encoding="utf-8")
+    second = builder.build(ctx)
+
+    assert first.system_prompt == "first veda"
+    assert second.system_prompt == "second veda"
+    assert second.debug_breakdown[0].cache_hit is False
 
 
 def test_current_session_prompt_distinguishes_web_and_android_surfaces():
@@ -127,6 +153,7 @@ def test_current_session_prompt_does_not_guess_unknown_channel_surface():
 
 def test_prompt_block_priorities_leave_spacing_for_future_inserts():
     priorities = [
+        (VedaPromptBlock.label, VedaPromptBlock.priority),
         (IdentityPromptBlock.label, IdentityPromptBlock.priority),
         (BehaviorRulesPromptBlock.label, BehaviorRulesPromptBlock.priority),
         (SkillsCatalogPromptBlock.label, SkillsCatalogPromptBlock.priority),
@@ -139,6 +166,7 @@ def test_prompt_block_priorities_leave_spacing_for_future_inserts():
     ]
 
     assert priorities == [
+        ("veda", 5),
         ("identity", 10),
         ("behavior_rules", 15),
         ("skills_catalog", 20),

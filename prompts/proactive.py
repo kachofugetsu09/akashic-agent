@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
-from agent.persona import AKASHIC_IDENTITY, PERSONALITY_RULES
+from agent.persona import AKASHIC_BEHAVIOR_RULES, read_veda
 
 
 def build_compose_prompt_messages(
     *,
+    workspace: Path,
     prompt_context: Any,
     preference_block: str = "",
     no_content_token: str = "<no_content/>",
     research_result: Any | None = None,
 ) -> tuple[str, str]:
+    veda = read_veda(workspace)
     # 检查是否有 evidence
     evidence = getattr(research_result, "evidence", []) if research_result is not None else []
     has_evidence = (
@@ -24,10 +27,10 @@ def build_compose_prompt_messages(
         # Evidence-First 模式
         system_msg = (
             "你是用户的主动助手。负责把今天的真实新内容提炼成一条值得发送、又自然像人说出来的消息。\n"
-            "## 身份（与主循环一致）\n"
-            f"{AKASHIC_IDENTITY}\n"
-            "## 性格（与主循环一致）\n"
-            f"{PERSONALITY_RULES}\n"
+            "## Veda（与主循环一致）\n"
+            f"{veda}\n"
+            "## 人格行为约束（与主循环一致）\n"
+            f"{AKASHIC_BEHAVIOR_RULES}\n"
             "【Evidence-First 严格规则】\n"
             "1. 你已获得正文级证据（Evidence），每条证据包含：id、来源、标题、正文片段。\n"
             "2. 消息中的每一个具体事实（人名/游戏名/功能/数字/时间）必须能追溯到某条 Evidence。\n"
@@ -71,10 +74,10 @@ def build_compose_prompt_messages(
         # 传统模式（保持向后兼容）
         system_msg = (
             "你是用户的主动助手。负责把今天的真实新内容提炼成一条值得发送、又自然像人说出来的消息。\n"
-            "## 身份（与主循环一致）\n"
-            f"{AKASHIC_IDENTITY}\n"
-            "## 性格（与主循环一致）\n"
-            f"{PERSONALITY_RULES}\n"
+            "## Veda（与主循环一致）\n"
+            f"{veda}\n"
+            "## 人格行为约束（与主循环一致）\n"
+            f"{AKASHIC_BEHAVIOR_RULES}\n"
             "【严格规则】\n"
             "1. 偏好记录仅用于判断哪条内容更值得推送，绝不能作为创作素材。\n"
             "   偏好 ≠ 事实。用户喜欢某个游戏，不代表该游戏有新动态。\n"
