@@ -331,7 +331,7 @@ session、channel、chat、source_ref 和预算在每次 post-response run 创�
 
 ### MEM-009 Akasha 使用固定输入确定性重建
 
-`akasha.db` 和 graph snapshot 是派生 sidecar。完整重建只读取 `sessions.db/messages`、对应的 `message_embeddings`、固定算法和固定配置，不引入 LLM 重新解释历史，也不重新生成已经存在的 embedding。同一组输入必须得到可复现的图；缺少或模型不匹配的 embedding 必须使完整重建失败并报告缺口，不能静默跳过消息后仍声称成功。
+`akasha.db` 和 graph snapshot 是派生 sidecar。完整重建只读取 `sessions.db/messages`、对应的 `message_embeddings`、固定算法和固定配置，不引入 LLM 重新解释历史，也不重新生成已经存在的 embedding。只有完成的 user/assistant turn 属于学习样本；被中断、失败或明确标为 `skip_post_memory` 的 turn 保留在原始会话中，但不要求 embedding，也不进入显式记忆图。同一组输入必须得到可复现的图；合法学习样本缺少或模型不匹配的 embedding 必须使完整重建失败并报告缺口，不能静默跳过后仍声称成功。
 
 ## 9. 运行时、并发和出站
 

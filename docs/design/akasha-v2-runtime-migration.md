@@ -101,6 +101,8 @@ reinforce 或检查器兼容层。旧配置和旧 sidecar 的正式切换必须�
 
 - `session_key` 前缀为 `scheduler` 的 turn 不查询学习状态，也不进入 replay。
 - user 或 assistant 的持久 metadata 含 `skip_post_memory` 时，同样排除。
+- 中断占位 turn 不进入学习样本。新数据通过 assistant 的 `skip_post_memory` 表达；
+  历史数据仅把 assistant 正文精确等于 `[interrupted]` 的 pair 视为中断。
 - user 与 assistant 都没有文本的纯媒体 turn 不进入索引。
 - 单边文本为空时，只要求非空一侧有 embedding；不得为纯空内容生成假向量。
 
@@ -140,6 +142,10 @@ dense / BM25 / burst / temporal evidence
 ```text
 只读打开 sessions.db
         │
+        ▼
+分类完成与中断 turn
+        │
+        ├─ 中断/显式跳过 ─► 保留原消息，不要求 embedding
         ▼
 审计所有 eligible message embeddings
         │

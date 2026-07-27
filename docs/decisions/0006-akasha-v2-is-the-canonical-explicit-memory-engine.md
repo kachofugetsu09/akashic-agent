@@ -27,8 +27,9 @@
 4. `sessions.db/messages` 和匹配的 `message_embeddings` 是固定重建输入。
    `akasha.db` 与稀疏索引都是派生 sidecar。完整重建在首次备份或目标写入前审计全部
    合法对话向量，缺失、错模型、错维度、非有限或零向量都 fail-loud。
-5. scheduler 与带 `skip_post_memory` 的消息既不在线学习，也不进入重放，避免两条路径
-   对学习样本的定义不同。
+5. scheduler、带 `skip_post_memory` 的消息以及没有完成 assistant 回复的中断 turn
+   既不在线学习，也不进入重放。新中断占位使用结构化 `skip_post_memory`；历史
+   assistant 占位只兼容精确正文 `[interrupted]`，避免两条路径对学习样本的定义不同。
 6. 用户可见结果保留“左脑记忆：精确回忆”和“右脑记忆：联想补全”两条 lane。
    左脑最多五条 dense 命中；右脑按稳定 turn ID 去重后排除左脑项。每条 lane 内按时间
    从近到远显示，日期为 `MM-DD`，assistant 正文最多 50 个字符。
@@ -43,8 +44,9 @@
 重排下一轮学习输入。
 
 固定 upstream 身份避免宿主镜像悄悄漂移。严格向量预检保护 MEM-009：重放不能以
-“成功退出”掩盖缺少历史 turn。把 scheduler 排除规则放在在线和重放共同边界，则避免
-重复任务把图的连接预算占满。
+“成功退出”掩盖合法学习样本的向量缺口。把 scheduler 和未完成 turn 的排除规则放在
+在线与重放共同边界，可以避免重复任务占满连接预算，也避免补算一个从未在线学习的
+中断事件。
 
 ## 影响
 
@@ -61,6 +63,7 @@
 - 同一隔离 `sessions.db` 的在线提交与干净重放得到相同 canonical logical state。
 - 不同 `PYTHONHASHSEED` 的完整重放得到相同 logical state。
 - 缺少合法对话 embedding 时，重建在备份和目标数据库写入前失败并生成缺口报告。
+- 中断 turn 保留原始消息，但不产生 embedding 要求、稀疏节点、hub 或图关系。
 - Docker runtime 使用独立 workspace 完成 query、持久化、自动上下文、显式 recall 和
   下一轮提交；正式 workspace 的文件摘要与 mtime 不变。
 
