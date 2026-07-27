@@ -277,13 +277,13 @@ workspace 之外还有两组明确的全局状态：
 
 ### 8.3 `memory/akasha.db`
 
-`AkashaStore` 保存 query log、nodes、edges、activation events、salience、migration、source snapshot、embedding cache 和 FTS IDF。`AkashaEngine` 的代码注释、describe metadata 和 [`plugins/akasha/REBUILD.md`](../../plugins/akasha/REBUILD.md) 都明确说明：原始正文必须回 `sessions.db` 读取，Akasha sidecar 不充当事实来源。
+Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activation/plasticity 事件和因果上下文。宿主 adapter 与重建 CLI 都只从 `sessions.db` 读取原始正文；Akasha sidecar 不充当事实来源。完整调用链见 [Akasha V2 在线与确定性重放设计](akasha-v2-runtime-migration.md)。
 
-**F-007：** `akasha.db` 是由 `sessions.db/messages`、`sessions.db/message_embeddings`、固定算法和固定配置得到的索引与图；`akasha_graph_snapshot.json` 又是供 dashboard 使用的派生快照。标准 rebuild 复用已有 embedding，不调用 LLM，也不让模型重新解释历史。
+**F-007：** `akasha.db` 与 `akasha-v2-index.db` 是由 `sessions.db/messages`、`sessions.db/message_embeddings`、固定算法和固定配置得到的派生索引与图。标准 rebuild 复用已有 embedding，不调用 LLM，也不让模型重新解释历史。旧 `akasha_graph_snapshot.json` 和私有图 Dashboard 已退出 V2 运行时接口。
 
 **F-007A：** 同一份 messages、匹配的 message embeddings、算法和配置必须得到可复现的图。算法与配置要作为重建输入固定；改变它们属于显式图迁移，不是同输入重建。
 
-**G-003：** 当前 `build_akasha_db.py` 在 embedding cache miss 时会跳过消息，可能生成残缺图。完整重建合同要求 miss 或模型不匹配时 fail-loud；修复前不能仅凭脚本退出成功声称已经完整重建。
+**F-007B：** 当前 `build_akasha_db.py` 在备份和目标数据库写入前审计全部合法对话 embedding。缺失、内容 hash 不匹配、模型/维度不匹配、非有限或零向量会写出确定性缺口报告并 fail-loud；scheduler、显式 `skip_post_memory` 和双方都为空的纯媒体 turn 不属于学习输入。
 
 ## 9. 主动流程、Wake、Drift 与调度
 
@@ -446,7 +446,6 @@ workspace 之外还有两组明确的全局状态：
 5. SQLite 分别 backup 时，每个文件内部一致，但多个数据库与普通文件之间没有全局事务时点。
 6. 备份范围没有明确包含或排除 `.app-server-token`、diagnostic traces、全局凭据和全局插件 manifest。
 7. `mcp/servers/*.toml` 与 workspace 手工 skill 目录仍绕过插件安装系统，形成第二套能力 owner；现存内容尚未迁移。
-8. Akasha rebuild 遇到 embedding miss 时仍会跳过消息，尚未满足 MEM-009 的完整重建失败语义。
 
 这些缺口正是 `BAK-001` 和 `NOW.md` 中恢复演练事项尚未完成的部分。
 
