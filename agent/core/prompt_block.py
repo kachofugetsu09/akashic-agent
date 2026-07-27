@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from agent.persona import read_veda
 from agent.prompting import PromptSectionMeta, PromptSectionRender, SectionCache
 from prompts.agent import (
     build_agent_behavior_rules_prompt,
@@ -42,6 +43,9 @@ class PromptBlock(Protocol):
 
 
 # ─── Prompt Block 渲染顺序（priority 升序 = system prompt 拼接顺序）────────────
+#   5 VedaPromptBlock         → memory/veda.md
+#                              来源：用户明确维护的 workspace 人格真源
+#                              时机：每次组装都重新读取，本轮修改从下一轮生效
 #  10 IdentityPromptBlock      → build_agent_static_identity_prompt(workspace)
 #                              来源：工作区路径、memory/* 文件索引
 #                              时机：仅 workspace 变化时才变，最稳定
@@ -70,6 +74,18 @@ class PromptBlock(Protocol):
 #                              来源：retrieved_memory_block
 #                              时机：每轮 retrieval 结果都可能不同，最高频
 # ─────────────────────────────────────────────────────────────────────────────
+class VedaPromptBlock:
+    priority = 5
+    label = "veda"
+    is_static = False
+
+    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str:
+        return read_veda(ctx.workspace)
+
+    def cache_signature(self, ctx: TurnContext) -> str | None:
+        return None
+
+
 class IdentityPromptBlock:
     priority = 10
     label = "identity"

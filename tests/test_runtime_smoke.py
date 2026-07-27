@@ -24,6 +24,7 @@ from agent.config import (
     resolve_app_server_endpoint,
 )
 from agent.memory import DEFAULT_SELF_MD
+from agent.persona import reset_veda
 from bus.event_bus import EventBus
 from core.net.http import SharedHttpResources
 
@@ -394,6 +395,7 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
     config_path = tmp_path / "config.toml"
     socket_path = tmp_path / "akashic.sock"
     _write_config(config_path, socket_path)
+    _ = reset_veda(tmp_path)
 
     original_build_core_runtime = bootstrap_app.build_core_runtime
     observed: dict[str, object] = {}
@@ -865,6 +867,9 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     assert (workspace / "memory" / "consolidation_writes.db").exists()
     assert not (workspace / "memory" / "journal").exists()
     assert (workspace / "memory" / "memory2.db").exists()
+    assert "你是 Akashic" in (
+        workspace / "memory" / "veda.md"
+    ).read_text(encoding="utf-8")
     assert "Proactive Context" in (
         workspace / "PROACTIVE_CONTEXT.md"
     ).read_text(encoding="utf-8")
@@ -885,14 +890,18 @@ def test_init_workspace_respects_force_for_text_assets(tmp_path):
         workspace=workspace,
     )
     self_path = workspace / "memory" / "SELF.md"
+    veda_path = workspace / "memory" / "veda.md"
     self_path.write_text("custom\n", encoding="utf-8")
+    veda_path.write_text("custom veda\n", encoding="utf-8")
 
     summary_skip = workspace_init.init_workspace(
         config_path=config_path,
         workspace=workspace,
     )
     assert self_path.read_text(encoding="utf-8") == "custom\n"
+    assert veda_path.read_text(encoding="utf-8") == "custom veda\n"
     assert any(path == self_path for path in summary_skip.skipped)
+    assert any(path == veda_path for path in summary_skip.skipped)
 
     summary_force = workspace_init.init_workspace(
         config_path=config_path,
@@ -900,7 +909,9 @@ def test_init_workspace_respects_force_for_text_assets(tmp_path):
         force=True,
     )
     assert self_path.read_text(encoding="utf-8") == DEFAULT_SELF_MD
+    assert veda_path.read_text(encoding="utf-8") == "custom veda\n"
     assert any(path == self_path for path in summary_force.overwritten)
+    assert any(path == veda_path for path in summary_force.skipped)
 
 
 @pytest.mark.asyncio

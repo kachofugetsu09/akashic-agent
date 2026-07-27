@@ -13,6 +13,7 @@ from agent.looping.core import AgentLoop, _supports_stream_events
 from agent.looping.interrupt import TurnInterruptState
 from agent.lifecycle.facade import TurnLifecycle
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, MemoryServices
+from agent.persona import reset_veda
 from agent.provider import LLMResponse
 from agent.retrieval.protocol import (
     MemoryRetrievalPipeline,
@@ -339,6 +340,7 @@ def _make_loop(
     *,
     retrieval_pipeline: MemoryRetrievalPipeline | None = None,
 ) -> AgentLoop:
+    _ = reset_veda(tmp_path)
     tools = ToolRegistry()
     tools.register(_NoopTool())
     return AgentLoop(

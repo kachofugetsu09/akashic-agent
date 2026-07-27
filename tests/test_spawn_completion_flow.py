@@ -5,6 +5,7 @@ import pytest
 
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryServices
+from agent.persona import reset_veda
 from agent.provider import LLMResponse
 from agent.tools.registry import ToolRegistry
 from bus.events import SpawnCompletionItem
@@ -25,6 +26,7 @@ class _Provider:
 
 @pytest.mark.asyncio
 async def test_spawn_completion_updates_original_session_without_raw_result(tmp_path):
+    _ = reset_veda(tmp_path)
     provider = _Provider()
     session_manager = SessionManager(tmp_path)
     tools = ToolRegistry()
@@ -76,6 +78,7 @@ async def test_spawn_completion_updates_original_session_without_raw_result(tmp_
 
 @pytest.mark.asyncio
 async def test_spawn_completion_retry_count_one_disables_retry_guidance(tmp_path):
+    _ = reset_veda(tmp_path)
     provider = _Provider()
     session_manager = SessionManager(tmp_path)
     tools = ToolRegistry()

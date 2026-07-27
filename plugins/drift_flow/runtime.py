@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
-from agent.persona import AKASHIC_IDENTITY, PERSONALITY_RULES
+from agent.persona import AKASHIC_BEHAVIOR_RULES
 from agent.prompting import (
     PromptSectionRender,
     build_context_frame_content,
@@ -58,6 +58,7 @@ _TOOL_CONSTRAINT_RETRY_LIMIT = 2
 class DriftTurnPipelineDeps:
     store: DriftStateStore
     tool_deps: DriftToolDeps
+    veda_fn: Callable[[], str]
     max_steps: int = 20
     step_recorder: StepRecorder | None = None
     tool_hooks: list[ToolHook] = field(default_factory=list)
@@ -85,6 +86,7 @@ class DriftTurnPipeline:
     def __init__(self, deps: DriftTurnPipelineDeps) -> None:
         self._store = deps.store
         self._tool_deps = deps.tool_deps
+        self._veda_fn = deps.veda_fn
         self._max_steps = deps.max_steps
         self.step_recorder = deps.step_recorder
         self._tool_executor = ToolExecutor(deps.tool_hooks)
@@ -769,8 +771,8 @@ class DriftTurnPipeline:
 
     def _build_system_prompt(self) -> str:
         return (
-            f"{AKASHIC_IDENTITY}\n\n"
-            f"{PERSONALITY_RULES}\n\n"
+            f"{self._veda_fn()}\n\n"
+            f"{AKASHIC_BEHAVIOR_RULES}\n\n"
             "你现在有一段空闲时间（Drift 模式）。没有外部内容需要推送，\n"
             "这段时间更像一个人没有被叫住时的自处：优先尝试做一点合适的小事，例如整理想法、延续小兴趣、准备以后可能用得上的素材，或发一个低打扰的轻量问题。"
             "Drift 不是服务用户当前请求，也不是补跑所有历史任务；但它默认应该行动一小步。"

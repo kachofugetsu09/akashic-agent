@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from agent.persona import read_default_veda
+
 
 _PROJECT_ROOT = Path(__file__).parents[1]
 
@@ -64,3 +66,85 @@ def test_init_marks_fresh_installation_at_current_head(tmp_path: Path) -> None:
     ).stdout.strip()
     cursor = config_path.with_name("config.toml.migration-cursor")
     assert cursor.read_text(encoding="ascii").strip() == head
+
+
+def test_veda_reset_runs_before_agent_runtime_and_preserves_original_bytes(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    veda = workspace / "memory/veda.md"
+    veda.parent.mkdir(parents=True)
+    original = b"\xffbroken"
+    veda.write_bytes(original)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_PROJECT_ROOT / "main.py"),
+            "veda-reset",
+            "--workspace",
+            str(workspace),
+        ],
+        cwd=_PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert veda.read_text(encoding="utf-8").strip() == read_default_veda()
+    backups = list((workspace / "memory/veda-backups").glob("*/veda.md"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == original
+    assert "原内容 sha256=" in output
+    assert "apscheduler" not in output
+
+
+def test_veda_reset_reports_noop_without_creating_backup(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+
+    first = subprocess.run(
+        [
+            sys.executable,
+            str(_PROJECT_ROOT / "main.py"),
+            "veda-reset",
+            "--workspace",
+            str(workspace),
+        ],
+        cwd=_PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    second = subprocess.run(
+        [
+            sys.executable,
+            str(_PROJECT_ROOT / "main.py"),
+            "veda-reset",
+            "--workspace",
+            str(workspace),
+        ],
+        cwd=_PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert "Veda 已是默认内容" in second.stdout
+    assert not (workspace / "memory/veda-backups").exists()
+
+
+def test_help_lists_veda_reset() -> None:
+    result = subprocess.run(
+        [sys.executable, str(_PROJECT_ROOT / "main.py"), "--help"],
+        cwd=_PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "veda-reset" in result.stdout

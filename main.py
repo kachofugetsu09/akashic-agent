@@ -7,6 +7,7 @@
   python main.py supervise          显式进入 supervisor（兼容别名）
   python main.py app-server --stdio 启动父进程托管控制面
   python main.py exec ...           非交互执行一个 turn
+  python main.py veda-reset         重建 workspace 默认人格
 """
 
 from __future__ import annotations
@@ -75,11 +76,12 @@ def _workspace_from_args(
     return Path(value).expanduser().resolve()
 
 
-def _run_lightweight_setup_command() -> bool:
-    """在加载 Agent runtime 依赖前分发纯配置命令。"""
+def _run_lightweight_command() -> bool:
+    """在加载 Agent runtime 依赖前分发恢复与纯配置命令。"""
     args = sys.argv[1:]
-    if not args or args[0] != "setup-main":
+    if not args or args[0] not in {"setup-main", "veda-reset"}:
         return False
+    command = args[0]
     config_path = "config.toml"
     if "--config" in args:
         index = args.index("--config")
@@ -87,9 +89,33 @@ def _run_lightweight_setup_command() -> bool:
             raise SystemExit("参数 --config 缺少值")
         config_path = args[index + 1]
     try:
-        workspace = _workspace_from_args(args, Path(config_path))
+        workspace = _workspace_from_args(
+            args,
+            Path(config_path),
+            allow_default=command == "veda-reset",
+        )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+
+    if command == "veda-reset":
+        from agent.persona import reset_veda
+
+        try:
+            result = reset_veda(workspace)
+        except (OSError, RuntimeError) as exc:
+            raise SystemExit(f"Veda 重建失败: {exc}") from exc
+        if not result.changed:
+            print(f"Veda 已是默认内容: {result.path}")
+            print(f"sha256={result.default_sha256}")
+            return True
+        print(f"Veda 已重建: {result.path}")
+        if result.backup_path is not None:
+            print(f"原内容备份: {result.backup_path}")
+            print(f"原内容 sha256={result.previous_sha256}")
+        print(f"默认内容 sha256={result.default_sha256}")
+        print("新人格从下一次提示词组装开始生效。")
+        return True
+
     import click
 
     from agent.migrations import migrate_installation
@@ -109,7 +135,7 @@ def _run_lightweight_setup_command() -> bool:
     return True
 
 
-if __name__ == "__main__" and _run_lightweight_setup_command():
+if __name__ == "__main__" and _run_lightweight_command():
     raise SystemExit(0)
 
 
@@ -122,6 +148,7 @@ from agent.migrations import (
 )
 from agent.restart import RestartCoordinator, SupervisorCommitChannel
 from agent.supervisor import RESTART_EXIT_CODE, run_supervisor
+from agent.persona import read_veda
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
 from agent.plugins.install import (
     install_git_plugin,
@@ -146,6 +173,7 @@ _HELP = """\
   setup                         运行交互式初始化向导
   setup-main                    仅切换主模型并保留其他配置
   init                          非交互初始化配置和工作区
+  veda-reset                    备份并重建 workspace 默认人格
   gateway                       启动未托管 Agent 服务（调试）
   supervise                     显式进入 supervisor（兼容别名）
   app-server --stdio            在 stdio 上运行程序化控制面
@@ -393,6 +421,7 @@ async def inspect_modules(config_path: str, workspace: Path) -> None:
 
 
 async def serve(config_path: str, workspace: Path) -> int:
+    _ = read_veda(workspace)
     config = Config.load(config_path, workspace=workspace)
     commit_channel = SupervisorCommitChannel.from_environment()
     restart_coordinator = (
@@ -669,6 +698,7 @@ if __name__ == "__main__":
             sys.exit(2)
         from bootstrap.app_server import run_stdio_app_server
 
+        _ = read_veda(workspace)
         config = Config.load(config_path, workspace=workspace)
         asyncio.run(run_stdio_app_server(config, workspace))
         sys.exit(0)

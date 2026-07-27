@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.context import ContextBuilder, ContextRequest
+from agent.persona import reset_veda
 from agent.prompting import SYSTEM_CONTEXT_FRAME_MARKER
 from agent.tools.base import Tool
 from agent.tools.memorize import MemorizeTool
@@ -757,6 +758,8 @@ def test_tool_base_and_timekit_and_json_store_cover_branches(
 def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
+    _ = reset_veda(tmp_path)
+
     class _Skills:
         def __init__(self, workspace: Path, **_: object) -> None:
             self.workspace = workspace
@@ -823,7 +826,10 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert "# Memes" not in prompt
     assert "<meme:shy>" not in prompt
     assert "catalog:skill summary" in prompt
-    assert [item.name for item in builder.last_debug_breakdown][:1] == ["identity"]
+    assert [item.name for item in builder.last_debug_breakdown][:2] == [
+        "veda",
+        "identity",
+    ]
 
     result2 = builder.render(
         ContextRequest(
@@ -951,6 +957,8 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
 def test_context_builder_reproduces_temporal_conflict_baseline(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
+    _ = reset_veda(tmp_path)
+
     class _Skills:
         def __init__(self, workspace: Path, **_: object) -> None:
             self.workspace = workspace
