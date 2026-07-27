@@ -1,6 +1,6 @@
 # Akasha V2 在线运行与确定性重放设计
 
-- 状态：accepted；实现在 stacked follow-up，正式 workspace 尚未部署
+- 状态：implemented；正式 workspace 尚未部署
 - 日期：2026-07-27
 - 决策：[0006](../decisions/0006-akasha-v2-is-the-canonical-explicit-memory-engine.md)
 - 需求：MEM-009、SES-003、GOV-005、TST-002、TST-005
@@ -16,8 +16,9 @@
 - 在线逐轮增长与对同一份历史做全量 replay 得到相同逻辑状态；
 - 重建、Docker 和报告都使用独立 workspace，不读写正式派生库。
 
-这次不部署正式 workspace，不迁移旧 Akasha 私有 Dashboard，也不保留旧 fast/slow、
-reinforce 或检查器兼容层。旧配置和旧 sidecar 的正式切换必须作为独立数据迁移执行。
+这次不部署正式 workspace，不迁移旧 Akasha Graph，也不保留旧 fast/slow、reinforce
+或可写检查器兼容层。桌面端和移动端重新提供面向 V2 schema 的只读 Inspector；旧配置
+和旧 sidecar 的正式切换必须作为独立数据迁移执行。
 
 ## 2. 状态所有权
 
@@ -29,6 +30,7 @@ reinforce 或检查器兼容层。旧配置和旧 sidecar 的正式切换必须�
 | `akasha.db` | 派生显式记忆 | 每个 commit 增加/更新 hub、关系、激活与遗忘状态 | `MemoryCycle` 原子发布全状态 | 部署前备份；可由稀疏索引重放恢复 |
 | pending retrieval ticket | 进程内临时状态 | 自动 context query 产生 | 同 session 新 context 可替换 | commit 消费；scheduler/skip 清除；进程退出可丢弃 |
 | recall trace/report | 诊断证据 | query 或重建生成 | 不参与图状态 | 按独立诊断 retention 管理 |
+| Inspector projection | 只读派生视图 | 每次请求从两个 V2 sidecar 重建 | 只缓存按文件签名失效的 dense 矩阵 | 不保存、无删除权限 |
 
 `sessions.db` 是唯一历史事实源。Akasha 不保存一份可独立修改的消息正文，也不因检索、
 遗忘或图清理删除原始消息。
@@ -46,6 +48,8 @@ reinforce 或检查器兼容层。旧配置和旧 sidecar 的正式切换必须�
 │                                                    │         │
 │                                                    ▼         │
 │                       plugins/akasha/MemoryPlugin adapter     │
+│                                                             │
+│  Dashboard / Mobile ── read-only ──► Akasha Inspector       │
 └────────────────────────────────┬────────────────────────────┘
                                  │ byte-identical mirror
                                  ▼
@@ -231,6 +235,38 @@ Docker 场景必须观察：
 两条 lane 先按各自证据选取，再按时间展示。去重使用稳定 turn ID，不用截断文本或
 字符串相等；同一 turn 即使两侧分数不同也只出现一次。
 
+### 9.1 Inspector 合同
+
+Inspector 不是第二套检索算法，也不拥有任何记忆状态：
+
+```text
+memory_events ───────────────► 检索轮次列表
+event_seeds ─────────────────► 直接线索
+activation_runs/items ───────► 可选逐节点扩散路径
+recall_runs/items ───────────► 显式模式补全
+turn_dense + prior-only dot ─► 左脑 dense top 5
+                               │
+                               ▼
+                     与运行时相同的去重、时间排序
+                               │
+                               ▼
+                     实际 Prompt 记忆块预览
+```
+
+`activation_runs/items` 只在请求 capture 的重放目标上持久化，普通在线轮次可能没有
+逐节点路径。此时 Inspector 仍能从 `recall_items` 展示最终补全，但必须把指标标成
+“补全候选”，隐藏“扩散激活”明细，不能把没有 capture 误写成没有扩散。
+
+桌面端通过插件 Dashboard 注册三个只读端点：overview、分页检索轮次和单轮详情。
+移动端复用宿主通用 plugin UI 协议：当前 assistant 回复前显示本轮左右脑召回，
+导航页显示最近检索并按需读取详情。两端都不暴露图快照、任意 SQL、reinforce 或写入
+RPC；SQLite 连接使用 read-only URI 与 `query_only`。assistant 预览保持最多 50 字，
+Dense 与显式补全按稳定 turn ID 去重后，分别按时间从近到远显示。
+
+`dashboard_panel_inspector.ts` 属于 upstream 镜像；宿主构建生成的同名 `.js` 是被
+Git 忽略的派生产物。镜像校验只排除这个明确命名的构建产物和 `UPSTREAM.json`，其他
+意外文件仍会让完整文件集合校验失败。
+
 ## 10. 失败、回滚与部署前置
 
 - upstream 镜像校验失败：停止构建，不从宿主镜像继续开发。
@@ -257,6 +293,10 @@ python scripts/check_akasic_behavior.py
 .venv/bin/python scripts/check_akasha_v2_mirror.py \
   --upstream /mnt/data/coding/akasha-v2-engine
 .venv/bin/python -m pytest -q
+npm run typecheck
+npm run lint
+npm run build:dashboard
+node --test tests/test_akasha_mobile_ui.mjs
 
 # strict isolated replay
 PYTHONHASHSEED=1 .venv/bin/python scripts/build_akasha_db.py \
@@ -276,3 +316,29 @@ PYTHONHASHSEED=987654321 .venv/bin/python scripts/build_akasha_db.py \
 # public runtime gate
 python docker/debug/gate.py run --base origin/main
 ```
+
+## 12. 2026-07-27 隔离验收结果
+
+正式 workspace 在 Gate 前后保持相同 SHA256、size 和 mtime。隔离 SQLite backup 中
+共有 4800 个相邻 user/assistant pair，其中 6 个 assistant 是精确的
+`[interrupted]` 占位。重放把它们分类为未完成 turn 后，得到 4794 个学习样本和
+9556 条必须存在的 message embedding；全部 9556 条有效，没有补算向量，也未修改
+正式 `sessions.db`。
+
+全量重放得到 4634 个 hub 和 21254 条关系，单次约 157～216 秒。两种
+`PYTHONHASHSEED` 使用相同 11 个冻结 query 产生相同 canonical logical state；
+本次 SQLite 文件摘要也相同，但物理页摘要不作为语义等价判据。每个 query 的显式
+召回数依次为：
+
+| user seq | 3011 | 4740 | 5294 | 7877 | 8464 | 8566 | 9224 | 9624 | 9710 | 9892 | 10306 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| recall turns | 6 | 18 | 8 | 15 | 9 | 20 | 5 | 15 | 15 | 27 | 11 |
+
+所有 query 都低于既定的 40 条上下文舒适范围；详细私有正文只保存在调用者选择的
+隔离报告中，不提交到公开仓库。与修复前逐项比较，11 个 query 的召回 turn 集合
+没有增加或减少；变化只发生在 6 个中断 turn 及其派生 hub 和关系。
+
+Docker Gate `AKV2-01` 至 `AKV2-06` 全部通过：第二轮 provider payload 确认包含自动
+Akasha 上下文；`recall_memory` 调用前后 logical state 相同；第二轮持久化后状态改变；
+停机 replay 与 online logical state 相同；Compose 无残留；正式 workspace 与仓库摘要
+不变。

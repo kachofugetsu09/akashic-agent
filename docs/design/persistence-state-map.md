@@ -76,7 +76,7 @@ workspace 仍不是完整运行环境的全部。显式主配置、全局凭据�
 | `consolidation_writes.db` | 为新的 `source_ref + kind` INSERT 幂等记录 | 保存已提交 payload 和提交状态 | 当前没有通用自动清理合同；在定义重放窗口和恢复证据前不得减少 |
 | `memory2.db/memory_items` | consolidation 或显式 memorize INSERT 新记忆 | reinforcement 更新强度/元数据；supersede 保留旧条目并改变状态，属于逻辑减少 | 只有用户明确 forget/管理操作可以 hard delete；向量索引可随 canonical 条目重建 |
 | `memory2.db/memory_replacements` | 每次 supersede 追加替换关系与前后条目 | 保留勘误和 undo 证据 | 当前没有普通运行删除协议 |
-| `akasha.db` 与 graph snapshot | 固定算法读取 `sessions.db/messages` 和已有 `message_embeddings`，增加图、激活和查询记录 | 可以用同一组输入确定性重建；重建不调用 LLM，也不重新解释历史 | 只能由显式 sidecar rebuild/maintenance 流程在备份后替换；embedding 缺失或模型不匹配时完整重建必须失败，不能跳过后声称成功 |
+| `akasha.db` 与 `akasha-v2-index.db` | 固定算法读取 `sessions.db/messages` 和已有 `message_embeddings`，增加图、激活和查询记录 | 可以用同一组输入确定性重建；只读 Inspector 从既有表派生视图，不新增状态；重建不调用 LLM，也不重新解释历史 | 只能由显式 sidecar rebuild/maintenance 流程在备份后替换；embedding 缺失或模型不匹配时完整重建必须失败，不能跳过后声称成功 |
 
 ### 3.3 自主运行、扩展与控制状态
 
@@ -187,7 +187,6 @@ workspace 之外还有两组明确的全局状态：
 │   ├── consolidation_writes.db
 │   ├── memory2.db                     default memory engine
 │   ├── akasha.db                      akasha engine
-│   ├── akasha_graph_snapshot.json     dashboard 派生快照
 │   ├── MEMORY.bak.md / SELF.bak.md
 │   ├── backups/
 │   ├── veda-backups/<UTC时间>/veda.md
@@ -279,7 +278,7 @@ workspace 之外还有两组明确的全局状态：
 
 Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activation/plasticity 事件和因果上下文。宿主 adapter 与重建 CLI 都只从 `sessions.db` 读取原始正文；Akasha sidecar 不充当事实来源。完整调用链见 [Akasha V2 在线与确定性重放设计](akasha-v2-runtime-migration.md)。
 
-**F-007：** `akasha.db` 与 `akasha-v2-index.db` 是由 `sessions.db/messages`、`sessions.db/message_embeddings`、固定算法和固定配置得到的派生索引与图。标准 rebuild 复用已有 embedding，不调用 LLM，也不让模型重新解释历史。旧 `akasha_graph_snapshot.json` 和私有图 Dashboard 已退出 V2 运行时接口。
+**F-007：** `akasha.db` 与 `akasha-v2-index.db` 是由 `sessions.db/messages`、`sessions.db/message_embeddings`、固定算法和固定配置得到的派生索引与图。标准 rebuild 复用已有 embedding，不调用 LLM，也不让模型重新解释历史。旧 `akasha_graph_snapshot.json` 和私有图 Dashboard 已退出 V2 运行时接口；新 Inspector 只读查询这两个 sidecar，不生成第三份快照，也不拥有保留或删除权限。
 
 **F-007A：** 同一份 messages、匹配的 message embeddings、算法和配置必须得到可复现的图。算法与配置要作为重建输入固定；改变它们属于显式图迁移，不是同输入重建。
 
@@ -479,7 +478,7 @@ INT-001～INT-008 和 INT-011 已由花月哥哥确认，其中长期语义已�
 
 已提升条款：MEM-005、MEM-008。`memory2.db` 进入最高备份级别；`vec_items` 可以重建，但整库不能按“向量缓存”排除。
 
-### INT-005 `akasha.db` 与 graph snapshot 是确定性派生 sidecar — 已确认
+### INT-005 Akasha 两个 V2 sidecar 是确定性派生状态 — 已确认
 
 确认内容：Akasha 使用固定算法读取 `sessions.db/messages` 和已有 `message_embeddings` 重建，不引入 LLM 重新解释历史。算法和配置固定时，同一输入必须产生可复现的图。
 
@@ -547,7 +546,7 @@ INT-001～INT-008 和 INT-011 已由花月哥哥确认，其中长期语义已�
 | **I · 待确认默认恢复集** | `schedules.json`、主配置、auth store、app-server token | INT-009/INT-010 尚未确认；当前只能在任务合同中显式选择并保护，不能写入默认 machine manifest |
 | **C · P1 行为连续性** | `proactive.db`、`wake_proactive.db`、`drift.db`、PROACTIVE_CONTEXT、consolidation idempotency | 启用对应能力时，恢复后不重复发送、不漏 ack、不丢工作流游标 |
 | **I · quota 恢复策略** | `proactive_quota.json` | INT-009 尚未确认；是否进入默认恢复集、是否只恢复当前窗口仍是 U |
-| **C · P2 可重建派生** | Akasha、graph snapshot、FTS、plugin Skill/MCP catalog、workspace skill links | 允许从固定输入或插件安装清单显式重建，但要有版本与 parity 证据 |
+| **C · P2 可重建派生** | Akasha V2 sidecar、FTS、plugin Skill/MCP catalog、workspace skill links | 允许从固定输入或插件安装清单显式重建，但要有版本与 parity 证据 |
 | **C · Companion 安装状态** | 插件 manifest、安装源与版本；cache 可从 source 重装 | 恢复后重新准备 Skill/MCP runtime 并发布同一能力集合 |
 | **I · P3 诊断证据** | recall/spawn/proactive traces、subagent-runs | INT-012 尚未确认；保留期、事故冻结、隐私与容量策略均不能从本表推导 |
 | **F + U · 运行控制** | PID、locks、readiness、socket、临时 shell/payload 文件；app-server token 除外 | 前五类由新进程重建是代码事实；token 是持久 secret，其恢复或轮换仍按 INT-013 等待确认 |

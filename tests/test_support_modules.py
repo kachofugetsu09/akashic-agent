@@ -30,6 +30,17 @@ from memory2.memorizer import Memorizer
 from memory2.store import MemoryStore2
 
 
+def test_inbound_message_default_timestamp_is_aware_utc() -> None:
+    message = InboundMessage(
+        channel="test",
+        sender="user",
+        chat_id="one",
+        content="hello",
+    )
+
+    assert message.timestamp.tzinfo is timezone.utc
+
+
 def _make_default_engine(
     *,
     retriever=None,

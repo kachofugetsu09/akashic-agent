@@ -512,6 +512,7 @@ async def test_resumed_interrupt_state_completes_normally(tmp_path: Path):
     assert session.messages[0]["content"] == "原始消息 A"
     assert session.messages[1]["content"] == "[interrupted]"
     assert session.messages[1]["tools_used"] == ["noop"]
+    assert session.messages[1]["skip_post_memory"] is True
     loop.session_manager.append_messages.assert_awaited_once_with(
         session,
         session.messages,

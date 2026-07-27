@@ -1,141 +1,161 @@
 /// <reference path="../../types/akashic-dashboard.d.ts" />
 
-// ── Types ────────────────────────────────────────────────────────────────────
-
-interface AkashaCandidate {
-  key: string;
-  user_message: string;
+interface InspectorItem {
+  query_id: string;
+  session_key: string;
+  ts: string;
+  user_text: string;
   assistant_preview: string;
-  score: number;
-  source: string;
-  path_type: string;
-  fan: number;
-  direct: number;
-  state: number;
-  edge: number;
-  long: number;
-  resource: number;
-  ripple: number;
-  seed_key: string;
-  bridge_key: string;
-  suppressed: string;
+  score?: number;
+  value?: number;
+  seed_score?: number;
+  completion_mass?: number;
+  graph_only?: boolean;
+  first_relation?: string | null;
+  sources?: string[];
+  relation_path?: string[];
 }
 
-interface AkashaCard extends AkashaCandidate {
-  user_message: string;
-  assistant_preview: string;
-  source_ref: string;
-}
-
-interface AkashaQueryRow {
+interface InspectorRow {
   query_id: string;
   session_key: string;
   seq: number;
-  query_text: string;
-  intent: string;
   ts: string;
+  query_text: string;
   seed_count: number;
-  pool_count: number;
-  activated_count: number;
-  activation_threshold: number;
-  dense_count: number;
-  ripple_count: number;
-  inject_chars: number;
-  source_ref_count: number;
+  activation_capture_available: boolean;
+  activation_count: number;
+  completion_count: number;
+  pushes: number;
+  residual_l1: number;
 }
 
-interface AkashaQueryDetail extends AkashaQueryRow {
-  activation_items: AkashaCandidate[];
-  dense_items: AkashaCard[];
-  ripple_items: AkashaCard[];
+interface InspectorDetail extends InspectorRow {
+  assistant_text: string;
+  graph_only_count: number;
+  basin_count: number;
+  surprise?: number | null;
+  observed_mass?: number | null;
+  recurrent_mass?: number | null;
+  reactivated_mass?: number | null;
+  potentiated_mass?: number | null;
+  inhibited_mass?: number | null;
+  seeds: InspectorItem[];
+  activation_items: InspectorItem[];
+  left: InspectorItem[];
+  right: InspectorItem[];
+  left_count: number;
+  right_count: number;
+  inject_chars: number;
   text_block_preview: string;
 }
 
-interface AkashaOverview {
+interface InspectorOverview {
   available: boolean;
   total: number;
-  latest_at: string | null;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function ai_fmtScore(v: number | null | undefined): string {
-  if (v == null) return "-";
-  const n = Number(v);
-  const cls = n >= 0.5 ? "ai-score-hi" : n >= 0.25 ? "ai-score-mid" : "ai-score-lo";
-  return `<span class="ai-score ${cls}">${n.toFixed(3)}</span>`;
+function shortTime(value: unknown): string {
+  if (!value) return "—";
+  const parsed = new Date(String(value));
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(parsed);
 }
 
-function ai_sourceTag(source: string): string {
-  const cls = {
-    Dense: "ai-src-dense",
-    "Dense(FB)": "ai-src-densefb",
-    FTS: "ai-src-fts",
-    BlackHole: "ai-src-blackhole",
-    Bridge: "ai-src-bridge",
-  }[source] ?? "ai-src-other";
-  return `<span class="ai-tag ${cls}">${escapeHtml(source)}</span>`;
+function fixed(value: unknown, digits = 3): string {
+  if (value === null || value === undefined || value === "") return "—";
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(digits) : "—";
 }
 
-function ai_pathTag(pt: string): string {
-  const cls = {
-    direct: "ai-path-direct",
-    "1hop": "ai-path-1hop",
-    "2hop": "ai-path-2hop",
-    bridge: "ai-path-bridge",
-  }[pt] ?? "";
-  return `<span class="ai-tag ${cls}">${escapeHtml(pt)}</span>`;
+function sourceText(item: InspectorItem): string {
+  const sources = item.sources ?? [];
+  if (sources.length) return sources.join(" · ");
+  if (item.first_relation) return item.first_relation;
+  return item.graph_only ? "仅由关系补全" : "外部线索";
 }
 
-function ai_suppressedTag(s: string): string {
-  if (!s) return "";
-  return `<span class="ai-tag ai-suppressed">${escapeHtml(s)}</span>`;
-}
-
-function ai_shortKey(key: string): string {
-  // session_key:seq → last 2 segments for readability
-  const parts = key.split(":");
-  if (parts.length >= 2) {
-    const seq = parts[parts.length - 1];
-    const sk = parts.slice(0, -1).join(":");
-    const short = sk.length > 20 ? "…" + sk.slice(-18) : sk;
-    return `${short}:${seq}`;
+function renderItems(items: InspectorItem[], empty: string): string {
+  if (!items.length) {
+    return `<p class="akasha-empty">${escapeHtml(empty)}</p>`;
   }
-  return key;
+  return `
+    <ol class="akasha-evidence-list">
+      ${items.map((item) => {
+        const score = item.score ?? item.value ?? item.completion_mass ?? item.seed_score;
+        const path = item.relation_path?.length
+          ? `<span class="akasha-path">${escapeHtml(item.relation_path.join(" → "))}</span>`
+          : "";
+        return `
+          <li class="akasha-evidence">
+            <div class="akasha-evidence-main">
+              <p>${escapeHtml(item.user_text || "（空消息）")}</p>
+              ${item.assistant_preview
+                ? `<p class="akasha-assistant">${escapeHtml(item.assistant_preview)}</p>`
+                : ""}
+            </div>
+            <div class="akasha-evidence-meta">
+              <time>${escapeHtml(shortTime(item.ts))}</time>
+              <span>${escapeHtml(sourceText(item))}</span>
+              ${score == null ? "" : `<b>${fixed(score)}</b>`}
+              ${path}
+            </div>
+          </li>
+        `;
+      }).join("")}
+    </ol>
+  `;
 }
 
-function ai_shortTs(value: unknown): string {
-  if (!value) return "-";
-  const d = new Date(String(value));
-  if (isNaN(d.getTime())) return String(value);
-  return `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+function metric(label: string, value: unknown, detail: string): string {
+  return `
+    <div class="akasha-metric">
+      <dt>${escapeHtml(label)}</dt>
+      <dd>${escapeHtml(String(value))}</dd>
+      <p>${escapeHtml(detail)}</p>
+    </div>
+  `;
 }
 
-function ai_renderFilters(container: HTMLElement, dispatch: PluginDispatch): void {
-  const q = dispatch.filters["q"] ?? "";
-  const existing = container.querySelector<HTMLInputElement>("[data-ai-search]");
+function renderFilters(container: HTMLElement, dispatch: PluginDispatch): void {
+  const value = dispatch.filters["q"] ?? "";
+  const existing = container.querySelector<HTMLInputElement>("[data-akasha-search]");
   if (existing) {
-    if (document.activeElement !== existing && existing.value !== q) {
-      existing.value = q;
+    if (document.activeElement !== existing && existing.value !== value) {
+      existing.value = value;
     }
     return;
   }
   container.innerHTML = `
-    <div class="filter-row">
-      <label class="search"><span>⌕</span><input type="text" placeholder="搜索 query / session" value="${escapeHtml(q)}" data-ai-search /></label>
-      <button class="ghost" type="button" data-ai-clear ${q ? "" : "disabled"}>清空</button>
+    <div class="akasha-filter">
+      <label>
+        <span>搜索检索记录</span>
+        <input
+          type="search"
+          value="${escapeHtml(value)}"
+          placeholder="Query、回复或 Session"
+          data-akasha-search
+        />
+      </label>
+      <button type="button" data-akasha-clear ${value ? "" : "disabled"}>清空</button>
     </div>
   `;
-  const input = container.querySelector<HTMLInputElement>("[data-ai-search]")!;
-  const clear = container.querySelector<HTMLButtonElement>("[data-ai-clear]")!;
-  let debounceTimer = 0;
+  const input = container.querySelector<HTMLInputElement>("[data-akasha-search]")!;
+  const clear = container.querySelector<HTMLButtonElement>("[data-akasha-clear]")!;
+  let timer = 0;
   input.addEventListener("input", () => {
-    window.clearTimeout(debounceTimer);
-    debounceTimer = window.setTimeout(() => {
-      const value = input.value.trim();
-      if (value) dispatch.setFilter("q", value);
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      const query = input.value.trim();
+      if (query) dispatch.setFilter("q", query);
       else dispatch.clearFilter("q");
-    }, 250);
+    }, 200);
   });
   clear.addEventListener("click", () => {
     input.value = "";
@@ -143,202 +163,78 @@ function ai_renderFilters(container: HTMLElement, dispatch: PluginDispatch): voi
   });
 }
 
-let _expanderId = 0;
-
-function ai_textExpander(text: string | null | undefined, isAssistant: boolean = false): string {
-  if (!text) return "-";
-  const size = isAssistant ? "11.5px" : "13px";
-  const lineH = isAssistant ? "1.4" : "1.5";
-  if (text.length < 60 && !text.includes('\n')) {
-    return `<div style="font-size:${size}; color:var(--color-${isAssistant ? 'muted' : 'fg'}); padding:4px 0; line-height:${lineH};">${escapeHtml(text)}</div>`;
-  }
-  const id = `ai-exp-${++_expanderId}`;
+function renderDetail(item: InspectorDetail, closePane?: () => void): string {
   return `
-    <div class="ai-expander ${isAssistant ? 'ai-exp-asst' : ''}">
-      <input type="checkbox" id="${id}" class="ai-exp-cb" style="display:none;" />
-      <label for="${id}" class="ai-exp-header">
-        <span class="ai-exp-icon">▶</span>
-        <span class="ai-exp-text-closed" style="font-size:${size}">${escapeHtml(text.replace(/\n/g, ' '))}</span>
-        <span class="ai-exp-text-open">Collapse</span>
-      </label>
-      <div class="ai-exp-full">
-        <div class="ai-exp-full-inner" style="font-size:${size}">${escapeHtml(text)}</div>
-      </div>
-    </div>
+    <article class="akasha-inspector">
+      <header class="akasha-query">
+        <div>
+          <p class="akasha-query-meta">${escapeHtml(shortTime(item.ts))} · ${escapeHtml(item.session_key)} · seq ${item.seq}</p>
+          <h2>${escapeHtml(item.query_text)}</h2>
+          <p class="akasha-query-answer">${escapeHtml(item.assistant_text || "（助手没有文本回复）")}</p>
+        </div>
+        ${closePane ? '<button class="akasha-close" type="button" data-akasha-close aria-label="关闭详情">×</button>' : ""}
+      </header>
+
+      <dl class="akasha-metrics">
+        ${metric("直接线索", item.seed_count, "Dense、BM25 与时序形成的 seed")}
+        ${metric(
+          item.activation_capture_available ? "扩散激活" : "补全候选",
+          item.activation_count,
+          item.activation_capture_available
+            ? `${item.graph_only_count} 个仅由图关系抵达`
+            : "这一轮没有保存逐节点扩散路径",
+        )}
+        ${metric("模式补全", item.right_count, `${item.basin_count} 个活跃情景 basin`)}
+        ${metric("残余", fixed(item.residual_l1, 6), `${item.pushes} 次 residual push`)}
+      </dl>
+
+      <section class="akasha-section">
+        <header><h3>直接线索</h3><span>${item.seeds.length}</span></header>
+        ${renderItems(item.seeds, "这一轮没有形成可持久化 seed。")}
+      </section>
+
+      ${item.activation_capture_available
+        ? `
+          <section class="akasha-section">
+            <header><h3>扩散激活</h3><span>${item.activation_items.length}</span></header>
+            ${renderItems(item.activation_items, "图扩散没有增加候选。")}
+          </section>
+        `
+        : ""}
+
+      <section class="akasha-section akasha-lane">
+        <header>
+          <div><h3>左脑记忆</h3><p>Embedding 精确回忆</p></div>
+          <span>${item.left_count}</span>
+        </header>
+        ${renderItems(item.left, "没有 Dense 直接命中。")}
+      </section>
+
+      <section class="akasha-section akasha-lane">
+        <header>
+          <div><h3>右脑联想</h3><p>显式图模式补全，已与左脑去重</p></div>
+          <span>${item.right_count}</span>
+        </header>
+        ${renderItems(item.right, "没有产生模式补全。")}
+      </section>
+
+      <details class="akasha-learning">
+        <summary>本轮如何改变记忆</summary>
+        <dl>
+          ${metric("惊喜度", fixed(item.surprise), "当前 cue 与已有模式的差异")}
+          ${metric("观察质量", fixed(item.observed_mass), "由外部证据支持的学习质量")}
+          ${metric("再激活", fixed(item.reactivated_mass), "已有关系重新获得的活性")}
+          ${metric("增强 / 抑制", `${fixed(item.potentiated_mass)} / ${fixed(item.inhibited_mass)}`, "连接预算内的竞争结果")}
+        </dl>
+      </details>
+
+      <details class="akasha-prompt">
+        <summary>查看实际 Prompt 记忆块 · ${item.inject_chars} 字</summary>
+        <pre>${escapeHtml(item.text_block_preview || "这一轮没有注入记忆。")}</pre>
+      </details>
+    </article>
   `;
 }
-
-function ai_assistantPreview(text: string | null | undefined): string {
-  if (!text) return "";
-  const prefixedText = `ASST: ${text}`;
-  return `<div class="ai-asst-expander-wrap">${ai_textExpander(prefixedText, true)}</div>`;
-}
-
-function ai_sparkbar(label: string, v: number | null | undefined): string {
-  if (v == null) return "";
-  const percent = Math.min(100, Math.max(0, v * 100));
-  return `
-    <div class="ai-act-metric">
-      <span class="ai-act-m-k">${label}</span>
-      <div class="ai-spark-track"><div class="ai-spark-fill" style="width: ${percent}%;"></div></div>
-    </div>
-  `;
-}
-
-function ai_renderActivationTable(items: AkashaCandidate[]): string {
-  if (!items.length) {
-    return '<div class="ai-empty">无激活节点</div>';
-  }
-  const rows = items.map((item) => `
-    <div class="ai-act-card ${item.suppressed ? "ai-row-suppressed" : ""}">
-      <div class="ai-act-head">
-        ${ai_fmtScore(item.score)}
-        ${ai_sourceTag(item.source)}
-        ${ai_pathTag(item.path_type)}${ai_suppressedTag(item.suppressed)}
-      </div>
-      <div class="ai-act-body">
-        ${ai_textExpander(item.user_message)}
-        ${ai_assistantPreview(item.assistant_preview)}
-      </div>
-      <div class="ai-act-metrics">
-        <div class="ai-act-metric"><span class="ai-act-m-k">FAN</span><span class="ai-act-m-v mono">${item.fan}</span></div>
-        ${ai_sparkbar('DIR', item.direct)}
-        ${ai_sparkbar('STA', item.state)}
-        ${ai_sparkbar('EDG', item.edge)}
-        ${ai_sparkbar('LNG', item.long)}
-        ${ai_sparkbar('RES', item.resource)}
-      </div>
-    </div>
-  `).join("");
-  return `<div class="ai-act-list">${rows}</div>`;
-}
-
-// ── Dense / Ripple card table ─────────────────────────────────────────────
-
-function ai_renderCardTable(items: AkashaCard[], type: 'dense' | 'ripple'): string {
-  if (!items.length) {
-    return '<div class="ai-empty">无记录</div>';
-  }
-  const showPath = type === 'ripple';
-
-  const cards = items.map((item) => {
-    const srcRefIds: string[] = (() => {
-      try { return JSON.parse(item.source_ref) as string[]; }
-      catch { return []; }
-    })();
-    const refCount = srcRefIds.length;
-    return `
-      <div class="ai-mem-card">
-        <div class="ai-mem-card-head">
-          ${ai_fmtScore(item.score)}
-          ${ai_sourceTag(item.source)}
-          ${showPath ? ai_pathTag(item.path_type) + ai_suppressedTag(item.suppressed) : ""}
-          <div style="flex:1"></div>
-          ${refCount > 0 ? `<span class="ai-source-ref" title="${escapeHtml(item.source_ref)}">${refCount} refs</span>` : ""}
-        </div>
-        <div class="ai-mem-card-body">
-          ${ai_textExpander(item.user_message)}
-          ${ai_assistantPreview(item.assistant_preview)}
-        </div>
-        ${showPath ? `<div class="ai-mem-card-foot"><div class="ai-mem-foot-item"><span>SEED</span> <span class="mono">${escapeHtml(ai_shortKey(item.seed_key))}</span></div><div class="ai-mem-foot-item"><span>BRIDGE</span> <span class="mono">${escapeHtml(ai_shortKey(item.bridge_key))}</span></div></div>` : ""}
-      </div>
-    `;
-  }).join("");
-  return `<div class="ai-cards-list">${cards}</div>`;
-}
-
-// ── Detail renderer ───────────────────────────────────────────────────────
-
-function ai_renderEmpty(): string {
-  return `
-    <div class="detail-empty">
-      <div class="detail-empty-title">Akasha Inspector</div>
-      <div class="detail-empty-text">点开一轮检索记录，这里会显示激活图、Dense 精确命中、Ripple 联想命中和注入预览。</div>
-    </div>
-  `;
-}
-
-function ai_renderDetail(item: AkashaQueryDetail, dispatch?: import("../../frontend/dashboard/src/types").PluginDispatch): string {
-  const threshold = (item.activation_threshold ?? 0).toFixed(3);
-  return `
-    <div class="ai-inspector">
-      <div class="ai-query-block">
-        <div class="detail-title" style="display:flex; justify-content:space-between; align-items:flex-start;">
-          <span>Akasha 检索记录 <span class="detail-subtext mono">(${escapeHtml(item.session_key)} · seq ${item.seq})</span></span>
-          ${dispatch?.closePane ? `<button class="ai-close-btn" type="button" title="关闭详情面板">✕</button>` : ""}
-        </div>
-        <div class="ai-query-text">${escapeHtml(item.query_text)}</div>
-        <div class="ai-meta-row">
-          <span class="ai-meta-kv"><span class="ai-meta-k">Intent</span><span class="ai-meta-v">${escapeHtml(item.intent)}</span></span>
-          <span class="ai-meta-kv"><span class="ai-meta-k">Time</span><span class="ai-meta-v">${escapeHtml(ai_shortTs(item.ts))}</span></span>
-        </div>
-      </div>
-
-      <!-- KPI Grid -->
-      <div class="ai-kpi-grid">
-        <div class="ai-kpi-card">
-          <div class="ai-kpi-val">${item.seed_count}</div>
-          <div class="ai-kpi-label">SEEDS IGNITED</div>
-        </div>
-        <div class="ai-kpi-card">
-          <div class="ai-kpi-val">${item.pool_count}</div>
-          <div class="ai-kpi-label">POOL SIZE</div>
-        </div>
-        <div class="ai-kpi-card">
-          <div class="ai-kpi-val">${item.activated_count}</div>
-          <div class="ai-kpi-label">ACTIVATED</div>
-        </div>
-        <div class="ai-kpi-card">
-          <div class="ai-kpi-val">${threshold}</div>
-          <div class="ai-kpi-label">THRESHOLD</div>
-        </div>
-      </div>
-
-      <!-- Activation -->
-      <div class="ai-section-container ai-container-act">
-        <div class="ai-section-header">
-          <div class="ai-sh-text">ACTIVATION MATRIX <span class="ai-sh-sub">Neural Graph Propagation</span></div>
-          <div class="ai-sh-count">${item.activation_items?.length || 0}</div>
-        </div>
-        ${ai_renderActivationTable(item.activation_items || [])}
-      </div>
-
-      <!-- Left Brain -->
-      <div class="ai-section-container ai-container-dense">
-        <div class="ai-section-header">
-          <div class="ai-sh-text">LEFT BRAIN <span class="ai-sh-sub">Precise Retrieval (Dense)</span></div>
-          <div class="ai-sh-count">${item.dense_count}</div>
-        </div>
-        ${ai_renderCardTable(item.dense_items || [], 'dense')}
-      </div>
-
-      <!-- Right Brain -->
-      <div class="ai-section-container ai-container-ripple">
-        <div class="ai-section-header">
-          <div class="ai-sh-text">RIGHT BRAIN <span class="ai-sh-sub">Associative Leaps (Ripple)</span></div>
-          <div class="ai-sh-count">${item.ripple_count}</div>
-        </div>
-        ${ai_renderCardTable(item.ripple_items || [], 'ripple')}
-      </div>
-
-      <!-- Prompt Synthesis -->
-      <div class="detail-block">
-        <div class="detail-title" style="margin-bottom:12px; font-size:14px; text-transform:uppercase; color:var(--color-subtle);">Synthesis (Prompt Injection)</div>
-        <div class="ai-meta-row" style="margin-bottom:12px;">
-          <span class="ai-meta-kv"><span class="ai-meta-k">Dense</span><span class="ai-meta-v">${item.dense_count}</span></span>
-          <span class="ai-meta-kv"><span class="ai-meta-k">Ripple</span><span class="ai-meta-v">${item.ripple_count}</span></span>
-          <span class="ai-meta-kv"><span class="ai-meta-k">Total Chars</span><span class="ai-meta-v">${item.inject_chars}</span></span>
-          <span class="ai-meta-kv"><span class="ai-meta-k">Refs</span><span class="ai-meta-v">${item.source_ref_count}</span></span>
-        </div>
-        ${item.text_block_preview
-          ? `<details class="ai-preview-block"><summary>View Injected Context</summary><pre class="ai-preview-pre">${escapeHtml(item.text_block_preview)}</pre></details>`
-          : '<div class="ai-empty">No context injected in this turn.</div>'}
-      </div>
-    </div>
-  `;
-}
-
-// ── Plugin registration ───────────────────────────────────────────────────
 
 window.AkashicDashboard.registerPlugin({
   id: "akasha_inspector",
@@ -352,52 +248,67 @@ window.AkashicDashboard.registerPlugin({
   },
 
   columns: [
-    { key: "session_key", label: "Session", width: 108, fmt: "mono-session", cellClass: "mono cell-session", rawTitle: true },
-    { key: "ts", label: "Time", width: 96, fmt: "mono-time", cellClass: "mono cell-time", rawTitle: true,
-      renderCell(value) { return escapeHtml(ai_shortTs(value)); } },
+    { key: "session_key", label: "Session", width: 120, fmt: "mono-session", cellClass: "mono cell-session", rawTitle: true },
+    {
+      key: "ts",
+      label: "Time",
+      width: 110,
+      cellClass: "mono cell-time",
+      rawTitle: true,
+      renderCell(value) { return escapeHtml(shortTime(value)); },
+    },
     { key: "query_text", label: "Query", flex: true, fmt: "text-preview", cellClass: "content-preview" },
+    { key: "seed_count", label: "Seeds", width: 64, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
+    { key: "completion_count", label: "Recall", width: 64, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
   ],
 
-  renderFilters: ai_renderFilters,
+  renderFilters,
 
   async getCount(): Promise<number | null> {
     try {
-      const r = await api<AkashaOverview>("/api/dashboard/akasha-inspector/overview");
-      return r.available ? (r.total ?? 0) : null;
+      const result = await api<InspectorOverview>("/api/dashboard/akasha-inspector/overview");
+      return result.available ? result.total : null;
     } catch {
       return null;
     }
   },
 
   async fetchPage({ page, pageSize, filters }: FetchPageOpts): Promise<FetchPageResult> {
-    const params = new URLSearchParams();
-    params.set("page", String(page));
-    params.set("page_size", String(pageSize));
+    const params = new URLSearchParams({
+      page: String(page),
+      page_size: String(pageSize),
+    });
     if (filters?.["session_key"]) params.set("session_key", filters["session_key"]);
     if (filters?.["q"]) params.set("q", filters["q"]);
-    const data = await api<{ items: Record<string, unknown>[]; total: number }>(
-      `/api/dashboard/akasha-inspector/turns?${params.toString()}`
+    const result = await api<{ items: Record<string, unknown>[]; total: number }>(
+      `/api/dashboard/akasha-inspector/turns?${params.toString()}`,
     );
-    return { items: data.items || [], total: data.total || 0 };
+    return { items: result.items, total: result.total };
   },
 
   async fetchDetail(item: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const queryId = String(item["query_id"] ?? "");
-    return api(`/api/dashboard/akasha-inspector/turns/${encodePath(queryId)}`);
+    return api(
+      `/api/dashboard/akasha-inspector/turns/${encodePath(String(item["query_id"] ?? ""))}`,
+    );
   },
 
-  renderDetail(item: Record<string, unknown> | null, container: HTMLElement, dispatch?: import("../../frontend/dashboard/src/types").PluginDispatch): void {
+  renderDetail(item: Record<string, unknown> | null, container: HTMLElement, dispatch?: PluginDispatch): void {
     if (!item) {
-      container.innerHTML = ai_renderEmpty();
+      container.innerHTML = `
+        <div class="detail-empty">
+          <div class="detail-empty-title">Akasha Inspector</div>
+          <div class="detail-empty-text">选择一轮检索，查看它从哪些线索开始、扩散到哪里，以及最终进入 Prompt 的内容。</div>
+        </div>
+      `;
       return;
     }
-    container.innerHTML = ai_renderDetail(item as unknown as AkashaQueryDetail, dispatch);
-    
-    if (dispatch?.closePane) {
-      const closeBtn = container.querySelector(".ai-close-btn");
-      if (closeBtn) {
-        closeBtn.addEventListener("click", () => dispatch.closePane!());
-      }
-    }
+    container.innerHTML = renderDetail(
+      item as unknown as InspectorDetail,
+      dispatch?.closePane,
+    );
+    container.querySelector("[data-akasha-close]")?.addEventListener(
+      "click",
+      () => dispatch?.closePane?.(),
+    );
   },
 });

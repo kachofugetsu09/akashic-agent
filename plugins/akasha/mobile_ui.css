@@ -1,50 +1,291 @@
-.akasha-recall-group {
-  --akasha-left: var(--m-primary);
-  --akasha-left-container: var(--m-primary-container);
-  --akasha-right: var(--m-trace-text);
-  --akasha-right-container: var(--m-trace-soft);
+.akasha-mobile-recall-group,
+.akasha-mobile-inspector {
+  --akasha-mobile-rule:
+    color-mix(in oklch, var(--m-on-surface) 12%, transparent);
+  --akasha-mobile-rule-strong:
+    color-mix(in oklch, var(--m-on-surface) 20%, transparent);
+  --akasha-mobile-accent: var(--m-primary);
+  --akasha-mobile-accent-soft:
+    color-mix(in oklch, var(--m-primary) 11%, var(--m-surface));
+  --akasha-mobile-shadow:
+    0 0 0 1px color-mix(in oklch, var(--m-on-surface) 7%, transparent),
+    0 1px 2px color-mix(in oklch, oklch(0 0 0) 12%, transparent);
+  color: var(--m-on-surface);
+}
+
+.akasha-mobile-recall-group {
   display: grid;
   gap: 8px;
   margin: 2px 0 14px;
 }
 
-.akasha-recall {
+.akasha-mobile-recall {
   overflow: hidden;
-  border-radius: var(--m-shape-large, 16px);
-  color: var(--m-on-surface);
-  background: var(--akasha-container);
+  border-radius: 12px;
+  background: var(--m-surface-container);
+  box-shadow: var(--akasha-mobile-shadow);
 }
 
-.akasha-recall.left {
-  --akasha-accent: var(--akasha-left);
-  --akasha-container: var(--akasha-left-container);
-}
-
-.akasha-recall.right {
-  --akasha-accent: var(--akasha-right);
-  --akasha-container: var(--akasha-right-container);
-}
-
-.akasha-recall summary {
-  display: grid;
+.akasha-mobile-recall summary {
+  display: flex;
   min-height: 44px;
-  grid-template-columns: 10px 1fr auto;
   align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 13px;
+  color: var(--m-on-surface);
   cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 620;
+  list-style: none;
+  transition-property: color, background-color;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+
+.akasha-mobile-recall summary::-webkit-details-marker {
+  display: none;
+}
+
+.akasha-mobile-recall summary:hover {
+  background: var(--akasha-mobile-accent-soft);
+}
+
+.akasha-mobile-recall summary b {
+  color: var(--akasha-mobile-accent);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.akasha-mobile-memories {
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--akasha-mobile-rule);
   list-style: none;
 }
 
-.akasha-recall summary::-webkit-details-marker { display: none; }
-.akasha-recall summary > span:last-child { color: var(--m-on-surface-variant); font-size: .75rem; }
-.akasha-recall-mark { width: 8px; height: 8px; border-radius: 50%; background: var(--akasha-accent); }
-.akasha-recall.right .akasha-recall-mark { border-radius: 2px; rotate: 45deg; }
-.akasha-recall ol { display: grid; gap: 0; margin: 0; padding: 0 12px 10px 30px; }
-.akasha-recall li { position: relative; display: grid; gap: 2px; padding: 9px 44px 9px 0; border-top: 1px solid color-mix(in oklch, var(--akasha-accent) 18%, transparent); }
-.akasha-recall li span { line-height: 1.45; }
-.akasha-recall li small { color: var(--m-on-surface-variant); line-height: 1.4; }
-.akasha-recall li b { position: absolute; top: 10px; right: 0; color: var(--m-on-surface); font-size: .72rem; font-weight: 650; line-height: 1; font-variant-numeric: tabular-nums; }
-.akasha-recall-empty, .akasha-recall-loading, .akasha-recall-error { color: var(--m-on-surface-variant); font-size: .82rem; }
-.akasha-recall-loading, .akasha-recall-error { padding: 8px 2px 14px; }
-.akasha-recall-error { color: var(--m-error); }
+.akasha-mobile-memories li {
+  display: grid;
+  gap: 6px;
+  padding: 11px 13px;
+  border-bottom: 1px solid var(--akasha-mobile-rule);
+}
+
+.akasha-mobile-memories li:last-child {
+  border-bottom: 0;
+}
+
+.akasha-mobile-memories p {
+  margin: 0;
+  color: var(--m-on-surface);
+  font-size: 0.82rem;
+  line-height: 1.48;
+  overflow-wrap: anywhere;
+}
+
+.akasha-mobile-memories .akasha-mobile-assistant {
+  margin-top: 3px;
+  color: var(--m-on-surface-variant);
+  font-size: 0.75rem;
+}
+
+.akasha-mobile-memories li > span {
+  color: var(--m-on-surface-variant);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.akasha-mobile-empty,
+.akasha-mobile-loading,
+.akasha-mobile-error {
+  margin: 0;
+  padding: 12px 2px 15px;
+  color: var(--m-on-surface-variant);
+  font-size: 0.8rem;
+}
+
+.akasha-mobile-recall .akasha-mobile-empty {
+  padding: 14px 13px;
+  border-top: 1px solid var(--akasha-mobile-rule);
+}
+
+.akasha-mobile-error {
+  color: var(--m-error);
+}
+
+.akasha-mobile-inspector {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  gap: 18px;
+  padding: 4px 2px 24px;
+}
+
+.akasha-mobile-inspector > header {
+  padding: 15px;
+  border-radius: 14px;
+  background: var(--m-surface-container);
+  box-shadow: var(--akasha-mobile-shadow);
+}
+
+.akasha-mobile-inspector h2 {
+  margin: 0;
+  color: var(--m-on-surface);
+  font-size: 1.18rem;
+  font-weight: 680;
+  line-height: 1.35;
+  letter-spacing: -0.016em;
+  overflow-wrap: anywhere;
+}
+
+.akasha-mobile-inspector header > p {
+  margin: 7px 0 0;
+  color: var(--m-on-surface-variant);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.akasha-mobile-inspector header .akasha-mobile-time {
+  margin: 0 0 5px;
+  color: var(--akasha-mobile-accent);
+  font-size: 0.71rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.akasha-mobile-turns {
+  margin: 0;
+  overflow: hidden;
+  padding: 0;
+  border-radius: 14px;
+  background: var(--m-surface-container);
+  box-shadow: var(--akasha-mobile-shadow);
+  list-style: none;
+}
+
+.akasha-mobile-turns li {
+  border-bottom: 1px solid var(--akasha-mobile-rule);
+}
+
+.akasha-mobile-turns li:last-child {
+  border-bottom: 0;
+}
+
+.akasha-mobile-turns button {
+  display: grid;
+  width: 100%;
+  min-height: 56px;
+  gap: 5px;
+  padding: 11px 13px;
+  border: 0;
+  color: var(--m-on-surface);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition-property: background-color, scale;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+
+.akasha-mobile-turns button:hover {
+  background: var(--akasha-mobile-accent-soft);
+}
+
+.akasha-mobile-turns button:active {
+  scale: 0.96;
+}
+
+.akasha-mobile-turns button > span {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 0.84rem;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.akasha-mobile-turns button small {
+  color: var(--m-on-surface-variant);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.akasha-mobile-back {
+  width: fit-content;
+  min-height: 44px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--m-on-surface);
+  background: var(--m-surface-container);
+  box-shadow: 0 0 0 1px var(--akasha-mobile-rule);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 620;
+  transition-property: background-color, scale, box-shadow;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+
+.akasha-mobile-back:hover {
+  background: var(--akasha-mobile-accent-soft);
+  box-shadow: 0 0 0 1px var(--akasha-mobile-rule-strong);
+}
+
+.akasha-mobile-back:active {
+  scale: 0.96;
+}
+
+.akasha-mobile-metrics {
+  display: grid;
+  margin: 14px 0 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 1px solid var(--akasha-mobile-rule);
+}
+
+.akasha-mobile-metrics > div {
+  padding: 11px 8px 0;
+  border-right: 1px solid var(--akasha-mobile-rule);
+}
+
+.akasha-mobile-metrics > div:first-child {
+  padding-left: 0;
+}
+
+.akasha-mobile-metrics > div:last-child {
+  border-right: 0;
+}
+
+.akasha-mobile-metrics dt {
+  color: var(--m-on-surface-variant);
+  font-size: 0.66rem;
+}
+
+.akasha-mobile-metrics dd {
+  margin: 3px 0 0;
+  color: var(--m-on-surface);
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.akasha-mobile-detail-lanes {
+  display: grid;
+  gap: 10px;
+}
+
+.akasha-mobile-convergence {
+  margin: 0;
+  color: var(--m-on-surface-variant);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .akasha-mobile-recall summary,
+  .akasha-mobile-turns button,
+  .akasha-mobile-back {
+    transition-duration: 0ms;
+  }
+}
