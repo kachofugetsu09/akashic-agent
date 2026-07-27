@@ -9,6 +9,11 @@ import json
 import subprocess
 from pathlib import Path
 
+_HOST_GENERATED_FILES = {
+    "UPSTREAM.json",
+    "dashboard_panel_inspector.js",
+}
+
 
 def main() -> None:
     """Validate the upstream revision, Git subtree, and mirrored file bytes."""
@@ -39,7 +44,7 @@ def main() -> None:
     # 2. Compare the complete source file set and deterministic content hash.
     source = upstream / str(metadata["source_subtree"])
     source_files = _files(source)
-    target_files = _files(target, ignored={"UPSTREAM.json"})
+    target_files = _files(target, ignored=_HOST_GENERATED_FILES)
     if source_files != target_files:
         missing = sorted(source_files - target_files)
         unexpected = sorted(target_files - source_files)
@@ -50,7 +55,7 @@ def main() -> None:
     for relative in sorted(source_files):
         if (source / relative).read_bytes() != (target / relative).read_bytes():
             raise ValueError(f"Akasha mirror differs: {relative}")
-    digest = _tree_sha256(target, ignored={"UPSTREAM.json"})
+    digest = _tree_sha256(target, ignored=_HOST_GENERATED_FILES)
     if digest != metadata["source_sha256"]:
         raise ValueError(
             f"Akasha mirror digest mismatch: {digest}"
@@ -112,7 +117,7 @@ def _git(root: Path, *arguments: str) -> str:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
+    _ = parser.add_argument(
         "--upstream",
         type=Path,
         required=True,

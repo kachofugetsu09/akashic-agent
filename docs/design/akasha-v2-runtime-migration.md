@@ -16,8 +16,9 @@
 - 在线逐轮增长与对同一份历史做全量 replay 得到相同逻辑状态；
 - 重建、Docker 和报告都使用独立 workspace，不读写正式派生库。
 
-这次不部署正式 workspace，不迁移旧 Akasha 私有 Dashboard，也不保留旧 fast/slow、
-reinforce 或检查器兼容层。旧配置和旧 sidecar 的正式切换必须作为独立数据迁移执行。
+这次不部署正式 workspace，不迁移旧 Akasha Graph，也不保留旧 fast/slow、reinforce
+或可写检查器兼容层。桌面端和移动端重新提供面向 V2 schema 的只读 Inspector；旧配置
+和旧 sidecar 的正式切换必须作为独立数据迁移执行。
 
 ## 2. 状态所有权
 
@@ -29,6 +30,7 @@ reinforce 或检查器兼容层。旧配置和旧 sidecar 的正式切换必须�
 | `akasha.db` | 派生显式记忆 | 每个 commit 增加/更新 hub、关系、激活与遗忘状态 | `MemoryCycle` 原子发布全状态 | 部署前备份；可由稀疏索引重放恢复 |
 | pending retrieval ticket | 进程内临时状态 | 自动 context query 产生 | 同 session 新 context 可替换 | commit 消费；scheduler/skip 清除；进程退出可丢弃 |
 | recall trace/report | 诊断证据 | query 或重建生成 | 不参与图状态 | 按独立诊断 retention 管理 |
+| Inspector projection | 只读派生视图 | 每次请求从两个 V2 sidecar 重建 | 只缓存按文件签名失效的 dense 矩阵 | 不保存、无删除权限 |
 
 `sessions.db` 是唯一历史事实源。Akasha 不保存一份可独立修改的消息正文，也不因检索、
 遗忘或图清理删除原始消息。
@@ -46,6 +48,8 @@ reinforce 或检查器兼容层。旧配置和旧 sidecar 的正式切换必须�
 │                                                    │         │
 │                                                    ▼         │
 │                       plugins/akasha/MemoryPlugin adapter     │
+│                                                             │
+│  Dashboard / Mobile ── read-only ──► Akasha Inspector       │
 └────────────────────────────────┬────────────────────────────┘
                                  │ byte-identical mirror
                                  ▼
@@ -231,6 +235,38 @@ Docker 场景必须观察：
 两条 lane 先按各自证据选取，再按时间展示。去重使用稳定 turn ID，不用截断文本或
 字符串相等；同一 turn 即使两侧分数不同也只出现一次。
 
+### 9.1 Inspector 合同
+
+Inspector 不是第二套检索算法，也不拥有任何记忆状态：
+
+```text
+memory_events ───────────────► 检索轮次列表
+event_seeds ─────────────────► 直接线索
+activation_runs/items ───────► 可选逐节点扩散路径
+recall_runs/items ───────────► 显式模式补全
+turn_dense + prior-only dot ─► 左脑 dense top 5
+                               │
+                               ▼
+                     与运行时相同的去重、时间排序
+                               │
+                               ▼
+                     实际 Prompt 记忆块预览
+```
+
+`activation_runs/items` 只在请求 capture 的重放目标上持久化，普通在线轮次可能没有
+逐节点路径。此时 Inspector 仍能从 `recall_items` 展示最终补全，但必须把指标标成
+“补全候选”，隐藏“扩散激活”明细，不能把没有 capture 误写成没有扩散。
+
+桌面端通过插件 Dashboard 注册三个只读端点：overview、分页检索轮次和单轮详情。
+移动端复用宿主通用 plugin UI 协议：当前 assistant 回复前显示本轮左右脑召回，
+导航页显示最近检索并按需读取详情。两端都不暴露图快照、任意 SQL、reinforce 或写入
+RPC；SQLite 连接使用 read-only URI 与 `query_only`。assistant 预览保持最多 50 字，
+Dense 与显式补全按稳定 turn ID 去重后，分别按时间从近到远显示。
+
+`dashboard_panel_inspector.ts` 属于 upstream 镜像；宿主构建生成的同名 `.js` 是被
+Git 忽略的派生产物。镜像校验只排除这个明确命名的构建产物和 `UPSTREAM.json`，其他
+意外文件仍会让完整文件集合校验失败。
+
 ## 10. 失败、回滚与部署前置
 
 - upstream 镜像校验失败：停止构建，不从宿主镜像继续开发。
@@ -257,6 +293,10 @@ python scripts/check_akasic_behavior.py
 .venv/bin/python scripts/check_akasha_v2_mirror.py \
   --upstream /mnt/data/coding/akasha-v2-engine
 .venv/bin/python -m pytest -q
+npm run typecheck
+npm run lint
+npm run build:dashboard
+node --test tests/test_akasha_mobile_ui.mjs
 
 # strict isolated replay
 PYTHONHASHSEED=1 .venv/bin/python scripts/build_akasha_db.py \

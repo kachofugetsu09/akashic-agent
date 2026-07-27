@@ -10,6 +10,8 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from agent.config_models import (
     Config,
@@ -17,13 +19,20 @@ from agent.config_models import (
     MemoryEmbeddingConfig,
 )
 from agent.plugins import Plugin
+from agent.plugins.context import PluginContext, PluginKVStore
+from agent.plugins.manifest import (
+    builtin_plugin_data_dir,
+    ensure_workspace_plugin_data_dir,
+)
 from agent.tools.recall_memory import RecallMemoryTool
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryQuery, MemoryScope
 from core.memory.plugin import MemoryPlugin as MemoryPluginProtocol
 from plugins.akasha.application.rebuild import rebuild_memory
-from plugins.akasha.config import AkashaConfig
+from plugins.akasha.config import AkashaConfig, render_akasha_config
+from plugins.akasha.dashboard import register as register_dashboard
 from plugins.akasha.engine import AkashaMemoryEngine
+from plugins.akasha.inspector import AkashaInspectorReader
 from plugins.akasha.infrastructure.persistence import (
     logical_state_sha256,
 )
@@ -55,9 +64,17 @@ class _Embedder:
 
 
 def test_akasha_v2_registers_both_host_protocols() -> None:
-    assert isinstance(AkashaPlugin(), Plugin)
+    plugin = AkashaPlugin()
+    assert isinstance(plugin, Plugin)
     assert isinstance(MemoryPlugin(), MemoryPluginProtocol)
     assert MemoryPlugin.plugin_id == "akasha"
+    assert plugin.dashboard_module() == "dashboard.py"
+    mobile = plugin.mobile_ui()
+    assert mobile.module == "mobile_ui.js"
+    assert mobile.stylesheet == "mobile_ui.css"
+    assert mobile.slots == ("turn.before_reasoning",)
+    assert mobile.navigation is not None
+    assert mobile.navigation.label == "Akasha Inspector"
 
 
 @pytest.mark.asyncio
@@ -153,6 +170,82 @@ async def test_online_turn_recall_and_replay_share_one_state(
     assert logical_state_sha256(
         tmp_path / "memory" / "akasha.db"
     ) == logical_state_sha256(replay)
+
+    # 5. Inspector reconstructs the exact prior-only lanes without writes.
+    _write_inspector_config(tmp_path)
+    before_memory = logical_state_sha256(
+        tmp_path / "memory" / "akasha.db"
+    )
+    reader = AkashaInspectorReader(tmp_path)
+    overview = reader.get_overview()
+    rows, total = reader.list_turns(q="alpha follow")
+    detail = reader.get_turn(str(rows[0]["query_id"]))
+    assert overview["total"] == 2
+    assert total == 1
+    assert detail is not None
+    assert detail["query_text"] == "alpha follow"
+    assert detail["left_count"] == 1
+    assert cast(list[dict[str, object]], detail["left"])[0][
+        "user_text"
+    ] == "alpha start"
+    assert "## 左脑记忆：精确回忆" in str(
+        detail["text_block_preview"]
+    )
+    assert detail["activation_capture_available"] is False
+    assert before_memory == logical_state_sha256(
+        tmp_path / "memory" / "akasha.db"
+    )
+
+    # 6. The desktop API exposes the same state through read-only routes.
+    app = FastAPI()
+    app.state.memory_admin = engine
+    register_dashboard(app, Path("plugins/akasha"), tmp_path)
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/dashboard/akasha-inspector/turns",
+            params={"q": "alpha follow"},
+        )
+        assert response.status_code == 200
+        assert response.json()["total"] == 1
+        api_detail = client.get(
+            f"/api/dashboard/akasha-inspector/turns/{rows[0]['query_id']}"
+        )
+        assert api_detail.status_code == 200
+        assert api_detail.json()["left_count"] == 1
+
+    # 7. Mobile projections resolve the same committed assistant message.
+    plugin = AkashaPlugin()
+    plugin.context = PluginContext(
+        event_bus=cast(Any, None),
+        tool_registry=None,
+        plugin_id="akasha",
+        plugin_dir=Path("plugins/akasha"),
+        data_dir=builtin_plugin_data_dir("akasha", tmp_path),
+        kv_store=PluginKVStore(tmp_path / ".kv.json"),
+        workspace=tmp_path,
+        memory_engine=engine,
+    )
+    mobile = plugin.mobile_ui_query(
+        "recall.current",
+        {"message_id": "message:3"},
+        session_id="test:one",
+        turn_id=None,
+    )
+    recent = plugin.mobile_ui_query(
+        "inspector.recent",
+        {},
+        session_id=None,
+        turn_id=None,
+    )
+    mobile_detail = plugin.mobile_ui_query(
+        "inspector.detail",
+        {"query_id": str(rows[0]["query_id"])},
+        session_id=None,
+        turn_id=None,
+    )
+    assert len(cast(list[object], mobile["left"])) == 1
+    assert recent["total"] == 2
+    assert mobile_detail["query_text"] == "alpha follow"
     _close_engine(engine)
 
 
@@ -399,3 +492,12 @@ def _append_turn(
 def _close_engine(engine: AkashaMemoryEngine) -> None:
     engine._runtime.close()  # noqa: SLF001
     engine._embedding_store.close()  # noqa: SLF001
+
+
+def _write_inspector_config(workspace: Path) -> None:
+    plugin_dir = builtin_plugin_data_dir("akasha", workspace)
+    ensure_workspace_plugin_data_dir(plugin_dir, workspace)
+    (plugin_dir / "config.local.toml").write_text(
+        render_akasha_config(),
+        encoding="utf-8",
+    )

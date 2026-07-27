@@ -33,8 +33,10 @@
 6. 用户可见结果保留“左脑记忆：精确回忆”和“右脑记忆：联想补全”两条 lane。
    左脑最多五条 dense 命中；右脑按稳定 turn ID 去重后排除左脑项。每条 lane 内按时间
    从近到远显示，日期为 `MM-DD`，assistant 正文最多 50 个字符。
-7. 旧 `/akashalast`、Akasha 图 Dashboard 和移动端检查器不再属于运行时接口。空
-   `AkashaPlugin` 只维持宿主插件发现合同；记忆能力由 `MemoryPlugin` 提供。
+7. 旧 `/akashalast` 和 Akasha 图 Dashboard 不再属于运行时接口。`AkashaPlugin`
+   提供桌面端与移动端只读 Inspector：它只从 V2 sidecar 重建线索、可选扩散路径、
+   左右脑召回和实际 Prompt 记忆块，不提供任意 SQL、图遍历或记忆修改；记忆能力仍由
+   `MemoryPlugin` 提供。
 
 ## 理由
 
@@ -54,7 +56,9 @@
 - 更新算法必须先在 upstream 提交，再重新镜像并更新三项身份；禁止直接改宿主镜像。
 - 现存旧 Akasha 配置和数据库不能被新 loader 猜测兼容。部署前需要在隔离快照完成
   embedding 审计、全量重建和原子 sidecar 切换；本决策不授权修改正式 workspace。
-- Dashboard 不再提供 Akasha 私有图检查入口；诊断以重放报告、数据库查询和测试证据为准。
+- Dashboard 与移动端提供只读 Inspector，但不恢复私有图入口。Inspector 没有新的
+  持久化 owner；逐节点扩散 capture 缺失时必须明确显示为“未保存路径”，不能推断为
+  没有发生扩散。
 
 ## 验收
 
@@ -66,6 +70,8 @@
 - 中断 turn 保留原始消息，但不产生 embedding 要求、稀疏节点、hub 或图关系。
 - Docker runtime 使用独立 workspace 完成 query、持久化、自动上下文、显式 recall 和
   下一轮提交；正式 workspace 的文件摘要与 mtime 不变。
+- Inspector 桌面 API、当前回复下方的移动端召回和移动端检索列表都只读取 V2 sidecar；
+  左右脑内容与实际 Prompt 重建结果一致，且不暴露 Akasha Graph。
 
 完整调用链、状态所有权和迁移 Gate 见
 [`../design/akasha-v2-runtime-migration.md`](../design/akasha-v2-runtime-migration.md)。

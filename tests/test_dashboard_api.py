@@ -18,6 +18,7 @@ from bootstrap.dashboard_api import (
     _dashboard_plugin_dirs,
     create_dashboard_app as _create_dashboard_app,
 )
+from plugins.akasha.engine import AkashaMemoryEngine
 from plugins.default_memory.engine import DefaultMemoryEngine
 from memory2.store import MemoryStore2
 from proactive_v2.state import ProactiveStateStore
@@ -82,6 +83,14 @@ class _DashboardMemoryAdmin:
 
     def close(self) -> None:
         self._store.close()
+
+
+class _AkashaDashboardMemoryAdmin:
+    def describe(self):
+        return AkashaMemoryEngine.DESCRIPTOR
+
+    def close(self) -> None:
+        return None
 
 
 def create_dashboard_app(tmp_path, **kwargs):
@@ -1031,3 +1040,30 @@ def test_memory_engine_plugins_only_expose_active_engine_panels(tmp_path) -> Non
         }
         assert client.get("/plugins/default_memory/dashboard_panel_inspector.js").status_code == 200
         assert client.get("/plugins/cross_memory/dashboard_panel_inspector.js").status_code == 404
+
+
+def test_akasha_only_exposes_read_only_inspector_panel(tmp_path) -> None:
+    with TestClient(
+        create_dashboard_app(
+            tmp_path,
+            memory_admin=_AkashaDashboardMemoryAdmin(),
+        )
+    ) as client:
+        plugins = client.get("/api/dashboard/plugins").json()
+        akasha = next(item for item in plugins if item["id"] == "akasha")
+        assert [panel["name"] for panel in akasha["panels"]] == [
+            "dashboard_panel_inspector"
+        ]
+        assert (
+            client.get(
+                "/plugins/akasha/dashboard_panel_inspector.js"
+            ).status_code
+            == 200
+        )
+        assert (
+            client.get(
+                "/plugins/akasha/dashboard_panel_inspector.css"
+            ).status_code
+            == 200
+        )
+        assert client.get("/api/dashboard/akasha/graph").status_code == 404
