@@ -19,7 +19,8 @@ from .model import CanonicalTurn, SessionState, SparseFeature, TimeStats
 from .schema import SCHEMA
 
 LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
-INDEX_VERSION = "6"
+INDEX_VERSION = "7"
+INTERRUPTED_ASSISTANT_MARKER = "[interrupted]"
 
 
 class AppendOnlyViolation(RuntimeError):
@@ -52,6 +53,7 @@ class EmbeddingAudit:
     """Summarize the frozen embedding boundary for eligible dialogue turns."""
 
     eligible_turns: int
+    excluded_interrupted_turns: int
     eligible_messages: int
     valid_messages: int
     dimension: int | None
@@ -67,6 +69,7 @@ class BuildResult:
     """Summarize an index build without hiding skipped or missing turns."""
 
     discovered_turns: int
+    excluded_interrupted_turns: int
     indexed_turns: int
     skipped_existing_turns: int
     turns_missing_embeddings: int
@@ -94,7 +97,10 @@ def build_sparse_index(
         _validate_index_version(output)
 
         # 2. Restore prior online state and identify append-only work.
-        turns, missing = _load_canonical_turns(source, config)
+        turns, missing, excluded_interrupted = _load_canonical_turns(
+            source,
+            config,
+        )
         existing = _load_existing_turns(output)
         new_turns = _select_new_turns(turns, existing)
         lexical = _load_lexical_states(output)
@@ -121,9 +127,21 @@ def build_sparse_index(
                 "turns_missing_embeddings",
                 str(missing),
             )
+            _set_metadata(
+                output,
+                "turns_excluded_interrupted",
+                str(excluded_interrupted),
+            )
             for key, value in lexical_identity().items():
                 _set_metadata(output, key, value)
-        return _build_result(output, turns, missing, new_turns, existing)
+        return _build_result(
+            output,
+            turns,
+            missing,
+            excluded_interrupted,
+            new_turns,
+            existing,
+        )
     finally:
         source.close()
         output.close()
@@ -140,7 +158,7 @@ def audit_source_embeddings(
     try:
         _validate_source(source)
         messages = _source_messages(source)
-        pairs = _eligible_pairs(messages)
+        pairs, excluded_interrupted = _eligible_pairs(messages)
         rows = source.execute(
             """
             SELECT message_id, content_hash, embedding, dim
@@ -165,6 +183,7 @@ def audit_source_embeddings(
     )
     return EmbeddingAudit(
         eligible_turns=len(pairs),
+        excluded_interrupted_turns=excluded_interrupted,
         eligible_messages=required,
         valid_messages=required - len(issues),
         dimension=dimension,
@@ -212,13 +231,18 @@ def _validate_index_version(connection: sqlite3.Connection) -> None:
 def _load_canonical_turns(
     connection: sqlite3.Connection,
     config: BuildConfig,
-) -> tuple[list[CanonicalTurn], int]:
+) -> tuple[list[CanonicalTurn], int, int]:
     """Reconstruct every dialogue turn and count incomplete dense cache rows."""
 
     # 1. Read source rows and the selected embedding space.
     messages = _source_messages(connection)
-    pairs = _eligible_pairs(messages)
-    audit = _audit_rows(connection, pairs, config)
+    pairs, excluded_interrupted = _eligible_pairs(messages)
+    audit = _audit_rows(
+        connection,
+        pairs,
+        config,
+        excluded_interrupted,
+    )
     invalid = {issue.message_id for issue in audit.issues}
     embeddings = {}
     for row in connection.execute(
@@ -257,7 +281,7 @@ def _load_canonical_turns(
             turn.turn_id.encode("utf-8"),
         )
     )
-    return turns, missing_embeddings
+    return turns, missing_embeddings, excluded_interrupted
 
 
 def _source_messages(
@@ -274,13 +298,14 @@ def _source_messages(
 
 def _eligible_pairs(
     messages: list[sqlite3.Row],
-) -> list[tuple[sqlite3.Row, sqlite3.Row]]:
+) -> tuple[list[tuple[sqlite3.Row, sqlite3.Row]], int]:
     """Pair committed user/assistant messages and exclude explicit skips."""
 
     grouped: dict[str, list[sqlite3.Row]] = defaultdict(list)
     for message in messages:
         grouped[str(message["session_key"])].append(message)
     pairs = []
+    excluded_interrupted = 0
     for session_messages in grouped.values():
         for user, assistant in zip(
             session_messages,
@@ -290,12 +315,15 @@ def _eligible_pairs(
                 continue
             if _excluded_session(str(user["session_key"])):
                 continue
+            if _interrupted_pair(user, assistant):
+                excluded_interrupted += 1
+                continue
             if _skip_post_memory(user) or _skip_post_memory(assistant):
                 continue
             if not _message_text(user) and not _message_text(assistant):
                 continue
             pairs.append((user, assistant))
-    return pairs
+    return pairs, excluded_interrupted
 
 
 def _excluded_session(session_key: str) -> bool:
@@ -318,10 +346,22 @@ def _message_text(message: sqlite3.Row) -> str:
     return str(message["content"] or "")
 
 
+def _interrupted_pair(
+    user: sqlite3.Row,
+    assistant: sqlite3.Row,
+) -> bool:
+    return (
+        user["role"] == "user"
+        and assistant["role"] == "assistant"
+        and _message_text(assistant) == INTERRUPTED_ASSISTANT_MARKER
+    )
+
+
 def _audit_rows(
     connection: sqlite3.Connection,
     pairs: list[tuple[sqlite3.Row, sqlite3.Row]],
     config: BuildConfig,
+    excluded_interrupted: int,
 ) -> EmbeddingAudit:
     rows = connection.execute(
         """
@@ -345,6 +385,7 @@ def _audit_rows(
     )
     return EmbeddingAudit(
         eligible_turns=len(pairs),
+        excluded_interrupted_turns=excluded_interrupted,
         eligible_messages=required,
         valid_messages=required - len(issues),
         dimension=dimension,
@@ -919,6 +960,7 @@ def _build_result(
     output: sqlite3.Connection,
     turns: list[CanonicalTurn],
     missing: int,
+    excluded_interrupted: int,
     new_turns: list[CanonicalTurn],
     existing: dict[str, sqlite3.Row],
 ) -> BuildResult:
@@ -927,6 +969,7 @@ def _build_result(
     ).fetchone()[0]
     return BuildResult(
         discovered_turns=len(turns),
+        excluded_interrupted_turns=excluded_interrupted,
         indexed_turns=len(new_turns),
         skipped_existing_turns=len(existing),
         turns_missing_embeddings=missing,

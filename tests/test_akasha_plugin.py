@@ -198,6 +198,38 @@ def test_embedding_preflight_excludes_scheduler_but_reports_dialogue_gap(
     ]
 
 
+def test_embedding_preflight_excludes_legacy_interrupted_turn(
+    tmp_path: Path,
+) -> None:
+    """Keep an interrupted placeholder outside the strict replay boundary."""
+
+    # 1. Persist the historical marker without embeddings or structured flags.
+    sessions = tmp_path / "sessions.db"
+    _create_sessions(sessions)
+    _append_turn(
+        sessions,
+        sequence=0,
+        user="unfinished request",
+        assistant="[interrupted]",
+        started=datetime(2026, 7, 6, tzinfo=timezone.utc),
+        with_embeddings=False,
+    )
+
+    # 2. Classify the turn as excluded instead of an embedding defect.
+    audit = audit_source_embeddings(
+        sessions,
+        BuildConfig(
+            embedding_model="embedding-model",
+            embedding_dimension=2,
+        ),
+    )
+
+    assert audit.complete
+    assert audit.eligible_turns == 0
+    assert audit.excluded_interrupted_turns == 1
+    assert audit.issues == ()
+
+
 def _engine(workspace: Path) -> AkashaMemoryEngine:
     return AkashaMemoryEngine(
         config=Config(

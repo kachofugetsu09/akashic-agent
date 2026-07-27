@@ -1,7 +1,7 @@
 {
   "repository": "git@github.com:kachofugetsu09/akasha-v2-engine.git",
-  "commit": "6f929939e16674a06b54c722049c026b7e0cc43c",
+  "commit": "69056e55b8333099aadf0ff0d6fcc28308fedde6",
   "source_subtree": "src/akasha",
-  "source_tree": "97f403f7795ac1c2d3ef46079d02af1a90949e4e",
-  "source_sha256": "a7329352dc4f29d921209c88c5f4cd9c623ff776177e7a26cf5c08f566b768b9"
+  "source_tree": "96eade42fdf0275beb3f359726e0e7082488b9f2",
+  "source_sha256": "44750a038f911dca0c9f24199c18d159f72d33151a0a4c6cc065dcf79befdfe6"
 }

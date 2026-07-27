@@ -634,6 +634,7 @@ class AgentLoop:
             "[interrupted]",
             tools_used=list(state.tools_used) if state.tools_used else None,
             tool_chain=tool_chain,
+            skip_post_memory=True,
         )
         await self.session_manager.append_messages(session, session.messages[start:])
 
