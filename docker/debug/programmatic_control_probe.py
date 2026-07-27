@@ -1682,6 +1682,25 @@ profile = "quiet"
     (sandbox / "config.toml").write_text(config, encoding="utf-8")
 
 
+def _initialize_current_workspace(workspace: Path, source_root: Path) -> None:
+    """为已标记 current 的 Gate workspace 写入当前版本必需资产。"""
+
+    # 1. Gate fixture 必须使用候选源码中的版本化默认值。
+    template = source_root / "prompts/veda.md"
+    try:
+        payload = template.read_bytes()
+        content = payload.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise GateFailure(f"无法读取 Gate Veda 模板: {template}") from exc
+    if not content.strip():
+        raise GateFailure(f"Gate Veda 模板为空: {template}")
+
+    # 2. current cursor 禁止依赖 migration 补齐当前格式资产。
+    target = workspace / "memory/veda.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(payload)
+
+
 def _prepare_host_sandbox(sandbox: Path, source_root: Path) -> None:
     """创建 control gate 独占的运行目录和可写静态目录。"""
 
@@ -1712,6 +1731,7 @@ def _prepare_host_sandbox(sandbox: Path, source_root: Path) -> None:
 
     # 2. 所有运行时写入均归外部 sandbox，不依赖仓库 ignored 目录。
     (sandbox / "workspace").mkdir(parents=True)
+    _initialize_current_workspace(sandbox / "workspace", sandbox / "app")
     (sandbox / "home").mkdir()
     (sandbox / "reports").mkdir()
     (sandbox / "static/dashboard").mkdir(parents=True)

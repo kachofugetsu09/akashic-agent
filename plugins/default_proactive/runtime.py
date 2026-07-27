@@ -118,6 +118,7 @@ class ProactiveFlowDeps:
     deduper: Any | None
     tool_deps: ToolDeps
     gateway_deps: GatewayDeps | None
+    veda_fn: Callable[[], str]
     workspace_context_fn: Callable[[], str] | None
     llm_fn: Any | None
     rng: Any | None
@@ -182,6 +183,7 @@ class ProactiveFlowRuntime:
         self._prompt_builder = ProactivePromptBuilder(
             cfg=self._cfg,
             memory=self._tool_deps.memory,
+            veda_fn=deps.veda_fn,
             workspace_context_fn=self._workspace_context_fn,
         )
         self._resolver = ProactiveResolver(

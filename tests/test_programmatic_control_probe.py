@@ -27,6 +27,9 @@ def test_control_gate_prepares_external_static_mount_without_repo_static(
     repo = tmp_path / "clean-checkout"
     repo.mkdir()
     (repo / "main.py").write_text("print('clean')\n", encoding="utf-8")
+    template = repo / "prompts/veda.md"
+    template.parent.mkdir()
+    template.write_text("gate veda\n", encoding="utf-8")
     assert not (repo / "static").exists()
 
     sandbox = tmp_path / "sandbox"
@@ -39,6 +42,9 @@ def test_control_gate_prepares_external_static_mount_without_repo_static(
     assert (sandbox / "static/chat").is_dir()
     assert (sandbox / "app/main.py").read_text(encoding="utf-8") == "print('clean')\n"
     assert (sandbox / "app/static").is_dir()
+    assert (sandbox / "workspace/memory/veda.md").read_text(
+        encoding="utf-8"
+    ) == "gate veda\n"
     head = subprocess.run(
         ["git", "-C", str(sandbox / "app"), "rev-parse", "HEAD"],
         check=True,

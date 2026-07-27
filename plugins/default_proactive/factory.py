@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
+from agent.persona import read_veda
 from agent.tools.web_fetch import WebFetchTool
 from plugins.default_proactive.source import McpGatewaySource
 from plugins.default_proactive.runtime import (
@@ -67,6 +68,7 @@ class AgentTickFactory:
             deduper=deduper,
             tool_deps=tool_deps,
             gateway_deps=gateway_deps,
+            veda_fn=lambda: read_veda(Path(self._deps.state_store.workspace_dir)),
             workspace_context_fn=self._deps.workspace_context_fn,
             llm_fn=self._build_llm_fn(),
             rng=self._deps.rng,

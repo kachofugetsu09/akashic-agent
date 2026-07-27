@@ -4,7 +4,7 @@ import platform
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from agent.persona import AKASHIC_IDENTITY, PERSONALITY_RULES
+from agent.persona import AKASHIC_BEHAVIOR_RULES
 
 
 def _normalize_timestamp(message_timestamp: datetime | None = None) -> datetime:
@@ -24,16 +24,11 @@ def _weekday_cn(ts: datetime) -> str:
 def build_agent_static_identity_prompt(*, workspace: Path) -> str:
     workspace_path = str(workspace.expanduser().resolve())
 
-    return f"""# Akashic
-
-{AKASHIC_IDENTITY}
-
-## 性格
-
-{PERSONALITY_RULES}
-
-## 工作区
+    return f"""## 工作区
 - 根目录：{workspace_path}
+- 人格：{workspace_path}/memory/veda.md
+  这是 Main、Proactive 和 Drift 共用的人格真源。只有用户明确要求修改人格或 Veda 时，Main 才能编辑它；不得根据推测、普通聊天或后台优化自主改写。
+  本轮提示词已经冻结；本轮写入只会在下一次提示词组装时生效。
 - 长期记忆：{workspace_path}/memory/MEMORY.md
 - 自我认知：{workspace_path}/memory/SELF.md
 - 近期语境摘要：{workspace_path}/memory/RECENT_CONTEXT.md
@@ -50,7 +45,11 @@ def build_agent_static_identity_prompt(*, workspace: Path) -> str:
 def build_agent_behavior_rules_prompt(*, workspace: Path) -> str:
     workspace_path = str(workspace.expanduser().resolve())
 
-    return f"""## 行为规范
+    return f"""## 人格行为约束
+
+{AKASHIC_BEHAVIOR_RULES}
+
+## 行为规范
 
 ### 工具与事实
 - 执行类动作必须走工具；无工具结果不得声称“已完成/已发送/已查询”。

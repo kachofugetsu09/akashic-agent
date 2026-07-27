@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.plugins.specs import ProactiveSourceSpec, RegisteredProactiveSource
+from agent.persona import reset_veda
 from agent.provider import LLMResponse, ToolCall
 from core.clock import ReplayClock
 from plugins.wake_proactive.plugin import WakeProactivePlugin, WakeRuntimeFactory
@@ -1512,6 +1513,7 @@ async def test_context_transitions_are_globally_throttled_to_once_per_three_hour
 
 
 def _drift_runtime(tmp_path, provider, orchestrator, now):
+    _ = reset_veda(tmp_path)
     store = WakeStateStore(tmp_path / "wake.db")
     scope = _scope(
         tmp_path,

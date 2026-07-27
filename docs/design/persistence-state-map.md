@@ -70,6 +70,7 @@ workspace 仍不是完整运行环境的全部。显式主配置、全局凭据�
 | 对象 | 正常增加 | 允许的原位或逻辑变化 | 允许物理减少的条件 |
 |---|---|---|---|
 | `MEMORY.md`、`SELF.md` | optimizer 把新事实合入下一版文档 | 以原子 replace 发布新版本；可以整理结构、合并重复、追加勘误 | 受保护事实不能无理由消失；移除需要显式 tombstone、来源和理由，重写前保留恢复点 |
+| `veda.md` | 新 workspace 初始化或旧 workspace 一次性迁移只在缺失时创建默认人格 | Main Agent 仅在用户明确要求时原子更新；`main.py veda-reset` 先备份原始字节再原子恢复版本化默认 | 正常运行没有删除协议；migration revert 仅可删除该 migration 创建且此后未修改的文件 |
 | `PENDING.md` | consolidation 只追加待处理事实 | optimizer 开始时把旧队列冻结成 snapshot；处理中到达的新事实继续追加到新 PENDING | 只有 MEMORY/SELF 成功提交后才能删除已消费 snapshot；失败、取消或重启必须合并回来 |
 | `RECENT_CONTEXT.md` | 从近期会话生成新的上下文投影 | 可以整体替换、缩短或重建，因为它不是原始会话 | 由 markdown maintenance owner 重建；普通 prompt 裁切不能顺带删除该文件或原始消息 |
 | `consolidation_writes.db` | 为新的 `source_ref + kind` INSERT 幂等记录 | 保存已提交 payload 和提交状态 | 当前没有通用自动清理合同；在定义重放窗口和恢复证据前不得减少 |
@@ -179,6 +180,7 @@ workspace 之外还有两组明确的全局状态：
 ├── memory/
 │   ├── MEMORY.md
 │   ├── SELF.md
+│   ├── veda.md
 │   ├── PENDING.md
 │   ├── RECENT_CONTEXT.md
 │   ├── PENDING.snapshot.md            优化事务进行中或崩溃遗留时
@@ -188,6 +190,7 @@ workspace 之外还有两组明确的全局状态：
 │   ├── akasha_graph_snapshot.json     dashboard 派生快照
 │   ├── MEMORY.bak.md / SELF.bak.md
 │   ├── backups/
+│   ├── veda-backups/<UTC时间>/veda.md
 │   ├── spawn_trace.jsonl
 │   ├── proactive_config_trace.jsonl
 │   └── proactive_rate_trace.jsonl
@@ -211,7 +214,7 @@ workspace 之外还有两组明确的全局状态：
 └── akashic.sock                       Unix 控制面启用时
 ```
 
-`bootstrap/init_workspace.py` 只预创建基础 Markdown、`schedules.json`、`memes/manifest.json`、目录、`sessions.db`、`consolidation_writes.db`、`proactive.db` 和当前 memory engine 声明的存储。`wake_proactive.db`、quota、附件、诊断记录和部分插件文件按功能首次使用时创建。
+`bootstrap/init_workspace.py` 只预创建基础 Markdown（包括缺失时的 `memory/veda.md`）、`schedules.json`、`memes/manifest.json`、目录、`sessions.db`、`consolidation_writes.db`、`proactive.db` 和当前 memory engine 声明的存储。已有 Veda 即使在 `init --force` 下也不覆盖；`wake_proactive.db`、quota、附件、诊断记录和部分插件文件按功能首次使用时创建。
 
 ## 7. 会话、消息与附件
 
@@ -240,12 +243,13 @@ workspace 之外还有两组明确的全局状态：
 
 ## 8. Markdown 记忆与语义记忆
 
-### 8.1 当前四份 Markdown
+### 8.1 当前五份 Markdown
 
 | 文件 | 写入 owner | 当前用途 | 状态性质 |
 |---|---|---|---|
 | `memory/MEMORY.md` | `MemoryOptimizer` 通过 `MarkdownMemoryStore` 重写 | 稳定用户档案，进入 prompt | 人类可读长期事实 |
 | `memory/SELF.md` | `MemoryOptimizer` | Akashic 自我认知，进入 prompt | 人类可读长期事实 |
+| `memory/veda.md` | Main Agent 仅响应用户明确指令；`main.py veda-reset` 是独立恢复 owner | Main、Proactive、Drift 每次组装 prompt 时读取的人格真源 | 用户可维护的权威人格状态 |
 | `memory/PENDING.md` | consolidation 追加，optimizer 消费 | 待归档事实队列 | 事务中的 canonical 输入 |
 | `memory/RECENT_CONTEXT.md` | markdown maintenance 重写 | compression 与 recent turns prompt 投影 | 可由会话和模型再次生成的持久投影 |
 
