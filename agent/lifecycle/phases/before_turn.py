@@ -38,6 +38,7 @@ class MemoryConsolidator(Protocol):
         *,
         archive_all: bool = False,
         force: bool = False,
+        drain_backlog: bool = True,
     ) -> bool: ...
 
 
@@ -126,6 +127,7 @@ class _MemoryContextGuardModule:
             try:
                 triggered = await self._consolidator.trigger_memory_consolidation(
                     state.session_key,
+                    drain_backlog=False,
                 )
             except Exception:
                 logger.exception(

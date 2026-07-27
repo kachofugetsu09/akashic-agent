@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from agent.config_models import Config
+from agent.model_runtime.context_policy import build_runtime_context_budget
 from agent.provider import LLMProvider
 from agent.tools.meta import register_memory_meta_tools
 from agent.tools.registry import ToolRegistry
@@ -100,6 +101,8 @@ def build_memory_runtime(
         provider=provider,
         model=config.model,
         keep_count=_memory_keep_count(config.memory_window),
+        consolidation_input_budget=_consolidation_input_budget(config),
+        provider_system_prompt=config.system_prompt,
         event_bus=event_publisher,
         recent_context_provider=light_provider or provider,
         recent_context_model=config.light_model or config.model,
@@ -149,6 +152,8 @@ def build_memory_admin_runtime(
         provider=provider,
         model=config.model,
         keep_count=_memory_keep_count(config.memory_window),
+        consolidation_input_budget=_consolidation_input_budget(config),
+        provider_system_prompt=config.system_prompt,
         event_bus=event_publisher,
         recent_context_provider=light_provider or provider,
         recent_context_model=config.light_model or config.model,
@@ -180,3 +185,30 @@ def build_memory_admin_runtime(
 
 def _memory_keep_count(window: int) -> int:
     return max(2, ((max(1, window) + 1) // 2) * 2)
+
+
+def _consolidation_input_budget(config: Config) -> int | None:
+    """返回主模型与近期模型都能接受的 consolidation 输入预算。"""
+
+    # 1. 事件提取使用 main，近期压缩使用 fast；没有 fast 时复用 main。
+    runtime_ids = {config.runtime_id, config.fast_runtime_id or config.runtime_id}
+    if not config.model_runtimes:
+        if config.context_window <= 0:
+            return None
+        return build_runtime_context_budget(
+            config.context_window,
+            config.effective_context_percent,
+            1024,
+        ).input_budget
+    # 2. 两个步骤均最多输出 1024 tokens，取更小输入预算作为分页上限。
+    budgets = []
+    for runtime_id in sorted(runtime_ids):
+        runtime = config.model_runtimes[runtime_id]
+        budgets.append(
+            build_runtime_context_budget(
+                runtime.context_window,
+                runtime.effective_context_percent,
+                1024,
+            ).input_budget
+        )
+    return min(budgets)

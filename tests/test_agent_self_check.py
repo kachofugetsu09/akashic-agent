@@ -208,6 +208,9 @@ async def test_trigger_memory_consolidation_times_out_when_busy(
     monkeypatch.setattr(loop_core, "_MANUAL_CONSOLIDATION_TIMEOUT_SECONDS", 0.01)
 
     with pytest.raises(TimeoutError, match="memory consolidation busy"):
-        await loop.trigger_memory_consolidation("cli:test")
+        await loop.trigger_memory_consolidation(
+            "cli:test",
+            drain_backlog=False,
+        )
 
     loop.session_manager.save_async.assert_not_awaited()

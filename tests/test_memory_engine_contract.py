@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 import asyncio
+import json
 import logging
 import pytest
 from pathlib import Path
@@ -664,6 +665,160 @@ async def test_markdown_consolidation_failure_trace_does_not_advance_cursor(tmp_
         "elapsed_ms": 180000,
     }
     assert session.last_consolidated == 0
+
+
+async def test_markdown_consolidation_drains_budgeted_pages_and_persists_each_cursor(
+    tmp_path: Path,
+):
+    async def _chat(**kwargs):
+        text = "\n".join(
+            str(message.get("content") or "")
+            for message in kwargs["messages"]
+        )
+        if "近期语境压缩代理" in text:
+            return SimpleNamespace(
+                content=(
+                    '{"active_topics":[],"user_preferences":[],'
+                    '"follow_ups":[],"avoidances":[],"ongoing_threads":[]}'
+                )
+            )
+        return SimpleNamespace(
+            content='{"history_entries":[],"pending_items":[]}'
+        )
+
+    session = SimpleNamespace(
+        key="cli:paged",
+        messages=[
+            {
+                "id": f"cli:paged:{index}",
+                "role": "user" if index % 2 == 0 else "assistant",
+                "content": f"message-{index}",
+                "timestamp": f"2026-07-27T00:{index:02d}:00+00:00",
+            }
+            for index in range(8)
+        ],
+        last_consolidated=0,
+    )
+    maintenance = MarkdownMemoryMaintenance(
+        store=MarkdownMemoryStore(tmp_path),
+        provider=cast(Any, SimpleNamespace(chat=AsyncMock(side_effect=_chat))),
+        model="lm",
+        keep_count=2,
+        consolidation_input_budget=1,
+    )
+    save_session = AsyncMock()
+    maintenance.bind_lifecycle(
+        MemoryLifecycleBindRequest(
+            get_session=lambda _key: session,
+            save_session=save_session,
+        )
+    )
+
+    result = await maintenance.consolidate(
+        ConsolidateRequest(session=session, drain_backlog=True)
+    )
+
+    assert result.consolidated_count == 6
+    assert result.trace["mode"] == "markdown"
+    assert result.trace["pages"] == 3
+    assert session.last_consolidated == 6
+    assert save_session.await_count == 3
+    assert [
+        json.loads(source_ref)
+        for source_ref in cast(list[str], result.trace["source_refs"])
+    ] == [
+        ["cli:paged:0", "cli:paged:1"],
+        ["cli:paged:2", "cli:paged:3"],
+        ["cli:paged:4", "cli:paged:5"],
+    ]
+
+
+async def test_markdown_consolidation_preserves_committed_pages_after_later_failure(
+    tmp_path: Path,
+):
+    event_extract_calls = 0
+
+    async def _chat(**kwargs):
+        nonlocal event_extract_calls
+        text = "\n".join(
+            str(message.get("content") or "")
+            for message in kwargs["messages"]
+        )
+        if "近期语境压缩代理" in text:
+            return SimpleNamespace(
+                content=(
+                    '{"active_topics":[],"user_preferences":[],'
+                    '"follow_ups":[],"avoidances":[],"ongoing_threads":[]}'
+                )
+            )
+        event_extract_calls += 1
+        if event_extract_calls == 2:
+            raise RuntimeError("page two failed")
+        return SimpleNamespace(
+            content='{"history_entries":[],"pending_items":[]}'
+        )
+
+    session = SimpleNamespace(
+        key="cli:paged-failure",
+        messages=[
+            {
+                "id": f"cli:paged-failure:{index}",
+                "role": "user" if index % 2 == 0 else "assistant",
+                "content": f"message-{index}",
+                "timestamp": f"2026-07-27T00:{index:02d}:00+00:00",
+            }
+            for index in range(8)
+        ],
+        last_consolidated=0,
+    )
+    maintenance = MarkdownMemoryMaintenance(
+        store=MarkdownMemoryStore(tmp_path),
+        provider=cast(Any, SimpleNamespace(chat=AsyncMock(side_effect=_chat))),
+        model="lm",
+        keep_count=2,
+        consolidation_input_budget=1,
+    )
+    save_session = AsyncMock()
+    maintenance.bind_lifecycle(
+        MemoryLifecycleBindRequest(
+            get_session=lambda _key: session,
+            save_session=save_session,
+        )
+    )
+
+    result = await maintenance.consolidate(
+        ConsolidateRequest(session=session, drain_backlog=True)
+    )
+
+    assert result.consolidated_count == 2
+    assert result.trace["mode"] == "failed"
+    assert result.trace["completed_pages"] == 1
+    assert session.last_consolidated == 2
+    save_session.assert_awaited_once_with(session)
+
+
+def test_consolidation_page_never_splits_a_single_semantic_turn():
+    from core.memory.markdown import (
+        _ConsolidationWindow,
+        _limit_consolidation_window,
+    )
+
+    messages = [
+        {"role": "user", "content": "u" * 1000},
+        {"role": "assistant", "content": "a" * 1000},
+        {"role": "user", "content": "next"},
+        {"role": "assistant", "content": "done"},
+    ]
+    window = _ConsolidationWindow(
+        old_messages=messages,
+        keep_count=0,
+        consolidate_up_to=4,
+    )
+
+    page = _limit_consolidation_window(window, max_conversation_chars=1)
+
+    assert page.old_messages == messages[:2]
+    assert page.consolidate_up_to == 2
 
 
 async def test_default_memory_engine_serializes_lifecycle_maintenance():

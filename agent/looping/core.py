@@ -303,7 +303,6 @@ class AgentLoop:
             tool_search_enabled=self._tool_search_enabled,
             memory_window=config.memory.keep_count,
             context=self._context,
-            session_manager=self.session_manager,
             event_bus=self._event_bus,
             non_preloadable_names=deps.tools.get_non_preloadable_names,
         )
@@ -893,6 +892,7 @@ class AgentLoop:
         *,
         archive_all: bool = False,
         force: bool = False,
+        drain_backlog: bool = True,
     ) -> bool:
         from core.memory.markdown import ConsolidateRequest
 
@@ -900,19 +900,24 @@ class AgentLoop:
         if self._markdown_memory is None:
             raise RuntimeError("markdown memory runtime unavailable")
         maintenance = self._markdown_memory.maintenance
-        try:
-            result = await asyncio.wait_for(
-                maintenance.consolidate(
-                    ConsolidateRequest(
-                        session=session,
-                        archive_all=archive_all,
-                        force=force,
-                    )
-                ),
-                timeout=_MANUAL_CONSOLIDATION_TIMEOUT_SECONDS,
+        operation = maintenance.consolidate(
+            ConsolidateRequest(
+                session=session,
+                archive_all=archive_all,
+                force=force,
+                drain_backlog=drain_backlog,
             )
-        except TimeoutError as exc:
-            raise TimeoutError("memory consolidation busy") from exc
+        )
+        if drain_backlog:
+            result = await operation
+        else:
+            try:
+                result = await asyncio.wait_for(
+                    operation,
+                    timeout=_MANUAL_CONSOLIDATION_TIMEOUT_SECONDS,
+                )
+            except TimeoutError as exc:
+                raise TimeoutError("memory consolidation busy") from exc
         if result.trace.get("mode") == "markdown":
             await self.session_manager.save_async(session)
             return True

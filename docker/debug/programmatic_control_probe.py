@@ -761,6 +761,176 @@ def _inside_smoke(report_dir: Path) -> int:
     return 0 if passed else 1
 
 
+def _inside_memory_context(report_dir: Path) -> int:
+    """验证真实 runtime 的滚动 consolidation 与 append-only session 语义。"""
+
+    report_dir.mkdir(parents=True, exist_ok=True)
+    events_path = report_dir / "events.jsonl"
+    model_url = os.environ.get("AKASHIC_MODEL_GATE_URL", "http://model-gate:8090")
+    endpoint = Path("/sandbox/akashic.sock")
+    session_key = "programmatic:memory-context"
+    checks: list[CheckResult] = []
+    client: JsonRpcSocketClient | None = None
+    try:
+        # 1. 为每个 event/recent-context 步骤提供同一份双兼容 JSON。
+        _wait_http_ready(f"{model_url}/readyz", READINESS_DEADLINE_S)
+        _wait_socket(endpoint, READINESS_DEADLINE_S)
+        response = json.dumps(
+            {
+                "history_entries": [],
+                "pending_items": [],
+                "active_topics": [],
+                "user_preferences": [],
+                "follow_ups": [],
+                "avoidances": [],
+                "ongoing_threads": [],
+            },
+            ensure_ascii=False,
+        )
+        _http_json(
+            "PUT",
+            f"{model_url}/control/script",
+            [{"mode": "complete", "content": response} for _ in range(4)],
+        )
+
+        # 2. 通过正式 control protocol 启动手动整理并等待 operation 终态。
+        client = _connect_client(endpoint, events_path)
+        started = client.request(
+            "thread/consolidate/start",
+            {"threadId": session_key},
+        )
+        operation = started.get("result")
+        if not isinstance(operation, dict):
+            raise GateFailure(f"consolidation 缺少 operation：{started!r}")
+        completed = client.wait_notification(
+            "operation/completed",
+            timeout=READINESS_DEADLINE_S,
+        )
+        completed_operation = completed.get("params", {}).get("operation")
+
+        # 3. 读取真实 sessions.db，证明消息不删、绝对游标排空到保留尾部。
+        connection = sqlite3.connect("/sandbox/workspace/sessions.db")
+        try:
+            row = connection.execute(
+                "SELECT last_consolidated FROM sessions WHERE key = ?",
+                (session_key,),
+            ).fetchone()
+            message_count = connection.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_key = ?",
+                (session_key,),
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        model_requests = _model_requests(
+            _http_json("GET", f"{model_url}/control/requests")
+        )
+        recent_context = Path(
+            "/sandbox/workspace/memory/RECENT_CONTEXT.md"
+        ).read_text(encoding="utf-8")
+        passed = (
+            isinstance(completed_operation, dict)
+            and completed_operation.get("id") == operation.get("id")
+            and completed_operation.get("status") == "completed"
+            and completed_operation.get("result") == {"consolidated": True}
+            and row == (20,)
+            and message_count == 24
+            and len(model_requests) == 4
+            and "until:" in recent_context
+        )
+        checks.append(
+            CheckResult(
+                "MC-01",
+                passed,
+                {
+                    "operation": completed_operation,
+                    "messageCount": message_count,
+                    "lastConsolidated": None if row is None else row[0],
+                    "modelRequestCount": len(model_requests),
+                    "recentContextChars": len(recent_context),
+                },
+            )
+        )
+        _write_jsonl(report_dir / "model-requests.jsonl", model_requests)
+
+        # 4. 构造一次真实 context retry，成功后历史只允许追加，游标不能回退。
+        retry_key = "programmatic:context-retry"
+        _http_json(
+            "PUT",
+            f"{model_url}/control/script",
+            [
+                {
+                    "mode": "error",
+                    "status": 400,
+                    "body": {
+                        "error": {
+                            "message": "context_length_exceeded",
+                            "type": "invalid_request_error",
+                        }
+                    },
+                },
+                {"mode": "complete", "content": "retry survived"},
+            ],
+        )
+        retry_turn = _start_turn(client, retry_key, "trigger prompt-only retry")
+        retry_terminal = client.wait_terminal(retry_turn)
+        retry_connection = sqlite3.connect("/sandbox/workspace/sessions.db")
+        try:
+            retry_row = retry_connection.execute(
+                "SELECT last_consolidated FROM sessions WHERE key = ?",
+                (retry_key,),
+            ).fetchone()
+            retry_message_count = retry_connection.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_key = ?",
+                (retry_key,),
+            ).fetchone()[0]
+        finally:
+            retry_connection.close()
+        final_requests = _model_requests(
+            _http_json("GET", f"{model_url}/control/requests")
+        )
+        retry_payload = _event_turn(retry_terminal)
+        checks.append(
+            CheckResult(
+                "MC-02",
+                retry_payload.get("status") == "completed"
+                and retry_payload.get("finalResponse") == "retry survived"
+                and retry_row == (4,)
+                and retry_message_count == 8
+                and len(final_requests) == 6,
+                {
+                    "terminal": retry_payload,
+                    "messageCount": retry_message_count,
+                    "lastConsolidated": (
+                        None if retry_row is None else retry_row[0]
+                    ),
+                    "modelRequestCount": len(final_requests),
+                },
+            )
+        )
+        _write_jsonl(report_dir / "model-requests.jsonl", final_requests)
+    except Exception as error:
+        checks.append(
+            CheckResult(
+                "controller",
+                False,
+                {"type": type(error).__name__, "message": str(error)},
+            )
+        )
+    finally:
+        if client is not None:
+            client.close()
+
+    passed = bool(checks) and all(check.passed for check in checks)
+    report = {
+        "gate": "memory-context",
+        "status": "passed" if passed else "failed",
+        "checks": [asdict(check) for check in checks],
+    }
+    _write_json(report_dir / "inside-gate.json", report)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if passed else 1
+
+
 def _inside_failure_matrix(report_dir: Path) -> int:
     """以真实 barrier 和多连接驱动 PR 必选故障矩阵。"""
 
@@ -1629,10 +1799,10 @@ def _repository_digest(repo: Path) -> dict[str, str]:
     return result
 
 
-def _write_config(sandbox: Path) -> None:
+def _write_config(sandbox: Path, *, context_window: int = 64_000) -> None:
     """渲染只连接 compose 私网 model-gate 的隔离配置。"""
 
-    config = """[llm]
+    config = f"""[llm]
 main = "model_gate"
 
 [llm.runtimes.model_gate]
@@ -1640,7 +1810,7 @@ provider = "openai"
 model = "model-gate"
 api_key = "model-gate-local"
 base_url = "http://model-gate:8090/v1"
-context_window = 64000
+context_window = {context_window}
 
 [agent]
 system_prompt = "Return the deterministic model-gate response."
@@ -1799,6 +1969,52 @@ def _install_control_failure_plugin(sandbox: Path) -> None:
         '[plugins."control_failure@gate"]\nenabled = true\n',
         encoding="utf-8",
     )
+
+
+def _seed_memory_context_fixture(
+    compose: list[str],
+    repo: Path,
+    env: dict[str, str],
+) -> None:
+    """在 gateway 启动前用生产 SessionManager 写入分页测试会话。"""
+
+    script = """
+from pathlib import Path
+from session.manager import SessionManager
+
+manager = SessionManager(Path("/sandbox/workspace"))
+session = manager.get_or_create("programmatic:memory-context")
+for index in range(12):
+    session.add_message("user", f"第 {index} 轮用户消息：" + "甲" * 2000)
+    session.add_message("assistant", f"第 {index} 轮助手回复：" + "乙" * 2000)
+manager.save(session)
+retry = manager.get_or_create("programmatic:context-retry")
+for index in range(3):
+    retry.add_message("user", f"retry user {index}")
+    retry.add_message("assistant", f"retry assistant {index}")
+retry.last_consolidated = 4
+manager.save(retry)
+manager.close()
+"""
+    seeded = subprocess.run(
+        [
+            *compose,
+            "run",
+            "--rm",
+            "--no-deps",
+            "-T",
+            "--entrypoint",
+            "python",
+            "akashic-control-gate",
+            "-c",
+            script,
+        ],
+        cwd=repo,
+        env=env,
+        check=False,
+    )
+    if seeded.returncode != 0:
+        raise GateFailure(f"memory context fixture seed failed: {seeded.returncode}")
 
 
 def _run_stdio_check(
@@ -2116,6 +2332,8 @@ def _run_host(gate: str) -> int:
     _prepare_host_sandbox(sandbox, repo)
     if gate == "failure-matrix":
         _install_control_failure_plugin(sandbox)
+    elif gate == "memory-context":
+        _write_config(sandbox, context_window=16_000)
     before = _repository_digest(repo)
     _write_json(report_dir / "repo-digest.before.json", before)
     env = {
@@ -2142,6 +2360,8 @@ def _run_host(gate: str) -> int:
         )
         if build.returncode != 0:
             raise GateFailure(f"control-gate image build failed: {build.returncode}")
+        if gate == "memory-context":
+            _seed_memory_context_fixture(compose, repo, env)
         up = subprocess.run(
             [*compose, "up", "-d", "model-gate", "akashic-control-gate"],
             cwd=repo,
@@ -2315,7 +2535,7 @@ def main() -> int:
     parser.add_argument(
         "--gate",
         required=True,
-        choices=("smoke", "failure-matrix", "soak"),
+        choices=("smoke", "failure-matrix", "memory-context", "soak"),
     )
     parser.add_argument("--inside-container", action="store_true")
     parser.add_argument("--phase", default="scenarios")
@@ -2328,6 +2548,8 @@ def main() -> int:
             return _inside_smoke(args.report_dir)
         if args.gate == "failure-matrix":
             return _inside_failure_matrix(args.report_dir)
+        if args.gate == "memory-context":
+            return _inside_memory_context(args.report_dir)
         if args.gate == "soak":
             return _inside_soak(args.report_dir)
         raise GateFailure(f"未知 inside gate：{args.gate}")

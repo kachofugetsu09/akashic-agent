@@ -34,6 +34,7 @@ class ConsolidateRequest:
     session: object
     archive_all: bool = False
     force: bool = False
+    drain_backlog: bool = True
     scope_channel: str = ""
     scope_chat_id: str = ""
 
@@ -168,6 +169,7 @@ def _select_consolidation_window(
     consolidation_min_new_messages: int,
     archive_all: bool,
     force: bool = False,
+    continuing: bool = False,
 ) -> _ConsolidationWindow | None:
     total_messages = len(session.messages)
     if archive_all:
@@ -189,7 +191,11 @@ def _select_consolidation_window(
     old_messages = session.messages[session.last_consolidated : consolidate_up_to]
     if not old_messages:
         return None
-    if not force and len(old_messages) < max(1, int(consolidation_min_new_messages)):
+    if (
+        not force
+        and not continuing
+        and len(old_messages) < max(1, int(consolidation_min_new_messages))
+    ):
         return None
     return _ConsolidationWindow(
         old_messages=old_messages,
@@ -230,6 +236,65 @@ def _format_conversation_for_consolidation(old_messages: list[dict]) -> str:
         ts = str(message.get("timestamp", "?"))[:16]
         lines.append(f"[{ts}] {role}: {message['content']}")
     return "\n".join(lines)
+
+
+def _starts_semantic_turn(message: dict) -> bool:
+    return message.get("role") == "user" or (
+        message.get("role") == "assistant" and bool(message.get("proactive"))
+    )
+
+
+def _limit_consolidation_window(
+    window: _ConsolidationWindow,
+    *,
+    max_conversation_chars: int,
+) -> _ConsolidationWindow:
+    """按完整语义回合限制单页正文，并返回稳定的绝对游标。"""
+
+    # 1. 先把窗口分成不会拆开 user/assistant/tool 因果链的语义组。
+    groups: list[list[dict]] = []
+    for message in window.old_messages:
+        if _starts_semantic_turn(message) or not groups:
+            groups.append([])
+        groups[-1].append(message)
+
+    # 2. 再按实际送给模型的文本长度装页；单个超长回合保持完整并 fail-loud。
+    selected: list[dict] = []
+    used_chars = 0
+    for group in groups:
+        rendered = _format_conversation_for_consolidation(group)
+        added_chars = len(rendered) + (1 if rendered and selected else 0)
+        if selected and used_chars + added_chars > max_conversation_chars:
+            break
+        selected.extend(group)
+        used_chars += added_chars
+    if len(selected) == len(window.old_messages):
+        return window
+    return _ConsolidationWindow(
+        old_messages=selected,
+        keep_count=window.keep_count,
+        consolidate_up_to=(
+            window.consolidate_up_to
+            - len(window.old_messages)
+            + len(selected)
+        ),
+    )
+
+
+def _replace_consolidation_prompt_conversation(
+    prompt: str,
+    *,
+    old_conversation: str,
+    new_conversation: str,
+) -> str:
+    """只替换事件提取 prompt 尾部的待处理对话。"""
+
+    marker = "\n## 待处理对话\n"
+    suffix = "\n\n只返回合法 JSON，不要 markdown 代码块。"
+    prefix, separator, tail = prompt.rpartition(marker)
+    if not separator or tail != old_conversation + suffix:
+        raise RuntimeError("consolidation prompt 尾部结构已改变")
+    return prefix + marker + new_conversation + suffix
 
 
 def _clip_context_text(text: str, max_chars: int = 16000) -> str:
@@ -409,6 +474,8 @@ class _MarkdownConsolidationWorker:
         provider: "LLMProvider",
         model: str,
         keep_count: int,
+        consolidation_input_budget: int | None = None,
+        provider_system_prompt: str = "",
         recent_context_provider: "LLMProvider | None" = None,
         recent_context_model: str | None = None,
     ) -> None:
@@ -420,6 +487,8 @@ class _MarkdownConsolidationWorker:
             str(recent_context_model or "").strip() or model
         )
         self._keep_count = keep_count
+        self._consolidation_input_budget = consolidation_input_budget
+        self._provider_system_prompt = provider_system_prompt
         self._consolidation_min_new_messages = max(5, keep_count // 2)
 
     @staticmethod
@@ -749,6 +818,7 @@ ongoing_threads 严格限制：
         session,
         archive_all: bool = False,
         force: bool = False,
+        continuing: bool = False,
         scope_channel: str = "",
         scope_chat_id: str = "",
     ) -> _ConsolidationDraft | _ConsolidationFailure | None:
@@ -760,6 +830,7 @@ ongoing_threads 严格限制：
             consolidation_min_new_messages=self._consolidation_min_new_messages,
             archive_all=archive_all,
             force=force,
+            continuing=continuing,
         )
         if archive_all:
             logger.info(
@@ -925,7 +996,43 @@ history_entries.emotional_weight 规则：
 
 只返回合法 JSON，不要 markdown 代码块。"""
 
-        # 3. 调主模型把这段旧对话提炼成结构化结果。
+        # 3. 普通 consolidation 按实际模型预算切成完整语义页。
+        if self._consolidation_input_budget is not None and not archive_all:
+            fixed_chars = (
+                len(self._provider_system_prompt)
+                + len(prompt)
+                - len(conversation)
+            )
+            available_tokens = self._consolidation_input_budget - max(
+                1, fixed_chars // 3
+            )
+            page_char_budget = max(1, available_tokens * 3 * 95 // 100)
+            paged_window = _limit_consolidation_window(
+                window,
+                max_conversation_chars=page_char_budget,
+            )
+            if paged_window is not window:
+                old_conversation = conversation
+                window = paged_window
+                conversation = _format_conversation_for_consolidation(
+                    window.old_messages
+                )
+                source_ref = _build_consolidation_source_ref(window)
+                prompt = _replace_consolidation_prompt_conversation(
+                    prompt,
+                    old_conversation=old_conversation,
+                    new_conversation=conversation,
+                )
+                logger.info(
+                    "Memory consolidation page selected: messages=%d up_to=%d "
+                    "conversation_chars=%d budget_chars=%d",
+                    len(window.old_messages),
+                    window.consolidate_up_to,
+                    len(conversation),
+                    page_char_budget,
+                )
+
+        # 4. 调主模型把这页旧对话提炼成结构化结果。
         call_result = await self._call_llm_step(
             step="event_extract",
             provider=self._provider,
@@ -963,7 +1070,7 @@ history_entries.emotional_weight 规则：
                 elapsed_ms=event_elapsed_ms,
             )
 
-        # 4. 归一化文本产物，并把后续写入所需信息交给 engine。
+        # 5. 归一化文本产物，并把后续写入所需信息交给 engine。
         try:
             history_entry_payloads = _normalize_history_entries(
                 result.get("history_entries"),
@@ -977,7 +1084,7 @@ history_entries.emotional_weight 规则：
                 error=f"invalid_schema: {exc}",
                 elapsed_ms=event_elapsed_ms,
             )
-        # 5. 生成 markdown 产物，向量写入由 engine 订阅提交事件完成。
+        # 6. 生成 markdown 产物，向量写入由 engine 订阅提交事件完成。
         recent_context_text = await self._build_recent_context_snapshot(
             session=session,
             window=window,
@@ -1049,6 +1156,8 @@ class MarkdownMemoryMaintenance:
         provider: "LLMProvider",
         model: str,
         keep_count: int,
+        consolidation_input_budget: int | None = None,
+        provider_system_prompt: str = "",
         event_bus: "EventBus | None" = None,
         recent_context_provider: "LLMProvider | None" = None,
         recent_context_model: str | None = None,
@@ -1060,6 +1169,8 @@ class MarkdownMemoryMaintenance:
             provider=provider,
             model=model,
             keep_count=keep_count,
+            consolidation_input_budget=consolidation_input_budget,
+            provider_system_prompt=provider_system_prompt,
             recent_context_provider=recent_context_provider,
             recent_context_model=recent_context_model,
         )
@@ -1182,28 +1293,59 @@ class MarkdownMemoryMaintenance:
             return await self._consolidate_unlocked(request)
 
     async def _consolidate_unlocked(self, request: ConsolidateRequest) -> ConsolidateResult:
-        draft = await self._worker.prepare_consolidation(
-            request.session,
-            archive_all=request.archive_all,
-            force=request.force,
-            scope_channel=request.scope_channel,
-            scope_chat_id=request.scope_chat_id,
-        )
-        if draft is None:
-            return ConsolidateResult(trace={"mode": "skipped"})
-        if isinstance(draft, _ConsolidationFailure):
-            return ConsolidateResult(
-                trace={
+        """逐页压缩 backlog，并在每页提交后保存绝对游标。"""
+
+        # 1. 每页重新读取 RECENT_CONTEXT，让下一页基于上一页的滚动摘要继续压缩。
+        consolidated_count = 0
+        source_refs: list[str] = []
+        while True:
+            draft = await self._worker.prepare_consolidation(
+                request.session,
+                archive_all=request.archive_all,
+                force=request.force,
+                continuing=bool(source_refs),
+                scope_channel=request.scope_channel,
+                scope_chat_id=request.scope_chat_id,
+            )
+            if draft is None:
+                if consolidated_count == 0:
+                    return ConsolidateResult(trace={"mode": "skipped"})
+                break
+            if isinstance(draft, _ConsolidationFailure):
+                failure_trace: dict[str, object] = {
                     "mode": "failed",
                     "step": draft.step,
                     "error": draft.error,
                     "elapsed_ms": draft.elapsed_ms,
                 }
-            )
-        await self._commit_markdown_draft(request.session, draft)
+                if source_refs:
+                    failure_trace["completed_pages"] = len(source_refs)
+                return ConsolidateResult(
+                    consolidated_count=consolidated_count,
+                    trace=failure_trace,
+                )
+
+            # 2. 提交一页后立即保存游标；失败重启只会重做未提交页。
+            await self._commit_markdown_draft(request.session, draft)
+            consolidated_count += len(draft.window.old_messages)
+            source_refs.append(draft.source_ref)
+            if self._save_session is not None:
+                await self._save_session(request.session)
+            if (
+                not request.drain_backlog
+                or request.archive_all
+                or draft.window.consolidate_up_to >= len(request.session.messages)
+            ):
+                break
+
         return ConsolidateResult(
-            consolidated_count=len(draft.window.old_messages),
-            trace={"mode": "markdown", "source_ref": draft.source_ref},
+            consolidated_count=consolidated_count,
+            trace={
+                "mode": "markdown",
+                "source_ref": source_refs[-1],
+                "source_refs": source_refs,
+                "pages": len(source_refs),
+            },
         )
 
     async def _commit_markdown_draft(
@@ -1252,6 +1394,8 @@ def build_markdown_memory_runtime(
     provider: "LLMProvider",
     model: str,
     keep_count: int,
+    consolidation_input_budget: int | None = None,
+    provider_system_prompt: str = "",
     event_bus: "EventBus | None" = None,
     recent_context_provider: "LLMProvider | None" = None,
     recent_context_model: str | None = None,
@@ -1262,6 +1406,8 @@ def build_markdown_memory_runtime(
         provider=provider,
         model=model,
         keep_count=keep_count,
+        consolidation_input_budget=consolidation_input_budget,
+        provider_system_prompt=provider_system_prompt,
         event_bus=event_bus,
         recent_context_provider=recent_context_provider,
         recent_context_model=recent_context_model,
