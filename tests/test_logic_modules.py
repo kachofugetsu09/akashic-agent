@@ -23,6 +23,7 @@ from proactive_v2.memory_optimizer import (
 from session.manager import (
     Session,
     SessionManager,
+    _STORED_TOOL_RESULT_CHAR_BUDGET,
     _TOOL_RESULT_CHAR_BUDGET,
 )
 from session.store import SessionStore
@@ -246,6 +247,58 @@ async def test_session_batch_persistence_uses_one_commit(tmp_path: Path) -> None
     await manager.append_messages(session, session.messages)
 
     assert statements.count("COMMIT") == 1
+
+
+@pytest.mark.asyncio
+async def test_session_persistence_truncates_each_large_tool_result(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("telegram:bounded-tool-result")
+    long_result = (
+        "head-"
+        + "x" * (_STORED_TOOL_RESULT_CHAR_BUDGET + 200)
+        + "-tail"
+    )
+    session.add_message("assistant", "结论")
+    session.messages[-1]["tool_chain"] = [
+        {
+            "text": "查询",
+            "calls": [
+                {
+                    "call_id": "call-1",
+                    "name": "shell",
+                    "arguments": {},
+                    "result": long_result,
+                },
+                {
+                    "call_id": "call-2",
+                    "name": "shell",
+                    "arguments": {},
+                    "result": "small",
+                },
+            ],
+        }
+    ]
+
+    await manager.append_messages(session, session.messages)
+    manager.close()
+    reloaded_manager = SessionManager(tmp_path)
+    stored_session = reloaded_manager.get_existing(session.key)
+    stored_chain = cast(
+        list[dict[str, object]],
+        stored_session.messages[0]["tool_chain"],
+    )
+    stored_calls = cast(list[dict[str, object]], stored_chain[0]["calls"])
+    stored_result = cast(str, stored_calls[0]["result"])
+
+    assert len(stored_result) == _STORED_TOOL_RESULT_CHAR_BUDGET
+    assert stored_result.startswith("head-")
+    assert stored_result.endswith("-tail")
+    assert "chars truncated before persistence" in stored_result
+    assert stored_calls[1]["result"] == "small"
+    assert long_result.endswith("-tail")
+    reloaded_manager.close()
 
 
 def test_session_manager_preserves_message_extra_payload_order(tmp_path: Path) -> None:

@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import mimetypes
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,6 +17,7 @@ from agent.prompting import (
 from session.store import SessionStore
 
 _TOOL_RESULT_CHAR_BUDGET = 10000
+_STORED_TOOL_RESULT_CHAR_BUDGET = 20000
 _PROACTIVE_HISTORY_CHAR_BUDGET = 360
 _PROACTIVE_META_HISTORY_CHAR_BUDGET = 1200
 _MSG_KEYS = {"id", "session_key", "seq", "role", "content", "timestamp", "tool_chain"}
@@ -37,6 +39,39 @@ def _truncate_tool_result(content: object) -> str:
     tail = keep - head
     truncated = text[:head] + marker + (text[-tail:] if tail else "")
     return f"Total output lines: {len(text.splitlines())}\n\n{truncated}"
+
+
+def _truncate_tool_chain_for_storage(tool_chain: object) -> object:
+    """Copy a tool chain and bound every persisted tool result."""
+
+    if tool_chain is None:
+        return None
+
+    # 1. Preserve the caller-owned runtime trace while preparing durable data.
+    stored = deepcopy(cast(list[dict[str, object]], tool_chain))
+
+    # 2. Truncate each result independently so one tool cannot dominate a turn.
+    for group in stored:
+        calls = cast(list[dict[str, object]], group["calls"])
+        for call in calls:
+            result = call.get("result")
+            if (
+                not isinstance(result, str)
+                or len(result) <= _STORED_TOOL_RESULT_CHAR_BUDGET
+            ):
+                continue
+            omitted = len(result) - _STORED_TOOL_RESULT_CHAR_BUDGET
+            while True:
+                marker = f"…{omitted} chars truncated before persistence…"
+                keep = max(0, _STORED_TOOL_RESULT_CHAR_BUDGET - len(marker))
+                actual_omitted = len(result) - keep
+                if actual_omitted == omitted:
+                    break
+                omitted = actual_omitted
+            head = keep // 2
+            tail = keep - head
+            call["result"] = result[:head] + marker + (result[-tail:] if tail else "")
+    return stored
 
 
 def _append_proactive_meta(content: str, msg: dict[str, object]) -> str:
@@ -450,7 +485,9 @@ class SessionManager:
                     "role": str(msg.get("role") or "assistant"),
                     "content": content,
                     "timestamp": ts,
-                    "tool_chain": msg.get("tool_chain"),
+                    "tool_chain": _truncate_tool_chain_for_storage(
+                        msg.get("tool_chain")
+                    ),
                     "extra": {k: v for k, v in msg.items() if k not in _MSG_KEYS},
                 }
             )
