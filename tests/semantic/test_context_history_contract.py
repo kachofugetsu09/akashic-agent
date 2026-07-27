@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -100,6 +99,7 @@ def _seed_session(workspace: Path) -> tuple[SessionManager, str]:
     for index in range(6):
         role = "user" if index % 2 == 0 else "assistant"
         session.add_message(role, f"message-{index}")
+    session.last_consolidated = 4
     manager.save(session)
     _seed_embeddings(
         manager,
@@ -108,10 +108,7 @@ def _seed_session(workspace: Path) -> tuple[SessionManager, str]:
     return manager, session_key
 
 
-def _reasoner(
-    manager: SessionManager,
-    history_windows: list[int],
-) -> DefaultReasoner:
+def _reasoner(history_windows: list[int]) -> DefaultReasoner:
     def render(request: ContextRequest, **_kwargs: object) -> ContextRenderResult:
         history_windows.append(len(request.history))
         return ContextRenderResult(
@@ -128,28 +125,25 @@ def _reasoner(
         get_schemas=lambda names=None: [],
         get_tool=lambda name: None,
     )
-    kwargs: dict[str, object] = {
-        "llm": cast(
+    return DefaultReasoner(
+        llm=cast(
             Any,
             LLMServices(
                 provider=SimpleNamespace(chat=AsyncMock()),
                 light_provider=SimpleNamespace(),
             ),
         ),
-        "llm_config": LLMConfig(
+        llm_config=LLMConfig(
             model="semantic-gate",
             max_iterations=1,
             max_tokens=128,
         ),
-        "tools": cast(Any, tools),
-        "discovery": ToolDiscoveryState(),
-        "tool_search_enabled": False,
-        "memory_window": 40,
-        "context": cast(Any, SimpleNamespace(render=render)),
-    }
-    if "session_manager" in inspect.signature(DefaultReasoner).parameters:
-        kwargs["session_manager"] = manager
-    return DefaultReasoner(**cast(Any, kwargs))
+        tools=cast(Any, tools),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=40,
+        context=cast(Any, SimpleNamespace(render=render)),
+    )
 
 
 def _message() -> SimpleNamespace:
@@ -166,13 +160,15 @@ def _message() -> SimpleNamespace:
 def test_context_retry_is_projection_over_append_only_history(tmp_path: Path) -> None:
     manager, session_key = _seed_session(tmp_path)
     session = manager.get_or_create(session_key)
+    before_runtime_messages = list(session.messages)
+    before_last_consolidated = session.last_consolidated
     before_messages = _messages_snapshot(manager, session_key)
     before_embeddings = _embeddings_snapshot(manager)
     before_highwater = max(cast(int, row[2]) for row in before_messages)
     statements: list[str] = []
     manager._store._conn.set_trace_callback(statements.append)
     windows: list[int] = []
-    reasoner = _reasoner(manager, windows)
+    reasoner = _reasoner(windows)
     reasoner.run = AsyncMock(
         side_effect=[
             ContextLengthError("too long"),
@@ -184,14 +180,19 @@ def test_context_retry_is_projection_over_append_only_history(tmp_path: Path) ->
         ]
     )
 
-    result = asyncio.run(reasoner.run_turn(msg=_message(), session=session))
+    result = asyncio.run(
+        reasoner.run_turn(
+            msg=_message(),
+            session=session,
+            base_history=list(session.messages),
+        )
+    )
 
     assert result.reply == "ok"
     assert windows[:5] == [6, 6, 6, 6, 6]
     assert windows[5] == 3
-    # Expand phase: old main trims the runtime mirror; the next implementation
-    # keeps all six. The contract PR following migration removes the old branch.
-    assert len(session.messages) in {3, 6}
+    assert session.messages == before_runtime_messages
+    assert session.last_consolidated == before_last_consolidated == 4
     assert_rows_unchanged(
         before_messages,
         _messages_snapshot(manager, session_key),
@@ -214,6 +215,7 @@ def test_context_retry_is_projection_over_append_only_history(tmp_path: Path) ->
     assert [message["content"] for message in reloaded.messages] == [
         f"message-{index}" for index in range(6)
     ]
+    assert reloaded.last_consolidated == 4
     reloaded.add_message("assistant", "message-6")
     reloaded_manager.save(reloaded)
     assert reloaded.messages[-1]["seq"] == before_highwater + 1
