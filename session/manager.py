@@ -500,34 +500,6 @@ class SessionManager:
             _ = self._persist_session(session, msgs_copy, updated_at=updated_at)
             self._cache[session.key] = session
 
-    async def trim_history_async(
-        self,
-        session: Session,
-        keep_count: int,
-        *,
-        last_consolidated: int = 0,
-    ) -> None:
-        """只裁剪运行时上下文，并保留 sessions.db 中的完整历史。"""
-
-        # 1. 在 session owner 的写锁内计算替换结果，避免覆盖并发追加。
-        async with self._lock(session.key):
-            retained = (
-                list(session.messages[-keep_count:]) if keep_count > 0 else []
-            )
-
-            # 2. 只更新 session 元数据；不传 retained IDs，禁止触发历史删除。
-            _ = self._persist_session(
-                session,
-                retained,
-                updated_at=datetime.now(UTC),
-                last_consolidated=last_consolidated,
-            )
-
-            # 3. 数据库成功后再提交运行时上下文视图。
-            session.messages[:] = retained
-            session.last_consolidated = int(last_consolidated)
-            self._cache[session.key] = session
-
     def invalidate(self, key: str) -> None:
         _ = self._cache.pop(key, None)
 

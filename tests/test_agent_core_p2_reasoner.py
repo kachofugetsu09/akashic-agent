@@ -446,7 +446,6 @@ def test_default_reasoner_observes_tool_lifecycle_events():
                 messages=[{"role": "user", "content": request.current_message}],
             ),
         )),
-        session_manager=cast(Any, SimpleNamespace()),
         event_bus=event_bus,
     )
     session = SimpleNamespace(
@@ -697,7 +696,6 @@ def test_default_reasoner_run_turn_uses_context_render():
             build_messages=lambda **_: (_ for _ in ()).throw(AssertionError("legacy build_messages should not be used")),
             build_turn_injection_context=lambda **_: (_ for _ in ()).throw(AssertionError("legacy turn_injection should not be used")),
         )),
-        session_manager=cast(Any, SimpleNamespace(save_async=lambda *_args, **_kwargs: None)),
     )
 
     session = SimpleNamespace(
@@ -737,7 +735,6 @@ def test_default_reasoner_run_turn_reports_llm_timeout():
                 messages=[{"role": "user", "content": request.current_message}],
             ),
         )),
-        session_manager=cast(Any, SimpleNamespace(save_async=lambda *_args, **_kwargs: None)),
     )
     session = SimpleNamespace(
         key="cli:1",

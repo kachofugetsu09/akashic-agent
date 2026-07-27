@@ -71,13 +71,6 @@ def _make_reasoner(*, discovery: ToolDiscoveryState, tool_search_enabled: bool):
         context=cast(Any, SimpleNamespace(
             render=_render,
         )),
-        session_manager=cast(
-            Any,
-            SimpleNamespace(
-                save_async=AsyncMock(),
-                trim_history_async=AsyncMock(),
-            ),
-        ),
     )
 
 
@@ -95,7 +88,9 @@ def test_reasoner_run_turn_retries_and_updates_discovery():
         ]
     )
 
-    result = asyncio.run(reasoner.run_turn(msg=_msg(), session=cast(Any, _session())))
+    session = _session()
+    original_messages = list(session.messages)
+    result = asyncio.run(reasoner.run_turn(msg=_msg(), session=cast(Any, session)))
 
     assert result.reply == "ok"
     assert result.tools_used == ["tool_search", "x"]
@@ -103,6 +98,8 @@ def test_reasoner_run_turn_retries_and_updates_discovery():
     assert result.thinking is None
     assert result.context_retry["selected_plan"] == "trim_skills_catalog"
     assert "x" in discovery._unlocked["s:1"]
+    assert session.messages == original_messages
+    assert session.last_consolidated == 3
 
 
 def test_reasoner_run_turn_context_length_all_fail_returns_fallback():
@@ -150,13 +147,6 @@ def test_reasoner_run_turn_context_length_trims_dynamic_sections_before_history(
         context=cast(Any, SimpleNamespace(
             render=_render,
         )),
-        session_manager=cast(
-            Any,
-            SimpleNamespace(
-                save_async=AsyncMock(),
-                trim_history_async=AsyncMock(),
-            ),
-        ),
     )
     reasoner.run = AsyncMock(
         side_effect=[

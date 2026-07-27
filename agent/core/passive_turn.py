@@ -84,7 +84,6 @@ if TYPE_CHECKING:
     from agent.retrieval.protocol import MemoryRetrievalPipeline
     from agent.tool_hooks.base import ToolHook
     from agent.tools.registry import ToolRegistry
-    from session.manager import SessionManager
 from core.common.diagnostic_log import diagnostic_context, diagnostic_line
 
 # 1. 统一通过模块 logger 记录关键分支，供排障和回归测试抓取。
@@ -898,7 +897,6 @@ class DefaultReasoner(Reasoner):
         tool_search_enabled: bool,
         memory_window: int,
         context: "ContextBuilder | None" = None,
-        session_manager: "SessionManager | None" = None,
         event_bus: "EventBus | None" = None,
         non_preloadable_names: Callable[[], set[str]] | None = None,
     ) -> None:
@@ -909,7 +907,6 @@ class DefaultReasoner(Reasoner):
         self._tool_search_enabled = tool_search_enabled
         self._memory_window = memory_window
         self._context = context
-        self._session_manager = session_manager
         self._event_bus = event_bus
         self._non_preloadable_names = non_preloadable_names or set
         self._prompt_render_plugin_modules: list[object] = []
@@ -1090,8 +1087,8 @@ class DefaultReasoner(Reasoner):
     ) -> "TurnRunResult":
         from agent.core.runtime_support import TurnRunResult
 
-        if self._context is None or self._session_manager is None:
-            raise RuntimeError("DefaultReasoner.run_turn requires context and session_manager")
+        if self._context is None:
+            raise RuntimeError("DefaultReasoner.run_turn requires context")
         if self._prompt_render is None:
             self._prompt_render = self._build_prompt_render_phase(self._context)
 
@@ -1191,19 +1188,13 @@ class DefaultReasoner(Reasoner):
                 tool_chain = list(result.metadata.get("tool_chain") or [])
                 media = list(result.metadata.get("media") or [])
                 if attempt > 0:
-                    window = plan["history_window"]
                     retry_trace["selected_plan"] = plan["name"]
                     retry_trace["trimmed_sections"] = sorted(plan["disabled_sections"])
                     logger.warning(
-                        "重试成功 plan=%s window=%d disabled=%s，修剪 session 历史",
+                        "重试成功 plan=%s window=%d disabled=%s，仅缩小本次 prompt 投影",
                         plan["name"],
-                        window,
+                        plan["history_window"],
                         sorted(plan["disabled_sections"]),
-                    )
-                    await self._session_manager.trim_history_async(
-                        cast(Any, session),
-                        window,
-                        last_consolidated=0,
                     )
 
                 if self._tool_search_enabled and (tools_used or tools_unlocked):

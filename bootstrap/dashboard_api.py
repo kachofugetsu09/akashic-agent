@@ -158,6 +158,7 @@ class ManualConsolidator(Protocol):
         *,
         archive_all: bool = False,
         force: bool = False,
+        drain_backlog: bool = True,
     ) -> bool: ...
 
 

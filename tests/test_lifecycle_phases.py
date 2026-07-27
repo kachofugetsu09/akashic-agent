@@ -539,10 +539,12 @@ async def test_before_turn_memory_context_guard_consolidates_before_blocking():
             *,
             archive_all: bool = False,
             force: bool = False,
+            drain_backlog: bool = True,
         ) -> bool:
             assert session_key == "telegram:123"
             assert archive_all is False
             assert force is False
+            assert drain_backlog is False
             session.last_consolidated = len(session.messages) - 20
             return True
 
@@ -585,7 +587,9 @@ async def test_before_turn_memory_context_guard_blocks_after_consolidation_failu
             *,
             archive_all: bool = False,
             force: bool = False,
+            drain_backlog: bool = True,
         ) -> bool:
+            assert drain_backlog is False
             return False
 
     phase = Phase(

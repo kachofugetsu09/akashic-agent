@@ -161,6 +161,7 @@ class _ManualConsolidator:
         *,
         archive_all: bool = False,
         force: bool = False,
+        drain_backlog: bool = True,
     ) -> bool:
         self.calls.append((session_key, archive_all, force))
         if self.error is not None:
