@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -127,22 +128,28 @@ def _reasoner(
         get_schemas=lambda names=None: [],
         get_tool=lambda name: None,
     )
-    return DefaultReasoner(
-        llm=cast(
+    kwargs: dict[str, object] = {
+        "llm": cast(
             Any,
             LLMServices(
                 provider=SimpleNamespace(chat=AsyncMock()),
                 light_provider=SimpleNamespace(),
             ),
         ),
-        llm_config=LLMConfig(model="semantic-gate", max_iterations=1, max_tokens=128),
-        tools=cast(Any, tools),
-        discovery=ToolDiscoveryState(),
-        tool_search_enabled=False,
-        memory_window=40,
-        context=cast(Any, SimpleNamespace(render=render)),
-        session_manager=manager,
-    )
+        "llm_config": LLMConfig(
+            model="semantic-gate",
+            max_iterations=1,
+            max_tokens=128,
+        ),
+        "tools": cast(Any, tools),
+        "discovery": ToolDiscoveryState(),
+        "tool_search_enabled": False,
+        "memory_window": 40,
+        "context": cast(Any, SimpleNamespace(render=render)),
+    }
+    if "session_manager" in inspect.signature(DefaultReasoner).parameters:
+        kwargs["session_manager"] = manager
+    return DefaultReasoner(**cast(Any, kwargs))
 
 
 def _message() -> SimpleNamespace:
@@ -182,7 +189,9 @@ def test_context_retry_is_projection_over_append_only_history(tmp_path: Path) ->
     assert result.reply == "ok"
     assert windows[:5] == [6, 6, 6, 6, 6]
     assert windows[5] == 3
-    assert len(session.messages) == 3
+    # Expand phase: old main trims the runtime mirror; the next implementation
+    # keeps all six. The contract PR following migration removes the old branch.
+    assert len(session.messages) in {3, 6}
     assert_rows_unchanged(
         before_messages,
         _messages_snapshot(manager, session_key),
