@@ -70,6 +70,10 @@ class DynamicMemoryGraph:
         self.last_external_seed_seconds: dict[int, float] = {}
         self.current_external: dict[int, float] = {}
         self.current_event = -1
+        self._transition_cache: dict[
+            int,
+            tuple[tuple[tuple[int, float, int], ...], float],
+        ] = {}
 
     def grow_turn_capacity(self, turn_count: int) -> None:
         """Grow turn slots and remap engram nodes without changing relations."""
@@ -81,6 +85,7 @@ class DynamicMemoryGraph:
             return
         old_turn_count = self.turn_count
         offset = turn_count - old_turn_count
+        self._transition_cache.clear()
 
         # 2. Shift every engram above the expanded contiguous turn range.
         def remap(node_id: int) -> int:
@@ -177,6 +182,7 @@ class DynamicMemoryGraph:
         gap = 0.0 if gap_seconds is None else gap_seconds
         self.elapsed_seconds += gap
         self._observe_gap(gap)
+        self._transition_cache.clear()
 
         # 2. Record only query-owned evidence as independent reactivation.
         direct_nodes = evidence.channels.get(
@@ -210,6 +216,9 @@ class DynamicMemoryGraph:
 
         if event < self.current_event:
             raise ValueError("relation state cannot move backwards in time")
+        cached = self._transition_cache.get(node_id)
+        if cached is not None:
+            return cached
         weighted: list[tuple[int, float, int]] = []
         for edge_id in self.adjacency[node_id]:
             edge_weight = self.effective_weight(edge_id)
@@ -220,13 +229,17 @@ class DynamicMemoryGraph:
                 weighted.append((target, edge_weight, edge_id))
         total = math.fsum(value for _, value, _ in weighted)
         if total == 0.0:
-            return (), 1.0
+            result = ((), 1.0)
+            self._transition_cache[node_id] = result
+            return result
         spread = -math.expm1(-total)
         transitions = tuple(
             (target, spread * value / total, edge_id)
             for target, value, edge_id in weighted
         )
-        return transitions, 1.0 - spread
+        result = (transitions, 1.0 - spread)
+        self._transition_cache[node_id] = result
+        return result
 
     def learn(
         self,
@@ -237,6 +250,7 @@ class DynamicMemoryGraph:
         """Adapt exposed relations and store the current event in one state."""
 
         # 1. Convert direct and completed recall into one continuous activity field.
+        self._transition_cache.clear()
         observed, activity = self._event_activity(event, evidence, diffusion)
         turn_nodes = np.flatnonzero(activity[: self.turn_count] > 0.0)
         values = activity[turn_nodes]
