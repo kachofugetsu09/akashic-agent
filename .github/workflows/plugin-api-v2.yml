@@ -1,0 +1,51 @@
+name: plugin-api-v2
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: akashic-plugins/plugin-contracts
+          ref: 24543445c7b99ca63fcd90b5828f754a148b184c
+          path: .plugin-contracts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Check built-in Plugin API v2
+        env:
+          PYTHONPATH: .plugin-contracts
+        run: >-
+          python -m akashic_plugin_contracts check
+          plugins/*/plugin.py
+          docker/debug/plugins/*/plugin.py
+
+  locked-runtime:
+    needs: contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Verify locked external plugins in Docker Debug
+        run: python docker/debug/plugin_api_v2_gate.py --require-clean-core
+      - name: Upload Plugin API v2 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-api-v2
+          path: docker/debug/reports/plugin-api-v2/
