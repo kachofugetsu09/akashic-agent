@@ -16,8 +16,7 @@ services:
       PYTHONPATH: /sandbox/python-packages:/app
       PYTHONUNBUFFERED: "1"
     volumes:
-      - ../..:/app:ro
-      - ${AKASHIC_GATE_GIT_COMMON_DIR:?set by plugin_hot_reload_probe.py}:${AKASHIC_GATE_GIT_COMMON_DIR:?set by plugin_hot_reload_probe.py}:ro
+      - ${AKASHIC_GATE_SANDBOX:?set by plugin_hot_reload_probe.py}/app:/app:ro
       - ${AKASHIC_GATE_SANDBOX:?set by plugin_hot_reload_probe.py}:/sandbox
       - ${AKASHIC_GATE_SANDBOX:?set by plugin_hot_reload_probe.py}/static:/app/static
       - ${AKASHIC_PLUGIN_SOURCE:?set by plugin_hot_reload_probe.py}:/fixtures/plugins:ro

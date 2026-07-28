@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import subprocess
 import sys
 
 _PROBE_PATH = (
@@ -28,6 +29,62 @@ def test_controller_rejects_protected_sandbox() -> None:
 
     assert probe._sandbox_is_protected(root / "gate", [root])
     assert not probe._sandbox_is_protected(Path("/tmp/gate"), [root])
+
+
+def test_gate_sandbox_prepares_static_mountpoint_outside_clean_checkout(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "clean-checkout"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / "removed.py").write_text("obsolete = True\n", encoding="utf-8")
+    subprocess.run(["git", "add", "removed.py"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Plugin Gate Test",
+            "-c",
+            "user.email=plugin-gate-test@invalid",
+            "commit",
+            "-qm",
+            "baseline",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    (repo / "removed.py").unlink()
+    (repo / "main.py").write_text("print('clean')\n", encoding="utf-8")
+    (repo / "current").symlink_to("main.py")
+    subprocess.run(["git", "add", "--all"], cwd=repo, check=True)
+    assert not (repo / "static").exists()
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    probe._prepare_gate_sandbox(sandbox, repo)
+    compose = (
+        Path(__file__).parents[1] / "docker/debug/docker-compose.plugin-gate.yml"
+    ).read_text(encoding="utf-8")
+
+    assert (sandbox / "app/main.py").read_text(encoding="utf-8") == "print('clean')\n"
+    assert (sandbox / "app/current").readlink() == Path("main.py")
+    assert not (sandbox / "app/removed.py").exists()
+    assert (sandbox / "app/static").is_dir()
+    assert (sandbox / "static").is_dir()
+    assert not (repo / "static").exists()
+    assert (
+        subprocess.run(
+            ["git", "-C", str(sandbox / "app"), "rev-parse", "--verify", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    assert (
+        "${AKASHIC_GATE_SANDBOX:?set by plugin_hot_reload_probe.py}"
+        "/app:/app:ro"
+    ) in compose
+    assert "../..:/app:ro" not in compose
 
 
 def test_system_gate_propagates_subgate_failure() -> None:

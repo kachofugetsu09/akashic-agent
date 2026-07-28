@@ -76,9 +76,89 @@ def _run(repo: Path, *args: str) -> bytes:
     ).stdout
 
 
-def _git_common_dir(repo: Path) -> str:
-    raw = _run(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
-    return str(Path(os.fsdecode(raw).strip()).resolve())
+def _copy_candidate_source(repo: Path, app: Path) -> None:
+    """复制完整历史，并把当前未提交候选覆盖到目标目录。"""
+
+    # 1. 独立 Git 对象库保留迁移 baseline，不依赖宿主 worktree 元数据。
+    _ = subprocess.run(
+        ["git", "clone", "--no-hardlinks", "--quiet", str(repo), str(app)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    # 2. 只覆盖 Git 候选文件，排除 ignored 运行产物。
+    paths = _run(
+        repo,
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "-z",
+    ).split(b"\0")
+    present_paths: set[Path] = set()
+    for raw_path in paths:
+        if not raw_path:
+            continue
+        relative = Path(os.fsdecode(raw_path))
+        source = repo / relative
+        if not source.is_file() and not source.is_symlink():
+            continue
+        present_paths.add(relative)
+        target = app / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_symlink():
+            if target.exists() or target.is_symlink():
+                target.unlink()
+            _ = target.symlink_to(os.readlink(source))
+        else:
+            _ = shutil.copy2(source, target)
+
+    # 3. staged 与 unstaged 删除都由候选实际存在集合决定。
+    baseline_paths = _run(app, "ls-files", "-z").split(b"\0")
+    for raw_path in baseline_paths:
+        if not raw_path:
+            continue
+        relative = Path(os.fsdecode(raw_path))
+        if relative in present_paths:
+            continue
+        target = app / relative
+        if target.is_file() or target.is_symlink():
+            target.unlink()
+
+
+def _commit_gate_candidate(app: Path) -> None:
+    """提交隔离候选，让容器中的 HEAD 精确表示 Gate 输入。"""
+
+    (app / "static").mkdir(exist_ok=True)
+    _ = subprocess.run(["git", "add", "--all"], cwd=app, check=True)
+    _ = subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Akashic Plugin Gate",
+            "-c",
+            "user.email=plugin-gate@invalid",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "plugin gate candidate",
+        ],
+        cwd=app,
+        check=True,
+    )
+
+
+def _prepare_gate_sandbox(sandbox: Path, repo: Path) -> None:
+    """复制候选源码，并建立只属于 Gate 的静态资源挂载点。"""
+
+    # 1. 源码、Git 历史与候选提交都封装在 sandbox。
+    app = sandbox / "app"
+    _copy_candidate_source(repo, app)
+    _commit_gate_candidate(app)
+
+    # 2. 外部可写静态目录不落入候选提交。
+    (sandbox / "static").mkdir()
 
 
 def _repository_digest(repo: Path) -> str:
@@ -291,18 +371,17 @@ def _run_controller(*, scenario: str, phase: str) -> int:
     sandbox = Path(
         tempfile.mkdtemp(prefix="akashic-plugin-gate-", dir="/tmp")
     ).resolve()
-    (sandbox / "static").mkdir()
     protected = [repo.resolve(), plugin_root, host_cache]
     if _sandbox_is_protected(sandbox, protected):
         shutil.rmtree(sandbox)
         raise SystemExit(f"Gate sandbox 不能位于受保护路径内：{sandbox}")
+    _prepare_gate_sandbox(sandbox, repo)
 
     repositories = _host_repositories(repo, plugin_root)
     before = {str(path): _repository_digest(path) for path in repositories}
     env = {
         **os.environ,
         "AKASHIC_GATE_SANDBOX": str(sandbox),
-        "AKASHIC_GATE_GIT_COMMON_DIR": _git_common_dir(repo),
         "AKASHIC_PLUGIN_SOURCE": str(plugin_root),
         "UID": str(os.getuid()),
         "GID": str(os.getgid()),
