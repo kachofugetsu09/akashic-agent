@@ -45,6 +45,10 @@ from infra.mobile_realtime.gateway import (
     create_mobile_gateway_app,
 )
 from infra.mobile_realtime.key_protection import KeyProtectionError
+from infra.mobile_realtime.plugin_ui_http import (
+    PluginUiHttpTicketError,
+    PluginUiHttpTicketIssuer,
+)
 from infra.mobile_realtime.protocol import AttachmentDownloadCommand, parse_frame
 from infra.mobile_realtime.storage import DeviceRecord
 from session.manager import SessionManager
@@ -1211,6 +1215,198 @@ def test_plugin_ui_failure_keeps_authenticated_websocket_available(
             }
         )
         assert websocket.receive_json()["type"] == "ping.ok"
+
+    runtime.close()
+
+
+def test_plugin_ui_https_data_plane_uses_signed_request_bound_ticket(
+    tmp_path: Path,
+) -> None:
+    query_calls: list[dict[str, object]] = []
+
+    class MobileUiProvider:
+        def catalog(self) -> dict[str, object]:
+            return {"catalog_revision": "a" * 64, "items": []}
+
+        async def query(
+            self,
+            plugin_id: str,
+            plugin_revision: str,
+            method: str,
+            payload: dict[str, object],
+            *,
+            session_id: str | None,
+            turn_id: str | None,
+        ) -> dict[str, object]:
+            query_calls.append(payload)
+            return {
+                "schema": "akasha.recall-card.v1",
+                "plugin_id": plugin_id,
+                "plugin_revision": plugin_revision,
+                "method": method,
+                "payload": payload,
+                "session_id": session_id,
+                "turn_id": turn_id,
+            }
+
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    runtime, _ = asyncio.run(build())
+    runtime.channel.bind_mobile_ui_provider(cast(Any, MobileUiProvider()))
+    device_key = ec.generate_private_key(ec.SECP256R1())
+    device_id = uuid4().hex
+    runtime.storage.register_device(
+        DeviceRecord(
+            device_id=device_id,
+            public_key=_device_public_key(device_key),
+            display_name="Pixel7",
+            created_at=datetime.now(timezone.utc),
+            revoked_at=None,
+            capabilities=("stream-v1",),
+        )
+    )
+    command_id = "01ARZ3NDEKTSV4RRFFQ69G5FB7"
+    query_payload = {
+        "owner_id": "turn:akasha",
+        "plugin_id": "akasha@builtin",
+        "plugin_revision": "revision-1",
+        "method": "recall.current",
+        "payload": {"message_id": "message:446"},
+        "slot": "turn.before_reasoning",
+    }
+    request_body = {
+        "request_id": command_id,
+        **query_payload,
+        "session_id": None,
+        "turn_id": None,
+    }
+
+    client = TestClient(create_mobile_gateway_app(runtime))
+    with client.websocket_connect("/ws") as websocket:
+        challenge = websocket.receive_json()
+        websocket.send_json(
+            _device_proof(
+                challenge=challenge["payload"],
+                device_id=device_id,
+                device_key=device_key,
+            )
+        )
+        accepted = websocket.receive_json()
+        epoch = accepted["connection_epoch"]
+        websocket.send_json(
+            {
+                "v": 1,
+                "kind": "control",
+                "type": "resume",
+                "connection_epoch": epoch,
+                "payload": {"last_ack": 0, "active_turns": []},
+            }
+        )
+        assert websocket.receive_json()["type"] == "sync.completed"
+        websocket.send_json(
+            {
+                "v": 1,
+                "kind": "command",
+                "type": "plugin.ui.query.prepare",
+                "id": command_id,
+                "connection_epoch": epoch,
+                "payload": query_payload,
+            }
+        )
+        ready = websocket.receive_json()
+        assert ready["type"] == "plugin.ui.query.ready", ready
+        assert len(json.dumps(ready).encode("utf-8")) < 2 * 1024
+
+        response = client.post(
+            ready["payload"]["path"],
+            headers={
+                "Authorization": f"Bearer {ready['payload']['ticket']}",
+            },
+            json=request_body,
+        )
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store"
+        assert query_calls == [{"message_id": "message:446"}]
+        assert response.json() == {
+            "schema": "akasha.recall-card.v1",
+            "plugin_id": "akasha@builtin",
+            "plugin_revision": "revision-1",
+            "method": "recall.current",
+            "payload": {"message_id": "message:446"},
+            "session_id": None,
+            "turn_id": None,
+        }
+
+        tampered = client.post(
+            ready["payload"]["path"],
+            headers={
+                "Authorization": f"Bearer {ready['payload']['ticket']}",
+            },
+            json={**request_body, "turn_id": "turn-other"},
+        )
+        assert tampered.status_code == 401
+        assert tampered.json()["code"] == "invalid_ticket"
+        assert len(query_calls) == 1
+
+    disconnected = client.post(
+        ready["payload"]["path"],
+        headers={
+            "Authorization": f"Bearer {ready['payload']['ticket']}",
+        },
+        json=request_body,
+    )
+    assert disconnected.status_code == 401
+    assert disconnected.json()["code"] == "invalid_ticket"
+    assert len(query_calls) == 1
+
+    runtime.close()
+
+
+def test_plugin_ui_https_ticket_expires_before_query_execution(
+    tmp_path: Path,
+) -> None:
+    async def build():
+        return build_mobile_gateway_runtime(
+            _config(),
+            tmp_path,
+            master_keys=_EphemeralMasterKeys(),
+        )
+
+    runtime, keyset = asyncio.run(build())
+    device_id = uuid4().hex
+    _register_test_device(runtime, device_id)
+    current = [datetime(2026, 7, 28, tzinfo=timezone.utc)]
+    issuer = PluginUiHttpTicketIssuer(
+        keyset,
+        runtime.storage,
+        clock=lambda: current[0],
+    )
+    body: dict[str, object] = {
+        "request_id": "01ARZ3NDEKTSV4RRFFQ69G5FB8",
+        "owner_id": "owner",
+    }
+    grant = issuer.issue(
+        device_id=device_id,
+        connection_epoch=1,
+        request_body=body,
+    )
+
+    runtime.storage.revoke_device(
+        device_id,
+        revoked_at=current[0],
+    )
+    with pytest.raises(PluginUiHttpTicketError, match="设备无效"):
+        issuer.verify(grant.ticket, request_body=body)
+
+    current[0] += timedelta(seconds=31)
+
+    with pytest.raises(PluginUiHttpTicketError, match="已过期"):
+        issuer.verify(grant.ticket, request_body=body)
 
     runtime.close()
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import secrets
 import shutil
@@ -23,6 +24,7 @@ from infra.mobile_realtime.gateway import (
     build_mobile_gateway_server,
 )
 from infra.mobile_realtime.key_protection import KeyProtectionError
+from plugins.akasha.plugin import _mobile_recall_lane
 from session.manager import SessionManager
 
 _FIXED_GIF = bytes.fromhex(
@@ -142,6 +144,122 @@ class PushTool:
     def register_channel(self, channel: str, **senders: object) -> None:
         if channel != "mobile":
             raise RuntimeError(f"隔离 Gateway 收到未知渠道: {channel}")
+
+
+class IsolatedAkashaMobileUiProvider:
+    """通过真实 Akasha module 和有界投影提供隔离真机查询。"""
+
+    plugin_id = "akasha@builtin"
+
+    def __init__(self) -> None:
+        plugin_root = Path(__file__).parents[1] / "plugins" / "akasha"
+        self._module = (plugin_root / "mobile_ui.js").read_text(encoding="utf-8")
+        self._stylesheet = (plugin_root / "mobile_ui.css").read_text(encoding="utf-8")
+        self._module_sha256 = hashlib.sha256(self._module.encode()).hexdigest()
+        self._stylesheet_sha256 = hashlib.sha256(
+            self._stylesheet.encode()
+        ).hexdigest()
+        self._revision = hashlib.sha256(
+            f"{self._module_sha256}:{self._stylesheet_sha256}".encode()
+        ).hexdigest()
+        self._item = {
+            "id": self.plugin_id,
+            "revision": self._revision,
+            "module_sha256": self._module_sha256,
+            "module_bytes": len(self._module.encode()),
+            "stylesheet_sha256": self._stylesheet_sha256,
+            "stylesheet_bytes": len(self._stylesheet.encode()),
+            "navigation": {
+                "label": "Akasha Inspector",
+                "description": "隔离真机召回卡片",
+            },
+            "slots": ["turn.before_reasoning"],
+        }
+
+    def catalog(self) -> dict[str, object]:
+        items = [self._item]
+        encoded = json.dumps(
+            items,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        return {
+            "catalog_revision": hashlib.sha256(encoded).hexdigest(),
+            "items": items,
+        }
+
+    def asset(
+        self,
+        plugin_id: str,
+        plugin_revision: str,
+        kind: str,
+        sha256: str,
+    ) -> dict[str, object]:
+        if plugin_id != self.plugin_id or plugin_revision != self._revision:
+            raise ValueError("隔离 Akasha asset revision 无效")
+        if kind == "module":
+            content, expected = self._module, self._module_sha256
+        elif kind == "stylesheet":
+            content, expected = self._stylesheet, self._stylesheet_sha256
+        else:
+            raise ValueError("隔离 Akasha asset kind 无效")
+        if sha256 != expected:
+            raise ValueError("隔离 Akasha asset digest 无效")
+        return {
+            "plugin_id": plugin_id,
+            "plugin_revision": plugin_revision,
+            "kind": kind,
+            "sha256": expected,
+            "content": content,
+        }
+
+    async def query(
+        self,
+        plugin_id: str,
+        plugin_revision: str,
+        method: str,
+        payload: dict[str, object],
+        *,
+        session_id: str | None,
+        turn_id: str | None,
+    ) -> dict[str, object]:
+        """用真实 card-v1 投影构造接近最坏体积的隔离结果。"""
+
+        if plugin_id != self.plugin_id or plugin_revision != self._revision:
+            raise ValueError("隔离 Akasha query revision 无效")
+        if method != "recall.current" or set(payload) != {"message_id"}:
+            raise ValueError("隔离 Akasha query 参数无效")
+        if session_id != _HISTORY_SESSION_ID or turn_id is not None:
+            raise ValueError("隔离 Akasha query 会话无效")
+        lane = _mobile_recall_lane(
+            [
+                {
+                    "user_text": "🌙" * 1_000,
+                    "assistant_preview": "🌙" * 1_000,
+                    "ts": "2026-07-28T00:00:00Z",
+                    "score": 0.5,
+                }
+                for _ in range(20)
+            ]
+        )
+        result: dict[str, object] = {
+            "schema": "akasha.recall-card.v1",
+            "query_id": "isolated-pixel7-query",
+            "recall_capture_available": True,
+            "left": lane,
+            "right": lane,
+            "tool_left": lane,
+            "tool_right": lane,
+        }
+        encoded = json.dumps(
+            result,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
+        if len(encoded) >= 16 * 1024:
+            raise RuntimeError("隔离 Akasha card 超过 16 KiB")
+        return result
 
 
 class FixedReplyBus:
@@ -285,6 +403,7 @@ async def run_harness(args: argparse.Namespace) -> None:
         root,
         master_keys=EphemeralMasterKeys(),
     )
+    runtime.channel.bind_mobile_ui_provider(IsolatedAkashaMobileUiProvider())
     fault_controller = install_fault_mode(runtime, args.fault_mode)
     bus = FixedReplyBus(manager, media)
     bus.bind(runtime)

@@ -677,6 +677,22 @@ class MobileRealtimeChannel:
     ) -> CommandReply:
         """校验并调度一个有 owner 的只读插件查询。"""
 
+        query = self.prepare_plugin_ui_query(device_id=device_id, frame=frame)
+        result = await self._require_mobile_ui_scheduler().execute(
+            device_id,
+            query,
+        )
+        return CommandReply(type="plugin.ui.query.ok", payload={"result": result})
+
+    def prepare_plugin_ui_query(
+        self,
+        *,
+        device_id: str,
+        frame: GenericCommand,
+    ) -> PluginUiQuery:
+        """校验一次插件查询并冻结其 HTTP/WS 共用的调度参数。"""
+
+        # 1. 在协议边界验证插件、owner、参数和槽位
         _expect_keys(
             frame.payload,
             {"owner_id", "plugin_id", "plugin_revision", "method", "payload", "slot"},
@@ -719,22 +735,20 @@ class MobileRealtimeChannel:
             if frame.session_id is None
             else self._require_mobile_session(frame.session_id)
         )
-        scheduler = self._require_mobile_ui_scheduler()
-        result = await scheduler.execute(
-            device_id,
-            PluginUiQuery(
-                request_id=frame.id,
-                owner_id=owner_id,
-                plugin_id=plugin_id,
-                plugin_revision=plugin_revision,
-                method=method,
-                payload=cast(dict[str, object], payload),
-                slot=cast(str, slot),
-                session_id=session_id,
-                turn_id=frame.turn_id,
-            ),
+        _ = self._require_mobile_ui_scheduler()
+
+        # 2. 后续执行只消费这份已验证的不可变查询
+        return PluginUiQuery(
+            request_id=frame.id,
+            owner_id=owner_id,
+            plugin_id=plugin_id,
+            plugin_revision=plugin_revision,
+            method=method,
+            payload=cast(dict[str, object], payload),
+            slot=cast(str, slot),
+            session_id=session_id,
+            turn_id=frame.turn_id,
         )
-        return CommandReply(type="plugin.ui.query.ok", payload={"result": result})
 
     async def _cancel_plugin_ui(
         self,

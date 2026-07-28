@@ -30,7 +30,7 @@ function memoryList(items, empty) {
       ${items.map((item) => `
         <li>
           <div>
-            <p>${escapeHtml(item.user_text || "（空消息）")}</p>
+            <p>${escapeHtml(item.user_preview || "（空消息）")}</p>
             ${item.assistant_preview
               ? `<p class="akasha-mobile-assistant">${escapeHtml(item.assistant_preview)}</p>`
               : ""}
@@ -117,12 +117,16 @@ function renderDetail(item) {
 }
 
 function mountRecall(host, context) {
+  if (!context.capabilities?.queryTransports?.includes("https")) {
+    host.innerHTML = '<p class="akasha-mobile-error">当前客户端版本不支持 Akasha 轻量数据通道，请更新后查看本轮记忆。</p>';
+    return undefined;
+  }
   host.innerHTML = '<p class="akasha-mobile-loading">正在读取本轮记忆…</p>';
   let active = true;
   context.query(
     "recall.current",
     { message_id: context.messageId },
-    { cache: "immutable" },
+    { cache: "immutable", transport: "https" },
   ).then((result) => {
     if (!active) return;
     const left = Array.isArray(result.left) ? result.left : [];
