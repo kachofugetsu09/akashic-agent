@@ -90,6 +90,8 @@
    重新 retrieve 后提交。
 5. adapter 先把 embedding 和因果 turn 持久化到稀疏索引；这是回复终态之前的
    durable recovery boundary。
+   在线加载不执行全库 `PRAGMA integrity_check`；只保留 schema、版本、稳定
+   message ID、快照身份、外键与向量形状校验，SQLite 读取错误继续直接传播。
 6. 单写者后台任务执行 `MemoryCycle.commit`，完成 Hebbian 关联、时序方向、连接
    预算、衰减与激活恢复，再原子发布 `akasha.db`。
 7. 下一次 context/recall query 通过 publication fence 等待上一份 staged suffix

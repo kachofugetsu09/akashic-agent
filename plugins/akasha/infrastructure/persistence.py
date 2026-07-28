@@ -562,9 +562,6 @@ def _verify(connection: sqlite3.Connection) -> None:
     violations = connection.execute("PRAGMA foreign_key_check").fetchall()
     if violations:
         raise sqlite3.IntegrityError(f"foreign key violations: {violations[:3]}")
-    integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
-    if integrity != "ok":
-        raise sqlite3.DatabaseError(integrity)
 
 
 def _validate_snapshot_identity(
