@@ -22,6 +22,7 @@ _DURABLE_WORKSPACE_FILES = (
     "wake_proactive.db",
     "memory/MEMORY.md",
     "memory/SELF.md",
+    "memory/VEDA.md",
     "memory/veda.md",
     "memory/memory2.db",
     "memory/akasha.db",

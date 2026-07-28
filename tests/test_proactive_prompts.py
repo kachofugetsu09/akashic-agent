@@ -7,7 +7,7 @@ from prompts.proactive import build_compose_prompt_messages
 
 
 def test_build_compose_prompt_messages_forbids_fabricated_links(tmp_path: Path):
-    veda = tmp_path / "memory/veda.md"
+    veda = tmp_path / "memory/VEDA.md"
     veda.parent.mkdir(parents=True)
     veda.write_text("test veda", encoding="utf-8")
     ctx = SimpleNamespace(

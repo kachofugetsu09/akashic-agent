@@ -8,7 +8,7 @@ Akashic 的身份和人格此前由 Python 常量直接拼入 Main、Proactive �
 
 ## 设计
 
-1. `<workspace>/memory/veda.md` 是运行时人格真源，Main、Proactive 和 Drift 每次组装 prompt 时严格读取同一文件。
+1. `<workspace>/memory/VEDA.md` 是运行时人格真源，Main、Proactive 和 Drift 每次组装 prompt 时严格读取同一文件。
 2. Veda 只描述 Akashic 的人格和关系定位。工具、安全、事实核验、检索、格式与持久化约束保留在代码拥有的行为规范中。
 3. 只有 Main Agent 在用户明确要求修改人格或 Veda 时可以写入。后台 optimizer、Proactive、Wake 和 Drift 只读。
 4. 本轮 prompt 在模型执行前冻结；本轮对 Veda 的写入只从下一次 prompt 组装开始生效。

@@ -94,13 +94,13 @@ def test_system_prompt_builder_respects_disabled_sections(tmp_path: Path):
 def test_static_identity_prompt_exposes_veda_edit_boundary(tmp_path: Path):
     prompt = build_agent_static_identity_prompt(workspace=tmp_path)
 
-    assert f"{tmp_path.resolve()}/memory/veda.md" in prompt
+    assert f"{tmp_path.resolve()}/memory/VEDA.md" in prompt
     assert "只有用户明确要求修改人格或 Veda 时" in prompt
     assert "用户的长期 AI 伙伴" not in prompt
 
 
 def test_veda_prompt_block_reloads_after_each_turn_build(tmp_path: Path):
-    path = tmp_path / "memory/veda.md"
+    path = tmp_path / "memory/VEDA.md"
     path.parent.mkdir(parents=True)
     path.write_text("first veda", encoding="utf-8")
     builder = SystemPromptBuilder([VedaPromptBlock()])

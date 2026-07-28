@@ -868,7 +868,7 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     assert not (workspace / "memory" / "journal").exists()
     assert (workspace / "memory" / "memory2.db").exists()
     assert "你是 Akashic" in (
-        workspace / "memory" / "veda.md"
+        workspace / "memory" / "VEDA.md"
     ).read_text(encoding="utf-8")
     assert "Proactive Context" in (
         workspace / "PROACTIVE_CONTEXT.md"
@@ -890,7 +890,7 @@ def test_init_workspace_respects_force_for_text_assets(tmp_path):
         workspace=workspace,
     )
     self_path = workspace / "memory" / "SELF.md"
-    veda_path = workspace / "memory" / "veda.md"
+    veda_path = workspace / "memory" / "VEDA.md"
     self_path.write_text("custom\n", encoding="utf-8")
     veda_path.write_text("custom veda\n", encoding="utf-8")
 

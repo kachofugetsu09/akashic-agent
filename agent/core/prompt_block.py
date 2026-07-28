@@ -43,7 +43,7 @@ class PromptBlock(Protocol):
 
 
 # ─── Prompt Block 渲染顺序（priority 升序 = system prompt 拼接顺序）────────────
-#   5 VedaPromptBlock         → memory/veda.md
+#   5 VedaPromptBlock         → memory/VEDA.md
 #                              来源：用户明确维护的 workspace 人格真源
 #                              时机：每次组装都重新读取，本轮修改从下一轮生效
 #  10 IdentityPromptBlock      → build_agent_static_identity_prompt(workspace)

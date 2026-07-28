@@ -233,6 +233,36 @@ def test_command_list_command_and_reply_are_valid() -> None:
 @pytest.mark.parametrize(
     "command_type",
     (
+        "runtime.document.list",
+        "runtime.document.get",
+        "runtime.capability.list",
+        "runtime.mcp.get",
+        "scheduler.job.list",
+        "scheduler.job.get",
+    ),
+)
+def test_runtime_inspection_command_and_reply_are_valid(command_type: str) -> None:
+    command = {
+        "v": 1,
+        "kind": "command",
+        "type": command_type,
+        "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "connection_epoch": 1,
+        "payload": {},
+    }
+    reply = {
+        **command,
+        "kind": "reply",
+        "type": f"{command_type}.ok",
+    }
+
+    assert parse_frame(json.dumps(command)).type == command_type
+    assert parse_frame(json.dumps(reply)).type == f"{command_type}.ok"
+
+
+@pytest.mark.parametrize(
+    "command_type",
+    (
         "plugin.ui.catalog",
         "plugin.ui.asset.get",
         "plugin.ui.query",
@@ -252,7 +282,9 @@ def test_plugin_ui_commands_are_valid(command_type: str) -> None:
     assert parse_frame(json.dumps(frame)).type == command_type
 
 
-@pytest.mark.parametrize("command_type", ("plugin.ui.list", "plugin.ui.asset", "plugin.ui.call"))
+@pytest.mark.parametrize(
+    "command_type", ("plugin.ui.list", "plugin.ui.asset", "plugin.ui.call")
+)
 def test_plugin_ui_v1_commands_are_rejected(command_type: str) -> None:
     frame = {
         "v": 1,
