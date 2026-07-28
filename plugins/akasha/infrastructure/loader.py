@@ -46,9 +46,6 @@ def load_turns(index_path: Path, max_turns: int | None = None) -> list[Turn]:
 def _validate_index(connection: sqlite3.Connection) -> None:
     """Validate the read-only sparse-index trust boundary."""
 
-    integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
-    if integrity != "ok":
-        raise sqlite3.DatabaseError(integrity)
     required = {"sparse_turns", "turn_dense", "turn_terms"}
     actual = {
         row[0]
