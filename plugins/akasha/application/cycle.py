@@ -175,7 +175,7 @@ class MemoryCycle:
             if event == 0 or not include_completion
             else read_pattern_completion(
                 graph=prepared,
-                turns=self.turns,
+                pool=pool,
                 query=turn,
                 context=decision.context,
                 evidence=evidence,
@@ -184,6 +184,7 @@ class MemoryCycle:
                     self.evidence
                 ),
                 config=self.config,
+                context_dependence=decision.context_dependence,
                 visible_nodes=decision.visible_nodes,
                 burst_continued=decision.continued,
             )

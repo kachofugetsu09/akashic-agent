@@ -76,12 +76,19 @@ class TemporalGraphView:
     def __init__(self, graph: DynamicMemoryGraph) -> None:
         self.graph = graph
         self.max_nodes = graph.max_nodes
+        self._transition_cache: dict[
+            int,
+            tuple[tuple[tuple[int, float, int], ...], float],
+        ] = {}
 
     def transitions(
         self,
         node_id: int,
         event: int,
     ) -> tuple[tuple[tuple[int, float, int], ...], float]:
+        cached = self._transition_cache.get(node_id)
+        if cached is not None:
+            return cached
         weighted: list[tuple[int, float, int]] = []
         for edge_id in self.graph.adjacency[node_id]:
             if self.graph.kind[edge_id] not in (
@@ -100,69 +107,220 @@ class TemporalGraphView:
                 weighted.append((target, weight, edge_id))
         total = math.fsum(weight for _, weight, _ in weighted)
         if total == 0.0:
-            return (), 1.0
+            result = ((), 1.0)
+            self._transition_cache[node_id] = result
+            return result
         spread = -math.expm1(-total)
-        return (
+        result = (
             tuple(
                 (target, spread * weight / total, edge_id)
                 for target, weight, edge_id in weighted
             ),
             1.0 - spread,
         )
+        self._transition_cache[node_id] = result
+        return result
 
 
 def read_pattern_completion(
     *,
     graph: DynamicMemoryGraph,
-    turns: list[Turn],
+    pool: FeaturePool,
     query: Turn,
     context: ContextState,
     evidence: SeedEvidence,
     diffusion: DiffusionResult,
     historical_surprise: np.ndarray,
     config: MemoryConfig,
+    context_dependence: float,
     visible_nodes: tuple[int, ...] = (),
     burst_continued: bool = True,
 ) -> PatternCompletion:
-    """Read the frozen V8 basin union without mutating memory state."""
+    """Read contextual and independent basin routes without mutating memory."""
 
-    # 1. Select live engram heads from current and contextual evidence.
-    pool = FeaturePool([*turns, query])
+    # 1. Preserve the contextual V8 route as the non-destructive baseline.
+    contextual = _read_contextual_route(
+        graph=graph,
+        pool=pool,
+        query=query,
+        context=context,
+        evidence=evidence,
+        diffusion=diffusion,
+        historical_surprise=historical_surprise,
+        config=config,
+        visible_nodes=visible_nodes,
+        burst_continued=burst_continued,
+    )
+
+    # 2. Inhibit query-only routing when the cue depends on its active context.
+    address_mass = _independent_address_mass(context_dependence)
+    if address_mass == 0.0:
+        return contextual
+    address = _read_independent_route(
+        graph=graph,
+        pool=pool,
+        query=query,
+        surprise=evidence.surprise,
+        historical_surprise=historical_surprise,
+        config=config,
+        visible_nodes=visible_nodes,
+    )
+
+    # 3. Let address-only completions compete without evicting baseline items.
+    return _competitive_route_union(
+        contextual,
+        address,
+        address_mass,
+    )
+
+
+def _read_contextual_route(
+    *,
+    graph: DynamicMemoryGraph,
+    pool: FeaturePool,
+    query: Turn,
+    context: ContextState,
+    evidence: SeedEvidence,
+    diffusion: DiffusionResult,
+    historical_surprise: np.ndarray,
+    config: MemoryConfig,
+    visible_nodes: tuple[int, ...],
+    burst_continued: bool,
+) -> PatternCompletion:
+    """Settle the existing current-cue plus active-context route."""
+
     fields = _evidence_fields(pool, query.node_id, context)
     scores = (
         fields["current"]
         + evidence.continuation
         * (fields["same_event"] - fields["current"])
     )
-    basins = _active_basins(graph, query.node_id, scores)
+    return _read_route(
+        graph=graph,
+        query=query,
+        fields=fields,
+        basin_scores=scores,
+        continuation=evidence.continuation,
+        surprise=evidence.surprise,
+        diffusion=diffusion,
+        historical_surprise=historical_surprise,
+        config=config,
+        visible_nodes=visible_nodes,
+        burst_continued=burst_continued,
+    )
+
+
+def _read_independent_route(
+    *,
+    graph: DynamicMemoryGraph,
+    pool: FeaturePool,
+    query: Turn,
+    surprise: float,
+    historical_surprise: np.ndarray,
+    config: MemoryConfig,
+    visible_nodes: tuple[int, ...],
+) -> PatternCompletion:
+    """Settle a query-only graph-address route without active context."""
+
+    fields = _evidence_fields(
+        pool,
+        query.node_id,
+        ContextState((), None, ()),
+    )
+    seed = _sparsemax(fields["current"])
+    diffusion = residual_push(
+        graph,
+        seed,
+        query.node_id,
+        restart=config.restart,
+        tolerance=config.tolerance,
+        capture_paths=False,
+    )
+    return _read_route(
+        graph=graph,
+        query=query,
+        fields=fields,
+        basin_scores=diffusion.reserve[: query.node_id],
+        continuation=0.0,
+        surprise=surprise,
+        diffusion=diffusion,
+        historical_surprise=historical_surprise,
+        config=config,
+        visible_nodes=visible_nodes,
+        burst_continued=False,
+    )
+
+
+def _read_route(
+    *,
+    graph: DynamicMemoryGraph,
+    query: Turn,
+    fields: dict[str, np.ndarray],
+    basin_scores: np.ndarray,
+    continuation: float,
+    surprise: float,
+    diffusion: DiffusionResult,
+    historical_surprise: np.ndarray,
+    config: MemoryConfig,
+    visible_nodes: tuple[int, ...],
+    burst_continued: bool,
+) -> PatternCompletion:
+    """Settle one independently normalized basin-routing hypothesis."""
+
+    # 1. Select live engram heads from this route's evidence.
+    basins = _active_basins(graph, query.node_id, basin_scores)
     temperature = _surprise_temperature(
-        evidence.surprise,
+        surprise,
         historical_surprise,
     )
     if not burst_continued:
-        temperature *= binary_entropy(evidence.continuation)
+        temperature *= binary_entropy(continuation)
     heads = _accessibility_supported_heads(
         graph,
         _pooled_heads(
             basins,
             fields,
-            evidence.continuation,
+            continuation,
             temperature,
         ),
     )
+    return _materialize_route_completion(
+        graph=graph,
+        query=query,
+        fields=fields,
+        diffusion=diffusion,
+        heads=heads,
+        continuation=continuation,
+        config=config,
+        visible_nodes=visible_nodes,
+    )
 
-    # 2. Diffuse the sharp cue and every selected basin independently.
+
+def _materialize_route_completion(
+    *,
+    graph: DynamicMemoryGraph,
+    query: Turn,
+    fields: dict[str, np.ndarray],
+    diffusion: DiffusionResult,
+    heads: list[tuple[str, float, tuple[tuple[int, float], ...]]],
+    continuation: float,
+    config: MemoryConfig,
+    visible_nodes: tuple[int, ...],
+) -> PatternCompletion:
+    """Diffuse selected heads and expose one route's stable readout."""
+
+    # 1. Diffuse the sharp cue and every selected basin independently.
     components = _diffuse_heads(
         graph=graph,
         query=query,
         fields=fields,
         sharp_diffusion=diffusion,
         heads=heads,
-        continuation=evidence.continuation,
+        continuation=continuation,
         config=config,
     )
 
-    # 3. Produce a stable set-valued readout with source provenance.
+    # 2. Produce a stable set-valued readout with source provenance.
     visible = set(visible_nodes)
     items = tuple(
         item
@@ -190,6 +348,140 @@ def read_pattern_completion(
         relative_tail_count=source_counts["relative_tail"],
         pushes=diffusion.pushes,
         residual_l1=diffusion.residual_l1,
+    )
+
+
+def _independent_address_mass(context_dependence: float) -> float:
+    """Project contextual and independent route evidence onto a sparse simplex."""
+
+    if context_dependence == 0.0:
+        return 1.0
+    if context_dependence == 1.0:
+        return 0.0
+    evidence = np.log(
+        np.asarray(
+            [1.0 - context_dependence, context_dependence],
+            dtype=np.float64,
+        )
+    )
+    return dict(_sparsemax(evidence)).get(0, 0.0)
+
+
+def _competitive_route_union(
+    contextual: PatternCompletion,
+    address: PatternCompletion,
+    address_mass: float,
+) -> PatternCompletion:
+    """Admit sparse address completions while preserving the baseline route."""
+
+    # 1. Merge provenance but expose only address-side pattern completion.
+    contextual_nodes = {item.node_id for item in contextual.items}
+    contextual_scores = {
+        item.node_id: item.score for item in contextual.items
+    }
+    items = _merge_address_completions(contextual, address)
+    ordered = tuple(
+        sorted(items.values(), key=lambda item: (-item.score, item.node_id))
+    )
+
+    # 2. Apply one shared lateral competition to address-only additions.
+    supported = _competitive_address_support(
+        ordered,
+        contextual_scores,
+        address_mass,
+    )
+    selected = tuple(
+        item
+        for item in ordered
+        if item.node_id in contextual_nodes or item.node_id in supported
+    )
+    return _union_completion(contextual, address, selected)
+
+
+def _merge_address_completions(
+    contextual: PatternCompletion,
+    address: PatternCompletion,
+) -> dict[int, RecallItem]:
+    """Merge address completion provenance into contextual recall items."""
+
+    items = {item.node_id: item for item in contextual.items}
+    for item in address.items:
+        if "basin_completion" not in item.sources:
+            continue
+        previous = items.get(item.node_id)
+        if previous is None:
+            items[item.node_id] = item
+            continue
+        items[item.node_id] = RecallItem(
+            node_id=item.node_id,
+            score=max(previous.score, item.score),
+            sources=tuple(sorted(set(previous.sources) | set(item.sources))),
+            basin_ids=tuple(
+                sorted(set(previous.basin_ids) | set(item.basin_ids))
+            ),
+        )
+    return items
+
+
+def _competitive_address_support(
+    ordered: tuple[RecallItem, ...],
+    contextual_scores: dict[int, float],
+    address_mass: float,
+) -> set[int]:
+    """Return address additions surviving shared sparse competition."""
+
+    scores = np.asarray(
+        [
+            max(
+                contextual_scores.get(
+                    item.node_id,
+                    address_mass * item.score,
+                ),
+                0.0,
+            )
+            for item in ordered
+        ],
+        dtype=np.float64,
+    )
+    peak = float(np.max(scores)) if scores.size else 0.0
+    supported = (
+        {
+            ordered[index].node_id
+            for index, _ in _sparsemax(scores / peak)
+        }
+        if peak > 0.0
+        else set()
+    )
+    return supported
+
+
+def _union_completion(
+    contextual: PatternCompletion,
+    address: PatternCompletion,
+    selected: tuple[RecallItem, ...],
+) -> PatternCompletion:
+    """Recompute observable diagnostics for one protected route union."""
+
+    source_counts = {
+        source: sum(source in item.sources for item in selected)
+        for source in (
+            "sharp_completion",
+            "basin_direct",
+            "basin_completion",
+            "relative_tail",
+        )
+    }
+    return PatternCompletion(
+        items=selected,
+        active_basin_count=(
+            contextual.active_basin_count + address.active_basin_count
+        ),
+        sharp_completion_count=source_counts["sharp_completion"],
+        basin_direct_count=source_counts["basin_direct"],
+        basin_completion_count=source_counts["basin_completion"],
+        relative_tail_count=source_counts["relative_tail"],
+        pushes=contextual.pushes + address.pushes,
+        residual_l1=max(contextual.residual_l1, address.residual_l1),
     )
 
 
@@ -492,9 +784,13 @@ def _accessibility_supported_heads(
 
     if len(heads) < 2:
         return heads
+    hubs_by_event = {
+        hub.created_event: hub.node_id
+        for hub in graph.hubs
+    }
     accessibility = np.asarray(
         [
-            _head_accessibility(graph, head_id)
+            _head_accessibility(graph, head_id, hubs_by_event)
             for head_id, _, _ in heads
         ],
         dtype=np.float64,
@@ -516,15 +812,20 @@ def _accessibility_supported_heads(
 def _head_accessibility(
     graph: DynamicMemoryGraph,
     head_id: str,
+    hubs_by_event: dict[int, int] | None = None,
 ) -> float:
-    hubs_by_event = {
-        hub.created_event: hub.node_id
-        for hub in graph.hubs
-    }
+    resolved = (
+        {
+            hub.created_event: hub.node_id
+            for hub in graph.hubs
+        }
+        if hubs_by_event is None
+        else hubs_by_event
+    )
     edge_ids = tuple(
         edge_id
         for event_id in (int(value) for value in head_id.split("+"))
-        for edge_id in graph.hub_members[hubs_by_event[event_id]]
+        for edge_id in graph.hub_members[resolved[event_id]]
     )
     raw = math.fsum(graph.weight[edge_id] for edge_id in edge_ids)
     effective = math.fsum(
