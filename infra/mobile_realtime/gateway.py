@@ -12,8 +12,10 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, cast
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from starlette.middleware.gzip import GZipMiddleware
 
 from agent.config_models import MobileRealtimeConfig
 from infra.mobile_realtime.auth import (
@@ -37,6 +39,11 @@ from infra.mobile_realtime.key_protection import (
     MasterKeyStore,
     SecretServiceMasterKeyStore,
     create_server_ssl_context,
+)
+from infra.mobile_realtime.plugin_ui_http import (
+    PluginUiHttpTicketError,
+    PluginUiHttpTicketIssuer,
+    format_plugin_ui_http_expiry,
 )
 from infra.mobile_realtime.pairing import (
     PairClaimPayload,
@@ -78,6 +85,8 @@ if TYPE_CHECKING:
 
 _CLOSE_PROTOCOL = 4400
 _CLOSE_UNAUTHENTICATED = 4401
+_PLUGIN_UI_HTTP_PATH = "/mobile/plugin-ui/v1/query"
+_MAX_PLUGIN_UI_HTTP_REQUEST_BYTES = 72 * 1024
 _CLOSE_REVOKED = 4403
 _CLOSE_SLOW_CONSUMER = 4408
 _CLOSE_COMMAND = 4410
@@ -96,6 +105,13 @@ def _plugin_ui_task_set() -> set[asyncio.Task[None]]:
 
 class MobileGatewayError(RuntimeError):
     pass
+
+
+class MobilePluginUiHttpError(RuntimeError):
+    def __init__(self, code: str, message: str, *, status_code: int) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +216,7 @@ class MobileGatewayRuntime:
         self.approvals = approvals
         self.keyset = keyset
         self.admin = MobilePairingAdmin(pairing, approvals)
+        self.plugin_ui_http_tickets = PluginUiHttpTicketIssuer(keyset, storage)
         self._channel: MobileRealtimeChannel | None = None
         self._connections: dict[str, ActiveMobileConnection] = {}
         self._delivery_lock = asyncio.Lock()
@@ -1199,15 +1216,35 @@ class MobileGatewayRuntime:
         if connection is None or connection.websocket is not websocket:
             return
         try:
-            reply = await self.channel.handle_plugin_ui_command(
-                device_id=device_id,
-                frame=frame,
-            )
+            if frame.type == "plugin.ui.query.prepare":
+                _ = self.channel.prepare_plugin_ui_query(
+                    device_id=device_id,
+                    frame=frame,
+                )
+                request_body = _plugin_ui_http_request_body(frame)
+                grant = self.plugin_ui_http_tickets.issue(
+                    device_id=device_id,
+                    connection_epoch=connection_epoch,
+                    request_body=request_body,
+                )
+                reply_type = "plugin.ui.query.ready"
+                payload: dict[str, object] = {
+                    "path": _PLUGIN_UI_HTTP_PATH,
+                    "ticket": grant.ticket,
+                    "expires_at": format_plugin_ui_http_expiry(grant.expires_at),
+                }
+            else:
+                reply = await self.channel.handle_plugin_ui_command(
+                    device_id=device_id,
+                    frame=frame,
+                )
+                reply_type = reply.type
+                payload = reply.payload
         except asyncio.CancelledError:
             return
         except MobileCommandError as error:
             reply_type = f"{frame.type}.error"
-            payload: dict[str, object] = {
+            payload = {
                 "code": error.code,
                 "message": str(error),
             }
@@ -1219,9 +1256,6 @@ class MobileGatewayRuntime:
             )
             reply_type = f"{frame.type}.error"
             payload = {"code": "plugin_error", "message": str(error)}
-        else:
-            reply_type = reply.type
-            payload = reply.payload
         if self._connections.get(device_id) is not connection:
             return
         async with connection.send_lock:
@@ -1234,6 +1268,48 @@ class MobileGatewayRuntime:
                 session_id=frame.session_id,
                 turn_id=frame.turn_id,
             )
+
+    async def handle_plugin_ui_http_query(
+        self,
+        *,
+        ticket: str,
+        request_body: dict[str, object],
+    ) -> dict[str, object]:
+        """验签并通过现有插件调度器执行一次 HTTPS 只读查询。"""
+
+        from infra.mobile_realtime.channel import MobileCommandError
+
+        verified = self.plugin_ui_http_tickets.verify(
+            ticket,
+            request_body=request_body,
+        )
+        connection = self._connections.get(verified.device_id)
+        if (
+            connection is None
+            or connection.connection_epoch != verified.connection_epoch
+        ):
+            raise PluginUiHttpTicketError("plugin UI HTTP ticket 的连接已失效")
+        frame = _plugin_ui_http_frame(
+            request_body,
+            connection_epoch=verified.connection_epoch,
+        )
+        try:
+            reply = await self.channel.handle_plugin_ui_command(
+                device_id=verified.device_id,
+                frame=frame,
+            )
+        except MobileCommandError as error:
+            raise MobilePluginUiHttpError(
+                error.code,
+                str(error),
+                status_code=_plugin_ui_http_error_status(error.code),
+            ) from error
+        if reply.type != "plugin.ui.query.ok":
+            raise RuntimeError(f"plugin UI HTTP query 返回了意外 reply: {reply.type}")
+        result = reply.payload.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError("plugin UI HTTP query 成功但缺少 object result")
+        return cast(dict[str, object], result)
 
     async def _flush_connection_delivery(
         self,
@@ -1336,10 +1412,52 @@ def build_mobile_gateway_runtime(
 
 def create_mobile_gateway_app(runtime: MobileGatewayRuntime) -> FastAPI:
     app = FastAPI(title="Akasic Mobile Realtime Gateway", docs_url=None, redoc_url=None)
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
 
     @app.websocket("/ws")
     async def mobile_websocket(websocket: WebSocket) -> None:
         await runtime.handle_websocket(websocket)
+
+    @app.post(_PLUGIN_UI_HTTP_PATH)
+    async def mobile_plugin_ui_query(request: Request) -> JSONResponse:
+        """接收短期设备授权下的插件查询数据面请求。"""
+
+        try:
+            ticket = _plugin_ui_http_bearer(request)
+            body = await _read_plugin_ui_http_body(request)
+            result = await runtime.handle_plugin_ui_http_query(
+                ticket=ticket,
+                request_body=body,
+            )
+        except PluginUiHttpTicketError as error:
+            return _plugin_ui_http_error_response(
+                "invalid_ticket",
+                str(error),
+                status_code=401,
+            )
+        except MobilePluginUiHttpError as error:
+            return _plugin_ui_http_error_response(
+                error.code,
+                str(error),
+                status_code=error.status_code,
+            )
+        except (MobileGatewayError, ProtocolDecodeError, ValidationError) as error:
+            return _plugin_ui_http_error_response(
+                "invalid_request",
+                str(error),
+                status_code=400,
+            )
+        except Exception:
+            logger.exception("plugin UI HTTP query 执行失败")
+            return _plugin_ui_http_error_response(
+                "plugin_error",
+                "插件查询执行失败",
+                status_code=500,
+            )
+        response = JSONResponse(result)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     return app
 
@@ -1562,6 +1680,144 @@ def _decode_stored_envelope(envelope_json: str) -> dict[str, object]:
     return cast(dict[str, object], raw)
 
 
+def _plugin_ui_http_request_body(frame: GenericCommand) -> dict[str, object]:
+    """把已验证 WS prepare 帧冻结为 HTTPS 请求摘要输入。"""
+
+    return {
+        "request_id": frame.id,
+        "owner_id": frame.payload["owner_id"],
+        "plugin_id": frame.payload["plugin_id"],
+        "plugin_revision": frame.payload["plugin_revision"],
+        "method": frame.payload["method"],
+        "payload": frame.payload["payload"],
+        "slot": frame.payload["slot"],
+        "session_id": frame.session_id,
+        "turn_id": frame.turn_id,
+    }
+
+
+def _plugin_ui_http_frame(
+    body: dict[str, object],
+    *,
+    connection_epoch: int,
+) -> GenericCommand:
+    """把验签后的 HTTPS body 还原为既有插件查询协议对象。"""
+
+    expected = {
+        "request_id",
+        "owner_id",
+        "plugin_id",
+        "plugin_revision",
+        "method",
+        "payload",
+        "slot",
+        "session_id",
+        "turn_id",
+    }
+    if set(body) != expected:
+        raise MobileGatewayError("plugin UI HTTP 请求字段无效")
+    return GenericCommand.model_validate(
+        {
+            "v": 1,
+            "kind": "command",
+            "type": "plugin.ui.query",
+            "id": body["request_id"],
+            "connection_epoch": connection_epoch,
+            "session_id": body["session_id"],
+            "turn_id": body["turn_id"],
+            "payload": {
+                "owner_id": body["owner_id"],
+                "plugin_id": body["plugin_id"],
+                "plugin_revision": body["plugin_revision"],
+                "method": body["method"],
+                "payload": body["payload"],
+                "slot": body["slot"],
+            },
+        },
+        strict=True,
+    )
+
+
+def _plugin_ui_http_bearer(request: Request) -> str:
+    authorization = request.headers.get("authorization")
+    if authorization is None or not authorization.startswith("Bearer "):
+        raise PluginUiHttpTicketError("plugin UI HTTP 请求缺少 Bearer ticket")
+    ticket = authorization.removeprefix("Bearer ")
+    if not 1 <= len(ticket) <= 4096 or any(character.isspace() for character in ticket):
+        raise PluginUiHttpTicketError("plugin UI HTTP Bearer ticket 无效")
+    return ticket
+
+
+async def _read_plugin_ui_http_body(request: Request) -> dict[str, object]:
+    """有界读取并严格解析一个插件查询 JSON object。"""
+
+    content_type = request.headers.get("content-type", "").partition(";")[0].strip()
+    if content_type != "application/json":
+        raise MobileGatewayError("plugin UI HTTP Content-Type 必须是 application/json")
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared_length = int(content_length)
+        except ValueError as error:
+            raise MobileGatewayError("plugin UI HTTP Content-Length 无效") from error
+        if declared_length < 0 or declared_length > _MAX_PLUGIN_UI_HTTP_REQUEST_BYTES:
+            raise MobileGatewayError("plugin UI HTTP 请求超过 72 KiB")
+
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > _MAX_PLUGIN_UI_HTTP_REQUEST_BYTES:
+            raise MobileGatewayError("plugin UI HTTP 请求超过 72 KiB")
+    if not raw:
+        raise MobileGatewayError("plugin UI HTTP 请求体不能为空")
+
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise MobileGatewayError(f"plugin UI HTTP JSON 包含重复字段: {key}")
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> None:
+        raise MobileGatewayError(f"plugin UI HTTP JSON 包含非标准常量: {value}")
+
+    try:
+        body = json.loads(
+            raw,
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise MobileGatewayError("plugin UI HTTP JSON 无效") from error
+    if not isinstance(body, dict):
+        raise MobileGatewayError("plugin UI HTTP 请求体必须是 object")
+    return cast(dict[str, object], body)
+
+
+def _plugin_ui_http_error_status(code: str) -> int:
+    if code in {"plugin_timeout", "plugin_overloaded", "plugin_unavailable"}:
+        return 503
+    if code == "plugin_failed":
+        return 500
+    return 422
+
+
+def _plugin_ui_http_error_response(
+    code: str,
+    message: str,
+    *,
+    status_code: int,
+) -> JSONResponse:
+    response = JSONResponse(
+        {"code": code, "message": message},
+        status_code=status_code,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
 def _protocol_close_code(error: ProtocolDecodeError | ValidationError) -> int:
     if isinstance(error, ValidationError):
         for issue in error.errors(include_url=False):
@@ -1624,6 +1880,7 @@ def _is_plugin_ui_command(frame: object) -> bool:
         "plugin.ui.catalog",
         "plugin.ui.asset.get",
         "plugin.ui.query",
+        "plugin.ui.query.prepare",
         "plugin.ui.cancel",
     }
 

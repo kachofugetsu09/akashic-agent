@@ -1,5 +1,7 @@
 """Plugin discovery and read-only inspection surfaces for Akasha V2."""
 
+from typing import cast
+
 from agent.plugins import (
     MobileUiContribution,
     MobileUiNavigation,
@@ -9,6 +11,11 @@ from agent.plugins.mobile_ui import MobileUiRpcInvalidRequest
 
 from .inspector import AkashaInspectorReader, mobile_summary
 from .memory_plugin import MemoryPlugin
+
+_MOBILE_RECALL_SCHEMA = "akasha.recall-card.v1"
+_MOBILE_RECALL_MAX_ITEMS_PER_LANE = 5
+_MOBILE_RECALL_USER_PREVIEW_CHARS = 100
+_MOBILE_RECALL_ASSISTANT_PREVIEW_CHARS = 50
 
 
 class AkashaPlugin(Plugin):
@@ -123,7 +130,7 @@ class AkashaPlugin(Plugin):
         # 2. Synthetic active messages use the latest committed session turn.
         if isinstance(message_id, str) and message_id.startswith("assistant:"):
             if turn_id is None or message_id != f"assistant:{turn_id}":
-                return {"left": [], "right": []}
+                return _empty_mobile_recall()
             item = self._inspector().latest_for_session(session_id)
         elif isinstance(message_id, str):
             item = self._inspector().for_assistant_message(
@@ -133,16 +140,25 @@ class AkashaPlugin(Plugin):
         else:
             item = self._inspector().latest_for_session(session_id)
         if item is None:
-            return {"left": [], "right": []}
+            return _empty_mobile_recall()
         return {
+            "schema": _MOBILE_RECALL_SCHEMA,
             "query_id": item["query_id"],
             "recall_capture_available": item[
                 "recall_capture_available"
             ],
-            "left": item["left"],
-            "right": item["right"],
-            "tool_left": item["tool_left"],
-            "tool_right": item["tool_right"],
+            "left": _mobile_recall_lane(
+                cast(list[dict[str, object]], item["left"])
+            ),
+            "right": _mobile_recall_lane(
+                cast(list[dict[str, object]], item["right"])
+            ),
+            "tool_left": _mobile_recall_lane(
+                cast(list[dict[str, object]], item["tool_left"])
+            ),
+            "tool_right": _mobile_recall_lane(
+                cast(list[dict[str, object]], item["tool_right"])
+            ),
         }
 
     def _inspector(self) -> AkashaInspectorReader:
@@ -162,3 +178,40 @@ __all__ = ["AkashaPlugin", "MemoryPlugin"]
 def _clip(text: str, limit: int) -> str:
     normalized = " ".join(text.split())
     return normalized if len(normalized) <= limit else normalized[:limit] + "..."
+
+
+def _empty_mobile_recall() -> dict[str, object]:
+    return {
+        "schema": _MOBILE_RECALL_SCHEMA,
+        "query_id": None,
+        "recall_capture_available": False,
+        "left": [],
+        "right": [],
+        "tool_left": [],
+        "tool_right": [],
+    }
+
+
+def _mobile_recall_lane(
+    value: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """把 Inspector 行裁成移动卡片真正渲染的有界字段。"""
+
+    projected: list[dict[str, object]] = []
+    for raw in value[:_MOBILE_RECALL_MAX_ITEMS_PER_LANE]:
+        item: dict[str, object] = {
+            "user_preview": _clip(
+                cast(str, raw["user_text"]),
+                _MOBILE_RECALL_USER_PREVIEW_CHARS,
+            ),
+            "assistant_preview": _clip(
+                cast(str, raw["assistant_preview"]),
+                _MOBILE_RECALL_ASSISTANT_PREVIEW_CHARS,
+            ),
+            "ts": cast(str, raw["ts"]),
+        }
+        score = raw.get("score")
+        if score is not None:
+            item["score"] = score
+        projected.append(item)
+    return projected

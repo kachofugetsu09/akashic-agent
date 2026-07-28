@@ -43,7 +43,7 @@ from plugins.akasha.infrastructure.sparse_index import (
     audit_source_embeddings,
 )
 from plugins.akasha.memory_plugin import MemoryPlugin
-from plugins.akasha.plugin import AkashaPlugin
+from plugins.akasha.plugin import AkashaPlugin, _mobile_recall_lane
 
 
 class _Embedder:
@@ -77,6 +77,45 @@ def test_akasha_v2_registers_both_host_protocols() -> None:
     assert mobile.slots == ("turn.before_reasoning",)
     assert mobile.navigation is not None
     assert mobile.navigation.label == "Akasha Inspector"
+
+
+def test_mobile_recall_card_projection_is_bounded() -> None:
+    lane = _mobile_recall_lane(
+        [
+            {
+                "user_text": "🌙" * 1_000,
+                "assistant_preview": "🌙" * 1_000,
+                "assistant_text": "不应进入移动卡片",
+                "ts": "2026-07-28T00:00:00Z",
+                "score": 0.5,
+            }
+            for _ in range(20)
+        ]
+    )
+    card = {
+        "schema": "akasha.recall-card.v1",
+        "query_id": "query",
+        "recall_capture_available": True,
+        "left": lane,
+        "right": lane,
+        "tool_left": lane,
+        "tool_right": lane,
+    }
+
+    assert len(lane) == 5
+    assert all(len(str(item["user_preview"])) == 103 for item in lane)
+    assert all(len(str(item["assistant_preview"])) == 53 for item in lane)
+    assert "assistant_text" not in json.dumps(card, ensure_ascii=False)
+    assert (
+        len(
+            json.dumps(
+                card,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        < 16 * 1024
+    )
 
 
 @pytest.mark.asyncio
@@ -292,6 +331,21 @@ async def test_online_turn_recall_and_replay_share_one_state(
     assert len(cast(list[object], mobile["left"])) == 1
     assert len(cast(list[object], mobile["tool_left"])) == 1
     assert len(cast(list[object], mobile["tool_right"])) == 1
+    assert mobile["schema"] == "akasha.recall-card.v1"
+    mobile_left = cast(list[dict[str, object]], mobile["left"])
+    assert mobile_left[0]["user_preview"] == "alpha start"
+    assert "user_text" not in mobile_left[0]
+    assert "assistant_text" not in json.dumps(mobile, ensure_ascii=False)
+    assert (
+        len(
+            json.dumps(
+                mobile,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        < 16 * 1024
+    )
     assert recent["total"] == 2
     assert mobile_detail["query_text"] == "alpha follow"
     _close_engine(engine)

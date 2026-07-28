@@ -41,6 +41,7 @@ COMMAND_TYPES = frozenset(
         "plugin.ui.catalog",
         "plugin.ui.asset.get",
         "plugin.ui.query",
+        "plugin.ui.query.prepare",
         "plugin.ui.cancel",
         "device.update",
         "ping",
@@ -104,7 +105,12 @@ _RFC3339_INSTANT_PATTERN_TEXT = (
 _REPLY_TYPE_PATTERN = re.compile(
     r"^(?P<command>[a-z][a-z0-9]*(?:\.[a-z][a-z0-9_]*)+)\.(?:ok|error)$"
 )
-_SPECIAL_REPLY_TYPES = frozenset({"plugin.ui.catalog.not_modified"})
+_SPECIAL_REPLY_TYPES = frozenset(
+    {
+        "plugin.ui.catalog.not_modified",
+        "plugin.ui.query.ready",
+    }
+)
 
 FrameId: TypeAlias = Annotated[
     str,
@@ -332,6 +338,7 @@ class GenericCommand(CommandEnvelope):
         "plugin.ui.catalog",
         "plugin.ui.asset.get",
         "plugin.ui.query",
+        "plugin.ui.query.prepare",
         "plugin.ui.cancel",
         "turn.stop",
         "device.update",
