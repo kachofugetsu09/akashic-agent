@@ -1,3 +1,5 @@
+"""Project core-owned runtime facts into the read-only mobile protocol."""
+
 from __future__ import annotations
 
 import json

@@ -383,7 +383,9 @@ class AppRuntime:
                     self.config.mobile_realtime,
                     self.workspace,
                 )
-                from agent.runtime_inspection import RuntimeInspectionService
+                from infra.mobile_realtime.runtime_inspection import (
+                    RuntimeInspectionService,
+                )
 
                 self.mobile_gateway_runtime.channel.bind_runtime_inspection(
                     RuntimeInspectionService(

@@ -28,7 +28,7 @@ from agent.plugins.mobile_ui import (
     MobileUiRpcInvalidRequest,
     MobileUiStaleRevision,
 )
-from agent.runtime_inspection import (
+from infra.mobile_realtime.runtime_inspection import (
     RuntimeInspectionError,
     RuntimeInspectionService,
 )

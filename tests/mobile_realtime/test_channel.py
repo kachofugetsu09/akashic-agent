@@ -13,7 +13,7 @@ import infra.mobile_realtime.channel as channel_module
 import infra.mobile_realtime.gateway as gateway_module
 
 from agent.config_models import MobileRealtimeConfig
-from agent.runtime_inspection import RuntimeInspectionService
+from infra.mobile_realtime.runtime_inspection import RuntimeInspectionService
 from bus.events import OutboundMessage
 from bus.events_lifecycle import (
     StreamDeltaReady,

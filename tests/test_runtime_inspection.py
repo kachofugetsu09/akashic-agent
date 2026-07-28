@@ -6,7 +6,10 @@ from typing import cast
 
 import pytest
 
-from agent.runtime_inspection import RuntimeInspectionError, RuntimeInspectionService
+from infra.mobile_realtime.runtime_inspection import (
+    RuntimeInspectionError,
+    RuntimeInspectionService,
+)
 from agent.scheduler import LatencyTracker, ScheduledJob, SchedulerService
 
 
