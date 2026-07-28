@@ -24,7 +24,7 @@ def test_restart_gate_enables_search_and_multi_step_tool_loop(tmp_path: Path) ->
     source = tmp_path / "source"
     source.mkdir()
     (source / "main.py").write_text("", encoding="utf-8")
-    template = source / "prompts/veda.md"
+    template = source / "prompts/VEDA.md"
     template.parent.mkdir()
     template.write_text("gate veda\n", encoding="utf-8")
     sandbox = tmp_path / "sandbox"

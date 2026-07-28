@@ -383,6 +383,21 @@ class AppRuntime:
                     self.config.mobile_realtime,
                     self.workspace,
                 )
+                from infra.mobile_realtime.runtime_inspection import (
+                    RuntimeInspectionService,
+                )
+
+                self.mobile_gateway_runtime.channel.bind_runtime_inspection(
+                    RuntimeInspectionService(
+                        workspace=self.workspace,
+                        scheduler=self.scheduler,
+                        snapshot_store=(
+                            plugin_manager.snapshot_store
+                            if plugin_manager is not None
+                            else None
+                        ),
+                    )
+                )
                 if plugin_manager is not None:
                     from agent.plugins.mobile_ui import PluginMobileUiProvider
 

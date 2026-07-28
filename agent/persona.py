@@ -9,8 +9,8 @@ from pathlib import Path
 from infra.persistence.json_store import atomic_write_text
 
 
-VEDA_RELATIVE_PATH = Path("memory/veda.md")
-DEFAULT_VEDA_PATH = Path(__file__).resolve().parents[1] / "prompts" / "veda.md"
+VEDA_RELATIVE_PATH = Path("memory/VEDA.md")
+DEFAULT_VEDA_PATH = Path(__file__).resolve().parents[1] / "prompts" / "VEDA.md"
 
 
 class VedaLoadError(RuntimeError):
@@ -130,7 +130,7 @@ def reset_veda(workspace: Path) -> VedaResetResult:
         backup_root = target.parent / "veda-backups"
         backup_root.mkdir(parents=True, mode=0o700, exist_ok=True)
         os.chmod(backup_root, 0o700)
-        backup_path = backup_root / timestamp / "veda.md"
+        backup_path = backup_root / timestamp / "VEDA.md"
         _write_backup(backup_path, previous_payload)
 
     # 3. 原子发布默认内容；正在进行的轮次仍持有此前 prompt。

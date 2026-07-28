@@ -13,6 +13,7 @@ import infra.mobile_realtime.channel as channel_module
 import infra.mobile_realtime.gateway as gateway_module
 
 from agent.config_models import MobileRealtimeConfig
+from infra.mobile_realtime.runtime_inspection import RuntimeInspectionService
 from bus.events import OutboundMessage
 from bus.events_lifecycle import (
     StreamDeltaReady,
@@ -23,7 +24,11 @@ from bus.events_lifecycle import (
 from infra.channels.base import AttachmentStore
 from infra.mobile_realtime.channel import MobileRealtimeChannel
 from infra.mobile_realtime.gateway import MobileGatewayRuntime
-from infra.mobile_realtime.protocol import GenericCommand, MessageSendCommand, parse_frame
+from infra.mobile_realtime.protocol import (
+    GenericCommand,
+    MessageSendCommand,
+    parse_frame,
+)
 from infra.mobile_realtime.remote_media import RemoteMediaError, RemoteMediaSnapshot
 from infra.mobile_realtime.storage import DeviceRecord, MobileRealtimeStorage
 from session.manager import SessionManager
@@ -75,6 +80,14 @@ class _PushTool:
         self.registered[channel] = senders
 
 
+class _RuntimeInspection:
+    def list_documents(self) -> dict[str, object]:
+        return {"items": [{"id": "memory"}]}
+
+    def get_document(self, document_id: str) -> dict[str, object]:
+        return {"id": document_id, "markdown": "# Memory"}
+
+
 def _register_device(storage: MobileRealtimeStorage, device_id: str) -> None:
     storage.register_device(
         DeviceRecord(
@@ -86,6 +99,39 @@ def _register_device(storage: MobileRealtimeStorage, device_id: str) -> None:
             capabilities=("stream-v1",),
         )
     )
+
+
+@pytest.mark.asyncio
+async def test_runtime_document_commands_use_bound_read_service(tmp_path: Path) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
+    channel.bind_runtime_inspection(
+        cast(RuntimeInspectionService, _RuntimeInspection())
+    )
+
+    listed = await channel.handle_command(
+        device_id=device_id,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            command_type="runtime.document.list",
+        ),
+    )
+    detail = await channel.handle_command(
+        device_id=device_id,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAW",
+            command_type="runtime.document.get",
+            payload={"document_id": "memory"},
+        ),
+    )
+
+    assert listed.type == "runtime.document.list.ok"
+    assert listed.payload["items"] == [{"id": "memory"}]
+    assert detail.type == "runtime.document.get.ok"
+    assert detail.payload["markdown"] == "# Memory"
+    storage.close()
 
 
 def test_mobile_tool_arguments_are_bounded_for_phone_storage() -> None:
@@ -137,7 +183,9 @@ def test_mobile_tool_arguments_are_bounded_for_phone_storage() -> None:
     emoji_arguments = channel_module._mobile_tool_arguments(
         {f"field_{index}": "😀" * 2_000 for index in range(64)}
     )
-    assert channel_module._mobile_tool_argument_encoded_size(emoji_arguments) <= 8 * 1024
+    assert (
+        channel_module._mobile_tool_argument_encoded_size(emoji_arguments) <= 8 * 1024
+    )
     encoded = gateway_module._encode_stored_event(
         event_id="01J00000000000000000000000",
         event_type="react.tool.started",
@@ -373,7 +421,9 @@ async def test_message_send_is_idempotent_and_session_is_shared_between_devices(
     assert mismatched.type == "message.send.error"
     assert mismatched.payload["code"] == "client_message_id_mismatch"
     assert len(bus.inbound) == 2
-    assert all(item.metadata["require_existing_session"] is True for item in bus.inbound)
+    assert all(
+        item.metadata["require_existing_session"] is True for item in bus.inbound
+    )
     with pytest.raises(ValueError, match="正在处理消息"):
         manager.delete_session(session_id)
     for item in bus.inbound:
@@ -626,7 +676,9 @@ async def test_message_send_keeps_unknown_outcome_without_persisted_user(
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def execute_slowly(*, device_id: str, frame: object) -> channel_module.CommandReply:
+    async def execute_slowly(
+        *, device_id: str, frame: object
+    ) -> channel_module.CommandReply:
         started.set()
         await release.wait()
         return channel_module.CommandReply(
@@ -636,7 +688,9 @@ async def test_message_send_keeps_unknown_outcome_without_persisted_user(
         )
 
     monkeypatch.setattr(channel, "_execute_command", execute_slowly)
-    original = asyncio.create_task(channel.handle_command(device_id=device_id, frame=frame))
+    original = asyncio.create_task(
+        channel.handle_command(device_id=device_id, frame=frame)
+    )
     await started.wait()
 
     result = await channel.handle_command(device_id=device_id, frame=frame)
@@ -849,7 +903,9 @@ async def test_message_send_resolves_reply_into_agent_context_and_metadata(
     )
     assert fourth.type == "message.send.ok"
     assert bus.inbound[3].metadata["reply_to_message_id"] == proactive_target["id"]
-    assert "被回复消息（来自 Akashic）：\n尚未同步历史的主动消息" in bus.inbound[3].content
+    assert (
+        "被回复消息（来自 Akashic）：\n尚未同步历史的主动消息" in bus.inbound[3].content
+    )
     manager.close()
     storage.close()
 
@@ -1189,7 +1245,9 @@ async def test_remote_media_failure_keeps_final_text(
 
 
 @pytest.mark.asyncio
-async def test_final_event_maps_optimistic_user_to_persisted_identity(tmp_path: Path) -> None:
+async def test_final_event_maps_optimistic_user_to_persisted_identity(
+    tmp_path: Path,
+) -> None:
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
@@ -1272,7 +1330,9 @@ async def test_turn_stop_accepts_a_shared_mobile_session(tmp_path: Path) -> None
     )
     manager.save(manager.get_or_create(session_id))
     interrupt = SimpleNamespace(
-        request_interrupt=lambda **_: SimpleNamespace(status="interrupted", message="已停止"),
+        request_interrupt=lambda **_: SimpleNamespace(
+            status="interrupted", message="已停止"
+        ),
     )
     await channel.start(
         cast(
@@ -1316,7 +1376,9 @@ async def test_turn_stop_accepts_a_shared_mobile_session(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_turn_stop_idle_result_still_closes_stale_mobile_turn(tmp_path: Path) -> None:
+async def test_turn_stop_idle_result_still_closes_stale_mobile_turn(
+    tmp_path: Path,
+) -> None:
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     device_id = uuid4().hex
     _register_device(storage, device_id)
@@ -1381,7 +1443,9 @@ async def test_turn_stop_idle_result_still_closes_stale_mobile_turn(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_command_list_uses_active_channel_catalog_without_stop(tmp_path: Path) -> None:
+async def test_command_list_uses_active_channel_catalog_without_stop(
+    tmp_path: Path,
+) -> None:
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     device_id = uuid4().hex
     _register_device(storage, device_id)
@@ -1428,7 +1492,9 @@ async def test_command_list_uses_active_channel_catalog_without_stop(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_message_send_preserves_mobile_slash_command_for_bus(tmp_path: Path) -> None:
+async def test_message_send_preserves_mobile_slash_command_for_bus(
+    tmp_path: Path,
+) -> None:
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     device_id = uuid4().hex
     _register_device(storage, device_id)
@@ -1470,7 +1536,9 @@ async def test_message_send_preserves_mobile_slash_command_for_bus(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_plugin_ui_catalog_is_empty_without_plugin_manager(tmp_path: Path) -> None:
+async def test_plugin_ui_catalog_is_empty_without_plugin_manager(
+    tmp_path: Path,
+) -> None:
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     device_id = uuid4().hex
     _register_device(storage, device_id)
@@ -1517,7 +1585,9 @@ async def test_plugin_ui_catalog_returns_not_modified_for_matching_revision(
 
 
 @pytest.mark.asyncio
-async def test_plugin_ui_hot_update_only_targets_subscribed_connection(tmp_path: Path) -> None:
+async def test_plugin_ui_hot_update_only_targets_subscribed_connection(
+    tmp_path: Path,
+) -> None:
     class _MutableProvider:
         def __init__(self) -> None:
             self.revision = "a" * 64
@@ -1569,7 +1639,9 @@ async def test_plugin_ui_hot_update_only_targets_subscribed_connection(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_plugin_ui_catalog_does_not_create_durable_receipt(tmp_path: Path) -> None:
+async def test_plugin_ui_catalog_does_not_create_durable_receipt(
+    tmp_path: Path,
+) -> None:
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     device_id = uuid4().hex
     _register_device(storage, device_id)
@@ -1606,7 +1678,9 @@ def _plugin_ui_query_frame(frame_id: str) -> GenericCommand:
 
 
 @pytest.mark.asyncio
-async def test_plugin_ui_timeout_becomes_transient_command_error(tmp_path: Path) -> None:
+async def test_plugin_ui_timeout_becomes_transient_command_error(
+    tmp_path: Path,
+) -> None:
     class _TimeoutProvider:
         def catalog(self) -> dict[str, object]:
             return {"catalog_revision": "a" * 64, "items": []}
@@ -1630,7 +1704,9 @@ async def test_plugin_ui_timeout_becomes_transient_command_error(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_plugin_ui_invalid_request_becomes_transient_command_error(tmp_path: Path) -> None:
+async def test_plugin_ui_invalid_request_becomes_transient_command_error(
+    tmp_path: Path,
+) -> None:
     class _InvalidRequestProvider:
         def catalog(self) -> dict[str, object]:
             return {"catalog_revision": "a" * 64, "items": []}
@@ -1655,7 +1731,9 @@ async def test_plugin_ui_invalid_request_becomes_transient_command_error(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_plugin_ui_execution_failure_becomes_transient_command_error(tmp_path: Path) -> None:
+async def test_plugin_ui_execution_failure_becomes_transient_command_error(
+    tmp_path: Path,
+) -> None:
     class _FailedProvider:
         def __init__(self) -> None:
             self.calls = 0
@@ -1682,7 +1760,9 @@ async def test_plugin_ui_execution_failure_becomes_transient_command_error(tmp_p
         )
 
     assert caught.value.code == "plugin_failed"
-    assert str(caught.value) == "插件 mobile UI RPC 执行失败: sample@github.recall.current"
+    assert (
+        str(caught.value) == "插件 mobile UI RPC 执行失败: sample@github.recall.current"
+    )
     assert provider.calls == 1
     storage.close()
 

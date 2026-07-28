@@ -72,7 +72,7 @@ def test_veda_reset_runs_before_agent_runtime_and_preserves_original_bytes(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
-    veda = workspace / "memory/veda.md"
+    veda = workspace / "memory/VEDA.md"
     veda.parent.mkdir(parents=True)
     original = b"\xffbroken"
     veda.write_bytes(original)
@@ -94,7 +94,7 @@ def test_veda_reset_runs_before_agent_runtime_and_preserves_original_bytes(
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
     assert veda.read_text(encoding="utf-8").strip() == read_default_veda()
-    backups = list((workspace / "memory/veda-backups").glob("*/veda.md"))
+    backups = list((workspace / "memory/veda-backups").glob("*/VEDA.md"))
     assert len(backups) == 1
     assert backups[0].read_bytes() == original
     assert "原内容 sha256=" in output

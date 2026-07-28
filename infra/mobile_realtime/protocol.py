@@ -16,7 +16,6 @@ from pydantic import (
     model_validator,
 )
 
-
 PROTOCOL_VERSION = 1
 MAX_JSON_FRAME_BYTES = 256 * 1024
 _MAX_REBASE_ACK = 1 << 62
@@ -33,6 +32,12 @@ COMMAND_TYPES = frozenset(
         "attachment.finish",
         "attachment.download",
         "command.list",
+        "runtime.document.list",
+        "runtime.document.get",
+        "runtime.capability.list",
+        "runtime.mcp.get",
+        "scheduler.job.list",
+        "scheduler.job.get",
         "plugin.ui.catalog",
         "plugin.ui.asset.get",
         "plugin.ui.query",
@@ -318,6 +323,12 @@ class GenericCommand(CommandEnvelope):
         "session.open",
         "history.get",
         "command.list",
+        "runtime.document.list",
+        "runtime.document.get",
+        "runtime.capability.list",
+        "runtime.mcp.get",
+        "scheduler.job.list",
+        "scheduler.job.get",
         "plugin.ui.catalog",
         "plugin.ui.asset.get",
         "plugin.ui.query",
@@ -358,9 +369,7 @@ class ReplyFrame(ProtocolModel):
             return self
         match = _REPLY_TYPE_PATTERN.fullmatch(self.type)
         if match is None or match.group("command") not in COMMAND_TYPES:
-            raise ValueError(
-                "reply type 必须为已知 command 的标准或显式扩展结果"
-            )
+            raise ValueError("reply type 必须为已知 command 的标准或显式扩展结果")
         return self
 
 
@@ -482,7 +491,9 @@ class AuthAcceptedControl(AuthenticatedControlEnvelope):
     @model_validator(mode="after")
     def validate_epoch_match(self) -> AuthAcceptedControl:
         if self.connection_epoch != self.payload.connection_epoch:
-            raise ValueError("auth.accepted envelope 与 payload 的 connection_epoch 必须一致")
+            raise ValueError(
+                "auth.accepted envelope 与 payload 的 connection_epoch 必须一致"
+            )
         return self
 
 

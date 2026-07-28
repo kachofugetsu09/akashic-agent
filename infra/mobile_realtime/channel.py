@@ -28,6 +28,10 @@ from agent.plugins.mobile_ui import (
     MobileUiRpcInvalidRequest,
     MobileUiStaleRevision,
 )
+from infra.mobile_realtime.runtime_inspection import (
+    RuntimeInspectionError,
+    RuntimeInspectionService,
+)
 from infra.channels.contract import ChannelContext
 from infra.channels.reply_context import build_reply_inbound_text
 from infra.mobile_realtime.attachments import (
@@ -164,6 +168,14 @@ class MobileRealtimeChannel:
         self._mobile_ui_scheduler: PluginUiQueryScheduler | None = None
         self._mobile_ui_catalog_identity = ""
         self._mobile_ui_hot_connections: dict[str, int] = {}
+        self._runtime_inspection: RuntimeInspectionService | None = None
+
+    def bind_runtime_inspection(self, service: RuntimeInspectionService) -> None:
+        """绑定只读运行时检查服务。"""
+
+        if self._runtime_inspection is not None:
+            raise RuntimeError("Runtime inspection service 已绑定")
+        self._runtime_inspection = service
 
     def bind_mobile_ui_provider(self, provider: MobileUiProvider) -> None:
         """绑定读取当前插件快照的移动 UI 提供器。"""
@@ -172,7 +184,9 @@ class MobileRealtimeChannel:
             raise RuntimeError("Mobile UI provider 已绑定")
         self._mobile_ui_provider = provider
         self._mobile_ui_scheduler = PluginUiQueryScheduler(provider)
-        self._mobile_ui_catalog_identity = _mobile_ui_catalog_identity(provider.catalog())
+        self._mobile_ui_catalog_identity = _mobile_ui_catalog_identity(
+            provider.catalog()
+        )
 
     async def refresh_mobile_ui_catalog(self) -> None:
         """目录内容变化时通知所有手机重新拉取插件 UI。"""
@@ -274,7 +288,7 @@ class MobileRealtimeChannel:
         self._processing_commands.add(command_key)
         try:
             reply = await self._execute_command(device_id=device_id, frame=frame)
-        except MobileCommandError as error:
+        except (MobileCommandError, RuntimeInspectionError) as error:
             reply = CommandReply(
                 type=f"{frame.type}.error",
                 payload={"code": error.code, "message": str(error)},
@@ -366,9 +380,11 @@ class MobileRealtimeChannel:
 
         # 2. 只有同一 client_message_id 已落库时，才能确认副作用已完成
         session_id = self._normalize_session_id(frame.session_id)
-        message = self._require_ctx().session_manager.control_store.get_message_by_client_id(
-            session_id,
-            frame.payload.client_message_id,
+        message = (
+            self._require_ctx().session_manager.control_store.get_message_by_client_id(
+                session_id,
+                frame.payload.client_message_id,
+            )
         )
         if message is None:
             if (device_id, frame.id) in self._processing_commands:
@@ -500,6 +516,55 @@ class MobileRealtimeChannel:
             return await self._get_history(device_id, frame)
         if frame.type == "command.list":
             return self._list_commands(frame)
+        if frame.type == "runtime.document.list":
+            _expect_keys(frame.payload, set())
+            return CommandReply(
+                type="runtime.document.list.ok",
+                payload=self._require_runtime_inspection().list_documents(),
+            )
+        if frame.type == "runtime.document.get":
+            _expect_keys(frame.payload, {"document_id"})
+            document_id = _expect_nonempty_string(
+                frame.payload["document_id"],
+                "document_id",
+            )
+            return CommandReply(
+                type="runtime.document.get.ok",
+                payload=self._require_runtime_inspection().get_document(document_id),
+            )
+        if frame.type == "scheduler.job.list":
+            _expect_keys(frame.payload, set())
+            return CommandReply(
+                type="scheduler.job.list.ok",
+                payload=self._require_runtime_inspection().list_jobs(),
+            )
+        if frame.type == "scheduler.job.get":
+            _expect_keys(frame.payload, {"job_id"})
+            job_id = _expect_nonempty_string(frame.payload["job_id"], "job_id")
+            return CommandReply(
+                type="scheduler.job.get.ok",
+                payload=self._require_runtime_inspection().get_job(job_id),
+            )
+        if frame.type == "runtime.capability.list":
+            _expect_keys(frame.payload, set())
+            return CommandReply(
+                type="runtime.capability.list.ok",
+                payload=await self._require_runtime_inspection().list_capabilities(),
+            )
+        if frame.type == "runtime.mcp.get":
+            _expect_keys(frame.payload, {"owner_id", "server_name"})
+            owner_id = _expect_nonempty_string(frame.payload["owner_id"], "owner_id")
+            server_name = _expect_nonempty_string(
+                frame.payload["server_name"],
+                "server_name",
+            )
+            return CommandReply(
+                type="runtime.mcp.get.ok",
+                payload=await self._require_runtime_inspection().get_mcp(
+                    owner_id,
+                    server_name,
+                ),
+            )
         if frame.type == "message.send":
             return await self._send_message(device_id, frame)
         if frame.type == "turn.stop":
@@ -511,6 +576,15 @@ class MobileRealtimeChannel:
         if frame.type == "attachment.download":
             return self._download_attachment(frame)
         raise MobileCommandError("unsupported_command", f"尚不支持命令: {frame.type}")
+
+    def _require_runtime_inspection(self) -> RuntimeInspectionService:
+        service = self._runtime_inspection
+        if service is None:
+            raise RuntimeInspectionError(
+                "runtime_inspection_unavailable",
+                "运行时检查服务尚未绑定",
+            )
+        return service
 
     def _list_commands(self, frame: GenericCommand) -> CommandReply:
         """返回当前已启用插件的快捷命令目录。"""
@@ -578,7 +652,9 @@ class MobileRealtimeChannel:
         plugin_revision = frame.payload["plugin_revision"]
         kind = frame.payload["kind"]
         sha256 = frame.payload["sha256"]
-        if not isinstance(plugin_id, str) or not _PLUGIN_ID_PATTERN.fullmatch(plugin_id):
+        if not isinstance(plugin_id, str) or not _PLUGIN_ID_PATTERN.fullmatch(
+            plugin_id
+        ):
             raise MobileCommandError("invalid_plugin", "plugin_id 无效")
         if not isinstance(plugin_revision, str) or not 1 <= len(plugin_revision) <= 128:
             raise MobileCommandError("invalid_revision", "plugin_revision 无效")
@@ -613,15 +689,22 @@ class MobileRealtimeChannel:
         slot = frame.payload["slot"]
         if not isinstance(owner_id, str) or not 1 <= len(owner_id) <= 128:
             raise MobileCommandError("invalid_owner", "owner_id 无效")
-        if not isinstance(plugin_id, str) or not _PLUGIN_ID_PATTERN.fullmatch(plugin_id):
+        if not isinstance(plugin_id, str) or not _PLUGIN_ID_PATTERN.fullmatch(
+            plugin_id
+        ):
             raise MobileCommandError("invalid_plugin", "plugin_id 无效")
         if not isinstance(plugin_revision, str) or not 1 <= len(plugin_revision) <= 128:
             raise MobileCommandError("invalid_revision", "plugin_revision 无效")
-        if not isinstance(method, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", method):
+        if not isinstance(method, str) or not re.fullmatch(
+            r"[a-z][a-z0-9_.-]{0,63}", method
+        ):
             raise MobileCommandError("invalid_method", "插件方法无效")
         if not isinstance(payload, dict):
             raise MobileCommandError("invalid_payload", "插件参数必须是对象")
-        if _mobile_tool_argument_encoded_size(cast(dict[str, object], payload)) > 64 * 1024:
+        if (
+            _mobile_tool_argument_encoded_size(cast(dict[str, object], payload))
+            > 64 * 1024
+        ):
             raise MobileCommandError("invalid_payload", "插件参数超过 64 KiB")
         if slot not in {
             "dashboard.main",
@@ -757,7 +840,9 @@ class MobileRealtimeChannel:
                 attachment_id=frame.payload.attachment_id,
             )
         except (AttachmentRequestError, AttachmentStateError) as error:
-            raise MobileCommandError("attachment_finish_rejected", str(error)) from error
+            raise MobileCommandError(
+                "attachment_finish_rejected", str(error)
+            ) from error
         await self._runtime.publish_event(
             event_type="attachment.ready",
             device_id=device_id,
@@ -785,7 +870,9 @@ class MobileRealtimeChannel:
                 offset=frame.payload.offset,
             )
         except (AttachmentRequestError, AttachmentStateError) as error:
-            raise MobileCommandError("attachment_download_rejected", str(error)) from error
+            raise MobileCommandError(
+                "attachment_download_rejected", str(error)
+            ) from error
         next_offset = outbound.offset + len(outbound.data)
         payload: dict[str, object] = {
             **outbound.descriptor,
@@ -816,7 +903,9 @@ class MobileRealtimeChannel:
         # 1. 所有已认证手机共享 mobile 渠道的完整会话空间
         _expect_keys(frame.payload, set())
         ctx = self._require_ctx()
-        session_rows = {item["key"]: item for item in ctx.session_manager.list_sessions()}
+        session_rows = {
+            item["key"]: item for item in ctx.session_manager.list_sessions()
+        }
         session_ids = tuple(
             session_id
             for session_id in session_rows
@@ -828,13 +917,17 @@ class MobileRealtimeChannel:
         for session_id in session_ids:
             session = session_rows.get(session_id)
             if session is None:
-                raise RuntimeError(f"已绑定移动会话在 session store 中不存在: {session_id}")
-            messages, total = ctx.session_manager.control_store.list_messages_for_dashboard(
-                session_key=session_id,
-                page=1,
-                page_size=1,
-                sort_by="seq",
-                sort_order="asc",
+                raise RuntimeError(
+                    f"已绑定移动会话在 session store 中不存在: {session_id}"
+                )
+            messages, total = (
+                ctx.session_manager.control_store.list_messages_for_dashboard(
+                    session_key=session_id,
+                    page=1,
+                    page_size=1,
+                    sort_by="seq",
+                    sort_order="asc",
+                )
             )
             first_content = str(messages[0]["content"]).strip() if messages else ""
             items.append(
@@ -1019,9 +1112,13 @@ class MobileRealtimeChannel:
                 cast(str, reference.delivery_id),
             )
         if target is None:
-            raise MobileCommandError("reply_target_missing", "被引用的消息不存在或尚未同步")
+            raise MobileCommandError(
+                "reply_target_missing", "被引用的消息不存在或尚未同步"
+            )
         if target["session_key"] != session_id:
-            raise MobileCommandError("reply_target_session_mismatch", "不能引用其他会话的消息")
+            raise MobileCommandError(
+                "reply_target_session_mismatch", "不能引用其他会话的消息"
+            )
         role = str(target["role"])
         if role not in {"user", "assistant"}:
             raise RuntimeError(f"被引用消息角色无效: {target['id']} {role}")
@@ -1219,7 +1316,9 @@ class MobileRealtimeChannel:
         user_message_id = metadata.get("persisted_user_message_id")
         client_message_id = metadata.get("client_message_id")
         if user_message_id is not None or client_message_id is not None:
-            if not isinstance(user_message_id, str) or not isinstance(client_message_id, str):
+            if not isinstance(user_message_id, str) or not isinstance(
+                client_message_id, str
+            ):
                 raise RuntimeError("mobile final 缺少完整的 user/client 消息标识")
             final_payload["user_message_id"] = user_message_id
             final_payload["client_message_id"] = client_message_id
@@ -1580,6 +1679,15 @@ def _expect_keys(payload: Mapping[str, object], allowed: set[str]) -> None:
         raise MobileCommandError("invalid_payload", f"payload 包含未知字段: {names}")
 
 
+def _expect_nonempty_string(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value or len(value) > 512:
+        raise MobileCommandError(
+            "invalid_payload",
+            f"{field} 必须是长度 1..512 的字符串",
+        )
+    return value
+
+
 def _validate_reply_frame_size(frame: ClientCommand, reply: CommandReply) -> None:
     """在持久化前按真实 JSON 编码校验回复可投递。"""
 
@@ -1603,7 +1711,9 @@ def _validate_reply_frame_size(frame: ClientCommand, reply: CommandReply) -> Non
         allow_nan=False,
     ).encode("utf-8")
     if len(encoded) > MAX_JSON_FRAME_BYTES:
-        raise RuntimeError(f"mobile reply 超过 {MAX_JSON_FRAME_BYTES} bytes: {reply.type}")
+        raise RuntimeError(
+            f"mobile reply 超过 {MAX_JSON_FRAME_BYTES} bytes: {reply.type}"
+        )
 
 
 def _mobile_history_item(item: Mapping[str, object]) -> dict[str, object]:
@@ -1672,8 +1782,14 @@ def _mobile_tool_chain(value: object) -> list[dict[str, object]] | None:
                 name = call_record.get("name")
                 if not isinstance(name, str) or not name:
                     continue
-                arguments = call_record.get("final_arguments", call_record.get("arguments"))
-                arguments_record = cast(dict[str, object], arguments) if isinstance(arguments, dict) else None
+                arguments = call_record.get(
+                    "final_arguments", call_record.get("arguments")
+                )
+                arguments_record = (
+                    cast(dict[str, object], arguments)
+                    if isinstance(arguments, dict)
+                    else None
+                )
                 call: dict[str, object] = {
                     "call_id": str(call_record.get("call_id") or ""),
                     "name": name,
@@ -1759,9 +1875,13 @@ def _mobile_tool_arguments(
         if _mobile_tool_argument_encoded_size(candidate) <= max_bytes:
             bounded[key] = value
             continue
-        while bounded and _mobile_tool_argument_encoded_size(
-            {**bounded, "…": _MOBILE_TOOL_ARGUMENT_TRUNCATED}
-        ) > max_bytes:
+        while (
+            bounded
+            and _mobile_tool_argument_encoded_size(
+                {**bounded, "…": _MOBILE_TOOL_ARGUMENT_TRUNCATED}
+            )
+            > max_bytes
+        ):
             _ = bounded.popitem()
         bounded["…"] = _MOBILE_TOOL_ARGUMENT_TRUNCATED
         break
@@ -1829,7 +1949,9 @@ def _mobile_tool_argument_value(
                     remaining=remaining,
                 )
             )
-            redact_next = isinstance(item, str) and _mobile_tool_argument_is_secret_flag(item)
+            redact_next = isinstance(
+                item, str
+            ) and _mobile_tool_argument_is_secret_flag(item)
         return result_list
     raise TypeError(f"mobile 工具参数包含非 JSON 类型: {type(value).__name__}")
 
