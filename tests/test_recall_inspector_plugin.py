@@ -32,7 +32,7 @@ async def test_recall_inspector_records_context_and_recall(tmp_path: Path) -> No
         workspace=tmp_path,
         memory_engine=DefaultMemoryEngine.__new__(DefaultMemoryEngine),
     )
-    await plugin.initialize()
+    plugin.activate()
 
     ctx = BeforeTurnCtx(
         session_key="cli:1",
@@ -138,7 +138,7 @@ async def test_recall_inspector_uses_workspace_data_path(tmp_path: Path) -> None
         workspace=workspace,
         memory_engine=DefaultMemoryEngine.__new__(DefaultMemoryEngine),
     )
-    await plugin.initialize()
+    plugin.activate()
 
     plugin.record_context_prepare(
         BeforeTurnCtx(
@@ -197,7 +197,7 @@ async def test_recall_inspector_is_inactive_without_memory_engine(tmp_path: Path
         memory_engine=None,
     )
 
-    await plugin.initialize()
+    plugin.activate()
 
     assert plugin.is_active() is False
     plugin.record_context_prepare(

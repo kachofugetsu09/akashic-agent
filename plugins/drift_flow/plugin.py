@@ -15,6 +15,7 @@ class DriftModuleFactory:
 
 
 class DriftFlowPlugin(Plugin):
+    api_version = 2
     name = "drift_flow"
 
     def proactive_module_factories(self) -> list[object]:

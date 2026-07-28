@@ -14,10 +14,12 @@ class PluginWatcher:
         self,
         manager: PluginManager,
         *,
+        baseline_revision: str,
         interval_seconds: float = 1.0,
         after_reconcile: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._manager = manager
+        self._baseline_revision = baseline_revision
         self._interval_seconds = interval_seconds
         self._after_reconcile = after_reconcile
         self._wake = asyncio.Event()
@@ -31,16 +33,12 @@ class PluginWatcher:
     async def run(self) -> None:
         """轮询插件文件状态，并在变化后执行一次热重载。"""
 
-        revision: str | None = None
+        revision = self._baseline_revision
         self._run_started = True
         try:
             # 1. 启动前已停止时，不再触碰 manager
             if not self._running:
                 return
-            try:
-                revision = self._manager.watch_revision()
-            except OSError:
-                logger.exception("插件热重载状态扫描失败")
             while self._running:
                 # 2. 等待定时轮询或外部唤醒
                 try:
@@ -57,14 +55,13 @@ class PluginWatcher:
                 self._forced = False
                 # 3. 读取最新状态；单次文件竞争交给下一轮恢复
                 try:
-                    current_revision = self._manager.watch_revision()
+                    current_revision = await asyncio.to_thread(
+                        self._manager.watch_revision
+                    )
                 except OSError:
                     self._forced = self._forced or forced
                     logger.exception("插件热重载状态扫描失败")
                     continue
-                if revision is None:
-                    revision = current_revision
-                    forced = True
                 changed = forced or current_revision != revision
                 if not changed and not self._notification_pending:
                     continue

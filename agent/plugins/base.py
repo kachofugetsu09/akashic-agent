@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 class Plugin(ABC):
-    api_version: int = 1
+    api_version: int = 2
     name: str | None = None
     version: str | None = None
     desc: str | None = None
@@ -32,8 +32,17 @@ class Plugin(ABC):
         from agent.plugins.registry import plugin_registry
         plugin_registry.register_class(cls)
 
-    async def initialize(self) -> None: ...
-    async def terminate(self) -> None: ...
+    async def prepare(self) -> None:
+        return None
+
+    def activate(self) -> None:
+        return None
+
+    def retire(self) -> None:
+        return None
+
+    async def terminate(self) -> None:
+        return None
 
     def static_semantic_checks(self) -> list["PluginSemanticCheck"]:
         return []

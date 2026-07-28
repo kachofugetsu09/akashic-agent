@@ -79,6 +79,22 @@ def test_smoke_config_uses_app_server_control_endpoint(tmp_path: Path) -> None:
     assert "[channels]" not in config
 
 
+def test_smoke_package_selection_enables_default_proactive(tmp_path: Path) -> None:
+    manifest = tmp_path / "home/.akashic-plugin/manifest.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        '[plugins."fitbit@gate"]\nenabled = true\n',
+        encoding="utf-8",
+    )
+
+    probe._write_smoke_package_selection(tmp_path, proactive_enabled=True)
+
+    content = manifest.read_text(encoding="utf-8")
+    assert '[plugins."fitbit@gate"]' in content
+    assert '[packages."default-proactive"]\nenabled = true' in content
+    assert '[packages."wake-proactive"]\nenabled = false' in content
+
+
 def test_migrated_plugin_gate_uses_mobile_catalog_not_dashboard(
     tmp_path: Path,
     monkeypatch,

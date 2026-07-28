@@ -27,6 +27,7 @@ class DefaultModuleFactory:
 
 
 class DefaultProactivePlugin(Plugin):
+    api_version = 2
     name = "default_proactive"
 
     def proactive_lifecycles(self) -> list[object]:

@@ -15,6 +15,7 @@ class ProactiveModuleFactory:
 
 
 class ProactiveFlowPlugin(Plugin):
+    api_version = 2
     name = "proactive_flow"
 
     def proactive_module_factories(self) -> list[object]:

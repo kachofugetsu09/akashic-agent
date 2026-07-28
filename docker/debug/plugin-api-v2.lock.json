@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "contract": {
+    "id": "plugin-contracts",
+    "repository": "https://github.com/akashic-plugins/plugin-contracts",
+    "commit": "24543445c7b99ca63fcd90b5828f754a148b184c"
+  },
+  "plugins": [
+    {
+      "id": "calendar-mcp",
+      "repository": "https://github.com/akashic-plugins/calendar-mcp",
+      "commit": "5b9069213ac48ad18aa5d53f50a413ca81b55e63"
+    },
+    {
+      "id": "citation",
+      "repository": "https://github.com/akashic-plugins/citation",
+      "commit": "4ba720a0bd0608997ea29655026cead715873b96"
+    },
+    {
+      "id": "computer-use-linux",
+      "repository": "https://github.com/akashic-plugins/computer-use-linux",
+      "commit": "387b2e399f0ceaffc4108862022e454ec0a10fb2"
+    },
+    {
+      "id": "context_pressure",
+      "repository": "https://github.com/akashic-plugins/context_pressure",
+      "commit": "19e02a8fba3355ea98902db04dc96ce7a25bead4"
+    },
+    {
+      "id": "daynight_gate",
+      "repository": "https://github.com/akashic-plugins/daynight_gate",
+      "commit": "bc485e1cf1c7518728cfb2cda75cf11c339f368c"
+    },
+    {
+      "id": "emotion",
+      "repository": "https://github.com/akashic-plugins/emotion",
+      "commit": "1f638cfaa1ef4396d93dc75917b242012d83620a"
+    },
+    {
+      "id": "feed-mcp",
+      "repository": "https://github.com/akashic-plugins/feed-mcp",
+      "commit": "bcbaf4166902c925bf1c1c8b1f78865688c76de4"
+    },
+    {
+      "id": "feishu",
+      "repository": "https://github.com/akashic-plugins/feishu",
+      "commit": "101a1d2402e251312a2ad5e5ffa050f337d00aed"
+    },
+    {
+      "id": "fitbit-mcp",
+      "repository": "https://github.com/akashic-plugins/fitbit-mcp",
+      "commit": "4fc865e44c0197db05e138a157aff32f37574dca"
+    },
+    {
+      "id": "huayue-skills",
+      "repository": "https://github.com/akashic-plugins/huayue-skills",
+      "commit": "e6a34b4ddffcfd51984a24896164bc42855215ac"
+    },
+    {
+      "id": "meme",
+      "repository": "https://github.com/akashic-plugins/meme",
+      "commit": "2a5d4e327e171c8d82a0c4589da614ed1e731e76"
+    },
+    {
+      "id": "observe",
+      "repository": "https://github.com/akashic-plugins/observe",
+      "commit": "84947957b52a2ef9f913b4d15f72c0fc54366b34"
+    },
+    {
+      "id": "plugin_undo",
+      "repository": "https://github.com/akashic-plugins/plugin_undo",
+      "commit": "34add1e85f96587fa487466eda4bf25f17785f75"
+    },
+    {
+      "id": "proactive_feedback",
+      "repository": "https://github.com/akashic-plugins/proactive_feedback",
+      "commit": "f84e0d767aaa517e50e4ff757445ec8c963385f5"
+    },
+    {
+      "id": "qqbot",
+      "repository": "https://github.com/akashic-plugins/qqbot",
+      "commit": "9f8f72c125113738c66bbf5d1f59206c276bfd56"
+    },
+    {
+      "id": "setup_helper",
+      "repository": "https://github.com/akashic-plugins/setup_helper",
+      "commit": "21e324ae29bef5f7266797e6dc4e35b0ad9fddeb"
+    },
+    {
+      "id": "shell_restore",
+      "repository": "https://github.com/akashic-plugins/shell_restore",
+      "commit": "3f0b7abb54f6f70df4e0f2f5c7d812666f4e61fc"
+    },
+    {
+      "id": "shell_safety",
+      "repository": "https://github.com/akashic-plugins/shell_safety",
+      "commit": "b6ae2775d1870d0ada710b5c3c3cc0b0da93d975"
+    },
+    {
+      "id": "status_commands",
+      "repository": "https://github.com/akashic-plugins/status_commands",
+      "commit": "96628c9c8ba99c3c665bfa730da9e428151c2ec8"
+    },
+    {
+      "id": "steam-mcp",
+      "repository": "https://github.com/akashic-plugins/steam-mcp",
+      "commit": "a2739c3f9608be260ec056c7ee8f39d64015695d"
+    },
+    {
+      "id": "tool_loop_guard",
+      "repository": "https://github.com/akashic-plugins/tool_loop_guard",
+      "commit": "a099cb4a311448bba2bcaf060c9ee90bfb446794"
+    }
+  ]
+}

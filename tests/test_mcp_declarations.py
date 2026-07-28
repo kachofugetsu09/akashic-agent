@@ -211,6 +211,7 @@ async def test_real_workspace_mcp_declaration_reconcile_and_empty_delete(
     await watcher.reconcile()
     assert first.catalog.servers["docs"].client.connected is True
     await old_lease.release()
+    await manager.snapshot_store.retry_drains()
     assert first.catalog.servers["docs"].client.connected is False
     for path in declarations.glob("*.toml"):
         path.unlink()

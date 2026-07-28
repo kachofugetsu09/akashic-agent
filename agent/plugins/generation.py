@@ -95,6 +95,7 @@ class PluginGeneration:
     module_path: str
     source_revision: str
     config_revision: str
+    data_dir: Path
     instance: object
     scope: PluginScope
     contributions: PluginContributions
@@ -105,7 +106,9 @@ class PluginGeneration:
     proactive_catalog: PreparedProactiveCatalog | None = None
     runtime_snapshot: RuntimeSnapshot | None = None
     staged_event_bus: ScopedEventBus | None = None
-    initialization_started: bool = False
+    prepare_started: bool = False
+    retire_started: bool = False
     minimum_resource_count: int = 0
     state: str = "active"
     lease_count: int = 0
+    reload_tx_id: str | None = None

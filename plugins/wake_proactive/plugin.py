@@ -24,6 +24,7 @@ class WakeProactiveModuleFactory:
 
 
 class WakeProactivePlugin(Plugin):
+    api_version = 2
     name = "wake_proactive"
 
     def proactive_module_factories(self) -> list[object]:

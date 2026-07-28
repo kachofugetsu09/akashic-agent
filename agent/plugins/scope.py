@@ -240,7 +240,7 @@ class ScopedEventBus:
     ) -> EventSubscription | _StagedEventSubscription[T]:
         if self._snapshot_managed:
             if self._active:
-                raise RuntimeError("插件事件订阅只能在 initialize 中注册")
+                raise RuntimeError("插件事件订阅必须在 generation 开放前注册")
             subscription = _StagedEventSubscription(
                 self._event_bus,
                 event_type,

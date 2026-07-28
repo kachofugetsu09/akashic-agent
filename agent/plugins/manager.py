@@ -70,6 +70,7 @@ from agent.plugins.generation import (
     PluginSemanticCheck,
 )
 from agent.plugins.importer import FreshPluginImporter
+from agent.plugins.reload_journal import ReloadJournal, ReloadPhase
 from agent.plugins.skill_host import PluginSkillHost, PreparedSkillCatalog
 from agent.mcp.generation import WorkspaceMcpGeneration
 from agent.mcp.host import McpGenerationHost, PreparedMcpCatalog
@@ -83,6 +84,7 @@ from agent.plugins.snapshot import (
     RuntimeSnapshot,
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
+    get_current_runtime_snapshot,
     plugin_is_active,
 )
 from proactive_v2.lifecycle import ProactiveLifecycleSpec
@@ -94,6 +96,16 @@ from infra.channels.contract import Channel
 
 logger = logging.getLogger(__name__)
 U = TypeVar("U")
+
+
+def _generation_can_write(generation: PluginGeneration) -> bool:
+    if generation.state in {"activating", "active"}:
+        return True
+    snapshot = get_current_runtime_snapshot()
+    return (
+        snapshot is not None
+        and snapshot.generations.get(generation.plugin_id) is generation
+    )
 
 
 def _package_project_root(plugin_dirs: list[Path]) -> Path | None:
@@ -226,6 +238,9 @@ class PluginManager:
         self._snapshot_compiler = RuntimeSnapshotCompiler()
         self._snapshot_store = RuntimeSnapshotStore(self._on_snapshot_drained)
         self._snapshot_skill_catalogs: dict[str, str] = {}
+        self._reload_journal = ReloadJournal(workspace)
+        self._drain_transactions: dict[str, str] = {}
+        self._drained_before_journal: set[str] = set()
         self._event_bus.bind_runtime_snapshot_store(self._snapshot_store)
 
     @property
@@ -234,62 +249,92 @@ class PluginManager:
 
     @property
     def tool_hooks(self) -> list[ToolHook]:
+        if self.current_snapshot is not None:
+            return list(self.current_snapshot.tool_hooks)
         return list(self._tool_hooks)
 
     @property
     def channels(self) -> list[Channel]:
+        if self.current_snapshot is not None:
+            return list(self.current_snapshot.channels.values())
         return list(self._channels)
 
     @property
     def before_turn_modules(self) -> list[object]:
+        if self.current_snapshot is not None:
+            return list(self.current_snapshot.before_turn_modules)
         return list(self._before_turn_modules)
 
     @property
     def before_reasoning_modules(self) -> list[object]:
+        if self.current_snapshot is not None:
+            return list(self.current_snapshot.before_reasoning_modules)
         return list(self._before_reasoning_modules)
 
     @property
     def prompt_render_modules(self) -> list[object]:
+        if self.current_snapshot is not None:
+            return list(self.current_snapshot.prompt_render_modules)
         return list(self._prompt_render_modules)
 
     @property
     def before_step_modules(self) -> list[object]:
+        if self.current_snapshot is not None:
+            return list(self.current_snapshot.before_step_modules)
         return list(self._before_step_modules)
 
     @property
     def after_step_modules(self) -> list[object]:
+        if self.current_snapshot is not None:
+            return list(self.current_snapshot.after_step_modules)
         return list(self._after_step_modules)
 
     @property
     def after_reasoning_modules(self) -> list[object]:
+        if self.current_snapshot is not None:
+            return list(self.current_snapshot.after_reasoning_modules)
         return list(self._after_reasoning_modules)
 
     @property
     def after_turn_modules(self) -> list[object]:
+        if self.current_snapshot is not None:
+            return list(self.current_snapshot.after_turn_modules)
         return list(self._after_turn_modules)
 
     @property
     def proactive_modules(self) -> list[object]:
+        if self.current_snapshot is not None:
+            return list(self.current_snapshot.proactive_modules)
         return list(self._proactive_modules)
 
     @property
     def proactive_lifecycles(self) -> list[object]:
+        if self.current_snapshot is not None:
+            return list(self.current_snapshot.proactive_lifecycles)
         return list(self._proactive_lifecycles)
 
     @property
     def proactive_module_factories(self) -> list[object]:
+        if self.current_snapshot is not None:
+            return list(self.current_snapshot.proactive_module_factories)
         return list(self._proactive_module_factories)
 
     @property
     def proactive_runtime_factories(self) -> list[object]:
+        if self.current_snapshot is not None:
+            return list(self.current_snapshot.proactive_runtime_factories)
         return list(self._proactive_runtime_factories)
 
     @property
     def proactive_sources(self) -> list[RegisteredProactiveSource]:
+        if self.current_snapshot is not None:
+            return list(self.current_snapshot.proactive_sources.values())
         return list(self._proactive_sources)
 
     @property
     def jobs(self) -> list[RegisteredPluginJob]:
+        if self.current_snapshot is not None:
+            return list(self.current_snapshot.jobs.values())
         return list(self._jobs)
 
     @property
@@ -545,6 +590,10 @@ class PluginManager:
     def snapshot_store(self) -> RuntimeSnapshotStore:
         return self._snapshot_store
 
+    @property
+    def reload_journal(self) -> ReloadJournal:
+        return self._reload_journal
+
     def sync_manifest(self, *, plugins_home: Path | None = None) -> Path:
         entries = load_plugin_manifest(plugins_home)
         project_root = _package_project_root(self._dirs)
@@ -665,8 +714,42 @@ class PluginManager:
         return mods
 
     async def load_all(self) -> None:
-        for mod in self.discover():
+        discovered = tuple(self.discover())
+        discovered_by_id = {
+            _resolve_plugin_id(mod): mod
+            for mod in discovered
+        }
+        recovery = self._reload_journal.pending_recovery()
+        for action in recovery:
+            if action.action != "restore_committed":
+                continue
+            mod = discovered_by_id.get(action.plugin_id)
+            if mod is None:
+                raise RuntimeError(
+                    f"ReloadTransaction 恢复缺少插件: {action.plugin_id}"
+                )
+            source_revision = _source_revision(Path(mod["plugin_root"]))
+            if source_revision != action.source_revision:
+                raise RuntimeError(
+                    "ReloadTransaction 恢复源码不一致: "
+                    f"{action.plugin_id} expected={action.source_revision} "
+                    f"actual={source_revision}"
+                )
+        for action in recovery:
+            if action.action == "discard_candidate":
+                self._reload_journal.finish_recovery(action)
+        for mod in discovered:
             _ = await self._load_one(mod)
+        for action in recovery:
+            if action.action != "restore_committed":
+                continue
+            generation = self._active_generations.get(action.plugin_id)
+            if generation is None:
+                raise RuntimeError(
+                    f"ReloadTransaction 恢复缺少插件: {action.plugin_id}"
+                )
+            assert generation.source_revision == action.source_revision
+            self._reload_journal.finish_recovery(action)
 
     async def prepare_candidate(self, plugin_id: str) -> PluginGeneration | None:
         await self.discard_prepared(plugin_id)
@@ -679,6 +762,7 @@ class PluginManager:
         generation = self._prepared_generations.pop(plugin_id, None)
         if generation is None:
             return
+        self._abort_reload(generation, error="candidate discarded")
         await self._dispose_generation(generation, state="discarded")
 
     async def _dispose_generation(
@@ -690,15 +774,18 @@ class PluginManager:
     ) -> None:
         """完成插件终止、作用域清理和注册表卸载。"""
 
+        from agent.plugins.context import allow_plugin_cleanup_writes
+
         # 1. 终止生命周期对象，并在调用方取消后继续完成它
         externally_cancelled = False
-        if generation.initialization_started:
+        if generation.prepare_started:
             terminator = getattr(generation.instance, "terminate", None)
             if callable(terminator):
                 try:
-                    _, terminator_cancelled = await _complete_critical(
-                        cast(Callable[[], Awaitable[None]], terminator)()
-                    )
+                    with allow_plugin_cleanup_writes(generation.generation_id):
+                        _, terminator_cancelled = await _complete_critical(
+                            cast(Callable[[], Awaitable[None]], terminator)()
+                        )
                     externally_cancelled = terminator_cancelled
                 except (asyncio.CancelledError, Exception) as error:
                     current = asyncio.current_task()
@@ -713,9 +800,10 @@ class PluginManager:
                     )
 
         # 2. 收集作用域失败，确保外部取消不会截断资源清理
-        cleanup_failures, cleanup_cancelled = await _complete_critical(
-            generation.scope.aclose()
-        )
+        with allow_plugin_cleanup_writes(generation.generation_id):
+            cleanup_failures, cleanup_cancelled = await _complete_critical(
+                generation.scope.aclose()
+            )
         self._cleanup_failures.extend(cleanup_failures)
         externally_cancelled = externally_cancelled or cleanup_cancelled
 
@@ -741,6 +829,29 @@ class PluginManager:
         generation.state = state
         if externally_cancelled:
             raise asyncio.CancelledError
+
+    def _retire_generation(self, generation: PluginGeneration) -> None:
+        """通知已关闭 admission 的 generation 进入退役状态。"""
+
+        if generation.retire_started:
+            return
+        generation.retire_started = True
+        generation.state = "retired"
+        try:
+            cast(Any, generation.instance).retire()
+        except Exception as error:
+            error_text = str(error) or type(error).__name__
+            logger.warning(
+                "插件 retire 失败 (%s): %s",
+                generation.plugin_id,
+                error_text,
+            )
+            self._cleanup_failures.append(
+                CleanupFailure(
+                    resource=f"plugin:{generation.plugin_id}:retire",
+                    error=error_text,
+                )
+            )
 
     async def _on_snapshot_drained(self, snapshot: RuntimeSnapshot) -> None:
         catalog_id = self._snapshot_skill_catalogs.pop(snapshot.snapshot_id, None)
@@ -775,6 +886,7 @@ class PluginManager:
             )
         ):
             await self._dispose_workspace_mcp(workspace_mcp, state=state)
+        self._finish_drained_reload(snapshot.snapshot_id)
 
     async def _dispose_workspace_mcp(
         self,
@@ -796,6 +908,7 @@ class PluginManager:
 
     async def reconcile_changed(self) -> list[dict[str, object]]:
         async with self._candidate_prepare_lock:
+            await self._snapshot_store.retry_drains()
             results: list[dict[str, object]] = []
             discovered = {
                 _resolve_plugin_id(mod): mod
@@ -909,7 +1022,7 @@ class PluginManager:
                     )
                 except BaseException as error:
                     endpoint_error = error
-            if transaction is not None and self._snapshot_store.current is snapshot:
+            if transaction is not None:
                 await self._snapshot_store.abort(transaction)
             else:
                 await self._snapshot_store.resume(quiesced)
@@ -926,7 +1039,10 @@ class PluginManager:
         try:
             assert transaction is not None
             _, commit_cancelled = await _complete_critical(
-                self._snapshot_store.commit(transaction)
+                self._snapshot_store.commit(
+                    transaction,
+                    after_open=lambda: self._retire_generation(active),
+                )
             )
         except BaseException as error:
             commit_error = error
@@ -1068,12 +1184,12 @@ class PluginManager:
             raise
         active = self._active_generations.get(plugin_id)
         try:
-            await self._initialize_prepared_generation(generation)
+            await self._prepare_generation(generation)
         except (asyncio.CancelledError, Exception) as error:
             self._record_failed_gate(
                 plugin_id=plugin_id,
                 revision=generation.source_revision,
-                check_id="initialize",
+                check_id="prepare",
                 reason=str(error) or type(error).__name__,
             )
             await self.discard_prepared(plugin_id)
@@ -1170,11 +1286,14 @@ class PluginManager:
                     candidate=generation,
                     publication_state="failed",
                 )
-        if generation.staged_event_bus is not None:
-            generation.staged_event_bus.publish()
         transaction = self._snapshot_store.begin_publish(
             snapshot,
             admission_gated=quiesced_snapshot is not None,
+        )
+        self._advance_reload(
+            generation,
+            "validating",
+            candidate_snapshot_id=snapshot.snapshot_id,
         )
         try:
             await asyncio.wait_for(
@@ -1197,6 +1316,10 @@ class PluginManager:
                 except BaseException as error:
                     endpoint_error = error
             await self._snapshot_store.abort(transaction)
+            self._abort_reload(
+                generation,
+                error="post-publish invariant failed",
+            )
             if self._endpoint_resumer is not None:
                 await self._endpoint_resumer()
             if endpoint_error is not None:
@@ -1205,13 +1328,84 @@ class PluginManager:
 
         commit_error: BaseException | None = None
         commit_cancelled = False
+        from agent.plugins.context import PreparedPluginKVStore
+
+        def open_candidate() -> None:
+            self._advance_reload(generation, "commit_started")
+            context = cast(Any, generation.instance).context
+            context.data_dir = generation.data_dir
+            context.session_manager = self._session_manager
+            context.memory_engine = self._memory_engine
+            context.llm = self._llm
+            generation.state = "activating"
+            try:
+                cast(Any, generation.instance).activate()
+            except BaseException:
+                context.data_dir = None
+                raise
+            if isinstance(context.kv_store, PreparedPluginKVStore):
+                context.kv_store.commit()
+            if generation.staged_event_bus is not None:
+                generation.staged_event_bus.publish()
+            generation.state = "active"
+
+        previous_snapshot = transaction.previous
+        if generation.reload_tx_id is not None and previous_snapshot is not None:
+            self._drain_transactions[previous_snapshot.snapshot_id] = (
+                generation.reload_tx_id
+            )
         try:
             _, commit_cancelled = await _complete_critical(
-                self._snapshot_store.commit(transaction)
+                self._snapshot_store.commit(
+                    transaction,
+                    before_open=open_candidate,
+                    after_open=(
+                        None
+                        if active is None
+                        else lambda: self._retire_generation(active)
+                    ),
+                )
             )
         except BaseException as error:
             commit_error = error
 
+        if (
+            commit_error is not None
+            and self._snapshot_store.pending_candidate is snapshot
+        ):
+            if previous_snapshot is not None:
+                _ = self._drain_transactions.pop(
+                    previous_snapshot.snapshot_id,
+                    None,
+                )
+            _ = self._prepared_generations.pop(plugin_id, None)
+            generation.state = "aborted"
+            endpoint_error: BaseException | None = None
+            if endpoints_switched:
+                try:
+                    await self._switch_plugin_endpoints(
+                        plugin_id,
+                        new_services,
+                        old_services,
+                        new_channels,
+                        old_channels,
+                    )
+                except BaseException as error:
+                    endpoint_error = error
+            await self._snapshot_store.abort(transaction)
+            self._abort_reload(
+                generation,
+                error=str(commit_error) or type(commit_error).__name__,
+            )
+            if self._endpoint_resumer is not None:
+                await self._endpoint_resumer()
+            if endpoint_error is not None:
+                raise RuntimeError(
+                    "Snapshot commit 失败后旧端点恢复失败"
+                ) from endpoint_error
+            raise commit_error
+
+        self._track_reload_drain(generation, previous_snapshot)
         _ = self._prepared_generations.pop(plugin_id)
         self._scopes[generation.module_path] = generation.scope
         self._loaded.add(generation.module_path)
@@ -1282,13 +1476,13 @@ class PluginManager:
         plugin_registry.register_instance(stable_alias, generation.instance)
         sys.modules[stable_alias] = sys.modules[generation.module_path]
 
-    async def _initialize_prepared_generation(
+    async def _prepare_generation(
         self,
         generation: PluginGeneration,
     ) -> None:
-        if generation.initialization_started:
+        if generation.prepare_started:
             return
-        from agent.plugins.context import PluginKVStore
+        from agent.plugins.context import PreparedPluginKVStore
 
         instance = cast(Any, generation.instance)
         context = instance.context
@@ -1299,14 +1493,19 @@ class PluginManager:
         )
         generation.staged_event_bus = staged_event_bus
         context.event_bus = staged_event_bus
-        context.kv_store = PluginKVStore(context.data_dir / ".kv.json")
-        context.session_manager = self._session_manager
-        context.memory_engine = self._memory_engine
-        context.llm = self._llm
+        context.kv_store = PreparedPluginKVStore(
+            generation.data_dir / ".kv.json",
+            can_write=lambda: _generation_can_write(generation),
+            writer_id=generation.generation_id,
+        )
+        context._can_start_tasks = lambda: generation.state in {
+            "activating",
+            "active",
+        }
         context.scope = generation.scope
         context.tool_registry = generation.runtime_snapshot.tool_registry
-        generation.initialization_started = True
-        await instance.initialize()
+        generation.prepare_started = True
+        await instance.prepare()
         generation.minimum_resource_count = generation.scope.resource_count
 
     def _compile_snapshot_event_handlers(self, snapshot: RuntimeSnapshot) -> None:
@@ -1349,8 +1548,14 @@ class PluginManager:
         snapshot: RuntimeSnapshot,
     ) -> None:
         await asyncio.sleep(0)
-        if self.current_snapshot is not snapshot:
-            raise RuntimeError("RuntimeSnapshot 发布指针不一致")
+        if snapshot.state == "committed":
+            if self.current_snapshot is not snapshot:
+                raise RuntimeError("RuntimeSnapshot 已提交指针不一致")
+        elif (
+            snapshot.state != "validating"
+            or self._snapshot_store.pending_candidate is not snapshot
+        ):
+            raise RuntimeError("RuntimeSnapshot 候选事务不一致")
         catalog_id = snapshot.skill_catalog_generation_id
         if catalog_id is not None and self._skill_host.get(catalog_id) is None:
             raise RuntimeError("RuntimeSnapshot skill catalog 不可用")
@@ -1378,6 +1583,82 @@ class PluginManager:
                 item.generation_id
             ) is not item.proactive_catalog:
                 raise RuntimeError("RuntimeSnapshot proactive catalog 不可用")
+
+    def _begin_reload(self, generation: PluginGeneration) -> None:
+        base = self.current_snapshot
+        generation.reload_tx_id = self._reload_journal.begin(
+            plugin_id=generation.plugin_id,
+            base_snapshot_id=base.snapshot_id if base is not None else None,
+            generation_id=generation.generation_id,
+            source_revision=generation.source_revision,
+            config_revision=generation.config_revision,
+        )
+
+    def _advance_reload(
+        self,
+        generation: PluginGeneration,
+        phase: ReloadPhase,
+        *,
+        candidate_snapshot_id: str | None = None,
+        error: str = "",
+    ) -> None:
+        tx_id = generation.reload_tx_id
+        if tx_id is None:
+            return
+        self._reload_journal.advance(
+            tx_id,
+            phase,
+            candidate_snapshot_id=candidate_snapshot_id,
+            error=error,
+        )
+
+    def _abort_reload(
+        self,
+        generation: PluginGeneration,
+        *,
+        error: str,
+    ) -> None:
+        tx_id = generation.reload_tx_id
+        if tx_id is None:
+            return
+        phase = self._reload_journal.get(tx_id).phase
+        if phase in {"complete", "aborted", "recovered"}:
+            return
+        self._advance_reload(generation, "aborted", error=error)
+
+    def _track_reload_drain(
+        self,
+        generation: PluginGeneration,
+        previous_snapshot: RuntimeSnapshot | None,
+    ) -> None:
+        tx_id = generation.reload_tx_id
+        if tx_id is None:
+            return
+        self._advance_reload(generation, "committed")
+        if previous_snapshot is None:
+            self._advance_reload(generation, "complete")
+            return
+        snapshot_id = previous_snapshot.snapshot_id
+        if snapshot_id in self._drained_before_journal:
+            self._drained_before_journal.remove(snapshot_id)
+            self._advance_reload(generation, "complete")
+            return
+        self._advance_reload(generation, "draining")
+        self._drain_transactions[snapshot_id] = tx_id
+
+    def _finish_drained_reload(self, snapshot_id: str) -> None:
+        tx_id = self._drain_transactions.pop(snapshot_id, None)
+        if tx_id is None:
+            return
+        record = self._reload_journal.get(tx_id)
+        if record.phase == "commit_started":
+            self._drained_before_journal.add(snapshot_id)
+            return
+        if record.phase == "committed":
+            self._reload_journal.advance(tx_id, "draining")
+            record = self._reload_journal.get(tx_id)
+        if record.phase == "draining":
+            self._reload_journal.advance(tx_id, "complete")
 
     def _publication_status(
         self,
@@ -1661,7 +1942,7 @@ class PluginManager:
             tool_registry=None,
             plugin_id=plugin_id,
             plugin_dir=plugin_dir,
-            data_dir=data_dir,
+            data_dir=None,
             kv_store=PluginKVStore(data_dir / ".kv.json", writable=False),
             config=plugin_config,
             workspace=self._workspace,
@@ -1672,11 +1953,20 @@ class PluginManager:
             generation_id=generation_id,
         )
         plugin_registry.register_instance(mp, instance)
-        initialization_started = False
+        prepare_started = False
+        reload_tx_id: str | None = None
 
         async def rollback_load() -> None:
+            if reload_tx_id is not None:
+                phase = self._reload_journal.get(reload_tx_id).phase
+                if phase not in {"complete", "aborted", "recovered"}:
+                    self._reload_journal.advance(
+                        reload_tx_id,
+                        "aborted",
+                        error=f"candidate {load_phase} failed",
+                    )
             terminator = getattr(instance, "terminate", None)
-            if initialization_started and callable(terminator):
+            if prepare_started and callable(terminator):
                 try:
                     typed_terminator = cast(
                         Callable[[], Awaitable[None]],
@@ -1736,12 +2026,16 @@ class PluginManager:
                 module_path=mp,
                 source_revision=source_revision,
                 config_revision=config_revision,
+                data_dir=data_dir,
                 instance=instance,
                 scope=scope,
                 contributions=contributions,
                 gate_result=gate_result,
-                state="prepared" if not activate else "activating",
+                state="prepared",
             )
+            if not activate:
+                self._begin_reload(generation)
+                reload_tx_id = generation.reload_tx_id
             catalog_generations = [
                 active_generation
                 for active_generation in self._active_generations.values()
@@ -1931,29 +2225,35 @@ class PluginManager:
                     generation.runtime_snapshot = self._compile_generation_snapshot(
                         generation
                     )
+                    self._advance_reload(
+                        generation,
+                        "prepared",
+                        candidate_snapshot_id=generation.runtime_snapshot.snapshot_id,
+                    )
                     generation.minimum_resource_count = scope.resource_count
                     self._prepared_generations[plugin_id] = generation
                     return generation
             generation.runtime_snapshot = self._compile_generation_snapshot(generation)
-            staged_event_bus = ScopedEventBus(self._event_bus, scope, staged=True)
-            generation.staged_event_bus = staged_event_bus
-            instance.context.event_bus = staged_event_bus
-            instance.context.kv_store = PluginKVStore(data_dir / ".kv.json")
+            from agent.plugins.context import PreparedPluginKVStore
+
+            load_phase = "prepare"
+            prepare_started = True
+            await self._prepare_generation(generation)
+            instance.context.data_dir = data_dir
             instance.context.session_manager = self._session_manager
             instance.context.memory_engine = self._memory_engine
             instance.context.llm = self._llm
-            instance.context.scope = scope
-            instance.context.tool_registry = generation.runtime_snapshot.tool_registry
-            load_phase = "initialize"
-            initialization_started = True
-            generation.initialization_started = True
-            await instance.initialize()
+            generation.state = "activating"
+            instance.activate()
+            if isinstance(instance.context.kv_store, PreparedPluginKVStore):
+                instance.context.kv_store.commit()
             load_phase = "publish"
             self._register_tools(instance, mp, tool_names)
             self._bind_tool_hooks(instance, mp)
             self._publish_contributions(contributions)
             self._channels.extend(contributions.channels)
-            staged_event_bus.publish()
+            assert generation.staged_event_bus is not None
+            generation.staged_event_bus.publish()
             generation.minimum_resource_count = scope.resource_count
         except asyncio.CancelledError:
             rollback_task = asyncio.create_task(
@@ -2311,8 +2611,23 @@ class PluginManager:
 
         check(
             "api_version",
-            getattr(instance, "api_version", None) == 1,
+            getattr(instance, "api_version", None) == 2,
             getattr(instance, "api_version", None),
+        )
+        lifecycle_type = type(instance)
+        legacy_lifecycle = [
+            name
+            for name in ("initialize",)
+            if name in lifecycle_type.__dict__
+        ]
+        check(
+            "lifecycle_api",
+            not legacy_lifecycle
+            and inspect.iscoroutinefunction(instance.prepare)
+            and not inspect.iscoroutinefunction(instance.activate)
+            and not inspect.iscoroutinefunction(instance.retire)
+            and inspect.iscoroutinefunction(instance.terminate),
+            {"legacy": legacy_lifecycle},
         )
         metadata = plugin_registry.get_handlers_by_module_path(type(instance).__module__)
         tool_names = [
@@ -2618,7 +2933,11 @@ class PluginManager:
     async def terminate_all(self) -> None:
         """完成快照、插件生命周期和作用域资源的全量关闭。"""
 
-        # 1. 先完成快照回收，再处理候选代际
+        from agent.plugins.context import allow_plugin_cleanup_writes
+
+        # 1. 先关闭当前 generation admission，再完成快照回收
+        for generation in self._active_generations.values():
+            self._retire_generation(generation)
         _, externally_cancelled = await _complete_critical(
             self._snapshot_store.close()
         )
@@ -2642,7 +2961,14 @@ class PluginManager:
                         Callable[[], Awaitable[None]],
                         terminator,
                     )
-                    _, cancelled = await _complete_critical(typed_terminator())
+                    generation = (
+                        None
+                        if active_info is None
+                        else self._active_generations.get(active_info.plugin_id)
+                    )
+                    writer_id = "" if generation is None else generation.generation_id
+                    with allow_plugin_cleanup_writes(writer_id):
+                        _, cancelled = await _complete_critical(typed_terminator())
                     externally_cancelled = externally_cancelled or cancelled
                 except (asyncio.CancelledError, Exception) as error:
                     current = asyncio.current_task()
@@ -2659,7 +2985,16 @@ class PluginManager:
                     )
             scope = self._scopes.pop(mp, None)
             if scope is not None:
-                cleanup_failures, cancelled = await _complete_critical(scope.aclose())
+                generation = (
+                    None
+                    if active_info is None
+                    else self._active_generations.get(active_info.plugin_id)
+                )
+                writer_id = "" if generation is None else generation.generation_id
+                with allow_plugin_cleanup_writes(writer_id):
+                    cleanup_failures, cancelled = await _complete_critical(
+                        scope.aclose()
+                    )
                 self._cleanup_failures.extend(cleanup_failures)
                 externally_cancelled = externally_cancelled or cancelled
 
