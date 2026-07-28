@@ -34,6 +34,17 @@ class OnlineCommit:
     cycle: CycleCommit
 
 
+@dataclass(frozen=True)
+class StagedOnlineCommit:
+    """Hold one durable sparse-index suffix until graph publication."""
+
+    base_version: int
+    turns: tuple[Turn, ...]
+    user_message_id: str
+    assistant_message_id: str
+    ticket: RetrievalTicket | None
+
+
 class OnlineMemoryRuntime:
     """Serve online retrieval and persist the same state produced by replay."""
 
@@ -114,7 +125,23 @@ class OnlineMemoryRuntime:
     ) -> OnlineCommit:
         """Append canonical source turns and atomically publish their state."""
 
-        # 1. Increment the causal feature index from sessions.db.
+        staged = self.stage_from_source(
+            user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
+            ticket=ticket,
+        )
+        return self.publish_staged(staged)
+
+    def stage_from_source(
+        self,
+        *,
+        user_message_id: str,
+        assistant_message_id: str,
+        ticket: RetrievalTicket | None,
+    ) -> StagedOnlineCommit:
+        """Persist the causal sparse suffix without publishing graph state."""
+
+        # 1. Increment the durable causal feature index from sessions.db.
         build_sparse_index(
             self.sessions_path,
             self.index_path,
@@ -126,31 +153,57 @@ class OnlineMemoryRuntime:
         turns = load_turns(self.index_path)
         if len(turns) <= self.cycle.state_version:
             raise ValueError("TurnCommitted did not append a new sparse turn")
+        suffix = tuple(turns[self.cycle.state_version :])
+        latest = suffix[-1]
+        if (
+            latest.user_message_id != user_message_id
+            or latest.assistant_message_id != assistant_message_id
+        ):
+            raise ValueError(
+                "TurnCommitted is not the latest canonical sparse turn"
+            )
+        return StagedOnlineCommit(
+            base_version=self.cycle.state_version,
+            turns=suffix,
+            user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
+            ticket=ticket,
+        )
 
-        # 2. Apply missing source turns to an isolated candidate state.
+    def publish_staged(
+        self,
+        staged: StagedOnlineCommit,
+    ) -> OnlineCommit:
+        """Apply one staged suffix and atomically publish its graph snapshot."""
+
+        # 1. Reject overlapping writers before cloning the published state.
+        if self.cycle.state_version != staged.base_version:
+            raise RuntimeError(
+                "staged Akasha commit no longer matches published state"
+            )
         candidate = copy.deepcopy(self.cycle)
         last_commit: CycleCommit | None = None
         last_turn: Turn | None = None
-        for turn in turns[self.cycle.state_version :]:
+        for turn in staged.turns:
             selected = _matching_ticket(
                 turn,
-                user_message_id,
-                assistant_message_id,
-                ticket,
+                staged.user_message_id,
+                staged.assistant_message_id,
+                staged.ticket,
             )
             last_commit = candidate.commit(turn, selected)
             last_turn = turn
         if last_commit is None or last_turn is None:
             raise RuntimeError("online commit produced no memory event")
         if (
-            last_turn.user_message_id != user_message_id
-            or last_turn.assistant_message_id != assistant_message_id
+            last_turn.user_message_id != staged.user_message_id
+            or last_turn.assistant_message_id != staged.assistant_message_id
         ):
             raise ValueError(
                 "TurnCommitted is not the latest canonical sparse turn"
             )
 
-        # 3. Publish one complete SQLite snapshot before adopting memory state.
+        # 2. Publish one complete SQLite snapshot before adopting memory state.
         if candidate.context is None:
             raise RuntimeError("committed memory state has no context")
         write_memory_database(

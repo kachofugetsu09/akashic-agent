@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import sqlite3
+import threading
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -111,6 +113,7 @@ async def test_online_turn_recall_and_replay_share_one_state(
             started=started,
         )
     )
+    await engine._wait_for_publication()  # noqa: SLF001
     assert engine._runtime.cycle.state_version == 1  # noqa: SLF001
 
     # 3. Explicit recall is read-only and cannot replace context learning.
@@ -191,6 +194,7 @@ async def test_online_turn_recall_and_replay_share_one_state(
             started=next_time,
         )
     )
+    await engine._wait_for_publication()  # noqa: SLF001
     replay = tmp_path / "memory" / "replay.db"
     rebuild_memory(
         tmp_path / "memory" / "akasha-v2-index.db",
@@ -290,6 +294,77 @@ async def test_online_turn_recall_and_replay_share_one_state(
     assert len(cast(list[object], mobile["tool_right"])) == 1
     assert recent["total"] == 2
     assert mobile_detail["query_text"] == "alpha follow"
+    _close_engine(engine)
+
+
+@pytest.mark.asyncio
+async def test_turn_commit_returns_before_graph_publish_and_fences_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Release the host turn after durable staging while fencing the next read."""
+
+    # 1. Block only graph publication after the source and embedding are durable.
+    _create_sessions(tmp_path / "sessions.db")
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    _append_turn(
+        tmp_path / "sessions.db",
+        sequence=0,
+        user="alpha start",
+        assistant="first answer",
+        started=started,
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    publish = engine._runtime.publish_staged  # noqa: SLF001
+
+    def blocked_publish(staged: object) -> object:
+        entered.set()
+        if not release.wait(timeout=5):
+            raise TimeoutError("test graph publication was not released")
+        return publish(cast(Any, staged))
+
+    monkeypatch.setattr(
+        engine._runtime,  # noqa: SLF001
+        "publish_staged",
+        blocked_publish,
+    )
+    await engine._on_turn_committed(  # noqa: SLF001
+        _event(
+            sequence=0,
+            user="alpha start",
+            assistant="first answer",
+            started=started,
+        )
+    )
+    assert await asyncio.to_thread(entered.wait, 1)
+    assert engine._runtime.cycle.state_version == 0  # noqa: SLF001
+    with closing(
+        sqlite3.connect(tmp_path / "memory" / "akasha-v2-index.db")
+    ) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sparse_turns"
+        ).fetchone() == (1,)
+
+    # 2. The next query waits until the staged graph becomes visible.
+    query = asyncio.create_task(
+        engine.query(
+            _query(
+                "alpha follow",
+                started + timedelta(minutes=5),
+                intent="context",
+            )
+        )
+    )
+    await asyncio.sleep(0)
+    assert not query.done()
+    release.set()
+    result = await query
+
+    assert engine._runtime.cycle.state_version == 1  # noqa: SLF001
+    assert result.trace["state_version"] == 1
     _close_engine(engine)
 
 
