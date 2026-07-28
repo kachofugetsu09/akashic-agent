@@ -76,6 +76,91 @@ def _run(repo: Path, *args: str) -> bytes:
     ).stdout
 
 
+def _copy_candidate_source(repo: Path, app: Path) -> None:
+    """复制完整历史，并把当前未提交候选覆盖到目标目录。"""
+
+    # 1. 独立 Git 对象库保留迁移 baseline，不依赖宿主 worktree 元数据。
+    _ = subprocess.run(
+        ["git", "clone", "--no-hardlinks", "--quiet", str(repo), str(app)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    # 2. 只覆盖 Git 候选文件，排除 ignored 运行产物。
+    paths = _run(
+        repo,
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "-z",
+    ).split(b"\0")
+    present_paths: set[Path] = set()
+    for raw_path in paths:
+        if not raw_path:
+            continue
+        relative = Path(os.fsdecode(raw_path))
+        source = repo / relative
+        if not source.is_file() and not source.is_symlink():
+            continue
+        present_paths.add(relative)
+        target = app / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_symlink():
+            if target.exists() or target.is_symlink():
+                target.unlink()
+            _ = target.symlink_to(os.readlink(source))
+        else:
+            _ = shutil.copy2(source, target)
+
+    # 3. staged 与 unstaged 删除都由候选实际存在集合决定。
+    baseline_paths = _run(app, "ls-files", "-z").split(b"\0")
+    for raw_path in baseline_paths:
+        if not raw_path:
+            continue
+        relative = Path(os.fsdecode(raw_path))
+        if relative in present_paths:
+            continue
+        target = app / relative
+        if target.is_file() or target.is_symlink():
+            target.unlink()
+
+
+def _commit_gate_candidate(app: Path) -> None:
+    """提交隔离候选，让容器中的 HEAD 精确表示 Gate 输入。"""
+
+    (app / "static").mkdir(exist_ok=True)
+    _ = subprocess.run(["git", "add", "--all"], cwd=app, check=True)
+    _ = subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Akashic Plugin Gate",
+            "-c",
+            "user.email=plugin-gate@invalid",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "plugin gate candidate",
+        ],
+        cwd=app,
+        check=True,
+    )
+
+
+def _prepare_gate_sandbox(sandbox: Path, repo: Path) -> None:
+    """复制候选源码，并建立只属于 Gate 的静态资源挂载点。"""
+
+    # 1. 源码、Git 历史与候选提交都封装在 sandbox。
+    app = sandbox / "app"
+    _copy_candidate_source(repo, app)
+    _commit_gate_candidate(app)
+
+    # 2. 外部可写静态目录不落入候选提交。
+    (sandbox / "static").mkdir()
+
+
 def _repository_digest(repo: Path) -> str:
     digest = hashlib.sha256()
     commands = (
@@ -286,11 +371,11 @@ def _run_controller(*, scenario: str, phase: str) -> int:
     sandbox = Path(
         tempfile.mkdtemp(prefix="akashic-plugin-gate-", dir="/tmp")
     ).resolve()
-    (sandbox / "static").mkdir()
     protected = [repo.resolve(), plugin_root, host_cache]
     if _sandbox_is_protected(sandbox, protected):
         shutil.rmtree(sandbox)
         raise SystemExit(f"Gate sandbox 不能位于受保护路径内：{sandbox}")
+    _prepare_gate_sandbox(sandbox, repo)
 
     repositories = _host_repositories(repo, plugin_root)
     before = {str(path): _repository_digest(path) for path in repositories}
@@ -453,6 +538,26 @@ def _write_smoke_config(
     )
 
 
+def _write_smoke_package_selection(
+    sandbox: Path,
+    *,
+    proactive_enabled: bool,
+) -> None:
+    """把 Gate 所需的 proactive 实现写成显式插件包选择。"""
+
+    manifest = sandbox / "home/.akashic-plugin/manifest.toml"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    content = manifest.read_text(encoding="utf-8") if manifest.exists() else "[plugins]\n"
+    content = content.rstrip() + "\n\n"
+    content += (
+        '[packages."default-proactive"]\n'
+        f"enabled = {'true' if proactive_enabled else 'false'}\n\n"
+        '[packages."wake-proactive"]\n'
+        "enabled = false\n"
+    )
+    _ = manifest.write_text(content, encoding="utf-8")
+
+
 def _install_scope_plugin(sandbox: Path) -> Path:
     plugin_dir = sandbox / "home/.akashic-plugin/cache/gate/scope_gate/1.0.0"
     plugin_dir.mkdir(parents=True, exist_ok=True)
@@ -473,11 +578,12 @@ def _install_scope_plugin(sandbox: Path) -> Path:
         "    def managed_services(cls):\n"
         "        return [ManagedServiceSpec(id='probe', command=('python', 'service.py'), readiness_url='http://127.0.0.1:18766/')]\n"
         "    def channels(self): return [ScopeGateChannel(self)]\n"
-        "    async def initialize(self):\n"
+        "    async def prepare(self):\n"
         "        self.context.kv_store.set('initialized', True)\n"
         "        self.context.kv_store.set('generation', self.context.generation_id)\n"
         "        self.context.defer('subscription_check', self._check_subscription)\n"
         "        self.subscription = self.context.event_bus.on(TurnCommitted, self._handle)\n"
+        "    def activate(self):\n"
         "        self.context.create_task(self._worker(), name='scope-gate-worker')\n"
         "        self.context.create_task(self._emit(), name='scope-gate-emit')\n"
         "    async def terminate(self):\n"
@@ -667,7 +773,7 @@ def _install_migrated_plugins(sandbox: Path, plugin_root: Path) -> Path:
         "class GateDriverPlugin(Plugin):\n"
         "    name = 'zz_gate_driver'\n"
         "    def before_turn_modules(self): return [InspectRuntimeModules(self)]\n"
-        "    async def initialize(self):\n"
+        "    def activate(self):\n"
         "        self.context.create_task(self._drive_feedback(), name='gate-feedback-driver')\n"
         "    async def _drive_feedback(self):\n"
         "        await asyncio.sleep(0.2)\n"
@@ -790,7 +896,7 @@ def _install_candidate_plugins(
         "from agent.plugins import Plugin\n"
         "class CandidateValidPlugin(Plugin):\n"
         "    name = 'candidate_valid'\n"
-        "    async def initialize(self):\n"
+        "    async def prepare(self):\n"
         "        self.context.kv_store.set('initialized', True)\n"
         "        self.context.kv_store.set('generation', self.context.generation_id)\n",
         encoding="utf-8",
@@ -799,8 +905,8 @@ def _install_candidate_plugins(
         "from agent.plugins import Plugin\n"
         "class CandidateInvalidPlugin(Plugin):\n"
         "    name = 'candidate_invalid'\n"
-        "    api_version = 2\n"
-        "    async def initialize(self):\n"
+        "    api_version = 1\n"
+        "    async def prepare(self):\n"
         "        self.context.kv_store.set('initialized', True)\n",
         encoding="utf-8",
     )
@@ -813,9 +919,9 @@ def _install_candidate_plugins(
         "    async def failed_tool(self, event):\n"
         '        """Failed candidate tool."""\n'
         "        return 'leaked'\n"
-        "    async def initialize(self):\n"
+        "    async def prepare(self):\n"
         "        self.context.event_bus.on(TurnCommitted, self._on_turn)\n"
-        "        raise RuntimeError('candidate init failed')\n"
+        "        raise RuntimeError('candidate prepare failed')\n"
         "    def _on_turn(self, event):\n"
         "        self.context.kv_store.set('handler_leaked', True)\n",
         encoding="utf-8",
@@ -827,7 +933,7 @@ def _install_candidate_plugins(
         "from bus.events_lifecycle import TurnCommitted\n"
         "class CandidateObserverPlugin(Plugin):\n"
         "    name = 'candidate_observer'\n"
-        "    async def initialize(self):\n"
+        "    def activate(self):\n"
         "        self.context.create_task(self._verify(), name='candidate-observer')\n"
         "    async def _verify(self):\n"
         "        await asyncio.sleep(0.2)\n"
@@ -871,7 +977,8 @@ def _install_candidate_plugins(
         "    if 'id' not in msg:\n"
         "        continue\n"
         "    method = msg.get('method')\n"
-        "    result = {'tools': tools} if method == 'tools/list' else {}\n"
+        "    result = {'protocolVersion': '2025-11-25'} if method == 'initialize' else {}\n"
+        "    if method == 'tools/list': result = {'tools': tools}\n"
         "    if method == 'tools/call':\n"
         "        tool = msg.get('params', {}).get('name')\n"
         "        with calls.open('a', encoding='utf-8') as stream:\n"
@@ -906,11 +1013,21 @@ def _install_candidate_plugins(
 
 
 def _candidate_reload_source(version: str) -> str:
-    initialize = (
+    prepare_body = (
         "        self.context.event_bus.on(TurnCommitted, self._on_committed)\n"
         "        self.context.kv_store.set('initialized_version', 'v1')\n"
         "        self.context.kv_store.set('active_generation', self.context.generation_id)\n"
+        if version == "v1"
+        else "        self.context.event_bus.on(TurnCommitted, self._on_committed)\n"
+        "        self.context.kv_store.set('initialized_version', 'v2')\n"
+        "        self.context.kv_store.set('active_generation', self.context.generation_id)\n"
+    )
+    activate_body = (
         "        self.context.create_task(self._heartbeat(), name='candidate-reload-heartbeat')\n"
+        if version == "v1"
+        else "        return None\n"
+    )
+    heartbeat = (
         "    async def _heartbeat(self):\n"
         "        while True:\n"
         "            self.context.kv_store.increment('heartbeats')\n"
@@ -921,8 +1038,7 @@ def _candidate_reload_source(version: str) -> str:
         "                self.context.kv_store.set('live_mcp_version', getattr(result, 'text', str(result)))\n"
         "            await asyncio.sleep(0.05)\n"
         if version == "v1"
-        else "        self.context.event_bus.on(TurnCommitted, self._on_committed)\n"
-        "        self.context.kv_store.set('initialized_version', 'v2')\n"
+        else ""
     )
     skills = (
         "    @classmethod\n"
@@ -1007,8 +1123,11 @@ def _candidate_reload_source(version: str) -> str:
         "    @on_tool_pre(tool_name='candidate_reload_tool')\n"
         "    async def before_candidate_tool(self, event):\n"
         f"        self.context.kv_store.increment('phase_hook_version_{version}')\n"
-        "    async def initialize(self):\n"
-        f"{initialize}"
+        "    async def prepare(self):\n"
+        f"{prepare_body}"
+        "    def activate(self):\n"
+        f"{activate_body}"
+        f"{heartbeat}"
         "    async def _on_committed(self, event):\n"
         f"        self.context.kv_store.increment('phase_event_version_{version}')\n"
     )
@@ -1046,6 +1165,61 @@ def _wait_json_value(path: Path, key: str, expected: object) -> dict[str, object
             return state
         time.sleep(0.05)
     return _read_json_object(path)
+
+
+def _wait_reload_transactions(
+    path: Path,
+    plugin_id: str,
+    *,
+    count: int,
+) -> list[dict[str, object]]:
+    """Wait for committed reloads to drain and return their persisted phase history."""
+
+    deadline = time.monotonic() + 8
+    transactions: list[dict[str, object]] = []
+    while time.monotonic() < deadline:
+        if not path.exists():
+            time.sleep(0.05)
+            continue
+        with sqlite3.connect(path) as connection:
+            rows = connection.execute(
+                """
+                SELECT tx_id, generation_id, candidate_snapshot_id, phase
+                FROM reload_transactions
+                WHERE plugin_id = ?
+                ORDER BY rowid
+                """,
+                (plugin_id,),
+            ).fetchall()
+            transactions = []
+            for tx_id, generation_id, snapshot_id, phase in rows:
+                event_rows = connection.execute(
+                    """
+                    SELECT phase
+                    FROM reload_events
+                    WHERE tx_id = ?
+                    ORDER BY sequence
+                    """,
+                    (tx_id,),
+                ).fetchall()
+                transactions.append(
+                    {
+                        "tx_id": str(tx_id),
+                        "generation_id": str(generation_id),
+                        "snapshot_id": (
+                            None if snapshot_id is None else str(snapshot_id)
+                        ),
+                        "phase": str(phase),
+                        "events": [str(item[0]) for item in event_rows],
+                    }
+                )
+        if (
+            len(transactions) >= count
+            and all(item["phase"] == "complete" for item in transactions[-count:])
+        ):
+            return transactions
+        time.sleep(0.05)
+    return transactions
 
 
 def _integer(value: object) -> int:
@@ -1655,7 +1829,7 @@ def _exercise_topology_watch(
         "class TopologyAddedPlugin(Plugin):\n"
         "    name = 'topology_added'\n"
         "    version = '1.0.0'\n"
-        "    async def initialize(self):\n"
+        "    async def prepare(self):\n"
         "        self.context.kv_store.set('generation', self.context.generation_id)\n"
         "    async def terminate(self):\n"
         "        self.context.kv_store.set('terminated', True)\n",
@@ -1827,14 +2001,18 @@ def _exercise_snapshot_publish(
     }
 
 
-def _exercise_candidate_prepare(
+def _exercise_atomic_reload(
     container_id: str,
     source_path: Path,
     state_path: Path,
     socket_path: Path,
 ) -> dict[str, object]:
+    """Verify failed, committed, and rolled-forward reloads at the runtime boundary."""
+
+    # 1. A broken source must fail without moving the active catalog.
     initial = _read_json_object(state_path)
     calls_path = state_path.parent / "candidate_mcp_calls.jsonl"
+    journal_path = state_path.parents[2] / "runtime/plugin-reloads.sqlite3"
     initial_calls = _mcp_call_counts(calls_path)
     initial_mcp_processes = _wait_process_count(
         container_id,
@@ -1862,6 +2040,9 @@ def _exercise_candidate_prepare(
         container_id,
         "candidate_mcp_server.py",
     )
+
+    # 2. A valid v2 source prepares against the old snapshot, then commits once.
+    snapshots_before_valid = _snapshot_statuses(container_id)
     _ = source_path.write_text(_candidate_reload_source("v2"), encoding="utf-8")
     valid_signal = subprocess.run(
         ["docker", "kill", "--signal", "HUP", container_id],
@@ -1875,23 +2056,41 @@ def _exercise_candidate_prepare(
         after=len(statuses),
         gate_status="passed",
     )
+    _, valid_commit = _wait_snapshot_status(
+        container_id,
+        after=len(snapshots_before_valid),
+        publication_state="committed",
+    )
+    valid_generation = valid_commit.get("new_generation")
+    after_valid = _wait_json_value(
+        state_path,
+        "initialized_version",
+        "v2",
+    )
+    valid_service_version = _wait_service_version(container_id, "v2")
+    after_valid_mcp_processes = _wait_process_count(
+        container_id,
+        "candidate_mcp_server.py",
+        lambda count: count == initial_mcp_processes,
+    )
     time.sleep(2.3)
     after_valid = _read_json_object(state_path)
     after_valid_calls = _mcp_call_counts(calls_path)
     detached_release = state_path.parent / "release-detached-probe"
     detached_release.unlink(missing_ok=True)
-    passive_response = _control_roundtrip(socket_path, "snapshot lease gate")
+    valid_passive_response = _control_roundtrip(socket_path, "snapshot lease gate")
     _ = detached_release.write_text("released\n", encoding="utf-8")
     after_passive = _wait_json_value(
         state_path,
         "detached_snapshot_visible",
         False,
     )
-    after_valid_mcp_processes = _wait_process_count(
-        container_id,
-        "candidate_mcp_server.py",
-        lambda count: count >= initial_mcp_processes + 1,
-    )
+    fenced_before = _read_json_object(state_path)
+    time.sleep(0.3)
+    fenced_after = _read_json_object(state_path)
+
+    # 3. Returning to v1 is another commit, not resurrection of the old generation.
+    snapshots_before_return = _snapshot_statuses(container_id)
     _ = source_path.write_text(_candidate_reload_source("v1"), encoding="utf-8")
     return_signal = subprocess.run(
         ["docker", "kill", "--signal", "HUP", container_id],
@@ -1903,15 +2102,35 @@ def _exercise_candidate_prepare(
     _, return_status = _wait_candidate_status(
         container_id,
         after=len(valid_statuses),
-        gate_status="active",
+        gate_status="passed",
     )
+    _, return_commit = _wait_snapshot_status(
+        container_id,
+        after=len(snapshots_before_return),
+        publication_state="committed",
+    )
+    return_generation = return_commit.get("new_generation")
+    after_return = _wait_json_value(
+        state_path,
+        "initialized_version",
+        "v1",
+    )
+    return_service_version = _wait_service_version(container_id, "v1")
     after_return_mcp_processes = _wait_process_count(
         container_id,
         "candidate_mcp_server.py",
         lambda count: count == initial_mcp_processes,
     )
+    return_passive_response = _control_roundtrip(socket_path, "snapshot lease gate")
     after_return = _read_json_object(state_path)
     after_return_calls = _mcp_call_counts(calls_path)
+    reload_transactions = _wait_reload_transactions(
+        journal_path,
+        "candidate_reload@gate",
+        count=2,
+    )
+
+    # 4. Compare the capability catalogs and durable transaction history.
     valid_skills = valid_status.get("skills")
     valid_descriptions = valid_status.get("skill_descriptions")
     valid_drift_descriptions = valid_status.get("drift_skill_descriptions")
@@ -1942,6 +2161,23 @@ def _exercise_candidate_prepare(
             return_drift_body_hashes,
         )
     ]
+    committed_transactions = reload_transactions[-2:]
+    required_phases = [
+        "preparing",
+        "prepared",
+        "validating",
+        "commit_started",
+        "committed",
+    ]
+    journal_complete = len(committed_transactions) == 2 and all(
+        isinstance(item.get("events"), list)
+        and cast(list[object], item["events"])[:5] == required_phases
+        and cast(list[object], item["events"])[-1] == "complete"
+        and set(cast(list[object], item["events"])[5:]).issubset(
+            {"draining", "complete"}
+        )
+        for item in committed_transactions
+    )
     passed = (
         invalid_signal.returncode == 0
         and valid_signal.returncode == 0
@@ -1950,10 +2186,20 @@ def _exercise_candidate_prepare(
         and invalid_status.get("active_generation") == initial_generation
         and isinstance(invalid_status.get("snapshot_id"), str)
         and valid_status.get("snapshot_id") == invalid_status.get("snapshot_id")
-        and return_status.get("snapshot_id") == invalid_status.get("snapshot_id")
         and invalid_status.get("prepared_generation") is None
         and valid_status.get("active_generation") == initial_generation
-        and isinstance(valid_status.get("prepared_generation"), str)
+        and valid_status.get("prepared_generation") == valid_generation
+        and isinstance(valid_generation, str)
+        and valid_generation != initial_generation
+        and valid_commit.get("old_generation") == initial_generation
+        and valid_commit.get("snapshot_id") != invalid_status.get("snapshot_id")
+        and return_status.get("active_generation") == valid_generation
+        and return_status.get("prepared_generation") == return_generation
+        and return_status.get("snapshot_id") == valid_commit.get("snapshot_id")
+        and isinstance(return_generation, str)
+        and return_generation not in {initial_generation, valid_generation}
+        and return_commit.get("old_generation") == valid_generation
+        and return_commit.get("snapshot_id") != valid_commit.get("snapshot_id")
         and isinstance(valid_skills, list)
         and isinstance(valid_mcp_tools, list)
         and valid_mcp_tools
@@ -2012,22 +2258,18 @@ def _exercise_candidate_prepare(
             cast(dict[str, int], after_valid_calls.get("v2", {})).get(tool, 0) == 0
             for tool in ("fetch_events", "ack_events")
         )
-        and _integer(after_valid.get("job_runs_v1"))
-        > _integer(initial.get("job_runs_v1"))
-        and after_valid.get("job_snapshot_bound_v1") is True
-        and _integer(after_valid.get("job_runs_v2")) == 0
+        and _integer(after_invalid.get("job_runs_v1"))
+        >= _integer(initial.get("job_runs_v1"))
+        and _integer(after_valid.get("job_runs_v2")) >= 1
+        and after_valid.get("job_snapshot_bound_v2") is True
         and after_return_calls.get("v2") == after_valid_calls.get("v2")
-        and passive_response.get("content") == "snapshot-v1"
-        and _integer(after_passive.get("phase_runs_v1")) >= 1
-        and _integer(after_passive.get("phase_runs_v2")) == 0
-        and after_passive.get("phase_tool_version_v1") == "v1"
-        and after_passive.get("phase_tool_version_v2") is None
-        and after_passive.get("phase_skill_body_v1") == "candidate v1"
-        and after_passive.get("phase_skill_body_v2") is None
-        and _integer(after_passive.get("phase_event_version_v1")) >= 1
-        and _integer(after_passive.get("phase_event_version_v2")) == 0
-        and _integer(after_passive.get("phase_hook_version_v1")) >= 1
-        and _integer(after_passive.get("phase_hook_version_v2")) == 0
+        and valid_passive_response.get("content") == "snapshot-v2"
+        and return_passive_response.get("content") == "snapshot-v1"
+        and _integer(after_passive.get("phase_runs_v2")) >= 1
+        and after_passive.get("phase_tool_version_v2") == "v2"
+        and after_passive.get("phase_skill_body_v2") == "candidate v2"
+        and _integer(after_passive.get("phase_event_version_v2")) >= 1
+        and _integer(after_passive.get("phase_hook_version_v2")) >= 1
         and after_passive.get("detached_snapshot_visible") is False
         and "candidate-skill" in valid_skills
         and valid_description_map.get("candidate-skill") == "candidate v2 skill"
@@ -2038,45 +2280,116 @@ def _exercise_candidate_prepare(
         and hash_maps[2].get("candidate-skill")
         == _skill_fixture_hash("v1", drift=False)
         and hash_maps[3].get("candidate-drift") == _skill_fixture_hash("v1", drift=True)
-        and return_status.get("active_generation") == initial_generation
-        and return_status.get("prepared_generation") is None
         and after_invalid.get("active_generation") == initial_generation
-        and after_valid.get("active_generation") == initial_generation
-        and after_valid.get("initialized_version") == "v1"
-        and after_valid.get("live_mcp_version") == "v1"
+        and after_valid.get("active_generation") == valid_generation
+        and after_valid.get("initialized_version") == "v2"
+        and fenced_before.get("active_generation") == valid_generation
+        and fenced_after.get("active_generation") == valid_generation
+        and fenced_after.get("heartbeats") == fenced_before.get("heartbeats")
+        and after_return.get("active_generation") == return_generation
+        and after_return.get("initialized_version") == "v1"
         and after_return.get("live_mcp_version") == "v1"
-        and _integer(after_valid.get("heartbeats")) > initial_heartbeats
+        and _integer(fenced_before.get("heartbeats")) > initial_heartbeats
+        and valid_service_version == "v2"
+        and return_service_version == "v1"
         and initial_mcp_processes >= 1
         and after_invalid_mcp_processes == initial_mcp_processes
-        and after_valid_mcp_processes >= initial_mcp_processes + 1
+        and after_valid_mcp_processes == initial_mcp_processes
         and after_return_mcp_processes == initial_mcp_processes
+        and journal_complete
+        and [item.get("generation_id") for item in committed_transactions]
+        == [valid_generation, return_generation]
+        and [item.get("snapshot_id") for item in committed_transactions]
+        == [valid_commit.get("snapshot_id"), return_commit.get("snapshot_id")]
     )
     return {
         "passed": passed,
         "initial": initial,
         "invalid_status": invalid_status,
         "after_invalid": after_invalid,
-        "valid_status": valid_status,
+        "valid_candidate": valid_status,
+        "valid_commit": valid_commit,
         "after_valid": after_valid,
-        "return_status": return_status,
+        "writer_fence": {
+            "before": fenced_before,
+            "after": fenced_after,
+        },
+        "return_candidate": return_status,
+        "return_commit": return_commit,
         "after_return": after_return,
         "mcp_calls": {
             "initial": initial_calls,
             "after_valid": after_valid_calls,
             "after_return": after_return_calls,
         },
-        "passive_response": passive_response,
+        "valid_passive_response": valid_passive_response,
+        "return_passive_response": return_passive_response,
         "after_passive": after_passive,
         "invalid_signal": invalid_signal.returncode,
         "valid_signal": valid_signal.returncode,
         "return_signal": return_signal.returncode,
+        "service_versions": {
+            "after_valid": valid_service_version,
+            "after_return": return_service_version,
+        },
         "mcp_processes": {
             "initial": initial_mcp_processes,
             "after_invalid": after_invalid_mcp_processes,
             "after_valid": after_valid_mcp_processes,
             "after_return": after_return_mcp_processes,
         },
+        "reload_transactions": reload_transactions,
     }
+
+
+def _install_all_plugin_dependencies(
+    *,
+    repo: Path,
+    sandbox: Path,
+    compose: list[str],
+    env: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    """Install runtime-only MCP dependencies into the disposable sandbox."""
+
+    # 1. Keep the image's tested Core stack and add only packages absent from it.
+    target = sandbox / "python-packages"
+    target.mkdir()
+    packages = (
+        "google-api-python-client",
+        "google-auth-oauthlib",
+        "google-auth-httplib2",
+        "python-dateutil",
+        "python-dotenv",
+        "email-validator",
+        "feedparser==6.0.12",
+    )
+
+    # 2. The source mounts remain read-only; every installed file stays in /sandbox.
+    return subprocess.run(
+        [
+            *compose,
+            "run",
+            "--rm",
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
+            "--entrypoint",
+            "python",
+            "akashic-plugin-gate",
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "--target",
+            "/sandbox/python-packages",
+            *packages,
+        ],
+        cwd=repo,
+        env=env,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
 
 
 def _run_runtime_smoke(
@@ -2128,20 +2441,47 @@ def _run_runtime_smoke(
         if phase == "all-plugins"
         else None
     )
-    candidate_states = (
-        _install_candidate_plugins(sandbox)
-        if phase in {"candidate", "capability-hosts", "snapshot", "topology"}
+    _write_smoke_package_selection(
+        sandbox,
+        proactive_enabled=phase
+        in {
+            "capability-hosts",
+            "snapshot",
+            "fitbit",
+            "proactive-fetch",
+        },
+    )
+    dependency_setup = (
+        _install_all_plugin_dependencies(
+            repo=repo,
+            sandbox=sandbox,
+            compose=compose,
+            env=env,
+        )
+        if all_plugins is not None
         else None
     )
-    started = subprocess.run(
-        [*compose, "up", "-d", "--no-build", "akashic-plugin-gate"],
-        cwd=repo,
-        env=env,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+    candidate_states = (
+        _install_candidate_plugins(sandbox)
+        if phase in {"atomic-reload", "capability-hosts", "snapshot", "topology"}
+        else None
     )
+    if dependency_setup is None or dependency_setup.returncode == 0:
+        started = subprocess.run(
+            [*compose, "up", "-d", "--no-build", "akashic-plugin-gate"],
+            cwd=repo,
+            env=env,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    else:
+        started = subprocess.CompletedProcess(
+            args=compose,
+            returncode=dependency_setup.returncode,
+            stdout=dependency_setup.stdout,
+        )
     socket = sandbox / "akashic.sock"
     container_id = ""
     control_ready = False
@@ -2241,7 +2581,9 @@ def _run_runtime_smoke(
         manifest = sandbox / "home/.akashic-plugin/manifest.toml"
         manifest.parent.mkdir(parents=True, exist_ok=True)
         _ = manifest.write_text(
-            '[plugins."fitbit@gate"]\nenabled = false\n',
+            '[plugins."fitbit@gate"]\nenabled = false\n\n'
+            '[packages."default-proactive"]\nenabled = true\n\n'
+            '[packages."wake-proactive"]\nenabled = false\n',
             encoding="utf-8",
         )
         _, fitbit_disabled = _wait_snapshot_status(
@@ -2271,7 +2613,7 @@ def _run_runtime_smoke(
                 candidate_states[5],
             )
         else:
-            candidate_prepare = _exercise_candidate_prepare(
+            candidate_prepare = _exercise_atomic_reload(
                 container_id,
                 candidate_states[4],
                 candidate_states[5],
@@ -2469,6 +2811,14 @@ def _run_runtime_smoke(
         "pid1": process.strip(),
         "exit_code": exit_code,
         "start_output": started.stdout[-2000:],
+        "dependency_setup": (
+            None
+            if dependency_setup is None
+            else {
+                "returncode": dependency_setup.returncode,
+                "output": dependency_setup.stdout[-2000:],
+            }
+        ),
         "stop_output": stopped.stdout[-2000:],
         "logs": logs[-4000:],
         "phase": phase_evidence,
@@ -2522,7 +2872,7 @@ def main() -> int:
         choices=(
             "smoke",
             "scope",
-            "candidate",
+            "atomic-reload",
             "capability-hosts",
             "snapshot",
             "topology",

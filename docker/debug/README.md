@@ -220,12 +220,40 @@ python docker/debug/plugin_hot_reload_probe.py \
   --scenario full-runtime --phase scope
 ```
 
-候选 Gate 场景会同时安装有效和无效插件，确认真实 Runtime 只初始化通过静态 Gate 的 generation：
+原子热重载场景会构造失败源码、有效新代和回切旧代，确认校验期间旧代仍服务，提交后
+request、skill、tool、job、event、MCP 与 service 同时换代，旧代 writer 被 fence，journal
+最终完成：
 
 ```bash
 python docker/debug/plugin_hot_reload_probe.py \
-  --scenario full-runtime --phase candidate
+  --scenario full-runtime --phase atomic-reload
 ```
+
+### Plugin API v2 发布组合 Gate
+
+`plugin-api-v2.lock.json` 固定合同检查器与 21 个外部插件的完整 commit SHA。Gate 只从公开
+GitHub HTTPS 地址获取这些对象，不读取宿主插件 cache、正式 workspace 或正式配置。
+
+```text
+┌─ 静态合同
+│  ├─ 拒绝 API v1 / initialize
+│  ├─ prepare 不得取得 data_dir 或启动 task
+│  └─ lifecycle task 必须归 generation scope
+└─ Docker Debug
+   ├─ atomic-reload   失败保旧、成功原子切换、WAL 完成
+   ├─ all-plugins     19 个可运行插件逐个热重载和禁用
+   └─ fitbit          monitor 单实例、重载、停机、用户数据不变
+```
+
+本地运行：
+
+```bash
+python docker/debug/plugin_api_v2_gate.py
+```
+
+CI 使用 `--require-clean-core`，并上传 `docker/debug/reports/plugin-api-v2/`。任何锁内仓库缺失、
+SHA 不可获取、静态合同失败、容器退出异常、源码挂载被修改或业务 oracle 不成立都会返回非零
+退出码。
 
 ### 移动插件发布组合 Gate
 

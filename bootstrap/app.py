@@ -568,12 +568,14 @@ class AppRuntime:
                 )
                 self.plugin_watcher = PluginWatcher(
                     plugin_manager,
+                    baseline_revision="",
                     after_reconcile=mobile_ui_refresh,
                 )
                 self.plugin_watcher_task = asyncio.create_task(
                     self.plugin_watcher.run(),
                     name="plugin_watcher",
                 )
+                self.plugin_watcher.wake()
 
             self._install_plugin_reload_signal()
             self._started = True

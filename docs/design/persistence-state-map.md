@@ -89,6 +89,7 @@ workspace 仍不是完整运行环境的全部。显式主配置、全局凭据�
 | `proactive_quota.json` | 动作增加当前窗口计数 | 新窗口滚动时重置计数并更新当前状态 | 这是当前计数器的状态迁移，不是用户历史删除；损坏不得静默重置 |
 | `PROACTIVE_CONTEXT.md` | workspace 初始化时只在缺失时写入模板 | runtime 只读；用户或获授权文件工具可以修改规则面板 | 当前没有 runtime 自动清空或删除协议；代码升级不得用默认模板覆盖已有内容 |
 | `plugin-data/` | 已激活插件在自己的 opaque 目录增加数据 | 由插件 schema 和 owner 决定 | 普通卸载只删除代码和能力投影，保留数据；永久删除必须使用名称不同的用户操作、影响预览、备份和再次确认 |
+| `runtime/plugin-reloads.sqlite3` | 每次热重载增加 transaction 与阶段事件 | 同一 transaction 按状态机更新当前 phase、snapshot identity 和错误 | 当前没有自动 retention；恢复和事故审计仍依赖的记录不得自动删除 |
 | 插件贡献的 Skill/Drift skill | 插件 source 持有 skill 正文；安装把版本化副本发布到 cache，generation 从 `skill_roots` 建 catalog | workspace `skills/` 和 `drift/skills/` 软链接随 active generation 重建 | 禁用/卸载插件可以移除已安装副本、catalog 和软链接；外部 canonical source 不归 workspace 或卸载流程所有 |
 | 插件贡献的 MCP | 插件安装读取 `mcp_servers()` 并准备 runtime，generation readiness 通过后发布 MCP catalog | 插件升级或热重载按 generation 原子替换，旧代随 lease 排空 | 禁用/卸载插件移除 MCP catalog 和 runtime；plugin-data 不级联删除 |
 | `mcp/servers/*.toml` 与手工 skill 目录 | 当前代码仍允许绕过插件直接声明或放置能力 | watcher/loader 可以热加载这些兼容内容 | 目标架构不再扩展这条路径；应迁移成插件并删除第二套 owner，迁移完成前不得把兼容目录写成 canonical 产品资产 |
@@ -204,6 +205,8 @@ workspace 之外还有两组明确的全局状态：
 ├── observe/
 │   └── recall_inspector.jsonl         default memory inspector 启用时
 ├── subagent-runs/<job-id>/            子任务产物
+├── runtime/
+│   └── plugin-reloads.sqlite3         插件热重载事务与恢复阶段
 ├── memes/manifest.json
 ├── .app-server-token
 ├── .instance.lock
@@ -339,7 +342,10 @@ Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activa
 - `.kv.json`：`PluginKVStore` 的原子 JSON 状态。
 - 插件自定义数据库、附件、游标或其他文件。
 
-候选插件 generation 的 KV 是只读的，正式发布后才获得可写 store。卸载流程删除全局 cache 和 manifest entry，但只返回 workspace data path，没有删除该目录。
+候选插件 generation 只能修改内存中的 KV staging；校验失败不写正式 `.kv.json`，commit
+时只落盘实际发生过的修改。正式发布后，同一个 store 才转为受 generation fencing 约束的
+直接写入。卸载流程删除全局 cache 和 manifest entry，但只返回 workspace data path，
+没有删除该目录。
 
 **F-012：** plugin-data 与插件代码生命周期分离，当前卸载会保留数据。备份系统不能只列出已知内置文件；整个目录对 core 来说必须按 opaque plugin-owned state 处理。
 

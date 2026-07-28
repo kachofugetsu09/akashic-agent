@@ -8,6 +8,7 @@ import os
 import py_compile
 import shutil
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -146,7 +147,7 @@ async def test_candidate_gate_publishes_unique_generation(tmp_path: Path):
         "    name = 'candidate'\n"
         "    def static_semantic_checks(self):\n"
         "        return [PluginSemanticCheck('fixture', True, 'ok')]\n"
-        "    async def initialize(self):\n"
+        "    async def prepare(self):\n"
         "        self.context.kv_store.set('generation', self.context.generation_id)\n",
     )
     manager = _manager(tmp_path)
@@ -172,7 +173,7 @@ async def test_candidate_gate_publishes_unique_generation(tmp_path: Path):
             "from agent.plugins import Plugin\n"
             "class BadApiPlugin(Plugin):\n"
             "    name = 'bad_api'\n"
-            "    api_version = 2\n",
+            "    api_version = 1\n",
             "api_version",
         ),
         (
@@ -183,6 +184,15 @@ async def test_candidate_gate_publishes_unique_generation(tmp_path: Path):
             "    def static_semantic_checks(self):\n"
             "        return [PluginSemanticCheck('model', False, 'missing')]\n",
             "semantic_checks",
+        ),
+        (
+            "legacy_lifecycle",
+            "from agent.plugins import Plugin\n"
+            "class LegacyLifecyclePlugin(Plugin):\n"
+            "    name = 'legacy_lifecycle'\n"
+            "    async def initialize(self):\n"
+            "        raise RuntimeError('legacy lifecycle ran')\n",
+            "lifecycle_api",
         ),
         (
             "bad_source",
@@ -225,7 +235,7 @@ async def test_candidate_gate_publishes_unique_generation(tmp_path: Path):
         ),
     ],
 )
-async def test_failed_candidate_never_initializes(
+async def test_failed_candidate_never_prepares(
     tmp_path: Path,
     name: str,
     source: str,
@@ -235,7 +245,7 @@ async def test_failed_candidate_never_initializes(
     marker = plugin_dir / "initialized"
     with (plugin_dir / "plugin.py").open("a", encoding="utf-8") as file:
         _ = file.write(
-            "    async def initialize(self):\n"
+            "    async def prepare(self):\n"
             f"        open({str(marker)!r}, 'w').write('bad')\n"
         )
     tools = ToolRegistry()
@@ -470,14 +480,14 @@ async def test_candidate_phase_graph_includes_active_plugins(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_initialize_failure_replaces_passed_gate(tmp_path: Path):
+async def test_prepare_failure_replaces_passed_gate(tmp_path: Path):
     _write_plugin(
         tmp_path / "plugins",
         "init_failure",
         "from agent.plugins import Plugin\n"
         "class InitFailurePlugin(Plugin):\n"
         "    name = 'init_failure'\n"
-        "    async def initialize(self): raise RuntimeError('init failed')\n",
+        "    async def prepare(self): raise RuntimeError('init failed')\n",
     )
     manager = _manager(tmp_path)
 
@@ -485,7 +495,7 @@ async def test_initialize_failure_replaces_passed_gate(tmp_path: Path):
 
     gate = manager.latest_gate("init_failure")
     assert gate is not None and gate.status == "failed"
-    assert gate.checks[0].check_id == "initialize"
+    assert gate.checks[0].check_id == "prepare"
     assert manager.generation("init_failure") is None
 
 
@@ -534,7 +544,7 @@ async def test_generation_module_tree_is_removed_on_config_failure_and_terminate
 
 
 @pytest.mark.asyncio
-async def test_candidate_is_not_published_before_initialize_finishes(tmp_path: Path):
+async def test_candidate_is_not_published_before_prepare_finishes(tmp_path: Path):
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "pending",
@@ -547,7 +557,7 @@ async def test_candidate_is_not_published_before_initialize_finishes(tmp_path: P
         "    async def pending_tool(self, event):\n"
         "        \"\"\"Pending tool.\"\"\"\n"
         "        return 'ready'\n"
-        "    async def initialize(self):\n"
+        "    async def prepare(self):\n"
         "        self.context.event_bus.on(TurnCommitted, self.on_turn)\n"
         "        while not (self.context.plugin_dir / 'release').exists():\n"
         "            await asyncio.sleep(0.01)\n"
@@ -619,7 +629,7 @@ async def test_prepare_same_plugin_keeps_active_generation_until_snapshot_publis
         "    async def run(self, event):\n"
         "        \"\"\"Replaceable tool.\"\"\"\n"
         "        return 'v2'\n"
-        "    async def initialize(self):\n"
+        "    async def prepare(self):\n"
         "        self.context.kv_store.set('initialized_v2', True)\n",
         encoding="utf-8",
     )
@@ -1053,7 +1063,7 @@ async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
         "        return [self.source_spec]\n"
         "    def jobs(self):\n"
         "        return [self.job_spec]\n"
-        "    async def initialize(self):\n"
+        "    async def prepare(self):\n"
         "        self.job_spec.triggers.append(object())\n"
         "        self.source_spec.channels.append('invalid')\n"
         "    async def refresh(self, context):\n"
@@ -1323,14 +1333,13 @@ async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
     v1_lease = store.lease()
     assert v1_lease.snapshot is v1
     transaction = store.begin_publish(v2)
-    assert store.current is v2
-    v2_lease = store.lease()
+    assert store.current is v1
+    with pytest.raises(RuntimeError, match="不可租用"):
+        _ = store.lease(v2.snapshot_id)
 
     await store.abort(transaction)
 
     assert store.current is v1
-    assert drained == []
-    await v2_lease.release()
     assert drained == [v2.snapshot_id]
     await v1_lease.release()
     assert active.lease_count == 0
@@ -1346,6 +1355,7 @@ async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="不可租用"):
         _ = store.lease(v1.snapshot_id)
     await held_v1.release()
+    await store.retry_drains()
     assert drained == [v2.snapshot_id, v1.snapshot_id]
     await store.close()
     assert drained == [v2.snapshot_id, v1.snapshot_id, next_v2.snapshot_id]
@@ -1529,7 +1539,9 @@ async def test_endpoint_failure_resumes_admission_before_candidate_terminate(
 
 
 @pytest.mark.asyncio
-async def test_runtime_snapshot_drain_retry_and_store_ownership(tmp_path: Path) -> None:
+async def test_runtime_snapshot_commit_does_not_wait_for_drain(
+    tmp_path: Path,
+) -> None:
     _write_plugin(
         tmp_path / "plugins",
         "snapshot_owner",
@@ -1549,10 +1561,14 @@ async def test_runtime_snapshot_drain_retry_and_store_ownership(tmp_path: Path) 
         catalog_generation=prepared,
     )
     attempts = 0
+    drain_started = asyncio.Event()
+    allow_drain = asyncio.Event()
 
     async def fail_once(snapshot) -> None:
         nonlocal attempts
         attempts += 1
+        drain_started.set()
+        await allow_drain.wait()
         if attempts == 1:
             raise RuntimeError("drain failed")
 
@@ -1565,11 +1581,11 @@ async def test_runtime_snapshot_drain_retry_and_store_ownership(tmp_path: Path) 
     await lease.release()
     transaction = store.begin_publish(v2)
 
-    with pytest.raises(RuntimeError, match="drain failed"):
-        await store.commit(transaction)
-
+    await asyncio.wait_for(store.commit(transaction), timeout=0.1)
     assert store.current is v2
+    await drain_started.wait()
     assert v1.snapshot_id in store.retained_snapshot_ids
+    allow_drain.set()
     await store.retry_drains()
     assert v1.snapshot_id not in store.retained_snapshot_ids
     other_store = RuntimeSnapshotStore()
@@ -1603,7 +1619,7 @@ async def test_snapshot_compile_failure_does_not_publish_plugin(
         "from agent.plugins import Plugin\n"
         "class SecondSnapshotPlugin(Plugin):\n"
         "    name = 'second_snapshot'\n"
-        "    async def initialize(self):\n"
+        "    async def prepare(self):\n"
         "        self.context.kv_store.set('initialized', True)\n",
     )
     compile_snapshot = manager._snapshot_compiler.compile
@@ -1742,12 +1758,22 @@ async def test_passive_runtime_snapshot_does_not_leak_to_detached_task(
     await manager.terminate_all()
 
 
-def _snapshot_publish_source(version: str, *, fail_initialize: bool = False) -> str:
-    initialize = (
+def _snapshot_publish_source(
+    version: str,
+    *,
+    fail_prepare: bool = False,
+    fail_activate: bool = False,
+) -> str:
+    prepare_body = (
         "        self.context.kv_store.set('initialized', 'v2')\n"
-        "        raise RuntimeError('initialize failed')\n"
-        if fail_initialize
+        "        raise RuntimeError('prepare failed')\n"
+        if fail_prepare
         else f"        self.context.kv_store.set('initialized', '{version}')\n"
+    )
+    activate_body = (
+        "        raise RuntimeError('activate failed')\n"
+        if fail_activate
+        else ""
     )
     return (
         "from agent.plugins import Plugin\n"
@@ -1759,15 +1785,22 @@ def _snapshot_publish_source(version: str, *, fail_initialize: bool = False) -> 
         "class SnapshotPublishPlugin(Plugin):\n"
         "    name = 'snapshot_publish'\n"
         "    def before_turn_modules(self): return [SnapshotModule()]\n"
-        "    async def initialize(self):\n"
-        f"{initialize}"
+        "    async def prepare(self):\n"
+        "        self.data_dir_hidden_during_prepare = self.context.data_dir is None\n"
+        f"{prepare_body}"
+        "    def activate(self):\n"
+        "        if self.context.data_dir is None:\n"
+        "            raise RuntimeError('plugin data unavailable during activation')\n"
+        f"{activate_body}"
+        "    def retire(self):\n"
+        "        self.retired = True\n"
         "    async def terminate(self):\n"
         "        self.context.kv_store.set('terminated', True)\n"
     )
 
 
 @pytest.mark.asyncio
-async def test_publish_prepared_switches_snapshot_after_initialize(
+async def test_publish_prepared_switches_snapshot_after_prepare(
     tmp_path: Path,
 ) -> None:
     plugin_dir = _write_plugin(
@@ -1780,6 +1813,7 @@ async def test_publish_prepared_switches_snapshot_after_initialize(
     active = manager.generation("snapshot_publish")
     old_snapshot = manager.current_snapshot
     assert active is not None and old_snapshot is not None
+    assert active.instance.data_dir_hidden_during_prepare is True
     old_lease = manager.snapshot_store.lease()
 
     _ = (plugin_dir / "plugin.py").write_text(
@@ -1788,16 +1822,20 @@ async def test_publish_prepared_switches_snapshot_after_initialize(
     )
     candidate = await manager.prepare_candidate("snapshot_publish")
     assert candidate is not None
+    assert candidate.reload_tx_id is not None
+    assert manager.reload_journal.get(candidate.reload_tx_id).phase == "prepared"
 
-    assert candidate.initialization_started is False
+    assert candidate.prepare_started is False
 
     result = await manager.publish_prepared("snapshot_publish")
 
     assert result["publication_state"] == "committed"
     assert manager.generation("snapshot_publish") is candidate
     assert manager.current_snapshot is candidate.runtime_snapshot
-    assert candidate.initialization_started is True
+    assert candidate.prepare_started is True
+    assert candidate.instance.data_dir_hidden_during_prepare is True
     assert active.state == "retired"
+    assert active.instance.retired is True
     assert old_lease.snapshot is old_snapshot
     assert old_lease.snapshot.before_turn_modules[0].version == "v1"
     next_lease = manager.snapshot_store.lease()
@@ -1806,14 +1844,20 @@ async def test_publish_prepared_switches_snapshot_after_initialize(
     state_value: object = json.loads(state.read_text(encoding="utf-8"))
     assert isinstance(state_value, dict)
     assert state_value["initialized"] == "v2"
+    with pytest.raises(RuntimeError, match="已退役 generation"):
+        active.instance.context.kv_store.set("stale_write", True)
+    assert "stale_write" not in json.loads(state.read_text(encoding="utf-8"))
+    assert manager.reload_journal.get(candidate.reload_tx_id).phase == "draining"
 
     await next_lease.release()
     await old_lease.release()
+    await manager.snapshot_store.retry_drains()
+    assert manager.reload_journal.get(candidate.reload_tx_id).phase == "complete"
     await manager.terminate_all()
 
 
 @pytest.mark.asyncio
-async def test_publish_prepared_initialize_failure_keeps_active_snapshot(
+async def test_publish_prepared_prepare_failure_keeps_active_snapshot(
     tmp_path: Path,
 ) -> None:
     plugin_dir = _write_plugin(
@@ -1826,8 +1870,16 @@ async def test_publish_prepared_initialize_failure_keeps_active_snapshot(
     active = manager.generation("snapshot_publish")
     old_snapshot = manager.current_snapshot
     assert active is not None and old_snapshot is not None
+    state_path = (
+        tmp_path
+        / "workspace"
+        / "plugin-data"
+        / "snapshot_publish-builtin"
+        / ".kv.json"
+    )
+    state_before = state_path.read_bytes()
     _ = (plugin_dir / "plugin.py").write_text(
-        _snapshot_publish_source("v2", fail_initialize=True),
+        _snapshot_publish_source("v2", fail_prepare=True),
         encoding="utf-8",
     )
     candidate = await manager.prepare_candidate("snapshot_publish")
@@ -1840,11 +1892,221 @@ async def test_publish_prepared_initialize_failure_keeps_active_snapshot(
     assert manager.current_snapshot is old_snapshot
     assert manager.prepared_generation("snapshot_publish") is None
     assert candidate.state == "discarded"
+    assert state_path.read_bytes() == state_before
     await manager.terminate_all()
 
 
 @pytest.mark.asyncio
-async def test_post_publish_invariant_failure_aborts_to_previous_snapshot(
+async def test_startup_recovers_committed_reload_by_exact_source_revision(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_publish",
+        _snapshot_publish_source("v2"),
+    )
+    first_manager = _manager(tmp_path)
+    await first_manager.load_all()
+    generation = first_manager.generation("snapshot_publish")
+    snapshot = first_manager.current_snapshot
+    assert generation is not None and snapshot is not None
+    source_revision = generation.source_revision
+    await first_manager.terminate_all()
+
+    tx_id = first_manager.reload_journal.begin(
+        plugin_id="snapshot_publish",
+        base_snapshot_id="snapshot-v1",
+        generation_id="snapshot_publish:source-v2:2",
+        source_revision=source_revision,
+        config_revision=generation.config_revision,
+    )
+    first_manager.reload_journal.advance(
+        tx_id,
+        "prepared",
+        candidate_snapshot_id=snapshot.snapshot_id,
+    )
+    first_manager.reload_journal.advance(tx_id, "validating")
+    first_manager.reload_journal.advance(tx_id, "commit_started")
+
+    restarted = _manager(tmp_path)
+    await restarted.load_all()
+
+    assert restarted.reload_journal.get(tx_id).phase == "recovered"
+    assert restarted.generation("snapshot_publish") is not None
+    await restarted.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_activate_failure_keeps_previous_snapshot_and_plugin_data(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_publish",
+        _snapshot_publish_source("v1"),
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("snapshot_publish")
+    old_snapshot = manager.current_snapshot
+    assert active is not None and old_snapshot is not None
+    state_path = (
+        tmp_path
+        / "workspace"
+        / "plugin-data"
+        / "snapshot_publish-builtin"
+        / ".kv.json"
+    )
+    state_before = state_path.read_bytes()
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_publish_source("v2", fail_activate=True),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("snapshot_publish")
+    assert candidate is not None
+
+    with pytest.raises(RuntimeError, match="activate failed"):
+        await manager.publish_prepared("snapshot_publish")
+
+    assert manager.current_snapshot is old_snapshot
+    assert manager.generation("snapshot_publish") is active
+    assert candidate.instance.context.data_dir is None
+    assert candidate.scope.closed is True
+    assert state_path.read_bytes() == state_before
+    assert candidate.reload_tx_id is not None
+    assert manager.reload_journal.get(candidate.reload_tx_id).phase == "aborted"
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_startup_fails_when_committed_reload_source_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_publish",
+        _snapshot_publish_source("v2"),
+    )
+    manager = _manager(tmp_path)
+    tx_id = manager.reload_journal.begin(
+        plugin_id="snapshot_publish",
+        base_snapshot_id="snapshot-v1",
+        generation_id="snapshot_publish:missing:2",
+        source_revision="missing-source-revision",
+        config_revision="",
+    )
+    manager.reload_journal.advance(
+        tx_id,
+        "prepared",
+        candidate_snapshot_id="snapshot-v2",
+    )
+    manager.reload_journal.advance(tx_id, "validating")
+    manager.reload_journal.advance(tx_id, "commit_started")
+
+    with pytest.raises(
+        RuntimeError,
+        match="ReloadTransaction 恢复源码不一致",
+    ):
+        await manager.load_all()
+
+    assert manager.generation("snapshot_publish") is None
+    assert manager.reload_journal.get(tx_id).phase == "commit_started"
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_candidate_kv_commit_failure_keeps_previous_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent.plugins.context import PreparedPluginKVStore
+
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_publish",
+        _snapshot_publish_source("v1"),
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("snapshot_publish")
+    old_snapshot = manager.current_snapshot
+    assert active is not None and old_snapshot is not None
+    state_path = (
+        tmp_path
+        / "workspace"
+        / "plugin-data"
+        / "snapshot_publish-builtin"
+        / ".kv.json"
+    )
+    state_before = state_path.read_bytes()
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_publish_source("v2"),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("snapshot_publish")
+    assert candidate is not None
+
+    def fail_commit(_store: PreparedPluginKVStore) -> None:
+        raise OSError("candidate KV commit failed")
+
+    monkeypatch.setattr(PreparedPluginKVStore, "commit", fail_commit)
+
+    with pytest.raises(OSError, match="candidate KV commit failed"):
+        await manager.publish_prepared("snapshot_publish")
+
+    assert manager.current_snapshot is old_snapshot
+    assert manager.generation("snapshot_publish") is active
+    assert manager.prepared_generation("snapshot_publish") is None
+    assert candidate.scope.closed is True
+    assert state_path.read_bytes() == state_before
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_prepare_cannot_start_generation_task_at_runtime(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "prepare_task",
+        "from agent.plugins import Plugin\n"
+        "class PrepareTaskPlugin(Plugin):\n"
+        "    name = 'prepare_task'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("prepare_task")
+    old_snapshot = manager.current_snapshot
+    assert active is not None and old_snapshot is not None
+    _ = (plugin_dir / "plugin.py").write_text(
+        "import asyncio\n"
+        "from agent.plugins import Plugin\n"
+        "class PrepareTaskPlugin(Plugin):\n"
+        "    name = 'prepare_task'\n"
+        "    async def prepare(self):\n"
+        "        self.context.create_task(self._run(), name='forbidden-prepare-task')\n"
+        "    async def _run(self):\n"
+        "        await asyncio.Event().wait()\n",
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("prepare_task")
+    assert candidate is not None
+
+    result = await manager.publish_prepared("prepare_task")
+
+    assert result["publication_state"] == "failed"
+    assert manager.generation("prepare_task") is active
+    assert manager.current_snapshot is old_snapshot
+    assert candidate.scope.closed is True
+    gate = manager.latest_gate("prepare_task")
+    assert gate is not None
+    assert gate.checks[-1].check_id == "prepare"
+    assert "prepare 阶段禁止启动后台任务" in gate.failure_reason
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_candidate_is_hidden_until_commit_and_failure_keeps_previous_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1874,7 +2136,6 @@ async def test_post_publish_invariant_failure_aborts_to_previous_snapshot(
     invariant_release = asyncio.Event()
 
     async def fail_invariant(generation, snapshot) -> None:
-        assert manager.current_snapshot is snapshot
         invariant_entered.set()
         await invariant_release.wait()
         raise RuntimeError("post publish failed")
@@ -1883,20 +2144,25 @@ async def test_post_publish_invariant_failure_aborts_to_previous_snapshot(
 
     publishing = asyncio.create_task(manager.publish_prepared("snapshot_publish"))
     await invariant_entered.wait()
-    candidate_lease = manager.snapshot_store.lease()
+    visible_snapshot = manager.current_snapshot
+    ordinary_lease = manager.snapshot_store.lease()
     invariant_release.set()
     with pytest.raises(RuntimeError, match="post publish failed"):
         await publishing
+    leased_snapshot = ordinary_lease.snapshot
+    await ordinary_lease.release()
 
+    assert visible_snapshot is old_snapshot
+    assert leased_snapshot is old_snapshot
     assert manager.current_snapshot is old_snapshot
     assert manager.generation("snapshot_publish") is active
     assert manager.prepared_generation("snapshot_publish") is None
     assert candidate.state == "aborted"
-    assert candidate.scope.closed is False
     assert candidate.runtime_snapshot is not None
     assert candidate.runtime_snapshot.state == "aborted"
-    await candidate_lease.release()
     assert candidate.scope.closed is True
+    assert candidate.reload_tx_id is not None
+    assert manager.reload_journal.get(candidate.reload_tx_id).phase == "aborted"
     assert any(
         failure.error == "terminate failed"
         for failure in manager.cleanup_failures
@@ -1940,7 +2206,7 @@ async def test_post_publish_invariant_timeout_aborts_snapshot(
 
 
 @pytest.mark.asyncio
-async def test_cancelled_publish_waits_for_candidate_lease_before_cleanup(
+async def test_cancelled_publish_never_leases_candidate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1968,14 +2234,14 @@ async def test_cancelled_publish_waits_for_candidate_lease_before_cleanup(
     publishing = asyncio.create_task(manager.publish_prepared("snapshot_publish"))
     await entered.wait()
     lease = manager.snapshot_store.lease()
+    assert lease.snapshot is old_snapshot
     publishing.cancel()
     with pytest.raises(asyncio.CancelledError):
         await publishing
 
     assert manager.current_snapshot is old_snapshot
-    assert candidate.scope.closed is False
-    await lease.release()
     assert candidate.scope.closed is True
+    await lease.release()
     await manager.terminate_all()
 
 
@@ -2097,7 +2363,9 @@ async def test_reconcile_changed_disables_and_reenables_plugin_capabilities(
         "    @tool(name='topology_value')\n"
         "    async def value(self, event):\n"
         "        \"\"\"Return topology value.\"\"\"\n"
-        "        return 'active'\n",
+        "        return 'active'\n"
+        "    def retire(self):\n"
+        "        self.retired = True\n",
     )
     skill = plugin_dir / "skills" / "topology-skill"
     skill.mkdir(parents=True)
@@ -2111,6 +2379,8 @@ async def test_reconcile_changed_disables_and_reenables_plugin_capabilities(
     write_plugin_manifest({"topology": True}, plugins_home=plugins_home)
     await manager.load_all()
     assert tools.has_tool("topology_value")
+    active = manager.generation("topology")
+    assert active is not None
 
     write_plugin_manifest({"topology": False}, plugins_home=plugins_home)
     disabled = await manager.reconcile_changed()
@@ -2121,6 +2391,8 @@ async def test_reconcile_changed_disables_and_reenables_plugin_capabilities(
     assert not snapshot.tool_registry.has_tool("topology_value")
     assert "topology-skill" not in snapshot.plugin_skill_index.records
     assert manager.generation("topology") is None
+    assert active.retire_started is True
+    assert active.instance.retired is True
 
     write_plugin_manifest({"topology": True}, plugins_home=plugins_home)
     enabled = await manager.reconcile_changed()
@@ -2283,8 +2555,17 @@ async def test_publish_cancellation_after_store_commit_keeps_manager_consistent(
     release = asyncio.Event()
     original_commit = manager.snapshot_store.commit
 
-    async def delayed_commit(transaction) -> None:
-        await original_commit(transaction)
+    async def delayed_commit(
+        transaction,
+        *,
+        before_open=None,
+        after_open=None,
+    ) -> None:
+        await original_commit(
+            transaction,
+            before_open=before_open,
+            after_open=after_open,
+        )
         committed.set()
         await release.wait()
 
@@ -2355,7 +2636,12 @@ async def test_plugin_watcher_reloads_source_without_signal(tmp_path: Path) -> N
     )
     manager = _manager(tmp_path)
     await manager.load_all()
-    watcher = PluginWatcher(manager, interval_seconds=0.01)
+    baseline_revision = await asyncio.to_thread(manager.watch_revision)
+    watcher = PluginWatcher(
+        manager,
+        baseline_revision=baseline_revision,
+        interval_seconds=0.01,
+    )
     task = asyncio.create_task(watcher.run())
     await asyncio.sleep(0)
     source = (plugin_dir / "plugin.py").read_text(encoding="utf-8")
@@ -2378,6 +2664,39 @@ async def test_plugin_watcher_reloads_source_without_signal(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_plugin_watcher_scans_files_outside_event_loop_thread() -> None:
+    event_loop_thread = threading.get_ident()
+
+    class Manager:
+        def __init__(self) -> None:
+            self.scan_threads: list[int] = []
+
+        def watch_revision(self) -> str:
+            self.scan_threads.append(threading.get_ident())
+            return "stable"
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            return []
+
+    manager = Manager()
+    watcher = PluginWatcher(
+        cast(PluginManager, manager),
+        baseline_revision="stable",
+        interval_seconds=0.01,
+    )
+    task = asyncio.create_task(watcher.run())
+    for _ in range(100):
+        if manager.scan_threads:
+            break
+        await asyncio.sleep(0.01)
+
+    watcher.stop()
+    await task
+    assert manager.scan_threads
+    assert all(thread_id != event_loop_thread for thread_id in manager.scan_threads)
+
+
+@pytest.mark.asyncio
 async def test_plugin_watcher_reconciles_change_arriving_during_scan() -> None:
     class Manager:
         def __init__(self) -> None:
@@ -2397,7 +2716,11 @@ async def test_plugin_watcher_reconciles_change_arriving_during_scan() -> None:
             return []
 
     manager = Manager()
-    watcher = PluginWatcher(cast(PluginManager, manager), interval_seconds=0.01)
+    watcher = PluginWatcher(
+        cast(PluginManager, manager),
+        baseline_revision="a",
+        interval_seconds=0.01,
+    )
     task = asyncio.create_task(watcher.run())
     await asyncio.sleep(0)
     manager.revision = "b"
@@ -2412,6 +2735,33 @@ async def test_plugin_watcher_reconciles_change_arriving_during_scan() -> None:
     watcher.stop()
     await task
     assert manager.calls >= 2
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_forced_wake_reconciles_unchanged_revision() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.called = asyncio.Event()
+
+        def watch_revision(self) -> str:
+            return "stable"
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.called.set()
+            return []
+
+    manager = Manager()
+    watcher = PluginWatcher(
+        cast(PluginManager, manager),
+        baseline_revision="stable",
+        interval_seconds=60,
+    )
+    task = asyncio.create_task(watcher.run())
+    watcher.wake()
+    await asyncio.wait_for(manager.called.wait(), timeout=1)
+
+    watcher.stop()
+    await task
 
 
 @pytest.mark.asyncio
@@ -2432,7 +2782,11 @@ async def test_plugin_watcher_recovers_after_revision_scan_error() -> None:
             return []
 
     manager = Manager()
-    watcher = PluginWatcher(cast(PluginManager, manager), interval_seconds=0.01)
+    watcher = PluginWatcher(
+        cast(PluginManager, manager),
+        baseline_revision="",
+        interval_seconds=0.01,
+    )
     task = asyncio.create_task(watcher.run())
     for _ in range(100):
         if manager.calls:
@@ -2462,7 +2816,11 @@ async def test_plugin_watcher_does_not_reconcile_after_recovered_scan_error() ->
             return []
 
     manager = Manager()
-    watcher = PluginWatcher(cast(PluginManager, manager), interval_seconds=0.01)
+    watcher = PluginWatcher(
+        cast(PluginManager, manager),
+        baseline_revision="stable",
+        interval_seconds=0.01,
+    )
     task = asyncio.create_task(watcher.run())
     for _ in range(100):
         if manager.scans >= 3:
@@ -2504,6 +2862,7 @@ async def test_plugin_watcher_recovers_after_reconcile_failure() -> None:
 
     watcher = PluginWatcher(
         cast(PluginManager, manager),
+        baseline_revision="stable",
         interval_seconds=0.01,
         after_reconcile=after_reconcile,
     )
@@ -2551,6 +2910,7 @@ async def test_plugin_watcher_retries_notification_without_reconciling_again() -
 
     watcher = PluginWatcher(
         cast(PluginManager, manager),
+        baseline_revision="stable",
         interval_seconds=0.01,
         after_reconcile=after_reconcile,
     )
@@ -2589,6 +2949,7 @@ async def test_plugin_watcher_confirms_disabled_result_against_stable_revision()
 
     watcher = PluginWatcher(
         cast(PluginManager, manager),
+        baseline_revision="stable",
         interval_seconds=0.01,
         after_reconcile=notify,
     )
@@ -2630,6 +2991,7 @@ async def test_plugin_watcher_notifies_explicit_disable_after_confirmation() -> 
 
     watcher = PluginWatcher(
         cast(PluginManager, manager),
+        baseline_revision="stable",
         interval_seconds=0.01,
         after_reconcile=notify,
     )
@@ -2673,6 +3035,7 @@ async def test_plugin_watcher_retries_failed_disabled_confirmation() -> None:
 
     watcher = PluginWatcher(
         cast(PluginManager, manager),
+        baseline_revision="stable",
         interval_seconds=0.01,
         after_reconcile=notify,
     )
@@ -2708,7 +3071,11 @@ async def test_plugin_watcher_propagates_cancellation_and_marks_stopped() -> Non
             return []
 
     manager = Manager()
-    watcher = PluginWatcher(cast(PluginManager, manager), interval_seconds=0.01)
+    watcher = PluginWatcher(
+        cast(PluginManager, manager),
+        baseline_revision="stable",
+        interval_seconds=0.01,
+    )
     task = asyncio.create_task(watcher.run())
     await asyncio.sleep(0)
     manager.revision = "changed"
@@ -2732,7 +3099,11 @@ async def test_plugin_watcher_stop_before_run_skips_initial_scan() -> None:
             return "stable"
 
     manager = Manager()
-    watcher = PluginWatcher(cast(PluginManager, manager), interval_seconds=0.01)
+    watcher = PluginWatcher(
+        cast(PluginManager, manager),
+        baseline_revision="stable",
+        interval_seconds=0.01,
+    )
     watcher.stop()
 
     await watcher.run()
@@ -2746,7 +3117,11 @@ async def test_plugin_watcher_cancellation_before_start_does_not_leak_waiter() -
         def watch_revision(self) -> str:
             raise AssertionError("未启动的 watcher 不应扫描")
 
-    watcher = PluginWatcher(cast(PluginManager, Manager()), interval_seconds=0.01)
+    watcher = PluginWatcher(
+        cast(PluginManager, Manager()),
+        baseline_revision="stable",
+        interval_seconds=0.01,
+    )
     task = asyncio.create_task(watcher.run())
     watcher.stop()
     task.cancel()
@@ -3047,6 +3422,7 @@ async def test_workspace_mcp_generation_publish_preserves_old_turn_lease(
 
     assert old_client.connected is True
     await old_fork.release()
+    await manager.snapshot_store.retry_drains()
     assert old_client.connected is False
     new_lease = await manager.snapshot_store.acquire()
     token = bind_runtime_snapshot(new_lease)
@@ -3331,7 +3707,7 @@ def _snapshot_event_source(version: str) -> str:
         "from bus.events_lifecycle import TurnCommitted\n"
         "class SnapshotEventPlugin(Plugin):\n"
         "    name = 'snapshot_event'\n"
-        "    async def initialize(self):\n"
+        "    async def prepare(self):\n"
         "        self.context.event_bus.on(TurnCommitted, self.handle)\n"
         "    async def handle(self, event):\n"
         f"{wait}"
@@ -3412,7 +3788,7 @@ async def test_snapshot_event_subscription_close_takes_effect_immediately(
         "from bus.events_lifecycle import TurnCommitted\n"
         "class SnapshotEventPlugin(Plugin):\n"
         "    name = 'snapshot_event'\n"
-        "    async def initialize(self):\n"
+        "    async def prepare(self):\n"
         "        self.subscription = self.context.event_bus.on(TurnCommitted, self.handle)\n"
         "    def handle(self, event):\n"
         "        self.context.kv_store.increment('events')\n",
@@ -3442,7 +3818,7 @@ async def test_snapshot_event_subscription_close_takes_effect_immediately(
 
     state_path = tmp_path / "workspace/plugin-data/snapshot_event-builtin/.kv.json"
     assert not state_path.exists()
-    with pytest.raises(RuntimeError, match="只能在 initialize"):
+    with pytest.raises(RuntimeError, match="必须在 generation 开放前"):
         generation.instance.context.event_bus.on(TurnCommitted, lambda _: None)
     await event_bus.aclose()
     await manager.terminate_all()
@@ -3946,6 +4322,7 @@ async def test_dashboard_routes_follow_snapshot_generation(tmp_path: Path) -> No
     ).json() == {"version": "v1"}
     assert not (tmp_path / "workspace" / "dashboard-v1-closed").exists()
     await old_lease.release()
+    await manager.snapshot_store.retry_drains()
     assert (tmp_path / "workspace" / "dashboard-v1-closed").exists()
     assert old_generation.scope.closed
     assert f"{old_generation.module_path}.dashboard" not in sys.modules

@@ -21,7 +21,7 @@ from infra.channels.contract import Channel
 
 SnapshotState = Literal[
     "compiled",
-    "published_pending",
+    "validating",
     "committed",
     "aborted",
     "retired",
@@ -374,10 +374,18 @@ class RuntimeSnapshotStore:
         self._on_drained = on_drained
         self._token = object()
         self._condition = asyncio.Condition()
+        self._drain_tasks: dict[str, asyncio.Task[None]] = {}
+        self._drain_failures: dict[str, BaseException] = {}
 
     @property
     def current(self) -> RuntimeSnapshot | None:
         return self._current
+
+    @property
+    def pending_candidate(self) -> RuntimeSnapshot | None:
+        if self._pending is None:
+            return None
+        return self._pending.candidate
 
     @property
     def retained_snapshot_ids(self) -> tuple[str, ...]:
@@ -392,7 +400,7 @@ class RuntimeSnapshotStore:
         return any(
             snapshot.snapshot_id != excluding_snapshot_id
             and (
-                snapshot.state in {"published_pending", "committed"}
+                snapshot.state in {"validating", "committed"}
                 or snapshot.lease_count > 0
             )
             and any(item is generation for item in snapshot.generations.values())
@@ -408,7 +416,7 @@ class RuntimeSnapshotStore:
         return any(
             snapshot.snapshot_id != excluding_snapshot_id
             and (
-                snapshot.state in {"published_pending", "committed"}
+                snapshot.state in {"validating", "committed"}
                 or snapshot.lease_count > 0
             )
             and snapshot.workspace_mcp_generation is generation
@@ -435,22 +443,32 @@ class RuntimeSnapshotStore:
             raise RuntimeError(f"RuntimeSnapshot 已存在: {candidate.snapshot_id}")
         self._adopt(candidate)
         transaction = SnapshotTransaction(previous=self._current, candidate=candidate)
-        candidate.state = "published_pending"
-        candidate.accepting_leases = not admission_gated
+        candidate.state = "validating"
+        candidate.accepting_leases = False
         self._snapshots[candidate.snapshot_id] = candidate
-        self._current = candidate
         self._pending = transaction
         return transaction
 
-    async def commit(self, transaction: SnapshotTransaction) -> None:
+    async def commit(
+        self,
+        transaction: SnapshotTransaction,
+        *,
+        before_open: Callable[[], None] | None = None,
+        after_open: Callable[[], None] | None = None,
+    ) -> None:
         self._require_pending(transaction)
+        if before_open is not None:
+            before_open()
         transaction.candidate.state = "committed"
         transaction.candidate.accepting_leases = True
+        self._current = transaction.candidate
         self._pending = None
         previous = transaction.previous
         if previous is not None:
             previous.state = "retired"
-            await self._drain_if_ready(previous)
+            if after_open is not None:
+                after_open()
+            self._schedule_drain(previous)
         async with self._condition:
             self._condition.notify_all()
 
@@ -458,11 +476,12 @@ class RuntimeSnapshotStore:
         self._require_pending(transaction)
         transaction.candidate.state = "aborted"
         transaction.candidate.accepting_leases = False
-        self._current = transaction.previous
-        if transaction.previous is not None:
+        if self._current is transaction.previous and transaction.previous is not None:
             transaction.previous.accepting_leases = True
         self._pending = None
-        await self._drain_if_ready(transaction.candidate)
+        self._schedule_drain(transaction.candidate)
+        await self._await_drain_tasks((transaction.candidate.snapshot_id,))
+        self._raise_drain_failures((transaction.candidate.snapshot_id,))
         async with self._condition:
             self._condition.notify_all()
 
@@ -509,7 +528,7 @@ class RuntimeSnapshotStore:
                 )
                 if snapshot is None:
                     raise RuntimeError("RuntimeSnapshot 不可用")
-                if snapshot.state not in {"published_pending", "committed"}:
+                if snapshot.state != "committed":
                     raise RuntimeError(f"RuntimeSnapshot 不可租用: {snapshot.state}")
                 if snapshot.accepting_leases:
                     return self._claim_lease(snapshot)
@@ -530,7 +549,8 @@ class RuntimeSnapshotStore:
         self._current = None
         if current is not None:
             current.state = "retired"
-            await self._drain_if_ready(current)
+            self._schedule_drain(current)
+            await self.retry_drains()
 
     def lease(self, snapshot_id: str | None = None) -> RuntimeSnapshotLease:
         snapshot = (
@@ -540,7 +560,7 @@ class RuntimeSnapshotStore:
         )
         if snapshot is None:
             raise RuntimeError("RuntimeSnapshot 不可用")
-        if snapshot.state not in {"published_pending", "committed"}:
+        if snapshot.state != "committed":
             raise RuntimeError(f"RuntimeSnapshot 不可租用: {snapshot.state}")
         if not snapshot.accepting_leases:
             raise RuntimeError("RuntimeSnapshot 暂停接收新 lease")
@@ -573,7 +593,7 @@ class RuntimeSnapshotStore:
             generation.lease_count -= 1
         if snapshot.workspace_mcp_generation is not None:
             snapshot.workspace_mcp_generation.lease_count -= 1
-        await self._drain_if_ready(snapshot)
+        self._schedule_drain(snapshot)
         async with self._condition:
             self._condition.notify_all()
 
@@ -586,19 +606,61 @@ class RuntimeSnapshotStore:
                 await self._condition.wait()
         await self.retry_drains()
 
-    async def _drain_if_ready(self, snapshot: RuntimeSnapshot) -> None:
+    def _schedule_drain(self, snapshot: RuntimeSnapshot) -> None:
         if snapshot.state not in {"retired", "aborted"} or snapshot.lease_count:
             return
-        if self._on_drained is not None:
-            await self._on_drained(snapshot)
-        _ = self._snapshots.pop(snapshot.snapshot_id, None)
+        existing = self._drain_tasks.get(snapshot.snapshot_id)
+        if existing is not None and not existing.done():
+            return
+        _ = self._drain_failures.pop(snapshot.snapshot_id, None)
+        self._drain_tasks[snapshot.snapshot_id] = asyncio.create_task(
+            self._run_drain(snapshot),
+            name=f"runtime_snapshot_drain:{snapshot.snapshot_id}",
+        )
+
+    async def _run_drain(self, snapshot: RuntimeSnapshot) -> None:
+        try:
+            if self._on_drained is not None:
+                await self._on_drained(snapshot)
+        except (asyncio.CancelledError, Exception) as error:
+            self._drain_failures[snapshot.snapshot_id] = error
+        else:
+            _ = self._snapshots.pop(snapshot.snapshot_id, None)
+        finally:
+            _ = self._drain_tasks.pop(snapshot.snapshot_id, None)
+            async with self._condition:
+                self._condition.notify_all()
 
     async def retry_drains(self) -> None:
+        await self._await_drain_tasks(tuple(self._drain_tasks))
         for snapshot in tuple(self._snapshots.values()):
-            await self._drain_if_ready(snapshot)
+            self._schedule_drain(snapshot)
+        attempted = tuple(self._drain_tasks)
+        await self._await_drain_tasks(attempted)
+        self._raise_drain_failures(attempted)
+
+    async def _await_drain_tasks(self, snapshot_ids: tuple[str, ...]) -> None:
+        tasks = [
+            task
+            for snapshot_id in snapshot_ids
+            if (task := self._drain_tasks.get(snapshot_id)) is not None
+        ]
+        if tasks:
+            await asyncio.gather(*tasks)
+
+    def _raise_drain_failures(self, snapshot_ids: tuple[str, ...]) -> None:
+        failures = [
+            (snapshot_id, self._drain_failures[snapshot_id])
+            for snapshot_id in snapshot_ids
+            if snapshot_id in self._drain_failures
+        ]
+        if not failures:
+            return
+        snapshot_id, error = failures[0]
+        raise RuntimeError(f"RuntimeSnapshot drain 失败: {snapshot_id}") from error
 
     def _require_pending(self, transaction: SnapshotTransaction) -> None:
-        if self._pending is not transaction or self._current is not transaction.candidate:
+        if self._pending is not transaction:
             raise RuntimeError("RuntimeSnapshot 发布事务已失效")
 
     def _adopt(self, snapshot: RuntimeSnapshot) -> None:

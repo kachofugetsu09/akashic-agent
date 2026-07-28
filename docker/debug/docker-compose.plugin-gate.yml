@@ -13,9 +13,10 @@ services:
       AKASHIC_HOST_UID: "${UID:?set by plugin_hot_reload_probe.py}"
       AKASHIC_PLUGIN_LOG_LEVEL: DEBUG
       HOME: /sandbox/home
+      PYTHONPATH: /sandbox/python-packages:/app
       PYTHONUNBUFFERED: "1"
     volumes:
-      - ../..:/app:ro
+      - ${AKASHIC_GATE_SANDBOX:?set by plugin_hot_reload_probe.py}/app:/app:ro
       - ${AKASHIC_GATE_SANDBOX:?set by plugin_hot_reload_probe.py}:/sandbox
       - ${AKASHIC_GATE_SANDBOX:?set by plugin_hot_reload_probe.py}/static:/app/static
       - ${AKASHIC_PLUGIN_SOURCE:?set by plugin_hot_reload_probe.py}:/fixtures/plugins:ro

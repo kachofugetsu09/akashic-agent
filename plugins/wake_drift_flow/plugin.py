@@ -15,6 +15,7 @@ class WakeDriftModuleFactory:
 
 
 class WakeDriftFlowPlugin(Plugin):
+    api_version = 2
     name = "wake_drift_flow"
 
     def proactive_module_factories(self) -> list[object]:

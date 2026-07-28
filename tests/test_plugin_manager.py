@@ -20,7 +20,7 @@ import pytest
 from agent.core.passive_turn import ContextStore as _  # noqa: F401
 from agent.config_models import Config
 from agent.lifecycle.types import AfterStepCtx, AfterToolResultCtx, BeforeToolCallCtx, BeforeTurnCtx
-from agent.plugins.context import PluginKVStore
+from agent.plugins.context import PluginKVStore, PreparedPluginKVStore
 from agent.plugins.manager import PluginManager
 from agent.plugins.manifest import write_package_manifest
 from agent.plugins.jobs import PluginJobRuntime, PluginJobSpec, RegisteredPluginJob
@@ -610,10 +610,11 @@ async def test_plugin_manager_scope_cleans_legacy_resources(tmp_path: Path):
         "from agent.plugins import Plugin\n"
         "from bus.events_lifecycle import TurnCommitted\n"
         "class ScopedPlugin(Plugin):\n"
-        "    name = 'scoped'\n"
-        "    async def initialize(self):\n"
-        "        self.context.event_bus.on(TurnCommitted, self._handle)\n"
-        "        self.task = self.context.create_task(self._run(), name='scoped-worker')\n"
+            "    name = 'scoped'\n"
+            "    async def prepare(self):\n"
+            "        self.context.event_bus.on(TurnCommitted, self._handle)\n"
+            "    def activate(self):\n"
+            "        self.task = self.context.create_task(self._run(), name='scoped-worker')\n"
         "        self.context.defer('marker', lambda: self.context.kv_store.set('closed', True))\n"
         "    async def terminate(self):\n"
         "        raise RuntimeError('terminate failed')\n"
@@ -662,7 +663,7 @@ async def test_plugin_manager_consumes_scope_failures_after_terminate_cancellati
         "release = asyncio.Event()\n"
         "class CancelledClosePlugin(Plugin):\n"
         "    name = 'cancelled_close'\n"
-        "    async def initialize(self):\n"
+        "    async def prepare(self):\n"
         "        async def slow_cleanup():\n"
         "            entered.set()\n"
         "            await release.wait()\n"
@@ -696,7 +697,7 @@ async def test_plugin_manager_consumes_scope_failures_after_terminate_cancellati
 
 
 @pytest.mark.asyncio
-async def test_plugin_initialize_failure_calls_terminate(tmp_path: Path):
+async def test_plugin_prepare_failure_calls_terminate(tmp_path: Path):
     plugin_root = tmp_path / "plugins"
     plugin_dir = plugin_root / "failing"
     plugin_dir.mkdir(parents=True)
@@ -709,7 +710,7 @@ async def test_plugin_initialize_failure_calls_terminate(tmp_path: Path):
         "tasks = []\n"
         "class FailingPlugin(Plugin):\n"
         "    name = 'failing'\n"
-        "    async def initialize(self):\n"
+        "    async def prepare(self):\n"
         "        self.task = asyncio.create_task(asyncio.Event().wait())\n"
         "        tasks.append(self.task)\n"
         "        raise RuntimeError('init failed')\n"
@@ -734,7 +735,7 @@ async def test_plugin_initialize_failure_calls_terminate(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_plugin_initialize_cancellation_rolls_back(tmp_path: Path):
+async def test_plugin_prepare_cancellation_rolls_back(tmp_path: Path):
     plugin_root = tmp_path / "plugins"
     plugin_dir = plugin_root / "cancelled"
     plugin_dir.mkdir(parents=True)
@@ -748,7 +749,7 @@ async def test_plugin_initialize_cancellation_rolls_back(tmp_path: Path):
         "tasks = []\n"
         "class CancelledPlugin(Plugin):\n"
         "    name = 'cancelled'\n"
-        "    async def initialize(self):\n"
+        "    async def prepare(self):\n"
         "        self.task = asyncio.create_task(asyncio.Event().wait())\n"
         "        tasks.append(self.task)\n"
         "        started.set()\n"
@@ -987,6 +988,21 @@ def test_kv_store_rejects_non_object_root(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="插件 KV 根节点必须是对象"):
         store.get("turn_count")
+
+
+def test_unmodified_candidate_kv_commit_does_not_create_state_file(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / ".kv.json"
+    store = PreparedPluginKVStore(
+        path,
+        can_write=lambda: True,
+        writer_id="candidate:1",
+    )
+
+    store.commit()
+
+    assert not path.exists()
 
 
 # ── 程序化身份声明测试 ────────────────────────────────────────────────────────

@@ -21,6 +21,7 @@ _MOBILE_RECALL_ASSISTANT_PREVIEW_CHARS = 50
 class AkashaPlugin(Plugin):
     """Register V2 memory inspection without exposing graph mutation."""
 
+    api_version = 2
     name = "akasha"
 
     def __init__(self) -> None:

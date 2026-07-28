@@ -70,6 +70,7 @@ class CaptureChannel:
 
 
 class ReplayDebugPlugin(Plugin):
+    api_version = 2
     name = "replay_debug"
 
     def channels(self) -> list[CaptureChannel]:
