@@ -9,7 +9,7 @@
     {
       "id": "calendar-mcp",
       "repository": "https://github.com/akashic-plugins/calendar-mcp",
-      "commit": "5b9069213ac48ad18aa5d53f50a413ca81b55e63"
+      "commit": "b83502367cd869a78b2a9cd019ae6e152a661096"
     },
     {
       "id": "citation",
@@ -39,7 +39,7 @@
     {
       "id": "feed-mcp",
       "repository": "https://github.com/akashic-plugins/feed-mcp",
-      "commit": "bcbaf4166902c925bf1c1c8b1f78865688c76de4"
+      "commit": "e4028236e5b8ac65c5741ca6e8908115bdea6d31"
     },
     {
       "id": "feishu",
@@ -104,7 +104,7 @@
     {
       "id": "steam-mcp",
       "repository": "https://github.com/akashic-plugins/steam-mcp",
-      "commit": "a2739c3f9608be260ec056c7ee8f39d64015695d"
+      "commit": "0e3dbfb1250b5b1f0d0f8ca268d1ad1c5dfd4a17"
     },
     {
       "id": "tool_loop_guard",

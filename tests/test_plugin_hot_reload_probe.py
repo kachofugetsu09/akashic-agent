@@ -87,6 +87,14 @@ def test_gate_sandbox_prepares_static_mountpoint_outside_clean_checkout(
     assert "../..:/app:ro" not in compose
 
 
+def test_plugin_gate_pins_fastmcp_compatible_runtime() -> None:
+    dockerfile = (
+        Path(__file__).parents[1] / "docker/debug/Dockerfile"
+    ).read_text(encoding="utf-8")
+
+    assert "python -m pip install mcp==1.28.1" in dockerfile
+
+
 def test_system_gate_propagates_subgate_failure() -> None:
     baseline = {
         "build_returncode": 0,
