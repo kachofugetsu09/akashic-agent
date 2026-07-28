@@ -88,11 +88,16 @@
    正文一致，复用 query dense，只计算 assistant；否则两条正文重新 batch embed。
 4. pending ticket 仍匹配时交给 `MemoryCycle.commit`；不存在或不匹配时在最新图状态上
    重新 retrieve 后提交。
-5. commit 将当前 turn 加入稀疏索引和图，执行 Hebbian 关联、时序方向、连接预算、
-   衰减与激活恢复，再原子发布 sidecar。
+5. adapter 先把 embedding 和因果 turn 持久化到稀疏索引；这是回复终态之前的
+   durable recovery boundary。
+6. 单写者后台任务执行 `MemoryCycle.commit`，完成 Hebbian 关联、时序方向、连接
+   预算、衰减与激活恢复，再原子发布 `akasha.db`。
+7. 下一次 context/recall query 通过 publication fence 等待上一份 staged suffix
+   发布完成；后台失败时异常继续传播，不允许读取落后的图状态。
 
 这个顺序保证“检索影响回答，已完成回答影响未来检索”，不会让未落库或失败的 turn
-提前进入图。
+提前进入图。若进程在 stage 后、publish 前退出，启动恢复会从已持久化稀疏 suffix
+重放同一个 `MemoryCycle`，不需要重新调用 embedding provider。
 
 ### 4.3 显式 recall
 
@@ -273,6 +278,8 @@ Git 忽略的派生产物。镜像校验只排除这个明确命名的构建产�
 - embedding audit 失败：保留报告，不触碰现存 sidecar。
 - replay 中断：目标 staging 不发布；现存 sidecar 的时间戳备份可恢复。
 - online commit 失败：异常上抛，不能把空结果当成功；原始 session 消息仍保留。
+- staged graph publish 失败：当前回复事实与 embedding/sparse suffix 保留；下一次
+  Akasha query 和 runtime close 传播同一失败。进程重启从 suffix 确定性补齐。
 - 正式部署前：备份旧 `config.local.toml` 和 `akasha.db`，在只读快照完成全量 Gate，
   再把规范 V2 config 与已验证 sidecar 作为同一个维护操作原子切换。
 - 回滚时同时恢复旧插件代码、旧 config 和旧 sidecar；不能只切代码后继续打开另一代

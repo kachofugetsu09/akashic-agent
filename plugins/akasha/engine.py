@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import threading
@@ -34,7 +35,7 @@ from memory2.embedder import Embedder
 from session.embedding_store import MessageEmbeddingStore
 
 from .application.cycle import RetrievalTicket
-from .application.runtime import OnlineMemoryRuntime
+from .application.runtime import OnlineMemoryRuntime, StagedOnlineCommit
 from .config import AkashaConfig, resolve_workspace_path
 from .domain.model import Turn
 
@@ -145,11 +146,14 @@ class AkashaMemoryEngine:
 
         # 2. Keep one global graph writer and one pending query per session.
         self._lock = threading.RLock()
+        self._commit_gate = asyncio.Lock()
+        self._publish_task: asyncio.Task[None] | None = None
         self._pending: dict[str, PendingRetrieval] = {}
         self.closeables: list[object] = [
             self._runtime,
             self._embedding_store,
             self._embedder,
+            self,
         ]
         if event_publisher is not None:
             self.closeables.append(
@@ -190,36 +194,38 @@ class AkashaMemoryEngine:
             if value is not None and value.tzinfo is None:
                 raise ValueError(f"Akasha {name} must be timezone-aware")
 
-        # 2. Embed the cue and run a non-mutating shared MemoryCycle read.
+        # 2. Embed without blocking commits, then fence the shared graph read.
         dense = np.asarray(
             await self._embedder.embed(text),
             dtype=np.float32,
         )
-        with self._lock:
-            cue, ticket = self._runtime.query_turn(
-                text=text,
-                dense=dense,
-                session_key=request.scope.session_key,
-                timestamp=request.timestamp,
-            )
-            lanes = self._records(ticket, cue, request)
-            retains_ticket = (
-                request.intent == "context"
-                and request.effect == "stateful"
-                and bool(request.scope.session_key)
-            )
-            if retains_ticket:
-                session_key = request.scope.session_key
-                if not session_key:
-                    raise RuntimeError(
-                        "stateful context query lost its session key"
-                    )
-                self._pending[session_key] = PendingRetrieval(
-                    ticket,
-                    request.timestamp,
-                    text,
-                    dense.copy(),
+        async with self._commit_gate:
+            await self._wait_for_publication()
+            with self._lock:
+                cue, ticket = self._runtime.query_turn(
+                    text=text,
+                    dense=dense,
+                    session_key=request.scope.session_key,
+                    timestamp=request.timestamp,
                 )
+                lanes = self._records(ticket, cue, request)
+                retains_ticket = (
+                    request.intent == "context"
+                    and request.effect == "stateful"
+                    and bool(request.scope.session_key)
+                )
+                if retains_ticket:
+                    session_key = request.scope.session_key
+                    if not session_key:
+                        raise RuntimeError(
+                            "stateful context query lost its session key"
+                        )
+                    self._pending[session_key] = PendingRetrieval(
+                        ticket,
+                        request.timestamp,
+                        text,
+                        dense.copy(),
+                    )
         # 3. Render context only for the runtime context-injection intent.
         text_block = (
             self._context_block(lanes, request.timestamp)
@@ -451,7 +457,7 @@ class AkashaMemoryEngine:
         )[:top_k]
 
     async def _on_turn_committed(self, event: TurnCommitted) -> None:
-        """Persist embeddings and apply one canonical MemoryCycle commit."""
+        """Stage one committed turn and publish its graph asynchronously."""
 
         # 1. Respect the host's explicit exclusion and validate stable IDs.
         if (
@@ -468,7 +474,7 @@ class AkashaMemoryEngine:
                 "TurnCommitted requires persisted user and assistant IDs"
             )
 
-        # 2. Embed exact persisted text and update the canonical embedding cache.
+        # 2. Embed exact persisted text without blocking other provider calls.
         messages = _load_messages(
             self._sessions_path,
             event.session_key,
@@ -499,15 +505,42 @@ class AkashaMemoryEngine:
             vectors,
         )
 
-        # 3. Commit the matching ticket or recompute on the latest state.
-        with self._lock:
-            if self._pending.get(event.session_key) is pending:
-                self._pending.pop(event.session_key, None)
-            self._runtime.commit_from_source(
-                user_message_id=user_id,
-                assistant_message_id=assistant_id,
-                ticket=None if pending is None else pending.ticket,
+        # 3. Serialize durable staging behind the prior graph publication.
+        async with self._commit_gate:
+            await self._wait_for_publication()
+            with self._lock:
+                if self._pending.get(event.session_key) is pending:
+                    self._pending.pop(event.session_key, None)
+                staged = self._runtime.stage_from_source(
+                    user_message_id=user_id,
+                    assistant_message_id=assistant_id,
+                    ticket=None if pending is None else pending.ticket,
+                )
+            self._publish_task = asyncio.create_task(
+                asyncio.to_thread(self._publish_staged, staged),
+                name="akasha-publish-staged",
             )
+
+    async def aclose(self) -> None:
+        """Drain a staged graph publication before closing owned resources."""
+
+        await self._wait_for_publication()
+
+    async def _wait_for_publication(self) -> None:
+        """Wait for the current graph snapshot and preserve its failure."""
+
+        task = self._publish_task
+        if task is None:
+            return
+        await asyncio.shield(task)
+        if self._publish_task is task:
+            self._publish_task = None
+
+    def _publish_staged(self, staged: StagedOnlineCommit) -> None:
+        """Publish one staged suffix under the shared runtime lock."""
+
+        with self._lock:
+            self._runtime.publish_staged(staged)
 
     def _records(
         self,
