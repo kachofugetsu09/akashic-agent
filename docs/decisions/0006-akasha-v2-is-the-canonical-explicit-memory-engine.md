@@ -72,6 +72,8 @@
   下一轮提交；正式 workspace 的文件摘要与 mtime 不变。
 - Inspector 桌面 API、当前回复下方的移动端召回和移动端检索列表都只读取 V2 sidecar；
   左右脑内容与实际 Prompt 重建结果一致，且不暴露 Akasha Graph。
+- 移动 recall 卡片使用 `akasha.recall-card.v1` 有界投影，不包含完整正文或未渲染的
+  Inspector 字段；最坏 Unicode fixture 的编码结果小于 16KiB。
 
 完整调用链、状态所有权和迁移 Gate 见
 [`../design/akasha-v2-runtime-migration.md`](../design/akasha-v2-runtime-migration.md)。

@@ -159,6 +159,12 @@ Writer 交接前必须把允许范围内的修改提交成可引用 commit，或
 
 服务端消息先以实时投影到达客户端、后进入会话历史时，客户端可以使用 Core 提供的稳定投递身份引用它，不得把本地临时 ID 冒充 SessionDB message ID。Core 只在同一 session 中把唯一的主动 assistant 投递身份解析为 canonical 消息；历史同步完成后，客户端继续使用 canonical message ID。投递尚未进入 SessionDB 时保持明确失败，不为该边缘窗口提前写消息、伪造引用正文或新增隐式重试状态机。
 
+### MOB-006 插件实时控制与查询数据显式分面
+
+移动插件的目录变化、资源版本、查询授权、取消和实时事件属于控制面；体积可随业务内容增长的只读查询结果属于数据面。插件只有显式声明 HTTPS 传输时才使用数据面：已认证 WebSocket 签发绑定设备、请求摘要和短期有效期的授权，客户端从同一已校验 endpoint 派生 HTTPS origin，服务端在执行前重新验签并核对设备撤销状态。授权不创建持久会话、cursor 或 workspace 状态。
+
+未声明 HTTPS 的插件继续使用既有 WebSocket 内联 reply，不能被静默迁移或 fallback。HTTPS 查询仍复用同一 plugin revision、generation lease、owner、调度和取消语义；客户端不得把 ticket、HTTP response 或本地结果缓存提升为服务端权威事实。协议新增或修改时按跨仓库固定顺序提交 Core schema，再同步客户端 snapshot、source commit 和内容摘要。
+
 ## 5. Agent 任务合同
 
 本节参考 [OpenAI · Prompting guidance for GPT-5.6](https://developers.openai.com/api/docs/guides/prompt-guidance-gpt-5p6)，并按本项目的数据与权限边界收窄。外部指南提供设计依据，不会自动覆盖本文件条款；指南更新需要评审后再修改 PRM 条款。
@@ -406,6 +412,12 @@ Skill、Drift skill 和 MCP server 都由插件包声明并通过插件安装系
 ### PLG-010 卸载插件默认保留 plugin-data
 
 插件代码、安装清单和 workspace 内 `plugin-data` 使用不同生命周期。普通卸载只移除插件 cache、manifest entry 和能力投影，必须保留 `<workspace>/plugin-data/<plugin>-<marketplace>/`。永久删除插件数据需要名称不同的用户操作、影响预览、独立备份和再次确认，不能作为卸载的隐式 cascade。
+
+### PLG-011 移动插件拥有有界语义投影
+
+插件只读查询可以服务桌面 Inspector 与移动卡片，但两者不是同一个 DTO。插件拥有移动端语义投影：只返回界面实际渲染的字段，显式版本化 schema，并对条目数、文本预览和编码后体积建立可执行上限。完整正文、调试轨迹和桌面详情不得因为“客户端可以自己裁切”而进入移动卡片结果。
+
+Core 只负责通用传输、认证、revision、generation lease、调度、取消和总响应上限，不猜测插件字段；Mobile 只负责端点信任、本地可重建缓存、异步桥接和展示，不从被裁掉的字段恢复语义。投影缺少内部必需字段时 fail-loud，不能用空值或旧的完整响应静默回退。
 
 ## 11. Workspace、文件和进程
 
