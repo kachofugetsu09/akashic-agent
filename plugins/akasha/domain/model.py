@@ -43,6 +43,15 @@ class MemoryConfig:
 
 
 @dataclass(frozen=True)
+class TurnFeedback:
+    """Carry canonical Message-level feedback into one causal commit."""
+
+    remember_nodes: tuple[int, ...] = ()
+    forget_nodes: tuple[int, ...] = ()
+    remember_boost: float = 1.0
+
+
+@dataclass(frozen=True)
 class Turn:
     """Hold one committed user/assistant turn in global causal order."""
 
@@ -61,6 +70,7 @@ class Turn:
     user_terms: tuple[tuple[str, int], ...]
     assistant_terms: tuple[tuple[str, int], ...]
     inter_gap_seconds: float | None
+    feedback: TurnFeedback = TurnFeedback()
 
 
 @dataclass(frozen=True)

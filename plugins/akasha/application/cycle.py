@@ -24,6 +24,7 @@ from ..domain.model import (
     PlasticityResult,
     SeedEvidence,
     Turn,
+    TurnFeedback,
 )
 
 
@@ -79,6 +80,7 @@ class MemoryCycle:
         self.evidence: list[SeedEvidence] = []
         self.recalls: list[RecallCapture] = []
         self.burst_members: dict[str, list[int]] = {}
+        self.inhibited_nodes: set[int] = set()
 
     @classmethod
     def restore(
@@ -116,6 +118,7 @@ class MemoryCycle:
             session: list(members)
             for session, members in burst_members.items()
         }
+        cycle.inhibited_nodes = _feedback_state(turns)
         return cycle
 
     @property
@@ -145,6 +148,7 @@ class MemoryCycle:
             turn,
             capture_paths,
         )
+        inhibited = frozenset(self.inhibited_nodes)
         evidence = decision.evidence
 
         # 3. Advance topology and causal clocks inside a reversible read frame.
@@ -185,6 +189,7 @@ class MemoryCycle:
                     context_dependence=decision.context_dependence,
                     visible_nodes=decision.visible_nodes,
                     burst_continued=decision.continued,
+                    inhibited_nodes=inhibited,
                 )
             )
         finally:
@@ -259,19 +264,39 @@ class MemoryCycle:
                 for event in self.events
             ]
 
-        # 3. Learn the accepted retrieval activity exactly once.
+        # 3. Apply durable feedback only after the pre-feedback read has ended.
+        feedback = causal_turn.feedback
+        _validate_feedback(feedback, self.state_version)
+        self.inhibited_nodes.update(feedback.forget_nodes)
+        self.inhibited_nodes.difference_update(feedback.remember_nodes)
+        inhibited = frozenset(self.inhibited_nodes)
+        self.graph.apply_feedback_inhibition(inhibited)
+        learning_evidence = selected.evidence
+        learning_diffusion = selected.diffusion
+
+        # 4. Learn retrieved activity, then reinforce only the addressed episode.
         plasticity = replace(
             self.graph.learn(
                 self.state_version,
-                selected.evidence,
-                selected.diffusion,
+                learning_evidence,
+                learning_diffusion,
             ),
-            pushes=selected.diffusion.pushes,
-            residual_l1=selected.diffusion.residual_l1,
+            pushes=learning_diffusion.pushes,
+            residual_l1=learning_diffusion.residual_l1,
+        )
+        self.graph.reinforce_feedback_nodes(
+            feedback.remember_nodes,
+            feedback.remember_boost,
         )
         self.turns.append(causal_turn)
 
-        # 4. Advance only the committed turn's stream-local visible burst.
+        # 5. Advance only the committed turn's stream-local visible burst.
+        for active in self.burst_members.values():
+            active[:] = [
+                node
+                for node in active
+                if node not in self.inhibited_nodes
+            ]
         members = self.burst_members.setdefault(
             causal_turn.session_key,
             [],
@@ -282,10 +307,14 @@ class MemoryCycle:
             members[:] = [causal_turn.node_id]
         pool = self.feature_pool or BurstAwareFeaturePool(self.turns)
         self.context = pool.build_context(
-            tuple((node, 1.0) for node in members)
+            tuple(
+                (node, 1.0)
+                for node in members
+                if node not in self.inhibited_nodes
+            )
         )
         self.events.append(plasticity)
-        self.evidence.append(selected.evidence)
+        self.evidence.append(learning_evidence)
         if selected.completion_evaluated:
             self.recalls.append(
                 RecallCapture(
@@ -295,8 +324,8 @@ class MemoryCycle:
             )
         return CycleCommit(
             event=plasticity,
-            evidence=selected.evidence,
-            diffusion=selected.diffusion,
+            evidence=learning_evidence,
+            diffusion=learning_diffusion,
             retrieval_recomputed=recomputed,
         )
 
@@ -327,7 +356,11 @@ class MemoryCycle:
                 visible_nodes=(),
                 context=ContextState((), None, ()),
             )
-        visible = tuple(self.burst_members.get(turn.session_key, ()))
+        visible = tuple(
+            node
+            for node in self.burst_members.get(turn.session_key, ())
+            if node not in self.inhibited_nodes
+        )
         context = (
             pool.build_context(
                 tuple((node, 1.0) for node in visible)
@@ -341,6 +374,28 @@ class MemoryCycle:
             visible,
             capture_channels,
         )
+
+
+def _feedback_state(turns: list[Turn]) -> set[int]:
+    inhibited: set[int] = set()
+    for event, turn in enumerate(turns):
+        _validate_feedback(turn.feedback, event)
+        inhibited.update(turn.feedback.forget_nodes)
+        inhibited.difference_update(turn.feedback.remember_nodes)
+    return inhibited
+
+
+def _validate_feedback(feedback: TurnFeedback, event: int) -> None:
+    remember = feedback.remember_nodes
+    forget = feedback.forget_nodes
+    if set(remember) & set(forget):
+        raise ValueError("remember and forget targets cannot overlap")
+    if any(node < 0 or node > event for node in remember):
+        raise ValueError("remember targets must be causally available")
+    if any(node < 0 or node >= event for node in forget):
+        raise ValueError("forget targets must be historical")
+    if not 1.0 <= feedback.remember_boost <= 3.0:
+        raise ValueError("remember boost must be in [1, 3]")
 
 
 def _empty_completion(

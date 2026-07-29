@@ -22,6 +22,9 @@ class CanonicalTurn:
     assistant_text: str
     user_embedding: np.ndarray | None
     assistant_embedding: np.ndarray | None
+    remember_target_turn_ids: tuple[str, ...]
+    forget_target_turn_ids: tuple[str, ...]
+    remember_boost: float
 
 
 @dataclass(frozen=True)

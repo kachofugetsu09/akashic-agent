@@ -10,12 +10,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from time import monotonic
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from zoneinfo import ZoneInfo
 
 import numpy as np
 
 from agent.config_models import Config
+from agent.control.context import current_turn_id
+from agent.tools.base import Tool
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import (
     EngineProfile,
@@ -81,6 +83,120 @@ class ActiveRecallSnapshot:
     records: RetrievalRecords
 
 
+@dataclass(frozen=True)
+class AkashaFeedbackMarker:
+    """Persist one agent-selected Message-level feedback event."""
+
+    action: Literal["remember", "forget"]
+    target_message_ids: tuple[str, ...]
+    target_turn_ids: tuple[str, ...]
+    reason: str
+
+    @property
+    def extra_key(self) -> str:
+        return (
+            "akasha_reinforce"
+            if self.action == "remember"
+            else "akasha_forget"
+        )
+
+    def payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "schema_version": 1,
+            "action": self.action,
+            "target_message_ids": list(self.target_message_ids),
+            "target_turn_ids": list(self.target_turn_ids),
+            "source": f"agent.{self.action}_memory",
+        }
+        if self.reason:
+            payload["reason"] = self.reason
+        if self.action == "remember":
+            payload["boost"] = 3.0
+        return payload
+
+
+class _AkashaFeedbackTool(Tool):
+    """Stage one of the two Message-level feedback primitives."""
+
+    name = "_akasha_feedback"
+    action: Literal["remember", "forget"]
+    description = "由 Akasha tool_profile 注入工具描述。"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "message_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+            },
+            "reason": {"type": "string"},
+        },
+        "required": ["message_ids"],
+        "additionalProperties": False,
+    }
+
+    def __init__(
+        self,
+        memory: AkashaMemoryEngine,
+        spec: MemoryToolSpec,
+    ) -> None:
+        self._memory = memory
+        self.description = spec.description
+        self.parameters = spec.parameters
+
+    async def execute(
+        self,
+        message_ids: list[str],
+        reason: str = "",
+        **_: Any,
+    ) -> str:
+        return json.dumps(
+            self._memory.stage_feedback(
+                turn_id=current_turn_id.get(),
+                action=self.action,
+                message_ids=message_ids,
+                reason=reason,
+            ),
+            ensure_ascii=False,
+        )
+
+
+class AkashaRememberTool(_AkashaFeedbackTool):
+    """Strengthen selected history or the user's current correction."""
+
+    name = "remember_memory"
+    action = "remember"
+
+
+class AkashaForgetTool(_AkashaFeedbackTool):
+    """Suppress selected history without inventing a replacement."""
+
+    name = "forget_memory"
+    action = "forget"
+
+
+class AkashaFeedbackPersistModule:
+    """Export staged feedback markers into the current user message."""
+
+    slot = "akasha.feedback.persist"
+    requires = ("after_reasoning.emit", "reasoning:ctx")
+
+    def __init__(self, plugin: Any) -> None:
+        self._plugin = plugin
+
+    async def run(self, frame: Any) -> Any:
+        engine = self._plugin.context.memory_engine
+        if engine is None or engine.describe().name != "akasha":
+            return frame
+        markers = cast(
+            AkashaMemoryEngine,
+            engine,
+        ).take_staged_feedback(current_turn_id.get())
+        for marker in markers:
+            frame.slots[f"persist:user:{marker.extra_key}"] = marker.payload()
+        return frame
+
+
 class AkashaMemoryEngine:
     """Adapt the standalone explicit memory runtime to Akasic Agent."""
 
@@ -100,7 +216,8 @@ class AkashaMemoryEngine:
         notes={
             "truth": "sessions.db/messages",
             "learning": "unsupervised_memory_cycle",
-            "external_reinforcement": "ignored_by_design",
+            "message_feedback": "remember_and_forget_markers",
+            "legacy_item_reinforcement": "ignored_by_design",
         },
     )
 
@@ -161,6 +278,10 @@ class AkashaMemoryEngine:
         self._commit_gate = asyncio.Lock()
         self._publish_task: asyncio.Task[None] | None = None
         self._pending: dict[str, PendingRetrieval] = {}
+        self._staged_feedback: dict[
+            str,
+            dict[Literal["remember", "forget"], AkashaFeedbackMarker],
+        ] = {}
         self.closeables: list[object] = [
             self._runtime,
             self._embedding_store,
@@ -360,7 +481,182 @@ class AkashaMemoryEngine:
                     "required": ["query"],
                 },
                 search_hint="历史对话 情景回忆 关联记忆",
+            ),
+            tools=(
+                MemoryToolSpec(
+                    name="remember_memory",
+                    description=(
+                        "记住或强化用户明确确认正确、有用、以后应优先的内容。"
+                        "参数接受 fetch_messages 返回的 Message ID；如果正确内容就在"
+                        "用户当前消息里，传保留值 current_user_message。"
+                        "不要传 recall_memory 的记忆条目 id、会话 source_ref 或 "
+                        "Akasha 图节点 id。"
+                        "调用前必须先用 recall_memory 或 search_messages 找候选，再用 "
+                        "fetch_messages 读取原文并取得 messages[].id。"
+                        "recall_memory 返回的 evidence[].refs 是可回源的 Message ID；"
+                        "不要把仅表示会话的 evidence[].source_ref 当作 Message ID。"
+                        "用户纠正旧内容时，用 forget_memory 忘记旧 Message，再用本工具"
+                        "记住正确 Message 或 current_user_message；没有第三种 correct 动作。"
+                        "仅仅回答了一个问题、召回了一段历史或模型自行觉得重要，不得调用。"
+                    ),
+                    parameters=AkashaRememberTool.parameters,
+                    risk="write",
+                    search_hint="记住 强化 偏好 正确纠正",
+                    tool_class=AkashaRememberTool,
+                ),
+                MemoryToolSpec(
+                    name="forget_memory",
+                    description=(
+                        "忘记或抑制用户明确要求撤回、判错、过时或不再使用的历史内容。"
+                        "参数只接受 fetch_messages 返回的旧 Message ID；"
+                        "不要传 recall_memory 记忆条目 id、会话 source_ref、"
+                        "Akasha 图节点 id 或 current_user_message。"
+                        "调用前必须先 recall_memory 或 search_messages，再用 "
+                        "fetch_messages 读原文并取得 messages[].id。"
+                        "如果用户同时给出正确替代，先用本工具忘记旧 Message，"
+                        "再调用 remember_memory 记住正确 Message 或 "
+                        "current_user_message；没有第三种 correct 动作。"
+                        "如果只是纯忘记，只调用本工具，并在成功后中性确认；"
+                        "不得把被忘内容的反命题当成新事实或新偏好。"
+                        "上一段对话已经结束也不受影响：定位旧 Message ID 后在本轮调用，"
+                        "系统会把它转换成 Akasha turn。"
+                    ),
+                    parameters=AkashaForgetTool.parameters,
+                    risk="write",
+                    search_hint="忘记 撤回 错误 过时 不要再提",
+                    tool_class=AkashaForgetTool,
+                ),
+            ),
+        )
+
+    def stage_feedback(
+        self,
+        *,
+        turn_id: str,
+        action: str,
+        message_ids: list[str],
+        reason: str,
+    ) -> dict[str, object]:
+        """Resolve Message IDs and stage one marker for this active turn."""
+
+        # 1. Validate the agent tool boundary before resolving graph identity.
+        clean_ids = _clean_feedback_message_ids(message_ids)
+        clean_reason = reason.strip()
+        error = _feedback_request_error(
+            turn_id=turn_id,
+            action=action,
+            message_ids=clean_ids,
+            reason=clean_reason,
+        )
+        if error is not None:
+            return error
+
+        # 2. Convert public Message identities to canonical Akasha turns.
+        resolved = self._resolve_and_stage_feedback(
+            turn_id=turn_id,
+            action=cast(
+                Literal["remember", "forget"],
+                action,
+            ),
+            message_ids=clean_ids,
+            reason=clean_reason,
+        )
+        if isinstance(resolved, dict):
+            return resolved
+        marker = resolved
+
+        # 3. Report staging honestly; persistence happens after reasoning.
+        return {
+            "status": "staged",
+            "action": marker.action,
+            "target_message_ids": list(marker.target_message_ids),
+            "target_turn_ids": list(marker.target_turn_ids),
+            "applies_after": "current_turn_commit",
+        }
+
+    def _resolve_and_stage_feedback(
+        self,
+        *,
+        turn_id: str,
+        action: Literal["remember", "forget"],
+        message_ids: list[str],
+        reason: str,
+    ) -> AkashaFeedbackMarker | dict[str, object]:
+        """Resolve Message IDs and atomically merge one active-turn marker."""
+
+        with self._lock:
+            turns_by_message = {
+                message_id: turn
+                for turn in self._runtime.cycle.turns
+                for message_id in (
+                    turn.user_message_id,
+                    turn.assistant_message_id,
+                )
+            }
+            missing = [
+                message_id
+                for message_id in message_ids
+                if (
+                    message_id not in turns_by_message
+                    and not (
+                        action == "remember"
+                        and message_id == "current_user_message"
+                    )
+                )
+            ]
+            if missing:
+                return _missing_feedback_messages(missing)
+            marker = AkashaFeedbackMarker(
+                action=action,
+                target_message_ids=tuple(message_ids),
+                target_turn_ids=tuple(
+                    dict.fromkeys(
+                        (
+                            "current_turn"
+                            if message_id == "current_user_message"
+                            else turns_by_message[message_id].turn_id
+                        )
+                        for message_id in message_ids
+                    )
+                ),
+                reason=reason,
             )
+            staged = self._staged_feedback.setdefault(turn_id, {})
+            opposite = staged.get(
+                "forget" if action == "remember" else "remember"
+            )
+            overlap = (
+                set(marker.target_turn_ids)
+                & set(opposite.target_turn_ids)
+                if opposite is not None
+                else set()
+            )
+            if overlap:
+                return {
+                    "status": "not_staged",
+                    "error": "conflicting_feedback_actions",
+                    "target_turn_ids": sorted(overlap),
+                }
+            previous = staged.get(action)
+            if previous is not None:
+                marker = _merge_feedback_markers(previous, marker)
+            staged[action] = marker
+            return marker
+
+    def take_staged_feedback(
+        self,
+        turn_id: str,
+    ) -> tuple[AkashaFeedbackMarker, ...]:
+        """Consume both marker primitives owned by one active host turn."""
+
+        if not turn_id:
+            return ()
+        with self._lock:
+            staged = self._staged_feedback.pop(turn_id, {})
+        return tuple(
+            staged[action]
+            for action in ("forget", "remember")
+            if action in staged
         )
 
     def keyword_match_procedures(
@@ -606,6 +902,8 @@ class AkashaMemoryEngine:
         }
         dense_candidates = []
         for turn in turns:
+            if turn.node_id in self._runtime.cycle.inhibited_nodes:
+                continue
             score = _dense_score(cue.user_dense, turn)
             if score is None or not _matches_filters(
                 turn,
@@ -878,6 +1176,92 @@ def _format_records(
 
 def _json_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
+
+
+def _clean_feedback_message_ids(message_ids: list[str]) -> list[str]:
+    clean: list[str] = []
+    seen: set[str] = set()
+    for raw in message_ids:
+        message_id = str(raw).strip()
+        if message_id and message_id not in seen:
+            seen.add(message_id)
+            clean.append(message_id)
+    return clean
+
+
+def _feedback_request_error(
+    *,
+    turn_id: str,
+    action: str,
+    message_ids: list[str],
+    reason: str,
+) -> dict[str, object] | None:
+    if not turn_id:
+        return {"status": "not_staged", "error": "no_active_turn"}
+    if action not in {"remember", "forget"}:
+        return {"status": "not_staged", "error": "invalid_action"}
+    if not message_ids:
+        return {"status": "not_staged", "error": "message_ids_required"}
+    if len(message_ids) > 20:
+        return {
+            "status": "not_staged",
+            "error": "too_many_message_ids",
+            "maximum": 20,
+        }
+    if action == "forget" and "current_user_message" in message_ids:
+        return {
+            "status": "not_staged",
+            "error": "cannot_forget_current_user_message",
+        }
+    if len(reason) > 500:
+        return {
+            "status": "not_staged",
+            "error": "reason_too_long",
+            "maximum": 500,
+        }
+    return None
+
+
+def _missing_feedback_messages(
+    message_ids: list[str],
+) -> dict[str, object]:
+    return {
+        "status": "not_staged",
+        "error": "messages_not_in_akasha",
+        "missing_message_ids": message_ids,
+        "hint": (
+            "请重新 fetch_messages，并只选择完整 "
+            "user/assistant 回合中的消息 ID。"
+        ),
+    }
+
+
+def _merge_feedback_markers(
+    previous: AkashaFeedbackMarker,
+    current: AkashaFeedbackMarker,
+) -> AkashaFeedbackMarker:
+    if previous.action != current.action:
+        raise ValueError("feedback marker actions must match")
+    return AkashaFeedbackMarker(
+        action=current.action,
+        target_message_ids=tuple(
+            dict.fromkeys(
+                [
+                    *previous.target_message_ids,
+                    *current.target_message_ids,
+                ]
+            )
+        ),
+        target_turn_ids=tuple(
+            dict.fromkeys(
+                [
+                    *previous.target_turn_ids,
+                    *current.target_turn_ids,
+                ]
+            )
+        ),
+        reason=current.reason or previous.reason,
+    )
 
 
 def _parse_turn_time(value: str) -> datetime:

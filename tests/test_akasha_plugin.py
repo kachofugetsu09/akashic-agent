@@ -20,6 +20,7 @@ from agent.config_models import (
     MemoryConfig as HostMemoryConfig,
     MemoryEmbeddingConfig,
 )
+from agent.control.context import current_turn_id
 from agent.looping.ports import MemoryServices
 from agent.plugins import Plugin
 from agent.plugins.context import PluginContext, PluginKVStore
@@ -30,13 +31,18 @@ from agent.plugins.manifest import (
 from agent.tools.recall_memory import RecallMemoryTool
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.retrieval.protocol import RetrievalRequest
+from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryQuery, MemoryScope
 from core.memory.plugin import MemoryPlugin as MemoryPluginProtocol
 from plugins.akasha.application.rebuild import rebuild_memory
 from plugins.akasha.config import AkashaConfig, render_akasha_config
 from plugins.akasha.dashboard import register as register_dashboard
-from plugins.akasha.engine import ActiveRecallSnapshot, AkashaMemoryEngine
+from plugins.akasha.engine import (
+    ActiveRecallSnapshot,
+    AkashaFeedbackPersistModule,
+    AkashaMemoryEngine,
+)
 from plugins.akasha.inspector import AkashaInspectorReader
 from plugins.akasha.infrastructure.persistence import (
     logical_state_sha256,
@@ -73,6 +79,7 @@ def test_akasha_v2_registers_both_host_protocols() -> None:
     assert isinstance(plugin, Plugin)
     assert isinstance(MemoryPlugin(), MemoryPluginProtocol)
     assert MemoryPlugin.plugin_id == "akasha"
+    assert len(plugin.after_reasoning_modules()) == 1
     assert plugin.dashboard_module() == "dashboard.py"
     mobile = plugin.mobile_ui()
     assert mobile.module == "mobile_ui.js"
@@ -80,6 +87,296 @@ def test_akasha_v2_registers_both_host_protocols() -> None:
     assert mobile.slots == ("turn.before_reasoning",)
     assert mobile.navigation is not None
     assert mobile.navigation.label == "Akasha Inspector"
+
+
+def test_feedback_marker_is_exported_before_user_message_persistence() -> None:
+    # Import after passive-turn modules settle their lifecycle import cycle.
+    from agent.lifecycle.phases import default_after_reasoning_modules
+
+    plugin = AkashaPlugin()
+    modules = default_after_reasoning_modules(
+        EventBus(),
+        cast(Any, SimpleNamespace()),
+        cast(Any, plugin.after_reasoning_modules()),
+    )
+    slots = [module.slot for module in modules]
+
+    assert slots.index("akasha.feedback.persist") < slots.index(
+        "after_reasoning.persist_user"
+    )
+
+
+@pytest.mark.asyncio
+async def test_feedback_persistence_is_inert_when_akasha_is_not_active() -> None:
+    frame = SimpleNamespace(slots={"existing": "value"})
+    owner = SimpleNamespace(
+        context=SimpleNamespace(memory_engine=None)
+    )
+
+    result = await AkashaFeedbackPersistModule(owner).run(frame)
+
+    assert result is frame
+    assert frame.slots == {"existing": "value"}
+
+
+@pytest.mark.asyncio
+async def test_feedback_tools_compose_correction_from_two_markers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Compose correction from forget plus remember without a third action."""
+
+    # 1. Build one historical turn addressable by either Message ID.
+    _create_sessions(tmp_path / "sessions.db")
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    _append_turn(
+        tmp_path / "sessions.db",
+        sequence=0,
+        user="old wrong answer",
+        assistant="incorrect detail",
+        started=started,
+    )
+    await engine._on_turn_committed(  # noqa: SLF001
+        _event(
+            sequence=0,
+            user="old wrong answer",
+            assistant="incorrect detail",
+            started=started,
+        )
+    )
+    await engine._wait_for_publication()  # noqa: SLF001
+
+    # 2. Forget the old Message and remember the current user correction.
+    specs = {spec.name: spec for spec in engine.tool_profile().tools}
+    assert set(specs) == {"remember_memory", "forget_memory"}
+    forget_spec = specs["forget_memory"]
+    remember_spec = specs["remember_memory"]
+    assert forget_spec.risk == "write"
+    assert remember_spec.risk == "write"
+    assert forget_spec.tool_class is not None
+    assert remember_spec.tool_class is not None
+    forget = forget_spec.tool_class(engine, forget_spec)
+    remember = remember_spec.tool_class(engine, remember_spec)
+    token = current_turn_id.set("turn:feedback")
+    try:
+        forgotten = json.loads(
+            await forget.execute(
+                message_ids=["message:1"],
+                reason="old assistant answer is wrong",
+            )
+        )
+        reinforced = json.loads(
+            await remember.execute(
+                message_ids=["current_user_message"],
+                reason="the current user message supplies the correction",
+            )
+        )
+        assert forgotten == {
+            "status": "staged",
+            "action": "forget",
+            "target_message_ids": ["message:1"],
+            "target_turn_ids": ["message:0::message:1"],
+            "applies_after": "current_turn_commit",
+        }
+        assert reinforced == {
+            "status": "staged",
+            "action": "remember",
+            "target_message_ids": ["current_user_message"],
+            "target_turn_ids": ["current_turn"],
+            "applies_after": "current_turn_commit",
+        }
+
+        # 3. Export both independent markers onto the current user Message.
+        frame = SimpleNamespace(slots={})
+        owner = SimpleNamespace(
+            context=SimpleNamespace(memory_engine=engine)
+        )
+        await AkashaFeedbackPersistModule(owner).run(frame)
+        forgotten_marker = frame.slots["persist:user:akasha_forget"]
+        remembered_marker = frame.slots["persist:user:akasha_reinforce"]
+        assert forgotten_marker["action"] == "forget"
+        assert forgotten_marker["target_message_ids"] == ["message:1"]
+        assert forgotten_marker["target_turn_ids"] == [
+            "message:0::message:1"
+        ]
+        assert remembered_marker["action"] == "remember"
+        assert remembered_marker["target_message_ids"] == [
+            "current_user_message"
+        ]
+        assert remembered_marker["target_turn_ids"] == ["current_turn"]
+        assert engine.take_staged_feedback("turn:feedback") == ()
+    finally:
+        current_turn_id.reset(token)
+        _close_engine(engine)
+
+
+@pytest.mark.asyncio
+async def test_feedback_tool_rejects_memory_item_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Require Message identities even when the turn ID looks plausible."""
+
+    _create_sessions(tmp_path / "sessions.db")
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    engine = _engine(tmp_path)
+    try:
+        spec = next(
+            spec
+            for spec in engine.tool_profile().tools
+            if spec.name == "forget_memory"
+        )
+        assert spec.tool_class is not None
+        tool = spec.tool_class(engine, spec)
+        token = current_turn_id.set("turn:feedback")
+        try:
+            result = json.loads(
+                await tool.execute(
+                    message_ids=["message:0::message:1"],
+                )
+            )
+        finally:
+            current_turn_id.reset(token)
+        assert result["status"] == "not_staged"
+        assert result["error"] == "messages_not_in_akasha"
+
+        token = current_turn_id.set("turn:feedback")
+        try:
+            current = json.loads(
+                await tool.execute(
+                    message_ids=["current_user_message"],
+                )
+            )
+        finally:
+            current_turn_id.reset(token)
+        assert current["status"] == "not_staged"
+        assert current["error"] == "cannot_forget_current_user_message"
+    finally:
+        _close_engine(engine)
+
+
+@pytest.mark.asyncio
+async def test_feedback_markers_change_future_recall_and_replay_identically(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Persist tool markers, suppress future recall, and reproduce the graph."""
+
+    # 1. Commit one wrong historical turn, then stage a current correction.
+    sessions = tmp_path / "sessions.db"
+    _create_sessions(sessions)
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    engine = _engine(tmp_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    _append_turn(
+        sessions,
+        sequence=0,
+        user="alpha old wrong claim",
+        assistant="wrong answer",
+        started=started,
+    )
+    await engine._on_turn_committed(  # noqa: SLF001
+        _event(
+            sequence=0,
+            user="alpha old wrong claim",
+            assistant="wrong answer",
+            started=started,
+        )
+    )
+    await engine._wait_for_publication()  # noqa: SLF001
+    specs = {spec.name: spec for spec in engine.tool_profile().tools}
+    forget_spec = specs["forget_memory"]
+    remember_spec = specs["remember_memory"]
+    assert forget_spec.tool_class is not None
+    assert remember_spec.tool_class is not None
+    forget = forget_spec.tool_class(engine, forget_spec)
+    remember = remember_spec.tool_class(engine, remember_spec)
+    token = current_turn_id.set("turn:correction")
+    try:
+        assert json.loads(
+            await forget.execute(message_ids=["message:1"])
+        )["status"] == "staged"
+        assert json.loads(
+            await remember.execute(
+                message_ids=["current_user_message"]
+            )
+        )["status"] == "staged"
+        frame = SimpleNamespace(slots={})
+        owner = SimpleNamespace(
+            context=SimpleNamespace(memory_engine=engine)
+        )
+        await AkashaFeedbackPersistModule(owner).run(frame)
+    finally:
+        current_turn_id.reset(token)
+
+    # 2. Persist those marker fields on the next canonical user Message.
+    correction_time = started + timedelta(minutes=5)
+    user_extra = {
+        key.removeprefix("persist:user:"): value
+        for key, value in frame.slots.items()
+    }
+    _append_turn(
+        sessions,
+        sequence=2,
+        user="beta corrected claim",
+        assistant="correction accepted",
+        started=correction_time,
+        user_extra=user_extra,
+    )
+    await engine._on_turn_committed(  # noqa: SLF001
+        _event(
+            sequence=2,
+            user="beta corrected claim",
+            assistant="correction accepted",
+            started=correction_time,
+        )
+    )
+    await engine._wait_for_publication()  # noqa: SLF001
+
+    assert engine._runtime.cycle.inhibited_nodes == {0}  # noqa: SLF001
+    correction = engine._runtime.cycle.turns[1]  # noqa: SLF001
+    assert correction.feedback.forget_nodes == (0,)
+    assert correction.feedback.remember_nodes == (1,)
+    with closing(
+        sqlite3.connect(tmp_path / "memory" / "akasha.db")
+    ) as connection:
+        assert connection.execute(
+            """
+            SELECT event_id, action, target_turn_node_id, boost
+            FROM feedback_events
+            ORDER BY event_id, action, target_turn_node_id
+            """
+        ).fetchall() == [
+            (1, "forget", 0, 1.0),
+            (1, "remember", 1, 3.0),
+        ]
+
+    # 3. Future direct-dense and graph completion lanes hide the old turn.
+    recalled = await engine.query(
+        _query(
+            "alpha old wrong claim",
+            correction_time + timedelta(minutes=5),
+            intent="answer",
+        )
+    )
+    assert all(
+        record.id != "message:0::message:1"
+        for record in recalled.records
+    )
+
+    # 4. A clean replay consumes the marker and hashes identically.
+    replay = tmp_path / "memory" / "feedback-replay.db"
+    rebuild_memory(
+        tmp_path / "memory" / "akasha-v2-index.db",
+        replay,
+        target_sequences=(),
+    )
+    assert logical_state_sha256(
+        tmp_path / "memory" / "akasha.db"
+    ) == logical_state_sha256(replay)
+    _close_engine(engine)
 
 
 def test_mobile_recall_card_projection_is_bounded() -> None:
@@ -669,6 +966,7 @@ def _append_turn(
     session_key: str = "test:one",
     with_embeddings: bool = False,
     assistant_tool_chain: str | None = None,
+    user_extra: dict[str, object] | None = None,
 ) -> None:
     assistant_time = started + timedelta(seconds=10)
     with closing(sqlite3.connect(path)) as connection, connection:
@@ -684,7 +982,11 @@ def _append_turn(
                     "user",
                     user,
                     None,
-                    None,
+                    (
+                        None
+                        if user_extra is None
+                        else json.dumps(user_extra)
+                    ),
                     started.isoformat(),
                 ),
                 (

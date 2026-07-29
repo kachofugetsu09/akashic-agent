@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from collections import defaultdict
@@ -11,7 +12,8 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
-from ..domain.model import Turn
+from ..domain.model import Turn, TurnFeedback
+from .sparse_index.schema import INDEX_VERSION
 
 
 def load_turns(index_path: Path, max_turns: int | None = None) -> list[Turn]:
@@ -25,7 +27,9 @@ def load_turns(index_path: Path, max_turns: int | None = None) -> list[Turn]:
             """
             SELECT turn_id, session_key, user_seq,
                    user_message_id, assistant_message_id,
-                   started_at, committed_at, user_text, assistant_text
+                   started_at, committed_at, user_text, assistant_text,
+                   remember_targets_json, forget_targets_json,
+                   remember_boost
             FROM sparse_turns
             ORDER BY started_at, session_key, user_seq, turn_id
             """
@@ -46,7 +50,7 @@ def load_turns(index_path: Path, max_turns: int | None = None) -> list[Turn]:
 def _validate_index(connection: sqlite3.Connection) -> None:
     """Validate the read-only sparse-index trust boundary."""
 
-    required = {"sparse_turns", "turn_dense", "turn_terms"}
+    required = {"metadata", "sparse_turns", "turn_dense", "turn_terms"}
     actual = {
         row[0]
         for row in connection.execute(
@@ -56,6 +60,14 @@ def _validate_index(connection: sqlite3.Connection) -> None:
     missing = required - actual
     if missing:
         raise ValueError(f"sparse index is missing tables: {sorted(missing)}")
+    row = connection.execute(
+        "SELECT value FROM metadata WHERE key='index_version'"
+    ).fetchone()
+    if row is None or str(row[0]) != INDEX_VERSION:
+        actual_version = None if row is None else str(row[0])
+        raise ValueError(
+            f"unsupported sparse index version: {actual_version}"
+        )
 
 
 def _load_dense(
@@ -108,6 +120,10 @@ def _materialize_turns(
     """Attach validated features and derive global causal gaps."""
 
     turns: list[Turn] = []
+    node_by_turn = {
+        str(row["turn_id"]): node_id
+        for node_id, row in enumerate(rows)
+    }
     previous: datetime | None = None
     for node_id, row in enumerate(rows):
         started = _as_utc(row["started_at"])
@@ -117,6 +133,18 @@ def _materialize_turns(
         turn_id = row["turn_id"]
         user_dense = dense.get((turn_id, "user"))
         assistant_dense = dense.get((turn_id, "assistant"))
+        remember_nodes = _feedback_nodes(
+            row["remember_targets_json"],
+            node_by_turn,
+            turn_id,
+            "remember",
+        )
+        forget_nodes = _feedback_nodes(
+            row["forget_targets_json"],
+            node_by_turn,
+            turn_id,
+            "forget",
+        )
         turns.append(
             Turn(
                 node_id=node_id,
@@ -134,10 +162,37 @@ def _materialize_turns(
                 user_terms=terms.get((turn_id, "user"), ()),
                 assistant_terms=terms.get((turn_id, "assistant"), ()),
                 inter_gap_seconds=gap,
+                feedback=TurnFeedback(
+                    remember_nodes=remember_nodes,
+                    forget_nodes=forget_nodes,
+                    remember_boost=float(row["remember_boost"]),
+                ),
             )
         )
         previous = started
     return turns
+
+
+def _feedback_nodes(
+    raw: str,
+    node_by_turn: dict[str, int],
+    carrier_turn_id: str,
+    action: str,
+) -> tuple[int, ...]:
+    targets = json.loads(raw)
+    if (
+        not isinstance(targets, list)
+        or any(not isinstance(target, str) for target in targets)
+    ):
+        raise ValueError(
+            f"invalid {action} targets at turn {carrier_turn_id}"
+        )
+    try:
+        return tuple(node_by_turn[target] for target in targets)
+    except KeyError as error:
+        raise ValueError(
+            f"missing {action} target at turn {carrier_turn_id}: {error.args[0]}"
+        ) from error
 
 
 def _turn_sort_key(row: sqlite3.Row) -> tuple[datetime, bytes, int, bytes]:

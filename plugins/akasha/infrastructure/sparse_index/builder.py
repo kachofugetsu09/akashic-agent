@@ -7,7 +7,7 @@ import hashlib
 import math
 import sqlite3
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -16,10 +16,9 @@ import numpy as np
 
 from .encoding import LexicalState, lexical_identity, tokenize
 from .model import CanonicalTurn, SessionState, SparseFeature, TimeStats
-from .schema import SCHEMA
+from .schema import INDEX_VERSION, SCHEMA
 
 LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
-INDEX_VERSION = "7"
 INTERRUPTED_ASSISTANT_MARKER = "[interrupted]"
 
 
@@ -281,6 +280,7 @@ def _load_canonical_turns(
             turn.turn_id.encode("utf-8"),
         )
     )
+    turns = _resolve_feedback_targets(turns)
     return turns, missing_embeddings, excluded_interrupted
 
 
@@ -331,15 +331,19 @@ def _excluded_session(session_key: str) -> bool:
 
 
 def _skip_post_memory(message: sqlite3.Row) -> bool:
+    return bool(_message_extra(message).get("skip_post_memory"))
+
+
+def _message_extra(message: sqlite3.Row) -> dict[str, object]:
     raw = message["extra"]
     if not raw:
-        return False
+        return {}
     payload = json.loads(str(raw))
     if not isinstance(payload, dict):
         raise ValueError(
             f"message extra must be an object: {message['id']}"
         )
-    return bool(payload.get("skip_post_memory"))
+    return payload
 
 
 def _message_text(message: sqlite3.Row) -> str:
@@ -507,8 +511,23 @@ def _make_turn(
     assistant: sqlite3.Row,
     embeddings: dict[str, np.ndarray],
 ) -> CanonicalTurn:
+    turn_id = f"{user['id']}::{assistant['id']}"
+    remember_targets, remember_boost = _feedback_marker(
+        user,
+        key="akasha_reinforce",
+        action="remember",
+        carrier_turn_id=turn_id,
+        target_required=False,
+    )
+    forget_targets, _ = _feedback_marker(
+        user,
+        key="akasha_forget",
+        action="forget",
+        carrier_turn_id=turn_id,
+        target_required=True,
+    )
     return CanonicalTurn(
-        turn_id=f"{user['id']}::{assistant['id']}",
+        turn_id=turn_id,
         session_key=user["session_key"],
         user_seq=user["seq"],
         user_message_id=user["id"],
@@ -519,7 +538,148 @@ def _make_turn(
         assistant_text=assistant["content"] or "",
         user_embedding=embeddings.get(user["id"]),
         assistant_embedding=embeddings.get(assistant["id"]),
+        remember_target_turn_ids=remember_targets,
+        forget_target_turn_ids=forget_targets,
+        remember_boost=remember_boost,
     )
+
+
+def _feedback_marker(
+    message: sqlite3.Row,
+    *,
+    key: str,
+    action: str,
+    carrier_turn_id: str,
+    target_required: bool,
+) -> tuple[tuple[str, ...], float]:
+    """Validate one persisted marker and retain only graph-relevant fields."""
+
+    # 1. Distinguish absence from malformed marker data at the source boundary.
+    raw = _message_extra(message).get(key)
+    if raw is None:
+        return (), 1.0
+    if not isinstance(raw, dict):
+        raise ValueError(f"{key} must be an object: {message['id']}")
+    schema_version = raw.get("schema_version")
+    if schema_version not in (None, 1):
+        raise ValueError(
+            f"{key} has unsupported schema_version: {message['id']}"
+        )
+    marker_action = raw.get("action")
+    if marker_action is not None and marker_action != action:
+        raise ValueError(f"{key} action mismatch: {message['id']}")
+
+    # 2. Canonicalize stable turn targets; legacy reinforce marks its carrier.
+    target_value = raw.get("target_turn_ids")
+    if target_value is None:
+        if target_required:
+            raise ValueError(
+                f"{key} requires target_turn_ids: {message['id']}"
+            )
+        targets = (carrier_turn_id,)
+    else:
+        if (
+            not isinstance(target_value, list)
+            or not target_value
+            or any(
+                not isinstance(value, str) or not value.strip()
+                for value in target_value
+            )
+        ):
+            raise ValueError(
+                f"{key} target_turn_ids must be non-empty strings: "
+                f"{message['id']}"
+            )
+        targets = tuple(
+            dict.fromkeys(value.strip() for value in target_value)
+        )
+
+    # 3. Bound reinforcement gain before it can affect graph plasticity.
+    if action == "forget":
+        return targets, 1.0
+    boost_value = raw.get("boost", 3.0)
+    if isinstance(boost_value, bool) or not isinstance(
+        boost_value,
+        (int, float),
+    ):
+        raise ValueError(f"{key} boost must be numeric: {message['id']}")
+    boost = float(boost_value)
+    if not math.isfinite(boost) or not 1.0 <= boost <= 3.0:
+        raise ValueError(f"{key} boost must be in [1, 3]: {message['id']}")
+    return targets, boost
+
+
+def _resolve_feedback_targets(
+    turns: list[CanonicalTurn],
+) -> list[CanonicalTurn]:
+    """Resolve stable target turn IDs after establishing causal node order."""
+
+    positions = {turn.turn_id: index for index, turn in enumerate(turns)}
+    resolved = []
+    for event, turn in enumerate(turns):
+        remember = _resolve_marker_targets(
+            turn.remember_target_turn_ids,
+            carrier=turn,
+            event=event,
+            positions=positions,
+            allow_current=True,
+            action="remember",
+        )
+        forget = _resolve_marker_targets(
+            turn.forget_target_turn_ids,
+            carrier=turn,
+            event=event,
+            positions=positions,
+            allow_current=False,
+            action="forget",
+        )
+        overlap = set(remember) & set(forget)
+        if overlap:
+            raise ValueError(
+                f"feedback actions overlap at turn {turn.turn_id}: "
+                f"{sorted(overlap)}"
+            )
+        resolved.append(
+            replace(
+                turn,
+                remember_target_turn_ids=remember,
+                forget_target_turn_ids=forget,
+            )
+        )
+    return resolved
+
+
+def _resolve_marker_targets(
+    targets: tuple[str, ...],
+    *,
+    carrier: CanonicalTurn,
+    event: int,
+    positions: dict[str, int],
+    allow_current: bool,
+    action: str,
+) -> tuple[str, ...]:
+    canonical = tuple(
+        carrier.turn_id if target == "current_turn" else target
+        for target in targets
+    )
+    missing = sorted(set(canonical) - positions.keys())
+    if missing:
+        raise ValueError(
+            f"{action} target turns are not indexed at {carrier.turn_id}: "
+            f"{missing}"
+        )
+    future = sorted(
+        target
+        for target in set(canonical)
+        if positions[target] > event
+        or (positions[target] == event and not allow_current)
+    )
+    if future:
+        raise ValueError(
+            f"{action} target turns are not causally available at "
+            f"{carrier.turn_id}: {future}"
+        )
+    return tuple(sorted(set(canonical), key=positions.__getitem__))
 
 
 def _decode_embedding(blob: bytes, dimension: int) -> np.ndarray:
@@ -787,7 +947,15 @@ def _persist_sparse_payload(
     """Persist canonical text plus every non-zero sparse dimension."""
 
     connection.execute(
-        "INSERT INTO sparse_turns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        """
+        INSERT INTO sparse_turns(
+            turn_id, session_key, user_seq,
+            user_message_id, assistant_message_id,
+            started_at, committed_at, user_text, assistant_text,
+            remember_targets_json, forget_targets_json,
+            remember_boost, source_digest
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
         (
             turn.turn_id,
             turn.session_key,
@@ -798,6 +966,17 @@ def _persist_sparse_payload(
             turn.committed_at,
             turn.user_text,
             turn.assistant_text,
+            json.dumps(
+                turn.remember_target_turn_ids,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            json.dumps(
+                turn.forget_target_turn_ids,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            turn.remember_boost,
             _turn_digest(turn),
         ),
     )
@@ -830,6 +1009,17 @@ def _turn_digest(turn: CanonicalTurn) -> str:
         turn.committed_at,
         turn.user_text,
         turn.assistant_text,
+        json.dumps(
+            turn.remember_target_turn_ids,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        json.dumps(
+            turn.forget_target_turn_ids,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        turn.remember_boost.hex(),
     ):
         encoded = value.encode("utf-8")
         digest.update(len(encoded).to_bytes(8, "big"))
