@@ -145,7 +145,6 @@ def _replay(
             turn,
             capture_paths=event in targets,
             include_completion=True,
-            isolate_graph=False,
         )
         committed = cycle.commit(
             turn,

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import copy
 import math
+import threading
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,6 +65,7 @@ class OnlineMemoryRuntime:
         self.embedding_dimension = embedding_dimension
         self.config = config
         self._writer_lease = WriterLease(memory_path)
+        self._state_lock = threading.RLock()
         self.cycle = self._restore_or_replay()
 
     def close(self) -> None:
@@ -84,7 +85,6 @@ class OnlineMemoryRuntime:
         # 1. Validate and normalize the external embedding boundary.
         vector = _unit_dense(dense)
         started = _as_utc(timestamp)
-        gap = _global_gap(self.cycle.turns, started)
         terms = tuple(
             sorted(
                 tokenize(text).items(),
@@ -92,29 +92,31 @@ class OnlineMemoryRuntime:
             )
         )
 
-        # 2. Build the next causal turn shell and run the shared cycle.
-        event = self.cycle.state_version
-        turn = Turn(
-            node_id=event,
-            turn_id=f"pending:{session_key}:{started.isoformat()}",
-            session_key=session_key,
-            user_seq=-1,
-            user_message_id=f"pending:user:{event}",
-            assistant_message_id=f"pending:assistant:{event}",
-            started_at=started.isoformat(),
-            committed_at=started.isoformat(),
-            user_text=text,
-            assistant_text="",
-            user_dense=vector,
-            assistant_dense=None,
-            user_terms=terms,
-            assistant_terms=(),
-            inter_gap_seconds=gap,
-        )
-        return turn, self.cycle.retrieve(
-            turn,
-            capture_paths=capture_paths,
-        )
+        # 2. Preview the mutable graph under its owning runtime lock.
+        with self._state_lock:
+            gap = _global_gap(self.cycle.turns, started)
+            event = self.cycle.state_version
+            turn = Turn(
+                node_id=event,
+                turn_id=f"pending:{session_key}:{started.isoformat()}",
+                session_key=session_key,
+                user_seq=-1,
+                user_message_id=f"pending:user:{event}",
+                assistant_message_id=f"pending:assistant:{event}",
+                started_at=started.isoformat(),
+                committed_at=started.isoformat(),
+                user_text=text,
+                assistant_text="",
+                user_dense=vector,
+                assistant_dense=None,
+                user_terms=terms,
+                assistant_terms=(),
+                inter_gap_seconds=gap,
+            )
+            return turn, self.cycle.retrieve(
+                turn,
+                capture_paths=capture_paths,
+            )
 
     def commit_from_source(
         self,
@@ -176,50 +178,62 @@ class OnlineMemoryRuntime:
     ) -> OnlineCommit:
         """Apply one staged suffix and atomically publish its graph snapshot."""
 
-        # 1. Reject overlapping writers before cloning the published state.
+        with self._state_lock:
+            return self._publish_staged_locked(staged)
+
+    def _publish_staged_locked(
+        self,
+        staged: StagedOnlineCommit,
+    ) -> OnlineCommit:
+        """Publish one staged suffix while holding the graph ownership lock."""
+
+        # 1. Reject overlapping writers before mutating the published cache.
         if self.cycle.state_version != staged.base_version:
             raise RuntimeError(
                 "staged Akasha commit no longer matches published state"
             )
-        candidate = copy.deepcopy(self.cycle)
         last_commit: CycleCommit | None = None
         last_turn: Turn | None = None
-        for turn in staged.turns:
-            selected = _matching_ticket(
-                turn,
-                staged.user_message_id,
-                staged.assistant_message_id,
-                staged.ticket,
-            )
-            last_commit = candidate.commit(turn, selected)
-            last_turn = turn
-        if last_commit is None or last_turn is None:
-            raise RuntimeError("online commit produced no memory event")
-        if (
-            last_turn.user_message_id != staged.user_message_id
-            or last_turn.assistant_message_id != staged.assistant_message_id
-        ):
-            raise ValueError(
-                "TurnCommitted is not the latest canonical sparse turn"
-            )
+        try:
+            for turn in staged.turns:
+                selected = _matching_ticket(
+                    turn,
+                    staged.user_message_id,
+                    staged.assistant_message_id,
+                    staged.ticket,
+                )
+                last_commit = self.cycle.commit(turn, selected)
+                last_turn = turn
+            if last_commit is None or last_turn is None:
+                raise RuntimeError("online commit produced no memory event")
+            if (
+                last_turn.user_message_id != staged.user_message_id
+                or last_turn.assistant_message_id
+                != staged.assistant_message_id
+            ):
+                raise ValueError(
+                    "TurnCommitted is not the latest canonical sparse turn"
+                )
 
-        # 2. Publish one complete SQLite snapshot before adopting memory state.
-        if candidate.context is None:
-            raise RuntimeError("committed memory state has no context")
-        write_memory_database(
-            self.memory_path,
-            turns=candidate.turns,
-            graph=candidate.graph,
-            events=candidate.events,
-            evidence=candidate.evidence,
-            captures=[],
-            context=candidate.context,
-            burst_members=candidate.burst_members,
-            config=self.config,
-            metadata=deterministic_metadata(self.index_path),
-            recalls=candidate.recalls,
-        )
-        self.cycle = candidate
+            # 2. Publish durable state before exposing the completed transaction.
+            if self.cycle.context is None:
+                raise RuntimeError("committed memory state has no context")
+            write_memory_database(
+                self.memory_path,
+                turns=self.cycle.turns,
+                graph=self.cycle.graph,
+                events=self.cycle.events,
+                evidence=self.cycle.evidence,
+                captures=[],
+                context=self.cycle.context,
+                burst_members=self.cycle.burst_members,
+                config=self.config,
+                metadata=deterministic_metadata(self.index_path),
+                recalls=self.cycle.recalls,
+            )
+        except Exception:
+            self.cycle = self._restore_persisted_cycle()
+            raise
         return OnlineCommit(last_turn, last_commit)
 
     def _restore_or_replay(self) -> MemoryCycle:
@@ -248,6 +262,25 @@ class OnlineMemoryRuntime:
             return self._catch_up(cycle, turns)
 
         # 2. Restore the persisted prefix and replay only crash-window suffixes.
+        cycle, suffix = self._load_persisted_prefix(turns)
+        return self._catch_up(cycle, suffix)
+
+    def _restore_persisted_cycle(self) -> MemoryCycle:
+        """Reload exactly the durable prefix after an in-memory write failure."""
+
+        if not self.memory_path.exists():
+            return MemoryCycle(self.config)
+        turns = load_turns(self.index_path)
+        cycle, _ = self._load_persisted_prefix(turns)
+        cycle.feature_pool = None
+        return cycle
+
+    def _load_persisted_prefix(
+        self,
+        turns: list[Turn],
+    ) -> tuple[MemoryCycle, list[Turn]]:
+        """Restore the durable prefix and return its unprocessed source suffix."""
+
         persisted = memory_turn_count(self.memory_path)
         if persisted > len(turns):
             raise ValueError(
@@ -282,7 +315,7 @@ class OnlineMemoryRuntime:
             if turns
             else None
         )
-        return self._catch_up(cycle, turns[persisted:])
+        return cycle, turns[persisted:]
 
     def _catch_up(
         self,
@@ -294,10 +327,7 @@ class OnlineMemoryRuntime:
         for turn in turns:
             cycle.commit(
                 turn,
-                cycle.retrieve(
-                    turn,
-                    isolate_graph=False,
-                ),
+                cycle.retrieve(turn),
             )
         cycle.feature_pool = None
         if not turns:
