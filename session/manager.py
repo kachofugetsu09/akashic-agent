@@ -18,7 +18,6 @@ from session.store import SessionStore
 
 _TOOL_RESULT_CHAR_BUDGET = 10000
 _STORED_TOOL_RESULT_CHAR_BUDGET = 20000
-_PROACTIVE_HISTORY_CHAR_BUDGET = 360
 _PROACTIVE_META_HISTORY_CHAR_BUDGET = 1200
 _MSG_KEYS = {"id", "session_key", "seq", "role", "content", "timestamp", "tool_chain"}
 
@@ -105,13 +104,17 @@ def _build_proactive_history_messages(
     content: str,
     msg: dict[str, object],
 ) -> list[dict[str, object]]:
-    preview = _truncate_text(content, _PROACTIVE_HISTORY_CHAR_BUDGET)
+    """将已送达的主动消息完整投影为历史正文和来源 frame。"""
+
+    # 1. 保留完整正文，让后续指代可以命中主动消息中的任意内容。
     messages: list[dict[str, object]] = [
         {
             "role": "assistant",
-            "content": f"[主动推送] {preview}" if preview else "[主动推送]",
+            "content": f"[主动推送] {content}" if content else "[主动推送]",
         }
     ]
+
+    # 2. 追加独立 metadata frame，保持来源不伪装成用户陈述。
     meta = _append_proactive_meta("", msg).strip()
     if not meta:
         return messages

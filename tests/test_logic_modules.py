@@ -674,11 +674,17 @@ def test_session_get_history_skips_cached_llm_frame_by_default():
     ]
 
 
-def test_session_get_history_replays_proactive_as_short_assistant_with_meta_frame():
+def test_session_get_history_replays_full_proactive_with_meta_frame():
     session = Session("cli:1")
+    proactive_content = (
+        "第一篇 TokenMem 介绍知识注入。\n\n"
+        + "第二篇情景记忆包含较长正文。" * 30
+        + "\n\n第三篇 HCG-RAG 使用模式约束因果图。"
+    )
+    assert len(proactive_content) > 360
     session.add_message(
         "assistant",
-        "这是一条主动消息",
+        proactive_content,
         proactive=True,
         source_refs=[
             {
@@ -692,7 +698,10 @@ def test_session_get_history_replays_proactive_as_short_assistant_with_meta_fram
     history = session.get_history()
 
     assert len(history) == 2
-    assert history[0] == {"role": "assistant", "content": "[主动推送] 这是一条主动消息"}
+    assert history[0] == {
+        "role": "assistant",
+        "content": f"[主动推送] {proactive_content}",
+    }
     assert history[1]["role"] == "user"
     content = str(history[1]["content"])
     assert is_context_frame(content)
