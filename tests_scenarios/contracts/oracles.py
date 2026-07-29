@@ -62,6 +62,19 @@ async def assert_call_finality(
     return result
 
 
+def assert_process_resources_released(
+    *,
+    live_descendant_pids: Sequence[int],
+    listening_ports: Sequence[int],
+) -> None:
+    """断言 owned process leader 退出后没有后代或监听端口残留。"""
+    if live_descendant_pids or listening_ports:
+        raise AssertionError(
+            "owned process tree 仍持有运行资源: "
+            f"pids={list(live_descendant_pids)}, ports={list(listening_ports)}"
+        )
+
+
 def assert_snapshot_fields(
     snapshot: Mapping[str, object],
     expected: Mapping[str, object],

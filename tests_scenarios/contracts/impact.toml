@@ -93,7 +93,7 @@ paths = [
   "tests/test_workspace_mcp_reload_probe.py",
 ]
 depends_on = ["plugin", "lifecycle"]
-scenarios = ["mcp_call_finality"]
+scenarios = ["mcp_call_finality", "mcp_process_lifecycle"]
 
 [groups.plugin]
 priority = "p0"
@@ -108,7 +108,7 @@ paths = [
   "tests/test_plugin_*.py",
 ]
 depends_on = ["lifecycle"]
-scenarios = ["plugin_generation_contract"]
+scenarios = ["plugin_generation_contract", "mcp_process_lifecycle"]
 
 [groups.lifecycle]
 priority = "p1"
@@ -217,7 +217,7 @@ paths = [
   "utils/**",
 ]
 depends_on = ["events", "session_persistence"]
-scenarios = ["contract_catalog"]
+scenarios = ["contract_catalog", "mcp_process_lifecycle"]
 
 [groups.migrations]
 priority = "p0"

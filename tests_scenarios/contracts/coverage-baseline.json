@@ -1,13 +1,14 @@
 {
   "acceptedGaps": [],
   "base": "d627fa600781855770a5ede752f268982b68ebf9",
-  "catalogDigest": "1132a1b767f3589936af0491c8cead1c628eb1e1115be68c8ecae107d83476e7",
+  "catalogDigest": "6008cf3992eb450c9d26ac78e626ddea3ad6ac610682d39c3b6221df1eac2c20",
   "coveredP0": {
     "context_projection": [
       "context_history_nondestructive"
     ],
     "mcp": [
-      "mcp_call_finality"
+      "mcp_call_finality",
+      "mcp_process_lifecycle"
     ],
     "memory": [
       "memory_persistence_contract"
@@ -20,7 +21,8 @@
       "mobile_realtime_contract"
     ],
     "plugin": [
-      "plugin_generation_contract"
+      "plugin_generation_contract",
+      "mcp_process_lifecycle"
     ],
     "session_persistence": [
       "context_history_nondestructive"
