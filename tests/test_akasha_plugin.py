@@ -107,6 +107,19 @@ def test_feedback_marker_is_exported_before_user_message_persistence() -> None:
 
 
 @pytest.mark.asyncio
+async def test_feedback_persistence_is_inert_when_akasha_is_not_active() -> None:
+    frame = SimpleNamespace(slots={"existing": "value"})
+    owner = SimpleNamespace(
+        context=SimpleNamespace(memory_engine=None)
+    )
+
+    result = await AkashaFeedbackPersistModule(owner).run(frame)
+
+    assert result is frame
+    assert frame.slots == {"existing": "value"}
+
+
+@pytest.mark.asyncio
 async def test_feedback_tools_compose_correction_from_two_markers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

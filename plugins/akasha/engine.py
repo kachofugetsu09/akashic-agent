@@ -187,9 +187,7 @@ class AkashaFeedbackPersistModule:
     async def run(self, frame: Any) -> Any:
         engine = self._plugin.context.memory_engine
         if engine is None or engine.describe().name != "akasha":
-            raise RuntimeError(
-                "Akasha feedback persistence requires AkashaMemoryEngine"
-            )
+            return frame
         markers = cast(
             AkashaMemoryEngine,
             engine,
