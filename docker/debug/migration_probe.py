@@ -19,6 +19,7 @@ from programmatic_control_probe import (
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE_FILE = _PROJECT_ROOT / "docker/debug/docker-compose.control-gate.yml"
 _TEST_TARGETS = (
+    "tests/test_akasha_sparse_index_v8_migration.py",
     "tests/test_migration_runner.py",
     "tests/test_provider_runtime_akasha_migration.py",
     "tests/test_migration_append_only.py",
