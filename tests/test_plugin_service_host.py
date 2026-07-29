@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import socket
 import asyncio
+import os
+import socket
 import sys
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -125,6 +127,109 @@ async def test_managed_service_rejects_occupied_readiness_endpoint(
 
     assert _read(port) == ""
     await host.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_managed_service_rejects_occupied_port_without_http_readiness(
+    tmp_path: Path,
+) -> None:
+    """未知 listener 即使不返回健康 HTTP，也不能被启动流程接管。"""
+    failed = tmp_path / "failed.py"
+    _ = failed.write_text("raise AssertionError('must not spawn')\n", encoding="utf-8")
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    port = int(listener.getsockname()[1])
+    host = PluginServiceHost()
+    try:
+        with pytest.raises(RuntimeError, match="监听端口已被占用"):
+            await host.swap_plugin_services(
+                "candidate",
+                {},
+                {"server": _service_spec(failed, port, "candidate")},
+            )
+    finally:
+        listener.close()
+        await host.stop_all()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="依赖 POSIX 进程组")
+@pytest.mark.asyncio
+async def test_managed_service_cleans_listener_after_leader_exit(
+    tmp_path: Path,
+) -> None:
+    """ready 后 leader 意外退出时必须回收仍监听端口的同组后代。"""
+    wrapper = tmp_path / "wrapper.py"
+    child_pid_file = tmp_path / "child.pid"
+    _ = wrapper.write_text(
+        "import os, time, urllib.request\n"
+        "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+        "from pathlib import Path\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    class Handler(BaseHTTPRequestHandler):\n"
+        "        def do_GET(self):\n"
+        "            self.send_response(200); self.end_headers()\n"
+        "            self.wfile.write(b'child')\n"
+        "        def log_message(self, *args): pass\n"
+        "    HTTPServer(('127.0.0.1', int(os.environ['PORT'])), "
+        "Handler).serve_forever()\n"
+        "Path(os.environ['CHILD_PID_FILE']).write_text(str(pid))\n"
+        "url = 'http://127.0.0.1:' + os.environ['PORT'] + '/'\n"
+        "for _ in range(100):\n"
+        "    try:\n"
+        "        urllib.request.urlopen(url, timeout=0.1).close()\n"
+        "        break\n"
+        "    except OSError:\n"
+        "        time.sleep(0.02)\n"
+        "time.sleep(0.5)\n"
+        "raise SystemExit(17)\n",
+        encoding="utf-8",
+    )
+    port = _free_port()
+    spec = _service_spec(wrapper, port, "wrapper")
+    env = spec["env"]
+    assert isinstance(env, dict)
+    env["CHILD_PID_FILE"] = str(child_pid_file)
+    host = PluginServiceHost()
+    host.bind_plugin_services({"wrapper": {"server": spec}})  # type: ignore[arg-type]
+    try:
+        await host.start_all()
+        assert _read(port) == "child"
+        child_pid = int(child_pid_file.read_text())
+
+        await _wait_until(lambda: host._running == {})
+        await _wait_until(lambda: not _process_exists(child_pid))
+        with pytest.raises(OSError):
+            _read(port)
+    finally:
+        await host.stop_all()
+
+
+def _process_exists(pid: int) -> bool:
+    try:
+        stat_fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        if stat_fields[0] == "Z":
+            return False
+    except OSError:
+        pass
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+async def _wait_until(
+    predicate: Callable[[], bool],
+    *,
+    timeout_s: float = 5.0,
+) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while not predicate():
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError("condition did not become true before timeout")
+        await asyncio.sleep(0.05)
 
 
 @pytest.mark.asyncio

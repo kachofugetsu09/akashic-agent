@@ -9,6 +9,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from utils.process_group import (
+    OwnedProcessGroup,
+    owned_process_env,
+    process_group_spawn_kwargs,
+)
+
 logger = logging.getLogger(__name__)
 
 _RECV_TIMEOUT = 30.0
@@ -47,6 +53,21 @@ def _infer_cwd(command: list[str]) -> str | None:
     return None
 
 
+async def _wait_for_leader_exit(process: asyncio.subprocess.Process) -> int | None:
+    """等待 leader returncode，不被仍持有 stdio pipe 的孙进程阻塞。"""
+    wait_task = asyncio.create_task(process.wait())
+    try:
+        while process.returncode is None and not wait_task.done():
+            await asyncio.sleep(0.05)
+        if wait_task.done():
+            _ = await wait_task
+        return process.returncode
+    finally:
+        if not wait_task.done():
+            _ = wait_task.cancel()
+            _ = await asyncio.gather(wait_task, return_exceptions=True)
+
+
 class McpClient:
     """启动并管理一个 stdio MCP server 子进程，处理 JSON-RPC 通信。"""
 
@@ -69,6 +90,10 @@ class McpClient:
         self._recent_stdout: deque[str] = deque(maxlen=8)
         self._recent_stderr: deque[str] = deque(maxlen=8)
         self._stderr_task: asyncio.Task[None] | None = None
+        self._process_group: OwnedProcessGroup | None = None
+        self._process_watch_task: asyncio.Task[None] | None = None
+        self._disconnect_task: asyncio.Task[None] | None = None
+        self._disconnecting = False
         self._protocol_version: str | None = None
 
     @property
@@ -91,7 +116,7 @@ class McpClient:
 
     async def _connect_impl(self) -> list[McpToolInfo]:
         """启动子进程，完成握手，获取工具列表。"""
-        proc_env = {**os.environ, **self.env}
+        proc_env = owned_process_env(self.env)
         logger.debug("[mcp] 启动 %r: %s  cwd=%s", self.name, self.command, self.cwd)
         self._process = await asyncio.create_subprocess_exec(
             *self.command,
@@ -101,11 +126,18 @@ class McpClient:
             env=proc_env,
             cwd=self.cwd,
             limit=_STREAM_LIMIT,
+            **process_group_spawn_kwargs(),
         )
+        self._process_group = OwnedProcessGroup.from_process(self._process)
         self._stderr_task = asyncio.create_task(
             self._drain_stderr(),
             name=f"mcp_stderr:{self.name}",
         )
+        if self._process_group.group_id is not None:
+            self._process_watch_task = asyncio.create_task(
+                self._watch_process_exit(self._process, self._process_group),
+                name=f"mcp_process:{self.name}",
+            )
 
         # initialize 握手
         init_id = self._new_id()
@@ -337,48 +369,113 @@ class McpClient:
         )
 
     async def disconnect(self) -> None:
-        """终止子进程。"""
-        if self._process is None:
-            return
+        """抗取消地终止 MCP 进程组，并只在回收成功后释放 ownership。"""
+        task = self._disconnect_task
+        if task is None:
+            if self._process is None:
+                return
+            task = asyncio.create_task(
+                self._disconnect_impl(),
+                name=f"mcp_disconnect:{self.name}",
+            )
+            self._disconnect_task = task
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            _ = await task
+            raise
+        finally:
+            if task.done() and self._disconnect_task is task:
+                self._disconnect_task = None
+
+    async def _disconnect_impl(self) -> None:
+        """关闭 stdio 后清理稳定 PGID，并聚合通信与回收错误。"""
         process = self._process
-        stopped = False
+        if process is None:
+            return
+        process_group = self._process_group or OwnedProcessGroup.from_process(process)
+        self._process_group = process_group
+        self._disconnecting = True
+        errors: list[BaseException] = []
+        hard_kill = False
+        cleanup_succeeded = False
+
+        # 1. 先关闭 stdin，给规范 MCP server 一个自然退出机会
         try:
             if process.stdin is not None:
                 process.stdin.close()
+        except BaseException as error:
+            errors.append(error)
+            hard_kill = True
+        if not hard_kill and os.name != "nt":
             try:
                 _ = await asyncio.wait_for(
-                    process.wait(),
+                    _wait_for_leader_exit(process),
                     timeout=_DISCONNECT_TIMEOUT,
                 )
-                stopped = True
-            except asyncio.TimeoutError:
-                process.terminate()
-                try:
-                    _ = await asyncio.wait_for(
-                        process.wait(),
-                        timeout=_DISCONNECT_TIMEOUT,
-                    )
-                    stopped = True
-                except asyncio.TimeoutError:
-                    process.kill()
-                    _ = await process.wait()
-                    stopped = True
-        finally:
-            try:
-                if not stopped:
-                    process.kill()
-                    _ = await process.wait()
-                    stopped = True
-            finally:
-                if stopped:
-                    self._process = None
-                    self._protocol_version = None
-                stderr_task = self._stderr_task
-                self._stderr_task = None
-                if stderr_task is not None:
-                    if not stderr_task.done():
-                        _ = stderr_task.cancel()
-                    _ = await asyncio.gather(stderr_task, return_exceptions=True)
+            except TimeoutError:
+                pass
+            except BaseException as error:
+                errors.append(error)
+                hard_kill = True
+
+        # 2. leader 即使已经退出，仍按保存的 PGID 回收 wrapper 后代
+        try:
+            if hard_kill:
+                await process_group.kill(timeout_s=_DISCONNECT_TIMEOUT)
+            else:
+                await process_group.terminate(timeout_s=_DISCONNECT_TIMEOUT)
+        except BaseException as error:
+            errors.append(error)
+        else:
+            cleanup_succeeded = True
+
+        # 3. 只有进程组回收成功，才释放 process 与诊断 watcher ownership
+        if cleanup_succeeded:
+            self._process = None
+            self._process_group = None
+            self._protocol_version = None
+            process_watch_task = self._process_watch_task
+            self._process_watch_task = None
+            if process_watch_task is not None:
+                _ = await asyncio.gather(process_watch_task, return_exceptions=True)
+            stderr_task = self._stderr_task
+            self._stderr_task = None
+            if stderr_task is not None:
+                if not stderr_task.done():
+                    _ = stderr_task.cancel()
+                _ = await asyncio.gather(stderr_task, return_exceptions=True)
+        self._disconnecting = False
+
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise BaseExceptionGroup(f"MCP server {self.name!r} 清理失败", errors)
+
+    async def _watch_process_exit(
+        self,
+        process: asyncio.subprocess.Process,
+        process_group: OwnedProcessGroup,
+    ) -> None:
+        """leader 意外退出后立即清理仍存活的 wrapper 后代。"""
+        while process.returncode is None:
+            await asyncio.sleep(0.05)
+        exit_code = process.returncode
+        if self._process is not process or self._disconnecting:
+            return
+        logger.error(
+            "[mcp] %r 进程意外退出: exit=%s，开始清理进程组 %s",
+            self.name,
+            exit_code,
+            process_group.group_id,
+        )
+        try:
+            await process_group.terminate(timeout_s=_DISCONNECT_TIMEOUT)
+        except Exception:
+            logger.exception(
+                "[mcp] %r 意外退出后的进程组清理失败",
+                self.name,
+            )
 
     def _new_id(self) -> int:
         i = self._next_id

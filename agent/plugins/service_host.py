@@ -1,17 +1,30 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import signal
+import logging
+import socket
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
+
+from utils.process_group import (
+    OwnedProcessGroup,
+    owned_process_env,
+    process_group_spawn_kwargs,
+)
+
+logger = logging.getLogger(__name__)
+_STOP_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass
 class _RunningService:
     spec: dict[str, Any]
     process: asyncio.subprocess.Process
+    process_group: OwnedProcessGroup
+    watch_task: asyncio.Task[None] | None = None
+    stopping: bool = False
 
 
 class PluginServiceHost:
@@ -134,25 +147,36 @@ class PluginServiceHost:
         if key in self._running:
             raise RuntimeError(f"managed service 已运行: {plugin_id}:{service_id}")
         readiness_url = str(spec.get("readiness_url") or "")
-        if readiness_url and await asyncio.to_thread(_url_ready, readiness_url):
+        if readiness_url and await asyncio.to_thread(
+            _endpoint_listening,
+            readiness_url,
+        ):
             raise RuntimeError(
-                f"managed service readiness endpoint 已被占用: {readiness_url}"
+                f"managed service readiness 监听端口已被占用: {readiness_url}"
             )
         process = await asyncio.create_subprocess_exec(
             *spec["command"],
             cwd=spec["cwd"],
-            env={**os.environ, **spec["env"]},
+            env=owned_process_env(spec["env"]),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
-            start_new_session=os.name != "nt",
+            **process_group_spawn_kwargs(),
         )
-        running = _RunningService(spec=spec, process=process)
+        running = _RunningService(
+            spec=spec,
+            process=process,
+            process_group=OwnedProcessGroup.from_process(process),
+        )
         self._running[key] = running
         try:
             await self._wait_ready(running)
         except BaseException:
             await self._stop(plugin_id, service_id)
             raise
+        running.watch_task = asyncio.create_task(
+            self._watch_process_exit(key, running),
+            name=f"managed_service:{plugin_id}:{service_id}",
+        )
 
     async def _wait_ready(self, service: _RunningService) -> None:
         timeout = float(service.spec["startup_timeout_seconds"])
@@ -190,26 +214,62 @@ class PluginServiceHost:
         if running is None:
             return
         key = (plugin_id, service_id)
+        running.stopping = True
 
         async def reap() -> None:
-            process = running.process
             try:
-                if process.returncode is None:
-                    _signal_process(process, signal.SIGTERM)
-                    try:
-                        _ = await asyncio.wait_for(process.wait(), timeout=5)
-                    except TimeoutError:
-                        _signal_process(process, signal.SIGKILL)
-                        _ = await process.wait()
-            finally:
-                _ = self._running.pop(key, None)
+                await running.process_group.terminate(
+                    timeout_s=_STOP_TIMEOUT_SECONDS,
+                )
+                if running.watch_task is not None:
+                    _ = await asyncio.gather(
+                        running.watch_task,
+                        return_exceptions=True,
+                    )
+            except BaseException:
+                running.stopping = False
+                raise
+            if self._running.get(key) is running:
+                del self._running[key]
 
-        task = asyncio.create_task(reap(), name=f"stop_service:{plugin_id}:{service_id}")
+        task = asyncio.create_task(
+            reap(), name=f"stop_service:{plugin_id}:{service_id}"
+        )
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
             _ = await task
             raise
+
+    async def _watch_process_exit(
+        self,
+        key: tuple[str, str],
+        running: _RunningService,
+    ) -> None:
+        """leader 意外退出后清理同组后代，并保留失败 ownership。"""
+        exit_code = await running.process.wait()
+        if running.stopping or self._running.get(key) is not running:
+            return
+        logger.error(
+            "managed service 意外退出: %s:%s exit=%s，开始清理进程组 %s",
+            key[0],
+            key[1],
+            exit_code,
+            running.process_group.group_id,
+        )
+        try:
+            await running.process_group.terminate(
+                timeout_s=_STOP_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            logger.exception(
+                "managed service 意外退出后的进程组清理失败: %s:%s",
+                key[0],
+                key[1],
+            )
+            return
+        if self._running.get(key) is running:
+            del self._running[key]
 
 
 def _url_ready(url: str) -> bool:
@@ -220,14 +280,19 @@ def _url_ready(url: str) -> bool:
         return False
 
 
-def _signal_process(process: asyncio.subprocess.Process, sig: signal.Signals) -> None:
+def _endpoint_listening(url: str) -> bool:
+    """验证 HTTP readiness endpoint，并判断其监听端口是否已被占用。"""
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+        raise RuntimeError(f"managed service readiness_url 无效: {url}")
     try:
-        if os.name == "nt":
-            if sig == signal.SIGTERM:
-                process.terminate()
-            else:
-                process.kill()
-        else:
-            os.killpg(process.pid, sig)
-    except ProcessLookupError:
-        pass
+        port = parsed.port
+    except ValueError as error:
+        raise RuntimeError(f"managed service readiness_url 无效: {url}") from error
+    if port is None:
+        port = 443 if parsed.scheme == "https" else 80
+    try:
+        with socket.create_connection((parsed.hostname, port), timeout=1):
+            return True
+    except OSError:
+        return False
