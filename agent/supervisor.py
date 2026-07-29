@@ -17,6 +17,7 @@ from uuid import uuid4
 
 RESTART_EXIT_CODE = 75
 SUPERVISOR_FAILURE_EXIT_CODE = 70
+_BOOT_CLEANUP_TIMEOUT_SECONDS = 5.0
 
 
 class _SupervisorLock:
@@ -114,6 +115,160 @@ class _SettingsRestartBridge:
         with self._condition:
             self._completed[generation] = success
             self._condition.notify_all()
+
+
+def _cleanup_boot_processes(
+    *,
+    boot_id: str,
+    gateway_group_id: int,
+    timeout_s: float = _BOOT_CLEANUP_TIMEOUT_SECONDS,
+) -> None:
+    """清理指定 boot 的全部进程组，保证下一代启动前旧端口已释放。"""
+
+    if os.name == "nt":
+        result = subprocess.run(
+            ["taskkill", "/PID", str(gateway_group_id), "/T", "/F"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if result.returncode not in {0, 128}:
+            raise RuntimeError(
+                f"boot {boot_id} Windows 进程树清理失败: exit={result.returncode}"
+            )
+        return
+
+    # 1. gateway 自身是独立组；Linux 再用唯一 boot ID 找到 MCP/service 子组
+    groups = {gateway_group_id}
+    direct_pids: set[int] = set()
+    if _wait_boot_targets(
+        boot_id,
+        groups,
+        direct_pids,
+        signal.SIGTERM,
+        timeout_s,
+    ):
+        return
+
+    # 2. 宽限期结束后升级为 KILL，并以仍存活的 PID/PGID 作为失败证据
+    if _wait_boot_targets(
+        boot_id,
+        groups,
+        direct_pids,
+        signal.SIGKILL,
+        timeout_s,
+    ):
+        return
+    alive_groups = sorted(group_id for group_id in groups if _group_exists(group_id))
+    alive_pids = sorted(pid for pid in direct_pids if _pid_exists(pid))
+    raise RuntimeError(
+        f"boot {boot_id} 进程清理失败: groups={alive_groups}, pids={alive_pids}"
+    )
+
+
+def _wait_boot_targets(
+    boot_id: str,
+    groups: set[int],
+    direct_pids: set[int],
+    sig: signal.Signals,
+    timeout_s: float,
+) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while True:
+        _discover_boot_targets(boot_id, groups, direct_pids)
+        _signal_targets(groups, direct_pids, sig)
+        if not any(_group_exists(group_id) for group_id in groups) and not any(
+            _pid_exists(pid) for pid in direct_pids
+        ):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+def _discover_boot_targets(
+    boot_id: str,
+    groups: set[int],
+    direct_pids: set[int],
+) -> None:
+    if not sys.platform.startswith("linux"):
+        return
+    expected = f"AKASHIC_BOOT_ID={boot_id}".encode()
+    own_group = os.getpgrp()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        try:
+            environ = (entry / "environ").read_bytes().split(b"\0")
+            if expected not in environ:
+                continue
+            group_id = os.getpgid(pid)
+        except (OSError, ProcessLookupError):
+            continue
+        if group_id == own_group:
+            direct_pids.add(pid)
+        else:
+            groups.add(group_id)
+
+
+def _signal_targets(
+    groups: set[int],
+    direct_pids: set[int],
+    sig: signal.Signals,
+) -> None:
+    for group_id in groups:
+        try:
+            os.killpg(group_id, sig)
+        except ProcessLookupError:
+            pass
+    for pid in direct_pids:
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+
+
+def _group_exists(group_id: int) -> bool:
+    if sys.platform.startswith("linux"):
+        return _linux_group_has_live_members(group_id)
+    try:
+        os.killpg(group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _pid_exists(pid: int) -> bool:
+    if sys.platform.startswith("linux"):
+        try:
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        except OSError:
+            return False
+        return fields[0] != "Z"
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _linux_group_has_live_members(group_id: int) -> bool:
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            continue
+        if len(fields) >= 3 and int(fields[2]) == group_id and fields[0] != "Z":
+            return True
+    return False
 
 
 def run_supervisor(
@@ -217,6 +372,7 @@ def run_supervisor(
                             pass_fds=(write_fd,),
                             # supervisor 单线程；exec 前只恢复继承的 signal mask。
                             preexec_fn=restore_child_signal_mask,
+                            start_new_session=True,
                         )
                     except BaseException:
                         os.close(read_fd)
@@ -240,19 +396,50 @@ def run_supervisor(
                 ):
                     child.send_signal(stopping_signal)
                 child.wait()
+                try:
+                    _cleanup_boot_processes(
+                        boot_id=boot_id,
+                        gateway_group_id=child.pid,
+                    )
+                except RuntimeError as error:
+                    print(str(error), file=sys.stderr)
+                    return SUPERVISOR_FAILURE_EXIT_CODE
                 os.close(read_fd)
                 child = None
                 return 0
-            result = _wait_child(
-                child,
-                read_fd=read_fd,
-                workspace=workspace,
-                boot_id=boot_id,
-                nonce=nonce,
-                readiness_timeout_s=readiness_timeout_s,
-                settings_bridge=settings_bridge,
-                report_settings_generation=report_settings_generation,
-            )
+            try:
+                result = _wait_child(
+                    child,
+                    read_fd=read_fd,
+                    workspace=workspace,
+                    boot_id=boot_id,
+                    nonce=nonce,
+                    readiness_timeout_s=readiness_timeout_s,
+                    settings_bridge=settings_bridge,
+                    report_settings_generation=report_settings_generation,
+                )
+            except BaseException as wait_error:
+                try:
+                    _cleanup_boot_processes(
+                        boot_id=boot_id,
+                        gateway_group_id=child.pid,
+                    )
+                except BaseException as cleanup_error:
+                    raise BaseExceptionGroup(
+                        "Supervisor 等待 gateway 与 boot 清理均失败",
+                        [wait_error, cleanup_error],
+                    ) from wait_error
+                raise
+            try:
+                _cleanup_boot_processes(
+                    boot_id=boot_id,
+                    gateway_group_id=child.pid,
+                )
+            except RuntimeError as error:
+                print(str(error), file=sys.stderr)
+                if result.settings_generation:
+                    settings_bridge.complete(result.settings_generation, False)
+                return SUPERVISOR_FAILURE_EXIT_CODE
             if report_settings_generation:
                 report_settings_generation = 0
             child = None

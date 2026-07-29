@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
+import signal
 import stat
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -60,6 +63,7 @@ class _Proc:
         self.stdin = _Pipe()
         self.stdout = _Pipe(stdout_lines)
         self.stderr = _Pipe(stderr_lines)
+        self.returncode: int | None = None
         self.terminated = False
         self.killed = False
 
@@ -70,6 +74,7 @@ class _Proc:
         self.killed = True
 
     async def wait(self) -> None:
+        self.returncode = 0
         return None
 
 
@@ -489,10 +494,18 @@ async def test_mcp_client_and_loop_factory_cover_core_paths(
         ],
         [b"warn\n", b""],
     )
-    monkeypatch.setattr("agent.mcp.client.asyncio.create_subprocess_exec", AsyncMock(return_value=proc))
-    client = McpClient("docs", ["python", str(script)], env={"X": "1"})
+    spawn = AsyncMock(return_value=proc)
+    monkeypatch.setattr("agent.mcp.client.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setenv("AKASHIC_BOOT_ID", "owned-boot")
+    client = McpClient(
+        "docs",
+        ["python", str(script)],
+        env={"X": "1", "AKASHIC_BOOT_ID": "spoofed-boot"},
+    )
     infos = await client.connect()
     assert infos[0].name == "tool1"
+    assert spawn.await_args.kwargs["env"]["X"] == "1"
+    assert spawn.await_args.kwargs["env"]["AKASHIC_BOOT_ID"] == "owned-boot"
     initialize = json.loads(proc.stdin.writes[0])
     assert initialize["params"]["protocolVersion"] == "2025-11-25"
     assert await client.call("tool1", {"q": "x"}) == "ok"
@@ -506,6 +519,91 @@ async def test_mcp_client_and_loop_factory_cover_core_paths(
     client._process = proc
     with pytest.raises(ConnectionError):
         await client._recv(expected_id=1)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows 使用 taskkill /T 覆盖进程树")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exit_after_list", [False, True])
+async def test_mcp_client_cleans_wrapper_process_group(
+    tmp_path: Path,
+    exit_after_list: bool,
+) -> None:
+    """显式断开和 leader 意外退出都必须回收 stdio wrapper 后代。"""
+    script = tmp_path / "mcp_wrapper.py"
+    child_pid_file = tmp_path / "child.pid"
+    _ = script.write_text(
+        "import json, os, subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time; time.sleep(300)'])\n"
+        "Path(os.environ['CHILD_PID_FILE']).write_text(str(child.pid))\n"
+        "for raw in sys.stdin:\n"
+        "    message = json.loads(raw)\n"
+        "    method = message.get('method')\n"
+        "    if method == 'initialize':\n"
+        "        result = {'protocolVersion': '2025-11-25'}\n"
+        "    elif method == 'tools/list':\n"
+        "        result = {'tools': []}\n"
+        "    else:\n"
+        "        continue\n"
+        "    print(json.dumps({'jsonrpc': '2.0', 'id': message['id'], "
+        "'result': result}), flush=True)\n"
+        "    if method == 'tools/list' and "
+        "os.environ['EXIT_AFTER_LIST'] == '1':\n"
+        "        time.sleep(0.2)\n"
+        "        raise SystemExit(17)\n",
+        encoding="utf-8",
+    )
+    client = McpClient(
+        "wrapper",
+        [sys.executable, str(script)],
+        env={
+            "CHILD_PID_FILE": str(child_pid_file),
+            "EXIT_AFTER_LIST": "1" if exit_after_list else "0",
+        },
+    )
+    child_pid = 0
+    try:
+        _ = await client.connect()
+        child_pid = int(child_pid_file.read_text())
+        assert _process_exists(child_pid)
+
+        if exit_after_list:
+            await _wait_until(lambda: not client.connected)
+            await _wait_until(lambda: not _process_exists(child_pid))
+        else:
+            await client.disconnect()
+            await _wait_until(lambda: not _process_exists(child_pid))
+    finally:
+        await client.disconnect()
+        if child_pid and _process_exists(child_pid):
+            os.kill(child_pid, signal.SIGKILL)
+
+
+def _process_exists(pid: int) -> bool:
+    try:
+        stat_fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        if stat_fields[0] == "Z":
+            return False
+    except OSError:
+        pass
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+async def _wait_until(
+    predicate: Callable[[], bool],
+    *,
+    timeout_s: float = 5.0,
+) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while not predicate():
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError("condition did not become true before timeout")
+        await asyncio.sleep(0.05)
 
 
 @pytest.mark.asyncio
@@ -685,6 +783,30 @@ async def test_mcp_client_disconnect_reports_cleanup_error() -> None:
 
     assert proc.killed is True
     assert client._process is None
+
+
+@pytest.mark.asyncio
+async def test_mcp_client_retains_ownership_when_process_group_cleanup_fails() -> None:
+    proc = _Proc([])
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+
+    class FailingProcessGroup:
+        async def terminate(self, *, timeout_s: float) -> None:
+            raise RuntimeError(f"cleanup failed after {timeout_s}s")
+
+        async def kill(self, *, timeout_s: float) -> None:
+            raise RuntimeError(f"cleanup failed after {timeout_s}s")
+
+    client._process_group = FailingProcessGroup()  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        await client.disconnect()
+
+    assert client._process is proc
+    assert client._process_group is not None
+    client._process_group = None
+    await client.disconnect()
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -533,6 +534,78 @@ class _RunningSupervisorChild(_FakeSupervisorChild):
         if self.running:
             raise AssertionError("child must receive pending stop before wait")
         return self.returncode
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="依赖 /proc boot identity"
+)
+def test_supervisor_cleans_orphaned_boot_listener(tmp_path: Path) -> None:
+    """gateway 退出后 Supervisor 必须回收独立 service 进程组及其端口。"""
+    script = tmp_path / "orphan_listener.py"
+    child_pid_file = tmp_path / "child.pid"
+    _ = script.write_text(
+        "import os, socket, time\n"
+        "from pathlib import Path\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    listener = socket.socket()\n"
+        "    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
+        "    listener.bind(('127.0.0.1', int(os.environ['PORT'])))\n"
+        "    listener.listen()\n"
+        "    while True:\n"
+        "        connection, _ = listener.accept()\n"
+        "        connection.close()\n"
+        "Path(os.environ['CHILD_PID_FILE']).write_text(str(pid))\n"
+        "time.sleep(0.2)\n"
+        "raise SystemExit(17)\n",
+        encoding="utf-8",
+    )
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+    boot_id = "test-orphan-listener"
+    env = {
+        **os.environ,
+        "AKASHIC_BOOT_ID": boot_id,
+        "CHILD_PID_FILE": str(child_pid_file),
+        "PORT": str(port),
+    }
+    leader = subprocess.Popen(
+        [sys.executable, str(script)],
+        env=env,
+        start_new_session=True,
+    )
+    try:
+        assert leader.wait(timeout=3) == 17
+        child_pid = int(child_pid_file.read_text())
+        _wait_for_listener(port)
+
+        supervisor_module._cleanup_boot_processes(
+            boot_id=boot_id,
+            gateway_group_id=999_999_999,
+            timeout_s=2,
+        )
+
+        assert not supervisor_module._pid_exists(child_pid)
+        with pytest.raises(OSError):
+            socket.create_connection(("127.0.0.1", port), timeout=0.2)
+    finally:
+        try:
+            os.killpg(leader.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def _wait_for_listener(port: int) -> None:
+    deadline = time.monotonic() + 2
+    while True:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                return
+        except OSError:
+            if time.monotonic() >= deadline:
+                raise AssertionError("listener did not start before timeout")
+            time.sleep(0.02)
 
 
 @pytest.mark.parametrize(
