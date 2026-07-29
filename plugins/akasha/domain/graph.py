@@ -328,6 +328,67 @@ class DynamicMemoryGraph:
         self._transition_cache[node_id] = result
         return result
 
+    def apply_feedback_inhibition(
+        self,
+        inhibited_nodes: frozenset[int],
+    ) -> None:
+        """Remove suppressed turns from independent plasticity support."""
+
+        for node_id in inhibited_nodes:
+            _ = self.current_external.pop(node_id, None)
+
+    def reinforce_feedback_nodes(
+        self,
+        node_ids: tuple[int, ...],
+        boost: float,
+    ) -> None:
+        """Strengthen each target's membership in its own episode."""
+
+        if boost == 1.0:
+            return
+
+        # 1. Resolve only the episode created by the addressed turn itself.
+        own_hubs = {
+            hub.created_event: hub
+            for hub in self.hubs
+            if hub.created_event in node_ids
+        }
+        gain = boost ** self.config.learning_rate
+        credit = math.log(gain)
+        affected_hubs: set[int] = set()
+        affected_sources: set[int] = set()
+        self._transition_cache.clear()
+
+        # 2. Potentiate the target membership without creating neighbor relations.
+        for node_id in sorted(node_ids):
+            own_hub = own_hubs.get(node_id)
+            if own_hub is None:
+                continue
+            target_edges = tuple(
+                edge
+                for edge in own_hub.member_edge_ids
+                if self.source[edge] == node_id
+            )
+            if len(target_edges) != 1:
+                raise RuntimeError(
+                    "own episode must contain exactly one target membership"
+                )
+            edge_id = target_edges[0]
+            self.weight[edge_id] = min(
+                1.0,
+                self.weight[edge_id] * gain,
+            )
+            self.last_updated[edge_id] = self.current_event
+            self._support_edge(edge_id, credit, credit)
+            affected_hubs.add(self.target[edge_id])
+            affected_sources.add(node_id)
+
+        # 3. Preserve the existing per-episode and per-source conductance budgets.
+        for hub_node in sorted(affected_hubs):
+            _ = self._normalize_hub(hub_node)
+        for source in sorted(affected_sources):
+            _ = self._normalize_membership_source(source)
+
     def learn(
         self,
         event: int,

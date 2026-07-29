@@ -60,6 +60,7 @@ def write_memory_database(
         _initialize(connection)
         _write_metadata(connection, metadata, turns, graph, config)
         _write_turns(connection, turns)
+        _write_feedback_events(connection, turns)
         _write_graph(connection, graph)
         _write_events(connection, events, evidence)
         _write_captures(connection, turns, graph, captures, config.restart)
@@ -206,7 +207,7 @@ def _write_metadata(
     values = {
         **metadata,
         "config_json": canonical_json(asdict(config)),
-        "engine": "single_state_empirical_recurrence_survival_v8",
+        "engine": "single_state_empirical_recurrence_survival_v9_feedback",
         "graph_turn_capacity": str(graph.turn_count),
         "hub_count": str(len(graph.hubs)),
         "relation_count": str(len(graph.source)),
@@ -239,6 +240,37 @@ def _write_turns(connection: sqlite3.Connection, turns: list[Turn]) -> None:
             )
             for turn in turns
         ],
+    )
+
+
+def _write_feedback_events(
+    connection: sqlite3.Connection,
+    turns: list[Turn],
+) -> None:
+    """Persist the canonical marker inputs that produced graph control."""
+
+    rows = []
+    for turn in turns:
+        rows.extend(
+            (
+                turn.node_id,
+                "remember",
+                target,
+                turn.feedback.remember_boost,
+            )
+            for target in turn.feedback.remember_nodes
+        )
+        rows.extend(
+            (turn.node_id, "forget", target, 1.0)
+            for target in turn.feedback.forget_nodes
+        )
+    connection.executemany(
+        """
+        INSERT INTO feedback_events(
+            event_id, action, target_turn_node_id, boost
+        ) VALUES (?, ?, ?, ?)
+        """,
+        rows,
     )
 
 
@@ -615,6 +647,48 @@ def _validate_snapshot_identity(
     )
     if actual != wanted:
         raise ValueError("memory snapshot turn bindings differ from source index")
+    _validate_feedback_bindings(connection, turns)
+
+
+def _validate_feedback_bindings(
+    connection: sqlite3.Connection,
+    turns: list[Turn],
+) -> None:
+    actual = tuple(
+        tuple(row)
+        for row in connection.execute(
+            """
+            SELECT event_id, action, target_turn_node_id, boost
+            FROM feedback_events
+            ORDER BY event_id, action, target_turn_node_id
+            """
+        )
+    )
+    wanted_rows = []
+    for turn in turns:
+        wanted_rows.extend(
+            (
+                turn.node_id,
+                "remember",
+                target,
+                turn.feedback.remember_boost,
+            )
+            for target in turn.feedback.remember_nodes
+        )
+        wanted_rows.extend(
+            (turn.node_id, "forget", target, 1.0)
+            for target in turn.feedback.forget_nodes
+        )
+    wanted = tuple(
+        sorted(
+            wanted_rows,
+            key=lambda row: (row[0], row[1], row[2]),
+        )
+    )
+    if actual != wanted:
+        raise ValueError(
+            "memory snapshot feedback bindings differ from source index"
+        )
 
 
 def memory_turn_count(memory_path: Path) -> int:
@@ -973,6 +1047,7 @@ def _load_context(
 
 _LOGICAL_STATE_TABLES = (
     "turn_nodes",
+    "feedback_events",
     "hub_nodes",
     "hub_memberships",
     "temporal_edges",
@@ -989,7 +1064,7 @@ _LOGICAL_STATE_TABLES = (
 
 _SCHEMA = """
 PRAGMA application_id = 1095452754;
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 
 CREATE TABLE metadata (
     key TEXT PRIMARY KEY,
@@ -1007,6 +1082,14 @@ CREATE TABLE turn_nodes (
     committed_at TEXT NOT NULL,
     inter_gap_seconds REAL
 );
+
+CREATE TABLE feedback_events (
+    event_id INTEGER NOT NULL REFERENCES turn_nodes(node_id),
+    action TEXT NOT NULL CHECK(action IN ('remember', 'forget')),
+    target_turn_node_id INTEGER NOT NULL REFERENCES turn_nodes(node_id),
+    boost REAL NOT NULL CHECK(boost >= 1.0 AND boost <= 3.0),
+    PRIMARY KEY (event_id, action, target_turn_node_id)
+) WITHOUT ROWID;
 
 CREATE TABLE hub_nodes (
     node_id INTEGER PRIMARY KEY,

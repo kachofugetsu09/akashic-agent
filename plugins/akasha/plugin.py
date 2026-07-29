@@ -1,4 +1,4 @@
-"""Plugin discovery and read-only inspection surfaces for Akasha V2."""
+"""Plugin lifecycle and read-only inspection surfaces for Akasha V2."""
 
 from typing import cast
 
@@ -10,7 +10,7 @@ from agent.plugins import (
 from agent.plugins.mobile_ui import MobileUiRpcInvalidRequest
 from core.memory.engine import MemoryRecord
 
-from .engine import AkashaMemoryEngine
+from .engine import AkashaFeedbackPersistModule, AkashaMemoryEngine
 from .inspector import AkashaInspectorReader, mobile_summary
 from .memory_plugin import MemoryPlugin
 
@@ -21,13 +21,16 @@ _MOBILE_RECALL_ASSISTANT_PREVIEW_CHARS = 50
 
 
 class AkashaPlugin(Plugin):
-    """Register V2 memory inspection without exposing graph mutation."""
+    """Register Message feedback persistence and read-only inspection."""
 
     api_version = 2
     name = "akasha"
 
     def __init__(self) -> None:
         self._reader: AkashaInspectorReader | None = None
+
+    def after_reasoning_modules(self) -> list[object]:
+        return [AkashaFeedbackPersistModule(self)]
 
     @classmethod
     def dashboard_module(cls) -> str:

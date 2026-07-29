@@ -135,35 +135,42 @@ def read_pattern_completion(
     context_dependence: float,
     visible_nodes: tuple[int, ...] = (),
     burst_continued: bool = True,
+    inhibited_nodes: frozenset[int] = frozenset(),
 ) -> PatternCompletion:
     """Read contextual and independent basin routes without mutating memory."""
 
     # 1. Preserve the contextual V8 route as the non-destructive baseline.
-    contextual = _read_contextual_route(
-        graph=graph,
-        pool=pool,
-        query=query,
-        context=context,
-        evidence=evidence,
-        diffusion=diffusion,
-        historical_surprise=historical_surprise,
-        config=config,
-        visible_nodes=visible_nodes,
-        burst_continued=burst_continued,
+    contextual = _exclude_recall_items(
+        _read_contextual_route(
+            graph=graph,
+            pool=pool,
+            query=query,
+            context=context,
+            evidence=evidence,
+            diffusion=diffusion,
+            historical_surprise=historical_surprise,
+            config=config,
+            visible_nodes=visible_nodes,
+            burst_continued=burst_continued,
+        ),
+        inhibited_nodes,
     )
 
     # 2. Inhibit query-only routing when the cue depends on its active context.
     address_mass = _independent_address_mass(context_dependence)
     if address_mass == 0.0:
         return contextual
-    address = _read_independent_route(
-        graph=graph,
-        pool=pool,
-        query=query,
-        surprise=evidence.surprise,
-        historical_surprise=historical_surprise,
-        config=config,
-        visible_nodes=visible_nodes,
+    address = _exclude_recall_items(
+        _read_independent_route(
+            graph=graph,
+            pool=pool,
+            query=query,
+            surprise=evidence.surprise,
+            historical_surprise=historical_surprise,
+            config=config,
+            visible_nodes=visible_nodes,
+        ),
+        inhibited_nodes,
     )
 
     # 3. Let address-only completions compete without evicting baseline items.
@@ -171,6 +178,40 @@ def read_pattern_completion(
         contextual,
         address,
         address_mass,
+    )
+
+
+def _exclude_recall_items(
+    completion: PatternCompletion,
+    excluded_nodes: frozenset[int],
+) -> PatternCompletion:
+    """Hide suppressed turns after they have served as graph bridges."""
+
+    if not excluded_nodes:
+        return completion
+    items = tuple(
+        item
+        for item in completion.items
+        if item.node_id not in excluded_nodes
+    )
+    counts = {
+        source: sum(source in item.sources for item in items)
+        for source in (
+            "sharp_completion",
+            "basin_direct",
+            "basin_completion",
+            "relative_tail",
+        )
+    }
+    return PatternCompletion(
+        items=items,
+        active_basin_count=completion.active_basin_count,
+        sharp_completion_count=counts["sharp_completion"],
+        basin_direct_count=counts["basin_direct"],
+        basin_completion_count=counts["basin_completion"],
+        relative_tail_count=counts["relative_tail"],
+        pushes=completion.pushes,
+        residual_l1=completion.residual_l1,
     )
 
 
@@ -222,11 +263,7 @@ def _read_independent_route(
 ) -> PatternCompletion:
     """Settle a query-only graph-address route without active context."""
 
-    fields = _evidence_fields(
-        pool,
-        query.node_id,
-        ContextState((), None, ()),
-    )
+    fields = _evidence_fields(pool, query.node_id, ContextState((), None, ()))
     seed = _sparsemax(fields["current"])
     diffusion = residual_push(
         graph,
