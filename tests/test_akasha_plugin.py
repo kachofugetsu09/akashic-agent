@@ -20,6 +20,7 @@ from agent.config_models import (
     MemoryConfig as HostMemoryConfig,
     MemoryEmbeddingConfig,
 )
+from agent.looping.ports import MemoryServices
 from agent.plugins import Plugin
 from agent.plugins.context import PluginContext, PluginKVStore
 from agent.plugins.manifest import (
@@ -27,13 +28,15 @@ from agent.plugins.manifest import (
     ensure_workspace_plugin_data_dir,
 )
 from agent.tools.recall_memory import RecallMemoryTool
+from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
+from agent.retrieval.protocol import RetrievalRequest
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryQuery, MemoryScope
 from core.memory.plugin import MemoryPlugin as MemoryPluginProtocol
 from plugins.akasha.application.rebuild import rebuild_memory
 from plugins.akasha.config import AkashaConfig, render_akasha_config
 from plugins.akasha.dashboard import register as register_dashboard
-from plugins.akasha.engine import AkashaMemoryEngine
+from plugins.akasha.engine import ActiveRecallSnapshot, AkashaMemoryEngine
 from plugins.akasha.inspector import AkashaInspectorReader
 from plugins.akasha.infrastructure.persistence import (
     logical_state_sha256,
@@ -157,9 +160,64 @@ async def test_online_turn_recall_and_replay_share_one_state(
 
     # 3. Explicit recall is read-only and cannot replace context learning.
     next_time = started + timedelta(minutes=5)
-    context = await engine.query(
-        _query("alpha follow", next_time, intent="context")
+    active_turn_id = "turn:alpha-follow"
+    plugin = AkashaPlugin()
+    plugin.context = PluginContext(
+        event_bus=cast(Any, None),
+        tool_registry=None,
+        plugin_id="akasha",
+        plugin_dir=Path("plugins/akasha"),
+        data_dir=builtin_plugin_data_dir("akasha", tmp_path),
+        kv_store=PluginKVStore(tmp_path / ".kv.json"),
+        workspace=tmp_path,
+        memory_engine=engine,
     )
+    wait_started = threading.Event()
+    wait_for_active_recall = engine.wait_for_active_recall
+
+    def marked_wait_for_active_recall(
+        session_key: str,
+        turn_id: str,
+        *,
+        timeout: float = 15.0,
+    ) -> ActiveRecallSnapshot | None:
+        wait_started.set()
+        return wait_for_active_recall(
+            session_key,
+            turn_id,
+            timeout=timeout,
+        )
+
+    monkeypatch.setattr(
+        engine,
+        "wait_for_active_recall",
+        marked_wait_for_active_recall,
+    )
+    active_query = asyncio.create_task(
+        asyncio.to_thread(
+            plugin.mobile_ui_query,
+            "recall.current",
+            {"message_id": f"assistant:{active_turn_id}"},
+            session_id="test:one",
+            turn_id=active_turn_id,
+        )
+    )
+    assert await asyncio.to_thread(wait_started.wait, 1.0)
+    context = await DefaultMemoryRetrievalPipeline(
+        MemoryServices(engine=engine)
+    ).retrieve(
+        RetrievalRequest(
+            message="alpha follow",
+            session_key="test:one",
+            channel="test",
+            chat_id="one",
+            history=[],
+            session_metadata={},
+            turn_id=active_turn_id,
+            timestamp=next_time,
+        )
+    )
+    active_mobile = await active_query
     pending = engine._pending["test:one"]  # noqa: SLF001
     tool = RecallMemoryTool(
         engine,
@@ -183,9 +241,25 @@ async def test_online_turn_recall_and_replay_share_one_state(
     assert rendered["count"] == 1
     assert before_recall == after_recall
     assert engine._pending["test:one"] is pending  # noqa: SLF001
-    assert context.text_block.startswith("# Akasha memory now=07-06")
-    assert "## 左脑记忆：精确回忆" in context.text_block
-    assert f'assistant="{"A" * 50}..."' in context.text_block
+    assert context.block.startswith("# Akasha memory now=07-06")
+    assert "## 左脑记忆：精确回忆" in context.block
+    assert f'assistant="{"A" * 50}..."' in context.block
+    assert (
+        engine.wait_for_active_recall(
+            "test:one",
+            "turn:other",
+            timeout=0,
+        )
+        is None
+    )
+
+    assert [
+        item["user_preview"]
+        for item in cast(
+            list[dict[str, object]],
+            active_mobile["left"],
+        )
+    ] == ["alpha start"]
     tool_payload = dict(rendered)
     tool_payload["items"] = [
         *cast(list[dict[str, object]], rendered["items"]),
@@ -299,17 +373,6 @@ async def test_online_turn_recall_and_replay_share_one_state(
         assert api_detail.json()["left_count"] == 1
 
     # 7. Mobile projections resolve the same committed assistant message.
-    plugin = AkashaPlugin()
-    plugin.context = PluginContext(
-        event_bus=cast(Any, None),
-        tool_registry=None,
-        plugin_id="akasha",
-        plugin_dir=Path("plugins/akasha"),
-        data_dir=builtin_plugin_data_dir("akasha", tmp_path),
-        kv_store=PluginKVStore(tmp_path / ".kv.json"),
-        workspace=tmp_path,
-        memory_engine=engine,
-    )
     mobile = plugin.mobile_ui_query(
         "recall.current",
         {"message_id": "message:3"},
@@ -334,6 +397,8 @@ async def test_online_turn_recall_and_replay_share_one_state(
     assert mobile["schema"] == "akasha.recall-card.v1"
     mobile_left = cast(list[dict[str, object]], mobile["left"])
     assert mobile_left[0]["user_preview"] == "alpha start"
+    assert active_mobile["left"] == mobile["left"]
+    assert active_mobile["right"] == mobile["right"]
     assert "user_text" not in mobile_left[0]
     assert "assistant_text" not in json.dumps(mobile, ensure_ascii=False)
     assert (

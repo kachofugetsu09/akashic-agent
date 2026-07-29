@@ -9,6 +9,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING, cast
 from zoneinfo import ZoneInfo
 
@@ -49,16 +50,6 @@ class UnsupportedOperationError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class PendingRetrieval:
-    """Bind one stateful query to the later committed source turn."""
-
-    ticket: RetrievalTicket
-    query_timestamp: datetime
-    query_text: str
-    query_dense: np.ndarray
-
-
-@dataclass(frozen=True)
 class RetrievalRecords:
     """Keep direct dense recall separate from explicit pattern completion."""
 
@@ -68,6 +59,26 @@ class RetrievalRecords:
     @property
     def combined(self) -> list[MemoryRecord]:
         return [*self.dense, *self.completion]
+
+
+@dataclass(frozen=True)
+class PendingRetrieval:
+    """Bind one stateful query and its prompt lanes to the active host turn."""
+
+    ticket: RetrievalTicket
+    query_timestamp: datetime
+    query_text: str
+    query_dense: np.ndarray
+    turn_id: str
+    records: RetrievalRecords
+
+
+@dataclass(frozen=True)
+class ActiveRecallSnapshot:
+    """Expose the exact pending prompt lanes without mutable graph state."""
+
+    query_id: str
+    records: RetrievalRecords
 
 
 class AkashaMemoryEngine:
@@ -146,6 +157,7 @@ class AkashaMemoryEngine:
 
         # 2. Keep one global graph writer and one pending query per session.
         self._lock = threading.RLock()
+        self._pending_changed = threading.Condition(self._lock)
         self._commit_gate = asyncio.Lock()
         self._publish_task: asyncio.Task[None] | None = None
         self._pending: dict[str, PendingRetrieval] = {}
@@ -220,12 +232,20 @@ class AkashaMemoryEngine:
                         raise RuntimeError(
                             "stateful context query lost its session key"
                         )
+                    turn_id = request.context.get("turn_id", "")
+                    if not isinstance(turn_id, str):
+                        raise ValueError(
+                            "Akasha context turn_id must be a string"
+                        )
                     self._pending[session_key] = PendingRetrieval(
                         ticket,
                         request.timestamp,
                         text,
                         dense.copy(),
+                        turn_id,
+                        lanes,
                     )
+                    self._pending_changed.notify_all()
         # 3. Render context only for the runtime context-injection intent.
         text_block = (
             self._context_block(lanes, request.timestamp)
@@ -252,6 +272,29 @@ class AkashaMemoryEngine:
                 "residual_l1": ticket.completion.residual_l1,
             },
         )
+
+    def wait_for_active_recall(
+        self,
+        session_key: str,
+        turn_id: str,
+        *,
+        timeout: float = 15.0,
+    ) -> ActiveRecallSnapshot | None:
+        """Wait for and return only the retrieval bound to one active turn."""
+
+        deadline = monotonic() + max(0.0, timeout)
+        with self._pending_changed:
+            while True:
+                pending = self._pending.get(session_key)
+                if pending is not None and pending.turn_id == turn_id:
+                    return ActiveRecallSnapshot(
+                        query_id=pending.ticket.turn_id,
+                        records=pending.records,
+                    )
+                remaining = deadline - monotonic()
+                if remaining <= 0.0:
+                    return None
+                self._pending_changed.wait(remaining)
 
     async def ingest(
         self,
