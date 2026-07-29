@@ -1134,7 +1134,13 @@ function toggleSet(id: string, checked: boolean, source: Set<string>, update: (v
 }
 
 function gridTemplate(columns: DashboardColumn[]): string {
-  return columns.map((col) => col.flex ? "1fr" : col.width ? `${col.width}px` : "auto").join(" ");
+  return columns
+    .map((col) => {
+      if (col.flex) return "minmax(0, 1fr)";
+      if (col.width) return `minmax(0, ${col.width}px)`;
+      return "minmax(0, auto)";
+    })
+    .join(" ");
 }
 
 function formatPluginCell(plugin: PluginConfig, column: DashboardColumn, item: Record<string, unknown>): string {
@@ -1145,6 +1151,10 @@ function formatPluginCell(plugin: PluginConfig, column: DashboardColumn, item: R
 
 function columnCellClass(column: DashboardColumn): string {
   const classes = [column.cellClass ?? ""];
+  if (!column.cellClass && column.fmt === "text-preview") classes.push("content-preview");
+  if (!column.cellClass && (column.fmt === "mono-session" || column.fmt === "mono-time")) {
+    classes.push(column.fmt === "mono-session" ? "mono cell-session" : "mono cell-time");
+  }
   if (column.align === "right") classes.push("align-right");
   return classes.filter(Boolean).join(" ");
 }

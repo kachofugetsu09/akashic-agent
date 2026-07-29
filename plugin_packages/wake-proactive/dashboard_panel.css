@@ -1,92 +1,747 @@
-[data-akashic-plugin="wake-proactive"] .wake-detail { gap: 12px; padding: 16px; }
-[data-akashic-plugin="wake-proactive"] .wake-empty { padding: 28px; color: var(--color-muted); }
-[data-akashic-plugin="wake-proactive"] .wake-summary { display: flex; align-items: center; justify-content: space-between; padding: 14px; }
-[data-akashic-plugin="wake-proactive"] .wake-summary div { display: flex; flex-direction: column; gap: 4px; }
+/* Wake Proactive — host industrial tokens, content-first. */
+
+/* ── Run detail ─────────────────────────────────────────────── */
+
+[data-akashic-plugin="wake-proactive"] .wake-detail {
+  gap: 12px;
+  padding: 12px 4px 16px;
+  font-synthesis: none;
+}
+
+[data-akashic-plugin="wake-proactive"] .wake-empty {
+  padding: 28px 16px;
+  color: var(--color-muted);
+  font-size: 13px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+[data-akashic-plugin="wake-proactive"] .wake-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+[data-akashic-plugin="wake-proactive"] .wake-summary div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
 [data-akashic-plugin="wake-proactive"] .wake-summary span,
 [data-akashic-plugin="wake-proactive"] .wake-message > span,
-[data-akashic-plugin="wake-proactive"] .wake-phase-title { color: var(--color-muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
-[data-akashic-plugin="wake-proactive"] .wake-summary strong { font-size: 16px; }
-[data-akashic-plugin="wake-proactive"] .wake-message { padding: 14px; }
-[data-akashic-plugin="wake-proactive"] .wake-message .ak-markdown { margin-top: 8px; }
-[data-akashic-plugin="wake-proactive"] .wake-phase { gap: 8px; }
-[data-akashic-plugin="wake-proactive"] .wake-phase-title { padding: 4px 2px; }
-[data-akashic-plugin="wake-proactive"] .wake-audit { border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); overflow: hidden; }
-[data-akashic-plugin="wake-proactive"] .wake-audit summary { display: flex; align-items: center; justify-content: space-between; padding: 11px 12px; cursor: pointer; color: var(--color-fg); font-size: 13px; }
-[data-akashic-plugin="wake-proactive"] .wake-audit[open] > summary { border-bottom: 1px solid var(--color-border); }
-[data-akashic-plugin="wake-proactive"] .wake-audit > .json-tree { max-height: 420px; overflow: auto; border: 0; border-radius: 0; }
+[data-akashic-plugin="wake-proactive"] .wake-phase-title {
+  color: var(--color-subtle);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
 
-[data-akashic-plugin="wake-meter"] { min-height: 100%; background: #0d1014; }
-[data-akashic-plugin="wake-meter"] .meter-loading { padding: 32px; color: var(--color-muted); font: 12px ui-monospace, monospace; }
-[data-akashic-plugin="wake-meter"] .excitement-console { min-height: 100%; padding: 28px; color: #edf2f5; background: #0d1014; }
-[data-akashic-plugin="wake-meter"] .meter-header { display: flex; align-items: end; justify-content: space-between; max-width: 940px; margin: 0 auto 22px; }
-[data-akashic-plugin="wake-meter"] .meter-header span { color: #7e8993; font: 700 10px/1.2 ui-monospace, monospace; letter-spacing: .16em; }
-[data-akashic-plugin="wake-meter"] .meter-header h2 { margin: 5px 0 0; font-size: 24px; font-weight: 750; letter-spacing: -.03em; }
-[data-akashic-plugin="wake-meter"] .meter-state { display: flex; align-items: center; gap: 8px; border: 2px solid #07090c; border-radius: 999px; padding: 7px 12px; background: #bcefff; color: #10232d; box-shadow: 3px 3px 0 #07090c; font: 800 11px ui-monospace, monospace; }
-[data-akashic-plugin="wake-meter"] .meter-state i { width: 8px; height: 8px; border: 2px solid #07090c; border-radius: 50%; background: #39b8e8; }
-[data-akashic-plugin="wake-meter"] .is-crossed .meter-state { background: #ff826d; color: #32100a; }
-[data-akashic-plugin="wake-meter"] .is-crossed .meter-state i { background: #fff3a8; }
+[data-akashic-plugin="wake-proactive"] .wake-summary strong {
+  color: var(--color-fg);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
 
-[data-akashic-plugin="wake-meter"] .meter-machine { position: relative; display: grid; grid-template-columns: minmax(280px, 400px) minmax(230px, 1fr); align-items: center; gap: 58px; max-width: 940px; min-height: 430px; margin: 0 auto; padding: 38px 62px; border: 3px solid #07090c; border-radius: 26px; background: #1a2027; box-shadow: 9px 9px 0 #07090c; }
-[data-akashic-plugin="wake-meter"] .meter-machine::after { content: "LIVE WATERLINE"; position: absolute; right: 24px; bottom: 18px; color: #68737d; font: 800 9px ui-monospace, monospace; letter-spacing: .14em; }
-[data-akashic-plugin="wake-meter"] .meter-chamber-wrap { position: relative; width: 250px; height: 350px; margin: 0 auto; }
-[data-akashic-plugin="wake-meter"] .tank-rim { position: absolute; left: 29px; top: 12px; z-index: 8; width: 174px; height: 18px; border: 4px solid #07090c; border-radius: 12px; background: #f5fafb; box-shadow: 4px 4px 0 #07090c; }
-[data-akashic-plugin="wake-meter"] .meter-chamber { position: absolute; inset: 23px 43px 8px 18px; overflow: hidden; border: 5px solid #07090c; border-radius: 10px 10px 24px 24px; background: #dff5f7; box-shadow: 5px 6px 0 #07090c; }
-[data-akashic-plugin="wake-meter"] .tank-zone { position: absolute; left: 0; right: 0; z-index: 0; pointer-events: none; }
-[data-akashic-plugin="wake-meter"] .overflow-zone { top: 0; height: 20%; background: #ffd8d0; }
-[data-akashic-plugin="wake-meter"] .overflow-zone span { position: absolute; right: 10px; top: 11px; color: #b94332; font: 800 9px ui-monospace, monospace; letter-spacing: .08em; }
-[data-akashic-plugin="wake-meter"] .warm-zone { bottom: 20%; height: 30%; background: #fff0b8; }
-[data-akashic-plugin="wake-meter"] .meter-fluid { position: absolute; left: 0; right: 0; z-index: 2; transition: height .65s cubic-bezier(.2,.8,.2,1), bottom .65s cubic-bezier(.2,.8,.2,1); }
-[data-akashic-plugin="wake-meter"] .meter-fluid.accumulated { bottom: 0; background: #41b8e7; }
-[data-akashic-plugin="wake-meter"] .meter-fluid.pressure { background: #ffc84b; }
-[data-akashic-plugin="wake-meter"] .is-crossed .meter-fluid.pressure { background: #ff6f5a; }
-[data-akashic-plugin="wake-meter"] .water-surface { position: absolute; left: -3px; right: -3px; z-index: 5; height: 18px; color: #8be0f6; transition: bottom .65s cubic-bezier(.2,.8,.2,1); animation: water-bob 2.2s ease-in-out infinite alternate; }
-[data-akashic-plugin="wake-meter"] .water-surface svg { display: block; width: 100%; height: 18px; overflow: visible; }
-[data-akashic-plugin="wake-meter"] .water-surface path { fill: currentColor; stroke: #07090c; stroke-width: 3px; vector-effect: non-scaling-stroke; }
-[data-akashic-plugin="wake-meter"] .water-surface.pressure-surface { color: #ffe08a; }
-[data-akashic-plugin="wake-meter"] .is-crossed .water-surface { color: #ff9b87; }
-[data-akashic-plugin="wake-meter"] .water-bubbles { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
-[data-akashic-plugin="wake-meter"] .water-bubbles i { position: absolute; width: 9px; height: 9px; border: 3px solid #087ca9; border-radius: 50%; }
-[data-akashic-plugin="wake-meter"] .water-bubbles i:nth-child(1) { left: 28px; bottom: 18%; }
-[data-akashic-plugin="wake-meter"] .water-bubbles i:nth-child(2) { right: 25px; bottom: 31%; width: 6px; height: 6px; }
-[data-akashic-plugin="wake-meter"] .water-bubbles i:nth-child(3) { left: 76px; bottom: 9%; width: 5px; height: 5px; }
-[data-akashic-plugin="wake-meter"] .meter-threshold { position: absolute; left: 0; right: 0; bottom: 80%; z-index: 7; border-top: 3px dashed #d84532; }
-[data-akashic-plugin="wake-meter"] .meter-threshold span { position: absolute; left: 8px; top: 6px; padding: 2px 5px; border: 2px solid #07090c; border-radius: 5px; background: #fff7e4; color: #a52d20; font: 800 9px ui-monospace, monospace; white-space: nowrap; }
-[data-akashic-plugin="wake-meter"] .meter-scale { position: absolute; right: 0; top: 29px; bottom: 17px; display: flex; flex-direction: column; justify-content: space-between; color: #7d8992; font: 800 9px ui-monospace, monospace; }
-[data-akashic-plugin="wake-meter"] .meter-scale span:nth-child(2) { color: #ff806b; }
+[data-akashic-plugin="wake-proactive"] .wake-message {
+  padding: 14px 16px;
+}
 
-[data-akashic-plugin="wake-meter"] .meter-burst { position: absolute; left: 18px; top: -12px; z-index: 12; width: 190px; height: 90px; opacity: 0; }
-[data-akashic-plugin="wake-meter"] .is-crossed .meter-burst { opacity: 1; animation: splash-pop .7s cubic-bezier(.2,1.4,.3,1) infinite alternate; }
-[data-akashic-plugin="wake-meter"] .meter-burst i { position: absolute; width: 16px; height: 23px; border: 3px solid #07090c; border-radius: 55% 45% 60% 40%; background: #ff806b; }
-[data-akashic-plugin="wake-meter"] .meter-burst i:nth-child(1) { left: 82px; top: 3px; }
-[data-akashic-plugin="wake-meter"] .meter-burst i:nth-child(2) { left: 38px; top: 26px; transform: rotate(-38deg) scale(.8); }
-[data-akashic-plugin="wake-meter"] .meter-burst i:nth-child(3) { right: 37px; top: 23px; transform: rotate(34deg) scale(.75); }
-[data-akashic-plugin="wake-meter"] .meter-burst i:nth-child(4) { left: 7px; top: 56px; transform: rotate(-62deg) scale(.55); }
-[data-akashic-plugin="wake-meter"] .meter-burst i:nth-child(5) { right: 8px; top: 53px; transform: rotate(64deg) scale(.55); }
-@keyframes water-bob { from { transform: translateX(-2px) rotate(-1deg); } to { transform: translateX(2px) rotate(1deg); } }
-@keyframes splash-pop { from { transform: translateY(5px) scale(.9); } to { transform: translateY(-4px) scale(1.05); } }
+[data-akashic-plugin="wake-proactive"] .wake-message .ak-markdown {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
 
-[data-akashic-plugin="wake-meter"] .meter-readout { padding-left: 42px; border-left: 3px solid #07090c; }
-[data-akashic-plugin="wake-meter"] .meter-readout > span { display: block; color: #81909a; font: 800 10px ui-monospace, monospace; letter-spacing: .14em; }
-[data-akashic-plugin="wake-meter"] .meter-readout strong { display: inline-block; margin-top: 8px; color: #f5fafb; font: 800 72px/.9 ui-monospace, monospace; letter-spacing: -.08em; }
-[data-akashic-plugin="wake-meter"] .meter-readout em { margin-left: 12px; color: #84919a; font: normal 18px ui-monospace, monospace; }
-[data-akashic-plugin="wake-meter"] .meter-readout p { max-width: 340px; margin: 18px 0 0; color: #aeb8bf; font-size: 13px; line-height: 1.6; }
-[data-akashic-plugin="wake-meter"] .is-crossed .meter-readout strong { color: #ff806b; }
+[data-akashic-plugin="wake-proactive"] .wake-phase {
+  gap: 8px;
+}
 
-[data-akashic-plugin="wake-meter"] .meter-telemetry { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; max-width: 940px; margin: 18px auto 0; }
-[data-akashic-plugin="wake-meter"] .meter-telemetry > div { position: relative; min-width: 0; padding: 15px 17px; border: 2px solid #07090c; border-radius: 12px; background: #1a2027; box-shadow: 4px 4px 0 #07090c; }
-[data-akashic-plugin="wake-meter"] .meter-telemetry span { display: flex; align-items: center; gap: 7px; color: #7d8992; font-size: 10px; }
-[data-akashic-plugin="wake-meter"] .meter-telemetry strong { display: block; margin-top: 6px; overflow: hidden; color: #e9eff2; font: 700 16px ui-monospace, monospace; text-overflow: ellipsis; }
-[data-akashic-plugin="wake-meter"] .meter-telemetry small { display: block; margin-top: 4px; color: #68747d; font-size: 9px; }
-[data-akashic-plugin="wake-meter"] .meter-telemetry span i { flex: 0 0 auto; width: 9px; height: 9px; border: 2px solid #07090c; border-radius: 50%; }
-[data-akashic-plugin="wake-meter"] .tone-cobalt { background: #41b8e7; }
-[data-akashic-plugin="wake-meter"] .tone-amber { background: #ffc84b; }
-[data-akashic-plugin="wake-meter"] .meter-footnote { display: flex; justify-content: space-between; gap: 20px; max-width: 940px; margin: 15px auto 0; color: #69757e; font-size: 10px; }
-[data-akashic-plugin="wake-meter"] .meter-footnote code { max-width: 48%; overflow: hidden; color: #78858e; font: 9px ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
+[data-akashic-plugin="wake-proactive"] .wake-phase-title {
+  padding: 2px 2px 0;
+}
+
+[data-akashic-plugin="wake-proactive"] .wake-audit {
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius, 6px);
+  background: var(--color-surface);
+}
+
+[data-akashic-plugin="wake-proactive"] .wake-audit summary {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px;
+  color: var(--color-fg);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  list-style: none;
+  user-select: none;
+  transition-property: background-color, color;
+  transition-duration: var(--t-fast, 140ms);
+  transition-timing-function: var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+[data-akashic-plugin="wake-proactive"] .wake-audit summary::-webkit-details-marker {
+  display: none;
+}
+
+[data-akashic-plugin="wake-proactive"] .wake-audit summary::before {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 0.7em;
+  margin-inline-end: 6px;
+  color: var(--color-subtle);
+  content: "▸";
+  font-size: 12px;
+  line-height: 1;
+  transition: rotate var(--t-fast, 140ms) var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+[data-akashic-plugin="wake-proactive"] .wake-audit[open] summary::before {
+  rotate: 90deg;
+}
+
+[data-akashic-plugin="wake-proactive"] .wake-audit summary:hover {
+  background: var(--color-surface-2);
+}
+
+[data-akashic-plugin="wake-proactive"] .wake-audit summary:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -1px;
+}
+
+[data-akashic-plugin="wake-proactive"] .wake-audit[open] > summary {
+  border-bottom: 1px solid var(--color-border);
+}
+
+[data-akashic-plugin="wake-proactive"] .wake-audit > .json-tree {
+  max-height: 420px;
+  overflow: auto;
+  border: 0;
+  border-radius: 0;
+}
+
+/* ── Excitement meter ───────────────────────────────────────── */
+
+[data-akashic-plugin="wake-meter"] {
+  --wm-ink: var(--color-fg);
+  --wm-muted: var(--color-muted);
+  --wm-subtle: var(--color-subtle);
+  --wm-surface: var(--color-surface);
+  --wm-surface-2: var(--color-surface-2);
+  --wm-surface-3: var(--color-surface-3);
+  --wm-rule: var(--color-border);
+  --wm-rule-strong: var(--color-border-strong);
+  --wm-fluid: var(--color-accent);
+  --wm-fluid-soft: var(--color-accent-soft);
+  --wm-pressure: var(--color-warning);
+  --wm-crossed: var(--color-danger);
+  --wm-tank: color-mix(in oklab, var(--color-surface-2) 88%, var(--color-accent));
+  --wm-overflow: color-mix(in oklab, var(--color-danger) 14%, var(--color-surface-2));
+  --wm-warm: color-mix(in oklab, var(--color-warning) 12%, var(--color-surface-2));
+  --wm-radius: var(--radius-lg, 10px);
+  --wm-radius-sm: var(--radius, 6px);
+  --wm-ease: var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1));
+  --wm-t: 520ms;
+  min-height: 100%;
+  color: var(--wm-ink);
+  background: var(--color-bg);
+  font-synthesis: none;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-loading {
+  padding: 32px 20px;
+  color: var(--wm-muted);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+[data-akashic-plugin="wake-meter"] .excitement-console {
+  min-height: 100%;
+  gap: 16px;
+  padding: 20px 18px 28px;
+  color: var(--wm-ink);
+}
+
+[data-akashic-plugin="wake-meter"] .meter-header {
+  display: flex;
+  max-width: 920px;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 auto;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-header span {
+  color: var(--wm-subtle);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-header h2 {
+  margin: 4px 0 0;
+  color: var(--wm-ink);
+  font-size: clamp(1.25rem, 2vw, 1.5rem);
+  font-weight: 650;
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-state {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid var(--wm-rule-strong);
+  border-radius: 9999px;
+  color: var(--wm-ink);
+  background: var(--wm-surface);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  user-select: none;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-state i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--wm-fluid);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--wm-fluid) 22%, transparent);
+}
+
+[data-akashic-plugin="wake-meter"] .is-crossed .meter-state {
+  border-color: color-mix(in oklab, var(--wm-crossed) 45%, var(--wm-rule));
+  color: var(--wm-crossed);
+  background: color-mix(in oklab, var(--wm-crossed) 10%, var(--wm-surface));
+}
+
+[data-akashic-plugin="wake-meter"] .is-crossed .meter-state i {
+  background: var(--wm-crossed);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--wm-crossed) 22%, transparent);
+}
+
+[data-akashic-plugin="wake-meter"] .meter-machine {
+  position: relative;
+  display: grid;
+  max-width: 920px;
+  min-height: 0;
+  margin: 0 auto;
+  grid-template-columns: minmax(240px, 340px) minmax(0, 1fr);
+  align-items: center;
+  gap: 36px;
+  padding: 28px 32px;
+  border: 1px solid var(--wm-rule);
+  border-radius: var(--wm-radius);
+  background: var(--wm-surface);
+}
+
+[data-akashic-plugin="wake-meter"] .meter-machine::after {
+  position: absolute;
+  right: 18px;
+  bottom: 14px;
+  color: var(--wm-subtle);
+  content: "live waterline";
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-chamber-wrap {
+  position: relative;
+  width: min(220px, 100%);
+  height: 320px;
+  margin: 0 auto;
+}
+
+[data-akashic-plugin="wake-meter"] .tank-rim {
+  position: absolute;
+  left: 24px;
+  top: 10px;
+  z-index: 8;
+  width: 152px;
+  height: 14px;
+  border: 1px solid var(--wm-rule-strong);
+  border-radius: var(--wm-radius-sm);
+  background: var(--wm-surface-3);
+}
+
+[data-akashic-plugin="wake-meter"] .meter-chamber {
+  position: absolute;
+  inset: 20px 36px 10px 16px;
+  overflow: hidden;
+  border: 1px solid var(--wm-rule-strong);
+  border-radius: var(--wm-radius-sm) var(--wm-radius-sm) 18px 18px;
+  background: var(--wm-tank);
+}
+
+[data-akashic-plugin="wake-meter"] .tank-zone {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+[data-akashic-plugin="wake-meter"] .overflow-zone {
+  top: 0;
+  height: 20%;
+  background: var(--wm-overflow);
+}
+
+[data-akashic-plugin="wake-meter"] .overflow-zone span {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  color: var(--wm-crossed);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+[data-akashic-plugin="wake-meter"] .warm-zone {
+  bottom: 20%;
+  height: 30%;
+  background: var(--wm-warm);
+}
+
+[data-akashic-plugin="wake-meter"] .meter-fluid {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  transition-property: height, bottom;
+  transition-duration: var(--wm-t);
+  transition-timing-function: var(--wm-ease);
+}
+
+[data-akashic-plugin="wake-meter"] .meter-fluid.accumulated {
+  bottom: 0;
+  background: color-mix(in oklab, var(--wm-fluid) 72%, var(--wm-surface));
+}
+
+[data-akashic-plugin="wake-meter"] .meter-fluid.pressure {
+  background: color-mix(in oklab, var(--wm-pressure) 78%, var(--wm-surface));
+}
+
+[data-akashic-plugin="wake-meter"] .is-crossed .meter-fluid.pressure {
+  background: color-mix(in oklab, var(--wm-crossed) 78%, var(--wm-surface));
+}
+
+[data-akashic-plugin="wake-meter"] .water-surface {
+  position: absolute;
+  left: -2px;
+  right: -2px;
+  z-index: 5;
+  height: 14px;
+  color: color-mix(in oklab, var(--wm-fluid) 55%, white);
+  transition-property: bottom;
+  transition-duration: var(--wm-t);
+  transition-timing-function: var(--wm-ease);
+  animation: wake-water-bob 2.4s ease-in-out infinite alternate;
+}
+
+[data-akashic-plugin="wake-meter"] .water-surface svg {
+  display: block;
+  width: 100%;
+  height: 14px;
+  overflow: visible;
+}
+
+[data-akashic-plugin="wake-meter"] .water-surface path {
+  fill: currentColor;
+  stroke: color-mix(in oklab, var(--wm-ink) 35%, transparent);
+  stroke-width: 1.25px;
+  vector-effect: non-scaling-stroke;
+}
+
+[data-akashic-plugin="wake-meter"] .water-surface.pressure-surface {
+  color: color-mix(in oklab, var(--wm-pressure) 60%, white);
+}
+
+[data-akashic-plugin="wake-meter"] .is-crossed .water-surface {
+  color: color-mix(in oklab, var(--wm-crossed) 55%, white);
+}
+
+[data-akashic-plugin="wake-meter"] .water-bubbles {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  opacity: 0.55;
+}
+
+[data-akashic-plugin="wake-meter"] .water-bubbles i {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border: 1px solid color-mix(in oklab, var(--wm-fluid) 55%, var(--wm-ink));
+  border-radius: 50%;
+  background: color-mix(in oklab, var(--wm-fluid) 18%, transparent);
+}
+
+[data-akashic-plugin="wake-meter"] .water-bubbles i:nth-child(1) {
+  left: 26px;
+  bottom: 18%;
+}
+
+[data-akashic-plugin="wake-meter"] .water-bubbles i:nth-child(2) {
+  right: 22px;
+  bottom: 31%;
+  width: 5px;
+  height: 5px;
+}
+
+[data-akashic-plugin="wake-meter"] .water-bubbles i:nth-child(3) {
+  left: 68px;
+  bottom: 10%;
+  width: 4px;
+  height: 4px;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-threshold {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 80%;
+  z-index: 7;
+  border-top: 1px dashed color-mix(in oklab, var(--wm-crossed) 70%, var(--wm-rule));
+}
+
+[data-akashic-plugin="wake-meter"] .meter-threshold span {
+  position: absolute;
+  left: 6px;
+  top: 5px;
+  padding: 2px 6px;
+  border: 1px solid var(--wm-rule);
+  border-radius: 4px;
+  color: var(--wm-crossed);
+  background: var(--wm-surface);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-scale {
+  position: absolute;
+  right: 0;
+  top: 26px;
+  bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  color: var(--wm-subtle);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1;
+  text-align: end;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-scale span:nth-child(2) {
+  color: var(--wm-crossed);
+}
+
+[data-akashic-plugin="wake-meter"] .meter-burst {
+  position: absolute;
+  left: 14px;
+  top: -8px;
+  z-index: 12;
+  width: 170px;
+  height: 72px;
+  opacity: 0;
+  pointer-events: none;
+  transition-property: opacity;
+  transition-duration: 180ms;
+  transition-timing-function: var(--wm-ease);
+}
+
+[data-akashic-plugin="wake-meter"] .is-crossed .meter-burst {
+  opacity: 1;
+  animation: wake-splash-pop 0.8s var(--wm-ease) infinite alternate;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-burst i {
+  position: absolute;
+  width: 12px;
+  height: 18px;
+  border: 1px solid color-mix(in oklab, var(--wm-crossed) 55%, var(--wm-ink));
+  border-radius: 55% 45% 60% 40%;
+  background: color-mix(in oklab, var(--wm-crossed) 72%, var(--wm-surface));
+}
+
+[data-akashic-plugin="wake-meter"] .meter-burst i:nth-child(1) {
+  left: 74px;
+  top: 2px;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-burst i:nth-child(2) {
+  left: 34px;
+  top: 22px;
+  transform: rotate(-38deg) scale(0.8);
+}
+
+[data-akashic-plugin="wake-meter"] .meter-burst i:nth-child(3) {
+  right: 32px;
+  top: 20px;
+  transform: rotate(34deg) scale(0.75);
+}
+
+[data-akashic-plugin="wake-meter"] .meter-burst i:nth-child(4) {
+  left: 6px;
+  top: 48px;
+  transform: rotate(-62deg) scale(0.55);
+}
+
+[data-akashic-plugin="wake-meter"] .meter-burst i:nth-child(5) {
+  right: 6px;
+  top: 46px;
+  transform: rotate(64deg) scale(0.55);
+}
+
+@keyframes wake-water-bob {
+  from {
+    transform: translateX(-1px);
+  }
+  to {
+    transform: translateX(1px);
+  }
+}
+
+@keyframes wake-splash-pop {
+  from {
+    transform: translateY(3px) scale(0.96);
+  }
+  to {
+    transform: translateY(-2px) scale(1.02);
+  }
+}
+
+[data-akashic-plugin="wake-meter"] .meter-readout {
+  min-width: 0;
+  padding-inline-start: 28px;
+  border-inline-start: 1px solid var(--wm-rule);
+}
+
+[data-akashic-plugin="wake-meter"] .meter-readout > span {
+  display: block;
+  color: var(--wm-subtle);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-readout strong {
+  display: inline-block;
+  margin-top: 8px;
+  color: var(--wm-ink);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: clamp(2.75rem, 6vw, 3.75rem);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  line-height: 0.95;
+  letter-spacing: -0.04em;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-readout em {
+  margin-inline-start: 10px;
+  color: var(--wm-muted);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 1.125rem;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-readout p {
+  max-width: 36ch;
+  margin: 14px 0 0;
+  color: var(--wm-muted);
+  font-size: 13px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+[data-akashic-plugin="wake-meter"] .is-crossed .meter-readout strong {
+  color: var(--wm-crossed);
+}
+
+[data-akashic-plugin="wake-meter"] .meter-telemetry {
+  display: grid;
+  max-width: 920px;
+  margin: 0 auto;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 10px;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-telemetry > div {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--wm-rule);
+  border-radius: var(--wm-radius-sm);
+  background: var(--wm-surface);
+}
+
+[data-akashic-plugin="wake-meter"] .meter-telemetry span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--wm-subtle);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-telemetry strong {
+  display: block;
+  margin-top: 6px;
+  overflow: hidden;
+  color: var(--wm-ink);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-telemetry small {
+  display: block;
+  margin-top: 3px;
+  color: var(--wm-subtle);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-telemetry span i {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+[data-akashic-plugin="wake-meter"] .tone-cobalt {
+  background: var(--wm-fluid);
+}
+
+[data-akashic-plugin="wake-meter"] .tone-amber {
+  background: var(--wm-pressure);
+}
+
+[data-akashic-plugin="wake-meter"] .meter-footnote {
+  display: flex;
+  max-width: 920px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 auto;
+  color: var(--wm-subtle);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-footnote span {
+  min-width: 0;
+  text-wrap: pretty;
+}
+
+[data-akashic-plugin="wake-meter"] .meter-footnote code {
+  max-width: 42%;
+  overflow: hidden;
+  color: var(--wm-muted);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 @media (max-width: 900px) {
-  [data-akashic-plugin="wake-meter"] .excitement-console { padding: 18px; }
-  [data-akashic-plugin="wake-meter"] .meter-machine { grid-template-columns: 1fr; gap: 24px; padding: 34px; }
-  [data-akashic-plugin="wake-meter"] .meter-readout { padding: 22px 0 0; border-top: 3px solid #07090c; border-left: 0; text-align: center; }
-  [data-akashic-plugin="wake-meter"] .meter-readout p { margin-left: auto; margin-right: auto; }
-  [data-akashic-plugin="wake-meter"] .meter-telemetry { grid-template-columns: repeat(2, 1fr); }
+  [data-akashic-plugin="wake-meter"] .excitement-console {
+    padding: 16px 12px 24px;
+  }
+
+  [data-akashic-plugin="wake-meter"] .meter-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  [data-akashic-plugin="wake-meter"] .meter-machine {
+    grid-template-columns: 1fr;
+    gap: 20px;
+    padding: 22px 18px 36px;
+  }
+
+  [data-akashic-plugin="wake-meter"] .meter-readout {
+    padding-block-start: 18px;
+    padding-inline-start: 0;
+    border-inline-start: 0;
+    border-block-start: 1px solid var(--wm-rule);
+    text-align: center;
+  }
+
+  [data-akashic-plugin="wake-meter"] .meter-readout p {
+    margin-inline: auto;
+  }
+
+  [data-akashic-plugin="wake-meter"] .meter-footnote {
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  [data-akashic-plugin="wake-meter"] .meter-footnote code {
+    max-width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-akashic-plugin="wake-meter"] .water-surface,
+  [data-akashic-plugin="wake-meter"] .is-crossed .meter-burst {
+    animation: none;
+  }
+
+  [data-akashic-plugin="wake-meter"] .meter-fluid,
+  [data-akashic-plugin="wake-meter"] .water-surface,
+  [data-akashic-plugin="wake-meter"] .meter-burst {
+    transition-duration: 0ms;
+  }
+
+  [data-akashic-plugin="wake-proactive"] .wake-audit summary,
+  [data-akashic-plugin="wake-proactive"] .wake-audit summary::before {
+    transition-duration: 0ms;
+  }
 }

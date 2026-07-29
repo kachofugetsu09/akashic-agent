@@ -95,7 +95,7 @@ function renderItems(items: InspectorItem[], empty: string): string {
       ${items.map((item) => {
         const score = item.score ?? item.value ?? item.completion_mass ?? item.seed_score;
         const path = item.relation_path?.length
-          ? `<span class="akasha-path">${escapeHtml(item.relation_path.join(" → "))}</span>`
+          ? `<span class="akasha-path" title="${escapeHtml(item.relation_path.join(" → "))}">${escapeHtml(item.relation_path.join(" → "))}</span>`
           : "";
         return `
           <li class="akasha-evidence">
@@ -106,9 +106,9 @@ function renderItems(items: InspectorItem[], empty: string): string {
                 : ""}
             </div>
             <div class="akasha-evidence-meta">
-              <time>${escapeHtml(shortTime(item.ts))}</time>
-              <span>${escapeHtml(sourceText(item))}</span>
-              ${score == null ? "" : `<b>${fixed(score)}</b>`}
+              <time class="akasha-chip akasha-chip--time">${escapeHtml(shortTime(item.ts))}</time>
+              <span class="akasha-chip">${escapeHtml(sourceText(item))}</span>
+              ${score == null ? "" : `<b class="akasha-chip akasha-chip--score">${fixed(score)}</b>`}
               ${path}
             </div>
           </li>
@@ -199,21 +199,21 @@ function renderDetail(item: InspectorDetail, closePane?: () => void): string {
         ${metric("残余", fixed(item.residual_l1, 6), `${item.pushes} 次 residual push`)}
       </dl>
 
-      <section class="akasha-section">
+      <section class="akasha-section akasha-lane akasha-lane--seed">
         <header><h3>直接线索</h3><span>${item.seeds.length}</span></header>
         ${renderItems(item.seeds, "这一轮没有形成可持久化 seed。")}
       </section>
 
       ${item.activation_capture_available
         ? `
-          <section class="akasha-section">
+          <section class="akasha-section akasha-lane akasha-lane--activation">
             <header><h3>扩散激活</h3><span>${item.activation_items.length}</span></header>
             ${renderItems(item.activation_items, "图扩散没有增加候选。")}
           </section>
         `
         : ""}
 
-      <section class="akasha-section akasha-lane">
+      <section class="akasha-section akasha-lane akasha-lane--precise">
         <header>
           <div><h3>左脑记忆</h3><p>Embedding 精确回忆</p></div>
           <span>${item.left_count}</span>
@@ -221,7 +221,7 @@ function renderDetail(item: InspectorDetail, closePane?: () => void): string {
         ${renderItems(item.left, "没有 Dense 直接命中。")}
       </section>
 
-      <section class="akasha-section akasha-lane">
+      <section class="akasha-section akasha-lane akasha-lane--completion">
         <header>
           <div><h3>右脑联想</h3><p>显式图模式补全，已与左脑去重</p></div>
           <span>${item.right_count}</span>
@@ -231,7 +231,7 @@ function renderDetail(item: InspectorDetail, closePane?: () => void): string {
 
       ${item.tool_left_count
         ? `
-          <section class="akasha-section akasha-lane">
+          <section class="akasha-section akasha-lane akasha-lane--precise">
             <header>
               <div><h3>工具精确回忆</h3><p>本轮 recall_memory 的 Dense 结果</p></div>
               <span>${item.tool_left_count}</span>
@@ -243,7 +243,7 @@ function renderDetail(item: InspectorDetail, closePane?: () => void): string {
 
       ${item.tool_right_count
         ? `
-          <section class="akasha-section akasha-lane">
+          <section class="akasha-section akasha-lane akasha-lane--completion">
             <header>
               <div><h3>工具模式补全</h3><p>本轮 recall_memory 的显式图结果</p></div>
               <span>${item.tool_right_count}</span>

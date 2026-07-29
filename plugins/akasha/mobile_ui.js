@@ -62,7 +62,10 @@ function renderRecent(items, total) {
   if (!items.length) {
     return `
       <section class="akasha-mobile-inspector">
-        <header><h2>Akasha Inspector</h2><p>还没有可检查的检索记录。</p></header>
+        <header>
+          <h2>Akasha Inspector</h2>
+          <p>还没有可检查的检索记录。</p>
+        </header>
       </section>
     `;
   }
