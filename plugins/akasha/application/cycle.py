@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -12,7 +11,7 @@ from ..domain.features import (
     BurstAwareFeaturePool,
     BurstDecision,
 )
-from ..domain.graph import DynamicMemoryGraph
+from ..domain.graph import DynamicMemoryGraph, RetrievalState
 from ..domain.readout import (
     PatternCompletion,
     RecallCapture,
@@ -42,7 +41,8 @@ class RetrievalTicket:
     evidence: SeedEvidence
     diffusion: DiffusionResult
     completion: PatternCompletion
-    prepared_graph: DynamicMemoryGraph
+    prepared_turn_capacity: int
+    prepared_state: RetrievalState
 
 
 @dataclass(frozen=True)
@@ -128,7 +128,6 @@ class MemoryCycle:
         *,
         capture_paths: bool = False,
         include_completion: bool = True,
-        isolate_graph: bool = True,
     ) -> RetrievalTicket:
         """Read the current state and return a non-mutating retrieval ticket."""
 
@@ -148,47 +147,49 @@ class MemoryCycle:
         )
         evidence = decision.evidence
 
-        # 3. Advance an isolated graph copy and settle its local fixed point.
+        # 3. Advance topology and causal clocks inside a reversible read frame.
         previous_turn_capacity = self.graph.turn_count
-        prepared = (
-            copy.deepcopy(self.graph)
-            if isolate_graph
-            else self.graph
-        )
-        if event >= prepared.turn_count:
-            prepared.grow_turn_capacity(event + 1)
-        prepared.prepare_retrieval(
-            event,
-            turn.inter_gap_seconds,
-            evidence,
-        )
-        diffusion = residual_push(
-            prepared,
-            evidence.seed,
-            event,
-            restart=self.config.restart,
-            tolerance=self.config.tolerance,
-            capture_paths=capture_paths,
-        )
-        completion = (
-            _empty_completion(diffusion)
-            if event == 0 or not include_completion
-            else read_pattern_completion(
-                graph=prepared,
-                pool=pool,
-                query=turn,
-                context=decision.context,
-                evidence=evidence,
-                diffusion=diffusion,
-                historical_surprise=_historical_surprise(
-                    self.evidence
-                ),
-                config=self.config,
-                context_dependence=decision.context_dependence,
-                visible_nodes=decision.visible_nodes,
-                burst_continued=decision.continued,
+        published_state = self.graph.capture_retrieval_state()
+        try:
+            if event >= self.graph.turn_count:
+                self.graph.grow_turn_capacity(event + 1)
+            self.graph.prepare_retrieval(
+                event,
+                turn.inter_gap_seconds,
+                evidence,
             )
-        )
+            prepared_turn_capacity = self.graph.turn_count
+            prepared_state = self.graph.capture_retrieval_state()
+            diffusion = residual_push(
+                self.graph,
+                evidence.seed,
+                event,
+                restart=self.config.restart,
+                tolerance=self.config.tolerance,
+                capture_paths=capture_paths,
+            )
+            completion = (
+                _empty_completion(diffusion)
+                if event == 0 or not include_completion
+                else read_pattern_completion(
+                    graph=self.graph,
+                    pool=pool,
+                    query=turn,
+                    context=decision.context,
+                    evidence=evidence,
+                    diffusion=diffusion,
+                    historical_surprise=_historical_surprise(
+                        self.evidence
+                    ),
+                    config=self.config,
+                    context_dependence=decision.context_dependence,
+                    visible_nodes=decision.visible_nodes,
+                    burst_continued=decision.continued,
+                )
+            )
+        finally:
+            self.graph.apply_retrieval_state(published_state)
+            self.graph.restore_turn_capacity(previous_turn_capacity)
         return RetrievalTicket(
             state_version=event,
             previous_turn_capacity=previous_turn_capacity,
@@ -200,7 +201,8 @@ class MemoryCycle:
             evidence=evidence,
             diffusion=diffusion,
             completion=completion,
-            prepared_graph=prepared,
+            prepared_turn_capacity=prepared_turn_capacity,
+            prepared_state=prepared_state,
         )
 
     def commit(
@@ -233,9 +235,13 @@ class MemoryCycle:
                 "retrieval ticket turn identity does not match committed turn"
             )
 
-        # 2. Remap historical event references to the prepared graph capacity.
+        # 2. Materialize the accepted read frame on the committed graph.
+        if selected.prepared_turn_capacity < self.graph.turn_count:
+            raise RuntimeError("committed memory cycle cannot shrink capacity")
+        self.graph.grow_turn_capacity(selected.prepared_turn_capacity)
+        self.graph.apply_retrieval_state(selected.prepared_state)
         offset = (
-            selected.prepared_graph.turn_count
+            selected.prepared_turn_capacity
             - selected.previous_turn_capacity
         )
         if offset < 0:
@@ -253,8 +259,7 @@ class MemoryCycle:
                 for event in self.events
             ]
 
-        # 3. Adopt the prepared state and learn the settled activity once.
-        self.graph = selected.prepared_graph
+        # 3. Learn the accepted retrieval activity exactly once.
         plasticity = replace(
             self.graph.learn(
                 self.state_version,

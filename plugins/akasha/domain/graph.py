@@ -26,6 +26,29 @@ class HubRecord:
     member_edge_ids: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class RetrievalState:
+    """Capture the small causal state advanced by one speculative retrieval."""
+
+    elapsed_seconds: float
+    short_log_gap: float | None
+    long_log_gap: float | None
+    short_gap_count: int
+    long_gap_count: int
+    short_recurrence_log_gap: float | None
+    long_recurrence_log_gap: float | None
+    short_recurrence_log_m2: float
+    long_recurrence_log_m2: float
+    short_recurrence_weight: float
+    long_recurrence_weight: float
+    recurrence_log_mean: float | None
+    recurrence_log_m2: float
+    recurrence_weight: float
+    last_external_seed_seconds: tuple[tuple[int, float], ...]
+    current_external: tuple[tuple[int, float], ...]
+    current_event: int
+
+
 class DynamicMemoryGraph:
     """Learn one bounded relation weight from every settled retrieval event."""
 
@@ -78,9 +101,24 @@ class DynamicMemoryGraph:
     def grow_turn_capacity(self, turn_count: int) -> None:
         """Grow turn slots and remap engram nodes without changing relations."""
 
-        # 1. Reject shrinkage because persisted turn identities are append-only.
+        # 1. Reject shrinkage at the public append-only boundary.
         if turn_count < self.turn_count:
             raise ValueError("memory graph turn capacity cannot shrink")
+        self._resize_turn_capacity(turn_count)
+
+    def restore_turn_capacity(self, turn_count: int) -> None:
+        """Undo speculative capacity growth before the graph is published."""
+
+        if turn_count > self.turn_count:
+            raise ValueError("restored memory graph capacity cannot grow")
+        if self.current_event >= turn_count:
+            raise ValueError("cannot remove a committed memory turn slot")
+        self._resize_turn_capacity(turn_count)
+
+    def _resize_turn_capacity(self, turn_count: int) -> None:
+        """Remap the disjoint turn and engram namespaces to one capacity."""
+
+        # 1. Return early when the namespace boundary is unchanged.
         if turn_count == self.turn_count:
             return
         old_turn_count = self.turn_count
@@ -119,6 +157,55 @@ class DynamicMemoryGraph:
             self.adjacency[source].append(edge_id)
             if bidirectional:
                 self.adjacency[target].append(edge_id)
+
+    def capture_retrieval_state(self) -> RetrievalState:
+        """Snapshot causal clocks without copying graph topology or weights."""
+
+        return RetrievalState(
+            elapsed_seconds=self.elapsed_seconds,
+            short_log_gap=self.short_log_gap,
+            long_log_gap=self.long_log_gap,
+            short_gap_count=self.short_gap_count,
+            long_gap_count=self.long_gap_count,
+            short_recurrence_log_gap=self.short_recurrence_log_gap,
+            long_recurrence_log_gap=self.long_recurrence_log_gap,
+            short_recurrence_log_m2=self.short_recurrence_log_m2,
+            long_recurrence_log_m2=self.long_recurrence_log_m2,
+            short_recurrence_weight=self.short_recurrence_weight,
+            long_recurrence_weight=self.long_recurrence_weight,
+            recurrence_log_mean=self.recurrence_log_mean,
+            recurrence_log_m2=self.recurrence_log_m2,
+            recurrence_weight=self.recurrence_weight,
+            last_external_seed_seconds=tuple(
+                sorted(self.last_external_seed_seconds.items())
+            ),
+            current_external=tuple(sorted(self.current_external.items())),
+            current_event=self.current_event,
+        )
+
+    def apply_retrieval_state(self, state: RetrievalState) -> None:
+        """Adopt one versioned retrieval frame and invalidate read caches."""
+
+        self.elapsed_seconds = state.elapsed_seconds
+        self.short_log_gap = state.short_log_gap
+        self.long_log_gap = state.long_log_gap
+        self.short_gap_count = state.short_gap_count
+        self.long_gap_count = state.long_gap_count
+        self.short_recurrence_log_gap = state.short_recurrence_log_gap
+        self.long_recurrence_log_gap = state.long_recurrence_log_gap
+        self.short_recurrence_log_m2 = state.short_recurrence_log_m2
+        self.long_recurrence_log_m2 = state.long_recurrence_log_m2
+        self.short_recurrence_weight = state.short_recurrence_weight
+        self.long_recurrence_weight = state.long_recurrence_weight
+        self.recurrence_log_mean = state.recurrence_log_mean
+        self.recurrence_log_m2 = state.recurrence_log_m2
+        self.recurrence_weight = state.recurrence_weight
+        self.last_external_seed_seconds = dict(
+            state.last_external_seed_seconds
+        )
+        self.current_external = dict(state.current_external)
+        self.current_event = state.current_event
+        self._transition_cache.clear()
 
     @property
     def resource_tau_seconds(self) -> float:
