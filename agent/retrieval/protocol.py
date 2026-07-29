@@ -16,6 +16,7 @@ class RetrievalRequest:
     history: list[HistoryMessage]  # 完整会话历史，无截窗。pipeline 实现负责自行决定使用范围。
     # DefaultMemoryRetrievalPipeline 内部截取末尾 MemoryConfig.window 条后使用。
     session_metadata: dict[str, object]
+    turn_id: str = ""
     timestamp: datetime | None = None
     extra: dict[str, object] = field(default_factory=dict[str, object])
 

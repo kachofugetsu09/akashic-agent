@@ -797,6 +797,7 @@ class DefaultContextStore(ContextStore):
                     session_metadata=(
                         session.metadata if isinstance(session.metadata, dict) else {}
                     ),
+                    turn_id=current_turn_id.get(),
                     timestamp=msg.timestamp,
                 )
             )

@@ -8,7 +8,9 @@ from agent.plugins import (
     Plugin,
 )
 from agent.plugins.mobile_ui import MobileUiRpcInvalidRequest
+from core.memory.engine import MemoryRecord
 
+from .engine import AkashaMemoryEngine
 from .inspector import AkashaInspectorReader, mobile_summary
 from .memory_plugin import MemoryPlugin
 
@@ -128,11 +130,34 @@ class AkashaPlugin(Plugin):
                 "Akasha recall.current 的 message_id 必须是字符串"
             )
 
-        # 2. Synthetic active messages use the latest committed session turn.
+        # 2. Synthetic active messages resolve only their exact pending retrieval.
         if isinstance(message_id, str) and message_id.startswith("assistant:"):
             if turn_id is None or message_id != f"assistant:{turn_id}":
                 return _empty_mobile_recall()
-            item = self._inspector().latest_for_session(session_id)
+            engine = cast(
+                AkashaMemoryEngine,
+                self.context.memory_engine,
+            )
+            if engine.describe().name != "akasha":
+                raise RuntimeError(
+                    "Akasha active recall requires AkashaMemoryEngine"
+                )
+            pending = engine.wait_for_active_recall(session_id, turn_id)
+            if pending is None:
+                return _empty_mobile_recall()
+            return {
+                "schema": _MOBILE_RECALL_SCHEMA,
+                "query_id": pending.query_id,
+                "recall_capture_available": True,
+                "left": _mobile_recall_records(
+                    pending.records.dense
+                ),
+                "right": _mobile_recall_records(
+                    pending.records.completion
+                ),
+                "tool_left": [],
+                "tool_right": [],
+            }
         elif isinstance(message_id, str):
             item = self._inspector().for_assistant_message(
                 session_id,
@@ -216,3 +241,23 @@ def _mobile_recall_lane(
             item["score"] = score
         projected.append(item)
     return projected
+
+
+def _mobile_recall_records(
+    records: tuple[MemoryRecord, ...],
+) -> list[dict[str, object]]:
+    """Project frozen runtime records through the same bounded card shape."""
+
+    return _mobile_recall_lane(
+        [
+            {
+                "user_text": record.signals["user_text"],
+                "assistant_preview": record.signals[
+                    "assistant_preview"
+                ],
+                "ts": record.signals["started_at"],
+                "score": record.score,
+            }
+            for record in records
+        ]
+    )

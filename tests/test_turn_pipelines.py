@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.control.context import current_turn_id
 from agent.core.passive_turn import _persistence_from_metadata
 from agent.core.runtime_support import SessionLike, TurnRunResult
 from agent.looping.core import AgentLoop, _supports_stream_events
@@ -377,10 +378,15 @@ def test_agent_loop_uses_custom_retrieval_pipeline(tmp_path: Path):
     loop._reasoner.run_turn = AsyncMock(return_value=TurnRunResult(reply="ok"))
 
     msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
-    asyncio.run(loop._core_runner.process(msg, msg.session_key))
+    turn_token = current_turn_id.set("turn:test-retrieval")
+    try:
+        asyncio.run(loop._core_runner.process(msg, msg.session_key))
+    finally:
+        current_turn_id.reset(turn_token)
 
     assert custom_retrieval.requests
     assert custom_retrieval.requests[0].message == "hello"
+    assert custom_retrieval.requests[0].turn_id == "turn:test-retrieval"
     run_kwargs = loop._reasoner.run_turn.await_args.kwargs
     assert "base_history" in run_kwargs
     assert run_kwargs["base_history"] is None

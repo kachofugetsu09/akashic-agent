@@ -41,6 +41,7 @@ class DefaultMemoryRetrievalPipeline(MemoryRetrievalPipeline):
                 context={
                     "history": request.history,
                     "session_metadata": request.session_metadata,
+                    "turn_id": request.turn_id,
                 },
                 filters=MemoryQueryFilters(hints=dict(request.extra or {})),
                 timestamp=request.timestamp,
