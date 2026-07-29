@@ -5,6 +5,7 @@ import { spawn, spawnSync } from "node:child_process";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const pluginsRoot = join(projectRoot, "plugins");
+const pluginPackagesRoot = join(projectRoot, "plugin_packages");
 const isWindows = process.platform === "win32";
 const localEsbuild = join(
   projectRoot,
@@ -25,12 +26,12 @@ function resolveEsbuildCommand() {
   return ["npx", "--yes", "esbuild"];
 }
 
-function listPluginPanels() {
-  if (!existsSync(pluginsRoot)) {
+function listPanelsInRoot(root) {
+  if (!existsSync(root)) {
     return [];
   }
-  return readdirSync(pluginsRoot)
-    .map((name) => join(pluginsRoot, name))
+  return readdirSync(root)
+    .map((name) => join(root, name))
     .filter((path) => statSync(path, { throwIfNoEntry: false })?.isDirectory())
     .flatMap((pluginDir) =>
       readdirSync(pluginDir)
@@ -41,6 +42,13 @@ function listPluginPanels() {
           jsPath: join(pluginDir, name.replace(/\.tsx?$/, ".js")),
         })),
     );
+}
+
+function listPluginPanels() {
+  return [
+    ...listPanelsInRoot(pluginsRoot),
+    ...listPanelsInRoot(pluginPackagesRoot),
+  ];
 }
 
 // Plugins build as ESM modules that bundle their own code but keep react /
