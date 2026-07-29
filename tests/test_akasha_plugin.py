@@ -97,7 +97,7 @@ def test_feedback_marker_is_exported_before_user_message_persistence() -> None:
     modules = default_after_reasoning_modules(
         EventBus(),
         cast(Any, SimpleNamespace()),
-        plugin.after_reasoning_modules(),
+        cast(Any, plugin.after_reasoning_modules()),
     )
     slots = [module.slot for module in modules]
 
