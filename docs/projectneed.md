@@ -265,6 +265,8 @@ D 类效果只能由拥有 prepared、committed、failed 和必要补偿语义�
 
 Prompt 历史不得从孤立 assistant 或 tool result 开始。assistant 工具调用和对应结果成对保留；合法 user 边界或明确的 proactive assistant 边界拥有窗口起点。长工具结果只允许在临时模型视图中截短。
 
+已送达的 proactive assistant 消息进入 prompt history 时保留完整正文，不得施加 proactive 专属字符预算或改写成 preview。整体请求超限时，只能由通用 prompt history 退化按完整语义边界缩小窗口。
+
 ### CTX-004 派生上下文不得伪装成用户原话
 
 skills、长期记忆、检索结果和 recent context 必须带来源和信任级别，作为 system context 或独立数据块进入请求。当前 user message 始终独立；工具授权不能由提示词内容决定。
