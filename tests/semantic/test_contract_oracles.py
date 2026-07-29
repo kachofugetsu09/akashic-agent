@@ -10,6 +10,7 @@ from tests_scenarios.contracts.oracles import (
     assert_atomic_generation_switch,
     assert_isolated_gate_paths,
     assert_paths_retained,
+    assert_process_resources_released,
     assert_rows_unchanged,
 )
 
@@ -57,6 +58,20 @@ def test_call_finality_rejects_background_refresh_mutant() -> None:
         await asyncio.gather(*tasks)
 
     asyncio.run(scenario())
+
+
+def test_process_lifecycle_oracle_rejects_leader_only_cleanup_mutant() -> None:
+    """leader 退出不能被误判为整个 owned process tree 已释放。"""
+    leader_alive = False
+    live_descendants = [18000]
+    listening_ports = [18765]
+
+    assert leader_alive is False
+    with pytest.raises(AssertionError, match="仍持有运行资源"):
+        assert_process_resources_released(
+            live_descendant_pids=live_descendants,
+            listening_ports=listening_ports,
+        )
 
 
 def test_plugin_publication_oracle_rejects_early_switch_mutant() -> None:

@@ -5,6 +5,7 @@ async_accepted_before_visible = "tests/semantic/test_contract_oracles.py::test_c
 candidate_visible_before_activation = "tests/semantic/test_contract_oracles.py::test_plugin_publication_oracle_rejects_early_switch_mutant"
 derived_state_overwrites_session_source = "tests/semantic/test_contract_oracles.py::test_memory_oracle_rejects_derived_state_overwrite_mutant"
 historical_session_delete = "tests/semantic/test_context_history_contract.py::test_history_oracle_rejects_historical_delete_mutant"
+leader_exit_assumed_tree_exit = "tests/semantic/test_contract_oracles.py::test_process_lifecycle_oracle_rejects_leader_only_cleanup_mutant"
 missing_p0_mutant = "tests/semantic/test_change_gate.py::test_every_p0_oracle_declares_a_known_wrong_mutant"
 official_workspace_path = "tests/semantic/test_contract_oracles.py::test_workspace_oracle_rejects_official_path_mutant"
 plugin_uninstall_deletes_data = "tests/semantic/test_contract_oracles.py::test_plugin_data_oracle_rejects_uninstall_delete_mutant"
@@ -72,6 +73,25 @@ command = [
 ]
 observes = ["call_return", "immediate_read_after_call"]
 mutants = ["async_accepted_before_visible"]
+
+[scenarios.mcp_process_lifecycle]
+requirements = ["PLG-004", "PLG-009", "RUN-001", "RUN-002", "TST-001", "TST-003"]
+groups = ["mcp", "plugin", "runtime"]
+environment = "public_clean_workspace"
+timeout_seconds = 60
+command = [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "tests/test_io_modules.py::test_mcp_client_cleans_wrapper_process_group",
+  "tests/test_io_modules.py::test_mcp_client_retains_ownership_when_process_group_cleanup_fails",
+  "tests/test_plugin_service_host.py::test_managed_service_rejects_occupied_port_without_http_readiness",
+  "tests/test_plugin_service_host.py::test_managed_service_cleans_listener_after_leader_exit",
+  "tests/test_agent_restart.py::test_supervisor_cleans_orphaned_boot_listener",
+]
+observes = ["leader_exit", "descendant_exit", "listener_release", "foreign_listener_survival", "cleanup_ownership"]
+mutants = ["leader_exit_assumed_tree_exit"]
 
 [scenarios.plugin_generation_contract]
 requirements = ["PLG-001", "PLG-004"]
