@@ -2,7 +2,7 @@
 
 日期：2026-07-30
 
-状态：持续手工诊断；全量 89 题诊断遍历进行中，未启动最终 eval
+状态：89/89 手工诊断遍历已收口；未启动优化后 fresh final eval
 
 设计合同：
 [V4 Flash 完整 Runtime Harness Benchmark 设计](../spark/2026-07-30-v4flash-harness-benchmark-design.md)
@@ -789,3 +789,127 @@ shutdown 的生命周期修复完成累计 49 个 benchmark tests 和相邻 publ
 
 线上 gateway 仍为 PID `162463`、启动时间 `2026-07-30 09:53:27 +0800`，命令行和
 workspace 未变化。
+
+### 02:31 89/89 诊断遍历检查点
+
+89 个 Terminal-Bench 2.1 task 均已至少触达一次，逐题 TSV 当前共 89 条。计入最后两个
+已到达、等待 TSV owner 回填的终态后，本检查点分布为：
+
+- 46 个 `reward_pass`；
+- 26 个 `reward_fail`；
+- 9 个 `agent_deadline`；
+- 5 个 `infra_invalid`；
+- 3 个 `oracle_blocked`；
+- 0 个仍在运行的 task。
+
+按主要问题层级归因：
+
+- 46 个通过，`primary_layer=none`；
+- 20 个以 Agent 的规划、工具执行、验证或停止闭环为主；
+- 5 个以 LLM 的领域推理或解法合成为主；
+- 9 个为 Agent、LLM、外部依赖或 oracle 共同作用的 mixed；
+- 3 个以 harness/runtime infra 为主；
+- 6 个以 benchmark oracle 或官方 verifier 为主。
+
+这里的 89/89 表示诊断遍历已经覆盖全部题目，不表示最终官方评测完成。记录混合了
+不同 wave 的有效结果和被明确隔离的 infra/oracle 无效 attempt；
+优化后的 fresh 89-task official eval 尚未运行，因此当前记录不能计算或冒充最终
+Terminal-Bench 分数，也不能与公开的 56.9% 基准直接比较。
+
+wave 10–12 的主要结果进一步收窄了归因边界：
+
+- portable runtime control 修复了旧 task image 中的 GLIBC ABI 不兼容，
+  `qemu-alpine-ssh` 与 `qemu-startup` 重跑均通过；
+- `caffe-cifar-10`、`multi-source-data-merger` 在运行环境修复后通过，证明旧失败不应
+  留在 Agent 侧；
+- `largest-eigenval`、`mteb-leaderboard` 暴露 mixed 问题，
+  `mcmc-sampling-stan`、`video-processing` 暴露 Agent 执行闭环或证据覆盖问题；
+- `make-mips-interpreter`、`train-fasttext`、`tune-mjcf` 和
+  `write-compressor` 在有效运行中耗尽 deadline；这些记录支持后续通用策略消融，
+  但不支持为具体题目增加提示或规则；
+- Torch 两题的 Agent turn 已完成，官方 verifier 仍停在大体积冷下载并超时，没有
+  CTRF/reward，继续按 infra invalid 隔离。
+
+### 02:31 隔离控制与事件消费根因
+
+本轮纯 infra 链路保持 task 指令、verifier、模型和 Agent 策略不变：
+
+1. task image 与 Git 内容寻址 volume 复用由 `#259` 承担；Git 仍从固定 source
+   bundle 恢复，volume 只读挂载，不把宿主 checkout 暴露给 task；
+2. `#260` 保证 driver 任意终态后都关闭 gateway；
+3. `#261` 保持 Agent 工具 cwd 为 `/app`，只把 durable workspace、socket、
+   `sessions.db`、memory 和 plugin-data 移到 `/opt/akashic-workspace`，避免污染
+   task root；
+4. `#262` 在 control buffered delta replay 中协作让出调度，但不合并、不丢弃、
+   不重排 delta；
+5. `#263` 让共享 runtime 按 manifest、lock、Python 版本和 ABI 做可移植校验，
+   避免复用宿主 ABI 偶合的产物。
+
+`winning-avg-corewars` 把事件拥塞拆成了两个独立层次。第一次修复只覆盖 control
+replay；第二次仍出现 SDK notification queue overflow，说明问题不在 delta 数量本身。
+`#264` 让 SDK reader 在连续路由已缓冲通知时协作让出调度。随后 trace 又证明
+runtime driver 读取一个 event 后等待 `turn/read`，会暂停 stream 消费；
+`#265` 因此改为持续 drain event stream，并与 `turn/read` 共同观察终态。两层修复都
+保留原 event、sequence、terminal 和 `SlowConsumerError` 语义，不用扩大队列或合并
+provider delta 掩盖背压。
+
+最终 continuous-drain 重跑
+`akasic-bench-v4flash-smoke-winning-avg-corewars-20260730-181015-097845`
+的 source `unchanged=true`、online check 通过、resource classification 为 `none`，
+并从 event stream 收到 1,259 个事件后正常完成 terminal。官方 CTRF 为 2/3、
+reward `0`，唯一失败是相对 stone/snake 的性能阈值。transport treatment 因此通过；
+trace 中模型共使用 65 次请求和 80 次工具调用，最终回答还明确知道 62% 低于 75%、
+12% 低于 33%，却没有合成满足阈值的交付，主因转为 LLM/domain synthesis，而不是
+SDK、control 或 driver 传输失败。
+
+### 02:31 资源与凭据证据
+
+`sam-cell-seg` 的旧 attempt 在 4 GiB memory cgroup 中把任务进程推近上限，gateway
+与任务进程处于同一 cgroup，OOM 后 driver 表面只得到 `ConnectionClosedError`。
+这既有 Agent 资源行为的触发因素，也有 harness 丢失真实失败原因的问题，不能直接算
+模型失败。`#266` 在 driver 成功、失败或启动失败的生命周期边界读取固定 cgroup v2
+白名单并保存 `memory.current`、`memory.peak` 和 `memory.events`，同时保持原始异常为
+主失败。
+
+第一轮 resource-evidence 重跑
+`akasic-bench-v4flash-smoke-sam-cell-seg-20260730-174923-561855` 的官方 verifier
+实际为 9/9、reward `1.0`，cgroup 记录为 4 GiB limit、约 2.68 GB peak、
+`oom_kill=0`。但是运行期间宿主候选源码从
+`sha256:bd16...` 变为 `sha256:45b1...`，manifest 的 source Gate 得到
+`unchanged=false`；因此该结果只证明本次容器没有 OOM，不能进入逐题有效结果。固定在
+稳定 source bundle 后的重跑
+`akasic-bench-v4flash-smoke-sam-cell-seg-20260730-182419-562086`
+最终 source `unchanged=true`、online check 通过、resource classification 为
+`none`；memory peak 为 429,051,904 bytes、`oom_kill=0`，event terminal 共 550 个
+事件，官方 CTRF 9/9、reward `1.0`。这次稳定重跑完成了 source Gate 与资源归因闭环。
+
+凭据模板先前已经避免把 secret value 写入持久化 config，但真实运行检查发现
+`docker exec --env NAME=value` 仍会把值短暂暴露在宿主进程 argv。`#267` 将真实值只放
+进当前 Docker client 的子进程环境，exec argv 只保留 `--env NAME`，并以宿主
+`/proc/*/cmdline` 负向扫描作为验收；这修复 secret transport，不改变 Agent 可见的
+环境变量和值。
+
+### 02:31 draft PR 与归因边界
+
+本轮后半段形成的 draft PR 均未合并，当前远端 `contract` 与 `locked-runtime`
+checks 为 green：
+
+| PR | 职责 | base |
+| --- | --- | --- |
+| `#260` | driver 退出后总是关闭 runtime | `perf/benchmark-portable-git` |
+| `#261` | durable workspace 与 task root 分离 | `fix/benchmark-driver-finally-v2` |
+| `#262` | control delta replay 协作让出调度 | `fix/benchmark-workspace-separation-v2` |
+| `#263` | shared runtime ABI 可移植校验 | `fix/control-delta-cooperative-replay-v2` |
+| `#264` | SDK notification reader 协作让出调度 | `fix/benchmark-portable-runtime-abi` |
+| `#265` | driver 持续消费 terminal event stream | `fix/sdk-reader-cooperative-drain-v2` |
+| `#266` | 采集 cgroup resource-limit 证据 | `fix/benchmark-portable-runtime-abi` |
+| `#267` | secret value 不进入宿主 argv | `fix/benchmark-resource-evidence-v2` |
+
+每题都使用独立 Docker 实例和新的 `/opt/akashic-workspace`，Akasha memory 不跨题，
+且当前 harness 只向 Akasic 发起一个 programmatic turn。因此这些 trace 可以归因
+single-turn 的规划、工具使用、验证、停止行为，以及 SDK/control/harness/runtime
+问题；不能据此声称测到了跨 turn 的 Akasha 记忆形成、巩固、遗忘或长期召回能力。
+相反，fresh workspace 也排除了历史记忆污染作为本轮失败原因。最终 89 题 eval 只有
+在待定语义改变得到维护者裁决、纯 infra PR 固定并从统一 source 重跑后才能开始。
+截至本检查点，所有 task container 和对应 network 已清理；线上 gateway 仍为 PID
+`162463`、start ticks `45439946`，命令行与正式 workspace 未变化。
