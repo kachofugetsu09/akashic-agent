@@ -277,6 +277,56 @@ H4 仍触发 terminal notification delivery gap，并通过 public `turn/read` r
 完成。benchmark recovery 保证了评分链路，但 `SlowConsumerError` 的核心
 backpressure 仍需独立调查，不能用恢复路径掩盖。
 
+## 第二阶段手工诊断波次
+
+本波次由主调度者手工启动三个独立容器；没有新增 scheduler 或状态机。每题只在模型
+terminal、官方 verifier、隔离检查、artifact seal 和停止保留全部完成后计为有效。
+
+| Case | 有效 Trial | Reward | 归因与停止决定 |
+|---|---|---:|---|
+| `adaptive-rejection-sampler` | `akasic-bench-v4flash-diagnostic-adaptive-rejection-sampler-20260730-062118-021442` | 1 | 官方 verifier 9/9；未发现 Agent 缺陷，停止 |
+| `bn-fit-modify` | `akasic-bench-v4flash-diagnostic-bn-fit-modify-20260730-062128-586452` | 0 | 有向边 tuple 按 `to,from` 表头直写，语义反转；属于模型/Agent 结构化产物校验失败，单例不足以改生产行为 |
+| `break-filter-js-from-html` | `akasic-bench-v4flash-diagnostic-break-filter-js-from-html-20260730-062139-894279` | 0 | 公开检查命令空输出且退出 0，模型随后手工探索至 40 轮仍未解决；task 可观测性缺陷与停止策略信号混杂，不做定向修复 |
+
+三题都保持候选源码 digest、正式 workspace owner 和线上进程不变；容器停止但保留，
+便于继续检查运行时。该波次的 `1/3` 只描述三个诊断样本，不外推为 baseline。
+
+`bn-fit-modify` 暂存一个跨任务可证伪假设：对带方向或坐标语义的结构化产物，在提交前
+做一次从最终文件反向读取的语义核对。只有后续不同任务出现同类“内部推理正确、序列化
+方向错误”时才设计通用 treatment。
+
+`break-filter-js-from-html` 暂存两个正交假设：
+
+1. 文档声明为 validator 的命令若没有产生任何断言或可观察结果，退出 0 不能自动视为
+   强验证证据；
+2. 连续多轮没有缩小失败空间时，Agent 需要显式总结已排除条件并判断是否停止。
+
+当前 case 的 helper 本身缺少可执行入口，无法把失败单独归因给 Agent，因此两项都等待
+跨 case 复现，不修改 task、不注入答案，也不为该题增加特殊规则。
+
+## H7 — manifest 不能记录自身的稳定 digest
+
+### 假设
+
+> `campaign-manifest.json` 先对自身求 hash、再写入包含该 hash 的最终内容，会使记录值
+> 必然失效；从 artifact digest 集合排除 manifest 自身，可以恢复证据完整性，同时
+> 不改变模型、任务、verifier 或 Agent 行为。
+
+Baseline 在本波次及前置 smoke 共四个真实 trial 复现：manifest 记录的自身 SHA-256
+与最终磁盘文件均不一致，其他 artifact 未出现同类问题。
+
+Treatment 只从 `artifacts.digests` 排除 `campaign-manifest.json`。targeted tests
+覆盖“manifest 不自引用、其他 artifact 仍记录 digest”，相关 benchmark/runtime
+测试共 124 项通过。真实 treatment：
+
+- Trial：`akasic-bench-v4flash-smoke-regex-log-20260730-064531-898385`；
+- reward `1`，preflight、source isolation 和 online invariant 全部通过；
+- manifest 记录的其余 18 个 artifact digest 与磁盘 SHA-256 全部一致；
+- 容器停止保留。
+
+H7 是 benchmark 证据链的功能性修复，不改变 Agent 语义，也不能解释或改善 task
+reward。
+
 ## 参考实现对账
 
 - Codex reference commit：`c7a4a7e136d96554e1fc6f66532e6060fd2aaf15`；
