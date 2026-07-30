@@ -24,7 +24,8 @@ from benchmark.harbor_v4flash.runtime_volume import (
 
 _RUNTIME_ROOT = "/opt/akashic"
 _SOURCE_ROOT = f"{_RUNTIME_ROOT}/src"
-_WORKSPACE = "/app"
+_TASK_ROOT = "/app"
+_WORKSPACE = "/opt/akashic-workspace"
 _ENDPOINT = f"{_WORKSPACE}/akashic.sock"
 _AGENT_LOGS = "/logs/agent"
 
@@ -330,7 +331,7 @@ class AkashicHarborAgent(BaseAgent):
         instruction_path = self.logs_dir / "instruction.md"
         instruction_path.write_text(instruction, encoding="utf-8")
         gateway_command = (
-            f"mkdir -p {_WORKSPACE} && cd /app || exit $?; "
+            f"mkdir -p {_WORKSPACE} && cd {_TASK_ROOT} || exit $?; "
             f"env PATH={GIT_MOUNT_PATH}/bin:$PATH "
             f"PYTHONPATH={_SOURCE_ROOT}:{_SOURCE_ROOT}/sdk/python/src "
             "PYTHONDONTWRITEBYTECODE=1 "
@@ -351,7 +352,10 @@ class AkashicHarborAgent(BaseAgent):
         # 2. SDK driver 记录全部 turn 通知并核对持久化终态。
         driver_command = " ".join(
             [
-                f"cd /app && PYTHONPATH={_SOURCE_ROOT}:{_SOURCE_ROOT}/sdk/python/src",
+                (
+                    f"cd {_TASK_ROOT} && "
+                    f"PYTHONPATH={_SOURCE_ROOT}:{_SOURCE_ROOT}/sdk/python/src"
+                ),
                 "PYTHONDONTWRITEBYTECODE=1",
                 f"{RUNTIME_VENV_PATH}/bin/python",
                 f"{_SOURCE_ROOT}/benchmark/harbor_v4flash/runtime_driver.py",
