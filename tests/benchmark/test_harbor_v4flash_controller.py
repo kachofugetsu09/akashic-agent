@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -20,6 +21,10 @@ from benchmark.harbor_v4flash.controller import (
     _task_agent_timeout_sec,
 )
 from benchmark.harbor_v4flash.isolation import IsolationError, create_source_bundle
+from benchmark.harbor_v4flash.resource_evidence import (
+    RESOURCE_EVIDENCE_FILENAME,
+    resource_probe_command,
+)
 
 
 class _ScriptedEnvironment:
@@ -46,6 +51,21 @@ def _git(root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+def _resource_result(*, oom_kill: int = 0) -> ExecResult:
+    return ExecResult(
+        return_code=0,
+        stdout=(
+            "cgroup_version=2\n"
+            "@@memory.max\n4294967296\n"
+            "@@memory.current\n268435456\n"
+            "@@memory.events\n"
+            f"low 0\nhigh 0\nmax 1\noom {oom_kill}\n"
+            f"oom_kill {oom_kill}\noom_group_kill 0\n"
+            "@@memory.peak\n4294967296\n"
+        ),
+    )
+
+
 def test_v4flash_high_uses_provider_output_limit() -> None:
     config_path = (
         Path(__file__).parents[2]
@@ -70,6 +90,7 @@ def test_benchmark_workspace_is_separate_from_terminal_task_root() -> None:
 def test_driver_success_keeps_command_order_and_logs(tmp_path: Path) -> None:
     environment = _ScriptedEnvironment(
         ExecResult(return_code=0, stdout="driver complete\n"),
+        _resource_result(),
         ExecResult(return_code=0, stdout="shutdown complete\n"),
     )
     result = asyncio.run(
@@ -83,13 +104,19 @@ def test_driver_success_keeps_command_order_and_logs(tmp_path: Path) -> None:
     )
 
     assert result.stdout == "driver complete\n"
-    assert environment.commands == ["driver", "shutdown"]
+    assert environment.commands == ["driver", resource_probe_command(), "shutdown"]
+    assert (tmp_path / "driver.stdout.log").read_text(
+        encoding="utf-8"
+    ) == "driver complete\n"
+    assert (tmp_path / "runtime.shutdown.log").read_text(
+        encoding="utf-8"
+    ) == "shutdown complete\n"
     assert (
-        tmp_path / "driver.stdout.log"
-    ).read_text(encoding="utf-8") == "driver complete\n"
-    assert (
-        tmp_path / "runtime.shutdown.log"
-    ).read_text(encoding="utf-8") == "shutdown complete\n"
+        json.loads((tmp_path / RESOURCE_EVIDENCE_FILENAME).read_text(encoding="utf-8"))[
+            "classification"
+        ]
+        == "none"
+    )
     assert not (tmp_path / "driver.exception.log").exists()
 
 
@@ -98,6 +125,7 @@ def test_driver_timeout_still_shuts_down_gateway_and_persists_evidence(
 ) -> None:
     environment = _ScriptedEnvironment(
         TimeoutError("driver exceeded deadline"),
+        _resource_result(oom_kill=1),
         ExecResult(return_code=0, stdout="gateway stopped\n"),
     )
 
@@ -112,15 +140,21 @@ def test_driver_timeout_still_shuts_down_gateway_and_persists_evidence(
             )
         )
 
-    assert environment.commands == ["driver", "shutdown"]
+    assert environment.commands == ["driver", resource_probe_command(), "shutdown"]
     assert (tmp_path / "driver.stdout.log").read_text(encoding="utf-8") == ""
     assert (tmp_path / "driver.stderr.log").read_text(encoding="utf-8") == ""
+    assert (tmp_path / "driver.exception.log").read_text(
+        encoding="utf-8"
+    ) == "TimeoutError: driver exceeded deadline\n"
+    assert (tmp_path / "runtime.shutdown.log").read_text(
+        encoding="utf-8"
+    ) == "gateway stopped\n"
     assert (
-        tmp_path / "driver.exception.log"
-    ).read_text(encoding="utf-8") == "TimeoutError: driver exceeded deadline\n"
-    assert (
-        tmp_path / "runtime.shutdown.log"
-    ).read_text(encoding="utf-8") == "gateway stopped\n"
+        json.loads((tmp_path / RESOURCE_EVIDENCE_FILENAME).read_text(encoding="utf-8"))[
+            "classification"
+        ]
+        == "resource_limit"
+    )
 
 
 def test_driver_cancellation_still_shuts_down_gateway(
@@ -128,6 +162,7 @@ def test_driver_cancellation_still_shuts_down_gateway(
 ) -> None:
     environment = _ScriptedEnvironment(
         asyncio.CancelledError("trial cancelled"),
+        _resource_result(),
         ExecResult(return_code=0),
     )
 
@@ -142,10 +177,10 @@ def test_driver_cancellation_still_shuts_down_gateway(
             )
         )
 
-    assert environment.commands == ["driver", "shutdown"]
-    assert (
-        tmp_path / "driver.exception.log"
-    ).read_text(encoding="utf-8") == "CancelledError: trial cancelled\n"
+    assert environment.commands == ["driver", resource_probe_command(), "shutdown"]
+    assert (tmp_path / "driver.exception.log").read_text(
+        encoding="utf-8"
+    ) == "CancelledError: trial cancelled\n"
     assert (tmp_path / "runtime.shutdown.log").read_text(encoding="utf-8") == ""
 
 
@@ -154,6 +189,7 @@ def test_driver_failure_remains_primary_when_shutdown_also_fails(
 ) -> None:
     environment = _ScriptedEnvironment(
         ExecResult(return_code=1, stdout="driver failed\n"),
+        RuntimeError("cgroup probe failed"),
         ExecResult(return_code=2),
     )
 
@@ -168,15 +204,53 @@ def test_driver_failure_remains_primary_when_shutdown_also_fails(
             )
         )
 
+    assert any("gateway cleanup also failed" in note for note in caught.value.__notes__)
     assert any(
-        "gateway cleanup also failed" in note for note in caught.value.__notes__
+        "resource evidence collection also failed" in note
+        for note in caught.value.__notes__
     )
     assert (
-        tmp_path / "driver.exception.log"
-    ).read_text(encoding="utf-8").startswith("RuntimeError: 执行 SDK turn")
-    assert (
-        tmp_path / "runtime.shutdown.log"
-    ).read_text(encoding="utf-8") == "exit=2\n"
+        (tmp_path / "driver.exception.log")
+        .read_text(encoding="utf-8")
+        .startswith("RuntimeError: 执行 SDK turn")
+    )
+    assert (tmp_path / "runtime.shutdown.log").read_text(encoding="utf-8") == "exit=2\n"
+    resource = json.loads(
+        (tmp_path / RESOURCE_EVIDENCE_FILENAME).read_text(encoding="utf-8")
+    )
+    assert resource["status"] == "collection_failed"
+    assert resource["classification"] == "unknown"
+
+
+def test_resource_probe_failure_fails_loud_after_successful_driver(
+    tmp_path: Path,
+) -> None:
+    environment = _ScriptedEnvironment(
+        ExecResult(return_code=0, stdout="driver complete\n"),
+        ExecResult(return_code=23, stderr="required cgroup file missing\n"),
+        ExecResult(return_code=0, stdout="gateway stopped\n"),
+    )
+
+    with pytest.raises(RuntimeError, match="采集容器资源证据"):
+        asyncio.run(
+            _run_driver_and_shutdown(
+                environment,  # type: ignore[arg-type]
+                driver_command="driver",
+                driver_timeout_sec=5,
+                shutdown_command="shutdown",
+                logs_dir=tmp_path,
+            )
+        )
+
+    assert environment.commands == ["driver", resource_probe_command(), "shutdown"]
+    resource = json.loads(
+        (tmp_path / RESOURCE_EVIDENCE_FILENAME).read_text(encoding="utf-8")
+    )
+    assert resource["status"] == "collection_failed"
+    assert resource["classification"] == "unknown"
+    assert (tmp_path / "runtime.shutdown.log").read_text(
+        encoding="utf-8"
+    ) == "gateway stopped\n"
 
 
 def test_task_agent_timeout_uses_harbor_task_budget(tmp_path: Path) -> None:

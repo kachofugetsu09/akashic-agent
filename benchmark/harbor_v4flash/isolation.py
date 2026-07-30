@@ -266,6 +266,9 @@ def inspect_compose_project(project_name: str) -> list[dict[str, object]]:
                 "image_id": item.get("Image"),
                 "status": item.get("State", {}).get("Status"),
                 "running": bool(item.get("State", {}).get("Running")),
+                "exit_code": item.get("State", {}).get("ExitCode"),
+                "oom_killed": bool(item.get("State", {}).get("OOMKilled")),
+                "memory_limit_bytes": item.get("HostConfig", {}).get("Memory"),
                 "mounts": mounts,
                 "ports": item.get("HostConfig", {}).get("PortBindings") or {},
                 "project": item.get("Config", {})

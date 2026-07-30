@@ -48,6 +48,10 @@ from benchmark.harbor_v4flash.isolation import (
 )
 from benchmark.harbor_v4flash.image_cache import prefetch_task_images
 from benchmark.harbor_v4flash.git_volume import inspect_git_volume
+from benchmark.harbor_v4flash.resource_evidence import (
+    RESOURCE_EVIDENCE_FILENAME,
+    load_resource_evidence,
+)
 from benchmark.harbor_v4flash.runtime_volume import (
     inspect_runtime_volume,
     runtime_compose_overlay,
@@ -321,7 +325,12 @@ async def run_trial(
         ),
     )
     trial = await Trial.create(config)
-    result = await trial.run()
+    cancellation: asyncio.CancelledError | None = None
+    try:
+        result = await trial.run()
+    except asyncio.CancelledError as error:
+        cancellation = error
+        result = trial.result
 
     # 3. 只有完整 trace、外部 verifier、停止容器和线上 owner 不变才算 trial 完成。
     after_source = source_tree_digest(source_root)
@@ -337,10 +346,13 @@ async def run_trial(
     agent_dir = trial_dir / "agent"
     trace_path = agent_dir / "trace.jsonl"
     turn_result_path = agent_dir / "turn-result.json"
+    resource_evidence_path = agent_dir / RESOURCE_EVIDENCE_FILENAME
+    resource_evidence = load_resource_evidence(resource_evidence_path)
     required_artifacts = [
         agent_dir / "isolation.preflight.json",
         trace_path,
         turn_result_path,
+        resource_evidence_path,
         trial_dir / "verifier" / "reward.txt",
         trial_dir / "result.json",
     ]
@@ -351,6 +363,7 @@ async def run_trial(
     ]
     trial_completed = (
         not missing_artifacts
+        and resource_evidence["status"] == "collected"
         and stopped
         and after_source == before_source
         and online_report["status"] == "passed"
@@ -374,6 +387,10 @@ async def run_trial(
             "network": network,
         },
         "result": _safe_trial_result(result),
+        "resource_evidence": {
+            "artifact": str(resource_evidence_path.relative_to(trial_dir)),
+            **resource_evidence,
+        },
         "artifacts": {
             "missing": missing_artifacts,
             "digests": artifact_digests(
@@ -397,13 +414,14 @@ async def run_trial(
                 "manifest": str(manifest_path),
                 "trace": str(trace_path),
                 "containers_stopped": stopped,
+                "resource_classification": resource_evidence["classification"],
                 "concurrency_gate": final_manifest["concurrency_gate"],
             },
             ensure_ascii=False,
             indent=2,
         )
     )
-    return {
+    outcome = {
         "state": final_manifest["state"],
         "trial_name": trial_name,
         "trial_dir": str(trial_dir),
@@ -412,8 +430,12 @@ async def run_trial(
         "task": initial_manifest["task"],
         "reward": final_manifest["result"]["rewards"],
         "containers_stopped": stopped,
+        "resource_classification": resource_evidence["classification"],
         "concurrency_gate": final_manifest["concurrency_gate"],
     }
+    if cancellation is not None:
+        raise cancellation
+    return outcome
 
 
 async def run_smoke(args: argparse.Namespace, task_dir: Path) -> int:

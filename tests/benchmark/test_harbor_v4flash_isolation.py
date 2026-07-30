@@ -118,7 +118,12 @@ def test_inspect_compose_project_records_immutable_image_id(
                                     )
                                 },
                             },
-                            "State": {"Status": "running", "Running": True},
+                            "State": {
+                                "Status": "exited",
+                                "Running": False,
+                                "ExitCode": 137,
+                                "OOMKilled": False,
+                            },
                             "Mounts": [
                                 {
                                     "Type": "volume",
@@ -131,7 +136,10 @@ def test_inspect_compose_project_records_immutable_image_id(
                                     "RW": False,
                                 }
                             ],
-                            "HostConfig": {"PortBindings": {}},
+                            "HostConfig": {
+                                "PortBindings": {},
+                                "Memory": 4294967296,
+                            },
                         }
                     ]
                 ),
@@ -147,6 +155,9 @@ def test_inspect_compose_project_records_immutable_image_id(
 
     assert containers[0]["image"] == "task:tag"
     assert containers[0]["image_id"] == "sha256:image-id"
+    assert containers[0]["exit_code"] == 137
+    assert containers[0]["oom_killed"] is False
+    assert containers[0]["memory_limit_bytes"] == 4294967296
     assert containers[0]["mounts"][0]["name"] == (
         "akasic-bench-runtime-v1-fixed"
     )

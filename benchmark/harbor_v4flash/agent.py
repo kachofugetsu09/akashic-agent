@@ -17,6 +17,12 @@ from benchmark.harbor_v4flash.isolation import (
 )
 from benchmark.harbor_v4flash.git_volume import GIT_BIN_PATH, GIT_MOUNT_PATH
 from benchmark.harbor_v4flash.result_projection import project_agent_context
+from benchmark.harbor_v4flash.resource_evidence import (
+    RESOURCE_EVIDENCE_FILENAME,
+    parse_resource_probe_output,
+    resource_probe_command,
+    resource_probe_failure,
+)
 from benchmark.harbor_v4flash.runtime_volume import (
     RUNTIME_MOUNT_PATH,
     RUNTIME_VENV_PATH,
@@ -70,6 +76,76 @@ def _write_shutdown_evidence(
     (logs_dir / "runtime.shutdown.log").write_text(output, encoding="utf-8")
 
 
+async def _capture_resource_evidence(
+    environment: BaseEnvironment,
+    logs_dir: Path,
+) -> tuple[BaseException | None, BaseException | None]:
+    """采集并持久化容器资源证据，分别返回采集与写入失败。"""
+
+    # 1. 容器仍运行时读取固定 cgroup 白名单。
+    resource_error: BaseException | None = None
+    try:
+        result = await environment.exec(
+            command=resource_probe_command(),
+            timeout_sec=10,
+        )
+        _require_success(
+            "采集容器资源证据",
+            result.return_code,
+            (result.stdout or "") + (result.stderr or ""),
+        )
+        evidence = parse_resource_probe_output(result.stdout or "")
+    except BaseException as error:
+        resource_error = error
+        evidence = resource_probe_failure(error)
+
+    # 2. 即使采集失败也写明确未知证据；写入失败单独返回。
+    try:
+        atomic_json(logs_dir / RESOURCE_EVIDENCE_FILENAME, evidence)
+    except BaseException as error:
+        return resource_error, error
+    return resource_error, None
+
+
+def _raise_lifecycle_errors(
+    *,
+    driver_error: BaseException | None,
+    resource_error: BaseException | None,
+    resource_write_error: BaseException | None,
+    shutdown_error: BaseException | None,
+) -> None:
+    """按 driver、资源采集、证据写入、shutdown 顺序传播主失败。"""
+
+    if driver_error is not None:
+        if resource_error is not None:
+            driver_error.add_note(
+                f"resource evidence collection also failed: {resource_error}"
+            )
+        if resource_write_error is not None:
+            driver_error.add_note(
+                f"resource evidence persistence also failed: {resource_write_error}"
+            )
+        if shutdown_error is not None:
+            driver_error.add_note(f"gateway cleanup also failed: {shutdown_error}")
+        raise driver_error
+    if resource_error is not None:
+        if resource_write_error is not None:
+            resource_error.add_note(
+                f"resource evidence persistence also failed: {resource_write_error}"
+            )
+        if shutdown_error is not None:
+            resource_error.add_note(f"gateway cleanup also failed: {shutdown_error}")
+        raise resource_error
+    if resource_write_error is not None:
+        if shutdown_error is not None:
+            resource_write_error.add_note(
+                f"gateway cleanup also failed: {shutdown_error}"
+            )
+        raise resource_write_error
+    if shutdown_error is not None:
+        raise shutdown_error
+
+
 async def _run_driver_and_shutdown(
     environment: BaseEnvironment,
     *,
@@ -78,7 +154,7 @@ async def _run_driver_and_shutdown(
     shutdown_command: str,
     logs_dir: Path,
 ) -> ExecResult:
-    """运行 driver 并始终尝试关闭 gateway，同时保留主失败。"""
+    """运行 driver、采集资源证据并关闭 gateway，同时保留主失败。"""
 
     # 1. 捕获 driver 的成功结果或原始异常，不提前跳过 cleanup。
     driver_result: ExecResult | None = None
@@ -96,7 +172,13 @@ async def _run_driver_and_shutdown(
     except BaseException as error:
         driver_error = error
 
-    # 2. driver 成功、失败、超时或取消后都尝试关闭 gateway。
+    # 2. driver 任意终态都先读取固定 cgroup 白名单，再停止容器内进程。
+    resource_error, resource_write_error = await _capture_resource_evidence(
+        environment,
+        logs_dir,
+    )
+
+    # 3. 资源采集成功或失败后都尝试关闭 gateway。
     shutdown_result: ExecResult | None = None
     shutdown_error: BaseException | None = None
     try:
@@ -112,15 +194,15 @@ async def _run_driver_and_shutdown(
     except BaseException as error:
         shutdown_error = error
 
-    # 3. 先写全两个阶段的证据，再按主失败优先级传播。
+    # 4. 先写全生命周期证据，再按 driver→资源→shutdown 的优先级传播。
     _write_driver_evidence(logs_dir, driver_result, driver_error)
     _write_shutdown_evidence(logs_dir, shutdown_result, shutdown_error)
-    if driver_error is not None:
-        if shutdown_error is not None:
-            driver_error.add_note(f"gateway cleanup also failed: {shutdown_error}")
-        raise driver_error
-    if shutdown_error is not None:
-        raise shutdown_error
+    _raise_lifecycle_errors(
+        driver_error=driver_error,
+        resource_error=resource_error,
+        resource_write_error=resource_write_error,
+        shutdown_error=shutdown_error,
+    )
     assert driver_result is not None
     return driver_result
 
@@ -342,12 +424,24 @@ class AkashicHarborAgent(BaseAgent):
             f"2>{_AGENT_LOGS}/runtime.stderr.log & "
             f"echo $! > {_AGENT_LOGS}/runtime.pid"
         )
-        started = await environment.exec(command=gateway_command)
-        _require_success(
-            "启动 Akasic gateway",
-            started.return_code,
-            (started.stdout or "") + (started.stderr or ""),
-        )
+        try:
+            started = await environment.exec(command=gateway_command)
+            _require_success(
+                "启动 Akasic gateway",
+                started.return_code,
+                (started.stdout or "") + (started.stderr or ""),
+            )
+        except BaseException as startup_error:
+            resource_error, resource_write_error = (
+                await _capture_resource_evidence(environment, self.logs_dir)
+            )
+            _raise_lifecycle_errors(
+                driver_error=startup_error,
+                resource_error=resource_error,
+                resource_write_error=resource_write_error,
+                shutdown_error=None,
+            )
+            raise AssertionError("unreachable")
 
         # 2. SDK driver 记录全部 turn 通知并核对持久化终态。
         driver_command = " ".join(
