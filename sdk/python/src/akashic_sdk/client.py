@@ -135,6 +135,8 @@ class _WireClient:
                         self.notifications.put_nowait(message)
                     except asyncio.QueueFull as exc:
                         raise SlowConsumerError("global notification queue overflow") from exc
+                # 已缓冲的 readline 可连续同步返回，让活跃消费者有机会排空有界队列。
+                await asyncio.sleep(0)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
