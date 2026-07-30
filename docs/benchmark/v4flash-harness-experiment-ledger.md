@@ -2,7 +2,7 @@
 
 日期：2026-07-30
 
-状态：持续手工诊断；已完成五题停止点、后续小波次和 H2～H10 消融，未启动 89 题最终 eval
+状态：持续手工诊断；全量 89 题诊断遍历进行中，未启动最终 eval
 
 设计合同：
 [V4 Flash 完整 Runtime Harness Benchmark 设计](../spark/2026-07-30-v4flash-harness-benchmark-design.md)
@@ -504,3 +504,122 @@ cache miss、manifest/lock 不匹配、额外 volume 或 `RW=true` 都 fail-loud
 当作严格消融结果。实现为 draft PR `#254`；最终 public Gate 8/8：
 `docker/debug/reports/change-gate/20260730-165409-a577680e`，private Gate 仍为
 `pending_maintainer`。
+
+## 全量诊断遍历检查点
+
+更新时间：2026-07-30 21:00（Asia/Shanghai）
+
+这轮是混合 treatment 下的诊断遍历，用来发现 Akashic Agent 与 harness 的通用问题，
+不是最终分数。每个 task 使用独立 Docker environment 和 `/app` workspace；最多同时
+运行 3 个真实 task container。共享项只有不可变、只读的 runtime volume：
+
+`akasic-bench-runtime-v1-79ea7f8bd2cbcb92b44062c0`
+
+核心 artifact 根目录为：
+
+`/mnt/data/coding/akasic-agent-worktrees/benchmark-runs`
+
+有效结果必须同时满足：Harbor lifecycle 正常结束、外部 verifier 实际运行并写出
+reward、trace/turn-result/manifest 已封存、source 与 online 隔离检查通过。超时、
+人为中断、provider 错误和仍在运行的 trial 只算“已触达”，不进入通过率。
+
+### 当前计数
+
+| 指标 | 数量 |
+|---|---:|
+| Dataset 总数 | 89 |
+| 已触达 | 40 |
+| 有效结果 | 34 |
+| 有效通过 | 23 |
+| 有效失败 | 11 |
+| 暂不计分 | 6 |
+| 尚未触达 | 49 |
+
+`filter-js-from-html` 的首次 attempt 因 verifier 下载 `uv` 断流而无效；重跑
+`akasic-bench-v4flash-smoke-filter-js-from-html-20260730-124859-743829`
+已正常执行 verifier，两个测试失败，因此计入有效 `reward=0`。
+
+### 任务索引
+
+这里记录的是每题最新、可用于诊断的核心结果。trial 名可以直接在 artifact 根目录
+下查找，避免重新扫描所有历史 attempt。
+
+| Task | 状态 | Reward | 初步归因 / 处理 | 最新 trial |
+|---|---|---:|---|---|
+| `adaptive-rejection-sampler` | 有效 | 1 | 通过；停止 | `...062118-021442` |
+| `bn-fit-modify` | 有效 | 0 | Agent：输出边方向与表头语义相反 | `...062128-586452` |
+| `break-filter-js-from-html` | 有效 | 0 | 模型：安全绕过能力；Agent 测试解释次要 | `...062139-894279` |
+| `build-cython-ext` | 有效 | 0 | Agent：搜索范围漏掉 `.pyx` 中的 `np.int` | `...070526-127111` |
+| `build-pmars` | 有效 | 1 | 通过；停止 | `...065406-441568` |
+| `build-pov-ray` | 有效 | 1 | 通过；停止 | `...065406-683196` |
+| `caffe-cifar-10` | 暂不计分 | — | 手动中断；下载重试删除 partial，另暴露 shell timeout 问题 | `...075112-133971` |
+| `cancel-async-tasks` | 有效 | 1 | 通过；停止 | `...040813-024970` |
+| `chess-best-move` | 有效 | 1 | 通过；停止 | `...071317-060896` |
+| `circuit-fibsqrt` | 有效 | 1 | 通过；停止 | `...071317-245614` |
+| `cobol-modernization` | 有效 | 1 | 通过；停止 | `...093103-982111` |
+| `code-from-image` | 有效 | 1 | 通过；停止 | `...095611-321488` |
+| `compile-compcert` | 有效 | 1 | 通过；停止 | `...093105-796149` |
+| `configure-git-webserver` | 有效 | 1 | 通过；停止 | `...101854-109233` |
+| `constraints-scheduling` | 有效 | 1 | 通过；停止 | `...101855-618691` |
+| `count-dataset-tokens` | 有效 | 1 | 通过；停止 | `...101856-809053` |
+| `crack-7z-hash` | 有效 | 1 | 通过；停止 | `...103027-310152` |
+| `custom-memory-heap-crash` | 有效 | 1 | 通过；停止 | `...103028-883213` |
+| `db-wal-recovery` | 有效 | 0 | Agent：未生成目标 `/app/recovered.json` 就结束 | `...042053-226551` |
+| `distribution-search` | 有效 | 1 | 通过；停止 | `...103029-250691` |
+| `dna-assembly` | 有效 | 0 | 模型：Golden Gate 领域约束未满足 | `...110025-535688` |
+| `dna-insert` | 有效 | 0 | Agent：搜索候选与最终写入候选不一致 | `...113818-729922` |
+| `extract-elf` | 有效 | 0 | Benchmark：oracle 的 signed/unsigned 口径有歧义 | `...110027-158216` |
+| `extract-moves-from-video` | 暂不计分 | — | 1805s task timeout；保留 trace 与中间产物 | `...115742-599841` |
+| `feal-differential-cryptanalysis` | 有效 | 1 | 通过；停止 | `...115743-791764` |
+| `feal-linear-cryptanalysis` | 暂不计分 | — | 1805s task timeout；保留 trace 与中间源码 | `...115744-046447` |
+| `filter-js-from-html` | 有效 | 0 | Agent/模型：XSS 漏检且改写 5/12 个 clean HTML | `...124859-743829` |
+| `financial-document-processor` | 有效 | 1 | 通过；停止 | `...123141-258087` |
+| `fix-code-vulnerability` | 有效 | 1 | 通过；停止 | `...042053-683463` |
+| `fix-git` | 有效 | 0 | Agent：冲突后停在 `UU` 并请求用户介入 | `...123142-146878` |
+| `fix-ocaml-gc` | 暂不计分 | — | `provider_connection_error`；应换新实例重跑 | `...123732-700015` |
+| `gcode-to-text` | 有效 | 0 | 模型：读取 metadata shortcut，未从几何恢复文字 | `...123734-863702` |
+| `git-leak-recovery` | 有效 | 1 | 通过；停止 | `...123735-799649` |
+| `git-multibranch` | 有效 | 1 | 通过；停止 | `...124814-185022` |
+| `gpt2-codegolf` | 运行中 | — | 独立实例；等待 lifecycle 终态 | `...124815-372510` |
+| `headless-terminal` | 有效 | 1 | 通过；停止 | `...125343-755608` |
+| `hf-model-inference` | 有效 | 1 | 通过；停止 | `...125344-124726` |
+| `install-windows-3.11` | 运行中 | — | 独立实例；等待 lifecycle 终态 | `...125759-813687` |
+| `openssl-selfsigned-cert` | 有效 | 0 | Agent：输出日期格式违反原始合同仍宣告完成 | `...035855` |
+| `regex-log` | 有效 | 1 | 通过；停止 | `...115050-533926` |
+
+### 有效失败的初步分层
+
+当前 11 个有效失败按主因分为：
+
+1. Agent/Akashic 执行策略 7 个：`bn-fit-modify`、`build-cython-ext`、
+   `db-wal-recovery`、`dna-insert`、`filter-js-from-html`、`fix-git`、
+   `openssl-selfsigned-cert`；
+2. 模型能力 3 个：`break-filter-js-from-html`、`dna-assembly`、
+   `gcode-to-text`；
+3. benchmark/oracle 歧义 1 个：`extract-elf`。
+
+这不是“只有 7 个值得改 Agent”。模型主因 case 也可能暴露过程控制问题，例如错误
+测试入口被当成成功、没有在最终回答前核对失败证据。当前隔离 workspace 中 Akasha
+记忆为空，没有证据表明这些失败由记忆召回或污染造成。
+
+### H11 — 非交互式完成 Gate（预注册，尚未实施）
+
+> 在 Agent 给出最终回答前，用同一个模型对“原始任务合同、真实工具结果、目标产物、
+> 未解决错误”做一次轻量完成检查，若发现可行动缺口则继续当前 turn；能够减少
+> “已经找到正确方向但没有交付有效产物”的失败，而不依赖隐藏 verifier 或
+> benchmark 专用规则。
+
+首轮消融候选冻结为 `bn-fit-modify`、`build-cython-ext`、`db-wal-recovery`、
+`dna-insert`、`fix-git`、`openssl-selfsigned-cert`。control 与 treatment 保持同一
+task、模型、effort、工具、workspace 初态和 timeout，只改变最终回答前是否执行完成
+Gate。它会改变 Agent 在非交互任务中的结束语义，不是纯 infra 鲁棒性修复；必须先
+实现通用机制并通过最小语义 Gate，再运行 pair，不能依据 verifier 细节写规则。
+
+截至本检查点，已落地的纯 harness/infra 修复包括：
+
+- `#255`：并发 Gate 校验真实 Docker bind source；
+- `#256`：凭据使用模板，secret 值不进入持久化配置；
+- `#257`：Agent workspace 与官方 task workspace 对齐到 `/app`；
+- Harbor 本地 patch `59e76ec`：secret 值不进入 Docker Compose argv。
+
+这些修复不改变 task 解法或 Agent 推理语义；H11 仍处于预注册状态。
