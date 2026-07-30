@@ -6,6 +6,7 @@ import pytest
 from benchmark.harbor_v4flash.campaign import (
     CampaignGateError,
     find_open_concurrency_gate,
+    plan_diagnostic_wave,
     task_slug,
     validate_campaign_request,
 )
@@ -62,3 +63,43 @@ def test_open_gate_fails_closed_without_smoke(tmp_path: Path) -> None:
 def test_task_slug_is_bounded_and_docker_safe(tmp_path: Path) -> None:
     task = tmp_path / ("UPPER_case.with spaces-" + "x" * 80)
     assert task_slug(task) == "upper-case-with-spaces-" + "x" * 25
+
+
+def test_diagnostic_wave_uses_two_discovery_and_one_validation(
+    tmp_path: Path,
+) -> None:
+    discovery = [tmp_path / f"d{index}" for index in range(4)]
+    validation = [tmp_path / f"v{index}" for index in range(2)]
+
+    scheduled, pending = plan_diagnostic_wave(discovery, validation)
+
+    assert [item["mode"] for item in scheduled] == [
+        "validation",
+        "discovery",
+        "discovery",
+    ]
+    assert [(item["mode"], item["task"].name) for item in pending] == [
+        ("discovery", "d2"),
+        ("discovery", "d3"),
+        ("validation", "v1"),
+    ]
+
+
+def test_diagnostic_wave_lends_empty_validation_slot_to_discovery(
+    tmp_path: Path,
+) -> None:
+    discovery = [tmp_path / f"d{index}" for index in range(4)]
+
+    scheduled, pending = plan_diagnostic_wave(discovery, [])
+
+    assert [item["task"].name for item in scheduled] == ["d0", "d1", "d2"]
+    assert [item["task"].name for item in pending] == ["d3"]
+
+
+def test_diagnostic_wave_never_runs_three_validations(tmp_path: Path) -> None:
+    validation = [tmp_path / f"v{index}" for index in range(3)]
+
+    scheduled, pending = plan_diagnostic_wave([], validation)
+
+    assert [item["task"].name for item in scheduled] == ["v0"]
+    assert [item["task"].name for item in pending] == ["v1", "v2"]

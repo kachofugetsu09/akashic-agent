@@ -26,13 +26,39 @@ def validate_campaign_request(task_dirs: list[Path], max_concurrent: int) -> Non
 
     # 2. 一个 case 对应一个独立 task 实例，不接受重复路径。
     resolved = [path.resolve() for path in task_dirs]
-    if len(resolved) < 2:
-        raise ValueError("campaign 至少需要两个 task；单 task 请使用 smoke")
+    if not resolved:
+        raise ValueError("campaign 至少需要一个 task")
     if len(set(resolved)) != len(resolved):
         raise ValueError("campaign 不允许重复 task")
     missing = [str(path) for path in resolved if not path.is_dir()]
     if missing:
         raise FileNotFoundError(f"task 目录不存在：{missing}")
+
+
+def plan_diagnostic_wave(
+    discovery_dirs: list[Path],
+    validation_dirs: list[Path],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """规划单波最多三项任务，validation 最多占一个 slot。"""
+
+    # 1. 有 validation 时固定 2 discovery + 1 validation；无 validation 时借给 discovery。
+    scheduled: list[dict[str, object]] = []
+    if validation_dirs:
+        scheduled.append({"mode": "validation", "task": validation_dirs[0]})
+    discovery_slots = 3 - len(scheduled)
+    scheduled.extend(
+        {"mode": "discovery", "task": task} for task in discovery_dirs[:discovery_slots]
+    )
+
+    # 2. 未进入本波的任务保持显式 pending，由 Root 决定下一次调度。
+    pending = [
+        *(
+            {"mode": "discovery", "task": task}
+            for task in discovery_dirs[discovery_slots:]
+        ),
+        *({"mode": "validation", "task": task} for task in validation_dirs[1:]),
+    ]
+    return scheduled, pending
 
 
 def find_open_concurrency_gate(runs_root: Path) -> dict[str, Any]:

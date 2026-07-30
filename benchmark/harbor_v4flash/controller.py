@@ -22,7 +22,9 @@ from harbor.trial.trial import Trial
 from benchmark.harbor_v4flash import HARNESS_VERSION
 from benchmark.harbor_v4flash.agent import AkashicHarborAgent
 from benchmark.harbor_v4flash.campaign import (
+    CampaignGateError,
     find_open_concurrency_gate,
+    plan_diagnostic_wave,
     task_slug,
     validate_campaign_request,
 )
@@ -194,9 +196,7 @@ async def run_trial(
                 "source_head": source_bundle["head"],
                 "uv_binary": str(uv_binary),
                 "allowed_bind_root": str(trial_dir),
-                "forbidden_host_paths": [
-                    str(path) for path in DEFAULT_FORBIDDEN_PATHS
-                ],
+                "forbidden_host_paths": [str(path) for path in DEFAULT_FORBIDDEN_PATHS],
                 "source_digest": before_source,
                 "install_timeout_sec": 900,
             },
@@ -304,20 +304,24 @@ async def run_smoke(args: argparse.Namespace, task_dir: Path) -> int:
 
 async def run_campaign(
     args: argparse.Namespace,
-    task_dirs: list[Path],
+    discovery_dirs: list[Path],
+    validation_dirs: list[Path],
 ) -> int:
-    """按硬上限三并发运行 diagnostic tasks，并冻结 campaign 汇总。"""
+    """按 2 discovery + 1 validation 调度单波任务并冻结结果。"""
 
-    # 1. 只有已完成 smoke 能打开并发，且整个 campaign 再次冻结源码和线上 owner。
-    validate_campaign_request(task_dirs, args.max_concurrent)
+    # 1. 只有同一源码完成 smoke 才能打开并发。
+    all_tasks = [*discovery_dirs, *validation_dirs]
+    validate_campaign_request(all_tasks, 3)
     runs_root = args.runs_dir.resolve()
     gate = find_open_concurrency_gate(runs_root)
     source_root = args.source_root.resolve()
     before_source = source_tree_digest(source_root)
+    if gate["source_digest"] != before_source:
+        raise CampaignGateError("源码已变化，必须先用当前源码重新完成 smoke Gate")
     before_online = online_process_snapshot()
-    campaign_id = (
-        f"{BENCHMARK_PREFIX}campaign-"
-        + time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    scheduled, pending = plan_diagnostic_wave(discovery_dirs, validation_dirs)
+    campaign_id = f"{BENCHMARK_PREFIX}campaign-" + time.strftime(
+        "%Y%m%d-%H%M%S", time.gmtime()
     )
     campaign_dir = runs_root / "_campaigns" / campaign_id
     campaign_dir.mkdir(parents=True, exist_ok=False)
@@ -326,34 +330,44 @@ async def run_campaign(
         "schema": "akasic.harbor-campaign.v1",
         "state": "running",
         "campaign_id": campaign_id,
-        "max_concurrent": args.max_concurrent,
+        "max_concurrent": 3,
+        "scheduling_policy": "2_discovery_1_validation",
         "gate": gate,
         "source_digest_before": before_source,
-        "tasks": [str(path.resolve()) for path in task_dirs],
+        "scheduled": [
+            {"mode": item["mode"], "task": str(item["task"].resolve())}
+            for item in scheduled
+        ],
+        "pending": [
+            {"mode": item["mode"], "task": str(item["task"].resolve())}
+            for item in pending
+        ],
         "online_before": before_online,
     }
     atomic_json(manifest_path, initial)
 
-    # 2. semaphore 是唯一并发 owner；每个 task 仍创建独立 Trial/Docker project。
-    semaphore = asyncio.Semaphore(args.max_concurrent)
+    # 2. 本波天然最多三项；每项仍创建独立 Trial/Docker project。
+    async def guarded(item: dict[str, object]) -> dict[str, object]:
+        task_dir = item["task"]
+        mode = item["mode"]
+        if not isinstance(task_dir, Path) or not isinstance(mode, str):
+            raise TypeError("scheduler 只产生已验证的 Path/mode")
+        try:
+            return await run_trial(args, task_dir, run_kind=mode)
+        except Exception as error:
+            return {
+                "state": "controller_failed",
+                "mode": mode,
+                "task": str(task_dir.resolve()),
+                "error": {
+                    "type": type(error).__name__,
+                    "message": str(error),
+                },
+            }
 
-    async def guarded(task_dir: Path) -> dict[str, object]:
-        async with semaphore:
-            try:
-                return await run_trial(args, task_dir, run_kind="diagnostic")
-            except Exception as error:
-                return {
-                    "state": "controller_failed",
-                    "task": str(task_dir.resolve()),
-                    "error": {
-                        "type": type(error).__name__,
-                        "message": str(error),
-                    },
-                }
+    outcomes = await asyncio.gather(*(guarded(item) for item in scheduled))
 
-    outcomes = await asyncio.gather(*(guarded(path) for path in task_dirs))
-
-    # 3. campaign 完成只表示生命周期证据齐全；reward 单独统计，不把失败题伪装通过。
+    # 3. campaign 只记录生命周期，不计算或拼接 benchmark 分数。
     after_source = source_tree_digest(source_root)
     after_online = online_process_snapshot()
     online_report = validate_online_processes_unchanged(before_online, after_online)
@@ -362,12 +376,6 @@ async def run_campaign(
         and after_source == before_source
         and online_report["status"] == "passed"
     )
-    passed = sum(
-        1
-        for outcome in outcomes
-        if isinstance(outcome.get("reward"), dict)
-        and outcome["reward"].get("reward") == 1.0
-    )
     final = {
         **initial,
         "state": "completed" if lifecycle_complete else "failed",
@@ -375,11 +383,6 @@ async def run_campaign(
         "source_unchanged": after_source == before_source,
         "online": online_report,
         "outcomes": outcomes,
-        "score": {
-            "passed": passed,
-            "total": len(outcomes),
-            "pass_rate": passed / len(outcomes),
-        },
     }
     atomic_json(manifest_path, final)
     print(json.dumps(final, ensure_ascii=False, indent=2))
@@ -390,19 +393,24 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--harbor-root", type=Path, required=True)
-    parser.add_argument("--task-dir", type=Path, action="append", required=True)
+    parser.add_argument("--task-dir", type=Path, action="append", default=[])
+    parser.add_argument(
+        "--validation-task-dir",
+        type=Path,
+        action="append",
+        default=[],
+    )
     parser.add_argument("--runs-dir", type=Path, required=True)
     parser.add_argument("--credential-profile", type=Path, required=True)
-    parser.add_argument("--max-concurrent", type=int, default=1)
     parser.add_argument(
         "--uv-binary",
         type=Path,
         default=Path(os.environ.get("AKASIC_BENCH_UV", "/home/huashen/.local/bin/uv")),
     )
     args = parser.parse_args()
-    if len(args.task_dir) == 1:
+    if len(args.task_dir) == 1 and not args.validation_task_dir:
         return asyncio.run(run_smoke(args, args.task_dir[0]))
-    return asyncio.run(run_campaign(args, args.task_dir))
+    return asyncio.run(run_campaign(args, args.task_dir, args.validation_task_dir))
 
 
 if __name__ == "__main__":
