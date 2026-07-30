@@ -7,6 +7,11 @@
 设计合同：
 [V4 Flash 完整 Runtime Harness Benchmark 设计](../spark/2026-07-30-v4flash-harness-benchmark-design.md)
 
+需要维护者最终定夺的行为 treatment 单独记录在
+[V4 Flash Benchmark 待定语义改变](v4flash-semantic-changes-pending.md)；遍历期间不实施。
+每个已触达 case 的终态、初步归因和核心证据维护在
+[V4 Flash 逐题结果](v4flash-case-results.tsv)。
+
 ## 冻结变量
 
 | 变量 | 当前值 |
@@ -754,3 +759,33 @@ Pyright 为 0 errors；相邻 base public Gate 通过：
 从 smoke 时的 `sha256:6c4d...` 变为 `sha256:2e8a...`。下一批六题在创建 trial 前被
 source-bound Gate 正确拒绝；没有制造无效 container。必须先对新摘要重跑单题 smoke，
 再打开六槽，不手工绕过 Gate。
+
+### 23:48 逐题记录与 runtime 状态隔离
+
+当前已触达 65 个唯一 task；逐题 TSV 检查点为 33 个 `reward_pass`、17 个
+`reward_fail`、4 个 `agent_deadline`、7 个 `infra_invalid`、3 个
+`oracle_blocked` 和 1 个仍在运行的 `active_prepared`。pass/fail 只在同时存在
+官方 CTRF 和 reward 时成立，无 CTRF 的 `reward=0` 不冒充有效失败。
+
+本波新有效结果包括：
+
+- `nginx-request-logging=1`、`polyglot-c-py=1`、`polyglot-rust-c=1`、
+  `prove-plus-comm=1`；
+- `password-recovery=0`；
+- `path-tracing=0` 与 `path-tracing-reverse=0` 均只失败 image/oracle 相关断言，
+  trace 分别暴露自测度量不一致和产物副作用不一致；
+- `portfolio-optimization=0` 只失败性能断言，且 wall-clock oracle 受同机并发负载
+  影响，暂记 mixed；
+- `overfull-hbox` 的 Agent 已生成 PDF 并把日志中的 Overfull 清到 0，但官方
+  verifier 360 秒内未产出 CTRF/reward，记 oracle blocked，不记模型失败。
+
+另发现 Akasic 的 durable workspace 与官方 task root 同为 `/app`，会把
+`sessions.db`、`memory/`、`plugin-data/`、socket 和 lock 写入题目树。该状态不跨题，
+但会污染全目录扫描类 oracle。纯 infra treatment 保持 Agent 工具 cwd 为 `/app`，
+仅把 durable workspace/socket 移到 `/opt/akashic-workspace`；与 driver 失败后总是
+shutdown 的生命周期修复完成累计 49 个 benchmark tests 和相邻 public Gate。driver
+修复为 stacked draft PR `#260`；workspace 分离需等旧 source 的最后一个任务排空后
+跑 source-bound smoke，再决定是否发布 stacked draft PR。
+
+线上 gateway 仍为 PID `162463`、启动时间 `2026-07-30 09:53:27 +0800`，命令行和
+workspace 未变化。
