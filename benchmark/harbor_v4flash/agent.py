@@ -23,7 +23,7 @@ from benchmark.harbor_v4flash.runtime_volume import (
 
 _RUNTIME_ROOT = "/opt/akashic"
 _SOURCE_ROOT = f"{_RUNTIME_ROOT}/src"
-_WORKSPACE = "/tmp/akashic-workspace"
+_WORKSPACE = "/app"
 _ENDPOINT = f"{_WORKSPACE}/akashic.sock"
 _AGENT_LOGS = "/logs/agent"
 

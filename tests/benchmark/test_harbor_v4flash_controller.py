@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from benchmark.harbor_v4flash.agent import _ENDPOINT, _WORKSPACE
 from benchmark.harbor_v4flash.controller import (
     _credential_templates,
     _inspect_finished_project,
@@ -37,6 +38,11 @@ def test_v4flash_high_uses_provider_output_limit() -> None:
     assert config["llm"]["runtimes"]["main"]["max_output_tokens"] == 0
     assert config["agent"]["max_tokens"] == 0
     assert config["agent"]["max_iterations"] == 0
+
+
+def test_benchmark_workspace_matches_terminal_task_root() -> None:
+    assert _WORKSPACE == "/app"
+    assert _ENDPOINT == "/app/akashic.sock"
 
 
 def test_task_agent_timeout_uses_harbor_task_budget(tmp_path: Path) -> None:
