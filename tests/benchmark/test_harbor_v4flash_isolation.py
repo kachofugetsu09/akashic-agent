@@ -21,7 +21,7 @@ def _container(
     *,
     source: str,
     ports: dict[str, object] | None = None,
-    volume_source: str = "akasic-bench-runtime-v1-fixed",
+    volume_name: str = "akasic-bench-runtime-v1-fixed",
     volume_rw: bool = False,
 ) -> dict[str, object]:
     return {
@@ -40,7 +40,8 @@ def _container(
             },
             {
                 "type": "volume",
-                "source": volume_source,
+                "name": volume_name,
+                "source": f"/var/lib/docker/volumes/{volume_name}/_data",
                 "destination": RUNTIME_MOUNT_PATH,
                 "rw": volume_rw,
             },
@@ -118,7 +119,18 @@ def test_inspect_compose_project_records_immutable_image_id(
                                 },
                             },
                             "State": {"Status": "running", "Running": True},
-                            "Mounts": [],
+                            "Mounts": [
+                                {
+                                    "Type": "volume",
+                                    "Name": "akasic-bench-runtime-v1-fixed",
+                                    "Source": (
+                                        "/var/lib/docker/volumes/"
+                                        "akasic-bench-runtime-v1-fixed/_data"
+                                    ),
+                                    "Destination": RUNTIME_MOUNT_PATH,
+                                    "RW": False,
+                                }
+                            ],
                             "HostConfig": {"PortBindings": {}},
                         }
                     ]
@@ -135,6 +147,9 @@ def test_inspect_compose_project_records_immutable_image_id(
 
     assert containers[0]["image"] == "task:tag"
     assert containers[0]["image_id"] == "sha256:image-id"
+    assert containers[0]["mounts"][0]["name"] == (
+        "akasic-bench-runtime-v1-fixed"
+    )
 
 
 def test_validate_isolation_accepts_only_trial_bind_mounts(tmp_path: Path) -> None:
@@ -187,14 +202,14 @@ def test_validate_isolation_rejects_host_escape(
 
 
 @pytest.mark.parametrize(
-    ("volume_source", "volume_rw"),
+    ("volume_name", "volume_rw"),
     [
         ("other-volume", False),
         ("akasic-bench-runtime-v1-fixed", True),
     ],
 )
 def test_validate_isolation_rejects_unapproved_or_writable_volume(
-    volume_source: str,
+    volume_name: str,
     volume_rw: bool,
 ) -> None:
     project = "akasic-bench-v4flash-smoke__env"
@@ -204,7 +219,7 @@ def test_validate_isolation_rejects_unapproved_or_writable_volume(
             [
                 _container(
                     source="/tmp/allowed/agent",
-                    volume_source=volume_source,
+                    volume_name=volume_name,
                     volume_rw=volume_rw,
                 )
             ],

@@ -252,6 +252,7 @@ def inspect_compose_project(project_name: str) -> list[dict[str, object]]:
             mounts.append(
                 {
                     "type": mount.get("Type"),
+                    "name": mount.get("Name"),
                     "source": mount.get("Source"),
                     "destination": mount.get("Destination"),
                     "rw": bool(mount.get("RW")),
@@ -315,7 +316,7 @@ def validate_isolation(
             mount_type = raw_mount.get("type")
             if mount_type == "volume":
                 checked_mount = (
-                    str(raw_mount.get("source") or ""),
+                    str(raw_mount.get("name") or ""),
                     str(raw_mount.get("destination") or ""),
                 )
                 if bool(raw_mount.get("rw")):
