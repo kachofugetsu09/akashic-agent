@@ -85,6 +85,12 @@ def test_context_budget_and_runtime_config_share_the_same_boundary() -> None:
         context_window=10_000,
         max_output_tokens=0,
     ).max_output_tokens == 0
+    assert ModelRuntimeConfig(
+        runtime_id="default",
+        provider="openai",
+        model="model",
+        context_window=10_000,
+    ).max_output_tokens == 0
     with pytest.raises(ValueError, match="不能小于 0"):
         ModelRuntimeConfig(
             runtime_id="negative",
@@ -500,6 +506,57 @@ max_output_tokens = 0
 
     assert config.max_tokens == 0
     assert config.model_runtimes["main"].max_output_tokens == 0
+
+
+def test_config_defaults_missing_output_limit_to_provider_boundary(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[llm]
+main = "main"
+
+[llm.runtimes.main]
+provider = "openai"
+model = "model"
+api_key = "key"
+context_window = 64000
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(path, workspace=tmp_path)
+
+    assert config.max_tokens == 0
+    assert config.model_runtimes["main"].max_output_tokens == 0
+
+
+def test_config_preserves_explicit_legacy_output_limit_for_main_runtime(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[llm]
+main = "main"
+
+[llm.runtimes.main]
+provider = "openai"
+model = "model"
+api_key = "key"
+context_window = 64000
+
+[agent]
+max_tokens = 8192
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(path, workspace=tmp_path)
+
+    assert config.max_tokens == 8192
+    assert config.model_runtimes["main"].max_output_tokens == 8192
 
 
 @pytest.mark.parametrize("modalities", ['"image"', "[1]"])

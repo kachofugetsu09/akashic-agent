@@ -103,7 +103,7 @@ class SubAgent:
         *,
         system_prompt: str = "",
         max_iterations: int = 30,
-        max_tokens: int = 8192,
+        max_tokens: int = 0,
         mandatory_exit_tools: Sequence[str] = (),
     ) -> None:
         self._provider = provider
@@ -266,7 +266,11 @@ class SubAgent:
                 messages=messages + [{"role": "user", "content": prompt}],
                 tools=[],
                 model=self._model,
-                max_tokens=min(_SUMMARY_MAX_TOKENS, self._max_tokens),
+                max_tokens=(
+                    min(_SUMMARY_MAX_TOKENS, self._max_tokens)
+                    if self._max_tokens > 0
+                    else _SUMMARY_MAX_TOKENS
+                ),
             )
             text = (resp.content or "").strip()
             if text:
@@ -291,7 +295,11 @@ class SubAgent:
                 messages=messages + [{"role": "user", "content": prompt}],
                 tools=[],
                 model=self._model,
-                max_tokens=min(_SUMMARY_MAX_TOKENS, self._max_tokens),
+                max_tokens=(
+                    min(_SUMMARY_MAX_TOKENS, self._max_tokens)
+                    if self._max_tokens > 0
+                    else _SUMMARY_MAX_TOKENS
+                ),
             )
             text = (resp.content or "").strip()
             if text:

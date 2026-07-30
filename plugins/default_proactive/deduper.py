@@ -61,7 +61,9 @@ class MessageDeduper:
             messages=messages,
             tools=[],
             model=self._model,
-            max_tokens=min(128, self._max_tokens),
+            max_tokens=(
+                min(128, self._max_tokens) if self._max_tokens > 0 else 128
+            ),
         )
         payload = extract_json_object((response.content or "").strip())
         if "is_duplicate" not in payload or not isinstance(

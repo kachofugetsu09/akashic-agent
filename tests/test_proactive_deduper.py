@@ -102,3 +102,27 @@ async def test_programming_error_propagates() -> None:
             "new",
             [RecentProactiveMessage(content="old")],
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("configured", "expected"), [(0, 128), (64, 64)])
+async def test_deduper_keeps_its_local_output_limit(
+    configured: int,
+    expected: int,
+) -> None:
+    provider = AsyncMock()
+    provider.chat.return_value = SimpleNamespace(
+        content='{"is_duplicate": false, "reason": "new"}'
+    )
+    deduper = MessageDeduper(
+        provider=cast(Any, provider),
+        model="test-model",
+        max_tokens=configured,
+    )
+
+    await deduper.is_duplicate(
+        "new",
+        [RecentProactiveMessage(content="old")],
+    )
+
+    assert provider.chat.await_args.kwargs["max_tokens"] == expected

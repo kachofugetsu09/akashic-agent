@@ -41,7 +41,7 @@ class WizardAnswers:
     reasoning_effort: str = ""
     context_window: int = 0
     effective_context_percent: float = 0.9
-    max_output_tokens: int = 8192
+    max_output_tokens: int = 0
     memory_window: int = 40
     enable_thinking: bool = False
     multimodal: bool = False
@@ -340,15 +340,11 @@ def _phase_api_key_llm(a: WizardAnswers) -> None:
     a.context_window = click.prompt("上下文大小（tokens）", type=int, default=64000)
     if a.context_window <= 0:
         raise click.BadParameter("上下文大小必须大于 0")
-    from agent.model_runtime.context_policy import recommended_context_settings
-
     a.max_output_tokens = click.prompt(
-        "最大输出 tokens",
-        type=click.IntRange(min=1),
-        default=recommended_context_settings(a.context_window).output_reserve,
+        "最大输出 tokens（0 由 Provider 决定）",
+        type=click.IntRange(min=0),
+        default=0,
     )
-    if a.max_output_tokens <= 0:
-        raise click.BadParameter("最大输出 tokens 必须大于 0")
     a.multimodal = (
         False
         if a.provider == "opencode-go"
@@ -380,7 +376,6 @@ def _phase_codex_llm(
     a: WizardAnswers, *, reuse_existing_auth: bool = False
 ) -> None:
     """完成 Codex 登录并从目录选择模型能力。"""
-    from agent.model_runtime.context_policy import recommended_context_settings
     from agent.model_runtime.auth.codex import CodexAuthDriver
     from agent.model_runtime.auth.store import CredentialStore
     from agent.model_runtime.catalog.codex import CodexModelCatalog
@@ -435,13 +430,7 @@ def _phase_codex_llm(
         default=capabilities.context_window,
     )
     a.effective_context_percent = capabilities.effective_context_percent
-    a.max_output_tokens = min(
-        capabilities.max_output_tokens,
-        recommended_context_settings(
-            a.context_window,
-            a.effective_context_percent,
-        ).output_reserve,
-    )
+    a.max_output_tokens = 0
     detected_image = "image" in capabilities.input_modalities
     if not selected.input_modalities_known:
         _warn("模型目录未提供多模态元数据，请手工确认")
@@ -457,7 +446,11 @@ def _phase_codex_manual(a: WizardAnswers) -> None:
     a.reasoning_effort = click.prompt("推理强度", default="medium")
     a.reasoning_summary = "auto"
     a.context_window = click.prompt("上下文大小（tokens）", type=int)
-    a.max_output_tokens = click.prompt("最大输出 tokens", type=int, default=8192)
+    a.max_output_tokens = click.prompt(
+        "最大输出 tokens（0 由 Provider 决定）",
+        type=click.IntRange(min=0),
+        default=0,
+    )
     a.multimodal = click.confirm("主模型支持图片输入？", default=False)
 
 
@@ -476,9 +469,9 @@ def _phase_vl_model(a: WizardAnswers) -> None:
         default=a.context_window,
     )
     a.vl_max_output_tokens = click.prompt(
-        "视觉模型最大输出 tokens",
-        type=click.IntRange(min=1),
-        default=min(a.max_output_tokens, 8192),
+        "视觉模型最大输出 tokens（0 由 Provider 决定）",
+        type=click.IntRange(min=0),
+        default=0,
     )
 
 
@@ -506,9 +499,9 @@ def _phase_fast_model(a: WizardAnswers) -> None:
         default=min(a.context_window, 128_000),
     )
     a.fast_max_output_tokens = click.prompt(
-        "轻量模型最大输出 tokens",
-        type=click.IntRange(min=1),
-        default=min(a.max_output_tokens, 4096),
+        "轻量模型最大输出 tokens（0 由 Provider 决定）",
+        type=click.IntRange(min=0),
+        default=0,
     )
 
 
@@ -942,7 +935,7 @@ def _render_llm(a: WizardAnswers) -> str:
             f'model = "{a.fast_model}"',
             f'base_url = "{a.fast_base_url}"',
             f"context_window = {a.fast_context_window or a.context_window}",
-            f"max_output_tokens = {a.fast_max_output_tokens or a.max_output_tokens}",
+            f"max_output_tokens = {a.fast_max_output_tokens}",
             'input_modalities = ["text"]',
             "",
         ])
@@ -955,7 +948,7 @@ def _render_llm(a: WizardAnswers) -> str:
             f'model = "{a.vl_model}"',
             f'base_url = "{a.vl_base_url}"',
             f"context_window = {a.vl_context_window or a.context_window}",
-            f"max_output_tokens = {a.vl_max_output_tokens or a.max_output_tokens}",
+            f"max_output_tokens = {a.vl_max_output_tokens}",
             'input_modalities = ["text", "image"]',
             "",
         ])

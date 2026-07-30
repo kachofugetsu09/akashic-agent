@@ -102,11 +102,19 @@ def load_config(
     data = _load_config_data(path)
 
     llm = _as_dict(data.get("llm"), field="llm")
-    runtime_id, llm_main, model_runtimes = _load_llm_runtimes(llm, workspace_path)
+    agent_cfg = _as_dict(data.get("agent"), field="agent")
+    legacy_max_output_tokens = agent_cfg.get(
+        "max_tokens",
+        data.get("max_tokens"),
+    )
+    runtime_id, llm_main, model_runtimes = _load_llm_runtimes(
+        llm,
+        workspace_path,
+        legacy_main_max_output_tokens=legacy_max_output_tokens,
+    )
     fast_runtime_id, llm_fast = _load_role_runtime(llm, "fast", runtime_id)
     agent_runtime_id, llm_agent = _load_role_runtime(llm, "agent", runtime_id)
     vl_runtime_id, llm_vl = _load_role_runtime(llm, "vl", runtime_id)
-    agent_cfg = _as_dict(data.get("agent"), field="agent")
     agent_context = _as_dict(agent_cfg.get("context"), field="agent.context")
     agent_tools = _as_dict(agent_cfg.get("tools"), field="agent.tools")
     agent_maintenance = _as_dict(
@@ -146,12 +154,7 @@ def load_config(
             agent_cfg.get("system_prompt")
             or data.get("system_prompt", "You are a helpful assistant.")
         ),
-        max_tokens=int(
-            llm_main.get(
-                "max_output_tokens",
-                agent_cfg.get("max_tokens", data.get("max_tokens", 8192)),
-            )
-        ),
+        max_tokens=model_runtimes[runtime_id].max_output_tokens,
         max_iterations=int(
             agent_cfg.get("max_iterations", data.get("max_iterations", 10))
         ),
@@ -542,6 +545,8 @@ def _load_extra_body(data: dict, llm_main: dict | None = None) -> dict:
 def _load_llm_runtimes(
     llm: dict,
     workspace: Path,
+    *,
+    legacy_main_max_output_tokens: object | None = None,
 ) -> tuple[str, dict, dict[str, ModelRuntimeConfig]]:
     """在配置边界解析 named runtimes，并拒绝未迁移的旧结构。"""
     main_value = llm.get("main")
@@ -559,6 +564,14 @@ def _load_llm_runtimes(
             raise ValueError(f"llm.runtimes.{runtime_id}.input_modalities 必须是字符串数组")
         provider = str(item.get("provider") or "").lower()
         auth_id = str(item.get("auth") or "")
+        configured_max_output_tokens = item.get("max_output_tokens")
+        if configured_max_output_tokens is None:
+            configured_max_output_tokens = (
+                legacy_main_max_output_tokens
+                if runtime_id == main_value
+                and legacy_main_max_output_tokens is not None
+                else 0
+            )
         parsed[runtime_id] = ModelRuntimeConfig(
             runtime_id=runtime_id,
             provider=provider,
@@ -576,7 +589,10 @@ def _load_llm_runtimes(
             base_url=_model_base_url(provider, item.get("base_url")),
             reasoning_effort=str(item.get("reasoning_effort") or ""),
             context_window=int(item.get("context_window") or 0),
-            max_output_tokens=int(item.get("max_output_tokens", 8192)),
+            max_output_tokens=_as_output_token_limit(
+                configured_max_output_tokens,
+                field=f"llm.runtimes.{runtime_id}.max_output_tokens",
+            ),
             input_modalities=tuple(modalities),
             effective_context_percent=float(item.get("effective_context_percent", 0.9)),
             use_responses_lite=_as_bool(
@@ -672,6 +688,14 @@ def _model_base_url(provider: str, configured: object) -> str:
 def _as_bool(value: object, *, field: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{field} 必须是布尔值")
+    return value
+
+
+def _as_output_token_limit(value: object, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field} 必须是整数")
+    if value < 0:
+        raise ValueError(f"{field} 不能小于 0")
     return value
 
 

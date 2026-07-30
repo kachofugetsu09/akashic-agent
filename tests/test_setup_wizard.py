@@ -24,6 +24,40 @@ def test_setup_wizard_renders_web_chat_config() -> None:
     assert 'channel_name = "web"' in text
 
 
+def test_setup_wizard_defaults_all_runtime_output_limits_to_provider() -> None:
+    answers = WizardAnswers(
+        fast_model="fast",
+        fast_provider="openai",
+        fast_context_window=64_000,
+        vl_model="vision",
+        vl_provider="openai",
+        vl_context_window=64_000,
+    )
+
+    text = _render_config(answers)
+
+    assert text.count("max_output_tokens = 0") == 3
+    assert "max_tokens = 0" in text
+
+
+def test_setup_wizard_preserves_explicit_role_output_limits() -> None:
+    answers = WizardAnswers(
+        fast_model="fast",
+        fast_provider="openai",
+        fast_context_window=64_000,
+        fast_max_output_tokens=2048,
+        vl_model="vision",
+        vl_provider="openai",
+        vl_context_window=64_000,
+        vl_max_output_tokens=4096,
+    )
+
+    text = _render_config(answers)
+
+    assert "max_output_tokens = 2048" in text
+    assert "max_output_tokens = 4096" in text
+
+
 @pytest.mark.asyncio
 async def test_qqbot_openid_fetch_times_out_without_ws_frames(
     monkeypatch: pytest.MonkeyPatch,

@@ -132,7 +132,7 @@ class ModelRuntimeConfig:
     reasoning_effort: str = ""
     context_window: int = 0
     # 0 表示不向 provider 发送输出上限，由模型服务自身边界负责。
-    max_output_tokens: int = 8192
+    max_output_tokens: int = 0
     input_modalities: tuple[str, ...] = ("text",)
     effective_context_percent: float = 0.9
     use_responses_lite: bool = False
@@ -177,7 +177,7 @@ class Config:
     model: str
     api_key: str
     system_prompt: str
-    max_tokens: int = 8192
+    max_tokens: int = 0
     max_iterations: int = 10
     memory_window: int = 40
     base_url: str | None = None

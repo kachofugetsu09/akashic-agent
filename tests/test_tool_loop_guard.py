@@ -732,6 +732,7 @@ def test_subagent_max_iterations_returns_summary_and_reason():
     assert "最大迭代" not in result
     assert "下一步" in result
     assert provider.calls[-1]["tools"] == []
+    assert provider.calls[-1]["max_tokens"] == 512
 
 
 def test_subagent_max_iterations_summary_failure_uses_fallback():

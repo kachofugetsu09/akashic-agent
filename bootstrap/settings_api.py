@@ -272,8 +272,20 @@ def _read_settings_state(
     try:
         if isinstance(active, str):
             runtimes_raw = llm.get("runtimes") if isinstance(llm.get("runtimes"), dict) else {}
+            agent = raw.get("agent") if isinstance(raw.get("agent"), dict) else {}
+            legacy_max_output_tokens = agent.get(
+                "max_tokens",
+                raw.get("max_tokens", 0),
+            )
             runtimes = [
-                _runtime_summary(runtime_id, value, credential_meta)
+                _runtime_summary(
+                    runtime_id,
+                    value,
+                    credential_meta,
+                    missing_max_output_tokens=(
+                        legacy_max_output_tokens if runtime_id == active else 0
+                    ),
+                )
                 for runtime_id, value in runtimes_raw.items()
                 if isinstance(runtime_id, str) and isinstance(value, dict)
             ]
@@ -306,9 +318,14 @@ def _runtime_summary(
     runtime_id: str,
     raw: dict[str, object],
     credential_meta: dict[str, dict[str, str]],
+    *,
+    missing_max_output_tokens: object = 0,
 ) -> dict[str, object]:
     context_window = raw.get("context_window", 0)
-    max_output_tokens = raw.get("max_output_tokens", 0)
+    max_output_tokens = raw.get(
+        "max_output_tokens",
+        missing_max_output_tokens,
+    )
     input_modalities = raw.get("input_modalities", ["text"])
     if isinstance(context_window, bool) or not isinstance(context_window, int):
         raise ValueError(f"runtime {runtime_id} 的 context_window 必须是整数")
