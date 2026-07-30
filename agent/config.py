@@ -576,7 +576,7 @@ def _load_llm_runtimes(
             base_url=_model_base_url(provider, item.get("base_url")),
             reasoning_effort=str(item.get("reasoning_effort") or ""),
             context_window=int(item.get("context_window") or 0),
-            max_output_tokens=int(item.get("max_output_tokens") or 8192),
+            max_output_tokens=int(item.get("max_output_tokens", 8192)),
             input_modalities=tuple(modalities),
             effective_context_percent=float(item.get("effective_context_percent", 0.9)),
             use_responses_lite=_as_bool(

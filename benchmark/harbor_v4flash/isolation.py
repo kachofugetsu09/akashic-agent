@@ -1,0 +1,296 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+from pathlib import Path
+from typing import Any, TypedDict
+
+BENCHMARK_PREFIX = "akasic-bench-v4flash-"
+_IGNORED_TREE_PARTS = {
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "__pycache__",
+}
+
+
+class IsolationError(RuntimeError):
+    pass
+
+
+class ProcessSnapshot(TypedDict):
+    pid: int
+    start_ticks: str
+    cmdline: list[str]
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def create_source_bundle(
+    source_root: Path,
+    bundle_path: Path,
+    *,
+    migration_baseline: str = "012e37c8b51df045353972bb551d8e868ab52455",
+) -> dict[str, str]:
+    """导出并校验可恢复 migration baseline 的 Git 历史包。"""
+
+    # 1. bundle 只承载 Git 对象与 refs；当前未提交内容仍由源码目录上传。
+    bundle_path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "-C", str(source_root), "bundle", "create", str(bundle_path), "--all"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    # 2. 用 Git 自身校验 bundle，并确认固定 migration baseline 可达。
+    subprocess.run(
+        ["git", "-C", str(source_root), "bundle", "verify", str(bundle_path)],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source_root),
+            "merge-base",
+            "--is-ancestor",
+            migration_baseline,
+            "HEAD",
+        ],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    head = subprocess.run(
+        ["git", "-C", str(source_root), "rev-parse", "HEAD"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).stdout.strip()
+    return {
+        "path": str(bundle_path),
+        "digest": sha256_file(bundle_path),
+        "head": head,
+        "migration_baseline": migration_baseline,
+    }
+
+
+def source_tree_digest(root: Path) -> str:
+    """计算上传源码的稳定内容摘要。"""
+
+    # 1. 排除版本控制与本地缓存，只散列会进入 runtime 的普通文件。
+    digest = hashlib.sha256()
+    paths = sorted(
+        path
+        for path in root.rglob("*")
+        if path.is_file()
+        and not any(part in _IGNORED_TREE_PARTS for part in path.relative_to(root).parts)
+    )
+    for path in paths:
+        relative = path.relative_to(root).as_posix().encode()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(bytes.fromhex(sha256_file(path).removeprefix("sha256:")))
+    return f"sha256:{digest.hexdigest()}"
+
+
+def compose_project_name(session_id: str) -> str:
+    value = session_id.lower()
+    if not re.match(r"^[a-z0-9]", value):
+        value = "0" + value
+    return re.sub(r"[^a-z0-9_-]", "-", value)
+
+
+def inspect_compose_project(project_name: str) -> list[dict[str, object]]:
+    """读取一个 Harbor compose project 的安全容器投影。"""
+
+    result = subprocess.run(
+        [
+            "docker",
+            "ps",
+            "-aq",
+            "--filter",
+            f"label=com.docker.compose.project={project_name}",
+        ],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    container_ids = [item for item in result.stdout.splitlines() if item]
+    if not container_ids:
+        raise IsolationError(f"未找到 compose project：{project_name}")
+    inspected = subprocess.run(
+        ["docker", "inspect", *container_ids],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    payload: object = json.loads(inspected.stdout)
+    if not isinstance(payload, list):
+        raise IsolationError("docker inspect 必须返回数组")
+    projection: list[dict[str, object]] = []
+    for raw_item in payload:
+        if not isinstance(raw_item, dict):
+            raise IsolationError("docker inspect 数组元素必须是对象")
+        item: dict[str, Any] = raw_item
+        raw_mounts = item.get("Mounts")
+        if not isinstance(raw_mounts, list):
+            raise IsolationError("docker inspect Mounts 必须是数组")
+        mounts: list[dict[str, object]] = []
+        for raw_mount in raw_mounts:
+            if not isinstance(raw_mount, dict):
+                raise IsolationError("docker inspect Mounts 元素必须是对象")
+            mount: dict[str, Any] = raw_mount
+            mounts.append(
+                {
+                    "type": mount.get("Type"),
+                    "source": mount.get("Source"),
+                    "destination": mount.get("Destination"),
+                    "rw": bool(mount.get("RW")),
+                }
+            )
+        projection.append(
+            {
+                "id": item.get("Id"),
+                "name": str(item.get("Name") or "").lstrip("/"),
+                "image": item.get("Config", {}).get("Image"),
+                "status": item.get("State", {}).get("Status"),
+                "running": bool(item.get("State", {}).get("Running")),
+                "mounts": mounts,
+                "ports": item.get("HostConfig", {}).get("PortBindings") or {},
+                "project": item.get("Config", {})
+                .get("Labels", {})
+                .get("com.docker.compose.project"),
+            }
+        )
+    return projection
+
+
+def validate_isolation(
+    containers: list[dict[str, object]],
+    *,
+    project_name: str,
+    allowed_bind_root: Path,
+    forbidden_host_paths: list[Path],
+) -> dict[str, object]:
+    """拒绝主机路径泄漏、Docker 控制面和端口发布。"""
+
+    # 1. 所有容器必须属于唯一 benchmark project。
+    if not project_name.startswith(BENCHMARK_PREFIX):
+        raise IsolationError(f"compose project 缺少 benchmark 前缀：{project_name}")
+    if not containers:
+        raise IsolationError("compose project 没有容器")
+    allowed_root = allowed_bind_root.resolve()
+    forbidden = [path.resolve() for path in forbidden_host_paths]
+
+    # 2. bind mount 只能来自本 trial 证据目录，且禁止 Docker socket。
+    checked_mounts = 0
+    for container in containers:
+        if container.get("project") != project_name:
+            raise IsolationError(f"容器 project 标签不一致：{container!r}")
+        ports = container.get("ports")
+        if ports:
+            raise IsolationError(f"benchmark 容器禁止发布主机端口：{ports!r}")
+        raw_mounts = container.get("mounts")
+        if not isinstance(raw_mounts, list):
+            raise IsolationError("容器投影 mounts 必须是数组")
+        for raw_mount in raw_mounts:
+            if not isinstance(raw_mount, dict) or raw_mount.get("type") != "bind":
+                continue
+            checked_mounts += 1
+            source = Path(str(raw_mount.get("source") or "")).resolve()
+            destination = str(raw_mount.get("destination") or "")
+            if destination == "/var/run/docker.sock" or source == Path(
+                "/var/run/docker.sock"
+            ):
+                raise IsolationError("benchmark 容器禁止挂载 Docker socket")
+            if source != allowed_root and allowed_root not in source.parents:
+                raise IsolationError(f"bind mount 超出 trial 目录：{source}")
+            for path in forbidden:
+                if source == path or path in source.parents or source in path.parents:
+                    raise IsolationError(f"bind mount 触及受保护路径：{source}")
+
+    return {
+        "status": "passed",
+        "project": project_name,
+        "container_count": len(containers),
+        "checked_bind_mounts": checked_mounts,
+        "containers": containers,
+    }
+
+
+def online_process_snapshot() -> list[ProcessSnapshot]:
+    """记录正式 workspace owner 的只读进程身份。"""
+
+    workspace = "/home/huashen/.akashic/workspace"
+    rows: list[ProcessSnapshot] = []
+    proc_root = Path("/proc")
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+            cmdline = [part.decode(errors="replace") for part in raw.split(b"\0") if part]
+            stat = (entry / "stat").read_text(encoding="utf-8")
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            continue
+        if workspace not in cmdline:
+            continue
+        rows.append(
+            {
+                "pid": int(entry.name),
+                "start_ticks": stat.rsplit(")", 1)[1].split()[19],
+                "cmdline": cmdline,
+            }
+        )
+    return sorted(rows, key=lambda row: row["pid"])
+
+
+def validate_online_processes_unchanged(
+    before: list[ProcessSnapshot],
+    after: list[ProcessSnapshot],
+) -> dict[str, object]:
+    before_by_pid = {row["pid"]: row for row in before}
+    after_by_pid = {row["pid"]: row for row in after}
+    missing = sorted(set(before_by_pid) - set(after_by_pid))
+    changed = sorted(
+        pid
+        for pid in set(before_by_pid) & set(after_by_pid)
+        if before_by_pid[pid] != after_by_pid[pid]
+    )
+    return {
+        "status": "passed" if not missing and not changed else "failed",
+        "missing_pids": missing,
+        "changed_pids": changed,
+        "before": before,
+        "after": after,
+    }
+
+
+def atomic_json(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)

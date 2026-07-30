@@ -292,6 +292,24 @@ async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
+async def test_chat_completions_omits_zero_max_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake = _FakeClient([_Response(content="done")])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+
+    result = await LLMProvider(api_key="k").chat(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        model="m",
+        max_tokens=0,
+    )
+
+    assert result.content == "done"
+    assert "max_tokens" not in fake.calls[0]
+
+
+@pytest.mark.asyncio
 async def test_provider_outer_deadline_cancels_without_retry(
     monkeypatch: pytest.MonkeyPatch,
 ):

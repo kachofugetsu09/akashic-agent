@@ -1379,9 +1379,10 @@ class DefaultReasoner(Reasoner):
                 schema_names = self._tools.get_registered_names() - disabled
             elif schema_names is not None:
                 schema_names = [name for name in schema_names if name not in disabled]
+            tool_schemas = self._tools.get_schemas(names=schema_names)
             response = await self._llm.provider.chat(
                 messages=messages,
-                tools=self._tools.get_schemas(names=schema_names),
+                tools=tool_schemas,
                 model=self._llm_config.model,
                 max_tokens=self._llm_config.max_tokens,
                 tool_choice="auto",
@@ -1396,7 +1397,52 @@ class DefaultReasoner(Reasoner):
                 react_cache_prompt_tokens += response.cache_prompt_tokens
                 react_cache_hit_tokens += response.cache_hit_tokens or 0
 
-            # 5. 模型返回 tool_calls 时，进入工具执行分支。
+            # 5. 空 thinking 响应保留同一工具 schema 修复一次，再进入正常分支。
+            if not response.content and not response.tool_calls and response.thinking:
+                logger.warning(
+                    "[空回复重试] 第%d轮，content为空但thinking非空，触发一次修复重试",
+                    iteration + 1,
+                )
+                retry_assistant: dict[str, Any] = {"role": "assistant", "content": ""}
+                model_state = response.provider_fields.get("model_state")
+                if isinstance(model_state, dict):
+                    retry_assistant["model_state"] = model_state
+                messages.append(retry_assistant)
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "你刚才只输出了思考过程，没有给出正式回复或工具调用。"
+                        "请继续：需要操作时通过已提供的结构化工具调用，"
+                        "不要把工具调用协议写入文本；否则直接回复用户。"
+                    ),
+                })
+                retry_response = await self._llm.provider.chat(
+                    messages=messages,
+                    tools=tool_schemas,
+                    model=self._llm_config.model,
+                    max_tokens=self._llm_config.max_tokens,
+                    tool_choice="auto",
+                    on_content_delta=on_content_delta,
+                    cache_namespace=tool_event_session_key,
+                )
+                react_usages.append(retry_response.usage or ModelUsage())
+                if retry_response.cache_prompt_tokens is not None:
+                    react_cache_seen = True
+                    react_cache_prompt_tokens += retry_response.cache_prompt_tokens
+                    react_cache_hit_tokens += retry_response.cache_hit_tokens or 0
+                if retry_response.content or retry_response.tool_calls:
+                    response = retry_response
+                    if on_content_delta is not None and response.content:
+                        streamed = True
+                    logger.info(
+                        "[空回复重试] 修复成功，content=%s tool_calls=%d",
+                        bool(response.content),
+                        len(response.tool_calls),
+                    )
+                else:
+                    logger.warning("[空回复重试] 重试仍为空，使用fallback")
+
+            # 6. 模型返回 tool_calls 时，进入工具执行分支。
             if response.tool_calls:
                 logger.info(
                     "[LLM决策→工具] 第%d轮，调用: %s",
@@ -1411,7 +1457,7 @@ class DefaultReasoner(Reasoner):
                 )
                 tool_batch = tool_call_batch_snapshot(response.tool_calls)
 
-                # 6. 逐个执行本轮工具调用。
+                # 7. 逐个执行本轮工具调用。
                 iter_calls: list[dict[str, Any]] = []
                 for tool_batch_index, tool_call in enumerate(response.tool_calls):
                     if tool_call.name in disabled:
@@ -1836,42 +1882,6 @@ class DefaultReasoner(Reasoner):
                 continue
 
             # 8. 没有 tool_calls 时，说明本轮得到最终回复。
-            # 8a. 若 content 为空（模型只输出了 thinking），retry 一次。
-            if not response.content and response.thinking:
-                logger.warning(
-                    "[空回复重试] 第%d轮，content为空但thinking非空，触发一次重试",
-                    iteration + 1,
-                )
-                retry_assistant: dict[str, Any] = {"role": "assistant", "content": ""}
-                model_state = response.provider_fields.get("model_state")
-                if isinstance(model_state, dict):
-                    retry_assistant["model_state"] = model_state
-                messages.append(retry_assistant)
-                messages.append({
-                    "role": "user",
-                    "content": "你刚才只输出了思考过程，没有给出正式回复。请直接回复用户，不要重复思考。",
-                })
-                retry_response = await self._llm.provider.chat(
-                    messages=messages,
-                    tools=[],
-                    model=self._llm_config.model,
-                    max_tokens=self._llm_config.max_tokens,
-                    on_content_delta=on_content_delta,
-                    cache_namespace=tool_event_session_key,
-                )
-                react_usages.append(retry_response.usage or ModelUsage())
-                if retry_response.cache_prompt_tokens is not None:
-                    react_cache_seen = True
-                    react_cache_prompt_tokens += retry_response.cache_prompt_tokens
-                    react_cache_hit_tokens += retry_response.cache_hit_tokens or 0
-                if retry_response.content:
-                    response = retry_response
-                    if on_content_delta is not None:
-                        streamed = True
-                    logger.info("[空回复重试] 重试成功，获得正常回复")
-                else:
-                    logger.warning("[空回复重试] 重试仍为空，使用fallback")
-
             logger.info(
                 "[LLM决策→回复] 第%d轮，共调用工具%d次: %s",
                 iteration + 1,
@@ -2030,7 +2040,11 @@ class DefaultReasoner(Reasoner):
                 ],
                 tools=[],
                 model=self._llm_config.model,
-                max_tokens=min(_SUMMARY_MAX_TOKENS, self._llm_config.max_tokens),
+                max_tokens=(
+                    min(_SUMMARY_MAX_TOKENS, self._llm_config.max_tokens)
+                    if self._llm_config.max_tokens > 0
+                    else _SUMMARY_MAX_TOKENS
+                ),
             )
             text = (response.content or "").strip()
             if text:

@@ -43,6 +43,44 @@ async def test_async_sdk_runs_against_real_socket_router(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_async_sdk_reads_terminal_frame_larger_than_streamreader_default(
+    tmp_path: Path,
+) -> None:
+    sessions = SessionManager(tmp_path)
+    response = "x" * (128 * 1024)
+
+    async def execute(_request: TurnRequest) -> str:
+        return response
+
+    runtime = ConversationRuntime(sessions.control_store, execute)
+    server = SocketAppServer(
+        tmp_path / "large-terminal.sock",
+        ControlService(runtime, sessions, tmp_path),
+    )
+    await server.start()
+    try:
+        async with await AsyncAkashic.connect(str(server.endpoint)) as client:
+            thread = await client.thread_start()
+            result = await thread.run("large")
+            assert result["status"] == "completed"
+            assert result["finalResponse"] == response
+    finally:
+        await server.stop()
+        await runtime.shutdown()
+        sessions.close()
+
+
+@pytest.mark.asyncio
+async def test_64k_streamreader_ablation_rejects_large_ndjson_frame() -> None:
+    reader = asyncio.StreamReader(limit=64 * 1024)
+    reader.feed_data(b"x" * (128 * 1024) + b"\n")
+    reader.feed_eof()
+
+    with pytest.raises(ValueError, match="chunk"):
+        _ = await reader.readline()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("terminal_mode", "expected_status"),
     (

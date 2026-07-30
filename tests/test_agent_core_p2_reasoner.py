@@ -779,8 +779,50 @@ def test_empty_content_with_thinking_triggers_retry_and_succeeds():
     assert result.reply == "正式回复"
     assert result.thinking == "新思考"
     retry_call = provider.calls[1]
-    assert retry_call["tools"] == []
+    assert [
+        schema["function"]["name"] for schema in retry_call["tools"]
+    ] == ["dummy"]
     assert len(provider.calls) == 2
+
+
+def test_empty_content_with_thinking_retry_can_enter_tool_loop():
+    provider = _Provider(
+        [
+            LLMResponse(content=None, tool_calls=[], thinking="需要写文件"),
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall("c1", "dummy", {})],
+                thinking="调用工具",
+            ),
+            LLMResponse(content="已完成", tool_calls=[]),
+        ]
+    )
+    tool = _DummyTool()
+    tools = ToolRegistry()
+    tools.register(tool, always_on=True)
+    reasoner = DefaultReasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider),
+                light_provider=cast(Any, provider),
+            ),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=40,
+    )
+
+    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+
+    assert result.reply == "已完成"
+    assert tool.calls == [{}]
+    assert len(provider.calls) == 3
+    assert [
+        schema["function"]["name"] for schema in provider.calls[1]["tools"]
+    ] == ["dummy"]
 
 
 def test_empty_content_with_thinking_retry_still_empty_falls_back():

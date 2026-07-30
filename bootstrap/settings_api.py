@@ -45,7 +45,7 @@ class ApplyPayload(BaseModel):
     use_local_opencode: bool = False
     base_url: str = Field(default="", max_length=2048)
     context_window: int = Field(gt=0)
-    max_output_tokens: int = Field(gt=0)
+    max_output_tokens: int = Field(ge=0)
     input_modalities: list[Literal["text", "image"]] = Field(
         default_factory=lambda: ["text"]
     )
@@ -144,7 +144,10 @@ def create_settings_app(
 
     @app.post("/api/settings/apply")
     async def apply(payload: ApplyPayload) -> dict[str, object]:
-        if payload.max_output_tokens >= payload.context_window:
+        if (
+            payload.max_output_tokens > 0
+            and payload.max_output_tokens >= payload.context_window
+        ):
             raise HTTPException(status_code=422, detail="最大输出必须小于上下文窗口")
         if "text" not in payload.input_modalities:
             raise HTTPException(status_code=422, detail="输入模态必须包含 text")

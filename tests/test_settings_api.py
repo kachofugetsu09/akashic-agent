@@ -100,7 +100,7 @@ def test_apply_writes_inline_key_and_preserves_other_config(
             "api_key": "new-secret",
             "base_url": "https://opencode.ai/zen/go/v1",
             "context_window": 128000,
-            "max_output_tokens": 8192,
+            "max_output_tokens": 0,
             "input_modalities": ["text"],
         },
     )
@@ -110,6 +110,7 @@ def test_apply_writes_inline_key_and_preserves_other_config(
     assert parsed["llm"]["main"] == "opencode_go_main"
     runtime = parsed["llm"]["runtimes"]["opencode_go_main"]
     assert runtime["api_key"] == "new-secret"
+    assert runtime["max_output_tokens"] == 0
     assert parsed["llm"]["runtimes"]["deepseek_main"]["api_key"] == "saved-secret"
     assert config_path.stat().st_mode & 0o777 == 0o600
     assert config_path.with_name(

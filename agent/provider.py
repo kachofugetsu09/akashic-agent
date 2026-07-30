@@ -284,7 +284,8 @@ class OpenCodeGoMiMoStrategy(OpenCodeGoStrategy):
         *,
         disable_thinking: bool,
     ) -> None:
-        kwargs["max_tokens"] = min(int(kwargs["max_tokens"]), 131_072)
+        if "max_tokens" in kwargs:
+            kwargs["max_tokens"] = min(int(kwargs["max_tokens"]), 131_072)
         super().prepare_request(
             kwargs,
             extra_body,
@@ -345,11 +346,9 @@ class ChatCompletionsRuntime:
         )
         full_messages = _merge_leading_system_messages(full_messages)
         full_messages = strategy.normalize_messages(full_messages)
-        kwargs: dict = dict(
-            model=request.model,
-            max_tokens=request.max_output_tokens,
-            messages=full_messages,
-        )
+        kwargs: dict = dict(model=request.model, messages=full_messages)
+        if request.max_output_tokens > 0:
+            kwargs["max_tokens"] = request.max_output_tokens
         if request.tools:
             kwargs["tools"] = request.tools
             kwargs["tool_choice"] = request.tool_choice

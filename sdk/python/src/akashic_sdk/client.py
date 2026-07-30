@@ -7,6 +7,8 @@ from collections.abc import AsyncIterator, Iterator
 from concurrent.futures import Future
 from typing import Any, cast
 
+DEFAULT_MAX_MESSAGE_BYTES = 2 * 1024 * 1024
+
 
 class RemoteError(RuntimeError):
     def __init__(self, code: int, message: str, data: object = None) -> None:
@@ -44,12 +46,23 @@ class _WireClient:
         endpoint: str,
         *,
         workspace_token: str | None = None,
+        max_message_bytes: int = DEFAULT_MAX_MESSAGE_BYTES,
     ) -> _WireClient:
+        if max_message_bytes <= 0:
+            raise ValueError("max_message_bytes must be positive")
+        reader_limit = max_message_bytes + 1
         if endpoint.count(":") == 1 and not endpoint.startswith("/"):
             host, raw_port = endpoint.rsplit(":", 1)
-            reader, writer = await asyncio.open_connection(host, int(raw_port))
+            reader, writer = await asyncio.open_connection(
+                host,
+                int(raw_port),
+                limit=reader_limit,
+            )
         else:
-            reader, writer = await asyncio.open_unix_connection(endpoint)
+            reader, writer = await asyncio.open_unix_connection(
+                endpoint,
+                limit=reader_limit,
+            )
         wire = cls(reader, writer)
         try:
             _ = await wire.request(
@@ -220,8 +233,15 @@ class AsyncAkashic:
         endpoint: str,
         *,
         workspace_token: str | None = None,
+        max_message_bytes: int = DEFAULT_MAX_MESSAGE_BYTES,
     ) -> AsyncAkashic:
-        return cls(await _WireClient.connect(endpoint, workspace_token=workspace_token))
+        return cls(
+            await _WireClient.connect(
+                endpoint,
+                workspace_token=workspace_token,
+                max_message_bytes=max_message_bytes,
+            )
+        )
 
     async def thread_start(self, metadata: dict[str, object] | None = None) -> Thread:
         record = cast(dict[str, Any], await self._wire.request("thread/start", {"metadata": metadata or {}}))
@@ -327,11 +347,23 @@ class Akashic:
         self._async = async_client
 
     @classmethod
-    def connect(cls, endpoint: str, *, workspace_token: str | None = None) -> Akashic:
+    def connect(
+        cls,
+        endpoint: str,
+        *,
+        workspace_token: str | None = None,
+        max_message_bytes: int = DEFAULT_MAX_MESSAGE_BYTES,
+    ) -> Akashic:
         runner = _LoopThread()
         return cls(
             runner,
-            runner.run(AsyncAkashic.connect(endpoint, workspace_token=workspace_token)),
+            runner.run(
+                AsyncAkashic.connect(
+                    endpoint,
+                    workspace_token=workspace_token,
+                    max_message_bytes=max_message_bytes,
+                )
+            ),
         )
 
     def thread_start(self, metadata: dict[str, object] | None = None) -> _SyncThread:
