@@ -262,6 +262,7 @@ def inspect_compose_project(project_name: str) -> list[dict[str, object]]:
                 "id": item.get("Id"),
                 "name": str(item.get("Name") or "").lstrip("/"),
                 "image": item.get("Config", {}).get("Image"),
+                "image_id": item.get("Image"),
                 "status": item.get("State", {}).get("Status"),
                 "running": bool(item.get("State", {}).get("Running")),
                 "mounts": mounts,
@@ -280,8 +281,9 @@ def validate_isolation(
     project_name: str,
     allowed_bind_root: Path,
     forbidden_host_paths: list[Path],
+    allowed_volume_mounts: list[tuple[str, str]],
 ) -> dict[str, object]:
-    """拒绝主机路径泄漏、Docker 控制面和端口发布。"""
+    """拒绝非 trial bind、非 allowlist volume、Docker 控制面和端口。"""
 
     # 1. 所有容器必须属于唯一 benchmark project。
     if not project_name.startswith(BENCHMARK_PREFIX):
@@ -290,9 +292,14 @@ def validate_isolation(
         raise IsolationError("compose project 没有容器")
     allowed_root = allowed_bind_root.resolve()
     forbidden = [path.resolve() for path in forbidden_host_paths]
+    allowed_volumes = set(allowed_volume_mounts)
+    if len(allowed_volumes) != len(allowed_volume_mounts):
+        raise IsolationError("volume allowlist 含重复项")
 
-    # 2. bind mount 只能来自本 trial 证据目录，且禁止 Docker socket。
+    # 2. bind 只能来自本 trial；named volume 必须精确匹配且只读。
     checked_mounts = 0
+    checked_volume_mounts = 0
+    seen_volumes: set[tuple[str, str]] = set()
     for container in containers:
         if container.get("project") != project_name:
             raise IsolationError(f"容器 project 标签不一致：{container!r}")
@@ -303,8 +310,31 @@ def validate_isolation(
         if not isinstance(raw_mounts, list):
             raise IsolationError("容器投影 mounts 必须是数组")
         for raw_mount in raw_mounts:
-            if not isinstance(raw_mount, dict) or raw_mount.get("type") != "bind":
+            if not isinstance(raw_mount, dict):
+                raise IsolationError("容器投影 mount 必须是对象")
+            mount_type = raw_mount.get("type")
+            if mount_type == "volume":
+                checked_mount = (
+                    str(raw_mount.get("source") or ""),
+                    str(raw_mount.get("destination") or ""),
+                )
+                if bool(raw_mount.get("rw")):
+                    raise IsolationError(
+                        f"benchmark runtime volume 必须只读：{checked_mount!r}"
+                    )
+                if checked_mount not in allowed_volumes:
+                    raise IsolationError(
+                        f"volume mount 不在 allowlist：{checked_mount!r}"
+                    )
+                if checked_mount in seen_volumes:
+                    raise IsolationError(
+                        f"volume mount 重复：{checked_mount!r}"
+                    )
+                seen_volumes.add(checked_mount)
+                checked_volume_mounts += 1
                 continue
+            if mount_type != "bind":
+                raise IsolationError(f"benchmark 禁止 mount 类型：{mount_type!r}")
             checked_mounts += 1
             source = Path(str(raw_mount.get("source") or "")).resolve()
             destination = str(raw_mount.get("destination") or "")
@@ -317,12 +347,20 @@ def validate_isolation(
             for path in forbidden:
                 if source == path or path in source.parents or source in path.parents:
                     raise IsolationError(f"bind mount 触及受保护路径：{source}")
+    if seen_volumes != allowed_volumes:
+        missing = sorted(allowed_volumes - seen_volumes)
+        raise IsolationError(f"缺少 allowlist volume mount：{missing!r}")
 
     return {
         "status": "passed",
         "project": project_name,
         "container_count": len(containers),
         "checked_bind_mounts": checked_mounts,
+        "checked_volume_mounts": checked_volume_mounts,
+        "allowed_volume_mounts": [
+            {"source": source, "destination": destination, "rw": False}
+            for source, destination in sorted(allowed_volumes)
+        ],
         "containers": containers,
     }
 

@@ -9,7 +9,7 @@ import subprocess
 import time
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.task.config import TaskConfig as HarborTaskConfig
@@ -40,6 +40,10 @@ from benchmark.harbor_v4flash.isolation import (
     reserve_compose_network,
     source_tree_digest,
     validate_online_processes_unchanged,
+)
+from benchmark.harbor_v4flash.runtime_volume import (
+    inspect_runtime_volume,
+    runtime_compose_overlay,
 )
 
 DEFAULT_FORBIDDEN_PATHS = (
@@ -145,6 +149,16 @@ async def run_trial(
     task_dir = task_dir.resolve()
     runs_root = args.runs_dir.resolve()
     task_agent_timeout_sec = _task_agent_timeout_sec(task_dir)
+    uv_binary = args.uv_binary.resolve()
+    runtime_volume = inspect_runtime_volume(
+        args.runtime_volume,
+        source_root=source_root,
+        uv_binary=uv_binary,
+    )
+    runtime_manifest = cast(dict[str, Any], runtime_volume["manifest"])
+    runtime_recipe = cast(dict[str, Any], runtime_manifest["recipe"])
+    runtime_lock = cast(dict[str, Any], runtime_recipe["resolved_lock"])
+    runtime_python = cast(dict[str, Any], runtime_recipe["python"])
     timestamp = (
         time.strftime("%Y%m%d-%H%M%S", time.gmtime())
         + f"-{time.time_ns() % 1_000_000:06d}"
@@ -160,21 +174,20 @@ async def run_trial(
         source_root,
         trial_dir / "inputs" / "source.bundle",
     )
-    uv_binary = args.uv_binary.resolve()
-    if not uv_binary.is_file():
-        raise FileNotFoundError(f"uv binary 不存在：{uv_binary}")
     network = reserve_compose_network(project)
-    network_compose_path = trial_dir / "inputs" / "network-compose.json"
+    runtime_compose_path = (
+        trial_dir / "inputs" / "runtime-network-compose.json"
+    )
+    compose_overlay = runtime_compose_overlay(args.runtime_volume)
+    compose_overlay["networks"] = {
+        "default": {
+            "external": True,
+            "name": network["name"],
+        }
+    }
     atomic_json(
-        network_compose_path,
-        {
-            "networks": {
-                "default": {
-                    "external": True,
-                    "name": network["name"],
-                }
-            }
-        },
+        runtime_compose_path,
+        compose_overlay,
     )
 
     manifest_path = trial_dir / "campaign-manifest.json"
@@ -211,6 +224,7 @@ async def run_trial(
             ),
         },
         "source": initial_source,
+        "runtime_cache": runtime_volume,
         "harbor": {
             "root": str(args.harbor_root.resolve()),
             "git_head": _git_output(args.harbor_root.resolve(), "rev-parse", "HEAD"),
@@ -246,20 +260,24 @@ async def run_trial(
                 "source_root": str(source_root),
                 "source_bundle": source_bundle["path"],
                 "source_head": source_bundle["head"],
-                "uv_binary": str(uv_binary),
                 "allowed_bind_root": str(trial_dir),
                 "forbidden_host_paths": [
                     str(path) for path in DEFAULT_FORBIDDEN_PATHS
                 ],
                 "source_digest": before_source,
-                "install_timeout_sec": 900,
+                "runtime_volume_name": args.runtime_volume,
+                "runtime_digest": runtime_manifest["runtime_digest"],
+                "runtime_manifest_digest": runtime_manifest["manifest_digest"],
+                "runtime_lock_digest": runtime_lock["digest"],
+                "runtime_python_version": runtime_python["version"],
+                "bootstrap_timeout_sec": 900,
                 "turn_timeout_sec": task_agent_timeout_sec,
             },
         ),
         environment=EnvironmentConfig(
             type=EnvironmentType.DOCKER,
             delete=True,
-            extra_docker_compose=[network_compose_path],
+            extra_docker_compose=[runtime_compose_path],
             kwargs={"keep_containers": True},
         ),
     )
@@ -459,7 +477,16 @@ def main() -> int:
         type=Path,
         default=Path(os.environ.get("AKASIC_BENCH_UV", "/home/huashen/.local/bin/uv")),
     )
+    parser.add_argument(
+        "--runtime-volume",
+        default=os.environ.get("AKASIC_BENCH_RUNTIME_VOLUME"),
+    )
     args = parser.parse_args()
+    if not args.runtime_volume:
+        parser.error(
+            "--runtime-volume 或 AKASIC_BENCH_RUNTIME_VOLUME 是必填项；"
+            "harness 不会在 trial 内冷安装"
+        )
     if len(args.task_dir) == 1:
         return asyncio.run(run_smoke(args, args.task_dir[0]))
     return asyncio.run(run_campaign(args, args.task_dir))

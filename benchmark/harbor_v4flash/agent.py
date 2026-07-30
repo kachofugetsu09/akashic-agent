@@ -16,10 +16,13 @@ from benchmark.harbor_v4flash.isolation import (
     validate_isolation,
 )
 from benchmark.harbor_v4flash.result_projection import project_agent_context
+from benchmark.harbor_v4flash.runtime_volume import (
+    RUNTIME_MOUNT_PATH,
+    RUNTIME_VENV_PATH,
+)
 
 _RUNTIME_ROOT = "/opt/akashic"
 _SOURCE_ROOT = f"{_RUNTIME_ROOT}/src"
-_VENV = f"{_RUNTIME_ROOT}/venv"
 _WORKSPACE = "/tmp/akashic-workspace"
 _ENDPOINT = f"{_WORKSPACE}/akashic.sock"
 _AGENT_LOGS = "/logs/agent"
@@ -45,11 +48,15 @@ class AkashicHarborAgent(BaseAgent):
         source_root: str,
         source_bundle: str,
         source_head: str,
-        uv_binary: str,
         allowed_bind_root: str,
         forbidden_host_paths: list[str],
         source_digest: str,
-        install_timeout_sec: int = 900,
+        runtime_volume_name: str,
+        runtime_digest: str,
+        runtime_manifest_digest: str,
+        runtime_lock_digest: str,
+        runtime_python_version: str,
+        bootstrap_timeout_sec: int = 900,
         turn_timeout_sec: float,
         **kwargs,
     ) -> None:
@@ -57,13 +64,17 @@ class AkashicHarborAgent(BaseAgent):
         self._source_root = Path(source_root).resolve()
         self._source_bundle = Path(source_bundle).resolve()
         self._source_head = source_head
-        self._uv_binary = Path(uv_binary).resolve()
         self._allowed_bind_root = Path(allowed_bind_root).resolve()
         self._forbidden_host_paths = [
             Path(path).resolve() for path in forbidden_host_paths
         ]
         self._source_digest = source_digest
-        self._install_timeout_sec = install_timeout_sec
+        self._runtime_volume_name = runtime_volume_name
+        self._runtime_digest = runtime_digest
+        self._runtime_manifest_digest = runtime_manifest_digest
+        self._runtime_lock_digest = runtime_lock_digest
+        self._runtime_python_version = runtime_python_version
+        self._bootstrap_timeout_sec = bootstrap_timeout_sec
         if turn_timeout_sec <= 0:
             raise ValueError("turn_timeout_sec 必须大于 0")
         self._turn_timeout_sec = turn_timeout_sec
@@ -71,10 +82,34 @@ class AkashicHarborAgent(BaseAgent):
     def version(self) -> str:
         return HARNESS_VERSION
 
-    async def setup(self, environment: BaseEnvironment) -> None:
-        """复制只读 harness，安装独立 Python runtime，并证明容器隔离。"""
+    def _runtime_check_command(self) -> str:
+        """生成只读取固定 runtime manifest 和 lock 的容器内校验命令。"""
 
-        # 1. 只向当前 Harbor task 容器复制源码与 uv，不建立主机源码挂载。
+        expected = {
+            "volume_name": self._runtime_volume_name,
+            "runtime_digest": self._runtime_digest,
+            "manifest_digest": self._runtime_manifest_digest,
+            "lock_digest": self._runtime_lock_digest,
+            "python_version": self._runtime_python_version,
+        }
+        code = (
+            "import hashlib,json,platform,pathlib;"
+            f"root=pathlib.Path({RUNTIME_MOUNT_PATH!r});"
+            "manifest=json.loads((root/'manifest.json').read_text());"
+            f"expected=json.loads({json.dumps(json.dumps(expected))});"
+            "assert manifest['volume_name']==expected['volume_name'];"
+            "assert manifest['runtime_digest']==expected['runtime_digest'];"
+            "assert manifest['manifest_digest']==expected['manifest_digest'];"
+            "lock=hashlib.sha256((root/'resolved.lock').read_bytes()).hexdigest();"
+            "assert 'sha256:'+lock==expected['lock_digest'];"
+            "assert platform.python_version()==expected['python_version']"
+        )
+        return f"{RUNTIME_VENV_PATH}/bin/python -c {shlex.quote(code)}"
+
+    async def setup(self, environment: BaseEnvironment) -> None:
+        """复制只读源码，验证共享 runtime，并证明容器隔离。"""
+
+        # 1. 只向当前 Harbor task 容器复制源码，不建立主机源码挂载。
         prepare = await environment.exec(
             command=f"mkdir -p {_SOURCE_ROOT} {_AGENT_LOGS}",
             user="root",
@@ -85,9 +120,40 @@ class AkashicHarborAgent(BaseAgent):
             self._source_bundle,
             f"{_RUNTIME_ROOT}/source.bundle",
         )
-        await environment.upload_file(self._uv_binary, f"{_RUNTIME_ROOT}/uv")
 
-        # 2. 补齐官方 agent setup 所需基础设施，并恢复真实 Git 历史。
+        # 2. 模型和网络安装前，拒绝错误或可写的共享 volume。
+        project = compose_project_name(environment.session_id)
+        containers = inspect_compose_project(project)
+        report = validate_isolation(
+            containers,
+            project_name=project,
+            allowed_bind_root=self._allowed_bind_root,
+            forbidden_host_paths=self._forbidden_host_paths,
+            allowed_volume_mounts=[
+                (self._runtime_volume_name, RUNTIME_MOUNT_PATH)
+            ],
+        )
+        checked_runtime = await environment.exec(
+            command=self._runtime_check_command(),
+            user="root",
+        )
+        _require_success(
+            "校验 Akasic runtime volume",
+            checked_runtime.return_code,
+            (checked_runtime.stdout or "") + (checked_runtime.stderr or ""),
+        )
+        report["source_digest"] = self._source_digest
+        report["runtime_volume"] = {
+            "name": self._runtime_volume_name,
+            "mount_path": RUNTIME_MOUNT_PATH,
+            "runtime_digest": self._runtime_digest,
+            "manifest_digest": self._runtime_manifest_digest,
+            "resolved_lock_digest": self._runtime_lock_digest,
+            "python_version": self._runtime_python_version,
+        }
+        atomic_json(self.logs_dir / "isolation.preflight.json", report)
+
+        # 3. 补齐 Git 基础设施，并恢复真实历史；Python 依赖不再逐 trial 安装。
         install_command = (
             "if ! command -v git >/dev/null 2>&1; then "
             "if command -v apk >/dev/null 2>&1; then "
@@ -108,34 +174,18 @@ class AkashicHarborAgent(BaseAgent):
             "012e37c8b51df045353972bb551d8e868ab52455^{commit} && "
             f"test \"$(git -C {_SOURCE_ROOT} rev-parse HEAD)\" = "
             f"{shlex.quote(self._source_head)} && "
-            f"chmod 755 {_RUNTIME_ROOT}/uv && "
-            f"{_RUNTIME_ROOT}/uv venv --python 3.13 {_VENV} && "
-            f"{_RUNTIME_ROOT}/uv pip install --python {_VENV}/bin/python "
-            f"-r {_SOURCE_ROOT}/requirements.txt tzdata && "
             f"chmod -R a-w {_SOURCE_ROOT}"
         )
         installed = await environment.exec(
             command=install_command,
-            timeout_sec=self._install_timeout_sec,
+            timeout_sec=self._bootstrap_timeout_sec,
             user="root",
         )
         _require_success(
-            "安装 Akasic runtime",
+            "准备 Akasic source checkout",
             installed.return_code,
             (installed.stdout or "") + (installed.stderr or ""),
         )
-
-        # 3. 模型调用前，从宿主 Docker 控制面拒绝任何线上路径或端口泄漏。
-        project = compose_project_name(environment.session_id)
-        containers = inspect_compose_project(project)
-        report = validate_isolation(
-            containers,
-            project_name=project,
-            allowed_bind_root=self._allowed_bind_root,
-            forbidden_host_paths=self._forbidden_host_paths,
-        )
-        report["source_digest"] = self._source_digest
-        atomic_json(self.logs_dir / "isolation.preflight.json", report)
 
     async def run(
         self,
@@ -152,7 +202,7 @@ class AkashicHarborAgent(BaseAgent):
             f"mkdir -p {_WORKSPACE} && cd /app || exit $?; "
             f"env PYTHONPATH={_SOURCE_ROOT}:{_SOURCE_ROOT}/sdk/python/src "
             "PYTHONDONTWRITEBYTECODE=1 "
-            f"{_VENV}/bin/python {_SOURCE_ROOT}/main.py gateway "
+            f"{RUNTIME_VENV_PATH}/bin/python {_SOURCE_ROOT}/main.py gateway "
             f"--config {_SOURCE_ROOT}/benchmark/harbor_v4flash/config.toml "
             f"--workspace {_WORKSPACE} "
             f">{_AGENT_LOGS}/runtime.stdout.log "
@@ -171,7 +221,7 @@ class AkashicHarborAgent(BaseAgent):
             [
                 f"cd /app && PYTHONPATH={_SOURCE_ROOT}:{_SOURCE_ROOT}/sdk/python/src",
                 "PYTHONDONTWRITEBYTECODE=1",
-                f"{_VENV}/bin/python",
+                f"{RUNTIME_VENV_PATH}/bin/python",
                 f"{_SOURCE_ROOT}/benchmark/harbor_v4flash/runtime_driver.py",
                 "--endpoint",
                 shlex.quote(_ENDPOINT),
