@@ -12,7 +12,7 @@
 | 变量 | 当前值 |
 |---|---|
 | Dataset | `terminal-bench/terminal-bench-2-1`，89 tasks |
-| Smoke task | `openssl-selfsigned-cert` |
+| Smoke task | 当前 source-bound Gate 使用 `cancel-async-tasks`；历史 S0–S4 使用 `openssl-selfsigned-cert` |
 | Harbor | `v0.16.1@137c27874df6163309c6c0cb218a56a7b0e00e79` |
 | Model | `deepseek-v4-flash` |
 | Effort | `high` |
@@ -20,8 +20,8 @@
 | Runtime | 完整 Akasic gateway，Akasha enabled |
 | 调用入口 | public Python SDK / control socket |
 | Agent / verifier timeout | `900s / task official value` |
-| Retention | Docker stop，不 delete；artifact 和 workspace 复制留证 |
-| Concurrency | smoke 为 `1`；Gate 打开后硬上限 `3` |
+| Retention | 核心 artifact 留证；完成诊断后删除可重复创建的 container/network，明确需要运行时取证时例外 |
+| Concurrency | smoke 为 `1`；Gate 打开后全局硬上限 `6` |
 
 ## Official Harbor infra 对账
 
@@ -32,7 +32,7 @@ verifier 和 stop。自定义 agent 只补 Akasic runtime 自身安装与 SDK �
 |---|---|---|
 | Host control | Docker Engine、Compose、Harbor pin、dataset artifact、uv binary | 缺失即在建实例前失败 |
 | Image OS | Linux/POSIX shell；setup 阶段可使用 root | Windows 或无 root setup 不进入当前 campaign |
-| Package manager | 缺少 Git 时支持 `apk`、`apt-get` 或 `yum` | 无受支持 manager 时 agent setup 失败 |
+| Git / CA | 内容寻址 Docker volume，只读挂载；trial 内不再运行 `apk`、`apt-get` 或 `yum` | cache、manifest、版本或挂载权限不匹配时 setup 失败 |
 | Runtime fetch | DNS、HTTPS、CA；可访问 Python/PyPI、DeepSeek、Dashscope | 不静默使用宿主依赖或假数据 |
 | Filesystem | `/app` 为 task 工作区；`/tmp` 和 `/logs` 可写 | source 复制入容器后设为只读；不 bind 宿主源码 |
 | Git history | source bundle 必须包含固定 migration baseline 与 candidate HEAD | 宿主和容器内分别用 Git 校验 |
@@ -507,7 +507,7 @@ cache miss、manifest/lock 不匹配、额外 volume 或 `RW=true` 都 fail-loud
 
 ## 全量诊断遍历检查点
 
-更新时间：2026-07-30 22:12（Asia/Shanghai）
+更新时间：2026-07-30 23:13（Asia/Shanghai）
 
 这轮是混合 treatment 下的诊断遍历，用来发现 Akashic Agent 与 harness 的通用问题，
 不是最终分数。每个 task 使用独立 Docker environment 和 `/app` workspace；维护者
@@ -529,12 +529,12 @@ reward、trace/turn-result/manifest 已封存、source 与 online 隔离检查�
 | 指标 | 数量 |
 |---|---:|
 | Dataset 总数 | 89 |
-| 已触达 | 47 |
-| 有效结果 | 37 |
-| 有效通过 | 25 |
-| 有效失败 | 12 |
-| 暂不计分 | 10 |
-| 尚未触达 | 42 |
+| 已触达 | 55 |
+| 有效结果 | 44 |
+| 有效通过 | 28 |
+| 有效失败 | 16 |
+| 暂不计分 | 11 |
+| 尚未触达 | 34 |
 
 `filter-js-from-html` 的首次 attempt 因 verifier 下载 `uv` 断流而无效；重跑
 `akasic-bench-v4flash-smoke-filter-js-from-html-20260730-124859-743829`
@@ -577,7 +577,7 @@ reward、trace/turn-result/manifest 已封存、source 与 online 隔离检查�
 | `financial-document-processor` | 有效 | 1 | 通过；停止 | `...123141-258087` |
 | `fix-code-vulnerability` | 有效 | 1 | 通过；停止 | `...042053-683463` |
 | `fix-git` | 有效 | 0 | Agent：冲突后停在 `UU` 并请求用户介入 | `...123142-146878` |
-| `fix-ocaml-gc` | 重跑中 | — | 前次为 `provider_connection_error`；当前已进入 verifier | `...131750-790941` |
+| `fix-ocaml-gc` | 暂不计分 | — | Agent 完成；官方 verifier 在 3600s 超时 | `...131750-790941` |
 | `gcode-to-text` | 有效 | 0 | 模型：读取 metadata shortcut，未从几何恢复文字 | `...123734-863702` |
 | `git-leak-recovery` | 有效 | 1 | 通过；停止 | `...123735-799649` |
 | `git-multibranch` | 有效 | 1 | 通过；停止 | `...124814-185022` |
@@ -588,10 +588,18 @@ reward、trace/turn-result/manifest 已封存、source 与 online 隔离检查�
 | `kv-store-grpc` | 有效 | 1 | 网络恢复后重跑通过；停止 | `...131753-510273` |
 | `large-scale-text-editing` | 有效 | 1 | 网络恢复后重跑通过；停止 | `...132920-184342` |
 | `largest-eigenval` | 暂不计分 | — | Docker Hub TLS EOF，镜像未拉取且未创建容器 | `...130550-692405` |
-| `llm-inference-batching-scheduler` | 运行中 | — | 首次 discovery；独立 container | `...140807-464965` |
-| `log-summary-date-ranges` | 运行中 | — | 首次 discovery；独立 container | `...140808-885933` |
-| `mailman` | 运行中 | — | 首次 discovery；独立 container | `...140810-558360` |
-| `make-doom-for-mips` | 准备中 | — | 首次 discovery；正在拉取/启动 task image | `...141114-239624` |
+| `llm-inference-batching-scheduler` | 有效 | 0 | 待读 trace 归因；不先归到模型或 Agent | `...140807-464965` |
+| `log-summary-date-ranges` | 有效 | 1 | 通过；停止 | `...140808-885933` |
+| `mailman` | 有效 | 1 | 通过；停止 | `...140810-558360` |
+| `make-doom-for-mips` | 暂不计分 | — | 905s task deadline；未进入有效 verifier | `...141114-239624` |
+| `make-mips-interpreter` | 有效 | 0 | 待读 trace 归因；不先归到模型或 Agent | `...143013-416980` |
+| `mcmc-sampling-stan` | 暂不计分 | — | 旧路径在 task image manifest 请求处 Docker Hub EOF | `...141552-139415` |
+| `merge-diff-arc-agi-task` | 有效 | 1 | 通过；停止 | `...141703-042043` |
+| `model-extraction-relu-logits` | 有效 | 1 | 通过；停止 | `...143015-324716` |
+| `modernize-scientific-stack` | 暂不计分 | — | Agent 完成；官方 verifier 在 600s 超时 | `...143016-641648` |
+| `mteb-leaderboard` | 暂不计分 | — | 旧路径并发拉取大 image，environment start 在 600s 超时 | `...143017-409280` |
+| `mteb-retrieve` | 有效 | 0 | 待读 trace 归因；不先归到模型或 Agent | `...143018-042684` |
+| `multi-source-data-merger` | 暂不计分 | — | 旧路径 environment start 在 600s 超时 | `...143020-079675` |
 | `openssl-selfsigned-cert` | 有效 | 0 | Agent：输出日期格式违反原始合同仍宣告完成 | `...035855` |
 | `regex-log` | 有效 | 1 | 通过；停止 | `...115050-533926` |
 
@@ -700,3 +708,49 @@ public change-impact Gate 和远端 `contract`/`locked-runtime` checks 通过；
 `log-summary-date-ranges`、`mailman` 和 `make-doom-for-mips`；`fix-ocaml-gc` 仍在前一
 官方 verifier。调度只按全局 active container 数补槽，不让多个 controller 各自的
 局部 semaphore 叠加越过 6。
+
+### 23:13 task image / Git 基础设施复用
+
+旧六槽路径在 trial 内各自承担 task image 拉取和 Git/CA 安装，真实出现两个
+`EnvironmentStartTimeoutError`；`modernize-scientific-stack` 另在官方 verifier
+阶段超时。该批只有三个有效结果：
+
+- `model-extraction-relu-logits=1`；
+- `make-mips-interpreter=0`；
+- `mteb-retrieve=0`。
+
+H12 treatment 不修改 task、verifier、instruction、模型或 Agent 策略：
+
+1. campaign 创建 trial 前按唯一 image reference 预拉取，registry 并发最多为 2；
+2. 本地完整 image 直接复用，trial compose 固定不可变 image ID 并设置
+   `pull_policy=never`；
+3. Git/CA 一次安装进内容寻址 Docker volume，记录 builder、包版本、内容摘要和
+   manifest digest，之后只读挂载；
+4. Git cache 再次执行 build 时直接命中本地校验结果，不重新运行 apt；
+5. setup 仍从固定 source bundle 恢复真实历史，所有 Git 操作保持 fail-loud。
+
+Git volume：
+
+`akasic-bench-git-v1-e4706df27562c97921ac2a6c`
+
+真实兼容性探针在 Debian 11/12/13 和 Ubuntu 24.04 的官方 task image 中完成
+`git init + bundle fetch + rev-parse`。`cancel-async-tasks` source-bound smoke：
+
+- Trial：`akasic-bench-v4flash-smoke-cancel-async-tasks-20260730-150438-090296`；
+- reward `1`；
+- environment setup `0.892s`，Agent setup `1.544s`；
+- task image `cache_hit=true`、`pull_attempts=0`；
+- runtime/Git 两个 volume 都是 `RW=false`；
+- setup artifact 中没有 `apt-get`、`apk add` 或 `yum install`；
+- source unchanged、online PID unchanged、container/network 在 artifact seal 后删除。
+
+实现为 stacked draft PR `#259`（commit `3ac8634d`）。35 个 targeted tests 通过，
+Pyright 为 0 errors；相邻 base public Gate 通过：
+`docker/debug/reports/change-gate/20260730-230948-607bbb55`，private Gate 为
+`pending_maintainer`。对 `origin/main` 的累计 Gate 因前序 stacked PR 的受保护合同
+变化报 `protected_contract_mixed`，不冒充本提交通过。
+
+运行公开 Gate 后，本地生成的忽略目录仍属于 `upload_dir` 的输入，因此 source digest
+从 smoke 时的 `sha256:6c4d...` 变为 `sha256:2e8a...`。下一批六题在创建 trial 前被
+source-bound Gate 正确拒绝；没有制造无效 container。必须先对新摘要重跑单题 smoke，
+再打开六槽，不手工绕过 Gate。
