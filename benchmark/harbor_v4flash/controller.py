@@ -389,9 +389,12 @@ async def run_campaign(
     # 1. 只有已完成 smoke 能打开并发，且整个 campaign 再次冻结源码和线上 owner。
     validate_campaign_request(task_dirs, args.max_concurrent)
     runs_root = args.runs_dir.resolve()
-    gate = find_open_concurrency_gate(runs_root)
     source_root = args.source_root.resolve()
     before_source = source_tree_digest(source_root)
+    gate = find_open_concurrency_gate(
+        runs_root,
+        expected_source_digest=before_source,
+    )
     before_online = online_process_snapshot()
     campaign_id = (
         f"{BENCHMARK_PREFIX}campaign-"

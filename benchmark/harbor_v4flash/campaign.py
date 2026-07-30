@@ -35,8 +35,12 @@ def validate_campaign_request(task_dirs: list[Path], max_concurrent: int) -> Non
         raise FileNotFoundError(f"task 目录不存在：{missing}")
 
 
-def find_open_concurrency_gate(runs_root: Path) -> dict[str, Any]:
-    """读取一个已完成 smoke 的并发授权证据。"""
+def find_open_concurrency_gate(
+    runs_root: Path,
+    *,
+    expected_source_digest: str,
+) -> dict[str, Any]:
+    """读取当前源码已完成 smoke 的并发授权证据。"""
 
     candidates: list[tuple[float, Path, dict[str, Any]]] = []
     for path in runs_root.glob("akasic-bench-v4flash-*/campaign-manifest.json"):
@@ -44,6 +48,7 @@ def find_open_concurrency_gate(runs_root: Path) -> dict[str, Any]:
         gate = payload.get("concurrency_gate")
         online = payload.get("online")
         docker = payload.get("docker")
+        source = payload.get("source")
         if (
             payload.get("state") == "completed"
             and isinstance(gate, dict)
@@ -53,10 +58,15 @@ def find_open_concurrency_gate(runs_root: Path) -> dict[str, Any]:
             and online.get("status") == "passed"
             and isinstance(docker, dict)
             and docker.get("all_stopped") is True
+            and isinstance(source, dict)
+            and source.get("digest_after") == expected_source_digest
         ):
             candidates.append((path.stat().st_mtime, path, payload))
     if not candidates:
-        raise CampaignGateError("未找到完成且隔离验证通过的 concurrency=3 smoke Gate")
+        raise CampaignGateError(
+            "未找到当前源码完成且隔离验证通过的 concurrency=3 smoke Gate："
+            f"{expected_source_digest}"
+        )
     _, path, payload = max(candidates, key=lambda item: item[0])
     return {
         "manifest": str(path),

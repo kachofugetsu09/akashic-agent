@@ -48,7 +48,10 @@ def test_open_gate_requires_completed_stopped_isolated_smoke(
         encoding="utf-8",
     )
 
-    gate = find_open_concurrency_gate(tmp_path)
+    gate = find_open_concurrency_gate(
+        tmp_path,
+        expected_source_digest="sha256:source",
+    )
 
     assert gate["manifest"] == str(manifest)
     assert gate["source_digest"] == "sha256:source"
@@ -56,7 +59,34 @@ def test_open_gate_requires_completed_stopped_isolated_smoke(
 
 def test_open_gate_fails_closed_without_smoke(tmp_path: Path) -> None:
     with pytest.raises(CampaignGateError):
-        find_open_concurrency_gate(tmp_path)
+        find_open_concurrency_gate(
+            tmp_path,
+            expected_source_digest="sha256:source",
+        )
+
+
+def test_open_gate_rejects_smoke_from_different_source(tmp_path: Path) -> None:
+    trial = tmp_path / "akasic-bench-v4flash-smoke-stale"
+    trial.mkdir()
+    (trial / "campaign-manifest.json").write_text(
+        json.dumps(
+            {
+                "state": "completed",
+                "trial_name": "smoke-stale",
+                "source": {"digest_after": "sha256:old-source"},
+                "online": {"status": "passed"},
+                "docker": {"all_stopped": True},
+                "concurrency_gate": {"opened": True, "max_concurrent": 3},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CampaignGateError, match="sha256:new-source"):
+        find_open_concurrency_gate(
+            tmp_path,
+            expected_source_digest="sha256:new-source",
+        )
 
 
 def test_task_slug_is_bounded_and_docker_safe(tmp_path: Path) -> None:
