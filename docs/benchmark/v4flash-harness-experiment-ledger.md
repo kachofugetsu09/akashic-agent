@@ -507,7 +507,7 @@ cache miss、manifest/lock 不匹配、额外 volume 或 `RW=true` 都 fail-loud
 
 ## 全量诊断遍历检查点
 
-更新时间：2026-07-30 21:06（Asia/Shanghai）
+更新时间：2026-07-30 21:38（Asia/Shanghai）
 
 这轮是混合 treatment 下的诊断遍历，用来发现 Akashic Agent 与 harness 的通用问题，
 不是最终分数。每个 task 使用独立 Docker environment 和 `/app` workspace；最多同时
@@ -528,12 +528,12 @@ reward、trace/turn-result/manifest 已封存、source 与 online 隔离检查�
 | 指标 | 数量 |
 |---|---:|
 | Dataset 总数 | 89 |
-| 已触达 | 41 |
-| 有效结果 | 34 |
-| 有效通过 | 23 |
+| 已触达 | 43 |
+| 有效结果 | 35 |
+| 有效通过 | 24 |
 | 有效失败 | 11 |
-| 暂不计分 | 7 |
-| 尚未触达 | 48 |
+| 暂不计分 | 8 |
+| 尚未触达 | 46 |
 
 `filter-js-from-html` 的首次 attempt 因 verifier 下载 `uv` 断流而无效；重跑
 `akasic-bench-v4flash-smoke-filter-js-from-html-20260730-124859-743829`
@@ -576,15 +576,17 @@ reward、trace/turn-result/manifest 已封存、source 与 online 隔离检查�
 | `financial-document-processor` | 有效 | 1 | 通过；停止 | `...123141-258087` |
 | `fix-code-vulnerability` | 有效 | 1 | 通过；停止 | `...042053-683463` |
 | `fix-git` | 有效 | 0 | Agent：冲突后停在 `UU` 并请求用户介入 | `...123142-146878` |
-| `fix-ocaml-gc` | 暂不计分 | — | `provider_connection_error`；应换新实例重跑 | `...123732-700015` |
+| `fix-ocaml-gc` | 重跑中 | — | 前次为 `provider_connection_error`；当前已进入 verifier | `...131750-790941` |
 | `gcode-to-text` | 有效 | 0 | 模型：读取 metadata shortcut，未从几何恢复文字 | `...123734-863702` |
 | `git-leak-recovery` | 有效 | 1 | 通过；停止 | `...123735-799649` |
 | `git-multibranch` | 有效 | 1 | 通过；停止 | `...124814-185022` |
 | `gpt2-codegolf` | 暂不计分 | — | 905s timeout；反复重写不完整实现，未进入 verifier | `...124815-372510` |
 | `headless-terminal` | 有效 | 1 | 通过；停止 | `...125343-755608` |
 | `hf-model-inference` | 有效 | 1 | 通过；停止 | `...125344-124726` |
-| `install-windows-3.11` | 暂不计分 | — | verifier 下载 `uv` 时 TLS EOF | `...125759-813687` |
-| `kv-store-grpc` | 暂不计分 | — | Docker Hub TLS EOF，镜像未拉取且未创建容器 | `...130208-758392` |
+| `install-windows-3.11` | 重跑中 | — | 前次 verifier TLS EOF；当前已进入 verifier | `...131751-264234` |
+| `kv-store-grpc` | 有效 | 1 | 网络恢复后重跑通过；停止 | `...131753-510273` |
+| `large-scale-text-editing` | 重跑中 | — | 前次 image pull TLS EOF；当前 Agent turn 运行中 | `...132920-184342` |
+| `largest-eigenval` | 暂不计分 | — | Docker Hub TLS EOF，镜像未拉取且未创建容器 | `...130550-692405` |
 | `openssl-selfsigned-cert` | 有效 | 0 | Agent：输出日期格式违反原始合同仍宣告完成 | `...035855` |
 | `regex-log` | 有效 | 1 | 通过；停止 | `...115050-533926` |
 
@@ -650,3 +652,24 @@ Gate。它会改变 Agent 在非交互任务中的结束语义，不是纯 infra
 `gpt2.c`、`filter.py`、trace、verifier 输出、manifest 和 digest 均已留存，task
 images 与不可变 runtime volume 保留。线上 gateway PID、start ticks 和命令行在
 各 manifest 的前后快照中一致。
+
+### 21:38 网络恢复与续跑
+
+维护者切换节点后，宿主探针恢复为 Docker Hub `401`、GitHub `200`、PyPI `200`、
+DeepSeek `401`。未同步的 ledger commit 随后成功推送，线上 gateway PID 和启动时间
+未变化。
+
+先重跑三个纯 infra 无效题：
+
+- `kv-store-grpc`：7/7 verifier tests 通过，reward `1`；
+- `fix-ocaml-gc`：Agent 完成后进入官方 verifier，仍在下载 oracle repo；
+- `install-windows-3.11`：Agent 完成后进入官方 verifier，正在运行 `uvx` 测试。
+
+`kv-store-grpc` 释放的槽位已由 `large-scale-text-editing` 接续，当前全局仍为 3 个
+独立 task container。controller 使用受管长连接 session；一次 `nohup` 启动被宿主
+回收并留下两个 `prepared` container，已在确认 Agent 未启动后删除对应孤儿 container
+和空 network。该事件不计 task attempt，也不改变 harness 源码。
+
+execution-budget treatment 的 `regex-log` probe 同样发生在旧网络故障窗口：原有效
+control 仍为 reward `1`，本次 verifier 因无法下载 `uvx` 得到的 `0` 不进入消融比较，
+必须在网络恢复后重新跑 pair。
