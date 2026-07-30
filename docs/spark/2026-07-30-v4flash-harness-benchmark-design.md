@@ -177,8 +177,8 @@ Akasha 当前通过 memory plugin contract 接入。本文的“无插件”准�
 - candidate source 通过 Git bundle 进入容器，保留 migration baseline 和 dirty
   overlay；不 bind 宿主源码。
 - verifier 由 Harbor lifecycle owner 在 agent terminal 后单独执行。
-- smoke 通过后并发硬上限为 3；首个五题 diagnostic campaign 验证了 slot 释放后才
-  启动下一实例。
+- smoke 通过后并发硬上限原为 3；资源画像确认宿主仍有余量且维护者批准后，上限提高
+  到 6。semaphore 继续保证 slot 释放后才启动下一实例。
 - DeepSeek V4 Flash High 的真实 wire trace 包含 `reasoning_content` 和结构化 tool
   calls。H4 证明旧的 8,192 显式输出上限会截断该 slice 的 `regex-log`，当前
   benchmark 改为 provider-default output policy。

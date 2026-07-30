@@ -70,7 +70,7 @@ candidate、不同 attempt 最好结果拼成的总分。
 │ Root Coordinator / LLM Gate                      │
 │ 冻结协议、调度任务、审核归因、批准实验、决定停止 │
 └───────────────┬──────────────────────────────────┘
-                │ 最多并发 3
+                │ 最多并发 6
        ┌────────┼────────┐
        ▼        ▼        ▼
 ┌──────────┐ ┌──────────┐ ┌──────────┐
@@ -113,7 +113,7 @@ candidate、不同 attempt 最好结果拼成的总分。
 Root 是唯一实验调度者和最终归因 owner，职责包括：
 
 - 冻结每个 attempt 的 candidate、配置、环境和 task identity。
-- 控制三个 Docker slot。
+- 控制六个 Docker slot。
 - 指派只读 trace 分析。
 - 核对分析 agent 的证据、反例和代码 owner。
 - 判断问题分类、实验是否可证伪、是否继续尝试。
@@ -232,7 +232,7 @@ Root 是唯一实验调度者和最终归因 owner，职责包括：
 
 ## 8. 调度策略
 
-系统维护两条共享三个 Docker slot 的队列：
+系统维护两条共享六个 Docker slot 的队列：
 
 ```text
 Discovery Queue                 Validation Queue
@@ -240,13 +240,13 @@ Discovery Queue                 Validation Queue
         │                               │
         └──────────┬────────────────────┘
                    ▼
-           Scheduler，max=3
+           Scheduler，max=6
 ```
 
 默认调度：
 
-- `2 discovery + 1 validation`。
-- 没有成熟假设时，三个 slot 都扫描未见 case。
+- `5 discovery + 1 validation`。
+- 没有成熟假设时，六个 slot 都扫描未见 case。
 - 出现会让大量 attempt 无效的基础设施问题时，暂停新任务并先恢复有效性。
 - trace 分析不占 Docker slot。
 - 已失败 case 的重复尝试不能长期挤占尚未扫描 case，除非它阻塞所有任务。

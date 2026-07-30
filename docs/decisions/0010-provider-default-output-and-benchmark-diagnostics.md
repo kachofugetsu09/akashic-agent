@@ -4,7 +4,7 @@
 - 日期：2026-07-30
 - 关联条款：RUN-006、TST-009
 - supersedes：无
-- superseded by：无
+- superseded by：[0011](0011-benchmark-concurrency-six.md)（仅并发上限）
 
 ## 背景
 

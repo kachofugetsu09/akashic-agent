@@ -11,13 +11,21 @@ from benchmark.harbor_v4flash.campaign import (
 )
 
 
-def test_campaign_rejects_more_than_three_concurrent_tasks(tmp_path: Path) -> None:
+def test_campaign_accepts_six_concurrent_tasks(tmp_path: Path) -> None:
     tasks = [tmp_path / "one", tmp_path / "two"]
     for task in tasks:
         task.mkdir()
 
-    with pytest.raises(ValueError, match="1 到 3"):
-        validate_campaign_request(tasks, 4)
+    validate_campaign_request(tasks, 6)
+
+
+def test_campaign_rejects_more_than_six_concurrent_tasks(tmp_path: Path) -> None:
+    tasks = [tmp_path / "one", tmp_path / "two"]
+    for task in tasks:
+        task.mkdir()
+
+    with pytest.raises(ValueError, match="1 到 6"):
+        validate_campaign_request(tasks, 7)
 
 
 def test_campaign_rejects_duplicate_task_instances(tmp_path: Path) -> None:
@@ -42,7 +50,7 @@ def test_open_gate_requires_completed_stopped_isolated_smoke(
                 "source": {"digest_after": "sha256:source"},
                 "online": {"status": "passed"},
                 "docker": {"all_stopped": True},
-                "concurrency_gate": {"opened": True, "max_concurrent": 3},
+                "concurrency_gate": {"opened": True, "max_concurrent": 6},
             }
         ),
         encoding="utf-8",
@@ -76,7 +84,7 @@ def test_open_gate_rejects_smoke_from_different_source(tmp_path: Path) -> None:
                 "source": {"digest_after": "sha256:old-source"},
                 "online": {"status": "passed"},
                 "docker": {"all_stopped": True},
-                "concurrency_gate": {"opened": True, "max_concurrent": 3},
+                "concurrency_gate": {"opened": True, "max_concurrent": 6},
             }
         ),
         encoding="utf-8",
@@ -86,6 +94,32 @@ def test_open_gate_rejects_smoke_from_different_source(tmp_path: Path) -> None:
         find_open_concurrency_gate(
             tmp_path,
             expected_source_digest="sha256:new-source",
+        )
+
+
+def test_open_gate_rejects_old_three_concurrent_authorization(
+    tmp_path: Path,
+) -> None:
+    trial = tmp_path / "akasic-bench-v4flash-smoke-old-limit"
+    trial.mkdir()
+    (trial / "campaign-manifest.json").write_text(
+        json.dumps(
+            {
+                "state": "completed",
+                "trial_name": "smoke-old-limit",
+                "source": {"digest_after": "sha256:source"},
+                "online": {"status": "passed"},
+                "docker": {"all_stopped": True},
+                "concurrency_gate": {"opened": True, "max_concurrent": 3},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CampaignGateError, match="concurrency=6"):
+        find_open_concurrency_gate(
+            tmp_path,
+            expected_source_digest="sha256:source",
         )
 
 

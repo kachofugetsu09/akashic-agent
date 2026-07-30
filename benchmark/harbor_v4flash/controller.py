@@ -28,6 +28,7 @@ from harbor.trial.trial import Trial
 from benchmark.harbor_v4flash import HARNESS_VERSION
 from benchmark.harbor_v4flash.agent import AkashicHarborAgent
 from benchmark.harbor_v4flash.campaign import (
+    MAX_CAMPAIGN_CONCURRENCY,
     find_open_concurrency_gate,
     task_slug,
     validate_campaign_request,
@@ -364,7 +365,9 @@ async def run_trial(
             ),
         },
         "concurrency_gate": {
-            "max_concurrent": 3 if trial_completed else 1,
+            "max_concurrent": (
+                MAX_CAMPAIGN_CONCURRENCY if trial_completed else 1
+            ),
             "opened": trial_completed,
         },
     }
@@ -405,7 +408,7 @@ async def run_campaign(
     args: argparse.Namespace,
     task_dirs: list[Path],
 ) -> int:
-    """按硬上限三并发运行 diagnostic tasks，并冻结 campaign 汇总。"""
+    """按硬上限六并发运行 diagnostic tasks，并冻结 campaign 汇总。"""
 
     # 1. 只有已完成 smoke 能打开并发，且整个 campaign 再次冻结源码和线上 owner。
     validate_campaign_request(task_dirs, args.max_concurrent)
