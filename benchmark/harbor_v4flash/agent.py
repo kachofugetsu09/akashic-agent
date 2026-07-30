@@ -5,7 +5,7 @@ import shlex
 from pathlib import Path
 
 from harbor.agents.base import BaseAgent
-from harbor.environments.base import BaseEnvironment
+from harbor.environments.base import BaseEnvironment, ExecResult
 from harbor.models.agent.context import AgentContext
 
 from benchmark.harbor_v4flash import HARNESS_VERSION
@@ -32,6 +32,96 @@ _AGENT_LOGS = "/logs/agent"
 def _require_success(label: str, return_code: int, output: str) -> None:
     if return_code != 0:
         raise RuntimeError(f"{label} 失败，exit={return_code}\n{output[-4000:]}")
+
+
+def _write_driver_evidence(
+    logs_dir: Path,
+    completed: ExecResult | None,
+    error: BaseException | None,
+) -> None:
+    (logs_dir / "driver.stdout.log").write_text(
+        "" if completed is None else completed.stdout or "",
+        encoding="utf-8",
+    )
+    (logs_dir / "driver.stderr.log").write_text(
+        "" if completed is None else completed.stderr or "",
+        encoding="utf-8",
+    )
+    if error is not None:
+        (logs_dir / "driver.exception.log").write_text(
+            f"{type(error).__name__}: {error}\n",
+            encoding="utf-8",
+        )
+
+
+def _write_shutdown_evidence(
+    logs_dir: Path,
+    completed: ExecResult | None,
+    error: BaseException | None,
+) -> None:
+    if completed is not None:
+        output = (completed.stdout or "") + (completed.stderr or "")
+        if completed.return_code != 0:
+            output = f"exit={completed.return_code}\n{output}"
+    else:
+        assert error is not None
+        output = f"{type(error).__name__}: {error}\n"
+    (logs_dir / "runtime.shutdown.log").write_text(output, encoding="utf-8")
+
+
+async def _run_driver_and_shutdown(
+    environment: BaseEnvironment,
+    *,
+    driver_command: str,
+    driver_timeout_sec: float,
+    shutdown_command: str,
+    logs_dir: Path,
+) -> ExecResult:
+    """运行 driver 并始终尝试关闭 gateway，同时保留主失败。"""
+
+    # 1. 捕获 driver 的成功结果或原始异常，不提前跳过 cleanup。
+    driver_result: ExecResult | None = None
+    driver_error: BaseException | None = None
+    try:
+        driver_result = await environment.exec(
+            command=driver_command,
+            timeout_sec=driver_timeout_sec,  # pyright: ignore[reportArgumentType]
+        )
+        _require_success(
+            "执行 SDK turn",
+            driver_result.return_code,
+            (driver_result.stdout or "") + (driver_result.stderr or ""),
+        )
+    except BaseException as error:
+        driver_error = error
+
+    # 2. driver 成功、失败、超时或取消后都尝试关闭 gateway。
+    shutdown_result: ExecResult | None = None
+    shutdown_error: BaseException | None = None
+    try:
+        shutdown_result = await environment.exec(
+            command=shutdown_command,
+            timeout_sec=70,
+        )
+        _require_success(
+            "收束 Akasic gateway",
+            shutdown_result.return_code,
+            (shutdown_result.stdout or "") + (shutdown_result.stderr or ""),
+        )
+    except BaseException as error:
+        shutdown_error = error
+
+    # 3. 先写全两个阶段的证据，再按主失败优先级传播。
+    _write_driver_evidence(logs_dir, driver_result, driver_error)
+    _write_shutdown_evidence(logs_dir, shutdown_result, shutdown_error)
+    if driver_error is not None:
+        if shutdown_error is not None:
+            driver_error.add_note(f"gateway cleanup also failed: {shutdown_error}")
+        raise driver_error
+    if shutdown_error is not None:
+        raise shutdown_error
+    assert driver_result is not None
+    return driver_result
 
 
 class AkashicHarborAgent(BaseAgent):
@@ -277,12 +367,11 @@ class AkashicHarborAgent(BaseAgent):
                 str(self._turn_timeout_sec),
             ]
         )
-        completed = await environment.exec(
-            command=driver_command,
-            timeout_sec=self._turn_timeout_sec + 5,
-        )
-        shutdown = await environment.exec(
-            command=(
+        _ = await _run_driver_and_shutdown(
+            environment,
+            driver_command=driver_command,
+            driver_timeout_sec=self._turn_timeout_sec + 5,
+            shutdown_command=(
                 f"pid=$(cat {_AGENT_LOGS}/runtime.pid) && "
                 "if ! kill -0 \"$pid\" 2>/dev/null; then exit 0; fi; "
                 "kill -TERM \"$pid\" && "
@@ -292,29 +381,7 @@ class AkashicHarborAgent(BaseAgent):
                 "done; "
                 "exit 1"
             ),
-            timeout_sec=70,
-        )
-        (self.logs_dir / "driver.stdout.log").write_text(
-            completed.stdout or "",
-            encoding="utf-8",
-        )
-        (self.logs_dir / "driver.stderr.log").write_text(
-            completed.stderr or "",
-            encoding="utf-8",
-        )
-        (self.logs_dir / "runtime.shutdown.log").write_text(
-            (shutdown.stdout or "") + (shutdown.stderr or ""),
-            encoding="utf-8",
-        )
-        _require_success(
-            "收束 Akasic gateway",
-            shutdown.return_code,
-            (shutdown.stdout or "") + (shutdown.stderr or ""),
-        )
-        _require_success(
-            "执行 SDK turn",
-            completed.return_code,
-            (completed.stdout or "") + (completed.stderr or ""),
+            logs_dir=self.logs_dir,
         )
 
         # 3. 把可机读终态投影到 Harbor AgentContext。

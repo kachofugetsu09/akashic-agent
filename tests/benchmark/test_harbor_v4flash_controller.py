@@ -1,3 +1,4 @@
+import asyncio
 import os
 import shutil
 import subprocess
@@ -5,14 +6,32 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from harbor.environments.base import ExecResult
 
-from benchmark.harbor_v4flash.agent import _ENDPOINT, _WORKSPACE
+from benchmark.harbor_v4flash.agent import (
+    _ENDPOINT,
+    _WORKSPACE,
+    _run_driver_and_shutdown,
+)
 from benchmark.harbor_v4flash.controller import (
     _credential_templates,
     _inspect_finished_project,
     _task_agent_timeout_sec,
 )
 from benchmark.harbor_v4flash.isolation import IsolationError, create_source_bundle
+
+
+class _ScriptedEnvironment:
+    def __init__(self, *outcomes: ExecResult | BaseException) -> None:
+        self._outcomes = list(outcomes)
+        self.commands: list[str] = []
+
+    async def exec(self, *, command: str, timeout_sec: float) -> ExecResult:
+        self.commands.append(command)
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
 
 def _git(root: Path, *args: str) -> str:
@@ -43,6 +62,118 @@ def test_v4flash_high_uses_provider_output_limit() -> None:
 def test_benchmark_workspace_matches_terminal_task_root() -> None:
     assert _WORKSPACE == "/app"
     assert _ENDPOINT == "/app/akashic.sock"
+
+
+def test_driver_success_keeps_command_order_and_logs(tmp_path: Path) -> None:
+    environment = _ScriptedEnvironment(
+        ExecResult(return_code=0, stdout="driver complete\n"),
+        ExecResult(return_code=0, stdout="shutdown complete\n"),
+    )
+    result = asyncio.run(
+        _run_driver_and_shutdown(
+            environment,  # type: ignore[arg-type]
+            driver_command="driver",
+            driver_timeout_sec=5,
+            shutdown_command="shutdown",
+            logs_dir=tmp_path,
+        )
+    )
+
+    assert result.stdout == "driver complete\n"
+    assert environment.commands == ["driver", "shutdown"]
+    assert (
+        tmp_path / "driver.stdout.log"
+    ).read_text(encoding="utf-8") == "driver complete\n"
+    assert (
+        tmp_path / "runtime.shutdown.log"
+    ).read_text(encoding="utf-8") == "shutdown complete\n"
+    assert not (tmp_path / "driver.exception.log").exists()
+
+
+def test_driver_timeout_still_shuts_down_gateway_and_persists_evidence(
+    tmp_path: Path,
+) -> None:
+    environment = _ScriptedEnvironment(
+        TimeoutError("driver exceeded deadline"),
+        ExecResult(return_code=0, stdout="gateway stopped\n"),
+    )
+
+    with pytest.raises(TimeoutError, match="driver exceeded deadline"):
+        asyncio.run(
+            _run_driver_and_shutdown(
+                environment,  # type: ignore[arg-type]
+                driver_command="driver",
+                driver_timeout_sec=5,
+                shutdown_command="shutdown",
+                logs_dir=tmp_path,
+            )
+        )
+
+    assert environment.commands == ["driver", "shutdown"]
+    assert (tmp_path / "driver.stdout.log").read_text(encoding="utf-8") == ""
+    assert (tmp_path / "driver.stderr.log").read_text(encoding="utf-8") == ""
+    assert (
+        tmp_path / "driver.exception.log"
+    ).read_text(encoding="utf-8") == "TimeoutError: driver exceeded deadline\n"
+    assert (
+        tmp_path / "runtime.shutdown.log"
+    ).read_text(encoding="utf-8") == "gateway stopped\n"
+
+
+def test_driver_cancellation_still_shuts_down_gateway(
+    tmp_path: Path,
+) -> None:
+    environment = _ScriptedEnvironment(
+        asyncio.CancelledError("trial cancelled"),
+        ExecResult(return_code=0),
+    )
+
+    with pytest.raises(asyncio.CancelledError, match="trial cancelled"):
+        asyncio.run(
+            _run_driver_and_shutdown(
+                environment,  # type: ignore[arg-type]
+                driver_command="driver",
+                driver_timeout_sec=5,
+                shutdown_command="shutdown",
+                logs_dir=tmp_path,
+            )
+        )
+
+    assert environment.commands == ["driver", "shutdown"]
+    assert (
+        tmp_path / "driver.exception.log"
+    ).read_text(encoding="utf-8") == "CancelledError: trial cancelled\n"
+    assert (tmp_path / "runtime.shutdown.log").read_text(encoding="utf-8") == ""
+
+
+def test_driver_failure_remains_primary_when_shutdown_also_fails(
+    tmp_path: Path,
+) -> None:
+    environment = _ScriptedEnvironment(
+        ExecResult(return_code=1, stdout="driver failed\n"),
+        ExecResult(return_code=2),
+    )
+
+    with pytest.raises(RuntimeError, match="执行 SDK turn") as caught:
+        asyncio.run(
+            _run_driver_and_shutdown(
+                environment,  # type: ignore[arg-type]
+                driver_command="driver",
+                driver_timeout_sec=5,
+                shutdown_command="shutdown",
+                logs_dir=tmp_path,
+            )
+        )
+
+    assert any(
+        "gateway cleanup also failed" in note for note in caught.value.__notes__
+    )
+    assert (
+        tmp_path / "driver.exception.log"
+    ).read_text(encoding="utf-8").startswith("RuntimeError: 执行 SDK turn")
+    assert (
+        tmp_path / "runtime.shutdown.log"
+    ).read_text(encoding="utf-8") == "exit=2\n"
 
 
 def test_task_agent_timeout_uses_harbor_task_budget(tmp_path: Path) -> None:
