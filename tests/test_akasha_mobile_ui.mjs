@@ -31,11 +31,14 @@ test("Akasha contributes current-turn recall and a mobile Inspector", () => {
 
 test("mobile UI keeps graph out and uses restrained interaction styles", () => {
   assert.doesNotMatch(source, /akasha-graph|graph\.(global|query|rebuild)/);
+  assert.doesNotMatch(source, /\.slice\(/);
   assert.doesNotMatch(styles, /linear-gradient|radial-gradient|backdrop-filter/);
   assert.doesNotMatch(styles, /transition:\s*all|transition-property:\s*all/);
   assert.match(styles, /color-mix\(in oklch/);
   assert.match(styles, /min-height:\s*44px/);
   assert.match(styles, /scale:\s*0\.96/);
+  assert.match(styles, /content-visibility:\s*auto/);
+  assert.match(styles, /contain-intrinsic-block-size:\s*auto 94px/);
 });
 
 test("recall lanes use distinct Material tonal semantics", () => {

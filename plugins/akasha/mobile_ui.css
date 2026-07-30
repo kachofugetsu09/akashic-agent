@@ -181,6 +181,8 @@
   gap: 6px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--akasha-mobile-rule);
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 94px;
 }
 
 .akasha-mobile-memories li:last-child {

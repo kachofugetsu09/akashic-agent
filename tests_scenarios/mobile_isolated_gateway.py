@@ -240,7 +240,7 @@ class IsolatedAkashaMobileUiProvider:
                     "ts": "2026-07-28T00:00:00Z",
                     "score": 0.5,
                 }
-                for _ in range(20)
+                for _ in range(40)
             ]
         )
         result: dict[str, object] = {
@@ -257,8 +257,8 @@ class IsolatedAkashaMobileUiProvider:
             ensure_ascii=False,
             separators=(",", ":"),
         ).encode()
-        if len(encoded) >= 16 * 1024:
-            raise RuntimeError("隔离 Akasha card 超过 16 KiB")
+        if len(encoded) >= 192 * 1024:
+            raise RuntimeError("隔离 Akasha card 超过 192 KiB")
         return result
 
 

@@ -379,7 +379,7 @@ async def test_feedback_markers_change_future_recall_and_replay_identically(
     _close_engine(engine)
 
 
-def test_mobile_recall_card_projection_is_bounded() -> None:
+def test_mobile_recall_card_projection_preserves_bounded_lanes() -> None:
     lane = _mobile_recall_lane(
         [
             {
@@ -389,7 +389,7 @@ def test_mobile_recall_card_projection_is_bounded() -> None:
                 "ts": "2026-07-28T00:00:00Z",
                 "score": 0.5,
             }
-            for _ in range(20)
+            for _ in range(40)
         ]
     )
     card = {
@@ -402,7 +402,7 @@ def test_mobile_recall_card_projection_is_bounded() -> None:
         "tool_right": lane,
     }
 
-    assert len(lane) == 5
+    assert len(lane) == 40
     assert all(len(str(item["user_preview"])) == 103 for item in lane)
     assert all(len(str(item["assistant_preview"])) == 53 for item in lane)
     assert "assistant_text" not in json.dumps(card, ensure_ascii=False)
@@ -414,7 +414,7 @@ def test_mobile_recall_card_projection_is_bounded() -> None:
                 separators=(",", ":"),
             ).encode("utf-8")
         )
-        < 16 * 1024
+        < 192 * 1024
     )
 
 
