@@ -327,6 +327,64 @@ Treatment 只从 `artifacts.digests` 排除 `campaign-manifest.json`。targeted 
 H7 是 benchmark 证据链的功能性修复，不改变 Agent 语义，也不能解释或改善 task
 reward。
 
+## 第三批手工诊断波次
+
+按数据集目录的固定顺序选择三个未跑 case，仍由主调度者手工启动三个独立容器：
+
+| Case | 有效 Trial | Reward | 归因与停止决定 |
+|---|---|---:|---|
+| `build-cython-ext` | `akasic-bench-v4flash-diagnostic-build-cython-ext-20260730-065406-145240` | 0 | verifier 9/11；40 轮上限以未完成进度总结收尾 |
+| `build-pmars` | `akasic-bench-v4flash-diagnostic-build-pmars-20260730-065406-441568` | 1 | verifier 通过；停止 |
+| `build-pov-ray` | `akasic-bench-v4flash-diagnostic-build-pov-ray-20260730-065406-683196` | 1 | verifier 通过；停止 |
+
+三题 lifecycle、source isolation、online invariant、artifact seal 和停止保留均通过。
+该波次的 `2/3` 只描述三个诊断样本，不外推为 baseline。
+
+`build-cython-ext` 的直接失败证据：
+
+1. Agent 已读取 `ccomplexity.pyx`，其中存在 NumPy 2.x 不支持的 `np.int`；
+2. 后续搜索和批量替换却只覆盖 `*.py`；
+3. Agent 没有核对“搜索范围与修改范围”的差集，转去修复 planarity 相关 repo test；
+4. 第 40 轮仍未收束，runtime 生成进度总结；官方 verifier 的
+   `test_ccomplexity` 和一个 repository test 失败。
+
+它与 `break-filter-js-from-html` 共同证明“固定 40 轮可以替代真实完成条件”是可达的，
+但不能单独证明取消上限会修复 Agent 的验收与优先级问题。
+
+## H8 — benchmark 取消固定 iteration 上限
+
+### 假设
+
+> benchmark 专用 `max_iterations=40` 截断了仍在产生有效进展的任务；使用已有
+> `0 = unlimited` 配置语义，同时保留 840/900 秒外层 deadline，可以让同一冻结 case
+> 自主完成。
+
+单变量 treatment 只把 `benchmark/harbor_v4flash/config.toml` 的
+`max_iterations` 从 `40` 改为 `0`。生产默认、正式 profile、模型、prompt、工具、
+task、verifier 和外层 deadline 均不变。当前源码 smoke：
+
+- Trial：`akasic-bench-v4flash-smoke-regex-log-20260730-070217-141758`；
+- 7 requests，reward `1`；
+- source/online isolation、artifact seal 和停止保留全部通过。
+
+`build-cython-ext` treatment：
+
+- Trial：`akasic-bench-v4flash-diagnostic-build-cython-ext-20260730-070526-127111`；
+- 从 40 requests 继续到 46 requests，并自主返回 final response；
+- verifier 从 9/11 改善到 10/11，但 reward 仍为 `0`；
+- 第 40 轮之后完成 planarity 修复和 repo tests，却仍未修改
+  `ccomplexity.pyx` 的 `np.int`；
+- final response 声称所有 Cython extensions 和 18 项 core tests 全部通过，与官方
+  verifier 的直接失败证据冲突。
+
+结论：H8 证明固定上限影响执行轨迹，但否定“取消上限足以解决本题”的强假设。
+`max_iterations=0` 保留为隔离 benchmark 的实验配置；它改变停止、时延和成本语义，
+不能描述成生产 Agent 的无语义鲁棒性修复。该 case 到此停止，不继续靠增加轮数重试。
+
+新的跨 case 候选是假设“Agent 缺少任务要求、搜索范围、修改范围与直接验收证据之间的
+闭环”。后续 treatment 必须是通用、可证伪的行为实验，并包含一个正常 control；
+不得为 Cython 文件扩展名或 hidden verifier 写定向规则。
+
 ## 参考实现对账
 
 - Codex reference commit：`c7a4a7e136d96554e1fc6f66532e6060fd2aaf15`；
