@@ -507,7 +507,7 @@ cache miss、manifest/lock 不匹配、额外 volume 或 `RW=true` 都 fail-loud
 
 ## 全量诊断遍历检查点
 
-更新时间：2026-07-30 21:00（Asia/Shanghai）
+更新时间：2026-07-30 21:06（Asia/Shanghai）
 
 这轮是混合 treatment 下的诊断遍历，用来发现 Akashic Agent 与 harness 的通用问题，
 不是最终分数。每个 task 使用独立 Docker environment 和 `/app` workspace；最多同时
@@ -528,12 +528,12 @@ reward、trace/turn-result/manifest 已封存、source 与 online 隔离检查�
 | 指标 | 数量 |
 |---|---:|
 | Dataset 总数 | 89 |
-| 已触达 | 40 |
+| 已触达 | 41 |
 | 有效结果 | 34 |
 | 有效通过 | 23 |
 | 有效失败 | 11 |
-| 暂不计分 | 6 |
-| 尚未触达 | 49 |
+| 暂不计分 | 7 |
+| 尚未触达 | 48 |
 
 `filter-js-from-html` 的首次 attempt 因 verifier 下载 `uv` 断流而无效；重跑
 `akasic-bench-v4flash-smoke-filter-js-from-html-20260730-124859-743829`
@@ -580,10 +580,11 @@ reward、trace/turn-result/manifest 已封存、source 与 online 隔离检查�
 | `gcode-to-text` | 有效 | 0 | 模型：读取 metadata shortcut，未从几何恢复文字 | `...123734-863702` |
 | `git-leak-recovery` | 有效 | 1 | 通过；停止 | `...123735-799649` |
 | `git-multibranch` | 有效 | 1 | 通过；停止 | `...124814-185022` |
-| `gpt2-codegolf` | 运行中 | — | 独立实例；等待 lifecycle 终态 | `...124815-372510` |
+| `gpt2-codegolf` | 暂不计分 | — | 905s timeout；反复重写不完整实现，未进入 verifier | `...124815-372510` |
 | `headless-terminal` | 有效 | 1 | 通过；停止 | `...125343-755608` |
 | `hf-model-inference` | 有效 | 1 | 通过；停止 | `...125344-124726` |
-| `install-windows-3.11` | 运行中 | — | 独立实例；等待 lifecycle 终态 | `...125759-813687` |
+| `install-windows-3.11` | 暂不计分 | — | verifier 下载 `uv` 时 TLS EOF | `...125759-813687` |
+| `kv-store-grpc` | 暂不计分 | — | Docker Hub TLS EOF，镜像未拉取且未创建容器 | `...130208-758392` |
 | `openssl-selfsigned-cert` | 有效 | 0 | Agent：输出日期格式违反原始合同仍宣告完成 | `...035855` |
 | `regex-log` | 有效 | 1 | 通过；停止 | `...115050-533926` |
 
@@ -623,3 +624,29 @@ Gate。它会改变 Agent 在非交互任务中的结束语义，不是纯 infra
 - Harbor 本地 patch `59e76ec`：secret 值不进入 Docker Compose argv。
 
 这些修复不改变 task 解法或 Agent 推理语义；H11 仍处于预注册状态。
+
+### 21:06 运行时检查点
+
+`gpt2-codegolf` 在 905 秒外层 deadline 到达时仍在反复重写不完整的 `/app/gpt2.c`，
+没有生成 `turn-result.json`，也没有进入 verifier。trace 已封存；最终 5,908 字节的
+`gpt2.c` 另存为：
+
+`akasic-bench-v4flash-diagnostic-gpt2-codegolf-20260730-124815-372510/diagnostic/gpt2.c`
+
+这个 attempt 暂不计 reward，但它支持“缺少 deadline 感知、checkpoint 和策略切换”
+这一 Agent 侧诊断，不支持简单增加 timeout：最后一版源码仍包含明确未完成的内存
+布局，并未处于接近可验证完成的状态。
+
+宿主经 Mihomo 路由访问 `registry-1.docker.io`、`pypi.org` 和 `astral.sh` 时出现 TLS
+握手 EOF；DeepSeek API 仍可访问。影响边界为：
+
+- `install-windows-3.11` 的 Agent lifecycle 完成，但 verifier 因无法安装 `uv/uvx`
+  而失败，不能把 reward `0` 归因给 Agent；
+- `kv-store-grpc` 在 Docker image pull 阶段失败，没有创建 task container；
+- 尚未触达的 48 个 task image 当前均未缓存，因此在该网络恢复前不继续制造同类
+  无效 attempt。
+
+已删除本波次 6 个 stopped、可重复创建的 task container 及对应空 network；
+`gpt2.c`、`filter.py`、trace、verifier 输出、manifest 和 digest 均已留存，task
+images 与不可变 runtime volume 保留。线上 gateway PID、start ticks 和命令行在
+各 manifest 的前后快照中一致。
