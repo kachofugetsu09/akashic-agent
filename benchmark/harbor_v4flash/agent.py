@@ -15,6 +15,7 @@ from benchmark.harbor_v4flash.isolation import (
     inspect_compose_project,
     validate_isolation,
 )
+from benchmark.harbor_v4flash.git_volume import GIT_BIN_PATH, GIT_MOUNT_PATH
 from benchmark.harbor_v4flash.result_projection import project_agent_context
 from benchmark.harbor_v4flash.runtime_volume import (
     RUNTIME_MOUNT_PATH,
@@ -56,6 +57,10 @@ class AkashicHarborAgent(BaseAgent):
         runtime_manifest_digest: str,
         runtime_lock_digest: str,
         runtime_python_version: str,
+        git_volume_name: str,
+        git_runtime_digest: str,
+        git_manifest_digest: str,
+        git_version: str,
         bootstrap_timeout_sec: int = 900,
         turn_timeout_sec: float,
         **kwargs,
@@ -74,6 +79,10 @@ class AkashicHarborAgent(BaseAgent):
         self._runtime_manifest_digest = runtime_manifest_digest
         self._runtime_lock_digest = runtime_lock_digest
         self._runtime_python_version = runtime_python_version
+        self._git_volume_name = git_volume_name
+        self._git_runtime_digest = git_runtime_digest
+        self._git_manifest_digest = git_manifest_digest
+        self._git_version = git_version
         self._bootstrap_timeout_sec = bootstrap_timeout_sec
         if turn_timeout_sec <= 0:
             raise ValueError("turn_timeout_sec 必须大于 0")
@@ -106,6 +115,29 @@ class AkashicHarborAgent(BaseAgent):
         )
         return f"{RUNTIME_VENV_PATH}/bin/python -c {shlex.quote(code)}"
 
+    def _git_check_command(self) -> str:
+        """生成只读取固定 Git manifest 并执行版本探针的校验命令。"""
+
+        expected = {
+            "volume_name": self._git_volume_name,
+            "runtime_digest": self._git_runtime_digest,
+            "manifest_digest": self._git_manifest_digest,
+            "git_version": self._git_version,
+        }
+        code = (
+            "import json,pathlib,subprocess;"
+            f"root=pathlib.Path({GIT_MOUNT_PATH!r});"
+            "manifest=json.loads((root/'manifest.json').read_text());"
+            f"expected=json.loads({json.dumps(json.dumps(expected))});"
+            "assert manifest['volume_name']==expected['volume_name'];"
+            "assert manifest['runtime_digest']==expected['runtime_digest'];"
+            "assert manifest['manifest_digest']==expected['manifest_digest'];"
+            f"version=subprocess.run([{GIT_BIN_PATH!r},'--version'],"
+            "check=True,text=True,stdout=subprocess.PIPE).stdout.strip();"
+            "assert version==expected['git_version']"
+        )
+        return f"{RUNTIME_VENV_PATH}/bin/python -c {shlex.quote(code)}"
+
     async def setup(self, environment: BaseEnvironment) -> None:
         """复制只读源码，验证共享 runtime，并证明容器隔离。"""
 
@@ -130,7 +162,8 @@ class AkashicHarborAgent(BaseAgent):
             allowed_bind_root=self._allowed_bind_root,
             forbidden_host_paths=self._forbidden_host_paths,
             allowed_volume_mounts=[
-                (self._runtime_volume_name, RUNTIME_MOUNT_PATH)
+                (self._runtime_volume_name, RUNTIME_MOUNT_PATH),
+                (self._git_volume_name, GIT_MOUNT_PATH),
             ],
         )
         checked_runtime = await environment.exec(
@@ -142,6 +175,15 @@ class AkashicHarborAgent(BaseAgent):
             checked_runtime.return_code,
             (checked_runtime.stdout or "") + (checked_runtime.stderr or ""),
         )
+        checked_git = await environment.exec(
+            command=self._git_check_command(),
+            user="root",
+        )
+        _require_success(
+            "校验 Akasic Git volume",
+            checked_git.return_code,
+            (checked_git.stdout or "") + (checked_git.stderr or ""),
+        )
         report["source_digest"] = self._source_digest
         report["runtime_volume"] = {
             "name": self._runtime_volume_name,
@@ -151,28 +193,27 @@ class AkashicHarborAgent(BaseAgent):
             "resolved_lock_digest": self._runtime_lock_digest,
             "python_version": self._runtime_python_version,
         }
+        report["git_volume"] = {
+            "name": self._git_volume_name,
+            "mount_path": GIT_MOUNT_PATH,
+            "runtime_digest": self._git_runtime_digest,
+            "manifest_digest": self._git_manifest_digest,
+            "git_version": self._git_version,
+        }
         atomic_json(self.logs_dir / "isolation.preflight.json", report)
 
-        # 3. 补齐 Git 基础设施，并恢复真实历史；Python 依赖不再逐 trial 安装。
+        # 3. 使用只读 Git 基础设施恢复真实历史，不在 trial 内联网安装。
         install_command = (
-            "if ! command -v git >/dev/null 2>&1; then "
-            "if command -v apk >/dev/null 2>&1; then "
-            "apk add --no-cache git ca-certificates; "
-            "elif command -v apt-get >/dev/null 2>&1; then "
-            "apt-get update && DEBIAN_FRONTEND=noninteractive "
-            "apt-get install -y --no-install-recommends git ca-certificates; "
-            "elif command -v yum >/dev/null 2>&1; then "
-            "yum install -y git ca-certificates; "
-            "else echo '任务镜像缺少 git 且无受支持的包管理器' >&2; exit 2; fi; fi && "
             f"rm -rf {_SOURCE_ROOT}/.git && "
-            f"git -C {_SOURCE_ROOT} init && "
-            f"git -C {_SOURCE_ROOT} fetch {_RUNTIME_ROOT}/source.bundle "
+            f"{GIT_BIN_PATH} -C {_SOURCE_ROOT} init && "
+            f"{GIT_BIN_PATH} -C {_SOURCE_ROOT} fetch {_RUNTIME_ROOT}/source.bundle "
             "'+refs/heads/*:refs/remotes/benchmark/*' "
             "'+refs/tags/*:refs/tags/*' && "
-            f"git -C {_SOURCE_ROOT} reset --mixed {shlex.quote(self._source_head)} && "
-            f"git -C {_SOURCE_ROOT} cat-file -e "
+            f"{GIT_BIN_PATH} -C {_SOURCE_ROOT} reset --mixed "
+            f"{shlex.quote(self._source_head)} && "
+            f"{GIT_BIN_PATH} -C {_SOURCE_ROOT} cat-file -e "
             "012e37c8b51df045353972bb551d8e868ab52455^{commit} && "
-            f"test \"$(git -C {_SOURCE_ROOT} rev-parse HEAD)\" = "
+            f"test \"$({GIT_BIN_PATH} -C {_SOURCE_ROOT} rev-parse HEAD)\" = "
             f"{shlex.quote(self._source_head)} && "
             f"chmod -R a-w {_SOURCE_ROOT}"
         )
@@ -200,7 +241,8 @@ class AkashicHarborAgent(BaseAgent):
         instruction_path.write_text(instruction, encoding="utf-8")
         gateway_command = (
             f"mkdir -p {_WORKSPACE} && cd /app || exit $?; "
-            f"env PYTHONPATH={_SOURCE_ROOT}:{_SOURCE_ROOT}/sdk/python/src "
+            f"env PATH={GIT_MOUNT_PATH}/bin:$PATH "
+            f"PYTHONPATH={_SOURCE_ROOT}:{_SOURCE_ROOT}/sdk/python/src "
             "PYTHONDONTWRITEBYTECODE=1 "
             f"{RUNTIME_VENV_PATH}/bin/python {_SOURCE_ROOT}/main.py gateway "
             f"--config {_SOURCE_ROOT}/benchmark/harbor_v4flash/config.toml "

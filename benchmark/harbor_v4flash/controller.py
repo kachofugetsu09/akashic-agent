@@ -46,6 +46,8 @@ from benchmark.harbor_v4flash.isolation import (
     source_tree_digest,
     validate_online_processes_unchanged,
 )
+from benchmark.harbor_v4flash.image_cache import prefetch_task_images
+from benchmark.harbor_v4flash.git_volume import inspect_git_volume
 from benchmark.harbor_v4flash.runtime_volume import (
     inspect_runtime_volume,
     runtime_compose_overlay,
@@ -171,6 +173,7 @@ async def run_trial(
     task_dir = task_dir.resolve()
     runs_root = args.runs_dir.resolve()
     task_agent_timeout_sec = _task_agent_timeout_sec(task_dir)
+    task_image = args.task_images[str(task_dir)]
     uv_binary = args.uv_binary.resolve()
     runtime_volume = inspect_runtime_volume(
         args.runtime_volume,
@@ -178,6 +181,10 @@ async def run_trial(
         uv_binary=uv_binary,
     )
     runtime_manifest = cast(dict[str, Any], runtime_volume["manifest"])
+    git_volume = inspect_git_volume(args.git_volume)
+    git_manifest = cast(dict[str, Any], git_volume["manifest"])
+    git_recipe = cast(dict[str, Any], git_manifest["recipe"])
+    git_packages = cast(dict[str, Any], git_recipe["packages"])
     runtime_recipe = cast(dict[str, Any], runtime_manifest["recipe"])
     runtime_lock = cast(dict[str, Any], runtime_recipe["resolved_lock"])
     runtime_python = cast(dict[str, Any], runtime_recipe["python"])
@@ -200,7 +207,11 @@ async def run_trial(
     runtime_compose_path = (
         trial_dir / "inputs" / "runtime-network-compose.json"
     )
-    compose_overlay = runtime_compose_overlay(args.runtime_volume)
+    compose_overlay = runtime_compose_overlay(
+        args.runtime_volume,
+        task_image_id=str(task_image["id"]),
+        git_volume_name=args.git_volume,
+    )
     compose_overlay["networks"] = {
         "default": {
             "external": True,
@@ -247,6 +258,7 @@ async def run_trial(
         },
         "source": initial_source,
         "runtime_cache": runtime_volume,
+        "git_cache": git_volume,
         "harbor": {
             "root": str(args.harbor_root.resolve()),
             "git_head": _git_output(args.harbor_root.resolve(), "rev-parse", "HEAD"),
@@ -261,6 +273,7 @@ async def run_trial(
         "docker": {
             "project": project,
             "network": network,
+            "task_image": task_image,
         },
     }
     atomic_json(manifest_path, initial_manifest)
@@ -292,6 +305,10 @@ async def run_trial(
                 "runtime_manifest_digest": runtime_manifest["manifest_digest"],
                 "runtime_lock_digest": runtime_lock["digest"],
                 "runtime_python_version": runtime_python["version"],
+                "git_volume_name": args.git_volume,
+                "git_runtime_digest": git_manifest["runtime_digest"],
+                "git_manifest_digest": git_manifest["manifest_digest"],
+                "git_version": git_packages["git_version"],
                 "bootstrap_timeout_sec": 900,
                 "turn_timeout_sec": task_agent_timeout_sec,
             },
@@ -491,6 +508,15 @@ async def run_campaign(
     return 0 if lifecycle_complete else 1
 
 
+async def _run_selected(args: argparse.Namespace) -> int:
+    """预拉取冻结 task images，再进入 smoke 或 campaign lifecycle。"""
+
+    args.task_images = await prefetch_task_images(args.task_dir)
+    if len(args.task_dir) == 1:
+        return await run_smoke(args, args.task_dir[0])
+    return await run_campaign(args, args.task_dir)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", type=Path, required=True)
@@ -508,19 +534,26 @@ def main() -> int:
         "--runtime-volume",
         default=os.environ.get("AKASIC_BENCH_RUNTIME_VOLUME"),
     )
+    parser.add_argument(
+        "--git-volume",
+        default=os.environ.get("AKASIC_BENCH_GIT_VOLUME"),
+    )
     args = parser.parse_args()
     if not args.runtime_volume:
         parser.error(
             "--runtime-volume 或 AKASIC_BENCH_RUNTIME_VOLUME 是必填项；"
             "harness 不会在 trial 内冷安装"
         )
+    if not args.git_volume:
+        parser.error(
+            "--git-volume 或 AKASIC_BENCH_GIT_VOLUME 是必填项；"
+            "harness 不会在 trial 内安装 Git"
+        )
     with _credential_templates(
         args.credential_profile.resolve()
     ) as credential_templates:
         args.credential_templates = credential_templates
-        if len(args.task_dir) == 1:
-            return asyncio.run(run_smoke(args, args.task_dir[0]))
-        return asyncio.run(run_campaign(args, args.task_dir))
+        return asyncio.run(_run_selected(args))
 
 
 if __name__ == "__main__":

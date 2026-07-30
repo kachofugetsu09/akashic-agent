@@ -74,6 +74,28 @@ def test_runtime_manifest_and_compose_freeze_identity() -> None:
             }
         },
     }
+    assert runtime_compose_overlay(
+        volume_name,
+        task_image_id="sha256:task-image",
+        git_volume_name="akasic-bench-git-v1-example",
+    )["services"]["main"] == {
+        "image": "sha256:task-image",
+        "pull_policy": "never",
+        "volumes": [
+            {
+                "type": "volume",
+                "source": "akasic_runtime",
+                "target": RUNTIME_MOUNT_PATH,
+                "read_only": True,
+            },
+            {
+                "type": "volume",
+                "source": "akasic_git",
+                "target": "/opt/akashic-git",
+                "read_only": True,
+            }
+        ],
+    }
 
 
 def test_inspect_runtime_volume_verifies_manifest_lock_and_inputs(

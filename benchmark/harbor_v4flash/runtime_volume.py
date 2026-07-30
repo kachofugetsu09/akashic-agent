@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmark.harbor_v4flash.isolation import sha256_file
+from benchmark.harbor_v4flash.git_volume import GIT_MOUNT_PATH
 
 RUNTIME_VOLUME_PREFIX = "akasic-bench-runtime-v1-"
 RUNTIME_VOLUME_SCHEMA = "akasic.benchmark-runtime.v1"
@@ -447,30 +448,58 @@ def inspect_runtime_volume(
     }
 
 
-def runtime_compose_overlay(volume_name: str) -> dict[str, object]:
-    """生成 Harbor main service 的唯一共享 runtime 只读挂载。"""
+def runtime_compose_overlay(
+    volume_name: str,
+    *,
+    task_image_id: str | None = None,
+    git_volume_name: str | None = None,
+) -> dict[str, object]:
+    """生成 Harbor main service 的冻结 image 与 runtime 只读挂载。"""
 
     if not _VOLUME_NAME_PATTERN.fullmatch(volume_name):
         raise RuntimeVolumeError(f"Docker volume 名称不合法：{volume_name!r}")
+    if task_image_id is not None and not task_image_id.startswith("sha256:"):
+        raise RuntimeVolumeError(f"task image ID 不合法：{task_image_id!r}")
+    if git_volume_name is not None and not _VOLUME_NAME_PATTERN.fullmatch(
+        git_volume_name
+    ):
+        raise RuntimeVolumeError(f"Git volume 名称不合法：{git_volume_name!r}")
+    service_volumes: list[dict[str, object]] = [
+        {
+            "type": "volume",
+            "source": "akasic_runtime",
+            "target": RUNTIME_MOUNT_PATH,
+            "read_only": True,
+        }
+    ]
+    service: dict[str, object] = {"volumes": service_volumes}
+    if task_image_id is not None:
+        service["image"] = task_image_id
+        service["pull_policy"] = "never"
+    volumes: dict[str, object] = {
+        "akasic_runtime": {
+            "external": True,
+            "name": volume_name,
+        }
+    }
+    if git_volume_name is not None:
+        service_volumes.append(
+            {
+                "type": "volume",
+                "source": "akasic_git",
+                "target": GIT_MOUNT_PATH,
+                "read_only": True,
+            }
+        )
+        volumes["akasic_git"] = {
+            "external": True,
+            "name": git_volume_name,
+        }
     return {
         "services": {
-            "main": {
-                "volumes": [
-                    {
-                        "type": "volume",
-                        "source": "akasic_runtime",
-                        "target": RUNTIME_MOUNT_PATH,
-                        "read_only": True,
-                    }
-                ]
-            }
+            "main": service,
         },
-        "volumes": {
-            "akasic_runtime": {
-                "external": True,
-                "name": volume_name,
-            }
-        },
+        "volumes": volumes,
     }
 
 
