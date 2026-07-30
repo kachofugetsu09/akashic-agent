@@ -14,12 +14,13 @@ from benchmark.harbor_v4flash.agent import (
     _TASK_ROOT,
     _WORKSPACE,
     _run_driver_and_shutdown,
+    _start_gateway_with_resource_evidence,
 )
 from benchmark.harbor_v4flash.controller import (
-    _credential_templates,
     _inspect_finished_project,
     _task_agent_timeout_sec,
 )
+from benchmark.harbor_v4flash.credentials import credential_scope
 from benchmark.harbor_v4flash.isolation import IsolationError, create_source_bundle
 from benchmark.harbor_v4flash.resource_evidence import (
     RESOURCE_EVIDENCE_FILENAME,
@@ -253,6 +254,40 @@ def test_resource_probe_failure_fails_loud_after_successful_driver(
     ) == "gateway stopped\n"
 
 
+def test_secure_gateway_failure_keeps_primary_error_and_resource_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    startup_error = RuntimeError("secure docker exec failed")
+    environment = _ScriptedEnvironment(_resource_result(oom_kill=1))
+
+    async def fail_secure_exec(*args: object, **kwargs: object) -> ExecResult:
+        raise startup_error
+
+    monkeypatch.setattr(
+        "benchmark.harbor_v4flash.agent.secure_docker_exec",
+        fail_secure_exec,
+    )
+
+    with pytest.raises(RuntimeError, match="secure docker exec failed") as caught:
+        asyncio.run(
+            _start_gateway_with_resource_evidence(
+                environment,  # type: ignore[arg-type]
+                gateway_command="start-gateway",
+                credential_names=("DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY"),
+                logs_dir=tmp_path,
+            )
+        )
+
+    assert caught.value is startup_error
+    assert environment.commands == [resource_probe_command()]
+    resource = json.loads(
+        (tmp_path / RESOURCE_EVIDENCE_FILENAME).read_text(encoding="utf-8")
+    )
+    assert resource["status"] == "collected"
+    assert resource["classification"] == "resource_limit"
+
+
 def test_task_agent_timeout_uses_harbor_task_budget(tmp_path: Path) -> None:
     task_dir = tmp_path / "task"
     task_dir.mkdir()
@@ -264,7 +299,7 @@ def test_task_agent_timeout_uses_harbor_task_budget(tmp_path: Path) -> None:
     assert _task_agent_timeout_sec(task_dir) == 3600.0
 
 
-def test_credential_templates_persist_names_and_restore_environment(
+def test_credential_scope_keeps_values_out_of_host_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -282,13 +317,10 @@ api_key = "dashscope-sentinel"
     monkeypatch.setenv("DEEPSEEK_API_KEY", "previous")
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
 
-    with _credential_templates(profile) as templates:
-        assert templates == {
-            "DEEPSEEK_API_KEY": "${DEEPSEEK_API_KEY}",
-            "DASHSCOPE_API_KEY": "${DASHSCOPE_API_KEY}",
-        }
-        assert os.environ["DEEPSEEK_API_KEY"] == "deepseek-sentinel"
-        assert os.environ["DASHSCOPE_API_KEY"] == "dashscope-sentinel"
+    with credential_scope(profile) as names:
+        assert names == ("DASHSCOPE_API_KEY", "DEEPSEEK_API_KEY")
+        assert os.environ["DEEPSEEK_API_KEY"] == "previous"
+        assert "DASHSCOPE_API_KEY" not in os.environ
 
     assert os.environ["DEEPSEEK_API_KEY"] == "previous"
     assert "DASHSCOPE_API_KEY" not in os.environ

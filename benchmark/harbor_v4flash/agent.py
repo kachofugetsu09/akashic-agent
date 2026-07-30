@@ -9,6 +9,7 @@ from harbor.environments.base import BaseEnvironment, ExecResult
 from harbor.models.agent.context import AgentContext
 
 from benchmark.harbor_v4flash import HARNESS_VERSION
+from benchmark.harbor_v4flash.credentials import secure_docker_exec
 from benchmark.harbor_v4flash.isolation import (
     atomic_json,
     compose_project_name,
@@ -146,6 +147,42 @@ def _raise_lifecycle_errors(
         raise shutdown_error
 
 
+async def _start_gateway_with_resource_evidence(
+    environment: BaseEnvironment,
+    *,
+    gateway_command: str,
+    credential_names: tuple[str, ...],
+    logs_dir: Path,
+) -> None:
+    """安全启动 gateway，并在启动失败时保留资源证据和原始错误。"""
+
+    # 1. 仅 gateway 启动进程接收 benchmark 凭据。
+    try:
+        started = await secure_docker_exec(
+            environment,
+            command=gateway_command,
+            credential_names=credential_names,
+        )
+        _require_success(
+            "启动 Akasic gateway",
+            started.return_code,
+            (started.stdout or "") + (started.stderr or ""),
+        )
+    except BaseException as startup_error:
+        # 2. 启动失败仍采集 cgroup；原始启动错误始终保持主失败。
+        resource_error, resource_write_error = await _capture_resource_evidence(
+            environment,
+            logs_dir,
+        )
+        _raise_lifecycle_errors(
+            driver_error=startup_error,
+            resource_error=resource_error,
+            resource_write_error=resource_write_error,
+            shutdown_error=None,
+        )
+        raise AssertionError("unreachable")
+
+
 async def _run_driver_and_shutdown(
     environment: BaseEnvironment,
     *,
@@ -236,6 +273,7 @@ class AkashicHarborAgent(BaseAgent):
         git_version: str,
         bootstrap_timeout_sec: int = 900,
         turn_timeout_sec: float,
+        credential_names: tuple[str, ...],
         **kwargs,
     ) -> None:
         super().__init__(logs_dir=logs_dir, model_name=model_name, **kwargs)
@@ -260,6 +298,9 @@ class AkashicHarborAgent(BaseAgent):
         if turn_timeout_sec <= 0:
             raise ValueError("turn_timeout_sec 必须大于 0")
         self._turn_timeout_sec = turn_timeout_sec
+        if not credential_names:
+            raise ValueError("credential_names 不能为空")
+        self._credential_names = credential_names
 
     def version(self) -> str:
         return HARNESS_VERSION
@@ -424,24 +465,12 @@ class AkashicHarborAgent(BaseAgent):
             f"2>{_AGENT_LOGS}/runtime.stderr.log & "
             f"echo $! > {_AGENT_LOGS}/runtime.pid"
         )
-        try:
-            started = await environment.exec(command=gateway_command)
-            _require_success(
-                "启动 Akasic gateway",
-                started.return_code,
-                (started.stdout or "") + (started.stderr or ""),
-            )
-        except BaseException as startup_error:
-            resource_error, resource_write_error = (
-                await _capture_resource_evidence(environment, self.logs_dir)
-            )
-            _raise_lifecycle_errors(
-                driver_error=startup_error,
-                resource_error=resource_error,
-                resource_write_error=resource_write_error,
-                shutdown_error=None,
-            )
-            raise AssertionError("unreachable")
+        await _start_gateway_with_resource_evidence(
+            environment,
+            gateway_command=gateway_command,
+            credential_names=self._credential_names,
+            logs_dir=self.logs_dir,
+        )
 
         # 2. SDK driver 记录全部 turn 通知并核对持久化终态。
         driver_command = " ".join(

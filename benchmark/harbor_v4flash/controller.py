@@ -7,9 +7,6 @@ import math
 import os
 import subprocess
 import time
-import tomllib
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -33,6 +30,7 @@ from benchmark.harbor_v4flash.campaign import (
     task_slug,
     validate_campaign_request,
 )
+from benchmark.harbor_v4flash.credentials import credential_scope
 from benchmark.harbor_v4flash.isolation import (
     BENCHMARK_PREFIX,
     IsolationError,
@@ -74,45 +72,6 @@ def _git_output(root: Path, *args: str) -> str:
         stderr=subprocess.PIPE,
     )
     return result.stdout.strip()
-
-
-def _credential_env(profile_path: Path) -> dict[str, str]:
-    """从本机 profile 只提取当前实验所需密钥，不持久化其值。"""
-
-    data = tomllib.loads(profile_path.read_text(encoding="utf-8"))
-    llm = data.get("llm")
-    memory = data.get("memory")
-    if not isinstance(llm, dict) or not isinstance(memory, dict):
-        raise ValueError("credential profile 缺少 llm 或 memory")
-    main = llm.get("main")
-    embedding = memory.get("embedding")
-    if not isinstance(main, dict) or not isinstance(embedding, dict):
-        raise ValueError("credential profile 缺少 llm.main 或 memory.embedding")
-    deepseek = str(main.get("api_key") or "").strip()
-    dashscope = str(embedding.get("api_key") or "").strip()
-    if not deepseek or not dashscope:
-        raise ValueError("credential profile 缺少 DeepSeek 或 embedding API key")
-    return {
-        "DEEPSEEK_API_KEY": deepseek,
-        "DASHSCOPE_API_KEY": dashscope,
-    }
-
-
-@contextmanager
-def _credential_templates(profile_path: Path) -> Iterator[dict[str, str]]:
-    """Expose credentials to Harbor by name while restoring the host environment."""
-
-    values = _credential_env(profile_path)
-    previous = {name: os.environ.get(name) for name in values}
-    os.environ.update(values)
-    try:
-        yield {name: f"${{{name}}}" for name in values}
-    finally:
-        for name, value in previous.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
 
 
 def _task_agent_timeout_sec(task_dir: Path) -> float:
@@ -202,7 +161,7 @@ async def run_trial(
     project = compose_project_name(f"{trial_name}__env")
     before_source = source_tree_digest(source_root)
     before_online = online_process_snapshot()
-    credential_env = cast(dict[str, str], args.credential_templates)
+    credential_names = cast(tuple[str, ...], args.credential_names)
     source_bundle = create_source_bundle(
         source_root,
         trial_dir / "inputs" / "source.bundle",
@@ -270,7 +229,7 @@ async def run_trial(
         },
         "credentials": {
             "source": str(args.credential_profile.resolve()),
-            "injected_names": sorted(credential_env),
+            "injected_names": list(credential_names),
             "persisted_values": False,
         },
         "online_before": before_online,
@@ -294,7 +253,6 @@ async def run_trial(
             override_timeout_sec=(
                 task_agent_timeout_sec + HARNESS_CLEANUP_RESERVE_SEC
             ),
-            env=credential_env,
             kwargs={
                 "source_root": str(source_root),
                 "source_bundle": source_bundle["path"],
@@ -315,6 +273,7 @@ async def run_trial(
                 "git_version": git_packages["git_version"],
                 "bootstrap_timeout_sec": 900,
                 "turn_timeout_sec": task_agent_timeout_sec,
+                "credential_names": credential_names,
             },
         ),
         environment=EnvironmentConfig(
@@ -571,10 +530,8 @@ def main() -> int:
             "--git-volume 或 AKASIC_BENCH_GIT_VOLUME 是必填项；"
             "harness 不会在 trial 内安装 Git"
         )
-    with _credential_templates(
-        args.credential_profile.resolve()
-    ) as credential_templates:
-        args.credential_templates = credential_templates
+    with credential_scope(args.credential_profile.resolve()) as credential_names:
+        args.credential_names = credential_names
         return asyncio.run(_run_selected(args))
 
 
