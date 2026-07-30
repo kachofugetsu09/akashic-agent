@@ -3,6 +3,7 @@
 - 状态：accepted
 - 日期：2026-07-28
 - 关联条款：MOB-001、MOB-003、MOB-006、PLG-003、PLG-011、TST-006～TST-008
+- superseded by：[0009](0009-akasha-mobile-recall-preserves-semantic-lanes.md)（仅取代第 5 项的每 lane 五项与 16KiB 上限）
 
 ## 背景
 
