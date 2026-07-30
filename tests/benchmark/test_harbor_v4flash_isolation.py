@@ -4,7 +4,9 @@ import pytest
 
 from benchmark.harbor_v4flash.isolation import (
     IsolationError,
+    artifact_digests,
     compose_project_name,
+    sha256_file,
     validate_isolation,
 )
 
@@ -76,3 +78,18 @@ def test_validate_isolation_rejects_host_escape(
             allowed_bind_root=allowed,
             forbidden_host_paths=[Path("/home/huashen/.akashic/workspace")],
         )
+
+
+def test_artifact_digests_excludes_self_referential_manifest(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "campaign-manifest.json"
+    trace = tmp_path / "agent" / "trace.jsonl"
+    trace.parent.mkdir()
+    manifest.write_text('{"state":"prepared"}\n', encoding="utf-8")
+    trace.write_text('{"event":"completed"}\n', encoding="utf-8")
+
+    digests = artifact_digests(tmp_path, exclude={manifest})
+
+    assert "campaign-manifest.json" not in digests
+    assert digests == {"agent/trace.jsonl": sha256_file(trace)}

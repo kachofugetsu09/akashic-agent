@@ -36,6 +36,23 @@ def sha256_file(path: Path) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
+def artifact_digests(
+    root: Path,
+    *,
+    exclude: set[Path] | None = None,
+) -> dict[str, str]:
+    """散列证据目录中的普通文件，并显式排除自引用 manifest。"""
+
+    excluded = {path.resolve() for path in (exclude or set())}
+    values: dict[str, str] = {}
+    if not root.exists():
+        return values
+    for path in sorted(root.rglob("*")):
+        if path.is_file() and path.resolve() not in excluded:
+            values[path.relative_to(root).as_posix()] = sha256_file(path)
+    return values
+
+
 def create_source_bundle(
     source_root: Path,
     bundle_path: Path,

@@ -28,12 +28,12 @@ from benchmark.harbor_v4flash.campaign import (
 )
 from benchmark.harbor_v4flash.isolation import (
     BENCHMARK_PREFIX,
+    artifact_digests,
     atomic_json,
     compose_project_name,
     create_source_bundle,
     inspect_compose_project,
     online_process_snapshot,
-    sha256_file,
     source_tree_digest,
     validate_online_processes_unchanged,
 )
@@ -76,16 +76,6 @@ def _credential_env(profile_path: Path) -> dict[str, str]:
         "DEEPSEEK_API_KEY": deepseek,
         "DASHSCOPE_API_KEY": dashscope,
     }
-
-
-def _artifact_digests(root: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    if not root.exists():
-        return values
-    for path in sorted(root.rglob("*")):
-        if path.is_file():
-            values[path.relative_to(root).as_posix()] = sha256_file(path)
-    return values
 
 
 def _safe_trial_result(result: Any) -> dict[str, object]:
@@ -262,7 +252,10 @@ async def run_trial(
         "result": _safe_trial_result(result),
         "artifacts": {
             "missing": missing_artifacts,
-            "digests": _artifact_digests(trial_dir),
+            "digests": artifact_digests(
+                trial_dir,
+                exclude={manifest_path},
+            ),
         },
         "concurrency_gate": {
             "max_concurrent": 3 if trial_completed else 1,
