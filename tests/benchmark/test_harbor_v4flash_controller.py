@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import tomllib
@@ -6,11 +7,11 @@ from pathlib import Path
 import pytest
 
 from benchmark.harbor_v4flash.controller import (
+    _credential_templates,
     _inspect_finished_project,
     _task_agent_timeout_sec,
 )
-from benchmark.harbor_v4flash.isolation import IsolationError
-from benchmark.harbor_v4flash.isolation import create_source_bundle
+from benchmark.harbor_v4flash.isolation import IsolationError, create_source_bundle
 
 
 def _git(root: Path, *args: str) -> str:
@@ -47,6 +48,36 @@ def test_task_agent_timeout_uses_harbor_task_budget(tmp_path: Path) -> None:
     )
 
     assert _task_agent_timeout_sec(task_dir) == 3600.0
+
+
+def test_credential_templates_persist_names_and_restore_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = tmp_path / "config.toml"
+    profile.write_text(
+        """
+[llm.main]
+api_key = "deepseek-sentinel"
+
+[memory.embedding]
+api_key = "dashscope-sentinel"
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "previous")
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+
+    with _credential_templates(profile) as templates:
+        assert templates == {
+            "DEEPSEEK_API_KEY": "${DEEPSEEK_API_KEY}",
+            "DASHSCOPE_API_KEY": "${DASHSCOPE_API_KEY}",
+        }
+        assert os.environ["DEEPSEEK_API_KEY"] == "deepseek-sentinel"
+        assert os.environ["DASHSCOPE_API_KEY"] == "dashscope-sentinel"
+
+    assert os.environ["DEEPSEEK_API_KEY"] == "previous"
+    assert "DASHSCOPE_API_KEY" not in os.environ
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "nan", "inf"])

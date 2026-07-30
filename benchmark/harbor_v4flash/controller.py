@@ -8,6 +8,8 @@ import os
 import subprocess
 import time
 import tomllib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -16,8 +18,10 @@ from harbor.models.task.config import TaskConfig as HarborTaskConfig
 from harbor.models.trial.config import (
     AgentConfig,
     EnvironmentConfig,
-    TaskConfig as TrialTaskConfig,
     TrialConfig,
+)
+from harbor.models.trial.config import (
+    TaskConfig as TrialTaskConfig,
 )
 from harbor.trial.trial import Trial
 
@@ -85,6 +89,23 @@ def _credential_env(profile_path: Path) -> dict[str, str]:
         "DEEPSEEK_API_KEY": deepseek,
         "DASHSCOPE_API_KEY": dashscope,
     }
+
+
+@contextmanager
+def _credential_templates(profile_path: Path) -> Iterator[dict[str, str]]:
+    """Expose credentials to Harbor by name while restoring the host environment."""
+
+    values = _credential_env(profile_path)
+    previous = {name: os.environ.get(name) for name in values}
+    os.environ.update(values)
+    try:
+        yield {name: f"${{{name}}}" for name in values}
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def _task_agent_timeout_sec(task_dir: Path) -> float:
@@ -169,7 +190,7 @@ async def run_trial(
     project = compose_project_name(f"{trial_name}__env")
     before_source = source_tree_digest(source_root)
     before_online = online_process_snapshot()
-    credential_env = _credential_env(args.credential_profile.resolve())
+    credential_env = cast(dict[str, str], args.credential_templates)
     source_bundle = create_source_bundle(
         source_root,
         trial_dir / "inputs" / "source.bundle",
@@ -490,9 +511,13 @@ def main() -> int:
             "--runtime-volume 或 AKASIC_BENCH_RUNTIME_VOLUME 是必填项；"
             "harness 不会在 trial 内冷安装"
         )
-    if len(args.task_dir) == 1:
-        return asyncio.run(run_smoke(args, args.task_dir[0]))
-    return asyncio.run(run_campaign(args, args.task_dir))
+    with _credential_templates(
+        args.credential_profile.resolve()
+    ) as credential_templates:
+        args.credential_templates = credential_templates
+        if len(args.task_dir) == 1:
+            return asyncio.run(run_smoke(args, args.task_dir[0]))
+        return asyncio.run(run_campaign(args, args.task_dir))
 
 
 if __name__ == "__main__":
