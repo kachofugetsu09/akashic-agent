@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -11,7 +13,64 @@ from agent.control.service import ControlService
 from infra.control.socket import SocketAppServer
 from session.manager import SessionManager
 
-from akashic_sdk import Akashic, AsyncAkashic
+from akashic_sdk import Akashic, AsyncAkashic, SlowConsumerError, TurnHandle
+from akashic_sdk.client import _WireClient
+
+
+def _buffered_notification_reader(
+    count: int,
+    *,
+    turn_id: str | None = None,
+) -> asyncio.StreamReader:
+    reader = asyncio.StreamReader()
+    for index in range(count):
+        params: dict[str, object] = {"index": index}
+        if turn_id is not None:
+            params["turnId"] = turn_id
+        payload: dict[str, object] = {
+            "jsonrpc": "2.0",
+            "method": "test/notification",
+            "params": params,
+        }
+        reader.feed_data(
+            (json.dumps(payload, separators=(",", ":")) + "\n").encode()
+        )
+    reader.feed_eof()
+    return reader
+
+
+@pytest.mark.asyncio
+async def test_sdk_reader_yields_to_active_turn_consumer() -> None:
+    reader = _buffered_notification_reader(600, turn_id="turn-1")
+    wire = _WireClient(reader, cast(asyncio.StreamWriter, object()))
+    handle = TurnHandle(wire, "thread-1", "turn-1")
+
+    notifications = handle.events()
+    received = [
+        await asyncio.wait_for(anext(notifications), timeout=1)
+        for _ in range(600)
+    ]
+    await wire.reader_task
+
+    assert [event["params"]["index"] for event in received] == list(range(600))
+
+
+@pytest.mark.asyncio
+async def test_sdk_reader_fails_loud_for_unconsumed_notification_queue() -> None:
+    reader = _buffered_notification_reader(513)
+    wire = _WireClient(reader, cast(asyncio.StreamWriter, object()))
+    client = AsyncAkashic(wire)
+
+    await wire.reader_task
+
+    notifications = client.notifications()
+    for _ in range(511):
+        _ = await anext(notifications)
+    with pytest.raises(
+        SlowConsumerError,
+        match="global notification queue overflow",
+    ):
+        _ = await anext(notifications)
 
 
 @pytest.mark.asyncio
