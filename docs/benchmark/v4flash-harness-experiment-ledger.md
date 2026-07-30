@@ -507,11 +507,12 @@ cache miss、manifest/lock 不匹配、额外 volume 或 `RW=true` 都 fail-loud
 
 ## 全量诊断遍历检查点
 
-更新时间：2026-07-30 21:38（Asia/Shanghai）
+更新时间：2026-07-30 22:12（Asia/Shanghai）
 
 这轮是混合 treatment 下的诊断遍历，用来发现 Akashic Agent 与 harness 的通用问题，
-不是最终分数。每个 task 使用独立 Docker environment 和 `/app` workspace；最多同时
-运行 3 个真实 task container。共享项只有不可变、只读的 runtime volume：
+不是最终分数。每个 task 使用独立 Docker environment 和 `/app` workspace；维护者
+已批准把并发硬上限从 3 提高到 6，当前按全局最多 6 个真实 task container 手动调度。
+共享项只有不可变、只读的 runtime volume：
 
 `akasic-bench-runtime-v1-79ea7f8bd2cbcb92b44062c0`
 
@@ -528,12 +529,12 @@ reward、trace/turn-result/manifest 已封存、source 与 online 隔离检查�
 | 指标 | 数量 |
 |---|---:|
 | Dataset 总数 | 89 |
-| 已触达 | 43 |
-| 有效结果 | 35 |
-| 有效通过 | 24 |
-| 有效失败 | 11 |
-| 暂不计分 | 8 |
-| 尚未触达 | 46 |
+| 已触达 | 47 |
+| 有效结果 | 37 |
+| 有效通过 | 25 |
+| 有效失败 | 12 |
+| 暂不计分 | 10 |
+| 尚未触达 | 42 |
 
 `filter-js-from-html` 的首次 attempt 因 verifier 下载 `uv` 断流而无效；重跑
 `akasic-bench-v4flash-smoke-filter-js-from-html-20260730-124859-743829`
@@ -583,16 +584,20 @@ reward、trace/turn-result/manifest 已封存、source 与 online 隔离检查�
 | `gpt2-codegolf` | 暂不计分 | — | 905s timeout；反复重写不完整实现，未进入 verifier | `...124815-372510` |
 | `headless-terminal` | 有效 | 1 | 通过；停止 | `...125343-755608` |
 | `hf-model-inference` | 有效 | 1 | 通过；停止 | `...125344-124726` |
-| `install-windows-3.11` | 重跑中 | — | 前次 verifier TLS EOF；当前已进入 verifier | `...131751-264234` |
+| `install-windows-3.11` | 有效 | 0 | verifier 3/4；键盘操作未产生要求的视觉变化，待 trace 归因 | `...131751-264234` |
 | `kv-store-grpc` | 有效 | 1 | 网络恢复后重跑通过；停止 | `...131753-510273` |
-| `large-scale-text-editing` | 重跑中 | — | 前次 image pull TLS EOF；当前 Agent turn 运行中 | `...132920-184342` |
+| `large-scale-text-editing` | 有效 | 1 | 网络恢复后重跑通过；停止 | `...132920-184342` |
 | `largest-eigenval` | 暂不计分 | — | Docker Hub TLS EOF，镜像未拉取且未创建容器 | `...130550-692405` |
+| `llm-inference-batching-scheduler` | 运行中 | — | 首次 discovery；独立 container | `...140807-464965` |
+| `log-summary-date-ranges` | 运行中 | — | 首次 discovery；独立 container | `...140808-885933` |
+| `mailman` | 运行中 | — | 首次 discovery；独立 container | `...140810-558360` |
+| `make-doom-for-mips` | 准备中 | — | 首次 discovery；正在拉取/启动 task image | `...141114-239624` |
 | `openssl-selfsigned-cert` | 有效 | 0 | Agent：输出日期格式违反原始合同仍宣告完成 | `...035855` |
 | `regex-log` | 有效 | 1 | 通过；停止 | `...115050-533926` |
 
 ### 有效失败的初步分层
 
-当前 11 个有效失败按主因分为：
+当前 12 个有效失败中，已有 11 个完成初步分层：
 
 1. Agent/Akashic 执行策略 7 个：`bn-fit-modify`、`build-cython-ext`、
    `db-wal-recovery`、`dna-insert`、`filter-js-from-html`、`fix-git`、
@@ -600,6 +605,9 @@ reward、trace/turn-result/manifest 已封存、source 与 online 隔离检查�
 2. 模型能力 3 个：`break-filter-js-from-html`、`dna-assembly`、
    `gcode-to-text`；
 3. benchmark/oracle 歧义 1 个：`extract-elf`。
+
+新增的 `install-windows-3.11` 已证明 verifier 有效执行，失败点是键盘输入没有造成
+要求的视觉变化；在读取 Agent trace 前保持“待归因”，不先归到模型或 Agent。
 
 这不是“只有 7 个值得改 Agent”。模型主因 case 也可能暴露过程控制问题，例如错误
 测试入口被当成成功、没有在最终回答前核对失败证据。当前隔离 workspace 中 Akasha
@@ -623,7 +631,9 @@ Gate。它会改变 Agent 在非交互任务中的结束语义，不是纯 infra
 - `#255`：并发 Gate 校验真实 Docker bind source；
 - `#256`：凭据使用模板，secret 值不进入持久化配置；
 - `#257`：Agent workspace 与官方 task workspace 对齐到 `/app`；
-- Harbor 本地 patch `59e76ec`：secret 值不进入 Docker Compose argv。
+- Harbor 本地 patch `59e76ec`：secret 值不进入 Docker Compose argv；22:08 检查
+  发现 benchmark venv 默认仍从未补丁 checkout 导入，之后的 controller 显式使用
+  `PYTHONPATH=.../harbor-secret-env/src`，并以宿主 `/proc/*/cmdline` 负向扫描验证。
 
 这些修复不改变 task 解法或 Agent 推理语义；H11 仍处于预注册状态。
 
@@ -673,3 +683,20 @@ DeepSeek `401`。未同步的 ledger commit 随后成功推送，线上 gateway 
 execution-budget treatment 的 `regex-log` probe 同样发生在旧网络故障窗口：原有效
 control 仍为 reward `1`，本次 verifier 因无法下载 `uvx` 得到的 `0` 不进入消融比较，
 必须在网络恢复后重新跑 pair。
+
+### 22:12 六槽调度与有效终态
+
+`large-scale-text-editing` 重跑通过，`install-windows-3.11` 的官方 verifier 完整执行后
+得到 `reward=0`；两者的 source、online PID 和容器停止检查均通过。唯一有效结果口径
+更新为 37 题，其中 25 通过、12 失败。
+
+并发上限变更已提交 draft PR `#258`（commit `cf17ab59`），19 个 targeted tests、
+public change-impact Gate 和远端 `contract`/`locked-runtime` checks 通过；PR 不等待
+合并，不阻塞 discovery。新源码的 `regex-log` smoke 因官方 verifier 冷下载超过
+900 秒得到 `VerifierTimeoutError`，只记 invalid infra，Agent trace 保留。另一个
+`large-scale-text-editing` source-bound smoke 正在运行，用于打开 concurrency=6 Gate。
+
+当前首次 discovery 为 `llm-inference-batching-scheduler`、
+`log-summary-date-ranges`、`mailman` 和 `make-doom-for-mips`；`fix-ocaml-gc` 仍在前一
+官方 verifier。调度只按全局 active container 数补槽，不让多个 controller 各自的
+局部 semaphore 叠加越过 6。
