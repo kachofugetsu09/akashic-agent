@@ -2,7 +2,7 @@
 
 日期：2026-07-30
 
-状态：第一阶段完成；已停止在 5 个有效 case，并完成 H2/H3/H4 消融
+状态：持续手工诊断；已完成五题停止点、后续小波次和 H2～H10 消融，未启动 89 题最终 eval
 
 设计合同：
 [V4 Flash 完整 Runtime Harness Benchmark 设计](../spark/2026-07-30-v4flash-harness-benchmark-design.md)
@@ -393,3 +393,114 @@ task、verifier 和外层 deadline 均不变。当前源码 smoke：
 - framing 使用 `max_message_len + 1`，超过协议边界时 fail-loud。
 
 以上只用于选择安全的 treatment，不把 Codex 的实现本身当作本项目实验结果。
+
+## H9 — task deadline 与 retained network pool
+
+### Task deadline
+
+旧 controller 把所有 Agent turn 固定为 `900s`，没有读取 Terminal-Bench task
+`[agent].timeout_sec`。这会让官方允许的长任务在 task 自身 deadline 前被 harness
+截断。treatment：
+
+- 从 Harbor task schema 读取 `agent.timeout_sec`；
+- SDK turn 使用同一 deadline；
+- Harbor 外层 Agent timeout 只增加 `120s` cleanup reserve；
+- 非正数和损坏 task 配置在创建 trial 前 fail-loud。
+
+该改动只对齐 benchmark lifecycle，不改变生产 Agent 默认值、task、模型或 verifier。
+实现为 draft PR `#251`。
+
+### Retained network pool
+
+保留容器时同时保留 Compose 默认 network，Docker 自动地址池为每个 trial 分配 `/20`；
+连续诊断后地址池耗尽，新 trial 在容器创建前失败。treatment 使用专用
+`10.240.0.0/16`，每 trial 预留一个带 benchmark owner labels 的 `/28` external
+network。空 endpoint network 可以在保存 inspect 证据后释放，container 和 volume
+不得随之删除。
+
+- 释放前证据：
+  `benchmark-runs/_infra/network-release-20260730-081843.json`；
+- 只删除 14 个同时满足 benchmark owner、旧 `/20`、`Containers={}` 的 network；
+- 没有删除 container 或 volume，30 个 stopped-retained benchmark container 保留；
+- treatment smoke：
+  `akasic-bench-v4flash-smoke-regex-log-20260730-074701-402789`，
+  reward `1`，新 network 为 `10.240.104.160/28`；
+- public Gate 8/8：
+  `docker/debug/reports/change-gate/20260730-162533-0cb71d94`。
+
+实现为 draft PR `#252`。这是 retained benchmark infra 的容量与失败封口修复，不改变
+Agent 行为。
+
+## Caffe 诊断停止点
+
+- Trial：
+  `akasic-bench-v4flash-diagnostic-caffe-cifar-10-20260730-075112-133971`；
+- task/turn deadline `3600s`，Harbor 外层 `3720s`，`max_iterations=0`；
+- 冷 setup 中 `uv venv` 约 `370s`，完整 runtime setup 约 `391s`；
+- 官方 CIFAR 下载约 50～60KB/s，预计 47～53 分钟，已经超过本次 task 剩余预算。
+
+同一个 turn 还暴露两个独立 Agent/tool 问题：
+
+1. Agent 三次从同一官方 URL 重试，每次都删除已有 partial tarball，从零开始；
+2. Agent 明确请求 `run_in_background=true, timeout=3600`，shell 工具却返回
+   `timeout_s=600`。
+
+在三次相同来源、相同清零策略后，主调度者通过 public control interrupt 停止该
+attempt。turn 终态为 `interrupted`，持续 `1,604,816ms`；Harbor 仍完成 evidence
+seal，source unchanged、online passed、container stopped-retained、17 个 artifact
+digest。缺少 `verifier/reward.txt` 是中断后的预期结果，因此该 attempt 不计 reward，
+不继续原样重跑。
+
+`3600 → 600` 已归因为 shell tool contract 的功能性问题：普通前台命令仍保留
+`600s`，显式后台 timeout 在既有 4 小时 lifecycle 内按请求保留，超过上限直接拒绝，
+不再静默夹断。36 个 shell 定向测试和 public Gate 8/8 通过；实现为独立 draft PR
+`#253`。这项兼容行为修复不能掩盖 Agent 删除 partial download 的决策问题。
+
+## H10 — 复用不可变 benchmark runtime
+
+### 假设
+
+> 如果跨 trial 只复用 Python、venv 和冻结依赖，并让每个 task container 只读挂载，
+> 就能消除重复的 runtime 网络安装，同时保持 task、HOME、workspace、trace、源码、
+> secret 和 verifier 初态独立。
+
+treatment 使用显式 builder 创建按 recipe digest 命名的 Docker volume：
+
+`akasic-bench-runtime-v1-79ea7f8bd2cbcb92b44062c0`
+
+recipe 冻结 requirements、uv binary/version、Python `3.13.7`、平台、builder image
+ID 和带 distribution hashes 的 resolved lock。trial 必须显式传入该 volume；
+cache miss、manifest/lock 不匹配、额外 volume 或 `RW=true` 都 fail-loud，不自动
+回退冷安装。CIFAR、Caffe source 和其他 task 下载物明确不进入共享 cache。
+
+真实兼容性探针在 `regex-log` 和 `caffe-cifar-10` 两个不同 task image 中只读挂载
+同一 volume，并成功导入 `cryptography`、`numpy`、`scipy`、`sklearn` 和
+`sqlite_vec`。
+
+第一次完整 smoke：
+
+- Trial：
+  `akasic-bench-v4flash-smoke-regex-log-20260730-084754-347608`；
+- 在模型请求前 fail-loud；
+- Docker 真实 `Mounts[].Source` 是宿主
+  `/var/lib/docker/volumes/.../_data`，volume 名称位于 `Mounts[].Name`；
+- mock 把 source 当 name，未覆盖真实结构；
+- container stopped-retained、source unchanged、online passed，不计 reward。
+
+修复 projection 后的完整 smoke：
+
+- Trial：
+  `akasic-bench-v4flash-smoke-regex-log-20260730-084951-336991`；
+- reward `1`，总计 `179.233s`；
+- environment setup `0.900s`，Agent setup `34.577s`，Agent execution
+  `109.777s`，verifier `23.253s`；
+- 同题旧冷路径 Agent setup `40.820s`，本次减少 `6.243s`，约 `15.3%`；
+- source unchanged、online passed、container stopped-retained；
+- 19 个 artifact digest，`missing=[]`；
+- isolation preflight 记录一个 allowlist volume 且 `RW=false`。
+
+`regex-log` 的直接 pair 只证明 setup 降低约 15.3%；Caffe 的 `391s` 冷 setup
+说明慢网络下潜在收益更大，但尚未用 Caffe 做完整 cached pair，因此不能把两者直接
+当作严格消融结果。实现为 draft PR `#254`；最终 public Gate 8/8：
+`docker/debug/reports/change-gate/20260730-165409-a577680e`，private Gate 仍为
+`pending_maintainer`。
