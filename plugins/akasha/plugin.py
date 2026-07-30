@@ -15,7 +15,6 @@ from .inspector import AkashaInspectorReader, mobile_summary
 from .memory_plugin import MemoryPlugin
 
 _MOBILE_RECALL_SCHEMA = "akasha.recall-card.v1"
-_MOBILE_RECALL_MAX_ITEMS_PER_LANE = 5
 _MOBILE_RECALL_USER_PREVIEW_CHARS = 100
 _MOBILE_RECALL_ASSISTANT_PREVIEW_CHARS = 50
 
@@ -224,10 +223,10 @@ def _empty_mobile_recall() -> dict[str, object]:
 def _mobile_recall_lane(
     value: list[dict[str, object]],
 ) -> list[dict[str, object]]:
-    """把 Inspector 行裁成移动卡片真正渲染的有界字段。"""
+    """把语义层已选出的整条 lane 投影成移动卡片字段。"""
 
     projected: list[dict[str, object]] = []
-    for raw in value[:_MOBILE_RECALL_MAX_ITEMS_PER_LANE]:
+    for raw in value:
         item: dict[str, object] = {
             "user_preview": _clip(
                 cast(str, raw["user_text"]),
