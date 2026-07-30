@@ -5,10 +5,12 @@ from pathlib import Path
 import pytest
 
 from benchmark.harbor_v4flash.runtime_volume import (
+    DEFAULT_BUILDER_IMAGE,
     DEFAULT_PYTHON_VERSION,
     RUNTIME_MOUNT_PATH,
     RUNTIME_TOP_LEVEL,
     RuntimeVolumeError,
+    _resolver_platform,
     build_runtime_volume,
     create_runtime_manifest,
     inspect_runtime_volume,
@@ -32,12 +34,13 @@ def _manifest() -> tuple[dict[str, object], bytes]:
         },
         python_version=DEFAULT_PYTHON_VERSION,
         platform="linux/amd64",
-        resolver_platform="x86_64-unknown-linux-gnu",
+        resolver_platform="x86_64-manylinux_2_28",
         builder_image={
-            "reference": "debian:bookworm-slim",
+            "reference": "debian:bullseye-slim",
             "id": "sha256:builder",
             "repo_digests": ["debian@sha256:repo"],
             "platform": "linux/amd64",
+            "libc": "glibc 2.31",
         },
         resolved_lock_digest=(
             f"sha256:{hashlib.sha256(lock_bytes).hexdigest()}"
@@ -54,6 +57,9 @@ def test_runtime_manifest_and_compose_freeze_identity() -> None:
     assert runtime_volume_labels(manifest)[
         "akasic.benchmark.runtime.resolved_lock_digest"
     ] == manifest["recipe"]["resolved_lock"]["digest"]
+    assert runtime_volume_labels(manifest)[
+        "akasic.benchmark.runtime.builder_glibc"
+    ] == "glibc 2.31"
     assert runtime_compose_overlay(volume_name) == {
         "services": {
             "main": {
@@ -96,6 +102,14 @@ def test_runtime_manifest_and_compose_freeze_identity() -> None:
             }
         ],
     }
+
+
+def test_runtime_labels_reject_manifest_without_builder_glibc() -> None:
+    manifest, _ = _manifest()
+    del manifest["recipe"]["builder_image"]["libc"]
+
+    with pytest.raises(RuntimeVolumeError, match="builder glibc 缺失"):
+        runtime_volume_labels(manifest)
 
 
 def test_inspect_runtime_volume_verifies_manifest_lock_and_inputs(
@@ -187,5 +201,47 @@ def test_builder_rejects_non_frozen_python_before_docker(
             source_root=tmp_path,
             uv_binary=tmp_path / "uv",
             python_version="3.13.8",
+            builder_image_reference="debian:bookworm-slim",
+        )
+
+
+def test_runtime_resolver_uses_explicit_manylinux_baseline() -> None:
+    assert DEFAULT_BUILDER_IMAGE == "debian:bullseye-slim"
+    assert _resolver_platform("linux/amd64") == "x86_64-manylinux_2_28"
+    assert _resolver_platform("linux/arm64") == "aarch64-manylinux_2_28"
+
+
+def test_builder_rejects_glibc_newer_than_official_task_floor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "benchmark.harbor_v4flash.runtime_volume._docker_platform",
+        lambda: "linux/amd64",
+    )
+    monkeypatch.setattr(
+        "benchmark.harbor_v4flash.runtime_volume._requirements_identity",
+        lambda _: {"digest": "sha256:requirements"},
+    )
+    monkeypatch.setattr(
+        "benchmark.harbor_v4flash.runtime_volume._uv_identity",
+        lambda _: {"version": "uv test", "digest": "sha256:uv"},
+    )
+    monkeypatch.setattr(
+        "benchmark.harbor_v4flash.runtime_volume._builder_image_identity",
+        lambda _: {
+            "reference": "debian:bookworm-slim",
+            "id": "sha256:builder",
+            "repo_digests": [],
+            "platform": "linux/amd64",
+            "libc": "glibc 2.36",
+        },
+    )
+
+    with pytest.raises(RuntimeVolumeError, match="glibc 高于兼容上限"):
+        build_runtime_volume(
+            source_root=tmp_path,
+            uv_binary=tmp_path / "uv",
+            python_version=DEFAULT_PYTHON_VERSION,
             builder_image_reference="debian:bookworm-slim",
         )

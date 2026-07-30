@@ -18,13 +18,17 @@ RUNTIME_VOLUME_SCHEMA = "akasic.benchmark-runtime.v1"
 RUNTIME_MOUNT_PATH = "/opt/akashic-runtime"
 RUNTIME_VENV_PATH = f"{RUNTIME_MOUNT_PATH}/venv"
 DEFAULT_PYTHON_VERSION = "3.13.7"
-DEFAULT_BUILDER_IMAGE = "debian:bookworm-slim"
+DEFAULT_BUILDER_IMAGE = "debian:bullseye-slim"
+MAX_BUILDER_GLIBC_VERSION = (2, 31)
 RUNTIME_TOP_LEVEL = ("manifest.json", "python", "resolved.lock", "venv")
 RUNTIME_BUILD_RECIPE = {
-    "id": "uv-managed-python-relocatable-venv-v1",
+    "id": "uv-managed-python-relocatable-venv-v2",
     "python_install": "uv-python-install-no-cache",
     "venv": "uv-venv-relocatable",
-    "dependency_install": "uv-pip-sync-require-hashes-strict-no-cache",
+    "dependency_install": (
+        "uv-pip-sync-manylinux-2.28-require-hashes-strict-no-cache"
+    ),
+    "builder_glibc_max": "2.31",
     "builder_root": "read-only",
     "builder_cache": "ephemeral-tmpfs",
 }
@@ -81,9 +85,16 @@ def _docker_platform() -> str:
 
 def _resolver_platform(platform: str) -> str:
     return {
-        "linux/amd64": "x86_64-unknown-linux-gnu",
-        "linux/arm64": "aarch64-unknown-linux-gnu",
+        "linux/amd64": "x86_64-manylinux_2_28",
+        "linux/arm64": "aarch64-manylinux_2_28",
     }[platform]
+
+
+def _glibc_version(raw: str) -> tuple[int, int]:
+    match = re.fullmatch(r"glibc ([0-9]+)\.([0-9]+)", raw)
+    if match is None:
+        raise RuntimeVolumeError(f"无法识别 builder glibc 版本：{raw!r}")
+    return int(match.group(1)), int(match.group(2))
 
 
 def _uv_identity(uv_binary: Path) -> dict[str, str]:
@@ -157,7 +168,7 @@ def _resolve_lock(
 
 
 def _builder_image_identity(reference: str) -> dict[str, object]:
-    """拉取 builder tag，并把后续写入固定到不可变 image ID。"""
+    """冻结 builder image，并记录决定原生依赖兼容性的 glibc。"""
 
     # 1. 显式 builder 命令才允许拉取镜像。
     _run(["docker", "pull", reference])
@@ -175,11 +186,27 @@ def _builder_image_identity(reference: str) -> dict[str, object]:
     image_platform = f"{image.get('Os')}/{image.get('Architecture')}"
     if not image_id.startswith("sha256:"):
         raise RuntimeVolumeError("builder image 缺少不可变 image ID")
+    glibc = _run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--read-only",
+            "--network",
+            "none",
+            "--entrypoint",
+            "/usr/bin/getconf",
+            image_id,
+            "GNU_LIBC_VERSION",
+        ]
+    ).stdout.strip()
+    _glibc_version(glibc)
     return {
         "reference": reference,
         "id": image_id,
         "repo_digests": sorted(str(value) for value in image.get("RepoDigests") or []),
         "platform": image_platform,
+        "libc": glibc,
     }
 
 
@@ -267,6 +294,9 @@ def runtime_volume_labels(manifest: dict[str, object]) -> dict[str, str]:
         for value in (requirements, uv, python, platform, lock, builder)
     ):
         raise RuntimeVolumeError("runtime manifest recipe 字段必须是对象")
+    builder_glibc = builder.get("libc")
+    if not isinstance(builder_glibc, str):
+        raise RuntimeVolumeError("runtime manifest builder glibc 缺失")
     return {
         f"{_LABEL_PREFIX}.managed": "true",
         f"{_LABEL_PREFIX}.schema": str(manifest["schema"]),
@@ -281,6 +311,7 @@ def runtime_volume_labels(manifest: dict[str, object]) -> dict[str, str]:
         f"{_LABEL_PREFIX}.platform": str(platform["docker"]),
         f"{_LABEL_PREFIX}.resolved_lock_digest": str(lock["digest"]),
         f"{_LABEL_PREFIX}.builder_image_id": str(builder["id"]),
+        f"{_LABEL_PREFIX}.builder_glibc": builder_glibc,
     }
 
 
@@ -437,6 +468,12 @@ def inspect_runtime_volume(
         "resolver": _resolver_platform(platform),
     }:
         raise RuntimeVolumeError("runtime volume 平台不匹配")
+    builder = recipe.get("builder_image")
+    if not isinstance(builder, dict):
+        raise RuntimeVolumeError("runtime volume builder image 缺失")
+    builder_glibc = _glibc_version(str(builder.get("libc") or ""))
+    if builder_glibc > MAX_BUILDER_GLIBC_VERSION:
+        raise RuntimeVolumeError("runtime volume builder glibc 高于兼容上限 2.31")
 
     return {
         "name": volume_name,
@@ -530,6 +567,11 @@ def build_runtime_volume(
             "builder image 平台不匹配："
             f"{builder_image['platform']} != {platform}"
         )
+    if (
+        _glibc_version(str(builder_image["libc"]))
+        > MAX_BUILDER_GLIBC_VERSION
+    ):
+        raise RuntimeVolumeError("builder glibc 高于兼容上限 2.31")
     with tempfile.TemporaryDirectory(prefix="akasic-runtime-volume-") as raw_temp:
         temp_root = Path(raw_temp)
         lock_path = temp_root / "resolved.lock"
@@ -593,7 +635,8 @@ def build_runtime_volume(
             f"/tools/uv venv --relocatable --python \"$1\" "
             f"{RUNTIME_VENV_PATH}\n"
             f"/tools/uv pip sync --python {RUNTIME_VENV_PATH}/bin/python "
-            "/inputs/resolved.lock --require-hashes --strict --no-cache\n"
+            "/inputs/resolved.lock --python-platform \"$RESOLVER_PLATFORM\" "
+            "--require-hashes --strict --no-cache\n"
             f"cp /inputs/resolved.lock {RUNTIME_MOUNT_PATH}/resolved.lock\n"
             f"cp /inputs/manifest.json {RUNTIME_MOUNT_PATH}/manifest.json\n"
             f"test \"$({RUNTIME_VENV_PATH}/bin/python -c "
@@ -638,6 +681,8 @@ def build_runtime_volume(
                     "UV_CACHE_DIR=/tmp/uv-cache",
                     "--env",
                     f"PYTHON_VERSION={python_version}",
+                    "--env",
+                    f"RESOLVER_PLATFORM={resolver_platform}",
                     "--entrypoint",
                     "/bin/sh",
                     str(builder_image["id"]),
