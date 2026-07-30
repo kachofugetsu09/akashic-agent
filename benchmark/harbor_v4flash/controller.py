@@ -30,12 +30,14 @@ from benchmark.harbor_v4flash.campaign import (
 )
 from benchmark.harbor_v4flash.isolation import (
     BENCHMARK_PREFIX,
+    IsolationError,
     artifact_digests,
     atomic_json,
     compose_project_name,
     create_source_bundle,
     inspect_compose_project,
     online_process_snapshot,
+    reserve_compose_network,
     source_tree_digest,
     validate_online_processes_unchanged,
 )
@@ -116,6 +118,20 @@ def _safe_trial_result(result: Any) -> dict[str, object]:
     }
 
 
+def _inspect_finished_project(
+    result: Any,
+    project_name: str,
+) -> tuple[list[dict[str, object]], str | None]:
+    """保留 Harbor 前置失败，同时让成功 trial 的容器缺失继续 fail-loud。"""
+
+    try:
+        return inspect_compose_project(project_name), None
+    except IsolationError as error:
+        if getattr(result, "exception_info", None) is None:
+            raise
+        return [], str(error)
+
+
 async def run_trial(
     args: argparse.Namespace,
     task_dir: Path,
@@ -136,6 +152,7 @@ async def run_trial(
     trial_name = f"{BENCHMARK_PREFIX}{run_kind}-{task_slug(task_dir)}-{timestamp}"
     trial_dir = runs_root / trial_name
     trial_dir.mkdir(parents=True, exist_ok=False)
+    project = compose_project_name(f"{trial_name}__env")
     before_source = source_tree_digest(source_root)
     before_online = online_process_snapshot()
     credential_env = _credential_env(args.credential_profile.resolve())
@@ -146,6 +163,19 @@ async def run_trial(
     uv_binary = args.uv_binary.resolve()
     if not uv_binary.is_file():
         raise FileNotFoundError(f"uv binary 不存在：{uv_binary}")
+    network = reserve_compose_network(project)
+    network_compose_path = trial_dir / "inputs" / "network-compose.json"
+    atomic_json(
+        network_compose_path,
+        {
+            "networks": {
+                "default": {
+                    "external": True,
+                    "name": network["name"],
+                }
+            }
+        },
+    )
 
     manifest_path = trial_dir / "campaign-manifest.json"
     initial_source: dict[str, object] = {
@@ -192,6 +222,10 @@ async def run_trial(
             "persisted_values": False,
         },
         "online_before": before_online,
+        "docker": {
+            "project": project,
+            "network": network,
+        },
     }
     atomic_json(manifest_path, initial_manifest)
 
@@ -225,6 +259,7 @@ async def run_trial(
         environment=EnvironmentConfig(
             type=EnvironmentType.DOCKER,
             delete=True,
+            extra_docker_compose=[network_compose_path],
             kwargs={"keep_containers": True},
         ),
     )
@@ -238,8 +273,7 @@ async def run_trial(
         before_online,
         after_online,
     )
-    project = compose_project_name(f"{trial_name}__env")
-    containers = inspect_compose_project(project)
+    containers, inspection_error = _inspect_finished_project(result, project)
     stopped = bool(containers) and all(
         not bool(container.get("running")) for container in containers
     )
@@ -276,9 +310,11 @@ async def run_trial(
         "online": online_report,
         "docker": {
             "project": project,
-            "retained": True,
+            "retained": bool(containers),
             "all_stopped": stopped,
             "containers": containers,
+            "inspection_error": inspection_error,
+            "network": network,
         },
         "result": _safe_trial_result(result),
         "artifacts": {

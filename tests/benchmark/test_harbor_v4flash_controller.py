@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from benchmark.harbor_v4flash.controller import _task_agent_timeout_sec
+from benchmark.harbor_v4flash.controller import (
+    _inspect_finished_project,
+    _task_agent_timeout_sec,
+)
+from benchmark.harbor_v4flash.isolation import IsolationError
 from benchmark.harbor_v4flash.isolation import create_source_bundle
 
 
@@ -59,6 +63,42 @@ def test_task_agent_timeout_rejects_invalid_budget(
 
     with pytest.raises(ValueError, match=r"\[agent\]\.timeout_sec"):
         _task_agent_timeout_sec(task_dir)
+
+
+def test_harbor_startup_failure_keeps_original_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = type("Result", (), {"exception_info": object()})()
+
+    def missing_project(project_name: str) -> list[dict[str, object]]:
+        raise IsolationError(f"未找到 compose project：{project_name}")
+
+    monkeypatch.setattr(
+        "benchmark.harbor_v4flash.controller.inspect_compose_project",
+        missing_project,
+    )
+
+    containers, error = _inspect_finished_project(result, "akasic-bench-missing")
+
+    assert containers == []
+    assert error == "未找到 compose project：akasic-bench-missing"
+
+
+def test_success_without_compose_project_fails_loud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = type("Result", (), {"exception_info": None})()
+
+    def missing_project(project_name: str) -> list[dict[str, object]]:
+        raise IsolationError(f"未找到 compose project：{project_name}")
+
+    monkeypatch.setattr(
+        "benchmark.harbor_v4flash.controller.inspect_compose_project",
+        missing_project,
+    )
+
+    with pytest.raises(IsolationError, match="未找到 compose project"):
+        _inspect_finished_project(result, "akasic-bench-missing")
 
 
 def test_source_bundle_restores_history_and_keeps_worktree_overlay(

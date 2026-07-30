@@ -1,3 +1,5 @@
+import ipaddress
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -6,6 +8,7 @@ from benchmark.harbor_v4flash.isolation import (
     IsolationError,
     artifact_digests,
     compose_project_name,
+    reserve_compose_network,
     sha256_file,
     validate_isolation,
 )
@@ -36,6 +39,44 @@ def test_compose_project_name_matches_harbor_normalization() -> None:
         compose_project_name("Akasic-Bench-V4Flash-Smoke.Name__env")
         == "akasic-bench-v4flash-smoke-name__env"
     )
+
+
+def test_reserve_compose_network_retries_overlapping_subnet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+    responses = iter(
+        [
+            subprocess.CompletedProcess(
+                [],
+                1,
+                stdout="",
+                stderr="Pool overlaps with other one on this address space",
+            ),
+            subprocess.CompletedProcess([], 0, stdout="network-id\n", stderr=""),
+        ]
+    )
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return next(responses)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    network = reserve_compose_network(
+        "akasic-bench-v4flash-smoke__env",
+        network_pool=ipaddress.IPv4Network("10.240.0.0/29"),
+        network_prefix=30,
+    )
+
+    assert network["id"] == "network-id"
+    assert network["pool"] == "10.240.0.0/29"
+    assert commands[0][6] != commands[1][6]
+
+
+def test_reserve_compose_network_rejects_non_benchmark_owner() -> None:
+    with pytest.raises(IsolationError, match="benchmark 前缀"):
+        reserve_compose_network("production_default")
 
 
 def test_validate_isolation_accepts_only_trial_bind_mounts(tmp_path: Path) -> None:

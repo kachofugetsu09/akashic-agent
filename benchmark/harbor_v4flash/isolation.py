@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -9,6 +10,8 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 BENCHMARK_PREFIX = "akasic-bench-v4flash-"
+BENCHMARK_NETWORK_POOL = ipaddress.IPv4Network("10.240.0.0/16")
+BENCHMARK_NETWORK_PREFIX = 28
 _IGNORED_TREE_PARTS = {
     ".git",
     ".mypy_cache",
@@ -133,6 +136,75 @@ def compose_project_name(session_id: str) -> str:
     if not re.match(r"^[a-z0-9]", value):
         value = "0" + value
     return re.sub(r"[^a-z0-9_-]", "-", value)
+
+
+def reserve_compose_network(
+    project_name: str,
+    *,
+    network_pool: ipaddress.IPv4Network = BENCHMARK_NETWORK_POOL,
+    network_prefix: int = BENCHMARK_NETWORK_PREFIX,
+) -> dict[str, str]:
+    """为 retained benchmark project 原子预留一个小型独立网络。"""
+
+    # 1. 只允许 benchmark owner 在合法 IPv4 池内分配子网。
+    if not project_name.startswith(BENCHMARK_PREFIX):
+        raise IsolationError(f"compose project 缺少 benchmark 前缀：{project_name}")
+    if network_prefix <= network_pool.prefixlen or network_prefix > 30:
+        raise IsolationError(
+            f"benchmark network prefix 无效：{network_pool} /{network_prefix}"
+        )
+
+    # 2. Docker 负责原子判定重叠；hash 只分散起点，冲突时顺序探测。
+    subnet_count = 1 << (network_prefix - network_pool.prefixlen)
+    subnet_size = 1 << (32 - network_prefix)
+    start = int.from_bytes(hashlib.sha256(project_name.encode()).digest()[:4]) % (
+        subnet_count
+    )
+    network_name = f"{project_name}_default"
+    for step in range(subnet_count):
+        index = (start + step) % subnet_count
+        candidate = ipaddress.IPv4Network(
+            (int(network_pool.network_address) + index * subnet_size, network_prefix)
+        )
+        result = subprocess.run(
+            [
+                "docker",
+                "network",
+                "create",
+                "--driver",
+                "bridge",
+                "--subnet",
+                str(candidate),
+                "--label",
+                f"com.docker.compose.project={project_name}",
+                "--label",
+                "com.docker.compose.network=default",
+                "--label",
+                "akasic.benchmark.managed=true",
+                network_name,
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if result.returncode == 0:
+            network_id = result.stdout.strip()
+            if not network_id:
+                raise IsolationError("docker network create 成功但未返回 network id")
+            return {
+                "id": network_id,
+                "name": network_name,
+                "subnet": str(candidate),
+                "pool": str(network_pool),
+            }
+        error = "\n".join((result.stdout, result.stderr)).strip()
+        if "overlaps with other one on this address space" in error:
+            continue
+        raise IsolationError(
+            f"无法创建 benchmark network {network_name}：{error}"
+        )
+    raise IsolationError(f"benchmark network pool 已耗尽：{network_pool}")
 
 
 def inspect_compose_project(project_name: str) -> list[dict[str, object]]:
