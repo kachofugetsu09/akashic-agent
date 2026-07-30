@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import subprocess
 import time
@@ -11,10 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from harbor.models.environment_type import EnvironmentType
+from harbor.models.task.config import TaskConfig as HarborTaskConfig
 from harbor.models.trial.config import (
     AgentConfig,
     EnvironmentConfig,
-    TaskConfig,
+    TaskConfig as TrialTaskConfig,
     TrialConfig,
 )
 from harbor.trial.trial import Trial
@@ -43,6 +45,7 @@ DEFAULT_FORBIDDEN_PATHS = (
     Path("/home/huashen/.akashic/workspace"),
     Path("/home/huashen/.akashic-plugin/cache"),
 )
+HARNESS_CLEANUP_RESERVE_SEC = 120.0
 
 
 def _git_output(root: Path, *args: str) -> str:
@@ -78,6 +81,22 @@ def _credential_env(profile_path: Path) -> dict[str, str]:
     }
 
 
+def _task_agent_timeout_sec(task_dir: Path) -> float:
+    """读取并校验 Harbor task 声明的 agent 执行预算。"""
+
+    # 1. 复用 Harbor 的 task schema 解析权威配置。
+    config_path = task_dir / "task.toml"
+    config = HarborTaskConfig.model_validate_toml(
+        config_path.read_text(encoding="utf-8")
+    )
+
+    # 2. 本 harness 要求显式、有限且为正的 task 预算。
+    timeout_sec = config.agent.timeout_sec
+    if timeout_sec is None or not math.isfinite(timeout_sec) or timeout_sec <= 0:
+        raise ValueError(f"{config_path} 缺少有效的 [agent].timeout_sec")
+    return timeout_sec
+
+
 def _safe_trial_result(result: Any) -> dict[str, object]:
     verifier = getattr(result, "verifier_result", None)
     rewards = getattr(verifier, "rewards", None) if verifier is not None else None
@@ -109,6 +128,7 @@ async def run_trial(
     source_root = args.source_root.resolve()
     task_dir = task_dir.resolve()
     runs_root = args.runs_dir.resolve()
+    task_agent_timeout_sec = _task_agent_timeout_sec(task_dir)
     timestamp = (
         time.strftime("%Y%m%d-%H%M%S", time.gmtime())
         + f"-{time.time_ns() % 1_000_000:06d}"
@@ -152,6 +172,14 @@ async def run_trial(
             "max_output_tokens": None,
             "max_output_policy": "provider_default",
         },
+        "timeouts": {
+            "task_agent_sec": task_agent_timeout_sec,
+            "turn_sec": task_agent_timeout_sec,
+            "harness_cleanup_reserve_sec": HARNESS_CLEANUP_RESERVE_SEC,
+            "harbor_agent_sec": (
+                task_agent_timeout_sec + HARNESS_CLEANUP_RESERVE_SEC
+            ),
+        },
         "source": initial_source,
         "harbor": {
             "root": str(args.harbor_root.resolve()),
@@ -169,14 +197,16 @@ async def run_trial(
 
     # 2. Harbor 负责启动环境、执行 agent、外部 verifier 和停止但保留容器。
     config = TrialConfig(
-        task=TaskConfig(path=task_dir),
+        task=TrialTaskConfig(path=task_dir),
         trial_name=trial_name,
         trials_dir=runs_root,
         agent=AgentConfig(
             import_path=AkashicHarborAgent.import_path(),
             model_name="deepseek/deepseek-v4-flash",
             override_setup_timeout_sec=900,
-            override_timeout_sec=900,
+            override_timeout_sec=(
+                task_agent_timeout_sec + HARNESS_CLEANUP_RESERVE_SEC
+            ),
             env=credential_env,
             kwargs={
                 "source_root": str(source_root),
@@ -189,6 +219,7 @@ async def run_trial(
                 ],
                 "source_digest": before_source,
                 "install_timeout_sec": 900,
+                "turn_timeout_sec": task_agent_timeout_sec,
             },
         ),
         environment=EnvironmentConfig(

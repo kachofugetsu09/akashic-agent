@@ -3,6 +3,9 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+import pytest
+
+from benchmark.harbor_v4flash.controller import _task_agent_timeout_sec
 from benchmark.harbor_v4flash.isolation import create_source_bundle
 
 
@@ -28,6 +31,34 @@ def test_v4flash_high_uses_provider_output_limit() -> None:
 
     assert config["llm"]["runtimes"]["main"]["max_output_tokens"] == 0
     assert config["agent"]["max_tokens"] == 0
+    assert config["agent"]["max_iterations"] == 0
+
+
+def test_task_agent_timeout_uses_harbor_task_budget(tmp_path: Path) -> None:
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "task.toml").write_text(
+        "[agent]\ntimeout_sec = 3600.0\n",
+        encoding="utf-8",
+    )
+
+    assert _task_agent_timeout_sec(task_dir) == 3600.0
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf"])
+def test_task_agent_timeout_rejects_invalid_budget(
+    tmp_path: Path,
+    value: str,
+) -> None:
+    task_dir = tmp_path / value
+    task_dir.mkdir()
+    (task_dir / "task.toml").write_text(
+        f"[agent]\ntimeout_sec = {value}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"\[agent\]\.timeout_sec"):
+        _task_agent_timeout_sec(task_dir)
 
 
 def test_source_bundle_restores_history_and_keeps_worktree_overlay(

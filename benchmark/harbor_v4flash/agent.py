@@ -50,6 +50,7 @@ class AkashicHarborAgent(BaseAgent):
         forbidden_host_paths: list[str],
         source_digest: str,
         install_timeout_sec: int = 900,
+        turn_timeout_sec: float,
         **kwargs,
     ) -> None:
         super().__init__(logs_dir=logs_dir, model_name=model_name, **kwargs)
@@ -63,6 +64,9 @@ class AkashicHarborAgent(BaseAgent):
         ]
         self._source_digest = source_digest
         self._install_timeout_sec = install_timeout_sec
+        if turn_timeout_sec <= 0:
+            raise ValueError("turn_timeout_sec 必须大于 0")
+        self._turn_timeout_sec = turn_timeout_sec
 
     def version(self) -> str:
         return HARNESS_VERSION
@@ -177,11 +181,13 @@ class AkashicHarborAgent(BaseAgent):
                 f"{_AGENT_LOGS}/trace.jsonl",
                 "--result",
                 f"{_AGENT_LOGS}/turn-result.json",
+                "--turn-timeout",
+                str(self._turn_timeout_sec),
             ]
         )
         completed = await environment.exec(
             command=driver_command,
-            timeout_sec=900,
+            timeout_sec=self._turn_timeout_sec + 5,
         )
         shutdown = await environment.exec(
             command=(
