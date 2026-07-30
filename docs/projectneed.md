@@ -363,6 +363,12 @@ AgentLoop 唯一拥有活动 turn task 的取消和 cleanup。无论成功、失
 
 内建 provider 的默认端点、输入模态、模型家族协议和请求字段映射由 core runtime 的 provider profile 拥有。模型目录可以在初始化时动态读取；同一已知 Chat Completions 家族的新版本无需维护静态型号表。使用其他 wire protocol 的家族和未知家族必须在配置边界 fail-closed，不能试发、静默 fallback 或把目录结果持久化成新的权威状态。
 
+### RUN-006 模型输出上限显式区分 provider 默认值
+
+新建配置和缺少该字段的配置默认使用 `max_output_tokens = 0`。`0` 表示请求不发送 provider 的输出 token 上限字段，由 provider 和模型自身边界负责；它不表示无限输出。正整数继续表示显式输出上限，负数在配置边界 fail-fast。已经显式配置正整数的存量配置必须保持原值，不能因默认值变化被自动改写。
+
+主 runtime 的默认值不拥有 summary、标题生成或其他内部小任务的局部预算。内部任务可以继续使用独立正整数上限，主 runtime 为 `0` 时不能把这些局部上限一并取消。
+
 ### OUT-001 被动按 Turn 提交，主动按送达提交
 
 被动消息以完整 Turn 为权威提交单位。推理和持久化成功后，user 与 assistant 消息共同进入会话历史；随后 dispatch 失败不得回滚已经提交的 Turn。主动消息没有对应的用户 Turn，只有 dispatch 明确成功后才进入会话历史、presence、dedupe 和 success 状态；未发送内容不得让 Agent 误认为自己已经说过。
@@ -542,6 +548,12 @@ P0 不变量必须由受保护的 semantic test、policy 或黑盒观察器验�
 `adb shell am instrument` 的进程退出码不能单独充当 oracle；Gate 必须核对声明的测试数量、指定方法、开始/成功状态和失败标记，0 test、crash、aborted 或 assertion failure 都不能记为通过。测试阶段通过后仍不能提前声明 Gate 通过；清理完成后才能写唯一终态。清理失败必须非零退出、标记 `gate_result=failed_cleanup` 并列出残留 package。
 
 正式应用及设备上既有 package 属于受保护状态。Gate 必须记录测试前后的 package、版本、安装身份和可观察数据身份，且不得覆盖、卸载、清空或连接正式应用状态。`base.apk` 只能恢复 binary，不能代替 app data 备份；若任务确实需要触碰既有 package，必须另获授权并先取得经过恢复演练的数据级备份，否则 blocked。测试结束还要证明 run-specific app/test package、ADB reverse、容器和测试 workspace 已清理。CI 继续承担固定逻辑的可重复 Gate，维护者设备只补充 OS lifecycle、Room migration、通知、文件系统和真实 Compose 交互证据。涉及实时 Gateway 的设备证据还必须绑定 Mobile Lab core SHA、run ID 和非正式配对来源；客户端 package 隔离不能证明服务端 workspace 已隔离。
+
+### TST-009 Benchmark 只作为通用故障诊断探针
+
+公开 benchmark case 可以用于发现 Agent 和 harness 的通用功能缺陷、鲁棒性问题、模型边界和环境问题，但不得驱动 task name、题面、expected output 或 verifier 特化的生产行为。Scoring runtime 每个 attempt 使用独立 runtime 与 workspace，封存终态证据后分析；基础设施无效、模型能力不足、task 问题、功能性 bug、鲁棒性优化和行为语义改变必须分开归因。
+
+诊断结果不能从不同 candidate 或 attempt 选择最好结果后拼成总分。生产候选必须先用与 benchmark 无关的 synthetic、现实 control 和项目 Gate 证明通用机制；行为语义改变先单独批准。优化后的正式完整 eval 只有维护者明确授权后才能从冻结 artifact 重新运行。
 
 ## 14. 需求变更流程
 

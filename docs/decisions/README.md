@@ -15,6 +15,7 @@
 | [0007](0007-mobile-plugin-control-and-data-planes-are-explicit.md) | accepted | 移动插件控制面与查询数据面显式分离 | MOB-001、MOB-003、MOB-006、PLG-003、PLG-011、TST-006～TST-008 |
 | [0008](0008-plugin-runtime-publishes-only-committed-snapshots.md) | accepted | 插件运行时只发布已提交快照 | PLG-001～PLG-008、GOV-005、TST-006～TST-008 |
 | [0009](0009-akasha-mobile-recall-preserves-semantic-lanes.md) | accepted | Akasha 移动卡片完整保留有界召回 lane | MOB-006、PLG-011、TST-006～TST-008 |
+| [0010](0010-provider-default-output-and-benchmark-diagnostics.md) | accepted | Provider 默认输出边界与 Benchmark 诊断边界 | RUN-006、TST-009 |
 
 ## 新增规则
 
