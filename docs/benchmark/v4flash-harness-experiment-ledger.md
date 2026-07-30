@@ -905,6 +905,14 @@ checks 为 green：
 | `#266` | 采集 cgroup resource-limit 证据 | `fix/benchmark-portable-runtime-abi` |
 | `#267` | secret value 不进入宿主 argv | `fix/benchmark-resource-evidence-v2` |
 
+独立 LLM Gate 对 `#264`–`#267` 的相邻 diff 判定为通过，无阻塞性正确性或安全问题。
+但按 `projectneed` 的严格定义，它们都应标成 `semantic_delta: compatible`，而不是
+`none`：`#264`、`#265` 会把可达的误报失败恢复为成功；`#266` 新增持久资源 artifact
+和错误分类；`#267` 改变 secret transport。它们仍不是需要维护者批准的 Agent
+策略 treatment，因为 task、prompt、模型、verifier 和评分规则保持不变。`#264` 的
+private Gate 为 `not_required`；`#265`–`#267` 的 private Gate 准确保留为
+`pending_maintainer`，不以公开 Gate 或 CI 代替。
+
 每题都使用独立 Docker 实例和新的 `/opt/akashic-workspace`，Akasha memory 不跨题，
 且当前 harness 只向 Akasic 发起一个 programmatic turn。因此这些 trace 可以归因
 single-turn 的规划、工具使用、验证、停止行为，以及 SDK/control/harness/runtime

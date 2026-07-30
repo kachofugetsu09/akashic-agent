@@ -15,6 +15,10 @@
 task image 预拉取、协议 framing、证据封存、隔离和 timeout owner 对齐等不改变任务
 解法的 infra 修复继续直接实施、验证和重跑，不进入这里。
 
+这里的“不进入”不等于 `semantic_delta: none`。若修复改变可达错误分类、让原本误失败
+的路径恢复成功、增加持久诊断 artifact 或改变 secret transport，应按项目合同标为
+`compatible`；只有所有外部行为和持久结果都不变时才可标 `none`。
+
 任何候选都不得读取 hidden verifier、写 task 特例或根据单题答案设计规则。遍历结束后，
 每项必须同时给出失败 case、正常 control、允许变化、受保护行为、成本和可回滚实现；
 证据不足的候选直接关闭，不为了提高 benchmark 分数实施。
