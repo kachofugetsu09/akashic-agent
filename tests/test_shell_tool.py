@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -30,6 +31,13 @@ from session.manager import SessionManager
 
 def _decode(value: str) -> dict[str, Any]:
     return json.loads(value)
+
+
+def _linux_process_state(pid: int) -> str | None:
+    try:
+        return Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[2]
+    except FileNotFoundError:
+        return None
 
 
 @pytest.mark.asyncio
@@ -249,10 +257,12 @@ async def test_natural_shell_exit_kills_remaining_process_group(tmp_path: Path) 
         assert result["process_status"] == "succeeded"
         child_pid = int(pid_path.read_text(encoding="utf-8").strip())
         for _ in range(100):
-            if not Path(f"/proc/{child_pid}").exists():
+            child_state = _linux_process_state(child_pid)
+            # 极简容器的 PID 1 可能不回收孤儿；Z 仍证明进程已被终止。
+            if child_state is None or child_state == "Z":
                 break
             await asyncio.sleep(0.01)
-        assert not Path(f"/proc/{child_pid}").exists()
+        assert child_state is None or child_state == "Z"
     finally:
         await manager.shutdown()
 
@@ -557,15 +567,33 @@ def test_explicit_shell_rejects_unknown_or_missing_binary() -> None:
 def test_default_shell_ignores_shell_environment_variable(monkeypatch) -> None:
     import pwd
 
-    passwd_shell = Path(pwd.getpwuid(os.getuid()).pw_shell)
-    expected_kind = detect_shell_kind(passwd_shell)
-    if expected_kind is None or not passwd_shell.is_file():
-        pytest.skip("current passwd shell is not a supported executable")
+    passwd_shell = resolve_shell("bash")
+    monkeypatch.setattr(
+        pwd,
+        "getpwuid",
+        lambda _uid: SimpleNamespace(pw_shell=str(passwd_shell.path)),
+    )
     monkeypatch.setenv("SHELL", "/definitely/missing/fish")
 
     selected = resolve_shell()
 
-    assert selected == ResolvedShell(expected_kind, passwd_shell)
+    assert selected == passwd_shell
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix passwd shell behavior")
+def test_default_shell_falls_back_when_uid_has_no_passwd_record(monkeypatch) -> None:
+    import pwd
+
+    def missing_passwd_record(_uid: int) -> None:
+        raise KeyError("uid not found")
+
+    monkeypatch.setattr(pwd, "getpwuid", missing_passwd_record)
+    monkeypatch.setenv("SHELL", "/definitely/missing/fish")
+
+    selected = resolve_shell()
+
+    assert selected.kind in {ShellKind.BASH, ShellKind.ZSH, ShellKind.SH}
+    assert selected.path.is_file()
 
 
 @pytest.mark.asyncio
