@@ -71,7 +71,7 @@ def register_common_meta_tools(
         ShellTaskStopTool(shell_manager),
         always_on=True,
         risk="external-side-effect",
-        search_hint="停止命令 task_stop 杀进程树",
+        search_hint="停止命令 task_stop 终止执行进程组",
     )
     tools.register(
         cast(Tool, readonly_tools["web_search"]),

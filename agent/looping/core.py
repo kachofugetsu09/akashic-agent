@@ -674,6 +674,7 @@ class AgentLoop:
             else ""
         )
         turn_token = current_turn_id.set(inherited_turn_id or new_turn_id())
+        primary_error: BaseException | None = None
         try:
             # 1. 先处理可能存在的续跑态，并发布 turn started。
             msg, resumed_from_interrupt = await self._resume_interrupted_message(msg, key)
@@ -698,10 +699,18 @@ class AgentLoop:
                 # 3. 无论核心处理结果如何，都释放 busy 状态。
                 if self._processing_state:
                     self._processing_state.exit(busy_key)
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
             # 4. 当前 query 结束即回收其 shell，再恢复调用方上下文。
             try:
-                await self._terminate_shell_owner(key)
+                try:
+                    await self._terminate_shell_owner(key)
+                except BaseException:
+                    if primary_error is None:
+                        raise
+                    logger.exception("shell owner cleanup 失败，保留原始 turn 异常")
             finally:
                 current_session_key.reset(session_token)
                 current_turn_id.reset(turn_token)

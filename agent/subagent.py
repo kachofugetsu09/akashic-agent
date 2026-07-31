@@ -135,10 +135,20 @@ class SubAgent:
 
     async def run(self, task: str) -> str:
         """执行单次任务，并在 owner 结束时回收 shell execution。"""
+
+        primary_error: BaseException | None = None
         try:
             return await self._run(task)
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
-            await self._shutdown_shell()
+            try:
+                await self._shutdown_shell()
+            except BaseException:
+                if primary_error is None:
+                    raise
+                logger.exception("[subagent] shell cleanup 失败，保留原始异常")
 
     async def _run(self, task: str) -> str:
         """执行单次任务，并返回完成结果或预算收尾总结。"""
