@@ -103,7 +103,7 @@
 | 会话、消息、turn、附件、删除或恢复 | `projectneed` 第 6～7、11～13 节 → [持久化状态地图](design/persistence-state-map.md) | `session/`、`infra/channels/base.py`、`bootstrap/channels.py`、`bootstrap/chat_api.py` |
 | Markdown 记忆、Memory2、Akasha | `projectneed` 第 6、8、11～13 节 → [0006](decisions/0006-akasha-v2-is-the-canonical-explicit-memory-engine.md) → [Akasha V2 在线与重放](design/akasha-v2-runtime-migration.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/memory.py`、`core/memory/markdown.py`、`memory2/store.py`、`plugins/default_memory/`、`plugins/akasha/` |
 | 主动流程、Wake、Drift、调度 | `projectneed` 第 6、9、12～13 节 → [持久化状态地图](design/persistence-state-map.md) → [Wake 最近主动消息上下文](design/wake-recent-delivery-context.md) | `bootstrap/proactive.py`、`proactive_v2/`、`plugins/default_proactive/`、`plugins/wake_proactive/`、`plugins/drift_flow/`、`agent/scheduler.py` |
-| 正式启动、Supervisor、自重启、停止信号 | `projectneed` RUN-001～RUN-004 → [`docker/debug/README.md`](../docker/debug/README.md) | `main.py`、`agent/supervisor.py`、`agent/restart.py`、`agent/tools/agent_restart.py`、`scripts/stop-runtime.sh`、restart Gate 报告 |
+| 正式启动、Supervisor、自重启、停止信号 | `projectneed` RUN-001～RUN-004 → [Linux Supervisor 安全自重启提议](design/linux-supervisor-safe-self-restart.md) → [`docker/debug/README.md`](../docker/debug/README.md) | `main.py`、`agent/supervisor.py`、`agent/restart.py`、`agent/tools/agent_restart.py`、`scripts/stop-runtime.sh`、restart Gate 报告 |
 | 插件安装、热重载、plugin-data、Skill、Drift skill、MCP | `projectneed` 第 6、10～13 节 → [0008](decisions/0008-plugin-runtime-publishes-only-committed-snapshots.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/plugins/base.py`、`agent/plugins/install.py`、`agent/plugins/manager.py`、`agent/plugins/reload_journal.py`、`agent/plugins/skill_links.py`、`agent/mcp/host.py` |
 | 移动端查看 Markdown、定时任务、插件、Skill、MCP | `projectneed` 第 6、10～13 节 → [移动端运行时检查](design/mobile-runtime-inspection.md) → [持久化状态地图](design/persistence-state-map.md) | `infra/mobile_realtime/runtime_inspection.py`、`infra/mobile_realtime/protocol.py`、`infra/mobile_realtime/channel.py` |
 | Workspace、配置、凭据、迁移、备份 | `projectneed` 第 6、11～13 节 → [持久化状态地图](design/persistence-state-map.md) → [0005](decisions/0005-git-cursor-drives-one-shot-migrations.md) → [迁移维护手册](design/git-migration-authoring.md) → [Git 一次性迁移设计](spark/2026-07-21-git-backed-one-shot-migrations-design.md) | `main.py`、`bootstrap/init_workspace.py`、`agent/config.py`、`agent/migrations/`、`migrations/`、`agent/model_runtime/auth/store.py`、`scripts/rolling_backup.py` |
@@ -192,9 +192,11 @@ docs/
 │   ├── 0009-akasha-mobile-recall-preserves-semantic-lanes.md
 │   ├── 0010-provider-default-output-and-benchmark-diagnostics.md
 │   ├── 0011-benchmark-concurrency-six.md
-│   └── 0012-query-local-compaction-is-a-persisted-projection.md
+│   ├── 0012-query-local-compaction-is-a-persisted-projection.md
+│   └── 0013-linux-supervisor-uses-one-boot-guardian.md
 ├── design/
 │   ├── akasha-v2-runtime-migration.md
+│   ├── linux-supervisor-safe-self-restart.md
 │   ├── mobile-cross-repository-semantic-gate.md
 │   ├── project-workbook-and-semantic-safety.md
 │   ├── query-local-react-compaction.md

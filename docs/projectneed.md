@@ -363,9 +363,9 @@ session、channel、chat、source_ref 和预算在每次 post-response run 创�
 
 AgentLoop 唯一拥有活动 turn task 的取消和 cleanup。无论成功、失败或取消，都恢复临时 session context。terminal event、inbound complete 和 delivery ack 各自由一个层提交，保证恰好一次。
 
-### RUN-004 正式默认入口必须由 Supervisor 托管
+### RUN-004 Linux 正式入口由 Supervisor 托管
 
-无子命令执行 `python main.py` 是正式服务入口，必须先进入 workspace 唯一的 Supervisor，再由 Supervisor 以固定参数启动 gateway child。`supervise` 只作为兼容别名；显式 `gateway` 只用于未托管调试，并且不得注册 `agent_restart`。自重启仍须经过当轮 ToolSearch 授权、回复持久化与送达、boot-scoped 私有提交证据和约定退出码，普通退出、崩溃或伪造退出码不得拉起下一代进程。
+Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先进入 workspace 唯一的 Supervisor，再由每个 boot 唯一的 Guardian 启动和清理 gateway。`supervise` 只作为 Linux 兼容别名；显式 `gateway` 只用于未托管调试，并且不得注册 `agent_restart`。非 Linux 默认入口必须明确警告并进入 unmanaged gateway，`supervise` 必须拒绝启动，且两者都不得提供 `agent_restart`、Supervisor settings、私有 readiness/commit 或 boot 进程树清理。Linux 自重启仍须经过当轮 ToolSearch 授权、回复持久化与送达、boot-scoped 私有提交证据、约定退出码和旧 boot 空集验证；普通退出、崩溃、伪造退出码或未知进程身份不得拉起下一代，也不得触发 crash auto-restart。
 
 ### RUN-005 内建模型端点按 profile 拥有协议边界
 
