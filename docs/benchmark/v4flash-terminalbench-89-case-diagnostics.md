@@ -2,8 +2,8 @@
 
 日期：2026-07-31
 
-状态：冻结候选首轮 89/89 个任务已取得终态。本文会在 infra 修复和替代重跑后
-继续更新，最终只保留每题一个有效结果。
+状态：89/89 个任务均已取得唯一有效结果；两个被 infra/provider 故障污染的
+首轮结果已在修复后替代重跑。
 
 关联文档：
 
@@ -15,17 +15,20 @@
 
 | 项目 | 值 |
 |---|---|
-| Candidate | `94823b730520c3bb61411f75b8fdf64dd20054ed` |
+| Frozen candidate | `94823b730520c3bb61411f75b8fdf64dd20054ed` |
+| Replacement candidate | `2db5b1ec59685f377a611e8209dfa30743594fbd` |
 | Dataset | Terminal-Bench 2.1，89 tasks |
 | Model | DeepSeek V4 Flash，`high` |
 | Agent 限制 | `max_output_tokens=0`、`max_iterations=0` |
 | Compaction | 按生产配置在模型上下文 74% 触发 |
 | 并发 | 最多 6 个独立 Docker runtime/workspace |
-| Run root | `/mnt/data/coding/akasic-agent-worktrees/benchmark-runs/final-eval-89-94823b73` |
+| Frozen run root | `/mnt/data/coding/akasic-agent-worktrees/benchmark-runs/final-eval-89-94823b73` |
+| Replacement run root | `/mnt/data/coding/akasic-agent-worktrees/benchmark-runs/replacement-eval-89-2db5b1ec` |
 | Runtime cache | `akasic-bench-runtime-v1-09168f46e2097f6c44d7daf2` |
 | Git cache | `akasic-bench-git-v1-e4706df27562c97921ac2a6c` |
 
-每行 `Trial` 均相对于上述 run root。标准证据位置如下：
+普通 `Trial` 相对于 frozen run root；以 `replacement/` 开头的 `Trial` 相对于
+replacement run root。标准证据位置如下：
 
 - Agent trace：`<Trial>/agent/trace.jsonl`
 - Agent 终态：`<Trial>/agent/turn-result.json`
@@ -41,12 +44,14 @@ case 的有效结果。
 
 | 分类 | 数量 | 说明 |
 |---|---:|---|
-| Verifier 通过 | 61 | reward `1.0` |
+| Verifier 通过 | 63 | reward `1.0` |
 | Verifier 真实断言失败 | 13 | reward `0.0`，官方测试确实执行 |
 | Agent/模型未收口 | 12 | 达到题目 turn timeout，online/resource 无异常 |
 | Agent 未收口并触发资源上限 | 1 | `make-mips-interpreter`，2 GiB OOM |
-| 无效 infra：工作目录 | 1 | `prove-plus-comm`，镜像 WORKDIR 为 `/workspace`，harness 强制 `cd /app` |
-| 无效 provider transport | 1 | `pytorch-model-recovery`，stream `incomplete chunked read` 未重试 |
+| 无效结果 | 0 | 两个首轮无效结果均已由修复后的有效结果替代 |
+
+最终唯一结果通过率为 `63 / 89 = 70.8%`。这是当前 Akashic harness 的诊断结果，
+不直接等同于官方 leaderboard 分数。
 
 另外两题虽有 OOM 证据，但都进入了 verifier：
 
@@ -129,10 +134,10 @@ case 的有效结果。
 | 61 | `polyglot-rust-c` | PASS | 官方 verifier 1/1。 | `akasic-bench-v4flash-diagnostic-polyglot-rust-c-20260731-101931-514360` |
 | 62 | `portfolio-optimization` | PASS | 官方 verifier 6/6。 | `akasic-bench-v4flash-diagnostic-portfolio-optimization-20260731-102303-592745` |
 | 63 | `protein-assembly` | ASSERT | 0/1；融合蛋白顺序不符合 `flag-donor-dhfr-acceptor-snap`。 | `akasic-bench-v4flash-diagnostic-protein-assembly-20260731-102519-392363` |
-| 64 | `prove-plus-comm` | INFRA-INVALID | 镜像 WORKDIR 为 `/workspace`；harness 强制 `cd /app`，gateway 在模型调用前启动失败。 | `akasic-bench-v4flash-diagnostic-prove-plus-comm-20260731-102714-468358` |
+| 64 | `prove-plus-comm` | PASS | 修复后继承镜像 `/workspace` WORKDIR；官方 verifier 4/4，无资源异常。首轮硬编码 `/app` 的结果无效。 | `replacement/akasic-bench-v4flash-smoke-prove-plus-comm-20260731-121432-473790` |
 | 65 | `pypi-server` | PASS | 官方 verifier 1/1。 | `akasic-bench-v4flash-diagnostic-pypi-server-20260731-102734-653302` |
 | 66 | `pytorch-model-cli` | PASS | 官方 verifier 6/6。 | `akasic-bench-v4flash-diagnostic-pytorch-model-cli-20260731-102829-360920` |
-| 67 | `pytorch-model-recovery` | INFRA-INVALID | 已生成并自检 `model.pt`；第 7 次 LLM stream 被 `incomplete chunked read` 中断，provider 未重试，verifier 未执行。 | `akasic-bench-v4flash-diagnostic-pytorch-model-recovery-20260731-102833-428222` |
+| 67 | `pytorch-model-recovery` | PASS | 替代运行 14 个 ReAct step、13 次工具调用后收口；官方 verifier 5/5，无资源异常。首轮第 7 次 stream 的 `incomplete chunked read` 结果无效。 | `replacement/akasic-bench-v4flash-smoke-pytorch-model-recovery-20260731-121617-459331` |
 | 68 | `qemu-alpine-ssh` | PASS | 官方 verifier 1/1。 | `akasic-bench-v4flash-diagnostic-qemu-alpine-ssh-20260731-102936-871296` |
 | 69 | `qemu-startup` | PASS | 官方 verifier 1/1。 | `akasic-bench-v4flash-diagnostic-qemu-startup-20260731-103026-338644` |
 | 70 | `query-optimize` | PASS | 官方 verifier 6/6；verifier 约 9 分 40 秒。 | `akasic-bench-v4flash-diagnostic-query-optimize-20260731-103241-583806` |
@@ -164,6 +169,8 @@ case 的有效结果。
 driver 启动命令无条件执行 `cd /app`，导致模型调用前失败。这是环境兼容性缺陷，
 修复应让进程继承镜像声明的 WORKDIR，不检测 task name，也不改变任务文件或 verifier。
 
+状态：已由 `e166be50` 修复；Harbor 定向测试 18/18，通过替代重跑 4/4。
+
 ### H6：流在首个有效 delta 前断开时应有限重试
 
 `pytorch-model-recovery` 的第 7 次 LLM 调用发生
@@ -175,6 +182,11 @@ driver 启动命令无条件执行 `cd /app`，导致模型调用前失败。这
 3. 重试次数和 1/2/4 秒退避沿用 provider 现有策略；
 4. 非重试错误继续 fail-fast、fail-loud。
 
+状态：已由 `e577dfda` 修复。新增测试分别证明首个有效 delta 前的
+`RemoteProtocolError` 会重试，以及收到 content delta 后不会重放；provider 流定向
+测试 5/5。替代实网运行未再次发生断线，因此它证明任务恢复为有效结果并通过 5/5，
+不作为“真实断线重试被命中”的证据。
+
 ### H7：只按上下文百分比触发 compaction 可能晚于内存压力
 
 `make-mips-interpreter` 在第 154 个 ReAct step 时可见输入约 335k token，尚未达到
@@ -182,8 +194,10 @@ V4 Flash 1M context 的 74%，但 2 GiB 容器已经 OOM。这个观察不直接
 compaction 语义；后续应先区分模型 payload、session history、LLM snapshot、工具子进程
 和 task 自身内存，再设计资源维度的消融。
 
-## 5. 待更新
+## 5. 当前结论与后续
 
-- H5/H6 的实现、最小回归和替代重跑；
-- 每题唯一有效结果后的最终通过率；
-- timeout case 的 step/token/compaction 聚合与 Agent/模型细分归因。
+- 89 题逐题唯一有效结果和失败证据已经冻结；
+- H5/H6 属于可泛化的 harness/provider 功能修复，不修改题目语义或 verifier；
+- H7 仍只是资源观察，不授权提前 compaction 或针对 benchmark 做特殊处理；
+- timeout case 的 step/token/compaction 聚合与 Agent/模型细分归因可在下一轮诊断中
+  继续补充，不影响本轮 89 题有效性。
