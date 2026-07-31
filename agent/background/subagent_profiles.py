@@ -15,7 +15,8 @@ from agent.tools.filesystem import (
     ReadFileTool,
     WriteFileTool,
 )
-from agent.tools.shell import ShellTool
+from agent.tools.shell import ShellTaskStopTool, ShellTool, ShellWriteStdinTool
+from agent.tools.unified_exec import ShellProcessManager
 from core.net.http import HttpRequester
 
 PROFILE_RESEARCH = "research"
@@ -86,15 +87,19 @@ def build_scripting_spec(
     multimodal: bool = True,
 ) -> SubagentSpec:
     """构建可执行命令并仅向任务目录写入、但禁止联网的配置。"""
+    shell_manager = ShellProcessManager()
     tools: list[Tool] = [
         ReadFileTool(allowed_dir=workspace, multimodal=multimodal),
         ListDirTool(allowed_dir=workspace),
         WriteFileTool(allowed_dir=task_dir),
         EditFileTool(allowed_dir=task_dir),
         ShellTool(
+            shell_manager,
             allow_network=False,
             working_dir=task_dir,
         ),
+        ShellWriteStdinTool(shell_manager),
+        ShellTaskStopTool(shell_manager),
     ]
     return SubagentSpec(
         tools=tools,
@@ -113,6 +118,7 @@ def build_general_spec(
     multimodal: bool = True,
 ) -> SubagentSpec:
     """构建同时允许联网调研和任务目录写入的通用配置。"""
+    shell_manager = ShellProcessManager()
     tools = build_readonly_research_tools(
         fetch_requester=fetch_requester,
         allowed_dir=workspace,
@@ -122,9 +128,12 @@ def build_general_spec(
         WriteFileTool(allowed_dir=task_dir),
         EditFileTool(allowed_dir=task_dir),
         ShellTool(
+            shell_manager,
             allow_network=True,
             working_dir=task_dir,
         ),
+        ShellWriteStdinTool(shell_manager),
+        ShellTaskStopTool(shell_manager),
     ]
     return SubagentSpec(
         tools=tools,

@@ -68,7 +68,7 @@ run
   "cwd": ".",
   "description": "抽样一条待审计记忆",
   "timeout": 60,
-  "auto_promote": false
+  "yield_time_ms": 30000
 }
 ```
 

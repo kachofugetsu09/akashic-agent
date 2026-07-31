@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any, Sequence
 
@@ -127,6 +128,13 @@ class SubAgent:
         self._tool_executor.add_hooks(hooks)
 
     async def run(self, task: str) -> str:
+        """执行单次任务，并在 owner 结束时回收 shell execution。"""
+        try:
+            return await self._run(task)
+        finally:
+            await self._shutdown_shell()
+
+    async def _run(self, task: str) -> str:
         """执行单次任务，并返回完成结果或预算收尾总结。"""
         messages: list[dict[str, Any]] = []
         self.last_exit_reason = "running"
@@ -254,6 +262,15 @@ class SubAgent:
             reason="max_iterations",
             iteration=self._max_iterations,
         )
+
+    async def _shutdown_shell(self) -> None:
+        shell = self._tool_map.get("shell")
+        shutdown = getattr(shell, "shutdown", None)
+        if callable(shutdown):
+            result = shutdown()
+            if not inspect.isawaitable(result):
+                raise TypeError("shell.shutdown 必须返回 awaitable")
+            await result
 
     async def _summarize_incomplete_progress(
         self,

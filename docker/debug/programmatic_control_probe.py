@@ -1051,7 +1051,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                                 "command": "sleep 300",
                                 "description": "阻塞中断探针",
                                 "timeout": 300,
-                                "auto_promote": False,
+                                "yield_time_ms": 30_000,
                             },
                         }
                     ],

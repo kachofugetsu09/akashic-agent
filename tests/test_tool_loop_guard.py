@@ -167,7 +167,7 @@ class _ToolLoopGuardHook(ToolHook):
 
     def _event_signature(self, ctx: HookContext) -> tuple[str, int]:
         request = ctx.request
-        excluded = {"task_output", "task_stop"}
+        excluded = {"write_stdin", "task_stop"}
         if not request.tool_batch:
             if request.tool_name in excluded:
                 return "", 0
@@ -494,13 +494,13 @@ def test_subagent_no_false_positive_when_same_tool_but_different_args():
     assert len(tool.calls) == 2
 
 
-def test_subagent_ignores_repeated_task_output_in_loop_guard():
-    tool = _DummyTool("task_output")
+def test_subagent_ignores_repeated_write_stdin_in_loop_guard():
+    tool = _DummyTool("write_stdin")
     provider = _FakeProvider(
         [
-            LLMResponse(content="", tool_calls=[ToolCall("s1", "task_output", {"x": 1})]),
-            LLMResponse(content="", tool_calls=[ToolCall("s2", "task_output", {"x": 1})]),
-            LLMResponse(content="", tool_calls=[ToolCall("s3", "task_output", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("s1", "write_stdin", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("s2", "write_stdin", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("s3", "write_stdin", {"x": 1})]),
             LLMResponse(content="状态已确认", tool_calls=[]),
         ]
     )
@@ -650,13 +650,13 @@ def test_agent_loop_does_not_trigger_on_two_repeats_only(tmp_path):
     assert len(tool.calls) == 2
 
 
-def test_agent_loop_ignores_repeated_task_output_in_loop_guard(tmp_path):
-    tool = _DummyTool("task_output")
+def test_agent_loop_ignores_repeated_write_stdin_in_loop_guard(tmp_path):
+    tool = _DummyTool("write_stdin")
     provider = _FakeProvider(
         [
-            LLMResponse(content="", tool_calls=[ToolCall("c1", "task_output", {"x": 1})]),
-            LLMResponse(content="", tool_calls=[ToolCall("c2", "task_output", {"x": 1})]),
-            LLMResponse(content="", tool_calls=[ToolCall("c3", "task_output", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("c1", "write_stdin", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("c2", "write_stdin", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("c3", "write_stdin", {"x": 1})]),
             LLMResponse(content="状态已确认", tool_calls=[]),
         ]
     )
