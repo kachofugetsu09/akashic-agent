@@ -142,6 +142,7 @@ def test_verifier_uv_is_prepared_after_agent_with_frozen_version() -> None:
     command = environment.commands[0]
     assert "/opt/akashic-runtime/uv" in command
     assert "/root/.local/bin/uvx" in command
+    assert "uv tool run" in command
     assert "uv 0.9.5" in command
 
 

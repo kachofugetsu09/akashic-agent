@@ -256,7 +256,10 @@ async def _prepare_verifier_runtime(
     command = (
         "mkdir -p /root/.local/bin && "
         f"install -m 0755 {RUNTIME_UV_PATH} /root/.local/bin/uv && "
-        "ln -sfn uv /root/.local/bin/uvx && "
+        "printf '%s\\n' '#!/bin/sh' "
+        "'exec /root/.local/bin/uv tool run \"$@\"' "
+        "> /root/.local/bin/uvx && "
+        "chmod 0755 /root/.local/bin/uvx && "
         "printf '%s\\n' 'export PATH=\"$HOME/.local/bin:$PATH\"' "
         "> /root/.local/bin/env && "
         f"test \"$(/root/.local/bin/uv --version)\" = "
