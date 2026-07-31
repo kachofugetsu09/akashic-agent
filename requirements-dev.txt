@@ -1,6 +1,5 @@
 # 开发与测试依赖
 -r requirements.txt
--e ./sdk/python
 
 black>=26.0.0
 pyright>=1.1.403
