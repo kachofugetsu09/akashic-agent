@@ -82,13 +82,20 @@ def append_tool_result(
     tool_call_id: str,
     content: str | ToolResult,
     tool_name: str | None = None,
+    execution_status: str | None = None,
 ) -> None:
     result = normalize_tool_result(content)
+    text = result.text or "工具执行完成。"
+    if execution_status is not None:
+        text = (
+            f'<tool_execution transport_status="{execution_status}" />\n'
+            f"{text}"
+        )
     messages.append(
         {
             "role": "tool",
             "tool_call_id": tool_call_id,
-            "content": result.text or "工具执行完成。",
+            "content": text,
         }
     )
     if result.content_blocks:

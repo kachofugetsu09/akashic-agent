@@ -458,6 +458,8 @@ class ShellTool(Tool):
             {
                 "command": command,
                 "background_task_id": task_id,
+                "process_status": "running",
+                "evidence_scope": "process_started",
                 "status": "running",
                 "output_path": log_path,
                 "started_at_ms": wall_start_ms,
@@ -527,6 +529,8 @@ class ShellTool(Tool):
                 {
                     "command": command,
                     "background_task_id": task_id,
+                    "process_status": "running",
+                    "evidence_scope": "process_started",
                     "status": "running",
                     "output_path": log_path,
                     "started_at_ms": wall_start_ms,
@@ -583,6 +587,8 @@ class ShellTool(Tool):
         return json.dumps(
             {
                 "command": command,
+                "process_status": "succeeded" if exit_code == 0 else "failed",
+                "evidence_scope": "command_exit_only",
                 "exit_code": exit_code,
                 "interrupted": False,
                 "duration_ms": duration_ms,
@@ -640,6 +646,8 @@ class ShellTool(Tool):
         return json.dumps(
             {
                 "command": command,
+                "process_status": "timed_out",
+                "evidence_scope": "command_exit_only",
                 "exit_code": -1,
                 "interrupted": True,
                 "duration_ms": duration_ms,
@@ -785,6 +793,14 @@ class ShellTaskOutputTool(Tool):
         return json.dumps(
             {
                 "task_id": task_id,
+                "process_status": (
+                    "running"
+                    if not done
+                    else "succeeded"
+                    if exit_code == 0
+                    else "failed"
+                ),
+                "evidence_scope": "process_snapshot" if not done else "command_exit_only",
                 "status": status,
                 "exit_code": exit_code,
                 "elapsed_ms": elapsed_ms,

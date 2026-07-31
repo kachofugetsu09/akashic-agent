@@ -210,6 +210,7 @@ class SubAgent:
                     tool_call_id=tc.id,
                     content=normalized,
                     tool_name=tc.name,
+                    execution_status=exec_result.status,
                 )
                 if _is_tool_loop_guard_denial(exec_result):
                     logger.warning(
@@ -223,6 +224,7 @@ class SubAgent:
                             tool_call_id=skipped.id,
                             content="工具调用已因重复循环检测跳过。",
                             tool_name=skipped.name,
+                            execution_status="skipped",
                         )
                     if self._mandatory_exit_tools:
                         await self._run_mandatory_exit(messages, tool_session_key)
@@ -370,6 +372,7 @@ class SubAgent:
                 tool_call_id=tc.id,
                 content=normalized,
                 tool_name=tc.name,
+                execution_status=exec_result.status,
             )
 
     async def _execute_tool_call(

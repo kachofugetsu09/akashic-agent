@@ -75,12 +75,32 @@ async def test_shell_tool_runs_directly_by_default(monkeypatch):
     result = json.loads(await tool.execute(command="printf ok", description="输出 ok"))
 
     assert observed["command"] == "printf ok"
+    assert result["process_status"] == "succeeded"
+    assert result["evidence_scope"] == "command_exit_only"
     assert result["exit_code"] == 0
     assert result["output"] == "ok"
     assert "stdout" not in result
     assert "stderr" not in result
     assert result["truncation"] is None
     assert result["full_output_path"] is None
+
+
+@pytest.mark.asyncio
+async def test_shell_tool_exposes_failed_process_status(monkeypatch):
+    async def _fake_create_subprocess_shell(command, **kwargs):
+        return _FakeProc(stdout="failed", returncode=7)
+
+    monkeypatch.setattr(
+        "agent.tools.shell.asyncio.create_subprocess_shell",
+        _fake_create_subprocess_shell,
+    )
+
+    tool = ShellTool()
+    result = json.loads(await tool.execute(command="exit 7", description="失败"))
+
+    assert result["process_status"] == "failed"
+    assert result["evidence_scope"] == "command_exit_only"
+    assert result["exit_code"] == 7
 
 
 @pytest.mark.asyncio
