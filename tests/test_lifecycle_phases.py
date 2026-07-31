@@ -613,7 +613,7 @@ async def test_before_turn_memory_context_guard_blocks_after_consolidation_failu
 
 
 @pytest.mark.asyncio
-async def test_before_turn_injects_memory_exclusion_for_marked_session():
+async def test_before_turn_memory_exclusion_overrides_explicit_turn_flag():
     bus = EventBus()
     session = _DummySession("telegram:123")
     session.metadata = {"skip_post_memory": True}
@@ -636,6 +636,7 @@ async def test_before_turn_injects_memory_exclusion_for_marked_session():
         frame_factory=BeforeTurnFrame,
     )
     msg = _inbound()
+    msg.metadata["skip_post_memory"] = True
     state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
 
     ctx = await phase.run(state)

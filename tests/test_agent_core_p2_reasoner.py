@@ -297,13 +297,14 @@ def test_default_reasoner_disable_memory_writes_expands_to_memory_write_tools():
     result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
 
     # 1. memory 来源的写工具被展开禁用，检索与普通工具保留。
+    first_tools = cast(list[dict[str, Any]], provider.calls[0]["tools"])
     first_tool_names = [
-        schema["function"]["name"] for schema in provider.calls[0]["tools"]
+        schema["function"]["name"] for schema in first_tools
     ]
     assert "memorize" not in first_tool_names
     assert "recall_memory" in first_tool_names
     assert "read_file" in first_tool_names
-    calls = result.tool_chain[0]["calls"]
+    calls = cast(list[dict[str, Any]], result.tool_chain[0]["calls"])
     assert calls[0]["name"] == "memorize"
     assert calls[0]["status"] == "blocked"
 

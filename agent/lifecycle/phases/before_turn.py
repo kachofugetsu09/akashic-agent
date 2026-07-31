@@ -83,15 +83,8 @@ class _ApplyMemoryExclusionModule:
     async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
         state = frame.input
         msg_metadata = state.msg.metadata
-        if not isinstance(msg_metadata, dict):
-            return frame
-        if msg_metadata.get("skip_post_memory") is True:
-            return frame
         session = cast(SessionLike, frame.slots[_SESSION_SLOT])
-        metadata = getattr(session, "metadata", None)
-        if not isinstance(metadata, dict):
-            return frame
-        if not excludes_memory(state.session_key, metadata):
+        if not excludes_memory(state.session_key, session.metadata):
             return frame
         msg_metadata["skip_post_memory"] = True
         msg_metadata["skip_memory_context_guard"] = True

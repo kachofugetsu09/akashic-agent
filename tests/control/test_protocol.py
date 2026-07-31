@@ -338,9 +338,10 @@ async def test_start_thread_persists_memory_exclusion_marker(tmp_path: Path) -> 
     service = ControlService(runtime, sessions, tmp_path)
 
     thread = service.start_thread({"skip_post_memory": True})
+    thread_id = cast(str, thread["id"])
 
     assert thread["metadata"] == {"skip_post_memory": True}
-    assert sessions.control_store.get_session_meta(thread["id"])["metadata"] == {
+    assert sessions.control_store.get_session_meta(thread_id)["metadata"] == {
         "skip_post_memory": True
     }
     await runtime.shutdown()
