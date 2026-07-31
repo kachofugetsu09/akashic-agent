@@ -117,7 +117,7 @@ class _LifecycleState:
         if self.protocol_error:
             self.commit_valid = False
 
-    def _accept(self, raw_frame: bytes) -> None:
+    def _accept(self, raw_frame: bytes | bytearray) -> None:
         if self.protocol_error:
             return
         try:
