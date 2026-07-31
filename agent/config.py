@@ -233,6 +233,9 @@ def load_config(
         reasoning_effort=str(llm_main.get("reasoning_effort") or ""),
         input_modalities=tuple(str(item) for item in llm_main.get("input_modalities", ["text"])),
         effective_context_percent=float(llm_main.get("effective_context_percent", 0.9)),
+        compaction_trigger_percent=float(
+            llm_main.get("compaction_trigger_percent", 0.74)
+        ),
         use_responses_lite=_as_bool(
             llm_main.get("use_responses_lite", False),
             field="llm.main.use_responses_lite",
@@ -595,6 +598,9 @@ def _load_llm_runtimes(
             ),
             input_modalities=tuple(modalities),
             effective_context_percent=float(item.get("effective_context_percent", 0.9)),
+            compaction_trigger_percent=float(
+                item.get("compaction_trigger_percent", 0.74)
+            ),
             use_responses_lite=_as_bool(
                 item.get("use_responses_lite", False),
                 field=f"llm.runtimes.{runtime_id}.use_responses_lite",

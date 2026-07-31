@@ -135,6 +135,7 @@ class ModelRuntimeConfig:
     max_output_tokens: int = 0
     input_modalities: tuple[str, ...] = ("text",)
     effective_context_percent: float = 0.9
+    compaction_trigger_percent: float = 0.74
     use_responses_lite: bool = False
     supports_parallel_tool_calls: bool = True
     reasoning_summary: str = "none"
@@ -162,6 +163,11 @@ class ModelRuntimeConfig:
         if not 0 < self.effective_context_percent <= 1:
             raise ValueError(
                 f"runtime {self.runtime_id} 的 effective_context_percent 必须在 (0, 1] 内"
+            )
+        if not 0 < self.compaction_trigger_percent < self.effective_context_percent:
+            raise ValueError(
+                f"runtime {self.runtime_id} 的 compaction_trigger_percent "
+                "必须在 (0, effective_context_percent) 内"
             )
         if self.max_output_tokens > 0 and self.max_output_tokens >= int(
             self.context_window * self.effective_context_percent
@@ -210,6 +216,7 @@ class Config:
     reasoning_effort: str = ""
     input_modalities: tuple[str, ...] = ("text",)
     effective_context_percent: float = 0.9
+    compaction_trigger_percent: float = 0.74
     use_responses_lite: bool = False
     supports_parallel_tool_calls: bool = True
     reasoning_summary: str = "none"

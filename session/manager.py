@@ -14,6 +14,10 @@ from agent.prompting import (
     build_context_frame_content,
     build_context_frame_message,
 )
+from agent.model_runtime.query_compaction import (
+    build_replay_compaction_messages,
+    parse_react_compaction,
+)
 from session.store import SessionStore
 
 _TOOL_RESULT_CHAR_BUDGET = 10000
@@ -290,7 +294,30 @@ class Session:
                 if raw_tool_chain is not None
                 else []
             )
-            for group in tool_chain:
+            replay_tool_chain = tool_chain
+            raw_compaction = m.get("react_compaction")
+            has_compaction = raw_compaction is not None
+            if has_compaction:
+                message_id = str(m.get("id") or f"{self.key}:{m.get('seq', '?')}")
+                compaction = parse_react_compaction(
+                    raw_compaction,
+                    source=message_id,
+                )
+                if compaction.compacted_tool_groups > len(tool_chain):
+                    raise ValueError(
+                        "react_compaction.compacted_tool_groups "
+                        f"超过 tool_chain 长度: {message_id}"
+                    )
+                out.extend(
+                    build_replay_compaction_messages(
+                        compaction,
+                        message_id=message_id,
+                    )
+                )
+                replay_tool_chain = tool_chain[
+                    compaction.compacted_tool_groups :
+                ]
+            for group in replay_tool_chain:
                 calls = cast(list[dict[str, object]], group["calls"])
                 if not calls:
                     continue
@@ -316,7 +343,7 @@ class Session:
                 if reasoning_content is not None:
                     assistant_msg["reasoning_content"] = reasoning_content
                 model_state = group.get("model_state")
-                if model_state is not None:
+                if model_state is not None and not has_compaction:
                     assistant_msg["model_state"] = model_state
                 out.append(assistant_msg)
                 for c in calls:

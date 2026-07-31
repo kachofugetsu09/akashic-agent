@@ -530,6 +530,60 @@ context_window = 64000
 
     assert config.max_tokens == 0
     assert config.model_runtimes["main"].max_output_tokens == 0
+    assert config.compaction_trigger_percent == 0.74
+    assert config.model_runtimes["main"].compaction_trigger_percent == 0.74
+
+
+def test_config_accepts_compaction_trigger_below_effective_boundary(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[llm]
+main = "main"
+
+[llm.runtimes.main]
+provider = "openai"
+model = "model"
+api_key = "key"
+context_window = 64000
+effective_context_percent = 0.8
+compaction_trigger_percent = 0.7
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(path, workspace=tmp_path)
+
+    assert config.compaction_trigger_percent == 0.7
+    assert config.model_runtimes["main"].compaction_trigger_percent == 0.7
+
+
+@pytest.mark.parametrize("trigger", [0, -0.1, 0.9, 1.0])
+def test_config_rejects_compaction_trigger_outside_soft_boundary(
+    tmp_path: Path,
+    trigger: float,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f"""
+[llm]
+main = "main"
+
+[llm.runtimes.main]
+provider = "openai"
+model = "model"
+api_key = "key"
+context_window = 64000
+effective_context_percent = 0.9
+compaction_trigger_percent = {trigger}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="compaction_trigger_percent"):
+        load_config(path, workspace=tmp_path)
 
 
 def test_config_preserves_explicit_legacy_output_limit_for_main_runtime(

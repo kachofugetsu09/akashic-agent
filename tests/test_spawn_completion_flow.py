@@ -12,10 +12,11 @@ from bus.events import SpawnCompletionItem
 from bus.internal_events import SpawnCompletionEvent
 from bus.queue import MessageBus
 from tests.memory_fakes import FakeMemoryEngine
+from tests.provider_fakes import ProviderContextBudgetStub
 from session.manager import SessionManager
 
 
-class _Provider:
+class _Provider(ProviderContextBudgetStub):
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 

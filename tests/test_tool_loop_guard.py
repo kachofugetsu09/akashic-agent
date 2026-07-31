@@ -21,6 +21,7 @@ from core.net.http import (
 )
 from prompts.completion import VERIFIABLE_COMPLETION_RULES
 from tests.memory_fakes import FakeMemoryEngine
+from tests.provider_fakes import ProviderContextBudgetStub
 
 
 class _DummyTool(Tool):
@@ -51,7 +52,7 @@ class _DummyTool(Tool):
         return f"ok:{kwargs.get('x')}"
 
 
-class _FakeProvider:
+class _FakeProvider(ProviderContextBudgetStub):
     def __init__(self, responses: list[LLMResponse]) -> None:
         self._responses = list(responses)
         self.calls: list[dict] = []
@@ -88,7 +89,7 @@ class _StrictProvider(_FakeProvider):
         return await super().chat(**kwargs)
 
 
-class _FailingProvider:
+class _FailingProvider(ProviderContextBudgetStub):
     async def chat(self, **kwargs):
         raise RuntimeError("provider unavailable")
 

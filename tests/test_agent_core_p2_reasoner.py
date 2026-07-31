@@ -19,6 +19,27 @@ from bus.events_lifecycle import ToolCallCompleted, ToolCallStarted
 _TEST_CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS = 1
 
 
+class _ProviderContextBudget:
+    context_window = 1_000_000
+    compaction_trigger_tokens = 740_000
+    hard_input_tokens = 900_000
+
+    def estimate_context_tokens(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+    ) -> int:
+        return max(
+            1,
+            len(json.dumps([messages, tools], ensure_ascii=False)) // 3,
+        )
+
+    def estimate_appended_message_tokens(self, messages: list[dict]) -> int:
+        if not messages:
+            return 0
+        return max(1, len(json.dumps(messages, ensure_ascii=False)) // 3)
+
+
 class ContextPressureStopModule:
     slot = "context_pressure.stop"
     requires = ("after_step.copy_input", "step:ctx")
@@ -77,7 +98,7 @@ class _InflateTool(Tool):
         return f"payload-{kwargs.get('value', '')}-" + ("x" * 2400)
 
 
-class _Provider:
+class _Provider(_ProviderContextBudget):
     def __init__(self, responses: list[LLMResponse]) -> None:
         self._responses = list(responses)
         self.calls: list[dict[str, Any]] = []
@@ -89,7 +110,7 @@ class _Provider:
         return self._responses.pop(0)
 
 
-class _TimeoutProvider:
+class _TimeoutProvider(_ProviderContextBudget):
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 

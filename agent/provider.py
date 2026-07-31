@@ -10,6 +10,7 @@ import hashlib
 import itertools
 import json
 import logging
+import math
 import os
 import re
 import tempfile
@@ -619,6 +620,7 @@ class LLMProvider:
             runtime_id=runtime.runtime_id,
             context_window=runtime.context_window,
             effective_context_percent=runtime.effective_context_percent,
+            compaction_trigger_percent=runtime.compaction_trigger_percent,
             use_responses_lite=runtime.use_responses_lite,
             supports_parallel_tool_calls=runtime.supports_parallel_tool_calls,
             reasoning_summary=runtime.reasoning_summary,
@@ -639,6 +641,7 @@ class LLMProvider:
         runtime_id: str = "main",
         context_window: int = 0,
         effective_context_percent: float = 0.9,
+        compaction_trigger_percent: float = 0.74,
         use_responses_lite: bool = False,
         supports_parallel_tool_calls: bool = True,
         reasoning_summary: str = "none",
@@ -650,11 +653,16 @@ class LLMProvider:
         self._extra_body = dict(extra_body or {})
         self._context_window = int(context_window)
         self._effective_context_percent = float(effective_context_percent)
+        self._compaction_trigger_percent = float(compaction_trigger_percent)
         self._force_disable_thinking = force_disable_thinking
         if self._context_window < 0:
             raise ValueError("context_window 不能小于 0")
         if not 0 < self._effective_context_percent <= 1:
             raise ValueError("effective_context_percent 必须在 (0, 1] 内")
+        if not 0 < self._compaction_trigger_percent < self._effective_context_percent:
+            raise ValueError(
+                "compaction_trigger_percent 必须在 (0, effective_context_percent) 内"
+            )
         self._backend: ModelBackend
         if provider_name.lower() == "codex":
             auth = CodexAuthDriver(CredentialStore(), auth_id)
@@ -736,14 +744,48 @@ class LLMProvider:
                 f"上下文估算超限 estimated={estimated} budget={budget.input_budget} quality=approximate"
             )
 
+    @property
+    def context_window(self) -> int:
+        return self._context_window
+
+    @property
+    def compaction_trigger_tokens(self) -> int:
+        return math.floor(
+            self._context_window * self._compaction_trigger_percent
+        )
+
+    @property
+    def hard_input_tokens(self) -> int:
+        return math.floor(
+            self._context_window * self._effective_context_percent
+        )
+
+    def estimate_context_tokens(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+    ) -> int:
+        """Estimate the complete provider input owned by this runtime."""
+        return _estimate_context_tokens(self._system, messages, tools)
+
+    def estimate_appended_message_tokens(self, messages: list[dict]) -> int:
+        """Estimate messages appended after an exact provider usage sample."""
+        return _estimate_message_tokens(messages)
+
 
 def _estimate_context_tokens(
     system_prompt: str, messages: list[dict], tools: list[dict]
 ) -> int:
     """估算文本与图片块预算，避免把 data URI 当作文本 token。"""
-    text_chars = len(system_prompt) + len(
+    fixed_chars = len(system_prompt) + len(
         json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
     )
+    return max(1, fixed_chars // 3 + _estimate_message_tokens(messages))
+
+
+def _estimate_message_tokens(messages: list[dict]) -> int:
+    """估算消息增量，保持与完整 provider input 相同的编码口径。"""
+    text_chars = 0
     image_tokens = 0
     for message in messages:
         content = message.get("content")
@@ -771,6 +813,8 @@ def _estimate_context_tokens(
                 separators=(",", ":"),
             )
         )
+    if not messages:
+        return 0
     return max(1, text_chars // 3 + image_tokens)
 
 

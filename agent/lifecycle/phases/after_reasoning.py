@@ -44,7 +44,13 @@ _PERSIST_USER_PREFIX = "persist:user:"
 _PERSIST_ASSISTANT_PREFIX = "persist:assistant:"
 _OUTBOUND_METADATA_PREFIX = "outbound:metadata:"
 _OUTBOUND_MEDIA_PREFIX = "outbound:media:"
-_ASSISTANT_FIXED_FIELDS = {"tools_used", "tool_chain", "reasoning_content", "model_state"}
+_ASSISTANT_FIXED_FIELDS = {
+    "tools_used",
+    "tool_chain",
+    "reasoning_content",
+    "model_state",
+    "react_compaction",
+}
 _USER_FIXED_FIELDS = {
     "media",
     "timestamp",
@@ -184,6 +190,10 @@ class _PersistAssistantMessageModule:
             assistant_kwargs["reasoning_content"] = ctx.thinking
         if frame.input.turn_result.model_state is not None:
             assistant_kwargs["model_state"] = frame.input.turn_result.model_state
+        if frame.input.turn_result.react_compaction is not None:
+            assistant_kwargs["react_compaction"] = dict(
+                frame.input.turn_result.react_compaction
+            )
         assistant_kwargs.update(_collect_persist_assistant_slots(frame.slots))
         if frame.input.state.persistence.persist_assistant:
             media = list(ctx.media)

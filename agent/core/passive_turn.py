@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, cast
 
 import agent.core.passive_support as support
 from agent.control.context import current_turn_id
+from agent.model_runtime.query_compaction import QueryCompactor
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.types import (
     ContextBundle,
@@ -1214,6 +1215,12 @@ class DefaultReasoner(Reasoner):
                     retry_trace["llm_context_frame"] = llm_context_frame
                 retry_trace["react_stats"] = dict(result.metadata.get("react_stats") or {})
                 raw_model_state = result.metadata.get("model_state")
+                raw_react_compaction = result.metadata.get("react_compaction")
+                if raw_react_compaction is not None and not isinstance(
+                    raw_react_compaction,
+                    dict,
+                ):
+                    raise RuntimeError("reasoner 返回了无效 react_compaction")
                 raw_mobile_attention = result.metadata.get("mobile_attention")
                 if raw_mobile_attention not in (None, "confirmation"):
                     raise RuntimeError("reasoner 返回了无效 mobile_attention")
@@ -1228,6 +1235,11 @@ class DefaultReasoner(Reasoner):
                     model_state=(
                         cast(dict[str, object], raw_model_state)
                         if isinstance(raw_model_state, dict)
+                        else None
+                    ),
+                    react_compaction=(
+                        cast(dict[str, object], raw_react_compaction)
+                        if isinstance(raw_react_compaction, dict)
                         else None
                     ),
                     mobile_attention=cast(
@@ -1290,7 +1302,7 @@ class DefaultReasoner(Reasoner):
         disabled_tools: set[str] | None = None,
     ) -> ReasonerResult:
         # 1. 初始化消息上下文、本轮工具轨迹。
-        messages = initial_messages
+        messages = list(initial_messages)
         tools_used: list[str] = []
         tools_unlocked: list[str] = []
         tool_chain: list[dict[str, Any]] = []
@@ -1306,6 +1318,12 @@ class DefaultReasoner(Reasoner):
         react_cache_seen = False
         react_usages: list[ModelUsage] = []
         disabled = set(disabled_tools or set())
+        compactor = QueryCompactor(
+            provider=self._llm.provider,
+            model=self._llm_config.model,
+            base_messages=messages,
+            scope_id=current_turn_id.get() or tool_event_session_key,
+        )
         before_step_phase, after_step_phase = self._runtime_step_phases()
         if self._tool_search_enabled:
             always_on = self._tools.get_always_on_names()
@@ -1332,6 +1350,7 @@ class DefaultReasoner(Reasoner):
                 and iteration >= self._llm_config.max_iterations
             ):
                 break
+            batch_start = len(messages)
             # 3. BeforeStep 模块链：token 估算、BeforeStep 事件、提示注入。
             step_ctx = await before_step_phase.run(BeforeStepInput(
                 session_key=tool_event_session_key,
@@ -1352,6 +1371,7 @@ class DefaultReasoner(Reasoner):
                     reply=step_ctx.early_stop_reply or summary,
                     tools_used=tools_used,
                     tool_chain=tool_chain,
+                    react_compaction=compactor.persistence_payload(),
                     media=outbound_media,
                     visible_names=visible_names,
                     thinking=None,
@@ -1364,14 +1384,7 @@ class DefaultReasoner(Reasoner):
                     model_usages=react_usages,
                     mobile_attention=mobile_attention,
                 )
-            # 4. 调用 LLM，带上当前可见工具 schema。
-            react_input_samples.append(step_ctx.input_tokens_estimate)
-            logger.info(
-                "[LLM调用] 第%d轮，可见工具=%s input_tokens~=%d",
-                iteration + 1,
-                f"{len(visible_names)}个" if visible_names is not None else "全部（tool_search未开启）",
-                step_ctx.input_tokens_estimate,
-            )
+            # 4. 构造本轮工具 schema，并按完整 provider input 判断压缩水位。
             schema_names: list[str] | set[str] | None = (
                 list(visible_order) if visible_order is not None else None
             )
@@ -1380,14 +1393,58 @@ class DefaultReasoner(Reasoner):
             elif schema_names is not None:
                 schema_names = [name for name in schema_names if name not in disabled]
             tool_schemas = self._tools.get_schemas(names=schema_names)
-            response = await self._llm.provider.chat(
-                messages=messages,
+            prepared = await compactor.prepare(
+                messages,
+                pending_start=batch_start,
                 tools=tool_schemas,
-                model=self._llm_config.model,
-                max_tokens=self._llm_config.max_tokens,
-                tool_choice="auto",
-                on_content_delta=on_content_delta,
-                cache_namespace=tool_event_session_key,
+            )
+            batch_start = prepared.pending_start
+            react_input_samples.append(prepared.estimated_tokens)
+            logger.info(
+                "[LLM调用] 第%d轮，可见工具=%s input_tokens~=%d quality=%s compacted=%s",
+                iteration + 1,
+                f"{len(visible_names)}个" if visible_names is not None else "全部（tool_search未开启）",
+                prepared.estimated_tokens,
+                prepared.estimate_quality,
+                prepared.compacted,
+            )
+            request_message_count = len(messages)
+            try:
+                response = await self._llm.provider.chat(
+                    messages=messages,
+                    tools=tool_schemas,
+                    model=self._llm_config.model,
+                    max_tokens=self._llm_config.max_tokens,
+                    tool_choice="auto",
+                    on_content_delta=on_content_delta,
+                    cache_namespace=tool_event_session_key,
+                )
+            except ContextLengthError:
+                if not compactor.has_compactable_prefix:
+                    raise
+                forced = await compactor.prepare(
+                    messages,
+                    pending_start=batch_start,
+                    tools=tool_schemas,
+                    trigger="context_overflow",
+                    force=True,
+                )
+                batch_start = forced.pending_start
+                react_input_samples[-1] = forced.estimated_tokens
+                request_message_count = len(messages)
+                response = await self._llm.provider.chat(
+                    messages=messages,
+                    tools=tool_schemas,
+                    model=self._llm_config.model,
+                    max_tokens=self._llm_config.max_tokens,
+                    tool_choice="auto",
+                    on_content_delta=on_content_delta,
+                    cache_namespace=tool_event_session_key,
+                )
+            compactor.record_response(
+                message_count=request_message_count,
+                tools=tool_schemas,
+                usage=response.usage,
             )
             react_usages.append(response.usage or ModelUsage())
             if on_content_delta is not None and response.content:
@@ -1416,14 +1473,48 @@ class DefaultReasoner(Reasoner):
                         "不要把工具调用协议写入文本；否则直接回复用户。"
                     ),
                 })
-                retry_response = await self._llm.provider.chat(
-                    messages=messages,
+                retry_prepared = await compactor.prepare(
+                    messages,
+                    pending_start=batch_start,
                     tools=tool_schemas,
-                    model=self._llm_config.model,
-                    max_tokens=self._llm_config.max_tokens,
-                    tool_choice="auto",
-                    on_content_delta=on_content_delta,
-                    cache_namespace=tool_event_session_key,
+                )
+                batch_start = retry_prepared.pending_start
+                request_message_count = len(messages)
+                try:
+                    retry_response = await self._llm.provider.chat(
+                        messages=messages,
+                        tools=tool_schemas,
+                        model=self._llm_config.model,
+                        max_tokens=self._llm_config.max_tokens,
+                        tool_choice="auto",
+                        on_content_delta=on_content_delta,
+                        cache_namespace=tool_event_session_key,
+                    )
+                except ContextLengthError:
+                    if not compactor.has_compactable_prefix:
+                        raise
+                    forced = await compactor.prepare(
+                        messages,
+                        pending_start=batch_start,
+                        tools=tool_schemas,
+                        trigger="context_overflow",
+                        force=True,
+                    )
+                    batch_start = forced.pending_start
+                    request_message_count = len(messages)
+                    retry_response = await self._llm.provider.chat(
+                        messages=messages,
+                        tools=tool_schemas,
+                        model=self._llm_config.model,
+                        max_tokens=self._llm_config.max_tokens,
+                        tool_choice="auto",
+                        on_content_delta=on_content_delta,
+                        cache_namespace=tool_event_session_key,
+                    )
+                compactor.record_response(
+                    message_count=request_message_count,
+                    tools=tool_schemas,
+                    usage=retry_response.usage,
                 )
                 react_usages.append(retry_response.usage or ModelUsage())
                 if retry_response.cache_prompt_tokens is not None:
@@ -1588,6 +1679,7 @@ class DefaultReasoner(Reasoner):
                                 reply=summary,
                                 tools_used=tools_used,
                                 tool_chain=tool_chain,
+                                react_compaction=compactor.persistence_payload(),
                                 media=outbound_media,
                                 visible_names=visible_names,
                                 thinking=None,
@@ -1820,6 +1912,7 @@ class DefaultReasoner(Reasoner):
                             reply=summary,
                             tools_used=tools_used,
                             tool_chain=tool_chain,
+                            react_compaction=compactor.persistence_payload(),
                             media=outbound_media,
                             visible_names=visible_names,
                             thinking=None,
@@ -1841,7 +1934,14 @@ class DefaultReasoner(Reasoner):
                 if isinstance(model_state, dict):
                     tool_chain_group["model_state"] = model_state
                 tool_chain.append(tool_chain_group)
-                pressure_tokens = support.estimate_messages_tokens(messages)
+                compactor.record_completed_batch(
+                    messages,
+                    batch_start=batch_start,
+                )
+                pressure_tokens = self._llm.provider.estimate_context_tokens(
+                    messages,
+                    tool_schemas,
+                )
                 # 7a. AfterStep 模块链（工具分支）：通知观察者本轮工具执行完毕。
                 after_step = await after_step_phase.run(AfterStepCtx(
                     session_key=tool_event_session_key,
@@ -1873,6 +1973,7 @@ class DefaultReasoner(Reasoner):
                         reply=summary,
                         tools_used=tools_used,
                         tool_chain=tool_chain,
+                        react_compaction=compactor.persistence_payload(),
                         media=outbound_media,
                         visible_names=visible_names,
                         thinking=None,
@@ -1913,6 +2014,7 @@ class DefaultReasoner(Reasoner):
                 reply=response.content or "（无响应）",
                 tools_used=tools_used,
                 tool_chain=tool_chain,
+                react_compaction=compactor.persistence_payload(),
                 media=outbound_media,
                 visible_names=visible_names,
                 thinking=response.thinking,
@@ -1947,6 +2049,7 @@ class DefaultReasoner(Reasoner):
             reply=summary,
             tools_used=tools_used,
             tool_chain=tool_chain,
+            react_compaction=compactor.persistence_payload(),
             media=outbound_media,
             visible_names=visible_names,
             thinking=None,
@@ -2072,6 +2175,7 @@ class DefaultReasoner(Reasoner):
         reply: str,
         tools_used: list[str],
         tool_chain: list[dict[str, Any]],
+        react_compaction: dict[str, object] | None,
         media: list[str],
         visible_names: set[str] | None,
         thinking: str | None,
@@ -2133,6 +2237,11 @@ class DefaultReasoner(Reasoner):
             "tools_used": list(tools_used),
             "tools_unlocked": list(tools_unlocked or []),
             "tool_chain": list(tool_chain),
+            "react_compaction": (
+                dict(react_compaction)
+                if react_compaction is not None
+                else None
+            ),
             "media": list(media),
             "visible_names": set(visible_names) if visible_names is not None else None,
             "react_stats": react_stats,

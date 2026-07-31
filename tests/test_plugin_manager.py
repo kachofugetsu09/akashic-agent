@@ -34,6 +34,7 @@ from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 from core.memory.events import MemoryWritten, RetrievalCompleted, RetrievalHitSummary
 from proactive_v2.lifecycle import ProactiveLifecycleSpec
+from tests.provider_fakes import ProviderContextBudgetStub
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -1591,7 +1592,7 @@ async def test_tool_hooks_fire_through_real_reasoner():
     from agent.provider import LLMResponse, ToolCall
 
     # 1. 构造 fake LLM provider：首轮调 get_weather，次轮返回文本
-    class FakeProvider:
+    class FakeProvider(ProviderContextBudgetStub):
         _call = 0
 
         async def chat(self, messages, tools, model, max_tokens, **kwargs) -> LLMResponse:
@@ -1816,7 +1817,7 @@ async def test_on_tool_pre_fires_through_real_reasoner():
     from agent.provider import LLMResponse, ToolCall
     from agent.tool_hooks.executor import ToolExecutor
 
-    class FakeProvider:
+    class FakeProvider(ProviderContextBudgetStub):
         _called = False
 
         async def chat(self, messages, tools, model, max_tokens, **kwargs) -> LLMResponse:

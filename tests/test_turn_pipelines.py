@@ -30,6 +30,7 @@ from bus.events_lifecycle import TurnCommitted
 from core.error_context import current_session_key
 from core.memory.engine import MemoryQueryResult
 from bootstrap.wiring import wire_turn_lifecycle
+from tests.provider_fakes import ProviderContextBudgetStub
 
 
 class _NoopTool(Tool):
@@ -49,7 +50,7 @@ class _NoopTool(Tool):
         return "ok"
 
 
-class _Provider:
+class _Provider(ProviderContextBudgetStub):
     async def chat(self, **kwargs):
         return LLMResponse(content="ok", tool_calls=[])
 
