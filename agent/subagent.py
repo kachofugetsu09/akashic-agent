@@ -15,6 +15,7 @@ from agent.tool_runtime import (
 )
 from agent.tool_hooks.types import ToolExecutionResult
 from agent.tools.base import Tool, normalize_tool_result
+from prompts.completion import VERIFIABLE_COMPLETION_RULES
 
 logger = logging.getLogger(__name__)
 
@@ -133,8 +134,10 @@ class SubAgent:
         self.tools_called = []
         self._run_seq += 1
         tool_session_key = f"subagent:{id(self)}:{self._run_seq}"
-        if self._system_prompt:
-            messages.append({"role": "system", "content": self._system_prompt})
+        system_prompt = "\n\n".join(
+            part for part in (self._system_prompt, VERIFIABLE_COMPLETION_RULES) if part
+        )
+        messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": task})
         for iteration in range(self._max_iterations):
             self.iterations_used = iteration + 1

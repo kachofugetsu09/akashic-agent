@@ -469,6 +469,8 @@ async def test_shell_run_in_background_returns_task_id(monkeypatch, tmp_path):
     task_id = result["background_task_id"]
     assert task_id is not None
     assert task_id.startswith("shell_")
+    assert result["process_status"] == "started"
+    assert result["evidence_scope"] == "process_started"
     assert result["status"] == "running"
     assert result["output_path"] is not None
     assert result["exit_code"] is None
@@ -496,17 +498,17 @@ async def test_task_output_returns_log_content(monkeypatch, tmp_path):
     shell_mod._BG_REGISTRY[task_id] = shell_mod._BackgroundTask(
         proc=fake_proc,
         log_path=log_path,
-        pump_task=asyncio.ensure_future(asyncio.sleep(0)),
+        pump_task=done_future,
         started_at=shell_mod.time.monotonic(),
         wall_started_at_ms=wall_ms,
     )
-    # 等 pump_task 完成
-    await asyncio.sleep(0)
 
     tool = ShellTaskOutputTool()
     result = json.loads(await tool.execute(task_id=task_id))
 
     assert result["task_id"] == task_id
+    assert result["process_status"] == "succeeded"
+    assert result["evidence_scope"] == "command_exit_only"
     assert "hello from bg" in result["output"]
     assert result["truncation"] is None
     assert result["elapsed_ms"] >= 0
@@ -542,6 +544,8 @@ async def test_task_output_returns_timing_fields(tmp_path):
 
     assert result["elapsed_ms"] >= 0
     assert result["since_last_output_ms"] >= 500  # 至少 500ms 前
+    assert result["process_status"] == "running"
+    assert result["evidence_scope"] == "process_snapshot"
     assert result["status"] == "running"
 
     shell_mod._BG_REGISTRY.pop(task_id, None)
@@ -580,6 +584,9 @@ async def test_task_output_not_found():
     tool = ShellTaskOutputTool()
     result = json.loads(await tool.execute(task_id="shell_nonexistent"))
     assert "error" in result
+    assert result["status"] == "not_found"
+    assert result["process_status"] == "unknown"
+    assert result["evidence_scope"] == "registry_lookup"
 
 
 @pytest.mark.asyncio
@@ -611,6 +618,8 @@ async def test_task_stop_kills_and_removes(monkeypatch):
     result = json.loads(await tool.execute(task_id=task_id))
 
     assert result["status"] == "stopped"
+    assert result["process_status"] == "termination_requested"
+    assert result["evidence_scope"] == "termination_requested"
     assert task_id not in shell_mod._BG_REGISTRY
     assert killed == [(9999, _KILL_SIGNAL)]
     # cancel() 是异步的，等一个事件循环 tick 让取消生效
@@ -679,6 +688,9 @@ async def test_task_output_ttl_deletes_log_file(monkeypatch, tmp_path):
 
     assert "error" in result
     assert "TTL" in result["error"]
+    assert result["status"] == "expired"
+    assert result["process_status"] == "unknown"
+    assert result["evidence_scope"] == "registry_cleanup"
     assert not log_path.exists(), "已完成任务 TTL 到期后日志文件应已被删除"
     assert task_id not in shell_mod._BG_REGISTRY
     assert killed == []
@@ -690,6 +702,8 @@ async def test_task_stop_not_found():
     tool = ShellTaskStopTool()
     result = json.loads(await tool.execute(task_id="shell_ghost"))
     assert result["status"] == "not_found"
+    assert result["process_status"] == "unknown"
+    assert result["evidence_scope"] == "registry_lookup"
 
 
 @pytest.mark.asyncio
@@ -1002,7 +1016,9 @@ async def test_shell_foreground_timeout_kills_instead_of_auto_promote(monkeypatc
     )
 
     assert result["interrupted"] is True
-    assert result["exit_code"] == -1
+    assert result["process_status"] == "timed_out"
+    assert result["evidence_scope"] == "termination_requested"
+    assert result["exit_code"] is None
     assert "background_task_id" not in result
     assert "Command timed out" in result["output"]
     assert killed == [(proc.pid, _KILL_SIGNAL)]
@@ -1035,6 +1051,9 @@ async def test_task_output_timeout_expired(monkeypatch, tmp_path):
 
     assert "error" in result
     assert "超时" in result["error"]
+    assert result["status"] == "timed_out"
+    assert result["process_status"] == "termination_requested"
+    assert result["evidence_scope"] == "termination_requested"
     assert task_id not in shell_mod._BG_REGISTRY
     assert not log_path.exists()
 
@@ -1120,6 +1139,9 @@ async def test_task_output_handles_internal_timeout_cancellation(monkeypatch, tm
 
     assert "error" in result
     assert "超时" in result["error"]
+    assert result["status"] == "timed_out"
+    assert result["process_status"] == "termination_requested"
+    assert result["evidence_scope"] == "termination_requested"
     assert task_id not in shell_mod._BG_REGISTRY
 
 

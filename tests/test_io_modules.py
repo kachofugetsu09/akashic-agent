@@ -348,6 +348,33 @@ def test_append_tool_result_supports_multimodal_blocks() -> None:
     assert messages[1]["content"][1]["type"] == "image_url"
 
 
+@pytest.mark.parametrize(
+    "execution_status",
+    ["success", "error", "denied", "blocked", "skipped"],
+)
+def test_append_tool_result_exposes_transport_status(
+    execution_status: str,
+) -> None:
+    messages: list[dict] = []
+
+    append_tool_result(
+        messages,
+        tool_call_id="call_1",
+        execution_status=execution_status,
+        content="result",
+    )
+
+    assert messages == [
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": (
+                f'<tool_execution transport_status="{execution_status}" />\nresult'
+            ),
+        }
+    ]
+
+
 @pytest.mark.asyncio
 async def test_file_mutation_lock_serializes_same_file_and_allows_different_files(
     tmp_path: Path,
