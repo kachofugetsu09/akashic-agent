@@ -279,6 +279,14 @@ skills、长期记忆、检索结果和 recent context 必须带来源和信任�
 
 长任务只在完成调查、确定设计、完成实现或完成验证等主要里程碑后压缩上下文。压缩结果至少保留目标、成功标准、已核对事实、关键假设、决定、未完成事项、文件/条款引用和验证状态；格式见 [`templates/context-handoff.yaml`](templates/context-handoff.yaml)。压缩内容是当前任务的 opaque handoff，不得把摘要措辞反向当成新的项目需求。
 
+### CTX-007 当前 Query 压缩按模型预算触发并可重放
+
+同一个 user query 进入长 ReAct 时，core model runtime 在每次模型请求前按完整 provider input 估算上下文，包括 system prompt、消息、工具 schema、多模态预算和协议开销。默认在模型 `context_window` 的 `74%` 达到软水位；该比例可以按 runtime 显式配置，但必须低于 `effective_context_percent` 拥有的硬输入边界。主 runtime 的 `max_output_tokens = 0` 不取消压缩水位，也不改写成输出上限。
+
+压缩只发生在完整 tool batch 已闭合的边界。正常情况优先使用已经形成的任务里程碑；若软水位先到，可以在最近的完整 tool batch 后紧急压缩，不得切开 assistant tool call 与其全部 tool result，也不得压缩当前 user query 本身。重复压缩使用上一份摘要和新淘汰步骤生成一份新摘要，活动模型视图只能保留一个压缩边界。
+
+压缩边界是 core 拥有的派生上下文，不是真实工具、用户原话或外部效果。provider 可以把它投影成成对的内部 compact call/result，但不得注册为模型可调用工具，不得进入工具 hook、权限、执行计数或完整 `tool_chain`。完整回合提交时，Session owner 把压缩投影随新 assistant 消息原子 INSERT 到 `sessions.db/messages`，同时保留完整 `tool_chain`；后续 query 从 SessionDB 重建时使用压缩投影和未压缩后缀，不再向模型展开已压缩前缀。上下文压缩不得 UPDATE 或 DELETE 既有消息。
+
 ### SES-001 回合持久化全有或全无
 
 同一批 session metadata、消息和序列分配必须在一个事务中提交。任一步失败时数据库不出现半批消息，内存对象也不得获得并不存在的稳定 ID。

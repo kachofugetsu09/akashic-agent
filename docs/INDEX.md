@@ -191,11 +191,13 @@ docs/
 │   ├── 0008-plugin-runtime-publishes-only-committed-snapshots.md
 │   ├── 0009-akasha-mobile-recall-preserves-semantic-lanes.md
 │   ├── 0010-provider-default-output-and-benchmark-diagnostics.md
-│   └── 0011-benchmark-concurrency-six.md
+│   ├── 0011-benchmark-concurrency-six.md
+│   └── 0012-query-local-compaction-is-a-persisted-projection.md
 ├── design/
 │   ├── akasha-v2-runtime-migration.md
 │   ├── mobile-cross-repository-semantic-gate.md
 │   ├── project-workbook-and-semantic-safety.md
+│   ├── query-local-react-compaction.md
 │   ├── veda-persona.md
 │   ├── persistence-state-map.md
 │   └── wake-recent-delivery-context.md
