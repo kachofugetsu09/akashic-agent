@@ -397,6 +397,21 @@ def test_subagent_propagates_provider_failure():
     assert subagent.last_exit_reason == "error"
 
 
+def test_subagent_preserves_provider_failure_when_shell_cleanup_also_fails():
+    class CleanupFailingShell(_DummyTool):
+        async def shutdown(self) -> None:
+            raise RuntimeError("cleanup unavailable")
+
+    subagent = SubAgent(
+        provider=cast(Any, _FailingProvider()),
+        model="m",
+        tools=[CleanupFailingShell("shell")],
+    )
+
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        asyncio.run(subagent.run("do work"))
+
+
 def test_subagent_injects_authoritative_completion_rules():
     provider = _FakeProvider([LLMResponse(content="done", tool_calls=[])])
     subagent = SubAgent(

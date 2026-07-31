@@ -10,6 +10,7 @@ import pytest
 from agent.core.passive_turn import DefaultReasoner
 from agent.core.runtime_support import LLMServices, ToolDiscoveryState
 from agent.looping.ports import LLMConfig
+from agent.model_runtime.execution_history import active_shell_execution_origins
 from agent.model_runtime.types import LLMResponse, ModelUsage, ToolCall
 from agent.provider import ContextLengthError
 from agent.tool_runtime import append_tool_result
@@ -263,6 +264,61 @@ async def test_compaction_pins_live_execution_until_terminal_result() -> None:
     assert completed.compacted is True
     assert compactor.compaction is not None
     assert compactor.compaction.compacted_tool_groups == 1
+
+
+@pytest.mark.parametrize("transport_status", ["blocked", "denied", "skipped", "error"])
+def test_active_execution_history_rejects_unsuccessful_transport(
+    transport_status: str,
+) -> None:
+    messages = _batch(1)
+    messages[0]["tool_calls"][0]["function"] = {
+        "name": "shell",
+        "arguments": json.dumps({"command": "sleep 30"}),
+    }
+    append_tool_result(
+        messages,
+        tool_call_id="call-1",
+        content=json.dumps(
+            {"process_status": "running", "execution_id": 4201}
+        ),
+        tool_name="shell",
+        execution_status=transport_status,
+    )
+
+    assert active_shell_execution_origins(messages) == {}
+
+
+def test_active_execution_history_rejects_malformed_transport_marker() -> None:
+    messages = _batch(1)
+    messages[0]["tool_calls"][0]["function"] = {
+        "name": "shell",
+        "arguments": json.dumps({"command": "sleep 30"}),
+    }
+    messages.append(
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": (
+                '<tool_execution transport_status="success" extra="x" />\n'
+                '{"process_status":"running","execution_id":4201}'
+            ),
+        }
+    )
+
+    assert active_shell_execution_origins(messages) == {}
+
+
+def test_active_execution_history_rejects_raw_json_without_transport() -> None:
+    messages = _batch(1)
+    messages[0]["tool_calls"][0]["function"] = {
+        "name": "shell",
+        "arguments": json.dumps({"command": "sleep 30"}),
+    }
+    messages[1]["content"] = json.dumps(
+        {"process_status": "running", "execution_id": 4201}
+    )
+
+    assert active_shell_execution_origins(messages) == {}
 
 
 @pytest.mark.asyncio

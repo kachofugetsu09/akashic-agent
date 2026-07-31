@@ -734,6 +734,46 @@ async def test_drift_shell_tools_isolate_tick_owners(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_drift_preserves_execution_failure_when_shell_cleanup_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_skill(tmp_path)
+    manager = ShellProcessManager()
+    shell = ShellTool(manager)
+    shared = ToolRegistry()
+    shared.register(shell)
+    store = DriftStateStore(tmp_path)
+    pipeline = _make_drift_pipeline(
+        store=store,
+        tool_deps=DriftToolDeps(
+            drift_dir=tmp_path,
+            store=store,
+            shared_tools=shared,
+        ),
+    )
+
+    async def fail_execute(*_args, **_kwargs) -> None:
+        raise RuntimeError("drift failed")
+
+    async def fail_cleanup(_owner_session_key: str) -> None:
+        raise RuntimeError("cleanup failed")
+
+    async def unused_llm(*_args, **_kwargs):
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(pipeline, "_execute_loop", fail_execute)
+    monkeypatch.setattr(shell, "terminate_owner", fail_cleanup)
+    ctx = AgentTickContext(
+        now_utc=datetime.now(timezone.utc),
+        session_key="drift:owner",
+    )
+
+    with pytest.raises(RuntimeError, match="drift failed"):
+        await pipeline.run(ctx, cast(Any, unused_llm))
+
+
+@pytest.mark.asyncio
 async def test_drift_readfile_accepts_outside_path(tmp_path: Path):
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
     outside = tmp_path.parent / "outside-read.txt"

@@ -4,8 +4,8 @@ import json
 from collections.abc import Sequence
 from typing import Any, cast
 
-_TOOL_EXECUTION_PREFIX = '<tool_execution transport_status="'
-_TOOL_EXECUTION_SUFFIX = '" />'
+_TOOL_EXECUTION_PREFIX = "<tool_execution "
+_SUCCESS_TOOL_EXECUTION_MARKER = '<tool_execution transport_status="success" />'
 _TERMINAL_STATUSES = frozenset(
     {"succeeded", "failed", "timed_out", "stopped", "unknown"}
 )
@@ -81,10 +81,11 @@ def _update_active(
 
 
 def _tool_result_object(value: object) -> dict[str, Any] | None:
-    if isinstance(value, str) and value.startswith(_TOOL_EXECUTION_PREFIX):
-        marker, separator, value = value.partition("\n")
-        if not separator or not marker.endswith(_TOOL_EXECUTION_SUFFIX):
-            return None
+    if not isinstance(value, str) or not value.startswith(_TOOL_EXECUTION_PREFIX):
+        return None
+    marker, separator, value = value.partition("\n")
+    if not separator or marker != _SUCCESS_TOOL_EXECUTION_MARKER:
+        return None
     return _json_object(value)
 
 

@@ -413,6 +413,42 @@ async def test_agent_loop_turn_end_terminates_owner_shell() -> None:
 
 
 @pytest.mark.asyncio
+async def test_agent_loop_preserves_turn_failure_when_shell_cleanup_fails(
+    monkeypatch,
+) -> None:
+    manager = ShellProcessManager()
+    shell = ShellTool(manager)
+    tools = ToolRegistry()
+    tools.register(shell)
+    loop = AgentLoop.__new__(AgentLoop)
+    loop.tools = tools
+    loop._processing_state = None
+    loop._interrupt_states = {}
+    loop._resume_interrupted_message = AsyncMock(
+        side_effect=lambda message, _key: (message, False)
+    )
+    loop._observe_turn_started = AsyncMock()
+
+    async def fail_process(*_args, **_kwargs) -> OutboundMessage:
+        raise RuntimeError("turn failed")
+
+    async def fail_cleanup(_owner_session_key: str) -> None:
+        raise RuntimeError("cleanup failed")
+
+    loop._core_runner = SimpleNamespace(process=fail_process)
+    monkeypatch.setattr(shell, "terminate_owner", fail_cleanup)
+    message = InboundMessage(
+        channel="cli",
+        sender="user",
+        chat_id="owner",
+        content="run",
+    )
+
+    with pytest.raises(RuntimeError, match="turn failed"):
+        await loop._process(message, dispatch_outbound=False)
+
+
+@pytest.mark.asyncio
 async def test_shutdown_terminates_all_executions() -> None:
     manager = ShellProcessManager()
     shell = ShellTool(manager)
