@@ -249,7 +249,7 @@ class ShellProcessManager:
             if execution.tty:
                 try:
                     if chars == INTERRUPT:
-                        self._interrupt_process_tree(execution.process)
+                        self._interrupt_process_group(execution.process)
                     else:
                         await self._write_pty(execution, chars.encode())
                         await asyncio.sleep(0.1)
@@ -260,7 +260,7 @@ class ShellProcessManager:
                     ):
                         raise
             elif chars == INTERRUPT:
-                self._interrupt_process_tree(execution.process)
+                self._interrupt_process_group(execution.process)
             else:
                 raise RuntimeError(
                     f"execution_id={execution_id} 未启用 tty，stdin 已关闭"
@@ -290,7 +290,7 @@ class ShellProcessManager:
         *,
         owner_session_key: str,
     ) -> bool:
-        """确认终止一棵进程树，成功后移除执行。"""
+        """确认终止执行进程组，成功后移除执行。"""
 
         try:
             execution = await self._get_owned_execution(
@@ -620,7 +620,7 @@ class ShellProcessManager:
     async def _terminate_confirmed(self, execution: _Execution) -> None:
         if execution.process.returncode is None:
             try:
-                _kill_process_tree(execution.process)
+                _kill_process_group(execution.process)
             except ProcessLookupError:
                 # 进程组可能刚刚自然退出；下面的 wait 仍必须确认终态。
                 pass
@@ -631,7 +631,7 @@ class ShellProcessManager:
             )
         except asyncio.TimeoutError as exc:
             raise RuntimeError(
-                f"execution_id={execution.execution_id} 进程树终止未确认"
+                f"execution_id={execution.execution_id} 进程组终止未确认"
             ) from exc
         execution.exit_event.set()
         execution.output_event.set()
@@ -685,7 +685,7 @@ class ShellProcessManager:
         await _write_fd(execution.master_fd, data)
 
     @staticmethod
-    def _interrupt_process_tree(process: asyncio.subprocess.Process) -> None:
+    def _interrupt_process_group(process: asyncio.subprocess.Process) -> None:
         if process.returncode is not None:
             return
         if _IS_WINDOWS:
@@ -755,7 +755,7 @@ def _limit_output(buffer: HeadTailBuffer, max_output_tokens: int) -> HeadTailBuf
     return limited
 
 
-def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
+def _kill_process_group(process: asyncio.subprocess.Process) -> None:
     if _IS_WINDOWS:
         completed = subprocess.run(
             ["taskkill", "/PID", str(process.pid), "/T", "/F"],

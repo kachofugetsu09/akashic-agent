@@ -4,6 +4,7 @@ import inspect
 import logging
 from typing import Any, Sequence
 
+from agent.model_runtime.execution_history import active_shell_execution_origins
 from agent.provider import LLMProvider
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from agent.tool_hooks.base import ToolHook
@@ -73,7 +74,7 @@ def _is_tool_loop_guard_denial(exec_result: object) -> bool:
 def _trim_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """裁剪旧工具结果，同时保留消息闭链所需的调用结构。"""
 
-    # 1. 定位需要保留完整结果的近期工具轮次
+    # 1. 定位近期工具轮次，以及仍需续接的 shell 创建结果。
     tool_round_indices = [
         i
         for i, m in enumerate(messages)
@@ -81,13 +82,18 @@ def _trim_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
     if len(tool_round_indices) <= _RECENT_TOOL_ROUNDS:
         return messages
+    active_origins = set(active_shell_execution_origins(messages).values())
 
-    # 2. 清空更早的结果，但保留消息角色与调用 ID
+    # 2. 清空更早的普通结果，但保留 active execution 的唯一句柄来源。
     cutoff = tool_round_indices[-_RECENT_TOOL_ROUNDS]
 
     out = []
     for i, m in enumerate(messages):
-        if m.get("role") == "tool" and i < cutoff:
+        if (
+            m.get("role") == "tool"
+            and i < cutoff
+            and m.get("tool_call_id") not in active_origins
+        ):
             out.append({**m, "content": _CLEARED})
         else:
             out.append(m)

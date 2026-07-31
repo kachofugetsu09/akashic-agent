@@ -67,7 +67,7 @@ def build_scripting_subagent_prompt(workspace: Path, task_dir: Path) -> str:
 - 执行命令前先确认工作目录和路径正确
 - shell 可以检查用户指定的目标路径和使用管道；不要用 shell 在任务目录外写文件
 - shell 返回 execution_id 说明命令仍在运行；用 write_stdin 的空 chars 继续等待增量输出，已知长任务可把 yield_time_ms 设到 300000
-- 放弃仍在运行的 execution 前必须调用 task_stop；timeout 只用于进程树硬截止，不用于控制单次等待
+- 放弃仍在运行的 execution 前必须调用 task_stop；timeout 只用于执行进程组硬截止，不用于控制单次等待
 - 优先读取任务描述中已提供的上下文，不要重复抓取已有信息
 - 命令执行出错时，换个方式处理，不要把报错写进最终回复
 
@@ -106,7 +106,7 @@ def build_general_subagent_prompt(workspace: Path, task_dir: Path) -> str:
 - 调研和执行按需切换，不要同时打开过多方向
 - shell 可以检查用户指定的目标路径和使用管道；不要用 shell 在任务目录外写文件
 - shell 返回 execution_id 说明命令仍在运行；用 write_stdin 的空 chars 继续等待增量输出，已知长任务可把 yield_time_ms 设到 300000
-- 放弃仍在运行的 execution 前必须调用 task_stop；timeout 只用于进程树硬截止，不用于控制单次等待
+- 放弃仍在运行的 execution 前必须调用 task_stop；timeout 只用于执行进程组硬截止，不用于控制单次等待
 - 命令执行出错时换个方式，不要把报错直接塞进结果
 - 任务描述中若已有用户上下文，优先使用；需要更多背景时可读取以下资源
 

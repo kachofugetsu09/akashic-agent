@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -9,7 +10,8 @@ from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryServices
 from bus.queue import MessageBus
 from agent.provider import LLMResponse, ToolCall
-from agent.subagent import SubAgent
+from agent.subagent import SubAgent, _trim_tool_results
+from agent.tool_runtime import append_assistant_tool_calls, append_tool_result
 from agent.tool_hooks.base import ToolHook
 from agent.tool_hooks.types import HookContext, HookOutcome
 from agent.tools.base import Tool
@@ -609,6 +611,58 @@ def test_subagent_keeps_repeated_tool_results_clean():
     assert second_round_tool_messages[1]["content"] == (
         '<tool_execution transport_status="success" />\nok:2'
     )
+
+
+def test_subagent_trim_pins_active_shell_result_until_terminal_call() -> None:
+    messages: list[dict[str, Any]] = []
+
+    def append_round(
+        call_id: str,
+        name: str,
+        arguments: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        append_assistant_tool_calls(
+            messages,
+            content="",
+            tool_calls=[ToolCall(call_id, name, arguments)],
+        )
+        append_tool_result(
+            messages,
+            tool_call_id=call_id,
+            content=json.dumps(result),
+            tool_name=name,
+            execution_status="success",
+        )
+
+    append_round(
+        "shell-1",
+        "shell",
+        {"command": "sleep 30"},
+        {"process_status": "running", "execution_id": 4201},
+    )
+    for index in range(3):
+        append_round(
+            f"probe-{index}",
+            "probe",
+            {"index": index},
+            {"ok": True},
+        )
+
+    active_view = _trim_tool_results(messages)
+
+    assert active_view[1]["content"] != "[已清除]"
+    assert "4201" in active_view[1]["content"]
+
+    append_round(
+        "wait-1",
+        "write_stdin",
+        {"execution_id": 4201},
+        {"process_status": "succeeded", "exit_code": 0},
+    )
+    terminal_view = _trim_tool_results(messages)
+
+    assert terminal_view[1]["content"] == "[已清除]"
 
 
 def test_subagent_unknown_tool_not_recorded_in_tools_called():

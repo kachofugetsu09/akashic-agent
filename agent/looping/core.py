@@ -53,6 +53,7 @@ from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from proactive_v2.presence import PresenceStore
 from agent.provider import LLMProvider
+from agent.tools.shell import ShellTool
 from agent.tools.registry import ToolRegistry
 from session.manager import SessionManager
 
@@ -698,9 +699,20 @@ class AgentLoop:
                 if self._processing_state:
                     self._processing_state.exit(busy_key)
         finally:
-            # 4. 恢复调用方上下文，避免 session 归属泄漏到后续任务。
-            current_session_key.reset(session_token)
-            current_turn_id.reset(turn_token)
+            # 4. 当前 query 结束即回收其 shell，再恢复调用方上下文。
+            try:
+                await self._terminate_shell_owner(key)
+            finally:
+                current_session_key.reset(session_token)
+                current_turn_id.reset(turn_token)
+
+    async def _terminate_shell_owner(self, owner_session_key: str) -> None:
+        shell = self.tools.get_tool("shell")
+        if shell is None:
+            return
+        if not isinstance(shell, ShellTool):
+            raise TypeError("注册名 shell 必须由 ShellTool 拥有生命周期")
+        await shell.terminate_owner(owner_session_key)
 
     async def _process_with_runtime_admission(
         self,

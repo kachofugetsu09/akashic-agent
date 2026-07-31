@@ -122,7 +122,7 @@ class ShellTool(Tool):
                     "minimum": 1,
                     "maximum": MAX_HARD_TIMEOUT_S,
                     "description": (
-                        f"进程树硬超时秒数，默认 {DEFAULT_HARD_TIMEOUT_S}，"
+                        f"执行进程组硬超时秒数，默认 {DEFAULT_HARD_TIMEOUT_S}，"
                         f"最大 {MAX_HARD_TIMEOUT_S}。"
                     ),
                 },
@@ -217,6 +217,9 @@ class ShellTool(Tool):
     async def shutdown(self) -> None:
         await self.manager.shutdown()
 
+    async def terminate_owner(self, owner_session_key: str) -> None:
+        await self.manager.terminate_owner(owner_session_key)
+
 
 class ShellWriteStdinTool(Tool):
     """续接一次 shell execution 并消费新增输出。"""
@@ -279,10 +282,10 @@ class ShellWriteStdinTool(Tool):
 
 
 class ShellTaskStopTool(Tool):
-    """确认终止一次 shell execution 的整棵进程树。"""
+    """确认终止一次 shell execution 的进程组。"""
 
     name = "task_stop"
-    description = "确认终止 shell execution 的整棵进程树，并释放 execution_id。"
+    description = "确认终止 shell execution 的进程组，并释放 execution_id。"
     parameters = {
         "type": "object",
         "properties": {
