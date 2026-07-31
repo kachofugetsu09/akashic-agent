@@ -26,7 +26,7 @@ Shell 采用与 Codex unified exec 对齐的状态机，并在 Akashic 工具边
                                       ┌────────────────┴───────────────┐
                                       ▼                                ▼
                               write_stdin                         task_stop
-                         增量读取 / PTY 输入                   确认终止进程树
+                         增量读取 / PTY 输入                   确认终止执行边界
 ```
 
 - 删除 `run_in_background`、`auto_promote` 和 `background_task_id`；删除 `task_output`，新增 `write_stdin`。
@@ -38,7 +38,8 @@ Shell 采用与 Codex unified exec 对齐的状态机，并在 Akashic 工具边
 - 空输入轮询等待 5～300 秒；带输入等待 250 毫秒～30 秒。普通非 PTY 执行拒绝写入，唯独 `Ctrl-C` 转换为进程中断。
 - 每次返回只消费新增输出。内存输出缓冲固定为 1 MiB，溢出时保留等量首尾并明确标出省略字节；完整输出追加写入临时日志。
 - manager 最多持有 64 个进程，回收时保护最近 8 个执行，优先移除已退出执行，否则终止最久未使用且未受保护的进程。
-- Akashic 保留比 Codex 更严格的 owner 和硬超时：执行只能由创建它的 `owner_session_key` 继续操作；硬超时、显式 stop、owner 结束或 runtime shutdown 必须确认终止进程树。
+- Akashic 保留比 Codex 更严格的 owner 和硬超时：执行只能由创建它的 `owner_session_key` 继续操作；硬超时、显式 stop、当前 query 结束或 runtime shutdown 必须确认终止平台执行边界。
+- 该边界与 Codex 一致：Unix 是初始 process group，Windows 是 `taskkill /T` 可见的后代集合。显式 `setsid`、daemonize 或外部服务管理器会脱离该边界；需要覆盖它们时必须使用拥有 cgroup/Job Object 的受控 runner，不能把 `killpg` 描述成任意后代回收。
 - 第一版不增加完成事件、自动回传或持久化队列。
 
 ## 理由
@@ -64,5 +65,5 @@ Shell 采用与 Codex unified exec 对齐的状态机，并在 Akashic 工具边
 - 初始等待被取消后，进程仍可通过同一 `execution_id` 续接。
 - 连续 `write_stdin` 返回互不重复的输出片段，进程退出后最后一次返回退出码且不再返回 `execution_id`。
 - PTY 可输入；非 PTY 普通输入明确失败，`Ctrl-C` 能中断进程。
-- stop、硬超时、owner 结束、容量回收和 runtime shutdown 均确认终止进程树。
+- stop、硬超时、当前 query 结束、容量回收和 runtime shutdown 均确认终止平台执行边界。
 - 复跑既往高轮询案例时，任务和 verifier 不变，并记录工具调用数、轮询次数、token、耗时和最终结果。
