@@ -36,6 +36,14 @@ def test_catalog_has_no_unmapped_executable_files() -> None:
     }
 
 
+def test_requirement_catalog_accepts_two_and_three_letter_owners() -> None:
+    gate = _gate_module()
+
+    requirements = gate._requirement_ids()
+
+    assert {"SH-001", "FS-001", "RUN-001"}.issubset(requirements)
+
+
 def test_unknown_executable_file_is_not_silently_accepted() -> None:
     gate = _gate_module()
     catalog = gate.load_catalog()

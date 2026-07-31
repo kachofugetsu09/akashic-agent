@@ -36,6 +36,25 @@ python docker/debug/gate.py plan --base origin/main
 
 公开 Gate 不安装也不枚举私有插件。`privateGateRequired=true` 表示公开部分已经给出受影响能力组，维护者还需用 private companion 消费同一 `planDigest`；普通贡献者不需要私有仓库、插件或凭据。
 
+### Shell execution 固定 Runtime 场景
+
+`shell_execution_contract` 在 change-gate 的只读 Arch Linux runtime 中运行，不读取
+宿主 `HOME` 或正式 workspace。普通路径覆盖短命令、非零退出、显式/默认 shell、
+login 开关、长命令增量输出和多 execution 隔离；edge case 覆盖 PTY 多次输入、等待
+取消、stop 与 initial/poll 竞态、执行进程组清理、输出 head/tail、recent-8 LRU、owner
+隔离、截止点退出、主 ReAct/SubAgent active execution pin、turn owner 回收和 Drift
+owner 隔离。
+
+只运行该固定场景可使用：
+
+```bash
+python docker/debug/gate.py run --base <仅含合同的前置提交>
+```
+
+Gate 根据 runtime source set 自动选择该场景，并验证候选源码只读、临时 workspace、
+Compose cleanup 和无残留容器/网络/卷。完整 diff 同时修改受保护合同与生产源码时必须
+拆层运行，不能绕过 `protected_contract_mixed`。
+
 ## 程序化控制面验收门
 
 `programmatic_control_probe.py` 拥有独立 Compose project、隔离 sandbox、证据收集、

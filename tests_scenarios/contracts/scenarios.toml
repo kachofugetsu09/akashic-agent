@@ -30,6 +30,43 @@ command = ["python", "-m", "pytest", "-q", "tests/semantic/test_gate_workspace_c
 observes = ["workspace_path", "plugin_home_path", "fresh_config"]
 mutants = ["official_workspace_path"]
 
+[scenarios.shell_execution_contract]
+requirements = ["SH-001", "RUN-002", "RUN-003", "ERR-001", "TST-001", "TST-003"]
+groups = ["runtime"]
+environment = "public_clean_workspace"
+timeout_seconds = 120
+command = [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "tests/test_shell_tool.py",
+  "tests/test_unified_exec.py",
+  "tests/test_query_compaction.py",
+  "tests/test_tool_loop_guard.py::test_subagent_trim_pins_active_shell_result_until_terminal_call",
+  "tests/test_tool_loop_guard.py::test_subagent_preserves_provider_failure_when_shell_cleanup_also_fails",
+  "tests/proactive_v2/test_drift.py::test_drift_shell_tools_isolate_tick_owners",
+  "tests/proactive_v2/test_drift.py::test_drift_preserves_execution_failure_when_shell_cleanup_fails",
+]
+observes = [
+  "default_shell_argv",
+  "short_command_exit",
+  "incremental_output",
+  "pty_state",
+  "owner_isolation",
+  "wait_cancellation",
+  "stop_races",
+  "process_group_cleanup",
+  "bounded_output",
+  "capacity_pruning",
+  "active_execution_compaction_pin",
+  "subagent_active_execution_pin",
+  "turn_owner_cleanup",
+  "drift_owner_isolation",
+  "cleanup_preserves_primary_error",
+]
+mutants = []
+
 [scenarios.context_history_nondestructive]
 requirements = ["CTX-001", "SES-002", "SES-003", "SES-005", "TST-002", "TST-003"]
 groups = ["context_projection", "session_persistence"]
