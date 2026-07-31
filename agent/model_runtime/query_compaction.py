@@ -36,7 +36,11 @@ _SUMMARY_PROMPT = """更新当前长任务的上下文压缩摘要。
 ## Unfinished work
 ## Next steps
 
-保留文件路径、符号、命令、错误、数值和验证结果。省略重复探索、无用日志、tool_call_id 和协议细节。只输出摘要正文。"""
+保留文件路径、符号、命令、错误、数值和验证结果。若输入中存在仍在运行的 shell execution，必须保留 execution_id、命令和当前状态。省略重复探索、无用日志、tool_call_id 和其他协议细节。只输出摘要正文。"""
+
+_SHELL_TERMINAL_STATUSES = frozenset(
+    {"succeeded", "failed", "timed_out", "stopped", "unknown"}
+)
 
 
 class ContextCompactionError(RuntimeError):
@@ -398,10 +402,12 @@ class QueryCompactor:
                 break
             keep_count += 1
             kept_tokens += batch_tokens
-        return min(
+        selected = min(
             len(self._completed_batches) - 1,
             max(1, len(self._completed_batches) - keep_count),
         )
+        active_batch = _active_execution_batch(self._completed_batches)
+        return selected if active_batch is None else min(selected, active_batch)
 
     async def _summarize(
         self,
@@ -452,6 +458,92 @@ def _tool_schema_digest(tools: list[dict]) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _active_execution_batch(batches: list[list[dict]]) -> int | None:
+    """Return the earliest batch that must remain visible for a live execution."""
+    active: dict[int, int] = {}
+    for batch_index, batch in enumerate(batches):
+        results = _tool_results(batch)
+        for message in batch:
+            calls = message.get("tool_calls")
+            if message.get("role") != "assistant" or not isinstance(calls, list):
+                continue
+            for raw_call in calls:
+                if not isinstance(raw_call, dict):
+                    continue
+                call = cast(dict[str, Any], raw_call)
+                function = call.get("function")
+                if not isinstance(function, dict):
+                    continue
+                name = function.get("name")
+                arguments = _json_object(function.get("arguments"))
+                result = results.get(str(call.get("id") or ""))
+                _update_active_executions(
+                    active,
+                    batch_index=batch_index,
+                    name=name,
+                    arguments=arguments,
+                    result=result,
+                )
+    return min(active.values()) if active else None
+
+
+def _tool_results(batch: list[dict]) -> dict[str, dict[str, Any]]:
+    results: dict[str, dict[str, Any]] = {}
+    for message in batch:
+        call_id = message.get("tool_call_id")
+        if message.get("role") != "tool" or not isinstance(call_id, str):
+            continue
+        result = _json_object(message.get("content"))
+        if result is not None:
+            results[call_id] = result
+    return results
+
+
+def _update_active_executions(
+    active: dict[int, int],
+    *,
+    batch_index: int,
+    name: object,
+    arguments: dict[str, Any] | None,
+    result: dict[str, Any] | None,
+) -> None:
+    if result is None:
+        return
+    status = result.get("process_status")
+    if name == "shell" and status == "running":
+        execution_id = _execution_id(result.get("execution_id"))
+        if execution_id is not None:
+            active[execution_id] = batch_index
+        return
+    if name not in {"write_stdin", "task_stop"} or arguments is None:
+        return
+    execution_id = _execution_id(arguments.get("execution_id"))
+    if execution_id is None:
+        return
+    if status == "running":
+        active.setdefault(execution_id, batch_index)
+    elif status in _SHELL_TERMINAL_STATUSES:
+        active.pop(execution_id, None)
+
+
+def _json_object(value: object) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return cast(dict[str, Any], value)
+    if not isinstance(value, str):
+        return None
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return cast(dict[str, Any], decoded) if isinstance(decoded, dict) else None
+
+
+def _execution_id(value: object) -> int | None:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        return None
+    return value
 
 
 def _compaction_call_id(scope_id: str, generation: int) -> str:

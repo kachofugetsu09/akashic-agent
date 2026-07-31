@@ -64,6 +64,43 @@ def _record_batch(
     compactor.record_completed_batch(messages, batch_start=start)
 
 
+def _record_execution_batch(
+    compactor: QueryCompactor,
+    messages: list[dict],
+    index: int,
+    *,
+    name: str,
+    arguments: dict[str, object],
+    result: dict[str, object],
+) -> None:
+    call_id = f"exec-{index}"
+    start = len(messages)
+    messages.extend(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": json.dumps(arguments),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": json.dumps(result),
+            },
+        ]
+    )
+    compactor.record_completed_batch(messages, batch_start=start)
+
+
 class _ControlledProvider:
     def __init__(
         self,
@@ -176,6 +213,53 @@ async def test_compaction_never_splits_current_query_or_only_recent_batch(
     assert messages == before
     assert provider.summary_calls == []
     assert compactor.has_compactable_prefix is False
+
+
+@pytest.mark.asyncio
+async def test_compaction_pins_live_execution_until_terminal_result() -> None:
+    base = [{"role": "user", "content": "完成长时间训练"}]
+    messages = deepcopy(base)
+    provider = _ControlledProvider([47_360, 47_360, 2_000])
+    compactor = _compactor(provider, base)
+    _record_execution_batch(
+        compactor,
+        messages,
+        1,
+        name="shell",
+        arguments={"command": "python train.py"},
+        result={"process_status": "running", "execution_id": 4201},
+    )
+    _record_batch(compactor, messages, 2)
+    _record_batch(compactor, messages, 3)
+    before = deepcopy(messages)
+
+    pinned = await compactor.prepare(
+        messages,
+        pending_start=len(messages),
+        tools=[],
+    )
+
+    assert pinned.compacted is False
+    assert messages == before
+    assert provider.summary_calls == []
+
+    _record_execution_batch(
+        compactor,
+        messages,
+        4,
+        name="write_stdin",
+        arguments={"execution_id": 4201},
+        result={"process_status": "succeeded", "exit_code": 0},
+    )
+    completed = await compactor.prepare(
+        messages,
+        pending_start=len(messages),
+        tools=[],
+    )
+
+    assert completed.compacted is True
+    assert compactor.compaction is not None
+    assert compactor.compaction.compacted_tool_groups == 1
 
 
 @pytest.mark.asyncio

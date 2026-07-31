@@ -272,6 +272,14 @@ class CoreRuntime:
                 if inspect.isawaitable(result):
                     await cast(Awaitable[object], result)
 
+        async def _stop_shell() -> None:
+            shell_tool = self.tools.get_tool("shell")
+            shutdown = getattr(shell_tool, "shutdown", None)
+            if callable(shutdown):
+                result = shutdown()
+                if inspect.isawaitable(result):
+                    await cast(Awaitable[object], result)
+
         async def _close_session_manager() -> None:
             self.session_manager.close()
 
@@ -291,6 +299,7 @@ class CoreRuntime:
         await run_cleanup_steps(
             ("workspace_mcp_watcher.stop", _stop_workspace_mcp_watcher),
             ("spawn.shutdown", _stop_spawn),
+            ("shell.shutdown", _stop_shell),
             ("event_bus.aclose", self.event_bus.aclose),
             (
                 "plugin_manager.terminate_all",

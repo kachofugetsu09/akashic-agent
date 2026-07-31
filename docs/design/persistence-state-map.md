@@ -424,7 +424,7 @@ Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activa
 | `memory/proactive_*_trace.jsonl` | proactive loop | 配置和频率决策 trace |
 | `subagent-runs/<job-id>/` | background subagent | 隔离的子任务报告和脚本产物 |
 | `/tmp/akashic-llm-payloads/` | provider，可配置启用 | 完整 LLM 请求快照 |
-| `/tmp/akashic-shell-*.log` | shell tool | 大输出或后台任务日志，代码会按生命周期删除 |
+| `/tmp/akashic-exec-*.log` | shell execution manager | 完整命令输出诊断日志；无截断终态、显式 stop、容量回收或 runtime shutdown 时删除，工具结果发生省略时保留并返回路径；不进入 SessionDB，也没有跨 runtime 恢复语义 |
 
 这些文件可能包含用户原文、工具参数、检索记忆、路径或模型 payload。它们对事故取证有价值，但当前代码没有统一 retention、脱敏、容量或备份策略。
 

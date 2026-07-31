@@ -930,6 +930,8 @@ def build_drift_tool_registry(
         "fetch_messages",
         "search_messages",
         "shell",
+        "write_stdin",
+        "task_stop",
     ):
         if shared is None:
             continue
@@ -939,7 +941,11 @@ def build_drift_tool_registry(
                 tool = DriftRecallMemoryTool(tool, ctx)
             elif name == "shell":
                 tool = DriftShellTool(tool, drift_dir)
-            risk = "external-side-effect" if name == "shell" else "read-only"
+            risk = (
+                "external-side-effect"
+                if name in {"shell", "write_stdin", "task_stop"}
+                else "read-only"
+            )
             tools.register(tool, risk=risk)
 
     # mount_server: 只有 shared registry 里有 MCP 工具时才注册
