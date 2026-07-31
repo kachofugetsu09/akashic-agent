@@ -7,6 +7,9 @@
 设计合同：
 [V4 Flash 完整 Runtime Harness Benchmark 设计](../spark/2026-07-30-v4flash-harness-benchmark-design.md)
 
+逐题证据：
+[V4 Flash Terminal-Bench 2.1 逐题诊断](v4flash-terminalbench-89-case-diagnostics.md)
+
 ## 冻结变量
 
 | 变量 | 当前值 |
