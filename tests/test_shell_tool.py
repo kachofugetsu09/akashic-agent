@@ -794,7 +794,7 @@ def test_old_shell_trace_reloads_as_history_without_runtime_alias(
     reloaded = SessionManager(tmp_path)
     try:
         history = reloaded.get_existing("cli:old-shell-history").get_history()
-        calls = history[1]["tool_calls"]
+        calls = cast(list[dict[str, Any]], history[1]["tool_calls"])
         assert [call["function"]["name"] for call in calls] == [
             "shell",
             "task_output",
