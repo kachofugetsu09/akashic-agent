@@ -154,6 +154,31 @@ async def test_compaction_triggers_at_exact_74_percent_after_closed_batches() ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("completed_batches", [0, 1])
+async def test_compaction_never_splits_current_query_or_only_recent_batch(
+    completed_batches: int,
+) -> None:
+    base = [{"role": "user", "content": "完成不可切分的长步骤"}]
+    messages = deepcopy(base)
+    provider = _ControlledProvider([47_360])
+    compactor = _compactor(provider, base)
+    for index in range(completed_batches):
+        _record_batch(compactor, messages, index + 1)
+    before = deepcopy(messages)
+
+    prepared = await compactor.prepare(
+        messages,
+        pending_start=len(messages),
+        tools=[],
+    )
+
+    assert prepared.compacted is False
+    assert messages == before
+    assert provider.summary_calls == []
+    assert compactor.has_compactable_prefix is False
+
+
+@pytest.mark.asyncio
 async def test_token_meter_uses_exact_provider_usage_plus_appended_delta() -> None:
     base = [{"role": "user", "content": "继续"}]
     messages = deepcopy(base)
