@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -9,7 +10,8 @@ from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryServices
 from bus.queue import MessageBus
 from agent.provider import LLMResponse, ToolCall
-from agent.subagent import SubAgent
+from agent.subagent import SubAgent, _trim_tool_results
+from agent.tool_runtime import append_assistant_tool_calls, append_tool_result
 from agent.tool_hooks.base import ToolHook
 from agent.tool_hooks.types import HookContext, HookOutcome
 from agent.tools.base import Tool
@@ -167,7 +169,7 @@ class _ToolLoopGuardHook(ToolHook):
 
     def _event_signature(self, ctx: HookContext) -> tuple[str, int]:
         request = ctx.request
-        excluded = {"task_output", "task_stop"}
+        excluded = {"write_stdin", "task_stop"}
         if not request.tool_batch:
             if request.tool_name in excluded:
                 return "", 0
@@ -395,6 +397,21 @@ def test_subagent_propagates_provider_failure():
     assert subagent.last_exit_reason == "error"
 
 
+def test_subagent_preserves_provider_failure_when_shell_cleanup_also_fails():
+    class CleanupFailingShell(_DummyTool):
+        async def shutdown(self) -> None:
+            raise RuntimeError("cleanup unavailable")
+
+    subagent = SubAgent(
+        provider=cast(Any, _FailingProvider()),
+        model="m",
+        tools=[CleanupFailingShell("shell")],
+    )
+
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        asyncio.run(subagent.run("do work"))
+
+
 def test_subagent_injects_authoritative_completion_rules():
     provider = _FakeProvider([LLMResponse(content="done", tool_calls=[])])
     subagent = SubAgent(
@@ -494,13 +511,13 @@ def test_subagent_no_false_positive_when_same_tool_but_different_args():
     assert len(tool.calls) == 2
 
 
-def test_subagent_ignores_repeated_task_output_in_loop_guard():
-    tool = _DummyTool("task_output")
+def test_subagent_ignores_repeated_write_stdin_in_loop_guard():
+    tool = _DummyTool("write_stdin")
     provider = _FakeProvider(
         [
-            LLMResponse(content="", tool_calls=[ToolCall("s1", "task_output", {"x": 1})]),
-            LLMResponse(content="", tool_calls=[ToolCall("s2", "task_output", {"x": 1})]),
-            LLMResponse(content="", tool_calls=[ToolCall("s3", "task_output", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("s1", "write_stdin", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("s2", "write_stdin", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("s3", "write_stdin", {"x": 1})]),
             LLMResponse(content="状态已确认", tool_calls=[]),
         ]
     )
@@ -611,6 +628,58 @@ def test_subagent_keeps_repeated_tool_results_clean():
     )
 
 
+def test_subagent_trim_pins_active_shell_result_until_terminal_call() -> None:
+    messages: list[dict[str, Any]] = []
+
+    def append_round(
+        call_id: str,
+        name: str,
+        arguments: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        append_assistant_tool_calls(
+            messages,
+            content="",
+            tool_calls=[ToolCall(call_id, name, arguments)],
+        )
+        append_tool_result(
+            messages,
+            tool_call_id=call_id,
+            content=json.dumps(result),
+            tool_name=name,
+            execution_status="success",
+        )
+
+    append_round(
+        "shell-1",
+        "shell",
+        {"command": "sleep 30"},
+        {"process_status": "running", "execution_id": 4201},
+    )
+    for index in range(3):
+        append_round(
+            f"probe-{index}",
+            "probe",
+            {"index": index},
+            {"ok": True},
+        )
+
+    active_view = _trim_tool_results(messages)
+
+    assert active_view[1]["content"] != "[已清除]"
+    assert "4201" in active_view[1]["content"]
+
+    append_round(
+        "wait-1",
+        "write_stdin",
+        {"execution_id": 4201},
+        {"process_status": "succeeded", "exit_code": 0},
+    )
+    terminal_view = _trim_tool_results(messages)
+
+    assert terminal_view[1]["content"] == "[已清除]"
+
+
 def test_subagent_unknown_tool_not_recorded_in_tools_called():
     provider = _FakeProvider(
         [
@@ -650,13 +719,13 @@ def test_agent_loop_does_not_trigger_on_two_repeats_only(tmp_path):
     assert len(tool.calls) == 2
 
 
-def test_agent_loop_ignores_repeated_task_output_in_loop_guard(tmp_path):
-    tool = _DummyTool("task_output")
+def test_agent_loop_ignores_repeated_write_stdin_in_loop_guard(tmp_path):
+    tool = _DummyTool("write_stdin")
     provider = _FakeProvider(
         [
-            LLMResponse(content="", tool_calls=[ToolCall("c1", "task_output", {"x": 1})]),
-            LLMResponse(content="", tool_calls=[ToolCall("c2", "task_output", {"x": 1})]),
-            LLMResponse(content="", tool_calls=[ToolCall("c3", "task_output", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("c1", "write_stdin", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("c2", "write_stdin", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("c3", "write_stdin", {"x": 1})]),
             LLMResponse(content="状态已确认", tool_calls=[]),
         ]
     )

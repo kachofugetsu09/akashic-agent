@@ -53,6 +53,7 @@ from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from proactive_v2.presence import PresenceStore
 from agent.provider import LLMProvider
+from agent.tools.shell import ShellTool
 from agent.tools.registry import ToolRegistry
 from session.manager import SessionManager
 
@@ -673,6 +674,7 @@ class AgentLoop:
             else ""
         )
         turn_token = current_turn_id.set(inherited_turn_id or new_turn_id())
+        primary_error: BaseException | None = None
         try:
             # 1. 先处理可能存在的续跑态，并发布 turn started。
             msg, resumed_from_interrupt = await self._resume_interrupted_message(msg, key)
@@ -697,10 +699,29 @@ class AgentLoop:
                 # 3. 无论核心处理结果如何，都释放 busy 状态。
                 if self._processing_state:
                     self._processing_state.exit(busy_key)
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
-            # 4. 恢复调用方上下文，避免 session 归属泄漏到后续任务。
-            current_session_key.reset(session_token)
-            current_turn_id.reset(turn_token)
+            # 4. 当前 query 结束即回收其 shell，再恢复调用方上下文。
+            try:
+                try:
+                    await self._terminate_shell_owner(key)
+                except BaseException:
+                    if primary_error is None:
+                        raise
+                    logger.exception("shell owner cleanup 失败，保留原始 turn 异常")
+            finally:
+                current_session_key.reset(session_token)
+                current_turn_id.reset(turn_token)
+
+    async def _terminate_shell_owner(self, owner_session_key: str) -> None:
+        shell = self.tools.get_tool("shell")
+        if shell is None:
+            return
+        if not isinstance(shell, ShellTool):
+            raise TypeError("注册名 shell 必须由 ShellTool 拥有生命周期")
+        await shell.terminate_owner(owner_session_key)
 
     async def _process_with_runtime_admission(
         self,

@@ -1,8 +1,8 @@
 # V4 Flash Harness 实验 Ledger
 
-日期：2026-07-30
+首次日期：2026-07-30；最近更新：2026-08-01
 
-状态：第一阶段完成；已停止在 5 个有效 case，并完成 H2/H3/H4 消融
+状态：第一阶段、89 题 discovery 和 H2/H3/H4/H7 定向实验已完成
 
 设计合同：
 [V4 Flash 完整 Runtime Harness Benchmark 设计](../spark/2026-07-30-v4flash-harness-benchmark-design.md)
@@ -279,6 +279,36 @@ H4 的 `regex-log` 中，shell PATH 没有 `/opt/akashic/venv/bin`。模型先�
 H4 仍触发 terminal notification delivery gap，并通过 public `turn/read` recovery
 完成。benchmark recovery 保证了评分链路，但 `SlowConsumerError` 的核心
 backpressure 仍需独立调查，不能用恢复路径掩盖。
+
+## H7 — Shell 统一 execution 消除累计日志轮询
+
+### 假设
+
+> 把前台、自动后台和累计 `task_output` 改为 Codex 风格的统一 execution，并让
+> `write_stdin` 只返回增量输出，可以减少长任务的无信息轮询和重复上下文；它不应
+> 改变 task、模型、verifier 或容器资源，也不保证模型会选择正确任务策略。
+
+对照是 89 题 discovery 中的 `train-fasttext`：`45 shell + 107 task_output +
+1 task_stop`，共 154 次工具调用，最终 3600 秒 TIMEOUT。Treatment trial 为
+`akasic-bench-v4flash-smoke-train-fasttext-20260731-155617-339973`，源码来自独立
+bundle，使用独立 Docker runtime/workspace，模型、effort、task、verifier 和资源
+不变。
+
+Treatment 结果：
+
+- `27 shell + 17 write_stdin`，连同文件工具共 59 次工具调用；
+- 同一 `execution_id` 连续存活约 15 分钟，300 秒空等待后仍能续接；
+- turn 在 3600 秒超时，未进入 verifier；没有 resource failure；
+- 模型在已有训练精度不足后继续尝试 900 秒与 1800 秒 autotune，并在 deadline
+  前开启新的预处理，故未收口属于任务策略，而非 shell execution 丢失；
+- treatment 还暴露两个真实 shell 语义问题：Python 隐式 `/bin/sh -c` 与 Codex
+  用户 shell argv 不一致，以及 pipeline 上游失败可能被末端过滤命令掩盖。
+
+接受“统一增量协议显著减少累计日志轮询”假设；拒绝“因此该 case 会通过”的外推。
+随后按 Codex reference commit
+`c7a4a7e136d96554e1fc6f66532e6060fd2aaf15` 把 shell detection、login argv 和直接
+process spawn 纳入同一候选，并迁移适用的核心测试。pipeline 不自动注入
+`pipefail`，需要上游失败语义的命令必须显式声明。
 
 ## 参考实现对账
 

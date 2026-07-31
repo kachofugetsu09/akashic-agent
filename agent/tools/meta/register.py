@@ -11,7 +11,8 @@ from agent.tools.message_push import MessagePushTool
 from agent.tools.recall_memory import RecallMemoryTool
 from agent.tools.request_user_confirmation import RequestUserConfirmationTool
 from agent.tools.registry import ToolRegistry
-from agent.tools.shell import ShellTool, ShellTaskOutputTool, ShellTaskStopTool
+from agent.tools.shell import ShellTaskStopTool, ShellTool, ShellWriteStdinTool
+from agent.tools.unified_exec import ShellProcessManager
 from agent.tools.tool_search import ToolSearchTool
 from core.memory.engine import MemoryEngine, MemoryToolSpec
 
@@ -47,6 +48,7 @@ def register_common_meta_tools(
     session_store: Any,
     push_tool: MessagePushTool | None = None,
 ) -> MessagePushTool:
+    shell_manager = ShellProcessManager()
     tools.register(ToolSearchTool(tools), always_on=True, risk="read-only")
     tools.register(
         RequestUserConfirmationTool(),
@@ -54,22 +56,22 @@ def register_common_meta_tools(
         risk="read-only",
     )
     tools.register(
-        ShellTool(),
+        ShellTool(shell_manager),
         always_on=True,
         risk="external-side-effect",
         search_hint="终端 脚本 bash 命令",
     )
     tools.register(
-        ShellTaskOutputTool(),
-        always_on=True,
-        risk="read-only",
-        search_hint="后台任务输出 task_output 进程日志",
-    )
-    tools.register(
-        ShellTaskStopTool(),
+        ShellWriteStdinTool(shell_manager),
         always_on=True,
         risk="external-side-effect",
-        search_hint="停止后台任务 task_stop 杀进程",
+        search_hint="等待命令 增量输出 stdin 交互",
+    )
+    tools.register(
+        ShellTaskStopTool(shell_manager),
+        always_on=True,
+        risk="external-side-effect",
+        search_hint="停止命令 task_stop 终止执行进程组",
     )
     tools.register(
         cast(Tool, readonly_tools["web_search"]),

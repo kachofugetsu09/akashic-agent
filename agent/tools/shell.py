@@ -1,272 +1,56 @@
-"""
-Shell 工具（Bash 命令执行）
-设计参考 OpenCode internal/llm/tools/bash.go：
-- 禁止高风险命令黑名单（nc、telnet、浏览器等）
-- 超时：默认 60s，普通命令最大 600s；显式前台阻塞最大 21600s
-- 输出截断：超过 30000 字符时首尾各取一半，中间注明省略行数
-- 记录执行时长
-- 结构化 JSON 输出（command / exit_code / duration_ms / output）
+from __future__ import annotations
 
-后台任务（run_in_background=True）：
-- 立即返回 background_task_id，不阻塞前台
-- 输出持续写入临时日志文件
-- 显式硬超时最长 4 小时；未显式传入时不设置硬超时
-- 配合 ShellTaskOutputTool / ShellTaskStopTool 管理
-"""
-
-import asyncio
 import json
 import logging
 import os
-import signal
-import shlex
-import ipaddress
-import subprocess
-import tempfile
-from dataclasses import dataclass
-from pathlib import Path, PureWindowsPath
-from urllib.parse import urlparse
-from uuid import uuid4
-import time
-from typing import Any, Callable, cast
+from pathlib import Path
+from typing import Any, Callable
 
 from agent.tools.base import Tool
+from agent.tools.shell_security import validate_command
+from agent.tools.shell_security import validate_network_command
+from agent.tools.shell_command import resolve_shell
+from agent.tools.unified_exec import DEFAULT_HARD_TIMEOUT_S
+from agent.tools.unified_exec import DEFAULT_INITIAL_YIELD_TIME_MS
+from agent.tools.unified_exec import DEFAULT_MAX_OUTPUT_TOKENS
+from agent.tools.unified_exec import MAX_HARD_TIMEOUT_S
+from agent.tools.unified_exec import ShellProcessManager
+from agent.tools.unified_exec import format_execution_result
+from core.error_context import current_session_key
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TIMEOUT = 60  # 秒（OpenCode 默认 1 分钟）
-_FG_THRESHOLD = 15    # 前台最长等待秒数；超时自动转后台
-_MAX_TIMEOUT = 600  # 秒（OpenCode 最大 10 分钟）
-_BLOCKING_TIMEOUT = 21_600  # 秒（auto_promote=False 时默认 6 小时）
-_MAX_OUTPUT = 30_000  # 字符（与 OpenCode MaxOutputLength 一致）
-_STREAM_CHUNK_SIZE = 4096
-_STREAM_DRAIN_GRACE_S = 0.2
-_BLOCK_DEFAULT_MS = 30_000  # task_output block 默认单次等待
-_BLOCK_MAX_MS = 30_000  # task_output block 单次硬上限：超过按上限，迫使长任务走轮询而非一次死等
-_BG_TTL_S = 4 * 3600  # 后台任务最长存活时间：4 小时
-_BG_EVICT_DELAY_S = 300  # 任务完成后延迟 5 分钟清理注册表和日志
-_IS_WINDOWS = os.name == "nt"
-
-# 禁止命令（对应 OpenCode bannedCommands）
-_BANNED = frozenset(
-    {
-        "curlie",
-        "axel",
-        "aria2c",
-        "nc",
-        "telnet",
-        "lynx",
-        "w3m",
-        "links",
-        "http-prompt",
-        "chrome",
-        "firefox",
-        "safari",
-    }
-)
-
-# 对网络命令启用额外安全限制
-_NETWORK_CMDS = frozenset({"curl", "wget", "http", "httpie", "xh"})
-_NET_WRITE_FLAGS = frozenset(
-    {
-        # curl
-        "-o",
-        "--output",
-        "-O",
-        "--remote-name",
-        "-T",
-        "--upload-file",
-        "-F",
-        "--form",
-        "--form-string",
-        # wget
-        "-O",
-        "--output-document",
-        "--post-file",
-        # httpie/xh
-        "--download",
-        "--output",
-        "--offline",
-        "@",
-    }
-)
-_RESTRICTED_META_CHARS = ("|", ";", "&", ">", "<", "`", "$(")
-_RESTRICTED_SHELL_RUNNERS = frozenset(
-    {
-        "sh",
-        "bash",
-        "zsh",
-        "fish",
-        "python",
-        "python3",
-        "node",
-        "perl",
-        "ruby",
-        "php",
-        "lua",
-    }
-)
-
-# ── 后台任务注册表 ────────────────────────────────────────────────────
-
-@dataclass
-class _BackgroundTask:
-    proc: Any  # asyncio.subprocess.Process
-    log_path: str
-    pump_task: asyncio.Task | None   # None 仅在创建瞬间，pump 注册后立即填入
-    started_at: float                # monotonic，用于 TTL 检查
-    wall_started_at_ms: int          # epoch ms，返回给 LLM
-    command: str = ""
-    description: str = ""
-    last_output_at_ms: int | None = None  # epoch ms，每次写文件时更新
-    timeout_s: int | None = None
-    timeout_handle: asyncio.TimerHandle | None = None
-    finish_reason: str = "natural"
-
-
-# 模块级单例：跨 ShellTool 实例共享
-_BG_REGISTRY: dict[str, _BackgroundTask] = {}
-
-
-async def _bg_pump(
-    proc: Any,
-    log_path: str,
-    bg_task: _BackgroundTask,
-    on_data: Callable[[str], None] | None = None,
-) -> None:
-    """持续从 stdout/stderr 读取并写入日志文件，直到进程退出（+ 短暂排水）。
-
-    顺序：先等主进程退出，再尝试排水 grace 秒；超时则强制取消 drain task。
-    这样即使子孙进程继承了 pipe fd，pump_task 也不会永久阻塞。
-    每次写入时更新 bg_task.last_output_at_ms，供 LLM 判断是否卡死。
-    on_data 用于前台阶段的实时流式回调（转后台后不再触发）。
-    """
-    with open(log_path, "wb") as f:
-        async def _drain_stream(stream) -> None:
-            if stream is None:
-                return
-            while True:
-                chunk = await stream.read(_STREAM_CHUNK_SIZE)
-                if not chunk:
-                    break
-                f.write(chunk)
-                f.flush()
-                bg_task.last_output_at_ms = int(time.time() * 1000)
-                if on_data is not None:
-                    on_data(chunk.decode(errors="replace"))
-
-        stdout_task = asyncio.create_task(_drain_stream(proc.stdout))
-        stderr_task = asyncio.create_task(_drain_stream(proc.stderr))
-
-        # 等主进程本体退出（不等子孙进程关 fd）
-        await proc.wait()
-
-        # 短暂排水：捕获最后几帧输出；超时后强制取消
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(stdout_task, stderr_task),
-                timeout=_STREAM_DRAIN_GRACE_S,
-            )
-        except asyncio.TimeoutError:
-            stdout_task.cancel()
-            stderr_task.cancel()
-            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
-
-
-def _schedule_eviction(task_id: str, log_path: str) -> None:
-    """在当前事件循环上注册延迟清理（由 pump_task done callback 调用）。"""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return
-
-    def _evict() -> None:
-        task = _BG_REGISTRY.pop(task_id, None)
-        if task is not None and task.timeout_handle is not None:
-            task.timeout_handle.cancel()
-        try:
-            os.unlink(log_path)
-        except OSError:
-            pass
-
-    loop.call_later(_BG_EVICT_DELAY_S, _evict)
-
-
-def _on_background_task_done(task_id: str, task: _BackgroundTask) -> None:
-    _schedule_eviction(task_id, task.log_path)
-
-
-def _subprocess_options(cwd: Path | None, env: dict[str, str] | None) -> dict[str, Any]:
-    options: dict[str, Any] = {
-        "cwd": str(cwd) if cwd is not None else None,
-        "env": env,
-        "stdout": asyncio.subprocess.PIPE,
-        "stderr": asyncio.subprocess.PIPE,
-    }
-    if _IS_WINDOWS:
-        options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    else:
-        options["start_new_session"] = True
-    return options
-
-
-def _kill_process_tree(proc: Any) -> None:
-    if _IS_WINDOWS:
-        result = subprocess.run(
-            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-        if result.returncode != 0:
-            proc.kill()
-        return
-    os.killpg(proc.pid, signal.SIGKILL)
-
-
-def _bg_kill(task_id: str, *, finish_reason: str = "stopped") -> None:
-    """杀掉后台任务、从注册表移除并立即删除日志文件。"""
-    task = _BG_REGISTRY.pop(task_id, None)
-    if task is None:
-        return
-    task.finish_reason = finish_reason
-    if task.timeout_handle is not None:
-        task.timeout_handle.cancel()
-    try:
-        _kill_process_tree(task.proc)
-    except (ProcessLookupError, PermissionError):
-        pass
-    if task.pump_task is not None:
-        task.pump_task.cancel()
-    try:
-        os.unlink(task.log_path)
-    except OSError:
-        pass
-
-
-def _bg_timeout(task_id: str) -> None:
-    task = _BG_REGISTRY.get(task_id)
-    if task is None:
-        return
-    _bg_kill(task_id, finish_reason="timeout")
-
-
-# ── ShellTool ────────────────────────────────────────────────────────
+_MAX_OUTPUT = 30_000
+_LOCAL_OWNER_PREFIX = "local-shell"
+_REMOVED_SHELL_ARGUMENTS = frozenset({"run_in_background", "auto_promote"})
+_UNIFIED_EXEC_ENV = {
+    "NO_COLOR": "1",
+    "TERM": "dumb",
+    "LANG": "C.UTF-8",
+    "LC_CTYPE": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "COLORTERM": "",
+    "PAGER": "cat",
+    "GIT_PAGER": "cat",
+    "GH_PAGER": "cat",
+}
 
 
 class ShellTool(Tool):
-    """在 bash 中执行命令，返回结构化结果"""
+    """启动命令，并返回终态或可续接的 execution_id。"""
 
     name = "shell"
 
     def __init__(
         self,
+        manager: ShellProcessManager | None = None,
         *,
         allow_network: bool = True,
         working_dir: Path | None = None,
         restricted_dir: Path | None = None,
         spawn_hook: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
+        self.manager = manager or ShellProcessManager()
         self._allow_network = allow_network
         self._working_dir = working_dir
         self._restricted_dir = restricted_dir.resolve() if restricted_dir else None
@@ -275,21 +59,19 @@ class ShellTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "在 bash 中执行命令并返回输出。\n"
+            "在 shell 中执行命令。命令在短等待窗口内结束时直接返回 exit_code；"
+            "仍在运行时返回 execution_id，之后用 write_stdin 等待增量输出或向 PTY 输入。\n"
             "注意：\n"
+            "- execution_id 只标识这次命令执行，不是 OS PID 或 Akashic 对话 session\n"
+            "- shell 默认使用当前用户的默认 shell；login 默认 true，可显式关闭\n"
+            "- write_stdin 每次只返回上次读取后的新增输出，空 chars 可等待最长 300 秒\n"
+            "- 需要交互输入时设置 tty=true；非 PTY 只允许用 Ctrl-C 中断\n"
+            "- 放弃仍在运行的命令前调用 task_stop\n"
+            "- pipeline 需要上游失败生效时，由命令显式启用 pipefail\n"
             "- 使用绝对路径，避免依赖 cd 切换目录\n"
-            "- 多条命令用 ; 或 && 连接，不要用换行分隔\n"
-            "- 网络命令（curl/wget/httpie/xh）仅允许访问公网 HTTP(S)，且禁止上传/写文件\n"
-            "- 以下命令被禁止：nc、telnet、浏览器等高风险工具\n"
-            "- 输出超过 30000 字符时自动截断\n"
-            "- 前台阻塞总超时默认 60 秒，普通命令最大 600 秒\n"
-            "- 命令超过 15 秒未完成时默认自动转为后台任务，返回 background_task_id；后台会沿用当前 timeout 作为硬截止时间\n"
-            "- 只有用户明确说“阻塞”时，才设置 auto_promote=false；未显式传 timeout 时会默认阻塞 21600 秒\n"
-            "- 服务进程或已知长时间运行的命令，直接用 run_in_background=true 后台启动，跳过 15 秒等待；后台显式硬超时最长 14400 秒，未显式传入时不设置硬超时\n"
-            "- 收到 background_task_id 后，由你负责用 task_output 主动查看进展和结果；不会有系统自动回传\n"
-            "- task_output 是轮询接口：block=true 单次最多等 30s 就返回快照（不会等到任务结束），长任务靠多次轮询推进\n"
-            "- 如果决定放弃后台任务并准备最终回复，必须先调用 task_stop 终止它\n"
-            "禁止用途：不得用 shell 替代专用工具（read_file 读文件、web_fetch 抓网页、list_dir 列目录）。"
+            "- 网络命令仅允许公网 HTTP(S)，且禁止上传或写文件\n"
+            "- 禁止 nc、telnet、浏览器等高风险命令\n"
+            "禁止用 shell 替代 read_file、web_fetch 或 list_dir 等专用工具。"
         )
 
     @property
@@ -299,78 +81,88 @@ class ShellTool(Tool):
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "要执行的 bash 命令",
+                    "description": "要执行的 shell 命令",
                 },
                 "description": {
                     "type": "string",
-                    "description": (
-                        "用 5-10 字描述这条命令的作用，便于用户审查和日志追踪。"
-                        "示例：'列出当前目录文件' / '安装 Python 依赖' / '查看进程状态'"
-                    ),
-                },
-                "timeout": {
-                    "type": "integer",
-                    "description": (
-                        f"前台阻塞或显式硬超时秒数，默认 {_DEFAULT_TIMEOUT}。"
-                        f"普通命令最大 {_MAX_TIMEOUT}；auto_promote=false 时最大 {_BLOCKING_TIMEOUT}。"
-                        f"run_in_background=true 时最大 {_BG_TTL_S}，且只有显式传入才生效。"
-                    ),
-                    "minimum": 1,
-                    "maximum": _BLOCKING_TIMEOUT,
-                },
-                "run_in_background": {
-                    "type": "boolean",
-                    "description": (
-                        "是否后台运行。设为 true 时立即返回 background_task_id，"
-                        "输出写入日志文件，通过 task_output 获取、task_stop 停止。"
-                        "适用于服务进程、长时间编译等不需要等待结果的场景。"
-                    ),
-                },
-                "auto_promote": {
-                    "type": "boolean",
-                    "description": (
-                        "前台命令超过 15 秒未完成时是否自动转后台，默认 true。"
-                        "只有用户明确说“阻塞”时才设为 false；不传 timeout 时默认等待 21600 秒。"
-                    ),
+                    "description": "用 5-10 字描述命令作用，供用户审查和日志追踪。",
                 },
                 "cwd": {
                     "type": "string",
                     "description": "可选工作目录；相对路径按当前进程工作目录解析。",
                 },
+                "shell": {
+                    "type": "string",
+                    "description": "要启动的 shell binary；默认使用当前用户的默认 shell。",
+                },
+                "login": {
+                    "type": "boolean",
+                    "description": "true 使用 login shell 语义，false 关闭；默认 true。",
+                },
+                "tty": {
+                    "type": "boolean",
+                    "description": "需要后续交互输入时设为 true，默认 false。",
+                },
+                "yield_time_ms": {
+                    "type": "integer",
+                    "description": (
+                        "首次等待毫秒数，默认 10000；实际钳制在 250 到 30000。"
+                    ),
+                },
+                "max_output_tokens": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": (
+                        "本次工具结果的近似输出 token 预算，默认 10000；"
+                        "不影响 provider 生成上限或完整诊断日志。"
+                    ),
+                },
+                "timeout": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_HARD_TIMEOUT_S,
+                    "description": (
+                        f"执行进程组硬超时秒数，默认 {DEFAULT_HARD_TIMEOUT_S}，"
+                        f"最大 {MAX_HARD_TIMEOUT_S}。"
+                    ),
+                },
             },
             "required": ["command", "description"],
+            "additionalProperties": False,
         }
 
     async def execute(self, **kwargs: Any) -> str:
-        command: str = kwargs.get("command", "").strip()
-        description: str = kwargs.get("description", "")
-        timeout_specified = "timeout" in kwargs and kwargs.get("timeout") is not None
-        run_in_background: bool = bool(kwargs.get("run_in_background", False))
-        auto_promote: bool = bool(kwargs.get("auto_promote", True))
-        requested_timeout = int(kwargs["timeout"]) if timeout_specified else None
-        if run_in_background and requested_timeout is not None:
-            if requested_timeout < 1 or requested_timeout > _BG_TTL_S:
-                return _err(
-                    f"后台显式 timeout 必须在 1 到 {_BG_TTL_S} 秒之间，"
-                    f"收到 {requested_timeout}"
-                )
-        if run_in_background:
-            max_timeout = _BG_TTL_S
-        elif not auto_promote:
-            max_timeout = _BLOCKING_TIMEOUT
-        else:
-            max_timeout = _MAX_TIMEOUT
-        default_timeout = (
-            _BLOCKING_TIMEOUT
-            if not run_in_background and not auto_promote and not timeout_specified
-            else _DEFAULT_TIMEOUT
-        )
-        timeout: int = min(int(kwargs.get("timeout", default_timeout)), max_timeout)
-        on_data = kwargs.get("_on_data")
+        """校验边界参数，注册执行，并返回统一结果。"""
 
+        # 1. 解析工具边界参数。
+        removed = sorted(_REMOVED_SHELL_ARGUMENTS.intersection(kwargs))
+        if removed:
+            return _error(f"shell 已移除参数: {', '.join(removed)}")
+        command = str(kwargs.get("command", "")).strip()
+        description = str(kwargs.get("description", ""))
         if not command:
-            return _err("命令不能为空")
+            return _error("命令不能为空")
+        yield_time_ms = int(kwargs.get("yield_time_ms", DEFAULT_INITIAL_YIELD_TIME_MS))
+        max_output_tokens = int(
+            kwargs.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)
+        )
+        hard_timeout_s = int(kwargs.get("timeout", DEFAULT_HARD_TIMEOUT_S))
+        if max_output_tokens < 0:
+            return _error("max_output_tokens 不能为负数")
+        if hard_timeout_s < 1 or hard_timeout_s > MAX_HARD_TIMEOUT_S:
+            return _error(
+                f"timeout 必须在 1 到 {MAX_HARD_TIMEOUT_S} 秒之间，"
+                f"收到 {hard_timeout_s}"
+            )
+        requested_shell = kwargs.get("shell")
+        try:
+            selected_shell = resolve_shell(
+                None if requested_shell is None else str(requested_shell)
+            )
+        except ValueError as exc:
+            return _error(str(exc))
 
+        # 2. 应用当前工具实例的 cwd、环境和 spawn hook。
         cwd = self._working_dir
         cwd_arg = kwargs.get("cwd")
         if cwd_arg not in (None, ""):
@@ -385,579 +177,156 @@ class ShellTool(Tool):
                 }
             )
             command = str(hooked.get("command", command)).strip()
-            cwd_val = hooked.get("cwd")
-            cwd = None if cwd_val in (None, "") else Path(str(cwd_val))
-            env_val = hooked.get("env")
-            if isinstance(env_val, dict):
-                env = {str(k): str(v) for k, v in env_val.items()}
-
+            hooked_cwd = hooked.get("cwd")
+            cwd = None if hooked_cwd in (None, "") else Path(str(hooked_cwd))
+            hooked_env = hooked.get("env")
+            if isinstance(hooked_env, dict):
+                env = {str(key): str(value) for key, value in hooked_env.items()}
         if self._restricted_dir is not None and cwd is None:
             cwd = self._restricted_dir
 
-        logger.info("shell [%s]: %s", description, command[:120])
-
-        cmd_err = _validate_command(
+        # 3. 在唯一安全边界校验最终将执行的命令。
+        validation_error = validate_command(
             command,
             allow_network=self._allow_network,
             restricted_dir=self._restricted_dir,
             cwd=cwd,
         )
-        if cmd_err:
-            return _err(cmd_err)
-
-        if run_in_background:
-            bg_timeout = timeout if timeout_specified else None
-            return await self._execute_background(
-                command, description, cwd, env, bg_timeout
-            )
-
-        # ── 前台路径（默认 15s 未完成自动转后台）──────────────────────
-        data_callback = (
-            cast(Callable[[str], None], on_data) if callable(on_data) else None
-        )
-        return await self._execute_with_auto_promote(
+        if validation_error:
+            return _error(validation_error)
+        logger.info("shell [%s]: %s", description, command[:120])
+        argv = selected_shell.derive_argv(
             command,
-            description,
-            cwd,
-            env,
-            timeout,
-            timeout_specified,
-            data_callback,
-            auto_promote,
+            login=bool(kwargs.get("login", True)),
         )
 
-    async def _execute_background(
-        self,
-        command: str,
-        description: str,
-        cwd: Path | None,
-        env: dict[str, str],
-        timeout_s: int | None,
-    ) -> str:
-        task_id = f"shell_{uuid4().hex[:12]}"
-        log_fd, log_path = tempfile.mkstemp(
-            prefix=f"akashic-bg-{task_id}-", suffix=".log"
-        )
-        os.close(log_fd)
-
-        wall_start_ms = int(time.time() * 1000)
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            **_subprocess_options(cwd, env),
-        )
-        # 先建 bg_task 对象，pump 需要引用它来更新 last_output_at_ms
-        bg = _BackgroundTask(
-            proc=proc,
-            log_path=log_path,
-            pump_task=None,
-            started_at=time.monotonic(),
-            wall_started_at_ms=wall_start_ms,
+        # 4. manager 在等待前注册进程；取消这里只取消等待。
+        result = await self.manager.exec_command(
             command=command,
-            description=description,
-            timeout_s=timeout_s,
+            argv=argv,
+            cwd=cwd,
+            env=env,
+            tty=bool(kwargs.get("tty", False)),
+            yield_time_ms=yield_time_ms,
+            max_output_tokens=max_output_tokens,
+            hard_timeout_s=hard_timeout_s,
+            owner_session_key=_owner_session_key(self.manager),
         )
-        pump = asyncio.create_task(_bg_pump(proc, log_path, bg))
-        pump.add_done_callback(lambda _: _on_background_task_done(task_id, bg))
-        bg.pump_task = pump
-        _BG_REGISTRY[task_id] = bg
-        _arm_background_timeout(task_id, bg)
-        logger.info("shell bg started [%s] pid=%s log=%s", task_id, proc.pid, log_path)
+        return format_execution_result(result, command=command)
 
-        return json.dumps(
-            {
-                "command": command,
-                "background_task_id": task_id,
-                "process_status": "started",
-                "evidence_scope": "process_started",
-                "status": "running",
-                "output_path": log_path,
-                "started_at_ms": wall_start_ms,
-                "timeout_s": timeout_s,
-                "exit_code": None,
-                "interrupted": False,
+    async def shutdown(self) -> None:
+        await self.manager.shutdown()
+
+    async def terminate_owner(self, owner_session_key: str) -> None:
+        await self.manager.terminate_owner(owner_session_key)
+
+
+class ShellWriteStdinTool(Tool):
+    """续接一次 shell execution 并消费新增输出。"""
+
+    name = "write_stdin"
+    description = (
+        "等待 shell execution 的新增输出，或向 tty=true 的 execution 写入字符。"
+        "空 chars 默认等待 5 秒、最多可等 300 秒；带输入最多等待 30 秒。"
+        "结果只包含上次读取后的新增输出。已知长任务应按预期耗时使用较长等待，"
+        "不要反复短轮询；暂时没有输出本身不代表卡死。若根据命令语义决定放弃，"
+        "必须调用 task_stop。"
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "execution_id": {
+                "type": "integer",
+                "description": "shell 返回的 execution_id",
             },
-            ensure_ascii=False,
-        )
-
-    async def _execute_with_auto_promote(
-        self,
-        command: str,
-        description: str,
-        cwd: Path | None,
-        env: dict[str, str],
-        timeout: int,
-        timeout_specified: bool,
-        on_data: Callable[[str], None] | None,
-        auto_promote: bool,
-    ) -> str:
-        """前台执行；允许按需关闭自动转后台，直接等待完整结果。"""
-        task_id = f"shell_{uuid4().hex[:12]}"
-        log_fd, log_path = tempfile.mkstemp(
-            prefix=f"akashic-fg-{task_id}-", suffix=".log"
-        )
-        os.close(log_fd)
-
-        wall_start_ms = int(time.time() * 1000)
-        start_mono = time.monotonic()
-        hard_timeout_s = timeout
-
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            **_subprocess_options(cwd, env),
-        )
-        bg = _BackgroundTask(
-            proc=proc,
-            log_path=log_path,
-            pump_task=None,
-            started_at=start_mono,
-            wall_started_at_ms=wall_start_ms,
-            command=command,
-            description=description,
-            timeout_s=hard_timeout_s,
-        )
-        pump = asyncio.create_task(_bg_pump(proc, log_path, bg, on_data))
-        bg.pump_task = pump
-
-        fg_wait_timeout = min(timeout, _FG_THRESHOLD) if auto_promote else timeout
-        try:
-            await asyncio.wait_for(asyncio.shield(pump), timeout=fg_wait_timeout)
-        except asyncio.TimeoutError:
-            elapsed_s = time.monotonic() - start_mono
-            if not auto_promote or (timeout_specified and elapsed_s >= timeout):
-                return await self._finalize_timed_out_process(
-                    command, proc, pump, log_path, start_mono
-                )
-            # ── 自动转后台 ──────────────────────────────────────────────
-            pump.add_done_callback(lambda _: _on_background_task_done(task_id, bg))
-            _BG_REGISTRY[task_id] = bg
-            _arm_background_timeout(task_id, bg)
-            logger.info(
-                "shell auto-promoted [%s] pid=%s log=%s", task_id, proc.pid, log_path
-            )
-            return json.dumps(
-                {
-                    "command": command,
-                    "background_task_id": task_id,
-                    "process_status": "started",
-                    "evidence_scope": "process_started",
-                    "status": "running",
-                    "output_path": log_path,
-                    "started_at_ms": wall_start_ms,
-                    "timeout_s": hard_timeout_s,
-                    "exit_code": None,
-                    "interrupted": False,
-                    "auto_promoted": True,
-                },
-                ensure_ascii=False,
-            )
-        except asyncio.CancelledError:
-            # 外层被取消 → 杀掉进程并清理
-            try:
-                _kill_process_tree(proc)
-            except (ProcessLookupError, PermissionError):
-                pass
-            pump.cancel()
-            try:
-                os.unlink(log_path)
-            except OSError:
-                pass
-            raise
-
-        # ── 前台正常完成 ────────────────────────────────────────────────
-        duration_ms = int((time.monotonic() - start_mono) * 1000)
-        exit_code = proc.returncode or 0
-
-        try:
-            content = Path(log_path).read_bytes().decode(errors="replace")
-        except OSError:
-            content = ""
-        finally:
-            try:
-                os.unlink(log_path)
-            except OSError:
-                pass
-
-        if not content:
-            content = "（无输出）"
-        elif exit_code != 0:
-            content = content + f"\nExit code {exit_code}"
-
-        output_meta = _truncate(content)
-        full_output_path = _write_full_output(content) if output_meta["truncated"] else None
-        truncation = None
-        if output_meta["truncated"]:
-            truncation = {
-                "strategy": output_meta["strategy"],
-                "full_length": output_meta["full_length"],
-                "returned_length": output_meta["returned_length"],
-                "omitted_lines": output_meta["omitted_lines"],
-            }
-
-        return json.dumps(
-            {
-                "command": command,
-                "process_status": "succeeded" if exit_code == 0 else "failed",
-                "evidence_scope": "command_exit_only",
-                "exit_code": exit_code,
-                "interrupted": False,
-                "duration_ms": duration_ms,
-                "output": output_meta["text"],
-                "truncation": truncation,
-                "full_output_path": full_output_path,
+            "chars": {
+                "type": "string",
+                "description": "写入 PTY 的字符；留空表示只等待和读取。",
             },
-            ensure_ascii=False,
-        )
-
-    async def _finalize_timed_out_process(
-        self,
-        command: str,
-        proc: Any,
-        pump: asyncio.Task,
-        log_path: str,
-        start_mono: float,
-    ) -> str:
-        try:
-            _kill_process_tree(proc)
-        except (ProcessLookupError, PermissionError):
-            pass
-
-        try:
-            await asyncio.wait_for(asyncio.shield(pump), timeout=_STREAM_DRAIN_GRACE_S)
-        except asyncio.TimeoutError:
-            pump.cancel()
-            await asyncio.gather(pump, return_exceptions=True)
-
-        duration_ms = int((time.monotonic() - start_mono) * 1000)
-        try:
-            content = Path(log_path).read_bytes().decode(errors="replace")
-        except OSError:
-            content = ""
-        finally:
-            try:
-                os.unlink(log_path)
-            except OSError:
-                pass
-
-        if not content:
-            content = "（无输出）"
-        content = content + "\nCommand timed out"
-        output_meta = _truncate(content)
-        full_output_path = _write_full_output(content) if output_meta["truncated"] else None
-        truncation = None
-        if output_meta["truncated"]:
-            truncation = {
-                "strategy": output_meta["strategy"],
-                "full_length": output_meta["full_length"],
-                "returned_length": output_meta["returned_length"],
-                "omitted_lines": output_meta["omitted_lines"],
-            }
-
-        return json.dumps(
-            {
-                "command": command,
-                "process_status": "timed_out",
-                "evidence_scope": (
-                    "command_exit_only"
-                    if proc.returncode is not None
-                    else "termination_requested"
+            "yield_time_ms": {
+                "type": "integer",
+                "description": (
+                    "本次等待毫秒数。空输入默认 5000、范围 5000 到 300000；"
+                    "带输入默认 250、范围 250 到 30000。"
                 ),
-                "exit_code": proc.returncode,
-                "interrupted": True,
-                "duration_ms": duration_ms,
-                "output": output_meta["text"],
-                "truncation": truncation,
-                "full_output_path": full_output_path,
             },
-            ensure_ascii=False,
-        )
-
-
-# ── ShellTaskOutputTool ──────────────────────────────────────────────
-
-
-class ShellTaskOutputTool(Tool):
-    """读取后台 shell 任务的当前输出，可选择阻塞等待完成。"""
-
-    name = "task_output"
-
-    @property
-    def description(self) -> str:
-        return (
-            "读取后台 shell 任务的当前输出和状态。\n"
-            "返回字段：\n"
-            "- status: 'running' | 'done' | 'not_found' | 'invalid' | "
-            "'timed_out' | 'expired'\n"
-            "- process_status: 进程生命周期状态，不等同于整项任务是否完成\n"
-            "- evidence_scope: 本次结果实际证明的证据范围\n"
-            "- exit_code: 进程退出码（运行中为 null）\n"
-            "- elapsed_ms: 任务已运行毫秒数\n"
-            "- since_last_output_ms: 距上次有输出经过的毫秒数（null 表示从未有过输出）\n"
-            "- output: 最近输出内容（尾部截断到 30000 字符）\n"
-            "收到 task_output 结果后，结合你对命令的了解，判断这个任务是否应该继续运行：\n"
-            "需要 task_stop 终止的情况（有输出不代表不该 stop）：\n"
-            "  - 任务是死循环或明确没有退出条件（无论是否产生输出）\n"
-            "  - 任务挂起：有过输出但 since_last_output_ms 异常大，不符合该命令的预期节奏\n"
-            "  - 任务卡死：从未有过输出（since_last_output_ms=null）且 elapsed_ms 超过合理预期\n"
-            "不需要 stop 的情况：编译、下载、训练等明确会结束的长时间任务，或用户主动要求的服务进程。\n"
-            "- 这是轮询接口：block=true 最多等待 timeout_ms（上限 30s）就返回一次快照，不会一直阻塞到任务结束。\n"
-            "- 长任务用轮询循环：每次 block 一段→返回后判断 done/继续轮询/task_stop，不要期望一次调用就等到结束（传超大 timeout_ms 也会被钳到 30s）。\n"
-            "- 分次轮询才能在等待期间响应用户新消息或 /stop；一次死等会让你长时间无响应。\n"
-            "- 如果你决定放弃某个后台任务、准备输出最终回复，必须先调用 task_stop 将其终止，再生成回复。不要让后台任务在你回复后继续孤立运行。\n"
-            "- 如果返回 status=done，本轮必须负责处理结果，不会有任何系统自动回传。"
-        )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "task_id": {
-                    "type": "string",
-                    "description": "shell 工具返回的 background_task_id",
-                },
-                "block": {
-                    "type": "boolean",
-                    "description": "是否等待任务完成后再返回，默认 false",
-                },
-                "timeout_ms": {
-                    "type": "integer",
-                    "description": "block=true 时本次最多等待毫秒数，默认 30000，上限 30000（超过按上限处理，单次轮询不会等到任务结束）",
-                    "minimum": 0,
-                    "maximum": _BLOCK_MAX_MS,
-                },
+            "max_output_tokens": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "本次工具结果的近似输出 token 预算，默认 10000。",
             },
-            "required": ["task_id"],
-        }
+        },
+        "required": ["execution_id"],
+        "additionalProperties": False,
+    }
+
+    def __init__(self, manager: ShellProcessManager) -> None:
+        self.manager = manager
 
     async def execute(self, **kwargs: Any) -> str:
-        task_id: str = kwargs.get("task_id", "")
-        block: bool = bool(kwargs.get("block", False))
-        # 钳到硬上限：block 本质是轮询一次，单次最多等 _BLOCK_MAX_MS，避免一次调用长时间静默
-        timeout_ms: int = min(max(int(kwargs.get("timeout_ms", _BLOCK_DEFAULT_MS)), 0), _BLOCK_MAX_MS)
-
-        task = _BG_REGISTRY.get(task_id)
-        if task is None:
-            return _process_error(
-                task_id,
-                status="not_found",
-                process_status="unknown",
-                evidence_scope="registry_lookup",
-                message=f"任务 {task_id!r} 不存在或已清理",
-            )
-
-        pump_task = task.pump_task
-        if pump_task is None:
-            return _process_error(
-                task_id,
-                status="invalid",
-                process_status="unknown",
-                evidence_scope="registry_snapshot",
-                message=f"任务 {task_id!r} 状态异常：缺少输出泵",
-            )
-        if _is_background_timeout(task):
-            _bg_timeout(task_id)
-            return _process_error(
-                task_id,
-                status="timed_out",
-                process_status="termination_requested",
-                evidence_scope="termination_requested",
-                message=f"任务 {task_id!r} 已超时（{task.timeout_s}s），已请求终止",
-            )
-
-        if block and not pump_task.done():
-            if task.timeout_s is not None:
-                remaining_ms = int(
-                    max(task.timeout_s - (time.monotonic() - task.started_at), 0)
-                    * 1000
-                )
-                timeout_ms = min(timeout_ms, remaining_ms)
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(pump_task), timeout=timeout_ms / 1000
-                )
-            except asyncio.TimeoutError:
-                pass
-            except asyncio.CancelledError:
-                current = asyncio.current_task()
-                if current is not None and current.cancelling():
-                    raise
-
-        if task.finish_reason == "timeout" or _is_background_timeout(task):
-            _bg_timeout(task_id)
-            return _process_error(
-                task_id,
-                status="timed_out",
-                process_status="termination_requested",
-                evidence_scope="termination_requested",
-                message=f"任务 {task_id!r} 已超时（{task.timeout_s}s），已请求终止",
-            )
-
-        done = pump_task.done()
-        if done and time.monotonic() - task.started_at > _BG_TTL_S:
-            if task_id in _BG_REGISTRY:
-                del _BG_REGISTRY[task_id]
-            if task.timeout_handle is not None:
-                task.timeout_handle.cancel()
-            try:
-                os.unlink(task.log_path)
-            except OSError:
-                pass
-            return _process_error(
-                task_id,
-                status="expired",
-                process_status="unknown",
-                evidence_scope="registry_cleanup",
-                message=f"任务 {task_id!r} 已超出 TTL（{_BG_TTL_S}s），已清理",
-            )
-
-        exit_code = task.proc.returncode if done else None
-        status = "done" if done else "running"
-
-        now_ms = int(time.time() * 1000)
-        elapsed_ms = now_ms - task.wall_started_at_ms
-        since_last_output_ms = (
-            now_ms - task.last_output_at_ms
-            if task.last_output_at_ms is not None
-            else None
+        chars = str(kwargs.get("chars", ""))
+        default_yield = 5_000 if not chars else 250
+        max_output_tokens = int(
+            kwargs.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)
         )
-
-        try:
-            content = Path(task.log_path).read_bytes().decode(errors="replace")
-        except OSError:
-            content = ""
-
-        output_meta = _truncate(content)
-        truncation = None
-        if output_meta["truncated"]:
-            truncation = {
-                "strategy": output_meta["strategy"],
-                "full_length": output_meta["full_length"],
-                "returned_length": output_meta["returned_length"],
-                "omitted_lines": output_meta["omitted_lines"],
-            }
-
-        return json.dumps(
-            {
-                "task_id": task_id,
-                "process_status": (
-                    "running"
-                    if not done
-                    else "succeeded"
-                    if exit_code == 0
-                    else "failed"
-                ),
-                "evidence_scope": "process_snapshot" if not done else "command_exit_only",
-                "status": status,
-                "exit_code": exit_code,
-                "elapsed_ms": elapsed_ms,
-                "since_last_output_ms": since_last_output_ms,
-                "output": output_meta["text"],
-                "truncation": truncation,
-                "output_path": task.log_path,
-            },
-            ensure_ascii=False,
+        if max_output_tokens < 0:
+            return _error("max_output_tokens 不能为负数")
+        result = await self.manager.write_stdin(
+            execution_id=int(kwargs.get("execution_id", 0)),
+            chars=chars,
+            yield_time_ms=int(kwargs.get("yield_time_ms", default_yield)),
+            max_output_tokens=max_output_tokens,
+            owner_session_key=_owner_session_key(self.manager),
         )
-
-
-# ── ShellTaskStopTool ────────────────────────────────────────────────
+        return format_execution_result(result)
 
 
 class ShellTaskStopTool(Tool):
-    """停止并清理一个后台 shell 任务。"""
+    """确认终止一次 shell execution 的进程组。"""
 
     name = "task_stop"
-
-    @property
-    def description(self) -> str:
-        return "停止后台 shell 任务（SIGKILL 整棵进程树）并从注册表移除。"
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "task_id": {
-                    "type": "string",
-                    "description": "要停止的后台任务 ID（background_task_id）",
-                },
+    description = "确认终止 shell execution 的进程组，并释放 execution_id。"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "execution_id": {
+                "type": "integer",
+                "description": "shell 返回的 execution_id",
             },
-            "required": ["task_id"],
-        }
+        },
+        "required": ["execution_id"],
+        "additionalProperties": False,
+    }
+
+    def __init__(self, manager: ShellProcessManager) -> None:
+        self.manager = manager
 
     async def execute(self, **kwargs: Any) -> str:
-        task_id: str = kwargs.get("task_id", "")
-        if task_id not in _BG_REGISTRY:
-            return json.dumps(
-                {
-                    "task_id": task_id,
-                    "process_status": "unknown",
-                    "evidence_scope": "registry_lookup",
-                    "status": "not_found",
-                },
-                ensure_ascii=False,
-            )
-        _bg_kill(task_id)
+        if "task_id" in kwargs:
+            return _error("task_stop 已移除 task_id；请使用 execution_id")
+        execution_id = int(kwargs.get("execution_id", 0))
+        stopped = await self.manager.terminate_execution(
+            execution_id,
+            owner_session_key=_owner_session_key(self.manager),
+        )
         return json.dumps(
             {
-                "task_id": task_id,
-                "process_status": "termination_requested",
-                "evidence_scope": "termination_requested",
-                "status": "stopped",
+                "execution_id": execution_id,
+                "process_status": "stopped" if stopped else "unknown",
+                "status": "stopped" if stopped else "not_found",
             },
             ensure_ascii=False,
         )
 
 
-# ── 模块级工具函数 ────────────────────────────────────────────────
-
-
-def _err(msg: str) -> str:
-    return json.dumps({"error": msg}, ensure_ascii=False)
-
-
-def _process_error(
-    task_id: str,
-    *,
-    status: str,
-    process_status: str,
-    evidence_scope: str,
-    message: str,
-) -> str:
-    return json.dumps(
-        {
-            "task_id": task_id,
-            "process_status": process_status,
-            "evidence_scope": evidence_scope,
-            "status": status,
-            "error": message,
-        },
-        ensure_ascii=False,
-    )
-
-
-def _arm_background_timeout(task_id: str, task: _BackgroundTask) -> None:
-    if task.timeout_s is None:
-        return
-    remain_s = task.timeout_s - (time.monotonic() - task.started_at)
-    if remain_s <= 0:
-        _bg_timeout(task_id)
-        return
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    task.timeout_handle = loop.call_later(remain_s, lambda: _bg_timeout(task_id))
-
-
-def _is_background_timeout(task: _BackgroundTask) -> bool:
-    if task.timeout_s is None:
-        return False
-    return time.monotonic() - task.started_at >= task.timeout_s
+def _owner_session_key(manager: ShellProcessManager) -> str:
+    return current_session_key.get() or f"{_LOCAL_OWNER_PREFIX}:{id(manager)}"
 
 
 def _shell_env() -> dict[str, str]:
     env = os.environ.copy()
     _prepend_existing_path_entries(env, _discover_user_path_entries(env))
+    env.update(_UNIFIED_EXEC_ENV)
     return env
 
 
@@ -978,14 +347,14 @@ def _discover_user_path_entries(env: dict[str, str]) -> list[Path]:
 def _discover_nvm_node_bins(nvm_dir: Path) -> list[Path]:
     node_root = nvm_dir / "versions" / "node"
     try:
-        version_dirs = [p for p in node_root.iterdir() if p.is_dir()]
+        version_dirs = [path for path in node_root.iterdir() if path.is_dir()]
     except OSError:
         return []
     return [
         version_dir / "bin"
         for version_dir in sorted(
             version_dirs,
-            key=lambda p: _node_version_key(p.name),
+            key=lambda path: _node_version_key(path.name),
             reverse=True,
         )
         if (version_dir / "bin").is_dir()
@@ -994,16 +363,13 @@ def _discover_nvm_node_bins(nvm_dir: Path) -> list[Path]:
 
 def _node_version_key(version: str) -> tuple[int, int, int]:
     parts = version.removeprefix("v").split(".")
-    nums: list[int] = []
-    for part in parts[:3]:
-        nums.append(int(part) if part.isdigit() else 0)
-    while len(nums) < 3:
-        nums.append(0)
-    return (nums[0], nums[1], nums[2])
+    numbers = [int(part) if part.isdigit() else 0 for part in parts[:3]]
+    numbers.extend([0] * (3 - len(numbers)))
+    return (numbers[0], numbers[1], numbers[2])
 
 
 def _prepend_existing_path_entries(env: dict[str, str], entries: list[Path]) -> None:
-    current = [p for p in env.get("PATH", "").split(os.pathsep) if p]
+    current = [path for path in env.get("PATH", "").split(os.pathsep) if path]
     seen = set(current)
     prepend: list[str] = []
     for entry in entries:
@@ -1016,7 +382,8 @@ def _prepend_existing_path_entries(env: dict[str, str], entries: list[Path]) -> 
 
 
 def _truncate(content: str) -> dict[str, Any]:
-    """超过阈值时优先保留尾部，便于看到命令结果与错误摘要。"""
+    """保留旧的独立文本截断 helper，供非 unified-exec 消费者使用。"""
+
     if len(content) <= _MAX_OUTPUT:
         return {
             "text": content,
@@ -1026,13 +393,11 @@ def _truncate(content: str) -> dict[str, Any]:
             "returned_length": len(content),
             "omitted_lines": 0,
         }
-
     omitted = content[: len(content) - _MAX_OUTPUT]
     omitted_lines = omitted.count("\n")
     prefix = f"... [{omitted_lines} 行已省略] ...\n\n"
     tail_budget = max(0, _MAX_OUTPUT - len(prefix))
-    tail = content[-tail_budget:] if tail_budget > 0 else ""
-    text = prefix + tail
+    text = prefix + (content[-tail_budget:] if tail_budget else "")
     return {
         "text": text,
         "truncated": True,
@@ -1043,207 +408,9 @@ def _truncate(content: str) -> dict[str, Any]:
     }
 
 
-def _write_full_output(content: str) -> str:
-    fd, path = tempfile.mkstemp(prefix="akashic-shell-", suffix=".log")
-    os.close(fd)
-    Path(path).write_text(content, encoding="utf-8")
-    return path
+def _error(message: str) -> str:
+    return json.dumps({"error": message}, ensure_ascii=False)
 
 
-def _validate_command(
-    command: str,
-    *,
-    allow_network: bool,
-    restricted_dir: Path | None,
-    cwd: Path | None = None,
-) -> str | None:
-    try:
-        tokens = _split_command(command)
-    except ValueError:
-        return "命令解析失败，请检查引号是否匹配"
-    if not tokens:
-        return None
-
-    cmd = _command_name(tokens[0])
-    if cmd in _BANNED:
-        return f"命令 '{cmd}' 不被允许（安全限制）"
-    if not allow_network and cmd in _NETWORK_CMDS:
-        return "当前 shell 配置禁止网络访问"
-
-    if restricted_dir is not None:
-        cwd_err = _validate_restricted_cwd(cwd, restricted_dir)
-        if cwd_err:
-            return cwd_err
-        restricted_err = _validate_restricted_command(tokens, restricted_dir)
-        if restricted_err:
-            return restricted_err
-
-    return _validate_network_command(command, tokens=tokens)
-
-
-def _validate_network_command(
-    command: str,
-    *,
-    tokens: list[str] | None = None,
-) -> str | None:
-    """网络命令护栏：仅允许 HTTP(S) 且禁止内网目标与写入类参数。"""
-    if tokens is None:
-        try:
-            tokens = _split_command(command)
-        except ValueError:
-            return "命令解析失败，请检查引号是否匹配"
-    if not tokens:
-        return None
-
-    cmd = _command_name(tokens[0])
-    if cmd not in _NETWORK_CMDS:
-        return None
-
-    # 阻止文件写入/上传相关参数
-    for t in tokens[1:]:
-        low = t.lower()
-        if low in _NET_WRITE_FLAGS:
-            return f"网络命令参数 '{t}' 不被允许（禁止上传/写文件）"
-        if any(low.startswith(flag + "=") for flag in _NET_WRITE_FLAGS):
-            return f"网络命令参数 '{t}' 不被允许（禁止上传/写文件）"
-        # httpie/xh 支持 field=@file 语法上传文件
-        if "=@" in t or t.startswith("@"):
-            return f"网络命令参数 '{t}' 不被允许（禁止本地文件上传）"
-
-    # 提取 URL 并校验
-    urls = [t for t in tokens[1:] if t.startswith(("http://", "https://"))]
-    if not urls:
-        return "网络命令必须显式提供 http:// 或 https:// URL"
-
-    for u in urls:
-        err = _validate_url_target(u)
-        if err:
-            return err
-    return None
-
-
-def _validate_url_target(url: str) -> str | None:
-    """校验 URL 目标是否为合法的公网地址。"""
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return "仅允许 http:// 或 https:// URL"
-    host = (parsed.hostname or "").strip().lower()
-    if not host:
-        return "URL 缺少主机名"
-
-    try:
-        # IP 地址：禁止回环、私有、链路本地、保留地址
-        ip = ipaddress.ip_address(host)
-        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved:
-            return f"禁止访问内网/本地地址：{host}"
-    except ValueError:
-        # 域名：阻断常见本地域名后缀
-        if host.endswith(".local") or host.endswith(".localhost"):
-            return f"禁止访问本地域名：{host}"
-    return None
-
-
-def _validate_restricted_command(tokens: list[str], restricted_dir: Path) -> str | None:
-    command = " ".join(tokens)
-    if any(marker in command for marker in _RESTRICTED_META_CHARS):
-        return "受限 shell 禁止管道、重定向或串联命令"
-
-    command_name = _command_name(tokens[0])
-    if command_name in _RESTRICTED_SHELL_RUNNERS:
-        return f"受限 shell 禁止启动解释器或二级 shell：{command_name}"
-
-    for token in tokens[1:]:
-        if token.startswith("-") or token == "--":
-            continue
-        err = _validate_restricted_token(token, restricted_dir)
-        if err:
-            return err
-    return None
-
-
-def _validate_restricted_cwd(cwd: Path | None, restricted_dir: Path) -> str | None:
-    if cwd is None:
-        return None
-    try:
-        resolved = cwd.resolve()
-    except OSError:
-        resolved = cwd
-    if resolved != restricted_dir and restricted_dir not in resolved.parents:
-        return f"受限 shell 禁止使用任务目录外工作目录：{cwd}"
-    return None
-
-
-def _validate_restricted_token(token: str, restricted_dir: Path) -> str | None:
-    token = _strip_shell_quotes(token)
-    if token.startswith("~"):
-        return f"受限 shell 禁止访问任务目录外路径：{token}"
-
-    if not _looks_like_path(token):
-        return None
-
-    parts = PureWindowsPath(token).parts if _IS_WINDOWS else Path(token).parts
-    if any(part == ".." for part in parts):
-        return f"受限 shell 禁止访问父级路径：{token}"
-
-    win_path = PureWindowsPath(token)
-    if _IS_WINDOWS and (win_path.drive or win_path.root):
-        return _validate_restricted_absolute_path(token, restricted_dir)
-
-    path = Path(token)
-    if path.is_absolute():
-        return _validate_restricted_absolute_path(token, restricted_dir)
-    return None
-
-
-def _split_command(command: str) -> list[str]:
-    return [
-        _strip_shell_quotes(token)
-        for token in shlex.split(command, posix=not _IS_WINDOWS)
-    ]
-
-
-def _command_name(token: str) -> str:
-    name = PureWindowsPath(token).name if _IS_WINDOWS else Path(token).name
-    name = name.lower()
-    return name.removesuffix(".exe")
-
-
-def _strip_shell_quotes(token: str) -> str:
-    if len(token) >= 2 and token[0] == token[-1] and token[0] in {'"', "'"}:
-        return token[1:-1]
-    return token
-
-
-def _validate_restricted_absolute_path(token: str, restricted_dir: Path) -> str | None:
-    if _IS_WINDOWS and os.name != "nt":
-        return f"受限 shell 禁止访问任务目录外路径：{token}"
-    path = Path(token)
-    win_path = PureWindowsPath(token)
-    if _IS_WINDOWS and (win_path.drive or win_path.root) and not path.is_absolute():
-        return f"受限 shell 禁止访问任务目录外路径：{token}"
-    if path.is_absolute():
-        try:
-            resolved = path.resolve()
-        except OSError:
-            resolved = path
-        try:
-            restricted_resolved = restricted_dir.resolve()
-        except OSError:
-            restricted_resolved = restricted_dir
-        if resolved != restricted_resolved and restricted_resolved not in resolved.parents:
-            return f"受限 shell 禁止访问任务目录外路径：{token}"
-    return None
-
-
-def _looks_like_path(token: str) -> bool:
-    if token in {".", ".."}:
-        return True
-    if _IS_WINDOWS:
-        win_path = PureWindowsPath(token)
-        return (
-            "\\" in token
-            or "/" in token
-            or bool(win_path.drive)
-            or token.startswith((".", "~"))
-        )
-    return "/" in token or token.startswith((".", "~"))
+_validate_command = validate_command
+_validate_network_command = validate_network_command

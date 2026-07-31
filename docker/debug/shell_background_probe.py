@@ -2,13 +2,13 @@
 """
 shell_background_probe.py
 
-验证新版 shell 后台设计：agent 能自主发现卡死任务并调用 task_stop，
+验证 unified shell execution：agent 能续接无输出命令并调用 task_stop，
 整个生命周期在单次 turn 内完成，不依赖系统自动回调。
 
 被测行为：
   1. agent 对外观无害的命令启动 shell
-  2. 命令 15s 后 auto-promote 转后台，agent 拿到 task_id
-  3. agent 用 task_output 轮询，发现从无输出（since_last_output_ms=null）
+  2. 首次等待结束后 agent 拿到 execution_id
+  3. agent 用 write_stdin 等待增量输出，发现命令仍在运行
   4. agent 判定卡死，调用 task_stop
   5. agent 给用户一条最终回复，整个 turn 内完成，无孤悬后台进程
 """
@@ -213,8 +213,8 @@ def _build_checks(
     call_names = [c.get("name", "") for c in all_calls]
 
     shell_idx = next((i for i, n in enumerate(call_names) if n == "shell"), -1)
-    task_output_idx = next(
-        (i for i, n in enumerate(call_names) if n == "task_output"), -1
+    write_stdin_idx = next(
+        (i for i, n in enumerate(call_names) if n == "write_stdin"), -1
     )
     task_stop_idx = next((i for i, n in enumerate(call_names) if n == "task_stop"), -1)
 
@@ -224,32 +224,32 @@ def _build_checks(
         m for m in assistant_messages if "后台命令已" in m["content"]
     ]
 
-    # task_output 调用里有没有拿到 status=done（不应该，死循环不会自然结束）
-    task_output_done = any(
+    # write_stdin 调用里有没有拿到终态（不应该，死循环不会自然结束）
+    write_stdin_done = any(
         _json_loads(c.get("output", "")) is not None
         and isinstance(_json_loads(c.get("output", "")), dict)
-        and _json_loads(c.get("output", "")).get("status") == "done"
+        and _json_loads(c.get("output", "")).get("process_status") != "running"
         for c in all_calls
-        if c.get("name") == "task_output"
+        if c.get("name") == "write_stdin"
     )
 
     checks: dict[str, Any] = {
         # 核心行为验证
         "shell_called": shell_idx >= 0,
-        "task_output_called": task_output_idx >= 0,
+        "write_stdin_called": write_stdin_idx >= 0,
         "task_stop_called": task_stop_idx >= 0,
-        # 顺序：shell → task_output → task_stop
+        # 顺序：shell → write_stdin → task_stop
         "correct_call_order": (
             shell_idx >= 0
-            and task_output_idx > shell_idx
-            and task_stop_idx > task_output_idx
+            and write_stdin_idx > shell_idx
+            and task_stop_idx > write_stdin_idx
         ),
         # 单 turn 内完成，无孤悬回调产生的额外消息
         "single_assistant_turn": len(assistant_messages) == 1,
         # 旧格式的自动回调消息不再出现
         "no_old_completion_format": len(old_format_messages) == 0,
         # 死循环不应该自然结束，agent 不应该看到 status=done
-        "task_not_done_naturally": not task_output_done,
+        "task_not_done_naturally": not write_stdin_done,
         # 调用序列摘要（供报告查看）
         "call_sequence": call_names,
     }
@@ -257,7 +257,7 @@ def _build_checks(
         bool(checks[k])
         for k in (
             "shell_called",
-            "task_output_called",
+            "write_stdin_called",
             "task_stop_called",
             "correct_call_order",
             "single_assistant_turn",
@@ -299,13 +299,13 @@ def _write_report(*, report_base: Path, payload: dict[str, Any]) -> None:
     lines = [
         "# shell background probe",
         "",
-        "验证 agent 能自主发现卡死的后台 shell 任务并调用 task_stop，",
+        "验证 agent 能续接无输出的 shell execution 并调用 task_stop，",
         "整个生命周期在单次 turn 内完成，不依赖系统自动回调。",
         "",
         "```",
         "shell(死循环命令)",
-        "  └─ auto-promote 15s → task_id",
-        "       └─ task_output(block=true) → since_last_output_ms=null",
+        "  └─ initial yield → execution_id",
+        "       └─ write_stdin(chars='') → process_status=running",
         "            └─ task_stop → 最终回复（单 turn 完成）",
         "```",
         "",
@@ -347,7 +347,7 @@ def _write_report(*, report_base: Path, payload: dict[str, Any]) -> None:
 # iter(int, 1) 是永远不停的迭代器；time.sleep(1) 让进程安静占着 CPU
 _HIDDEN_LOOP_COMMAND = 'python3 -c "import time; [time.sleep(1) for _ in iter(int, 1)]"'
 
-# 发给 agent 的 prompt：不暴露循环意图，agent 只能通过 task_output 观察到什么都没输出
+# 发给 agent 的 prompt：不暴露循环意图，agent 只能通过 write_stdin 观察运行态
 _PROBE_PROMPT = (
     "帮我运行下面这个命令，告诉我它的输出是什么。\n\n" f"命令：{_HIDDEN_LOOP_COMMAND}"
 )
@@ -402,7 +402,7 @@ async def _run_probe(args: argparse.Namespace) -> None:
             print(
                 f"发送 prompt（死循环命令，agent 不知情）：\n  {_HIDDEN_LOOP_COMMAND}\n"
             )
-            # agent 需要：15s auto-promote + 至少一次 task_output + task_stop + 回复
+            # agent 需要：initial yield + 至少一次 write_stdin + task_stop + 回复
             # 给充裕的 turn_timeout（默认 120s）
             response = await _run_turn(
                 client, session_key, _PROBE_PROMPT, args.turn_timeout
@@ -465,7 +465,7 @@ def _parse_args() -> argparse.Namespace:
         "--turn-timeout",
         type=float,
         default=120,
-        help="等待 agent 完成整个 turn 的超时秒数（含 auto-promote 15s + 轮询 + 回复）",
+        help="等待 agent 完成整个 turn 的超时秒数（含 initial yield、续接、stop 和回复）",
     )
     parser.add_argument("--start-timeout", type=float, default=90)
     parser.add_argument("--reset-workspace", action="store_true")

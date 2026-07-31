@@ -9,7 +9,9 @@ from typing import Any, cast
 from agent.tools.base import Tool, ToolResult
 from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from agent.tools.registry import ToolRegistry
+from agent.tools.shell import ShellTool
 from bus.events_lifecycle import DriftFinished
+from core.error_context import current_session_key
 from plugins.default_proactive.context import AgentTickContext
 from plugins.drift_flow.state import DriftStateStore
 from plugins.default_proactive.outbound_text import normalize_outbound_text
@@ -734,10 +736,12 @@ class DriftRecallMemoryTool(Tool):
         return await self._wrapped.execute(**args)
 
 
-class DriftShellTool(Tool):
-    def __init__(self, wrapped: Tool, drift_dir: Path) -> None:
+class DriftSessionOwnedTool(Tool):
+    """把共享 execution 工具绑定到当前 Drift owner。"""
+
+    def __init__(self, wrapped: Tool, owner_key: str) -> None:
         self._wrapped = wrapped
-        self._drift_dir = drift_dir
+        self._owner_key = owner_key
 
     @property
     def name(self) -> str:
@@ -745,11 +749,28 @@ class DriftShellTool(Tool):
 
     @property
     def description(self) -> str:
-        return self._wrapped.description + "\nDrift 中默认工作目录是 drift 工作区。"
+        return self._wrapped.description
 
     @property
     def parameters(self) -> dict[str, Any]:
         return self._wrapped.parameters
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        token = current_session_key.set(self._owner_key)
+        try:
+            return await self._wrapped.execute(**kwargs)
+        finally:
+            current_session_key.reset(token)
+
+
+class DriftShellTool(DriftSessionOwnedTool):
+    def __init__(self, wrapped: Tool, drift_dir: Path, owner_key: str) -> None:
+        super().__init__(wrapped, owner_key)
+        self._drift_dir = drift_dir
+
+    @property
+    def description(self) -> str:
+        return self._wrapped.description + "\nDrift 中默认工作目录是 drift 工作区。"
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         args = dict(kwargs)
@@ -761,7 +782,11 @@ class DriftShellTool(Tool):
         else:
             cwd = self._drift_dir
         args["cwd"] = str(cwd)
-        return await self._wrapped.execute(**args)
+        return await super().execute(**args)
+
+    async def terminate_owner(self) -> None:
+        if isinstance(self._wrapped, ShellTool):
+            await self._wrapped.terminate_owner(self._owner_key)
 
 
 class DriftPathResolver:
@@ -923,6 +948,7 @@ def build_drift_tool_registry(
     tools.register(DriftEditFileTool(resolver, write_allowed_dir), risk="write")
 
     shared = deps.shared_tools
+    shell_owner_key = ctx.session_key or f"drift:{id(ctx)}"
     for name in (
         "recall_memory",
         "web_fetch",
@@ -930,6 +956,8 @@ def build_drift_tool_registry(
         "fetch_messages",
         "search_messages",
         "shell",
+        "write_stdin",
+        "task_stop",
     ):
         if shared is None:
             continue
@@ -938,8 +966,14 @@ def build_drift_tool_registry(
             if name == "recall_memory":
                 tool = DriftRecallMemoryTool(tool, ctx)
             elif name == "shell":
-                tool = DriftShellTool(tool, drift_dir)
-            risk = "external-side-effect" if name == "shell" else "read-only"
+                tool = DriftShellTool(tool, drift_dir, shell_owner_key)
+            elif name in {"write_stdin", "task_stop"}:
+                tool = DriftSessionOwnedTool(tool, shell_owner_key)
+            risk = (
+                "external-side-effect"
+                if name in {"shell", "write_stdin", "task_stop"}
+                else "read-only"
+            )
             tools.register(tool, risk=risk)
 
     # mount_server: 只有 shared registry 里有 MCP 工具时才注册

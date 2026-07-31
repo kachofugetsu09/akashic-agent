@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from agent.model_runtime.execution_history import active_shell_execution_origins
 from agent.prompting import is_context_frame
 from agent.model_runtime.types import ModelUsage
 
@@ -36,8 +37,7 @@ _SUMMARY_PROMPT = """更新当前长任务的上下文压缩摘要。
 ## Unfinished work
 ## Next steps
 
-保留文件路径、符号、命令、错误、数值和验证结果。省略重复探索、无用日志、tool_call_id 和协议细节。只输出摘要正文。"""
-
+保留文件路径、符号、命令、错误、数值和验证结果。若输入中存在仍在运行的 shell execution，必须保留 execution_id、命令和当前状态。省略重复探索、无用日志、tool_call_id 和其他协议细节。只输出摘要正文。"""
 
 class ContextCompactionError(RuntimeError):
     """当前 query 无法生成可继续执行的有界上下文。"""
@@ -398,10 +398,12 @@ class QueryCompactor:
                 break
             keep_count += 1
             kept_tokens += batch_tokens
-        return min(
+        selected = min(
             len(self._completed_batches) - 1,
             max(1, len(self._completed_batches) - keep_count),
         )
+        active_batch = _active_execution_batch(self._completed_batches)
+        return selected if active_batch is None else min(selected, active_batch)
 
     async def _summarize(
         self,
@@ -452,6 +454,35 @@ def _tool_schema_digest(tools: list[dict]) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _active_execution_batch(batches: list[list[dict]]) -> int | None:
+    """Return the earliest batch that must remain visible for a live execution."""
+
+    # 1. 保留 tool_call_id 到原始 batch 的稳定映射。
+    call_batches: dict[str, int] = {}
+    messages: list[dict[str, Any]] = []
+    for batch_index, batch in enumerate(batches):
+        messages.extend(cast(list[dict[str, Any]], batch))
+        for message in batch:
+            calls = message.get("tool_calls")
+            if message.get("role") != "assistant" or not isinstance(calls, list):
+                continue
+            for raw_call in calls:
+                if not isinstance(raw_call, dict):
+                    continue
+                call_id = str(raw_call.get("id") or "")
+                if call_id:
+                    call_batches[call_id] = batch_index
+
+    # 2. 只 pin 仍在运行 execution 的最早创建 batch。
+    active_origins = active_shell_execution_origins(messages)
+    active_batches = [
+        call_batches[call_id]
+        for call_id in active_origins.values()
+        if call_id in call_batches
+    ]
+    return min(active_batches) if active_batches else None
 
 
 def _compaction_call_id(scope_id: str, generation: int) -> str:

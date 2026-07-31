@@ -19,6 +19,8 @@ from agent.plugins.snapshot import (
 from plugins.default_proactive.runtime import ProactiveFlowRuntime, ProactiveFlowDeps
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
+from agent.tools.shell import ShellTaskStopTool, ShellTool, ShellWriteStdinTool
+from agent.tools.unified_exec import ShellProcessManager, UnknownExecutionError
 from agent.looping.ports import SessionServices
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from agent.turns.outbound import OutboundDispatch
@@ -659,6 +661,116 @@ async def test_drift_shell_defaults_to_drift_dir(tmp_path: Path):
 
     assert shell.calls[0]["cwd"] == str(tmp_path)
     assert shell.calls[1]["cwd"] == str(tmp_path / "skills/demo")
+
+
+@pytest.mark.asyncio
+async def test_drift_shell_tools_isolate_tick_owners(tmp_path: Path) -> None:
+    manager = ShellProcessManager()
+    shared = ToolRegistry()
+    shared.register(ShellTool(manager))
+    shared.register(ShellWriteStdinTool(manager))
+    shared.register(ShellTaskStopTool(manager))
+    owner_a = AgentTickContext(
+        now_utc=datetime.now(timezone.utc),
+        session_key="drift:owner-a",
+    )
+    owner_b = AgentTickContext(
+        now_utc=datetime.now(timezone.utc),
+        session_key="drift:owner-b",
+    )
+    registry_a = build_drift_tool_registry(
+        ctx=owner_a,
+        deps=DriftToolDeps(
+            drift_dir=tmp_path,
+            store=DriftStateStore(tmp_path / "a"),
+            shared_tools=shared,
+        ),
+    )
+    registry_b = build_drift_tool_registry(
+        ctx=owner_b,
+        deps=DriftToolDeps(
+            drift_dir=tmp_path,
+            store=DriftStateStore(tmp_path / "b"),
+            shared_tools=shared,
+        ),
+    )
+    try:
+        opened = json.loads(
+            cast(
+                str,
+                await registry_a.execute(
+                    "shell",
+                    {
+                        "command": "sleep 30",
+                        "description": "验证 Drift owner",
+                        "yield_time_ms": 250,
+                    },
+                    raise_errors=True,
+                ),
+            )
+        )
+        execution_id = int(opened["execution_id"])
+
+        with pytest.raises(UnknownExecutionError):
+            await registry_b.execute(
+                "write_stdin",
+                {"execution_id": execution_id, "yield_time_ms": 5_000},
+                raise_errors=True,
+            )
+
+        stopped = json.loads(
+            cast(
+                str,
+                await registry_a.execute(
+                    "task_stop",
+                    {"execution_id": execution_id},
+                    raise_errors=True,
+                ),
+            )
+        )
+        assert stopped["process_status"] == "stopped"
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_drift_preserves_execution_failure_when_shell_cleanup_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_skill(tmp_path)
+    manager = ShellProcessManager()
+    shell = ShellTool(manager)
+    shared = ToolRegistry()
+    shared.register(shell)
+    store = DriftStateStore(tmp_path)
+    pipeline = _make_drift_pipeline(
+        store=store,
+        tool_deps=DriftToolDeps(
+            drift_dir=tmp_path,
+            store=store,
+            shared_tools=shared,
+        ),
+    )
+
+    async def fail_execute(*_args, **_kwargs) -> None:
+        raise RuntimeError("drift failed")
+
+    async def fail_cleanup(_owner_session_key: str) -> None:
+        raise RuntimeError("cleanup failed")
+
+    async def unused_llm(*_args, **_kwargs):
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(pipeline, "_execute_loop", fail_execute)
+    monkeypatch.setattr(shell, "terminate_owner", fail_cleanup)
+    ctx = AgentTickContext(
+        now_utc=datetime.now(timezone.utc),
+        session_key="drift:owner",
+    )
+
+    with pytest.raises(RuntimeError, match="drift failed"):
+        await pipeline.run(ctx, cast(Any, unused_llm))
 
 
 @pytest.mark.asyncio

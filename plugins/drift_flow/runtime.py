@@ -36,6 +36,7 @@ from bus.events_lifecycle import DriftFinished
 from plugins.default_proactive.context import AgentTickContext
 from plugins.drift_flow.state import DriftStateStore, SkillMeta
 from plugins.drift_flow.tools import (
+    DriftShellTool,
     DriftToolDeps,
     build_drift_tool_registry,
 )
@@ -108,12 +109,29 @@ class DriftTurnPipeline:
         # 3. Prepare — 构建 tool registry 与初始 messages。
         tools, messages = await self._prepare(ctx, skills)
 
-        # 4. Execute — LLM 工具调用循环。
-        await self._execute_loop(ctx, llm_fn, tools, messages)
+        primary_error: BaseException | None = None
+        try:
+            # 4. Execute — LLM 工具调用循环。
+            await self._execute_loop(ctx, llm_fn, tools, messages)
 
-        # 5. Finish — 记录退出。
-        self._finish(ctx)
-        return True
+            # 5. Finish — 记录退出。
+            self._finish(ctx)
+            return True
+        except BaseException as exc:
+            primary_error = exc
+            raise
+        finally:
+            # 6. Drift owner 结束时回收仍在运行的 execution。
+            try:
+                shell = tools.get_tool("shell")
+                if shell is not None:
+                    if not isinstance(shell, DriftShellTool):
+                        raise TypeError("Drift shell 必须由 DriftShellTool 绑定 owner")
+                    await shell.terminate_owner()
+            except BaseException:
+                if primary_error is None:
+                    raise
+                logger.exception("[drift] shell cleanup 失败，保留原始执行异常")
 
     # ── 1. Scan（扫描）───────────────────────────────────────────────
 

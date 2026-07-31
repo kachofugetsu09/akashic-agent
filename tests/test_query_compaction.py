@@ -10,8 +10,10 @@ import pytest
 from agent.core.passive_turn import DefaultReasoner
 from agent.core.runtime_support import LLMServices, ToolDiscoveryState
 from agent.looping.ports import LLMConfig
+from agent.model_runtime.execution_history import active_shell_execution_origins
 from agent.model_runtime.types import LLMResponse, ModelUsage, ToolCall
 from agent.provider import ContextLengthError
+from agent.tool_runtime import append_tool_result
 from agent.model_runtime.query_compaction import (
     COMPACTION_TOOL_NAME,
     ContextCompactionError,
@@ -61,6 +63,45 @@ def _record_batch(
 ) -> None:
     start = len(messages)
     messages.extend(_batch(index, model_state=model_state))
+    compactor.record_completed_batch(messages, batch_start=start)
+
+
+def _record_execution_batch(
+    compactor: QueryCompactor,
+    messages: list[dict],
+    index: int,
+    *,
+    name: str,
+    arguments: dict[str, object],
+    result: dict[str, object],
+) -> None:
+    call_id = f"exec-{index}"
+    start = len(messages)
+    messages.extend(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": json.dumps(arguments),
+                        },
+                    }
+                ],
+            },
+        ]
+    )
+    append_tool_result(
+        messages,
+        tool_call_id=call_id,
+        content=json.dumps(result),
+        tool_name=name,
+        execution_status="success",
+    )
     compactor.record_completed_batch(messages, batch_start=start)
 
 
@@ -176,6 +217,108 @@ async def test_compaction_never_splits_current_query_or_only_recent_batch(
     assert messages == before
     assert provider.summary_calls == []
     assert compactor.has_compactable_prefix is False
+
+
+@pytest.mark.asyncio
+async def test_compaction_pins_live_execution_until_terminal_result() -> None:
+    base = [{"role": "user", "content": "完成长时间训练"}]
+    messages = deepcopy(base)
+    provider = _ControlledProvider([47_360, 47_360, 2_000])
+    compactor = _compactor(provider, base)
+    _record_execution_batch(
+        compactor,
+        messages,
+        1,
+        name="shell",
+        arguments={"command": "python train.py"},
+        result={"process_status": "running", "execution_id": 4201},
+    )
+    _record_batch(compactor, messages, 2)
+    _record_batch(compactor, messages, 3)
+    before = deepcopy(messages)
+
+    pinned = await compactor.prepare(
+        messages,
+        pending_start=len(messages),
+        tools=[],
+    )
+
+    assert pinned.compacted is False
+    assert messages == before
+    assert provider.summary_calls == []
+
+    _record_execution_batch(
+        compactor,
+        messages,
+        4,
+        name="write_stdin",
+        arguments={"execution_id": 4201},
+        result={"process_status": "succeeded", "exit_code": 0},
+    )
+    completed = await compactor.prepare(
+        messages,
+        pending_start=len(messages),
+        tools=[],
+    )
+
+    assert completed.compacted is True
+    assert compactor.compaction is not None
+    assert compactor.compaction.compacted_tool_groups == 1
+
+
+@pytest.mark.parametrize("transport_status", ["blocked", "denied", "skipped", "error"])
+def test_active_execution_history_rejects_unsuccessful_transport(
+    transport_status: str,
+) -> None:
+    messages = _batch(1)
+    messages[0]["tool_calls"][0]["function"] = {
+        "name": "shell",
+        "arguments": json.dumps({"command": "sleep 30"}),
+    }
+    append_tool_result(
+        messages,
+        tool_call_id="call-1",
+        content=json.dumps(
+            {"process_status": "running", "execution_id": 4201}
+        ),
+        tool_name="shell",
+        execution_status=transport_status,
+    )
+
+    assert active_shell_execution_origins(messages) == {}
+
+
+def test_active_execution_history_rejects_malformed_transport_marker() -> None:
+    messages = _batch(1)
+    messages[0]["tool_calls"][0]["function"] = {
+        "name": "shell",
+        "arguments": json.dumps({"command": "sleep 30"}),
+    }
+    messages.append(
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": (
+                '<tool_execution transport_status="success" extra="x" />\n'
+                '{"process_status":"running","execution_id":4201}'
+            ),
+        }
+    )
+
+    assert active_shell_execution_origins(messages) == {}
+
+
+def test_active_execution_history_rejects_raw_json_without_transport() -> None:
+    messages = _batch(1)
+    messages[0]["tool_calls"][0]["function"] = {
+        "name": "shell",
+        "arguments": json.dumps({"command": "sleep 30"}),
+    }
+    messages[1]["content"] = json.dumps(
+        {"process_status": "running", "execution_id": 4201}
+    )
+
+    assert active_shell_execution_origins(messages) == {}
 
 
 @pytest.mark.asyncio
