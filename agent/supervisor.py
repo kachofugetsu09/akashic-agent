@@ -3,25 +3,36 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import selectors
 import signal
 import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import FrameType
 from typing import IO
 from uuid import uuid4
 
+from agent.background.boot_guardian import (
+    _cleanup_boot_processes,
+    _enable_child_subreaper,
+    _pid_has_boot_identity,
+    _pid_exists,
+    _reap_adopted_children,
+)
+from utils.pidfd import open_pidfd, send_pidfd_signal
 
 RESTART_EXIT_CODE = 75
 SUPERVISOR_FAILURE_EXIT_CODE = 70
-_BOOT_CLEANUP_TIMEOUT_SECONDS = 5.0
+_GUARDIAN_CLEANUP_WAIT_SECONDS = 7.0
+_MAX_LIFECYCLE_FRAME_BYTES = 4096
+_MAX_LIFECYCLE_DRAIN_BYTES = 65536
 
 
 class _SupervisorLock:
-    """保证一个 workspace 只有一个 supervisor。"""
+    """保证一个 workspace 只有一个 Supervisor。"""
 
     def __init__(self, workspace: Path) -> None:
         self.path = workspace / ".supervisor.lock"
@@ -70,10 +81,103 @@ class _ChildResult:
     ready: bool
     commit_valid: bool
     settings_generation: int = 0
+    gateway_pid: int | None = None
+    last_stage: str = "guardian.spawn"
+    protocol_error: str = ""
+
+
+@dataclass
+class _LifecycleState:
+    boot_id: str
+    nonce: str
+    ready: bool = False
+    gateway_pid: int | None = None
+    commit_valid: bool = False
+    last_stage: str = "guardian.spawn"
+    last_elapsed_ms: int = -1
+    protocol_error: str = ""
+    buffer: bytearray = field(default_factory=bytearray)
+
+    def feed(self, payload: bytes, *, eof: bool = False) -> None:
+        """解析完整 NDJSON frame，并保留末尾尚未完成的字节。"""
+
+        self.buffer.extend(payload)
+        while b"\n" in self.buffer:
+            raw_frame, _, remainder = self.buffer.partition(b"\n")
+            self.buffer = bytearray(remainder)
+            if raw_frame:
+                if len(raw_frame) > _MAX_LIFECYCLE_FRAME_BYTES:
+                    self.protocol_error = "lifecycle frame 超过 PIPE_BUF 安全上限"
+                    break
+                self._accept(raw_frame)
+        if len(self.buffer) > _MAX_LIFECYCLE_FRAME_BYTES and not self.protocol_error:
+            self.protocol_error = "lifecycle frame 超过 PIPE_BUF 安全上限"
+        if eof and self.buffer and not self.protocol_error:
+            self.protocol_error = "lifecycle pipe 以不完整 frame 结束"
+        if self.protocol_error:
+            self.commit_valid = False
+
+    def _accept(self, raw_frame: bytes | bytearray) -> None:
+        if self.protocol_error:
+            return
+        try:
+            frame = json.loads(raw_frame)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self.protocol_error = "lifecycle frame 不是有效 JSON"
+            return
+        if not isinstance(frame, dict) or frame.get("bootId") != self.boot_id:
+            self.protocol_error = "lifecycle frame 的 boot identity 无效"
+            return
+        frame_type = frame.get("type")
+        if frame_type == "stage":
+            self._accept_stage(frame)
+        elif frame_type == "ready":
+            self._accept_ready(frame)
+        elif frame_type == "commit":
+            self._accept_commit(frame)
+        else:
+            self.protocol_error = f"未知 lifecycle frame: {frame_type!r}"
+
+    def _accept_stage(self, frame: dict[str, object]) -> None:
+        stage = frame.get("stage")
+        elapsed_ms = frame.get("elapsedMs")
+        if (
+            not isinstance(stage, str)
+            or not stage.strip()
+            or not isinstance(elapsed_ms, int)
+            or elapsed_ms < self.last_elapsed_ms
+            or self.ready
+        ):
+            self.protocol_error = "lifecycle stage frame 无效"
+            return
+        self.last_stage = stage
+        self.last_elapsed_ms = elapsed_ms
+
+    def _accept_ready(self, frame: dict[str, object]) -> None:
+        pid = frame.get("pid")
+        if self.ready or not isinstance(pid, int) or pid <= 0:
+            self.protocol_error = "lifecycle ready frame 无效或重复"
+            return
+        self.ready = True
+        self.gateway_pid = pid
+
+    def _accept_commit(self, frame: dict[str, object]) -> None:
+        request_id = frame.get("requestId")
+        nonce = str(frame.get("nonce") or "")
+        if (
+            not self.ready
+            or self.commit_valid
+            or not isinstance(request_id, str)
+            or not request_id.startswith(("restart_", "settings_"))
+            or not secrets.compare_digest(nonce, self.nonce)
+        ):
+            self.protocol_error = "lifecycle commit frame 无效或重复"
+            return
+        self.commit_valid = True
 
 
 class _SettingsRestartBridge:
-    """在设置 HTTP 线程与 supervisor owner 之间交接一次可等待重启。"""
+    """用 wake pipe 在设置线程与 Supervisor 之间交接一次重启。"""
 
     def __init__(self, timeout_s: float) -> None:
         self.timeout_s = timeout_s
@@ -82,6 +186,12 @@ class _SettingsRestartBridge:
         self._next_generation = 0
         self._requested_generation = 0
         self._completed: dict[int, bool] = {}
+        self._read_fd, self._write_fd = os.pipe()
+        os.set_blocking(self._read_fd, False)
+        os.set_blocking(self._write_fd, False)
+
+    def fileno(self) -> int:
+        return self._read_fd
 
     def request_and_wait(self) -> None:
         with self._condition:
@@ -89,6 +199,7 @@ class _SettingsRestartBridge:
             generation = self._next_generation
             self._requested_generation = generation
             self.request_event.set()
+            os.write(self._write_fd, b"\0")
             completed = self._condition.wait_for(
                 lambda: generation in self._completed,
                 timeout=self.timeout_s,
@@ -104,6 +215,7 @@ class _SettingsRestartBridge:
                 return 0
             generation = self._requested_generation
             self.request_event.clear()
+            _drain_fd(self._read_fd)
             return generation
 
     def wait_request(self) -> int:
@@ -116,159 +228,9 @@ class _SettingsRestartBridge:
             self._completed[generation] = success
             self._condition.notify_all()
 
-
-def _cleanup_boot_processes(
-    *,
-    boot_id: str,
-    gateway_group_id: int,
-    timeout_s: float = _BOOT_CLEANUP_TIMEOUT_SECONDS,
-) -> None:
-    """清理指定 boot 的全部进程组，保证下一代启动前旧端口已释放。"""
-
-    if os.name == "nt":
-        result = subprocess.run(
-            ["taskkill", "/PID", str(gateway_group_id), "/T", "/F"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-        if result.returncode not in {0, 128}:
-            raise RuntimeError(
-                f"boot {boot_id} Windows 进程树清理失败: exit={result.returncode}"
-            )
-        return
-
-    # 1. gateway 自身是独立组；Linux 再用唯一 boot ID 找到 MCP/service 子组
-    groups = {gateway_group_id}
-    direct_pids: set[int] = set()
-    if _wait_boot_targets(
-        boot_id,
-        groups,
-        direct_pids,
-        signal.SIGTERM,
-        timeout_s,
-    ):
-        return
-
-    # 2. 宽限期结束后升级为 KILL，并以仍存活的 PID/PGID 作为失败证据
-    if _wait_boot_targets(
-        boot_id,
-        groups,
-        direct_pids,
-        signal.SIGKILL,
-        timeout_s,
-    ):
-        return
-    alive_groups = sorted(group_id for group_id in groups if _group_exists(group_id))
-    alive_pids = sorted(pid for pid in direct_pids if _pid_exists(pid))
-    raise RuntimeError(
-        f"boot {boot_id} 进程清理失败: groups={alive_groups}, pids={alive_pids}"
-    )
-
-
-def _wait_boot_targets(
-    boot_id: str,
-    groups: set[int],
-    direct_pids: set[int],
-    sig: signal.Signals,
-    timeout_s: float,
-) -> bool:
-    deadline = time.monotonic() + timeout_s
-    while True:
-        _discover_boot_targets(boot_id, groups, direct_pids)
-        _signal_targets(groups, direct_pids, sig)
-        if not any(_group_exists(group_id) for group_id in groups) and not any(
-            _pid_exists(pid) for pid in direct_pids
-        ):
-            return True
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.05)
-
-
-def _discover_boot_targets(
-    boot_id: str,
-    groups: set[int],
-    direct_pids: set[int],
-) -> None:
-    if not sys.platform.startswith("linux"):
-        return
-    expected = f"AKASHIC_BOOT_ID={boot_id}".encode()
-    own_group = os.getpgrp()
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        pid = int(entry.name)
-        try:
-            environ = (entry / "environ").read_bytes().split(b"\0")
-            if expected not in environ:
-                continue
-            group_id = os.getpgid(pid)
-        except (OSError, ProcessLookupError):
-            continue
-        if group_id == own_group:
-            direct_pids.add(pid)
-        else:
-            groups.add(group_id)
-
-
-def _signal_targets(
-    groups: set[int],
-    direct_pids: set[int],
-    sig: signal.Signals,
-) -> None:
-    for group_id in groups:
-        try:
-            os.killpg(group_id, sig)
-        except ProcessLookupError:
-            pass
-    for pid in direct_pids:
-        try:
-            os.kill(pid, sig)
-        except ProcessLookupError:
-            pass
-
-
-def _group_exists(group_id: int) -> bool:
-    if sys.platform.startswith("linux"):
-        return _linux_group_has_live_members(group_id)
-    try:
-        os.killpg(group_id, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def _pid_exists(pid: int) -> bool:
-    if sys.platform.startswith("linux"):
-        try:
-            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-        except OSError:
-            return False
-        return fields[0] != "Z"
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def _linux_group_has_live_members(group_id: int) -> bool:
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
-        except (OSError, IndexError):
-            continue
-        if len(fields) >= 3 and int(fields[2]) == group_id and fields[0] != "Z":
-            return True
-    return False
+    def close(self) -> None:
+        os.close(self._read_fd)
+        os.close(self._write_fd)
 
 
 def run_supervisor(
@@ -277,10 +239,14 @@ def run_supervisor(
     workspace: Path,
     readiness_timeout_s: float = 15.0,
 ) -> int:
-    """监管固定 gateway child，并只接受当前 boot 的私有重启提交。"""
+    """管理 Linux boot 代际，并且只接受当前 boot 的私有重启提交。"""
 
+    if not sys.platform.startswith("linux"):
+        raise RuntimeError("Supervisor 仅支持 Linux")
     if readiness_timeout_s <= 0:
         raise ValueError("readiness_timeout_s 必须大于 0")
+    # 1. 建立 workspace owner、设置线程和停止信号边界。
+    _enable_child_subreaper()
     project_root = Path(__file__).resolve().parent.parent
     main_path = project_root / "main.py"
     config_path = config_path.expanduser().resolve()
@@ -288,6 +254,24 @@ def run_supervisor(
     lock = _SupervisorLock(workspace)
     lock.acquire()
     settings_bridge = _SettingsRestartBridge(max(30.0, readiness_timeout_s * 2))
+    signal_read_fd, signal_write_fd = os.pipe()
+    os.set_blocking(signal_read_fd, False)
+    os.set_blocking(signal_write_fd, False)
+    stopping_signal: int | None = None
+    guardian: subprocess.Popen[bytes] | None = None
+
+    def forward_stop(signum: int, _frame: FrameType | None) -> None:
+        nonlocal stopping_signal
+        stopping_signal = signum
+        try:
+            os.write(signal_write_fd, bytes((signum,)))
+        except BlockingIOError:
+            pass
+        if guardian is not None and guardian.poll() is None:
+            guardian.send_signal(signum)
+
+    stop_signals = (signal.SIGINT, signal.SIGTERM)
+    previous_handlers = {sig: signal.signal(sig, forward_stop) for sig in stop_signals}
     try:
         settings_server, settings_thread = _start_settings_server(
             config_path,
@@ -295,122 +279,95 @@ def run_supervisor(
             settings_bridge,
         )
     except BaseException:
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
+        settings_bridge.close()
+        os.close(signal_read_fd)
+        os.close(signal_write_fd)
         lock.release()
         raise
-    stopping_signal: int | None = None
-    child: subprocess.Popen[bytes] | None = None
-    forwarded_stop: tuple[subprocess.Popen[bytes], int] | None = None
-    stop_signals = {signal.SIGINT, signal.SIGTERM}
 
-    def forward_stop(signum: int, _frame: FrameType | None) -> None:
-        nonlocal stopping_signal, forwarded_stop
-        stopping_signal = signum
-        if child is not None and child.poll() is None:
-            child.send_signal(signum)
-            forwarded_stop = (child, signum)
-
-    previous_handlers = {
-        sig: signal.signal(sig, forward_stop)
-        for sig in stop_signals
-    }
     try:
+        # 2. 每一代只创建一个 Guardian，并在上一代清空后进入下一代。
         report_settings_generation = 0
         while True:
-            # 1. child 代际之间收到停止信号时，禁止创建下一代进程。
             if stopping_signal is not None:
                 return 0
-            if not config_path.exists():
-                while report_settings_generation == 0 and stopping_signal is None:
-                    if settings_bridge.request_event.wait(0.2):
-                        report_settings_generation = settings_bridge.take_request()
+            if not config_path.exists() and report_settings_generation == 0:
+                report_settings_generation = _wait_initial_settings_request(
+                    settings_bridge,
+                    signal_read_fd,
+                )
                 if stopping_signal is not None:
                     return 0
+
             boot_id = uuid4().hex
             nonce = secrets.token_hex(32)
-            read_fd, write_fd = os.pipe()
-            os.set_blocking(read_fd, False)
-            env = os.environ.copy()
-            env.update(
-                {
-                    "AKASHIC_SUPERVISED": "1",
-                    "AKASHIC_BOOT_ID": boot_id,
-                    "AKASHIC_RESTART_COMMIT_FD": str(write_fd),
-                    "AKASHIC_RESTART_NONCE": nonce,
-                }
-            )
-            argv = [
-                sys.executable,
-                str(main_path),
-                "gateway",
-                "--config",
-                str(config_path),
-                "--workspace",
-                str(workspace),
-            ]
-            # 2. 屏蔽 stop handler，直到 Popen 返回且 child 所有权已建立。
-            spawn_blocked = False
-            previous_mask = signal.pthread_sigmask(
-                signal.SIG_BLOCK,
-                stop_signals,
-            )
-            try:
-                pending_stops = signal.sigpending() & stop_signals
-                if stopping_signal is not None or pending_stops:
-                    spawn_blocked = True
-                else:
-                    def restore_child_signal_mask() -> None:
-                        signal.pthread_sigmask(
-                            signal.SIG_SETMASK,
-                            previous_mask,
-                        )
-
-                    try:
-                        child = subprocess.Popen(
-                            argv,
-                            cwd=project_root,
-                            env=env,
-                            pass_fds=(write_fd,),
-                            # supervisor 单线程；exec 前只恢复继承的 signal mask。
-                            preexec_fn=restore_child_signal_mask,
-                            start_new_session=True,
-                        )
-                    except BaseException:
-                        os.close(read_fd)
-                        raise
-            finally:
-                _ = signal.pthread_sigmask(
-                    signal.SIG_SETMASK,
-                    previous_mask,
-                )
-                os.close(write_fd)
-            if spawn_blocked:
-                os.close(read_fd)
-                return 0
-
-            # 3. pending signal 恢复时 child 已有唯一 owner，可精确转发并收束。
-            assert child is not None
             if stopping_signal is not None:
-                if (
-                    child.poll() is None
-                    and forwarded_stop != (child, stopping_signal)
-                ):
-                    child.send_signal(stopping_signal)
-                child.wait()
-                try:
-                    _cleanup_boot_processes(
-                        boot_id=boot_id,
-                        gateway_group_id=child.pid,
-                    )
-                except RuntimeError as error:
-                    print(str(error), file=sys.stderr)
-                    return SUPERVISOR_FAILURE_EXIT_CODE
-                os.close(read_fd)
-                child = None
+                return 0
+            lifecycle_read_fd, lifecycle_write_fd = os.pipe()
+            lease_read_fd, lease_write_fd = os.pipe()
+            os.set_blocking(lifecycle_read_fd, False)
+            guardian_env = os.environ.copy()
+            for name in (
+                "AKASHIC_SUPERVISED",
+                "AKASHIC_BOOT_ID",
+                "AKASHIC_LIFECYCLE_FD",
+                "AKASHIC_RESTART_NONCE",
+            ):
+                guardian_env.pop(name, None)
+            try:
+                guardian = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-m",
+                        "agent.background.boot_guardian",
+                        "--main-path",
+                        str(main_path),
+                        "--config",
+                        str(config_path),
+                        "--workspace",
+                        str(workspace),
+                        "--boot-id",
+                        boot_id,
+                        "--nonce",
+                        nonce,
+                        "--lifecycle-fd",
+                        str(lifecycle_write_fd),
+                        "--lease-fd",
+                        str(lease_read_fd),
+                    ],
+                    cwd=project_root,
+                    env=guardian_env,
+                    pass_fds=(lifecycle_write_fd, lease_read_fd),
+                    start_new_session=True,
+                )
+            except BaseException:
+                os.close(lifecycle_read_fd)
+                os.close(lease_write_fd)
+                raise
+            finally:
+                os.close(lifecycle_write_fd)
+                os.close(lease_read_fd)
+
+            if stopping_signal is not None and guardian.poll() is None:
+                guardian.send_signal(stopping_signal)
+            if stopping_signal is not None:
+                os.close(lifecycle_read_fd)
+                os.close(lease_write_fd)
+                _stop_guardian(guardian)
+                _cleanup_boot_processes(
+                    boot_id=boot_id,
+                    gateway_group_id=None,
+                )
+                _reap_adopted_children()
+                guardian = None
                 return 0
             try:
                 result = _wait_child(
-                    child,
-                    read_fd=read_fd,
+                    guardian,
+                    read_fd=lifecycle_read_fd,
+                    lease_fd=lease_write_fd,
                     workspace=workspace,
                     boot_id=boot_id,
                     nonce=nonce,
@@ -419,32 +376,40 @@ def run_supervisor(
                     report_settings_generation=report_settings_generation,
                 )
             except BaseException as wait_error:
+                _stop_guardian(guardian)
                 try:
                     _cleanup_boot_processes(
                         boot_id=boot_id,
-                        gateway_group_id=child.pid,
+                        gateway_group_id=None,
                     )
+                    _reap_adopted_children()
                 except BaseException as cleanup_error:
                     raise BaseExceptionGroup(
-                        "Supervisor 等待 gateway 与 boot 清理均失败",
+                        "Supervisor 等待 Guardian 与 boot 清理均失败",
                         [wait_error, cleanup_error],
                     ) from wait_error
                 raise
+
+            # 3. Guardian 完成后再做一次 boot-scoped 空集验证和兜底清理。
             try:
                 _cleanup_boot_processes(
                     boot_id=boot_id,
-                    gateway_group_id=child.pid,
+                    gateway_group_id=None,
                 )
+                _reap_adopted_children()
             except RuntimeError as error:
                 print(str(error), file=sys.stderr)
                 if result.settings_generation:
                     settings_bridge.complete(result.settings_generation, False)
                 return SUPERVISOR_FAILURE_EXIT_CODE
+            guardian = None
             if report_settings_generation:
                 report_settings_generation = 0
-            child = None
             if stopping_signal is not None:
                 return 0
+            if result.protocol_error:
+                print(result.protocol_error, file=sys.stderr)
+                return SUPERVISOR_FAILURE_EXIT_CODE
             if result.exit_code != RESTART_EXIT_CODE:
                 if result.settings_generation:
                     settings_bridge.complete(result.settings_generation, False)
@@ -463,10 +428,15 @@ def run_supervisor(
                 return SUPERVISOR_FAILURE_EXIT_CODE
             report_settings_generation = result.settings_generation
     finally:
+        if guardian is not None:
+            _stop_guardian(guardian)
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)
         settings_server.should_exit = True
         settings_thread.join(timeout=5)
+        settings_bridge.close()
+        os.close(signal_read_fd)
+        os.close(signal_write_fd)
         lock.release()
 
 
@@ -474,6 +444,7 @@ def _wait_child(
     child: subprocess.Popen[bytes],
     *,
     read_fd: int,
+    lease_fd: int | None = None,
     workspace: Path,
     boot_id: str,
     nonce: str,
@@ -481,106 +452,160 @@ def _wait_child(
     settings_bridge: _SettingsRestartBridge | None = None,
     report_settings_generation: int = 0,
 ) -> _ChildResult:
-    """等待 child 退出，同时验证 readiness 与唯一 commit frame。"""
+    """等待 pidfd 与生命周期事件，直到 Guardian 退出或启动失败。"""
 
+    # 1. 建立本代协议状态和三个可等待的内核事件。
+    _ = workspace
+    owned_bridge = settings_bridge is None
     settings_bridge = settings_bridge or _SettingsRestartBridge(readiness_timeout_s)
-    readiness_path = workspace / ".runtime-ready.json"
+    state = _LifecycleState(boot_id, nonce)
     deadline = time.monotonic() + readiness_timeout_s
-    ready = False
     settings_generation = 0
-    buffer = bytearray()
+    gateway_pidfd: int | None = None
+    child_pidfd = open_pidfd(child.pid)
+    lifecycle_open = True
     try:
-        while child.poll() is None:
-            _read_available(read_fd, buffer)
-            if not ready:
-                ready = _matches_readiness(
-                    readiness_path,
-                    boot_id=boot_id,
-                    pid=child.pid,
-                )
-                if not ready and time.monotonic() >= deadline:
-                    child.terminate()
-                    try:
-                        child.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        child.kill()
-                        child.wait(timeout=5)
+        # 2. ready 前受总体 deadline 约束，ready 后只等待事件或进程退出。
+        with selectors.DefaultSelector() as selector:
+            selector.register(child_pidfd, selectors.EVENT_READ, "guardian")
+            selector.register(read_fd, selectors.EVENT_READ, "lifecycle")
+            while child.poll() is None:
+                timeout = None
+                if not state.ready:
+                    timeout = deadline - time.monotonic()
+                    if timeout <= 0:
+                        state.protocol_error = (
+                            f"Gateway 启动超时: stage={state.last_stage} "
+                            f"deadline={readiness_timeout_s:.3f}s"
+                        )
+                        _stop_guardian(child)
+                        break
+                events = selector.select(timeout)
+                for key, _mask in events:
+                    if key.data == "guardian":
+                        _ = child.wait()
+                    elif key.data == "lifecycle":
+                        chunk = os.read(read_fd, 65536)
+                        if chunk:
+                            state.feed(chunk)
+                        else:
+                            state.feed(b"", eof=True)
+                            selector.unregister(read_fd)
+                            lifecycle_open = False
+                    elif key.data == "settings":
+                        settings_generation = settings_bridge.take_request()
+                        if settings_generation:
+                            assert gateway_pidfd is not None
+                            send_pidfd_signal(gateway_pidfd, signal.SIGUSR2)
+
+                if state.protocol_error:
+                    _stop_guardian(child)
+                    break
+                if state.ready and gateway_pidfd is None:
+                    assert state.gateway_pid is not None
+                    if not _pid_has_boot_identity(state.gateway_pid, boot_id):
+                        state.protocol_error = (
+                            "ready PID 不属于当前 boot，拒绝取得信号权限"
+                        )
+                        state.commit_valid = False
+                        _stop_guardian(child)
+                        break
+                    gateway_pidfd = open_pidfd(state.gateway_pid)
                     if report_settings_generation:
-                        settings_bridge.complete(report_settings_generation, False)
-                    return _ChildResult(
-                        SUPERVISOR_FAILURE_EXIT_CODE,
-                        False,
-                        False,
-                        report_settings_generation,
+                        settings_bridge.complete(report_settings_generation, True)
+                        report_settings_generation = 0
+                    selector.register(
+                        settings_bridge.fileno(),
+                        selectors.EVENT_READ,
+                        "settings",
                     )
-            if ready and report_settings_generation:
-                settings_bridge.complete(report_settings_generation, True)
-                report_settings_generation = 0
-            if ready and settings_generation == 0 and settings_bridge.request_event.is_set():
-                settings_generation = settings_bridge.take_request()
-                child.send_signal(signal.SIGUSR2)
-            time.sleep(0.02)
-        _read_available(read_fd, buffer)
-        if not ready:
-            ready = _matches_readiness(
-                readiness_path,
-                boot_id=boot_id,
-                pid=child.pid,
-            )
-        if report_settings_generation:
-            settings_bridge.complete(report_settings_generation, False)
+
+            if lifecycle_open and not state.protocol_error:
+                _read_lifecycle_to_eof(read_fd, state)
+            if report_settings_generation:
+                settings_bridge.complete(report_settings_generation, False)
+        # 3. 只返回已解析的私有证据；调用方负责最终 boot 空集验证。
         return _ChildResult(
-            child.returncode,
-            ready,
-            _valid_commit(bytes(buffer), boot_id=boot_id, nonce=nonce),
+            (
+                child.returncode
+                if child.returncode is not None
+                else SUPERVISOR_FAILURE_EXIT_CODE
+            ),
+            state.ready,
+            state.commit_valid,
             settings_generation or report_settings_generation,
+            state.gateway_pid,
+            state.last_stage,
+            state.protocol_error,
         )
     finally:
+        if lease_fd is not None:
+            os.close(lease_fd)
+        if gateway_pidfd is not None:
+            os.close(gateway_pidfd)
+        os.close(child_pidfd)
         os.close(read_fd)
+        if owned_bridge:
+            settings_bridge.close()
 
 
-def _read_available(fd: int, buffer: bytearray) -> None:
+def _read_lifecycle_to_eof(fd: int, state: _LifecycleState) -> None:
+    total_bytes = 0
     while True:
         try:
-            chunk = os.read(fd, 4096)
+            chunk = os.read(
+                fd,
+                min(65536, _MAX_LIFECYCLE_DRAIN_BYTES - total_bytes + 1),
+            )
         except BlockingIOError:
             return
         if not chunk:
+            state.feed(b"", eof=True)
             return
-        buffer.extend(chunk)
+        total_bytes += len(chunk)
+        if total_bytes > _MAX_LIFECYCLE_DRAIN_BYTES:
+            state.protocol_error = "lifecycle pipe 退出排空超过固定预算"
+            state.commit_valid = False
+            return
+        state.feed(chunk)
 
 
-def _matches_readiness(path: Path, *, boot_id: str, pid: int) -> bool:
-    if not path.exists():
-        return False
+def _wait_initial_settings_request(
+    bridge: _SettingsRestartBridge,
+    signal_fd: int,
+) -> int:
+    with selectors.DefaultSelector() as selector:
+        selector.register(bridge.fileno(), selectors.EVENT_READ, "settings")
+        selector.register(signal_fd, selectors.EVENT_READ, "signal")
+        for key, _mask in selector.select():
+            if key.data == "settings":
+                return bridge.take_request()
+            _drain_fd(signal_fd)
+            return 0
+    raise AssertionError("selector returned no initial event")
+
+
+def _stop_guardian(child: subprocess.Popen[bytes]) -> None:
+    if child.poll() is None:
+        child.send_signal(signal.SIGTERM)
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    return payload == {"bootId": boot_id, "pid": pid, "state": "ready"}
+        child.wait(timeout=_GUARDIAN_CLEANUP_WAIT_SECONDS)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.wait(timeout=2)
 
 
-def _valid_commit(payload: bytes, *, boot_id: str, nonce: str) -> bool:
-    lines = [line for line in payload.splitlines() if line]
-    if len(lines) != 1:
-        return False
-    try:
-        frame = json.loads(lines[0])
-    except json.JSONDecodeError:
-        return False
-    return (
-        isinstance(frame, dict)
-        and frame.get("type") == "restart_commit"
-        and frame.get("bootId") == boot_id
-        and secrets.compare_digest(str(frame.get("nonce") or ""), nonce)
-        and str(frame.get("requestId") or "").startswith(("restart_", "settings_"))
-    )
+def _drain_fd(fd: int) -> None:
+    while True:
+        try:
+            if not os.read(fd, 4096):
+                return
+        except BlockingIOError:
+            return
 
 
 def _portable_exit_code(code: int) -> int:
-    if code >= 0:
-        return code
-    return 128 + abs(code)
+    return code if code >= 0 else 128 + abs(code)
 
 
 def _start_settings_server(
@@ -588,15 +613,19 @@ def _start_settings_server(
     workspace: Path,
     bridge: _SettingsRestartBridge,
 ):
-    """在 supervisor 内启动固定设置服务，并确认端口实际进入监听。"""
+    """启动仅监听 loopback 的设置服务，并等待确定的启动事件。"""
+
     import asyncio
 
     from bootstrap.settings_api import create_settings_server
 
+    host = os.environ.get("AKASHIC_SETTINGS_HOST", "127.0.0.1")
+    if host != "127.0.0.1":
+        raise RuntimeError("AKASHIC_SETTINGS_HOST 只允许 127.0.0.1")
     server = create_settings_server(
         config_path,
         workspace,
-        host=os.environ.get("AKASHIC_SETTINGS_HOST", "127.0.0.1"),
+        host=host,
         on_applied=bridge.request_and_wait,
     )
     thread = threading.Thread(
@@ -605,9 +634,7 @@ def _start_settings_server(
         daemon=True,
     )
     thread.start()
-    deadline = time.monotonic() + 5
-    while not server.started and thread.is_alive() and time.monotonic() < deadline:
-        time.sleep(0.02)
+    _ = server.startup_event.wait(timeout=5)
     if not server.started:
         server.should_exit = True
         thread.join(timeout=1)

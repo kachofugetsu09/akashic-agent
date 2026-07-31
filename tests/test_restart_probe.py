@@ -3,7 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
+
+import pytest
 
 from docker.debug.programmatic_control_probe import _prepare_host_sandbox
 from docker.debug.restart_probe import (
@@ -92,6 +95,20 @@ def test_process_identity_rejects_reused_pid_counterexample() -> None:
     assert not _identity_alive(
         {"pid": identity["pid"], "starttime": identity["starttime"] + 1}
     )
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="依赖 Linux zombie 状态")
+def test_process_identity_treats_zombie_as_exited() -> None:
+    pid = os.fork()
+    if pid == 0:
+        os._exit(0)
+    try:
+        os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+        identity = _process_identity(pid)
+
+        assert not _identity_alive(identity)
+    finally:
+        os.waitpid(pid, 0)
 
 
 def test_process_metrics_include_rss_and_high_water_mark() -> None:

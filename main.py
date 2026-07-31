@@ -2,7 +2,7 @@
 入口
 
 主要模式：
-  python main.py                    默认以固定 supervisor 托管 gateway
+  python main.py                    Linux 由 supervisor 托管，其他平台直接运行 gateway
   python main.py gateway            显式启动未托管 gateway（调试）
   python main.py supervise          显式进入 supervisor（兼容别名）
   python main.py app-server --stdio 启动父进程托管控制面
@@ -29,6 +29,10 @@ _DEFAULT_WORKSPACE = "~/.akashic/workspace"
 
 def _supervisor_readiness_timeout() -> float:
     return float(os.environ.get("AKASHIC_READINESS_TIMEOUT_S", "15"))
+
+
+def _supervisor_supported(platform: str | None = None) -> bool:
+    return (platform or sys.platform).startswith("linux")
 
 
 def _workspace_from_config(config_path: Path) -> str:
@@ -249,6 +253,8 @@ def _prepare_startup_migrations(
     command = args[0] if args and not args[0].startswith("--") else ""
     if command not in {"", "setup", "init", "supervise", "gateway", "app-server", "dashboard"}:
         return None
+    if command == "gateway" and os.environ.get("AKASHIC_SUPERVISED") == "1":
+        return None
     outcome = migrate_installation(config_path, workspace)
     if outcome.state == "migrated" and outcome.commits:
         print(f"启动迁移完成: commits={len(outcome.commits)} head={outcome.head[:12]}")
@@ -421,9 +427,13 @@ async def inspect_modules(config_path: str, workspace: Path) -> None:
 
 
 async def serve(config_path: str, workspace: Path) -> int:
+    commit_channel = SupervisorCommitChannel.from_environment()
+    if commit_channel is not None:
+        commit_channel.stage("gateway.starting")
     _ = read_veda(workspace)
     config = Config.load(config_path, workspace=workspace)
-    commit_channel = SupervisorCommitChannel.from_environment()
+    if commit_channel is not None:
+        commit_channel.stage("config.loaded")
     restart_coordinator = (
         RestartCoordinator(
             commit_channel.boot_id,
@@ -434,7 +444,7 @@ async def serve(config_path: str, workspace: Path) -> int:
         else None
     )
     readiness = (
-        RuntimeReadiness(workspace, commit_channel.boot_id)
+        RuntimeReadiness(workspace, commit_channel.boot_id, commit_channel)
         if commit_channel is not None
         else None
     )
@@ -562,6 +572,9 @@ if __name__ == "__main__":
         sys.exit(1)
 
     os.environ["AKASHIC_WORKSPACE"] = str(workspace)
+    if args and args[0] == "supervise" and not _supervisor_supported():
+        print("supervise 仅支持 Linux", file=sys.stderr)
+        sys.exit(2)
     if host_value is not None:
         dashboard_host = host_value
     if port_value is not None:
@@ -738,6 +751,13 @@ if __name__ == "__main__":
 
     if "--inspect-modules" in args:
         asyncio.run(inspect_modules(config_path, workspace))
+    elif not _supervisor_supported():
+        print(
+            "警告：当前平台不支持 Supervisor；将以 unmanaged gateway 运行，"
+            "agent_restart、设置重启和 boot 进程树清理不可用。",
+            file=sys.stderr,
+        )
+        sys.exit(asyncio.run(serve(config_path, workspace)))
     else:
         sys.exit(
             run_supervisor(

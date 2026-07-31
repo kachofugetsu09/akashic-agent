@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import tempfile
 import threading
 import tomllib
@@ -27,6 +28,20 @@ from agent.model_runtime.errors import AuthenticationError, ModelRuntimeError, T
 from agent.provider import LLMProvider
 from bootstrap.setup_main import patch_main_model_config
 from bootstrap.setup_wizard import WizardAnswers
+
+
+class SettingsServer(uvicorn.Server):
+    """在线程边界发布一次确定的监听启动结果。"""
+
+    def __init__(self, config: uvicorn.Config) -> None:
+        super().__init__(config)
+        self.startup_event = threading.Event()
+
+    async def startup(self, sockets: list[socket.socket] | None = None) -> None:
+        try:
+            await super().startup(sockets=sockets)
+        finally:
+            self.startup_event.set()
 
 
 class ModelQuery(BaseModel):
@@ -554,7 +569,7 @@ def create_settings_server(
     host: str = "127.0.0.1",
     port: int = 6321,
     on_applied: Callable[[], None] | None = None,
-) -> uvicorn.Server:
+) -> SettingsServer:
     config = uvicorn.Config(
         create_settings_app(config_path, workspace, on_applied=on_applied),
         host=host,
@@ -563,4 +578,4 @@ def create_settings_server(
         access_log=False,
         ws="none",
     )
-    return uvicorn.Server(config)
+    return SettingsServer(config)

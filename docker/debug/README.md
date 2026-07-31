@@ -107,9 +107,9 @@ label 检查容器、网络和卷均无残留。
 │  └─ 删除声明后工具与真实 MCP 进程全部退出
 └─ restart + MCP 组合 Gate
    ├─ tool_search → agent_restart → terminal delivery
-   ├─ supervisor 固定、child/boot ID 更换、session resume
+   ├─ Supervisor 固定、每 boot 一个 Guardian、Gateway/boot ID 更换
    ├─ MCP 热更后跨进程重启恢复，旧 MCP PID 退出
-   ├─ 裸 exit 75、stale readiness、断线和 SIGTERM 失败矩阵
+   ├─ 裸 exit 75、stale readiness、断线、TERM 与 owner SIGKILL 矩阵
    └─ 20 轮 FD、线程、zombie 与非终态 turn 资源门禁
 ```
 
@@ -122,6 +122,8 @@ python docker/debug/restart_probe.py --soak
 
 验收以两个 host `gate.json` 的 `status=passed` 为准，不能只使用容器内
 `restart-gate.json`。两份报告必须来自同一 HEAD、相同 source digest；CI 还要求工作树为空。
+owner 故障矩阵分别杀死 Supervisor 和 Guardian，要求剩余 owner 清空 Gateway、MCP 与
+double-fork 后代；未知 PID 和不属于当前 boot 的端口不构成 kill 授权。
 20 轮 soak 的阈值为 supervisor FD 增量不超过 2、线程增量为 0，child FD 增量不超过 4、
 线程增量不超过 2；supervisor 与新 child 的 sampled RSS 增量及内核记录的 HWM 增量分别
 不超过 64 MiB，并要求无 zombie、无 `queued/in_progress` turn。
@@ -303,9 +305,10 @@ docker compose -f docker/debug/docker-compose.yml up akashic-debug
 
 此时向调试 Telegram bot 发消息或图片，所有会话和记忆都会进入 `docker/debug/profiles/default/workspace`。
 
-调试容器现在通过固定 supervisor 启动 gateway。supervisor 只会在当前 boot 已 ready、
-`agent_restart` 的最终回复已经实际送达、child 向继承私有管道提交一次匹配证据，且 child
-以 75 退出时拉起下一代进程。普通退出、崩溃、伪造 75、断线和送达超时都不会触发重启。
+调试容器通过固定 Supervisor 启动每个 boot 唯一的 Guardian，再由 Guardian 启动 Gateway。
+Supervisor 只会在当前 boot 已通过私有事件 ready、`agent_restart` 的最终回复已经实际送达、
+Gateway 提交一次匹配证据、以 75 退出且 Guardian 证明旧 boot 已空时拉起下一代。普通退出、
+崩溃、伪造 75、断线和送达超时都不会触发重启。
 
 本机若仍由忽略版本控制的 `start.sh` 启动，应让它调用正式默认入口：
 
@@ -313,11 +316,11 @@ docker compose -f docker/debug/docker-compose.yml up akashic-debug
 python main.py --config /absolute/config.toml --workspace /absolute/workspace
 ```
 
-`supervise` 子命令保留为兼容别名。只有需要让调试器直接附着未托管 child 时才显式使用
+`supervise` 子命令在 Linux 保留为兼容别名。只有需要让调试器直接附着未托管 child 时才显式使用
 `python main.py gateway`；该入口不注册 `agent_restart`。
 
 不要在外层脚本再做 `while`、`pgrep` 或“任意非零退出就重启”；进程唯一性、信号转发、
-readiness 和重启授权均由 supervisor 持有。
+重启授权和 boot 代际由 Supervisor 持有，Guardian 只拥有当前 boot 的进程清理。
 
 ## 多套调试配置
 
