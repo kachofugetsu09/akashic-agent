@@ -13,6 +13,7 @@ from benchmark.harbor_v4flash.agent import (
     _ENDPOINT,
     _TASK_ROOT,
     _WORKSPACE,
+    _prepare_verifier_runtime,
     _run_driver_and_shutdown,
     _start_gateway_with_resource_evidence,
 )
@@ -33,7 +34,13 @@ class _ScriptedEnvironment:
         self._outcomes = list(outcomes)
         self.commands: list[str] = []
 
-    async def exec(self, *, command: str, timeout_sec: float) -> ExecResult:
+    async def exec(
+        self,
+        *,
+        command: str,
+        timeout_sec: float,
+        user: str | int | None = None,
+    ) -> ExecResult:
         self.commands.append(command)
         outcome = self._outcomes.pop(0)
         if isinstance(outcome, BaseException):
@@ -119,6 +126,23 @@ def test_driver_success_keeps_command_order_and_logs(tmp_path: Path) -> None:
         == "none"
     )
     assert not (tmp_path / "driver.exception.log").exists()
+
+
+def test_verifier_uv_is_prepared_after_agent_with_frozen_version() -> None:
+    environment = _ScriptedEnvironment(ExecResult(return_code=0))
+
+    asyncio.run(
+        _prepare_verifier_runtime(
+            environment,  # type: ignore[arg-type]
+            expected_uv_version="uv 0.9.5",
+        )
+    )
+
+    assert len(environment.commands) == 1
+    command = environment.commands[0]
+    assert "/opt/akashic-runtime/uv" in command
+    assert "/root/.local/bin/uvx" in command
+    assert "uv 0.9.5" in command
 
 
 def test_driver_timeout_still_shuts_down_gateway_and_persists_evidence(

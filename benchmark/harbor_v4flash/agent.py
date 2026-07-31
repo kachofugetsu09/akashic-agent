@@ -26,6 +26,7 @@ from benchmark.harbor_v4flash.resource_evidence import (
 )
 from benchmark.harbor_v4flash.runtime_volume import (
     RUNTIME_MOUNT_PATH,
+    RUNTIME_UV_PATH,
     RUNTIME_VENV_PATH,
 )
 
@@ -244,6 +245,35 @@ async def _run_driver_and_shutdown(
     return driver_result
 
 
+async def _prepare_verifier_runtime(
+    environment: BaseEnvironment,
+    *,
+    expected_uv_version: str,
+) -> None:
+    """在 Agent 退出后为官方 verifier 准备冻结的 uv。"""
+
+    # 1. 只在 turn 完成后复制工具，避免改变 Agent 可见能力。
+    command = (
+        "mkdir -p /root/.local/bin && "
+        f"install -m 0755 {RUNTIME_UV_PATH} /root/.local/bin/uv && "
+        "ln -sfn uv /root/.local/bin/uvx && "
+        "printf '%s\\n' 'export PATH=\"$HOME/.local/bin:$PATH\"' "
+        "> /root/.local/bin/env && "
+        f"test \"$(/root/.local/bin/uv --version)\" = "
+        f"{shlex.quote(expected_uv_version)}"
+    )
+    prepared = await environment.exec(
+        command=command,
+        timeout_sec=30,
+        user="root",
+    )
+    _require_success(
+        "准备 verifier uv",
+        prepared.return_code,
+        (prepared.stdout or "") + (prepared.stderr or ""),
+    )
+
+
 class AkashicHarborAgent(BaseAgent):
     """在 Harbor task 容器内运行完整 Akasic runtime。"""
 
@@ -267,6 +297,8 @@ class AkashicHarborAgent(BaseAgent):
         runtime_manifest_digest: str,
         runtime_lock_digest: str,
         runtime_python_version: str,
+        runtime_uv_digest: str,
+        runtime_uv_version: str,
         git_volume_name: str,
         git_runtime_digest: str,
         git_manifest_digest: str,
@@ -290,6 +322,8 @@ class AkashicHarborAgent(BaseAgent):
         self._runtime_manifest_digest = runtime_manifest_digest
         self._runtime_lock_digest = runtime_lock_digest
         self._runtime_python_version = runtime_python_version
+        self._runtime_uv_digest = runtime_uv_digest
+        self._runtime_uv_version = runtime_uv_version
         self._git_volume_name = git_volume_name
         self._git_runtime_digest = git_runtime_digest
         self._git_manifest_digest = git_manifest_digest
@@ -314,9 +348,11 @@ class AkashicHarborAgent(BaseAgent):
             "manifest_digest": self._runtime_manifest_digest,
             "lock_digest": self._runtime_lock_digest,
             "python_version": self._runtime_python_version,
+            "uv_digest": self._runtime_uv_digest,
+            "uv_version": self._runtime_uv_version,
         }
         code = (
-            "import hashlib,json,platform,pathlib;"
+            "import hashlib,json,platform,pathlib,subprocess;"
             f"root=pathlib.Path({RUNTIME_MOUNT_PATH!r});"
             "manifest=json.loads((root/'manifest.json').read_text());"
             f"expected=json.loads({json.dumps(json.dumps(expected))});"
@@ -325,6 +361,11 @@ class AkashicHarborAgent(BaseAgent):
             "assert manifest['manifest_digest']==expected['manifest_digest'];"
             "lock=hashlib.sha256((root/'resolved.lock').read_bytes()).hexdigest();"
             "assert 'sha256:'+lock==expected['lock_digest'];"
+            "uv=hashlib.sha256((root/'uv').read_bytes()).hexdigest();"
+            "assert 'sha256:'+uv==expected['uv_digest'];"
+            "uv_version=subprocess.run([str(root/'uv'),'--version'],"
+            "check=True,text=True,stdout=subprocess.PIPE).stdout.strip();"
+            "assert uv_version==expected['uv_version'];"
             "assert platform.python_version()==expected['python_version']"
         )
         return f"{RUNTIME_VENV_PATH}/bin/python -c {shlex.quote(code)}"
@@ -406,6 +447,8 @@ class AkashicHarborAgent(BaseAgent):
             "manifest_digest": self._runtime_manifest_digest,
             "resolved_lock_digest": self._runtime_lock_digest,
             "python_version": self._runtime_python_version,
+            "uv_digest": self._runtime_uv_digest,
+            "uv_version": self._runtime_uv_version,
         }
         report["git_volume"] = {
             "name": self._git_volume_name,
@@ -521,4 +564,10 @@ class AkashicHarborAgent(BaseAgent):
             harness_name=self.name(),
             harness_version=self.version(),
             source_digest=self._source_digest,
+        )
+
+        # 4. Agent 已结束后才准备 verifier 自身依赖，不改变任务执行能力。
+        await _prepare_verifier_runtime(
+            environment,
+            expected_uv_version=self._runtime_uv_version,
         )

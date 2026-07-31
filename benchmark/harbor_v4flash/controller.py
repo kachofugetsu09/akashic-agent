@@ -151,6 +151,7 @@ async def run_trial(
     runtime_recipe = cast(dict[str, Any], runtime_manifest["recipe"])
     runtime_lock = cast(dict[str, Any], runtime_recipe["resolved_lock"])
     runtime_python = cast(dict[str, Any], runtime_recipe["python"])
+    runtime_uv = cast(dict[str, Any], runtime_recipe["uv"])
     timestamp = (
         time.strftime("%Y%m%d-%H%M%S", time.gmtime())
         + f"-{time.time_ns() % 1_000_000:06d}"
@@ -267,6 +268,8 @@ async def run_trial(
                 "runtime_manifest_digest": runtime_manifest["manifest_digest"],
                 "runtime_lock_digest": runtime_lock["digest"],
                 "runtime_python_version": runtime_python["version"],
+                "runtime_uv_digest": runtime_uv["digest"],
+                "runtime_uv_version": runtime_uv["version"],
                 "git_volume_name": args.git_volume,
                 "git_runtime_digest": git_manifest["runtime_digest"],
                 "git_manifest_digest": git_manifest["manifest_digest"],

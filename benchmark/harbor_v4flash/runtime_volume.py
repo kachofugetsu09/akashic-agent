@@ -17,12 +17,13 @@ RUNTIME_VOLUME_PREFIX = "akasic-bench-runtime-v1-"
 RUNTIME_VOLUME_SCHEMA = "akasic.benchmark-runtime.v1"
 RUNTIME_MOUNT_PATH = "/opt/akashic-runtime"
 RUNTIME_VENV_PATH = f"{RUNTIME_MOUNT_PATH}/venv"
+RUNTIME_UV_PATH = f"{RUNTIME_MOUNT_PATH}/uv"
 DEFAULT_PYTHON_VERSION = "3.13.7"
 DEFAULT_BUILDER_IMAGE = "debian:bullseye-slim"
 MAX_BUILDER_GLIBC_VERSION = (2, 31)
-RUNTIME_TOP_LEVEL = ("manifest.json", "python", "resolved.lock", "venv")
+RUNTIME_TOP_LEVEL = ("manifest.json", "python", "resolved.lock", "uv", "venv")
 RUNTIME_BUILD_RECIPE = {
-    "id": "uv-managed-python-relocatable-venv-v2",
+    "id": "uv-managed-python-relocatable-venv-v3",
     "python_install": "uv-python-install-no-cache",
     "venv": "uv-venv-relocatable",
     "dependency_install": (
@@ -271,6 +272,7 @@ def create_runtime_manifest(
             "contains_task_data": False,
             "contains_secrets": False,
             "contains_uv_cache": False,
+            "contains_verifier_uv": True,
         },
     }
     return {
@@ -637,6 +639,7 @@ def build_runtime_volume(
             f"/tools/uv pip sync --python {RUNTIME_VENV_PATH}/bin/python "
             "/inputs/resolved.lock --python-platform \"$RESOLVER_PLATFORM\" "
             "--require-hashes --strict --no-cache\n"
+            f"cp /tools/uv {RUNTIME_UV_PATH}\n"
             f"cp /inputs/resolved.lock {RUNTIME_MOUNT_PATH}/resolved.lock\n"
             f"cp /inputs/manifest.json {RUNTIME_MOUNT_PATH}/manifest.json\n"
             f"test \"$({RUNTIME_VENV_PATH}/bin/python -c "
