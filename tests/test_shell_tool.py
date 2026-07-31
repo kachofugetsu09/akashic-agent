@@ -487,6 +487,73 @@ async def test_shell_run_in_background_returns_task_id(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_shell_run_in_background_preserves_explicit_long_timeout(monkeypatch):
+    """后台长任务应保留显式 3600 秒硬超时，不再静默压缩为 600 秒。"""
+    import agent.tools.shell as shell_mod
+
+    async def _fake_create_subprocess_shell(command, **kwargs):
+        return _FakeProc(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(
+        "agent.tools.shell.asyncio.create_subprocess_shell",
+        _fake_create_subprocess_shell,
+    )
+
+    tool = ShellTool()
+    result = json.loads(
+        await tool.execute(
+            command="sleep 3600",
+            description="后台长任务",
+            timeout=3600,
+            run_in_background=True,
+        )
+    )
+
+    task_id = result["background_task_id"]
+    task = shell_mod._BG_REGISTRY.pop(task_id)
+    assert result["timeout_s"] == 3600
+    assert task.timeout_s == 3600
+    assert task.timeout_handle is not None
+    assert task.pump_task is not None
+    task.timeout_handle.cancel()
+    await asyncio.gather(task.pump_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_shell_run_in_background_rejects_timeout_beyond_ttl(monkeypatch):
+    """后台显式硬超时超过任务 TTL 时应失败并且不启动进程。"""
+    import agent.tools.shell as shell_mod
+
+    launched = False
+
+    async def _fake_create_subprocess_shell(command, **kwargs):
+        nonlocal launched
+        launched = True
+        return _FakeProc(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(
+        "agent.tools.shell.asyncio.create_subprocess_shell",
+        _fake_create_subprocess_shell,
+    )
+
+    tool = ShellTool()
+    result = json.loads(
+        await tool.execute(
+            command="sleep 99999",
+            description="超长后台任务",
+            timeout=shell_mod._BG_TTL_S + 1,
+            run_in_background=True,
+        )
+    )
+
+    assert result["error"] == (
+        f"后台显式 timeout 必须在 1 到 {shell_mod._BG_TTL_S} 秒之间，"
+        f"收到 {shell_mod._BG_TTL_S + 1}"
+    )
+    assert launched is False
+
+
+@pytest.mark.asyncio
 async def test_task_output_returns_log_content(monkeypatch, tmp_path):
     """task_output 能读取后台任务已写入的日志内容。"""
     import agent.tools.shell as shell_mod

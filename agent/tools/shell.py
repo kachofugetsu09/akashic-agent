@@ -10,6 +10,7 @@ Shell 工具（Bash 命令执行）
 后台任务（run_in_background=True）：
 - 立即返回 background_task_id，不阻塞前台
 - 输出持续写入临时日志文件
+- 显式硬超时最长 4 小时；未显式传入时不设置硬超时
 - 配合 ShellTaskOutputTool / ShellTaskStopTool 管理
 """
 
@@ -284,7 +285,7 @@ class ShellTool(Tool):
             "- 前台阻塞总超时默认 60 秒，普通命令最大 600 秒\n"
             "- 命令超过 15 秒未完成时默认自动转为后台任务，返回 background_task_id；后台会沿用当前 timeout 作为硬截止时间\n"
             "- 只有用户明确说“阻塞”时，才设置 auto_promote=false；未显式传 timeout 时会默认阻塞 21600 秒\n"
-            "- 服务进程或已知长时间运行的命令，直接用 run_in_background=true 后台启动，跳过 15 秒等待；后台模式只有显式传 timeout 时才会按 timeout 自动终止\n"
+            "- 服务进程或已知长时间运行的命令，直接用 run_in_background=true 后台启动，跳过 15 秒等待；后台显式硬超时最长 14400 秒，未显式传入时不设置硬超时\n"
             "- 收到 background_task_id 后，由你负责用 task_output 主动查看进展和结果；不会有系统自动回传\n"
             "- task_output 是轮询接口：block=true 单次最多等 30s 就返回快照（不会等到任务结束），长任务靠多次轮询推进\n"
             "- 如果决定放弃后台任务并准备最终回复，必须先调用 task_stop 终止它\n"
@@ -312,7 +313,7 @@ class ShellTool(Tool):
                     "description": (
                         f"前台阻塞或显式硬超时秒数，默认 {_DEFAULT_TIMEOUT}。"
                         f"普通命令最大 {_MAX_TIMEOUT}；auto_promote=false 时最大 {_BLOCKING_TIMEOUT}。"
-                        "自动转后台后只有显式传入才生效。"
+                        f"run_in_background=true 时最大 {_BG_TTL_S}，且只有显式传入才生效。"
                     ),
                     "minimum": 1,
                     "maximum": _BLOCKING_TIMEOUT,
@@ -346,11 +347,19 @@ class ShellTool(Tool):
         timeout_specified = "timeout" in kwargs and kwargs.get("timeout") is not None
         run_in_background: bool = bool(kwargs.get("run_in_background", False))
         auto_promote: bool = bool(kwargs.get("auto_promote", True))
-        max_timeout = (
-            _BLOCKING_TIMEOUT
-            if not run_in_background and not auto_promote
-            else _MAX_TIMEOUT
-        )
+        requested_timeout = int(kwargs["timeout"]) if timeout_specified else None
+        if run_in_background and requested_timeout is not None:
+            if requested_timeout < 1 or requested_timeout > _BG_TTL_S:
+                return _err(
+                    f"后台显式 timeout 必须在 1 到 {_BG_TTL_S} 秒之间，"
+                    f"收到 {requested_timeout}"
+                )
+        if run_in_background:
+            max_timeout = _BG_TTL_S
+        elif not auto_promote:
+            max_timeout = _BLOCKING_TIMEOUT
+        else:
+            max_timeout = _MAX_TIMEOUT
         default_timeout = (
             _BLOCKING_TIMEOUT
             if not run_in_background and not auto_promote and not timeout_specified
