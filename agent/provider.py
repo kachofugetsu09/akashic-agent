@@ -78,6 +78,15 @@ class LLMNetworkTimeoutError(TimeoutError):
     """LLM provider 在网络连接或读取边界超时。"""
 
 
+class _ChatStreamReadError(Exception):
+    """保留流读取原始错误及中断前是否已经收到有效 delta。"""
+
+    def __init__(self, error: Exception, *, response_delta_seen: bool) -> None:
+        super().__init__(str(error))
+        self.error = error
+        self.response_delta_seen = response_delta_seen
+
+
 class ProviderStrategy:
     def normalize_messages(self, messages: list[dict]) -> list[dict]:
         return _strip_reasoning_content(_normalize_chat_messages(messages))
@@ -412,17 +421,55 @@ class ChatCompletionsRuntime:
         on_content_delta: Callable[[StreamDelta], Awaitable[None]],
         strategy: ProviderStrategy,
     ) -> LLMResponse:
-        """消费单个 provider stream 并组装最终响应。"""
+        """有限重试首个有效 delta 前断开的流，并组装最终响应。"""
 
-        # 1. 创建并消费流，网络 idle 超时由 SDK read timeout 统一拥有。
-        stream = cast(
-            Any,
-            await self._create_with_retry(strategy.prepare_stream_request(kwargs)),
-        )
+        # 1. 每次重试都重建完整请求；收到有效 delta 后禁止重放。
+        stream_kwargs = strategy.prepare_stream_request(kwargs)
+        for attempt in range(self._max_retries + 1):
+            stream = cast(Any, await self._create_with_retry(stream_kwargs))
+            try:
+                return await self._consume_chat_stream(
+                    stream,
+                    kwargs,
+                    on_content_delta,
+                    strategy,
+                )
+            except _ChatStreamReadError as interrupted:
+                error = interrupted.error
+                retryable = self._is_retryable(error)
+                exhausted = attempt >= self._max_retries
+                if interrupted.response_delta_seen or not retryable or exhausted:
+                    if self._is_network_timeout(error):
+                        raise LLMNetworkTimeoutError(
+                            "LLM 流读取网络超时"
+                        ) from error
+                    raise error
+                wait_s = min(8.0, 1.0 * (2**attempt))
+                logger.warning(
+                    "[llm] 流读取中断，将重试 attempt=%d/%d wait=%.1fs err=%s",
+                    attempt + 1,
+                    self._max_retries + 1,
+                    wait_s,
+                    type(error).__name__,
+                )
+                await asyncio.sleep(wait_s)
+        raise RuntimeError("LLM stream failed without exception")
+
+    async def _consume_chat_stream(
+        self,
+        stream: Any,
+        kwargs: dict[str, Any],
+        on_content_delta: Callable[[StreamDelta], Awaitable[None]],
+        strategy: ProviderStrategy,
+    ) -> LLMResponse:
+        """消费一次 provider stream，并在读取中断时保留重试边界。"""
+
+        # 1. 收集一次流的完整响应；只包装 SDK iterator 的读取错误。
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_call_chunks: dict[int, dict[str, str]] = {}
         tool_call_seen = False
+        response_delta_seen = False
         cache_prompt_tokens: int | None = None
         cache_hit_tokens: int | None = None
         usage: ModelUsage | None = None
@@ -436,9 +483,10 @@ class ChatCompletionsRuntime:
                 except StopAsyncIteration:
                     break
                 except Exception as exc:
-                    if not self._is_network_timeout(exc):
-                        raise
-                    raise LLMNetworkTimeoutError("LLM 流读取网络超时") from exc
+                    raise _ChatStreamReadError(
+                        exc,
+                        response_delta_seen=response_delta_seen,
+                    ) from exc
                 raw_usage = getattr(chunk, "usage", None)
                 prompt_tokens, hit_tokens = _extract_cache_usage(raw_usage)
                 if prompt_tokens is not None:
@@ -458,11 +506,15 @@ class ChatCompletionsRuntime:
 
                 reasoning_piece = _get_field(delta, "reasoning_content")
                 if isinstance(reasoning_piece, str) and reasoning_piece:
+                    response_delta_seen = True
                     reasoning_parts.append(reasoning_piece)
                     if not tool_call_seen:
                         await on_content_delta({"thinking_delta": reasoning_piece})
 
-                for tc in _iter_tool_call_deltas(delta):
+                tool_call_deltas = _iter_tool_call_deltas(delta)
+                if tool_call_deltas:
+                    response_delta_seen = True
+                for tc in tool_call_deltas:
                     tool_call_seen = True
                     chunk_index = int(tc["index"])
                     slot = tool_call_chunks.setdefault(chunk_index, {})
@@ -478,6 +530,7 @@ class ChatCompletionsRuntime:
 
                 content_piece = _get_field(delta, "content")
                 if isinstance(content_piece, str) and content_piece:
+                    response_delta_seen = True
                     content_parts.append(content_piece)
                     if not tool_call_seen:
                         await on_content_delta({"content_delta": content_piece})
@@ -574,7 +627,9 @@ class ChatCompletionsRuntime:
 
     @staticmethod
     def _is_retryable(err: Exception) -> bool:
-        if ChatCompletionsRuntime._is_network_timeout(err):
+        if ChatCompletionsRuntime._is_network_timeout(err) or isinstance(
+            err, httpx.TransportError
+        ):
             return True
         status_code = getattr(err, "status_code", None)
         if status_code in {429, 500, 502, 503, 504}:
