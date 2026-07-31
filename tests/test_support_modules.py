@@ -828,6 +828,8 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     context_frame = result.messages[-2]["content"]
     assert "identity" in prompt
     assert "## 行为规范" in prompt
+    assert "最终回复前逐项核对用户明确提出的要求" in result.messages[0]["content"]
+    assert "超过验收标准的完美继续调用工具" in result.messages[0]["content"]
     assert "retrieved" not in prompt
     assert context_frame.startswith(SYSTEM_CONTEXT_FRAME_MARKER)
     assert "retrieved" in context_frame
