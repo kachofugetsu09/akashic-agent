@@ -188,6 +188,7 @@ class TurnRunResult:
     streamed: bool = False
     context_retry: dict[str, object] = field(default_factory=dict[str, object])
     model_state: dict[str, object] | None = None
+    react_compaction: dict[str, object] | None = None
     mobile_attention: Literal["confirmation"] | None = None
 
 

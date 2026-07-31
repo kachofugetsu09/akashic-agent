@@ -76,6 +76,29 @@ def test_context_policy_scales_from_one_million(
 def test_context_budget_and_runtime_config_share_the_same_boundary() -> None:
     budget = build_runtime_context_budget(100_000, 0.9, 8_000)
     assert (budget.effective_context, budget.input_budget) == (90_000, 82_000)
+    uncapped = build_runtime_context_budget(100_000, 0.9, 0)
+    assert (uncapped.input_budget, uncapped.reserved_output) == (90_000, 0)
+    assert ModelRuntimeConfig(
+        runtime_id="uncapped",
+        provider="openai",
+        model="model",
+        context_window=10_000,
+        max_output_tokens=0,
+    ).max_output_tokens == 0
+    assert ModelRuntimeConfig(
+        runtime_id="default",
+        provider="openai",
+        model="model",
+        context_window=10_000,
+    ).max_output_tokens == 0
+    with pytest.raises(ValueError, match="不能小于 0"):
+        ModelRuntimeConfig(
+            runtime_id="negative",
+            provider="openai",
+            model="model",
+            context_window=10_000,
+            max_output_tokens=-1,
+        )
     with pytest.raises(ValueError, match="max_output_tokens 必须小于有效上下文"):
         ModelRuntimeConfig(
             runtime_id="bad",
@@ -460,6 +483,134 @@ input_modalities = ["text", "image"]
     assert image_config.multimodal is True
     assert image_config.provider == "openai"
     assert image_config.model == "vision-model"
+
+
+def test_config_preserves_explicit_uncapped_output(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[llm]
+main = "main"
+
+[llm.runtimes.main]
+provider = "deepseek"
+model = "deepseek-v4-flash"
+api_key = "key"
+context_window = 1000000
+max_output_tokens = 0
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(path, workspace=tmp_path)
+
+    assert config.max_tokens == 0
+    assert config.model_runtimes["main"].max_output_tokens == 0
+
+
+def test_config_defaults_missing_output_limit_to_provider_boundary(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[llm]
+main = "main"
+
+[llm.runtimes.main]
+provider = "openai"
+model = "model"
+api_key = "key"
+context_window = 64000
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(path, workspace=tmp_path)
+
+    assert config.max_tokens == 0
+    assert config.model_runtimes["main"].max_output_tokens == 0
+    assert config.compaction_trigger_percent == 0.74
+    assert config.model_runtimes["main"].compaction_trigger_percent == 0.74
+
+
+def test_config_accepts_compaction_trigger_below_effective_boundary(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[llm]
+main = "main"
+
+[llm.runtimes.main]
+provider = "openai"
+model = "model"
+api_key = "key"
+context_window = 64000
+effective_context_percent = 0.8
+compaction_trigger_percent = 0.7
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(path, workspace=tmp_path)
+
+    assert config.compaction_trigger_percent == 0.7
+    assert config.model_runtimes["main"].compaction_trigger_percent == 0.7
+
+
+@pytest.mark.parametrize("trigger", [0, -0.1, 0.9, 1.0])
+def test_config_rejects_compaction_trigger_outside_soft_boundary(
+    tmp_path: Path,
+    trigger: float,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f"""
+[llm]
+main = "main"
+
+[llm.runtimes.main]
+provider = "openai"
+model = "model"
+api_key = "key"
+context_window = 64000
+effective_context_percent = 0.9
+compaction_trigger_percent = {trigger}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="compaction_trigger_percent"):
+        load_config(path, workspace=tmp_path)
+
+
+def test_config_preserves_explicit_legacy_output_limit_for_main_runtime(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[llm]
+main = "main"
+
+[llm.runtimes.main]
+provider = "openai"
+model = "model"
+api_key = "key"
+context_window = 64000
+
+[agent]
+max_tokens = 8192
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(path, workspace=tmp_path)
+
+    assert config.max_tokens == 8192
+    assert config.model_runtimes["main"].max_output_tokens == 8192
 
 
 @pytest.mark.parametrize("modalities", ['"image"', "[1]"])

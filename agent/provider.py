@@ -10,6 +10,7 @@ import hashlib
 import itertools
 import json
 import logging
+import math
 import os
 import re
 import tempfile
@@ -75,6 +76,15 @@ class ContextLengthError(Exception):
 
 class LLMNetworkTimeoutError(TimeoutError):
     """LLM provider 在网络连接或读取边界超时。"""
+
+
+class _ChatStreamReadError(Exception):
+    """保留流读取原始错误及中断前是否已经收到有效 delta。"""
+
+    def __init__(self, error: Exception, *, response_delta_seen: bool) -> None:
+        super().__init__(str(error))
+        self.error = error
+        self.response_delta_seen = response_delta_seen
 
 
 class ProviderStrategy:
@@ -284,7 +294,8 @@ class OpenCodeGoMiMoStrategy(OpenCodeGoStrategy):
         *,
         disable_thinking: bool,
     ) -> None:
-        kwargs["max_tokens"] = min(int(kwargs["max_tokens"]), 131_072)
+        if "max_tokens" in kwargs:
+            kwargs["max_tokens"] = min(int(kwargs["max_tokens"]), 131_072)
         super().prepare_request(
             kwargs,
             extra_body,
@@ -299,7 +310,7 @@ class ChatCompletionsRuntime:
         base_url: str | None = None,
         extra_body: dict | None = None,
         read_timeout_s: float = 90.0,
-        max_retries: int = 1,
+        max_retries: int = 3,
         provider_name: str = "",
         force_disable_thinking: bool = False,
         payload_snapshot_enabled: bool | None = None,
@@ -345,11 +356,9 @@ class ChatCompletionsRuntime:
         )
         full_messages = _merge_leading_system_messages(full_messages)
         full_messages = strategy.normalize_messages(full_messages)
-        kwargs: dict = dict(
-            model=request.model,
-            max_tokens=request.max_output_tokens,
-            messages=full_messages,
-        )
+        kwargs: dict = dict(model=request.model, messages=full_messages)
+        if request.max_output_tokens > 0:
+            kwargs["max_tokens"] = request.max_output_tokens
         if request.tools:
             kwargs["tools"] = request.tools
             kwargs["tool_choice"] = request.tool_choice
@@ -365,7 +374,14 @@ class ChatCompletionsRuntime:
             return await self._chat_streaming(kwargs, request.on_delta, strategy)
 
         resp = cast(Any, await self._create_with_retry(kwargs))
-        msg = resp.choices[0].message
+        choice = resp.choices[0]
+        msg = choice.message
+        raw_finish_reason = getattr(choice, "finish_reason", None)
+        finish_reason = (
+            str(raw_finish_reason)
+            if raw_finish_reason is not None
+            else None
+        )
 
         tool_calls = []
         if msg.tool_calls:
@@ -392,6 +408,7 @@ class ChatCompletionsRuntime:
             content=raw,
             tool_calls=tool_calls,
             thinking=thinking,
+            finish_reason=finish_reason,
             provider_fields=provider_fields,
             cache_prompt_tokens=cache_prompt_tokens,
             cache_hit_tokens=cache_hit_tokens,
@@ -404,20 +421,59 @@ class ChatCompletionsRuntime:
         on_content_delta: Callable[[StreamDelta], Awaitable[None]],
         strategy: ProviderStrategy,
     ) -> LLMResponse:
-        """消费单个 provider stream 并组装最终响应。"""
+        """有限重试首个有效 delta 前断开的流，并组装最终响应。"""
 
-        # 1. 创建并消费流，网络 idle 超时由 SDK read timeout 统一拥有。
-        stream = cast(
-            Any,
-            await self._create_with_retry(strategy.prepare_stream_request(kwargs)),
-        )
+        # 1. 每次重试都重建完整请求；收到有效 delta 后禁止重放。
+        stream_kwargs = strategy.prepare_stream_request(kwargs)
+        for attempt in range(self._max_retries + 1):
+            stream = cast(Any, await self._create_with_retry(stream_kwargs))
+            try:
+                return await self._consume_chat_stream(
+                    stream,
+                    kwargs,
+                    on_content_delta,
+                    strategy,
+                )
+            except _ChatStreamReadError as interrupted:
+                error = interrupted.error
+                retryable = self._is_retryable(error)
+                exhausted = attempt >= self._max_retries
+                if interrupted.response_delta_seen or not retryable or exhausted:
+                    if self._is_network_timeout(error):
+                        raise LLMNetworkTimeoutError(
+                            "LLM 流读取网络超时"
+                        ) from error
+                    raise error
+                wait_s = min(8.0, 1.0 * (2**attempt))
+                logger.warning(
+                    "[llm] 流读取中断，将重试 attempt=%d/%d wait=%.1fs err=%s",
+                    attempt + 1,
+                    self._max_retries + 1,
+                    wait_s,
+                    type(error).__name__,
+                )
+                await asyncio.sleep(wait_s)
+        raise RuntimeError("LLM stream failed without exception")
+
+    async def _consume_chat_stream(
+        self,
+        stream: Any,
+        kwargs: dict[str, Any],
+        on_content_delta: Callable[[StreamDelta], Awaitable[None]],
+        strategy: ProviderStrategy,
+    ) -> LLMResponse:
+        """消费一次 provider stream，并在读取中断时保留重试边界。"""
+
+        # 1. 收集一次流的完整响应；只包装 SDK iterator 的读取错误。
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_call_chunks: dict[int, dict[str, str]] = {}
         tool_call_seen = False
+        response_delta_seen = False
         cache_prompt_tokens: int | None = None
         cache_hit_tokens: int | None = None
         usage: ModelUsage | None = None
+        finish_reason: str | None = None
 
         try:
             stream_iter = aiter(stream)
@@ -427,9 +483,10 @@ class ChatCompletionsRuntime:
                 except StopAsyncIteration:
                     break
                 except Exception as exc:
-                    if not self._is_network_timeout(exc):
-                        raise
-                    raise LLMNetworkTimeoutError("LLM 流读取网络超时") from exc
+                    raise _ChatStreamReadError(
+                        exc,
+                        response_delta_seen=response_delta_seen,
+                    ) from exc
                 raw_usage = getattr(chunk, "usage", None)
                 prompt_tokens, hit_tokens = _extract_cache_usage(raw_usage)
                 if prompt_tokens is not None:
@@ -440,17 +497,24 @@ class ChatCompletionsRuntime:
                 if not choices:
                     continue
                 choice = choices[0]
+                raw_finish_reason = getattr(choice, "finish_reason", None)
+                if raw_finish_reason is not None:
+                    finish_reason = str(raw_finish_reason)
                 delta = getattr(choice, "delta", None)
                 if delta is None:
                     continue
 
                 reasoning_piece = _get_field(delta, "reasoning_content")
                 if isinstance(reasoning_piece, str) and reasoning_piece:
+                    response_delta_seen = True
                     reasoning_parts.append(reasoning_piece)
                     if not tool_call_seen:
                         await on_content_delta({"thinking_delta": reasoning_piece})
 
-                for tc in _iter_tool_call_deltas(delta):
+                tool_call_deltas = _iter_tool_call_deltas(delta)
+                if tool_call_deltas:
+                    response_delta_seen = True
+                for tc in tool_call_deltas:
                     tool_call_seen = True
                     chunk_index = int(tc["index"])
                     slot = tool_call_chunks.setdefault(chunk_index, {})
@@ -466,6 +530,7 @@ class ChatCompletionsRuntime:
 
                 content_piece = _get_field(delta, "content")
                 if isinstance(content_piece, str) and content_piece:
+                    response_delta_seen = True
                     content_parts.append(content_piece)
                     if not tool_call_seen:
                         await on_content_delta({"content_delta": content_piece})
@@ -502,6 +567,7 @@ class ChatCompletionsRuntime:
             content=raw,
             tool_calls=tool_calls,
             thinking=thinking,
+            finish_reason=finish_reason,
             provider_fields=provider_fields,
             cache_prompt_tokens=cache_prompt_tokens,
             cache_hit_tokens=cache_hit_tokens,
@@ -561,7 +627,9 @@ class ChatCompletionsRuntime:
 
     @staticmethod
     def _is_retryable(err: Exception) -> bool:
-        if ChatCompletionsRuntime._is_network_timeout(err):
+        if ChatCompletionsRuntime._is_network_timeout(err) or isinstance(
+            err, httpx.TransportError
+        ):
             return True
         status_code = getattr(err, "status_code", None)
         if status_code in {429, 500, 502, 503, 504}:
@@ -620,6 +688,7 @@ class LLMProvider:
             runtime_id=runtime.runtime_id,
             context_window=runtime.context_window,
             effective_context_percent=runtime.effective_context_percent,
+            compaction_trigger_percent=runtime.compaction_trigger_percent,
             use_responses_lite=runtime.use_responses_lite,
             supports_parallel_tool_calls=runtime.supports_parallel_tool_calls,
             reasoning_summary=runtime.reasoning_summary,
@@ -634,12 +703,13 @@ class LLMProvider:
         system_prompt: str = "",
         extra_body: dict | None = None,
         read_timeout_s: float = 90.0,
-        max_retries: int = 1,
+        max_retries: int = 3,
         provider_name: str = "",
         auth_id: str = "",
         runtime_id: str = "main",
         context_window: int = 0,
         effective_context_percent: float = 0.9,
+        compaction_trigger_percent: float = 0.74,
         use_responses_lite: bool = False,
         supports_parallel_tool_calls: bool = True,
         reasoning_summary: str = "none",
@@ -651,11 +721,16 @@ class LLMProvider:
         self._extra_body = dict(extra_body or {})
         self._context_window = int(context_window)
         self._effective_context_percent = float(effective_context_percent)
+        self._compaction_trigger_percent = float(compaction_trigger_percent)
         self._force_disable_thinking = force_disable_thinking
         if self._context_window < 0:
             raise ValueError("context_window 不能小于 0")
         if not 0 < self._effective_context_percent <= 1:
             raise ValueError("effective_context_percent 必须在 (0, 1] 内")
+        if not 0 < self._compaction_trigger_percent < self._effective_context_percent:
+            raise ValueError(
+                "compaction_trigger_percent 必须在 (0, effective_context_percent) 内"
+            )
         self._backend: ModelBackend
         if provider_name.lower() == "codex":
             auth = CodexAuthDriver(CredentialStore(), auth_id)
@@ -737,14 +812,48 @@ class LLMProvider:
                 f"上下文估算超限 estimated={estimated} budget={budget.input_budget} quality=approximate"
             )
 
+    @property
+    def context_window(self) -> int:
+        return self._context_window
+
+    @property
+    def compaction_trigger_tokens(self) -> int:
+        return math.floor(
+            self._context_window * self._compaction_trigger_percent
+        )
+
+    @property
+    def hard_input_tokens(self) -> int:
+        return math.floor(
+            self._context_window * self._effective_context_percent
+        )
+
+    def estimate_context_tokens(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+    ) -> int:
+        """Estimate the complete provider input owned by this runtime."""
+        return _estimate_context_tokens(self._system, messages, tools)
+
+    def estimate_appended_message_tokens(self, messages: list[dict]) -> int:
+        """Estimate messages appended after an exact provider usage sample."""
+        return _estimate_message_tokens(messages)
+
 
 def _estimate_context_tokens(
     system_prompt: str, messages: list[dict], tools: list[dict]
 ) -> int:
     """估算文本与图片块预算，避免把 data URI 当作文本 token。"""
-    text_chars = len(system_prompt) + len(
+    fixed_chars = len(system_prompt) + len(
         json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
     )
+    return max(1, fixed_chars // 3 + _estimate_message_tokens(messages))
+
+
+def _estimate_message_tokens(messages: list[dict]) -> int:
+    """估算消息增量，保持与完整 provider input 相同的编码口径。"""
+    text_chars = 0
     image_tokens = 0
     for message in messages:
         content = message.get("content")
@@ -772,6 +881,8 @@ def _estimate_context_tokens(
                 separators=(",", ":"),
             )
         )
+    if not messages:
+        return 0
     return max(1, text_chars // 3 + image_tokens)
 
 

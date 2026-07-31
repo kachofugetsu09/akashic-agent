@@ -10,6 +10,7 @@ from agent.provider import LLMResponse, ToolCall
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from tests.memory_fakes import FakeMemoryEngine
+from tests.provider_fakes import ProviderContextBudgetStub
 
 
 class _DummyTool(Tool):
@@ -38,7 +39,7 @@ class _DummyTool(Tool):
         return "fetched"
 
 
-class _FakeProvider:
+class _FakeProvider(ProviderContextBudgetStub):
     def __init__(self, responses: list[LLMResponse]) -> None:
         self._responses = list(responses)
         self.calls: list[dict] = []

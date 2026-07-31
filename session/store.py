@@ -17,6 +17,7 @@ from agent.control.models import (
     TurnUsage,
     parse_rfc3339,
 )
+from agent.model_runtime.query_compaction import parse_react_compaction
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,11 @@ def _decode_message_extra(
             raise ValueError(f"message {field} 必须是字符串: {message_id}")
     if "model_state" in extra_dict:
         _validate_model_state(extra_dict["model_state"], message_id)
+    if "react_compaction" in extra_dict:
+        _ = parse_react_compaction(
+            extra_dict["react_compaction"],
+            source=message_id,
+        )
     return extra_dict
 
 

@@ -131,9 +131,11 @@ class ModelRuntimeConfig:
     base_url: str = ""
     reasoning_effort: str = ""
     context_window: int = 0
-    max_output_tokens: int = 8192
+    # 0 表示不向 provider 发送输出上限，由模型服务自身边界负责。
+    max_output_tokens: int = 0
     input_modalities: tuple[str, ...] = ("text",)
     effective_context_percent: float = 0.9
+    compaction_trigger_percent: float = 0.74
     use_responses_lite: bool = False
     supports_parallel_tool_calls: bool = True
     reasoning_summary: str = "none"
@@ -147,8 +149,10 @@ class ModelRuntimeConfig:
             raise ValueError(f"Codex runtime {self.runtime_id} 必须配置 auth")
         if self.context_window <= 0:
             raise ValueError(f"runtime {self.runtime_id} 的 context_window 必须大于 0")
-        if self.max_output_tokens <= 0:
-            raise ValueError(f"runtime {self.runtime_id} 的 max_output_tokens 必须大于 0")
+        if self.max_output_tokens < 0:
+            raise ValueError(
+                f"runtime {self.runtime_id} 的 max_output_tokens 不能小于 0"
+            )
         if "text" not in self.input_modalities:
             raise ValueError(f"runtime {self.runtime_id} 的 input_modalities 必须包含 text")
         validate_profile_runtime(
@@ -160,7 +164,12 @@ class ModelRuntimeConfig:
             raise ValueError(
                 f"runtime {self.runtime_id} 的 effective_context_percent 必须在 (0, 1] 内"
             )
-        if self.max_output_tokens >= int(
+        if not 0 < self.compaction_trigger_percent < self.effective_context_percent:
+            raise ValueError(
+                f"runtime {self.runtime_id} 的 compaction_trigger_percent "
+                "必须在 (0, effective_context_percent) 内"
+            )
+        if self.max_output_tokens > 0 and self.max_output_tokens >= int(
             self.context_window * self.effective_context_percent
         ):
             raise ValueError(
@@ -174,7 +183,7 @@ class Config:
     model: str
     api_key: str
     system_prompt: str
-    max_tokens: int = 8192
+    max_tokens: int = 0
     max_iterations: int = 10
     memory_window: int = 40
     base_url: str | None = None
@@ -207,6 +216,7 @@ class Config:
     reasoning_effort: str = ""
     input_modalities: tuple[str, ...] = ("text",)
     effective_context_percent: float = 0.9
+    compaction_trigger_percent: float = 0.74
     use_responses_lite: bool = False
     supports_parallel_tool_calls: bool = True
     reasoning_summary: str = "none"

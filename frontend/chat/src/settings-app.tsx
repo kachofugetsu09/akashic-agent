@@ -92,7 +92,7 @@ export function SettingsApp() {
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [contextWindow, setContextWindow] = useState("128000");
-  const [maxOutputTokens, setMaxOutputTokens] = useState("8192");
+  const [maxOutputTokens, setMaxOutputTokens] = useState("0");
   const [models, setModels] = useState<ModelOption[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -133,7 +133,7 @@ export function SettingsApp() {
     setBaseUrl(runtime.baseUrl);
     setModel(runtime.model);
     setContextWindow(String(runtime.contextWindow || 128000));
-    setMaxOutputTokens(String(runtime.maxOutputTokens || 8192));
+    setMaxOutputTokens(String(runtime.maxOutputTokens ?? 0));
     setApiKey("");
     setModels([]);
   }
@@ -154,17 +154,18 @@ export function SettingsApp() {
       setBaseUrl("https://opencode.ai/zen/go/v1");
       setModel("");
       setContextWindow("128000");
-      setMaxOutputTokens("8192");
+      setMaxOutputTokens("0");
     } else if (next === "codex") {
       setProvider("codex");
       setBaseUrl("");
       setModel("");
       setContextWindow("128000");
-      setMaxOutputTokens("8192");
+      setMaxOutputTokens("0");
     } else {
       setProvider("openai");
       setBaseUrl("https://api.openai.com/v1");
       setModel("");
+      setMaxOutputTokens("0");
     }
   }
 
@@ -193,7 +194,6 @@ export function SettingsApp() {
   function applyModel(option: ModelOption) {
     setModel(option.id);
     if (option.contextWindow) setContextWindow(String(option.contextWindow));
-    if (option.maxOutputTokens) setMaxOutputTokens(String(option.maxOutputTokens));
   }
 
   async function save() {
@@ -374,7 +374,7 @@ export function SettingsApp() {
 
             <div className="field-grid two-columns">
               <Field label="上下文窗口"><Input inputMode="numeric" value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} /></Field>
-              <Field label="最大输出"><Input inputMode="numeric" value={maxOutputTokens} onChange={(event) => setMaxOutputTokens(event.target.value)} /></Field>
+              <Field label="最大输出（0 由 Provider 决定）"><Input inputMode="numeric" value={maxOutputTokens} onChange={(event) => setMaxOutputTokens(event.target.value)} /></Field>
             </div>
 
             {error && <div className="settings-error" role="alert">{error}</div>}

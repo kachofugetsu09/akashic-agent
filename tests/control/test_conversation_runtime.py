@@ -143,6 +143,61 @@ async def test_runtime_persists_structured_tool_items_and_usage(tmp_path: Path) 
     store.close()
 
 
+@pytest.mark.asyncio
+async def test_runtime_replays_large_delta_stream_without_detaching_subscriber(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    deltas = [f"chunk-{sequence}" for sequence in range(300)]
+    response = "".join(deltas)
+
+    async def execute(_request: TurnRequest) -> ControlExecutionResult:
+        return ControlExecutionResult(response=response, deltas=deltas)
+
+    runtime = ConversationRuntime(store, execute)
+    handle = await runtime.start_turn(
+        TurnRequest("programmatic:large-delta-stream", "hello")
+    )
+    events: list[TurnEvent] = []
+    async for event in handle.events():
+        if event.method == "turn/completed":
+            persisted = store.read_turn(handle.id)
+            assert persisted is not None
+            assert persisted.status is TurnStatus.COMPLETED
+        events.append(event)
+    result = await handle.result()
+
+    delta_events = [
+        event
+        for event in events
+        if event.method == "item/assistantMessage/delta"
+    ]
+    assistant_item_id = cast(str, delta_events[0].data["itemId"])
+    assistant_events = [
+        event
+        for event in events
+        if event.data.get("itemId") == assistant_item_id
+        or (
+            isinstance(event.data.get("item"), dict)
+            and event.data["item"].get("id") == assistant_item_id
+        )
+    ]
+    assert [event.data["delta"] for event in delta_events] == deltas
+    assert [event.data["sequence"] for event in delta_events] == list(range(300))
+    assert [event.method for event in assistant_events] == [
+        "item/started",
+        *(["item/assistantMessage/delta"] * 300),
+        "item/completed",
+    ]
+    assert events[-1].method == "turn/completed"
+    assert result.status is TurnStatus.COMPLETED
+    assert result.final_response == response
+    assert [event.method for event in events].count("turn/completed") == 1
+    _assert_single_terminal(runtime, handle.id)
+    await runtime.shutdown()
+    store.close()
+
+
 async def _executor_with_open_tool(
     request: TurnRequest,
     started: asyncio.Event,

@@ -19,6 +19,27 @@ from bus.events_lifecycle import ToolCallCompleted, ToolCallStarted
 _TEST_CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS = 1
 
 
+class _ProviderContextBudget:
+    context_window = 1_000_000
+    compaction_trigger_tokens = 740_000
+    hard_input_tokens = 900_000
+
+    def estimate_context_tokens(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+    ) -> int:
+        return max(
+            1,
+            len(json.dumps([messages, tools], ensure_ascii=False)) // 3,
+        )
+
+    def estimate_appended_message_tokens(self, messages: list[dict]) -> int:
+        if not messages:
+            return 0
+        return max(1, len(json.dumps(messages, ensure_ascii=False)) // 3)
+
+
 class ContextPressureStopModule:
     slot = "context_pressure.stop"
     requires = ("after_step.copy_input", "step:ctx")
@@ -77,7 +98,7 @@ class _InflateTool(Tool):
         return f"payload-{kwargs.get('value', '')}-" + ("x" * 2400)
 
 
-class _Provider:
+class _Provider(_ProviderContextBudget):
     def __init__(self, responses: list[LLMResponse]) -> None:
         self._responses = list(responses)
         self.calls: list[dict[str, Any]] = []
@@ -89,7 +110,7 @@ class _Provider:
         return self._responses.pop(0)
 
 
-class _TimeoutProvider:
+class _TimeoutProvider(_ProviderContextBudget):
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
@@ -759,8 +780,18 @@ def test_default_reasoner_run_turn_reports_llm_timeout():
 def test_empty_content_with_thinking_triggers_retry_and_succeeds():
     provider = _Provider(
         [
-            LLMResponse(content=None, tool_calls=[], thinking="长思考过程"),
-            LLMResponse(content="正式回复", tool_calls=[], thinking="新思考"),
+            LLMResponse(
+                content=None,
+                tool_calls=[],
+                thinking="长思考过程",
+                finish_reason="length",
+            ),
+            LLMResponse(
+                content="正式回复",
+                tool_calls=[],
+                thinking="新思考",
+                finish_reason="stop",
+            ),
         ]
     )
     tools = ToolRegistry()
@@ -778,9 +809,57 @@ def test_empty_content_with_thinking_triggers_retry_and_succeeds():
 
     assert result.reply == "正式回复"
     assert result.thinking == "新思考"
+    assert result.metadata["react_stats"]["finish_reasons"] == [
+        "length",
+        "stop",
+    ]
     retry_call = provider.calls[1]
-    assert retry_call["tools"] == []
+    assert retry_call["disable_thinking"] is True
+    assert [
+        schema["function"]["name"] for schema in retry_call["tools"]
+    ] == ["dummy"]
     assert len(provider.calls) == 2
+
+
+def test_empty_content_with_thinking_retry_can_enter_tool_loop():
+    provider = _Provider(
+        [
+            LLMResponse(content=None, tool_calls=[], thinking="需要写文件"),
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall("c1", "dummy", {})],
+                thinking="调用工具",
+            ),
+            LLMResponse(content="已完成", tool_calls=[]),
+        ]
+    )
+    tool = _DummyTool()
+    tools = ToolRegistry()
+    tools.register(tool, always_on=True)
+    reasoner = DefaultReasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider),
+                light_provider=cast(Any, provider),
+            ),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=40,
+    )
+
+    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+
+    assert result.reply == "已完成"
+    assert tool.calls == [{}]
+    assert len(provider.calls) == 3
+    assert provider.calls[1]["disable_thinking"] is True
+    assert [
+        schema["function"]["name"] for schema in provider.calls[1]["tools"]
+    ] == ["dummy"]
 
 
 def test_empty_content_with_thinking_retry_still_empty_falls_back():
@@ -803,7 +882,7 @@ def test_empty_content_with_thinking_retry_still_empty_falls_back():
 
     result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
 
-    assert result.reply == "（无响应）"
+    assert result.reply == "模型未返回可用回复，请重试。"
     assert result.thinking == "只有思考"
     assert len(provider.calls) == 2
 
@@ -827,7 +906,7 @@ def test_empty_content_without_thinking_no_retry():
 
     result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
 
-    assert result.reply == "（无响应）"
+    assert result.reply == "模型未返回可用回复，请重试。"
     assert len(provider.calls) == 1
 
 

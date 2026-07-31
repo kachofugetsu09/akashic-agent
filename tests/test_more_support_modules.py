@@ -39,11 +39,14 @@ class _Response:
         tool_calls: list | None = None,
         reasoning_content: str | None = None,
         usage: object | None = None,
+        finish_reason: str | None = None,
     ) -> None:
         message = SimpleNamespace(content=content, tool_calls=tool_calls or [])
         if reasoning_content is not None:
             message.reasoning_content = reasoning_content
-        self.choices = [SimpleNamespace(message=message)]
+        self.choices = [
+            SimpleNamespace(message=message, finish_reason=finish_reason)
+        ]
         self.usage = usage
 
 
@@ -194,6 +197,7 @@ async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
             _Response(
                 content="done",
                 tool_calls=[_ToolCall("1", "search", {"q": "x"})],
+                finish_reason="tool_calls",
             ),
         ]
     )
@@ -218,6 +222,7 @@ async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
         max_tokens=10,
     )
     assert result.content == "done"
+    assert result.finish_reason == "tool_calls"
     assert result.tool_calls[0].arguments == {"q": "x"}
     assert fake.calls[-1]["messages"][0]["role"] == "system"
     assert fake.calls[-1]["extra_body"] == {"x": 1}
@@ -270,6 +275,21 @@ async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
     assert result.content == "retry-ok"
     assert slept == [1.0]
 
+    fake = _FakeClient(
+        [
+            RuntimeError("Error code: 503"),
+            RuntimeError("Error code: 503"),
+            RuntimeError("Error code: 503"),
+            _Response(content="busy-recovered"),
+        ]
+    )
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    slept = []
+    monkeypatch.setattr("agent.provider.asyncio.sleep", _sleep)
+    result = await LLMProvider(api_key="k").chat([], [], "m", 1)
+    assert result.content == "busy-recovered"
+    assert slept == [1.0, 2.0, 4.0]
+
     fake = _FakeClient([RuntimeError("content_policy_violation")])
     monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
     with pytest.raises(ContentSafetyError):
@@ -289,6 +309,24 @@ async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
     with pytest.raises(RuntimeError):
         await LLMProvider(api_key="k", max_retries=0).chat([], [], "m", 1)
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_omits_zero_max_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake = _FakeClient([_Response(content="done")])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+
+    result = await LLMProvider(api_key="k").chat(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        model="m",
+        max_tokens=0,
+    )
+
+    assert result.content == "done"
+    assert "max_tokens" not in fake.calls[0]
 
 
 @pytest.mark.asyncio
@@ -433,7 +471,8 @@ async def test_provider_chat_stream_parses_content_reasoning_and_tool_calls(
                     SimpleNamespace(
                         delta=SimpleNamespace(
                             content="好", reasoning_content="法", tool_calls=[]
-                        )
+                        ),
+                        finish_reason="stop",
                     )
                 ]
             ),
@@ -459,6 +498,7 @@ async def test_provider_chat_stream_parses_content_reasoning_and_tool_calls(
     )
     assert result.content == "你好"
     assert result.thinking == "想法"
+    assert result.finish_reason == "stop"
     content_deltas = [d["content_delta"] for d in deltas if "content_delta" in d]
     thinking_deltas = [d["thinking_delta"] for d in deltas if "thinking_delta" in d]
     assert content_deltas == ["你", "好"]
@@ -562,6 +602,87 @@ async def test_provider_chat_stream_propagates_sdk_read_timeout(
         )
     assert isinstance(exc_info.value.__cause__, httpx.ReadTimeout)
     assert stream.closed is True
+
+
+@pytest.mark.asyncio
+async def test_provider_chat_stream_retries_transport_error_before_first_delta(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    interrupted = _FakeStream(
+        [
+            httpx.RemoteProtocolError(
+                "peer closed connection without sending complete message body"
+            )
+        ]
+    )
+    recovered = _FakeStream(
+        [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content="完成", tool_calls=[]),
+                        finish_reason="stop",
+                    )
+                ]
+            )
+        ]
+    )
+    fake = _FakeClient([interrupted, recovered])
+    sleep = AsyncMock()
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    monkeypatch.setattr(provider_module.asyncio, "sleep", sleep)
+
+    result = await LLMProvider(api_key="k", max_retries=1).chat(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        model="m",
+        max_tokens=10,
+        on_content_delta=lambda chunk: _collect_delta([], chunk),
+    )
+
+    assert result.content == "完成"
+    assert result.finish_reason == "stop"
+    assert len(fake.calls) == 2
+    sleep.assert_awaited_once_with(1.0)
+    assert interrupted.closed is True
+    assert recovered.closed is True
+
+
+@pytest.mark.asyncio
+async def test_provider_chat_stream_does_not_retry_after_response_delta(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    error = httpx.RemoteProtocolError("incomplete chunked read")
+    interrupted = _FakeStream(
+        [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content="部分", tool_calls=[])
+                    )
+                ]
+            ),
+            error,
+        ]
+    )
+    unused = _FakeStream([])
+    fake = _FakeClient([interrupted, unused])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    deltas: list[dict[str, str]] = []
+
+    with pytest.raises(httpx.RemoteProtocolError, match="incomplete chunked read"):
+        await LLMProvider(api_key="k", max_retries=1).chat(
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            model="m",
+            max_tokens=10,
+            on_content_delta=lambda chunk: _collect_delta(deltas, chunk),
+        )
+
+    assert deltas == [{"content_delta": "部分"}]
+    assert len(fake.calls) == 1
+    assert interrupted.closed is True
+    assert unused.closed is False
 
 
 @pytest.mark.asyncio

@@ -1470,8 +1470,8 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                 [
                     {"mode": "complete", "content": "ordered one"},
                     {"mode": "complete", "content": "ordered two"},
-                    {"mode": "error", "status": 500},
-                    {"mode": "error", "status": 500},
+                    # 当前 provider 会执行首次请求和三次重试，失败 turn 必须全部耗尽。
+                    *[{"mode": "error", "status": 500} for _ in range(4)],
                     {"mode": "complete", "content": "recovered"},
                 ],
             )

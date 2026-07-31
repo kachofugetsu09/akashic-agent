@@ -19,7 +19,9 @@ from core.net.http import (
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
+from prompts.completion import VERIFIABLE_COMPLETION_RULES
 from tests.memory_fakes import FakeMemoryEngine
+from tests.provider_fakes import ProviderContextBudgetStub
 
 
 class _DummyTool(Tool):
@@ -50,7 +52,7 @@ class _DummyTool(Tool):
         return f"ok:{kwargs.get('x')}"
 
 
-class _FakeProvider:
+class _FakeProvider(ProviderContextBudgetStub):
     def __init__(self, responses: list[LLMResponse]) -> None:
         self._responses = list(responses)
         self.calls: list[dict] = []
@@ -87,7 +89,7 @@ class _StrictProvider(_FakeProvider):
         return await super().chat(**kwargs)
 
 
-class _FailingProvider:
+class _FailingProvider(ProviderContextBudgetStub):
     async def chat(self, **kwargs):
         raise RuntimeError("provider unavailable")
 
@@ -393,6 +395,24 @@ def test_subagent_propagates_provider_failure():
     assert subagent.last_exit_reason == "error"
 
 
+def test_subagent_injects_authoritative_completion_rules():
+    provider = _FakeProvider([LLMResponse(content="done", tool_calls=[])])
+    subagent = SubAgent(
+        provider=cast(Any, provider),
+        model="m",
+        tools=[],
+        system_prompt="profile rules",
+    )
+
+    result = asyncio.run(subagent.run("do work"))
+
+    assert result == "done"
+    system_message = provider.calls[0]["messages"][0]
+    assert system_message["role"] == "system"
+    assert system_message["content"].startswith("profile rules")
+    assert VERIFIABLE_COMPLETION_RULES in system_message["content"]
+
+
 def test_subagent_rejects_empty_final_result():
     subagent = SubAgent(
         provider=cast(
@@ -545,7 +565,9 @@ def test_subagent_keeps_tool_result_clean():
         m for m in provider.calls[1]["messages"] if m.get("role") == "tool"
     ]
     assert len(tool_messages) == 1
-    assert tool_messages[0]["content"] == "ok:1"
+    assert tool_messages[0]["content"] == (
+        '<tool_execution transport_status="success" />\nok:1'
+    )
 
 
 def test_subagent_keeps_repeated_tool_results_clean():
@@ -581,8 +603,12 @@ def test_subagent_keeps_repeated_tool_results_clean():
         m for m in provider.calls[2]["messages"] if m.get("role") == "tool"
     ]
     assert len(second_round_tool_messages) == 2
-    assert second_round_tool_messages[0]["content"] == "ok:1"
-    assert second_round_tool_messages[1]["content"] == "ok:2"
+    assert second_round_tool_messages[0]["content"] == (
+        '<tool_execution transport_status="success" />\nok:1'
+    )
+    assert second_round_tool_messages[1]["content"] == (
+        '<tool_execution transport_status="success" />\nok:2'
+    )
 
 
 def test_subagent_unknown_tool_not_recorded_in_tools_called():
@@ -732,6 +758,7 @@ def test_subagent_max_iterations_returns_summary_and_reason():
     assert "最大迭代" not in result
     assert "下一步" in result
     assert provider.calls[-1]["tools"] == []
+    assert provider.calls[-1]["max_tokens"] == 512
 
 
 def test_subagent_max_iterations_summary_failure_uses_fallback():

@@ -54,6 +54,53 @@ def test_state_never_returns_saved_api_key(tmp_path: Path) -> None:
     }
 
 
+def test_settings_round_trip_preserves_explicit_legacy_output_limit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    legacy = _config().replace(
+        "max_output_tokens = 8192\n",
+        "",
+    ).replace(
+        "[agent.context]",
+        "[agent]\nmax_tokens = 8192\n\n[agent.context]",
+    )
+    config_path.write_text(legacy, encoding="utf-8")
+
+    async def validate(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr("bootstrap.settings_api._validate_live_candidate", validate)
+    app = create_settings_app(
+        config_path,
+        tmp_path / "workspace",
+        credential_store=CredentialStore(tmp_path / "auth" / "auth.json"),
+    )
+    client = TestClient(app)
+    state = client.get("/api/settings/state").json()
+
+    assert state["runtimes"][0]["maxOutputTokens"] == 8192
+
+    response = client.post(
+        "/api/settings/apply",
+        headers={"Origin": "http://testserver", "X-Akasic-CSRF": "1"},
+        json={
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "api_key": "",
+            "base_url": "https://api.deepseek.com/v1",
+            "context_window": 64000,
+            "max_output_tokens": state["runtimes"][0]["maxOutputTokens"],
+            "input_modalities": ["text"],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert parsed["llm"]["runtimes"]["deepseek_main"]["max_output_tokens"] == 8192
+
+
 def test_state_marks_invalid_runtime_fields_for_repair(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
@@ -100,7 +147,7 @@ def test_apply_writes_inline_key_and_preserves_other_config(
             "api_key": "new-secret",
             "base_url": "https://opencode.ai/zen/go/v1",
             "context_window": 128000,
-            "max_output_tokens": 8192,
+            "max_output_tokens": 0,
             "input_modalities": ["text"],
         },
     )
@@ -110,6 +157,7 @@ def test_apply_writes_inline_key_and_preserves_other_config(
     assert parsed["llm"]["main"] == "opencode_go_main"
     runtime = parsed["llm"]["runtimes"]["opencode_go_main"]
     assert runtime["api_key"] == "new-secret"
+    assert runtime["max_output_tokens"] == 0
     assert parsed["llm"]["runtimes"]["deepseek_main"]["api_key"] == "saved-secret"
     assert config_path.stat().st_mode & 0o777 == 0o600
     assert config_path.with_name(

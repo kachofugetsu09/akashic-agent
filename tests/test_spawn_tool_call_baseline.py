@@ -12,9 +12,10 @@ from agent.tools.filesystem import ReadFileTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.spawn import SpawnTool
 from tests.memory_fakes import FakeMemoryEngine
+from tests.provider_fakes import ProviderContextBudgetStub
 
 
-class _FakeProvider:
+class _FakeProvider(ProviderContextBudgetStub):
     def __init__(self, responses: list[LLMResponse]) -> None:
         self._responses = list(responses)
         self.calls: list[dict[str, Any]] = []

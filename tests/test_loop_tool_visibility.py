@@ -29,6 +29,7 @@ from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.tools.tool_search import ToolSearchTool
 from tests.memory_fakes import FakeMemoryEngine
+from tests.provider_fakes import ProviderContextBudgetStub
 
 # ── 工具桩 ────────────────────────────────────────────────────────────────────
 
@@ -55,7 +56,7 @@ class _DummyTool(Tool):
         return f"ok:{self._name}"
 
 
-class _FakeProvider:
+class _FakeProvider(ProviderContextBudgetStub):
     def __init__(self, responses: list[LLMResponse]) -> None:
         self._responses = list(responses)
 
@@ -219,7 +220,7 @@ class TestVisibilityGuard:
 
         schemas_seen: list[list[str]] = []
 
-        class _CapturingProvider:
+        class _CapturingProvider(ProviderContextBudgetStub):
             _responses = [LLMResponse(content="done", tool_calls=[])]
 
             async def chat(self, **kwargs: Any) -> LLMResponse:

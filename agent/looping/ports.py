@@ -29,7 +29,7 @@ class LLMConfig:
     model: str = "deepseek-chat"
     light_model: str = ""
     max_iterations: int = 10
-    max_tokens: int = 8192
+    max_tokens: int = 0
     tool_search_enabled: bool = False
     multimodal: bool = True
     vl_available: bool = False

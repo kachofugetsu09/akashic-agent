@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -11,7 +13,64 @@ from agent.control.service import ControlService
 from infra.control.socket import SocketAppServer
 from session.manager import SessionManager
 
-from akashic_sdk import Akashic, AsyncAkashic
+from akashic_sdk import Akashic, AsyncAkashic, SlowConsumerError, TurnHandle
+from akashic_sdk.client import _WireClient
+
+
+def _buffered_notification_reader(
+    count: int,
+    *,
+    turn_id: str | None = None,
+) -> asyncio.StreamReader:
+    reader = asyncio.StreamReader()
+    for index in range(count):
+        params: dict[str, object] = {"index": index}
+        if turn_id is not None:
+            params["turnId"] = turn_id
+        payload: dict[str, object] = {
+            "jsonrpc": "2.0",
+            "method": "test/notification",
+            "params": params,
+        }
+        reader.feed_data(
+            (json.dumps(payload, separators=(",", ":")) + "\n").encode()
+        )
+    reader.feed_eof()
+    return reader
+
+
+@pytest.mark.asyncio
+async def test_sdk_reader_yields_to_active_turn_consumer() -> None:
+    reader = _buffered_notification_reader(600, turn_id="turn-1")
+    wire = _WireClient(reader, cast(asyncio.StreamWriter, object()))
+    handle = TurnHandle(wire, "thread-1", "turn-1")
+
+    notifications = handle.events()
+    received = [
+        await asyncio.wait_for(anext(notifications), timeout=1)
+        for _ in range(600)
+    ]
+    await wire.reader_task
+
+    assert [event["params"]["index"] for event in received] == list(range(600))
+
+
+@pytest.mark.asyncio
+async def test_sdk_reader_fails_loud_for_unconsumed_notification_queue() -> None:
+    reader = _buffered_notification_reader(513)
+    wire = _WireClient(reader, cast(asyncio.StreamWriter, object()))
+    client = AsyncAkashic(wire)
+
+    await wire.reader_task
+
+    notifications = client.notifications()
+    for _ in range(511):
+        _ = await anext(notifications)
+    with pytest.raises(
+        SlowConsumerError,
+        match="global notification queue overflow",
+    ):
+        _ = await anext(notifications)
 
 
 @pytest.mark.asyncio
@@ -40,6 +99,44 @@ async def test_async_sdk_runs_against_real_socket_router(tmp_path: Path) -> None
         await server.stop()
         await runtime.shutdown()
         sessions.close()
+
+
+@pytest.mark.asyncio
+async def test_async_sdk_reads_terminal_frame_larger_than_streamreader_default(
+    tmp_path: Path,
+) -> None:
+    sessions = SessionManager(tmp_path)
+    response = "x" * (128 * 1024)
+
+    async def execute(_request: TurnRequest) -> str:
+        return response
+
+    runtime = ConversationRuntime(sessions.control_store, execute)
+    server = SocketAppServer(
+        tmp_path / "large-terminal.sock",
+        ControlService(runtime, sessions, tmp_path),
+    )
+    await server.start()
+    try:
+        async with await AsyncAkashic.connect(str(server.endpoint)) as client:
+            thread = await client.thread_start()
+            result = await thread.run("large")
+            assert result["status"] == "completed"
+            assert result["finalResponse"] == response
+    finally:
+        await server.stop()
+        await runtime.shutdown()
+        sessions.close()
+
+
+@pytest.mark.asyncio
+async def test_64k_streamreader_ablation_rejects_large_ndjson_frame() -> None:
+    reader = asyncio.StreamReader(limit=64 * 1024)
+    reader.feed_data(b"x" * (128 * 1024) + b"\n")
+    reader.feed_eof()
+
+    with pytest.raises(ValueError, match="chunk"):
+        _ = await reader.readline()
 
 
 @pytest.mark.asyncio

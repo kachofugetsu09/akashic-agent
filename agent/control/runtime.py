@@ -264,6 +264,8 @@ class ConversationRuntime:
                             sequence=sequence,
                         )
                     )
+                    # 2a. 让订阅者消费事后回放，避免突发填满有界队列。
+                    await asyncio.sleep(0)
                 self._publish(
                     TurnEvent.create(
                         "item/completed",

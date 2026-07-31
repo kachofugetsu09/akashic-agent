@@ -47,6 +47,7 @@ class LLMResponse:
     content: str | None
     tool_calls: list[ToolCall] = field(default_factory=list)
     thinking: str | None = None
+    finish_reason: str | None = None
     provider_fields: dict[str, Any] = field(default_factory=dict)
     cache_prompt_tokens: int | None = None
     cache_hit_tokens: int | None = None

@@ -15,6 +15,7 @@ from agent.tool_runtime import (
 )
 from agent.tool_hooks.types import ToolExecutionResult
 from agent.tools.base import Tool, normalize_tool_result
+from prompts.completion import VERIFIABLE_COMPLETION_RULES
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +104,7 @@ class SubAgent:
         *,
         system_prompt: str = "",
         max_iterations: int = 30,
-        max_tokens: int = 8192,
+        max_tokens: int = 0,
         mandatory_exit_tools: Sequence[str] = (),
     ) -> None:
         self._provider = provider
@@ -133,8 +134,10 @@ class SubAgent:
         self.tools_called = []
         self._run_seq += 1
         tool_session_key = f"subagent:{id(self)}:{self._run_seq}"
-        if self._system_prompt:
-            messages.append({"role": "system", "content": self._system_prompt})
+        system_prompt = "\n\n".join(
+            part for part in (self._system_prompt, VERIFIABLE_COMPLETION_RULES) if part
+        )
+        messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": task})
         for iteration in range(self._max_iterations):
             self.iterations_used = iteration + 1
@@ -210,6 +213,7 @@ class SubAgent:
                     tool_call_id=tc.id,
                     content=normalized,
                     tool_name=tc.name,
+                    execution_status=exec_result.status,
                 )
                 if _is_tool_loop_guard_denial(exec_result):
                     logger.warning(
@@ -223,6 +227,7 @@ class SubAgent:
                             tool_call_id=skipped.id,
                             content="工具调用已因重复循环检测跳过。",
                             tool_name=skipped.name,
+                            execution_status="skipped",
                         )
                     if self._mandatory_exit_tools:
                         await self._run_mandatory_exit(messages, tool_session_key)
@@ -266,7 +271,11 @@ class SubAgent:
                 messages=messages + [{"role": "user", "content": prompt}],
                 tools=[],
                 model=self._model,
-                max_tokens=min(_SUMMARY_MAX_TOKENS, self._max_tokens),
+                max_tokens=(
+                    min(_SUMMARY_MAX_TOKENS, self._max_tokens)
+                    if self._max_tokens > 0
+                    else _SUMMARY_MAX_TOKENS
+                ),
             )
             text = (resp.content or "").strip()
             if text:
@@ -291,7 +300,11 @@ class SubAgent:
                 messages=messages + [{"role": "user", "content": prompt}],
                 tools=[],
                 model=self._model,
-                max_tokens=min(_SUMMARY_MAX_TOKENS, self._max_tokens),
+                max_tokens=(
+                    min(_SUMMARY_MAX_TOKENS, self._max_tokens)
+                    if self._max_tokens > 0
+                    else _SUMMARY_MAX_TOKENS
+                ),
             )
             text = (resp.content or "").strip()
             if text:
@@ -362,6 +375,7 @@ class SubAgent:
                 tool_call_id=tc.id,
                 content=normalized,
                 tool_name=tc.name,
+                execution_status=exec_result.status,
             )
 
     async def _execute_tool_call(

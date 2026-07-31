@@ -110,7 +110,7 @@ class ProviderPluginLlmService:
             messages=messages,
             tools=[],
             model=model or self._model,
-            max_tokens=max_tokens or self._max_tokens,
+            max_tokens=self._max_tokens if max_tokens is None else max_tokens,
         )
         return str(resp.content or "").strip()
 
