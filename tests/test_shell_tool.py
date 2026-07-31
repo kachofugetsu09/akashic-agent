@@ -514,6 +514,7 @@ async def test_shell_run_in_background_preserves_explicit_long_timeout(monkeypat
     assert result["timeout_s"] == 3600
     assert task.timeout_s == 3600
     assert task.timeout_handle is not None
+    assert task.pump_task is not None
     task.timeout_handle.cancel()
     await asyncio.gather(task.pump_task, return_exceptions=True)
 
