@@ -1,9 +1,11 @@
 # 开发与测试依赖
 -r requirements.txt
+-e ./sdk/python
 
 black>=26.0.0
 pyright>=1.1.403
 pytest>=9.0.0
 pytest-asyncio>=1.3.0
 pytest-cov>=6.0.0
+harbor==0.16.1
 httpx2>=2.3.0

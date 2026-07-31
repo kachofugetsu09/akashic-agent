@@ -2,6 +2,7 @@ import ipaddress
 import json
 import subprocess
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -149,18 +150,15 @@ def test_inspect_compose_project_records_immutable_image_id(
     )
     monkeypatch.setattr(subprocess, "run", lambda *_, **__: next(responses))
 
-    containers = inspect_compose_project(
-        "akasic-bench-v4flash-smoke__env"
-    )
+    containers = inspect_compose_project("akasic-bench-v4flash-smoke__env")
 
     assert containers[0]["image"] == "task:tag"
     assert containers[0]["image_id"] == "sha256:image-id"
     assert containers[0]["exit_code"] == 137
     assert containers[0]["oom_killed"] is False
     assert containers[0]["memory_limit_bytes"] == 4294967296
-    assert containers[0]["mounts"][0]["name"] == (
-        "akasic-bench-runtime-v1-fixed"
-    )
+    mounts = cast(list[dict[str, object]], containers[0]["mounts"])
+    assert mounts[0]["name"] == ("akasic-bench-runtime-v1-fixed")
 
 
 def test_validate_isolation_accepts_only_trial_bind_mounts(tmp_path: Path) -> None:
@@ -174,9 +172,7 @@ def test_validate_isolation_accepts_only_trial_bind_mounts(tmp_path: Path) -> No
         project_name=project,
         allowed_bind_root=trial,
         forbidden_host_paths=[tmp_path / "online"],
-        allowed_volume_mounts=[
-            ("akasic-bench-runtime-v1-fixed", RUNTIME_MOUNT_PATH)
-        ],
+        allowed_volume_mounts=[("akasic-bench-runtime-v1-fixed", RUNTIME_MOUNT_PATH)],
     )
 
     assert report["status"] == "passed"
@@ -246,7 +242,8 @@ def test_validate_isolation_rejects_unapproved_or_writable_volume(
 def test_validate_isolation_rejects_missing_runtime_volume() -> None:
     project = "akasic-bench-v4flash-smoke__env"
     container = _container(source="/tmp/allowed/agent")
-    container["mounts"] = container["mounts"][:1]
+    mounts = cast(list[dict[str, object]], container["mounts"])
+    container["mounts"] = mounts[:1]
 
     with pytest.raises(IsolationError, match="缺少 allowlist volume"):
         validate_isolation(

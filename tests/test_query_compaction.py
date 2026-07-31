@@ -145,7 +145,7 @@ async def test_compaction_triggers_at_exact_74_percent_after_closed_batches() ->
         sum(
             1
             for message in messages
-            for call in message.get("tool_calls", [])
+            for call in cast(list[dict[str, Any]], message.get("tool_calls", []))
             if call["function"]["name"] == COMPACTION_TOOL_NAME
         )
         == 1
@@ -244,7 +244,7 @@ async def test_repeated_compaction_replaces_pair_and_updates_summary() -> None:
     compact_calls = [
         call
         for message in messages
-        for call in message.get("tool_calls", [])
+        for call in cast(list[dict[str, Any]], message.get("tool_calls", []))
         if call["function"]["name"] == COMPACTION_TOOL_NAME
     ]
     assert len(compact_calls) == 1
@@ -609,7 +609,8 @@ def test_sessiondb_reloads_compaction_projection_and_keeps_full_trace(
     restored = reloaded.get_existing("cli:compaction")
     assistant = restored.messages[-1]
     assert len(cast(list[object], assistant["tool_chain"])) == 3
-    assert assistant["react_compaction"]["compacted_tool_groups"] == 2
+    compaction = cast(dict[str, object], assistant["react_compaction"])
+    assert compaction["compacted_tool_groups"] == 2
 
     history = restored.get_history()
     compact_calls = [

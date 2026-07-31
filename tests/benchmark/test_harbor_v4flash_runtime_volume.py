@@ -2,6 +2,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -21,31 +22,32 @@ from benchmark.harbor_v4flash.runtime_volume import (
 )
 
 
-def _manifest() -> tuple[dict[str, object], bytes]:
+def _manifest() -> tuple[dict[str, Any], bytes]:
     lock_bytes = b"example==1.0 --hash=sha256:abc\n"
-    manifest = create_runtime_manifest(
-        requirements={
-            "source": "requirements.txt",
-            "source_digest": "sha256:requirements-source",
-            "extras": ["tzdata"],
-            "digest": "sha256:requirements",
-        },
-        uv={
-            "version": "uv 0.8.23",
-            "digest": "sha256:uv",
-        },
-        python_version=DEFAULT_PYTHON_VERSION,
-        platform="linux/amd64",
-        resolver_platform="x86_64-manylinux_2_28",
-        builder_image={
-            "reference": "debian:bullseye-slim",
-            "id": "sha256:builder",
-            "repo_digests": ["debian@sha256:repo"],
-            "platform": "linux/amd64",
-            "libc": "glibc 2.31",
-        },
-        resolved_lock_digest=(
-            f"sha256:{hashlib.sha256(lock_bytes).hexdigest()}"
+    manifest = cast(
+        dict[str, Any],
+        create_runtime_manifest(
+            requirements={
+                "source": "requirements.txt",
+                "source_digest": "sha256:requirements-source",
+                "extras": ["tzdata"],
+                "digest": "sha256:requirements",
+            },
+            uv={
+                "version": "uv 0.8.23",
+                "digest": "sha256:uv",
+            },
+            python_version=DEFAULT_PYTHON_VERSION,
+            platform="linux/amd64",
+            resolver_platform="x86_64-manylinux_2_28",
+            builder_image={
+                "reference": "debian:bullseye-slim",
+                "id": "sha256:builder",
+                "repo_digests": ["debian@sha256:repo"],
+                "platform": "linux/amd64",
+                "libc": "glibc 2.31",
+            },
+            resolved_lock_digest=(f"sha256:{hashlib.sha256(lock_bytes).hexdigest()}"),
         ),
     )
     return manifest, lock_bytes
@@ -56,12 +58,14 @@ def test_runtime_manifest_and_compose_freeze_identity() -> None:
     volume_name = str(manifest["volume_name"])
 
     assert volume_name.startswith("akasic-bench-runtime-v1-")
-    assert runtime_volume_labels(manifest)[
-        "akasic.benchmark.runtime.resolved_lock_digest"
-    ] == manifest["recipe"]["resolved_lock"]["digest"]
-    assert runtime_volume_labels(manifest)[
-        "akasic.benchmark.runtime.builder_glibc"
-    ] == "glibc 2.31"
+    assert (
+        runtime_volume_labels(manifest)["akasic.benchmark.runtime.resolved_lock_digest"]
+        == manifest["recipe"]["resolved_lock"]["digest"]
+    )
+    assert (
+        runtime_volume_labels(manifest)["akasic.benchmark.runtime.builder_glibc"]
+        == "glibc 2.31"
+    )
     assert runtime_compose_overlay(volume_name) == {
         "services": {
             "main": {
@@ -82,11 +86,15 @@ def test_runtime_manifest_and_compose_freeze_identity() -> None:
             }
         },
     }
-    assert runtime_compose_overlay(
-        volume_name,
-        task_image_id="sha256:task-image",
-        git_volume_name="akasic-bench-git-v1-example",
-    )["services"]["main"] == {
+    overlay = cast(
+        dict[str, Any],
+        runtime_compose_overlay(
+            volume_name,
+            task_image_id="sha256:task-image",
+            git_volume_name="akasic-bench-git-v1-example",
+        ),
+    )
+    assert overlay["services"]["main"] == {
         "image": "sha256:task-image",
         "pull_policy": "never",
         "volumes": [
@@ -101,7 +109,7 @@ def test_runtime_manifest_and_compose_freeze_identity() -> None:
                 "source": "akasic_git",
                 "target": "/opt/akashic-git",
                 "read_only": True,
-            }
+            },
         ],
     }
 
