@@ -11,8 +11,9 @@ from harbor.environments.base import ExecResult
 
 from benchmark.harbor_v4flash.agent import (
     _ENDPOINT,
-    _TASK_ROOT,
     _WORKSPACE,
+    _build_driver_command,
+    _build_gateway_command,
     _prepare_verifier_runtime,
     _run_driver_and_shutdown,
     _start_gateway_with_resource_evidence,
@@ -88,11 +89,16 @@ def test_v4flash_high_uses_provider_output_limit() -> None:
     assert config["agent"]["max_iterations"] == 0
 
 
-def test_benchmark_workspace_is_separate_from_terminal_task_root() -> None:
-    assert _TASK_ROOT == "/app"
+def test_benchmark_commands_inherit_terminal_task_workdir() -> None:
+    gateway_command = _build_gateway_command()
+    driver_command = _build_driver_command(900)
+
     assert _WORKSPACE == "/opt/akashic-workspace"
-    assert _WORKSPACE != _TASK_ROOT
     assert _ENDPOINT == "/opt/akashic-workspace/akashic.sock"
+    assert "cd /app" not in gateway_command
+    assert "cd /app" not in driver_command
+    assert gateway_command.startswith("mkdir -p /opt/akashic-workspace && env ")
+    assert driver_command.startswith("PYTHONPATH=/opt/akashic/src:")
 
 
 def test_driver_success_keeps_command_order_and_logs(tmp_path: Path) -> None:

@@ -32,7 +32,6 @@ from benchmark.harbor_v4flash.runtime_volume import (
 
 _RUNTIME_ROOT = "/opt/akashic"
 _SOURCE_ROOT = f"{_RUNTIME_ROOT}/src"
-_TASK_ROOT = "/app"
 _WORKSPACE = "/opt/akashic-workspace"
 _ENDPOINT = f"{_WORKSPACE}/akashic.sock"
 _AGENT_LOGS = "/logs/agent"
@@ -76,6 +75,46 @@ def _write_shutdown_evidence(
         assert error is not None
         output = f"{type(error).__name__}: {error}\n"
     (logs_dir / "runtime.shutdown.log").write_text(output, encoding="utf-8")
+
+
+def _build_gateway_command() -> str:
+    """生成继承题目镜像 WORKDIR 的 gateway 启动命令。"""
+
+    return (
+        f"mkdir -p {_WORKSPACE} && "
+        f"env PATH={GIT_MOUNT_PATH}/bin:$PATH "
+        f"PYTHONPATH={_SOURCE_ROOT}:{_SOURCE_ROOT}/sdk/python/src "
+        "PYTHONDONTWRITEBYTECODE=1 "
+        f"{RUNTIME_VENV_PATH}/bin/python {_SOURCE_ROOT}/main.py gateway "
+        f"--config {_SOURCE_ROOT}/benchmark/harbor_v4flash/config.toml "
+        f"--workspace {_WORKSPACE} "
+        f">{_AGENT_LOGS}/runtime.stdout.log "
+        f"2>{_AGENT_LOGS}/runtime.stderr.log & "
+        f"echo $! > {_AGENT_LOGS}/runtime.pid"
+    )
+
+
+def _build_driver_command(turn_timeout_sec: float) -> str:
+    """生成继承题目镜像 WORKDIR 的 SDK driver 命令。"""
+
+    return " ".join(
+        [
+            f"PYTHONPATH={_SOURCE_ROOT}:{_SOURCE_ROOT}/sdk/python/src",
+            "PYTHONDONTWRITEBYTECODE=1",
+            f"{RUNTIME_VENV_PATH}/bin/python",
+            f"{_SOURCE_ROOT}/benchmark/harbor_v4flash/runtime_driver.py",
+            "--endpoint",
+            shlex.quote(_ENDPOINT),
+            "--instruction-file",
+            f"{_AGENT_LOGS}/instruction.md",
+            "--trace",
+            f"{_AGENT_LOGS}/trace.jsonl",
+            "--result",
+            f"{_AGENT_LOGS}/turn-result.json",
+            "--turn-timeout",
+            str(turn_timeout_sec),
+        ]
+    )
 
 
 async def _capture_resource_evidence(
@@ -499,50 +538,17 @@ class AkashicHarborAgent(BaseAgent):
         # 1. Harbor 提供的 task instruction 通过证据挂载传入，不进入 shell 参数。
         instruction_path = self.logs_dir / "instruction.md"
         instruction_path.write_text(instruction, encoding="utf-8")
-        gateway_command = (
-            f"mkdir -p {_WORKSPACE} && cd {_TASK_ROOT} || exit $?; "
-            f"env PATH={GIT_MOUNT_PATH}/bin:$PATH "
-            f"PYTHONPATH={_SOURCE_ROOT}:{_SOURCE_ROOT}/sdk/python/src "
-            "PYTHONDONTWRITEBYTECODE=1 "
-            f"{RUNTIME_VENV_PATH}/bin/python {_SOURCE_ROOT}/main.py gateway "
-            f"--config {_SOURCE_ROOT}/benchmark/harbor_v4flash/config.toml "
-            f"--workspace {_WORKSPACE} "
-            f">{_AGENT_LOGS}/runtime.stdout.log "
-            f"2>{_AGENT_LOGS}/runtime.stderr.log & "
-            f"echo $! > {_AGENT_LOGS}/runtime.pid"
-        )
         await _start_gateway_with_resource_evidence(
             environment,
-            gateway_command=gateway_command,
+            gateway_command=_build_gateway_command(),
             credential_names=self._credential_names,
             logs_dir=self.logs_dir,
         )
 
         # 2. SDK driver 记录全部 turn 通知并核对持久化终态。
-        driver_command = " ".join(
-            [
-                (
-                    f"cd {_TASK_ROOT} && "
-                    f"PYTHONPATH={_SOURCE_ROOT}:{_SOURCE_ROOT}/sdk/python/src"
-                ),
-                "PYTHONDONTWRITEBYTECODE=1",
-                f"{RUNTIME_VENV_PATH}/bin/python",
-                f"{_SOURCE_ROOT}/benchmark/harbor_v4flash/runtime_driver.py",
-                "--endpoint",
-                shlex.quote(_ENDPOINT),
-                "--instruction-file",
-                f"{_AGENT_LOGS}/instruction.md",
-                "--trace",
-                f"{_AGENT_LOGS}/trace.jsonl",
-                "--result",
-                f"{_AGENT_LOGS}/turn-result.json",
-                "--turn-timeout",
-                str(self._turn_timeout_sec),
-            ]
-        )
         _ = await _run_driver_and_shutdown(
             environment,
-            driver_command=driver_command,
+            driver_command=_build_driver_command(self._turn_timeout_sec),
             driver_timeout_sec=self._turn_timeout_sec + 5,
             shutdown_command=(
                 f"pid=$(cat {_AGENT_LOGS}/runtime.pid) && "
