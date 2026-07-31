@@ -39,7 +39,7 @@
 ## 3. 名称与生命周期
 
 - `execution_id`：manager 分配的 opaque integer handle，只标识一次 shell execution。
-- `pid`：操作系统进程 ID，只用于进程树控制，不暴露为工具主键。
+- `pid`：操作系统进程 ID，只用于平台执行边界控制，不暴露为工具主键。
 - `owner_session_key`：拥有该 execution 的 Akashic 对话 session。
 - execution 不写入 SessionDB、不跨 runtime 恢复；这与 Akashic 持久对话 session 完全不同。
 
@@ -72,7 +72,7 @@ Cmd 使用 `/c`。manager 通过 `create_subprocess_exec(*argv)` 直接创建进
 
 `write_stdin` 参数为 `execution_id`、`chars`、`yield_time_ms`、`max_output_tokens`。空 `chars` 是等待/增量读取，默认 5 秒且最大 300 秒；非空输入默认 250 毫秒且最大 30 秒。
 
-`task_stop` 只接收 `execution_id`。它在确认进程树终止后才返回 stopped；终止失败时保留注册项并明确失败。
+`task_stop` 只接收 `execution_id`。它在确认平台执行边界终止后才返回 stopped；终止失败时保留注册项并明确失败。Unix 边界是创建 shell 时独立出的 process group；Windows 边界是 `taskkill /T` 可见的后代集合。这与 Codex 的 process-group ownership 对齐，不承诺追踪显式 `setsid`、daemonize 或外部服务管理器接管的进程；需要该保证的调用方必须使用拥有 cgroup/Job Object 的受控 runner。
 
 `max_output_tokens` 只控制本次工具结果的近似输出预算，不是 provider 的生成上限。完整输出写入临时日志；发生省略时结果返回日志路径。
 
@@ -90,6 +90,8 @@ Cmd 使用 `/c`。manager 通过 `create_subprocess_exec(*argv)` 直接创建进
   必须在命令中显式启用。
 - 当前 query compaction 不得淘汰仍处于 running 状态的 execution 所在批次；收到
   terminal `write_stdin` 或成功 `task_stop` 后才允许压缩该批次。
+- 主 ReAct 与 SubAgent 的历史裁切都必须识别真实 tool transport envelope，保留 active
+  execution 的原始 shell 结果；当前 query 返回、失败或取消时由 owner 回收剩余 execution。
 
 ## 7. 验证
 
