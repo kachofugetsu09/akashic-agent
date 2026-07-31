@@ -275,6 +275,21 @@ async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
     assert result.content == "retry-ok"
     assert slept == [1.0]
 
+    fake = _FakeClient(
+        [
+            RuntimeError("Error code: 503"),
+            RuntimeError("Error code: 503"),
+            RuntimeError("Error code: 503"),
+            _Response(content="busy-recovered"),
+        ]
+    )
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    slept = []
+    monkeypatch.setattr("agent.provider.asyncio.sleep", _sleep)
+    result = await LLMProvider(api_key="k").chat([], [], "m", 1)
+    assert result.content == "busy-recovered"
+    assert slept == [1.0, 2.0, 4.0]
+
     fake = _FakeClient([RuntimeError("content_policy_violation")])
     monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
     with pytest.raises(ContentSafetyError):
