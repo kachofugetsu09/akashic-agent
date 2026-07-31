@@ -50,6 +50,7 @@ from plugins.akasha.infrastructure.persistence import (
 from plugins.akasha.infrastructure.sparse_index import (
     BuildConfig,
     audit_source_embeddings,
+    build_sparse_index,
 )
 from plugins.akasha.memory_plugin import MemoryPlugin
 from plugins.akasha.plugin import AkashaPlugin, _mobile_recall_lane
@@ -927,6 +928,17 @@ def _create_sessions(path: Path) -> None:
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(
             """
+            CREATE TABLE sessions (
+                key               TEXT PRIMARY KEY,
+                created_at        TEXT NOT NULL,
+                updated_at        TEXT NOT NULL,
+                last_consolidated INTEGER NOT NULL DEFAULT 0,
+                metadata          TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
             CREATE TABLE messages (
                 id TEXT PRIMARY KEY,
                 session_key TEXT NOT NULL,
@@ -967,9 +979,27 @@ def _append_turn(
     with_embeddings: bool = False,
     assistant_tool_chain: str | None = None,
     user_extra: dict[str, object] | None = None,
+    session_metadata: dict[str, object] | None = None,
 ) -> None:
     assistant_time = started + timedelta(seconds=10)
     with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(
+            """
+            INSERT INTO sessions (key, created_at, updated_at, last_consolidated, metadata)
+            VALUES (?, ?, ?, 0, ?)
+            ON CONFLICT(key) DO UPDATE SET metadata = excluded.metadata
+            """,
+            (
+                session_key,
+                started.isoformat(),
+                assistant_time.isoformat(),
+                (
+                    None
+                    if session_metadata is None
+                    else json.dumps(session_metadata)
+                ),
+            ),
+        )
         connection.executemany(
             "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             [
@@ -1033,6 +1063,93 @@ def _append_turn(
 def _close_engine(engine: AkashaMemoryEngine) -> None:
     engine._runtime.close()  # noqa: SLF001
     engine._embedding_store.close()  # noqa: SLF001
+
+
+def test_build_sparse_index_excludes_marked_and_scheduler_sessions(
+    tmp_path: Path,
+) -> None:
+    sessions_path = tmp_path / "sessions.db"
+    _create_sessions(sessions_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    _append_turn(
+        sessions_path,
+        sequence=0,
+        user="normal user",
+        assistant="normal reply",
+        started=started,
+        session_key="telegram:1",
+        with_embeddings=True,
+    )
+    _append_turn(
+        sessions_path,
+        sequence=2,
+        user="pr noise",
+        assistant="pr reply",
+        started=started + timedelta(minutes=1),
+        session_key="github:owner/repo:pr:1",
+        with_embeddings=True,
+        session_metadata={"skip_post_memory": True},
+    )
+    _append_turn(
+        sessions_path,
+        sequence=4,
+        user="scheduler prompt",
+        assistant="scheduler reply",
+        started=started + timedelta(minutes=2),
+        session_key="scheduler:job-1",
+        with_embeddings=True,
+    )
+
+    result = build_sparse_index(sessions_path, tmp_path / "index.db")
+
+    # 1. 只有普通 session 成为学习样本，排除计数可见。
+    assert result.discovered_turns == 1
+    assert result.excluded_memory_turns == 2
+    with closing(sqlite3.connect(tmp_path / "index.db")) as connection:
+        row = connection.execute(
+            "SELECT value FROM metadata WHERE key='turns_excluded_memory'"
+        ).fetchone()
+        assert row[0] == "2"
+
+
+def test_audit_source_embeddings_counts_excluded_memory_turns(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.db"
+    _create_sessions(sessions_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    _append_turn(
+        sessions_path,
+        sequence=0,
+        user="pr noise",
+        assistant="pr reply",
+        started=started,
+        session_key="github:owner/repo:pr:1",
+        with_embeddings=True,
+        session_metadata={"skip_post_memory": True},
+    )
+
+    audit = audit_source_embeddings(sessions_path, BuildConfig())
+
+    assert audit.eligible_turns == 0
+    assert audit.excluded_memory_turns == 1
+
+
+def test_build_sparse_index_fails_loud_on_orphan_messages(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.db"
+    _create_sessions(sessions_path)
+    started = datetime(2026, 7, 6, 8, tzinfo=timezone.utc)
+    _append_turn(
+        sessions_path,
+        sequence=0,
+        user="user",
+        assistant="reply",
+        started=started,
+    )
+    # 1. 制造孤儿消息：删除 session 行后重建必须 fail-loud，不得静默消失。
+    with closing(sqlite3.connect(sessions_path)) as connection, connection:
+        connection.execute("DELETE FROM sessions")
+
+    with pytest.raises(ValueError, match="孤儿"):
+        build_sparse_index(sessions_path, tmp_path / "index.db")
 
 
 def _write_inspector_config(workspace: Path) -> None:

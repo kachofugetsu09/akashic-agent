@@ -452,6 +452,46 @@ def test_markdown_maintenance_respects_skip_post_memory_event_flag():
     maintenance._enqueue_maintenance.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_markdown_consolidate_skips_marked_session():
+    maintenance = MarkdownMemoryMaintenance.__new__(MarkdownMemoryMaintenance)
+    session = SimpleNamespace(
+        key="github:owner/repo:pr:1",
+        metadata={"skip_post_memory": True},
+        messages=[{"role": "user", "content": "u"}] * 31,
+        last_consolidated=0,
+    )
+
+    result = await maintenance.consolidate(
+        ConsolidateRequest(session=session, force=True)
+    )
+
+    assert result.trace == {
+        "mode": "skipped",
+        "reason": "session_memory_excluded",
+    }
+
+
+@pytest.mark.asyncio
+async def test_markdown_consolidate_skips_scheduler_session():
+    maintenance = MarkdownMemoryMaintenance.__new__(MarkdownMemoryMaintenance)
+    session = SimpleNamespace(
+        key="scheduler:job",
+        metadata={},
+        messages=[{"role": "user", "content": "u"}] * 31,
+        last_consolidated=0,
+    )
+
+    result = await maintenance.consolidate(
+        ConsolidateRequest(session=session, force=True)
+    )
+
+    assert result.trace == {
+        "mode": "skipped",
+        "reason": "session_memory_excluded",
+    }
+
+
 async def test_default_memory_engine_refreshes_recent_context_from_lifecycle():
     event_bus = EventBus()
     session = SimpleNamespace(

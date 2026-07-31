@@ -148,6 +148,8 @@ class _PersistUserMessageModule:
         if isinstance(llm_context_frame, str) and llm_context_frame.strip():
             user_kwargs["llm_context_frame"] = llm_context_frame
         user_kwargs.update(_collect_persist_user_slots(frame.slots))
+        if (msg.metadata or {}).get("skip_post_memory") is True:
+            user_kwargs["skip_post_memory"] = True
         client_message_id = msg.metadata.get("client_message_id")
         if isinstance(client_message_id, str) and client_message_id:
             user_kwargs["client_message_id"] = client_message_id
@@ -195,6 +197,8 @@ class _PersistAssistantMessageModule:
                 frame.input.turn_result.react_compaction
             )
         assistant_kwargs.update(_collect_persist_assistant_slots(frame.slots))
+        if (frame.input.state.msg.metadata or {}).get("skip_post_memory") is True:
+            assistant_kwargs["skip_post_memory"] = True
         if frame.input.state.persistence.persist_assistant:
             media = list(ctx.media)
             _append_media(

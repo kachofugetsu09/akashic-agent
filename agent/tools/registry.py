@@ -301,6 +301,28 @@ class ToolRegistry:
             return view.get_registered_names()
         return set(self._tools.keys())
 
+    def get_source_tool_names(
+        self,
+        source_type: str,
+        source_name: str,
+        *,
+        risk: str | None = None,
+    ) -> set[str]:
+        """按来源与 risk 返回工具名，跟随 runtime snapshot 视图。"""
+        view = self._runtime_view()
+        if view is not self:
+            return view.get_source_tool_names(source_type, source_name, risk=risk)
+        names: set[str] = set()
+        for name, document in self._documents.items():
+            if document.source_type != source_type:
+                continue
+            if document.source_name != source_name:
+                continue
+            if risk is not None and document.risk != risk:
+                continue
+            names.add(name)
+        return names
+
     def get_schemas(
         self,
         names: AbstractSet[str] | Iterable[str] | None = None,

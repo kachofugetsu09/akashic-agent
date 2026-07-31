@@ -16,6 +16,7 @@ from agent.control.protocol.errors import JsonRpcError, UNAUTHORIZED
 from agent.control.runtime import ConversationRuntime, TurnHandle
 from agent.restart import RestartCoordinator
 from session.manager import SessionManager
+from session.memory_policy import validate_session_memory_metadata
 
 
 class ControlService:
@@ -79,6 +80,8 @@ class ControlService:
             self._restart_coordinator.mark_delivery_failed(turn_id, reason)
 
     def start_thread(self, metadata: dict[str, Any]) -> dict[str, object]:
+        # 1. 外部输入边界校验：非 boolean 的 skip_post_memory 拒绝创建 session。
+        validate_session_memory_metadata(metadata)
         thread_id = new_thread_id()
         session = self.sessions.get_or_create(thread_id)
         session.metadata.update(metadata)

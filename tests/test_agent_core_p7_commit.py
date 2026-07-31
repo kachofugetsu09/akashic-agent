@@ -153,6 +153,110 @@ async def test_context_store_commit_persists_commits_and_dispatches():
     await event_bus.aclose()
 
 
+def _make_excluded_agent_core(session: _DummySession, event_bus: EventBus) -> AgentCore:
+    session_manager = SimpleNamespace(
+        get_or_create=MagicMock(return_value=session),
+        append_messages=AsyncMock(),
+    )
+    context_store = SimpleNamespace(
+        prepare=AsyncMock(
+            return_value=ContextBundle(
+                skill_mentions=[],
+                retrieved_memory_block="",
+            )
+        )
+    )
+    context = SimpleNamespace(
+        render=MagicMock(
+            return_value=SimpleNamespace(system_prompt="p", messages=[]),
+        )
+    )
+    reasoner = SimpleNamespace(
+        run_turn=AsyncMock(
+            return_value=TurnRunResult(
+                reply="ok",
+                tools_used=[],
+                tool_chain=[],
+                context_retry={},
+            )
+        )
+    )
+    tools = SimpleNamespace(set_context=MagicMock())
+    return AgentCore(
+        AgentCoreDeps(
+            session=cast(
+                Any,
+                SimpleNamespace(
+                    session_manager=session_manager,
+                    presence=SimpleNamespace(
+                        record_user_message=MagicMock()
+                    ),
+                ),
+            ),
+            context_store=cast(Any, context_store),
+            context=cast(Any, context),
+            tools=cast(Any, tools),
+            reasoner=cast(Any, reasoner),
+            event_bus=event_bus,
+            outbound_port=cast(Any, SimpleNamespace(dispatch=AsyncMock())),
+            history_window=500,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_excluded_turn_persists_marker_on_both_messages():
+    session = _DummySession("telegram:123")
+    session.metadata = {"skip_post_memory": True}
+    event_bus = EventBus()
+    committed_events: list[TurnCommitted] = []
+    event_bus.on(TurnCommitted, committed_events.append)
+    agent_core = _make_excluded_agent_core(session, event_bus)
+
+    await agent_core.process(
+        InboundMessage(
+            channel="telegram",
+            sender="hua",
+            chat_id="123",
+            content="你好",
+        ),
+        "telegram:123",
+        dispatch_outbound=True,
+    )
+    await event_bus.drain()
+
+    # 1. session 级排除经 before_turn 注入并投影到两条持久消息。
+    assert session.messages[0]["skip_post_memory"] is True
+    assert session.messages[1]["skip_post_memory"] is True
+    # 2. TurnCommitted.extra 带标志，在线 memory consumer 全部跳过。
+    assert len(committed_events) == 1
+    assert committed_events[0].extra == {"skip_post_memory": True}
+
+
+@pytest.mark.asyncio
+async def test_turn_level_skip_persists_marker_on_both_messages():
+    session = _DummySession("telegram:123")
+    event_bus = EventBus()
+    agent_core = _make_excluded_agent_core(session, event_bus)
+
+    await agent_core.process(
+        InboundMessage(
+            channel="telegram",
+            sender="hua",
+            chat_id="123",
+            content="你好",
+            metadata={"skip_post_memory": True},
+        ),
+        "telegram:123",
+        dispatch_outbound=True,
+    )
+    await event_bus.drain()
+
+    # 1. turn 级标记同样投影到两条持久消息，修复 replay 合同（缺口 B）。
+    assert session.messages[0]["skip_post_memory"] is True
+    assert session.messages[1]["skip_post_memory"] is True
+
+
 @pytest.mark.asyncio
 async def test_turn_committed_omits_user_message_when_user_turn_not_persisted():
     session = _DummySession("cli:direct")

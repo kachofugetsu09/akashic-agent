@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
+from session.memory_policy import excludes_memory
+
 from .encoding import LexicalState, lexical_identity, tokenize
 from .model import CanonicalTurn, SessionState, SparseFeature, TimeStats
 from .schema import INDEX_VERSION, SCHEMA
@@ -53,6 +55,7 @@ class EmbeddingAudit:
 
     eligible_turns: int
     excluded_interrupted_turns: int
+    excluded_memory_turns: int
     eligible_messages: int
     valid_messages: int
     dimension: int | None
@@ -69,6 +72,7 @@ class BuildResult:
 
     discovered_turns: int
     excluded_interrupted_turns: int
+    excluded_memory_turns: int
     indexed_turns: int
     skipped_existing_turns: int
     turns_missing_embeddings: int
@@ -96,7 +100,7 @@ def build_sparse_index(
         _validate_index_version(output)
 
         # 2. Restore prior online state and identify append-only work.
-        turns, missing, excluded_interrupted = _load_canonical_turns(
+        turns, missing, excluded_interrupted, excluded_memory = _load_canonical_turns(
             source,
             config,
         )
@@ -131,6 +135,11 @@ def build_sparse_index(
                 "turns_excluded_interrupted",
                 str(excluded_interrupted),
             )
+            _set_metadata(
+                output,
+                "turns_excluded_memory",
+                str(excluded_memory),
+            )
             for key, value in lexical_identity().items():
                 _set_metadata(output, key, value)
         return _build_result(
@@ -138,6 +147,7 @@ def build_sparse_index(
             turns,
             missing,
             excluded_interrupted,
+            excluded_memory,
             new_turns,
             existing,
         )
@@ -157,7 +167,7 @@ def audit_source_embeddings(
     try:
         _validate_source(source)
         messages = _source_messages(source)
-        pairs, excluded_interrupted = _eligible_pairs(messages)
+        pairs, excluded_interrupted, excluded_memory = _eligible_pairs(messages)
         rows = source.execute(
             """
             SELECT message_id, content_hash, embedding, dim
@@ -183,6 +193,7 @@ def audit_source_embeddings(
     return EmbeddingAudit(
         eligible_turns=len(pairs),
         excluded_interrupted_turns=excluded_interrupted,
+        excluded_memory_turns=excluded_memory,
         eligible_messages=required,
         valid_messages=required - len(issues),
         dimension=dimension,
@@ -214,7 +225,7 @@ class EncodedTurn:
 
 
 def _validate_source(connection: sqlite3.Connection) -> None:
-    required = {"messages", "message_embeddings"}
+    required = {"sessions", "messages", "message_embeddings"}
     actual = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     missing = required - actual
     if missing:
@@ -230,17 +241,18 @@ def _validate_index_version(connection: sqlite3.Connection) -> None:
 def _load_canonical_turns(
     connection: sqlite3.Connection,
     config: BuildConfig,
-) -> tuple[list[CanonicalTurn], int, int]:
+) -> tuple[list[CanonicalTurn], int, int, int]:
     """Reconstruct every dialogue turn and count incomplete dense cache rows."""
 
     # 1. Read source rows and the selected embedding space.
     messages = _source_messages(connection)
-    pairs, excluded_interrupted = _eligible_pairs(messages)
+    pairs, excluded_interrupted, excluded_memory = _eligible_pairs(messages)
     audit = _audit_rows(
         connection,
         pairs,
         config,
         excluded_interrupted,
+        excluded_memory,
     )
     invalid = {issue.message_id for issue in audit.issues}
     embeddings = {}
@@ -281,24 +293,43 @@ def _load_canonical_turns(
         )
     )
     turns = _resolve_feedback_targets(turns)
-    return turns, missing_embeddings, excluded_interrupted
+    return turns, missing_embeddings, excluded_interrupted, excluded_memory
 
 
 def _source_messages(
     connection: sqlite3.Connection,
 ) -> list[sqlite3.Row]:
+    """读取全部消息并带出 session metadata；孤儿消息 fail-loud 而不是静默消失。"""
+
+    # 1. 先核对每条消息都有对应 session 行，损坏数据不得伪装成空结果。
+    session_keys = {
+        str(row["key"])
+        for row in connection.execute("SELECT key FROM sessions")
+    }
+    orphan_keys = {
+        str(row["session_key"])
+        for row in connection.execute("SELECT DISTINCT session_key FROM messages")
+    } - session_keys
+    if orphan_keys:
+        preview = ", ".join(sorted(orphan_keys)[:5])
+        raise ValueError(
+            f"messages 存在无 session 记录的孤儿 session_key: {preview}"
+            + (f" 等 {len(orphan_keys)} 个" if len(orphan_keys) > 5 else "")
+        )
     return connection.execute(
         """
-        SELECT session_key, seq, id, role, content, extra, ts
-        FROM messages
-        ORDER BY session_key, seq
+        SELECT m.session_key, m.seq, m.id, m.role, m.content, m.extra, m.ts,
+               s.metadata AS session_metadata
+        FROM messages AS m
+        JOIN sessions AS s ON s.key = m.session_key
+        ORDER BY m.session_key, m.seq
         """
     ).fetchall()
 
 
 def _eligible_pairs(
     messages: list[sqlite3.Row],
-) -> tuple[list[tuple[sqlite3.Row, sqlite3.Row]], int]:
+) -> tuple[list[tuple[sqlite3.Row, sqlite3.Row]], int, int]:
     """Pair committed user/assistant messages and exclude explicit skips."""
 
     grouped: dict[str, list[sqlite3.Row]] = defaultdict(list)
@@ -306,6 +337,7 @@ def _eligible_pairs(
         grouped[str(message["session_key"])].append(message)
     pairs = []
     excluded_interrupted = 0
+    excluded_memory = 0
     for session_messages in grouped.values():
         for user, assistant in zip(
             session_messages,
@@ -313,7 +345,8 @@ def _eligible_pairs(
         ):
             if user["role"] != "user" or assistant["role"] != "assistant":
                 continue
-            if _excluded_session(str(user["session_key"])):
+            if _excluded_session(str(user["session_key"]), user):
+                excluded_memory += 1
                 continue
             if _interrupted_pair(user, assistant):
                 excluded_interrupted += 1
@@ -323,11 +356,23 @@ def _eligible_pairs(
             if not _message_text(user) and not _message_text(assistant):
                 continue
             pairs.append((user, assistant))
-    return pairs, excluded_interrupted
+    return pairs, excluded_interrupted, excluded_memory
 
 
-def _excluded_session(session_key: str) -> bool:
-    return session_key.split(":", 1)[0] == "scheduler"
+def _excluded_session(session_key: str, user: sqlite3.Row) -> bool:
+    return excludes_memory(session_key, _session_metadata(user))
+
+
+def _session_metadata(message: sqlite3.Row) -> dict[str, object]:
+    raw = message["session_metadata"]
+    if not raw:
+        return {}
+    payload = json.loads(str(raw))
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"session metadata must be an object: {message['session_key']}"
+        )
+    return payload
 
 
 def _skip_post_memory(message: sqlite3.Row) -> bool:
@@ -366,6 +411,7 @@ def _audit_rows(
     pairs: list[tuple[sqlite3.Row, sqlite3.Row]],
     config: BuildConfig,
     excluded_interrupted: int,
+    excluded_memory: int,
 ) -> EmbeddingAudit:
     rows = connection.execute(
         """
@@ -390,6 +436,7 @@ def _audit_rows(
     return EmbeddingAudit(
         eligible_turns=len(pairs),
         excluded_interrupted_turns=excluded_interrupted,
+        excluded_memory_turns=excluded_memory,
         eligible_messages=required,
         valid_messages=required - len(issues),
         dimension=dimension,
@@ -1151,6 +1198,7 @@ def _build_result(
     turns: list[CanonicalTurn],
     missing: int,
     excluded_interrupted: int,
+    excluded_memory: int,
     new_turns: list[CanonicalTurn],
     existing: dict[str, sqlite3.Row],
 ) -> BuildResult:
@@ -1160,6 +1208,7 @@ def _build_result(
     return BuildResult(
         discovered_turns=len(turns),
         excluded_interrupted_turns=excluded_interrupted,
+        excluded_memory_turns=excluded_memory,
         indexed_turns=len(new_turns),
         skipped_existing_turns=len(existing),
         turns_missing_embeddings=missing,
