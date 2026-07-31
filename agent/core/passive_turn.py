@@ -1479,6 +1479,7 @@ class DefaultReasoner(Reasoner):
                             tool_call_id=tool_call.id,
                             content=result,
                             tool_name=tool_call.name,
+                            execution_status="blocked",
                         )
                         await self._observe_tool_call_completed(
                             session_key=tool_event_session_key,
@@ -1533,6 +1534,7 @@ class DefaultReasoner(Reasoner):
                                 tool_call_id=tool_call.id,
                                 content=result,
                                 tool_name=tool_call.name,
+                                execution_status=exec_result.status,
                             )
                             await self._observe_tool_call_completed(
                                 session_key=tool_event_session_key,
@@ -1573,6 +1575,7 @@ class DefaultReasoner(Reasoner):
                                     tool_call_id=skipped.id,
                                     content="工具调用已因重复循环检测跳过。",
                                     tool_name=skipped.name,
+                                    execution_status="skipped",
                                 )
                             tool_chain.append({"text": response.content, "calls": iter_calls})
                             summary = await self._summarize_incomplete_progress(
@@ -1610,6 +1613,7 @@ class DefaultReasoner(Reasoner):
                             messages,
                             tool_call_id=tool_call.id,
                             content=result,
+                            execution_status="blocked",
                         )
                         await self._observe_tool_call_completed(
                             session_key=tool_event_session_key,
@@ -1724,6 +1728,7 @@ class DefaultReasoner(Reasoner):
                         tool_call_id=tool_call.id,
                         content=result,
                         tool_name=tool_call.name,
+                        execution_status=exec_result.status,
                     )
                     if exec_result.status == "success" and tool_call.name == "message_push":
                         _collect_current_web_push_media(
@@ -1802,6 +1807,7 @@ class DefaultReasoner(Reasoner):
                                 tool_call_id=skipped.id,
                                 content="工具调用已因重复循环检测跳过。",
                                 tool_name=skipped.name,
+                                execution_status="skipped",
                             )
                         tool_chain.append({"text": response.content, "calls": iter_calls})
                         summary = await self._summarize_incomplete_progress(

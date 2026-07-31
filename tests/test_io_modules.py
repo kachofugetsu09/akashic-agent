@@ -327,6 +327,7 @@ def test_append_tool_result_supports_multimodal_blocks() -> None:
         messages,
         tool_call_id="call_1",
         tool_name="read_file",
+        execution_status="success",
         content=ToolResult(
             text="[已读取图片文件 a.png，图片内容已提供给多模态模型]",
             content_blocks=[
@@ -338,10 +339,40 @@ def test_append_tool_result_supports_multimodal_blocks() -> None:
         ),
     )
     assert messages[0]["role"] == "tool"
-    assert messages[0]["content"].startswith("[已读取图片文件")
+    assert messages[0]["content"].startswith(
+        '<tool_execution transport_status="success" />'
+    )
+    assert "[已读取图片文件" in messages[0]["content"]
     assert messages[1]["role"] == "user"
     assert messages[1]["content"][0]["type"] == "text"
     assert messages[1]["content"][1]["type"] == "image_url"
+
+
+@pytest.mark.parametrize(
+    "execution_status",
+    ["success", "error", "denied", "blocked", "skipped"],
+)
+def test_append_tool_result_exposes_transport_status(
+    execution_status: str,
+) -> None:
+    messages: list[dict] = []
+
+    append_tool_result(
+        messages,
+        tool_call_id="call_1",
+        execution_status=execution_status,
+        content="result",
+    )
+
+    assert messages == [
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": (
+                f'<tool_execution transport_status="{execution_status}" />\nresult'
+            ),
+        }
+    ]
 
 
 @pytest.mark.asyncio

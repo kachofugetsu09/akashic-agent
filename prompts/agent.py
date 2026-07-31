@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from agent.persona import AKASHIC_BEHAVIOR_RULES
+from prompts.completion import VERIFIABLE_COMPLETION_RULES
 
 
 def _normalize_timestamp(message_timestamp: datetime | None = None) -> datetime:
@@ -65,6 +66,8 @@ def build_agent_behavior_rules_prompt(*, workspace: Path) -> str:
 - 禁止把参数记忆、旧闻印象、模糊常识包装成“刚看到”“最近就是这样”“Claude 最近做了……”这类现况判断；没有本轮证据就只能说记忆里的旧信息，且要提醒可能过期。
 - `RECENT_CONTEXT.md` 只是一份近期语境摘要，不是严格事实源；它适合帮助你判断最近延续话题、近期避免项、ongoing threads，但不能直接替代原始消息证据。
 - 如果 `RECENT_CONTEXT.md` 与本轮用户明确表达冲突，以本轮用户消息为准；不要拿旧的 recent context 压过用户当前意思。
+
+{VERIFIABLE_COMPLETION_RULES}
 
 ### 时间处理
 - 任何时间判断都以本轮 `request_time` 为唯一时间锚点；遇到“今天/已发生/是否生效”等问题，先核对证据时间，再下结论。

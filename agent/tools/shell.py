@@ -458,6 +458,8 @@ class ShellTool(Tool):
             {
                 "command": command,
                 "background_task_id": task_id,
+                "process_status": "started",
+                "evidence_scope": "process_started",
                 "status": "running",
                 "output_path": log_path,
                 "started_at_ms": wall_start_ms,
@@ -527,6 +529,8 @@ class ShellTool(Tool):
                 {
                     "command": command,
                     "background_task_id": task_id,
+                    "process_status": "started",
+                    "evidence_scope": "process_started",
                     "status": "running",
                     "output_path": log_path,
                     "started_at_ms": wall_start_ms,
@@ -583,6 +587,8 @@ class ShellTool(Tool):
         return json.dumps(
             {
                 "command": command,
+                "process_status": "succeeded" if exit_code == 0 else "failed",
+                "evidence_scope": "command_exit_only",
                 "exit_code": exit_code,
                 "interrupted": False,
                 "duration_ms": duration_ms,
@@ -640,7 +646,13 @@ class ShellTool(Tool):
         return json.dumps(
             {
                 "command": command,
-                "exit_code": -1,
+                "process_status": "timed_out",
+                "evidence_scope": (
+                    "command_exit_only"
+                    if proc.returncode is not None
+                    else "termination_requested"
+                ),
+                "exit_code": proc.returncode,
                 "interrupted": True,
                 "duration_ms": duration_ms,
                 "output": output_meta["text"],
@@ -664,7 +676,10 @@ class ShellTaskOutputTool(Tool):
         return (
             "读取后台 shell 任务的当前输出和状态。\n"
             "返回字段：\n"
-            "- status: 'running' | 'done'\n"
+            "- status: 'running' | 'done' | 'not_found' | 'invalid' | "
+            "'timed_out' | 'expired'\n"
+            "- process_status: 进程生命周期状态，不等同于整项任务是否完成\n"
+            "- evidence_scope: 本次结果实际证明的证据范围\n"
             "- exit_code: 进程退出码（运行中为 null）\n"
             "- elapsed_ms: 任务已运行毫秒数\n"
             "- since_last_output_ms: 距上次有输出经过的毫秒数（null 表示从未有过输出）\n"
@@ -713,14 +728,32 @@ class ShellTaskOutputTool(Tool):
 
         task = _BG_REGISTRY.get(task_id)
         if task is None:
-            return _err(f"任务 {task_id!r} 不存在或已清理")
+            return _process_error(
+                task_id,
+                status="not_found",
+                process_status="unknown",
+                evidence_scope="registry_lookup",
+                message=f"任务 {task_id!r} 不存在或已清理",
+            )
 
         pump_task = task.pump_task
         if pump_task is None:
-            return _err(f"任务 {task_id!r} 状态异常：缺少输出泵")
+            return _process_error(
+                task_id,
+                status="invalid",
+                process_status="unknown",
+                evidence_scope="registry_snapshot",
+                message=f"任务 {task_id!r} 状态异常：缺少输出泵",
+            )
         if _is_background_timeout(task):
             _bg_timeout(task_id)
-            return _err(f"任务 {task_id!r} 已超时（{task.timeout_s}s），已自动终止")
+            return _process_error(
+                task_id,
+                status="timed_out",
+                process_status="termination_requested",
+                evidence_scope="termination_requested",
+                message=f"任务 {task_id!r} 已超时（{task.timeout_s}s），已请求终止",
+            )
 
         if block and not pump_task.done():
             if task.timeout_s is not None:
@@ -742,7 +775,13 @@ class ShellTaskOutputTool(Tool):
 
         if task.finish_reason == "timeout" or _is_background_timeout(task):
             _bg_timeout(task_id)
-            return _err(f"任务 {task_id!r} 已超时（{task.timeout_s}s），已自动终止")
+            return _process_error(
+                task_id,
+                status="timed_out",
+                process_status="termination_requested",
+                evidence_scope="termination_requested",
+                message=f"任务 {task_id!r} 已超时（{task.timeout_s}s），已请求终止",
+            )
 
         done = pump_task.done()
         if done and time.monotonic() - task.started_at > _BG_TTL_S:
@@ -754,7 +793,13 @@ class ShellTaskOutputTool(Tool):
                 os.unlink(task.log_path)
             except OSError:
                 pass
-            return _err(f"任务 {task_id!r} 已超出 TTL（{_BG_TTL_S}s），已清理")
+            return _process_error(
+                task_id,
+                status="expired",
+                process_status="unknown",
+                evidence_scope="registry_cleanup",
+                message=f"任务 {task_id!r} 已超出 TTL（{_BG_TTL_S}s），已清理",
+            )
 
         exit_code = task.proc.returncode if done else None
         status = "done" if done else "running"
@@ -785,6 +830,14 @@ class ShellTaskOutputTool(Tool):
         return json.dumps(
             {
                 "task_id": task_id,
+                "process_status": (
+                    "running"
+                    if not done
+                    else "succeeded"
+                    if exit_code == 0
+                    else "failed"
+                ),
+                "evidence_scope": "process_snapshot" if not done else "command_exit_only",
                 "status": status,
                 "exit_code": exit_code,
                 "elapsed_ms": elapsed_ms,
@@ -826,10 +879,24 @@ class ShellTaskStopTool(Tool):
         task_id: str = kwargs.get("task_id", "")
         if task_id not in _BG_REGISTRY:
             return json.dumps(
-                {"task_id": task_id, "status": "not_found"}, ensure_ascii=False
+                {
+                    "task_id": task_id,
+                    "process_status": "unknown",
+                    "evidence_scope": "registry_lookup",
+                    "status": "not_found",
+                },
+                ensure_ascii=False,
             )
         _bg_kill(task_id)
-        return json.dumps({"task_id": task_id, "status": "stopped"}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "task_id": task_id,
+                "process_status": "termination_requested",
+                "evidence_scope": "termination_requested",
+                "status": "stopped",
+            },
+            ensure_ascii=False,
+        )
 
 
 # ── 模块级工具函数 ────────────────────────────────────────────────
@@ -837,6 +904,26 @@ class ShellTaskStopTool(Tool):
 
 def _err(msg: str) -> str:
     return json.dumps({"error": msg}, ensure_ascii=False)
+
+
+def _process_error(
+    task_id: str,
+    *,
+    status: str,
+    process_status: str,
+    evidence_scope: str,
+    message: str,
+) -> str:
+    return json.dumps(
+        {
+            "task_id": task_id,
+            "process_status": process_status,
+            "evidence_scope": evidence_scope,
+            "status": status,
+            "error": message,
+        },
+        ensure_ascii=False,
+    )
 
 
 def _arm_background_timeout(task_id: str, task: _BackgroundTask) -> None:

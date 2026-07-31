@@ -19,6 +19,7 @@ from core.net.http import (
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
+from prompts.completion import VERIFIABLE_COMPLETION_RULES
 from tests.memory_fakes import FakeMemoryEngine
 
 
@@ -393,6 +394,24 @@ def test_subagent_propagates_provider_failure():
     assert subagent.last_exit_reason == "error"
 
 
+def test_subagent_injects_authoritative_completion_rules():
+    provider = _FakeProvider([LLMResponse(content="done", tool_calls=[])])
+    subagent = SubAgent(
+        provider=cast(Any, provider),
+        model="m",
+        tools=[],
+        system_prompt="profile rules",
+    )
+
+    result = asyncio.run(subagent.run("do work"))
+
+    assert result == "done"
+    system_message = provider.calls[0]["messages"][0]
+    assert system_message["role"] == "system"
+    assert system_message["content"].startswith("profile rules")
+    assert VERIFIABLE_COMPLETION_RULES in system_message["content"]
+
+
 def test_subagent_rejects_empty_final_result():
     subagent = SubAgent(
         provider=cast(
@@ -545,7 +564,9 @@ def test_subagent_keeps_tool_result_clean():
         m for m in provider.calls[1]["messages"] if m.get("role") == "tool"
     ]
     assert len(tool_messages) == 1
-    assert tool_messages[0]["content"] == "ok:1"
+    assert tool_messages[0]["content"] == (
+        '<tool_execution transport_status="success" />\nok:1'
+    )
 
 
 def test_subagent_keeps_repeated_tool_results_clean():
@@ -581,8 +602,12 @@ def test_subagent_keeps_repeated_tool_results_clean():
         m for m in provider.calls[2]["messages"] if m.get("role") == "tool"
     ]
     assert len(second_round_tool_messages) == 2
-    assert second_round_tool_messages[0]["content"] == "ok:1"
-    assert second_round_tool_messages[1]["content"] == "ok:2"
+    assert second_round_tool_messages[0]["content"] == (
+        '<tool_execution transport_status="success" />\nok:1'
+    )
+    assert second_round_tool_messages[1]["content"] == (
+        '<tool_execution transport_status="success" />\nok:2'
+    )
 
 
 def test_subagent_unknown_tool_not_recorded_in_tools_called():

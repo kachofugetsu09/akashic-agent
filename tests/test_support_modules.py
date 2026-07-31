@@ -24,10 +24,12 @@ from agent.tools.web_search import WebSearchTool
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import ChatLane, MessageBus
 from core.common import timekit
-from plugins.default_memory.engine import DefaultMemoryEngine
 from infra.persistence.json_store import atomic_save_json, load_json, save_json
 from memory2.memorizer import Memorizer
 from memory2.store import MemoryStore2
+from plugins.default_memory.engine import DefaultMemoryEngine
+from prompts.agent import build_agent_behavior_rules_prompt
+from prompts.completion import VERIFIABLE_COMPLETION_RULES
 
 
 def test_inbound_message_default_timestamp_is_aware_utc() -> None:
@@ -39,6 +41,15 @@ def test_inbound_message_default_timestamp_is_aware_utc() -> None:
     )
 
     assert message.timestamp.tzinfo is timezone.utc
+
+
+def test_agent_prompt_uses_authoritative_completion_rules(tmp_path: Path) -> None:
+    prompt = build_agent_behavior_rules_prompt(workspace=tmp_path)
+
+    assert VERIFIABLE_COMPLETION_RULES in prompt
+    assert "每个主要工具结果后都要把新增证据对应到用户明确提出的要求" in prompt
+    assert "transport_status=\"success\"" in prompt
+    assert "只补尚未证明要求的最小缺口" in prompt
 
 
 def _make_default_engine(
@@ -828,6 +839,8 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     context_frame = result.messages[-2]["content"]
     assert "identity" in prompt
     assert "## 行为规范" in prompt
+    assert "最终回复前逐项核对用户明确提出的要求" in result.messages[0]["content"]
+    assert "超过验收标准的完美继续调用工具" in result.messages[0]["content"]
     assert "retrieved" not in prompt
     assert context_frame.startswith(SYSTEM_CONTEXT_FRAME_MARKER)
     assert "retrieved" in context_frame
