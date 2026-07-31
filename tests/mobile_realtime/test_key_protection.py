@@ -155,7 +155,9 @@ def test_tampered_blob_and_manifest_path_are_rejected(tmp_path: Path) -> None:
     manager = KeysetManager(root, keys)
     _ = manager.initialize(lan_hostname="akashic.local")
     blob = root / "keyset-v1" / "server-identity.key.enc"
-    blob.write_bytes(blob.read_bytes()[:-1] + b"x")
+    tampered_blob = bytearray(blob.read_bytes())
+    tampered_blob[-1] ^= 1
+    blob.write_bytes(tampered_blob)
 
     with pytest.raises(KeyProtectionError, match="blob hash 不匹配"):
         manager.load()
