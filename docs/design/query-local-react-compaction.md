@@ -188,4 +188,4 @@ Session 重载读取上一 assistant row 的 `react_compaction`，跳过已压�
 
 确定性测试覆盖 74% 前后一 token、完整批次、重复压缩、summary 失败、单个巨大后缀、Responses 投影和短 query no-op。Session 测试关闭并重新加载 SQLite，核对完整 `tool_chain`、压缩字段、下一次模型消息和旧消息 write set。
 
-真实验证使用独立 Docker。生产默认 `74%` 不足以触发现有 V4 Flash 长任务：`regex-chess` 旧峰值约为 370k/1M，`path-tracing-reverse` 约为 130k/1M。因此只在 fault-injection trial 临时降低触发比例，并明确排除正式 benchmark 分数；control 与 treatment 固定模型、prompt、工具、timeout、runtime、task checksum 和 verifier。另跑一个已知短任务证明默认配置不触发时行为不变。
+真实验证使用独立 Docker，并与生产保持相同的 `74%` 触发比例，不通过降低水位制造压缩。现有 V4 Flash 长任务尚不足以自然触发：`regex-chess` 旧峰值约为 370k/1M，`path-tracing-reverse` 约为 130k/1M；它们只验证默认配置下的 no-op 回归、容器隔离和完整任务结束。74% 边界、压缩调用和重放由可控 provider 的确定性测试覆盖；后续只有自然越过 74% 的真实任务才能作为 Docker 压缩验证。
