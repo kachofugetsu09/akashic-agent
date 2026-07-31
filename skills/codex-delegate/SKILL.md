@@ -36,7 +36,7 @@ metadata: {"akashic": {"always": false, "requires": {"bins": ["codex"]}}}
 6. 检查通过后，外层必须用 `spawn(run_in_background=true)`，不要在主会话里直接跑长时间 `codex exec`。
 7. subagent 的 `profile` 选 `scripting`；如果任务还需要联网调研，选 `general`。
 8. subagent 内部启动 `codex exec` 时把 `yield_time_ms` 设为 30000；若返回 `execution_id`，用空 `chars` 的 `write_stdin` 续接，并把 `yield_time_ms` 设为 300000，直到结果不再返回 `execution_id`。
-9. `timeout` 是整棵进程树的硬截止，默认 14400 秒；它不控制单次等待。只有需要更短硬截止时才显式传入。
+9. `timeout` 是 execution 进程组的硬截止，默认 14400 秒；它不控制单次等待。只有需要更短硬截止时才显式传入。
 10. `codex exec` 要用 `--cd <repo>` 指定工作目录，避免依赖 shell 的 `cd` 状态。
 11. 默认把任务说明写入 prompt 文件，再用 `codex exec --cd <repo> - < prompt.txt` 读取，避免 shell 引号、换行和特殊字符破坏 prompt。
 12. 必须给 `codex exec` 加 `--output-last-message <task_dir>/codex-result.md`，完成后读这个文件作为主要结果；不要从 `/tmp/akashic-shell-*.log` 里 grep 或 tail 输出。

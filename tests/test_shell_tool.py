@@ -6,9 +6,11 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.looping.core import AgentLoop
 from agent.provider import LLMResponse
 from agent.subagent import SubAgent
 from agent.tools.shell import ShellTaskStopTool
@@ -25,6 +27,8 @@ from agent.tools.unified_exec import HeadTailBuffer
 from agent.tools.unified_exec import ShellProcessManager, UnknownExecutionError
 from agent.tools.unified_exec import clamp_initial_yield_time
 from agent.tools.unified_exec import clamp_write_stdin_yield_time
+from agent.tools.registry import ToolRegistry
+from bus.events import InboundMessage, OutboundMessage
 from core.error_context import current_session_key
 from session.manager import SessionManager
 
@@ -192,7 +196,7 @@ async def test_non_tty_rejects_input_but_ctrl_c_interrupts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_hard_timeout_terminates_process_tree() -> None:
+async def test_hard_timeout_terminates_process_group() -> None:
     manager = ShellProcessManager()
     try:
         opened = _decode(
@@ -356,6 +360,54 @@ async def test_same_conversation_can_resume_execution_after_context_reset() -> N
             current_session_key.reset(resumed_token)
         assert resumed["output"] == "resumed"
         assert resumed["process_status"] == "succeeded"
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_turn_end_terminates_owner_shell() -> None:
+    manager = ShellProcessManager()
+    shell = ShellTool(manager)
+    tools = ToolRegistry()
+    tools.register(shell)
+    loop = AgentLoop.__new__(AgentLoop)
+    loop.tools = tools
+    loop._processing_state = None
+    loop._interrupt_states = {}
+    loop._resume_interrupted_message = AsyncMock(
+        side_effect=lambda message, _key: (message, False)
+    )
+    loop._observe_turn_started = AsyncMock()
+
+    async def process(
+        _message: InboundMessage,
+        _key: str,
+        *,
+        dispatch_outbound: bool,
+    ) -> OutboundMessage:
+        assert dispatch_outbound is False
+        opened = _decode(
+            await shell.execute(
+                command="sleep 30",
+                description="验证 turn 回收",
+                yield_time_ms=250,
+            )
+        )
+        assert opened["process_status"] == "running"
+        return OutboundMessage(channel="cli", chat_id="owner", content="done")
+
+    loop._core_runner = SimpleNamespace(process=process)
+    message = InboundMessage(
+        channel="cli",
+        sender="user",
+        chat_id="owner",
+        content="run",
+    )
+    try:
+        result = await loop._process(message, dispatch_outbound=False)
+
+        assert result.content == "done"
+        assert await manager.active_execution_ids() == []
     finally:
         await manager.shutdown()
 

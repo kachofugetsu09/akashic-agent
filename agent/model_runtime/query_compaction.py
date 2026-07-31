@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from agent.model_runtime.execution_history import active_shell_execution_origins
 from agent.prompting import is_context_frame
 from agent.model_runtime.types import ModelUsage
 
@@ -37,11 +38,6 @@ _SUMMARY_PROMPT = """更新当前长任务的上下文压缩摘要。
 ## Next steps
 
 保留文件路径、符号、命令、错误、数值和验证结果。若输入中存在仍在运行的 shell execution，必须保留 execution_id、命令和当前状态。省略重复探索、无用日志、tool_call_id 和其他协议细节。只输出摘要正文。"""
-
-_SHELL_TERMINAL_STATUSES = frozenset(
-    {"succeeded", "failed", "timed_out", "stopped", "unknown"}
-)
-
 
 class ContextCompactionError(RuntimeError):
     """当前 query 无法生成可继续执行的有界上下文。"""
@@ -462,9 +458,12 @@ def _tool_schema_digest(tools: list[dict]) -> str:
 
 def _active_execution_batch(batches: list[list[dict]]) -> int | None:
     """Return the earliest batch that must remain visible for a live execution."""
-    active: dict[int, int] = {}
+
+    # 1. 保留 tool_call_id 到原始 batch 的稳定映射。
+    call_batches: dict[str, int] = {}
+    messages: list[dict[str, Any]] = []
     for batch_index, batch in enumerate(batches):
-        results = _tool_results(batch)
+        messages.extend(cast(list[dict[str, Any]], batch))
         for message in batch:
             calls = message.get("tool_calls")
             if message.get("role") != "assistant" or not isinstance(calls, list):
@@ -472,78 +471,18 @@ def _active_execution_batch(batches: list[list[dict]]) -> int | None:
             for raw_call in calls:
                 if not isinstance(raw_call, dict):
                     continue
-                call = cast(dict[str, Any], raw_call)
-                function = call.get("function")
-                if not isinstance(function, dict):
-                    continue
-                name = function.get("name")
-                arguments = _json_object(function.get("arguments"))
-                result = results.get(str(call.get("id") or ""))
-                _update_active_executions(
-                    active,
-                    batch_index=batch_index,
-                    name=name,
-                    arguments=arguments,
-                    result=result,
-                )
-    return min(active.values()) if active else None
+                call_id = str(raw_call.get("id") or "")
+                if call_id:
+                    call_batches[call_id] = batch_index
 
-
-def _tool_results(batch: list[dict]) -> dict[str, dict[str, Any]]:
-    results: dict[str, dict[str, Any]] = {}
-    for message in batch:
-        call_id = message.get("tool_call_id")
-        if message.get("role") != "tool" or not isinstance(call_id, str):
-            continue
-        result = _json_object(message.get("content"))
-        if result is not None:
-            results[call_id] = result
-    return results
-
-
-def _update_active_executions(
-    active: dict[int, int],
-    *,
-    batch_index: int,
-    name: object,
-    arguments: dict[str, Any] | None,
-    result: dict[str, Any] | None,
-) -> None:
-    if result is None:
-        return
-    status = result.get("process_status")
-    if name == "shell" and status == "running":
-        execution_id = _execution_id(result.get("execution_id"))
-        if execution_id is not None:
-            active[execution_id] = batch_index
-        return
-    if name not in {"write_stdin", "task_stop"} or arguments is None:
-        return
-    execution_id = _execution_id(arguments.get("execution_id"))
-    if execution_id is None:
-        return
-    if status == "running":
-        active.setdefault(execution_id, batch_index)
-    elif status in _SHELL_TERMINAL_STATUSES:
-        active.pop(execution_id, None)
-
-
-def _json_object(value: object) -> dict[str, Any] | None:
-    if isinstance(value, dict):
-        return cast(dict[str, Any], value)
-    if not isinstance(value, str):
-        return None
-    try:
-        decoded = json.loads(value)
-    except json.JSONDecodeError:
-        return None
-    return cast(dict[str, Any], decoded) if isinstance(decoded, dict) else None
-
-
-def _execution_id(value: object) -> int | None:
-    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-        return None
-    return value
+    # 2. 只 pin 仍在运行 execution 的最早创建 batch。
+    active_origins = active_shell_execution_origins(messages)
+    active_batches = [
+        call_batches[call_id]
+        for call_id in active_origins.values()
+        if call_id in call_batches
+    ]
+    return min(active_batches) if active_batches else None
 
 
 def _compaction_call_id(scope_id: str, generation: int) -> str:

@@ -12,6 +12,7 @@ from agent.core.runtime_support import LLMServices, ToolDiscoveryState
 from agent.looping.ports import LLMConfig
 from agent.model_runtime.types import LLMResponse, ModelUsage, ToolCall
 from agent.provider import ContextLengthError
+from agent.tool_runtime import append_tool_result
 from agent.model_runtime.query_compaction import (
     COMPACTION_TOOL_NAME,
     ContextCompactionError,
@@ -91,12 +92,14 @@ def _record_execution_batch(
                     }
                 ],
             },
-            {
-                "role": "tool",
-                "tool_call_id": call_id,
-                "content": json.dumps(result),
-            },
         ]
+    )
+    append_tool_result(
+        messages,
+        tool_call_id=call_id,
+        content=json.dumps(result),
+        tool_name=name,
+        execution_status="success",
     )
     compactor.record_completed_batch(messages, batch_start=start)
 
