@@ -89,6 +89,8 @@ command = [
   "tests/test_plugin_service_host.py::test_managed_service_rejects_occupied_port_without_http_readiness",
   "tests/test_plugin_service_host.py::test_managed_service_cleans_listener_after_leader_exit",
   "tests/test_agent_restart.py::test_supervisor_cleans_orphaned_boot_listener",
+  "tests/test_agent_restart.py::test_boot_cleanup_never_kills_unknown_listener",
+  "tests/test_agent_restart.py::test_boot_guardian_cleans_double_fork_listener_after_owner_failure",
 ]
 observes = ["leader_exit", "descendant_exit", "listener_release", "foreign_listener_survival", "cleanup_ownership"]
 mutants = ["leader_exit_assumed_tree_exit"]
