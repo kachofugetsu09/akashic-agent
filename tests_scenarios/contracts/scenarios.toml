@@ -30,6 +30,35 @@ command = ["python", "-m", "pytest", "-q", "tests/semantic/test_gate_workspace_c
 observes = ["workspace_path", "plugin_home_path", "fresh_config"]
 mutants = ["official_workspace_path"]
 
+[scenarios.shell_execution_contract]
+requirements = ["SH-001", "RUN-002", "RUN-003", "ERR-001", "TST-001", "TST-003"]
+groups = ["runtime"]
+environment = "public_clean_workspace"
+timeout_seconds = 120
+command = [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "tests/test_shell_tool.py",
+  "tests/test_unified_exec.py",
+  "tests/test_query_compaction.py::test_compaction_pins_live_execution_until_terminal_result",
+]
+observes = [
+  "default_shell_argv",
+  "short_command_exit",
+  "incremental_output",
+  "pty_state",
+  "owner_isolation",
+  "wait_cancellation",
+  "stop_races",
+  "process_tree_cleanup",
+  "bounded_output",
+  "capacity_pruning",
+  "active_execution_compaction_pin",
+]
+mutants = []
+
 [scenarios.context_history_nondestructive]
 requirements = ["CTX-001", "SES-002", "SES-003", "SES-005", "TST-002", "TST-003"]
 groups = ["context_projection", "session_persistence"]

@@ -214,10 +214,13 @@ paths = [
   "infra/__init__.py",
   "main.py",
   "prompts/**",
+  "tests/test_query_compaction.py",
+  "tests/test_shell_tool.py",
+  "tests/test_unified_exec.py",
   "utils/**",
 ]
 depends_on = ["events", "session_persistence"]
-scenarios = ["contract_catalog", "mcp_process_lifecycle"]
+scenarios = ["contract_catalog", "mcp_process_lifecycle", "shell_execution_contract"]
 
 [groups.migrations]
 priority = "p0"
