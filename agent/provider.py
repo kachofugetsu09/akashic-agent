@@ -365,7 +365,14 @@ class ChatCompletionsRuntime:
             return await self._chat_streaming(kwargs, request.on_delta, strategy)
 
         resp = cast(Any, await self._create_with_retry(kwargs))
-        msg = resp.choices[0].message
+        choice = resp.choices[0]
+        msg = choice.message
+        raw_finish_reason = getattr(choice, "finish_reason", None)
+        finish_reason = (
+            str(raw_finish_reason)
+            if raw_finish_reason is not None
+            else None
+        )
 
         tool_calls = []
         if msg.tool_calls:
@@ -392,6 +399,7 @@ class ChatCompletionsRuntime:
             content=raw,
             tool_calls=tool_calls,
             thinking=thinking,
+            finish_reason=finish_reason,
             provider_fields=provider_fields,
             cache_prompt_tokens=cache_prompt_tokens,
             cache_hit_tokens=cache_hit_tokens,
@@ -418,6 +426,7 @@ class ChatCompletionsRuntime:
         cache_prompt_tokens: int | None = None
         cache_hit_tokens: int | None = None
         usage: ModelUsage | None = None
+        finish_reason: str | None = None
 
         try:
             stream_iter = aiter(stream)
@@ -440,6 +449,9 @@ class ChatCompletionsRuntime:
                 if not choices:
                     continue
                 choice = choices[0]
+                raw_finish_reason = getattr(choice, "finish_reason", None)
+                if raw_finish_reason is not None:
+                    finish_reason = str(raw_finish_reason)
                 delta = getattr(choice, "delta", None)
                 if delta is None:
                     continue
@@ -502,6 +514,7 @@ class ChatCompletionsRuntime:
             content=raw,
             tool_calls=tool_calls,
             thinking=thinking,
+            finish_reason=finish_reason,
             provider_fields=provider_fields,
             cache_prompt_tokens=cache_prompt_tokens,
             cache_hit_tokens=cache_hit_tokens,

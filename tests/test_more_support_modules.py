@@ -39,11 +39,14 @@ class _Response:
         tool_calls: list | None = None,
         reasoning_content: str | None = None,
         usage: object | None = None,
+        finish_reason: str | None = None,
     ) -> None:
         message = SimpleNamespace(content=content, tool_calls=tool_calls or [])
         if reasoning_content is not None:
             message.reasoning_content = reasoning_content
-        self.choices = [SimpleNamespace(message=message)]
+        self.choices = [
+            SimpleNamespace(message=message, finish_reason=finish_reason)
+        ]
         self.usage = usage
 
 
@@ -194,6 +197,7 @@ async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
             _Response(
                 content="done",
                 tool_calls=[_ToolCall("1", "search", {"q": "x"})],
+                finish_reason="tool_calls",
             ),
         ]
     )
@@ -218,6 +222,7 @@ async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
         max_tokens=10,
     )
     assert result.content == "done"
+    assert result.finish_reason == "tool_calls"
     assert result.tool_calls[0].arguments == {"q": "x"}
     assert fake.calls[-1]["messages"][0]["role"] == "system"
     assert fake.calls[-1]["extra_body"] == {"x": 1}
@@ -451,7 +456,8 @@ async def test_provider_chat_stream_parses_content_reasoning_and_tool_calls(
                     SimpleNamespace(
                         delta=SimpleNamespace(
                             content="好", reasoning_content="法", tool_calls=[]
-                        )
+                        ),
+                        finish_reason="stop",
                     )
                 ]
             ),
@@ -477,6 +483,7 @@ async def test_provider_chat_stream_parses_content_reasoning_and_tool_calls(
     )
     assert result.content == "你好"
     assert result.thinking == "想法"
+    assert result.finish_reason == "stop"
     content_deltas = [d["content_delta"] for d in deltas if "content_delta" in d]
     thinking_deltas = [d["thinking_delta"] for d in deltas if "thinking_delta" in d]
     assert content_deltas == ["你", "好"]

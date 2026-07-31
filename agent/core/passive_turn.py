@@ -1317,6 +1317,7 @@ class DefaultReasoner(Reasoner):
         react_cache_hit_tokens = 0
         react_cache_seen = False
         react_usages: list[ModelUsage] = []
+        react_finish_reasons: list[str | None] = []
         disabled = set(disabled_tools or set())
         compactor = QueryCompactor(
             provider=self._llm.provider,
@@ -1382,6 +1383,7 @@ class DefaultReasoner(Reasoner):
                     cache_seen=react_cache_seen,
                     tools_unlocked=tools_unlocked,
                     model_usages=react_usages,
+                    finish_reasons=react_finish_reasons,
                     mobile_attention=mobile_attention,
                 )
             # 4. 构造本轮工具 schema，并按完整 provider input 判断压缩水位。
@@ -1450,6 +1452,7 @@ class DefaultReasoner(Reasoner):
                 usage=response.usage,
             )
             react_usages.append(response.usage or ModelUsage())
+            react_finish_reasons.append(response.finish_reason)
             if on_content_delta is not None and response.content:
                 streamed = True
             if response.cache_prompt_tokens is not None:
@@ -1457,11 +1460,13 @@ class DefaultReasoner(Reasoner):
                 react_cache_prompt_tokens += response.cache_prompt_tokens
                 react_cache_hit_tokens += response.cache_hit_tokens or 0
 
-            # 5. 空 thinking 响应保留同一工具 schema 修复一次，再进入正常分支。
+            # 5. 空 thinking 响应关闭 thinking 修复一次，再进入正常分支。
             if not response.content and not response.tool_calls and response.thinking:
                 logger.warning(
-                    "[空回复重试] 第%d轮，content为空但thinking非空，触发一次修复重试",
+                    "[空回复重试] 第%d轮，content为空但thinking非空，"
+                    "finish_reason=%s，关闭thinking修复一次",
                     iteration + 1,
+                    response.finish_reason,
                 )
                 retry_assistant: dict[str, Any] = {"role": "assistant", "content": ""}
                 model_state = response.provider_fields.get("model_state")
@@ -1494,6 +1499,7 @@ class DefaultReasoner(Reasoner):
                         model=self._llm_config.model,
                         max_tokens=self._llm_config.max_tokens,
                         tool_choice="auto",
+                        disable_thinking=True,
                         on_content_delta=on_content_delta,
                         cache_namespace=tool_event_session_key,
                     )
@@ -1516,6 +1522,7 @@ class DefaultReasoner(Reasoner):
                         model=self._llm_config.model,
                         max_tokens=self._llm_config.max_tokens,
                         tool_choice="auto",
+                        disable_thinking=True,
                         on_content_delta=on_content_delta,
                         cache_namespace=tool_event_session_key,
                     )
@@ -1525,6 +1532,7 @@ class DefaultReasoner(Reasoner):
                     usage=retry_response.usage,
                 )
                 react_usages.append(retry_response.usage or ModelUsage())
+                react_finish_reasons.append(retry_response.finish_reason)
                 if retry_response.cache_prompt_tokens is not None:
                     react_cache_seen = True
                     react_cache_prompt_tokens += retry_response.cache_prompt_tokens
@@ -1534,12 +1542,17 @@ class DefaultReasoner(Reasoner):
                     if on_content_delta is not None and response.content:
                         streamed = True
                     logger.info(
-                        "[空回复重试] 修复成功，content=%s tool_calls=%d",
+                        "[空回复重试] 修复成功，finish_reason=%s content=%s "
+                        "tool_calls=%d",
+                        response.finish_reason,
                         bool(response.content),
                         len(response.tool_calls),
                     )
                 else:
-                    logger.warning("[空回复重试] 重试仍为空，使用fallback")
+                    logger.warning(
+                        "[空回复重试] 重试仍为空，finish_reason=%s，使用fallback",
+                        retry_response.finish_reason,
+                    )
 
             # 6. 模型返回 tool_calls 时，进入工具执行分支。
             if response.tool_calls:
@@ -1698,6 +1711,7 @@ class DefaultReasoner(Reasoner):
                                 cache_seen=react_cache_seen,
                                 tools_unlocked=tools_unlocked,
                                 model_usages=react_usages,
+                                finish_reasons=react_finish_reasons,
                                 mobile_attention=mobile_attention,
                             )
                         logger.warning(
@@ -1931,6 +1945,7 @@ class DefaultReasoner(Reasoner):
                             cache_seen=react_cache_seen,
                             tools_unlocked=tools_unlocked,
                             model_usages=react_usages,
+                            finish_reasons=react_finish_reasons,
                             mobile_attention=mobile_attention,
                         )
 
@@ -1992,6 +2007,7 @@ class DefaultReasoner(Reasoner):
                         cache_seen=react_cache_seen,
                         tools_unlocked=tools_unlocked,
                         model_usages=react_usages,
+                        finish_reasons=react_finish_reasons,
                         mobile_attention=mobile_attention,
                     )
                 continue
@@ -2019,7 +2035,7 @@ class DefaultReasoner(Reasoner):
                 has_more=False,
             ))
             return self._build_result(
-                reply=response.content or "（无响应）",
+                reply=response.content or "模型未返回可用回复，请重试。",
                 tools_used=tools_used,
                 tool_chain=tool_chain,
                 react_compaction=compactor.persistence_payload(),
@@ -2033,6 +2049,7 @@ class DefaultReasoner(Reasoner):
                 cache_seen=react_cache_seen,
                 tools_unlocked=tools_unlocked,
                 model_usages=react_usages,
+                finish_reasons=react_finish_reasons,
                 mobile_attention=mobile_attention,
                 model_state=(
                     cast(dict[str, object], response.provider_fields["model_state"])
@@ -2068,6 +2085,7 @@ class DefaultReasoner(Reasoner):
             cache_seen=react_cache_seen,
             tools_unlocked=tools_unlocked,
             model_usages=react_usages,
+            finish_reasons=react_finish_reasons,
             mobile_attention=mobile_attention,
         )
 
@@ -2195,6 +2213,7 @@ class DefaultReasoner(Reasoner):
         tools_unlocked: list[str] | None = None,
         model_state: dict[str, object] | None = None,
         model_usages: list[ModelUsage] | None = None,
+        finish_reasons: list[str | None] | None = None,
         mobile_attention: Literal["confirmation"] | None = None,
     ) -> ReasonerResult:
         # 1. 先把 tool_chain 扁平化成 invocations。
@@ -2241,6 +2260,7 @@ class DefaultReasoner(Reasoner):
             "covered_request_count": usage.covered_request_count,
             "coverage": usage.coverage.value,
         }
+        react_stats["finish_reasons"] = list(finish_reasons or [])
         metadata = {
             "tools_used": list(tools_used),
             "tools_unlocked": list(tools_unlocked or []),
