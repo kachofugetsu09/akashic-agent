@@ -222,9 +222,14 @@ def _process_identity(pid: int) -> dict[str, int]:
 
 def _identity_alive(identity: dict[str, int]) -> bool:
     try:
-        return _process_identity(identity["pid"]) == identity
+        stat = Path(f"/proc/{identity['pid']}/stat").read_text(encoding="utf-8")
     except FileNotFoundError:
         return False
+    fields = stat[stat.rfind(")") + 2 :].split()
+    return fields[0] != "Z" and {
+        "pid": identity["pid"],
+        "starttime": int(fields[19]),
+    } == identity
 
 
 def _running_mcp_identity(
@@ -910,6 +915,20 @@ def _install_startup_plugin(home: Path, name: str, source: str) -> None:
     )
 
 
+def _wait_scenario_ready(path: Path) -> dict[str, Any]:
+    deadline = time.monotonic() + READINESS_DEADLINE_S
+    while time.monotonic() < deadline:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            time.sleep(0.02)
+            continue
+        if payload.get("state") == "ready":
+            return cast(dict[str, Any], payload)
+        time.sleep(0.02)
+    raise GateFailure(f"场景 readiness 超时: {path}")
+
+
 def _failure_mode_checks(report_dir: Path) -> list[CheckResult]:
     checks: list[CheckResult] = []
 
@@ -1003,10 +1022,7 @@ def _failure_mode_checks(report_dir: Path) -> list[CheckResult]:
         env={**os.environ, "HOME": str(stop_home)},
     )
     ready_path = stop_workspace / ".runtime-ready.json"
-    deadline = time.monotonic() + READINESS_DEADLINE_S
-    while not ready_path.exists() and time.monotonic() < deadline:
-        time.sleep(0.02)
-    ready = json.loads(ready_path.read_text(encoding="utf-8"))
+    ready = _wait_scenario_ready(ready_path)
     child_identity = _process_identity(int(ready["pid"]))
     mcp_identity = _running_mcp_identity("sigterm", workspace=stop_workspace)
     descendant_identities = [
@@ -1036,6 +1052,105 @@ def _failure_mode_checks(report_dir: Path) -> list[CheckResult]:
                 "descendantIdentities": descendant_identities,
                 "liveDescendants": live_descendants,
                 "readinessExists": ready_path.exists(),
+            },
+        )
+    )
+
+    # 4. Supervisor SIGKILL 后，Guardian 必须通过 lease EOF 清空完整 boot。
+    kill_config, kill_workspace, _ = _isolated_config("supervisor-kill")
+    kill_home = Path("/sandbox/supervisor-kill-home")
+    kill_home.mkdir(exist_ok=True)
+    _write_mcp_declaration("supervisor-kill", workspace=kill_workspace)
+    killed_supervisor = subprocess.Popen(
+        [
+            sys.executable,
+            "main.py",
+            "supervise",
+            "--config",
+            str(kill_config),
+            "--workspace",
+            str(kill_workspace),
+        ],
+        env={**os.environ, "HOME": str(kill_home)},
+    )
+    kill_ready_path = kill_workspace / ".runtime-ready.json"
+    _ = _wait_scenario_ready(kill_ready_path)
+    kill_descendants = [
+        _process_identity(pid) for pid in _descendant_pids(killed_supervisor.pid)
+    ]
+    os.kill(killed_supervisor.pid, signal.SIGKILL)
+    kill_exit = killed_supervisor.wait(timeout=5)
+    for identity in kill_descendants:
+        _wait_identity_exit(identity)
+    kill_live = [
+        identity for identity in kill_descendants if _identity_alive(identity)
+    ]
+    checks.append(
+        CheckResult(
+            "RESTART-SUPERVISOR-SIGKILL",
+            kill_exit == -signal.SIGKILL
+            and not kill_live
+            and not kill_ready_path.exists(),
+            {
+                "returncode": kill_exit,
+                "descendantIdentities": kill_descendants,
+                "liveDescendants": kill_live,
+                "readinessExists": kill_ready_path.exists(),
+            },
+        )
+    )
+
+    # 5. Guardian SIGKILL 后，Supervisor 必须兜底清空 boot 并非零退出。
+    guardian_config, guardian_workspace, _ = _isolated_config("guardian-kill")
+    guardian_home = Path("/sandbox/guardian-kill-home")
+    guardian_home.mkdir(exist_ok=True)
+    _write_mcp_declaration("guardian-kill", workspace=guardian_workspace)
+    guardian_supervisor = subprocess.Popen(
+        [
+            sys.executable,
+            "main.py",
+            "supervise",
+            "--config",
+            str(guardian_config),
+            "--workspace",
+            str(guardian_workspace),
+        ],
+        env={**os.environ, "HOME": str(guardian_home)},
+    )
+    guardian_ready_path = guardian_workspace / ".runtime-ready.json"
+    _ = _wait_scenario_ready(guardian_ready_path)
+    guardian_descendants = _descendant_pids(guardian_supervisor.pid)
+    guardian_children_path = Path(
+        f"/proc/{guardian_supervisor.pid}/task/"
+        f"{guardian_supervisor.pid}/children"
+    )
+    guardian_children = [
+        int(pid) for pid in guardian_children_path.read_text().split()
+    ]
+    if len(guardian_children) != 1:
+        raise GateFailure(f"Guardian 数量异常: {guardian_children}")
+    guardian_identities = [
+        _process_identity(pid) for pid in guardian_descendants
+    ]
+    os.kill(guardian_children[0], signal.SIGKILL)
+    guardian_supervisor_exit = guardian_supervisor.wait(timeout=15)
+    for identity in guardian_identities:
+        _wait_identity_exit(identity)
+    guardian_live = [
+        identity for identity in guardian_identities if _identity_alive(identity)
+    ]
+    checks.append(
+        CheckResult(
+            "RESTART-GUARDIAN-SIGKILL",
+            guardian_supervisor_exit != 0
+            and not guardian_live
+            and not guardian_ready_path.exists(),
+            {
+                "returncode": guardian_supervisor_exit,
+                "guardianPid": guardian_children[0],
+                "descendantIdentities": guardian_identities,
+                "liveDescendants": guardian_live,
+                "readinessExists": guardian_ready_path.exists(),
             },
         )
     )

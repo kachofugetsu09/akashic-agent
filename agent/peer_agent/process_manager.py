@@ -9,6 +9,11 @@ from pathlib import Path
 import httpx
 
 from core.net.http import HttpRequester, RequestBudget
+from utils.process_group import (
+    OwnedProcessGroup,
+    owned_process_env,
+    process_group_spawn_kwargs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +179,8 @@ class PeerProcessManager:
                 stdout=log_fp,
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=cfg.cwd,
+                env=owned_process_env({}),
+                **process_group_spawn_kwargs(),
             )
         except BaseException as create_error:
             try:
@@ -256,21 +263,6 @@ class PeerProcessManager:
 
     @staticmethod
     async def _kill(proc: asyncio.subprocess.Process, timeout_s: float) -> None:
-        """SIGTERM 后等待，超时则 SIGKILL 并再次 wait。"""
+        """使用既有进程组 owner 清理 peer leader 及其后代。"""
 
-        if proc.returncode is not None:
-            await proc.wait()
-            return
-        try:
-            proc.terminate()
-        except ProcessLookupError:
-            pass
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=float(timeout_s))
-        except asyncio.TimeoutError:
-            logger.warning("[PeerProcess] SIGTERM 超时，强制 SIGKILL pid=%d", proc.pid)
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            await proc.wait()
+        await OwnedProcessGroup.from_process(proc).terminate(timeout_s=timeout_s)

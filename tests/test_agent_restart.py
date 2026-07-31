@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import select
 import signal
 import socket
 import subprocess
@@ -35,6 +36,7 @@ from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.app import AppRuntime
 from core.error_context import current_session_key
 from infra.control.connection import NdjsonConnection
+import main as main_module
 from session.store import SessionStore
 
 
@@ -289,7 +291,7 @@ def test_supervisor_commit_channel_uses_inherited_fd(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("AKASHIC_SUPERVISED", "1")
     monkeypatch.setenv("AKASHIC_BOOT_ID", "boot-a")
     monkeypatch.setenv("AKASHIC_RESTART_NONCE", "n" * 64)
-    monkeypatch.setenv("AKASHIC_RESTART_COMMIT_FD", str(write_fd))
+    monkeypatch.setenv("AKASHIC_LIFECYCLE_FD", str(write_fd))
     try:
         channel = SupervisorCommitChannel.from_environment()
         assert channel is not None
@@ -298,7 +300,7 @@ def test_supervisor_commit_channel_uses_inherited_fd(monkeypatch: pytest.MonkeyP
         os.close(read_fd)
         os.close(write_fd)
 
-    monkeypatch.setenv("AKASHIC_RESTART_COMMIT_FD", str(write_fd))
+    monkeypatch.setenv("AKASHIC_LIFECYCLE_FD", str(write_fd))
     with pytest.raises(OSError):
         SupervisorCommitChannel.from_environment()
 
@@ -316,11 +318,9 @@ def _spawn_supervisor_child(
 import json, os, pathlib, sys, time
 workspace = pathlib.Path(sys.argv[1])
 boot_id, nonce, write_fd, frame_count, exit_code = sys.argv[2:]
-payload = {'bootId': boot_id, 'pid': os.getpid(), 'state': 'ready'}
-temporary = workspace / f'.runtime-ready.{os.getpid()}.tmp'
-temporary.write_text(json.dumps(payload))
-os.replace(temporary, workspace / '.runtime-ready.json')
-frame = {'type': 'restart_commit', 'bootId': boot_id, 'nonce': nonce, 'requestId': 'restart_test'}
+ready = {'type': 'ready', 'bootId': boot_id, 'pid': os.getpid()}
+os.write(int(write_fd), (json.dumps(ready) + '\\n').encode())
+frame = {'type': 'commit', 'bootId': boot_id, 'nonce': nonce, 'requestId': 'restart_test'}
 for _ in range(int(frame_count)):
     os.write(int(write_fd), (json.dumps(frame) + '\\n').encode())
 time.sleep(0.05)
@@ -339,6 +339,7 @@ raise SystemExit(int(exit_code))
             str(exit_code),
         ],
         pass_fds=(write_fd,),
+        env={**os.environ, "AKASHIC_BOOT_ID": boot_id},
     )
     os.close(write_fd)
     return child, read_fd
@@ -369,9 +370,20 @@ def test_real_child_exit_75_requires_unique_private_commit(
         readiness_timeout_s=2,
     )
 
-    assert result.exit_code == RESTART_EXIT_CODE
+    if frame_count < 2:
+        assert result.exit_code == RESTART_EXIT_CODE
+    else:
+        assert result.protocol_error
     assert result.ready is True
     assert result.commit_valid is expected
+
+
+def test_lifecycle_parser_rejects_frame_larger_than_pipe_buf() -> None:
+    state = supervisor_module._LifecycleState("boot-live", "secret-nonce")
+
+    state.feed(b"x" * 4097)
+
+    assert state.protocol_error == "lifecycle frame 超过 PIPE_BUF 安全上限"
 
 
 def test_runtime_readiness_is_boot_and_pid_scoped(tmp_path: Path) -> None:
@@ -393,6 +405,25 @@ def test_runtime_readiness_is_boot_and_pid_scoped(tmp_path: Path) -> None:
     assert (tmp_path / ".runtime-ready.json").exists()
 
 
+def test_runtime_readiness_publishes_private_stage_and_ready(
+    tmp_path: Path,
+) -> None:
+    read_fd, write_fd = os.pipe()
+    channel = SupervisorCommitChannel(write_fd, "boot-current", "n" * 64)
+    readiness = RuntimeReadiness(tmp_path, "boot-current", channel)
+    try:
+        readiness.mark_stage("core.ready")
+        readiness.mark_ready()
+        frames = [json.loads(line) for line in os.read(read_fd, 4096).splitlines()]
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+    assert [frame["type"] for frame in frames] == ["stage", "ready"]
+    assert frames[0]["stage"] == "core.ready"
+    assert frames[1]["pid"] == os.getpid()
+
+
 def test_stale_readiness_cannot_satisfy_new_boot(tmp_path: Path) -> None:
     (tmp_path / ".runtime-ready.json").write_text(
         json.dumps({"bootId": "old", "pid": 1, "state": "ready"})
@@ -411,6 +442,53 @@ def test_stale_readiness_cannot_satisfy_new_boot(tmp_path: Path) -> None:
     )
 
     assert result.ready is False
+    assert result.protocol_error == (
+        "Gateway 启动超时: stage=guardian.spawn deadline=0.050s"
+    )
+    assert child.poll() is not None
+
+
+def test_stage_flood_cannot_extend_startup_deadline(tmp_path: Path) -> None:
+    read_fd, write_fd = os.pipe()
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(2)"])
+    stopped = threading.Event()
+
+    def flood_stages() -> None:
+        elapsed_ms = 0
+        while not stopped.is_set():
+            frame = {
+                "type": "stage",
+                "bootId": "new",
+                "stage": "still.starting",
+                "elapsedMs": elapsed_ms,
+            }
+            try:
+                os.write(write_fd, (json.dumps(frame) + "\n").encode())
+            except (BrokenPipeError, OSError):
+                return
+            elapsed_ms += 1
+
+    writer = threading.Thread(target=flood_stages, daemon=True)
+    writer.start()
+    started_at = time.monotonic()
+    try:
+        result = _wait_child(
+            child,
+            read_fd=read_fd,
+            workspace=tmp_path,
+            boot_id="new",
+            nonce="secret",
+            readiness_timeout_s=0.05,
+        )
+    finally:
+        stopped.set()
+        os.close(write_fd)
+        writer.join(timeout=1)
+
+    assert time.monotonic() - started_at < 1
+    assert result.protocol_error == (
+        "Gateway 启动超时: stage=still.starting deadline=0.050s"
+    )
     assert child.poll() is not None
 
 
@@ -422,6 +500,9 @@ class _ReadinessProbe:
     def mark_ready(self) -> None:
         self.ready = True
         self.marked.set()
+
+    def mark_stage(self, _name: str) -> None:
+        pass
 
 
 def _runtime_with_probe(tmp_path: Path) -> tuple[AppRuntime, _ReadinessProbe]:
@@ -513,7 +594,8 @@ class _FakeSupervisorChild:
     def send_signal(self, signum: int) -> None:
         self.signals.append(signum)
 
-    def wait(self) -> int:
+    def wait(self, timeout: float | None = None) -> int:
+        _ = timeout
         return self.returncode
 
 
@@ -530,7 +612,8 @@ class _RunningSupervisorChild(_FakeSupervisorChild):
         self.running = False
         self.returncode = -signum
 
-    def wait(self) -> int:
+    def wait(self, timeout: float | None = None) -> int:
+        _ = timeout
         if self.running:
             raise AssertionError("child must receive pending stop before wait")
         return self.returncode
@@ -596,6 +679,47 @@ def test_supervisor_cleans_orphaned_boot_listener(tmp_path: Path) -> None:
             pass
 
 
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="依赖 /proc boot identity"
+)
+def test_boot_cleanup_never_kills_unknown_listener(tmp_path: Path) -> None:
+    script = tmp_path / "unknown_listener.py"
+    _ = script.write_text(
+        "import socket, sys\n"
+        "listener = socket.socket()\n"
+        "listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
+        "listener.bind(('127.0.0.1', int(sys.argv[1])))\n"
+        "listener.listen()\n"
+        "while True:\n"
+        "    connection, _ = listener.accept()\n"
+        "    connection.close()\n",
+        encoding="utf-8",
+    )
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+    unknown = subprocess.Popen(
+        [sys.executable, str(script), str(port)],
+        start_new_session=True,
+    )
+    try:
+        _wait_for_listener(port)
+        supervisor_module._cleanup_boot_processes(
+            boot_id="unrelated-boot",
+            gateway_group_id=None,
+            timeout_s=0.1,
+        )
+        assert unknown.poll() is None
+        with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+            pass
+    finally:
+        try:
+            os.killpg(unknown.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        unknown.wait(timeout=2)
+
+
 def _wait_for_listener(port: int) -> None:
     deadline = time.monotonic() + 2
     while True:
@@ -606,6 +730,127 @@ def _wait_for_listener(port: int) -> None:
             if time.monotonic() >= deadline:
                 raise AssertionError("listener did not start before timeout")
             time.sleep(0.02)
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="依赖 Linux pidfd 与 subreaper"
+)
+@pytest.mark.parametrize("owner_failure", ["supervisor", "guardian"])
+def test_boot_guardian_cleans_double_fork_listener_after_owner_failure(
+    tmp_path: Path,
+    owner_failure: str,
+) -> None:
+    """Supervisor 或 Guardian 单点退出都不能留下 setsid grandchild。"""
+
+    script = tmp_path / "guardian_gateway.py"
+    gateway_pid_path = tmp_path / "gateway.pid"
+    grandchild_pid_path = tmp_path / "grandchild.pid"
+    _ = script.write_text(
+        "import json, os, socket, time\n"
+        "from pathlib import Path\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    os.setsid()\n"
+        "    grandchild = os.fork()\n"
+        "    if grandchild > 0:\n"
+        "        os._exit(0)\n"
+        "    listener = socket.socket()\n"
+        "    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
+        "    listener.bind(('127.0.0.1', int(os.environ['TEST_PORT'])))\n"
+        "    listener.listen()\n"
+        "    Path(os.environ['GRANDCHILD_PID']).write_text(str(os.getpid()))\n"
+        "    while True:\n"
+        "        connection, _ = listener.accept()\n"
+        "        connection.close()\n"
+        "os.waitpid(pid, 0)\n"
+        "Path(os.environ['GATEWAY_PID']).write_text(str(os.getpid()))\n"
+        "while not Path(os.environ['GRANDCHILD_PID']).exists():\n"
+        "    time.sleep(0.01)\n"
+        "frame = {'type': 'ready', 'bootId': os.environ['AKASHIC_BOOT_ID'], "
+        "'pid': os.getpid()}\n"
+        "os.write(int(os.environ['AKASHIC_LIFECYCLE_FD']), "
+        "(json.dumps(frame) + '\\n').encode())\n"
+        "while True:\n"
+        "    time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+    boot_id = f"guardian-{owner_failure}-{os.getpid()}"
+    lifecycle_read_fd, lifecycle_write_fd = os.pipe()
+    lease_read_fd, lease_write_fd = os.pipe()
+    env = {
+        **os.environ,
+        "TEST_PORT": str(port),
+        "GATEWAY_PID": str(gateway_pid_path),
+        "GRANDCHILD_PID": str(grandchild_pid_path),
+    }
+    guardian = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "agent.background.boot_guardian",
+            "--main-path",
+            str(script),
+            "--config",
+            str(tmp_path / "config.toml"),
+            "--workspace",
+            str(tmp_path),
+            "--boot-id",
+            boot_id,
+            "--nonce",
+            "n" * 64,
+            "--lifecycle-fd",
+            str(lifecycle_write_fd),
+            "--lease-fd",
+            str(lease_read_fd),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        pass_fds=(lifecycle_write_fd, lease_read_fd),
+        start_new_session=True,
+    )
+    os.close(lifecycle_write_fd)
+    os.close(lease_read_fd)
+    try:
+        readable, _, _ = select.select([lifecycle_read_fd], [], [], 3)
+        assert readable, "Guardian Gateway 未发布 ready"
+        lifecycle = os.read(lifecycle_read_fd, 4096)
+        assert json.loads(lifecycle)["type"] == "ready"
+        gateway_pid = int(gateway_pid_path.read_text())
+        grandchild_pid = int(grandchild_pid_path.read_text())
+        _wait_for_listener(port)
+
+        if owner_failure == "supervisor":
+            os.close(lease_write_fd)
+            lease_write_fd = -1
+            assert guardian.wait(timeout=5) == 128 + signal.SIGTERM
+        else:
+            os.kill(guardian.pid, signal.SIGKILL)
+            assert guardian.wait(timeout=2) == -signal.SIGKILL
+            supervisor_module._cleanup_boot_processes(
+                boot_id=boot_id,
+                gateway_group_id=None,
+                timeout_s=2,
+            )
+
+        assert not supervisor_module._pid_exists(gateway_pid)
+        assert not supervisor_module._pid_exists(grandchild_pid)
+        with pytest.raises(OSError):
+            socket.create_connection(("127.0.0.1", port), timeout=0.2)
+    finally:
+        os.close(lifecycle_read_fd)
+        if lease_write_fd >= 0:
+            os.close(lease_write_fd)
+        if guardian.poll() is None:
+            os.killpg(guardian.pid, signal.SIGKILL)
+            guardian.wait(timeout=2)
+        supervisor_module._cleanup_boot_processes(
+            boot_id=boot_id,
+            gateway_group_id=None,
+            timeout_s=2,
+        )
 
 
 @pytest.mark.parametrize(
@@ -630,8 +875,15 @@ def test_supervisor_exit_code_contract(
         lambda *_args, **_kwargs: child,
     )
 
-    def wait_child(_child: Any, *, read_fd: int, **_kwargs: Any):
+    def wait_child(
+        _child: Any,
+        *,
+        read_fd: int,
+        lease_fd: int,
+        **_kwargs: Any,
+    ):
         os.close(read_fd)
+        os.close(lease_fd)
         return child_result
 
     monkeypatch.setattr(supervisor_module, "_wait_child", wait_child)
@@ -647,23 +899,11 @@ def test_supervisor_without_config_waits_for_settings_request(
     monkeypatch: pytest.MonkeyPatch,
     no_settings_server: None,
 ) -> None:
-    class DelayedRequestEvent:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def wait(self, _timeout: float) -> bool:
-            self.calls += 1
-            return self.calls == 3
-
-    request_event = DelayedRequestEvent()
-    bridge = SimpleNamespace(
-        request_event=request_event,
-        take_request=lambda: 1,
-    )
+    waits: list[bool] = []
     monkeypatch.setattr(
         supervisor_module,
-        "_SettingsRestartBridge",
-        lambda _timeout: bridge,
+        "_wait_initial_settings_request",
+        lambda *_args: (waits.append(True), 1)[1],
     )
     child = _FakeSupervisorChild(0)
     monkeypatch.setattr(supervisor_module.subprocess, "Popen", lambda *_args, **_kwargs: child)
@@ -673,10 +913,12 @@ def test_supervisor_without_config_waits_for_settings_request(
         _child: Any,
         *,
         read_fd: int,
+        lease_fd: int,
         report_settings_generation: int,
         **_kwargs: Any,
     ):
         os.close(read_fd)
+        os.close(lease_fd)
         observed.append(report_settings_generation)
         return supervisor_module._ChildResult(0, True, True)
 
@@ -686,7 +928,7 @@ def test_supervisor_without_config_waits_for_settings_request(
         config_path=tmp_path / "missing.toml",
         workspace=tmp_path,
     ) == 0
-    assert request_event.calls == 3
+    assert waits == [True]
     assert observed == [1]
 
 
@@ -705,8 +947,15 @@ def test_supervisor_stop_between_generations_does_not_spawn_child_two(
 
     monkeypatch.setattr(supervisor_module.subprocess, "Popen", launch)
 
-    def wait_child(_child: Any, *, read_fd: int, **_kwargs: Any):
+    def wait_child(
+        _child: Any,
+        *,
+        read_fd: int,
+        lease_fd: int,
+        **_kwargs: Any,
+    ):
         os.close(read_fd)
+        os.close(lease_fd)
         return supervisor_module._ChildResult(
             RESTART_EXIT_CODE,
             True,
@@ -774,6 +1023,7 @@ def test_supervisor_child_does_not_inherit_blocked_stop_signals(
     observed: dict[str, int] = {}
 
     def launch(_argv: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+        assert "preexec_fn" not in kwargs
         code = """
 import pathlib, sys, time
 pathlib.Path(sys.argv[1]).write_text(pathlib.Path('/proc/self/status').read_text())
@@ -793,6 +1043,7 @@ time.sleep(30)
         child: subprocess.Popen[bytes],
         *,
         read_fd: int,
+        lease_fd: int,
         **_kwargs: Any,
     ) -> supervisor_module._ChildResult:
         deadline = time.monotonic() + 2
@@ -807,6 +1058,7 @@ time.sleep(30)
         child.send_signal(signal.SIGTERM)
         exit_code = child.wait(timeout=2)
         os.close(read_fd)
+        os.close(lease_fd)
         return supervisor_module._ChildResult(exit_code, False, False)
 
     monkeypatch.setattr(supervisor_module, "_wait_child", inspect_and_stop)
@@ -834,6 +1086,62 @@ def test_settings_restart_bridge_waits_for_matching_ready_generation() -> None:
     thread.join(timeout=1)
 
     assert completed == [True]
+
+
+def test_supervised_gateway_skips_duplicate_startup_migration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[Path, Path]] = []
+    monkeypatch.setenv("AKASHIC_SUPERVISED", "1")
+    monkeypatch.setattr(
+        main_module,
+        "migrate_installation",
+        lambda config, workspace: calls.append((config, workspace)),
+    )
+
+    assert (
+        main_module._prepare_startup_migrations(
+            ["gateway"],
+            tmp_path / "config.toml",
+            tmp_path,
+        )
+        is None
+    )
+    assert calls == []
+
+
+def test_platform_boundary_exposes_supervisor_only_on_linux(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert main_module._supervisor_supported("linux")
+    assert not main_module._supervisor_supported("win32")
+    assert not main_module._supervisor_supported("darwin")
+
+    monkeypatch.setattr(supervisor_module.sys, "platform", "darwin")
+    with pytest.raises(RuntimeError, match="仅支持 Linux"):
+        run_supervisor(
+            config_path=tmp_path / "config.toml",
+            workspace=tmp_path,
+        )
+
+
+def test_settings_server_rejects_non_loopback_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = supervisor_module._SettingsRestartBridge(1)
+    monkeypatch.setenv("AKASHIC_SETTINGS_HOST", "0.0.0.0")
+    try:
+        with pytest.raises(RuntimeError, match="只允许 127.0.0.1"):
+            supervisor_module._start_settings_server(
+                tmp_path / "config.toml",
+                tmp_path,
+                bridge,
+            )
+    finally:
+        bridge.close()
 
 
 @pytest.mark.asyncio

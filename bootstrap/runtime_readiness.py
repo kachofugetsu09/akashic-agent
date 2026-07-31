@@ -4,21 +4,37 @@ import json
 import os
 from pathlib import Path
 
+from agent.restart import SupervisorCommitChannel
+
 
 class RuntimeReadiness:
     """发布并清理当前 supervised boot 的完整启动状态。"""
 
-    def __init__(self, workspace: Path, boot_id: str) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        boot_id: str,
+        lifecycle: SupervisorCommitChannel | None = None,
+    ) -> None:
         if not boot_id:
             raise ValueError("boot_id 不能为空")
         self.path = workspace / ".runtime-ready.json"
         self.boot_id = boot_id
         self.pid = os.getpid()
         self.ready = False
+        self.lifecycle = lifecycle
+
+    def mark_stage(self, name: str) -> None:
+        """把当前启动阶段发布到私有生命周期管道。"""
+
+        if self.lifecycle is not None:
+            self.lifecycle.stage(name)
 
     def mark_ready(self) -> None:
         """在完整 AppRuntime.start 成功后原子发布 readiness。"""
 
+        if self.lifecycle is not None:
+            self.lifecycle.ready(self.pid)
         payload = {
             "bootId": self.boot_id,
             "pid": self.pid,

@@ -1,5 +1,6 @@
 import asyncio
 import io
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -678,6 +679,30 @@ class _CloseFaultFile(io.BytesIO):
         super().close()
 
 
+class _FakeOwnedProcessGroup:
+    def __init__(self, process: _FakeProcess) -> None:
+        self.process = process
+
+    async def terminate(self, *, timeout_s: float) -> None:
+        if self.process.returncode is not None:
+            await self.process.wait()
+            return
+        self.process.terminate()
+        try:
+            await asyncio.wait_for(self.process.wait(), timeout=timeout_s)
+        except TimeoutError:
+            self.process.kill()
+            await self.process.wait()
+
+
+@pytest.fixture(autouse=True)
+def peer_process_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "agent.peer_agent.process_manager.OwnedProcessGroup.from_process",
+        lambda process: _FakeOwnedProcessGroup(process),
+    )
+
+
 def _manager(
     tmp_path: Path,
     requester: object,
@@ -700,6 +725,7 @@ def _manager(
 async def test_process_manager_reaps_process_and_log_on_terminate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("AKASHIC_BOOT_ID", "boot-peer")
     proc = _FakeProcess()
     captured: dict[str, object] = {}
     requester = SimpleNamespace(
@@ -727,6 +753,9 @@ async def test_process_manager_reaps_process_and_log_on_terminate(
     assert proc.wait_calls == 1
     assert not manager._procs
     assert captured["stdout"].closed  # type: ignore[union-attr]
+    assert captured["start_new_session"] is True
+    assert captured["env"]["PATH"] == os.environ["PATH"]  # type: ignore[index]
+    assert captured["env"]["AKASHIC_BOOT_ID"] == "boot-peer"  # type: ignore[index]
 
 
 @pytest.mark.asyncio

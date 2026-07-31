@@ -245,6 +245,8 @@ class AppRuntime:
         if self._started:
             return
         self._workspace_lock.acquire()
+        if self.readiness is not None:
+            self.readiness.mark_stage("workspace.locked")
         try:
             configure_default_shared_http_resources(self.http_resources)
             core_kwargs = (
@@ -274,6 +276,8 @@ class AppRuntime:
             self.peer_process_manager = self.core.peer_process_manager
             self.peer_poller = self.core.peer_poller
             await self.core.start()
+            if self.readiness is not None:
+                self.readiness.mark_stage("core.ready")
             self.workspace_mcp_watcher_task = (
                 self.core.workspace_mcp_watcher_task
             )
@@ -374,6 +378,8 @@ class AppRuntime:
                 plugin_manager.bind_service_switcher(
                     self.plugin_service_host.swap_plugin_services
                 )
+            if self.readiness is not None:
+                self.readiness.mark_stage("services.ready")
             if self.config.mobile_realtime.enabled:
                 from infra.mobile_realtime.gateway import (
                     build_mobile_gateway_runtime,
@@ -435,6 +441,8 @@ class AppRuntime:
                 plugin_channels=plugin_channels,
             )
             await self.channel_host.start_all()
+            if self.readiness is not None:
+                self.readiness.mark_stage("channels.ready")
             if plugin_manager is not None:
                 channel_bindings = {
                     plugin_id: generation.contributions.channels
@@ -578,6 +586,8 @@ class AppRuntime:
                 self.plugin_watcher.wake()
 
             self._install_plugin_reload_signal()
+            if self.readiness is not None:
+                self.readiness.mark_stage("runtime.started")
             self._started = True
         except (asyncio.CancelledError, Exception) as startup_error:
             try:
