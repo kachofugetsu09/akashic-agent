@@ -1,5 +1,6 @@
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from benchmark.harbor_v4flash.runtime_volume import (
     RUNTIME_MOUNT_PATH,
     RUNTIME_TOP_LEVEL,
     RuntimeVolumeError,
+    _builder_image_identity,
     _resolver_platform,
     build_runtime_volume,
     create_runtime_manifest,
@@ -209,6 +211,47 @@ def test_runtime_resolver_uses_explicit_manylinux_baseline() -> None:
     assert DEFAULT_BUILDER_IMAGE == "debian:bullseye-slim"
     assert _resolver_platform("linux/amd64") == "x86_64-manylinux_2_28"
     assert _resolver_platform("linux/arm64") == "aarch64-manylinux_2_28"
+
+
+def test_builder_image_id_reuses_local_immutable_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def run(command: list[str], *, text: bool = True):
+        commands.append(command)
+        if command[:3] == ["docker", "image", "inspect"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "Id": "sha256:builder",
+                            "RepoDigests": ["debian@sha256:repo"],
+                            "Os": "linux",
+                            "Architecture": "amd64",
+                        }
+                    ]
+                ),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="glibc 2.31\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        "benchmark.harbor_v4flash.runtime_volume._run",
+        run,
+    )
+
+    identity = _builder_image_identity("sha256:builder")
+
+    assert identity["id"] == "sha256:builder"
+    assert not any(command[:2] == ["docker", "pull"] for command in commands)
 
 
 def test_builder_rejects_glibc_newer_than_official_task_floor(

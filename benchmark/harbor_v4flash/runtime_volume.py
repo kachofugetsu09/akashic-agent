@@ -171,8 +171,9 @@ def _resolve_lock(
 def _builder_image_identity(reference: str) -> dict[str, object]:
     """冻结 builder image，并记录决定原生依赖兼容性的 glibc。"""
 
-    # 1. 显式 builder 命令才允许拉取镜像。
-    _run(["docker", "pull", reference])
+    # 1. 不可变 image ID 直接复用；浮动引用仍先拉取再冻结。
+    if not reference.startswith("sha256:"):
+        _run(["docker", "pull", reference])
 
     # 2. Docker image ID 和平台进入 recipe，tag 漂移会生成新 volume。
     inspected = _run(["docker", "image", "inspect", reference]).stdout
