@@ -41,8 +41,9 @@ python docker/debug/gate.py plan --base origin/main
 `shell_execution_contract` 在 change-gate 的只读 Arch Linux runtime 中运行，不读取
 宿主 `HOME` 或正式 workspace。普通路径覆盖短命令、非零退出、显式/默认 shell、
 login 开关、长命令增量输出和多 execution 隔离；edge case 覆盖 PTY 多次输入、等待
-取消、stop 与 initial/poll 竞态、进程树清理、输出 head/tail、recent-8 LRU、owner
-隔离、截止点退出和 active execution compaction pin。
+取消、stop 与 initial/poll 竞态、执行进程组清理、输出 head/tail、recent-8 LRU、owner
+隔离、截止点退出、主 ReAct/SubAgent active execution pin、turn owner 回收和 Drift
+owner 隔离。
 
 只运行该固定场景可使用：
 

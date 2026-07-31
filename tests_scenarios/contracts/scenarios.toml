@@ -43,6 +43,8 @@ command = [
   "tests/test_shell_tool.py",
   "tests/test_unified_exec.py",
   "tests/test_query_compaction.py::test_compaction_pins_live_execution_until_terminal_result",
+  "tests/test_tool_loop_guard.py::test_subagent_trim_pins_active_shell_result_until_terminal_call",
+  "tests/proactive_v2/test_drift.py::test_drift_shell_tools_isolate_tick_owners",
 ]
 observes = [
   "default_shell_argv",
@@ -52,10 +54,13 @@ observes = [
   "owner_isolation",
   "wait_cancellation",
   "stop_races",
-  "process_tree_cleanup",
+  "process_group_cleanup",
   "bounded_output",
   "capacity_pruning",
   "active_execution_compaction_pin",
+  "subagent_active_execution_pin",
+  "turn_owner_cleanup",
+  "drift_owner_isolation",
 ]
 mutants = []
 
