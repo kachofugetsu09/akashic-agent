@@ -469,9 +469,9 @@ plugin、marketplace、snapshot 等名称必须是安全单片段；resolved pat
 
 old text 不存在时失败；多次匹配而未声明 replace-all 时拒绝猜测。编辑保留 BOM、换行和 mode，并在锁内重读最新内容。
 
-### SH-001 Shell 生命周期有界
+### SH-001 Shell 使用统一执行句柄管理进程生命周期
 
-前台超时或取消终止整个进程树；后台任务有硬上限、状态查询和显式 stop。路径字符串检查只防误操作，不得冒充安全沙箱；运行不可信命令使用容器、namespace 和最小权限。
+Shell 在短等待窗口内返回已完成结果；命令仍运行时返回当前对话 owner 可继续读取和写入的 `execution_id`。该 ID 是 manager 内一次命令执行的句柄，不是 OS PID，也不是 Akashic 对话 session。初始等待或后续等待被取消不得隐式杀死已注册进程；只有硬超时、显式 stop、当前 query 结束、进程容量回收或 runtime shutdown 才终止该 execution 的平台执行边界：Unix 是启动时创建的 process group，Windows 是 `taskkill /T` 可见的后代集合。显式 `setsid`、daemonize 或外部服务管理器会脱离这个边界，不得声称已被 manager 回收；需要强制覆盖这类命令时必须使用具备 cgroup/Job Object 所有权的受控容器或 runner。每次读取只返回上次读取后的新增输出，完整输出保存在临时诊断日志中。路径字符串检查只防误操作，不得冒充安全沙箱；运行不可信命令使用容器、namespace 和最小权限。
 
 ## 12. 调度、主动流程、备份和控制面
 
