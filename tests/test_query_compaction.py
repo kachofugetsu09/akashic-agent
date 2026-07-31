@@ -341,16 +341,31 @@ class _LoopProvider:
     hard_input_tokens = 900
 
     def __init__(self, *, overflow_once: bool = False) -> None:
+        first_usage = (
+            None if overflow_once else ModelUsage(input_tokens=10, output_tokens=2)
+        )
+        second_usage = (
+            None if overflow_once else ModelUsage(input_tokens=730, output_tokens=2)
+        )
+        final_usage = (
+            None if overflow_once else ModelUsage(input_tokens=10, output_tokens=2)
+        )
         self._responses = [
             LLMResponse(
                 content="",
                 tool_calls=[ToolCall("call-1", "probe", {})],
+                usage=first_usage,
             ),
             LLMResponse(
                 content="",
                 tool_calls=[ToolCall("call-2", "probe", {})],
+                usage=second_usage,
             ),
-            LLMResponse(content="完成", tool_calls=[]),
+            LLMResponse(
+                content="完成",
+                tool_calls=[],
+                usage=final_usage,
+            ),
         ]
         self.overflow_once = overflow_once
         self.overflow_raised = False
@@ -375,7 +390,10 @@ class _LoopProvider:
     async def chat(self, **kwargs: Any) -> LLMResponse:
         if not kwargs["tools"]:
             self.summary_calls.append(deepcopy(kwargs))
-            return LLMResponse(content="## Goal\n完成 probe 流程")
+            return LLMResponse(
+                content="## Goal\n完成 probe 流程",
+                usage=ModelUsage(input_tokens=11, output_tokens=3),
+            )
         self.real_calls.append(deepcopy(kwargs))
         if (
             self.overflow_once
@@ -445,6 +463,9 @@ def test_reasoner_compacts_before_provider_without_tool_side_effects() -> None:
     assert provider.summary_calls[0]["tools"] == []
     assert "cache_namespace" not in provider.summary_calls[0]
     assert _contains_compaction_pair(provider.real_calls[-1]["messages"])
+    assert result.metadata["react_stats"]["model_usage"]["request_count"] == 4
+    assert result.metadata["react_stats"]["model_usage"]["input_tokens"] == 761
+    assert result.metadata["react_stats"]["model_usage"]["output_tokens"] == 9
 
 
 def test_reasoner_forces_one_compaction_after_provider_overflow() -> None:
@@ -458,6 +479,7 @@ def test_reasoner_forces_one_compaction_after_provider_overflow() -> None:
     assert len(provider.summary_calls) == 1
     assert result.metadata["react_compaction"]["trigger"] == "context_overflow"
     assert _contains_compaction_pair(provider.real_calls[-1]["messages"])
+    assert result.metadata["react_stats"]["model_usage"]["request_count"] == 4
 
 
 class _ImmediateOverflowProvider(_LoopProvider):

@@ -1398,6 +1398,8 @@ class DefaultReasoner(Reasoner):
                 pending_start=batch_start,
                 tools=tool_schemas,
             )
+            if prepared.compacted:
+                react_usages.append(prepared.summary_usage or ModelUsage())
             batch_start = prepared.pending_start
             react_input_samples.append(prepared.estimated_tokens)
             logger.info(
@@ -1429,6 +1431,7 @@ class DefaultReasoner(Reasoner):
                     trigger="context_overflow",
                     force=True,
                 )
+                react_usages.append(forced.summary_usage or ModelUsage())
                 batch_start = forced.pending_start
                 react_input_samples[-1] = forced.estimated_tokens
                 request_message_count = len(messages)
@@ -1478,6 +1481,10 @@ class DefaultReasoner(Reasoner):
                     pending_start=batch_start,
                     tools=tool_schemas,
                 )
+                if retry_prepared.compacted:
+                    react_usages.append(
+                        retry_prepared.summary_usage or ModelUsage()
+                    )
                 batch_start = retry_prepared.pending_start
                 request_message_count = len(messages)
                 try:
@@ -1500,6 +1507,7 @@ class DefaultReasoner(Reasoner):
                         trigger="context_overflow",
                         force=True,
                     )
+                    react_usages.append(forced.summary_usage or ModelUsage())
                     batch_start = forced.pending_start
                     request_message_count = len(messages)
                     retry_response = await self._llm.provider.chat(

@@ -189,6 +189,7 @@ class PreparedQueryContext:
     estimated_tokens: int
     estimate_quality: Literal["approximate", "exact_plus_delta"]
     compacted: bool
+    summary_usage: ModelUsage | None
 
 
 class _ContextTokenMeter:
@@ -305,21 +306,21 @@ class QueryCompactor:
         estimated, quality = self._meter.estimate(self._provider, messages, tools)
         soft_limit = self._provider.compaction_trigger_tokens
         if not force and (soft_limit <= 0 or estimated < soft_limit):
-            return PreparedQueryContext(pending_start, estimated, quality, False)
+            return PreparedQueryContext(pending_start, estimated, quality, False, None)
 
         # 2. 至少保留最近一个完整批次；没有可淘汰前缀时推迟压缩。
         compact_count = self._select_compact_count()
         if compact_count <= 0:
             if force:
                 raise ContextCompactionError("context_compaction_no_closed_prefix")
-            return PreparedQueryContext(pending_start, estimated, quality, False)
+            return PreparedQueryContext(pending_start, estimated, quality, False, None)
         if pending_start < 0 or pending_start > len(messages):
             raise ValueError("pending_start 超出当前 query 消息范围")
 
         evicted = self._completed_batches[:compact_count]
         retained = self._completed_batches[compact_count:]
         pending = [_copy_message(item) for item in messages[pending_start:]]
-        summary = await self._summarize(evicted)
+        summary, summary_usage = await self._summarize(evicted)
         generation = 1 if self._compaction is None else self._compaction.generation + 1
         compacted_groups = compact_count + (
             self._compaction.compacted_tool_groups
@@ -373,7 +374,13 @@ class QueryCompactor:
         self._completed_batches = retained
         messages[:] = rebuilt
         self._meter.invalidate()
-        return PreparedQueryContext(len(prefix), after, "approximate", True)
+        return PreparedQueryContext(
+            len(prefix),
+            after,
+            "approximate",
+            True,
+            summary_usage,
+        )
 
     def _select_compact_count(self) -> int:
         """Keep a recent suffix sized from the model window."""
@@ -396,7 +403,10 @@ class QueryCompactor:
             max(1, len(self._completed_batches) - keep_count),
         )
 
-    async def _summarize(self, evicted: list[list[dict]]) -> str:
+    async def _summarize(
+        self,
+        evicted: list[list[dict]],
+    ) -> tuple[str, ModelUsage | None]:
         """Generate one structured handoff from previous summary and evicted batches."""
 
         # 1. 序列化受控输入，避免单个工具结果占满 summary 请求。
@@ -431,7 +441,7 @@ class QueryCompactor:
         summary = (response.content or "").strip()
         if not summary or response.tool_calls:
             raise ContextCompactionError("context_compaction_summary_invalid")
-        return summary
+        return summary, response.usage
 
 
 def _tool_schema_digest(tools: list[dict]) -> str:
