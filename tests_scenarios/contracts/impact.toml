@@ -252,7 +252,7 @@ scenarios = ["contract_catalog"]
 [groups.evaluation]
 priority = "p2"
 requirements = ["TST-001", "TST-002"]
-paths = ["eval/**"]
+paths = ["benchmark/**", "eval/**"]
 depends_on = ["runtime"]
 scenarios = ["contract_catalog"]
 
