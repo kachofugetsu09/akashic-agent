@@ -142,6 +142,9 @@ const LazyMobileShowcase = lazy(() =>
 const LazySharedChatShowcase = lazy(() =>
   import("./shared-chat-showcase").then(({ SharedChatShowcase }) => ({ default: SharedChatShowcase })),
 );
+const LazyDrawerIslandShowcase = lazy(() =>
+  import("./drawer-island-showcase").then(({ DrawerIslandShowcase }) => ({ default: DrawerIslandShowcase })),
+);
 const LazySettingsApp = lazy(() =>
   import("./settings-app").then(({ SettingsApp }) => ({ default: SettingsApp })),
 );
@@ -1246,12 +1249,15 @@ function formatMessageTime(value: string) {
 const preview = new URLSearchParams(window.location.search).get("preview");
 const isMobileShowcase = preview === "mobile";
 const isSharedChatShowcase = preview === "chat";
+const isDrawerIslandShowcase = preview === "drawer-islands";
 const rootApp = window.location.port === "6321"
   ? <LazySettingsApp />
   : isMobileShowcase
     ? <LazyMobileShowcase />
     : isSharedChatShowcase
       ? <LazySharedChatShowcase />
+      : isDrawerIslandShowcase
+        ? <LazyDrawerIslandShowcase />
     : <App />;
 
 createRoot(document.getElementById("root")!).render(

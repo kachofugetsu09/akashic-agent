@@ -2,17 +2,19 @@ import "./mobile-polyfills";
 
 import React, {
   lazy,
+  startTransition,
   Suspense,
   type ReactNode,
   useCallback,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import { createRoot } from "react-dom/client";
-import { useStickToBottomContext } from "use-stick-to-bottom";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   AlertCircle,
   ArchiveX,
@@ -51,11 +53,6 @@ import {
   MessageReplyReference,
   SharedMessageActions,
 } from "./message-actions";
-import {
-  Conversation,
-  ConversationContent,
-  ConversationEmptyState,
-} from "@/components/ai-elements/conversation";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   Dialog,
@@ -96,19 +93,20 @@ import {
   normalizeMobileComposerDraftText,
   normalizeMobileSearchText,
   reconcileMobileMessageSelection,
+  reconcileMobileSnapshotMessages,
   resolveMobileComposerDraft,
   resolveMobileReplyNavigationTarget,
   selectableMobileMessages,
   shouldClearAcceptedMobileComposerDraft,
   shouldClearMobileSelectionAfterShare,
   shouldSubmitMobileComposerKey,
-  updateMobileReadingRestoreTarget,
   updateMobileSearchIndex,
   type MobileSearchIndexEntry,
   type MobileComposerDraft,
   type MobileComposerDraftWrite,
 } from "./mobile-message-state";
 import type { AgentBlock, ChatMessage } from "./main";
+import { messageNeedsMarkdown } from "./message-rendering-policy";
 import {
   pushMobileSurface,
   readMobileSurfaceHistoryState,
@@ -122,7 +120,7 @@ const LazyChatMessageView = lazy(() =>
   import("./message-view").then(({ ChatMessageView }) => ({ default: ChatMessageView })),
 );
 const LazyMessageResponse = lazy(() =>
-  import("@/components/ai-elements/message").then(({ MessageResponse }) => ({ default: MessageResponse })),
+  import("@/components/ai-elements/message-response").then(({ MessageResponse }) => ({ default: MessageResponse })),
 );
 
 type ConnectionStatus = "connecting" | "ready" | "degraded" | "reconnecting" | "disconnected";
@@ -187,6 +185,10 @@ interface MobileUnreadState {
   count: number;
 }
 
+interface MobileConversationHandle {
+  jumpToMessage(messageId: string, focus?: boolean): void;
+}
+
 interface MobileSession {
   id: string;
   title: string;
@@ -205,6 +207,10 @@ interface MobileStreamPatch {
   messageIndex: number;
   message: MobileMessage;
 }
+
+type MobileStatePatch = Omit<MobileSnapshot, "protocolVersion" | "messages"> & {
+  protocolVersion: 1;
+};
 
 interface MobileReadingPosition {
   messageId: string;
@@ -712,6 +718,19 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
   };
 }
 
+/** Validate a native control-state patch while reusing the full snapshot boundary schema. */
+function parseMobileStatePatch(value: unknown): MobileStatePatch {
+  const raw = requireRecord(value, "statePatch");
+  if (raw.protocolVersion !== 1) {
+    throw new Error(`不支持的 state patch 版本: ${String(raw.protocolVersion)}`);
+  }
+  const parsed = parseMobileSnapshot({ ...raw, protocolVersion: 7, messages: [] });
+  const { messages, protocolVersion, ...state } = parsed;
+  void messages;
+  void protocolVersion;
+  return { protocolVersion: 1, ...state };
+}
+
 function parseMobilePluginCatalog(value: unknown): MobilePluginCatalog {
   const raw = requireRecord(value, "pluginCatalog");
   const revision = requireString(raw.catalogRevision, "pluginCatalog.catalogRevision");
@@ -778,6 +797,7 @@ declare global {
     AkashicMobile?: {
       receiveSnapshot(snapshot: unknown): void;
       receiveStreamPatch(patch: unknown): void;
+      receiveStatePatch(patch: unknown): void;
       receivePluginCatalog(catalog: unknown): void;
       receivePluginUiResult(result: unknown): void;
       receiveSendResult(requestId: string, accepted: boolean): void;
@@ -823,10 +843,10 @@ function MobileNativeApp() {
   const searchOpenRef = useRef(false);
   const normalizedSearchQueryRef = useRef("");
   const messageElementsRef = useRef(new Map<string, HTMLDivElement>());
+  const conversationRef = useRef<MobileConversationHandle>(null);
   const copiedTimerRef = useRef<number | null>(null);
   const missingReplyTimerRef = useRef<number | null>(null);
   const replyAnnouncementTimerRef = useRef<number | null>(null);
-  const searchFocusTimerRef = useRef<number | null>(null);
   const searchHighlightTimerRef = useRef<number | null>(null);
   const previousSessionIdRef = useRef<string | undefined>(undefined);
   const handledNavigationTargetRef = useRef<string | undefined>(undefined);
@@ -1030,7 +1050,17 @@ function MobileNativeApp() {
               false,
             ));
           }
-          setSnapshot(nextSnapshot);
+          const publishSnapshot = () => setSnapshot((current) => {
+            if (!current || current.selectedSessionId !== nextSnapshot.selectedSessionId) {
+              return nextSnapshot;
+            }
+            return {
+              ...nextSnapshot,
+              messages: reconcileMobileSnapshotMessages(current.messages, nextSnapshot.messages),
+            };
+          });
+          if (snapshotAccepted) startTransition(publishSnapshot);
+          else publishSnapshot();
           snapshotAccepted = true;
           if (requestTimer !== null) window.clearTimeout(requestTimer);
         });
@@ -1069,6 +1099,32 @@ function MobileNativeApp() {
               ));
             }
             return nextSnapshot;
+          });
+        });
+      },
+      receiveStatePatch(next) {
+        let patch: MobileStatePatch;
+        try {
+          patch = parseMobileStatePatch(next);
+          setSnapshotError(null);
+        } catch (error) {
+          console.error("[mobile] rejected native state patch", error);
+          setSnapshotError(error instanceof Error ? error.message : "原生状态 patch 无效");
+          return;
+        }
+        startTransition(() => {
+          setSnapshot((current) => {
+            if (
+              current === null ||
+              current.selectedSessionId !== patch.selectedSessionId ||
+              current.projectionGeneration !== patch.projectionGeneration
+            ) {
+              window.AkashicNative?.requestSnapshot();
+              return current;
+            }
+            const { protocolVersion, ...state } = patch;
+            void protocolVersion;
+            return { ...current, ...state };
           });
         });
       },
@@ -1153,11 +1209,23 @@ function MobileNativeApp() {
         return true;
       },
     };
-    const receivePluginMessage = (event: MessageEvent<unknown>) => {
+    const receiveNativeMessage = (event: MessageEvent<unknown>) => {
       if (typeof event.data !== "string") return;
       try {
-        const message = requireRecord(JSON.parse(event.data), "pluginMessage");
-        const type = requireString(message.type, "pluginMessage.type");
+        const message = requireRecord(JSON.parse(event.data), "nativeMessage");
+        const type = requireString(message.type, "nativeMessage.type");
+        if (type === "mobile.snapshot") {
+          window.AkashicMobile?.receiveSnapshot(message.payload);
+          return;
+        }
+        if (type === "mobile.stream-patch") {
+          window.AkashicMobile?.receiveStreamPatch(message.payload);
+          return;
+        }
+        if (type === "mobile.state-patch") {
+          window.AkashicMobile?.receiveStatePatch(message.payload);
+          return;
+        }
         if (type === "plugin.catalog") {
           window.AkashicMobile?.receivePluginCatalog(message.payload);
           return;
@@ -1166,12 +1234,12 @@ function MobileNativeApp() {
           window.AkashicMobile?.receivePluginUiResult(message.payload);
           return;
         }
-        throw new Error(`pluginMessage.type 无效: ${type}`);
+        throw new Error(`nativeMessage.type 无效: ${type}`);
       } catch (error) {
-        console.error("[mobile] rejected native plugin message", error);
+        console.error("[mobile] rejected native message", error);
       }
     };
-    window.addEventListener("message", receivePluginMessage);
+    window.addEventListener("message", receiveNativeMessage);
     window.AkashicNative?.reportReady();
     requestSnapshot();
     return () => {
@@ -1179,7 +1247,7 @@ function MobileNativeApp() {
       if (patchFrame !== null) cancelAnimationFrame(patchFrame);
       if (requestTimer !== null) window.clearTimeout(requestTimer);
       window.removeEventListener("popstate", handlePopState);
-      window.removeEventListener("message", receivePluginMessage);
+      window.removeEventListener("message", receiveNativeMessage);
       window.history.scrollRestoration = previousScrollRestoration;
       delete window.AkashicMobile;
     };
@@ -1310,7 +1378,6 @@ function MobileNativeApp() {
     if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
     if (missingReplyTimerRef.current !== null) window.clearTimeout(missingReplyTimerRef.current);
     if (replyAnnouncementTimerRef.current !== null) window.clearTimeout(replyAnnouncementTimerRef.current);
-    if (searchFocusTimerRef.current !== null) window.clearTimeout(searchFocusTimerRef.current);
     if (searchHighlightTimerRef.current !== null) window.clearTimeout(searchHighlightTimerRef.current);
   }, []);
 
@@ -1335,18 +1402,8 @@ function MobileNativeApp() {
     : searchResults.findIndex((message) => message.id === searchTargetId);
 
   const jumpToMessage = useCallback((messageId: string, focus = false) => {
-    // 1. 按距离选择短平滑跳转或直接定位
-    const element = messageElementsRef.current.get(messageId);
-    if (!element) return;
-    if (searchFocusTimerRef.current !== null) {
-      window.clearTimeout(searchFocusTimerRef.current);
-      searchFocusTimerRef.current = null;
-    }
-    const distance = Math.abs(element.getBoundingClientRect().top - window.innerHeight / 2);
-    element.scrollIntoView({
-      block: "center",
-      behavior: distance <= window.innerHeight * 2 ? "smooth" : "auto",
-    });
+    // 1. 由虚拟列表先挂载目标行，再完成定位和焦点恢复
+    conversationRef.current?.jumpToMessage(messageId, focus);
 
     // 2. 点亮目标状态层并恢复无障碍焦点
     setHighlightedMessageId(messageId);
@@ -1355,12 +1412,6 @@ function MobileNativeApp() {
       setHighlightedMessageId((current) => current === messageId ? null : current);
       searchHighlightTimerRef.current = null;
     }, 1300);
-    if (focus) {
-      searchFocusTimerRef.current = window.setTimeout(() => {
-        element.focus({ preventScroll: true });
-        searchFocusTimerRef.current = null;
-      }, 320);
-    }
   }, []);
 
   useEffect(() => {
@@ -1395,10 +1446,6 @@ function MobileNativeApp() {
     }
     if (sessionId === previousSessionIdRef.current) return;
     previousSessionIdRef.current = sessionId;
-    if (searchFocusTimerRef.current !== null) {
-      window.clearTimeout(searchFocusTimerRef.current);
-      searchFocusTimerRef.current = null;
-    }
     setSearchOpen(false);
     searchOpenRef.current = false;
     setSearchQuery("");
@@ -1572,10 +1619,6 @@ function MobileNativeApp() {
     requestAnimationFrame(() => searchInputRef.current?.focus());
   };
   const closeSearch = () => {
-    if (searchFocusTimerRef.current !== null) {
-      window.clearTimeout(searchFocusTimerRef.current);
-      searchFocusTimerRef.current = null;
-    }
     searchOpenRef.current = false;
     normalizedSearchQueryRef.current = "";
     setSearchOpen(false);
@@ -1778,75 +1821,38 @@ function MobileNativeApp() {
           <section className="mobile-plugin-dashboard" aria-label="插件看板">
             <MobilePluginDashboard pluginId={surface.pluginId} />
           </section>
-        ) : (
-        <div className={`mobile-main-content ${replyTarget ? "replying" : ""} ${searchOpen ? "searching" : ""} ${selectionActive ? "selecting" : ""} ${queueOpen && snapshot.composer.pendingMessages.length > 1 ? "queueing" : ""} ${selectedSessionUnavailable ? "session-unavailable" : ""}`} inert={drawerOpen ? true : undefined}>
-          <Conversation
-            key={snapshot.selectedSessionId ?? "empty"}
-            className="mobile-conversation"
-            initial="instant"
-          >
-            <ConversationContent className="mobile-conversation__content">
-              {messages.length === 0 ? (
-                <ConversationEmptyState className="mobile-empty">
-                  <h1>开始一段新对话</h1>
-                  <p>消息会通过电脑上的 Akashic 实时处理。</p>
-                </ConversationEmptyState>
-              ) : (
-                messages.map((message, index) => {
-                  const source = snapshot.messages[index];
-                  const previous = snapshot.messages[index - 1];
-                  return (
-                    <MobileMessageRow
-                      key={message.id}
-                      source={source}
-                      message={message}
-                      startsDay={!previous || !sameLocalDay(previous.createdAt, source.createdAt)}
-                      followsSameRole={previous?.role === source.role}
-                      unreadCount={source.id === unreadState.firstMessageId ? unreadState.count : 0}
-                      highlighted={highlightedMessageId === source.id}
-                      selected={selectedMessageIds.has(source.id)}
-                      selectionActive={selectionActive}
-                      canReply={mobileMessageCanReply(source, snapshot.selectedSessionId)}
-                      copied={copiedMessageId === source.id}
-                      deliveryActionBusy={recoveringMessageIds.has(source.id)}
-                      replySourceUnavailable={missingReplySourceId === source.id}
-                      selectedSessionUnavailable={selectedSessionUnavailable}
-                      messageElementsRef={messageElementsRef}
-                      onEnterSelection={enterSelection}
-                      onToggleSelection={toggleSelection}
-                      onReplyToMessage={replyToMessage}
-                      onNavigateToReply={navigateToReply}
-                      onCopyMessage={copyMessage}
-                      onRetryMessageDelivery={retryMessageDelivery}
-                    />
-                  );
-                })
-              )}
-            </ConversationContent>
-            <MobileConversationBehavior
-              sessionId={snapshot.selectedSessionId}
-              sourceMessages={snapshot.messages}
-              chatMessages={messages}
-              streaming={snapshot.composer.isStreaming}
-              projectionGeneration={snapshot.projectionGeneration}
-              resyncing={snapshot.composer.isResyncing}
-              suspended={searchOpen || selectionActive}
-              forceScrollToken={sendScrollRequest}
-              readingPosition={snapshot.readingPosition}
-              messageElementsRef={messageElementsRef}
-              onUnreadChange={setUnreadState}
-            />
-            <MobileSearchScrollBehavior active={searchOpen} targetMessageId={searchTargetId} />
-            <MobileSearchTextHighlight query={searchQuery} messageId={searchTargetId} />
-            <MobileScrollButton
-              unread={unreadState}
-              unreadAnchorVisited={unreadAnchorVisited}
-              onVisitUnread={(messageId) => {
-                setUnreadAnchorVisited(true);
-                jumpToMessage(messageId, false);
-              }}
-            />
-          </Conversation>
+        ) : null}
+        <div
+          className={`mobile-main-content ${surface.kind === "chat" ? "" : "surface-hidden"} ${replyTarget ? "replying" : ""} ${searchOpen ? "searching" : ""} ${selectionActive ? "selecting" : ""} ${queueOpen && snapshot.composer.pendingMessages.length > 1 ? "queueing" : ""} ${selectedSessionUnavailable ? "session-unavailable" : ""}`}
+          aria-hidden={surface.kind === "chat" ? undefined : true}
+          inert={drawerOpen || surface.kind !== "chat" ? true : undefined}
+        >
+          <MobileVirtualConversation
+            ref={conversationRef}
+            snapshot={snapshot}
+            messages={messages}
+            selectedMessageIds={selectedMessageIds}
+            recoveringMessageIds={recoveringMessageIds}
+            selectionActive={selectionActive}
+            selectedSessionUnavailable={selectedSessionUnavailable}
+            highlightedMessageId={highlightedMessageId}
+            copiedMessageId={copiedMessageId}
+            missingReplySourceId={missingReplySourceId}
+            suspended={searchOpen || selectionActive}
+            forceScrollToken={sendScrollRequest}
+            unread={unreadState}
+            unreadAnchorVisited={unreadAnchorVisited}
+            messageElementsRef={messageElementsRef}
+            onUnreadChange={setUnreadState}
+            onVisitUnread={() => setUnreadAnchorVisited(true)}
+            onEnterSelection={enterSelection}
+            onToggleSelection={toggleSelection}
+            onReplyToMessage={replyToMessage}
+            onNavigateToReply={navigateToReply}
+            onCopyMessage={copyMessage}
+            onRetryMessageDelivery={retryMessageDelivery}
+          />
+          <MobileSearchTextHighlight query={searchQuery} messageId={searchTargetId} />
 
           {searchOpen ? (
             <MobileSearchNavigator
@@ -1878,7 +1884,6 @@ function MobileNativeApp() {
             />
           )}
         </div>
-        )}
       </main>
     </TooltipProvider>
   );
@@ -1929,6 +1934,10 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
   onRetryMessageDelivery: (messageId: string) => void;
 }) {
   const pluginTurn = !selectedSessionUnavailable && isPluginTurnMessage(message);
+  const requiresFullRenderer = source.reply !== undefined
+    || source.blocks.length > 0
+    || source.attachments.length > 0
+    || messageNeedsMarkdown(source.content);
   return (
     <>
       {startsDay ? <MessageDateDivider createdAt={source.createdAt} /> : null}
@@ -1951,27 +1960,28 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
         onToggleSelection={() => onToggleSelection(source.id)}
       >
         <div className="message-interaction-surface">
-          <Suspense fallback={<div className="mobile-message-render-fallback" aria-hidden="true" />}>
-            <LazyChatMessageView
-              message={message}
-              onCopyToolDetail={copyToolDetail}
-              leadingContent={source.reply ? (
-                <MessageReplyReference
-                  role={source.reply.role}
-                  preview={source.reply.preview}
-                  unavailable={replySourceUnavailable}
-                  onNavigate={() => onNavigateToReply(source.id, source.reply!)}
-                />
-              ) : undefined}
-              attachmentContent={<MobileMessageAttachments attachments={source.attachments} />}
-              processStartContent={pluginTurn ? (
-                <MobilePluginSlot
-                  name="turn.before_reasoning"
-                  sessionId={source.sessionId}
-                  messageId={message.id}
-                  turnId={pluginTurnId(message)}
-                />
-              ) : undefined}
+          {requiresFullRenderer ? (
+            <Suspense fallback={<MobilePlainMessageView role={source.role} content={source.content} />}>
+              <LazyChatMessageView
+                message={message}
+                onCopyToolDetail={copyToolDetail}
+                leadingContent={source.reply ? (
+                  <MessageReplyReference
+                    role={source.reply.role}
+                    preview={source.reply.preview}
+                    unavailable={replySourceUnavailable}
+                    onNavigate={() => onNavigateToReply(source.id, source.reply!)}
+                  />
+                ) : undefined}
+                attachmentContent={<MobileMessageAttachments attachments={source.attachments} />}
+                processStartContent={pluginTurn ? (
+                  <MobilePluginSlot
+                    name="turn.before_reasoning"
+                    sessionId={source.sessionId}
+                    messageId={message.id}
+                    turnId={pluginTurnId(message)}
+                  />
+                ) : undefined}
               beforeProcessBlock={(block) => pluginTurn && block.kind === "tool" ? (
                 <MobilePluginSlot
                   name="turn.before_tool"
@@ -1989,8 +1999,21 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
                   turnId={pluginTurnId(message)}
                 />
               ) : undefined}
-            />
-          </Suspense>
+              />
+            </Suspense>
+          ) : (
+            <>
+              <MobilePlainMessageView role={source.role} content={source.content} />
+              {pluginTurn ? (
+                <MobilePluginSlot
+                  name="turn.after_answer"
+                  sessionId={source.sessionId}
+                  messageId={message.id}
+                  turnId={pluginTurnId(message)}
+                />
+              ) : null}
+            </>
+          )}
           <MessageMeta
             source={source}
             copied={copied}
@@ -2005,6 +2028,16 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
     </>
   );
 });
+
+function MobilePlainMessageView({ role, content }: { role: MobileMessage["role"]; content: string }) {
+  return (
+    <div className={`mobile-plain-message-view ${role}`}>
+      <div className="mobile-plain-message-view__content">
+        <p>{content}</p>
+      </div>
+    </div>
+  );
+}
 
 function copyToolDetail(text: string) {
   window.AkashicNative?.copyText(text);
@@ -2261,6 +2294,7 @@ function MobileDrawer({
             icon: <LibraryBig size={20} />,
             label: "知识与运行",
             description: "记忆 · MCP · 定时任务",
+            featured: true,
             onActivate: onOpenRuntime,
           },
           {
@@ -3380,253 +3414,281 @@ function replyPreview(message: MobileMessage) {
   return message.content.trim().replace(/\s+/g, " ").slice(0, 512) || "[无文字消息]";
 }
 
-function MobileConversationBehavior({
-  sessionId,
-  sourceMessages,
-  chatMessages,
-  streaming,
-  projectionGeneration,
-  resyncing,
-  suspended,
-  forceScrollToken,
-  readingPosition,
-  messageElementsRef,
-  onUnreadChange,
-}: {
-  sessionId?: string;
-  sourceMessages: MobileMessage[];
-  chatMessages: ChatMessage[];
-  streaming: boolean;
-  projectionGeneration: number;
-  resyncing: boolean;
+interface MobileVirtualConversationProps {
+  snapshot: MobileSnapshot;
+  messages: ChatMessage[];
+  selectedMessageIds: Set<string>;
+  recoveringMessageIds: Set<string>;
+  selectionActive: boolean;
+  selectedSessionUnavailable: boolean;
+  highlightedMessageId: string | null;
+  copiedMessageId: string | null;
+  missingReplySourceId: string | null;
   suspended: boolean;
   forceScrollToken: number;
-  readingPosition?: MobileReadingPosition;
+  unread: MobileUnreadState;
+  unreadAnchorVisited: boolean;
   messageElementsRef: React.RefObject<Map<string, HTMLDivElement>>;
   onUnreadChange: (state: MobileUnreadState) => void;
-}) {
-  useMobileUnreadTracking(
-    sessionId,
-    sourceMessages,
-    projectionGeneration,
-    resyncing,
-    suspended,
-    onUnreadChange,
-  );
-  useMobileAutoScroll(sessionId, chatMessages, streaming, suspended, forceScrollToken);
-  useMobileReadingPosition(
-    sessionId,
-    sourceMessages,
-    projectionGeneration,
-    resyncing,
-    readingPosition,
-    messageElementsRef,
-    suspended,
-  );
-  return null;
+  onVisitUnread: () => void;
+  onEnterSelection: (messageId: string) => void;
+  onToggleSelection: (messageId: string) => void;
+  onReplyToMessage: (message: MobileMessage) => void;
+  onNavigateToReply: (sourceMessageId: string, reply: MobileReply) => void;
+  onCopyMessage: (message: MobileMessage) => void;
+  onRetryMessageDelivery: (messageId: string) => void;
 }
 
-/** 以可见消息为锚点持久化每个会话的阅读位置，并在回到会话时恢复。 */
-function useMobileReadingPosition(
-  sessionId: string | undefined,
-  messages: MobileMessage[],
-  projectionGeneration: number,
-  resyncing: boolean,
-  readingPosition: MobileReadingPosition | undefined,
-  messageElementsRef: React.RefObject<Map<string, HTMLDivElement>>,
-  suspended: boolean,
-) {
-  const { isAtBottom, scrollRef, scrollToBottom, stopScroll } = useStickToBottomContext();
-  const restoredProjectionRef = useRef<string | undefined>(undefined);
-  const restoringProjectionRef = useRef<string | undefined>(undefined);
-  const restoreTargetRef = useRef<MobileReadingPosition | null | undefined>(undefined);
-  const restoreTimerRef = useRef<number | null>(null);
-  const restoreFrameRef = useRef<number | null>(null);
-  const syncPhaseRef = useRef<{ projectionKey?: string; active: boolean }>({ active: false });
-  const saveTimerRef = useRef<number | null>(null);
-  const lastSavedRef = useRef("");
-  const lastReadAtRef = useRef(0);
-  const messagesRef = useRef(messages);
-
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
-  useLayoutEffect(() => {
-    // 1. 同一投影代次同步完成前持续校准，避免网络分页把视口推走
-    if (!sessionId) return;
-    const projectionKey = `${sessionId}\u001f${projectionGeneration}`;
-    const syncStarting = resyncing && (
-      syncPhaseRef.current.projectionKey !== projectionKey || !syncPhaseRef.current.active
+/** Render only the measured chat window and keep the latest edge stable during streaming. */
+const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, MobileVirtualConversationProps>(
+  function MobileVirtualConversation({
+    snapshot,
+    messages,
+    selectedMessageIds,
+    recoveringMessageIds,
+    selectionActive,
+    selectedSessionUnavailable,
+    highlightedMessageId,
+    copiedMessageId,
+    missingReplySourceId,
+    suspended,
+    forceScrollToken,
+    unread,
+    unreadAnchorVisited,
+    messageElementsRef,
+    onUnreadChange,
+    onVisitUnread,
+    onEnterSelection,
+    onToggleSelection,
+    onReplyToMessage,
+    onNavigateToReply,
+    onCopyMessage,
+    onRetryMessageDelivery,
+  }, ref) {
+    const scrollRef = useRef<HTMLDivElement>(null);
+    const [isAtEnd, setIsAtEnd] = useState(true);
+    const isAtEndRef = useRef(true);
+    const restoredProjectionRef = useRef<string | undefined>(undefined);
+    const restoreFrameRef = useRef<number | null>(null);
+    const saveTimerRef = useRef<number | null>(null);
+    const lastSavedRef = useRef("");
+    const messageIndexById = useMemo(
+      () => new Map(snapshot.messages.map((message, index) => [message.id, index])),
+      [snapshot.messages],
     );
-    syncPhaseRef.current = { projectionKey, active: resyncing };
-    if (syncStarting) {
-      if (restoreTimerRef.current !== null) window.clearTimeout(restoreTimerRef.current);
-      if (restoreFrameRef.current !== null) window.cancelAnimationFrame(restoreFrameRef.current);
-      restoreTimerRef.current = null;
-      restoreFrameRef.current = null;
-      if (restoredProjectionRef.current === projectionKey) restoredProjectionRef.current = undefined;
-    }
-    if (restoredProjectionRef.current === projectionKey) return;
-    if (restoringProjectionRef.current !== projectionKey) {
-      if (restoreTimerRef.current !== null) window.clearTimeout(restoreTimerRef.current);
-      if (restoreFrameRef.current !== null) window.cancelAnimationFrame(restoreFrameRef.current);
-      restoringProjectionRef.current = projectionKey;
-      restoreTargetRef.current = readingPosition ?? null;
-    } else {
-      restoreTargetRef.current = updateMobileReadingRestoreTarget(
-        restoreTargetRef.current,
-        readingPosition,
-      );
-    }
-    if (messages.length === 0) return;
-    const scrollElement = scrollRef.current;
-    const target = restoreTargetRef.current;
-    if (!scrollElement || target === undefined) return;
-    if (target) {
-      const element = messageElementsRef.current.get(target.messageId);
-      if (element) {
-        stopScroll();
-        element.scrollIntoView({ block: "start", behavior: "auto" });
-        scrollElement.scrollTop -= target.offsetPx;
-      }
-    }
-    if (resyncing) return;
-    if (restoreTimerRef.current !== null) window.clearTimeout(restoreTimerRef.current);
-    restoreTimerRef.current = window.setTimeout(() => {
-      const settle = () => {
-        if (restoringProjectionRef.current !== projectionKey) return;
-        restoredProjectionRef.current = projectionKey;
-        restoringProjectionRef.current = undefined;
-        restoreTargetRef.current = undefined;
-        restoreTimerRef.current = null;
-        restoreFrameRef.current = null;
-        scrollElement.dispatchEvent(new Event("scroll"));
-      };
-      if (restoringProjectionRef.current !== projectionKey) return;
-      if (target) {
-        const element = messageElementsRef.current.get(target.messageId);
+    const latestAssistantAt = useMemo(
+      () => snapshot.messages.reduce(
+        (latest, message) => message.role === "assistant" ? Math.max(latest, message.createdAt) : latest,
+        0,
+      ),
+      [snapshot.messages],
+    );
+
+    const getScrollElement = useCallback(() => scrollRef.current, []);
+    const estimateSize = useCallback(
+      (index: number) => estimateMobileMessageHeight(snapshot.messages[index]),
+      [snapshot.messages],
+    );
+    const getItemKey = useCallback(
+      (index: number) => snapshot.messages[index]?.id ?? index,
+      [snapshot.messages],
+    );
+    // TanStack Virtual 的有状态实例由组件持有，不能交给 React Compiler 自动记忆化。
+    // eslint-disable-next-line react-hooks/incompatible-library
+    const virtualizer = useVirtualizer({
+      count: messages.length,
+      getScrollElement,
+      estimateSize,
+      getItemKey,
+      anchorTo: "end",
+      followOnAppend: suspended ? false : "auto",
+      scrollEndThreshold: 48,
+      overscan: 4,
+      useAnimationFrameWithResizeObserver: true,
+      onChange(instance) {
+        const next = instance.isAtEnd(2);
+        if (next === isAtEndRef.current) return;
+        isAtEndRef.current = next;
+        setIsAtEnd(next);
+      },
+    });
+
+    const jumpToMessage = useCallback((messageId: string, focus = false) => {
+      const index = messageIndexById.get(messageId);
+      if (index === undefined) return;
+      virtualizer.scrollToIndex(index, { align: "center", behavior: "auto" });
+      if (!focus) return;
+      let attempts = 0;
+      const focusWhenMounted = () => {
+        const element = messageElementsRef.current.get(messageId);
         if (element) {
-          stopScroll();
-          element.scrollIntoView({ block: "start", behavior: "auto" });
-          scrollElement.scrollTop -= target.offsetPx;
-          restoreFrameRef.current = requestAnimationFrame(settle);
+          element.focus({ preventScroll: true });
           return;
         }
-      }
-      void Promise.resolve(scrollToBottom({ animation: "instant", ignoreEscapes: true })).then(() => {
-        if (restoringProjectionRef.current === projectionKey) settle();
-      });
-    }, 320);
-  }, [
-    messageElementsRef,
-    messages.length,
-    projectionGeneration,
-    readingPosition,
-    resyncing,
-    scrollRef,
-    scrollToBottom,
-    sessionId,
-    stopScroll,
-  ]);
+        attempts += 1;
+        if (attempts < 4) requestAnimationFrame(focusWhenMounted);
+      };
+      requestAnimationFrame(focusWhenMounted);
+    }, [messageElementsRef, messageIndexById, virtualizer]);
 
-  useEffect(() => {
-    // 2. 历史装载期间若用户主动触摸，立即把视口所有权交还给用户
-    const scrollElement = scrollRef.current;
-    if (!sessionId || !scrollElement) return;
-    const projectionKey = `${sessionId}\u001f${projectionGeneration}`;
-    const interruptRestore = () => {
-      if (restoringProjectionRef.current !== projectionKey) return;
-      if (restoreTimerRef.current !== null) window.clearTimeout(restoreTimerRef.current);
-      if (restoreFrameRef.current !== null) window.cancelAnimationFrame(restoreFrameRef.current);
+    useImperativeHandle(ref, () => ({ jumpToMessage }), [jumpToMessage]);
+
+    useLayoutEffect(() => {
+      // 1. Restore an owned reading anchor or open at the latest message.
+      const sessionId = snapshot.selectedSessionId;
+      if (!sessionId || messages.length === 0 || snapshot.composer.isResyncing) return;
+      const projectionKey = `${sessionId}\u001f${snapshot.projectionGeneration}`;
+      if (restoredProjectionRef.current === projectionKey) return;
       restoredProjectionRef.current = projectionKey;
-      restoringProjectionRef.current = undefined;
-      restoreTargetRef.current = undefined;
-      restoreTimerRef.current = null;
-      restoreFrameRef.current = null;
-    };
-    scrollElement.addEventListener("touchstart", interruptRestore, { passive: true });
-    scrollElement.addEventListener("wheel", interruptRestore, { passive: true });
-    return () => {
-      scrollElement.removeEventListener("touchstart", interruptRestore);
-      scrollElement.removeEventListener("wheel", interruptRestore);
-      if (restoringProjectionRef.current === projectionKey && restoreTimerRef.current !== null) {
-        window.clearTimeout(restoreTimerRef.current);
-      }
-      if (restoringProjectionRef.current === projectionKey && restoreFrameRef.current !== null) {
-        window.cancelAnimationFrame(restoreFrameRef.current);
-      }
-    };
-  }, [projectionGeneration, scrollRef, sessionId]);
-
-  useEffect(() => {
-    // 3. 滚动停止后记录首个可见消息和相对偏移，避免按绝对 scrollTop 恢复后被乱序归位破坏
-    const scrollElement = scrollRef.current;
-    if (!sessionId || !scrollElement || resyncing || suspended) return;
-    const persist = () => {
-      saveTimerRef.current = null;
-      const projectionKey = `${sessionId}\u001f${projectionGeneration}`;
-      if (restoringProjectionRef.current === projectionKey) return;
-      const distanceFromBottom = scrollElement.scrollHeight - scrollElement.scrollTop - scrollElement.clientHeight;
-      if (distanceFromBottom <= 2) {
-        const readAt = messagesRef.current.reduce(
-          (latest, message) => message.role === "assistant" ? Math.max(latest, message.createdAt) : latest,
-          0,
-        );
-        const tailKey = `${sessionId}\u001ftail\u001f${readAt}`;
-        if (tailKey !== lastSavedRef.current) {
-          lastSavedRef.current = tailKey;
-          lastReadAtRef.current = Math.max(lastReadAtRef.current, readAt);
-          window.AkashicNative?.markSessionReadThrough(sessionId, readAt);
+      const target = snapshot.readingPosition;
+      const targetIndex = target ? messageIndexById.get(target.messageId) : undefined;
+      let attempts = 0;
+      const restore = () => {
+        if (target && targetIndex !== undefined) {
+          virtualizer.scrollToIndex(targetIndex, { align: "start", behavior: "auto" });
+          const item = virtualizer.getVirtualItems().find((candidate) => candidate.index === targetIndex);
+          if (item) virtualizer.scrollToOffset(item.start - target.offsetPx, { behavior: "auto" });
+        } else {
+          virtualizer.scrollToEnd({ behavior: "auto" });
         }
-        return;
-      }
-      const viewportTop = scrollElement.getBoundingClientRect().top;
-      let anchor: { messageId: string; element: HTMLDivElement; top: number } | undefined;
-      for (const [messageId, element] of messageElementsRef.current) {
-        const rect = element.getBoundingClientRect();
-        if (rect.bottom <= viewportTop + 1 || (anchor && rect.top >= anchor.top)) continue;
-        anchor = { messageId, element, top: rect.top };
-      }
-      if (!anchor) return;
-      const { element, messageId } = anchor;
-      const offsetPx = Math.round(element.getBoundingClientRect().top - viewportTop);
-      const key = `${sessionId}\u001f${messageId}\u001f${offsetPx}`;
-      if (key === lastSavedRef.current) return;
-      lastSavedRef.current = key;
-      window.AkashicNative?.saveReadingPosition(sessionId, messageId, offsetPx);
-    };
-    const schedulePersist = () => {
-      if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = window.setTimeout(persist, 180);
-    };
-    scrollElement.addEventListener("scroll", schedulePersist, { passive: true });
-    schedulePersist();
-    return () => {
-      scrollElement.removeEventListener("scroll", schedulePersist);
-      if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
-    };
-  }, [messageElementsRef, projectionGeneration, resyncing, scrollRef, sessionId, suspended]);
+        attempts += 1;
+        if (attempts < 3) restoreFrameRef.current = requestAnimationFrame(restore);
+        else restoreFrameRef.current = null;
+      };
+      restoreFrameRef.current = requestAnimationFrame(restore);
+      return () => {
+        if (restoreFrameRef.current !== null) cancelAnimationFrame(restoreFrameRef.current);
+        restoreFrameRef.current = null;
+      };
+    }, [messageIndexById, messages.length, snapshot.composer.isResyncing, snapshot.projectionGeneration, snapshot.readingPosition, snapshot.selectedSessionId, virtualizer]);
 
-  useEffect(() => {
-    // 4. 真正回到底部时推进该会话的持久化已读水位
-    const scrollElement = scrollRef.current;
-    if (!sessionId || resyncing || suspended || !scrollElement) return;
-    const projectionKey = `${sessionId}\u001f${projectionGeneration}`;
-    if (restoringProjectionRef.current === projectionKey) return;
-    const distanceFromBottom = scrollElement.scrollHeight - scrollElement.scrollTop - scrollElement.clientHeight;
-    if (!isAtBottom || distanceFromBottom > 2) {
-      return;
-    }
-    const readAt = messages.reduce(
-      (latest, message) => message.role === "assistant" ? Math.max(latest, message.createdAt) : latest,
-      0,
+    useEffect(() => {
+      // 2. Persist from virtual measurements, avoiding a full DOM layout walk.
+      const scrollElement = scrollRef.current;
+      const sessionId = snapshot.selectedSessionId;
+      if (!scrollElement || !sessionId || snapshot.composer.isResyncing || suspended) return;
+      const persist = () => {
+        saveTimerRef.current = null;
+        if (virtualizer.isAtEnd(2)) {
+          const key = `${sessionId}\u001ftail\u001f${latestAssistantAt}`;
+          if (key !== lastSavedRef.current) {
+            lastSavedRef.current = key;
+            window.AkashicNative?.markSessionReadThrough(sessionId, latestAssistantAt);
+          }
+          return;
+        }
+        const scrollOffset = virtualizer.scrollOffset ?? 0;
+        const anchor = virtualizer.getVirtualItems().find((item) => item.end > scrollOffset + 1);
+        const message = anchor ? snapshot.messages[anchor.index] : undefined;
+        if (!anchor || !message) return;
+        const offsetPx = Math.round(anchor.start - scrollOffset);
+        const key = `${sessionId}\u001f${message.id}\u001f${offsetPx}`;
+        if (key === lastSavedRef.current) return;
+        lastSavedRef.current = key;
+        window.AkashicNative?.saveReadingPosition(sessionId, message.id, offsetPx);
+      };
+      const schedulePersist = () => {
+        if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = window.setTimeout(persist, 180);
+      };
+      scrollElement.addEventListener("scroll", schedulePersist, { passive: true });
+      schedulePersist();
+      return () => {
+        scrollElement.removeEventListener("scroll", schedulePersist);
+        if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
+      };
+    }, [latestAssistantAt, snapshot.composer.isResyncing, snapshot.messages, snapshot.projectionGeneration, snapshot.selectedSessionId, suspended, virtualizer]);
+
+    useEffect(() => {
+      if (forceScrollToken === 0) return;
+      virtualizer.scrollToEnd({ behavior: "auto" });
+    }, [forceScrollToken, virtualizer]);
+
+    useMobileUnreadTracking(
+      snapshot.selectedSessionId,
+      snapshot.messages,
+      snapshot.projectionGeneration,
+      snapshot.composer.isResyncing,
+      suspended,
+      isAtEnd,
+      !isAtEnd,
+      onUnreadChange,
     );
-    const tailKey = `${sessionId}\u001ftail\u001f${readAt}`;
-    if (tailKey === lastSavedRef.current && readAt <= lastReadAtRef.current) return;
-    lastSavedRef.current = tailKey;
-    lastReadAtRef.current = Math.max(lastReadAtRef.current, readAt);
-    window.AkashicNative?.markSessionReadThrough(sessionId, readAt);
-  }, [isAtBottom, messages, projectionGeneration, resyncing, scrollRef, sessionId, suspended]);
+
+    const virtualItems = virtualizer.getVirtualItems();
+    return (
+      <div ref={scrollRef} className="mobile-conversation mobile-virtual-conversation" role="log">
+        {messages.length === 0 ? (
+          <div className="mobile-empty">
+            <h1>开始一段新对话</h1>
+            <p>消息会通过电脑上的 Akashic 实时处理。</p>
+          </div>
+        ) : (
+          <div
+            className="mobile-virtual-conversation__content"
+            style={{ height: virtualizer.getTotalSize() }}
+          >
+            {virtualItems.map((virtualItem) => {
+              const index = virtualItem.index;
+              const source = snapshot.messages[index];
+              const message = messages[index];
+              const previous = snapshot.messages[index - 1];
+              return (
+                <div
+                  className="mobile-virtual-row"
+                  data-index={index}
+                  key={virtualItem.key}
+                  ref={virtualizer.measureElement}
+                  style={{ transform: `translateY(${virtualItem.start}px)` }}
+                >
+                  <MobileMessageRow
+                    source={source}
+                    message={message}
+                    startsDay={!previous || !sameLocalDay(previous.createdAt, source.createdAt)}
+                    followsSameRole={previous?.role === source.role}
+                    unreadCount={source.id === unread.firstMessageId ? unread.count : 0}
+                    highlighted={highlightedMessageId === source.id}
+                    selected={selectedMessageIds.has(source.id)}
+                    selectionActive={selectionActive}
+                    canReply={mobileMessageCanReply(source, snapshot.selectedSessionId)}
+                    copied={copiedMessageId === source.id}
+                    deliveryActionBusy={recoveringMessageIds.has(source.id)}
+                    replySourceUnavailable={missingReplySourceId === source.id}
+                    selectedSessionUnavailable={selectedSessionUnavailable}
+                    messageElementsRef={messageElementsRef}
+                    onEnterSelection={onEnterSelection}
+                    onToggleSelection={onToggleSelection}
+                    onReplyToMessage={onReplyToMessage}
+                    onNavigateToReply={onNavigateToReply}
+                    onCopyMessage={onCopyMessage}
+                    onRetryMessageDelivery={onRetryMessageDelivery}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <MobileScrollButton
+          isAtBottom={isAtEnd}
+          unread={unread}
+          unreadAnchorVisited={unreadAnchorVisited}
+          onVisitUnread={(messageId) => {
+            onVisitUnread();
+            jumpToMessage(messageId);
+          }}
+          onScrollToBottom={() => virtualizer.scrollToEnd({ behavior: "auto" })}
+        />
+      </div>
+    );
+  },
+);
+
+function estimateMobileMessageHeight(message: MobileMessage | undefined) {
+  if (!message) return 180;
+  const textLines = Math.ceil(Math.min(message.content.length, 2_400) / 34);
+  const blockHeight = Math.min(message.blocks.length, 4) * 72;
+  const attachmentHeight = Math.min(message.attachments.length, 2) * 112;
+  return Math.min(720, 76 + textLines * 20 + blockHeight + attachmentHeight);
 }
 
 /** 按顶层助手消息追踪当前阅读位置之后的未读集合。 */
@@ -3636,9 +3698,10 @@ function useMobileUnreadTracking(
   projectionGeneration: number,
   resyncing: boolean,
   suspended: boolean,
+  isAtBottom: boolean,
+  escapedFromLock: boolean,
   onUnreadChange: (state: MobileUnreadState) => void,
 ) {
-  const { escapedFromLock, isAtBottom } = useStickToBottomContext();
   const trackedSessionRef = useRef<string | undefined>(undefined);
   const knownMessagesRef = useRef(new Map<string, MobileMessage>());
   const unseenMessageIdsRef = useRef<string[]>([]);
@@ -3727,96 +3790,19 @@ function useMobileUnreadTracking(
   ]);
 }
 
-/** 在用户未主动离开阅读位置时跟随新提问与流式回答。 */
-function useMobileAutoScroll(
-  sessionId: string | undefined,
-  chatMessages: ChatMessage[],
-  streaming: boolean,
-  suspended: boolean,
-  forceScrollToken: number,
-) {
-  const { escapedFromLock, isAtBottom, scrollToBottom } = useStickToBottomContext();
-  const autoScrollSessionRef = useRef<string | undefined>(undefined);
-  const handledForceScrollTokenRef = useRef(forceScrollToken);
-  const lastMessage = chatMessages[chatMessages.length - 1];
-  const lastBlock = lastMessage?.blocks[lastMessage.blocks.length - 1];
-  const scrollKey = `${chatMessages.length}:${lastMessage?.id}:${lastMessage?.content.length}:${lastMessage?.blocks.length}:${lastBlock?.kind === "thinking" ? lastBlock.content.length : ""}`;
-
-  useEffect(() => {
-    // 1. 切换会话只建立快照基线，不制造一次假滚动
-    if (autoScrollSessionRef.current !== sessionId) {
-      autoScrollSessionRef.current = sessionId;
-      handledForceScrollTokenRef.current = forceScrollToken;
-      return;
-    }
-
-    // 2. 搜索接管阅读位置；否则发送动作强制到底，流式增量只跟随底部
-    if (suspended) return;
-    if (handledForceScrollTokenRef.current !== forceScrollToken) {
-      handledForceScrollTokenRef.current = forceScrollToken;
-      void scrollToBottom({ animation: "smooth", ignoreEscapes: true });
-    } else if (streaming && isAtBottom && !escapedFromLock) {
-      void scrollToBottom({ animation: "smooth", ignoreEscapes: false });
-    }
-  }, [escapedFromLock, forceScrollToken, isAtBottom, scrollKey, scrollToBottom, sessionId, streaming, suspended]);
-}
-
-/** 搜索期间解除底部滚动锁，并只在未发生跳转时恢复原底部位置。 */
-function MobileSearchScrollBehavior({ active, targetMessageId }: { active: boolean; targetMessageId: string | null }) {
-  const { escapedFromLock, isAtBottom, scrollRef, scrollToBottom, stopScroll } = useStickToBottomContext();
-  const activeRef = useRef(false);
-  const enteredAtBottomRef = useRef(false);
-  const manuallyMovedRef = useRef(false);
-  const movedRef = useRef(false);
-
-  useLayoutEffect(() => {
-    // 1. 进入搜索时先解除 ResizeObserver 的底部锁
-    if (active && !activeRef.current) {
-      enteredAtBottomRef.current = isAtBottom;
-      manuallyMovedRef.current = false;
-      movedRef.current = false;
-      stopScroll();
-    }
-    if (active && activeRef.current && !escapedFromLock) stopScroll();
-
-    // 2. 未跳转且未手动滚动的空搜索恢复原位置，否则保留阅读位置
-    if (!active && activeRef.current && enteredAtBottomRef.current && !movedRef.current && !manuallyMovedRef.current) {
-      void scrollToBottom({ animation: "smooth", ignoreEscapes: true });
-    }
-    activeRef.current = active;
-  }, [active, escapedFromLock, isAtBottom, scrollToBottom, stopScroll]);
-
-  useEffect(() => {
-    if (!active) return;
-    const scrollElement = scrollRef.current;
-    if (!scrollElement) return;
-    const markManualMove = () => { manuallyMovedRef.current = true; };
-    scrollElement.addEventListener("touchmove", markManualMove, { passive: true });
-    scrollElement.addEventListener("wheel", markManualMove, { passive: true });
-    scrollElement.addEventListener("keydown", markManualMove);
-    return () => {
-      scrollElement.removeEventListener("touchmove", markManualMove);
-      scrollElement.removeEventListener("wheel", markManualMove);
-      scrollElement.removeEventListener("keydown", markManualMove);
-    };
-  }, [active, scrollRef]);
-
-  useEffect(() => {
-    if (active && targetMessageId !== null) movedRef.current = true;
-  }, [active, targetMessageId]);
-  return null;
-}
-
 function MobileScrollButton({
+  isAtBottom,
   unread,
   unreadAnchorVisited,
   onVisitUnread,
+  onScrollToBottom,
 }: {
+  isAtBottom: boolean;
   unread: MobileUnreadState;
   unreadAnchorVisited: boolean;
   onVisitUnread: (messageId: string) => void;
+  onScrollToBottom: () => void;
 }) {
-  const { isAtBottom, scrollToBottom } = useStickToBottomContext();
   const visibleCount = unread.count > 99 ? "99+" : String(unread.count);
   return (
     <button
@@ -3830,7 +3816,7 @@ function MobileScrollButton({
           onVisitUnread(unread.firstMessageId);
           return;
         }
-        void scrollToBottom({ animation: "smooth", ignoreEscapes: true });
+        onScrollToBottom();
       }}
     >
       {unread.count > 0 ? <span>{visibleCount}</span> : null}

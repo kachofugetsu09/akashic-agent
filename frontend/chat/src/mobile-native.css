@@ -170,7 +170,16 @@ button {
 }
 
 .mobile-main-content {
-  display: contents;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.mobile-main-content.surface-hidden {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .mobile-surface-errors {
@@ -818,8 +827,20 @@ button {
 }
 
 .mobile-conversation {
+  position: relative;
+  flex: 1;
   min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
   padding-block: calc(64px + env(safe-area-inset-top)) calc(var(--mobile-composer-height, 76px) + 30px);
+  scroll-behavior: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.mobile-conversation::-webkit-scrollbar {
+  display: none;
 }
 
 .mobile-main-content.replying .mobile-conversation {
@@ -842,10 +863,6 @@ button {
   padding-block-end: calc(122px + env(safe-area-inset-bottom));
 }
 
-.mobile-main-content.session-unavailable .mobile-conversation {
-  padding-block-end: calc(122px + env(safe-area-inset-bottom));
-}
-
 .mobile-conversation__content {
   width: 100%;
   max-width: 48rem;
@@ -855,9 +872,29 @@ button {
   padding: 24px 20px 42px;
 }
 
+.mobile-virtual-conversation__content {
+  position: relative;
+  width: calc(100% - 40px);
+  max-width: 44rem;
+  margin-inline: auto;
+}
+
+.mobile-virtual-row {
+  position: absolute;
+  inset: 0 0 auto;
+  width: 100%;
+  padding-block-end: 28px;
+  will-change: transform;
+}
+
 .mobile-empty {
+  display: flex;
   min-height: calc(100vh - 190px);
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   padding: 28px;
+  text-align: center;
 }
 
 .mobile-empty h1 {
@@ -892,6 +929,39 @@ button {
   font-size: 0.75rem;
   line-height: 1.4;
   font-variant-numeric: tabular-nums;
+}
+
+.mobile-plain-message-view {
+  display: flex;
+  width: 100%;
+  max-width: 95%;
+  flex-direction: column;
+}
+
+.mobile-plain-message-view.user {
+  margin-inline-start: auto;
+  align-items: flex-end;
+}
+
+.mobile-plain-message-view__content {
+  min-width: 0;
+  max-width: 100%;
+  color: var(--m-on-surface);
+  font-size: 1rem;
+  line-height: 1.62;
+}
+
+.mobile-plain-message-view.user .mobile-plain-message-view__content {
+  width: fit-content;
+  border-radius: var(--m-shape-large);
+  padding: 12px 16px;
+  background: var(--m-secondary-container);
+}
+
+.mobile-plain-message-view__content p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .mobile-message-meta.user {
@@ -986,11 +1056,6 @@ button {
 .mobile-markdown-render-fallback {
   min-height: 48px;
   color: var(--m-on-surface-variant);
-}
-
-.mobile-message-anchor:not(.streaming) {
-  content-visibility: auto;
-  contain-intrinsic-block-size: auto 120px;
 }
 
 .mobile-message-anchor .agent-content {

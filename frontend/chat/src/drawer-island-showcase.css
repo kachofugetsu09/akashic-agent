@@ -1,0 +1,127 @@
+.legacy-drawer-showcase {
+  min-height: 100%;
+  overflow: auto;
+  padding: 32px 20px 64px;
+  color: var(--m-on-surface);
+  background: var(--m-surface);
+}
+
+.legacy-drawer-showcase__header {
+  width: min(430px, 100%);
+  margin: 0 auto 20px;
+}
+
+.legacy-drawer-showcase__header h1 {
+  margin: 0 0 8px;
+  font-size: clamp(1.75rem, 7vw, 2.25rem);
+  font-weight: 650;
+  line-height: 1.12;
+  letter-spacing: -0.02em;
+}
+
+.legacy-drawer-showcase__header p {
+  margin: 0;
+  color: var(--m-on-surface-variant);
+  font-size: 0.875rem;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+.legacy-drawer-device {
+  position: relative;
+  width: min(430px, 100%);
+  height: 820px;
+  margin: 0 auto;
+  overflow: hidden;
+  border: 1px solid var(--m-outline-variant);
+  border-radius: 24px;
+  background: var(--m-surface-container-high);
+}
+
+.legacy-drawer-underlay {
+  position: absolute;
+  inset: 86px 24px auto 46%;
+  display: grid;
+  gap: 22px;
+}
+
+.legacy-drawer-underlay span {
+  display: block;
+  height: 72px;
+  border-radius: 12px;
+  background: var(--m-surface-container);
+}
+
+.legacy-drawer-underlay span:nth-child(2) {
+  height: 168px;
+}
+
+.legacy-drawer-scrim {
+  position: absolute;
+  inset: 0;
+  background: oklch(0 0 0 / 0.54);
+}
+
+.legacy-drawer {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: min(84%, 360px);
+  padding: 0;
+  box-shadow: 8px 0 28px oklch(0 0 0 / 0.18);
+}
+
+.legacy-drawer .conversation-navigation__header {
+  min-height: 72px;
+  padding: 12px 14px;
+}
+
+.legacy-drawer__close {
+  position: absolute;
+  inset: 10px auto auto 12px;
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--m-shape-full);
+  padding: 0;
+  color: var(--m-on-surface-variant);
+  background: transparent;
+}
+
+.legacy-memory-summary {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 6px 14px 0;
+  border: 0;
+  border-block-start: 1px solid var(--m-outline-variant);
+  padding: 11px 2px 8px;
+  color: var(--m-on-surface-variant);
+  background: transparent;
+  font: inherit;
+  font-size: 0.8125rem;
+  text-align: start;
+}
+
+.legacy-memory-summary strong {
+  color: var(--m-primary);
+  font-size: 0.8125rem;
+  font-weight: 650;
+}
+
+.legacy-drawer .conversation-navigation__actions {
+  padding-bottom: 14px;
+}
+
+@media (max-width: 520px) {
+  .legacy-drawer-showcase {
+    padding: 24px 14px 56px;
+  }
+
+  .legacy-drawer-device {
+    height: 760px;
+  }
+}

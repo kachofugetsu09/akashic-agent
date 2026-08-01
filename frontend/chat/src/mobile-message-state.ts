@@ -64,6 +64,23 @@ export interface MobileStreamProjection<T> {
   messages: T[];
 }
 
+/** Preserve stable message identities across full snapshots when native revisions are unchanged. */
+export function reconcileMobileSnapshotMessages<T extends { id: string; searchRevision: number }>(
+  previous: readonly T[],
+  next: T[],
+): T[] {
+  if (previous.length === 0 || next.length === 0) return next;
+  const previousById = new Map(previous.map((message) => [message.id, message]));
+  let reused = 0;
+  const reconciled = next.map((message) => {
+    const stable = previousById.get(message.id);
+    if (!stable || stable.searchRevision !== message.searchRevision) return message;
+    reused += 1;
+    return stable;
+  });
+  return reused === 0 ? next : reconciled;
+}
+
 /** 在 generation、会话和消息身份一致时局部替换一个 streaming 投影。 */
 export function applyMobileStreamPatch<
   T extends { id: string },

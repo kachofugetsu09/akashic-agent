@@ -15,8 +15,8 @@
     "dev": "vite --config frontend/dashboard/vite.config.ts",
     "lint": "eslint \"frontend/dashboard/src/**/*.{ts,tsx}\" \"frontend/chat/src/**/*.{ts,tsx}\" \"plugins/**/*.ts\" \"types/**/*.d.ts\"",
     "package:mobile-web": "bash scripts/package-mobile-web.sh",
-    "test:shared-chat-showcase": "node --test frontend/chat/src/shared-chat-showcase.test.mjs",
-    "test:mobile-web-state": "node --experimental-strip-types --test frontend/chat/src/mobile-message-state.test.mjs frontend/chat/src/mobile-plugin-layout.test.mjs frontend/chat/src/mobile-plugin-query-queue.test.mjs frontend/chat/src/mobile-plugin-result-cache.test.mjs frontend/chat/src/mobile-surface-history.test.mjs",
+    "test:shared-chat-showcase": "node --test frontend/chat/src/shared-chat-showcase.test.mjs frontend/chat/src/drawer-island-showcase.test.mjs",
+    "test:mobile-web-state": "node --experimental-strip-types --test frontend/chat/src/message-rendering-policy.test.mjs frontend/chat/src/mobile-message-state.test.mjs frontend/chat/src/mobile-plugin-layout.test.mjs frontend/chat/src/mobile-plugin-query-queue.test.mjs frontend/chat/src/mobile-plugin-result-cache.test.mjs frontend/chat/src/mobile-surface-history.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
@@ -40,6 +40,7 @@
     "vite": "^6.0.7"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.14.9",
     "@ai-sdk/react": "^4.0.16",
     "@radix-ui/react-collapsible": "^1.1.15",
     "@radix-ui/react-dialog": "^1.1.18",

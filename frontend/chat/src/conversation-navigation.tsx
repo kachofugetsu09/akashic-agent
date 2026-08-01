@@ -9,6 +9,7 @@ export interface ConversationDestination {
   description?: string;
   badge?: ReactNode;
   href?: string;
+  featured?: boolean;
   disabled?: boolean;
   onActivate?: () => void;
 }
@@ -53,6 +54,9 @@ export function ConversationNavigation({
   dialog?: boolean;
   className?: string;
 }) {
+  const featuredDestinations = destinations.filter((destination) => destination.featured);
+  const standardDestinations = destinations.filter((destination) => !destination.featured);
+
   return (
     <aside
       ref={panelRef}
@@ -63,30 +67,17 @@ export function ConversationNavigation({
       tabIndex={dialog ? -1 : undefined}
     >
       <header className="conversation-navigation__header">
-        <div className="conversation-navigation__heading">会话</div>
+        {featuredDestinations.length === 0 ? <div className="conversation-navigation__heading">会话</div> : null}
         {closeAction}
       </header>
 
-      <nav className="conversation-destinations" aria-label="功能入口">
-        {destinations.map((destination) => {
-          const content = (
-            <>
-              <span className="conversation-destination__icon" aria-hidden="true">{destination.icon}</span>
-              <span className="conversation-destination__copy">
-                <strong>{destination.label}</strong>
-                {destination.description ? <small>{destination.description}</small> : null}
-              </span>
-              {destination.badge ? <span className="conversation-destination__badge">{destination.badge}</span> : null}
-              <ChevronRight size={18} aria-hidden="true" />
-            </>
-          );
-          return destination.href && !destination.disabled ? (
-            <a className="conversation-destination" href={destination.href} key={destination.id}>{content}</a>
-          ) : (
-            <button className="conversation-destination" type="button" disabled={destination.disabled} onClick={destination.onActivate} key={destination.id}>{content}</button>
-          );
-        })}
-      </nav>
+      {featuredDestinations.length > 0 ? (
+        <>
+          <DestinationList destinations={featuredDestinations} featured />
+          <div className="conversation-navigation__heading conversation-navigation__heading--section">会话</div>
+        </>
+      ) : null}
+      <DestinationList destinations={standardDestinations} />
 
       <section className="conversation-navigation__sessions">
         <nav className="conversation-session-list" aria-label="最近会话">
@@ -126,5 +117,32 @@ export function ConversationNavigation({
         ))}
       </div>
     </aside>
+  );
+}
+
+function DestinationList({ destinations, featured = false }: { destinations: ConversationDestination[]; featured?: boolean }) {
+  if (destinations.length === 0) return null;
+  return (
+    <nav className={`conversation-destinations ${featured ? "featured" : ""}`} aria-label={featured ? "重点功能入口" : "功能入口"}>
+      {destinations.map((destination) => {
+        const content = (
+          <>
+            <span className="conversation-destination__icon" aria-hidden="true">{destination.icon}</span>
+            <span className="conversation-destination__copy">
+              <strong>{destination.label}</strong>
+              {destination.description ? <small>{destination.description}</small> : null}
+            </span>
+            {destination.badge ? <span className="conversation-destination__badge">{destination.badge}</span> : null}
+            <ChevronRight size={18} aria-hidden="true" />
+          </>
+        );
+        const className = `conversation-destination ${featured ? "featured" : ""}`;
+        return destination.href && !destination.disabled ? (
+          <a className={className} href={destination.href} key={destination.id}>{content}</a>
+        ) : (
+          <button className={className} type="button" disabled={destination.disabled} onClick={destination.onActivate} key={destination.id}>{content}</button>
+        );
+      })}
+    </nav>
   );
 }

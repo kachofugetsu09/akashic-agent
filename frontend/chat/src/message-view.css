@@ -627,3 +627,8 @@ button.tool-step-summary:active {
     transition-duration: 0ms;
   }
 }
+.plain-message-response {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
