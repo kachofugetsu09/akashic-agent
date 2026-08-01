@@ -195,7 +195,9 @@ docs/
 │   ├── 0011-benchmark-concurrency-six.md
 │   ├── 0012-query-local-compaction-is-a-persisted-projection.md
 │   ├── 0013-linux-supervisor-uses-one-boot-guardian.md
-│   └── 0014-shell-uses-unified-execution.md
+│   ├── 0014-shell-uses-unified-execution.md
+│   ├── 0015-cleanup-does-not-own-turn-or-restart-finality.md
+│   └── 0016-channel-delivery-uses-complete-logical-messages.md
 ├── design/
 │   ├── akasha-v2-runtime-migration.md
 │   ├── linux-supervisor-safe-self-restart.md
