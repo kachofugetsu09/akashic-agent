@@ -41,6 +41,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install host channel contract dependencies
+        run: python -m pip install -r requirements.txt pytest pytest-asyncio
       - name: Verify locked external plugins in Docker Debug
         run: python docker/debug/plugin_api_v2_gate.py --require-clean-core
       - name: Upload Plugin API v2 evidence

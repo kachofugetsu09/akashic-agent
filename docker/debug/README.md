@@ -260,6 +260,8 @@ GitHub HTTPS 地址获取这些对象，不读取宿主插件 cache、正式 wor
 │  ├─ 拒绝 API v1 / initialize
 │  ├─ prepare 不得取得 data_dir 或启动 task
 │  └─ lifecycle task 必须归 generation scope
+├─ Host 渠道合同
+│  └─ 固定 Feishu / QQBot 在当前 Core 上执行启动与完整消息投递测试
 └─ Docker Debug
    ├─ atomic-reload   失败保旧、成功原子切换、WAL 完成
    ├─ all-plugins     19 个可运行插件逐个热重载和禁用

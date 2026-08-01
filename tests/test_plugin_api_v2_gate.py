@@ -46,3 +46,15 @@ def test_release_lock_rejects_floating_reference(tmp_path: Path) -> None:
 
 def test_runtime_gate_uses_business_named_phases() -> None:
     assert gate.RUNTIME_PHASES == ("atomic-reload", "all-plugins", "fitbit")
+
+
+def test_host_channel_contract_covers_official_external_channels() -> None:
+    assert gate.HOST_CHANNEL_CONTRACT_PLUGIN_IDS == ("feishu", "qqbot")
+
+
+def test_release_lock_uses_host_contract_compatible_channel_commits() -> None:
+    release = gate._load_lock(gate.DEFAULT_LOCK)
+    commits = {plugin.id: plugin.commit for plugin in release.plugins}
+
+    assert commits["feishu"] == "071278d518aea0ac80bcc76d9346e5bb02d93df1"
+    assert commits["qqbot"] == "d9d105515db9e63f3639968fd488904f230be95b"
