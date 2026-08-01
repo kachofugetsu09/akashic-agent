@@ -137,7 +137,7 @@ def _signal_posix_group(group_id: int, sig: signal.Signals) -> None:
 async def _wait_posix_group_exit(group_id: int, timeout_s: float) -> bool:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s
-    while _posix_group_exists(group_id):
+    while process_group_exists(group_id):
         remaining = deadline - loop.time()
         if remaining <= 0:
             return False
@@ -145,7 +145,9 @@ async def _wait_posix_group_exit(group_id: int, timeout_s: float) -> bool:
     return True
 
 
-def _posix_group_exists(group_id: int) -> bool:
+def process_group_exists(group_id: int) -> bool:
+    """只在进程组仍有活成员时返回 True。"""
+
     if sys.platform.startswith("linux"):
         return _linux_group_has_live_members(group_id)
     try:

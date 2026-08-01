@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from utils.process_group import process_group_exists
+
 MIN_YIELD_TIME_MS = 250
 MIN_EMPTY_YIELD_TIME_MS = 5_000
 MAX_YIELD_TIME_MS = 30_000
@@ -778,6 +780,12 @@ def _kill_remaining_process_group(process: asyncio.subprocess.Process) -> None:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        # Linux killpg 会因组内只剩其他 UID 的 zombie 返回 EPERM；zombie 已不再执行，
+        # 由 subreaper wait 回收，不能把已完成命令误判为仍有活进程。
+        if not process_group_exists(process.pid):
+            return
+        raise
 
 
 async def _read_fd(fd: int, size: int) -> bytes:
