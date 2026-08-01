@@ -342,7 +342,7 @@ async def test_content_vertical_slice_filters_investigates_and_shares(
     assert "scratchpad" not in final_messages[-1]["content"]
     assert "share_content" in final_messages[-1]["content"]
     assert "skip_content" in final_messages[-1]["content"]
-    assert gateway.acks == [{"event_ids": ["new", "old"]}]
+    assert gateway.acks == [{"event_ids": ["new"]}]
     assert [event["id"] for event in runtime._state.unread("content")] == [ids[1]]
 
 
@@ -401,10 +401,10 @@ async def test_content_skip_keeps_full_unread_window_when_title_page_is_capped(
     await runtime.decide(state)
 
     observation = runtime._state.observations("content")[0]
-    assert len(json.loads(observation["candidates_json"])) == 120
-    assert state.ctx.content_backlog_count == 1
+    assert len(json.loads(observation["candidates_json"])) == 100
+    assert state.ctx.content_backlog_count == 21
     assert len(runtime._state.unread("content")) == 121
-    assert len(gateway.acks[0]["event_ids"]) == 121
+    assert gateway.acks == []
 
 
 @pytest.mark.asyncio
@@ -443,6 +443,51 @@ async def test_decayed_content_is_acknowledged_without_wake(tmp_path, request):
     assert runtime._state.unread("content") == []
     assert runtime._state.observations("content") == []
     assert gateway.acks == [{"event_ids": ["stale"]}]
+
+
+@pytest.mark.asyncio
+async def test_decayed_content_keeps_payload_until_ack_retry_succeeds(tmp_path, request):
+    now = datetime(2026, 7, 12, tzinfo=UTC)
+    gateway = FlakyAckGateway(
+        [
+            {
+                "kind": "content",
+                "event_id": "stale-retry",
+                "title": "需要重试 ack 的旧内容",
+                "published_at": (now - timedelta(days=30)).isoformat(),
+                "preprocess_score": 0.9,
+            }
+        ]
+    )
+    scope = _scope(
+        tmp_path,
+        gateway,
+        SimpleNamespace(chat=AsyncMock()),
+        FakeOrchestrator(),
+        _source("content"),
+    )
+    scope.memory.embedding_api = None
+    store = WakeStateStore(tmp_path / "wake.db")
+    runtime = WakeRuntime(scope, state_store=store, clock=FixedClock(now))
+    request.addfinalizer(runtime.close)
+
+    first = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(first)
+    await runtime.decide(first)
+    assert store.pending_acknowledgement_batches()[0]["action"] == "expire"
+    assert store._conn.execute(
+        "SELECT 1 FROM reservoir_events WHERE item_id = ?",
+        ("feed_plugin:main:stale-retry",),
+    ).fetchone() is not None
+
+    gateway.events = []
+    second = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(second)
+    assert store.pending_acknowledgements() == {}
+    assert store._conn.execute(
+        "SELECT 1 FROM reservoir_events WHERE item_id = ?",
+        ("feed_plugin:main:stale-retry",),
+    ).fetchone() is None
 
 
 @pytest.mark.asyncio

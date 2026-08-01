@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -11,6 +14,25 @@ from agent.tools.base import ToolResult
 from agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class QuarantinedItem:
+    """保留单条 MCP 输入的可查询诊断，而不阻断同批合法记录。"""
+
+    source_id: str
+    item_id: str
+    reason: str
+    payload: object
+
+
+class SourceChannels(dict[str, list[dict[str, Any]]]):
+    """三类 source 结果及同批被隔离的单条输入。"""
+
+    def __init__(self) -> None:
+        super().__init__({"alert": [], "content": [], "context": []})
+        self.quarantined: list[QuarantinedItem] = []
+
 
 class McpGateway(Protocol):
     async def call(
@@ -63,14 +85,15 @@ async def fetch_sources_async(
     sources: list[RegisteredProactiveSource],
 ) -> dict[str, list[dict[str, Any]]]:
     results = await asyncio.gather(
-        *(fetch_source_strict_async(pool, source) for source in sources),
+        *(
+            fetch_source_strict_async(
+                pool, source, quarantine_invalid=True
+            )
+            for source in sources
+        ),
         return_exceptions=True,
     )
-    channels: dict[str, list[dict[str, Any]]] = {
-        "alert": [],
-        "content": [],
-        "context": [],
-    }
+    channels = SourceChannels()
     succeeded = 0
     failures: list[str] = []
     for source, result in zip(sources, results):
@@ -82,6 +105,9 @@ async def fetch_sources_async(
         succeeded += 1
         for channel, items in result.items():
             channels[channel].extend(items)
+        channels.quarantined.extend(
+            getattr(result, "quarantined", [])
+        )
     if failures and succeeded == 0:
         raise RuntimeError(f"所有 proactive sources 拉取失败: {failures}")
     return channels
@@ -90,16 +116,14 @@ async def fetch_sources_async(
 async def fetch_source_strict_async(
     pool: McpGateway,
     source: RegisteredProactiveSource,
+    *,
+    quarantine_invalid: bool = False,
 ) -> dict[str, list[dict[str, Any]]]:
     """拉取并严格校验单个 source，保留原始失败。"""
 
     spec = source.spec
     key = source_key(source)
-    result: dict[str, list[dict[str, Any]]] = {
-        "alert": [],
-        "content": [],
-        "context": [],
-    }
+    result = SourceChannels()
     if spec.fetch_page_size > 0:
         data = await _fetch_pages(pool, source)
     else:
@@ -111,27 +135,84 @@ async def fetch_source_strict_async(
         return result
     if not isinstance(data, list):
         raise RuntimeError(f"source 返回值必须是 list 或 context dict: {key}")
-    for raw in data:
-        if not isinstance(raw, dict):
-            raise RuntimeError(
-                f"source item 必须是 object: {key} ({type(raw).__name__})"
+    for index, raw in enumerate(data):
+        item_id = _item_identity(raw, index)
+        try:
+            item = _validate_item(raw, spec.channels, key)
+        except ValueError as exc:
+            if not quarantine_invalid:
+                raise RuntimeError(str(exc)) from exc
+            result.quarantined.append(
+                QuarantinedItem(key, item_id, str(exc), raw)
             )
-        kind = str(raw.get("kind") or "").strip()
-        if not kind and len(spec.channels) == 1:
-            kind = spec.channels[0]
+            logger.warning(
+                "[proactive.source] item quarantined source=%s item=%s reason=%s",
+                key,
+                item_id,
+                exc,
+            )
+            continue
+        kind = str(item.get("kind") or "")
         if kind not in spec.channels:
             continue
-        if kind in {"alert", "content"} and not str(
-            raw.get("event_id") or raw.get("id") or ""
-        ).strip():
-            raise RuntimeError(f"source item 缺少 event_id/id: {key}")
-        item = dict(raw)
         if kind == "context":
             item.setdefault("_source", key)
         else:
             item.setdefault("ack_server", key)
         result[kind].append(item)
     return result
+
+
+def _item_identity(raw: object, index: int) -> str:
+    if isinstance(raw, dict):
+        value = raw.get("event_id") or raw.get("id")
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return f"index:{index}"
+
+
+def _validate_item(
+    raw: object,
+    declared_channels: tuple[str, ...],
+    source_id: str,
+) -> dict[str, Any]:
+    """在 MCP 信任边界验证一条记录，失败只返回该条 quarantine。"""
+
+    if not isinstance(raw, dict):
+        raise ValueError(f"source item 必须是 object ({type(raw).__name__})")
+    item = dict(raw)
+    kind = str(item.get("kind") or "").strip()
+    if not kind and len(declared_channels) == 1:
+        kind = declared_channels[0]
+    if kind not in declared_channels:
+        raise ValueError(f"kind 未声明或为空: {source_id}")
+    if kind in {"alert", "content"}:
+        if not str(item.get("event_id") or item.get("id") or "").strip():
+            raise ValueError(f"source item 缺少 event_id/id: {source_id}")
+        score_value = item.get("preprocess_score")
+        if score_value is None:
+            score_value = item.get("rank_score", 0.0)
+        try:
+            score = float(score_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"score 非数字: {source_id}") from exc
+        if not math.isfinite(score) or not 0.0 <= score <= 1.0:
+            raise ValueError(f"score 超出 [0,1] 或非 finite: {source_id}")
+        item["preprocess_score"] = score
+    for field in ("published_at", "triggered_at", "first_seen_at"):
+        if field not in item or item[field] in (None, ""):
+            continue
+        try:
+            parsed = item[field]
+            if isinstance(parsed, datetime):
+                value = parsed
+            else:
+                value = datetime.fromisoformat(str(parsed))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field} 不是 ISO timestamp: {source_id}") from exc
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError(f"{field} 必须带 timezone: {source_id}")
+    return item
 
 
 async def _fetch_pages(

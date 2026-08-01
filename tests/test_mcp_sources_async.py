@@ -188,6 +188,37 @@ async def test_fetch_source_rejects_corrupt_event_items(
 
 
 @pytest.mark.asyncio
+async def test_fetch_quarantines_one_bad_item_and_keeps_valid_batch_item() -> None:
+    pool = FakePool(
+        {
+            ("feed", "events"): [
+                {
+                    "kind": "content",
+                    "event_id": "good",
+                    "preprocess_score": 0.4,
+                    "published_at": "2026-07-12T00:00:00+00:00",
+                },
+                {
+                    "kind": "content",
+                    "event_id": "bad",
+                    "preprocess_score": float("nan"),
+                    "published_at": "2026-07-12T00:00:00+00:00",
+                },
+            ]
+        }
+    )
+    result = await mcp_sources.fetch_sources_async(
+        cast(Any, pool),
+        [source("feed", "content", ("content",), "feed", "events")],
+    )
+
+    assert [item["event_id"] for item in result["content"]] == ["good"]
+    assert [(item.item_id, item.source_id) for item in result.quarantined] == [
+        ("bad", "feed:content")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_fetch_isolates_single_source_failure() -> None:
     pool = FakePool(
         {("ok", "events"): [{"kind": "content", "event_id": "1"}], ("bad", "events"): []},
