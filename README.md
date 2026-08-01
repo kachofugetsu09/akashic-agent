@@ -199,6 +199,24 @@ supervisor；需要直接调试 child 时把程序参数设为 `gateway`。也�
 
 ---
 
+## 用 Android 手机接入
+
+Akashic Mobile 是一个通过独立实时网关连接 Akashic Agent 的 Android 客户端。远程接入推荐使用 Cloudflare Tunnel：Web Chat 和配对管理页继续留在本机 `127.0.0.1:6322`，Tunnel 只转发由 Akashic 设备认证保护的 `6323` 端口。
+
+```text
+1. 在 config.toml 启用 [mobile_realtime]
+2. 用 Cloudflare Tunnel 把一个公共域名转到 https://127.0.0.1:6323
+3. 在本机 Web Chat 点击“连接手机”，用 Akashic Mobile 扫描二维码
+4. 两端核对六位确认码，在电脑上批准设备
+```
+
+- Android 安装包：<https://github.com/kachofugetsu09/akashic-mobile/releases/latest>
+- 配置、Cloudflare、验证与排障：[移动端接入手册](./_handbook/mobile-access.md)
+
+首次配对成功后，手机会保存设备密钥，正常升级应用或重连无需再次扫码。
+
+---
+
 ## 系统全景
 
 ```
@@ -217,6 +235,7 @@ supervisor；需要直接调试 child 时把程序参数设为 `gateway`。也�
 |---------|------|
 | 怎么首次配置或切换 Provider | 启动后访问 `http://127.0.0.1:6321`，支持 API Key、OpenCode Go 和 Codex Auth |
 | 怎么打开本机 Web Chatbox | 启动后访问 `http://127.0.0.1:6322`，配置见 `config.toml` 的 `[channels.chat]` |
+| 怎么用 Android 手机远程连接 | [移动端接入手册](./_handbook/mobile-access.md) |
 | 怎么让 agent 主动推送消息、怎么配数据源 | [_handbook/proactive-guide.md](./_handbook/proactive-guide.md) |
 | 怎么写后台任务让 agent 空闲时自动干活 | [_handbook/drift-guide.md](./_handbook/drift-guide.md) |
 | MEMORY.md / SELF.md / consolidation / 记忆怎么流转 | [_handbook/memory-markdown.md](./_handbook/memory-markdown.md) |
