@@ -433,6 +433,17 @@ class MobileRealtimeChannel:
                         "message": "该命令仍在执行，请等待原命令 ID 的最终收据",
                     },
                 )
+            if self._require_ctx().bus.has_pending_mobile_handoff(
+                session_key=session_id,
+                client_message_id=frame.payload.client_message_id,
+            ):
+                return CommandReply(
+                    type=f"{receipt.command_type}.error",
+                    payload={
+                        "code": "command_in_progress",
+                        "message": "该命令已进入持久化队列，请等待原命令 ID 的最终收据",
+                    },
+                )
             if (device_id, frame.id) in self._receipt_completion_failures:
                 self._receipt_completion_failures.discard((device_id, frame.id))
                 unknown = self._runtime.storage.mark_command_outcome_unknown(

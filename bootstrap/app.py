@@ -385,6 +385,9 @@ class AppRuntime:
                     self.config.mobile_realtime,
                     self.workspace,
                 )
+                self.bus.bind_durable_inbound_store(
+                    self.session_manager.control_store
+                )
                 from infra.mobile_realtime.runtime_inspection import (
                     RuntimeInspectionService,
                 )
