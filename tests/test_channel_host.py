@@ -275,8 +275,8 @@ async def test_channel_host_revokes_shared_registrations_on_stop():
     assert event_bus.handler_count() == 1
     assert "registered" in message_bus._subscribers
     assert await push_tool.execute(
-        channel="registered",
-        chat_id="1",
+        target_channel="registered",
+        target_chat_id="1",
         message="hello",
     ) == "消息已发送"
 
@@ -285,8 +285,8 @@ async def test_channel_host_revokes_shared_registrations_on_stop():
     assert event_bus.handler_count() == 0
     assert "registered" not in message_bus._subscribers
     assert "未注册" in await push_tool.execute(
-        channel="registered",
-        chat_id="1",
+        target_channel="registered",
+        target_chat_id="1",
         message="hello",
     )
 
@@ -324,8 +324,8 @@ async def test_channel_host_restores_shared_registrations_after_failed_swap():
     assert event_bus.handler_count() == 1
     assert len(message_bus._subscribers["registered"]) == 1
     assert await push_tool.execute(
-        channel="registered",
-        chat_id="1",
+        target_channel="registered",
+        target_chat_id="1",
         message="hello",
     ) == "消息已发送"
 

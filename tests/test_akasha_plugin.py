@@ -28,6 +28,7 @@ from agent.plugins.manifest import (
     builtin_plugin_data_dir,
     ensure_workspace_plugin_data_dir,
 )
+from agent.tools.base import ToolExecutionContext, tool_execution_context_scope
 from agent.tools.recall_memory import RecallMemoryTool
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.retrieval.protocol import RetrievalRequest
@@ -524,15 +525,20 @@ async def test_online_turn_recall_and_replay_share_one_state(
     before_recall = logical_state_sha256(
         tmp_path / "memory" / "akasha.db"
     )
-    rendered = json.loads(
-        await tool.execute(
-            query="alpha details",
-            channel="test",
-            chat_id="one",
-            limit=5,
+    with tool_execution_context_scope(
+        ToolExecutionContext(
+            origin_channel="test",
+            origin_chat_id="one",
+            origin_session_key="test:one",
             current_timestamp=next_time.isoformat(),
         )
-    )
+    ):
+        rendered = json.loads(
+            await tool.execute(
+                query="alpha details",
+                limit=5,
+            )
+        )
     after_recall = logical_state_sha256(
         tmp_path / "memory" / "akasha.db"
     )

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from agent.tools.base import Tool
+from agent.tools.base import Tool, get_current_tool_context
 from core.memory.engine import (
     MemoryMutation,
     MemoryScope,
@@ -42,28 +42,24 @@ class MemorizeTool(Tool):
         tool_requirement: str | None = None,
         steps: list[str] | None = None,
         metadata: dict[str, object] | None = None,
-        current_user_source_ref: str | None = None,
-        channel: str | None = None,
-        chat_id: str | None = None,
-        **extra_kwargs: Any,
     ) -> str:
         kind = memory_kind.strip()
         extra = dict(metadata or {})
-        extra.update(extra_kwargs)
         if tool_requirement is not None:
             extra["tool_requirement"] = tool_requirement
         if steps is not None:
             extra["steps"] = steps
+        context = get_current_tool_context()
         result = await self._memory.mutate(
             MemoryMutation(
                 kind="remember",
                 summary=summary,
                 memory_kind=kind,
-                source_ref=str(current_user_source_ref or "").strip(),
+                source_ref=(context.current_user_source_ref if context else "").strip(),
                 scope=MemoryScope(
-                    session_key=f"{channel}:{chat_id}" if channel and chat_id else "",
-                    channel=channel or "",
-                    chat_id=chat_id or "",
+                    session_key=context.origin_session_key if context else "",
+                    channel=context.origin_channel if context else "",
+                    chat_id=context.origin_chat_id if context else "",
                 ),
                 metadata=extra,
             )

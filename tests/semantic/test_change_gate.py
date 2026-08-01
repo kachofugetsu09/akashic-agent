@@ -53,6 +53,18 @@ def test_unknown_executable_file_is_not_silently_accepted() -> None:
     assert gate._groups_for_path(mutant_path, catalog) == set()
 
 
+def test_deleted_path_contract_maps_live_and_removed_peer_files() -> None:
+    gate = _gate_module()
+    catalog = gate.load_catalog()
+
+    group = catalog.groups["companion_peer_removal"]
+
+    assert group.deleted_paths == ("agent/peer_agent/**",)
+    assert "companion_peer_removal" in gate._groups_for_path(
+        "agent/peer_agent/tool.py", catalog
+    )
+
+
 def test_change_classes_allow_single_class_and_reject_mixed_contract_changes() -> None:
     gate = _gate_module()
 

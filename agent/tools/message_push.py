@@ -1,5 +1,5 @@
 """
-统一消息推送工具，agent 通过 channel + chat_id 向任意已注册渠道发送消息、文件或图片。
+统一消息推送工具，agent 通过显式 target_channel + target_chat_id 向任意已注册渠道发送消息、文件或图片。
 """
 
 import logging
@@ -38,17 +38,17 @@ class MessagePushTool(Tool):
     name = "message_push"
     description = (
         "向指定渠道的用户主动发送消息、文件或图片。"
-        "需要提供渠道名（如 telegram、qq）和目标 chat_id。"
+        "需要提供目标渠道名（如 telegram、qq）和目标 chat_id。"
         "message/file/image 三者至少提供一个。"
     )
     parameters = {
         "type": "object",
         "properties": {
-            "channel": {
+            "target_channel": {
                 "type": "string",
                 "description": "目标渠道名，如 telegram、qq",
             },
-            "chat_id": {
+            "target_chat_id": {
                 "type": "string",
                 "description": "目标会话 ID",
             },
@@ -65,7 +65,7 @@ class MessagePushTool(Tool):
                 "description": "要发送的图片本地路径或 URL",
             },
         },
-        "required": ["channel", "chat_id"],
+        "required": ["target_channel", "target_chat_id"],
     }
 
     def __init__(self, chat_lane: ChatLane | None = None) -> None:
@@ -97,8 +97,8 @@ class MessagePushTool(Tool):
         _ = self._adapters.pop(channel, None)
 
     async def execute(self, **kwargs: Any) -> str:
-        channel: str = kwargs["channel"]
-        chat_id: str = str(kwargs["chat_id"])
+        target_channel = kwargs["target_channel"]
+        target_chat_id = str(kwargs["target_chat_id"])
         message: str | None = kwargs.get("message")
         file: str | None = kwargs.get("file")
         image: str | None = kwargs.get("image")
@@ -122,8 +122,8 @@ class MessagePushTool(Tool):
             attachments.append(ChannelAttachment(AttachmentKind.IMAGE, image))
         receipt = await self.dispatch(
             ChannelMessage(
-                channel=channel,
-                chat_id=chat_id,
+                channel=target_channel,
+                chat_id=target_chat_id,
                 content=message or "",
                 attachments=tuple(attachments),
                 metadata=outbound_metadata,

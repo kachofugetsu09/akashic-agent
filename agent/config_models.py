@@ -97,18 +97,6 @@ class MemoryConfig:
 
 
 @dataclass
-class PeerAgentConfig:
-    name: str
-    base_url: str
-    launcher: list[str]          # 拉起命令，如 ["uv", "run", "python", "-m", "app.a2a_server"]
-    cwd: str | None = None       # 子进程工作目录，None 表示继承父进程
-    description: str = ""        # 工具描述，用于 LLM 路由；服务器在线时会被 AgentCard 覆盖
-    health_path: str = "/health"
-    startup_timeout_s: int = 30
-    shutdown_timeout_s: int = 10
-
-
-@dataclass
 class WiringConfig:
     context: str = "default"
     memory: str = "default"
@@ -208,7 +196,6 @@ class Config:
     tool_search_enabled: bool = False
     spawn_enabled: bool = True
     dev_mode: bool = False
-    peer_agents: list[PeerAgentConfig] = field(default_factory=list)
     wiring: WiringConfig = field(default_factory=WiringConfig)
     runtime_id: str = "main"
     auth_id: str = ""
@@ -246,7 +233,6 @@ __all__ = [
     "MobileKeyEncryptionConfig",
     "MobileRealtimeConfig",
     "ModelRuntimeConfig",
-    "PeerAgentConfig",
     "QQChannelConfig",
     "QQGroupConfig",
     "TelegramChannelConfig",

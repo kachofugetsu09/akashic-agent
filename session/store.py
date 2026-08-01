@@ -338,6 +338,25 @@ class SessionStore:
                 )
                 """)
             self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS inbound_handoffs (
+                    handoff_id  TEXT PRIMARY KEY,
+                    dedupe_key  TEXT UNIQUE,
+                    channel     TEXT NOT NULL,
+                    sender      TEXT NOT NULL,
+                    chat_id     TEXT NOT NULL,
+                    session_key TEXT NOT NULL,
+                    content     TEXT NOT NULL,
+                    timestamp   TEXT NOT NULL,
+                    media_json  TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at  TEXT NOT NULL
+                )
+                """)
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_inbound_handoffs_session
+                ON inbound_handoffs(session_key, created_at)
+                """)
+            self._conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_session_admissions_session
                 ON session_admissions(session_key)
                 """)
@@ -379,6 +398,180 @@ class SessionStore:
                 """)
             self._ensure_next_seq_values()
             self._ensure_fts()
+            self._conn.commit()
+
+    def reserve_inbound_handoff(
+        self,
+        *,
+        handoff_id: str,
+        dedupe_key: str | None,
+        channel: str,
+        sender: str,
+        chat_id: str,
+        session_key: str,
+        content: str,
+        timestamp: str,
+        media_json: str,
+        metadata_json: str,
+        created_at: str,
+    ) -> tuple[str, bool]:
+        """Durably reserve one inbound message before exposing it to MessageBus."""
+
+        fields = (
+            handoff_id,
+            dedupe_key,
+            channel,
+            sender,
+            chat_id,
+            session_key,
+            content,
+            timestamp,
+            media_json,
+            metadata_json,
+            created_at,
+        )
+        if not all(isinstance(value, str) and value for value in fields if value is not None):
+            raise ValueError("inbound handoff fields must be non-empty strings")
+        identity = {
+            "dedupe_key": dedupe_key,
+            "channel": channel,
+            "sender": sender,
+            "chat_id": chat_id,
+            "session_key": session_key,
+            "content": content,
+            "timestamp": timestamp,
+            "media_json": media_json,
+            "metadata_json": metadata_json,
+        }
+        stable_identity = {
+            key: value for key, value in identity.items() if key != "timestamp"
+        }
+
+        def validate_existing(row: sqlite3.Row, *, include_timestamp: bool) -> None:
+            expected_identity = identity if include_timestamp else stable_identity
+            for column, expected in expected_identity.items():
+                if row[column] != expected:
+                    raise RuntimeError(
+                        "inbound handoff identity conflict: "
+                        f"handoff_id={handoff_id} field={column}"
+                    )
+
+        with self._lock:
+            existing_by_id = self._conn.execute(
+                "SELECT * FROM inbound_handoffs WHERE handoff_id = ?",
+                (handoff_id,),
+            ).fetchone()
+            if dedupe_key is not None:
+                existing_by_dedupe = self._conn.execute(
+                    "SELECT * FROM inbound_handoffs WHERE dedupe_key = ?",
+                    (dedupe_key,),
+                ).fetchone()
+            else:
+                existing_by_dedupe = None
+            if (
+                existing_by_id is not None
+                and existing_by_dedupe is not None
+                and existing_by_id["handoff_id"] != existing_by_dedupe["handoff_id"]
+            ):
+                raise RuntimeError(
+                    "inbound handoff identity conflict: handoff_id and dedupe_key differ"
+                )
+            existing = existing_by_id or existing_by_dedupe
+            if existing is not None:
+                validate_existing(existing, include_timestamp=existing_by_id is not None)
+                return str(existing["handoff_id"]), False
+            cursor = self._conn.execute(
+                """
+                INSERT INTO inbound_handoffs(
+                    handoff_id, dedupe_key, channel, sender, chat_id,
+                    session_key, content, timestamp, media_json,
+                    metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT DO NOTHING
+                """,
+                fields,
+            )
+            row = self._conn.execute(
+                "SELECT * FROM inbound_handoffs WHERE handoff_id = ?",
+                (handoff_id,),
+            ).fetchone()
+            if row is None and dedupe_key is not None:
+                row = self._conn.execute(
+                    "SELECT * FROM inbound_handoffs WHERE dedupe_key = ?",
+                    (dedupe_key,),
+                ).fetchone()
+            if row is None:
+                self._conn.rollback()
+                raise RuntimeError(f"inbound handoff disappeared: {handoff_id}")
+            try:
+                validate_existing(
+                    row,
+                    include_timestamp=row["handoff_id"] == handoff_id,
+                )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+            return str(row["handoff_id"]), cursor.rowcount == 1
+
+    def list_inbound_handoffs(
+        self,
+        *,
+        limit: int | None = None,
+    ) -> list[dict[str, str | None]]:
+        """按 durable 到达顺序读取有限页的 pending inbound handoff。"""
+
+        if limit is not None and (
+            not isinstance(limit, int) or isinstance(limit, bool) or limit < 1
+        ):
+            raise ValueError("inbound handoff limit 必须是正整数")
+        limit_sql = "" if limit is None else " LIMIT ?"
+
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT handoff_id, dedupe_key, channel, sender, chat_id,
+                       session_key, content, timestamp, media_json,
+                       metadata_json, created_at
+                FROM inbound_handoffs
+                ORDER BY created_at ASC, handoff_id ASC
+                """ + limit_sql,
+                () if limit is None else (limit,),
+            ).fetchall()
+        return [
+            {key: cast(str | None, row[key]) for key in row.keys()}
+            for row in rows
+        ]
+
+    def has_inbound_handoff(
+        self,
+        *,
+        session_key: str,
+        client_message_id: str,
+    ) -> bool:
+        """Check whether a client message still owns an uncompleted handoff."""
+
+        dedupe_key = f"{session_key}:{client_message_id}"
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM inbound_handoffs WHERE dedupe_key = ?",
+                (dedupe_key,),
+            ).fetchone()
+        return row is not None
+
+    def complete_inbound_handoff(self, handoff_id: str) -> None:
+        """Release a handoff only after its worker has finished processing."""
+
+        if not isinstance(handoff_id, str) or not handoff_id:
+            raise ValueError("handoff_id must be a non-empty string")
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM inbound_handoffs WHERE handoff_id = ?",
+                (handoff_id,),
+            )
+            if cursor.rowcount != 1:
+                self._conn.rollback()
+                raise RuntimeError(f"inbound handoff not found: {handoff_id}")
             self._conn.commit()
 
     def _ensure_session_columns(self) -> None:

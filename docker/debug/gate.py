@@ -57,6 +57,7 @@ class Group:
     priority: str
     requirements: tuple[str, ...]
     paths: tuple[str, ...]
+    deleted_paths: tuple[str, ...]
     depends_on: tuple[str, ...]
     scenarios: tuple[str, ...]
 
@@ -190,6 +191,11 @@ def _load_groups(data: dict[str, object]) -> dict[str, Group]:
             priority=cast(str, priority),
             requirements=_strings(item, "requirements", owner=f"groups.{group_id}"),
             paths=_strings(item, "paths", owner=f"groups.{group_id}"),
+            deleted_paths=_possibly_empty_strings(
+                item, "deleted_paths", owner=f"groups.{group_id}"
+            )
+            if "deleted_paths" in item
+            else (),
             depends_on=_optional_strings(
                 item, "depends_on", owner=f"groups.{group_id}"
             ),
@@ -362,7 +368,10 @@ def _groups_for_path(path: str, catalog: Catalog) -> set[str]:
     return {
         group.id
         for group in catalog.groups.values()
-        if any(_matches(path, pattern) for pattern in group.paths)
+        if any(
+            _matches(path, pattern)
+            for pattern in (*group.paths, *group.deleted_paths)
+        )
     }
 
 

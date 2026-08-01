@@ -16,6 +16,7 @@ chat_id 约定：
 
 import asyncio
 import base64
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 import html
 import importlib
@@ -62,6 +63,9 @@ _GROUP_PREFIX = "gqq:"
 _TRACE_THINKING_LIMIT = 500
 _TRACE_TOOL_RESULT_LIMIT = 120
 _TRACE_DEFAULT_ACTOR = "Akashic"
+MAX_QQ_IMAGE_COUNT = 10
+MAX_QQ_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_QQ_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024
 
 
 @dataclass
@@ -264,10 +268,17 @@ async def _download_to_temp(
     urls: list[str],
     requester: HttpRequester,
     attachments: AttachmentStore,
+    diagnostics: list[str] | None = None,
 ) -> list[str]:
     """下载图片到临时文件，返回本地路径列表"""
     if not urls:
         return []
+    diagnostics = diagnostics if diagnostics is not None else []
+    if len(urls) > MAX_QQ_IMAGE_COUNT:
+        diagnostics.append(
+            f"image_count_exceeded: received={len(urls)} limit={MAX_QQ_IMAGE_COUNT}"
+        )
+    accepted_total = 0
     paths: list[str] = []
     ext_map = {
         "image/jpeg": ".jpg",
@@ -275,27 +286,69 @@ async def _download_to_temp(
         "image/gif": ".gif",
         "image/webp": ".webp",
     }
-    for url in urls:
+    for index, url in enumerate(urls[:MAX_QQ_IMAGE_COUNT]):
+        if accepted_total >= MAX_QQ_TOTAL_IMAGE_BYTES:
+            diagnostics.append(
+                f"image_total_limit_reached: limit={MAX_QQ_TOTAL_IMAGE_BYTES}"
+            )
+            break
         try:
             url = html.unescape(url)  # 还原 &amp; 等 HTML 实体
-            resp = await requester.get(
+            remaining = MAX_QQ_TOTAL_IMAGE_BYTES - accepted_total
+            item_limit = min(MAX_QQ_IMAGE_BYTES, remaining)
+            content, ct = await _read_qq_image(
                 url,
-                follow_redirects=True,
-                timeout_s=15.0,
-                budget=RequestBudget(total_timeout_s=20.0),
+                requester,
+                max_bytes=item_limit,
             )
-            resp.raise_for_status()
-            ct = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+            if not ct.startswith("image/"):
+                raise ValueError(f"不支持的媒体类型: {ct}")
             ext = ext_map.get(ct, ".jpg")
             path = attachments.write_bytes(
-                resp.content,
+                content,
                 prefix="akashic_qq_",
                 suffix=ext,
             )
             paths.append(str(path))
-        except Exception as e:
-            logger.warning(f"[qq] 图片下载失败  url={url[:80]}  错误: {e}")
+            accepted_total += len(content)
+        except Exception as exc:
+            reason = f"media[{index}] failed: {exc}"
+            diagnostics.append(reason)
+            logger.warning("[qq] 图片下载失败  url=%s  错误: %s", url[:80], exc)
     return paths
+
+
+async def _read_qq_image(
+    url: str,
+    requester: HttpRequester,
+    *,
+    max_bytes: int,
+) -> tuple[bytes, str]:
+    """流式读取单张 QQ 图片，分配内存前执行单项上限。"""
+
+    stream_context = requester.stream(
+        "GET",
+        url,
+        timeout_s=15.0,
+        budget=RequestBudget(total_timeout_s=20.0),
+        validate_redirects=True,
+    )
+    async with cast(AbstractAsyncContextManager[Any], stream_context) as response:
+        if response.status_code < 200 or response.status_code >= 300:
+            raise ValueError(f"HTTP {response.status_code}")
+        content_type = (
+            response.headers.get("content-type", "image/jpeg")
+            .split(";", 1)[0]
+            .strip()
+        )
+        content = bytearray()
+        async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+            if len(content) + len(chunk) > max_bytes:
+                raise ValueError(
+                    f"图片超过 {max_bytes // (1024 * 1024)}MB 上限"
+                )
+            content.extend(chunk)
+        return bytes(content), content_type
 
 
 class QQChannel:
@@ -529,11 +582,16 @@ class QQChannel:
     ) -> None:
         """私聊入站：chat_id = user_id"""
         await self._identity_index.remember(user_id, user_id)
+        media_diagnostics: list[str] = []
         media = await _download_to_temp(
             img_urls or [],
             self._http_requester,
             self._attachments,
+            media_diagnostics,
         )
+        metadata: dict[str, Any] = {"chat_type": "private"}
+        if media_diagnostics:
+            metadata["media_diagnostics"] = media_diagnostics
         await self._bus.publish_inbound(
             InboundMessage(
                 channel=_CHANNEL,
@@ -541,7 +599,7 @@ class QQChannel:
                 chat_id=user_id,
                 content=content,
                 media=media,
-                metadata={"chat_type": "private"},
+                metadata=metadata,
             )
         )
 
@@ -569,11 +627,20 @@ class QQChannel:
         if "group_id" not in session.metadata:
             session.metadata["group_id"] = group_id
             await self._session_manager.save_async(session)
+        media_diagnostics: list[str] = []
         media = await _download_to_temp(
             img_urls or [],
             self._http_requester,
             self._attachments,
+            media_diagnostics,
         )
+        metadata: dict[str, Any] = {
+            "chat_type": "group",
+            "group_id": group_id,
+            "sender_id": user_id,
+        }
+        if media_diagnostics:
+            metadata["media_diagnostics"] = media_diagnostics
         await self._bus.publish_inbound(
             InboundMessage(
                 channel=_CHANNEL,
@@ -581,11 +648,7 @@ class QQChannel:
                 chat_id=chat_id,
                 content=content,
                 media=media,
-                metadata={
-                    "chat_type": "group",
-                    "group_id": group_id,
-                    "sender_id": user_id,
-                },
+                metadata=metadata,
             )
         )
 
@@ -768,5 +831,8 @@ def _is_local(path: str) -> bool:
 
 def _local_to_base64(path: str) -> str:
     """将本地文件编码为 NapCat 接受的 base64:// URI"""
-    data = Path(path).read_bytes()
+    with Path(path).open("rb") as handle:
+        data = handle.read(MAX_QQ_IMAGE_BYTES + 1)
+    if len(data) > MAX_QQ_IMAGE_BYTES:
+        raise ValueError(f"QQ 图片不能超过 {MAX_QQ_IMAGE_BYTES} 字节")
     return "base64://" + base64.b64encode(data).decode()

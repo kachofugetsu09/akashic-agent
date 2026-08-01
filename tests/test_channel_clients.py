@@ -5,6 +5,7 @@ import importlib
 import logging
 import sys
 import types
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -751,16 +752,23 @@ async def test_qq_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     mod = _import_qq_channel(monkeypatch)
     bus = _Bus()
     session_manager = _SessionManager(tmp_path)
-    async def _request_get(url, **kwargs):
-        if url.endswith("a.jpg") or url.endswith("a.png"):
-            return SimpleNamespace(
-                headers={"content-type": "image/png"},
-                content=b"img",
-                raise_for_status=lambda: None,
-            )
-        raise RuntimeError("boom")
+    class _Response:
+        status_code = 200
+        headers = {"content-type": "image/png"}
 
-    requester = SimpleNamespace(get=AsyncMock(side_effect=_request_get))
+        async def aiter_bytes(self, *, chunk_size: int):
+            _ = chunk_size
+            yield b"img"
+
+    class _Requester:
+        @asynccontextmanager
+        async def stream(self, method: str, url: str, **kwargs: object):
+            _ = (method, kwargs)
+            if not (url.endswith("a.jpg") or url.endswith("a.png")):
+                raise RuntimeError("boom")
+            yield _Response()
+
+    requester = _Requester()
     group_filter = SimpleNamespace(should_process=AsyncMock(return_value=True))
     group_cfg = SimpleNamespace(group_id="100")
     channel = mod.QQChannel(
@@ -830,6 +838,10 @@ async def test_qq_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     assert mod._is_local(str(sample)) is True
     assert mod._is_local("https://example.com/x.jpg") is False
     assert mod._local_to_base64(str(sample)).startswith("base64://")
+    oversized = tmp_path / "oversized.bin"
+    oversized.write_bytes(b"x" * (mod.MAX_QQ_IMAGE_BYTES + 1))
+    with pytest.raises(ValueError, match="QQ 图片不能超过"):
+        mod._local_to_base64(str(oversized))
 
     test_attachments = mod.AttachmentStore(tmp_path / "uploads")
     paths = await mod._download_to_temp(

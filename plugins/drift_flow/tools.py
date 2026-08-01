@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
-from agent.tools.base import Tool, ToolResult
+from agent.tools.base import (
+    Tool,
+    ToolExecutionContext,
+    ToolResult,
+    tool_execution_context_scope,
+)
 from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.shell import ShellTool
@@ -50,7 +55,7 @@ class SendMessageTool(Tool):
     def description(self) -> str:
         return (
             "向用户发送一条消息，可附带图片。单次 Drift run 最多只能调用一次。\n"
-            "channel 和 chat_id 在 Drift 上下文中已由配置预设，可省略不填。\n"
+            "target_channel 和 target_chat_id 在 Drift 上下文中已由配置预设，可省略不填。\n"
             "这是 fire-and-forget：发送成功即完成本轮动作，不创建等待回复的状态。"
             "未来若出现用户回答，它会作为新的会话上下文和记忆自然进入；"
             "不得记录‘等用户回复’，也不得把‘没有回复’当成可观测事实。"
@@ -68,11 +73,11 @@ class SendMessageTool(Tool):
                     "items": {"type": "string"},
                     "description": "要随消息发送的图片路径或 URL 列表",
                 },
-                "channel": {
+                "target_channel": {
                     "type": "string",
                     "description": "目标渠道（Drift 上下文可省略，已由配置预设）",
                 },
-                "chat_id": {
+                "target_chat_id": {
                     "type": "string",
                     "description": "目标会话 ID（Drift 上下文可省略，已由配置预设）",
                 },
@@ -85,10 +90,10 @@ class SendMessageTool(Tool):
         message: str = "",
         image: str = "",
         media: list[str] | str | None = None,
-        channel: str = "",
-        chat_id: str = "",
+        target_channel: str = "",
+        target_chat_id: str = "",
     ) -> str:
-        _ = (channel, chat_id)
+        _ = (target_channel, target_chat_id)
         text = normalize_outbound_text(message or "").strip()
         media_paths = self._normalize_media(image=image, media=media)
         if self._ctx.drift_message_staged:
@@ -727,13 +732,18 @@ class DriftRecallMemoryTool(Tool):
         return self._wrapped.parameters
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
-        args = dict(kwargs)
-        args.setdefault("current_timestamp", self._ctx.now_utc.isoformat())
+        origin_channel = ""
+        origin_chat_id = ""
         if ":" in self._ctx.session_key:
-            channel, chat_id = self._ctx.session_key.split(":", 1)
-            args.setdefault("channel", channel)
-            args.setdefault("chat_id", chat_id)
-        return await self._wrapped.execute(**args)
+            origin_channel, origin_chat_id = self._ctx.session_key.split(":", 1)
+        context = ToolExecutionContext(
+            origin_channel=origin_channel,
+            origin_chat_id=origin_chat_id,
+            origin_session_key=self._ctx.session_key,
+            current_timestamp=self._ctx.now_utc.isoformat(),
+        )
+        with tool_execution_context_scope(context):
+            return await self._wrapped.execute(**kwargs)
 
 
 class DriftSessionOwnedTool(Tool):
@@ -930,7 +940,10 @@ def build_drift_tool_registry(
     ctx: AgentTickContext,
     deps: DriftToolDeps,
 ) -> ToolRegistry:
-    tools = ToolRegistry(follow_runtime_snapshot=False)
+    tools = ToolRegistry(
+        follow_runtime_snapshot=False,
+        validate_semantic_schema=False,
+    )
     drift_dir = deps.drift_dir
     resolver = DriftPathResolver(drift_dir, deps.store)
     tools.register(SelectSkillTool(ctx, deps.store), risk="write")

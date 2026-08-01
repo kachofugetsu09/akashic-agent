@@ -1772,14 +1772,16 @@ class DefaultReasoner(Reasoner):
                         name: str,
                         arguments: dict[str, Any],
                     ) -> Any:
+                        internal_arguments: dict[str, Any] = {}
                         if name == "tool_search" and visible_names is not None:
-                            arguments = {
-                                **arguments,
-                                "excluded_names": visible_names | disabled,
-                            }
+                            internal_arguments["excluded_names"] = visible_names | disabled
                         if name == "message_push":
-                            arguments = {**arguments, "_commit_role": "passive"}
-                        return await self._tools.execute(name, arguments)
+                            internal_arguments["_commit_role"] = "passive"
+                        return await self._tools.execute(
+                            name,
+                            arguments,
+                            internal_arguments=internal_arguments,
+                        )
 
                     _args_preview = support.log_preview(tool_call.arguments, 120)
                     logger.info("[工具执行→] %s  args=%s", tool_call.name, _args_preview)
@@ -2417,9 +2419,9 @@ def _collect_current_web_push_media(
 ) -> None:
     if channel != "web":
         return
-    if str(arguments.get("channel") or "").strip() != channel:
+    if str(arguments.get("target_channel") or "").strip() != channel:
         return
-    if str(arguments.get("chat_id") or "").strip() != chat_id:
+    if str(arguments.get("target_chat_id") or "").strip() != chat_id:
         return
     for key in ("image", "file"):
         value = str(arguments.get(key) or "").strip()
