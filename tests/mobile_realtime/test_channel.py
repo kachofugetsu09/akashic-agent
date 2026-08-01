@@ -732,11 +732,48 @@ async def test_message_send_keeps_unknown_outcome_without_persisted_user(
     result = await channel.handle_command(device_id=device_id, frame=frame)
 
     assert result.type == "message.send.error"
-    assert result.payload["code"] == "command_outcome_unknown"
+    assert result.payload["code"] == "command_in_progress"
     assert bus.inbound == []
     release.set()
     completed = await original
     assert completed.type == "message.send.ok"
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_processing_non_message_keeps_active_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
+    frame = _generic_frame(
+        frame_id="01ARZ3NDEKTSV4RRFFQ69G5FB3",
+        command_type="ping",
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def execute_slowly(
+        *, device_id: str, frame: object
+    ) -> channel_module.CommandReply:
+        started.set()
+        await release.wait()
+        return channel_module.CommandReply(type="ping.ok", payload={})
+
+    monkeypatch.setattr(channel, "_execute_command", execute_slowly)
+    original = asyncio.create_task(
+        channel.handle_command(device_id=device_id, frame=frame)
+    )
+    await started.wait()
+    duplicate = await channel.handle_command(device_id=device_id, frame=frame)
+    assert duplicate.payload["code"] == "command_in_progress"
+    release.set()
+    assert (await original).type == "ping.ok"
+    replay = await channel.handle_command(device_id=device_id, frame=frame)
+    assert replay.type == "ping.ok"
     storage.close()
 
 
