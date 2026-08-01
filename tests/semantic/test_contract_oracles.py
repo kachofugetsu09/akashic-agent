@@ -8,10 +8,12 @@ import pytest
 from tests_scenarios.contracts.oracles import assert_call_finality
 from tests_scenarios.contracts.oracles import (
     assert_atomic_generation_switch,
+    assert_committed_turn_finality,
     assert_isolated_gate_paths,
     assert_paths_retained,
     assert_process_resources_released,
     assert_rows_unchanged,
+    assert_unconfirmed_cleanup_retains_ownership,
 )
 
 
@@ -71,6 +73,23 @@ def test_process_lifecycle_oracle_rejects_leader_only_cleanup_mutant() -> None:
         assert_process_resources_released(
             live_descendant_pids=live_descendants,
             listening_ports=listening_ports,
+        )
+
+
+def test_turn_finality_oracle_rejects_cleanup_failure_mutant() -> None:
+    with pytest.raises(AssertionError, match="cleanup 反向破坏已提交 turn"):
+        assert_committed_turn_finality(
+            status="failed",
+            final_response="all updated",
+            dispatch_count=1,
+        )
+
+
+def test_cleanup_ownership_oracle_rejects_forgetful_mutant() -> None:
+    with pytest.raises(AssertionError, match="提前丢失 execution ownership"):
+        assert_unconfirmed_cleanup_retains_ownership(
+            cleanup_confirmed=False,
+            tracked_execution_ids=[],
         )
 
 

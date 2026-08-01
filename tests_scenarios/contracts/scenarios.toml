@@ -6,6 +6,8 @@ candidate_visible_before_activation = "tests/semantic/test_contract_oracles.py::
 derived_state_overwrites_session_source = "tests/semantic/test_contract_oracles.py::test_memory_oracle_rejects_derived_state_overwrite_mutant"
 historical_session_delete = "tests/semantic/test_context_history_contract.py::test_history_oracle_rejects_historical_delete_mutant"
 leader_exit_assumed_tree_exit = "tests/semantic/test_contract_oracles.py::test_process_lifecycle_oracle_rejects_leader_only_cleanup_mutant"
+cleanup_drops_unconfirmed_execution = "tests/semantic/test_contract_oracles.py::test_cleanup_ownership_oracle_rejects_forgetful_mutant"
+cleanup_retroactively_fails_turn = "tests/semantic/test_contract_oracles.py::test_turn_finality_oracle_rejects_cleanup_failure_mutant"
 missing_p0_mutant = "tests/semantic/test_change_gate.py::test_every_p0_oracle_declares_a_known_wrong_mutant"
 official_workspace_path = "tests/semantic/test_contract_oracles.py::test_workspace_oracle_rejects_official_path_mutant"
 plugin_uninstall_deletes_data = "tests/semantic/test_contract_oracles.py::test_plugin_data_oracle_rejects_uninstall_delete_mutant"
@@ -42,6 +44,7 @@ command = [
   "-q",
   "tests/test_shell_tool.py",
   "tests/test_unified_exec.py",
+  "tests/test_agent_restart.py::test_boot_guardian_reaps_adopted_zombie_while_gateway_runs",
   "tests/test_query_compaction.py",
   "tests/test_tool_loop_guard.py::test_subagent_trim_pins_active_shell_result_until_terminal_call",
   "tests/test_tool_loop_guard.py::test_subagent_preserves_provider_failure_when_shell_cleanup_also_fails",
@@ -57,6 +60,8 @@ observes = [
   "wait_cancellation",
   "stop_races",
   "process_group_cleanup",
+  "zombie_only_process_group_cleanup",
+  "guardian_adopted_child_reaping",
   "bounded_output",
   "capacity_pruning",
   "active_execution_compaction_pin",
@@ -66,6 +71,45 @@ observes = [
   "cleanup_preserves_primary_error",
 ]
 mutants = []
+
+[scenarios.shell_turn_finality_contract]
+requirements = ["SH-002", "RUN-003", "OUT-001", "ERR-001", "TST-001", "TST-003"]
+groups = ["shell_finality"]
+environment = "public_clean_workspace"
+timeout_seconds = 180
+command = [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "tests/test_shell_tool.py::test_agent_loop_returns_completed_reply_when_shell_cleanup_fails",
+  "tests/control/test_control_execution.py::test_committed_control_turn_survives_shell_cleanup_error",
+  "tests/test_unified_exec.py::test_zombie_only_permission_error_does_not_fail_completed_cleanup",
+  "tests/test_unified_exec.py::test_live_privileged_group_permission_error_stays_loud",
+  "tests/test_unified_exec.py::test_failed_owner_cleanup_retains_execution_and_quarantines_new_spawn",
+  "tests/test_agent_restart.py::test_boot_guardian_reaps_adopted_zombie_while_gateway_runs",
+  "tests/test_agent_restart.py::test_supervisor_logs_cleanup_failure_and_still_starts_next_boot",
+]
+observes = [
+  "committed_turn_status",
+  "final_response",
+  "dispatch_count",
+  "cleanup_diagnostic",
+  "execution_ownership",
+  "same_owner_shell_admission",
+  "guardian_adopted_child_reaping",
+  "restart_generation",
+]
+mutants = ["cleanup_retroactively_fails_turn", "cleanup_drops_unconfirmed_execution"]
+
+[scenarios.shell_privileged_cleanup_contract]
+requirements = ["SH-002", "RUN-003", "ERR-001", "TST-001", "TST-003"]
+groups = ["shell_finality"]
+environment = "public_clean_workspace"
+timeout_seconds = 60
+command = ["gate-root-shell-cleanup"]
+observes = ["real_cross_uid_process_group", "killpg_eperm", "live_process_detection"]
+mutants = ["cleanup_drops_unconfirmed_execution"]
 
 [scenarios.context_history_nondestructive]
 requirements = ["CTX-001", "SES-002", "SES-003", "SES-005", "TST-002", "TST-003"]

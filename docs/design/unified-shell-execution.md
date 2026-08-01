@@ -92,6 +92,9 @@ Cmd 使用 `/c`。manager 通过 `create_subprocess_exec(*argv)` 直接创建进
   terminal `write_stdin` 或成功 `task_stop` 后才允许压缩该批次。
 - 主 ReAct 与 SubAgent 的历史裁切都必须识别真实 tool transport envelope，保留 active
   execution 的原始 shell 结果；当前 query 返回、失败或取消时由 owner 回收剩余 execution。
+- 当前 query cleanup 与 turn 终态按 [0015](../decisions/0015-cleanup-does-not-own-turn-or-restart-finality.md)
+  解耦。cleanup 未确认时保留 execution 并隔离本 runtime 内同 owner 的新 Shell spawn；
+  结构化诊断不得反向把已提交回复改成 failed。
 
 ## 7. 验证
 

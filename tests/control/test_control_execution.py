@@ -2,17 +2,108 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
 from agent.control.models import TurnItemKind, TurnRequest
 from agent.control.runtime import ConversationRuntime
+from agent.looping.core import AgentLoop
+from agent.tools.registry import ToolRegistry
+from agent.tools.shell import ShellTool
+from agent.tools.unified_exec import ShellProcessManager
 from bootstrap.control_execution import execute_control_turn
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage, TurnDisposition
 from bus.events_lifecycle import ToolCallCompleted, ToolCallStarted, TurnCommitted
 from session.store import SessionStore
+
+
+@pytest.mark.asyncio
+async def test_committed_control_turn_survives_shell_cleanup_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    bus = EventBus()
+    manager = ShellProcessManager()
+    shell = ShellTool(manager)
+    tools = ToolRegistry()
+    tools.register(shell)
+    loop = AgentLoop.__new__(AgentLoop)
+    loop.tools = tools
+    loop._event_bus = bus
+    loop._processing_state = None
+    loop._interrupt_states = {}
+    loop._passive_runtime_lock = asyncio.Lock()
+    loop._runtime_snapshot_store = None
+    loop._resume_interrupted_message = AsyncMock(
+        side_effect=lambda message, _key: (message, False)
+    )
+    loop._observe_turn_started = AsyncMock()
+    executions = 0
+
+    async def process(message: object, key: str, **_kwargs: object) -> OutboundMessage:
+        nonlocal executions
+        executions += 1
+        metadata = cast(Any, message).metadata
+        turn_id = str(metadata["control_turn_id"])
+        await bus.fanout(
+            TurnCommitted(
+                session_key=key,
+                channel="mobile",
+                chat_id="cleanup",
+                input_message="update",
+                persisted_user_message="update",
+                assistant_response="all updated",
+                tools_used=["shell"],
+                turn_id=turn_id,
+            )
+        )
+        return OutboundMessage(
+            "mobile",
+            "cleanup",
+            "all updated",
+            session_message_id="mobile:cleanup:1",
+        )
+
+    loop._core_runner = SimpleNamespace(process=process)
+
+    async def fail_cleanup(_owner_session_key: str) -> None:
+        raise PermissionError("Operation not permitted")
+
+    monkeypatch.setattr(shell, "terminate_owner", fail_cleanup)
+    store = SessionStore(tmp_path / "sessions.db")
+
+    async def execute(request: TurnRequest):
+        return await execute_control_turn(loop, bus, request)
+
+    runtime = ConversationRuntime(store, execute)
+    try:
+        with caplog.at_level("ERROR", logger="agent.loop"):
+            handle = await runtime.start_turn(
+                TurnRequest(
+                    "mobile:cleanup",
+                    "update",
+                    {"channel": "mobile", "chatId": "cleanup"},
+                )
+            )
+            result = await handle.result()
+
+        persisted = runtime.read_turn(handle.thread_id, handle.id)
+        assert result.status.value == "completed"
+        assert result.final_response == "all updated"
+        assert persisted.status.value == "completed"
+        assert persisted.final_response == "all updated"
+        assert persisted.error is None
+        assert executions == 1
+        assert "event=cleanup_degraded" in caplog.text
+    finally:
+        await runtime.shutdown()
+        await bus.aclose()
+        store.close()
 
 
 @pytest.mark.asyncio

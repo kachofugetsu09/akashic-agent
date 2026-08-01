@@ -222,6 +222,21 @@ paths = [
 depends_on = ["events", "session_persistence"]
 scenarios = ["contract_catalog", "mcp_process_lifecycle", "shell_execution_contract"]
 
+[groups.shell_finality]
+priority = "p0"
+requirements = ["SH-002", "RUN-003", "OUT-001", "ERR-001", "TST-001", "TST-003"]
+paths = [
+  "agent/background/boot_guardian.py",
+  "agent/looping/core.py",
+  "agent/supervisor.py",
+  "agent/tools/shell.py",
+  "agent/tools/unified_exec.py",
+  "bootstrap/control_execution.py",
+  "agent/control/runtime.py",
+]
+depends_on = ["events", "session_persistence"]
+scenarios = ["shell_privileged_cleanup_contract", "shell_turn_finality_contract"]
+
 [groups.migrations]
 priority = "p0"
 requirements = ["MIG-001", "MIG-002", "WSP-003", "BAK-001", "TST-002", "TST-005"]

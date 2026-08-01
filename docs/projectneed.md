@@ -365,7 +365,7 @@ AgentLoop 唯一拥有活动 turn task 的取消和 cleanup。无论成功、失
 
 ### RUN-004 Linux 正式入口由 Supervisor 托管
 
-Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先进入 workspace 唯一的 Supervisor，再由每个 boot 唯一的 Guardian 启动和清理 gateway。`supervise` 只作为 Linux 兼容别名；显式 `gateway` 只用于未托管调试，并且不得注册 `agent_restart`。非 Linux 默认入口必须明确警告并进入 unmanaged gateway，`supervise` 必须拒绝启动，且两者都不得提供 `agent_restart`、Supervisor settings、私有 readiness/commit 或 boot 进程树清理。Linux 自重启仍须经过当轮 ToolSearch 授权、回复持久化与送达、boot-scoped 私有提交证据、约定退出码和旧 boot 空集验证；普通退出、崩溃、伪造退出码或未知进程身份不得拉起下一代，也不得触发 crash auto-restart。
+Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先进入 workspace 唯一的 Supervisor，再由每个 boot 唯一的 Guardian 启动和清理 gateway。`supervise` 只作为 Linux 兼容别名；显式 `gateway` 只用于未托管调试，并且不得注册 `agent_restart`。非 Linux 默认入口必须明确警告并进入 unmanaged gateway，`supervise` 必须拒绝启动，且两者都不得提供 `agent_restart`、Supervisor settings、私有 readiness/commit 或 boot 进程树清理。Linux 自重启仍须经过当轮 ToolSearch 授权、回复持久化与送达、boot-scoped 私有提交证据和约定退出码；旧 boot 清理尽力执行并记录未清空目标，但清理失败不阻止已合法提交的下一代。普通退出、崩溃、伪造退出码或未知进程身份不得拉起下一代，也不得触发 crash auto-restart。
 
 ### RUN-005 内建模型端点按 profile 拥有协议边界
 
@@ -472,6 +472,10 @@ old text 不存在时失败；多次匹配而未声明 replace-all 时拒绝猜�
 ### SH-001 Shell 使用统一执行句柄管理进程生命周期
 
 Shell 在短等待窗口内返回已完成结果；命令仍运行时返回当前对话 owner 可继续读取和写入的 `execution_id`。该 ID 是 manager 内一次命令执行的句柄，不是 OS PID，也不是 Akashic 对话 session。初始等待或后续等待被取消不得隐式杀死已注册进程；只有硬超时、显式 stop、当前 query 结束、进程容量回收或 runtime shutdown 才终止该 execution 的平台执行边界：Unix 是启动时创建的 process group，Windows 是 `taskkill /T` 可见的后代集合。显式 `setsid`、daemonize 或外部服务管理器会脱离这个边界，不得声称已被 manager 回收；需要强制覆盖这类命令时必须使用具备 cgroup/Job Object 所有权的受控容器或 runner。每次读取只返回上次读取后的新增输出，完整输出保存在临时诊断日志中。路径字符串检查只防误操作，不得冒充安全沙箱；运行不可信命令使用容器、namespace 和最小权限。
+
+### SH-002 Shell cleanup 不拥有 turn 与重启终态
+
+工具执行错误必须作为工具结果或明确异常交给当轮 Agent；当前 query 结束后的 execution cleanup 属于独立生命周期。回复一旦按 OUT-001 提交，cleanup 的权限错误、超时或残留不得把 turn 改成 failed，也不得阻止已获合法提交的 Gateway 重启。仅剩 zombie 时由 Guardian 持续 `wait` 回收；仍有活进程且当前权限不能终止时，runtime 保留 execution ownership、记录结构化诊断，并在本次 runtime 内隔离同 owner 的新 Shell spawn，普通对话继续运行。cleanup 未确认前不得把 execution 从注册表移除；重启不持久化该隔离状态。
 
 ## 12. 调度、主动流程、备份和控制面
 

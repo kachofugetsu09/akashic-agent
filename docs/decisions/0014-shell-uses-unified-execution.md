@@ -3,6 +3,7 @@
 - 状态：accepted
 - 日期：2026-07-31
 - 关联条款：SH-001、RUN-002、RUN-003、ERR-001、TST-009
+- superseded by：[0015](0015-cleanup-does-not-own-turn-or-restart-finality.md)（仅勘误 cleanup 失败传播语义）
 
 ## 背景
 

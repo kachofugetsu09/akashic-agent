@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import select
@@ -16,6 +17,7 @@ from typing import Any, cast
 
 import pytest
 
+import agent.background.boot_guardian as boot_guardian_module
 from agent.control.context import current_turn_id
 from agent.control.errors import RuntimeClosedError
 from agent.control.models import TurnRequest
@@ -733,6 +735,92 @@ def _wait_for_listener(port: int) -> None:
 
 
 @pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="依赖 Linux subreaper 与 /proc"
+)
+def test_boot_guardian_reaps_adopted_zombie_while_gateway_runs(
+    tmp_path: Path,
+) -> None:
+    """Guardian 运行期间持续收割被托管树转交的 zombie。"""
+
+    # 1. Gateway 创建一个会被 subreaper 收养的 double-fork zombie。
+    script = tmp_path / "zombie_gateway.py"
+    zombie_pid_path = tmp_path / "zombie.pid"
+    gateway_pid_path = tmp_path / "gateway.pid"
+    _ = script.write_text(
+        "import os, time\n"
+        "from pathlib import Path\n"
+        "middle = os.fork()\n"
+        "if middle == 0:\n"
+        "    child = os.fork()\n"
+        "    if child == 0:\n"
+        "        Path(os.environ['ZOMBIE_PID']).write_text(str(os.getpid()))\n"
+        "        os._exit(0)\n"
+        "    os._exit(0)\n"
+        "os.waitpid(middle, 0)\n"
+        "Path(os.environ['GATEWAY_PID']).write_text(str(os.getpid()))\n"
+        "while True:\n"
+        "    time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    lifecycle_read_fd, lifecycle_write_fd = os.pipe()
+    lease_read_fd, lease_write_fd = os.pipe()
+    env = {
+        **os.environ,
+        "ZOMBIE_PID": str(zombie_pid_path),
+        "GATEWAY_PID": str(gateway_pid_path),
+    }
+    guardian = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "agent.background.boot_guardian",
+            "--main-path",
+            str(script),
+            "--config",
+            str(tmp_path / "config.toml"),
+            "--workspace",
+            str(tmp_path),
+            "--boot-id",
+            f"zombie-reap-{os.getpid()}",
+            "--nonce",
+            "n" * 64,
+            "--lifecycle-fd",
+            str(lifecycle_write_fd),
+            "--lease-fd",
+            str(lease_read_fd),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        pass_fds=(lifecycle_write_fd, lease_read_fd),
+        start_new_session=True,
+    )
+    os.close(lifecycle_write_fd)
+    os.close(lease_read_fd)
+    try:
+        # 2. Gateway 仍存活时，adopted child 必须已经从 /proc 消失。
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and (
+            not zombie_pid_path.exists() or not gateway_pid_path.exists()
+        ):
+            time.sleep(0.01)
+        assert zombie_pid_path.exists()
+        assert gateway_pid_path.exists()
+        zombie_pid = int(zombie_pid_path.read_text(encoding="utf-8"))
+        gateway_pid = int(gateway_pid_path.read_text(encoding="utf-8"))
+        while time.monotonic() < deadline and Path(f"/proc/{zombie_pid}").exists():
+            time.sleep(0.01)
+        assert supervisor_module._pid_exists(gateway_pid)
+        assert not Path(f"/proc/{zombie_pid}").exists()
+    finally:
+        # 3. 一次性 Guardian 仍按正式生命周期清空 Gateway。
+        os.close(lifecycle_read_fd)
+        os.close(lease_write_fd)
+        if guardian.poll() is None:
+            guardian.send_signal(signal.SIGTERM)
+        guardian.wait(timeout=5)
+
+
+@pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="依赖 Linux pidfd 与 subreaper"
 )
 @pytest.mark.parametrize("owner_failure", ["supervisor", "guardian"])
@@ -892,6 +980,56 @@ def test_supervisor_exit_code_contract(
         config_path=tmp_path / "config.toml",
         workspace=tmp_path,
     ) == expected
+
+
+def test_supervisor_logs_cleanup_failure_and_still_starts_next_boot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_settings_server: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (tmp_path / "config.toml").write_text("", encoding="utf-8")
+    children = [
+        _FakeSupervisorChild(RESTART_EXIT_CODE),
+        _FakeSupervisorChild(0),
+    ]
+    spawned: list[_FakeSupervisorChild] = []
+
+    def launch(*_args: Any, **_kwargs: Any) -> _FakeSupervisorChild:
+        child = children[len(spawned)]
+        spawned.append(child)
+        return child
+
+    monkeypatch.setattr(supervisor_module.subprocess, "Popen", launch)
+
+    def wait_child(
+        child: _FakeSupervisorChild,
+        *,
+        read_fd: int,
+        lease_fd: int,
+        **_kwargs: Any,
+    ) -> supervisor_module._ChildResult:
+        os.close(read_fd)
+        os.close(lease_fd)
+        if child.returncode == RESTART_EXIT_CODE:
+            return supervisor_module._ChildResult(RESTART_EXIT_CODE, True, True)
+        return supervisor_module._ChildResult(0, True, False)
+
+    monkeypatch.setattr(supervisor_module, "_wait_child", wait_child)
+    monkeypatch.setattr(
+        boot_guardian_module,
+        "_cleanup_boot_processes",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            PermissionError(errno.EPERM, "Operation not permitted")
+        ),
+    )
+
+    assert run_supervisor(
+        config_path=tmp_path / "config.toml",
+        workspace=tmp_path,
+    ) == 0
+    assert len(spawned) == 2
+    assert "event=cleanup_degraded" in capsys.readouterr().err
 
 
 def test_supervisor_without_config_waits_for_settings_request(
