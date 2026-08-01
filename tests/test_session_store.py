@@ -1,4 +1,6 @@
 from datetime import UTC, datetime, timedelta
+import asyncio
+import logging
 import threading
 
 import pytest
@@ -14,6 +16,8 @@ from agent.control.models import (
 )
 from session.manager import SessionManager
 from session.store import SessionStore
+from bus.events import InboundMessage
+from bus.queue import MessageBus
 
 NOW = datetime(2026, 7, 14, 8, 0, tzinfo=UTC)
 
@@ -67,6 +71,190 @@ def test_turn_reopens_with_terminal_usage_and_items(tmp_path) -> None:
     assert record.usage == TurnUsage(input_tokens=12, output_tokens=3, coverage="exact")
     assert record.final_response == "完成"
     reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_mobile_inbound_handoff_survives_queue_restart_and_deduplicates(tmp_path) -> None:
+    db_path = tmp_path / "sessions.db"
+    store = SessionStore(db_path)
+    bus = MessageBus()
+    bus.bind_durable_inbound_store(store)
+    message = InboundMessage(
+        channel="mobile",
+        sender="device:1",
+        chat_id="mobile:session",
+        content="你好",
+        metadata={"client_message_id": "client:1"},
+    )
+
+    await bus.publish_inbound(message)
+    assert len(store.list_inbound_handoffs()) == 1
+
+    restarted = MessageBus()
+    recovered_store = SessionStore(db_path)
+    restarted.bind_durable_inbound_store(recovered_store)
+    await restarted.recover_durable_inbounds()
+    recovered = await restarted.consume_inbound()
+    assert recovered.content == "你好"
+    assert recovered.handoff_id == message.handoff_id
+
+    duplicate = InboundMessage(
+        channel="mobile",
+        sender="device:1",
+        chat_id="mobile:session",
+        content="你好",
+        metadata={"client_message_id": "client:1"},
+    )
+    await bus.publish_inbound(duplicate)
+    assert bus.inbound_size == 1
+
+    await restarted.complete_inbound(recovered)
+    assert store.list_inbound_handoffs() == []
+    recovered_store.close()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_mobile_handoff_recovery_pages_durable_rows_and_completes_them(tmp_path) -> None:
+    db_path = tmp_path / "sessions.db"
+    store = SessionStore(db_path)
+    seed = MessageBus()
+    seed.bind_durable_inbound_store(store)
+    for index in range(3):
+        await seed.publish_inbound(
+            InboundMessage(
+                channel="mobile",
+                sender="device:1",
+                chat_id=f"mobile:session-{index}",
+                content=f"message-{index}",
+                metadata={"client_message_id": f"client:{index}"},
+            )
+        )
+
+    recovered_store = SessionStore(db_path)
+    restarted = MessageBus()
+    restarted.bind_durable_inbound_store(recovered_store)
+    await restarted.recover_durable_inbounds()
+    assert restarted.inbound_size == 3
+    assert len(recovered_store.list_inbound_handoffs()) == 3
+
+    for index in range(3):
+        item = await restarted.consume_inbound()
+        assert item.content == f"message-{index}"
+        await restarted.complete_inbound(item)
+        assert restarted.inbound_size == 2 - index
+    assert recovered_store.list_inbound_handoffs() == []
+    recovered_store.close()
+    store.close()
+
+
+def test_mobile_handoff_recovery_rejects_corrupt_json(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store._conn.execute(
+        """
+        INSERT INTO inbound_handoffs(
+            handoff_id, dedupe_key, channel, sender, chat_id, session_key,
+            content, timestamp, media_json, metadata_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "handoff-corrupt",
+            "mobile:session:client-corrupt",
+            "mobile",
+            "device:1",
+            "mobile:session",
+            "mobile:session",
+            "bad",
+            NOW.isoformat(),
+            "{}",
+            "[]",
+            NOW.isoformat(),
+        ),
+    )
+    store._conn.commit()
+    bus = MessageBus()
+    bus.bind_durable_inbound_store(store)
+    with pytest.raises(ValueError, match="inbound handoff media invalid"):
+        asyncio.run(bus.recover_durable_inbounds())
+    store.close()
+
+
+def test_mobile_handoff_conflicting_reuse_fails_loud(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    base = {
+        "handoff_id": "handoff-1",
+        "dedupe_key": "mobile:session:client-1",
+        "channel": "mobile",
+        "sender": "device:1",
+        "chat_id": "mobile:session",
+        "session_key": "mobile:session",
+        "content": "hello",
+        "timestamp": NOW.isoformat(),
+        "media_json": "[]",
+        "metadata_json": '{"client_message_id":"client-1"}',
+        "created_at": NOW.isoformat(),
+    }
+    assert store.reserve_inbound_handoff(**base) == ("handoff-1", True)
+    assert store.reserve_inbound_handoff(**base | {"handoff_id": "handoff-2"}) == (
+        "handoff-1",
+        False,
+    )
+    with pytest.raises(RuntimeError, match="identity conflict"):
+        store.reserve_inbound_handoff(**base | {"content": "tampered"})
+    with pytest.raises(RuntimeError, match="identity conflict"):
+        store.reserve_inbound_handoff(
+            **base
+            | {
+                "handoff_id": "handoff-2",
+                "content": "tampered",
+            }
+        )
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_mobile_handoff_delete_failure_retains_owner_until_retry(
+    tmp_path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    bus = MessageBus()
+    bus.bind_durable_inbound_store(store)
+    message = InboundMessage(
+        channel="mobile",
+        sender="device:1",
+        chat_id="mobile:session",
+        content="hello",
+        metadata={"client_message_id": "client:delete-retry"},
+    )
+    await bus.publish_inbound(message)
+    consumed = await bus.consume_inbound()
+    original_complete = store.complete_inbound_handoff
+    failed = True
+
+    def fail_once(handoff_id: str) -> None:
+        nonlocal failed
+        if failed:
+            failed = False
+            raise OSError("delete unavailable")
+        original_complete(handoff_id)
+
+    store.complete_inbound_handoff = fail_once  # type: ignore[method-assign]
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(OSError, match="delete unavailable"):
+            await bus.complete_inbound(consumed)
+    assert len(bus._inbound_accepted) == 1
+    assert len(store.list_inbound_handoffs()) == 1
+    assert "cleanup_degraded" in caplog.text
+
+    async def retry_finished() -> None:
+        while bus._inbound_accepted:
+            await asyncio.sleep(0.02)
+
+    await asyncio.wait_for(retry_finished(), timeout=1)
+    assert bus._inbound_accepted == {}
+    assert store.list_inbound_handoffs() == []
+    store.close()
 
 
 def test_queued_turn_can_be_cancelled(tmp_path) -> None:

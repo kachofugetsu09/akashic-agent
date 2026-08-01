@@ -475,9 +475,10 @@ async def test_message_push_default_call_waits_for_passive_lane():
         events.append(message)
 
     _register_text_channel(tool, "cli", text)
-    await bus.publish_inbound(
-        InboundMessage(channel="cli", sender="user", chat_id="1", content="hello")
+    inbound = InboundMessage(
+        channel="cli", sender="user", chat_id="1", content="hello"
     )
+    await bus.publish_inbound(inbound)
     push_task = asyncio.create_task(
         tool.execute(target_channel="cli", target_chat_id="1", message="inline")
     )
@@ -485,9 +486,7 @@ async def test_message_push_default_call_waits_for_passive_lane():
     await asyncio.sleep(0.01)
     assert not push_task.done()
 
-    await bus.complete_inbound(
-        InboundMessage(channel="cli", sender="user", chat_id="1", content="hello")
-    )
+    await bus.complete_inbound(inbound)
     result = await asyncio.wait_for(push_task, timeout=1)
 
     assert result == "消息已发送"

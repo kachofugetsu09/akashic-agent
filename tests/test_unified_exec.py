@@ -440,6 +440,49 @@ async def test_failed_owner_cleanup_retains_execution_and_quarantines_new_spawn(
 
 
 @pytest.mark.asyncio
+async def test_failed_owner_cleanup_retains_complete_diagnostic_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = ShellProcessManager()
+    owner = "mobile:cleanup-log"
+    original_remove = manager._remove_execution
+    output_path: Path | None = None
+    try:
+        opened = await manager.exec_command(
+            command="printf retained-log; sleep 30",
+            argv=["/bin/sh", "-c", "printf retained-log; sleep 30"],
+            cwd=None,
+            env=dict(os.environ),
+            tty=False,
+            yield_time_ms=250,
+            max_output_tokens=10,
+            hard_timeout_s=60,
+            owner_session_key=owner,
+        )
+        assert opened.execution_id is not None
+        assert opened.output_path is not None
+        output_path = Path(opened.output_path)
+
+        async def deny_remove(*_args: object, **_kwargs: object) -> None:
+            raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+
+        monkeypatch.setattr(manager, "_remove_execution", deny_remove)
+        report = await manager.terminate_owner(owner)
+
+        assert report.failed_execution_ids == (opened.execution_id,)
+        assert output_path.exists()
+        assert output_path.read_text(encoding="utf-8") == "retained-log"
+
+        monkeypatch.setattr(manager, "_remove_execution", original_remove)
+        retry = await manager.terminate_owner(owner)
+        assert retry.failed_execution_ids == ()
+        assert not output_path.exists()
+    finally:
+        monkeypatch.setattr(manager, "_remove_execution", original_remove)
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_stop_during_initial_wait_returns_terminal_state() -> None:
     manager = ShellProcessManager()
     shell = ShellTool(manager)

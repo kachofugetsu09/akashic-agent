@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 import json
 import sqlite3
+import shutil
 import threading
 import tomllib
 from datetime import datetime
@@ -46,6 +47,40 @@ class _TrackedTestClient(_RawTestClient):
 
 
 TestClient = _TrackedTestClient
+
+
+@pytest.fixture(autouse=True)
+def _isolate_dashboard_plugin_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    """让 Dashboard 测试只观察各自声明的 HOME/manifest。"""
+
+    monkeypatch.delenv("AKASHIC_PLUGIN_HOME", raising=False)
+
+
+def _use_writable_dashboard_plugins(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    plugin_ids: set[str],
+) -> None:
+    """复制指定插件源码，并为只读 Gate 合成最小测试面板产物。"""
+
+    discovered = _dashboard_plugin_dirs(Path.cwd())
+    missing = plugin_ids - discovered.keys()
+    assert not missing
+    writable: dict[str, Path] = {}
+    for plugin_id in sorted(plugin_ids):
+        target = tmp_path / "dashboard-plugins" / plugin_id
+        shutil.copytree(discovered[plugin_id], target)
+        for source in target.glob("dashboard_panel*.ts*"):
+            source.with_suffix(".js").write_text(
+                "export default {};\n",
+                encoding="utf-8",
+            )
+        writable[plugin_id] = target
+    monkeypatch.setattr(
+        dashboard_api,
+        "_dashboard_plugin_dirs",
+        lambda _project_root: dict(writable),
+    )
 
 
 class _DashboardMemoryAdmin:
@@ -893,6 +928,11 @@ def test_wake_package_owns_dashboard_visibility(tmp_path, monkeypatch) -> None:
         "bootstrap.dashboard_api.load_package_manifest",
         lambda: {"default-proactive": False, "wake-proactive": True},
     )
+    _use_writable_dashboard_plugins(
+        tmp_path,
+        monkeypatch,
+        {"wake-proactive"},
+    )
     with TestClient(create_dashboard_app(tmp_path)) as client:
         plugin_ids = {
             item["id"] for item in client.get("/api/dashboard/plugins").json()
@@ -1028,7 +1068,15 @@ def test_plugin_asset_paths_reject_cross_platform_traversal(tmp_path) -> None:
         assert client.get("/plugins/missing/dashboard_panel.js").status_code == 404
 
 
-def test_memory_engine_plugins_only_expose_active_engine_panels(tmp_path) -> None:
+def test_memory_engine_plugins_only_expose_active_engine_panels(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _use_writable_dashboard_plugins(
+        tmp_path,
+        monkeypatch,
+        {"default_memory"},
+    )
     with TestClient(create_dashboard_app(tmp_path)) as client:
         plugins = client.get("/api/dashboard/plugins").json()
         memory_plugins = {
@@ -1043,7 +1091,15 @@ def test_memory_engine_plugins_only_expose_active_engine_panels(tmp_path) -> Non
         assert client.get("/plugins/cross_memory/dashboard_panel_inspector.js").status_code == 404
 
 
-def test_akasha_only_exposes_read_only_inspector_panel(tmp_path) -> None:
+def test_akasha_only_exposes_read_only_inspector_panel(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _use_writable_dashboard_plugins(
+        tmp_path,
+        monkeypatch,
+        {"akasha"},
+    )
     with TestClient(
         create_dashboard_app(
             tmp_path,

@@ -69,6 +69,7 @@ from infra.mobile_realtime.storage import (
     AttachmentRecord,
     AttachmentStateError,
     CommandReceipt,
+    CommandReceiptCapacityError,
     MobileStorageError,
 )
 
@@ -171,6 +172,7 @@ class MobileRealtimeChannel:
         self._runtime = runtime
         self._ctx: ChannelContext | None = None
         self._processing_commands: set[tuple[str, str]] = set()
+        self._receipt_completion_failures: set[tuple[str, str]] = set()
         self._active_turn_ids: dict[str, str] = {}
         self._process_turns: dict[tuple[str, str], _ProcessTurnState] = {}
         self._delta_batches: dict[tuple[str, str], _DeltaBatch] = {}
@@ -263,6 +265,7 @@ class MobileRealtimeChannel:
         self._active_turn_ids.clear()
         self._process_turns.clear()
         self._processing_commands.clear()
+        self._receipt_completion_failures.clear()
 
     async def handle_command(
         self,
@@ -274,13 +277,19 @@ class MobileRealtimeChannel:
 
         # 1. 先持久化命令占用，避免重连重复触发 Agent turn
         self._raise_delta_failure()
-        receipt, created = self._runtime.storage.reserve_command(
-            device_id=device_id,
-            command_id=frame.id,
-            command_type=frame.type,
-            request_hash=_command_hash(frame),
-            created_at=_utc_now(),
-        )
+        try:
+            receipt, created = self._runtime.storage.reserve_command(
+                device_id=device_id,
+                command_id=frame.id,
+                command_type=frame.type,
+                request_hash=_command_hash(frame),
+                created_at=_utc_now(),
+            )
+        except CommandReceiptCapacityError as error:
+            raise MobileCommandError(
+                "mobile_command_receipt_capacity_reached",
+                str(error),
+            ) from error
         if not created:
             replay = self._recover_message_send_receipt(
                 device_id=device_id,
@@ -298,41 +307,47 @@ class MobileRealtimeChannel:
         command_key = (device_id, frame.id)
         self._processing_commands.add(command_key)
         try:
-            reply = await self._execute_command(device_id=device_id, frame=frame)
-        except (MobileCommandError, RuntimeInspectionError) as error:
-            reply = CommandReply(
-                type=f"{frame.type}.error",
-                payload={"code": error.code, "message": str(error)},
-                session_id=frame.session_id,
-                turn_id=frame.turn_id,
-            )
+            try:
+                reply = await self._execute_command(device_id=device_id, frame=frame)
+            except (MobileCommandError, RuntimeInspectionError) as error:
+                reply = CommandReply(
+                    type=f"{frame.type}.error",
+                    payload={"code": error.code, "message": str(error)},
+                    session_id=frame.session_id,
+                    turn_id=frame.turn_id,
+                )
 
-        # 3. 只有收据完成后才释放当前进程对未决副作用的所有权
-        _validate_reply_frame_size(frame, reply)
-        completed = self._runtime.storage.complete_command(
-            device_id=device_id,
-            command_id=frame.id,
-            reply_type=reply.type,
-            reply_payload_json=json.dumps(
-                reply.payload,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-                allow_nan=False,
-            ),
-            session_id=reply.session_id,
-            turn_id=reply.turn_id,
-            completed_at=_utc_now(),
-        )
-        self._processing_commands.discard(command_key)
-        stored = _reply_from_receipt(completed)
-        return CommandReply(
-            type=stored.type,
-            payload=stored.payload,
-            session_id=stored.session_id,
-            turn_id=stored.turn_id,
-            binary=reply.binary,
-        )
+            # 3. 只有收据完成后才释放当前进程对未决副作用的所有权
+            _validate_reply_frame_size(frame, reply)
+            try:
+                completed = self._runtime.storage.complete_command(
+                    device_id=device_id,
+                    command_id=frame.id,
+                    reply_type=reply.type,
+                    reply_payload_json=json.dumps(
+                        reply.payload,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                        allow_nan=False,
+                    ),
+                    session_id=reply.session_id,
+                    turn_id=reply.turn_id,
+                    completed_at=_utc_now(),
+                )
+            except Exception:
+                self._receipt_completion_failures.add(command_key)
+                raise
+            stored = _reply_from_receipt(completed)
+            return CommandReply(
+                type=stored.type,
+                payload=stored.payload,
+                session_id=stored.session_id,
+                turn_id=stored.turn_id,
+                binary=reply.binary,
+            )
+        finally:
+            self._processing_commands.discard(command_key)
 
     async def handle_plugin_ui_command(
         self,
@@ -383,11 +398,23 @@ class MobileRealtimeChannel:
         """从已持久化消息修复中断的 message.send 收据。"""
 
         # 1. 已完成或非消息命令继续复用稳定回复
-        if receipt.status == "completed":
+        if receipt.status in {"completed", "outcome_unknown"}:
             self._processing_commands.discard((device_id, frame.id))
             return _reply_from_receipt(receipt)
+        if (device_id, frame.id) in self._processing_commands:
+            return CommandReply(
+                type=f"{receipt.command_type}.error",
+                payload={
+                    "code": "command_in_progress",
+                    "message": "该命令仍在执行，请等待原命令 ID 的最终收据",
+                },
+            )
         if not isinstance(frame, MessageSendCommand):
-            return _reply_from_receipt(receipt)
+            unknown = self._runtime.storage.mark_command_outcome_unknown(
+                device_id=device_id,
+                command_id=frame.id,
+            )
+            return _reply_from_receipt(unknown)
 
         # 2. 只有同一 client_message_id 已落库时，才能确认副作用已完成
         session_id = self._normalize_session_id(frame.session_id)
@@ -399,7 +426,31 @@ class MobileRealtimeChannel:
         )
         if message is None:
             if (device_id, frame.id) in self._processing_commands:
-                return _reply_from_receipt(receipt)
+                return CommandReply(
+                    type=f"{receipt.command_type}.error",
+                    payload={
+                        "code": "command_in_progress",
+                        "message": "该命令仍在执行，请等待原命令 ID 的最终收据",
+                    },
+                )
+            if self._require_ctx().bus.has_pending_mobile_handoff(
+                session_key=session_id,
+                client_message_id=frame.payload.client_message_id,
+            ):
+                return CommandReply(
+                    type=f"{receipt.command_type}.error",
+                    payload={
+                        "code": "command_in_progress",
+                        "message": "该命令已进入持久化队列，请等待原命令 ID 的最终收据",
+                    },
+                )
+            if (device_id, frame.id) in self._receipt_completion_failures:
+                self._receipt_completion_failures.discard((device_id, frame.id))
+                unknown = self._runtime.storage.mark_command_outcome_unknown(
+                    device_id=device_id,
+                    command_id=frame.id,
+                )
+                return _reply_from_receipt(unknown)
             return self._complete_interrupted_message_send(
                 device_id=device_id,
                 frame=frame,
@@ -429,6 +480,7 @@ class MobileRealtimeChannel:
             turn_id=None,
             completed_at=_utc_now(),
         )
+        self._receipt_completion_failures.discard((device_id, frame.id))
         self._processing_commands.discard((device_id, frame.id))
         return _reply_from_receipt(completed)
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
+from agent.control.context import current_turn_id
 from agent.core.runtime_support import AgentLoopRunner, PromptRenderRunner, TurnRunResult
 from agent.lifecycle.types import PromptRenderInput, TurnPersistencePolicy
 from agent.looping.ports import SessionServices
@@ -71,10 +72,14 @@ async def process_spawn_completion_event(
     )
 
     # 2. 再调用主模型生成用户可见回复。
+    turn_id = current_turn_id.get()
+    if not turn_id:
+        raise RuntimeError("spawn completion tool context 缺少 runtime turn_id")
     tools.set_context(
         channel=item.channel,
         chat_id=item.chat_id,
         session_key=key,
+        turn_id=turn_id,
         current_timestamp=item.timestamp.isoformat(),
     )
     prompt_render = await prompt_render_fn(

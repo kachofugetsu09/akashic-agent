@@ -79,6 +79,7 @@ class InboundMessage:
     media: list[str] = field(default_factory=list[str])
     metadata: dict[str, Any] = field(default_factory=dict[str, Any])
     session_admission_id: str | None = field(default=None, repr=False, compare=False)
+    handoff_id: str | None = field(default=None, repr=False, compare=False)
 
     @property
     def session_key(self) -> str:

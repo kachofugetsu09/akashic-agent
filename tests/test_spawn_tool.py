@@ -115,7 +115,7 @@ async def test_spawn_tool_blocks_when_concurrent_limit_reached():
 
 
 @pytest.mark.asyncio
-async def test_spawn_tool_sync_mode_ignores_background_concurrency_limit():
+async def test_spawn_tool_sync_mode_uses_shared_concurrency_limit():
     registry = ToolRegistry()
     manager = _make_manager()
     manager.get_running_count = Mock(return_value=3)
@@ -123,8 +123,8 @@ async def test_spawn_tool_sync_mode_ignores_background_concurrency_limit():
 
     result = await tool.execute(task="inline task")
 
-    assert result == "sync-result"
-    manager.spawn_sync.assert_awaited_once()
+    assert "任务被拦截" in result
+    manager.spawn_sync.assert_not_awaited()
     manager.spawn.assert_not_called()
 
 

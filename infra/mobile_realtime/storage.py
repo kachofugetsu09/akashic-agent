@@ -6,7 +6,7 @@ import sqlite3
 import stat
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Literal, cast
 
@@ -55,6 +55,10 @@ class SentCursorError(MobileStorageError):
 
 class CommandConflictError(MobileStorageError):
     """表示同一命令 ID 被用于不同请求。"""
+
+
+class CommandReceiptCapacityError(MobileStorageError):
+    """表示设备命令收据达到数量或字节高水位。"""
 
 
 class AttachmentStateError(MobileStorageError):
@@ -117,11 +121,34 @@ class CommandReceipt:
     command_id: str
     command_type: str
     request_hash: str
-    status: Literal["processing", "completed"]
+    status: Literal["processing", "completed", "outcome_unknown"]
     reply_type: str | None
     reply_payload_json: str | None
     session_id: str | None
     turn_id: str | None
+    created_at: datetime
+    completed_at: datetime | None
+
+
+_COMMAND_RECEIPT_RETENTION = timedelta(days=7)
+_COMMAND_RECEIPT_MAX_COUNT = 10_000
+_COMMAND_RECEIPT_MAX_BYTES = 64 * 1024 * 1024
+_RECEIPT_BYTES_SQL = " + ".join(
+    f"COALESCE(length(CAST({field} AS BLOB)), 0)"
+    for field in (
+        "device_id",
+        "command_id",
+        "command_type",
+        "request_hash",
+        "status",
+        "reply_type",
+        "reply_payload_json",
+        "session_id",
+        "turn_id",
+        "created_at",
+        "completed_at",
+    )
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1475,14 +1502,16 @@ class MobileRealtimeStorage:
         digest = _require_text(request_hash, "request_hash")
         timestamp = _serialize_datetime(created_at, "created_at")
 
-        # 2. 在写事务内复用相同请求，拒绝命令 ID 冲突
+        # 2. 在同一写事务内优先复用现有请求，随后清理并检查设备高水位
         with self._lock, self._db:
             _ = self._db.execute("BEGIN IMMEDIATE")
             _ = self._read_device_row(device_key)
+            self._cleanup_expired_command_receipts_locked(device_key, now=created_at)
             row = self._db.execute(
                 """
                 SELECT device_id, command_id, command_type, request_hash,
-                       status, reply_type, reply_payload_json, session_id, turn_id
+                       status, reply_type, reply_payload_json, session_id, turn_id,
+                       created_at, completed_at
                 FROM mobile_command_receipts
                 WHERE device_id = ? AND command_id = ?
                 """,
@@ -1498,6 +1527,27 @@ class MobileRealtimeStorage:
                         f"命令 ID 已绑定其他请求: {device_key}/{command_key}"
                     )
                 return receipt, False
+            count, size = self._command_receipt_usage_locked(device_key)
+            projected_size = _receipt_row_bytes(
+                device_id=device_key,
+                command_id=command_key,
+                command_type=command_name,
+                request_hash=digest,
+                status="processing",
+                reply_type=None,
+                reply_payload_json=None,
+                session_id=None,
+                turn_id=None,
+                created_at=timestamp,
+                completed_at=None,
+            )
+            if count >= _COMMAND_RECEIPT_MAX_COUNT or (
+                size + projected_size > _COMMAND_RECEIPT_MAX_BYTES
+            ):
+                raise CommandReceiptCapacityError(
+                    "mobile command receipt capacity reached: "
+                    f"device={device_key} count={count} bytes={size}"
+                )
             _ = self._db.execute(
                 """
                 INSERT INTO mobile_command_receipts(
@@ -1517,7 +1567,97 @@ class MobileRealtimeStorage:
             reply_payload_json=None,
             session_id=None,
             turn_id=None,
+            created_at=created_at,
+            completed_at=None,
         ), True
+
+    def cleanup_command_receipts(
+        self,
+        *,
+        device_id: str,
+        now: datetime,
+    ) -> int:
+        """删除已过保留期的 completed 收据并返回删除数量。"""
+
+        device_key = _require_text(device_id, "device_id")
+        _ = _serialize_datetime(now, "now")
+        with self._lock, self._db:
+            _ = self._db.execute("BEGIN IMMEDIATE")
+            _ = self._read_device_row(device_key)
+            return self._cleanup_expired_command_receipts_locked(
+                device_key,
+                now=now,
+            )
+
+    def mark_command_outcome_unknown(
+        self,
+        *,
+        device_id: str,
+        command_id: str,
+    ) -> CommandReceipt:
+        """把无法核对外部效果的 processing 收据持久化为 outcome_unknown。"""
+
+        device_key = _require_text(device_id, "device_id")
+        command_key = _require_text(command_id, "command_id")
+        with self._lock, self._db:
+            _ = self._db.execute("BEGIN IMMEDIATE")
+            updated = self._db.execute(
+                """
+                UPDATE mobile_command_receipts
+                SET status = 'outcome_unknown'
+                WHERE device_id = ? AND command_id = ? AND status = 'processing'
+                """,
+                (device_key, command_key),
+            )
+            if updated.rowcount != 1:
+                raise MobileStorageError(
+                    f"命令收据不处于 processing: {device_key}/{command_key}"
+                )
+            row = self._db.execute(
+                """
+                SELECT device_id, command_id, command_type, request_hash,
+                       status, reply_type, reply_payload_json, session_id, turn_id,
+                       created_at, completed_at
+                FROM mobile_command_receipts
+                WHERE device_id = ? AND command_id = ?
+                """,
+                (device_key, command_key),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("已标记 outcome_unknown 的收据在同一事务中消失")
+        return _command_receipt_from_row(row)
+
+    def _cleanup_expired_command_receipts_locked(
+        self,
+        device_id: str,
+        *,
+        now: datetime,
+    ) -> int:
+        cutoff = now - _COMMAND_RECEIPT_RETENTION
+        cutoff_text = _serialize_datetime(cutoff, "cutoff")
+        deleted = self._db.execute(
+            """
+            DELETE FROM mobile_command_receipts
+            WHERE device_id = ? AND status = 'completed'
+              AND completed_at IS NOT NULL AND completed_at < ?
+            """,
+            (device_id, cutoff_text),
+        )
+        return deleted.rowcount
+
+    def _command_receipt_usage_locked(self, device_id: str) -> tuple[int, int]:
+        row = self._db.execute(
+            f"""
+            SELECT COUNT(*) AS count,
+                   COALESCE(SUM({_RECEIPT_BYTES_SQL}), 0) AS bytes
+            FROM mobile_command_receipts
+            WHERE device_id = ?
+            """,
+            (device_id,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("命令收据用量查询无结果")
+        return int(row["count"]), int(row["bytes"])
 
     def complete_command(
         self,
@@ -1542,6 +1682,61 @@ class MobileRealtimeStorage:
         # 2. 只允许 processing 收据推进为 completed
         with self._lock, self._db:
             _ = self._db.execute("BEGIN IMMEDIATE")
+            existing = self._db.execute(
+                """
+                SELECT device_id, command_id, command_type, request_hash,
+                       status, reply_type, reply_payload_json, session_id, turn_id,
+                       created_at, completed_at
+                FROM mobile_command_receipts
+                WHERE device_id = ? AND command_id = ?
+                """,
+                (device_key, command_key),
+            ).fetchone()
+            if existing is None:
+                raise MobileStorageError(
+                    f"命令收据不存在: {device_key}/{command_key}"
+                )
+            current = _command_receipt_from_row(existing)
+            if current.status != "processing":
+                raise MobileStorageError(
+                    f"命令收据不处于 processing: {device_key}/{command_key}"
+                )
+            self._cleanup_expired_command_receipts_locked(
+                device_key,
+                now=completed_at,
+            )
+            _count, size = self._command_receipt_usage_locked(device_key)
+            current_size = _receipt_row_bytes(
+                device_id=current.device_id,
+                command_id=current.command_id,
+                command_type=current.command_type,
+                request_hash=current.request_hash,
+                status=current.status,
+                reply_type=current.reply_type,
+                reply_payload_json=current.reply_payload_json,
+                session_id=current.session_id,
+                turn_id=current.turn_id,
+                created_at=_serialize_datetime(current.created_at, "created_at"),
+                completed_at=None,
+            )
+            projected_size = _receipt_row_bytes(
+                device_id=current.device_id,
+                command_id=current.command_id,
+                command_type=current.command_type,
+                request_hash=current.request_hash,
+                status="completed",
+                reply_type=reply_name,
+                reply_payload_json=payload,
+                session_id=session_id,
+                turn_id=turn_id,
+                created_at=_serialize_datetime(current.created_at, "created_at"),
+                completed_at=timestamp,
+            )
+            if size - current_size + projected_size > _COMMAND_RECEIPT_MAX_BYTES:
+                raise CommandReceiptCapacityError(
+                    "mobile command receipt byte capacity reached: "
+                    f"device={device_key} bytes={size}"
+                )
             updated = self._db.execute(
                 """
                 UPDATE mobile_command_receipts
@@ -1566,7 +1761,8 @@ class MobileRealtimeStorage:
             row = self._db.execute(
                 """
                 SELECT device_id, command_id, command_type, request_hash,
-                       status, reply_type, reply_payload_json, session_id, turn_id
+                       status, reply_type, reply_payload_json, session_id, turn_id,
+                       created_at, completed_at
                 FROM mobile_command_receipts
                 WHERE device_id = ? AND command_id = ?
                 """,
@@ -1663,7 +1859,9 @@ class MobileRealtimeStorage:
                 command_id TEXT NOT NULL,
                 command_type TEXT NOT NULL,
                 request_hash TEXT NOT NULL,
-                status TEXT NOT NULL CHECK(status IN ('processing', 'completed')),
+                status TEXT NOT NULL CHECK(
+                    status IN ('processing', 'completed', 'outcome_unknown')
+                ),
                 reply_type TEXT,
                 reply_payload_json TEXT,
                 session_id TEXT,
@@ -1672,7 +1870,8 @@ class MobileRealtimeStorage:
                 completed_at TEXT,
                 PRIMARY KEY(device_id, command_id),
                 CHECK(
-                    (status = 'processing' AND reply_type IS NULL
+                    ((status IN ('processing', 'outcome_unknown'))
+                     AND reply_type IS NULL
                      AND reply_payload_json IS NULL AND completed_at IS NULL)
                     OR
                     (status = 'completed' AND reply_type IS NOT NULL
@@ -1732,6 +1931,76 @@ class MobileRealtimeStorage:
             """
         )
         self._db.commit()
+        self._migrate_command_receipt_status()
+
+    def _migrate_command_receipt_status(self) -> None:
+        """把旧版 receipt CHECK 约束升级为可持久化 outcome_unknown。"""
+
+        row = self._db.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'mobile_command_receipts'"
+        ).fetchone()
+        if row is None or not isinstance(row[0], str):
+            raise RuntimeError("mobile_command_receipts schema 不存在")
+        if "outcome_unknown" in row[0]:
+            return
+        with self._lock:
+            try:
+                _ = self._db.execute("BEGIN IMMEDIATE")
+                _ = self._db.execute(
+                    "ALTER TABLE mobile_command_receipts "
+                    "RENAME TO mobile_command_receipts_legacy"
+                )
+                _ = self._db.execute(
+                    """
+                    CREATE TABLE mobile_command_receipts (
+                        device_id TEXT NOT NULL,
+                        command_id TEXT NOT NULL,
+                        command_type TEXT NOT NULL,
+                        request_hash TEXT NOT NULL,
+                        status TEXT NOT NULL CHECK(
+                            status IN ('processing', 'completed', 'outcome_unknown')
+                        ),
+                        reply_type TEXT,
+                        reply_payload_json TEXT,
+                        session_id TEXT,
+                        turn_id TEXT,
+                        created_at TEXT NOT NULL,
+                        completed_at TEXT,
+                        PRIMARY KEY(device_id, command_id),
+                        CHECK(
+                            ((status IN ('processing', 'outcome_unknown'))
+                             AND reply_type IS NULL
+                             AND reply_payload_json IS NULL
+                             AND completed_at IS NULL)
+                            OR
+                            (status = 'completed' AND reply_type IS NOT NULL
+                             AND reply_payload_json IS NOT NULL
+                             AND completed_at IS NOT NULL)
+                        ),
+                        FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
+                            ON DELETE CASCADE
+                    )
+                    """
+                )
+                _ = self._db.execute(
+                    """
+                    INSERT INTO mobile_command_receipts(
+                        device_id, command_id, command_type, request_hash,
+                        status, reply_type, reply_payload_json, session_id, turn_id,
+                        created_at, completed_at
+                    )
+                    SELECT device_id, command_id, command_type, request_hash,
+                           status, reply_type, reply_payload_json, session_id, turn_id,
+                           created_at, completed_at
+                    FROM mobile_command_receipts_legacy
+                    """
+                )
+                _ = self._db.execute("DROP TABLE mobile_command_receipts_legacy")
+                self._db.commit()
+            except sqlite3.Error:
+                self._db.rollback()
+                raise
 
     def _insert_device(self, device: DeviceRecord) -> None:
         if device.revoked_at is not None:
@@ -1852,7 +2121,7 @@ def _device_from_row(row: sqlite3.Row) -> DeviceRecord:
 
 def _command_receipt_from_row(row: sqlite3.Row) -> CommandReceipt:
     status = _row_text(row, "status")
-    if status not in {"processing", "completed"}:
+    if status not in {"processing", "completed", "outcome_unknown"}:
         raise ValueError(f"mobile_command_receipts.status 非法: {status}")
     optional: dict[str, str | None] = {}
     for field in ("reply_type", "reply_payload_json", "session_id", "turn_id"):
@@ -1860,11 +2129,11 @@ def _command_receipt_from_row(row: sqlite3.Row) -> CommandReceipt:
         if value is not None and not isinstance(value, str):
             raise TypeError(f"mobile_command_receipts.{field} 必须为文本或 NULL")
         optional[field] = value
-    if status == "processing" and (
+    if status in {"processing", "outcome_unknown"} and (
         optional["reply_type"] is not None
         or optional["reply_payload_json"] is not None
     ):
-        raise ValueError("processing 命令收据包含回复")
+        raise ValueError(f"{status} 命令收据包含回复")
     if status == "completed" and (
         not optional["reply_type"] or not optional["reply_payload_json"]
     ):
@@ -1874,12 +2143,61 @@ def _command_receipt_from_row(row: sqlite3.Row) -> CommandReceipt:
         command_id=_row_text(row, "command_id"),
         command_type=_row_text(row, "command_type"),
         request_hash=_row_text(row, "request_hash"),
-        status=cast(Literal["processing", "completed"], status),
+        status=cast(
+            Literal["processing", "completed", "outcome_unknown"],
+            status,
+        ),
         reply_type=optional["reply_type"],
         reply_payload_json=optional["reply_payload_json"],
         session_id=optional["session_id"],
         turn_id=optional["turn_id"],
+        created_at=_parse_datetime(_row_text(row, "created_at"), "created_at"),
+        completed_at=_optional_row_datetime(row, "completed_at"),
     )
+
+
+def _receipt_row_bytes(
+    *,
+    device_id: str,
+    command_id: str,
+    command_type: str,
+    request_hash: str,
+    status: str,
+    reply_type: str | None,
+    reply_payload_json: str | None,
+    session_id: str | None,
+    turn_id: str | None,
+    created_at: str,
+    completed_at: str | None,
+) -> int:
+    """按 SQLite 文本字段的 UTF-8 字节数计算单条收据占用。"""
+
+    return sum(
+        len(value.encode("utf-8"))
+        for value in (
+            device_id,
+            command_id,
+            command_type,
+            request_hash,
+            status,
+            reply_type,
+            reply_payload_json,
+            session_id,
+            turn_id,
+            created_at,
+            completed_at,
+        )
+        if value is not None
+    )
+
+
+def _optional_row_datetime(row: sqlite3.Row, field: str) -> datetime | None:
+    value = row[field]
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise TypeError(f"SQLite 字段 {field} 必须为文本或 NULL")
+    return _parse_datetime(value, field)
 
 
 def _attachment_from_row(row: sqlite3.Row) -> AttachmentRecord:
