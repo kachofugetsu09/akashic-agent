@@ -23,6 +23,7 @@ import {
   normalizeMobileComposerDraftText,
   reconcileMobileMessageSelection,
   reconcileAssistantMessageIds,
+  reconcileMobileStreamItems,
   resolveMobileComposerDraft,
   resolveMobileReplyNavigationTarget,
   selectableMobileMessages,
@@ -47,6 +48,27 @@ test("full snapshot reconciliation preserves unchanged message identities", () =
   assert.equal(next[1].content, "after");
 });
 
+test("full snapshot reconciliation replaces an attachment whose local presentation changed", () => {
+  const cached = {
+    id: "message",
+    searchRevision: 1,
+    attachments: [{ id: "image", state: "downloading", contentUrl: undefined }],
+  };
+  const downloaded = {
+    id: "message",
+    searchRevision: 1,
+    attachments: [{ id: "image", state: "cached", contentUrl: "https://appassets.androidplatform.net/media/image" }],
+  };
+  const next = reconcileMobileSnapshotMessages(
+    [cached],
+    [downloaded],
+    (previous, candidate) => previous.attachments[0].state === candidate.attachments[0].state
+      && previous.attachments[0].contentUrl === candidate.attachments[0].contentUrl,
+  );
+
+  assert.equal(next[0], downloaded);
+});
+
 test("stream patch replaces only the matching message projection", () => {
   const first = { id: "history", content: "稳定历史" };
   const active = { id: "assistant:turn", content: "正在" };
@@ -67,6 +89,23 @@ test("stream patch replaces only the matching message projection", () => {
   assert.notEqual(next, null);
   assert.equal(next.messages[0], first);
   assert.equal(next.messages[1], patchedMessage);
+});
+
+test("stream reconciliation preserves completed block identities and replaces active blocks", () => {
+  const completed = { id: "tool-1", detail: "完成", state: "completed" };
+  const active = { id: "thinking-2", detail: "正在", state: "running" };
+  const nextActive = { ...active, detail: "正在检查" };
+
+  const reconciled = reconcileMobileStreamItems(
+    [completed, active],
+    [{ ...completed }, nextActive],
+    (previous, next) => previous.id === next.id
+      && previous.detail === next.detail
+      && previous.state === next.state,
+  );
+
+  assert.equal(reconciled[0], completed);
+  assert.equal(reconciled[1], nextActive);
 });
 
 test("stream patch rejects stale generation, session, index, and identity", () => {

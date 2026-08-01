@@ -94,6 +94,7 @@ import {
   normalizeMobileSearchText,
   reconcileMobileMessageSelection,
   reconcileMobileSnapshotMessages,
+  reconcileMobileStreamItems,
   resolveMobileComposerDraft,
   resolveMobileReplyNavigationTarget,
   selectableMobileMessages,
@@ -543,6 +544,39 @@ function parseMobileStreamPatch(value: unknown): MobileStreamPatch {
     messageIndex,
     message,
   };
+}
+
+/** 复用流式消息内语义未变化的块，避免已完成工具链随每个 token 重绘。 */
+function reconcileMobileStreamMessage(previous: MobileMessage, next: MobileMessage): MobileMessage {
+  const blocks = reconcileMobileStreamItems(previous.blocks, next.blocks, mobileProcessBlocksMatch);
+  return blocks === next.blocks ? next : { ...next, blocks };
+}
+
+function mobileProcessBlocksMatch(previous: MobileProcessBlock, next: MobileProcessBlock) {
+  return previous.id === next.id
+    && previous.kind === next.kind
+    && previous.title === next.title
+    && previous.detail === next.detail
+    && previous.state === next.state
+    && previous.resultPreview === next.resultPreview
+    && previous.durationMillis === next.durationMillis
+    && JSON.stringify(previous.arguments) === JSON.stringify(next.arguments);
+}
+
+function mobileMessagePresentationMatches(previous: MobileMessage, next: MobileMessage) {
+  if (previous.attachments.length !== next.attachments.length) return false;
+  return previous.attachments.every((attachment, index) => {
+    const candidate = next.attachments[index];
+    return candidate !== undefined
+      && attachment.id === candidate.id
+      && attachment.filename === candidate.filename
+      && attachment.contentType === candidate.contentType
+      && attachment.sizeBytes === candidate.sizeBytes
+      && attachment.transferredBytes === candidate.transferredBytes
+      && attachment.state === candidate.state
+      && attachment.canRemove === candidate.canRemove
+      && attachment.contentUrl === candidate.contentUrl;
+  });
 }
 
 function parseRuntimeInspection(value: unknown): MobileRuntimeInspection {
@@ -1056,7 +1090,11 @@ function MobileNativeApp() {
             }
             return {
               ...nextSnapshot,
-              messages: reconcileMobileSnapshotMessages(current.messages, nextSnapshot.messages),
+              messages: reconcileMobileSnapshotMessages(
+                current.messages,
+                nextSnapshot.messages,
+                mobileMessagePresentationMatches,
+              ),
             };
           });
           if (snapshotAccepted) startTransition(publishSnapshot);
@@ -1085,7 +1123,11 @@ function MobileNativeApp() {
               window.AkashicNative?.requestSnapshot();
               return current;
             }
-            const nextSnapshot = applyMobileStreamPatch(current, patch);
+            const previousMessage = current.messages[patch.messageIndex];
+            const reconciledPatch = previousMessage
+              ? { ...patch, message: reconcileMobileStreamMessage(previousMessage, patch.message) }
+              : patch;
+            const nextSnapshot = applyMobileStreamPatch(current, reconciledPatch);
             if (nextSnapshot === null) {
               window.AkashicNative?.requestSnapshot();
               return current;
@@ -2925,9 +2967,18 @@ function MobileMessageAttachment({ attachment }: { attachment: MobileAttachment 
     ? Math.min(100, Math.round(attachment.transferredBytes / attachment.sizeBytes * 100))
     : 0;
   const cached = attachment.state === "cached";
-  const image = cached && attachment.contentType.startsWith("image/") && attachment.contentUrl;
+  const imageUrl = cached && /^image\//i.test(attachment.contentType.trim())
+    ? attachment.contentUrl
+    : undefined;
+  const [imageRetry, setImageRetry] = useState(0);
+  const [imageUnavailable, setImageUnavailable] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const viewerOpenRef = useRef(false);
+
+  useEffect(() => {
+    setImageRetry(0);
+    setImageUnavailable(false);
+  }, [attachment.contentUrl]);
 
   useEffect(() => {
     const closeFromHistory = () => {
@@ -2981,11 +3032,18 @@ function MobileMessageAttachment({ attachment }: { attachment: MobileAttachment 
 
   return (
     <div className={`mobile-message-attachment ${attachment.state}`}>
-      {image ? (
+      {imageUrl && !imageUnavailable ? (
         <Dialog open={viewerOpen} onOpenChange={changeViewer}>
           <DialogTrigger asChild>
             <button className="message-attachment-preview" type="button" aria-label={`预览 ${attachment.filename}`}>
-              <img alt="" src={attachment.contentUrl} />
+              <img
+                alt=""
+                src={imageRetry === 0 ? imageUrl : `${imageUrl}${imageUrl.includes("?") ? "&" : "?"}retry=${imageRetry}`}
+                onError={() => {
+                  if (imageRetry === 0) setImageRetry(1);
+                  else setImageUnavailable(true);
+                }}
+              />
             </button>
           </DialogTrigger>
           <ImageViewer attachment={attachment} onClose={() => changeViewer(false)} />
@@ -3004,7 +3062,7 @@ function MobileMessageAttachment({ attachment }: { attachment: MobileAttachment 
           </span>
         </button>
       )}
-      {image ? (
+      {imageUrl && !imageUnavailable ? (
         <div className="message-attachment-caption">
           <strong>{attachment.filename}</strong>
           <small>{status}</small>
@@ -3466,32 +3524,44 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
     onRetryMessageDelivery,
   }, ref) {
     const scrollRef = useRef<HTMLDivElement>(null);
+    const sourceMessagesRef = useRef(snapshot.messages);
+    sourceMessagesRef.current = snapshot.messages;
     const [isAtEnd, setIsAtEnd] = useState(true);
     const isAtEndRef = useRef(true);
     const restoredProjectionRef = useRef<string | undefined>(undefined);
     const restoreFrameRef = useRef<number | null>(null);
     const saveTimerRef = useRef<number | null>(null);
     const lastSavedRef = useRef("");
+    const firstMessageId = snapshot.messages[0]?.id ?? "";
+    const lastMessageId = snapshot.messages.at(-1)?.id ?? "";
+    const messageIdentityKey = [
+      snapshot.projectionGeneration,
+      snapshot.messages.length,
+      firstMessageId,
+      lastMessageId,
+    ].join("\u001f");
     const messageIndexById = useMemo(
       () => new Map(snapshot.messages.map((message, index) => [message.id, index])),
-      [snapshot.messages],
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [messageIdentityKey],
     );
     const latestAssistantAt = useMemo(
       () => snapshot.messages.reduce(
         (latest, message) => message.role === "assistant" ? Math.max(latest, message.createdAt) : latest,
         0,
       ),
-      [snapshot.messages],
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [messageIdentityKey],
     );
 
     const getScrollElement = useCallback(() => scrollRef.current, []);
     const estimateSize = useCallback(
-      (index: number) => estimateMobileMessageHeight(snapshot.messages[index]),
-      [snapshot.messages],
+      (index: number) => estimateMobileMessageHeight(sourceMessagesRef.current[index]),
+      [],
     );
     const getItemKey = useCallback(
-      (index: number) => snapshot.messages[index]?.id ?? index,
-      [snapshot.messages],
+      (index: number) => sourceMessagesRef.current[index]?.id ?? index,
+      [],
     );
     // TanStack Virtual 的有状态实例由组件持有，不能交给 React Compiler 自动记忆化。
     // eslint-disable-next-line react-hooks/incompatible-library
@@ -3504,7 +3574,6 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
       followOnAppend: suspended ? false : "auto",
       scrollEndThreshold: 48,
       overscan: 4,
-      useAnimationFrameWithResizeObserver: true,
       onChange(instance) {
         const next = instance.isAtEnd(2);
         if (next === isAtEndRef.current) return;
@@ -3579,7 +3648,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
         }
         const scrollOffset = virtualizer.scrollOffset ?? 0;
         const anchor = virtualizer.getVirtualItems().find((item) => item.end > scrollOffset + 1);
-        const message = anchor ? snapshot.messages[anchor.index] : undefined;
+        const message = anchor ? sourceMessagesRef.current[anchor.index] : undefined;
         if (!anchor || !message) return;
         const offsetPx = Math.round(anchor.start - scrollOffset);
         const key = `${sessionId}\u001f${message.id}\u001f${offsetPx}`;
@@ -3597,7 +3666,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
         scrollElement.removeEventListener("scroll", schedulePersist);
         if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
       };
-    }, [latestAssistantAt, snapshot.composer.isResyncing, snapshot.messages, snapshot.projectionGeneration, snapshot.selectedSessionId, suspended, virtualizer]);
+    }, [latestAssistantAt, snapshot.composer.isResyncing, snapshot.projectionGeneration, snapshot.selectedSessionId, suspended, virtualizer]);
 
     useEffect(() => {
       if (forceScrollToken === 0) return;
@@ -3607,6 +3676,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
     useMobileUnreadTracking(
       snapshot.selectedSessionId,
       snapshot.messages,
+      messageIdentityKey,
       snapshot.projectionGeneration,
       snapshot.composer.isResyncing,
       suspended,
@@ -3617,57 +3687,59 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
 
     const virtualItems = virtualizer.getVirtualItems();
     return (
-      <div ref={scrollRef} className="mobile-conversation mobile-virtual-conversation" role="log">
-        {messages.length === 0 ? (
-          <div className="mobile-empty">
-            <h1>开始一段新对话</h1>
-            <p>消息会通过电脑上的 Akashic 实时处理。</p>
-          </div>
-        ) : (
-          <div
-            className="mobile-virtual-conversation__content"
-            style={{ height: virtualizer.getTotalSize() }}
-          >
-            {virtualItems.map((virtualItem) => {
-              const index = virtualItem.index;
-              const source = snapshot.messages[index];
-              const message = messages[index];
-              const previous = snapshot.messages[index - 1];
-              return (
-                <div
-                  className="mobile-virtual-row"
-                  data-index={index}
-                  key={virtualItem.key}
-                  ref={virtualizer.measureElement}
-                  style={{ transform: `translateY(${virtualItem.start}px)` }}
-                >
-                  <MobileMessageRow
-                    source={source}
-                    message={message}
-                    startsDay={!previous || !sameLocalDay(previous.createdAt, source.createdAt)}
-                    followsSameRole={previous?.role === source.role}
-                    unreadCount={source.id === unread.firstMessageId ? unread.count : 0}
-                    highlighted={highlightedMessageId === source.id}
-                    selected={selectedMessageIds.has(source.id)}
-                    selectionActive={selectionActive}
-                    canReply={mobileMessageCanReply(source, snapshot.selectedSessionId)}
-                    copied={copiedMessageId === source.id}
-                    deliveryActionBusy={recoveringMessageIds.has(source.id)}
-                    replySourceUnavailable={missingReplySourceId === source.id}
-                    selectedSessionUnavailable={selectedSessionUnavailable}
-                    messageElementsRef={messageElementsRef}
-                    onEnterSelection={onEnterSelection}
-                    onToggleSelection={onToggleSelection}
-                    onReplyToMessage={onReplyToMessage}
-                    onNavigateToReply={onNavigateToReply}
-                    onCopyMessage={onCopyMessage}
-                    onRetryMessageDelivery={onRetryMessageDelivery}
-                  />
-                </div>
-              );
-            })}
-          </div>
-        )}
+      <div className="mobile-conversation-frame">
+        <div ref={scrollRef} className="mobile-conversation mobile-virtual-conversation" role="log">
+          {messages.length === 0 ? (
+            <div className="mobile-empty">
+              <h1>开始一段新对话</h1>
+              <p>消息会通过电脑上的 Akashic 实时处理。</p>
+            </div>
+          ) : (
+            <div
+              className="mobile-virtual-conversation__content"
+              style={{ height: virtualizer.getTotalSize() }}
+            >
+              {virtualItems.map((virtualItem) => {
+                const index = virtualItem.index;
+                const source = snapshot.messages[index];
+                const message = messages[index];
+                const previous = snapshot.messages[index - 1];
+                return (
+                  <div
+                    className="mobile-virtual-row"
+                    data-index={index}
+                    key={virtualItem.key}
+                    ref={virtualizer.measureElement}
+                    style={{ transform: `translateY(${virtualItem.start}px)` }}
+                  >
+                    <MobileMessageRow
+                      source={source}
+                      message={message}
+                      startsDay={!previous || !sameLocalDay(previous.createdAt, source.createdAt)}
+                      followsSameRole={previous?.role === source.role}
+                      unreadCount={source.id === unread.firstMessageId ? unread.count : 0}
+                      highlighted={highlightedMessageId === source.id}
+                      selected={selectedMessageIds.has(source.id)}
+                      selectionActive={selectionActive}
+                      canReply={mobileMessageCanReply(source, snapshot.selectedSessionId)}
+                      copied={copiedMessageId === source.id}
+                      deliveryActionBusy={recoveringMessageIds.has(source.id)}
+                      replySourceUnavailable={missingReplySourceId === source.id}
+                      selectedSessionUnavailable={selectedSessionUnavailable}
+                      messageElementsRef={messageElementsRef}
+                      onEnterSelection={onEnterSelection}
+                      onToggleSelection={onToggleSelection}
+                      onReplyToMessage={onReplyToMessage}
+                      onNavigateToReply={onNavigateToReply}
+                      onCopyMessage={onCopyMessage}
+                      onRetryMessageDelivery={onRetryMessageDelivery}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
         <MobileScrollButton
           isAtBottom={isAtEnd}
           unread={unread}
@@ -3695,6 +3767,7 @@ function estimateMobileMessageHeight(message: MobileMessage | undefined) {
 function useMobileUnreadTracking(
   sessionId: string | undefined,
   sourceMessages: MobileMessage[],
+  messageIdentityKey: string,
   projectionGeneration: number,
   resyncing: boolean,
   suspended: boolean,
@@ -3702,6 +3775,10 @@ function useMobileUnreadTracking(
   escapedFromLock: boolean,
   onUnreadChange: (state: MobileUnreadState) => void,
 ) {
+  const sourceMessagesRef = useRef(sourceMessages);
+  useEffect(() => {
+    sourceMessagesRef.current = sourceMessages;
+  }, [sourceMessages]);
   const trackedSessionRef = useRef<string | undefined>(undefined);
   const knownMessagesRef = useRef(new Map<string, MobileMessage>());
   const unseenMessageIdsRef = useRef<string[]>([]);
@@ -3712,6 +3789,7 @@ function useMobileUnreadTracking(
   const anchorOrdinalRef = useRef(0);
 
   useEffect(() => {
+    const currentMessages = sourceMessagesRef.current;
     const publishUnread = (ids: string[], migrations: ReadonlyMap<string, string>) => {
       const key = ids.join("\u001f");
       if (key === publishedUnreadKeyRef.current) return;
@@ -3749,7 +3827,7 @@ function useMobileUnreadTracking(
     }
     if (trackedSessionRef.current !== sessionId) {
       trackedSessionRef.current = sessionId;
-      knownMessagesRef.current = new Map(sourceMessages.map((message) => [message.id, message]));
+      knownMessagesRef.current = new Map(currentMessages.map((message) => [message.id, message]));
       unseenMessageIdsRef.current = [];
       projectionBaselineRef.current = { generation: projectionGeneration, rebuilding: false };
       anchorMessageIdRef.current = undefined;
@@ -3769,7 +3847,7 @@ function useMobileUnreadTracking(
     const advanced = advanceMobileUnreadTracking(
       knownMessagesRef.current,
       unseenMessageIdsRef.current,
-      sourceMessages,
+      currentMessages,
       { escapedFromLock, isAtBottom, suspended },
       baseline.resetBaseline,
     );
@@ -3785,7 +3863,7 @@ function useMobileUnreadTracking(
     projectionGeneration,
     resyncing,
     sessionId,
-    sourceMessages,
+    messageIdentityKey,
     suspended,
   ]);
 }
@@ -3833,34 +3911,48 @@ function MobileSearchTextHighlight({ query, messageId }: { query: string; messag
     const HighlightConstructor = (window as Window & { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
     registry?.delete("akashic-search-match");
     if (!registry || !HighlightConstructor || !messageId || !query.trim()) return;
-    const element = document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(messageId)}"]`);
-    if (!element) return;
     const rawNeedle = query.trim();
     const needle = normalizeMobileSearchText(rawNeedle);
     if (needle.length !== rawNeedle.length) return;
+    let retryFrame: number | null = null;
+    let attempts = 0;
 
-    // 2. 收集目标消息内所有命中文本范围
-    const ranges: Range[] = [];
-    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      const text = node.nodeValue ?? "";
-      const searchable = normalizeMobileSearchText(text);
-      if (searchable.length !== text.length) continue;
-      let offset = 0;
-      while (offset < searchable.length) {
-        const index = searchable.indexOf(needle, offset);
-        if (index < 0) break;
-        const range = document.createRange();
-        range.setStart(node, index);
-        range.setEnd(node, index + needle.length);
-        ranges.push(range);
-        offset = index + needle.length;
+    const register = () => {
+      retryFrame = null;
+      const element = document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(messageId)}"]`);
+      if (!element) {
+        attempts += 1;
+        if (attempts < 4) retryFrame = requestAnimationFrame(register);
+        return;
       }
-    }
 
-    // 3. 原子替换命中集合，并在目标变化或卸载时清理
-    if (ranges.length > 0) registry.set("akashic-search-match", new HighlightConstructor(...ranges));
-    return () => registry.delete("akashic-search-match");
+      // 2. 目标行由虚拟列表挂载后，收集其中所有命中文本范围
+      const ranges: Range[] = [];
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const text = node.nodeValue ?? "";
+        const searchable = normalizeMobileSearchText(text);
+        if (searchable.length !== text.length) continue;
+        let offset = 0;
+        while (offset < searchable.length) {
+          const index = searchable.indexOf(needle, offset);
+          if (index < 0) break;
+          const range = document.createRange();
+          range.setStart(node, index);
+          range.setEnd(node, index + needle.length);
+          ranges.push(range);
+          offset = index + needle.length;
+        }
+      }
+      if (ranges.length > 0) registry.set("akashic-search-match", new HighlightConstructor(...ranges));
+    };
+
+    // 3. 下一帧等待虚拟行落位，并在目标变化或卸载时原子清理
+    retryFrame = requestAnimationFrame(register);
+    return () => {
+      if (retryFrame !== null) cancelAnimationFrame(retryFrame);
+      registry.delete("akashic-search-match");
+    };
   }, [messageId, query]);
   return null;
 }
@@ -3871,7 +3963,7 @@ function toChatMessage(message: MobileMessage): ChatMessage {
     role: message.role,
     content: message.content,
     attachments: [],
-    blocks: message.blocks.map(toAgentBlock),
+    blocks: message.blocks.map(toCachedAgentBlock),
     streaming: message.streaming,
     interrupted: message.interrupted,
     durationMs: message.durationSeconds !== undefined ? message.durationSeconds * 1000 : undefined,
@@ -3879,12 +3971,21 @@ function toChatMessage(message: MobileMessage): ChatMessage {
 }
 
 const chatMessageProjectionCache = new WeakMap<MobileMessage, ChatMessage>();
+const agentBlockProjectionCache = new WeakMap<MobileProcessBlock, AgentBlock>();
 
 function toCachedChatMessage(message: MobileMessage): ChatMessage {
   const cached = chatMessageProjectionCache.get(message);
   if (cached !== undefined) return cached;
   const projected = toChatMessage(message);
   chatMessageProjectionCache.set(message, projected);
+  return projected;
+}
+
+function toCachedAgentBlock(block: MobileProcessBlock): AgentBlock {
+  const cached = agentBlockProjectionCache.get(block);
+  if (cached !== undefined) return cached;
+  const projected = toAgentBlock(block);
+  agentBlockProjectionCache.set(block, projected);
   return projected;
 }
 

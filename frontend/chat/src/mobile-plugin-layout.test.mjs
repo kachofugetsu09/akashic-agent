@@ -94,3 +94,35 @@ test("mobile attachment previews preserve intrinsic aspect ratios", () => {
     /\.message-attachment-preview img\s*\{[^}]*\bwidth:\s*100%;/,
   );
 });
+
+test("mobile scroll control is anchored outside the virtual scroll plane", () => {
+  assert.match(
+    mobileSource,
+    /<div className="mobile-conversation-frame">[\s\S]*?<div ref=\{scrollRef\} className="mobile-conversation mobile-virtual-conversation"[\s\S]*?<\/div>\s*<MobileScrollButton/,
+  );
+  assert.match(
+    platformStyles,
+    /\.mobile-conversation-frame\s*\{[^}]*position:\s*relative;[^}]*flex:\s*1;[^}]*overflow:\s*hidden;/,
+  );
+  assert.match(
+    platformStyles,
+    /\.mobile-conversation\s*\{[^}]*height:\s*100%;[^}]*overflow-y:\s*auto;/,
+  );
+});
+
+test("virtual search highlight waits for its target row to mount", () => {
+  assert.match(
+    mobileSource,
+    /const register = \(\) => \{[\s\S]*attempts < 4[\s\S]*requestAnimationFrame\(register\)/,
+  );
+});
+
+test("dynamic message measurement stays in the ResizeObserver frame", () => {
+  assert.doesNotMatch(mobileSource, /useAnimationFrameWithResizeObserver:\s*true/);
+});
+
+test("cached images retry once and degrade to an openable file instead of a blank card", () => {
+  assert.match(mobileSource, /\^image\\\/\/i\.test\(attachment\.contentType\.trim\(\)\)/);
+  assert.match(mobileSource, /if \(imageRetry === 0\) setImageRetry\(1\);[\s\S]*else setImageUnavailable\(true\);/);
+  assert.match(mobileSource, /imageUrl && !imageUnavailable/);
+});
