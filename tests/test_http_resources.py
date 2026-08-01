@@ -274,6 +274,7 @@ async def test_shared_http_resources_aclose_preserves_order_and_all_errors(
         ("external_default", resources.external_default),
         ("feed_fetcher", resources.feed_fetcher),
         ("local_service", resources.local_service),
+        ("web_fetch", resources.web_fetch),
     ):
         async def _close(*, _profile: str = profile) -> None:
             close_order.append(_profile)
@@ -285,7 +286,12 @@ async def test_shared_http_resources_aclose_preserves_order_and_all_errors(
     with pytest.raises(ExceptionGroup) as caught:
         await resources.aclose()
 
-    assert close_order == ["local_service", "feed_fetcher", "external_default"]
+    assert close_order == [
+        "web_fetch",
+        "local_service",
+        "feed_fetcher",
+        "external_default",
+    ]
     assert caught.value.exceptions == (
         errors["local_service"],
         errors["feed_fetcher"],
