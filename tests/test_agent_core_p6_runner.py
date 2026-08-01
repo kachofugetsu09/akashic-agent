@@ -12,6 +12,7 @@ from agent.lifecycle.types import TurnPersistencePolicy
 from agent.looping.ports import SessionServices
 from agent.tools.registry import ToolRegistry
 from agent.core.runner import CoreRunner, CoreRunnerDeps
+from agent.control.context import current_turn_id
 from bus.events import InboundMessage, OutboundMessage, SpawnCompletionItem
 from bus.internal_events import SpawnCompletionEvent
 
@@ -106,7 +107,11 @@ async def test_core_runner_handles_spawn_completion_via_direct_helper_deps():
         ),
     )
 
-    out = await runner.process(item, "scheduler:job-1", dispatch_outbound=False)
+    turn_token = current_turn_id.set("turn:spawn-completion")
+    try:
+        out = await runner.process(item, "scheduler:job-1", dispatch_outbound=False)
+    finally:
+        current_turn_id.reset(turn_token)
 
     assert out.content == "spawn done"
     session_svc.session_manager.get_or_create.assert_called_once_with("scheduler:job-1")
@@ -114,6 +119,7 @@ async def test_core_runner_handles_spawn_completion_via_direct_helper_deps():
         channel="telegram",
         chat_id="123",
         session_key="scheduler:job-1",
+        turn_id="turn:spawn-completion",
         current_timestamp=item.timestamp.isoformat(),
     )
     prompt_render_fn.assert_awaited_once()
