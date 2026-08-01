@@ -14,7 +14,7 @@ import pytest
 from agent.core.runtime_support import ToolDiscoveryState, TurnRunResult
 from agent.provider import ContentSafetyError, ContextLengthError, LLMResponse
 from agent.tools.shell import ShellTool, _MAX_OUTPUT, _truncate, _validate_network_command
-from agent.tools.web_fetch import WebFetchTool, _to_markdown, _to_text, _validate_url_target
+from agent.tools.web_fetch import WebFetchTool, _to_markdown, _to_text
 from memory2.procedure_tagger import ProcedureTagger, _validate
 from memory2.store import MemoryStore2
 
@@ -142,7 +142,15 @@ async def test_web_fetch_procedure_tagger_and_store_cover_core_paths(tmp_path: P
     )
     assert "请求超时" in json.loads(await tool.execute(url="https://example.com"))["error"]
     assert "http:// 或 https://" in json.loads(await tool.execute(url="ftp://x"))["error"]
-    assert _validate_url_target("http://127.0.0.1")
+    requester.get = AsyncMock(
+        return_value=_Resp(
+            headers={"content-type": "text/html", "content-length": "20"},
+            content=b"<html><body><script>x</script><p>Hello <b>world</b></p></body></html>",
+        )
+    )
+    assert json.loads(
+        await tool.execute(url="http://127.0.0.1", format="text")
+    )["text"] == "Hello world"
     assert _to_text(b"<html><body><style>x</style><p>Hi</p></body></html>") == "Hi"
     assert "Title" in _to_markdown("<h1>Title</h1>")
 

@@ -16,11 +16,8 @@ Git diff
    ▼
 公开 capability/state/scenario catalog
    │
-   ├── G1：公开 Docker 场景（所有贡献者可运行）
+   ├── 公开 Docker 场景（所有贡献者可运行）
    └── plan.json：group + digest，不含 provider 身份
-                         │
-                         ▼
-               G2：private runtime 维护者验证
 ```
 
 常用维护命令：
@@ -30,11 +27,11 @@ python docker/debug/gate.py audit
 python docker/debug/gate.py plan --base origin/main
 ```
 
-如果同一 diff 同时包含生产 source set 与 protected contract/policy paths，`plan` 和 `run` 都会报告 `status=protected_contract_mixed`、分别列出两组路径并以非零退出；仅合同/Gate，或生产源码加普通测试，仍按正常 Gate 处理。`migrations/**` 本身不在该 protected 集合内，继续由 append-only/repair Gate 管理。
+如果同一 diff 同时包含生产 source set 与 protected contract/policy paths，`plan` 和 `run` 会扩大为完整公开场景，同时仍分别列出两组路径。未知可执行改动和触及 baseline gap 仍以非零退出。`migrations/**` 本身不在该 protected 集合内，继续由 append-only/repair Gate 管理。
 
 `init` 只用于仓库第一次建立 coverage baseline。baseline 已存在时再次执行会失败，不能覆盖人工合同。新增未映射可执行文件会先运行全量公开语义场景，最终仍以 `unmapped_change` 失败。报告位于 `docker/debug/reports/change-gate/<run-id>/`。
 
-公开 Gate 不安装也不枚举私有插件。`privateGateRequired=true` 表示公开部分已经给出受影响能力组，维护者还需用 private companion 消费同一 `planDigest`；普通贡献者不需要私有仓库、插件或凭据。
+公开 Gate 不安装也不枚举私有插件，不依赖外部私有验证或 provider 身份；公开报告是当前仓库的合并依据。
 
 ### Shell execution 固定 Runtime 场景
 
@@ -53,7 +50,7 @@ python docker/debug/gate.py run --base <仅含合同的前置提交>
 
 Gate 根据 runtime source set 自动选择该场景，并验证候选源码只读、临时 workspace、
 Compose cleanup 和无残留容器/网络/卷。完整 diff 同时修改受保护合同与生产源码时必须
-拆层运行，不能绕过 `protected_contract_mixed`。
+执行完整公开场景，不能用 focused 场景替代。
 
 ## 程序化控制面验收门
 

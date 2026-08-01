@@ -32,9 +32,11 @@ SCENARIO_PATH = CONTRACTS_DIR / "scenarios.toml"
 BASELINE_PATH = CONTRACTS_DIR / "coverage-baseline.json"
 REPORT_ROOT = ROOT / "docker" / "debug" / "reports" / "change-gate"
 COMPOSE_PATH = ROOT / "docker" / "debug" / "docker-compose.change-gate.yml"
-REQUIREMENT_PATTERN = re.compile(r"\b[A-Z]{2,3}-[0-9]{3}\b")
+REQUIREMENT_PATTERN = re.compile(r"\b[A-Z]{2,5}-[0-9]{3}\b")
 ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 IMAGE_BUILD_TIMEOUT_SECONDS = 600
+GATE_TMPDIR_ENV = "AKASHIC_CHANGE_GATE_TMPDIR"
 PROTECTED_CONTRACT_PATHS = (
     "docs/projectneed.md",
     "docs/decisions/**",
@@ -86,6 +88,10 @@ class StateContract:
     consumers: tuple[str, ...]
     protected_tables: tuple[str, ...]
     oracles: tuple[str, ...]
+    retention: str
+    physical_reduction_owner: str
+    recovery_evidence: tuple[str, ...]
+    failure_semantics: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -96,7 +102,6 @@ class Catalog:
     baseline_scenarios: tuple[str, ...]
     executable_suffixes: frozenset[str]
     executable_names: frozenset[str]
-    private_groups: frozenset[str]
     always_full_paths: tuple[str, ...]
     mutant_tests: dict[str, str]
 
@@ -142,6 +147,13 @@ def _optional_strings(
     if key not in data:
         return ()
     return _strings(data, key, owner=owner)
+
+
+def _required_text(data: dict[str, object], key: str, *, owner: str) -> str:
+    value = data.get(key)
+    if not isinstance(value, str) or not value:
+        raise GateError(f"{owner}.{key} 必须是非空字符串")
+    return value
 
 
 def _possibly_empty_strings(
@@ -254,6 +266,9 @@ def _load_states(data: dict[str, object]) -> dict[str, StateContract]:
         if normal_change not in {
             "insert_only",
             "metadata_upsert",
+            "append_state_machine",
+            "bounded_projection",
+            "execution_owned_temporary",
             "select_isolated_root",
             "plugin_owned_update",
         }:
@@ -261,6 +276,7 @@ def _load_states(data: dict[str, object]) -> dict[str, StateContract]:
         if destructive_owner not in {
             "explicit_user_data_management",
             "explicit_plugin_data_deletion",
+            "protocol_owner",
             "not_applicable",
         }:
             raise GateError(f"states.{state_id}.destructive_owner 使用未知 owner")
@@ -277,6 +293,16 @@ def _load_states(data: dict[str, object]) -> dict[str, StateContract]:
                 item, "protected_tables", owner=f"states.{state_id}"
             ),
             oracles=_strings(item, "oracles", owner=f"states.{state_id}"),
+            retention=_required_text(item, "retention", owner=f"states.{state_id}"),
+            physical_reduction_owner=_required_text(
+                item, "physical_reduction_owner", owner=f"states.{state_id}"
+            ),
+            recovery_evidence=_strings(
+                item, "recovery_evidence", owner=f"states.{state_id}"
+            ),
+            failure_semantics=_strings(
+                item, "failure_semantics", owner=f"states.{state_id}"
+            ),
         )
     return states
 
@@ -305,9 +331,6 @@ def load_catalog() -> Catalog:
         ),
         executable_names=frozenset(
             _strings(defaults, "executable_names", owner="defaults")
-        ),
-        private_groups=frozenset(
-            _strings(defaults, "private_groups", owner="defaults")
         ),
         always_full_paths=_strings(defaults, "always_full_paths", owner="defaults"),
         mutant_tests=mutant_tests,
@@ -419,9 +442,6 @@ def _validate_references(catalog: Catalog, requirements: set[str]) -> list[str]:
     for scenario_id in catalog.baseline_scenarios:
         if scenario_id not in catalog.scenarios:
             issues.append(f"baseline scenario 不存在: {scenario_id}")
-    for private_group in catalog.private_groups:
-        if private_group not in catalog.groups:
-            issues.append(f"private group 不存在: {private_group}")
     for group in catalog.groups.values():
         for dependency in group.depends_on:
             if dependency not in catalog.groups:
@@ -442,6 +462,12 @@ def _validate_references(catalog: Catalog, requirements: set[str]) -> list[str]:
         for mutant in scenario.mutants:
             if mutant not in catalog.mutant_tests:
                 issues.append(f"scenarios.{scenario.id} 引用未知 mutant: {mutant}")
+            elif scenario.id.startswith("companion_"):
+                test_node = catalog.mutant_tests[mutant]
+                if test_node not in scenario.command:
+                    issues.append(
+                        f"scenarios.{scenario.id} command 未运行 mutant test node: {test_node}"
+                    )
     for mutant_id, test_node in catalog.mutant_tests.items():
         test_path = ROOT / test_node.split("::", 1)[0]
         if not test_path.is_file():
@@ -451,12 +477,48 @@ def _validate_references(catalog: Catalog, requirements: set[str]) -> list[str]:
 
 def _validate_state_contracts(catalog: Catalog, requirements: set[str]) -> list[str]:
     issues: list[str] = []
+    allowed_failure_semantics = {
+        "operation_rejected",
+        "item_quarantined",
+        "degraded_continuation",
+        "unit_failed",
+        "cleanup_degraded",
+        "runtime_fatal",
+    }
     for state in catalog.states.values():
+        if not state.retention.strip():
+            issues.append(f"states.{state.id}.retention 不能为空")
+        if not state.physical_reduction_owner.strip():
+            issues.append(
+                f"states.{state.id}.physical_reduction_owner 不能为空"
+            )
+        unknown_failures = set(state.failure_semantics) - allowed_failure_semantics
+        if unknown_failures:
+            issues.append(
+                f"states.{state.id}.failure_semantics 含未知分类: "
+                f"{','.join(sorted(unknown_failures))}"
+            )
         if state.normal_change == "insert_only" and not state.protected_tables:
             issues.append(f"states.{state.id} 的 insert_only 合同缺少 protected_tables")
+        if state.normal_change == "append_state_machine" and not state.protected_tables:
+            issues.append(
+                f"states.{state.id} 的 append_state_machine 合同缺少 protected_tables"
+            )
         if state.destructive_owner == "not_applicable" and state.protected_tables:
             issues.append(
                 f"states.{state.id} 声明 destructive_owner 不适用却保护持久表"
+            )
+        if state.destructive_owner == "protocol_owner" and (
+            state.physical_reduction_owner != state.owner
+        ):
+            issues.append(
+                f"states.{state.id} 的 protocol_owner 必须等于 physical_reduction_owner"
+            )
+        if state.destructive_owner == "not_applicable" and (
+            state.physical_reduction_owner != "not_applicable"
+        ):
+            issues.append(
+                f"states.{state.id} 的 not_applicable 必须使用 not_applicable physical owner"
             )
         if "PLG-010" in state.requirements and (
             state.destructive_owner != "explicit_plugin_data_deletion"
@@ -474,12 +536,18 @@ def _validate_state_contracts(catalog: Catalog, requirements: set[str]) -> list[
             elif state.priority == "p0" and not scenario.mutants:
                 issues.append(f"states.{state.id} 的 P0 oracle 缺少 mutant: {oracle}")
             elif (
-                state.normal_change == "insert_only"
+                state.normal_change in {"insert_only", "append_state_machine"}
                 and state.protected_tables
-                and "sqlite_write_set" not in scenario.observes
+                and not any("write_set" in observation for observation in scenario.observes)
             ):
                 issues.append(
-                    f"states.{state.id} 的 insert_only oracle 未观察 sqlite_write_set: {oracle}"
+                    f"states.{state.id} 的 state-machine oracle 未观察 write_set: {oracle}"
+                )
+            missing_evidence = set(state.recovery_evidence) - set(scenario.observes)
+            if missing_evidence:
+                issues.append(
+                    f"states.{state.id} 的 oracle {oracle} 未观察恢复证据: "
+                    f"{','.join(sorted(missing_evidence))}"
                 )
         for requirement in state.requirements:
             if requirement not in requirements:
@@ -488,8 +556,21 @@ def _validate_state_contracts(catalog: Catalog, requirements: set[str]) -> list[
 
 
 def _validate_baseline(payload: dict[str, object], catalog: Catalog) -> list[str]:
-    """验证 baseline 只接受非 P0 缺口，且完整记录当前 P0 场景。"""
+    """验证 baseline 是可重放的批准合同映射，而不是测试通过报告。"""
     issues: list[str] = []
+    if payload.get("purpose") != "approved_contract_mapping":
+        issues.append("coverage baseline purpose 必须是 approved_contract_mapping")
+    base = payload.get("base")
+    if not isinstance(base, str) or not COMMIT_PATTERN.fullmatch(base):
+        issues.append("coverage baseline base 必须是完整 40 位 SHA")
+    else:
+        resolved = _run_git("cat-file", "-e", f"{base}^{{commit}}", check=False)
+        if resolved.returncode != 0:
+            issues.append(f"coverage baseline base 无法解析: {base}")
+        else:
+            ancestor = _run_git("merge-base", "--is-ancestor", base, "HEAD", check=False)
+            if ancestor.returncode != 0:
+                issues.append("coverage baseline base 必须是当前 HEAD 的 ancestor")
     expected_p0 = {
         group.id: list(group.scenarios)
         for group in catalog.groups.values()
@@ -517,6 +598,13 @@ def _validate_baseline(payload: dict[str, object], catalog: Catalog) -> list[str
         if priority not in {"p1", "p2"}:
             issues.append(f"coverage baseline 不得接受 P0 缺口: {gap_id}")
     return issues
+
+
+def _commit_tree_paths(commit: str) -> list[str]:
+    result = _run_git("ls-tree", "-r", "--name-only", commit, check=False)
+    if result.returncode != 0:
+        return []
+    return [line for line in result.stdout.decode("utf-8").splitlines() if line]
 
 
 def audit_catalog(
@@ -557,13 +645,24 @@ def audit_catalog(
         if not isinstance(baseline, dict) or baseline.get("version") != 1:
             issues.append("coverage-baseline.json schema 无效")
             baseline_status = "invalid"
-        elif check_baseline and baseline.get("catalogDigest") != catalog_digest():
+        elif not check_baseline:
+            baseline_status = "unchecked"
+        elif baseline.get("catalogDigest") != catalog_digest():
             issues.append("coverage baseline 与当前 catalog digest 不一致")
             baseline_status = "stale"
         else:
             baseline_issues = _validate_baseline(
                 cast(dict[str, object], baseline), catalog
             )
+            base = baseline.get("base")
+            if isinstance(base, str) and COMMIT_PATTERN.fullmatch(base):
+                frozen_files = _commit_tree_paths(base)
+                for group in catalog.groups.values():
+                    for pattern in group.deleted_paths:
+                        if not any(_matches(path, pattern) for path in frozen_files):
+                            baseline_issues.append(
+                                f"groups.{group.id} deleted_paths 在 frozen base 无匹配: {pattern}"
+                            )
             issues.extend(baseline_issues)
             baseline_status = "current" if not baseline_issues else "invalid"
     return {
@@ -578,6 +677,10 @@ def audit_catalog(
                 "normalChange": state.normal_change,
                 "destructiveOwner": state.destructive_owner,
                 "protectedTables": list(state.protected_tables),
+                "retention": state.retention,
+                "physicalReductionOwner": state.physical_reduction_owner,
+                "recoveryEvidence": list(state.recovery_evidence),
+                "failureSemantics": list(state.failure_semantics),
             }
             for state in catalog.states.values()
         },
@@ -661,6 +764,7 @@ def command_init(args: argparse.Namespace) -> int:
     }
     baseline: dict[str, object] = {
         "version": 1,
+        "purpose": "approved_contract_mapping",
         "catalogDigest": catalog_digest(),
         "base": _resolve_commit(args.base),
         "coveredP0": covered_p0,
@@ -780,8 +884,6 @@ def build_plan(base: str, *, full: bool = False) -> dict[str, object]:
     change_classes = classify_change_paths(changed)
     production_paths = change_classes["productionSourcePaths"]
     protected_paths = change_classes["protectedContractPaths"]
-    protected_contract_mixed = bool(production_paths and protected_paths)
-
     # 2. 计算直接命中、依赖闭包和未知可执行改动。
     direct: set[str] = set()
     reasons: list[str] = []
@@ -795,6 +897,7 @@ def build_plan(base: str, *, full: bool = False) -> dict[str, object]:
             unmapped.append(path)
     force_full = (
         full
+        or bool(production_paths and protected_paths)
         or bool(unmapped)
         or any(
             _matches(path, pattern)
@@ -810,11 +913,9 @@ def build_plan(base: str, *, full: bool = False) -> dict[str, object]:
         selected.update(catalog.groups[group_id].scenarios)
     touched_gaps = _touched_gaps(changed, baseline, catalog)
 
-    # 3. 公开计划只暴露能力分组，provider 选择留给 private companion。
+    # 3. 公开计划只暴露能力分组和可执行场景。
     status = "planned"
-    if protected_contract_mixed:
-        status = "protected_contract_mixed"
-    elif not changed and not full:
+    if not changed and not full:
         status = "not_affected"
     elif unmapped:
         status = "unmapped_change"
@@ -833,7 +934,6 @@ def build_plan(base: str, *, full: bool = False) -> dict[str, object]:
         "protectedContractPaths": protected_paths,
         "affectedGroups": sorted(affected),
         "selectedScenarios": sorted(selected),
-        "privateGateRequired": bool(affected.intersection(catalog.private_groups)),
         "unmappedChanges": unmapped,
         "touchedBaselineGaps": touched_gaps,
         "full": force_full,
@@ -861,7 +961,6 @@ def _print_plan(plan: dict[str, object]) -> None:
     print("Selected public scenarios:")
     for scenario in cast(list[str], plan["selectedScenarios"]):
         print(f"  {scenario}")
-    print(f"Private gate required: {str(plan['privateGateRequired']).lower()}")
     print(f"Plan digest: {plan['planDigest']}")
 
 
@@ -873,8 +972,7 @@ def command_plan(args: argparse.Namespace) -> int:
     print(f"report={report_dir.relative_to(ROOT)}")
     return (
         1
-        if plan["status"]
-        in {"unmapped_change", "baseline_gap_touched", "protected_contract_mixed"}
+        if plan["status"] in {"unmapped_change", "baseline_gap_touched"}
         else 0
     )
 
@@ -924,6 +1022,18 @@ def _compose_env(sandbox: Path) -> dict[str, str]:
     return env
 
 
+def _gate_temp_root() -> Path:
+    """解析 Gate sandbox 根目录，缺省保持系统 `/tmp`。"""
+
+    raw = os.environ.get(GATE_TMPDIR_ENV, "/tmp").strip()
+    if not raw:
+        raise GateError(f"{GATE_TMPDIR_ENV} 不能为空")
+    root = Path(raw).expanduser().resolve()
+    if not root.is_dir():
+        raise GateError(f"{GATE_TMPDIR_ENV} 不是已存在目录: {root}")
+    return root
+
+
 def _residual_resources(project: str) -> dict[str, list[str]]:
     resources: dict[str, list[str]] = {}
     for kind, command in (
@@ -945,7 +1055,7 @@ def _prepare_sandbox(run_id: str, scenario_id: str) -> Path:
     sandbox = Path(
         tempfile.mkdtemp(
             prefix=f"akashic-change-gate-{run_id}-{scenario_id}-",
-            dir="/tmp",
+            dir=_gate_temp_root(),
         )
     )
     for name in ("app", "workspace", "plugin-home", "home", "reports", "static"):
@@ -966,7 +1076,7 @@ def _build_change_gate_image(run_id: str, report_dir: Path) -> dict[str, object]
     # 1. Compose 解析配置需要隔离路径，但构建阶段不会挂载或运行它。
     with tempfile.TemporaryDirectory(
         prefix=f"akashic-change-gate-{run_id}-image-build-",
-        dir="/tmp",
+        dir=_gate_temp_root(),
     ) as sandbox_name:
         project = f"akashic-change-gate-build-{uuid.uuid4().hex[:12]}"
         env = _compose_env(Path(sandbox_name))
@@ -1071,7 +1181,7 @@ def _run_scenario(
 def command_run(args: argparse.Namespace) -> int:
     """生成计划，并在干净 Docker workspace 中执行所选公开场景。"""
 
-    # 1. 计划先落盘；公开 Gate 不读取 private runtime 或插件清单。
+    # 1. 计划先落盘；Gate 只读取公开合同和公开场景。
     catalog = load_catalog()
     plan = build_plan(args.base, full=args.full)
     run_id = _new_run_id()
@@ -1082,12 +1192,10 @@ def command_run(args: argparse.Namespace) -> int:
     # 2. 镜像只构建一次；每个场景的超时只约束场景本身。
     selected_scenarios = cast(list[str], plan["selectedScenarios"])
     image_build: dict[str, object] | None = None
-    if selected_scenarios and plan["status"] != "protected_contract_mixed":
+    if selected_scenarios:
         image_build = _build_change_gate_image(run_id, report_dir)
     checks = []
-    if plan["status"] != "protected_contract_mixed" and (
-        image_build is None or image_build["status"] == "passed"
-    ):
+    if image_build is None or image_build["status"] == "passed":
         checks = [
             _run_scenario(
                 catalog.scenarios[scenario_id], run_id=run_id, report_dir=report_dir
@@ -1102,7 +1210,6 @@ def command_run(args: argparse.Namespace) -> int:
     elif plan["status"] in {
         "unmapped_change",
         "baseline_gap_touched",
-        "protected_contract_mixed",
     }:
         status = cast(str, plan["status"])
     elif image_build is not None and image_build["status"] != "passed":
@@ -1134,15 +1241,12 @@ def command_run(args: argparse.Namespace) -> int:
         "protectedContractPaths": plan["protectedContractPaths"],
         "affectedGroups": plan["affectedGroups"],
         "selectedScenarios": plan["selectedScenarios"],
-        "privateGateRequired": plan["privateGateRequired"],
         "imageBuild": image_build,
         "checks": checks,
         "residualResources": residual,
     }
     _atomic_json(report_dir / "gate.json", gate)
     print(f"GATE {status.upper()} report={report_dir.relative_to(ROOT)}")
-    if plan["privateGateRequired"]:
-        print("private-contract-gate: required (provider identity stays private)")
     return 0 if status in {"passed", "not_affected"} else 1
 
 

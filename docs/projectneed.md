@@ -553,9 +553,7 @@ P0 不变量必须由受保护的 semantic test、policy 或黑盒观察器验�
 
 代码改动必须由版本控制中的 capability、state 和 scenario 索引解释，再从 Git diff 选择语义场景。未知可执行改动先运行全量公开场景，最终仍要 fail-loud，不能由实现者临时猜测或缩减测试。每个场景使用一次性测试 workspace、plugin home、config 和 HOME，不读取正式运行状态。
 
-公开 Gate 只输出能力组、场景和 plan/source/catalog digest，不要求贡献者安装私有插件，也不得暴露 provider 身份。private runtime 用同一 plan digest 把能力组映射到真实 provider；`privateGateRequired=true` 时，公开 Gate 通过只表示 G1 完成，跨仓库总体验收在 G2 明确返回 `passed`、`failed` 或 `not_affected` 前仍属待验证。
-
-跨仓库 Gate 必须从私有 catalog 的 GitHub `repository + 完整 ref` 查询远端当前 revision，并在开跑前冻结成 commit SHA。安装、验收和报告都绑定该 SHA；本地 checkout、remote-tracking ref、开发者机器上的插件 cache 或手工传入路径不能满足 required check。这样主仓库候选始终与 Gate 启动时远端真实插件版本组成一个明确、可复现的验收组合。
+公开 Gate 只输出能力组、场景和 plan/source/catalog digest，不要求贡献者安装私有插件，也不得暴露 provider 身份。生产路径与受保护合同同时变化时，必须执行完整公开场景；公开结果是当前仓库的合并依据。
 
 ### TST-007 跨仓库证据绑定不可变组合
 
@@ -579,7 +577,53 @@ P0 不变量必须由受保护的 semantic test、policy 或黑盒观察器验�
 
 诊断结果不能从不同 candidate 或 attempt 选择最好结果后拼成总分。生产候选必须先用与 benchmark 无关的 synthetic、现实 control 和项目 Gate 证明通用机制；行为语义改变先单独批准。优化后的正式完整 eval 只有维护者明确授权后才能从冻结 artifact 重新运行。
 
-## 14. 需求变更流程
+## 14. Companion 安全与容量边界
+
+本节固化单一服务对象模型下仍然成立的安全、容量和失败语义。Telegram、QQ、Mobile、Web Chat、设备和 session 都是同一位用户与同一个 Agent 的渠道；它们不是租户、权限或数据隔离边界。所有已经进入渠道的消息都按服务对象本人处理。本节不引入认证、Origin、per-channel ACL 或 per-device session isolation。
+
+本节不削弱既有 Mobile QR pairing、控制面握手、查询授权、设备撤销和实时协议条款（MOB-001～MOB-006、CTRL-001～CTRL-002、PLG-003、PLG-011）。这些机制保护移动端控制面和查询数据面；本轮只不新增渠道/租户 ACL，也不把它们误解为多用户授权模型。
+
+### SEC-001 Runtime provenance 与显式 target 分离
+
+当前 turn 的 `origin_channel`、`origin_chat_id`、`origin_session_key` 和 `turn_id` 由 runtime 注入 `ToolExecutionContext`，模型参数不得覆盖或伪造。普通记忆和查询工具不得公开原始 channel/chat/session 字段；未知参数必须拒绝。需要跨渠道发送的工具可以显式接收 `target_channel`、`target_chat_id`，并保留 origin 作为 provenance。拒绝当前调用不得结束 runtime。
+
+### SEC-002 外部请求逐跳有界且拥有临时结果
+
+`web_fetch` 在单人本地运行中允许访问 localhost、私网和内网 HTTP 服务；它仍逐跳校验 HTTP URL 结构、限制 redirect hop，并禁用环境代理。其他外部 HTTP consumer 继续执行公开地址策略。所有响应在读取前受传输和磁盘绝对上限约束；超过内联阈值的合法响应流式写入 execution-owned 私有临时文件，并返回可分页读取的引用。文件必须绑定 execution，turn 结束或显式 release 后清理；清理失败保留 owner 和诊断，不推翻已经提交的结果。上传、附件和 QQ 媒体在分配前验证单项与总量上限。
+
+### SEC-003 Peer 能力不再存在
+
+Peer 配置、路由、工具、Prompt 注入、任务和协议从生产能力面移除。遗留配置在边界返回明确的 unsupported/unknown capability，不得静默启用或转为空配置。全局记忆仍服务同一位用户，不按渠道拆分。
+
+### SEC-004 MCP 外部记录隔离与衰减
+
+单条 MCP 记录的 schema、时间和分数校验失败时进入可查询 quarantine；同批合法记录和后续 tick 继续。material candidate window 固定为 100；旧 reservoir 只贡献衰减后的聚合 wake mass，不自动成为本轮素材。记录满足最小驻留期且低于 decay floor 后，只有在 ack/cursor 提交成功的可恢复事务中才允许物理删除；事务失败不得前移 cursor 或提前删除。
+
+### SEC-005 调度数量边界
+
+Schedule 在整个 workspace 维度默认最多同时存在 10 个 active job。第 11 个 add 返回 `schedule_capacity_reached`，已有任务保持不变，Agent 应询问用户要移除哪个不再需要的任务。不增加频率、due、发送或自动降频限制；只有用户明确 cancel 才能减少任务。
+
+### SEC-006 Mobile receipt 与 plugin lease 保留
+
+completed mobile receipt 从 `completed_at` 起保留 7 天，并受每设备 10,000 条和 64 MiB 高水位保护。高水位先清理已过期 completed；仍满时只拒绝当前新 command，不能删除有效 receipt 或结束 runtime。processing 不能按 TTL 盲删，必须根据真实外部效果恢复为 completed、可安全重试或 `outcome_unknown`。超时 plugin query 在真实 worker 结束前持续占用 quota 和 generation lease。
+
+### SEC-007 Shell 与 Subagent 准入有界
+
+Shell 的 retained log、同步 subagent 和后台 subagent 共享真实 admission owner。容量拒绝只影响当前操作；terminal cleanup 失败保留 execution owner 和诊断，不能把已提交 turn 改成失败。单人本地 Companion 的 MessageBus 不设置独立全局容量拒绝；它只保持 lane 顺序，Mobile 的崩溃恢复由持久 handoff owner 保证。
+
+### SEC-008 Control replay 是临时投影
+
+Control admission 只统计 queued/running turn 及其实际字节和 live runtime objects，不统计历史 thread 或 programmatic channel。运行中 replay ring 每 turn 最多 256 events/4 MiB，全局最多 32 MiB；淘汰只影响晚到 replay 请求，当前 live subscriber 继续收到新事件。terminal replay 最多保留 5 分钟；过期返回 `replay_expired` 并从 SessionStore 读取权威最终状态，截断返回 `replay_truncated` 与 snapshot。回收不得删除 `sessions.db/messages`。
+
+### SEC-009 字段级外部值渲染
+
+Fitbit 等外部 provider 的 `efficiency` 只以有限数值进入展示；非法、非有限或越界值显示 `--` 并记录字段诊断，其他字段继续展示。原始 provider 文本不得进入可执行 HTML sink；使用 `textContent`、数字节点或等价上下文安全渲染。本条不把单字段错误升级为整批 snapshot 失败。
+
+### SEC-010 可观察失败分类
+
+跨上述边界的失败必须属于 `operation_rejected`、`item_quarantined`、`degraded_continuation`、`unit_failed`、`cleanup_degraded` 或 `runtime_fatal`。可恢复失败必须能查询原因、对象和 owner，并继续无关运行；权威 store 损坏、无法建立 owner 或核心内部不变量违反且无局部恢复动作时才允许 `runtime_fatal`。任何失败都不得伪装成空成功、静默丢 item、隐式删除或回滚已提交外部效果。
+
+## 15. 需求变更流程
 
 1. 指出受影响条款、当前语义和拟议语义。
 2. 说明为什么现有语义不再成立，以及对持久数据和外部行为的影响。

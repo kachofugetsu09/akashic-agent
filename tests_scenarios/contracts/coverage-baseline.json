@@ -1,10 +1,35 @@
 {
   "acceptedGaps": [],
   "base": "d627fa600781855770a5ede752f268982b68ebf9",
-  "catalogDigest": "214d8af95e0159e690c8e4422fc6a6a64a232aff4ee23e6a833a848dcfc9e6b1",
+  "catalogDigest": "efe8eaca2272c2e5786e40121c6f2c894903b92a7dd19a2073bbde8f72392fc1",
+  "purpose": "approved_contract_mapping",
   "coveredP0": {
+    "companion_control": [
+      "companion_control_replay_contract"
+    ],
+    "companion_dashboard": [
+      "companion_dashboard_value_contract"
+    ],
+    "companion_external_io": [
+      "companion_external_io_contract"
+    ],
+    "companion_mcp": [
+      "companion_mcp_reservoir_contract"
+    ],
+    "companion_mobile": [
+      "companion_mobile_receipt_contract"
+    ],
     "companion_peer_removal": [
-      "contract_catalog"
+      "companion_peer_removal_contract"
+    ],
+    "companion_schedule": [
+      "companion_schedule_capacity_contract"
+    ],
+    "companion_shell": [
+      "companion_shell_admission_contract"
+    ],
+    "companion_tool_context": [
+      "companion_tool_context_contract"
     ],
     "context_projection": [
       "context_history_nondestructive"

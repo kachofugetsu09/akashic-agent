@@ -56,7 +56,7 @@
 | Verify | 运行相关测试、类型或前端检查，再运行 change-impact Gate | 测试与报告来自当前源码；未运行项有明确状态 |
 | Review | 按基线审查完整 diff；stacked PR 逐层检查相邻 `base..head`，再在最终 head 检查累计行为 | Findings 带严重度、文件位置、触发路径和证据；需要维护者决定的语义已停止确认 |
 | Reconcile | 获取目标分支最新状态，核对完整 diff、工作手册变化和报告摘要 | 目标分支的新变化没有使任务合同失效 |
-| Deliver | 使用 PR 模板写明改动、证据、private 状态、阻塞和回滚方式 | 另一位维护者可以独立评审并继续处理 |
+| Deliver | 使用 PR 模板写明改动、Gate 证据、阻塞和回滚方式 | 另一位维护者可以独立评审并继续处理 |
 
 历史会话、自动记忆和 `_handbook/` 只提供调查线索。当前工作手册和真实实现负责确认事实。
 
@@ -98,13 +98,7 @@ python docker/debug/gate.py run --base origin/main
 
 Gate 根据 Git diff 选择场景，并把报告写入 `docker/debug/reports/change-gate/<run-id>/`。报告的 `sourceDigest`、`planDigest` 和当前源码必须匹配。源码在计划生成后发生变化会使原计划失效，此时重新运行 Gate。
 
-| 公开计划结果 | PR 状态 |
-|---|---|
-| `privateGateRequired=false` | `private-contract-gate: not_required` |
-| `privateGateRequired=true`，贡献者没有私有插件 | `private-contract-gate: pending_maintainer` |
-| 维护者已用同一份 `plan.json` 取得私有通过报告 | `private-contract-gate: passed` |
-
-公开结果不能替代待运行的私有检查。测试失败先归因为实现、环境或契约冲突；修改断言、跳过场景和缩减 Gate 需要独立理由与授权。
+生产路径与受保护合同同时变化时，Gate 必须扩大为完整公开场景执行，不能以结构性拒绝代替验证。测试失败先归因为实现、环境或契约冲突；修改断言、跳过场景和缩减 Gate 需要独立理由与授权。
 
 ## 6. Review 模式
 
@@ -141,6 +135,5 @@ Pixel/ADB Gate 只从干净 source commit/tree 构建，同一 Android worktree 
 - 受保护状态和禁止副作用经过独立核对。
 - 跨仓库或客户端变化已经完成能力 owner 与 runtime patch 归属检查。
 - 相关测试、静态检查和 Gate 已通过；未运行项有明确状态。
-- private Gate 准确写成 `not_required`、`pending_maintainer` 或 `passed`。
 - 文档、代码和当前接手点一致，完成事项已从 `NOW.md` 删除。
 - [PR 模板](../.github/pull_request_template.md) 已写明报告摘要、真实阻塞和回滚方式。

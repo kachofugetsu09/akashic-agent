@@ -174,3 +174,115 @@ def assert_paths_retained(paths: Sequence[Path], *, operation: str) -> None:
     missing = [path for path in paths if not path.exists()]
     if missing:
         raise AssertionError(f"{operation} 越权删除持久数据: {missing}")
+
+
+def assert_companion_contract(observation: Mapping[str, object]) -> None:
+    """断言 Companion 合同快照没有静默丢失、越权删除或错误升级。"""
+
+    # 1. 失败必须属于公开分类，且可恢复项不能宣称 runtime 已退出。
+    allowed = {
+        "operation_rejected",
+        "item_quarantined",
+        "degraded_continuation",
+        "unit_failed",
+        "cleanup_degraded",
+        "runtime_fatal",
+    }
+    failure = observation.get("failure_semantics")
+    if not isinstance(failure, str) or failure not in allowed:
+        raise AssertionError(f"未知失败分类: {failure!r}")
+    if failure != "runtime_fatal" and observation.get("runtime_alive") is False:
+        raise AssertionError("可恢复失败错误结束 Companion runtime")
+
+    # 2. 已提交状态和 live subscriber 必须保持可观察。
+    if observation.get("committed_result") is False:
+        raise AssertionError("cleanup 或容量处理反向破坏已提交结果")
+    if observation.get("live_event_dropped") is True:
+        raise AssertionError("replay eviction 丢弃 live subscriber 事件")
+
+    # 3. 物理减少必须具备 owner、恢复证据和明确授权。
+    if observation.get("physical_reduction") is True and not all(
+        observation.get(key) for key in ("physical_reduction_owner", "recovery_evidence")
+    ):
+        raise AssertionError("物理减少缺少 owner 或恢复证据")
+
+
+def assert_companion_capacity(observation: Mapping[str, object]) -> None:
+    """断言容量拒绝保持既有状态并只影响当前操作。"""
+    if observation.get("capacity_rejected") is True:
+        if observation.get("existing_state_changed") is True:
+            raise AssertionError("容量拒绝改变了既有状态")
+        if observation.get("runtime_alive") is False:
+            raise AssertionError("容量拒绝错误结束 Companion runtime")
+
+
+def assert_tool_context_contract(observation: Mapping[str, object]) -> None:
+    """断言 runtime provenance 不被模型参数覆盖，显式 target 仍可不同。"""
+    if observation.get("origin_overridden") is True:
+        raise AssertionError("模型参数覆盖 runtime provenance")
+    if observation.get("target_required") is True and not observation.get("target"):
+        raise AssertionError("显式 target 缺失")
+
+
+def assert_external_io_contract(observation: Mapping[str, object]) -> None:
+    """断言 spill 结果仍绑定 execution owner。"""
+    if observation.get("spill_owner") in (None, ""):
+        raise AssertionError("spill 结果缺少 execution owner")
+    if observation.get("redirect_validated") is False:
+        raise AssertionError("redirect hop 未执行地址校验")
+
+
+def assert_peer_removed(observation: Mapping[str, object]) -> None:
+    """断言 Peer 生产表面已经消失。"""
+    if observation.get("peer_route_registered") is True:
+        raise AssertionError("Peer route 仍然注册")
+    if observation.get("legacy_peer_config") == "enabled":
+        raise AssertionError("遗留 Peer 配置被静默启用")
+
+
+def assert_mcp_reservoir_contract(observation: Mapping[str, object]) -> None:
+    """断言单条 MCP quarantine 不会中止合法批次。"""
+    if observation.get("quarantine_aborted_batch") is True:
+        raise AssertionError("MCP quarantine 错误中止合法批次")
+    if observation.get("deleted_before_ack") is True:
+        raise AssertionError("MCP item 在 ack 前被删除")
+
+
+def assert_schedule_capacity_contract(observation: Mapping[str, object]) -> None:
+    """断言第 11 个 Schedule add 不改变已有任务。"""
+    if observation.get("active_jobs", 0) > 10 and observation.get("operation_accepted") is True:
+        raise AssertionError("Schedule 超过默认 10 个仍被接受")
+    assert_companion_capacity(observation)
+
+
+def assert_receipt_contract(observation: Mapping[str, object]) -> None:
+    """断言高水位清理不会删除仍在有效窗口内的 receipt。"""
+    if observation.get("valid_receipt_deleted") is True:
+        raise AssertionError("有效 receipt 被提前删除")
+    if observation.get("stale_processing_replayed_blindly") is True:
+        raise AssertionError("processing receipt 被盲目重放")
+
+
+def assert_shell_contract(observation: Mapping[str, object]) -> None:
+    """断言 cleanup 失败不能改写已提交 turn。"""
+    assert_committed_turn_finality(
+        status=cast(str, observation.get("status")),
+        final_response=cast(str | None, observation.get("final_response")),
+        dispatch_count=cast(int, observation.get("dispatch_count", 0)),
+    )
+
+
+def assert_control_replay_contract(observation: Mapping[str, object]) -> None:
+    """断言 replay eviction 不丢 live subscriber 的新事件。"""
+    if observation.get("live_event_dropped") is True:
+        raise AssertionError("replay eviction 丢失 live subscriber 事件")
+    if observation.get("expired_without_snapshot") is True:
+        raise AssertionError("replay 过期后静默返回空流")
+
+
+def assert_dashboard_contract(observation: Mapping[str, object]) -> None:
+    """断言外部字段不经 innerHTML 进入展示层。"""
+    if observation.get("html_sink") is True:
+        raise AssertionError("外部 efficiency 值进入 HTML sink")
+    if observation.get("invalid_efficiency_display") != "--":
+        raise AssertionError("非法 efficiency 未显示 --")

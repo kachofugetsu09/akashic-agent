@@ -14,6 +14,15 @@ plugin_uninstall_deletes_data = "tests/semantic/test_contract_oracles.py::test_p
 plugin_drain_reports_before_old_lease_release = "tests/semantic/test_contract_oracles.py::test_plugin_drain_oracle_rejects_active_only_completion_mutant"
 unicode_utf16_command_length = "tests/mobile_realtime/test_channel.py::test_command_list_uses_active_channel_catalog_without_stop"
 unmapped_executable_file = "tests/semantic/test_change_gate.py::test_unknown_executable_file_is_not_silently_accepted"
+companion_tool_context_origin_override = "tests/semantic/test_companion_contract.py::test_tool_context_rejects_origin_override_mutant"
+companion_external_io_spill_owner = "tests/semantic/test_companion_contract.py::test_external_io_rejects_ownerless_spill_mutant"
+companion_peer_surface_survives = "tests/semantic/test_companion_contract.py::test_peer_surface_removal_rejects_surviving_route_mutant"
+companion_mcp_bad_item_aborts_batch = "tests/semantic/test_companion_contract.py::test_mcp_quarantine_rejects_batch_abort_mutant"
+companion_schedule_unbounded = "tests/semantic/test_companion_contract.py::test_schedule_capacity_rejects_unbounded_add_mutant"
+companion_receipt_deletes_valid_result = "tests/semantic/test_companion_contract.py::test_receipt_retention_rejects_valid_delete_mutant"
+companion_shell_cleanup_rewrites_turn = "tests/semantic/test_companion_contract.py::test_shell_cleanup_rejects_turn_rewrite_mutant"
+companion_control_replay_drops_live_event = "tests/semantic/test_companion_contract.py::test_control_replay_rejects_live_drop_mutant"
+companion_dashboard_uses_html_sink = "tests/semantic/test_companion_contract.py::test_dashboard_rejects_html_sink_mutant"
 
 [scenarios.contract_catalog]
 requirements = ["GOV-001", "GOV-003", "TST-001", "TST-006"]
@@ -118,7 +127,7 @@ groups = ["context_projection", "session_persistence"]
 environment = "public_clean_workspace"
 timeout_seconds = 120
 command = ["python", "-m", "pytest", "-q", "tests/semantic/test_context_history_contract.py"]
-observes = ["retry_history_windows", "messages_full_snapshot", "message_embeddings_full_snapshot", "sqlite_write_set", "restart_sequence"]
+observes = ["retry_history_windows", "messages_full_snapshot", "message_embeddings_full_snapshot", "metadata_snapshot", "sqlite_write_set", "restart_sequence"]
 mutants = ["historical_session_delete"]
 
 [scenarios.mobile_realtime_contract]
@@ -242,3 +251,84 @@ command = [
 ]
 observes = ["long_term_owner", "session_source"]
 mutants = ["derived_state_overwrites_session_source"]
+
+[scenarios.companion_tool_context_contract]
+requirements = ["SEC-001", "ERR-001", "TST-001", "TST-003"]
+groups = ["companion_tool_context"]
+environment = "public_clean_workspace"
+timeout_seconds = 60
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_tool_context_rejects_origin_override_mutant", "tests/test_tool_executor.py", "tests/test_recall_memory_tool.py", "tests/turns/test_outbound.py"]
+observes = ["tool_execution_context", "schema_rejection", "outbound_target", "memory_provenance", "failure_semantics"]
+mutants = ["companion_tool_context_origin_override"]
+
+[scenarios.companion_external_io_contract]
+requirements = ["SEC-002", "FS-001", "SES-006", "ERR-001", "TST-001", "TST-003"]
+groups = ["companion_external_io"]
+environment = "public_clean_workspace"
+timeout_seconds = 60
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_external_io_rejects_ownerless_spill_mutant", "tests/test_http_resources.py", "tests/test_http_migrations.py", "tests/test_channel_clients.py", "tests/mobile_realtime/test_attachments.py", "tests/mobile_realtime/test_channel.py", "tests/mobile_realtime/test_gateway.py", "tests/mobile_realtime/test_storage.py", "tests/test_web_chat_channel.py"]
+observes = ["redirect_hop_url", "stream_byte_count", "spill_owner", "spill_lifetime", "cleanup_diagnostic", "attachment_write_set", "logical_message_receipt", "target_device_commit", "failure_semantics"]
+mutants = ["companion_external_io_spill_owner"]
+
+[scenarios.companion_peer_removal_contract]
+requirements = ["SEC-003", "ERR-001", "TST-001", "TST-003"]
+groups = ["companion_peer_removal"]
+environment = "public_clean_workspace"
+timeout_seconds = 60
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_peer_surface_removal_rejects_surviving_route_mutant", "tests/test_peer_agent_tool.py"]
+observes = ["peer_config_schema", "tool_catalog", "route_registry", "prompt_surface", "legacy_config_error"]
+mutants = ["companion_peer_surface_survives"]
+
+[scenarios.companion_mcp_reservoir_contract]
+requirements = ["SEC-004", "PRO-002", "PLG-009", "ERR-001", "TST-001", "TST-003"]
+groups = ["companion_mcp"]
+environment = "public_clean_workspace"
+timeout_seconds = 60
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_mcp_quarantine_rejects_batch_abort_mutant", "tests/test_mcp_sources_async.py", "tests/wake_proactive/test_tools.py"]
+observes = ["quarantine_item", "material_candidate_window", "aggregated_wake_mass", "ack_cursor_commit", "source_cursor", "reservoir_write_set", "failure_semantics"]
+mutants = ["companion_mcp_bad_item_aborts_batch"]
+
+[scenarios.companion_schedule_capacity_contract]
+requirements = ["SEC-005", "SCH-001", "SCH-002", "ERR-001", "TST-001", "TST-003"]
+groups = ["companion_schedule"]
+environment = "public_clean_workspace"
+timeout_seconds = 60
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_schedule_capacity_rejects_unbounded_add_mutant", "tests/test_schedule_tool.py", "tests/test_scheduler_service.py"]
+observes = ["active_job_count", "candidate_commit", "schedule_capacity_error", "existing_jobs_unchanged", "failure_semantics"]
+mutants = ["companion_schedule_unbounded"]
+
+[scenarios.companion_mobile_receipt_contract]
+requirements = ["SEC-006", "MOB-003", "PLG-003", "PLG-004", "ERR-001", "TST-001", "TST-003"]
+groups = ["companion_mobile"]
+environment = "public_clean_workspace"
+timeout_seconds = 60
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_receipt_retention_rejects_valid_delete_mutant", "tests/mobile_realtime/test_storage.py", "tests/mobile_realtime/test_channel.py", "tests/mobile_realtime/test_gateway.py", "tests/test_message_bus_admission.py", "tests/test_plugin_mobile_ui.py"]
+observes = ["receipt_retention", "receipt_high_water", "external_effect_reconciliation", "durable_inbound_handoff", "durable_recovery_page", "receipt_write_set", "query_lease", "generation_drain", "failure_semantics"]
+mutants = ["companion_receipt_deletes_valid_result"]
+
+[scenarios.companion_shell_admission_contract]
+requirements = ["SEC-007", "SH-001", "SH-002", "RUN-003", "ERR-001", "TST-001", "TST-003"]
+groups = ["companion_shell"]
+environment = "public_clean_workspace"
+timeout_seconds = 60
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_shell_cleanup_rejects_turn_rewrite_mutant", "tests/test_shell_tool.py", "tests/test_spawn_tool.py", "tests/test_shell_background_probe.py", "tests/test_subagent_manager.py", "tests/test_unified_exec.py"]
+observes = ["execution_owner", "retained_log", "cleanup_diagnostic", "shared_admission", "turn_finality", "failure_semantics"]
+mutants = ["companion_shell_cleanup_rewrites_turn"]
+
+[scenarios.companion_control_replay_contract]
+requirements = ["SEC-007", "SEC-008", "CTRL-001", "CTRL-002", "ERR-001", "TST-001", "TST-003"]
+groups = ["companion_control"]
+environment = "public_clean_workspace"
+timeout_seconds = 60
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_control_replay_rejects_live_drop_mutant", "tests/control/test_control_execution.py", "tests/control/test_d8_control_admission_replay.py", "tests/test_programmatic_control_probe.py"]
+observes = ["admission_bytes", "lane_queue", "replay_ring", "live_subscriber", "replay_truncated", "replay_expired", "terminal_reaper", "session_store_write_set", "failure_semantics"]
+mutants = ["companion_control_replay_drops_live_event"]
+
+[scenarios.companion_dashboard_value_contract]
+requirements = ["SEC-009", "ERR-001", "TST-001", "TST-003"]
+groups = ["companion_dashboard"]
+environment = "public_clean_workspace"
+timeout_seconds = 60
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_dashboard_rejects_html_sink_mutant", "tests/test_dashboard_api.py"]
+observes = ["finite_efficiency", "field_diagnostic", "safe_text_sink", "other_fields_continue", "failure_semantics"]
+mutants = ["companion_dashboard_uses_html_sink"]
