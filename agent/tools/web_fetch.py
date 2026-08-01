@@ -2,27 +2,38 @@
 WebFetch 工具
 """
 
-import ipaddress
 import json
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import html2text
+import httpx
 from lxml import html as lxml_html
 from lxml.etree import ParserError
 
 from agent.tools.base import Tool
 from core.net.http import (
+    AddressPolicyError,
     HttpRequester,
     RequestBudget,
     get_default_http_requester,
 )
+from agent.tools.web_fetch_spill import (
+    INLINE_MAX_BYTES,
+    SPILL_MAX_FILE_BYTES,
+    SpillLimitExceeded,
+    WebFetchSpillStore,
+)
 
-_MAX_BYTES = 5 * 1024 * 1024  # 5MB，与 OpenCode 一致
+_MAX_BYTES = INLINE_MAX_BYTES
 _DEFAULT_TIMEOUT = 30  # 秒
 _MAX_TIMEOUT = 120  # 秒，与 OpenCode 一致
 _USER_AGENT = "akashic/1.0"
 _MAX_TEXT_CHARS = 50_000  # 返回给 LLM 的文本字符上限（约 ~12K tokens）
+_STREAM_CHUNK_BYTES = 64 * 1024
 
 # 根据 format 设置 Accept header，引导服务端返回更合适的格式
 _ACCEPT = {
@@ -39,7 +50,7 @@ class WebFetchTool(Tool):
     description = (
         "抓取指定 URL 的内容并返回。"
         "支持 text（纯文本）、markdown（转换后的 Markdown，默认）、html（原始 HTML）三种格式。"
-        "仅支持 HTTP/HTTPS，响应上限 5MB。"
+        "仅支持 HTTP/HTTPS；大响应会写入本次 execution 的私有临时文件。"
     )
     parameters = {
         "type": "object",
@@ -63,8 +74,18 @@ class WebFetchTool(Tool):
         "required": ["url"],
     }
 
-    def __init__(self, requester: HttpRequester | None = None) -> None:
+    def __init__(
+        self,
+        requester: HttpRequester | None = None,
+        spill_store: WebFetchSpillStore | None = None,
+    ) -> None:
         self._requester = requester or get_default_http_requester("external_default")
+        self._spill_store = spill_store or WebFetchSpillStore()
+
+    def release(self, execution_id: str):
+        """释放指定 execution 的响应文件并返回可查询清理诊断。"""
+
+        return self._spill_store.release(execution_id)
 
     async def execute(self, **kwargs: Any) -> str:
         url: str = kwargs["url"]
@@ -76,101 +97,148 @@ class WebFetchTool(Tool):
             return _err(url, "URL 必须以 http:// 或 https:// 开头")
         ssrf_err = _validate_url_target(url)
         if ssrf_err:
-            return _err(url, ssrf_err)
+            return _err(url, ssrf_err, classification="operation_rejected")
+
+        execution_id = str(kwargs.get("execution_id") or f"web-fetch-{uuid4().hex}")
+        validator = getattr(self._requester, "validate_external_url", None)
+        if callable(validator):
+            try:
+                validator(url)
+            except AddressPolicyError as exc:
+                return _err(url, str(exc), classification="operation_rejected")
 
         try:
-            resp = await self._requester.get(
+            async with _open_stream(
+                self._requester,
                 url,
-                follow_redirects=True,
-                timeout_s=timeout,
-                budget=RequestBudget(total_timeout_s=float(timeout)),
-                headers={
-                    "User-Agent": _USER_AGENT,
-                    "Accept": _ACCEPT.get(fmt, "*/*"),
-                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-                },
-            )
-        except Exception as e:
-            import httpx
+                timeout=timeout,
+                fmt=fmt,
+            ) as resp:
+                if resp.status_code != 200:
+                    return _err(url, f"HTTP {resp.status_code}")
 
-            if isinstance(e, httpx.TimeoutException):
-                return _err(url, f"请求超时（>{timeout}s）")
-            if isinstance(e, httpx.ConnectError):
-                return _err(url, "无法建立连接")
-            if isinstance(e, httpx.RequestError):
-                return _err(url, f"请求失败：{e}")
-            return _err(url, f"请求失败：{e}")
+                content_type = resp.headers.get("content-type", "")
+                is_binary = any(
+                    ct in content_type
+                    for ct in (
+                        "application/pdf",
+                        "application/octet-stream",
+                        "image/",
+                        "video/",
+                        "audio/",
+                    )
+                )
+                if is_binary:
+                    return _err(
+                        url,
+                        f"不支持二进制内容（{content_type}），请使用能处理该格式的专用工具",
+                    )
 
-        if resp.status_code != 200:
-            return _err(url, f"HTTP {resp.status_code}")
+                declared = _declared_length(resp.headers.get("content-length"))
+                if declared is not None and declared > SPILL_MAX_FILE_BYTES:
+                    return _err(
+                        url,
+                        f"响应过大（超过 {SPILL_MAX_FILE_BYTES // (1024 * 1024)}MB 临时文件上限）",
+                        classification="operation_rejected",
+                    )
 
-        # 5MB 双重检查：先看 Content-Length header，再看实际 body
-        cl = resp.headers.get("content-length")
-        if cl and int(cl) > _MAX_BYTES:
-            return _err(url, "响应过大（超过 5MB 限制）")
+                body, spill = await self._collect_response(
+                    resp,
+                    execution_id=execution_id,
+                )
+                if spill is not None:
+                    self._spill_store.finalize(spill)
+                    return json.dumps(
+                        {
+                            "url": url,
+                            "final_url": str(resp.url),
+                            "status": resp.status_code,
+                            "content_type": content_type,
+                            "format": "file",
+                            "length": spill.size,
+                            "execution_id": execution_id,
+                            "file_path": str(spill.path),
+                            "note": "响应已保存到私有临时文件，请使用 read_file 分页读取；turn 结束后由 execution owner release。",
+                        },
+                        ensure_ascii=False,
+                    )
 
-        body = resp.content
-        if len(body) > _MAX_BYTES:
-            return _err(url, "响应过大（超过 5MB 限制）")
+                assert body is not None
+                encoding = resp.encoding or "utf-8"
+                is_html = "text/html" in content_type
+                if fmt == "html":
+                    text = body.decode(encoding, errors="replace")
+                elif fmt == "markdown" and is_html:
+                    text = _to_markdown(body.decode(encoding, errors="replace"))
+                elif fmt == "text" and is_html:
+                    text = _to_text(body)
+                else:
+                    text = body.decode(encoding, errors="replace")
 
-        content_type = resp.headers.get("content-type", "")
-        encoding = resp.encoding or "utf-8"
-        is_html = "text/html" in content_type
-        is_binary = any(
-            ct in content_type
-            for ct in (
-                "application/pdf",
-                "application/octet-stream",
-                "image/",
-                "video/",
-                "audio/",
-            )
-        )
+                truncated = len(text) > _MAX_TEXT_CHARS
+                if truncated:
+                    text = text[:_MAX_TEXT_CHARS]
+                result: dict[str, Any] = {
+                    "url": url,
+                    "final_url": str(resp.url),
+                    "status": resp.status_code,
+                    "content_type": content_type,
+                    "format": fmt,
+                    "length": len(text),
+                    "text": text,
+                }
+                if truncated:
+                    result["truncated"] = True
+                    result["note"] = (
+                        f"内容已截断至 {_MAX_TEXT_CHARS} 字符，如需更多内容请缩小范围或使用其他工具"
+                    )
+                return json.dumps(result, ensure_ascii=False)
+        except SpillLimitExceeded as exc:
+            self.release(execution_id)
+            return _err(url, f"响应超过临时文件上限：{exc}", classification="operation_rejected")
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.RequestError) as exc:
+            return _err(url, _request_error(exc, timeout))
+        except AddressPolicyError as exc:
+            return _err(url, str(exc), classification="operation_rejected")
+        except OSError as exc:
+            self.release(execution_id)
+            return _err(url, f"响应临时文件失败：{exc}", classification="unit_failed")
+        except ValueError as exc:
+            return _err(url, str(exc), classification="operation_rejected")
 
-        if is_binary:
-            return _err(
-                url, f"不支持二进制内容（{content_type}），请使用能处理该格式的专用工具"
-            )
+    async def _collect_response(self, resp: Any, *, execution_id: str):
+        """在内联阈值和 spill 绝对上限内收集响应。"""
 
-        if fmt == "html":
-            text = body.decode(encoding, errors="replace")
-        elif fmt == "markdown" and is_html:
-            text = _to_markdown(body.decode(encoding, errors="replace"))
-        elif fmt == "text" and is_html:
-            text = _to_text(body)
-        else:
-            # 非 HTML 内容（JSON、纯文本等）直接返回原文
-            text = body.decode(encoding, errors="replace")
-
-        # 截断过长文本，避免撑爆 LLM 上下文
-        truncated = False
-        if len(text) > _MAX_TEXT_CHARS:
-            text = text[:_MAX_TEXT_CHARS]
-            truncated = True
-
-        result: dict[str, Any] = {
-            "url": url,
-            "final_url": str(resp.url),
-            "status": resp.status_code,
-            "content_type": content_type,
-            "format": fmt,
-            "length": len(text),
-            "text": text,
-        }
-        if truncated:
-            result["truncated"] = True
-            result["note"] = (
-                f"内容已截断至 {_MAX_TEXT_CHARS} 字符，如需更多内容请缩小范围或使用其他工具"
-            )
-
-        return json.dumps(result, ensure_ascii=False)
+        inline = bytearray()
+        spill = None
+        total = 0
+        iterator = resp.aiter_bytes(chunk_size=_STREAM_CHUNK_BYTES)
+        async for chunk in iterator:
+            if not isinstance(chunk, bytes):
+                raise TypeError("HTTP response chunk must be bytes")
+            next_total = total + len(chunk)
+            if next_total > SPILL_MAX_FILE_BYTES:
+                raise SpillLimitExceeded("spill file limit exceeded")
+            if spill is None and next_total <= INLINE_MAX_BYTES:
+                inline.extend(chunk)
+            else:
+                if spill is None:
+                    spill = self._spill_store.open(execution_id)
+                    self._spill_store.write(spill, bytes(inline))
+                    inline.clear()
+                self._spill_store.write(spill, chunk)
+            total = next_total
+        return (bytes(inline) if spill is None else None), spill
 
 
 # ── 模块级工具函数 ────────────────────────────────────────────
 
 
-def _err(url: str, msg: str) -> str:
-    return json.dumps({"error": msg, "url": url}, ensure_ascii=False)
+def _err(url: str, msg: str, *, classification: str | None = None) -> str:
+    result: dict[str, str] = {"error": msg, "url": url}
+    if classification:
+        result["classification"] = classification
+    return json.dumps(result, ensure_ascii=False)
 
 
 def _validate_url_target(url: str) -> str | None:
@@ -180,13 +248,81 @@ def _validate_url_target(url: str) -> str | None:
     if not host:
         return "URL 缺少主机名"
     try:
+        import ipaddress
+
         ip = ipaddress.ip_address(host)
-        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved:
+        if not ip.is_global:
             return f"禁止访问内网/本地地址：{host}"
     except ValueError:
-        if host.endswith(".local") or host.endswith(".localhost"):
+        if host in {"localhost"} or host.endswith((".local", ".localhost")):
             return f"禁止访问本地域名：{host}"
     return None
+
+
+def _declared_length(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        length = int(value)
+    except ValueError as exc:
+        raise ValueError("响应 Content-Length 非法") from exc
+    if length < 0:
+        raise ValueError("响应 Content-Length 不能为负数")
+    return length
+
+
+def _request_error(exc: Exception, timeout: int) -> str:
+    if isinstance(exc, httpx.TimeoutException):
+        return f"请求超时（>{timeout}s）"
+    if isinstance(exc, httpx.ConnectError):
+        return "无法建立连接"
+    return f"请求失败：{exc}"
+
+
+@asynccontextmanager
+async def _open_stream(
+    requester: Any,
+    url: str,
+    *,
+    timeout: int,
+    fmt: str,
+) -> AsyncIterator[Any]:
+    """优先使用有界 HttpRequester stream，旧测试 fake 走兼容适配。"""
+
+    stream = getattr(requester, "stream", None)
+    headers = {
+        "User-Agent": _USER_AGENT,
+        "Accept": _ACCEPT.get(fmt, "*/*"),
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+    if callable(stream):
+        async with stream(
+            "GET",
+            url,
+            timeout_s=timeout,
+            budget=RequestBudget(total_timeout_s=float(timeout)),
+            headers=headers,
+            validate_redirects=True,
+        ) as response:
+            yield response
+        return
+
+    response = await requester.get(
+        url,
+        follow_redirects=False,
+        timeout_s=timeout,
+        budget=RequestBudget(total_timeout_s=float(timeout)),
+        headers=headers,
+    )
+    if not hasattr(response, "aiter_bytes"):
+        content = bytes(response.content)
+
+        async def _iter_bytes(*, chunk_size: int):
+            for index in range(0, len(content), chunk_size):
+                yield content[index : index + chunk_size]
+
+        response.aiter_bytes = _iter_bytes
+    yield response
 
 
 def _to_markdown(raw_html: str) -> str:

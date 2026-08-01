@@ -10,7 +10,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from infra.channels.base import AttachmentStore
-from infra.channels.web_chat_channel import WebChatChannel
+from infra.channels.web_chat_channel import (
+    MAX_UPLOAD_BYTES,
+    UploadTooLargeError,
+    WebChatChannel,
+)
 from infra.mobile_realtime.pairing import PairingError
 from infra.mobile_realtime.storage import PairingStateError
 
@@ -92,11 +96,27 @@ def create_chat_app(
         request: Request,
         filename: str = Query(default="upload.bin"),
     ) -> dict[str, str]:
-        data = await request.body()
-        if not data:
-            raise HTTPException(status_code=400, detail="上传内容不能为空")
+        declared_length = request.headers.get("content-length")
+        if declared_length is not None:
+            try:
+                declared = int(declared_length)
+                if declared < 0:
+                    raise ValueError("负数")
+                if declared > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="上传内容超过 50MB 限制")
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="Content-Length 非法") from exc
         clean_name = Path(filename).name or "upload.bin"
-        return channel.save_upload(data, clean_name)
+        try:
+            return await channel.save_upload_stream(
+                request.stream(),
+                clean_name,
+                max_bytes=MAX_UPLOAD_BYTES,
+            )
+        except UploadTooLargeError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/chat/media")
     def read_media(path: str = Query(...)) -> FileResponse:

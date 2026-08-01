@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from core.net.http import (
+    AddressPolicyError,
     HttpRequester,
     RequestBudget,
     RetryPolicy,
@@ -60,6 +61,79 @@ async def test_http_requester_retries_retryable_status_then_succeeds():
 
     assert response.status_code == 200
     assert calls["count"] == 2
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_http_requester_stream_revalidates_redirect_hop() -> None:
+    calls: list[str] = []
+
+    def _resolver(host: str, port: int, **_: object):
+        ip = "8.8.8.8" if host == "public.example" else "127.0.0.1"
+        return [(2, 1, 6, "", (ip, port, 0, 0))]
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(
+            302,
+            request=request,
+            headers={"location": "https://private.example/next"},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    requester = HttpRequester(
+        client=client,
+        retry_policy=RetryPolicy(max_attempts=1),
+        default_timeout_s=1.0,
+        default_budget=RequestBudget(total_timeout_s=2.0),
+        resolver=_resolver,
+    )
+
+    with pytest.raises(AddressPolicyError, match="非公开连接地址"):
+        async with requester.stream(
+            "GET",
+            "https://public.example/start",
+            validate_redirects=True,
+        ):
+            raise AssertionError("blocked redirect must not yield a response")
+
+    assert calls == ["https://public.example/start"]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_http_requester_stream_follows_multiple_hops_before_retry_budget() -> None:
+    calls: list[str] = []
+
+    def _resolver(host: str, port: int, **_: object):
+        return [(2, 1, 6, "", ("8.8.8.8", port, 0, 0))]
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/start":
+            return httpx.Response(302, request=request, headers={"location": "/next"})
+        if request.url.path == "/next":
+            return httpx.Response(302, request=request, headers={"location": "/done"})
+        return httpx.Response(200, request=request, content=b"done")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    requester = HttpRequester(
+        client=client,
+        retry_policy=RetryPolicy(max_attempts=1),
+        default_timeout_s=1.0,
+        default_budget=RequestBudget(total_timeout_s=2.0),
+        resolver=_resolver,
+    )
+
+    async with requester.stream(
+        "GET",
+        "https://public.example/start",
+        validate_redirects=True,
+    ) as response:
+        assert response.status_code == 200
+        assert await response.aread() == b"done"
+
+    assert calls == ["/start", "/next", "/done"]
     await client.aclose()
 
 
