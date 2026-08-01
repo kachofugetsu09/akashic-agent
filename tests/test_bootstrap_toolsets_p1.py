@@ -98,12 +98,7 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
         "bootstrap.tools.build_scheduler",
         lambda *_args, **_kwargs: SimpleNamespace(),
     )
-    monkeypatch.setattr(
-        "bootstrap.tools.build_peer_agent_resources",
-        lambda *_args, **_kwargs: (None, None),
-    )
-
-    tools, push_tool, scheduler, memory_runtime, peer_pm, peer_poller = (
+    tools, push_tool, scheduler, memory_runtime = (
         build_registered_tools(
             config=Config(
                 provider="openai",
@@ -131,8 +126,6 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
     assert push_tool is not None
     assert scheduler is not None
     assert memory_runtime.engine is not None
-    assert peer_pm is None
-    assert peer_poller is None
 
 
 def test_build_registration_result_uses_public_registry_names():

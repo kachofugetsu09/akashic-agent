@@ -216,8 +216,6 @@ class AppRuntime:
         self.memory_runtime = None
         self.presence = None
         self.proactive_loop = None
-        self.peer_process_manager = None
-        self.peer_poller = None
         self.dashboard_server = None
         self.dashboard_task: asyncio.Task[None] | None = None
         self.chat_server = None
@@ -273,8 +271,6 @@ class AppRuntime:
             self.light_provider = self.core.light_provider
             self.memory_runtime = self.core.memory_runtime
             self.presence = self.core.presence
-            self.peer_process_manager = self.core.peer_process_manager
-            self.peer_poller = self.core.peer_poller
             await self.core.start()
             if self.readiness is not None:
                 self.readiness.mark_stage("core.ready")
