@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 from agent.skills import SkillsLoader
 from agent.background.subagent_manager import SubagentManager
@@ -146,16 +147,20 @@ class SpawnToolsetProvider(ToolsetProvider):
 def build_readonly_tools(
     http_resources: SharedHttpResources,
     *,
+    workspace: Path | None = None,
     multimodal: bool = True,
     vl_available: bool = False,
+    context_provider: Callable[[], object | None] | None = None,
 ) -> dict[str, Tool]:
     return {
         tool.name: tool
         for tool in build_readonly_research_tools(
             fetch_requester=http_resources.external_default,
+            allowed_dir=workspace,
             include_list_dir=True,
             multimodal=multimodal,
             vl_available=vl_available,
+            context_provider=context_provider,
         )
     }
 

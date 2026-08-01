@@ -46,11 +46,14 @@ class AttachmentStore:
                 handle.flush()
                 os.fsync(handle.fileno())
             return self.publish_staging(staging, prefix=prefix, suffix=suffix)
-        except Exception:
+        except BaseException as exc:
             try:
                 staging.unlink(missing_ok=True)
-            except OSError:
-                pass
+            except OSError as cleanup_error:
+                raise BaseExceptionGroup(
+                    "附件 staging 清理失败",
+                    [exc, cleanup_error],
+                ) from exc
             raise
 
     def create_staging_path(self, *, prefix: str = ".upload-", suffix: str = ".part") -> Path:

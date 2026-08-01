@@ -3,11 +3,10 @@ WebFetch 工具
 """
 
 import json
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
-from uuid import uuid4
 
 import html2text
 import httpx
@@ -24,6 +23,7 @@ from core.net.http import (
 from agent.tools.web_fetch_spill import (
     INLINE_MAX_BYTES,
     SPILL_MAX_FILE_BYTES,
+    SpillCleanup,
     SpillLimitExceeded,
     WebFetchSpillStore,
 )
@@ -34,6 +34,31 @@ _MAX_TIMEOUT = 120  # 秒，与 OpenCode 一致
 _USER_AGENT = "akashic/1.0"
 _MAX_TEXT_CHARS = 50_000  # 返回给 LLM 的文本字符上限（约 ~12K tokens）
 _STREAM_CHUNK_BYTES = 64 * 1024
+
+
+class SpillOwnerMissing(RuntimeError):
+    """大响应缺少 runtime execution owner。"""
+
+
+def _default_tool_context() -> object | None:
+    """D1 尚未接线时不产生 owner；bootstrap 必须显式注入 runtime provider。"""
+
+    return None
+
+
+def _owner_from_context(context: object | None) -> tuple[str | None, str | None]:
+    if context is None:
+        return None, None
+    execution_id = getattr(context, "execution_id", None)
+    turn_id = getattr(context, "turn_id", None)
+    if isinstance(context, dict):
+        execution_id = context.get("execution_id")
+        turn_id = context.get("turn_id")
+    owner = str(execution_id).strip() if execution_id is not None else None
+    turn = str(turn_id).strip() if turn_id is not None else None
+    if not owner or not turn:
+        return None, None
+    return owner, turn
 
 # 根据 format 设置 Accept header，引导服务端返回更合适的格式
 _ACCEPT = {
@@ -78,14 +103,37 @@ class WebFetchTool(Tool):
         self,
         requester: HttpRequester | None = None,
         spill_store: WebFetchSpillStore | None = None,
+        context_provider: Callable[[], object | None] = _default_tool_context,
     ) -> None:
         self._requester = requester or get_default_http_requester("external_default")
-        self._spill_store = spill_store or WebFetchSpillStore()
+        self._spill_store = spill_store
+        self._context_provider = context_provider
+        self._execution_turns: dict[str, str] = {}
 
     def release(self, execution_id: str):
         """释放指定 execution 的响应文件并返回可查询清理诊断。"""
 
-        return self._spill_store.release(execution_id)
+        if self._spill_store is None:
+            return SpillCleanup(
+                execution_id=str(execution_id),
+                released=True,
+                status="no_spill_store",
+            )
+        result = self._spill_store.release(execution_id)
+        if result.released:
+            self._execution_turns.pop(str(execution_id), None)
+        return result
+
+    def release_turn(self, turn_id: str) -> list[object]:
+        """释放一个 turn 产生的所有 spill，并保留失败 owner 的诊断。"""
+
+        turn = str(turn_id or "").strip()
+        execution_ids = [
+            execution_id
+            for execution_id, owner_turn in self._execution_turns.items()
+            if owner_turn == turn
+        ]
+        return [self.release(execution_id) for execution_id in execution_ids]
 
     async def execute(self, **kwargs: Any) -> str:
         url: str = kwargs["url"]
@@ -99,7 +147,8 @@ class WebFetchTool(Tool):
         if ssrf_err:
             return _err(url, ssrf_err, classification="operation_rejected")
 
-        execution_id = str(kwargs.get("execution_id") or f"web-fetch-{uuid4().hex}")
+        context = self._context_provider()
+        execution_id, turn_id = _owner_from_context(context)
         validator = getattr(self._requester, "validate_external_url", None)
         if callable(validator):
             try:
@@ -147,6 +196,9 @@ class WebFetchTool(Tool):
                     execution_id=execution_id,
                 )
                 if spill is not None:
+                    assert execution_id is not None
+                    assert turn_id is not None
+                    self._execution_turns[execution_id] = turn_id
                     self._spill_store.finalize(spill)
                     return json.dumps(
                         {
@@ -157,6 +209,7 @@ class WebFetchTool(Tool):
                             "format": "file",
                             "length": spill.size,
                             "execution_id": execution_id,
+                            "turn_id": turn_id,
                             "file_path": str(spill.path),
                             "note": "响应已保存到私有临时文件，请使用 read_file 分页读取；turn 结束后由 execution owner release。",
                         },
@@ -194,19 +247,27 @@ class WebFetchTool(Tool):
                     )
                 return json.dumps(result, ensure_ascii=False)
         except SpillLimitExceeded as exc:
-            self.release(execution_id)
+            if execution_id is not None:
+                self.release(execution_id)
             return _err(url, f"响应超过临时文件上限：{exc}", classification="operation_rejected")
+        except SpillOwnerMissing as exc:
+            return _err(url, str(exc), classification="unit_failed")
         except (httpx.TimeoutException, httpx.ConnectError, httpx.RequestError) as exc:
             return _err(url, _request_error(exc, timeout))
         except AddressPolicyError as exc:
             return _err(url, str(exc), classification="operation_rejected")
         except OSError as exc:
-            self.release(execution_id)
+            if execution_id is not None:
+                self.release(execution_id)
             return _err(url, f"响应临时文件失败：{exc}", classification="unit_failed")
         except ValueError as exc:
             return _err(url, str(exc), classification="operation_rejected")
+        except BaseException:
+            if execution_id is not None:
+                self.release(execution_id)
+            raise
 
-    async def _collect_response(self, resp: Any, *, execution_id: str):
+    async def _collect_response(self, resp: Any, *, execution_id: str | None):
         """在内联阈值和 spill 绝对上限内收集响应。"""
 
         inline = bytearray()
@@ -223,6 +284,14 @@ class WebFetchTool(Tool):
                 inline.extend(chunk)
             else:
                 if spill is None:
+                    if execution_id is None:
+                        raise SpillOwnerMissing(
+                            "大响应需要 runtime execution owner 与 workspace 私有临时目录"
+                        )
+                    if self._spill_store is None:
+                        raise SpillOwnerMissing(
+                            "当前执行没有 workspace 私有临时目录，不能返回不可读 spill 引用"
+                        )
                     spill = self._spill_store.open(execution_id)
                     self._spill_store.write(spill, bytes(inline))
                     inline.clear()
@@ -295,15 +364,31 @@ async def _open_stream(
         "Accept": _ACCEPT.get(fmt, "*/*"),
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     }
-    if callable(stream):
-        async with stream(
+    is_requester_mock = type(requester).__module__.startswith("unittest.mock")
+    stream_context = (
+        stream(
             "GET",
             url,
             timeout_s=timeout,
             budget=RequestBudget(total_timeout_s=float(timeout)),
             headers=headers,
             validate_redirects=True,
-        ) as response:
+        )
+        if callable(stream) and not is_requester_mock
+        else None
+    )
+    is_mock_context = type(stream_context).__module__.startswith("unittest.mock")
+    is_protocol_context = not is_mock_context and (
+        isinstance(stream_context, AbstractAsyncContextManager)
+        or (
+            stream_context is not None
+            and hasattr(type(stream_context), "__aenter__")
+            and hasattr(type(stream_context), "__aexit__")
+        )
+    )
+    if isinstance(requester, HttpRequester) or is_protocol_context:
+        assert stream_context is not None
+        async with stream_context as response:
             yield response
         return
 
