@@ -8,16 +8,22 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.context import ContextBuilder
-from agent.core.passive_turn import ContextStore, Reasoner
+from agent.core.passive_turn import ContextStore, Reasoner, _NoopOutboundPort
 from agent.core.runtime_support import SessionLike, TurnRunResult
 from agent.core.passive_support import predict_current_user_source_ref
 from agent.core.passive_turn import AgentCore, AgentCoreDeps
 from agent.core.types import ContextBundle
 from agent.looping.ports import SessionServices
 from agent.tools.registry import ToolRegistry
-from agent.turns.outbound import OutboundPort
+from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
-from bus.events import InboundMessage, OutboundMessage, TurnDisposition
+from bus.events import (
+    DeliveryReceipt,
+    DeliveryStatus,
+    InboundMessage,
+    OutboundMessage,
+    TurnDisposition,
+)
 from agent.lifecycle.types import BeforeReasoningCtx, BeforeTurnCtx
 from session.manager import SessionManager
 
@@ -51,6 +57,18 @@ class _DummySession:
         message = {"role": role, "content": content, **kwargs}
         self.messages.append(message)
         return message
+
+
+@pytest.mark.asyncio
+async def test_noop_outbound_port_returns_failed_receipt() -> None:
+    receipt = await _NoopOutboundPort().dispatch(
+        OutboundDispatch(channel="mobile", chat_id="device", content="hello")
+    )
+
+    assert receipt == DeliveryReceipt(
+        DeliveryStatus.FAILED,
+        detail="未配置出站投递端口",
+    )
 
 
 @pytest.mark.asyncio

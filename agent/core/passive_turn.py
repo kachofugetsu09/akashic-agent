@@ -33,7 +33,13 @@ from agent.tools.base import normalize_tool_result
 from agent.tools.registry import begin_turn_search_scope, end_turn_search_scope
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
-from bus.events import InboundMessage, OutboundMessage, TurnDisposition
+from bus.events import (
+    DeliveryReceipt,
+    DeliveryStatus,
+    InboundMessage,
+    OutboundMessage,
+    TurnDisposition,
+)
 from bus.events_lifecycle import (
     ToolCallCompleted,
     ToolCallStarted,
@@ -161,8 +167,11 @@ def _disabled_tools_from_msg(msg: object) -> set[str]:
 
 
 class _NoopOutboundPort:
-    async def dispatch(self, outbound: OutboundDispatch) -> bool:
-        return False
+    async def dispatch(self, outbound: OutboundDispatch) -> DeliveryReceipt:
+        return DeliveryReceipt(
+            DeliveryStatus.FAILED,
+            detail="未配置出站投递端口",
+        )
 
 
 @dataclass

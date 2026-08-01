@@ -9,7 +9,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Callable, cast
 
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -78,6 +78,7 @@ from infra.mobile_realtime.storage import (
     PairingStateError,
     ServerIdentityReference,
     UnknownDeviceError,
+    AttachmentRecord,
 )
 
 if TYPE_CHECKING:
@@ -849,6 +850,72 @@ class MobileGatewayRuntime:
                     continue
                 connection.pending_events.append(event)
                 self._schedule_delivery_locked(target_device_id, connection)
+
+    async def publish_event_with_outbound_attachments(
+        self,
+        *,
+        candidates: tuple[AttachmentRecord, ...],
+        payload_builder: Callable[[tuple[AttachmentRecord, ...]], dict[str, object]],
+        session_id: str,
+    ) -> tuple[AttachmentRecord, ...]:
+        """原子提交附件和 proactive durable event，再排队在线投递。"""
+
+        event_id = _new_ulid()
+        # 1. delivery lock 内用一个 SQLite 事务提交附件与全部 inbox 行
+        async with self._delivery_lock:
+            target_device_ids = tuple(
+                device.device_id for device in self.storage.list_active_devices()
+            )
+            resolved, events = self.storage.commit_outbound_event(
+                candidates,
+                device_ids=target_device_ids,
+                event_id=event_id,
+                envelope_builder=lambda records: _encode_stored_event(
+                    event_id=event_id,
+                    event_type="message.proactive",
+                    payload=payload_builder(records),
+                    session_id=session_id,
+                    turn_id=None,
+                ),
+                created_at=datetime.now(timezone.utc),
+            )
+
+            # 2. 数据库提交已是送达事实；在线队列只优化即时可见性
+            self._queue_committed_events_locked(events)
+        return resolved
+
+    def _queue_committed_events_locked(
+        self,
+        events: tuple[DurableInboxEvent, ...],
+    ) -> None:
+        """尽力排队已提交事件；失败时保留 durable resume 恢复路径。"""
+
+        try:
+            for event in events:
+                connection = self._connections.get(event.device_id)
+                if connection is None:
+                    continue
+                if len(connection.pending_events) >= _MAX_PENDING_CONNECTION_EVENTS:
+                    _ = self._connections.pop(event.device_id)
+                    _ = asyncio.create_task(
+                        self._close_connection(
+                            event.device_id,
+                            connection,
+                            code=_CLOSE_SLOW_CONSUMER,
+                            reason="设备实时投递队列已满，请重新连接恢复",
+                        )
+                    )
+                    logger.warning(
+                        "mobile 设备投递队列已满，转为下次 resume: device=%s",
+                        event.device_id,
+                    )
+                    continue
+                connection.pending_events.append(event)
+                self._schedule_delivery_locked(event.device_id, connection)
+        except Exception:
+            logger.exception(
+                "mobile durable event 已提交，在线排队失败；等待设备 resume"
+            )
 
     async def publish_connection_control(
         self,

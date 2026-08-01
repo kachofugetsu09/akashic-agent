@@ -24,6 +24,7 @@ from agent.tools.unified_exec import ShellProcessManager, UnknownExecutionError
 from agent.looping.ports import SessionServices
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from agent.turns.outbound import OutboundDispatch
+from bus.events import DeliveryReceipt, DeliveryStatus
 from plugins.default_proactive.context import AgentTickContext
 from plugins.drift_flow.runtime import DriftTurnPipeline, DriftTurnPipelineDeps
 from plugins.drift_flow.state import DriftStateStore
@@ -1625,8 +1626,11 @@ async def test_agent_tick_drift_emits_delivery_result(
     )
 
     class _Outbound:
-        async def dispatch(self, outbound: OutboundDispatch) -> bool:
-            return await sender(outbound.content)
+        async def dispatch(self, outbound: OutboundDispatch) -> DeliveryReceipt:
+            sent = await sender(outbound.content)
+            return DeliveryReceipt(
+                DeliveryStatus.SUCCESS if sent else DeliveryStatus.FAILED
+            )
 
     orchestrator = TurnOrchestrator(
         TurnOrchestratorDeps(

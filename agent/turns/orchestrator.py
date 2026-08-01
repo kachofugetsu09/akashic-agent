@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from agent.turns.result import TurnResult, TurnSideEffect
+from bus.events import DeliveryStatus
 
 if TYPE_CHECKING:
     from agent.core.runtime_support import SessionLike
@@ -45,11 +46,11 @@ class TurnOrchestrator:
         content = result.outbound.content
         media = list(result.outbound.media or [])
         delivery_id = uuid4().hex
-        sent = False
+        receipt = None
         try:
             # 2. 先执行发送前 side_effects，再真正 dispatch 到 outbound。
             await self._run_effects(result.side_effects)
-            sent = await self._outbound.dispatch(
+            receipt = await self._outbound.dispatch(
                 OutboundDispatch(
                     channel=channel,
                     chat_id=chat_id,
@@ -62,12 +63,14 @@ class TurnOrchestrator:
             logger.exception("proactive outbound dispatch failed: %s", e)
 
         # 3. 只有用户真正收到后，才把 proactive 消息写入可见会话历史。
+        sent = receipt is not None and receipt.status is DeliveryStatus.SUCCESS
         if sent:
+            assert receipt is not None
             session = self._session.session_manager.get_or_create(session_key)
             self._persist_proactive_session(
                 session=session,
                 content=content,
-                media=media,
+                media=list(receipt.canonical_media),
                 result=result,
                 delivery_id=delivery_id,
             )

@@ -25,7 +25,13 @@ from telegram.ext import (
 )
 
 from bus.event_bus import EventBus
-from bus.events import InboundMessage, OutboundMessage
+from bus.events import (
+    ChannelMessage,
+    DeliveryReceipt,
+    InboundMessage,
+    OutboundMessage,
+    channel_message_from_outbound,
+)
 from bus.events_lifecycle import (
     StreamDeltaReady,
     ToolCallCompleted,
@@ -36,6 +42,7 @@ from bus.queue import MessageBus
 from agent.looping.interrupt import InterruptController
 from infra.channels.base import AttachmentStore, MessageDeduper, SessionIdentityIndex
 from infra.channels.contract import ChannelContext
+from infra.channels.delivery import deliver_message_parts
 from infra.channels.reply_context import build_reply_inbound_text
 from infra.channels.telegram_utils import (
     TelegramOutboundLimiter,
@@ -172,10 +179,7 @@ class TelegramChannel:
             self._interrupt_controller = ctx.interrupt_controller
             ctx.push_tool.register_channel(
                 self.name,
-                text=self.send,
-                stream_text=self.send_stream,
-                file=self.send_file,
-                image=self.send_image,
+                deliver=self._deliver_message,
             )
         self._bind_runtime()
         self._rebuild_user_map()
@@ -742,6 +746,27 @@ class TelegramChannel:
                 action=lambda: self._send_photo_file(cid, image),
             )
 
+    async def _deliver_message(self, message: ChannelMessage) -> DeliveryReceipt:
+        """以 Telegram 原生调用提交完整消息并报告部分送达。"""
+
+        async def send_text(chat_id: str, content: str) -> None:
+            if bool(message.metadata.get("streamed_reply")):
+                stream = self._active_streams.pop(str(chat_id), None)
+                if stream is not None:
+                    await stream.finalize(content)
+                    return
+            if message.metadata.get("_channel_commit_role") == "passive":
+                await self.send(chat_id, content)
+            else:
+                await self.send_stream(chat_id, content)
+
+        return await deliver_message_parts(
+            message,
+            send_text=send_text,
+            send_file=self.send_file,
+            send_image=self.send_image,
+        )
+
     async def _send_document_file(
         self,
         chat_id: int,
@@ -779,26 +804,9 @@ class TelegramChannel:
                     self._telegram_outbound_limiter,
                 )
             await self._send_final_tool_snapshot(session_key, msg.chat_id)
-        streamed_reply = bool((msg.metadata or {}).get("streamed_reply"))
-        if msg.content.strip():
-            if streamed_reply:
-                stream = self._active_streams.pop(str(msg.chat_id), None)
-                if stream is not None:
-                    await stream.finalize(msg.content)
-                else:
-                    await send_markdown(
-                        self._app.bot,
-                        msg.chat_id,
-                        msg.content,
-                        self._telegram_outbound_limiter,
-                    )
-            else:
-                await send_markdown(
-                    self._app.bot,
-                    msg.chat_id,
-                    msg.content,
-                    self._telegram_outbound_limiter,
-                )
+        outbound = channel_message_from_outbound(msg)
+        outbound.metadata["_channel_commit_role"] = "passive"
+        receipt = await self._deliver_message(outbound)
         if final_thinking and not had_live:
             await send_thinking_block(
                 self._app.bot,
@@ -812,11 +820,8 @@ class TelegramChannel:
         _ = self._live_last_lengths.pop(session_key, None)
         _ = self._tool_lines.pop(session_key, None)
         _ = self._active_streams.pop(str(msg.chat_id), None)
-        for image in (msg.media or []):
-            try:
-                await self.send_image(str(msg.chat_id), image)
-            except Exception as e:
-                logger.warning(f"[telegram] meme 图片发送失败  chat_id={msg.chat_id}  path={image}  err={e}")
+        if not receipt.succeeded:
+            raise RuntimeError(receipt.detail or "Telegram 消息提交失败")
 
     async def _safe_send_typing(
         self, context: ContextTypes.DEFAULT_TYPE, chat_id: int

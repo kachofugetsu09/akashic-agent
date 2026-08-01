@@ -34,7 +34,13 @@ from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.turns.outbound import BusOutboundPort, OutboundDispatch, PushToolOutboundPort
 from bootstrap.tools import build_core_runtime
-from bus.events import InboundMessage, OutboundMessage
+from bus.events import (
+    ChannelMessage,
+    DeliveryReceipt,
+    DeliveryStatus,
+    InboundMessage,
+    OutboundMessage,
+)
 from bus.event_bus import EventBus
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
@@ -275,7 +281,11 @@ class RaceHarness:
         async def _text(chat_id: str, message: str) -> None:
             await self._send_text_for(channel, chat_id, message)
 
-        push_tool.register_channel(channel, text=_text)
+        async def _deliver(message: ChannelMessage) -> DeliveryReceipt:
+            await _text(message.chat_id, message.content)
+            return DeliveryReceipt(DeliveryStatus.SUCCESS)
+
+        push_tool.register_channel(channel, deliver=_deliver)
         bus.subscribe_outbound(channel, self._send_outbound)
 
     async def start(self) -> None:

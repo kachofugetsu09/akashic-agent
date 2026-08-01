@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from agent.plugins import McpServerSpec, Plugin, ProactiveSourceSpec
+from bus.events import ChannelMessage, DeliveryReceipt
 from core.clock import clock_from_env
+from infra.channels.delivery import deliver_message_parts
 from infra.channels.contract import ChannelContext
 
 
@@ -29,9 +31,7 @@ class CaptureChannel:
         self._outbox_path.parent.mkdir(parents=True, exist_ok=True)
         self._registration = ctx.push_tool.register_channel(
             self.name,
-            text=self._send_text,
-            file=self._send_file,
-            image=self._send_image,
+            deliver=self._deliver,
         )
 
     async def stop(self) -> None:
@@ -41,6 +41,14 @@ class CaptureChannel:
 
     async def _send_text(self, chat_id: str, message: str) -> None:
         self._append({"type": "text", "chat_id": chat_id, "message": message})
+
+    async def _deliver(self, message: ChannelMessage) -> DeliveryReceipt:
+        return await deliver_message_parts(
+            message,
+            send_text=self._send_text,
+            send_file=self._send_file,
+            send_image=self._send_image,
+        )
 
     async def _send_file(
         self,

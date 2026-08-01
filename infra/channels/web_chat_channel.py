@@ -10,7 +10,14 @@ from uuid import uuid4
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
-from bus.events import InboundMessage, OutboundMessage
+from bus.events import (
+    ChannelMessage,
+    DeliveryReceipt,
+    DeliveryStatus,
+    InboundMessage,
+    OutboundMessage,
+    channel_message_from_outbound,
+)
 from bus.events_lifecycle import (
     StreamDeltaReady,
     ToolCallCompleted,
@@ -49,10 +56,7 @@ class WebChatChannel:
             self._events_bound = True
         ctx.push_tool.register_channel(
             self.name,
-            text=self.send,
-            stream_text=self.send_stream,
-            file=self.send_file,
-            image=self.send_image,
+            deliver=self._deliver_message,
         )
 
     def bind_attachment_store(self, store: AttachmentStore) -> None:
@@ -173,6 +177,36 @@ class WebChatChannel:
             "media": [image],
             "metadata": {"source": "message_push", "kind": "image"},
         })
+
+    async def _deliver_message(self, message: ChannelMessage) -> DeliveryReceipt:
+        """把完整渠道消息映射为一个 Web final frame。"""
+
+        session_key = self._session_key(message.chat_id)
+        media = [attachment.source for attachment in message.attachments]
+        self.remember_media(media)
+        metadata = dict(message.metadata)
+        passive = metadata.pop("_channel_commit_role", None) == "passive"
+        if not passive:
+            metadata.setdefault("source", "message_push")
+        delivered = await self._broadcast(session_key, {
+            "type": "message.final",
+            "session_id": session_key,
+            "turn_id": message.control_turn_id or self._current_turn_id(session_key),
+            "content": message.content,
+            "thinking": message.thinking or "",
+            "media": media,
+            "duration_ms": metadata.get("turn_duration_ms"),
+            "metadata": metadata,
+        })
+        if delivered == 0:
+            return DeliveryReceipt(
+                DeliveryStatus.FAILED,
+                detail="Web 会话没有可用连接",
+            )
+        return DeliveryReceipt(
+            DeliveryStatus.SUCCESS,
+            canonical_media=tuple(media),
+        )
 
     async def _handle_client_frame(
         self,
@@ -335,19 +369,11 @@ class WebChatChannel:
 
     async def _on_response(self, msg: OutboundMessage) -> None:
         session_key = self._session_key(msg.chat_id)
-        media = list(msg.media or [])
-        metadata = dict(msg.metadata or {})
-        self.remember_media(media)
-        await self._broadcast(session_key, {
-            "type": "message.final",
-            "session_id": session_key,
-            "turn_id": self._current_turn_id(session_key),
-            "content": msg.content,
-            "thinking": msg.thinking or "",
-            "media": media,
-            "duration_ms": metadata.get("turn_duration_ms"),
-            "metadata": metadata,
-        })
+        outbound = channel_message_from_outbound(msg)
+        outbound.metadata["_channel_commit_role"] = "passive"
+        receipt = await self._deliver_message(outbound)
+        if not receipt.succeeded:
+            raise RuntimeError(receipt.detail or "Web 消息提交失败")
         _ = self._active_turn_ids.pop(session_key, None)
 
     async def _add_connection(self, session_key: str, websocket: WebSocket) -> None:
@@ -368,18 +394,20 @@ class WebChatChannel:
                 if not sockets:
                     _ = self._connections.pop(session_key, None)
 
-    async def _broadcast(self, session_key: str, frame: dict[str, Any]) -> None:
+    async def _broadcast(self, session_key: str, frame: dict[str, Any]) -> int:
         async with self._connection_lock:
             sockets = list(self._connections.get(session_key, set()))
         if not sockets:
-            return
+            return 0
         stale: list[WebSocket] = []
+        delivered = 0
         for socket in sockets:
             if socket.application_state != WebSocketState.CONNECTED:
                 stale.append(socket)
                 continue
             try:
                 await socket.send_json(frame)
+                delivered += 1
             except Exception as e:
                 logger.warning("[web_chat] 发送 WebSocket frame 失败: %s", e)
                 stale.append(socket)
@@ -389,6 +417,7 @@ class WebChatChannel:
                 if current is not None:
                     for socket in stale:
                         current.discard(socket)
+        return delivered
 
     async def _send_error(
         self,

@@ -23,10 +23,43 @@ from infra.mobile_realtime.storage import (
     AttachmentStateError,
     DeviceRecord,
     MobileRealtimeStorage,
+    UnknownDeviceError,
 )
 
 
 ATTACHMENT_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+
+
+def test_outbound_attachment_and_all_device_inbox_rows_roll_back_together(
+    storage: MobileRealtimeStorage,
+    tmp_path: Path,
+) -> None:
+    service = AttachmentTransferService(
+        storage,
+        AttachmentStore(tmp_path / "attachments"),
+        max_attachment_bytes=1024,
+    )
+    source = tmp_path / "report.pdf"
+    source.write_bytes(b"report")
+    candidates = service.snapshot_outbound_batch(
+        session_id="mobile:session-1",
+        local_media_paths=(source,),
+    )
+
+    with pytest.raises(UnknownDeviceError, match="missing-device"):
+        storage.commit_outbound_event(
+            candidates,
+            device_ids=("device-1", "missing-device"),
+            event_id="event-atomic",
+            envelope_builder=lambda _records: '{"kind":"event"}',
+            created_at=datetime.now(timezone.utc),
+        )
+
+    assert storage.read_attachment(candidates[0].attachment_id) is None
+    assert storage.count_durable_events("device-1") == 0
+    assert Path(candidates[0].local_path).exists()
+    service.cleanup_outbound_candidates(candidates)
+    assert not Path(candidates[0].local_path).exists()
 
 
 @pytest.fixture

@@ -3,10 +3,18 @@
 """
 
 import logging
+from pathlib import Path
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 from agent.tools.base import Tool
+from bus.events import (
+    AttachmentKind,
+    ChannelAttachment,
+    ChannelMessage,
+    DeliveryReceipt,
+    DeliveryStatus,
+)
 from bus.queue import ChatLane
 
 logger = logging.getLogger(__name__)
@@ -61,53 +69,32 @@ class MessagePushTool(Tool):
     }
 
     def __init__(self, chat_lane: ChatLane | None = None) -> None:
-        # channel -> {type: sender_fn}
-        self._senders: dict[str, dict[str, Callable[..., Awaitable[None]]]] = {}
+        self._adapters: dict[
+            str, Callable[[ChannelMessage], Awaitable[DeliveryReceipt]]
+        ] = {}
         self._registration_tokens: dict[str, object] = {}
         self._chat_lane = chat_lane
 
     def register_channel(
         self,
         channel: str,
-        text: Callable[[str, str], Awaitable[None]] | None = None,
-        stream_text: Callable[[str, str], Awaitable[None]] | None = None,
-        text_with_metadata: (
-            Callable[[str, str, dict[str, object]], Awaitable[None]] | None
-        ) = None,
-        file: Callable[[str, str, str | None], Awaitable[None]] | None = None,
-        image: Callable[[str, str], Awaitable[None]] | None = None,
+        deliver: Callable[[ChannelMessage], Awaitable[DeliveryReceipt]],
     ) -> ChannelRegistration:
-        """注册渠道的各类 sender。
-        - text(chat_id, message)
-        - stream_text(chat_id, message)
-        - file(chat_id, file_path, name=None)
-        - image(chat_id, image_path_or_url)
-        """
-        if channel in self._senders:
+        """注册完整逻辑消息的唯一渠道 adapter。"""
+
+        if channel in self._adapters:
             raise RuntimeError(f"message_push 渠道名称重复: {channel}")
-        self._senders[channel] = {}
+        self._adapters[channel] = deliver
         token = object()
         self._registration_tokens[channel] = token
-        if text:
-            self._senders[channel]["text"] = text
-        if stream_text:
-            self._senders[channel]["stream_text"] = stream_text
-        if text_with_metadata:
-            self._senders[channel]["text_with_metadata"] = text_with_metadata
-        if file:
-            self._senders[channel]["file"] = file
-        if image:
-            self._senders[channel]["image"] = image
-        logger.debug(
-            f"message_push: 注册渠道 {channel!r}  支持: {list(self._senders[channel])}"
-        )
+        logger.debug("message_push: 注册渠道 %r", channel)
         return ChannelRegistration(self, channel, token)
 
     def unregister_channel(self, channel: str, token: object) -> None:
         if self._registration_tokens.get(channel) is not token:
             return
         _ = self._registration_tokens.pop(channel, None)
-        _ = self._senders.pop(channel, None)
+        _ = self._adapters.pop(channel, None)
 
     async def execute(self, **kwargs: Any) -> str:
         channel: str = kwargs["channel"]
@@ -126,77 +113,57 @@ class MessagePushTool(Tool):
 
         if not message and not file and not image:
             return "错误：message、file、image 至少提供一个"
-
-        senders = self._senders.get(channel)
-        if senders is None:
-            return f"渠道 {channel!r} 未注册，可用渠道：{list(self._senders) or ['（无）']}"
-
-        async def _send() -> str:
-            return await self._send_now(
+        attachments: list[ChannelAttachment] = []
+        if file:
+            attachments.append(
+                ChannelAttachment(AttachmentKind.FILE, file, Path(file).name)
+            )
+        if image:
+            attachments.append(ChannelAttachment(AttachmentKind.IMAGE, image))
+        receipt = await self.dispatch(
+            ChannelMessage(
                 channel=channel,
                 chat_id=chat_id,
-                message=message,
-                file=file,
-                image=image,
-                senders=senders,
-                outbound_metadata=outbound_metadata,
+                content=message or "",
+                attachments=tuple(attachments),
+                metadata=outbound_metadata,
+            ),
+            commit_role=commit_role,
+        )
+        if receipt.status is DeliveryStatus.SUCCESS:
+            return "消息已发送"
+        if receipt.status is DeliveryStatus.PARTIAL:
+            return f"消息部分送达：{receipt.detail or '渠道未提交全部内容'}"
+        return f"发送失败：{receipt.detail or '渠道未提交消息'}"
+
+    async def dispatch(
+        self,
+        message: ChannelMessage,
+        *,
+        commit_role: str = "",
+    ) -> DeliveryReceipt:
+        """通过单一 adapter 提交完整消息，并保留 chat lane 顺序。"""
+
+        adapter = self._adapters.get(message.channel)
+        if adapter is None:
+            return DeliveryReceipt(
+                DeliveryStatus.FAILED,
+                detail=(
+                    f"渠道 {message.channel!r} 未注册，可用渠道："
+                    f"{list(self._adapters) or ['（无）']}"
+                ),
             )
 
+        async def _deliver() -> DeliveryReceipt:
+            receipt = await adapter(message)
+            if not isinstance(receipt, DeliveryReceipt):
+                raise TypeError("message_push channel adapter 必须返回 DeliveryReceipt")
+            return receipt
+
         if self._chat_lane is not None and commit_role != "passive":
-            return await self._chat_lane.run_non_passive(channel, chat_id, _send)
-        return await _send()
-
-    async def _send_now(
-        self,
-        *,
-        channel: str,
-        chat_id: str,
-        message: str | None,
-        file: str | None,
-        image: str | None,
-        senders: dict[str, Callable[..., Awaitable[None]]],
-        outbound_metadata: dict[str, object],
-    ) -> str:
-
-        results: list[str] = []
-        try:
-            if message and "text" in senders:
-                if outbound_metadata and "text_with_metadata" in senders:
-                    await senders["text_with_metadata"](
-                        chat_id,
-                        message,
-                        dict(outbound_metadata),
-                    )
-                else:
-                    sender_name = "stream_text" if "stream_text" in senders else "text"
-                    await senders[sender_name](chat_id, message)
-                preview = message[:60] + "..." if len(message) > 60 else message
-                logger.info(f"[message_push] {channel}:{chat_id} ← text: {preview!r}")
-                results.append("文本已发送")
-
-            if file:
-                if "file" not in senders:
-                    results.append(f"渠道 {channel!r} 不支持发送文件")
-                else:
-                    import os
-
-                    name = os.path.basename(file)
-                    await senders["file"](chat_id, file, name)
-                    logger.info(f"[message_push] {channel}:{chat_id} ← file: {file!r}")
-                    results.append(f"文件 {name!r} 已发送")
-
-            if image:
-                if "image" not in senders:
-                    results.append(f"渠道 {channel!r} 不支持发送图片")
-                else:
-                    await senders["image"](chat_id, image)
-                    logger.info(
-                        f"[message_push] {channel}:{chat_id} ← image: {image!r}"
-                    )
-                    results.append("图片已发送")
-
-        except Exception as e:
-            logger.error(f"[message_push] 发送失败 {channel}:{chat_id}: {e}")
-            return f"发送失败：{e}"
-
-        return "；".join(results) if results else f"渠道 {channel!r} 没有可用的 sender"
+            return await self._chat_lane.run_non_passive(
+                message.channel,
+                message.chat_id,
+                _deliver,
+            )
+        return await _deliver()

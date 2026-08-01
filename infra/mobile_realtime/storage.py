@@ -8,7 +8,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, cast
+from typing import Callable, Literal, cast
 
 
 PairingStatus = Literal["pending", "confirmed", "consumed", "expired"]
@@ -977,6 +977,107 @@ class MobileRealtimeStorage:
                         (_require_text(message_id, "message_id"), ordinal, record.attachment_id),
                     )
         return tuple(result)
+
+    def commit_outbound_event(
+        self,
+        records: tuple[AttachmentRecord, ...],
+        *,
+        device_ids: tuple[str, ...],
+        event_id: str,
+        envelope_builder: Callable[[tuple[AttachmentRecord, ...]], str],
+        created_at: datetime,
+    ) -> tuple[tuple[AttachmentRecord, ...], tuple[DurableInboxEvent, ...]]:
+        """原子提交 outbound 附件与同一事件的全部设备 inbox 行。"""
+
+        if not records:
+            raise ValueError("outbound event 附件批次不能为空")
+        for record in records:
+            self._validate_outbound_candidate(record)
+        device_keys = tuple(
+            _require_text(device_id, "device_id") for device_id in device_ids
+        )
+        if len(set(device_keys)) != len(device_keys):
+            raise ValueError("durable event 广播设备不能重复")
+        event_key = _require_text(event_id, "event_id")
+        timestamp = _serialize_datetime(created_at, "created_at")
+
+        # 1. 同一写锁内解析附件身份并构造引用 canonical 记录的 envelope
+        with self._lock, self._db:
+            _ = self._db.execute("BEGIN IMMEDIATE")
+            resolved: list[AttachmentRecord] = []
+            by_identity: dict[tuple[str, str, str, str, int], AttachmentRecord] = {}
+            for candidate in records:
+                identity = (
+                    candidate.session_id,
+                    candidate.filename,
+                    candidate.content_type,
+                    candidate.sha256,
+                    candidate.size_bytes,
+                )
+                record = by_identity.get(identity)
+                if record is None:
+                    record = self._read_outbound_for_candidate(candidate)
+                    if record is None:
+                        self._insert_outbound_attachment(candidate)
+                        record = candidate
+                    by_identity[identity] = record
+                if record.local_path != candidate.local_path:
+                    Path(candidate.local_path).unlink()
+                resolved.append(record)
+            resolved_records = tuple(resolved)
+            envelope = _require_text(
+                envelope_builder(resolved_records),
+                "envelope_json",
+            )
+
+            # 2. 在附件事务内为全部目标设备分配序号并写入 inbox
+            allocated: list[tuple[str, int]] = []
+            for device_key in device_keys:
+                row = self._db.execute(
+                    "SELECT next_event_seq FROM mobile_device_cursors WHERE device_id = ?",
+                    (device_key,),
+                ).fetchone()
+                if row is None:
+                    raise UnknownDeviceError(
+                        f"设备不存在或缺少 cursor: {device_key}"
+                    )
+                event_seq = _row_positive_int(row, "next_event_seq")
+                allocated.append((device_key, event_seq))
+                _ = self._db.execute(
+                    """
+                    INSERT INTO mobile_device_inbox(
+                        device_id, event_seq, event_id, priority,
+                        envelope_json, created_at
+                    ) VALUES(?, ?, ?, 'P0', ?, ?)
+                    """,
+                    (device_key, event_seq, event_key, envelope, timestamp),
+                )
+                updated = self._db.execute(
+                    """
+                    UPDATE mobile_device_cursors
+                    SET next_event_seq = ?
+                    WHERE device_id = ? AND next_event_seq = ?
+                    """,
+                    (event_seq + 1, device_key, event_seq),
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError(
+                        f"设备 event_seq 分配发生并发冲突: {device_key}"
+                    )
+
+        created = _parse_datetime(timestamp, "created_at")
+        events = tuple(
+            DurableInboxEvent(
+                device_id=device_key,
+                event_seq=event_seq,
+                event_id=event_key,
+                priority="P0",
+                envelope_json=envelope,
+                created_at=created,
+            )
+            for device_key, event_seq in allocated
+        )
+        return resolved_records, events
 
     def read_message_outbound_attachments(
         self,

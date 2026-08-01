@@ -18,7 +18,12 @@ from agent.core.types import ContextBundle
 from agent.lifecycle.phase import Phase
 from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
-from bus.events import InboundMessage, OutboundMessage
+from bus.events import (
+    DeliveryReceipt,
+    DeliveryStatus,
+    InboundMessage,
+    OutboundMessage,
+)
 from bus.events_lifecycle import TurnCommitted
 from agent.lifecycle.types import (
     AfterReasoningCtx,
@@ -142,8 +147,8 @@ class _MemoryStatusPluginModule:
 
 
 class _DummyOutbound:
-    async def dispatch(self, outbound: OutboundDispatch) -> bool:
-        return True
+    async def dispatch(self, outbound: OutboundDispatch) -> DeliveryReceipt:
+        return DeliveryReceipt(DeliveryStatus.SUCCESS)
 
 
 class _KVCachePluginModule:
