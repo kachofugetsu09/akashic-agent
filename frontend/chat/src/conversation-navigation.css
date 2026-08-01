@@ -82,7 +82,7 @@
 }
 
 .conversation-destination:active {
-  scale: 0.98;
+  scale: 0.96;
 }
 
 .conversation-destination:disabled {
@@ -170,7 +170,7 @@
 }
 
 .conversation-session:active {
-  scale: 0.99;
+  scale: 0.96;
 }
 
 .conversation-session.active {
@@ -258,7 +258,7 @@
 }
 
 .conversation-navigation__action:active {
-  scale: 0.98;
+  scale: 0.96;
 }
 
 .conversation-navigation__action.primary {

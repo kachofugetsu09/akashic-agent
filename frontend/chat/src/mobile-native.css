@@ -542,7 +542,7 @@ button {
 }
 
 .runtime-item:active:not(:disabled) {
-  scale: 0.985;
+  scale: 0.96;
   background: rgb(255 255 255 / 0.58);
 }
 
@@ -1356,7 +1356,7 @@ button {
 }
 
 .mobile-unavailable-session button:active {
-  scale: 0.97;
+  scale: 0.96;
   background: color-mix(in oklch, var(--m-warning) 12%, transparent);
 }
 
