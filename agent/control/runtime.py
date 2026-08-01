@@ -137,7 +137,9 @@ class ConversationRuntime:
         self._history_byte_totals: dict[str, int] = {}
         self._replay_bytes = 0
         self._terminal_replay_expiry: dict[str, float] = {}
-        self._replay_cleanup_degraded: dict[str, str] = {}
+        self._replay_reaper_task: asyncio.Task[None] | None = None
+        self._replay_reaper_wakeup = asyncio.Event()
+        self._replay_reaper_error: BaseException | None = None
         self._subscribers: dict[str, set[asyncio.Queue[StreamValue]]] = {}
         self._interrupt_requested: set[str] = set()
         self._thread_idle: dict[str, asyncio.Event] = {}
@@ -152,6 +154,7 @@ class ConversationRuntime:
         # 1. 在唯一 owner 处检查 thread 与控制面容量；拒绝不写 SessionStore。
         request_bytes = _encoded_turn_bytes(request)
         async with self._control_admission_lock:
+            self._raise_replay_reaper_failure()
             if self._closed or not self._accepting_turns:
                 raise RuntimeClosedError("conversation runtime is shutting down")
             if request.thread_id in self._active_by_thread:
@@ -468,6 +471,7 @@ class ConversationRuntime:
             self._release_admission(turn_id, _encoded_turn_bytes(request))
 
     def _publish(self, event: TurnEvent) -> None:
+        self._raise_replay_reaper_failure()
         self._gc_terminal_replay()
         history = self._history[event.turn_id]
         sequences = self._history_sequences[event.turn_id]
@@ -497,14 +501,7 @@ class ConversationRuntime:
             len(history) > self._replay_events_per_turn
             or self._history_bytes(turn_id) > self._replay_bytes_per_turn
         ):
-            if not self._remove_oldest_replay_event(turn_id):
-                self._replay_cleanup_degraded[turn_id] = "turn replay eviction failed"
-                logger.error(
-                    "event=cleanup_degraded owner=control.replay_ring turn=%s "
-                    "reason=turn_eviction_failed",
-                    turn_id,
-                )
-                break
+            self._remove_oldest_replay_event(turn_id)
             if len(history) != len(sequences):
                 raise RuntimeError(f"control replay index corrupted: {turn_id}")
         if len(history) < self._next_event_sequence[turn_id]:
@@ -513,29 +510,20 @@ class ConversationRuntime:
     def _trim_global_replay(self) -> None:
         while self._replay_bytes > self._replay_bytes_global and self._replay_order:
             (turn_id, sequence), (event, event_bytes) = self._replay_order.popitem(last=False)
-            if not self._remove_replay_event(
+            self._remove_replay_event(
                 turn_id, sequence, event, event_bytes=event_bytes, global_removed=True
-            ):
-                self._replay_order[(turn_id, sequence)] = (event, event_bytes)
-                self._replay_order.move_to_end((turn_id, sequence), last=False)
-                self._replay_cleanup_degraded[turn_id] = "global replay eviction failed"
-                logger.error(
-                    "event=cleanup_degraded owner=control.replay_ring turn=%s "
-                    "reason=global_eviction_failed",
-                    turn_id,
-                )
-                break
+            )
             self._history_truncated.add(turn_id)
 
     def _history_bytes(self, turn_id: str) -> int:
         return self._history_byte_totals[turn_id]
 
-    def _remove_oldest_replay_event(self, turn_id: str) -> bool:
+    def _remove_oldest_replay_event(self, turn_id: str) -> None:
         history = self._history[turn_id]
         sequences = self._history_sequences[turn_id]
-        if not history:
-            return False
-        return self._remove_replay_event(turn_id, sequences[0], history[0])
+        if not history or len(history) != len(sequences):
+            raise RuntimeError(f"control replay index corrupted: {turn_id}")
+        self._remove_replay_event(turn_id, sequences[0], history[0])
 
     def _remove_replay_event(
         self,
@@ -545,27 +533,60 @@ class ConversationRuntime:
         *,
         event_bytes: int | None = None,
         global_removed: bool = False,
-    ) -> bool:
+    ) -> None:
         history = self._history.get(turn_id)
         sequences = self._history_sequences.get(turn_id)
         if history is None or sequences is None:
-            return False
+            raise RuntimeError(f"control replay index corrupted: {turn_id}")
+        if len(history) != len(sequences):
+            raise RuntimeError(f"control replay index corrupted: {turn_id}")
+        if len(set(sequences)) != len(sequences):
+            raise RuntimeError(f"control replay index corrupted: {turn_id}")
+
+        target_index: int | None = None
         for index, (item_sequence, item) in enumerate(zip(sequences, history)):
-            if item_sequence == sequence and item is event:
-                if not global_removed and (turn_id, sequence) not in self._replay_order:
-                    return False
-                history.pop(index)
-                sequences.pop(index)
-                if not global_removed:
-                    self._replay_order.pop((turn_id, sequence), None)
-                size = event_bytes
-                if size is None:
-                    entry = self._replay_order.get((turn_id, sequence))
-                    size = _encoded_event_bytes(event) if entry is None else entry[1]
-                self._replay_bytes -= size
-                self._history_byte_totals[turn_id] -= size
-                return True
-        return False
+            key = (turn_id, item_sequence)
+            entry = self._replay_order.get(key)
+            if global_removed and item_sequence == sequence:
+                if item is not event:
+                    raise RuntimeError(f"control replay index corrupted: {turn_id}")
+                if target_index is not None:
+                    raise RuntimeError(f"control replay index corrupted: {turn_id}")
+                target_index = index
+                continue
+            if entry is None or entry[0] is not item:
+                raise RuntimeError(f"control replay index corrupted: {turn_id}")
+            if item_sequence == sequence:
+                if item is not event:
+                    raise RuntimeError(f"control replay index corrupted: {turn_id}")
+                target_index = index
+
+        if target_index is None:
+            raise RuntimeError(f"control replay index corrupted: {turn_id}")
+        key = (turn_id, sequence)
+        entry = self._replay_order.get(key)
+        if global_removed:
+            if entry is not None:
+                raise RuntimeError(f"control replay index corrupted: {turn_id}")
+            if event_bytes is None:
+                raise RuntimeError(f"control replay index corrupted: {turn_id}")
+            size = event_bytes
+        else:
+            if entry is None or entry[0] is not event:
+                raise RuntimeError(f"control replay index corrupted: {turn_id}")
+            if event_bytes is not None and entry[1] != event_bytes:
+                raise RuntimeError(f"control replay index corrupted: {turn_id}")
+            size = entry[1]
+        turn_total = self._history_byte_totals.get(turn_id)
+        if turn_total is None or size < 0 or turn_total < size or self._replay_bytes < size:
+            raise RuntimeError(f"control replay index corrupted: {turn_id}")
+
+        history.pop(target_index)
+        sequences.pop(target_index)
+        if not global_removed:
+            self._replay_order.pop(key)
+        self._replay_bytes -= size
+        self._history_byte_totals[turn_id] = turn_total - size
 
     def _gc_terminal_replay(self) -> None:
         now = time.monotonic()
@@ -577,14 +598,7 @@ class ConversationRuntime:
                 self._terminal_replay_expiry.pop(turn_id, None)
                 continue
             while history:
-                if not self._remove_oldest_replay_event(turn_id):
-                    self._replay_cleanup_degraded[turn_id] = "terminal replay expiry failed"
-                    logger.error(
-                        "event=cleanup_degraded owner=control.replay_ring turn=%s "
-                        "reason=terminal_expiry_failed",
-                        turn_id,
-                    )
-                    break
+                self._remove_oldest_replay_event(turn_id)
             if not history:
                 self._history.pop(turn_id, None)
                 self._history_sequences.pop(turn_id, None)
@@ -596,9 +610,12 @@ class ConversationRuntime:
                 self._terminal_replay_expiry.pop(turn_id, None)
 
     def _finish_streams(self, turn_id: str) -> None:
+        self._raise_replay_reaper_failure()
         self._terminal_replay_expiry[turn_id] = (
             time.monotonic() + self._terminal_replay_ttl_seconds
         )
+        self._ensure_replay_reaper()
+        self._replay_reaper_wakeup.set()
         for queue in tuple(self._subscribers[turn_id]):
             try:
                 queue.put_nowait(_STREAM_END)
@@ -626,6 +643,7 @@ class ConversationRuntime:
             not isinstance(after_event, int) or isinstance(after_event, bool) or after_event < -1
         ):
             raise ValueError("after_event 必须是大于等于 -1 的整数")
+        self._raise_replay_reaper_failure()
         self._gc_terminal_replay()
         record = self.read_turn(thread_id, turn_id)
         history = self._history.get(turn_id)
@@ -680,6 +698,64 @@ class ConversationRuntime:
     def _terminal_replay_expired(self, turn_id: str) -> bool:
         expiry = self._terminal_replay_expiry.get(turn_id)
         return expiry is not None and expiry <= time.monotonic()
+
+    def _raise_replay_reaper_failure(self) -> None:
+        if self._replay_reaper_error is not None:
+            raise RuntimeError("control replay reaper failed") from self._replay_reaper_error
+
+    def _ensure_replay_reaper(self) -> None:
+        self._raise_replay_reaper_failure()
+        if self._replay_reaper_task is None:
+            loop = asyncio.get_running_loop()
+            self._replay_reaper_task = loop.create_task(
+                self._replay_reaper(),
+                name="conversation-replay-reaper",
+            )
+            self._replay_reaper_task.add_done_callback(
+                self._observe_replay_reaper_task
+            )
+
+    def _observe_replay_reaper_task(self, task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None and self._replay_reaper_error is None:
+            self._replay_reaper_error = error
+
+    async def _replay_reaper(self) -> None:
+        """按最早 terminal expiry 回收 replay，并把内部损坏升级为 runtime fatal。"""
+
+        try:
+            while not self._closed:
+                # 1. 先清除旧唤醒，再读取当前最早 expiry，避免错过更早的新终态。
+                self._replay_reaper_wakeup.clear()
+                expiry = min(self._terminal_replay_expiry.values(), default=None)
+                if expiry is None:
+                    await self._replay_reaper_wakeup.wait()
+                    continue
+
+                delay = expiry - time.monotonic()
+                if delay > 0:
+                    try:
+                        await asyncio.wait_for(
+                            self._replay_reaper_wakeup.wait(), timeout=delay
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+
+                # 2. 到期清理只触碰运行时 replay 投影；SessionStore 保持权威终态。
+                self._gc_terminal_replay()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            self._replay_reaper_error = exc
+            self._accepting_turns = False
+            logger.critical(
+                "event=runtime_fatal owner=control.replay_reaper reason=terminal_replay_cleanup_failed",
+                exc_info=True,
+            )
+            raise
 
     @staticmethod
     def _replay_notice(method: str, record: TurnRecord) -> TurnEvent:
@@ -847,10 +923,21 @@ class ConversationRuntime:
 
     async def shutdown(self) -> None:
         if self._closed:
+            self._raise_replay_reaper_failure()
             return
         self._closed = True
+        self._accepting_turns = False
         tasks = tuple(self._tasks.values())
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        reaper = self._replay_reaper_task
+        if reaper is not None:
+            reaper.cancel()
+            result = await asyncio.gather(reaper, return_exceptions=True)
+            if result and isinstance(result[0], BaseException) and not isinstance(
+                result[0], asyncio.CancelledError
+            ):
+                self._replay_reaper_error = result[0]
+        self._raise_replay_reaper_failure()

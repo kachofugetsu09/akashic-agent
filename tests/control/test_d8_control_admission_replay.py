@@ -213,3 +213,59 @@ async def test_terminal_replay_expiry_reads_authoritative_store_snapshot(tmp_pat
     assert store.read_turn(handle.id) is not None
     await runtime.shutdown()
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_terminal_replay_reaper_evicts_without_followup_activity(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+
+    async def execute(_request: TurnRequest) -> str:
+        return "done"
+
+    runtime = ConversationRuntime(store, execute, terminal_replay_ttl_seconds=0.01)
+    handle = await runtime.start_turn(TurnRequest("programmatic:reaper", "hello"))
+    assert (await handle.result()).status is TurnStatus.COMPLETED
+    reaper = runtime._replay_reaper_task
+    assert reaper is not None
+
+    for _ in range(100):
+        if handle.id not in runtime._history:
+            break
+        await asyncio.sleep(0.005)
+
+    assert handle.id not in runtime._history
+    assert handle.id not in runtime._results
+    assert handle.id not in runtime._subscribers
+    assert handle.id not in runtime._terminal_replay_expiry
+    assert store.read_turn(handle.id) is not None
+    await runtime.shutdown()
+    assert reaper.done()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_terminal_replay_reaper_surfaces_index_corruption(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+
+    async def execute(_request: TurnRequest) -> str:
+        return "done"
+
+    runtime = ConversationRuntime(store, execute, terminal_replay_ttl_seconds=0.01)
+    handle = await runtime.start_turn(TurnRequest("programmatic:corrupt-replay", "hello"))
+    assert (await handle.result()).status is TurnStatus.COMPLETED
+    reaper = runtime._replay_reaper_task
+    assert reaper is not None
+    runtime._history_sequences[handle.id].clear()
+
+    with caplog.at_level("CRITICAL", logger="agent.control.runtime"):
+        with pytest.raises(RuntimeError, match="control replay index corrupted"):
+            await asyncio.wait_for(asyncio.shield(reaper), timeout=1)
+    assert "event=runtime_fatal owner=control.replay_reaper" in caplog.text
+    assert runtime._replay_reaper_error is not None
+    with pytest.raises(RuntimeError, match="control replay reaper failed"):
+        await runtime.shutdown()
+    assert store.read_turn(handle.id) is not None
+    store.close()
