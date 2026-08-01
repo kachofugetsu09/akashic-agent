@@ -47,6 +47,7 @@ def advance_hazard(
     new_item_ids: set[str],
     random_draw: float,
     last_wake_at: datetime | None,
+    pool_mass: float | None = None,
 ) -> HazardResult:
     """用新事件推动全池概率抽签，并返回可审计的触发结果。"""
 
@@ -85,7 +86,8 @@ def advance_hazard(
         )
 
     # 2. 新事件提供 kick，旧池只放大本次抽签
-    evidence = sum(value for _, value in contributions)
+    material_mass = sum(value for _, value in contributions)
+    evidence = max(material_mass, max(0.0, float(pool_mass or 0.0)))
     refractory = (
         1.0
         - math.exp(

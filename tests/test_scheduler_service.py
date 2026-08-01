@@ -2,12 +2,18 @@
 
 import asyncio
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
-from agent.scheduler import LatencyTracker, SchedulerService, ScheduledJob
+from agent.scheduler import (
+    LatencyTracker,
+    ScheduleCapacityError,
+    SchedulerService,
+    ScheduledJob,
+)
 from tests.conftest import drain_tasks, make_job
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -171,10 +177,12 @@ async def test_instant_not_fired_before_fire_at(
     mock_push.execute.assert_not_called()
 
 
-# ── One-shot jobs removed after firing ───────────────────────────
+# ── One-shot jobs retained as disabled after firing ──────────────
 
 
-async def test_at_job_removed_after_fire(tmp_path, mock_push, mock_loop, fixed_now):
+async def test_at_job_retained_disabled_after_fire(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
     svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
     job = make_job(
         trigger="at", tier="instant", fire_at=fixed_now - timedelta(seconds=1)
@@ -185,9 +193,17 @@ async def test_at_job_removed_after_fire(tmp_path, mock_push, mock_loop, fixed_n
     await drain_tasks()
 
     assert job.id not in svc._jobs
+    assert svc.list_jobs() == []
+    persisted = svc.store.load()
+    assert len(persisted) == 1
+    assert persisted[0].id == job.id
+    assert persisted[0].enabled is False
+    assert persisted[0].run_count == 1
 
 
-async def test_after_job_removed_after_fire(tmp_path, mock_push, mock_loop, fixed_now):
+async def test_after_job_retained_disabled_after_fire(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
     svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
     job = make_job(
         trigger="after", tier="instant", fire_at=fixed_now - timedelta(seconds=1)
@@ -198,6 +214,27 @@ async def test_after_job_removed_after_fire(tmp_path, mock_push, mock_loop, fixe
     await drain_tasks()
 
     assert job.id not in svc._jobs
+    assert svc.store.load()[0].enabled is False
+    assert svc.store.load()[0].run_count == 1
+
+
+async def test_failed_one_shot_is_retained_disabled_without_run_count_increment(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    mock_push.execute.side_effect = RuntimeError("push failed")
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    job = make_job(
+        trigger="after", tier="instant", fire_at=fixed_now - timedelta(seconds=1)
+    )
+    svc._jobs[job.id] = job
+
+    await svc._tick()
+    await drain_tasks()
+
+    assert svc._jobs == {}
+    persisted = svc.store.load()
+    assert persisted[0].enabled is False
+    assert persisted[0].run_count == 0
 
 
 # ── Every: rescheduling ───────────────────────────────────────────
@@ -252,6 +289,155 @@ def test_add_job_does_not_publish_memory_state_when_persistence_fails(
         svc.add_job(job)
 
     assert svc.list_jobs() == []
+
+
+def test_add_job_rejects_eleventh_active_job_without_write(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    for index in range(SchedulerService.MAX_ACTIVE_JOBS):
+        svc.add_job(make_job(name=f"job-{index}"))
+    before = svc.store.path.read_bytes()
+    svc.store.save = MagicMock(wraps=svc.store.save)
+
+    with pytest.raises(ScheduleCapacityError) as exc_info:
+        svc.add_job(make_job(name="overflow"))
+
+    assert exc_info.value.code == "schedule_capacity_reached"
+    assert exc_info.value.active_jobs == SchedulerService.MAX_ACTIVE_JOBS
+    assert len(svc.list_jobs()) == SchedulerService.MAX_ACTIVE_JOBS
+    assert svc.store.save.call_count == 0
+    assert svc.store.path.read_bytes() == before
+
+
+def test_add_job_replacement_does_not_consume_capacity(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    jobs = [
+        make_job(name=f"job-{index}")
+        for index in range(SchedulerService.MAX_ACTIVE_JOBS)
+    ]
+    for job in jobs:
+        svc.add_job(job)
+
+    replacement = make_job(name="replacement")
+    replacement.id = jobs[0].id
+    svc.add_job(replacement)
+
+    assert len(svc.list_jobs()) == SchedulerService.MAX_ACTIVE_JOBS
+    assert svc._jobs[replacement.id] is replacement
+
+
+def test_disabled_job_does_not_consume_capacity(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    for index in range(SchedulerService.MAX_ACTIVE_JOBS):
+        svc.add_job(make_job(name=f"job-{index}"))
+
+    disabled = make_job(name="disabled")
+    disabled.enabled = False
+    svc.add_job(disabled)
+
+    assert len(svc._jobs) == SchedulerService.MAX_ACTIVE_JOBS
+    assert {job.id for job in svc.store.load()} == {
+        *svc._jobs,
+        disabled.id,
+    }
+    with pytest.raises(ScheduleCapacityError):
+        svc.add_job(make_job(name="overflow"))
+
+
+def test_legacy_disabled_job_survives_add(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    disabled = make_job(
+        name="legacy-disabled",
+        fire_at=fixed_now + timedelta(hours=1),
+    )
+    disabled.enabled = False
+    svc.store.save({disabled.id: disabled})
+
+    svc.load_and_recover()
+    active = make_job(
+        name="new-active",
+        fire_at=fixed_now + timedelta(hours=2),
+    )
+    svc.add_job(active)
+
+    assert set(svc._jobs) == {active.id}
+    assert {job.id for job in svc.store.load()} == {disabled.id, active.id}
+    assert svc.store.load()[0].enabled is False
+
+
+def test_cancel_other_keeps_disabled_job(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    disabled = make_job(
+        name="disabled-other",
+        fire_at=fixed_now + timedelta(hours=1),
+    )
+    disabled.enabled = False
+    target = make_job(
+        name="cancel-target",
+        fire_at=fixed_now + timedelta(hours=2),
+    )
+    svc.store.save({disabled.id: disabled, target.id: target})
+    svc.load_and_recover()
+
+    assert svc.cancel_job(target.id) is True
+
+    persisted = svc.store.load()
+    assert [job.id for job in persisted] == [disabled.id]
+    assert persisted[0].enabled is False
+
+
+def test_empty_persisted_set_does_not_revive_stale_active_job(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    stale = make_job(name="stale")
+    svc._jobs[stale.id] = stale
+    svc._commit_jobs({})
+
+    fresh = make_job(name="fresh")
+    svc.add_job(fresh)
+
+    assert set(svc._jobs) == {fresh.id}
+    assert [job.id for job in svc.store.load()] == [fresh.id]
+
+
+def test_replace_and_cancel_disabled_job(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    disabled = make_job(
+        name="replace-me",
+        fire_at=fixed_now + timedelta(hours=1),
+    )
+    disabled.enabled = False
+    svc.store.save({disabled.id: disabled})
+    svc.load_and_recover()
+
+    replacement = make_job(
+        name="replacement",
+        fire_at=fixed_now + timedelta(hours=2),
+    )
+    replacement.id = disabled.id
+    svc.add_job(replacement)
+    assert set(svc._jobs) == {disabled.id}
+    assert svc.store.load()[0].enabled is True
+
+    replacement_disabled = replace(replacement, enabled=False)
+    svc.add_job(replacement_disabled)
+    assert disabled.id not in svc._jobs
+    assert svc.store.load()[0].enabled is False
+
+    assert svc.cancel_job(disabled.id) is True
+    assert svc.store.load() == []
 
 
 def test_cancel_job_keeps_memory_state_when_persistence_fails(
@@ -481,8 +667,10 @@ def test_misfire_within_grace_loaded(tmp_path, mock_push, mock_loop, fixed_now):
     assert job.id in svc._jobs
 
 
-def test_misfire_beyond_grace_discarded(tmp_path, mock_push, mock_loop, fixed_now):
-    """Jobs missed beyond 5min grace are discarded on startup."""
+def test_misfire_beyond_grace_retained_disabled_after_restart(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    """Jobs missed beyond 5min grace remain as disabled terminal records."""
     svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
     job = make_job(
         trigger="at",
@@ -493,6 +681,55 @@ def test_misfire_beyond_grace_discarded(tmp_path, mock_push, mock_loop, fixed_no
     svc.load_and_recover()
 
     assert job.id not in svc._jobs
+    assert svc.list_jobs() == []
+    assert svc.match_job_ids(job.id[:8]) == [job.id]
+    persisted = svc.store.load()
+    assert len(persisted) == 1
+    assert persisted[0].enabled is False
+
+    restarted = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    restarted.load_and_recover()
+    assert restarted._jobs == {}
+    assert restarted.match_job_ids(job.id) == [job.id]
+    assert restarted.store.load()[0].enabled is False
+
+
+async def test_terminal_disabled_job_does_not_consume_capacity(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    terminal = make_job(
+        trigger="at", tier="instant", fire_at=fixed_now - timedelta(seconds=1)
+    )
+    svc._jobs[terminal.id] = terminal
+
+    await svc._tick()
+    await drain_tasks()
+
+    assert svc._jobs == {}
+    assert svc.store.load()[0].enabled is False
+    for index in range(SchedulerService.MAX_ACTIVE_JOBS):
+        svc.add_job(make_job(name=f"active-{index}"))
+    with pytest.raises(ScheduleCapacityError):
+        svc.add_job(make_job(name="overflow"))
+    assert terminal.id in svc.match_job_ids(terminal.id)
+
+
+async def test_terminal_disabled_job_is_removed_only_by_explicit_cancel(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    terminal = make_job(
+        trigger="at", tier="instant", fire_at=fixed_now - timedelta(seconds=1)
+    )
+    svc._jobs[terminal.id] = terminal
+
+    await svc._tick()
+    await drain_tasks()
+    assert svc.store.load()[0].enabled is False
+
+    assert svc.cancel_job(terminal.id) is True
+    assert svc.store.load() == []
 
 
 def test_every_misfire_advances_to_future(tmp_path, mock_push, mock_loop, fixed_now):

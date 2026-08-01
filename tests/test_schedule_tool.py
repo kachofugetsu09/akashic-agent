@@ -144,6 +144,28 @@ async def test_instant_after_registers_job(tmp_path, mock_push, mock_loop):
     assert job.message == "喝水了"
 
 
+async def test_capacity_error_is_converted_for_agent(tmp_path, mock_push, mock_loop):
+    svc = make_svc(tmp_path, mock_push, mock_loop)
+    for index in range(SchedulerService.MAX_ACTIVE_JOBS):
+        svc.add_job(make_job(name=f"job-{index}"))
+    tool = ScheduleTool(svc, default_tz="UTC")
+
+    result = await tool.execute(
+        tier="instant",
+        trigger="after",
+        when="5m",
+        channel="telegram",
+        chat_id="123",
+        message="overflow",
+        request_time=_NOW.isoformat(),
+    )
+
+    assert "schedule_capacity_reached" in result
+    assert "已有 10 个活动定时任务" in result
+    assert "移除哪个不再需要的任务" in result
+    assert len(svc.list_jobs()) == SchedulerService.MAX_ACTIVE_JOBS
+
+
 async def test_after_request_time_used_for_fire_at(tmp_path, mock_push, mock_loop):
     svc = make_svc(tmp_path, mock_push, mock_loop)
     tool = ScheduleTool(svc, default_tz="UTC")
@@ -291,6 +313,37 @@ async def test_cancel_by_id(tmp_path, mock_push, mock_loop):
     result = await tool.execute(id=job.id)
     assert "已取消" in result
     assert job.id not in svc._jobs
+
+
+async def test_cancel_disabled_by_id_prefix_after_recovery(
+    tmp_path, mock_push, mock_loop
+):
+    svc = make_svc(tmp_path, mock_push, mock_loop)
+    disabled_target = make_job(name="disabled-target")
+    disabled_target.id = "target-123456"
+    disabled_target.enabled = False
+    disabled_other = make_job(name="disabled-other")
+    disabled_other.id = "other-456789"
+    disabled_other.enabled = False
+    active = make_job(name="active")
+    active.id = "active-job-789"
+    svc.store.save(
+        {
+            disabled_target.id: disabled_target,
+            disabled_other.id: disabled_other,
+            active.id: active,
+        }
+    )
+    svc.load_and_recover()
+
+    result = await CancelScheduleTool(svc).execute(id="target-1")
+
+    assert "已取消 1 个任务" in result
+    assert set(svc._jobs) == {active.id}
+    assert {job.id for job in svc.store.load()} == {
+        disabled_other.id,
+        active.id,
+    }
 
 
 async def test_cancel_by_name(tmp_path, mock_push, mock_loop):
