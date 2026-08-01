@@ -25,8 +25,11 @@
 │ frontend/chat                                                 │
 │ ├─ theme.css                 共享色彩、形状、阴影 token       │
 │ ├─ message-view.tsx          共享消息、工具、流式正文          │
-│ ├─ main.tsx                  桌面入口 + QR 配对能力            │
-│ └─ mobile-native.tsx         Android WebView 入口 + bridge    │
+│ ├─ message-view.css          共享消息、工具与引用视觉          │
+│ ├─ message-actions.tsx       共享引用、复制与引用预览          │
+│ ├─ conversation-navigation.* 共享功能入口、会话与底部操作      │
+│ ├─ main.tsx                  桌面适配器 + QR 配对能力          │
+│ └─ mobile-native.tsx         Android 适配器 + Native bridge   │
 └───────────────┬──────────────────────────────┬─────────────────┘
                 │ desktop Vite build           │ clean commit build
                 ▼                              ▼
@@ -49,8 +52,12 @@
 |---|---|---|---|
 | 主题、消息、Markdown、工具轨迹 | 拥有 | 使用 | 使用 |
 | 流式正文生长 | `isAnimating` 驱动 | WebSocket delta | rAF 合并的 native patch |
+| 会话侧栏、引用、复制 | 拥有 | 使用 | 使用 |
+| 知识与插件入口 | 共享导航结构 | 跳转 Dashboard 公网端口 | 打开 Native bridge 页面 |
+| 新聊天 | 共享导航结构 | Web session | Native bridge session |
 | 扫码配对展示 | 复用视觉组件 | 生成 QR、确认设备 | 不挂载 |
 | 相机扫码 | 无 | 无 | 原生 CameraX / ZXing |
+| 设置、诊断、清理同步、重新扫码 | 无 | 不挂载 | Native bridge 拥有 |
 | 离线队列、重试、阅读位置 | 只展示已验证状态 | 无 | Room 与 Native bridge 拥有 |
 | 通知、分享、Keystore | 无 | 无 | Android 原生拥有 |
 

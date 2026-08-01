@@ -12,14 +12,6 @@ import React, {
   useState,
 } from "react";
 import { createRoot } from "react-dom/client";
-import {
-  animate,
-  motion,
-  useMotionValue,
-  useMotionValueEvent,
-  useReducedMotion,
-  useTransform,
-} from "motion/react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import {
   AlertCircle,
@@ -53,6 +45,12 @@ import {
   WifiOff,
   X,
 } from "lucide-react";
+import { ConversationNavigation } from "./conversation-navigation";
+import {
+  ComposerReply,
+  MessageReplyReference,
+  SharedMessageActions,
+} from "./message-actions";
 import {
   Conversation,
   ConversationContent,
@@ -118,6 +116,7 @@ import {
   type MobileSurface,
 } from "./mobile-surface-history";
 import "./mobile-native.css";
+import "./message-view.css";
 
 const LazyChatMessageView = lazy(() =>
   import("./message-view").then(({ ChatMessageView }) => ({ default: ChatMessageView })),
@@ -1951,17 +1950,15 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
         onEnterSelection={() => onEnterSelection(source.id)}
         onToggleSelection={() => onToggleSelection(source.id)}
       >
-        <SwipeToReply
-          disabled={!canReply || selectionActive}
-          onReply={() => onReplyToMessage(source)}
-        >
+        <div className="message-interaction-surface">
           <Suspense fallback={<div className="mobile-message-render-fallback" aria-hidden="true" />}>
             <LazyChatMessageView
               message={message}
               onCopyToolDetail={copyToolDetail}
               leadingContent={source.reply ? (
                 <MessageReplyReference
-                  reply={source.reply}
+                  role={source.reply.role}
+                  preview={source.reply.preview}
                   unavailable={replySourceUnavailable}
                   onNavigate={() => onNavigateToReply(source.id, source.reply!)}
                 />
@@ -2003,7 +2000,7 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
             deliveryActionBusy={deliveryActionBusy}
             onDeliveryAction={() => onRetryMessageDelivery(source.id)}
           />
-        </SwipeToReply>
+        </div>
       </MessageSelectionTarget>
     </>
   );
@@ -2249,93 +2246,90 @@ function MobileDrawer({
   return (
     <div className={`mobile-drawer-layer ${open ? "open" : ""}`} aria-hidden={!open}>
       <button className="mobile-drawer-scrim" type="button" onClick={onClose} aria-label="关闭会话抽屉" tabIndex={open ? 0 : -1} />
-      <aside ref={drawerRef} className="mobile-drawer" role="dialog" aria-modal="true" aria-label="会话列表" tabIndex={-1}>
-        <button className="mobile-drawer__close" type="button" onClick={onClose} aria-label="关闭会话抽屉">
-          <X size={24} />
-        </button>
-        <button className="mobile-runtime-destination" type="button" onClick={onOpenRuntime}>
-          <LibraryBig size={21} aria-hidden="true" />
-          <span>
-            <strong>知识与运行</strong>
-            <small>记忆 · MCP · 定时任务</small>
-          </span>
-          <ChevronRight size={19} aria-hidden="true" />
-        </button>
-        <div className="mobile-drawer__heading">会话</div>
-        <button className="mobile-plugin-destination" type="button" onClick={onOpenPlugins}>
-          <Puzzle size={20} aria-hidden="true" />
-          <span>插件</span>
-          <small>{pluginCount}</small>
-          <ChevronRight size={18} aria-hidden="true" />
-        </button>
-        <nav className="mobile-session-list">
-          {snapshot.sessions.map((session) => (
-            <button
-              className={`mobile-session-row ${session.id === snapshot.selectedSessionId ? "active" : ""} ${session.isAvailable ? "" : "unavailable"}`}
-              type="button"
-              key={session.id}
-              onClick={() => {
-                window.AkashicNative?.selectSession(session.id);
-                onClose();
-              }}
-            >
-              <span className="mobile-session-row__copy">
-                <span className="mobile-session-row__title">
-                  <strong>{session.title || "未命名会话"}</strong>
-                  {session.lastMessageAt ? <time>{formatDrawerTime(session.lastMessageAt)}</time> : null}
-                </span>
-                <small>{session.isAvailable
-                  ? session.lastMessagePreview || "还没有消息"
-                  : "电脑端已不存在 · 本机保留历史"}</small>
-              </span>
-              <span className="mobile-session-row__state">
-                {!session.isAvailable ? (
-                  <ArchiveX size={19} aria-label="电脑端已不存在" />
-                ) : session.isRunning ? <span className="session-running" aria-label="Agent 正在处理" /> : null}
-                {session.isAvailable && session.unreadCount > 0 ? (
-                  <strong className="session-unread" aria-label={`${session.unreadCount} 条未读`}>
-                    {session.unreadCount > 99 ? "99+" : session.unreadCount}
-                  </strong>
-                ) : session.isAvailable && session.id === snapshot.selectedSessionId ? <Check size={18} /> : null}
-              </span>
-            </button>
-          ))}
-        </nav>
-        <MobilePluginSlot name="drawer.panel" sessionId={snapshot.selectedSessionId} />
-        <div className="mobile-drawer__actions">
-          <button className="drawer-action" type="button" onClick={onOpenSettings}>
-            <Settings size={18} />
-            <span>设置</span>
+      <ConversationNavigation
+        className="mobile-drawer"
+        panelRef={drawerRef}
+        dialog
+        closeAction={(
+          <button className="mobile-drawer__close" type="button" onClick={onClose} aria-label="关闭会话抽屉">
+            <X size={24} />
           </button>
-          <button className="drawer-action" type="button" onClick={() => {
-            window.AkashicNative?.exportDiagnostics();
+        )}
+        destinations={[
+          {
+            id: "runtime",
+            icon: <LibraryBig size={20} />,
+            label: "知识与运行",
+            description: "记忆 · MCP · 定时任务",
+            onActivate: onOpenRuntime,
+          },
+          {
+            id: "plugins",
+            icon: <Puzzle size={20} />,
+            label: "插件",
+            badge: pluginCount,
+            onActivate: onOpenPlugins,
+          },
+        ]}
+        sessions={snapshot.sessions.map((session) => ({
+          id: session.id,
+          title: session.title || "未命名会话",
+          preview: session.isAvailable
+            ? session.lastMessagePreview || "还没有消息"
+            : "电脑端已不存在 · 本机保留历史",
+          updatedLabel: session.lastMessageAt ? formatDrawerTime(session.lastMessageAt) : undefined,
+          active: session.id === snapshot.selectedSessionId,
+          unavailable: !session.isAvailable,
+          state: !session.isAvailable ? (
+            <ArchiveX size={19} aria-label="电脑端已不存在" />
+          ) : session.isRunning ? <span className="session-running" aria-label="Agent 正在处理" />
+            : session.unreadCount > 0 ? (
+              <strong className="session-unread" aria-label={`${session.unreadCount} 条未读`}>
+                {session.unreadCount > 99 ? "99+" : session.unreadCount}
+              </strong>
+            ) : session.id === snapshot.selectedSessionId ? <Check size={18} /> : null,
+          onActivate: () => {
+            window.AkashicNative?.selectSession(session.id);
             onClose();
-          }}>
-            <FileText size={18} />
-            <span>导出诊断报告</span>
-          </button>
-          <button className="drawer-action" type="button" disabled={!snapshot.composer.canResync} onClick={() => {
-            if (window.confirm("清除本机已同步消息和附件缓存，并从电脑重新拉取？连接状态会保留。")) {
-              window.AkashicNative?.reloadFromServer();
+          },
+        }))}
+        sessionAfterContent={<MobilePluginSlot name="drawer.panel" sessionId={snapshot.selectedSessionId} />}
+        actions={[
+          { id: "settings", icon: <Settings size={18} />, label: "设置", onActivate: onOpenSettings },
+          {
+            id: "diagnostics",
+            icon: <FileText size={18} />,
+            label: "导出诊断报告",
+            onActivate: () => {
+              window.AkashicNative?.exportDiagnostics();
               onClose();
-            }
-          }}>
-            <RotateCcw size={18} />
-            <span>{snapshot.composer.isResyncing ? "正在重新同步" : "清理缓存并同步"}</span>
-          </button>
-          <button className="drawer-action" type="button" onClick={onRestartPairing}>
-            <RefreshCw size={18} />
-            <span>重新扫码</span>
-          </button>
-          <button className="new-chat-action" type="button" onClick={() => {
-            window.AkashicNative?.createSession();
-            onClose();
-          }}>
-            <MessageSquarePlus size={18} />
-            <span>新聊天</span>
-          </button>
-        </div>
-      </aside>
+            },
+          },
+          {
+            id: "resync",
+            icon: <RotateCcw size={18} />,
+            label: snapshot.composer.isResyncing ? "正在重新同步" : "清理缓存并同步",
+            disabled: !snapshot.composer.canResync,
+            onActivate: () => {
+              if (window.confirm("清除本机已同步消息和附件缓存，并从电脑重新拉取？连接状态会保留。")) {
+                window.AkashicNative?.reloadFromServer();
+                onClose();
+              }
+            },
+          },
+          { id: "pairing", icon: <RefreshCw size={18} />, label: "重新扫码", onActivate: onRestartPairing },
+          {
+            id: "new-chat",
+            icon: <MessageSquarePlus size={18} />,
+            label: "新聊天",
+            primary: true,
+            onActivate: () => {
+              window.AkashicNative?.createSession();
+              onClose();
+            },
+          },
+        ]}
+      />
     </div>
   );
 }
@@ -2678,7 +2672,13 @@ function MobileComposer({
             onToggle={onToggleQueue}
           />
         ) : null}
-        {replyTarget ? <ComposerReply target={replyTarget} onCancel={onCancelReply} /> : null}
+        {replyTarget ? (
+          <ComposerReply
+            role={replyTarget.role}
+            preview={replyPreview(replyTarget)}
+            onCancel={onCancelReply}
+          />
+        ) : null}
         <div className="mobile-composer">
         <button className={`mobile-icon-button command-toggle ${commandsOpen ? "active" : ""}`} type="button" disabled={!hasOwner} onClick={onToggleCommands} aria-label={commandsOpen ? "关闭快捷命令" : "打开快捷命令"}>
           {commandsOpen ? <X size={22} /> : <Menu size={22} />}
@@ -3161,18 +3161,13 @@ function MessageMeta({
         ) : null}
         {source.interrupted ? <span className="interrupted-label">本轮已中止</span> : null}
       </div>
-      <div className="mobile-message-actions">
-        {canReply ? (
-          <button type="button" onClick={onReply} aria-label="引用此消息">
-            <Reply size={16} />
-          </button>
-        ) : null}
-        {source.content ? (
-          <button type="button" className={copied ? "copied" : ""} onClick={onCopy} aria-label={copied ? "已复制" : "复制消息"}>
-            {copied ? <Check size={16} /> : <Copy size={16} />}
-          </button>
-        ) : null}
-      </div>
+      <SharedMessageActions
+        canReply={canReply}
+        canCopy={Boolean(source.content)}
+        copied={copied}
+        onReply={onReply}
+        onCopy={onCopy}
+      />
     </div>
   );
 }
@@ -3320,96 +3315,6 @@ const MessageSelectionTarget = React.forwardRef<
 
 function isMessageInteractiveTarget(target: EventTarget | null) {
   return target instanceof Element && target.closest("button, a, input, textarea, [role='button']") !== null;
-}
-
-function SwipeToReply({ disabled, onReply, children }: { disabled: boolean; onReply: () => void; children: ReactNode }) {
-  const x = useMotionValue(0);
-  const hapticFired = useRef(false);
-  const reduceMotion = useReducedMotion();
-  const disabledRef = useRef(disabled);
-  const iconOpacity = useTransform(x, [-80, -50, -12, 0], [1, 1, 0.12, 0]);
-  const iconScale = useTransform(x, [-80, -50, 0], [1, 1, 0.72]);
-  useEffect(() => {
-    disabledRef.current = disabled;
-  }, [disabled]);
-
-  useMotionValueEvent(x, "change", (value) => {
-    if (value > -50) {
-      hapticFired.current = false;
-      return;
-    }
-    if (value <= -50 && !hapticFired.current) {
-      hapticFired.current = true;
-      window.AkashicNative?.performActionHaptic();
-    }
-  });
-
-  return (
-    <div className={`swipe-reply ${disabled ? "disabled" : ""}`}>
-      <motion.div className="swipe-reply__indicator" style={{ opacity: iconOpacity, scale: iconScale }} aria-hidden="true">
-        <Reply size={20} />
-      </motion.div>
-      <motion.div
-        className="swipe-reply__content"
-        drag={disabled ? false : "x"}
-        dragConstraints={{ left: -80, right: 0 }}
-        dragElastic={0.03}
-        dragMomentum={false}
-        style={{ x }}
-        onDragStart={() => {
-          hapticFired.current = false;
-        }}
-        onDragEnd={() => {
-          const shouldReply = !disabledRef.current && x.get() <= -50;
-          if (shouldReply) onReply();
-          animate(x, 0, reduceMotion ? { duration: 0 } : {
-            type: "spring",
-            stiffness: 520,
-            damping: 42,
-            mass: 0.8,
-            bounce: 0,
-          });
-        }}
-      >
-        {children}
-      </motion.div>
-    </div>
-  );
-}
-
-function MessageReplyReference({
-  reply,
-  unavailable,
-  onNavigate,
-}: {
-  reply: MobileReply;
-  unavailable: boolean;
-  onNavigate: () => void;
-}) {
-  return (
-    <button
-      className={`message-reply-reference ${unavailable ? "unavailable" : ""}`}
-      type="button"
-      onClick={onNavigate}
-      aria-label={reply.role === "assistant" ? "查看引用的 Akashic 消息" : "查看引用的你的消息"}
-    >
-      <span>{reply.role === "assistant" ? "Akashic" : "你"}</span>
-      <p aria-live="polite">{unavailable ? "原消息不在当前记录中" : reply.preview}</p>
-    </button>
-  );
-}
-
-function ComposerReply({ target, onCancel }: { target: MobileMessage; onCancel: () => void }) {
-  return (
-    <div className="composer-reply" aria-label={`正在回复${target.role === "assistant" ? " Akashic" : "你的消息"}`}>
-      <Reply size={18} />
-      <div>
-        <strong>回复 {target.role === "assistant" ? "Akashic" : "你"}</strong>
-        <span>{replyPreview(target)}</span>
-      </div>
-      <button type="button" onClick={onCancel} aria-label="取消引用"><X size={19} /></button>
-    </div>
-  );
 }
 
 function MessageDateDivider({ createdAt }: { createdAt: number }) {
