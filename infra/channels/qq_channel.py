@@ -16,6 +16,7 @@ chat_id 约定：
 
 import asyncio
 import base64
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 import html
 import importlib
@@ -327,13 +328,14 @@ async def _read_qq_image(
 
     stream = getattr(requester, "stream", None)
     if callable(stream):
-        async with stream(
+        stream_context = stream(
             "GET",
             url,
             timeout_s=15.0,
             budget=RequestBudget(total_timeout_s=20.0),
             validate_redirects=True,
-        ) as response:
+        )
+        async with cast(AbstractAsyncContextManager[Any], stream_context) as response:
             if response.status_code < 200 or response.status_code >= 300:
                 raise ValueError(f"HTTP {response.status_code}")
             content_type = response.headers.get("content-type", "image/jpeg").split(";", 1)[0].strip()
