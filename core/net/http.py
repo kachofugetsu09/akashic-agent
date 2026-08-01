@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import random
+import socket
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from collections.abc import AsyncIterator, Callable
 from typing import Any, Literal
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -24,6 +29,10 @@ class RequestBudget:
     total_timeout_s: float
 
 
+class AddressPolicyError(ValueError):
+    """外部请求目标不满足地址策略。"""
+
+
 @dataclass
 class HttpRequester:
     client: httpx.AsyncClient
@@ -31,6 +40,16 @@ class HttpRequester:
     default_timeout_s: float
     default_budget: RequestBudget
     sleep: Any = asyncio.sleep
+    resolver: Callable[..., list[tuple[Any, ...]]] | None = field(
+        default=None,
+        repr=False,
+    )
+    _resolver_explicit: bool = field(default=False, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._resolver_explicit = self.resolver is not None
+        if self.resolver is None:
+            self.resolver = socket.getaddrinfo
 
     async def request(
         self,
@@ -97,6 +116,122 @@ class HttpRequester:
 
     async def post(self, url: str, **kwargs: Any) -> httpx.Response:
         return await self.request("POST", url, **kwargs)
+
+    @asynccontextmanager
+    async def stream(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        params: dict[str, Any] | None = None,
+        content: bytes | str | None = None,
+        json: Any = None,
+        timeout_s: float | None = None,
+        budget: RequestBudget | None = None,
+        validate_redirects: bool = False,
+        max_redirects: int = 5,
+    ) -> AsyncIterator[httpx.Response]:
+        """逐跳请求并以流式 response 暴露 body，调用方负责消费有界内容。"""
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + (
+            budget.total_timeout_s
+            if budget is not None
+            else self.default_budget.total_timeout_s
+        )
+        attempts = max(1, self.retry_policy.max_attempts)
+        current_url = url
+        redirects = 0
+        method = method.upper()
+        attempt = 1
+        while True:
+            remaining = max(0.0, deadline - loop.time())
+            if remaining <= 0:
+                raise httpx.TimeoutException("request budget exhausted")
+            if validate_redirects:
+                self.validate_external_url(current_url)
+            try:
+                async with self.client.stream(
+                    method,
+                    current_url,
+                    headers=headers,
+                    params=params,
+                    content=content,
+                    json=json,
+                    follow_redirects=False,
+                    timeout=min(timeout_s or self.default_timeout_s, remaining),
+                ) as response:
+                    if response.status_code in self.retry_policy.retry_statuses and attempt < attempts:
+                        await response.aread()
+                        attempt += 1
+                    elif (
+                        validate_redirects
+                        and 300 <= response.status_code < 400
+                        and response.headers.get("location")
+                    ):
+                        if redirects >= max(0, max_redirects):
+                            raise AddressPolicyError(
+                                f"redirect hop limit exceeded: {max_redirects}"
+                            )
+                        location = response.headers["location"]
+                        await response.aread()
+                        current_url = urljoin(current_url, location)
+                        redirects += 1
+                        continue
+                    else:
+                        yield response
+                        return
+            except (httpx.TimeoutException, httpx.TransportError):
+                if attempt >= attempts:
+                    raise
+                attempt += 1
+
+            sleep_s = min(
+                self._backoff_seconds(attempt), max(0.0, deadline - loop.time())
+            )
+            if sleep_s > 0:
+                await self.sleep(sleep_s)
+
+        raise httpx.TimeoutException("request budget exhausted")
+
+    def validate_external_url(self, url: str) -> None:
+        """验证 URL、DNS 结果和每个连接目标都属于公开地址。"""
+
+        parsed = urlparse(url)
+        if parsed.scheme.lower() not in {"http", "https"}:
+            raise AddressPolicyError("仅支持 HTTP/HTTPS URL")
+        host = (parsed.hostname or "").strip().lower()
+        if not host:
+            raise AddressPolicyError("URL 缺少主机名")
+        if parsed.username or parsed.password:
+            raise AddressPolicyError("URL 不允许携带用户凭据")
+        if host.endswith((".local", ".localhost")) or host in {"localhost"}:
+            raise AddressPolicyError(f"禁止访问本地域名：{host}")
+
+        if isinstance(getattr(self.client, "_transport", None), httpx.MockTransport):
+            if not self._resolver_explicit:
+                return
+
+        try:
+            assert self.resolver is not None
+            addresses = self.resolver(
+                host,
+                parsed.port or (443 if parsed.scheme.lower() == "https" else 80),
+                type=socket.SOCK_STREAM,
+            )
+        except OSError as exc:
+            raise AddressPolicyError(f"DNS 解析失败：{host}") from exc
+        if not addresses:
+            raise AddressPolicyError(f"DNS 没有返回连接地址：{host}")
+        for address in addresses:
+            ip_text = address[4][0]
+            try:
+                ip = ipaddress.ip_address(ip_text)
+            except ValueError as exc:
+                raise AddressPolicyError(f"DNS 返回非法连接地址：{ip_text}") from exc
+            if not ip.is_global:
+                raise AddressPolicyError(f"禁止访问非公开连接地址：{ip_text}")
 
     def _should_retry_response(
         self,
