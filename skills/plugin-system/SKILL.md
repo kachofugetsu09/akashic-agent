@@ -132,10 +132,24 @@ python main.py plugin-uninstall demo@github
 
 ## 热重载验证
 
-```text
-┌─ plugin-install 更新 cache，或修改 manifest.toml/config.local.toml
-├─ 等待 watcher 生成候选代际
-├─ 检查 candidate 与 snapshot Gate 日志
-├─ 发起一次新请求验证新能力
-└─ 确认旧 MCP、任务、Channel 与服务已排空
+`plugin-install` 成功只代表文件就绪；运行时发布由 watcher 异步完成，本 turn 开始时绑定的 runtime snapshot 不含新能力是正常现象。不要用当前 turn 的 `tool_search` 结果、`exec --new` 新进程或反复重试安装来判断成败。
+
+安装或修改 manifest.toml/config.local.toml 后，等待 watcher 完成一轮扫描（≤10 秒），然后查询 reload journal 最新事务的终态：
+
+```bash
+sqlite3 <workspace>/runtime/plugin-reloads.sqlite3 \
+  "SELECT phase, error FROM reload_transactions WHERE plugin_id='<name>@<marketplace>' ORDER BY started_at DESC LIMIT 1;"
 ```
+
+按终态收尾并停止：
+
+```text
+┌─ complete → 候选已通过 Gate、snapshot 已发布
+│  报告“安装成功，热重载已发布”，停止；下一轮新消息即可使用新能力
+├─ aborted  → 读取 error 与 manager 日志中“候选验证失败”的 gate 行
+│  报告失败原因，停止；重试或修复留到后续 turn
+└─ 仍处于 preparing/validating/committed → 再等 ≤5 秒重查一次
+   仍不推进则报告“热重载未推进”，停止
+```
+
+同一 turn 内 journal 已到 `complete` 或 `aborted` 后，不再重复执行安装或验证命令；`tool_search` 只用于下一轮确认新工具可见，`exec --new` 是启动全新进程，不能验证热重载发布。
