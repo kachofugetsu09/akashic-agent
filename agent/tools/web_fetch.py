@@ -5,7 +5,7 @@ WebFetch 工具
 import json
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from collections.abc import AsyncIterator
-from typing import Any, Callable
+from typing import Any, Callable, cast
 from urllib.parse import urlparse
 
 import html2text
@@ -388,7 +388,7 @@ async def _open_stream(
     )
     if isinstance(requester, HttpRequester) or is_protocol_context:
         assert stream_context is not None
-        async with stream_context as response:
+        async with cast(AbstractAsyncContextManager[Any], stream_context) as response:
             yield response
         return
 
