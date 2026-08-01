@@ -2004,7 +2004,7 @@ button {
   position: absolute;
   inset: 0;
   border: 0;
-  background: rgb(0 0 0 / 0.54);
+  background: oklch(0 0 0 / 0.54);
   opacity: 0;
   transition-property: opacity;
   transition-duration: 180ms;
@@ -2023,16 +2023,18 @@ button {
   flex-direction: column;
   padding: 0;
   color: var(--m-on-surface);
-  background: var(--m-surface-container-low);
+  background: var(--m-surface);
   transform: translateX(-100%);
-  box-shadow: 8px 0 28px rgb(0 0 0 / 0.18);
+  box-shadow: 8px 0 28px oklch(0 0 0 / 0.18);
   transition-property: transform;
   transition-duration: 220ms;
   transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
 .mobile-drawer__close {
-  position: static;
+  position: absolute;
+  inset-block-start: calc(8px + env(safe-area-inset-top));
+  inset-inline-start: 12px;
   display: grid;
   width: 44px;
   height: 44px;
@@ -2044,13 +2046,14 @@ button {
   background: transparent;
 }
 
-.mobile-drawer .conversation-navigation__brand {
+.mobile-drawer .conversation-navigation__header {
   min-height: calc(72px + env(safe-area-inset-top));
-  padding-top: calc(12px + env(safe-area-inset-top));
+  padding-block: calc(12px + env(safe-area-inset-top)) 12px;
+  padding-inline: 14px;
 }
 
 .mobile-drawer .conversation-navigation__actions {
-  padding-bottom: calc(10px + env(safe-area-inset-bottom));
+  padding-bottom: calc(14px + env(safe-area-inset-bottom));
 }
 
 .message-interaction-surface {

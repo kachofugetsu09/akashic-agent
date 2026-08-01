@@ -22,6 +22,14 @@ const mobileSource = await readFile(
   new URL("./mobile-native.tsx", import.meta.url),
   "utf8",
 );
+const navigationSource = await readFile(
+  new URL("./conversation-navigation.tsx", import.meta.url),
+  "utf8",
+);
+const navigationStyles = await readFile(
+  new URL("./conversation-navigation.css", import.meta.url),
+  "utf8",
+);
 
 test("process plugin slots align with thinking and tool content", () => {
   assert.match(
@@ -50,6 +58,20 @@ test("desktop and mobile keep one shared conversation owner", () => {
   assert.match(mobileSource, /<SharedMessageActions/);
   assert.doesNotMatch(mobileSource, /mobile-message-actions/);
   assert.doesNotMatch(mobileSource, /SwipeToReply|useMotionValue/);
+});
+
+test("shared navigation keeps the compact mobile drawer language", () => {
+  assert.doesNotMatch(navigationSource, /对话与知识/);
+  assert.doesNotMatch(navigationSource, />Akashic</);
+  assert.match(navigationSource, /conversation-navigation__heading">会话/);
+  assert.match(
+    navigationStyles,
+    /\.conversation-destination__icon\s*\{[^}]*width:\s*24px;[^}]*background:\s*transparent;/,
+  );
+  assert.match(
+    navigationStyles,
+    /\.conversation-navigation__action\.primary\s*\{[^}]*width:\s*fit-content;[^}]*border-radius:\s*24px;/,
+  );
 });
 
 test("mobile attachment previews preserve intrinsic aspect ratios", () => {

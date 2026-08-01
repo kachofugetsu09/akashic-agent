@@ -62,12 +62,8 @@ export function ConversationNavigation({
       aria-label="会话列表"
       tabIndex={dialog ? -1 : undefined}
     >
-      <header className="conversation-navigation__brand">
-        <span aria-hidden="true">A</span>
-        <div>
-          <strong>Akashic</strong>
-          <small>对话与知识</small>
-        </div>
+      <header className="conversation-navigation__header">
+        <div className="conversation-navigation__heading">会话</div>
         {closeAction}
       </header>
 
@@ -93,7 +89,6 @@ export function ConversationNavigation({
       </nav>
 
       <section className="conversation-navigation__sessions">
-        <div className="conversation-navigation__heading">会话</div>
         <nav className="conversation-session-list" aria-label="最近会话">
           {sessions.map((session) => (
             <button
