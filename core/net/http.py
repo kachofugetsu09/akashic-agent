@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import random
 import socket
+import ssl
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from collections.abc import AsyncIterator, Callable
@@ -11,6 +12,7 @@ from typing import Any, Literal
 from urllib.parse import urljoin, urlparse
 
 import httpx
+import httpcore
 
 HttpProfile = Literal["external_default", "feed_fetcher", "local_service"]
 
@@ -33,6 +35,189 @@ class AddressPolicyError(ValueError):
     """外部请求目标不满足地址策略。"""
 
 
+def _public_addresses(
+    host: str,
+    port: int,
+    resolver: Callable[..., list[tuple[Any, ...]]],
+) -> tuple[str, ...]:
+    """解析并校验一组连接地址，返回后续连接唯一允许使用的 IP。"""
+
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if not literal.is_global:
+            raise AddressPolicyError(f"禁止访问非公开连接地址：{host}")
+        return (host,)
+    try:
+        addresses = resolver(host, port, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise AddressPolicyError(f"DNS 解析失败：{host}") from exc
+    if not addresses:
+        raise AddressPolicyError(f"DNS 没有返回连接地址：{host}")
+    approved: list[str] = []
+    for address in addresses:
+        ip_text = address[4][0]
+        try:
+            ip = ipaddress.ip_address(ip_text)
+        except ValueError as exc:
+            raise AddressPolicyError(f"DNS 返回非法连接地址：{ip_text}") from exc
+        if not ip.is_global:
+            raise AddressPolicyError(f"禁止访问非公开连接地址：{ip_text}")
+        if ip_text not in approved:
+            approved.append(ip_text)
+    return tuple(approved)
+
+
+class _PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
+    """将已校验的 DNS 结果绑定为实际 TCP connect 目标。"""
+
+    def __init__(self, addresses: tuple[str, ...]) -> None:
+        self._addresses = addresses
+        self._next_address = 0
+        self._backend = httpcore.AnyIOBackend()
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Any = None,
+    ) -> httpcore.AsyncNetworkStream:
+        if not self._addresses:
+            raise AddressPolicyError(f"没有可用连接地址：{host}")
+        address = self._addresses[self._next_address % len(self._addresses)]
+        self._next_address += 1
+        return await self._backend.connect_tcp(
+            address,
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    async def connect_unix_socket(
+        self,
+        path: str,
+        timeout: float | None = None,
+        socket_options: Any = None,
+    ) -> httpcore.AsyncNetworkStream:
+        return await self._backend.connect_unix_socket(
+            path,
+            timeout=timeout,
+            socket_options=socket_options,
+        )
+
+    async def sleep(self, seconds: float) -> None:
+        await self._backend.sleep(seconds)
+
+
+class _HttpcoreResponseStream(httpx.AsyncByteStream):
+    def __init__(
+        self,
+        response: httpcore.Response,
+        pool: httpcore.AsyncConnectionPool,
+    ) -> None:
+        self._response = response
+        self._pool = pool
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        async for chunk in self._response.aiter_stream():
+            yield chunk
+
+    async def aclose(self) -> None:
+        errors: list[BaseException] = []
+        try:
+            await self._response.aclose()
+        except BaseException as exc:
+            errors.append(exc)
+        try:
+            await self._pool.aclose()
+        except BaseException as exc:
+            errors.append(exc)
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise BaseExceptionGroup("HTTP response cleanup failed", errors)
+
+
+class SafeExternalTransport(httpx.AsyncBaseTransport):
+    """每次请求解析一次 DNS，并让 httpcore 连接已批准 IP、保留原始 Host/SNI。"""
+
+    def __init__(
+        self,
+        *,
+        resolver: Callable[..., list[tuple[Any, ...]]] = socket.getaddrinfo,
+        verify: bool | ssl.SSLContext = True,
+        max_connections: int = 20,
+        http2: bool = False,
+    ) -> None:
+        self._resolver = resolver
+        self._ssl_context = (
+            verify
+            if isinstance(verify, ssl.SSLContext)
+            else httpx.create_ssl_context(verify=verify, trust_env=False)
+        )
+        self._max_connections = max_connections
+        self._http2 = http2
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        scheme = request.url.scheme
+        host = request.url.host
+        if isinstance(scheme, bytes):
+            scheme = scheme.decode("ascii")
+        if isinstance(host, bytes):
+            host = host.decode("ascii")
+        if host == "localhost" or host.endswith((".local", ".localhost")):
+            raise AddressPolicyError(f"禁止访问本地域名：{host}")
+        port = request.url.port or (443 if scheme == "https" else 80)
+        addresses = _public_addresses(host, port, self._resolver)
+        backend = _PinnedNetworkBackend(addresses)
+        pool = httpcore.AsyncConnectionPool(
+            ssl_context=self._ssl_context,
+            max_connections=self._max_connections,
+            max_keepalive_connections=0,
+            http1=True,
+            http2=self._http2,
+            network_backend=backend,
+        )
+        core_request = httpcore.Request(
+            method=request.method,
+            url=httpcore.URL(
+                scheme=request.url.raw_scheme,
+                host=request.url.raw_host,
+                port=request.url.port,
+                target=request.url.raw_path,
+            ),
+            headers=request.headers.raw,
+            content=request.stream,
+            extensions=request.extensions,
+        )
+        try:
+            core_response = await pool.handle_async_request(core_request)
+        except BaseException as exc:
+            try:
+                await pool.aclose()
+            except BaseException as cleanup_error:
+                raise BaseExceptionGroup(
+                    "HTTP transport cleanup failed",
+                    [exc, cleanup_error],
+                ) from exc
+            raise
+        return httpx.Response(
+            status_code=core_response.status,
+            headers=core_response.headers,
+            stream=_HttpcoreResponseStream(core_response, pool),
+            extensions=core_response.extensions,
+            request=request,
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+
 @dataclass
 class HttpRequester:
     client: httpx.AsyncClient
@@ -44,6 +229,7 @@ class HttpRequester:
         default=None,
         repr=False,
     )
+    safe_transport: SafeExternalTransport | None = field(default=None, repr=False)
     _resolver_explicit: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -92,7 +278,7 @@ class HttpRequester:
                 )
                 if not self._should_retry_response(response, attempt, attempts):
                     return response
-                _ = await response.aread()
+                await response.aclose()
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = exc
                 if not self._should_retry_exception(exc, attempt, attempts):
@@ -163,7 +349,6 @@ class HttpRequester:
                     timeout=min(timeout_s or self.default_timeout_s, remaining),
                 ) as response:
                     if response.status_code in self.retry_policy.retry_statuses and attempt < attempts:
-                        await response.aread()
                         attempt += 1
                     elif (
                         validate_redirects
@@ -175,7 +360,6 @@ class HttpRequester:
                                 f"redirect hop limit exceeded: {max_redirects}"
                             )
                         location = response.headers["location"]
-                        await response.aread()
                         current_url = urljoin(current_url, location)
                         redirects += 1
                         continue
@@ -209,29 +393,17 @@ class HttpRequester:
         if host.endswith((".local", ".localhost")) or host in {"localhost"}:
             raise AddressPolicyError(f"禁止访问本地域名：{host}")
 
+        if self.safe_transport is not None:
+            return
         if isinstance(getattr(self.client, "_transport", None), httpx.MockTransport):
             if not self._resolver_explicit:
                 return
-
-        try:
-            assert self.resolver is not None
-            addresses = self.resolver(
-                host,
-                parsed.port or (443 if parsed.scheme.lower() == "https" else 80),
-                type=socket.SOCK_STREAM,
-            )
-        except OSError as exc:
-            raise AddressPolicyError(f"DNS 解析失败：{host}") from exc
-        if not addresses:
-            raise AddressPolicyError(f"DNS 没有返回连接地址：{host}")
-        for address in addresses:
-            ip_text = address[4][0]
-            try:
-                ip = ipaddress.ip_address(ip_text)
-            except ValueError as exc:
-                raise AddressPolicyError(f"DNS 返回非法连接地址：{ip_text}") from exc
-            if not ip.is_global:
-                raise AddressPolicyError(f"禁止访问非公开连接地址：{ip_text}")
+        assert self.resolver is not None
+        _ = _public_addresses(
+            host,
+            parsed.port or (443 if parsed.scheme.lower() == "https" else 80),
+            self.resolver,
+        )
 
     def _should_retry_response(
         self,
@@ -276,14 +448,21 @@ class SharedHttpResources:
     _closed: bool = field(init=False, default=False)
 
     def __post_init__(self) -> None:
+        external_transport = SafeExternalTransport(max_connections=20)
+        feed_transport = SafeExternalTransport(max_connections=10)
         external_client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10)
+            transport=external_transport,
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            trust_env=False,
         )
         feed_client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5)
+            transport=feed_transport,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+            trust_env=False,
         )
         local_client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5)
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+            trust_env=False,
         )
         self._clients = [external_client, feed_client, local_client]
         self.external_default = HttpRequester(
@@ -291,12 +470,14 @@ class SharedHttpResources:
             retry_policy=RetryPolicy(max_attempts=3),
             default_timeout_s=30.0,
             default_budget=RequestBudget(total_timeout_s=45.0),
+            safe_transport=external_transport,
         )
         self.feed_fetcher = HttpRequester(
             client=feed_client,
             retry_policy=RetryPolicy(max_attempts=3, base_delay_s=0.2, max_delay_s=0.8),
             default_timeout_s=15.0,
             default_budget=RequestBudget(total_timeout_s=20.0),
+            safe_transport=feed_transport,
         )
         self.local_service = HttpRequester(
             client=local_client,

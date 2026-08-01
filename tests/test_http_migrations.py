@@ -1,3 +1,4 @@
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -25,6 +26,7 @@ from core.net.http import (
     configure_default_shared_http_resources,
     get_default_shared_http_resources,
 )
+from agent.tool_bundles import build_readonly_research_tools
 from memory2.embedder import Embedder
 
 
@@ -91,7 +93,13 @@ async def test_web_fetch_spills_large_response_with_execution_owner(tmp_path: Pa
 
     requester = _build_requester(_handler)
     store = WebFetchSpillStore(root=tmp_path / "spill")
-    tool = WebFetchTool(requester, spill_store=store)
+    tool = WebFetchTool(
+        requester,
+        spill_store=store,
+        context_provider=lambda: SimpleNamespace(
+            execution_id="turn-1", turn_id="turn-1"
+        ),
+    )
     try:
         payload = json.loads(
             await tool.execute(
@@ -112,6 +120,71 @@ async def test_web_fetch_spills_large_response_with_execution_owner(tmp_path: Pa
         assert not spill_path.exists()
     finally:
         await requester.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_does_not_create_ownerless_spill(tmp_path: Path):
+    body = b"x" * (INLINE_MAX_BYTES + 1)
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, request=request, content=body)
+
+    requester = _build_requester(_handler)
+    store = WebFetchSpillStore(root=tmp_path / "spill")
+    tool = WebFetchTool(requester, spill_store=store)
+    try:
+        payload = json.loads(
+            await tool.execute(
+                url="https://example.com/data.txt",
+                execution_id="model-forged-id",
+            )
+        )
+        assert payload["classification"] == "unit_failed"
+        assert "execution owner" in payload["error"]
+        assert not list((tmp_path / "spill").glob("*.spill"))
+    finally:
+        await requester.client.aclose()
+
+
+def test_readonly_research_bundle_puts_spill_under_allowed_workspace(tmp_path: Path):
+    tools = build_readonly_research_tools(
+        fetch_requester=SimpleNamespace(),
+        allowed_dir=tmp_path,
+    )
+    web_fetch = next(tool for tool in tools if tool.name == "web_fetch")
+    assert isinstance(web_fetch, WebFetchTool)
+    assert web_fetch._spill_store is not None
+    assert web_fetch._spill_store.root == (tmp_path / ".tmp" / "web-fetch")
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_cancel_cleans_partial_spill(tmp_path: Path):
+    class _Response:
+        status_code = 200
+        headers = {"content-type": "text/plain"}
+        encoding = "utf-8"
+        url = "https://example.com/data.txt"
+
+        async def aiter_bytes(self, *, chunk_size: int):
+            _ = chunk_size
+            yield b"x" * (INLINE_MAX_BYTES + 1)
+            raise asyncio.CancelledError()
+
+    class _Requester:
+        @asynccontextmanager
+        async def stream(self, method: str, url: str, **kwargs: object):
+            _ = (method, url, kwargs)
+            yield _Response()
+
+    store = WebFetchSpillStore(root=tmp_path / "spill")
+    tool = WebFetchTool(
+        _Requester(),
+        spill_store=store,
+        context_provider=lambda: SimpleNamespace(execution_id="e1", turn_id="t1"),
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await tool.execute(url="https://example.com/data.txt")
+    assert not list((tmp_path / "spill").glob("*.spill"))
 
 
 @pytest.mark.asyncio

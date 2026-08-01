@@ -157,11 +157,14 @@ class WebChatChannel:
                 handle.flush()
                 os.fsync(handle.fileno())
             path = store.publish_staging(staging, prefix="web_", suffix=suffix)
-        except Exception:
+        except BaseException as exc:
             try:
                 staging.unlink(missing_ok=True)
-            except OSError:
-                pass
+            except OSError as cleanup_error:
+                raise BaseExceptionGroup(
+                    "Web 上传 staging 清理失败",
+                    [exc, cleanup_error],
+                ) from exc
             raise
         return self._upload_result(filename, path)
 

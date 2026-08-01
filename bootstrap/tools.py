@@ -334,6 +334,7 @@ def build_registered_tools(
     tools: ToolRegistry | None = None,
     event_publisher=None,
     agent_loop_provider: Callable[[], Any] | None = None,
+    tool_context_provider: Callable[[], object | None] | None = None,
     restart_coordinator: "RestartCoordinator | None" = None,
 ) -> tuple[
     ToolRegistry,
@@ -353,7 +354,11 @@ def build_registered_tools(
     multimodal = config.multimodal
     vl_available = not multimodal and config.vl_model != ""
     readonly_tools = build_readonly_tools(
-        http_resources, multimodal=multimodal, vl_available=vl_available
+        http_resources,
+        workspace=workspace,
+        multimodal=multimodal,
+        vl_available=vl_available,
+        context_provider=tool_context_provider,
     )
     store = (
         session_store

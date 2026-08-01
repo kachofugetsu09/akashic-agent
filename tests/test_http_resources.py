@@ -8,7 +8,11 @@ from core.net.http import (
     HttpRequester,
     RequestBudget,
     RetryPolicy,
+    SafeExternalTransport,
     SharedHttpResources,
+    _HttpcoreResponseStream,
+    _PinnedNetworkBackend,
+    _public_addresses,
 )
 
 
@@ -135,6 +139,95 @@ async def test_http_requester_stream_follows_multiple_hops_before_retry_budget()
 
     assert calls == ["/start", "/next", "/done"]
     await client.aclose()
+
+
+def test_dns_multi_answer_rejects_private_and_rebind_is_rechecked() -> None:
+    answers = [(2, 1, 6, "", ("8.8.8.8", 443, 0, 0))]
+
+    def _resolver(host: str, port: int, **_: object):
+        _ = (host, port)
+        return answers
+
+    assert _public_addresses("example.com", 443, _resolver) == ("8.8.8.8",)
+    answers[:] = [(2, 1, 6, "", ("127.0.0.1", 443, 0, 0))]
+    with pytest.raises(AddressPolicyError, match="非公开连接地址"):
+        _public_addresses("example.com", 443, _resolver)
+
+
+@pytest.mark.asyncio
+async def test_pinned_backend_connects_approved_ipv6_and_ipv4_targets() -> None:
+    calls: list[str] = []
+
+    class _Backend:
+        async def connect_tcp(self, host: str, port: int, **kwargs: object):
+            _ = (port, kwargs)
+            calls.append(host)
+            return object()
+
+        async def connect_unix_socket(self, path: str, **kwargs: object):
+            _ = (path, kwargs)
+            return object()
+
+        async def sleep(self, seconds: float):
+            _ = seconds
+
+    backend = _PinnedNetworkBackend(("2001:4860:4860::8888", "8.8.8.8"))
+    backend._backend = _Backend()
+    await backend.connect_tcp("example.com", 443)
+    await backend.connect_tcp("example.com", 443)
+    assert calls == ["2001:4860:4860::8888", "8.8.8.8"]
+
+
+@pytest.mark.asyncio
+async def test_safe_external_transport_rejects_literal_private_target() -> None:
+    transport = SafeExternalTransport()
+    request = httpx.Request("GET", "http://127.0.0.1/")
+    with pytest.raises(AddressPolicyError, match="非公开连接地址"):
+        await transport.handle_async_request(request)
+
+
+@pytest.mark.asyncio
+async def test_httpcore_response_stream_awaits_response_close() -> None:
+    class _CoreResponse:
+        closed = 0
+
+        async def aiter_stream(self):
+            yield b"ok"
+
+        async def aclose(self) -> None:
+            self.closed += 1
+
+        def close(self) -> None:
+            raise AssertionError("async response must use aclose")
+
+    class _Pool:
+        closed = 0
+
+        async def aclose(self) -> None:
+            self.closed += 1
+
+    core_response = _CoreResponse()
+    pool = _Pool()
+    stream = _HttpcoreResponseStream(core_response, pool)
+
+    await stream.aclose()
+
+    assert core_response.closed == 1
+    assert pool.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_local_service_keeps_local_network_transport() -> None:
+    resources = SharedHttpResources()
+
+    try:
+        assert resources.local_service.safe_transport is None
+        assert not isinstance(
+            resources.local_service.client._transport,
+            SafeExternalTransport,
+        )
+    finally:
+        await resources.aclose()
 
 
 @pytest.mark.asyncio
