@@ -51,7 +51,11 @@ async def test_capture_channel_records_replay_time(tmp_path, monkeypatch) -> Non
     channel = CaptureChannel(outbox_path)
 
     await channel.start(cast(ChannelContext, SimpleNamespace(push_tool=push)))
-    result = await push.execute(channel="replay", chat_id="user", message="hello")
+    result = await push.execute(
+        target_channel="replay",
+        target_chat_id="user",
+        message="hello",
+    )
     await channel.stop()
 
     assert result == "消息已发送"

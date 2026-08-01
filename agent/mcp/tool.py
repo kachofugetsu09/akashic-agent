@@ -3,7 +3,7 @@
 from typing import Any
 
 from agent.mcp.client import McpClient, McpToolInfo
-from agent.tools.base import Tool
+from agent.tools.base import Tool, normalize_tool_parameters
 
 
 class McpToolWrapper(Tool):
@@ -35,6 +35,21 @@ class McpToolWrapper(Tool):
     @property
     def parameters(self) -> dict[str, Any]:
         return self._info.input_schema
+
+    def to_schema(self) -> dict[str, Any]:
+        """Preserve MCP JSON Schema openness when the server omits the flag."""
+
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": normalize_tool_parameters(
+                    self.parameters,
+                    open_object=True,
+                ),
+            },
+        }
 
     async def execute(self, **kwargs: Any) -> str:
         return await self._client.call(self._info.name, kwargs)

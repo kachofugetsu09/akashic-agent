@@ -1,4 +1,5 @@
 import asyncio
+from copy import deepcopy
 import inspect
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
@@ -6,6 +7,34 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal, cast
+
+
+def normalize_tool_parameters(
+    parameters: dict[str, Any],
+    *,
+    open_object: bool = False,
+) -> dict[str, Any]:
+    """Normalize object schemas while preserving explicit JSON Schema policy."""
+
+    schema = cast(dict[str, Any], deepcopy(parameters))
+
+    def visit(node: dict[str, Any], *, root: bool = False) -> None:
+        if node.get("type") == "object" or isinstance(node.get("properties"), dict):
+            if root and "additionalProperties" not in node:
+                node["additionalProperties"] = open_object
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                for child in properties.values():
+                    if isinstance(child, dict):
+                        visit(cast(dict[str, Any], child))
+            additional = node.get("additionalProperties")
+            if isinstance(additional, dict):
+                visit(cast(dict[str, Any], additional))
+        elif isinstance(node.get("items"), dict):
+            visit(cast(dict[str, Any], node["items"]))
+
+    visit(schema, root=True)
+    return schema
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,14 +167,19 @@ class Tool(ABC):
             return await execution
         return await asyncio.wait_for(execution, timeout=execution_timeout)
 
-    def validate_params(self, params: dict[str, Any]) -> list[str]:
+    def validate_params(
+        self,
+        params: dict[str, Any],
+        *,
+        schema: dict[str, Any] | None = None,
+    ) -> list[str]:
         """校验参数，返回错误列表（空列表表示校验通过）"""
-        schema = self.parameters or {}
-        if schema.get("type", "object") != "object":
+        active_schema = schema if schema is not None else self.parameters or {}
+        if active_schema.get("type", "object") != "object":
             raise ValueError(
-                f"Schema 顶层类型必须为 object，当前为 {schema.get('type')!r}"
+                f"Schema 顶层类型必须为 object，当前为 {active_schema.get('type')!r}"
             )
-        return self._validate(params, {**schema, "type": "object"}, "")
+        return self._validate(params, {**active_schema, "type": "object"}, "")
 
     def _validate(self, val: Any, schema: dict[str, Any], path: str) -> list[str]:
         """递归校验值是否符合 schema，返回错误列表"""
@@ -192,6 +226,14 @@ class Tool(ABC):
                     errors.append(
                         f"不允许额外字段：{path + '.' + k if path else k}"
                     )
+                elif isinstance(schema.get("additionalProperties"), dict):
+                    errors.extend(
+                        self._validate(
+                            v,
+                            cast(dict[str, Any], schema["additionalProperties"]),
+                            f"{path}.{k}" if path else k,
+                        )
+                    )
 
         if t == "array" and "items" in schema:
             array_value = cast(list[Any], val)
@@ -209,6 +251,6 @@ class Tool(ABC):
         fn: dict[str, Any] = {
             "name": self.name,
             "description": self.description,
-            "parameters": self.parameters,
+            "parameters": normalize_tool_parameters(self.parameters),
         }
         return {"type": "function", "function": fn}

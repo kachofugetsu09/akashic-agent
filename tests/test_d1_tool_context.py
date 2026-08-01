@@ -5,7 +5,10 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from unittest.mock import AsyncMock
 
+from agent.mcp.client import McpToolInfo
+from agent.mcp.tool import McpToolWrapper
 from agent.tools.base import Tool, get_current_tool_context
 from agent.tools.memorize import MemorizeTool
 from agent.tools.message_push import MessagePushTool
@@ -134,3 +137,88 @@ def test_registry_fork_does_not_clone_mutable_context_storage():
     registry.set_context(channel="mobile", chat_id="conversation-a")
     fork = registry.fork()
     assert fork.get_execution_context() == registry.get_execution_context()
+
+
+def test_set_context_rejects_mixed_legacy_and_origin_aliases():
+    registry = ToolRegistry()
+
+    with pytest.raises(TypeError, match="不能同时使用"):
+        registry.set_context(
+            channel="mobile",
+            origin_channel="telegram",
+        )
+
+
+@pytest.mark.asyncio
+async def test_execute_does_not_accept_context_override():
+    registry = ToolRegistry()
+    registry.register(_ContextProbe(), always_on=True)
+    registry.set_context(channel="mobile", chat_id="conversation-a")
+
+    with pytest.raises(TypeError, match="context"):
+        await registry.execute(
+            "context_probe",
+            {"value": "x"},
+            context=None,  # type: ignore[call-arg]
+        )
+
+
+@pytest.mark.asyncio
+async def test_mcp_schema_omitted_additional_properties_remains_open():
+    client = AsyncMock()
+    client.name = "calendar"
+    client.call.return_value = "ok"
+    wrapper = McpToolWrapper(
+        client,
+        McpToolInfo(
+            name="create_event",
+            description="create event",
+            input_schema={"type": "object", "properties": {"title": {}}},
+        ),
+    )
+    registry = ToolRegistry()
+    registry.register(wrapper, source_type="mcp", source_name="calendar")
+
+    schema = registry.get_schemas()[0]["function"]["parameters"]
+    assert schema["additionalProperties"] is True
+    result = await registry.execute(
+        "mcp_calendar__create_event",
+        {"title": "demo", "timezone": "Asia/Shanghai"},
+    )
+
+    assert result == "ok"
+    client.call.assert_awaited_once_with(
+        "create_event",
+        {"title": "demo", "timezone": "Asia/Shanghai"},
+        timeout=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_mcp_schema_explicit_false_rejects_unknown_fields():
+    client = AsyncMock()
+    client.name = "calendar"
+    wrapper = McpToolWrapper(
+        client,
+        McpToolInfo(
+            name="create_event",
+            description="create event",
+            input_schema={
+                "type": "object",
+                "properties": {"title": {}},
+                "additionalProperties": False,
+            },
+        ),
+    )
+    registry = ToolRegistry()
+    registry.register(wrapper, source_type="mcp", source_name="calendar")
+
+    schema = registry.get_schemas()[0]["function"]["parameters"]
+    assert schema["additionalProperties"] is False
+    result = await registry.execute(
+        "mcp_calendar__create_event",
+        {"title": "demo", "timezone": "Asia/Shanghai"},
+    )
+
+    assert "不允许额外字段" in str(result)
+    client.call.assert_not_awaited()

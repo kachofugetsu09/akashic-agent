@@ -10,6 +10,7 @@ from agent.tools.base import (
     Tool,
     ToolExecutionContext,
     ToolResult,
+    normalize_tool_parameters,
     tool_execution_context_scope,
 )
 from agent.tools.search_backend import KeywordSearchBackend, SearchBackend
@@ -46,6 +47,56 @@ def _tool_defines_parameter(tool: Tool, name: str) -> bool:
     parameters: dict[str, Any] = tool.parameters or {}
     properties = parameters.get("properties")
     return isinstance(properties, dict) and name in properties
+
+
+def _validate_structure(
+    value: Any,
+    schema: dict[str, Any],
+    path: str = "",
+) -> list[str]:
+    """Validate only object shape, leaving domain values to the tool."""
+
+    if schema.get("type") == "object":
+        if not isinstance(value, dict):
+            return []
+        errors: list[str] = []
+        properties = schema.get("properties", {})
+        if not isinstance(properties, dict):
+            properties = {}
+        for name in schema.get("required", []):
+            if name not in value:
+                errors.append(f"缺少必填字段：{path + '.' + name if path else name}")
+        additional = schema.get("additionalProperties")
+        for name, child in value.items():
+            if name in properties and isinstance(properties[name], dict):
+                errors.extend(
+                    _validate_structure(
+                        child,
+                        cast(dict[str, Any], properties[name]),
+                        f"{path}.{name}" if path else name,
+                    )
+                )
+            elif additional is False:
+                errors.append(f"不允许额外字段：{path + '.' + name if path else name}")
+            elif isinstance(additional, dict):
+                errors.extend(
+                    _validate_structure(
+                        child,
+                        cast(dict[str, Any], additional),
+                        f"{path}.{name}" if path else name,
+                    )
+                )
+        return errors
+    if schema.get("type") == "array" and isinstance(value, list):
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            errors: list[str] = []
+            for index, item in enumerate(value):
+                errors.extend(
+                    _validate_structure(item, cast(dict[str, Any], item_schema), f"{path}[{index}]")
+                )
+            return errors
+    return []
 
 
 def _with_progress_description(schema: dict[str, Any], tool: Tool) -> dict[str, Any]:
@@ -168,6 +219,7 @@ class ToolRegistry:
         backend: SearchBackend | None = None,
         *,
         follow_runtime_snapshot: bool = True,
+        validate_semantic_schema: bool = True,
     ) -> None:
         self._tools: dict[str, Tool] = {}
         self._metadata: dict[str, ToolMeta] = {}
@@ -178,6 +230,7 @@ class ToolRegistry:
         )
         self._backend: SearchBackend = backend or KeywordSearchBackend()
         self._snapshot_view = not follow_runtime_snapshot
+        self._validate_semantic_schema = validate_semantic_schema
 
     def fork(
         self,
@@ -186,7 +239,10 @@ class ToolRegistry:
         excluded_sources: set[tuple[str, str]] | None = None,
     ) -> "ToolRegistry":
         backend = deepcopy(self._backend)
-        cloned = ToolRegistry(backend=backend)
+        cloned = ToolRegistry(
+            backend=backend,
+            validate_semantic_schema=self._validate_semantic_schema,
+        )
         excluded_types = excluded_source_types or set()
         excluded_pairs = excluded_sources or set()
         names = [
@@ -235,6 +291,17 @@ class ToolRegistry:
         unknown = sorted(set(kwargs) - allowed)
         if unknown:
             raise TypeError(f"工具上下文包含未知字段: {', '.join(unknown)}")
+        legacy_fields = {"channel", "chat_id", "session_key"}
+        origin_fields = {
+            "origin_channel",
+            "origin_chat_id",
+            "origin_session_key",
+        }
+        if legacy_fields.intersection(kwargs) and origin_fields.intersection(kwargs):
+            raise TypeError(
+                "工具上下文不能同时使用 legacy channel/chat_id/session_key "
+                "和 origin_* 字段"
+            )
         self_context = ToolExecutionContext(
             origin_channel=str(
                 kwargs.get("origin_channel", kwargs.get("channel", ""))
@@ -498,7 +565,6 @@ class ToolRegistry:
         arguments: dict[str, Any],
         *,
         internal_arguments: dict[str, Any] | None = None,
-        context: ToolExecutionContext | None = None,
         raise_errors: bool = False,
         execution_timeout: float | None = None,
     ) -> str | ToolResult:
@@ -508,7 +574,6 @@ class ToolRegistry:
                 name,
                 arguments,
                 internal_arguments=internal_arguments,
-                context=context,
                 raise_errors=raise_errors,
                 execution_timeout=execution_timeout,
             )
@@ -527,10 +592,20 @@ class ToolRegistry:
         validation_arguments = dict(arguments)
         if not _tool_defines_parameter(tool, _PROGRESS_DESCRIPTION_FIELD):
             validation_arguments.pop(_PROGRESS_DESCRIPTION_FIELD, None)
-        properties = (tool.parameters or {}).get("properties", {})
+        source_type = self._documents[name].source_type
+        parameter_schema = normalize_tool_parameters(
+            tool.parameters or {},
+            open_object=source_type == "mcp",
+        )
+        properties = parameter_schema.get("properties", {})
         known_names = set(properties) if isinstance(properties, dict) else set()
-        unknown_names = sorted(
-            str(key) for key in validation_arguments if key not in known_names
+        additional = parameter_schema.get("additionalProperties", False)
+        unknown_names = (
+            []
+            if additional is not False
+            else sorted(
+                str(key) for key in validation_arguments if key not in known_names
+            )
         )
         if unknown_names:
             message = f"工具参数无效: 不允许额外字段：{', '.join(unknown_names)}"
@@ -538,7 +613,16 @@ class ToolRegistry:
                 raise ValueError(message)
             return message
 
-        validation_errors = tool.validate_params(validation_arguments)
+        if self._validate_semantic_schema:
+            validation_errors = tool.validate_params(
+                validation_arguments,
+                schema=parameter_schema,
+            )
+        else:
+            validation_errors = _validate_structure(
+                validation_arguments,
+                parameter_schema,
+            )
         if validation_errors:
             message = "; ".join(validation_errors)
             if raise_errors:
@@ -574,7 +658,7 @@ class ToolRegistry:
             merged = dict(validation_arguments)
             if internal_arguments:
                 merged.update(internal_arguments)
-            execution_context = context or self._execution_context.get()
+            execution_context = self._execution_context.get()
             with tool_execution_context_scope(execution_context):
                 return await tool.execute_with_timeout(
                     merged,
