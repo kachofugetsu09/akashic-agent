@@ -47,3 +47,20 @@ def test_plugin_skill_routes_standalone_mcp_to_workspace_skill(tmp_path: Path) -
     assert "插件内 MCP" in record.description
     assert "独立本地 MCP server 使用 manage-workspace-mcp" in record.when_to_use
     assert "加载 `manage-workspace-mcp`" in body
+
+
+def test_plugin_skill_requires_async_uninstall_final_state_validation(tmp_path: Path) -> None:
+    loader = SkillsLoader(tmp_path, builtin_skills_dir=REPO_ROOT / "skills")
+    body = loader.load_skill_body("plugin-system")
+
+    assert body is not None
+    for contract in (
+        "只表示请求已受理，不表示已经完成",
+        "表示正在排空，不是失败，也不是完成",
+        "不要在同一 turn 反复等待或再次执行 `plugin-uninstall`",
+        "manifest.toml 不再包含该 plugin ID",
+        "cache/<marketplace>/<plugin>/ 不存在",
+        "卸载前已存在的 <workspace>/plugin-data/<plugin>-<marketplace>/ 仍存在",
+        "任一条件不满足时返回非零退出码",
+    ):
+        assert contract in body

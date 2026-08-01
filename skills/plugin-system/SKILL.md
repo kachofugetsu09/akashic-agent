@@ -80,6 +80,8 @@ python main.py plugin-doctor <name>@github
 
 `plugin-doctor` 只证明插件结构、根目录与声明可加载，不证明某个具体 skill 已安装，也不能代替真实行为验证。不要用中途检查、手动改 cache 后的结果或 doctor healthy 推断最终成功。
 
+删除类操作使用对应章节的 absence oracle，不套用上面的“目标文件存在”判定。
+
 ## 启用与禁用
 
 使用管理命令修改 `manifest.toml` 对应条目的 `enabled`。运行中的 watcher 会自动完成启停，不需要重启进程。
@@ -95,7 +97,19 @@ python main.py plugin-enable demo@github
 python main.py plugin-uninstall demo@github
 ```
 
-卸载删除 manifest 条目与 cache，始终保留插件 data。不要手动删除 data、配置、Token、数据库或模型。
+执行前记录对应的 manifest 条目、cache 路径，以及 plugin-data 是否存在。卸载命令返回“卸载已安排”或 operation ID，只表示请求已受理，不表示已经完成。
+
+当前 turn 可能仍持有包含该插件的 runtime snapshot lease。此时 `enabled = false` 且 cache 仍存在表示正在排空，不是失败，也不是完成。不要在同一 turn 反复等待或再次执行 `plugin-uninstall`；先明确报告“卸载已安排，正在排空”，在后续 turn 从最终状态重新验收。
+
+只有同时满足以下条件，才能报告“卸载完成”：
+
+```text
+┌─ ~/.akashic-plugin/manifest.toml 不再包含该 plugin ID
+├─ ~/.akashic-plugin/cache/<marketplace>/<plugin>/ 不存在
+└─ 卸载前已存在的 <workspace>/plugin-data/<plugin>-<marketplace>/ 仍存在
+```
+
+验收命令必须让任一条件不满足时返回非零退出码；不要用末尾的 `echo` 或无条件成功命令掩盖失败。后续 turn 仍停在排空状态或 operation 明确失败时，检查 operation 与 runtime 日志；不要手动删除 cache、data、配置、Token、数据库或模型。
 
 ## 配置
 
