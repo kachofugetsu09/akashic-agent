@@ -248,10 +248,13 @@ def test_every_p0_oracle_declares_a_known_wrong_mutant() -> None:
     } == {}
 
 
-def test_public_plan_contains_no_private_provider_identity() -> None:
+def test_public_plan_contains_no_private_provider_identity(
+    monkeypatch: Any,
+) -> None:
     gate = _gate_module()
     if not gate.BASELINE_PATH.is_file() or not (ROOT / ".git").exists():
         return
+    monkeypatch.setattr(gate, "audit_catalog", lambda _catalog: {"status": "passed"})
     plan = cast(dict[str, Any], gate.build_plan("HEAD"))
 
     assert "providers" not in plan
