@@ -4,6 +4,8 @@ import asyncio
 import errno
 import json
 import os
+import pwd
+import signal
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -62,6 +64,95 @@ def test_live_privileged_group_permission_error_stays_loud(
 
     with pytest.raises(PermissionError, match="Operation not permitted"):
         unified_exec_module._kill_remaining_process_group(SimpleNamespace(pid=12345))
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or not hasattr(os, "geteuid") or os.geteuid() != 0,
+    reason="Gate 容器需要 root 创建真实跨 UID 进程组",
+)
+def test_real_cross_uid_live_process_group_returns_eperm() -> None:
+    """在隔离容器中复现非特权 owner 无法清理 root 后代。"""
+
+    nobody = pwd.getpwnam("nobody")
+    leader_ready_r, leader_ready_w = os.pipe()
+    leader_stop_r, leader_stop_w = os.pipe()
+    residual_ready_r, residual_ready_w = os.pipe()
+    result_r, result_w = os.pipe()
+    leader_pid = -1
+    residual_pid = -1
+    controller_pid = -1
+    try:
+        # 1. 创建 nobody 进程组 leader，再让 root sibling 加入该组。
+        leader_pid = os.fork()
+        if leader_pid == 0:
+            os.close(leader_ready_r)
+            os.close(leader_stop_w)
+            os.setpgid(0, 0)
+            os.setgroups([])
+            os.setgid(nobody.pw_gid)
+            os.setuid(nobody.pw_uid)
+            os.write(leader_ready_w, b"ready")
+            os.read(leader_stop_r, 1)
+            os._exit(0)
+        os.close(leader_ready_w)
+        os.close(leader_stop_r)
+        assert os.read(leader_ready_r, 5) == b"ready"
+
+        residual_pid = os.fork()
+        if residual_pid == 0:
+            os.close(residual_ready_r)
+            os.setpgid(0, leader_pid)
+            os.write(residual_ready_w, b"ready")
+            while True:
+                signal.pause()
+        os.close(residual_ready_w)
+        assert os.read(residual_ready_r, 5) == b"ready"
+
+        # 2. leader 退出后，目标组只剩 root 活进程。
+        os.write(leader_stop_w, b"x")
+        os.waitpid(leader_pid, 0)
+        leader_pid = -1
+
+        # 3. nobody controller 调用真实 cleanup，必须得到 EPERM。
+        controller_pid = os.fork()
+        if controller_pid == 0:
+            os.close(result_r)
+            os.setgroups([])
+            os.setgid(nobody.pw_gid)
+            os.setuid(nobody.pw_uid)
+            try:
+                unified_exec_module._kill_remaining_process_group(
+                    SimpleNamespace(pid=os.getpgid(residual_pid))
+                )
+            except PermissionError as exc:
+                os.write(result_w, str(exc.errno).encode())
+            else:
+                os.write(result_w, b"success")
+            os._exit(0)
+        os.close(result_w)
+        assert os.read(result_r, 32) == str(errno.EPERM).encode()
+        os.waitpid(controller_pid, 0)
+        controller_pid = -1
+    finally:
+        for fd in (
+            leader_ready_r,
+            leader_stop_w,
+            residual_ready_r,
+            result_r,
+        ):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if controller_pid > 0:
+            os.kill(controller_pid, signal.SIGKILL)
+            os.waitpid(controller_pid, 0)
+        if leader_pid > 0:
+            os.kill(leader_pid, signal.SIGKILL)
+            os.waitpid(leader_pid, 0)
+        if residual_pid > 0:
+            os.kill(residual_pid, signal.SIGKILL)
+            os.waitpid(residual_pid, 0)
 
 
 def test_head_tail_keeps_prefix_and_suffix_when_over_budget() -> None:
@@ -318,9 +409,24 @@ async def test_failed_owner_cleanup_retains_execution_and_quarantines_new_spawn(
                 owner_session_key=owner,
             )
 
+        other = await manager.exec_command(
+            command="sleep 30",
+            argv=["/bin/sh", "-c", "sleep 30"],
+            cwd=None,
+            env=dict(os.environ),
+            tty=False,
+            yield_time_ms=250,
+            max_output_tokens=100,
+            hard_timeout_s=60,
+            owner_session_key="mobile:other-owner",
+        )
+        assert other.execution_id is not None
+
         monkeypatch.setattr(manager, "_remove_execution", original_remove)
         retry = await manager.terminate_owner(owner)
         assert retry.failed_execution_ids == ()
+        other_cleanup = await manager.terminate_owner("mobile:other-owner")
+        assert other_cleanup.failed_execution_ids == ()
         assert await manager.active_execution_ids() == []
     finally:
         monkeypatch.setattr(manager, "_remove_execution", original_remove)

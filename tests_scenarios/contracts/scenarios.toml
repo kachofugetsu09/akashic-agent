@@ -86,6 +86,7 @@ command = [
   "tests/control/test_control_execution.py::test_committed_control_turn_survives_shell_cleanup_error",
   "tests/test_unified_exec.py::test_zombie_only_permission_error_does_not_fail_completed_cleanup",
   "tests/test_unified_exec.py::test_live_privileged_group_permission_error_stays_loud",
+  "tests/test_unified_exec.py::test_real_cross_uid_live_process_group_returns_eperm",
   "tests/test_unified_exec.py::test_failed_owner_cleanup_retains_execution_and_quarantines_new_spawn",
   "tests/test_agent_restart.py::test_boot_guardian_reaps_adopted_zombie_while_gateway_runs",
   "tests/test_agent_restart.py::test_supervisor_logs_cleanup_failure_and_still_starts_next_boot",

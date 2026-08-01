@@ -17,6 +17,7 @@ from typing import Any, cast
 
 import pytest
 
+import agent.background.boot_guardian as boot_guardian_module
 from agent.control.context import current_turn_id
 from agent.control.errors import RuntimeClosedError
 from agent.control.models import TurnRequest
@@ -1016,7 +1017,7 @@ def test_supervisor_logs_cleanup_failure_and_still_starts_next_boot(
 
     monkeypatch.setattr(supervisor_module, "_wait_child", wait_child)
     monkeypatch.setattr(
-        supervisor_module,
+        boot_guardian_module,
         "_cleanup_boot_processes",
         lambda **_kwargs: (_ for _ in ()).throw(
             PermissionError(errno.EPERM, "Operation not permitted")
