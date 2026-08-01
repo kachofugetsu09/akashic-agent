@@ -119,6 +119,9 @@ const LazyChatMessageView = lazy(() =>
 const LazyMobileShowcase = lazy(() =>
   import("./mobile-showcase").then(({ MobileShowcase }) => ({ default: MobileShowcase })),
 );
+const LazySharedChatShowcase = lazy(() =>
+  import("./shared-chat-showcase").then(({ SharedChatShowcase }) => ({ default: SharedChatShowcase })),
+);
 const LazySettingsApp = lazy(() =>
   import("./settings-app").then(({ SettingsApp }) => ({ default: SettingsApp })),
 );
@@ -1054,11 +1057,15 @@ function sessionLabel(session: SessionRow) {
   return title.length > 28 ? `${title.slice(0, 28)}...` : title;
 }
 
-const isMobileShowcase = new URLSearchParams(window.location.search).get("preview") === "mobile";
+const preview = new URLSearchParams(window.location.search).get("preview");
+const isMobileShowcase = preview === "mobile";
+const isSharedChatShowcase = preview === "chat";
 const rootApp = window.location.port === "6321"
   ? <LazySettingsApp />
   : isMobileShowcase
     ? <LazyMobileShowcase />
+    : isSharedChatShowcase
+      ? <LazySharedChatShowcase />
     : <App />;
 
 createRoot(document.getElementById("root")!).render(
