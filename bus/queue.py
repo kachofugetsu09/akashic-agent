@@ -16,6 +16,8 @@ _T = TypeVar("_T")
 
 DEFAULT_MESSAGE_BUS_CAPACITY = 256
 DEFAULT_MESSAGE_BUS_BYTES = 4 * 1024 * 1024
+_INBOUND_CLEANUP_RETRY_INITIAL_DELAY = 0.1
+_INBOUND_CLEANUP_RETRY_MAX_DELAY = 5.0
 
 
 class MessageBusCapacityError(RuntimeError):
@@ -181,6 +183,15 @@ class _ChatLaneState:
         default_factory=lambda: set[int]()
     )
     sending: bool = False
+
+
+@dataclass
+class _InboundOwner:
+    """在 durable cleanup 确认前保持 accepted inbound item 的强引用。"""
+
+    item: InboundItem
+    item_bytes: int
+    cleanup_pending: bool = False
 
 
 class ChatLane:
@@ -374,7 +385,9 @@ class MessageBus:
         self._inbound: asyncio.Queue[InboundItem] = asyncio.Queue(maxsize=inbound_capacity)
         self._outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue(maxsize=outbound_capacity)
         self._inbound_bytes = 0
-        self._inbound_accepted: dict[int, int] = {}
+        self._inbound_accepted: dict[int, _InboundOwner] = {}
+        self._inbound_cleanup_tasks: dict[int, asyncio.Task[None]] = {}
+        self._inbound_cleanup_error: BaseException | None = None
         self._recovery_claimed: set[str] = set()
         self._outbound_bytes = 0
         self._inbound_reserved_items = 0
@@ -402,6 +415,7 @@ class MessageBus:
     async def recover_durable_inbounds(self) -> None:
         """在有界 bus slot 内重放尚未完成的移动 handoff。"""
 
+        self._raise_inbound_cleanup_error()
         store = self._durable_inbound_store
         if store is None:
             return
@@ -432,6 +446,9 @@ class MessageBus:
                     error.reason,
                 )
                 break
+            except BaseException:
+                self._recovery_claimed.discard(handoff_id)
+                raise
 
     def has_pending_mobile_handoff(
         self,
@@ -462,6 +479,7 @@ class MessageBus:
 
     async def publish_inbound(self, msg: InboundItem) -> None:
         """将渠道输入交给 Agent 消费。"""
+        self._raise_inbound_cleanup_error()
         await self._publish_inbound(msg, allow_existing_handoff=False)
 
     async def _publish_inbound(
@@ -528,7 +546,10 @@ class MessageBus:
             finally:
                 self._inbound_reserved_items -= 1
                 self._inbound_reserved_bytes -= item_bytes
-            self._inbound_accepted[id(msg)] = item_bytes
+            self._inbound_accepted[id(msg)] = _InboundOwner(
+                item=msg,
+                item_bytes=item_bytes,
+            )
             self._inbound_bytes += item_bytes
 
     async def consume_inbound(self) -> InboundItem:
@@ -536,36 +557,145 @@ class MessageBus:
         return await self._inbound.get()
 
     async def complete_inbound(self, msg: InboundItem) -> None:
+        self._raise_inbound_cleanup_error()
         item_bytes = _wire_size(msg)
         async with self._admission_lock:
-            accepted = self._inbound_accepted.get(id(msg))
-            if accepted is None:
+            owner = self._inbound_accepted.get(id(msg))
+            if owner is None or owner.item is not msg:
                 raise RuntimeError("inbound 未被接受或已完成")
-            if accepted != item_bytes:
+            if owner.item_bytes != item_bytes:
                 raise RuntimeError("inbound ownership bytes 不一致")
+            if owner.cleanup_pending:
+                raise RuntimeError("inbound cleanup 已在重试中")
         if isinstance(msg, InboundMessage) and msg.handoff_id is not None:
             store = self._durable_inbound_store
             if store is None:
                 raise RuntimeError("mobile inbound durable handoff store 未绑定")
             try:
                 store.complete_inbound_handoff(msg.handoff_id)
-            except Exception as error:
+            except OSError as error:
                 logger.error(
                     "message_bus cleanup_degraded: retained inbound owner "
                     "handoff=%s error=%s",
                     msg.handoff_id,
                     error,
                 )
+                owner.cleanup_pending = True
+                self._schedule_inbound_cleanup_retry(id(msg))
                 raise
-        await self._chat_lane.mark_passive_done(msg.channel, msg.chat_id)
+            except Exception as error:
+                self._record_inbound_cleanup_fatal(error, id(msg))
+                raise
+        await self._finalize_inbound_owner(id(msg), owner)
+
+    def _raise_inbound_cleanup_error(self) -> None:
+        error = self._inbound_cleanup_error
+        if error is not None:
+            raise RuntimeError("message bus inbound cleanup owner failed") from error
+
+    def _record_inbound_cleanup_fatal(
+        self,
+        error: BaseException,
+        owner_key: int,
+    ) -> None:
+        if self._inbound_cleanup_error is None:
+            self._inbound_cleanup_error = error
+        logger.exception(
+            "message_bus event=runtime_fatal owner=message_bus.inbound_cleanup "
+            "owner_key=%s error=%s",
+            owner_key,
+            error,
+        )
+
+    def _schedule_inbound_cleanup_retry(self, owner_key: int) -> None:
+        """为 cleanup-only owner 启动唯一的退避重试 task。"""
+
+        existing = self._inbound_cleanup_tasks.get(owner_key)
+        if existing is not None and not existing.done():
+            raise RuntimeError(f"inbound cleanup retry 已存在: {owner_key}")
+        self._inbound_cleanup_tasks[owner_key] = asyncio.create_task(
+            self._retry_inbound_cleanup(owner_key),
+            name=f"message-bus-cleanup:{owner_key}",
+        )
+
+    async def _retry_inbound_cleanup(self, owner_key: int) -> None:
+        """只重试 durable handoff 删除，成功后释放原 accepted owner。"""
+
+        delay = _INBOUND_CLEANUP_RETRY_INITIAL_DELAY
+        attempt = 0
+        try:
+            while True:
+                await asyncio.sleep(delay)
+                owner = self._inbound_accepted.get(owner_key)
+                if owner is None:
+                    raise RuntimeError(f"inbound cleanup owner 丢失: {owner_key}")
+                if not owner.cleanup_pending:
+                    raise RuntimeError(f"inbound cleanup owner 状态非法: {owner_key}")
+                item = owner.item
+                if not isinstance(item, InboundMessage) or item.handoff_id is None:
+                    raise RuntimeError(f"cleanup owner 缺少 mobile handoff: {owner_key}")
+                store = self._durable_inbound_store
+                if store is None:
+                    raise RuntimeError("mobile inbound durable handoff store 未绑定")
+                try:
+                    store.complete_inbound_handoff(item.handoff_id)
+                except OSError as error:
+                    attempt += 1
+                    delay = min(_INBOUND_CLEANUP_RETRY_MAX_DELAY, delay * 2)
+                    logger.error(
+                        "message_bus cleanup_degraded: retry failed "
+                        "handoff=%s attempt=%s next_delay=%.3f error=%s",
+                        item.handoff_id,
+                        attempt,
+                        delay,
+                        error,
+                    )
+                    continue
+                try:
+                    await self._finalize_inbound_owner(owner_key, owner)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    self._record_inbound_cleanup_fatal(error, owner_key)
+                return
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self._record_inbound_cleanup_fatal(error, owner_key)
+        finally:
+            current = self._inbound_cleanup_tasks.get(owner_key)
+            if current is asyncio.current_task():
+                self._inbound_cleanup_tasks.pop(owner_key, None)
+
+    async def _finalize_inbound_owner(
+        self,
+        owner_key: int,
+        owner: _InboundOwner,
+    ) -> None:
+        """确认 lane 完成后释放 accepted owner，并继续有限 durable pump。"""
+
+        item = owner.item
+        await self._chat_lane.mark_passive_done(item.channel, item.chat_id)
         async with self._admission_lock:
-            released = self._inbound_accepted.pop(id(msg), None)
-            if released != accepted:
+            current = self._inbound_accepted.pop(owner_key, None)
+            if current is not owner:
                 raise RuntimeError("inbound ownership changed during completion")
-            self._inbound_bytes -= released
-        if isinstance(msg, InboundMessage) and msg.handoff_id is not None:
-            self._recovery_claimed.discard(msg.handoff_id)
+            self._inbound_bytes -= owner.item_bytes
+        if isinstance(item, InboundMessage) and item.handoff_id is not None:
+            self._recovery_claimed.discard(item.handoff_id)
         await self.recover_durable_inbounds()
+
+    async def aclose(self) -> None:
+        """停止出站循环并收束所有 cleanup-only retry task。"""
+
+        self.stop()
+        tasks = tuple(self._inbound_cleanup_tasks.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._inbound_cleanup_tasks.clear()
+        self._raise_inbound_cleanup_error()
 
     async def publish_outbound(self, msg: OutboundMessage) -> None:
         """将 Agent 输出交给对应渠道发送。"""

@@ -432,34 +432,87 @@ class SessionStore:
         )
         if not all(isinstance(value, str) and value for value in fields if value is not None):
             raise ValueError("inbound handoff fields must be non-empty strings")
+        identity = {
+            "dedupe_key": dedupe_key,
+            "channel": channel,
+            "sender": sender,
+            "chat_id": chat_id,
+            "session_key": session_key,
+            "content": content,
+            "timestamp": timestamp,
+            "media_json": media_json,
+            "metadata_json": metadata_json,
+        }
+        stable_identity = {
+            key: value for key, value in identity.items() if key != "timestamp"
+        }
+
+        def validate_existing(row: sqlite3.Row, *, include_timestamp: bool) -> None:
+            expected_identity = identity if include_timestamp else stable_identity
+            for column, expected in expected_identity.items():
+                if row[column] != expected:
+                    raise RuntimeError(
+                        "inbound handoff identity conflict: "
+                        f"handoff_id={handoff_id} field={column}"
+                    )
+
         with self._lock:
+            existing_by_id = self._conn.execute(
+                "SELECT * FROM inbound_handoffs WHERE handoff_id = ?",
+                (handoff_id,),
+            ).fetchone()
             if dedupe_key is not None:
-                existing = self._conn.execute(
-                    "SELECT handoff_id FROM inbound_handoffs WHERE dedupe_key = ?",
+                existing_by_dedupe = self._conn.execute(
+                    "SELECT * FROM inbound_handoffs WHERE dedupe_key = ?",
                     (dedupe_key,),
                 ).fetchone()
-                if existing is not None:
-                    return str(existing["handoff_id"]), False
-            self._conn.execute(
+            else:
+                existing_by_dedupe = None
+            if (
+                existing_by_id is not None
+                and existing_by_dedupe is not None
+                and existing_by_id["handoff_id"] != existing_by_dedupe["handoff_id"]
+            ):
+                raise RuntimeError(
+                    "inbound handoff identity conflict: handoff_id and dedupe_key differ"
+                )
+            existing = existing_by_id or existing_by_dedupe
+            if existing is not None:
+                validate_existing(existing, include_timestamp=existing_by_id is not None)
+                return str(existing["handoff_id"]), False
+            cursor = self._conn.execute(
                 """
                 INSERT INTO inbound_handoffs(
                     handoff_id, dedupe_key, channel, sender, chat_id,
                     session_key, content, timestamp, media_json,
                     metadata_json, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(handoff_id) DO NOTHING
+                ON CONFLICT DO NOTHING
                 """,
                 fields,
             )
             row = self._conn.execute(
-                "SELECT handoff_id FROM inbound_handoffs WHERE handoff_id = ?",
+                "SELECT * FROM inbound_handoffs WHERE handoff_id = ?",
                 (handoff_id,),
             ).fetchone()
+            if row is None and dedupe_key is not None:
+                row = self._conn.execute(
+                    "SELECT * FROM inbound_handoffs WHERE dedupe_key = ?",
+                    (dedupe_key,),
+                ).fetchone()
             if row is None:
                 self._conn.rollback()
                 raise RuntimeError(f"inbound handoff disappeared: {handoff_id}")
-            self._conn.commit()
-            return str(row["handoff_id"]), True
+            try:
+                validate_existing(
+                    row,
+                    include_timestamp=row["handoff_id"] == handoff_id,
+                )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+            return str(row["handoff_id"]), cursor.rowcount == 1
 
     def list_inbound_handoffs(
         self,

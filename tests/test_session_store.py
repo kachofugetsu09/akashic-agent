@@ -179,6 +179,39 @@ def test_mobile_handoff_recovery_rejects_corrupt_json(tmp_path) -> None:
     store.close()
 
 
+def test_mobile_handoff_conflicting_reuse_fails_loud(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    base = {
+        "handoff_id": "handoff-1",
+        "dedupe_key": "mobile:session:client-1",
+        "channel": "mobile",
+        "sender": "device:1",
+        "chat_id": "mobile:session",
+        "session_key": "mobile:session",
+        "content": "hello",
+        "timestamp": NOW.isoformat(),
+        "media_json": "[]",
+        "metadata_json": '{"client_message_id":"client-1"}',
+        "created_at": NOW.isoformat(),
+    }
+    assert store.reserve_inbound_handoff(**base) == ("handoff-1", True)
+    assert store.reserve_inbound_handoff(**base | {"handoff_id": "handoff-2"}) == (
+        "handoff-1",
+        False,
+    )
+    with pytest.raises(RuntimeError, match="identity conflict"):
+        store.reserve_inbound_handoff(**base | {"content": "tampered"})
+    with pytest.raises(RuntimeError, match="identity conflict"):
+        store.reserve_inbound_handoff(
+            **base
+            | {
+                "handoff_id": "handoff-2",
+                "content": "tampered",
+            }
+        )
+    store.close()
+
+
 @pytest.mark.asyncio
 async def test_mobile_handoff_delete_failure_retains_owner_until_retry(
     tmp_path,
@@ -215,7 +248,11 @@ async def test_mobile_handoff_delete_failure_retains_owner_until_retry(
     assert len(store.list_inbound_handoffs()) == 1
     assert "cleanup_degraded" in caplog.text
 
-    await bus.complete_inbound(consumed)
+    async def retry_finished() -> None:
+        while bus.inbound_bytes:
+            await asyncio.sleep(0.02)
+
+    await asyncio.wait_for(retry_finished(), timeout=1)
     assert bus.inbound_bytes == 0
     assert bus._inbound_accepted == {}
     assert store.list_inbound_handoffs() == []
