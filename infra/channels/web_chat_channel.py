@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
+import os
 from pathlib import Path
+from collections.abc import AsyncIterable
 from typing import Any, cast
 from uuid import uuid4
 
@@ -28,6 +30,12 @@ from infra.channels.base import AttachmentStore
 from infra.channels.contract import ChannelContext
 
 logger = logging.getLogger(__name__)
+
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+
+
+class UploadTooLargeError(ValueError):
+    """上传内容超过单文件上限。"""
 
 
 class WebChatChannel:
@@ -98,15 +106,70 @@ class WebChatChannel:
             await self._remove_connection(websocket, session_keys)
 
     def save_upload(self, data: bytes, filename: str) -> dict[str, str]:
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise UploadTooLargeError("上传内容超过 50MB 限制")
         suffix = Path(filename).suffix
         if not suffix:
             guessed = mimetypes.guess_extension(mimetypes.guess_type(filename)[0] or "")
             suffix = guessed or ".bin"
-        path = self._require_attachment_store().write_bytes(
-            data,
-            prefix="web_",
-            suffix=suffix,
-        )
+        path = self._require_attachment_store().write_bytes(data, prefix="web_", suffix=suffix)
+        return self._upload_result(filename, path)
+
+    async def save_upload_stream(
+        self,
+        chunks: AsyncIterable[bytes],
+        filename: str,
+        *,
+        max_bytes: int = MAX_UPLOAD_BYTES,
+    ) -> dict[str, str]:
+        """在分配正式附件前有界读取，并以 fsync + replace 原子发布。"""
+
+        return await self._save_upload_stream(chunks, filename, max_bytes=max_bytes)
+
+    async def _save_upload_stream(
+        self,
+        chunks: AsyncIterable[bytes],
+        filename: str,
+        *,
+        max_bytes: int,
+    ) -> dict[str, str]:
+        if max_bytes <= 0:
+            raise ValueError("max_bytes must be positive")
+        suffix = Path(filename).suffix
+        if not suffix:
+            guessed = mimetypes.guess_extension(mimetypes.guess_type(filename)[0] or "")
+            suffix = guessed or ".bin"
+        store = self._require_attachment_store()
+        staging = store.create_staging_path(prefix=".web_", suffix=".part")
+        total = 0
+        try:
+            fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                async for chunk in chunks:
+                    if not isinstance(chunk, bytes):
+                        raise TypeError("上传 chunk 必须是 bytes")
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise UploadTooLargeError(f"上传内容超过 {max_bytes // (1024 * 1024)}MB 限制")
+                    handle.write(chunk)
+                if total == 0:
+                    raise ValueError("上传内容不能为空")
+                handle.flush()
+                os.fsync(handle.fileno())
+            path = store.publish_staging(staging, prefix="web_", suffix=suffix)
+        except BaseException as exc:
+            try:
+                staging.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                raise BaseExceptionGroup(
+                    "Web 上传 staging 清理失败",
+                    [exc, cleanup_error],
+                ) from exc
+            raise
+        return self._upload_result(filename, path)
+
+    @staticmethod
+    def _upload_result(filename: str, path: Path) -> dict[str, str]:
         return {
             "filename": filename,
             "upload_path": str(path),

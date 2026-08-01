@@ -5,7 +5,7 @@ from typing import Any
 
 from agent.control.context import current_turn_id
 from agent.restart import RestartCoordinator
-from agent.tools.base import Tool
+from agent.tools.base import Tool, get_current_tool_context
 from core.error_context import current_session_key
 
 
@@ -35,15 +35,18 @@ class AgentRestartTool(Tool):
     async def execute(
         self,
         reason: str,
-        channel: str = "",
-        chat_id: str = "",
         **_: Any,
     ) -> str:
+        context = get_current_tool_context()
         request = self._coordinator.arm(
-            turn_id=current_turn_id.get(),
-            session_key=current_session_key.get() or "",
-            channel=channel,
-            chat_id=chat_id,
+            turn_id=context.turn_id if context is not None else current_turn_id.get(),
+            session_key=(
+                context.origin_session_key
+                if context is not None
+                else current_session_key.get() or ""
+            ),
+            channel=context.origin_channel if context is not None else "",
+            chat_id=context.origin_chat_id if context is not None else "",
             reason=reason,
         )
         return json.dumps(

@@ -606,7 +606,15 @@ class MobileRealtimeChannel:
             raise
         finally:
             for snapshot in snapshots:
-                snapshot.path.unlink(missing_ok=True)
+                try:
+                    snapshot.path.unlink(missing_ok=True)
+                except OSError as cleanup_error:
+                    logger.error(
+                        "mobile proactive cleanup_degraded: 远程媒体临时快照清理失败 "
+                        "path=%s error=%s",
+                        snapshot.path,
+                        cleanup_error,
+                    )
 
     @staticmethod
     def _proactive_attachment_payload(

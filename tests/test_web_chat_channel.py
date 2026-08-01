@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -11,7 +12,7 @@ from starlette.websockets import WebSocketState
 from bootstrap.chat_api import create_chat_app
 from bus.events import OutboundMessage
 from infra.channels.base import AttachmentStore
-from infra.channels.web_chat_channel import WebChatChannel
+from infra.channels.web_chat_channel import UploadTooLargeError, WebChatChannel
 from session.manager import Session
 
 
@@ -236,6 +237,40 @@ def test_chat_upload_returns_local_path(tmp_path: Path) -> None:
     assert payload["filename"] == "note.txt"
     assert Path(payload["upload_path"]).is_file()
     assert payload["upload_url"].startswith("/api/chat/media?path=")
+
+
+@pytest.mark.asyncio
+async def test_chat_upload_stream_rejects_before_publishing_partial_file(tmp_path: Path) -> None:
+    channel = WebChatChannel()
+    store = AttachmentStore(tmp_path / "uploads")
+    channel._attachments = store
+
+    async def _chunks():
+        yield b"ab"
+        yield b"cd"
+
+    with pytest.raises(UploadTooLargeError):
+        await channel.save_upload_stream(_chunks(), "note.txt", max_bytes=3)
+
+    upload_root = tmp_path / "uploads"
+    assert not list(upload_root.glob("*.part"))
+    assert not list(upload_root.glob("web_*"))
+
+
+@pytest.mark.asyncio
+async def test_chat_upload_cancel_cleans_staging_without_swallowing_cancel(
+    tmp_path: Path,
+) -> None:
+    channel = WebChatChannel()
+    channel._attachments = AttachmentStore(tmp_path / "uploads")
+
+    async def _chunks():
+        yield b"ab"
+        raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        await channel.save_upload_stream(_chunks(), "note.txt")
+    assert not list((tmp_path / "uploads").glob("*.part"))
 
 
 def test_chat_media_reads_uploaded_file(tmp_path: Path) -> None:

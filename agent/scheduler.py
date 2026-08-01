@@ -654,8 +654,8 @@ class SchedulerService:
         label = job.name or job.id[:8]
         if job.tier == "instant":
             result = await self.push_tool.execute(
-                channel=job.channel,
-                chat_id=job.chat_id,
+                target_channel=job.channel,
+                target_chat_id=job.chat_id,
                 message=job.message,
             )
             logger.info(f"[scheduler] instant 推送完成 {label!r}: {result}")
@@ -683,8 +683,8 @@ class SchedulerService:
             )
             if content:
                 result = await self.push_tool.execute(
-                    channel=job.channel,
-                    chat_id=job.chat_id,
+                    target_channel=job.channel,
+                    target_chat_id=job.chat_id,
                     message=content,
                 )
                 logger.info(f"[scheduler] soft 推送完成 {label!r}: {result}")

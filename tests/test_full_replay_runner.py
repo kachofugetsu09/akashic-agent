@@ -259,10 +259,6 @@ def test_patch_config_preserves_history_target_and_disables_external_channel(tmp
         [proactive.target]
         channel = "telegram"
         chat_id = "7674283004"
-        [integrations]
-        [[integrations.peer_agents]]
-        name = "host-only"
-        cwd = "/host/path"
         """,
         encoding="utf-8",
     )

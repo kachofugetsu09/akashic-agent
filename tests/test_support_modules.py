@@ -169,8 +169,8 @@ async def test_message_push_tool_covers_success_failure_and_fallbacks():
 
     _ = tool.register_channel("telegram", deliver=deliver)
     result = await tool.execute(
-        channel="telegram",
-        chat_id=123,
+        target_channel="telegram",
+        target_chat_id=123,
         message="hello",
         file="/tmp/demo.txt",
         image="https://img",
@@ -182,10 +182,10 @@ async def test_message_push_tool_covers_success_failure_and_fallbacks():
     assert sent["file"] == [("123", "/tmp/demo.txt", "demo.txt")]
     assert sent["image"] == [("123", "https://img")]
 
-    assert await tool.execute(channel="telegram", chat_id=1) == (
+    assert await tool.execute(target_channel="telegram", target_chat_id=1) == (
         "错误：message、file、image 至少提供一个"
     )
-    assert "未注册" in await tool.execute(channel="qq", chat_id=1, message="x")
+    assert "未注册" in await tool.execute(target_channel="qq", target_chat_id=1, message="x")
 
     async def unsupported_file(
         _chat_id: str,
@@ -207,7 +207,7 @@ async def test_message_push_tool_covers_success_failure_and_fallbacks():
 
     _ = tool.register_channel("limited", deliver=limited_deliver)
     limited = await tool.execute(
-        channel="limited", chat_id=1, file="/tmp/a.txt", image="/tmp/a.png"
+        target_channel="limited", target_chat_id=1, file="/tmp/a.txt", image="/tmp/a.png"
     )
     assert "不支持发送文件" in limited
 
@@ -215,7 +215,7 @@ async def test_message_push_tool_covers_success_failure_and_fallbacks():
         raise RuntimeError("send failed")
 
     _register_text_channel(tool, "broken", broken)
-    assert "发送失败" in await tool.execute(channel="broken", chat_id=1, message="x")
+    assert "发送失败" in await tool.execute(target_channel="broken", target_chat_id=1, message="x")
 
 
 @pytest.mark.asyncio
@@ -230,8 +230,8 @@ async def test_message_push_routes_internal_metadata_only_to_capable_sender():
     _ = tool.register_channel("mobile", deliver=deliver)
 
     result = await tool.execute(
-        channel="mobile",
-        chat_id="123",
+        target_channel="mobile",
+        target_chat_id="123",
         message="hello",
         _outbound_metadata={"delivery_id": "delivery-1"},
     )
@@ -271,8 +271,8 @@ async def test_message_push_reports_partial_after_text_commit() -> None:
     _ = tool.register_channel("telegram", deliver=deliver)
 
     result = await tool.execute(
-        channel="telegram",
-        chat_id="1",
+        target_channel="telegram",
+        target_chat_id="1",
         message="正文",
         file="/tmp/report.pdf",
     )
@@ -313,8 +313,8 @@ async def test_message_push_non_passive_waits_for_passive_reply():
         await bus.complete_inbound(inbound)
         push_task = asyncio.create_task(
             tool.execute(
-                channel="cli",
-                chat_id="1",
+                target_channel="cli",
+                target_chat_id="1",
                 message="drift",
             )
         )
@@ -358,8 +358,8 @@ async def test_message_push_non_passive_resumes_after_silent_passive_turn():
     await bus.publish_inbound(inbound)
     push_task = asyncio.create_task(
         tool.execute(
-            channel="cli",
-            chat_id="1",
+            target_channel="cli",
+            target_chat_id="1",
             message="scheduler",
         )
     )
@@ -390,16 +390,16 @@ async def test_message_push_non_passive_same_chat_keeps_fifo_order():
     _register_text_channel(tool, "cli", text)
     first = asyncio.create_task(
         tool.execute(
-            channel="cli",
-            chat_id="1",
+            target_channel="cli",
+            target_chat_id="1",
             message="first",
         )
     )
     await asyncio.sleep(0)
     second = asyncio.create_task(
         tool.execute(
-            channel="cli",
-            chat_id="1",
+            target_channel="cli",
+            target_chat_id="1",
             message="second",
         )
     )
@@ -479,7 +479,7 @@ async def test_message_push_default_call_waits_for_passive_lane():
         InboundMessage(channel="cli", sender="user", chat_id="1", content="hello")
     )
     push_task = asyncio.create_task(
-        tool.execute(channel="cli", chat_id="1", message="inline")
+        tool.execute(target_channel="cli", target_chat_id="1", message="inline")
     )
 
     await asyncio.sleep(0.01)
@@ -510,8 +510,8 @@ async def test_message_push_passive_role_does_not_wait_for_passive_lane():
 
     result = await asyncio.wait_for(
         tool.execute(
-            channel="cli",
-            chat_id="1",
+            target_channel="cli",
+            target_chat_id="1",
             message="inline",
             _commit_role="passive",
         ),

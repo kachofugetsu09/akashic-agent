@@ -24,7 +24,6 @@ from agent.config_models import (
     MobileKeyEncryptionConfig,
     MobileRealtimeConfig,
     ModelRuntimeConfig,
-    PeerAgentConfig,
     QQChannelConfig,
     QQGroupConfig,
     TelegramChannelConfig,
@@ -100,6 +99,7 @@ def load_config(
 ) -> Config:
     workspace_path = Path(workspace)
     data = _load_config_data(path)
+    _reject_removed_peer_configuration(data)
 
     llm = _as_dict(data.get("llm"), field="llm")
     agent_cfg = _as_dict(data.get("agent"), field="agent")
@@ -135,7 +135,6 @@ def load_config(
         )
     proactive = _load_proactive_config(data)
     memory = _load_memory_config(data, workspace_path)
-    peer_agents = _load_peer_agents_config(data)
     wiring = _load_wiring_config(data)
 
     return Config(
@@ -225,7 +224,6 @@ def load_config(
             workspace=workspace_path,
         ),
         vl_base_url=str(llm_vl.get("base_url") or ""),
-        peer_agents=peer_agents,
         wiring=wiring,
         runtime_id=runtime_id,
         auth_id=str(llm_main.get("auth") or ""),
@@ -477,22 +475,19 @@ def _load_memory_config(data: dict, workspace: Path) -> MemoryConfig:
     )
 
 
-def _load_peer_agents_config(data: dict) -> list[PeerAgentConfig]:
-    integrations = _as_dict(data.get("integrations"), field="integrations")
-    peer_agents = integrations.get("peer_agents", data.get("peer_agents", []))
-    return [
-        PeerAgentConfig(
-            name=pa["name"],
-            base_url=pa["base_url"],
-            launcher=pa["launcher"],
-            cwd=pa.get("cwd"),
-            description=pa.get("description", ""),
-            health_path=pa.get("health_path", "/health"),
-            startup_timeout_s=int(pa.get("startup_timeout_s", 30)),
-            shutdown_timeout_s=int(pa.get("shutdown_timeout_s", 10)),
+def _reject_removed_peer_configuration(data: dict) -> None:
+    """Reject removed Peer configuration before loading any runtime settings."""
+
+    # 1. Check both legacy locations at the configuration boundary.
+    if "peer_agents" in data:
+        raise ValueError(
+            "unsupported capability: peer_agents; Peer capability has been removed"
         )
-        for pa in peer_agents
-    ]
+    integrations = data.get("integrations")
+    if isinstance(integrations, dict) and "peer_agents" in integrations:
+        raise ValueError(
+            "unsupported capability: integrations.peer_agents; Peer capability has been removed"
+        )
 
 
 def _load_wiring_config(data: dict) -> WiringConfig:
