@@ -49,6 +49,40 @@
   margin-block: 0 0.9em;
 }
 
+.agent-content :where(ul, ol) {
+  margin-block: 0 0.9em;
+  padding-inline-start: 1.5em;
+}
+
+.agent-content ul {
+  list-style: disc;
+}
+
+.agent-content ol {
+  list-style: decimal;
+}
+
+.agent-content :where(ul, ol) :where(ul, ol) {
+  margin-block: 0.35em 0;
+  padding-inline-start: 1.25em;
+}
+
+.agent-content li {
+  padding-inline-start: 0.2em;
+}
+
+.agent-content li + li {
+  margin-block-start: 0.35em;
+}
+
+.agent-content li::marker {
+  color: var(--m-on-surface-variant);
+}
+
+.agent-content li > p {
+  margin-block: 0;
+}
+
 .agent-content a {
   color: var(--m-primary);
   text-underline-position: from-font;

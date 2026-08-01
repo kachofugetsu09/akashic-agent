@@ -37,7 +37,10 @@ test("process plugin slots align with thinking and tool content", () => {
 test("desktop and mobile keep one shared conversation owner", () => {
   assert.match(sharedStyles, /\.tool-step-disclosure\s*\{/);
   assert.match(sharedStyles, /\.message-reply-reference\s*\{/);
+  assert.match(sharedStyles, /\.agent-content ul\s*\{[\s\S]*?list-style:\s*disc;/);
+  assert.match(sharedStyles, /\.agent-content ol\s*\{[\s\S]*?list-style:\s*decimal;/);
   assert.doesNotMatch(platformStyles, /\.tool-step-disclosure\s*\{/);
+  assert.doesNotMatch(platformStyles, /\.agent-content (?:ul|ol)\s*\{/);
   assert.doesNotMatch(desktopStyles, /\.tool-step-disclosure\s*\{/);
   assert.match(desktopSource, /import "\.\/message-view\.css";/);
   assert.match(mobileSource, /import "\.\/message-view\.css";/);
@@ -47,4 +50,15 @@ test("desktop and mobile keep one shared conversation owner", () => {
   assert.match(mobileSource, /<SharedMessageActions/);
   assert.doesNotMatch(mobileSource, /mobile-message-actions/);
   assert.doesNotMatch(mobileSource, /SwipeToReply|useMotionValue/);
+});
+
+test("mobile attachment previews preserve intrinsic aspect ratios", () => {
+  assert.match(
+    platformStyles,
+    /\.message-attachment-preview img\s*\{[^}]*inline-size:\s*auto;[^}]*max-inline-size:\s*100%;[^}]*block-size:\s*auto;[^}]*object-fit:\s*contain;/,
+  );
+  assert.doesNotMatch(
+    platformStyles,
+    /\.message-attachment-preview img\s*\{[^}]*\bwidth:\s*100%;/,
+  );
 });
