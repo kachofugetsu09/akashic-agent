@@ -9,7 +9,6 @@ from agent.tools.memorize import MemorizeTool
 from agent.tools.message_lookup import FetchMessagesTool, SearchMessagesTool
 from agent.tools.message_push import MessagePushTool
 from agent.tools.recall_memory import RecallMemoryTool
-from agent.tools.request_user_confirmation import RequestUserConfirmationTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.shell import ShellTaskStopTool, ShellTool, ShellWriteStdinTool
 from agent.tools.unified_exec import ShellProcessManager
@@ -50,11 +49,6 @@ def register_common_meta_tools(
 ) -> MessagePushTool:
     shell_manager = ShellProcessManager()
     tools.register(ToolSearchTool(tools), always_on=True, risk="read-only")
-    tools.register(
-        RequestUserConfirmationTool(),
-        always_on=True,
-        risk="read-only",
-    )
     tools.register(
         ShellTool(shell_manager),
         always_on=True,
