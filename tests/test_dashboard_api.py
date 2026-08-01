@@ -48,6 +48,13 @@ class _TrackedTestClient(_RawTestClient):
 TestClient = _TrackedTestClient
 
 
+@pytest.fixture(autouse=True)
+def _isolate_dashboard_plugin_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    """让 Dashboard 测试只观察各自声明的 HOME/manifest。"""
+
+    monkeypatch.delenv("AKASHIC_PLUGIN_HOME", raising=False)
+
+
 class _DashboardMemoryAdmin:
     def __init__(self, workspace) -> None:
         self._store = MemoryStore2(workspace / "memory" / "memory2.db")
