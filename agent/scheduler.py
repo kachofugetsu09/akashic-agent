@@ -35,6 +35,18 @@ from infra.persistence.json_store import atomic_save_json
 
 logger = logging.getLogger(__name__)
 _SCHEDULER_EXECUTION_CHANNEL = "scheduler"
+SCHEDULE_MAX_ACTIVE_JOBS = 10
+
+
+class ScheduleCapacityError(RuntimeError):
+    """表示新增任务会超过 workspace 全局活动任务上限。"""
+
+    code = "schedule_capacity_reached"
+
+    def __init__(self, *, active_jobs: int, max_active_jobs: int) -> None:
+        self.active_jobs = active_jobs
+        self.max_active_jobs = max_active_jobs
+        super().__init__(self.code)
 
 
 # ── LatencyTracker ───────────────────────────────────────────────
@@ -428,6 +440,7 @@ class SchedulerService:
     """
 
     GRACE_SECONDS = 300  # 5分钟内的 misfire 仍执行
+    MAX_ACTIVE_JOBS = SCHEDULE_MAX_ACTIVE_JOBS
 
     def __init__(
         self,
@@ -488,6 +501,17 @@ class SchedulerService:
             job.fire_at = job.fire_at.replace(tzinfo=timezone.utc)
         candidate = dict(self._jobs)
         candidate[job.id] = job
+        active_jobs = sum(
+            1 for current_job in self._jobs.values() if current_job.enabled
+        )
+        candidate_active_jobs = sum(
+            1 for candidate_job in candidate.values() if candidate_job.enabled
+        )
+        if candidate_active_jobs > self.MAX_ACTIVE_JOBS:
+            raise ScheduleCapacityError(
+                active_jobs=active_jobs,
+                max_active_jobs=self.MAX_ACTIVE_JOBS,
+            )
         self._commit_jobs(candidate)
         logger.info(
             f"Job added: {job.id[:8]} tier={job.tier} trigger={job.trigger} "

@@ -7,7 +7,12 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
-from agent.scheduler import LatencyTracker, SchedulerService, ScheduledJob
+from agent.scheduler import (
+    LatencyTracker,
+    ScheduleCapacityError,
+    SchedulerService,
+    ScheduledJob,
+)
 from tests.conftest import drain_tasks, make_job
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -252,6 +257,60 @@ def test_add_job_does_not_publish_memory_state_when_persistence_fails(
         svc.add_job(job)
 
     assert svc.list_jobs() == []
+
+
+def test_add_job_rejects_eleventh_active_job_without_write(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    for index in range(SchedulerService.MAX_ACTIVE_JOBS):
+        svc.add_job(make_job(name=f"job-{index}"))
+    before = svc.store.path.read_bytes()
+    svc.store.save = MagicMock(wraps=svc.store.save)
+
+    with pytest.raises(ScheduleCapacityError) as exc_info:
+        svc.add_job(make_job(name="overflow"))
+
+    assert exc_info.value.code == "schedule_capacity_reached"
+    assert exc_info.value.active_jobs == SchedulerService.MAX_ACTIVE_JOBS
+    assert len(svc.list_jobs()) == SchedulerService.MAX_ACTIVE_JOBS
+    assert svc.store.save.call_count == 0
+    assert svc.store.path.read_bytes() == before
+
+
+def test_add_job_replacement_does_not_consume_capacity(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    jobs = [
+        make_job(name=f"job-{index}")
+        for index in range(SchedulerService.MAX_ACTIVE_JOBS)
+    ]
+    for job in jobs:
+        svc.add_job(job)
+
+    replacement = make_job(name="replacement")
+    replacement.id = jobs[0].id
+    svc.add_job(replacement)
+
+    assert len(svc.list_jobs()) == SchedulerService.MAX_ACTIVE_JOBS
+    assert svc._jobs[replacement.id] is replacement
+
+
+def test_disabled_job_does_not_consume_capacity(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    for index in range(SchedulerService.MAX_ACTIVE_JOBS):
+        svc.add_job(make_job(name=f"job-{index}"))
+
+    disabled = make_job(name="disabled")
+    disabled.enabled = False
+    svc.add_job(disabled)
+
+    assert len(svc._jobs) == SchedulerService.MAX_ACTIVE_JOBS + 1
+    with pytest.raises(ScheduleCapacityError):
+        svc.add_job(make_job(name="overflow"))
 
 
 def test_cancel_job_keeps_memory_state_when_persistence_fails(
