@@ -235,6 +235,21 @@ async def test_local_service_keeps_local_network_transport() -> None:
 
 
 @pytest.mark.asyncio
+async def test_web_fetch_profile_allows_private_targets_without_weakening_external_profiles() -> None:
+    resources = SharedHttpResources()
+
+    try:
+        resources.web_fetch.validate_external_url("http://127.0.0.1:8080/status")
+        resources.web_fetch.validate_external_url("http://router.local/status")
+        assert resources.web_fetch.allow_private_targets is True
+        assert resources.web_fetch.safe_transport is None
+        assert resources.external_default.allow_private_targets is False
+        assert isinstance(resources.external_default.client._transport, SafeExternalTransport)
+    finally:
+        await resources.aclose()
+
+
+@pytest.mark.asyncio
 async def test_shared_http_resources_aclose_is_idempotent():
     resources = SharedHttpResources()
 

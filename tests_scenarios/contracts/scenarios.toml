@@ -267,7 +267,7 @@ groups = ["companion_external_io"]
 environment = "public_clean_workspace"
 timeout_seconds = 60
 command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_external_io_rejects_ownerless_spill_mutant", "tests/test_http_resources.py", "tests/test_http_migrations.py", "tests/test_channel_clients.py", "tests/mobile_realtime/test_attachments.py", "tests/mobile_realtime/test_channel.py", "tests/mobile_realtime/test_gateway.py", "tests/mobile_realtime/test_storage.py", "tests/test_web_chat_channel.py"]
-observes = ["redirect_hop_target", "stream_byte_count", "spill_owner", "spill_lifetime", "cleanup_diagnostic", "attachment_write_set", "logical_message_receipt", "target_device_commit", "failure_semantics"]
+observes = ["redirect_hop_url", "stream_byte_count", "spill_owner", "spill_lifetime", "cleanup_diagnostic", "attachment_write_set", "logical_message_receipt", "target_device_commit", "failure_semantics"]
 mutants = ["companion_external_io_spill_owner"]
 
 [scenarios.companion_peer_removal_contract]
@@ -302,8 +302,8 @@ requirements = ["SEC-006", "MOB-003", "PLG-003", "PLG-004", "ERR-001", "TST-001"
 groups = ["companion_mobile"]
 environment = "public_clean_workspace"
 timeout_seconds = 60
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_receipt_retention_rejects_valid_delete_mutant", "tests/mobile_realtime/test_storage.py", "tests/mobile_realtime/test_channel.py", "tests/mobile_realtime/test_gateway.py", "tests/test_plugin_mobile_ui.py"]
-observes = ["receipt_retention", "receipt_high_water", "external_effect_reconciliation", "durable_inbound_handoff", "bounded_recovery", "accepted_inbound_bytes", "receipt_write_set", "query_lease", "generation_drain", "failure_semantics"]
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_receipt_retention_rejects_valid_delete_mutant", "tests/mobile_realtime/test_storage.py", "tests/mobile_realtime/test_channel.py", "tests/mobile_realtime/test_gateway.py", "tests/test_message_bus_admission.py", "tests/test_plugin_mobile_ui.py"]
+observes = ["receipt_retention", "receipt_high_water", "external_effect_reconciliation", "durable_inbound_handoff", "durable_recovery_page", "receipt_write_set", "query_lease", "generation_drain", "failure_semantics"]
 mutants = ["companion_receipt_deletes_valid_result"]
 
 [scenarios.companion_shell_admission_contract]
@@ -320,8 +320,8 @@ requirements = ["SEC-007", "SEC-008", "CTRL-001", "CTRL-002", "ERR-001", "TST-00
 groups = ["companion_control"]
 environment = "public_clean_workspace"
 timeout_seconds = 60
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_control_replay_rejects_live_drop_mutant", "tests/control/test_control_execution.py", "tests/control/test_d8_control_admission_replay.py", "tests/test_message_bus_admission.py", "tests/test_programmatic_control_probe.py"]
-observes = ["admission_bytes", "accepted_inbound_bytes", "lane_queue", "backpressure", "replay_ring", "live_subscriber", "replay_truncated", "replay_expired", "terminal_reaper", "session_store_write_set", "failure_semantics"]
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_control_replay_rejects_live_drop_mutant", "tests/control/test_control_execution.py", "tests/control/test_d8_control_admission_replay.py", "tests/test_programmatic_control_probe.py"]
+observes = ["admission_bytes", "lane_queue", "replay_ring", "live_subscriber", "replay_truncated", "replay_expired", "terminal_reaper", "session_store_write_set", "failure_semantics"]
 mutants = ["companion_control_replay_drops_live_event"]
 
 [scenarios.companion_dashboard_value_contract]

@@ -591,7 +591,7 @@ P0 不变量必须由受保护的 semantic test、policy 或黑盒观察器验�
 
 ### SEC-002 外部请求逐跳有界且拥有临时结果
 
-每个 DNS 解析结果、连接目标和 redirect hop 都必须重新执行地址策略。响应在读取前受传输和磁盘绝对上限约束；超过内联阈值的合法响应流式写入 execution-owned 私有临时文件，并返回可分页读取的引用。文件必须绑定 execution，turn 结束或显式 release 后清理；清理失败保留 owner 和诊断，不推翻已经提交的结果。上传、附件和 QQ 媒体在分配前验证单项与总量上限。
+`web_fetch` 在单人本地运行中允许访问 localhost、私网和内网 HTTP 服务；它仍逐跳校验 HTTP URL 结构、限制 redirect hop，并禁用环境代理。其他外部 HTTP consumer 继续执行公开地址策略。所有响应在读取前受传输和磁盘绝对上限约束；超过内联阈值的合法响应流式写入 execution-owned 私有临时文件，并返回可分页读取的引用。文件必须绑定 execution，turn 结束或显式 release 后清理；清理失败保留 owner 和诊断，不推翻已经提交的结果。上传、附件和 QQ 媒体在分配前验证单项与总量上限。
 
 ### SEC-003 Peer 能力不再存在
 
@@ -609,9 +609,9 @@ Schedule 在整个 workspace 维度默认最多同时存在 10 个 active job。
 
 completed mobile receipt 从 `completed_at` 起保留 7 天，并受每设备 10,000 条和 64 MiB 高水位保护。高水位先清理已过期 completed；仍满时只拒绝当前新 command，不能删除有效 receipt 或结束 runtime。processing 不能按 TTL 盲删，必须根据真实外部效果恢复为 completed、可安全重试或 `outcome_unknown`。超时 plugin query 在真实 worker 结束前持续占用 quota 和 generation lease。
 
-### SEC-007 Shell、Subagent 与消息准入有界
+### SEC-007 Shell 与 Subagent 准入有界
 
-Shell 的 retained log、同步 subagent 和后台 subagent 共享真实 admission owner。容量拒绝只影响当前操作；terminal cleanup 失败保留 execution owner 和诊断，不能把已提交 turn 改成失败。MessageBus 在 admission 前实施有界 backpressure；已接纳消息不得静默丢弃。
+Shell 的 retained log、同步 subagent 和后台 subagent 共享真实 admission owner。容量拒绝只影响当前操作；terminal cleanup 失败保留 execution owner 和诊断，不能把已提交 turn 改成失败。单人本地 Companion 的 MessageBus 不设置独立全局容量拒绝；它只保持 lane 顺序，Mobile 的崩溃恢复由持久 handoff owner 保证。
 
 ### SEC-008 Control replay 是临时投影
 
