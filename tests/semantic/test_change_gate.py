@@ -205,7 +205,7 @@ def test_mixed_commands_run_public_scenarios(
     assert gate.command_plan(args) == 0
     assert gate.command_run(args) == 0
     assert writes[-1]["status"] == "passed"
-    assert len(writes[-1]["checks"]) == 1
+    assert len(cast(list[object], writes[-1]["checks"])) == 1
 
 
 def test_gate_temp_root_uses_explicit_existing_directory(
