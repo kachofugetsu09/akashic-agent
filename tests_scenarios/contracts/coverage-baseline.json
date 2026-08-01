@@ -1,8 +1,11 @@
 {
   "acceptedGaps": [],
   "base": "d627fa600781855770a5ede752f268982b68ebf9",
-  "catalogDigest": "b0ed85c8757145ce5108c97a8c2c4a4de07c67e106213b5f884c1777cba60344",
+  "catalogDigest": "9c2f0dc9c4bd4e62becbde6cd448e19038d18f61c92d19ad88ebcb027ab56fc5",
   "coveredP0": {
+    "companion_peer_removal": [
+      "contract_catalog"
+    ],
     "context_projection": [
       "context_history_nondestructive"
     ],

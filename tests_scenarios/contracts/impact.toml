@@ -192,7 +192,6 @@ paths = [
   "agent/core/**",
   "agent/llm_json.py",
   "agent/model_runtime/**",
-  "agent/peer_agent/**",
   "agent/persona.py",
   "agent/policies/**",
   "agent/provider.py",
@@ -257,6 +256,14 @@ priority = "p2"
 requirements = ["COM-001", "COM-004"]
 paths = ["frontend/**", "eslint.config.js"]
 depends_on = ["control"]
+scenarios = ["contract_catalog"]
+
+[groups.companion_peer_removal]
+priority = "p0"
+requirements = ["RUN-003", "ERR-001", "TST-001"]
+paths = ["agent/config.py"]
+deleted_paths = ["agent/peer_agent/**"]
+depends_on = ["runtime"]
 scenarios = ["contract_catalog"]
 
 [groups.sdk]
