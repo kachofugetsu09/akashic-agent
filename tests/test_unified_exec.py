@@ -44,7 +44,8 @@ def test_zombie_only_permission_error_does_not_fail_completed_cleanup(
         raising=False,
     )
 
-    unified_exec_module._kill_remaining_process_group(SimpleNamespace(pid=12345))
+    process = cast(asyncio.subprocess.Process, SimpleNamespace(pid=12345))
+    unified_exec_module._kill_remaining_process_group(process)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows 不使用 POSIX 进程组")
@@ -63,7 +64,8 @@ def test_live_privileged_group_permission_error_stays_loud(
     )
 
     with pytest.raises(PermissionError, match="Operation not permitted"):
-        unified_exec_module._kill_remaining_process_group(SimpleNamespace(pid=12345))
+        process = cast(asyncio.subprocess.Process, SimpleNamespace(pid=12345))
+        unified_exec_module._kill_remaining_process_group(process)
 
 
 @pytest.mark.skipif(
@@ -121,8 +123,12 @@ def test_real_cross_uid_live_process_group_returns_eperm() -> None:
             os.setgid(nobody.pw_gid)
             os.setuid(nobody.pw_uid)
             try:
+                process = cast(
+                    asyncio.subprocess.Process,
+                    SimpleNamespace(pid=os.getpgid(residual_pid)),
+                )
                 unified_exec_module._kill_remaining_process_group(
-                    SimpleNamespace(pid=os.getpgid(residual_pid))
+                    process
                 )
             except PermissionError as exc:
                 os.write(result_w, str(exc.errno).encode())
