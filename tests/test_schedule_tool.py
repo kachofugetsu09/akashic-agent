@@ -144,6 +144,28 @@ async def test_instant_after_registers_job(tmp_path, mock_push, mock_loop):
     assert job.message == "喝水了"
 
 
+async def test_capacity_error_is_converted_for_agent(tmp_path, mock_push, mock_loop):
+    svc = make_svc(tmp_path, mock_push, mock_loop)
+    for index in range(SchedulerService.MAX_ACTIVE_JOBS):
+        svc.add_job(make_job(name=f"job-{index}"))
+    tool = ScheduleTool(svc, default_tz="UTC")
+
+    result = await tool.execute(
+        tier="instant",
+        trigger="after",
+        when="5m",
+        channel="telegram",
+        chat_id="123",
+        message="overflow",
+        request_time=_NOW.isoformat(),
+    )
+
+    assert "schedule_capacity_reached" in result
+    assert "已有 10 个活动定时任务" in result
+    assert "移除哪个不再需要的任务" in result
+    assert len(svc.list_jobs()) == SchedulerService.MAX_ACTIVE_JOBS
+
+
 async def test_after_request_time_used_for_fire_at(tmp_path, mock_push, mock_loop):
     svc = make_svc(tmp_path, mock_push, mock_loop)
     tool = ScheduleTool(svc, default_tz="UTC")
