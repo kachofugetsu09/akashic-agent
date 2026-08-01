@@ -89,3 +89,4 @@ lme_error_log_*.txt
 *.migration-cursor
 *.migration-lock
 *.migration-backups/
+/docs/spark/

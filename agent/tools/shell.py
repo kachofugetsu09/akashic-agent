@@ -108,7 +108,10 @@ class ShellTool(Tool):
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "要执行的 shell 命令",
+                    "description": (
+                        "要执行的 shell 命令；长任务需要观察进度时，"
+                        "不要以 tail -n 等等待 EOF 的过滤器收尾。"
+                    ),
                 },
                 "description": {
                     "type": "string",
@@ -128,7 +131,10 @@ class ShellTool(Tool):
                 },
                 "tty": {
                     "type": "boolean",
-                    "description": "需要后续交互输入时设为 true，默认 false。",
+                    "description": (
+                        "命令可能在运行中请求输入（如密码或确认）时设为 true，"
+                        "并在启动前确认输入可获得；默认 false。"
+                    ),
                 },
                 "yield_time_ms": {
                     "type": "integer",
@@ -261,9 +267,9 @@ class ShellWriteStdinTool(Tool):
     description = (
         "等待 shell execution 的新增输出，或向 tty=true 的 execution 写入字符。"
         "空 chars 默认等待 5 秒、最多可等 300 秒；带输入最多等待 30 秒。"
-        "结果只包含上次读取后的新增输出。已知长任务应按预期耗时使用较长等待，"
-        "不要反复短轮询；暂时没有输出本身不代表卡死。若根据命令语义决定放弃，"
-        "必须调用 task_stop。"
+        "结果只包含上次读取后的新增输出；running 且 output 为空只表示本次没有新增输出。"
+        "已知长任务应按预期耗时使用较长等待，不要反复短轮询。一次足够长的等待仍无输出时，"
+        "不要原样重复调用；先根据命令语义检查进程、日志或产物，再决定继续等待或 task_stop。"
     )
     parameters = {
         "type": "object",

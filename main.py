@@ -28,7 +28,7 @@ _DEFAULT_WORKSPACE = "~/.akashic/workspace"
 
 
 def _supervisor_readiness_timeout() -> float:
-    return float(os.environ.get("AKASHIC_READINESS_TIMEOUT_S", "15"))
+    return float(os.environ.get("AKASHIC_READINESS_TIMEOUT_S", "300"))
 
 
 def _supervisor_supported(platform: str | None = None) -> bool:

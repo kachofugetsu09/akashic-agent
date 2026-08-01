@@ -44,6 +44,22 @@ def _linux_process_state(pid: int) -> str | None:
         return None
 
 
+def test_shell_tool_schema_guides_observable_long_running_commands() -> None:
+    manager = ShellProcessManager()
+    shell_schema = ShellTool(manager).to_schema()["function"]
+    writer_schema = ShellWriteStdinTool(manager).to_schema()["function"]
+
+    command_description = shell_schema["parameters"]["properties"]["command"][
+        "description"
+    ]
+    tty_description = shell_schema["parameters"]["properties"]["tty"]["description"]
+    assert "tail -n" in command_description
+    assert "等待 EOF" in command_description
+    assert "启动前确认输入可获得" in tty_description
+    assert "不要原样重复调用" in writer_schema["description"]
+    assert "检查进程、日志或产物" in writer_schema["description"]
+
+
 @pytest.mark.asyncio
 async def test_short_command_returns_exit_without_execution_id() -> None:
     manager = ShellProcessManager()
