@@ -6,7 +6,6 @@ import json
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from collections.abc import AsyncIterator
 from typing import Any, Callable, cast
-from urllib.parse import urlparse
 
 import html2text
 import httpx
@@ -104,7 +103,7 @@ class WebFetchTool(Tool):
         spill_store: WebFetchSpillStore | None = None,
         context_provider: Callable[[], ToolExecutionContext | None] = _default_tool_context,
     ) -> None:
-        self._requester = requester or get_default_http_requester("external_default")
+        self._requester = requester or get_default_http_requester("web_fetch")
         self._spill_store = spill_store
         self._context_provider = context_provider
         self._execution_turns: dict[str, str] = {}
@@ -139,12 +138,9 @@ class WebFetchTool(Tool):
         fmt: str = kwargs.get("format", "markdown")
         timeout: int = min(int(kwargs.get("timeout", _DEFAULT_TIMEOUT)), _MAX_TIMEOUT)
 
-        # URL 安全校验
+        # URL 结构校验；单人本地运行允许显式访问本机和内网 HTTP 服务。
         if not url.startswith(("http://", "https://")):
             return _err(url, "URL 必须以 http:// 或 https:// 开头")
-        ssrf_err = _validate_url_target(url)
-        if ssrf_err:
-            return _err(url, ssrf_err, classification="operation_rejected")
 
         context = self._context_provider()
         execution_id, turn_id = _owner_from_context(context)
@@ -347,24 +343,6 @@ def _err(
         if not cleanup.released:
             result["cleanup_classification"] = cleanup.status
     return json.dumps(result, ensure_ascii=False)
-
-
-def _validate_url_target(url: str) -> str | None:
-    """SSRF 防护：拒绝内网/回环/保留地址。"""
-    parsed = urlparse(url)
-    host = (parsed.hostname or "").strip().lower()
-    if not host:
-        return "URL 缺少主机名"
-    try:
-        import ipaddress
-
-        ip = ipaddress.ip_address(host)
-        if not ip.is_global:
-            return f"禁止访问内网/本地地址：{host}"
-    except ValueError:
-        if host in {"localhost"} or host.endswith((".local", ".localhost")):
-            return f"禁止访问本地域名：{host}"
-    return None
 
 
 def _declared_length(value: str | None) -> int | None:

@@ -2,7 +2,7 @@
 
 - 状态：implemented pilot
 - 日期：2026-08-01
-- 决策：[0017](../decisions/0017-chat-webui-has-one-source-and-two-adapters.md)
+- 决策：[0018](../decisions/0018-chat-webui-has-one-source-and-two-adapters.md)
 - 关联条款：WEBUI-001～WEBUI-003、MOB-001、TST-007～TST-008
 
 ## 1. 用户意图

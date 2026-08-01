@@ -13,11 +13,6 @@
 - 建立受保护路径 policy：`semantic_delta: none` 的普通实现改动不能同时修改 P0 oracle、mutant 或 coverage baseline 来获得全绿。
 - 建立轻量 `change-intent` 校验，检查实际 diff、允许路径、受保护状态和副作用是否超出声明。
 
-## P0 · 私有跨仓库 Gate
-
-- 把 Feed freshness、Observe turn identity、status_commands public session lookup 和 proactive_feedback mobile UI v2 的真实 seam 和 mutant 场景接入统一 G2 Docker controller；再为其余 selected provider 补独立语义 scenario 和可执行结果。所有场景使用空 plugin home/独立 workspace，禁止读取正式 config、workspace 或安装缓存。
-- 建立始终返回 `passed`、`failed` 或 `not_affected` 的 `private-contract-gate` 外部状态；不受信任 PR 不接触 private source、provider ID、凭据或私有报告。
-
 ## P1 · 工作流扩展
 
 - 把 `projectneed.md` 中其他 P0 不变量逐步迁入可执行契约，优先处理 MEM-001、MEM-002、OUT-001、PLG-001、PLG-004、WSP-001 和 BAK-001。

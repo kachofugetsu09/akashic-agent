@@ -17,7 +17,6 @@ executable_suffixes = [
   ".yml",
 ]
 executable_names = ["Dockerfile"]
-private_groups = ["channel", "events", "jobs", "lifecycle", "mcp", "memory", "plugin", "proactive"]
 always_full_paths = [
   ".github/workflows/**",
   "AGENTS.md",
@@ -258,13 +257,69 @@ paths = ["frontend/**", "eslint.config.js"]
 depends_on = ["control"]
 scenarios = ["contract_catalog"]
 
+[groups.companion_tool_context]
+priority = "p0"
+requirements = ["SEC-001", "ERR-001", "TST-001", "TST-003"]
+paths = ["agent/tools/memorize.py", "agent/tools/recall_memory.py", "agent/tools/message_push.py", "agent/tools/registry.py", "agent/tools/base.py", "agent/tools/meta/register.py", "agent/tools/meta/catalog.py", "agent/tool_runtime.py", "agent/context.py", "agent/turns/outbound.py", "agent/lifecycle/phases/before_reasoning.py", "agent/looping/handlers.py", "plugins/drift_flow/tools.py"]
+depends_on = ["memory", "channel"]
+scenarios = ["companion_tool_context_contract"]
+
+[groups.companion_external_io]
+priority = "p0"
+requirements = ["SEC-002", "FS-001", "SES-006", "ERR-001", "TST-001", "TST-003"]
+paths = ["core/net/http.py", "agent/tools/web_fetch.py", "bootstrap/chat_api.py", "infra/channels/base.py", "infra/channels/delivery.py", "infra/channels/qq_channel.py", "infra/channels/telegram_channel.py", "infra/channels/web_chat_channel.py", "infra/mobile_realtime/attachments.py", "infra/mobile_realtime/channel.py", "infra/mobile_realtime/gateway.py", "infra/mobile_realtime/storage.py", "tests/mobile_realtime/test_attachments.py", "tests/mobile_realtime/test_channel.py", "tests/mobile_realtime/test_gateway.py", "tests/mobile_realtime/test_storage.py"]
+depends_on = ["runtime", "mobile_realtime"]
+scenarios = ["companion_external_io_contract"]
+
 [groups.companion_peer_removal]
 priority = "p0"
-requirements = ["RUN-003", "ERR-001", "TST-001"]
-paths = ["agent/config.py"]
+requirements = ["SEC-003", "ERR-001", "TST-001", "TST-003"]
+paths = ["agent/config.py", "bootstrap/tools.py", "bootstrap/wiring.py"]
 deleted_paths = ["agent/peer_agent/**"]
 depends_on = ["runtime"]
-scenarios = ["contract_catalog"]
+scenarios = ["companion_peer_removal_contract"]
+
+[groups.companion_mcp]
+priority = "p0"
+requirements = ["SEC-004", "PRO-002", "PLG-009", "ERR-001", "TST-001", "TST-003"]
+paths = ["proactive_v2/mcp_sources.py", "agent/mcp/**", "plugins/wake_proactive/**"]
+depends_on = ["mcp", "proactive"]
+scenarios = ["companion_mcp_reservoir_contract"]
+
+[groups.companion_schedule]
+priority = "p0"
+requirements = ["SEC-005", "SCH-001", "SCH-002", "ERR-001", "TST-001", "TST-003"]
+paths = ["agent/scheduler.py", "agent/tools/schedule.py"]
+depends_on = ["jobs"]
+scenarios = ["companion_schedule_capacity_contract"]
+
+[groups.companion_mobile]
+priority = "p0"
+requirements = ["SEC-006", "MOB-003", "PLG-003", "PLG-004", "ERR-001", "TST-001", "TST-003"]
+paths = ["infra/mobile_realtime/**", "agent/plugins/**", "bus/queue.py", "bootstrap/passive_worker.py", "bootstrap/app.py", "session/store.py"]
+depends_on = ["mobile_realtime", "plugin"]
+scenarios = ["companion_mobile_receipt_contract"]
+
+[groups.companion_shell]
+priority = "p0"
+requirements = ["SEC-007", "SH-001", "SH-002", "RUN-003", "ERR-001", "TST-001", "TST-003"]
+paths = ["agent/tools/shell.py", "agent/tools/unified_exec.py", "agent/background/**", "agent/subagent.py"]
+depends_on = ["shell_finality", "runtime"]
+scenarios = ["companion_shell_admission_contract"]
+
+[groups.companion_control]
+priority = "p0"
+requirements = ["SEC-007", "SEC-008", "CTRL-001", "CTRL-002", "ERR-001", "TST-001", "TST-003"]
+paths = ["bus/**", "agent/control/**", "infra/control/**"]
+depends_on = ["control", "events"]
+scenarios = ["companion_control_replay_contract"]
+
+[groups.companion_dashboard]
+priority = "p0"
+requirements = ["SEC-009", "ERR-001", "TST-001", "TST-003"]
+paths = ["private_runtime"]
+depends_on = []
+scenarios = ["companion_dashboard_value_contract"]
 
 [groups.sdk]
 priority = "p2"

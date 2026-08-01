@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from argparse import Namespace
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any, cast
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -28,11 +31,16 @@ def test_catalog_has_no_unmapped_executable_files() -> None:
     report = gate.audit_catalog(catalog, check_baseline=False)
 
     assert report["unmappedExecutableFiles"] == []
+    assert report["baselineStatus"] == "unchecked"
     assert report["issues"] == []
     assert report["stateContracts"]["plugin_data"] == {
         "normalChange": "plugin_owned_update",
         "destructiveOwner": "explicit_plugin_data_deletion",
         "protectedTables": [],
+        "retention": "plugin-data survives ordinary uninstall",
+        "physicalReductionOwner": "explicit_plugin_data_deletion",
+        "recoveryEvidence": ["candidate_generation", "rollback"],
+        "failureSemantics": ["unit_failed", "cleanup_degraded", "runtime_fatal"],
     }
 
 
@@ -51,18 +59,6 @@ def test_unknown_executable_file_is_not_silently_accepted() -> None:
 
     assert gate._is_executable(mutant_path, catalog)
     assert gate._groups_for_path(mutant_path, catalog) == set()
-
-
-def test_deleted_path_contract_maps_live_and_removed_peer_files() -> None:
-    gate = _gate_module()
-    catalog = gate.load_catalog()
-
-    group = catalog.groups["companion_peer_removal"]
-
-    assert group.deleted_paths == ("agent/peer_agent/**",)
-    assert "companion_peer_removal" in gate._groups_for_path(
-        "agent/peer_agent/tool.py", catalog
-    )
 
 
 def test_change_classes_allow_single_class_and_reject_mixed_contract_changes() -> None:
@@ -114,7 +110,7 @@ def test_change_classes_allow_single_class_and_reject_mixed_contract_changes() -
     )
 
 
-def test_build_plan_marks_production_and_protected_contract_mixes(
+def test_build_plan_runs_full_public_gate_for_production_and_contract_mixes(
     monkeypatch: Any,
 ) -> None:
     gate = _gate_module()
@@ -146,19 +142,20 @@ def test_build_plan_marks_production_and_protected_contract_mixes(
 
     plan = gate.build_plan("origin/main")
 
-    assert plan["status"] == "protected_contract_mixed"
+    assert plan["status"] == "planned"
+    assert plan["full"] is True
     assert plan["productionSourcePaths"] == ["agent/core/passive_turn.py"]
     assert plan["protectedContractPaths"] == [
         "tests/semantic/test_change_gate.py"
     ]
 
 
-def test_mixed_commands_fail_without_building_or_running_scenarios(
+def test_mixed_commands_run_public_scenarios(
     monkeypatch: Any,
 ) -> None:
     gate = _gate_module()
     plan = {
-        "status": "protected_contract_mixed",
+        "status": "planned",
         "base": "base",
         "head": "head",
         "dirtyStatus": [],
@@ -173,11 +170,14 @@ def test_mixed_commands_fail_without_building_or_running_scenarios(
         "protectedContractPaths": ["tests/semantic/test_change_gate.py"],
         "affectedGroups": ["runtime"],
         "selectedScenarios": ["expensive"],
-        "privateGateRequired": True,
     }
     writes: list[dict[str, object]] = []
     monkeypatch.setattr(gate, "build_plan", lambda *_args, **_kwargs: plan)
-    monkeypatch.setattr(gate, "load_catalog", lambda: SimpleNamespace(scenarios={}))
+    monkeypatch.setattr(
+        gate,
+        "load_catalog",
+        lambda: SimpleNamespace(scenarios={"expensive": SimpleNamespace()}),
+    )
     monkeypatch.setattr(gate, "_new_run_id", lambda: "run")
     report_dir = gate.ROOT / "docker" / "debug" / "reports" / "change-gate" / "test"
     monkeypatch.setattr(gate, "_report_dir", lambda _run_id: report_dir)
@@ -190,23 +190,44 @@ def test_mixed_commands_fail_without_building_or_running_scenarios(
     monkeypatch.setattr(
         gate,
         "_build_change_gate_image",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("mixed Gate 不得构建镜像")
-        ),
+        lambda *_args, **_kwargs: {"status": "passed"},
     )
     monkeypatch.setattr(
         gate,
         "_run_scenario",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("mixed Gate 不得运行场景")
-        ),
+        lambda *_args, **_kwargs: {
+            "status": "passed",
+            "residualResources": {"containers": [], "networks": [], "volumes": []},
+        },
     )
     args = Namespace(base="origin/main", full=False)
 
-    assert gate.command_plan(args) == 1
-    assert gate.command_run(args) == 1
-    assert writes[-1]["status"] == "protected_contract_mixed"
-    assert writes[-1]["checks"] == []
+    assert gate.command_plan(args) == 0
+    assert gate.command_run(args) == 0
+    assert writes[-1]["status"] == "passed"
+    assert len(cast(list[object], writes[-1]["checks"])) == 1
+
+
+def test_gate_temp_root_uses_explicit_existing_directory(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    gate = _gate_module()
+    monkeypatch.setenv("AKASHIC_CHANGE_GATE_TMPDIR", str(tmp_path))
+
+    assert gate._gate_temp_root() == tmp_path.resolve()
+
+
+def test_gate_temp_root_rejects_missing_directory(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    gate = _gate_module()
+    missing = tmp_path / "missing"
+    monkeypatch.setenv("AKASHIC_CHANGE_GATE_TMPDIR", str(missing))
+
+    with pytest.raises(gate.GateError, match="不是已存在目录"):
+        gate._gate_temp_root()
 
 
 def test_every_p0_oracle_declares_a_known_wrong_mutant() -> None:
@@ -227,15 +248,17 @@ def test_every_p0_oracle_declares_a_known_wrong_mutant() -> None:
     } == {}
 
 
-def test_public_plan_contains_no_private_provider_identity() -> None:
+def test_public_plan_contains_no_private_provider_identity(
+    monkeypatch: Any,
+) -> None:
     gate = _gate_module()
     if not gate.BASELINE_PATH.is_file() or not (ROOT / ".git").exists():
         return
+    monkeypatch.setattr(gate, "audit_catalog", lambda _catalog: {"status": "passed"})
     plan = cast(dict[str, Any], gate.build_plan("HEAD"))
 
     assert "providers" not in plan
     assert "providerIds" not in plan
-    assert isinstance(plan["privateGateRequired"], bool)
 
 
 def test_state_contract_loads_destructive_policy_fields() -> None:
@@ -260,6 +283,121 @@ def test_state_contract_rejects_plugin_uninstall_as_data_owner() -> None:
     issues = gate._validate_state_contracts(catalog, gate._requirement_ids())
 
     assert any("普通卸载不得拥有 plugin-data 删除权" in issue for issue in issues)
+
+
+def test_companion_group_rejects_wrong_path_owner() -> None:
+    gate = _gate_module()
+    catalog = gate.load_catalog()
+    catalog.groups["companion_tool_context"] = replace(
+        catalog.groups["companion_tool_context"],
+        paths=("agent/does-not-exist.py",),
+    )
+
+    report = gate.audit_catalog(catalog, check_baseline=False)
+
+    assert any(
+        "groups.companion_tool_context 路径规则无匹配" in issue
+        for issue in report["issues"]
+    )
+
+
+def test_deleted_path_requires_frozen_base_match(tmp_path: Path, monkeypatch: Any) -> None:
+    gate = _gate_module()
+    baseline = json.loads(gate.BASELINE_PATH.read_text(encoding="utf-8"))
+    baseline_path = tmp_path / "coverage-baseline.json"
+    baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+    monkeypatch.setattr(gate, "BASELINE_PATH", baseline_path)
+    monkeypatch.setattr(gate, "_commit_tree_paths", lambda _base: [])
+
+    report = gate.audit_catalog(gate.load_catalog())
+
+    assert any("deleted_paths 在 frozen base 无匹配" in issue for issue in report["issues"])
+
+
+def test_companion_scenario_requires_mutant_node_in_command() -> None:
+    gate = _gate_module()
+    catalog = gate.load_catalog()
+    scenario = catalog.scenarios["companion_tool_context_contract"]
+    catalog.scenarios[scenario.id] = replace(
+        scenario,
+        command=tuple(
+            item
+            for item in scenario.command
+            if "test_tool_context_rejects_origin_override_mutant" not in item
+        ),
+    )
+
+    issues = gate._validate_references(catalog, gate._requirement_ids())
+
+    assert any("command 未运行 mutant test node" in issue for issue in issues)
+
+
+def test_deleted_peer_path_selects_peer_group_in_plan(monkeypatch: Any) -> None:
+    gate = _gate_module()
+    monkeypatch.setattr(
+        gate,
+        "_changed_paths",
+        lambda _base: ["agent/peer_agent/registry.py"],
+    )
+    monkeypatch.setattr(gate, "_resolve_commit", lambda _base: "base-commit")
+    monkeypatch.setattr(gate, "_dirty_status", lambda: [])
+    monkeypatch.setattr(gate, "_load_baseline", lambda: {"acceptedGaps": []})
+    monkeypatch.setattr(gate, "source_digest", lambda: "source-digest")
+    monkeypatch.setattr(gate, "catalog_digest", lambda: "catalog-digest")
+    monkeypatch.setattr(
+        gate,
+        "audit_catalog",
+        lambda *_args, **_kwargs: {"status": "passed"},
+    )
+    monkeypatch.setattr(
+        gate,
+        "_run_git",
+        lambda *args, **kwargs: gate.subprocess.CompletedProcess(
+            ["git", *args], 0, b"head-commit\n", b""
+        ),
+    )
+
+    plan = gate.build_plan("origin/main")
+
+    assert "companion_peer_removal" in plan["affectedGroups"]
+
+
+def test_state_contract_rejects_protocol_owner_mismatch() -> None:
+    gate = _gate_module()
+    catalog = gate.load_catalog()
+    state = catalog.states["mobile_receipts"]
+    catalog.states[state.id] = replace(
+        state,
+        physical_reduction_owner="other.owner",
+    )
+
+    issues = gate._validate_state_contracts(catalog, gate._requirement_ids())
+
+    assert any("protocol_owner 必须等于 physical_reduction_owner" in issue for issue in issues)
+
+
+def test_state_contract_rejects_not_applicable_physical_owner() -> None:
+    gate = _gate_module()
+    catalog = gate.load_catalog()
+    state = catalog.states["runtime_workspace_boundary"]
+    catalog.states[state.id] = replace(
+        state,
+        physical_reduction_owner="runtime.workspace_selection",
+    )
+
+    issues = gate._validate_state_contracts(catalog, gate._requirement_ids())
+
+    assert any("not_applicable 必须使用 not_applicable physical owner" in issue for issue in issues)
+
+
+def test_baseline_rejects_non_sha_base() -> None:
+    gate = _gate_module()
+    baseline = json.loads(gate.BASELINE_PATH.read_text(encoding="utf-8"))
+    baseline["base"] = "HEAD"
+
+    issues = gate._validate_baseline(baseline, gate.load_catalog())
+
+    assert any("base 必须是完整 40 位 SHA" in issue for issue in issues)
 
 
 def test_gate_build_and_scenario_have_independent_timeouts(

@@ -235,6 +235,21 @@ async def test_local_service_keeps_local_network_transport() -> None:
 
 
 @pytest.mark.asyncio
+async def test_web_fetch_profile_allows_private_targets_without_weakening_external_profiles() -> None:
+    resources = SharedHttpResources()
+
+    try:
+        resources.web_fetch.validate_external_url("http://127.0.0.1:8080/status")
+        resources.web_fetch.validate_external_url("http://router.local/status")
+        assert resources.web_fetch.allow_private_targets is True
+        assert resources.web_fetch.safe_transport is None
+        assert resources.external_default.allow_private_targets is False
+        assert isinstance(resources.external_default.client._transport, SafeExternalTransport)
+    finally:
+        await resources.aclose()
+
+
+@pytest.mark.asyncio
 async def test_shared_http_resources_aclose_is_idempotent():
     resources = SharedHttpResources()
 
@@ -259,6 +274,7 @@ async def test_shared_http_resources_aclose_preserves_order_and_all_errors(
         ("external_default", resources.external_default),
         ("feed_fetcher", resources.feed_fetcher),
         ("local_service", resources.local_service),
+        ("web_fetch", resources.web_fetch),
     ):
         async def _close(*, _profile: str = profile) -> None:
             close_order.append(_profile)
@@ -270,7 +286,12 @@ async def test_shared_http_resources_aclose_preserves_order_and_all_errors(
     with pytest.raises(ExceptionGroup) as caught:
         await resources.aclose()
 
-    assert close_order == ["local_service", "feed_fetcher", "external_default"]
+    assert close_order == [
+        "web_fetch",
+        "local_service",
+        "feed_fetcher",
+        "external_default",
+    ]
     assert caught.value.exceptions == (
         errors["local_service"],
         errors["feed_fetcher"],

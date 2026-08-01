@@ -10,6 +10,10 @@ writers = ["session_persistence"]
 consumers = ["context_projection", "memory"]
 protected_tables = ["messages", "message_embeddings"]
 oracles = ["context_history_nondestructive"]
+retention = "永久保留，除用户主动数据管理"
+physical_reduction_owner = "explicit_user_data_management"
+recovery_evidence = ["sqlite_write_set", "messages_full_snapshot", "restart_sequence"]
+failure_semantics = ["unit_failed", "runtime_fatal"]
 
 [states.session_metadata]
 priority = "p0"
@@ -21,6 +25,10 @@ writers = ["session_persistence"]
 consumers = ["context_projection", "runtime"]
 protected_tables = ["sessions"]
 oracles = ["context_history_nondestructive"]
+retention = "metadata follows session lifetime"
+physical_reduction_owner = "explicit_user_data_management"
+recovery_evidence = ["metadata_snapshot", "sqlite_write_set"]
+failure_semantics = ["unit_failed", "runtime_fatal"]
 
 [states.runtime_workspace_boundary]
 priority = "p0"
@@ -32,6 +40,10 @@ writers = ["runtime"]
 consumers = ["runtime", "memory", "plugin"]
 protected_tables = []
 oracles = ["workspace_bootstrap"]
+retention = "current runtime workspace selection"
+physical_reduction_owner = "not_applicable"
+recovery_evidence = ["workspace_path", "fresh_config"]
+failure_semantics = ["runtime_fatal"]
 
 [states.plugin_data]
 priority = "p0"
@@ -43,3 +55,67 @@ writers = ["plugin"]
 consumers = ["plugin", "mcp", "proactive"]
 protected_tables = []
 oracles = ["plugin_generation_contract"]
+retention = "plugin-data survives ordinary uninstall"
+physical_reduction_owner = "explicit_plugin_data_deletion"
+recovery_evidence = ["candidate_generation", "rollback"]
+failure_semantics = ["unit_failed", "cleanup_degraded", "runtime_fatal"]
+
+[states.mobile_receipts]
+priority = "p0"
+requirements = ["SEC-006", "MOB-003", "TST-001", "TST-002", "TST-005"]
+owner = "mobile.receipt_store"
+normal_change = "append_state_machine"
+destructive_owner = "protocol_owner"
+writers = ["companion_mobile"]
+consumers = ["companion_mobile", "companion_control"]
+protected_tables = ["mobile_command_receipts"]
+oracles = ["companion_mobile_receipt_contract"]
+retention = "completed 7 days; processing/outcome_unknown retained until reconciliation"
+physical_reduction_owner = "mobile.receipt_store"
+recovery_evidence = ["receipt_retention", "external_effect_reconciliation", "receipt_write_set"]
+failure_semantics = ["operation_rejected", "unit_failed", "cleanup_degraded", "runtime_fatal"]
+
+[states.mcp_reservoir]
+priority = "p0"
+requirements = ["SEC-004", "PRO-002", "TST-001", "TST-002", "TST-003"]
+owner = "wake.mcp_reservoir"
+normal_change = "append_state_machine"
+destructive_owner = "protocol_owner"
+writers = ["companion_mcp"]
+consumers = ["companion_mcp", "proactive"]
+protected_tables = ["reservoir_events", "reservoir_ack"]
+oracles = ["companion_mcp_reservoir_contract"]
+retention = "material window 100; old mass retained until decay floor and minimum residence"
+physical_reduction_owner = "wake.mcp_reservoir"
+recovery_evidence = ["source_cursor", "quarantine_item", "reservoir_write_set"]
+failure_semantics = ["item_quarantined", "unit_failed", "cleanup_degraded", "runtime_fatal"]
+
+[states.control_replay]
+priority = "p0"
+requirements = ["SEC-008", "CTRL-002", "TST-001", "TST-002", "TST-003"]
+owner = "control.replay_ring"
+normal_change = "bounded_projection"
+destructive_owner = "protocol_owner"
+writers = ["companion_control"]
+consumers = ["companion_control", "events"]
+protected_tables = []
+oracles = ["companion_control_replay_contract"]
+retention = "active ring bounded per turn/global; terminal grace 5 minutes"
+physical_reduction_owner = "control.replay_ring"
+recovery_evidence = ["replay_truncated", "replay_expired", "session_store_write_set"]
+failure_semantics = ["operation_rejected", "cleanup_degraded", "runtime_fatal"]
+
+[states.companion_execution_spill]
+priority = "p1"
+requirements = ["SEC-002", "FS-001", "ERR-001", "TST-001"]
+owner = "tool.execution_spill"
+normal_change = "execution_owned_temporary"
+destructive_owner = "protocol_owner"
+writers = ["companion_external_io"]
+consumers = ["companion_external_io", "runtime"]
+protected_tables = []
+oracles = ["companion_external_io_contract"]
+retention = "until turn end or explicit release; cleanup failure retains owner"
+physical_reduction_owner = "tool.execution_spill"
+recovery_evidence = ["spill_owner", "spill_lifetime", "cleanup_diagnostic"]
+failure_semantics = ["operation_rejected", "degraded_continuation", "cleanup_degraded", "runtime_fatal"]

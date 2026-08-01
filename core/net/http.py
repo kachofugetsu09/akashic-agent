@@ -14,7 +14,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 import httpcore
 
-HttpProfile = Literal["external_default", "feed_fetcher", "local_service"]
+HttpProfile = Literal["external_default", "feed_fetcher", "local_service", "web_fetch"]
 
 
 @dataclass(frozen=True)
@@ -230,6 +230,7 @@ class HttpRequester:
         repr=False,
     )
     safe_transport: SafeExternalTransport | None = field(default=None, repr=False)
+    allow_private_targets: bool = False
     _resolver_explicit: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -390,9 +391,10 @@ class HttpRequester:
             raise AddressPolicyError("URL 缺少主机名")
         if parsed.username or parsed.password:
             raise AddressPolicyError("URL 不允许携带用户凭据")
+        if self.allow_private_targets:
+            return
         if host.endswith((".local", ".localhost")) or host in {"localhost"}:
             raise AddressPolicyError(f"禁止访问本地域名：{host}")
-
         if self.safe_transport is not None:
             return
         if isinstance(getattr(self.client, "_transport", None), httpx.MockTransport):
@@ -441,6 +443,7 @@ class SharedHttpResources:
     external_default: HttpRequester = field(init=False)
     feed_fetcher: HttpRequester = field(init=False)
     local_service: HttpRequester = field(init=False)
+    web_fetch: HttpRequester = field(init=False)
     _clients: list[httpx.AsyncClient] = field(
         init=False,
         default_factory=list[httpx.AsyncClient],
@@ -464,7 +467,11 @@ class SharedHttpResources:
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
             trust_env=False,
         )
-        self._clients = [external_client, feed_client, local_client]
+        web_fetch_client = httpx.AsyncClient(
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+            trust_env=False,
+        )
+        self._clients = [external_client, feed_client, local_client, web_fetch_client]
         self.external_default = HttpRequester(
             client=external_client,
             retry_policy=RetryPolicy(max_attempts=3),
@@ -486,6 +493,13 @@ class SharedHttpResources:
             ),
             default_timeout_s=5.0,
             default_budget=RequestBudget(total_timeout_s=8.0),
+        )
+        self.web_fetch = HttpRequester(
+            client=web_fetch_client,
+            retry_policy=RetryPolicy(max_attempts=3),
+            default_timeout_s=30.0,
+            default_budget=RequestBudget(total_timeout_s=45.0),
+            allow_private_targets=True,
         )
 
     async def aclose(self) -> None:

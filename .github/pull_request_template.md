@@ -34,7 +34,6 @@
 - [ ] `python docker/debug/gate.py run --base origin/main` 已运行。
 - `sourceDigest`：
 - `planDigest`：
-- `private-contract-gate`：`not_required | pending_maintainer | passed`
 - 真实设备证据（设备/API、debug application ID、源码/APK 身份；不适用时说明）：
 - 未运行项与原因：
 
