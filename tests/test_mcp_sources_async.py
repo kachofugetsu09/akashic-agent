@@ -240,6 +240,39 @@ async def test_single_channel_infers_kind_and_writes_it_back() -> None:
 
 
 @pytest.mark.asyncio
+async def test_quarantine_overflow_is_counted_without_retaining_raw_items() -> None:
+    pool = FakePool(
+        {
+            ("feed", "events"): [
+                {
+                    "kind": "content",
+                    "event_id": f"bad-{index}",
+                    "preprocess_score": float("nan"),
+                }
+                for index in range(300)
+            ]
+            + [
+                {
+                    "kind": "content",
+                    "event_id": "good-after-overflow",
+                    "preprocess_score": 0.4,
+                }
+            ]
+        }
+    )
+    result = await mcp_sources.fetch_sources_async(
+        cast(Any, pool),
+        [source("feed", "content", ("content",), "feed", "events")],
+    )
+
+    assert len(result.quarantined) == mcp_sources.MAX_QUARANTINE_ITEMS_PER_SOURCE
+    assert result.quarantine_overflow == {"feed:content": 44}
+    assert [item["event_id"] for item in result["content"]] == [
+        "good-after-overflow"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_ack_without_declared_tool_is_not_local_success() -> None:
     pool = FakePool({("feed", "events"): []})
     no_ack = source("feed", "content", ("content",), "feed", "events")

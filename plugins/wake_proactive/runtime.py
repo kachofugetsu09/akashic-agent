@@ -218,6 +218,22 @@ class WakeRuntime:
                 reason=item.reason,
                 payload=item.payload,
             )
+        for source_id, dropped_count in getattr(
+            channels, "quarantine_overflow", {}
+        ).items():
+            self._state.record_quarantine(
+                source_id=source_id,
+                item_id="quarantine-overflow",
+                reason=(
+                    "坏 MCP item 超过单 source quarantine detail cap; "
+                    f"dropped={dropped_count}"
+                ),
+                payload={
+                    "overflow": True,
+                    "dropped_count": dropped_count,
+                    "detail_cap": mcp_sources.MAX_QUARANTINE_ITEMS_PER_SOURCE,
+                },
+            )
         state.context_results = self._state.ingest_context(
             channels["context"], state.ctx.now_utc
         )

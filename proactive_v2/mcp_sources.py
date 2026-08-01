@@ -33,6 +33,8 @@ class SourceChannels(dict[str, list[dict[str, Any]]]):
     def __init__(self) -> None:
         super().__init__({"alert": [], "content": [], "context": []})
         self.quarantined: list[QuarantinedItem] = []
+        self.quarantine_overflow: dict[str, int] = {}
+        self.quarantine_overflow_count = 0
 
 
 class McpGateway(Protocol):
@@ -109,6 +111,11 @@ async def fetch_sources_async(
         channels.quarantined.extend(
             getattr(result, "quarantined", [])
         )
+        overflow_count = int(getattr(result, "quarantine_overflow_count", 0))
+        if overflow_count:
+            channels.quarantine_overflow[key] = (
+                channels.quarantine_overflow.get(key, 0) + overflow_count
+            )
     if failures and succeeded == 0:
         raise RuntimeError(f"所有 proactive sources 拉取失败: {failures}")
     return channels
@@ -147,6 +154,8 @@ async def fetch_source_strict_async(
                 result.quarantined.append(
                     QuarantinedItem(key, item_id, str(exc), raw)
                 )
+            else:
+                result.quarantine_overflow_count += 1
             logger.warning(
                 "[proactive.source] item quarantined source=%s item=%s reason=%s",
                 key,
