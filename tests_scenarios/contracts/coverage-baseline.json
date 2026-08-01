@@ -1,7 +1,7 @@
 {
   "acceptedGaps": [],
   "base": "d627fa600781855770a5ede752f268982b68ebf9",
-  "catalogDigest": "da09471abd749aa14a917356e3b496145d6a74907c67d57a90fa08537c6364d9",
+  "catalogDigest": "35e64e6e844640b0e84af835b6c050b48e6ae88b187f66d5a4d308d575751c20",
   "coveredP0": {
     "context_projection": [
       "context_history_nondestructive"
@@ -28,6 +28,7 @@
       "context_history_nondestructive"
     ],
     "shell_finality": [
+      "shell_privileged_cleanup_contract",
       "shell_turn_finality_contract"
     ]
   },
