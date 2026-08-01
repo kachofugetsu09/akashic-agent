@@ -190,6 +190,13 @@ class WebFetchTool(Tool):
                         classification="operation_rejected",
                     )
 
+                if (
+                    self._spill_store is not None
+                    and execution_id is not None
+                    and turn_id is not None
+                ):
+                    # Spill 可能在 _collect_response 返回前创建；先登记可恢复 owner。
+                    self._execution_turns[execution_id] = turn_id
                 body, spill = await self._collect_response(
                     resp,
                     execution_id=execution_id,
@@ -215,6 +222,8 @@ class WebFetchTool(Tool):
                         ensure_ascii=False,
                     )
 
+                if execution_id is not None:
+                    self._execution_turns.pop(execution_id, None)
                 assert body is not None
                 encoding = resp.encoding or "utf-8"
                 is_html = "text/html" in content_type
@@ -246,21 +255,36 @@ class WebFetchTool(Tool):
                     )
                 return json.dumps(result, ensure_ascii=False)
         except SpillLimitExceeded as exc:
-            if execution_id is not None:
-                self.release(execution_id)
-            return _err(url, f"响应超过临时文件上限：{exc}", classification="operation_rejected")
+            cleanup = self.release(execution_id) if execution_id is not None else None
+            return _err(
+                url,
+                f"响应超过临时文件上限：{exc}",
+                classification="operation_rejected",
+                cleanup=cleanup,
+            )
         except SpillOwnerMissing as exc:
             return _err(url, str(exc), classification="unit_failed")
         except (httpx.TimeoutException, httpx.ConnectError, httpx.RequestError) as exc:
-            return _err(url, _request_error(exc, timeout))
+            cleanup = self.release(execution_id) if execution_id is not None else None
+            return _err(url, _request_error(exc, timeout), cleanup=cleanup)
         except AddressPolicyError as exc:
             return _err(url, str(exc), classification="operation_rejected")
         except OSError as exc:
-            if execution_id is not None:
-                self.release(execution_id)
-            return _err(url, f"响应临时文件失败：{exc}", classification="unit_failed")
+            cleanup = self.release(execution_id) if execution_id is not None else None
+            return _err(
+                url,
+                f"响应临时文件失败：{exc}",
+                classification="unit_failed",
+                cleanup=cleanup,
+            )
         except ValueError as exc:
-            return _err(url, str(exc), classification="operation_rejected")
+            cleanup = self.release(execution_id) if execution_id is not None else None
+            return _err(
+                url,
+                str(exc),
+                classification="operation_rejected",
+                cleanup=cleanup,
+            )
         except BaseException:
             if execution_id is not None:
                 self.release(execution_id)
@@ -302,10 +326,26 @@ class WebFetchTool(Tool):
 # ── 模块级工具函数 ────────────────────────────────────────────
 
 
-def _err(url: str, msg: str, *, classification: str | None = None) -> str:
-    result: dict[str, str] = {"error": msg, "url": url}
+def _err(
+    url: str,
+    msg: str,
+    *,
+    classification: str | None = None,
+    cleanup: SpillCleanup | None = None,
+) -> str:
+    result: dict[str, Any] = {"error": msg, "url": url}
     if classification:
         result["classification"] = classification
+    if cleanup is not None:
+        result["cleanup"] = {
+            "execution_id": cleanup.execution_id,
+            "released": cleanup.released,
+            "status": cleanup.status,
+            "path": cleanup.path,
+            "error": cleanup.error,
+        }
+        if not cleanup.released:
+            result["cleanup_classification"] = cleanup.status
     return json.dumps(result, ensure_ascii=False)
 
 

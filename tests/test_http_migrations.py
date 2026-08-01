@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from agent.tools import web_fetch as web_fetch_module
 from agent.tools.web_fetch import WebFetchTool
 from agent.tools.base import ToolExecutionContext
 from agent.tools.web_fetch_spill import (
@@ -119,6 +120,7 @@ async def test_web_fetch_spills_large_response_with_execution_owner(tmp_path: Pa
         cleanup = tool.release("turn-1")
         assert cleanup.status == "released"
         assert not spill_path.exists()
+        assert tool._execution_turns == {}
     finally:
         await requester.client.aclose()
 
@@ -188,6 +190,68 @@ async def test_web_fetch_cancel_cleans_partial_spill(tmp_path: Path):
     with pytest.raises(asyncio.CancelledError):
         await tool.execute(url="https://example.com/data.txt")
     assert not list((tmp_path / "spill").glob("*.spill"))
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_spill_limit_cleanup_failure_keeps_turn_owner_for_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    class _Response:
+        status_code = 200
+        headers = {"content-type": "text/plain"}
+        encoding = "utf-8"
+        url = "https://example.com/data.txt"
+
+        async def aiter_bytes(self, *, chunk_size: int):
+            _ = chunk_size
+            yield b"x" * (INLINE_MAX_BYTES + 1)
+            yield b"y"
+
+    class _Requester:
+        @asynccontextmanager
+        async def stream(self, method: str, url: str, **kwargs: object):
+            _ = (method, url, kwargs)
+            yield _Response()
+
+    monkeypatch.setattr(web_fetch_module, "SPILL_MAX_FILE_BYTES", INLINE_MAX_BYTES + 1)
+    original_unlink = Path.unlink
+    unlink_attempts = 0
+
+    def fail_first_spill_unlink(path: Path, *, missing_ok: bool = False) -> None:
+        nonlocal unlink_attempts
+        if path.suffix == ".spill" and unlink_attempts == 0:
+            unlink_attempts += 1
+            raise OSError("unlink denied")
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", fail_first_spill_unlink)
+    store = WebFetchSpillStore(root=tmp_path / "spill")
+    tool = WebFetchTool(
+        _Requester(),
+        spill_store=store,
+        context_provider=lambda: ToolExecutionContext(
+            execution_id="execution-1", turn_id="turn-1"
+        ),
+    )
+
+    payload = json.loads(await tool.execute(url="https://example.com/data.txt"))
+
+    assert payload["classification"] == "operation_rejected"
+    assert payload["cleanup_classification"] == "cleanup_degraded"
+    diagnostic = store.diagnostics("execution-1")
+    assert diagnostic is not None
+    assert diagnostic.status == "cleanup_degraded"
+    assert diagnostic.path is not None
+    assert Path(diagnostic.path).exists()
+    assert tool._execution_turns == {"execution-1": "turn-1"}
+
+    retry = tool.release_turn("turn-1")
+
+    assert [item.status for item in retry] == ["released"]
+    assert not Path(diagnostic.path).exists()
+    assert tool._execution_turns == {}
+    assert store.diagnostics("execution-1") is not None
+    assert store.diagnostics("execution-1").status == "released"
 
 
 @pytest.mark.asyncio
