@@ -87,12 +87,21 @@ class _Bus:
     def __init__(self) -> None:
         self.inbound: list[object] = []
         self.outbound: dict[str, object] = {}
+        self.pending_handoff = False
 
     async def publish_inbound(self, message: object) -> None:
         self.inbound.append(message)
 
     def subscribe_outbound(self, channel: str, callback: object) -> None:
         self.outbound[channel] = callback
+
+    def has_pending_mobile_handoff(
+        self,
+        *,
+        session_key: str,
+        client_message_id: str,
+    ) -> bool:
+        return self.pending_handoff
 
 
 class _FailingBus(_Bus):
@@ -863,6 +872,69 @@ async def test_message_send_marks_prestart_processing_receipt_retryable(
     assert result == replayed
     assert result.type == "message.send.error"
     assert result.payload["code"] == "command_interrupted"
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_message_send_pending_handoff_stays_in_progress_until_user_reconciles(
+    tmp_path: Path,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    manager = SessionManager(tmp_path / "workspace")
+    session_id = f"mobile:{uuid4()}"
+    frame = _message_frame(
+        frame_id="01ARZ3NDEKSTV4RRFFQ69G5FAY",
+        session_id=session_id,
+    )
+    _, created = storage.reserve_command(
+        device_id=device_id,
+        command_id=frame.id,
+        command_type=frame.type,
+        request_hash=channel_module._command_hash(frame),
+        created_at=datetime.now(timezone.utc),
+    )
+    assert created
+    bus = _Bus()
+    bus.pending_handoff = True
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=bus,
+                session_manager=manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+            ),
+        )
+    )
+
+    pending = await channel.handle_command(device_id=device_id, frame=frame)
+    assert pending.type == "message.send.error"
+    assert pending.payload["code"] == "command_in_progress"
+    receipt = storage._db.execute(
+        "SELECT status FROM mobile_command_receipts WHERE device_id = ? AND command_id = ?",
+        (device_id, frame.id),
+    ).fetchone()
+    assert receipt is not None and receipt[0] == "processing"
+
+    session = manager.get_or_create(session_id)
+    session.add_message("user", frame.payload.text, client_message_id=frame.id)
+    manager.save(session)
+    bus.pending_handoff = False
+    completed = await channel.handle_command(device_id=device_id, frame=frame)
+    assert completed.type == "message.send.ok"
+    receipt = storage._db.execute(
+        "SELECT status FROM mobile_command_receipts WHERE device_id = ? AND command_id = ?",
+        (device_id, frame.id),
+    ).fetchone()
+    assert receipt is not None and receipt[0] == "completed"
+    manager.close()
     storage.close()
 
 
