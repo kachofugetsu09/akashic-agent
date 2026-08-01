@@ -4,10 +4,10 @@ import json
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 from zoneinfo import ZoneInfo
 
-from agent.tools.base import Tool
+from agent.tools.base import Tool, get_current_tool_context
 from core.memory.engine import (
     EvidenceRef,
     MemoryQuery,
@@ -63,9 +63,7 @@ class RecallMemoryTool(Tool):
         memory_kind: str = "",
         time_filter: str = "",
         limit: int = 8,
-        channel: str | None = None,
-        chat_id: str | None = None,
-        **extra: Any,
+        current_timestamp: str | None = None,
     ) -> str:
         text = (query or "").strip()
         if not text:
@@ -73,14 +71,20 @@ class RecallMemoryTool(Tool):
         time_window = _parse_time_filter(time_filter)
         if time_filter and time_window is None:
             return json.dumps({"count": 0, "items": [], "error": "invalid_time_filter"}, ensure_ascii=False)
+        context = get_current_tool_context()
+        timestamp_value = (
+            current_timestamp
+            if current_timestamp is not None
+            else (context.current_timestamp if context else "")
+        )
         result = await self._memory.query(
             MemoryQuery(
                 text=text,
                 intent=_INTENTS.get(intent, "answer"),
                 scope=MemoryScope(
-                    session_key=f"{channel}:{chat_id}" if channel and chat_id else "",
-                    channel=channel or "",
-                    chat_id=chat_id or "",
+                    session_key=context.origin_session_key if context else "",
+                    channel=context.origin_channel if context else "",
+                    chat_id=context.origin_chat_id if context else "",
                 ),
                 filters=MemoryQueryFilters(
                     kinds=_memory_kinds(memory_kind),
@@ -88,8 +92,8 @@ class RecallMemoryTool(Tool):
                     time_end=time_window[1] if time_window else None,
                 ),
                 limit=max(1, min(int(limit), 200)),
-                context=dict(extra),
-                timestamp=_parse_current_timestamp(extra.get("current_timestamp")),
+                context={},
+                timestamp=_parse_current_timestamp(timestamp_value),
             )
         )
         return _render_records(result.records, trace=result.trace)
