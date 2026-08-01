@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agent.background.subagent_manager import SubagentManager
+from agent.background.subagent_manager import SubagentCapacityError, SubagentManager
 from agent.policies.delegation import DelegationPolicy
 from agent.tool_hooks.base import ToolHook
 from agent.tools.base import Tool
@@ -128,7 +128,8 @@ subagent 没有看过当前会话。像给刚进房间的同事写交接文档�
         **_: Any,
     ) -> str:
         retry_count = max(0, int(retry_count))
-        running_count = self._manager.get_running_count() if run_in_background else 0
+        # manager 的 admission 是最终原子 owner；两种执行模式都读取同一活动计数。
+        running_count = self._manager.get_running_count()
         decision = self._policy.decide(
             task=task, label=label, running_count=running_count
         )
@@ -152,21 +153,27 @@ subagent 没有看过当前会话。像给刚进房间的同事写交接文档�
             chat_id = str(ctx.origin_chat_id if ctx else "").strip()
             if not channel or not chat_id:
                 return "错误：当前会话上下文缺失，无法创建后台任务"
-            return await self._manager.spawn(
+            try:
+                return await self._manager.spawn(
+                    task=task,
+                    label=label,
+                    origin_channel=channel,
+                    origin_chat_id=chat_id,
+                    decision=decision,
+                    profile=profile,
+                    retry_count=retry_count,
+                )
+            except SubagentCapacityError as exc:
+                return f"错误：{exc}"
+
+        try:
+            return await self._manager.spawn_sync(
                 task=task,
                 label=label,
-                origin_channel=channel,
-                origin_chat_id=chat_id,
-                decision=decision,
                 profile=profile,
-                retry_count=retry_count,
             )
-
-        return await self._manager.spawn_sync(
-            task=task,
-            label=label,
-            profile=profile,
-        )
+        except SubagentCapacityError as exc:
+            return f"错误：{exc}"
 
 
 class SpawnManageTool(Tool):
