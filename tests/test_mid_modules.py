@@ -148,7 +148,9 @@ async def test_web_fetch_procedure_tagger_and_store_cover_core_paths(tmp_path: P
             content=b"<html><body><script>x</script><p>Hello <b>world</b></p></body></html>",
         )
     )
-    assert json.loads(await tool.execute(url="http://127.0.0.1"))["text"] == "Hello world"
+    assert json.loads(
+        await tool.execute(url="http://127.0.0.1", format="text")
+    )["text"] == "Hello world"
     assert _to_text(b"<html><body><style>x</style><p>Hi</p></body></html>") == "Hi"
     assert "Title" in _to_markdown("<h1>Title</h1>")
 

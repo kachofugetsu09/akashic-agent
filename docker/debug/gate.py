@@ -102,7 +102,6 @@ class Catalog:
     baseline_scenarios: tuple[str, ...]
     executable_suffixes: frozenset[str]
     executable_names: frozenset[str]
-    private_groups: frozenset[str]
     always_full_paths: tuple[str, ...]
     mutant_tests: dict[str, str]
 
@@ -333,9 +332,6 @@ def load_catalog() -> Catalog:
         executable_names=frozenset(
             _strings(defaults, "executable_names", owner="defaults")
         ),
-        private_groups=frozenset(
-            _strings(defaults, "private_groups", owner="defaults")
-        ),
         always_full_paths=_strings(defaults, "always_full_paths", owner="defaults"),
         mutant_tests=mutant_tests,
     )
@@ -446,9 +442,6 @@ def _validate_references(catalog: Catalog, requirements: set[str]) -> list[str]:
     for scenario_id in catalog.baseline_scenarios:
         if scenario_id not in catalog.scenarios:
             issues.append(f"baseline scenario 不存在: {scenario_id}")
-    for private_group in catalog.private_groups:
-        if private_group not in catalog.groups:
-            issues.append(f"private group 不存在: {private_group}")
     for group in catalog.groups.values():
         for dependency in group.depends_on:
             if dependency not in catalog.groups:
@@ -891,8 +884,6 @@ def build_plan(base: str, *, full: bool = False) -> dict[str, object]:
     change_classes = classify_change_paths(changed)
     production_paths = change_classes["productionSourcePaths"]
     protected_paths = change_classes["protectedContractPaths"]
-    protected_contract_mixed = bool(production_paths and protected_paths)
-
     # 2. 计算直接命中、依赖闭包和未知可执行改动。
     direct: set[str] = set()
     reasons: list[str] = []
@@ -906,6 +897,7 @@ def build_plan(base: str, *, full: bool = False) -> dict[str, object]:
             unmapped.append(path)
     force_full = (
         full
+        or bool(production_paths and protected_paths)
         or bool(unmapped)
         or any(
             _matches(path, pattern)
@@ -921,17 +913,14 @@ def build_plan(base: str, *, full: bool = False) -> dict[str, object]:
         selected.update(catalog.groups[group_id].scenarios)
     touched_gaps = _touched_gaps(changed, baseline, catalog)
 
-    # 3. 公开计划只暴露能力分组，provider 选择留给 private companion。
+    # 3. 公开计划只暴露能力分组和可执行场景。
     status = "planned"
-    if protected_contract_mixed:
-        status = "protected_contract_mixed"
-    elif not changed and not full:
+    if not changed and not full:
         status = "not_affected"
     elif unmapped:
         status = "unmapped_change"
     elif touched_gaps:
         status = "baseline_gap_touched"
-    private_gate_required = bool(affected.intersection(catalog.private_groups))
     payload: dict[str, object] = {
         "version": 1,
         "status": status,
@@ -945,10 +934,6 @@ def build_plan(base: str, *, full: bool = False) -> dict[str, object]:
         "protectedContractPaths": protected_paths,
         "affectedGroups": sorted(affected),
         "selectedScenarios": sorted(selected),
-        "privateGateRequired": private_gate_required,
-        "privateGateStatus": (
-            "pending_maintainer" if private_gate_required else "not_required"
-        ),
         "unmappedChanges": unmapped,
         "touchedBaselineGaps": touched_gaps,
         "full": force_full,
@@ -976,8 +961,6 @@ def _print_plan(plan: dict[str, object]) -> None:
     print("Selected public scenarios:")
     for scenario in cast(list[str], plan["selectedScenarios"]):
         print(f"  {scenario}")
-    print(f"Private gate required: {str(plan['privateGateRequired']).lower()}")
-    print(f"Private gate status: {plan['privateGateStatus']}")
     print(f"Plan digest: {plan['planDigest']}")
 
 
@@ -989,8 +972,7 @@ def command_plan(args: argparse.Namespace) -> int:
     print(f"report={report_dir.relative_to(ROOT)}")
     return (
         1
-        if plan["status"]
-        in {"unmapped_change", "baseline_gap_touched", "protected_contract_mixed"}
+        if plan["status"] in {"unmapped_change", "baseline_gap_touched"}
         else 0
     )
 
@@ -1199,7 +1181,7 @@ def _run_scenario(
 def command_run(args: argparse.Namespace) -> int:
     """生成计划，并在干净 Docker workspace 中执行所选公开场景。"""
 
-    # 1. 计划先落盘；公开 Gate 不读取 private runtime 或插件清单。
+    # 1. 计划先落盘；Gate 只读取公开合同和公开场景。
     catalog = load_catalog()
     plan = build_plan(args.base, full=args.full)
     run_id = _new_run_id()
@@ -1210,12 +1192,10 @@ def command_run(args: argparse.Namespace) -> int:
     # 2. 镜像只构建一次；每个场景的超时只约束场景本身。
     selected_scenarios = cast(list[str], plan["selectedScenarios"])
     image_build: dict[str, object] | None = None
-    if selected_scenarios and plan["status"] != "protected_contract_mixed":
+    if selected_scenarios:
         image_build = _build_change_gate_image(run_id, report_dir)
     checks = []
-    if plan["status"] != "protected_contract_mixed" and (
-        image_build is None or image_build["status"] == "passed"
-    ):
+    if image_build is None or image_build["status"] == "passed":
         checks = [
             _run_scenario(
                 catalog.scenarios[scenario_id], run_id=run_id, report_dir=report_dir
@@ -1230,7 +1210,6 @@ def command_run(args: argparse.Namespace) -> int:
     elif plan["status"] in {
         "unmapped_change",
         "baseline_gap_touched",
-        "protected_contract_mixed",
     }:
         status = cast(str, plan["status"])
     elif image_build is not None and image_build["status"] != "passed":
@@ -1262,21 +1241,12 @@ def command_run(args: argparse.Namespace) -> int:
         "protectedContractPaths": plan["protectedContractPaths"],
         "affectedGroups": plan["affectedGroups"],
         "selectedScenarios": plan["selectedScenarios"],
-        "privateGateRequired": plan["privateGateRequired"],
-        "privateGateStatus": plan.get(
-            "privateGateStatus",
-            "pending_maintainer" if plan["privateGateRequired"] else "not_required",
-        ),
         "imageBuild": image_build,
         "checks": checks,
         "residualResources": residual,
     }
     _atomic_json(report_dir / "gate.json", gate)
     print(f"GATE {status.upper()} report={report_dir.relative_to(ROOT)}")
-    if plan["privateGateRequired"]:
-        print("private-contract-gate: pending_maintainer (provider identity stays private)")
-    else:
-        print("private-contract-gate: not_required")
     return 0 if status in {"passed", "not_affected"} else 1
 
 

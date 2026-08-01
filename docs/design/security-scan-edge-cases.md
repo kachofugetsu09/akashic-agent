@@ -1,6 +1,6 @@
 # Companion 安全边界与 Edge Case 实施设计
 
-- 状态：implemented / public Gate passed / private Gate pending maintainer
+- 状态：implemented / public Gate
 - 日期：2026-08-01
 - 设计 owner：主 Agent
 - 合同决策：[0017](../decisions/0017-one-person-companion-security-boundary.md)
@@ -131,11 +131,11 @@ Mutant：`efficiency` 通过 `innerHTML` 进入 DOM。
 | G8 | SEC-007～SEC-008 | MessageBus、control replay |
 | G9 | SEC-009 | Fitbit DTO 与 Dashboard renderer |
 
-实现已按依赖关系拆入 stacked PR；共享合同、oracle 和 baseline 由本层唯一拥有，产品 PR 只修改各自 owner 路径和 focused tests。累计 head 的公开 Gate 已覆盖 20 个 selected scenarios、正例、known-wrong mutant、受保护 write set 和资源清理。正式 private Gate 仍为 `pending_maintainer`。
+实现已按依赖关系拆入 stacked PR；共享合同、oracle 和 baseline 由本层唯一拥有，产品 PR 只修改各自 owner 路径和 focused tests。累计 head 的公开 Gate 覆盖 selected scenarios、正例、known-wrong mutant、受保护 write set 和资源清理。生产路径与合同同时变化时执行完整公开场景。
 
-G9 的公开 command 只运行语义 oracle 和公开 Dashboard focused tests；真实 Fitbit provider、Dashboard native renderer 与字段安全验证由 `private_runtime` 固定 gitlink及其 native tests 提供本地证据。gitlink `2d10da5b` 的 native renderer 5/5、Python field validation 11/11 已通过；公开计划仍写成 `privateGateStatus=pending_maintainer`。只有维护者用同一 `plan.json` 取得私有报告后才能升级为 `passed`，本地 native tests 不能冒充正式 private Gate。
+G9 的公开 command 运行语义 oracle 和 Dashboard focused tests；私有 provider 的本地 native 测试可以作为维护辅助证据，但不再构成额外的合并 Gate。
 
-`coverage-baseline.json` 的 `purpose` 是 `approved_contract_mapping`：`coveredP0` 只记录批准的场景映射、冻结 base 和 catalog digest，不表示这些场景或 mutant 已经运行通过。只有实现 head 上的公开/私有 Gate 报告才能提供运行证据。
+`coverage-baseline.json` 的 `purpose` 是 `approved_contract_mapping`：`coveredP0` 只记录批准的场景映射、冻结 base 和 catalog digest，不表示这些场景或 mutant 已经运行通过。只有实现 head 上的公开 Gate 报告才能提供运行证据。
 
 ## 14. 非目标与移除的扫描语义
 

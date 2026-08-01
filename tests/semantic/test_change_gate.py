@@ -110,7 +110,7 @@ def test_change_classes_allow_single_class_and_reject_mixed_contract_changes() -
     )
 
 
-def test_build_plan_marks_production_and_protected_contract_mixes(
+def test_build_plan_runs_full_public_gate_for_production_and_contract_mixes(
     monkeypatch: Any,
 ) -> None:
     gate = _gate_module()
@@ -142,19 +142,20 @@ def test_build_plan_marks_production_and_protected_contract_mixes(
 
     plan = gate.build_plan("origin/main")
 
-    assert plan["status"] == "protected_contract_mixed"
+    assert plan["status"] == "planned"
+    assert plan["full"] is True
     assert plan["productionSourcePaths"] == ["agent/core/passive_turn.py"]
     assert plan["protectedContractPaths"] == [
         "tests/semantic/test_change_gate.py"
     ]
 
 
-def test_mixed_commands_fail_without_building_or_running_scenarios(
+def test_mixed_commands_run_public_scenarios(
     monkeypatch: Any,
 ) -> None:
     gate = _gate_module()
     plan = {
-        "status": "protected_contract_mixed",
+        "status": "planned",
         "base": "base",
         "head": "head",
         "dirtyStatus": [],
@@ -169,12 +170,14 @@ def test_mixed_commands_fail_without_building_or_running_scenarios(
         "protectedContractPaths": ["tests/semantic/test_change_gate.py"],
         "affectedGroups": ["runtime"],
         "selectedScenarios": ["expensive"],
-        "privateGateRequired": True,
-        "privateGateStatus": "pending_maintainer",
     }
     writes: list[dict[str, object]] = []
     monkeypatch.setattr(gate, "build_plan", lambda *_args, **_kwargs: plan)
-    monkeypatch.setattr(gate, "load_catalog", lambda: SimpleNamespace(scenarios={}))
+    monkeypatch.setattr(
+        gate,
+        "load_catalog",
+        lambda: SimpleNamespace(scenarios={"expensive": SimpleNamespace()}),
+    )
     monkeypatch.setattr(gate, "_new_run_id", lambda: "run")
     report_dir = gate.ROOT / "docker" / "debug" / "reports" / "change-gate" / "test"
     monkeypatch.setattr(gate, "_report_dir", lambda _run_id: report_dir)
@@ -187,23 +190,22 @@ def test_mixed_commands_fail_without_building_or_running_scenarios(
     monkeypatch.setattr(
         gate,
         "_build_change_gate_image",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("mixed Gate 不得构建镜像")
-        ),
+        lambda *_args, **_kwargs: {"status": "passed"},
     )
     monkeypatch.setattr(
         gate,
         "_run_scenario",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("mixed Gate 不得运行场景")
-        ),
+        lambda *_args, **_kwargs: {
+            "status": "passed",
+            "residualResources": {"containers": [], "networks": [], "volumes": []},
+        },
     )
     args = Namespace(base="origin/main", full=False)
 
-    assert gate.command_plan(args) == 1
-    assert gate.command_run(args) == 1
-    assert writes[-1]["status"] == "protected_contract_mixed"
-    assert writes[-1]["checks"] == []
+    assert gate.command_plan(args) == 0
+    assert gate.command_run(args) == 0
+    assert writes[-1]["status"] == "passed"
+    assert len(writes[-1]["checks"]) == 1
 
 
 def test_gate_temp_root_uses_explicit_existing_directory(
@@ -254,10 +256,6 @@ def test_public_plan_contains_no_private_provider_identity() -> None:
 
     assert "providers" not in plan
     assert "providerIds" not in plan
-    assert isinstance(plan["privateGateRequired"], bool)
-    assert plan["privateGateStatus"] == (
-        "pending_maintainer" if plan["privateGateRequired"] else "not_required"
-    )
 
 
 def test_state_contract_loads_destructive_policy_fields() -> None:

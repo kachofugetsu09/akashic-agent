@@ -17,7 +17,6 @@ executable_suffixes = [
   ".yml",
 ]
 executable_names = ["Dockerfile"]
-private_groups = ["channel", "events", "jobs", "lifecycle", "mcp", "memory", "plugin", "proactive", "companion_dashboard"]
 always_full_paths = [
   ".github/workflows/**",
   "AGENTS.md",

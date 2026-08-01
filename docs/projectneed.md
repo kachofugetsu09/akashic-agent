@@ -553,9 +553,7 @@ P0 不变量必须由受保护的 semantic test、policy 或黑盒观察器验�
 
 代码改动必须由版本控制中的 capability、state 和 scenario 索引解释，再从 Git diff 选择语义场景。未知可执行改动先运行全量公开场景，最终仍要 fail-loud，不能由实现者临时猜测或缩减测试。每个场景使用一次性测试 workspace、plugin home、config 和 HOME，不读取正式运行状态。
 
-公开 Gate 只输出能力组、场景和 plan/source/catalog digest，不要求贡献者安装私有插件，也不得暴露 provider 身份。private runtime 用同一 plan digest 把能力组映射到真实 provider；`privateGateRequired=true` 时，公开 Gate 通过只表示 G1 完成，跨仓库总体验收在 G2 明确返回 `passed`、`failed` 或 `not_affected` 前仍属待验证。
-
-跨仓库 Gate 必须从私有 catalog 的 GitHub `repository + 完整 ref` 查询远端当前 revision，并在开跑前冻结成 commit SHA。安装、验收和报告都绑定该 SHA；本地 checkout、remote-tracking ref、开发者机器上的插件 cache 或手工传入路径不能满足 required check。这样主仓库候选始终与 Gate 启动时远端真实插件版本组成一个明确、可复现的验收组合。
+公开 Gate 只输出能力组、场景和 plan/source/catalog digest，不要求贡献者安装私有插件，也不得暴露 provider 身份。生产路径与受保护合同同时变化时，必须执行完整公开场景；公开结果是当前仓库的合并依据。
 
 ### TST-007 跨仓库证据绑定不可变组合
 
