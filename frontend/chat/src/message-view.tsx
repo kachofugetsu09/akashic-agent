@@ -26,7 +26,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Check, ChevronDown, Copy, Wrench } from "lucide-react";
-import { Fragment, lazy, Suspense, type ReactNode, useEffect, useMemo, useState } from "react";
+import { Fragment, lazy, memo, Suspense, type ReactNode, useEffect, useMemo, useState } from "react";
 import type {
   AgentBlock,
   ChatMessage,
@@ -243,16 +243,16 @@ function ProcessTraceTrigger({ interrupted }: { interrupted: boolean }) {
   );
 }
 
-function ThinkingStep({ block, active }: { block: ThinkingBlock; active: boolean }) {
+const ThinkingStep = memo(function ThinkingStep({ block, active }: { block: ThinkingBlock; active: boolean }) {
   return (
     <div className={`process-item thinking-step ${active ? "active" : ""}`}>
       <span className="process-node circle" />
       <div className="process-text">{block.content}</div>
     </div>
   );
-}
+});
 
-function ToolStep({
+const ToolStep = memo(function ToolStep({
   block,
   active,
   onCopyDetail,
@@ -372,7 +372,7 @@ function ToolStep({
       </div>
     </div>
   );
-}
+});
 
 function ToolDetailHeading({
   label,

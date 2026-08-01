@@ -68,13 +68,35 @@ export interface MobileStreamProjection<T> {
 export function reconcileMobileSnapshotMessages<T extends { id: string; searchRevision: number }>(
   previous: readonly T[],
   next: T[],
+  presentationMatches: (previousMessage: T, nextMessage: T) => boolean = () => true,
 ): T[] {
   if (previous.length === 0 || next.length === 0) return next;
   const previousById = new Map(previous.map((message) => [message.id, message]));
   let reused = 0;
   const reconciled = next.map((message) => {
     const stable = previousById.get(message.id);
-    if (!stable || stable.searchRevision !== message.searchRevision) return message;
+    if (
+      !stable
+      || stable.searchRevision !== message.searchRevision
+      || !presentationMatches(stable, message)
+    ) return message;
+    reused += 1;
+    return stable;
+  });
+  return reused === 0 ? next : reconciled;
+}
+
+/** 复用流式消息中未变化的子项，让完成的 thinking 与 tool 块跳过重复渲染。 */
+export function reconcileMobileStreamItems<T>(
+  previous: readonly T[],
+  next: T[],
+  matches: (previousItem: T, nextItem: T) => boolean,
+): T[] {
+  if (previous.length === 0 || next.length === 0) return next;
+  let reused = 0;
+  const reconciled = next.map((item, index) => {
+    const stable = previous[index];
+    if (stable === undefined || !matches(stable, item)) return item;
     reused += 1;
     return stable;
   });

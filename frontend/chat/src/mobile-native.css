@@ -826,9 +826,15 @@ button {
   animation: connection-spin 1.25s linear infinite;
 }
 
-.mobile-conversation {
+.mobile-conversation-frame {
   position: relative;
   flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.mobile-conversation {
+  height: 100%;
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
