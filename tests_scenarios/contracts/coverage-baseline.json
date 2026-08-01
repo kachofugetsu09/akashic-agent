@@ -1,7 +1,7 @@
 {
   "acceptedGaps": [],
   "base": "d627fa600781855770a5ede752f268982b68ebf9",
-  "catalogDigest": "94d4bea269abaf464887c8edb952cd18269d427e99d8648d8df99aa44de95804",
+  "catalogDigest": "4a943e6766e3d6a0486da69a825b0f3b1f32c399bf84e2d9aef4fa5ec27ff6e8",
   "coveredP0": {
     "context_projection": [
       "context_history_nondestructive"
@@ -26,6 +26,9 @@
     ],
     "session_persistence": [
       "context_history_nondestructive"
+    ],
+    "shell_finality": [
+      "shell_turn_finality_contract"
     ]
   },
   "version": 1

@@ -277,6 +277,57 @@ async def test_write_stdin_cancellation_preserves_execution() -> None:
 
 
 @pytest.mark.asyncio
+async def test_failed_owner_cleanup_retains_execution_and_quarantines_new_spawn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = ShellProcessManager()
+    owner = "mobile:cleanup-quarantine"
+    original_remove = manager._remove_execution
+    try:
+        opened = await manager.exec_command(
+            command="sleep 30",
+            argv=["/bin/sh", "-c", "sleep 30"],
+            cwd=None,
+            env=dict(os.environ),
+            tty=False,
+            yield_time_ms=250,
+            max_output_tokens=100,
+            hard_timeout_s=60,
+            owner_session_key=owner,
+        )
+        assert opened.execution_id is not None
+
+        async def deny_remove(*_args: object, **_kwargs: object) -> None:
+            raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+
+        monkeypatch.setattr(manager, "_remove_execution", deny_remove)
+        report = await manager.terminate_owner(owner)
+
+        assert report.failed_execution_ids == (opened.execution_id,)
+        assert await manager.active_execution_ids() == [opened.execution_id]
+        with pytest.raises(RuntimeError, match="cleanup 未确认"):
+            await manager.exec_command(
+                command="printf blocked",
+                argv=["/bin/sh", "-c", "printf blocked"],
+                cwd=None,
+                env=dict(os.environ),
+                tty=False,
+                yield_time_ms=250,
+                max_output_tokens=100,
+                hard_timeout_s=60,
+                owner_session_key=owner,
+            )
+
+        monkeypatch.setattr(manager, "_remove_execution", original_remove)
+        retry = await manager.terminate_owner(owner)
+        assert retry.failed_execution_ids == ()
+        assert await manager.active_execution_ids() == []
+    finally:
+        monkeypatch.setattr(manager, "_remove_execution", original_remove)
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_stop_during_initial_wait_returns_terminal_state() -> None:
     manager = ShellProcessManager()
     shell = ShellTool(manager)

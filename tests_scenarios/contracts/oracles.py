@@ -75,6 +75,31 @@ def assert_process_resources_released(
         )
 
 
+def assert_committed_turn_finality(
+    *,
+    status: str,
+    final_response: str | None,
+    dispatch_count: int,
+) -> None:
+    """断言后置 cleanup 不能反向改变已经提交的 turn。"""
+    if status != "completed" or final_response is None or dispatch_count != 1:
+        raise AssertionError(
+            "cleanup 反向破坏已提交 turn: "
+            f"status={status!r}, final_response={final_response!r}, "
+            f"dispatch_count={dispatch_count}"
+        )
+
+
+def assert_unconfirmed_cleanup_retains_ownership(
+    *,
+    cleanup_confirmed: bool,
+    tracked_execution_ids: Sequence[int],
+) -> None:
+    """断言未确认清理时 execution 仍由 supervisor 跟踪。"""
+    if not cleanup_confirmed and not tracked_execution_ids:
+        raise AssertionError("cleanup 未确认却提前丢失 execution ownership")
+
+
 def assert_snapshot_fields(
     snapshot: Mapping[str, object],
     expected: Mapping[str, object],

@@ -20,6 +20,7 @@
 | [0012](0012-query-local-compaction-is-a-persisted-projection.md) | accepted | Query 内压缩是可持久重放的非破坏性投影 | CTX-001～CTX-007、SES-001、SES-005、CAP-001 |
 | [0013](0013-linux-supervisor-uses-one-boot-guardian.md) | accepted | Linux Supervisor 每个 boot 只使用一个 Guardian | RUN-001～RUN-004、WSP-001～WSP-004 |
 | [0014](0014-shell-uses-unified-execution.md) | accepted | Shell 采用统一可续接执行句柄 | SH-001、RUN-002、RUN-003、ERR-001 |
+| [0015](0015-cleanup-does-not-own-turn-or-restart-finality.md) | accepted | Cleanup 不拥有 turn 与重启终态 | SH-002、RUN-003、RUN-004、OUT-001、ERR-001 |
 
 ## 新增规则
 

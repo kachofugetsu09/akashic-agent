@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import select
@@ -978,6 +979,56 @@ def test_supervisor_exit_code_contract(
         config_path=tmp_path / "config.toml",
         workspace=tmp_path,
     ) == expected
+
+
+def test_supervisor_logs_cleanup_failure_and_still_starts_next_boot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_settings_server: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (tmp_path / "config.toml").write_text("", encoding="utf-8")
+    children = [
+        _FakeSupervisorChild(RESTART_EXIT_CODE),
+        _FakeSupervisorChild(0),
+    ]
+    spawned: list[_FakeSupervisorChild] = []
+
+    def launch(*_args: Any, **_kwargs: Any) -> _FakeSupervisorChild:
+        child = children[len(spawned)]
+        spawned.append(child)
+        return child
+
+    monkeypatch.setattr(supervisor_module.subprocess, "Popen", launch)
+
+    def wait_child(
+        child: _FakeSupervisorChild,
+        *,
+        read_fd: int,
+        lease_fd: int,
+        **_kwargs: Any,
+    ) -> supervisor_module._ChildResult:
+        os.close(read_fd)
+        os.close(lease_fd)
+        if child.returncode == RESTART_EXIT_CODE:
+            return supervisor_module._ChildResult(RESTART_EXIT_CODE, True, True)
+        return supervisor_module._ChildResult(0, True, False)
+
+    monkeypatch.setattr(supervisor_module, "_wait_child", wait_child)
+    monkeypatch.setattr(
+        supervisor_module,
+        "_cleanup_boot_processes",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            PermissionError(errno.EPERM, "Operation not permitted")
+        ),
+    )
+
+    assert run_supervisor(
+        config_path=tmp_path / "config.toml",
+        workspace=tmp_path,
+    ) == 0
+    assert len(spawned) == 2
+    assert "event=cleanup_degraded" in capsys.readouterr().err
 
 
 def test_supervisor_without_config_waits_for_settings_request(

@@ -4,7 +4,7 @@
 - 日期：2026-08-01
 - 关联条款：RUN-001～RUN-004、WSP-001～WSP-004
 - supersedes：无
-- superseded by：无
+- superseded by：[0015](0015-cleanup-does-not-own-turn-or-restart-finality.md)（仅勘误旧 boot 空集前置条件）
 
 ## 背景
 

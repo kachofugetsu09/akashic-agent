@@ -449,6 +449,48 @@ async def test_agent_loop_preserves_turn_failure_when_shell_cleanup_fails(
 
 
 @pytest.mark.asyncio
+async def test_agent_loop_returns_completed_reply_when_shell_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    manager = ShellProcessManager()
+    shell = ShellTool(manager)
+    tools = ToolRegistry()
+    tools.register(shell)
+    loop = AgentLoop.__new__(AgentLoop)
+    loop.tools = tools
+    loop._processing_state = None
+    loop._interrupt_states = {}
+    loop._resume_interrupted_message = AsyncMock(
+        side_effect=lambda message, _key: (message, False)
+    )
+    loop._observe_turn_started = AsyncMock()
+    loop._core_runner = SimpleNamespace(
+        process=AsyncMock(
+            return_value=OutboundMessage("mobile", "owner", "completed reply")
+        )
+    )
+
+    async def fail_cleanup(_owner_session_key: str) -> None:
+        raise PermissionError("cleanup denied")
+
+    monkeypatch.setattr(shell, "terminate_owner", fail_cleanup)
+    message = InboundMessage(
+        channel="mobile",
+        sender="user",
+        chat_id="owner",
+        content="run",
+    )
+
+    with caplog.at_level("ERROR", logger="agent.loop"):
+        result = await loop._process(message)
+
+    assert result.content == "completed reply"
+    assert "event=cleanup_degraded" in caplog.text
+    assert "session=mobile:owner" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_shutdown_terminates_all_executions() -> None:
     manager = ShellProcessManager()
     shell = ShellTool(manager)

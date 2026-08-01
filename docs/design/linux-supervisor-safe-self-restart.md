@@ -39,7 +39,7 @@ Guardian 是 Gateway 的父进程并设置为 Linux child subreaper。它持有�
 1. 等待发起重启的正式 turn 成功持久化。
 2. 等待该 turn 的最终回复被 transport 实际送达。
 3. 拒绝普通退出、崩溃或伪造退出码触发重启。
-4. 结束旧 boot 的 Gateway 及其残留后代，并确认端口已经释放。
+4. 尽力结束旧 boot 的 Gateway 及其残留后代；无法清理的目标进入结构化诊断。
 5. 从磁盘重新加载修改后的代码，启动下一代并确认 ready。
 
 因此，去掉 Supervisor 会失去可靠的自重启能力；但把它扩展成跨平台通用进程管理器也不是目标。本提议只保留实现上述闭环所需的最小机制。
@@ -47,7 +47,7 @@ Guardian 是 Gateway 的父进程并设置为 Linux child subreaper。它持有�
 ### 2.1 本次目标
 
 - Linux 上保留 Agent 自重启和设置应用后的受控重启。
-- Supervisor、Guardian 或 Gateway 单点异常时，旧 boot 的后代能够被清理。
+- Supervisor、Guardian 或 Gateway 单点异常时，旧 boot 的后代被尽力清理，残留可从日志定位。
 - 启动等待改为事件驱动，并能指出停在哪个阶段。
 - 未知端口占用者、未知 PID 和不属于当前 boot 的进程始终 fail-loud，不得误杀。
 
@@ -145,7 +145,7 @@ Supervisor 只拥有：
 - settings 本地事务入口。
 - 读取 `stage`、`ready`、`commit` 生命周期事件。
 - 判断是否允许启动下一代。
-- Guardian 异常时使用同一 boot token 做一次兜底清理，收割被内核转交的孤儿进程，然后 fail-loud 退出。
+- Guardian 异常时使用同一 boot token 做一次兜底清理并收割被内核转交的孤儿进程；残留写日志，不撤销已有合法重启提交。
 
 它不拥有插件、MCP 或 channel 的创建细节，不提供任意进程管理 API，也不在 Guardian 缺失时继续运行 Gateway。
 
@@ -158,9 +158,9 @@ Supervisor 只拥有：
 - 持有 Supervisor lease；lease EOF 表示 Supervisor 已消失。
 - 等待 Gateway、收割被托管树中成为其后代的孤儿。
 - 在 Gateway 退出或 lease 断开后，对当前 boot 执行一次有总预算的 drain/TERM/KILL/验证为空。
-- cleanup 成功时以 Guardian 自身退出状态转交 Gateway 退出码；cleanup 失败时返回固定失败码。
+- 无论 cleanup 是否完全成功，都转交 Gateway 退出码；失败另外输出结构化诊断。
 
-Guardian 不参与业务 readiness、设置、回复送达或重启授权。它的正确性范围是“这个 boot 的进程最终为空”。
+Guardian 不参与业务 readiness、设置、回复送达或重启授权。它负责尽力清空 boot、持续回收 adopted zombie，并明确报告仍存活的目标。
 
 ### 6.3 Gateway 与现有子进程 owner
 
@@ -205,7 +205,7 @@ Supervisor 验证 ready + commit + 75，启动下一 boot
 
 | 观察结果 | Supervisor 行为 |
 |---|---|
-| ready + 合法 commit + exit 75 + cleanup empty | 启动下一 boot |
+| ready + 合法 commit + exit 75 | 记录 cleanup 结果并启动下一 boot |
 | bare exit 75 或伪造/跨 boot commit | 失败退出，不重启 |
 | 普通退出、异常、OOM 等价退出 | 清理后返回原始失败，不自动重启 |
 | 回复未送达或 turn 未完成 | 不 commit；恢复准入或失败退出 |
@@ -285,7 +285,7 @@ TERM-ignore、double-fork、`setsid` 和 wrapper 进程必须包含在故障注�
 | lock、PID、readiness、socket | 每个进程生命周期创建/替换 | 对应 boot 停止后由生命周期 owner 删除 | 当前 boot ID、持有锁的 FD、PID/pidfd 与端口核对 |
 | lifecycle pipe、lease、pidfd、nonce | 仅内存/内核态创建 | boot 结束即关闭 | 不持久化；关闭和后代为空是恢复证据 |
 
-旧 boot 未清空时不得创建新 boot。Supervisor 或 Guardian 故障不能用删除 workspace 控制文件伪装成清理成功，更不能修改任何权威业务状态来恢复启动。
+旧 boot 未清空时必须记录残留目标，但不阻止具备合法 commit 的新 boot。Supervisor 或 Guardian 故障不能用删除 workspace 控制文件伪装成清理成功，更不能修改任何权威业务状态来恢复启动。
 
 ## 12. 分阶段实施（已完成）
 
@@ -315,7 +315,7 @@ TERM-ignore、double-fork、`setsid` 和 wrapper 进程必须包含在故障注�
 
 最低验收必须从真实进程和端口边界观察：
 
-1. 合法 commit：回复持久化且实际送达后，旧 boot 全空，新 boot ready，新代码已加载。
+1. 合法 commit：回复持久化且实际送达后启动下一代；旧 boot 清理失败时存在结构化诊断，新 boot 仍 ready 且新代码已加载。
 2. 非法重启：bare 75、伪造 nonce、旧 boot commit、未送达回复和失败 turn 均不拉起下一代。
 3. owner 故障：分别 SIGKILL Supervisor、Guardian、Gateway，证明单点故障下 boot 被清空或明确 fail-loud。
 4. 后代故障：SIGKILL/OOM 等价、TERM-ignore、double-fork、`setsid`、wrapper 和 MCP/service leader 异常不留下 zombie 或监听端口。
