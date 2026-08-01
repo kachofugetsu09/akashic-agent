@@ -854,8 +854,6 @@ async def test_app_runtime_start_preserves_startup_error_when_rollback_fails(
         light_provider=None,
         memory_runtime=types.SimpleNamespace(aclose=bootstrap_app._noop_async),
         presence=object(),
-        peer_process_manager=None,
-        peer_poller=None,
         plugin_manager=None,
         start=_start,
         stop=_stop,

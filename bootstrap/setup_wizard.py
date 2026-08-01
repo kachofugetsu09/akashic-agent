@@ -878,7 +878,6 @@ def _render_config(a: WizardAnswers) -> str:
         _render_channels(a),
         _render_memory(a),
         _render_proactive(a),
-        _render_integrations(),
     ])
 
 
@@ -1137,20 +1136,6 @@ def _render_proactive(a: WizardAnswers) -> str:
         "min_interval_hours = 3",
         "",
     ])
-
-
-def _render_integrations() -> str:
-    return """\
-# 可选：接入外部 Peer Agent（如 DeepResearch）
-# [[integrations.peer_agents]]
-# name = "DeepResearch Agent"
-# base_url = "http://127.0.0.1:9404"
-# launcher = ["uv", "run", "--project", "/path/to/deepresearch", "python", "-m", "app.a2a_server"]
-# cwd = "/path/to/deepresearch"
-# description = "对复杂问题执行多轮深度调研，生成结构化长报告。"
-# startup_timeout_s = 30
-# shutdown_timeout_s = 60
-"""
 
 
 # ---------------------------------------------------------------------------

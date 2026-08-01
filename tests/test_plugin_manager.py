@@ -2029,8 +2029,6 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
         workspace_mcp_watcher_task=None,
         memory_runtime=SimpleNamespace(),  # type: ignore[arg-type]
         presence=SimpleNamespace(),  # type: ignore[arg-type]
-        peer_process_manager=None,
-        peer_poller=None,
         plugin_manager=plugin_manager,  # type: ignore[arg-type]
     )
 
@@ -2080,8 +2078,6 @@ async def test_core_runtime_stop_closes_session_manager(tmp_path: Path):
         workspace_mcp_watcher_task=None,
         memory_runtime=SimpleNamespace(),  # type: ignore[arg-type]
         presence=SimpleNamespace(),  # type: ignore[arg-type]
-        peer_process_manager=None,
-        peer_poller=None,
         plugin_manager=None,
     )
 
