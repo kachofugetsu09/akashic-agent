@@ -115,6 +115,10 @@ case "$cmd" in
             --port "$DASHBOARD_PORT" \
             "$@"
         ;;
+    gate-root-shell-cleanup)
+        exec python -m pytest -q \
+            tests/test_unified_exec.py::test_real_cross_uid_live_process_group_returns_eperm
+        ;;
     *)
         exec_as_host "$cmd" "$@"
         ;;
