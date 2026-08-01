@@ -141,6 +141,33 @@ Core proactive delivery_id
 
 当前接受的边缘窗口是：Mobile 已接收后 Core 在追加历史前崩溃，该主动消息可能只保留在手机投影中。当前方案不为这个窗口新增 outbox、重试状态机或 SessionDB 表。
 
+### 2.7 主动正文与附件属于同一条渠道消息
+
+**C：** 主动正文、文件和图片先组成一个经过类型校验的渠道消息，再一次性交给渠道 adapter。Core 不再把同一条逻辑消息拆成 text、file、image sender，也不从人类可读返回文案推断成功。
+
+```text
+TurnOrchestrator
+      │ complete outbound message
+      ▼
+Channel adapter ──→ structured delivery receipt
+      │                    ├─ success
+      │                    ├─ partial
+      │                    └─ failed
+      ▼
+Mobile: one durable message.proactive event
+        ├─ content
+        ├─ typed attachment descriptors
+        └─ delivery_id
+```
+
+**C：** 被动回复和主动发送使用同一个渠道消息模型与 adapter。被动路径仍以已提交 Turn 为事实；主动路径必须等待 adapter 的实际终态，MessageBus 入队本身不构成送达成功。只有 `success` 可以追加主动 SessionDB 消息并运行成功副作用，`partial` 与 `failed` 都走失败分支。
+
+**C：** Mobile 在准备本地文件或远程 URL 快照后，必须在同一个数据库事务中提交附件记录和全部目标设备的 durable inbox 行。事务失败可以删除尚未提交的候选文件；任何已经提交或被引用的附件都不得由失败清理删除。receipt 返回 canonical media，SessionDB 只保存稳定副本路径，历史页复用同一附件身份。
+
+**C：** 本次能力不改变 wire protocol 字段、Android Room schema 或客户端展示模型；客户端继续消费既有 `content + attachments + delivery_id`。不新增附件自动 GC，也不缩小“Mobile durable event 已提交、SessionDB 尚未追加时进程崩溃”的既有窗口。
+
+**T：** 验证至少覆盖：完整消息只调用一次 adapter；正文成功后附件失败得到 `partial` 且不追加历史；Mobile 多设备 inbox 与附件记录原子提交；失败候选文件清理不触碰已引用文件；重启后同一 durable event 可重放；历史页使用 receipt 的 canonical media。mutant 必须杀死字符串成功判断、拆分 sender、附件与 inbox 分事务以及用原始临时路径写历史的实现。
+
 ## 3. 协议与外部仓库版本固定
 
 ### 3.1 客户端协议快照
