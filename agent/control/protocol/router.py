@@ -189,6 +189,15 @@ class ConnectionRouter:
             return handle.record()
         if method == "plugin/disable-and-drain":
             return await self._service.disable_and_drain_plugin(values["pluginId"])
+        if method == "plugin/uninstall/start":
+            operation = self._service.start_plugin_uninstall(values["pluginId"])
+            task = asyncio.create_task(
+                self._forward_operation(operation),
+                name=f"control-operation:{operation.id}",
+            )
+            self._event_tasks.add(task)
+            task.add_done_callback(self._event_tasks.discard)
+            return operation.record()
         raise AssertionError(f"unhandled protocol method: {method}")
 
     async def _post_response_notifications(

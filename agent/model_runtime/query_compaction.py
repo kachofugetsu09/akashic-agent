@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -8,8 +9,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from agent.model_runtime.execution_history import active_shell_execution_origins
-from agent.prompting import is_context_frame
 from agent.model_runtime.types import ModelUsage
+from agent.model_runtime.usage import aggregate_usage
+from agent.prompting import is_context_frame
 
 if TYPE_CHECKING:
     from agent.provider import LLMProvider
@@ -18,6 +20,8 @@ COMPACTION_SCHEMA_VERSION = 1
 COMPACTION_TOOL_NAME = "context_compact"
 _KEEP_RECENT_PERCENT = 0.20
 _SUMMARY_MAX_TOKENS = 8192
+_SUMMARY_MAX_RETRIES = 3
+_SUMMARY_RETRY_BASE_DELAY_SECONDS = 2.0
 _TOOL_RESULT_SUMMARY_CHAR_LIMIT = 2000
 _MESSAGE_SUMMARY_CHAR_LIMIT = 8000
 
@@ -430,20 +434,30 @@ class QueryCompactor:
             _serialize_message(message) for batch in evicted for message in batch
         )
 
-        # 2. summary 使用同一模型但不携带业务工具和主 ReAct cache。
-        response = await self._provider.chat(
-            messages=[{"role": "user", "content": "".join(sections)}],
-            tools=[],
-            model=self._model,
-            max_tokens=min(
-                _SUMMARY_MAX_TOKENS,
-                max(512, self._provider.hard_input_tokens // 8),
-            ),
-        )
-        summary = (response.content or "").strip()
-        if not summary or response.tool_calls:
-            raise ContextCompactionError("context_compaction_summary_invalid")
-        return summary, response.usage
+        # 2. summary 不携带业务工具和主 ReAct cache；语义无效时有界退避重试。
+        usages: list[ModelUsage] = []
+        for attempt in range(_SUMMARY_MAX_RETRIES + 1):
+            response = await self._provider.chat(
+                messages=[{"role": "user", "content": "".join(sections)}],
+                tools=[],
+                model=self._model,
+                max_tokens=min(
+                    _SUMMARY_MAX_TOKENS,
+                    max(512, self._provider.hard_input_tokens // 8),
+                ),
+                disable_thinking=True,
+            )
+            if response.usage is not None:
+                usages.append(response.usage)
+            summary = (response.content or "").strip()
+            if summary and not response.tool_calls:
+                return summary, aggregate_usage(usages) if usages else None
+            if attempt < _SUMMARY_MAX_RETRIES:
+                await asyncio.sleep(
+                    _SUMMARY_RETRY_BASE_DELAY_SECONDS * (2**attempt)
+                )
+
+        raise ContextCompactionError("context_compaction_summary_invalid")
 
 
 def _tool_schema_digest(tools: list[dict]) -> str:

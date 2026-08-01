@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
+from agent.control.context import current_turn_id
 from agent.tools.base import Tool
 from agent.tools.shell_security import validate_command
 from agent.tools.shell_security import validate_network_command
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_OUTPUT = 30_000
 _LOCAL_OWNER_PREFIX = "local-shell"
+_DEFER_PLUGIN_UNINSTALL_ENV = "AKASHIC_DEFER_PLUGIN_UNINSTALL"
 _REMOVED_SHELL_ARGUMENTS = frozenset({"run_in_background", "auto_promote"})
 _UNIFIED_EXEC_ENV = {
     "NO_COLOR": "1",
@@ -364,6 +366,10 @@ def _owner_session_key(manager: ShellProcessManager) -> str:
 
 def _shell_env() -> dict[str, str]:
     env = os.environ.copy()
+    if current_turn_id.get():
+        env[_DEFER_PLUGIN_UNINSTALL_ENV] = "1"
+    else:
+        env.pop(_DEFER_PLUGIN_UNINSTALL_ENV, None)
     _prepend_existing_path_entries(env, _discover_user_path_entries(env))
     env.update(_UNIFIED_EXEC_ENV)
     return env

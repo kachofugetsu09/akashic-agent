@@ -314,6 +314,7 @@ class AppRuntime:
                 self.session_manager,
                 self.workspace,
                 plugin_drain=self._disable_and_drain_plugin,
+                plugin_uninstall=self._uninstall_plugin,
                 consolidate=(
                     self.agent_loop.trigger_memory_consolidation
                     if self.config.app_server.enabled
@@ -860,6 +861,40 @@ class AppRuntime:
             raise RuntimeError("插件 Runtime 不可用")
         await manager.reconcile_disabled_and_drain(plugin_id)
         return f"插件已停用并排空: {plugin_id}"
+
+    async def _uninstall_plugin(self, plugin_id: str) -> dict[str, object]:
+        """Disable, drain, and remove plugin code while retaining workspace data."""
+
+        # 1. 先更新安装清单，新请求不再取得该插件 generation。
+        plugin_id = plugin_id.strip()
+        if not plugin_id:
+            raise ValueError("缺少插件 ID")
+        manager = getattr(self.core, "plugin_manager", None)
+        if manager is None:
+            raise RuntimeError("插件 Runtime 不可用")
+        from agent.plugins.install import (
+            finalize_uninstall_plugin,
+            set_installed_plugin_enabled,
+        )
+
+        _ = set_installed_plugin_enabled(
+            plugin_id,
+            enabled=False,
+            plugins_home=manager.installed_plugins_home,
+        )
+
+        # 2. 等待旧 turn 释放 lease，再删除 cache 和 manifest entry。
+        await manager.reconcile_disabled_and_drain(plugin_id)
+        cache_path, data_path = finalize_uninstall_plugin(
+            plugin_id,
+            workspace=self.workspace,
+            plugins_home=manager.installed_plugins_home,
+        )
+        return {
+            "pluginId": plugin_id,
+            "cachePath": str(cache_path),
+            "dataPath": str(data_path),
+        }
 
     def _plugin_candidate_scan_done(self, task: asyncio.Task[Any]) -> None:
         self._plugin_candidate_tasks.discard(task)

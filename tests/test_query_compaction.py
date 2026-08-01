@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import pytest
 
+import agent.model_runtime.query_compaction as query_compaction_module
 from agent.core.passive_turn import DefaultReasoner
 from agent.core.runtime_support import LLMServices, ToolDiscoveryState
 from agent.looping.ports import LLMConfig
@@ -140,6 +141,30 @@ class _ControlledProvider:
         return LLMResponse(content=self.summary)
 
 
+class _SummarySequenceProvider(_ControlledProvider):
+    def __init__(
+        self,
+        estimates: list[int],
+        summaries: list[str | LLMResponse],
+    ) -> None:
+        super().__init__(estimates)
+        self.summaries = list(summaries)
+
+    async def chat(self, **kwargs: Any) -> LLMResponse:
+        self.summary_calls.append(kwargs)
+        if not self.summaries:
+            raise AssertionError("缺少预设的摘要响应")
+        response = self.summaries.pop(0)
+        if isinstance(response, LLMResponse):
+            return response
+        content = response
+        return LLMResponse(
+            content=content,
+            thinking="仅有推理内容" if not content else None,
+            usage=ModelUsage(input_tokens=1),
+        )
+
+
 def _compactor(
     provider: object,
     base_messages: list[dict],
@@ -192,6 +217,125 @@ async def test_compaction_triggers_at_exact_74_percent_after_closed_batches() ->
         == 1
     )
     assert "model_state" not in messages[-2]
+
+
+@pytest.mark.asyncio
+async def test_compaction_summary_disables_thinking() -> None:
+    base = [{"role": "user", "content": "完成长任务"}]
+    messages = deepcopy(base)
+    provider = _ControlledProvider([47_360, 2_000])
+    compactor = _compactor(provider, base)
+    _record_batch(compactor, messages, 1)
+    _record_batch(compactor, messages, 2)
+
+    await compactor.prepare(
+        messages,
+        pending_start=len(messages),
+        tools=[],
+    )
+
+    assert provider.summary_calls[0]["disable_thinking"] is True
+
+
+@pytest.mark.asyncio
+async def test_compaction_retries_thinking_only_summary_with_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = [{"role": "user", "content": "完成长任务"}]
+    messages = deepcopy(base)
+    provider = _SummarySequenceProvider(
+        [47_360, 2_000],
+        ["", "", "", "## Goal\n继续完成任务"],
+    )
+    delays: list[float] = []
+
+    async def record_delay(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(query_compaction_module.asyncio, "sleep", record_delay)
+    compactor = _compactor(provider, base)
+    _record_batch(compactor, messages, 1)
+    _record_batch(compactor, messages, 2)
+
+    prepared = await compactor.prepare(
+        messages,
+        pending_start=len(messages),
+        tools=[],
+    )
+
+    assert prepared.compacted is True
+    assert prepared.summary_usage is not None
+    assert prepared.summary_usage.input_tokens == 4
+    assert prepared.summary_usage.request_count == 4
+    assert len(provider.summary_calls) == 4
+    assert delays == [2.0, 4.0, 8.0]
+    assert all(call["disable_thinking"] is True for call in provider.summary_calls)
+
+
+@pytest.mark.asyncio
+async def test_compaction_retries_success_response_with_tool_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = [{"role": "user", "content": "完成长任务"}]
+    messages = deepcopy(base)
+    provider = _SummarySequenceProvider(
+        [47_360, 2_000],
+        [
+            LLMResponse(
+                content="不应接受带工具调用的摘要",
+                tool_calls=[ToolCall("summary-tool", "probe", {})],
+            ),
+            "## Goal\n继续完成任务",
+        ],
+    )
+    delays: list[float] = []
+
+    async def record_delay(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(query_compaction_module.asyncio, "sleep", record_delay)
+    compactor = _compactor(provider, base)
+    _record_batch(compactor, messages, 1)
+    _record_batch(compactor, messages, 2)
+
+    prepared = await compactor.prepare(
+        messages,
+        pending_start=len(messages),
+        tools=[],
+    )
+
+    assert prepared.compacted is True
+    assert len(provider.summary_calls) == 2
+    assert delays == [2.0]
+
+
+@pytest.mark.asyncio
+async def test_compaction_cancellation_during_backoff_preserves_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = [{"role": "user", "content": "完成长任务"}]
+    messages = deepcopy(base)
+    provider = _SummarySequenceProvider([47_360], [""])
+    compactor = _compactor(provider, base)
+    _record_batch(compactor, messages, 1)
+    _record_batch(compactor, messages, 2)
+    before = deepcopy(messages)
+
+    async def cancel_delay(_delay: float) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(query_compaction_module.asyncio, "sleep", cancel_delay)
+
+    with pytest.raises(asyncio.CancelledError):
+        await compactor.prepare(
+            messages,
+            pending_start=len(messages),
+            tools=[],
+        )
+
+    assert messages == before
+    assert len(provider.summary_calls) == 1
+    assert compactor.compaction is None
 
 
 @pytest.mark.asyncio
@@ -409,7 +553,12 @@ async def test_repeated_compaction_replaces_pair_and_updates_summary() -> None:
 async def test_summary_failure_does_not_mutate_active_context(
     summary: str | BaseException,
     error: type[BaseException],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    async def skip_delay(_delay: float) -> None:
+        return None
+
+    monkeypatch.setattr(query_compaction_module.asyncio, "sleep", skip_delay)
     base = [{"role": "user", "content": "长任务"}]
     messages = deepcopy(base)
     provider = _ControlledProvider([47_360], summary=summary)
@@ -427,6 +576,7 @@ async def test_summary_failure_does_not_mutate_active_context(
 
     assert messages == before
     assert compactor.compaction is None
+    assert len(provider.summary_calls) == (4 if summary == "" else 1)
 
 
 @pytest.mark.asyncio

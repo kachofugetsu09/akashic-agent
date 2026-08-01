@@ -49,6 +49,56 @@ class _FakeChatServer:
             await asyncio.sleep(0)
 
 
+def test_plugin_uninstall_defers_only_inside_runtime_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[runtime]\nworkspace='workspace'\n", encoding="utf-8")
+    calls: list[bool] = []
+
+    monkeypatch.setattr(
+        main.Config,
+        "load",
+        lambda *_args, **_kwargs: types.SimpleNamespace(
+            app_server=types.SimpleNamespace(listen="runtime.sock")
+        ),
+    )
+    monkeypatch.setattr(main, "resolve_app_server_endpoint", lambda *_args: "runtime.sock")
+
+    async def request(
+        _endpoint: str,
+        plugin_id: str,
+        _workspace: Path,
+        *,
+        wait: bool,
+    ) -> dict[str, object]:
+        calls.append(wait)
+        return {
+            "id": "operation:drain",
+            "pluginId": plugin_id,
+            "status": "completed" if wait else "in_progress",
+        }
+
+    monkeypatch.setattr(main, "_request_plugin_uninstall", request)
+    monkeypatch.delenv("AKASHIC_DEFER_PLUGIN_UNINSTALL", raising=False)
+    completed = main._uninstall_via_runtime(
+        str(config_path),
+        "context_pressure@github",
+        tmp_path / "workspace",
+    )
+    monkeypatch.setenv("AKASHIC_DEFER_PLUGIN_UNINSTALL", "1")
+    deferred = main._uninstall_via_runtime(
+        str(config_path),
+        "context_pressure@github",
+        tmp_path / "workspace",
+    )
+
+    assert calls == [True, False]
+    assert completed is not None and completed["status"] == "completed"
+    assert deferred is not None and deferred["status"] == "in_progress"
+
+
 def _toml_value(value):
     if isinstance(value, bool):
         return "true" if value else "false"
