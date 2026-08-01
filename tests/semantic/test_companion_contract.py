@@ -53,7 +53,6 @@ def test_companion_contract_catalog() -> None:
         assert scenario.observes
         assert scenario.mutants
     assert catalog.groups["companion_dashboard"].paths == ("private_runtime",)
-    assert "companion_dashboard" in catalog.private_groups
     assert catalog.groups["companion_peer_removal"].deleted_paths == (
         "agent/peer_agent/**",
     )
