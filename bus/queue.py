@@ -1,14 +1,76 @@
 import asyncio
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TypeVar
 
-from bus.events import InboundItem, OutboundMessage
+from bus.events import InboundItem, InboundMessage, OutboundMessage, SpawnCompletionItem
 
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
+
+DEFAULT_MESSAGE_BUS_CAPACITY = 256
+DEFAULT_MESSAGE_BUS_BYTES = 4 * 1024 * 1024
+
+
+class MessageBusCapacityError(RuntimeError):
+    """表示消息在进入有界队列前被拒绝。"""
+
+    error_type = "resource-exhausted"
+    failure_type = "operation_rejected"
+    code = "resource-exhausted"
+    retryable = True
+
+    def __init__(self, direction: str, *, item_bytes: int, reason: str) -> None:
+        self.direction = direction
+        self.item_bytes = item_bytes
+        self.reason = reason
+        super().__init__(
+            f"resource-exhausted: {direction} message bus admission {reason} "
+            f"(item_bytes={item_bytes})"
+        )
+
+
+# Keep a descriptive alias for callers that use the transport terminology.
+MessageBusBusyError = MessageBusCapacityError
+
+
+def _wire_size(item: object) -> int:
+    """计算消息进入队列后占用的 UTF-8 JSON 字节数。"""
+
+    if isinstance(item, InboundMessage):
+        payload = {
+            "channel": item.channel,
+            "sender": item.sender,
+            "chat_id": item.chat_id,
+            "content": item.content,
+            "timestamp": item.timestamp.isoformat(),
+            "media": list(item.media),
+            "metadata": dict(item.metadata),
+        }
+    elif isinstance(item, SpawnCompletionItem):
+        payload = {
+            "channel": item.channel,
+            "chat_id": item.chat_id,
+            "event": repr(item.event),
+            "decision": repr(item.decision),
+            "timestamp": item.timestamp.isoformat(),
+        }
+    elif isinstance(item, OutboundMessage):
+        payload = {
+            "channel": item.channel,
+            "chat_id": item.chat_id,
+            "content": item.content,
+            "thinking": item.thinking,
+            "reply_to": item.reply_to,
+            "media": list(item.media),
+            "metadata": dict(item.metadata),
+        }
+    else:
+        raise TypeError(f"unsupported MessageBus item: {type(item).__name__}")
+    return len(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode())
 
 
 @dataclass
@@ -91,6 +153,18 @@ class ChatLane:
         try:
             async with state.condition:
                 state.passive_sends += 1
+                state.condition.notify_all()
+        finally:
+            self._release_state(key, state)
+
+    async def mark_passive_send_done(self, channel: str, chat_id: str) -> None:
+        """回滚尚未开始发送的出站 lane 计数。"""
+
+        key, state = self._acquire_state(channel, chat_id)
+        try:
+            async with state.condition:
+                if state.passive_sends > 0:
+                    state.passive_sends -= 1
                 state.condition.notify_all()
         finally:
             self._release_state(key, state)
@@ -180,9 +254,36 @@ class OutboundSubscription:
 class MessageBus:
     """agent 与各 channel 之间的异步消息总线"""
 
-    def __init__(self, chat_lane: ChatLane | None = None) -> None:
-        self._inbound: asyncio.Queue[InboundItem] = asyncio.Queue()
-        self._outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue()
+    def __init__(
+        self,
+        chat_lane: ChatLane | None = None,
+        *,
+        inbound_capacity: int = DEFAULT_MESSAGE_BUS_CAPACITY,
+        outbound_capacity: int = DEFAULT_MESSAGE_BUS_CAPACITY,
+        inbound_bytes: int = DEFAULT_MESSAGE_BUS_BYTES,
+        outbound_bytes: int = DEFAULT_MESSAGE_BUS_BYTES,
+    ) -> None:
+        for name, value in (
+            ("inbound_capacity", inbound_capacity),
+            ("outbound_capacity", outbound_capacity),
+            ("inbound_bytes", inbound_bytes),
+            ("outbound_bytes", outbound_bytes),
+        ):
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"{name} 必须是正整数")
+        self._inbound_capacity = inbound_capacity
+        self._outbound_capacity = outbound_capacity
+        self._inbound_bytes_capacity = inbound_bytes
+        self._outbound_bytes_capacity = outbound_bytes
+        self._inbound: asyncio.Queue[InboundItem] = asyncio.Queue(maxsize=inbound_capacity)
+        self._outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue(maxsize=outbound_capacity)
+        self._inbound_bytes = 0
+        self._outbound_bytes = 0
+        self._inbound_reserved_items = 0
+        self._outbound_reserved_items = 0
+        self._inbound_reserved_bytes = 0
+        self._outbound_reserved_bytes = 0
+        self._admission_lock = asyncio.Lock()
         self._subscribers: dict[
             str, list[Callable[[OutboundMessage], Awaitable[None]]]
         ] = {}
@@ -204,20 +305,61 @@ class MessageBus:
 
     async def publish_inbound(self, msg: InboundItem) -> None:
         """将渠道输入交给 Agent 消费。"""
-        await self._chat_lane.mark_passive_pending(msg.channel, msg.chat_id)
-        await self._inbound.put(msg)
+        item_bytes = _wire_size(msg)
+        async with self._admission_lock:
+            if self._inbound.qsize() + self._inbound_reserved_items >= self._inbound_capacity:
+                raise MessageBusCapacityError("inbound", item_bytes=item_bytes, reason="queue full")
+            if self._inbound_bytes + self._inbound_reserved_bytes + item_bytes > self._inbound_bytes_capacity:
+                raise MessageBusCapacityError("inbound", item_bytes=item_bytes, reason="byte budget full")
+            self._inbound_reserved_items += 1
+            self._inbound_reserved_bytes += item_bytes
+            marked = False
+            try:
+                await self._chat_lane.mark_passive_pending(msg.channel, msg.chat_id)
+                marked = True
+                self._inbound.put_nowait(msg)
+            except BaseException:
+                if marked:
+                    await self._chat_lane.mark_passive_done(msg.channel, msg.chat_id)
+                raise
+            finally:
+                self._inbound_reserved_items -= 1
+                self._inbound_reserved_bytes -= item_bytes
+            self._inbound_bytes += item_bytes
 
     async def consume_inbound(self) -> InboundItem:
         """阻塞直到有消息可消费"""
-        return await self._inbound.get()
+        msg = await self._inbound.get()
+        async with self._admission_lock:
+            self._inbound_bytes -= _wire_size(msg)
+        return msg
 
     async def complete_inbound(self, msg: InboundItem) -> None:
         await self._chat_lane.mark_passive_done(msg.channel, msg.chat_id)
 
     async def publish_outbound(self, msg: OutboundMessage) -> None:
         """将 Agent 输出交给对应渠道发送。"""
-        await self._chat_lane.mark_passive_send_pending(msg.channel, msg.chat_id)
-        await self._outbound.put(msg)
+        item_bytes = _wire_size(msg)
+        async with self._admission_lock:
+            if self._outbound.qsize() + self._outbound_reserved_items >= self._outbound_capacity:
+                raise MessageBusCapacityError("outbound", item_bytes=item_bytes, reason="queue full")
+            if self._outbound_bytes + self._outbound_reserved_bytes + item_bytes > self._outbound_bytes_capacity:
+                raise MessageBusCapacityError("outbound", item_bytes=item_bytes, reason="byte budget full")
+            self._outbound_reserved_items += 1
+            self._outbound_reserved_bytes += item_bytes
+            marked = False
+            try:
+                await self._chat_lane.mark_passive_send_pending(msg.channel, msg.chat_id)
+                marked = True
+                self._outbound.put_nowait(msg)
+            except BaseException:
+                if marked:
+                    await self._chat_lane.mark_passive_send_done(msg.channel, msg.chat_id)
+                raise
+            finally:
+                self._outbound_reserved_items -= 1
+                self._outbound_reserved_bytes -= item_bytes
+            self._outbound_bytes += item_bytes
 
     def subscribe_outbound(
         self,
@@ -252,6 +394,8 @@ class MessageBus:
         while self._running:
             try:
                 msg = await asyncio.wait_for(self._outbound.get(), timeout=1.0)
+                async with self._admission_lock:
+                    self._outbound_bytes -= _wire_size(msg)
                 delivered = await self._chat_lane.run_passive(
                     msg.channel,
                     msg.chat_id,
@@ -310,3 +454,35 @@ class MessageBus:
     @property
     def outbound_size(self) -> int:
         return self._outbound.qsize()
+
+    @property
+    def inbound_bytes(self) -> int:
+        return self._inbound_bytes
+
+    @property
+    def outbound_bytes(self) -> int:
+        return self._outbound_bytes
+
+    @property
+    def inbound_capacity(self) -> int:
+        return self._inbound_capacity
+
+    @property
+    def outbound_capacity(self) -> int:
+        return self._outbound_capacity
+
+    @property
+    def inbound_bytes_capacity(self) -> int:
+        return self._inbound_bytes_capacity
+
+    @property
+    def outbound_bytes_capacity(self) -> int:
+        return self._outbound_bytes_capacity
+
+    @property
+    def inbound_reserved_bytes(self) -> int:
+        return self._inbound_reserved_bytes
+
+    @property
+    def outbound_reserved_bytes(self) -> int:
+        return self._outbound_reserved_bytes
