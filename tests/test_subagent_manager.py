@@ -286,6 +286,7 @@ async def test_cancelled_sync_wait_keeps_admission_until_worker_finishes(tmp_pat
             started.set()
             try:
                 await asyncio.Event().wait()
+                raise AssertionError("阻塞任务不应正常返回")
             except asyncio.CancelledError:
                 cleanup_started.set()
                 await release.wait()

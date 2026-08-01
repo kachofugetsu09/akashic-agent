@@ -131,6 +131,7 @@ async def test_recovered_mobile_handoff_with_canonical_user_skips_new_turn(
         cast(Any, SimpleNamespace(session_manager=manager)),
     )
 
+    assert isinstance(recovered, InboundMessage)
     await worker._run_message(recovered)
 
     assert manager.control_store.list_turns(session_key) == []
