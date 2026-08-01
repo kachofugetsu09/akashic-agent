@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -144,8 +145,8 @@ async def test_http_requester_stream_follows_multiple_hops_before_retry_budget()
 def test_dns_multi_answer_rejects_private_and_rebind_is_rechecked() -> None:
     answers = [(2, 1, 6, "", ("8.8.8.8", 443, 0, 0))]
 
-    def _resolver(host: str, port: int, **_: object):
-        _ = (host, port)
+    def _resolver(host: str, port: int, **kwargs: object):
+        _ = (host, port, kwargs)
         return answers
 
     assert _public_addresses("example.com", 443, _resolver) == ("8.8.8.8",)
@@ -208,7 +209,10 @@ async def test_httpcore_response_stream_awaits_response_close() -> None:
 
     core_response = _CoreResponse()
     pool = _Pool()
-    stream = _HttpcoreResponseStream(core_response, pool)
+    stream = _HttpcoreResponseStream(
+        cast(Any, core_response),
+        cast(Any, pool),
+    )
 
     await stream.aclose()
 

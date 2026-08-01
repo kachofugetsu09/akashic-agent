@@ -7,8 +7,8 @@ from typing import Any
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from agent.core import ToolCall
 from agent.looping.core import AgentLoop
+from agent.model_runtime.types import ToolCall
 from agent.mcp.client import McpToolInfo
 from agent.mcp.tool import McpToolWrapper
 from agent.provider import LLMResponse
@@ -250,6 +250,10 @@ class _MemoryCapture:
 
     async def query(self, _request: Any) -> MemoryQueryResult:
         return MemoryQueryResult()
+
+    def reinforce_items_batch(self, ids: list[str]) -> None:
+        _ = ids
+        return None
 
 
 @pytest.mark.asyncio

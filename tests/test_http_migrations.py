@@ -3,6 +3,7 @@ import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import httpx
 import pytest
@@ -151,7 +152,7 @@ async def test_web_fetch_does_not_create_ownerless_spill(tmp_path: Path):
 
 def test_readonly_research_bundle_puts_spill_under_allowed_workspace(tmp_path: Path):
     tools = build_readonly_research_tools(
-        fetch_requester=SimpleNamespace(),
+        fetch_requester=cast(HttpRequester, SimpleNamespace()),
         allowed_dir=tmp_path,
     )
     web_fetch = next(tool for tool in tools if tool.name == "web_fetch")
@@ -181,7 +182,7 @@ async def test_web_fetch_cancel_cleans_partial_spill(tmp_path: Path):
 
     store = WebFetchSpillStore(root=tmp_path / "spill")
     tool = WebFetchTool(
-        _Requester(),
+        cast(HttpRequester, _Requester()),
         spill_store=store,
         context_provider=lambda: ToolExecutionContext(
             execution_id="e1", turn_id="t1"
@@ -227,7 +228,7 @@ async def test_web_fetch_spill_limit_cleanup_failure_keeps_turn_owner_for_retry(
     monkeypatch.setattr(Path, "unlink", fail_first_spill_unlink)
     store = WebFetchSpillStore(root=tmp_path / "spill")
     tool = WebFetchTool(
-        _Requester(),
+        cast(HttpRequester, _Requester()),
         spill_store=store,
         context_provider=lambda: ToolExecutionContext(
             execution_id="execution-1", turn_id="turn-1"
@@ -302,7 +303,7 @@ async def test_qq_download_stream_enforces_item_limit_and_degrades(tmp_path: Pat
     diagnostics: list[str] = []
     paths = await _download_to_temp(
         ["https://example.com/bad.png", "https://example.com/large.png"],
-        _Requester(),
+        cast(HttpRequester, _Requester()),
         AttachmentStore(tmp_path / "uploads"),
         diagnostics,
     )
