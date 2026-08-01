@@ -271,8 +271,8 @@ async def test_message_push_reports_partial_after_text_commit() -> None:
     _ = tool.register_channel("telegram", deliver=deliver)
 
     result = await tool.execute(
-        channel="telegram",
-        chat_id="1",
+        target_channel="telegram",
+        target_chat_id="1",
         message="正文",
         file="/tmp/report.pdf",
     )
