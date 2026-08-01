@@ -1034,9 +1034,7 @@ function MobileNativeApp() {
   }, []);
 
   useEffect(() => {
-    let pending: MobileSnapshot | null = null;
     let pendingPatch: MobileStreamPatch | null = null;
-    let frame: number | null = null;
     let patchFrame: number | null = null;
     let requestTimer: number | null = null;
     let snapshotAccepted = false;
@@ -1056,9 +1054,9 @@ function MobileNativeApp() {
     window.addEventListener("popstate", handlePopState);
     window.AkashicMobile = {
       receiveSnapshot(next) {
+        let nextSnapshot: MobileSnapshot;
         try {
-          const parsed = parseMobileSnapshot(next);
-          pending = parsed;
+          nextSnapshot = parseMobileSnapshot(next);
           pendingPatch = null;
           if (patchFrame !== null) {
             window.cancelAnimationFrame(patchFrame);
@@ -1070,38 +1068,29 @@ function MobileNativeApp() {
           setSnapshotError(error instanceof Error ? error.message : "原生快照无效");
           return;
         }
-        if (frame !== null) return;
-        frame = requestAnimationFrame(() => {
-          frame = null;
-          const nextSnapshot = pending;
-          if (nextSnapshot === null) throw new Error("移动端快照帧缺少待发布数据");
-          pending = null;
-          if (searchOpenRef.current && normalizedSearchQueryRef.current) {
-            setSearchIndex((current) => updateMobileSearchIndex(
-              current,
-              nextSnapshot.messages,
-              normalizedSearchQueryRef.current,
-              false,
-            ));
+        if (searchOpenRef.current && normalizedSearchQueryRef.current) {
+          setSearchIndex((current) => updateMobileSearchIndex(
+            current,
+            nextSnapshot.messages,
+            normalizedSearchQueryRef.current,
+            false,
+          ));
+        }
+        setSnapshot((current) => {
+          if (!current || current.selectedSessionId !== nextSnapshot.selectedSessionId) {
+            return nextSnapshot;
           }
-          const publishSnapshot = () => setSnapshot((current) => {
-            if (!current || current.selectedSessionId !== nextSnapshot.selectedSessionId) {
-              return nextSnapshot;
-            }
-            return {
-              ...nextSnapshot,
-              messages: reconcileMobileSnapshotMessages(
-                current.messages,
-                nextSnapshot.messages,
-                mobileMessagePresentationMatches,
-              ),
-            };
-          });
-          if (snapshotAccepted) startTransition(publishSnapshot);
-          else publishSnapshot();
-          snapshotAccepted = true;
-          if (requestTimer !== null) window.clearTimeout(requestTimer);
+          return {
+            ...nextSnapshot,
+            messages: reconcileMobileSnapshotMessages(
+              current.messages,
+              nextSnapshot.messages,
+              mobileMessagePresentationMatches,
+            ),
+          };
         });
+        snapshotAccepted = true;
+        if (requestTimer !== null) window.clearTimeout(requestTimer);
       },
       receiveStreamPatch(next) {
         try {
@@ -1112,7 +1101,7 @@ function MobileNativeApp() {
           setSnapshotError(error instanceof Error ? error.message : "原生流式 patch 无效");
           return;
         }
-        if (pending !== null || patchFrame !== null) return;
+        if (patchFrame !== null) return;
         patchFrame = requestAnimationFrame(() => {
           patchFrame = null;
           const patch = pendingPatch;
@@ -1285,7 +1274,6 @@ function MobileNativeApp() {
     window.AkashicNative?.reportReady();
     requestSnapshot();
     return () => {
-      if (frame !== null) cancelAnimationFrame(frame);
       if (patchFrame !== null) cancelAnimationFrame(patchFrame);
       if (requestTimer !== null) window.clearTimeout(requestTimer);
       window.removeEventListener("popstate", handlePopState);

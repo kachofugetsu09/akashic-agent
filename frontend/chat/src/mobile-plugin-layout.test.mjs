@@ -121,6 +121,14 @@ test("dynamic message measurement stays in the ResizeObserver frame", () => {
   assert.doesNotMatch(mobileSource, /useAnimationFrameWithResizeObserver:\s*true/);
 });
 
+test("full native snapshots commit without waiting for another animation frame", () => {
+  const receiver = mobileSource.match(/receiveSnapshot\(next\) \{[\s\S]*?\n[ ]{6}\},\n[ ]{6}receiveStreamPatch/);
+  assert.ok(receiver, "mobile snapshot receiver must remain discoverable");
+  assert.match(receiver[0], /nextSnapshot = parseMobileSnapshot\(next\)/);
+  assert.match(receiver[0], /setSnapshot\(\(current\) =>/);
+  assert.doesNotMatch(receiver[0], /requestAnimationFrame|startTransition/);
+});
+
 test("cached images retry once and degrade to an openable file instead of a blank card", () => {
   assert.match(mobileSource, /\^image\\\/\/i\.test\(attachment\.contentType\.trim\(\)\)/);
   assert.match(mobileSource, /if \(imageRetry === 0\) setImageRetry\(1\);[\s\S]*else setImageUnavailable\(true\);/);
