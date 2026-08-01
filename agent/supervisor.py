@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from agent.background.boot_guardian import (
     _cleanup_boot_processes,
+    _cleanup_boot_processes_best_effort,
     _enable_child_subreaper,
     _pid_has_boot_identity,
     _pid_exists,
@@ -356,9 +357,10 @@ def run_supervisor(
                 os.close(lifecycle_read_fd)
                 os.close(lease_write_fd)
                 _stop_guardian(guardian)
-                _cleanup_boot_processes(
+                _ = _cleanup_boot_processes_best_effort(
                     boot_id=boot_id,
                     gateway_group_id=None,
+                    owner="supervisor",
                 )
                 _reap_adopted_children()
                 guardian = None
@@ -375,33 +377,23 @@ def run_supervisor(
                     settings_bridge=settings_bridge,
                     report_settings_generation=report_settings_generation,
                 )
-            except BaseException as wait_error:
+            except BaseException:
                 _stop_guardian(guardian)
-                try:
-                    _cleanup_boot_processes(
-                        boot_id=boot_id,
-                        gateway_group_id=None,
-                    )
-                    _reap_adopted_children()
-                except BaseException as cleanup_error:
-                    raise BaseExceptionGroup(
-                        "Supervisor 等待 Guardian 与 boot 清理均失败",
-                        [wait_error, cleanup_error],
-                    ) from wait_error
+                _ = _cleanup_boot_processes_best_effort(
+                    boot_id=boot_id,
+                    gateway_group_id=None,
+                    owner="supervisor",
+                )
+                _reap_adopted_children()
                 raise
 
             # 3. Guardian 完成后再做一次 boot-scoped 空集验证和兜底清理。
-            try:
-                _cleanup_boot_processes(
-                    boot_id=boot_id,
-                    gateway_group_id=None,
-                )
-                _reap_adopted_children()
-            except RuntimeError as error:
-                print(str(error), file=sys.stderr)
-                if result.settings_generation:
-                    settings_bridge.complete(result.settings_generation, False)
-                return SUPERVISOR_FAILURE_EXIT_CODE
+            _ = _cleanup_boot_processes_best_effort(
+                boot_id=boot_id,
+                gateway_group_id=None,
+                owner="supervisor",
+            )
+            _reap_adopted_children()
             guardian = None
             if report_settings_generation:
                 report_settings_generation = 0

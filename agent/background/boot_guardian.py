@@ -12,6 +12,7 @@ import sys
 import time
 from pathlib import Path
 
+from core.common.diagnostic_log import diagnostic_line
 from utils.pidfd import open_pidfd
 from utils.process_group import process_group_exists
 
@@ -100,9 +101,10 @@ def run_boot_guardian(
         # 4. 无论退出来源如何，都在返回前证明当前 boot 已清空。
         gateway_exit_code = gateway.poll()
         cleanup_attempted = True
-        _cleanup_boot_processes(
+        _ = _cleanup_boot_processes_best_effort(
             boot_id=boot_id,
             gateway_group_id=gateway.pid,
+            owner="guardian",
         )
         if gateway_exit_code is None:
             gateway_exit_code = gateway.wait()
@@ -110,16 +112,11 @@ def run_boot_guardian(
         return _portable_exit_code(gateway_exit_code)
     except BaseException as run_error:
         if gateway is not None and not cleanup_attempted:
-            try:
-                _cleanup_boot_processes(
-                    boot_id=boot_id,
-                    gateway_group_id=gateway.pid,
-                )
-            except BaseException as cleanup_error:
-                raise BaseExceptionGroup(
-                    "Boot Guardian 执行与 boot 清理均失败",
-                    [run_error, cleanup_error],
-                ) from run_error
+            _ = _cleanup_boot_processes_best_effort(
+                boot_id=boot_id,
+                gateway_group_id=gateway.pid,
+                owner="guardian",
+            )
         raise
     finally:
         if lifecycle_fd >= 0:
@@ -187,6 +184,37 @@ def _cleanup_boot_processes(
     raise RuntimeError(
         f"boot {boot_id} 进程清理失败: groups={alive_groups}, pids={alive_pids}"
     )
+
+
+def _cleanup_boot_processes_best_effort(
+    *,
+    boot_id: str,
+    gateway_group_id: int | None,
+    owner: str,
+) -> bool:
+    """尽力清理 boot；权限或残留失败只输出结构化诊断。"""
+
+    try:
+        _cleanup_boot_processes(
+            boot_id=boot_id,
+            gateway_group_id=gateway_group_id,
+        )
+    except (OSError, RuntimeError) as exc:
+        print(
+            diagnostic_line(
+                "BootCleanup",
+                event="cleanup_degraded",
+                flow="runtime",
+                phase="boot_cleanup",
+                action="continue",
+                reason="boot_cleanup_unconfirmed",
+                error_type=type(exc).__name__,
+                note=f"owner={owner} boot_id={boot_id} error={exc}",
+            ),
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def _wait_boot_targets(

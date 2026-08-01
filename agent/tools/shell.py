@@ -13,9 +13,11 @@ from agent.tools.shell_command import resolve_shell
 from agent.tools.unified_exec import DEFAULT_HARD_TIMEOUT_S
 from agent.tools.unified_exec import DEFAULT_INITIAL_YIELD_TIME_MS
 from agent.tools.unified_exec import DEFAULT_MAX_OUTPUT_TOKENS
+from agent.tools.unified_exec import ExecutionCleanupReport
 from agent.tools.unified_exec import MAX_HARD_TIMEOUT_S
 from agent.tools.unified_exec import ShellProcessManager
 from agent.tools.unified_exec import format_execution_result
+from core.common.diagnostic_log import diagnostic_line
 from core.error_context import current_session_key
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,31 @@ _UNIFIED_EXEC_ENV = {
     "GIT_PAGER": "cat",
     "GH_PAGER": "cat",
 }
+
+
+def _cleanup_diagnostic(
+    action: str,
+    owner_session_key: str,
+    report: ExecutionCleanupReport,
+) -> str:
+    failures = ";".join(
+        f"{failure.execution_id}:{failure.error_type}:{failure.message}"
+        for failure in report.failures
+    )
+    return diagnostic_line(
+        "ShellCleanup",
+        event="cleanup_degraded",
+        flow="runtime",
+        phase="cleanup",
+        session=owner_session_key,
+        action=action,
+        reason="execution_cleanup_unconfirmed",
+        counts=(
+            f"attempted:{len(report.attempted_execution_ids)},"
+            f"failed:{len(report.failures)}"
+        ),
+        note=failures,
+    )
 
 
 class ShellTool(Tool):
@@ -214,11 +241,17 @@ class ShellTool(Tool):
         )
         return format_execution_result(result, command=command)
 
-    async def shutdown(self) -> None:
-        await self.manager.shutdown()
+    async def shutdown(self) -> ExecutionCleanupReport:
+        report = await self.manager.shutdown()
+        if report.failures:
+            logger.error(_cleanup_diagnostic("shutdown", "-", report))
+        return report
 
-    async def terminate_owner(self, owner_session_key: str) -> None:
-        await self.manager.terminate_owner(owner_session_key)
+    async def terminate_owner(
+        self,
+        owner_session_key: str,
+    ) -> ExecutionCleanupReport:
+        return await self.manager.terminate_owner(owner_session_key)
 
 
 class ShellWriteStdinTool(Tool):
