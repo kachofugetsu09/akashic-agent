@@ -19,6 +19,9 @@ if [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
 fi
 
 source_repository="$(git config --get remote.origin.url)"
+if [[ "$source_repository" =~ ^git@github.com:(.+)\.git$ ]]; then
+  source_repository="https://github.com/${BASH_REMATCH[1]}"
+fi
 source_commit="$(git rev-parse HEAD)"
 source_tree="$(git rev-parse 'HEAD^{tree}')"
 source_epoch="$(git show -s --format=%ct HEAD)"
