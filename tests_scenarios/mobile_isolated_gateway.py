@@ -15,7 +15,12 @@ from typing import Any, cast
 from uuid import uuid4
 
 from bus.events import InboundMessage, OutboundMessage
-from bus.events_lifecycle import StreamDeltaReady, TurnStarted
+from bus.events_lifecycle import (
+    StreamDeltaReady,
+    ToolCallCompleted,
+    ToolCallStarted,
+    TurnStarted,
+)
 from agent.config_models import MobileKeyEncryptionConfig, MobileRealtimeConfig
 from infra.channels.base import AttachmentStore
 from infra.mobile_realtime.gateway import (
@@ -41,6 +46,14 @@ _PILOT_REPLY_CHUNKS = (
     "- 同一消息组件\n",
     "- 原生能力仍独立\n\n",
     "```text\nWeb + Android = one WebUI\n```\n",
+)
+_PILOT_THINKING_BEFORE_TOOL = (
+    "先确认两端是否正在使用同一套主题 token。",
+    "再检查流式消息组件和平台能力边界。",
+)
+_PILOT_THINKING_AFTER_TOOL = (
+    "工具结果表明共享主题已经生效。",
+    "现在整理最终结论。",
 )
 
 
@@ -329,6 +342,62 @@ class FixedReplyBus:
                 turn_id=turn_id,
             )
         )
+        for chunk in _PILOT_THINKING_BEFORE_TOOL:
+            await runtime.channel._on_stream_delta(  # pyright: ignore[reportPrivateUsage]
+                StreamDeltaReady(
+                    session_key=inbound.session_key,
+                    channel="mobile",
+                    chat_id=inbound.chat_id,
+                    turn_id=turn_id,
+                    thinking_delta=chunk,
+                )
+            )
+            await asyncio.sleep(0.42)
+        call_id = f"pilot-theme-{turn_id}"
+        tool_arguments: dict[str, Any] = {
+            "description": "检查 Web 与 Android 是否共用移动端浅蓝主题",
+            "source": "frontend/chat/src/theme.css",
+            "targets": ["desktop", "android-webview"],
+        }
+        await runtime.channel._on_tool_call_started(  # pyright: ignore[reportPrivateUsage]
+            ToolCallStarted(
+                session_key=inbound.session_key,
+                channel="mobile",
+                chat_id=inbound.chat_id,
+                iteration=1,
+                call_id=call_id,
+                tool_name="inspect_shared_webui",
+                arguments=tool_arguments,
+                turn_id=turn_id,
+            )
+        )
+        await asyncio.sleep(0.9)
+        await runtime.channel._on_tool_call_completed(  # pyright: ignore[reportPrivateUsage]
+            ToolCallCompleted(
+                session_key=inbound.session_key,
+                channel="mobile",
+                chat_id=inbound.chat_id,
+                iteration=1,
+                call_id=call_id,
+                tool_name="inspect_shared_webui",
+                arguments=tool_arguments,
+                final_arguments=tool_arguments,
+                status="success",
+                result_preview="桌面与 Android WebView 共用同一套浅蓝主题和消息组件。",
+                turn_id=turn_id,
+            )
+        )
+        for chunk in _PILOT_THINKING_AFTER_TOOL:
+            await runtime.channel._on_stream_delta(  # pyright: ignore[reportPrivateUsage]
+                StreamDeltaReady(
+                    session_key=inbound.session_key,
+                    channel="mobile",
+                    chat_id=inbound.chat_id,
+                    turn_id=turn_id,
+                    thinking_delta=chunk,
+                )
+            )
+            await asyncio.sleep(0.42)
         for chunk in _PILOT_REPLY_CHUNKS:
             await runtime.channel._on_stream_delta(  # pyright: ignore[reportPrivateUsage]
                 StreamDeltaReady(
@@ -346,6 +415,9 @@ class FixedReplyBus:
                 chat_id=inbound.chat_id,
                 content=reply,
                 media=[str(self._reply_media)],
+                thinking="".join(
+                    (*_PILOT_THINKING_BEFORE_TOOL, *_PILOT_THINKING_AFTER_TOOL)
+                ),
                 control_turn_id=turn_id,
                 session_message_id=assistant_message_id,
             )

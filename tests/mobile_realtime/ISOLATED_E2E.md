@@ -71,7 +71,7 @@ uv run python -m tests_scenarios.mobile_isolated_gateway \
 
 1. 首次连接后出现 `mobile:isolated-history`，其中两条历史消息各出现一次。
 2. 退出再进入该 session，确认第二次 history sync 不产生重复消息。
-3. 发送任意消息，确认 Markdown 标题、列表和代码块逐段生长，结束时没有跳回、重复或闪烁；随后确认 GIF 到达且可打开。
+3. 发送任意消息，确认思考文字逐段生长、`inspect_shared_webui` 工具从运行中变为完成，随后 Markdown 标题、列表和代码块逐段生长；结束时没有跳回、重复或闪烁，并确认 GIF 到达且可打开。
 4. 回复流式进行时移除端口转发，再恢复端口转发：
 
    ```bash
