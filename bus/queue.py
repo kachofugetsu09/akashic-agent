@@ -8,74 +8,15 @@ from typing import TypeVar
 from typing import Protocol, cast
 from uuid import uuid4
 
-from bus.events import InboundItem, InboundMessage, OutboundMessage, SpawnCompletionItem
+from bus.events import InboundItem, InboundMessage, OutboundMessage
 
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
-DEFAULT_MESSAGE_BUS_CAPACITY = 256
-DEFAULT_MESSAGE_BUS_BYTES = 4 * 1024 * 1024
+_DURABLE_INBOUND_RECOVERY_PAGE_SIZE = 256
 _INBOUND_CLEANUP_RETRY_INITIAL_DELAY = 0.1
 _INBOUND_CLEANUP_RETRY_MAX_DELAY = 5.0
-
-
-class MessageBusCapacityError(RuntimeError):
-    """表示消息在进入有界队列前被拒绝。"""
-
-    error_type = "resource-exhausted"
-    failure_type = "operation_rejected"
-    code = "resource-exhausted"
-    retryable = True
-
-    def __init__(self, direction: str, *, item_bytes: int, reason: str) -> None:
-        self.direction = direction
-        self.item_bytes = item_bytes
-        self.reason = reason
-        super().__init__(
-            f"resource-exhausted: {direction} message bus admission {reason} "
-            f"(item_bytes={item_bytes})"
-        )
-
-
-# Keep a descriptive alias for callers that use the transport terminology.
-MessageBusBusyError = MessageBusCapacityError
-
-
-def _wire_size(item: object) -> int:
-    """计算消息进入队列后占用的 UTF-8 JSON 字节数。"""
-
-    if isinstance(item, InboundMessage):
-        payload = {
-            "channel": item.channel,
-            "sender": item.sender,
-            "chat_id": item.chat_id,
-            "content": item.content,
-            "timestamp": item.timestamp.isoformat(),
-            "media": list(item.media),
-            "metadata": dict(item.metadata),
-        }
-    elif isinstance(item, SpawnCompletionItem):
-        payload = {
-            "channel": item.channel,
-            "chat_id": item.chat_id,
-            "event": repr(item.event),
-            "decision": repr(item.decision),
-            "timestamp": item.timestamp.isoformat(),
-        }
-    elif isinstance(item, OutboundMessage):
-        payload = {
-            "channel": item.channel,
-            "chat_id": item.chat_id,
-            "content": item.content,
-            "thinking": item.thinking,
-            "reply_to": item.reply_to,
-            "media": list(item.media),
-            "metadata": dict(item.metadata),
-        }
-    else:
-        raise TypeError(f"unsupported MessageBus item: {type(item).__name__}")
-    return len(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode())
 
 
 class DurableInboundStore(Protocol):
@@ -187,10 +128,9 @@ class _ChatLaneState:
 
 @dataclass
 class _InboundOwner:
-    """在 durable cleanup 确认前保持 accepted inbound item 的强引用。"""
+    """在 durable cleanup 确认前保持 mobile handoff 的强引用。"""
 
     item: InboundItem
-    item_bytes: int
     cleanup_pending: bool = False
 
 
@@ -359,42 +299,16 @@ class OutboundSubscription:
 
 
 class MessageBus:
-    """agent 与各 channel 之间的异步消息总线"""
+    """在单用户 Companion 内传递消息，并持有 mobile handoff 的删除责任。"""
 
-    def __init__(
-        self,
-        chat_lane: ChatLane | None = None,
-        *,
-        inbound_capacity: int = DEFAULT_MESSAGE_BUS_CAPACITY,
-        outbound_capacity: int = DEFAULT_MESSAGE_BUS_CAPACITY,
-        inbound_bytes: int = DEFAULT_MESSAGE_BUS_BYTES,
-        outbound_bytes: int = DEFAULT_MESSAGE_BUS_BYTES,
-    ) -> None:
-        for name, value in (
-            ("inbound_capacity", inbound_capacity),
-            ("outbound_capacity", outbound_capacity),
-            ("inbound_bytes", inbound_bytes),
-            ("outbound_bytes", outbound_bytes),
-        ):
-            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-                raise ValueError(f"{name} 必须是正整数")
-        self._inbound_capacity = inbound_capacity
-        self._outbound_capacity = outbound_capacity
-        self._inbound_bytes_capacity = inbound_bytes
-        self._outbound_bytes_capacity = outbound_bytes
-        self._inbound: asyncio.Queue[InboundItem] = asyncio.Queue(maxsize=inbound_capacity)
-        self._outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue(maxsize=outbound_capacity)
-        self._inbound_bytes = 0
+    def __init__(self, chat_lane: ChatLane | None = None) -> None:
+        self._inbound: asyncio.Queue[InboundItem] = asyncio.Queue()
+        self._outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue()
         self._inbound_accepted: dict[int, _InboundOwner] = {}
         self._inbound_cleanup_tasks: dict[int, asyncio.Task[None]] = {}
         self._inbound_cleanup_error: BaseException | None = None
         self._recovery_claimed: set[str] = set()
-        self._outbound_bytes = 0
-        self._inbound_reserved_items = 0
-        self._outbound_reserved_items = 0
-        self._inbound_reserved_bytes = 0
-        self._outbound_reserved_bytes = 0
-        self._admission_lock = asyncio.Lock()
+        self._durable_handoff_lock = asyncio.Lock()
         self._subscribers: dict[
             str, list[Callable[[OutboundMessage], Awaitable[None]]]
         ] = {}
@@ -413,39 +327,22 @@ class MessageBus:
         self._durable_inbound_store = store
 
     async def recover_durable_inbounds(self) -> None:
-        """在有界 bus slot 内重放尚未完成的移动 handoff。"""
+        """分页重放尚未完成的移动 handoff，不以 bus 容量拒绝消息。"""
 
         self._raise_inbound_cleanup_error()
         store = self._durable_inbound_store
         if store is None:
             return
         # 1. 只读取有限页，避免启动时把整个 durable backlog 搬入内存。
-        available = self._inbound_capacity - len(self._inbound_accepted)
-        if available <= 0:
-            return
-        rows = store.list_inbound_handoffs(
-            limit=min(self._inbound_capacity, available + len(self._recovery_claimed))
-        )
+        rows = store.list_inbound_handoffs(limit=_DURABLE_INBOUND_RECOVERY_PAGE_SIZE)
         for row in rows:
             handoff_id = row.get("handoff_id")
             if not isinstance(handoff_id, str) or handoff_id in self._recovery_claimed:
                 continue
-            if len(self._inbound_accepted) >= self._inbound_capacity:
-                break
             item = _inbound_from_handoff(row)
             self._recovery_claimed.add(handoff_id)
             try:
                 await self._publish_inbound(item, allow_existing_handoff=True)
-            except MessageBusCapacityError as error:
-                self._recovery_claimed.discard(handoff_id)
-                if error.item_bytes > self._inbound_bytes_capacity:
-                    raise
-                logger.info(
-                    "durable inbound recovery waiting for bus capacity: handoff=%s reason=%s",
-                    handoff_id,
-                    error.reason,
-                )
-                break
             except BaseException:
                 self._recovery_claimed.discard(handoff_id)
                 raise
@@ -488,69 +385,50 @@ class MessageBus:
         *,
         allow_existing_handoff: bool,
     ) -> None:
-        """在容量、lane 和 durable handoff 三者一致后入队一条消息。"""
+        """将消息入队；mobile 先持久化并由本类负责删除确认。"""
 
-        item_bytes = _wire_size(msg)
-        async with self._admission_lock:
-            if id(msg) in self._inbound_accepted:
-                raise RuntimeError("同一 inbound 对象被重复接受")
-            if len(self._inbound_accepted) + self._inbound_reserved_items >= self._inbound_capacity:
-                raise MessageBusCapacityError("inbound", item_bytes=item_bytes, reason="queue full")
-            if (
-                self._inbound_bytes
-                + self._inbound_reserved_bytes
-                + item_bytes
-                > self._inbound_bytes_capacity
-            ):
-                raise MessageBusCapacityError(
-                    "inbound",
-                    item_bytes=item_bytes,
-                    reason="byte budget full",
-                )
-            self._inbound_reserved_items += 1
-            self._inbound_reserved_bytes += item_bytes
-            marked = False
+        if not isinstance(msg, InboundMessage) or msg.channel != "mobile":
+            await self._chat_lane.mark_passive_pending(msg.channel, msg.chat_id)
             try:
-                if isinstance(msg, InboundMessage) and msg.channel == "mobile":
-                    store = self._durable_inbound_store
-                    if store is None:
-                        raise RuntimeError("mobile inbound durable handoff store 未绑定")
-                    requested_handoff_id = msg.handoff_id
-                    media_json, metadata_json = _serialize_handoff(msg)
-                    handoff_id, created = store.reserve_inbound_handoff(
-                        handoff_id=msg.handoff_id or uuid4().hex,
-                        dedupe_key=_mobile_dedupe_key(msg),
-                        channel=msg.channel,
-                        sender=msg.sender,
-                        chat_id=msg.chat_id,
-                        session_key=msg.session_key,
-                        content=msg.content,
-                        timestamp=msg.timestamp.astimezone(timezone.utc).isoformat(),
-                        media_json=media_json,
-                        metadata_json=metadata_json,
-                        created_at=datetime.now(timezone.utc).isoformat(),
-                    )
-                    msg.handoff_id = handoff_id
-                    if not created and not (
-                        allow_existing_handoff
-                        and requested_handoff_id == handoff_id
-                    ):
-                        return
-                await self._chat_lane.mark_passive_pending(msg.channel, msg.chat_id)
-                marked = True
                 self._inbound.put_nowait(msg)
             except BaseException:
-                if marked:
-                    await self._chat_lane.mark_passive_done(msg.channel, msg.chat_id)
+                await self._chat_lane.mark_passive_done(msg.channel, msg.chat_id)
                 raise
-            finally:
-                self._inbound_reserved_items -= 1
-                self._inbound_reserved_bytes -= item_bytes
-            self._inbound_accepted[id(msg)] = _InboundOwner(
-                item=msg,
-                item_bytes=item_bytes,
+            return
+
+        async with self._durable_handoff_lock:
+            if id(msg) in self._inbound_accepted:
+                raise RuntimeError("同一 mobile inbound 对象被重复接受")
+            store = self._durable_inbound_store
+            if store is None:
+                raise RuntimeError("mobile inbound durable handoff store 未绑定")
+            requested_handoff_id = msg.handoff_id
+            media_json, metadata_json = _serialize_handoff(msg)
+            handoff_id, created = store.reserve_inbound_handoff(
+                handoff_id=msg.handoff_id or uuid4().hex,
+                dedupe_key=_mobile_dedupe_key(msg),
+                channel=msg.channel,
+                sender=msg.sender,
+                chat_id=msg.chat_id,
+                session_key=msg.session_key,
+                content=msg.content,
+                timestamp=msg.timestamp.astimezone(timezone.utc).isoformat(),
+                media_json=media_json,
+                metadata_json=metadata_json,
+                created_at=datetime.now(timezone.utc).isoformat(),
             )
-            self._inbound_bytes += item_bytes
+            msg.handoff_id = handoff_id
+            if not created and not (
+                allow_existing_handoff and requested_handoff_id == handoff_id
+            ):
+                return
+            await self._chat_lane.mark_passive_pending(msg.channel, msg.chat_id)
+            try:
+                self._inbound.put_nowait(msg)
+            except BaseException:
+                await self._chat_lane.mark_passive_done(msg.channel, msg.chat_id)
+                raise
+            self._inbound_accepted[id(msg)] = _InboundOwner(item=msg)
 
     async def consume_inbound(self) -> InboundItem:
         """阻塞直到有消息可消费"""
@@ -558,15 +436,14 @@ class MessageBus:
 
     async def complete_inbound(self, msg: InboundItem) -> None:
         self._raise_inbound_cleanup_error()
-        item_bytes = _wire_size(msg)
-        async with self._admission_lock:
-            owner = self._inbound_accepted.get(id(msg))
-            if owner is None or owner.item is not msg:
-                raise RuntimeError("inbound 未被接受或已完成")
-            if owner.item_bytes != item_bytes:
-                raise RuntimeError("inbound ownership bytes 不一致")
-            if owner.cleanup_pending:
-                raise RuntimeError("inbound cleanup 已在重试中")
+        owner = self._inbound_accepted.get(id(msg))
+        if owner is None:
+            await self._chat_lane.mark_passive_done(msg.channel, msg.chat_id)
+            return
+        if owner.item is not msg:
+            raise RuntimeError("mobile inbound ownership changed")
+        if owner.cleanup_pending:
+            raise RuntimeError("inbound cleanup 已在重试中")
         if isinstance(msg, InboundMessage) and msg.handoff_id is not None:
             store = self._durable_inbound_store
             if store is None:
@@ -672,15 +549,14 @@ class MessageBus:
         owner_key: int,
         owner: _InboundOwner,
     ) -> None:
-        """确认 lane 完成后释放 accepted owner，并继续有限 durable pump。"""
+        """确认 lane 完成后释放 mobile handoff owner，并继续分页 pump。"""
 
         item = owner.item
         await self._chat_lane.mark_passive_done(item.channel, item.chat_id)
-        async with self._admission_lock:
+        async with self._durable_handoff_lock:
             current = self._inbound_accepted.pop(owner_key, None)
             if current is not owner:
                 raise RuntimeError("inbound ownership changed during completion")
-            self._inbound_bytes -= owner.item_bytes
         if isinstance(item, InboundMessage) and item.handoff_id is not None:
             self._recovery_claimed.discard(item.handoff_id)
         await self.recover_durable_inbounds()
@@ -699,27 +575,12 @@ class MessageBus:
 
     async def publish_outbound(self, msg: OutboundMessage) -> None:
         """将 Agent 输出交给对应渠道发送。"""
-        item_bytes = _wire_size(msg)
-        async with self._admission_lock:
-            if self._outbound.qsize() + self._outbound_reserved_items >= self._outbound_capacity:
-                raise MessageBusCapacityError("outbound", item_bytes=item_bytes, reason="queue full")
-            if self._outbound_bytes + self._outbound_reserved_bytes + item_bytes > self._outbound_bytes_capacity:
-                raise MessageBusCapacityError("outbound", item_bytes=item_bytes, reason="byte budget full")
-            self._outbound_reserved_items += 1
-            self._outbound_reserved_bytes += item_bytes
-            marked = False
-            try:
-                await self._chat_lane.mark_passive_send_pending(msg.channel, msg.chat_id)
-                marked = True
-                self._outbound.put_nowait(msg)
-            except BaseException:
-                if marked:
-                    await self._chat_lane.mark_passive_send_done(msg.channel, msg.chat_id)
-                raise
-            finally:
-                self._outbound_reserved_items -= 1
-                self._outbound_reserved_bytes -= item_bytes
-            self._outbound_bytes += item_bytes
+        await self._chat_lane.mark_passive_send_pending(msg.channel, msg.chat_id)
+        try:
+            self._outbound.put_nowait(msg)
+        except BaseException:
+            await self._chat_lane.mark_passive_send_done(msg.channel, msg.chat_id)
+            raise
 
     def subscribe_outbound(
         self,
@@ -754,8 +615,6 @@ class MessageBus:
         while self._running:
             try:
                 msg = await asyncio.wait_for(self._outbound.get(), timeout=1.0)
-                async with self._admission_lock:
-                    self._outbound_bytes -= _wire_size(msg)
                 delivered = await self._chat_lane.run_passive(
                     msg.channel,
                     msg.chat_id,
@@ -814,35 +673,3 @@ class MessageBus:
     @property
     def outbound_size(self) -> int:
         return self._outbound.qsize()
-
-    @property
-    def inbound_bytes(self) -> int:
-        return self._inbound_bytes
-
-    @property
-    def outbound_bytes(self) -> int:
-        return self._outbound_bytes
-
-    @property
-    def inbound_capacity(self) -> int:
-        return self._inbound_capacity
-
-    @property
-    def outbound_capacity(self) -> int:
-        return self._outbound_capacity
-
-    @property
-    def inbound_bytes_capacity(self) -> int:
-        return self._inbound_bytes_capacity
-
-    @property
-    def outbound_bytes_capacity(self) -> int:
-        return self._outbound_bytes_capacity
-
-    @property
-    def inbound_reserved_bytes(self) -> int:
-        return self._inbound_reserved_bytes
-
-    @property
-    def outbound_reserved_bytes(self) -> int:
-        return self._outbound_reserved_bytes

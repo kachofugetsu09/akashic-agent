@@ -115,7 +115,7 @@ async def test_mobile_inbound_handoff_survives_queue_restart_and_deduplicates(tm
 
 
 @pytest.mark.asyncio
-async def test_mobile_handoff_recovery_is_bounded_and_pumps_after_completion(tmp_path) -> None:
+async def test_mobile_handoff_recovery_pages_durable_rows_and_completes_them(tmp_path) -> None:
     db_path = tmp_path / "sessions.db"
     store = SessionStore(db_path)
     seed = MessageBus()
@@ -132,17 +132,17 @@ async def test_mobile_handoff_recovery_is_bounded_and_pumps_after_completion(tmp
         )
 
     recovered_store = SessionStore(db_path)
-    restarted = MessageBus(inbound_capacity=1)
+    restarted = MessageBus()
     restarted.bind_durable_inbound_store(recovered_store)
     await restarted.recover_durable_inbounds()
-    assert restarted.inbound_size == 1
+    assert restarted.inbound_size == 3
     assert len(recovered_store.list_inbound_handoffs()) == 3
 
     for index in range(3):
         item = await restarted.consume_inbound()
         assert item.content == f"message-{index}"
         await restarted.complete_inbound(item)
-        assert restarted.inbound_size == (1 if index < 2 else 0)
+        assert restarted.inbound_size == 2 - index
     assert recovered_store.list_inbound_handoffs() == []
     recovered_store.close()
     store.close()
@@ -243,17 +243,15 @@ async def test_mobile_handoff_delete_failure_retains_owner_until_retry(
     with caplog.at_level(logging.ERROR):
         with pytest.raises(OSError, match="delete unavailable"):
             await bus.complete_inbound(consumed)
-    assert bus.inbound_bytes > 0
     assert len(bus._inbound_accepted) == 1
     assert len(store.list_inbound_handoffs()) == 1
     assert "cleanup_degraded" in caplog.text
 
     async def retry_finished() -> None:
-        while bus.inbound_bytes:
+        while bus._inbound_accepted:
             await asyncio.sleep(0.02)
 
     await asyncio.wait_for(retry_finished(), timeout=1)
-    assert bus.inbound_bytes == 0
     assert bus._inbound_accepted == {}
     assert store.list_inbound_handoffs() == []
     store.close()
