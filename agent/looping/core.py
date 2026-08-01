@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from core.error_context import current_session_key
+from core.common.diagnostic_log import diagnostic_line
 from agent.control.context import current_turn_id
 from agent.control.ids import new_turn_id
 from agent.context import ContextBuilder
@@ -54,6 +55,7 @@ from bus.queue import MessageBus
 from proactive_v2.presence import PresenceStore
 from agent.provider import LLMProvider
 from agent.tools.shell import ShellTool
+from agent.tools.unified_exec import ExecutionCleanupReport
 from agent.tools.registry import ToolRegistry
 from session.manager import SessionManager
 
@@ -674,7 +676,6 @@ class AgentLoop:
             else ""
         )
         turn_token = current_turn_id.set(inherited_turn_id or new_turn_id())
-        primary_error: BaseException | None = None
         try:
             # 1. 先处理可能存在的续跑态，并发布 turn started。
             msg, resumed_from_interrupt = await self._resume_interrupted_message(msg, key)
@@ -699,29 +700,71 @@ class AgentLoop:
                 # 3. 无论核心处理结果如何，都释放 busy 状态。
                 if self._processing_state:
                     self._processing_state.exit(busy_key)
-        except BaseException as exc:
-            primary_error = exc
-            raise
         finally:
             # 4. 当前 query 结束即回收其 shell，再恢复调用方上下文。
             try:
-                try:
-                    await self._terminate_shell_owner(key)
-                except BaseException:
-                    if primary_error is None:
-                        raise
-                    logger.exception("shell owner cleanup 失败，保留原始 turn 异常")
+                await self._cleanup_shell_owner(key)
             finally:
                 current_session_key.reset(session_token)
                 current_turn_id.reset(turn_token)
 
-    async def _terminate_shell_owner(self, owner_session_key: str) -> None:
+    async def _cleanup_shell_owner(self, owner_session_key: str) -> None:
+        """回收 turn 的 Shell，并把失败隔离为 execution 诊断。"""
+
+        # 1. 未预期的 cleanup 异常只进入日志，不拥有 turn 终态。
+        try:
+            report = await self._terminate_shell_owner(owner_session_key)
+        except Exception as exc:
+            logger.exception(
+                diagnostic_line(
+                    "AgentLoop.shell_cleanup",
+                    event="cleanup_degraded",
+                    flow="passive",
+                    phase="cleanup",
+                    session=owner_session_key,
+                    turn=current_turn_id.get(),
+                    action="retain_turn_finality",
+                    reason="cleanup_exception",
+                    error_type=type(exc).__name__,
+                    note=str(exc),
+                )
+            )
+            return
+
+        # 2. manager 的已知失败保留 execution ownership 和完整明细。
+        if report is not None and report.failures:
+            failures = ";".join(
+                f"{failure.execution_id}:{failure.error_type}:{failure.message}"
+                for failure in report.failures
+            )
+            logger.error(
+                diagnostic_line(
+                    "AgentLoop.shell_cleanup",
+                    event="cleanup_degraded",
+                    flow="passive",
+                    phase="cleanup",
+                    session=owner_session_key,
+                    turn=current_turn_id.get(),
+                    action="retain_turn_finality",
+                    reason="execution_cleanup_unconfirmed",
+                    counts=(
+                        f"attempted:{len(report.attempted_execution_ids)},"
+                        f"failed:{len(report.failures)}"
+                    ),
+                    note=failures,
+                )
+            )
+
+    async def _terminate_shell_owner(
+        self,
+        owner_session_key: str,
+    ) -> ExecutionCleanupReport | None:
         shell = self.tools.get_tool("shell")
         if shell is None:
-            return
+            return None
         if not isinstance(shell, ShellTool):
             raise TypeError("注册名 shell 必须由 ShellTool 拥有生命周期")
-        await shell.terminate_owner(owner_session_key)
+        return await shell.terminate_owner(owner_session_key)
 
     async def _process_with_runtime_admission(
         self,

@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from utils.process_group import process_group_exists
+
 MIN_YIELD_TIME_MS = 250
 MIN_EMPTY_YIELD_TIME_MS = 5_000
 MAX_YIELD_TIME_MS = 30_000
@@ -131,6 +133,24 @@ class ExecutionResult:
     finish_reason: str
 
 
+@dataclass(frozen=True)
+class ExecutionCleanupFailure:
+    execution_id: int
+    error_type: str
+    message: str
+
+
+@dataclass(frozen=True)
+class ExecutionCleanupReport:
+    attempted_execution_ids: tuple[int, ...]
+    cleaned_execution_ids: tuple[int, ...]
+    failures: tuple[ExecutionCleanupFailure, ...]
+
+    @property
+    def failed_execution_ids(self) -> tuple[int, ...]:
+        return tuple(failure.execution_id for failure in self.failures)
+
+
 @dataclass
 class _Execution:
     execution_id: int
@@ -171,6 +191,7 @@ class ShellProcessManager:
             MIN_EMPTY_YIELD_TIME_MS,
         )
         self._executions: dict[int, _Execution] = {}
+        self._quarantined_owners: dict[str, ExecutionCleanupReport] = {}
         self._lock = asyncio.Lock()
         self._spawn_lock = asyncio.Lock()
         self._rng = random.SystemRandom()
@@ -192,6 +213,7 @@ class ShellProcessManager:
 
         # 1. 串行容量回收和 spawn，保证新进程在开始等待前已注册。
         async with self._spawn_lock:
+            await self._ensure_owner_admitted(owner_session_key)
             await self._prune_if_needed()
             execution_id = await self._allocate_execution_id()
             execution = await self._spawn(
@@ -304,23 +326,37 @@ class ShellProcessManager:
         await self._remove_execution(execution, delete_log=True)
         return True
 
-    async def terminate_owner(self, owner_session_key: str) -> None:
-        """回收某个对话 owner 创建的全部执行。"""
+    async def terminate_owner(
+        self,
+        owner_session_key: str,
+    ) -> ExecutionCleanupReport:
+        """回收 owner 执行，并隔离 cleanup 未确认的 owner。"""
 
-        async with self._lock:
-            executions = [
-                execution
-                for execution in self._executions.values()
-                if execution.owner_session_key == owner_session_key
-            ]
-        await self._terminate_many(executions)
+        # 1. 与 spawn 串行，避免 cleanup 与同 owner 新进程交错。
+        async with self._spawn_lock:
+            async with self._lock:
+                executions = [
+                    execution
+                    for execution in self._executions.values()
+                    if execution.owner_session_key == owner_session_key
+                ]
+            report = await self._terminate_many(executions)
 
-    async def shutdown(self) -> None:
-        """确认终止 manager 持有的全部执行。"""
+            # 2. cleanup 成功解除隔离；失败保留 execution 与失败证据。
+            async with self._lock:
+                if report.failures:
+                    self._quarantined_owners[owner_session_key] = report
+                else:
+                    _ = self._quarantined_owners.pop(owner_session_key, None)
+            return report
 
-        async with self._lock:
-            executions = list(self._executions.values())
-        await self._terminate_many(executions)
+    async def shutdown(self) -> ExecutionCleanupReport:
+        """尽力终止全部执行，并返回未清理明细。"""
+
+        async with self._spawn_lock:
+            async with self._lock:
+                executions = list(self._executions.values())
+            return await self._terminate_many(executions)
 
     async def active_execution_ids(self) -> list[int]:
         async with self._lock:
@@ -604,18 +640,47 @@ class ShellProcessManager:
             execution.failure_message = f"shell 硬超时终止失败: {exc}"
             execution.output_event.set()
 
-    async def _terminate_many(self, executions: list[_Execution]) -> None:
-        failures: list[str] = []
+    async def _terminate_many(
+        self,
+        executions: list[_Execution],
+    ) -> ExecutionCleanupReport:
+        """逐个清理 execution，并保留每个失败的 ownership。"""
+
+        cleaned: list[int] = []
+        failures: list[ExecutionCleanupFailure] = []
         for execution in executions:
             try:
                 if execution.process.returncode is None:
                     execution.finish_reason = "shutdown"
                     await self._terminate_confirmed(execution)
                 await self._remove_execution(execution, delete_log=True)
+                cleaned.append(execution.execution_id)
             except Exception as exc:
-                failures.append(f"{execution.execution_id}: {exc}")
-        if failures:
-            raise RuntimeError("shell execution 回收失败: " + "; ".join(failures))
+                failures.append(
+                    ExecutionCleanupFailure(
+                        execution_id=execution.execution_id,
+                        error_type=type(exc).__name__,
+                        message=str(exc),
+                    )
+                )
+        return ExecutionCleanupReport(
+            attempted_execution_ids=tuple(
+                execution.execution_id for execution in executions
+            ),
+            cleaned_execution_ids=tuple(cleaned),
+            failures=tuple(failures),
+        )
+
+    async def _ensure_owner_admitted(self, owner_session_key: str) -> None:
+        async with self._lock:
+            report = self._quarantined_owners.get(owner_session_key)
+        if report is None:
+            return
+        failed = ",".join(str(value) for value in report.failed_execution_ids)
+        raise RuntimeError(
+            f"owner={owner_session_key} 的 shell cleanup 未确认；"
+            f"failed_execution_ids={failed}，拒绝创建新 execution"
+        )
 
     async def _terminate_confirmed(self, execution: _Execution) -> None:
         if execution.process.returncode is None:
@@ -778,6 +843,12 @@ def _kill_remaining_process_group(process: asyncio.subprocess.Process) -> None:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        # Linux killpg 会因组内只剩其他 UID 的 zombie 返回 EPERM；zombie 已不再执行，
+        # 由 subreaper wait 回收，不能把已完成命令误判为仍有活进程。
+        if not process_group_exists(process.pid):
+            return
+        raise
 
 
 async def _read_fd(fd: int, size: int) -> bytes:

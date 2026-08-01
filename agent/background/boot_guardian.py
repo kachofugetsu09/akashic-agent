@@ -12,7 +12,9 @@ import sys
 import time
 from pathlib import Path
 
+from core.common.diagnostic_log import diagnostic_line
 from utils.pidfd import open_pidfd
+from utils.process_group import process_group_exists
 
 GUARDIAN_FAILURE_EXIT_CODE = 70
 _BOOT_CLEANUP_TIMEOUT_SECONDS = 5.0
@@ -38,8 +40,9 @@ def run_boot_guardian(
     os.set_blocking(signal_write_fd, False)
     previous_wakeup_fd = signal.set_wakeup_fd(signal_write_fd)
     stop_signals = (signal.SIGINT, signal.SIGTERM)
+    handled_signals = (*stop_signals, signal.SIGCHLD)
     previous_handlers = {
-        sig: signal.signal(sig, lambda _signum, _frame: None) for sig in stop_signals
+        sig: signal.signal(sig, lambda _signum, _frame: None) for sig in handled_signals
     }
 
     gateway: subprocess.Popen[bytes] | None = None
@@ -89,15 +92,19 @@ def run_boot_guardian(
                         break
                     raise RuntimeError("Supervisor lease 收到未知数据")
                 if any(key.data == "signal" for key, _mask in events):
-                    _drain_fd(signal_read_fd)
-                    break
+                    received = _drain_signal_fd(signal_read_fd)
+                    if signal.SIGCHLD in received:
+                        _reap_adopted_children(exclude_pids={gateway.pid})
+                    if received.intersection(stop_signals):
+                        break
 
         # 4. 无论退出来源如何，都在返回前证明当前 boot 已清空。
         gateway_exit_code = gateway.poll()
         cleanup_attempted = True
-        _cleanup_boot_processes(
+        _ = _cleanup_boot_processes_best_effort(
             boot_id=boot_id,
             gateway_group_id=gateway.pid,
+            owner="guardian",
         )
         if gateway_exit_code is None:
             gateway_exit_code = gateway.wait()
@@ -105,16 +112,11 @@ def run_boot_guardian(
         return _portable_exit_code(gateway_exit_code)
     except BaseException as run_error:
         if gateway is not None and not cleanup_attempted:
-            try:
-                _cleanup_boot_processes(
-                    boot_id=boot_id,
-                    gateway_group_id=gateway.pid,
-                )
-            except BaseException as cleanup_error:
-                raise BaseExceptionGroup(
-                    "Boot Guardian 执行与 boot 清理均失败",
-                    [run_error, cleanup_error],
-                ) from run_error
+            _ = _cleanup_boot_processes_best_effort(
+                boot_id=boot_id,
+                gateway_group_id=gateway.pid,
+                owner="guardian",
+            )
         raise
     finally:
         if lifecycle_fd >= 0:
@@ -182,6 +184,37 @@ def _cleanup_boot_processes(
     raise RuntimeError(
         f"boot {boot_id} 进程清理失败: groups={alive_groups}, pids={alive_pids}"
     )
+
+
+def _cleanup_boot_processes_best_effort(
+    *,
+    boot_id: str,
+    gateway_group_id: int | None,
+    owner: str,
+) -> bool:
+    """尽力清理 boot；权限或残留失败只输出结构化诊断。"""
+
+    try:
+        _cleanup_boot_processes(
+            boot_id=boot_id,
+            gateway_group_id=gateway_group_id,
+        )
+    except (OSError, RuntimeError) as exc:
+        print(
+            diagnostic_line(
+                "BootCleanup",
+                event="cleanup_degraded",
+                flow="runtime",
+                phase="boot_cleanup",
+                action="continue",
+                reason="boot_cleanup_unconfirmed",
+                error_type=type(exc).__name__,
+                note=f"owner={owner} boot_id={boot_id} error={exc}",
+            ),
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def _wait_boot_targets(
@@ -262,7 +295,7 @@ def _signal_targets(
 
 
 def _group_exists(group_id: int) -> bool:
-    return _linux_group_has_live_members(group_id)
+    return process_group_exists(group_id)
 
 
 def _pid_exists(pid: int) -> bool:
@@ -273,29 +306,41 @@ def _pid_exists(pid: int) -> bool:
     return fields[0] != "Z"
 
 
-def _linux_group_has_live_members(group_id: int) -> bool:
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
-        except (OSError, IndexError):
-            continue
-        if len(fields) >= 3 and int(fields[2]) == group_id and fields[0] != "Z":
-            return True
-    return False
-
-
-def _drain_fd(fd: int) -> None:
+def _drain_signal_fd(fd: int) -> set[int]:
+    received: set[int] = set()
     while True:
         try:
-            if not os.read(fd, 4096):
-                return
+            chunk = os.read(fd, 4096)
+            if not chunk:
+                return received
+            received.update(chunk)
         except BlockingIOError:
-            return
+            return received
 
 
-def _reap_adopted_children() -> None:
+def _reap_adopted_children(*, exclude_pids: set[int] | None = None) -> None:
+    """收割 adopted zombie；运行期间保留由 Popen 持有的直接 child。"""
+
+    excluded = exclude_pids or set()
+    if excluded:
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            pid = int(entry.name)
+            if pid in excluded:
+                continue
+            try:
+                fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+            except (OSError, IndexError):
+                continue
+            if len(fields) < 2 or fields[0] != "Z" or int(fields[1]) != os.getpid():
+                continue
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                continue
+        return
+
     while True:
         try:
             pid, _status = os.waitpid(-1, os.WNOHANG)
