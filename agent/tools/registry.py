@@ -3,7 +3,7 @@ import logging
 from collections.abc import Iterable, Set as AbstractSet
 from contextvars import ContextVar, Token
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, TypedDict, cast
 
 from agent.tools.base import (
@@ -14,6 +14,7 @@ from agent.tools.base import (
     tool_execution_context_scope,
 )
 from agent.tools.search_backend import KeywordSearchBackend, SearchBackend
+from agent.control.ids import new_operation_id
 
 logger = logging.getLogger(__name__)
 
@@ -658,7 +659,11 @@ class ToolRegistry:
             merged = dict(validation_arguments)
             if internal_arguments:
                 merged.update(internal_arguments)
-            execution_context = self._execution_context.get()
+            base_context = self._execution_context.get()
+            execution_context = replace(
+                base_context or ToolExecutionContext(),
+                execution_id=new_operation_id(),
+            )
             with tool_execution_context_scope(execution_context):
                 return await tool.execute_with_timeout(
                     merged,

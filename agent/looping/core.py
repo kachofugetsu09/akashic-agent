@@ -58,6 +58,7 @@ from agent.tools.shell import ShellTool
 from agent.tools.unified_exec import ExecutionCleanupReport
 from agent.tools.registry import ToolRegistry
 from session.manager import SessionManager
+from agent.tools.web_fetch import WebFetchTool
 
 if TYPE_CHECKING:
     from core.memory.engine import MemoryEngine
@@ -705,8 +706,53 @@ class AgentLoop:
             try:
                 await self._cleanup_shell_owner(key)
             finally:
-                current_session_key.reset(session_token)
-                current_turn_id.reset(turn_token)
+                try:
+                    self._cleanup_web_fetch_owner(current_turn_id.get())
+                finally:
+                    current_session_key.reset(session_token)
+                    current_turn_id.reset(turn_token)
+
+    def _cleanup_web_fetch_owner(self, turn_id: str) -> None:
+        """释放当前 turn 的 web_fetch spill，并保留清理失败诊断。"""
+
+        web_fetch = self.tools.get_tool("web_fetch")
+        if web_fetch is None:
+            return
+        if not isinstance(web_fetch, WebFetchTool):
+            raise TypeError("注册名 web_fetch 必须由 WebFetchTool 拥有生命周期")
+        try:
+            cleanups = web_fetch.release_turn(turn_id)
+        except Exception as exc:
+            logger.error(
+                diagnostic_line(
+                    "AgentLoop.web_fetch_cleanup",
+                    event="cleanup_degraded",
+                    flow="passive",
+                    phase="cleanup",
+                    turn=turn_id,
+                    action="retain_spill_owner",
+                    reason="release_turn_exception",
+                    error_type=type(exc).__name__,
+                    note=str(exc),
+                )
+            )
+            return
+        for cleanup in cleanups:
+            if cleanup.released:
+                continue
+            logger.error(
+                diagnostic_line(
+                    "AgentLoop.web_fetch_cleanup",
+                    event="cleanup_degraded",
+                    flow="passive",
+                    phase="cleanup",
+                    turn=turn_id,
+                    action="retain_spill_owner",
+                    reason=cleanup.status,
+                    counts=f"execution_id:{cleanup.execution_id}",
+                    note=f"path={cleanup.path} error={cleanup.error}",
+                )
+            )
 
     async def _cleanup_shell_owner(self, owner_session_key: str) -> None:
         """回收 turn 的 Shell，并把失败隔离为 execution 诊断。"""

@@ -47,6 +47,7 @@ class ToolExecutionContext:
     turn_id: str = ""
     current_timestamp: str = ""
     current_user_source_ref: str = ""
+    execution_id: str = ""
 
     @property
     def timestamp(self) -> datetime | None:

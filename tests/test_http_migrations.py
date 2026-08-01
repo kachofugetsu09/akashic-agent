@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from agent.tools.web_fetch import WebFetchTool
+from agent.tools.base import ToolExecutionContext
 from agent.tools.web_fetch_spill import (
     INLINE_MAX_BYTES,
     WebFetchSpillStore,
@@ -96,7 +97,7 @@ async def test_web_fetch_spills_large_response_with_execution_owner(tmp_path: Pa
     tool = WebFetchTool(
         requester,
         spill_store=store,
-        context_provider=lambda: SimpleNamespace(
+        context_provider=lambda: ToolExecutionContext(
             execution_id="turn-1", turn_id="turn-1"
         ),
     )
@@ -180,7 +181,9 @@ async def test_web_fetch_cancel_cleans_partial_spill(tmp_path: Path):
     tool = WebFetchTool(
         _Requester(),
         spill_store=store,
-        context_provider=lambda: SimpleNamespace(execution_id="e1", turn_id="t1"),
+        context_provider=lambda: ToolExecutionContext(
+            execution_id="e1", turn_id="t1"
+        ),
     )
     with pytest.raises(asyncio.CancelledError):
         await tool.execute(url="https://example.com/data.txt")
