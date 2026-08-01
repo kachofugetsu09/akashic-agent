@@ -15,6 +15,7 @@ from agent.plugins.snapshot import RuntimeSnapshot
 
 MOBILE_UI_QUERY_TIMEOUT_SECONDS = 20.0
 MOBILE_UI_QUERY_WORKERS = 8
+MOBILE_UI_QUERY_QUEUE_LIMIT = 16
 logger = logging.getLogger(__name__)
 
 
@@ -51,6 +52,8 @@ class PluginMobileUiProvider:
             thread_name_prefix="mobile-plugin-ui",
         )
         self._draining_queries: set[asyncio.Task[dict[str, object]]] = set()
+        self._admission_lock = asyncio.Lock()
+        self._admitted_queries = 0
 
     def catalog(self) -> dict[str, object]:
         """返回当前 generation 的轻量目录与内容摘要。"""
@@ -107,6 +110,7 @@ class PluginMobileUiProvider:
     ) -> dict[str, object]:
         """在线程池执行只读 handler，并在超时后继续持有快照到线程退出。"""
 
+        await self._reserve_query_slot()
         task = asyncio.create_task(
             self._run_query(
                 plugin_id,
@@ -117,6 +121,7 @@ class PluginMobileUiProvider:
                 turn_id=turn_id,
             )
         )
+        task.add_done_callback(self._query_done)
         try:
             async with asyncio.timeout(MOBILE_UI_QUERY_TIMEOUT_SECONDS):
                 return await asyncio.shield(task)
@@ -128,6 +133,25 @@ class PluginMobileUiProvider:
         except asyncio.CancelledError:
             self._drain_query(task)
             raise
+
+    async def _reserve_query_slot(self) -> None:
+        """在提交线程池前拒绝超过有界 worker+queue 容量的查询。"""
+
+        async with self._admission_lock:
+            limit = MOBILE_UI_QUERY_WORKERS + MOBILE_UI_QUERY_QUEUE_LIMIT
+            if self._admitted_queries >= limit:
+                raise MobileUiQueryOverloaded(
+                    "插件 mobile UI query 队列已满"
+                )
+            self._admitted_queries += 1
+
+    def _query_done(self, completed: asyncio.Task[dict[str, object]]) -> None:
+        self._admitted_queries -= 1
+        if self._admitted_queries < 0:
+            raise RuntimeError("插件 mobile UI query admission 计数失衡")
+        self._draining_queries.discard(completed)
+        if not completed.cancelled():
+            _ = completed.exception()
 
     async def _run_query(
         self,
@@ -177,13 +201,6 @@ class PluginMobileUiProvider:
 
     def _drain_query(self, task: asyncio.Task[dict[str, object]]) -> None:
         self._draining_queries.add(task)
-
-        def consume(completed: asyncio.Task[dict[str, object]]) -> None:
-            self._draining_queries.discard(completed)
-            if not completed.cancelled():
-                _ = completed.exception()
-
-        task.add_done_callback(consume)
 
     def _require_snapshot(self) -> RuntimeSnapshot:
         snapshot = self._manager.current_snapshot

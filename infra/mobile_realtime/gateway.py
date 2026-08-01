@@ -1180,6 +1180,8 @@ class MobileGatewayRuntime:
                     }
                 )
             return
+        from infra.mobile_realtime.channel import MobileCommandError
+
         try:
             reply = await self.channel.handle_command(
                 device_id=device_id,
@@ -1193,6 +1195,18 @@ class MobileGatewayRuntime:
                     connection_epoch=connection_epoch,
                     reply_type=f"{frame.type}.error",
                     payload={"code": "command_id_conflict", "message": str(error)},
+                    session_id=frame.session_id,
+                    turn_id=frame.turn_id,
+                )
+            return
+        except MobileCommandError as error:
+            async with connection.send_lock:
+                await _send_reply(
+                    websocket,
+                    frame_id=frame.id,
+                    connection_epoch=connection_epoch,
+                    reply_type=f"{frame.type}.error",
+                    payload={"code": error.code, "message": str(error)},
                     session_id=frame.session_id,
                     turn_id=frame.turn_id,
                 )

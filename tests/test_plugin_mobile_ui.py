@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import threading
 from types import MappingProxyType, SimpleNamespace
@@ -241,6 +242,54 @@ async def test_mobile_ui_timeout_keeps_snapshot_lease_until_worker_exits(
             break
         await asyncio.sleep(0.01)
     assert store.exited == 1
+
+
+@pytest.mark.asyncio
+async def test_mobile_ui_query_rejects_beyond_bounded_worker_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider()
+    blocker = threading.Event()
+    entered = threading.Event()
+    monkeypatch.setattr(mobile_ui_module, "MOBILE_UI_QUERY_WORKERS", 1)
+    monkeypatch.setattr(mobile_ui_module, "MOBILE_UI_QUERY_QUEUE_LIMIT", 0)
+    cast(Any, provider)._executor.shutdown(wait=True)
+    cast(Any, provider)._executor = ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="mobile-plugin-ui-test",
+    )
+
+    def block(*args: object, **kwargs: object) -> dict[str, object]:
+        entered.set()
+        blocker.wait(timeout=1)
+        return {}
+
+    cast(Any, provider)._manager.current_snapshot.generations[
+        "sample@github"
+    ].instance.mobile_ui_query = block
+    running = asyncio.create_task(
+        provider.query(
+            "sample@github",
+            "revision-1",
+            "health.snapshot",
+            {},
+            session_id="mobile:test",
+            turn_id="turn-1",
+        )
+    )
+    assert await asyncio.to_thread(entered.wait, 1)
+    with pytest.raises(mobile_ui_module.MobileUiQueryOverloaded):
+        await provider.query(
+            "sample@github",
+            "revision-1",
+            "health.snapshot",
+            {},
+            session_id="mobile:test",
+            turn_id="turn-2",
+        )
+    blocker.set()
+    assert await running == {}
+
 
 @pytest.mark.asyncio
 async def test_mobile_ui_rpc_failure_isolated_from_transport() -> None:

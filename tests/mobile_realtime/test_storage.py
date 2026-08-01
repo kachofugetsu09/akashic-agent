@@ -9,10 +9,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import infra.mobile_realtime.storage as storage_module
 
 from infra.mobile_realtime.storage import (
     AckOverflowError,
     AckRollbackError,
+    CommandConflictError,
+    CommandReceiptCapacityError,
     DeviceRecord,
     MobileRealtimeStorage,
     PairingExpiredError,
@@ -364,3 +367,124 @@ def test_corrupt_sqlite_event_payload_fails_at_row_boundary(
 
     with pytest.raises(TypeError, match="JSON object"):
         storage.read_durable_events("device-1", after_event_seq=0, limit=10)
+
+
+def test_command_receipt_replay_conflict_and_retention(
+    storage: MobileRealtimeStorage,
+) -> None:
+    storage.register_device(_device())
+    old = NOW - timedelta(days=8)
+    receipt, created = storage.reserve_command(
+        device_id="device-1",
+        command_id="command-1",
+        command_type="ping",
+        request_hash="hash-1",
+        created_at=NOW,
+    )
+    assert created and receipt.status == "processing"
+    completed = storage.complete_command(
+        device_id="device-1",
+        command_id="command-1",
+        reply_type="ping.ok",
+        reply_payload_json='{"ok":true}',
+        session_id=None,
+        turn_id=None,
+        completed_at=NOW,
+    )
+    replay, created = storage.reserve_command(
+        device_id="device-1",
+        command_id="command-1",
+        command_type="ping",
+        request_hash="hash-1",
+        created_at=NOW + timedelta(days=1),
+    )
+    assert not created and replay == completed
+    with pytest.raises(CommandConflictError):
+        storage.reserve_command(
+            device_id="device-1",
+            command_id="command-1",
+            command_type="ping",
+            request_hash="different",
+            created_at=NOW,
+        )
+
+    _, created = storage.reserve_command(
+        device_id="device-1",
+        command_id="command-2",
+        command_type="ping",
+        request_hash="hash-2",
+        created_at=old,
+    )
+    assert created
+    storage.complete_command(
+        device_id="device-1",
+        command_id="command-2",
+        reply_type="ping.ok",
+        reply_payload_json='{"ok":true}',
+        session_id=None,
+        turn_id=None,
+        completed_at=old,
+    )
+    replacement, created = storage.reserve_command(
+        device_id="device-1",
+        command_id="command-2",
+        command_type="ping",
+        request_hash="hash-2",
+        created_at=NOW,
+    )
+    assert created and replacement.status == "processing"
+
+
+def test_command_receipt_capacity_cleanup_and_insert_are_bounded(
+    storage: MobileRealtimeStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage.register_device(_device())
+    monkeypatch.setattr(storage_module, "_COMMAND_RECEIPT_MAX_COUNT", 1)
+    storage.reserve_command(
+        device_id="device-1",
+        command_id="command-1",
+        command_type="ping",
+        request_hash="hash-1",
+        created_at=NOW,
+    )
+    with pytest.raises(CommandReceiptCapacityError):
+        storage.reserve_command(
+            device_id="device-1",
+            command_id="command-2",
+            command_type="ping",
+            request_hash="hash-2",
+            created_at=NOW,
+        )
+    assert storage.read_cursor("device-1").next_event_seq == 1
+
+
+def test_command_receipt_completion_rejects_byte_overflow_without_losing_processing(
+    storage: MobileRealtimeStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage.register_device(_device())
+    storage.reserve_command(
+        device_id="device-1",
+        command_id="command-1",
+        command_type="ping",
+        request_hash="hash-1",
+        created_at=NOW,
+    )
+    monkeypatch.setattr(storage_module, "_COMMAND_RECEIPT_MAX_BYTES", 50)
+    with pytest.raises(CommandReceiptCapacityError):
+        storage.complete_command(
+            device_id="device-1",
+            command_id="command-1",
+            reply_type="ping.ok",
+            reply_payload_json='{"result":"' + ("x" * 128) + '"}',
+            session_id=None,
+            turn_id=None,
+            completed_at=NOW,
+        )
+    row = storage._db.execute(
+        "SELECT status FROM mobile_command_receipts "
+        "WHERE device_id = ? AND command_id = ?",
+        ("device-1", "command-1"),
+    ).fetchone()
+    assert row["status"] == "processing"
