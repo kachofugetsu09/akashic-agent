@@ -13,11 +13,13 @@ from agent.tools.base import Tool, get_current_tool_context
 from agent.tools.memorize import MemorizeTool
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
+from bus.events import ChannelMessage, DeliveryReceipt
 from core.memory.engine import (
     MemoryMutationResult,
     MemoryQueryResult,
     MemoryToolSpec,
 )
+from infra.channels.delivery import deliver_message_parts
 
 
 class _ContextProbe(Tool):
@@ -67,7 +69,21 @@ async def test_message_push_uses_explicit_cross_channel_target():
     async def send(chat_id: str, message: str) -> None:
         sent.append((chat_id, message))
 
-    push.register_channel("telegram", text=send)
+    async def send_file(_chat_id: str, _path: str, _name: str | None) -> None:
+        raise AssertionError("text-only test should not send file")
+
+    async def send_image(_chat_id: str, _path: str) -> None:
+        raise AssertionError("text-only test should not send image")
+
+    async def deliver(message: ChannelMessage) -> DeliveryReceipt:
+        return await deliver_message_parts(
+            message,
+            send_text=send,
+            send_file=send_file,
+            send_image=send_image,
+        )
+
+    push.register_channel("telegram", deliver=deliver)
     registry = ToolRegistry()
     registry.register(push, always_on=True, risk="external-side-effect")
     registry.set_context(channel="mobile", chat_id="conversation-a")
@@ -80,7 +96,7 @@ async def test_message_push_uses_explicit_cross_channel_target():
             "message": "hello",
         },
     )
-    assert result == "文本已发送"
+    assert result == "消息已发送"
     assert sent == [("conversation-b", "hello")]
 
 
