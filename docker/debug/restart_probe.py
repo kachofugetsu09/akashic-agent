@@ -966,7 +966,7 @@ def _failure_mode_checks(report_dir: Path) -> list[CheckResult]:
         )
     )
 
-    # 2. stale readiness 不能满足新 boot；startup 卡住后必须走 15 秒失败门。
+    # 2. stale readiness 不能满足新 boot；故障场景单独使用 15 秒失败门。
     stale_config, stale_workspace, _ = _isolated_config("stale-ready")
     stale_home = Path("/sandbox/stale-ready-home")
     stale_payload = {"bootId": "stale", "pid": 1, "state": "ready"}
@@ -983,7 +983,11 @@ def _failure_mode_checks(report_dir: Path) -> list[CheckResult]:
             "--workspace",
             str(stale_workspace),
         ],
-        env={**os.environ, "HOME": str(stale_home)},
+        env={
+            **os.environ,
+            "HOME": str(stale_home),
+            "AKASHIC_READINESS_TIMEOUT_S": "15",
+        },
         timeout=25,
     )
     stale_duration = time.monotonic() - stale_started
