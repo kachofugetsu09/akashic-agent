@@ -107,7 +107,7 @@ paths = [
   "tests/test_plugin_*.py",
 ]
 depends_on = ["lifecycle"]
-scenarios = ["plugin_generation_contract", "mcp_process_lifecycle"]
+scenarios = ["plugin_generation_contract", "plugin_uninstall_drain_finality", "mcp_process_lifecycle"]
 
 [groups.lifecycle]
 priority = "p1"
@@ -179,7 +179,7 @@ paths = [
   "tests/control/**",
 ]
 depends_on = ["events", "session_persistence"]
-scenarios = ["contract_catalog"]
+scenarios = ["contract_catalog", "plugin_uninstall_drain_finality"]
 
 [groups.runtime]
 priority = "p1"
@@ -219,7 +219,7 @@ paths = [
   "utils/**",
 ]
 depends_on = ["events", "session_persistence"]
-scenarios = ["contract_catalog", "mcp_process_lifecycle", "shell_execution_contract"]
+scenarios = ["contract_catalog", "plugin_uninstall_drain_finality", "mcp_process_lifecycle", "shell_execution_contract"]
 
 [groups.shell_finality]
 priority = "p0"

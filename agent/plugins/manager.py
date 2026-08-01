@@ -222,6 +222,7 @@ class PluginManager:
         self._scopes: dict[str, PluginScope] = {}
         self._cleanup_failures: list[CleanupFailure] = []
         self._active_generations: dict[str, PluginGeneration] = {}
+        self._draining_generations: dict[str, list[PluginGeneration]] = {}
         self._prepared_generations: dict[str, PluginGeneration] = {}
         self._gate_results: dict[str, GateResult] = {}
         self._stable_aliases: dict[str, str] = {}
@@ -587,6 +588,10 @@ class PluginManager:
         return self._snapshot_store.current
 
     @property
+    def installed_plugins_home(self) -> Path:
+        return _plugins_home(self._installed_cache_root)
+
+    @property
     def snapshot_store(self) -> RuntimeSnapshotStore:
         return self._snapshot_store
 
@@ -837,6 +842,9 @@ class PluginManager:
             return
         generation.retire_started = True
         generation.state = "retired"
+        self._draining_generations.setdefault(generation.plugin_id, []).append(
+            generation
+        )
         try:
             cast(Any, generation.instance).retire()
         except Exception as error:
@@ -852,6 +860,16 @@ class PluginManager:
                     error=error_text,
                 )
             )
+
+    def _forget_drained_generation(self, generation: PluginGeneration) -> None:
+        tracked = self._draining_generations.get(generation.plugin_id)
+        if tracked is None:
+            return
+        remaining = [item for item in tracked if item is not generation]
+        if remaining:
+            self._draining_generations[generation.plugin_id] = remaining
+        else:
+            _ = self._draining_generations.pop(generation.plugin_id, None)
 
     async def _on_snapshot_drained(self, snapshot: RuntimeSnapshot) -> None:
         catalog_id = self._snapshot_skill_catalogs.pop(snapshot.snapshot_id, None)
@@ -877,6 +895,7 @@ class PluginManager:
                     replacement is not None and replacement is not generation
                 ),
             )
+            self._forget_drained_generation(generation)
         workspace_mcp = snapshot.workspace_mcp_generation
         if (
             workspace_mcp is not None
@@ -952,12 +971,17 @@ class PluginManager:
             if manifest.get(plugin_id, False):
                 raise RuntimeError(f"插件尚未禁用: {plugin_id}")
             active = self._active_generations.get(plugin_id)
-            if active is None:
+            draining = self._draining_generations.get(plugin_id, [])
+            if active is None and not draining:
                 return
-            await self._deactivate_plugin(plugin_id)
-            await self._snapshot_store.wait_for_generation_drained(active)
-            if not active.scope.closed:
-                raise RuntimeError(f"插件旧代资源尚未关闭: {plugin_id}")
+            if active is not None:
+                await self._deactivate_plugin(plugin_id)
+                draining = self._draining_generations[plugin_id]
+            for generation in draining:
+                await self._snapshot_store.wait_for_generation_drained(generation)
+                if not generation.scope.closed:
+                    raise RuntimeError(f"插件旧代资源尚未关闭: {plugin_id}")
+            _ = self._draining_generations.pop(plugin_id, None)
 
     async def _deactivate_plugin(self, plugin_id: str) -> dict[str, object]:
         active = self._active_generations[plugin_id]
@@ -3035,6 +3059,7 @@ class PluginManager:
         self._channels.clear()
         self._scopes.clear()
         self._active_generations.clear()
+        self._draining_generations.clear()
         self._prepared_generations.clear()
         self._active_workspace_mcp = None
         self._prepared_workspace_mcp = None

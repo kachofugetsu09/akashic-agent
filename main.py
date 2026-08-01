@@ -25,6 +25,7 @@ from uuid import uuid4
 
 
 _DEFAULT_WORKSPACE = "~/.akashic/workspace"
+_DEFER_PLUGIN_UNINSTALL_ENV = "AKASHIC_DEFER_PLUGIN_UNINSTALL"
 
 
 def _supervisor_readiness_timeout() -> float:
@@ -267,29 +268,75 @@ def _parse_csv_flag(value: str | None) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-def _wait_plugin_disabled(
+def _uninstall_via_runtime(
     config_path: str,
     plugin_id: str,
     workspace: Path,
-) -> None:
+) -> dict[str, object] | None:
     if not Path(config_path).is_file():
-        return
+        return None
     config = Config.load(config_path, workspace=workspace)
     endpoint = resolve_app_server_endpoint(
         config.app_server.listen,
         workspace,
     )
-    asyncio.run(_request_plugin_drain(endpoint, plugin_id, workspace))
+    wait = os.environ.get(_DEFER_PLUGIN_UNINSTALL_ENV) != "1"
+    return asyncio.run(
+        _request_plugin_uninstall(
+            endpoint,
+            plugin_id,
+            workspace,
+            wait=wait,
+        )
+    )
 
 
-async def _request_plugin_drain(
+async def _request_plugin_uninstall(
     endpoint: str,
     plugin_id: str,
     workspace: Path,
-) -> None:
+    *,
+    wait: bool,
+) -> dict[str, object]:
+    """启动 runtime-owned 卸载，并按调用边界选择是否等待终态。"""
+
+    # 1. 启动 operation；turn 内调用立即返回，避免等待自己的 snapshot lease。
     token = read_workspace_token(workspace) if is_tcp_endpoint(endpoint) else None
     async with await ControlClient.connect(endpoint, workspace_token=token) as client:
-        _ = await client.request("plugin/disable-and-drain", {"pluginId": plugin_id})
+        started = await client.request(
+            "plugin/uninstall/start",
+            {"pluginId": plugin_id},
+        )
+        if not isinstance(started, dict):
+            raise RuntimeError("插件卸载 operation 响应无效")
+        operation = cast(dict[str, object], started)
+        if not wait:
+            return operation
+
+        # 2. 外部 CLI 保持同步语义，等待 runtime 完成真实 drain 和 cache 清理。
+        operation_id = str(operation.get("id", ""))
+        async for notification in client.notifications():
+            if notification.get("method") != "operation/completed":
+                continue
+            params = notification.get("params")
+            if not isinstance(params, dict):
+                continue
+            completed = params.get("operation")
+            if not isinstance(completed, dict) or completed.get("id") != operation_id:
+                continue
+            if completed.get("status") != "completed":
+                error = completed.get("error")
+                message = (
+                    str(error.get("message", "插件卸载失败"))
+                    if isinstance(error, dict)
+                    else "插件卸载失败"
+                )
+                raise RuntimeError(message)
+            result = completed.get("result")
+            if not isinstance(result, dict):
+                raise RuntimeError("插件卸载 operation 缺少结果")
+            return cast(dict[str, object], result)
+    raise RuntimeError("插件卸载 operation 未返回终态")
 
 
 def _exec_prompt(args: list[str]) -> str:
@@ -656,15 +703,23 @@ if __name__ == "__main__":
             sys.exit(1)
         plugin_id = args[1]
         try:
-            cache_path, data_path = uninstall_plugin(
+            runtime_result = _uninstall_via_runtime(
+                config_path,
                 plugin_id,
-                workspace=workspace,
-                wait_until_disabled=lambda target: _wait_plugin_disabled(
-                    config_path,
-                    target,
-                    workspace,
-                ),
+                workspace,
             )
+            if runtime_result is not None and runtime_result.get("status") == "in_progress":
+                print(f"插件卸载已安排: {plugin_id}")
+                print(f"operation: {runtime_result['id']}")
+                sys.exit(0)
+            if runtime_result is None:
+                cache_path, data_path = uninstall_plugin(
+                    plugin_id,
+                    workspace=workspace,
+                )
+            else:
+                cache_path = Path(str(runtime_result["cachePath"]))
+                data_path = Path(str(runtime_result["dataPath"]))
         except (ValueError, RuntimeError) as exc:
             print(str(exc))
             sys.exit(1)

@@ -2495,6 +2495,188 @@ async def test_current_plugin_views_ignore_retained_old_generation(
 
 
 @pytest.mark.asyncio
+async def test_repeated_drain_joins_cancelled_request_until_old_turn_releases(
+    tmp_path: Path,
+) -> None:
+    """复现 mobile turn 持有 lease 时卸载 context_pressure 的 drain。"""
+
+    # 1. 当前 turn 持有包含 context_pressure 的旧快照。
+    _write_plugin(
+        tmp_path / "plugins",
+        "context_pressure",
+        "from agent.plugins import Plugin\n"
+        "class ContextPressurePlugin(Plugin):\n"
+        "    name = 'context_pressure'\n",
+    )
+    manager = _manager(tmp_path)
+    plugins_home = tmp_path / "home"
+    write_plugin_manifest({"context_pressure": True}, plugins_home=plugins_home)
+    await manager.load_all()
+    active = manager.generation("context_pressure")
+    assert active is not None
+    old_turn = manager.snapshot_store.lease()
+
+    # 2. 第一次 drain 发布禁用快照后，被外层 Shell timeout 取消。
+    write_plugin_manifest({"context_pressure": False}, plugins_home=plugins_home)
+    first = asyncio.create_task(
+        manager.reconcile_disabled_and_drain("context_pressure")
+    )
+    for _ in range(100):
+        if manager.generation("context_pressure") is None:
+            break
+        await asyncio.sleep(0)
+    else:
+        pytest.fail("context_pressure 未进入 retired generation")
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    # 3. 重试不得因 active 已移除而假报 drained，必须等待旧 turn 结束。
+    repeated = asyncio.create_task(
+        manager.reconcile_disabled_and_drain("context_pressure")
+    )
+    await asyncio.sleep(0)
+    assert not repeated.done()
+
+    await old_turn.release()
+    await asyncio.wait_for(repeated, timeout=1)
+    assert active.scope.closed
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_drain_joins_generation_predeactivated_by_manifest_watcher(
+    tmp_path: Path,
+) -> None:
+    """复现 watcher 抢先停用插件后卸载误报 drain 完成的竞争。"""
+
+    # 1. 旧 turn 持有快照，watcher 先观察 disabled manifest 并停用插件。
+    _write_plugin(
+        tmp_path / "plugins",
+        "context_pressure",
+        "from agent.plugins import Plugin\n"
+        "class ContextPressurePlugin(Plugin):\n"
+        "    name = 'context_pressure'\n",
+    )
+    manager = _manager(tmp_path)
+    plugins_home = tmp_path / "home"
+    write_plugin_manifest({"context_pressure": True}, plugins_home=plugins_home)
+    await manager.load_all()
+    active = manager.generation("context_pressure")
+    assert active is not None
+    old_turn = manager.snapshot_store.lease()
+
+    write_plugin_manifest({"context_pressure": False}, plugins_home=plugins_home)
+    await manager.reconcile_changed()
+    assert manager.generation("context_pressure") is None
+    assert not active.scope.closed
+
+    # 2. 卸载必须加入 watcher 登记的旧代 drain，不能因 active 为空提前完成。
+    drain = asyncio.create_task(
+        manager.reconcile_disabled_and_drain("context_pressure")
+    )
+    await asyncio.sleep(0)
+    assert not drain.done()
+
+    await old_turn.release()
+    await asyncio.wait_for(drain, timeout=1)
+    assert active.scope.closed
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_uninstall_waits_for_generation_retired_by_hot_reload(
+    tmp_path: Path,
+) -> None:
+    """复现 G1 热替换为 G2 后卸载遗漏 G1 lease 的竞争。"""
+
+    # 1. 旧 turn 持有 G1，watcher 发布 G2 并令 G1 进入退役状态。
+    plugin_dir = tmp_path / "plugins"
+    _write_plugin(
+        plugin_dir,
+        "context_pressure",
+        "from agent.plugins import Plugin\n"
+        "class ContextPressurePlugin(Plugin):\n"
+        "    name = 'context_pressure'\n"
+        "    version = 'v1'\n",
+    )
+    manager = _manager(tmp_path)
+    plugins_home = tmp_path / "home"
+    write_plugin_manifest({"context_pressure": True}, plugins_home=plugins_home)
+    await manager.load_all()
+    generation_one = manager.generation("context_pressure")
+    assert generation_one is not None
+    old_turn = manager.snapshot_store.lease()
+
+    _ = (plugin_dir / "context_pressure" / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class ContextPressurePlugin(Plugin):\n"
+        "    name = 'context_pressure'\n"
+        "    version = 'v2'\n",
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("context_pressure")
+    assert candidate is not None
+    await manager.publish_prepared("context_pressure")
+    generation_two = manager.generation("context_pressure")
+    assert generation_two is not None
+    assert generation_two is not generation_one
+    assert not generation_one.scope.closed
+
+    # 2. 卸载 G2 必须同时等待仍被旧 turn 持有的 G1。
+    write_plugin_manifest({"context_pressure": False}, plugins_home=plugins_home)
+    drain = asyncio.create_task(
+        manager.reconcile_disabled_and_drain("context_pressure")
+    )
+    await asyncio.sleep(0)
+    assert not drain.done()
+
+    await old_turn.release()
+    await asyncio.wait_for(drain, timeout=1)
+    assert generation_one.scope.closed
+    assert generation_two.scope.closed
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_hot_reload_forgets_closed_retired_generation(tmp_path: Path) -> None:
+    """热重载完成排空后不再保留旧 generation 引用。"""
+
+    plugin_dir = tmp_path / "plugins"
+    _write_plugin(
+        plugin_dir,
+        "reload_cleanup",
+        "from agent.plugins import Plugin\n"
+        "class ReloadCleanupPlugin(Plugin):\n"
+        "    name = 'reload_cleanup'\n"
+        "    version = 'v1'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    generation_one = manager.generation("reload_cleanup")
+    assert generation_one is not None
+    old_turn = manager.snapshot_store.lease()
+
+    _ = (plugin_dir / "reload_cleanup" / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class ReloadCleanupPlugin(Plugin):\n"
+        "    name = 'reload_cleanup'\n"
+        "    version = 'v2'\n",
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("reload_cleanup")
+    assert candidate is not None
+    await manager.publish_prepared("reload_cleanup")
+    assert manager._draining_generations["reload_cleanup"] == [generation_one]
+
+    await old_turn.release()
+    await manager.snapshot_store.wait_for_generation_drained(generation_one)
+    assert generation_one.scope.closed
+    assert "reload_cleanup" not in manager._draining_generations
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
 async def test_bot_command_catalogs_require_explicit_channel_declarations(
     tmp_path: Path,
 ) -> None:

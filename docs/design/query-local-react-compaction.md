@@ -177,7 +177,7 @@ Session 重载读取上一 assistant row 的 `react_compaction`，跳过已压�
 - 初始 prompt 已达软水位但没有工具批次可淘汰：不伪造摘要；硬边界内继续原请求，provider 若报告 overflow 则保留原 `ContextLengthError`，让既有 history projection retry 接手。
 - 只有一个必须保留的巨大最近批次：不得切成孤立消息；硬边界内继续，overflow 时保留原 provider 错误。
 - 存在可压缩前缀，但重建后的完整 provider input 仍达到硬输入边界：返回 `compaction_insufficient`，不提交候选投影。
-- summary provider 调用失败、取消、返回空白：活动 prompt 保持原值，不写半成品；错误向上暴露。
+- summary provider 调用失败或取消：活动 prompt 保持原值，不写半成品；错误向上暴露。provider 成功但正文为空、空白或携带工具调用时，关闭 thinking 后按 `2s → 4s → 8s` 最多重试三次；恢复成功合并全部 usage，耗尽后返回 `context_compaction_summary_invalid`。
 - provider 先报告 context overflow：最多执行一次强制 compaction 并重试同一请求；再次失败保留原错误。
 - compaction summary 请求不携带业务工具，也不复用主 ReAct cache namespace。
 - 被压缩前缀的 opaque `model_state` 不重放；压缩后的下一次真实响应建立新状态。

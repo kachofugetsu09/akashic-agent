@@ -68,4 +68,5 @@ METHOD_PARAMS: dict[str, type[StrictModel]] = {
     "turn/read": TurnIdParams,
     "turn/interrupt": TurnIdParams,
     "plugin/disable-and-drain": PluginDrainParams,
+    "plugin/uninstall/start": PluginDrainParams,
 }

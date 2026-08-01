@@ -29,6 +29,7 @@ class ControlService:
         workspace: Path,
         *,
         plugin_drain: Callable[[str], Awaitable[str]] | None = None,
+        plugin_uninstall: Callable[[str], Awaitable[dict[str, object]]] | None = None,
         consolidate: Callable[[str], Awaitable[bool]] | None = None,
         workspace_token: str | None = None,
         restart_coordinator: RestartCoordinator | None = None,
@@ -39,6 +40,7 @@ class ControlService:
         self.sessions = sessions
         self.workspace = workspace.resolve()
         self._plugin_drain = plugin_drain
+        self._plugin_uninstall = plugin_uninstall
         self._consolidate = consolidate
         self._workspace_token = workspace_token
         self._restart_coordinator = restart_coordinator
@@ -136,6 +138,22 @@ class ControlService:
         message = await self._plugin_drain(plugin_id)
         return {"pluginId": plugin_id, "drained": True, "message": message}
 
+    def start_plugin_uninstall(self, plugin_id: str) -> PluginOperationHandle:
+        """启动服务端卸载任务，不阻塞调用 turn 持有的 snapshot lease。"""
+
+        if self._plugin_uninstall is None:
+            raise RuntimeError("当前 runtime 不支持插件卸载")
+        from agent.control.ids import new_operation_id
+
+        operation_id = new_operation_id()
+        task = asyncio.create_task(
+            self._run_plugin_uninstall(operation_id, plugin_id),
+            name=f"control-plugin-uninstall:{operation_id}",
+        )
+        self._operation_tasks.add(task)
+        task.add_done_callback(self._operation_tasks.discard)
+        return PluginOperationHandle(operation_id, plugin_id, task)
+
     def start_consolidation(self, thread_id: str) -> OperationHandle:
         """启动 thread consolidation，并返回可独立观察的 operation。"""
 
@@ -182,6 +200,28 @@ class ControlService:
             "result": {"consolidated": changed},
         }
 
+    async def _run_plugin_uninstall(
+        self,
+        operation_id: str,
+        plugin_id: str,
+    ) -> dict[str, object]:
+        assert self._plugin_uninstall is not None
+        try:
+            result = await self._plugin_uninstall(plugin_id)
+        except Exception as exc:
+            return {
+                "id": operation_id,
+                "pluginId": plugin_id,
+                "status": "failed",
+                "error": {"type": type(exc).__name__, "message": str(exc)},
+            }
+        return {
+            "id": operation_id,
+            "pluginId": plugin_id,
+            "status": "completed",
+            "result": result,
+        }
+
     def _thread_record(self, thread_id: str) -> ThreadRecord:
         meta = self.sessions.control_store.get_session_meta(thread_id)
         if meta is None:
@@ -220,3 +260,13 @@ class OperationHandle:
 
     def record(self) -> dict[str, object]:
         return {"id": self.id, "threadId": self.thread_id, "status": "in_progress"}
+
+
+@dataclass(frozen=True)
+class PluginOperationHandle:
+    id: str
+    plugin_id: str
+    task: asyncio.Task[dict[str, object]]
+
+    def record(self) -> dict[str, object]:
+        return {"id": self.id, "pluginId": self.plugin_id, "status": "in_progress"}

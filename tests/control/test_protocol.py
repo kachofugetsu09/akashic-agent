@@ -301,6 +301,118 @@ async def test_thread_consolidation_returns_operation_and_notification(tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_plugin_uninstall_returns_before_old_turn_drain_completes(
+    tmp_path: Path,
+) -> None:
+    """context_pressure 卸载请求不能等待调用 turn 自己持有的 lease。"""
+
+    sessions = SessionManager(tmp_path)
+    runtime = ConversationRuntime(sessions.control_store, _echo)
+    started = asyncio.Event()
+    old_turn_released = asyncio.Event()
+
+    async def uninstall(plugin_id: str) -> dict[str, object]:
+        started.set()
+        await old_turn_released.wait()
+        return {
+            "pluginId": plugin_id,
+            "cachePath": str(tmp_path / "plugins/cache/context_pressure"),
+            "dataPath": str(tmp_path / "workspace/plugin-data/context_pressure-github"),
+        }
+
+    service = ControlService(
+        runtime,
+        sessions,
+        tmp_path,
+        plugin_uninstall=uninstall,
+    )
+    sent: list[dict[str, object]] = []
+
+    async def send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    router = ConnectionRouter(service, send)
+    await router.handle_line(
+        b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1.0","clientInfo":{"name":"test","version":"1"}}}\n'
+    )
+    await router.handle_line(b'{"jsonrpc":"2.0","method":"initialized","params":{}}\n')
+    await router.handle_line(
+        b'{"jsonrpc":"2.0","id":2,"method":"plugin/uninstall/start","params":{"pluginId":"context_pressure@github"}}\n'
+    )
+
+    response = next(item for item in sent if item.get("id") == 2)
+    operation = response["result"]
+    assert isinstance(operation, dict)
+    assert operation["status"] == "in_progress"
+    assert operation["pluginId"] == "context_pressure@github"
+    await asyncio.wait_for(started.wait(), timeout=1)
+    assert not any(item.get("method") == "operation/completed" for item in sent)
+
+    old_turn_released.set()
+    await asyncio.wait_for(_wait_method(sent, "operation/completed"), timeout=1)
+    completed = next(item for item in sent if item.get("method") == "operation/completed")
+    assert completed["params"] == {
+        "operation": {
+            "id": operation["id"],
+            "pluginId": "context_pressure@github",
+            "status": "completed",
+            "result": {
+                "pluginId": "context_pressure@github",
+                "cachePath": str(tmp_path / "plugins/cache/context_pressure"),
+                "dataPath": str(
+                    tmp_path / "workspace/plugin-data/context_pressure-github"
+                ),
+            },
+        }
+    }
+    await router.close()
+    await service.shutdown()
+    await runtime.shutdown()
+    sessions.close()
+
+
+@pytest.mark.asyncio
+async def test_plugin_uninstall_survives_deferred_client_disconnect(
+    tmp_path: Path,
+) -> None:
+    sessions = SessionManager(tmp_path)
+    runtime = ConversationRuntime(sessions.control_store, _echo)
+    release_old_turn = asyncio.Event()
+    completed = asyncio.Event()
+
+    async def uninstall(_plugin_id: str) -> dict[str, object]:
+        await release_old_turn.wait()
+        completed.set()
+        return {"cachePath": "removed", "dataPath": "retained"}
+
+    service = ControlService(
+        runtime,
+        sessions,
+        tmp_path,
+        plugin_uninstall=uninstall,
+    )
+
+    async def send(_message: dict[str, object]) -> None:
+        return None
+
+    router = ConnectionRouter(service, send)
+    await router.handle_line(
+        b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1.0","clientInfo":{"name":"test","version":"1"}}}\n'
+    )
+    await router.handle_line(b'{"jsonrpc":"2.0","method":"initialized","params":{}}\n')
+    await router.handle_line(
+        b'{"jsonrpc":"2.0","id":2,"method":"plugin/uninstall/start","params":{"pluginId":"context_pressure@github"}}\n'
+    )
+
+    await router.close()
+    release_old_turn.set()
+    await asyncio.wait_for(completed.wait(), timeout=1)
+    await service.shutdown()
+    await runtime.shutdown()
+    sessions.close()
+
+
+@pytest.mark.asyncio
 async def test_control_service_attaches_utc_to_legacy_naive_session_times(
     tmp_path: Path,
 ) -> None:

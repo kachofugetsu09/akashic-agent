@@ -1,7 +1,7 @@
 {
   "acceptedGaps": [],
   "base": "d627fa600781855770a5ede752f268982b68ebf9",
-  "catalogDigest": "b0ed85c8757145ce5108c97a8c2c4a4de07c67e106213b5f884c1777cba60344",
+  "catalogDigest": "e554a27b0724a0d8aa3094d5689c7d006f90e471261c8d54343481217cce6225",
   "coveredP0": {
     "context_projection": [
       "context_history_nondestructive"
@@ -22,6 +22,7 @@
     ],
     "plugin": [
       "plugin_generation_contract",
+      "plugin_uninstall_drain_finality",
       "mcp_process_lifecycle"
     ],
     "session_persistence": [

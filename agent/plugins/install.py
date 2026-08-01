@@ -101,12 +101,28 @@ def uninstall_plugin(
     wait_until_disabled: Callable[[str], None] | None = None,
 ) -> tuple[Path, Path]:
     home = plugins_home or aka_plugins_root()
-    plugin_name, marketplace = _split_installed_plugin_id(plugin_id)
-    cache_path = home / "cache" / marketplace / plugin_name
-    data_path = workspace_plugin_data_dir(workspace, plugin_name, marketplace)
     _ = set_plugin_enabled(plugin_id, enabled=False, plugins_home=home)
     if wait_until_disabled is not None:
         wait_until_disabled(plugin_id)
+    return finalize_uninstall_plugin(
+        plugin_id,
+        workspace=workspace,
+        plugins_home=home,
+    )
+
+
+def finalize_uninstall_plugin(
+    plugin_id: str,
+    *,
+    workspace: Path,
+    plugins_home: Path | None = None,
+) -> tuple[Path, Path]:
+    """删除已禁用插件的代码和清单，并保留 workspace plugin-data。"""
+
+    home = plugins_home or aka_plugins_root()
+    plugin_name, marketplace = _split_installed_plugin_id(plugin_id)
+    cache_path = home / "cache" / marketplace / plugin_name
+    data_path = workspace_plugin_data_dir(workspace, plugin_name, marketplace)
     if cache_path.exists():
         shutil.rmtree(cache_path)
     _ = remove_plugin_manifest_entry(plugin_id, plugins_home=home)
