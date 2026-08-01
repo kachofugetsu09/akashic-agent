@@ -44,7 +44,7 @@
     {
       "id": "feishu",
       "repository": "https://github.com/akashic-plugins/feishu",
-      "commit": "b33bf07c4d791201e2fbcb8c889fd095e382ce7b"
+      "commit": "071278d518aea0ac80bcc76d9346e5bb02d93df1"
     },
     {
       "id": "fitbit-mcp",
@@ -79,7 +79,7 @@
     {
       "id": "qqbot",
       "repository": "https://github.com/akashic-plugins/qqbot",
-      "commit": "97234e9fac0007356300d1411c8432060efb883c"
+      "commit": "d9d105515db9e63f3639968fd488904f230be95b"
     },
     {
       "id": "setup_helper",

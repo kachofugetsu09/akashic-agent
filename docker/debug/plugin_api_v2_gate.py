@@ -22,6 +22,7 @@ DEFAULT_REPORT = (
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_PATTERN = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 RUNTIME_PHASES = ("atomic-reload", "all-plugins", "fitbit")
+HOST_CHANNEL_CONTRACT_PLUGIN_IDS = ("feishu", "qqbot")
 EXPECTED_PLUGIN_IDS = {
     "calendar-mcp",
     "citation",
@@ -103,6 +104,14 @@ def main() -> int:
             report["static_contract"] = static_report
             if static_report["returncode"] != 0:
                 raise RuntimeError("Plugin API v2 静态合同失败")
+
+            host_channel_report = _run_host_channel_contract(
+                plugin_root=plugin_root,
+                report_dir=report_path.parent,
+            )
+            report["host_channel_contract"] = host_channel_report
+            if host_channel_report["returncode"] != 0:
+                raise RuntimeError("外部渠道 Host 合同失败")
 
             phase_reports = cast(dict[str, object], report["runtime_phases"])
             for phase in RUNTIME_PHASES:
@@ -285,6 +294,54 @@ def _run_runtime_phase(
         "returncode": result.returncode,
         "report": output_path.name,
         "sha256": hashlib.sha256(result.stdout.encode()).hexdigest(),
+    }
+
+
+def _run_host_channel_contract(
+    *,
+    plugin_root: Path,
+    report_dir: Path,
+) -> dict[str, object]:
+    """用当前 Core 接口运行锁定渠道仓库的启动与投递合同测试。"""
+
+    # 1. 每个仓库独立运行，避免同名测试模块互相污染
+    env = os.environ.copy()
+    env["AKASHIC_AGENT_ROOT"] = str(ROOT)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    outputs: list[str] = []
+    returncode = 0
+    for plugin_id in HOST_CHANNEL_CONTRACT_PLUGIN_IDS:
+        plugin_path = plugin_root / plugin_id
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                "no:cacheprovider",
+                "tests",
+            ],
+            cwd=plugin_path,
+            env=env,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        outputs.append(f"===== {plugin_id} =====\n{result.stdout}")
+        if result.returncode != 0:
+            returncode = result.returncode
+
+    # 2. 保存可审计的固定组合结果
+    output = "\n".join(outputs)
+    output_path = report_dir / "host-channel-contract.log"
+    output_path.write_text(output, encoding="utf-8")
+    return {
+        "returncode": returncode,
+        "plugins": list(HOST_CHANNEL_CONTRACT_PLUGIN_IDS),
+        "report": output_path.name,
+        "sha256": hashlib.sha256(output.encode()).hexdigest(),
     }
 
 
