@@ -287,6 +287,8 @@ skills、长期记忆、检索结果和 recent context 必须带来源和信任�
 
 压缩边界是 core 拥有的派生上下文，不是真实工具、用户原话或外部效果。provider 可以把它投影成成对的内部 compact call/result，但不得注册为模型可调用工具，不得进入工具 hook、权限、执行计数或完整 `tool_chain`。完整回合提交时，Session owner 把压缩投影随新 assistant 消息原子 INSERT 到 `sessions.db/messages`，同时保留完整 `tool_chain`；后续 query 从 SessionDB 重建时使用压缩投影和未压缩后缀，不再向模型展开已压缩前缀。上下文压缩不得 UPDATE 或 DELETE 既有消息。
 
+摘要请求必须关闭推理正文分流。provider 成功但摘要正文为空、空白或携带工具调用时，core 按 `2s → 4s → 8s` 最多重试三次，并累计所有已返回的 usage；耗尽后保留原 prompt 和完整历史，明确返回压缩失败。网络、限流和服务端错误继续由 provider 自己的重试 owner 处理，压缩层不得把确定性异常或取消无差别重放。
+
 ### SES-001 回合持久化全有或全无
 
 同一批 session metadata、消息和序列分配必须在一个事务中提交。任一步失败时数据库不出现半批消息，内存对象也不得获得并不存在的稳定 ID。
@@ -440,6 +442,10 @@ Skill、Drift skill 和 MCP server 都由插件包声明并通过插件安装系
 插件只读查询可以服务桌面 Inspector 与移动卡片，但两者不是同一个 DTO。插件拥有移动端语义投影：只返回界面实际渲染的字段，显式版本化 schema，并对文本预览和编码后体积建立可执行上限。每条 lane 的条目数和顺序由它的领域生产者决定；移动投影必须完整保留上游已经选出的 N 条，不得再用固定 top-k、分页或界面裁切减少结果。完整正文、调试轨迹和桌面详情不得因为“客户端可以自己裁切”而进入移动卡片结果。
 
 Core 只负责通用传输、认证、revision、generation lease、调度、取消和总响应上限，不猜测插件字段；Mobile 只负责端点信任、本地可重建缓存、异步桥接和展示，并为 DTO 中每条 lane 渲染全部 N 个列表项。Mobile 可以跳过离屏项的布局和绘制，但不得改变条目、顺序或计数。投影缺少内部必需字段或完整结果超过总响应上限时 fail-loud，不能用空值、尾部丢弃或旧的完整响应静默回退。
+
+### PLG-012 Turn 内卸载使用 Runtime owner 的异步排空
+
+持有 runtime snapshot lease 的 turn 可以请求卸载插件，但工具进程不得同步等待该 lease 自己归零。Control owner 先返回可观察的 uninstall operation；runtime 发布禁用快照后，在后台等待旧 generation 的全部 lease 释放，确认 scope 已关闭，再删除 cache 和 manifest entry。所有停用和替换入口（包括 manifest watcher 与热重载）都必须登记退役 generation；重复请求必须加入所有未完成 drain，不能因插件已从 active generation 表移除而报告完成。普通卸载继续保留 plugin-data；operation 失败、取消或 runtime 关闭时必须保留禁用状态和未删除 cache 作为可恢复证据，不得假报 drained。
 
 ## 11. Workspace、文件和进程
 
