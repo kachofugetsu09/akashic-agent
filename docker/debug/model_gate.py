@@ -142,6 +142,13 @@ class ModelGateState:
         mode = script.get("mode", "complete")
         if mode not in {"complete", "stream", "error", "timeout", "truncate"}:
             raise ValueError(f"不支持的 script mode：{mode!r}")
+        delay_ms = script.get("delay_ms", 0)
+        if (
+            isinstance(delay_ms, bool)
+            or not isinstance(delay_ms, int)
+            or not 0 <= delay_ms <= 5_000
+        ):
+            raise ValueError("script.delay_ms 必须是 0..5000 的整数")
         if "barrier" in script and not isinstance(script["barrier"], str):
             raise ValueError("script.barrier 必须是字符串")
         if mode == "error":
@@ -341,6 +348,7 @@ class ModelGateHandler(BaseHTTPRequestHandler):
         truncated: bool,
     ) -> None:
         completion_id = f"chatcmpl-gate-{uuid.uuid4().hex}"
+        delay_seconds = cast(int, script.get("delay_ms", 0)) / 1_000
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -357,6 +365,8 @@ class ModelGateHandler(BaseHTTPRequestHandler):
                     "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
                 }
             )
+            if delay_seconds:
+                time.sleep(delay_seconds)
         if truncated:
             self.wfile.flush()
             self.connection.shutdown(socket.SHUT_RDWR)

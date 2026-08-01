@@ -110,6 +110,32 @@ def test_stream_emits_content_tool_usage_and_done() -> None:
         assert body.endswith("data: [DONE]\n\n")
 
 
+def test_stream_can_pace_deltas_for_visual_debugging() -> None:
+    with _server_url() as url:
+        _json(
+            "PUT",
+            f"{url}/control/script",
+            {
+                "mode": "stream",
+                "deltas": ["one", "two", "three"],
+                "delay_ms": 20,
+            },
+        )
+        request = Request(
+            f"{url}/v1/chat/completions",
+            method="POST",
+            data=json.dumps({"model": "gate", "messages": [], "stream": True}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+
+        started = time.monotonic()
+        with urlopen(request, timeout=2) as response:
+            body = response.read().decode()
+
+        assert time.monotonic() - started >= 0.05
+        assert body.index('"content":"one"') < body.index('"content":"three"')
+
+
 def test_complete_script_honors_stream_request() -> None:
     with _server_url() as url:
         _json(
@@ -220,6 +246,21 @@ def test_invalid_script_is_rejected_without_partial_load() -> None:
     with _server_url() as url:
         with pytest.raises(HTTPError) as raised:
             _json("PUT", f"{url}/control/script", {"mode": "error", "status": 200})
+        assert raised.value.code == 400
+        body = json.loads(raised.value.read())
+        raised.value.close()
+        assert body["error"] == "invalid_request"
+
+
+@pytest.mark.parametrize("delay_ms", [-1, 5001, 1.5, True])
+def test_invalid_stream_delay_is_rejected(delay_ms: object) -> None:
+    with _server_url() as url:
+        with pytest.raises(HTTPError) as raised:
+            _json(
+                "PUT",
+                f"{url}/control/script",
+                {"mode": "stream", "deltas": ["x"], "delay_ms": delay_ms},
+            )
         assert raised.value.code == 400
         body = json.loads(raised.value.read())
         raised.value.close()
