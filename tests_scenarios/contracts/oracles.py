@@ -130,6 +130,24 @@ def assert_atomic_generation_switch(
         )
 
 
+def assert_plugin_drain_finality(
+    *,
+    status: str,
+    old_generation_lease_count: int,
+    old_scope_closed: bool,
+    cache_exists: bool,
+) -> None:
+    """断言 uninstall completed 只表示旧代和代码均已真实排空。"""
+    if status == "completed" and (
+        old_generation_lease_count != 0 or not old_scope_closed or cache_exists
+    ):
+        raise AssertionError(
+            "插件卸载假报完成: "
+            f"leases={old_generation_lease_count}, "
+            f"scope_closed={old_scope_closed}, cache_exists={cache_exists}"
+        )
+
+
 def assert_isolated_gate_paths(
     *,
     sandbox: Path,

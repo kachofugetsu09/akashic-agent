@@ -11,6 +11,7 @@ from tests_scenarios.contracts.oracles import (
     assert_committed_turn_finality,
     assert_isolated_gate_paths,
     assert_paths_retained,
+    assert_plugin_drain_finality,
     assert_process_resources_released,
     assert_rows_unchanged,
     assert_unconfirmed_cleanup_retains_ownership,
@@ -105,6 +106,16 @@ def test_plugin_publication_oracle_rejects_early_switch_mutant() -> None:
             observations,
             previous_generation="generation-1",
             next_generation="generation-2",
+        )
+
+
+def test_plugin_drain_oracle_rejects_active_only_completion_mutant() -> None:
+    with pytest.raises(AssertionError, match="插件卸载假报完成"):
+        assert_plugin_drain_finality(
+            status="completed",
+            old_generation_lease_count=1,
+            old_scope_closed=False,
+            cache_exists=True,
         )
 
 

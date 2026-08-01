@@ -65,3 +65,7 @@ core model runtime 拥有当前 query 的压缩计算。它只接收当前 promp
 - 完整回合提交后，SessionDB 保留完整 `tool_chain` 和版本化 `react_compaction`；write set 没有既有 message UPDATE/DELETE。
 - 关闭并重新加载 Session 后，下一次 query 不展开已压缩工具组。
 - summary 错误或压缩后仍达到硬输入边界时明确失败；没有可压缩前缀时不切开消息，provider overflow 保留原错误。
+
+## 2026-08-01 紧急勘误：摘要语义无效使用有界退避
+
+摘要请求关闭 thinking。provider 返回成功响应但正文为空、空白或携带工具调用时，按 `2s → 4s → 8s` 最多重试三次并累计 usage；耗尽后仍按原决定明确失败，且不提交候选投影。传输、限流和服务端异常继续由 provider 重试层拥有，本勘误不引入无差别异常重放。
