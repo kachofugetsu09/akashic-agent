@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, MagicMock, call
 
@@ -308,9 +309,104 @@ def test_disabled_job_does_not_consume_capacity(
     disabled.enabled = False
     svc.add_job(disabled)
 
-    assert len(svc._jobs) == SchedulerService.MAX_ACTIVE_JOBS + 1
+    assert len(svc._jobs) == SchedulerService.MAX_ACTIVE_JOBS
+    assert {job.id for job in svc.store.load()} == {
+        *svc._jobs,
+        disabled.id,
+    }
     with pytest.raises(ScheduleCapacityError):
         svc.add_job(make_job(name="overflow"))
+
+
+def test_legacy_disabled_job_survives_add(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    disabled = make_job(
+        name="legacy-disabled",
+        fire_at=fixed_now + timedelta(hours=1),
+    )
+    disabled.enabled = False
+    svc.store.save({disabled.id: disabled})
+
+    svc.load_and_recover()
+    active = make_job(
+        name="new-active",
+        fire_at=fixed_now + timedelta(hours=2),
+    )
+    svc.add_job(active)
+
+    assert set(svc._jobs) == {active.id}
+    assert {job.id for job in svc.store.load()} == {disabled.id, active.id}
+    assert svc.store.load()[0].enabled is False
+
+
+def test_cancel_other_keeps_disabled_job(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    disabled = make_job(
+        name="disabled-other",
+        fire_at=fixed_now + timedelta(hours=1),
+    )
+    disabled.enabled = False
+    target = make_job(
+        name="cancel-target",
+        fire_at=fixed_now + timedelta(hours=2),
+    )
+    svc.store.save({disabled.id: disabled, target.id: target})
+    svc.load_and_recover()
+
+    assert svc.cancel_job(target.id) is True
+
+    persisted = svc.store.load()
+    assert [job.id for job in persisted] == [disabled.id]
+    assert persisted[0].enabled is False
+
+
+def test_empty_persisted_set_does_not_revive_stale_active_job(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    stale = make_job(name="stale")
+    svc._jobs[stale.id] = stale
+    svc._commit_jobs({})
+
+    fresh = make_job(name="fresh")
+    svc.add_job(fresh)
+
+    assert set(svc._jobs) == {fresh.id}
+    assert [job.id for job in svc.store.load()] == [fresh.id]
+
+
+def test_replace_and_cancel_disabled_job(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    disabled = make_job(
+        name="replace-me",
+        fire_at=fixed_now + timedelta(hours=1),
+    )
+    disabled.enabled = False
+    svc.store.save({disabled.id: disabled})
+    svc.load_and_recover()
+
+    replacement = make_job(
+        name="replacement",
+        fire_at=fixed_now + timedelta(hours=2),
+    )
+    replacement.id = disabled.id
+    svc.add_job(replacement)
+    assert set(svc._jobs) == {disabled.id}
+    assert svc.store.load()[0].enabled is True
+
+    replacement_disabled = replace(replacement, enabled=False)
+    svc.add_job(replacement_disabled)
+    assert disabled.id not in svc._jobs
+    assert svc.store.load()[0].enabled is False
+
+    assert svc.cancel_job(disabled.id) is True
+    assert svc.store.load() == []
 
 
 def test_cancel_job_keeps_memory_state_when_persistence_fails(

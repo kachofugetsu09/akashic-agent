@@ -458,6 +458,7 @@ class SchedulerService:
         self.tracker = tracker or LatencyTracker()
         self._now = _now_fn or (lambda: datetime.now(timezone.utc))
         self._jobs: dict[str, ScheduledJob] = {}
+        self._persisted_jobs: dict[str, ScheduledJob] | None = None
         self._in_flight: set[str] = set()
         self._tasks: set[asyncio.Task[None]] = set()
         self._background_error: BaseException | None = None
@@ -499,10 +500,11 @@ class SchedulerService:
         # 确保 fire_at 带有 UTC 时区
         if job.fire_at.tzinfo is None:
             job.fire_at = job.fire_at.replace(tzinfo=timezone.utc)
-        candidate = dict(self._jobs)
+        current = self._current_persisted_jobs()
+        candidate = dict(current)
         candidate[job.id] = job
         active_jobs = sum(
-            1 for current_job in self._jobs.values() if current_job.enabled
+            1 for current_job in current.values() if current_job.enabled
         )
         candidate_active_jobs = sum(
             1 for candidate_job in candidate.values() if candidate_job.enabled
@@ -519,17 +521,17 @@ class SchedulerService:
         )
 
     def cancel_job(self, job_id: str) -> bool:
-        if job_id not in self._jobs:
+        candidate = self._current_persisted_jobs()
+        if job_id not in candidate:
             return False
-        candidate = dict(self._jobs)
         del candidate[job_id]
         self._commit_jobs(candidate)
         return True
 
     def cancel_job_by_name(self, name: str) -> list[str]:
-        cancelled = [jid for jid, j in self._jobs.items() if j.name == name]
+        candidate = self._current_persisted_jobs()
+        cancelled = [jid for jid, j in candidate.items() if j.name == name]
         if cancelled:
-            candidate = dict(self._jobs)
             for jid in cancelled:
                 del candidate[jid]
             self._commit_jobs(candidate)
@@ -537,6 +539,16 @@ class SchedulerService:
 
     def list_jobs(self) -> list[ScheduledJob]:
         return list(self._jobs.values())
+
+    def match_job_ids(self, id_or_prefix: str) -> list[str]:
+        """按完整 ID 或前缀匹配持久集合中的任务。"""
+
+        jobs = self._current_persisted_jobs()
+        return [
+            job_id
+            for job_id in jobs
+            if job_id == id_or_prefix or job_id.startswith(id_or_prefix)
+        ]
 
     def load_and_recover(self) -> None:
         """启动时加载持久化 jobs，处理 misfire。"""
@@ -582,6 +594,7 @@ class SchedulerService:
 
         if persistence_changed:
             self.store.save(persisted)
+        self._persisted_jobs = persisted
         self._jobs = recovered
         logger.info(f"SchedulerService recovered {count_loaded} jobs")
 
@@ -631,7 +644,17 @@ class SchedulerService:
         """先持久化候选状态，再提交内存中的任务映射。"""
 
         self.store.save(jobs)
-        self._jobs = jobs
+        self._persisted_jobs = dict(jobs)
+        self._jobs = {
+            job_id: job for job_id, job in jobs.items() if job.enabled
+        }
+
+    def _current_persisted_jobs(self) -> dict[str, ScheduledJob]:
+        """返回包含禁用记录的持久集合，尚未建立 owner 时回退运行集合。"""
+
+        if self._persisted_jobs is not None:
+            return dict(self._persisted_jobs)
+        return dict(self._jobs)
 
     async def _execute_and_reschedule(self, job: ScheduledJob) -> None:
         execution_succeeded = False
@@ -646,7 +669,7 @@ class SchedulerService:
             logger.error(f"Job {job.id[:8]} execution failed: {e}", exc_info=True)
         finally:
             self._in_flight.discard(job.id)
-            candidate = self._jobs
+            candidate = self._current_persisted_jobs()
             committed_job: ScheduledJob | None = None
             current_job = self._jobs.get(job.id)
             if not execution_cancelled and job.trigger == "every":
@@ -661,15 +684,12 @@ class SchedulerService:
                         fire_at=self._advance_every(job, reschedule_after),
                         run_count=job.run_count + (1 if execution_succeeded else 0),
                     )
-                    candidate = dict(self._jobs)
                     candidate[job.id] = committed_job
             elif not execution_cancelled and job.trigger != "every":
                 if current_job is job:
-                    candidate = dict(self._jobs)
                     _ = candidate.pop(job.id)
 
-            self.store.save(candidate)
-            self._jobs = candidate
+            self._commit_jobs(candidate)
             if committed_job is not None:
                 job.fire_at = committed_job.fire_at
                 job.run_count = committed_job.run_count

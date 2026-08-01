@@ -315,6 +315,37 @@ async def test_cancel_by_id(tmp_path, mock_push, mock_loop):
     assert job.id not in svc._jobs
 
 
+async def test_cancel_disabled_by_id_prefix_after_recovery(
+    tmp_path, mock_push, mock_loop
+):
+    svc = make_svc(tmp_path, mock_push, mock_loop)
+    disabled_target = make_job(name="disabled-target")
+    disabled_target.id = "target-123456"
+    disabled_target.enabled = False
+    disabled_other = make_job(name="disabled-other")
+    disabled_other.id = "other-456789"
+    disabled_other.enabled = False
+    active = make_job(name="active")
+    active.id = "active-job-789"
+    svc.store.save(
+        {
+            disabled_target.id: disabled_target,
+            disabled_other.id: disabled_other,
+            active.id: active,
+        }
+    )
+    svc.load_and_recover()
+
+    result = await CancelScheduleTool(svc).execute(id="target-1")
+
+    assert "已取消 1 个任务" in result
+    assert set(svc._jobs) == {active.id}
+    assert {job.id for job in svc.store.load()} == {
+        disabled_other.id,
+        active.id,
+    }
+
+
 async def test_cancel_by_name(tmp_path, mock_push, mock_loop):
     svc = make_svc(tmp_path, mock_push, mock_loop)
     job = make_job(name="daily-report")
