@@ -159,4 +159,5 @@ def test_restart_probe_defaults_are_pr_gate_and_soak_compatible() -> None:
     assert '"supervisorHwmKiB": 64 * 1024' in source
     assert '"childRssKiB": 64 * 1024' in source
     assert '"childHwmKiB": 64 * 1024' in source
+    assert '"AKASHIC_READINESS_TIMEOUT_S": "15"' in source
     json.dumps({"status": "passed", "iterations": 3})

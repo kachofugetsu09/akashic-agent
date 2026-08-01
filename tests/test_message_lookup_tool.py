@@ -361,6 +361,28 @@ def test_message_lookup_tools_require_fetch_for_evidence():
     assert "§cited:[" in FetchMessagesTool.description
 
 
+def test_search_messages_description_requires_recall_memory_first():
+    description = SearchMessagesTool.description
+
+    assert "必须先尝试 recall_memory" in description
+    assert "recall_memory 已经尝试" in description
+    assert "截断的原始消息" in description
+    assert "evidence" in description
+    assert "fetch_messages 获取完整原文" in description
+    assert "不要把截断当作召回失败" in description
+    assert "仍无法确定答案时" in description
+    assert "akasha" not in description.lower()
+
+
+def test_fetch_messages_description_handles_truncated_recall_preview():
+    description = FetchMessagesTool.description
+
+    assert "截断的原始消息" in description
+    assert "evidence 读取完整原文" in description
+    assert "不要根据预览补写缺失内容" in description
+    assert "akasha" not in description.lower()
+
+
 def test_history_fact_guard_requires_fetch_after_search_preview():
     prompt = build_agent_behavior_rules_prompt(workspace=Path("."))
     assert "search_messages" in prompt

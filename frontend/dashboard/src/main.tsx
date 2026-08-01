@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { BookOpenText, Sparkles } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import "./styles.css";
 import { api, asPageResult, pageCount } from "./api";
 import {
@@ -39,6 +39,8 @@ const pluginPreset = document.createElement("link");
 pluginPreset.rel = "stylesheet";
 pluginPreset.href = "/assets/sdk/preset.css";
 document.head.appendChild(pluginPreset);
+
+const notificationIcon = "data:image/png;base64,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";
 
 // Creates a PluginDispatch bound to the given plugin + latest state getter.
 function makeDispatch(
@@ -147,54 +149,6 @@ function useLatestReader<T>(value: T): () => T {
   return useCallback(() => ref.current, []);
 }
 
-function MagicIndicator(props: { containerRef: React.RefObject<HTMLElement | null>; activeSelector: string }) {
-  const [style, setStyle] = useState<React.CSSProperties>({ opacity: 0 });
-
-  useEffect(() => {
-    let animationFrameId: number;
-
-    const update = () => {
-      animationFrameId = requestAnimationFrame(() => {
-        if (!props.containerRef.current) return;
-        const activeEl = props.containerRef.current.querySelector(props.activeSelector) as HTMLElement;
-        if (!activeEl) {
-          setStyle((prev) => ({ ...prev, opacity: 0 }));
-          return;
-        }
-
-        const top = activeEl.offsetTop;
-        const left = activeEl.offsetLeft;
-        const width = activeEl.offsetWidth;
-        const height = activeEl.offsetHeight;
-        const radius = window.getComputedStyle(activeEl).borderRadius;
-
-        setStyle({
-          opacity: 1,
-          transform: `translate(${left}px, ${top}px)`,
-          width: `${width}px`,
-          height: `${height}px`,
-          borderRadius: radius,
-        });
-      });
-    };
-
-    update();
-    const observer = new MutationObserver(update);
-    if (props.containerRef.current) {
-      observer.observe(props.containerRef.current, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
-    }
-    window.addEventListener("resize", update);
-
-    return () => {
-      cancelAnimationFrame(animationFrameId);
-      observer.disconnect();
-      window.removeEventListener("resize", update);
-    };
-  }, [props.activeSelector, props.containerRef]);
-
-  return <div className="magic-indicator" style={style} />;
-}
-
 function App(): React.ReactElement {
   const [viewMode, setViewMode] = useState<ViewMode>("sessions");
   const [plugins, setPlugins] = useState<PluginConfig[]>([]);
@@ -202,6 +156,10 @@ function App(): React.ReactElement {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [sessionSearch, setSessionSearch] = useState("");
   const [sessionChannel, setSessionChannel] = useState("");
+  const [expandedSessionGroups, setExpandedSessionGroups] = useState<Record<string, boolean>>({
+    scheduler: false,
+    programmatic: false,
+  });
   const [activeSessionKey, setActiveSessionKey] = useState<string | null>(null);
   const [activeSession, setActiveSession] = useState<SessionRow | null>(null);
   const [messages, setMessages] = useState<MessageRow[]>([]);
@@ -227,8 +185,6 @@ function App(): React.ReactElement {
   const [hiddenPlugins, setHiddenPlugins] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
 
-  const explorerBodyRef = useRef<HTMLDivElement>(null);
-  const tableBodyRef = useRef<HTMLDivElement>(null);
   const sessionsRequestRef = useRef<AbortController | null>(null);
   const messagesRequestRef = useRef<AbortController | null>(null);
   const proactiveRequestRef = useRef<AbortController | null>(null);
@@ -260,6 +216,18 @@ function App(): React.ReactElement {
   }, []);
 
   const channels = useMemo(() => Array.from(new Set(sessions.map((session) => session.key.split(":")[0]).filter(Boolean))), [sessions]);
+  const ordinarySessions = useMemo(
+    () => sessions.filter((session) => !isFoldedSession(session)),
+    [sessions],
+  );
+  const schedulerSessions = useMemo(
+    () => sessions.filter((session) => sessionChannelOf(session) === "scheduler"),
+    [sessions],
+  );
+  const programmaticSessions = useMemo(
+    () => sessions.filter((session) => sessionChannelOf(session) === "programmatic"),
+    [sessions],
+  );
 
   const reportError = useCallback((exc: unknown): void => {
     if (isAbortError(exc)) return;
@@ -452,6 +420,10 @@ function App(): React.ReactElement {
     setActiveSession(sessions.find((session) => session.key === key) ?? null);
     setActiveMessage(null);
     setMessagePage(1);
+    const channel = sessionChannelOf({ key });
+    if (channel === "scheduler" || channel === "programmatic") {
+      setExpandedSessionGroups((current) => ({ ...current, [channel]: true }));
+    }
     selectView("sessions");
   });
 
@@ -550,83 +522,46 @@ function App(): React.ReactElement {
 
   return (
     <div className="shell">
-      <header className="topbar">
+      <aside className="sessions-pane">
         <div className="brand">
-          <div className="brand-mark" aria-hidden="true">
-            <BookOpenText className="brand-mark-book" />
-            <Sparkles className="brand-mark-spark" />
-          </div>
+          <img className="brand-mark" src={notificationIcon} alt="" />
           <div>
-            <div className="brand-title">Akashic Dashboard</div>
-            <div className="brand-sub">Session / Memory Explorer</div>
+            <div className="brand-title">Akashic</div>
+            <div className="brand-sub">Dashboard</div>
           </div>
         </div>
-        <TopbarFilters
-          viewMode={viewMode}
-          messageSearch={messageSearch}
-          setMessageSearch={(value) => { setMessageSearch(value); setMessagePage(1); }}
-          messageRole={messageRole}
-          setMessageRole={(value) => { setMessageRole(value); setMessagePage(1); }}
-          activeSessionKey={activeSessionKey}
-          clearSession={() => { setActiveSessionKey(null); setActiveSession(null); setActiveMessage(null); setMessagePage(1); }}
-          proactiveSection={proactiveSection}
-          proactiveSessionFilter={proactiveSessionFilter}
-          clearProactiveSession={() => { setProactiveSessionFilter(""); setProactivePage(1); }}
-          currentPlugin={currentPlugin}
-          currentPluginState={currentPluginState}
-          onSetPluginState={currentPlugin ? (updater) => setPluginState((c) => ({ ...c, [currentPlugin.id]: updater(c[currentPlugin.id]) })) : undefined}
-          onError={reportError}
+        <ModuleSwitcher
+            viewMode={viewMode}
+            sessionsCount={sessions.length}
+            plugins={plugins.filter((plugin) => !hiddenPlugins[plugin.id])}
+            pluginState={pluginState}
+            onSelect={(next) => {
+              if (next === "sessions") {
+                setActiveSessionKey(null);
+                setActiveSession(null);
+                setActiveMessage(null);
+                setMessagePage(1);
+              }
+              selectView(next);
+            }}
         />
-        <div className="topbar-view">
-          <div className="view-chip"><span>{viewLabel(viewMode, currentPlugin)}</span></div>
-          {viewMode.startsWith("plugin:") && currentPlugin?.renderTopbarAction && currentPluginState && currentDispatch && (
-            <PluginTopbarAction
-              plugin={currentPlugin}
-              pluginId={currentPlugin.id}
-              state={currentPluginState}
-              onSetState={(updater) => setPluginState((c) => ({ ...c, [currentPlugin.id]: updater(c[currentPlugin.id]) }))}
-              onActivate={() => focusView(`plugin:${currentPlugin.id}`)}
-              onError={reportError}
-            />
-          )}
-        </div>
-      </header>
 
-      <main className={`workspace${isPluginWorkbench ? " plugin-workbench-mode" : ""}`}>
-        <aside className="sessions-pane">
-          {/* Section switcher: flat tabs, not accordions — the active section's
-              content is always shown in the body below (no expand-on-entry). */}
-          <div className="section-switcher">
-            <div className="pane-kicker">Explorer</div>
-            <button type="button" className={`section-tab ${viewMode === "sessions" ? "active" : ""}`} onClick={() => {
-              setActiveSessionKey(null);
-              setActiveSession(null);
-              setActiveMessage(null);
-              setMessagePage(1);
-              selectView("sessions");
-            }}>
-              <span className="section-tab-label">Sessions</span>
-              <span className="section-tab-count">{sessions.length}</span>
-            </button>
-            {plugins.filter((p) => !hiddenPlugins[p.id]).map((plugin) => (
-              <button key={plugin.id} type="button" className={`section-tab ${viewMode === `plugin:${plugin.id}` ? "active" : ""}`} onClick={() => selectView(`plugin:${plugin.id}`)}>
-                <span className="section-tab-label">{plugin.label}</span>
-                <span className="section-tab-count">{pluginState[plugin.id]?.total ?? 0}</span>
-              </button>
-            ))}
-          </div>
-
-          <div className="explorer-body" ref={explorerBodyRef} style={{ position: "relative" }}>
-            <MagicIndicator containerRef={explorerBodyRef} activeSelector=".active" />
+          <div className="explorer-body">
             {viewMode === "sessions" && (
               <>
-                <div className="filters-stack">
+                <div className="filters-stack session-filters">
                   <label className="search search-small">
                     <span>⌕</span>
-                    <input type="text" placeholder="过滤 session" value={sessionSearch} onChange={(event) => setSessionSearch(event.target.value.trim())} />
+                    <input type="text" placeholder="搜索会话" value={sessionSearch} onChange={(event) => setSessionSearch(event.target.value.trim())} />
                   </label>
-                  <select value={sessionChannel} onChange={(event) => setSessionChannel(event.target.value)}>
-                    <option value="">全部 channel</option>
+                  <select value={sessionChannel} onChange={(event) => {
+                    const channel = event.target.value;
+                    setSessionChannel(channel);
+                    if (channel === "scheduler" || channel === "programmatic") {
+                      setExpandedSessionGroups((current) => ({ ...current, [channel]: true }));
+                    }
+                  }}>
+                    <option value="">全部来源</option>
                     {channels.map((channel) => <option key={channel} value={channel}>{channel}</option>)}
                   </select>
                 </div>
@@ -638,24 +573,52 @@ function App(): React.ReactElement {
                     setMessagePage(1);
                     selectView("sessions");
                   }}>
-                    <span>全部消息</span><strong>{sessions.length}</strong>
+                    <span>全部会话</span><strong>{sessions.length}</strong>
                   </button>
-                  {sessions.map((session) => (
-                    <button key={session.key} className={`session-item ${activeSessionKey === session.key ? "active" : ""}`} type="button" onClick={() => {
+                  {ordinarySessions.map((session) => (
+                    <SessionNavItem
+                      key={session.key}
+                      session={session}
+                      active={activeSessionKey === session.key}
+                      onSelect={() => {
+                        setActiveSessionKey(session.key);
+                        setActiveSession(session);
+                        setActiveMessage(null);
+                        setMessagePage(1);
+                        selectView("sessions");
+                      }}
+                    />
+                  ))}
+                  <SessionGroup
+                    id="scheduler-sessions"
+                    label="定时任务"
+                    sessions={schedulerSessions}
+                    open={expandedSessionGroups.scheduler}
+                    activeSessionKey={activeSessionKey}
+                    onOpenChange={() => setExpandedSessionGroups((current) => ({ ...current, scheduler: !current.scheduler }))}
+                    onSelect={(session) => {
                       setActiveSessionKey(session.key);
                       setActiveSession(session);
                       setActiveMessage(null);
                       setMessagePage(1);
                       selectView("sessions");
-                    }}>
-                      <div className="nav-item-row">
-                        <span className="nav-type-dot memory-type-profile" />
-                        <span className="nav-item-name mono">{formatSessionKeyForTable(session.key)}</span>
-                        <span className="nav-item-count">{session.message_count}</span>
-                      </div>
-                      <div className="nav-item-desc">{relativeTime(session.updated_at)}</div>
-                    </button>
-                  ))}
+                    }}
+                  />
+                  <SessionGroup
+                    id="programmatic-sessions"
+                    label="程序会话"
+                    sessions={programmaticSessions}
+                    open={expandedSessionGroups.programmatic}
+                    activeSessionKey={activeSessionKey}
+                    onOpenChange={() => setExpandedSessionGroups((current) => ({ ...current, programmatic: !current.programmatic }))}
+                    onSelect={(session) => {
+                      setActiveSessionKey(session.key);
+                      setActiveSession(session);
+                      setActiveMessage(null);
+                      setMessagePage(1);
+                      selectView("sessions");
+                    }}
+                  />
                 </div>
               </>
             )}
@@ -686,8 +649,42 @@ function App(): React.ReactElement {
                 onError={reportError}
               />
             )}
-          </div>
-        </aside>
+        </div>
+      </aside>
+
+      <section className="content-shell">
+        <header className="content-toolbar">
+          <ContentFilters
+            viewMode={viewMode}
+            messageSearch={messageSearch}
+            setMessageSearch={(value) => { setMessageSearch(value); setMessagePage(1); }}
+            messageRole={messageRole}
+            setMessageRole={(value) => { setMessageRole(value); setMessagePage(1); }}
+            activeSessionKey={activeSessionKey}
+            clearSession={() => { setActiveSessionKey(null); setActiveSession(null); setActiveMessage(null); setMessagePage(1); }}
+            proactiveSection={proactiveSection}
+            proactiveSessionFilter={proactiveSessionFilter}
+            clearProactiveSession={() => { setProactiveSessionFilter(""); setProactivePage(1); }}
+            currentPlugin={currentPlugin}
+            currentPluginState={currentPluginState}
+            onSetPluginState={currentPlugin ? (updater) => setPluginState((c) => ({ ...c, [currentPlugin.id]: updater(c[currentPlugin.id]) })) : undefined}
+            onError={reportError}
+          />
+          {viewMode.startsWith("plugin:") && currentPlugin?.renderTopbarAction && currentPluginState && currentDispatch && (
+            <div className="content-toolbar-actions">
+              <PluginTopbarAction
+                plugin={currentPlugin}
+                pluginId={currentPlugin.id}
+                state={currentPluginState}
+                onSetState={(updater) => setPluginState((c) => ({ ...c, [currentPlugin.id]: updater(c[currentPlugin.id]) }))}
+                onActivate={() => focusView(`plugin:${currentPlugin.id}`)}
+                onError={reportError}
+              />
+            </div>
+          )}
+        </header>
+
+        <main className={`workspace${isPluginWorkbench ? " plugin-workbench-mode" : ""}`}>
 
         {isPluginWorkbench && currentPlugin && currentDispatch ? (
           <section className="plugin-workbench-pane">
@@ -724,8 +721,7 @@ function App(): React.ReactElement {
                 </div>
               )}
               <TableHead viewMode={viewMode} plugin={currentPlugin} pluginState={currentPluginState} messageSortBy={messageSortBy} messageSortOrder={messageSortOrder} proactiveSortBy={proactiveSortBy} proactiveSortOrder={proactiveSortOrder} onSort={sort} onPluginSort={currentDispatch ? (key) => currentDispatch.setSort(key) : undefined} />
-              <div className="table-body" ref={tableBodyRef} style={{ position: "relative" }}>
-                <MagicIndicator containerRef={tableBodyRef} activeSelector=".active" />
+              <div className="table-body">
                 <Rows
                   viewMode={viewMode}
                   messages={messages}
@@ -815,10 +811,204 @@ function App(): React.ReactElement {
             </aside>
           </>
         )}
-      </main>
+        </main>
+      </section>
       {error && <div className="modal-backdrop" onClick={() => setError(null)}><div className="modal"><div className="modal-title">请求失败</div><p>{error}</p><div className="modal-actions"><button className="primary" type="button" onClick={() => setError(null)}>关闭</button></div></div></div>}
     </div>
   );
+}
+
+function SessionGroup(props: {
+  id: string;
+  label: string;
+  sessions: SessionRow[];
+  open: boolean;
+  activeSessionKey: string | null;
+  onOpenChange(): void;
+  onSelect(session: SessionRow): void;
+}): React.ReactElement | null {
+  if (!props.sessions.length) return null;
+  return (
+    <div className={`nav-group session-group ${props.open ? "open" : ""}`}>
+      <button
+        className="nav-group-toggle"
+        type="button"
+        aria-expanded={props.open}
+        aria-controls={props.id}
+        onClick={props.onOpenChange}
+      >
+        <span className="nav-group-caret" aria-hidden="true">›</span>
+        <span className="nav-group-label">{props.label}</span>
+        <span className="nav-group-count">{props.sessions.length}</span>
+      </button>
+      <div
+        id={props.id}
+        className={`nav-group-body ${props.open ? "open" : ""}`}
+        hidden={!props.open}
+      >
+        <div className="nav-group-body-inner">
+          {props.sessions.map((session) => (
+            <SessionNavItem
+              key={session.key}
+              session={session}
+              active={props.activeSessionKey === session.key}
+              nested
+              onSelect={() => props.onSelect(session)}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ModuleSwitcher(props: {
+  viewMode: ViewMode;
+  sessionsCount: number;
+  plugins: PluginConfig[];
+  pluginState: Record<string, PluginState>;
+  onSelect(next: ViewMode): void;
+}): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const currentPlugin = props.viewMode.startsWith("plugin:")
+    ? props.plugins.find((plugin) => `plugin:${plugin.id}` === props.viewMode) ?? null
+    : null;
+  const currentLabel = props.viewMode === "sessions" ? "Sessions" : currentPlugin?.label ?? "Explorer";
+  const currentCount = props.viewMode === "sessions"
+    ? props.sessionsCount
+    : currentPlugin ? props.pluginState[currentPlugin.id]?.total ?? 0 : 0;
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: PointerEvent): void => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  const select = (next: ViewMode): void => {
+    props.onSelect(next);
+    setOpen(false);
+  };
+
+  return (
+    <div className="module-switcher" ref={rootRef}>
+      <button
+        ref={triggerRef}
+        className="module-switcher-trigger"
+        type="button"
+        aria-expanded={open}
+        aria-controls="dashboard-module-options"
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="module-switcher-label">{currentLabel}</span>
+        <span className="module-switcher-meta">
+          <span className="module-switcher-count">{currentCount}</span>
+          <ChevronDown className={open ? "open" : ""} size={16} aria-hidden="true" />
+        </span>
+      </button>
+      <div id="dashboard-module-options" className="module-switcher-options" hidden={!open}>
+        <button
+          className={`module-switcher-option ${props.viewMode === "sessions" ? "active" : ""}`}
+          type="button"
+          aria-current={props.viewMode === "sessions" ? "page" : undefined}
+          onClick={() => select("sessions")}
+        >
+          <span>Sessions</span>
+          <span>{props.sessionsCount}</span>
+        </button>
+        {props.plugins.map((plugin) => {
+          const mode = `plugin:${plugin.id}` as ViewMode;
+          return (
+            <button
+              key={plugin.id}
+              className={`module-switcher-option ${props.viewMode === mode ? "active" : ""}`}
+              type="button"
+              aria-current={props.viewMode === mode ? "page" : undefined}
+              onClick={() => select(mode)}
+            >
+              <span>{plugin.label}</span>
+              <span>{props.pluginState[plugin.id]?.total ?? 0}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SessionNavItem(props: {
+  session: SessionRow;
+  active: boolean;
+  nested?: boolean;
+  onSelect(): void;
+}): React.ReactElement {
+  const title = sessionNavTitle(props.session);
+  const channel = sessionChannelOf(props.session);
+  return (
+    <button
+      className={`session-item ${props.nested ? "nested" : ""} ${props.active ? "active" : ""}`}
+      type="button"
+      aria-current={props.active ? "page" : undefined}
+      title={`${title}\n${props.session.key}`}
+      onClick={props.onSelect}
+    >
+      <div className="nav-item-row">
+        <span className="nav-item-name">{title}</span>
+        <span className="nav-item-count" title={`${props.session.message_count} 条消息`}>
+          {props.session.message_count}
+        </span>
+      </div>
+      <div className="nav-item-desc">
+        <span>{sessionChannelLabel(channel)}</span>
+        <span aria-hidden="true">·</span>
+        <span>{relativeTime(props.session.updated_at)}</span>
+      </div>
+    </button>
+  );
+}
+
+function isFoldedSession(session: Pick<SessionRow, "key">): boolean {
+  const channel = sessionChannelOf(session);
+  return channel === "scheduler" || channel === "programmatic";
+}
+
+function sessionChannelOf(session: Pick<SessionRow, "key">): string {
+  return session.key.split(":", 1)[0] || "unknown";
+}
+
+function sessionNavTitle(session: SessionRow): string {
+  const firstMessage = stripMarkdown(session.first_message_content).trim();
+  return firstMessage || formatSessionKeyForTable(session.key);
+}
+
+function sessionChannelLabel(channel: string): string {
+  const labels: Record<string, string> = {
+    cli: "CLI",
+    cross_mem: "Cross Memory",
+    dashboard: "Dashboard",
+    feishu: "飞书",
+    mobile: "Mobile",
+    programmatic: "Programmatic",
+    qq: "QQ",
+    qqbot: "QQ Bot",
+    scheduler: "定时任务",
+    telegram: "Telegram",
+    web: "Web",
+  };
+  return labels[channel] || channel;
 }
 
 function PluginNavBody(props: {
@@ -896,7 +1086,7 @@ function PluginTopbarAction(props: {
   return <div ref={ref} />;
 }
 
-function TopbarFilters(props: {
+function ContentFilters(props: {
   viewMode: ViewMode;
   messageSearch: string;
   setMessageSearch(value: string): void;
@@ -913,7 +1103,7 @@ function TopbarFilters(props: {
   onError(error: unknown): void;
 }): React.ReactElement {
   return (
-    <div className="topbar-filters">
+    <div className="content-filters">
       {props.viewMode.startsWith("plugin:") ? (
           props.currentPlugin?.renderFilters && props.currentPluginState && props.onSetPluginState
             ? <PluginFilters
@@ -1171,12 +1361,6 @@ function proactiveSectionCount(section: string, overview: ProactiveOverview | nu
   if (section === "all") return overview.counts.tick_logs ?? 0;
   if (section === "drift" || section === "proactive") return overview.flow_counts[section] ?? 0;
   return overview.result_counts[section] ?? 0;
-}
-
-function viewLabel(viewMode: ViewMode, plugin: PluginConfig | null): string {
-  if (plugin) return plugin.viewLabel || plugin.label;
-  if (viewMode === "proactive") return "proactive";
-  return "messages";
 }
 
 createRoot(document.getElementById("root") as HTMLElement).render(<App />);

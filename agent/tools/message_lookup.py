@@ -19,6 +19,7 @@ class FetchMessagesTool(Tool):
         "这是 recall_memory / search_messages / 记忆注入三条路里唯一可以直接作为最终证据的工具。\n"
         "何时必须调用：回答依赖具体时间、原话、金额、配置值、是否发生过——只要结论需要事实支撑，就在回复前调用此工具。\n"
         "recall_memory 返回 evidence 时优先传 evidence；search_messages 返回 source_ref 时传 source_ref。\n"
+        "recall_memory 的 summary 若只是截断的原始消息或预览，传该条目的 evidence 读取完整原文，不要根据预览补写缺失内容。\n"
         "支持 context 参数扩展前后文，适合还原完整上下文片段。\n"
         "【引用协议（必须执行）】本工具调用后，最终回复正文末尾必须另起一行输出：\n"
         "  §cited:[memory_id1,memory_id2,...]§\n"
@@ -165,10 +166,15 @@ class SearchMessagesTool(Tool):
     name = "search_messages"
     description = (
         "对原始历史消息做 grep 式搜索，返回命中候选消息的预览和 source_ref。\n"
-        "适合查找某个词、句子、文件名、报错、命令、配置项曾出现在哪些消息里——它是文本定位工具。\n"
-        "不是记忆检索工具：不负责总结偏好、判断做没做过、回答历史事实。这些问题先用 recall_memory。\n"
+        "检索历史信息时，必须先尝试 recall_memory 获取相关记忆、关联情景和模式线索；"
+        "如果 recall_memory 返回相关条目，但 summary 是截断的原始消息或预览，先将该条目的 evidence "
+        "传给 fetch_messages 获取完整原文；不要把截断当作召回失败。\n"
+        "只有 recall_memory 已经尝试但未找到相关内容，或通过 fetch_messages 读取已召回原文后结果仍不足、"
+        "仍无法确定答案时，才使用本工具检索原始消息。\n"
+        "适合在上述回忆不足后，查找某个词、句子、文件名、报错、命令、配置项曾出现在哪些消息里——"
+        "它是文本定位工具，不负责记忆召回、偏好总结或历史事实判断。\n"
         "命中后若需确认上下文或以结果作为证据，必须继续 fetch_messages(source_ref)，预览不能直接作证。\n"
-        "recall_memory 返回的摘要读起来像[询问行为]而非[事件本身]时，可同步用此工具补一路 grep 交叉验证。"
+        "recall_memory 返回的摘要读起来像[询问行为]而非[事件本身]时，可用本工具补一路 grep 交叉验证。"
     )
     parameters = {
         "type": "object",

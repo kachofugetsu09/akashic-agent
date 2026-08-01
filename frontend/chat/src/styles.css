@@ -102,8 +102,8 @@ input {
   border: 0;
   border-radius: 12px;
   padding: 6px 14px 6px 10px;
-  color: var(--pairing-on-primary-container);
-  background: var(--pairing-surface-container-low);
+  color: var(--pairing-on-surface);
+  background: transparent;
   font-size: 14px;
   font-weight: 650;
   cursor: pointer;
@@ -113,7 +113,7 @@ input {
 }
 
 .mobile-connect-trigger:hover {
-  color: var(--pairing-on-surface);
+  color: var(--pairing-on-primary-container);
   background: var(--pairing-surface-container-high);
 }
 
@@ -128,13 +128,11 @@ input {
 
 .mobile-connect-icon {
   display: grid;
-  width: 32px;
-  height: 32px;
+  width: 20px;
+  height: 20px;
   place-items: center;
   flex: 0 0 auto;
-  border-radius: 8px;
-  color: var(--pairing-on-primary-container);
-  background: var(--pairing-primary-container);
+  color: var(--pairing-primary);
 }
 
 .icon-button,
@@ -669,14 +667,12 @@ form.composer:focus-within [data-slot="input-group"] {
   max-height: min(880px, calc(100vh - 32px));
   gap: 0;
   overflow-y: auto;
-  border: 0;
-  border-radius: 28px;
+  border: 1px solid var(--pairing-outline);
+  border-radius: 18px;
   padding: 0;
   color: var(--pairing-on-surface);
   background: var(--pairing-surface);
-  box-shadow:
-    0 0 0 1px var(--pairing-outline),
-    0 24px 68px var(--pairing-shadow);
+  box-shadow: 0 12px 32px var(--pairing-shadow);
   transition-property: opacity, transform;
   transition-duration: 180ms;
   transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
@@ -687,7 +683,7 @@ form.composer:focus-within [data-slot="input-group"] {
   width: 44px;
   height: 44px;
   place-items: center;
-  border-radius: 50%;
+  border-radius: 8px;
   color: var(--pairing-on-surface-variant);
   transition-property: scale, opacity, background-color;
   transition-duration: 150ms;
@@ -705,8 +701,8 @@ form.composer:focus-within [data-slot="input-group"] {
 
 .mobile-pairing-header {
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
-  gap: 16px;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 12px;
   padding: 28px 76px 22px 28px;
   text-align: left;
 }
@@ -729,12 +725,10 @@ form.composer:focus-within [data-slot="input-group"] {
 
 .mobile-pairing-symbol {
   display: grid;
-  width: 48px;
-  height: 48px;
+  width: 28px;
+  height: 28px;
   place-items: center;
-  border-radius: 15px;
-  color: var(--pairing-on-primary-container);
-  background: var(--pairing-primary-container);
+  color: var(--pairing-primary);
 }
 
 .mobile-pairing-stage {
@@ -796,19 +790,17 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 
 .mobile-pairing-qr-wrap {
-  padding: 14px;
-  border-radius: 24px;
+  padding: 10px;
+  border: 1px solid var(--pairing-outline-strong);
+  border-radius: 14px;
   background: var(--pairing-qr-surface);
-  box-shadow:
-    0 0 0 1px var(--pairing-outline-strong),
-    0 10px 30px var(--pairing-shadow-soft);
 }
 
 .mobile-pairing-qr {
   display: block;
   width: 100%;
   aspect-ratio: 1;
-  border-radius: 10px;
+  border-radius: 4px;
   outline: 1px solid var(--pairing-qr-outline);
   outline-offset: -1px;
 }
@@ -844,8 +836,8 @@ form.composer:focus-within [data-slot="input-group"] {
   background: var(--pairing-primary-container-high);
 }
 
-.mobile-pairing-step strong,
-.mobile-pairing-step span {
+.mobile-pairing-step > div > strong,
+.mobile-pairing-step > div > span {
   display: block;
 }
 
@@ -882,20 +874,18 @@ form.composer:focus-within [data-slot="input-group"] {
 .mobile-pairing-device-row {
   display: grid;
   min-width: min(100%, 360px);
-  grid-template-columns: 44px minmax(0, 1fr);
-  gap: 13px;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
   align-items: center;
   margin-bottom: 30px;
 }
 
 .mobile-pairing-device-icon {
   display: grid;
-  width: 44px;
-  height: 44px;
+  width: 24px;
+  height: 24px;
   place-items: center;
-  border-radius: 14px;
-  color: var(--pairing-on-primary-container);
-  background: var(--pairing-primary-container);
+  color: var(--pairing-primary);
 }
 
 .mobile-pairing-device-row span,
@@ -969,7 +959,7 @@ form.composer:focus-within [data-slot="input-group"] {
   justify-content: center;
   gap: 8px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 10px;
   padding: 0 20px;
   font-size: 14px;
   font-weight: 650;
@@ -1058,7 +1048,7 @@ form.composer:focus-within [data-slot="input-group"] {
   .mobile-pairing-dialog {
     width: min(calc(100vw - 20px), 760px);
     max-height: calc(100vh - 20px);
-    border-radius: 24px;
+    border-radius: 16px;
   }
 
   .mobile-pairing-header {
