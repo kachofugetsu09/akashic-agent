@@ -326,39 +326,29 @@ async def _read_qq_image(
 ) -> tuple[bytes, str]:
     """流式读取单张 QQ 图片，分配内存前执行单项上限。"""
 
-    stream = getattr(requester, "stream", None)
-    if callable(stream):
-        stream_context = stream(
-            "GET",
-            url,
-            timeout_s=15.0,
-            budget=RequestBudget(total_timeout_s=20.0),
-            validate_redirects=True,
-        )
-        async with cast(AbstractAsyncContextManager[Any], stream_context) as response:
-            if response.status_code < 200 or response.status_code >= 300:
-                raise ValueError(f"HTTP {response.status_code}")
-            content_type = response.headers.get("content-type", "image/jpeg").split(";", 1)[0].strip()
-            content = bytearray()
-            async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
-                if len(content) + len(chunk) > max_bytes:
-                    raise ValueError(f"图片超过 {max_bytes // (1024 * 1024)}MB 上限")
-                content.extend(chunk)
-            return bytes(content), content_type
-
-    # 旧测试 fake 没有 stream 接口；真实 HttpRequester 始终走上面的生产路径。
-    response = await requester.get(
+    stream_context = requester.stream(
+        "GET",
         url,
-        follow_redirects=True,
         timeout_s=15.0,
         budget=RequestBudget(total_timeout_s=20.0),
+        validate_redirects=True,
     )
-    response.raise_for_status()
-    content = bytes(response.content)
-    if len(content) > max_bytes:
-        raise ValueError(f"图片超过 {max_bytes // (1024 * 1024)}MB 上限")
-    content_type = response.headers.get("content-type", "image/jpeg").split(";", 1)[0].strip()
-    return content, content_type
+    async with cast(AbstractAsyncContextManager[Any], stream_context) as response:
+        if response.status_code < 200 or response.status_code >= 300:
+            raise ValueError(f"HTTP {response.status_code}")
+        content_type = (
+            response.headers.get("content-type", "image/jpeg")
+            .split(";", 1)[0]
+            .strip()
+        )
+        content = bytearray()
+        async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+            if len(content) + len(chunk) > max_bytes:
+                raise ValueError(
+                    f"图片超过 {max_bytes // (1024 * 1024)}MB 上限"
+                )
+            content.extend(chunk)
+        return bytes(content), content_type
 
 
 class QQChannel:
