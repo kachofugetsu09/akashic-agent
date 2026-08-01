@@ -53,7 +53,6 @@ requirements = ["OUT-001", "OUT-002", "PLG-003", "PLG-008", "SES-002", "SES-005"
 paths = [
   "infra/mobile_realtime/**",
   "agent/plugins/**",
-  "agent/tools/request_user_confirmation.py",
   "agent/turns/outbound.py",
   "agent/lifecycle/phases/after_reasoning.py",
   "agent/lifecycle/phases/after_turn.py",
