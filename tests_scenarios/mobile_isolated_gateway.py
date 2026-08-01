@@ -15,7 +15,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 from bus.events import InboundMessage, OutboundMessage
-from bus.events_lifecycle import TurnStarted
+from bus.events_lifecycle import StreamDeltaReady, TurnStarted
 from agent.config_models import MobileKeyEncryptionConfig, MobileRealtimeConfig
 from infra.channels.base import AttachmentStore
 from infra.mobile_realtime.gateway import (
@@ -32,6 +32,16 @@ _FIXED_GIF = bytes.fromhex(
 )
 _HISTORY_SESSION_ID = "mobile:00000000-0000-7000-8000-000000000001"
 _FAULT_MODES = ("none", "stall_before_challenge", "stall_after_auth")
+_PILOT_REPLY_CHUNKS = (
+    "## WebUI 试点\n\n",
+    "这段内容由隔离 Gateway ",
+    "逐段推送，",
+    "用来观察网页端式的生长效果。\n\n",
+    "- 共享浅蓝主题\n",
+    "- 同一消息组件\n",
+    "- 原生能力仍独立\n\n",
+    "```text\nWeb + Android = one WebUI\n```\n",
+)
 
 
 class GatewayFaultController:
@@ -283,6 +293,7 @@ class FixedReplyBus:
         # 1. 按真实生命周期语义持久化干净正文和引用投影
         inbound = cast(InboundMessage, message)
         runtime = self._require_runtime()
+        reply = "".join(_PILOT_REPLY_CHUNKS)
         session = self._manager.get_or_create(inbound.session_key)
         user_kwargs: dict[str, str] = {
             "client_message_id": cast(str, inbound.metadata["client_message_id"]),
@@ -300,7 +311,7 @@ class FixedReplyBus:
         )
         _ = session.add_message(
             "assistant",
-            "隔离 Gateway 已收到消息，这是固定媒体回复。",
+            reply,
             media=[str(self._reply_media)],
         )
         self._manager.save(session)
@@ -318,11 +329,22 @@ class FixedReplyBus:
                 turn_id=turn_id,
             )
         )
+        for chunk in _PILOT_REPLY_CHUNKS:
+            await runtime.channel._on_stream_delta(  # pyright: ignore[reportPrivateUsage]
+                StreamDeltaReady(
+                    session_key=inbound.session_key,
+                    channel="mobile",
+                    chat_id=inbound.chat_id,
+                    turn_id=turn_id,
+                    content_delta=chunk,
+                )
+            )
+            await asyncio.sleep(0.18)
         await runtime.channel._on_response(  # pyright: ignore[reportPrivateUsage]
             OutboundMessage(
                 channel="mobile",
                 chat_id=inbound.chat_id,
-                content="隔离 Gateway 已收到消息，这是固定媒体回复。",
+                content=reply,
                 media=[str(self._reply_media)],
                 control_turn_id=turn_id,
                 session_message_id=assistant_message_id,
