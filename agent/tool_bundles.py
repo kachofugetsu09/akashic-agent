@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from agent.tools.base import Tool
+from agent.tools.base import Tool, ToolExecutionContext, get_current_tool_context
 from agent.tools.filesystem import ListDirTool, ReadFileTool
 from agent.tools.web_fetch import WebFetchTool
 from agent.tools.web_fetch_spill import WebFetchSpillStore
@@ -18,7 +18,7 @@ def build_readonly_research_tools(
     include_list_dir: bool = False,
     multimodal: bool = True,
     vl_available: bool = False,
-    context_provider: Callable[[], object | None] | None = None,
+    context_provider: Callable[[], ToolExecutionContext | None] | None = None,
 ) -> list[Tool]:
     tools: list[Tool] = [ReadFileTool(allowed_dir=allowed_dir, multimodal=multimodal, vl_available=vl_available)]
     if include_list_dir:
@@ -30,7 +30,7 @@ def build_readonly_research_tools(
         WebFetchTool(
             fetch_requester,
             spill_store=spill_store,
-            context_provider=context_provider or (lambda: None),
+            context_provider=context_provider or get_current_tool_context,
         )
     )
     tools.append(WebSearchTool())

@@ -32,6 +32,7 @@ from agent.mcp.watcher import WorkspaceMcpWatcher
 from agent.provider import LLMProvider
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.scheduler import SchedulerService
+from agent.tools.base import ToolExecutionContext, get_current_tool_context
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from bootstrap.toolsets.meta import build_readonly_tools
@@ -298,7 +299,7 @@ def build_registered_tools(
     tools: ToolRegistry | None = None,
     event_publisher=None,
     agent_loop_provider: Callable[[], Any] | None = None,
-    tool_context_provider: Callable[[], object | None] | None = None,
+    tool_context_provider: Callable[[], ToolExecutionContext | None] = get_current_tool_context,
     restart_coordinator: "RestartCoordinator | None" = None,
 ) -> tuple[
     ToolRegistry,

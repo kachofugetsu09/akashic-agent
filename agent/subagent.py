@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import inspect
 import logging
+from contextvars import ContextVar
+from dataclasses import replace
 from typing import Any, Sequence
 
+from agent.control.ids import new_operation_id, new_turn_id
 from agent.model_runtime.execution_history import active_shell_execution_origins
 from agent.provider import LLMProvider
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
@@ -16,10 +19,26 @@ from agent.tool_runtime import (
     tool_call_batch_snapshot,
 )
 from agent.tool_hooks.types import ToolExecutionResult
-from agent.tools.base import Tool, normalize_tool_result
+from agent.tools.base import (
+    Tool,
+    ToolExecutionContext,
+    get_current_tool_context,
+    normalize_tool_result,
+    tool_execution_context_scope,
+)
+from agent.tools.web_fetch import WebFetchTool
 from prompts.completion import VERIFIABLE_COMPLETION_RULES
 
 logger = logging.getLogger(__name__)
+
+_SUBAGENT_TURN_ID: ContextVar[str | None] = ContextVar(
+    "akashic_subagent_turn_id",
+    default=None,
+)
+_SUBAGENT_BASE_CONTEXT: ContextVar[ToolExecutionContext | None] = ContextVar(
+    "akashic_subagent_base_context",
+    default=None,
+)
 
 _REFLECT_PROMPT = (
     "根据上述工具结果，决定下一步操作。\n"
@@ -136,6 +155,15 @@ class SubAgent:
     async def run(self, task: str) -> str:
         """执行单次任务，并在 owner 结束时回收 shell execution。"""
 
+        run_turn_id = new_turn_id()
+        inherited_context = get_current_tool_context()
+        base_context = replace(
+            inherited_context or ToolExecutionContext(),
+            turn_id=run_turn_id,
+            execution_id="",
+        )
+        turn_token = _SUBAGENT_TURN_ID.set(run_turn_id)
+        context_token = _SUBAGENT_BASE_CONTEXT.set(base_context)
         primary_error: BaseException | None = None
         try:
             return await self._run(task)
@@ -144,11 +172,50 @@ class SubAgent:
             raise
         finally:
             try:
-                await self._shutdown_shell()
-            except BaseException:
-                if primary_error is None:
-                    raise
-                logger.exception("[subagent] shell cleanup 失败，保留原始异常")
+                try:
+                    self._cleanup_web_fetch_turn(run_turn_id)
+                except BaseException:
+                    if primary_error is None:
+                        raise
+                    logger.exception(
+                        "[subagent] web_fetch cleanup failed，保留原始异常"
+                    )
+            finally:
+                try:
+                    await self._shutdown_shell()
+                except BaseException:
+                    if primary_error is None:
+                        raise
+                    logger.exception("[subagent] shell cleanup 失败，保留原始异常")
+                finally:
+                    _SUBAGENT_BASE_CONTEXT.reset(context_token)
+                    _SUBAGENT_TURN_ID.reset(turn_token)
+
+    def _cleanup_web_fetch_turn(self, turn_id: str) -> None:
+        """释放本次 subagent run 的 web_fetch spill。"""
+
+        seen: set[int] = set()
+        for tool in self._tool_map.values():
+            if not isinstance(tool, WebFetchTool) or id(tool) in seen:
+                continue
+            seen.add(id(tool))
+            try:
+                cleanups = tool.release_turn(turn_id)
+            except Exception as exc:
+                logger.error(
+                    "[subagent] cleanup_degraded: web_fetch release_turn failed: %s",
+                    exc,
+                )
+                continue
+            for cleanup in cleanups:
+                if cleanup.released:
+                    continue
+                logger.error(
+                    "[subagent] cleanup_degraded: web_fetch execution=%s path=%s error=%s",
+                    cleanup.execution_id,
+                    cleanup.path,
+                    cleanup.error,
+                )
 
     async def _run(self, task: str) -> str:
         """执行单次任务，并返回完成结果或预算收尾总结。"""
@@ -430,7 +497,17 @@ class SubAgent:
             )
 
         async def _invoke(name: str, kwargs: dict[str, Any]):
-            return await tool.execute(**kwargs)
+            inherited_context = _SUBAGENT_BASE_CONTEXT.get()
+            run_turn_id = _SUBAGENT_TURN_ID.get()
+            if inherited_context is None or run_turn_id is None:
+                raise RuntimeError("subagent tool execution owner 未建立")
+            execution_context = replace(
+                inherited_context,
+                turn_id=run_turn_id,
+                execution_id=new_operation_id(),
+            )
+            with tool_execution_context_scope(execution_context):
+                return await tool.execute(**kwargs)
 
         return await self._tool_executor.execute(
             ToolExecutionRequest(

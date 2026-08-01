@@ -5,15 +5,21 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
+from agent.core import ToolCall
+from agent.looping.core import AgentLoop
 from agent.mcp.client import McpToolInfo
 from agent.mcp.tool import McpToolWrapper
+from agent.provider import LLMResponse
+from agent.subagent import SubAgent
 from agent.tools.base import Tool, get_current_tool_context
 from agent.tools.memorize import MemorizeTool
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from bus.events import ChannelMessage, DeliveryReceipt
+from agent.tools.web_fetch import WebFetchTool
+from agent.tools.web_fetch_spill import SpillCleanup
 from core.memory.engine import (
     MemoryMutationResult,
     MemoryQueryResult,
@@ -39,6 +45,35 @@ class _ContextProbe(Tool):
         return f"{value}:{origin}:{chat_id}"
 
 
+class _ExecutionProbe(Tool):
+    name = "execution_probe"
+    description = "测试 execution owner"
+    parameters = {
+        "type": "object",
+        "properties": {"value": {"type": "string"}},
+        "required": ["value"],
+    }
+
+    async def execute(self, value: str, **_: Any) -> str:
+        context = get_current_tool_context()
+        assert context is not None
+        return f"{value}:{context.execution_id}:{context.turn_id}"
+
+
+class _SubagentProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def chat(self, **_: Any) -> LLMResponse:
+        self.calls += 1
+        if self.calls == 1:
+            return LLMResponse(
+                content="",
+                tool_calls=[ToolCall("c1", "execution_probe", {"value": "x"})],
+            )
+        return LLMResponse(content="done", tool_calls=[])
+
+
 @pytest.mark.asyncio
 async def test_registry_rejects_model_origin_override_and_isolates_concurrent_turns():
     registry = ToolRegistry()
@@ -59,6 +94,106 @@ async def test_registry_rejects_model_origin_override_and_isolates_concurrent_tu
         run("mobile", "conversation-a"),
         run("telegram", "conversation-b"),
     ) == ["ok:mobile:conversation-a", "ok:telegram:conversation-b"]
+
+
+@pytest.mark.asyncio
+async def test_registry_generates_execution_owner_per_call_and_ignores_overrides():
+    registry = ToolRegistry()
+    registry.register(_ExecutionProbe(), always_on=True)
+    registry.set_context(channel="mobile", chat_id="conversation-a", turn_id="turn-1")
+
+    first = await registry.execute(
+        "execution_probe",
+        {"value": "x"},
+        internal_arguments={"execution_id": "model-forged"},
+    )
+    second = await registry.execute("execution_probe", {"value": "x"})
+
+    first_id = str(first).split(":", 1)[1].rsplit(":", 1)[0]
+    second_id = str(second).split(":", 1)[1].rsplit(":", 1)[0]
+    assert first_id.startswith("operation:")
+    assert second_id.startswith("operation:")
+    assert first_id != second_id
+    assert str(first).endswith(":turn-1")
+    assert str(second).endswith(":turn-1")
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_context_provider_rejects_untyped_result():
+    from agent.tools.web_fetch import WebFetchTool
+
+    class _Requester:
+        async def get(self, *_args: Any, **_kwargs: Any):
+            raise AssertionError("context validation should happen first")
+
+    tool = WebFetchTool(
+        requester=_Requester(),  # type: ignore[arg-type]
+        context_provider=lambda: {"execution_id": "e", "turn_id": "t"},  # type: ignore[return-value]
+    )
+
+    with pytest.raises(TypeError, match="ToolExecutionContext"):
+        await tool.execute(url="https://example.com")
+
+
+@pytest.mark.asyncio
+async def test_subagent_scopes_each_tool_call_and_releases_own_turn():
+    provider = _SubagentProvider()
+    probe = _ExecutionProbe()
+    web_fetch = WebFetchTool(requester=object())  # type: ignore[arg-type]
+    web_fetch.release_turn = MagicMock(return_value=[])
+    subagent = SubAgent(
+        provider=provider,  # type: ignore[arg-type]
+        model="m",
+        tools=[probe, web_fetch],
+    )
+
+    result = await subagent.run("inspect")
+
+    assert result == "done"
+    # The generated owner is visible only during the tool call and is not a model argument.
+    assert provider.calls == 2
+    web_fetch.release_turn.assert_called_once()
+    released_turn = web_fetch.release_turn.call_args.args[0]
+    assert str(released_turn).startswith("turn:")
+
+
+@pytest.mark.asyncio
+async def test_subagent_spill_cleanup_failure_does_not_rewrite_success():
+    provider = _SubagentProvider()
+    web_fetch = WebFetchTool(requester=object())  # type: ignore[arg-type]
+    web_fetch.release_turn = MagicMock(side_effect=OSError("unlink denied"))
+    subagent = SubAgent(
+        provider=provider,  # type: ignore[arg-type]
+        model="m",
+        tools=[web_fetch],
+    )
+
+    assert await subagent.run("inspect") == "done"
+
+
+def test_agent_loop_releases_web_fetch_turn_and_keeps_cleanup_owner(caplog):
+    web_fetch = WebFetchTool(requester=object())  # type: ignore[arg-type]
+    web_fetch.release_turn = MagicMock(
+        return_value=[
+            SpillCleanup(
+                execution_id="operation:1",
+                released=False,
+                status="cleanup_degraded",
+                path="/tmp/response.spill",
+                error="permission denied",
+            )
+        ]
+    )
+    registry = ToolRegistry()
+    registry.register(web_fetch, always_on=True)
+    loop = object.__new__(AgentLoop)
+    loop.tools = registry
+
+    AgentLoop._cleanup_web_fetch_owner(loop, "turn:1")
+
+    web_fetch.release_turn.assert_called_once_with("turn:1")
+    assert "cleanup_degraded" in caplog.text
+    assert "operation:1" in caplog.text
 
 
 @pytest.mark.asyncio

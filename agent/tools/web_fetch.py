@@ -13,7 +13,7 @@ import httpx
 from lxml import html as lxml_html
 from lxml.etree import ParserError
 
-from agent.tools.base import Tool
+from agent.tools.base import Tool, ToolExecutionContext
 from core.net.http import (
     AddressPolicyError,
     HttpRequester,
@@ -40,22 +40,21 @@ class SpillOwnerMissing(RuntimeError):
     """大响应缺少 runtime execution owner。"""
 
 
-def _default_tool_context() -> object | None:
+def _default_tool_context() -> ToolExecutionContext | None:
     """D1 尚未接线时不产生 owner；bootstrap 必须显式注入 runtime provider。"""
 
     return None
 
 
-def _owner_from_context(context: object | None) -> tuple[str | None, str | None]:
+def _owner_from_context(
+    context: ToolExecutionContext | None,
+) -> tuple[str | None, str | None]:
     if context is None:
         return None, None
-    execution_id = getattr(context, "execution_id", None)
-    turn_id = getattr(context, "turn_id", None)
-    if isinstance(context, dict):
-        execution_id = context.get("execution_id")
-        turn_id = context.get("turn_id")
-    owner = str(execution_id).strip() if execution_id is not None else None
-    turn = str(turn_id).strip() if turn_id is not None else None
+    if not isinstance(context, ToolExecutionContext):
+        raise TypeError("web_fetch context_provider 必须返回 ToolExecutionContext | None")
+    owner = context.execution_id.strip()
+    turn = context.turn_id.strip()
     if not owner or not turn:
         return None, None
     return owner, turn
@@ -103,7 +102,7 @@ class WebFetchTool(Tool):
         self,
         requester: HttpRequester | None = None,
         spill_store: WebFetchSpillStore | None = None,
-        context_provider: Callable[[], object | None] = _default_tool_context,
+        context_provider: Callable[[], ToolExecutionContext | None] = _default_tool_context,
     ) -> None:
         self._requester = requester or get_default_http_requester("external_default")
         self._spill_store = spill_store
@@ -124,7 +123,7 @@ class WebFetchTool(Tool):
             self._execution_turns.pop(str(execution_id), None)
         return result
 
-    def release_turn(self, turn_id: str) -> list[object]:
+    def release_turn(self, turn_id: str) -> list[SpillCleanup]:
         """释放一个 turn 产生的所有 spill，并保留失败 owner 的诊断。"""
 
         turn = str(turn_id or "").strip()
