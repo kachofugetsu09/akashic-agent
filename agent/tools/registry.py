@@ -6,7 +6,12 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, TypedDict, cast
 
-from agent.tools.base import Tool, ToolResult
+from agent.tools.base import (
+    Tool,
+    ToolExecutionContext,
+    ToolResult,
+    tool_execution_context_scope,
+)
 from agent.tools.search_backend import KeywordSearchBackend, SearchBackend
 
 logger = logging.getLogger(__name__)
@@ -167,7 +172,10 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
         self._metadata: dict[str, ToolMeta] = {}
         self._documents: dict[str, ToolDocument] = {}
-        self._context: dict[str, str] = {}
+        self._execution_context: ContextVar[ToolExecutionContext | None] = ContextVar(
+            f"akashic_tool_registry_context_{id(self)}",
+            default=None,
+        )
         self._backend: SearchBackend = backend or KeywordSearchBackend()
         self._snapshot_view = not follow_runtime_snapshot
 
@@ -190,7 +198,7 @@ class ToolRegistry:
         cloned._tools = {name: self._tools[name] for name in names}
         cloned._metadata = {name: self._metadata[name] for name in names}
         cloned._documents = {name: self._documents[name] for name in names}
-        cloned._context = dict(self._context)
+        _ = cloned._execution_context.set(self._execution_context.get())
         cloned._backend.rebuild(list(cloned._documents.values()))
         cloned._snapshot_view = True
         return cloned
@@ -206,18 +214,82 @@ class ToolRegistry:
         return snapshot.tool_registry
 
     def set_context(self, **kwargs: str) -> None:
-        """设置当前会话上下文（channel、chat_id 等），供工具按需读取。"""
+        """为当前 async task 绑定不可变 runtime provenance。"""
+
         view = self._runtime_view()
         if view is not self:
             view.set_context(**kwargs)
             return
-        self._context.update(kwargs)
+
+        allowed = {
+            "channel",
+            "chat_id",
+            "session_key",
+            "turn_id",
+            "current_timestamp",
+            "current_user_source_ref",
+            "origin_channel",
+            "origin_chat_id",
+            "origin_session_key",
+        }
+        unknown = sorted(set(kwargs) - allowed)
+        if unknown:
+            raise TypeError(f"工具上下文包含未知字段: {', '.join(unknown)}")
+        self_context = ToolExecutionContext(
+            origin_channel=str(
+                kwargs.get("origin_channel", kwargs.get("channel", ""))
+                or ""
+            ),
+            origin_chat_id=str(
+                kwargs.get("origin_chat_id", kwargs.get("chat_id", ""))
+                or ""
+            ),
+            origin_session_key=str(
+                kwargs.get(
+                    "origin_session_key",
+                    kwargs.get("session_key", ""),
+                )
+                or ""
+            ),
+            turn_id=str(kwargs.get("turn_id", "") or ""),
+            current_timestamp=str(
+                kwargs.get("current_timestamp", "") or ""
+            ),
+            current_user_source_ref=str(
+                kwargs.get(
+                    "current_user_source_ref", ""
+                )
+                or ""
+            ),
+        )
+        # ContextVar is task-local; no registry-owned mutable context remains.
+        _ = self._execution_context.set(self_context)
 
     def get_context(self) -> dict[str, str]:
+        """Return a compatibility view for internal callers, never model input."""
+
         view = self._runtime_view()
         if view is not self:
             return view.get_context()
-        return self._context
+        context = self._execution_context.get()
+        if context is None:
+            return {}
+        return {
+            "channel": context.origin_channel,
+            "chat_id": context.origin_chat_id,
+            "session_key": context.origin_session_key,
+            "turn_id": context.turn_id,
+            "current_timestamp": context.current_timestamp,
+            "current_user_source_ref": context.current_user_source_ref,
+        }
+
+    def get_execution_context(self) -> ToolExecutionContext | None:
+        """Return the immutable runtime provenance for internal tool adapters."""
+
+        view = self._runtime_view()
+        if view is not self:
+            return view.get_execution_context()
+        return self._execution_context.get()
 
     def begin_turn_search_scope(
         self,
@@ -425,6 +497,8 @@ class ToolRegistry:
         name: str,
         arguments: dict[str, Any],
         *,
+        internal_arguments: dict[str, Any] | None = None,
+        context: ToolExecutionContext | None = None,
         raise_errors: bool = False,
         execution_timeout: float | None = None,
     ) -> str | ToolResult:
@@ -433,6 +507,8 @@ class ToolRegistry:
             return await view.execute(
                 name,
                 arguments,
+                internal_arguments=internal_arguments,
+                context=context,
                 raise_errors=raise_errors,
                 execution_timeout=execution_timeout,
             )
@@ -442,6 +518,33 @@ class ToolRegistry:
                 raise RuntimeError(f"工具 '{name}' 不存在")
             return f"工具 '{name}' 不存在"
         meta = self._metadata[name]
+        if not isinstance(arguments, dict):
+            message = "工具参数必须是对象"
+            if raise_errors:
+                raise TypeError(message)
+            return message
+
+        validation_arguments = dict(arguments)
+        if not _tool_defines_parameter(tool, _PROGRESS_DESCRIPTION_FIELD):
+            validation_arguments.pop(_PROGRESS_DESCRIPTION_FIELD, None)
+        properties = (tool.parameters or {}).get("properties", {})
+        known_names = set(properties) if isinstance(properties, dict) else set()
+        unknown_names = sorted(
+            str(key) for key in validation_arguments if key not in known_names
+        )
+        if unknown_names:
+            message = f"工具参数无效: 不允许额外字段：{', '.join(unknown_names)}"
+            if raise_errors:
+                raise ValueError(message)
+            return message
+
+        validation_errors = tool.validate_params(validation_arguments)
+        if validation_errors:
+            message = "; ".join(validation_errors)
+            if raise_errors:
+                raise ValueError(message)
+            return f"工具参数无效: {message}"
+
         if meta.requires_turn_search:
             scope = _TURN_SEARCH_SCOPE.get()
             from agent.control.context import current_turn_id
@@ -467,25 +570,16 @@ class ToolRegistry:
                 if raise_errors:
                     raise RuntimeError(message)
                 return message
-            validation_arguments = dict(arguments)
-            if not _tool_defines_parameter(tool, _PROGRESS_DESCRIPTION_FIELD):
-                validation_arguments.pop(_PROGRESS_DESCRIPTION_FIELD, None)
-            validation_errors = tool.validate_params(validation_arguments)
-            if validation_errors:
-                message = "; ".join(validation_errors)
-                if raise_errors:
-                    raise ValueError(message)
-                return f"工具参数无效: {message}"
         try:
-            # 将会话上下文（channel、chat_id）作为低优先级默认值合并进 kwargs，
-            # 工具可按需读取，不感知此机制的工具会直接忽略多余的 key。
-            merged: dict[str, Any] = {**self._context, **arguments}
-            if not _tool_defines_parameter(tool, _PROGRESS_DESCRIPTION_FIELD):
-                merged.pop(_PROGRESS_DESCRIPTION_FIELD, None)
-            return await tool.execute_with_timeout(
-                merged,
-                execution_timeout=execution_timeout,
-            )
+            merged = dict(validation_arguments)
+            if internal_arguments:
+                merged.update(internal_arguments)
+            execution_context = context or self._execution_context.get()
+            with tool_execution_context_scope(execution_context):
+                return await tool.execute_with_timeout(
+                    merged,
+                    execution_timeout=execution_timeout,
+                )
         except Exception as e:
             logger.error(f"工具 {name} 执行出错: {e}", exc_info=True)
             if raise_errors:

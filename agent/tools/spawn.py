@@ -147,9 +147,9 @@ subagent 没有看过当前会话。像给刚进房间的同事写交接文档�
             return f"任务被拦截：{decision.block_reason}"
 
         if run_in_background:
-            ctx = self._tool_registry.get_context()
-            channel = str(ctx.get("channel", "") or "").strip()
-            chat_id = str(ctx.get("chat_id", "") or "").strip()
+            ctx = self._tool_registry.get_execution_context()
+            channel = str(ctx.origin_channel if ctx else "").strip()
+            chat_id = str(ctx.origin_chat_id if ctx else "").strip()
             if not channel or not chat_id:
                 return "错误：当前会话上下文缺失，无法创建后台任务"
             return await self._manager.spawn(

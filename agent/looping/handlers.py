@@ -74,6 +74,7 @@ async def process_spawn_completion_event(
     tools.set_context(
         channel=item.channel,
         chat_id=item.chat_id,
+        session_key=key,
         current_timestamp=item.timestamp.isoformat(),
     )
     prompt_render = await prompt_render_fn(
