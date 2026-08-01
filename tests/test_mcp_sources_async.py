@@ -219,6 +219,38 @@ async def test_fetch_quarantines_one_bad_item_and_keeps_valid_batch_item() -> No
 
 
 @pytest.mark.asyncio
+async def test_single_channel_infers_kind_and_writes_it_back() -> None:
+    pool = FakePool(
+        {
+            ("feed", "events"): [
+                {
+                    "event_id": "missing-kind",
+                    "preprocess_score": 0.2,
+                    "published_at": "2026-07-12T00:00:00+00:00",
+                }
+            ]
+        }
+    )
+    result = await mcp_sources.fetch_sources_async(
+        cast(Any, pool),
+        [source("feed", "content", ("content",), "feed", "events")],
+    )
+
+    assert result["content"][0]["kind"] == "content"
+
+
+@pytest.mark.asyncio
+async def test_ack_without_declared_tool_is_not_local_success() -> None:
+    pool = FakePool({("feed", "events"): []})
+    no_ack = source("feed", "content", ("content",), "feed", "events")
+
+    with pytest.raises(RuntimeError, match="未声明 ack tool"):
+        await mcp_sources.acknowledge_async(
+            cast(Any, pool), [no_ack], "feed:content", ["event-1"]
+        )
+
+
+@pytest.mark.asyncio
 async def test_fetch_isolates_single_source_failure() -> None:
     pool = FakePool(
         {("ok", "events"): [{"kind": "content", "event_id": "1"}], ("bad", "events"): []},

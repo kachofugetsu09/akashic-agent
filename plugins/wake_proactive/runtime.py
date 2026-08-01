@@ -87,6 +87,7 @@ class WakeRunState:
     new_content_count: int = 0
     new_content_ids: set[str] | None = None
     unread_content_mass: float = 0.0
+    unread_content_count: int = 0
 
 
 @dataclass(slots=True)
@@ -174,7 +175,10 @@ class WakeRuntime:
         if state.alerts:
             return
         await self._cache_event_embeddings()
-        state.contents = self._state.unread("content")
+        state.contents = self._state.unread(
+            "content", limit=_MAX_TITLES_PER_WAKE
+        )
+        state.unread_content_count = self._state.unread_count("content")
         self._apply_semantic_interest(state.contents, state.ctx.now_utc)
 
     async def _fetch_source_channels(self) -> dict[str, list[dict[str, Any]]]:
@@ -302,6 +306,7 @@ class WakeRuntime:
                 for event in state.contents
                 if str(event["id"]) not in expired_ids
             ]
+            state.unread_content_count = self._state.unread_count("content")
         new_content_ids = (state.new_content_ids or set()) - expired_ids
         should_evaluate_content = bool(state.contents and new_content_ids)
         if should_evaluate_content:
@@ -334,7 +339,7 @@ class WakeRuntime:
                     now=state.ctx.now_utc,
                 )
                 state.ctx.content_backlog_count = (
-                    len(state.contents) - len(state.ctx.content_events)
+                    state.unread_content_count - len(state.ctx.content_events)
                 )
                 self._record_content_observation(state.ctx, result)
                 await self._run_content_tools(state.ctx)
