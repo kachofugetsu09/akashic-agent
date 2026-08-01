@@ -268,7 +268,6 @@ export function SettingsApp() {
       <div className="settings-shell">
         <header className="settings-header">
           <div>
-            <span className="settings-kicker">AKASHIC SETTINGS</span>
             <h1>{state?.mode === "needs_setup" ? "连接你的模型" : "模型与认证"}</h1>
             <p>选择一个 Provider，验证后安全切换。已保存的密钥不会显示在页面中。</p>
           </div>

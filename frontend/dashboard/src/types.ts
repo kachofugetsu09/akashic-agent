@@ -17,6 +17,7 @@ export interface SessionRow {
   metadata: Record<string, unknown>;
   last_user_at: string | null;
   last_proactive_at: string | null;
+  first_message_content: string | null;
   message_count: number;
 }
 
