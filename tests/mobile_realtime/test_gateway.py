@@ -33,7 +33,9 @@ from bus.events_lifecycle import (
 from infra.channels.base import AttachmentStore
 from infra.mobile_realtime.attachments import (
     AttachmentChunk,
+    AttachmentTransferService,
     MAX_ATTACHMENT_CHUNK_BYTES,
+    attachment_descriptor,
     decode_attachment_chunk,
     encode_attachment_chunk,
 )
@@ -52,6 +54,67 @@ from infra.mobile_realtime.plugin_ui_http import (
 from infra.mobile_realtime.protocol import AttachmentDownloadCommand, parse_frame
 from infra.mobile_realtime.storage import DeviceRecord
 from session.manager import SessionManager
+
+
+@pytest.mark.asyncio
+async def test_gateway_atomically_publishes_proactive_attachment(
+    tmp_path: Path,
+) -> None:
+    runtime, _keyset = build_mobile_gateway_runtime(
+        _config(),
+        tmp_path,
+        master_keys=_EphemeralMasterKeys(),
+    )
+    device_id = uuid4().hex
+    runtime.storage.register_device(
+        DeviceRecord(
+            device_id=device_id,
+            public_key="test-public-key",
+            display_name="Pixel",
+            created_at=datetime.now(timezone.utc),
+            revoked_at=None,
+            capabilities=("attachments",),
+        )
+    )
+    source = tmp_path / "report.pdf"
+    source.write_bytes(b"report")
+    service = AttachmentTransferService(
+        runtime.storage,
+        AttachmentStore(tmp_path / "uploads"),
+        max_attachment_bytes=1024,
+    )
+    candidates = service.snapshot_outbound_batch(
+        session_id="mobile:session-1",
+        local_media_paths=(source,),
+    )
+    try:
+        resolved = await runtime.publish_event_with_outbound_attachments(
+            candidates=candidates,
+            session_id="mobile:session-1",
+            payload_builder=lambda records: {
+                "content": "报告",
+                "attachments": [
+                    attachment_descriptor(record) for record in records
+                ],
+                "metadata": {"source": "message_push"},
+                "delivery_id": "delivery-1",
+            },
+        )
+
+        replay = runtime.storage.read_durable_events(
+            device_id,
+            after_event_seq=0,
+            limit=10,
+        )
+        assert len(resolved) == 1
+        assert runtime.storage.read_attachment(resolved[0].attachment_id) == resolved[0]
+        assert len(replay) == 1
+        envelope = json.loads(replay[0].envelope_json)
+        assert envelope["payload"]["attachments"][0]["attachment_id"] == (
+            resolved[0].attachment_id
+        )
+    finally:
+        runtime.close()
 
 
 class _ControlledWebSocket:

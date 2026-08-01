@@ -14,7 +14,13 @@ import infra.mobile_realtime.gateway as gateway_module
 
 from agent.config_models import MobileRealtimeConfig
 from infra.mobile_realtime.runtime_inspection import RuntimeInspectionService
-from bus.events import OutboundMessage
+from bus.events import (
+    AttachmentKind,
+    ChannelAttachment,
+    ChannelMessage,
+    DeliveryStatus,
+    OutboundMessage,
+)
 from bus.events_lifecycle import (
     StreamDeltaReady,
     ToolCallCompleted,
@@ -30,7 +36,11 @@ from infra.mobile_realtime.protocol import (
     parse_frame,
 )
 from infra.mobile_realtime.remote_media import RemoteMediaError, RemoteMediaSnapshot
-from infra.mobile_realtime.storage import DeviceRecord, MobileRealtimeStorage
+from infra.mobile_realtime.storage import (
+    AttachmentRecord,
+    DeviceRecord,
+    MobileRealtimeStorage,
+)
 from session.manager import SessionManager
 
 
@@ -45,6 +55,32 @@ class _Runtime:
 
     async def publish_connection_control(self, **control: object) -> None:
         self.events.append(dict(control))
+
+    async def publish_event_with_outbound_attachments(
+        self,
+        *,
+        candidates: tuple[AttachmentRecord, ...],
+        payload_builder: Any,
+        session_id: str,
+    ) -> tuple[AttachmentRecord, ...]:
+        event_id = gateway_module._new_ulid()
+        resolved, events = self.storage.commit_outbound_event(
+            candidates,
+            device_ids=tuple(
+                device.device_id for device in self.storage.list_active_devices()
+            ),
+            event_id=event_id,
+            envelope_builder=lambda records: gateway_module._encode_stored_event(
+                event_id=event_id,
+                event_type="message.proactive",
+                payload=payload_builder(records),
+                session_id=session_id,
+                turn_id=None,
+            ),
+            created_at=datetime.now(timezone.utc),
+        )
+        self.events.append({"durable": events})
+        return resolved
 
 
 class _Bus:
@@ -1489,6 +1525,7 @@ async def test_command_list_uses_active_channel_catalog_without_stop(
     }
     await channel.stop()
     storage.close()
+    storage.close()
 
 
 @pytest.mark.asyncio
@@ -2058,10 +2095,17 @@ async def test_proactive_sender_uses_mobile_event_path(tmp_path: Path) -> None:
         session_id=f"mobile:{chat_id}",
         created_at=datetime.now(timezone.utc),
     )
-    sender = cast(Any, push.registered["mobile"]["text"])
+    deliver = cast(Any, push.registered["mobile"]["deliver"])
 
-    await sender(chat_id, "该休息一下了")
+    receipt = await deliver(
+        ChannelMessage(
+            channel="mobile",
+            chat_id=chat_id,
+            content="该休息一下了",
+        )
+    )
 
+    assert receipt.status is DeliveryStatus.SUCCESS
     assert runtime.events == [
         {
             "event_type": "message.proactive",
@@ -2080,6 +2124,7 @@ async def test_proactive_sender_uses_mobile_event_path(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_proactive_metadata_sender_forwards_delivery_id(tmp_path: Path) -> None:
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    _register_device(storage, uuid4().hex)
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     push = _PushTool()
@@ -2097,10 +2142,18 @@ async def test_proactive_metadata_sender_forwards_delivery_id(tmp_path: Path) ->
         )
     )
     chat_id = str(uuid4())
-    sender = cast(Any, push.registered["mobile"]["text_with_metadata"])
+    deliver = cast(Any, push.registered["mobile"]["deliver"])
 
-    await sender(chat_id, "该休息一下了", {"delivery_id": "delivery-1"})
+    receipt = await deliver(
+        ChannelMessage(
+            channel="mobile",
+            chat_id=chat_id,
+            content="该休息一下了",
+            metadata={"delivery_id": "delivery-1"},
+        )
+    )
 
+    assert receipt.status is DeliveryStatus.SUCCESS
     assert runtime.events[-1]["payload"] == {
         "content": "该休息一下了",
         "attachments": [],
@@ -2108,4 +2161,80 @@ async def test_proactive_metadata_sender_forwards_delivery_id(tmp_path: Path) ->
         "delivery_id": "delivery-1",
     }
     await channel.stop()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_proactive_attachment_commits_one_replayable_logical_message(
+    tmp_path: Path,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_ids = (uuid4().hex, uuid4().hex)
+    for device_id in device_ids:
+        _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    push = _PushTool()
+    upload_store = AttachmentStore(tmp_path / "uploads")
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=_Bus(),
+                session_manager=SessionManager(tmp_path / "workspace"),
+                event_bus=_EventBus(),
+                push_tool=push,
+                interrupt_controller=None,
+                attachment_store=upload_store,
+            ),
+        )
+    )
+    source = tmp_path / "photo.png"
+    source.write_bytes(b"png-payload")
+    chat_id = str(uuid4())
+    deliver = cast(Any, push.registered["mobile"]["deliver"])
+
+    receipt = await deliver(
+        ChannelMessage(
+            channel="mobile",
+            chat_id=chat_id,
+            content="看图",
+            attachments=(
+                ChannelAttachment(AttachmentKind.IMAGE, str(source)),
+            ),
+            metadata={"delivery_id": "delivery-with-image"},
+        )
+    )
+
+    assert receipt.status is DeliveryStatus.SUCCESS
+    assert len(receipt.canonical_media) == 1
+    assert receipt.canonical_media[0] != str(source)
+    assert Path(receipt.canonical_media[0]).read_bytes() == b"png-payload"
+    envelopes = []
+    for device_id in device_ids:
+        replay = storage.read_durable_events(
+            device_id,
+            after_event_seq=0,
+            limit=10,
+        )
+        assert len(replay) == 1
+        envelopes.append(json.loads(replay[0].envelope_json))
+    assert envelopes[0] == envelopes[1]
+    assert envelopes[0]["type"] == "message.proactive"
+    assert envelopes[0]["payload"]["content"] == "看图"
+    assert envelopes[0]["payload"]["delivery_id"] == "delivery-with-image"
+    assert len(envelopes[0]["payload"]["attachments"]) == 1
+
+    await channel.stop()
+    storage.close()
+
+    reopened = MobileRealtimeStorage(tmp_path / "mobile.db")
+    assert len(
+        reopened.read_durable_events(
+            device_ids[0],
+            after_event_seq=0,
+            limit=10,
+        )
+    ) == 1
+    reopened.close()
     storage.close()

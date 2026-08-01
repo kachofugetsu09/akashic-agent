@@ -9,6 +9,7 @@ from agent.tools.message_push import MessagePushTool
 from bootstrap.channel_host import ChannelHost
 from bootstrap.app import AppRuntime
 from bus.event_bus import EventBus
+from bus.events import ChannelMessage, DeliveryReceipt, DeliveryStatus
 from bus.queue import MessageBus
 
 
@@ -77,12 +78,12 @@ class _RegisteredChannel:
         async def on_outbound(_message: object) -> None:
             return None
 
-        async def send_text(_chat_id: str, _message: str) -> None:
-            return None
+        async def deliver(_message: ChannelMessage) -> DeliveryReceipt:
+            return DeliveryReceipt(DeliveryStatus.SUCCESS)
 
         ctx.event_bus.on(_Event, lambda event: event)
         ctx.bus.subscribe_outbound(self.name, on_outbound)
-        ctx.push_tool.register_channel(self.name, text=send_text)
+        ctx.push_tool.register_channel(self.name, deliver=deliver)
         if self._fail_start:
             raise RuntimeError("registered start failed")
 
@@ -277,7 +278,7 @@ async def test_channel_host_revokes_shared_registrations_on_stop():
         channel="registered",
         chat_id="1",
         message="hello",
-    ) == "文本已发送"
+    ) == "消息已发送"
 
     await host.stop_all()
 
@@ -326,7 +327,7 @@ async def test_channel_host_restores_shared_registrations_after_failed_swap():
         channel="registered",
         chat_id="1",
         message="hello",
-    ) == "文本已发送"
+    ) == "消息已发送"
 
 
 @pytest.mark.asyncio

@@ -54,7 +54,7 @@ async def test_capture_channel_records_replay_time(tmp_path, monkeypatch) -> Non
     result = await push.execute(channel="replay", chat_id="user", message="hello")
     await channel.stop()
 
-    assert result == "文本已发送"
+    assert result == "消息已发送"
     report = status(layout)
     assert report["outbox_messages"] == 1
     assert report["latest_outbound"]["message"] == "hello"

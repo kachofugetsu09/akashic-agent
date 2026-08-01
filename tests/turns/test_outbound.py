@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from agent.turns.outbound import BusOutboundPort, OutboundDispatch
-from bus.events import OutboundMessage
+from bus.events import DeliveryStatus, OutboundMessage
 from bus.queue import MessageBus
 
 
@@ -24,7 +24,7 @@ async def test_bus_outbound_port_publishes_typed_message() -> None:
     )
     message = await bus._outbound.get()
 
-    assert sent is True
+    assert sent.status is DeliveryStatus.SUCCESS
     assert message == OutboundMessage(
         channel="telegram",
         chat_id="123",

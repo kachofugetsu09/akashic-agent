@@ -23,6 +23,7 @@ from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.web_fetch import WebFetchTool
 from bus.event_bus import EventBus
+from bus.events import ChannelMessage, DeliveryReceipt, DeliveryStatus
 from bootstrap.proactive import _build_proactive_provider
 from bootstrap.providers import build_providers
 from proactive_v2.config import ProactiveConfig
@@ -438,7 +439,11 @@ async def tick(
     async def send_text(chat_id: str, message: str) -> None:
         sent.append({"chat_id": chat_id, "message": message})
 
-    push.register_channel("sandbox", text=send_text)
+    async def deliver(message: ChannelMessage) -> DeliveryReceipt:
+        await send_text(message.chat_id, message.content)
+        return DeliveryReceipt(DeliveryStatus.SUCCESS)
+
+    push.register_channel("sandbox", deliver=deliver)
     await plugins.load_all()
     runtime_sources = plugins.proactive_sources
     if isinstance(provider, SandboxProvider):

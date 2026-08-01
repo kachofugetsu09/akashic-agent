@@ -268,6 +268,29 @@ class AttachmentTransferService:
     ) -> tuple[AttachmentRecord, ...]:
         """先完整快照一批媒体，再以单个事务注册全部附件。"""
 
+        candidates = self.snapshot_outbound_batch(
+            session_id=session_id,
+            local_media_paths=local_media_paths,
+            metadata_overrides=metadata_overrides,
+        )
+        try:
+            return self._storage.create_or_read_outbound_attachments(
+                candidates,
+                message_id=message_id,
+            )
+        except BaseException:
+            self.cleanup_outbound_candidates(candidates)
+            raise
+
+    def snapshot_outbound_batch(
+        self,
+        *,
+        session_id: str,
+        local_media_paths: tuple[str | Path, ...] | list[str | Path],
+        metadata_overrides: tuple[tuple[str, str] | None, ...] | None = None,
+    ) -> tuple[AttachmentRecord, ...]:
+        """完整快照并校验一批尚未提交的 outbound 候选。"""
+
         sources = tuple(Path(value) for value in local_media_paths)
         if not 1 <= len(sources) <= 10:
             raise AttachmentRequestError("单条消息附件数量必须在 1..10")
@@ -293,14 +316,18 @@ class AttachmentTransferService:
                         f"{self._max_attachment_bytes} 字节"
                     )
 
-            # 2. 存储层在一个 SQLite 事务内完成整批创建或复用
-            return self._storage.create_or_read_outbound_attachments(
-                tuple(candidates),
-                message_id=message_id,
-            )
+            return tuple(candidates)
         except BaseException:
             _remove_paths([Path(record.local_path) for record in candidates])
             raise
+
+    def cleanup_outbound_candidates(
+        self,
+        candidates: tuple[AttachmentRecord, ...],
+    ) -> None:
+        """删除未提交候选；调用方必须保证事务尚未成功。"""
+
+        _remove_paths([Path(record.local_path) for record in candidates])
 
     def read_message_outbound(
         self,

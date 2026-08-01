@@ -28,7 +28,13 @@ from typing import Any, cast
 from agent.config_models import QQGroupConfig
 from agent.looping.interrupt import InterruptController
 from bus.event_bus import EventBus
-from bus.events import InboundMessage, OutboundMessage
+from bus.events import (
+    ChannelMessage,
+    DeliveryReceipt,
+    InboundMessage,
+    OutboundMessage,
+    channel_message_from_outbound,
+)
 from bus.events_lifecycle import (
     ToolCallCompleted,
     ToolCallStarted,
@@ -37,6 +43,7 @@ from bus.events_lifecycle import (
 from bus.queue import MessageBus
 from infra.channels.base import AttachmentStore, SessionIdentityIndex
 from infra.channels.contract import ChannelContext
+from infra.channels.delivery import deliver_message_parts
 from infra.channels.group_filter import (
     DefaultGroupFilter,
     GroupMessageFilter,
@@ -376,9 +383,7 @@ class QQChannel:
             self._interrupt_controller = ctx.interrupt_controller
             ctx.push_tool.register_channel(
                 self.name,
-                text=self.send,
-                file=self.send_file,
-                image=self.send_image,
+                deliver=self._deliver_message,
             )
         self._main_loop = asyncio.get_running_loop()
         self._identity_index.rebuild()
@@ -609,26 +614,10 @@ class QQChannel:
                 await self._send_private_trace(msg.chat_id, session_key, msg)
             except Exception as e:
                 logger.warning(f"[qq] 私聊 tracing 合并转发失败  chat_id={msg.chat_id}  错误: {e}")
-        if msg.content.strip():
-            try:
-                if msg.chat_id.startswith(_GROUP_PREFIX):
-                    group_id = msg.chat_id[len(_GROUP_PREFIX) :]
-                    logger.info(f"[qq] 群聊回复  group_id={group_id}  内容: {preview!r}")
-                    await self._run_on_bot_loop(
-                        api.send_group_text(int(group_id), msg.content)
-                    )
-                else:
-                    logger.info(f"[qq] 私聊回复  user_id={msg.chat_id}  内容: {preview!r}")
-                    await self._run_on_bot_loop(
-                        api.send_private_text(int(msg.chat_id), msg.content)
-                    )
-            except Exception as e:
-                logger.error(f"[qq] 发送失败  chat_id={msg.chat_id}  错误: {e}")
-        for image in (msg.media or []):
-            try:
-                await self.send_image(msg.chat_id, image)
-            except Exception as e:
-                logger.error(f"[qq] meme 图片发送失败  chat_id={msg.chat_id}  path={image}  err={e}")
+        logger.info("[qq] 发送回复  chat_id=%s 内容=%r", msg.chat_id, preview)
+        receipt = await self._deliver_message(channel_message_from_outbound(msg))
+        if not receipt.succeeded:
+            raise RuntimeError(receipt.detail or "QQ 消息提交失败")
         self._trace_states.pop(session_key, None)
 
     async def _send_private_trace(
@@ -744,6 +733,16 @@ class QQChannel:
             await self._run_on_bot_loop(api.send_group_image(int(group_id), uri))
         else:
             await self._run_on_bot_loop(api.send_private_image(int(chat_id), uri))
+
+    async def _deliver_message(self, message: ChannelMessage) -> DeliveryReceipt:
+        """以 QQ 原生调用提交完整消息并报告部分送达。"""
+
+        return await deliver_message_parts(
+            message,
+            send_text=self.send,
+            send_file=self.send_file,
+            send_image=self.send_image,
+        )
 
     def _require_main_loop(self) -> asyncio.AbstractEventLoop:
         if self._main_loop is None:

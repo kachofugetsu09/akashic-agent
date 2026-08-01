@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import re
+import sqlite3
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -13,7 +14,14 @@ from time import monotonic
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
-from bus.events import InboundMessage, OutboundMessage
+from bus.events import (
+    ChannelMessage,
+    DeliveryReceipt,
+    DeliveryStatus,
+    InboundMessage,
+    OutboundMessage,
+    channel_message_from_outbound,
+)
 from bus.events_lifecycle import (
     StreamDeltaReady,
     ToolCallCompleted,
@@ -57,7 +65,12 @@ from infra.mobile_realtime.remote_media import (
     RemoteMediaSnapshot,
     snapshot_remote_media,
 )
-from infra.mobile_realtime.storage import AttachmentStateError, CommandReceipt
+from infra.mobile_realtime.storage import (
+    AttachmentRecord,
+    AttachmentStateError,
+    CommandReceipt,
+    MobileStorageError,
+)
 
 if TYPE_CHECKING:
     from agent.plugins.mobile_ui import MobileUiProvider
@@ -231,9 +244,7 @@ class MobileRealtimeChannel:
         _ = ctx.event_bus.on(ToolCallCompleted, self._on_tool_call_completed)
         _ = ctx.push_tool.register_channel(
             self.name,
-            text=self.send,
-            stream_text=self.send_stream,
-            text_with_metadata=self.send_with_metadata,
+            deliver=self._deliver_message,
         )
 
     async def stop(self) -> None:
@@ -496,6 +507,124 @@ class MobileRealtimeChannel:
 
     async def send_stream(self, chat_id: str, message: str) -> None:
         await self.send(chat_id, message)
+
+    async def _deliver_message(self, message: ChannelMessage) -> DeliveryReceipt:
+        """把完整主动消息原子提交为一个 Mobile durable event。"""
+
+        self._raise_delta_failure()
+        if message.metadata.get("_channel_commit_role") == "passive":
+            return await self._deliver_passive_message(message)
+        session_id = self._session_id(message.chat_id)
+        if not self._runtime.storage.list_active_devices():
+            return DeliveryReceipt(
+                DeliveryStatus.FAILED,
+                detail="Mobile 没有可接收消息的已配对设备",
+            )
+        delivery_id = message.metadata.get("delivery_id")
+        if delivery_id is not None and (
+            not isinstance(delivery_id, str)
+            or not delivery_id
+            or len(delivery_id) > 128
+        ):
+            raise ValueError("mobile proactive delivery_id 无效")
+        if not message.attachments:
+            payload: dict[str, object] = {
+                "content": message.content,
+                "attachments": [],
+                "metadata": {"source": "message_push"},
+            }
+            if delivery_id is not None:
+                payload["delivery_id"] = delivery_id
+            await self._runtime.publish_event(
+                event_type="message.proactive",
+                session_id=session_id,
+                payload=payload,
+            )
+            return DeliveryReceipt(DeliveryStatus.SUCCESS)
+
+        snapshots: list[RemoteMediaSnapshot] = []
+        candidates: tuple[AttachmentRecord, ...] = ()
+        try:
+            # 1. 所有源先成为受限本地快照，尚不写数据库
+            paths: list[str] = []
+            overrides: list[tuple[str, str] | None] = []
+            for attachment in message.attachments:
+                if attachment.source.startswith(("http://", "https://")):
+                    snapshot = await snapshot_remote_media(
+                        attachment.source,
+                        self._require_ctx().attachment_store,
+                        max_bytes=(
+                            self._runtime.config.max_attachment_mb * 1024 * 1024
+                        ),
+                    )
+                    snapshots.append(snapshot)
+                    paths.append(str(snapshot.path))
+                    overrides.append((snapshot.filename, snapshot.content_type))
+                else:
+                    paths.append(attachment.source)
+                    overrides.append(None)
+            candidates = await asyncio.to_thread(
+                self._require_attachments().snapshot_outbound_batch,
+                session_id=session_id,
+                local_media_paths=tuple(paths),
+                metadata_overrides=tuple(overrides),
+            )
+
+            # 2. 附件记录与所有设备 inbox 行在同一事务提交
+            resolved = await self._runtime.publish_event_with_outbound_attachments(
+                candidates=candidates,
+                session_id=session_id,
+                payload_builder=lambda records: self._proactive_attachment_payload(
+                    message,
+                    records,
+                    delivery_id=cast(str | None, delivery_id),
+                ),
+            )
+            return DeliveryReceipt(
+                DeliveryStatus.SUCCESS,
+                canonical_media=tuple(record.local_path for record in resolved),
+            )
+        except (
+            AttachmentRequestError,
+            AttachmentStateError,
+            MobileStorageError,
+            RemoteMediaError,
+            OSError,
+            sqlite3.Error,
+        ) as error:
+            if candidates:
+                self._require_attachments().cleanup_outbound_candidates(candidates)
+            logger.warning(
+                "mobile proactive 附件提交失败: session=%s error=%s",
+                session_id,
+                error,
+            )
+            return DeliveryReceipt(DeliveryStatus.FAILED, detail=str(error))
+        except BaseException:
+            if candidates:
+                self._require_attachments().cleanup_outbound_candidates(candidates)
+            raise
+        finally:
+            for snapshot in snapshots:
+                snapshot.path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _proactive_attachment_payload(
+        message: ChannelMessage,
+        records: tuple[AttachmentRecord, ...],
+        *,
+        delivery_id: str | None,
+    ) -> dict[str, object]:
+        """用事务内解析出的 canonical 附件构造主动事件。"""
+
+        payload: dict[str, object] = {
+            "content": message.content,
+            "attachments": [attachment_descriptor(record) for record in records],
+            "metadata": {"source": "message_push"},
+        }
+        if delivery_id is not None:
+            payload["delivery_id"] = delivery_id
+        return payload
 
     async def _execute_command(
         self,
@@ -1290,18 +1419,32 @@ class MobileRealtimeChannel:
         )
 
     async def _on_response(self, message: OutboundMessage) -> None:
+        outbound = channel_message_from_outbound(message)
+        outbound.metadata["_channel_commit_role"] = "passive"
+        receipt = await self._deliver_message(outbound)
+        if not receipt.succeeded:
+            raise RuntimeError(receipt.detail or "Mobile 被动消息提交失败")
+
+    async def _deliver_passive_message(
+        self,
+        message: ChannelMessage,
+    ) -> DeliveryReceipt:
+        """提交已持久化 Turn 的 Mobile final 投影。"""
+
         self._raise_delta_failure()
         session_id = self._session_id(message.chat_id)
         turn_id = message.control_turn_id or self._current_turn_id(session_id)
         await self._flush_deltas(session_id, turn_id)
         message_id = message.session_message_id
-        if message.media and message_id is None:
+        media = [attachment.source for attachment in message.attachments]
+        if media and message_id is None:
             raise RuntimeError("出站媒体缺少已持久化的 assistant 消息")
         metadata = dict(message.metadata)
+        _ = metadata.pop("_channel_commit_role", None)
         try:
             attachments = await self._outbound_descriptors(
                 session_id,
-                list(message.media),
+                media,
                 message_id=message_id,
             )
         except (
@@ -1346,6 +1489,10 @@ class MobileRealtimeChannel:
         )
         _ = self._active_turn_ids.pop(session_id, None)
         _ = self._process_turns.pop((session_id, turn_id), None)
+        return DeliveryReceipt(
+            DeliveryStatus.SUCCESS,
+            canonical_media=tuple(media),
+        )
 
     async def _mobile_history_item(
         self,

@@ -21,15 +21,48 @@ from agent.tools.memorize import MemorizeTool
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolMeta, ToolRegistry
 from agent.tools.web_search import WebSearchTool
-from bus.events import InboundMessage, OutboundMessage
+from bus.events import (
+    ChannelMessage,
+    DeliveryReceipt,
+    DeliveryStatus,
+    InboundMessage,
+    OutboundMessage,
+)
 from bus.queue import ChatLane, MessageBus
 from core.common import timekit
+from infra.channels.delivery import deliver_message_parts
 from infra.persistence.json_store import atomic_save_json, load_json, save_json
 from memory2.memorizer import Memorizer
 from memory2.store import MemoryStore2
 from plugins.default_memory.engine import DefaultMemoryEngine
 from prompts.agent import build_agent_behavior_rules_prompt
 from prompts.completion import VERIFIABLE_COMPLETION_RULES
+
+
+def _register_text_channel(
+    tool: MessagePushTool,
+    channel: str,
+    sender: Any,
+) -> None:
+    async def unsupported_file(
+        _chat_id: str,
+        _path: str,
+        _name: str | None,
+    ) -> None:
+        raise AssertionError("text-only 测试不应发送文件")
+
+    async def unsupported_image(_chat_id: str, _path: str) -> None:
+        raise AssertionError("text-only 测试不应发送图片")
+
+    async def deliver(message: ChannelMessage) -> DeliveryReceipt:
+        return await deliver_message_parts(
+            message,
+            send_text=sender,
+            send_file=unsupported_file,
+            send_image=unsupported_image,
+        )
+
+    _ = tool.register_channel(channel, deliver=deliver)
 
 
 def test_inbound_message_default_timestamp_is_aware_utc() -> None:
@@ -126,13 +159,15 @@ async def test_message_push_tool_covers_success_failure_and_fallbacks():
     async def image(chat_id: str, path: str) -> None:
         sent["image"].append((chat_id, path))
 
-    tool.register_channel(
-        "telegram",
-        text=text,
-        stream_text=stream_text,
-        file=file,
-        image=image,
-    )
+    async def deliver(message: ChannelMessage) -> DeliveryReceipt:
+        return await deliver_message_parts(
+            message,
+            send_text=stream_text,
+            send_file=file,
+            send_image=image,
+        )
+
+    _ = tool.register_channel("telegram", deliver=deliver)
     result = await tool.execute(
         channel="telegram",
         chat_id=123,
@@ -141,9 +176,7 @@ async def test_message_push_tool_covers_success_failure_and_fallbacks():
         image="https://img",
     )
 
-    assert "文本已发送" in result
-    assert "文件 'demo.txt' 已发送" in result
-    assert "图片已发送" in result
+    assert result == "消息已发送"
     assert sent["text"] == []
     assert sent["stream_text"] == [("123", "hello")]
     assert sent["file"] == [("123", "/tmp/demo.txt", "demo.txt")]
@@ -154,40 +187,47 @@ async def test_message_push_tool_covers_success_failure_and_fallbacks():
     )
     assert "未注册" in await tool.execute(channel="qq", chat_id=1, message="x")
 
-    tool.register_channel("limited", text=text)
+    async def unsupported_file(
+        _chat_id: str,
+        _path: str,
+        _name: str | None,
+    ) -> None:
+        raise RuntimeError("渠道 'limited' 不支持发送文件")
+
+    async def unsupported_image(_chat_id: str, _path: str) -> None:
+        raise RuntimeError("渠道 'limited' 不支持发送图片")
+
+    async def limited_deliver(message: ChannelMessage) -> DeliveryReceipt:
+        return await deliver_message_parts(
+            message,
+            send_text=text,
+            send_file=unsupported_file,
+            send_image=unsupported_image,
+        )
+
+    _ = tool.register_channel("limited", deliver=limited_deliver)
     limited = await tool.execute(
         channel="limited", chat_id=1, file="/tmp/a.txt", image="/tmp/a.png"
     )
     assert "不支持发送文件" in limited
-    assert "不支持发送图片" in limited
 
     async def broken(chat_id: str, message: str) -> None:
         raise RuntimeError("send failed")
 
-    tool.register_channel("broken", text=broken)
+    _register_text_channel(tool, "broken", broken)
     assert "发送失败" in await tool.execute(channel="broken", chat_id=1, message="x")
 
 
 @pytest.mark.asyncio
 async def test_message_push_routes_internal_metadata_only_to_capable_sender():
     tool = MessagePushTool()
-    calls: list[tuple[str, str, dict[str, object]]] = []
+    calls: list[ChannelMessage] = []
 
-    async def text(_chat_id: str, _message: str) -> None:
-        raise AssertionError("metadata-capable sender should own this dispatch")
+    async def deliver(message: ChannelMessage) -> DeliveryReceipt:
+        calls.append(message)
+        return DeliveryReceipt(DeliveryStatus.SUCCESS)
 
-    async def text_with_metadata(
-        chat_id: str,
-        message: str,
-        metadata: dict[str, object],
-    ) -> None:
-        calls.append((chat_id, message, metadata))
-
-    tool.register_channel(
-        "mobile",
-        text=text,
-        text_with_metadata=text_with_metadata,
-    )
+    _ = tool.register_channel("mobile", deliver=deliver)
 
     result = await tool.execute(
         channel="mobile",
@@ -196,8 +236,49 @@ async def test_message_push_routes_internal_metadata_only_to_capable_sender():
         _outbound_metadata={"delivery_id": "delivery-1"},
     )
 
-    assert result == "文本已发送"
-    assert calls == [("123", "hello", {"delivery_id": "delivery-1"})]
+    assert result == "消息已发送"
+    assert calls[0].chat_id == "123"
+    assert calls[0].content == "hello"
+    assert calls[0].metadata == {"delivery_id": "delivery-1"}
+
+
+@pytest.mark.asyncio
+async def test_message_push_reports_partial_after_text_commit() -> None:
+    tool = MessagePushTool()
+    committed: list[str] = []
+
+    async def text(_chat_id: str, message: str) -> None:
+        committed.append(message)
+
+    async def file(
+        _chat_id: str,
+        _path: str,
+        _name: str | None,
+    ) -> None:
+        raise OSError("attachment unavailable")
+
+    async def image(_chat_id: str, _path: str) -> None:
+        raise AssertionError("测试消息没有图片")
+
+    async def deliver(message: ChannelMessage) -> DeliveryReceipt:
+        return await deliver_message_parts(
+            message,
+            send_text=text,
+            send_file=file,
+            send_image=image,
+        )
+
+    _ = tool.register_channel("telegram", deliver=deliver)
+
+    result = await tool.execute(
+        channel="telegram",
+        chat_id="1",
+        message="正文",
+        file="/tmp/report.pdf",
+    )
+
+    assert result == "消息部分送达：attachment unavailable"
+    assert committed == ["正文"]
 
 
 @pytest.mark.asyncio
@@ -216,7 +297,7 @@ async def test_message_push_non_passive_waits_for_passive_reply():
         events.append(f"non_passive:{message}")
 
     bus.subscribe_outbound("cli", on_outbound)
-    tool.register_channel("cli", text=text)
+    _register_text_channel(tool, "cli", text)
     dispatch_task = asyncio.create_task(bus.dispatch_outbound())
     try:
         inbound = InboundMessage(
@@ -245,7 +326,7 @@ async def test_message_push_non_passive_waits_for_passive_reply():
 
         result = await asyncio.wait_for(push_task, timeout=1)
 
-        assert "文本已发送" in result
+        assert result == "消息已发送"
         assert events == [
             "passive:start:reply",
             "passive:end:reply",
@@ -267,7 +348,7 @@ async def test_message_push_non_passive_resumes_after_silent_passive_turn():
     async def text(chat_id: str, message: str) -> None:
         events.append(message)
 
-    tool.register_channel("cli", text=text)
+    _register_text_channel(tool, "cli", text)
     inbound = InboundMessage(
         channel="cli",
         sender="user",
@@ -289,7 +370,7 @@ async def test_message_push_non_passive_resumes_after_silent_passive_turn():
     await bus.complete_inbound(inbound)
     result = await asyncio.wait_for(push_task, timeout=1)
 
-    assert "文本已发送" in result
+    assert result == "消息已发送"
     assert events == ["scheduler"]
 
 
@@ -306,7 +387,7 @@ async def test_message_push_non_passive_same_chat_keeps_fifo_order():
             await release_first.wait()
         events.append(f"end:{message}")
 
-    tool.register_channel("cli", text=text)
+    _register_text_channel(tool, "cli", text)
     first = asyncio.create_task(
         tool.execute(
             channel="cli",
@@ -393,7 +474,7 @@ async def test_message_push_default_call_waits_for_passive_lane():
     async def text(chat_id: str, message: str) -> None:
         events.append(message)
 
-    tool.register_channel("cli", text=text)
+    _register_text_channel(tool, "cli", text)
     await bus.publish_inbound(
         InboundMessage(channel="cli", sender="user", chat_id="1", content="hello")
     )
@@ -409,7 +490,7 @@ async def test_message_push_default_call_waits_for_passive_lane():
     )
     result = await asyncio.wait_for(push_task, timeout=1)
 
-    assert "文本已发送" in result
+    assert result == "消息已发送"
     assert events == ["inline"]
 
 
@@ -422,7 +503,7 @@ async def test_message_push_passive_role_does_not_wait_for_passive_lane():
     async def text(chat_id: str, message: str) -> None:
         events.append(message)
 
-    tool.register_channel("cli", text=text)
+    _register_text_channel(tool, "cli", text)
     await bus.publish_inbound(
         InboundMessage(channel="cli", sender="user", chat_id="1", content="hello")
     )
@@ -437,7 +518,7 @@ async def test_message_push_passive_role_does_not_wait_for_passive_lane():
         timeout=1,
     )
 
-    assert "文本已发送" in result
+    assert result == "消息已发送"
     assert events == ["inline"]
 
 
