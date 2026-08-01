@@ -88,6 +88,22 @@
       "title": "PluginDrainParams",
       "type": "object"
     },
+    "plugin/uninstall/start": {
+      "additionalProperties": false,
+      "properties": {
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Pluginid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pluginId"
+      ],
+      "title": "PluginDrainParams",
+      "type": "object"
+    },
     "server/status": {
       "additionalProperties": false,
       "properties": {},
