@@ -113,6 +113,7 @@ async def test_core_runner_handles_spawn_completion_via_direct_helper_deps():
     tools.set_context.assert_called_once_with(
         channel="telegram",
         chat_id="123",
+        session_key="scheduler:job-1",
         current_timestamp=item.timestamp.isoformat(),
     )
     prompt_render_fn.assert_awaited_once()
