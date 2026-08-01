@@ -177,10 +177,12 @@ async def test_instant_not_fired_before_fire_at(
     mock_push.execute.assert_not_called()
 
 
-# ── One-shot jobs removed after firing ───────────────────────────
+# ── One-shot jobs retained as disabled after firing ──────────────
 
 
-async def test_at_job_removed_after_fire(tmp_path, mock_push, mock_loop, fixed_now):
+async def test_at_job_retained_disabled_after_fire(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
     svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
     job = make_job(
         trigger="at", tier="instant", fire_at=fixed_now - timedelta(seconds=1)
@@ -191,9 +193,17 @@ async def test_at_job_removed_after_fire(tmp_path, mock_push, mock_loop, fixed_n
     await drain_tasks()
 
     assert job.id not in svc._jobs
+    assert svc.list_jobs() == []
+    persisted = svc.store.load()
+    assert len(persisted) == 1
+    assert persisted[0].id == job.id
+    assert persisted[0].enabled is False
+    assert persisted[0].run_count == 1
 
 
-async def test_after_job_removed_after_fire(tmp_path, mock_push, mock_loop, fixed_now):
+async def test_after_job_retained_disabled_after_fire(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
     svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
     job = make_job(
         trigger="after", tier="instant", fire_at=fixed_now - timedelta(seconds=1)
@@ -204,6 +214,27 @@ async def test_after_job_removed_after_fire(tmp_path, mock_push, mock_loop, fixe
     await drain_tasks()
 
     assert job.id not in svc._jobs
+    assert svc.store.load()[0].enabled is False
+    assert svc.store.load()[0].run_count == 1
+
+
+async def test_failed_one_shot_is_retained_disabled_without_run_count_increment(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    mock_push.execute.side_effect = RuntimeError("push failed")
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    job = make_job(
+        trigger="after", tier="instant", fire_at=fixed_now - timedelta(seconds=1)
+    )
+    svc._jobs[job.id] = job
+
+    await svc._tick()
+    await drain_tasks()
+
+    assert svc._jobs == {}
+    persisted = svc.store.load()
+    assert persisted[0].enabled is False
+    assert persisted[0].run_count == 0
 
 
 # ── Every: rescheduling ───────────────────────────────────────────
@@ -636,8 +667,10 @@ def test_misfire_within_grace_loaded(tmp_path, mock_push, mock_loop, fixed_now):
     assert job.id in svc._jobs
 
 
-def test_misfire_beyond_grace_discarded(tmp_path, mock_push, mock_loop, fixed_now):
-    """Jobs missed beyond 5min grace are discarded on startup."""
+def test_misfire_beyond_grace_retained_disabled_after_restart(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    """Jobs missed beyond 5min grace remain as disabled terminal records."""
     svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
     job = make_job(
         trigger="at",
@@ -648,6 +681,55 @@ def test_misfire_beyond_grace_discarded(tmp_path, mock_push, mock_loop, fixed_no
     svc.load_and_recover()
 
     assert job.id not in svc._jobs
+    assert svc.list_jobs() == []
+    assert svc.match_job_ids(job.id[:8]) == [job.id]
+    persisted = svc.store.load()
+    assert len(persisted) == 1
+    assert persisted[0].enabled is False
+
+    restarted = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    restarted.load_and_recover()
+    assert restarted._jobs == {}
+    assert restarted.match_job_ids(job.id) == [job.id]
+    assert restarted.store.load()[0].enabled is False
+
+
+async def test_terminal_disabled_job_does_not_consume_capacity(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    terminal = make_job(
+        trigger="at", tier="instant", fire_at=fixed_now - timedelta(seconds=1)
+    )
+    svc._jobs[terminal.id] = terminal
+
+    await svc._tick()
+    await drain_tasks()
+
+    assert svc._jobs == {}
+    assert svc.store.load()[0].enabled is False
+    for index in range(SchedulerService.MAX_ACTIVE_JOBS):
+        svc.add_job(make_job(name=f"active-{index}"))
+    with pytest.raises(ScheduleCapacityError):
+        svc.add_job(make_job(name="overflow"))
+    assert terminal.id in svc.match_job_ids(terminal.id)
+
+
+async def test_terminal_disabled_job_is_removed_only_by_explicit_cancel(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    terminal = make_job(
+        trigger="at", tier="instant", fire_at=fixed_now - timedelta(seconds=1)
+    )
+    svc._jobs[terminal.id] = terminal
+
+    await svc._tick()
+    await drain_tasks()
+    assert svc.store.load()[0].enabled is False
+
+    assert svc.cancel_job(terminal.id) is True
+    assert svc.store.load() == []
 
 
 def test_every_misfire_advances_to_future(tmp_path, mock_push, mock_loop, fixed_now):

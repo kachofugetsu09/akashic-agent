@@ -582,9 +582,10 @@ class SchedulerService:
                     persisted[job.id] = job
                     count_loaded += 1
                 else:
+                    persisted[job.id] = replace(job, enabled=False)
                     logger.info(
                         f"Job {job.id[:8]} ({job.name or 'unnamed'}) expired "
-                        f"{age:.0f}s ago, beyond grace period — discarded"
+                        f"{age:.0f}s ago, beyond grace period — retained disabled"
                     )
                     persistence_changed = True
             else:
@@ -687,7 +688,11 @@ class SchedulerService:
                     candidate[job.id] = committed_job
             elif not execution_cancelled and job.trigger != "every":
                 if current_job is job:
-                    _ = candidate.pop(job.id)
+                    candidate[job.id] = replace(
+                        job,
+                        enabled=False,
+                        run_count=job.run_count + (1 if execution_succeeded else 0),
+                    )
 
             self._commit_jobs(candidate)
             if committed_job is not None:
