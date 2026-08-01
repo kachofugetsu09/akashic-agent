@@ -733,6 +733,92 @@ def _wait_for_listener(port: int) -> None:
 
 
 @pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="依赖 Linux subreaper 与 /proc"
+)
+def test_boot_guardian_reaps_adopted_zombie_while_gateway_runs(
+    tmp_path: Path,
+) -> None:
+    """Guardian 运行期间持续收割被托管树转交的 zombie。"""
+
+    # 1. Gateway 创建一个会被 subreaper 收养的 double-fork zombie。
+    script = tmp_path / "zombie_gateway.py"
+    zombie_pid_path = tmp_path / "zombie.pid"
+    gateway_pid_path = tmp_path / "gateway.pid"
+    _ = script.write_text(
+        "import os, time\n"
+        "from pathlib import Path\n"
+        "middle = os.fork()\n"
+        "if middle == 0:\n"
+        "    child = os.fork()\n"
+        "    if child == 0:\n"
+        "        Path(os.environ['ZOMBIE_PID']).write_text(str(os.getpid()))\n"
+        "        os._exit(0)\n"
+        "    os._exit(0)\n"
+        "os.waitpid(middle, 0)\n"
+        "Path(os.environ['GATEWAY_PID']).write_text(str(os.getpid()))\n"
+        "while True:\n"
+        "    time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    lifecycle_read_fd, lifecycle_write_fd = os.pipe()
+    lease_read_fd, lease_write_fd = os.pipe()
+    env = {
+        **os.environ,
+        "ZOMBIE_PID": str(zombie_pid_path),
+        "GATEWAY_PID": str(gateway_pid_path),
+    }
+    guardian = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "agent.background.boot_guardian",
+            "--main-path",
+            str(script),
+            "--config",
+            str(tmp_path / "config.toml"),
+            "--workspace",
+            str(tmp_path),
+            "--boot-id",
+            f"zombie-reap-{os.getpid()}",
+            "--nonce",
+            "n" * 64,
+            "--lifecycle-fd",
+            str(lifecycle_write_fd),
+            "--lease-fd",
+            str(lease_read_fd),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        pass_fds=(lifecycle_write_fd, lease_read_fd),
+        start_new_session=True,
+    )
+    os.close(lifecycle_write_fd)
+    os.close(lease_read_fd)
+    try:
+        # 2. Gateway 仍存活时，adopted child 必须已经从 /proc 消失。
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and (
+            not zombie_pid_path.exists() or not gateway_pid_path.exists()
+        ):
+            time.sleep(0.01)
+        assert zombie_pid_path.exists()
+        assert gateway_pid_path.exists()
+        zombie_pid = int(zombie_pid_path.read_text(encoding="utf-8"))
+        gateway_pid = int(gateway_pid_path.read_text(encoding="utf-8"))
+        while time.monotonic() < deadline and Path(f"/proc/{zombie_pid}").exists():
+            time.sleep(0.01)
+        assert supervisor_module._pid_exists(gateway_pid)
+        assert not Path(f"/proc/{zombie_pid}").exists()
+    finally:
+        # 3. 一次性 Guardian 仍按正式生命周期清空 Gateway。
+        os.close(lifecycle_read_fd)
+        os.close(lease_write_fd)
+        if guardian.poll() is None:
+            guardian.send_signal(signal.SIGTERM)
+        guardian.wait(timeout=5)
+
+
+@pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="依赖 Linux pidfd 与 subreaper"
 )
 @pytest.mark.parametrize("owner_failure", ["supervisor", "guardian"])

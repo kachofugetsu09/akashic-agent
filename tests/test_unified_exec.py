@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import time
@@ -10,6 +11,7 @@ from typing import Any, cast
 
 import pytest
 
+import agent.tools.unified_exec as unified_exec_module
 from agent.tools.shell import ShellTaskStopTool
 from agent.tools.shell import ShellTool
 from agent.tools.shell import ShellWriteStdinTool
@@ -23,6 +25,43 @@ from agent.tools.unified_exec import UnknownExecutionError
 
 def _decode(value: str) -> dict[str, Any]:
     return json.loads(value)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows 不使用 POSIX 进程组")
+def test_zombie_only_permission_error_does_not_fail_completed_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def deny_group_signal(_group_id: int, _signal: int) -> None:
+        raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+
+    monkeypatch.setattr(unified_exec_module.os, "killpg", deny_group_signal)
+    monkeypatch.setattr(
+        unified_exec_module,
+        "process_group_exists",
+        lambda _group_id: False,
+        raising=False,
+    )
+
+    unified_exec_module._kill_remaining_process_group(SimpleNamespace(pid=12345))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows 不使用 POSIX 进程组")
+def test_live_privileged_group_permission_error_stays_loud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def deny_group_signal(_group_id: int, _signal: int) -> None:
+        raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+
+    monkeypatch.setattr(unified_exec_module.os, "killpg", deny_group_signal)
+    monkeypatch.setattr(
+        unified_exec_module,
+        "process_group_exists",
+        lambda _group_id: True,
+        raising=False,
+    )
+
+    with pytest.raises(PermissionError, match="Operation not permitted"):
+        unified_exec_module._kill_remaining_process_group(SimpleNamespace(pid=12345))
 
 
 def test_head_tail_keeps_prefix_and_suffix_when_over_budget() -> None:
