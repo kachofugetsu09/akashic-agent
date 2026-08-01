@@ -16,7 +16,7 @@
 ## P0 · 私有跨仓库 Gate
 
 - 把 Feed freshness、Observe turn identity、status_commands public session lookup 和 proactive_feedback mobile UI v2 的真实 seam 和 mutant 场景接入统一 G2 Docker controller；再为其余 selected provider 补独立语义 scenario 和可执行结果。所有场景使用空 plugin home/独立 workspace，禁止读取正式 config、workspace 或安装缓存。
-- 建立始终返回 `passed`、`failed` 或 `not_affected` 的 `private-contract-gate` 外部状态；不受信任 PR 不接触 private source、provider ID、凭据或私有报告。
+- 建立消费同一份公开 `plan.json` 的 `private-contract-gate` 外部状态，把公开 `pending_maintainer` 推进为 `passed` 或 `failed`；`not_required` 不启动私有执行。不受信任 PR 不接触 private source、provider ID、凭据或私有报告。
 
 ## P1 · 工作流扩展
 

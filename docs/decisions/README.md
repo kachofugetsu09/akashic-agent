@@ -22,6 +22,7 @@
 | [0014](0014-shell-uses-unified-execution.md) | accepted | Shell 采用统一可续接执行句柄 | SH-001、RUN-002、RUN-003、ERR-001 |
 | [0015](0015-cleanup-does-not-own-turn-or-restart-finality.md) | accepted | Cleanup 不拥有 turn 与重启终态 | SH-002、RUN-003、RUN-004、OUT-001、ERR-001 |
 | [0016](0016-channel-delivery-uses-complete-logical-messages.md) | accepted | 渠道投递使用完整逻辑消息 | OUT-001～OUT-003、MOB-001、MOB-005、SES-005～SES-006 |
+| [0017](0017-one-person-companion-security-boundary.md) | accepted | 单一 Companion 的安全、容量与可恢复失败边界 | SEC-001～SEC-010、TST-001～TST-006 |
 
 ## 新增规则
 
