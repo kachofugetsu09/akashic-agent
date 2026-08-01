@@ -841,5 +841,8 @@ def _is_local(path: str) -> bool:
 
 def _local_to_base64(path: str) -> str:
     """将本地文件编码为 NapCat 接受的 base64:// URI"""
-    data = Path(path).read_bytes()
+    with Path(path).open("rb") as handle:
+        data = handle.read(MAX_QQ_IMAGE_BYTES + 1)
+    if len(data) > MAX_QQ_IMAGE_BYTES:
+        raise ValueError(f"QQ 图片不能超过 {MAX_QQ_IMAGE_BYTES} 字节")
     return "base64://" + base64.b64encode(data).decode()

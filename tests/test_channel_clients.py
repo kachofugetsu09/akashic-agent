@@ -830,6 +830,10 @@ async def test_qq_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     assert mod._is_local(str(sample)) is True
     assert mod._is_local("https://example.com/x.jpg") is False
     assert mod._local_to_base64(str(sample)).startswith("base64://")
+    oversized = tmp_path / "oversized.bin"
+    oversized.write_bytes(b"x" * (mod.MAX_QQ_IMAGE_BYTES + 1))
+    with pytest.raises(ValueError, match="QQ 图片不能超过"):
+        mod._local_to_base64(str(oversized))
 
     test_attachments = mod.AttachmentStore(tmp_path / "uploads")
     paths = await mod._download_to_temp(
