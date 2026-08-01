@@ -99,6 +99,31 @@ def test_plugin_uninstall_defers_only_inside_runtime_turn(
     assert deferred is not None and deferred["status"] == "in_progress"
 
 
+def test_app_runtime_uses_explicit_dashboard_bind(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("AKASHIC_DASHBOARD_HOST", "127.0.0.1")
+    monkeypatch.setenv("AKASHIC_DASHBOARD_PORT", "16403")
+
+    runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
+
+    assert runtime.dashboard_host == "127.0.0.1"
+    assert runtime.dashboard_port == 16403
+
+
+@pytest.mark.parametrize("value", ["not-a-port", "0", "65536"])
+def test_app_runtime_rejects_invalid_dashboard_port(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    value: str,
+) -> None:
+    monkeypatch.setenv("AKASHIC_DASHBOARD_PORT", value)
+
+    with pytest.raises(ValueError, match="AKASHIC_DASHBOARD_PORT"):
+        bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
+
+
 def _toml_value(value):
     if isinstance(value, bool):
         return "true" if value else "false"
