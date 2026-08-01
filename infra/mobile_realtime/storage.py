@@ -996,6 +996,8 @@ class MobileRealtimeStorage:
         device_keys = tuple(
             _require_text(device_id, "device_id") for device_id in device_ids
         )
+        if not device_keys:
+            raise MobileStorageError("durable event 没有可提交的目标设备")
         if len(set(device_keys)) != len(device_keys):
             raise ValueError("durable event 广播设备不能重复")
         event_key = _require_text(event_id, "event_id")
