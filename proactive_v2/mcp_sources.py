@@ -14,6 +14,7 @@ from agent.tools.base import ToolResult
 from agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
+MAX_QUARANTINE_ITEMS_PER_SOURCE = 256
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,9 +143,10 @@ async def fetch_source_strict_async(
         except ValueError as exc:
             if not quarantine_invalid:
                 raise RuntimeError(str(exc)) from exc
-            result.quarantined.append(
-                QuarantinedItem(key, item_id, str(exc), raw)
-            )
+            if len(result.quarantined) < MAX_QUARANTINE_ITEMS_PER_SOURCE:
+                result.quarantined.append(
+                    QuarantinedItem(key, item_id, str(exc), raw)
+                )
             logger.warning(
                 "[proactive.source] item quarantined source=%s item=%s reason=%s",
                 key,
@@ -186,6 +188,7 @@ def _validate_item(
         kind = declared_channels[0]
     if kind not in declared_channels:
         raise ValueError(f"kind 未声明或为空: {source_id}")
+    item["kind"] = kind
     if kind in {"alert", "content"}:
         if not str(item.get("event_id") or item.get("id") or "").strip():
             raise ValueError(f"source item 缺少 event_id/id: {source_id}")
@@ -248,8 +251,12 @@ async def acknowledge_async(
     feedback: str | None = None,
 ) -> None:
     source = next((item for item in sources if source_key(item) == source_id), None)
-    if source is None or not source.spec.ack_tool or not event_ids:
+    if not event_ids:
         return
+    if source is None:
+        raise RuntimeError(f"MCP ack source 不存在: {source_id}")
+    if not source.spec.ack_tool:
+        raise RuntimeError(f"MCP source 未声明 ack tool: {source_id}")
     args: dict[str, Any] = {"event_ids": event_ids}
     if feedback is not None:
         args["feedback"] = feedback

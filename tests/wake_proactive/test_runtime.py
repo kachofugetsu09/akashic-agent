@@ -408,6 +408,47 @@ async def test_content_skip_keeps_full_unread_window_when_title_page_is_capped(
 
 
 @pytest.mark.asyncio
+async def test_ingest_after_embedding_keeps_material_window_bounded(tmp_path, request):
+    now = datetime(2026, 7, 12, tzinfo=UTC)
+    events = [
+        {
+            "kind": "content",
+            "event_id": f"bounded-{index}",
+            "title": f"标题 {index}",
+            "published_at": now.isoformat(),
+            "preprocess_score": 0.5,
+        }
+        for index in range(121)
+    ]
+    gateway = FakeGateway(events)
+    scope = _scope(
+        tmp_path,
+        gateway,
+        SimpleNamespace(chat=AsyncMock()),
+        FakeOrchestrator(),
+        _source("content"),
+    )
+    runtime = WakeRuntime(
+        scope,
+        state_store=WakeStateStore(tmp_path / "wake.db"),
+        clock=FixedClock(now),
+    )
+    request.addfinalizer(runtime.close)
+    statements: list[str] = []
+    runtime._state._conn.set_trace_callback(statements.append)
+    state = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(state)
+    runtime._state._conn.set_trace_callback(None)
+
+    assert len(state.contents) == 100
+    assert any(
+        "FROM reservoir_events" in statement
+        and "LIMIT 100" in statement
+        for statement in statements
+    )
+
+
+@pytest.mark.asyncio
 async def test_decayed_content_is_acknowledged_without_wake(tmp_path, request):
     now = datetime(2026, 7, 12, tzinfo=UTC)
     gateway = FakeGateway(
@@ -429,10 +470,11 @@ async def test_decayed_content_is_acknowledged_without_wake(tmp_path, request):
         _source("content"),
     )
     scope.memory.embedding_api = None
+    clock = FixedClock(now)
     runtime = WakeRuntime(
         scope,
         state_store=WakeStateStore(tmp_path / "wake.db"),
-        clock=FixedClock(now),
+        clock=clock,
     )
     request.addfinalizer(runtime.close)
     state = runtime.begin(new_proactive_frame("telegram:1"))
@@ -440,8 +482,15 @@ async def test_decayed_content_is_acknowledged_without_wake(tmp_path, request):
     await runtime.ingest(state)
     await runtime.decide(state)
 
-    assert runtime._state.unread("content") == []
+    assert len(runtime._state.unread("content")) == 1
     assert runtime._state.observations("content") == []
+    assert gateway.acks == []
+
+    clock.advance(timedelta(days=2))
+    retry = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(retry)
+    await runtime.decide(retry)
+    assert runtime._state.unread("content") == []
     assert gateway.acks == [{"event_ids": ["stale"]}]
 
 
@@ -468,12 +517,18 @@ async def test_decayed_content_keeps_payload_until_ack_retry_succeeds(tmp_path, 
     )
     scope.memory.embedding_api = None
     store = WakeStateStore(tmp_path / "wake.db")
-    runtime = WakeRuntime(scope, state_store=store, clock=FixedClock(now))
+    clock = FixedClock(now)
+    runtime = WakeRuntime(scope, state_store=store, clock=clock)
     request.addfinalizer(runtime.close)
 
     first = runtime.begin(new_proactive_frame("telegram:1"))
     await runtime.ingest(first)
     await runtime.decide(first)
+    assert store.pending_acknowledgements() == {}
+    clock.advance(timedelta(days=2))
+    second = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(second)
+    await runtime.decide(second)
     assert store.pending_acknowledgement_batches()[0]["action"] == "expire"
     assert store._conn.execute(
         "SELECT 1 FROM reservoir_events WHERE item_id = ?",
@@ -481,8 +536,9 @@ async def test_decayed_content_keeps_payload_until_ack_retry_succeeds(tmp_path, 
     ).fetchone() is not None
 
     gateway.events = []
-    second = runtime.begin(new_proactive_frame("telegram:1"))
-    await runtime.ingest(second)
+    gateway.events = []
+    third = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(third)
     assert store.pending_acknowledgements() == {}
     assert store._conn.execute(
         "SELECT 1 FROM reservoir_events WHERE item_id = ?",

@@ -4,7 +4,7 @@ import json
 import hashlib
 import math
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -16,6 +16,14 @@ from plugins.wake_proactive.context_drive import (
     evaluate_context,
 )
 from plugins.wake_proactive.hazard import HazardResult
+
+
+MAX_FUTURE_TIMESTAMP_SKEW = timedelta(hours=24)
+QUARANTINE_PAYLOAD_BYTES = 4096
+QUARANTINE_GLOBAL_CAP = 1000
+QUARANTINE_PER_SOURCE_CAP = 100
+TOMBSTONE_RETENTION = timedelta(days=30)
+TOMBSTONE_GLOBAL_CAP = 10_000
 
 
 class WakeStateStore:
@@ -73,7 +81,32 @@ class WakeStateStore:
             )
             """
         )
+        _ = self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reservoir_quarantine (
+                identity TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                item_id TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                occurrences INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+        _ = self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reservoir_tombstones (
+                identity TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                source_event_id TEXT NOT NULL,
+                acknowledged_at TEXT NOT NULL
+            )
+            """
+        )
         self._migrate_reservoir_sources()
+        self._migrate_reservoir_timestamps()
         _ = self._conn.execute(
             "UPDATE reservoir_events SET status = 'unread' WHERE status = 'suppressed'"
         )
@@ -84,6 +117,30 @@ class WakeStateStore:
             ON reservoir_events(
                 kind, status, original_source_id, published_at DESC, first_seen_at DESC
             )
+            """
+        )
+        _ = self._conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_reservoir_expiry
+            ON reservoir_events(kind, status, first_seen_at)
+            """
+        )
+        _ = self._conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_reservoir_aggregate
+            ON reservoir_events(kind, status, published_at, preprocess_score)
+            """
+        )
+        _ = self._conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_quarantine_source_time
+            ON reservoir_quarantine(source_id, last_seen_at DESC)
+            """
+        )
+        _ = self._conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_tombstone_time
+            ON reservoir_tombstones(acknowledged_at)
             """
         )
         _ = self._conn.execute(
@@ -167,21 +224,11 @@ class WakeStateStore:
             )
             """
         )
-        _ = self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS reservoir_quarantine (
-                identity TEXT PRIMARY KEY,
-                source_id TEXT NOT NULL,
-                item_id TEXT NOT NULL,
-                reason TEXT NOT NULL,
-                payload_json TEXT NOT NULL,
-                first_seen_at TEXT NOT NULL,
-                last_seen_at TEXT NOT NULL,
-                occurrences INTEGER NOT NULL DEFAULT 1
-            )
-            """
-        )
-        self._migrate_pending_acknowledgements()
+        try:
+            self._migrate_pending_acknowledgements()
+        except Exception:
+            self._conn.close()
+            raise
         self._conn.commit()
 
     def _migrate_drift_timer(self) -> None:
@@ -237,11 +284,78 @@ class WakeStateStore:
                 (str(row["source_id"]), original_source_id, str(row["item_id"])),
             )
 
+    def _migrate_reservoir_timestamps(self) -> None:
+        now = datetime.now(UTC)
+        rows = self._conn.execute(
+            """
+            SELECT item_id, ack_source_id, source_event_id,
+                   published_at, first_seen_at, payload_json, status
+            FROM reservoir_events
+            """
+        ).fetchall()
+        for row in rows:
+            invalid_reason: str | None = None
+            for field in ("published_at", "first_seen_at"):
+                value = str(row[field] or "")
+                if not value:
+                    if field == "first_seen_at":
+                        invalid_reason = f"{field} 缺失"
+                        break
+                    continue
+                try:
+                    parsed = datetime.fromisoformat(value)
+                except ValueError:
+                    invalid_reason = f"{field} 不是 ISO timestamp"
+                    break
+                if parsed.tzinfo is None or parsed.utcoffset() is None:
+                    invalid_reason = f"{field} 为 naive timestamp"
+                    break
+                if parsed > now + MAX_FUTURE_TIMESTAMP_SKEW:
+                    invalid_reason = f"{field} 超过 future skew"
+                    break
+            if invalid_reason is None:
+                continue
+            self.record_quarantine(
+                source_id=str(row["ack_source_id"] or "unknown"),
+                item_id=str(row["item_id"]),
+                reason=f"legacy reservoir: {invalid_reason}",
+                payload=str(row["payload_json"]),
+                commit=False,
+            )
+            _ = self._conn.execute(
+                "UPDATE reservoir_events SET status = 'quarantined' WHERE item_id = ?",
+                (str(row["item_id"]),),
+            )
+
     def _migrate_pending_acknowledgements(self) -> None:
         info = list(self._conn.execute("PRAGMA table_info(pending_acknowledgements)"))
         columns = {str(row[1]) for row in info}
         primary_key = tuple(str(row[1]) for row in info if int(row[5]) > 0)
         if primary_key == ("source_id", "source_event_id"):
+            legacy_rows = list(
+                self._conn.execute(
+                    "SELECT source_id, source_event_id, queued_at FROM pending_acknowledgements"
+                )
+            )
+            resolved_rows: list[tuple[str, str, str, str]] = []
+            for row in legacy_rows:
+                matches = list(
+                    self._conn.execute(
+                        """
+                        SELECT item_id FROM reservoir_events
+                        WHERE ack_source_id = ? AND source_event_id = ?
+                        """,
+                        (str(row[0]), str(row[1])),
+                    )
+                )
+                if len(matches) != 1:
+                    raise RuntimeError(
+                        "pending acknowledgement migration cannot resolve "
+                        f"{row[0]}:{row[1]} to one reservoir item (matches={len(matches)})"
+                    )
+                resolved_rows.append(
+                    (str(row[0]), str(row[1]), str(matches[0][0]), str(row[2]))
+                )
             _ = self._conn.execute(
                 """
                 CREATE TABLE pending_acknowledgements_v2 (
@@ -254,20 +368,15 @@ class WakeStateStore:
                 )
                 """
             )
-            _ = self._conn.execute(
-                """
-                INSERT INTO pending_acknowledgements_v2(
-                    source_id, source_event_id, item_id, action, queued_at
+            for source_id, event_id, item_id, queued_at in resolved_rows:
+                _ = self._conn.execute(
+                    """
+                    INSERT INTO pending_acknowledgements_v2(
+                        source_id, source_event_id, item_id, action, queued_at
+                    ) VALUES (?, ?, ?, 'consume', ?)
+                    """,
+                    (source_id, event_id, item_id, queued_at),
                 )
-                SELECT source_id, source_event_id,
-                       coalesce((SELECT item_id FROM reservoir_events
-                                 WHERE ack_source_id = pending_acknowledgements.source_id
-                                   AND source_event_id = pending_acknowledgements.source_event_id
-                                 LIMIT 1), ''),
-                       'consume', queued_at
-                FROM pending_acknowledgements
-                """
-            )
             _ = self._conn.execute("DROP TABLE pending_acknowledgements")
             _ = self._conn.execute(
                 "ALTER TABLE pending_acknowledgements_v2 RENAME TO pending_acknowledgements"
@@ -400,6 +509,8 @@ class WakeStateStore:
         """持久化事件，并返回本轮首次进入池子的项目 ID。"""
 
         # 1. 在信任边界规范化来源标识
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("wake reservoir ingest requires timezone-aware now")
         inserted_ids: list[str] = []
         for event in events:
             event_kind = str(event.get("kind") or kind).strip()
@@ -436,18 +547,19 @@ class WakeStateStore:
                 )
                 continue
             item_id = f"{ack_source_id}:{source_event_id}"
+            tombstone = self._conn.execute(
+                "SELECT 1 FROM reservoir_tombstones WHERE identity = ?",
+                (item_id,),
+            ).fetchone()
+            if tombstone is not None:
+                continue
             payload = dict(event)
             payload["id"] = item_id
             payload["item_id"] = item_id
             published_at = str(
                 event.get("published_at") or event.get("triggered_at") or ""
             )
-            first_seen_at = str(
-                event.get("first_seen_at")
-                or event.get("published_at")
-                or event.get("triggered_at")
-                or now.isoformat()
-            )
+            first_seen_at = now.isoformat()
             score_value = event.get("preprocess_score")
             if score_value is None:
                 score_value = event.get("rank_score", 0.0)
@@ -492,16 +604,20 @@ class WakeStateStore:
                         commit=False,
                     )
                     break
+                if parsed > now + MAX_FUTURE_TIMESTAMP_SKEW:
+                    self.record_quarantine(
+                        source_id=ack_source_id,
+                        item_id=item_id,
+                        reason=f"{field} 超过 future skew",
+                        payload=event,
+                        commit=False,
+                    )
+                    break
             else:
                 published_at = str(
                     event.get("published_at") or event.get("triggered_at") or ""
                 )
-                first_seen_at = str(
-                    event.get("first_seen_at")
-                    or event.get("published_at")
-                    or event.get("triggered_at")
-                    or now.isoformat()
-                )
+                first_seen_at = now.isoformat()
                 existing = self._conn.execute(
                     "SELECT 1 FROM reservoir_events WHERE item_id = ?",
                     (item_id,),
@@ -568,6 +684,13 @@ class WakeStateStore:
                 payload["_event_embedding"] = json.loads(row["embedding_json"])
             result.append(payload)
         return result
+
+    def unread_count(self, kind: str) -> int:
+        row = self._conn.execute(
+            "SELECT count(*) AS count FROM reservoir_events WHERE kind = ? AND status = 'unread'",
+            (kind,),
+        ).fetchone()
+        return int(row["count"] if row is not None else 0)
 
     def unread_aggregate_mass(
         self,
@@ -640,6 +763,19 @@ class WakeStateStore:
 
         identity = f"{source_id}:{item_id}"
         now = datetime.now().astimezone().isoformat()
+        payload_json = json.dumps(payload, ensure_ascii=False, default=str)
+        if len(payload_json.encode("utf-8")) > QUARANTINE_PAYLOAD_BYTES:
+            preview_budget = max(0, QUARANTINE_PAYLOAD_BYTES - 96)
+            preview = payload_json.encode("utf-8")[:preview_budget].decode(
+                "utf-8", errors="ignore"
+            )
+            payload_json = json.dumps(
+                {
+                    "truncated": True,
+                    "preview": preview,
+                },
+                ensure_ascii=False,
+            )
         _ = self._conn.execute(
             """
             INSERT INTO reservoir_quarantine(
@@ -657,10 +793,33 @@ class WakeStateStore:
                 source_id,
                 item_id,
                 reason,
-                json.dumps(payload, ensure_ascii=False, default=str),
+                payload_json,
                 now,
                 now,
             ),
+        )
+        _ = self._conn.execute(
+            """
+            DELETE FROM reservoir_quarantine
+            WHERE source_id = ? AND identity NOT IN (
+                SELECT identity FROM reservoir_quarantine
+                WHERE source_id = ?
+                ORDER BY last_seen_at DESC
+                LIMIT ?
+            )
+            """,
+            (source_id, source_id, QUARANTINE_PER_SOURCE_CAP),
+        )
+        _ = self._conn.execute(
+            """
+            DELETE FROM reservoir_quarantine
+            WHERE identity NOT IN (
+                SELECT identity FROM reservoir_quarantine
+                ORDER BY last_seen_at DESC
+                LIMIT ?
+            )
+            """,
+            (QUARANTINE_GLOBAL_CAP,),
         )
         if commit:
             self._conn.commit()
@@ -713,15 +872,21 @@ class WakeStateStore:
     ) -> None:
         for source_id, event_ids in acknowledgements.items():
             for event_id in event_ids:
-                _ = self._conn.execute(
+                item = self._conn.execute(
                     """
-                    INSERT INTO pending_acknowledgements(
-                        source_id, source_event_id, item_id, action, queued_at
-                    ) VALUES (?, ?, coalesce((SELECT item_id FROM reservoir_events
-                        WHERE ack_source_id = ? AND source_event_id = ? LIMIT 1), ''), 'consume', ?)
-                    ON CONFLICT DO NOTHING
+                    SELECT item_id FROM reservoir_events
+                    WHERE ack_source_id = ? AND source_event_id = ?
                     """,
-                    (source_id, event_id, source_id, event_id, now.isoformat()),
+                    (source_id, event_id),
+                ).fetchone()
+                if item is None:
+                    continue
+                self._queue_pending_ack(
+                    source_id=source_id,
+                    event_id=event_id,
+                    item_id=str(item[0]) if item is not None else "",
+                    action="consume",
+                    queued_at=now,
                 )
         self._conn.commit()
 
@@ -738,23 +903,67 @@ class WakeStateStore:
                 f"""
                 UPDATE reservoir_events
                 SET status = 'consumed', consumed_at = ?
-                WHERE item_id IN ({placeholders})
+                WHERE item_id IN ({placeholders}) AND status != 'pending_expiry'
                 """,
                 (now.isoformat(), *item_ids),
             )
         for source_id, event_ids in acknowledgements.items():
             for event_id in event_ids:
-                _ = self._conn.execute(
+                item = self._conn.execute(
                     """
-                    INSERT INTO pending_acknowledgements(
-                        source_id, source_event_id, item_id, action, queued_at
-                    ) VALUES (?, ?, coalesce((SELECT item_id FROM reservoir_events
-                        WHERE ack_source_id = ? AND source_event_id = ? LIMIT 1), ''), 'consume', ?)
-                    ON CONFLICT DO NOTHING
+                    SELECT item_id FROM reservoir_events
+                    WHERE ack_source_id = ? AND source_event_id = ?
                     """,
-                    (source_id, event_id, source_id, event_id, now.isoformat()),
+                    (source_id, event_id),
+                ).fetchone()
+                if item is None:
+                    continue
+                self._queue_pending_ack(
+                    source_id=source_id,
+                    event_id=event_id,
+                    item_id=str(item[0]) if item is not None else "",
+                    action="consume",
+                    queued_at=now,
                 )
         self._conn.commit()
+
+    def _queue_pending_ack(
+        self,
+        *,
+        source_id: str,
+        event_id: str,
+        item_id: str,
+        action: str,
+        queued_at: datetime,
+    ) -> None:
+        existing = self._conn.execute(
+            """
+            SELECT action FROM pending_acknowledgements
+            WHERE source_id = ? AND source_event_id = ? AND item_id = ?
+            """,
+            (source_id, event_id, item_id),
+        ).fetchone()
+        if existing is not None:
+            if str(existing[0]) == "expire" or action == "consume":
+                return
+            _ = self._conn.execute(
+                """
+                UPDATE pending_acknowledgements
+                SET action = 'expire', queued_at = ?
+                WHERE source_id = ? AND source_event_id = ? AND item_id = ?
+                """,
+                (queued_at.isoformat(), source_id, event_id, item_id),
+            )
+            return
+        _ = self._conn.execute(
+            """
+            INSERT INTO pending_acknowledgements(
+                source_id, source_event_id, item_id, action, queued_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT DO NOTHING
+            """,
+            (source_id, event_id, item_id, action, queued_at.isoformat()),
+        )
 
     def queue_expiration(self, item_ids: list[str], now: datetime) -> None:
         """登记低分事件的 expire ack，ack 成功前保留 payload。"""
@@ -767,7 +976,8 @@ class WakeStateStore:
             f"""
             SELECT item_id, ack_source_id, source_event_id
             FROM reservoir_events
-            WHERE item_id IN ({placeholders}) AND status = 'unread'
+            WHERE item_id IN ({placeholders})
+              AND status IN ('unread', 'consumed', 'pending_expiry')
             """,
             tuple(unique_ids),
         ).fetchall()
@@ -777,23 +987,16 @@ class WakeStateStore:
             _ = self._conn.execute(
                 """
                 UPDATE reservoir_events SET status = 'pending_expiry'
-                WHERE item_id = ? AND status = 'unread'
+                WHERE item_id = ? AND status IN ('unread', 'consumed', 'pending_expiry')
                 """,
                 (str(row["item_id"]),),
             )
-            _ = self._conn.execute(
-                """
-                INSERT INTO pending_acknowledgements(
-                    source_id, source_event_id, item_id, action, queued_at
-                ) VALUES (?, ?, ?, 'expire', ?)
-                ON CONFLICT DO NOTHING
-                """,
-                (
-                    str(row["ack_source_id"]),
-                    str(row["source_event_id"]),
-                    str(row["item_id"]),
-                    now.isoformat(),
-                ),
+            self._queue_pending_ack(
+                source_id=str(row["ack_source_id"]),
+                event_id=str(row["source_event_id"]),
+                item_id=str(row["item_id"]),
+                action="expire",
+                queued_at=now,
             )
         self._conn.commit()
 
@@ -840,10 +1043,32 @@ class WakeStateStore:
         try:
             for row in rows:
                 if str(row["action"]) == "expire" and str(row["item_id"]):
+                    item_id = str(row["item_id"])
+                    tombstone_row = self._conn.execute(
+                        "SELECT ack_source_id, source_event_id FROM reservoir_events WHERE item_id = ?",
+                        (item_id,),
+                    ).fetchone()
+                    if tombstone_row is None:
+                        continue
+                    _ = self._conn.execute(
+                        """
+                        INSERT INTO reservoir_tombstones(
+                            identity, source_id, source_event_id, acknowledged_at
+                        ) VALUES (?, ?, ?, ?)
+                        ON CONFLICT(identity) DO UPDATE SET
+                            acknowledged_at=excluded.acknowledged_at
+                        """,
+                        (
+                            item_id,
+                            str(tombstone_row["ack_source_id"]),
+                            str(tombstone_row["source_event_id"]),
+                            datetime.now(UTC).isoformat(),
+                        ),
+                    )
                     _ = self._conn.execute(
                         "DELETE FROM reservoir_events "
                         "WHERE item_id = ? AND status = 'pending_expiry'",
-                        (str(row["item_id"]),),
+                        (item_id,),
                     )
             _ = self._conn.execute(
                 f"""
@@ -851,6 +1076,22 @@ class WakeStateStore:
                 WHERE source_id = ? AND source_event_id IN ({placeholders})
                 """,
                 (source_id, *event_ids),
+            )
+            cutoff = (datetime.now(UTC) - TOMBSTONE_RETENTION).isoformat()
+            _ = self._conn.execute(
+                "DELETE FROM reservoir_tombstones WHERE acknowledged_at < ?",
+                (cutoff,),
+            )
+            _ = self._conn.execute(
+                """
+                DELETE FROM reservoir_tombstones
+                WHERE identity NOT IN (
+                    SELECT identity FROM reservoir_tombstones
+                    ORDER BY acknowledged_at DESC
+                    LIMIT ?
+                )
+                """,
+                (TOMBSTONE_GLOBAL_CAP,),
             )
             self._conn.commit()
         except Exception:
