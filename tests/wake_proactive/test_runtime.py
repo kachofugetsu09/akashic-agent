@@ -449,6 +449,47 @@ async def test_ingest_after_embedding_keeps_material_window_bounded(tmp_path, re
 
 
 @pytest.mark.asyncio
+async def test_runtime_persists_quarantine_overflow_diagnostic(tmp_path, request):
+    events = [
+        {
+            "kind": "content",
+            "event_id": f"bad-{index}",
+            "preprocess_score": float("nan"),
+        }
+        for index in range(300)
+    ]
+    gateway = FakeGateway(events)
+    scope = _scope(
+        tmp_path,
+        gateway,
+        SimpleNamespace(chat=AsyncMock()),
+        FakeOrchestrator(),
+        _source("content"),
+    )
+    scope.memory.embedding_api = None
+    store = WakeStateStore(tmp_path / "wake.db")
+    runtime = WakeRuntime(
+        scope,
+        state_store=store,
+        clock=FixedClock(datetime(2026, 7, 12, tzinfo=UTC)),
+    )
+    request.addfinalizer(runtime.close)
+
+    await runtime.ingest(runtime.begin(new_proactive_frame("telegram:1")))
+
+    rows = store.quarantined(limit=1000)
+    # Per-source persistence remains capped at 100 rows; the synthetic
+    # overflow record must remain queryable within that cap.
+    assert len(rows) == 100
+    overflow = next(row for row in rows if row["item_id"] == "quarantine-overflow")
+    assert json.loads(overflow["payload_json"]) == {
+        "overflow": True,
+        "dropped_count": 44,
+        "detail_cap": 256,
+    }
+
+
+@pytest.mark.asyncio
 async def test_decayed_content_is_acknowledged_without_wake(tmp_path, request):
     now = datetime(2026, 7, 12, tzinfo=UTC)
     gateway = FakeGateway(
