@@ -327,6 +327,46 @@ async def test_control_service_attaches_utc_to_legacy_naive_session_times(
     sessions.close()
 
 
+@pytest.mark.asyncio
+async def test_start_thread_persists_memory_exclusion_marker(tmp_path: Path) -> None:
+    sessions = SessionManager(tmp_path)
+
+    async def execute(request: TurnRequest) -> str:
+        return request.input
+
+    runtime = ConversationRuntime(sessions.control_store, execute)
+    service = ControlService(runtime, sessions, tmp_path)
+
+    thread = service.start_thread({"skip_post_memory": True})
+    thread_id = cast(str, thread["id"])
+
+    assert thread["metadata"] == {"skip_post_memory": True}
+    assert sessions.control_store.get_session_meta(thread_id)["metadata"] == {
+        "skip_post_memory": True
+    }
+    await runtime.shutdown()
+    sessions.close()
+
+
+@pytest.mark.asyncio
+async def test_start_thread_rejects_non_boolean_memory_marker(tmp_path: Path) -> None:
+    sessions = SessionManager(tmp_path)
+
+    async def execute(request: TurnRequest) -> str:
+        return request.input
+
+    runtime = ConversationRuntime(sessions.control_store, execute)
+    service = ControlService(runtime, sessions, tmp_path)
+
+    with pytest.raises(ValueError, match="必须是 boolean"):
+        service.start_thread({"skip_post_memory": "false"})
+
+    # 1. 非法标记不创建 session。
+    assert sessions.list_sessions() == []
+    await runtime.shutdown()
+    sessions.close()
+
+
 async def _wait_terminal(sent: list[dict[str, object]]) -> None:
     while not any(item.get("method") == "turn/completed" for item in sent):
         await asyncio.sleep(0)

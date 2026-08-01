@@ -1120,6 +1120,13 @@ class DefaultReasoner(Reasoner):
             self._stream_sink_factory(msg) if self._stream_sink_factory is not None else None
         )
         disabled_tools = _disabled_tools_from_msg(msg)
+        # session 级记忆排除：disable_memory_writes 展开为 memory 来源的写工具。
+        if bool((getattr(msg, "metadata", None) or {}).get("disable_memory_writes")):
+            disabled_tools |= self._tools.get_source_tool_names(
+                "builtin",
+                "memory",
+                risk="write",
+            )
 
         # 2. 再按 trim plan + history window 顺序逐轮尝试。
         attempts = self._build_attempt_plans(total_history)

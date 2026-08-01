@@ -237,6 +237,78 @@ def test_default_reasoner_blocks_disabled_tool_even_if_model_calls_it():
     assert calls[0]["status"] == "blocked"
 
 
+def test_default_reasoner_disable_memory_writes_expands_to_memory_write_tools():
+    provider = _Provider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall("c1", "memorize", {"summary": "x"})],
+            ),
+            LLMResponse(content="final", tool_calls=[]),
+        ]
+    )
+    tools = ToolRegistry()
+    tools.register(
+        _DummyTool("memorize"),
+        always_on=True,
+        risk="write",
+        source_type="builtin",
+        source_name="memory",
+    )
+    tools.register(
+        _DummyTool("recall_memory"),
+        always_on=True,
+        risk="read-only",
+        source_type="builtin",
+        source_name="memory",
+    )
+    tools.register(_DummyTool("read_file"), always_on=True, risk="read-only")
+    reasoner = DefaultReasoner(
+        llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=40,
+        context=cast(
+            Any,
+            SimpleNamespace(
+                render=lambda request, **_: SimpleNamespace(
+                    messages=[{"role": "user", "content": request.current_message}],
+                ),
+            ),
+        ),
+    )
+    session = SimpleNamespace(
+        key="telegram:123",
+        messages=[],
+        get_history=lambda max_messages=40, *, start_index=None: [],
+        last_consolidated=0,
+    )
+    msg = SimpleNamespace(
+        content="hi",
+        media=[],
+        channel="telegram",
+        chat_id="123",
+        timestamp=datetime(2026, 4, 5, 12, 0, 0),
+        metadata={"disable_memory_writes": True},
+    )
+
+    result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
+
+    # 1. memory 来源的写工具被展开禁用，检索与普通工具保留。
+    first_tools = cast(list[dict[str, Any]], provider.calls[0]["tools"])
+    first_tool_names = [
+        schema["function"]["name"] for schema in first_tools
+    ]
+    assert "memorize" not in first_tool_names
+    assert "recall_memory" in first_tool_names
+    assert "read_file" in first_tool_names
+    calls = cast(list[dict[str, Any]], result.tool_chain[0]["calls"])
+    assert calls[0]["name"] == "memorize"
+    assert calls[0]["status"] == "blocked"
+
+
 def test_default_reasoner_forces_passive_message_push_role():
     provider = _Provider(
         [

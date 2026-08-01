@@ -19,6 +19,7 @@ from agent.provider import LLMProvider
 from bus.events_lifecycle import TurnCommitted
 from core.memory.events import ConsolidationCommitted
 from infra.persistence.json_store import atomic_write_text
+from session.memory_policy import excludes_memory
 
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
@@ -1285,9 +1286,20 @@ class MarkdownMemoryMaintenance:
         )
 
     async def consolidate(self, request: ConsolidateRequest) -> ConsolidateResult:
+        # 1. session 级记忆排除：命中统一谓词的 session 不进入 markdown 沉淀。
         session_key = request.session.key
         if not session_key:
             return await self._consolidate_unlocked(request)
+        session_metadata = getattr(request.session, "metadata", None)
+        if isinstance(session_metadata, dict) and excludes_memory(
+            session_key, session_metadata
+        ):
+            return ConsolidateResult(
+                trace={
+                    "mode": "skipped",
+                    "reason": "session_memory_excluded",
+                }
+            )
         lock = self._maintenance_locks.setdefault(session_key, asyncio.Lock())
         async with lock:
             return await self._consolidate_unlocked(request)

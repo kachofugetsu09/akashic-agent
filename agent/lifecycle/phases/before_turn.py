@@ -15,6 +15,7 @@ from agent.lifecycle.phase import (
     topo_sort_modules,
 )
 from agent.lifecycle.types import BeforeTurnCtx, TurnState
+from session.memory_policy import excludes_memory
 
 if TYPE_CHECKING:
     from agent.core.passive_turn import ContextStore
@@ -70,6 +71,27 @@ class _AcquireSessionModule:
         return frame
 
 
+class _ApplyMemoryExclusionModule:
+    """session 级记忆排除的唯一在线决策点：命中统一谓词时注入三项策略。
+
+    用赋值而不是 setdefault，保证 excluded session 不能被 turn 覆盖为 false。
+    """
+
+    slot = "before_turn.memory_exclusion"
+    requires = ("before_turn.acquire_session", _SESSION_SLOT)
+
+    async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
+        state = frame.input
+        msg_metadata = state.msg.metadata
+        session = cast(SessionLike, frame.slots[_SESSION_SLOT])
+        if not excludes_memory(state.session_key, session.metadata):
+            return frame
+        msg_metadata["skip_post_memory"] = True
+        msg_metadata["skip_memory_context_guard"] = True
+        msg_metadata["disable_memory_writes"] = True
+        return frame
+
+
 class _PrepareContextModule:
     slot = "before_turn.prepare_context"
     requires = ("before_turn.acquire_session", _SESSION_SLOT)
@@ -94,7 +116,11 @@ class _PrepareContextModule:
 
 class _MemoryContextGuardModule:
     slot = "before_turn.memory_context_guard"
-    requires = ("before_turn.acquire_session", _SESSION_SLOT)
+    requires = (
+        "before_turn.acquire_session",
+        "before_turn.memory_exclusion",
+        _SESSION_SLOT,
+    )
     produces = (_CTX_SLOT,)
 
     def __init__(
@@ -254,6 +280,7 @@ def default_before_turn_modules(
 ) -> BeforeTurnModules:
     builtins: BeforeTurnModules = [
         _AcquireSessionModule(session_manager),
+        _ApplyMemoryExclusionModule(),
         _MemoryContextGuardModule(keep_count, consolidator),
         _PrepareContextModule(context_store),
         _BuildBeforeTurnCtxModule(),

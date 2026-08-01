@@ -142,6 +142,9 @@ def _register_memory_tool(
         always_on=True,
         risk=risk,
         search_hint=search_hint,
+        # 来源身份：excluded session 按 source=memory + risk=write 禁用写工具。
+        source_type="builtin",
+        source_name="memory",
     )
 
 

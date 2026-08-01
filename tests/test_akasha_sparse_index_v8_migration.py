@@ -65,6 +65,15 @@ def _context(tmp_path: Path, config: str = _ACTIVE_CONFIG) -> MigrationContext:
 def _create_sessions(path: Path) -> None:
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("""
+            CREATE TABLE sessions (
+                key               TEXT PRIMARY KEY,
+                created_at        TEXT NOT NULL,
+                updated_at        TEXT NOT NULL,
+                last_consolidated INTEGER NOT NULL DEFAULT 0,
+                metadata          TEXT
+            )
+            """)
+        connection.execute("""
             CREATE TABLE messages (
                 id TEXT PRIMARY KEY,
                 session_key TEXT NOT NULL,
@@ -92,6 +101,13 @@ def _create_sessions(path: Path) -> None:
 
 
 def _append_reinforced_turn(path: Path) -> None:
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(
+            """
+            INSERT INTO sessions (key, created_at, updated_at, last_consolidated, metadata)
+            VALUES ('test:one', '2026-07-30T00:00:00+00:00', '2026-07-30T00:00:00+00:00', 0, NULL)
+            """
+        )
     messages = (
         (
             "message:user",

@@ -613,6 +613,159 @@ async def test_before_turn_memory_context_guard_blocks_after_consolidation_failu
 
 
 @pytest.mark.asyncio
+async def test_before_turn_memory_exclusion_overrides_explicit_turn_flag():
+    bus = EventBus()
+    session = _DummySession("telegram:123")
+    session.metadata = {"skip_post_memory": True}
+    session.messages = [
+        {"role": "user", "content": f"u{i}"} for i in range(30)
+    ]
+    session.last_consolidated = 0
+    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    ctx_store = SimpleNamespace(
+        prepare=AsyncMock(return_value=ContextBundle(history_messages=[]))
+    )
+
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+            keep_count=20,
+        ),
+        frame_factory=BeforeTurnFrame,
+    )
+    msg = _inbound()
+    msg.metadata["skip_post_memory"] = True
+    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
+
+    ctx = await phase.run(state)
+
+    # 1. excluded session 注入三项策略，且不被 context guard 阻塞。
+    assert ctx.abort is False
+    assert msg.metadata["skip_post_memory"] is True
+    assert msg.metadata["skip_memory_context_guard"] is True
+    assert msg.metadata["disable_memory_writes"] is True
+    ctx_store.prepare.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_before_turn_injects_memory_exclusion_for_scheduler_session():
+    bus = EventBus()
+    session = _DummySession("scheduler:job")
+    session.messages = [
+        {"role": "user", "content": f"u{i}"} for i in range(30)
+    ]
+    session.last_consolidated = 0
+    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    ctx_store = SimpleNamespace(
+        prepare=AsyncMock(return_value=ContextBundle(history_messages=[]))
+    )
+
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+            keep_count=20,
+        ),
+        frame_factory=BeforeTurnFrame,
+    )
+    msg = _inbound()
+    state = TurnState(msg=msg, session_key="scheduler:job", dispatch_outbound=True)
+
+    ctx = await phase.run(state)
+
+    assert ctx.abort is False
+    assert msg.metadata["skip_post_memory"] is True
+    assert msg.metadata["skip_memory_context_guard"] is True
+    assert msg.metadata["disable_memory_writes"] is True
+
+
+@pytest.mark.asyncio
+async def test_before_turn_does_not_inject_for_regular_session():
+    bus = EventBus()
+    session = _DummySession("telegram:123")
+    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    ctx_store = SimpleNamespace(
+        prepare=AsyncMock(return_value=ContextBundle(history_messages=[]))
+    )
+
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+            keep_count=20,
+        ),
+        frame_factory=BeforeTurnFrame,
+    )
+    msg = _inbound()
+    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
+
+    await phase.run(state)
+
+    assert "skip_post_memory" not in msg.metadata
+    assert "skip_memory_context_guard" not in msg.metadata
+    assert "disable_memory_writes" not in msg.metadata
+
+
+@pytest.mark.asyncio
+async def test_before_turn_keeps_explicit_turn_flag_and_skips_injection():
+    bus = EventBus()
+    session = _DummySession("telegram:123")
+    session.metadata = {}
+    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    ctx_store = SimpleNamespace(
+        prepare=AsyncMock(return_value=ContextBundle(history_messages=[]))
+    )
+
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+            keep_count=20,
+        ),
+        frame_factory=BeforeTurnFrame,
+    )
+    msg = _inbound()
+    msg.metadata["skip_post_memory"] = True
+    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
+
+    await phase.run(state)
+
+    # turn 级声明优先：不重复注入，也不添加 guard/写工具策略。
+    assert msg.metadata["skip_post_memory"] is True
+    assert "skip_memory_context_guard" not in msg.metadata
+    assert "disable_memory_writes" not in msg.metadata
+
+
+@pytest.mark.asyncio
+async def test_before_turn_memory_exclusion_fails_loud_on_non_boolean():
+    bus = EventBus()
+    session = _DummySession("telegram:123")
+    session.metadata = {"skip_post_memory": "false"}
+    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    ctx_store = SimpleNamespace(prepare=AsyncMock())
+
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+            keep_count=20,
+        ),
+        frame_factory=BeforeTurnFrame,
+    )
+    msg = _inbound()
+    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
+
+    with pytest.raises(ValueError, match="必须是 boolean"):
+        await phase.run(state)
+
+
+@pytest.mark.asyncio
 async def test_before_turn_accepts_custom_command_module():
     bus = EventBus()
     session = _DummySession("telegram:123")

@@ -88,6 +88,21 @@ def test_register_meta_tool_helpers_mark_expected_tools_always_on():
     assert "reinforce_memory" in always_on
 
 
+def test_memory_tools_carry_source_identity_for_exclusion():
+    tools = ToolRegistry()
+    register_memory_meta_tools(
+        tools,
+        cast(Any, _MemoryEngineStub()),
+    )
+
+    # 1. memory profile 的写工具可按来源身份查询，供 excluded session 禁用。
+    write_names = tools.get_source_tool_names("builtin", "memory", risk="write")
+    assert {"forget_memory", "reinforce_memory"} <= write_names
+    # 2. 检索工具不属于写工具集合，不会被排除。
+    assert "recall_memory" not in write_names
+    assert "recall_memory" in tools.get_source_tool_names("builtin", "memory")
+
+
 def test_common_meta_toolset_registers_load_skill(tmp_path):
     tools = ToolRegistry()
     session_store = SessionStore(tmp_path / "sessions.db")

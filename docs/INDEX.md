@@ -205,6 +205,7 @@ docs/
 │   ├── unified-shell-execution.md
 │   ├── veda-persona.md
 │   ├── persistence-state-map.md
+│   ├── programmatic-session-memory-exclusion.md
 │   └── wake-recent-delivery-context.md
 ├── spark/
 │   ├── 2026-07-16-change-impact-contract-gate.md
