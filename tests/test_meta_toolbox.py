@@ -85,6 +85,7 @@ def test_register_meta_tool_helpers_mark_expected_tools_always_on():
     always_on = tools.get_always_on_names()
     assert isinstance(push_tool, MessagePushTool)
     assert set(META_TOOLBOX_NAMES) - {"memorize"} <= always_on
+    assert "request_user_confirmation" not in always_on
     assert "reinforce_memory" in always_on
 
 
