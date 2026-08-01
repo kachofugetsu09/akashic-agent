@@ -273,10 +273,7 @@ class CancelScheduleTool(Tool):
             return "错误：id 或 name 至少提供一个"
 
         if job_id:
-            all_ids = list(self._service._jobs.keys())
-            matches = [
-                jid for jid in all_ids if jid == job_id or jid.startswith(job_id)
-            ]
+            matches = self._service.match_job_ids(job_id)
             if not matches:
                 return f"未找到 ID 为 {job_id!r} 的任务"
             for jid in matches:
