@@ -1820,9 +1820,11 @@ button {
 }
 
 .message-attachment-preview {
-  display: block;
+  display: grid;
   min-width: 0;
+  min-block-size: 44px;
   grid-column: 1 / -1;
+  place-items: center;
   border: 0;
   padding: 0;
   background: transparent;

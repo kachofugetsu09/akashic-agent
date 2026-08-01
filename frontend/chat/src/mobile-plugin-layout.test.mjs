@@ -55,6 +55,10 @@ test("desktop and mobile keep one shared conversation owner", () => {
 test("mobile attachment previews preserve intrinsic aspect ratios", () => {
   assert.match(
     platformStyles,
+    /\.message-attachment-preview\s*\{[^}]*display:\s*grid;[^}]*min-block-size:\s*44px;[^}]*place-items:\s*center;/,
+  );
+  assert.match(
+    platformStyles,
     /\.message-attachment-preview img\s*\{[^}]*inline-size:\s*auto;[^}]*max-inline-size:\s*100%;[^}]*block-size:\s*auto;[^}]*object-fit:\s*contain;/,
   );
   assert.doesNotMatch(
