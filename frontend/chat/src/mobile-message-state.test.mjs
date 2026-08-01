@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   applyMobileStreamPatch,
+  reconcileMobileSnapshotMessages,
   advanceMobileProjectionBaseline,
   advanceMobileUnreadTracking,
   allMobileAttachmentsReady,
@@ -32,6 +33,19 @@ import {
   updateMobileUnreadMessageIds,
   updateMobileSearchIndex,
 } from "./mobile-message-state.ts";
+
+test("full snapshot reconciliation preserves unchanged message identities", () => {
+  const first = { id: "first", searchRevision: 1, content: "stable" };
+  const changed = { id: "second", searchRevision: 2, content: "before" };
+  const next = reconcileMobileSnapshotMessages([first, changed], [
+    { ...first },
+    { id: "second", searchRevision: 3, content: "after" },
+  ]);
+
+  assert.equal(next[0], first);
+  assert.notEqual(next[1], changed);
+  assert.equal(next[1].content, "after");
+});
 
 test("stream patch replaces only the matching message projection", () => {
   const first = { id: "history", content: "稳定历史" };

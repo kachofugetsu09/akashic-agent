@@ -11,8 +11,8 @@ import {
 import {
   Message,
   MessageContent,
-  MessageResponse,
 } from "@/components/ai-elements/message";
+import { messageNeedsMarkdown } from "@/message-rendering-policy";
 import {
   Reasoning,
   ReasoningTrigger,
@@ -26,7 +26,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Check, ChevronDown, Copy, Wrench } from "lucide-react";
-import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
+import { Fragment, lazy, Suspense, type ReactNode, useEffect, useMemo, useState } from "react";
 import type {
   AgentBlock,
   ChatMessage,
@@ -34,6 +34,21 @@ import type {
   ThinkingBlock,
   ToolBlock,
 } from "./main";
+
+const LazyMessageResponse = lazy(() =>
+  import("@/components/ai-elements/message-response").then(({ MessageResponse }) => ({ default: MessageResponse })),
+);
+
+function MessageBody({ content, streaming }: { content: string; streaming: boolean }) {
+  if (!messageNeedsMarkdown(content)) {
+    return <p className="plain-message-response">{content}</p>;
+  }
+  return (
+    <Suspense fallback={<p className="plain-message-response">{content}</p>}>
+      <LazyMessageResponse isAnimating={streaming}>{content}</LazyMessageResponse>
+    </Suspense>
+  );
+}
 
 export function ChatMessageView({
   message,
@@ -64,7 +79,7 @@ export function ChatMessageView({
           {leadingContent}
           {attachments}
           {message.content ? (
-            <MessageResponse isAnimating={message.streaming}>{message.content}</MessageResponse>
+            <MessageBody content={message.content} streaming={message.streaming === true} />
           ) : null}
         </MessageContent>
       </Message>
@@ -85,7 +100,7 @@ export function ChatMessageView({
         ) : null}
         {attachments}
         {message.content ? (
-          <MessageResponse isAnimating={message.streaming}>{message.content}</MessageResponse>
+          <MessageBody content={message.content} streaming={message.streaming === true} />
         ) : null}
         {answerEndContent}
       </MessageContent>

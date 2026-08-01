@@ -64,6 +64,8 @@ test("shared navigation keeps the compact mobile drawer language", () => {
   assert.doesNotMatch(navigationSource, /对话与知识/);
   assert.doesNotMatch(navigationSource, />Akashic</);
   assert.match(navigationSource, /conversation-navigation__heading">会话/);
+  assert.match(navigationSource, /featuredDestinations/);
+  assert.match(mobileSource, /label: "知识与运行",[\s\S]*?featured: true,/);
   assert.match(
     navigationStyles,
     /\.conversation-destination__icon\s*\{[^}]*width:\s*24px;[^}]*background:\s*transparent;/,
@@ -71,6 +73,10 @@ test("shared navigation keeps the compact mobile drawer language", () => {
   assert.match(
     navigationStyles,
     /\.conversation-navigation__action\.primary\s*\{[^}]*width:\s*fit-content;[^}]*border-radius:\s*24px;/,
+  );
+  assert.match(
+    navigationStyles,
+    /\.conversation-destination\.featured\s*\{[^}]*min-height:\s*68px;[^}]*border-radius:\s*22px;[^}]*background:\s*#3f7479;/,
   );
 });
 

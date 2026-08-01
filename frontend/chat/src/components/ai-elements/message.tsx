@@ -12,25 +12,17 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { cjk } from "@streamdown/cjk";
-import { code } from "@streamdown/code";
-import { math } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
 import type { UIMessage } from "ai";
-import type { Element, Parent, Root, RootContent } from "hast";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
 import {
   createContext,
-  memo,
   useCallback,
   useContext,
   useEffect,
   useMemo,
   useState,
 } from "react";
-import { Streamdown } from "streamdown";
-import type { PluggableList } from "unified";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
@@ -320,144 +312,6 @@ export const MessageBranchPage = ({
     </ButtonGroupText>
   );
 };
-
-export type MessageResponseProps = ComponentProps<typeof Streamdown>;
-
-const streamdownPlugins = { cjk, code, math, mermaid };
-const kaomojiPlaceholder = "\uE000AKASHIC_KAOMOJI_";
-const kaomojiPattern = /^([（(])([^()\n（）]{0,24}[・ω｀´＾＿ー∀▽дД﹏꒳][^()\n（）]{0,24})([）)])/;
-
-export const MessageResponse = memo(
-  ({ className, children, rehypePlugins, ...props }: MessageResponseProps) => {
-    const prepared = useMemo(
-      () => prepareKaomojiMarkdown(children),
-      [children]
-    );
-    const mergedRehypePlugins = useMemo<PluggableList>(
-      () => [
-        ...(rehypePlugins ?? []),
-        [restoreKaomojiPlugin, prepared.kaomoji],
-      ],
-      [prepared.kaomoji, rehypePlugins]
-    );
-
-    return (
-      <Streamdown
-        className={cn(
-          "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
-          className
-        )}
-        plugins={streamdownPlugins}
-        rehypePlugins={mergedRehypePlugins}
-        {...props}
-      >
-        {prepared.markdown}
-      </Streamdown>
-    );
-  },
-  (prevProps, nextProps) =>
-    prevProps.children === nextProps.children &&
-    nextProps.isAnimating === prevProps.isAnimating
-);
-
-MessageResponse.displayName = "MessageResponse";
-
-function prepareKaomojiMarkdown(children: MessageResponseProps["children"]) {
-  const markdown = typeof children === "string"
-    ? children.replace(/\uE000AKASHIC_KAOMOJI_\d+\uE000/g, "")
-    : "";
-  const kaomoji: string[] = [];
-  let fenced = false;
-  const lines = markdown.split(/(\n)/);
-  const masked = lines.map((line) => {
-    if (line === "\n") return line;
-    if (/^\s*(```|~~~)/.test(line)) {
-      fenced = !fenced;
-      return line;
-    }
-    if (fenced) return line;
-    return maskKaomojiInLine(line, kaomoji);
-  }).join("");
-  return { markdown: masked, kaomoji };
-}
-
-function maskKaomojiInLine(line: string, kaomoji: string[]) {
-  let result = "";
-  let index = 0;
-  while (index < line.length) {
-    if (line[index] === "`") {
-      const next = line.indexOf("`", index + 1);
-      if (next === -1) {
-        result += line.slice(index);
-        break;
-      }
-      result += line.slice(index, next + 1);
-      index = next + 1;
-      continue;
-    }
-
-    const match = kaomojiPattern.exec(line.slice(index));
-    if (match?.index === 0) {
-      const value = match[0];
-      const placeholder = `${kaomojiPlaceholder}${kaomoji.length}\uE000`;
-      kaomoji.push(value);
-      result += placeholder;
-      index += value.length;
-      continue;
-    }
-
-    result += line[index];
-    index += 1;
-  }
-  return result;
-}
-
-function restoreKaomojiPlugin(kaomoji: string[]) {
-  return (tree: Root) => {
-    if (kaomoji.length === 0) return;
-    restoreKaomojiNodes(tree, kaomoji);
-  };
-}
-
-function restoreKaomojiNodes(parent: Parent, kaomoji: string[]) {
-  parent.children = parent.children.flatMap((child) => {
-    if (child.type === "text") {
-      return restoreKaomojiText(child.value, kaomoji);
-    }
-    if (child.type === "element" && !isLiteralElement(child)) {
-      restoreKaomojiNodes(child, kaomoji);
-    }
-    return [child];
-  }) as Parent["children"];
-}
-
-function restoreKaomojiText(value: string, kaomoji: string[]): RootContent[] {
-  const nodes: RootContent[] = [];
-  const pattern = new RegExp(`${kaomojiPlaceholder}(\\d+)\\uE000`, "g");
-  let offset = 0;
-  for (const match of value.matchAll(pattern)) {
-    const index = match.index ?? 0;
-    if (index > offset) {
-      nodes.push({ type: "text", value: value.slice(offset, index) });
-    }
-    const text = kaomoji[Number(match[1])] ?? match[0];
-    nodes.push({
-      type: "element",
-      tagName: "span",
-      properties: { className: ["kaomoji-literal"] },
-      children: [{ type: "text", value: text }],
-    });
-    offset = index + match[0].length;
-  }
-  if (offset < value.length) {
-    nodes.push({ type: "text", value: value.slice(offset) });
-  }
-  return nodes.length ? nodes : [{ type: "text", value }];
-}
-
-function isLiteralElement(element: Element) {
-  return ["code", "pre", "kbd", "samp"].includes(element.tagName);
-}
 
 export type MessageToolbarProps = ComponentProps<"div">;
 
