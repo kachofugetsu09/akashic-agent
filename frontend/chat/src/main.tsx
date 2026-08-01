@@ -42,7 +42,6 @@ import {
 } from "@/components/ai-elements/prompt-input";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { MobilePairingDialog } from "./mobile-pairing-dialog";
-import { SettingsApp } from "./settings-app";
 import "./styles.css";
 
 type ChatStatus = "idle" | "submitted" | "streaming" | "error";
@@ -80,6 +79,7 @@ export interface ToolBlock {
   input: unknown;
   output: unknown;
   errorText: string | undefined;
+  durationMs?: number;
 }
 
 export type AgentBlock = ThinkingBlock | ToolBlock;
@@ -108,12 +108,19 @@ export interface ChatMessage {
   attachments?: MessageAttachment[];
   blocks: AgentBlock[];
   streaming?: boolean;
+  interrupted?: boolean;
   startedAt?: number;
   durationMs?: number;
 }
 
 const LazyChatMessageView = lazy(() =>
   import("./message-view").then(({ ChatMessageView }) => ({ default: ChatMessageView })),
+);
+const LazyMobileShowcase = lazy(() =>
+  import("./mobile-showcase").then(({ MobileShowcase }) => ({ default: MobileShowcase })),
+);
+const LazySettingsApp = lazy(() =>
+  import("./settings-app").then(({ SettingsApp }) => ({ default: SettingsApp })),
 );
 
 type ChatFrame =
@@ -736,10 +743,11 @@ function handleFrame(
     return;
   }
   if (frame.type === "react.tool.completed") {
+    const succeeded = frame.status === "success";
     ctx.setMessages((messages) => updateTool(messages, frame.call_id, {
-      status: frame.status === "error" ? "output-error" : "output-available",
+      status: succeeded ? "output-available" : "output-error",
       output: frame.result_preview,
-      errorText: frame.status === "error" ? frame.result_preview : undefined,
+      errorText: succeeded ? undefined : frame.result_preview,
     }));
     return;
   }
@@ -938,7 +946,8 @@ function toolCallToBlock(call: unknown, groupIndex: number, callIndex: number): 
   if (!item) return null;
   const name = stringValue(item.name);
   if (!name) return null;
-  const status = stringValue(item.status) === "error" ? "output-error" : "output-available";
+  const rawStatus = stringValue(item.status);
+  const status = !rawStatus || rawStatus === "success" ? "output-available" : "output-error";
   return {
     kind: "tool",
     callId: stringValue(item.call_id) || `${groupIndex}-${callIndex}-${name}`,
@@ -1045,10 +1054,17 @@ function sessionLabel(session: SessionRow) {
   return title.length > 28 ? `${title.slice(0, 28)}...` : title;
 }
 
-const rootApp = window.location.port === "6321" ? <SettingsApp /> : <App />;
+const isMobileShowcase = new URLSearchParams(window.location.search).get("preview") === "mobile";
+const rootApp = window.location.port === "6321"
+  ? <LazySettingsApp />
+  : isMobileShowcase
+    ? <LazyMobileShowcase />
+    : <App />;
 
 createRoot(document.getElementById("root")!).render(
   <TooltipProvider>
-    {rootApp}
+    <Suspense fallback={<div className="webui-entry-loading">正在载入界面…</div>}>
+      {rootApp}
+    </Suspense>
   </TooltipProvider>,
 );

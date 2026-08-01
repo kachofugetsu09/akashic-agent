@@ -175,10 +175,10 @@ export function MobilePairingDialog({ open, onOpenChange }: MobilePairingDialogP
           <motion.div
             key={state.stage}
             className="mobile-pairing-stage"
-            initial={{ opacity: 0, y: 4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            transition={{ duration: 0.16, ease: "easeOut" }}
+            initial={{ opacity: 0, y: 10, filter: "blur(4px)" }}
+            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+            exit={{ opacity: 0, y: -6, filter: "blur(4px)" }}
+            transition={{ type: "spring", duration: 0.3, bounce: 0 }}
           >
             {state.stage === "creating" ? <CreatingStage /> : null}
             {state.stage === "waiting" ? (
