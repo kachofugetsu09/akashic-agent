@@ -250,9 +250,14 @@ async def test_agent_restart_requires_current_attempt_search_grant() -> None:
         preloadable=False,
         requires_turn_search=True,
     )
-    registry.set_context(channel="programmatic", chat_id="one")
     turn_token = current_turn_id.set("turn-a")
     session_token = current_session_key.set("programmatic:one")
+    registry.set_context(
+        channel="programmatic",
+        chat_id="one",
+        session_key="programmatic:one",
+        turn_id="turn-a",
+    )
     scope = registry.begin_turn_search_scope(
         turn_id="turn-a",
         session_key="programmatic:one",
