@@ -428,11 +428,7 @@ def test_source_bundle_restores_history_and_keeps_worktree_overlay(
     tracked.write_text("dirty overlay\n", encoding="utf-8")
 
     bundle = tmp_path / "inputs" / "source.bundle"
-    info = create_source_bundle(
-        source,
-        bundle,
-        migration_baseline=baseline,
-    )
+    info = create_source_bundle(source, bundle)
 
     restored = tmp_path / "restored"
     restored.mkdir()
@@ -450,4 +446,3 @@ def test_source_bundle_restores_history_and_keeps_worktree_overlay(
     assert (restored / "tracked.txt").read_text(encoding="utf-8") == "dirty overlay\n"
     assert _git(restored, "status", "--short") == "M tracked.txt"
     assert info["head"] == head
-    assert info["migration_baseline"] == baseline

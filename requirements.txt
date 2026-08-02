@@ -47,4 +47,5 @@ tomlkit>=0.13.0,<1
 tzlocal>=5.3.0
 uvicorn>=0.41.0
 websockets>=15.0,<16
+yoyo-migrations==9.0.0
 yt-dlp>=2026.0.0

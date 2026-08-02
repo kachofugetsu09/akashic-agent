@@ -13,7 +13,7 @@ Akashic 的身份和人格此前由 Python 常量直接拼入 Main、Proactive �
 3. 只有 Main Agent 在用户明确要求修改人格或 Veda 时可以写入。后台 optimizer、Proactive、Wake 和 Drift 只读。
 4. 本轮 prompt 在模型执行前冻结；本轮对 Veda 的写入只从下一次 prompt 组装开始生效。
 5. 合法 Veda 必须存在、为非空 UTF-8。缺失或损坏时失败，不使用代码 fallback，也不自动修复。
-6. 仓库保存版本化默认 Markdown。新安装只在缺失时初始化；旧 workspace 通过追加式 Git migration 只创建缺失文件；已有合法内容不覆盖。
+6. 仓库保存版本化默认 Markdown。workspace 初始化只在缺失时创建；已有合法内容不覆盖。退役的 Git migration 脚本仅作为历史源码保留，不再自动执行。
 7. `python main.py veda-reset` 是 runtime 加载前的显式恢复入口。它先保存原始字节和 hash，再原子发布当前版本默认内容。
 
 ## 状态边界

@@ -1910,36 +1910,6 @@ def _prepare_host_sandbox(sandbox: Path, source_root: Path) -> None:
     # 3. 配置只引用同一 sandbox 内的路径。
     _write_config(sandbox)
 
-    # 4. 当前格式 Gate fixture 直接建立独立源码身份，不伪装成旧安装迁移。
-    app_root = sandbox / "app"
-    subprocess.run(["git", "init", "-q"], cwd=app_root, check=True)
-    subprocess.run(["git", "add", "--all"], cwd=app_root, check=True)
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=Akashic Control Gate",
-            "-c",
-            "user.email=control-gate@invalid",
-            "commit",
-            "-qm",
-            "control gate source snapshot",
-        ],
-        cwd=app_root,
-        check=True,
-    )
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=app_root,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    (sandbox / "config.toml.migration-cursor").write_text(
-        f"{head}\n", encoding="ascii"
-    )
-
-
 def _install_control_failure_plugin(sandbox: Path) -> None:
     """安装只为 PC10 构造 started 后 gate failure 的隔离插件。"""
 

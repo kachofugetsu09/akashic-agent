@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -35,7 +36,7 @@ def test_setup_main_does_not_import_agent_runtime(tmp_path: Path) -> None:
     assert "apscheduler" not in output
 
 
-def test_init_marks_fresh_installation_at_current_head(tmp_path: Path) -> None:
+def test_init_records_yoyo_origin_in_workspace_ledger(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     workspace = tmp_path / "workspace"
 
@@ -57,15 +58,16 @@ def test_init_marks_fresh_installation_at_current_head(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    head = subprocess.run(
-        ["git", "-C", str(_PROJECT_ROOT), "rev-parse", "HEAD"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    cursor = config_path.with_name("config.toml.migration-cursor")
-    assert cursor.read_text(encoding="ascii").strip() == head
+    ledger = workspace / "migrations.sqlite3"
+    connection = sqlite3.connect(ledger)
+    try:
+        applied = connection.execute(
+            "SELECT migration_id FROM _yoyo_migration"
+        ).fetchall()
+    finally:
+        connection.close()
+    assert applied == [("20260802_01_yoyo_origin",)]
+    assert not config_path.with_name("config.toml.migration-cursor").exists()
 
 
 def test_veda_reset_runs_before_agent_runtime_and_preserves_original_bytes(

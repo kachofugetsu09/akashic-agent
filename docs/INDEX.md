@@ -106,7 +106,7 @@
 | 正式启动、Supervisor、自重启、停止信号 | `projectneed` RUN-001～RUN-004 → [Linux Supervisor 安全自重启提议](design/linux-supervisor-safe-self-restart.md) → [`docker/debug/README.md`](../docker/debug/README.md) | `main.py`、`agent/supervisor.py`、`agent/restart.py`、`agent/tools/agent_restart.py`、`scripts/stop-runtime.sh`、restart Gate 报告 |
 | 插件安装、热重载、plugin-data、Skill、Drift skill、MCP | `projectneed` 第 6、10～13 节 → [0008](decisions/0008-plugin-runtime-publishes-only-committed-snapshots.md) → [持久化状态地图](design/persistence-state-map.md) | `agent/plugins/base.py`、`agent/plugins/install.py`、`agent/plugins/manager.py`、`agent/plugins/reload_journal.py`、`agent/plugins/skill_links.py`、`agent/mcp/host.py` |
 | 移动端查看 Markdown、定时任务、插件、Skill、MCP | `projectneed` 第 6、10～13 节 → [移动端运行时检查](design/mobile-runtime-inspection.md) → [持久化状态地图](design/persistence-state-map.md) | `infra/mobile_realtime/runtime_inspection.py`、`infra/mobile_realtime/protocol.py`、`infra/mobile_realtime/channel.py` |
-| Workspace、配置、凭据、迁移、备份 | `projectneed` 第 6、11～13 节 → [持久化状态地图](design/persistence-state-map.md) → [0005](decisions/0005-git-cursor-drives-one-shot-migrations.md) → [迁移维护手册](design/git-migration-authoring.md) → [Git 一次性迁移设计](spark/2026-07-21-git-backed-one-shot-migrations-design.md) | `main.py`、`bootstrap/init_workspace.py`、`agent/config.py`、`agent/migrations/`、`migrations/`、`agent/model_runtime/auth/store.py`、`scripts/rolling_backup.py` |
+| Workspace、配置、凭据、迁移、备份 | `projectneed` 第 6、11～13 节 → [持久化状态地图](design/persistence-state-map.md) → [0021](decisions/0021-yoyo-workspace-ledger-defines-migration-origin.md) → [Yoyo 迁移维护手册](design/git-migration-authoring.md) | `main.py`、`bootstrap/init_workspace.py`、`agent/config.py`、`agent/migrations/`、`migrations/yoyo/`、`agent/model_runtime/auth/store.py`、`scripts/rolling_backup.py` |
 | 高风险 refactor、语义不变重构、CI oracle | `projectneed` 第 4～6、13、15 节 → [综合重构账本](refactor/clean-code-ledger.md) → [上下文事故设计](design/project-workbook-and-semantic-safety.md) → 相关决策 | 改动前后的完整 diff、semantic tests、write set、故障注入 |
 | 变更影响 Gate、跨仓库插件契约 | `projectneed` 第 10、13、15 节 → [0004](decisions/0004-cross-repository-evidence-is-an-immutable-combination.md) → [移动端与跨仓库 Gate](design/mobile-cross-repository-semantic-gate.md) → [Gate 总体设计](spark/2026-07-16-change-impact-contract-gate.md) → [持久化状态地图](design/persistence-state-map.md) | `tests_scenarios/contracts/`、`docker/debug/gate.py`、`private_runtime/` |
 | Companion 安全、容量和长时运行 Edge Case | `projectneed` SEC-001～SEC-010 → [0017](decisions/0017-one-person-companion-security-boundary.md) → [Companion 安全边界与 Edge Case 实施设计](design/security-scan-edge-cases.md) → [持久化状态地图](design/persistence-state-map.md) | 相关 D1～D9 owner、`tests_scenarios/contracts/`、`docker/debug/gate.py` |
@@ -202,7 +202,8 @@ docs/
 │   ├── 0017-one-person-companion-security-boundary.md
 │   ├── 0018-chat-webui-has-one-source-and-two-adapters.md
 │   ├── 0019-mobile-long-messages-use-bounded-events.md
-│   └── 0020-mobile-history-content-uses-authenticated-http-ranges.md
+│   ├── 0020-mobile-history-content-uses-authenticated-http-ranges.md
+│   └── 0021-yoyo-workspace-ledger-defines-migration-origin.md
 ├── design/
 │   ├── akasha-v2-runtime-migration.md
 │   ├── linux-supervisor-safe-self-restart.md

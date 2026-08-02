@@ -1,7 +1,8 @@
 # 0005 · Git cursor 驱动一次性兼容迁移
 
-- 状态：accepted
+- 状态：superseded
 - 日期：2026-07-21
+- 被取代：[0021 · Yoyo workspace 账本定义迁移原点](0021-yoyo-workspace-ledger-defines-migration-origin.md)
 - 关联条款：MIG-001、MIG-002、WSP-003、BAK-001、TST-002、TST-005
 
 ## 背景

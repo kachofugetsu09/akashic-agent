@@ -90,6 +90,7 @@ workspace 仍不是完整运行环境的全部。显式主配置、全局凭据�
 | `PROACTIVE_CONTEXT.md` | workspace 初始化时只在缺失时写入模板 | runtime 只读；用户或获授权文件工具可以修改规则面板 | 当前没有 runtime 自动清空或删除协议；代码升级不得用默认模板覆盖已有内容 |
 | `plugin-data/` | 已激活插件在自己的 opaque 目录增加数据 | 由插件 schema 和 owner 决定 | 普通卸载只删除代码和能力投影，保留数据；永久删除必须使用名称不同的用户操作、影响预览、备份和再次确认 |
 | `runtime/plugin-reloads.sqlite3` | 每次热重载增加 transaction 与阶段事件 | 同一 transaction 按状态机更新当前 phase、snapshot identity 和错误 | 当前没有自动 retention；恢复和事故审计仍依赖的记录不得自动删除 |
+| `migrations.sqlite3` | Yoyo 在 migration step 成功后记录唯一 migration ID | 已应用回执保持不变；新增迁移只追加新的成功回执 | runtime 没有删除或回滚回执权限；只随用户明确删除整个 workspace 而减少，恢复依赖 workspace 备份与 SQLite 完整性检查 |
 | 插件贡献的 Skill/Drift skill | 插件 source 持有 skill 正文；安装把版本化副本发布到 cache，generation 从 `skill_roots` 建 catalog | workspace `skills/` 和 `drift/skills/` 软链接随 active generation 重建 | 禁用/卸载插件可以移除已安装副本、catalog 和软链接；外部 canonical source 不归 workspace 或卸载流程所有 |
 | 插件贡献的 MCP | 插件安装读取 `mcp_servers()` 并准备 runtime，generation readiness 通过后发布 MCP catalog | 插件升级或热重载按 generation 原子替换，旧代随 lease 排空 | 禁用/卸载插件移除 MCP catalog 和 runtime；plugin-data 不级联删除 |
 | `mcp/servers/*.toml` 与手工 skill 目录 | 当前代码仍允许绕过插件直接声明或放置能力 | watcher/loader 可以热加载这些兼容内容 | 目标架构不再扩展这条路径；应迁移成插件并删除第二套 owner，迁移完成前不得把兼容目录写成 canonical 产品资产 |
@@ -140,6 +141,7 @@ workspace 仍不是完整运行环境的全部。显式主配置、全局凭据�
      │             │              │               │
      ▼             ▼              ▼               ▼
  sessions.db   memory/*.md    proactive.db     plugin-data/
+ migrations.sqlite3
  uploads/      memory2.db     wake*.db         插件 Skill/MCP catalog
                akasha.db      drift/drift.db   workspace 能力投影
 ```
@@ -176,6 +178,7 @@ workspace 之外还有两组明确的全局状态：
 ```text
 <workspace>/
 ├── sessions.db
+├── migrations.sqlite3                 Yoyo 迁移成功回执
 ├── sessions/                         目前只创建目录，未找到生产写入者
 ├── schedules.json
 ├── PROACTIVE_CONTEXT.md
