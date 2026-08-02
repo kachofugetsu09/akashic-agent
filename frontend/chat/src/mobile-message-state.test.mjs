@@ -71,13 +71,20 @@ test("full snapshot reconciliation replaces an attachment whose local presentati
 
 test("stream patch replaces only the matching message projection", () => {
   const first = { id: "history", content: "稳定历史" };
-  const active = { id: "assistant:turn", content: "正在" };
+  const active = {
+    id: "assistant:turn",
+    sessionId: "mobile:test",
+    role: "assistant",
+    createdAt: 1_000,
+    streaming: true,
+    content: "正在",
+  };
   const snapshot = {
     projectionGeneration: 7,
     selectedSessionId: "mobile:test",
     messages: [first, active],
   };
-  const patchedMessage = { id: active.id, content: "正在分析" };
+  const patchedMessage = { ...active, content: "正在分析" };
 
   const next = applyMobileStreamPatch(snapshot, {
     projectionGeneration: 7,
@@ -141,17 +148,25 @@ test("incremental stream patch appends answer and one thinking block without rep
 });
 
 test("stream patch rejects stale generation, session, index, and identity", () => {
+  const active = {
+    id: "assistant:turn",
+    sessionId: "mobile:test",
+    role: "assistant",
+    createdAt: 1_000,
+    streaming: true,
+    content: "正在",
+  };
   const snapshot = {
     projectionGeneration: 7,
     selectedSessionId: "mobile:test",
-    messages: [{ id: "assistant:turn", content: "正在" }],
+    messages: [active],
   };
   const base = {
     projectionGeneration: 7,
     selectedSessionId: "mobile:test",
     messageIndex: 0,
     messageId: "assistant:turn",
-    message: { id: "assistant:turn", content: "完成" },
+    message: { ...active, streaming: false, content: "完成" },
   };
 
   assert.equal(applyMobileStreamPatch(snapshot, { ...base, projectionGeneration: 8 }), null);
@@ -159,7 +174,46 @@ test("stream patch rejects stale generation, session, index, and identity", () =
   assert.equal(applyMobileStreamPatch(snapshot, { ...base, messageIndex: 1 }), null);
   assert.equal(applyMobileStreamPatch(snapshot, {
     ...base,
-    message: { id: "assistant:other", content: "完成" },
+    message: { ...base.message, id: "assistant:other", streaming: true },
+  }), null);
+});
+
+test("terminal stream patch accepts only a matching assistant id migration", () => {
+  const active = {
+    id: "assistant:turn",
+    sessionId: "mobile:test",
+    role: "assistant",
+    createdAt: 1_000,
+    streaming: true,
+    content: "正在",
+  };
+  const snapshot = {
+    projectionGeneration: 7,
+    selectedSessionId: "mobile:test",
+    messages: [active],
+  };
+  const terminal = {
+    ...active,
+    id: "message:canonical",
+    streaming: false,
+    content: "完成",
+  };
+  const patch = {
+    projectionGeneration: 7,
+    selectedSessionId: "mobile:test",
+    messageIndex: 0,
+    messageId: active.id,
+    message: terminal,
+  };
+
+  assert.equal(applyMobileStreamPatch(snapshot, patch)?.messages[0], terminal);
+  assert.equal(applyMobileStreamPatch(snapshot, {
+    ...patch,
+    message: { ...terminal, sessionId: "mobile:other" },
+  }), null);
+  assert.equal(applyMobileStreamPatch(snapshot, {
+    ...patch,
+    message: { ...terminal, role: "user" },
   }), null);
 });
 

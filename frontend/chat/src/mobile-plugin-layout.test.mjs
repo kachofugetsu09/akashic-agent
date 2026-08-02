@@ -26,6 +26,10 @@ const mobileSource = await readFile(
   new URL("./mobile-native.tsx", import.meta.url),
   "utf8",
 );
+const sharedMessageSource = await readFile(
+  new URL("./message-view.tsx", import.meta.url),
+  "utf8",
+);
 const navigationSource = await readFile(
   new URL("./conversation-navigation.tsx", import.meta.url),
   "utf8",
@@ -137,16 +141,26 @@ test("full native snapshots commit without waiting for another animation frame",
   const receiver = mobileSource.match(/receiveSnapshot\(next\) \{[\s\S]*?\n[ ]{6}\},\n[ ]{6}receiveStreamPatch/);
   assert.ok(receiver, "mobile snapshot receiver must remain discoverable");
   assert.match(receiver[0], /nextSnapshot = parseMobileSnapshot\(next\)/);
-  assert.match(receiver[0], /setSnapshot\(\(current\) =>/);
+  assert.match(receiver[0], /setSnapshot\(nextSnapshot\)/);
   assert.doesNotMatch(receiver[0], /requestAnimationFrame|startTransition/);
 });
 
-test("stream patches batch per frame without a starvable React transition", () => {
+test("stream patches publish to the affected row without a starvable React transition", () => {
   const receiver = mobileSource.match(/receiveStreamPatch\(next\) \{[\s\S]*?\n[ ]{6}\},\n[ ]{6}receiveStatePatch/);
   assert.ok(receiver, "mobile stream receiver must remain discoverable");
-  assert.match(receiver[0], /requestAnimationFrame/);
-  assert.match(receiver[0], /setSnapshot\(\(current\) =>/);
+  assert.match(receiver[0], /streamSnapshotRef\.current = nextSnapshot/);
+  assert.match(receiver[0], /streamStore\.publish\(/);
+  assert.doesNotMatch(receiver[0], /requestAnimationFrame/);
   assert.doesNotMatch(receiver[0], /startTransition/);
+});
+
+test("streaming redraws only dynamic message subtrees", () => {
+  assert.match(mobileSource, /useSyncExternalStore\(subscribe, getSnapshot, getSnapshot\)/);
+  assert.match(mobileSource, /const MessageMeta = React\.memo/);
+  assert.match(mobileSource, /blocks: toCachedAgentBlocks\(message\.blocks\)/);
+  assert.match(sharedMessageSource, /const MessageBody = memo/);
+  assert.match(sharedMessageSource, /const MessageAttachments = memo/);
+  assert.match(sharedMessageSource, /const ProcessTrace = memo/);
 });
 
 test("user message bubble uses a defined secondary container token", () => {

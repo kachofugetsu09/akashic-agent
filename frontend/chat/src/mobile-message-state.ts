@@ -116,6 +116,10 @@ export function reconcileMobileStreamItems<T>(
 export function applyMobileStreamPatch<
   T extends {
     id: string;
+    sessionId?: string;
+    role?: "user" | "assistant";
+    createdAt?: number;
+    streaming?: boolean;
     content?: string;
     searchRevision?: number;
     durationSeconds?: number;
@@ -133,7 +137,18 @@ export function applyMobileStreamPatch<
   const previous = snapshot.messages[patch.messageIndex]
   let message: T
   if (patch.message !== undefined) {
-    if (patch.message.id !== patch.messageId) return null
+    if (
+      previous.role !== "assistant"
+      || patch.message.role !== "assistant"
+      || previous.streaming !== true
+      || (patch.message.streaming !== true && patch.message.streaming !== false)
+      || previous.sessionId !== patch.message.sessionId
+      || previous.createdAt !== patch.message.createdAt
+      || (
+        patch.message.id !== patch.messageId
+        && patch.message.streaming !== false
+      )
+    ) return null
     message = patch.message
   } else {
     if (typeof previous.content !== "string" || !Array.isArray(previous.blocks)) return null

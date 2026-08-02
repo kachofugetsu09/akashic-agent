@@ -39,7 +39,7 @@ const LazyMessageResponse = lazy(() =>
   import("@/components/ai-elements/message-response").then(({ MessageResponse }) => ({ default: MessageResponse })),
 );
 
-function MessageBody({ content, streaming }: { content: string; streaming: boolean }) {
+const MessageBody = memo(function MessageBody({ content, streaming }: { content: string; streaming: boolean }) {
   if (!messageNeedsMarkdown(content)) {
     return <p className="plain-message-response">{content}</p>;
   }
@@ -48,7 +48,7 @@ function MessageBody({ content, streaming }: { content: string; streaming: boole
       <LazyMessageResponse isAnimating={streaming}>{content}</LazyMessageResponse>
     </Suspense>
   );
-}
+});
 
 export function ChatMessageView({
   message,
@@ -92,7 +92,10 @@ export function ChatMessageView({
         {leadingContent}
         {message.blocks.length ? (
           <ProcessTrace
-            message={message}
+            blocks={message.blocks}
+            streaming={message.streaming === true}
+            interrupted={message.interrupted === true}
+            durationMs={message.durationMs}
             startContent={processStartContent}
             beforeBlock={beforeProcessBlock}
             onCopyToolDetail={onCopyToolDetail}
@@ -108,7 +111,7 @@ export function ChatMessageView({
   );
 }
 
-function MessageAttachments({ attachments }: { attachments: MessageAttachment[] }) {
+const MessageAttachments = memo(function MessageAttachments({ attachments }: { attachments: MessageAttachment[] }) {
   return (
     <Attachments className="message-attachments" variant="grid">
       {attachments.map((attachment) => (
@@ -116,7 +119,7 @@ function MessageAttachments({ attachments }: { attachments: MessageAttachment[] 
       ))}
     </Attachments>
   );
-}
+});
 
 function MessageAttachmentItem({ attachment }: { attachment: MessageAttachment }) {
   const isImage = getMediaCategory(attachment) === "image" && attachment.url;
@@ -181,13 +184,19 @@ function AttachmentHover({ attachment }: { attachment: MessageAttachment }) {
   );
 }
 
-function ProcessTrace({
-  message,
+const ProcessTrace = memo(function ProcessTrace({
+  blocks,
+  streaming,
+  interrupted,
+  durationMs,
   startContent,
   beforeBlock,
   onCopyToolDetail,
 }: {
-  message: ChatMessage;
+  blocks: AgentBlock[];
+  streaming: boolean;
+  interrupted: boolean;
+  durationMs?: number;
   startContent?: ReactNode;
   beforeBlock?: (block: AgentBlock, index: number) => ReactNode;
   onCopyToolDetail?: (text: string) => void;
@@ -195,22 +204,22 @@ function ProcessTrace({
   return (
     <Reasoning
       className="process-trace"
-      isStreaming={!!message.streaming}
-      defaultOpen={!!message.streaming}
-      duration={message.durationMs ? Math.max(1, Math.round(message.durationMs / 1000)) : undefined}
+      isStreaming={streaming}
+      defaultOpen={streaming}
+      duration={durationMs ? Math.max(1, Math.round(durationMs / 1000)) : undefined}
     >
-      <ProcessTraceTrigger interrupted={!!message.interrupted} />
+      <ProcessTraceTrigger interrupted={interrupted} />
       <CollapsibleContent className="process-content">
         <div className="process-line" aria-hidden="true" />
         <div className="process-items">
           {startContent}
-          {message.blocks.map((block, index) => (
+          {blocks.map((block, index) => (
             <Fragment key={block.kind === "thinking" ? `thinking-${index}` : block.callId}>
               {beforeBlock?.(block, index)}
               {block.kind === "thinking" ? (
                 <ThinkingStep
                   block={block}
-                  active={!!message.streaming && index === message.blocks.length - 1}
+                  active={streaming && index === blocks.length - 1}
                 />
               ) : (
                 <ToolStep
@@ -225,7 +234,7 @@ function ProcessTrace({
       </CollapsibleContent>
     </Reasoning>
   );
-}
+});
 
 function ProcessTraceTrigger({ interrupted }: { interrupted: boolean }) {
   const { isOpen, isStreaming, duration } = useReasoning();

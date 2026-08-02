@@ -12,6 +12,7 @@ import React, {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { createRoot } from "react-dom/client";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -109,6 +110,10 @@ import {
 import type { AgentBlock, ChatMessage } from "./main";
 import { messageNeedsMarkdown } from "./message-rendering-policy";
 import {
+  advanceMobileStreamPresentation,
+  MobileStreamProjectionStore,
+} from "./mobile-stream-projection";
+import {
   pushMobileSurface,
   readMobileSurfaceHistoryState,
   replaceMobileSurface,
@@ -202,7 +207,7 @@ interface MobileSession {
 }
 
 interface MobileStreamPatch {
-  protocolVersion: 2;
+  protocolVersion: 3;
   projectionGeneration: number;
   selectedSessionId: string;
   messageIndex: number;
@@ -216,6 +221,7 @@ interface MobileStreamPatch {
     delta: string;
   };
   message?: MobileMessage;
+  state?: MobileStatePatch;
 }
 
 type MobileStatePatch = Omit<MobileSnapshot, "protocolVersion" | "messages"> & {
@@ -534,7 +540,7 @@ function parseTransferStatus(value: unknown): MobileTransferStatus {
 /** 校验 native 在完整快照之后发送的单消息 streaming patch。 */
 function parseMobileStreamPatch(value: unknown): MobileStreamPatch {
   const raw = requireRecord(value, "streamPatch");
-  if (raw.protocolVersion !== 2) {
+  if (raw.protocolVersion !== 3) {
     throw new Error(`不支持的 stream patch 版本: ${String(raw.protocolVersion)}`);
   }
   const projectionGeneration = requireNonNegativeInteger(
@@ -543,9 +549,32 @@ function parseMobileStreamPatch(value: unknown): MobileStreamPatch {
   );
   const messageIndex = requireNonNegativeInteger(raw.messageIndex, "streamPatch.messageIndex");
   const messageId = requireString(raw.messageId, "streamPatch.messageId");
+  const selectedSessionId = requireString(raw.selectedSessionId, "streamPatch.selectedSessionId");
   const message = raw.message === undefined ? undefined : parseMessage(raw.message, messageIndex);
-  if (message && (!message.streaming || message.role !== "assistant" || message.id !== messageId)) {
-    throw new Error("stream patch 只能更新正在执行的助手消息");
+  const state = raw.state === undefined ? undefined : parseMobileStatePatch(raw.state);
+  if (message && (
+    message.role !== "assistant"
+    || message.sessionId !== selectedSessionId
+  )) {
+    throw new Error("stream patch 只能更新当前会话的助手消息");
+  }
+  if (message?.streaming && message.id !== messageId) {
+    throw new Error("streaming patch 不得迁移消息 ID");
+  }
+  if (message && !message.streaming && (
+    message.sessionId !== selectedSessionId
+    || state === undefined
+  )) {
+    throw new Error("terminal patch 必须携带同会话控制状态");
+  }
+  if (state && (
+    state.selectedSessionId !== selectedSessionId
+    || state.projectionGeneration !== projectionGeneration
+  )) {
+    throw new Error("stream patch 控制状态与消息投影不一致");
+  }
+  if (state && message?.streaming !== false) {
+    throw new Error("只有 terminal patch 可以携带控制状态");
   }
   const contentAppend = optionalString(raw.contentAppend, "streamPatch.contentAppend");
   const thinkingAppend = raw.thinkingAppend === undefined
@@ -565,9 +594,9 @@ function parseMobileStreamPatch(value: unknown): MobileStreamPatch {
     throw new Error("stream patch 缺少消息变化");
   }
   return {
-    protocolVersion: 2,
+    protocolVersion: 3,
     projectionGeneration,
-    selectedSessionId: requireString(raw.selectedSessionId, "streamPatch.selectedSessionId"),
+    selectedSessionId,
     messageIndex,
     messageId,
     searchRevision: requireNonNegativeInteger(raw.searchRevision, "streamPatch.searchRevision"),
@@ -577,6 +606,7 @@ function parseMobileStreamPatch(value: unknown): MobileStreamPatch {
     contentAppend,
     thinkingAppend,
     message,
+    state,
   };
 }
 
@@ -879,6 +909,13 @@ declare global {
 function MobileNativeApp() {
   const pluginDashboards = useMobilePluginDashboards();
   const [snapshot, setSnapshot] = useState<MobileSnapshot | null>(null);
+  const [streamStore] = useState(() => new MobileStreamProjectionStore<MobileMessage>(
+    {
+      request: (callback) => window.requestAnimationFrame(callback),
+      cancel: (handle) => window.cancelAnimationFrame(handle),
+    },
+    advanceMobileStreamPresentation,
+  ));
   const [surface, setSurface] = useState<MobileSurface>({ kind: "chat" });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [commandsOpen, setCommandsOpen] = useState(false);
@@ -932,6 +969,7 @@ function MobileNativeApp() {
   const optimisticComposerDraftsRef = useRef(new Map<string, MobileComposerDraftWrite>());
   const composerDraftTimerRef = useRef<number | null>(null);
   const snapshotMessagesRef = useRef<MobileMessage[]>([]);
+  const streamSnapshotRef = useRef<MobileSnapshot | null>(null);
   const composerInputRef = useRef("");
 
   const saveComposerDraft = useCallback((draft: MobileComposerDraftWrite) => {
@@ -1068,8 +1106,6 @@ function MobileNativeApp() {
   }, []);
 
   useEffect(() => {
-    let pendingPatches: MobileStreamPatch[] = [];
-    let patchFrame: number | null = null;
     let requestTimer: number | null = null;
     let snapshotAccepted = false;
     const requestSnapshot = () => {
@@ -1091,17 +1127,24 @@ function MobileNativeApp() {
         let nextSnapshot: MobileSnapshot;
         try {
           nextSnapshot = parseMobileSnapshot(next);
-          pendingPatches = [];
-          if (patchFrame !== null) {
-            window.cancelAnimationFrame(patchFrame);
-            patchFrame = null;
-          }
           setSnapshotError(null);
         } catch (error) {
           console.error("[mobile] rejected native snapshot", error);
           setSnapshotError(error instanceof Error ? error.message : "原生快照无效");
           return;
         }
+        const delivered = streamSnapshotRef.current;
+        if (delivered && delivered.selectedSessionId === nextSnapshot.selectedSessionId) {
+          nextSnapshot = {
+            ...nextSnapshot,
+            messages: reconcileMobileSnapshotMessages(
+              delivered.messages,
+              nextSnapshot.messages,
+              mobileMessagePresentationMatches,
+            ),
+          };
+        }
+        streamSnapshotRef.current = nextSnapshot;
         if (searchOpenRef.current && normalizedSearchQueryRef.current) {
           setSearchIndex((current) => updateMobileSearchIndex(
             current,
@@ -1110,19 +1153,8 @@ function MobileNativeApp() {
             false,
           ));
         }
-        setSnapshot((current) => {
-          if (!current || current.selectedSessionId !== nextSnapshot.selectedSessionId) {
-            return nextSnapshot;
-          }
-          return {
-            ...nextSnapshot,
-            messages: reconcileMobileSnapshotMessages(
-              current.messages,
-              nextSnapshot.messages,
-              mobileMessagePresentationMatches,
-            ),
-          };
-        });
+        setSnapshot(nextSnapshot);
+        streamStore.clear();
         snapshotAccepted = true;
         if (requestTimer !== null) window.clearTimeout(requestTimer);
       },
@@ -1136,42 +1168,41 @@ function MobileNativeApp() {
           setSnapshotError(error instanceof Error ? error.message : "原生流式 patch 无效");
           return;
         }
-        pendingPatches.push(parsed);
-        if (patchFrame !== null) return;
-        patchFrame = requestAnimationFrame(() => {
-          patchFrame = null;
-          const patches = pendingPatches;
-          pendingPatches = [];
-          if (patches.length === 0) throw new Error("移动端流式帧缺少待发布 patch");
-          setSnapshot((current) => {
-            if (current === null) {
-              window.AkashicNative?.requestSnapshot();
-              return current;
-            }
-            let nextSnapshot = current;
-            for (const patch of patches) {
-              const previousMessage = nextSnapshot.messages[patch.messageIndex];
-              const reconciledPatch = previousMessage && patch.message
-                ? { ...patch, message: reconcileMobileStreamMessage(previousMessage, patch.message) }
-                : patch;
-              const applied = applyMobileStreamPatch(nextSnapshot, reconciledPatch);
-              if (applied === null) {
-                window.AkashicNative?.requestSnapshot();
-                return current;
-              }
-              nextSnapshot = applied;
-            }
-            if (searchOpenRef.current && normalizedSearchQueryRef.current) {
-              setSearchIndex((index) => updateMobileSearchIndex(
-                index,
-                nextSnapshot.messages,
-                normalizedSearchQueryRef.current,
-                false,
-              ));
-            }
-            return nextSnapshot;
-          });
-        });
+        const current = streamSnapshotRef.current;
+        if (current === null) {
+          window.AkashicNative?.requestSnapshot();
+          return;
+        }
+        const previousMessage = current.messages[parsed.messageIndex];
+        const reconciledPatch = previousMessage && parsed.message
+          ? { ...parsed, message: reconcileMobileStreamMessage(previousMessage, parsed.message) }
+          : parsed;
+        const applied = applyMobileStreamPatch(current, reconciledPatch);
+        if (applied === null || previousMessage === undefined) {
+          window.AkashicNative?.requestSnapshot();
+          return;
+        }
+        let nextSnapshot = applied;
+        if (parsed.state) {
+          const { protocolVersion, ...state } = parsed.state;
+          void protocolVersion;
+          nextSnapshot = { ...nextSnapshot, ...state };
+        }
+        const nextMessage = nextSnapshot.messages[parsed.messageIndex];
+        if (nextMessage === undefined) throw new Error("stream patch 应产生目标消息");
+        streamSnapshotRef.current = nextSnapshot;
+        const immediate = !nextMessage.streaming
+          || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        streamStore.publish(parsed.messageId, previousMessage, nextMessage, immediate);
+        if (searchOpenRef.current && normalizedSearchQueryRef.current) {
+          setSearchIndex((index) => updateMobileSearchIndex(
+            index,
+            nextSnapshot.messages,
+            normalizedSearchQueryRef.current,
+            false,
+          ));
+        }
+        if (parsed.state || !nextMessage.streaming) setSnapshot(nextSnapshot);
       },
       receiveStatePatch(next) {
         let patch: MobileStatePatch;
@@ -1183,6 +1214,18 @@ function MobileNativeApp() {
           setSnapshotError(error instanceof Error ? error.message : "原生状态 patch 无效");
           return;
         }
+        const projected = streamSnapshotRef.current;
+        if (
+          projected === null
+          || projected.selectedSessionId !== patch.selectedSessionId
+          || projected.projectionGeneration !== patch.projectionGeneration
+        ) {
+          window.AkashicNative?.requestSnapshot();
+          return;
+        }
+        const { protocolVersion, ...state } = patch;
+        void protocolVersion;
+        streamSnapshotRef.current = { ...projected, ...state };
         startTransition(() => {
           setSnapshot((current) => {
             if (
@@ -1193,8 +1236,6 @@ function MobileNativeApp() {
               window.AkashicNative?.requestSnapshot();
               return current;
             }
-            const { protocolVersion, ...state } = patch;
-            void protocolVersion;
             return { ...current, ...state };
           });
         });
@@ -1314,14 +1355,14 @@ function MobileNativeApp() {
     window.AkashicNative?.reportReady();
     requestSnapshot();
     return () => {
-      if (patchFrame !== null) cancelAnimationFrame(patchFrame);
       if (requestTimer !== null) window.clearTimeout(requestTimer);
       window.removeEventListener("popstate", handlePopState);
       window.removeEventListener("message", receiveNativeMessage);
       window.history.scrollRestoration = previousScrollRestoration;
+      streamStore.clear();
       delete window.AkashicMobile;
     };
-  }, [applySharedText, clearAcceptedComposerDraft, flushComposerDraft]);
+  }, [applySharedText, clearAcceptedComposerDraft, flushComposerDraft, streamStore]);
 
   useEffect(() => {
     if (snapshot?.composer.isStopping || !snapshot?.composer.canStop || snapshot?.connection.error) {
@@ -1451,10 +1492,6 @@ function MobileNativeApp() {
     if (searchHighlightTimerRef.current !== null) window.clearTimeout(searchHighlightTimerRef.current);
   }, []);
 
-  const messages = useMemo(
-    () => snapshot?.messages.map(toCachedChatMessage) ?? [],
-    [snapshot?.messages],
-  );
   const normalizedSearchQuery = normalizeMobileSearchText(searchQuery.trim());
   const searchResults = useMemo(() => {
     if (!normalizedSearchQuery || !snapshot) return [];
@@ -1538,6 +1575,11 @@ function MobileNativeApp() {
   useLayoutEffect(() => {
     snapshotMessagesRef.current = snapshot?.messages ?? [];
   }, [snapshot?.messages]);
+
+  const baselineMessages = snapshot?.messages;
+  useEffect(() => {
+    if (baselineMessages) streamStore.reconcileBaseline(baselineMessages);
+  }, [baselineMessages, streamStore]);
 
   useLayoutEffect(() => {
     composerInputRef.current = input;
@@ -1900,7 +1942,7 @@ function MobileNativeApp() {
           <MobileVirtualConversation
             ref={conversationRef}
             snapshot={snapshot}
-            messages={messages}
+            streamStore={streamStore}
             selectedMessageIds={selectedMessageIds}
             recoveringMessageIds={recoveringMessageIds}
             selectionActive={selectionActive}
@@ -1961,8 +2003,8 @@ function MobileNativeApp() {
 
 /** 让单消息 patch 只重渲染引用发生变化的消息行。 */
 const MobileMessageRow = React.memo(function MobileMessageRow({
-  source,
-  message,
+  source: baselineSource,
+  streamStore,
   startsDay,
   followsSameRole,
   unreadCount,
@@ -1983,7 +2025,7 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
   onRetryMessageDelivery,
 }: {
   source: MobileMessage;
-  message: ChatMessage;
+  streamStore: MobileStreamProjectionStore<MobileMessage>;
   startsDay: boolean;
   followsSameRole: boolean;
   unreadCount: number;
@@ -2003,7 +2045,70 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
   onCopyMessage: (message: MobileMessage) => void;
   onRetryMessageDelivery: (messageId: string) => void;
 }) {
+  const subscribe = useCallback(
+    (listener: () => void) => streamStore.subscribe(baselineSource.id, listener),
+    [baselineSource.id, streamStore],
+  );
+  const getSnapshot = useCallback(
+    () => streamStore.read(baselineSource.id, baselineSource),
+    [baselineSource, streamStore],
+  );
+  const source = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const message = toCachedChatMessage(source);
   const pluginTurn = !selectedSessionUnavailable && isPluginTurnMessage(message);
+  const turnId = pluginTurnId(message);
+  const leadingContent = useMemo(() => {
+    const reply = source.reply;
+    return reply ? (
+      <MessageReplyReference
+        role={reply.role}
+        preview={reply.preview}
+        unavailable={replySourceUnavailable}
+        onNavigate={() => onNavigateToReply(source.id, reply)}
+      />
+    ) : undefined;
+  }, [onNavigateToReply, replySourceUnavailable, source.id, source.reply]);
+  const attachmentContent = useMemo(
+    () => <MobileMessageAttachments attachments={source.attachments} />,
+    [source.attachments],
+  );
+  const processStartContent = useMemo(() => pluginTurn ? (
+    <MobilePluginSlot
+      name="turn.before_reasoning"
+      sessionId={source.sessionId}
+      messageId={message.id}
+      turnId={turnId}
+    />
+  ) : undefined, [message.id, pluginTurn, source.sessionId, turnId]);
+  const beforeProcessBlock = useCallback((block: AgentBlock) => pluginTurn && block.kind === "tool" ? (
+    <MobilePluginSlot
+      name="turn.before_tool"
+      sessionId={source.sessionId}
+      messageId={message.id}
+      turnId={turnId}
+      block={block}
+    />
+  ) : null, [message.id, pluginTurn, source.sessionId, turnId]);
+  const answerEndContent = useMemo(() => pluginTurn ? (
+    <MobilePluginSlot
+      name="turn.after_answer"
+      sessionId={source.sessionId}
+      messageId={message.id}
+      turnId={turnId}
+    />
+  ) : undefined, [message.id, pluginTurn, source.sessionId, turnId]);
+  const copyCurrentMessage = useCallback(
+    () => onCopyMessage(getSnapshot()),
+    [getSnapshot, onCopyMessage],
+  );
+  const replyToCurrentMessage = useCallback(
+    () => onReplyToMessage(getSnapshot()),
+    [getSnapshot, onReplyToMessage],
+  );
+  const retryCurrentMessage = useCallback(
+    () => onRetryMessageDelivery(getSnapshot().id),
+    [getSnapshot, onRetryMessageDelivery],
+  );
   const requiresFullRenderer = source.reply !== undefined
     || source.blocks.length > 0
     || source.attachments.length > 0
@@ -2035,40 +2140,11 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
               <LazyChatMessageView
                 message={message}
                 onCopyToolDetail={copyToolDetail}
-                leadingContent={source.reply ? (
-                  <MessageReplyReference
-                    role={source.reply.role}
-                    preview={source.reply.preview}
-                    unavailable={replySourceUnavailable}
-                    onNavigate={() => onNavigateToReply(source.id, source.reply!)}
-                  />
-                ) : undefined}
-                attachmentContent={<MobileMessageAttachments attachments={source.attachments} />}
-                processStartContent={pluginTurn ? (
-                  <MobilePluginSlot
-                    name="turn.before_reasoning"
-                    sessionId={source.sessionId}
-                    messageId={message.id}
-                    turnId={pluginTurnId(message)}
-                  />
-                ) : undefined}
-              beforeProcessBlock={(block) => pluginTurn && block.kind === "tool" ? (
-                <MobilePluginSlot
-                  name="turn.before_tool"
-                  sessionId={source.sessionId}
-                  messageId={message.id}
-                  turnId={pluginTurnId(message)}
-                  block={block}
-                />
-              ) : null}
-              answerEndContent={pluginTurn ? (
-                <MobilePluginSlot
-                  name="turn.after_answer"
-                  sessionId={source.sessionId}
-                  messageId={message.id}
-                  turnId={pluginTurnId(message)}
-                />
-              ) : undefined}
+                leadingContent={leadingContent}
+                attachmentContent={attachmentContent}
+                processStartContent={processStartContent}
+                beforeProcessBlock={beforeProcessBlock}
+                answerEndContent={answerEndContent}
               />
             </Suspense>
           ) : (
@@ -2085,13 +2161,18 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
             </>
           )}
           <MessageMeta
-            source={source}
+            role={source.role}
+            createdAt={source.createdAt}
+            deliveryLabel={source.deliveryLabel}
+            deliveryAction={source.deliveryAction}
+            interrupted={source.interrupted}
+            hasContent={Boolean(source.content)}
             copied={copied}
             canReply={canReply}
-            onCopy={() => onCopyMessage(source)}
-            onReply={() => onReplyToMessage(source)}
+            onCopy={copyCurrentMessage}
+            onReply={replyToCurrentMessage}
             deliveryActionBusy={deliveryActionBusy}
-            onDeliveryAction={() => onRetryMessageDelivery(source.id)}
+            onDeliveryAction={retryCurrentMessage}
           />
         </div>
       </MessageSelectionTarget>
@@ -2099,7 +2180,7 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
   );
 });
 
-function MobilePlainMessageView({ role, content }: { role: MobileMessage["role"]; content: string }) {
+const MobilePlainMessageView = React.memo(function MobilePlainMessageView({ role, content }: { role: MobileMessage["role"]; content: string }) {
   return (
     <div className={`mobile-plain-message-view ${role}`}>
       <div className="mobile-plain-message-view__content">
@@ -2107,7 +2188,7 @@ function MobilePlainMessageView({ role, content }: { role: MobileMessage["role"]
       </div>
     </div>
   );
-}
+});
 
 function copyToolDetail(text: string) {
   window.AkashicNative?.copyText(text);
@@ -3234,8 +3315,13 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 }
 
-function MessageMeta({
-  source,
+const MessageMeta = React.memo(function MessageMeta({
+  role,
+  createdAt,
+  deliveryLabel,
+  deliveryAction,
+  interrupted,
+  hasContent,
   copied,
   canReply,
   deliveryActionBusy,
@@ -3243,7 +3329,12 @@ function MessageMeta({
   onReply,
   onDeliveryAction,
 }: {
-  source: MobileMessage;
+  role: MobileMessage["role"];
+  createdAt: number;
+  deliveryLabel?: string;
+  deliveryAction?: MobileMessage["deliveryAction"];
+  interrupted: boolean;
+  hasContent: boolean;
   copied: boolean;
   canReply: boolean;
   deliveryActionBusy: boolean;
@@ -3253,22 +3344,22 @@ function MessageMeta({
 }) {
   const deliveryActionLabel = deliveryActionBusy
     ? "处理中"
-    : source.deliveryAction === "retry" ? "重试" : "核对";
-  const deliveryActionAria = source.deliveryAction === "retry"
+    : deliveryAction === "retry" ? "重试" : "核对";
+  const deliveryActionAria = deliveryAction === "retry"
     ? "发送失败，重试消息"
     : "结果待确认，核对消息状态";
   return (
-    <div className={`mobile-message-meta ${source.role}`}>
+    <div className={`mobile-message-meta ${role}`}>
       <div className="mobile-message-meta__text">
-        <time dateTime={new Date(source.createdAt).toISOString()}>{formatMessageTime(source.createdAt)}</time>
-        {source.role === "user" && source.deliveryLabel ? (
-          <span className={source.deliveryAction ? `delivery-state ${source.deliveryAction}` : undefined}>
-            {source.deliveryLabel}
+        <time dateTime={new Date(createdAt).toISOString()}>{formatMessageTime(createdAt)}</time>
+        {role === "user" && deliveryLabel ? (
+          <span className={deliveryAction ? `delivery-state ${deliveryAction}` : undefined}>
+            {deliveryLabel}
           </span>
         ) : null}
-        {source.role === "user" && source.deliveryAction ? (
+        {role === "user" && deliveryAction ? (
           <button
-            className={`mobile-delivery-action ${source.deliveryAction}`}
+            className={`mobile-delivery-action ${deliveryAction}`}
             type="button"
             onClick={onDeliveryAction}
             aria-label={deliveryActionAria}
@@ -3279,18 +3370,18 @@ function MessageMeta({
             <span>{deliveryActionLabel}</span>
           </button>
         ) : null}
-        {source.interrupted ? <span className="interrupted-label">本轮已中止</span> : null}
+        {interrupted ? <span className="interrupted-label">本轮已中止</span> : null}
       </div>
       <SharedMessageActions
         canReply={canReply}
-        canCopy={Boolean(source.content)}
+        canCopy={hasContent}
         copied={copied}
         onReply={onReply}
         onCopy={onCopy}
       />
     </div>
   );
-}
+});
 
 const MessageSelectionTarget = React.forwardRef<
   HTMLDivElement,
@@ -3502,7 +3593,7 @@ function replyPreview(message: MobileMessage) {
 
 interface MobileVirtualConversationProps {
   snapshot: MobileSnapshot;
-  messages: ChatMessage[];
+  streamStore: MobileStreamProjectionStore<MobileMessage>;
   selectedMessageIds: Set<string>;
   recoveringMessageIds: Set<string>;
   selectionActive: boolean;
@@ -3529,7 +3620,7 @@ interface MobileVirtualConversationProps {
 const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, MobileVirtualConversationProps>(
   function MobileVirtualConversation({
     snapshot,
-    messages,
+    streamStore,
     selectedMessageIds,
     recoveringMessageIds,
     selectionActive,
@@ -3594,7 +3685,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
     // TanStack Virtual 的有状态实例由组件持有，不能交给 React Compiler 自动记忆化。
     // eslint-disable-next-line react-hooks/incompatible-library
     const virtualizer = useVirtualizer({
-      count: messages.length,
+      count: snapshot.messages.length,
       getScrollElement,
       estimateSize,
       getItemKey,
@@ -3633,7 +3724,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
     useLayoutEffect(() => {
       // 1. Restore an owned reading anchor or open at the latest message.
       const sessionId = snapshot.selectedSessionId;
-      if (!sessionId || messages.length === 0 || snapshot.composer.isResyncing) return;
+      if (!sessionId || snapshot.messages.length === 0 || snapshot.composer.isResyncing) return;
       const projectionKey = `${sessionId}\u001f${snapshot.projectionGeneration}`;
       if (restoredProjectionRef.current === projectionKey) return;
       restoredProjectionRef.current = projectionKey;
@@ -3657,7 +3748,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
         if (restoreFrameRef.current !== null) cancelAnimationFrame(restoreFrameRef.current);
         restoreFrameRef.current = null;
       };
-    }, [messageIndexById, messages.length, snapshot.composer.isResyncing, snapshot.projectionGeneration, snapshot.readingPosition, snapshot.selectedSessionId, virtualizer]);
+    }, [messageIndexById, snapshot.composer.isResyncing, snapshot.messages.length, snapshot.projectionGeneration, snapshot.readingPosition, snapshot.selectedSessionId, virtualizer]);
 
     useEffect(() => {
       // 2. Persist from virtual measurements, avoiding a full DOM layout walk.
@@ -3717,7 +3808,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
     return (
       <div className="mobile-conversation-frame">
         <div ref={scrollRef} className="mobile-conversation mobile-virtual-conversation" role="log">
-          {messages.length === 0 ? (
+          {snapshot.messages.length === 0 ? (
             <div className="mobile-empty">
               <h1>开始一段新对话</h1>
               <p>消息会通过电脑上的 Akashic 实时处理。</p>
@@ -3730,7 +3821,6 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
               {virtualItems.map((virtualItem) => {
                 const index = virtualItem.index;
                 const source = snapshot.messages[index];
-                const message = messages[index];
                 const previous = snapshot.messages[index - 1];
                 return (
                   <div
@@ -3742,7 +3832,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
                   >
                     <MobileMessageRow
                       source={source}
-                      message={message}
+                      streamStore={streamStore}
                       startsDay={!previous || !sameLocalDay(previous.createdAt, source.createdAt)}
                       followsSameRole={previous?.role === source.role}
                       unreadCount={source.id === unread.firstMessageId ? unread.count : 0}
@@ -3991,7 +4081,7 @@ function toChatMessage(message: MobileMessage): ChatMessage {
     role: message.role,
     content: message.content,
     attachments: [],
-    blocks: message.blocks.map(toCachedAgentBlock),
+    blocks: toCachedAgentBlocks(message.blocks),
     streaming: message.streaming,
     interrupted: message.interrupted,
     durationMs: message.durationSeconds !== undefined ? message.durationSeconds * 1000 : undefined,
@@ -4000,6 +4090,7 @@ function toChatMessage(message: MobileMessage): ChatMessage {
 
 const chatMessageProjectionCache = new WeakMap<MobileMessage, ChatMessage>();
 const agentBlockProjectionCache = new WeakMap<MobileProcessBlock, AgentBlock>();
+const agentBlockListProjectionCache = new WeakMap<MobileProcessBlock[], AgentBlock[]>();
 
 function toCachedChatMessage(message: MobileMessage): ChatMessage {
   const cached = chatMessageProjectionCache.get(message);
@@ -4014,6 +4105,14 @@ function toCachedAgentBlock(block: MobileProcessBlock): AgentBlock {
   if (cached !== undefined) return cached;
   const projected = toAgentBlock(block);
   agentBlockProjectionCache.set(block, projected);
+  return projected;
+}
+
+function toCachedAgentBlocks(blocks: MobileProcessBlock[]): AgentBlock[] {
+  const cached = agentBlockListProjectionCache.get(blocks);
+  if (cached !== undefined) return cached;
+  const projected = blocks.map(toCachedAgentBlock);
+  agentBlockListProjectionCache.set(blocks, projected);
   return projected;
 }
 
