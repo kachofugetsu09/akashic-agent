@@ -24,6 +24,7 @@
 | [0016](0016-channel-delivery-uses-complete-logical-messages.md) | accepted | 渠道投递使用完整逻辑消息 | OUT-001～OUT-003、MOB-001、MOB-005、SES-005～SES-006 |
 | [0017](0017-one-person-companion-security-boundary.md) | accepted | 单一 Companion 的安全、容量与可恢复失败边界 | SEC-001～SEC-010、TST-001～TST-006 |
 | [0018](0018-chat-webui-has-one-source-and-two-adapters.md) | accepted | 对话 WebUI 使用一个源码真源和两个平台适配器 | WEBUI-001～WEBUI-003、MOB-001、TST-007～TST-008 |
+| [0019](0019-mobile-long-messages-use-bounded-events.md) | accepted | Mobile 长消息使用有界正文事件和紧凑终态 | MOB-001、MOB-003、MOB-005、MOB-007、SES-001 |
 
 ## 新增规则
 

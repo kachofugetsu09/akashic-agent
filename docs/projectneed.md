@@ -165,6 +165,12 @@ Writer 交接前必须把允许范围内的修改提交成可引用 commit，或
 
 未声明 HTTPS 的插件继续使用既有 WebSocket 内联 reply，不能被静默迁移或 fallback。HTTPS 查询仍复用同一 plugin revision、generation lease、owner、调度和取消语义；客户端不得把 ticket、HTTP response 或本地结果缓存提升为服务端权威事实。协议新增或修改时按跨仓库固定顺序提交 Core schema，再同步客户端 snapshot、source commit 和内容摘要。
 
+### MOB-007 Mobile 长正文使用有界事件提交
+
+Mobile 的单条 JSON frame 上限不限制一条逻辑消息的总正文。Core 按 UTF-8 字节边界把可顺序追加的正文发布为有界、可排序的增量事件，再用紧凑终态事件提交同一条消息；终态不得重复已经发送的正文，也不得携带 `tool_chain` 等只属于 SessionDB 和内部诊断的元数据。
+
+SessionDB 继续保存完整 assistant 正文和完整内部轨迹。实时投影与历史投影必须能够还原同一正文；增量前缀与权威终稿不一致时不得拼接成伪造结果，必须保留显式纠正或进入可恢复失败。WebSocket 传输层分片不能替代应用层事件、顺序、重放和终态语义，也不得通过提高单帧上限掩盖无界 payload。
+
 ### WEBUI-001 对话 WebUI 只保留一个源码真源
 
 桌面浏览器与 Android WebView 的对话展示、富文本、流式生长、主题 token 和可复用交互组件由本仓库 `frontend/chat` 统一维护。移动仓库只消费由固定源码 commit 构建并校验摘要的 WebUI 产物，不维护可独立演进的第二份前端源码。

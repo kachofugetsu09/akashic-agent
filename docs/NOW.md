@@ -20,3 +20,7 @@
 - 由维护者继续确认 [`design/persistence-state-map.md`](design/persistence-state-map.md) 的 INT-009、INT-010、INT-012～INT-014，以及旧消息编辑和 turns retention；INT-001～INT-008、INT-011 已提升为 projectneed 条款。
 - 把 `mcp/servers/*.toml` 直装声明和 workspace 手工 skill 目录迁移成插件贡献；迁移现存能力后收窄 `WorkspaceMcpAdmin`、watcher 和 loader，Skill/MCP 只保留插件安装、readiness 与 generation 发布这一个 owner。
 - 把已确认的持久化状态地图转成机器可读备份 manifest，补齐目录快照、global companion state 和隔离恢复演练；确认 snapshot 能启动只读 runtime，并读取会话、记忆、调度、插件数据和主动流程连续性。
+
+## P1 · Mobile 长消息恢复协议
+
+- 在 MOB-007 的有界实时增量之上增加正文 range/chunk 查询、总字节数与内容摘要；Android 持久化已确认 offset，重连后只补缺口。覆盖超大纠正终稿、历史页超大单条消息、重复/乱序 chunk、摘要不一致和进程重启，不把 Room 投影提升为 SessionDB 权威事实。

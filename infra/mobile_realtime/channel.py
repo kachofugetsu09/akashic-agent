@@ -7,7 +7,7 @@ import logging
 import re
 import sqlite3
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from time import monotonic
@@ -116,6 +116,7 @@ class _ProcessTurnState:
     next_ordinal: int
     thinking_block: tuple[str, int] | None
     tool_blocks: dict[str, tuple[str, int, float]]
+    answer_segments: list[str]
 
 
 _DELTA_FLUSH_BYTES = 4 * 1024
@@ -133,6 +134,24 @@ _MOBILE_HISTORY_TOOL_ARGUMENT_MAX_BYTES = 8 * 1024
 _MOBILE_HISTORY_PAYLOAD_MAX_BYTES = 240 * 1024
 _MOBILE_TOOL_ARGUMENT_REDACTED = "[已隐藏]"
 _MOBILE_TOOL_ARGUMENT_TRUNCATED = "[已截断]"
+
+
+def _utf8_chunks(text: str, max_bytes: int) -> Iterator[str]:
+    """按字符边界生成不超过指定 UTF-8 字节数的非空片段。"""
+
+    start = 0
+    chunk_bytes = 0
+    for index, character in enumerate(text):
+        character_bytes = len(character.encode("utf-8"))
+        if chunk_bytes and chunk_bytes + character_bytes > max_bytes:
+            yield text[start:index]
+            start = index
+            chunk_bytes = 0
+        chunk_bytes += character_bytes
+    if start < len(text):
+        yield text[start:]
+
+
 _MOBILE_TOOL_SECRET_KEYS = frozenset(
     {
         "secret",
@@ -1391,6 +1410,7 @@ class MobileRealtimeChannel:
             next_ordinal=0,
             thinking_block=None,
             tool_blocks={},
+            answer_segments=[],
         )
         await self._runtime.publish_event(
             event_type="turn.started",
@@ -1406,7 +1426,7 @@ class MobileRealtimeChannel:
         turn_id = event.turn_id or self._current_turn_id(event.session_key)
         if event.thinking_delta:
             block_id, ordinal = self._thinking_block(event.session_key, turn_id)
-            await self._buffer_delta(
+            await self._buffer_bounded_delta(
                 session_id=event.session_key,
                 turn_id=turn_id,
                 event_type="react.thinking.delta",
@@ -1415,7 +1435,9 @@ class MobileRealtimeChannel:
                 ordinal=ordinal,
             )
         if event.content_delta:
-            await self._buffer_delta(
+            state = self._require_process_state(event.session_key, turn_id)
+            state.answer_segments.append(event.content_delta)
+            await self._buffer_bounded_delta(
                 session_id=event.session_key,
                 turn_id=turn_id,
                 event_type="answer.delta",
@@ -1497,12 +1519,32 @@ class MobileRealtimeChannel:
         session_id = self._session_id(message.chat_id)
         turn_id = message.control_turn_id or self._current_turn_id(session_id)
         await self._flush_deltas(session_id, turn_id)
+        state = self._process_turns.get((session_id, turn_id))
+        final_content = message.content
+        emitted_content = "" if state is None else "".join(state.answer_segments)
+        if emitted_content and message.content.startswith(emitted_content):
+            await self._publish_answer_suffix(
+                session_id,
+                turn_id,
+                message.content[len(emitted_content) :],
+            )
+            final_content = ""
+        elif (
+            not emitted_content
+            and len(message.content.encode("utf-8")) > _DELTA_FLUSH_BYTES
+        ):
+            await self._publish_answer_suffix(session_id, turn_id, message.content)
+            final_content = ""
         message_id = message.session_message_id
         media = [attachment.source for attachment in message.attachments]
         if media and message_id is None:
             raise RuntimeError("出站媒体缺少已持久化的 assistant 消息")
-        metadata = dict(message.metadata)
-        _ = metadata.pop("_channel_commit_role", None)
+        source_metadata = dict(message.metadata)
+        metadata = {
+            key: source_metadata[key]
+            for key in ("mobile_attention",)
+            if key in source_metadata
+        }
         try:
             attachments = await self._outbound_descriptors(
                 session_id,
@@ -1527,13 +1569,13 @@ class MobileRealtimeChannel:
                 "message": "附件源暂时不可用",
             }
         final_payload: dict[str, object] = {
-            "content": message.content,
+            "content": final_content,
             "thinking": message.thinking or "",
             "attachments": attachments,
             "metadata": metadata,
         }
-        user_message_id = metadata.get("persisted_user_message_id")
-        client_message_id = metadata.get("client_message_id")
+        user_message_id = source_metadata.get("persisted_user_message_id")
+        client_message_id = source_metadata.get("client_message_id")
         if user_message_id is not None or client_message_id is not None:
             if not isinstance(user_message_id, str) or not isinstance(
                 client_message_id, str
@@ -1556,6 +1598,26 @@ class MobileRealtimeChannel:
             DeliveryStatus.SUCCESS,
             canonical_media=tuple(media),
         )
+
+    async def _publish_answer_suffix(
+        self,
+        session_id: str,
+        turn_id: str,
+        suffix: str,
+    ) -> None:
+        """用有界 delta 发布 final 尚未覆盖的正文后缀。"""
+
+        if not suffix:
+            return
+        await self._buffer_bounded_delta(
+            session_id=session_id,
+            turn_id=turn_id,
+            event_type="answer.delta",
+            delta=suffix,
+            block_id=None,
+            ordinal=None,
+        )
+        await self._flush_deltas(session_id, turn_id)
 
     async def _mobile_history_item(
         self,
@@ -1706,6 +1768,28 @@ class MobileRealtimeChannel:
         if flush_now:
             await self._flush_deltas(session_id, turn_id)
 
+    async def _buffer_bounded_delta(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        event_type: str,
+        delta: str,
+        block_id: str | None,
+        ordinal: int | None,
+    ) -> None:
+        """按 UTF-8 字节边界把任意增量限制在单个事件预算内。"""
+
+        for chunk in _utf8_chunks(delta, _DELTA_FLUSH_BYTES):
+            await self._buffer_delta(
+                session_id=session_id,
+                turn_id=turn_id,
+                event_type=event_type,
+                delta=chunk,
+                block_id=block_id,
+                ordinal=ordinal,
+            )
+
     async def _flush_after_interval(self, key: tuple[str, str]) -> None:
         await asyncio.sleep(_DELTA_FLUSH_INTERVAL_SECONDS)
         await self._flush_deltas(*key)
@@ -1735,6 +1819,7 @@ class MobileRealtimeChannel:
                     turn_id=turn_id,
                     payload=payload,
                 )
+
     def _on_delta_timer_done(self, task: asyncio.Task[None]) -> None:
         if task.cancelled():
             return
