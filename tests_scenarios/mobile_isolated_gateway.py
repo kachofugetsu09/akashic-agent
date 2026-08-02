@@ -288,9 +288,18 @@ class IsolatedAkashaMobileUiProvider:
 class FixedReplyBus:
     """把真实手机入站写入隔离会话库，并返回固定文字和媒体。"""
 
-    def __init__(self, manager: SessionManager, reply_media: Path) -> None:
+    def __init__(
+        self,
+        manager: SessionManager,
+        reply_media: Path,
+        *,
+        tokens_per_second: int = 0,
+        stream_tokens: int = 1_200,
+    ) -> None:
         self._manager = manager
         self._reply_media = reply_media
+        self._tokens_per_second = tokens_per_second
+        self._stream_tokens = stream_tokens
         self._runtime: MobileGatewayRuntime | None = None
 
     def bind(self, runtime: MobileGatewayRuntime) -> None:
@@ -306,7 +315,10 @@ class FixedReplyBus:
         # 1. 按真实生命周期语义持久化干净正文和引用投影
         inbound = cast(InboundMessage, message)
         runtime = self._require_runtime()
-        reply = "".join(_PILOT_REPLY_CHUNKS)
+        thinking_before, thinking_after, reply_chunks, thinking_delay, answer_delay = (
+            self._stream_payloads()
+        )
+        reply = "".join(reply_chunks)
         session = self._manager.get_or_create(inbound.session_key)
         user_kwargs: dict[str, str] = {
             "client_message_id": cast(str, inbound.metadata["client_message_id"]),
@@ -342,7 +354,7 @@ class FixedReplyBus:
                 turn_id=turn_id,
             )
         )
-        for chunk in _PILOT_THINKING_BEFORE_TOOL:
+        for chunk in thinking_before:
             await runtime.channel._on_stream_delta(  # pyright: ignore[reportPrivateUsage]
                 StreamDeltaReady(
                     session_key=inbound.session_key,
@@ -352,7 +364,7 @@ class FixedReplyBus:
                     thinking_delta=chunk,
                 )
             )
-            await asyncio.sleep(0.42)
+            await asyncio.sleep(thinking_delay)
         call_id = f"pilot-theme-{turn_id}"
         tool_arguments: dict[str, Any] = {
             "description": "检查 Web 与 Android 是否共用移动端浅蓝主题",
@@ -387,7 +399,7 @@ class FixedReplyBus:
                 turn_id=turn_id,
             )
         )
-        for chunk in _PILOT_THINKING_AFTER_TOOL:
+        for chunk in thinking_after:
             await runtime.channel._on_stream_delta(  # pyright: ignore[reportPrivateUsage]
                 StreamDeltaReady(
                     session_key=inbound.session_key,
@@ -397,8 +409,8 @@ class FixedReplyBus:
                     thinking_delta=chunk,
                 )
             )
-            await asyncio.sleep(0.42)
-        for chunk in _PILOT_REPLY_CHUNKS:
+            await asyncio.sleep(thinking_delay)
+        for chunk in reply_chunks:
             await runtime.channel._on_stream_delta(  # pyright: ignore[reportPrivateUsage]
                 StreamDeltaReady(
                     session_key=inbound.session_key,
@@ -408,7 +420,7 @@ class FixedReplyBus:
                     content_delta=chunk,
                 )
             )
-            await asyncio.sleep(0.18)
+            await asyncio.sleep(answer_delay)
         await runtime.channel._on_response(  # pyright: ignore[reportPrivateUsage]
             OutboundMessage(
                 channel="mobile",
@@ -416,12 +428,38 @@ class FixedReplyBus:
                 content=reply,
                 media=[str(self._reply_media)],
                 thinking="".join(
-                    (*_PILOT_THINKING_BEFORE_TOOL, *_PILOT_THINKING_AFTER_TOOL)
+                    (*thinking_before, *thinking_after)
                 ),
                 control_turn_id=turn_id,
                 session_message_id=assistant_message_id,
             )
         )
+
+    def _stream_payloads(
+        self,
+    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], float, float]:
+        """生成普通演示流或固定速率的单字符性能流。"""
+
+        # 1. 默认模式保持既有设备 Gate 的内容和节奏
+        if self._tokens_per_second == 0:
+            return (
+                _PILOT_THINKING_BEFORE_TOOL,
+                _PILOT_THINKING_AFTER_TOOL,
+                _PILOT_REPLY_CHUNKS,
+                0.42,
+                0.18,
+            )
+
+        # 2. 性能模式以单字符近似 token，精确控制 provider delta 频率
+        thinking_count = self._stream_tokens // 2
+        answer_count = self._stream_tokens - thinking_count
+        thinking = _repeat_to_length("分析移动端流式渲染与工具调用。", thinking_count)
+        answer = _repeat_to_length(
+            "## WebUI 试点\n\n验证一百 token 每秒时的消息生长、滚动和图片显示。",
+            answer_count,
+        )
+        delay = 1.0 / self._tokens_per_second
+        return tuple(thinking), (), tuple(answer), delay, delay
 
     def _require_runtime(self) -> MobileGatewayRuntime:
         if self._runtime is None:
@@ -441,6 +479,11 @@ def build_config(root: Path, host: str, port: int) -> MobileRealtimeConfig:
             keyset_manifest=root / "gateway" / "keys" / "current.json"
         ),
     )
+
+
+def _repeat_to_length(seed: str, length: int) -> str:
+    repeats = (length + len(seed) - 1) // len(seed)
+    return (seed * repeats)[:length]
 
 
 def write_pairing_artifacts(root: Path, offer: dict[str, object]) -> None:
@@ -488,9 +531,16 @@ async def run_harness(args: argparse.Namespace) -> None:
     )
     _ = root.mkdir(parents=True, exist_ok=True)
     manager = SessionManager(root / "workspace")
-    media = root / "fixtures" / "fixed-reply.gif"
+    reply_media = args.reply_media.resolve() if args.reply_media is not None else None
+    if reply_media is not None and not reply_media.is_file():
+        raise ValueError(f"reply-media 不是文件: {reply_media}")
+    media_suffix = reply_media.suffix if reply_media is not None else ".gif"
+    media = root / "fixtures" / f"fixed-reply{media_suffix}"
     _ = media.parent.mkdir(parents=True, exist_ok=True)
-    _ = media.write_bytes(_FIXED_GIF)
+    if reply_media is None:
+        _ = media.write_bytes(_FIXED_GIF)
+    else:
+        _ = shutil.copy2(reply_media, media)
     config = build_config(root, args.host, args.port)
     runtime, keyset = build_mobile_gateway_runtime(
         config,
@@ -499,7 +549,16 @@ async def run_harness(args: argparse.Namespace) -> None:
     )
     runtime.channel.bind_mobile_ui_provider(IsolatedAkashaMobileUiProvider())
     fault_controller = install_fault_mode(runtime, args.fault_mode)
-    bus = FixedReplyBus(manager, media)
+    if args.tokens_per_second < 0:
+        raise ValueError("tokens-per-second 不能为负数")
+    if args.stream_tokens <= 0:
+        raise ValueError("stream-tokens 必须为正数")
+    bus = FixedReplyBus(
+        manager,
+        media,
+        tokens_per_second=args.tokens_per_second,
+        stream_tokens=args.stream_tokens,
+    )
     bus.bind(runtime)
     await runtime.channel.start(
         cast(
@@ -529,6 +588,8 @@ async def run_harness(args: argparse.Namespace) -> None:
     print(f"history_session={_HISTORY_SESSION_ID}", flush=True)
     print(f"adb_reverse=adb reverse tcp:{args.port} tcp:{args.port}", flush=True)
     print(f"fault_mode={fault_controller.mode}", flush=True)
+    print(f"tokens_per_second={args.tokens_per_second}", flush=True)
+    print(f"stream_tokens={args.stream_tokens}", flush=True)
 
     # 2. 启动真实 TLS WebSocket，并自动批准唯一的隔离配对请求
     server = build_mobile_gateway_server(runtime, keyset)
@@ -566,6 +627,23 @@ def parse_args() -> argparse.Namespace:
         "--keep",
         action="store_true",
         help="保留自动创建的临时根目录",
+    )
+    _ = parser.add_argument(
+        "--tokens-per-second",
+        type=int,
+        default=0,
+        help="以单字符近似 token 的 provider delta 速率；0 保持演示节奏",
+    )
+    _ = parser.add_argument(
+        "--stream-tokens",
+        type=int,
+        default=1_200,
+        help="性能流 thinking 与 answer 的总字符数",
+    )
+    _ = parser.add_argument(
+        "--reply-media",
+        type=Path,
+        help="复制到隔离目录并随固定回复发送的真实尺寸媒体文件",
     )
     return parser.parse_args()
 
