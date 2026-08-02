@@ -1793,7 +1793,15 @@ class MobileGatewayRuntime:
             if target is None or target.manifest_digest != manifest_digest:
                 raise MobileWebUiHttpError("resource_not_found", "manifest 不属于当前 target", status_code=404)
             body = canonical_manifest_bytes(self.publication.get_manifest(manifest_digest))
-            if self.publication.get_release_light().selection_digest != verified.selection_digest:
+            current = self.publication.get_release_light()
+            current_target = current.target(verified.target_key)
+            if (
+                current.release_epoch != verified.release_epoch
+                or current.selection_digest != verified.selection_digest
+                or current_target is None
+                or current_target.generation_id != verified.generation_id
+                or current_target.manifest_digest != verified.manifest_digest
+            ):
                 raise MobileWebUiHttpError("target_changed", "manifest 读取期间 release 已变化", status_code=409)
             return body, verified
         except WebUiTicketError as error:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import os
+import signal
 import sqlite3
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -54,6 +56,38 @@ def _manifest(root: Path, text: bytes = b"<html>ok</html>\n"):
     root.mkdir(parents=True, exist_ok=True)
     (root / "mobile.html").write_bytes(text)
     return manifest_from_directory(root, **_SOURCE)
+
+
+def _kill_backup_before_rename(root: str, destination: str) -> None:
+    from infra.mobile_webui import store as store_module
+
+    original_replace = store_module.os.replace
+    absolute_destination = os.path.abspath(destination)
+
+    def kill_before_rename(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> None:
+        if os.path.abspath(os.fspath(target)) == absolute_destination:
+            os.kill(os.getpid(), signal.SIGKILL)
+        original_replace(source, target)
+
+    store_module.os.replace = kill_before_rename
+    store = MobileWebUiStore(Path(root), server_id="server-1")
+    store.backup_to(Path(destination))
+
+
+def _kill_backup_after_rename(root: str, destination: str) -> None:
+    from infra.mobile_webui import store as store_module
+
+    original_replace = store_module.os.replace
+    absolute_destination = os.path.abspath(destination)
+
+    def kill_after_rename(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> None:
+        original_replace(source, target)
+        if os.path.abspath(os.fspath(target)) == absolute_destination:
+            os.kill(os.getpid(), signal.SIGKILL)
+
+    store_module.os.replace = kill_after_rename
+    store = MobileWebUiStore(Path(root), server_id="server-1")
+    store.backup_to(Path(destination))
 
 
 def test_golden_manifest_and_derived_ids() -> None:
@@ -152,7 +186,7 @@ def test_manifest_directory_covers_wire_reachable_script_and_binary_mimes(tmp_pa
     assert by_path == {
         "app.js": "text/javascript",
         "asset.bin": "application/octet-stream",
-        "bundle.map": "application/octet-stream",
+        "bundle.map": "application/json",
         "mobile.html": "text/html",
         "module.mjs": "text/javascript",
         "style.css": "text/css",
@@ -208,6 +242,85 @@ def test_store_preview_promotion_rollback_gc_and_backup(tmp_path: Path) -> None:
         backup = store.backup_to(tmp_path / "backup")
         MobileWebUiStore.verify_backup(backup, server_id="server-1")
         assert first.generation_id not in store.gc().removed_generations
+    finally:
+        store.close()
+
+
+def test_backup_pending_kill_restart_reclaims_registration_and_gc_can_collect(tmp_path: Path) -> None:
+    manifest, contents = _manifest(tmp_path / "build")
+    root = tmp_path / "store"
+    store = MobileWebUiStore(root, server_id="server-1")
+    store.publish(manifest, contents, stable=True, preview=False)
+    store.close()
+    destination = tmp_path / "backup-before-rename"
+    context = multiprocessing.get_context("fork")
+    child = context.Process(target=_kill_backup_before_rename, args=(str(root), str(destination)))
+    child.start()
+    child.join(timeout=10)
+    assert child.exitcode == -signal.SIGKILL
+    assert list((root / "staging").glob(".backup-*.pending.json"))
+    assert list(destination.parent.glob(f".{destination.name}.*.tmp"))
+
+    reopened = MobileWebUiStore(root, server_id="server-1")
+    try:
+        assert reopened._db.execute("SELECT COUNT(*) FROM webui_backup_sets").fetchone()[0] == 0
+        assert not list((root / "staging").glob(".backup-*.pending.json"))
+        assert not list(destination.parent.glob(f".{destination.name}.*.tmp"))
+        generations = [manifest]
+        for index in range(5):
+            next_manifest, next_contents = _manifest(
+                tmp_path / f"build-{index}",
+                f"<html>{index}</html>\n".encode(),
+            )
+            generations.append(next_manifest)
+            reopened.publish(next_manifest, next_contents, stable=True, preview=False)
+        report = reopened.gc()
+        assert generations[0].generation_id in report.removed_generations
+    finally:
+        reopened.close()
+
+
+def test_backup_pending_restart_preserves_published_destination(tmp_path: Path) -> None:
+    manifest, contents = _manifest(tmp_path / "build")
+    root = tmp_path / "store"
+    store = MobileWebUiStore(root, server_id="server-1")
+    store.publish(manifest, contents, stable=True, preview=False)
+    store.close()
+    destination = tmp_path / "backup-after-rename"
+    context = multiprocessing.get_context("fork")
+    child = context.Process(target=_kill_backup_after_rename, args=(str(root), str(destination)))
+    child.start()
+    child.join(timeout=10)
+    assert child.exitcode == -signal.SIGKILL
+    assert destination.is_dir()
+    assert list((root / "staging").glob(".backup-*.pending.json"))
+
+    reopened = MobileWebUiStore(root, server_id="server-1")
+    try:
+        MobileWebUiStore.verify_backup(destination, server_id="server-1")
+        backup_id = json.loads((destination / "backup.json").read_text(encoding="utf-8"))["backup_id"]
+        assert reopened._db.execute(
+            "SELECT COUNT(*) FROM webui_backup_sets WHERE backup_id = ?", (backup_id,)
+        ).fetchone()[0] == 1
+        assert not list((root / "staging").glob(".backup-*.pending.json"))
+        reopened.release_backup(backup_id)
+    finally:
+        reopened.close()
+
+
+def test_backup_rejects_destination_symlink_without_writing_target(tmp_path: Path) -> None:
+    manifest, contents = _manifest(tmp_path / "build")
+    root = tmp_path / "store"
+    store = MobileWebUiStore(root, server_id="server-1")
+    store.publish(manifest, contents, stable=True, preview=False)
+    target = tmp_path / "symlink-target"
+    destination = tmp_path / "symlink-destination"
+    destination.symlink_to(target, target_is_directory=True)
+    try:
+        with pytest.raises(RuntimeError, match="符号链接"):
+            store.backup_to(destination)
+        assert not target.exists()
+        assert store._db.execute("SELECT COUNT(*) FROM webui_backup_sets").fetchone()[0] == 0
     finally:
         store.close()
 
@@ -310,6 +423,18 @@ def test_restore_empty_backup_keeps_no_state_and_records_restore(tmp_path: Path)
         assert tuple(event) == (1, None, "restore", 0, 0)
     finally:
         restored.close()
+
+
+def test_restore_rejects_target_symlink_without_following_target(tmp_path: Path) -> None:
+    source = MobileWebUiStore(tmp_path / "source", server_id="server-1")
+    backup = source.backup_to(tmp_path / "backup")
+    source.close()
+    actual_target = tmp_path / "actual-target"
+    target = tmp_path / "target-link"
+    target.symlink_to(actual_target, target_is_directory=True)
+    with pytest.raises(RuntimeError, match="普通目录"):
+        MobileWebUiStore.restore_backup(backup, target, server_id="server-1")
+    assert not actual_target.exists()
 
 
 def test_restore_marker_recovers_old_root_after_swap_gap(tmp_path: Path) -> None:

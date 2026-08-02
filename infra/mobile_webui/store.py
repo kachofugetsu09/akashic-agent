@@ -113,6 +113,7 @@ class MobileWebUiStore:
             self._ensure_server_id()
             self._ensure_lineage_epoch()
             self._recover_blob_temps()
+            self._recover_backup_pending()
             self._recover_trash()
         except BaseException:
             self._db.close()
@@ -457,11 +458,20 @@ class MobileWebUiStore:
     def _backup_locked(self, destination: Path) -> Path:
         """在独立目录发布 SQLite、CAS 和校验清单，供恢复 smoke 使用。"""
 
-        destination = destination.resolve()
+        destination = _absolute_path(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = Path(tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent))
+        if destination.is_symlink():
+            raise RuntimeError("WebUI backup destination 不能是符号链接")
+        if destination.exists():
+            raise FileExistsError(destination)
         backup_id = str(uuid4())
+        temporary = destination.parent / f".{destination.name}.{backup_id}.tmp"
+        if temporary.exists() or temporary.is_symlink():
+            raise FileExistsError(temporary)
+        marker = self._write_backup_pending_marker(backup_id, destination, temporary)
+        published = False
         try:
+            temporary.mkdir()
             generations = tuple(str(row["generation_id"]) for row in self._db.execute("SELECT generation_id FROM webui_generations").fetchall())
             self._db.execute("BEGIN IMMEDIATE")
             try:
@@ -493,12 +503,22 @@ class MobileWebUiStore:
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target_path)
             descriptor = {"backup_id": backup_id, "server_id": self.server_id, "generation_ids": generations, "sha256": _tree_digest(temporary), "created_at": _now()}
-            (temporary / "backup.json").write_text(json.dumps(descriptor, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
-            if destination.exists():
+            descriptor_path = temporary / "backup.json"
+            with descriptor_path.open("w", encoding="utf-8") as handle:
+                handle.write(json.dumps(descriptor, ensure_ascii=False, sort_keys=True) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._fsync_tree(temporary)
+            if destination.is_symlink() or destination.exists():
                 raise FileExistsError(destination)
             os.replace(temporary, destination)
+            published = True
+            self._fsync_directory(destination.parent)
+            self._clear_backup_pending_marker(marker)
             return destination
         except BaseException:
+            if published:
+                raise
             self._db.execute("BEGIN IMMEDIATE")
             try:
                 self._db.execute("DELETE FROM webui_backup_sets WHERE backup_id = ?", (backup_id,))
@@ -507,6 +527,7 @@ class MobileWebUiStore:
                 self._db.execute("ROLLBACK")
                 raise
             shutil.rmtree(temporary, ignore_errors=True)
+            self._clear_backup_pending_marker(marker)
             raise
 
     def release_backup(self, backup_id: str) -> None:
@@ -526,6 +547,7 @@ class MobileWebUiStore:
         """验证 backup 后原子替换 target，并为旧 store 留下可恢复副本。"""
 
         MobileWebUiStore.verify_backup(destination, server_id=server_id)
+        target_root = _absolute_path(target_root)
         MobileWebUiStore._recover_restore_marker(target_root)
         target_root.parent.mkdir(parents=True, exist_ok=True)
         if target_root.is_symlink() or (target_root.exists() and not target_root.is_dir()):
@@ -551,11 +573,14 @@ class MobileWebUiStore:
                 old_root = target_root.with_name(f"{target_root.name}.recovery-{uuid4()}")
                 restore_marker = MobileWebUiStore._write_restore_marker(target_root, old_root)
                 os.replace(target_root, old_root)
+                MobileWebUiStore._fsync_directory(target_root.parent)
             try:
                 os.replace(temporary, target_root)
+                MobileWebUiStore._fsync_directory(target_root.parent)
             except BaseException:
                 if old_root is not None and not target_root.exists():
                     os.replace(old_root, target_root)
+                    MobileWebUiStore._fsync_directory(target_root.parent)
                 raise
             if restore_marker is not None:
                 MobileWebUiStore._clear_restore_marker(restore_marker)
@@ -570,6 +595,9 @@ class MobileWebUiStore:
     def verify_backup(destination: Path, *, server_id: str) -> None:
         """在不连接正式 store 的前提下校验备份 SQLite、manifest 和全部 CAS。"""
 
+        destination = _absolute_path(destination)
+        if destination.is_symlink() or not destination.is_dir():
+            raise RuntimeError("WebUI backup destination 必须是普通目录")
         db_path = destination / "publication.sqlite3"
         if not db_path.is_file():
             raise RuntimeError("WebUI backup 缺少 publication.sqlite3")
@@ -582,7 +610,9 @@ class MobileWebUiStore:
             descriptor_path = destination / "backup.json"
             if not descriptor_path.is_file():
                 raise RuntimeError("WebUI backup 缺少 backup.json")
-            descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+            descriptor = _strict_json_loads(descriptor_path.read_bytes())
+            if not isinstance(descriptor, dict):
+                raise RuntimeError("WebUI backup descriptor 字段不符合合同")
             if descriptor.get("server_id") != server_id or descriptor.get("sha256") != _tree_digest(destination):
                 raise RuntimeError("WebUI backup descriptor 校验失败")
             meta = db.execute("SELECT value FROM webui_meta WHERE key = 'server_id'").fetchone()
@@ -849,13 +879,14 @@ class MobileWebUiStore:
 
     @staticmethod
     def _restore_marker_path(root: Path) -> Path:
-        return root.resolve().with_name(f".{root.resolve().name}.restore-pending.json")
+        root = _absolute_path(root)
+        return root.with_name(f".{root.name}.restore-pending.json")
 
     @staticmethod
     def _recover_restore_marker(root: Path) -> None:
         """Recover a store swap interrupted between old-root rename and new-root install."""
 
-        target_root = root.resolve()
+        target_root = _absolute_path(root)
         marker = MobileWebUiStore._restore_marker_path(target_root)
         if not marker.exists() and not marker.is_symlink():
             return
@@ -869,12 +900,14 @@ class MobileWebUiStore:
             raise RuntimeError("WebUI restore marker 字段不符合合同")
         if payload["target_root"] != str(target_root) or not isinstance(payload["recovery_root"], str):
             raise RuntimeError("WebUI restore marker 路径不符合合同")
-        recovery_root = Path(payload["recovery_root"]).resolve()
+        recovery_root = _absolute_path(Path(payload["recovery_root"]))
         if recovery_root == target_root or not recovery_root.name.startswith(f"{target_root.name}.recovery-"):
             raise RuntimeError("WebUI restore marker recovery 路径不符合合同")
         if target_root.is_symlink():
             raise RuntimeError("WebUI restore marker target 不能是符号链接")
         if target_root.exists():
+            if not target_root.is_dir():
+                raise RuntimeError("WebUI restore marker target 必须是普通目录")
             MobileWebUiStore._clear_restore_marker(marker)
             return
         if recovery_root.is_symlink() or not recovery_root.is_dir():
@@ -886,8 +919,8 @@ class MobileWebUiStore:
 
     @staticmethod
     def _write_restore_marker(target_root: Path, recovery_root: Path) -> Path:
-        target_root = target_root.resolve()
-        recovery_root = recovery_root.resolve()
+        target_root = _absolute_path(target_root)
+        recovery_root = _absolute_path(recovery_root)
         marker = MobileWebUiStore._restore_marker_path(target_root)
         temporary = marker.with_name(f".{marker.name}.{uuid4().hex}.tmp")
         payload = json.dumps(
@@ -981,6 +1014,134 @@ class MobileWebUiStore:
         finally:
             os.close(directory_fd)
 
+    @staticmethod
+    def _fsync_tree(root: Path) -> None:
+        """Durably flush a completed backup tree before its atomic rename."""
+
+        # 1. Flush file contents before making the directory entry durable.
+        for path in sorted(item for item in root.rglob("*") if item.is_file()):
+            with path.open("rb") as handle:
+                os.fsync(handle.fileno())
+        # 2. Flush each directory from the leaves back to the backup root.
+        directories = sorted((item for item in root.rglob("*") if item.is_dir()), key=lambda item: len(item.parts), reverse=True)
+        for path in (*directories, root):
+            MobileWebUiStore._fsync_directory(path)
+
+    def _write_backup_pending_marker(self, backup_id: str, destination: Path, temporary: Path) -> Path:
+        """Persist the owner record that makes a pre-rename backup recoverable."""
+
+        marker = self.staging_root / f".backup-{backup_id}.pending.json"
+        marker_temporary = marker.with_name(f"{marker.name}.{os.getpid()}.tmp")
+        payload = {
+            "backup_id": backup_id,
+            "destination": str(destination),
+            "server_id": self.server_id,
+            "temporary": str(temporary),
+        }
+        with marker_temporary.open("xb") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+            handle.write(b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(marker_temporary, marker)
+        self._fsync_directory(marker.parent)
+        return marker
+
+    @staticmethod
+    def _clear_backup_pending_marker(marker: Path) -> None:
+        if marker.is_symlink() or (marker.exists() and not marker.is_file()):
+            raise RuntimeError("WebUI backup pending marker 不是普通文件")
+        if marker.exists():
+            marker.unlink()
+            MobileWebUiStore._fsync_directory(marker.parent)
+
+    @staticmethod
+    def _remove_pending_temporary(temporary: Path) -> None:
+        if temporary.is_symlink():
+            raise RuntimeError("WebUI backup pending temporary 不能是符号链接")
+        if temporary.is_dir():
+            shutil.rmtree(temporary)
+        elif temporary.exists():
+            temporary.unlink()
+
+    def _recover_backup_pending(self) -> None:
+        """Recover only store-owned backup registrations with no valid destination."""
+
+        with self._exclusive():
+            for marker_temporary in self.staging_root.iterdir():
+                if re.fullmatch(r"\.backup-[0-9a-f]{8}-[0-9a-f]{4}-[4][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.pending\.json\.\d+\.tmp", marker_temporary.name):
+                    if marker_temporary.is_symlink():
+                        raise RuntimeError("WebUI backup pending marker temporary 不能是符号链接")
+                    if marker_temporary.is_file():
+                        marker_temporary.unlink()
+            self._fsync_directory(self.staging_root)
+            for marker in sorted(self.staging_root.glob(".backup-*.pending.json")):
+                if marker.is_symlink() or not marker.is_file():
+                    raise RuntimeError("WebUI backup pending marker 不是普通文件")
+                backup_id, destination, temporary = self._read_backup_pending_marker(marker)
+                rows = self._db.execute(
+                    "SELECT DISTINCT destination FROM webui_backup_sets WHERE backup_id = ?",
+                    (backup_id,),
+                ).fetchall()
+                destinations = {str(row["destination"]) for row in rows}
+                if destinations and destinations != {str(destination)}:
+                    raise RuntimeError("WebUI backup pending registration destination 不一致")
+                published = self._is_valid_published_backup(destination, backup_id)
+                if rows and not published:
+                    self._db.execute("BEGIN IMMEDIATE")
+                    try:
+                        self._db.execute("DELETE FROM webui_backup_sets WHERE backup_id = ?", (backup_id,))
+                        self._db.execute("COMMIT")
+                    except BaseException:
+                        self._db.execute("ROLLBACK")
+                        raise
+                self._remove_pending_temporary(temporary)
+                self._clear_backup_pending_marker(marker)
+
+    def _read_backup_pending_marker(self, marker: Path) -> tuple[str, Path, Path]:
+        """Validate a pending marker and derive its only permitted temporary path."""
+
+        try:
+            payload = _strict_json_loads(marker.read_bytes())
+        except (OSError, ManifestError) as error:
+            raise RuntimeError("WebUI backup pending marker 损坏") from error
+        if not isinstance(payload, dict) or set(payload) != {"backup_id", "destination", "server_id", "temporary"}:
+            raise RuntimeError("WebUI backup pending marker 字段不符合合同")
+        backup_id = payload["backup_id"]
+        destination_raw = payload["destination"]
+        temporary_raw = payload["temporary"]
+        if not isinstance(backup_id, str) or not isinstance(destination_raw, str) or not isinstance(temporary_raw, str):
+            raise RuntimeError("WebUI backup pending marker 类型不符合合同")
+        _require_canonical_uuid4(backup_id, "WebUI backup pending backup_id")
+        if marker.name != f".backup-{backup_id}.pending.json":
+            raise RuntimeError("WebUI backup pending marker 文件名不符合合同")
+        if payload["server_id"] != self.server_id:
+            raise RuntimeError("WebUI backup pending marker server_id 不匹配")
+        destination = _absolute_path(Path(destination_raw))
+        if destination_raw != str(destination):
+            raise RuntimeError("WebUI backup pending destination 必须是规范绝对路径")
+        temporary = destination.parent / f".{destination.name}.{backup_id}.tmp"
+        if temporary_raw != str(temporary):
+            raise RuntimeError("WebUI backup pending temporary 路径不符合合同")
+        return backup_id, destination, temporary
+
+    def _is_valid_published_backup(self, destination: Path, backup_id: str) -> bool:
+        """Return whether destination is a complete backup for this pending owner."""
+
+        if destination.is_symlink() or not destination.is_dir():
+            return False
+        descriptor_path = destination / "backup.json"
+        if descriptor_path.is_symlink() or not descriptor_path.is_file():
+            return False
+        try:
+            descriptor = _strict_json_loads(descriptor_path.read_bytes())
+            if not isinstance(descriptor, dict) or descriptor.get("backup_id") != backup_id:
+                return False
+            MobileWebUiStore.verify_backup(destination, server_id=self.server_id)
+        except (OSError, ManifestError, RuntimeError, sqlite3.Error, UnicodeError, ValueError, TypeError):
+            return False
+        return True
+
     def _recover_blob_temps(self) -> None:
         """Remove only temp names emitted by this store's digest-addressed CAS writer."""
 
@@ -1033,6 +1194,12 @@ class MobileWebUiStore:
 
 def _valid_digest(value: str) -> bool:
     return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+
+def _absolute_path(path: Path) -> Path:
+    """Make a lexical absolute path without following the destination symlink."""
+
+    return Path(os.path.abspath(os.fspath(path)))
 
 
 def _strict_json_loads(payload: bytes) -> object:

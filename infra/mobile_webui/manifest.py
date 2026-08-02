@@ -52,6 +52,7 @@ _MIME_BY_SUFFIX = {
     ".mjs": "text/javascript",
     ".cjs": "text/javascript",
     ".json": "application/json",
+    ".map": "application/json",
     ".wasm": "application/wasm",
     ".woff": "font/woff",
     ".woff2": "font/woff2",

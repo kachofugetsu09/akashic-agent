@@ -170,3 +170,64 @@ def test_build_environment_is_controlled_and_clean_publish_revalidates(tmp_path:
         output_dir=output,
     )
     assert first["build_context_digest"] != second["build_context_digest"]
+
+
+def test_clean_publish_rejects_nondeterministic_artifact_rebuild(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    package = json.loads((repo / "package.json").read_text(encoding="utf-8"))
+    package["scripts"]["build:mobile-web"] = (
+        "node -e \"const fs=require('fs');"
+        "fs.mkdirSync(process.env.AKASHIC_MOBILE_WEB_OUT_DIR,{recursive:true});"
+        "fs.writeFileSync(process.env.AKASHIC_MOBILE_WEB_OUT_DIR+'/mobile.html',String(Math.random()))\""
+    )
+    (repo / "package.json").write_text(json.dumps(package) + "\n", encoding="utf-8")
+    _run(repo, "add", "package.json")
+    _run(repo, "commit", "-qm", "nondeterministic build")
+    output = tmp_path / "nondeterministic-output"
+    built = _PUBLISHER._build(repo, output, allow_dirty=False, source_commit=None, stable=True)
+    with pytest.raises(RuntimeError, match="artifact 不可复现"):
+        _PUBLISHER._manifest(repo, built, allow_dirty=False)
+
+
+def test_internal_publish_cleans_build_sidecar_on_success(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = _repo(tmp_path)
+    workspace = tmp_path / "runtime-workspace"
+    assert _PUBLISHER.main(
+        [
+            "publish",
+            "--source-repository",
+            str(repo),
+            "--workspace",
+            str(workspace),
+            "--server-id",
+            "server-1",
+            "--stable",
+        ]
+    ) == 0
+    _ = capsys.readouterr()
+    assert not list(workspace.glob("mobile-webui-build-*.provenance.json"))
+
+
+def test_internal_publish_cleans_build_sidecar_on_build_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _repo(tmp_path)
+    workspace = tmp_path / "runtime-workspace"
+
+    def fail_build(source: Path, output: Path, **_kwargs: object) -> Path:
+        output.mkdir(parents=True, exist_ok=True)
+        output.with_name(output.name + ".provenance.json").write_text("owned", encoding="utf-8")
+        raise RuntimeError("synthetic build failure")
+
+    monkeypatch.setattr(_PUBLISHER, "_build", fail_build)
+    with pytest.raises(RuntimeError, match="synthetic build failure"):
+        _PUBLISHER.main(
+            [
+                "publish",
+                "--source-repository",
+                str(repo),
+                "--workspace",
+                str(workspace),
+                "--server-id",
+                "server-1",
+            ]
+        )
+    assert not list(workspace.glob("mobile-webui-build-*.provenance.json"))

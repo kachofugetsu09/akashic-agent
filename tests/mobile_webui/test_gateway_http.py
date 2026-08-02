@@ -6,6 +6,7 @@ from collections import deque
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from cryptography.hazmat.primitives.asymmetric import ec
 import httpx
@@ -224,6 +225,37 @@ async def test_blob_http_rechecks_selection_after_body_read(tmp_path: Path, monk
             )
         assert error.value.code == "target_changed"
         assert reads >= 2
+    finally:
+        await runtime.stop()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_manifest_http_rechecks_release_epoch_after_body_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime, store, _storage, ticket, manifest_digest = _runtime(tmp_path)
+    runtime.start()
+    try:
+        original_get_manifest = store.get_manifest
+        switched = False
+
+        def hooked_get_manifest(digest: str):
+            nonlocal switched
+            manifest = original_get_manifest(digest)
+            if not switched:
+                switched = True
+                next_epoch = str(uuid4())
+                store._db.execute("UPDATE webui_meta SET value = ? WHERE key = 'release_epoch'", (next_epoch,))
+                store._db.execute(
+                    "UPDATE webui_release_state SET release_epoch = ? WHERE singleton = 1",
+                    (next_epoch,),
+                )
+            return manifest
+
+        monkeypatch.setattr(store, "get_manifest", hooked_get_manifest)
+        with pytest.raises(MobileWebUiHttpError, match="release 已变化") as error:
+            runtime.read_webui_manifest_http(ticket=ticket, manifest_digest=manifest_digest)
+        assert error.value.code == "target_changed"
+        assert switched
     finally:
         await runtime.stop()
         store.close()

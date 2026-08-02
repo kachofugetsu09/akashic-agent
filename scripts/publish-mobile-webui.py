@@ -49,22 +49,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.action == "publish":
             build_dir = args.build_dir
             temporary: Path | None = None
-            if build_dir is None:
-                temporary = Path(tempfile.mkdtemp(prefix="mobile-webui-build-", dir=workspace if workspace is not None else None))
-                build_dir = _build(
-                    source_repository,
-                    temporary,
-                    allow_dirty=args.allow_dirty,
-                    source_commit=args.source_commit,
-                    stable=args.stable,
-                )
+            temporary_sidecar: Path | None = None
             try:
+                if build_dir is None:
+                    temporary = Path(tempfile.mkdtemp(prefix="mobile-webui-build-", dir=workspace if workspace is not None else None))
+                    temporary_sidecar = temporary.with_name(temporary.name + ".provenance.json")
+                    build_dir = _build(
+                        source_repository,
+                        temporary,
+                        allow_dirty=args.allow_dirty,
+                        source_commit=args.source_commit,
+                        stable=args.stable,
+                    )
                 manifest, contents = _manifest(source_repository, build_dir, allow_dirty=args.allow_dirty)
                 release = store.publish(manifest, contents, stable=args.stable, preview=not args.stable, actor=args.actor)
                 print(json.dumps(_release_json(release), ensure_ascii=False, sort_keys=True))
             finally:
-                if temporary is not None:
-                    shutil.rmtree(temporary, ignore_errors=True)
+                try:
+                    if temporary_sidecar is not None:
+                        _remove_owned_temporary_file(temporary_sidecar)
+                finally:
+                    if temporary is not None:
+                        shutil.rmtree(temporary, ignore_errors=True)
             return 0
         if args.action == "promote-preview":
             print(json.dumps(_release_json(store.promote_preview(actor=args.actor)), ensure_ascii=False, sort_keys=True))
@@ -171,20 +177,9 @@ def _build(
             output_dir=output,
         )
         if lock_available:
-            subprocess.run(
-                ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
-                cwd=build_workspace,
-                env=environment,
-                check=True,
-            )
+            _run_build(build_workspace, environment=environment, lock_available=True)
         else:
-            subprocess.run(
-                ["npm", "install", "--package-lock=false", "--ignore-scripts", "--no-audit", "--no-fund"],
-                cwd=build_workspace,
-                env=environment,
-                check=True,
-            )
-        subprocess.run(["npm", "run", "build:mobile-web"], cwd=build_workspace, env=environment, check=True)
+            _run_build(build_workspace, environment=environment, lock_available=False)
         after = _capture_provenance(
             build_workspace,
             environment=environment,
@@ -240,9 +235,13 @@ def _manifest(workspace: Path, build_dir: Path, *, allow_dirty: bool):
         raise RuntimeError("无 package-lock 的构建不能作为 Stable/reproducible manifest")
     if dirty is None:
         expected_provenance = {key: sidecar[key] for key in _build_provenance_keys()}
-        with _build_source(workspace, commit, dirty=False) as snapshot:
-            if _capture_provenance(snapshot, environment=environment, output_dir=build_dir) != expected_provenance:
-                raise RuntimeError("clean build provenance 未通过 commit snapshot 重算")
+        _verify_clean_reproducibility(
+            workspace,
+            commit,
+            build_dir,
+            expected_provenance=expected_provenance,
+            expected_artifact_digest=str(sidecar["artifact_digest"]),
+        )
     return manifest_from_directory(
         build_dir,
         source_repository=sidecar["source_repository"],
@@ -259,6 +258,75 @@ def _manifest(workspace: Path, build_dir: Path, *, allow_dirty: bool):
 def _require_clean_source(workspace: Path, *, allow_dirty: bool) -> None:
     if _webui_dirty(workspace) and not allow_dirty:
         raise RuntimeError("WebUI/build inputs require clean source；Preview 可用 --allow-dirty")
+
+
+def _remove_owned_temporary_file(path: Path) -> None:
+    """Remove only the exact provenance sidecar owned by an internal build."""
+
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise RuntimeError(f"内部 build sidecar 不是普通文件: {path}")
+    if path.exists():
+        path.unlink()
+
+
+def _run_build(
+    build_workspace: Path,
+    *,
+    environment: Mapping[str, str],
+    lock_available: bool,
+) -> None:
+    """Install the pinned dependency graph and emit one isolated WebUI artifact tree."""
+
+    # 1. Recreate dependencies from the declared lock policy.
+    if lock_available:
+        subprocess.run(
+            ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+            cwd=build_workspace,
+            env=dict(environment),
+            check=True,
+        )
+    else:
+        subprocess.run(
+            ["npm", "install", "--package-lock=false", "--ignore-scripts", "--no-audit", "--no-fund"],
+            cwd=build_workspace,
+            env=dict(environment),
+            check=True,
+        )
+    # 2. Build only into the caller-owned output directory.
+    subprocess.run(["npm", "run", "build:mobile-web"], cwd=build_workspace, env=dict(environment), check=True)
+
+
+def _verify_clean_reproducibility(
+    workspace: Path,
+    commit: str,
+    build_dir: Path,
+    *,
+    expected_provenance: Mapping[str, object],
+    expected_artifact_digest: str,
+) -> None:
+    """Rebuild clean input in a fresh worktree and reject any artifact drift."""
+
+    if not _commit_has_file(workspace, commit, "package-lock.json"):
+        raise RuntimeError("clean reproducible build 要求指定 commit 自带 package-lock.json")
+    candidate = Path(tempfile.mkdtemp(prefix="mobile-webui-repro-", dir=build_dir.parent))
+    try:
+        with _build_source(workspace, commit, dirty=False) as snapshot:
+            environment = _build_environment(candidate)
+            before = _capture_provenance(snapshot, environment=environment, output_dir=candidate)
+            if before != dict(expected_provenance):
+                raise RuntimeError("clean build provenance 未通过 commit snapshot 重算")
+            _run_build(snapshot, environment=environment, lock_available=True)
+            after = _capture_provenance(snapshot, environment=environment, output_dir=candidate)
+            if before != after:
+                raise RuntimeError("可复现校验期间 source/input/build_context 发生变化")
+        actual_artifact_digest = _artifact_digest(candidate)
+        if actual_artifact_digest != expected_artifact_digest:
+            raise RuntimeError(
+                "clean build artifact 不可复现: "
+                f"expected={expected_artifact_digest} actual={actual_artifact_digest}"
+            )
+    finally:
+        shutil.rmtree(candidate, ignore_errors=True)
 
 
 def _webui_dirty(workspace: Path) -> bool:
