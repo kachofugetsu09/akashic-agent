@@ -22,6 +22,7 @@ interface RuntimeSummary {
   contextWindow: number;
   maxOutputTokens: number;
   inputModalities: string[];
+  reasoningEffort: string;
   credential: { configured: boolean; source: string };
 }
 
@@ -40,6 +41,8 @@ interface ModelOption {
   contextWindow?: number;
   maxOutputTokens?: number;
   inputModalities?: string[];
+  supportedReasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
 }
 
 interface CodexLoginState {
@@ -93,6 +96,7 @@ export function SettingsApp() {
   const [model, setModel] = useState("");
   const [contextWindow, setContextWindow] = useState("128000");
   const [maxOutputTokens, setMaxOutputTokens] = useState("0");
+  const [reasoningEffort, setReasoningEffort] = useState("");
   const [models, setModels] = useState<ModelOption[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -127,6 +131,9 @@ export function SettingsApp() {
     [kind, state],
   );
 
+  const selectedModel = models.find((item) => item.id === model);
+  const effortOptions = selectedModel?.supportedReasoningEfforts ?? [];
+
   function selectRuntime(runtime: RuntimeSummary) {
     setKind(runtimeKind(runtime));
     setProvider(runtime.provider);
@@ -134,6 +141,7 @@ export function SettingsApp() {
     setModel(runtime.model);
     setContextWindow(String(runtime.contextWindow || 128000));
     setMaxOutputTokens(String(runtime.maxOutputTokens ?? 0));
+    setReasoningEffort(runtime.reasoningEffort || "");
     setApiKey("");
     setModels([]);
   }
@@ -155,17 +163,20 @@ export function SettingsApp() {
       setModel("");
       setContextWindow("128000");
       setMaxOutputTokens("0");
+      setReasoningEffort("");
     } else if (next === "codex") {
       setProvider("codex");
       setBaseUrl("");
       setModel("");
       setContextWindow("128000");
       setMaxOutputTokens("0");
+      setReasoningEffort("");
     } else {
       setProvider("openai");
       setBaseUrl("https://api.openai.com/v1");
       setModel("");
       setMaxOutputTokens("0");
+      setReasoningEffort("");
     }
   }
 
@@ -194,6 +205,9 @@ export function SettingsApp() {
   function applyModel(option: ModelOption) {
     setModel(option.id);
     if (option.contextWindow) setContextWindow(String(option.contextWindow));
+    if (!reasoningEffort && option.defaultReasoningEffort) {
+      setReasoningEffort(option.defaultReasoningEffort);
+    }
   }
 
   async function save() {
@@ -212,6 +226,7 @@ export function SettingsApp() {
           base_url: baseUrl,
           context_window: Number(contextWindow),
           max_output_tokens: Number(maxOutputTokens),
+          reasoning_effort: reasoningEffort,
           input_modalities: ["text"],
         }),
       });
@@ -370,6 +385,20 @@ export function SettingsApp() {
                 </Button>
               )}
             </div>
+
+            <Field label="思考强度" hint={effortOptions.length ? "按模型支持的档位选择" : "填写模型支持的推理强度，留空使用 Provider 默认"}>
+              {effortOptions.length ? (
+                <Select value={reasoningEffort || "__default"} onValueChange={(value) => setReasoningEffort(value === "__default" ? "" : value)}>
+                  <SelectTrigger><SelectValue placeholder="选择思考强度" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__default">不设置（Provider 默认）</SelectItem>
+                    {effortOptions.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value)} placeholder="如 low / medium / high" />
+              )}
+            </Field>
 
             <div className="field-grid two-columns">
               <Field label="上下文窗口"><Input inputMode="numeric" value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} /></Field>

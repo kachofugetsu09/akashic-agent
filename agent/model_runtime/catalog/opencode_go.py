@@ -15,6 +15,26 @@ from agent.model_runtime.provider_profiles import (
 @dataclass(frozen=True)
 class OpenCodeGoModel:
     slug: str
+    supported_reasoning_efforts: tuple[str, ...] = ()
+
+
+_WIDELY_SUPPORTED_EFFORTS = ("low", "medium", "high")
+_GLM52_IDS = ("glm-5.2", "glm-5-2", "glm-5p2")
+
+
+def _reasoning_efforts_for(model_id: str) -> tuple[str, ...]:
+    """OpenCode Go 目录不发布推理强度；按 opencode 客户端对 OpenAI 兼容通道的规则推算。"""
+    normalized = model_id.strip().lower()
+    if normalized.startswith("deepseek-v4"):
+        return (*_WIDELY_SUPPORTED_EFFORTS, "max")
+    if any(marker in normalized for marker in _GLM52_IDS):
+        return ("high", "max")
+    # 排除列表：deepseek 旧版、kimi、minimax、qwen、glm(<5.2) 等无思考强度档位。
+    if normalized.startswith(
+        ("deepseek-", "kimi-", "minimax-", "qwen", "glm-")
+    ):
+        return ()
+    return _WIDELY_SUPPORTED_EFFORTS
 
 
 class OpenCodeGoModelCatalog:
@@ -62,5 +82,12 @@ class OpenCodeGoModelCatalog:
             if not isinstance(model_id, str) or not model_id.strip():
                 raise TransportError("OpenCode Go 模型目录包含无效模型项")
             if OPENCODE_GO_PROFILE.classify_model(model_id) == "chat_completions":
-                models.append(OpenCodeGoModel(slug=model_id))
+                models.append(
+                    OpenCodeGoModel(
+                        slug=model_id,
+                        supported_reasoning_efforts=_reasoning_efforts_for(
+                            model_id
+                        ),
+                    )
+                )
         return models

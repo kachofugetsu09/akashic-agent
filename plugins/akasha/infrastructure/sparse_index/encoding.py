@@ -17,6 +17,9 @@ with warnings.catch_warnings():
         message="pkg_resources is deprecated as an API.*",
         category=UserWarning,
     )
+    # jieba 0.42.1 在 Python 3.12 下产生 invalid escape sequence SyntaxWarning，
+    # 测试与 Gate 的 -W error 下必须显式忽略，否则导入即失败。
+    warnings.filterwarnings("ignore", category=SyntaxWarning)
     import jieba
 
 from .model import SparseFeature
