@@ -44,6 +44,8 @@ COMMAND_TYPES = frozenset(
         "plugin.ui.query",
         "plugin.ui.query.prepare",
         "plugin.ui.cancel",
+        "mobile.webui.release.get",
+        "mobile.webui.content.prepare",
         "device.update",
         "ping",
     }
@@ -68,7 +70,6 @@ EVENT_TYPES = frozenset(
         "connection.degraded",
         "sync.completed",
         "sync.reset_required",
-        "device.revoked",
     }
 )
 CONTROL_TYPES = frozenset(
@@ -78,9 +79,11 @@ CONTROL_TYPES = frozenset(
         "auth.accepted",
         "resume",
         "plugin.ui.changed",
+        "mobile.webui.release.changed",
         "pair.claim",
         "pair.pending",
         "pair.accepted",
+        "device.revoked",
         "protocol.error",
     }
 )
@@ -121,6 +124,10 @@ FrameId: TypeAlias = Annotated[
 ConnectionEpoch: TypeAlias = Annotated[int, Field(ge=1)]
 EventSequence: TypeAlias = Annotated[int, Field(ge=1)]
 NonEmptyId: TypeAlias = Annotated[str, Field(min_length=1, max_length=512)]
+ServerId: TypeAlias = Annotated[
+    str,
+    Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"),
+]
 JsonObject: TypeAlias = dict[str, JsonValue]
 
 
@@ -273,6 +280,27 @@ class CommandEnvelope(ProtocolModel):
         return self
 
 
+class MobileWebUiReleaseGetPayload(ProtocolModel):
+    """ReleaseView 查询不接受客户端排序或版本选择参数。"""
+
+
+class MobileWebUiContentPreparePayload(ProtocolModel):
+    target_key: Annotated[
+        str,
+        Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"),
+    ]
+
+
+class MobileWebUiReleaseGetCommand(CommandEnvelope):
+    type: Literal["mobile.webui.release.get"]
+    payload: MobileWebUiReleaseGetPayload
+
+
+class MobileWebUiContentPrepareCommand(CommandEnvelope):
+    type: Literal["mobile.webui.content.prepare"]
+    payload: MobileWebUiContentPreparePayload
+
+
 class MessageSendCommand(ProtocolModel):
     v: Literal[1]
     kind: Literal["command"]
@@ -354,6 +382,8 @@ ClientCommand: TypeAlias = (
     | AttachmentBeginCommand
     | AttachmentFinishCommand
     | AttachmentDownloadCommand
+    | MobileWebUiReleaseGetCommand
+    | MobileWebUiContentPrepareCommand
     | GenericCommand
 )
 CommandFrame: TypeAlias = Annotated[
@@ -446,7 +476,6 @@ class GenericEvent(EventEnvelope):
         "connection.degraded",
         "sync.completed",
         "sync.reset_required",
-        "device.revoked",
     ]
 
 
@@ -516,6 +545,19 @@ class PluginUiChangedControl(AuthenticatedControlEnvelope):
     type: Literal["plugin.ui.changed"]
 
 
+class MobileWebUiReleaseChangedPayload(ProtocolModel):
+    server_id: ServerId
+    selection_digest: Annotated[
+        str,
+        Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"),
+    ]
+
+
+class MobileWebUiReleaseChangedControl(AuthenticatedControlEnvelope):
+    type: Literal["mobile.webui.release.changed"]
+    payload: MobileWebUiReleaseChangedPayload
+
+
 class GenericControl(ControlEnvelope):
     type: Literal[
         "server.challenge",
@@ -523,12 +565,17 @@ class GenericControl(ControlEnvelope):
         "pair.claim",
         "pair.pending",
         "pair.accepted",
+        "device.revoked",
         "protocol.error",
     ]
 
 
 ControlFrame: TypeAlias = Annotated[
-    AuthAcceptedControl | ResumeControl | PluginUiChangedControl | GenericControl,
+    AuthAcceptedControl
+    | ResumeControl
+    | PluginUiChangedControl
+    | MobileWebUiReleaseChangedControl
+    | GenericControl,
     Field(discriminator="type"),
 ]
 

@@ -10,6 +10,8 @@ from pydantic import ValidationError
 from infra.mobile_realtime.protocol import (
     AttachmentDownloadCommand,
     AuthAcceptedControl,
+    CONTROL_TYPES,
+    EVENT_TYPES,
     GenericControl,
     MessageSendCommand,
     PRE_AUTH_CONTROL_TYPES,
@@ -360,6 +362,22 @@ def test_pair_claim_is_valid_before_authentication() -> None:
 def test_control_rejects_unknown_type() -> None:
     with pytest.raises(ValidationError):
         parse_frame('{"v":1,"kind":"control","type":"auth.skipped","payload":{}}')
+
+
+def test_device_revoked_is_control_only() -> None:
+    assert "device.revoked" in CONTROL_TYPES
+    assert "device.revoked" not in EVENT_TYPES
+    control = parse_frame(
+        '{"v":1,"kind":"control","type":"device.revoked",'
+        '"connection_epoch":7,"payload":{"device_id":"device-1"}}'
+    )
+    assert isinstance(control, GenericControl)
+    with pytest.raises(ValidationError):
+        parse_frame(
+            '{"v":1,"kind":"event","type":"device.revoked",'
+            '"id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","connection_epoch":7,'
+            '"event_seq":1,"payload":{"device_id":"device-1"}}'
+        )
 
 
 def test_plugin_ui_changed_is_authenticated_connection_control() -> None:

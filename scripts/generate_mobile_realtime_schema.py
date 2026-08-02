@@ -19,6 +19,18 @@ from infra.mobile_realtime.protocol import (
     PROTOCOL_VERSION,
 )
 from infra.mobile_realtime.attachments import MAX_ATTACHMENT_CHUNK_BYTES
+from infra.mobile_webui.protocol import (
+    BuilderIdentityWire,
+    DirtyProvenanceWire,
+    ErrorReplyWire,
+    HttpErrorBodyWire,
+    PrepareReplyWire,
+    ReleaseViewWire,
+    WebUiFileWire,
+    WebUiManifestWire,
+    WebUiTargetWire,
+)
+from pydantic import TypeAdapter
 
 
 OUTPUT = ROOT / "schema" / "mobile-realtime-v1.json"
@@ -60,6 +72,102 @@ def build_schema() -> dict[str, object]:
         "eventTypes": sorted(EVENT_TYPES),
         "controlTypes": sorted(CONTROL_TYPES),
         "preAuthControlTypes": sorted(PRE_AUTH_CONTROL_TYPES),
+        "mobileWebUi": {
+            "capability": "mobile-webui-ota-v1",
+            "commandTypes": [
+                "mobile.webui.release.get",
+                "mobile.webui.content.prepare",
+            ],
+            "controlType": "mobile.webui.release.changed",
+            "contentPrepareReply": {
+                "type": "mobile.webui.content.prepare.ok",
+                "fields": ["target_key", "manifest_digest", "ticket", "expires_at"],
+                "paths": {
+                    "manifest": "/mobile/webui/v1/manifest/{manifest_digest}",
+                    "blob": "/mobile/webui/v1/blob/{blob_digest}",
+                },
+            },
+            "schemas": {
+                "ReleaseView": TypeAdapter(ReleaseViewWire).json_schema(),
+                "Target": TypeAdapter(WebUiTargetWire).json_schema(),
+                "Manifest": TypeAdapter(WebUiManifestWire).json_schema(),
+                "ManifestFile": TypeAdapter(WebUiFileWire).json_schema(),
+                "DirtyProvenance": TypeAdapter(DirtyProvenanceWire).json_schema(),
+                "BuilderIdentity": TypeAdapter(BuilderIdentityWire).json_schema(),
+                "PrepareReply": TypeAdapter(PrepareReplyWire).json_schema(),
+                "ErrorReply": TypeAdapter(ErrorReplyWire).json_schema(),
+                "HttpErrorBody": TypeAdapter(HttpErrorBodyWire).json_schema(),
+            },
+            "releaseView": {
+                "fields": [
+                    "server_id", "release_epoch", "sequence", "selection_digest",
+                    "stable", "preview",
+                ],
+                "stable": "Target|null",
+                "preview": "Target|null",
+                "selectionDigest": "sha256(canonical UTF-8 JSON {server_id,stable_target_key,preview_target_key}; null keys are present)",
+                "sequenceSemantics": "audit-only; clients never order or choose by sequence/time/semver",
+                "noPublication": "stable=null and preview=null is the desired baseline",
+            },
+            "target": {
+                "fields": [
+                    "target_key", "generation_id", "manifest_digest", "manifest_size_bytes",
+                    "bridge_protocol_min", "bridge_protocol_max", "snapshot_protocol_min",
+                    "snapshot_protocol_max", "minimum_native_build", "platforms",
+                ],
+                "targetKey": "sha256(canonical UTF-8 JSON {server_id,generation_id,manifest_digest})",
+            },
+            "manifest": {
+                "schemaVersion": 2,
+                "fields": [
+                    "schema_version", "generation_id", "entrypoint", "files",
+                    "bridge_protocol_min", "bridge_protocol_max", "snapshot_protocol_min",
+                    "snapshot_protocol_max", "minimum_native_build", "platforms",
+                    "source_repository", "source_commit", "source_tree", "input_digest",
+                    "build_context_digest", "dirty_provenance", "reproducible",
+                    "builder_identity", "unpacked_size_bytes", "file_count",
+                ],
+                "generationId": "sha256(canonical complete manifest with generation_id omitted)",
+                "manifestDigest": "sha256(canonical complete manifest)",
+                "canonical": "UTF-8 JSON, sorted object keys, no insignificant whitespace, NFC paths, files/platforms UTF-8 order; duplicate/unknown fields rejected",
+                "limits": {
+                    "manifestBytes": 1048576,
+                    "files": 2048,
+                    "fileBytes": 8388608,
+                    "unpackedBytes": 67108864,
+                },
+                "provenance": {
+                    "dirty_provenance": "null or {base_commit,tracked_patch_digest,untracked_tree_digest}",
+                    "builder_identity": "{node_version,npm_version,package_lock_digest,build_script_digest}",
+                    "stable": "reproducible=true and dirty_provenance=null",
+                },
+            },
+            "ticket": {
+                "audience": "mobile-webui-v1",
+                "ttlSeconds": 300,
+                "claims": [
+                    "aud", "v", "server_id", "device_id", "connection_epoch", "target_key",
+                    "generation_id", "manifest_digest", "selection_digest", "release_epoch", "iat", "exp",
+                ],
+                "scope": "one target manifest plus all blobs listed by that target manifest",
+                "recheck": "signature, server/device/revoke, connection_epoch, release_epoch, selection_digest and target membership on every HTTP request",
+            },
+            "http": {
+                "manifest": "/mobile/webui/v1/manifest/{manifest_digest}",
+                "blob": "/mobile/webui/v1/blob/{blob_digest}",
+                "manifestCacheControl": "no-store",
+                "blobCacheControl": "immutable",
+                "range": "one bytes range, response <= 8388608 bytes",
+                "statuses": {
+                    "invalid_ticket": 401,
+                    "target_changed": 409,
+                    "resource_not_found": 404,
+                    "invalid_range": 416,
+                    "range_precondition_failed": 412,
+                    "release_store_corrupt": 500,
+                },
+            },
+        },
         "frame": FRAME_ADAPTER.json_schema(),
     }
 

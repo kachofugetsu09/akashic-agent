@@ -38,6 +38,8 @@
     "history.get",
     "message.content.prepare",
     "message.send",
+    "mobile.webui.content.prepare",
+    "mobile.webui.release.get",
     "ping",
     "plugin.ui.asset.get",
     "plugin.ui.cancel",
@@ -58,6 +60,8 @@
   "controlTypes": [
     "auth.accepted",
     "device.proof",
+    "device.revoked",
+    "mobile.webui.release.changed",
     "pair.accepted",
     "pair.claim",
     "pair.pending",
@@ -71,7 +75,6 @@
     "attachment.progress",
     "attachment.ready",
     "connection.degraded",
-    "device.revoked",
     "history.page",
     "message.final",
     "message.proactive",
@@ -739,6 +742,7 @@
               "pair.claim",
               "pair.pending",
               "pair.accepted",
+              "device.revoked",
               "protocol.error"
             ],
             "title": "Type",
@@ -835,8 +839,7 @@
               "attachment.ready",
               "connection.degraded",
               "sync.completed",
-              "sync.reset_required",
-              "device.revoked"
+              "sync.reset_required"
             ],
             "title": "Type",
             "type": "string"
@@ -1063,6 +1066,253 @@
           "client_created_at"
         ],
         "title": "MessageSendPayload",
+        "type": "object"
+      },
+      "MobileWebUiContentPrepareCommand": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_epoch": {
+            "minimum": 1,
+            "title": "Connection Epoch",
+            "type": "integer"
+          },
+          "id": {
+            "maxLength": 36,
+            "minLength": 26,
+            "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12})$",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "command",
+            "title": "Kind",
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/$defs/MobileWebUiContentPreparePayload"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "turn_id": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turn Id"
+          },
+          "type": {
+            "const": "mobile.webui.content.prepare",
+            "title": "Type",
+            "type": "string"
+          },
+          "v": {
+            "const": 1,
+            "title": "V",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "v",
+          "kind",
+          "type",
+          "id",
+          "connection_epoch",
+          "payload"
+        ],
+        "title": "MobileWebUiContentPrepareCommand",
+        "type": "object"
+      },
+      "MobileWebUiContentPreparePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "target_key": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Target Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_key"
+        ],
+        "title": "MobileWebUiContentPreparePayload",
+        "type": "object"
+      },
+      "MobileWebUiReleaseChangedControl": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_epoch": {
+            "minimum": 1,
+            "title": "Connection Epoch",
+            "type": "integer"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "minLength": 26,
+                "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12})$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Id"
+          },
+          "kind": {
+            "const": "control",
+            "title": "Kind",
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/$defs/MobileWebUiReleaseChangedPayload"
+          },
+          "type": {
+            "const": "mobile.webui.release.changed",
+            "title": "Type",
+            "type": "string"
+          },
+          "v": {
+            "const": 1,
+            "title": "V",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "v",
+          "kind",
+          "type",
+          "connection_epoch",
+          "payload"
+        ],
+        "title": "MobileWebUiReleaseChangedControl",
+        "type": "object"
+      },
+      "MobileWebUiReleaseChangedPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "selection_digest": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Selection Digest",
+            "type": "string"
+          },
+          "server_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "title": "Server Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "server_id",
+          "selection_digest"
+        ],
+        "title": "MobileWebUiReleaseChangedPayload",
+        "type": "object"
+      },
+      "MobileWebUiReleaseGetCommand": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_epoch": {
+            "minimum": 1,
+            "title": "Connection Epoch",
+            "type": "integer"
+          },
+          "id": {
+            "maxLength": 36,
+            "minLength": 26,
+            "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12})$",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "command",
+            "title": "Kind",
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/$defs/MobileWebUiReleaseGetPayload"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "turn_id": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turn Id"
+          },
+          "type": {
+            "const": "mobile.webui.release.get",
+            "title": "Type",
+            "type": "string"
+          },
+          "v": {
+            "const": 1,
+            "title": "V",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "v",
+          "kind",
+          "type",
+          "id",
+          "connection_epoch",
+          "payload"
+        ],
+        "title": "MobileWebUiReleaseGetCommand",
+        "type": "object"
+      },
+      "MobileWebUiReleaseGetPayload": {
+        "additionalProperties": false,
+        "description": "ReleaseView 查询不接受客户端排序或版本选择参数。",
+        "properties": {},
+        "title": "MobileWebUiReleaseGetPayload",
         "type": "object"
       },
       "PluginUiChangedControl": {
@@ -1503,6 +1753,8 @@
               "history.get": "#/$defs/GenericCommand",
               "message.content.prepare": "#/$defs/GenericCommand",
               "message.send": "#/$defs/MessageSendCommand",
+              "mobile.webui.content.prepare": "#/$defs/MobileWebUiContentPrepareCommand",
+              "mobile.webui.release.get": "#/$defs/MobileWebUiReleaseGetCommand",
               "ping": "#/$defs/GenericCommand",
               "plugin.ui.asset.get": "#/$defs/GenericCommand",
               "plugin.ui.cancel": "#/$defs/GenericCommand",
@@ -1536,6 +1788,12 @@
               "$ref": "#/$defs/AttachmentDownloadCommand"
             },
             {
+              "$ref": "#/$defs/MobileWebUiReleaseGetCommand"
+            },
+            {
+              "$ref": "#/$defs/MobileWebUiContentPrepareCommand"
+            },
+            {
               "$ref": "#/$defs/GenericCommand"
             }
           ]
@@ -1545,6 +1803,8 @@
             "mapping": {
               "auth.accepted": "#/$defs/AuthAcceptedControl",
               "device.proof": "#/$defs/GenericControl",
+              "device.revoked": "#/$defs/GenericControl",
+              "mobile.webui.release.changed": "#/$defs/MobileWebUiReleaseChangedControl",
               "pair.accepted": "#/$defs/GenericControl",
               "pair.claim": "#/$defs/GenericControl",
               "pair.pending": "#/$defs/GenericControl",
@@ -1566,6 +1826,9 @@
               "$ref": "#/$defs/PluginUiChangedControl"
             },
             {
+              "$ref": "#/$defs/MobileWebUiReleaseChangedControl"
+            },
+            {
               "$ref": "#/$defs/GenericControl"
             }
           ]
@@ -1577,7 +1840,6 @@
               "attachment.progress": "#/$defs/GenericEvent",
               "attachment.ready": "#/$defs/GenericEvent",
               "connection.degraded": "#/$defs/GenericEvent",
-              "device.revoked": "#/$defs/GenericEvent",
               "history.page": "#/$defs/GenericEvent",
               "message.final": "#/$defs/GenericEvent",
               "message.proactive": "#/$defs/GenericEvent",
@@ -1626,6 +1888,8 @@
             "history.get": "#/$defs/GenericCommand",
             "message.content.prepare": "#/$defs/GenericCommand",
             "message.send": "#/$defs/MessageSendCommand",
+            "mobile.webui.content.prepare": "#/$defs/MobileWebUiContentPrepareCommand",
+            "mobile.webui.release.get": "#/$defs/MobileWebUiReleaseGetCommand",
             "ping": "#/$defs/GenericCommand",
             "plugin.ui.asset.get": "#/$defs/GenericCommand",
             "plugin.ui.cancel": "#/$defs/GenericCommand",
@@ -1659,6 +1923,12 @@
             "$ref": "#/$defs/AttachmentDownloadCommand"
           },
           {
+            "$ref": "#/$defs/MobileWebUiReleaseGetCommand"
+          },
+          {
+            "$ref": "#/$defs/MobileWebUiContentPrepareCommand"
+          },
+          {
             "$ref": "#/$defs/GenericCommand"
           }
         ]
@@ -1673,7 +1943,6 @@
             "attachment.progress": "#/$defs/GenericEvent",
             "attachment.ready": "#/$defs/GenericEvent",
             "connection.degraded": "#/$defs/GenericEvent",
-            "device.revoked": "#/$defs/GenericEvent",
             "history.page": "#/$defs/GenericEvent",
             "message.final": "#/$defs/GenericEvent",
             "message.proactive": "#/$defs/GenericEvent",
@@ -1714,6 +1983,8 @@
           "mapping": {
             "auth.accepted": "#/$defs/AuthAcceptedControl",
             "device.proof": "#/$defs/GenericControl",
+            "device.revoked": "#/$defs/GenericControl",
+            "mobile.webui.release.changed": "#/$defs/MobileWebUiReleaseChangedControl",
             "pair.accepted": "#/$defs/GenericControl",
             "pair.claim": "#/$defs/GenericControl",
             "pair.pending": "#/$defs/GenericControl",
@@ -1735,6 +2006,9 @@
             "$ref": "#/$defs/PluginUiChangedControl"
           },
           {
+            "$ref": "#/$defs/MobileWebUiReleaseChangedControl"
+          },
+          {
             "$ref": "#/$defs/GenericControl"
           }
         ]
@@ -1743,6 +2017,906 @@
   },
   "maxAttachmentChunkBytes": 131072,
   "maxJsonFrameBytes": 262144,
+  "mobileWebUi": {
+    "capability": "mobile-webui-ota-v1",
+    "commandTypes": [
+      "mobile.webui.release.get",
+      "mobile.webui.content.prepare"
+    ],
+    "contentPrepareReply": {
+      "fields": [
+        "target_key",
+        "manifest_digest",
+        "ticket",
+        "expires_at"
+      ],
+      "paths": {
+        "blob": "/mobile/webui/v1/blob/{blob_digest}",
+        "manifest": "/mobile/webui/v1/manifest/{manifest_digest}"
+      },
+      "type": "mobile.webui.content.prepare.ok"
+    },
+    "controlType": "mobile.webui.release.changed",
+    "http": {
+      "blob": "/mobile/webui/v1/blob/{blob_digest}",
+      "blobCacheControl": "immutable",
+      "manifest": "/mobile/webui/v1/manifest/{manifest_digest}",
+      "manifestCacheControl": "no-store",
+      "range": "one bytes range, response <= 8388608 bytes",
+      "statuses": {
+        "invalid_range": 416,
+        "invalid_ticket": 401,
+        "range_precondition_failed": 412,
+        "release_store_corrupt": 500,
+        "resource_not_found": 404,
+        "target_changed": 409
+      }
+    },
+    "manifest": {
+      "canonical": "UTF-8 JSON, sorted object keys, no insignificant whitespace, NFC paths, files/platforms UTF-8 order; duplicate/unknown fields rejected",
+      "fields": [
+        "schema_version",
+        "generation_id",
+        "entrypoint",
+        "files",
+        "bridge_protocol_min",
+        "bridge_protocol_max",
+        "snapshot_protocol_min",
+        "snapshot_protocol_max",
+        "minimum_native_build",
+        "platforms",
+        "source_repository",
+        "source_commit",
+        "source_tree",
+        "input_digest",
+        "build_context_digest",
+        "dirty_provenance",
+        "reproducible",
+        "builder_identity",
+        "unpacked_size_bytes",
+        "file_count"
+      ],
+      "generationId": "sha256(canonical complete manifest with generation_id omitted)",
+      "limits": {
+        "fileBytes": 8388608,
+        "files": 2048,
+        "manifestBytes": 1048576,
+        "unpackedBytes": 67108864
+      },
+      "manifestDigest": "sha256(canonical complete manifest)",
+      "provenance": {
+        "builder_identity": "{node_version,npm_version,package_lock_digest,build_script_digest}",
+        "dirty_provenance": "null or {base_commit,tracked_patch_digest,untracked_tree_digest}",
+        "stable": "reproducible=true and dirty_provenance=null"
+      },
+      "schemaVersion": 2
+    },
+    "releaseView": {
+      "fields": [
+        "server_id",
+        "release_epoch",
+        "sequence",
+        "selection_digest",
+        "stable",
+        "preview"
+      ],
+      "noPublication": "stable=null and preview=null is the desired baseline",
+      "preview": "Target|null",
+      "selectionDigest": "sha256(canonical UTF-8 JSON {server_id,stable_target_key,preview_target_key}; null keys are present)",
+      "sequenceSemantics": "audit-only; clients never order or choose by sequence/time/semver",
+      "stable": "Target|null"
+    },
+    "schemas": {
+      "BuilderIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "build_script_digest": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Build Script Digest",
+            "type": "string"
+          },
+          "node_version": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "title": "Node Version",
+            "type": "string"
+          },
+          "npm_version": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "title": "Npm Version",
+            "type": "string"
+          },
+          "package_lock_digest": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Package Lock Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node_version",
+          "npm_version",
+          "package_lock_digest",
+          "build_script_digest"
+        ],
+        "title": "BuilderIdentityWire",
+        "type": "object"
+      },
+      "DirtyProvenance": {
+        "additionalProperties": false,
+        "properties": {
+          "base_commit": {
+            "maxLength": 40,
+            "minLength": 40,
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Base Commit",
+            "type": "string"
+          },
+          "tracked_patch_digest": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Tracked Patch Digest",
+            "type": "string"
+          },
+          "untracked_tree_digest": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Untracked Tree Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "base_commit",
+          "tracked_patch_digest",
+          "untracked_tree_digest"
+        ],
+        "title": "DirtyProvenanceWire",
+        "type": "object"
+      },
+      "ErrorReply": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "enum": [
+              "capability_required",
+              "invalid_range",
+              "invalid_ticket",
+              "range_precondition_failed",
+              "release_store_corrupt",
+              "resource_not_found",
+              "rollback_unavailable",
+              "target_changed",
+              "target_not_found"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ErrorReplyWire",
+        "type": "object"
+      },
+      "HttpErrorBody": {
+        "$defs": {
+          "ErrorReplyWire": {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "enum": [
+                  "capability_required",
+                  "invalid_range",
+                  "invalid_ticket",
+                  "range_precondition_failed",
+                  "release_store_corrupt",
+                  "resource_not_found",
+                  "rollback_unavailable",
+                  "target_changed",
+                  "target_not_found"
+                ],
+                "title": "Code",
+                "type": "string"
+              },
+              "message": {
+                "maxLength": 512,
+                "minLength": 1,
+                "title": "Message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "title": "ErrorReplyWire",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/$defs/ErrorReplyWire"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "HttpErrorBodyWire",
+        "type": "object"
+      },
+      "Manifest": {
+        "$defs": {
+          "BuilderIdentityWire": {
+            "additionalProperties": false,
+            "properties": {
+              "build_script_digest": {
+                "maxLength": 64,
+                "minLength": 64,
+                "pattern": "^[0-9a-f]{64}$",
+                "title": "Build Script Digest",
+                "type": "string"
+              },
+              "node_version": {
+                "maxLength": 2048,
+                "minLength": 1,
+                "pattern": "^\\S+$",
+                "title": "Node Version",
+                "type": "string"
+              },
+              "npm_version": {
+                "maxLength": 2048,
+                "minLength": 1,
+                "pattern": "^\\S+$",
+                "title": "Npm Version",
+                "type": "string"
+              },
+              "package_lock_digest": {
+                "maxLength": 64,
+                "minLength": 64,
+                "pattern": "^[0-9a-f]{64}$",
+                "title": "Package Lock Digest",
+                "type": "string"
+              }
+            },
+            "required": [
+              "node_version",
+              "npm_version",
+              "package_lock_digest",
+              "build_script_digest"
+            ],
+            "title": "BuilderIdentityWire",
+            "type": "object"
+          },
+          "DirtyProvenanceWire": {
+            "additionalProperties": false,
+            "properties": {
+              "base_commit": {
+                "maxLength": 40,
+                "minLength": 40,
+                "pattern": "^[0-9a-f]{40}$",
+                "title": "Base Commit",
+                "type": "string"
+              },
+              "tracked_patch_digest": {
+                "maxLength": 64,
+                "minLength": 64,
+                "pattern": "^[0-9a-f]{64}$",
+                "title": "Tracked Patch Digest",
+                "type": "string"
+              },
+              "untracked_tree_digest": {
+                "maxLength": 64,
+                "minLength": 64,
+                "pattern": "^[0-9a-f]{64}$",
+                "title": "Untracked Tree Digest",
+                "type": "string"
+              }
+            },
+            "required": [
+              "base_commit",
+              "tracked_patch_digest",
+              "untracked_tree_digest"
+            ],
+            "title": "DirtyProvenanceWire",
+            "type": "object"
+          },
+          "WebUiFileWire": {
+            "additionalProperties": false,
+            "properties": {
+              "mime": {
+                "enum": [
+                  "application/json",
+                  "application/octet-stream",
+                  "application/wasm",
+                  "font/otf",
+                  "font/ttf",
+                  "font/woff",
+                  "font/woff2",
+                  "image/avif",
+                  "image/gif",
+                  "image/jpeg",
+                  "image/png",
+                  "image/svg+xml",
+                  "image/webp",
+                  "text/css",
+                  "text/html",
+                  "text/javascript",
+                  "text/plain",
+                  "video/mp4",
+                  "audio/mpeg",
+                  "audio/ogg",
+                  "audio/wav"
+                ],
+                "title": "Mime",
+                "type": "string"
+              },
+              "path": {
+                "maxLength": 512,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._-]{1,128}(?:/[A-Za-z0-9._-]{1,128})*$",
+                "title": "Path",
+                "type": "string"
+              },
+              "sha256": {
+                "maxLength": 64,
+                "minLength": 64,
+                "pattern": "^[0-9a-f]{64}$",
+                "title": "Sha256",
+                "type": "string"
+              },
+              "size_bytes": {
+                "maximum": 8388608,
+                "minimum": 0,
+                "title": "Size Bytes",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "path",
+              "sha256",
+              "size_bytes",
+              "mime"
+            ],
+            "title": "WebUiFileWire",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "bridge_protocol_max": {
+            "minimum": 1,
+            "title": "Bridge Protocol Max",
+            "type": "integer"
+          },
+          "bridge_protocol_min": {
+            "minimum": 1,
+            "title": "Bridge Protocol Min",
+            "type": "integer"
+          },
+          "build_context_digest": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Build Context Digest",
+            "type": "string"
+          },
+          "builder_identity": {
+            "$ref": "#/$defs/BuilderIdentityWire"
+          },
+          "dirty_provenance": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DirtyProvenanceWire"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "entrypoint": {
+            "const": "mobile.html",
+            "title": "Entrypoint",
+            "type": "string"
+          },
+          "file_count": {
+            "maximum": 2048,
+            "minimum": 1,
+            "title": "File Count",
+            "type": "integer"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/$defs/WebUiFileWire"
+            },
+            "maxItems": 2048,
+            "minItems": 1,
+            "title": "Files",
+            "type": "array"
+          },
+          "generation_id": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "input_digest": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Input Digest",
+            "type": "string"
+          },
+          "minimum_native_build": {
+            "minimum": 1,
+            "title": "Minimum Native Build",
+            "type": "integer"
+          },
+          "platforms": {
+            "items": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._-]{1,64}$",
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "title": "Platforms",
+            "type": "array"
+          },
+          "reproducible": {
+            "title": "Reproducible",
+            "type": "boolean"
+          },
+          "schema_version": {
+            "const": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "snapshot_protocol_max": {
+            "minimum": 1,
+            "title": "Snapshot Protocol Max",
+            "type": "integer"
+          },
+          "snapshot_protocol_min": {
+            "minimum": 1,
+            "title": "Snapshot Protocol Min",
+            "type": "integer"
+          },
+          "source_commit": {
+            "maxLength": 40,
+            "minLength": 40,
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Source Commit",
+            "type": "string"
+          },
+          "source_repository": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "title": "Source Repository",
+            "type": "string"
+          },
+          "source_tree": {
+            "maxLength": 40,
+            "minLength": 40,
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Source Tree",
+            "type": "string"
+          },
+          "unpacked_size_bytes": {
+            "maximum": 67108864,
+            "minimum": 0,
+            "title": "Unpacked Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "generation_id",
+          "entrypoint",
+          "files",
+          "bridge_protocol_min",
+          "bridge_protocol_max",
+          "snapshot_protocol_min",
+          "snapshot_protocol_max",
+          "minimum_native_build",
+          "platforms",
+          "source_repository",
+          "source_commit",
+          "source_tree",
+          "input_digest",
+          "build_context_digest",
+          "dirty_provenance",
+          "reproducible",
+          "builder_identity",
+          "unpacked_size_bytes",
+          "file_count"
+        ],
+        "title": "WebUiManifestWire",
+        "type": "object"
+      },
+      "ManifestFile": {
+        "additionalProperties": false,
+        "properties": {
+          "mime": {
+            "enum": [
+              "application/json",
+              "application/octet-stream",
+              "application/wasm",
+              "font/otf",
+              "font/ttf",
+              "font/woff",
+              "font/woff2",
+              "image/avif",
+              "image/gif",
+              "image/jpeg",
+              "image/png",
+              "image/svg+xml",
+              "image/webp",
+              "text/css",
+              "text/html",
+              "text/javascript",
+              "text/plain",
+              "video/mp4",
+              "audio/mpeg",
+              "audio/ogg",
+              "audio/wav"
+            ],
+            "title": "Mime",
+            "type": "string"
+          },
+          "path": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._-]{1,128}(?:/[A-Za-z0-9._-]{1,128})*$",
+            "title": "Path",
+            "type": "string"
+          },
+          "sha256": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size_bytes": {
+            "maximum": 8388608,
+            "minimum": 0,
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "sha256",
+          "size_bytes",
+          "mime"
+        ],
+        "title": "WebUiFileWire",
+        "type": "object"
+      },
+      "PrepareReply": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_at": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Expires At",
+            "type": "string"
+          },
+          "manifest_digest": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Manifest Digest",
+            "type": "string"
+          },
+          "target_key": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Target Key",
+            "type": "string"
+          },
+          "ticket": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Ticket",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_key",
+          "manifest_digest",
+          "ticket",
+          "expires_at"
+        ],
+        "title": "PrepareReplyWire",
+        "type": "object"
+      },
+      "ReleaseView": {
+        "$defs": {
+          "WebUiTargetWire": {
+            "additionalProperties": false,
+            "properties": {
+              "bridge_protocol_max": {
+                "minimum": 1,
+                "title": "Bridge Protocol Max",
+                "type": "integer"
+              },
+              "bridge_protocol_min": {
+                "minimum": 1,
+                "title": "Bridge Protocol Min",
+                "type": "integer"
+              },
+              "generation_id": {
+                "maxLength": 64,
+                "minLength": 64,
+                "pattern": "^[0-9a-f]{64}$",
+                "title": "Generation Id",
+                "type": "string"
+              },
+              "manifest_digest": {
+                "maxLength": 64,
+                "minLength": 64,
+                "pattern": "^[0-9a-f]{64}$",
+                "title": "Manifest Digest",
+                "type": "string"
+              },
+              "manifest_size_bytes": {
+                "maximum": 1048576,
+                "minimum": 1,
+                "title": "Manifest Size Bytes",
+                "type": "integer"
+              },
+              "minimum_native_build": {
+                "minimum": 1,
+                "title": "Minimum Native Build",
+                "type": "integer"
+              },
+              "platforms": {
+                "items": {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9._-]{1,64}$",
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "minItems": 1,
+                "title": "Platforms",
+                "type": "array"
+              },
+              "snapshot_protocol_max": {
+                "minimum": 1,
+                "title": "Snapshot Protocol Max",
+                "type": "integer"
+              },
+              "snapshot_protocol_min": {
+                "minimum": 1,
+                "title": "Snapshot Protocol Min",
+                "type": "integer"
+              },
+              "target_key": {
+                "maxLength": 64,
+                "minLength": 64,
+                "pattern": "^[0-9a-f]{64}$",
+                "title": "Target Key",
+                "type": "string"
+              }
+            },
+            "required": [
+              "target_key",
+              "generation_id",
+              "manifest_digest",
+              "manifest_size_bytes",
+              "bridge_protocol_min",
+              "bridge_protocol_max",
+              "snapshot_protocol_min",
+              "snapshot_protocol_max",
+              "minimum_native_build",
+              "platforms"
+            ],
+            "title": "WebUiTargetWire",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "preview": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/WebUiTargetWire"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "release_epoch": {
+            "maxLength": 36,
+            "minLength": 36,
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Release Epoch",
+            "type": "string"
+          },
+          "selection_digest": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Selection Digest",
+            "type": "string"
+          },
+          "sequence": {
+            "minimum": 0,
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "server_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "title": "Server Id",
+            "type": "string"
+          },
+          "stable": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/WebUiTargetWire"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "server_id",
+          "release_epoch",
+          "sequence",
+          "selection_digest",
+          "stable",
+          "preview"
+        ],
+        "title": "ReleaseViewWire",
+        "type": "object"
+      },
+      "Target": {
+        "additionalProperties": false,
+        "properties": {
+          "bridge_protocol_max": {
+            "minimum": 1,
+            "title": "Bridge Protocol Max",
+            "type": "integer"
+          },
+          "bridge_protocol_min": {
+            "minimum": 1,
+            "title": "Bridge Protocol Min",
+            "type": "integer"
+          },
+          "generation_id": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "manifest_digest": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Manifest Digest",
+            "type": "string"
+          },
+          "manifest_size_bytes": {
+            "maximum": 1048576,
+            "minimum": 1,
+            "title": "Manifest Size Bytes",
+            "type": "integer"
+          },
+          "minimum_native_build": {
+            "minimum": 1,
+            "title": "Minimum Native Build",
+            "type": "integer"
+          },
+          "platforms": {
+            "items": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._-]{1,64}$",
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "title": "Platforms",
+            "type": "array"
+          },
+          "snapshot_protocol_max": {
+            "minimum": 1,
+            "title": "Snapshot Protocol Max",
+            "type": "integer"
+          },
+          "snapshot_protocol_min": {
+            "minimum": 1,
+            "title": "Snapshot Protocol Min",
+            "type": "integer"
+          },
+          "target_key": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Target Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_key",
+          "generation_id",
+          "manifest_digest",
+          "manifest_size_bytes",
+          "bridge_protocol_min",
+          "bridge_protocol_max",
+          "snapshot_protocol_min",
+          "snapshot_protocol_max",
+          "minimum_native_build",
+          "platforms"
+        ],
+        "title": "WebUiTargetWire",
+        "type": "object"
+      }
+    },
+    "target": {
+      "fields": [
+        "target_key",
+        "generation_id",
+        "manifest_digest",
+        "manifest_size_bytes",
+        "bridge_protocol_min",
+        "bridge_protocol_max",
+        "snapshot_protocol_min",
+        "snapshot_protocol_max",
+        "minimum_native_build",
+        "platforms"
+      ],
+      "targetKey": "sha256(canonical UTF-8 JSON {server_id,generation_id,manifest_digest})"
+    },
+    "ticket": {
+      "audience": "mobile-webui-v1",
+      "claims": [
+        "aud",
+        "v",
+        "server_id",
+        "device_id",
+        "connection_epoch",
+        "target_key",
+        "generation_id",
+        "manifest_digest",
+        "selection_digest",
+        "release_epoch",
+        "iat",
+        "exp"
+      ],
+      "recheck": "signature, server/device/revoke, connection_epoch, release_epoch, selection_digest and target membership on every HTTP request",
+      "scope": "one target manifest plus all blobs listed by that target manifest",
+      "ttlSeconds": 300
+    }
+  },
   "preAuthControlTypes": [
     "device.proof",
     "pair.accepted",

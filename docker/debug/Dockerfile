@@ -19,6 +19,8 @@ RUN printf '%s\n' \
         ca-certificates \
         curl \
         git \
+        nodejs \
+        npm \
         python \
         python-pip \
         util-linux \

@@ -185,6 +185,28 @@ SessionDB 继续保存完整 assistant 正文和完整内部轨迹。实时投�
 
 两端默认使用同一套移动端浅蓝主题和同一套流式正文呈现。视觉与组件复用不得把 SessionDB、Room、outbox、设备密钥、通知、配对或插件运行状态迁入 WebUI；这些状态继续由 `MOB-001` 与移动仓库合同指定的 owner 管理。
 
+### WEBUI-004 移动 WebUI 只发布不可变 generation
+
+Core 发布者从固定 WebUI 输入生成不可变 manifest 和按内容摘要寻址的静态资源。只有名称明确的 Stable、Preview、清除和回滚命令可以原子改变当前 `ReleaseView`；保存源码、构建成功、文件 watcher 和 Runtime 重启都不得自动发布。Preview 对同一服务端配对的设备共同生效；Stable 必须能从声明的提交、锁文件、构建配置和工具链重建相同 generation，未提交的 Preview 只有在提交后重建出相同 generation 时才能提升。
+
+客户端把每次已认证 `Resolve` 返回的当前 `ReleaseView` 当作服务端选择，不按发布序号、时间、语义版本或本地历史推断新旧。发布恢复或显式回滚可以重新选择过去的 generation；迟到的客户端回调只能用本地 owner token 拒绝，不能覆盖较新的解析结果。
+
+### WEBUI-005 移动端只运行本地完整验证的 WebUI
+
+Android 和未来的 iOS 客户端不得直接打开远程页面。已配对客户端从当前服务端身份下解析发布选择，通过同一认证边界补齐 manifest 与静态资源，校验兼容范围、路径、类型、大小和摘要后，才从本地可信 origin 创建新的 UI session。每个服务端的缓存和失败记录相互隔离；相同摘要不得跨服务端共享资源。
+
+APK 或 IPA 必须保留 embedded baseline，远程发现、下载、校验、激活、renderer 故障或进程恢复失败时仍能回到最近健康的本地 generation 或 baseline。客户端只协调 `Resolve`、`Ensure` 和 `Present` 三个幂等动作，不建立把网络检查、下载、等待页面状态和 WebView 替换串成一条全局更新状态机。
+
+`Resolve/Ensure` 只能得到 `Ready`、`RetryAfter`、`WaitFor(trigger)` 或 `RejectTarget`。同一 Target 进入 `WaitFor(space)` 后，前台、重连和普通 hint 可以重新 Resolve 当前选择，但不得重复 prepare、manifest 或 blob 下载；只有 Target 变化、显式清理、用户明确重试、reset 或 revoke 解除该等待事实。同 Target 的永久 reject 也只能由 Target/兼容指纹变化或针对当前 Target 的显式用户重试解除。
+
+### WEBUI-006 WebUI OTA 不取得原生与业务状态所有权
+
+纯样式、布局、组件组合和只使用既有 bridge capability 的交互通过服务端 WebUI 发布交付，不要求发布移动二进制。新增或改变原生 capability、bridge/snapshot 兼容边界、平台生命周期、数据库、网络或安全逻辑时必须发布对应平台二进制，并用 manifest 的兼容范围阻止旧客户端加载。
+
+移动原生层继续拥有配对、认证、下载、摘要校验、缓存、激活、回退、GC、系统能力和业务动作 admission；WebUI 不得读取凭据、任意文件路径、任意网络或发布权限。更新、回滚、清理未使用 UI 资源和重置单个服务端 UI 缓存只能改变派生 WebUI 资源和诊断状态，不得删除或改写消息、草稿、outbox、阅读位置、附件、配对密钥或插件事实。GitHub APK 更新检查、下载、安装确认和权限继续使用独立 owner，不因 WebUI OTA 自动改变。
+
+candidate 在 10 秒健康提交前必须由 process-scope attempt lease 持有，Activity 旋转、配置重建或 server switch 不得把它误当成已提交 serving。在该边界前不开放写动作或外链 Activity；GC 只有在物理文件删除成功后才能删除对应 metadata/reference owner，删除失败必须 fail-loud 并保留引用。
+
 ## 5. Agent 任务合同
 
 本节参考 [OpenAI · Prompting guidance for GPT-5.6](https://developers.openai.com/api/docs/guides/prompt-guidance-gpt-5p6)，并按本项目的数据与权限边界收窄。外部指南提供设计依据，不会自动覆盖本文件条款；指南更新需要评审后再修改 PRM 条款。
