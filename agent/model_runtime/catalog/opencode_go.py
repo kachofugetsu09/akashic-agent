@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -15,6 +16,22 @@ from agent.model_runtime.provider_profiles import (
 @dataclass(frozen=True)
 class OpenCodeGoModel:
     slug: str
+    supported_reasoning_efforts: tuple[str, ...] = ()
+
+
+_GLM_EFFORT_ID = re.compile(r"^glm-5(?:\.(\d+)|-(\d+)|p(\d+))$")
+
+
+def _reasoning_efforts_for(model_id: str) -> tuple[str, ...]:
+    """OpenCode Go 目录不发布推理强度，按 opencode 客户端规则为 GLM-5.2+ 推算档位。"""
+    match = _GLM_EFFORT_ID.match(model_id.strip().lower())
+    if match:
+        minor = next(
+            int(value) for value in match.groups() if value is not None
+        )
+        if minor >= 2:
+            return ("high", "xhigh")
+    return ()
 
 
 class OpenCodeGoModelCatalog:
@@ -62,5 +79,12 @@ class OpenCodeGoModelCatalog:
             if not isinstance(model_id, str) or not model_id.strip():
                 raise TransportError("OpenCode Go 模型目录包含无效模型项")
             if OPENCODE_GO_PROFILE.classify_model(model_id) == "chat_completions":
-                models.append(OpenCodeGoModel(slug=model_id))
+                models.append(
+                    OpenCodeGoModel(
+                        slug=model_id,
+                        supported_reasoning_efforts=_reasoning_efforts_for(
+                            model_id
+                        ),
+                    )
+                )
         return models
