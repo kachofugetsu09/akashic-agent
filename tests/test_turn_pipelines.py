@@ -23,6 +23,7 @@ from agent.retrieval.protocol import (
 )
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
+from agent.tools.web_fetch import WebFetchTool
 from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
@@ -335,6 +336,29 @@ async def test_process_restores_session_context_after_core_failure(tmp_path: Pat
         state.exit.assert_called_once_with("telegram:123")
     finally:
         current_session_key.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_process_does_not_run_removed_web_fetch_spill_cleanup(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    loop = _make_loop(tmp_path)
+    loop.tools.register(WebFetchTool(requester=cast(Any, object())))
+    loop._core_runner.process = AsyncMock(  # type: ignore[attr-defined]
+        side_effect=RuntimeError("provider failed")
+    )
+    msg = InboundMessage(
+        channel="web",
+        sender="user",
+        chat_id="desktop-chat",
+        content="继续",
+    )
+
+    with pytest.raises(RuntimeError, match="provider failed"):
+        await loop._process(msg, dispatch_outbound=False)
+
+    assert "web_fetch_cleanup" not in caplog.text
 
 
 def _make_loop(
