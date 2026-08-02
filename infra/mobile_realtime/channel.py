@@ -400,6 +400,47 @@ class MobileRealtimeChannel:
             raise MobileCommandError("plugin_overloaded", str(error)) from error
         raise MobileCommandError("unsupported_command", f"尚不支持命令: {frame.type}")
 
+    def prepare_message_content(self, frame: GenericCommand) -> dict[str, object]:
+        """校验正文下载请求并返回当前不可变内容描述。"""
+
+        # 1. 请求必须精确引用 history.page 宣告的正文版本
+        _expect_keys(frame.payload, {"message_id", "byte_length", "sha256"})
+        session_id = self._require_mobile_session(frame.session_id)
+        message_id = _expect_nonempty_string(frame.payload["message_id"], "message_id")
+        byte_length = _expect_nonnegative_int(frame.payload["byte_length"], "byte_length")
+        sha256 = _expect_sha256(frame.payload["sha256"], "sha256")
+
+        # 2. 重新读取 SessionDB 权威正文，拒绝客户端猜测或过期 manifest
+        content = self.read_message_content(
+            session_id=session_id,
+            message_id=message_id,
+            byte_length=byte_length,
+            sha256=sha256,
+        )
+        return {
+            "message_id": message_id,
+            "byte_length": len(content),
+            "sha256": sha256,
+        }
+
+    def read_message_content(
+        self,
+        *,
+        session_id: str,
+        message_id: str,
+        byte_length: int,
+        sha256: str,
+    ) -> bytes:
+        """从 SessionDB 读取并核对票据绑定的完整 UTF-8 正文。"""
+
+        message = self._require_ctx().session_manager.control_store.get_message(message_id)
+        if message is None or message["session_key"] != session_id:
+            raise MobileCommandError("message_not_found", "消息正文不存在")
+        content = str(message["content"]).encode("utf-8")
+        if len(content) != byte_length or hashlib.sha256(content).hexdigest() != sha256:
+            raise MobileCommandError("content_changed", "消息正文与历史 manifest 不一致")
+        return content
+
     async def cancel_plugin_ui_device(self, device_id: str) -> None:
         """断线时取消设备的全部临时插件查询。"""
 
@@ -1194,24 +1235,68 @@ class MobileRealtimeChannel:
         frame: GenericCommand,
     ) -> CommandReply:
         session_id = self._require_mobile_session(frame.session_id)
-        pagination = _pagination_payload(frame.payload)
-        (
-            items,
-            total,
-        ) = self._require_ctx().session_manager.control_store.list_messages_for_dashboard(
-            session_key=session_id,
-            page=pagination["page"],
-            page_size=pagination["page_size"],
-            sort_by="seq",
-            sort_order="asc",
-        )
+        query = _history_query_payload(frame.payload)
+        store = self._require_ctx().session_manager.control_store
+        if query["content_ref_version"] == 1:
+            snapshot_max_seq = query["snapshot_max_seq"]
+            if snapshot_max_seq is None:
+                total, snapshot_max_seq = store.mobile_history_snapshot(session_id)
+            else:
+                _, current_max_seq = store.mobile_history_snapshot(session_id)
+                if snapshot_max_seq > current_max_seq:
+                    raise MobileCommandError(
+                        "invalid_snapshot",
+                        "历史快照高水位超过服务端当前序列",
+                    )
+                total = store.mobile_history_count_through(session_id, snapshot_max_seq)
+            after_seq = cast(int, query["after_seq"])
+            snapshot_max_seq = cast(int, snapshot_max_seq)
+            items = store.list_mobile_history_page(
+                session_key=session_id,
+                after_seq=after_seq,
+                through_seq=snapshot_max_seq,
+                page_size=cast(int, query["page_size"]),
+            )
+            next_after_seq = int(items[-1]["seq"]) if items else after_seq
+            has_more = (
+                len(items) == cast(int, query["page_size"])
+                and next_after_seq < snapshot_max_seq
+            )
+        else:
+            pagination = {
+                "page": cast(int, query["page"]),
+                "page_size": cast(int, query["page_size"]),
+            }
+            items, total = store.list_messages_for_dashboard(
+                session_key=session_id,
+                page=pagination["page"],
+                page_size=pagination["page_size"],
+                sort_by="seq",
+                sort_order="asc",
+            )
         mobile_items = [await self._mobile_history_item(item) for item in items]
-        page_payload: dict[str, object] = {
-            "items": cast(list[object], mobile_items),
-            "total": total,
-            **pagination,
-        }
-        _fit_mobile_history_payload(page_payload)
+        if query["content_ref_version"] == 1:
+            page_payload: dict[str, object] = {
+                "items": cast(list[object], mobile_items),
+                "total": total,
+                "page_size": query["page_size"],
+                "content_ref_version": 1,
+                "after_seq": query["after_seq"],
+                "next_after_seq": next_after_seq,
+                "snapshot_max_seq": snapshot_max_seq,
+                "has_more": has_more,
+            }
+        else:
+            page_payload = {
+                "items": cast(list[object], mobile_items),
+                "total": total,
+                "page": query["page"],
+                "page_size": query["page_size"],
+            }
+        _fit_mobile_history_payload(
+            page_payload,
+            allow_content_refs=query["content_ref_version"] == 1,
+        )
         await self._runtime.publish_event(
             event_type="history.page",
             session_id=session_id,
@@ -1221,7 +1306,11 @@ class MobileRealtimeChannel:
         return CommandReply(
             type="history.get.ok",
             session_id=session_id,
-            payload={"total": total, **pagination},
+            payload={
+                key: value
+                for key, value in page_payload.items()
+                if key != "items"
+            },
         )
 
     async def _send_message(
@@ -1964,19 +2053,72 @@ def _decode_reply_payload(raw: str) -> dict[str, object]:
     return cast(dict[str, object], decoded)
 
 
-def _pagination_payload(payload: Mapping[str, object]) -> dict[str, int]:
-    _expect_keys(payload, {"page", "page_size"})
-    page = payload.get("page", 1)
+def _history_query_payload(payload: Mapping[str, object]) -> dict[str, int | None]:
+    """解析旧分页或 v1 正文引用游标，两种模式不能混用。"""
+
+    # 1. 旧客户端继续使用 page；新客户端显式声明正文引用版本
+    _expect_keys(
+        payload,
+        {
+            "page",
+            "page_size",
+            "content_ref_version",
+            "after_seq",
+            "snapshot_max_seq",
+        },
+    )
+    version = payload.get("content_ref_version", 0)
+    if not isinstance(version, int) or isinstance(version, bool) or version not in {0, 1}:
+        raise MobileCommandError(
+            "unsupported_content_ref_version",
+            "content_ref_version 只支持 1",
+        )
     page_size = payload.get("page_size", 50)
-    if not isinstance(page, int) or isinstance(page, bool) or page < 1:
-        raise MobileCommandError("invalid_pagination", "page 必须是正整数")
     if (
         not isinstance(page_size, int)
         or isinstance(page_size, bool)
         or not 1 <= page_size <= 200
     ):
         raise MobileCommandError("invalid_pagination", "page_size 必须在 1..200")
-    return {"page": page, "page_size": page_size}
+    if version == 0:
+        if "after_seq" in payload or "snapshot_max_seq" in payload:
+            raise MobileCommandError("invalid_pagination", "旧分页不能携带 seq 游标")
+        page = payload.get("page", 1)
+        if not isinstance(page, int) or isinstance(page, bool) or page < 1:
+            raise MobileCommandError("invalid_pagination", "page 必须是正整数")
+        return {
+            "page": page,
+            "page_size": page_size,
+            "content_ref_version": 0,
+            "after_seq": None,
+            "snapshot_max_seq": None,
+        }
+
+    # 2. v1 以 seq 游标恢复；-1 表示尚未消费任何消息
+    if "page" in payload:
+        raise MobileCommandError("invalid_pagination", "正文引用分页不能携带 page")
+    after_seq = payload.get("after_seq", -1)
+    if not isinstance(after_seq, int) or isinstance(after_seq, bool) or after_seq < -1:
+        raise MobileCommandError("invalid_pagination", "after_seq 必须大于等于 -1")
+    snapshot_max_seq = payload.get("snapshot_max_seq")
+    if snapshot_max_seq is not None and (
+        not isinstance(snapshot_max_seq, int)
+        or isinstance(snapshot_max_seq, bool)
+        or snapshot_max_seq < -1
+    ):
+        raise MobileCommandError(
+            "invalid_snapshot",
+            "snapshot_max_seq 必须大于等于 -1",
+        )
+    if snapshot_max_seq is not None and after_seq > snapshot_max_seq:
+        raise MobileCommandError("invalid_snapshot", "after_seq 超过历史快照高水位")
+    return {
+        "page": None,
+        "page_size": page_size,
+        "content_ref_version": 1,
+        "after_seq": after_seq,
+        "snapshot_max_seq": snapshot_max_seq,
+    }
 
 
 def _expect_keys(payload: Mapping[str, object], allowed: set[str]) -> None:
@@ -1993,6 +2135,21 @@ def _expect_nonempty_string(value: object, field: str) -> str:
             f"{field} 必须是长度 1..512 的字符串",
         )
     return value
+
+
+def _expect_nonnegative_int(value: object, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise MobileCommandError("invalid_payload", f"{field} 必须是非负整数")
+    return value
+
+
+def _expect_sha256(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        raise MobileCommandError("invalid_payload", f"{field} 必须是 SHA-256")
+    digest = value.lower()
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise MobileCommandError("invalid_payload", f"{field} 必须是 SHA-256")
+    return digest
 
 
 def _validate_reply_frame_size(frame: ClientCommand, reply: CommandReply) -> None:
@@ -2122,15 +2279,45 @@ def _mobile_tool_chain(value: object) -> list[dict[str, object]] | None:
     return groups
 
 
-def _fit_mobile_history_payload(payload: dict[str, object]) -> None:
-    """在历史事件接近帧上限时回收工具详情预算。"""
+def _fit_mobile_history_payload(
+    payload: dict[str, object],
+    *,
+    allow_content_refs: bool = False,
+) -> None:
+    """在历史事件接近帧上限时回收工具预算并外置长正文。"""
 
     # 1. 正常页面直接保留全部安全参数
     if _mobile_tool_argument_encoded_size(payload) <= _MOBILE_HISTORY_PAYLOAD_MAX_BYTES:
         return
 
-    # 2. 从页面末尾先回收完整参数，再回收参数派生的描述
+    # 2. v1 优先外置最大的正文，保留 thinking/tool 展示语义
     items = cast(list[dict[str, object]], payload["items"])
+    if allow_content_refs:
+        content_items = sorted(
+            items,
+            key=lambda item: len(str(item["content"]).encode("utf-8")),
+            reverse=True,
+        )
+        for item in content_items:
+            content = str(item["content"])
+            encoded = content.encode("utf-8")
+            if not encoded:
+                continue
+            item["content"] = None
+            item["content_ref"] = {
+                "version": 1,
+                "encoding": "utf-8",
+                "byte_length": len(encoded),
+                "sha256": hashlib.sha256(encoded).hexdigest(),
+                "preview": content[:512],
+            }
+            if (
+                _mobile_tool_argument_encoded_size(payload)
+                <= _MOBILE_HISTORY_PAYLOAD_MAX_BYTES
+            ):
+                return
+
+    # 3. 正文外置后仍超限，才从页面末尾回收工具参数与派生描述
     for item in reversed(items):
         chain = cast(list[dict[str, object]] | None, item["tool_chain"])
         if chain is None:
@@ -2146,6 +2333,7 @@ def _fit_mobile_history_payload(payload: dict[str, object]) -> None:
                     <= _MOBILE_HISTORY_PAYLOAD_MAX_BYTES
                 ):
                     return
+
     for item in reversed(items):
         chain = cast(list[dict[str, object]] | None, item["tool_chain"])
         if chain is None:
@@ -2161,6 +2349,10 @@ def _fit_mobile_history_payload(payload: dict[str, object]) -> None:
                     <= _MOBILE_HISTORY_PAYLOAD_MAX_BYTES
                 ):
                     return
+
+    # 4. 非正文部分仍超限时明确失败，不能发送违规帧或静默丢失 thinking/tool
+    code = "history_item_too_large" if allow_content_refs else "upgrade_required"
+    raise MobileCommandError(code, "历史消息超过当前客户端可恢复的帧预算")
 
 
 def _mobile_tool_arguments(

@@ -1,8 +1,8 @@
 # Mobile 长消息投递设计
 
-- 状态：phase 1 implemented
+- 状态：phase 1 implemented；phase 2 implemented in Core
 - 日期：2026-08-02
-- 决策：[0019](../decisions/0019-mobile-long-messages-use-bounded-events.md)
+- 决策：[0019](../decisions/0019-mobile-long-messages-use-bounded-events.md)、[0020](../decisions/0020-mobile-history-content-uses-authenticated-http-ranges.md)
 - 关联条款：MOB-003、MOB-005、MOB-007、SES-001
 
 ## 1. 问题和用户意图
@@ -79,10 +79,27 @@
 
 ## 6. 第二阶段
 
-引入以 `message_id + byte_offset` 标识的正文 chunk/range 数据面，manifest 携带总 UTF-8 字节数与内容摘要。Android 只持久化已验证连续 offset，重连查询缺口；final 仍是提交标记，不拆成多个伪终态。历史页遇到大消息时返回 manifest，而不是截断正文或抬高 WebSocket 单帧上限。
+```text
+┌──────────────────┐  history.page: identity/tool/content_ref  ┌──────────────┐
+│ SessionDB        │ ─────────────────────────────────────────► │ Android Room │
+│ canonical text   │                                            │ projection   │
+└────────┬─────────┘  WS prepare: short-lived bound ticket       └──────┬───────┘
+         └──────────────────────────────────────────────────────────────┤
+                  HTTPS Range: 206 + offset + ETag + digest             │
+         ◄──────────────────────────────────────────────────────────────┘
+```
+
+1. 新客户端用 `content_ref_version=1 + after_seq` 请求历史；首个页面冻结 `snapshot_max_seq`，后续页面只读取该高水位内的消息。
+2. 页面超过 240 KiB 安全预算时，Core 优先把最大的正文替换成 UTF-8 `byte_length + sha256 + preview`，保留 thinking/tool 投影。正文外置后仍超限才回收有界工具参数；剩余非正文继续超限则 fail-loud。
+3. `message.content.prepare` 重新读取 SessionDB 并核对 manifest，再签发绑定 device、connection epoch、session、message、length 和 digest 的 60 秒票据。prepare 不写 durable command receipt。
+4. 固定 HTTPS 路径只接受单个、不超过 256 KiB 的 byte range；响应关闭内容压缩并返回 `Content-Range`、强 ETag、`Content-Digest` 与 `Repr-Digest`。
+5. Android 每个分片先 fsync 临时文件再推进 Room offset。进程重启时截断未被 Room 确认的尾部；全部完成后验证整篇 SHA-256、严格解码 UTF-8，再原子更新消息正文并删除恢复行。
+
+SessionDB 正常路径仍只增加消息。Range 服务只读；Android 恢复行允许更新 offset/state，并只在正文提交、投影 reset、消息明确删除或应用数据清除时物理减少。临时文件在对应恢复行消失后属于孤儿，可由恢复目录 owner 删除；其恢复证据是 SessionDB manifest 与重新下载。
 
 ## 7. 验收
 
 - 大内部元数据、1 MiB Unicode 正文、流式前缀补齐和分歧纠正都有定向测试。
 - 每个生成的正文事件小于协议单帧上限，重组结果逐字节等于 canonical 正文。
 - final 不包含内部工具轨迹；SessionDB、附件和正式 workspace 无写入变化。
+- 清除 Android 本地投影后，超长正文、thinking/tool block 和消息顺序能从固定快照恢复；中断只重取未确认 byte range。

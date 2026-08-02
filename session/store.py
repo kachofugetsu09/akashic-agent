@@ -1656,6 +1656,58 @@ class SessionStore:
             ).fetchall()
         return [self._row_to_message(row) for row in rows]
 
+    def mobile_history_snapshot(self, session_key: str) -> tuple[int, int]:
+        """返回当前会话历史的消息数与不可变 seq 高水位。"""
+
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT COUNT(*) AS total, COALESCE(MAX(seq), -1) AS max_seq
+                FROM messages
+                WHERE session_key = ?
+                """,
+                (session_key,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("mobile history snapshot 查询未返回结果")
+        return int(row["total"]), int(row["max_seq"])
+
+    def mobile_history_count_through(self, session_key: str, through_seq: int) -> int:
+        """统计固定 seq 高水位内仍存在的历史消息。"""
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS total FROM messages WHERE session_key = ? AND seq <= ?",
+                (session_key, through_seq),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("mobile history count 查询未返回结果")
+        return int(row["total"])
+
+    def list_mobile_history_page(
+        self,
+        *,
+        session_key: str,
+        after_seq: int,
+        through_seq: int,
+        page_size: int,
+    ) -> list[dict[str, Any]]:
+        """在固定 seq 高水位内按游标读取一页历史。"""
+
+        safe_page_size = max(1, min(int(page_size), 200))
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, session_key, seq, role, content, tool_chain, extra, ts
+                FROM messages
+                WHERE session_key = ? AND seq > ? AND seq <= ?
+                ORDER BY seq ASC, id ASC
+                LIMIT ?
+                """,
+                (session_key, after_seq, through_seq, safe_page_size),
+            ).fetchall()
+        return [self._row_to_message(row) for row in rows]
+
     def list_messages_for_dashboard(
         self,
         *,
