@@ -3,6 +3,7 @@
 - 状态：accepted
 - 日期：2026-08-01
 - 关联条款：WEBUI-001～WEBUI-003、MOB-001、GOV-001～GOV-005、TST-007～TST-008
+- 部分勘误：[0022](0022-mobile-webui-uses-server-selected-generations.md) 将固定 ZIP 收窄为 embedded baseline，并增加服务端选择的不可变 generation
 
 ## 背景
 
@@ -13,7 +14,7 @@
 1. `akasic-agent/frontend/chat` 是对话 WebUI 的唯一源码真源，同时构建桌面浏览器入口和 Android WebView 入口。
 2. 共用消息、Markdown、流式呈现和主题 token 只实现一次；桌面扫码配对与 Android 原生桥通过两个显式入口组合。
 3. Android 的 Room、outbox、附件、通知、Keystore、配对扫描和生命周期继续由 `akashic-mobile` 原生层拥有。共享 WebUI 只消费经过校验的 snapshot、patch 和命令接口。
-4. `akashic-mobile` 不通过本机路径、submodule 或浮动分支读取源码。它保存一个由干净源码 commit 构建的静态 ZIP，并在 Gradle 解包前验证 SHA-256；ZIP 内 manifest 固定 repository、commit、tree 和资产摘要。
+4. `akashic-mobile` 不通过本机路径、submodule 或浮动分支读取源码。它保存一个由干净源码 commit 构建的静态 ZIP 作为 embedded baseline，并在 Gradle 解包前验证 SHA-256；ZIP 内 manifest 固定 repository、commit、tree 和资产摘要。已配对运行时还可按 [0022](0022-mobile-webui-uses-server-selected-generations.md) 消费服务端选择的不可变 generation。
 5. Web 默认改用移动端现有浅蓝色主题；正文流式呈现由共用 `MessageResponse` 的 `isAnimating` 状态驱动。`prefers-reduced-motion` 继续关闭非必要动画。
 
 ## 理由
@@ -22,7 +23,7 @@
 
 ## 影响
 
-- WebUI 改动只在 `akasic-agent` 编写和测试，再生成新产物并更新移动仓库的固定 ZIP 与摘要。
+- WebUI 改动只在 `akasic-agent` 编写和测试；baseline 变化更新移动仓库的固定 ZIP 与摘要，兼容的运行时 UI 变化也可按 0022 发布服务端 generation。
 - Android 原生接口变化仍需先更新移动端桥合同，并通过固定组合验证；本决策不授权修改核心协议或持久状态。
 - 移动仓库删除 `frontend/chat` 源码和 Node 构建链，CI 改为校验固定 WebUI 产物并构建 Android。
 

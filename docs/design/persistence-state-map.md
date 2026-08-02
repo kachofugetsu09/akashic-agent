@@ -122,6 +122,20 @@ workspace 仍不是完整运行环境的全部。显式主配置、全局凭据�
 
 上述状态的容量拒绝、quarantine 和 cleanup 失败只影响当前 operation/item/unit。权威 schema 损坏、owner 无法建立或提交结果不可判定时，按 `ERR-001` 与 `SEC-010` fail-loud；不得写入空成功或静默丢弃。
 
+### 3.6 移动 WebUI 发布与客户端缓存
+
+[0022](../decisions/0022-mobile-webui-uses-server-selected-generations.md) 把服务端当前 `ReleaseView` 和其可达 generation 定义为 deployment 权威状态，把设备上的 verified generation 定义为按服务端隔离的派生 UI 缓存。两者都不得借用 SessionDB、Mobile Realtime DB 或 plugin-data 的删除和恢复协议。
+
+| 对象 | 正常增加 | 允许的原位更新/逻辑终态 | 物理减少条件 | owner 与恢复证据 |
+|---|---|---|---|---|
+| `<workspace>/mobile-webui/publication.sqlite3` | 显式 build/import 增加 immutable generation/file 引用；每次 publish/clear/promote/rollback/restore 追加 journal；rollback pin 显式增加 | 单 writer 事务原子替换 Stable/Preview 指针并递增审计 sequence；generation、manifest 和 journal 既有内容不改写 | 指针不以 DELETE 代替更新；journal retention 未另立合同前不得自动减少；只有显式 unpin/GC 可减少 rollback eligibility，用户删除整个 workspace 属于其既有范围 | Core WebUI publisher；SQLite integrity、当前 `ReleaseView`、selection digest、journal、pin 与 source provenance |
+| `<workspace>/mobile-webui/blobs/` | 候选校验后以 SHA-256 创建不可变文件；相同内容复用 | 只改变 generation、指针和 pin 的可达性，不原位改 blob | 显式 publication GC 在写锁内重新读取引用，只删除 Stable/Preview、每 channel 最近 4 个选择、显式 pin、候选和进行中备份 source set 均不可达的对象 | Core WebUI publisher；manifest/file digest、blob bytes、引用扫描与 GC report |
+| `<workspace>/mobile-webui/staging/` | build/import 为当前候选创建临时对象 | 成功提交后变为 immutable CAS 引用；崩溃遗留保持未提交 | 启动恢复或显式 GC 只能删除能证明未被 publication DB 引用的 staging | Core WebUI publisher；候选 marker、publication transaction 与 orphan report |
+| 用户指定的 WebUI backup artifact | `backup` 在临时目录写 SQLite online snapshot、自包含 CAS、source manifest 与 artifact digest，完整校验后原子发布；已存在目标不覆盖 | 已发布 artifact 内容不可原位更新；它独立保留快照时的 lineage、ReleaseView、journal 和全部声明资源 | publisher 不自动删除；只有名称明确、目标精确的 backup retention/delete 操作可减少，且不能把删除备份当成 live GC | Core WebUI backup/restore owner；artifact manifest/digest、SQLite `integrity_check`、server/epoch/selection/journal 与全部 reachable member hash |
+| 移动端 app-private WebUI store | `Ensure` 在单 server staging 写入 manifest/blob，完整校验后增加 verified generation | desired/serving/fallback/attempt/reject marker 按 `Resolve/Ensure/Present` owner 更新；`WaitFor(space)` 是 coordinator 持有的进程内协调事实，不写业务 Room 表 | 安全 GC 只删除未 pinned 对象，或用户明确“重置此服务端 UI 缓存”；必须先取消并等待该 server owner，物理文件删除成功后才能删 metadata/reference，且不得删除其他 server 或业务状态 | Android/future iOS native store；embedded baseline、per-server manifest/hash、verified/attempt marker、删除失败后仍在的 owner、业务 write-set 对比 |
+
+发布仓的 `release_epoch` 是 store 初始化时生成并持久化的 lineage UUID；从备份恢复到历史 `ReleaseView` 后保持备份中的 lineage 与当前选择。客户端不使用 epoch、sequence 或时间排序，因此恢复不会要求伪造更大的版本号。正式备份必须在同一 source snapshot 中列出 `publication.sqlite3`、当时所有数据库声明的 generation/blob、rollback pin 和 artifact digest；只复制数据库或只复制目录都不能证明可恢复。backup source set 在快照完成前 pin，避免与 live GC 竞态；恢复先在隔离目录验证 SQLite `integrity_check`、server identity、epoch、ReleaseView/selection、journal 连续性及每个 manifest/member digest，再原子替换 live publication root，替换前另建可恢复备份，替换后重复全部校验。
+
 ## 4. 再看上层所有权
 
 ```text
@@ -179,6 +193,10 @@ workspace 之外还有两组明确的全局状态：
 <workspace>/
 ├── sessions.db
 ├── migrations.sqlite3                 Yoyo 迁移成功回执
+├── mobile-webui/
+│   ├── publication.sqlite3             WebUI generation、ReleaseView 与 journal
+│   ├── blobs/sha256/<prefix>/<digest>  不可变静态资源
+│   └── staging/                         未提交候选；可证明 orphan 后才清理
 ├── sessions/                         目前只创建目录，未找到生产写入者
 ├── schedules.json
 ├── PROACTIVE_CONTEXT.md
@@ -468,6 +486,7 @@ Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activa
 5. SQLite 分别 backup 时，每个文件内部一致，但多个数据库与普通文件之间没有全局事务时点。
 6. 备份范围没有明确包含或排除 `.app-server-token`、diagnostic traces、全局凭据和全局插件 manifest。
 7. `mcp/servers/*.toml` 与 workspace 手工 skill 目录仍绕过插件安装系统，形成第二套能力 owner；现存内容尚未迁移。
+8. 通用 rolling backup 尚不能把 WebUI publication DB 与它引用的 blobs 作为同一一致性 source；首版 publisher 必须至少导出可审阅 reachable manifest，并在发布正式资源前完成隔离恢复 smoke。
 
 这些缺口正是 `BAK-001` 和 `NOW.md` 中恢复演练事项尚未完成的部分。
 

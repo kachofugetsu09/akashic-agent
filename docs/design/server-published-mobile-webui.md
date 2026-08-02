@@ -1,22 +1,22 @@
 # 服务端发布的移动 WebUI OTA 设计
 
-- 状态：proposed；产品边界、三步协调模型和 edge case 语义已经确认，持久化落点、线协议字段、资源上限和实施合同仍待确认
+- 状态：accepted；产品边界、三步协调模型、持久化、线协议、资源上限和 edge case 合同已经确认，实施与验收状态以两仓库当前代码和 Gate 报告为准
 - 日期：2026-08-03
-- 关联决策：[0018](../decisions/0018-chat-webui-has-one-source-and-two-adapters.md)
-- 关联条款：WEBUI-001～WEBUI-003、MOB-001、STA-001～STA-003、CAP-001～CAP-002、ERR-001、TST-006～TST-008
+- 关联决策：[0018](../decisions/0018-chat-webui-has-one-source-and-two-adapters.md)、[0022](../decisions/0022-mobile-webui-uses-server-selected-generations.md)
+- 关联条款：WEBUI-001～WEBUI-006、MOB-001、STA-001～STA-003、CAP-001～CAP-002、ERR-001、TST-006～TST-008
 - 涉及仓库：`akasic-agent`、`akashic-mobile`
 
 ## 1. 文档边界
 
-本文固化已经确认的产品边界、发布模型、Android 三步协调模型、回滚语义和 edge case。它不是实现批准，也不把尚未修改的现行合同描述成已经支持 OTA。
+本文是已经确认的产品边界、发布模型、Android 三步协调模型、回滚语义、线协议和 edge case 实施合同。它不把尚未通过当前源码验证的行为描述成已经交付；实际支持范围仍由两仓库实现、固定协议组合、隔离 Gate 和真机报告共同证明。
 
 本文使用三种标记：
 
 - **F（fact）**：当前代码或现行合同已经能证明的事实。
 - **C（confirmed）**：维护者在本轮设计中已经确认的目标语义。
-- **U（unknown）**：仍会影响持久状态、协议兼容或实施范围的待确认项。
+- **I（implementation evidence）**：必须由当前代码、schema、测试或运行报告证明的实施事实。
 
-在新决策被接受、相关需求条款完成勘误、两仓库实现和 Gate 通过前，当前 APK 内固定 ZIP 仍是唯一已实现路径。
+决策 0022 与 WEBUI-004～WEBUI-006 已接受本合同。是否已经交付必须以 Core provider 实现、Android consumer 锁定、两仓库 Gate 和本轮真机报告的组合证据为准；文档批准或单仓库绿灯都不能单独证明 OTA 已经运行。
 
 ## 2. 用户意图与成功边界
 
@@ -42,17 +42,17 @@
 | 改变 bridge/snapshot 协议且旧客户端不能兼容 | 否 | 是 |
 | 修改 Kotlin/Swift 生命周期、数据库、网络或安全逻辑 | 否 | 是 |
 
-## 3. 当前事实与合同冲突
+## 3. 实施前基线与当前证据
 
-- **F：** `frontend/chat` 是桌面和移动 WebUI 的唯一源码真源；`mobile-native.tsx` 是移动入口。
-- **F：** `scripts/package-mobile-web.sh` 当前只接受整个 Git tree 干净的源码，生成完整 ZIP、SHA-256 和 schema v1 manifest。
-- **F：** Android 当前把固定 ZIP 作为 Gradle 输入，构建时校验并解包进 APK。
-- **F：** Android 通过 `WebViewAssetLoader` 从 `https://appassets.androidplatform.net` 加载 APK 资产并阻止外部资源请求。Native→Web 使用指定 origin 的 `postWebMessage`；Web→Native 当前仍通过 `addJavascriptInterface`，在服务端下发 JS 前需要收窄。
+- **F（实施前基线）：** `frontend/chat` 是桌面和移动 WebUI 的唯一源码真源；`mobile-native.tsx` 是移动入口。
+- **F（实施前基线）：** `scripts/package-mobile-web.sh` 只接受整个 Git tree 干净的源码，生成完整 ZIP、SHA-256 和 schema v1 manifest；Android 把该 ZIP 作为 Gradle 输入，构建时校验并解包进 APK。这条 schema v1 路径在首个 OTA APK 中仍作为 embedded baseline，不导入 schema v2 OTA 缓存。
+- **F（实施前基线）：** Android 通过 `WebViewAssetLoader` 从 `https://appassets.androidplatform.net` 加载 APK 资产并阻止外部资源请求。Native→Web 使用指定 origin 的 `postWebMessage`；Web→Native 当时使用 `addJavascriptInterface`，因而服务端下发 JS 的 candidate 路径必须收窄 bridge admission。
 - **F：** Room、outbox、附件传输、通知、Keystore、配对、系统 Activity result 和生命周期由 Android 原生层拥有。
 - **F：** Core 已有配对后的 WSS 与同源认证 HTTPS 传输模式，可以作为发布发现与资源下载的现有信任基础。
-- **F：** [0018](../decisions/0018-chat-webui-has-one-source-and-two-adapters.md) 和移动仓库的现行合同要求固定 ZIP、干净 commit、构建期解包且无网络 fallback。
+- **I（Core provider）：** `infra/mobile_webui/` 拥有 canonical manifest、发布仓、ticket 和 HTTP 数据面；`scripts/publish-mobile-webui.py` 拥有 build/import/promote/rollback/GC 命令；`infra/mobile_realtime/` 只读已提交的 `ReleaseView`。`scripts/generate_mobile_realtime_schema.py`、`schema/mobile-realtime-v1.json` 与 `tests/mobile_webui/` 共同构成 provider 的机器可读证据。
+- **I（跨仓库 consumer）：** Android 只能消费 Mobile 仓库锁定到 Core merge commit/tree/schema SHA-256 的快照。OTA 的当前实际支持范围必须继续从该锁、Android 源码、migration test、隔离 runtime 和真机报告读取，不由本文档代为宣布。
 
-因此，服务端发布 OTA 不是对现有实现的自然解释，而是对“移动产物怎样交付”这一部分合同的有意改变。它不改变 WEBUI-001～WEBUI-003 的单一源码真源和状态 owner；后续接受设计时必须用新决策明确勘误 0018，并同步修改移动仓库对应合同。
+因此，服务端发布 OTA 是对“移动产物怎样交付”的有意改变，不是把旧固定 ZIP 路径改名。决策 0022 勘误 0018 的交付边界，但不改变 WEBUI-001～WEBUI-003 的单一源码真源和状态 owner；移动仓库必须以自己的决策和锁定证据同步接受。
 
 ### 3.1 成熟实践与采用理由
 
@@ -60,15 +60,17 @@
 
 | 成熟实践 | 官方行为 | 本设计采用的抽象 |
 |---|---|---|
-| [Expo Updates](https://docs.expo.dev/versions/latest/sdk/updates/) | 默认启动时检查并下载，下一次启动才应用；binary 中保留 embedded update | `Ensure` 可以后台运行，`Present` 只在 UI session 边界运行；APK baseline 永久可用 |
+| [Expo 下载与应用策略](https://docs.expo.dev/eas-update/download-updates/) | 默认冷启动异步检查而不阻塞首屏，下载完成后在后续启动应用；官方明确不建议为“永远最新”长期阻塞启动 | `Ensure` 可以后台运行，`Present` 只在 UI session 边界运行；慢网或离线不阻塞 APK baseline |
 | [Expo runtime versions](https://docs.expo.dev/eas-update/runtime-versions/) | 远程更新必须匹配原生 runtime compatibility | `Target` 在下载前检查 native、bridge、snapshot 和平台兼容范围 |
 | [Expo error recovery](https://docs.expo.dev/eas-update/error-recovery/) | 首次内容出现前失败可以回退；已经运行后的回退不能假装撤销持久副作用 | candidate 健康前不开放有副作用 bridge；回退只切换 UI，不回滚原生业务事实 |
-| [Ionic Appflow background strategy](https://ionic.io/docs/appflow/deploy/setup/capacitor-sdk) | 推荐后台下载、下次启动应用；需要前台重载时只阻止少量 critical workflow | 页面 modal、手势和选区不进入原生状态机，只保留一个 `canReplaceUi` 原生判定 |
+| [Ionic Appflow Live Updates](https://ionic.io/docs/appflow/deploy/deploy-live-update) | background 方式先下载，关闭再打开应用时采用；auto 方式才在启动时立即切换 | 页面 modal、手势和选区不进入原生状态机，只保留一个 `canReplaceUi` 原生判定 |
 | [Ionic differential updates](https://ionic.io/docs/appflow/deploy/differentials) | manifest 为每个文件保存 hash，只下载变化文件 | `Ensure(Target)` 按 content hash 复用 blobs，不在 serving 目录原位打补丁 |
 | [OCI Distribution Spec](https://github.com/opencontainers/distribution-spec/blob/main/spec.md) | blob 由 digest 标识，manifest 引用 blobs，可变 tag 选择不可变内容 | generation 是不可变内容；Stable/Preview 只组成当前 `ReleaseView` |
-| [Android WebViewAssetLoader](https://developer.android.com/develop/ui/views/layout/webapps/load-local-content) | 应用内资源从 HTTPS 语义的本地 origin 加载 | 下载和校验由原生完成，WebView 只看本地 generation |
+| [Android WebViewAssetLoader](https://developer.android.com/reference/androidx/webkit/WebViewAssetLoader) | 应用私有资源以 HTTPS 语义的本地 origin 加载，保留 same-origin 隔离；官方同时建议关闭不需要的 file/content access | 下载和校验由原生完成，WebView 只看本地 generation |
 | [Android WebView termination handling](https://developer.android.com/develop/ui/views/layout/webapps/handle-termination) | renderer 退出后不得复用旧 WebView；重复崩溃不能无限重载同一页面 | 单次重建 serving，重复失败回 fallback并 `RejectTarget` |
 | [Android WorkManager unique work](https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/manage-work) | unique work 避免同一目标重复排队，并定义替换策略 | 每个 server 只有一个 `Ensure` owner；新 `Target` 取代旧工作 |
+| [RFC 9530 Digest Fields](https://www.ietf.org/rfc/rfc9530.html) | `Content-Digest` 校验本次消息内容，`Repr-Digest` 校验完整选定表示；Range 响应中二者可以不同 | 206 校验本次 range bytes，同时用 representation digest 和强 ETag 锚定完整 blob |
+| [SLSA Build Provenance v1.2](https://slsa.dev/spec/v1.2/build-provenance) | 构建溯源区分外部参数、内部环境、已解析依赖、builder 和最终 subject；完整输入才支持验证与重建 | manifest 固定源码、lock、脚本、toolchain 与有效构建环境摘要；`reproducible=true` 不由“Git 干净”单独推出 |
 
 这些实践共同指向一个更小的心智模型：客户端不维护“正在检查、等待激活、重新下载”等平行状态机，而是持续回答三个问题：服务端当前想要什么、本地是否已经完整拥有它、下一次 UI session 应展示什么。
 
@@ -127,7 +129,7 @@ WebUI source inputs
        ▼
 ┌───────────────┐   验证成功   ┌──────────────────────────────┐
 │ 离线构建候选  ├─────────────→│ 不可变 generation            │
-└───────────────┘              │ manifest + CAS blobs/archive │
+└───────────────┘              │ manifest + per-file CAS blobs│
                                └──────────────┬───────────────┘
                                               │ 原子提交
                          ┌────────────────────┴──────────────────┐
@@ -144,7 +146,7 @@ WebUI source inputs
 
 构建、校验和资源写入发生在候选区。只有全部成功后，单一发布者才原子提交 Stable/Preview 指针组成的 `ReleaseView`。Runtime 只读取已提交发布，不在请求路径运行 Node/Vite，也不拥有发布写权限。
 
-`ReleaseView` 是“服务端现在选择什么”的完整快照，至少包含 server identity、Stable target、可选 Preview target 和每个 target 的 manifest digest。规范化选择内容计算 `selection_digest`；审计 journal 可以记录每次发布事件，但客户端不按 journal 序号、发布时间或 semver 推断新旧。
+`ReleaseView` 是“服务端现在选择什么”的完整快照，至少包含 server identity、nullable Stable/Preview target 和每个 target 的 manifest digest。两根指针都为 `null` 是合法且唯一的“当前没有远端发布”，此时成功 Resolve 得到的 desired 必须是 embedded baseline；旧 serving 只能维持当前尚未结束的 UI session，不能反向成为远端 desired。规范化选择内容计算 `selection_digest`；审计 journal 可以记录每次发布事件，但客户端不按 journal 序号、发布时间或 semver 推断新旧。
 
 这一点有意采用 OCI mutable tag 的语义：客户端每次只解析当前指针。显式回滚可以重新得到一个历史上出现过的 `selection_digest`，这是相同 desired state，不需要伪造一个“更大版本号”。每个 server 的 `Resolve` 单飞串行，迟到响应用本地 resolve token 丢弃，因此服务端备份恢复也不需要客户端理解 release lineage。
 
@@ -156,7 +158,7 @@ WebUI source inputs
 | Stable | 服务端默认生产 WebUI | 由显式发布命令原子推进或回滚 |
 | Preview | 服务端级试验 WebUI | 由显式发布、清除或提升操作改变 |
 
-**C：** Preview 对该服务端配对的全部设备生效，不是单设备选择。Preview 效果不好时，发布者可以清除 Preview 或把指针回退到旧 generation；客户端下一次成功 Resolve 后收敛到当前 ReleaseView。
+**C：** Preview 对该服务端配对的全部设备生效，不是单设备选择。Preview 效果不好时，发布者可以清除 Preview 或把指针回退到仍被 rollback pin 保留的旧 generation；客户端下一次成功 Resolve 后收敛到当前 ReleaseView。首版发布仓保留当前 Stable/Preview、每个 channel 最近 4 个成功选择和显式 pin 的 generation；journal 本身不隐式 pin 资源。目标已被 GC 时，回滚命令必须以 `rollback_unavailable` fail-loud，保持指针不变；操作者只能先从自包含备份恢复/导入并重新校验，不能创建悬空指针。
 
 **C：** 保存源码、构建成功、文件 watcher 或重启 Core 都不得自动发布。Stable 和 Preview 都必须由名称明确的发布命令提交。Watcher 只能发送“有新发布可检查”的提示。
 
@@ -164,30 +166,41 @@ WebUI source inputs
 
 - Preview 允许使用有未提交 WebUI 输入的源码，但构建前必须固化 base commit、patch/tree digest、完整 build context、产物 digest、`reproducible=false` 和 dirty provenance。
 - Stable 只从指定 commit 的隔离 source snapshot、固定 lockfile/config/toolchain 构建，并且只接受 `reproducible=true` 的 generation。
+- `build_context_digest` 必须按实际交给构建进程的环境计算：包含 OS/architecture、解析后的 Node/npm 可执行身份、锁文件、构建脚本，以及能影响 Node/npm/Vite 的有效配置；输出临时路径等经审查不影响产物的调度元数据应规范化排除。该划分采用 SLSA 对 external/internal parameters 与 resolved dependencies 的区分，但首版只是本地可审计 provenance，不宣称达到某个 SLSA level。
 - 当前开发 checkout 的后端、测试、文档甚至 WebUI dirty 都不影响从指定 commit 发布 Stable；它们不会进入隔离 source snapshot。
 - dirty WebUI 输入不能通过忽略标记或伪造 commit 进入 Stable。
 - 同一 generation ID 对应不同内容时 fail-loud；完全相同内容重复发布可以成为 no-op，但不能伪造新的资源内容。
-- `reproducible=true` 的 Preview 可以原样提升 Stable。dirty Preview 必须先提交其真实输入，并从隔离 snapshot 重建出完全相同 generation；若产物不同，先发布新的 Preview 重新验证，不能把未复现的 dirty artifact 提升 Stable。
+- `reproducible=true` 的 Preview 可以原样提升 Stable。dirty Preview 提交真实输入后必须从隔离 snapshot 重建为新的 reproducible generation，再发布为 Preview 验证；逐文件摘要相同的 blobs 可以复用，但 provenance 改变会产生新的 generation，未复现的 dirty target 不能直接提升 Stable。
 
 ### 5.4 Manifest 语义
 
-generation manifest 至少表达以下语义；最终字段名和编码在协议设计中确认：
+schema 2 manifest 使用 UTF-8 canonical JSON：对象键排序、无无意义空白、禁止重复键、未知字段和非标准数值。字段固定如下：
 
-- `manifest_schema`
-- `generation_id`
-- source repository、commit/base、WebUI 输入 digest 和 dirty provenance
-- bundle/render digest 与构建工具身份
-- bridge protocol 与 snapshot protocol 范围
-- minimum native build、platform 和可选 WebView 约束
-- entrypoint
-- 每个文件的相对路径、content hash 和 size
-- archive hash、总解包 size 和文件数量
-- `reproducible`
-- builder/publisher identity 和可复现构建信息
+| 字段 | 语义 |
+|---|---|
+| `schema_version` | 固定为 `2` |
+| `generation_id` | 完整 manifest 排除本字段后的 canonical SHA-256 |
+| `entrypoint` | 本地 UI session 入口；首版为 `mobile.html` |
+| `files[]` | 严格对象 `{path, sha256, size_bytes, mime}`；path 总 UTF-8 长度 1..512 bytes、每段 1..128 bytes、每段只允许 ASCII `[A-Za-z0-9._-]+`，并按 UTF-8 bytes 排序 |
+| `bridge_protocol_min/max` | Web→Native bridge 兼容闭区间 |
+| `snapshot_protocol_min/max` | Native→Web snapshot 兼容闭区间 |
+| `minimum_native_build` | 能运行该 generation 的最小原生 build code |
+| `platforms` | 有序去重的平台集合；首版包含 `android` |
+| `source_repository/commit/tree` | 构建来源的固定 repository、commit 与 Git tree |
+| `input_digest` | 影响移动入口构建的全部源码输入清单摘要 |
+| `build_context_digest` | 实际构建环境、有效配置、锁文件、构建脚本和 builder identity 的规范摘要；不得明文保存环境秘密 |
+| `dirty_provenance` | `null`，或严格对象 `{base_commit, tracked_patch_digest, untracked_tree_digest}` |
+| `reproducible` | Stable 与可提升 Preview 必须为 `true` |
+| `builder_identity` | 严格对象 `{node_version, npm_version, package_lock_digest, build_script_digest}` |
+| `unpacked_size_bytes/file_count` | 必须分别等于 `files` 的总字节数和项数 |
 
 channel、Stable/Preview、发布时间、发布事件和当前选择不进入 generation manifest；它们属于 `ReleaseView` 或发布 journal。这样同一 Preview generation 才能原样提升 Stable。
 
-`generation_id` 由经过规范化的 manifest 内容和资源内容决定，不由可变 channel、服务器路径或客户端时间决定。`TargetKey = server_identity + generation_id + manifest_digest`；generation 自身不可变。
+`manifest_digest` 是包含 `generation_id` 的完整 canonical manifest SHA-256。`generation_id` 与 `manifest_digest` 都不包含可变 channel、服务器路径、发布时间或客户端时间。`TargetKey` 是严格对象 `{server_id, generation_id, manifest_digest}` 的 canonical SHA-256；它不进入 manifest，因此同一不可变 generation 可以由不同服务端独立发布。
+
+本协议中的 canonical JSON 固定为：RFC 8259 object、UTF-8 无 BOM、键按 Unicode code point 升序、无键外空白、字符串不转义非 ASCII 且只转义 JSON 必需字符、布尔/null 使用小写字面量、整数使用无前导零十进制；禁止重复键、未知键、NaN 与 Infinity。`server_id` 使用现有配对身份在已认证协议中携带的原始 ASCII identifier bytes，区分大小写，禁止 trim、大小写转换或 Unicode 归一化。`TargetKey` 的字段集合和顺序语义精确为上述三个 non-null string；`selection_digest` 的字段集合精确为 `{server_id, stable_target_key, preview_target_key}`，后两项即使为空也必须编码为 JSON `null`。Core 与 Kotlin 必须对同一 golden vectors 产生逐字节相同的 canonical bytes 与 SHA-256。
+
+MIME 不由平台库猜测，而由两端共享的固定小写 suffix map 决定：`.html/.htm → text/html`，`.css → text/css`，`.js/.mjs/.cjs → text/javascript`，`.json → application/json`，`.wasm → application/wasm`，`.woff/.woff2/.ttf/.otf → font/*`，常见图片、音视频和 `.txt` 使用 manifest 列出的对应类型；未列出的后缀固定为 `application/octet-stream`。`.dex/.jar/.so/.apk/.aab` 无论声明什么 MIME 都拒绝。Core publisher、Core domain validator、机器 schema 的可达枚举和 Android parser 必须消费同一份含 JS/CSS/unknown 文件的 golden fixture；任一端使用系统 MIME 推断都视为合同漂移。
 
 ## 6. 增量同步与缓存
 
@@ -195,14 +208,14 @@ channel、Stable/Preview、发布时间、发布事件和当前选择不进入 g
 
 1. 客户端先获取并验证 manifest。
 2. 客户端按 `server_id + content_hash` 检查已有 blobs。
-3. 冷缓存或缺失比例较大时下载完整 archive；少量缺失时只下载缺失 blobs。
+3. 无论冷缓存还是增量更新都只下载本服务端缺失的 blobs；首版不再并行维护 archive 与 blob 两套选择策略。
 4. 校验每个 blob、完整文件树和 bundle digest。
 5. 从不可变 blobs 物化 verified generation，使 `ready(Target)=true`。
 6. serving generation 在 Present 健康提交前保持不变。
 
 客户端不得跨 `server_id` 共享 CAS，即使 hash 相同。这样可以防止服务端身份撤销、保留策略和故障归属被全局去重混淆。
 
-所有可用网络默认允许后台下载，不按 Wi-Fi/蜂窝做产品级禁用；下载必须受单文件、文件数、总压缩量、总解包量、压缩比、时间、并发和磁盘余量的硬限制。具体数值仍是 U。
+所有可用网络默认允许后台下载，不按 Wi-Fi/蜂窝做产品级禁用。首版固定 manifest 不超过 1 MiB、单 generation 不超过 2,048 个文件、单文件不超过 8 MiB、文件总量不超过 64 MiB、单次 Range response 不超过 8 MiB；下载还必须检查 Content-Length、实际字节、磁盘余量、超时和单 server 并发 owner。因为数据面不传 archive，OTA 路径没有压缩比或解包状态。
 
 ## 7. Android 组件边界
 
@@ -275,7 +288,7 @@ UI session boundary ───────────────→┌───
 
 同一 server 同时只有一个 resolve 请求。请求期间到达的多个 hint 合并为一个 dirty bit；当前请求结束后最多再查一次。hint 不携带可直接下载或激活的 target。客户端用本地 resolve token 忽略旧请求结果，不比较远端 publication sequence、时间或 semver。
 
-选择规则固定为：compatible Preview、compatible Stable、当前 serving、embedded baseline。Preview 和 Stable 都只是 `ReleaseView` 中的指针；服务端回滚后，下一次成功 Resolve 直接得到旧 generation 作为新 desired。
+选择规则固定为：compatible Preview、compatible Stable、embedded baseline。Preview 和 Stable 都只是 `ReleaseView` 中的指针；服务端回滚后，下一次成功 Resolve 直接得到旧 generation 作为新 desired。当前 serving 只在尚未完成新的 Resolve、临时认证/网络失败或当前 UI session 尚未到替换边界时继续显示；它不参与一次成功 Resolve 的 desired 选择。两根指针为 `null` 或均不兼容时，desired 明确变为 baseline，并在下一 UI session 收敛。
 
 ### 8.2 Ensure：什么时候下载、等待和重新下载
 
@@ -333,8 +346,8 @@ streaming、stop、outbox、上传和下载本身不阻止替换，只要它们�
 1. 重新读取当前 desired、ready 证据、server identity 和 `canReplaceUi`。
 2. 关闭旧页面的普通 action admission；fence 后请求明确返回 `ui_reloading`。
 3. 写入 `attempting TargetKey`、fallback、activation nonce 和当前 native/WebView compatibility fingerprint。
-4. 销毁旧 WebView，从 generation-specific 本地 URL 创建 candidate WebView。
-5. candidate 先以只读 bridge 完成 exact origin、nonce、generation 和协议握手。
+4. 销毁旧 WebView，以不可变 `PresentationLease(server, generation, manifest, nonce)` 从 `/mobile-webui/<server-hash>/<generation>/<entrypoint>` 创建 candidate WebView；handler 只服务该 lease，不能读取别的 generation，也不能对缺失文件回退 embedded asset。
+5. candidate 先通过 `WebMessageListener` 的只读 bridge 完成 exact origin、main frame、nonce、generation 和协议握手；远端 generation 不暴露 `addJavascriptInterface`。
 6. 原生发送完整 snapshot；页面完成 root render 和首次 visual acknowledgment。
 7. 原子提交 serving、清除 attempting，再开放有副作用的业务动作。
 
@@ -353,23 +366,23 @@ candidate 自己的 `reportHealthy` 只是证据之一，不能单独提交 serv
 
 **C：** embedded baseline 永久保留。客户端只 pin 当前 serving、fallback、ready desired 和 attempting 所引用的 generation 及其 blobs。Stable/Preview 是服务端选择，不自动让客户端永久保留两个 channel 的全部历史。
 
-正常稳定状态通常只有 serving 与 fallback 两代；desired 正在下载或激活时短暂增加一代。最终实现同时设置每 server generation 数和总字节硬上限，具体数值在真实 bundle 测量后确认。达到上限时先删未引用对象；若 pinned 集合本身超过预算则 `WaitFor(space)`，不得破坏回退链。
+正常稳定状态通常只有 serving 与 fallback 两代；desired 正在下载或激活时短暂增加一代。GC 以每 server 最多 4 个 verified generation、256 MiB 和应用全局 512 MiB 为目标预算；pinned 对象不因预算被删除。若 pinned 集合已经超过预算则 `WaitFor(space)`，不得破坏回退链或伪造清理成功。
 
 客户端提供两个名称明确的动作：
 
 | 动作 | 允许改变 | 不得改变 |
 |---|---|---|
-| 清理未使用 UI 资源 | 删除各服务端未被 serving/fallback/ready desired/attempting 引用的派生 blobs、archive 和 orphan staging | pinned generation、baseline、业务数据和凭据 |
+| 清理未使用 UI 资源 | 删除各服务端未被 serving/fallback/ready desired/attempting 引用的派生 blobs、manifest 和 orphan staging | pinned generation、baseline、业务数据和凭据 |
 | 重置此服务端 UI 缓存 | 取消并等待该 server 的 Ensure/Present owner 退出，回到 baseline，删除其派生 UI 缓存，并将当前 TargetKey 置为需手动重试 | 配对身份、Room、outbox、草稿、附件、SessionDB、插件数据和其他服务端缓存 |
 
 不提供任意本地版本选择器。正常版本选择由服务端当前 `ReleaseView` 决定；客户端只保留恢复所需 generation。重置后不会在下一个周期立即偷偷重下同一 TargetKey；用户手动重试或服务端 target 改变后才重新 Ensure。低磁盘时先运行安全 GC，空间仍不足则保留当前 UI、停止下载并明确报告，不删除 pinned 资源制造“成功”。
 
-持久对象的最低语义如下；具体目录和 schema 是 U：
+Core 发布仓固定在 `<workspace>/mobile-webui/`，包含 `publication.sqlite3`、`blobs/sha256/<prefix>/<digest>` 和 `staging/`；不得写入 `sessions.db`、`mobile_realtime.db` 或 plugin-data。客户端固定使用 app-private `filesDir/mobile-web-ui/<server identity>/` 保存 blobs、manifest 和 staging，并用 Room 的 WebUI 专属表保存四事实与引用；不得借迁移或 reset 触碰既有业务表。持久对象的最低语义如下：
 
 | 对象 | 正常增加 | 允许更新或逻辑失效 | 物理减少条件与 owner | 恢复证据 |
 |---|---|---|---|---|
 | 服务端 immutable generation | 成功构建并验证后新增 | 被新指针 supersede，不改内容 | 无指针/租约引用且满足保留协议时由发布 GC 删除 | manifest、blob hash、发布日志 |
-| 服务端 CAS blob/archive | 以 content hash 新增 | 只改变引用可达性 | 无 generation/候选引用时由发布 GC 删除 | hash、size、引用扫描 |
+| 服务端 CAS blob | 以 content hash 新增 | 只改变引用可达性 | 无 generation/候选引用时由发布 GC 删除 | hash、size、引用扫描 |
 | Stable/Preview pointer 与 `ReleaseView` | 发布事务创建 | 单 writer 原子替换当前选择；Preview 可显式清除 | 不直接删除所指内容；旧 generation 按 GC 协议处理 | 当前 ReleaseView、selection digest、发布 journal |
 | 客户端 generation/blob cache | Ensure 验证后新增 | serving/fallback/desired/rejected 改变引用状态 | 仅上述清理、重置或安全 orphan recovery | hash、manifest、per-server reference set |
 | `attempting` marker | Present 关闭旧 bridge 后写入 | 成功清除；未提交恢复为 rejected-for-auto TargetKey | 只能由完成或启动恢复事务清除 | fallback、nonce、TargetKey、启动恢复报告 |
@@ -383,20 +396,22 @@ candidate 自己的 `reportHealthy` 只是证据之一，不能单独提交 serv
 paired server identity
         │ authenticated WSS
         ▼
-release descriptor ── short-lived bound ticket ──→ same server HTTPS
+ReleaseView ── target-scoped short-lived ticket ──→ same server HTTPS
         │                                         manifest / blobs
         └──────────────── hashes + limits ────────────────────┘
 ```
 
-- descriptor 必须来自已认证 WSS，并绑定 `server_id`、设备、`selection_digest`、Stable/Preview TargetKey 和 manifest digest。
-- 下载 ticket 短时有效、一次或有界使用，绑定资源和配对 epoch；401 只能重新获取 ticket，不能降级匿名下载。
+- 客户端用 capability `mobile-webui-ota-v1` 声明支持。已认证 WSS command `mobile.webui.release.get` 返回完整当前 `ReleaseView`；control `mobile.webui.release.changed` 只带 `server_id` 与 `selection_digest`，仅触发重新 Resolve，不携带可执行 target。
+- `ReleaseView` 严格包含 `server_id`、持久 store lineage `release_epoch`、仅供审计的 `sequence`、`selection_digest`、nullable `stable` 与 `preview`。每个 Target 严格包含 `target_key`、`generation_id`、`manifest_digest`、`manifest_size_bytes`、bridge/snapshot 兼容范围、`minimum_native_build` 和 `platforms`。`selection_digest` 使用 5.4 节固定的精确对象和 canonical bytes；nullable 键仍存在。Core schema 必须同时归档 canonical golden vectors，Android Runtime Contract 必须逐字节复算。
+- 已认证 WSS command `mobile.webui.content.prepare` 只接受当前 TargetKey，严格返回 `{target_key, manifest_digest, ticket, expires_at}`；ticket 固定 300 秒有效并绑定 `server_id`、device、connection epoch、release epoch、TargetKey 与 manifest identity。HTTPS 每次执行重新检查设备撤销和 epoch，并验证请求 digest 属于该 target。
+- HTTPS 路径固定为 `/mobile/webui/v1/manifest/{manifest_digest}` 与 `/mobile/webui/v1/blob/{blob_digest}`。manifest 使用 `no-store`；带 Bearer 授权的 blob 使用 `private, immutable`、strong ETag 和有界 Range，禁止 shared cache 绕过 ticket 复核。按照 [RFC 9530](https://www.ietf.org/rfc/rfc9530.html)，`Content-Digest` 校验本次响应 bytes，`Repr-Digest` 校验完整 representation；206 时二者通常不同，客户端同时校验二者且显式请求 identity encoding。CAS 只拥有摘要、bytes 与 size；`Content-Type` 必须从当前 target 的 `generation_files` 成员读取，不能由同 digest 首次写入时的 MIME 决定。因为资源 URL 不含 path，同一 target 内一个 digest 只能对应一种 MIME；不同 target 可以对相同 bytes 声明不同合法 MIME。401 只能重新 prepare一次，不能降级匿名下载；3xx 不转发 Authorization。
 - HTTPS 不跟随任意 host redirect；最终 TLS/服务端身份必须与配对身份一致。
 - 设备 revoke 后停止新发现和下载，关闭该服务端 bridge admission，并按明确产品动作决定是否保留已验证缓存；不得继续把旧 ticket 当授权。
-- WebView 继续只加载原生提供的本地可信 origin，generation 进入 URL path；entry HTML 使用 `no-store`，content-hash asset 可以 immutable。CSP 不开放任意网络，外部链接交给系统浏览器。
+- WebView 继续只加载原生提供的本地可信 origin，server 与 generation 进入 URL path；entry HTML 使用 `no-store`，content-hash asset 可以 immutable。entry CSP 固定拒绝 `connect-src`、`frame-src`、`object-src` 与 `worker-src`，外部链接交给系统浏览器。
 - WebView navigation、subresource 和 service worker 不得绕过 asset handler 访问发布服务器或第三方。
 - Web→Native bridge 使用 exact-origin、main-frame 的单一版本化消息 envelope；Android 优先使用带 `allowedOriginRules` 的 [WebViewCompat.addWebMessageListener](https://developer.android.com/reference/androidx/webkit/WebViewCompat#addWebMessageListener)。candidate 健康前不开放有副作用 capability。Android 官方把加载不可信内容的 JavaScript interface 列为高风险边界，见 [WebView native bridge security](https://developer.android.com/privacy-and-security/risks/insecure-webview-native-bridges)。
-- archive 必须拒绝绝对路径、`..`、重复规范化路径、symlink、特殊文件、zip bomb、超限文件数和超限解包体积。
-- manifest、文件 hash、archive hash 或 content length 不一致时 fail-loud，不使用“尽量能打开”的部分版本。
+- 发布者扫描输入目录时必须拒绝绝对路径、`..`、反斜杠、空段、ASCII 大小写冲突、超长路径、`%`/`?`/`#`、非 ASCII 段、symlink 和特殊文件；客户端对 manifest 重复执行同一规范化与 MIME 白名单。首版收窄为 URL/storage 都无歧义的 ASCII path，不把 Unicode case-fold 或 percent-decoding 差异留给跨平台实现。首版 OTA 不接收 archive，因此不把 ZIP 解压权限交给数据面。
+- manifest、文件 hash 或 content length 不一致时 fail-loud，不使用“尽量能打开”的部分版本。
 
 ## 11. Edge case 合同矩阵
 
@@ -422,6 +437,9 @@ release descriptor ── short-lived bound ticket ──→ same server HTTPS
 | PUB-014 | 发布 GC 与指针提交并发 | ReleaseView 可达对象在同一引用/租约协议下 pin；不得提交指向缺失 blob 的选择 |
 | PUB-015 | commit 相同但 lockfile、构建配置、toolchain 或环境不同 | WebUI build context fingerprint 不同；Stable 可复现证据必须覆盖全部真实输入 |
 | PUB-016 | 发布仓从备份恢复到旧选择 | 恢复后的当前 ReleaseView 是 desired truth；审计 journal 记录恢复，但客户端不比较历史序号拒绝它 |
+| PUB-017 | 回滚目标仍在 rollback pin/备份 | 在线 pin 可直接原子切指针；只在备份中时必须先隔离恢复/导入并完整复验 |
+| PUB-018 | 回滚目标已 GC 且无可验证备份 | `rollback_unavailable`，不改变 ReleaseView、不发成功 hint、不伪造 generation |
+| PUB-019 | Stable/Preview 都清空 | ReleaseView 保留两个 null 键；客户端成功 Resolve 后 desired=baseline |
 
 ### 11.2 发现、认证和身份
 
@@ -439,6 +457,9 @@ release descriptor ── short-lived bound ticket ──→ same server HTTPS
 | AUTH-010 | server identity 变化但地址相同 | 视为新服务端；旧缓存不能继承 |
 | AUTH-011 | 地址改变但固定 server identity 相同 | 只有经过配对 profile 的显式重绑定/验证才沿用缓存；redirect 不能完成重绑定 |
 | AUTH-012 | 相同 selection digest 或 TargetKey 返回不同规范化内容 | fail-loud，拒绝整个 ReleaseView/Target |
+| AUTH-013 | 收到 `release.changed` EVENT、durable replay 或未认证 CONTROL | 全部拒绝；hint 只允许已认证 CONTROL，且 envelope 的 positive connection epoch 必须与当前连接一致 |
+| AUTH-014 | hint 缺少 `server_id`/`selection_digest`、多余键或 digest 不是 64 位小写十六进制 | 严格拒绝 payload；合法 digest 仍只是 dirty hint，不能作为 Target |
+| AUTH-015 | `ReleaseView` 省略 nullable `stable` 或 `preview` 键 | 严格拒绝；显式 `null` 才表示该 channel 无选择，不得把缺键默认成 null |
 
 ### 11.3 网络与传输
 
@@ -451,13 +472,17 @@ release descriptor ── short-lived bound ticket ──→ same server HTTPS
 | NET-005 | 当前 Target 的 manifest/blob 404 | `RejectTarget` 并报告发布仓损坏，不解释为“没有更新” |
 | NET-006 | 412、strong ETag 或内容身份变化 | 丢弃该 blob partial并重新 Resolve，不拼接不同内容 |
 | NET-007 | Content-Length、实际字节或 hash 超限/不符 | 删除临时对象并 fail-loud |
-| NET-008 | archive 路径逃逸、symlink、特殊文件或压缩炸弹 | 在物化前拒绝整个候选 |
+| NET-008 | manifest 路径逃逸、超长/非 ASCII/percent 歧义、大小写冲突，或发布输入含 symlink/特殊文件 | 在任何 serving/verified marker 前拒绝整个候选；首版不接收 archive |
 | NET-009 | Ensure A 期间 Resolve 得到 Target B | B 替换唯一 worker；A 不可 Present，已验证 blobs 可复用 |
 | NET-010 | 临时错误连续发生 | `RetryAfter` 有界退避并可观察，不阻塞 serving |
 | NET-011 | 应用或设备重启 | 先读取 verified marker/hash；完整 target 不因重启重新下载 |
 | NET-012 | 本地单个 blob 自检损坏 | 只删除并补齐该 blob；从服务端连续得到错误内容后 `RejectTarget` |
 | NET-013 | 设备离线后服务端已清除 Preview | 设备无法猜测远端变化，继续使用最后已认证 desired；重连 Resolve 后收敛，不按本地时间伪造清除 |
 | NET-014 | 客户端或服务端 wall clock 回拨/跳变 | 时间只用于展示、TTL 或退避，不用于判断 ReleaseView 新旧 |
+| NET-015 | `409 target_changed` | 终止旧 target owner 并重新 Resolve；旧响应不能更新 desired/ready/serving |
+| NET-016 | `416 invalid_range` | 校验并丢弃不成立的 partial，再从零请求该 blob；有界重试仍失败则按损坏证据拒绝 |
+| NET-017 | `500 release_store_corrupt` 或临时 5xx | 保留当前健康 serving；发布仓损坏需显式报告，临时 5xx 进入 `RetryAfter`，都不能从 realtime owner 裸抛退出 |
+| NET-018 | 一个 manifest 的多个 path 复用同一 blob digest | size 与 MIME 都必须相同，否则拒绝整个 Target；缺失空间只按唯一 digest 计算，不重复扩大下载预算 |
 
 ### 11.4 存储、GC 和人工清理
 
@@ -477,6 +502,9 @@ release descriptor ── short-lived bound ticket ──→ same server HTTPS
 | STO-012 | OS 清除 cache 目录 | serving/fallback 放 app-private durable files；丢失的 partial/未引用 cache 可重建 |
 | STO-013 | app data 被恢复到另一设备但 Keystore/配对身份不可用 | 不执行旧远程 UI；回 baseline并等待重新配对，业务数据按其独立恢复合同处理 |
 | STO-014 | reset/clear 与 Ensure/Present 并发 | 同一 store/coordinator owner 先取消并等完成，再删除；不得边读边删 |
+| STO-015 | GC 删文件失败 | 保留 DAO/reference owner 并 fail-loud，不报告已释放空间；只有物理删除成功后才能删 metadata |
+| STO-016 | 同 Target 已因空间不足进入 `WaitFor(space)` | 前台、重连或普通 hint 可 Resolve 当前选择，但不得对同 Target 再 prepare/manifest/download；只有 Target 变化、显式清理、用户明确重试、reset 或 revoke 才解除该等待事实 |
+| STO-017 | manifest/blob 本地验证、删除或 Room 写入失败 | WebUI coordinator 保留 serving/lease owner 并转换为可观察错误或有界重试；派生 UI 缓存故障不得冒充 realtime 协议错误而断开消息连接 |
 
 ### 11.5 生命周期与进程恢复
 
@@ -495,6 +523,8 @@ release descriptor ── short-lived bound ticket ──→ same server HTTPS
 | LIFE-011 | WebView provider 缺失、禁用或无法创建 | 显示原生恢复页并提示系统修复；不能假称 baseline 已成功渲染 |
 | LIFE-012 | APK 升级时旧 `attempting` 尚在 | 新 binary 先用自己的 baseline，废止旧 attempt，再按新兼容性重新 Resolve/Ensure |
 | LIFE-013 | serving 健康提交后应用被 force-stop 或 OS kill | serving marker 已提交，下一次可继续使用；不当作 candidate 失败 |
+| LIFE-014 | 同一 Activity 从 server A 切换到 B | 在 B 首帧前同步建立新 UI session；不能继承 A 的 `sessionStarted` 而跳过 B 的 Present 边界 |
+| LIFE-015 | candidate 健康窗口中 Activity 旋转/配置重建 | application/process-scope attempt lease 仍是唯一 owner；新 WebView 继续以 candidate 身份和 `admission=false` 运行，不得把未提交 generation 读成 serving |
 
 ### 11.6 用户行为与页面状态
 
@@ -536,6 +566,8 @@ release descriptor ── short-lived bound ticket ──→ same server HTTPS
 | WEB-015 | 路径大小写、Unicode normalization 冲突或 MIME 与扩展不符 | manifest 规范化阶段拒绝整个 target |
 | WEB-016 | action 在 reload 前后重复、capability 已废弃 | 版本化 envelope + request ID；幂等与终态由原生 owner 决定 |
 | WEB-017 | 页面自报 healthy 但尚未产生可见首帧 | 原生 visual acknowledgment 未到，不提交 serving、不开放写动作 |
+| WEB-018 | 两个 generation 复用同一 bytes digest 但声明不同合法 MIME | CAS 复用 bytes；每次响应按当前 target 的 MIME 返回，不能继承首次写入 MIME；同一 target 内 digest 对应多个 MIME 时拒绝 manifest |
+| WEB-019 | candidate 在健康提交前尝试打开外链 | 拦截且不调用系统 Activity；只有同一 lease 健康提交并开放 admission 后，才可按已有外链策略交给系统浏览器 |
 
 ### 11.8 连续发布、多设备和多服务端
 
@@ -553,6 +585,9 @@ release descriptor ── short-lived bound ticket ──→ same server HTTPS
 | CON-010 | 短时间收到大量 hint | 合并为 dirty bit；单飞 Resolve 结束后最多补查一次 |
 | CON-011 | 旧 Resolve/Ensure callback 晚于 server switch | owner token 不匹配即忽略；不能改变新 UI session |
 | CON-012 | 同一应用同时维护多个 server UI 缓存 | 每 server 独立 Resolve/Ensure/Store；全局容量只触发安全 GC，不串改 desired |
+| CON-013 | 成功 Resolve 得到两个 null 指针 | 当前 UI session 可继续旧 serving；下一 session 使用 baseline，旧 serving 不成为 desired |
+| CON-014 | 用户对当前 rejected Target 执行显式“重新检查/重试” | 只清除当前 ReleaseView 中精确 TargetKey + compatibility fingerprint 的 reject 并 Resolve；不清空其他 target，不改 GitHub APK 更新器 |
+| CON-015 | candidate B 健康窗口中 Resolve 得到 Target C | 立即废止 B 的 attempt lease 并恢复已提交 serving/baseline；B 不再渲染或提交，其已验证 blobs 可由 Store 复用，唯一 Ensure owner 转向 C |
 
 ### 11.9 兼容性与二进制发行
 
@@ -566,6 +601,8 @@ release descriptor ── short-lived bound ticket ──→ same server HTTPS
 | BIN-006 | 未来 iOS | 复用中立 manifest/Resolve/Ensure/Present；哪些 WebUI 变化可 OTA 需按 [App Review Guidelines 2.5.2](https://developer.apple.com/app-store/review/guidelines/) 单独确认 |
 | BIN-007 | 服务端下发 dex/JAR/.so 或原生可执行内容 | 永久拒绝；WebUI OTA 只接受声明的静态 Web 资源类型 |
 | BIN-008 | APK 升级带来新 baseline，但服务端仍选择旧 generation | 按 compatibility 和当前 ReleaseView 选择，不以 build 时间判断；无兼容 target 时使用新 baseline |
+| BIN-009 | 首个 OTA APK 同时含 baseline schema 1 与远端 manifest schema 2 | 两者由不同 owner 解析：Gradle/embedded loader 继续验证 schema 1 ZIP，OTA parser 只接受 schema 2；baseline 不写入 OTA Room/CAS |
+| BIN-010 | 强制保留数据降级到旧 APK | 不属于支持的恢复路径；不得 destructive migrate v13 业务库。旧 binary 不解析 OTA store，恢复应安装兼容的新 binary；embedded baseline 不能证明 Room downgrade 安全 |
 
 ## 12. 用户可见行为
 
@@ -576,17 +613,19 @@ release descriptor ── short-lived bound ticket ──→ same server HTTPS
 - “立即应用”只在 ready 时出现；`canReplaceUi=false` 时显示原生 continuation/snapshot 等粗粒度原因，不展示内部状态名。
 - “清理未使用 UI 资源”和“重置此服务端 UI 缓存”必须明确不会删除聊天、草稿、附件或配对；执行结果报告释放空间和当前来源。
 
-## 13. 分阶段实施方向
+## 13. 实施与交付顺序
 
-以下只是设计顺序，不是当前实施授权：
+维护者已经批准按以下顺序实施和交付：
 
-1. 接受本设计后，新增决策记录并勘误 0018 与移动仓库固定 ZIP/no-network 合同。
-2. 确认服务端发布仓的持久化根、备份/恢复、增改减和发布事务。
-3. 固化平台中立 generation manifest、ReleaseView、WSS descriptor、HTTPS ticket/content 和 bridge envelope。
-4. 实现 Core 隔离构建、不可变 generation、CAS、Stable/Preview 发布和只读 Runtime 接口。
-5. Android 分别实现 `ReleaseResolver`、`ArtifactEnsurer`、`UiSessionController` 与 `LocalWebUiStore`，不再实现平行的下载/等待/激活总状态机。
-6. 运行 Core/Android targeted tests、change-impact Gate、跨仓库固定组合和真机故障注入。
-7. 当前 GitHub APK updater 保持原状；未来真的准备 Google Play 或 iOS 时分别建立新合同，不作为首版 OTA 前置工作。
+1. 决策 0022 与 WEBUI-004～WEBUI-006 勘误固定 ZIP/no-network 合同，并把本文精确 wire 生成 Core schema 真源。
+2. Core 实现隔离构建、不可变 generation、CAS、Stable/Preview 发布、备份清单和只读 Runtime 接口；先合并 Core PR 并固定 merge commit/tree/schema digest。
+3. Android 实现 `ReleaseResolver`、`ArtifactEnsurer`、`UiSessionController` 与 `LocalWebUiStore`，把协议 snapshot 和 Runtime Contract 固定到已合并 Core commit，不实现平行的下载/等待/激活总状态机。
+4. 两仓库分别运行 targeted tests、静态检查和 change-impact Gate，再运行无网络、只读源码、tmpfs workspace 的固定跨仓库组合。
+5. 只从干净移动端 commit 构建 run-specific app/test package，连接一次性 Core workspace 与 Gateway，在真机分阶段验证发布、增量下载、进程恢复、回滚、缓存重置和业务 write set；正式 app package、正式 Gateway 与正式 workspace 保持逐项不变。
+6. Core 与 Android PR checks、主审累计 diff 和真机 cleanup 都通过后合并 Android PR，从 merge commit 构建并验证签名 APK，发布下一个 GitHub patch release。
+7. Release 资产和摘要复读成功后更新两个本地 `main`，最后按 Supervisor/Guardian 合同安全重启正式 Core，并独立核对新 boot、readiness、listener 与受保护数据。
+
+当前 GitHub APK updater 保持原状；未来真的准备 Google Play 或 iOS 时分别建立新合同，不作为首版 OTA 前置工作。
 
 ## 14. 验收边界
 
@@ -599,18 +638,25 @@ release descriptor ── short-lived bound ticket ──→ same server HTTPS
 - 连续发布最终只 Present 最近一次成功 Resolve 的 desired Target；不会在 serving 目录混合两个 generation。
 - 草稿、阅读位置、outbox、附件、消息、配对和插件真实状态在更新、回滚、GC 和重置前后符合各自 owner 合同。
 - Preview dirty provenance 可审计，Stable 能从声明的 WebUI 输入重建相同产物。
-- 所有安全上限、archive 攻击、ticket 失效、身份变化和恶意 navigation 都有独立失败测试。
+- 所有安全上限、输入目录路径攻击、ticket 失效、身份变化和恶意 navigation 都有独立失败测试。
 - 多服务端、多设备、冷启动、后台、Activity result、IME、streaming、连续崩溃、备份恢复、旧 callback 和低磁盘场景有明确 oracle，且分别绑定 Resolve/Ensure/Present/Store owner。
 - Android 真机证据与 Core CI、跨仓库组合证据分层报告，不用模拟成功替代设备行为。
 
-## 15. 待继续商讨
+## 15. 首版固定实施参数
 
-以下内容尚未批准，不能从本文推断实现：
+| 范围 | 固定选择 |
+|---|---|
+| 原生兼容 | 首个 OTA Android binary 使用 native build 45；bridge protocol `1`、snapshot protocol `7` |
+| ticket | ECDSA target-scoped bearer，TTL 300 秒；同一 target 内只能读取 manifest 与清单成员；每次 HTTP 执行复核 device revoke 与 connection epoch |
+| HTTP 失败 | 无发布返回 nullable Stable/Preview；非法 ticket=`401 invalid_ticket`，选择已变=`409 target_changed`，目标成员不存在=`404 resource_not_found`，Range 无效=`416 invalid_range`，发布仓引用损坏=`500 release_store_corrupt` |
+| 资源边界 | manifest 1 MiB、2,048 files、single blob 8 MiB、generation 64 MiB、single Range response 8 MiB；无 archive 数据面 |
+| 健康提交 | candidate 必须在 10 秒内完成 exact-origin/nonce/generation/bridge/snapshot 握手、完整 snapshot、root render 和 visual acknowledgment；JS 自报 healthy 单独无效 |
+| renderer 恢复 | serving 单次 termination 重建同 generation；5 分钟内第二次 termination 回 fallback/baseline 并拒绝当前 compatibility fingerprint 下的 TargetKey |
+| 自动重试 | 同 TargetKey 的 `RejectTarget` 不自动重试；只在 TargetKey、native/WebView compatibility fingerprint 改变或用户明确重试时解除。临时错误使用有界退避，reconnect 和手动检查可以提前触发 |
+| 客户端保留 | 每 server 4 个 verified generation/256 MiB、全局 512 MiB 为 GC 目标；pinned 集合可以临时超出并转 `WaitFor(space)`，不能删除 pinned 资源 |
+| 发布保留与恢复 | `release_epoch` 是 publication store 初始化时生成并持久化的 lineage UUID；`sequence` 只追加审计。当前 Stable/Preview、每 channel 最近 4 个选择、显式 pin 与进行中的 backup source set 不可 GC；客户端不比较 epoch/sequence 判断新旧 |
+| Bridge | Web→Native 只接受本地 exact origin、main frame 的版本化单 envelope；candidate 通过 visual health 前只开放只读握手和 snapshot，不开放发送、文件、系统或插件副作用 |
 
-1. 服务端发布仓位于 Akashic `<workspace>`、独立 deployment state root，还是由配置显式选择；Stable/Preview、generation、CAS 和 publication journal 是否进入正式备份。
-2. 各持久对象的具体目录、schema、锁、事务、retention 数值、备份恢复和跨版本迁移。
-3. generation manifest、ReleaseView、selection digest 与 WSS/HTTPS 的精确字段名、命令、事件、错误码、endpoint 和 ticket 生命周期。
-4. 文件数、大小、压缩比、并发、超时、重试、健康窗口、崩溃窗口和 rejected TargetKey 重试窗口的具体常量。
-5. bridge snapshot/patch/capability 的精确兼容矩阵、single-envelope 迁移和通用 durable ack；不再为页面各类临时状态设计专用 flush 字段。
-6. 两仓库 PR 切分、任务合同、Gate 选择、真机矩阵和正式发布操作手册。
-7. Google Play 与 iOS 的未来发行资格和具体改动；当前 GitHub APK updater 不变，该项不阻塞首版 OTA。
+OTA 交付的唯一机器可读真源由 Core merge commit 中的 schema 生成器、`schema/mobile-realtime-v1.json` 和 canonical golden vectors 共同保存。Android 只能消费固定 repository/merge commit/tree/path/SHA-256 的 snapshot，并记录实际 provider runtime；只有锁定到已合并 Core 身份的 consumer 通过跨仓库组合 Gate 和本轮设备验收时，才能声称该组合已交付。文档表格用于评审语义，若字段、canonical bytes 或错误码与机器 schema 不一致则实现和 Gate 必须 fail-loud，不能选择更宽松的一方。
+
+Google Play 与 iOS 的未来发行资格和具体改动仍不属于首版；当前 GitHub APK updater 不变，该项不阻塞 WebUI OTA。
