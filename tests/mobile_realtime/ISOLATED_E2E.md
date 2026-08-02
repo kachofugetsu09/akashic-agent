@@ -45,10 +45,11 @@ uv run python -m tests_scenarios.mobile_isolated_gateway \
 ```bash
 adb devices
 adb reverse tcp:16323 tcp:16323
-adb install -r clients/android/app/build/outputs/apk/debug/app-debug.apk
+adb install clients/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
 打开输出的 `pairing-offer.png`，用 Android 客户端扫码。脚本只会自动批准本进程创建的单次 pairing，不接受其他 Gateway 或 pairing ID。
+独立 Pilot 包建议通过 `-PakashicDebugApplicationIdSuffix=.webuipilot` 构建，避免覆盖正式包或普通 debug 包。
 
 要复现“WebSocket 已连但应用协议停滞”，可在首次配对后注入一次性故障：
 
@@ -70,7 +71,7 @@ uv run python -m tests_scenarios.mobile_isolated_gateway \
 
 1. 首次连接后出现 `mobile:isolated-history`，其中两条历史消息各出现一次。
 2. 退出再进入该 session，确认第二次 history sync 不产生重复消息。
-3. 发送“请返回固定媒体”，确认文字和 GIF 到达、GIF 可打开。
+3. 发送任意消息，确认思考文字逐段生长、`inspect_shared_webui` 工具从运行中变为完成，随后 Markdown 标题、列表和代码块逐段生长；结束时没有跳回、重复或闪烁，并确认 GIF 到达且可打开。
 4. 回复流式进行时移除端口转发，再恢复端口转发：
 
    ```bash

@@ -193,6 +193,25 @@ def _close_mobile_gateway(runtime: Any | None) -> Callable[[], Awaitable[None]]:
     return close
 
 
+def _dashboard_bind_address() -> tuple[str, int]:
+    """Resolve and validate the dashboard listener from environment config."""
+
+    # 1. Normalize the process boundary before any runtime service starts.
+    host = os.environ.get("AKASHIC_DASHBOARD_HOST", "0.0.0.0").strip()
+    if not host:
+        raise ValueError("AKASHIC_DASHBOARD_HOST 不能为空")
+
+    # 2. Reject invalid ports instead of falling back to the formal listener.
+    raw_port = os.environ.get("AKASHIC_DASHBOARD_PORT", "2236")
+    try:
+        port = int(raw_port)
+    except ValueError as error:
+        raise ValueError("AKASHIC_DASHBOARD_PORT 必须是 1 到 65535 的整数") from error
+    if not 1 <= port <= 65_535:
+        raise ValueError("AKASHIC_DASHBOARD_PORT 必须是 1 到 65535 的整数")
+    return host, port
+
+
 class AppRuntime:
     def __init__(
         self,
@@ -206,6 +225,7 @@ class AppRuntime:
         self.workspace = workspace
         self.restart_coordinator = restart_coordinator
         self.readiness = readiness
+        self.dashboard_host, self.dashboard_port = _dashboard_bind_address()
         self.http_resources = SharedHttpResources()
         self.app_server: SocketAppServer | None = None
         self.conversation_runtime: ConversationRuntime | None = None
@@ -488,6 +508,8 @@ class AppRuntime:
             self.tasks.extend(optimizer_tasks)
             self.dashboard_server = build_dashboard_server(
                 workspace=self.workspace,
+                host=self.dashboard_host,
+                port=self.dashboard_port,
                 manual_consolidator=self.agent_loop,
                 manual_memory_optimizer=self._memory_optimizer,
                 memory_admin=self.memory_runtime.engine,

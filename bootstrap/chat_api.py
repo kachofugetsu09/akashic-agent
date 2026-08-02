@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -68,6 +69,10 @@ def create_chat_app(
             if str(item.get("first_message_content") or "").strip()
         ]
         return {"items": visible, "total": len(visible)}
+
+    @app.get("/api/chat/navigation")
+    def chat_navigation() -> dict[str, int]:
+        return {"dashboard_port": _public_dashboard_port()}
 
     @app.get("/api/chat/sessions/{session_key:path}/messages")
     def list_messages(
@@ -200,3 +205,18 @@ def _can_read_media(channel: WebChatChannel, path: Path) -> bool:
     if callable(media_path_exists):
         return bool(media_path_exists(path))
     return False
+
+
+def _public_dashboard_port() -> int:
+    raw_port = os.environ.get("AKASHIC_DASHBOARD_PUBLIC_PORT", "2236")
+    try:
+        port = int(raw_port)
+    except ValueError as error:
+        raise RuntimeError(
+            "AKASHIC_DASHBOARD_PUBLIC_PORT 必须是 1 到 65535 的整数"
+        ) from error
+    if not 1 <= port <= 65535:
+        raise RuntimeError(
+            "AKASHIC_DASHBOARD_PUBLIC_PORT 必须是 1 到 65535 的整数"
+        )
+    return port

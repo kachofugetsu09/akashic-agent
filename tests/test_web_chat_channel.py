@@ -70,10 +70,18 @@ class _SessionManager:
     async def append_messages(self, session: Session, messages: list[dict[str, Any]]) -> None:
         self.appended.append((session, list(messages)))
 
+    @property
+    def control_store(self) -> _SessionStore:
+        return self._store
+
 
 class _SessionStore:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.messages: dict[str, dict[str, Any]] = {}
+
+    def get_message(self, message_id: str) -> dict[str, Any] | None:
+        return self.messages.get(message_id)
 
     def list_sessions_for_dashboard(self, **_: Any) -> tuple[list[dict[str, Any]], int]:
         return [], 0
@@ -151,6 +159,104 @@ async def test_web_chat_message_send_can_create_session_without_persisting_empty
     assert len(bus.inbound) == 1
     assert bus.inbound[0].content == "你好"
     assert str(bus.inbound[0].session_key).startswith("web:")
+
+
+@pytest.mark.asyncio
+async def test_web_chat_message_send_resolves_canonical_reply(tmp_path: Path) -> None:
+    bus = _Bus()
+    session_manager = _SessionManager()
+    session_manager._store.messages["m1"] = {
+        "id": "m1",
+        "session_key": "web:abc",
+        "role": "assistant",
+        "content": "先前回答",
+    }
+    channel = WebChatChannel()
+    await channel.start(cast(Any, SimpleNamespace(
+        bus=bus,
+        session_manager=session_manager,
+        event_bus=_EventBus(),
+        push_tool=_PushTool(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
+        interrupt_controller=None,
+    )))
+    app = create_chat_app(workspace=tmp_path, channel=channel)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({
+                "type": "message.send",
+                "request_id": "reply-1",
+                "session_id": "web:abc",
+                "text": "继续说明",
+                "media": [],
+                "reply_to_message_id": "m1",
+            })
+
+    assert len(bus.inbound) == 1
+    inbound = bus.inbound[0]
+    assert "先前回答" in inbound.content
+    assert "继续说明" in inbound.content
+    assert inbound.metadata == {
+        "client_request_id": "reply-1",
+        "display_content": "继续说明",
+        "reply_to_message_id": "m1",
+        "reply_role": "assistant",
+        "reply_preview": "先前回答",
+    }
+
+
+@pytest.mark.asyncio
+async def test_web_chat_message_send_rejects_invalid_reply_target(tmp_path: Path) -> None:
+    bus = _Bus()
+    session_manager = _SessionManager()
+    session_manager._store.messages["other"] = {
+        "id": "other",
+        "session_key": "web:other",
+        "role": "user",
+        "content": "其他会话",
+    }
+    channel = WebChatChannel()
+    await channel.start(cast(Any, SimpleNamespace(
+        bus=bus,
+        session_manager=session_manager,
+        event_bus=_EventBus(),
+        push_tool=_PushTool(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
+        interrupt_controller=None,
+    )))
+    app = create_chat_app(workspace=tmp_path, channel=channel)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({
+                "type": "message.send",
+                "request_id": "bad-reply",
+                "session_id": "web:abc",
+                "text": "继续",
+                "media": [],
+                "reply_to_message_id": "other",
+            })
+            assert ws.receive_json() == {
+                "type": "error",
+                "request_id": "bad-reply",
+                "message": "不能引用其他会话的消息",
+            }
+
+    assert bus.inbound == []
+
+
+def test_chat_navigation_uses_explicit_public_dashboard_port(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AKASHIC_DASHBOARD_PUBLIC_PORT", "19321")
+    app = create_chat_app(workspace=tmp_path, channel=WebChatChannel())
+
+    with TestClient(app) as client:
+        response = client.get("/api/chat/navigation")
+
+    assert response.json() == {"dashboard_port": 19321}
 
 
 @pytest.mark.asyncio

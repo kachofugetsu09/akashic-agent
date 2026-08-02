@@ -32,6 +32,7 @@ from infra.mobile_realtime.channel import MobileRealtimeChannel
 from infra.mobile_realtime.gateway import MobileGatewayRuntime
 from infra.mobile_realtime.protocol import (
     GenericCommand,
+    MAX_JSON_FRAME_BYTES,
     MessageSendCommand,
     parse_frame,
 )
@@ -2012,7 +2013,7 @@ async def test_delta_paths_reuse_existing_lock_without_allocating_lock() -> None
     )
 
     assert allocations == 0
-    assert channel._delta_locks == {}
+    assert channel._delta_locks == {key: existing_lock}
     assert runtime.events == [
         {
             "event_type": "answer.delta",
@@ -2023,8 +2024,12 @@ async def test_delta_paths_reuse_existing_lock_without_allocating_lock() -> None
     ]
 
 
+def test_stream_delta_flush_cadence_targets_60hz() -> None:
+    assert channel_module._DELTA_FLUSH_INTERVAL_SECONDS == pytest.approx(1.0 / 60.0)
+
+
 @pytest.mark.asyncio
-async def test_stream_deltas_batch_within_one_event_loop_turn_and_flush_before_tool_and_final(
+async def test_stream_deltas_batch_within_one_frame_window_and_flush_before_tool_and_final(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2076,8 +2081,9 @@ async def test_stream_deltas_batch_within_one_event_loop_turn_and_flush_before_t
                 thinking_delta=delta,
             )
         )
+        await asyncio.sleep(0.005)
     assert [event["event_type"] for event in runtime.events] == ["turn.started"]
-    await asyncio.sleep(0.01)
+    await asyncio.sleep(channel_module._DELTA_FLUSH_INTERVAL_SECONDS + 0.01)
     assert [event["event_type"] for event in runtime.events] == [
         "turn.started",
         "react.thinking.delta",
@@ -2174,6 +2180,162 @@ async def test_stream_deltas_batch_within_one_event_loop_turn_and_flush_before_t
     assert second_thinking["block_id"] != first_thinking["block_id"]
     assert cast(dict[str, object], final_metadata)["mobile_attention"] == "confirmation"
     await channel.stop()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_final_projects_only_explicit_mobile_metadata(tmp_path: Path) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    session_id = f"mobile:{uuid4()}"
+
+    await channel._on_response(
+        OutboundMessage(
+            channel="mobile",
+            chat_id=session_id.removeprefix("mobile:"),
+            content="完成",
+            metadata={
+                "mobile_attention": "confirmation",
+                "tool_chain": [{"result": "x" * 350_000}],
+                "tools_used": ["shell"],
+            },
+            control_turn_id=uuid4().hex,
+        )
+    )
+
+    final = runtime.events[-1]
+    payload = cast(dict[str, object], final["payload"])
+    assert payload["content"] == "完成"
+    assert payload["metadata"] == {"mobile_attention": "confirmation"}
+    assert (
+        len(json.dumps(final, ensure_ascii=False).encode("utf-8"))
+        < MAX_JSON_FRAME_BYTES
+    )
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_nonstreamed_large_unicode_answer_uses_bounded_deltas(
+    tmp_path: Path,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    session_id = f"mobile:{uuid4()}"
+    content = ("长回复🙂\n" * 150_000)[:1_000_000]
+
+    await channel._on_response(
+        OutboundMessage(
+            channel="mobile",
+            chat_id=session_id.removeprefix("mobile:"),
+            content=content,
+            control_turn_id=uuid4().hex,
+        )
+    )
+
+    deltas = [
+        cast(dict[str, object], event["payload"])["delta"]
+        for event in runtime.events
+        if event["event_type"] == "answer.delta"
+    ]
+    final = runtime.events[-1]
+    final_payload = cast(dict[str, object], final["payload"])
+    assert "".join(cast(list[str], deltas)) == content
+    assert final_payload["content"] == ""
+    assert all(
+        len(json.dumps(event, ensure_ascii=False).encode("utf-8"))
+        < MAX_JSON_FRAME_BYTES
+        for event in runtime.events
+    )
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_final_emits_only_missing_streamed_answer_suffix(tmp_path: Path) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    session_id = f"mobile:{uuid4()}"
+    turn_id = uuid4().hex
+    await channel._on_turn_started(
+        TurnStarted(
+            session_key=session_id,
+            channel="mobile",
+            chat_id=session_id.removeprefix("mobile:"),
+            content="继续",
+            timestamp=datetime.now(timezone.utc),
+            turn_id=turn_id,
+        )
+    )
+    await channel._on_stream_delta(
+        StreamDeltaReady(
+            session_key=session_id,
+            channel="mobile",
+            chat_id=session_id.removeprefix("mobile:"),
+            turn_id=turn_id,
+            content_delta="你好",
+        )
+    )
+
+    await channel._on_response(
+        OutboundMessage(
+            channel="mobile",
+            chat_id=session_id.removeprefix("mobile:"),
+            content="你好世界🙂",
+            control_turn_id=turn_id,
+        )
+    )
+
+    deltas = [
+        cast(str, cast(dict[str, object], event["payload"])["delta"])
+        for event in runtime.events
+        if event["event_type"] == "answer.delta"
+    ]
+    final_payload = cast(dict[str, object], runtime.events[-1]["payload"])
+    assert "".join(deltas) == "你好世界🙂"
+    assert final_payload["content"] == ""
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_divergent_stream_keeps_final_correction_inline(tmp_path: Path) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    session_id = f"mobile:{uuid4()}"
+    turn_id = uuid4().hex
+    await channel._on_turn_started(
+        TurnStarted(
+            session_key=session_id,
+            channel="mobile",
+            chat_id=session_id.removeprefix("mobile:"),
+            content="继续",
+            timestamp=datetime.now(timezone.utc),
+            turn_id=turn_id,
+        )
+    )
+    await channel._on_stream_delta(
+        StreamDeltaReady(
+            session_key=session_id,
+            channel="mobile",
+            chat_id=session_id.removeprefix("mobile:"),
+            turn_id=turn_id,
+            content_delta="草稿",
+        )
+    )
+
+    await channel._on_response(
+        OutboundMessage(
+            channel="mobile",
+            chat_id=session_id.removeprefix("mobile:"),
+            content="定稿",
+            control_turn_id=turn_id,
+        )
+    )
+
+    final_payload = cast(dict[str, object], runtime.events[-1]["payload"])
+    assert final_payload["content"] == "定稿"
     storage.close()
 
 

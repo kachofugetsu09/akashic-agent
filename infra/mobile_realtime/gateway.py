@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 import logging
 import secrets
@@ -13,7 +15,7 @@ from typing import TYPE_CHECKING, Callable, cast
 
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -44,6 +46,11 @@ from infra.mobile_realtime.plugin_ui_http import (
     PluginUiHttpTicketError,
     PluginUiHttpTicketIssuer,
     format_plugin_ui_http_expiry,
+)
+from infra.mobile_realtime.message_content_http import (
+    MessageContentTicketError,
+    MessageContentTicketIssuer,
+    format_message_content_expiry,
 )
 from infra.mobile_realtime.pairing import (
     PairClaimPayload,
@@ -87,6 +94,8 @@ if TYPE_CHECKING:
 _CLOSE_PROTOCOL = 4400
 _CLOSE_UNAUTHENTICATED = 4401
 _PLUGIN_UI_HTTP_PATH = "/mobile/plugin-ui/v1/query"
+_MESSAGE_CONTENT_HTTP_PATH = "/mobile/message-content/v1"
+_MAX_MESSAGE_CONTENT_RANGE_BYTES = 256 * 1024
 _MAX_PLUGIN_UI_HTTP_REQUEST_BYTES = 72 * 1024
 _CLOSE_REVOKED = 4403
 _CLOSE_SLOW_CONSUMER = 4408
@@ -109,6 +118,13 @@ class MobileGatewayError(RuntimeError):
 
 
 class MobilePluginUiHttpError(RuntimeError):
+    def __init__(self, code: str, message: str, *, status_code: int) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
+
+
+class MobileMessageContentHttpError(RuntimeError):
     def __init__(self, code: str, message: str, *, status_code: int) -> None:
         super().__init__(message)
         self.code = code
@@ -218,6 +234,7 @@ class MobileGatewayRuntime:
         self.keyset = keyset
         self.admin = MobilePairingAdmin(pairing, approvals)
         self.plugin_ui_http_tickets = PluginUiHttpTicketIssuer(keyset, storage)
+        self.message_content_tickets = MessageContentTicketIssuer(keyset, storage)
         self._channel: MobileRealtimeChannel | None = None
         self._connections: dict[str, ActiveMobileConnection] = {}
         self._delivery_lock = asyncio.Lock()
@@ -488,6 +505,17 @@ class MobileGatewayRuntime:
                         connection_epoch=connection_epoch,
                     ):
                         return
+                    if (
+                        isinstance(frame, GenericCommand)
+                        and frame.type == "message.content.prepare"
+                    ):
+                        await self._handle_message_content_prepare(
+                            websocket,
+                            frame,
+                            connection_epoch,
+                            device_id,
+                        )
+                        continue
                     if isinstance(frame, GenericCommand) and _is_plugin_ui_command(frame):
                         if frame.type == "plugin.ui.query":
                             self._start_plugin_ui_command(
@@ -1350,6 +1378,98 @@ class MobileGatewayRuntime:
                 turn_id=frame.turn_id,
             )
 
+    async def _handle_message_content_prepare(
+        self,
+        websocket: WebSocket,
+        frame: GenericCommand,
+        connection_epoch: int,
+        device_id: str,
+    ) -> None:
+        """校验 manifest 并直接签发不进入 durable receipt 的正文下载票据。"""
+
+        from infra.mobile_realtime.channel import MobileCommandError
+
+        connection = self._connections.get(device_id)
+        if connection is None or connection.websocket is not websocket:
+            return
+        try:
+            descriptor = self.channel.prepare_message_content(frame)
+            session_id = frame.session_id
+            if session_id is None:
+                raise RuntimeError("message content prepare 缺少 session_id")
+            grant = self.message_content_tickets.issue(
+                device_id=device_id,
+                connection_epoch=connection_epoch,
+                session_id=session_id,
+                message_id=cast(str, descriptor["message_id"]),
+                byte_length=cast(int, descriptor["byte_length"]),
+                sha256=cast(str, descriptor["sha256"]),
+            )
+            reply_type = "message.content.ready"
+            payload: dict[str, object] = {
+                **descriptor,
+                "path": _MESSAGE_CONTENT_HTTP_PATH,
+                "ticket": grant.ticket,
+                "expires_at": format_message_content_expiry(grant.expires_at),
+            }
+        except MobileCommandError as error:
+            reply_type = "message.content.prepare.error"
+            payload = {"code": error.code, "message": str(error)}
+        if self._connections.get(device_id) is not connection:
+            return
+        async with connection.send_lock:
+            await _send_reply(
+                websocket,
+                frame_id=frame.id,
+                connection_epoch=connection_epoch,
+                reply_type=reply_type,
+                payload=payload,
+                session_id=frame.session_id,
+                turn_id=None,
+            )
+
+    def read_message_content_http(
+        self,
+        *,
+        ticket: str,
+        range_header: str | None,
+        if_range: str | None,
+    ) -> tuple[bytes, int, int, int, str]:
+        """校验短期授权并返回一个有界、连续的正文 byte range。"""
+
+        from infra.mobile_realtime.channel import MobileCommandError
+
+        verified = self.message_content_tickets.verify(ticket)
+        connection = self._connections.get(verified.device_id)
+        if (
+            connection is None
+            or connection.connection_epoch != verified.connection_epoch
+        ):
+            raise MessageContentTicketError("message content ticket 的连接已失效")
+        expected_etag = f'"{verified.sha256}"'
+        if if_range is not None and if_range != expected_etag:
+            raise MobileMessageContentHttpError(
+                "content_changed",
+                "If-Range 与正文摘要不匹配",
+                status_code=412,
+            )
+        try:
+            content = self.channel.read_message_content(
+                session_id=verified.session_id,
+                message_id=verified.message_id,
+                byte_length=verified.byte_length,
+                sha256=verified.sha256,
+            )
+        except MobileCommandError as error:
+            status = 404 if error.code == "message_not_found" else 412
+            raise MobileMessageContentHttpError(
+                error.code,
+                str(error),
+                status_code=status,
+            ) from error
+        start, end = _parse_message_content_range(range_header, len(content))
+        return content[start : end + 1], start, end, len(content), verified.sha256
+
     async def handle_plugin_ui_http_query(
         self,
         *,
@@ -1539,6 +1659,47 @@ def create_mobile_gateway_app(runtime: MobileGatewayRuntime) -> FastAPI:
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
+
+    @app.get(_MESSAGE_CONTENT_HTTP_PATH)
+    async def mobile_message_content(request: Request) -> Response:
+        """返回短期设备授权下的一个不可变正文 byte range。"""
+
+        try:
+            ticket = _message_content_http_bearer(request)
+            content, start, end, total, sha256 = runtime.read_message_content_http(
+                ticket=ticket,
+                range_header=request.headers.get("range"),
+                if_range=request.headers.get("if-range"),
+            )
+        except MessageContentTicketError as error:
+            return _message_content_error_response(
+                "invalid_ticket",
+                str(error),
+                status_code=401,
+            )
+        except MobileMessageContentHttpError as error:
+            return _message_content_error_response(
+                error.code,
+                str(error),
+                status_code=error.status_code,
+            )
+        content_digest = base64.b64encode(hashlib.sha256(content).digest()).decode("ascii")
+        representation_digest = base64.b64encode(bytes.fromhex(sha256)).decode("ascii")
+        return Response(
+            content=content,
+            status_code=206,
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "private, no-store",
+                "Content-Digest": f"sha-256=:{content_digest}:",
+                "Content-Encoding": "identity",
+                "Content-Range": f"bytes {start}-{end}/{total}",
+                "ETag": f'"{sha256}"',
+                "Repr-Digest": f"sha-256=:{representation_digest}:",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     return app
 
@@ -1827,6 +1988,70 @@ def _plugin_ui_http_bearer(request: Request) -> str:
     if not 1 <= len(ticket) <= 4096 or any(character.isspace() for character in ticket):
         raise PluginUiHttpTicketError("plugin UI HTTP Bearer ticket 无效")
     return ticket
+
+
+def _message_content_http_bearer(request: Request) -> str:
+    authorization = request.headers.get("authorization")
+    if authorization is None or not authorization.startswith("Bearer "):
+        raise MessageContentTicketError("message content 请求缺少 Bearer ticket")
+    ticket = authorization.removeprefix("Bearer ")
+    if not 1 <= len(ticket) <= 4096 or any(character.isspace() for character in ticket):
+        raise MessageContentTicketError("message content Bearer ticket 无效")
+    return ticket
+
+
+def _parse_message_content_range(value: str | None, total: int) -> tuple[int, int]:
+    """解析一个显式 bytes range，并强制单次响应保持有界。"""
+
+    if total <= 0:
+        raise MobileMessageContentHttpError(
+            "range_not_satisfiable",
+            "空正文不需要 range 下载",
+            status_code=416,
+        )
+    if value is None or not value.startswith("bytes=") or "," in value:
+        raise MobileMessageContentHttpError(
+            "range_required",
+            "正文下载必须携带单个 bytes Range",
+            status_code=416,
+        )
+    bounds = value.removeprefix("bytes=").split("-", 1)
+    if len(bounds) != 2 or not bounds[0].isdigit() or not bounds[1].isdigit():
+        raise MobileMessageContentHttpError(
+            "invalid_range",
+            "正文 Range 格式无效",
+            status_code=416,
+        )
+    start, requested_end = int(bounds[0]), int(bounds[1])
+    if start >= total or requested_end < start:
+        raise MobileMessageContentHttpError(
+            "range_not_satisfiable",
+            "正文 Range 超出内容范围",
+            status_code=416,
+        )
+    end = min(requested_end, total - 1)
+    if end - start + 1 > _MAX_MESSAGE_CONTENT_RANGE_BYTES:
+        raise MobileMessageContentHttpError(
+            "range_too_large",
+            "正文 Range 超过单次下载预算",
+            status_code=416,
+        )
+    return start, end
+
+
+def _message_content_error_response(
+    code: str,
+    message: str,
+    *,
+    status_code: int,
+) -> JSONResponse:
+    response = JSONResponse(
+        {"error": {"code": code, "message": message}},
+        status_code=status_code,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 async def _read_plugin_ui_http_body(request: Request) -> dict[str, object]:

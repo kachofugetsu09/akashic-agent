@@ -97,7 +97,9 @@ def _ephemeral_dashboard() -> Iterator[None]:
     original = bootstrap_app.build_dashboard_server
 
     def build(**kwargs: Any) -> object:
-        return original(host="127.0.0.1", port=0, **kwargs)
+        kwargs["host"] = "127.0.0.1"
+        kwargs["port"] = 0
+        return original(**kwargs)
 
     bootstrap_app.build_dashboard_server = build  # type: ignore[assignment]
     try:

@@ -165,6 +165,26 @@ Writer 交接前必须把允许范围内的修改提交成可引用 commit，或
 
 未声明 HTTPS 的插件继续使用既有 WebSocket 内联 reply，不能被静默迁移或 fallback。HTTPS 查询仍复用同一 plugin revision、generation lease、owner、调度和取消语义；客户端不得把 ticket、HTTP response 或本地结果缓存提升为服务端权威事实。协议新增或修改时按跨仓库固定顺序提交 Core schema，再同步客户端 snapshot、source commit 和内容摘要。
 
+### MOB-007 Mobile 长正文使用有界事件提交
+
+Mobile 的单条 JSON frame 上限不限制一条逻辑消息的总正文。Core 按 UTF-8 字节边界把可顺序追加的正文发布为有界、可排序的增量事件，再用紧凑终态事件提交同一条消息；终态不得重复已经发送的正文，也不得携带 `tool_chain` 等只属于 SessionDB 和内部诊断的元数据。
+
+SessionDB 继续保存完整 assistant 正文和完整内部轨迹。实时投影与历史投影必须能够还原同一正文；增量前缀与权威终稿不一致时不得拼接成伪造结果，必须保留显式纠正或进入可恢复失败。WebSocket 传输层分片不能替代应用层事件、顺序、重放和终态语义，也不得通过提高单帧上限掩盖无界 payload。
+
+历史页不能安全内联完整正文时，Core 用总 UTF-8 字节数、摘要和稳定消息身份提交 manifest，并通过已认证设备的短期授权提供有界 range。客户端先持久化已验证连续 offset，完整长度、摘要与解码全部通过后才提交本地正文；临时文件、offset 和 Room 消息都是可重建投影，不得反向更新或删除 SessionDB 权威消息。
+
+### WEBUI-001 对话 WebUI 只保留一个源码真源
+
+桌面浏览器与 Android WebView 的对话展示、富文本、流式生长、主题 token 和可复用交互组件由本仓库 `frontend/chat` 统一维护。移动仓库只消费由固定源码 commit 构建并校验摘要的 WebUI 产物，不维护可独立演进的第二份前端源码。
+
+### WEBUI-002 平台能力通过显式入口和适配器组合
+
+共享 WebUI 可以有桌面与 Android 两个入口。共用展示代码不得直接猜测运行平台；桌面扫码认证、Android 原生桥、离线队列、分享、通知和设备能力通过各自入口或显式适配器注入。缺少能力时隐藏对应入口或给出明确不可用状态，不提供假成功 fallback。
+
+### WEBUI-003 视觉一致不改变状态所有权
+
+两端默认使用同一套移动端浅蓝主题和同一套流式正文呈现。视觉与组件复用不得把 SessionDB、Room、outbox、设备密钥、通知、配对或插件运行状态迁入 WebUI；这些状态继续由 `MOB-001` 与移动仓库合同指定的 owner 管理。
+
 ## 5. Agent 任务合同
 
 本节参考 [OpenAI · Prompting guidance for GPT-5.6](https://developers.openai.com/api/docs/guides/prompt-guidance-gpt-5p6)，并按本项目的数据与权限边界收窄。外部指南提供设计依据，不会自动覆盖本文件条款；指南更新需要评审后再修改 PRM 条款。

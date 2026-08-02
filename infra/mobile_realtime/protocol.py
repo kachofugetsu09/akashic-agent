@@ -26,6 +26,7 @@ COMMAND_TYPES = frozenset(
         "session.create",
         "session.open",
         "history.get",
+        "message.content.prepare",
         "message.send",
         "turn.stop",
         "attachment.begin",
@@ -107,6 +108,7 @@ _REPLY_TYPE_PATTERN = re.compile(
 )
 _SPECIAL_REPLY_TYPES = frozenset(
     {
+        "message.content.ready",
         "plugin.ui.catalog.not_modified",
         "plugin.ui.query.ready",
     }
@@ -328,6 +330,7 @@ class GenericCommand(CommandEnvelope):
         "session.create",
         "session.open",
         "history.get",
+        "message.content.prepare",
         "command.list",
         "runtime.document.list",
         "runtime.document.get",

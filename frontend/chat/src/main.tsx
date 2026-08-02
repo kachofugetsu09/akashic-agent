@@ -3,9 +3,12 @@ import { createRoot } from "react-dom/client";
 import type { FileUIPart } from "ai";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import {
+  Check,
   CircleStop,
-  Pencil,
+  LibraryBig,
+  MessageSquarePlus,
   Plus,
+  Puzzle,
   SendHorizontal,
   Smartphone,
 } from "lucide-react";
@@ -41,9 +44,11 @@ import {
   usePromptInputAttachments,
 } from "@/components/ai-elements/prompt-input";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { ConversationNavigation } from "./conversation-navigation";
+import { ComposerReply, MessageReplyReference, SharedMessageActions } from "./message-actions";
 import { MobilePairingDialog } from "./mobile-pairing-dialog";
-import { SettingsApp } from "./settings-app";
 import "./styles.css";
+import "./message-view.css";
 
 type ChatStatus = "idle" | "submitted" | "streaming" | "error";
 type Role = "user" | "assistant";
@@ -65,6 +70,13 @@ interface MessageRow {
   reasoning_content?: unknown;
   turn_duration_ms?: unknown;
   extra?: Record<string, unknown>;
+  reply_to_message_id?: unknown;
+  reply_role?: unknown;
+  reply_preview?: unknown;
+}
+
+interface ChatNavigation {
+  dashboard_port: number;
 }
 
 export interface ThinkingBlock {
@@ -80,6 +92,7 @@ export interface ToolBlock {
   input: unknown;
   output: unknown;
   errorText: string | undefined;
+  durationMs?: number;
 }
 
 export type AgentBlock = ThinkingBlock | ToolBlock;
@@ -108,12 +121,32 @@ export interface ChatMessage {
   attachments?: MessageAttachment[];
   blocks: AgentBlock[];
   streaming?: boolean;
+  interrupted?: boolean;
   startedAt?: number;
   durationMs?: number;
+  createdAt?: string;
+  canonical?: boolean;
+  reply?: {
+    messageId: string;
+    role: Role;
+    preview: string;
+  };
 }
 
 const LazyChatMessageView = lazy(() =>
   import("./message-view").then(({ ChatMessageView }) => ({ default: ChatMessageView })),
+);
+const LazyMobileShowcase = lazy(() =>
+  import("./mobile-showcase").then(({ MobileShowcase }) => ({ default: MobileShowcase })),
+);
+const LazySharedChatShowcase = lazy(() =>
+  import("./shared-chat-showcase").then(({ SharedChatShowcase }) => ({ default: SharedChatShowcase })),
+);
+const LazyDrawerIslandShowcase = lazy(() =>
+  import("./drawer-island-showcase").then(({ DrawerIslandShowcase }) => ({ default: DrawerIslandShowcase })),
+);
+const LazySettingsApp = lazy(() =>
+  import("./settings-app").then(({ SettingsApp }) => ({ default: SettingsApp })),
 );
 
 type ChatFrame =
@@ -170,6 +203,8 @@ function sessionRows(payload: unknown): SessionRow[] {
     typeof item.key !== "string"
     || !item.key.trim()
     || (item.first_message_content !== undefined && typeof item.first_message_content !== "string")
+    || (item.updated_at !== undefined && typeof item.updated_at !== "string")
+    || (item.message_count !== undefined && (typeof item.message_count !== "number" || !Number.isFinite(item.message_count)))
   ))) {
     throw new Error("/api/chat/sessions 返回了无效 session 行");
   }
@@ -180,8 +215,12 @@ function messageRows(payload: unknown, endpoint: string): MessageRow[] {
   const items = responseItems(payload, endpoint);
   if (items.some((item) => (
     (typeof item.id !== "string" && (typeof item.id !== "number" || !Number.isFinite(item.id)))
-    || typeof item.role !== "string"
+    || (item.role !== "user" && item.role !== "assistant")
     || typeof item.content !== "string"
+    || (item.reply_to_message_id !== undefined && typeof item.reply_to_message_id !== "string")
+    || (item.reply_role !== undefined && item.reply_role !== "user" && item.reply_role !== "assistant")
+    || (item.reply_preview !== undefined && typeof item.reply_preview !== "string")
+    || ([item.reply_to_message_id, item.reply_role, item.reply_preview].filter((value) => value !== undefined).length % 3 !== 0)
   ))) {
     throw new Error(`${endpoint} 返回了无效 message 行`);
   }
@@ -199,6 +238,15 @@ function uploadedFileResponse(payload: unknown): UploadedFile {
   return body as unknown as UploadedFile;
 }
 
+function chatNavigation(payload: unknown): ChatNavigation {
+  const body = recordValue(payload);
+  const port = body?.dashboard_port;
+  if (!Number.isInteger(port) || Number(port) < 1 || Number(port) > 65535) {
+    throw new Error("/api/chat/navigation 返回了无效端口");
+  }
+  return { dashboard_port: Number(port) };
+}
+
 function App() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [activeSessionId, setActiveSessionId] = useState("");
@@ -207,7 +255,11 @@ function App() {
   const [status, setStatus] = useState<ChatStatus>("idle");
   const [error, setError] = useState("");
   const [mobilePairingOpen, setMobilePairingOpen] = useState(false);
+  const [dashboardPort, setDashboardPort] = useState<number | null>(null);
+  const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
+  const [copiedMessageId, setCopiedMessageId] = useState("");
   const socketRef = useRef<WebSocket | null>(null);
+  const messageElementsRef = useRef(new Map<string, HTMLDivElement>());
   const activeSessionRef = useRef("");
   const statusRef = useRef<ChatStatus>("idle");
   const sessionsRequestRef = useRef<AbortController | null>(null);
@@ -277,6 +329,7 @@ function App() {
           setMessages,
           setStatus,
           loadSessions: loadSessionsSafely,
+          loadMessages: loadMessagesSafely,
         });
       } catch (error) {
         reportError(error, "error");
@@ -293,10 +346,13 @@ function App() {
       }
     };
     return socket;
-  }, [loadSessionsSafely, reportError]);
+  }, [loadMessagesSafely, loadSessionsSafely, reportError]);
 
   useEffect(() => {
     void loadSessionsSafely();
+    void fetchChatJson<unknown>("/api/chat/navigation")
+      .then((payload) => setDashboardPort(chatNavigation(payload).dashboard_port))
+      .catch((error: unknown) => reportError(error));
     const socket = connect();
     return () => {
       sessionsRequestRef.current?.abort();
@@ -305,7 +361,7 @@ function App() {
       if (socketRef.current === socket) socketRef.current = null;
       socket.close(1000, "component unmounted");
     };
-  }, [connect, loadSessionsSafely]);
+  }, [connect, loadSessionsSafely, reportError]);
 
   const ensureSession = useCallback(async () => {
     if (activeSessionRef.current) return activeSessionRef.current;
@@ -325,6 +381,7 @@ function App() {
     const controller = new AbortController();
     sendRequestRef.current = controller;
     const optimisticId = crypto.randomUUID();
+    const reply = replyTarget;
     try {
       const sessionId = await ensureSession();
       const media = await uploadFiles(files, controller.signal);
@@ -337,15 +394,25 @@ function App() {
           content: cleanText || media.map((item) => item.filename).join("\n"),
           attachments,
           blocks: [],
+          createdAt: new Date().toISOString(),
+          canonical: false,
+          reply: reply ? {
+            messageId: reply.id,
+            role: reply.role,
+            preview: messageReplyPreview(reply),
+          } : undefined,
         },
       ]);
-      await sendWhenOpen(connect(), {
+      const payload: Record<string, unknown> = {
         type: "message.send",
         request_id: crypto.randomUUID(),
         session_id: sessionId,
         text: cleanText,
         media: media.map((item) => item.upload_path),
-      }, controller.signal);
+      };
+      if (reply) payload.reply_to_message_id = reply.id;
+      await sendWhenOpen(connect(), payload, controller.signal);
+      setReplyTarget(null);
     } catch (error) {
       if (isAbortError(error)) throw error;
       setMessages((current) => current.filter((message) => message.id !== optimisticId));
@@ -355,7 +422,7 @@ function App() {
     } finally {
       if (sendRequestRef.current === controller) sendRequestRef.current = null;
     }
-  }, [connect, ensureSession, reportError]);
+  }, [connect, ensureSession, replyTarget, reportError]);
 
   const stopTurn = useCallback(() => {
     if (!activeSessionId) return;
@@ -366,50 +433,72 @@ function App() {
     }).then(() => setStatus("idle")).catch((error: unknown) => reportError(error, "error"));
   }, [activeSessionId, connect, reportError]);
 
+  const startNewChat = useCallback(() => {
+    activeSessionRef.current = "";
+    messagesRequestRef.current?.abort();
+    sendRequestRef.current?.abort();
+    setActiveSessionId("");
+    setMessages([]);
+    setReplyTarget(null);
+    setStatus("idle");
+  }, []);
+
+  const dashboardHref = dashboardPort === null
+    ? undefined
+    : `${window.location.protocol}//${window.location.hostname}:${dashboardPort}`;
+
   return (
     <main className="chat-shell dark">
       <aside className="chat-sidebar">
-        <section className="session-section">
-          <div className="session-title-row">
-            <div className="session-title">最近</div>
-            <button
-              className="icon-button"
-              type="button"
-              aria-label="新聊天"
-              onClick={() => {
-                activeSessionRef.current = "";
-                messagesRequestRef.current?.abort();
-                sendRequestRef.current?.abort();
-                setActiveSessionId("");
-                setMessages([]);
-                setStatus("idle");
-              }}
-            >
-              <Pencil size={18} />
-            </button>
-          </div>
-          <div className="session-list">
-            {sessions.map((session) => (
-              <button
-                key={session.key}
-                className={`session-button ${activeSessionId === session.key ? "active" : ""}`}
-                type="button"
-                onClick={() => {
-                  setActiveSessionId(session.key);
-                  void loadMessagesSafely(session.key);
-                }}
-              >
-                {sessionLabel(session)}
-              </button>
-            ))}
-          </div>
-        </section>
-        <div className="sidebar-mobile-action">
-          <button className="mobile-connect-trigger" type="button" onClick={() => setMobilePairingOpen(true)}>
-            <span className="mobile-connect-icon" aria-hidden="true"><Smartphone size={19} /></span>
-            <span>连接手机</span>
-          </button>
-        </div>
+        <ConversationNavigation
+          destinations={[
+            {
+              id: "runtime",
+              icon: <LibraryBig size={20} />,
+              label: "知识与运行",
+              description: "记忆 · MCP · 定时任务",
+              href: dashboardHref,
+              disabled: dashboardHref === undefined,
+            },
+            {
+              id: "plugins",
+              icon: <Puzzle size={20} />,
+              label: "插件",
+              description: "打开 Dashboard 插件工作台",
+              href: dashboardHref,
+              disabled: dashboardHref === undefined,
+            },
+          ]}
+          sessions={sessions.map((session) => ({
+            id: session.key,
+            title: sessionLabel(session),
+            preview: `${session.message_count ?? 0} 条消息`,
+            updatedLabel: formatNavigationTime(session.updated_at),
+            active: activeSessionId === session.key,
+            state: activeSessionId === session.key ? <Check size={18} /> : null,
+            onActivate: () => {
+              activeSessionRef.current = session.key;
+              setActiveSessionId(session.key);
+              setReplyTarget(null);
+              void loadMessagesSafely(session.key);
+            },
+          }))}
+          actions={[
+            {
+              id: "connect-mobile",
+              icon: <Smartphone size={18} />,
+              label: "连接手机",
+              onActivate: () => setMobilePairingOpen(true),
+            },
+            {
+              id: "new-chat",
+              icon: <MessageSquarePlus size={18} />,
+              label: "新聊天",
+              primary: true,
+              onActivate: startNewChat,
+            },
+          ]}
+        />
       </aside>
 
       <section className="chat-main">
@@ -425,7 +514,43 @@ function App() {
                   {messages.map((message, index) => (
                     <React.Fragment key={message.id}>
                       {messages[index - 1]?.role === message.role ? <RoleDivider role={message.role} /> : null}
-                      <LazyChatMessageView message={message} />
+                      <div
+                        className={`web-message-anchor ${message.role}`}
+                        data-message-id={message.id}
+                        ref={(element) => {
+                          if (element) messageElementsRef.current.set(message.id, element);
+                          else messageElementsRef.current.delete(message.id);
+                        }}
+                      >
+                        <LazyChatMessageView
+                          message={message}
+                          leadingContent={message.reply ? (
+                            <MessageReplyReference
+                              role={message.reply.role}
+                              preview={message.reply.preview}
+                              unavailable={!messages.some((item) => item.id === message.reply?.messageId)}
+                              onNavigate={() => {
+                                messageElementsRef.current.get(message.reply!.messageId)?.scrollIntoView({ behavior: "smooth", block: "center" });
+                              }}
+                            />
+                          ) : undefined}
+                          onCopyToolDetail={(text) => {
+                            void navigator.clipboard.writeText(text).catch((copyError: unknown) => reportError(copyError));
+                          }}
+                        />
+                        <WebMessageMeta
+                          message={message}
+                          copied={copiedMessageId === message.id}
+                          canReply={Boolean(message.canonical) && status === "idle"}
+                          onReply={() => setReplyTarget(message)}
+                          onCopy={() => {
+                            void navigator.clipboard.writeText(message.content).then(() => {
+                              setCopiedMessageId(message.id);
+                              window.setTimeout(() => setCopiedMessageId(""), 1200);
+                            }).catch((copyError: unknown) => reportError(copyError));
+                          }}
+                        />
+                      </div>
                     </React.Fragment>
                   ))}
                 </Suspense>
@@ -442,6 +567,13 @@ function App() {
               multiple
               onSubmit={(message) => sendMessage(message.text, message.files)}
             >
+              {replyTarget ? (
+                <ComposerReply
+                  role={replyTarget.role}
+                  preview={messageReplyPreview(replyTarget)}
+                  onCancel={() => setReplyTarget(null)}
+                />
+              ) : null}
               <PromptInputBody>
                 <ComposerAttachments />
                 <PromptInputTextarea
@@ -575,6 +707,33 @@ function RoleDivider({ role }: { role: Role }) {
   return <div aria-hidden="true" className={`role-divider ${role}-divider`} />;
 }
 
+function WebMessageMeta({
+  message,
+  copied,
+  canReply,
+  onReply,
+  onCopy,
+}: {
+  message: ChatMessage;
+  copied: boolean;
+  canReply: boolean;
+  onReply: () => void;
+  onCopy: () => void;
+}) {
+  return (
+    <div className={`shared-message-meta ${message.role}`}>
+      {message.createdAt ? <time dateTime={message.createdAt}>{formatMessageTime(message.createdAt)}</time> : null}
+      <SharedMessageActions
+        canReply={canReply}
+        canCopy={Boolean(message.content)}
+        copied={copied}
+        onReply={onReply}
+        onCopy={onCopy}
+      />
+    </div>
+  );
+}
+
 function AutoScroll({ messages, status }: { messages: ChatMessage[]; status: ChatStatus }) {
   const { escapedFromLock, isAtBottom, scrollToBottom } = useStickToBottomContext();
   const lastMessageCountRef = useRef(messages.length);
@@ -666,6 +825,7 @@ function handleFrame(
     setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
     setStatus: React.Dispatch<React.SetStateAction<ChatStatus>>;
     loadSessions: () => Promise<void>;
+    loadMessages: (sessionId: string) => Promise<void>;
   },
 ) {
   if (frame.type === "session.created") {
@@ -736,10 +896,11 @@ function handleFrame(
     return;
   }
   if (frame.type === "react.tool.completed") {
+    const succeeded = frame.status === "success";
     ctx.setMessages((messages) => updateTool(messages, frame.call_id, {
-      status: frame.status === "error" ? "output-error" : "output-available",
+      status: succeeded ? "output-available" : "output-error",
       output: frame.result_preview,
-      errorText: frame.status === "error" ? frame.result_preview : undefined,
+      errorText: succeeded ? undefined : frame.result_preview,
     }));
     return;
   }
@@ -776,6 +937,7 @@ function handleFrame(
       ),
       streaming: false,
     })));
+    void ctx.loadMessages(frame.session_id);
     void ctx.loadSessions();
   }
 }
@@ -898,6 +1060,17 @@ function rowToMessage(row: MessageRow): ChatMessage {
     attachments: mediaToAttachments(row.media),
     blocks: role === "assistant" ? rowBlocks(row) : [],
     durationMs: numberValue(row.turn_duration_ms),
+    createdAt: row.timestamp,
+    canonical: true,
+    reply: typeof row.reply_to_message_id === "string"
+      && (row.reply_role === "user" || row.reply_role === "assistant")
+      && typeof row.reply_preview === "string"
+      ? {
+        messageId: row.reply_to_message_id,
+        role: row.reply_role,
+        preview: row.reply_preview,
+      }
+      : undefined,
   };
 }
 
@@ -938,7 +1111,8 @@ function toolCallToBlock(call: unknown, groupIndex: number, callIndex: number): 
   if (!item) return null;
   const name = stringValue(item.name);
   if (!name) return null;
-  const status = stringValue(item.status) === "error" ? "output-error" : "output-available";
+  const rawStatus = stringValue(item.status);
+  const status = !rawStatus || rawStatus === "success" ? "output-available" : "output-error";
   return {
     kind: "tool",
     callId: stringValue(item.call_id) || `${groupIndex}-${callIndex}-${name}`,
@@ -1045,10 +1219,51 @@ function sessionLabel(session: SessionRow) {
   return title.length > 28 ? `${title.slice(0, 28)}...` : title;
 }
 
-const rootApp = window.location.port === "6321" ? <SettingsApp /> : <App />;
+function messageReplyPreview(message: ChatMessage) {
+  return message.content.split(/\s+/).filter(Boolean).join(" ").slice(0, 512)
+    || (message.attachments?.length ? "[附件]" : "[无文字消息]");
+}
+
+const navigationTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  month: "numeric",
+  day: "numeric",
+});
+
+const chatMessageTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+function formatNavigationTime(value: string | undefined) {
+  if (!value) return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : navigationTimeFormatter.format(date);
+}
+
+function formatMessageTime(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : chatMessageTimeFormatter.format(date);
+}
+
+const preview = new URLSearchParams(window.location.search).get("preview");
+const isMobileShowcase = preview === "mobile";
+const isSharedChatShowcase = preview === "chat";
+const isDrawerIslandShowcase = preview === "drawer-islands";
+const rootApp = window.location.port === "6321"
+  ? <LazySettingsApp />
+  : isMobileShowcase
+    ? <LazyMobileShowcase />
+    : isSharedChatShowcase
+      ? <LazySharedChatShowcase />
+      : isDrawerIslandShowcase
+        ? <LazyDrawerIslandShowcase />
+    : <App />;
 
 createRoot(document.getElementById("root")!).render(
   <TooltipProvider>
-    {rootApp}
+    <Suspense fallback={<div className="webui-entry-loading">正在载入界面…</div>}>
+      {rootApp}
+    </Suspense>
   </TooltipProvider>,
 );

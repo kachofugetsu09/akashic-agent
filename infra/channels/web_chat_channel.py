@@ -28,6 +28,7 @@ from bus.events_lifecycle import (
 )
 from infra.channels.base import AttachmentStore
 from infra.channels.contract import ChannelContext
+from infra.channels.reply_context import build_reply_inbound_text
 
 logger = logging.getLogger(__name__)
 
@@ -333,6 +334,44 @@ class WebChatChannel:
         if not text.strip() and not media:
             await self._send_error(websocket, request_id, "text 和 media 不能同时为空")
             return session_key
+        reply_to_message_id = payload.get("reply_to_message_id")
+        metadata: dict[str, object] = {"client_request_id": request_id}
+        inbound_content = text
+        if reply_to_message_id is not None:
+            if not isinstance(reply_to_message_id, str) or not reply_to_message_id.strip():
+                await self._send_error(
+                    websocket,
+                    request_id,
+                    "reply_to_message_id 必须是非空字符串",
+                )
+                return session_key
+            target = ctx.session_manager.control_store.get_message(
+                reply_to_message_id.strip()
+            )
+            if target is None:
+                await self._send_error(websocket, request_id, "被引用的消息不存在")
+                return session_key
+            if target["session_key"] != session_key:
+                await self._send_error(websocket, request_id, "不能引用其他会话的消息")
+                return session_key
+            reply_role = str(target["role"])
+            if reply_role not in {"user", "assistant"}:
+                raise RuntimeError(
+                    f"被引用消息角色无效: {target['id']} {reply_role}"
+                )
+            reply_content = _reply_source_text(target)
+            reply_preview = " ".join(reply_content.split())[:512]
+            metadata.update({
+                "display_content": text,
+                "reply_to_message_id": str(target["id"]),
+                "reply_role": reply_role,
+                "reply_preview": reply_preview,
+            })
+            inbound_content = build_reply_inbound_text(
+                text,
+                reply_content,
+                sender_label="你" if reply_role == "user" else "Akashic",
+            )
         await self._add_connection(session_key, websocket)
         chat_id = self._chat_id(session_key)
         await ctx.bus.publish_inbound(
@@ -340,9 +379,9 @@ class WebChatChannel:
                 channel=self.name,
                 sender="web",
                 chat_id=chat_id,
-                content=text,
+                content=inbound_content,
                 media=media,
-                metadata={"client_request_id": request_id},
+                metadata=metadata,
             )
         )
         return session_key
@@ -522,3 +561,13 @@ class WebChatChannel:
         if self._ctx is None:
             raise RuntimeError("WebChatChannel 尚未启动")
         return self._ctx
+
+
+def _reply_source_text(target: dict[str, Any]) -> str:
+    content = str(target["content"])
+    if content.strip():
+        return content
+    media = target.get("media")
+    if isinstance(media, list) and media:
+        return "[附件]"
+    return "[无文字消息]"
