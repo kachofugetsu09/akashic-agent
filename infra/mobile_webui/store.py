@@ -93,6 +93,7 @@ class MobileWebUiStore:
         self.trash_root = root / "trash"
         self.lock_path = root / "publication.lock"
         self.server_id = server_id
+        self._recover_restore_marker(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.blob_root.mkdir(parents=True, exist_ok=True)
         self.staging_root.mkdir(parents=True, exist_ok=True)
@@ -111,6 +112,7 @@ class MobileWebUiStore:
             self._init_schema()
             self._ensure_server_id()
             self._ensure_lineage_epoch()
+            self._recover_blob_temps()
             self._recover_trash()
         except BaseException:
             self._db.close()
@@ -340,7 +342,7 @@ class MobileWebUiStore:
         row = self._db.execute("SELECT manifest_json, manifest_digest FROM webui_generations WHERE manifest_digest = ?", (digest,)).fetchone()
         if row is None:
             raise UnknownReleaseError(digest)
-        manifest = manifest_from_json(json.loads(bytes(row["manifest_json"])))
+        manifest = manifest_from_json(_strict_json_loads(bytes(row["manifest_json"])))
         if manifest_digest(manifest) != digest:
             raise RuntimeError("manifest digest 损坏")
         return manifest
@@ -524,11 +526,17 @@ class MobileWebUiStore:
         """验证 backup 后原子替换 target，并为旧 store 留下可恢复副本。"""
 
         MobileWebUiStore.verify_backup(destination, server_id=server_id)
+        MobileWebUiStore._recover_restore_marker(target_root)
         target_root.parent.mkdir(parents=True, exist_ok=True)
+        if target_root.is_symlink() or (target_root.exists() and not target_root.is_dir()):
+            raise RuntimeError("WebUI restore target 必须是普通目录")
         temporary = Path(tempfile.mkdtemp(prefix=f".{target_root.name}.", dir=target_root.parent))
         old_root: Path | None = None
+        restore_marker: Path | None = None
         try:
             shutil.copytree(destination, temporary, dirs_exist_ok=True)
+            MobileWebUiStore._append_restore_journal(temporary, server_id=server_id)
+            MobileWebUiStore._refresh_backup_descriptor(temporary)
             MobileWebUiStore.verify_backup(temporary, server_id=server_id)
             if target_root.exists():
                 backup_path = pre_restore_backup or target_root.with_name(f"{target_root.name}.pre-restore-{uuid4()}")
@@ -541,6 +549,7 @@ class MobileWebUiStore:
                 finally:
                     existing.close()
                 old_root = target_root.with_name(f"{target_root.name}.recovery-{uuid4()}")
+                restore_marker = MobileWebUiStore._write_restore_marker(target_root, old_root)
                 os.replace(target_root, old_root)
             try:
                 os.replace(temporary, target_root)
@@ -548,8 +557,12 @@ class MobileWebUiStore:
                 if old_root is not None and not target_root.exists():
                     os.replace(old_root, target_root)
                 raise
+            if restore_marker is not None:
+                MobileWebUiStore._clear_restore_marker(restore_marker)
             return target_root
         except BaseException:
+            if restore_marker is not None and target_root.exists():
+                MobileWebUiStore._clear_restore_marker(restore_marker)
             shutil.rmtree(temporary, ignore_errors=True)
             raise
 
@@ -592,7 +605,10 @@ class MobileWebUiStore:
             if not isinstance(descriptor_ids, list) or set(descriptor_ids) != generation_ids or len(descriptor_ids) != len(generation_ids):
                 raise RuntimeError("WebUI backup generation source set 不完整")
             for row in generations:
-                manifest = manifest_from_json(json.loads(bytes(row["manifest_json"])))
+                try:
+                    manifest = manifest_from_json(_strict_json_loads(bytes(row["manifest_json"])))
+                except ManifestError as error:
+                    raise RuntimeError(f"WebUI backup manifest JSON 损坏: {row['generation_id']}") from error
                 digest = str(row["manifest_digest"])
                 if manifest_digest(manifest) != digest:
                     raise RuntimeError(f"WebUI backup manifest 损坏: {row['generation_id']}")
@@ -626,9 +642,11 @@ class MobileWebUiStore:
                 journal_max = db.execute("SELECT MAX(sequence) AS value FROM webui_publication_journal").fetchone()["value"]
                 if journal_max is None or int(journal_max) != int(state["sequence"]):
                     raise RuntimeError("WebUI backup journal 与 release sequence 不一致")
-            elif db.execute("SELECT 1 FROM webui_publication_journal LIMIT 1").fetchone() is not None:
-                raise RuntimeError("WebUI backup 无 release state 但存在 journal")
-            journal_rows = db.execute("SELECT sequence, generation_id, release_epoch FROM webui_publication_journal ORDER BY sequence").fetchall()
+            journal_rows = db.execute("SELECT sequence, generation_id, operation, release_epoch, stable, preview FROM webui_publication_journal ORDER BY sequence").fetchall()
+            if state is None:
+                for row in journal_rows:
+                    if str(row["operation"]) != "restore" or row["generation_id"] is not None or int(row["stable"]) != 0 or int(row["preview"]) != 0:
+                        raise RuntimeError("WebUI backup 无 release state 时仅允许空指针 restore journal")
             for expected_sequence, row in enumerate(journal_rows, start=1):
                 if int(row["sequence"]) != expected_sequence or str(row["release_epoch"]) != str(lineage["value"]):
                     raise RuntimeError("WebUI backup journal sequence/epoch 不连续")
@@ -674,7 +692,7 @@ class MobileWebUiStore:
         row = self._db.execute("SELECT manifest_json, manifest_digest, target_key FROM webui_generations WHERE generation_id = ?", (generation_id,)).fetchone()
         if row is None:
             raise RuntimeError("release pointer 引用了不存在的 generation")
-        manifest = manifest_from_json(json.loads(bytes(row["manifest_json"])))
+        manifest = manifest_from_json(_strict_json_loads(bytes(row["manifest_json"])))
         target = manifest.target(self.server_id, str(row["manifest_digest"]))
         if str(row["target_key"]) != target.target_key:
             raise RuntimeError("generation target_key 损坏")
@@ -686,7 +704,7 @@ class MobileWebUiStore:
         row = self._db.execute("SELECT manifest_json, manifest_digest FROM webui_generations WHERE generation_id = ?", (generation_id,)).fetchone()
         if row is None:
             raise RuntimeError("release pointer 引用了不存在的 generation")
-        manifest = manifest_from_json(json.loads(bytes(row["manifest_json"])))
+        manifest = manifest_from_json(_strict_json_loads(bytes(row["manifest_json"])))
         digest = str(row["manifest_digest"])
         if manifest_digest(manifest) != digest:
             raise RuntimeError("generation manifest digest 损坏")
@@ -829,6 +847,151 @@ class MobileWebUiStore:
         _require_canonical_uuid4(value, "WebUI release lineage epoch")
         return value
 
+    @staticmethod
+    def _restore_marker_path(root: Path) -> Path:
+        return root.resolve().with_name(f".{root.resolve().name}.restore-pending.json")
+
+    @staticmethod
+    def _recover_restore_marker(root: Path) -> None:
+        """Recover a store swap interrupted between old-root rename and new-root install."""
+
+        target_root = root.resolve()
+        marker = MobileWebUiStore._restore_marker_path(target_root)
+        if not marker.exists() and not marker.is_symlink():
+            return
+        if marker.is_symlink() or not marker.is_file():
+            raise RuntimeError("WebUI restore marker 不是普通文件")
+        try:
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise RuntimeError("WebUI restore marker 损坏") from error
+        if not isinstance(payload, dict) or set(payload) != {"target_root", "recovery_root"}:
+            raise RuntimeError("WebUI restore marker 字段不符合合同")
+        if payload["target_root"] != str(target_root) or not isinstance(payload["recovery_root"], str):
+            raise RuntimeError("WebUI restore marker 路径不符合合同")
+        recovery_root = Path(payload["recovery_root"]).resolve()
+        if recovery_root == target_root or not recovery_root.name.startswith(f"{target_root.name}.recovery-"):
+            raise RuntimeError("WebUI restore marker recovery 路径不符合合同")
+        if target_root.is_symlink():
+            raise RuntimeError("WebUI restore marker target 不能是符号链接")
+        if target_root.exists():
+            MobileWebUiStore._clear_restore_marker(marker)
+            return
+        if recovery_root.is_symlink() or not recovery_root.is_dir():
+            raise RuntimeError("WebUI restore marker 缺少可恢复旧 store")
+        target_root.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(recovery_root, target_root)
+        MobileWebUiStore._fsync_directory(target_root.parent)
+        MobileWebUiStore._clear_restore_marker(marker)
+
+    @staticmethod
+    def _write_restore_marker(target_root: Path, recovery_root: Path) -> Path:
+        target_root = target_root.resolve()
+        recovery_root = recovery_root.resolve()
+        marker = MobileWebUiStore._restore_marker_path(target_root)
+        temporary = marker.with_name(f".{marker.name}.{uuid4().hex}.tmp")
+        payload = json.dumps(
+            {"target_root": str(target_root), "recovery_root": str(recovery_root)},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        with temporary.open("xb") as handle:
+            handle.write(payload)
+            handle.write(b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, marker)
+        MobileWebUiStore._fsync_directory(marker.parent)
+        return marker
+
+    @staticmethod
+    def _clear_restore_marker(marker: Path) -> None:
+        if marker.exists() or marker.is_symlink():
+            marker.unlink()
+            MobileWebUiStore._fsync_directory(marker.parent)
+
+    @staticmethod
+    def _append_restore_journal(root: Path, *, server_id: str) -> None:
+        """Append a restore audit event while preserving the restored pointer state."""
+
+        db_path = root / "publication.sqlite3"
+        db = sqlite3.connect(db_path, isolation_level=None)
+        db.row_factory = sqlite3.Row
+        try:
+            db.execute("PRAGMA foreign_keys = ON")
+            db.execute("PRAGMA journal_mode = WAL")
+            db.execute("PRAGMA synchronous = FULL")
+            meta = db.execute("SELECT value FROM webui_meta WHERE key = 'server_id'").fetchone()
+            if meta is None or str(meta["value"]) != server_id:
+                raise RuntimeError("restore backup server_id 不匹配")
+            lineage = db.execute("SELECT value FROM webui_meta WHERE key = 'release_epoch'").fetchone()
+            if lineage is None:
+                raise RuntimeError("restore backup 缺少 release_epoch")
+            release_epoch = str(lineage["value"])
+            _require_canonical_uuid4(release_epoch, "restore backup release_epoch")
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                state = db.execute("SELECT stable_generation_id, preview_generation_id, sequence FROM webui_release_state WHERE singleton = 1").fetchone()
+                if state is None:
+                    latest = db.execute("SELECT MAX(sequence) AS value FROM webui_publication_journal").fetchone()["value"]
+                    sequence = int(latest or 0) + 1
+                    generation_id = None
+                    stable = 0
+                    preview = 0
+                else:
+                    sequence = int(state["sequence"]) + 1
+                    generation_id = state["stable_generation_id"] or state["preview_generation_id"]
+                    stable = int(state["stable_generation_id"] is not None)
+                    preview = int(state["preview_generation_id"] is not None)
+                    db.execute("UPDATE webui_release_state SET sequence = ?, updated_at = ? WHERE singleton = 1", (sequence, _now()))
+                db.execute(
+                    "INSERT INTO webui_publication_journal(sequence, generation_id, operation, release_epoch, stable, preview, actor, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (sequence, generation_id, "restore", release_epoch, stable, preview, "restore-mobile-webui", _now()),
+                )
+                db.execute("COMMIT")
+            except BaseException:
+                db.execute("ROLLBACK")
+                raise
+            checkpoint = db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if checkpoint is not None and int(checkpoint[0]) != 0:
+                raise RuntimeError("restore backup WAL checkpoint 失败")
+        finally:
+            db.close()
+
+    @staticmethod
+    def _refresh_backup_descriptor(root: Path) -> None:
+        descriptor_path = root / "backup.json"
+        try:
+            descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise RuntimeError("restore backup descriptor 损坏") from error
+        if not isinstance(descriptor, dict) or set(descriptor) != {"backup_id", "server_id", "generation_ids", "sha256", "created_at"}:
+            raise RuntimeError("restore backup descriptor 字段不符合合同")
+        descriptor["sha256"] = _tree_digest(root)
+        descriptor_path.write_text(json.dumps(descriptor, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+        with descriptor_path.open("rb") as handle:
+            os.fsync(handle.fileno())
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        directory_fd = os.open(path, os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+    def _recover_blob_temps(self) -> None:
+        """Remove only temp names emitted by this store's digest-addressed CAS writer."""
+
+        with self._exclusive():
+            for path in self.blob_root.glob("[0-9a-f][0-9a-f]/*"):
+                match = re.fullmatch(r"\.([0-9a-f]{64})\.\d+\.tmp", path.name)
+                if match is None or path.parent.name != match.group(1)[:2]:
+                    continue
+                if path.is_file() or path.is_symlink():
+                    path.unlink()
+
     def _recover_trash(self) -> None:
         """启动时恢复未完成 GC 的 CAS 临时 rename，并清除无引用 trash。"""
 
@@ -870,6 +1033,33 @@ class MobileWebUiStore:
 
 def _valid_digest(value: str) -> bool:
     return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+
+def _strict_json_loads(payload: bytes) -> object:
+    """Parse persisted manifest JSON without duplicate fields or non-standard numbers."""
+
+    def reject_constant(value: str) -> object:
+        raise ManifestError(f"manifest JSON 不允许常量: {value}")
+
+    def reject_duplicate_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ManifestError(f"manifest JSON 存在重复字段: {key}")
+            result[key] = value
+        return result
+
+    try:
+        text = payload.decode("utf-8")
+        return json.loads(
+            text,
+            object_pairs_hook=reject_duplicate_fields,
+            parse_constant=reject_constant,
+        )
+    except ManifestError:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ManifestError("manifest JSON 无效") from error
 
 
 def _require_canonical_uuid4(value: str, label: str) -> None:

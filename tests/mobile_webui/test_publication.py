@@ -133,6 +133,46 @@ def test_manifest_directory_uses_fixed_mime_mapping(tmp_path: Path) -> None:
     assert by_path["asset.unknown"] == "application/octet-stream"
 
 
+def test_manifest_directory_covers_wire_reachable_script_and_binary_mimes(tmp_path: Path) -> None:
+    root = tmp_path / "mime-golden"
+    root.mkdir()
+    contents = {
+        "mobile.html": b"<html/>",
+        "app.js": b"console.log(1);",
+        "module.mjs": b"export {};",
+        "worker.cjs": b"module.exports = {};",
+        "style.css": b"body{}",
+        "bundle.map": b"{}",
+        "asset.bin": b"\x00\x01",
+    }
+    for path, data in contents.items():
+        (root / path).write_bytes(data)
+    manifest, _ = manifest_from_directory(root, **_SOURCE)
+    by_path = {item.path: item.mime for item in manifest.files}
+    assert by_path == {
+        "app.js": "text/javascript",
+        "asset.bin": "application/octet-stream",
+        "bundle.map": "application/octet-stream",
+        "mobile.html": "text/html",
+        "module.mjs": "text/javascript",
+        "style.css": "text/css",
+        "worker.cjs": "text/javascript",
+    }
+    from infra.mobile_webui.protocol import WebUiManifestWire, WebUiFileWire
+
+    WebUiManifestWire.model_validate(manifest.as_json(), strict=True)
+    with pytest.raises(ValueError):
+        WebUiFileWire.model_validate(
+            {
+                "path": "bad.js",
+                "sha256": "0" * 64,
+                "size_bytes": 0,
+                "mime": "application/javascript",
+            },
+            strict=True,
+        )
+
+
 def test_manifest_directory_rejects_symlink_and_special_file(tmp_path: Path) -> None:
     root = tmp_path / "special"
     root.mkdir()
@@ -187,6 +227,118 @@ def test_store_rejects_corrupt_release_epoch_on_open(tmp_path: Path) -> None:
         connection.close()
     with pytest.raises(RuntimeError, match="规范 UUID4"):
         MobileWebUiStore(root, server_id="server-1")
+
+
+def test_store_rejects_duplicate_and_nonstandard_manifest_json(tmp_path: Path) -> None:
+    manifest, contents = _manifest(tmp_path / "build")
+    root = tmp_path / "store"
+    store = MobileWebUiStore(root, server_id="server-1")
+    store.publish(manifest, contents, stable=True, preview=False)
+    raw = canonical_manifest_bytes(manifest)
+    duplicate = raw[:-1] + b',"generation_id":"' + manifest.generation_id.encode() + b'"}'
+    store._db.execute("UPDATE webui_generations SET manifest_json = ? WHERE generation_id = ?", (duplicate, manifest.generation_id))
+    with pytest.raises(ManifestError, match="重复字段"):
+        store.get_manifest(manifest_digest(manifest))
+    store._db.execute(
+        "UPDATE webui_generations SET manifest_json = ? WHERE generation_id = ?",
+        (raw.replace(str(manifest.unpacked_size_bytes).encode(), b"NaN", 1), manifest.generation_id),
+    )
+    with pytest.raises(ManifestError, match="不允许常量"):
+        store.get_manifest(manifest_digest(manifest))
+    store.close()
+
+
+def test_store_recovers_only_its_blob_temp_residue(tmp_path: Path) -> None:
+    root = tmp_path / "store"
+    store = MobileWebUiStore(root, server_id="server-1")
+    digest = "a" * 64
+    blob_dir = root / "blobs" / "sha256" / digest[:2]
+    blob_dir.mkdir(parents=True, exist_ok=True)
+    stale = blob_dir / f".{digest}.123.tmp"
+    unrelated = blob_dir / ".not-a-store-temp.tmp"
+    stale.write_bytes(b"partial")
+    unrelated.write_bytes(b"keep")
+    store.close()
+    reopened = MobileWebUiStore(root, server_id="server-1")
+    reopened.close()
+    assert not stale.exists()
+    assert unrelated.read_bytes() == b"keep"
+
+
+def test_restore_appends_audit_event_and_preserves_source_backup(tmp_path: Path) -> None:
+    manifest, contents = _manifest(tmp_path / "build")
+    source = MobileWebUiStore(tmp_path / "source", server_id="server-1")
+    source.publish(manifest, contents, stable=True, preview=False)
+    backup = source.backup_to(tmp_path / "backup")
+    source_descriptor = (backup / "backup.json").read_bytes()
+    source.close()
+    target = MobileWebUiStore(tmp_path / "target", server_id="server-1")
+    target.close()
+    MobileWebUiStore.restore_backup(
+        backup,
+        tmp_path / "target",
+        server_id="server-1",
+        pre_restore_backup=tmp_path / "pre-restore",
+    )
+    MobileWebUiStore.verify_backup(backup, server_id="server-1")
+    assert (backup / "backup.json").read_bytes() == source_descriptor
+    MobileWebUiStore.verify_backup(tmp_path / "target", server_id="server-1")
+    restored = MobileWebUiStore(tmp_path / "target", server_id="server-1")
+    try:
+        assert restored.get_release().sequence == 2
+        event = restored._db.execute(
+            "SELECT sequence, generation_id, operation, stable, preview, actor FROM webui_publication_journal ORDER BY sequence DESC LIMIT 1"
+        ).fetchone()
+        assert tuple(event) == (2, manifest.generation_id, "restore", 1, 0, "restore-mobile-webui")
+    finally:
+        restored.close()
+    MobileWebUiStore.verify_backup(tmp_path / "pre-restore", server_id="server-1")
+
+
+def test_restore_empty_backup_keeps_no_state_and_records_restore(tmp_path: Path) -> None:
+    source = MobileWebUiStore(tmp_path / "empty", server_id="server-1")
+    backup = source.backup_to(tmp_path / "empty-backup")
+    source.close()
+    MobileWebUiStore.restore_backup(backup, tmp_path / "restored-empty", server_id="server-1")
+    MobileWebUiStore.verify_backup(tmp_path / "restored-empty", server_id="server-1")
+    restored = MobileWebUiStore(tmp_path / "restored-empty", server_id="server-1")
+    try:
+        assert restored.get_release().stable is None
+        event = restored._db.execute(
+            "SELECT sequence, generation_id, operation, stable, preview FROM webui_publication_journal"
+        ).fetchone()
+        assert tuple(event) == (1, None, "restore", 0, 0)
+    finally:
+        restored.close()
+
+
+def test_restore_marker_recovers_old_root_after_swap_gap(tmp_path: Path) -> None:
+    root = tmp_path / "store"
+    store = MobileWebUiStore(root, server_id="server-1")
+    store.close()
+    recovery = tmp_path / "store.recovery-test"
+    os.replace(root, recovery)
+    marker = MobileWebUiStore._write_restore_marker(root, recovery)
+    assert marker.exists()
+    recovered = MobileWebUiStore(root, server_id="server-1")
+    recovered.close()
+    assert root.is_dir()
+    assert not recovery.exists()
+    assert not marker.exists()
+
+
+def test_restore_marker_keeps_new_root_when_swap_completed(tmp_path: Path) -> None:
+    root = tmp_path / "store"
+    store = MobileWebUiStore(root, server_id="server-1")
+    store.close()
+    recovery = tmp_path / "store.recovery-new"
+    recovery.mkdir()
+    marker = MobileWebUiStore._write_restore_marker(root, recovery)
+    reopened = MobileWebUiStore(root, server_id="server-1")
+    reopened.close()
+    assert root.is_dir()
+    assert recovery.is_dir()
+    assert not marker.exists()
 
 
 def test_channel_history_is_distinct_per_pointer_and_bounds_gc(tmp_path: Path) -> None:

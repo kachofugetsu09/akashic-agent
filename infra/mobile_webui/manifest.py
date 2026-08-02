@@ -17,9 +17,6 @@ MANIFEST_SCHEMA_VERSION = 2
 
 _MIME_ALLOWLIST = frozenset(
     {
-        "application/font-woff",
-        "application/font-woff2",
-        "application/javascript",
         "application/json",
         "application/octet-stream",
         "application/wasm",

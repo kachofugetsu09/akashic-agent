@@ -1101,6 +1101,61 @@ class MobileGatewayRuntime:
                 force_close=False,
             )
 
+    async def revoke_device(
+        self,
+        device_id: str,
+        *,
+        revoked_at: datetime | None = None,
+    ) -> DeviceRecord:
+        """持久化设备撤销，并通知当前连接后以 4403 关闭。"""
+
+        # 1. 先提交权威撤销状态，任何后续投递失败都不能回滚它
+        revoked = self.storage.revoke_device(device_id, revoked_at=revoked_at or _utc_now())
+        async with self._delivery_lock:
+            connection = self._connections.pop(device_id, None)
+        if connection is None:
+            return revoked
+
+        # 2. 使用已摘除的连接发送一次非 durable 撤销控制帧
+        frame = parse_frame(
+            json.dumps(
+                {
+                    "v": 1,
+                    "kind": "control",
+                    "type": "device.revoked",
+                    "connection_epoch": connection.connection_epoch,
+                    "payload": {
+                        "device_id": revoked.device_id,
+                        "revoked_at": revoked.revoked_at.isoformat() if revoked.revoked_at is not None else None,
+                    },
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+                allow_nan=False,
+            )
+        )
+        try:
+            async with asyncio.timeout(_CONNECTION_CONTROL_SEND_TIMEOUT_SECONDS):
+                _ = await connection.send_lock.acquire()
+            try:
+                async with asyncio.timeout(_CONNECTION_CONTROL_SEND_TIMEOUT_SECONDS):
+                    await connection.websocket.send_text(frame_to_json(frame))
+            finally:
+                connection.send_lock.release()
+        except (WebSocketDisconnect, RuntimeError, OSError, TimeoutError) as error:
+            logger.warning("mobile 撤销控制帧投递失败: device=%s error=%s", device_id, error)
+        finally:
+            # 3. 无论控制帧是否送达，都强制关闭旧连接并保留已提交撤销
+            await self._close_connection(
+                device_id,
+                connection,
+                code=_CLOSE_REVOKED,
+                reason="设备已撤销",
+                force=True,
+            )
+        return revoked
+
     async def publish_webui_release_changed(self) -> None:
         """在 publication commit 后向具备 OTA 能力的在线设备发送 hint。"""
 
@@ -1776,6 +1831,16 @@ class MobileGatewayRuntime:
             content = blob.path.read_bytes()
             if len(content) != blob.size_bytes or hashlib.sha256(content).hexdigest() != blob_digest:
                 raise RuntimeError("CAS blob 内容与 publication metadata 不一致")
+            current = self.publication.get_release_light()
+            current_target = current.target(verified.target_key)
+            if (
+                current.release_epoch != verified.release_epoch
+                or current.selection_digest != verified.selection_digest
+                or current_target is None
+                or current_target.generation_id != verified.generation_id
+                or current_target.manifest_digest != verified.manifest_digest
+            ):
+                raise MobileWebUiHttpError("target_changed", "blob 读取期间 release 已变化", status_code=409)
             if range_header is not None and if_range is not None and if_range != f'"{blob_digest}"':
                 raise MobileWebUiHttpError("range_precondition_failed", "If-Range 与 blob 摘要不匹配", status_code=412)
             try:
@@ -2101,7 +2166,7 @@ def create_mobile_gateway_app(runtime: MobileGatewayRuntime) -> FastAPI:
         status = 206 if request.headers.get("range") is not None else 200
         headers = {
             "Accept-Ranges": "bytes",
-            "Cache-Control": "public, max-age=31536000, immutable, no-transform",
+            "Cache-Control": "private, max-age=31536000, immutable, no-transform",
             "Content-Encoding": "identity",
             "Content-Length": str(len(content)),
             "ETag": f'"{blob_digest}"',

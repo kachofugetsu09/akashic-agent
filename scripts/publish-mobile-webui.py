@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import shutil
 import stat
 import subprocess
@@ -14,7 +15,7 @@ import sys
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -163,9 +164,12 @@ def _build(
         raise FileExistsError(f"build output 非空: {output}")
     output.mkdir(parents=True, exist_ok=True)
     with _build_source(workspace, commit, dirty=dirty) as build_workspace:
-        before = _capture_provenance(build_workspace)
-        environment = os.environ.copy()
-        environment["AKASHIC_MOBILE_WEB_OUT_DIR"] = str(output)
+        environment = _build_environment(output)
+        before = _capture_provenance(
+            build_workspace,
+            environment=environment,
+            output_dir=output,
+        )
         if lock_available:
             subprocess.run(
                 ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
@@ -181,7 +185,11 @@ def _build(
                 check=True,
             )
         subprocess.run(["npm", "run", "build:mobile-web"], cwd=build_workspace, env=environment, check=True)
-        after = _capture_provenance(build_workspace)
+        after = _capture_provenance(
+            build_workspace,
+            environment=environment,
+            output_dir=output,
+        )
         if before != after:
             raise RuntimeError("构建期间 source/input/build_context 发生变化")
     sidecar = output.with_name(output.name + ".provenance.json")
@@ -212,18 +220,28 @@ def _manifest(workspace: Path, build_dir: Path, *, allow_dirty: bool):
         raise RuntimeError("build-dir provenance 的 source tree 不存在或不匹配")
     current_head = _git(workspace, "rev-parse", "HEAD")
     dirty = sidecar["dirty_provenance"]
+    environment = _build_environment(build_dir)
     if dirty is not None:
-        if current_head != commit or _capture_provenance(workspace)["input_digest"] != sidecar["input_digest"] or _dirty_provenance(workspace) != dirty:
+        current_provenance = _capture_provenance(workspace, environment=environment, output_dir=build_dir)
+        if (
+            current_head != commit
+            or current_provenance["input_digest"] != sidecar["input_digest"]
+            or current_provenance["build_context_digest"] != sidecar["build_context_digest"]
+            or _dirty_provenance(workspace) != dirty
+        ):
             raise RuntimeError("dirty build provenance 与当前 source 不匹配")
-    elif current_head == commit and _capture_provenance(workspace) != {key: sidecar[key] for key in _build_provenance_keys()}:
-        raise RuntimeError("build-dir provenance 与当前 clean source 不匹配")
+    elif current_head == commit:
+        expected_provenance = {key: sidecar[key] for key in _build_provenance_keys()}
+        if _capture_provenance(workspace, environment=environment, output_dir=build_dir) != expected_provenance:
+            raise RuntimeError("build-dir provenance 与当前 clean source 不匹配")
     if dirty is not None and not allow_dirty:
         raise RuntimeError("publish 默认拒绝 dirty source；Preview 请显式 --allow-dirty")
     if dirty is None and sidecar["builder_identity"]["package_lock_digest"] == _no_lock_digest():
         raise RuntimeError("无 package-lock 的构建不能作为 Stable/reproducible manifest")
     if dirty is None:
+        expected_provenance = {key: sidecar[key] for key in _build_provenance_keys()}
         with _build_source(workspace, commit, dirty=False) as snapshot:
-            if _capture_provenance(snapshot) != {key: sidecar[key] for key in _build_provenance_keys()}:
+            if _capture_provenance(snapshot, environment=environment, output_dir=build_dir) != expected_provenance:
                 raise RuntimeError("clean build provenance 未通过 commit snapshot 重算")
     return manifest_from_directory(
         build_dir,
@@ -300,20 +318,51 @@ def _commit_has_file(workspace: Path, commit: str, path: str) -> bool:
     return result.returncode == 0
 
 
-def _capture_provenance(workspace: Path) -> dict[str, object]:
+def _capture_provenance(
+    workspace: Path,
+    *,
+    environment: Mapping[str, str] | None = None,
+    output_dir: Path | None = None,
+) -> dict[str, object]:
     """Capture all source/build identity inputs before and after a build."""
 
+    effective_environment = dict(os.environ if environment is None else environment)
     package_lock = workspace / "package-lock.json"
     package_lock_digest = _sha256(package_lock.read_bytes()) if package_lock.is_file() else _no_lock_digest()
     build_script = workspace / "scripts" / "package-mobile-web.sh"
     script_digest = _sha256(build_script.read_bytes())
-    node_version = _run_version("node", "--version")
-    npm_version = _run_version("npm", "--version")
+    node_identity = _executable_identity("node", effective_environment)
+    npm_identity = _executable_identity("npm", effective_environment)
+    node_version = _run_version(node_identity["path"], "--version", environment=effective_environment, cwd=workspace)
+    npm_version = _run_version(npm_identity["path"], "--version", environment=effective_environment, cwd=workspace)
+    npm_config = _npm_config_snapshot(
+        npm_identity["path"],
+        workspace,
+        environment=effective_environment,
+        output_dir=output_dir,
+    )
     context = {
-        "node": node_version,
-        "npm": npm_version,
+        "os": {
+            "name": os.name,
+            "platform": sys.platform,
+            "system": platform.system(),
+            "release": platform.release(),
+            "machine": platform.machine(),
+        },
+        "executables": {
+            "node": node_identity,
+            "npm": npm_identity,
+        },
+        "environment": _effective_build_environment(
+            effective_environment,
+            workspace=workspace,
+            output_dir=output_dir,
+        ),
+        "npm_config": npm_config,
         "package_lock": package_lock_digest,
         "script": script_digest,
+        "node_version": node_version,
+        "npm_version": npm_version,
     }
     return {
         "source_repository": _repository_url(workspace),
@@ -457,8 +506,151 @@ def _git(workspace: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _run_version(command: str, flag: str) -> str:
-    return subprocess.run([command, flag], check=True, capture_output=True, text=True).stdout.strip()
+def _run_version(
+    command: str,
+    flag: str,
+    *,
+    environment: Mapping[str, str],
+    cwd: Path,
+) -> str:
+    return subprocess.run(
+        [command, flag],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=dict(environment),
+        cwd=cwd,
+    ).stdout.strip()
+
+
+def _executable_identity(command: str, environment: Mapping[str, str]) -> dict[str, object]:
+    path = shutil.which(command, path=environment.get("PATH"))
+    if path is None:
+        raise RuntimeError(f"构建工具不可解析: {command}")
+    resolved = Path(path).resolve()
+    data = _read_regular_input(resolved)
+    return {
+        "path": str(resolved),
+        "sha256": _sha256(data),
+        "size_bytes": len(data),
+    }
+
+
+_BUILD_ENV_EXACT = frozenset(
+    {
+        "ALL_PROXY",
+        "CI",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LOGNAME",
+        "NO_PROXY",
+        "PATH",
+        "PWD",
+        "SOURCE_DATE_EPOCH",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "TZ",
+        "USER",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+    }
+)
+_BUILD_ENV_PREFIXES = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "VITE_",
+    "NODE_",
+    "NPM_CONFIG_",
+    "npm_config_",
+)
+
+
+def _effective_build_environment(
+    environment: Mapping[str, str],
+    *,
+    workspace: Path,
+    output_dir: Path | None,
+) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for key in sorted(environment, key=lambda value: value.encode("utf-8")):
+        value = environment[key]
+        if key == "AKASHIC_MOBILE_WEB_OUT_DIR":
+            value = "<OUTPUT_DIR>"
+        value = _normalise_context_paths(value, workspace=workspace, output_dir=output_dir)
+        values[key] = value
+    return values
+
+
+def _normalise_context_paths(
+    value: Any,
+    *,
+    workspace: Path,
+    output_dir: Path | None,
+) -> Any:
+    if isinstance(value, str):
+        text = value
+        if output_dir is not None:
+            text = text.replace(str(output_dir.resolve()), "<OUTPUT_DIR>")
+        text = text.replace(str(workspace.resolve()), "<SOURCE_WORKSPACE>")
+        return text
+    if isinstance(value, list):
+        return [_normalise_context_paths(item, workspace=workspace, output_dir=output_dir) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): _normalise_context_paths(item, workspace=workspace, output_dir=output_dir)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _npm_config_snapshot(
+    npm_path: str,
+    workspace: Path,
+    *,
+    environment: Mapping[str, str],
+    output_dir: Path | None = None,
+) -> dict[str, object]:
+    result = subprocess.run(
+        [npm_path, "config", "list", "--json"],
+        cwd=workspace,
+        env=dict(environment),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    try:
+        parsed = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("npm config list --json 未返回 JSON") from error
+    if not isinstance(parsed, dict):
+        raise RuntimeError("npm config list --json 顶层必须是 object")
+    normalised = _normalise_context_paths(parsed, workspace=workspace, output_dir=output_dir)
+    if not isinstance(normalised, dict):
+        raise AssertionError("npm config snapshot normalise 类型改变")
+    return normalised
+
+
+def _build_environment(output_dir: Path) -> dict[str, str]:
+    """Return the controlled environment shared by build and provenance revalidation."""
+
+    inherited = os.environ
+    environment = {
+        key: value
+        for key, value in inherited.items()
+        if key in _BUILD_ENV_EXACT or any(key.startswith(prefix) for prefix in _BUILD_ENV_PREFIXES)
+    }
+    if "PATH" not in environment:
+        raise RuntimeError("构建环境缺少 PATH")
+    environment["AKASHIC_MOBILE_WEB_OUT_DIR"] = str(output_dir.resolve())
+    return environment
 
 
 def _sha256(data: bytes) -> str:

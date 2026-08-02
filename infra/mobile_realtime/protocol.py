@@ -84,6 +84,7 @@ CONTROL_TYPES = frozenset(
         "pair.claim",
         "pair.pending",
         "pair.accepted",
+        "device.revoked",
         "protocol.error",
     }
 )
@@ -566,6 +567,7 @@ class GenericControl(ControlEnvelope):
         "pair.claim",
         "pair.pending",
         "pair.accepted",
+        "device.revoked",
         "protocol.error",
     ]
 

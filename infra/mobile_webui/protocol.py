@@ -12,9 +12,6 @@ ServerId = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z
 PlatformToken = Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]{1,64}$")]
 Token = Annotated[str, Field(min_length=1, max_length=2048, pattern=r"^\S+$")]
 MimeType = Literal[
-    "application/font-woff",
-    "application/font-woff2",
-    "application/javascript",
     "application/json",
     "application/octet-stream",
     "application/wasm",
