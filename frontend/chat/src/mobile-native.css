@@ -1906,7 +1906,7 @@ button {
   width: auto;
   max-width: 100%;
   height: auto;
-  max-height: min(40vh, 260px);
+  max-height: 260px;
   margin-inline: auto;
   object-fit: contain;
   outline: 1px solid var(--m-image-outline);

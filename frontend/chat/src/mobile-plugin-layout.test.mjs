@@ -91,11 +91,11 @@ test("mobile attachment previews preserve intrinsic aspect ratios", () => {
   );
   assert.match(
     platformStyles,
-    /\.message-attachment-preview img\s*\{[^}]*width:\s*auto;[^}]*max-width:\s*100%;[^}]*height:\s*auto;[^}]*max-height:\s*min\(40vh, 260px\);[^}]*object-fit:\s*contain;/,
+    /\.message-attachment-preview img\s*\{[^}]*width:\s*auto;[^}]*max-width:\s*100%;[^}]*height:\s*auto;[^}]*max-height:\s*260px;[^}]*object-fit:\s*contain;/,
   );
   assert.doesNotMatch(
     platformStyles,
-    /\.message-attachment-preview img\s*\{[^}]*max-block-size:/,
+    /\.message-attachment-preview img\s*\{[^}]*(?:max-block-size|min\(40vh)/,
   );
 });
 
