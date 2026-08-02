@@ -1,6 +1,6 @@
 # Mobile 长消息投递设计
 
-- 状态：phase 1 implemented；phase 2 implemented in Core
+- 状态：phase 1 and phase 2 implemented；固定 Android consumer 已通过 Pixel 7 隔离验收
 - 日期：2026-08-02
 - 决策：[0019](../decisions/0019-mobile-long-messages-use-bounded-events.md)、[0020](../decisions/0020-mobile-history-content-uses-authenticated-http-ranges.md)
 - 关联条款：MOB-003、MOB-005、MOB-007、SES-001
@@ -44,7 +44,7 @@
 - **F：** Android 先追加 `answer.delta`；final 正文为空时保留已经累积的正文。
 - **F：** Codex/OpenAI WebSocket 使用 typed delta 和完成事件；OpenAI completed 可以包含完整 Response，Akashic 不能在 256 KiB 应用帧和 durable inbox 下照搬该 payload。
 - **C：** 第一阶段只处理可证明为前缀兼容的正文；分歧 final 保留纠正语义。
-- **U：** 超大分歧纠正和历史页中的超大单条消息需要第二阶段 range/chunk 数据面。
+- **F：** 历史页中的超大单条消息使用第二阶段 authenticated HTTPS Range 数据面；超大分歧纠正先由 canonical 消息进入 SessionDB，再经同一路径恢复。
 
 ## 4. 第一阶段协议
 
@@ -74,7 +74,7 @@
 
 - delta 使用既有 durable event sequence；断线后由 inbox 与 ACK 重放，重复事件仍由现有序列语义处理。
 - final 发布前失败不伪造完成；SessionDB 权威正文仍在，可由历史恢复。
-- 前缀分歧时不追加后缀；小型 final 明确覆盖。大型纠正在第二阶段完成前保持可见失败。
+- 前缀分歧时不追加后缀；小型 final 明确覆盖。大型纠正若不能装入 final，会明确失败当前实时投递，并由 SessionDB 历史的正文 Range 恢复 canonical 结果。
 - 回滚代码 commit 即恢复原 final 行为；不需要数据库、workspace 或 Android schema 回滚。
 
 ## 6. 第二阶段
@@ -103,3 +103,4 @@ SessionDB 正常路径仍只增加消息。Range 服务只读；Android 恢复�
 - 每个生成的正文事件小于协议单帧上限，重组结果逐字节等于 canonical 正文。
 - final 不包含内部工具轨迹；SessionDB、附件和正式 workspace 无写入变化。
 - 清除 Android 本地投影后，超长正文、thinking/tool block 和消息顺序能从固定快照恢复；中断只重取未确认 byte range。
+- Pixel 7 隔离 Gate 使用 560000-byte Unicode 正文和 3 个 thinking/tool blocks，首次恢复后清除可重建投影，再从同一 SessionDB 快照恢复；两次正文、消息身份、server seq、block 顺序、类型、状态和内容完全相等。
