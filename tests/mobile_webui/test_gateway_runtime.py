@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from infra.mobile_realtime.gateway import ActiveMobileConnection, MobileGatewayRuntime
 from infra.mobile_realtime.storage import DeviceRecord
@@ -212,3 +213,19 @@ async def test_revoke_device_commits_offline_and_notifies_active_connection() ->
     assert failed.revoked_at == revoked.revoked_at
     assert device.device_id not in runtime._connections
     assert failing_socket.closed == [{"code": 4403, "reason": "设备已撤销"}]
+
+
+def test_device_revoked_cannot_enter_durable_event_enqueue() -> None:
+    runtime = object.__new__(MobileGatewayRuntime)
+
+    class Inbox:
+        def enqueue(self, **_kwargs: object) -> None:
+            raise AssertionError("invalid durable event must fail before inbox write")
+
+    runtime.inbox = Inbox()
+    with pytest.raises(ValidationError):
+        runtime._enqueue_event(
+            device_id="device",
+            event_type="device.revoked",
+            payload={"device_id": "device"},
+        )

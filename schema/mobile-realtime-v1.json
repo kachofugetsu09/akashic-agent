@@ -75,7 +75,6 @@
     "attachment.progress",
     "attachment.ready",
     "connection.degraded",
-    "device.revoked",
     "history.page",
     "message.final",
     "message.proactive",
@@ -840,8 +839,7 @@
               "attachment.ready",
               "connection.degraded",
               "sync.completed",
-              "sync.reset_required",
-              "device.revoked"
+              "sync.reset_required"
             ],
             "title": "Type",
             "type": "string"
@@ -1842,7 +1840,6 @@
               "attachment.progress": "#/$defs/GenericEvent",
               "attachment.ready": "#/$defs/GenericEvent",
               "connection.degraded": "#/$defs/GenericEvent",
-              "device.revoked": "#/$defs/GenericEvent",
               "history.page": "#/$defs/GenericEvent",
               "message.final": "#/$defs/GenericEvent",
               "message.proactive": "#/$defs/GenericEvent",
@@ -1946,7 +1943,6 @@
             "attachment.progress": "#/$defs/GenericEvent",
             "attachment.ready": "#/$defs/GenericEvent",
             "connection.degraded": "#/$defs/GenericEvent",
-            "device.revoked": "#/$defs/GenericEvent",
             "history.page": "#/$defs/GenericEvent",
             "message.final": "#/$defs/GenericEvent",
             "message.proactive": "#/$defs/GenericEvent",

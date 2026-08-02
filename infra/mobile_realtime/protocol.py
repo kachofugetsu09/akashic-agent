@@ -70,7 +70,6 @@ EVENT_TYPES = frozenset(
         "connection.degraded",
         "sync.completed",
         "sync.reset_required",
-        "device.revoked",
     }
 )
 CONTROL_TYPES = frozenset(
@@ -477,7 +476,6 @@ class GenericEvent(EventEnvelope):
         "connection.degraded",
         "sync.completed",
         "sync.reset_required",
-        "device.revoked",
     ]
 
 
