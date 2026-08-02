@@ -281,7 +281,7 @@ def test_opencode_go_models_expose_reasoning_efforts(
 
         async def list_models(self):
             return [
-                FakeModel("glm-5.99", ("high", "xhigh")),
+                FakeModel("deepseek-v4-pro", ("low", "medium", "high", "max")),
                 FakeModel("kimi-k3", ()),
             ]
 
@@ -299,7 +299,12 @@ def test_opencode_go_models_expose_reasoning_efforts(
 
     assert response.status_code == 200, response.text
     models = {item["id"]: item for item in response.json()["models"]}
-    assert models["glm-5.99"]["supportedReasoningEfforts"] == ["high", "xhigh"]
+    assert models["deepseek-v4-pro"]["supportedReasoningEfforts"] == [
+        "low",
+        "medium",
+        "high",
+        "max",
+    ]
     assert models["kimi-k3"]["supportedReasoningEfforts"] == []
 
 

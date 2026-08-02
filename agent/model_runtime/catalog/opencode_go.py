@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 
 import httpx
@@ -19,19 +18,23 @@ class OpenCodeGoModel:
     supported_reasoning_efforts: tuple[str, ...] = ()
 
 
-_GLM_EFFORT_ID = re.compile(r"^glm-5(?:\.(\d+)|-(\d+)|p(\d+))$")
+_WIDELY_SUPPORTED_EFFORTS = ("low", "medium", "high")
+_GLM52_IDS = ("glm-5.2", "glm-5-2", "glm-5p2")
 
 
 def _reasoning_efforts_for(model_id: str) -> tuple[str, ...]:
-    """OpenCode Go 目录不发布推理强度，按 opencode 客户端规则为 GLM-5.2+ 推算档位。"""
-    match = _GLM_EFFORT_ID.match(model_id.strip().lower())
-    if match:
-        minor = next(
-            int(value) for value in match.groups() if value is not None
-        )
-        if minor >= 2:
-            return ("high", "xhigh")
-    return ()
+    """OpenCode Go 目录不发布推理强度；按 opencode 客户端对 OpenAI 兼容通道的规则推算。"""
+    normalized = model_id.strip().lower()
+    if normalized.startswith("deepseek-v4"):
+        return (*_WIDELY_SUPPORTED_EFFORTS, "max")
+    if any(marker in normalized for marker in _GLM52_IDS):
+        return ("high", "max")
+    # 排除列表：deepseek 旧版、kimi、minimax、qwen、glm(<5.2) 等无思考强度档位。
+    if normalized.startswith(
+        ("deepseek-", "kimi-", "minimax-", "qwen", "glm-")
+    ):
+        return ()
+    return _WIDELY_SUPPORTED_EFFORTS
 
 
 class OpenCodeGoModelCatalog:
