@@ -1,4 +1,5 @@
 import "./mobile-polyfills";
+import { installMobileBridge } from "./mobile-bridge";
 
 import React, {
   lazy,
@@ -319,7 +320,7 @@ interface MobileRuntimeDetail {
 }
 
 interface NativeBridge {
-  reportReady(): void;
+  reportHealthy(): void;
   requestSnapshot(): void;
   selectSession(sessionId: string): void;
   removeUnavailableSession(sessionId: string): void;
@@ -891,6 +892,9 @@ function parseMobilePluginResult(value: unknown) {
 
 declare global {
   interface Window {
+    AkashicNativeTransport?: {
+      postMessage(message: string): void;
+    };
     AkashicNative?: NativeBridge;
     AkashicMobile?: {
       receiveSnapshot(snapshot: unknown): void;
@@ -1352,7 +1356,6 @@ function MobileNativeApp() {
       }
     };
     window.addEventListener("message", receiveNativeMessage);
-    window.AkashicNative?.reportReady();
     requestSnapshot();
     return () => {
       if (requestTimer !== null) window.clearTimeout(requestTimer);
@@ -1363,6 +1366,14 @@ function MobileNativeApp() {
       delete window.AkashicMobile;
     };
   }, [applySharedText, clearAcceptedComposerDraft, flushComposerDraft, streamStore]);
+
+  useEffect(() => {
+    if (!snapshot) return;
+    const frame = window.requestAnimationFrame(() => {
+      window.AkashicNative?.reportHealthy();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [snapshot]);
 
   useEffect(() => {
     if (snapshot?.composer.isStopping || !snapshot?.composer.canStop || snapshot?.connection.error) {
@@ -4179,6 +4190,7 @@ function syncMobileViewportHeight() {
 
 syncMobileViewportHeight();
 window.addEventListener("resize", syncMobileViewportHeight);
+installMobileBridge();
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Mobile Web root 不存在");

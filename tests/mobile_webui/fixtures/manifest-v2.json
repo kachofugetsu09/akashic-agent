@@ -1,0 +1,39 @@
+{
+  "manifest": {
+    "bridge_protocol_max": 1,
+    "bridge_protocol_min": 1,
+    "build_context_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "builder_identity": {
+      "build_script_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "node_version": "v22.23.1",
+      "npm_version": "10.9.0",
+      "package_lock_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "dirty_provenance": null,
+    "entrypoint": "mobile.html",
+    "file_count": 1,
+    "files": [
+      {
+        "mime": "text/html",
+        "path": "mobile.html",
+        "sha256": "79179d7a9ab0e61354b2924a8db81f0cece3165461b7021010156cd79d363aac",
+        "size_bytes": 12
+      }
+    ],
+    "generation_id": "2b75e991d7134f8e60df02677336ef7f2c4bfaec89685393d1416fdabeec72e9",
+    "input_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "minimum_native_build": 45,
+    "platforms": ["android"],
+    "reproducible": true,
+    "schema_version": 2,
+    "snapshot_protocol_max": 7,
+    "snapshot_protocol_min": 7,
+    "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "source_repository": "https://github.com/example/repo",
+    "source_tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "unpacked_size_bytes": 12
+  },
+  "manifest_digest": "b4c9c2e698f110b385e576c190fae17c6217f64e824d18e5909f27c53a0df9fa",
+  "selection_digest": "f39766d597b64e8eaada0eefba9d4713a4f6aaa9802c81c665f788394ac76025",
+  "target_key": "5737f08516b5075c1edc2427a135c0e77c887b9be4ed454708904ad32381a126"
+}
