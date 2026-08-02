@@ -150,7 +150,7 @@ def _commit_gate_candidate(app: Path) -> None:
 
 
 def _prepare_gate_sandbox(sandbox: Path, repo: Path) -> None:
-    """复制候选源码，并建立只属于 Gate 的静态资源挂载点。"""
+    """复制候选源码，并建立当前版本可直接启动的 Gate sandbox。"""
 
     # 1. 源码、Git 历史与候选提交都封装在 sandbox。
     app = sandbox / "app"
@@ -159,6 +159,12 @@ def _prepare_gate_sandbox(sandbox: Path, repo: Path) -> None:
 
     # 2. 外部可写静态目录不落入候选提交。
     (sandbox / "static").mkdir()
+
+    # 3. 当前版本 fixture 显式携带必需人格，不依赖历史迁移补齐。
+    veda = (app / "prompts/VEDA.md").read_bytes()
+    target = sandbox / "workspace/memory/VEDA.md"
+    target.parent.mkdir(parents=True)
+    _ = target.write_bytes(veda)
 
 
 def _repository_digest(repo: Path) -> str:
@@ -485,14 +491,27 @@ def _write_smoke_config(
 ) -> None:
     config = sandbox / "config.toml"
     lines = [
+        "[llm]",
+        'main = "plugin_gate"',
+        "",
+        "[llm.runtimes.plugin_gate]",
         'provider = "openai"',
         'model = "plugin-gate"',
         'api_key = "gate-not-used"',
+        "context_window = 64000",
+        "max_output_tokens = 64",
+        "",
+        "[agent]",
         'system_prompt = "plugin gate"',
         "max_iterations = 1",
-        "max_tokens = 64",
+        "",
+        "[agent.context]",
         "memory_window = 4",
+        "",
+        "[agent.maintenance]",
         "memory_optimizer_enabled = false",
+        "",
+        "[agent.tools]",
         "spawn_enabled = false",
         "",
         "[app_server]",
