@@ -1143,35 +1143,33 @@ function MobileNativeApp() {
           const patches = pendingPatches;
           pendingPatches = [];
           if (patches.length === 0) throw new Error("移动端流式帧缺少待发布 patch");
-          startTransition(() => {
-            setSnapshot((current) => {
-              if (current === null) {
+          setSnapshot((current) => {
+            if (current === null) {
+              window.AkashicNative?.requestSnapshot();
+              return current;
+            }
+            let nextSnapshot = current;
+            for (const patch of patches) {
+              const previousMessage = nextSnapshot.messages[patch.messageIndex];
+              const reconciledPatch = previousMessage && patch.message
+                ? { ...patch, message: reconcileMobileStreamMessage(previousMessage, patch.message) }
+                : patch;
+              const applied = applyMobileStreamPatch(nextSnapshot, reconciledPatch);
+              if (applied === null) {
                 window.AkashicNative?.requestSnapshot();
                 return current;
               }
-              let nextSnapshot = current;
-              for (const patch of patches) {
-                const previousMessage = nextSnapshot.messages[patch.messageIndex];
-                const reconciledPatch = previousMessage && patch.message
-                  ? { ...patch, message: reconcileMobileStreamMessage(previousMessage, patch.message) }
-                  : patch;
-                const applied = applyMobileStreamPatch(nextSnapshot, reconciledPatch);
-                if (applied === null) {
-                  window.AkashicNative?.requestSnapshot();
-                  return current;
-                }
-                nextSnapshot = applied;
-              }
-              if (searchOpenRef.current && normalizedSearchQueryRef.current) {
-                setSearchIndex((index) => updateMobileSearchIndex(
-                  index,
-                  nextSnapshot.messages,
-                  normalizedSearchQueryRef.current,
-                  false,
-                ));
-              }
-              return nextSnapshot;
-            });
+              nextSnapshot = applied;
+            }
+            if (searchOpenRef.current && normalizedSearchQueryRef.current) {
+              setSearchIndex((index) => updateMobileSearchIndex(
+                index,
+                nextSnapshot.messages,
+                normalizedSearchQueryRef.current,
+                false,
+              ));
+            }
+            return nextSnapshot;
           });
         });
       },

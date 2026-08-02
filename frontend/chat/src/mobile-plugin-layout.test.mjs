@@ -10,6 +10,10 @@ const sharedStyles = await readFile(
   new URL("./message-view.css", import.meta.url),
   "utf8",
 );
+const themeStyles = await readFile(
+  new URL("./theme.css", import.meta.url),
+  "utf8",
+);
 const desktopStyles = await readFile(
   new URL("./styles.css", import.meta.url),
   "utf8",
@@ -135,6 +139,20 @@ test("full native snapshots commit without waiting for another animation frame",
   assert.match(receiver[0], /nextSnapshot = parseMobileSnapshot\(next\)/);
   assert.match(receiver[0], /setSnapshot\(\(current\) =>/);
   assert.doesNotMatch(receiver[0], /requestAnimationFrame|startTransition/);
+});
+
+test("stream patches batch per frame without a starvable React transition", () => {
+  const receiver = mobileSource.match(/receiveStreamPatch\(next\) \{[\s\S]*?\n[ ]{6}\},\n[ ]{6}receiveStatePatch/);
+  assert.ok(receiver, "mobile stream receiver must remain discoverable");
+  assert.match(receiver[0], /requestAnimationFrame/);
+  assert.match(receiver[0], /setSnapshot\(\(current\) =>/);
+  assert.doesNotMatch(receiver[0], /startTransition/);
+});
+
+test("user message bubble uses a defined secondary container token", () => {
+  assert.match(platformStyles, /\.mobile-plain-message-view\.user[\s\S]*?background:\s*var\(--m-secondary-container\)/);
+  assert.match(themeStyles, /--m-secondary-container:\s*#[0-9a-f]+;/i);
+  assert.match(themeStyles, /--m-secondary-container:\s*oklch\(/);
 });
 
 test("cached images retry once and degrade to an openable file instead of a blank card", () => {

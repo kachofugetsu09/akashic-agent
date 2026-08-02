@@ -37,6 +37,7 @@
   --m-primary-hover: #1e64b5;
   --m-primary-container: #cbe0fc;
   --m-on-primary-container: #0b376a;
+  --m-secondary-container: #dfe7f2;
   --m-trace: #9b5fed;
   --m-trace-text: #8654cc;
   --m-trace-soft: #e5dbfc;
@@ -75,6 +76,7 @@
     --m-primary-hover: oklch(0.505 0.145 255);
     --m-primary-container: oklch(0.9 0.045 255);
     --m-on-primary-container: oklch(0.34 0.1 255);
+    --m-secondary-container: oklch(0.92 0.025 255);
     --m-trace: oklch(0.62 0.205 300);
     --m-trace-text: oklch(0.56 0.18 300);
     --m-trace-soft: oklch(0.91 0.045 300);
