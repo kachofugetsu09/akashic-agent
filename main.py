@@ -148,7 +148,6 @@ from agent.config import Config, resolve_app_server_endpoint
 from agent.control.client import ControlClient, RemoteControlError
 from agent.migrations import (
     MigrationOutcome,
-    mark_fresh_installation_current,
     migrate_installation,
 )
 from agent.restart import RestartCoordinator, SupervisorCommitChannel
@@ -257,8 +256,8 @@ def _prepare_startup_migrations(
     if command == "gateway" and os.environ.get("AKASHIC_SUPERVISED") == "1":
         return None
     outcome = migrate_installation(config_path, workspace)
-    if outcome.state == "migrated" and outcome.commits:
-        print(f"启动迁移完成: commits={len(outcome.commits)} head={outcome.head[:12]}")
+    if outcome.state == "migrated":
+        print(f"启动迁移完成: migrations={len(outcome.migrations)}")
     return outcome
 
 
@@ -643,8 +642,6 @@ if __name__ == "__main__":
             config_path=Path(config_path),
             workspace=workspace,
         )
-        if migration_outcome is not None and migration_outcome.state == "fresh":
-            _ = mark_fresh_installation_current(Path(config_path), workspace)
         sys.exit(0)
 
     if args and args[0] == "setup-main":
@@ -659,8 +656,6 @@ if __name__ == "__main__":
             workspace=workspace,
             force=force,
         )
-        if migration_outcome is not None and migration_outcome.state == "fresh":
-            _ = mark_fresh_installation_current(Path(config_path), workspace)
         _print_init_summary(summary)
         sys.exit(0)
 

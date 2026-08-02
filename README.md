@@ -154,17 +154,14 @@ port = 6322
 channel_name = "web"
 ```
 
-旧式 inline `[llm.main]` 会在代码更新后的第一次启动中自动迁移为 named runtime，已有
-main/fast/agent/vl 字段和密钥都会保留。迁移前会在 `config.toml.migration-backups/`
-创建权限受限的备份；配置或 Akasha 重建验证失败时，runtime 不会带着半迁移状态启动。
+当前代码形状是新的迁移原点。启动时 Yoyo 只读取 `migrations/yoyo/`，并在
+`<workspace>/migrations.sqlite3` 记录已成功执行的迁移；它不依赖 Git 历史、分支或版本号。
+旧 Git cursor 时代的脚本保留为历史源码，但不会注册或自动执行，也不承诺接管旧格式。
+原点迁移只删除退役的 `config.toml.migration-{cursor,lock,backups}` companion state，
+不修改配置与业务数据。
 
-迁移使用固定 Git baseline 和 `config.toml.migration-cursor`，同一个源码 `HEAD` 的后续
-启动只比较 cursor，不重复扫描或执行脚本。新 clone 且没有配置和 workspace 数据时直接
-初始化最新结构，不回放历史迁移。旧安装使用 shallow clone、缺少 baseline 历史时会明确
-失败，需要先补齐 Git 历史再启动；启动过程不会自动访问网络或执行 `git fetch`。
-
-后续开发者新增兼容逻辑时，请先阅读[Git 一次性迁移维护手册](./docs/design/git-migration-authoring.md)：
-历史状态转换应放入只追加 bundle，核心配置与 runtime 只接受当前规范形状。
+新增迁移前请阅读 [Yoyo 迁移维护手册](./docs/design/git-migration-authoring.md)。已注册脚本
+只追加不修改；修正错误时新增 migration ID。
 
 `workspace` 默认是 `~/.akashic/workspace`。临时切换隔离环境时传
 `--workspace PATH`；它的优先级高于 `AKASHIC_WORKSPACE` 和 `config.toml`。

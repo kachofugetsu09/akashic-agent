@@ -26,7 +26,7 @@ RUN printf '%s\n' \
 
 COPY requirements.txt requirements-dev.txt /tmp/
 RUN python -m venv /opt/venv \
-    && python -m pip install --upgrade pip \
+    && python -m pip install pip==26.1.2 \
     && python -m pip install -r /tmp/requirements-dev.txt \
     && python -m pip install mcp==1.28.1
 

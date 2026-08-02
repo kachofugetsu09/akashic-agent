@@ -59,10 +59,8 @@ def artifact_digests(
 def create_source_bundle(
     source_root: Path,
     bundle_path: Path,
-    *,
-    migration_baseline: str = "012e37c8b51df045353972bb551d8e868ab52455",
 ) -> dict[str, str]:
-    """导出并校验可恢复 migration baseline 的 Git 历史包。"""
+    """导出并校验可恢复当前源码历史的 Git 包。"""
 
     # 1. bundle 只承载 Git 对象与 refs；当前未提交内容仍由源码目录上传。
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
@@ -74,24 +72,9 @@ def create_source_bundle(
         stderr=subprocess.PIPE,
     )
 
-    # 2. 用 Git 自身校验 bundle，并确认固定 migration baseline 可达。
+    # 2. 用 Git 自身校验 bundle 并记录当前源码身份
     subprocess.run(
         ["git", "-C", str(source_root), "bundle", "verify", str(bundle_path)],
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(source_root),
-            "merge-base",
-            "--is-ancestor",
-            migration_baseline,
-            "HEAD",
-        ],
         check=True,
         text=True,
         stdout=subprocess.PIPE,
@@ -108,7 +91,6 @@ def create_source_bundle(
         "path": str(bundle_path),
         "digest": sha256_file(bundle_path),
         "head": head,
-        "migration_baseline": migration_baseline,
     }
 
 

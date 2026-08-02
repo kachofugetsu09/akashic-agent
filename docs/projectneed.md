@@ -485,13 +485,13 @@ plugin、marketplace、snapshot 等名称必须是安全单片段；resolved pat
 
 `<workspace>` 表示由 `--workspace`、`AKASHIC_WORKSPACE` 或主配置选中的 Akashic 运行实例主要工作区。它承载会话、长期记忆、附件、调度、主动流程、plugin-data、能力投影、诊断和运行控制状态，不是源码仓库、Git checkout 或 Git worktree。插件代码、Skill/MCP 的 canonical source、全局插件清单和凭据可以位于 workspace 之外，必须作为明确 companion state 管理。Git worktree 只承载代码、测试和项目工作手册；任何代码 worktree 都不得把自己的目录当成正式运行数据根。
 
-### MIG-001 兼容迁移由固定 Git cursor 一次性推进
+### MIG-001 兼容迁移由 workspace Yoyo 账本一次性推进
 
-迁移框架以固定 Git baseline 和配置实例旁的 cursor 判断已成功处理到的源码提交。`cursor == HEAD` 的正常启动不得扫描或导入历史迁移；HEAD 变化后只按 Git 主线顺序执行 cursor 之后新增的 bundle。既有 bundle 只追加不修改，失败提交及其后续提交不得被 cursor 越过。
+迁移框架只从 `migrations/yoyo/` 加载已注册脚本，以 `<workspace>/migrations.sqlite3` 的成功回执判断待执行集合。迁移在 runtime、provider 和业务写入 owner 启动前持有 workspace 单实例锁执行；任一步失败时不得记录成功回执，runtime 不得启动。既有 migration ID 只追加不修改，修正通过新的 ID 和依赖关系表达。
 
-### MIG-002 新安装与旧状态接管严格区分
+### MIG-002 当前结构是迁移原点
 
-首次没有 cursor 时，实际选中的 `config.toml` 已存在，或 workspace 已有权威、派生或运行连续性状态，都按旧安装从固定 baseline 接管。只有配置和持久状态同时不存在才直接初始化当前结构并写入 `cursor = HEAD`。迁移在 runtime、provider 和业务写入 owner 启动前离线完成；apply 或 verify 失败时 runtime 不得启动。
+新系统不接管 Git cursor 时代的迁移历史。历史脚本保留为源码证据，但不注册、不自动执行，也不据此推断旧安装状态。原点迁移只清除退役的配置 companion cursor、lock 和 backups；配置、会话、记忆及其他业务数据保持不变。此后的兼容变换只能新增到 Yoyo 目录，不依赖 Git HEAD、分支拓扑、浅克隆状态或人工产品版本号。
 
 ### FS-001 文件写入限于 allowed root
 

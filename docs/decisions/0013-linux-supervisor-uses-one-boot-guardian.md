@@ -28,7 +28,7 @@ Linux 正式入口保留 Supervisor。每个 boot 只增加一个轻量 Boot Gua
 
 - 正面影响：移除多线程 `preexec_fn` 和常驻 20ms polling；Supervisor、Guardian、Gateway 单 owner 故障有明确清理路径。
 - 兼容性：Linux 默认入口与 `supervise` 保持；非 Linux 失去完整 Supervisor、settings restart 和 `agent_restart`。
-- 数据和迁移：业务持久状态不迁移、不减少；正式 supervised 启动只由 Supervisor 执行一次 Git cursor 迁移检查。
+- 数据和迁移：业务持久状态不迁移、不减少；正式 supervised 启动只由 Supervisor 执行一次 Yoyo 账本迁移检查。
 - 失败与回滚：Guardian 或协议异常时清理当前 boot 后非零退出；可按实现提交整体回滚，workspace 权威状态保持不变。
 
 ## 验收

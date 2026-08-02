@@ -119,7 +119,7 @@ run_supervisor()
 
 ### 4.5 迁移与设置边界不够收敛
 
-当前 Supervisor 启动前和其创建的 Gateway 都会经过 `_prepare_startup_migrations()`，导致同一正式启动做两次迁移检查。迁移已有 Git cursor 幂等合同，但正式启动只应由一个 owner 检查一次。
+当前 Supervisor 启动前和其创建的 Gateway 都会经过 `_prepare_startup_migrations()`，导致同一正式启动做两次迁移检查。Yoyo 账本保证幂等，但正式启动只应由一个 owner 检查一次。
 
 settings server 默认监听 loopback，但 `AKASHIC_SETTINGS_HOST` 可以扩大到非 loopback。当前 Origin 与 CSRF 检查不能把本地设置接口变成安全的远程管理面。本提议固定只允许 loopback，非 loopback 配置在边界直接拒绝。
 
@@ -281,7 +281,7 @@ TERM-ignore、double-fork、`setsid` 和 wrapper 进程必须包含在故障注�
 | sessions、turns、messages、附件 | 沿现有业务路径增加或按既有状态机更新 | 本提议无减少权限 | 各现有 repository；重启前后行数、正文与附件引用一致 |
 | memory、Akasha、主动流程、调度、plugin-data | 沿现有 owner 写入 | 本提议无减少权限 | 既有 runtime；重启前后文件/DB 完整性与连续性状态一致 |
 | `config.toml` | 仅现有 settings candidate/原子提交可更新 | 回滚只恢复该事务的备份，不删除其他配置 | settings owner；候选、备份、应用结果和回滚结果可核对 |
-| migration cursor | 正式启动时按既有 Git cursor 合同推进一次 | 只允许既有显式 revert 协议 | migration owner；cursor、commit 列表与前后检查结果 |
+| `migrations.sqlite3` | 正式启动时由 migration owner 追加成功回执 | 本提议无删除或回滚权限 | migration owner；migration ID、账本完整性与前后检查结果 |
 | lock、PID、readiness、socket | 每个进程生命周期创建/替换 | 对应 boot 停止后由生命周期 owner 删除 | 当前 boot ID、持有锁的 FD、PID/pidfd 与端口核对 |
 | lifecycle pipe、lease、pidfd、nonce | 仅内存/内核态创建 | boot 结束即关闭 | 不持久化；关闭和后代为空是恢复证据 |
 

@@ -1153,7 +1153,7 @@ async def test_bootstrap_trigger_and_entrypoints_cover_paths(
         return 0
 
     def _fake_migration(config_path: Path, workspace: Path) -> MigrationOutcome:
-        return MigrationOutcome(state="current", head="test-head")
+        return MigrationOutcome(state="current")
 
     monkeypatch.setattr("agent.supervisor.run_supervisor", _fake_supervisor)
     monkeypatch.setattr("agent.migrations.migrate_installation", _fake_migration)

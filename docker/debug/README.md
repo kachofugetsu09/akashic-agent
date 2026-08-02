@@ -27,7 +27,7 @@ python docker/debug/gate.py audit
 python docker/debug/gate.py plan --base origin/main
 ```
 
-如果同一 diff 同时包含生产 source set 与 protected contract/policy paths，`plan` 和 `run` 会扩大为完整公开场景，同时仍分别列出两组路径。未知可执行改动和触及 baseline gap 仍以非零退出。`migrations/**` 本身不在该 protected 集合内，继续由 append-only/repair Gate 管理。
+如果同一 diff 同时包含生产 source set 与 protected contract/policy paths，`plan` 和 `run` 会扩大为完整公开场景，同时仍分别列出两组路径。未知可执行改动和触及 baseline gap 仍以非零退出。`migrations/**` 本身不在该 protected 集合内；已注册的 `migrations/yoyo/*.py` 由精简的 append-only 检查保护。
 
 `init` 只用于仓库第一次建立 coverage baseline。baseline 已存在时再次执行会失败，不能覆盖人工合同。新增未映射可执行文件会先运行全量公开语义场景，最终仍以 `unmapped_change` 失败。报告位于 `docker/debug/reports/change-gate/<run-id>/`。
 
@@ -93,20 +93,17 @@ Gate 完成两个真实 turn，检查第二轮 provider payload 已收到自动 
 和仓库摘要未改变，Compose 无残留。证据位于
 `docker/debug/reports/akasha-v2-runtime/<run-id>/`。
 
-## 一次性迁移验收门
+## Yoyo 迁移检查
 
-迁移专用 Gate 在与 runtime control Gate 相同的只读容器边界内运行完整 case matrix：
+迁移使用普通 pytest 覆盖执行与失败重试，CI 另以精简检查保护已注册 migration 不被改写：
 
 ```bash
-python docker/debug/migration_probe.py
+python -m pytest tests/test_migration_runner.py tests/test_yoyo_migration_append_only.py
+python scripts/check_yoyo_migrations.py --base origin/main
 ```
 
-它覆盖 fresh/legacy 分类、固定 baseline、快速路径、顺序执行、merge、纯代码提交、
-blocked/apply/verify/cursor 写入失败与安全重试、分支分叉、shallow history、并发锁、
-两类旧 provider 配置、显式恢复、Akasha 状态零读写和 append-only policy。每个 pytest
-case 及源码不变性、Compose cleanup 结果记录在
-`docker/debug/reports/migrations/<run-id>/gate.json`。新增 migration bundle 前先按
-[迁移维护手册](../../docs/design/git-migration-authoring.md)补齐来源 lineage 和相应 case。
+新增 migration 前按 [Yoyo 迁移维护手册](../../docs/design/git-migration-authoring.md)补齐
+真实状态变换与相应 case。不再构造 Git cursor、固定 baseline、repair 清单或专用容器 Gate。
 
 ## Runtime 扩展生命周期验收门
 

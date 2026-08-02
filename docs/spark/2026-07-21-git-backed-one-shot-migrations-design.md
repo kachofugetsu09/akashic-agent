@@ -1,7 +1,7 @@
 # Git 驱动的一次性兼容迁移
 
 日期：2026-07-21  
-状态：implemented  
+状态：superseded by [0021](../decisions/0021-yoyo-workspace-ledger-defines-migration-origin.md)
 固定基线：`012e37c8b51df045353972bb551d8e868ab52455`
 
 ## 1. 结论

@@ -55,6 +55,8 @@ def test_gate_sandbox_prepares_static_mountpoint_outside_clean_checkout(
     )
     (repo / "removed.py").unlink()
     (repo / "main.py").write_text("print('clean')\n", encoding="utf-8")
+    (repo / "prompts").mkdir()
+    (repo / "prompts/VEDA.md").write_text("current veda\n", encoding="utf-8")
     (repo / "current").symlink_to("main.py")
     subprocess.run(["git", "add", "--all"], cwd=repo, check=True)
     assert not (repo / "static").exists()
@@ -71,6 +73,9 @@ def test_gate_sandbox_prepares_static_mountpoint_outside_clean_checkout(
     assert not (sandbox / "app/removed.py").exists()
     assert (sandbox / "app/static").is_dir()
     assert (sandbox / "static").is_dir()
+    assert (sandbox / "workspace/memory/VEDA.md").read_text(encoding="utf-8") == (
+        "current veda\n"
+    )
     assert not (repo / "static").exists()
     assert (
         subprocess.run(
@@ -139,6 +144,8 @@ def test_smoke_config_uses_app_server_control_endpoint(tmp_path: Path) -> None:
 
     config = (tmp_path / "config.toml").read_text()
 
+    assert '[llm]\nmain = "plugin_gate"' in config
+    assert "[llm.runtimes.plugin_gate]" in config
     assert "[app_server]" in config
     assert 'listen = "/sandbox/akashic.sock"' in config
     assert "[channels]" not in config
