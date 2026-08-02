@@ -381,23 +381,41 @@ export function SettingsApp() {
               {kind !== "api" && (
                 <Button variant="outline" onClick={loadModels} disabled={loadingModels || !authReady}>
                   {loadingModels ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
-                  读取模型
+                  探测模型与档位
                 </Button>
               )}
             </div>
 
-            <Field label="思考强度" hint={effortOptions.length ? "按模型支持的档位选择" : "填写模型支持的推理强度，留空使用 Provider 默认"}>
-              {effortOptions.length ? (
-                <Select value={reasoningEffort || "__default"} onValueChange={(value) => setReasoningEffort(value === "__default" ? "" : value)}>
-                  <SelectTrigger><SelectValue placeholder="选择思考强度" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__default">不设置（Provider 默认）</SelectItem>
-                    {effortOptions.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <Input value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value)} placeholder="如 low / medium / high" />
-              )}
+            <Field label="思考强度" hint={effortOptions.length ? "候选来自所选模型的实时目录，也可以输入自定义值" : "填写模型支持的推理强度，留空使用 Provider 默认"}>
+              <div className="effort-control">
+                <Input
+                  aria-label="自定义思考强度"
+                  value={reasoningEffort}
+                  onChange={(event) => setReasoningEffort(event.target.value)}
+                  placeholder="留空使用 Provider 默认；也可输入自定义值"
+                />
+                {effortOptions.length > 0 && (
+                  <div className="effort-options" aria-label="探测到的思考强度" role="group">
+                    <button
+                      className={!reasoningEffort ? "is-selected" : ""}
+                      onClick={() => setReasoningEffort("")}
+                      type="button"
+                    >
+                      Provider 默认
+                    </button>
+                    {effortOptions.map((item) => (
+                      <button
+                        className={reasoningEffort === item ? "is-selected" : ""}
+                        key={item}
+                        onClick={() => setReasoningEffort(item)}
+                        type="button"
+                      >
+                        {item}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </Field>
 
             <div className="field-grid two-columns">

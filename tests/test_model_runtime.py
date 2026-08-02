@@ -16,7 +16,7 @@ from agent.model_runtime.auth.store import Credential, CredentialStore
 from agent.model_runtime.catalog.codex import CodexModelCatalog
 from agent.model_runtime.catalog.opencode_go import (
     OpenCodeGoModelCatalog,
-    _reasoning_efforts_for,
+    _parse_opencode_go_reasoning_efforts,
 )
 from agent.model_runtime.context_policy import (
     build_runtime_context_budget,
@@ -146,40 +146,32 @@ def test_opencode_go_profile_is_dynamic_and_rejects_wrong_wire() -> None:
         )
 
 
-def test_opencode_go_reasoning_efforts_follow_client_rules() -> None:
-    assert _reasoning_efforts_for("deepseek-v4-pro") == (
-        "low",
-        "medium",
-        "high",
-        "max",
-    )
-    assert _reasoning_efforts_for("deepseek-v4-flash") == (
-        "low",
-        "medium",
-        "high",
-        "max",
-    )
-    assert _reasoning_efforts_for("glm-5.2") == ("high", "max")
-    assert _reasoning_efforts_for("glm-5p2") == ("high", "max")
-    assert _reasoning_efforts_for("glm-5-2") == ("high", "max")
-    assert _reasoning_efforts_for("glm-5.99") == ()
-    assert _reasoning_efforts_for("glm-5.1") == ()
-    assert _reasoning_efforts_for("glm-5") == ()
-    assert _reasoning_efforts_for("kimi-k3") == ()
-    assert _reasoning_efforts_for("minimax-m3") == ()
-    assert _reasoning_efforts_for("qwen3.7-plus") == ()
-    assert _reasoning_efforts_for("deepseek-chat") == ()
-    assert _reasoning_efforts_for("mimo-v2.5-pro") == (
-        "low",
-        "medium",
-        "high",
-    )
-    assert _reasoning_efforts_for("grok-4.5") == ("low", "medium", "high")
-    assert _reasoning_efforts_for("future-model-1") == ("low", "medium", "high")
+def test_opencode_go_reasoning_efforts_follow_verbose_catalog() -> None:
+    output = """opencode-go/deepseek-v4-pro
+{
+  "id": "deepseek-v4-pro",
+  "variants": {
+    "high": {"reasoningEffort": "high"},
+    "max": {"reasoningEffort": "max"}
+  }
+}
+opencode-go/kimi-k3
+{
+  "id": "kimi-k3",
+  "variants": {}
+}
+"""
+
+    assert _parse_opencode_go_reasoning_efforts(output) == {
+        "deepseek-v4-pro": ("high", "max"),
+        "kimi-k3": (),
+    }
 
 
 @pytest.mark.asyncio
-async def test_opencode_go_catalog_uses_http_boundary_and_filters_protocols() -> None:
+async def test_opencode_go_catalog_uses_http_boundary_and_opencode_variants(
+    monkeypatch,
+) -> None:
     requests: list[tuple[str, str | None]] = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -205,6 +197,16 @@ async def test_opencode_go_catalog_uses_http_boundary_and_filters_protocols() ->
         def log_message(self, _format: str, *_args: object) -> None:
             return
 
+    async def fake_reasoning_efforts(_executable: str):
+        return {
+            "glm-5.99": ("high", "max"),
+            "future-model-1": ("low", "medium", "high"),
+        }
+
+    monkeypatch.setattr(
+        "agent.model_runtime.catalog.opencode_go._load_opencode_go_reasoning_efforts",
+        fake_reasoning_efforts,
+    )
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -226,7 +228,7 @@ async def test_opencode_go_catalog_uses_http_boundary_and_filters_protocols() ->
         "kimi-k3",
         "future-model-1",
     ]
-    assert by_slug["glm-5.99"].supported_reasoning_efforts == ()
+    assert by_slug["glm-5.99"].supported_reasoning_efforts == ("high", "max")
     assert by_slug["kimi-k3"].supported_reasoning_efforts == ()
     assert by_slug["future-model-1"].supported_reasoning_efforts == (
         "low",

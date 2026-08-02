@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
+from typing import cast
 
 import httpx
 
@@ -18,23 +20,90 @@ class OpenCodeGoModel:
     supported_reasoning_efforts: tuple[str, ...] = ()
 
 
-_WIDELY_SUPPORTED_EFFORTS = ("low", "medium", "high")
-_GLM52_IDS = ("glm-5.2", "glm-5-2", "glm-5p2")
+_OPENCODE_PROVIDER_PREFIX = "opencode-go/"
 
 
-def _reasoning_efforts_for(model_id: str) -> tuple[str, ...]:
-    """OpenCode Go 目录不发布推理强度；按 opencode 客户端对 OpenAI 兼容通道的规则推算。"""
-    normalized = model_id.strip().lower()
-    if normalized.startswith("deepseek-v4"):
-        return (*_WIDELY_SUPPORTED_EFFORTS, "max")
-    if any(marker in normalized for marker in _GLM52_IDS):
-        return ("high", "max")
-    # 排除列表：deepseek 旧版、kimi、minimax、qwen、glm(<5.2) 等无思考强度档位。
-    if normalized.startswith(
-        ("deepseek-", "kimi-", "minimax-", "qwen", "glm-")
-    ):
-        return ()
-    return _WIDELY_SUPPORTED_EFFORTS
+def _parse_opencode_go_reasoning_efforts(
+    output: str,
+) -> dict[str, tuple[str, ...]]:
+    """从 OpenCode verbose 模型目录提取每个模型的真实 variant 名称。"""
+    decoder = json.JSONDecoder()
+    cursor = 0
+    efforts: dict[str, tuple[str, ...]] = {}
+
+    # 1. 每个记录由 provider/model 标题行和紧随其后的 JSON 对象组成。
+    while cursor < len(output):
+        while cursor < len(output) and output[cursor].isspace():
+            cursor += 1
+        if cursor >= len(output):
+            break
+        line_end = output.find("\n", cursor)
+        if line_end == -1:
+            raise TransportError("OpenCode 模型目录包含不完整的标题行")
+        header = output[cursor:line_end].strip()
+        if not header.startswith(_OPENCODE_PROVIDER_PREFIX):
+            raise TransportError("OpenCode 模型目录包含未知记录")
+        model_id = header.removeprefix(_OPENCODE_PROVIDER_PREFIX).strip()
+        if not model_id:
+            raise TransportError("OpenCode 模型目录包含空模型 ID")
+
+        # 2. JSON 由 OpenCode 自己生成；结构异常必须暴露，不能回退到模型名猜测。
+        json_start = line_end + 1
+        while json_start < len(output) and output[json_start].isspace():
+            json_start += 1
+        try:
+            decoded, cursor = decoder.raw_decode(output, json_start)
+        except json.JSONDecodeError as exc:
+            raise TransportError("OpenCode 模型目录返回了无效 JSON") from exc
+        if not isinstance(decoded, dict):
+            raise TransportError(f"OpenCode 模型 {model_id} 的元数据无效")
+        metadata = cast(dict[str, object], decoded)
+        variants = metadata.get("variants")
+        if not isinstance(variants, dict):
+            raise TransportError(f"OpenCode 模型 {model_id} 的 variants 无效")
+        variant_map = cast(dict[object, object], variants)
+        variant_names: list[str] = []
+        for name in variant_map:
+            if not isinstance(name, str) or not name:
+                raise TransportError(f"OpenCode 模型 {model_id} 的 variants 无效")
+            variant_names.append(name)
+        efforts[model_id] = tuple(variant_names)
+    return efforts
+
+
+async def _load_opencode_go_reasoning_efforts(
+    executable: str,
+) -> dict[str, tuple[str, ...]]:
+    """调用 OpenCode 的公开模型命令并返回 Go 模型的 variant 目录。"""
+    # 1. OpenCode 是 variant 规则的 owner；直接读取其解析后的目录。
+    try:
+        process = await asyncio.create_subprocess_exec(
+            executable,
+            "models",
+            "opencode-go",
+            "--verbose",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError as exc:
+        raise TransportError(f"无法执行 OpenCode 模型探测：{exc}") from exc
+
+    # 2. 限制探测时间，并保留非零退出的明确失败语义。
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+    except TimeoutError as exc:
+        _ = process.kill()
+        _ = await process.wait()
+        raise TransportError("OpenCode 模型探测超时") from exc
+    if process.returncode != 0:
+        detail = stderr.decode("utf-8", errors="replace").strip()
+        suffix = f"：{detail[:500]}" if detail else ""
+        raise TransportError(f"OpenCode 模型探测失败{suffix}")
+    try:
+        output = stdout.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise TransportError("OpenCode 模型目录不是有效 UTF-8") from exc
+    return _parse_opencode_go_reasoning_efforts(output)
 
 
 class OpenCodeGoModelCatalog:
@@ -45,9 +114,11 @@ class OpenCodeGoModelCatalog:
         api_key: str,
         *,
         base_url: str = OPENCODE_GO_BASE_URL,
+        opencode_executable: str = "opencode",
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
+        self.opencode_executable = opencode_executable
 
     async def list_models(self) -> list[OpenCodeGoModel]:
         # 1. 在外部 HTTP 边界读取目录，网络错误统一转换为 transport error。
@@ -69,24 +140,35 @@ class OpenCodeGoModelCatalog:
 
         # 2. 校验 OpenAI 模型目录结构，并只暴露已知 Chat 模型家族。
         try:
-            payload = response.json()
+            decoded_payload: object = response.json()
         except json.JSONDecodeError as exc:
             raise TransportError("OpenCode Go 模型目录返回了无效 JSON") from exc
-        raw_models = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(decoded_payload, dict):
+            raise TransportError("OpenCode Go 模型目录响应不是对象")
+        payload = cast(dict[str, object], decoded_payload)
+        raw_models = payload.get("data")
         if not isinstance(raw_models, list):
             raise TransportError("OpenCode Go 模型目录响应缺少 data 数组")
+        model_items = cast(list[object], raw_models)
 
+        # 3. `/models` 决定当前账号可用模型，OpenCode 决定各模型真实 variant。
+        reasoning_efforts = await _load_opencode_go_reasoning_efforts(
+            self.opencode_executable
+        )
         models: list[OpenCodeGoModel] = []
-        for raw in raw_models:
-            model_id = raw.get("id") if isinstance(raw, dict) else None
+        for raw in model_items:
+            if not isinstance(raw, dict):
+                raise TransportError("OpenCode Go 模型目录包含无效模型项")
+            model_entry = cast(dict[str, object], raw)
+            model_id = model_entry.get("id")
             if not isinstance(model_id, str) or not model_id.strip():
                 raise TransportError("OpenCode Go 模型目录包含无效模型项")
             if OPENCODE_GO_PROFILE.classify_model(model_id) == "chat_completions":
                 models.append(
                     OpenCodeGoModel(
                         slug=model_id,
-                        supported_reasoning_efforts=_reasoning_efforts_for(
-                            model_id
+                        supported_reasoning_efforts=reasoning_efforts.get(
+                            model_id, ()
                         ),
                     )
                 )
