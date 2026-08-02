@@ -534,9 +534,12 @@ def _require_bool(value: object, label: str) -> bool:
 
 
 def _require_string_map(value: dict[object, object], label: str) -> dict[str, str]:
-    if any(not isinstance(key, str) or not isinstance(item, str) for key, item in value.items()):
-        raise ManifestError(f"{label} 必须是 string map")
-    return dict(value)
+    result: dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not isinstance(item, str):
+            raise ManifestError(f"{label} 必须是 string map")
+        result[key] = item
+    return result
 
 
 def _validate_dirty_provenance(value: Mapping[str, object] | None) -> None:

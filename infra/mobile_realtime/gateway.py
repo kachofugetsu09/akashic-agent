@@ -13,7 +13,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, cast
+from typing import TYPE_CHECKING, Callable, NoReturn, cast
 
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -98,7 +98,7 @@ from infra.mobile_webui.http import (
     parse_single_range,
 )
 from infra.mobile_webui.manifest import ManifestError, canonical_manifest_bytes
-from infra.mobile_webui.protocol import ErrorReplyWire, PrepareReplyWire, ReleaseViewWire
+from infra.mobile_webui.protocol import ErrorCode, ErrorReplyWire, PrepareReplyWire, ReleaseViewWire
 from infra.mobile_webui.store import (
     MobileWebUiStore,
     ReleaseSelectionChangedError,
@@ -153,7 +153,9 @@ class MobileMessageContentHttpError(RuntimeError):
 
 
 class MobileWebUiHttpError(RuntimeError):
-    def __init__(self, code: str, message: str, *, status_code: int) -> None:
+    code: ErrorCode
+
+    def __init__(self, code: ErrorCode, message: str, *, status_code: int) -> None:
         super().__init__(message)
         self.code = code
         self.status_code = status_code
@@ -1163,7 +1165,7 @@ class MobileGatewayRuntime:
             raise RuntimeError("WebUI publication store 未绑定")
         release = self.publication.get_release()
         self._publication_selection_digest = release.selection_digest
-        payload = {
+        payload: dict[str, object] = {
             "server_id": release.server_id,
             "selection_digest": release.selection_digest,
         }
@@ -1859,7 +1861,8 @@ class MobileGatewayRuntime:
                 start, end = 0, len(content) - 1
             else:
                 start, end = selected
-            return content[start : end + 1], start, end, len(content), blob.mime, verified
+            mime = cast(str, blob.mime)
+            return content[start : end + 1], start, end, len(content), mime, verified
         except WebUiTicketError as error:
             _raise_webui_ticket_http_error(error)
         except MobileWebUiHttpError:
@@ -2678,7 +2681,7 @@ def _release_view_json(release: ReleaseView) -> dict[str, object]:
     }
 
 
-def _raise_webui_ticket_http_error(error: WebUiTicketError) -> None:
+def _raise_webui_ticket_http_error(error: WebUiTicketError) -> NoReturn:
     status = {
         "invalid_ticket": 401,
         "target_changed": 409,
@@ -2686,7 +2689,7 @@ def _raise_webui_ticket_http_error(error: WebUiTicketError) -> None:
     }.get(error.code)
     if status is None:
         raise MobileWebUiHttpError("invalid_ticket", str(error), status_code=401) from error
-    raise MobileWebUiHttpError(error.code, str(error), status_code=status) from error
+    raise MobileWebUiHttpError(cast(ErrorCode, error.code), str(error), status_code=status) from error
 
 
 def _resolve_workspace_path(workspace: Path, configured: Path) -> Path:
