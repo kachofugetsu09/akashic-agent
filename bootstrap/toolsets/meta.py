@@ -120,7 +120,7 @@ class SpawnToolsetProvider(ToolsetProvider):
             bus=bus,
             model=config.model,
             max_tokens=config.max_tokens,
-            fetch_requester=http_resources.web_fetch,
+            fetch_requester=http_resources.external_default,
             multimodal=config.multimodal,
         )
         if config.spawn_enabled:
@@ -152,15 +152,15 @@ def build_readonly_tools(
     vl_available: bool = False,
     context_provider: Callable[[], ToolExecutionContext | None] | None = None,
 ) -> dict[str, Tool]:
+    _ = context_provider
     return {
         tool.name: tool
         for tool in build_readonly_research_tools(
-            fetch_requester=http_resources.web_fetch,
+            fetch_requester=http_resources.external_default,
             allowed_dir=workspace,
             include_list_dir=True,
             multimodal=multimodal,
             vl_available=vl_available,
-            context_provider=context_provider,
         )
     }
 

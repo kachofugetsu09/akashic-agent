@@ -26,7 +26,6 @@ from agent.tools.base import (
     normalize_tool_result,
     tool_execution_context_scope,
 )
-from agent.tools.web_fetch import WebFetchTool
 from prompts.completion import VERIFIABLE_COMPLETION_RULES
 
 logger = logging.getLogger(__name__)
@@ -172,50 +171,14 @@ class SubAgent:
             raise
         finally:
             try:
-                try:
-                    self._cleanup_web_fetch_turn(run_turn_id)
-                except BaseException:
-                    if primary_error is None:
-                        raise
-                    logger.exception(
-                        "[subagent] web_fetch cleanup failed，保留原始异常"
-                    )
+                await self._shutdown_shell()
+            except BaseException:
+                if primary_error is None:
+                    raise
+                logger.exception("[subagent] shell cleanup 失败，保留原始异常")
             finally:
-                try:
-                    await self._shutdown_shell()
-                except BaseException:
-                    if primary_error is None:
-                        raise
-                    logger.exception("[subagent] shell cleanup 失败，保留原始异常")
-                finally:
-                    _SUBAGENT_BASE_CONTEXT.reset(context_token)
-                    _SUBAGENT_TURN_ID.reset(turn_token)
-
-    def _cleanup_web_fetch_turn(self, turn_id: str) -> None:
-        """释放本次 subagent run 的 web_fetch spill。"""
-
-        seen: set[int] = set()
-        for tool in self._tool_map.values():
-            if not isinstance(tool, WebFetchTool) or id(tool) in seen:
-                continue
-            seen.add(id(tool))
-            try:
-                cleanups = tool.release_turn(turn_id)
-            except Exception as exc:
-                logger.error(
-                    "[subagent] cleanup_degraded: web_fetch release_turn failed: %s",
-                    exc,
-                )
-                continue
-            for cleanup in cleanups:
-                if cleanup.released:
-                    continue
-                logger.error(
-                    "[subagent] cleanup_degraded: web_fetch execution=%s path=%s error=%s",
-                    cleanup.execution_id,
-                    cleanup.path,
-                    cleanup.error,
-                )
+                _SUBAGENT_BASE_CONTEXT.reset(context_token)
+                _SUBAGENT_TURN_ID.reset(turn_token)
 
     async def _run(self, task: str) -> str:
         """执行单次任务，并返回完成结果或预算收尾总结。"""
