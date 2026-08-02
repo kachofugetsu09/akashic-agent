@@ -1903,10 +1903,10 @@ button {
 
 .message-attachment-preview img {
   display: block;
-  inline-size: auto;
-  max-inline-size: 100%;
-  block-size: auto;
-  max-block-size: min(40vh, 260px);
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: min(40vh, 260px);
   margin-inline: auto;
   object-fit: contain;
   outline: 1px solid var(--m-image-outline);
