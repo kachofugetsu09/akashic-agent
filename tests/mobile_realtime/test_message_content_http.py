@@ -4,6 +4,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -15,10 +16,12 @@ from infra.mobile_realtime.gateway import (
     _parse_message_content_range,
     create_mobile_gateway_app,
 )
+from infra.mobile_realtime.key_protection import LoadedKeyset
 from infra.mobile_realtime.message_content_http import (
     MessageContentTicketError,
     MessageContentTicketIssuer,
 )
+from infra.mobile_realtime.storage import MobileRealtimeStorage
 from session.store import SessionStore
 
 
@@ -35,8 +38,8 @@ def _issuer(now: datetime) -> MessageContentTicketIssuer:
         identity_private_key=ec.generate_private_key(ec.SECP256R1()),
     )
     return MessageContentTicketIssuer(
-        keyset,
-        _Storage(),
+        cast(LoadedKeyset, keyset),
+        cast(MobileRealtimeStorage, _Storage()),
         clock=lambda: now,
     )
 
