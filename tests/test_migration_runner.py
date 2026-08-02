@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -77,6 +78,27 @@ def test_origin_is_a_noop_when_legacy_state_is_absent(tmp_path: Path) -> None:
     assert first.migrations == (_ORIGIN_ID,)
     assert second.state == "current"
     assert second.migrations == ()
+
+
+def test_runner_supplies_yoyo_identity_without_os_username(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for key in ("LOGNAME", "USER", "LNAME", "USERNAME"):
+        monkeypatch.delenv(key, raising=False)
+
+    def get_user() -> str:
+        username = os.environ.get("USER")
+        if not username:
+            raise OSError("No username set in the environment")
+        return username
+
+    monkeypatch.setattr("yoyo.backends.base.getpass.getuser", get_user)
+
+    outcome = _runner(tmp_path / "state").run()
+
+    assert outcome.migrations == (_ORIGIN_ID,)
+    assert "USER" not in os.environ
 
 
 def test_origin_failure_is_not_marked_and_retries(

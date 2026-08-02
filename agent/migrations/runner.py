@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Iterator, Literal
 from urllib.parse import quote
 
 from yoyo import get_backend, read_migrations
@@ -13,6 +14,7 @@ from bootstrap.workspace_lock import WorkspaceInstanceLock
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_USERNAME_ENV_KEYS = ("LOGNAME", "USER", "LNAME", "USERNAME")
 
 
 @dataclass(frozen=True)
@@ -59,9 +61,13 @@ class MigrationRunner:
             os.chmod(self.ledger_path, 0o600)
 
             # 2. 为 Yoyo Python step 绑定明确的安装路径
-            with backend, bind_migration_context(
-                config_path=self.config_path,
-                workspace=self.workspace,
+            with (
+                _bind_yoyo_username(),
+                backend,
+                bind_migration_context(
+                    config_path=self.config_path,
+                    workspace=self.workspace,
+                ),
             ):
                 pending = backend.to_apply(migrations)
                 migration_ids = tuple(migration.id for migration in pending)
@@ -79,6 +85,20 @@ class MigrationRunner:
     def _ledger_uri(self) -> str:
         encoded = quote(self.ledger_path.as_posix(), safe="/:")
         return f"sqlite:///{encoded}"
+
+
+@contextmanager
+def _bind_yoyo_username() -> Iterator[None]:
+    """为没有 OS 用户记录的容器提供稳定的 Yoyo 审计身份。"""
+    if any(os.environ.get(key) for key in _USERNAME_ENV_KEYS):
+        yield
+        return
+
+    os.environ["USER"] = "akashic"
+    try:
+        yield
+    finally:
+        del os.environ["USER"]
 
 
 def migrate_installation(config_path: Path, workspace: Path) -> MigrationOutcome:
