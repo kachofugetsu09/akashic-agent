@@ -54,7 +54,11 @@ from plugins.akasha.infrastructure.sparse_index import (
     build_sparse_index,
 )
 from plugins.akasha.memory_plugin import MemoryPlugin
-from plugins.akasha.plugin import AkashaPlugin, _mobile_recall_lane
+from plugins.akasha.plugin import (
+    AkashaPlugin,
+    _empty_mobile_recall,
+    _mobile_recall_lane,
+)
 
 
 class _Embedder:
@@ -418,6 +422,11 @@ def test_mobile_recall_card_projection_preserves_bounded_lanes() -> None:
         )
         < 192 * 1024
     )
+
+
+def test_active_mobile_recall_marks_temporary_absence_as_pending() -> None:
+    assert _empty_mobile_recall()["pending"] is False
+    assert _empty_mobile_recall(pending=True)["pending"] is True
 
 
 @pytest.mark.asyncio

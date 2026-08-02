@@ -119,6 +119,7 @@ class _ProcessTurnState:
 
 
 _DELTA_FLUSH_BYTES = 4 * 1024
+_DELTA_FLUSH_INTERVAL_SECONDS = 0.05
 _MAX_DELTA_BATCHES = 256
 _BOT_COMMAND_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _PLUGIN_SEGMENT = r"[A-Za-z0-9][A-Za-z0-9._-]*"
@@ -1367,6 +1368,7 @@ class MobileRealtimeChannel:
         )
         _ = self._active_turn_ids.pop(session_id, None)
         _ = self._process_turns.pop((session_id, turn_id), None)
+        _ = self._delta_locks.pop((session_id, turn_id), None)
         return CommandReply(
             type="turn.stop.ok",
             session_id=session_id,
@@ -1549,6 +1551,7 @@ class MobileRealtimeChannel:
         )
         _ = self._active_turn_ids.pop(session_id, None)
         _ = self._process_turns.pop((session_id, turn_id), None)
+        _ = self._delta_locks.pop((session_id, turn_id), None)
         return DeliveryReceipt(
             DeliveryStatus.SUCCESS,
             canonical_media=tuple(media),
@@ -1671,7 +1674,7 @@ class MobileRealtimeChannel:
                 if len(self._delta_batches) >= _MAX_DELTA_BATCHES:
                     raise RuntimeError("mobile delta batch 已达到 256 个活跃 turn 上限")
                 timer = asyncio.create_task(
-                    self._flush_next_loop(key),
+                    self._flush_after_interval(key),
                     name=f"mobile-delta-flush:{turn_id}",
                 )
                 timer.add_done_callback(self._on_delta_timer_done)
@@ -1703,8 +1706,8 @@ class MobileRealtimeChannel:
         if flush_now:
             await self._flush_deltas(session_id, turn_id)
 
-    async def _flush_next_loop(self, key: tuple[str, str]) -> None:
-        await asyncio.sleep(0)
+    async def _flush_after_interval(self, key: tuple[str, str]) -> None:
+        await asyncio.sleep(_DELTA_FLUSH_INTERVAL_SECONDS)
         await self._flush_deltas(*key)
 
     async def _flush_deltas(self, session_id: str, turn_id: str) -> None:
@@ -1732,8 +1735,6 @@ class MobileRealtimeChannel:
                     turn_id=turn_id,
                     payload=payload,
                 )
-        _ = self._delta_locks.pop(key, None)
-
     def _on_delta_timer_done(self, task: asyncio.Task[None]) -> None:
         if task.cancelled():
             return

@@ -146,7 +146,7 @@ class AkashaPlugin(Plugin):
                 )
             pending = engine.wait_for_active_recall(session_id, turn_id)
             if pending is None:
-                return _empty_mobile_recall()
+                return _empty_mobile_recall(pending=True)
             return {
                 "schema": _MOBILE_RECALL_SCHEMA,
                 "query_id": pending.query_id,
@@ -208,10 +208,11 @@ def _clip(text: str, limit: int) -> str:
     return normalized if len(normalized) <= limit else normalized[:limit] + "..."
 
 
-def _empty_mobile_recall() -> dict[str, object]:
+def _empty_mobile_recall(*, pending: bool = False) -> dict[str, object]:
     return {
         "schema": _MOBILE_RECALL_SCHEMA,
         "query_id": None,
+        "pending": pending,
         "recall_capture_available": False,
         "left": [],
         "right": [],
