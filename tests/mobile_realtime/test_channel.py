@@ -2023,6 +2023,10 @@ async def test_delta_paths_reuse_existing_lock_without_allocating_lock() -> None
     ]
 
 
+def test_stream_delta_flush_cadence_targets_60hz() -> None:
+    assert channel_module._DELTA_FLUSH_INTERVAL_SECONDS == pytest.approx(1.0 / 60.0)
+
+
 @pytest.mark.asyncio
 async def test_stream_deltas_batch_within_one_frame_window_and_flush_before_tool_and_final(
     tmp_path: Path,
