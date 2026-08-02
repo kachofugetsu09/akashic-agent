@@ -60,6 +60,7 @@
   "controlTypes": [
     "auth.accepted",
     "device.proof",
+    "device.revoked",
     "mobile.webui.release.changed",
     "pair.accepted",
     "pair.claim",
@@ -742,6 +743,7 @@
               "pair.claim",
               "pair.pending",
               "pair.accepted",
+              "device.revoked",
               "protocol.error"
             ],
             "title": "Type",
@@ -1803,6 +1805,7 @@
             "mapping": {
               "auth.accepted": "#/$defs/AuthAcceptedControl",
               "device.proof": "#/$defs/GenericControl",
+              "device.revoked": "#/$defs/GenericControl",
               "mobile.webui.release.changed": "#/$defs/MobileWebUiReleaseChangedControl",
               "pair.accepted": "#/$defs/GenericControl",
               "pair.claim": "#/$defs/GenericControl",
@@ -1984,6 +1987,7 @@
           "mapping": {
             "auth.accepted": "#/$defs/AuthAcceptedControl",
             "device.proof": "#/$defs/GenericControl",
+            "device.revoked": "#/$defs/GenericControl",
             "mobile.webui.release.changed": "#/$defs/MobileWebUiReleaseChangedControl",
             "pair.accepted": "#/$defs/GenericControl",
             "pair.claim": "#/$defs/GenericControl",
@@ -2341,9 +2345,6 @@
             "properties": {
               "mime": {
                 "enum": [
-                  "application/font-woff",
-                  "application/font-woff2",
-                  "application/javascript",
                   "application/json",
                   "application/octet-stream",
                   "application/wasm",
@@ -2560,9 +2561,6 @@
         "properties": {
           "mime": {
             "enum": [
-              "application/font-woff",
-              "application/font-woff2",
-              "application/javascript",
               "application/json",
               "application/octet-stream",
               "application/wasm",
