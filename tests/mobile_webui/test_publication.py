@@ -8,17 +8,19 @@ import sqlite3
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 
+from infra.mobile_realtime.key_protection import LoadedKeyset
 from infra.mobile_realtime.protocol import (
     MobileWebUiContentPrepareCommand,
     MobileWebUiReleaseChangedControl,
     parse_frame,
 )
 from infra.mobile_webui.protocol import PrepareReplyWire, ReleaseViewWire
-from infra.mobile_realtime.storage import DeviceRecord
+from infra.mobile_realtime.storage import DeviceRecord, MobileRealtimeStorage
 from infra.mobile_webui.http import WebUiTicketIssuer, WebUiTicketError, parse_single_range
 from infra.mobile_webui.manifest import (
     ManifestError,
@@ -155,6 +157,29 @@ def test_manifest_rejects_ambiguous_digest_mime() -> None:
         validate_manifest(replace(draft, generation_id=generation_id_for_manifest(draft)))
 
 
+def test_manifest_rejects_ambiguous_digest_size() -> None:
+    digest = "2" * 64
+    draft = WebUiManifest(
+        generation_id="0" * 64,
+        entrypoint="mobile.html",
+        files=(
+            WebUiFile("mobile.html", digest, 1, "text/html"),
+            WebUiFile("screen.htm", digest, 2, "text/html"),
+        ),
+        bridge_protocol_min=1,
+        bridge_protocol_max=1,
+        snapshot_protocol_min=7,
+        snapshot_protocol_max=7,
+        minimum_native_build=45,
+        platforms=("android",),
+        **_SOURCE,
+        unpacked_size_bytes=3,
+        file_count=2,
+    )
+    with pytest.raises(ManifestError, match="size/mime"):
+        validate_manifest(replace(draft, generation_id=generation_id_for_manifest(draft)))
+
+
 def test_manifest_directory_uses_fixed_mime_mapping(tmp_path: Path) -> None:
     root = tmp_path / "mime"
     root.mkdir()
@@ -205,6 +230,24 @@ def test_manifest_directory_covers_wire_reachable_script_and_binary_mimes(tmp_pa
             },
             strict=True,
         )
+
+
+def test_wire_manifest_rejects_ambiguous_digest_size(tmp_path: Path) -> None:
+    root = tmp_path / "wire-size-conflict"
+    root.mkdir()
+    (root / "mobile.html").write_bytes(b"<html/>")
+    manifest, _ = manifest_from_directory(root, **_SOURCE)
+    payload = manifest.as_json()
+    payload["files"] = [
+        {"path": "a.html", "sha256": "0" * 64, "size_bytes": 1, "mime": "text/html"},
+        {"path": "mobile.html", "sha256": "0" * 64, "size_bytes": 2, "mime": "text/html"},
+    ]
+    payload["file_count"] = 2
+    payload["unpacked_size_bytes"] = 3
+    from infra.mobile_webui.protocol import WebUiManifestWire
+
+    with pytest.raises(ValueError, match="size/mime"):
+        WebUiManifestWire.model_validate(payload, strict=True)
 
 
 def test_manifest_directory_rejects_symlink_and_special_file(tmp_path: Path) -> None:
@@ -509,10 +552,15 @@ def test_ticket_scope_and_range(tmp_path: Path) -> None:
     device = DeviceRecord("device-1", "pub", "test", datetime.now(timezone.utc), None, ("mobile-webui-ota-v1",))
 
     class FakeStorage:
-        def read_device(self, device_id: str):
+        def read_device(self, device_id: str) -> DeviceRecord | None:
             return device if device_id == device.device_id else None
 
-    issuer = WebUiTicketIssuer(FakeKeyset(), FakeStorage(), store, connection_checker=lambda _id, epoch: epoch == 7)
+    issuer = WebUiTicketIssuer(
+        cast(LoadedKeyset, FakeKeyset()),
+        cast(MobileRealtimeStorage, FakeStorage()),
+        store,
+        connection_checker=lambda _id, epoch: epoch == 7,
+    )
     assert release.stable is not None
     grant = issuer.issue(device_id=device.device_id, connection_epoch=7, release=release, target_key=release.stable.target_key)
     verified = issuer.verify(grant.ticket, resource_kind="manifest", resource_digest=release.stable.manifest_digest)

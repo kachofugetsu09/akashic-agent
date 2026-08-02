@@ -357,7 +357,7 @@ def validate_manifest(manifest: WebUiManifest) -> None:
         raise ManifestError("file_count 与 files 不一致")
     seen: set[str] = set()
     seen_folded: set[str] = set()
-    digest_mimes: dict[str, str] = {}
+    digest_metadata: dict[str, tuple[int, str]] = {}
     total = 0
     for item in manifest.files:
         normalized = _normalise_path(item.path)
@@ -377,9 +377,10 @@ def validate_manifest(manifest: WebUiManifest) -> None:
         expected_mime = _MIME_BY_SUFFIX.get(Path(item.path).suffix.lower(), "application/octet-stream")
         if item.mime != expected_mime:
             raise ManifestError(f"MIME 与固定后缀映射不一致: {item.path}")
-        previous_mime = digest_mimes.setdefault(item.sha256, item.mime)
-        if previous_mime != item.mime:
-            raise ManifestError("同一 generation 内 digest 不得映射多个 MIME")
+        metadata = (item.size_bytes, item.mime)
+        previous_metadata = digest_metadata.setdefault(item.sha256, metadata)
+        if previous_metadata != metadata:
+            raise ManifestError("同一 generation 内 digest 不得映射多个 size/mime")
         if Path(item.path).suffix.lower() in _FORBIDDEN_SUFFIXES:
             raise ManifestError(f"文件类型禁止进入 WebUI: {item.path}")
         total += item.size_bytes

@@ -114,11 +114,12 @@ class WebUiManifestWire(WireModel):
         folded = [item.path.lower() for item in self.files]
         if len(set(folded)) != len(folded):
             raise ValueError("files 存在大小写折叠冲突")
-        digest_mimes: dict[str, MimeType] = {}
+        digest_metadata: dict[str, tuple[int, MimeType]] = {}
         for item in self.files:
-            previous_mime = digest_mimes.setdefault(item.sha256, item.mime)
-            if previous_mime != item.mime:
-                raise ValueError("同一 generation 内 digest 不得映射多个 MIME")
+            metadata = (item.size_bytes, item.mime)
+            previous_metadata = digest_metadata.setdefault(item.sha256, metadata)
+            if previous_metadata != metadata:
+                raise ValueError("同一 generation 内 digest 不得映射多个 size/mime")
         total = sum(item.size_bytes for item in self.files)
         if total != self.unpacked_size_bytes or total > 64 * 1024 * 1024:
             raise ValueError("unpacked_size_bytes 与 files 不一致")

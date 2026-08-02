@@ -5,14 +5,16 @@ from collections import deque
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
+from fastapi import WebSocket
 import pytest
 from pydantic import ValidationError
 
 from infra.mobile_realtime.gateway import ActiveMobileConnection, MobileGatewayRuntime
 from infra.mobile_realtime.storage import DeviceRecord
 from infra.mobile_realtime.protocol import parse_frame
-from infra.mobile_webui.manifest import manifest_from_directory
+from infra.mobile_webui.manifest import WebUiManifest, manifest_from_directory
 from infra.mobile_webui.store import MobileWebUiStore
 
 
@@ -33,12 +35,16 @@ _SOURCE = {
 }
 
 
-def _manifest(root: Path, text: bytes) -> tuple[object, dict[str, bytes]]:
+def _manifest(root: Path, text: bytes) -> tuple[WebUiManifest, dict[str, bytes]]:
     root.mkdir(parents=True, exist_ok=True)
     path = root / "mobile.html"
     path.write_bytes(text)
     manifest, contents = manifest_from_directory(root, **_SOURCE)
     return manifest, contents
+
+
+def _websocket_stub(value: object) -> WebSocket:
+    return cast(WebSocket, value)
 
 
 def _watcher_runtime(store: MobileWebUiStore) -> MobileGatewayRuntime:
@@ -68,9 +74,9 @@ async def test_publication_watcher_deduplicates_and_filters_capability(tmp_path:
 
         runtime.publish_connection_control = send_control
         runtime._connections = {
-            "enabled": ActiveMobileConnection(object(), 7, asyncio.Lock(), deque(), True, None, ("mobile-webui-ota-v1",)),
-            "disabled": ActiveMobileConnection(object(), 8, asyncio.Lock(), deque(), True, None, ("other",)),
-            "not-ready": ActiveMobileConnection(object(), 9, asyncio.Lock(), deque(), False, None, ("mobile-webui-ota-v1",)),
+            "enabled": ActiveMobileConnection(_websocket_stub(object()), 7, asyncio.Lock(), deque(), True, None, ("mobile-webui-ota-v1",)),
+            "disabled": ActiveMobileConnection(_websocket_stub(object()), 8, asyncio.Lock(), deque(), True, None, ("other",)),
+            "not-ready": ActiveMobileConnection(_websocket_stub(object()), 9, asyncio.Lock(), deque(), False, None, ("mobile-webui-ota-v1",)),
         }
         runtime.start()
         runtime.start()
@@ -121,8 +127,8 @@ async def test_control_delivery_rejects_replaced_epoch_and_evicts_failed_socket(
                 self.closed = True
 
         old_socket = Socket()
-        old = ActiveMobileConnection(old_socket, 7, asyncio.Lock(), deque(), True, None, ("mobile-webui-ota-v1",))
-        replacement = ActiveMobileConnection(Socket(), 8, asyncio.Lock(), deque(), True, None, ("mobile-webui-ota-v1",))
+        old = ActiveMobileConnection(_websocket_stub(old_socket), 7, asyncio.Lock(), deque(), True, None, ("mobile-webui-ota-v1",))
+        replacement = ActiveMobileConnection(_websocket_stub(Socket()), 8, asyncio.Lock(), deque(), True, None, ("mobile-webui-ota-v1",))
         runtime._connections = {"device": old}
         runtime._connections["device"] = replacement
         await runtime.publish_connection_control(
@@ -134,7 +140,7 @@ async def test_control_delivery_rejects_replaced_epoch_and_evicts_failed_socket(
         assert old_socket.sent == []
 
         failing_socket = Socket(fail=True)
-        failing = ActiveMobileConnection(failing_socket, 9, asyncio.Lock(), deque(), True, None, ("mobile-webui-ota-v1",))
+        failing = ActiveMobileConnection(_websocket_stub(failing_socket), 9, asyncio.Lock(), deque(), True, None, ("mobile-webui-ota-v1",))
         runtime._connections["device"] = failing
         await runtime.publish_connection_control(
             control_type="mobile.webui.release.changed",
@@ -184,7 +190,7 @@ async def test_revoke_device_commits_offline_and_notifies_active_connection() ->
     runtime._delivery_lock = asyncio.Lock()
     socket = Socket()
     runtime._connections = {
-        device.device_id: ActiveMobileConnection(socket, 7, asyncio.Lock(), deque(), True, None, ())
+        device.device_id: ActiveMobileConnection(_websocket_stub(socket), 7, asyncio.Lock(), deque(), True, None, ())
     }
     revoked = await runtime.revoke_device(device.device_id)
     assert revoked.revoked_at is not None
@@ -201,7 +207,7 @@ async def test_revoke_device_commits_offline_and_notifies_active_connection() ->
 
     failing_socket = Socket(fail=True)
     runtime._connections[device.device_id] = ActiveMobileConnection(
-        failing_socket,
+        _websocket_stub(failing_socket),
         8,
         asyncio.Lock(),
         deque(),

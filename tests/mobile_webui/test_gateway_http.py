@@ -6,9 +6,11 @@ from collections import deque
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 from cryptography.hazmat.primitives.asymmetric import ec
+from fastapi import WebSocket
 import httpx
 import pytest
 
@@ -39,6 +41,10 @@ _SOURCE = {
         "build_script_digest": "f" * 64,
     },
 }
+
+
+def _websocket_stub() -> WebSocket:
+    return cast(WebSocket, object())
 
 
 class _FakeKeyset:
@@ -84,7 +90,7 @@ def _runtime(tmp_path: Path) -> tuple[MobileGatewayRuntime, MobileWebUiStore, _F
         publication=store,
     )
     runtime._connections[device.device_id] = ActiveMobileConnection(
-        object(),
+        _websocket_stub(),
         7,
         asyncio.Lock(),
         deque(),
@@ -143,7 +149,7 @@ async def test_webui_http_headers_ranges_and_ticket_lifecycle(tmp_path: Path) ->
             assert not_member.json()["error"]["code"] == "resource_not_found"
 
             runtime._connections["device-1"] = ActiveMobileConnection(
-                object(),
+                _websocket_stub(),
                 8,
                 asyncio.Lock(),
                 deque(),
@@ -156,7 +162,7 @@ async def test_webui_http_headers_ranges_and_ticket_lifecycle(tmp_path: Path) ->
             assert stale_epoch.json()["error"]["code"] == "invalid_ticket"
 
             runtime._connections["device-1"] = ActiveMobileConnection(
-                object(),
+                _websocket_stub(),
                 7,
                 asyncio.Lock(),
                 deque(),
