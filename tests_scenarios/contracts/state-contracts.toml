@@ -75,6 +75,49 @@ physical_reduction_owner = "mobile.receipt_store"
 recovery_evidence = ["receipt_retention", "external_effect_reconciliation", "receipt_write_set"]
 failure_semantics = ["operation_rejected", "unit_failed", "cleanup_degraded", "runtime_fatal"]
 
+[states.mobile_webui_publication]
+priority = "p1"
+requirements = [
+  "WEBUI-004",
+  "WEBUI-005",
+  "WEBUI-006",
+  "MOB-001",
+  "CAP-001",
+  "CAP-002",
+  "ERR-001",
+  "TST-001",
+  "TST-002",
+  "TST-005",
+  "TST-006",
+  "TST-007",
+  "TST-008",
+]
+owner = "mobile_webui.publication_store"
+normal_change = "append_state_machine"
+destructive_owner = "protocol_owner"
+writers = ["mobile_webui"]
+consumers = ["mobile_webui", "mobile_realtime"]
+protected_tables = [
+  "webui_meta",
+  "webui_generations",
+  "webui_generation_files",
+  "webui_blobs",
+  "webui_release_state",
+  "webui_pins",
+  "webui_channel_selections",
+  "webui_backup_sets",
+  "webui_publication_journal",
+]
+oracles = ["mobile_webui_contract"]
+retention = "immutable generations and CAS blobs remain until no ReleaseView, pin, backup, channel-history or active candidate reference is reachable; publication journal is append-only"
+physical_reduction_owner = "mobile_webui.publication_store"
+recovery_evidence = [
+  "publication_write_set",
+  "publication_recovery",
+  "publication_gc_reachability",
+]
+failure_semantics = ["operation_rejected", "unit_failed", "cleanup_degraded", "runtime_fatal"]
+
 [states.mcp_reservoir]
 priority = "p0"
 requirements = ["SEC-004", "PRO-002", "TST-001", "TST-002", "TST-003"]

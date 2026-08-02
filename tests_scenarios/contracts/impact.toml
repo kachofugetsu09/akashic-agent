@@ -77,6 +77,41 @@ paths = [
 depends_on = ["channel", "plugin", "session_persistence"]
 scenarios = ["mobile_realtime_contract"]
 
+[groups.mobile_webui]
+priority = "p1"
+requirements = [
+  "WEBUI-001",
+  "WEBUI-002",
+  "WEBUI-003",
+  "WEBUI-004",
+  "WEBUI-005",
+  "WEBUI-006",
+  "MOB-001",
+  "CAP-001",
+  "CAP-002",
+  "ERR-001",
+  "TST-001",
+  "TST-002",
+  "TST-005",
+  "TST-006",
+  "TST-007",
+  "TST-008",
+]
+paths = [
+  "frontend/chat/**",
+  "infra/mobile_realtime/gateway.py",
+  "infra/mobile_realtime/protocol.py",
+  "infra/mobile_webui/**",
+  "package-lock.json",
+  "schema/mobile-realtime-v1.json",
+  "scripts/generate_mobile_realtime_schema.py",
+  "scripts/publish-mobile-webui.py",
+  "tests/mobile_realtime/test_mobile_realtime_protocol.py",
+  "tests/mobile_webui/**",
+]
+depends_on = ["mobile_realtime"]
+scenarios = ["mobile_webui_contract"]
+
 [groups.mcp]
 priority = "p0"
 requirements = ["PLG-004", "PLG-008", "PLG-009", "TST-001", "TST-003"]
@@ -349,6 +384,7 @@ paths = [
   "pyproject.toml",
   "pyrightconfig*.json",
   "requirements*.txt",
+  "package-lock.json",
   "private_runtime",
   "scripts/**",
   "skills/**",

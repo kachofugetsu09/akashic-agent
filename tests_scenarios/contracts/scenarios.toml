@@ -148,6 +148,50 @@ command = [
 observes = ["protocol_frames", "session_identity", "durable_delivery", "resume_cursor", "attachment_finality", "plugin_ui_snapshot"]
 mutants = ["unicode_utf16_command_length"]
 
+[scenarios.mobile_webui_contract]
+requirements = [
+  "WEBUI-001",
+  "WEBUI-002",
+  "WEBUI-003",
+  "WEBUI-004",
+  "WEBUI-005",
+  "WEBUI-006",
+  "MOB-001",
+  "CAP-001",
+  "CAP-002",
+  "ERR-001",
+  "TST-001",
+  "TST-002",
+  "TST-005",
+  "TST-006",
+  "TST-007",
+  "TST-008",
+]
+groups = ["mobile_webui"]
+environment = "public_clean_workspace"
+timeout_seconds = 180
+command = [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "tests/mobile_webui",
+  "tests/mobile_realtime/test_mobile_realtime_protocol.py",
+]
+observes = [
+  "release_view",
+  "generation_manifest",
+  "blob_cas_integrity",
+  "target_scoped_ticket",
+  "range_digest_headers",
+  "publication_write_set",
+  "publication_recovery",
+  "publication_gc_reachability",
+  "build_provenance_reproducibility",
+  "failure_semantics",
+]
+mutants = []
+
 [scenarios.mcp_call_finality]
 requirements = ["PLG-004", "PLG-008", "TST-001", "TST-003"]
 groups = ["mcp"]
