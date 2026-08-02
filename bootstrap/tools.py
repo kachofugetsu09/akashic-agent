@@ -18,9 +18,6 @@ logger = logging.getLogger(__name__)
 from agent.config_models import Config
 from agent.plugins.manifest import plugins_root
 from agent.context import ContextBuilder
-from agent.peer_agent.process_manager import PeerProcessManager
-from agent.peer_agent.poller import PeerAgentPoller
-from agent.peer_agent.registry import PeerAgentRegistry
 from agent.looping.core import AgentLoop
 from agent.looping.ports import (
     AgentLoopConfig,
@@ -35,10 +32,10 @@ from agent.mcp.watcher import WorkspaceMcpWatcher
 from agent.provider import LLMProvider
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.scheduler import SchedulerService
+from agent.tools.base import ToolExecutionContext, get_current_tool_context
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from bootstrap.toolsets.meta import build_readonly_tools
-from bootstrap.toolsets.peer import build_peer_agent_resources
 from bootstrap.toolsets.protocol import ToolsetDeps
 from bootstrap.toolsets.schedule import build_scheduler
 from bootstrap.wiring import (
@@ -82,39 +79,17 @@ class CoreRuntime:
     workspace_mcp_watcher_task: asyncio.Task[None] | None
     memory_runtime: MemoryRuntime
     presence: PresenceStore
-    peer_process_manager: PeerProcessManager | None
-    peer_poller: PeerAgentPoller | None
     agent_provider: LLMProvider | None = None
     plugin_manager: "PluginManager | None" = None
     workspace: Path | None = None
 
     async def start(self) -> None:
-        """启动外部连接、peer 资源和插件扩展。"""
+        """启动外部连接和插件扩展。"""
 
-        # 1. 仅在 peer 配置真实启用时发现工具并启动轮询。
-        if (
-            self.peer_poller is not None
-            and self.peer_process_manager is not None
-            and self.config.peer_agents
-        ):
-            peer_registry = PeerAgentRegistry(
-                process_manager=self.peer_process_manager,
-                poller=self.peer_poller,
-                requester=self.http_resources.local_service,
-            )
-            peer_tools = await peer_registry.discover_all(self.config.peer_agents)
-            for t in peer_tools:
-                self.tools.register(
-                    t,
-                    always_on=False,
-                    risk="external-side-effect",
-                )
-            self.peer_poller.start()
-
-        # 2. workspace MCP 必须先原子发布，插件同名声明随后 fail-loud
+        # 1. workspace MCP 必须先原子发布，插件同名声明随后 fail-loud
         await self.workspace_mcp_watcher.reconcile()
 
-        # 3. 加载插件后同步 skill，再绑定工具 hook。
+        # 2. 加载插件后同步 skill，再绑定工具 hook。
         if self.plugin_manager is not None:
             await self.plugin_manager.load_all()
             self.plugin_manager.assert_no_workspace_mcp_plugin_conflicts()
@@ -145,7 +120,7 @@ class CoreRuntime:
                 if spawn_tool is not None and hasattr(spawn_tool, "add_tool_hooks"):
                     spawn_tool.add_tool_hooks(self.plugin_manager.tool_hooks)
 
-        # 4. 首次启动全部成功后才启动容错热重载 watcher
+        # 3. 首次启动全部成功后才启动容错热重载 watcher
         self.workspace_mcp_watcher_task = asyncio.create_task(
             self.workspace_mcp_watcher.run(), name="workspace_mcp_watcher"
         )
@@ -307,16 +282,6 @@ class CoreRuntime:
                 if self.plugin_manager is not None
                 else _noop_async,
             ),
-            (
-                "peer_poller.stop",
-                self.peer_poller.stop if self.peer_poller is not None else _noop_async,
-            ),
-            (
-                "peer_process_manager.shutdown_all",
-                self.peer_process_manager.shutdown_all
-                if self.peer_process_manager is not None
-                else _noop_async,
-            ),
             ("session_manager.close", _close_session_manager),
         )
 
@@ -334,14 +299,13 @@ def build_registered_tools(
     tools: ToolRegistry | None = None,
     event_publisher=None,
     agent_loop_provider: Callable[[], Any] | None = None,
+    tool_context_provider: Callable[[], ToolExecutionContext | None] = get_current_tool_context,
     restart_coordinator: "RestartCoordinator | None" = None,
 ) -> tuple[
     ToolRegistry,
     MessagePushTool,
     SchedulerService,
     MemoryRuntime,
-    PeerProcessManager | None,
-    PeerAgentPoller | None,
 ]:
     """按配置顺序构造并注册核心工具资源。"""
 
@@ -353,7 +317,11 @@ def build_registered_tools(
     multimodal = config.multimodal
     vl_available = not multimodal and config.vl_model != ""
     readonly_tools = build_readonly_tools(
-        http_resources, multimodal=multimodal, vl_available=vl_available
+        http_resources,
+        workspace=workspace,
+        multimodal=multimodal,
+        vl_available=vl_available,
+        context_provider=tool_context_provider,
     )
     store = (
         session_store
@@ -378,10 +346,6 @@ def build_registered_tools(
         push_tool,
         agent_loop_provider=agent_loop_provider,
     )
-    peer_process_manager, peer_poller = build_peer_agent_resources(
-        config, bus, http_resources
-    )
-
     # 2. 保持 wiring.toolsets 顺序注册。
     for name in wiring.toolsets:
         provider_obj = resolve_toolset_provider(
@@ -429,8 +393,6 @@ def build_registered_tools(
         push_tool,
         scheduler,
         memory_runtime,
-        peer_process_manager,
-        peer_poller,
     )
 
 
@@ -535,7 +497,7 @@ def build_core_runtime(
     if clear_stale_session_admissions:
         session_manager.clear_stale_admissions()
     loop_ref: dict[str, AgentLoop] = {}
-    tools, push_tool, scheduler, memory_runtime, peer_pm, peer_poller = (
+    tools, push_tool, scheduler, memory_runtime = (
         build_registered_tools(
             config,
             workspace,
@@ -661,8 +623,6 @@ def build_core_runtime(
         workspace_mcp_watcher_task=None,
         memory_runtime=memory_runtime,
         presence=presence,
-        peer_process_manager=peer_pm,
-        peer_poller=peer_poller,
         plugin_manager=plugin_manager,
     )
 

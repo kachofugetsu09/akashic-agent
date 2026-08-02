@@ -28,6 +28,8 @@ class PassiveMessageWorker:
     async def run(self) -> None:
         self._running = True
         try:
+            # 1. 仅重放有界 durable handoff 页，lane 准入由 MessageBus 统一持有。
+            await self._bus.recover_durable_inbounds()
             while self._running:
                 try:
                     item = await asyncio.wait_for(self._bus.consume_inbound(), timeout=1.0)
@@ -85,8 +87,16 @@ class PassiveMessageWorker:
     async def _run_message(self, item: InboundMessage) -> None:
         """执行一条渠道消息，并始终完成 MessageBus 入站确认。"""
 
+        # 1. canonical 用户消息证明该 handoff 已进入过 turn。
+        if self._is_recovered_mobile_duplicate(item):
+            await self._bus.complete_inbound(item)
+            return
+        if item.channel == "mobile" and item.session_admission_id is None:
+            _, item.session_admission_id = self._legacy_loop.session_manager.admit_existing(
+                item.session_key
+            )
         try:
-            # 1. 渠道信息只作为 executor 所需的受控 metadata，不改变 thread identity。
+            # 2. 渠道信息只作为 executor 所需的受控 metadata，不改变 thread identity。
             request = TurnRequest(
                 item.session_key,
                 item.content,
@@ -116,7 +126,7 @@ class PassiveMessageWorker:
                 break
             result = await handle.result()
 
-            # 2. channel adapter 在领域终态外层映射用户安全文案。
+            # 3. channel adapter 在领域终态外层映射用户安全文案。
             if result.status is TurnStatus.COMPLETED:
                 assistant = next(
                     entry for entry in reversed(result.items) if entry.kind.value == "assistantMessage"
@@ -150,6 +160,20 @@ class PassiveMessageWorker:
                     self._legacy_loop.session_manager.release_admission(
                         item.session_admission_id
                     )
+
+    def _is_recovered_mobile_duplicate(self, item: InboundMessage) -> bool:
+        """识别 canonical 用户消息已存在的移动 handoff，避免重复 turn。"""
+
+        if item.channel != "mobile" or item.handoff_id is None:
+            return False
+        client_message_id = item.metadata.get("client_message_id")
+        if not isinstance(client_message_id, str) or not client_message_id:
+            return False
+        message = self._legacy_loop.session_manager.control_store.get_message_by_client_id(
+            item.session_key,
+            client_message_id,
+        )
+        return message is not None
 
     def stop(self) -> None:
         self._running = False

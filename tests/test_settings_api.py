@@ -165,6 +165,149 @@ def test_apply_writes_inline_key_and_preserves_other_config(
     ).exists()
 
 
+def test_state_reports_reasoning_effort(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        _config().replace(
+            "input_modalities = [\"text\"]",
+            "input_modalities = [\"text\"]\nreasoning_effort = \"high\"",
+        ),
+        encoding="utf-8",
+    )
+    app = create_settings_app(
+        config_path,
+        tmp_path / "workspace",
+        credential_store=CredentialStore(tmp_path / "auth" / "auth.json"),
+    )
+
+    response = TestClient(app).get("/api/settings/state")
+
+    assert response.status_code == 200
+    assert response.json()["runtimes"][0]["reasoningEffort"] == "high"
+
+
+def test_apply_writes_reasoning_effort(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_config(), encoding="utf-8")
+
+    async def validate(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr("bootstrap.settings_api._validate_live_candidate", validate)
+    app = create_settings_app(
+        config_path,
+        tmp_path / "workspace",
+        credential_store=CredentialStore(tmp_path / "auth" / "auth.json"),
+    )
+    response = TestClient(app).post(
+        "/api/settings/apply",
+        headers={"Origin": "http://testserver", "X-Akasic-CSRF": "1"},
+        json={
+            "provider": "opencode-go",
+            "model": "glm-5",
+            "api_key": "new-secret",
+            "base_url": "https://opencode.ai/zen/go/v1",
+            "context_window": 128000,
+            "max_output_tokens": 0,
+            "reasoning_effort": "high",
+            "input_modalities": ["text"],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert parsed["llm"]["runtimes"]["opencode_go_main"]["reasoning_effort"] == "high"
+
+
+def test_codex_models_expose_reasoning_effort_capabilities(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_config(), encoding="utf-8")
+
+    class FakeModel:
+        slug = "o4-mini"
+        capabilities = type(
+            "Caps",
+            (),
+            {
+                "context_window": 200000,
+                "max_output_tokens": 100000,
+                "input_modalities": ("text",),
+                "supported_reasoning_efforts": ("minimal", "low", "medium", "high"),
+                "default_reasoning_effort": "medium",
+            },
+        )()
+
+    class FakeCatalog:
+        def __init__(self, auth) -> None:
+            pass
+
+        async def list_models(self):
+            return [FakeModel()]
+
+    monkeypatch.setattr("bootstrap.settings_api.CodexModelCatalog", FakeCatalog)
+    app = create_settings_app(
+        config_path,
+        tmp_path / "workspace",
+        credential_store=CredentialStore(tmp_path / "auth" / "auth.json"),
+    )
+    response = TestClient(app).post(
+        "/api/settings/models",
+        headers={"Origin": "http://testserver", "X-Akasic-CSRF": "1"},
+        json={"provider": "codex"},
+    )
+
+    assert response.status_code == 200, response.text
+    model = response.json()["models"][0]
+    assert model["supportedReasoningEfforts"] == ["minimal", "low", "medium", "high"]
+    assert model["defaultReasoningEffort"] == "medium"
+
+
+def test_opencode_go_models_expose_reasoning_efforts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_config(), encoding="utf-8")
+
+    class FakeModel:
+        def __init__(self, slug: str, efforts: tuple[str, ...]) -> None:
+            self.slug = slug
+            self.supported_reasoning_efforts = efforts
+
+    class FakeCatalog:
+        def __init__(self, api_key: str, *, base_url: str) -> None:
+            pass
+
+        async def list_models(self):
+            return [
+                FakeModel("deepseek-v4-pro", ("low", "medium", "high", "max")),
+                FakeModel("kimi-k3", ()),
+            ]
+
+    monkeypatch.setattr("bootstrap.settings_api.OpenCodeGoModelCatalog", FakeCatalog)
+    app = create_settings_app(
+        config_path,
+        tmp_path / "workspace",
+        credential_store=CredentialStore(tmp_path / "auth" / "auth.json"),
+    )
+    response = TestClient(app).post(
+        "/api/settings/models",
+        headers={"Origin": "http://testserver", "X-Akasic-CSRF": "1"},
+        json={"provider": "opencode-go", "api_key": "secret"},
+    )
+
+    assert response.status_code == 200, response.text
+    models = {item["id"]: item for item in response.json()["models"]}
+    assert models["deepseek-v4-pro"]["supportedReasoningEfforts"] == [
+        "low",
+        "medium",
+        "high",
+        "max",
+    ]
+    assert models["kimi-k3"]["supportedReasoningEfforts"] == []
+
+
 def test_mutation_rejects_cross_origin(tmp_path: Path) -> None:
     app = create_settings_app(
         tmp_path / "config.toml",

@@ -48,10 +48,9 @@ from session.embedding_store import MessageEmbeddingStore
 
 
 logger = logging.getLogger(__name__)
-_MAX_TITLES_PER_WAKE = 120
+_MAX_TITLES_PER_WAKE = 100
 _SEMANTIC_CALIBRATION_POWER = 4
 _CONTENT_MIN_RESIDENCE = timedelta(hours=24)
-_CONTENT_MAX_AGE = timedelta(days=14)
 _RECENT_PROACTIVE_WINDOW = timedelta(days=7)
 _RECENT_PROACTIVE_LIMIT = 30
 _RECENT_PROACTIVE_CHAR_BUDGET = 8_000
@@ -87,6 +86,8 @@ class WakeRunState:
     new_alert_count: int = 0
     new_content_count: int = 0
     new_content_ids: set[str] | None = None
+    unread_content_mass: float = 0.0
+    unread_content_count: int = 0
 
 
 @dataclass(slots=True)
@@ -174,7 +175,10 @@ class WakeRuntime:
         if state.alerts:
             return
         await self._cache_event_embeddings()
-        state.contents = self._state.unread("content")
+        state.contents = self._state.unread(
+            "content", limit=_MAX_TITLES_PER_WAKE
+        )
+        state.unread_content_count = self._state.unread_count("content")
         self._apply_semantic_interest(state.contents, state.ctx.now_utc)
 
     async def _fetch_source_channels(self) -> dict[str, list[dict[str, Any]]]:
@@ -207,10 +211,29 @@ class WakeRuntime:
         )
         state.new_content_ids = set(new_content_ids)
         state.new_content_count = len(new_content_ids)
-        self._state.queue_acknowledgements(
-            _group_acknowledgements(channels["content"]),
-            state.ctx.now_utc,
-        )
+        for item in getattr(channels, "quarantined", []):
+            self._state.record_quarantine(
+                source_id=item.source_id,
+                item_id=item.item_id,
+                reason=item.reason,
+                payload=item.payload,
+            )
+        for source_id, dropped_count in getattr(
+            channels, "quarantine_overflow", {}
+        ).items():
+            self._state.record_quarantine(
+                source_id=source_id,
+                item_id="quarantine-overflow",
+                reason=(
+                    "坏 MCP item 超过单 source quarantine detail cap; "
+                    f"dropped={dropped_count}"
+                ),
+                payload={
+                    "overflow": True,
+                    "dropped_count": dropped_count,
+                    "detail_cap": mcp_sources.MAX_QUARANTINE_ITEMS_PER_SOURCE,
+                },
+            )
         state.context_results = self._state.ingest_context(
             channels["context"], state.ctx.now_utc
         )
@@ -230,7 +253,12 @@ class WakeRuntime:
             else False
         )
         state.alerts = self._state.unread("alert")
-        state.contents = self._state.unread("content")
+        state.contents = self._state.unread(
+            "content", limit=_MAX_TITLES_PER_WAKE
+        )
+        state.unread_content_mass = self._state.unread_aggregate_mass(
+            "content", now=state.ctx.now_utc
+        )
 
     def _log_source_summary(
         self,
@@ -263,21 +291,38 @@ class WakeRuntime:
             await self._decide_event(state, "context", state.context_event)
             state.next_interval_seconds = self._tick_interval_seconds
             return True
-        expired_ids: set[str] = set()
-        if state.contents:
-            ranked = rank_events(state.contents, now=state.ctx.now_utc)
-            expired_ids = {
-                str(event["id"])
-                for event in ranked
-                if _content_expired(event, state.ctx.now_utc)
+        expiry_rows = self._state.expiry_candidates(
+            "content",
+            before=state.ctx.now_utc - _CONTENT_MIN_RESIDENCE,
+        )
+        expiry_events = [
+            {
+                "id": str(row["item_id"]),
+                "_reservoir_original_source_id": row["original_source_id"],
+                "_reservoir_ack_source_id": row["ack_source_id"],
+                "_reservoir_source_event_id": row["source_event_id"],
+                "published_at": row["published_at"],
+                "first_seen_at": row["first_seen_at"],
+                "preprocess_score": row["preprocess_score"],
             }
-            if expired_ids:
-                self._state.expire(sorted(expired_ids), state.ctx.now_utc)
-                state.contents = [
-                    event
-                    for event in state.contents
-                    if str(event["id"]) not in expired_ids
-                ]
+            for row in expiry_rows
+        ]
+        expired_ids = {
+            str(event["id"])
+            for event in rank_events(expiry_events, now=state.ctx.now_utc)
+            if _content_expired(event, state.ctx.now_utc)
+        }
+        if expired_ids:
+            self._state.queue_expiration(
+                sorted(expired_ids), state.ctx.now_utc
+            )
+            await self._flush_pending_acknowledgements()
+            state.contents = [
+                event
+                for event in state.contents
+                if str(event["id"]) not in expired_ids
+            ]
+            state.unread_content_count = self._state.unread_count("content")
         new_content_ids = (state.new_content_ids or set()) - expired_ids
         should_evaluate_content = bool(state.contents and new_content_ids)
         if should_evaluate_content:
@@ -294,6 +339,7 @@ class WakeRuntime:
                     state.ctx.now_utc,
                 ),
                 last_wake_at=last_wake_at,
+                pool_mass=state.unread_content_mass,
             )
             state.hazard_result = result
             state.base_score = result.rate
@@ -309,7 +355,7 @@ class WakeRuntime:
                     now=state.ctx.now_utc,
                 )
                 state.ctx.content_backlog_count = (
-                    len(state.contents) - len(state.ctx.content_events)
+                    state.unread_content_count - len(state.ctx.content_events)
                 )
                 self._record_content_observation(state.ctx, result)
                 await self._run_content_tools(state.ctx)
@@ -1010,10 +1056,18 @@ class WakeRuntime:
         events: list[dict[str, Any]],
         now: datetime,
     ) -> None:
-        self._state.consume(
-            [str(event["id"]) for event in events],
-            now,
+        grouped: dict[str, list[str]] = {}
+        for event in events:
+            source_id = str(event.get("_reservoir_ack_source_id") or "")
+            source_event_id = str(event.get("_reservoir_source_event_id") or "")
+            if source_id and source_event_id:
+                grouped.setdefault(source_id, []).append(source_event_id)
+        self._state.consume_and_queue_ack(
+            item_ids=[str(event["id"]) for event in events],
+            acknowledgements=grouped,
+            now=now,
         )
+        await self._flush_pending_acknowledgements()
 
     async def _flush_pending_acknowledgements(self) -> None:
         grouped = self._state.pending_acknowledgements()
@@ -1123,12 +1177,7 @@ def _parse_optional_time(value: object) -> datetime | None:
 def _content_expired(event: dict[str, Any], now: datetime) -> bool:
     """只在内容超龄或度过驻留期后跌破衰减线时淘汰。"""
 
-    # 1. 发布时间可靠时直接淘汰绝对陈旧内容
-    published_at = _parse_optional_time(event.get("published_at"))
-    if published_at is not None and now - published_at >= _CONTENT_MAX_AGE:
-        return True
-
-    # 2. 新内容先获得一次跟随后续事件进入判别的机会
+    # 1. 新内容先获得一次跟随后续事件进入判别的机会
     first_seen_at = _parse_optional_time(event.get("first_seen_at"))
     if first_seen_at is None:
         raise ValueError("wake content missing first_seen_at")

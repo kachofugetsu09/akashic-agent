@@ -9,6 +9,7 @@ from typing import Any, cast
 from pydantic import ValidationError
 
 from agent.control.errors import (
+    ControlAdmissionError,
     RuntimeClosedError,
     ThreadBusyError,
     ThreadNotFoundError,
@@ -99,6 +100,14 @@ class ConnectionRouter:
             await self._send(JsonRpcError(THREAD_NOT_FOUND, str(exc)).envelope(request_id))
         except ThreadBusyError as exc:
             await self._send(JsonRpcError(THREAD_BUSY, str(exc), {"retryable": True}).envelope(request_id))
+        except ControlAdmissionError as exc:
+            await self._send(
+                JsonRpcError(
+                    SERVER_OVERLOADED,
+                    str(exc),
+                    {"retryable": True, "failure": exc.failure_type},
+                ).envelope(request_id)
+            )
         except TurnNotFoundError as exc:
             await self._send(JsonRpcError(TURN_NOT_FOUND, str(exc)).envelope(request_id))
         except RuntimeClosedError as exc:

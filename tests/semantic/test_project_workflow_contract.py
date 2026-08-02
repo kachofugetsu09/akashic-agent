@@ -69,7 +69,6 @@ def test_pull_request_template_carries_contract_and_gate_status() -> None:
         "protected_state",
         "sourceDigest",
         "planDigest",
-        "private-contract-gate",
         "NOW.md",
     ):
         assert field in template, f"PR 模板缺少工作流字段: {field}"

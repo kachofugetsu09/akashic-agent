@@ -9,6 +9,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent.scheduler import (
+    ScheduleCapacityError,
     ScheduledJob,
     SchedulerService,
     compute_fire_at,
@@ -172,7 +173,14 @@ class ScheduleTool(Tool):
             name=name,
             timezone=tz,
         )
-        self._service.add_job(job)
+        try:
+            self._service.add_job(job)
+        except ScheduleCapacityError as exc:
+            return (
+                f"{exc.code}：当前已有 {exc.active_jobs} 个活动定时任务，"
+                f"默认上限为 {exc.max_active_jobs} 个。"
+                "请询问用户要移除哪个不再需要的任务后再添加。"
+            )
 
         # 5. 优先按请求时区展示，格式异常时保留已注册任务并回退 ISO 时间
         try:
@@ -265,10 +273,7 @@ class CancelScheduleTool(Tool):
             return "错误：id 或 name 至少提供一个"
 
         if job_id:
-            all_ids = list(self._service._jobs.keys())
-            matches = [
-                jid for jid in all_ids if jid == job_id or jid.startswith(job_id)
-            ]
+            matches = self._service.match_job_ids(job_id)
             if not matches:
                 return f"未找到 ID 为 {job_id!r} 的任务"
             for jid in matches:

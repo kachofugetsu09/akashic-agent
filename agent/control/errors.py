@@ -29,6 +29,15 @@ class RuntimeClosedError(ControlError):
     pass
 
 
+class ControlAdmissionError(ControlError):
+    """表示 queued/running turn 超出控制面准入容量。"""
+
+    error_type = "resource-exhausted"
+    failure_type = "operation_rejected"
+    code = "resource-exhausted"
+    retryable = True
+
+
 class ControlExecutionError(ControlError):
     def __init__(self, error_type: str, message: str, *, retryable: bool) -> None:
         super().__init__(message)

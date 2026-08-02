@@ -1,8 +1,92 @@
 import asyncio
+from copy import deepcopy
 import inspect
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Literal, cast
+
+
+def normalize_tool_parameters(
+    parameters: dict[str, Any],
+    *,
+    open_object: bool = False,
+) -> dict[str, Any]:
+    """Normalize object schemas while preserving explicit JSON Schema policy."""
+
+    schema = cast(dict[str, Any], deepcopy(parameters))
+
+    def visit(node: dict[str, Any], *, root: bool = False) -> None:
+        if node.get("type") == "object" or isinstance(node.get("properties"), dict):
+            if root and "additionalProperties" not in node:
+                node["additionalProperties"] = open_object
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                for child in properties.values():
+                    if isinstance(child, dict):
+                        visit(cast(dict[str, Any], child))
+            additional = node.get("additionalProperties")
+            if isinstance(additional, dict):
+                visit(cast(dict[str, Any], additional))
+        elif isinstance(node.get("items"), dict):
+            visit(cast(dict[str, Any], node["items"]))
+
+    visit(schema, root=True)
+    return schema
+
+
+@dataclass(frozen=True, slots=True)
+class ToolExecutionContext:
+    """Immutable runtime provenance captured for one tool execution."""
+
+    origin_channel: str = ""
+    origin_chat_id: str = ""
+    origin_session_key: str = ""
+    turn_id: str = ""
+    current_timestamp: str = ""
+    current_user_source_ref: str = ""
+    execution_id: str = ""
+
+    @property
+    def timestamp(self) -> datetime | None:
+        if not self.current_timestamp:
+            return None
+        return datetime.fromisoformat(self.current_timestamp)
+
+
+_CURRENT_TOOL_CONTEXT: ContextVar[ToolExecutionContext | None] = ContextVar(
+    "akashic_current_tool_execution_context",
+    default=None,
+)
+
+
+def get_current_tool_context() -> ToolExecutionContext | None:
+    """Return the immutable provenance for the current async execution."""
+
+    return _CURRENT_TOOL_CONTEXT.get()
+
+
+def set_current_tool_context(
+    context: ToolExecutionContext | None,
+) -> Token[ToolExecutionContext | None]:
+    """Bind a runtime context in the current async task."""
+
+    return _CURRENT_TOOL_CONTEXT.set(context)
+
+
+@contextmanager
+def tool_execution_context_scope(
+    context: ToolExecutionContext | None,
+) -> Any:
+    """Bind one execution context and restore the caller context on exit."""
+
+    token: Token[ToolExecutionContext | None] = _CURRENT_TOOL_CONTEXT.set(context)
+    try:
+        yield context
+    finally:
+        _CURRENT_TOOL_CONTEXT.reset(token)
 
 
 @dataclass
@@ -84,14 +168,19 @@ class Tool(ABC):
             return await execution
         return await asyncio.wait_for(execution, timeout=execution_timeout)
 
-    def validate_params(self, params: dict[str, Any]) -> list[str]:
+    def validate_params(
+        self,
+        params: dict[str, Any],
+        *,
+        schema: dict[str, Any] | None = None,
+    ) -> list[str]:
         """校验参数，返回错误列表（空列表表示校验通过）"""
-        schema = self.parameters or {}
-        if schema.get("type", "object") != "object":
+        active_schema = schema if schema is not None else self.parameters or {}
+        if active_schema.get("type", "object") != "object":
             raise ValueError(
-                f"Schema 顶层类型必须为 object，当前为 {schema.get('type')!r}"
+                f"Schema 顶层类型必须为 object，当前为 {active_schema.get('type')!r}"
             )
-        return self._validate(params, {**schema, "type": "object"}, "")
+        return self._validate(params, {**active_schema, "type": "object"}, "")
 
     def _validate(self, val: Any, schema: dict[str, Any], path: str) -> list[str]:
         """递归校验值是否符合 schema，返回错误列表"""
@@ -138,6 +227,14 @@ class Tool(ABC):
                     errors.append(
                         f"不允许额外字段：{path + '.' + k if path else k}"
                     )
+                elif isinstance(schema.get("additionalProperties"), dict):
+                    errors.extend(
+                        self._validate(
+                            v,
+                            cast(dict[str, Any], schema["additionalProperties"]),
+                            f"{path}.{k}" if path else k,
+                        )
+                    )
 
         if t == "array" and "items" in schema:
             array_value = cast(list[Any], val)
@@ -155,6 +252,6 @@ class Tool(ABC):
         fn: dict[str, Any] = {
             "name": self.name,
             "description": self.description,
-            "parameters": self.parameters,
+            "parameters": normalize_tool_parameters(self.parameters),
         }
         return {"type": "function", "function": fn}

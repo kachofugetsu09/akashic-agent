@@ -28,6 +28,7 @@ from bootstrap.tools import CoreRuntime, build_core_runtime
 from bootstrap.workspace_lock import WorkspaceInstanceLock
 from bootstrap.workspace_token import ensure_workspace_token
 from bus.event_bus import EventBus
+from bus.queue import MessageBus
 from agent.plugins.jobs import PluginJobRuntime
 from agent.plugins.service_host import PluginServiceHost
 from agent.plugins.watcher import PluginWatcher
@@ -83,6 +84,14 @@ def _clear_readiness(
             readiness.clear()
 
     return clear
+
+
+def _close_message_bus(bus: object | None) -> Callable[[], Awaitable[None]]:
+    """返回已初始化 MessageBus 的异步关闭动作。"""
+
+    if isinstance(bus, MessageBus):
+        return bus.aclose
+    return _noop_async
 
 
 def _raise_unexpected_task_errors(name: str, results: list[object]) -> None:
@@ -236,8 +245,6 @@ class AppRuntime:
         self.memory_runtime = None
         self.presence = None
         self.proactive_loop = None
-        self.peer_process_manager = None
-        self.peer_poller = None
         self.dashboard_server = None
         self.dashboard_task: asyncio.Task[None] | None = None
         self.chat_server = None
@@ -293,8 +300,6 @@ class AppRuntime:
             self.light_provider = self.core.light_provider
             self.memory_runtime = self.core.memory_runtime
             self.presence = self.core.presence
-            self.peer_process_manager = self.core.peer_process_manager
-            self.peer_poller = self.core.peer_poller
             await self.core.start()
             if self.readiness is not None:
                 self.readiness.mark_stage("core.ready")
@@ -409,6 +414,9 @@ class AppRuntime:
                 self.mobile_gateway_runtime, _ = build_mobile_gateway_runtime(
                     self.config.mobile_realtime,
                     self.workspace,
+                )
+                self.bus.bind_durable_inbound_store(
+                    self.session_manager.control_store
                 )
                 from infra.mobile_realtime.runtime_inspection import (
                     RuntimeInspectionService,
@@ -782,6 +790,7 @@ class AppRuntime:
                     "mobile_gateway_server.wait",
                     _wait_server_task(self.mobile_gateway_task),
                 ),
+                ("message_bus.aclose", _close_message_bus(self.bus)),
                 (
                     "mobile_gateway.close",
                     _close_mobile_gateway(self.mobile_gateway_runtime),

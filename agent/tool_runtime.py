@@ -8,17 +8,7 @@ from agent.tools.base import Tool, ToolResult, normalize_tool_result
 
 
 def build_tool_schemas(tools: list[Tool]) -> list[dict[str, Any]]:
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.parameters,
-            },
-        }
-        for tool in tools
-    ]
+    return [tool.to_schema() for tool in tools]
 
 
 def build_tool_map(tools: list[Tool]) -> dict[str, Tool]:

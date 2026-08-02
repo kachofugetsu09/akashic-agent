@@ -12,6 +12,7 @@ from agent.control.ports import ControlExecutionResult
 from agent.control.runtime import ConversationRuntime
 from bootstrap.passive_worker import PassiveMessageWorker
 from bus.events import InboundMessage, OutboundMessage
+from bus.queue import MessageBus
 from session.manager import SessionManager
 from session.store import SessionStore
 
@@ -25,6 +26,9 @@ class _Bus:
 
     async def consume_inbound(self) -> InboundMessage:
         return await self.inbound.get()
+
+    async def recover_durable_inbounds(self) -> None:
+        return None
 
     async def publish_outbound(self, message: OutboundMessage) -> None:
         self.outbound.append(message)
@@ -98,6 +102,40 @@ async def test_channel_adapter_releases_session_admission_after_completion(
     assert dashboard_store.delete_session(session_key, cascade=True)
     dashboard_store.close()
     await runtime.shutdown()
+    manager.close()
+
+
+@pytest.mark.asyncio
+async def test_recovered_mobile_handoff_with_canonical_user_skips_new_turn(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path / "workspace")
+    session_key = "mobile:existing"
+    session = manager.get_or_create(session_key)
+    session.add_message("user", "hello", client_message_id="client:1")
+    manager.save(session)
+    bus = MessageBus()
+    bus.bind_durable_inbound_store(manager.control_store)
+    inbound = InboundMessage(
+        "mobile",
+        "device:1",
+        "existing",
+        "hello",
+        metadata={"session_key_override": session_key, "client_message_id": "client:1"},
+    )
+    await bus.publish_inbound(inbound)
+    recovered = await bus.consume_inbound()
+    worker = PassiveMessageWorker(
+        bus,
+        cast(Any, object()),
+        cast(Any, SimpleNamespace(session_manager=manager)),
+    )
+
+    assert isinstance(recovered, InboundMessage)
+    await worker._run_message(recovered)
+
+    assert manager.control_store.list_turns(session_key) == []
+    assert manager.control_store.list_inbound_handoffs() == []
     manager.close()
 
 

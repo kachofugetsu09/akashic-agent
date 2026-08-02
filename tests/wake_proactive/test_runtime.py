@@ -342,7 +342,7 @@ async def test_content_vertical_slice_filters_investigates_and_shares(
     assert "scratchpad" not in final_messages[-1]["content"]
     assert "share_content" in final_messages[-1]["content"]
     assert "skip_content" in final_messages[-1]["content"]
-    assert gateway.acks == [{"event_ids": ["new", "old"]}]
+    assert gateway.acks == [{"event_ids": ["new"]}]
     assert [event["id"] for event in runtime._state.unread("content")] == [ids[1]]
 
 
@@ -401,10 +401,92 @@ async def test_content_skip_keeps_full_unread_window_when_title_page_is_capped(
     await runtime.decide(state)
 
     observation = runtime._state.observations("content")[0]
-    assert len(json.loads(observation["candidates_json"])) == 120
-    assert state.ctx.content_backlog_count == 1
+    assert len(json.loads(observation["candidates_json"])) == 100
+    assert state.ctx.content_backlog_count == 21
     assert len(runtime._state.unread("content")) == 121
-    assert len(gateway.acks[0]["event_ids"]) == 121
+    assert gateway.acks == []
+
+
+@pytest.mark.asyncio
+async def test_ingest_after_embedding_keeps_material_window_bounded(tmp_path, request):
+    now = datetime(2026, 7, 12, tzinfo=UTC)
+    events = [
+        {
+            "kind": "content",
+            "event_id": f"bounded-{index}",
+            "title": f"标题 {index}",
+            "published_at": now.isoformat(),
+            "preprocess_score": 0.5,
+        }
+        for index in range(121)
+    ]
+    gateway = FakeGateway(events)
+    scope = _scope(
+        tmp_path,
+        gateway,
+        SimpleNamespace(chat=AsyncMock()),
+        FakeOrchestrator(),
+        _source("content"),
+    )
+    runtime = WakeRuntime(
+        scope,
+        state_store=WakeStateStore(tmp_path / "wake.db"),
+        clock=FixedClock(now),
+    )
+    request.addfinalizer(runtime.close)
+    statements: list[str] = []
+    runtime._state._conn.set_trace_callback(statements.append)
+    state = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(state)
+    runtime._state._conn.set_trace_callback(None)
+
+    assert len(state.contents) == 100
+    assert any(
+        "FROM reservoir_events" in statement
+        and "LIMIT 100" in statement
+        for statement in statements
+    )
+
+
+@pytest.mark.asyncio
+async def test_runtime_persists_quarantine_overflow_diagnostic(tmp_path, request):
+    events = [
+        {
+            "kind": "content",
+            "event_id": f"bad-{index}",
+            "preprocess_score": float("nan"),
+        }
+        for index in range(300)
+    ]
+    gateway = FakeGateway(events)
+    scope = _scope(
+        tmp_path,
+        gateway,
+        SimpleNamespace(chat=AsyncMock()),
+        FakeOrchestrator(),
+        _source("content"),
+    )
+    scope.memory.embedding_api = None
+    store = WakeStateStore(tmp_path / "wake.db")
+    runtime = WakeRuntime(
+        scope,
+        state_store=store,
+        clock=FixedClock(datetime(2026, 7, 12, tzinfo=UTC)),
+    )
+    request.addfinalizer(runtime.close)
+
+    await runtime.ingest(runtime.begin(new_proactive_frame("telegram:1")))
+
+    rows = store.quarantined(limit=1000)
+    # Per-source persistence remains capped at 100 rows; the synthetic
+    # overflow record must remain queryable within that cap.
+    assert len(rows) == 100
+    overflow = next(row for row in rows if row["item_id"] == "quarantine-overflow")
+    assert json.loads(overflow["payload_json"]) == {
+        "overflow": True,
+        "dropped_count": 44,
+        "detail_cap": 256,
+    }
 
 
 @pytest.mark.asyncio
@@ -429,10 +511,11 @@ async def test_decayed_content_is_acknowledged_without_wake(tmp_path, request):
         _source("content"),
     )
     scope.memory.embedding_api = None
+    clock = FixedClock(now)
     runtime = WakeRuntime(
         scope,
         state_store=WakeStateStore(tmp_path / "wake.db"),
-        clock=FixedClock(now),
+        clock=clock,
     )
     request.addfinalizer(runtime.close)
     state = runtime.begin(new_proactive_frame("telegram:1"))
@@ -440,9 +523,68 @@ async def test_decayed_content_is_acknowledged_without_wake(tmp_path, request):
     await runtime.ingest(state)
     await runtime.decide(state)
 
-    assert runtime._state.unread("content") == []
+    assert len(runtime._state.unread("content")) == 1
     assert runtime._state.observations("content") == []
+    assert gateway.acks == []
+
+    clock.advance(timedelta(days=2))
+    retry = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(retry)
+    await runtime.decide(retry)
+    assert runtime._state.unread("content") == []
     assert gateway.acks == [{"event_ids": ["stale"]}]
+
+
+@pytest.mark.asyncio
+async def test_decayed_content_keeps_payload_until_ack_retry_succeeds(tmp_path, request):
+    now = datetime(2026, 7, 12, tzinfo=UTC)
+    gateway = FlakyAckGateway(
+        [
+            {
+                "kind": "content",
+                "event_id": "stale-retry",
+                "title": "需要重试 ack 的旧内容",
+                "published_at": (now - timedelta(days=30)).isoformat(),
+                "preprocess_score": 0.9,
+            }
+        ]
+    )
+    scope = _scope(
+        tmp_path,
+        gateway,
+        SimpleNamespace(chat=AsyncMock()),
+        FakeOrchestrator(),
+        _source("content"),
+    )
+    scope.memory.embedding_api = None
+    store = WakeStateStore(tmp_path / "wake.db")
+    clock = FixedClock(now)
+    runtime = WakeRuntime(scope, state_store=store, clock=clock)
+    request.addfinalizer(runtime.close)
+
+    first = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(first)
+    await runtime.decide(first)
+    assert store.pending_acknowledgements() == {}
+    clock.advance(timedelta(days=2))
+    second = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(second)
+    await runtime.decide(second)
+    assert store.pending_acknowledgement_batches()[0]["action"] == "expire"
+    assert store._conn.execute(
+        "SELECT 1 FROM reservoir_events WHERE item_id = ?",
+        ("feed_plugin:main:stale-retry",),
+    ).fetchone() is not None
+
+    gateway.events = []
+    gateway.events = []
+    third = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(third)
+    assert store.pending_acknowledgements() == {}
+    assert store._conn.execute(
+        "SELECT 1 FROM reservoir_events WHERE item_id = ?",
+        ("feed_plugin:main:stale-retry",),
+    ).fetchone() is None
 
 
 @pytest.mark.asyncio

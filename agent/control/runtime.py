@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import time
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import cast
 
 from agent.control.errors import (
+    ControlAdmissionError,
     ControlExecutionError,
     RuntimeClosedError,
     SlowConsumerError,
@@ -33,6 +37,26 @@ logger = logging.getLogger(__name__)
 _STREAM_END = object()
 StreamValue = TurnEvent | BaseException | object
 
+DEFAULT_CONTROL_MAX_ACTIVE_TURNS = 16
+DEFAULT_CONTROL_MAX_ACTIVE_BYTES = 32 * 1024 * 1024
+DEFAULT_CONTROL_MAX_RUNTIME_OBJECTS = 16
+DEFAULT_REPLAY_EVENTS_PER_TURN = 256
+DEFAULT_REPLAY_BYTES_PER_TURN = 4 * 1024 * 1024
+DEFAULT_REPLAY_BYTES_GLOBAL = 32 * 1024 * 1024
+DEFAULT_TERMINAL_REPLAY_TTL_SECONDS = 5 * 60
+
+
+def _encoded_turn_bytes(request: TurnRequest) -> int:
+    """计算控制面 turn 请求的 UTF-8 编码字节数。"""
+
+    return len(json.dumps(request.to_dict(), ensure_ascii=False, sort_keys=True, default=str).encode())
+
+
+def _encoded_event_bytes(event: TurnEvent) -> int:
+    """计算 replay event 的 UTF-8 编码字节数。"""
+
+    return len(json.dumps(event.to_notification(), ensure_ascii=False, sort_keys=True, default=str).encode())
+
 
 class TurnHandle:
     """持有一个 turn 的结果、事件流和精确中断入口。"""
@@ -48,8 +72,8 @@ class TurnHandle:
     async def result(self) -> TurnResult:
         return await self._runtime.wait_result(self.thread_id, self.id)
 
-    def events(self) -> AsyncIterator[TurnEvent]:
-        return self._runtime.subscribe(self.thread_id, self.id)
+    def events(self, *, after_event: int | None = None) -> AsyncIterator[TurnEvent]:
+        return self._runtime.subscribe(self.thread_id, self.id, after_event=after_event)
 
     async def interrupt(self) -> TurnRecord:
         return await self._runtime.interrupt_turn(self.thread_id, self.id)
@@ -65,17 +89,57 @@ class ConversationRuntime:
         *,
         subscriber_queue_size: int = 256,
         restart_coordinator: RestartCoordinator | None = None,
+        max_active_turns: int = DEFAULT_CONTROL_MAX_ACTIVE_TURNS,
+        max_active_bytes: int = DEFAULT_CONTROL_MAX_ACTIVE_BYTES,
+        max_live_runtime_objects: int = DEFAULT_CONTROL_MAX_RUNTIME_OBJECTS,
+        replay_events_per_turn: int = DEFAULT_REPLAY_EVENTS_PER_TURN,
+        replay_bytes_per_turn: int = DEFAULT_REPLAY_BYTES_PER_TURN,
+        replay_bytes_global: int = DEFAULT_REPLAY_BYTES_GLOBAL,
+        terminal_replay_ttl_seconds: float = DEFAULT_TERMINAL_REPLAY_TTL_SECONDS,
     ) -> None:
         if subscriber_queue_size < 2:
             raise ValueError("subscriber_queue_size 必须至少为 2")
+        for name, value in (
+            ("max_active_turns", max_active_turns),
+            ("max_active_bytes", max_active_bytes),
+            ("max_live_runtime_objects", max_live_runtime_objects),
+            ("replay_events_per_turn", replay_events_per_turn),
+            ("replay_bytes_per_turn", replay_bytes_per_turn),
+            ("replay_bytes_global", replay_bytes_global),
+        ):
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"{name} 必须是正整数")
+        if terminal_replay_ttl_seconds <= 0:
+            raise ValueError("terminal_replay_ttl_seconds 必须为正数")
         self._store = store
         self._executor = executor
         self._subscriber_queue_size = subscriber_queue_size
         self._admission = asyncio.Lock()
+        self._control_admission_lock = asyncio.Lock()
+        self._max_active_turns = max_active_turns
+        self._max_active_bytes = max_active_bytes
+        self._max_live_runtime_objects = max_live_runtime_objects
+        self._active_turn_bytes: dict[str, int] = {}
+        self._active_admission_bytes = 0
+        self._live_runtime_objects = 0
+        self._replay_events_per_turn = replay_events_per_turn
+        self._replay_bytes_per_turn = replay_bytes_per_turn
+        self._replay_bytes_global = replay_bytes_global
+        self._terminal_replay_ttl_seconds = terminal_replay_ttl_seconds
         self._active_by_thread: dict[str, str] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._results: dict[str, asyncio.Future[TurnResult]] = {}
         self._history: dict[str, list[TurnEvent]] = {}
+        self._history_sequences: dict[str, list[int]] = {}
+        self._next_event_sequence: dict[str, int] = {}
+        self._history_truncated: set[str] = set()
+        self._replay_order: OrderedDict[tuple[str, int], tuple[TurnEvent, int]] = OrderedDict()
+        self._history_byte_totals: dict[str, int] = {}
+        self._replay_bytes = 0
+        self._terminal_replay_expiry: dict[str, float] = {}
+        self._replay_reaper_task: asyncio.Task[None] | None = None
+        self._replay_reaper_wakeup = asyncio.Event()
+        self._replay_reaper_error: BaseException | None = None
         self._subscribers: dict[str, set[asyncio.Queue[StreamValue]]] = {}
         self._interrupt_requested: set[str] = set()
         self._thread_idle: dict[str, asyncio.Event] = {}
@@ -87,38 +151,50 @@ class ConversationRuntime:
     async def start_turn(self, request: TurnRequest) -> TurnHandle:
         """持久化 queued turn 并立即返回可操作句柄。"""
 
-        # 1. 在唯一 owner 处拒绝同 thread 并发。
-        if self._closed or not self._accepting_turns:
-            raise RuntimeClosedError("conversation runtime is shutting down")
-        if request.thread_id in self._active_by_thread:
-            raise ThreadBusyError(f"thread 已有 active turn: {request.thread_id}")
+        # 1. 在唯一 owner 处检查 thread 与控制面容量；拒绝不写 SessionStore。
+        request_bytes = _encoded_turn_bytes(request)
+        async with self._control_admission_lock:
+            self._raise_replay_reaper_failure()
+            if self._closed or not self._accepting_turns:
+                raise RuntimeClosedError("conversation runtime is shutting down")
+            if request.thread_id in self._active_by_thread:
+                raise ThreadBusyError(f"thread 已有 active turn: {request.thread_id}")
+            admission_token = self._reserve_admission(request_bytes)
 
-        # 2. 先持久化 handle，再让后台任务推进状态。
-        turn_id = new_turn_id()
-        user_item = TurnItem(
-            TurnItemKind.USER_MESSAGE,
-            new_item_id(),
-            {"content": request.input},
-        )
-        record = self._store.create_turn(
-            TurnRecord(
-                id=turn_id,
-                thread_id=request.thread_id,
-                status=TurnStatus.QUEUED,
-                input=request.input,
-                metadata=dict(request.metadata),
-                items=[user_item],
-                usage=None,
-                error=None,
-                created_at=datetime.now(UTC),
+            # 2. 先持久化 queued handle；失败时只回滚本轮 admission token。
+            turn_id = new_turn_id()
+            user_item = TurnItem(
+                TurnItemKind.USER_MESSAGE,
+                new_item_id(),
+                {"content": request.input},
             )
-        )
-        self._active_by_thread[request.thread_id] = turn_id
-        self._thread_idle[request.thread_id] = asyncio.Event()
-        loop = asyncio.get_running_loop()
-        self._results[turn_id] = loop.create_future()
-        self._history[turn_id] = []
-        self._subscribers[turn_id] = set()
+            try:
+                record = self._store.create_turn(
+                    TurnRecord(
+                        id=turn_id,
+                        thread_id=request.thread_id,
+                        status=TurnStatus.QUEUED,
+                        input=request.input,
+                        metadata=dict(request.metadata),
+                        items=[user_item],
+                        usage=None,
+                        error=None,
+                        created_at=datetime.now(UTC),
+                    )
+                )
+            except BaseException:
+                self._release_admission(admission_token, request_bytes)
+                raise
+            self._commit_admission_token(admission_token, turn_id, request_bytes)
+            self._active_by_thread[request.thread_id] = turn_id
+            self._thread_idle[request.thread_id] = asyncio.Event()
+            loop = asyncio.get_running_loop()
+            self._results[turn_id] = loop.create_future()
+            self._history[turn_id] = []
+            self._history_sequences[turn_id] = []
+            self._history_byte_totals[turn_id] = 0
+            self._next_event_sequence[turn_id] = 0
+            self._subscribers[turn_id] = set()
         self._publish(TurnEvent.create("turn/queued", request.thread_id, turn_id, turn=record.to_dict()))
         self._publish(
             TurnEvent.create(
@@ -139,6 +215,44 @@ class ConversationRuntime:
         task = asyncio.create_task(self._run(request, turn_id), name=f"conversation-turn:{turn_id}")
         self._tasks[turn_id] = task
         return TurnHandle(self, request.thread_id, turn_id)
+
+    def _reserve_admission(self, request_bytes: int) -> str:
+        """在控制准入锁内保留一个 queued/running turn 的容量 token。"""
+
+        active_turns = len(self._active_turn_bytes)
+        if (
+            active_turns >= self._max_active_turns
+            or self._active_admission_bytes + request_bytes > self._max_active_bytes
+            or self._live_runtime_objects >= self._max_live_runtime_objects
+        ):
+            raise ControlAdmissionError(
+                "resource-exhausted: control admission capacity busy "
+                f"(turns={active_turns}/{self._max_active_turns}, "
+                f"bytes={self._active_admission_bytes + request_bytes}/{self._max_active_bytes}, "
+                f"runtime_objects={self._live_runtime_objects + 1}/{self._max_live_runtime_objects})"
+            )
+        # The turn id is not available until after the persistent record is built.
+        token = f"__reserved__:{time.monotonic_ns()}:{active_turns}"
+        self._active_turn_bytes[token] = request_bytes
+        self._active_admission_bytes += request_bytes
+        self._live_runtime_objects += 1
+        return token
+
+    def _commit_admission_token(self, token: str, turn_id: str, request_bytes: int) -> None:
+        if token not in self._active_turn_bytes:
+            raise RuntimeError(f"control admission token missing for turn: {turn_id}")
+        if self._active_turn_bytes.pop(token) != request_bytes:
+            raise RuntimeError(f"control admission token bytes mismatch: {turn_id}")
+        self._active_turn_bytes[turn_id] = request_bytes
+
+    def _release_admission(self, turn_id: str, request_bytes: int) -> None:
+        stored = self._active_turn_bytes.pop(turn_id, None)
+        if stored is None:
+            return
+        if stored != request_bytes:
+            raise RuntimeError(f"control admission bytes mismatch: {turn_id}")
+        self._active_admission_bytes -= stored
+        self._live_runtime_objects -= 1
 
     async def _run(self, request: TurnRequest, turn_id: str) -> None:
         """在全局 admission 内执行 turn，并保证只写一个终态。"""
@@ -354,9 +468,23 @@ class ConversationRuntime:
                 idle.set()
             _ = self._tasks.pop(turn_id, None)
             self._interrupt_requested.discard(turn_id)
+            self._release_admission(turn_id, _encoded_turn_bytes(request))
 
     def _publish(self, event: TurnEvent) -> None:
-        self._history[event.turn_id].append(event)
+        self._raise_replay_reaper_failure()
+        self._gc_terminal_replay()
+        history = self._history[event.turn_id]
+        sequences = self._history_sequences[event.turn_id]
+        sequence = self._next_event_sequence[event.turn_id]
+        self._next_event_sequence[event.turn_id] = sequence + 1
+        event_bytes = _encoded_event_bytes(event)
+        history.append(event)
+        sequences.append(sequence)
+        self._replay_order[(event.turn_id, sequence)] = (event, event_bytes)
+        self._replay_bytes += event_bytes
+        self._history_byte_totals[event.turn_id] += event_bytes
+        self._trim_turn_replay(event.turn_id)
+        self._trim_global_replay()
         for queue in tuple(self._subscribers[event.turn_id]):
             try:
                 queue.put_nowait(event)
@@ -366,7 +494,128 @@ class ConversationRuntime:
                 queue.put_nowait(SlowConsumerError(f"turn event consumer too slow: {event.turn_id}"))
                 self._subscribers[event.turn_id].discard(queue)
 
+    def _trim_turn_replay(self, turn_id: str) -> None:
+        history = self._history[turn_id]
+        sequences = self._history_sequences[turn_id]
+        while history and (
+            len(history) > self._replay_events_per_turn
+            or self._history_bytes(turn_id) > self._replay_bytes_per_turn
+        ):
+            self._remove_oldest_replay_event(turn_id)
+            if len(history) != len(sequences):
+                raise RuntimeError(f"control replay index corrupted: {turn_id}")
+        if len(history) < self._next_event_sequence[turn_id]:
+            self._history_truncated.add(turn_id)
+
+    def _trim_global_replay(self) -> None:
+        while self._replay_bytes > self._replay_bytes_global and self._replay_order:
+            (turn_id, sequence), (event, event_bytes) = self._replay_order.popitem(last=False)
+            self._remove_replay_event(
+                turn_id, sequence, event, event_bytes=event_bytes, global_removed=True
+            )
+            self._history_truncated.add(turn_id)
+
+    def _history_bytes(self, turn_id: str) -> int:
+        return self._history_byte_totals[turn_id]
+
+    def _remove_oldest_replay_event(self, turn_id: str) -> None:
+        history = self._history[turn_id]
+        sequences = self._history_sequences[turn_id]
+        if not history or len(history) != len(sequences):
+            raise RuntimeError(f"control replay index corrupted: {turn_id}")
+        self._remove_replay_event(turn_id, sequences[0], history[0])
+
+    def _remove_replay_event(
+        self,
+        turn_id: str,
+        sequence: int,
+        event: TurnEvent,
+        *,
+        event_bytes: int | None = None,
+        global_removed: bool = False,
+    ) -> None:
+        history = self._history.get(turn_id)
+        sequences = self._history_sequences.get(turn_id)
+        if history is None or sequences is None:
+            raise RuntimeError(f"control replay index corrupted: {turn_id}")
+        if len(history) != len(sequences):
+            raise RuntimeError(f"control replay index corrupted: {turn_id}")
+        if len(set(sequences)) != len(sequences):
+            raise RuntimeError(f"control replay index corrupted: {turn_id}")
+
+        target_index: int | None = None
+        for index, (item_sequence, item) in enumerate(zip(sequences, history)):
+            key = (turn_id, item_sequence)
+            entry = self._replay_order.get(key)
+            if global_removed and item_sequence == sequence:
+                if item is not event:
+                    raise RuntimeError(f"control replay index corrupted: {turn_id}")
+                if target_index is not None:
+                    raise RuntimeError(f"control replay index corrupted: {turn_id}")
+                target_index = index
+                continue
+            if entry is None or entry[0] is not item:
+                raise RuntimeError(f"control replay index corrupted: {turn_id}")
+            if item_sequence == sequence:
+                if item is not event:
+                    raise RuntimeError(f"control replay index corrupted: {turn_id}")
+                target_index = index
+
+        if target_index is None:
+            raise RuntimeError(f"control replay index corrupted: {turn_id}")
+        key = (turn_id, sequence)
+        entry = self._replay_order.get(key)
+        if global_removed:
+            if entry is not None:
+                raise RuntimeError(f"control replay index corrupted: {turn_id}")
+            if event_bytes is None:
+                raise RuntimeError(f"control replay index corrupted: {turn_id}")
+            size = event_bytes
+        else:
+            if entry is None or entry[0] is not event:
+                raise RuntimeError(f"control replay index corrupted: {turn_id}")
+            if event_bytes is not None and entry[1] != event_bytes:
+                raise RuntimeError(f"control replay index corrupted: {turn_id}")
+            size = entry[1]
+        turn_total = self._history_byte_totals.get(turn_id)
+        if turn_total is None or size < 0 or turn_total < size or self._replay_bytes < size:
+            raise RuntimeError(f"control replay index corrupted: {turn_id}")
+
+        history.pop(target_index)
+        sequences.pop(target_index)
+        if not global_removed:
+            self._replay_order.pop(key)
+        self._replay_bytes -= size
+        self._history_byte_totals[turn_id] = turn_total - size
+
+    def _gc_terminal_replay(self) -> None:
+        now = time.monotonic()
+        for turn_id, expiry in tuple(self._terminal_replay_expiry.items()):
+            if expiry > now:
+                continue
+            history = self._history.get(turn_id)
+            if history is None:
+                self._terminal_replay_expiry.pop(turn_id, None)
+                continue
+            while history:
+                self._remove_oldest_replay_event(turn_id)
+            if not history:
+                self._history.pop(turn_id, None)
+                self._history_sequences.pop(turn_id, None)
+                self._history_byte_totals.pop(turn_id, None)
+                self._history_truncated.discard(turn_id)
+                self._next_event_sequence.pop(turn_id, None)
+                self._subscribers.pop(turn_id, None)
+                self._results.pop(turn_id, None)
+                self._terminal_replay_expiry.pop(turn_id, None)
+
     def _finish_streams(self, turn_id: str) -> None:
+        self._raise_replay_reaper_failure()
+        self._terminal_replay_expiry[turn_id] = (
+            time.monotonic() + self._terminal_replay_ttl_seconds
+        )
+        self._ensure_replay_reaper()
+        self._replay_reaper_wakeup.set()
         for queue in tuple(self._subscribers[turn_id]):
             try:
                 queue.put_nowait(_STREAM_END)
@@ -381,15 +630,55 @@ class ConversationRuntime:
                 _ = queue.get_nowait()
             queue.put_nowait(error)
 
-    async def subscribe(self, thread_id: str, turn_id: str) -> AsyncIterator[TurnEvent]:
+    async def subscribe(
+        self,
+        thread_id: str,
+        turn_id: str,
+        *,
+        after_event: int | None = None,
+    ) -> AsyncIterator[TurnEvent]:
+        """订阅 live stream，并在 replay 被截断或过期时发出权威快照。"""
+
+        if after_event is not None and (
+            not isinstance(after_event, int) or isinstance(after_event, bool) or after_event < -1
+        ):
+            raise ValueError("after_event 必须是大于等于 -1 的整数")
+        self._raise_replay_reaper_failure()
+        self._gc_terminal_replay()
         record = self.read_turn(thread_id, turn_id)
-        queue: asyncio.Queue[StreamValue] = asyncio.Queue(self._subscriber_queue_size)
         history = self._history.get(turn_id)
-        if history is None:
-            if record.status.is_terminal:
-                return
+        sequences = self._history_sequences.get(turn_id, [])
+        replay_expired = record.status.is_terminal and history is None
+        if history is None and not replay_expired:
             raise TurnNotFoundError(f"turn 不在当前 runtime: {thread_id}/{turn_id}")
-        for event in history:
+
+        replay_events: list[TurnEvent] = [] if history is None else list(history)
+        replay_sequences = [] if history is None else list(sequences)
+        replay_truncated = False
+        if replay_expired:
+            replay_events = [self._replay_notice("replay/expired", record)]
+        elif record.status.is_terminal and self._terminal_replay_expired(turn_id):
+            replay_expired = True
+            replay_events = [self._replay_notice("replay/expired", record)]
+        else:
+            if after_event is not None:
+                replay_truncated = bool(
+                    replay_sequences and after_event < replay_sequences[0] - 1
+                )
+                replay_events = [
+                    event
+                    for sequence, event in zip(replay_sequences, replay_events)
+                    if sequence > after_event
+                ]
+            elif turn_id in self._history_truncated:
+                replay_truncated = True
+            if replay_truncated:
+                replay_events.insert(0, self._replay_notice("replay/truncated", record))
+
+        queue: asyncio.Queue[StreamValue] = asyncio.Queue(
+            max(self._subscriber_queue_size, len(replay_events) + 1)
+        )
+        for event in replay_events:
             queue.put_nowait(event)
         if record.status.is_terminal:
             queue.put_nowait(_STREAM_END)
@@ -406,11 +695,113 @@ class ConversationRuntime:
         finally:
             self._subscribers.get(turn_id, set()).discard(queue)
 
+    def _terminal_replay_expired(self, turn_id: str) -> bool:
+        expiry = self._terminal_replay_expiry.get(turn_id)
+        return expiry is not None and expiry <= time.monotonic()
+
+    def _raise_replay_reaper_failure(self) -> None:
+        if self._replay_reaper_error is not None:
+            raise RuntimeError("control replay reaper failed") from self._replay_reaper_error
+
+    def _ensure_replay_reaper(self) -> None:
+        self._raise_replay_reaper_failure()
+        if self._replay_reaper_task is None:
+            loop = asyncio.get_running_loop()
+            self._replay_reaper_task = loop.create_task(
+                self._replay_reaper(),
+                name="conversation-replay-reaper",
+            )
+            self._replay_reaper_task.add_done_callback(
+                self._observe_replay_reaper_task
+            )
+
+    def _observe_replay_reaper_task(self, task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None and self._replay_reaper_error is None:
+            self._replay_reaper_error = error
+
+    async def _replay_reaper(self) -> None:
+        """按最早 terminal expiry 回收 replay，并把内部损坏升级为 runtime fatal。"""
+
+        try:
+            while not self._closed:
+                # 1. 先清除旧唤醒，再读取当前最早 expiry，避免错过更早的新终态。
+                self._replay_reaper_wakeup.clear()
+                expiry = min(self._terminal_replay_expiry.values(), default=None)
+                if expiry is None:
+                    await self._replay_reaper_wakeup.wait()
+                    continue
+
+                delay = expiry - time.monotonic()
+                if delay > 0:
+                    try:
+                        await asyncio.wait_for(
+                            self._replay_reaper_wakeup.wait(), timeout=delay
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+
+                # 2. 到期清理只触碰运行时 replay 投影；SessionStore 保持权威终态。
+                self._gc_terminal_replay()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            self._replay_reaper_error = exc
+            self._accepting_turns = False
+            logger.critical(
+                "event=runtime_fatal owner=control.replay_reaper reason=terminal_replay_cleanup_failed",
+                exc_info=True,
+            )
+            raise
+
+    @staticmethod
+    def _replay_notice(method: str, record: TurnRecord) -> TurnEvent:
+        status = "replay_truncated" if method.endswith("truncated") else "replay_expired"
+        return TurnEvent.create(
+            method,
+            record.thread_id,
+            record.id,
+            error=status,
+            replay_status=status,
+            snapshot=record.to_dict(),
+        )
+
     def read_turn(self, thread_id: str, turn_id: str) -> TurnRecord:
         record = self._store.read_turn(turn_id)
         if record is None or record.thread_id != thread_id:
             raise TurnNotFoundError(f"turn 不存在: {thread_id}/{turn_id}")
         return record
+
+    def admission_snapshot(self) -> dict[str, int]:
+        """返回 queued/running turn 的控制准入计数，不含历史 thread。"""
+
+        return {
+            "turns": len(self._active_turn_bytes),
+            "bytes": self._active_admission_bytes,
+            "runtime_objects": self._live_runtime_objects,
+            "max_turns": self._max_active_turns,
+            "max_bytes": self._max_active_bytes,
+            "max_runtime_objects": self._max_live_runtime_objects,
+        }
+
+    @property
+    def active_turn_count(self) -> int:
+        return len(self._active_turn_bytes)
+
+    @property
+    def active_admission_bytes(self) -> int:
+        return self._active_admission_bytes
+
+    @property
+    def live_runtime_objects(self) -> int:
+        return self._live_runtime_objects
+
+    @property
+    def replay_bytes(self) -> int:
+        return self._replay_bytes
 
     def is_thread_active(self, thread_id: str) -> bool:
         return thread_id in self._active_by_thread
@@ -497,6 +888,10 @@ class ConversationRuntime:
             if idle is not None:
                 idle.set()
             _ = self._tasks.pop(turn_id, None)
+            request_bytes = self._active_turn_bytes.get(turn_id)
+            if request_bytes is None:
+                raise RuntimeError(f"queued turn admission missing: {turn_id}")
+            self._release_admission(turn_id, request_bytes)
             return terminal
 
         # 2. in-progress task 自己在取消处理器中提交 interrupted。
@@ -528,10 +923,21 @@ class ConversationRuntime:
 
     async def shutdown(self) -> None:
         if self._closed:
+            self._raise_replay_reaper_failure()
             return
         self._closed = True
+        self._accepting_turns = False
         tasks = tuple(self._tasks.values())
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        reaper = self._replay_reaper_task
+        if reaper is not None:
+            reaper.cancel()
+            result = await asyncio.gather(reaper, return_exceptions=True)
+            if result and isinstance(result[0], BaseException) and not isinstance(
+                result[0], asyncio.CancelledError
+            ):
+                self._replay_reaper_error = result[0]
+        self._raise_replay_reaper_failure()

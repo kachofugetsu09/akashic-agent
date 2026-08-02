@@ -63,9 +63,12 @@ async def test_spawn_completion_updates_original_session_without_raw_result(tmp_
 
     response = await loop._process(item)
     updated = session_manager.get_or_create("telegram:123")
+    execution_context = tools.get_execution_context()
 
     assert response.channel == "telegram"
     assert response.chat_id == "123"
+    assert execution_context is not None
+    assert execution_context.turn_id.startswith("turn:")
     assert "整理" in response.content
     assert updated.messages[-1]["content"] == "我已经整理完后台结果，结论如下。"
     assert all(

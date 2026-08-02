@@ -52,7 +52,7 @@ from infra.mobile_realtime.plugin_ui_http import (
     PluginUiHttpTicketIssuer,
 )
 from infra.mobile_realtime.protocol import AttachmentDownloadCommand, parse_frame
-from infra.mobile_realtime.storage import DeviceRecord
+from infra.mobile_realtime.storage import DeviceRecord, MobileStorageError
 from session.manager import SessionManager
 
 
@@ -114,6 +114,41 @@ async def test_gateway_atomically_publishes_proactive_attachment(
             resolved[0].attachment_id
         )
     finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_rejects_attachment_commit_after_last_device_disappears(
+    tmp_path: Path,
+) -> None:
+    runtime, _keyset = build_mobile_gateway_runtime(
+        _config(),
+        tmp_path,
+        master_keys=_EphemeralMasterKeys(),
+    )
+    source = tmp_path / "report.pdf"
+    source.write_bytes(b"report")
+    service = AttachmentTransferService(
+        runtime.storage,
+        AttachmentStore(tmp_path / "uploads"),
+        max_attachment_bytes=1024,
+    )
+    candidates = service.snapshot_outbound_batch(
+        session_id="mobile:session-1",
+        local_media_paths=(source,),
+    )
+    try:
+        with pytest.raises(MobileStorageError, match="没有可提交的目标设备"):
+            await runtime.publish_event_with_outbound_attachments(
+                candidates=candidates,
+                session_id="mobile:session-1",
+                payload_builder=lambda _records: {
+                    "content": "报告",
+                    "attachments": [],
+                },
+            )
+    finally:
+        service.cleanup_outbound_candidates(candidates)
         runtime.close()
 
 

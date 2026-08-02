@@ -137,6 +137,12 @@ def create_settings_app(
                             "contextWindow": entry.capabilities.context_window,
                             "maxOutputTokens": entry.capabilities.max_output_tokens,
                             "inputModalities": list(entry.capabilities.input_modalities),
+                            "supportedReasoningEfforts": list(
+                                entry.capabilities.supported_reasoning_efforts
+                            ),
+                            "defaultReasoningEffort": (
+                                entry.capabilities.default_reasoning_effort
+                            ),
                         }
                         for entry in entries
                     ]
@@ -152,7 +158,17 @@ def create_settings_app(
                     key,
                     base_url=payload.base_url or "https://opencode.ai/zen/go/v1",
                 ).list_models()
-                return {"models": [{"id": entry.slug} for entry in entries]}
+                return {
+                    "models": [
+                        {
+                            "id": entry.slug,
+                            "supportedReasoningEfforts": list(
+                                entry.supported_reasoning_efforts
+                            ),
+                        }
+                        for entry in entries
+                    ]
+                }
             return {"models": []}
         except (AuthenticationError, TransportError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -361,6 +377,7 @@ def _runtime_summary(
         "contextWindow": context_window,
         "maxOutputTokens": max_output_tokens,
         "inputModalities": input_modalities,
+        "reasoningEffort": str(raw.get("reasoning_effort") or ""),
         "credential": {
             "id": auth,
             "configured": bool(auth and auth in credential_meta) or bool(inline),

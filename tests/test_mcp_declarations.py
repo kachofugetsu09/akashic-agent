@@ -429,8 +429,6 @@ async def test_core_stop_cancels_blocked_real_candidate_before_publish(
         workspace_mcp_watcher_task=watcher_task,
         memory_runtime=object(),  # type: ignore[arg-type]
         presence=object(),  # type: ignore[arg-type]
-        peer_process_manager=None,
-        peer_poller=None,
         plugin_manager=manager,
     )
     await asyncio.wait_for(runtime.stop(), timeout=1)
@@ -457,7 +455,7 @@ async def test_app_start_bad_batch_releases_workspace_lock(
     class Core:
         loop = bus = tools = push_tool = session_manager = scheduler = object()
         provider = presence = object()
-        light_provider = peer_process_manager = peer_poller = None
+        light_provider = None
         event_bus = EventBus()
         plugin_manager = manager
         memory_runtime = type("Memory", (), {"aclose": staticmethod(noop)})()

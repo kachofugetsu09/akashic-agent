@@ -3,7 +3,9 @@ from typing import Any, cast
 
 import pytest
 
+from agent.background.subagent_manager import SubagentCapacityError
 from agent.background.subagent_manager import SubagentManager
+from agent.background.subagent_manager import _SubagentAdmission
 from agent.policies.delegation import SpawnDecision, SpawnDecisionMeta
 from agent.provider import LLMResponse
 from bus.events import SpawnCompletionItem
@@ -198,3 +200,145 @@ async def test_spawn_sync_uses_shorter_iteration_budget(tmp_path):
     assert "退出原因: completed" in result
     assert observed["profile"] == "research"
     assert observed["max_iterations"] == 10
+
+
+@pytest.mark.asyncio
+async def test_sync_and_background_workers_share_atomic_capacity(tmp_path):
+    bus = MessageBus()
+    manager = SubagentManager(
+        provider=cast(Any, _Provider()),
+        workspace=tmp_path,
+        bus=bus,
+        model="m",
+        max_tokens=256,
+        fetch_requester=object(),  # type: ignore[arg-type]
+    )
+    sync_started = asyncio.Event()
+    sync_release = asyncio.Event()
+    background_started = asyncio.Event()
+    background_release = asyncio.Event()
+
+    class _BlockingSubAgent:
+        last_exit_reason = "completed"
+
+        async def run(self, task: str) -> str:
+            sync_started.set()
+            await sync_release.wait()
+            return task
+
+    async def _fake_background(**_kwargs: Any) -> None:
+        background_started.set()
+        await background_release.wait()
+
+    manager._build_subagent = (
+        lambda *, task_dir, profile="research", max_iterations=50: _BlockingSubAgent()
+    )  # type: ignore[assignment]
+    manager._run_subagent = _fake_background  # type: ignore[assignment]
+
+    sync_task = asyncio.create_task(
+        manager.spawn_sync(task="sync", label="sync")
+    )
+    await asyncio.wait_for(sync_started.wait(), timeout=0.2)
+    await manager.spawn(
+        task="background-1",
+        label="background-1",
+        origin_channel="telegram",
+        origin_chat_id="1",
+    )
+    await manager.spawn(
+        task="background-2",
+        label="background-2",
+        origin_channel="telegram",
+        origin_chat_id="1",
+    )
+    await asyncio.wait_for(background_started.wait(), timeout=0.2)
+    assert manager.get_running_count() == 3
+
+    with pytest.raises(SubagentCapacityError, match="active=3, max=3"):
+        await manager.spawn_sync(task="rejected", label="rejected")
+
+    background_release.set()
+    sync_release.set()
+    assert "退出原因: completed" in await sync_task
+    await asyncio.sleep(0)
+    assert manager.get_running_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_cancelled_sync_wait_keeps_admission_until_worker_finishes(tmp_path):
+    bus = MessageBus()
+    manager = SubagentManager(
+        provider=cast(Any, _Provider()),
+        workspace=tmp_path,
+        bus=bus,
+        model="m",
+        max_tokens=256,
+        fetch_requester=object(),  # type: ignore[arg-type]
+    )
+    started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _BlockingSubAgent:
+        last_exit_reason = "completed"
+
+        async def run(self, _task: str) -> str:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+                raise AssertionError("阻塞任务不应正常返回")
+            except asyncio.CancelledError:
+                cleanup_started.set()
+                await release.wait()
+                raise
+
+    manager._build_subagent = (
+        lambda *, task_dir, profile="research", max_iterations=50: _BlockingSubAgent()
+    )  # type: ignore[assignment]
+
+    caller = asyncio.create_task(manager.spawn_sync(task="long", label="long"))
+    await asyncio.wait_for(started.wait(), timeout=0.2)
+    caller.cancel()
+    await asyncio.wait_for(cleanup_started.wait(), timeout=0.2)
+    assert manager.get_running_count() == 1
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert manager.get_running_count() == 0
+
+
+def test_subagent_admission_rejects_double_release() -> None:
+    admission = _SubagentAdmission()
+    lease = admission.acquire(owner="test")
+    lease.release()
+    with pytest.raises(RuntimeError, match="已释放"):
+        lease.release()
+
+
+@pytest.mark.asyncio
+async def test_background_setup_failure_releases_admission(tmp_path):
+    bus = MessageBus()
+    manager = SubagentManager(
+        provider=cast(Any, _Provider()),
+        workspace=tmp_path,
+        bus=bus,
+        model="m",
+        max_tokens=256,
+        fetch_requester=object(),  # type: ignore[arg-type]
+    )
+
+    def fail_task_dir(_job_id: str):
+        raise OSError("task directory unavailable")
+
+    manager._job_task_dir = fail_task_dir  # type: ignore[assignment]
+    with pytest.raises(OSError, match="task directory unavailable"):
+        await manager.spawn(
+            task="setup failure",
+            label="setup",
+            origin_channel="telegram",
+            origin_chat_id="1",
+        )
+    assert manager.get_running_count() == 0

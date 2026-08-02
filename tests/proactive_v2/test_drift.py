@@ -1190,8 +1190,8 @@ async def test_finish_drift_rejects_removed_waiting_status(tmp_path: Path):
         },
         store=store,
     )
-    payload = json.loads(cast(Any, raw))
-    assert payload["error"] == "status must be one of: completed, paused"
+    assert "工具参数无效" in str(raw)
+    assert "缺少必填字段：self_update" in str(raw)
     assert ctx.drift_finished is False
     assert store.load_drift()["recent_runs"] == []
 
@@ -1212,8 +1212,8 @@ async def test_finish_drift_paused_requires_scratchpad(tmp_path: Path):
         },
         store=store,
     )
-    payload = json.loads(cast(Any, raw))
-    assert payload["error"] == "scratchpad_update is required when status is paused"
+    assert "工具参数无效" in str(raw)
+    assert "缺少必填字段：self_update" in str(raw)
     assert ctx.drift_finished is False
 
 

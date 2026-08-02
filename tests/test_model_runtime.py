@@ -14,7 +14,10 @@ from agent.config_models import ModelRuntimeConfig
 from agent.model_runtime.auth.codex import CODEX_CLIENT_VERSION, CodexAuthDriver
 from agent.model_runtime.auth.store import Credential, CredentialStore
 from agent.model_runtime.catalog.codex import CodexModelCatalog
-from agent.model_runtime.catalog.opencode_go import OpenCodeGoModelCatalog
+from agent.model_runtime.catalog.opencode_go import (
+    OpenCodeGoModelCatalog,
+    _reasoning_efforts_for,
+)
 from agent.model_runtime.context_policy import (
     build_runtime_context_budget,
     recommended_context_settings,
@@ -143,6 +146,38 @@ def test_opencode_go_profile_is_dynamic_and_rejects_wrong_wire() -> None:
         )
 
 
+def test_opencode_go_reasoning_efforts_follow_client_rules() -> None:
+    assert _reasoning_efforts_for("deepseek-v4-pro") == (
+        "low",
+        "medium",
+        "high",
+        "max",
+    )
+    assert _reasoning_efforts_for("deepseek-v4-flash") == (
+        "low",
+        "medium",
+        "high",
+        "max",
+    )
+    assert _reasoning_efforts_for("glm-5.2") == ("high", "max")
+    assert _reasoning_efforts_for("glm-5p2") == ("high", "max")
+    assert _reasoning_efforts_for("glm-5-2") == ("high", "max")
+    assert _reasoning_efforts_for("glm-5.99") == ()
+    assert _reasoning_efforts_for("glm-5.1") == ()
+    assert _reasoning_efforts_for("glm-5") == ()
+    assert _reasoning_efforts_for("kimi-k3") == ()
+    assert _reasoning_efforts_for("minimax-m3") == ()
+    assert _reasoning_efforts_for("qwen3.7-plus") == ()
+    assert _reasoning_efforts_for("deepseek-chat") == ()
+    assert _reasoning_efforts_for("mimo-v2.5-pro") == (
+        "low",
+        "medium",
+        "high",
+    )
+    assert _reasoning_efforts_for("grok-4.5") == ("low", "medium", "high")
+    assert _reasoning_efforts_for("future-model-1") == ("low", "medium", "high")
+
+
 @pytest.mark.asyncio
 async def test_opencode_go_catalog_uses_http_boundary_and_filters_protocols() -> None:
     requests: list[tuple[str, str | None]] = []
@@ -185,11 +220,19 @@ async def test_opencode_go_catalog_uses_http_boundary_and_filters_protocols() ->
         server.server_close()
         thread.join()
 
+    by_slug = {model.slug: model for model in models}
     assert [model.slug for model in models] == [
         "glm-5.99",
         "kimi-k3",
         "future-model-1",
     ]
+    assert by_slug["glm-5.99"].supported_reasoning_efforts == ()
+    assert by_slug["kimi-k3"].supported_reasoning_efforts == ()
+    assert by_slug["future-model-1"].supported_reasoning_efforts == (
+        "low",
+        "medium",
+        "high",
+    )
     assert requests == [("/v1/models", "Bearer secret")]
 
 
