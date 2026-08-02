@@ -29,6 +29,12 @@ test("Akasha contributes current-turn recall and a mobile Inspector", () => {
   assert.match(source, /context\.query\("inspector\.detail"/);
 });
 
+test("active recall does not cache a temporary empty projection", () => {
+  assert.match(source, /activeMessage \? "none" : "immutable"/);
+  assert.match(source, /if \(result\.pending === true\)[\s\S]*?continue;/);
+  assert.match(source, /记忆生成中…/);
+});
+
 test("mobile UI keeps graph out and uses restrained interaction styles", () => {
   assert.doesNotMatch(source, /akasha-graph|graph\.(global|query|rebuild)/);
   assert.doesNotMatch(source, /\.slice\(/);

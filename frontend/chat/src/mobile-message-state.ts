@@ -55,7 +55,16 @@ export interface MobileStreamPatch<T> {
   projectionGeneration: number;
   selectedSessionId: string;
   messageIndex: number;
-  message: T & { id: string };
+  messageId: string;
+  searchRevision?: number;
+  durationSeconds?: number;
+  contentAppend?: string;
+  thinkingAppend?: {
+    blockIndex: number;
+    blockId: string;
+    delta: string;
+  };
+  message?: T & { id: string };
 }
 
 export interface MobileStreamProjection<T> {
@@ -105,18 +114,49 @@ export function reconcileMobileStreamItems<T>(
 
 /** 在 generation、会话和消息身份一致时局部替换一个 streaming 投影。 */
 export function applyMobileStreamPatch<
-  T extends { id: string },
+  T extends {
+    id: string;
+    content?: string;
+    searchRevision?: number;
+    durationSeconds?: number;
+    blocks?: { id: string; detail: string }[];
+  },
   S extends MobileStreamProjection<T>,
 >(snapshot: S, patch: MobileStreamPatch<T>): S | null {
   if (
     snapshot.projectionGeneration !== patch.projectionGeneration
     || snapshot.selectedSessionId !== patch.selectedSessionId
-    || snapshot.messages[patch.messageIndex]?.id !== patch.message.id
+    || snapshot.messages[patch.messageIndex]?.id !== patch.messageId
   ) {
     return null
   }
+  const previous = snapshot.messages[patch.messageIndex]
+  let message: T
+  if (patch.message !== undefined) {
+    if (patch.message.id !== patch.messageId) return null
+    message = patch.message
+  } else {
+    if (typeof previous.content !== "string" || !Array.isArray(previous.blocks)) return null
+    let blocks = previous.blocks
+    if (patch.thinkingAppend !== undefined) {
+      const currentBlock = blocks[patch.thinkingAppend.blockIndex]
+      if (currentBlock?.id !== patch.thinkingAppend.blockId) return null
+      blocks = blocks.slice()
+      blocks[patch.thinkingAppend.blockIndex] = {
+        ...currentBlock,
+        detail: currentBlock.detail + patch.thinkingAppend.delta,
+      }
+    }
+    message = {
+      ...previous,
+      content: previous.content + (patch.contentAppend ?? ""),
+      blocks,
+      searchRevision: patch.searchRevision ?? previous.searchRevision,
+      durationSeconds: patch.durationSeconds ?? previous.durationSeconds,
+    }
+  }
   const messages = snapshot.messages.slice()
-  messages[patch.messageIndex] = patch.message
+  messages[patch.messageIndex] = message
   return { ...snapshot, messages }
 }
 

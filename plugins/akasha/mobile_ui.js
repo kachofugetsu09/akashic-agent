@@ -126,31 +126,49 @@ function mountRecall(host, context) {
   }
   host.innerHTML = '<p class="akasha-mobile-loading">正在读取本轮记忆…</p>';
   let active = true;
-  context.query(
-    "recall.current",
-    { message_id: context.messageId },
-    { cache: "immutable", transport: "https" },
-  ).then((result) => {
-    if (!active) return;
-    const left = Array.isArray(result.left) ? result.left : [];
-    const right = Array.isArray(result.right) ? result.right : [];
-    const toolLeft = Array.isArray(result.tool_left) ? result.tool_left : [];
-    const toolRight = Array.isArray(result.tool_right) ? result.tool_right : [];
-    const recallCaptured = result.recall_capture_available !== false;
-    host.innerHTML = `
-      <div class="akasha-mobile-recall-group">
-        ${recallSection("左脑 · 精确回忆", left, "precise")}
-        ${recallSection("右脑 · 模式补全", right, "completion", recallCaptured)}
-        ${toolLeft.length ? recallSection("工具回忆 · 精确回忆", toolLeft, "precise") : ""}
-        ${toolRight.length ? recallSection("工具回忆 · 模式补全", toolRight, "completion") : ""}
-      </div>
-    `;
-  }).catch((error) => {
+  let retryTimer;
+  const activeMessage = context.messageId.startsWith("assistant:");
+  const waitToRetry = () => new Promise((resolve) => {
+    retryTimer = setTimeout(resolve, 250);
+  });
+  const load = async () => {
+    while (active) {
+      const result = await context.query(
+        "recall.current",
+        { message_id: context.messageId },
+        { cache: activeMessage ? "none" : "immutable", transport: "https" },
+      );
+      if (!active) return;
+      if (result.pending === true) {
+        host.innerHTML = '<p class="akasha-mobile-loading">记忆生成中…</p>';
+        await waitToRetry();
+        continue;
+      }
+      const left = Array.isArray(result.left) ? result.left : [];
+      const right = Array.isArray(result.right) ? result.right : [];
+      const toolLeft = Array.isArray(result.tool_left) ? result.tool_left : [];
+      const toolRight = Array.isArray(result.tool_right) ? result.tool_right : [];
+      const recallCaptured = result.recall_capture_available !== false;
+      host.innerHTML = `
+        <div class="akasha-mobile-recall-group">
+          ${recallSection("左脑 · 精确回忆", left, "precise")}
+          ${recallSection("右脑 · 模式补全", right, "completion", recallCaptured)}
+          ${toolLeft.length ? recallSection("工具回忆 · 精确回忆", toolLeft, "precise") : ""}
+          ${toolRight.length ? recallSection("工具回忆 · 模式补全", toolRight, "completion") : ""}
+        </div>
+      `;
+      return;
+    }
+  };
+  load().catch((error) => {
     if (active) {
       host.innerHTML = `<p class="akasha-mobile-error">${escapeHtml(error.message || "记忆读取失败")}</p>`;
     }
   });
-  return () => { active = false; };
+  return () => {
+    active = false;
+    if (retryTimer !== undefined) clearTimeout(retryTimer);
+  };
 }
 
 function mountInspector(host, context) {

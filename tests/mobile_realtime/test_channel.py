@@ -2012,7 +2012,7 @@ async def test_delta_paths_reuse_existing_lock_without_allocating_lock() -> None
     )
 
     assert allocations == 0
-    assert channel._delta_locks == {}
+    assert channel._delta_locks == {key: existing_lock}
     assert runtime.events == [
         {
             "event_type": "answer.delta",
@@ -2024,7 +2024,7 @@ async def test_delta_paths_reuse_existing_lock_without_allocating_lock() -> None
 
 
 @pytest.mark.asyncio
-async def test_stream_deltas_batch_within_one_event_loop_turn_and_flush_before_tool_and_final(
+async def test_stream_deltas_batch_within_one_frame_window_and_flush_before_tool_and_final(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2076,8 +2076,9 @@ async def test_stream_deltas_batch_within_one_event_loop_turn_and_flush_before_t
                 thinking_delta=delta,
             )
         )
+        await asyncio.sleep(0.005)
     assert [event["event_type"] for event in runtime.events] == ["turn.started"]
-    await asyncio.sleep(0.01)
+    await asyncio.sleep(channel_module._DELTA_FLUSH_INTERVAL_SECONDS + 0.01)
     assert [event["event_type"] for event in runtime.events] == [
         "turn.started",
         "react.thinking.delta",

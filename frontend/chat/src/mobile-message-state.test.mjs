@@ -83,6 +83,7 @@ test("stream patch replaces only the matching message projection", () => {
     projectionGeneration: 7,
     selectedSessionId: "mobile:test",
     messageIndex: 1,
+    messageId: active.id,
     message: patchedMessage,
   });
 
@@ -108,6 +109,37 @@ test("stream reconciliation preserves completed block identities and replaces ac
   assert.equal(reconciled[1], nextActive);
 });
 
+test("incremental stream patch appends answer and one thinking block without replacing stable blocks", () => {
+  const stable = { id: "tool-1", detail: "完成" };
+  const thinking = { id: "thinking-2", detail: "正在" };
+  const snapshot = {
+    projectionGeneration: 7,
+    selectedSessionId: "mobile:test",
+    messages: [{
+      id: "assistant:turn",
+      content: "回答",
+      searchRevision: 1,
+      blocks: [stable, thinking],
+    }],
+  };
+
+  const next = applyMobileStreamPatch(snapshot, {
+    projectionGeneration: 7,
+    selectedSessionId: "mobile:test",
+    messageIndex: 0,
+    messageId: "assistant:turn",
+    searchRevision: 2,
+    contentAppend: "继续",
+    thinkingAppend: { blockIndex: 1, blockId: "thinking-2", delta: "检查" },
+  });
+
+  assert.notEqual(next, null);
+  assert.equal(next.messages[0].content, "回答继续");
+  assert.equal(next.messages[0].blocks[0], stable);
+  assert.equal(next.messages[0].blocks[1].detail, "正在检查");
+  assert.equal(next.messages[0].searchRevision, 2);
+});
+
 test("stream patch rejects stale generation, session, index, and identity", () => {
   const snapshot = {
     projectionGeneration: 7,
@@ -118,6 +150,7 @@ test("stream patch rejects stale generation, session, index, and identity", () =
     projectionGeneration: 7,
     selectedSessionId: "mobile:test",
     messageIndex: 0,
+    messageId: "assistant:turn",
     message: { id: "assistant:turn", content: "完成" },
   };
 

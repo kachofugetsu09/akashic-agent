@@ -202,11 +202,20 @@ interface MobileSession {
 }
 
 interface MobileStreamPatch {
-  protocolVersion: 1;
+  protocolVersion: 2;
   projectionGeneration: number;
   selectedSessionId: string;
   messageIndex: number;
-  message: MobileMessage;
+  messageId: string;
+  searchRevision: number;
+  durationSeconds?: number;
+  contentAppend?: string;
+  thinkingAppend?: {
+    blockIndex: number;
+    blockId: string;
+    delta: string;
+  };
+  message?: MobileMessage;
 }
 
 type MobileStatePatch = Omit<MobileSnapshot, "protocolVersion" | "messages"> & {
@@ -525,7 +534,7 @@ function parseTransferStatus(value: unknown): MobileTransferStatus {
 /** 校验 native 在完整快照之后发送的单消息 streaming patch。 */
 function parseMobileStreamPatch(value: unknown): MobileStreamPatch {
   const raw = requireRecord(value, "streamPatch");
-  if (raw.protocolVersion !== 1) {
+  if (raw.protocolVersion !== 2) {
     throw new Error(`不支持的 stream patch 版本: ${String(raw.protocolVersion)}`);
   }
   const projectionGeneration = requireNonNegativeInteger(
@@ -533,15 +542,40 @@ function parseMobileStreamPatch(value: unknown): MobileStreamPatch {
     "streamPatch.projectionGeneration",
   );
   const messageIndex = requireNonNegativeInteger(raw.messageIndex, "streamPatch.messageIndex");
-  const message = parseMessage(raw.message, messageIndex);
-  if (!message.streaming || message.role !== "assistant") {
+  const messageId = requireString(raw.messageId, "streamPatch.messageId");
+  const message = raw.message === undefined ? undefined : parseMessage(raw.message, messageIndex);
+  if (message && (!message.streaming || message.role !== "assistant" || message.id !== messageId)) {
     throw new Error("stream patch 只能更新正在执行的助手消息");
   }
+  const contentAppend = optionalString(raw.contentAppend, "streamPatch.contentAppend");
+  const thinkingAppend = raw.thinkingAppend === undefined
+    ? undefined
+    : (() => {
+        const append = requireRecord(raw.thinkingAppend, "streamPatch.thinkingAppend");
+        return {
+          blockIndex: requireNonNegativeInteger(append.blockIndex, "streamPatch.thinkingAppend.blockIndex"),
+          blockId: requireString(append.blockId, "streamPatch.thinkingAppend.blockId"),
+          delta: requireString(append.delta, "streamPatch.thinkingAppend.delta"),
+        };
+      })();
+  if (message && (contentAppend !== undefined || thinkingAppend !== undefined)) {
+    throw new Error("stream patch 不能同时携带完整消息和追加量");
+  }
+  if (!message && contentAppend === undefined && thinkingAppend === undefined) {
+    throw new Error("stream patch 缺少消息变化");
+  }
   return {
-    protocolVersion: 1,
+    protocolVersion: 2,
     projectionGeneration,
     selectedSessionId: requireString(raw.selectedSessionId, "streamPatch.selectedSessionId"),
     messageIndex,
+    messageId,
+    searchRevision: requireNonNegativeInteger(raw.searchRevision, "streamPatch.searchRevision"),
+    durationSeconds: raw.durationSeconds === undefined
+      ? undefined
+      : requireNonNegativeInteger(raw.durationSeconds, "streamPatch.durationSeconds"),
+    contentAppend,
+    thinkingAppend,
     message,
   };
 }
@@ -1034,7 +1068,7 @@ function MobileNativeApp() {
   }, []);
 
   useEffect(() => {
-    let pendingPatch: MobileStreamPatch | null = null;
+    let pendingPatches: MobileStreamPatch[] = [];
     let patchFrame: number | null = null;
     let requestTimer: number | null = null;
     let snapshotAccepted = false;
@@ -1057,7 +1091,7 @@ function MobileNativeApp() {
         let nextSnapshot: MobileSnapshot;
         try {
           nextSnapshot = parseMobileSnapshot(next);
-          pendingPatch = null;
+          pendingPatches = [];
           if (patchFrame !== null) {
             window.cancelAnimationFrame(patchFrame);
             patchFrame = null;
@@ -1093,43 +1127,51 @@ function MobileNativeApp() {
         if (requestTimer !== null) window.clearTimeout(requestTimer);
       },
       receiveStreamPatch(next) {
+        let parsed: MobileStreamPatch;
         try {
-          pendingPatch = parseMobileStreamPatch(next);
+          parsed = parseMobileStreamPatch(next);
           setSnapshotError(null);
         } catch (error) {
           console.error("[mobile] rejected native stream patch", error);
           setSnapshotError(error instanceof Error ? error.message : "原生流式 patch 无效");
           return;
         }
+        pendingPatches.push(parsed);
         if (patchFrame !== null) return;
         patchFrame = requestAnimationFrame(() => {
           patchFrame = null;
-          const patch = pendingPatch;
-          if (patch === null) throw new Error("移动端流式帧缺少待发布 patch");
-          pendingPatch = null;
-          setSnapshot((current) => {
-            if (current === null) {
-              window.AkashicNative?.requestSnapshot();
-              return current;
-            }
-            const previousMessage = current.messages[patch.messageIndex];
-            const reconciledPatch = previousMessage
-              ? { ...patch, message: reconcileMobileStreamMessage(previousMessage, patch.message) }
-              : patch;
-            const nextSnapshot = applyMobileStreamPatch(current, reconciledPatch);
-            if (nextSnapshot === null) {
-              window.AkashicNative?.requestSnapshot();
-              return current;
-            }
-            if (searchOpenRef.current && normalizedSearchQueryRef.current) {
-              setSearchIndex((index) => updateMobileSearchIndex(
-                index,
-                nextSnapshot.messages,
-                normalizedSearchQueryRef.current,
-                false,
-              ));
-            }
-            return nextSnapshot;
+          const patches = pendingPatches;
+          pendingPatches = [];
+          if (patches.length === 0) throw new Error("移动端流式帧缺少待发布 patch");
+          startTransition(() => {
+            setSnapshot((current) => {
+              if (current === null) {
+                window.AkashicNative?.requestSnapshot();
+                return current;
+              }
+              let nextSnapshot = current;
+              for (const patch of patches) {
+                const previousMessage = nextSnapshot.messages[patch.messageIndex];
+                const reconciledPatch = previousMessage && patch.message
+                  ? { ...patch, message: reconcileMobileStreamMessage(previousMessage, patch.message) }
+                  : patch;
+                const applied = applyMobileStreamPatch(nextSnapshot, reconciledPatch);
+                if (applied === null) {
+                  window.AkashicNative?.requestSnapshot();
+                  return current;
+                }
+                nextSnapshot = applied;
+              }
+              if (searchOpenRef.current && normalizedSearchQueryRef.current) {
+                setSearchIndex((index) => updateMobileSearchIndex(
+                  index,
+                  nextSnapshot.messages,
+                  normalizedSearchQueryRef.current,
+                  false,
+                ));
+              }
+              return nextSnapshot;
+            });
           });
         });
       },

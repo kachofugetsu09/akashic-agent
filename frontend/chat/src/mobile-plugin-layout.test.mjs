@@ -110,6 +110,14 @@ test("mobile scroll control is anchored outside the virtual scroll plane", () =>
   );
 });
 
+test("same-role divider stays centered in the inter-message gap", () => {
+  assert.match(
+    platformStyles,
+    /\.mobile-role-divider\s*\{[^}]*height:\s*1px;[^}]*margin-block:\s*-14px 13px;/,
+  );
+  assert.doesNotMatch(platformStyles, /\.mobile-role-divider\s*\{[^}]*margin-block:\s*-7px;/);
+});
+
 test("virtual search highlight waits for its target row to mount", () => {
   assert.match(
     mobileSource,
