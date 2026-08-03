@@ -24,6 +24,8 @@ from infra.mobile_realtime.message_content_http import (
 from infra.mobile_realtime.storage import MobileRealtimeStorage
 from session.store import SessionStore
 
+_BASE64URL_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
 
 class _Storage:
     def read_device(self, device_id: str) -> object | None:
@@ -78,8 +80,38 @@ def test_ticket_rejects_tampering() -> None:
         sha256="b" * 64,
     )
 
+    payload, signature = grant.ticket.split(".")
+    tampered_first = "B" if signature[0] == "A" else "A"
     with pytest.raises(MessageContentTicketError, match="签名无效"):
-        issuer.verify(f"{grant.ticket[:-1]}A")
+        issuer.verify(f"{payload}.{tampered_first}{signature[1:]}")
+
+
+def _padding_bit_alias(value: str) -> str:
+    remainder = len(value) % 4
+    assert remainder in (2, 3)
+    padding_mask = 0b1111 if remainder == 2 else 0b11
+    tail_index = _BASE64URL_ALPHABET.index(value[-1])
+    assert tail_index & padding_mask == 0
+    alias_index = tail_index | 1
+    assert alias_index != tail_index
+    return value[:-1] + _BASE64URL_ALPHABET[alias_index]
+
+
+def test_ticket_rejects_noncanonical_payload_padding_bits() -> None:
+    now = datetime(2026, 8, 2, tzinfo=timezone.utc)
+    issuer = _issuer(now)
+    grant = issuer.issue(
+        device_id="device-1",
+        connection_epoch=7,
+        session_id="mobile:test",
+        message_id="mobile:test:3",
+        byte_length=1,
+        sha256="b" * 64,
+    )
+    payload, signature = grant.ticket.split(".")
+
+    with pytest.raises(MessageContentTicketError, match="Base64URL 无效"):
+        issuer.verify(f"{_padding_bit_alias(payload)}.{signature}")
 
 
 def test_range_is_single_bounded_and_clamped() -> None:

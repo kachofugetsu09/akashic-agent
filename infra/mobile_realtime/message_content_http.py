@@ -212,13 +212,16 @@ def _decode_b64url(value: str) -> bytes:
         raise MessageContentTicketError("message content ticket 段不能为空")
     padding = "=" * (-len(value) % 4)
     try:
-        return base64.b64decode(
+        decoded = base64.b64decode(
             value + padding,
             altchars=b"-_",
             validate=True,
         )
     except (binascii.Error, ValueError) as error:
         raise MessageContentTicketError("message content ticket Base64URL 无效") from error
+    if _b64url(decoded) != value:
+        raise MessageContentTicketError("message content ticket Base64URL 无效")
+    return decoded
 
 
 def _b64url(value: bytes) -> str:
