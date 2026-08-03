@@ -93,7 +93,7 @@ class MobileWebUiStore:
         self.trash_root = root / "trash"
         self.lock_path = root / "publication.lock"
         self.server_id = server_id
-        self._recover_restore_marker(root)
+        self._recover_restore_marker(root, server_id=server_id)
         self.root.mkdir(parents=True, exist_ok=True)
         self.blob_root.mkdir(parents=True, exist_ok=True)
         self.staging_root.mkdir(parents=True, exist_ok=True)
@@ -548,7 +548,7 @@ class MobileWebUiStore:
 
         MobileWebUiStore.verify_backup(destination, server_id=server_id)
         target_root = _absolute_path(target_root)
-        MobileWebUiStore._recover_restore_marker(target_root)
+        MobileWebUiStore._recover_restore_marker(target_root, server_id=server_id)
         target_root.parent.mkdir(parents=True, exist_ok=True)
         if target_root.is_symlink() or (target_root.exists() and not target_root.is_dir()):
             raise RuntimeError("WebUI restore target 必须是普通目录")
@@ -560,7 +560,12 @@ class MobileWebUiStore:
             MobileWebUiStore._append_restore_journal(temporary, server_id=server_id)
             MobileWebUiStore._refresh_backup_descriptor(temporary)
             MobileWebUiStore.verify_backup(temporary, server_id=server_id)
-            if target_root.exists():
+            # 1. 先把候选树的内容和目录项完整落盘，再写 marker 或移动旧 root。
+            MobileWebUiStore._fsync_tree(temporary)
+            expected_tree_digest = _tree_digest(temporary)
+            had_target = target_root.exists()
+            recovery_root = target_root.with_name(f"{target_root.name}.recovery-{uuid4()}")
+            if had_target:
                 backup_path = pre_restore_backup or target_root.with_name(f"{target_root.name}.pre-restore-{uuid4()}")
                 if backup_path.exists():
                     raise FileExistsError(backup_path)
@@ -570,8 +575,16 @@ class MobileWebUiStore:
                     MobileWebUiStore.verify_backup(backup_path, server_id=server_id)
                 finally:
                     existing.close()
-                old_root = target_root.with_name(f"{target_root.name}.recovery-{uuid4()}")
-                restore_marker = MobileWebUiStore._write_restore_marker(target_root, old_root)
+                old_root = recovery_root
+            restore_marker = MobileWebUiStore._write_restore_marker(
+                target_root,
+                recovery_root,
+                temporary_root=temporary,
+                server_id=server_id,
+                expected_tree_digest=expected_tree_digest,
+                had_target=had_target,
+            )
+            if old_root is not None:
                 os.replace(target_root, old_root)
                 MobileWebUiStore._fsync_directory(target_root.parent)
             try:
@@ -583,12 +596,14 @@ class MobileWebUiStore:
                     MobileWebUiStore._fsync_directory(target_root.parent)
                 raise
             if restore_marker is not None:
+                if old_root is not None:
+                    MobileWebUiStore._remove_restore_recovery(old_root)
                 MobileWebUiStore._clear_restore_marker(restore_marker)
             return target_root
         except BaseException:
-            if restore_marker is not None and target_root.exists():
-                MobileWebUiStore._clear_restore_marker(restore_marker)
-            shutil.rmtree(temporary, ignore_errors=True)
+            # 恢复标记存在时，把候选树和旧 root 交给启动恢复；不能提前清掉唯一证据。
+            if restore_marker is None:
+                shutil.rmtree(temporary, ignore_errors=True)
             raise
 
     @staticmethod
@@ -883,8 +898,8 @@ class MobileWebUiStore:
         return root.with_name(f".{root.name}.restore-pending.json")
 
     @staticmethod
-    def _recover_restore_marker(root: Path) -> None:
-        """Recover a store swap interrupted between old-root rename and new-root install."""
+    def _recover_restore_marker(root: Path, *, server_id: str | None = None) -> None:
+        """恢复被中断的 store 切换，不接受未经验证的新 root。"""
 
         target_root = _absolute_path(root)
         marker = MobileWebUiStore._restore_marker_path(target_root)
@@ -893,38 +908,181 @@ class MobileWebUiStore:
         if marker.is_symlink() or not marker.is_file():
             raise RuntimeError("WebUI restore marker 不是普通文件")
         try:
-            payload = json.loads(marker.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            payload = _strict_json_loads(marker.read_bytes())
+        except (OSError, ManifestError) as error:
             raise RuntimeError("WebUI restore marker 损坏") from error
-        if not isinstance(payload, dict) or set(payload) != {"target_root", "recovery_root"}:
+        expected_fields = {
+            "expected_tree_digest",
+            "had_target",
+            "recovery_root",
+            "server_id",
+            "target_root",
+            "temporary_root",
+        }
+        if not isinstance(payload, dict) or set(payload) != expected_fields:
             raise RuntimeError("WebUI restore marker 字段不符合合同")
-        if payload["target_root"] != str(target_root) or not isinstance(payload["recovery_root"], str):
-            raise RuntimeError("WebUI restore marker 路径不符合合同")
-        recovery_root = _absolute_path(Path(payload["recovery_root"]))
-        if recovery_root == target_root or not recovery_root.name.startswith(f"{target_root.name}.recovery-"):
+        if payload["target_root"] != str(target_root):
+            raise RuntimeError("WebUI restore marker target 路径不符合合同")
+        marker_server_id = payload["server_id"]
+        expected_tree_digest = payload["expected_tree_digest"]
+        had_target = payload["had_target"]
+        if (
+            not isinstance(marker_server_id, str)
+            or (server_id is not None and marker_server_id != server_id)
+            or not isinstance(expected_tree_digest, str)
+            or not _valid_digest(expected_tree_digest)
+            or not isinstance(had_target, bool)
+        ):
+            raise RuntimeError("WebUI restore marker identity 不符合合同")
+        recovery_root = _absolute_path(_require_marker_path(payload["recovery_root"], "recovery_root"))
+        temporary_root = _absolute_path(_require_marker_path(payload["temporary_root"], "temporary_root"))
+        if (
+            recovery_root == target_root
+            or recovery_root.parent != target_root.parent
+            or not recovery_root.name.startswith(f"{target_root.name}.recovery-")
+        ):
             raise RuntimeError("WebUI restore marker recovery 路径不符合合同")
+        if (
+            temporary_root == target_root
+            or temporary_root == recovery_root
+            or temporary_root.parent != target_root.parent
+            or not temporary_root.name.startswith(f".{target_root.name}.")
+        ):
+            raise RuntimeError("WebUI restore marker temporary 路径不符合合同")
         if target_root.is_symlink():
             raise RuntimeError("WebUI restore marker target 不能是符号链接")
-        if target_root.exists():
-            if not target_root.is_dir():
-                raise RuntimeError("WebUI restore marker target 必须是普通目录")
+        if recovery_root.is_symlink():
+            raise RuntimeError("WebUI restore marker recovery 不能是符号链接")
+        if temporary_root.is_symlink():
+            raise RuntimeError("WebUI restore marker temporary 不能是符号链接")
+        target_exists = target_root.exists()
+        recovery_exists = recovery_root.exists()
+        if target_exists and not target_root.is_dir():
+            raise RuntimeError("WebUI restore marker target 必须是普通目录")
+        if recovery_exists and not recovery_root.is_dir():
+            raise RuntimeError("WebUI restore marker recovery 必须是普通目录")
+
+        # 1. 两个 root 同时存在时，先完整验证新候选再清理 marker。
+        if target_exists and recovery_exists:
+            if not had_target:
+                raise RuntimeError("WebUI restore marker 无旧 target 却同时存在 recovery")
+            try:
+                MobileWebUiStore._verify_restored_root(
+                    target_root,
+                    server_id=marker_server_id,
+                    expected_tree_digest=expected_tree_digest,
+                )
+            except (ManifestError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as error:
+                failed_root = target_root.with_name(f"{target_root.name}.restore-failed-{uuid4().hex}")
+                if failed_root.exists() or failed_root.is_symlink():
+                    raise FileExistsError(failed_root) from error
+                os.replace(target_root, failed_root)
+                MobileWebUiStore._fsync_directory(target_root.parent)
+                os.replace(recovery_root, target_root)
+                MobileWebUiStore._fsync_directory(target_root.parent)
+                MobileWebUiStore._remove_restore_temporary(temporary_root)
+                MobileWebUiStore._clear_restore_marker(marker)
+                return
+            MobileWebUiStore._remove_restore_recovery(recovery_root)
+            MobileWebUiStore._remove_restore_temporary(temporary_root)
             MobileWebUiStore._clear_restore_marker(marker)
             return
-        if recovery_root.is_symlink() or not recovery_root.is_dir():
-            raise RuntimeError("WebUI restore marker 缺少可恢复旧 store")
-        target_root.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(recovery_root, target_root)
-        MobileWebUiStore._fsync_directory(target_root.parent)
-        MobileWebUiStore._clear_restore_marker(marker)
+
+        # 2. 只有 target 时，按 marker 区分旧 root 与无旧 root 的新候选。
+        if target_exists:
+            if not had_target:
+                MobileWebUiStore._verify_restored_root(
+                    target_root,
+                    server_id=marker_server_id,
+                    expected_tree_digest=expected_tree_digest,
+                )
+            MobileWebUiStore._remove_restore_temporary(temporary_root)
+            MobileWebUiStore._clear_restore_marker(marker)
+            return
+
+        # 3. 无旧 root 时，先验证 marker 绑定的完整 temporary，再完成安装。
+        if not had_target and not recovery_exists:
+            MobileWebUiStore._verify_restored_root(
+                temporary_root,
+                server_id=marker_server_id,
+                expected_tree_digest=expected_tree_digest,
+            )
+            target_root.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(temporary_root, target_root)
+            MobileWebUiStore._fsync_directory(target_root.parent)
+            MobileWebUiStore._clear_restore_marker(marker)
+            return
+
+        # 4. rename gap 没有 target，先恢复 marker 所有的旧 root。
+        if recovery_exists:
+            if not had_target:
+                raise RuntimeError("WebUI restore marker 无旧 target 却存在 recovery")
+            target_root.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(recovery_root, target_root)
+            MobileWebUiStore._fsync_directory(target_root.parent)
+            MobileWebUiStore._remove_restore_temporary(temporary_root)
+            MobileWebUiStore._clear_restore_marker(marker)
+            return
+        raise RuntimeError("WebUI restore marker 同时缺少 target 和 recovery")
 
     @staticmethod
-    def _write_restore_marker(target_root: Path, recovery_root: Path) -> Path:
+    def _verify_restored_root(root: Path, *, server_id: str, expected_tree_digest: str) -> None:
+        """校验新安装的备份树及恢复标记绑定的身份。"""
+
+        MobileWebUiStore.verify_backup(root, server_id=server_id)
+        if _tree_digest(root) != expected_tree_digest:
+            raise RuntimeError("WebUI restore target 与 marker 绑定摘要不一致")
+
+    @staticmethod
+    def _remove_restore_temporary(root: Path) -> None:
+        """只删除持久恢复标记指定的 temporary 目录。"""
+
+        if root.is_symlink():
+            raise RuntimeError("WebUI restore temporary 不能是符号链接")
+        if root.is_dir():
+            shutil.rmtree(root)
+            MobileWebUiStore._fsync_directory(root.parent)
+        elif root.exists():
+            raise RuntimeError("WebUI restore temporary 必须是目录")
+
+    @staticmethod
+    def _remove_restore_recovery(root: Path) -> None:
+        """新 root 验证通过后，持久删除旧 root。"""
+
+        if root.is_symlink():
+            raise RuntimeError("WebUI restore recovery 不能是符号链接")
+        if root.is_dir():
+            shutil.rmtree(root)
+            MobileWebUiStore._fsync_directory(root.parent)
+        elif root.exists():
+            raise RuntimeError("WebUI restore recovery 必须是目录")
+
+    @staticmethod
+    def _write_restore_marker(
+        target_root: Path,
+        recovery_root: Path,
+        *,
+        temporary_root: Path,
+        server_id: str,
+        expected_tree_digest: str,
+        had_target: bool,
+    ) -> Path:
         target_root = _absolute_path(target_root)
         recovery_root = _absolute_path(recovery_root)
+        temporary_root = _absolute_path(temporary_root)
+        if not _valid_digest(expected_tree_digest):
+            raise ValueError("WebUI restore marker expected_tree_digest 无效")
         marker = MobileWebUiStore._restore_marker_path(target_root)
         temporary = marker.with_name(f".{marker.name}.{uuid4().hex}.tmp")
         payload = json.dumps(
-            {"target_root": str(target_root), "recovery_root": str(recovery_root)},
+            {
+                "expected_tree_digest": expected_tree_digest,
+                "had_target": had_target,
+                "recovery_root": str(recovery_root),
+                "server_id": server_id,
+                "target_root": str(target_root),
+                "temporary_root": str(temporary_root),
+            },
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
@@ -1200,6 +1358,17 @@ def _absolute_path(path: Path) -> Path:
     """Make a lexical absolute path without following the destination symlink."""
 
     return Path(os.path.abspath(os.fspath(path)))
+
+
+def _require_marker_path(value: object, label: str) -> Path:
+    """在访问文件系统前校验恢复标记路径。"""
+
+    if not isinstance(value, str):
+        raise RuntimeError(f"WebUI restore marker {label} 路径类型无效")
+    path = _absolute_path(Path(value))
+    if value != str(path):
+        raise RuntimeError(f"WebUI restore marker {label} 必须是规范绝对路径")
+    return path
 
 
 def _strict_json_loads(payload: bytes) -> object:

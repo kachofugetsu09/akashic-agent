@@ -8,7 +8,7 @@ import sqlite3
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -90,6 +90,105 @@ def _kill_backup_after_rename(root: str, destination: str) -> None:
     store_module.os.replace = kill_after_rename
     store = MobileWebUiStore(Path(root), server_id="server-1")
     store.backup_to(Path(destination))
+
+
+def _restore_fixture(root: Path) -> tuple[Path, Path, Path, WebUiManifest, WebUiManifest]:
+    """创建已验证的 source backup 和独立旧 target store。"""
+
+    source_manifest, source_contents = _manifest(root / "source-build", b"<html>new</html>\n")
+    source = MobileWebUiStore(root / "source", server_id="server-1")
+    source.publish(source_manifest, source_contents, stable=True, preview=False)
+    source_backup = source.backup_to(root / "source-backup")
+    source.close()
+
+    old_manifest, old_contents = _manifest(root / "old-build", b"<html>old</html>\n")
+    target = MobileWebUiStore(root / "target", server_id="server-1")
+    target.publish(old_manifest, old_contents, stable=True, preview=False)
+    target.close()
+    return source_backup, root / "target", root / "pre-restore", source_manifest, old_manifest
+
+
+def _restore_target_name(target: str) -> str:
+    return Path(target).name
+
+
+def _kill_restore_before_old_rename(backup: str, target: str, pre_restore: str) -> None:
+    from infra.mobile_webui import store as store_module
+
+    original_replace = store_module.os.replace
+    target_name = _restore_target_name(target)
+
+    def kill_before_old_rename(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
+        if Path(destination).name.startswith(f"{target_name}.recovery-"):
+            os.kill(os.getpid(), signal.SIGKILL)
+        original_replace(source, destination)
+
+    store_module.os.replace = kill_before_old_rename
+    store_module.MobileWebUiStore.restore_backup(
+        Path(backup),
+        Path(target),
+        server_id="server-1",
+        pre_restore_backup=Path(pre_restore),
+    )
+
+
+def _kill_restore_after_old_rename(backup: str, target: str, pre_restore: str) -> None:
+    from infra.mobile_webui import store as store_module
+
+    original_replace = store_module.os.replace
+    target_name = _restore_target_name(target)
+
+    def kill_after_old_rename(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
+        original_replace(source, destination)
+        if Path(destination).name.startswith(f"{target_name}.recovery-"):
+            os.kill(os.getpid(), signal.SIGKILL)
+
+    store_module.os.replace = kill_after_old_rename
+    store_module.MobileWebUiStore.restore_backup(
+        Path(backup),
+        Path(target),
+        server_id="server-1",
+        pre_restore_backup=Path(pre_restore),
+    )
+
+
+def _kill_restore_after_new_install(backup: str, target: str, pre_restore: str) -> None:
+    from infra.mobile_webui import store as store_module
+
+    original_replace = store_module.os.replace
+    absolute_target = os.path.abspath(target)
+
+    def kill_after_new_install(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
+        original_replace(source, destination)
+        if os.path.abspath(os.fspath(destination)) == absolute_target:
+            os.kill(os.getpid(), signal.SIGKILL)
+
+    store_module.os.replace = kill_after_new_install
+    store_module.MobileWebUiStore.restore_backup(
+        Path(backup),
+        Path(target),
+        server_id="server-1",
+        pre_restore_backup=Path(pre_restore),
+    )
+
+
+def _kill_restore_before_new_install_without_old(backup: str, target: str) -> None:
+    from infra.mobile_webui import store as store_module
+
+    original_replace = store_module.os.replace
+    marker_path = os.path.abspath(store_module.MobileWebUiStore._restore_marker_path(Path(target)))
+
+    def kill_after_marker_install(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
+        original_replace(source, destination)
+        if os.path.abspath(os.fspath(destination)) == marker_path:
+            os.kill(os.getpid(), signal.SIGKILL)
+
+    store_module.os.replace = kill_after_marker_install
+    store_module.MobileWebUiStore.restore_backup(
+        Path(backup),
+        Path(target),
+        server_id="server-1",
+    )
 
 
 def test_golden_manifest_and_derived_ids() -> None:
@@ -436,6 +535,7 @@ def test_restore_appends_audit_event_and_preserves_source_backup(tmp_path: Path)
         server_id="server-1",
         pre_restore_backup=tmp_path / "pre-restore",
     )
+    assert not list(tmp_path.glob("target.recovery-*"))
     MobileWebUiStore.verify_backup(backup, server_id="server-1")
     assert (backup / "backup.json").read_bytes() == source_descriptor
     MobileWebUiStore.verify_backup(tmp_path / "target", server_id="server-1")
@@ -486,7 +586,14 @@ def test_restore_marker_recovers_old_root_after_swap_gap(tmp_path: Path) -> None
     store.close()
     recovery = tmp_path / "store.recovery-test"
     os.replace(root, recovery)
-    marker = MobileWebUiStore._write_restore_marker(root, recovery)
+    marker = MobileWebUiStore._write_restore_marker(
+        root,
+        recovery,
+        temporary_root=tmp_path / ".store.candidate",
+        server_id="server-1",
+        expected_tree_digest="a" * 64,
+        had_target=True,
+    )
     assert marker.exists()
     recovered = MobileWebUiStore(root, server_id="server-1")
     recovered.close()
@@ -495,18 +602,373 @@ def test_restore_marker_recovers_old_root_after_swap_gap(tmp_path: Path) -> None
     assert not marker.exists()
 
 
-def test_restore_marker_keeps_new_root_when_swap_completed(tmp_path: Path) -> None:
+def test_restore_marker_rejects_unverified_new_root_and_recovers_old_root(tmp_path: Path) -> None:
     root = tmp_path / "store"
     store = MobileWebUiStore(root, server_id="server-1")
     store.close()
     recovery = tmp_path / "store.recovery-new"
     recovery.mkdir()
-    marker = MobileWebUiStore._write_restore_marker(root, recovery)
+    marker = MobileWebUiStore._write_restore_marker(
+        root,
+        recovery,
+        temporary_root=tmp_path / ".store.candidate",
+        server_id="server-1",
+        expected_tree_digest="a" * 64,
+        had_target=True,
+    )
     reopened = MobileWebUiStore(root, server_id="server-1")
     reopened.close()
     assert root.is_dir()
-    assert recovery.is_dir()
+    assert not recovery.exists()
+    assert list(tmp_path.glob("store.restore-failed-*"))
     assert not marker.exists()
+
+
+def test_restore_recovery_pre_swap_crash_keeps_old_root_and_cleans_candidate(tmp_path: Path) -> None:
+    backup, target, pre_restore, _source_manifest, old_manifest = _restore_fixture(tmp_path)
+    context = multiprocessing.get_context("fork")
+    child = context.Process(
+        target=_kill_restore_before_old_rename,
+        args=(str(backup), str(target), str(pre_restore)),
+    )
+    child.start()
+    child.join(timeout=10)
+    assert child.exitcode == -signal.SIGKILL
+    marker = MobileWebUiStore._restore_marker_path(target)
+    assert marker.is_file()
+    assert target.is_dir()
+    assert list(tmp_path.glob(".target.*"))
+
+    recovered = MobileWebUiStore(target, server_id="server-1")
+    try:
+        assert recovered.get_release().stable is not None
+        assert recovered.get_release().stable.generation_id == old_manifest.generation_id
+    finally:
+        recovered.close()
+    assert not marker.exists()
+    assert not list(tmp_path.glob(".target.*"))
+
+
+def test_restore_recovery_rename_gap_restores_old_root(tmp_path: Path) -> None:
+    backup, target, pre_restore, _source_manifest, old_manifest = _restore_fixture(tmp_path)
+    context = multiprocessing.get_context("fork")
+    child = context.Process(
+        target=_kill_restore_after_old_rename,
+        args=(str(backup), str(target), str(pre_restore)),
+    )
+    child.start()
+    child.join(timeout=10)
+    assert child.exitcode == -signal.SIGKILL
+    marker = MobileWebUiStore._restore_marker_path(target)
+    assert marker.is_file()
+    assert not target.exists()
+    assert list(tmp_path.glob("target.recovery-*"))
+
+    recovered = MobileWebUiStore(target, server_id="server-1")
+    try:
+        assert recovered.get_release().stable is not None
+        assert recovered.get_release().stable.generation_id == old_manifest.generation_id
+    finally:
+        recovered.close()
+    assert not marker.exists()
+    assert not list(tmp_path.glob("target.recovery-*"))
+    assert not list(tmp_path.glob(".target.*"))
+
+
+def test_restore_recovery_new_target_valid_deletes_recovery_after_validation(tmp_path: Path) -> None:
+    backup, target, pre_restore, source_manifest, _old_manifest = _restore_fixture(tmp_path)
+    context = multiprocessing.get_context("fork")
+    child = context.Process(
+        target=_kill_restore_after_new_install,
+        args=(str(backup), str(target), str(pre_restore)),
+    )
+    child.start()
+    child.join(timeout=10)
+    assert child.exitcode == -signal.SIGKILL
+    marker = MobileWebUiStore._restore_marker_path(target)
+    assert marker.is_file()
+    recovery_roots = list(tmp_path.glob("target.recovery-*"))
+    assert len(recovery_roots) == 1
+
+    recovered = MobileWebUiStore(target, server_id="server-1")
+    try:
+        assert recovered.get_release().stable is not None
+        assert recovered.get_release().stable.generation_id == source_manifest.generation_id
+    finally:
+        recovered.close()
+    assert not marker.exists()
+    assert not recovery_roots[0].exists()
+    MobileWebUiStore.verify_backup(pre_restore, server_id="server-1")
+    MobileWebUiStore.verify_backup(backup, server_id="server-1")
+
+
+def test_restore_recovery_new_target_without_old_root_verifies_before_marker_clear(tmp_path: Path) -> None:
+    source_manifest, source_contents = _manifest(tmp_path / "source-build", b"<html>new-only</html>\n")
+    source = MobileWebUiStore(tmp_path / "source", server_id="server-1")
+    source.publish(source_manifest, source_contents, stable=True, preview=False)
+    backup = source.backup_to(tmp_path / "source-backup")
+    source.close()
+    target = tmp_path / "new-target"
+    pre_restore = tmp_path / "unused-pre-restore"
+
+    context = multiprocessing.get_context("fork")
+    child = context.Process(
+        target=_kill_restore_after_new_install,
+        args=(str(backup), str(target), str(pre_restore)),
+    )
+    child.start()
+    child.join(timeout=10)
+    assert child.exitcode == -signal.SIGKILL
+    marker = MobileWebUiStore._restore_marker_path(target)
+    assert marker.is_file()
+    assert target.is_dir()
+    assert not list(tmp_path.glob("new-target.recovery-*"))
+
+    recovered = MobileWebUiStore(target, server_id="server-1")
+    try:
+        assert recovered.get_release().stable is not None
+        assert recovered.get_release().stable.generation_id == source_manifest.generation_id
+    finally:
+        recovered.close()
+    assert not marker.exists()
+    MobileWebUiStore.verify_backup(backup, server_id="server-1")
+
+
+def test_restore_recovery_pre_install_crash_finishes_complete_temporary(tmp_path: Path) -> None:
+    source_manifest, source_contents = _manifest(tmp_path / "source-build", b"<html>new-pre-install</html>\n")
+    source = MobileWebUiStore(tmp_path / "source", server_id="server-1")
+    source.publish(source_manifest, source_contents, stable=True, preview=False)
+    backup = source.backup_to(tmp_path / "source-backup")
+    source.close()
+    target = tmp_path / "new-target"
+
+    context = multiprocessing.get_context("fork")
+    child = context.Process(
+        target=_kill_restore_before_new_install_without_old,
+        args=(str(backup), str(target)),
+    )
+    child.start()
+    child.join(timeout=10)
+    assert child.exitcode == -signal.SIGKILL
+    marker = MobileWebUiStore._restore_marker_path(target)
+    assert marker.is_file()
+    assert not target.exists()
+    assert not list(tmp_path.glob("new-target.recovery-*"))
+    temporary_roots = [path for path in tmp_path.glob(".new-target.*") if path.is_dir()]
+    assert len(temporary_roots) == 1
+
+    recovered = MobileWebUiStore(target, server_id="server-1")
+    try:
+        assert recovered.get_release().stable is not None
+        assert recovered.get_release().stable.generation_id == source_manifest.generation_id
+    finally:
+        recovered.close()
+    assert not marker.exists()
+    assert not temporary_roots[0].exists()
+    MobileWebUiStore.verify_backup(backup, server_id="server-1")
+
+
+def test_restore_recovery_new_target_corrupt_restores_old_and_keeps_failed_evidence(tmp_path: Path) -> None:
+    backup, target, pre_restore, _source_manifest, old_manifest = _restore_fixture(tmp_path)
+    context = multiprocessing.get_context("fork")
+    child = context.Process(
+        target=_kill_restore_after_new_install,
+        args=(str(backup), str(target), str(pre_restore)),
+    )
+    child.start()
+    child.join(timeout=10)
+    assert child.exitcode == -signal.SIGKILL
+    (target / "publication.sqlite3").unlink()
+
+    recovered = MobileWebUiStore(target, server_id="server-1")
+    try:
+        assert recovered.get_release().stable is not None
+        assert recovered.get_release().stable.generation_id == old_manifest.generation_id
+    finally:
+        recovered.close()
+    assert not MobileWebUiStore._restore_marker_path(target).exists()
+    assert len(list(tmp_path.glob("target.restore-failed-*"))) == 1
+    MobileWebUiStore.verify_backup(pre_restore, server_id="server-1")
+    MobileWebUiStore.verify_backup(backup, server_id="server-1")
+
+
+def test_restore_parent_fsync_failure_keeps_marker_for_valid_new_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.mobile_webui import store as store_module
+
+    backup, target, pre_restore, source_manifest, _old_manifest = _restore_fixture(tmp_path)
+    original_replace = store_module.os.replace
+    original_fsync_directory = store_module.MobileWebUiStore._fsync_directory
+    state = {"new_installed": False, "failed": False}
+    absolute_target = os.path.abspath(target)
+
+    def replace(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
+        original_replace(source, destination)
+        if os.path.abspath(os.fspath(destination)) == absolute_target:
+            state["new_installed"] = True
+
+    def fsync_directory(path: Path) -> None:
+        if state["new_installed"] and not state["failed"]:
+            state["failed"] = True
+            raise OSError("injected restore parent fsync failure")
+        original_fsync_directory(path)
+
+    monkeypatch.setattr(store_module.os, "replace", replace)
+    monkeypatch.setattr(store_module.MobileWebUiStore, "_fsync_directory", staticmethod(fsync_directory))
+    with pytest.raises(OSError, match="parent fsync"):
+        MobileWebUiStore.restore_backup(
+            backup,
+            target,
+            server_id="server-1",
+            pre_restore_backup=pre_restore,
+        )
+    marker = MobileWebUiStore._restore_marker_path(target)
+    assert marker.is_file()
+    assert target.is_dir()
+    recovery_roots = list(tmp_path.glob("target.recovery-*"))
+    assert len(recovery_roots) == 1
+
+    recovered = MobileWebUiStore(target, server_id="server-1")
+    try:
+        assert recovered.get_release().stable is not None
+        assert recovered.get_release().stable.generation_id == source_manifest.generation_id
+    finally:
+        recovered.close()
+    assert not marker.exists()
+    assert not recovery_roots[0].exists()
+    MobileWebUiStore.verify_backup(pre_restore, server_id="server-1")
+    MobileWebUiStore.verify_backup(backup, server_id="server-1")
+
+
+def test_restore_recovery_delete_failure_keeps_marker_for_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.mobile_webui import store as store_module
+
+    backup, target, pre_restore, source_manifest, _old_manifest = _restore_fixture(tmp_path)
+    original_rmtree = store_module.shutil.rmtree
+    state = {"failed": False}
+
+    def rmtree(path: str | os.PathLike[str], *args: Any, **kwargs: Any) -> None:
+        if Path(path).name.startswith("target.recovery-") and not state["failed"]:
+            state["failed"] = True
+            raise OSError("injected recovery delete failure")
+        original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(store_module.shutil, "rmtree", rmtree)
+    with pytest.raises(OSError, match="recovery delete"):
+        MobileWebUiStore.restore_backup(
+            backup,
+            target,
+            server_id="server-1",
+            pre_restore_backup=pre_restore,
+        )
+    marker = MobileWebUiStore._restore_marker_path(target)
+    assert marker.is_file()
+    assert target.is_dir()
+    recovery_roots = list(tmp_path.glob("target.recovery-*"))
+    assert len(recovery_roots) == 1
+
+    recovered = MobileWebUiStore(target, server_id="server-1")
+    try:
+        assert recovered.get_release().stable is not None
+        assert recovered.get_release().stable.generation_id == source_manifest.generation_id
+    finally:
+        recovered.close()
+    assert not marker.exists()
+    assert not recovery_roots[0].exists()
+    MobileWebUiStore.verify_backup(pre_restore, server_id="server-1")
+    MobileWebUiStore.verify_backup(backup, server_id="server-1")
+
+
+def test_restore_recovery_delete_fsync_failure_keeps_marker_for_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.mobile_webui import store as store_module
+
+    backup, target, pre_restore, source_manifest, _old_manifest = _restore_fixture(tmp_path)
+    original_rmtree = store_module.shutil.rmtree
+    original_fsync_directory = store_module.MobileWebUiStore._fsync_directory
+    state = {"recovery_deleted": False, "failed": False}
+
+    def rmtree(path: str | os.PathLike[str], *args: Any, **kwargs: Any) -> None:
+        original_rmtree(path, *args, **kwargs)
+        if Path(path).name.startswith("target.recovery-"):
+            state["recovery_deleted"] = True
+
+    def fsync_directory(path: Path) -> None:
+        if state["recovery_deleted"] and not state["failed"]:
+            state["failed"] = True
+            raise OSError("injected recovery parent fsync failure")
+        original_fsync_directory(path)
+
+    monkeypatch.setattr(store_module.shutil, "rmtree", rmtree)
+    monkeypatch.setattr(store_module.MobileWebUiStore, "_fsync_directory", staticmethod(fsync_directory))
+    with pytest.raises(OSError, match="recovery parent fsync"):
+        MobileWebUiStore.restore_backup(
+            backup,
+            target,
+            server_id="server-1",
+            pre_restore_backup=pre_restore,
+        )
+    marker = MobileWebUiStore._restore_marker_path(target)
+    assert marker.is_file()
+    assert target.is_dir()
+    assert not list(tmp_path.glob("target.recovery-*"))
+
+    recovered = MobileWebUiStore(target, server_id="server-1")
+    try:
+        assert recovered.get_release().stable is not None
+        assert recovered.get_release().stable.generation_id == source_manifest.generation_id
+    finally:
+        recovered.close()
+    assert not marker.exists()
+    MobileWebUiStore.verify_backup(pre_restore, server_id="server-1")
+    MobileWebUiStore.verify_backup(backup, server_id="server-1")
+
+
+def test_restore_marker_cleanup_failure_keeps_marker_and_recovers_on_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.mobile_webui import store as store_module
+
+    backup, target, pre_restore, source_manifest, _old_manifest = _restore_fixture(tmp_path)
+    original_clear = store_module.MobileWebUiStore._clear_restore_marker
+    state = {"failed": False}
+
+    def clear_marker(marker: Path) -> None:
+        if not state["failed"]:
+            state["failed"] = True
+            raise OSError("injected restore marker cleanup failure")
+        original_clear(marker)
+
+    monkeypatch.setattr(store_module.MobileWebUiStore, "_clear_restore_marker", staticmethod(clear_marker))
+    with pytest.raises(OSError, match="marker cleanup"):
+        MobileWebUiStore.restore_backup(
+            backup,
+            target,
+            server_id="server-1",
+            pre_restore_backup=pre_restore,
+        )
+    marker = MobileWebUiStore._restore_marker_path(target)
+    assert marker.is_file()
+    assert target.is_dir()
+    assert not list(tmp_path.glob("target.recovery-*"))
+
+    recovered = MobileWebUiStore(target, server_id="server-1")
+    try:
+        assert recovered.get_release().stable is not None
+        assert recovered.get_release().stable.generation_id == source_manifest.generation_id
+    finally:
+        recovered.close()
+    assert not marker.exists()
+    MobileWebUiStore.verify_backup(pre_restore, server_id="server-1")
+    MobileWebUiStore.verify_backup(backup, server_id="server-1")
 
 
 def test_channel_history_is_distinct_per_pointer_and_bounds_gc(tmp_path: Path) -> None:
