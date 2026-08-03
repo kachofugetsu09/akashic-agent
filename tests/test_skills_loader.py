@@ -139,6 +139,36 @@ def test_skill_index_rejects_non_object_metadata_json(
     assert str(skill_dir / "SKILL.md") in str(exc_info.value)
 
 
+def test_skill_binary_requirement_uses_user_login_shell_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    bin_dir = tmp_path / "user-bin"
+    bin_dir.mkdir()
+    executable = bin_dir / "opencli-test"
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o755)
+    _write_skill(
+        workspace / "skills",
+        "opencli",
+        extra_frontmatter=(
+            'metadata: {"akashic": {"requires": '
+            '{"bins": ["opencli-test"]}}}'
+        ),
+    )
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setattr("agent.skills._default_shell_path", lambda: str(bin_dir))
+
+    record = SkillsLoader(
+        workspace,
+        builtin_skills_dir=tmp_path / "builtin",
+    ).build_index().records["opencli"]
+
+    assert record.available is True
+    assert record.missing == ""
+
+
 @pytest.mark.asyncio
 async def test_load_skill_tool_returns_body_and_base_directory(tmp_path: Path):
     workspace = tmp_path / "workspace"

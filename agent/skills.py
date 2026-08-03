@@ -2,14 +2,34 @@ import json
 import os
 import re
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping, cast
 
 import yaml
 
+from agent.tools.shell_command import resolve_shell
+
 BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills"
 SkillSource = Literal["workspace", "builtin", "plugin"]
+
+
+def _default_shell_path() -> str:
+    """读取用户默认 login shell 实际导出的 PATH。"""
+    if os.name == "nt":
+        return os.environ.get("PATH", "")
+    shell = resolve_shell()
+    result = subprocess.run(
+        shell.derive_argv("command env -0", login=True),
+        check=True,
+        capture_output=True,
+        timeout=10,
+    )
+    paths = [item[5:] for item in result.stdout.split(b"\0") if item.startswith(b"PATH=")]
+    if not paths:
+        raise RuntimeError(f"用户 login shell 未导出 PATH: {shell.path}")
+    return os.fsdecode(paths[-1])
 
 
 @dataclass(frozen=True)
@@ -62,6 +82,7 @@ class SkillsLoader:
             root.resolve(strict=False) for root in ignored_workspace_symlink_roots
         )
         self.runtime_catalog = runtime_catalog
+        self._shell_path: str | None = None
 
     def list_skill_records(self, filter_unavailable: bool = True) -> list[SkillRecord]:
         return self.build_index().list_records(filter_unavailable=filter_unavailable)
@@ -293,12 +314,17 @@ class SkillsLoader:
             return ""
         requires_dict = cast(dict[str, object], requires)
         for binary in self._string_list(requires_dict.get("bins")):
-            if not shutil.which(binary):
+            if not shutil.which(binary, path=self._binary_search_path()):
                 missing.append(f"CLI: {binary}")
         for env in self._string_list(requires_dict.get("env")):
             if not os.environ.get(env):
                 missing.append(f"ENV: {env}")
         return ", ".join(missing)
+
+    def _binary_search_path(self) -> str:
+        if self._shell_path is None:
+            self._shell_path = _default_shell_path()
+        return self._shell_path
 
     def _string_list(self, value: object) -> list[str]:
         if not isinstance(value, list):

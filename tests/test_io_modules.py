@@ -102,6 +102,11 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     assert "不存在" in _as_text(await reader.execute("missing.txt"))
     assert "不是文件" in _as_text(await reader.execute("."))
 
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    assert "outside" in _as_text(await reader.execute(str(outside)))
+    assert "outside" in _as_text(await reader.execute("../outside.txt"))
+
     image = base / "a.png"
     image.write_bytes(b"\x89PNG\r\n\x1a\n")
     image_result = await reader.execute("a.png")

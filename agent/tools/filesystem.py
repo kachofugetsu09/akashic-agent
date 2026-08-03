@@ -54,6 +54,14 @@ def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
     return resolved
 
 
+def _resolve_read_path(path: str, base_dir: Path | None = None) -> Path:
+    """解析只读路径，并仅把 base_dir 用作相对路径基准。"""
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute() and base_dir is not None:
+        candidate = base_dir / candidate
+    return candidate.resolve()
+
+
 def _strip_utf8_bom(text: str) -> tuple[str, bool]:
     if text.startswith("\ufeff"):
         return text[1:], True
@@ -336,7 +344,7 @@ class ReadFileTool(Tool):
         if limit is not None:
             limit = int(limit)
         try:
-            file_path = _resolve_path(path, self._allowed_dir)
+            file_path = _resolve_read_path(path, self._allowed_dir)
             if not file_path.exists():
                 return f"错误：文件不存在：{path}"
             if not file_path.is_file():
