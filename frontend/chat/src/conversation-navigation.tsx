@@ -108,8 +108,13 @@ export function ConversationNavigation({
             </button>
           ))}
         </nav>
-        {sessionAfterContent}
       </section>
+
+      {sessionAfterContent ? (
+        <div className="conversation-navigation__auxiliary">
+          {sessionAfterContent}
+        </div>
+      ) : null}
 
       <div className="conversation-navigation__actions">
         {actions.map((action) => (

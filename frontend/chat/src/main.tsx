@@ -48,6 +48,7 @@ import { ConversationNavigation } from "./conversation-navigation";
 import { akashicBrandIcon } from "./akashic-brand";
 import { ComposerReply, MessageReplyReference, SharedMessageActions } from "./message-actions";
 import { MobilePairingDialog } from "./mobile-pairing-dialog";
+import { loadWebPluginCatalog, MobilePluginSlot } from "./mobile-plugin-runtime";
 import { RuntimeDashboard } from "./runtime-dashboard";
 import "./styles.css";
 import "./message-view.css";
@@ -368,6 +369,14 @@ function App() {
     };
   }, [connect, loadSessionsSafely, reportError]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadWebPluginCatalog(controller.signal).catch((error: unknown) => {
+      if (!isAbortError(error)) reportError(error);
+    });
+    return () => controller.abort();
+  }, [reportError]);
+
   const ensureSession = useCallback(async () => {
     if (activeSessionRef.current) return activeSessionRef.current;
     const sessionId = `web:${crypto.randomUUID().replaceAll("-", "")}`;
@@ -505,6 +514,9 @@ function App() {
               void loadMessagesSafely(session.key);
             },
           }))}
+          sessionAfterContent={surface === "chat" && activeSessionId ? (
+            <MobilePluginSlot name="drawer.panel" sessionId={activeSessionId} />
+          ) : undefined}
           actions={[
             {
               id: "connect-mobile",
@@ -554,6 +566,31 @@ function App() {
                               onNavigate={() => {
                                 messageElementsRef.current.get(message.reply!.messageId)?.scrollIntoView({ behavior: "smooth", block: "center" });
                               }}
+                            />
+                          ) : undefined}
+                          processStartContent={message.role === "assistant" ? (
+                            <MobilePluginSlot
+                              name="turn.before_reasoning"
+                              sessionId={activeSessionId}
+                              messageId={message.streaming ? `assistant:${message.id}` : message.id}
+                              turnId={message.streaming ? message.id : undefined}
+                            />
+                          ) : undefined}
+                          beforeProcessBlock={(block) => message.role === "assistant" && block.kind === "tool" ? (
+                            <MobilePluginSlot
+                              name="turn.before_tool"
+                              sessionId={activeSessionId}
+                              messageId={message.streaming ? `assistant:${message.id}` : message.id}
+                              turnId={message.streaming ? message.id : undefined}
+                              block={block}
+                            />
+                          ) : null}
+                          answerEndContent={message.role === "assistant" ? (
+                            <MobilePluginSlot
+                              name="turn.after_answer"
+                              sessionId={activeSessionId}
+                              messageId={message.streaming ? `assistant:${message.id}` : message.id}
+                              turnId={message.streaming ? message.id : undefined}
                             />
                           ) : undefined}
                           onCopyToolDetail={(text) => {

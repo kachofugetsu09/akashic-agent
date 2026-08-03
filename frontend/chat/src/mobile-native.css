@@ -253,13 +253,6 @@ button {
   background: rgb(255 255 255 / 0.08);
 }
 
-.mobile-plugin-host--error {
-  padding: 8px 0;
-  color: var(--m-error);
-  font-size: .8125rem;
-  line-height: 1.4;
-}
-
 .mobile-plugin-topbar {
   align-items: flex-end;
 }
@@ -1148,13 +1141,6 @@ button {
   background: var(--m-primary-container);
 }
 
-.mobile-plugin-slot[data-slot="turn.before_reasoning"],
-.mobile-plugin-slot[data-slot="turn.before_tool"] {
-  display: grid;
-  min-width: 0;
-  gap: 12px;
-  margin-inline-start: 30px;
-}
 .image-viewer-dialog {
   inset: 0;
   display: grid;

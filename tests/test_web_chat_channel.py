@@ -94,6 +94,59 @@ class _SessionStore:
         ], 2
 
 
+class _PluginUiProvider:
+    def __init__(self) -> None:
+        self.queries: list[dict[str, object]] = []
+
+    def catalog(self) -> dict[str, object]:
+        return {
+            "catalog_revision": "a" * 64,
+            "items": [{
+                "id": "akasha",
+                "revision": "revision-1",
+                "module_sha256": "b" * 64,
+                "stylesheet_sha256": None,
+                "navigation": {"label": "Akasha Inspector", "description": "移动端独立页面"},
+                "slots": ["turn.before_reasoning"],
+            }],
+        }
+
+    def asset(
+        self,
+        plugin_id: str,
+        plugin_revision: str,
+        kind: str,
+        sha256: str,
+    ) -> dict[str, object]:
+        return {
+            "plugin_id": plugin_id,
+            "plugin_revision": plugin_revision,
+            "kind": kind,
+            "sha256": sha256,
+            "content": "export default {};",
+        }
+
+    async def query(
+        self,
+        plugin_id: str,
+        plugin_revision: str,
+        method: str,
+        payload: dict[str, object],
+        *,
+        session_id: str | None,
+        turn_id: str | None,
+    ) -> dict[str, object]:
+        self.queries.append({
+            "plugin_id": plugin_id,
+            "plugin_revision": plugin_revision,
+            "method": method,
+            "payload": payload,
+            "session_id": session_id,
+            "turn_id": turn_id,
+        })
+        return {"left": [], "right": []}
+
+
 @pytest.mark.asyncio
 async def test_web_chat_session_and_message_flow(tmp_path: Path) -> None:
     bus = _Bus()
@@ -129,6 +182,69 @@ async def test_web_chat_session_and_message_flow(tmp_path: Path) -> None:
     assert len(bus.inbound) == 1
     assert bus.inbound[0].content == "你好"
     assert bus.inbound[0].session_key == session_id
+
+
+def test_web_plugin_ui_exposes_shared_slots_but_rejects_dashboard_query(
+    tmp_path: Path,
+) -> None:
+    channel = WebChatChannel()
+    provider = _PluginUiProvider()
+    app = create_chat_app(
+        workspace=tmp_path,
+        channel=channel,
+        plugin_ui_provider=cast(Any, provider),
+    )
+
+    with TestClient(app) as client:
+        catalog = client.get("/api/chat/plugin-ui/catalog")
+        asset = client.get(
+            "/api/chat/plugin-ui/asset",
+            params={
+                "plugin_id": "akasha",
+                "plugin_revision": "revision-1",
+                "kind": "module",
+                "sha256": "b" * 64,
+            },
+        )
+        query = client.post(
+            "/api/chat/plugin-ui/query",
+            json={
+                "plugin_id": "akasha",
+                "plugin_revision": "revision-1",
+                "method": "recall.current",
+                "payload": {"message_id": "assistant:turn-1"},
+                "slot": "turn.before_reasoning",
+                "session_id": "web:abc",
+                "turn_id": "turn-1",
+            },
+        )
+        dashboard_query = client.post(
+            "/api/chat/plugin-ui/query",
+            json={
+                "plugin_id": "akasha",
+                "plugin_revision": "revision-1",
+                "method": "inspector.recent",
+                "payload": {},
+                "slot": "dashboard.main",
+            },
+        )
+
+    assert catalog.status_code == 200
+    assert catalog.json()["items"][0]["navigation"]["label"] == "Akasha Inspector"
+    assert asset.status_code == 200
+    assert asset.headers["content-type"] == "text/javascript; charset=utf-8"
+    assert asset.headers["cache-control"] == "private, max-age=31536000, immutable"
+    assert query.status_code == 200
+    assert query.json() == {"left": [], "right": []}
+    assert provider.queries == [{
+        "plugin_id": "akasha",
+        "plugin_revision": "revision-1",
+        "method": "recall.current",
+        "payload": {"message_id": "assistant:turn-1"},
+        "session_id": "web:abc",
+        "turn_id": "turn-1",
+    }]
+    assert dashboard_query.status_code == 422
 
 
 @pytest.mark.asyncio

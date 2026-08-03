@@ -212,6 +212,58 @@ Akashic Mobile 是一个通过独立实时网关连接 Akashic Agent 的 Android
 
 首次配对成功后，手机会保存设备密钥，正常升级应用或重连无需再次扫码。
 
+### 把前端改动更新到移动端
+
+Android 的对话界面与 Web Chat 共用 `frontend/chat/src`。只修改 React、CSS 或插件插槽时，
+不需要重新打包 APK；服务端把构建结果发布成不可变 WebUI generation，支持 OTA 的客户端会
+下载、校验并切换到所选频道。只有原生壳、Native Bridge 协议或最低原生 build 发生变化时
+才需要发布新的 APK。
+
+先从发布仓读取当前服务身份，并为指针和可达资源创建恢复点：
+
+```bash
+AKASHIC_WEBUI_SERVER_ID="$(sqlite3 -readonly \
+  ~/.akashic/workspace/mobile-webui/publication.sqlite3 \
+  "SELECT value FROM webui_meta WHERE key = 'server_id'")"
+
+.venv/bin/python scripts/publish-mobile-webui.py backup \
+  --workspace ~/.akashic/workspace \
+  --server-id "$AKASHIC_WEBUI_SERVER_ID" \
+  --destination ~/.akashic/backups/mobile-webui-"$(date +%Y%m%d-%H%M%S)"
+```
+
+开发中的 dirty 前端只能发布到 Preview，适合在配置为 Preview 频道的真机上验收：
+
+```bash
+.venv/bin/python scripts/publish-mobile-webui.py publish \
+  --source-repository "$PWD" \
+  --workspace ~/.akashic/workspace \
+  --server-id "$AKASHIC_WEBUI_SERVER_ID" \
+  --allow-dirty \
+  --actor local-preview
+```
+
+合并后切到最新且干净的 `main`，再从确定的 commit 发布 Stable；普通设备随后会通过 OTA
+取得该 generation：
+
+```bash
+git checkout main
+git pull --ff-only origin main
+test -z "$(git status --porcelain)"
+
+AKASHIC_WEBUI_SOURCE_COMMIT="$(git rev-parse HEAD)"
+.venv/bin/python scripts/publish-mobile-webui.py publish \
+  --source-repository "$PWD" \
+  --workspace ~/.akashic/workspace \
+  --server-id "$AKASHIC_WEBUI_SERVER_ID" \
+  --source-commit "$AKASHIC_WEBUI_SOURCE_COMMIT" \
+  --stable \
+  --actor local-stable
+```
+
+用 `publish-mobile-webui.py inspect` 核对 Stable/Preview 的 generation、协议窗口和
+`minimum_native_build`。发布只更新 WebUI 发布仓，不会改写会话、记忆或插件数据。
+
 ---
 
 ## 系统全景

@@ -26,6 +26,10 @@ const mobileSource = await readFile(
   new URL("./mobile-native.tsx", import.meta.url),
   "utf8",
 );
+const pluginRuntimeSource = await readFile(
+  new URL("./mobile-plugin-runtime.tsx", import.meta.url),
+  "utf8",
+);
 const sharedMessageSource = await readFile(
   new URL("./message-view.tsx", import.meta.url),
   "utf8",
@@ -53,9 +57,10 @@ test("process plugin slots align with thinking and tool content", () => {
     /\.process-item\s*\{[\s\S]*?grid-template-columns:\s*var\(--process-rail-width\) minmax\(0, 1fr\);[\s\S]*?column-gap:\s*12px;/,
   );
   assert.match(
-    platformStyles,
+    sharedStyles,
     /\.mobile-plugin-slot\[data-slot="turn\.before_reasoning"\],[\s\S]*?margin-inline-start:\s*30px;/,
   );
+  assert.doesNotMatch(platformStyles, /\.mobile-plugin-slot\[data-slot="turn\.before_reasoning"\]/);
   assert.match(
     sharedStyles,
     /\.process-line\s*\{[\s\S]*?left:\s*var\(--process-content-inset\);[\s\S]*?width:\s*var\(--process-rail-width\);[\s\S]*?justify-content:\s*center;/,
@@ -68,6 +73,33 @@ test("process plugin slots align with thinking and tool content", () => {
     sharedStyles,
     /\.process-node\.diamond\s*\{[^}]*width:\s*8px;[^}]*height:\s*8px;/,
   );
+});
+
+test("streaming thinking uses the shared Streamdown renderer", () => {
+  assert.match(
+    sharedMessageSource,
+    /function ThinkingStep[\s\S]*?<LazyMessageResponse isAnimating=\{active\}>\{block\.content\}<\/LazyMessageResponse>/,
+  );
+  assert.match(
+    sharedStyles,
+    /\.process-markdown\s*\{[^}]*white-space:\s*normal;/,
+  );
+  assert.match(
+    sharedStyles,
+    /\.process-markdown-fallback\s*\{[^}]*white-space:\s*pre-wrap;/,
+  );
+});
+
+test("desktop shares plugin shell slots without exposing mobile dashboards", () => {
+  assert.match(desktopSource, /import \{ loadWebPluginCatalog, MobilePluginSlot \} from "\.\/mobile-plugin-runtime";/);
+  assert.match(desktopSource, /<MobilePluginSlot name="drawer\.panel"/);
+  assert.match(desktopSource, /name="turn\.before_reasoning"/);
+  assert.match(desktopSource, /name="turn\.before_tool"/);
+  assert.match(desktopSource, /name="turn\.after_answer"/);
+  assert.doesNotMatch(desktopSource, /MobilePluginDashboard|useMobilePluginDashboards/);
+  assert.match(pluginRuntimeSource, /fetch\("\/api\/chat\/plugin-ui\/catalog"/);
+  assert.match(pluginRuntimeSource, /fetch\("\/api\/chat\/plugin-ui\/query"/);
+  assert.match(pluginRuntimeSource, /slot === "dashboard\.main"/);
 });
 
 test("desktop and mobile keep one shared conversation owner", () => {
@@ -101,6 +133,22 @@ test("shared navigation keeps the compact mobile drawer language", () => {
   assert.match(
     navigationStyles,
     /\.conversation-navigation__action\.primary\s*\{[^}]*width:\s*fit-content;[^}]*border-radius:\s*24px;/,
+  );
+  assert.match(
+    navigationStyles,
+    /\.conversation-session-list\s*\{[^}]*min-height:\s*0;[^}]*flex:\s*1;[^}]*grid-auto-rows:\s*min-content;[^}]*align-content:\s*start;[^}]*overflow-y:\s*auto;/,
+  );
+  assert.match(
+    navigationSource,
+    /<section className="conversation-navigation__sessions">[\s\S]*?<\/section>[\s\S]*?conversation-navigation__auxiliary/,
+  );
+  assert.match(
+    navigationStyles,
+    /\.conversation-navigation__auxiliary\s*\{[^}]*position:\s*relative;[^}]*height:\s*80px;[^}]*flex:\s*0 0 80px;/,
+  );
+  assert.match(
+    sharedStyles,
+    /\.mobile-plugin-slot\[data-slot="drawer\.panel"\]\s*\{[^}]*position:\s*absolute;[^}]*inset-block-end:\s*0;[^}]*background:\s*var\(--m-surface\);/,
   );
   assert.match(
     navigationStyles,

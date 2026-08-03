@@ -73,7 +73,9 @@ input {
 .chat-sidebar {
   display: flex;
   min-width: 0;
+  min-height: 0;
   flex-direction: column;
+  overflow: hidden;
   border-right: 1px solid var(--m-outline-variant);
   background: var(--m-surface-container-low);
 }
