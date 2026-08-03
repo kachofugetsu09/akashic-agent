@@ -8,7 +8,7 @@ import sqlite3
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -93,7 +93,7 @@ def _kill_backup_after_rename(root: str, destination: str) -> None:
 
 
 def _restore_fixture(root: Path) -> tuple[Path, Path, Path, WebUiManifest, WebUiManifest]:
-    """Create a verified source backup and a distinct old target store."""
+    """创建已验证的 source backup 和独立旧 target store。"""
 
     source_manifest, source_contents = _manifest(root / "source-build", b"<html>new</html>\n")
     source = MobileWebUiStore(root / "source", server_id="server-1")
@@ -535,6 +535,7 @@ def test_restore_appends_audit_event_and_preserves_source_backup(tmp_path: Path)
         server_id="server-1",
         pre_restore_backup=tmp_path / "pre-restore",
     )
+    assert not list(tmp_path.glob("target.recovery-*"))
     MobileWebUiStore.verify_backup(backup, server_id="server-1")
     assert (backup / "backup.json").read_bytes() == source_descriptor
     MobileWebUiStore.verify_backup(tmp_path / "target", server_id="server-1")
@@ -837,6 +838,95 @@ def test_restore_parent_fsync_failure_keeps_marker_for_valid_new_recovery(
         recovered.close()
     assert not marker.exists()
     assert not recovery_roots[0].exists()
+    MobileWebUiStore.verify_backup(pre_restore, server_id="server-1")
+    MobileWebUiStore.verify_backup(backup, server_id="server-1")
+
+
+def test_restore_recovery_delete_failure_keeps_marker_for_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.mobile_webui import store as store_module
+
+    backup, target, pre_restore, source_manifest, _old_manifest = _restore_fixture(tmp_path)
+    original_rmtree = store_module.shutil.rmtree
+    state = {"failed": False}
+
+    def rmtree(path: str | os.PathLike[str], *args: Any, **kwargs: Any) -> None:
+        if Path(path).name.startswith("target.recovery-") and not state["failed"]:
+            state["failed"] = True
+            raise OSError("injected recovery delete failure")
+        original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(store_module.shutil, "rmtree", rmtree)
+    with pytest.raises(OSError, match="recovery delete"):
+        MobileWebUiStore.restore_backup(
+            backup,
+            target,
+            server_id="server-1",
+            pre_restore_backup=pre_restore,
+        )
+    marker = MobileWebUiStore._restore_marker_path(target)
+    assert marker.is_file()
+    assert target.is_dir()
+    recovery_roots = list(tmp_path.glob("target.recovery-*"))
+    assert len(recovery_roots) == 1
+
+    recovered = MobileWebUiStore(target, server_id="server-1")
+    try:
+        assert recovered.get_release().stable is not None
+        assert recovered.get_release().stable.generation_id == source_manifest.generation_id
+    finally:
+        recovered.close()
+    assert not marker.exists()
+    assert not recovery_roots[0].exists()
+    MobileWebUiStore.verify_backup(pre_restore, server_id="server-1")
+    MobileWebUiStore.verify_backup(backup, server_id="server-1")
+
+
+def test_restore_recovery_delete_fsync_failure_keeps_marker_for_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.mobile_webui import store as store_module
+
+    backup, target, pre_restore, source_manifest, _old_manifest = _restore_fixture(tmp_path)
+    original_rmtree = store_module.shutil.rmtree
+    original_fsync_directory = store_module.MobileWebUiStore._fsync_directory
+    state = {"recovery_deleted": False, "failed": False}
+
+    def rmtree(path: str | os.PathLike[str], *args: Any, **kwargs: Any) -> None:
+        original_rmtree(path, *args, **kwargs)
+        if Path(path).name.startswith("target.recovery-"):
+            state["recovery_deleted"] = True
+
+    def fsync_directory(path: Path) -> None:
+        if state["recovery_deleted"] and not state["failed"]:
+            state["failed"] = True
+            raise OSError("injected recovery parent fsync failure")
+        original_fsync_directory(path)
+
+    monkeypatch.setattr(store_module.shutil, "rmtree", rmtree)
+    monkeypatch.setattr(store_module.MobileWebUiStore, "_fsync_directory", staticmethod(fsync_directory))
+    with pytest.raises(OSError, match="recovery parent fsync"):
+        MobileWebUiStore.restore_backup(
+            backup,
+            target,
+            server_id="server-1",
+            pre_restore_backup=pre_restore,
+        )
+    marker = MobileWebUiStore._restore_marker_path(target)
+    assert marker.is_file()
+    assert target.is_dir()
+    assert not list(tmp_path.glob("target.recovery-*"))
+
+    recovered = MobileWebUiStore(target, server_id="server-1")
+    try:
+        assert recovered.get_release().stable is not None
+        assert recovered.get_release().stable.generation_id == source_manifest.generation_id
+    finally:
+        recovered.close()
+    assert not marker.exists()
     MobileWebUiStore.verify_backup(pre_restore, server_id="server-1")
     MobileWebUiStore.verify_backup(backup, server_id="server-1")
 

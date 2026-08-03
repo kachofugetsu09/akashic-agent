@@ -601,7 +601,7 @@ class MobileWebUiStore:
                 MobileWebUiStore._clear_restore_marker(restore_marker)
             return target_root
         except BaseException:
-            # Marker 存在时把候选树和旧 root 交给启动恢复；不能提前清掉唯一证据。
+            # 恢复标记存在时，把候选树和旧 root 交给启动恢复；不能提前清掉唯一证据。
             if restore_marker is None:
                 shutil.rmtree(temporary, ignore_errors=True)
             raise
@@ -899,7 +899,7 @@ class MobileWebUiStore:
 
     @staticmethod
     def _recover_restore_marker(root: Path, *, server_id: str | None = None) -> None:
-        """Recover an interrupted store swap without accepting an unverified new root."""
+        """恢复被中断的 store 切换，不接受未经验证的新 root。"""
 
         target_root = _absolute_path(root)
         marker = MobileWebUiStore._restore_marker_path(target_root)
@@ -1027,7 +1027,7 @@ class MobileWebUiStore:
 
     @staticmethod
     def _verify_restored_root(root: Path, *, server_id: str, expected_tree_digest: str) -> None:
-        """Verify the newly installed backup tree and its marker-bound identity."""
+        """校验新安装的备份树及恢复标记绑定的身份。"""
 
         MobileWebUiStore.verify_backup(root, server_id=server_id)
         if _tree_digest(root) != expected_tree_digest:
@@ -1035,7 +1035,7 @@ class MobileWebUiStore:
 
     @staticmethod
     def _remove_restore_temporary(root: Path) -> None:
-        """Remove only the temporary tree named by a durable restore marker."""
+        """只删除持久恢复标记指定的 temporary 目录。"""
 
         if root.is_symlink():
             raise RuntimeError("WebUI restore temporary 不能是符号链接")
@@ -1047,7 +1047,7 @@ class MobileWebUiStore:
 
     @staticmethod
     def _remove_restore_recovery(root: Path) -> None:
-        """Durably remove the old root after the new restore is verified."""
+        """新 root 验证通过后，持久删除旧 root。"""
 
         if root.is_symlink():
             raise RuntimeError("WebUI restore recovery 不能是符号链接")
@@ -1361,7 +1361,7 @@ def _absolute_path(path: Path) -> Path:
 
 
 def _require_marker_path(value: object, label: str) -> Path:
-    """Validate a restore marker path before any filesystem operation."""
+    """在访问文件系统前校验恢复标记路径。"""
 
     if not isinstance(value, str):
         raise RuntimeError(f"WebUI restore marker {label} 路径类型无效")
