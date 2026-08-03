@@ -465,7 +465,7 @@ candidate 在所有 invariant 通过前不接受公开请求。commit 临界区�
 
 ### PLG-007 Watcher 单轮失败不终止生命周期
 
-一次 scan 或 reconcile 失败只影响当前 revision，旧插件继续服务。相同失败 revision 不得无限重试；后续变化或显式 wake 可以恢复。stop 必须可等待。
+一次 scan 或 reconcile 失败只影响当前 revision，旧插件继续服务。相同失败 revision 只允许有界自动重试，不得无限重试；达到上限后由后续变化或显式 wake 恢复。只有 reconcile 成功才能推进已确认 revision 并发布 catalog changed 等后置通知，失败状态不得要求消费者通过清缓存恢复。stop 必须可等待。
 
 ### PLG-008 动态协议和冲突 fail-loud
 
