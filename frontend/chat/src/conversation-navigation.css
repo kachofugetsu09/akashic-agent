@@ -57,6 +57,17 @@
   background: var(--m-surface-container);
 }
 
+.conversation-destination.active {
+  color: var(--m-on-primary-container);
+  background: var(--m-primary-container);
+}
+
+.conversation-destination.active .conversation-destination__icon,
+.conversation-destination.active small,
+.conversation-destination.active > svg {
+  color: inherit;
+}
+
 .conversation-destination:focus-visible,
 .conversation-session:focus-visible,
 .conversation-navigation__action:focus-visible {

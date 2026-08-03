@@ -17,6 +17,10 @@ from infra.channels.web_chat_channel import (
     WebChatChannel,
 )
 from infra.mobile_realtime.pairing import PairingError
+from infra.mobile_realtime.runtime_inspection import (
+    RuntimeInspectionError,
+    RuntimeInspectionService,
+)
 from infra.mobile_realtime.storage import PairingStateError
 
 if TYPE_CHECKING:
@@ -34,6 +38,7 @@ def create_chat_app(
     workspace: Path,
     channel: WebChatChannel,
     mobile_pairing_admin: MobilePairingAdmin | None = None,
+    runtime_inspection: RuntimeInspectionService | None = None,
 ) -> FastAPI:
     channel.bind_attachment_store(AttachmentStore(workspace / "uploads"))
     app = FastAPI(title="Akashic Chat API")
@@ -73,6 +78,52 @@ def create_chat_app(
     @app.get("/api/chat/navigation")
     def chat_navigation() -> dict[str, int]:
         return {"dashboard_port": _public_dashboard_port()}
+
+    @app.get("/api/chat/runtime/documents")
+    def list_runtime_documents() -> dict[str, object]:
+        return _require_runtime_inspection(runtime_inspection).list_documents()
+
+    @app.get("/api/chat/runtime/documents/{document_id}")
+    def read_runtime_document(document_id: str) -> dict[str, object]:
+        try:
+            return _require_runtime_inspection(runtime_inspection).get_document(
+                document_id
+            )
+        except RuntimeInspectionError as error:
+            raise _runtime_http_error(error) from error
+
+    @app.get("/api/chat/runtime/jobs")
+    def list_runtime_jobs() -> dict[str, object]:
+        return _require_runtime_inspection(runtime_inspection).list_jobs()
+
+    @app.get("/api/chat/runtime/jobs/{job_id}")
+    def read_runtime_job(job_id: str) -> dict[str, object]:
+        try:
+            return _require_runtime_inspection(runtime_inspection).get_job(job_id)
+        except RuntimeInspectionError as error:
+            raise _runtime_http_error(error) from error
+
+    @app.get("/api/chat/runtime/capabilities")
+    async def list_runtime_capabilities() -> dict[str, object]:
+        try:
+            return await _require_runtime_inspection(
+                runtime_inspection
+            ).list_capabilities()
+        except RuntimeInspectionError as error:
+            raise _runtime_http_error(error) from error
+
+    @app.get("/api/chat/runtime/mcp")
+    async def read_runtime_mcp(
+        owner_id: str = Query(...),
+        name: str = Query(...),
+    ) -> dict[str, object]:
+        try:
+            return await _require_runtime_inspection(runtime_inspection).get_mcp(
+                owner_id,
+                name,
+            )
+        except RuntimeInspectionError as error:
+            raise _runtime_http_error(error) from error
 
     @app.get("/api/chat/sessions/{session_key:path}/messages")
     def list_messages(
@@ -166,6 +217,7 @@ def build_chat_server(
     workspace: Path,
     channel: WebChatChannel,
     mobile_pairing_admin: MobilePairingAdmin | None = None,
+    runtime_inspection: RuntimeInspectionService | None = None,
     host: str = "127.0.0.1",
     port: int = 6322,
 ) -> uvicorn.Server:
@@ -174,6 +226,7 @@ def build_chat_server(
             workspace=workspace,
             channel=channel,
             mobile_pairing_admin=mobile_pairing_admin,
+            runtime_inspection=runtime_inspection,
         ),
         host=host,
         port=port,
@@ -181,6 +234,19 @@ def build_chat_server(
         access_log=False,
     )
     return uvicorn.Server(config)
+
+
+def _require_runtime_inspection(
+    service: RuntimeInspectionService | None,
+) -> RuntimeInspectionService:
+    if service is None:
+        raise HTTPException(status_code=503, detail="运行时检查服务不可用")
+    return service
+
+
+def _runtime_http_error(error: RuntimeInspectionError) -> HTTPException:
+    status_code = 404 if error.code.endswith("_not_found") else 409
+    return HTTPException(status_code=status_code, detail=str(error))
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:

@@ -38,15 +38,35 @@ const navigationStyles = await readFile(
   new URL("./conversation-navigation.css", import.meta.url),
   "utf8",
 );
+const runtimeDashboardSource = await readFile(
+  new URL("./runtime-dashboard.tsx", import.meta.url),
+  "utf8",
+);
+const runtimeDashboardStyles = await readFile(
+  new URL("./runtime-dashboard.css", import.meta.url),
+  "utf8",
+);
 
 test("process plugin slots align with thinking and tool content", () => {
   assert.match(
     sharedStyles,
-    /\.process-item\s*\{[\s\S]*?grid-template-columns:\s*18px minmax\(0, 1fr\);[\s\S]*?column-gap:\s*12px;/,
+    /\.process-item\s*\{[\s\S]*?grid-template-columns:\s*var\(--process-rail-width\) minmax\(0, 1fr\);[\s\S]*?column-gap:\s*12px;/,
   );
   assert.match(
     platformStyles,
     /\.mobile-plugin-slot\[data-slot="turn\.before_reasoning"\],[\s\S]*?margin-inline-start:\s*30px;/,
+  );
+  assert.match(
+    sharedStyles,
+    /\.process-line\s*\{[\s\S]*?left:\s*var\(--process-content-inset\);[\s\S]*?width:\s*var\(--process-rail-width\);[\s\S]*?justify-content:\s*center;/,
+  );
+  assert.match(
+    sharedStyles,
+    /\.process-line::before\s*\{[^}]*width:\s*1px;[^}]*height:\s*100%;/,
+  );
+  assert.match(
+    sharedStyles,
+    /\.process-node\.diamond\s*\{[^}]*width:\s*8px;[^}]*height:\s*8px;/,
   );
 });
 
@@ -85,6 +105,21 @@ test("shared navigation keeps the compact mobile drawer language", () => {
   assert.match(
     navigationStyles,
     /\.conversation-destination\.featured\s*\{[^}]*min-height:\s*68px;[^}]*border-radius:\s*22px;[^}]*background:\s*#3f7479;/,
+  );
+});
+
+test("runtime metrics introduce the category before its value", () => {
+  assert.match(
+    runtimeDashboardSource,
+    /<div><small>\{label\}<\/small><strong>\{value\}<\/strong><\/div>/,
+  );
+  assert.match(
+    runtimeDashboardStyles,
+    /\.runtime-metric strong\s*\{[^}]*margin-top:\s*6px;/,
+  );
+  assert.doesNotMatch(
+    runtimeDashboardStyles,
+    /\.runtime-metric small\s*\{[^}]*margin-top:/,
   );
 });
 

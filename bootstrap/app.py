@@ -406,6 +406,19 @@ class AppRuntime:
                 )
             if self.readiness is not None:
                 self.readiness.mark_stage("services.ready")
+            from infra.mobile_realtime.runtime_inspection import (
+                RuntimeInspectionService,
+            )
+
+            runtime_inspection = RuntimeInspectionService(
+                workspace=self.workspace,
+                scheduler=self.scheduler,
+                snapshot_store=(
+                    plugin_manager.snapshot_store
+                    if plugin_manager is not None
+                    else None
+                ),
+            )
             if self.config.mobile_realtime.enabled:
                 from infra.mobile_realtime.gateway import (
                     build_mobile_gateway_runtime,
@@ -418,20 +431,8 @@ class AppRuntime:
                 self.bus.bind_durable_inbound_store(
                     self.session_manager.control_store
                 )
-                from infra.mobile_realtime.runtime_inspection import (
-                    RuntimeInspectionService,
-                )
-
                 self.mobile_gateway_runtime.channel.bind_runtime_inspection(
-                    RuntimeInspectionService(
-                        workspace=self.workspace,
-                        scheduler=self.scheduler,
-                        snapshot_store=(
-                            plugin_manager.snapshot_store
-                            if plugin_manager is not None
-                            else None
-                        ),
-                    )
+                    runtime_inspection
                 )
                 if plugin_manager is not None:
                     from agent.plugins.mobile_ui import PluginMobileUiProvider
@@ -546,6 +547,7 @@ class AppRuntime:
                         if self.mobile_gateway_runtime is not None
                         else None
                     ),
+                    runtime_inspection=runtime_inspection,
                 )
                 self.chat_task = asyncio.create_task(
                     self.chat_server.serve(),

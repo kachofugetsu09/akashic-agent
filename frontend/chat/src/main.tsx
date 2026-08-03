@@ -5,7 +5,7 @@ import { useStickToBottomContext } from "use-stick-to-bottom";
 import {
   Check,
   CircleStop,
-  LibraryBig,
+  BookOpenText,
   MessageSquarePlus,
   Plus,
   Puzzle,
@@ -45,8 +45,10 @@ import {
 } from "@/components/ai-elements/prompt-input";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ConversationNavigation } from "./conversation-navigation";
+import { akashicBrandIcon } from "./akashic-brand";
 import { ComposerReply, MessageReplyReference, SharedMessageActions } from "./message-actions";
 import { MobilePairingDialog } from "./mobile-pairing-dialog";
+import { RuntimeDashboard } from "./runtime-dashboard";
 import "./styles.css";
 import "./message-view.css";
 
@@ -248,6 +250,9 @@ function chatNavigation(payload: unknown): ChatNavigation {
 }
 
 function App() {
+  const [surface, setSurface] = useState<"chat" | "runtime">(
+    () => new URLSearchParams(window.location.search).get("surface") === "runtime" ? "runtime" : "chat",
+  );
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [activeSessionId, setActiveSessionId] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -434,6 +439,8 @@ function App() {
   }, [activeSessionId, connect, reportError]);
 
   const startNewChat = useCallback(() => {
+    setSurface("chat");
+    window.history.replaceState(null, "", window.location.pathname);
     activeSessionRef.current = "";
     messagesRequestRef.current?.abort();
     sendRequestRef.current?.abort();
@@ -450,15 +457,28 @@ function App() {
   return (
     <main className="chat-shell dark">
       <aside className="chat-sidebar">
+        <header className="chat-sidebar-brand">
+          <span
+            className="chat-sidebar-brand__mark"
+            style={{ WebkitMaskImage: `url(${akashicBrandIcon})`, maskImage: `url(${akashicBrandIcon})` }}
+            aria-hidden="true"
+          />
+          <span><strong>Akashic</strong><small>Dashboard</small></span>
+        </header>
         <ConversationNavigation
+          destinationHeading="工作空间"
+          sessionHeading="最近会话"
           destinations={[
             {
               id: "runtime",
-              icon: <LibraryBig size={20} />,
+              icon: <BookOpenText size={20} />,
               label: "知识与运行",
               description: "记忆 · MCP · 定时任务",
-              href: dashboardHref,
-              disabled: dashboardHref === undefined,
+              active: surface === "runtime",
+              onActivate: () => {
+                setSurface("runtime");
+                window.history.replaceState(null, "", `${window.location.pathname}?surface=runtime`);
+              },
             },
             {
               id: "plugins",
@@ -474,9 +494,11 @@ function App() {
             title: sessionLabel(session),
             preview: `${session.message_count ?? 0} 条消息`,
             updatedLabel: formatNavigationTime(session.updated_at),
-            active: activeSessionId === session.key,
-            state: activeSessionId === session.key ? <Check size={18} /> : null,
+            active: surface === "chat" && activeSessionId === session.key,
+            state: surface === "chat" && activeSessionId === session.key ? <Check size={18} /> : null,
             onActivate: () => {
+              setSurface("chat");
+              window.history.replaceState(null, "", window.location.pathname);
               activeSessionRef.current = session.key;
               setActiveSessionId(session.key);
               setReplyTarget(null);
@@ -501,7 +523,7 @@ function App() {
         />
       </aside>
 
-      <section className="chat-main">
+      {surface === "runtime" ? <RuntimeDashboard /> : <section className="chat-main">
         <Conversation className="conversation">
           <ConversationContent className={messages.length ? "conversation-content" : "conversation-content empty"}>
             {messages.length === 0 ? (
@@ -600,7 +622,7 @@ function App() {
           </PromptInput>
           {error && <div className="error-line">{error}</div>}
         </div>
-      </section>
+      </section>}
       <MobilePairingDialog open={mobilePairingOpen} onOpenChange={setMobilePairingOpen} />
     </main>
   );
