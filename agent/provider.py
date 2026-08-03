@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 import httpx
 from openai import AsyncOpenAI
 
+from agent.llm_json import load_json_object_loose
 from agent.model_runtime.auth.codex import CodexAuthDriver
 from agent.model_runtime.auth.store import CredentialStore
 from agent.model_runtime.context_policy import build_runtime_context_budget
@@ -910,7 +911,16 @@ def _coerce_int(value: Any) -> int | None:
 def _parse_tool_arguments(raw_arguments: str) -> dict[str, Any]:
     """解析 provider 工具参数并保持内部对象契约。"""
 
-    arguments = json.loads(raw_arguments)
+    try:
+        arguments = json.loads(raw_arguments)
+    except json.JSONDecodeError:
+        arguments = load_json_object_loose(raw_arguments)
+        if arguments is None:
+            raise
+        logger.warning(
+            "[llm] repaired malformed tool arguments original_chars=%d",
+            len(raw_arguments),
+        )
     if not isinstance(arguments, dict):
         raise TypeError("LLM 工具调用参数必须是 JSON 对象")
     return arguments
