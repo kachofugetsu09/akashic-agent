@@ -97,6 +97,29 @@ def test_process_identity_rejects_reused_pid_counterexample() -> None:
     )
 
 
+def test_process_identity_treats_proc_lookup_race_as_exited(monkeypatch: pytest.MonkeyPatch) -> None:
+    identity = {"pid": 123456, "starttime": 1}
+
+    def read_text(_path: Path, **_kwargs: object) -> str:
+        raise ProcessLookupError("process exited during /proc read")
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    assert not _identity_alive(identity)
+
+
+def test_process_identity_propagates_unexpected_proc_read_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    identity = {"pid": 123456, "starttime": 1}
+
+    def read_text(_path: Path, **_kwargs: object) -> str:
+        raise PermissionError("unexpected /proc read failure")
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    with pytest.raises(PermissionError, match="unexpected /proc read failure"):
+        _identity_alive(identity)
+
+
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="依赖 Linux zombie 状态")
 def test_process_identity_treats_zombie_as_exited() -> None:
     pid = os.fork()
