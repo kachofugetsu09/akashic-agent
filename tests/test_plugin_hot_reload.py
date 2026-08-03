@@ -3016,6 +3016,51 @@ async def test_plugin_watcher_does_not_reconcile_after_recovered_scan_error() ->
 
 
 @pytest.mark.asyncio
+async def test_plugin_watcher_recovers_on_third_reconcile_attempt() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.revision = "broken"
+            self.failures_remaining = 2
+            self.calls = 0
+            self.recovered = asyncio.Event()
+
+        def watch_revision(self) -> str:
+            return self.revision
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            if self.failures_remaining:
+                self.failures_remaining -= 1
+                raise RuntimeError("transient callback failure")
+            self.recovered.set()
+            return []
+
+    manager = Manager()
+    notification_calls = 0
+    notified = asyncio.Event()
+
+    async def notify() -> None:
+        nonlocal notification_calls
+        notification_calls += 1
+        notified.set()
+
+    watcher = PluginWatcher(
+        cast(PluginManager, manager),
+        baseline_revision="stable",
+        interval_seconds=0.01,
+        after_reconcile=notify,
+    )
+    task = asyncio.create_task(watcher.run())
+    await asyncio.wait_for(manager.recovered.wait(), timeout=1)
+    await asyncio.wait_for(notified.wait(), timeout=1)
+
+    watcher.stop()
+    await task
+    assert manager.calls == 3
+    assert notification_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_plugin_watcher_recovers_after_reconcile_failure() -> None:
     class Manager:
         def __init__(self) -> None:
@@ -3052,17 +3097,75 @@ async def test_plugin_watcher_recovers_after_reconcile_failure() -> None:
     task = asyncio.create_task(watcher.run())
     await asyncio.sleep(0)
     await asyncio.wait_for(manager.failed.wait(), timeout=1)
+    for _ in range(100):
+        if manager.calls >= 3:
+            break
+        await asyncio.sleep(0.01)
     await asyncio.sleep(0.03)
-    assert manager.calls >= 2
+    assert manager.calls == 3
     assert reconciled == 0
     assert not task.done()
 
     manager.allow_reconcile = True
+    manager.revision = "fixed"
     await asyncio.wait_for(manager.recovered.wait(), timeout=1)
     watcher.stop()
     await task
-    assert manager.calls >= 2
+    assert manager.calls == 4
     assert reconciled == 1
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_wake_retries_blocked_revision() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.revision = "broken"
+            self.allow_reconcile = False
+            self.calls = 0
+            self.recovered = asyncio.Event()
+
+        def watch_revision(self) -> str:
+            return self.revision
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            if not self.allow_reconcile:
+                raise RuntimeError("persistent callback failure")
+            self.recovered.set()
+            return []
+
+    manager = Manager()
+    notification_calls = 0
+    notified = asyncio.Event()
+
+    async def notify() -> None:
+        nonlocal notification_calls
+        notification_calls += 1
+        notified.set()
+
+    watcher = PluginWatcher(
+        cast(PluginManager, manager),
+        baseline_revision="stable",
+        interval_seconds=0.01,
+        after_reconcile=notify,
+    )
+    task = asyncio.create_task(watcher.run())
+    for _ in range(100):
+        if manager.calls >= 3:
+            break
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.03)
+    assert manager.calls == 3
+    assert notification_calls == 0
+
+    manager.allow_reconcile = True
+    watcher.wake()
+    await asyncio.wait_for(manager.recovered.wait(), timeout=1)
+    await asyncio.wait_for(notified.wait(), timeout=1)
+    watcher.stop()
+    await task
+    assert manager.calls == 4
+    assert notification_calls == 1
 
 
 @pytest.mark.asyncio
