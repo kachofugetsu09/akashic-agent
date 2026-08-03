@@ -140,6 +140,43 @@ def test_build_context_tracks_effective_env_and_normalizes_output_dir(tmp_path: 
     assert changed["build_context_digest"] != second["build_context_digest"]
 
 
+def test_source_bound_provenance_ignores_inherited_pwd(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    environment = os.environ.copy()
+    first = _PUBLISHER._capture_provenance(
+        repo,
+        environment={**environment, "PWD": str(tmp_path / "inherited-a")},
+        output_dir=tmp_path / "output",
+    )
+    second = _PUBLISHER._capture_provenance(
+        repo,
+        environment={**environment, "PWD": str(tmp_path / "inherited-b")},
+        output_dir=tmp_path / "output",
+    )
+    assert first["build_context_digest"] == second["build_context_digest"]
+
+
+def test_run_build_binds_pwd_to_build_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _repo(tmp_path)
+    calls: list[tuple[list[str], Path, dict[str, str]]] = []
+
+    def fake_run(
+        command: list[str], *, cwd: Path, env: dict[str, str], check: bool
+    ) -> None:
+        assert check is True
+        calls.append((command, cwd, env))
+
+    monkeypatch.setattr(_PUBLISHER.subprocess, "run", fake_run)
+    _PUBLISHER._run_build(
+        repo,
+        environment={"PATH": os.environ["PATH"], "PWD": str(tmp_path / "inherited")},
+        lock_available=True,
+    )
+    assert len(calls) == 2
+    assert all(cwd == repo for _, cwd, _ in calls)
+    assert all(env["PWD"] == str(repo.resolve()) for _, _, env in calls)
+
+
 def test_build_environment_is_controlled_and_clean_publish_revalidates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repo = _repo(tmp_path)
     monkeypatch.setenv("UNTRACKED_BUILD_INPUT", "ignored")
@@ -189,9 +226,15 @@ def test_clean_publish_rejects_nondeterministic_artifact_rebuild(tmp_path: Path)
         _PUBLISHER._manifest(repo, built, allow_dirty=False)
 
 
-def test_internal_publish_cleans_build_sidecar_on_success(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_internal_publish_cleans_build_sidecar_on_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     repo = _repo(tmp_path)
     workspace = tmp_path / "runtime-workspace"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("PWD", str(repo))
     assert _PUBLISHER.main(
         [
             "publish",
