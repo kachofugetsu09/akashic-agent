@@ -8,6 +8,8 @@ from agent.plugins.manager import PluginManager
 
 logger = logging.getLogger(__name__)
 
+_MAX_RECONCILE_ATTEMPTS = 3
+
 
 class PluginWatcher:
     def __init__(
@@ -24,6 +26,7 @@ class PluginWatcher:
         self._after_reconcile = after_reconcile
         self._wake = asyncio.Event()
         self._forced = False
+        self._manual_wake_pending = False
         self._confirmation_pending = False
         self._notification_pending = False
         self._running = True
@@ -34,6 +37,9 @@ class PluginWatcher:
         """轮询插件文件状态，并在变化后执行一次热重载。"""
 
         revision = self._baseline_revision
+        failed_revision: str | None = None
+        failed_attempts = 0
+        blocked_revision: str | None = None
         self._run_started = True
         try:
             # 1. 启动前已停止时，不再触碰 manager
@@ -52,30 +58,53 @@ class PluginWatcher:
                 if not self._running:
                     break
                 forced = self._forced
+                manual_wake = self._manual_wake_pending
                 self._forced = False
+                self._manual_wake_pending = False
                 # 3. 读取最新状态；单次文件竞争交给下一轮恢复
                 try:
                     current_revision = await asyncio.to_thread(
                         self._manager.watch_revision
                     )
                 except OSError:
-                    self._forced = self._forced or forced
+                    self._forced = self._forced or forced or manual_wake
+                    self._manual_wake_pending = self._manual_wake_pending or manual_wake
                     logger.exception("插件热重载状态扫描失败")
                     continue
+                if manual_wake:
+                    failed_revision = None
+                    failed_attempts = 0
+                    blocked_revision = None
+                elif failed_revision is not None and current_revision != failed_revision:
+                    failed_revision = None
+                    failed_attempts = 0
+                    blocked_revision = None
                 changed = forced or current_revision != revision
+                if blocked_revision == current_revision and not manual_wake:
+                    changed = False
                 if not changed and not self._notification_pending:
                     continue
-                # 4. 插件版本只协调一次，通知失败仅重试通知
+                # 4. 同 revision 失败有界重试；通知失败只重试通知，不重复 reconcile
                 confirming = self._confirmation_pending
                 needs_confirmation = False
                 if changed:
+                    if failed_revision != current_revision:
+                        failed_revision = current_revision
+                        failed_attempts = 0
+                        blocked_revision = None
+                    failed_attempts += 1
                     try:
                         results = await self._manager.reconcile_changed()
                     except Exception:
                         logger.exception("插件热重载失败")
-                        if confirming:
+                        if failed_attempts >= _MAX_RECONCILE_ATTEMPTS:
+                            blocked_revision = current_revision
+                            if self._confirmation_pending:
+                                self._notification_pending = False
+                        else:
+                            # 保留旧 revision；下一轮按轮询间隔自动重试。
                             self._forced = True
-                            continue
+                        continue
                     else:
                         # 安装器原子替换目录时，单次 discover 可能只看到短暂缺口。
                         # 禁用结果先确认一次，只向移动端发布稳定后的最终目录。
@@ -88,8 +117,11 @@ class PluginWatcher:
                             self._forced = True
                         elif confirming:
                             self._confirmation_pending = False
-                    revision = current_revision
-                    self._notification_pending = self._after_reconcile is not None
+                        revision = current_revision
+                        self._notification_pending = self._after_reconcile is not None
+                        failed_revision = None
+                        failed_attempts = 0
+                        blocked_revision = None
                 if needs_confirmation:
                     continue
                 if self._notification_pending:
@@ -105,6 +137,7 @@ class PluginWatcher:
 
     def wake(self) -> None:
         self._forced = True
+        self._manual_wake_pending = True
         self._wake.set()
 
     def stop(self) -> None:
