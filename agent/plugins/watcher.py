@@ -84,7 +84,7 @@ class PluginWatcher:
                     changed = False
                 if not changed and not self._notification_pending:
                     continue
-                # 4. 插件版本只协调一次，通知失败仅重试通知
+                # 4. 同 revision 失败有界重试；通知失败只重试通知，不重复 reconcile
                 confirming = self._confirmation_pending
                 needs_confirmation = False
                 if changed:
