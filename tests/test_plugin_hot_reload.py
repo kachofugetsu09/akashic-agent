@@ -3019,7 +3019,8 @@ async def test_plugin_watcher_does_not_reconcile_after_recovered_scan_error() ->
 async def test_plugin_watcher_recovers_after_reconcile_failure() -> None:
     class Manager:
         def __init__(self) -> None:
-            self.revision = "stable"
+            self.revision = "broken"
+            self.allow_reconcile = False
             self.failed = asyncio.Event()
             self.recovered = asyncio.Event()
             self.calls = 0
@@ -3029,7 +3030,7 @@ async def test_plugin_watcher_recovers_after_reconcile_failure() -> None:
 
         async def reconcile_changed(self) -> list[dict[str, object]]:
             self.calls += 1
-            if self.revision == "broken":
+            if not self.allow_reconcile:
                 self.failed.set()
                 raise RuntimeError("callback failed")
             self.recovered.set()
@@ -3050,19 +3051,18 @@ async def test_plugin_watcher_recovers_after_reconcile_failure() -> None:
     )
     task = asyncio.create_task(watcher.run())
     await asyncio.sleep(0)
-    manager.revision = "broken"
     await asyncio.wait_for(manager.failed.wait(), timeout=1)
     await asyncio.sleep(0.03)
-    assert manager.calls == 1
-    assert reconciled == 1
+    assert manager.calls >= 2
+    assert reconciled == 0
     assert not task.done()
 
-    manager.revision = "fixed"
+    manager.allow_reconcile = True
     await asyncio.wait_for(manager.recovered.wait(), timeout=1)
     watcher.stop()
     await task
-    assert manager.calls == 2
-    assert reconciled == 2
+    assert manager.calls >= 2
+    assert reconciled == 1
 
 
 @pytest.mark.asyncio

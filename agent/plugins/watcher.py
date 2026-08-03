@@ -73,9 +73,9 @@ class PluginWatcher:
                         results = await self._manager.reconcile_changed()
                     except Exception:
                         logger.exception("插件热重载失败")
-                        if confirming:
-                            self._forced = True
-                            continue
+                        # 保留旧 revision；成功 reconcile 前不能丢掉下一次重试或发布通知。
+                        self._forced = True
+                        continue
                     else:
                         # 安装器原子替换目录时，单次 discover 可能只看到短暂缺口。
                         # 禁用结果先确认一次，只向移动端发布稳定后的最终目录。
@@ -88,8 +88,8 @@ class PluginWatcher:
                             self._forced = True
                         elif confirming:
                             self._confirmation_pending = False
-                    revision = current_revision
-                    self._notification_pending = self._after_reconcile is not None
+                        revision = current_revision
+                        self._notification_pending = self._after_reconcile is not None
                 if needs_confirmation:
                     continue
                 if self._notification_pending:
