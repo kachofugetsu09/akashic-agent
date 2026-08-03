@@ -94,6 +94,59 @@ class _SessionStore:
         ], 2
 
 
+class _PluginUiProvider:
+    def __init__(self) -> None:
+        self.queries: list[dict[str, object]] = []
+
+    def catalog(self) -> dict[str, object]:
+        return {
+            "catalog_revision": "a" * 64,
+            "items": [{
+                "id": "akasha",
+                "revision": "revision-1",
+                "module_sha256": "b" * 64,
+                "stylesheet_sha256": None,
+                "navigation": {"label": "Akasha Inspector", "description": "移动端独立页面"},
+                "slots": ["turn.before_reasoning"],
+            }],
+        }
+
+    def asset(
+        self,
+        plugin_id: str,
+        plugin_revision: str,
+        kind: str,
+        sha256: str,
+    ) -> dict[str, object]:
+        return {
+            "plugin_id": plugin_id,
+            "plugin_revision": plugin_revision,
+            "kind": kind,
+            "sha256": sha256,
+            "content": "export default {};",
+        }
+
+    async def query(
+        self,
+        plugin_id: str,
+        plugin_revision: str,
+        method: str,
+        payload: dict[str, object],
+        *,
+        session_id: str | None,
+        turn_id: str | None,
+    ) -> dict[str, object]:
+        self.queries.append({
+            "plugin_id": plugin_id,
+            "plugin_revision": plugin_revision,
+            "method": method,
+            "payload": payload,
+            "session_id": session_id,
+            "turn_id": turn_id,
+        })
+        return {"left": [], "right": []}
+
+
 @pytest.mark.asyncio
 async def test_web_chat_session_and_message_flow(tmp_path: Path) -> None:
     bus = _Bus()
@@ -129,6 +182,69 @@ async def test_web_chat_session_and_message_flow(tmp_path: Path) -> None:
     assert len(bus.inbound) == 1
     assert bus.inbound[0].content == "你好"
     assert bus.inbound[0].session_key == session_id
+
+
+def test_web_plugin_ui_exposes_shared_slots_but_rejects_dashboard_query(
+    tmp_path: Path,
+) -> None:
+    channel = WebChatChannel()
+    provider = _PluginUiProvider()
+    app = create_chat_app(
+        workspace=tmp_path,
+        channel=channel,
+        plugin_ui_provider=cast(Any, provider),
+    )
+
+    with TestClient(app) as client:
+        catalog = client.get("/api/chat/plugin-ui/catalog")
+        asset = client.get(
+            "/api/chat/plugin-ui/asset",
+            params={
+                "plugin_id": "akasha",
+                "plugin_revision": "revision-1",
+                "kind": "module",
+                "sha256": "b" * 64,
+            },
+        )
+        query = client.post(
+            "/api/chat/plugin-ui/query",
+            json={
+                "plugin_id": "akasha",
+                "plugin_revision": "revision-1",
+                "method": "recall.current",
+                "payload": {"message_id": "assistant:turn-1"},
+                "slot": "turn.before_reasoning",
+                "session_id": "web:abc",
+                "turn_id": "turn-1",
+            },
+        )
+        dashboard_query = client.post(
+            "/api/chat/plugin-ui/query",
+            json={
+                "plugin_id": "akasha",
+                "plugin_revision": "revision-1",
+                "method": "inspector.recent",
+                "payload": {},
+                "slot": "dashboard.main",
+            },
+        )
+
+    assert catalog.status_code == 200
+    assert catalog.json()["items"][0]["navigation"]["label"] == "Akasha Inspector"
+    assert asset.status_code == 200
+    assert asset.headers["content-type"] == "text/javascript; charset=utf-8"
+    assert asset.headers["cache-control"] == "private, max-age=31536000, immutable"
+    assert query.status_code == 200
+    assert query.json() == {"left": [], "right": []}
+    assert provider.queries == [{
+        "plugin_id": "akasha",
+        "plugin_revision": "revision-1",
+        "method": "recall.current",
+        "payload": {"message_id": "assistant:turn-1"},
+        "session_id": "web:abc",
+        "turn_id": "turn-1",
+    }]
+    assert dashboard_query.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -257,6 +373,68 @@ def test_chat_navigation_uses_explicit_public_dashboard_port(
         response = client.get("/api/chat/navigation")
 
     assert response.json() == {"dashboard_port": 19321}
+
+
+def test_chat_runtime_routes_share_read_only_inspection_projection(
+    tmp_path: Path,
+) -> None:
+    class RuntimeInspection:
+        def list_documents(self) -> dict[str, object]:
+            return {"items": [{"id": "veda", "title": "VEDA 人格"}]}
+
+        def get_document(self, document_id: str) -> dict[str, object]:
+            return {"id": document_id, "markdown": "# VEDA"}
+
+        def list_jobs(self) -> dict[str, object]:
+            return {"items": [{"id": "morning", "name": "晨间提醒"}]}
+
+        def get_job(self, job_id: str) -> dict[str, object]:
+            return {"id": job_id, "markdown": "# 晨间提醒"}
+
+        async def list_capabilities(self) -> dict[str, object]:
+            return {
+                "snapshot_id": "snapshot-1",
+                "plugins": [],
+                "skills": [],
+                "mcp_servers": [
+                    {"owner_id": "workspace", "name": "github", "tool_count": 14}
+                ],
+            }
+
+        async def get_mcp(
+            self,
+            owner_id: str,
+            server_name: str,
+        ) -> dict[str, object]:
+            return {
+                "owner_id": owner_id,
+                "name": server_name,
+                "markdown": "# github",
+            }
+
+    app = create_chat_app(
+        workspace=tmp_path,
+        channel=WebChatChannel(),
+        runtime_inspection=cast(Any, RuntimeInspection()),
+    )
+
+    with TestClient(app) as client:
+        documents = client.get("/api/chat/runtime/documents")
+        document = client.get("/api/chat/runtime/documents/veda")
+        jobs = client.get("/api/chat/runtime/jobs")
+        job = client.get("/api/chat/runtime/jobs/morning")
+        capabilities = client.get("/api/chat/runtime/capabilities")
+        mcp = client.get(
+            "/api/chat/runtime/mcp",
+            params={"owner_id": "workspace", "name": "github"},
+        )
+
+    assert documents.json()["items"][0]["id"] == "veda"
+    assert document.json()["markdown"] == "# VEDA"
+    assert jobs.json()["items"][0]["id"] == "morning"
+    assert job.json()["markdown"] == "# 晨间提醒"
+    assert capabilities.json()["snapshot_id"] == "snapshot-1"
+    assert mcp.json()["owner_id"] == "workspace"
 
 
 @pytest.mark.asyncio

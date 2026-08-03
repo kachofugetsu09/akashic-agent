@@ -10,6 +10,7 @@ export interface ConversationDestination {
   badge?: ReactNode;
   href?: string;
   featured?: boolean;
+  active?: boolean;
   disabled?: boolean;
   onActivate?: () => void;
 }
@@ -43,6 +44,8 @@ export function ConversationNavigation({
   sessionAfterContent,
   panelRef,
   dialog,
+  destinationHeading,
+  sessionHeading,
   className = "",
 }: {
   destinations: ConversationDestination[];
@@ -52,6 +55,8 @@ export function ConversationNavigation({
   sessionAfterContent?: ReactNode;
   panelRef?: React.Ref<HTMLElement>;
   dialog?: boolean;
+  destinationHeading?: string;
+  sessionHeading?: string;
   className?: string;
 }) {
   const featuredDestinations = destinations.filter((destination) => destination.featured);
@@ -67,7 +72,10 @@ export function ConversationNavigation({
       tabIndex={dialog ? -1 : undefined}
     >
       <header className="conversation-navigation__header">
-        {featuredDestinations.length === 0 ? <div className="conversation-navigation__heading">会话</div> : null}
+        {featuredDestinations.length === 0 ? destinationHeading
+          ? <div className="conversation-navigation__heading">{destinationHeading}</div>
+          : <div className="conversation-navigation__heading">会话</div>
+          : null}
         {closeAction}
       </header>
 
@@ -78,6 +86,7 @@ export function ConversationNavigation({
         </>
       ) : null}
       <DestinationList destinations={standardDestinations} />
+      {sessionHeading ? <div className="conversation-navigation__heading conversation-navigation__heading--section">{sessionHeading}</div> : null}
 
       <section className="conversation-navigation__sessions">
         <nav className="conversation-session-list" aria-label="最近会话">
@@ -99,8 +108,13 @@ export function ConversationNavigation({
             </button>
           ))}
         </nav>
-        {sessionAfterContent}
       </section>
+
+      {sessionAfterContent ? (
+        <div className="conversation-navigation__auxiliary">
+          {sessionAfterContent}
+        </div>
+      ) : null}
 
       <div className="conversation-navigation__actions">
         {actions.map((action) => (
@@ -136,11 +150,11 @@ function DestinationList({ destinations, featured = false }: { destinations: Con
             <ChevronRight size={18} aria-hidden="true" />
           </>
         );
-        const className = `conversation-destination ${featured ? "featured" : ""}`;
+        const className = `conversation-destination ${featured ? "featured" : ""} ${destination.active ? "active" : ""}`;
         return destination.href && !destination.disabled ? (
-          <a className={className} href={destination.href} key={destination.id}>{content}</a>
+          <a className={className} href={destination.href} aria-current={destination.active ? "page" : undefined} key={destination.id}>{content}</a>
         ) : (
-          <button className={className} type="button" disabled={destination.disabled} onClick={destination.onActivate} key={destination.id}>{content}</button>
+          <button className={className} type="button" aria-current={destination.active ? "page" : undefined} disabled={destination.disabled} onClick={destination.onActivate} key={destination.id}>{content}</button>
         );
       })}
     </nav>

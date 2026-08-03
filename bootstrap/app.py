@@ -406,6 +406,24 @@ class AppRuntime:
                 )
             if self.readiness is not None:
                 self.readiness.mark_stage("services.ready")
+            from infra.mobile_realtime.runtime_inspection import (
+                RuntimeInspectionService,
+            )
+
+            runtime_inspection = RuntimeInspectionService(
+                workspace=self.workspace,
+                scheduler=self.scheduler,
+                snapshot_store=(
+                    plugin_manager.snapshot_store
+                    if plugin_manager is not None
+                    else None
+                ),
+            )
+            plugin_ui_provider = None
+            if plugin_manager is not None:
+                from agent.plugins.mobile_ui import PluginMobileUiProvider
+
+                plugin_ui_provider = PluginMobileUiProvider(plugin_manager)
             if self.config.mobile_realtime.enabled:
                 from infra.mobile_realtime.gateway import (
                     build_mobile_gateway_runtime,
@@ -418,26 +436,12 @@ class AppRuntime:
                 self.bus.bind_durable_inbound_store(
                     self.session_manager.control_store
                 )
-                from infra.mobile_realtime.runtime_inspection import (
-                    RuntimeInspectionService,
-                )
-
                 self.mobile_gateway_runtime.channel.bind_runtime_inspection(
-                    RuntimeInspectionService(
-                        workspace=self.workspace,
-                        scheduler=self.scheduler,
-                        snapshot_store=(
-                            plugin_manager.snapshot_store
-                            if plugin_manager is not None
-                            else None
-                        ),
-                    )
+                    runtime_inspection
                 )
-                if plugin_manager is not None:
-                    from agent.plugins.mobile_ui import PluginMobileUiProvider
-
+                if plugin_ui_provider is not None:
                     self.mobile_gateway_runtime.channel.bind_mobile_ui_provider(
-                        PluginMobileUiProvider(plugin_manager)
+                        plugin_ui_provider
                     )
             plugin_channels = list(plugin_manager.channels) if plugin_manager else []
             if self.mobile_gateway_runtime is not None:
@@ -546,6 +550,8 @@ class AppRuntime:
                         if self.mobile_gateway_runtime is not None
                         else None
                     ),
+                    runtime_inspection=runtime_inspection,
+                    plugin_ui_provider=plugin_ui_provider,
                 )
                 self.chat_task = asyncio.create_task(
                     self.chat_server.serve(),

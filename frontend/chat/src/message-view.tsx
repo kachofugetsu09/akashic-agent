@@ -256,7 +256,11 @@ const ThinkingStep = memo(function ThinkingStep({ block, active }: { block: Thin
   return (
     <div className={`process-item thinking-step ${active ? "active" : ""}`}>
       <span className="process-node circle" />
-      <div className="process-text">{block.content}</div>
+      <div className="process-text process-markdown">
+        <Suspense fallback={<span className="process-markdown-fallback">{block.content}</span>}>
+          <LazyMessageResponse isAnimating={active}>{block.content}</LazyMessageResponse>
+        </Suspense>
+      </div>
     </div>
   );
 });

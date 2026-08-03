@@ -1,15 +1,25 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent.plugins.mobile_ui import (
+    MobileUiPluginUnavailable,
+    MobileUiProvider,
+    MobileUiQueryOverloaded,
+    MobileUiQueryTimeout,
+    MobileUiRpcExecutionError,
+    MobileUiRpcInvalidRequest,
+    MobileUiStaleRevision,
+)
 from infra.channels.base import AttachmentStore
 from infra.channels.web_chat_channel import (
     MAX_UPLOAD_BYTES,
@@ -17,6 +27,10 @@ from infra.channels.web_chat_channel import (
     WebChatChannel,
 )
 from infra.mobile_realtime.pairing import PairingError
+from infra.mobile_realtime.runtime_inspection import (
+    RuntimeInspectionError,
+    RuntimeInspectionService,
+)
 from infra.mobile_realtime.storage import PairingStateError
 
 if TYPE_CHECKING:
@@ -29,11 +43,30 @@ class PairingApprovalPayload(BaseModel):
     confirmation_code: str = Field(pattern=r"^[0-9]{6}$")
 
 
+class WebPluginUiQueryPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    plugin_id: str = Field(min_length=1, max_length=128)
+    plugin_revision: str = Field(min_length=1, max_length=128)
+    method: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,255}$")
+    payload: dict[str, object]
+    slot: Literal[
+        "turn.before_reasoning",
+        "turn.before_tool",
+        "turn.after_answer",
+        "drawer.panel",
+    ]
+    session_id: str | None = Field(default=None, max_length=512)
+    turn_id: str | None = Field(default=None, max_length=128)
+
+
 def create_chat_app(
     *,
     workspace: Path,
     channel: WebChatChannel,
     mobile_pairing_admin: MobilePairingAdmin | None = None,
+    runtime_inspection: RuntimeInspectionService | None = None,
+    plugin_ui_provider: MobileUiProvider | None = None,
 ) -> FastAPI:
     channel.bind_attachment_store(AttachmentStore(workspace / "uploads"))
     app = FastAPI(title="Akashic Chat API")
@@ -73,6 +106,112 @@ def create_chat_app(
     @app.get("/api/chat/navigation")
     def chat_navigation() -> dict[str, int]:
         return {"dashboard_port": _public_dashboard_port()}
+
+    @app.get("/api/chat/plugin-ui/catalog")
+    def plugin_ui_catalog() -> dict[str, object]:
+        return _require_plugin_ui_provider(plugin_ui_provider).catalog()
+
+    @app.get("/api/chat/plugin-ui/asset")
+    def plugin_ui_asset(
+        plugin_id: str = Query(..., min_length=1, max_length=128),
+        plugin_revision: str = Query(..., min_length=1, max_length=128),
+        kind: Literal["module", "stylesheet"] = Query(...),
+        sha256: str = Query(..., pattern=r"^[0-9a-f]{64}$"),
+    ) -> Response:
+        try:
+            asset = _require_plugin_ui_provider(plugin_ui_provider).asset(
+                plugin_id,
+                plugin_revision,
+                kind,
+                sha256,
+            )
+        except (MobileUiPluginUnavailable, MobileUiStaleRevision) as error:
+            raise _plugin_ui_http_error(error) from error
+        return Response(
+            content=str(asset["content"]),
+            media_type="text/javascript" if kind == "module" else "text/css",
+            headers={"Cache-Control": "private, max-age=31536000, immutable"},
+        )
+
+    @app.post("/api/chat/plugin-ui/query")
+    async def plugin_ui_query(
+        request: WebPluginUiQueryPayload,
+    ) -> dict[str, object]:
+        try:
+            encoded = json.dumps(
+                request.payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="插件参数不是有效 JSON") from error
+        if len(encoded) > 64 * 1024:
+            raise HTTPException(status_code=413, detail="插件参数超过 64 KiB")
+        try:
+            return await _require_plugin_ui_provider(plugin_ui_provider).query(
+                request.plugin_id,
+                request.plugin_revision,
+                request.method,
+                request.payload,
+                session_id=request.session_id,
+                turn_id=request.turn_id,
+            )
+        except (
+            MobileUiPluginUnavailable,
+            MobileUiStaleRevision,
+            MobileUiQueryOverloaded,
+            MobileUiQueryTimeout,
+            MobileUiRpcInvalidRequest,
+            MobileUiRpcExecutionError,
+        ) as error:
+            raise _plugin_ui_http_error(error) from error
+
+    @app.get("/api/chat/runtime/documents")
+    def list_runtime_documents() -> dict[str, object]:
+        return _require_runtime_inspection(runtime_inspection).list_documents()
+
+    @app.get("/api/chat/runtime/documents/{document_id}")
+    def read_runtime_document(document_id: str) -> dict[str, object]:
+        try:
+            return _require_runtime_inspection(runtime_inspection).get_document(
+                document_id
+            )
+        except RuntimeInspectionError as error:
+            raise _runtime_http_error(error) from error
+
+    @app.get("/api/chat/runtime/jobs")
+    def list_runtime_jobs() -> dict[str, object]:
+        return _require_runtime_inspection(runtime_inspection).list_jobs()
+
+    @app.get("/api/chat/runtime/jobs/{job_id}")
+    def read_runtime_job(job_id: str) -> dict[str, object]:
+        try:
+            return _require_runtime_inspection(runtime_inspection).get_job(job_id)
+        except RuntimeInspectionError as error:
+            raise _runtime_http_error(error) from error
+
+    @app.get("/api/chat/runtime/capabilities")
+    async def list_runtime_capabilities() -> dict[str, object]:
+        try:
+            return await _require_runtime_inspection(
+                runtime_inspection
+            ).list_capabilities()
+        except RuntimeInspectionError as error:
+            raise _runtime_http_error(error) from error
+
+    @app.get("/api/chat/runtime/mcp")
+    async def read_runtime_mcp(
+        owner_id: str = Query(...),
+        name: str = Query(...),
+    ) -> dict[str, object]:
+        try:
+            return await _require_runtime_inspection(runtime_inspection).get_mcp(
+                owner_id,
+                name,
+            )
+        except RuntimeInspectionError as error:
+            raise _runtime_http_error(error) from error
 
     @app.get("/api/chat/sessions/{session_key:path}/messages")
     def list_messages(
@@ -166,6 +305,8 @@ def build_chat_server(
     workspace: Path,
     channel: WebChatChannel,
     mobile_pairing_admin: MobilePairingAdmin | None = None,
+    runtime_inspection: RuntimeInspectionService | None = None,
+    plugin_ui_provider: MobileUiProvider | None = None,
     host: str = "127.0.0.1",
     port: int = 6322,
 ) -> uvicorn.Server:
@@ -174,6 +315,8 @@ def build_chat_server(
             workspace=workspace,
             channel=channel,
             mobile_pairing_admin=mobile_pairing_admin,
+            runtime_inspection=runtime_inspection,
+            plugin_ui_provider=plugin_ui_provider,
         ),
         host=host,
         port=port,
@@ -181,6 +324,41 @@ def build_chat_server(
         access_log=False,
     )
     return uvicorn.Server(config)
+
+
+def _require_runtime_inspection(
+    service: RuntimeInspectionService | None,
+) -> RuntimeInspectionService:
+    if service is None:
+        raise HTTPException(status_code=503, detail="运行时检查服务不可用")
+    return service
+
+
+def _require_plugin_ui_provider(
+    provider: MobileUiProvider | None,
+) -> MobileUiProvider:
+    if provider is None:
+        raise HTTPException(status_code=503, detail="插件界面服务不可用")
+    return provider
+
+
+def _plugin_ui_http_error(error: Exception) -> HTTPException:
+    if isinstance(error, MobileUiPluginUnavailable):
+        return HTTPException(status_code=404, detail=str(error))
+    if isinstance(error, MobileUiStaleRevision):
+        return HTTPException(status_code=409, detail=str(error))
+    if isinstance(error, MobileUiQueryOverloaded):
+        return HTTPException(status_code=429, detail=str(error))
+    if isinstance(error, MobileUiQueryTimeout):
+        return HTTPException(status_code=504, detail=str(error))
+    if isinstance(error, MobileUiRpcInvalidRequest):
+        return HTTPException(status_code=400, detail=str(error))
+    return HTTPException(status_code=502, detail=str(error))
+
+
+def _runtime_http_error(error: RuntimeInspectionError) -> HTTPException:
+    status_code = 404 if error.code.endswith("_not_found") else 409
+    return HTTPException(status_code=status_code, detail=str(error))
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:

@@ -85,6 +85,7 @@ interface PendingQuery {
   cacheKey?: string;
   slot: MobilePluginSlotName;
   started: boolean;
+  abort?: AbortController;
   send: () => void;
 }
 
@@ -129,7 +130,7 @@ export function receiveMobilePluginCatalog(next: MobilePluginCatalog): Promise<v
     try {
       if (await activateCatalog(next)) activeRevision = next.catalogRevision;
     } catch (error) {
-      const normalized = error instanceof Error ? error : new Error("移动插件加载失败");
+      const normalized = error instanceof Error ? error : new Error("插件界面加载失败");
       quarantinedRevisions.set(next.catalogRevision, normalized);
       if (catalog.catalogRevision === next.catalogRevision) {
         catalog = { ...catalog, error: normalized.message };
@@ -141,12 +142,101 @@ export function receiveMobilePluginCatalog(next: MobilePluginCatalog): Promise<v
   return activation;
 }
 
+/** 通过桌面适配器加载同一份内容寻址插件界面。 */
+export async function loadWebPluginCatalog(signal?: AbortSignal): Promise<void> {
+  const response = await fetch("/api/chat/plugin-ui/catalog", { signal });
+  if (!response.ok) throw new Error(await webPluginError(response));
+  await receiveMobilePluginCatalog(parseWebPluginCatalog(await response.json()));
+}
+
+function parseWebPluginCatalog(value: unknown): MobilePluginCatalog {
+  const raw = requireRecord(value, "plugin catalog");
+  const revision = requireString(raw.catalog_revision, "catalog_revision");
+  if (!/^[0-9a-f]{64}$/.test(revision)) throw new Error("插件目录版本无效");
+  const rawItems = raw.items;
+  if (!Array.isArray(rawItems)) throw new Error("插件目录列表无效");
+  const plugins = rawItems.map((value, index) => {
+    const item = requireRecord(value, `plugins[${index}]`);
+    const id = requireString(item.id, `plugins[${index}].id`);
+    const pluginRevision = requireString(item.revision, `plugins[${index}].revision`);
+    const moduleSha256 = requireDigest(item.module_sha256, `plugins[${index}].module_sha256`);
+    const stylesheetSha256 = item.stylesheet_sha256 === null
+      ? undefined
+      : requireDigest(item.stylesheet_sha256, `plugins[${index}].stylesheet_sha256`);
+    const slots = requireSlots(item.slots, index);
+    const navigation = item.navigation === null
+      ? undefined
+      : parseNavigation(item.navigation, index);
+    return {
+      id,
+      revision: pluginRevision,
+      moduleUrl: webPluginAssetUrl(id, pluginRevision, "module", moduleSha256),
+      stylesheetUrl: stylesheetSha256
+        ? webPluginAssetUrl(id, pluginRevision, "stylesheet", stylesheetSha256)
+        : undefined,
+      navigation,
+      slots,
+    } satisfies MobilePluginCatalogItem;
+  });
+  if (new Set(plugins.map((plugin) => plugin.id)).size !== plugins.length) {
+    throw new Error("插件目录包含重复 ID");
+  }
+  return { catalogRevision: revision, updating: false, plugins };
+}
+
+function webPluginAssetUrl(
+  pluginId: string,
+  pluginRevision: string,
+  kind: "module" | "stylesheet",
+  sha256: string,
+): string {
+  const query = new URLSearchParams({ plugin_id: pluginId, plugin_revision: pluginRevision, kind, sha256 });
+  return `/api/chat/plugin-ui/asset?${query}`;
+}
+
+function requireRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} 无效`);
+  return value as Record<string, unknown>;
+}
+
+function requireString(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value) throw new Error(`${label} 无效`);
+  return value;
+}
+
+function requireDigest(value: unknown, label: string): string {
+  const digest = requireString(value, label);
+  if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error(`${label} 无效`);
+  return digest;
+}
+
+function requireSlots(
+  value: unknown,
+  pluginIndex: number,
+): Exclude<MobilePluginSlotName, "dashboard.main">[] {
+  if (!Array.isArray(value)) throw new Error(`plugins[${pluginIndex}].slots 无效`);
+  return value.map((slot, slotIndex) => {
+    if (typeof slot !== "string" || !SLOT_NAMES.has(slot as Exclude<MobilePluginSlotName, "dashboard.main">)) {
+      throw new Error(`plugins[${pluginIndex}].slots[${slotIndex}] 无效`);
+    }
+    return slot as Exclude<MobilePluginSlotName, "dashboard.main">;
+  });
+}
+
+function parseNavigation(value: unknown, pluginIndex: number): MobilePluginCatalogItem["navigation"] {
+  const navigation = requireRecord(value, `plugins[${pluginIndex}].navigation`);
+  return {
+    label: requireString(navigation.label, `plugins[${pluginIndex}].navigation.label`),
+    description: requireString(navigation.description, `plugins[${pluginIndex}].navigation.description`),
+  };
+}
+
 async function activateCatalog(next: MobilePluginCatalog): Promise<boolean> {
   const loaded = await Promise.all(next.plugins.map(async (plugin) => {
     const module = await withDeadline(
       import(/* @vite-ignore */ plugin.moduleUrl) as Promise<{ default?: unknown }>,
       MODULE_LOAD_TIMEOUT_MS,
-      `移动插件加载超时: ${plugin.id}`,
+      `插件界面加载超时: ${plugin.id}`,
     );
     return [plugin, parseDefinition(module.default, plugin)] as const;
   }));
@@ -191,29 +281,29 @@ function withDeadline<T>(promise: Promise<T>, timeoutMs: number, message: string
 
 function parseDefinition(value: unknown, plugin: MobilePluginCatalogItem): MobilePluginDefinition {
   if (!value || typeof value !== "object") {
-    throw new Error(`移动插件必须默认导出定义对象: ${plugin.id}`);
+    throw new Error(`插件界面必须默认导出定义对象: ${plugin.id}`);
   }
   const raw = value as { slots?: unknown; dashboard?: unknown };
   const slots = raw.slots ?? {};
   if (!slots || typeof slots !== "object" || Array.isArray(slots)) {
-    throw new Error(`移动插件 slots 无效: ${plugin.id}`);
+    throw new Error(`插件界面 slots 无效: ${plugin.id}`);
   }
   for (const [name, renderer] of Object.entries(slots)) {
     if (!SLOT_NAMES.has(name as Exclude<MobilePluginSlotName, "dashboard.main">)) {
-      throw new Error(`移动插件 slot 无效: ${plugin.id}.${name}`);
+      throw new Error(`插件界面 slot 无效: ${plugin.id}.${name}`);
     }
-    if (!isRenderer(renderer)) throw new Error(`移动插件 renderer 无效: ${plugin.id}.${name}`);
+    if (!isRenderer(renderer)) throw new Error(`插件界面 renderer 无效: ${plugin.id}.${name}`);
   }
   const declaredSlots = Object.keys(slots).sort().join("|");
   if (declaredSlots !== [...plugin.slots].sort().join("|")) {
-    throw new Error(`移动插件 slots 与 catalog 不一致: ${plugin.id}`);
+    throw new Error(`插件界面 slots 与 catalog 不一致: ${plugin.id}`);
   }
   const dashboard = raw.dashboard;
   if (dashboard !== undefined && !isRenderer(dashboard)) {
-    throw new Error(`移动插件 dashboard renderer 无效: ${plugin.id}`);
+    throw new Error(`插件界面 dashboard renderer 无效: ${plugin.id}`);
   }
   if ((dashboard !== undefined) !== (plugin.navigation !== undefined)) {
-    throw new Error(`移动插件 dashboard 与 catalog navigation 不一致: ${plugin.id}`);
+    throw new Error(`插件界面 dashboard 与 catalog navigation 不一致: ${plugin.id}`);
   }
   return {
     slots: slots as MobilePluginDefinition["slots"],
@@ -370,10 +460,6 @@ function MountedPlugin({
         query(method, payload = {}, options = {}) {
           const requestId = createRequestId();
           return new Promise((resolve, reject) => {
-            if (!window.AkashicNative) {
-              reject(new Error("原生插件桥未连接"));
-              return;
-            }
             if (method.length < 1 || method.length > 256) {
               reject(new Error("插件方法名无效"));
               return;
@@ -400,9 +486,11 @@ function MountedPlugin({
             const timeout = window.setTimeout(() => {
               const request = pendingQueries.get(requestId);
               if (!request) return;
+              request.abort?.abort();
               window.AkashicNative?.cancelPluginUiOwner(request.ownerId);
               rejectOwnerPending(request.ownerId, "插件请求超时");
             }, 30_000);
+            const abort = window.AkashicNative ? undefined : new AbortController();
             const request = {
               resolve,
               reject,
@@ -411,18 +499,40 @@ function MountedPlugin({
               cacheKey,
               slot,
               started: false,
-              send: () => window.AkashicNative!.queryPluginUi(
-                requestId,
-                ownerId,
-                slot,
-                sessionId ?? null,
-                turnId ?? null,
-                pluginId,
-                method,
-                encoded,
-                options.cache ?? "none",
-                options.transport ?? "inline",
-              ),
+              abort,
+              send: () => {
+                if (window.AkashicNative) {
+                  window.AkashicNative.queryPluginUi(
+                    requestId,
+                    ownerId,
+                    slot,
+                    sessionId ?? null,
+                    turnId ?? null,
+                    pluginId,
+                    method,
+                    encoded,
+                    options.cache ?? "none",
+                    options.transport ?? "inline",
+                  );
+                  return;
+                }
+                void queryWebPluginUi({
+                  pluginId,
+                  pluginRevision,
+                  method,
+                  payload,
+                  slot,
+                  sessionId,
+                  turnId,
+                  signal: abort!.signal,
+                }).then(
+                  (result) => receiveMobilePluginResult({ requestId, resultJson: JSON.stringify(result) }),
+                  (error: unknown) => receiveMobilePluginResult({
+                    requestId,
+                    error: error instanceof Error ? error.message : "插件查询失败",
+                  }),
+                );
+              },
             };
             try {
               pendingQueries.enqueue(requestId, request);
@@ -445,12 +555,58 @@ function MountedPlugin({
       try {
         cleanup?.();
       } catch (error) {
-        console.error(`[mobile] plugin cleanup failed: ${pluginId}`, error);
+        console.error(`[plugin-ui] cleanup failed: ${pluginId}`, error);
       }
       host.replaceChildren();
     };
   }, [messageId, pluginId, pluginRevision, renderer, sessionId, slot, stableBlock, turnId]);
   return <div ref={hostRef} className="mobile-plugin-host" data-plugin={pluginId} />;
+}
+
+async function queryWebPluginUi({
+  pluginId,
+  pluginRevision,
+  method,
+  payload,
+  slot,
+  sessionId,
+  turnId,
+  signal,
+}: {
+  pluginId: string;
+  pluginRevision: string;
+  method: string;
+  payload: Record<string, unknown>;
+  slot: MobilePluginSlotName;
+  sessionId?: string;
+  turnId?: string;
+  signal: AbortSignal;
+}): Promise<Record<string, unknown>> {
+  if (slot === "dashboard.main") throw new Error("Web 不开放插件独立面板");
+  const response = await fetch("/api/chat/plugin-ui/query", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      plugin_id: pluginId,
+      plugin_revision: pluginRevision,
+      method,
+      payload,
+      slot,
+      session_id: sessionId ?? null,
+      turn_id: turnId ?? null,
+    }),
+    signal,
+  });
+  if (!response.ok) throw new Error(await webPluginError(response));
+  return requireRecord(await response.json(), "插件响应");
+}
+
+async function webPluginError(response: Response): Promise<string> {
+  const value = await response.json().catch(() => null);
+  const detail = value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>).detail
+    : undefined;
+  return typeof detail === "string" ? detail : `插件请求失败 (${response.status})`;
 }
 
 function pluginQueryCacheKey(
@@ -468,6 +624,7 @@ function rejectOwnerPending(ownerId: string, message: string) {
   const owned = pendingQueries.removeOwner(ownerId);
   for (const [, request] of owned) {
     window.clearTimeout(request.timeout);
+    request.abort?.abort();
     request.reject(new Error(message));
   }
   drainQueryQueue();
@@ -477,6 +634,7 @@ function rejectAllPending(message: string) {
   const requests = pendingQueries.clear();
   for (const [, request] of requests) {
     window.clearTimeout(request.timeout);
+    request.abort?.abort();
     request.reject(new Error(message));
   }
   drainQueryQueue();

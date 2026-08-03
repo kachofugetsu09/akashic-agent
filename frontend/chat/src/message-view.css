@@ -186,9 +186,11 @@
 }
 
 .process-content {
+  --process-content-inset: 2px;
+  --process-rail-width: 18px;
   --process-node-center: 12px;
   position: relative;
-  padding: 2px 0 2px 2px;
+  padding: 2px 0 2px var(--process-content-inset);
   overflow: hidden;
   color: var(--m-on-surface-variant);
   outline: none;
@@ -196,13 +198,21 @@
 
 .process-line {
   position: absolute;
+  display: flex;
   top: var(--process-node-center);
   bottom: 0;
-  left: 8px;
-  width: 1px;
-  background: color-mix(in oklch, var(--m-trace) 35%, var(--m-outline-variant));
+  left: var(--process-content-inset);
+  width: var(--process-rail-width);
+  justify-content: center;
   transform-origin: top;
   animation: shared-trace-grow 280ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+.process-line::before {
+  width: 1px;
+  height: 100%;
+  background: color-mix(in oklch, var(--m-trace) 35%, var(--m-outline-variant));
+  content: "";
 }
 
 .process-items {
@@ -214,7 +224,7 @@
 .process-item {
   position: relative;
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-columns: var(--process-rail-width) minmax(0, 1fr);
   min-height: 26px;
   align-items: start;
   column-gap: 12px;
@@ -226,8 +236,8 @@
   z-index: 0;
   top: var(--process-node-center);
   bottom: 0;
-  left: 8px;
-  width: 1px;
+  left: 0;
+  width: var(--process-rail-width);
   background: var(--m-surface);
   content: "";
 }
@@ -248,8 +258,8 @@
 }
 
 .process-node.diamond {
-  width: 9px;
-  height: 9px;
+  width: 8px;
+  height: 8px;
   transform: rotate(45deg);
 }
 
@@ -273,6 +283,25 @@
   line-height: 1.58;
   white-space: pre-wrap;
   user-select: text;
+}
+
+.process-markdown {
+  min-width: 0;
+  white-space: normal;
+}
+
+.process-markdown-fallback {
+  white-space: pre-wrap;
+}
+
+.process-markdown :where(h1, h2, h3, h4) {
+  margin-block: 0.8em 0.4em;
+  font-size: 1em;
+  line-height: 1.4;
+}
+
+.process-markdown :where(p, ul, ol, blockquote, pre, table) {
+  margin-block-end: 0.65em;
 }
 
 .tool-step-body {
@@ -631,4 +660,46 @@ button.tool-step-summary:active {
   margin: 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.mobile-plugin-host {
+  min-width: 0;
+}
+
+.mobile-plugin-host--loading,
+.mobile-plugin-host--error {
+  padding: 8px 0;
+  color: var(--m-on-surface-variant);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.mobile-plugin-host--error {
+  color: var(--m-error);
+}
+
+.mobile-plugin-slot[data-slot="turn.before_reasoning"],
+.mobile-plugin-slot[data-slot="turn.before_tool"] {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+  margin-inline-start: 30px;
+}
+
+.mobile-plugin-slot[data-slot="turn.after_answer"] {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.mobile-plugin-slot[data-slot="drawer.panel"] {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+  padding: 8px 10px 0;
+  background: var(--m-surface);
 }

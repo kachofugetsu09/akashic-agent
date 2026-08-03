@@ -1,9 +1,11 @@
 .conversation-navigation {
+  position: relative;
   display: flex;
   width: 100%;
   height: 100%;
   min-height: 0;
   flex-direction: column;
+  overflow: hidden;
   color: var(--m-on-surface);
   background: var(--m-surface);
   outline: none;
@@ -55,6 +57,17 @@
 .conversation-destination:hover,
 .conversation-destination:focus-visible {
   background: var(--m-surface-container);
+}
+
+.conversation-destination.active {
+  color: var(--m-on-primary-container);
+  background: var(--m-primary-container);
+}
+
+.conversation-destination.active .conversation-destination__icon,
+.conversation-destination.active small,
+.conversation-destination.active > svg {
+  color: inherit;
 }
 
 .conversation-destination:focus-visible,
@@ -142,6 +155,7 @@
   min-height: 0;
   flex: 1;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .conversation-navigation__heading {
@@ -159,10 +173,20 @@
 .conversation-session-list {
   display: grid;
   min-height: 0;
+  flex: 1;
+  grid-auto-rows: min-content;
+  align-content: start;
   gap: 2px;
   padding: 0 10px 8px;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+.conversation-navigation__auxiliary {
+  position: relative;
+  z-index: 2;
+  height: 80px;
+  flex: 0 0 80px;
 }
 
 .conversation-session {
