@@ -260,6 +260,14 @@ def _require_clean_source(workspace: Path, *, allow_dirty: bool) -> None:
         raise RuntimeError("WebUI/build inputs require clean source；Preview 可用 --allow-dirty")
 
 
+def _source_environment(workspace: Path, environment: Mapping[str, str]) -> dict[str, str]:
+    """Bind source-sensitive commands to the workspace they inspect or build."""
+
+    bound = dict(environment)
+    bound["PWD"] = str(workspace.resolve())
+    return bound
+
+
 def _remove_owned_temporary_file(path: Path) -> None:
     """Remove only the exact provenance sidecar owned by an internal build."""
 
@@ -277,23 +285,24 @@ def _run_build(
 ) -> None:
     """Install the pinned dependency graph and emit one isolated WebUI artifact tree."""
 
+    source_environment = _source_environment(build_workspace, environment)
     # 1. Recreate dependencies from the declared lock policy.
     if lock_available:
         subprocess.run(
             ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
             cwd=build_workspace,
-            env=dict(environment),
+            env=source_environment,
             check=True,
         )
     else:
         subprocess.run(
             ["npm", "install", "--package-lock=false", "--ignore-scripts", "--no-audit", "--no-fund"],
             cwd=build_workspace,
-            env=dict(environment),
+            env=source_environment,
             check=True,
         )
     # 2. Build only into the caller-owned output directory.
-    subprocess.run(["npm", "run", "build:mobile-web"], cwd=build_workspace, env=dict(environment), check=True)
+    subprocess.run(["npm", "run", "build:mobile-web"], cwd=build_workspace, env=source_environment, check=True)
 
 
 def _verify_clean_reproducibility(
@@ -394,7 +403,10 @@ def _capture_provenance(
 ) -> dict[str, object]:
     """Capture all source/build identity inputs before and after a build."""
 
-    effective_environment = dict(os.environ if environment is None else environment)
+    effective_environment = _source_environment(
+        workspace,
+        os.environ if environment is None else environment,
+    )
     package_lock = workspace / "package-lock.json"
     package_lock_digest = _sha256(package_lock.read_bytes()) if package_lock.is_file() else _no_lock_digest()
     build_script = workspace / "scripts" / "package-mobile-web.sh"
