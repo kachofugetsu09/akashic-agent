@@ -223,7 +223,7 @@ def _process_identity(pid: int) -> dict[str, int]:
 def _identity_alive(identity: dict[str, int]) -> bool:
     try:
         stat = Path(f"/proc/{identity['pid']}/stat").read_text(encoding="utf-8")
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return False
     fields = stat[stat.rfind(")") + 2 :].split()
     return fields[0] != "Z" and {
