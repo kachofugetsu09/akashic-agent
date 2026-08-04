@@ -2,102 +2,8 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ---------------------------------------------------------------------------
-   Industrial design tokens. Solid colors live as space-separated RGB triplets
-   so tailwind opacity modifiers (bg-danger/20) can inject <alpha-value>. The
-   derived --color-* vars keep raw CSS/plugin code theme-aware.
-   --------------------------------------------------------------------------- */
 :root {
-  color-scheme: dark;
-
-  --color-bg-rgb: 0 0 0;
-  --color-surface-rgb: 10 10 10;
-  --color-surface-2-rgb: 20 20 20;
-  --color-surface-3-rgb: 31 31 31;
-  --color-fg-rgb: 237 237 237;
-  --color-muted-rgb: 161 161 170;
-  --color-subtle-rgb: 113 113 122;
-  --color-accent-rgb: 255 255 255;
-  --color-accent-ink-rgb: 0 0 0;
-  --color-accent-deep-rgb: 200 200 200;
-  --color-danger-rgb: 239 68 68;
-  --color-warning-rgb: 245 158 11;
-  --color-success-rgb: 34 197 94;
-
-  --color-bg: rgb(var(--color-bg-rgb));
-  --color-surface: rgb(var(--color-surface-rgb));
-  --color-surface-2: rgb(var(--color-surface-2-rgb));
-  --color-surface-3: rgb(var(--color-surface-3-rgb));
-  --color-border: rgba(255, 255, 255, 0.08);
-  --color-border-strong: rgba(255, 255, 255, 0.15);
-
-  --color-fg: rgb(var(--color-fg-rgb));
-  --color-muted: rgb(var(--color-muted-rgb));
-  --color-subtle: rgb(var(--color-subtle-rgb));
-
-  --color-accent: rgb(var(--color-accent-rgb));
-  --color-accent-ink: rgb(var(--color-accent-ink-rgb));
-  --color-accent-soft: rgba(255, 255, 255, 0.1);
-  --color-accent-deep: rgb(var(--color-accent-deep-rgb));
-
-  --color-danger: rgb(var(--color-danger-rgb));
-  --color-warning: rgb(var(--color-warning-rgb));
-  --color-success: rgb(var(--color-success-rgb));
-}
-
-:root[data-theme="light"] {
-  color-scheme: light;
-
-  --color-bg-rgb: 245 245 245;
-  --color-surface-rgb: 252 252 252;
-  --color-surface-2-rgb: 239 239 239;
-  --color-surface-3-rgb: 230 230 230;
-  --color-fg-rgb: 35 35 35;
-  --color-muted-rgb: 91 94 102;
-  --color-subtle-rgb: 156 159 166;
-  --color-danger-rgb: 214 56 64;
-  --color-warning-rgb: 184 117 3;
-  --color-success-rgb: 31 143 95;
-
-  --color-border: rgba(15, 17, 21, 0.08);
-  --color-border-strong: rgba(15, 17, 21, 0.16);
-  --color-accent-soft: rgba(72, 90, 226, 0.1);
-}
-
-/* ---------------------------------------------------------------------------
-   Legacy token compatibility shim. Runtime-injected plugin panels ship their
-   own CSS that still references the old cream/coral variable names. We alias
-   them onto the new industrial tokens so plugins inherit the unified look with
-   no per-plugin edits. Aliases derive from the --color-* vars, so they follow
-   light/dark automatically.
-   --------------------------------------------------------------------------- */
-:root {
-  --bg: var(--color-bg);
-  --bg-soft: var(--color-surface-2);
-  --paper: var(--color-surface);
-  --paper-strong: var(--color-surface-3);
-  --line: var(--color-border);
-  --line-strong: var(--color-border-strong);
-  --line-soft: var(--color-border);
-  --text: var(--color-fg);
-  --text-soft: var(--color-muted);
-  --accent: var(--color-accent);
-  --accent-soft: var(--color-accent-soft);
-  --accent-hover: var(--color-accent-deep);
-  --green: var(--color-success);
-  --green-soft: rgb(var(--color-success-rgb) / 0.15);
-  --yellow-soft: rgb(var(--color-warning-rgb) / 0.15);
-  --red-soft: rgb(var(--color-danger-rgb) / 0.15);
-  --blue-soft: rgb(var(--color-accent-rgb) / 0.15);
-  --neutral-soft: var(--color-surface-3);
-  --system: var(--color-warning);
-  --tool: var(--color-accent);
-  --danger: var(--color-danger);
-  --drift: var(--color-success);
-  --drift-soft: rgb(var(--color-success-rgb) / 0.15);
-  --proactive: var(--color-accent);
-  --proactive-soft: var(--color-accent-soft);
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  --shadow: 0 1px 2px var(--ak-color-shadow), 0 0 0 1px var(--ak-color-image-outline);
   --radius: 6px;
   --radius-lg: 10px;
   --radius-xl: 14px;
@@ -124,8 +30,8 @@ body {
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: var(--color-bg);
-  color: var(--color-fg);
+  background: var(--ak-color-bg-canvas);
+  color: var(--ak-color-text-primary);
 }
 
 /* Public plugin preset. Plugins may use these classes or the matching SDK components. */
@@ -150,9 +56,9 @@ body {
 .ak-plugin-panel {
   min-width: 0;
   overflow: hidden;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--ak-color-border-default);
   border-radius: var(--radius-lg);
-  background: var(--color-surface);
+  background: var(--ak-color-bg-surface);
 }
 
 .ak-plugin-toolbar {
@@ -166,12 +72,12 @@ body {
 .ak-plugin-pre-wrap { white-space: pre-wrap; }
 
 ::selection {
-  background: var(--color-accent);
-  color: var(--color-accent-ink);
+  background: var(--ak-color-action-primary);
+  color: var(--ak-color-on-action-primary);
 }
 
 :where(button, a, input, textarea, select, [tabindex]):focus-visible {
-  outline: 1px solid var(--color-accent);
+  outline: 1px solid var(--ak-color-action-primary);
   outline-offset: 2px;
 }
 
@@ -230,12 +136,40 @@ body {
     @apply h-8 w-8 flex-shrink-0 object-contain;
   }
 
+  :root[data-theme="light"] .brand-mark,
+  :root[data-theme="warm-paper"] .brand-mark {
+    filter: brightness(0);
+  }
+
   .brand-title {
     @apply text-[14px] font-semibold leading-4 tracking-tight text-fg;
   }
 
   .brand-sub {
     @apply mt-0.5 text-[11.5px] leading-4 text-muted;
+  }
+
+  .theme-cycle-button {
+    @apply flex h-11 flex-shrink-0 cursor-pointer items-center justify-center gap-2 rounded-md border border-border bg-transparent px-3 text-fg;
+    transition-property: background-color, border-color, color, scale;
+    transition-duration: 140ms;
+    transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  .theme-cycle-button:hover {
+    @apply border-border-strong bg-surface-2;
+  }
+
+  .theme-cycle-button:active {
+    scale: 0.96;
+  }
+
+  .theme-cycle-button:focus-visible {
+    @apply outline outline-2 outline-offset-2 outline-accent;
+  }
+
+  .theme-cycle-button span {
+    @apply text-[12px] font-medium;
   }
 
   .content-toolbar {
@@ -293,7 +227,7 @@ body {
   select:focus,
   textarea:focus {
     @apply border-border-strong bg-surface-3;
-    box-shadow: 0 0 0 3px var(--color-accent-soft);
+    box-shadow: 0 0 0 3px var(--ak-color-action-soft);
   }
 
   /* ── Custom select ── */
@@ -323,7 +257,7 @@ body {
 
   .custom-select.open .cs-trigger {
     @apply border-border-strong;
-    box-shadow: 0 0 0 3px var(--color-accent-soft);
+    box-shadow: 0 0 0 3px var(--ak-color-action-soft);
   }
 
   .cs-dropdown {
@@ -375,7 +309,7 @@ body {
   /* ── Workspace ── */
 
   .workspace {
-    @apply flex min-h-0 flex-1 overflow-hidden gap-3 p-3;
+    @apply flex min-h-0 flex-1 overflow-hidden p-3;
   }
 
   /* ── Panes ── */
@@ -383,28 +317,25 @@ body {
   /* Side panes read as raised metal panels (hairline top highlight); the center
      log surface is the darkest layer and sits recessed between them. */
   .sessions-pane {
-    @apply flex min-h-0 flex-shrink-0 flex-col bg-surface-2 overflow-hidden;
-    border-right: 1px solid var(--color-border);
+    @apply flex min-h-0 flex-shrink-0 flex-col overflow-hidden;
+    border-right: 1px solid var(--ak-color-border-default);
     width: clamp(280px, 18vw, 320px);
-    background: var(--color-surface-2);
+    background: var(--ak-color-bg-surface);
   }
 
   .messages-pane {
     @apply flex min-h-0 min-w-0 flex-1 flex-col bg-surface overflow-hidden;
-    border-radius: var(--radius-lg);
-    border: 1px solid var(--color-border);
-    background: var(--color-surface);
-    box-shadow: var(--shadow);
+    border: 1px solid var(--ak-color-border-default);
+    background: var(--ak-color-bg-surface);
   }
 
   .detail-pane {
     @apply min-h-0 flex-shrink-0 overflow-y-auto bg-surface overflow-hidden;
     position: relative;
-    border-radius: var(--radius-lg);
-    border: 1px solid var(--color-border);
+    border: 1px solid var(--ak-color-border-default);
+    border-left: 0;
     width: clamp(360px, 26vw, 460px);
-    background: var(--color-surface);
-    box-shadow: var(--shadow);
+    background: var(--ak-color-bg-surface);
     transition: width 0.35s cubic-bezier(0.2, 1, 0.3, 1), opacity 0.3s ease, margin 0.35s ease;
   }
 
@@ -412,12 +343,12 @@ body {
     position: absolute;
     top: 16px;
     right: 16px;
-    width: 28px;
-    height: 28px;
-    border-radius: 14px;
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    color: var(--color-subtle);
+    width: 40px;
+    height: 40px;
+    border-radius: var(--radius);
+    background: var(--ak-color-bg-surface-low);
+    border: 1px solid var(--ak-color-border-default);
+    color: var(--ak-color-text-muted);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -426,8 +357,8 @@ body {
     transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
   }
   .detail-close-btn:hover {
-    background: rgba(255, 255, 255, 0.15);
-    color: var(--color-fg);
+    background: var(--ak-color-bg-surface-high);
+    color: var(--ak-color-text-primary);
   }
 
   .detail-pane:has(.detail-empty) {
@@ -442,10 +373,8 @@ body {
 
   .plugin-workbench-pane {
     @apply min-h-0 min-w-0 flex-1 overflow-y-auto bg-bg;
-    border-radius: var(--radius-lg);
-    border: 1px solid var(--color-border);
-    background: var(--color-bg);
-    box-shadow: var(--shadow);
+    border: 1px solid var(--ak-color-border-default);
+    background: var(--ak-color-bg-surface);
   }
 
   .plugin-workbench-root {
@@ -469,16 +398,16 @@ body {
   /* ── Context switcher ── */
 
   .module-switcher {
-    @apply relative flex-shrink-0 border-b border-border p-2;
+    @apply relative flex-shrink-0 p-3;
   }
 
   .module-switcher-trigger {
-    @apply flex min-h-11 w-full cursor-pointer items-center justify-between gap-3 rounded-md border border-transparent bg-transparent px-2.5 text-left text-fg transition-colors;
+    @apply flex min-h-12 w-full cursor-pointer items-center justify-between gap-3 rounded border border-border bg-surface-2 px-3 text-left text-fg transition-colors;
   }
 
   .module-switcher-trigger:hover,
   .module-switcher-trigger[aria-expanded="true"] {
-    @apply bg-surface-3;
+    @apply border-border-strong bg-surface-3;
   }
 
   .module-switcher-label {
@@ -504,12 +433,12 @@ body {
   }
 
   .module-switcher-options {
-    @apply absolute left-2 right-2 top-[calc(100%-4px)] z-30 max-h-[min(480px,65vh)] overflow-y-auto rounded-md border border-border bg-surface-2 p-1;
-    box-shadow: 0 8px 20px -12px rgba(0, 0, 0, 0.9), 0 1px 2px rgba(0, 0, 0, 0.45);
+    @apply absolute left-3 right-3 top-[calc(100%-8px)] z-30 max-h-[min(480px,65vh)] overflow-y-auto rounded border border-border-strong bg-surface p-1;
+    box-shadow: 0 4px 10px -6px var(--ak-color-shadow);
   }
 
   .module-switcher-option {
-    @apply flex min-h-10 w-full cursor-pointer items-center justify-between gap-3 rounded px-2.5 text-left text-[13px] font-medium text-muted transition-colors;
+    @apply flex min-h-11 w-full cursor-pointer items-center justify-between gap-3 border-l-2 border-transparent px-3 text-left text-[13px] font-medium text-muted transition-colors;
   }
 
   .module-switcher-option:hover {
@@ -517,7 +446,7 @@ body {
   }
 
   .module-switcher-option.active {
-    @apply bg-accent-soft text-fg;
+    @apply border-accent bg-surface-2 text-fg;
   }
 
   .session-filters {
@@ -539,6 +468,12 @@ body {
 
   .explorer-body {
     @apply flex min-h-0 flex-1 flex-col overflow-y-auto pb-3;
+    overscroll-behavior: contain;
+  }
+
+  .sessions-pane-footer {
+    @apply flex flex-shrink-0 items-center border-t border-border px-3 py-2.5;
+    background: var(--ak-color-bg-surface);
   }
 
   .explorer-body .session-list,
@@ -745,7 +680,7 @@ body {
   .memory-status-active,
   .proactive-result-reply {
     @apply text-success;
-    background: rgb(var(--color-success-rgb) / 0.15);
+    background: rgb(var(--ak-color-status-success-rgb) / 0.15);
   }
 
   /* role-system / superseded / skip -> warning */
@@ -753,15 +688,15 @@ body {
   .memory-status-superseded,
   .proactive-result-skip {
     @apply text-warning;
-    background: rgb(var(--color-warning-rgb) / 0.15);
+    background: rgb(var(--ak-color-status-warning-rgb) / 0.15);
   }
 
   /* role-tool / procedure -> warning amber, separated by a hairline ring */
   .role-tool,
   .memory-type-procedure {
     @apply text-warning;
-    background: rgb(var(--color-warning-rgb) / 0.12);
-    box-shadow: inset 0 0 0 1px rgb(var(--color-warning-rgb) / 0.25);
+    background: rgb(var(--ak-color-status-warning-rgb) / 0.12);
+    box-shadow: inset 0 0 0 1px rgb(var(--ak-color-status-warning-rgb) / 0.25);
   }
 
   /* unknown / profile -> neutral subtle */
@@ -777,13 +712,13 @@ body {
   .proactive-result-cooldown,
   .proactive-result-presence {
     @apply text-danger;
-    background: rgb(var(--color-danger-rgb) / 0.15);
+    background: rgb(var(--ak-color-status-error-rgb) / 0.15);
   }
 
   /* flow: drift -> success, proactive -> accent */
   .proactive-flow-drift {
     @apply text-success;
-    background: rgb(var(--color-success-rgb) / 0.15);
+    background: rgb(var(--ak-color-status-success-rgb) / 0.15);
   }
 
   .proactive-flow-proactive {
@@ -862,14 +797,13 @@ body {
 
   /* Machined header strip: hairline top highlight, defined bottom edge */
   .table-head {
-    @apply sticky top-0 z-[1] min-h-[36px] px-5 font-sans text-[10px] font-medium uppercase tracking-wide text-subtle;
-    border-bottom: 1px solid var(--color-border-strong);
-    background: var(--color-surface-2);
-    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.04), 0 1px 0 0 rgba(0, 0, 0, 0.35);
+    @apply sticky top-0 z-[1] min-h-[40px] px-4 font-sans text-[11px] font-medium text-muted;
+    border-bottom: 1px solid var(--ak-color-border-strong);
+    background: var(--ak-color-bg-surface-low);
   }
 
   .table-sort-btn {
-    @apply inline-flex w-full cursor-pointer items-center justify-between gap-1.5 border-none bg-transparent p-0 font-[inherit] uppercase tracking-[inherit];
+    @apply inline-flex w-full cursor-pointer items-center justify-between gap-1.5 border-none bg-transparent p-0 font-[inherit];
     color: inherit;
   }
 
@@ -888,36 +822,32 @@ body {
   .table-row {
     @apply relative min-h-[44px] cursor-pointer;
     transition: background-color 150ms ease, border-color 150ms ease;
-    margin: 4px 12px;
-    border-radius: 8px;
-    padding: 0 8px;
-    background: rgba(255, 255, 255, 0.015);
-    border: 1px solid transparent;
+    margin: 0;
+    padding: 0 16px;
+    background: transparent;
+    border-bottom: 1px solid var(--ak-color-border-default);
   }
 
   .table-row::before {
     content: "";
-    @apply absolute bottom-2 left-0 top-2 w-[4px] origin-center scale-y-0 bg-accent transition-transform;
-    border-radius: 0 4px 4px 0;
+    @apply absolute bottom-0 left-0 top-0 w-[3px] origin-center scale-y-0 bg-accent transition-transform;
   }
 
   .table-row:hover {
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid var(--color-border);
+    background: var(--ak-color-bg-surface-high);
   }
 
   .table-row.active {
-    background: rgb(var(--color-accent-rgb) / 0.1);
-    border: 1px solid rgb(var(--color-accent-rgb) / 0.2);
+    background: var(--ak-color-action-soft);
   }
 
   /* selected (batch pick) -> warning wash so it reads apart from active */
   .table-row.selected {
-    background: rgb(var(--color-warning-rgb) / 0.12);
+    background: rgb(var(--ak-color-status-warning-rgb) / 0.12);
   }
 
   .table-row.active:hover {
-    background: rgb(var(--color-accent-rgb) / 0.1);
+    background: rgb(var(--ak-color-action-primary-rgb) / 0.1);
   }
 
   /* ── Table foot ── */
@@ -1029,7 +959,7 @@ body {
   .btn-ghost.danger:hover,
   .danger-ghost:hover {
     @apply border-danger;
-    background: rgb(var(--color-danger-rgb) / 0.12);
+    background: rgb(var(--ak-color-status-error-rgb) / 0.12);
   }
 
   /* ── Pager ── */
@@ -1046,7 +976,7 @@ body {
 
   .detail-empty-title,
   .detail-title {
-    @apply text-[26px] font-semibold leading-tight tracking-tight text-fg;
+    @apply text-xl font-semibold leading-tight tracking-tight text-fg;
   }
 
   .detail-empty-text,
@@ -1062,20 +992,19 @@ body {
     @apply flex items-center justify-between gap-2 border-b border-border;
     margin: -16px -16px 16px -16px;
     padding: 16px;
-    background: var(--color-surface);
+    background: var(--ak-color-bg-surface);
     position: sticky;
     top: -16px;
     z-index: 50;
   }
 
   .detail-callout {
-    @apply my-3 mb-4 rounded border border-border px-3 py-2.5 text-[12.5px] text-fg;
-    background: rgb(var(--color-warning-rgb) / 0.12);
+    @apply my-3 mb-4 border border-border bg-surface-2 px-3 py-2.5 text-[12.5px] text-fg;
   }
 
   .detail-callout.success {
     @apply text-success;
-    background: rgb(var(--color-success-rgb) / 0.12);
+    background: var(--ak-color-bg-surface-low);
   }
 
   .detail-block {
@@ -1087,7 +1016,7 @@ body {
   }
 
   .detail-content {
-    @apply rounded border border-border bg-surface-2 px-4 py-3 text-[13px] leading-[1.8] shadow-inset-hairline;
+    @apply border-t border-border px-0 py-3 text-[13px] leading-[1.7];
     overflow-wrap: anywhere;
     word-break: break-word;
   }
@@ -1423,7 +1352,7 @@ body {
   .explorer-nav::-webkit-scrollbar-thumb,
   .table-body::-webkit-scrollbar-thumb,
   .modal::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.12);
+    background: rgb(var(--ak-color-text-muted-rgb) / 0.3);
     border-radius: 999px;
   }
 
@@ -1432,7 +1361,7 @@ body {
   .explorer-nav::-webkit-scrollbar-thumb:hover,
   .table-body::-webkit-scrollbar-thumb:hover,
   .modal::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.2);
+    background: rgb(var(--ak-color-text-muted-rgb) / 0.5);
   }
 
   .detail-pane,
@@ -1442,7 +1371,7 @@ body {
   .table-body,
   .modal {
     scrollbar-width: thin;
-    scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+    scrollbar-color: rgb(var(--ak-color-text-muted-rgb) / 0.3) transparent;
     scroll-behavior: smooth;
     overscroll-behavior: contain;
   }
@@ -1471,8 +1400,40 @@ body {
     }
 
     .sessions-pane {
-      @apply w-full border-b border-r-0 border-border;
-      max-height: 42vh;
+      @apply w-full flex-shrink-0 border-b border-r-0 border-border;
+      height: 58dvh;
+    }
+
+    .brand {
+      @apply h-14 px-3;
+    }
+
+    .module-switcher {
+      @apply p-2;
+    }
+
+    .module-switcher-trigger {
+      @apply min-h-11;
+    }
+
+    .module-switcher-options {
+      @apply left-2 right-2 top-[calc(100%-4px)] grid max-h-[min(320px,48vh)] grid-cols-2 gap-1 p-1.5;
+    }
+
+    .module-switcher-option {
+      @apply min-h-12 rounded border border-transparent px-2.5;
+    }
+
+    .module-switcher-option.active {
+      @apply border-border-strong;
+    }
+
+    .sessions-pane-footer {
+      @apply px-3 py-2;
+    }
+
+    .sessions-pane-footer .theme-cycle-button {
+      @apply h-10;
     }
 
     .content-toolbar {

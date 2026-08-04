@@ -1,8 +1,8 @@
 .shared-chat-showcase {
   min-height: 100%;
   padding: 40px clamp(20px, 5vw, 72px) 64px;
-  color: var(--m-on-surface);
-  background: var(--m-surface);
+  color: var(--ak-color-text-primary);
+  background: var(--ak-color-bg-canvas);
 }
 
 .shared-chat-showcase-header {
@@ -15,7 +15,7 @@
 }
 
 .shared-chat-showcase-header span {
-  color: var(--m-primary);
+  color: var(--ak-color-action-primary);
   font-size: 12px;
   font-weight: 750;
   letter-spacing: 0.12em;
@@ -31,7 +31,7 @@
 .shared-chat-showcase-header p {
   max-width: 650px;
   margin: 0;
-  color: var(--m-on-surface-variant);
+  color: var(--ak-color-text-secondary);
   line-height: 1.7;
 }
 
@@ -43,15 +43,15 @@
   border: 0;
   border-radius: var(--m-shape-full);
   padding: 0 18px;
-  color: var(--m-on-primary);
-  background: var(--m-primary);
+  color: var(--ak-color-on-action-primary);
+  background: var(--ak-color-action-primary);
   font-weight: 700;
   cursor: pointer;
   transition: background-color 150ms ease, scale 150ms ease;
 }
 
 .shared-chat-showcase-header button:hover {
-  background: var(--m-primary-hover);
+  background: var(--ak-color-action-hover);
 }
 
 .shared-chat-showcase-header button:active {
@@ -59,7 +59,7 @@
 }
 
 .shared-chat-showcase-header button:focus-visible {
-  outline: 2px solid var(--m-primary);
+  outline: 2px solid var(--ak-color-action-primary);
   outline-offset: 3px;
 }
 
@@ -67,10 +67,10 @@
   width: min(920px, 100%);
   min-height: 560px;
   margin: 0 auto;
-  border: 1px solid var(--m-outline-variant);
+  border: 1px solid var(--ak-color-border-default);
   border-radius: var(--m-shape-large-increased);
   padding: clamp(24px, 4vw, 48px);
-  background: var(--m-surface-container-low);
+  background: var(--ak-color-bg-surface-low);
   box-shadow: var(--shadow-border);
 }
 

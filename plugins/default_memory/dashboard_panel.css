@@ -12,9 +12,9 @@
 }
 
 .row-delete-btn {
-  color: var(--danger) !important;
+  color: var(--ak-color-status-error) !important;
 }
 
 .row-delete-btn:hover {
-  background: var(--red-soft);
+  background: var(--ak-color-status-error-container);
 }

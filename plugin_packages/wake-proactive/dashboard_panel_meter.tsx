@@ -1,6 +1,6 @@
 /// <reference path="../../types/akashic-dashboard.d.ts" />
 import { useEffect, useState, type ReactElement } from "react";
-import { Panel, Stack, api } from "@akashic/dashboard-ui";
+import { api } from "@akashic/dashboard-ui";
 
 interface MeterData {
   session_key: string;
@@ -39,10 +39,10 @@ function meterStatus(data: MeterData): { label: string; detail: string } {
     ? (data.hazard_after + data.preference_pressure) / data.threshold
     : 0;
   if (ratio >= 0.75) {
-    return { label: "临界蓄压", detail: "再出现一条强相关信息就可能越线。" };
+    return { label: "接近阈值", detail: "再出现一条强相关信息就可能进入最终判断。" };
   }
   if (ratio >= 0.35) {
-    return { label: "持续积累", detail: "兴趣证据正在蓄水池中累积。" };
+    return { label: "正在累积", detail: "相关信息正在提高主动唤醒压力。" };
   }
   return { label: "低压稳定", detail: "当前信息不足以打扰用户。" };
 }
@@ -80,16 +80,14 @@ function MeterPage(): ReactElement {
   const total = data.hazard_after + data.preference_pressure;
   const status = meterStatus(data);
   const crossed = Boolean(data.should_wake);
-  const surfaceClass = data.preference_pressure > 0
-    ? "water-surface pressure-surface"
-    : "water-surface";
+  const ratio = data.threshold > 0 ? total / data.threshold : 0;
 
   return (
-    <Stack className={`excitement-console${crossed ? " is-crossed" : ""}`}>
+    <main className={`excitement-console${crossed ? " is-crossed" : ""}`} aria-labelledby="meter-title">
       <header className="meter-header">
         <div>
-          <span>Wake reservoir</span>
-          <h2>兴奋水位</h2>
+          <span>主动唤醒压力</span>
+          <h2 id="meter-title">是否值得现在打扰用户</h2>
         </div>
         <div className="meter-state" aria-live="polite">
           <i aria-hidden="true" />
@@ -97,60 +95,27 @@ function MeterPage(): ReactElement {
         </div>
       </header>
 
-      <Panel className="meter-machine">
-        <div
-          className="meter-chamber-wrap"
-          role="img"
-          aria-label={`当前水位 ${total.toFixed(2)}，阈值 ${data.threshold.toFixed(2)}`}
-        >
-          <div className="meter-burst" aria-hidden="true">
-            <i /><i /><i /><i /><i />
-          </div>
-          <div className="tank-rim" aria-hidden="true" />
-          <div className="meter-chamber">
-            <div className="tank-zone overflow-zone">
-              <span>冲破区</span>
-            </div>
-            <div className="tank-zone warm-zone" aria-hidden="true" />
-            <div className="meter-threshold">
-              <span>阈值 {data.threshold.toFixed(2)}</span>
-            </div>
-            <div
-              className="meter-fluid accumulated"
-              style={{ height: `${accumulated}%` }}
-            />
-            <div
-              className="meter-fluid pressure"
-              style={{ bottom: `${accumulated}%`, height: `${pressure}%` }}
-            />
-            <div
-              className={surfaceClass}
-              style={{ bottom: `${Math.min(98, accumulated + pressure)}%` }}
-              aria-hidden="true"
-            >
-              <svg viewBox="0 0 180 18" preserveAspectRatio="none">
-                <path d="M0 10 Q22 2 45 10 T90 10 T135 10 T180 10 V18 H0 Z" />
-              </svg>
-            </div>
-            <div className="water-bubbles" aria-hidden="true">
-              <i /><i /><i />
-            </div>
-          </div>
-          <div className="meter-scale" aria-hidden="true">
-            <span>125%</span>
-            <span>阈值</span>
-            <span>50%</span>
-            <span>0</span>
-          </div>
-        </div>
-
+      <section className="meter-machine" aria-label="当前压力与阈值">
         <div className="meter-readout">
-          <span>当前水位</span>
+          <span>当前压力</span>
           <strong>{total.toFixed(2)}</strong>
           <em>/ {data.threshold.toFixed(2)}</em>
           <p>{status.detail}</p>
         </div>
-      </Panel>
+        <div className="pressure-visual">
+          <div className="pressure-scale"><span>0</span><span>阈值 {data.threshold.toFixed(2)}</span><span>125%</span></div>
+          <div className="pressure-track" role="img" aria-label={`当前压力 ${total.toFixed(2)}，阈值 ${data.threshold.toFixed(2)}`}>
+            <i className="pressure-segment is-accumulated" style={{ width: `${accumulated}%` }} />
+            <i className="pressure-segment is-instant" style={{ left: `${accumulated}%`, width: `${pressure}%` }} />
+            <b className="pressure-threshold" />
+          </div>
+          <div className="pressure-legend">
+            <span><i className="is-accumulated" />持续积累 {data.hazard_after.toFixed(3)}</span>
+            <span><i className="is-instant" />瞬时兴趣 {data.preference_pressure.toFixed(3)}</span>
+            <strong>{Math.round(ratio * 100)}%</strong>
+          </div>
+        </div>
+      </section>
 
       <div className="meter-telemetry">
         <div>
@@ -184,14 +149,14 @@ function MeterPage(): ReactElement {
           {data.driver_item_id || "NO ACTIVE DRIVER"}
         </code>
       </footer>
-    </Stack>
+    </main>
   );
 }
 
 window.AkashicDashboard.registerPlugin({
   id: "wake-meter",
   label: "兴奋阈值",
-  viewLabel: "wake pressure",
+  viewLabel: "兴奋阈值",
   layout: "workbench",
   rowKey: "id",
   columns: [],

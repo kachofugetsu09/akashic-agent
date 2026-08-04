@@ -7,11 +7,13 @@ import {
   CircleStop,
   BookOpenText,
   MessageSquarePlus,
+  Palette,
   Plus,
   Puzzle,
   SendHorizontal,
   Smartphone,
 } from "lucide-react";
+import { cycleTheme, initializeTheme, startCrossPortThemeSync, useTheme } from "../../theme/src/theme-runtime";
 import {
   Attachment,
   AttachmentHoverCard,
@@ -251,6 +253,7 @@ function chatNavigation(payload: unknown): ChatNavigation {
 }
 
 function App() {
+  const theme = useTheme();
   const [surface, setSurface] = useState<"chat" | "runtime">(
     () => new URLSearchParams(window.location.search).get("surface") === "runtime" ? "runtime" : "chat",
   );
@@ -464,7 +467,7 @@ function App() {
     : `${window.location.protocol}//${window.location.hostname}:${dashboardPort}`;
 
   return (
-    <main className="chat-shell dark">
+    <main className="chat-shell">
       <aside className="chat-sidebar">
         <header className="chat-sidebar-brand">
           <span
@@ -518,6 +521,12 @@ function App() {
             <MobilePluginSlot name="drawer.panel" sessionId={activeSessionId} />
           ) : undefined}
           actions={[
+            {
+              id: "theme",
+              icon: <Palette size={18} />,
+              label: `主题 · ${theme.label}`,
+              onActivate: cycleTheme,
+            },
             {
               id: "connect-mobile",
               icon: <Smartphone size={18} />,
@@ -1306,6 +1315,8 @@ function formatMessageTime(value: string) {
 }
 
 const preview = new URLSearchParams(window.location.search).get("preview");
+initializeTheme();
+startCrossPortThemeSync();
 const isMobileShowcase = preview === "mobile";
 const isSharedChatShowcase = preview === "chat";
 const isDrawerIslandShowcase = preview === "drawer-islands";

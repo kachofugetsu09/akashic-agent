@@ -564,9 +564,11 @@ def _build_provenance_keys() -> tuple[str, ...]:
 def _webui_paths() -> tuple[str, ...]:
     return (
         "frontend/chat",
+        "frontend/theme",
         "scripts/package-mobile-web.sh",
         "package.json",
         "package-lock.json",
+        "tsconfig.json",
     )
 
 

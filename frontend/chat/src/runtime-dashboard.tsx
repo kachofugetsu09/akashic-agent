@@ -149,7 +149,7 @@ export function RuntimeDashboard() {
         </div>
       </header>
 
-      <section className="runtime-dashboard__metrics" aria-label="运行概览">
+      <section className="runtime-dashboard__metrics" aria-label="运行摘要">
         <RuntimeMetric icon={<BookOpenText size={20} />} value={overview?.documents.length ?? 0} label="核心文档" tone="documents" />
         <RuntimeMetric icon={<Server size={20} />} value={overview?.capabilities.mcp_servers.reduce((sum, item) => sum + item.tool_count, 0) ?? 0} label={`MCP 工具 · ${overview?.capabilities.skills.length ?? 0} Skills`} tone="mcp" />
         <RuntimeMetric icon={<Timer size={20} />} value={overview?.jobs.filter((job) => job.enabled).length ?? 0} label="已启用定时任务" tone="jobs" />
@@ -159,7 +159,29 @@ export function RuntimeDashboard() {
         {(Object.keys(viewMeta) as RuntimeView[]).map((key) => {
           const Icon = viewMeta[key].icon;
           return (
-            <button key={key} type="button" role="tab" aria-selected={view === key} onClick={() => selectView(key)}>
+            <button
+              id={`runtime-tab-${key}`}
+              key={key}
+              type="button"
+              role="tab"
+              aria-controls="runtime-directory-panel"
+              aria-selected={view === key}
+              tabIndex={view === key ? 0 : -1}
+              onClick={() => selectView(key)}
+              onKeyDown={(event) => {
+                if (!(["ArrowLeft", "ArrowRight", "Home", "End"] as string[]).includes(event.key)) return;
+                event.preventDefault();
+                const keys = Object.keys(viewMeta) as RuntimeView[];
+                const current = keys.indexOf(key);
+                const next = event.key === "Home"
+                  ? keys[0]
+                  : event.key === "End"
+                    ? keys[keys.length - 1]
+                    : keys[(current + (event.key === "ArrowRight" ? 1 : -1) + keys.length) % keys.length];
+                selectView(next);
+                requestAnimationFrame(() => document.getElementById(`runtime-tab-${next}`)?.focus());
+              }}
+            >
               <Icon size={20} />
               <span>{viewMeta[key].label}</span>
             </button>
@@ -171,7 +193,12 @@ export function RuntimeDashboard() {
         {error ? <div className="runtime-dashboard__error" role="alert"><AlertCircle size={18} />{error}</div> : null}
       </div>
 
-      <section className={`runtime-directory ${detailOpen ? "detail-open" : ""}`}>
+      <section
+        id="runtime-directory-panel"
+        className={`runtime-directory ${detailOpen ? "detail-open" : ""}`}
+        role="tabpanel"
+        aria-labelledby={`runtime-tab-${view}`}
+      >
         <div className="runtime-directory__list">
           <header>
             <h2>{viewMeta[view].label}</h2>
@@ -248,7 +275,7 @@ function runtimeItems(view: RuntimeView, overview: RuntimeOverview | null): Dire
       title: server.name,
       description: `${server.tool_count} 个工具 · ${server.owner_id}`,
       icon: <Server size={20} />,
-      status: "Ready",
+      status: "可用",
       statusTone: "enabled",
     }));
   }

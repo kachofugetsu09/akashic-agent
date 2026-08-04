@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { Check, ChevronRight, KeyRound, LoaderCircle, RefreshCw, Settings2 } from "lucide-react";
+import { Check, ChevronRight, KeyRound, LoaderCircle, Palette, RefreshCw, Settings2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import "./settings.css";
+import { cycleTheme, useTheme } from "../../theme/src/theme-runtime";
 
 type ProviderKind = "api" | "opencode-go" | "codex";
 
@@ -88,6 +89,7 @@ function runtimeKind(runtime: RuntimeSummary): ProviderKind {
 }
 
 export function SettingsApp() {
+  const theme = useTheme();
   const [state, setState] = useState<SettingsState | null>(null);
   const [kind, setKind] = useState<ProviderKind>("api");
   const [provider, setProvider] = useState("openai");
@@ -286,11 +288,16 @@ export function SettingsApp() {
             <h1>{state?.mode === "needs_setup" ? "连接你的模型" : "模型与认证"}</h1>
             <p>选择一个 Provider，验证后安全切换。已保存的密钥不会显示在页面中。</p>
           </div>
-          {state?.mode === "ready" && (
-            <a className="settings-chat-link" href={`http://${window.location.hostname}:6322`}>
-              打开聊天 <ChevronRight />
-            </a>
-          )}
+          <div className="settings-header-actions">
+            <button className="settings-theme-button" type="button" onClick={cycleTheme}>
+              <Palette aria-hidden="true" /> {theme.label}
+            </button>
+            {state?.mode === "ready" && (
+              <a className="settings-chat-link" href={`http://${window.location.hostname}:6322`}>
+                打开聊天 <ChevronRight />
+              </a>
+            )}
+          </div>
         </header>
 
         <div className="settings-layout">

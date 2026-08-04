@@ -2,8 +2,8 @@
   min-height: 100%;
   overflow: auto;
   padding: 32px 20px 64px;
-  color: var(--m-on-surface);
-  background: var(--m-surface);
+  color: var(--ak-color-text-primary);
+  background: var(--ak-color-bg-canvas);
 }
 
 .legacy-drawer-showcase__header {
@@ -21,7 +21,7 @@
 
 .legacy-drawer-showcase__header p {
   margin: 0;
-  color: var(--m-on-surface-variant);
+  color: var(--ak-color-text-secondary);
   font-size: 0.875rem;
   line-height: 1.55;
   text-wrap: pretty;
@@ -33,9 +33,9 @@
   height: 820px;
   margin: 0 auto;
   overflow: hidden;
-  border: 1px solid var(--m-outline-variant);
+  border: 1px solid var(--ak-color-border-default);
   border-radius: 24px;
-  background: var(--m-surface-container-high);
+  background: var(--ak-color-bg-surface-high);
 }
 
 .legacy-drawer-underlay {
@@ -49,7 +49,7 @@
   display: block;
   height: 72px;
   border-radius: 12px;
-  background: var(--m-surface-container);
+  background: var(--ak-color-bg-surface);
 }
 
 .legacy-drawer-underlay span:nth-child(2) {
@@ -85,7 +85,7 @@
   border: 0;
   border-radius: var(--m-shape-full);
   padding: 0;
-  color: var(--m-on-surface-variant);
+  color: var(--ak-color-text-secondary);
   background: transparent;
 }
 
@@ -97,9 +97,9 @@
   gap: 12px;
   margin: 6px 14px 0;
   border: 0;
-  border-block-start: 1px solid var(--m-outline-variant);
+  border-block-start: 1px solid var(--ak-color-border-default);
   padding: 11px 2px 8px;
-  color: var(--m-on-surface-variant);
+  color: var(--ak-color-text-secondary);
   background: transparent;
   font: inherit;
   font-size: 0.8125rem;
@@ -107,7 +107,7 @@
 }
 
 .legacy-memory-summary strong {
-  color: var(--m-primary);
+  color: var(--ak-color-action-primary);
   font-size: 0.8125rem;
   font-weight: 650;
 }

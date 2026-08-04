@@ -1,10 +1,12 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
+import { SunMoon } from "lucide-react";
 import { cn } from "./cn";
 import { renderMarkdown } from "../format";
+import { cycleTheme, themes, useTheme } from "../../../theme/src/theme-runtime";
 
 // ---------------------------------------------------------------------------
 // Shared primitives for the dashboard and the /design storybook.
-// Dark canvas · cobalt accent · sharp corners (small radii) · hairline borders.
+// Semantic theme colors · sharp corners (small radii) · hairline borders.
 // This atomic layer is the single source of visual truth — the same vocabulary
 // is exposed to runtime-injected plugin panels (see pluginRuntime.ts).
 // ---------------------------------------------------------------------------
@@ -48,7 +50,7 @@ export function Tile({
   padded?: boolean;
 }) {
   return (
-    <div className={cn("relative rounded-lg border border-border bg-surface", padded && "p-5", className)}>
+    <div className={cn("relative rounded border border-border bg-surface", padded && "p-4", className)}>
       {label && (
         <div className="mb-4 flex items-center justify-between">
           <Label>{label}</Label>
@@ -370,52 +372,21 @@ export function BrandMark({ className }: { className?: string }) {
 // Theme
 // ---------------------------------------------------------------------------
 
-export type Theme = "light" | "dark";
-
-function readTheme(): Theme {
-  if (typeof document === "undefined") return "dark";
-  return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
-}
-
-export function useTheme(): Theme {
-  const [theme, setTheme] = useState<Theme>(readTheme);
-  useEffect(() => {
-    const observer = new MutationObserver(() => setTheme(readTheme()));
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
-    return () => observer.disconnect();
-  }, []);
-  return theme;
-}
-
 export function ThemeToggle() {
   const theme = useTheme();
-  const next: Theme = theme === "dark" ? "light" : "dark";
-  const apply = (t: Theme): void => {
-    document.documentElement.setAttribute("data-theme", t);
-    try {
-      localStorage.setItem("theme", t);
-    } catch {
-      // ignore storage failures (private mode etc.)
-    }
-  };
+  const options = themes();
+  const currentIndex = options.findIndex((option) => option.id === theme.id);
+  const nextTheme = options[(currentIndex + 1) % options.length];
   return (
     <button
       type="button"
-      onClick={() => apply(next)}
-      aria-label={`Switch to ${next} theme`}
-      title={`Switch to ${next} theme`}
-      className="grid h-7 w-7 place-items-center rounded-md border border-border text-muted transition-colors hover:text-fg"
+      onClick={() => cycleTheme()}
+      title={`当前主题：${theme.label}；切换到${nextTheme.label}`}
+      aria-label={`切换主题，当前为${theme.label}，下一主题为${nextTheme.label}`}
+      className="theme-cycle-button"
     >
-      {theme === "dark" ? (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="12" cy="12" r="4" />
-          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
-        </svg>
-      ) : (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-        </svg>
-      )}
+      <SunMoon size={20} strokeWidth={2} aria-hidden="true" />
+      <span>主题 · {theme.label}</span>
     </button>
   );
 }

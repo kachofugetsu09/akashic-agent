@@ -1,20 +1,20 @@
 /* Akasha Inspector — host industrial tokens, content-first, no private palette. */
 
 .akasha-inspector {
-  --akasha-ink: var(--color-fg);
-  --akasha-muted: var(--color-muted);
-  --akasha-subtle: var(--color-subtle);
-  --akasha-surface: var(--color-surface);
-  --akasha-surface-2: var(--color-surface-2);
-  --akasha-surface-3: var(--color-surface-3);
-  --akasha-rule: var(--color-border);
-  --akasha-rule-strong: var(--color-border-strong);
-  --akasha-accent: var(--color-accent);
-  --akasha-accent-soft: var(--color-accent-soft);
-  --akasha-lane-seed: var(--color-accent);
-  --akasha-lane-precise: var(--color-success);
-  --akasha-lane-completion: var(--color-warning);
-  --akasha-lane-activation: var(--color-accent);
+  --akasha-ink: var(--ak-color-text-primary);
+  --akasha-muted: var(--ak-color-text-secondary);
+  --akasha-subtle: var(--ak-color-text-muted);
+  --akasha-surface: var(--ak-color-bg-surface);
+  --akasha-surface-2: var(--ak-color-bg-surface-low);
+  --akasha-surface-3: var(--ak-color-bg-surface-high);
+  --akasha-rule: var(--ak-color-border-default);
+  --akasha-rule-strong: var(--ak-color-border-strong);
+  --akasha-accent: var(--ak-color-action-primary);
+  --akasha-accent-soft: var(--ak-color-action-soft);
+  --akasha-lane-seed: var(--ak-color-action-primary);
+  --akasha-lane-precise: var(--ak-color-status-success);
+  --akasha-lane-completion: var(--ak-color-status-warning);
+  --akasha-lane-activation: var(--ak-color-action-primary);
   --akasha-radius: var(--radius-lg, 10px);
   --akasha-radius-sm: var(--radius, 6px);
   --akasha-ease: var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1));
@@ -23,7 +23,7 @@
   min-width: 0;
   flex-direction: column;
   gap: 14px;
-  padding: 4px 2px 12px;
+  padding: 0 0 16px;
   color: var(--akasha-ink);
   font-family: var(--sans, inherit);
   font-synthesis: none;
@@ -34,10 +34,9 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
-  padding: 14px 16px;
-  border: 1px solid var(--akasha-rule);
-  border-radius: var(--akasha-radius);
-  background: var(--akasha-surface);
+  padding: 4px 0 18px;
+  border-bottom: 1px solid var(--akasha-rule);
+  background: transparent;
 }
 
 .akasha-query > div {
@@ -79,9 +78,9 @@
 
 .akasha-close {
   display: grid;
-  width: 36px;
-  height: 36px;
-  flex: 0 0 36px;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
   place-items: center;
   margin-block-start: 2px;
   border: 1px solid var(--akasha-rule);
@@ -107,19 +106,50 @@
   scale: 0.96;
 }
 
+.akasha-overview {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.9fr) minmax(0, 1.7fr);
+  gap: 0;
+  border: 1px solid var(--akasha-rule);
+  border-radius: var(--akasha-radius-sm);
+  background: var(--akasha-surface);
+}
+
+.akasha-overview-copy {
+  padding: 18px;
+  border-inline-end: 1px solid var(--akasha-rule);
+}
+
+.akasha-overview-copy > span {
+  color: var(--akasha-subtle);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.akasha-overview-copy h3 {
+  margin: 6px 0;
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.akasha-overview-copy p {
+  margin: 0;
+  color: var(--akasha-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
 .akasha-metrics {
   display: grid;
   margin: 0;
-  overflow: hidden;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  border: 1px solid var(--akasha-rule);
-  border-radius: var(--akasha-radius);
-  background: var(--akasha-surface);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .akasha-metric {
   min-width: 0;
-  padding: 12px 14px;
+  padding: 11px 14px;
   border-right: 1px solid var(--akasha-rule);
 }
 
@@ -154,61 +184,162 @@
   text-wrap: pretty;
 }
 
+.akasha-flow {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  list-style: none;
+}
+
+.akasha-flow li {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  padding-inline-end: 14px;
+}
+
+.akasha-flow li:not(:last-child)::after {
+  position: absolute;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border-block-start: 1px solid var(--akasha-rule-strong);
+  border-inline-end: 1px solid var(--akasha-rule-strong);
+  content: "";
+  rotate: 45deg;
+}
+
+.akasha-flow li > span {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  place-items: center;
+  border: 1px solid var(--akasha-rule-strong);
+  border-radius: 50%;
+  color: var(--akasha-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.akasha-flow div {
+  min-width: 0;
+}
+
+.akasha-flow strong,
+.akasha-flow small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.akasha-flow strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.akasha-flow small {
+  margin-top: 2px;
+  color: var(--akasha-subtle);
+  font-size: 11px;
+}
+
+.akasha-lanes {
+  display: grid;
+  gap: 8px;
+}
+
 .akasha-section {
   overflow: hidden;
   border: 1px solid var(--akasha-rule);
-  border-radius: var(--akasha-radius);
+  border-radius: var(--akasha-radius-sm);
   background: var(--akasha-surface);
 }
 
-.akasha-section > header {
+.akasha-section > summary {
   display: flex;
   min-height: 48px;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 10px 14px;
+  cursor: pointer;
+  background: transparent;
+  list-style: none;
+  user-select: none;
+  transition: background-color var(--akasha-t) var(--akasha-ease);
+}
+
+.akasha-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.akasha-section > summary::before {
+  width: 0.65em;
+  flex: 0 0 0.65em;
+  color: var(--akasha-subtle);
+  content: "▸";
+  font-size: 12px;
+  transition: rotate var(--akasha-t) var(--akasha-ease);
+}
+
+.akasha-section[open] > summary::before {
+  rotate: 90deg;
+}
+
+.akasha-section[open] > summary {
   border-bottom: 1px solid var(--akasha-rule);
+}
+
+.akasha-section > summary:hover {
   background: var(--akasha-surface-2);
 }
 
-.akasha-section h3 {
-  margin: 0;
+.akasha-section > summary:focus-visible {
+  outline: 2px solid var(--akasha-accent);
+  outline-offset: -2px;
+}
+
+.akasha-lane-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.akasha-lane-copy strong {
+  display: block;
   color: var(--akasha-ink);
   font-size: 13px;
   font-weight: 600;
   line-height: 1.25;
-  letter-spacing: -0.01em;
-  text-wrap: balance;
 }
 
-.akasha-section header p {
-  margin: 2px 0 0;
+.akasha-lane-copy small {
+  display: block;
+  margin-top: 3px;
   color: var(--akasha-subtle);
   font-size: 12px;
   line-height: 1.4;
+  text-wrap: pretty;
 }
 
-.akasha-section header > span {
+.akasha-lane-count {
   flex: 0 0 auto;
-  min-width: 1.75rem;
-  padding: 2px 8px;
-  border: 1px solid var(--akasha-rule);
-  border-radius: 9999px;
+  min-width: 2rem;
   color: var(--akasha-muted);
-  background: var(--akasha-surface);
-  font-family: var(--mono, ui-monospace, monospace);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-  font-weight: 550;
+  font-weight: 600;
   line-height: 1.4;
-  text-align: center;
+  text-align: end;
 }
 
 /* Lane accents: seed / precise / completion / activation */
 .akasha-lane {
   --akasha-lane: var(--akasha-lane-seed);
-  box-shadow: inset 3px 0 0 var(--akasha-lane);
 }
 
 .akasha-lane--seed {
@@ -227,12 +358,6 @@
   --akasha-lane: var(--akasha-lane-completion);
 }
 
-.akasha-lane > header > span {
-  color: var(--akasha-lane);
-  border-color: color-mix(in oklab, var(--akasha-lane) 28%, var(--akasha-rule));
-  background: color-mix(in oklab, var(--akasha-lane) 10%, var(--akasha-surface));
-}
-
 .akasha-evidence-list {
   margin: 0;
   padding: 0;
@@ -241,8 +366,8 @@
 
 .akasha-evidence {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(148px, 0.32fr);
-  gap: 12px 16px;
+  grid-template-columns: 24px minmax(0, 1fr) minmax(132px, 0.3fr);
+  gap: 8px 12px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--akasha-rule);
 }
@@ -288,9 +413,9 @@
   min-height: 22px;
   padding: 0 7px;
   border: 1px solid var(--akasha-rule);
-  border-radius: 9999px;
+  border-radius: 3px;
   color: var(--akasha-muted);
-  background: var(--akasha-surface-2);
+  background: transparent;
   font-size: 12px;
   line-height: 1.3;
   white-space: nowrap;
@@ -308,12 +433,13 @@
 }
 
 .akasha-path {
-  width: 100%;
+  grid-column: 2 / -1;
+  width: auto;
   overflow: hidden;
   color: var(--akasha-subtle);
   font-family: var(--mono, ui-monospace, monospace);
   font-size: 11.5px;
-  text-align: end;
+  text-align: start;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -380,8 +506,8 @@
 
 .akasha-learning summary:focus-visible,
 .akasha-prompt summary:focus-visible {
-  outline: 1px solid var(--akasha-accent);
-  outline-offset: -1px;
+  outline: 2px solid var(--akasha-accent);
+  outline-offset: -2px;
 }
 
 .akasha-learning dl {
@@ -424,7 +550,7 @@
   display: grid;
   min-width: min(420px, 70vw);
   gap: 5px;
-  color: var(--color-muted);
+  color: var(--ak-color-text-secondary);
   font-size: 12px;
   font-weight: 500;
 }
@@ -433,10 +559,10 @@
   min-height: 40px;
   width: 100%;
   padding: 0 10px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--ak-color-border-default);
   border-radius: var(--radius, 6px);
-  color: var(--color-fg);
-  background: var(--color-surface);
+  color: var(--ak-color-text-primary);
+  background: var(--ak-color-bg-surface-low);
   font: inherit;
   font-size: 16px;
 }
@@ -448,18 +574,18 @@
 }
 
 .akasha-filter input:focus-visible {
-  outline: 1px solid var(--color-accent);
-  outline-offset: 1px;
+  outline: 2px solid var(--ak-color-action-primary);
+  outline-offset: 2px;
 }
 
 .akasha-filter button {
   min-width: 52px;
   min-height: 40px;
   padding: 0 12px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--ak-color-border-default);
   border-radius: var(--radius, 6px);
-  color: var(--color-fg);
-  background: var(--color-surface-2);
+  color: var(--ak-color-text-primary);
+  background: var(--ak-color-bg-surface);
   cursor: pointer;
   font: inherit;
   font-size: 13px;
@@ -471,8 +597,8 @@
 }
 
 .akasha-filter button:hover:not(:disabled) {
-  border-color: var(--color-border-strong);
-  background: var(--color-surface-3);
+  border-color: var(--ak-color-border-strong);
+  background: var(--ak-color-bg-surface-high);
 }
 
 .akasha-filter button:active:not(:disabled) {
@@ -485,29 +611,37 @@
 }
 
 @media (max-width: 760px) {
+  .akasha-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .akasha-overview-copy {
+    border-inline-end: 0;
+    border-bottom: 1px solid var(--akasha-rule);
+  }
+
   .akasha-metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .akasha-metric:nth-child(2n) {
-    border-right: 0;
-  }
-
-  .akasha-metric:nth-child(n + 3) {
-    border-top: 1px solid var(--akasha-rule);
+  .akasha-flow {
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
   }
 
   .akasha-evidence {
-    grid-template-columns: 1fr;
+    grid-template-columns: 24px minmax(0, 1fr);
     gap: 8px;
   }
 
   .akasha-evidence-meta {
+    grid-column: 2;
     justify-content: flex-start;
     text-align: start;
   }
 
   .akasha-path {
+    grid-column: 2;
     text-align: start;
   }
 
@@ -533,4 +667,15 @@
   .akasha-prompt summary::before {
     transition-duration: 0ms;
   }
+}
+.akasha-evidence-rank {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid var(--akasha-rule);
+  border-radius: 50%;
+  color: var(--akasha-subtle);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
 }

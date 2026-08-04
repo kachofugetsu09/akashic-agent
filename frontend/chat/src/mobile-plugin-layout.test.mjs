@@ -148,26 +148,26 @@ test("shared navigation keeps the compact mobile drawer language", () => {
   );
   assert.match(
     sharedStyles,
-    /\.mobile-plugin-slot\[data-slot="drawer\.panel"\]\s*\{[^}]*position:\s*absolute;[^}]*inset-block-end:\s*0;[^}]*background:\s*var\(--m-surface\);/,
+    /\.mobile-plugin-slot\[data-slot="drawer\.panel"\]\s*\{[^}]*position:\s*absolute;[^}]*inset-block-end:\s*0;[^}]*background:\s*var\(--ak-color-bg-canvas\);/,
   );
   assert.match(
     navigationStyles,
-    /\.conversation-destination\.featured\s*\{[^}]*min-height:\s*68px;[^}]*border-radius:\s*22px;[^}]*background:\s*#3f7479;/,
+    /\.conversation-destination\.featured\s*\{[^}]*min-height:\s*68px;[^}]*border-radius:\s*22px;[^}]*background:\s*var\(--ak-color-action-primary\);/,
   );
 });
 
-test("runtime metrics introduce the category before its value", () => {
+test("runtime metrics keep values and categories on one compact baseline", () => {
   assert.match(
     runtimeDashboardSource,
     /<div><small>\{label\}<\/small><strong>\{value\}<\/strong><\/div>/,
   );
   assert.match(
     runtimeDashboardStyles,
-    /\.runtime-metric strong\s*\{[^}]*margin-top:\s*6px;/,
+    /\.runtime-metric div\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*baseline;/,
   );
-  assert.doesNotMatch(
+  assert.match(
     runtimeDashboardStyles,
-    /\.runtime-metric small\s*\{[^}]*margin-top:/,
+    /\.runtime-metric strong\s*\{[^}]*order:\s*-1;/,
   );
 });
 
@@ -247,9 +247,23 @@ test("streaming redraws only dynamic message subtrees", () => {
 });
 
 test("user message bubble uses a defined secondary container token", () => {
-  assert.match(platformStyles, /\.mobile-plain-message-view\.user[\s\S]*?background:\s*var\(--m-secondary-container\)/);
-  assert.match(themeStyles, /--m-secondary-container:\s*#[0-9a-f]+;/i);
-  assert.match(themeStyles, /--m-secondary-container:\s*oklch\(/);
+  assert.match(platformStyles, /\.mobile-plain-message-view\.user[\s\S]*?background:\s*var\(--ak-color-action-soft\)/);
+  assert.doesNotMatch(themeStyles, /--m-secondary-container:/);
+});
+
+test("fixed mobile chrome stays opaque over the native window", () => {
+  assert.match(
+    platformStyles,
+    /\.mobile-topbar\s*\{[^}]*background:\s*var\(--ak-color-bg-canvas\);/,
+  );
+  assert.match(
+    platformStyles,
+    /\.mobile-composer-zone\s*\{[^}]*background:\s*var\(--ak-color-bg-canvas\);/,
+  );
+  assert.doesNotMatch(
+    platformStyles,
+    /\.(?:mobile-topbar|mobile-composer-zone)\s*\{[^}]*background:\s*color-mix\([^}]*transparent/,
+  );
 });
 
 test("cached images retry once and degrade to an openable file instead of a blank card", () => {

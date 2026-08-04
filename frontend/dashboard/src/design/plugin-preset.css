@@ -1,2 +1,11 @@
 @tailwind components;
 @tailwind utilities;
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-up,
+  .animate-ping,
+  .animate-pulse-dot,
+  .animate-spin {
+    animation: none !important;
+  }
+}

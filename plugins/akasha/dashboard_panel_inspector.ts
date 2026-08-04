@@ -92,13 +92,14 @@ function renderItems(items: InspectorItem[], empty: string): string {
   }
   return `
     <ol class="akasha-evidence-list">
-      ${items.map((item) => {
+      ${items.map((item, index) => {
         const score = item.score ?? item.value ?? item.completion_mass ?? item.seed_score;
         const path = item.relation_path?.length
           ? `<span class="akasha-path" title="${escapeHtml(item.relation_path.join(" → "))}">${escapeHtml(item.relation_path.join(" → "))}</span>`
           : "";
         return `
           <li class="akasha-evidence">
+            <span class="akasha-evidence-rank" aria-hidden="true">${index + 1}</span>
             <div class="akasha-evidence-main">
               <p>${escapeHtml(item.user_text || "（空消息）")}</p>
               ${item.assistant_preview
@@ -109,12 +110,35 @@ function renderItems(items: InspectorItem[], empty: string): string {
               <time class="akasha-chip akasha-chip--time">${escapeHtml(shortTime(item.ts))}</time>
               <span class="akasha-chip">${escapeHtml(sourceText(item))}</span>
               ${score == null ? "" : `<b class="akasha-chip akasha-chip--score">${fixed(score)}</b>`}
-              ${path}
             </div>
+            ${path}
           </li>
         `;
       }).join("")}
     </ol>
+  `;
+}
+
+function evidenceLane(
+  title: string,
+  description: string,
+  lane: string,
+  items: InspectorItem[],
+  count: number | string,
+  empty: string,
+  open = false,
+): string {
+  return `
+    <details class="akasha-section akasha-lane akasha-lane--${escapeHtml(lane)}" ${open ? "open" : ""}>
+      <summary>
+        <span class="akasha-lane-copy">
+          <strong>${escapeHtml(title)}</strong>
+          <small>${escapeHtml(description)}</small>
+        </span>
+        <span class="akasha-lane-count">${escapeHtml(String(count))}</span>
+      </summary>
+      ${renderItems(items, empty)}
+    </details>
   `;
 }
 
@@ -169,6 +193,9 @@ function renderFilters(container: HTMLElement, dispatch: PluginDispatch): void {
 }
 
 function renderDetail(item: InspectorDetail, closePane?: () => void): string {
+  const recallCount = item.recall_capture_available
+    ? item.left_count + item.right_count
+    : item.left_count;
   return `
     <article class="akasha-inspector">
       <header class="akasha-query">
@@ -180,81 +207,45 @@ function renderDetail(item: InspectorDetail, closePane?: () => void): string {
         ${closePane ? '<button class="akasha-close" type="button" data-akasha-close aria-label="关闭详情">×</button>' : ""}
       </header>
 
-      <dl class="akasha-metrics">
-        ${metric("直接线索", item.seed_count, "Dense、BM25 与时序形成的 seed")}
-        ${metric(
-          item.activation_capture_available ? "扩散激活" : "补全候选",
-          item.activation_count,
-          item.activation_capture_available
-            ? `${item.graph_only_count} 个仅由图关系抵达`
-            : "这一轮没有保存逐节点扩散路径",
-        )}
-        ${metric(
-          "模式补全",
-          item.recall_capture_available ? item.right_count : "未记录",
-          item.recall_capture_available
-            ? `${item.basin_count} 个活跃情景 basin`
-            : "旧重放没有保存这一轮的补全读出",
-        )}
-        ${metric("残余", fixed(item.residual_l1, 6), `${item.pushes} 次 residual push`)}
-      </dl>
-
-      <section class="akasha-section akasha-lane akasha-lane--seed">
-        <header><h3>直接线索</h3><span>${item.seeds.length}</span></header>
-        ${renderItems(item.seeds, "这一轮没有形成可持久化 seed。")}
+      <section class="akasha-overview" aria-labelledby="akasha-overview-title">
+        <div class="akasha-overview-copy">
+          <span>本轮结论</span>
+          <h3 id="akasha-overview-title">${recallCount} 条记忆参与回答</h3>
+          <p>${item.inject_chars > 0
+            ? `最终向 Prompt 注入 ${item.inject_chars} 字，检索经过 ${item.pushes} 次扩散。`
+            : "本轮没有向 Prompt 注入记忆。"}</p>
+        </div>
+        <dl class="akasha-metrics">
+          ${metric("起始线索", item.seed_count, "Dense、BM25 与时序")}
+          ${metric("扩散候选", item.activation_count, `${item.graph_only_count} 条来自图关系`)}
+          ${metric("最终召回", recallCount, item.recall_capture_available ? `${item.basin_count} 个情景簇` : "模式补全未记录")}
+        </dl>
       </section>
 
-      ${item.activation_capture_available
-        ? `
-          <section class="akasha-section akasha-lane akasha-lane--activation">
-            <header><h3>扩散激活</h3><span>${item.activation_items.length}</span></header>
-            ${renderItems(item.activation_items, "图扩散没有增加候选。")}
-          </section>
-        `
-        : ""}
+      <ol class="akasha-flow" aria-label="本轮检索路径">
+        <li><span>1</span><div><strong>识别线索</strong><small>${item.seed_count} 条直接线索</small></div></li>
+        <li><span>2</span><div><strong>沿图扩散</strong><small>${item.activation_count} 条候选</small></div></li>
+        <li><span>3</span><div><strong>精确与联想</strong><small>${recallCount} 条去重结果</small></div></li>
+        <li><span>4</span><div><strong>写入上下文</strong><small>${item.inject_chars} 字</small></div></li>
+      </ol>
 
-      <section class="akasha-section akasha-lane akasha-lane--precise">
-        <header>
-          <div><h3>左脑记忆</h3><p>Embedding 精确回忆</p></div>
-          <span>${item.left_count}</span>
-        </header>
-        ${renderItems(item.left, "没有 Dense 直接命中。")}
-      </section>
-
-      <section class="akasha-section akasha-lane akasha-lane--completion">
-        <header>
-          <div><h3>右脑联想</h3><p>显式图模式补全，已与左脑去重</p></div>
-          <span>${item.right_count}</span>
-        </header>
-        ${renderItems(item.right, "没有产生模式补全。")}
-      </section>
-
-      ${item.tool_left_count
-        ? `
-          <section class="akasha-section akasha-lane akasha-lane--precise">
-            <header>
-              <div><h3>工具精确回忆</h3><p>本轮 recall_memory 的 Dense 结果</p></div>
-              <span>${item.tool_left_count}</span>
-            </header>
-            ${renderItems(item.tool_left, "工具没有产生 Dense 命中。")}
-          </section>
-        `
-        : ""}
-
-      ${item.tool_right_count
-        ? `
-          <section class="akasha-section akasha-lane akasha-lane--completion">
-            <header>
-              <div><h3>工具模式补全</h3><p>本轮 recall_memory 的显式图结果</p></div>
-              <span>${item.tool_right_count}</span>
-            </header>
-            ${renderItems(item.tool_right, "工具没有产生模式补全。")}
-          </section>
-        `
-        : ""}
+      <div class="akasha-lanes" aria-label="检索证据">
+        ${evidenceLane("直接线索", "最初命中的消息", "seed", item.seeds, item.seeds.length, "这一轮没有形成可持久化线索。", true)}
+        ${item.activation_capture_available
+          ? evidenceLane("图扩散候选", "由关系网络补入的候选", "activation", item.activation_items, item.activation_items.length, "图扩散没有增加候选。")
+          : ""}
+        ${evidenceLane("精确回忆", "语义最接近的历史消息", "precise", item.left, item.left_count, "没有精确命中。", true)}
+        ${evidenceLane("模式联想", "跨关系补全且已与精确结果去重", "completion", item.right, item.recall_capture_available ? item.right_count : "未记录", "没有产生模式联想。")}
+        ${item.tool_left_count
+          ? evidenceLane("工具精确回忆", "recall_memory 的语义命中", "precise", item.tool_left, item.tool_left_count, "工具没有产生精确命中。")
+          : ""}
+        ${item.tool_right_count
+          ? evidenceLane("工具模式联想", "recall_memory 的图关系结果", "completion", item.tool_right, item.tool_right_count, "工具没有产生模式联想。")
+          : ""}
+      </div>
 
       <details class="akasha-learning">
-        <summary>本轮如何改变记忆</summary>
+        <summary>学习变化与技术指标</summary>
         <dl>
           ${metric("惊喜度", fixed(item.surprise), "当前 cue 与已有模式的差异")}
           ${metric("观察质量", fixed(item.observed_mass), "由外部证据支持的学习质量")}
@@ -264,7 +255,7 @@ function renderDetail(item: InspectorDetail, closePane?: () => void): string {
       </details>
 
       <details class="akasha-prompt">
-        <summary>查看实际 Prompt 记忆块 · ${item.inject_chars} 字</summary>
+        <summary>查看写入 Prompt 的记忆 · ${item.inject_chars} 字</summary>
         <pre>${escapeHtml(item.text_block_preview || "这一轮没有注入记忆。")}</pre>
       </details>
     </article>
@@ -273,8 +264,8 @@ function renderDetail(item: InspectorDetail, closePane?: () => void): string {
 
 window.AkashicDashboard.registerPlugin({
   id: "akasha_inspector",
-  label: "Akasha Inspector",
-  viewLabel: "akasha inspector",
+  label: "Akasha 检索",
+  viewLabel: "Akasha 检索",
   pageSize: 25,
   rowKey: "query_id",
 
@@ -283,18 +274,18 @@ window.AkashicDashboard.registerPlugin({
   },
 
   columns: [
-    { key: "session_key", label: "Session", width: 120, fmt: "mono-session", cellClass: "mono cell-session", rawTitle: true },
+    { key: "session_key", label: "会话", width: 120, fmt: "mono-session", cellClass: "mono cell-session", rawTitle: true },
     {
       key: "ts",
-      label: "Time",
+      label: "时间",
       width: 110,
       cellClass: "mono cell-time",
       rawTitle: true,
       renderCell(value) { return escapeHtml(shortTime(value)); },
     },
-    { key: "query_text", label: "Query", flex: true, fmt: "text-preview", cellClass: "content-preview" },
-    { key: "seed_count", label: "Seeds", width: 64, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
-    { key: "completion_count", label: "Recall", width: 64, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
+    { key: "query_text", label: "用户问题", flex: true, fmt: "text-preview", cellClass: "content-preview" },
+    { key: "seed_count", label: "线索", width: 64, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
+    { key: "completion_count", label: "召回", width: 64, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
   ],
 
   renderFilters,
