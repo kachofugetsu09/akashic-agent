@@ -12,23 +12,20 @@
 provider fallback 被错收成 reward `0`，另有一题在 verifier 下载阶段耗尽时限；
 `torch-tensor-parallelism` 的补跑则按真实 Agent timeout 记失败。
 
-审计后的当前状态为：
+固定 89 题集合的最终报告为：**通过 59 题，`59/89 = 66.3%`**。
 
-| 分类 | 数量 | 是否进入当前有效分母 |
-|---|---:|---|
-| 官方 verifier reward `1` | 59 | 是 |
-| 有效 reward `0`，含真实 Agent timeout | 26 | 是 |
-| Provider fallback 无效 | 3 | 否 |
-| Verifier 依赖下载无效 | 1 | 否 |
-| 合计 | 89 | 85 个有效结果 |
+逐题失败原因如下：
 
-因此当前可报告为：
+| 分类 | 数量 |
+|---|---:|
+| 官方 verifier reward `1` | 59 |
+| 有效 reward `0`，含真实 Agent timeout | 26 |
+| Provider fallback | 3 |
+| Verifier 依赖下载未进入测试正文 | 1 |
+| 合计 | 89 |
 
-- 全量进度：`85/89` 个任务已有有效结果，4 个基础设施无效结果待替代重跑；
-- 当前有效结果通过率：`59/85 = 69.4%`；
-- 若只把未完成题暂时按失败放进固定 89 分母，进度快照是 `59/89 = 66.3%`，但这不是
-  最终成绩；
-- 最终 Max 全量分数必须等 5 个无效 case 取得替代结果后才能冻结。
+本报告不因失败原因改变分母，也不再使用 `59/85`。Provider、verifier、harness 和
+Agent timeout 只用于解释失败及后续改进；当前 PR 不继续重跑任务。
 
 历史 High 全量 `63/89 = 70.8%` 只保留在 CSV 的 `historical_high_*` 对照列，不是
 本报告的主结果，也不能与 Max attempt 拼接。
@@ -50,7 +47,7 @@ provider fallback 被错收成 reward `0`，另有一题在 verifier 下载阶�
 重复 attempt 相加。逐题 CSV 以 `114103` 的 88 个 accepted outcome 为主投影，再应用
 trace 审计和有效补验。
 
-## 3. 四个待替代结果
+## 3. 四个基础设施失败结果
 
 ### Provider fallback：3 题
 
@@ -60,14 +57,14 @@ trace 审计和有效补验。
 | `modernize-scientific-stack` | 只生成同一 fallback | 基础设施无效 |
 | `overfull-hbox` | 只生成同一 fallback | 基础设施无效 |
 
-这三题没有可接受的模型终态。它们必须由修正后的 provider 分类和 lifecycle cleanup
-创建新 trial 替代，不能保留旧 reward `0`。
+这三题没有可接受的模型终态，在固定 89 题报告中按未通过记录。修正后的 harness
+应避免再次产生同类误分类，但当前 PR 不重跑这些任务。
 
 ### Verifier 依赖下载：1 题
 
 `pytorch-model-recovery` 三次都在 verifier 内下载约 2.6 GiB PyTorch/CUDA 依赖时耗尽
-900 秒，官方测试正文没有开始，campaign 因此始终没有 accepted outcome。该题属于
-verifier 基础设施无效，不属于模型失败。
+900 秒，官方测试正文没有开始，campaign 因此始终没有 accepted outcome。该题在固定
+89 题报告中按未通过记录，失败原因归为 verifier 基础设施。
 
 ## 4. 已补验和额外诊断
 
@@ -76,7 +73,7 @@ verifier 基础设施无效，不属于模型失败。
 - 替代 Trial：`akasic-bench-v4flash-diagnostic-mteb-retrieve-20260804-144354-124543`；
 - verifier 依赖准备发生在评分计时前，准备前后候选摘要一致；
 - 官方 verifier 1/2，Agent 回答 HumanEval，期望 MTEB；
-- reward `0` 是有效模型失败，已经进入 84 个有效结果。
+- reward `0` 是有效模型失败，已经计入固定 89 题结果。
 
 ### `path-tracing-reverse`：保留原始 Agent timeout
 

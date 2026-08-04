@@ -449,9 +449,9 @@ Max 全量主 campaign 经 `025734 → 030932 → 052229 → 104726 → 114103` 
 harness 错收为 reward `0`，`pytorch-model-recovery` 又在 verifier 下载约 2.6 GiB
 PyTorch/CUDA 依赖时耗尽 900 秒且没有 accepted outcome。`torch-tensor-parallelism` 的
 v7 已获得完整 Agent 官方时限并超时，按维护者确认的规则记有效失败，不再补模型时限。
-当前因此是 85 个有效结果：59 pass、26 fail，通过率 `59/85 = 69.4%`；另有 4 个
-infra-invalid case 待替代重跑，
-最终 Max 全量成绩尚未冻结。
+固定 89 题集合最终如实报告为 59 pass、30 not-pass，即 `59/89 = 66.3%`。其中三个
+provider fallback 和一个 verifier 下载失败继续保留具体基础设施归因，但不改变分母，
+本 PR 不再补跑任务。
 
 三题补验中只有 `mteb-retrieve` 形成有效模型失败。`path-tracing-reverse` 的 v7 在 Agent
 deadline 后发生 gateway 与 verifier 生命周期重叠，未替换主运行的真实 Agent timeout；
