@@ -10,7 +10,7 @@ class CampaignGateError(RuntimeError):
     pass
 
 
-MAX_CAMPAIGN_CONCURRENCY = 6
+MAX_CAMPAIGN_CONCURRENCY = 4
 
 
 def task_slug(task_dir: Path) -> str:
@@ -23,7 +23,7 @@ def task_slug(task_dir: Path) -> str:
 def validate_campaign_request(task_dirs: list[Path], max_concurrent: int) -> None:
     """验证 diagnostic campaign 的任务身份和并发硬上限。"""
 
-    # 1. 当前阶段只允许用户确认过的最多六并发。
+    # 1. 当前受控 benchmark 轨道最多四并发，避免瞬时压垮 provider。
     if not 1 <= max_concurrent <= MAX_CAMPAIGN_CONCURRENCY:
         raise ValueError(
             f"max_concurrent 必须在 1 到 {MAX_CAMPAIGN_CONCURRENCY} 之间"

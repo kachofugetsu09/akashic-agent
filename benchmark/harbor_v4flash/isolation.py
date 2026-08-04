@@ -5,6 +5,7 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, TypedDict
@@ -29,6 +30,164 @@ class ProcessSnapshot(TypedDict):
     pid: int
     start_ticks: str
     cmdline: list[str]
+
+
+def storage_snapshot(runs_root: Path) -> dict[str, object]:
+    """读取 artifact 与临时目录所在文件系统的剩余容量。"""
+
+    runs_root.mkdir(parents=True, exist_ok=True)
+    runs = shutil.disk_usage(runs_root)
+    temporary = shutil.disk_usage("/tmp")
+    docker_root = subprocess.run(
+        ["docker", "info", "--format", "{{.DockerRootDir}}"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).stdout.strip()
+    if not docker_root:
+        raise IsolationError("docker info 未返回 DockerRootDir")
+    docker = shutil.disk_usage(docker_root)
+    return {
+        "runs_root": str(runs_root.resolve()),
+        "runs_free_bytes": runs.free,
+        "runs_total_bytes": runs.total,
+        "tmp_free_bytes": temporary.free,
+        "tmp_total_bytes": temporary.total,
+        "docker_root": docker_root,
+        "docker_free_bytes": docker.free,
+        "docker_total_bytes": docker.total,
+    }
+
+
+def require_storage_capacity(
+    runs_root: Path,
+    *,
+    min_runs_free_gib: float,
+    min_tmp_free_gib: float,
+    min_docker_free_gib: float,
+) -> dict[str, object]:
+    """容量低于冻结阈值时停止创建新容器，不做全局自动清理。"""
+
+    if min_runs_free_gib <= 0 or min_tmp_free_gib <= 0 or min_docker_free_gib <= 0:
+        raise ValueError("磁盘剩余容量阈值必须大于 0")
+    snapshot = storage_snapshot(runs_root)
+    gib = 1024**3
+    if int(snapshot["runs_free_bytes"]) < min_runs_free_gib * gib:
+        raise IsolationError(
+            f"artifact 文件系统剩余空间低于 {min_runs_free_gib:g} GiB，停止调度"
+        )
+    if int(snapshot["tmp_free_bytes"]) < min_tmp_free_gib * gib:
+        raise IsolationError(
+            f"/tmp 剩余空间低于 {min_tmp_free_gib:g} GiB，停止调度"
+        )
+    if int(snapshot["docker_free_bytes"]) < min_docker_free_gib * gib:
+        raise IsolationError(
+            f"Docker Root 剩余空间低于 {min_docker_free_gib:g} GiB，停止调度"
+        )
+    return snapshot
+
+
+def cleanup_compose_project(
+    project_name: str,
+    *,
+    expected_containers: list[dict[str, object]],
+    network: dict[str, str],
+) -> dict[str, object]:
+    """只删除已核对且停止的当前 benchmark project 容器与网络。"""
+
+    # 1. 重新读取 project，避免使用过期 ID 或误删其他 Docker owner。
+    if not project_name.startswith(BENCHMARK_PREFIX):
+        raise IsolationError(f"compose project 缺少 benchmark 前缀：{project_name}")
+    current = inspect_compose_project(project_name)
+    expected_ids = {str(item["id"]) for item in expected_containers}
+    current_ids = {str(item["id"]) for item in current}
+    if current_ids != expected_ids or any(item["running"] for item in current):
+        raise IsolationError("benchmark cleanup 的容器身份已变化或仍在运行")
+
+    # 2. 网络必须同时匹配固定 ID、名称、project 和 managed 标签。
+    inspected = subprocess.run(
+        ["docker", "network", "inspect", network["id"]],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    payload = json.loads(inspected.stdout)
+    if not isinstance(payload, list) or len(payload) != 1:
+        raise IsolationError("docker network inspect 必须返回唯一网络")
+    item = payload[0]
+    labels = item.get("Labels") or {}
+    if (
+        item.get("Id") != network["id"]
+        or item.get("Name") != network["name"]
+        or labels.get("com.docker.compose.project") != project_name
+        or labels.get("akasic.benchmark.managed") != "true"
+    ):
+        raise IsolationError("benchmark cleanup 的网络身份不匹配")
+
+    # 3. 只按已核对的不可变 ID 删除；共享 image 和 cache volume 永不自动删除。
+    subprocess.run(
+        ["docker", "container", "rm", *sorted(current_ids)],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    subprocess.run(
+        ["docker", "network", "rm", network["id"]],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return {
+        "status": "removed",
+        "container_ids": sorted(current_ids),
+        "network_id": network["id"],
+        "images_removed": False,
+        "volumes_removed": False,
+    }
+
+
+def stop_and_cleanup_compose_project(
+    project_name: str,
+    *,
+    network: dict[str, str],
+    stop_timeout_sec: int = 10,
+) -> dict[str, object]:
+    """停止并删除身份已核对的当前 benchmark project，用于中断恢复。"""
+
+    # 1. 只解析当前 benchmark project 的精确容器 ID。
+    if stop_timeout_sec <= 0:
+        raise ValueError("stop_timeout_sec 必须大于 0")
+    containers = inspect_compose_project(project_name)
+    running_ids = sorted(
+        str(item["id"]) for item in containers if bool(item["running"])
+    )
+    if running_ids:
+        subprocess.run(
+            [
+                "docker",
+                "container",
+                "stop",
+                "--time",
+                str(stop_timeout_sec),
+                *running_ids,
+            ],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    # 2. 停止后重新读取身份，再复用严格的终态 cleanup。
+    stopped = inspect_compose_project(project_name)
+    return cleanup_compose_project(
+        project_name,
+        expected_containers=stopped,
+        network=network,
+    )
 
 
 def sha256_file(path: Path) -> str:
@@ -97,14 +256,47 @@ def create_source_bundle(
 def source_tree_digest(root: Path) -> str:
     """计算上传源码的稳定内容摘要。"""
 
-    # 1. 排除版本控制与本地缓存，只散列会进入 runtime 的普通文件。
+    # 1. Git source 只纳入 tracked 与非忽略 untracked；普通 task 仍按文件树散列。
     digest = hashlib.sha256()
-    paths = sorted(
-        path
-        for path in root.rglob("*")
-        if path.is_file()
-        and not any(part in _IGNORED_TREE_PARTS for part in path.relative_to(root).parts)
+    root = root.resolve()
+    git_root = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
     )
+    if git_root.returncode == 0 and Path(git_root.stdout.strip()).resolve() == root:
+        listed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "ls-files",
+                "-z",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ).stdout
+        paths = sorted(
+            root / value.decode(errors="surrogateescape")
+            for value in listed.split(b"\0")
+            if value and (root / value.decode(errors="surrogateescape")).is_file()
+        )
+    else:
+        paths = sorted(
+            path
+            for path in root.rglob("*")
+            if path.is_file()
+            and not any(
+                part in _IGNORED_TREE_PARTS
+                for part in path.relative_to(root).parts
+            )
+        )
     for path in paths:
         relative = path.relative_to(root).as_posix().encode()
         digest.update(len(relative).to_bytes(8, "big"))

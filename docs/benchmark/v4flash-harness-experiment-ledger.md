@@ -1,6 +1,6 @@
 # V4 Flash Harness 实验 Ledger
 
-首次日期：2026-07-30；最近更新：2026-08-01
+首次日期：2026-07-30；最近更新：2026-08-05
 
 状态：第一阶段、89 题 discovery 和 H2/H3/H4/H7 定向实验已完成
 
@@ -318,3 +318,147 @@ process spawn 纳入同一候选，并迁移适用的核心测试。pipeline 不
 - framing 使用 `max_message_len + 1`，超过协议边界时 fail-loud。
 
 以上只用于选择安全的 treatment，不把 Codex 的实现本身当作本项目实验结果。
+
+## 2026-08-04 · OpenCode Go Max 自动化轨道
+
+维护者明确要求把当前本机 OpenCode Go 订阅用于独立的新轨道，并以自动完成、官方
+时限、官方 verifier 和有界 Docker 占用为优先级。它不改写上文 High 轨道的历史
+冻结变量，也不与历史 attempt 拼分。
+
+```text
+┌──────────────┐   原始 task.toml 时限   ┌────────────────┐
+│ Campaign WAL │ ───────────────────────▶ │ Akashic turn   │
+└──────┬───────┘                          └───────┬────────┘
+       │ 逐题 fsync                                │ 任意终态
+       ▼                                           ▼
+┌──────────────┐                          ┌────────────────┐
+│ 可恢复进度   │ ◀──── official reward ── │ Harbor verifier│
+└──────────────┘                          └───────┬────────┘
+                                                ▼
+                                      冷证据后定向 Docker cleanup
+```
+
+冻结值与失败语义：
+
+- provider/model 为 `opencode-go/deepseek-v4-flash`，`reasoning_effort=max`，
+  `max_output_tokens=0`；正式 `config.toml` 不改写，只从其中读取当前 route 密钥。
+- Harbor setup 继续使用独立 900 秒上限。`Agent.run` 从入口开始消费 task
+  `[agent].timeout_sec`；gateway readiness 与 turn 共用该预算。Harbor 外层只增加
+  120 秒收束保留，不给模型增加解题时间。verifier 使用 task 原始
+  `[verifier].timeout_sec`。
+- `timed_out` 和已经开始后的 `agent_failed` 仍停止 runtime、采集证据并进入 Harbor
+  官方 verifier；gateway readiness、配置或 controller 故障标为 infra，不进入有效
+  attempt。failed turn 的 control usage 合法为 `null`，此时 Harbor token 字段保持未知，
+  但 metadata、轨迹和 verifier 流程不得因此失败。
+- campaign 的默认和硬上限都是 4 并发。该值来自 OpenCode Go 当前端点的受控探针
+  （短请求 6 并发均成功但未返回公开 rate-limit header）后的保守选择，不宣称是官方
+  硬限制。明确的 provider 429 记为
+  `provider_rate_limited` 基础设施无效 admission，不把其 verifier `reward=0` 混入
+  pass@1；最多三次 admission，按 30 秒起步指数退避并加入逐题稳定抖动。等待退避时
+  释放 semaphore slot，使其他题可以继续。明确的 provider 500/502/503/504 同样按
+  transient infra 处理；`GoUsageLimitError` 则停止该题并等待额度 reset 或维护者启用
+ 余额，不做短间隔 admission 重试。
+- 新 campaign 只按每题 `task.toml [agent].timeout_sec` 生成 Longest Processing Time
+  first 贪心队列，官方预算更长的任务先进入四个 slot；历史 harness、provider 表现和
+  旧耗时完全不参与顺序。冻结后的顺序与官方时限写入 manifest，resume 原样恢复。
+- campaign 使用 append-only `events.jsonl`，每条事件写入后执行 `fsync`；
+  `accepted-results.json` 是从 WAL 原子再生的当前有效数据投影，最终 manifest 继续保存
+  全部 accepted outcomes 与汇总分数。进程若在两者之间中断，续跑时以 WAL 为权威重建，
+  不重复接受 task。
+  `--resume-campaign-dir` 只在源码、task 集合、并发和 dataset 身份完全相同时续跑。
+- 每题创建前同时检查 artifact 文件系统、`/tmp` 和 Docker Root，默认低水位分别为
+  20 GiB、2 GiB 和 20 GiB。默认 `retention=none` 在证据与 verifier 落盘后，只按
+  当前 project 的容器 ID 和 managed network ID 删除终态现场；不运行全局 prune，
+  不自动删除 image 或共享 cache volume。需要复盘文件层时显式使用
+  `retention=failures` 或 `all`。
+- campaign 取消时，各 trial 使用精确 project 容器 ID 执行 10 秒有界 stop，再复用同一
+  managed network 身份检查删除现场；campaign manifest/WAL 记录 `interrupted`，不把
+  中断误写成完成。
+- `--dataset-dir` 稳定发现直接子目录的 89 个 task，并冻结逐题 digest 与有序集合
+  digest。没有独立核对外部 revision 时，manifest 必须写
+  `provenance=unverified_local_copy`，不能把本地目录名冒充官方来源证明。
+
+Maka PR #1719 的公开最终账本采用相同的证据原则：task-native deadline ×1、官方
+verifier、accepted dataset 与 attempts WAL 分离、只替换 infrastructure-invalid
+admission、轨迹保留而容器可删除。本轨道没有照搬其最高 4 task-pair / 8 cell 并发，
+而是按 OpenCode Go 订阅容量冻结为 4 个 Akashic cell。
+
+真实 smoke：
+
+- Trial：`akasic-bench-v4flash-smoke-prove-plus-comm-20260804-015952-307817`；
+- task agent/verifier 时限：`900s / 900s`；实际 route 为 OpenCode Go Max；
+- Akashic 经 public SDK 完成 10 轮、10 次工具调用并持久化 terminal turn；
+- Harbor 官方 `reward.txt=1`，manifest artifact 缺失为 0，源码和线上 owner 不变；
+- 冷证据落盘后，唯一停止容器和 managed network 已按不可变 ID 删除，残留计数为 0；
+- 运行前记录 `/mnt/data` 约 81 GiB、`/tmp` 约 14 GiB 可用。本次补充核对 Docker
+  Root 所在文件系统约 42.9 GiB 可用。
+
+首个无效预跑同时发现新主分支要求空 workspace 先初始化 `memory/VEDA.md`。harness
+现通过仓库 `veda-reset` 正式入口初始化每题独立 workspace；readiness timeout 与题目
+deadline 使用不同终态，避免 infra 故障伪装成有效超时并打开 concurrency Gate。
+
+已知边界：当前凭据仍由 gateway 进程环境注入，题内进程可观察同容器进程环境；旧
+trace 也可能包含模型自行打印的环境内容。本轨道暂不把宿主受限 provider proxy 作为
+运行前置，但发布或共享 artifact 前必须先执行 secret scan，并建议轮换历史暴露凭据。
+
+### 2026-08-04 · verifier 依赖准备与官方评分计时分离
+
+本地全量运行暴露出 `mteb-retrieve` 和 `torch-tensor-parallelism` 的官方
+`tests/test.sh` 在 pytest 前通过 apt、curl 和 uvx 下载依赖；网络下载耗尽 900 秒后，
+测试正文尚未开始。这类结果不能与真实断言失败混为一类。
+
+- Agent turn 结束并冻结候选后，harness 从原始 `test.sh` 提取 pytest 前的安装段；
+  uvx 使用完全相同的 Python 与 `-w` 依赖集合，但以 `python -c 'pass'` 只完成解析、
+  下载和环境缓存，不运行测试正文。
+- 依赖准备拥有独立 14,400 秒基础设施上限，最多两路并发；它发生在 Harbor
+  `VERIFICATION_START` 之前。随后仍由 Harbor 执行未改写的官方 `test.sh`，并使用
+  task 原始 `[verifier].timeout_sec`。因此这是“官方 verifier 与官方正文时限、下载
+  不计时”的本地诊断口径，不冒充 Terminal-Bench 官方端到端 verifier 计时口径。
+- 准备前后分别计算当前 task workdir 的确定性摘要；任何候选变化都 fail-loud，禁止
+  进入评分。`agent/verifier-bootstrap.json` 记录准备时长、独立上限和前后摘要。
+- 补验只选择 Agent 已正常完成、首次 verifier 在 pytest 前被依赖下载耗尽的两题。
+  已有真实 pytest 断言失败、真实 Agent timeout、无候选输出或 provider failure 的题
+  不因这次计时修正重跑。
+
+补验启动后，OpenCode Go 两路请求同时发生 `RemoteProtocolError`，最终由 runtime
+fallback 生成“模型未返回可用回复，请重试。”，没有有效 delta、工具调用或 usage。
+该状态现在归为 `provider_transient`：跳过 verifier 及其大依赖下载，保留 trace 和候选
+摘要后按 campaign admission 策略重试，不能再伪装成 completed reward 0。维护者随后
+明确把 `path-tracing-reverse` 纳入补验；其原 attempt 的 provider 断流持续占满 Agent
+预算，因此本次与前两题一起作为新的三题 campaign 运行，不改写旧记录。
+
+### 2026-08-04 · 三题补验切换 DeepSeek 官方 API
+
+OpenCode Go smoke 的首个模型流持续无有效事件直至 task agent deadline。进一步核对
+发现旧 credential loader 无条件读取正式配置的 `llm.main`；当前该引用为
+`deepseek_main`，却把得到的 DeepSeek 官方 key 命名为 `OPENCODE_GO_API_KEY` 并注入
+OpenCode Go endpoint。该次 smoke 因 provider、endpoint 与凭据身份不一致而无效，
+保留冷 trace 后停止，不能进入三题补验或计入分数。
+
+维护者明确接受把三题补验切换到 DeepSeek 官方 API。候选轨道因此冻结为
+`deepseek/deepseek-v4-flash`、`https://api.deepseek.com/v1`、
+`reasoning_effort=max`；credential loader 按明确的 `deepseek_main` runtime 读取并
+注入 `DEEPSEEK_API_KEY`，不再根据可变的 `llm.main` 猜测 route。新 smoke 与后续每道
+题都创建独立 trial，并从 task 官方 agent deadline 重新计时；旧 OpenCode Go 结果不与
+该 provider 阶段拼成同一 pass@1。
+
+### 2026-08-05 · 补验终态与逐题审计
+
+Max 全量主 campaign 经 `025734 → 030932 → 052229 → 104726 → 114103` 恢复，最新投影
+为 `88/89 accepted`、59 个 reward `1`。逐项 trace 审计后，三个 runtime fallback 被旧
+harness 错收为 reward `0`，`pytorch-model-recovery` 又在 verifier 下载约 2.6 GiB
+PyTorch/CUDA 依赖时耗尽 900 秒且没有 accepted outcome。`torch-tensor-parallelism` 的
+v7 已获得完整 Agent 官方时限并超时，按维护者确认的规则记有效失败，不再补模型时限。
+固定 89 题集合最终如实报告为 59 pass、30 not-pass，即 `59/89 = 66.3%`。其中三个
+provider fallback 和一个 verifier 下载失败继续保留具体基础设施归因，但不改变分母，
+本 PR 不再补跑任务。
+
+三题补验中只有 `mteb-retrieve` 形成有效模型失败。`path-tracing-reverse` 的 v7 在 Agent
+deadline 后发生 gateway 与 verifier 生命周期重叠，未替换主运行的真实 Agent timeout；
+`torch-tensor-parallelism` 的 v7 Agent 超时后残留 `apt-get` 持有 dpkg lock，导致
+verifier 依赖准备 exit `100`。该题仍按 Agent timeout 记失败；v7 campaign 自身终态为
+`failed`、`accepted=0/2`，不形成独立分数。
+
+完整口径、三题证据和 89 题机器可读索引见
+[2026-08-05 运行审计](terminalbench-2.1-run-audit-2026-08-05.md)与
+[逐题 CSV](terminalbench-2.1-case-results-2026-08-05.csv)。

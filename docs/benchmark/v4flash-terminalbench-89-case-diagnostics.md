@@ -8,6 +8,7 @@
 关联文档：
 
 - [V4 Flash Harness 实验 Ledger](v4flash-harness-experiment-ledger.md)
+- [2026-08-05 运行审计与逐题 CSV](terminalbench-2.1-run-audit-2026-08-05.md)
 - [Benchmark 诊断循环设计](../spark/2026-07-30-agent-benchmark-diagnostic-loop-design.md)
 - [0010：Provider 默认输出与 Benchmark 诊断](../decisions/0010-provider-default-output-and-benchmark-diagnostics.md)
 

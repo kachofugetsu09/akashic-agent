@@ -24,21 +24,31 @@ _CREDENTIAL_VALUES: ContextVar[dict[str, str] | None] = ContextVar(
 
 
 def _credential_values(profile_path: Path) -> dict[str, str]:
-    """从本机 profile 只提取当前实验所需密钥。"""
+    """从当前配置只提取 benchmark 路由与 embedding 所需密钥。"""
 
+    # 1. benchmark 固定使用正式配置中明确命名的 DeepSeek runtime。
     data = tomllib.loads(profile_path.read_text(encoding="utf-8"))
     llm = data.get("llm")
     memory = data.get("memory")
     if not isinstance(llm, dict) or not isinstance(memory, dict):
         raise ValueError("credential profile 缺少 llm 或 memory")
-    main = llm.get("main")
+    runtimes = llm.get("runtimes")
+    if not isinstance(runtimes, dict):
+        raise ValueError("credential profile 缺少 llm.runtimes")
+    main = runtimes.get("deepseek_main")
     embedding = memory.get("embedding")
     if not isinstance(main, dict) or not isinstance(embedding, dict):
-        raise ValueError("credential profile 缺少 llm.main 或 memory.embedding")
+        raise ValueError(
+            "credential profile 缺少 llm.runtimes.deepseek_main 或 memory.embedding"
+        )
+    if str(main.get("provider") or "").strip().lower() != "deepseek":
+        raise ValueError("credential profile 的 deepseek_main provider 必须是 deepseek")
+
+    # 2. 密钥值只进入 controller 内存作用域，变量名与 endpoint 一致。
     deepseek = str(main.get("api_key") or "").strip()
     dashscope = str(embedding.get("api_key") or "").strip()
     if not deepseek or not dashscope:
-        raise ValueError("credential profile 缺少 DeepSeek 或 embedding API key")
+        raise ValueError("credential profile 缺少主模型或 embedding API key")
     return {
         "DEEPSEEK_API_KEY": deepseek,
         "DASHSCOPE_API_KEY": dashscope,

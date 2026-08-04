@@ -31,7 +31,11 @@ def test_secure_exec_argv_hides_values_and_subprocess_receives_them(
     profile = tmp_path / "config.toml"
     profile.write_text(
         """
-[llm.main]
+[llm]
+main = "opencode_go_main"
+
+[llm.runtimes.deepseek_main]
+provider = "deepseek"
 api_key = "deepseek-sentinel"
 
 [memory.embedding]
