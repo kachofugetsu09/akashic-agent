@@ -68,6 +68,8 @@ def test_dirty_preview_overlay_is_frozen_with_untracked_inputs(tmp_path: Path) -
     repo = _repo(tmp_path)
     (repo / "frontend/chat/mobile.html").write_text("dirty", encoding="utf-8")
     (repo / "frontend/chat/extra.js").write_text("extra", encoding="utf-8")
+    (repo / "frontend/theme").mkdir()
+    (repo / "frontend/theme/shared.ts").write_text("export const theme = 'light';\n", encoding="utf-8")
     (repo / ".gitignore").write_text("frontend/chat/ignored.js\n", encoding="utf-8")
     _run(repo, "add", ".gitignore")
     _run(repo, "commit", "-qm", "ignore rule")
@@ -76,6 +78,7 @@ def test_dirty_preview_overlay_is_frozen_with_untracked_inputs(tmp_path: Path) -
     with _PUBLISHER._build_source(repo, commit, dirty=True) as snapshot:
         assert (snapshot / "frontend/chat/mobile.html").read_text(encoding="utf-8") == "dirty"
         assert (snapshot / "frontend/chat/extra.js").read_text(encoding="utf-8") == "extra"
+        assert (snapshot / "frontend/theme/shared.ts").read_text(encoding="utf-8") == "export const theme = 'light';\n"
         assert not (snapshot / "frontend/chat/ignored.js").exists()
         (repo / "frontend/chat/mobile.html").write_text("changed-after-freeze", encoding="utf-8")
         assert (snapshot / "frontend/chat/mobile.html").read_text(encoding="utf-8") == "dirty"

@@ -35,6 +35,13 @@ test("active recall does not cache a temporary empty projection", () => {
   assert.match(source, /记忆生成中…/);
 });
 
+test("recall entries survive the Akasha user field migration", () => {
+  assert.match(
+    source,
+    /item\.user_preview \|\| item\.user_text \|\| "（空消息）"/,
+  );
+});
+
 test("mobile UI keeps graph out and uses restrained interaction styles", () => {
   assert.doesNotMatch(source, /akasha-graph|graph\.(global|query|rebuild)/);
   assert.doesNotMatch(source, /\.slice\(/);
@@ -47,11 +54,13 @@ test("mobile UI keeps graph out and uses restrained interaction styles", () => {
   assert.match(styles, /contain-intrinsic-block-size:\s*auto 94px/);
 });
 
-test("recall lanes use distinct Material tonal semantics", () => {
+test("recall lanes use distinct shared-theme tonal semantics", () => {
   assert.match(source, /left,\s*"precise"/);
   assert.match(source, /right,\s*"completion"/);
-  assert.match(styles, /--akasha-mobile-precise:\s*var\(--m-primary\)/);
-  assert.match(styles, /--akasha-mobile-completion:/);
-  assert.match(styles, /var\(--m-trace,\s*oklch\(0\.56 0\.18 300\)\)/);
+  assert.match(styles, /--akasha-mobile-precise:\s*var\(--ak-color-action-primary\)/);
+  assert.match(styles, /--akasha-mobile-completion:\s*var\(--ak-color-status-trace\)/);
+  assert.match(styles, /var\(--akasha-mobile-lane\) 10%/);
+  assert.match(styles, /var\(--akasha-mobile-lane\) 28%/);
+  assert.doesNotMatch(styles, /--m-primary|--m-trace/);
   assert.match(styles, /grid-template-columns:\s*4px minmax\(0, 1fr\) auto/);
 });

@@ -30,7 +30,7 @@ function memoryList(items, empty) {
       ${items.map((item) => `
         <li>
           <div>
-            <p>${escapeHtml(item.user_preview || "（空消息）")}</p>
+            <p>${escapeHtml(item.user_preview || item.user_text || "（空消息）")}</p>
             ${item.assistant_preview
               ? `<p class="akasha-mobile-assistant">${escapeHtml(item.assistant_preview)}</p>`
               : ""}

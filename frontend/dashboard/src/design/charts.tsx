@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import {
   Area,
   AreaChart,
@@ -17,19 +17,19 @@ import { cn } from "./cn";
 export type ChartTone = "accent" | "success" | "warning" | "danger" | "muted";
 
 const TONE_RGB: Record<ChartTone, string> = {
-  accent: "var(--color-accent-rgb)",
-  success: "var(--color-success-rgb)",
-  warning: "var(--color-warning-rgb)",
-  danger: "var(--color-danger-rgb)",
-  muted: "var(--color-muted-rgb)",
+  accent: "var(--ak-color-action-primary-rgb)",
+  success: "var(--ak-color-status-success-rgb)",
+  warning: "var(--ak-color-status-warning-rgb)",
+  danger: "var(--ak-color-status-error-rgb)",
+  muted: "var(--ak-color-text-secondary-rgb)",
 };
 
 const toneColor = (tone: ChartTone): string => `rgb(${TONE_RGB[tone]})`;
 
-const AXIS_TICK = { fontSize: 10, fill: "rgba(138,138,143,0.6)", fontFamily: "var(--sans)" };
-const GRID_STROKE = "rgba(255,255,255,0.07)";
+const AXIS_TICK = { fontSize: 10, fill: "rgb(var(--ak-color-text-muted-rgb) / 0.72)", fontFamily: "var(--sans)" };
+const GRID_STROKE = "rgb(var(--ak-color-border-default-rgb) / 0.72)";
 
-// Hand-rolled SVG pie — a 2-slice hit/miss chart with a sweep-in animation on mount.
+// Hand-rolled SVG pie — a compact two-slice hit/miss chart.
 export function Pie({
   rate,
   hit,
@@ -54,24 +54,8 @@ export function Pie({
   const ratio = rate != null ? Math.max(0, Math.min(1, rate)) : total > 0 ? hit / total : 0;
   const pct = Math.round(ratio * 1000) / 10;
 
-  // 2. Sweep-in: animate the drawn fraction 0 -> 1 on mount (easeOutCubic).
-  const [drawn, setDrawn] = useState(0);
-  useEffect(() => {
-    let raf = 0;
-    let start = 0;
-    const dur = 750;
-    const tick = (now: number): void => {
-      if (!start) start = now;
-      const t = Math.min(1, (now - start) / dur);
-      setDrawn(1 - Math.pow(1 - t, 3));
-      if (t < 1) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [ratio]);
-  const shown = ratio * drawn;
-
-  // 3. Pie geometry: hit wedge drawn clockwise from 12 o'clock over the miss disc.
+  // 2. Pie geometry: hit wedge drawn clockwise from 12 o'clock over the miss disc.
+  const shown = ratio;
   const cx = size / 2;
   const r = size / 2 - 3;
   const angle = shown * 2 * Math.PI;
@@ -92,13 +76,13 @@ export function Pie({
         height={size}
         viewBox={`0 0 ${size} ${size}`}
       >
-        <circle cx={cx} cy={cx} r={r} fill="rgb(var(--color-surface-3-rgb))" />
+        <circle cx={cx} cy={cx} r={r} fill="rgb(var(--ak-color-bg-surface-high-rgb))" />
         {shown >= 0.999 ? (
-          <circle cx={cx} cy={cx} r={r} fill="rgb(var(--color-success-rgb))" />
+          <circle cx={cx} cy={cx} r={r} fill="rgb(var(--ak-color-status-success-rgb))" />
         ) : shown > 0.001 ? (
-          <path d={slice} fill="rgb(var(--color-success-rgb))" />
+          <path d={slice} fill="rgb(var(--ak-color-status-success-rgb))" />
         ) : null}
-        <circle cx={cx} cy={cx} r={r} fill="none" stroke="var(--color-border-strong)" strokeWidth={1} />
+        <circle cx={cx} cy={cx} r={r} fill="none" stroke="var(--ak-color-border-strong)" strokeWidth={1} />
       </svg>
       <div className="flex w-full items-center justify-center gap-4 font-sans text-[11px] tabular-nums">
         <span className="flex items-center gap-1.5 text-success">
@@ -137,7 +121,7 @@ export function MetricTile({
   className?: string;
 }) {
   return (
-    <div className={cn("relative overflow-hidden rounded-lg border border-border bg-surface p-5 shadow-lift-sm", className)}>
+    <div className={cn("relative overflow-hidden border border-border bg-surface p-4", className)}>
       <div className="flex items-center justify-between">
         <span className="font-sans text-[11px] font-medium tracking-wide text-muted">{label}</span>
         {typeof delta === "number" && (
@@ -172,7 +156,6 @@ export function Sparkline({
   height?: number;
   className?: string;
 }) {
-  const uid = useId().replace(/:/g, "");
   const w = 100;
   const h = 40;
   const max = Math.max(...data, 1);
@@ -194,13 +177,7 @@ export function Sparkline({
       style={{ height }}
       className={cn("block", className)}
     >
-      <defs>
-        <linearGradient id={`spark-${uid}`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.3" />
-          <stop offset="100%" stopColor={color} stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <path d={area} fill={`url(#spark-${uid})`} />
+      <path d={area} fill={color} opacity="0.08" />
       <path d={line} fill="none" stroke={color} strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
     </svg>
   );
@@ -208,13 +185,13 @@ export function Sparkline({
 
 // Tooltip styled to the industrial tokens, shared by all recharts surfaces.
 const TOOLTIP_CONTENT_STYLE = {
-  background: "rgb(var(--color-surface-2-rgb))",
-  border: "1px solid var(--color-border-strong)",
+  background: "rgb(var(--ak-color-bg-surface-low-rgb))",
+  border: "1px solid var(--ak-color-border-strong)",
   borderRadius: 8,
   fontSize: 11,
   fontFamily: "var(--sans)",
   padding: "6px 10px",
-  boxShadow: "0 2px 8px rgba(0,0,0,0.35)",
+  boxShadow: "0 2px 8px var(--ak-color-shadow)",
 };
 
 // TrendChart — a recharts area/bar time series with a dashed horizontal grid,
@@ -237,7 +214,6 @@ export function TrendChart({
   className?: string;
   empty?: ReactNode;
 }) {
-  const uid = useId().replace(/:/g, "");
   const color = toneColor(tone);
   const allZero = data.every((d) => d.value === 0);
   if (data.length === 0 || (allZero && empty)) {
@@ -257,43 +233,31 @@ export function TrendChart({
       <ResponsiveContainer width="100%" height="100%">
         {kind === "area" ? (
           <AreaChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-            <defs>
-              <linearGradient id={`trend-${uid}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={color} stopOpacity="0.28" />
-                <stop offset="100%" stopColor={color} stopOpacity="0" />
-              </linearGradient>
-            </defs>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_STROKE} />
             <XAxis dataKey="label" {...axisProps} minTickGap={28} />
             <YAxis {...axisProps} width={42} tickFormatter={valueFmt} />
             <Tooltip
               cursor={{ stroke: GRID_STROKE }}
               contentStyle={TOOLTIP_CONTENT_STYLE}
-              labelStyle={{ color: "rgb(var(--color-subtle-rgb))", marginBottom: 2 }}
-              itemStyle={{ color: "rgb(var(--color-fg-rgb))" }}
+              labelStyle={{ color: "rgb(var(--ak-color-text-muted-rgb))", marginBottom: 2 }}
+              itemStyle={{ color: "rgb(var(--ak-color-text-primary-rgb))" }}
               formatter={(v) => [valueFmt(Number(v)), ""] as [string, string]}
             />
-            <Area type="monotone" dataKey="value" stroke={color} strokeWidth={1.5} fill={`url(#trend-${uid})`} dot={false} activeDot={{ r: 3, fill: color }} />
+            <Area type="monotone" dataKey="value" stroke={color} strokeWidth={1.5} fill={color} fillOpacity={0.08} dot={false} activeDot={{ r: 3, fill: color }} />
           </AreaChart>
         ) : (
           <RBarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-            <defs>
-              <linearGradient id={`bar-${uid}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={color} stopOpacity="0.95" />
-                <stop offset="100%" stopColor={color} stopOpacity="0.5" />
-              </linearGradient>
-            </defs>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_STROKE} />
             <XAxis dataKey="label" {...axisProps} minTickGap={28} />
             <YAxis {...axisProps} width={42} tickFormatter={valueFmt} />
             <Tooltip
-              cursor={{ fill: "rgba(255,255,255,0.04)" }}
+              cursor={{ fill: "rgb(var(--ak-color-bg-surface-high-rgb) / 0.4)" }}
               contentStyle={TOOLTIP_CONTENT_STYLE}
-              labelStyle={{ color: "rgb(var(--color-subtle-rgb))", marginBottom: 2 }}
-              itemStyle={{ color: "rgb(var(--color-fg-rgb))" }}
+              labelStyle={{ color: "rgb(var(--ak-color-text-muted-rgb))", marginBottom: 2 }}
+              itemStyle={{ color: "rgb(var(--ak-color-text-primary-rgb))" }}
               formatter={(v) => [valueFmt(Number(v)), ""] as [string, string]}
             />
-            <Bar dataKey="value" fill={`url(#bar-${uid})`} radius={[2, 2, 0, 0]} maxBarSize={28} />
+            <Bar dataKey="value" fill={color} radius={[2, 2, 0, 0]} maxBarSize={28} />
           </RBarChart>
         )}
       </ResponsiveContainer>

@@ -35,6 +35,7 @@ import {
   Menu,
   MessageSquarePlus,
   Paperclip,
+  Palette,
   Puzzle,
   RefreshCw,
   Reply,
@@ -49,6 +50,7 @@ import {
   WifiOff,
   X,
 } from "lucide-react";
+import { cycleTheme, initializeTheme, setTheme, useTheme } from "../../theme/src/theme-runtime";
 import { ConversationNavigation } from "./conversation-navigation";
 import {
   ComposerReply,
@@ -383,6 +385,7 @@ interface NativeBridge {
     transportMode: string,
   ): void;
   cancelPluginUiOwner(ownerId: string): void;
+  setTheme(themeId: string): void;
 }
 
 type SnapshotRecord = Record<string, unknown>;
@@ -1340,6 +1343,10 @@ function MobileNativeApp() {
         }
         if (type === "mobile.state-patch") {
           window.AkashicMobile?.receiveStatePatch(message.payload);
+          return;
+        }
+        if (type === "mobile.theme") {
+          setTheme(requireString(message.payload, "nativeMessage.payload"), false);
           return;
         }
         if (type === "plugin.catalog") {
@@ -2301,6 +2308,7 @@ function MobileTopBar({
   onShareSelection: () => void;
   onReplyToSelection: () => void;
 }) {
+  const theme = useTheme();
   if (selectionCount > 0) {
     const actions = mobileSelectionActionAvailability(sharePending, {
       reply: canReplyToSelection,
@@ -2377,6 +2385,18 @@ function MobileTopBar({
           <span>运行 {activeTaskCount}</span>
         </div>
       ) : null}
+      <button
+        className="mobile-icon-button"
+        type="button"
+        onClick={() => {
+          const next = cycleTheme();
+          window.AkashicNative?.setTheme(next.requestedThemeId);
+        }}
+        aria-label={`切换主题，当前为${theme.label}`}
+        title={`当前主题：${theme.label}`}
+      >
+        <Palette size={21} />
+      </button>
       <button ref={searchButtonRef} className="mobile-icon-button" type="button" onClick={onOpenSearch} aria-label="搜索消息">
         <Search size={22} />
       </button>
@@ -4190,6 +4210,7 @@ function syncMobileViewportHeight() {
 
 syncMobileViewportHeight();
 window.addEventListener("resize", syncMobileViewportHeight);
+initializeTheme();
 installMobileBridge();
 
 const root = document.getElementById("root");

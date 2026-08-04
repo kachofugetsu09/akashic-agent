@@ -5,21 +5,21 @@
 @tailwind utilities;
 
 :root {
-  --pairing-surface: var(--m-surface);
-  --pairing-surface-container-low: var(--m-surface-container-low);
-  --pairing-surface-container: var(--m-surface-container);
-  --pairing-surface-container-high: var(--m-surface-container-high);
-  --pairing-on-surface: var(--m-on-surface);
-  --pairing-on-surface-variant: var(--m-on-surface-variant);
-  --pairing-on-surface-muted: var(--m-outline);
-  --pairing-primary: var(--m-primary);
-  --pairing-primary-hover: var(--m-primary-hover);
-  --pairing-primary-container: var(--m-primary-container);
-  --pairing-primary-container-high: color-mix(in oklch, var(--m-primary) 18%, var(--m-primary-container));
-  --pairing-on-primary: var(--m-on-primary);
-  --pairing-on-primary-container: var(--m-on-primary-container);
-  --pairing-error-container: var(--m-error-container);
-  --pairing-on-error-container: var(--m-error);
+  --pairing-surface: var(--ak-color-bg-canvas);
+  --pairing-surface-container-low: var(--ak-color-bg-surface-low);
+  --pairing-surface-container: var(--ak-color-bg-surface);
+  --pairing-surface-container-high: var(--ak-color-bg-surface-high);
+  --pairing-on-surface: var(--ak-color-text-primary);
+  --pairing-on-surface-variant: var(--ak-color-text-secondary);
+  --pairing-on-surface-muted: var(--ak-color-border-strong);
+  --pairing-primary: var(--ak-color-action-primary);
+  --pairing-primary-hover: var(--ak-color-action-hover);
+  --pairing-primary-container: var(--ak-color-action-container);
+  --pairing-primary-container-high: color-mix(in oklch, var(--ak-color-action-primary) 18%, var(--ak-color-action-container));
+  --pairing-on-primary: var(--ak-color-on-action-primary);
+  --pairing-on-primary-container: var(--ak-color-on-action-container);
+  --pairing-error-container: var(--ak-color-status-error-container);
+  --pairing-on-error-container: var(--ak-color-status-error);
   --pairing-outline: oklch(0 0 0 / 0.06);
   --pairing-outline-strong: oklch(0 0 0 / 0.1);
   --pairing-qr-surface: oklch(1 0 0);
@@ -38,11 +38,11 @@ body,
   width: 100%;
   height: 100%;
   margin: 0;
-  background: var(--m-surface);
+  background: var(--ak-color-bg-canvas);
 }
 
 body {
-  color: var(--m-on-surface);
+  color: var(--ak-color-text-primary);
 }
 
 button,
@@ -56,8 +56,8 @@ input {
   width: 100%;
   min-height: 100%;
   place-items: center;
-  color: var(--m-on-surface-variant);
-  background: var(--m-surface);
+  color: var(--ak-color-text-secondary);
+  background: var(--ak-color-bg-canvas);
   font-size: 0.875rem;
 }
 
@@ -67,7 +67,7 @@ input {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  background: var(--m-surface);
+  background: var(--ak-color-bg-canvas);
 }
 
 .chat-sidebar {
@@ -76,8 +76,8 @@ input {
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
-  border-right: 1px solid var(--m-outline-variant);
-  background: var(--m-surface-container-low);
+  border-right: 1px solid var(--ak-color-border-default);
+  background: var(--ak-color-bg-surface-low);
 }
 
 .chat-sidebar-brand {
@@ -86,14 +86,14 @@ input {
   align-items: center;
   gap: 12px;
   padding: 0 22px;
-  background: var(--m-surface);
+  background: var(--ak-color-bg-canvas);
 }
 
 .chat-sidebar-brand__mark {
   width: 40px;
   height: 40px;
   flex: 0 0 40px;
-  background: var(--m-primary);
+  background: var(--ak-color-action-primary);
   -webkit-mask-position: center;
   mask-position: center;
   -webkit-mask-repeat: no-repeat;
@@ -116,7 +116,7 @@ input {
 
 .chat-sidebar-brand small {
   margin-top: 2px;
-  color: var(--m-on-surface-variant);
+  color: var(--ak-color-text-secondary);
   font-size: 0.75rem;
 }
 
@@ -199,18 +199,18 @@ input {
   place-items: center;
   border: 0;
   border-radius: 9px;
-  color: var(--m-on-surface);
+  color: var(--ak-color-text-primary);
   background: transparent;
   cursor: pointer;
 }
 
 .icon-button:hover,
 .composer-tool:hover {
-  background: var(--m-surface-container);
+  background: var(--ak-color-bg-surface);
 }
 
 .session-button:hover {
-  background: var(--m-surface-container);
+  background: var(--ak-color-bg-surface);
 }
 
 .session-section {
@@ -230,7 +230,7 @@ input {
 
 .session-title {
   padding: 0;
-  color: var(--m-on-surface);
+  color: var(--ak-color-text-primary);
   font-size: 15px;
   font-weight: 700;
 }
@@ -249,7 +249,7 @@ input {
   border: 0;
   border-radius: 10px;
   padding: 8px 10px;
-  color: var(--m-on-surface);
+  color: var(--ak-color-text-primary);
   background: transparent;
   font-size: 14px;
   line-height: 1.35;
@@ -258,8 +258,8 @@ input {
 }
 
 .session-button.active {
-  color: var(--m-on-primary);
-  background: var(--m-surface-container);
+  color: var(--ak-color-on-action-primary);
+  background: var(--ak-color-bg-surface);
 }
 
 .chat-main {
@@ -268,7 +268,7 @@ input {
   min-width: 0;
   min-height: 0;
   flex-direction: column;
-  background: var(--m-surface);
+  background: var(--ak-color-bg-canvas);
 }
 
 .conversation {
@@ -295,7 +295,7 @@ input {
 
 .home-state h1 {
   margin: 0 0 88px;
-  color: var(--m-on-surface);
+  color: var(--ak-color-text-primary);
   font-size: clamp(26px, 3.1vw, 34px);
   font-weight: 500;
   line-height: 1.2;
@@ -305,7 +305,7 @@ input {
   width: min(100%, 820px);
   height: 1px;
   margin: -6px 0;
-  background: var(--m-outline-variant);
+  background: var(--ak-color-border-default);
 }
 
 .user-divider {
@@ -336,17 +336,17 @@ input {
 
 .composer {
   min-height: 66px;
-  border: 1px solid var(--m-outline-variant);
+  border: 1px solid var(--ak-color-border-default);
   border-radius: 18px;
   padding: 4px 9px;
-  background: var(--m-surface-container-high);
+  background: var(--ak-color-bg-surface-high);
   box-shadow: 0 2px 8px rgb(0 0 0 / 0.08);
   transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 
 .composer:focus-within {
-  border-color: hsl(var(--ring) / 0.72);
-  box-shadow: 0 2px 8px rgb(0 0 0 / 0.08), 0 0 0 1px hsl(var(--ring) / 0.18);
+  border-color: rgb(var(--ak-color-action-primary-rgb) / 0.72);
+  box-shadow: 0 2px 8px var(--ak-color-shadow), 0 0 0 1px rgb(var(--ak-color-action-primary-rgb) / 0.18);
 }
 
 form.composer:focus-within [data-slot="input-group"] {
@@ -359,14 +359,14 @@ form.composer:focus-within [data-slot="input-group"] {
   resize: none;
   border: 0;
   padding: 14px 10px;
-  color: var(--m-on-surface);
+  color: var(--ak-color-text-primary);
   background: transparent;
   font-size: 17px;
   outline: none;
 }
 
 .composer textarea::placeholder {
-  color: var(--m-on-surface-variant);
+  color: var(--ak-color-text-secondary);
 }
 
 .composer-attachments {
@@ -378,9 +378,9 @@ form.composer:focus-within [data-slot="input-group"] {
 .composer-attachments [data-radix-collection-item],
 .composer-attachments .group {
   max-width: min(100%, 260px);
-  border-color: var(--m-outline);
-  background: var(--m-surface-container);
-  color: var(--m-on-surface);
+  border-color: var(--ak-color-border-strong);
+  background: var(--ak-color-bg-surface);
+  color: var(--ak-color-text-primary);
 }
 
 .attachment-preview-slot {
@@ -397,13 +397,13 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 
 .attachment-remove-inline {
-  background: var(--m-on-primary);
-  color: var(--m-surface-container-low);
+  background: var(--ak-color-on-action-primary);
+  color: var(--ak-color-bg-surface-low);
 }
 
 .attachment-hover {
   max-width: 320px;
-  color: var(--m-on-surface);
+  color: var(--ak-color-text-primary);
 }
 
 .attachment-hover-image {
@@ -420,7 +420,7 @@ form.composer:focus-within [data-slot="input-group"] {
   height: 96px;
   place-items: center;
   border-radius: 8px;
-  background: var(--m-surface-container);
+  background: var(--ak-color-bg-surface);
 }
 
 .attachment-hover-title {
@@ -434,7 +434,7 @@ form.composer:focus-within [data-slot="input-group"] {
 
 .attachment-hover-type {
   margin-top: 4px;
-  color: var(--m-on-surface-variant);
+  color: var(--ak-color-text-secondary);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
 }
@@ -448,22 +448,22 @@ form.composer:focus-within [data-slot="input-group"] {
   width: 42px;
   height: 42px;
   border-radius: 50%;
-  color: var(--m-on-primary);
-  background: var(--m-primary);
+  color: var(--ak-color-on-action-primary);
+  background: var(--ak-color-action-primary);
 }
 
 .send-button:hover {
-  background: var(--m-primary-hover);
+  background: var(--ak-color-action-hover);
 }
 
 .send-button:disabled {
-  color: var(--m-outline);
-  background: var(--m-surface-container-high);
+  color: var(--ak-color-border-strong);
+  background: var(--ak-color-bg-surface-high);
 }
 
 .error-line {
   margin: 8px 12px 0;
-  color: var(--m-error);
+  color: var(--ak-color-status-error);
   font-size: 13px;
 }
 

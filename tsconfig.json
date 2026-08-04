@@ -5,6 +5,7 @@
     "types": ["node"],
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "resolveJsonModule": true,
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
@@ -18,5 +19,5 @@
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["frontend/dashboard/src/**/*.ts", "frontend/dashboard/src/**/*.tsx", "frontend/chat/src/**/*.ts", "frontend/chat/src/**/*.tsx", "plugins/**/*.ts", "plugins/**/*.tsx", "types/**/*.d.ts"]
+  "include": ["frontend/dashboard/src/**/*.ts", "frontend/dashboard/src/**/*.tsx", "frontend/chat/src/**/*.ts", "frontend/chat/src/**/*.tsx", "frontend/theme/src/**/*.ts", "plugins/**/*.ts", "plugins/**/*.tsx", "types/**/*.d.ts"]
 }

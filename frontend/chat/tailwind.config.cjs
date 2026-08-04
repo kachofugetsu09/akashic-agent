@@ -9,38 +9,38 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        border: "hsl(var(--border))",
-        input: "hsl(var(--input))",
-        ring: "hsl(var(--ring))",
-        background: "hsl(var(--background))",
-        foreground: "hsl(var(--foreground))",
+        border: "rgb(var(--ak-color-border-default-rgb) / <alpha-value>)",
+        input: "rgb(var(--ak-color-border-default-rgb) / <alpha-value>)",
+        ring: "rgb(var(--ak-color-action-primary-rgb) / <alpha-value>)",
+        background: "rgb(var(--ak-color-bg-canvas-rgb) / <alpha-value>)",
+        foreground: "rgb(var(--ak-color-text-primary-rgb) / <alpha-value>)",
         primary: {
-          DEFAULT: "hsl(var(--primary))",
-          foreground: "hsl(var(--primary-foreground))",
+          DEFAULT: "rgb(var(--ak-color-action-primary-rgb) / <alpha-value>)",
+          foreground: "rgb(var(--ak-color-on-action-primary-rgb) / <alpha-value>)",
         },
         secondary: {
-          DEFAULT: "hsl(var(--secondary))",
-          foreground: "hsl(var(--secondary-foreground))",
+          DEFAULT: "rgb(var(--ak-color-bg-surface-low-rgb) / <alpha-value>)",
+          foreground: "rgb(var(--ak-color-text-primary-rgb) / <alpha-value>)",
         },
         destructive: {
-          DEFAULT: "hsl(var(--destructive))",
-          foreground: "hsl(var(--destructive-foreground))",
+          DEFAULT: "rgb(var(--ak-color-status-error-rgb) / <alpha-value>)",
+          foreground: "rgb(var(--ak-color-on-action-primary-rgb) / <alpha-value>)",
         },
         muted: {
-          DEFAULT: "hsl(var(--muted))",
-          foreground: "hsl(var(--muted-foreground))",
+          DEFAULT: "rgb(var(--ak-color-bg-surface-low-rgb) / <alpha-value>)",
+          foreground: "rgb(var(--ak-color-text-secondary-rgb) / <alpha-value>)",
         },
         accent: {
-          DEFAULT: "hsl(var(--accent))",
-          foreground: "hsl(var(--accent-foreground))",
+          DEFAULT: "rgb(var(--ak-color-action-soft-rgb) / <alpha-value>)",
+          foreground: "rgb(var(--ak-color-text-primary-rgb) / <alpha-value>)",
         },
         popover: {
-          DEFAULT: "hsl(var(--popover))",
-          foreground: "hsl(var(--popover-foreground))",
+          DEFAULT: "rgb(var(--ak-color-bg-surface-rgb) / <alpha-value>)",
+          foreground: "rgb(var(--ak-color-text-primary-rgb) / <alpha-value>)",
         },
         card: {
-          DEFAULT: "hsl(var(--card))",
-          foreground: "hsl(var(--card-foreground))",
+          DEFAULT: "rgb(var(--ak-color-bg-surface-rgb) / <alpha-value>)",
+          foreground: "rgb(var(--ak-color-text-primary-rgb) / <alpha-value>)",
         },
       },
       borderRadius: {

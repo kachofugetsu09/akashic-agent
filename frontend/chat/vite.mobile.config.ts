@@ -2,6 +2,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import { emitThemeCatalog } from "../theme/src/vite-theme-plugin";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..");
@@ -12,7 +13,7 @@ const outDir = process.env.AKASHIC_MOBILE_WEB_OUT_DIR
 export default defineConfig({
   root: here,
   base: "./",
-  plugins: [react()],
+  plugins: [react(), emitThemeCatalog()],
   resolve: {
     alias: {
       "@": resolve(here, "src"),

@@ -6,8 +6,8 @@
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
-  color: var(--m-on-surface);
-  background: var(--m-surface);
+  color: var(--ak-color-text-primary);
+  background: var(--ak-color-bg-canvas);
   outline: none;
 }
 
@@ -22,7 +22,7 @@
 
 .conversation-destination small,
 .conversation-session small {
-  color: var(--m-on-surface-variant);
+  color: var(--ak-color-text-secondary);
 }
 
 .conversation-destinations {
@@ -56,12 +56,12 @@
 
 .conversation-destination:hover,
 .conversation-destination:focus-visible {
-  background: var(--m-surface-container);
+  background: var(--ak-color-bg-surface);
 }
 
 .conversation-destination.active {
-  color: var(--m-on-primary-container);
-  background: var(--m-primary-container);
+  color: var(--ak-color-on-action-container);
+  background: var(--ak-color-action-container);
 }
 
 .conversation-destination.active .conversation-destination__icon,
@@ -73,7 +73,7 @@
 .conversation-destination:focus-visible,
 .conversation-session:focus-visible,
 .conversation-navigation__action:focus-visible {
-  outline: 2px solid var(--m-primary);
+  outline: 2px solid var(--ak-color-action-primary);
   outline-offset: -2px;
 }
 
@@ -91,17 +91,9 @@
   gap: 11px;
   border-radius: 22px;
   padding: 10px 14px;
-  color: white;
-  background: #3f7479;
-  box-shadow: 0 8px 20px rgb(35 91 96 / 0.18);
-}
-
-@supports (color: oklch(0 0 0)) {
-  .conversation-destination.featured {
-    color: oklch(0.98 0.006 205);
-    background: oklch(0.52 0.065 205);
-    box-shadow: 0 8px 20px oklch(0.35 0.05 205 / 0.2);
-  }
+  color: var(--ak-color-on-action-primary);
+  background: var(--ak-color-action-primary);
+  box-shadow: 0 8px 20px var(--ak-color-shadow);
 }
 
 .conversation-destination.featured .conversation-destination__icon,
@@ -120,7 +112,7 @@
   width: 24px;
   height: 24px;
   place-items: center;
-  color: var(--m-primary);
+  color: var(--ak-color-action-primary);
   background: transparent;
 }
 
@@ -145,7 +137,7 @@
 }
 
 .conversation-destination__badge {
-  color: var(--m-on-surface-variant);
+  color: var(--ak-color-text-secondary);
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
 }
@@ -159,7 +151,7 @@
 }
 
 .conversation-navigation__heading {
-  color: var(--m-on-surface-variant);
+  color: var(--ak-color-text-secondary);
   font-size: 0.875rem;
   font-weight: 650;
   line-height: 1.1;
@@ -209,7 +201,7 @@
 
 .conversation-session:hover,
 .conversation-session:focus-visible {
-  background: var(--m-surface-container);
+  background: var(--ak-color-bg-surface);
 }
 
 .conversation-session:active {
@@ -217,7 +209,7 @@
 }
 
 .conversation-session.active {
-  background: var(--m-primary-container);
+  background: var(--ak-color-action-container);
 }
 
 .conversation-session.unavailable {
@@ -226,7 +218,7 @@
 
 .conversation-session.unavailable .conversation-session__copy small,
 .conversation-session.unavailable .conversation-session__state {
-  color: var(--m-warning);
+  color: var(--ak-color-status-warning);
 }
 
 .conversation-session__copy,
@@ -257,7 +249,7 @@
 
 .conversation-session__title time {
   flex: 0 0 auto;
-  color: var(--m-on-surface-variant);
+  color: var(--ak-color-text-secondary);
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
   line-height: 1.35;
@@ -273,7 +265,7 @@
 
 .conversation-session.active .conversation-session__title time,
 .conversation-session.active .conversation-session__copy small {
-  color: var(--m-on-primary-container);
+  color: var(--ak-color-on-action-container);
   opacity: 0.76;
 }
 
@@ -281,7 +273,7 @@
   display: grid;
   min-width: 20px;
   place-items: center;
-  color: var(--m-primary);
+  color: var(--ak-color-action-primary);
 }
 
 .conversation-navigation__actions {
@@ -299,7 +291,7 @@
   border-radius: 14px;
   padding-block: 8px;
   padding-inline: 16px;
-  color: var(--m-on-surface-variant);
+  color: var(--ak-color-text-secondary);
   background: transparent;
   font: inherit;
   font-size: 0.875rem;
@@ -311,7 +303,7 @@
 
 .conversation-navigation__action:hover,
 .conversation-navigation__action:focus-visible {
-  background: var(--m-surface-container);
+  background: var(--ak-color-bg-surface);
 }
 
 .conversation-navigation__action:active {
@@ -323,14 +315,14 @@
   margin-top: 8px;
   border-radius: 24px;
   padding-inline: 16px 18px;
-  color: var(--m-on-primary-container);
-  background: var(--m-primary-container);
+  color: var(--ak-color-on-action-container);
+  background: var(--ak-color-action-container);
   font-weight: 650;
 }
 
 .conversation-navigation__action.primary:hover,
 .conversation-navigation__action.primary:focus-visible {
-  background: color-mix(in oklch, var(--m-primary-container), var(--m-primary) 12%);
+  background: color-mix(in oklch, var(--ak-color-action-container), var(--ak-color-action-primary) 12%);
 }
 
 .conversation-navigation__action:disabled {
