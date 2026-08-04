@@ -423,7 +423,7 @@ class MobileRealtimeStorage:
         return _device_from_row(row)
 
     def revoke_device(self, device_id: str, *, revoked_at: datetime) -> DeviceRecord:
-        """原子标记设备已撤销，并返回数据库中的最终状态。"""
+        """原子撤销设备、清空待投递事件，并返回最终状态。"""
 
         # 1. 锁定设备当前撤销状态
         device_key = _require_text(device_id, "device_id")
@@ -443,7 +443,7 @@ class MobileRealtimeStorage:
                     """,
                     (timestamp, device_key),
                 )
-                return DeviceRecord(
+                revoked = DeviceRecord(
                     device_id=existing.device_id,
                     public_key=existing.public_key,
                     display_name=existing.display_name,
@@ -451,7 +451,15 @@ class MobileRealtimeStorage:
                     revoked_at=_parse_datetime(timestamp, "revoked_at"),
                     capabilities=existing.capabilities,
                 )
-        return existing
+            else:
+                revoked = existing
+
+            # 3. 已撤销设备不再拥有投递能力，其未确认 inbox 同事务物理减少
+            _ = self._db.execute(
+                "DELETE FROM mobile_device_inbox WHERE device_id = ?",
+                (device_key,),
+            )
+        return revoked
 
     def read_cursor(self, device_id: str) -> DeviceCursor:
         with self._lock:

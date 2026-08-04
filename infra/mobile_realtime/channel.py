@@ -134,6 +134,7 @@ _MOBILE_HISTORY_TOOL_ARGUMENT_MAX_BYTES = 8 * 1024
 _MOBILE_HISTORY_PAYLOAD_MAX_BYTES = 240 * 1024
 _MOBILE_TOOL_ARGUMENT_REDACTED = "[已隐藏]"
 _MOBILE_TOOL_ARGUMENT_TRUNCATED = "[已截断]"
+_MOBILE_HISTORY_DETAIL_OMITTED = "[历史同步时已省略过长详情]"
 
 
 def _utf8_chunks(text: str, max_bytes: int) -> Iterator[str]:
@@ -2317,7 +2318,19 @@ def _fit_mobile_history_payload(
             ):
                 return
 
-    # 3. 正文外置后仍超限，才从页面末尾回收工具参数与派生描述
+    # 3. 游标协议按真实帧预算缩小页面，后续请求会从新高水位继续
+    if allow_content_refs:
+        while len(items) > 1:
+            items.pop()
+            payload["next_after_seq"] = int(items[-1]["seq"])
+            payload["has_more"] = True
+            if (
+                _mobile_tool_argument_encoded_size(payload)
+                <= _MOBILE_HISTORY_PAYLOAD_MAX_BYTES
+            ):
+                return
+
+    # 4. 单条消息仍超限时，回收可重新生成的工具参数与派生描述
     for item in reversed(items):
         chain = cast(list[dict[str, object]] | None, item["tool_chain"])
         if chain is None:
@@ -2350,7 +2363,48 @@ def _fit_mobile_history_payload(
                 ):
                     return
 
-    # 4. 非正文部分仍超限时明确失败，不能发送违规帧或静默丢失 thinking/tool
+    # 5. 继续用显式占位符收缩结果预览，保留工具名称与执行状态
+    for item in reversed(items):
+        chain = cast(list[dict[str, object]] | None, item["tool_chain"])
+        if chain is None:
+            continue
+        for group in reversed(chain):
+            calls = cast(list[dict[str, object]], group["calls"])
+            for call in reversed(calls):
+                preview = call.get("result_preview")
+                if (
+                    not isinstance(preview, str)
+                    or preview == _MOBILE_HISTORY_DETAIL_OMITTED
+                ):
+                    continue
+                call["result_preview"] = _MOBILE_HISTORY_DETAIL_OMITTED
+                if (
+                    _mobile_tool_argument_encoded_size(payload)
+                    <= _MOBILE_HISTORY_PAYLOAD_MAX_BYTES
+                ):
+                    return
+
+    # 6. 极长 thinking 也显式标记收缩，不让一条历史拖垮整个同步连接
+    for item in reversed(items):
+        chain = cast(list[dict[str, object]] | None, item["tool_chain"])
+        if chain is None:
+            continue
+        for group in reversed(chain):
+            for field in ("reasoning_content", "text"):
+                value = group.get(field)
+                if (
+                    not isinstance(value, str)
+                    or value == _MOBILE_HISTORY_DETAIL_OMITTED
+                ):
+                    continue
+                group[field] = _MOBILE_HISTORY_DETAIL_OMITTED
+                if (
+                    _mobile_tool_argument_encoded_size(payload)
+                    <= _MOBILE_HISTORY_PAYLOAD_MAX_BYTES
+                ):
+                    return
+
+    # 7. 固定结构仍超限时明确失败，不能发送违规帧或静默删除工具记录
     code = "history_item_too_large" if allow_content_refs else "upgrade_required"
     raise MobileCommandError(code, "历史消息超过当前客户端可恢复的帧预算")
 
