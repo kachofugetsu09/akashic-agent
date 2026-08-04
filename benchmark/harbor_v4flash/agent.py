@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
+import time
 from pathlib import Path
 
 from harbor.agents.base import BaseAgent
@@ -10,20 +12,20 @@ from harbor.models.agent.context import AgentContext
 
 from benchmark.harbor_v4flash import HARNESS_VERSION
 from benchmark.harbor_v4flash.credentials import secure_docker_exec
+from benchmark.harbor_v4flash.git_volume import GIT_BIN_PATH, GIT_MOUNT_PATH
 from benchmark.harbor_v4flash.isolation import (
     atomic_json,
     compose_project_name,
     inspect_compose_project,
     validate_isolation,
 )
-from benchmark.harbor_v4flash.git_volume import GIT_BIN_PATH, GIT_MOUNT_PATH
-from benchmark.harbor_v4flash.result_projection import project_agent_context
 from benchmark.harbor_v4flash.resource_evidence import (
     RESOURCE_EVIDENCE_FILENAME,
     parse_resource_probe_output,
     resource_probe_command,
     resource_probe_failure,
 )
+from benchmark.harbor_v4flash.result_projection import project_agent_context
 from benchmark.harbor_v4flash.runtime_volume import (
     RUNTIME_MOUNT_PATH,
     RUNTIME_UV_PATH,
@@ -35,6 +37,12 @@ _SOURCE_ROOT = f"{_RUNTIME_ROOT}/src"
 _WORKSPACE = "/opt/akashic-workspace"
 _ENDPOINT = f"{_WORKSPACE}/akashic.sock"
 _AGENT_LOGS = "/logs/agent"
+_VERIFIER_PREPARE_TIMEOUT_SEC = 14_400
+_CANDIDATE_DIGEST_COMMAND = (
+    "pwd -P; "
+    "tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 "
+    "--numeric-owner --format=gnu -cf - . | sha256sum | awk '{print $1}'"
+)
 
 
 def _require_success(label: str, return_code: int, output: str) -> None:
@@ -82,6 +90,10 @@ def _build_gateway_command() -> str:
 
     return (
         f"mkdir -p {_WORKSPACE} && "
+        f"env PYTHONPATH={_SOURCE_ROOT}:{_SOURCE_ROOT}/sdk/python/src "
+        f"{RUNTIME_VENV_PATH}/bin/python {_SOURCE_ROOT}/main.py veda-reset "
+        f"--config {_SOURCE_ROOT}/benchmark/harbor_v4flash/config.toml "
+        f"--workspace {_WORKSPACE} >/dev/null && "
         f"env PATH={GIT_MOUNT_PATH}/bin:$PATH "
         f"PYTHONPATH={_SOURCE_ROOT}:{_SOURCE_ROOT}/sdk/python/src "
         "PYTHONDONTWRITEBYTECODE=1 "
@@ -111,6 +123,8 @@ def _build_driver_command(turn_timeout_sec: float) -> str:
             f"{_AGENT_LOGS}/trace.jsonl",
             "--result",
             f"{_AGENT_LOGS}/turn-result.json",
+            "--outcome",
+            f"{_AGENT_LOGS}/driver-outcome.json",
             "--turn-timeout",
             str(turn_timeout_sec),
         ]
@@ -284,12 +298,62 @@ async def _run_driver_and_shutdown(
     return driver_result
 
 
+def _verifier_dependency_command(test_script: str) -> str | None:
+    """Extract dependency setup while replacing the verifier body with a no-op."""
+
+    # 1. Find the first supported test runner boundary in the official script.
+    lines = test_script.splitlines()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "uvx \\" or stripped.startswith("uvx "):
+            end = index
+            while lines[end].rstrip().endswith("\\"):
+                end += 1
+            invocation = " ".join(
+                item.rstrip().removesuffix("\\").strip()
+                for item in lines[index : end + 1]
+            )
+            match = re.search(r"\s+pytest(?:\s|$)", invocation)
+            if match is None:
+                raise RuntimeError("官方 uvx verifier 不以 pytest 为执行边界")
+            dependency_invocation = invocation[: match.start()]
+            preamble = "\n".join(lines[:index])
+            return f"{preamble}\n{dependency_invocation} python -c 'pass'"
+        if re.match(r"(?:python(?:3)?\s+-m\s+)?pytest(?:\s|$)", stripped):
+            return "\n".join(lines[:index])
+    return None
+
+
+async def _candidate_digest(environment: BaseEnvironment) -> str:
+    """Return the frozen `/app` identity around verifier preparation."""
+
+    result = await environment.exec(
+        command=_CANDIDATE_DIGEST_COMMAND,
+        timeout_sec=300,
+        user="root",
+    )
+    _require_success(
+        "计算 verifier 候选摘要",
+        result.return_code,
+        (result.stdout or "") + (result.stderr or ""),
+    )
+    lines = (result.stdout or "").strip().splitlines()
+    if len(lines) < 2:
+        raise RuntimeError("verifier 候选摘要输出无效")
+    root, digest = lines[-2:]
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise RuntimeError("verifier 候选摘要输出无效")
+    return f"{root}|sha256:{digest}"
+
+
 async def _prepare_verifier_runtime(
     environment: BaseEnvironment,
     *,
     expected_uv_version: str,
-) -> None:
-    """在 Agent 退出后为官方 verifier 准备冻结的 uv。"""
+    test_script: str,
+    timeout_sec: float = _VERIFIER_PREPARE_TIMEOUT_SEC,
+) -> dict[str, object]:
+    """在官方计时前下载 verifier 依赖并证明候选未被改变。"""
 
     # 1. 只在 turn 完成后复制工具，避免改变 Agent 可见能力。
     command = (
@@ -301,7 +365,7 @@ async def _prepare_verifier_runtime(
         "chmod 0755 /root/.local/bin/uvx && "
         "printf '%s\\n' 'export PATH=\"$HOME/.local/bin:$PATH\"' "
         "> /root/.local/bin/env && "
-        f"test \"$(/root/.local/bin/uv --version)\" = "
+        f'test "$(/root/.local/bin/uv --version)" = '
         f"{shlex.quote(expected_uv_version)}"
     )
     prepared = await environment.exec(
@@ -314,6 +378,37 @@ async def _prepare_verifier_runtime(
         prepared.return_code,
         (prepared.stdout or "") + (prepared.stderr or ""),
     )
+
+    # 2. 从官方脚本抽出安装段，uvx 只解析和下载同一组依赖。
+    dependency_command = _verifier_dependency_command(test_script)
+    before_digest = await _candidate_digest(environment)
+    started = time.monotonic()
+    if dependency_command is not None:
+        dependency_result = await environment.exec(
+            command=f"set -eu\n{dependency_command}",
+            timeout_sec=timeout_sec,
+            user="root",
+        )
+        output = (dependency_result.stdout or "") + (dependency_result.stderr or "")
+        _require_success("准备 verifier 依赖", dependency_result.return_code, output)
+    else:
+        output = ""
+    duration_sec = time.monotonic() - started
+
+    # 3. 依赖阶段只准改变 verifier runtime；触碰候选立即失败。
+    after_digest = await _candidate_digest(environment)
+    if after_digest != before_digest:
+        raise RuntimeError("verifier 依赖准备改变了 /app 候选，禁止进入评分")
+    return {
+        "schema": "akasic.verifier-bootstrap.v1",
+        "status": "prepared" if dependency_command is not None else "not_required",
+        "official_verifier_timeout_started": False,
+        "timeout_sec": timeout_sec,
+        "duration_sec": duration_sec,
+        "candidate_digest_before": before_digest,
+        "candidate_digest_after": after_digest,
+        "stdout_tail": output[-4000:],
+    }
 
 
 class AkashicHarborAgent(BaseAgent):
@@ -512,7 +607,7 @@ class AkashicHarborAgent(BaseAgent):
             f"{shlex.quote(self._source_head)} && "
             f"{GIT_BIN_PATH} -C {_SOURCE_ROOT} cat-file -e "
             "012e37c8b51df045353972bb551d8e868ab52455^{commit} && "
-            f"test \"$({GIT_BIN_PATH} -C {_SOURCE_ROOT} rev-parse HEAD)\" = "
+            f'test "$({GIT_BIN_PATH} -C {_SOURCE_ROOT} rev-parse HEAD)" = '
             f"{shlex.quote(self._source_head)} && "
             f"chmod -R a-w {_SOURCE_ROOT}"
         )
@@ -535,7 +630,8 @@ class AkashicHarborAgent(BaseAgent):
     ) -> None:
         """启动完整 gateway，通过公开 SDK 完成任务并保留 trace。"""
 
-        # 1. Harbor 提供的 task instruction 通过证据挂载传入，不进入 shell 参数。
+        # 1. task 官方 agent 预算从 Agent.run 入口开始，包含 gateway readiness。
+        agent_started = time.monotonic()
         instruction_path = self.logs_dir / "instruction.md"
         instruction_path.write_text(instruction, encoding="utf-8")
         await _start_gateway_with_resource_evidence(
@@ -545,38 +641,65 @@ class AkashicHarborAgent(BaseAgent):
             logs_dir=self.logs_dir,
         )
 
-        # 2. SDK driver 记录全部 turn 通知并核对持久化终态。
-        _ = await _run_driver_and_shutdown(
-            environment,
-            driver_command=_build_driver_command(self._turn_timeout_sec),
-            driver_timeout_sec=self._turn_timeout_sec + 5,
-            shutdown_command=(
-                f"pid=$(cat {_AGENT_LOGS}/runtime.pid) && "
-                "if ! kill -0 \"$pid\" 2>/dev/null; then exit 0; fi; "
-                "kill -TERM \"$pid\" && "
-                "for _ in $(seq 1 120); do "
-                "if ! kill -0 \"$pid\" 2>/dev/null; then exit 0; fi; "
-                "sleep 0.5; "
-                "done; "
-                "exit 1"
-            ),
-            logs_dir=self.logs_dir,
+        # 2. SDK driver 只获得官方预算的剩余部分，不额外赠送 readiness 时间。
+        remaining_sec = self._turn_timeout_sec - (time.monotonic() - agent_started)
+        if remaining_sec <= 0:
+            raise TimeoutError("gateway 启动已耗尽 task 官方 agent 预算")
+        driver_error: RuntimeError | None = None
+        try:
+            _ = await _run_driver_and_shutdown(
+                environment,
+                driver_command=_build_driver_command(remaining_sec),
+                driver_timeout_sec=remaining_sec + 5,
+                shutdown_command=(
+                    f"pid=$(cat {_AGENT_LOGS}/runtime.pid) && "
+                    'if ! kill -0 "$pid" 2>/dev/null; then exit 0; fi; '
+                    'kill -TERM "$pid" && '
+                    "for _ in $(seq 1 120); do "
+                    'if ! kill -0 "$pid" 2>/dev/null; then exit 0; fi; '
+                    "sleep 0.5; "
+                    "done; "
+                    "exit 1"
+                ),
+                logs_dir=self.logs_dir,
+            )
+        except RuntimeError as error:
+            driver_error = error
+
+        # 3. 题目原始时限只终止 Agent；已完成 cleanup 后仍交给官方 verifier 打分。
+        driver_outcome = json.loads(
+            (self.logs_dir / "driver-outcome.json").read_text(encoding="utf-8")
         )
+        if driver_error is not None and (
+            driver_outcome.get("status")
+            not in {
+                "timed_out",
+                "agent_failed",
+                "rate_limited",
+                "provider_transient",
+                "account_limited",
+            }
+            or getattr(driver_error, "__notes__", None)
+        ):
+            raise driver_error
 
         # 3. 把可机读终态投影到 Harbor AgentContext。
-        turn_result = json.loads(
-            (self.logs_dir / "turn-result.json").read_text(encoding="utf-8")
-        )
-        project_agent_context(
-            context,
-            turn_result,
-            harness_name=self.name(),
-            harness_version=self.version(),
-            source_digest=self._source_digest,
-        )
-
-        # 4. Agent 已结束后才准备 verifier 自身依赖，不改变任务执行能力。
-        await _prepare_verifier_runtime(
-            environment,
-            expected_uv_version=self._runtime_uv_version,
-        )
+        turn_result_path = self.logs_dir / "turn-result.json"
+        if turn_result_path.is_file():
+            turn_result = json.loads(turn_result_path.read_text(encoding="utf-8"))
+            project_agent_context(
+                context,
+                turn_result,
+                harness_name=self.name(),
+                harness_version=self.version(),
+                source_digest=self._source_digest,
+            )
+        else:
+            context.metadata = {
+                **(context.metadata or {}),
+                "harness": self.name(),
+                "harness_version": self.version(),
+                "source_digest": self._source_digest,
+                "turn_status": driver_outcome["status"],
+                "trace": "agent/trace.jsonl",
+            }

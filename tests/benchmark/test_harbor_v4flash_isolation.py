@@ -9,10 +9,14 @@ import pytest
 from benchmark.harbor_v4flash.isolation import (
     IsolationError,
     artifact_digests,
+    cleanup_compose_project,
     compose_project_name,
     inspect_compose_project,
+    require_storage_capacity,
     reserve_compose_network,
     sha256_file,
+    source_tree_digest,
+    stop_and_cleanup_compose_project,
     validate_isolation,
 )
 from benchmark.harbor_v4flash.runtime_volume import RUNTIME_MOUNT_PATH
@@ -94,6 +98,105 @@ def test_reserve_compose_network_retries_overlapping_subnet(
 def test_reserve_compose_network_rejects_non_benchmark_owner() -> None:
     with pytest.raises(IsolationError, match="benchmark 前缀"):
         reserve_compose_network("production_default")
+
+
+def test_storage_capacity_fails_before_new_container(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    usage = type("Usage", (), {"total": 100, "used": 99, "free": 1})()
+    monkeypatch.setattr("shutil.disk_usage", lambda path: usage)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, "/var/lib/docker\n", ""
+        ),
+    )
+
+    with pytest.raises(IsolationError, match="停止调度"):
+        require_storage_capacity(
+            tmp_path,
+            min_runs_free_gib=1,
+            min_tmp_free_gib=1,
+            min_docker_free_gib=1,
+        )
+
+
+def test_cleanup_only_removes_exact_stopped_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = "akasic-bench-v4flash-smoke__env"
+    container = {"id": "container-id", "running": False}
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        "benchmark.harbor_v4flash.isolation.inspect_compose_project",
+        lambda name: [container],
+    )
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[:3] == ["docker", "network", "inspect"]:
+            payload = [{
+                "Id": "network-id",
+                "Name": "network-name",
+                "Labels": {
+                    "com.docker.compose.project": project,
+                    "akasic.benchmark.managed": "true",
+                },
+            }]
+            return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    result = cleanup_compose_project(
+        project,
+        expected_containers=[container],
+        network={"id": "network-id", "name": "network-name"},
+    )
+
+    assert result["status"] == "removed"
+    assert ["docker", "container", "rm", "container-id"] in calls
+    assert ["docker", "network", "rm", "network-id"] in calls
+
+
+def test_interruption_cleanup_stops_before_exact_project_removal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = "akasic-bench-v4flash-smoke__env"
+    running = {"id": "container-id", "running": True}
+    stopped = {"id": "container-id", "running": False}
+    inspections = iter(([running], [stopped]))
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        "benchmark.harbor_v4flash.isolation.inspect_compose_project",
+        lambda name: next(inspections),
+    )
+    monkeypatch.setattr(
+        "benchmark.harbor_v4flash.isolation.cleanup_compose_project",
+        lambda name, *, expected_containers, network: {
+            "status": "removed",
+            "container_ids": [expected_containers[0]["id"]],
+        },
+    )
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "container-id\n", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    result = stop_and_cleanup_compose_project(
+        project,
+        network={"id": "network-id", "name": "network-name"},
+    )
+
+    assert result["status"] == "removed"
+    assert calls == [
+        ["docker", "container", "stop", "--time", "10", "container-id"]
+    ]
 
 
 def test_inspect_compose_project_records_immutable_image_id(
@@ -270,3 +373,24 @@ def test_artifact_digests_excludes_self_referential_manifest(
 
     assert "campaign-manifest.json" not in digests
     assert digests == {"agent/trace.jsonl": sha256_file(trace)}
+
+
+def test_source_digest_ignores_gitignored_reports_but_keeps_dirty_overlay(
+    tmp_path: Path,
+) -> None:
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("one\n", encoding="utf-8")
+    (tmp_path / ".gitignore").write_text("reports/\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "add", "tracked.txt", ".gitignore"],
+        check=True,
+    )
+    baseline = source_tree_digest(tmp_path)
+    report = tmp_path / "reports" / "gate.json"
+    report.parent.mkdir()
+    report.write_text("ignored\n", encoding="utf-8")
+    assert source_tree_digest(tmp_path) == baseline
+
+    tracked.write_text("dirty\n", encoding="utf-8")
+    assert source_tree_digest(tmp_path) != baseline

@@ -11,6 +11,27 @@ from typing import Any
 from akashic_sdk import AsyncAkashic
 
 TERMINAL_STATUSES = {"completed", "failed", "interrupted", "cancelled"}
+_EMPTY_PROVIDER_REPLY = "模型未返回可用回复，请重试。"
+
+
+class TurnDeadlineExceeded(TimeoutError):
+    """题目原始 agent 时限已耗尽。"""
+
+
+class AgentTurnFailed(RuntimeError):
+    """Akashic turn 已开始但未形成成功终态。"""
+
+
+class ProviderRateLimited(AgentTurnFailed):
+    """Provider 以明确的 429/rate-limit 终止本次 turn。"""
+
+
+class ProviderTransientFailure(AgentTurnFailed):
+    """Provider 以明确的临时 5xx 终止本次 turn。"""
+
+
+class ProviderAccountLimited(AgentTurnFailed):
+    """OpenCode Go 账户使用额度已耗尽，必须等待 reset 或启用余额。"""
 
 
 @dataclass(slots=True)
@@ -23,6 +44,123 @@ def _append_jsonl(path: Path, record: dict[str, object]) -> None:
     with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
         stream.write("\n")
+
+
+def _turn_was_rate_limited(turn: dict[str, Any]) -> bool:
+    """只从结构化 turn error 识别 provider 限流，不扫描题目或模型正文。"""
+
+    error = turn.get("error")
+    if not isinstance(error, dict):
+        return False
+    error_type = str(error.get("type") or "").lower()
+    message = str(error.get("message") or "").lower()
+    data = error.get("data")
+    data_status = data.get("status_code") if isinstance(data, dict) else None
+    data_code = str(data.get("code") or "").lower() if isinstance(data, dict) else ""
+    return (
+        data_status == 429
+        or str(data_status) == "429"
+        or data_code in {"429", "rate_limit", "rate_limited", "rate_limit_exceeded"}
+        or "ratelimit" in error_type
+        or "rate limit" in message
+        or "rate_limit" in message
+        or "too many requests" in message
+        or "error code: 429" in message
+        or "status code: 429" in message
+        or "status_code=429" in message
+    )
+
+
+def _turn_was_transient_provider_failure(turn: dict[str, Any]) -> bool:
+    """识别结构化 5xx 与响应体中断这两类临时 provider 故障。"""
+
+    error = turn.get("error")
+    if not isinstance(error, dict):
+        return False
+    error_type = str(error.get("type") or "").lower()
+    message = str(error.get("message") or "").lower()
+    data = error.get("data")
+    data_status = data.get("status_code") if isinstance(data, dict) else None
+    provider_error_type = any(
+        token in error_type
+        for token in (
+            "internalservererror",
+            "apistatuserror",
+            "serviceunavailable",
+            "badgateway",
+            "gatewaytimeout",
+            "providererror",
+            "provider_error",
+        )
+    )
+    explicit_status = any(
+        marker in message
+        for code in (500, 502, 503, 504)
+        for marker in (
+            f"error code: {code}",
+            f"status code: {code}",
+            f"status_code={code}",
+        )
+    )
+    incomplete_response = error_type == "remoteprotocolerror" and any(
+        marker in message
+        for marker in (
+            "peer closed connection without sending complete message body",
+            "incomplete chunked read",
+        )
+    )
+    return (
+        incomplete_response
+        or data_status in {500, 502, 503, 504}
+        or (provider_error_type and explicit_status)
+    )
+
+
+def _turn_was_account_limited(turn: dict[str, Any]) -> bool:
+    """识别 OpenCode Go 的账户额度终态，避免当作瞬时 429 重试。"""
+
+    error = turn.get("error")
+    if not isinstance(error, dict):
+        return False
+    message = str(error.get("message") or "").lower()
+    return "gousagelimiterror" in message or "usage limit reached" in message
+
+
+def _turn_was_empty_provider_response(turn: dict[str, Any]) -> bool:
+    """识别 provider 未产生任何可用 delta 却被包装成 completed 的终态。"""
+
+    # 1. 只接受 runtime 自有 fallback，不根据普通模型正文猜测失败。
+    if (
+        turn.get("status") != "completed"
+        or turn.get("finalResponse") != _EMPTY_PROVIDER_REPLY
+        or turn.get("error") is not None
+    ):
+        return False
+
+    # 2. 要求唯一 assistant item 明示未流出回复且没有任何工具调用。
+    items = turn.get("items")
+    if not isinstance(items, list):
+        return False
+    assistant_items = [
+        item
+        for item in items
+        if isinstance(item, dict) and item.get("type") == "assistantMessage"
+    ]
+    tool_items = [
+        item
+        for item in items
+        if isinstance(item, dict) and item.get("type") == "toolCall"
+    ]
+    if len(assistant_items) != 1 or tool_items:
+        return False
+    data = assistant_items[0].get("data")
+    metadata = data.get("metadata") if isinstance(data, dict) else None
+    return (
+        isinstance(data, dict)
+        and data.get("content") == _EMPTY_PROVIDER_REPLY
+        and isinstance(metadata, dict)
+        and metadata.get("streamed_reply") is False
+    )
 
 
 async def _connect(endpoint: str, deadline_s: float) -> AsyncAkashic:
@@ -125,7 +263,7 @@ async def _read_while_draining(
                 waiters.add(drain_task)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError(timeout_message)
+                raise TurnDeadlineExceeded(timeout_message)
 
             # 2. 同时完成时先暴露异常；两者成功则以 terminal event 收束。
             done, _ = await asyncio.wait(
@@ -134,7 +272,7 @@ async def _read_while_draining(
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if not done:
-                raise TimeoutError(timeout_message)
+                raise TurnDeadlineExceeded(timeout_message)
             terminal = None
             if drain_task in done:
                 terminal = drain_task.result()
@@ -215,7 +353,10 @@ async def _observe_terminal(
                     )
                     if terminal is not None:
                         return terminal, "event", state.event_count
-                if drain_done or time.monotonic() - terminal_seen_at >= terminal_grace_s:
+                if (
+                    drain_done
+                    or time.monotonic() - terminal_seen_at >= terminal_grace_s
+                ):
                     return _recovered_terminal(
                         persisted,
                         trace_path=trace_path,
@@ -224,7 +365,7 @@ async def _observe_terminal(
                     )
             elif drain_done:
                 raise RuntimeError("SDK 事件流结束但 turn/read 尚未终止")
-        raise TimeoutError(timeout_message)
+        raise TurnDeadlineExceeded(timeout_message)
     finally:
         if not drain_task.done():
             drain_task.cancel()
@@ -242,9 +383,10 @@ async def run_turn(
 ) -> dict[str, Any]:
     """通过公开 SDK 完成一轮任务并保存完整事件与持久化投影。"""
 
-    # 1. 连接独占 runtime，并建立本 task 唯一 thread。
+    # 1. readiness 与 turn 共享同一份 task 官方 agent 预算。
+    deadline = time.monotonic() + turn_timeout_s
     instruction = instruction_path.read_text(encoding="utf-8")
-    client = await _connect(endpoint, readiness_timeout_s)
+    client = await _connect(endpoint, min(readiness_timeout_s, turn_timeout_s))
     try:
         thread = await client.thread_start(
             {
@@ -265,12 +407,20 @@ async def run_turn(
         )
 
         # 2. 正常记录完整通知；若 terminal delivery 丢失则显式标记并读权威终态。
-        terminal, terminal_source, event_count = await _observe_terminal(
-            client,
-            handle,
-            trace_path=trace_path,
-            turn_timeout_s=turn_timeout_s,
-        )
+        remaining_sec = deadline - time.monotonic()
+        if remaining_sec <= 0:
+            raise TurnDeadlineExceeded(f"agent 未在 {turn_timeout_s:.1f}s 内终止")
+        try:
+            terminal, terminal_source, event_count = await _observe_terminal(
+                client,
+                handle,
+                trace_path=trace_path,
+                turn_timeout_s=remaining_sec,
+            )
+        except TurnDeadlineExceeded:
+            raise
+        except Exception as error:
+            raise AgentTurnFailed(str(error)) from error
 
         # 3. 用公开读取接口核对终态已经持久化，再写结果。
         persisted = await client.turn_read(thread.id, handle.id)
@@ -301,11 +451,57 @@ async def run_turn(
                 "status": status,
             },
         )
+        if status != "completed" and _turn_was_account_limited(terminal):
+            raise ProviderAccountLimited("OpenCode Go usage limit 已耗尽")
+        if status != "completed" and _turn_was_rate_limited(terminal):
+            raise ProviderRateLimited("provider 返回明确的 rate-limit 终态")
+        if status != "completed" and _turn_was_transient_provider_failure(terminal):
+            raise ProviderTransientFailure("provider 返回明确的临时 5xx 终态")
+        if _turn_was_empty_provider_response(terminal):
+            raise ProviderTransientFailure("provider 未返回任何可用响应 delta")
         if status != "completed":
-            raise RuntimeError(f"Akasic turn 未正常完成：{status}")
+            raise AgentTurnFailed(f"Akasic turn 未正常完成：{status}")
         return result
     finally:
         await client.close()
+
+
+def _write_driver_outcome(
+    path: Path,
+    *,
+    status: str,
+    error: BaseException | None = None,
+) -> None:
+    """原子记录 driver 终态，供 Harbor 区分题目超时与基础设施故障。"""
+
+    payload: dict[str, object] = {"status": status, "timestamp": time.time()}
+    if error is not None:
+        payload["error"] = {
+            "type": type(error).__name__,
+            "message": str(error),
+        }
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def _driver_error_status(error: BaseException) -> str:
+    """把 driver 异常映射为 verifier 与有效性 Gate 使用的终态。"""
+
+    if isinstance(error, TurnDeadlineExceeded):
+        return "timed_out"
+    if isinstance(error, ProviderRateLimited):
+        return "rate_limited"
+    if isinstance(error, ProviderTransientFailure):
+        return "provider_transient"
+    if isinstance(error, ProviderAccountLimited):
+        return "account_limited"
+    if isinstance(error, AgentTurnFailed):
+        return "agent_failed"
+    return "infra_failed"
 
 
 def main() -> int:
@@ -314,6 +510,7 @@ def main() -> int:
     parser.add_argument("--instruction-file", type=Path, required=True)
     parser.add_argument("--trace", type=Path, required=True)
     parser.add_argument("--result", type=Path, required=True)
+    parser.add_argument("--outcome", type=Path, required=True)
     parser.add_argument("--readiness-timeout", type=float, default=180.0)
     parser.add_argument("--turn-timeout", type=float, default=840.0)
     args = parser.parse_args()
@@ -329,6 +526,11 @@ def main() -> int:
             )
         )
     except Exception as error:
+        _write_driver_outcome(
+            args.outcome,
+            status=_driver_error_status(error),
+            error=error,
+        )
         _append_jsonl(
             args.trace,
             {
@@ -339,6 +541,7 @@ def main() -> int:
             },
         )
         raise
+    _write_driver_outcome(args.outcome, status="completed")
     print(
         json.dumps(
             {

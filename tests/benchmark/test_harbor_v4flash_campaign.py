@@ -11,21 +11,21 @@ from benchmark.harbor_v4flash.campaign import (
 )
 
 
-def test_campaign_accepts_six_concurrent_tasks(tmp_path: Path) -> None:
+def test_campaign_accepts_four_concurrent_tasks(tmp_path: Path) -> None:
     tasks = [tmp_path / "one", tmp_path / "two"]
     for task in tasks:
         task.mkdir()
 
-    validate_campaign_request(tasks, 6)
+    validate_campaign_request(tasks, 4)
 
 
-def test_campaign_rejects_more_than_six_concurrent_tasks(tmp_path: Path) -> None:
+def test_campaign_rejects_more_than_four_concurrent_tasks(tmp_path: Path) -> None:
     tasks = [tmp_path / "one", tmp_path / "two"]
     for task in tasks:
         task.mkdir()
 
-    with pytest.raises(ValueError, match="1 到 6"):
-        validate_campaign_request(tasks, 7)
+    with pytest.raises(ValueError, match="1 到 4"):
+        validate_campaign_request(tasks, 5)
 
 
 def test_campaign_rejects_duplicate_task_instances(tmp_path: Path) -> None:
@@ -50,7 +50,7 @@ def test_open_gate_requires_completed_stopped_isolated_smoke(
                 "source": {"digest_after": "sha256:source"},
                 "online": {"status": "passed"},
                 "docker": {"all_stopped": True},
-                "concurrency_gate": {"opened": True, "max_concurrent": 6},
+                "concurrency_gate": {"opened": True, "max_concurrent": 4},
             }
         ),
         encoding="utf-8",
@@ -84,7 +84,7 @@ def test_open_gate_rejects_smoke_from_different_source(tmp_path: Path) -> None:
                 "source": {"digest_after": "sha256:old-source"},
                 "online": {"status": "passed"},
                 "docker": {"all_stopped": True},
-                "concurrency_gate": {"opened": True, "max_concurrent": 6},
+                "concurrency_gate": {"opened": True, "max_concurrent": 4},
             }
         ),
         encoding="utf-8",
@@ -116,7 +116,7 @@ def test_open_gate_rejects_old_three_concurrent_authorization(
         encoding="utf-8",
     )
 
-    with pytest.raises(CampaignGateError, match="concurrency=6"):
+    with pytest.raises(CampaignGateError, match="concurrency=4"):
         find_open_concurrency_gate(
             tmp_path,
             expected_source_digest="sha256:source",

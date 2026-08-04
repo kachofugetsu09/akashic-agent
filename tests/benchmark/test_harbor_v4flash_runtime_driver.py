@@ -6,7 +6,19 @@ from typing import Any
 import pytest
 from akashic_sdk import SlowConsumerError
 
-from benchmark.harbor_v4flash.runtime_driver import _observe_terminal
+from benchmark.harbor_v4flash.runtime_driver import (
+    AgentTurnFailed,
+    ProviderAccountLimited,
+    ProviderRateLimited,
+    ProviderTransientFailure,
+    TurnDeadlineExceeded,
+    _driver_error_status,
+    _observe_terminal,
+    _turn_was_empty_provider_response,
+    _turn_was_account_limited,
+    _turn_was_rate_limited,
+    _turn_was_transient_provider_failure,
+)
 
 
 class _HandleWithoutTerminalEvent:
@@ -142,6 +154,124 @@ class _NeverReturningClient:
         raise AssertionError("unreachable")
 
 
+def test_driver_error_status_keeps_readiness_failure_out_of_valid_timeout() -> None:
+    assert _driver_error_status(TimeoutError("readiness")) == "infra_failed"
+    assert _driver_error_status(TurnDeadlineExceeded("budget")) == "timed_out"
+    assert _driver_error_status(AgentTurnFailed("turn")) == "agent_failed"
+    assert _driver_error_status(ProviderRateLimited("429")) == "rate_limited"
+    assert _driver_error_status(ProviderTransientFailure("500")) == "provider_transient"
+    assert _driver_error_status(ProviderAccountLimited("quota")) == "account_limited"
+
+
+def test_rate_limit_detection_only_reads_structured_turn_error() -> None:
+    assert _turn_was_rate_limited(
+        {
+            "status": "failed",
+            "input": "unrelated",
+            "error": {
+                "type": "RateLimitError",
+                "message": "Error code: 429 - Too Many Requests",
+                "retryable": True,
+            },
+        }
+    )
+    assert not _turn_was_rate_limited(
+        {
+            "status": "failed",
+            "input": "please explain HTTP 429 rate limits",
+            "error": {"type": "RuntimeError", "message": "tool failed"},
+        }
+    )
+
+
+def test_provider_transient_detection_requires_provider_type_and_explicit_5xx() -> None:
+    assert _turn_was_transient_provider_failure(
+        {
+            "error": {
+                "type": "InternalServerError",
+                "message": "Error code: 500 - Router.Unavailable",
+            }
+        }
+    )
+    assert _turn_was_transient_provider_failure(
+        {
+            "error": {
+                "type": "provider_error",
+                "message": (
+                    "Error code: 500 - {'type': 'Router.Unavailable', "
+                    "'modelID': 'deepseek-v4-flash'}"
+                ),
+                "retryable": True,
+            }
+        }
+    )
+    assert not _turn_was_transient_provider_failure(
+        {
+            "error": {
+                "type": "RuntimeError",
+                "message": "tool returned status code: 500",
+            }
+        }
+    )
+
+
+def test_provider_transient_detection_accepts_incomplete_response_body() -> None:
+    assert _turn_was_transient_provider_failure(
+        {
+            "error": {
+                "type": "RemoteProtocolError",
+                "message": (
+                    "peer closed connection without sending complete message body "
+                    "(incomplete chunked read)"
+                ),
+                "retryable": False,
+            }
+        }
+    )
+    assert not _turn_was_transient_provider_failure(
+        {
+            "error": {
+                "type": "RuntimeError",
+                "message": "incomplete chunked read",
+            }
+        }
+    )
+
+
+def test_empty_provider_response_requires_runtime_fallback_without_tool_calls() -> None:
+    terminal = {
+        "status": "completed",
+        "finalResponse": "模型未返回可用回复，请重试。",
+        "error": None,
+        "items": [
+            {"type": "userMessage", "data": {"content": "task"}},
+            {
+                "type": "assistantMessage",
+                "data": {
+                    "content": "模型未返回可用回复，请重试。",
+                    "metadata": {"streamed_reply": False},
+                },
+            },
+        ],
+    }
+
+    assert _turn_was_empty_provider_response(terminal)
+    terminal["items"].insert(1, {"type": "toolCall", "data": {"name": "shell"}})
+    assert not _turn_was_empty_provider_response(terminal)
+
+
+def test_go_usage_limit_is_not_treated_as_ordinary_rate_limit() -> None:
+    turn = {
+        "error": {
+            "type": "RateLimitError",
+            "message": "GoUsageLimitError: 5 hour usage limit reached",
+        }
+    }
+
+    assert _turn_was_account_limited(turn)
+    assert _turn_was_rate_limited(turn)
+
+
 @pytest.mark.asyncio
 async def test_observer_recovers_persisted_terminal_after_delivery_gap(
     tmp_path: Path,
@@ -158,8 +288,7 @@ async def test_observer_recovers_persisted_terminal_after_delivery_gap(
     )
 
     records = [
-        json.loads(line)
-        for line in trace.read_text(encoding="utf-8").splitlines()
+        json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()
     ]
     assert terminal["status"] == "completed"
     assert source == "turn/read_recovery"
@@ -184,8 +313,7 @@ async def test_observer_continuously_drains_burst_while_turn_read_is_pending(
     )
 
     records = [
-        json.loads(line)
-        for line in trace.read_text(encoding="utf-8").splitlines()
+        json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()
     ]
     assert terminal["status"] == "completed"
     assert source == "event"
