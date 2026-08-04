@@ -354,6 +354,93 @@ def test_mobile_history_tool_descriptions_fit_real_event_frame() -> None:
     assert any("description" not in call for call in calls)
 
 
+def test_mobile_history_cursor_shrinks_page_before_tool_details() -> None:
+    items = [
+        {
+            "id": f"message-{seq}",
+            "session_key": "mobile:test",
+            "seq": seq,
+            "role": "assistant",
+            "content": "done",
+            "tool_chain": [
+                {
+                    "calls": [
+                        {
+                            "call_id": f"call-{seq}",
+                            "name": "shell",
+                            "status": "success",
+                            "result_preview": "结" * 80_000,
+                        }
+                    ]
+                }
+            ],
+            "extra": {},
+            "ts": "2026-08-05T00:00:00Z",
+        }
+        for seq in (10, 11)
+    ]
+    payload: dict[str, object] = {
+        "items": items,
+        "total": 2,
+        "page_size": 50,
+        "content_ref_version": 1,
+        "after_seq": 9,
+        "next_after_seq": 11,
+        "snapshot_max_seq": 11,
+        "has_more": False,
+    }
+
+    channel_module._fit_mobile_history_payload(payload, allow_content_refs=True)
+
+    assert payload["items"] == [items[0]]
+    assert payload["next_after_seq"] == 10
+    assert payload["has_more"] is True
+    assert items[0]["tool_chain"][0]["calls"][0]["result_preview"].startswith("结")
+
+
+def test_mobile_history_marks_oversized_result_previews() -> None:
+    calls = [
+        {
+            "call_id": f"call-{index}",
+            "name": "shell",
+            "status": "success",
+            "result_preview": "结果" * 1_000,
+        }
+        for index in range(80)
+    ]
+    payload: dict[str, object] = {
+        "items": [
+            {
+                "id": "message-1",
+                "session_key": "mobile:test",
+                "seq": 1,
+                "role": "assistant",
+                "content": "done",
+                "tool_chain": [
+                    {
+                        "reasoning_content": "思考" * 30_000,
+                        "calls": calls,
+                    }
+                ],
+                "extra": {},
+                "ts": "2026-08-05T00:00:00Z",
+            }
+        ],
+        "total": 1,
+        "page_size": 50,
+        "content_ref_version": 1,
+        "after_seq": 0,
+        "next_after_seq": 1,
+        "snapshot_max_seq": 1,
+        "has_more": False,
+    }
+
+    channel_module._fit_mobile_history_payload(payload, allow_content_refs=True)
+
+    assert any(call["result_preview"] == "[历史同步时已省略过长详情]" for call in calls)
+    assert channel_module._mobile_tool_argument_encoded_size(payload) <= 240 * 1024
+
+
 def _message_frame(
     *,
     frame_id: str,

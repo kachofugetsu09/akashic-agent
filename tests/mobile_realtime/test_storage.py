@@ -98,6 +98,29 @@ def test_database_uses_wal_and_keeps_server_identity_stable(
         )
 
 
+def test_revoke_device_clears_durable_inbox_atomically(
+    storage: MobileRealtimeStorage,
+) -> None:
+    storage.register_device(_device())
+    for index in range(2):
+        storage.append_durable_event(
+            device_id="device-1",
+            event_id=f"event-{index + 1}",
+            envelope_json=_event_json(f"event-{index + 1}"),
+            created_at=NOW,
+        )
+
+    revoked_at = NOW + timedelta(minutes=1)
+    revoked = storage.revoke_device("device-1", revoked_at=revoked_at)
+
+    assert revoked.revoked_at == revoked_at
+    assert storage.count_durable_events("device-1") == 0
+    assert storage.list_active_devices() == ()
+    assert storage.revoke_device(
+        "device-1", revoked_at=NOW + timedelta(minutes=2)
+    ).revoked_at == revoked_at
+
+
 def test_durable_event_range_detects_missing_sequence(
     storage: MobileRealtimeStorage,
 ) -> None:
