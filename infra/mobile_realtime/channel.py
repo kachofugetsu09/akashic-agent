@@ -2322,7 +2322,7 @@ def _fit_mobile_history_payload(
     if allow_content_refs:
         while len(items) > 1:
             items.pop()
-            payload["next_after_seq"] = int(items[-1]["seq"])
+            payload["next_after_seq"] = cast(int, items[-1]["seq"])
             payload["has_more"] = True
             if (
                 _mobile_tool_argument_encoded_size(payload)
