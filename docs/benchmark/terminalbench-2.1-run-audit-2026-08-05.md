@@ -1,4 +1,4 @@
-# Terminal-Bench 2.1 运行审计
+# Terminal-Bench 2.1 Max 全量运行审计
 
 日期：2026-08-05
 
@@ -7,69 +7,92 @@
 
 ## 1. 结论
 
-本报告保留两条互不拼分的轨道：
+2026-08-04 运行的是 DeepSeek V4 Flash、`reasoning_effort=max` 的 89 题全量轨道。
+最新主 campaign 投影为 `88/89 accepted`、`59` 题 reward `1`。trace 审计发现三个
+provider fallback 被错收成 reward `0`，另有一题在 verifier 下载阶段耗尽时限；
+`torch-tensor-parallelism` 的补跑则按真实 Agent timeout 记失败。
 
-| 轨道 | Provider / effort | 有效结果 | 结论 |
-|---|---|---:|---|
-| 2026-07-31 历史全量诊断 | DeepSeek V4 Flash / `high` | 89/89 | `63/89 = 70.8%` |
-| 2026-08-04 定向补验 | DeepSeek 官方 API / `max` | 1/3 | 只有 `mteb-retrieve` 得到可计分结果，reward `0`；另外两题基础设施无效 |
+审计后的当前状态为：
 
-历史全量结果仍是当前唯一完整的 89 题成绩。定向补验不是一次新的全量运行，不能把
-`mteb-retrieve` 的新结果替换进历史 High 轨道，也不能把三个 nominal reward `0`
-写成 Max 轨道 `0/3`。
+| 分类 | 数量 | 是否进入当前有效分母 |
+|---|---:|---|
+| 官方 verifier reward `1` | 59 | 是 |
+| 有效 reward `0`，含真实 Agent timeout | 26 | 是 |
+| Provider fallback 无效 | 3 | 否 |
+| Verifier 依赖下载无效 | 1 | 否 |
+| 合计 | 89 | 85 个有效结果 |
 
-## 2. 历史 89 题
+因此当前可报告为：
 
-历史逐题证据来自
-[V4 Flash Terminal-Bench 2.1 逐题诊断](v4flash-terminalbench-89-case-diagnostics.md)：
+- 全量进度：`85/89` 个任务已有有效结果，4 个基础设施无效结果待替代重跑；
+- 当前有效结果通过率：`59/85 = 69.4%`；
+- 若只把未完成题暂时按失败放进固定 89 分母，进度快照是 `59/89 = 66.3%`，但这不是
+  最终成绩；
+- 最终 Max 全量分数必须等 5 个无效 case 取得替代结果后才能冻结。
 
-| 分类 | 数量 |
-|---|---:|
-| `PASS`，含 `PASS + RESOURCE` | 63 |
-| `ASSERT` | 13 |
-| `TIMEOUT` | 12 |
-| `TIMEOUT + RESOURCE` | 1 |
-| 合计 | 89 |
+历史 High 全量 `63/89 = 70.8%` 只保留在 CSV 的 `historical_high_*` 对照列，不是
+本报告的主结果，也不能与 Max attempt 拼接。
 
-CSV 的每一行都保留历史状态、reward、失败摘要和 trial 名。`historical_*` 列只描述
-2026-07-31 High 轨道；`revalidation_*` 列只描述 2026-08-04 Max 定向补验。
+## 2. 全量 campaign 恢复链
 
-## 3. Max 定向补验
+运行根目录：
+`/mnt/data/coding/akasic-agent-worktrees/benchmark-runs/official-automation-max-20260804`
 
-### `mteb-retrieve`：有效模型失败
+| Campaign | Task set | Accepted | Reward 1 | 终态 |
+|---|---:|---:|---:|---|
+| `20260804-025734` | 89 | 0 | 0 | 为修 harness 主动中断 |
+| `20260804-030932` | 89 | 13 | 11 | 中断，WAL 保留 |
+| `20260804-052229` | 89 | 85 | 59 | failed，缺 4 题 |
+| `20260804-104726` | 89 | 85 | 59 | failed，继续恢复 |
+| `20260804-114103` | 89 | 88 | 59 | failed，缺 `pytorch-model-recovery` |
 
-- Trial：`akasic-bench-v4flash-diagnostic-mteb-retrieve-20260804-144354-124543`
-- Agent 正常完成，回答的是 `HumanEval: Benchmarking Python code generation via
-  functional examples`；期望答案为 `MTEB: Massive Text Embedding Benchmark`。
-- 官方 verifier 为 1 pass、1 fail，reward `0`。
-- verifier 依赖准备耗时约 1066 秒，发生在评分计时前；准备前后候选摘要一致。
-- 分类：`valid_model_failure`。这次失败可以用于分析模型策略，不需要因基础设施原因替换。
+这些 campaign 是同一 Max 全量轨道的恢复过程，不是五次独立 benchmark，也不能把
+重复 attempt 相加。逐题 CSV 以 `114103` 的 88 个 accepted outcome 为主投影，再应用
+trace 审计和有效补验。
 
-### `path-tracing-reverse`：provider 与生命周期污染
+## 3. 四个待替代结果
 
-- 首个 Max trial：`akasic-bench-v4flash-diagnostic-path-tracing-reverse-20260804-144356-248789`。
-  模型流中断后 runtime 生成 fallback 文本，Agent 没有创建 `/app/mystery.c`；该 nominal
-  reward `0` 不应被 campaign 接受为真实模型结果。
-- 再次运行：`akasic-bench-v4flash-diagnostic-path-tracing-reverse-20260804-152820-788304`。
-  Agent 达到原题 1800 秒 deadline 后，gateway 仍继续执行并与 verifier 阶段重叠。
-  verifier 最终写出 reward `0`，但候选和进程生命周期已经不再满足独立评分前提。
-- 分类：`invalid_provider_and_lifecycle`。这两个结果都不进入 Max 分母。
-- 下一步：deadline 必须先终止 gateway 及其子进程，确认 task workdir 冻结后才能启动
-  verifier；随后使用新 trial 重跑。
+### Provider fallback：3 题
 
-### `torch-tensor-parallelism`：verifier 基础设施无效
+| Case | 主运行现象 | 当前结论 |
+|---|---|---|
+| `code-from-image` | 做过 OCR 工具工作，最后只生成“模型未返回可用回复，请重试。” | provider fallback，旧 harness 错收 reward `0` |
+| `modernize-scientific-stack` | 只生成同一 fallback | 基础设施无效 |
+| `overfull-hbox` | 只生成同一 fallback | 基础设施无效 |
 
-- 首个 Max trial：`akasic-bench-v4flash-diagnostic-torch-tensor-parallelism-20260804-144358-056485`。
-  模型流中断后只得到 fallback，未形成候选；nominal reward `0` 无效。
-- 再次运行：`akasic-bench-v4flash-diagnostic-torch-tensor-parallelism-20260804-152822-805189`。
-  Agent 在原题 900 秒 deadline 前生成了 `/app/parallel_linear.py`，但其残留 `apt-get`
-  继续持有 `/var/lib/dpkg/lock-frontend`。verifier 依赖准备以 exit `100` 失败，未执行
-  官方评分，因此没有 reward。
-- 分类：`invalid_verifier_infrastructure`。该结果不进入 Max 分母。
-- 下一步：修复 Agent 超时后的进程组清理，再从独立 trial 重跑；若只补验冻结候选，也必须
-  先证明候选摘要不变且没有 Agent 进程存活。
+这三题没有可接受的模型终态。它们必须由修正后的 provider 分类和 lifecycle cleanup
+创建新 trial 替代，不能保留旧 reward `0`。
 
-## 4. Harness 审计发现
+### Verifier 依赖下载：1 题
+
+`pytorch-model-recovery` 三次都在 verifier 内下载约 2.6 GiB PyTorch/CUDA 依赖时耗尽
+900 秒，官方测试正文没有开始，campaign 因此始终没有 accepted outcome。该题属于
+verifier 基础设施无效，不属于模型失败。
+
+## 4. 已补验和额外诊断
+
+### `mteb-retrieve`：有效失败
+
+- 替代 Trial：`akasic-bench-v4flash-diagnostic-mteb-retrieve-20260804-144354-124543`；
+- verifier 依赖准备发生在评分计时前，准备前后候选摘要一致；
+- 官方 verifier 1/2，Agent 回答 HumanEval，期望 MTEB；
+- reward `0` 是有效模型失败，已经进入 84 个有效结果。
+
+### `path-tracing-reverse`：保留原始 Agent timeout
+
+- 主运行 Trial：`akasic-bench-v4flash-diagnostic-path-tracing-reverse-20260804-075349-176596`；
+- 原始结果是达到题目 1800 秒 Agent deadline，reward `0`，当前按真实 timeout 计入；
+- 额外 v7 Trial 在 deadline 后发生 gateway 与 verifier 重叠，属于无效诊断，没有替换
+  原始结果。
+
+### `torch-tensor-parallelism`：按真实 Agent timeout 记失败
+
+- v7 Trial：`akasic-bench-v4flash-diagnostic-torch-tensor-parallelism-20260804-152822-805189`；
+- Agent 获得完整 900 秒官方时限后超时，按本轨道规则直接记有效失败，不再给模型补时；
+- Agent 残留 `apt-get` 让后续 verifier 无法取得 dpkg lock。该 lifecycle 缺陷仍要修，
+  但不会触发本题再次运行 Agent。
+
+## 5. Harness 审计发现
 
 ```text
 ┌──────────────┐   deadline   ┌────────────────────┐
@@ -86,27 +109,24 @@ CSV 的每一行都保留历史状态、reward、失败摘要和 trial 名。`hi
                               └────────────────────┘
 ```
 
-当前实现已经覆盖 WAL 恢复、最长官方时限优先、四并发上限、provider transient
-重试、磁盘低水位、依赖准备与 verifier 计时分离，以及按精确 Docker project 清理。
-这轮运行仍暴露两个不能靠结果投影修补的问题：
+当前候选已经覆盖 WAL 恢复、最长官方时限优先、四并发上限、provider transient 重试、
+磁盘低水位、verifier 依赖准备与评分计时分离，以及按精确 Docker project 清理。这轮
+运行仍证明两个前置条件尚未成立：
 
-1. fallback 文本会把 provider 断流伪装成正常 completed turn，随后得到 nominal
-   reward `0`；provider 失败必须在 accepted-results 之前分类。
-2. Agent deadline 只终止等待者，不保证 gateway 及其题内进程已经停止；verifier
-   必须以“进程已停且候选已冻结”为硬前置条件。
+1. runtime fallback 不能代表 completed model turn；accepted projection 必须先读取
+   provider 终态并把 transient admission 排除；
+2. Agent deadline 后必须证明 gateway 和题内子进程已经停止、候选 workdir 已冻结，
+   才能开始 verifier。
 
-因此 v7 campaign 的终态是 `failed`、`accepted=0/2`。它正确地没有形成新分数，
-但仍说明 lifecycle cleanup 需要继续修复。
+v7 campaign 的 `failed`、`accepted=0/2` 是额外诊断终态，不是 Max 全量得分。
 
-## 5. 证据入口
-
-运行根目录：
-`/mnt/data/coding/akasic-agent-worktrees/benchmark-runs/official-automation-max-20260804`
+## 6. 证据入口
 
 | 证据 | 相对运行根目录的位置 |
 |---|---|
-| 三题 Max campaign | `_campaigns/akasic-bench-v4flash-campaign-20260804-144353/` |
-| 两题 v7 campaign | `_campaigns/akasic-bench-v4flash-campaign-20260804-152819/` |
+| Max 主投影 | `_campaigns/akasic-bench-v4flash-campaign-20260804-114103/` |
+| 三题补验 | `_campaigns/akasic-bench-v4flash-campaign-20260804-144353/` |
+| 两题 v7 诊断 | `_campaigns/akasic-bench-v4flash-campaign-20260804-152819/` |
 | Campaign WAL | `<campaign>/events.jsonl` |
 | Accepted 投影 | `<campaign>/accepted-results.json` |
 | Agent trace | `<trial>/agent/trace.jsonl` |
@@ -114,5 +134,5 @@ CSV 的每一行都保留历史状态、reward、失败摘要和 trial 名。`hi
 | Verifier 输出 | `<trial>/verifier/test-stdout.txt` |
 | 完整结果与 artifact digest | `<trial>/campaign-manifest.json` |
 
-运行 artifact 不提交进 Git；报告和 CSV 只记录可审阅索引与结论。容器终态由每个
-trial manifest 的 `containers_stopped` 记录，清理策略不运行全局 Docker prune。
+运行 artifact 不提交进 Git；报告和 CSV 只记录可审阅索引与结论。逐题 CSV 以 Max
+状态开头，历史 High 只作为末尾对照列。

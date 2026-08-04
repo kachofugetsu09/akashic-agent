@@ -444,11 +444,20 @@ OpenCode Go endpoint。该次 smoke 因 provider、endpoint 与凭据身份不�
 
 ### 2026-08-05 · 补验终态与逐题审计
 
-三题 DeepSeek 官方 API Max campaign 表面记录三个 reward `0`，逐项 trace 复核后只有
-`mteb-retrieve` 是有效模型失败。`path-tracing-reverse` 的首轮是 provider fallback；
-v7 又在 Agent deadline 后发生 gateway 与 verifier 生命周期重叠。`torch-tensor-parallelism`
-的 v7 Agent 超时后残留 `apt-get` 持有 dpkg lock，导致 verifier 依赖准备 exit `100`。
-因此 v7 campaign 终态为 `failed`、`accepted=0/2`，不形成新分数。
+Max 全量主 campaign 经 `025734 → 030932 → 052229 → 104726 → 114103` 恢复，最新投影
+为 `88/89 accepted`、59 个 reward `1`。逐项 trace 审计后，三个 runtime fallback 被旧
+harness 错收为 reward `0`，`pytorch-model-recovery` 又在 verifier 下载约 2.6 GiB
+PyTorch/CUDA 依赖时耗尽 900 秒且没有 accepted outcome。`torch-tensor-parallelism` 的
+v7 已获得完整 Agent 官方时限并超时，按维护者确认的规则记有效失败，不再补模型时限。
+当前因此是 85 个有效结果：59 pass、26 fail，通过率 `59/85 = 69.4%`；另有 4 个
+infra-invalid case 待替代重跑，
+最终 Max 全量成绩尚未冻结。
+
+三题补验中只有 `mteb-retrieve` 形成有效模型失败。`path-tracing-reverse` 的 v7 在 Agent
+deadline 后发生 gateway 与 verifier 生命周期重叠，未替换主运行的真实 Agent timeout；
+`torch-tensor-parallelism` 的 v7 Agent 超时后残留 `apt-get` 持有 dpkg lock，导致
+verifier 依赖准备 exit `100`。该题仍按 Agent timeout 记失败；v7 campaign 自身终态为
+`failed`、`accepted=0/2`，不形成独立分数。
 
 完整口径、三题证据和 89 题机器可读索引见
 [2026-08-05 运行审计](terminalbench-2.1-run-audit-2026-08-05.md)与
