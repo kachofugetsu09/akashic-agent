@@ -10,6 +10,7 @@ from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -444,3 +445,11 @@ def test_gate_build_and_scenario_have_independent_timeouts(
     assert "--build" not in scenario_command
     assert scenario_command[-4:-1] == ["--no-deps", "change-gate", "python"]
     assert scenario_timeout == scenario.timeout_seconds
+
+
+def test_change_gate_forbids_npm_network_fallback() -> None:
+    compose_path = ROOT / "docker" / "debug" / "docker-compose.change-gate.yml"
+    compose = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+    environment = compose["services"]["change-gate"]["environment"]
+
+    assert environment["npm_config_offline"] == "true"
