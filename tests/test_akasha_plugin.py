@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import sqlite3
 import threading
 from contextlib import closing
@@ -22,6 +23,7 @@ from agent.config_models import (
 )
 from agent.control.context import current_turn_id
 from agent.looping.ports import MemoryServices
+from agent.migrations.akasha_sidecar import rebuild_akasha_sidecars
 from agent.plugins import Plugin
 from agent.plugins.context import PluginContext, PluginKVStore
 from agent.plugins.manifest import (
@@ -1165,6 +1167,123 @@ def test_build_sparse_index_fails_loud_on_orphan_messages(tmp_path: Path) -> Non
 
     with pytest.raises(ValueError, match="孤儿"):
         build_sparse_index(sessions_path, tmp_path / "index.db")
+
+
+def test_build_sparse_index_models_arrival_during_previous_reply_as_overlap(
+    tmp_path: Path,
+) -> None:
+    sessions_path = tmp_path / "sessions.db"
+    index_path = tmp_path / "index.db"
+    _create_sessions(sessions_path)
+    started = datetime(2026, 8, 5, 2, 23, tzinfo=timezone.utc)
+    _append_turn(
+        sessions_path,
+        sequence=0,
+        user="first",
+        assistant="slow reply",
+        started=started,
+    )
+    _append_turn(
+        sessions_path,
+        sequence=2,
+        user="arrived while busy",
+        assistant="second reply",
+        started=started + timedelta(seconds=5),
+    )
+
+    build_sparse_index(sessions_path, index_path)
+
+    with closing(sqlite3.connect(index_path)) as connection:
+        timing = connection.execute(
+            """
+            SELECT response_delta_seconds, idle_gap_seconds, log_idle_gap,
+                   overlap_seconds, log_overlap
+            FROM time_observations WHERE turn_id = 'message:2::message:3'
+            """
+        ).fetchone()
+        feature = connection.execute(
+            """
+            SELECT value FROM sparse_features
+            WHERE turn_id = 'message:2::message:3'
+              AND family = 'time_overlap' AND feature_id = 'test'
+            """
+        ).fetchone()
+        stats = connection.execute(
+            """
+            SELECT idle_gap_count, mean_log_idle_gap
+            FROM time_stats WHERE channel = 'test'
+            """
+        ).fetchone()
+
+    assert timing == pytest.approx((-5.0, 0.0, 0.0, 5.0, math.log1p(5.0)))
+    assert feature == pytest.approx((math.log1p(5.0),))
+    assert stats == pytest.approx((1, 0.0))
+
+
+def test_rebuild_akasha_sidecars_backs_up_and_publishes_verified_pair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    memory_dir = workspace / "memory"
+    memory_dir.mkdir(parents=True)
+    sessions_path = workspace / "sessions.db"
+    index_path = memory_dir / "akasha-v2-index.db"
+    graph_path = memory_dir / "akasha.db"
+    backup_dir = workspace / "backups" / "v9-test"
+    _create_sessions(sessions_path)
+    _append_turn(
+        sessions_path,
+        sequence=0,
+        user="alpha request",
+        assistant="beta reply",
+        started=datetime(2026, 8, 5, tzinfo=timezone.utc),
+        with_embeddings=True,
+    )
+    with closing(sqlite3.connect(index_path)) as connection, connection:
+        connection.execute("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO metadata VALUES ('index_version', '8')")
+    source_sha = hashlib.sha256(sessions_path.read_bytes()).hexdigest()
+    host = Config(
+        provider="openai",
+        model="chat-model",
+        api_key="chat-key",
+        system_prompt="system",
+        memory=HostMemoryConfig(
+            enabled=True,
+            engine="akasha",
+            embedding=MemoryEmbeddingConfig(
+                model="embedding-model",
+                output_dimensionality=2,
+            ),
+        ),
+    )
+    monkeypatch.setattr(Config, "load", lambda *_args, **_kwargs: host)
+
+    rebuilt = rebuild_akasha_sidecars(
+        config_path=tmp_path / "config.toml",
+        workspace=workspace,
+        backup_dir=backup_dir,
+        accepted_versions={"8"},
+    )
+
+    with closing(sqlite3.connect(index_path)) as connection:
+        assert connection.execute(
+            "SELECT value FROM metadata WHERE key = 'index_version'"
+        ).fetchone() == ("9",)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sparse_turns"
+        ).fetchone() == (1,)
+    with closing(sqlite3.connect(backup_dir / "index-before.db")) as connection:
+        assert connection.execute(
+            "SELECT value FROM metadata WHERE key = 'index_version'"
+        ).fetchone() == ("8",)
+    manifest = json.loads((backup_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert rebuilt
+    assert graph_path.is_file()
+    assert manifest["indexVersion"] == "9"
+    assert manifest["candidateMemorySha256"]
+    assert hashlib.sha256(sessions_path.read_bytes()).hexdigest() == source_sha
 
 
 def _write_inspector_config(workspace: Path) -> None:

@@ -12,6 +12,8 @@ from bootstrap.workspace_lock import WorkspaceInstanceLock
 
 _PROJECT_ROOT = Path(__file__).parents[1]
 _ORIGIN_ID = "20260802_01_yoyo_origin"
+_AKASHA_V9_ID = "20260805_01_akasha_sparse_index_v9"
+_CURRENT_IDS = (_ORIGIN_ID, _AKASHA_V9_ID)
 
 
 def _runner(root: Path, *, repo_root: Path = _PROJECT_ROOT) -> MigrationRunner:
@@ -58,14 +60,14 @@ def test_origin_removes_legacy_state_without_touching_business_data(
     outcome = _runner(root).run()
 
     assert outcome.state == "migrated"
-    assert outcome.migrations == (_ORIGIN_ID,)
+    assert outcome.migrations == _CURRENT_IDS
     assert not cursor.exists()
     assert not lock.exists()
     assert not backups.exists()
     assert config.read_bytes() == b"current = true\n"
     assert sessions.read_bytes() == b"session-bytes"
     assert memory.read_bytes() == b"memory-bytes"
-    assert _applied_ids(workspace / "migrations.sqlite3") == [_ORIGIN_ID]
+    assert _applied_ids(workspace / "migrations.sqlite3") == list(_CURRENT_IDS)
 
 
 def test_origin_is_a_noop_when_legacy_state_is_absent(tmp_path: Path) -> None:
@@ -75,7 +77,7 @@ def test_origin_is_a_noop_when_legacy_state_is_absent(tmp_path: Path) -> None:
     second = runner.run()
 
     assert first.state == "migrated"
-    assert first.migrations == (_ORIGIN_ID,)
+    assert first.migrations == _CURRENT_IDS
     assert second.state == "current"
     assert second.migrations == ()
 
@@ -97,7 +99,7 @@ def test_runner_supplies_yoyo_identity_without_os_username(
 
     outcome = _runner(tmp_path / "state").run()
 
-    assert outcome.migrations == (_ORIGIN_ID,)
+    assert outcome.migrations == _CURRENT_IDS
     assert "USER" not in os.environ
 
 
@@ -121,7 +123,7 @@ def test_origin_failure_is_not_marked_and_retries(
     assert _applied_ids(runner.ledger_path) == []
 
     monkeypatch.undo()
-    assert runner.run().migrations == (_ORIGIN_ID,)
+    assert runner.run().migrations == _CURRENT_IDS
     assert not backups.exists()
 
 
@@ -144,8 +146,8 @@ def test_catalog_ignores_archived_git_cursor_migrations(tmp_path: Path) -> None:
 
     outcome = runner.run()
 
-    assert outcome.migrations == (_ORIGIN_ID,)
-    assert _applied_ids(runner.ledger_path) == [_ORIGIN_ID]
+    assert outcome.migrations == _CURRENT_IDS
+    assert _applied_ids(runner.ledger_path) == list(_CURRENT_IDS)
 
 
 def test_new_branch_migration_is_applied_even_after_sibling_ran(
@@ -188,5 +190,5 @@ def test_ledger_supports_workspace_path_with_uri_characters(tmp_path: Path) -> N
 
     outcome = _runner(root).run()
 
-    assert outcome.migrations == (_ORIGIN_ID,)
+    assert outcome.migrations == _CURRENT_IDS
     assert (root / "workspace/migrations.sqlite3").is_file()

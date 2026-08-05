@@ -209,8 +209,11 @@ class EncodedTurn:
     term_fields: dict[str, Counter[str]]
     start_gap_seconds: float | None
     log_start_gap: float | None
-    inter_turn_gap_seconds: float | None
-    log_inter_turn_gap: float | None
+    response_delta_seconds: float | None
+    idle_gap_seconds: float | None
+    log_idle_gap: float | None
+    overlap_seconds: float | None
+    log_overlap: float | None
     persisted_message_span_seconds: float
     log_persisted_message_span: float
     channel: str
@@ -817,9 +820,9 @@ def _load_time_stats(connection: sqlite3.Connection) -> dict[str, TimeStats]:
     return {
         row["channel"]: TimeStats(
             channel=row["channel"],
-            inter_gap_count=row["inter_gap_count"],
-            mean_log_inter_gap=row["mean_log_inter_gap"],
-            m2_log_inter_gap=row["m2_log_inter_gap"],
+            idle_gap_count=row["idle_gap_count"],
+            mean_log_idle_gap=row["mean_log_idle_gap"],
+            m2_log_idle_gap=row["m2_log_idle_gap"],
         )
         for row in connection.execute("SELECT * FROM time_stats")
     }
@@ -862,8 +865,11 @@ def _encode_turn(
         term_fields=term_fields,
         start_gap_seconds=temporal.start_gap_seconds,
         log_start_gap=temporal.log_start_gap,
-        inter_turn_gap_seconds=temporal.inter_turn_gap_seconds,
-        log_inter_turn_gap=temporal.log_inter_turn_gap,
+        response_delta_seconds=temporal.response_delta_seconds,
+        idle_gap_seconds=temporal.idle_gap_seconds,
+        log_idle_gap=temporal.log_idle_gap,
+        overlap_seconds=temporal.overlap_seconds,
+        log_overlap=temporal.log_overlap,
         persisted_message_span_seconds=temporal.persisted_message_span_seconds,
         log_persisted_message_span=temporal.log_persisted_message_span,
         channel=temporal.channel,
@@ -885,8 +891,11 @@ class EncodedTime:
     features: list[SparseFeature]
     start_gap_seconds: float | None
     log_start_gap: float | None
-    inter_turn_gap_seconds: float | None
-    log_inter_turn_gap: float | None
+    response_delta_seconds: float | None
+    idle_gap_seconds: float | None
+    log_idle_gap: float | None
+    overlap_seconds: float | None
+    log_overlap: float | None
     persisted_message_span_seconds: float
     log_persisted_message_span: float
     channel: str
@@ -915,23 +924,32 @@ def _encode_time(
     if persisted_span < 0:
         raise AppendOnlyViolation(f"negative persisted message span at turn {turn.turn_id}")
     start_gap = None if previous is None else (started - _parse_time(previous.last_started_at)).total_seconds()
-    inter_gap = None if previous is None else (started - _parse_time(previous.last_committed_at)).total_seconds()
-    if start_gap is not None and (start_gap < 0 or inter_gap is None or inter_gap < 0):
+    response_delta = (
+        None
+        if previous is None
+        else (started - _parse_time(previous.last_committed_at)).total_seconds()
+    )
+    if start_gap is not None and (start_gap < 0 or response_delta is None):
         raise AppendOnlyViolation(f"negative session gap at turn {turn.turn_id}")
     log_start_gap = None if start_gap is None else math.log1p(start_gap)
-    log_inter_gap = None if inter_gap is None else math.log1p(inter_gap)
+    idle_gap = None if response_delta is None else max(response_delta, 0.0)
+    overlap = None if response_delta is None else max(-response_delta, 0.0)
+    log_idle_gap = None if idle_gap is None else math.log1p(idle_gap)
+    log_overlap = None if overlap is None else math.log1p(overlap)
     stats = time_stats.setdefault(channel, TimeStats(channel, 0.0, 0.0, 0))
     variance = (
-        stats.m2_log_inter_gap / (stats.inter_gap_count - 1)
-        if stats.inter_gap_count > 1
+        stats.m2_log_idle_gap / (stats.idle_gap_count - 1)
+        if stats.idle_gap_count > 1
         else None
     )
     local = _local_time(turn.started_at)
     evidence = {
-        "inter_turn_gap_seconds": inter_gap,
-        "prior_count": stats.inter_gap_count,
-        "prior_mean_log_inter_gap": stats.mean_log_inter_gap,
-        "prior_variance_log_inter_gap": variance,
+        "response_delta_seconds": response_delta,
+        "idle_gap_seconds": idle_gap,
+        "overlap_seconds": overlap,
+        "prior_count": stats.idle_gap_count,
+        "prior_mean_log_idle_gap": stats.mean_log_idle_gap,
+        "prior_variance_log_idle_gap": variance,
         "persisted_message_span_seconds": persisted_span,
         "start_gap_seconds": start_gap,
     }
@@ -944,16 +962,29 @@ def _encode_time(
             evidence_json=json.dumps(evidence, sort_keys=True),
         )
     ]
-    if log_inter_gap is not None:
-        _update_time_stats(stats, log_inter_gap)
+    if log_overlap is not None and overlap is not None and overlap > 0.0:
+        features.append(
+            SparseFeature(
+                family="time_overlap",
+                feature_id=channel,
+                value=log_overlap,
+                rank=1,
+                evidence_json=json.dumps(evidence, sort_keys=True),
+            )
+        )
+    if log_idle_gap is not None:
+        _update_time_stats(stats, log_idle_gap)
     hour_angle = 2.0 * math.pi * (local.hour + local.minute / 60.0 + local.second / 3600.0) / 24.0
     weekday_angle = 2.0 * math.pi * local.weekday() / 7.0
     return EncodedTime(
         features=features,
         start_gap_seconds=start_gap,
         log_start_gap=log_start_gap,
-        inter_turn_gap_seconds=inter_gap,
-        log_inter_turn_gap=log_inter_gap,
+        response_delta_seconds=response_delta,
+        idle_gap_seconds=idle_gap,
+        log_idle_gap=log_idle_gap,
+        overlap_seconds=overlap,
+        log_overlap=log_overlap,
         persisted_message_span_seconds=persisted_span,
         log_persisted_message_span=math.log1p(persisted_span),
         channel=channel,
@@ -968,11 +999,11 @@ def _encode_time(
     )
 
 
-def _update_time_stats(stats: TimeStats, log_inter_gap: float) -> None:
-    stats.inter_gap_count += 1
-    delta = log_inter_gap - stats.mean_log_inter_gap
-    stats.mean_log_inter_gap += delta / stats.inter_gap_count
-    stats.m2_log_inter_gap += delta * (log_inter_gap - stats.mean_log_inter_gap)
+def _update_time_stats(stats: TimeStats, log_idle_gap: float) -> None:
+    stats.idle_gap_count += 1
+    delta = log_idle_gap - stats.mean_log_idle_gap
+    stats.mean_log_idle_gap += delta / stats.idle_gap_count
+    stats.m2_log_idle_gap += delta * (log_idle_gap - stats.mean_log_idle_gap)
 
 
 def _persist_turn(
@@ -1108,7 +1139,8 @@ def _persist_channel_observations(
         dense_rows,
     )
     connection.execute(
-        "INSERT INTO time_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO time_observations VALUES "
+        "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             turn.turn_id,
             encoded.channel,
@@ -1116,8 +1148,11 @@ def _persist_channel_observations(
             encoded.session_turn_index,
             encoded.start_gap_seconds,
             encoded.log_start_gap,
-            encoded.inter_turn_gap_seconds,
-            encoded.log_inter_turn_gap,
+            encoded.response_delta_seconds,
+            encoded.idle_gap_seconds,
+            encoded.log_idle_gap,
+            encoded.overlap_seconds,
+            encoded.log_overlap,
             encoded.persisted_message_span_seconds,
             encoded.log_persisted_message_span,
             encoded.local_hour,
@@ -1168,9 +1203,9 @@ def _persist_online_state(
         [
             (
                 stats.channel,
-                stats.inter_gap_count,
-                stats.mean_log_inter_gap,
-                stats.m2_log_inter_gap,
+                stats.idle_gap_count,
+                stats.mean_log_idle_gap,
+                stats.m2_log_idle_gap,
             )
             for stats in time_stats.values()
         ],

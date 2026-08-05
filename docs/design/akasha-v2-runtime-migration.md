@@ -122,6 +122,11 @@
 一个历史 turn 是稳定原子节点。它携带原始 message 指针、user/assistant dense、
 增量 BM25 词项、时间与 burst 统计。检索先形成非负 seed，再进入同一 `MemoryCycle`：
 
+用户消息可以在上一轮 assistant 回复尚未提交时到达。v9 索引把“本轮开始时间减去
+上一轮提交时间”保留为有符号 `response_delta_seconds`：非负部分是空闲间隔，负值的
+绝对值是回复重叠，并分别编码 `time` 与 `time_overlap` 特征。只有同一 session 的
+turn 开始时间倒序或单轮持久化跨度为负才属于源数据契约破坏；合法重叠不得阻止启动。
+
 ```text
 dense / BM25 / burst / temporal evidence
                     │
