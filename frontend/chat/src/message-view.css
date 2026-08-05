@@ -216,7 +216,22 @@
   content: "";
 }
 
-.process-line::after {
+.process-flow {
+  position: absolute;
+  left: var(--process-content-inset);
+  width: var(--process-rail-width);
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease-out;
+}
+
+.process-flow[data-active="true"] {
+  opacity: 1;
+}
+
+.process-flow::after {
   position: absolute;
   inset: 0;
   background-image: linear-gradient(
@@ -685,7 +700,7 @@ button.tool-step-summary:active {
 
 @media (prefers-reduced-motion: reduce) {
   .process-line,
-  .process-line::after,
+  .process-flow::after,
   .process-item,
   .process-item:not(.trace-origin) .process-node,
   .process-item.active .process-node,
@@ -696,6 +711,10 @@ button.tool-step-summary:active {
   }
 
   .process-line {
+    transition-duration: 0ms;
+  }
+
+  .process-flow {
     transition-duration: 0ms;
   }
 

@@ -214,11 +214,17 @@ const ProcessTrace = memo(function ProcessTrace({
 }) {
   const processItemsRef = useRef<HTMLDivElement>(null);
   const processLineRef = useRef<HTMLDivElement>(null);
+  const processFlowRef = useRef<HTMLDivElement>(null);
+  let activeBlockIndex = streaming ? blocks.length - 1 : -1;
+  blocks.forEach((block, index) => {
+    if (block.kind === "tool" && block.status === "input-available") activeBlockIndex = index;
+  });
 
   useLayoutEffect(() => {
     const items = processItemsRef.current;
     const line = processLineRef.current;
-    if (!items || !line) return;
+    const flow = processFlowRef.current;
+    if (!items || !line || !flow) return;
 
     let animationFrame = 0;
     const syncLineHeight = () => {
@@ -232,12 +238,30 @@ const ProcessTrace = memo(function ProcessTrace({
       const nextHeight = Math.max(0, items.offsetTop + items.offsetHeight - lineTop);
       line.style.top = `${lineTop}px`;
       line.style.height = `${nextHeight}px`;
+
+      // 2. 流光只覆盖上一个节点到当前活动内容末端。
+      const processItems = Array.from(items.querySelectorAll<HTMLElement>(".process-item"));
+      const activeItemIndex = processItems.findIndex((item) => item.classList.contains("active"));
+      if (activeItemIndex < 0) {
+        flow.dataset.active = "false";
+        flow.style.height = "0px";
+        return;
+      }
+      const activeItem = processItems[activeItemIndex];
+      const frontierItem = processItems[Math.max(0, activeItemIndex - 1)];
+      const frontierNode = frontierItem.querySelector<HTMLElement>(".process-node");
+      if (!frontierNode) return;
+      const flowTop = items.offsetTop + frontierItem.offsetTop + frontierNode.offsetTop + frontierNode.offsetHeight / 2;
+      const flowBottom = items.offsetTop + activeItem.offsetTop + activeItem.offsetHeight;
+      flow.style.top = `${flowTop}px`;
+      flow.style.height = `${Math.max(0, flowBottom - flowTop)}px`;
+      flow.dataset.active = "true";
     };
     const scheduleLineHeight = () => {
       if (animationFrame) window.cancelAnimationFrame(animationFrame);
       animationFrame = window.requestAnimationFrame(syncLineHeight);
     };
-    // 2. 合并流式文字和新节点引起的连续尺寸变化。
+    // 3. 合并流式文字和新节点引起的连续尺寸变化。
     const observer = new ResizeObserver(scheduleLineHeight);
     observer.observe(items);
     scheduleLineHeight();
@@ -246,7 +270,7 @@ const ProcessTrace = memo(function ProcessTrace({
       observer.disconnect();
       if (animationFrame) window.cancelAnimationFrame(animationFrame);
     };
-  }, []);
+  }, [activeBlockIndex]);
 
   return (
     <Reasoning
@@ -258,6 +282,7 @@ const ProcessTrace = memo(function ProcessTrace({
       <ProcessTraceTrigger interrupted={interrupted} />
       <CollapsibleContent className="process-content">
         <div className="process-line" aria-hidden="true" ref={processLineRef} />
+        <div className="process-flow" aria-hidden="true" data-active="false" ref={processFlowRef} />
         <div className="process-items" ref={processItemsRef}>
           {startContent}
           {blocks.map((block, index) => (
