@@ -11,6 +11,13 @@
   padding: 64px 0 96px;
 }
 
+:root[data-embedded-shell="true"] .settings-shell {
+  width: calc(100% - 64px);
+  max-width: none;
+  margin: 0 32px;
+  padding: 48px 0 72px;
+}
+
 .settings-header {
   display: flex;
   align-items: end;
@@ -221,7 +228,8 @@
 .settings-muted { margin-top: 8px !important; font-size: 13px !important; }
 
 @media (max-width: 760px) {
-  .settings-shell { width: min(100% - 24px, 620px); padding: 38px 0 60px; }
+  .settings-shell,
+  :root[data-embedded-shell="true"] .settings-shell { width: min(100% - 24px, 620px); margin: 0 auto; padding: 38px 0 60px; }
   .settings-header { align-items: start; flex-direction: column; margin-bottom: 24px; }
   .settings-layout { grid-template-columns: 1fr; }
   .provider-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }

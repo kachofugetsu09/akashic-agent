@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { ChevronDown } from "lucide-react";
+import * as Dialog from "@radix-ui/react-dialog";
+import "@material/web/progress/linear-progress.js";
+import { BookOpenText, Bot, ChevronDown, ChevronLeft, ChevronRight, Gauge, SlidersHorizontal, X } from "lucide-react";
 import "./styles.css";
 import { api, asPageResult, pageCount } from "./api";
 import {
@@ -17,9 +19,10 @@ import {
 } from "./format";
 import { installDashboardGlobals, loadPluginAssets } from "./pluginRuntime";
 import { exposeRuntime } from "./design/runtime";
-import { JsonView, Markdown, ThemeToggle } from "./design/ui";
+import { Btn, JsonView, Markdown, ThemeToggle } from "./design/ui";
 import { PluginDetail, PluginMain } from "./PluginDetail";
-import { initializeTheme, startCrossPortThemeSync } from "../../theme/src/theme-runtime";
+import { initializeTheme, startCrossPortThemeSync, useTheme } from "../../theme/src/theme-runtime";
+import { MaterialIconButton } from "../../theme/src/material-react";
 import type {
   DashboardColumn,
   MessageRow,
@@ -152,7 +155,95 @@ function useLatestReader<T>(value: T): () => T {
   return useCallback(() => ref.current, []);
 }
 
+type ShellView = "chat" | "dashboard" | "runtime" | "models";
+
+function initialShellView(): ShellView {
+  const value = window.location.hash.slice(1);
+  return value === "chat" || value === "runtime" || value === "models" ? value : "dashboard";
+}
+
 function App(): React.ReactElement {
+  const theme = useTheme();
+  const [shellView, setShellView] = useState<ShellView>(initialShellView);
+  const serviceOrigin = `${window.location.protocol}//${window.location.hostname}`;
+  const chatFrameRef = useRef<HTMLIFrameElement>(null);
+  const runtimeFrameRef = useRef<HTMLIFrameElement>(null);
+  const settingsFrameRef = useRef<HTMLIFrameElement>(null);
+
+  const syncFrameTheme = useCallback((frame: HTMLIFrameElement | null, port: number): void => {
+    frame?.contentWindow?.postMessage(
+      { type: "akashic.theme", themeId: theme.id },
+      `${serviceOrigin}:${port}`,
+    );
+  }, [serviceOrigin, theme.id]);
+
+  useEffect(() => {
+    syncFrameTheme(chatFrameRef.current, 6322);
+    syncFrameTheme(runtimeFrameRef.current, 6322);
+    syncFrameTheme(settingsFrameRef.current, 6321);
+  }, [syncFrameTheme]);
+
+  const openView = (next: ShellView): void => {
+    setShellView(next);
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#${next}`);
+  };
+
+  return (
+    <div className="unified-shell">
+      <aside className="primary-rail" aria-label="Akashic 主导航">
+        <div className="primary-rail-brand" title="Akashic">
+          <img src={notificationIcon} alt="" />
+        </div>
+        <nav className="primary-rail-nav" aria-label="主要功能">
+          <PrimaryRailButton label="聊天" active={shellView === "chat"} onClick={() => openView("chat")}>
+            <Bot aria-hidden="true" />
+          </PrimaryRailButton>
+          <PrimaryRailButton label="工作台" active={shellView === "dashboard"} onClick={() => openView("dashboard")}>
+            <Gauge aria-hidden="true" />
+          </PrimaryRailButton>
+          <PrimaryRailButton label="知识与运行" active={shellView === "runtime"} onClick={() => openView("runtime")}>
+            <BookOpenText aria-hidden="true" />
+          </PrimaryRailButton>
+          <PrimaryRailButton label="模型" active={shellView === "models"} onClick={() => openView("models")}>
+            <SlidersHorizontal aria-hidden="true" />
+          </PrimaryRailButton>
+        </nav>
+        <div className="primary-rail-footer"><ThemeToggle /></div>
+      </aside>
+
+      <div className="shell-view-stack">
+        <section className={`shell-view dashboard-shell-view ${shellView === "dashboard" ? "is-active" : ""}`} aria-hidden={shellView !== "dashboard"}>
+          <DashboardWorkspace />
+        </section>
+        <section className={`shell-view ${shellView === "chat" ? "is-active" : ""}`} aria-hidden={shellView !== "chat"}>
+          <iframe ref={chatFrameRef} title="Akashic 聊天" src={`${serviceOrigin}:6322/?embedded=1`} onLoad={() => syncFrameTheme(chatFrameRef.current, 6322)} />
+        </section>
+        <section className={`shell-view ${shellView === "runtime" ? "is-active" : ""}`} aria-hidden={shellView !== "runtime"}>
+          <iframe ref={runtimeFrameRef} title="知识与运行" src={`${serviceOrigin}:6322/?embedded=1&surface=runtime`} onLoad={() => syncFrameTheme(runtimeFrameRef.current, 6322)} />
+        </section>
+        <section className={`shell-view ${shellView === "models" ? "is-active" : ""}`} aria-hidden={shellView !== "models"}>
+          <iframe ref={settingsFrameRef} title="模型配置" src={`${serviceOrigin}:6321/?embedded=1`} onLoad={() => syncFrameTheme(settingsFrameRef.current, 6321)} />
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function PrimaryRailButton(props: {
+  label: string;
+  active: boolean;
+  onClick(): void;
+  children: React.ReactNode;
+}): React.ReactElement {
+  return (
+    <button type="button" className={`primary-rail-button ${props.active ? "is-active" : ""}`} aria-label={props.label} title={props.label} aria-current={props.active ? "page" : undefined} onClick={props.onClick}>
+      {props.children}
+      <span>{props.label}</span>
+    </button>
+  );
+}
+
+function DashboardWorkspace(): React.ReactElement {
   const [viewMode, setViewMode] = useState<ViewMode>("sessions");
   const [plugins, setPlugins] = useState<PluginConfig[]>([]);
   const [pluginState, setPluginState] = useState<Record<string, PluginState>>({});
@@ -185,12 +276,16 @@ function App(): React.ReactElement {
   const [activeProactiveKey, setActiveProactiveKey] = useState<string | null>(null);
   const [activeProactiveDetail, setActiveProactiveDetail] = useState<ProactiveTick | null>(null);
   const [activeProactiveSteps, setActiveProactiveSteps] = useState<ProactiveStep[]>([]);
+  const [proactiveDetailPending, setProactiveDetailPending] = useState(false);
   const [hiddenPlugins, setHiddenPlugins] = useState<Record<string, boolean>>({});
+  const [pendingPluginDetailKey, setPendingPluginDetailKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const sessionsRequestRef = useRef<AbortController | null>(null);
   const messagesRequestRef = useRef<AbortController | null>(null);
   const proactiveRequestRef = useRef<AbortController | null>(null);
+  const proactiveDetailRequestRef = useRef(0);
+  const pluginDetailRequestRef = useRef(0);
 
   const messagePageSize = 25;
   const proactivePageSize = 25;
@@ -211,6 +306,7 @@ function App(): React.ReactElement {
     setViewMode(`plugin:${pluginId}`);
   }, []);
   const closePlugin = useCallback((pluginId: string): void => {
+    setPendingPluginDetailKey(null);
     setPluginState((current) => {
       const state = current[pluginId];
       if (!state) return current;
@@ -522,6 +618,11 @@ function App(): React.ReactElement {
       && currentPluginLayout === "workbench"
       && (currentPlugin.renderMain || currentPlugin.Main),
   );
+  const detailOpen = viewMode.startsWith("plugin:")
+    ? Boolean(currentPluginState?.activeRowKey)
+    : viewMode === "proactive"
+      ? Boolean(activeProactiveKey)
+      : Boolean(activeMessage || activeSession);
 
   return (
     <div className="shell">
@@ -653,9 +754,6 @@ function App(): React.ReactElement {
               />
             )}
         </div>
-        <footer className="sessions-pane-footer">
-          <ThemeToggle />
-        </footer>
       </aside>
 
       <section className="content-shell">
@@ -711,19 +809,19 @@ function App(): React.ReactElement {
                           await loadPluginPanel(currentPlugin.id);
                         })}>{action.label}</button>
                       ))
-                    : <button className="danger-ghost" type="button" onClick={() => void run(async () => {
+                    : <Btn size="sm" variant="danger" onClick={() => void run(async () => {
                         await api("/api/dashboard/messages/batch-delete", { method: "POST", body: JSON.stringify({ ids: [...selectedMessageIds] }) });
                         setSelectedMessageIds(new Set());
                         await refreshCurrentView();
-                      })}>批量删除</button>
+                      })}>批量删除</Btn>
                   }
-                  <button className="ghost" type="button" onClick={() => {
+                  <Btn size="sm" variant="ghost" onClick={() => {
                     if (viewMode.startsWith("plugin:") && currentPlugin) {
                       setPluginState((c) => ({ ...c, [currentPlugin.id]: { ...c[currentPlugin.id], selectedIds: new Set() } }));
                     } else {
                       setSelectedMessageIds(new Set());
                     }
-                  }}>取消选择</button>
+                  }}>取消选择</Btn>
                 </div>
               )}
               <TableHead viewMode={viewMode} plugin={currentPlugin} pluginState={currentPluginState} messageSortBy={messageSortBy} messageSortOrder={messageSortOrder} proactiveSortBy={proactiveSortBy} proactiveSortOrder={proactiveSortOrder} onSort={sort} onPluginSort={currentDispatch ? (key) => currentDispatch.setSort(key) : undefined} />
@@ -739,32 +837,53 @@ function App(): React.ReactElement {
                   activeProactiveKey={activeProactiveKey}
                   onSelectMessage={(msg) => setActiveMessage((current) => current?.id === msg.id ? null : msg)}
                   onSelectProactive={(item) => void run(async () => {
-                    setActiveProactiveKey((current) => {
-                      if (current === item.tick_id) return null;
-                      return item.tick_id;
-                    });
-                    const [detail, stepsPayload] = await Promise.all([
-                      api<ProactiveTick>(`/api/dashboard/proactive/tick_logs/${encodePath(item.tick_id)}`),
-                      api<PageResult<ProactiveStep>>(`/api/dashboard/proactive/tick_logs/${encodePath(item.tick_id)}/steps`),
-                    ]);
-                    const steps = asPageResult<ProactiveStep>(stepsPayload);
-                    setActiveProactiveDetail(detail);
-                    setActiveProactiveSteps(steps.items);
+                    const closing = activeProactiveKey === item.tick_id;
+                    const requestId = ++proactiveDetailRequestRef.current;
+                    setActiveProactiveKey(closing ? null : item.tick_id);
+                    setActiveProactiveDetail(null);
+                    setActiveProactiveSteps([]);
+                    setProactiveDetailPending(!closing);
+                    if (closing) return;
+                    try {
+                      const [detail, stepsPayload] = await Promise.all([
+                        api<ProactiveTick>(`/api/dashboard/proactive/tick_logs/${encodePath(item.tick_id)}`),
+                        api<PageResult<ProactiveStep>>(`/api/dashboard/proactive/tick_logs/${encodePath(item.tick_id)}/steps`),
+                      ]);
+                      if (proactiveDetailRequestRef.current !== requestId) return;
+                      const steps = asPageResult<ProactiveStep>(stepsPayload);
+                      setActiveProactiveDetail(detail);
+                      setActiveProactiveSteps(steps.items);
+                    } finally {
+                      if (proactiveDetailRequestRef.current === requestId) setProactiveDetailPending(false);
+                    }
                   })}
                   onSelectPluginRow={(row) => {
                     if (!currentPlugin) return;
                     const key = String(row[currentPlugin.rowKey] ?? "");
+                    const requestId = ++pluginDetailRequestRef.current;
+                    const closing = currentPluginState?.activeRowKey === key;
+                    setPendingPluginDetailKey(closing ? null : `${currentPlugin.id}:${key}`);
                     setPluginState((c) => {
                       const ps = c[currentPlugin.id];
                       if (!ps) return c;
-                      return { ...c, [currentPlugin.id]: { ...ps, activeRowKey: ps.activeRowKey === key ? null : key, activeDetail: ps.activeRowKey === key ? null : ps.activeDetail } };
+                      return { ...c, [currentPlugin.id]: { ...ps, activeRowKey: closing ? null : key, activeDetail: null } };
                     });
-                    if (currentPluginState?.activeRowKey !== key) {
-                      void run(async () => {
+                    if (closing) return;
+                    void (async () => {
+                      try {
                         const detail = currentPlugin.fetchDetail ? await currentPlugin.fetchDetail(row) : row;
-                        setPluginState((current) => ({ ...current, [currentPlugin.id]: { ...current[currentPlugin.id], activeDetail: detail } }));
-                      });
-                    }
+                        if (pluginDetailRequestRef.current !== requestId) return;
+                        setPluginState((current) => {
+                          const state = current[currentPlugin.id];
+                          if (!state || state.activeRowKey !== key) return current;
+                          return { ...current, [currentPlugin.id]: { ...state, activeDetail: detail } };
+                        });
+                      } catch (exc) {
+                        if (pluginDetailRequestRef.current === requestId) reportError(exc);
+                      } finally {
+                        if (pluginDetailRequestRef.current === requestId) setPendingPluginDetailKey(null);
+                      }
+                    })();
                   }}
                   onTogglePluginRow={(id) => {
                     if (!currentPlugin) return;
@@ -783,14 +902,14 @@ function App(): React.ReactElement {
               <footer className="table-foot">
                 <div>{tableMeta(viewMode, totalMessages, proactiveTotal, currentPlugin, currentPluginState, proactiveSessionFilter)}</div>
                 <div className="pager">
-                  <button className="ghost" type="button" disabled={currentPage <= 1} onClick={() => changePage(-1)}>‹</button>
+                  <MaterialIconButton variant="standard" label="上一页" disabled={currentPage <= 1} onClick={() => changePage(-1)}><ChevronLeft size={18} aria-hidden="true" /></MaterialIconButton>
                   <span>{currentPage} / {currentPageCount}</span>
-                  <button className="ghost" type="button" disabled={currentPage >= currentPageCount} onClick={() => changePage(1)}>›</button>
+                  <MaterialIconButton variant="standard" label="下一页" disabled={currentPage >= currentPageCount} onClick={() => changePage(1)}><ChevronRight size={18} aria-hidden="true" /></MaterialIconButton>
                 </div>
               </footer>
             </section>
 
-            <aside className="detail-pane">
+            <aside className={`detail-pane${detailOpen ? " is-open" : ""}`} aria-label="详情">
               <DetailPane
                 viewMode={viewMode}
                 activeSession={activeSession}
@@ -799,13 +918,22 @@ function App(): React.ReactElement {
                 activeProactiveSteps={activeProactiveSteps}
                 plugin={currentPlugin}
                 pluginState={currentPluginState}
+                loading={viewMode === "proactive"
+                  ? proactiveDetailPending
+                  : Boolean(currentPlugin && currentPluginState?.activeRowKey && pendingPluginDetailKey === `${currentPlugin.id}:${currentPluginState.activeRowKey}`)}
                 dispatch={currentDispatch}
                 setProactiveSessionFilter={(key) => { setProactiveSessionFilter(key); setProactivePage(1); selectView("proactive"); }}
                 onClose={() => {
                   setActiveSession(null);
                   setActiveMessage(null);
+                  proactiveDetailRequestRef.current += 1;
                   setActiveProactiveKey(null);
+                  setActiveProactiveDetail(null);
+                  setActiveProactiveSteps([]);
+                  setProactiveDetailPending(false);
                   if (currentPlugin) {
+                    pluginDetailRequestRef.current += 1;
+                    setPendingPluginDetailKey(null);
                     setPluginState(c => {
                       const ps = c[currentPlugin.id];
                       if (!ps) return c;
@@ -819,7 +947,18 @@ function App(): React.ReactElement {
         )}
         </main>
       </section>
-      {error && <div className="modal-backdrop" onClick={() => setError(null)}><div className="modal"><div className="modal-title">请求失败</div><p>{error}</p><div className="modal-actions"><button className="primary" type="button" onClick={() => setError(null)}>关闭</button></div></div></div>}
+      <Dialog.Root open={Boolean(error)} onOpenChange={(open) => { if (!open) setError(null); }}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="modal-backdrop" />
+          <Dialog.Content className="modal" aria-describedby="dashboard-error-description">
+            <Dialog.Title className="modal-title">请求失败</Dialog.Title>
+            <Dialog.Description id="dashboard-error-description" className="modal-sub">{error}</Dialog.Description>
+            <div className="modal-actions">
+              <Btn onClick={() => setError(null)}>关闭</Btn>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }
@@ -1214,7 +1353,7 @@ function Rows(props: {
     return <>{props.pluginState.items.length ? props.pluginState.items.map((item) => {
       const key = String(item[props.plugin!.rowKey] ?? "");
       const isSelected = props.pluginState!.selectedIds.has(key);
-      return <div key={key} className={`table-row ${props.pluginState!.activeRowKey === key ? "active" : ""} ${isSelected ? "selected" : ""} ${props.plugin!.rowClass?.(item) ?? ""}`} style={{ gridTemplateColumns: grid }} onClick={() => props.onSelectPluginRow(item)}>
+      return <div key={key} className={`table-row ${props.pluginState!.activeRowKey === key ? "active" : ""} ${isSelected ? "selected" : ""} ${props.plugin!.rowClass?.(item) ?? ""}`} style={{ gridTemplateColumns: grid }} role="button" tabIndex={0} aria-expanded={props.pluginState!.activeRowKey === key} onClick={() => props.onSelectPluginRow(item)} onKeyDown={(event) => activateRowFromKeyboard(event, () => props.onSelectPluginRow(item))}>
         {hasBatch && (
           <label className="checkbox-cell" onClick={(event) => event.stopPropagation()}>
             <input type="checkbox" checked={isSelected} onChange={() => props.onTogglePluginRow(key)} />
@@ -1231,7 +1370,7 @@ function Rows(props: {
     }) : <div className="empty-state">{props.plugin.emptyMessage || "暂无记录。"}</div>}</>;
   }
   if (props.viewMode === "proactive") {
-    return <>{props.proactiveItems.map((item) => <div key={item.tick_id} className={`table-row mode-proactive-ticks ${props.activeProactiveKey === item.tick_id ? "active" : ""}`} onClick={() => props.onSelectProactive(item)}>
+    return <>{props.proactiveItems.map((item) => <div key={item.tick_id} className={`table-row mode-proactive-ticks ${props.activeProactiveKey === item.tick_id ? "active" : ""}`} role="button" tabIndex={0} aria-expanded={props.activeProactiveKey === item.tick_id} onClick={() => props.onSelectProactive(item)} onKeyDown={(event) => activateRowFromKeyboard(event, () => props.onSelectProactive(item))}>
       <div className="cell-session mono">{formatSessionKeyForTable(item.session_key)}</div>
       <div className="cell-time">{shortTs(item.started_at)}</div>
       <div className="proactive-status-cell"><span className={`status-pill proactive-result-${proactiveResultLabel(item)}`}>{proactiveResultLabel(item)}</span><span className={`type-pill proactive-flow-${proactiveFlowLabel(item).toLowerCase()}`}>{proactiveFlowLabel(item)}</span></div>
@@ -1239,7 +1378,7 @@ function Rows(props: {
       <div />
     </div>)}</>;
   }
-  return <>{props.messages.map((item) => <div key={item.id} className={`table-row mode-messages ${props.activeMessage?.id === item.id ? "active" : ""} ${props.selectedMessageIds.has(item.id) ? "selected" : ""}`} onClick={() => props.onSelectMessage(item)}>
+  return <>{props.messages.map((item) => <div key={item.id} className={`table-row mode-messages ${props.activeMessage?.id === item.id ? "active" : ""} ${props.selectedMessageIds.has(item.id) ? "selected" : ""}`} role="button" tabIndex={0} aria-expanded={props.activeMessage?.id === item.id} onClick={() => props.onSelectMessage(item)} onKeyDown={(event) => activateRowFromKeyboard(event, () => props.onSelectMessage(item))}>
     <label className="checkbox-cell" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={props.selectedMessageIds.has(item.id)} onChange={(event) => toggleSet(item.id, event.target.checked, props.selectedMessageIds, props.setSelectedMessageIds)} /></label>
     <div className="cell-session mono" title={item.session_key}>{formatSessionKeyForTable(item.session_key)}</div>
     <div className="cell-seq mono">#{item.seq}</div>
@@ -1258,10 +1397,12 @@ function DetailPane(props: {
   activeProactiveSteps: ProactiveStep[];
   plugin: PluginConfig | null;
   pluginState: PluginState | null;
+  loading: boolean;
   dispatch?: PluginDispatch;
   setProactiveSessionFilter(key: string): void;
   onClose: () => void;
 }): React.ReactElement {
+  if (props.loading) return <DetailLoading />;
   if (props.viewMode.startsWith("plugin:") && props.plugin) {
     return <PluginDetail plugin={props.plugin} item={props.pluginState?.activeDetail ?? null} dispatch={props.dispatch} />;
   }
@@ -1269,8 +1410,8 @@ function DetailPane(props: {
     const item = props.activeProactiveDetail;
     if (!item) return <EmptyDetail text="点开 tick 后，这里会显示 proactive 执行详情和工具链。" />;
     return <div className="detail-wrap">
-      <div className="detail-toolbar"><div><div className="detail-title">Tick 详情</div><div className="detail-subtext">{item.tick_id}</div></div><button className="ai-close-btn" type="button" title="关闭面板" onClick={props.onClose}>✕</button></div>
-      <button className="ghost" type="button" onClick={() => props.setProactiveSessionFilter(item.session_key)}>只看这个 session</button>
+      <div className="detail-toolbar"><div><div className="detail-title">Tick 详情</div><div className="detail-subtext">{item.tick_id}</div></div><MaterialIconButton variant="standard" label="关闭详情" onClick={props.onClose}><X size={18} aria-hidden="true" /></MaterialIconButton></div>
+      <Btn size="sm" variant="ghost" onClick={() => props.setProactiveSessionFilter(item.session_key)}>只看这个 session</Btn>
       <div className="detail-grid">
         {detailRow("session", <code>{item.session_key}</code>)}
         {detailRow("started", <code>{item.started_at}</code>)}
@@ -1284,7 +1425,7 @@ function DetailPane(props: {
   if (props.activeMessage) {
     const message = props.activeMessage;
     return <div className="detail-wrap">
-      <div className="detail-toolbar"><div><div className="detail-title">消息详情</div><div className="detail-subtext">{message.session_key} · #{message.seq}</div></div><button className="ai-close-btn" type="button" title="关闭面板" onClick={props.onClose}>✕</button></div>
+      <div className="detail-toolbar"><div><div className="detail-title">消息详情</div><div className="detail-subtext">{message.session_key} · #{message.seq}</div></div><MaterialIconButton variant="standard" label="关闭详情" onClick={props.onClose}><X size={18} aria-hidden="true" /></MaterialIconButton></div>
       <div className="detail-grid">
         {detailRow("role", <span className={`role-pill ${roleClass(message.role)}`}>{message.role}</span>)}
         {detailRow("time", <code>{message.timestamp}</code>)}
@@ -1298,7 +1439,7 @@ function DetailPane(props: {
   if (props.activeSession) {
     const session = props.activeSession;
     return <div className="detail-wrap">
-      <div className="detail-toolbar"><div><div className="detail-title">Session 详情</div><div className="detail-subtext">{session.key}</div></div><button className="ai-close-btn" type="button" title="关闭面板" onClick={props.onClose}>✕</button></div>
+      <div className="detail-toolbar"><div><div className="detail-title">Session 详情</div><div className="detail-subtext">{session.key}</div></div><MaterialIconButton variant="standard" label="关闭详情" onClick={props.onClose}><X size={18} aria-hidden="true" /></MaterialIconButton></div>
       <div className="detail-grid">
         {detailRow("messages", <code>{session.message_count}</code>)}
         {detailRow("updated", <code>{session.updated_at}</code>)}
@@ -1308,6 +1449,17 @@ function DetailPane(props: {
     </div>;
   }
   return <EmptyDetail text="点开消息、session 或 memory 后，这里会显示完整内容、字段和 JSON 信息。" />;
+}
+
+function DetailLoading(): React.ReactElement {
+  return <div className="detail-loading" role="status" aria-label="正在加载详情">
+    {React.createElement("md-linear-progress", { className: "detail-loading-progress", indeterminate: true, "aria-label": "正在加载详情" })}
+    <div className="detail-loading-line detail-loading-line-short" />
+    <div className="detail-loading-line detail-loading-line-title" />
+    <div className="detail-loading-block" />
+    <div className="detail-loading-line" />
+    <div className="detail-loading-line" />
+  </div>;
 }
 
 function EmptyDetail(props: { text: string }): React.ReactElement {
@@ -1327,6 +1479,12 @@ function toggleSet(id: string, checked: boolean, source: Set<string>, update: (v
   if (checked) next.add(id);
   else next.delete(id);
   update(next);
+}
+
+function activateRowFromKeyboard(event: React.KeyboardEvent<HTMLDivElement>, activate: () => void): void {
+  if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
+  event.preventDefault();
+  activate();
 }
 
 function gridTemplate(columns: DashboardColumn[]): string {

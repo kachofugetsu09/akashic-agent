@@ -325,6 +325,23 @@ def test_mutation_rejects_cross_origin(tmp_path: Path) -> None:
     assert response.json()["code"] == "csrf_rejected"
 
 
+def test_settings_page_allows_only_local_shell_frames(tmp_path: Path) -> None:
+    app = create_settings_app(
+        tmp_path / "config.toml",
+        tmp_path / "workspace",
+        credential_store=CredentialStore(tmp_path / "auth" / "auth.json"),
+    )
+
+    response = TestClient(app).get("/api/settings/state")
+
+    assert response.status_code == 200
+    assert response.headers["content-security-policy"].endswith(
+        "frame-ancestors http://127.0.0.1:2236 http://localhost:2236 "
+        "http://127.0.0.1:5173 http://localhost:5173"
+    )
+    assert "attacker.invalid" not in response.headers["content-security-policy"]
+
+
 def test_new_config_includes_web_chat_runtime_dependencies(tmp_path: Path) -> None:
     parsed = tomllib.loads(_new_config(tmp_path / "workspace"))
 

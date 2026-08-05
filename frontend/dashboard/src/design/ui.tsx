@@ -1,5 +1,5 @@
 import { type ReactNode } from "react";
-import { SunMoon } from "lucide-react";
+import { Search, SunMoon } from "lucide-react";
 import { cn } from "./cn";
 import { renderMarkdown } from "../format";
 import { cycleTheme, themes, useTheme } from "../../../theme/src/theme-runtime";
@@ -274,16 +274,7 @@ export function SearchInput({
 }) {
   return (
     <div className={cn("relative", className)}>
-      <svg
-        className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-subtle"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-      >
-        <circle cx="11" cy="11" r="7" />
-        <path d="m20 20-3.5-3.5" />
-      </svg>
+      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-subtle" strokeWidth={2} aria-hidden="true" />
       <input
         value={value}
         onChange={(e) => onChange?.(e.target.value)}

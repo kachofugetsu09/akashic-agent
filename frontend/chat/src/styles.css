@@ -271,6 +271,37 @@ input {
   background: var(--md-sys-color-surface);
 }
 
+:root[data-embedded-shell="true"] .chat-shell {
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 0;
+  padding: 0;
+  background: transparent;
+}
+
+:root[data-embedded-shell="true"] .chat-sidebar {
+  overflow: hidden;
+  border-inline-end: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+:root[data-embedded-shell="true"] .chat-main {
+  overflow: hidden;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+:root[data-embedded-shell="true"] .chat-shell.embedded-runtime {
+  display: block;
+}
+
+:root[data-embedded-shell="true"] .chat-shell.embedded-runtime .runtime-dashboard {
+  height: 100%;
+  overflow: hidden;
+  border-radius: 0;
+  box-shadow: none;
+}
+
 .conversation {
   min-height: 0;
   padding-bottom: 132px;
@@ -442,23 +473,6 @@ form.composer:focus-within [data-slot="input-group"] {
 .composer [data-slot="input-group-addon"],
 .composer [cmdk-root] {
   border: 0;
-}
-
-.send-button {
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-  color: var(--ak-color-on-action-primary);
-  background: var(--ak-color-action-primary);
-}
-
-.send-button:hover {
-  background: var(--ak-color-action-hover);
-}
-
-.send-button:disabled {
-  color: var(--ak-color-border-strong);
-  background: var(--ak-color-bg-surface-high);
 }
 
 .error-line {

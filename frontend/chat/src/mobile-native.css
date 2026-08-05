@@ -1611,33 +1611,7 @@ button {
   background: var(--ak-color-action-container);
 }
 
-.mobile-send-button {
-  display: grid;
-  width: 44px;
-  height: 44px;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 0;
-  border-radius: 50%;
-  --md-filled-icon-button-container-color: var(--md-sys-color-primary);
-  --md-filled-icon-button-icon-color: var(--md-sys-color-on-primary);
-  transition-property: scale, background-color, opacity;
-  transition-duration: 150ms;
-  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
-}
-
-.mobile-send-button:disabled {
-  color: var(--ak-color-text-secondary);
-  background: var(--ak-color-bg-surface-high);
-  opacity: 0.62;
-}
-
-.mobile-send-button.stop {
-  --md-filled-tonal-icon-button-container-color: var(--md-sys-color-error-container);
-  --md-filled-tonal-icon-button-icon-color: var(--md-sys-color-on-error-container);
-}
-
-.mobile-send-button.stop.pending {
+.composer-action-button.pending {
   opacity: 0.72;
 }
 

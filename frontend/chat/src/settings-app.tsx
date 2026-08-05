@@ -13,6 +13,8 @@ import "./settings.css";
 import { cycleTheme, useTheme } from "../../theme/src/theme-runtime";
 import { MaterialButton, MaterialFilterChip } from "../../theme/src/material-react";
 
+const isEmbeddedShell = new URLSearchParams(window.location.search).get("embedded") === "1";
+
 type ProviderKind = "api" | "opencode-go" | "codex";
 
 interface RuntimeSummary {
@@ -289,10 +291,10 @@ export function SettingsApp() {
             <p>选择一个 Provider，验证后安全切换。已保存的密钥不会显示在页面中。</p>
           </div>
           <div className="settings-header-actions">
-            <button className="settings-theme-button" type="button" onClick={cycleTheme}>
+            {!isEmbeddedShell && <button className="settings-theme-button" type="button" onClick={cycleTheme}>
               <Palette aria-hidden="true" /> {theme.label}
-            </button>
-            {state?.mode === "ready" && (
+            </button>}
+            {state?.mode === "ready" && !isEmbeddedShell && (
               <a className="settings-chat-link" href={`http://${window.location.hostname}:6322`}>
                 打开聊天 <ChevronRight />
               </a>

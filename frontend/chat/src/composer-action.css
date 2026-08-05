@@ -1,0 +1,66 @@
+.composer-action-button {
+  position: relative;
+  display: inline-grid;
+  width: 42px;
+  min-width: 42px;
+  max-width: 42px;
+  height: 42px;
+  min-height: 42px;
+  max-height: 42px;
+  flex: 0 0 42px;
+  box-sizing: border-box;
+  place-items: center;
+  overflow: hidden;
+  border: 0;
+  border-radius: 9999px;
+  padding: 0;
+  color: var(--ak-color-on-action-primary);
+  background: var(--ak-color-action-primary);
+  cursor: pointer;
+  appearance: none;
+  transition-property: scale, color, background-color, opacity;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.composer-action-button > svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  stroke-width: 2;
+}
+
+.composer-action-button[data-mode="send"] > svg {
+  transform: translateX(0.75px);
+}
+
+.composer-action-button[data-mode="stop"] {
+  color: var(--ak-color-status-error);
+  background: var(--ak-color-bg-surface-high);
+}
+
+.composer-action-button:hover:not(:disabled) {
+  background: var(--ak-color-action-hover);
+}
+
+.composer-action-button[data-mode="stop"]:hover:not(:disabled) {
+  color: var(--md-sys-color-on-error-container);
+  background: var(--md-sys-color-error-container);
+}
+
+.composer-action-button:active:not(:disabled) {
+  scale: 0.96;
+}
+
+.composer-action-button:focus-visible {
+  outline: 2px solid var(--ak-color-action-primary);
+  outline-offset: 2px;
+}
+
+.composer-action-button:disabled {
+  color: var(--ak-color-border-strong);
+  background: var(--ak-color-bg-surface-high);
+  cursor: default;
+  opacity: 0.62;
+}

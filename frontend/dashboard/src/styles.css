@@ -6,6 +6,7 @@
 
 :root {
   --shadow: 0 1px 2px rgb(var(--md-sys-color-shadow-rgb) / 0.16), 0 1px 3px 1px rgb(var(--md-sys-color-shadow-rgb) / 0.08);
+  --shell-shadow: 0 1px 2px rgb(var(--md-sys-color-shadow-rgb) / 0.08), 0 4px 12px rgb(var(--md-sys-color-shadow-rgb) / 0.05);
   --radius: var(--md-sys-shape-corner-medium);
   --radius-lg: var(--md-sys-shape-corner-large);
   --radius-xl: var(--md-sys-shape-corner-extra-large);
@@ -172,12 +173,167 @@ body {
 
   /* ── Layout ── */
 
+  .unified-shell {
+    display: grid;
+    width: 100vw;
+    height: 100dvh;
+    grid-template-columns: 48px minmax(0, 1fr);
+    gap: 0.5rem;
+    overflow: hidden;
+    padding: 0.5rem;
+    background: var(--md-sys-color-surface);
+  }
+
+  .primary-rail {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    align-items: center;
+    border-radius: var(--radius-xl);
+    padding: 0.375rem 0.25rem;
+    border: 1px solid var(--md-sys-color-outline-variant);
+    background: var(--md-sys-color-surface-container-low);
+    box-shadow: var(--shell-shadow);
+  }
+
+  .primary-rail-brand {
+    display: grid;
+    width: 40px;
+    height: 40px;
+    flex: 0 0 40px;
+    place-items: center;
+  }
+
+  .primary-rail-brand img {
+    width: 30px;
+    height: 30px;
+    object-fit: contain;
+  }
+
+  .primary-rail-nav {
+    display: grid;
+    width: 100%;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+  }
+
+  .primary-rail-button {
+    display: grid;
+    min-height: 46px;
+    place-items: center;
+    gap: 0.25rem;
+    border: 0;
+    border-radius: var(--radius-lg);
+    padding: 0;
+    color: var(--md-sys-color-on-surface-variant);
+    background: transparent;
+    font: inherit;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition-property: color, background-color, scale;
+    transition-duration: var(--t-fast);
+    transition-timing-function: var(--ease-out);
+  }
+
+  .primary-rail-button svg {
+    width: 24px;
+    height: 24px;
+    stroke-width: 2;
+  }
+
+  .primary-rail-button span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  :root[data-theme="light"] .primary-rail-brand img,
+  :root[data-theme="warm-paper"] .primary-rail-brand img {
+    filter: brightness(0);
+  }
+
+  :root[data-theme="dark"] .primary-rail-brand img {
+    filter: brightness(0) invert(1);
+  }
+
+  .primary-rail-button:hover {
+    background: var(--md-sys-color-surface-container-high);
+  }
+
+  .primary-rail-button:active {
+    scale: 0.96;
+  }
+
+  .primary-rail-button.is-active {
+    color: var(--md-sys-color-on-secondary-container);
+    background: var(--md-sys-color-secondary-container);
+  }
+
+  .primary-rail-footer {
+    width: 100%;
+    margin-top: auto;
+  }
+
+  .primary-rail-footer .theme-cycle-button {
+    width: 100%;
+    min-height: 40px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-lg);
+  }
+
+  .primary-rail-footer .theme-cycle-button span {
+    display: none;
+  }
+
+  .shell-view-stack,
+  .shell-view,
+  .shell-view iframe {
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .shell-view-stack {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: var(--radius-xl);
+    background: var(--md-sys-color-surface-container-low);
+    box-shadow: var(--shell-shadow);
+  }
+
+  .shell-view {
+    display: none;
+    overflow: hidden;
+  }
+
+  .shell-view.is-active {
+    display: block;
+  }
+
+  .shell-view iframe {
+    display: block;
+    border: 0;
+    background: var(--md-sys-color-surface);
+  }
+
   .shell {
-    @apply flex h-screen overflow-hidden bg-bg;
+    @apply flex h-full overflow-hidden bg-bg;
+    gap: 0;
   }
 
   .content-shell {
     @apply flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden;
+    border-radius: 0;
+    background: var(--md-sys-color-surface);
+    box-shadow: none;
   }
 
   .brand {
@@ -370,9 +526,12 @@ body {
      log surface is the darkest layer and sits recessed between them. */
   .sessions-pane {
     @apply flex min-h-0 flex-shrink-0 flex-col overflow-hidden;
-    border-right: 1px solid var(--ak-color-border-default);
+    margin: 0;
     width: clamp(280px, 18vw, 320px);
-    background: var(--ak-color-bg-surface);
+    border-inline-end: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: 0;
+    background: var(--md-sys-color-surface-container-low);
+    box-shadow: none;
   }
 
   .messages-pane {
@@ -382,13 +541,25 @@ body {
   }
 
   .detail-pane {
-    @apply min-h-0 flex-shrink-0 overflow-y-auto bg-surface overflow-hidden;
+    @apply min-h-0 flex-shrink-0 bg-surface;
     position: relative;
-    border: 1px solid var(--ak-color-border-default);
-    border-left: 0;
-    width: clamp(360px, 26vw, 460px);
+    width: 0;
+    overflow-y: auto;
+    border: 0 solid var(--ak-color-border-default);
     background: var(--ak-color-bg-surface);
-    transition: width 0.35s cubic-bezier(0.2, 1, 0.3, 1), opacity 0.3s ease, margin 0.35s ease;
+    opacity: 0;
+    pointer-events: none;
+    container-name: detail-pane;
+    container-type: inline-size;
+    transition: width 280ms cubic-bezier(0.2, 0, 0, 1), opacity 180ms ease;
+  }
+
+  .detail-pane.is-open {
+    width: clamp(360px, 26vw, 460px);
+    border-width: 1px;
+    border-inline-start: 0;
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .detail-close-btn {
@@ -411,16 +582,6 @@ body {
   .detail-close-btn:hover {
     background: var(--ak-color-bg-surface-high);
     color: var(--ak-color-text-primary);
-  }
-
-  .detail-pane:has(.detail-empty) {
-    width: 0 !important;
-    min-width: 0 !important;
-    padding: 0 !important;
-    border: none !important;
-    opacity: 0;
-    margin-left: -16px; /* Offset the flex gap to completely hide it */
-    pointer-events: none;
   }
 
   .plugin-workbench-pane {
@@ -525,7 +686,7 @@ body {
 
   .sessions-pane-footer {
     @apply flex flex-shrink-0 items-center border-t border-border px-3 py-2.5;
-    background: var(--ak-color-bg-surface);
+    background: transparent;
   }
 
   .explorer-body .session-list,
@@ -814,6 +975,12 @@ body {
     column-gap: 10px;
   }
 
+  .table-row:focus-visible {
+    z-index: 2;
+    outline: 2px solid var(--ak-color-action-primary);
+    outline-offset: -2px;
+  }
+
   /* `table-row` collides with Tailwind's built-in display:table-row utility
      (same specificity, utilities layer wins). The doubled-class selector raises
      specificity to 0,2,0 so our grid display wins for every row — host modes and
@@ -1038,6 +1205,43 @@ body {
 
   .detail-wrap {
     @apply p-4;
+  }
+
+  .detail-loading {
+    display: grid;
+    gap: 14px;
+    padding: 20px;
+  }
+
+  .detail-loading-line,
+  .detail-loading-block {
+    border-radius: var(--radius);
+    background: var(--ak-color-bg-surface-high);
+  }
+
+  .detail-loading-line {
+    width: 100%;
+    height: 14px;
+  }
+
+  .detail-loading-line-short {
+    width: 42%;
+    height: 11px;
+  }
+
+  .detail-loading-line-title {
+    width: 78%;
+    height: 26px;
+  }
+
+  .detail-loading-block {
+    height: 132px;
+  }
+
+  .detail-loading-progress {
+    width: 100%;
+    --md-linear-progress-track-color: var(--ak-color-bg-surface-high);
+    --md-linear-progress-active-indicator-color: var(--ak-color-action-primary);
   }
 
   .detail-toolbar {
@@ -1346,12 +1550,16 @@ body {
 
   .modal-backdrop {
     @apply fixed inset-0 z-[400];
-    background: rgba(0, 0, 0, 0.55);
+    background: rgb(0 0 0 / 0.48);
   }
 
   .modal {
     @apply fixed left-1/2 top-1/2 z-[500] max-h-[calc(100vh-40px)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-border-strong bg-surface-2 p-6 shadow-lift-md;
     width: min(500px, calc(100vw - 24px));
+  }
+
+  .modal:focus-visible {
+    outline: none;
   }
 
   .modal-title {
@@ -1431,8 +1639,19 @@ body {
   /* ── Responsive ── */
 
   @media (max-width: 1180px) {
-    .detail-pane {
-      display: none;
+    .workspace {
+      position: relative;
+    }
+
+    .detail-pane.is-open {
+      position: absolute;
+      inset-block: 12px;
+      inset-inline-end: 12px;
+      z-index: 80;
+      width: min(460px, calc(100% - 24px));
+      border: 1px solid var(--ak-color-border-default);
+      border-radius: var(--md-sys-shape-corner-large, 16px);
+      box-shadow: 0 2px 8px rgb(0 0 0 / 0.14);
     }
   }
 
@@ -1447,13 +1666,72 @@ body {
   }
 
   @media (max-width: 760px) {
+    .unified-shell {
+      display: block;
+      padding: 0.5rem 0.5rem 5.5rem;
+    }
+
+    .primary-rail {
+      position: fixed;
+      right: 0.5rem;
+      bottom: 0.5rem;
+      left: 0.5rem;
+      z-index: 300;
+      min-height: 72px;
+      flex-direction: row;
+      padding: 0.375rem;
+      border-radius: var(--radius-xl);
+    }
+
+    .primary-rail-brand,
+    .primary-rail-footer {
+      display: none;
+    }
+
+    .primary-rail-nav {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.25rem;
+      margin: 0;
+    }
+
+    .primary-rail-button {
+      min-height: 60px;
+      border-radius: var(--radius-lg);
+    }
+
+    .primary-rail-button span {
+      position: static;
+      width: auto;
+      height: auto;
+      overflow: visible;
+      clip: auto;
+      clip-path: none;
+      white-space: normal;
+    }
+
+    .shell-view-stack {
+      height: 100%;
+      border-radius: var(--radius-lg);
+    }
+
+    .detail-pane.is-open {
+      inset: 8px;
+      width: calc(100% - 16px);
+      border-radius: var(--md-sys-shape-corner-large, 16px);
+    }
+
     .shell {
       @apply flex-col;
     }
 
     .sessions-pane {
-      @apply w-full flex-shrink-0 border-b border-r-0 border-border;
+      @apply flex-shrink-0;
+      margin: 0;
+      width: 100%;
       height: 58dvh;
+      border-radius: var(--radius-lg);
+      border-inline-end: 0;
+      border-block-end: 1px solid var(--md-sys-color-outline-variant);
     }
 
     .brand {

@@ -4,16 +4,14 @@ import type { FileUIPart } from "ai";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import {
   Check,
-  CircleStop,
   BookOpenText,
   MessageSquarePlus,
   Palette,
   Plus,
   Puzzle,
-  SendHorizontal,
   Smartphone,
 } from "lucide-react";
-import { cycleTheme, initializeTheme, startCrossPortThemeSync, useTheme } from "../../theme/src/theme-runtime";
+import { cycleTheme, initializeTheme, setTheme, startCrossPortThemeSync, useTheme } from "../../theme/src/theme-runtime";
 import {
   Attachment,
   AttachmentHoverCard,
@@ -40,13 +38,13 @@ import {
   PromptInputActionMenuTrigger,
   PromptInputBody,
   PromptInputFooter,
-  PromptInputSubmit,
   PromptInputTextarea,
   PromptInputTools,
   usePromptInputAttachments,
 } from "@/components/ai-elements/prompt-input";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ConversationNavigation } from "./conversation-navigation";
+import { ComposerActionButton } from "./composer-action";
 import { akashicBrandIcon } from "./akashic-brand";
 import { ComposerReply, MessageReplyReference, SharedMessageActions } from "./message-actions";
 import { MobilePairingDialog } from "./mobile-pairing-dialog";
@@ -467,20 +465,20 @@ function App() {
     : `${window.location.protocol}//${window.location.hostname}:${dashboardPort}`;
 
   return (
-    <main className="chat-shell">
-      <aside className="chat-sidebar">
-        <header className="chat-sidebar-brand">
+    <main className={`chat-shell ${isEmbeddedRuntime ? "embedded-runtime" : ""}`}>
+      {!isEmbeddedRuntime && <aside className="chat-sidebar">
+        {!isEmbeddedShell && <header className="chat-sidebar-brand">
           <span
             className="chat-sidebar-brand__mark"
             style={{ WebkitMaskImage: `url(${akashicBrandIcon})`, maskImage: `url(${akashicBrandIcon})` }}
             aria-hidden="true"
           />
           <span><strong>Akashic</strong><small>Dashboard</small></span>
-        </header>
+        </header>}
         <ConversationNavigation
-          destinationHeading="工作空间"
+          destinationHeading={isEmbeddedShell ? undefined : "工作空间"}
           sessionHeading="最近会话"
-          destinations={[
+          destinations={isEmbeddedShell ? [] : [
             {
               id: "runtime",
               icon: <BookOpenText size={20} />,
@@ -520,7 +518,15 @@ function App() {
           sessionAfterContent={surface === "chat" && activeSessionId ? (
             <MobilePluginSlot name="drawer.panel" sessionId={activeSessionId} />
           ) : undefined}
-          actions={[
+          actions={isEmbeddedShell ? [
+            {
+              id: "new-chat",
+              icon: <MessageSquarePlus size={18} />,
+              label: "新聊天",
+              primary: true,
+              onActivate: startNewChat,
+            },
+          ] : [
             {
               id: "theme",
               icon: <Palette size={18} />,
@@ -542,7 +548,7 @@ function App() {
             },
           ]}
         />
-      </aside>
+      </aside>}
 
       {surface === "runtime" ? <RuntimeDashboard /> : <section className="chat-main">
         <Conversation className="conversation">
@@ -759,15 +765,15 @@ function ComposerSubmit({
   onStop: () => void;
 }) {
   const attachments = usePromptInputAttachments();
+  const isGenerating = status === "submitted" || status === "streaming";
   return (
-    <PromptInputSubmit
-      className="send-button"
-      status={status === "idle" ? undefined : status}
-      onStop={onStop}
+    <ComposerActionButton
+      mode={status === "idle" ? "send" : "stop"}
+      label={isGenerating ? "中止回答" : "发送消息"}
+      type={isGenerating ? "button" : "submit"}
+      onClick={isGenerating ? onStop : undefined}
       disabled={status === "idle" && !input.trim() && attachments.files.length === 0}
-    >
-      {status === "idle" ? <SendHorizontal size={18} /> : <CircleStop size={18} />}
-    </PromptInputSubmit>
+    />
   );
 }
 
@@ -1314,9 +1320,25 @@ function formatMessageTime(value: string) {
   return Number.isNaN(date.getTime()) ? "" : chatMessageTimeFormatter.format(date);
 }
 
-const preview = new URLSearchParams(window.location.search).get("preview");
+const entryParams = new URLSearchParams(window.location.search);
+const preview = entryParams.get("preview");
+const isEmbeddedShell = entryParams.get("embedded") === "1";
+const isEmbeddedRuntime = isEmbeddedShell && entryParams.get("surface") === "runtime";
+if (isEmbeddedShell) document.documentElement.dataset.embeddedShell = "true";
 initializeTheme();
 startCrossPortThemeSync();
+if (isEmbeddedShell) {
+  const parentOrigins = new Set([
+    `${window.location.protocol}//${window.location.hostname}:2236`,
+    `${window.location.protocol}//${window.location.hostname}:5173`,
+  ]);
+  window.addEventListener("message", (event: MessageEvent<unknown>) => {
+    if (!parentOrigins.has(event.origin) || typeof event.data !== "object" || event.data === null) return;
+    const message = event.data as Record<string, unknown>;
+    if (message.type !== "akashic.theme" || typeof message.themeId !== "string") return;
+    setTheme(message.themeId, false);
+  });
+}
 const isMobileShowcase = preview === "mobile";
 const isSharedChatShowcase = preview === "chat";
 const isDrawerIslandShowcase = preview === "drawer-islands";

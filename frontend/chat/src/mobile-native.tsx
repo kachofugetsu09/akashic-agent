@@ -41,17 +41,15 @@ import {
   Reply,
   RotateCcw,
   Search,
-  SendHorizontal,
   Settings,
   Share2,
-  Square,
   TimerReset,
   Wifi,
   WifiOff,
   X,
 } from "lucide-react";
 import { cycleTheme, initializeTheme, setTheme, useTheme } from "../../theme/src/theme-runtime";
-import { MaterialIconButton } from "../../theme/src/material-react";
+import { ComposerActionButton } from "./composer-action";
 import { ConversationNavigation } from "./conversation-navigation";
 import {
   ComposerReply,
@@ -2925,13 +2923,9 @@ function MobileComposer({
           <Paperclip size={22} />
         </button>
         {snapshot.composer.canStop || stopping ? (
-          <MaterialIconButton className={`mobile-send-button stop ${stopping ? "pending" : ""}`} variant="danger" onClick={onStop} label={stopping ? "正在中止" : "中止回答"} disabled={stopping}>
-            <Square size={17} fill="currentColor" />
-          </MaterialIconButton>
+          <ComposerActionButton mode="stop" className={stopping ? "pending" : undefined} onClick={onStop} label={stopping ? "正在中止" : "中止回答"} disabled={stopping} />
         ) : (
-          <MaterialIconButton className="mobile-send-button" onClick={onSend} label={sendPending ? "正在保存消息" : "发送消息"} disabled={!canSubmit}>
-            <SendHorizontal size={22} />
-          </MaterialIconButton>
+          <ComposerActionButton mode="send" onClick={onSend} label={sendPending ? "正在保存消息" : "发送消息"} disabled={!canSubmit} />
         )}
         </div>
       </div>
