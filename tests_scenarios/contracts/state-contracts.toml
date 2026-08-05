@@ -60,6 +60,21 @@ physical_reduction_owner = "explicit_plugin_data_deletion"
 recovery_evidence = ["candidate_generation", "rollback"]
 failure_semantics = ["unit_failed", "cleanup_degraded", "runtime_fatal"]
 
+[states.plugin_runtime_selection]
+priority = "p0"
+requirements = ["RUN-007", "OUT-004", "PLG-013", "CTRL-003", "TST-001", "TST-002", "TST-003", "TST-005", "TST-006"]
+owner = "plugin.runtime_snapshot_store"
+normal_change = "metadata_upsert"
+destructive_owner = "protocol_owner"
+writers = ["recursive_plugin_validation", "plugin"]
+consumers = ["recursive_plugin_validation", "control", "runtime"]
+protected_tables = ["reload_transactions", "reload_events"]
+oracles = ["recursive_plugin_self_validation_contract"]
+retention = "stable/latest descriptors survive restart; reload events remain append-only; immutable artifacts remain while referenced by a pointer or lease"
+physical_reduction_owner = "plugin.runtime_snapshot_store"
+recovery_evidence = ["runtime_pointer_snapshot", "reload_journal", "crash_recovery"]
+failure_semantics = ["operation_rejected", "unit_failed", "cleanup_degraded", "runtime_fatal"]
+
 [states.mobile_receipts]
 priority = "p0"
 requirements = ["SEC-006", "MOB-003", "TST-001", "TST-002", "TST-005"]

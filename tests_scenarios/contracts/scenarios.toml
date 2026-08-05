@@ -12,6 +12,14 @@ missing_p0_mutant = "tests/semantic/test_change_gate.py::test_every_p0_oracle_de
 official_workspace_path = "tests/semantic/test_contract_oracles.py::test_workspace_oracle_rejects_official_path_mutant"
 plugin_uninstall_deletes_data = "tests/semantic/test_contract_oracles.py::test_plugin_data_oracle_rejects_uninstall_delete_mutant"
 plugin_drain_reports_before_old_lease_release = "tests/semantic/test_contract_oracles.py::test_plugin_drain_oracle_rejects_active_only_completion_mutant"
+recursive_crash_promotes_candidate = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_crash_promotion_mutant"
+recursive_fake_domain_success = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_fake_domain_success_mutant"
+recursive_fake_tool_item = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_fake_tool_item"
+recursive_global_turn_lock = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_global_lock_mutant"
+recursive_memory_write = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_memory_write_mutant"
+recursive_message_push_blocks_parent = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_message_push_blocking_mutant"
+recursive_parent_terminal_overflow = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_parent_terminal_overflow_mutant"
+recursive_stable_misbinding = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_stable_misbinding_mutant"
 unicode_utf16_command_length = "tests/mobile_realtime/test_channel.py::test_command_list_uses_active_channel_catalog_without_stop"
 unmapped_executable_file = "tests/semantic/test_change_gate.py::test_unknown_executable_file_is_not_silently_accepted"
 companion_tool_context_origin_override = "tests/semantic/test_companion_contract.py::test_tool_context_rejects_origin_override_mutant"
@@ -295,6 +303,63 @@ command = [
 ]
 observes = ["long_term_owner", "session_source"]
 mutants = ["derived_state_overwrites_session_source"]
+
+[scenarios.recursive_plugin_self_validation_contract]
+requirements = ["RUN-007", "OUT-004", "PLG-013", "CTRL-003", "TST-001", "TST-002", "TST-003", "TST-005", "TST-006"]
+groups = ["recursive_plugin_validation"]
+environment = "public_clean_workspace"
+timeout_seconds = 180
+command = [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "tests/semantic/test_recursive_plugin_self_validation_contract.py",
+  "tests/semantic/test_recursive_plugin_self_validation_trajectory.py",
+  "tests/test_plugin_runtime_control.py",
+  "tests/test_turn_pipelines.py::test_process_direct_runs_concurrently_with_another_session",
+  "tests/test_turn_pipelines.py::test_process_direct_waits_for_the_same_session_lane",
+  "tests/test_plugin_hot_reload.py::test_runtime_snapshot_latest_requires_explicit_selector_and_promotion",
+  "tests/test_plugin_hot_reload.py::test_installed_candidate_kv_write_blocks_promotion",
+  "tests/test_plugin_hot_reload.py::test_startup_recovers_installed_candidate_from_durable_pointers",
+  "tests/test_plugin_hot_reload.py::test_startup_rejects_bad_recovered_candidate_but_keeps_stable",
+  "tests/test_plugin_hot_reload.py::test_passive_runtime_admission_selects_latest_only_when_explicit",
+  "tests/test_plugin_doctor.py::test_plugin_doctor_reads_latest_artifact_candidate",
+  "tests/control/test_control_execution.py::test_control_execution_preserves_inbound_metadata",
+  "tests/control/test_exec_cli.py::test_exec_new_defaults_to_read_only_memory_and_selects_runtime",
+  "tests/control/test_exec_cli.py::test_control_client_reads_terminal_larger_than_asyncio_default",
+  "tests/control/test_protocol.py::test_thread_runtime_selector_is_strict_and_inherited_by_turn",
+  "tests/control/test_protocol.py::test_router_disconnect_interrupts_only_attached_turn",
+  "tests/test_memory_engine_contract.py::test_default_memory_engine_respects_skip_post_memory_event_flag",
+  "tests/test_memory_engine_contract.py::test_markdown_maintenance_respects_skip_post_memory_event_flag",
+  "tests/test_support_modules.py::test_message_push_passive_role_does_not_wait_for_passive_lane",
+  "tests/test_support_modules.py::test_message_push_passive_role_serializes_actual_same_chat_send",
+  "tests/test_support_modules.py::test_context_builder_debug_projection_is_turn_local",
+  "tests/test_builtin_develop_akashic_plugin_skill.py",
+]
+observes = [
+  "runtime_pointer_snapshot",
+  "reload_journal",
+  "validation_before_parent_release",
+  "parent_control_terminal",
+  "control_tool_items",
+  "candidate_domain_state",
+  "validation_session_db",
+  "semantic_memory_write_set",
+  "chat_lane_timer_order",
+  "message_push_receipt",
+  "crash_recovery",
+]
+mutants = [
+  "recursive_stable_misbinding",
+  "recursive_global_turn_lock",
+  "recursive_parent_terminal_overflow",
+  "recursive_memory_write",
+  "recursive_fake_domain_success",
+  "recursive_message_push_blocks_parent",
+  "recursive_crash_promotes_candidate",
+  "recursive_fake_tool_item",
+]
 
 [scenarios.companion_tool_context_contract]
 requirements = ["SEC-001", "ERR-001", "TST-001", "TST-003"]

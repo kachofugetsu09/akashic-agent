@@ -1,6 +1,6 @@
 # 插件递归自验证运行时设计
 
-- 状态：accepted / stable-latest programmatic 闭环已实现，共享状态 owner 审计待完成
+- 状态：implemented / stable-latest programmatic 闭环、共享状态 owner 审计、自动化与真实模型验收均已完成
 - 确认日期：2026-08-05
 - 决策：[0024](../decisions/0024-plugin-self-validation-uses-stable-and-latest.md)
 - 关联条款：RUN-007、OUT-004、PLG-013、CTRL-003、SH-001、TST-001～TST-006
@@ -259,7 +259,25 @@ Tool/Skill 可见性严格来自绑定 snapshot：T 继续看到 S0；V 看到 S
 
 当前 `AgentLoop`、reasoner、event subscription 和工具执行链中的可变字段必须逐项证明属于上述某个 owner。无法归属、靠“通常只有一轮”成立的字段，是并发实现的阻塞项；不能用更多局部锁掩盖。
 
-### 8.1 写型插件的边界
+### 8.1 Owner 审计结果
+
+审计覆盖生产 `PassiveMessageWorker → AgentLoop → DefaultReasoner → ToolRegistry` 路径，不把 legacy 串行入口误当成生产并发模型。结果如下：
+
+| 对象 | 实际 owner | 审计结论 |
+|---|---|---|
+| `_active_tasks`、`_active_turn_states`、`_interrupt_states` | `AgentLoop`，key 为 `session_key` | 修改只发生在同一 event loop；每个 key 受 session lane 约束，不存在跨 session 共用 turn frame。 |
+| Prompt messages、tool trace、compactor 与 provider request | 当前 `TurnFrame` / reasoner 调用栈 | 每次请求局部创建；共享 provider 只持连接池与配置，请求消息、usage 和取消信号不回写 service 字段。 |
+| reasoner phase snapshot cache | reasoner service cache | 命中只返回完整不可变 phase；并发替换最多造成重复构建，不会把 A turn 的局部状态返回给 B turn。 |
+| `ToolRegistry` current execution/search scope | `ContextVar` | 每个 task 独立；snapshot 内 registry 只提供冻结 catalog，candidate write 工具按 lease policy 禁用。 |
+| `ToolDiscoveryState` | runtime service 内按 session key 的同步 LRU | 读写之间没有 `await`，一次更新原子完成；不同 session 只共享容量，不共享选中工具值。 |
+| Session cache、history 与 SQLite | session lane + `SessionManager` / store lock | 同 session 整轮串行，跨 session 的持久提交由 store 短锁拥有；messages 正常路径仍只追加。 |
+| plugin module/tool 实例与 plugin-data | generation + 插件资源 owner | generation 可被多个 session 租用，因此插件实例必须可重入；一次调用状态放 frame/局部变量，共享文件由插件 repository 或原子替换拥有。 |
+| Shell execution registry | `ShellProcessManager` | `execution_id` 与 owner session 共同隔离；wait/write 不持有 session lane 或 snapshot pointer 锁。 |
+| semantic memory writer | memory engine repository owner | validation session 保留 recall，但 `skip_post_memory` 与 candidate write-tool policy 让 semantic write set 保持为空。 |
+
+审计发现并修复一个真实可达的串值：`ContextBuilder` 曾把 `last_debug_breakdown` 和 `last_assembled_contexts` 存在共享实例字段。A turn 完成 render 后等待 provider，B turn 可以覆盖字段，导致 A 的 after-turn budget/debug 读取 B 的投影。现在两项诊断投影由 `ContextVar` 按 task 保存，并用两个并发 render 在交错后回读各自 marker 的测试锁定。该问题不会改写权威消息，但会污染诊断与预算证据，不能靠“只是 debug”忽略。
+
+### 8.2 写型插件的边界
 
 默认 latest 验证 session：
 
@@ -292,6 +310,7 @@ python main.py exec --new --runtime latest --json "验证新插件的目标行�
 - 显式 `--persist-memory` 才允许该新 session 沉淀长期语义记忆；该参数只能在创建 thread 时使用。
 - SessionDB 中的 thread、turn、user/assistant message 和 tool items 始终正常持久化，便于审计和回读。
 - `--json` 输出当前 control event 流；terminal 至少包含 `threadId`、`turn id`、`status`、`finalResponse`、`items`、`usage` 和 `error`。
+- Control 两端共享显式 2 MiB 单帧上限；超过 asyncio 默认 64 KiB 的合法 terminal 必须完整送达，超过协议上限则 fail-loud。
 
 Shell 是异步可观察传输：命令在初始窗口没有结束时返回 `execution_id`，父 T 用 `write_stdin` 读取增量输出。它不创建第二个 Akashic runtime；CLI 仍连接当前 Gateway，所以能租用内存中的 latest。
 
@@ -369,7 +388,7 @@ cancelled → discard candidate when owned and safe → report terminal
 
 1. [完成] 建立 `SessionLaneRegistry`，让 channel/direct 与 control executor 汇入同一 session owner。
 2. [完成] 移除两层全局整轮互斥，保留全局有界 admission。
-3. [待完成] 对其余 `AgentLoop` 共享可变字段和 Tool owner 做完整审计。
+3. [完成] 对其余 `AgentLoop`、reasoner、ContextBuilder、ToolRegistry、SessionManager、provider、插件实例和 Shell owner 完成审计；将共享 ContextBuilder 诊断投影迁回 task-local owner。
 4. [完成] 验证不同 session 并发、同 session 串行和 passive `message_push` 的 ChatLane 顺序。
 
 ### Phase 2：引入 stable/latest
@@ -429,10 +448,11 @@ cache/<marketplace>/<plugin>/
 ### 14.4 Shell、取消和 `message_push`
 
 1. Shell 返回 execution_id，`write_stdin` 只读新增 JSONL 并最终观察 terminal。
-2. 杀死 attached exec CLI 后服务端 V 进入 cancelled/interrupted，并释放 latest lease。
-3. V 的 `message_push` 在 T 未结束时可取得短 send owner；不会等待 session A lane。
-4. 两次实际 channel send 不重叠；scheduler 的 non-passive send 仍排在用户被动回复之后。
-5. push 正文不进入 T 的 Prompt/目标 session history；V 的工具 trace 包含真实 DeliveryReceipt 终态。
+2. 父 terminal 即使包含超过 64 KiB 的工具轨迹，也必须在 2 MiB 协议上限内完整送达调用方。
+3. 杀死 attached exec CLI 后服务端 V 进入 cancelled/interrupted，并释放 latest lease。
+4. V 的 `message_push` 在 T 未结束时可取得短 send owner；不会等待 session A lane。
+5. 两次实际 channel send 不重叠；scheduler 的 non-passive send 仍排在用户被动回复之后。
+6. push 正文不进入 T 的 Prompt/目标 session history；V 的工具 trace 包含真实 DeliveryReceipt 终态。
 
 ### 14.5 行为 oracle
 
@@ -444,6 +464,43 @@ cache/<marketplace>/<plugin>/
 - mutant 3：把 V 错绑 stable；tool visibility oracle 必须失败。
 - mutant 4：恢复全局锁；死锁超时 oracle 必须失败。
 - mutant 5：让 programmatic session 写入 semantic memory；memory write-set oracle 必须失败。
+
+### 14.6 自动化证据
+
+| 合同 | 直接证据 |
+|---|---|
+| latest/stable、install 完成定义、candidate 单 owner | `tests/test_plugin_runtime_control.py`、`tests/test_plugin_hot_reload.py` 的 selector、promotion、KV write 与 crash recovery 用例 |
+| candidate 诊断入口 | `tests/test_plugin_doctor.py::test_plugin_doctor_reads_latest_artifact_candidate` 证明 doctor 按 pointer 读取 `.artifacts` 下的 latest |
+| 跨 session 并发、同 session 串行 | `tests/test_turn_pipelines.py::test_process_direct_runs_concurrently_with_another_session`、`test_process_direct_waits_for_the_same_session_lane` |
+| programmatic runtime、长 terminal、SessionDB 与默认 memory policy | `tests/control/test_exec_cli.py::test_exec_new_defaults_to_read_only_memory_and_selects_runtime`、`test_control_client_reads_terminal_larger_than_asyncio_default`、`tests/control/test_protocol.py::test_thread_runtime_selector_is_strict_and_inherited_by_turn` |
+| `message_push` 不等父 session 且实际 send 串行 | `tests/test_support_modules.py::test_message_push_passive_role_does_not_wait_for_passive_lane`、`test_message_push_passive_role_serializes_actual_same_chat_send` |
+| turn-local 调试投影 | `tests/test_support_modules.py::test_context_builder_debug_projection_is_turn_local` |
+| 生产轨迹 oracle | `tests/semantic/test_recursive_plugin_self_validation_trajectory.py` 通过真实 `PluginManager` install、`ConversationRuntime` latest child、`DefaultReasoner`、候选工具、`message_push`、SessionDB、reload journal 与 promote 取证；stable misbinding、假 tool success、假领域结果从真实执行 seam 注入并必须被拒绝 |
+| 聚合合同 oracle 与已知错误 | `tests/semantic/test_recursive_plugin_self_validation_contract.py` 对跨场景 observation 做稳定性自测：global lock、parent terminal overflow、semantic write、blocking push、crash promotion 等 mutant；它不替代生产轨迹测试 |
+
+上述证据注册为 P0 `recursive_plugin_validation` group、`plugin_runtime_selection` state contract 与 `recursive_plugin_self_validation_contract` scenario。Gate 的主通过证据由生产组件生成，不接受手工 observation：它观察 pointer/journal、真实 tool item、SessionDB、semantic write set、ChatLane timer 和 promote；独立 startup 用例覆盖 crash recovery。coverage baseline 只记录批准后的合同映射，不充当测试通过报告。
+
+### 14.7 真实模型闭环证据
+
+2026-08-06 在一次性 workspace、独立 plugin home、关闭 channel/proactive 且 `memory.enabled=false`、`engine=""` 的 Gateway 中完成真实验收：
+
+```text
+parent stable T
+├─ 自行编写 prompt-only Git 插件 helloworld_rule@local
+├─ source tests 首跑暴露测试契约错误，修复后 5 passed
+├─ install: stable 335c0bba4d86f063 → latest 12aec517458d6252
+├─ child latest V: 普通问题 → 精确 helloworld，status=completed
+├─ 回读 SessionDB、reload journal 与 pointer
+└─ promote: stable == latest == 12aec517458d6252
+```
+
+- 父 session/turn：`programmatic:e8971595-33b5-4062-b6a5-0e244030c546` / `turn:6d59a0e4-7e6b-4cbd-aa25-3f304f67201e`，`21:58:48.912912Z` 开始，`22:07:25.139531Z` 完成。
+- 子 session/turn：`programmatic:d3850b5b-b004-473b-9106-c95b28395a0f` / `turn:ca68e274-33b5-4be0-acd8-1d7b898825e8`，`22:06:06.976456Z` 开始，`22:06:10.879357Z` 完成；因此 V 在 T 释放前约 494 秒完成，不存在跨 session 整轮锁。
+- 子输入是普通问题 `What is the capital of France?`，不含注入规则；SessionDB 的 user/assistant 两条消息和 turn final 均证明最终回答严格为 `helloworld`，session metadata 为 `runtime=latest`、`skip_post_memory=true`。
+- reload transaction `abf4b6346c6e43dd9d9509de3530af54` 最终 `phase=complete`、`error=''`；source commit 为 `a5f7d54b13ac88c9dfa5a36ba08f64960c984dd7`，stable/latest pointer 均为 `.artifacts/0.1.0-a5f7d54b13ac88c9`。
+- 父 terminal 的 `items_json` 为 769,056 bytes；CLI 完整收到 `completed`，证明显式 2 MiB control frame 合同修复了旧 64 KiB 断连。
+- 本次父 Agent 用了 81 次模型迭代、100 次工具调用，功能成立但效率不可接受。主要浪费来自成功路径预读 diagnostics、重复枚举已给定运行时信息和反向考古 CLI/EventBus；builtin Skill 已把 prompt-only 模板、单向快路径与按失败诊断写成明确约束。
+- 现场还发现 `plugin-doctor` 仍按旧可见版本目录查找、误报 `.artifacts` 候选不存在；现已让 doctor 通过原子 pointer 读取 latest，并以定向测试覆盖。
 
 ## 15. 非目标与仍需单独设计的边界
 

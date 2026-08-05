@@ -4,10 +4,11 @@
 
 1. 最小插件
 2. Tool
-3. Skill
-4. MCP 与其他贡献
-5. 状态与生命周期
-6. Source 验证
+3. Prompt 注入
+4. Skill
+5. MCP 与其他贡献
+6. 状态与生命周期
+7. Source 验证
 
 ## 1. 最小插件
 
@@ -57,7 +58,37 @@ class ExamplePlugin(Plugin):
 
 测试要同时断言 schema、真实调用结果和失败语义。仅断言装饰器注册不证明工具可用。
 
-## 3. Skill
+## 3. Prompt 注入
+
+只需要追加 system prompt section 时，直接使用当前 `on_prompt_render` 事件，不要先搜索 phase slot、编写自定义 module factory 或复制 ContextBuilder：
+
+```python
+from agent.lifecycle.types import PromptRenderCtx
+from agent.plugins import Plugin, on_prompt_render
+from agent.prompting import PromptSectionRender
+
+
+class PromptOnlyPlugin(Plugin):
+    name = "prompt_only"
+    version = "0.1.0"
+
+    @on_prompt_render(priority=100)
+    async def inject_rule(self, ctx: PromptRenderCtx) -> PromptRenderCtx:
+        ctx.system_sections_bottom.append(
+            PromptSectionRender(
+                name="prompt_only_rule",
+                content="这里写可独立断言的规则。",
+                is_static=True,
+            )
+        )
+        return ctx
+```
+
+source test 至少直接调用 handler，断言 section 的 name、content、位置和静态属性，并证明没有意外 Tool handler。真实有效性仍由安装后的 latest child 断言，source test 不能替代模型行为。
+
+测试 `channels()`、`jobs()` 等普通实例方法时先实例化插件；只有 `skill_roots()`、`mcp_servers()`、`managed_services()` 等基类声明为 `@classmethod` 的能力才直接从类调用。不要为确认这个区别遍历 manager/EventBus 实现。
+
+## 4. Skill
 
 插件 Skill 放在：
 
@@ -86,7 +117,7 @@ def skill_roots(cls) -> tuple[str, ...]:
 3. runtime 支持候选选择时，在 latest programmatic child 给出真实触发请求；否则只在隔离 runtime 中走 current-snapshot child，并报告候选隔离不可用。
 4. 从 tool items、产物或领域状态证明 Skill 被正确执行。
 
-## 4. MCP 与其他贡献
+## 5. MCP 与其他贡献
 
 只通过 Plugin API 声明：
 
@@ -99,7 +130,7 @@ def skill_roots(cls) -> tuple[str, ...]:
 
 不要创建第二套 workspace MCP/skill owner。固定端口、bot token、long-poll 或 singleton daemon 属于独占 endpoint，不能与 stable generation 同时在一个 runtime 启动时，必须使用隔离验证路径。
 
-## 5. 状态与生命周期
+## 6. 状态与生命周期
 
 - canonical source：插件 Git 仓库。
 - installed code：全局插件 cache；不可直接编辑。
@@ -108,7 +139,13 @@ def skill_roots(cls) -> tuple[str, ...]:
 
 候选 prepare/readiness 不得写正式 session、memory、plugin-data 或外部服务。行为验证若需要写入，必须使用真实事务/dry-run、隔离目标或明确副作用授权；代码 pointer 回滚不拥有这些效果。
 
-## 6. Source 验证
+## 7. Source 验证
+
+先确认当前 Gateway 的 Python 解释器。仓库存在 `.venv/bin/python` 时使用它，不要默认系统 `python` 已安装 runtime/test 依赖；不确定时从 Gateway 进程的 `/proc/<pid>/exe` 核对。source test 示例：
+
+```bash
+/absolute/repository/.venv/bin/python -m pytest -q /absolute/plugin-source/tests
+```
 
 按插件仓库自己的说明执行最小测试。随后从干净 Git HEAD 安装：
 

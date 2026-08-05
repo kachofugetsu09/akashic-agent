@@ -15,7 +15,7 @@ import pytest
 
 from agent.context import ContextBuilder, ContextRequest
 from agent.persona import reset_veda
-from agent.prompting import SYSTEM_CONTEXT_FRAME_MARKER
+from agent.prompting import PromptSectionRender, SYSTEM_CONTEXT_FRAME_MARKER
 from agent.tools.base import Tool
 from agent.tools.memorize import MemorizeTool
 from agent.tools.message_push import MessagePushTool
@@ -929,6 +929,66 @@ def test_tool_base_and_timekit_and_json_store_cover_branches(
     logger.warning.assert_called_once()
     assert timekit.local_now("UTC").tzinfo is not None
     assert timekit.utcnow().tzinfo is not None
+
+
+@pytest.mark.asyncio
+async def test_context_builder_debug_projection_is_turn_local(tmp_path: Path) -> None:
+    """并发 render 只暴露调用 task 自己的诊断投影。"""
+
+    class _Memory:
+        def read_profile(self) -> str:
+            return ""
+
+        def read_self(self) -> str:
+            return ""
+
+        def read_recent_context(self) -> str:
+            return ""
+
+        def get_memory_context(self) -> str:
+            return ""
+
+    _ = reset_veda(tmp_path)
+    builder = ContextBuilder(tmp_path, _Memory())  # type: ignore[arg-type]
+    first_rendered = asyncio.Event()
+    second_rendered = asyncio.Event()
+
+    async def render(marker: str) -> tuple[list[object], list[object], dict[str, str]]:
+        # 1. 让两个 task 写入不同的 debug 与 turn injection 投影。
+        result = builder.render(
+            ContextRequest(
+                history=[],
+                current_message=marker,
+                turn_injection_prompt=marker,
+            ),
+            system_sections_top=[
+                PromptSectionRender(
+                    name=f"marker-{marker}",
+                    content=marker,
+                    is_static=False,
+                )
+            ],
+        )
+        if marker == "first":
+            first_rendered.set()
+            await second_rendered.wait()
+        else:
+            await first_rendered.wait()
+            second_rendered.set()
+
+        # 2. 在另一 task 已完成 render 后读取，必须仍得到本 task 的值。
+        return (
+            list(result.debug_breakdown),
+            list(builder.last_debug_breakdown),
+            builder.last_assembled_contexts["turn_injection_context"],
+        )
+
+    first, second = await asyncio.gather(render("first"), render("second"))
+
+    assert first[1] == first[0]
+    assert second[1] == second[0]
+    assert first[2] == {"turn_injection": "first"}
+    assert second[2] == {"turn_injection": "second"}
 
 
 def test_context_builder_builds_prompt_messages_and_assistant_blocks(

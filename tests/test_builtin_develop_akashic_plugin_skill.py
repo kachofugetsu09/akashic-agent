@@ -66,11 +66,21 @@ def test_develop_akashic_plugin_references_are_complete() -> None:
     assert "references/runtime-diagnostics.md" in body
     for contract in (
         "@tool",
+        "@on_prompt_render(priority=100)",
+        "PromptSectionRender",
+        ".venv/bin/python",
+        "普通实例方法",
         "skill_roots()",
         "SkillsLoader",
         "plugin-doctor",
     ):
         assert contract in authoring
+    for contract in (
+        "成功前不要预先做全量诊断考古",
+        "不要创建空 `requirements.txt`",
+        "source test → commit → install",
+    ):
+        assert contract in body
     for contract in (
         "plugin-install",
         "--runtime latest",

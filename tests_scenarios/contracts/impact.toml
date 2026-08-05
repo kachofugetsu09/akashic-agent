@@ -143,6 +143,34 @@ paths = [
 depends_on = ["lifecycle"]
 scenarios = ["plugin_generation_contract", "plugin_uninstall_drain_finality", "mcp_process_lifecycle"]
 
+[groups.recursive_plugin_validation]
+priority = "p0"
+requirements = ["RUN-007", "OUT-004", "PLG-013", "CTRL-003", "TST-001", "TST-002", "TST-003", "TST-005", "TST-006"]
+paths = [
+  "agent/context.py",
+  "agent/control/**",
+  "agent/looping/**",
+  "agent/plugins/**",
+  "agent/tools/message_push.py",
+  "bootstrap/control_execution.py",
+  "bootstrap/tools.py",
+  "bus/queue.py",
+  "infra/control/**",
+  "main.py",
+  "session/**",
+  "skills/develop-akashic-plugin/**",
+  "tests/control/**",
+  "tests/semantic/test_recursive_plugin_self_validation_contract.py",
+  "tests/semantic/test_recursive_plugin_self_validation_trajectory.py",
+  "tests/test_builtin_develop_akashic_plugin_skill.py",
+  "tests/test_plugin_hot_reload.py",
+  "tests/test_plugin_runtime_control.py",
+  "tests/test_support_modules.py",
+  "tests/test_turn_pipelines.py",
+]
+depends_on = ["plugin", "control", "session_persistence", "channel", "memory"]
+scenarios = ["recursive_plugin_self_validation_contract"]
+
 [groups.lifecycle]
 priority = "p1"
 requirements = ["RUN-001", "RUN-002", "PLG-001"]

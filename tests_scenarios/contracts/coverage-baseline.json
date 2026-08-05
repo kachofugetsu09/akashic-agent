@@ -1,7 +1,7 @@
 {
   "acceptedGaps": [],
   "base": "d627fa600781855770a5ede752f268982b68ebf9",
-  "catalogDigest": "4bad9bf2f6284b6d27d8d9b73ba469c795151b1e7e428a66274a1cdce6e14cca",
+  "catalogDigest": "a49b93860a76022bf50c2cee865a617765bca585034eaa919c30e0dcd3ba7f50",
   "purpose": "approved_contract_mapping",
   "coveredP0": {
     "companion_control": [
@@ -52,6 +52,9 @@
       "plugin_generation_contract",
       "plugin_uninstall_drain_finality",
       "mcp_process_lifecycle"
+    ],
+    "recursive_plugin_validation": [
+      "recursive_plugin_self_validation_contract"
     ],
     "session_persistence": [
       "context_history_nondestructive"

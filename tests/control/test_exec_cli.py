@@ -130,6 +130,102 @@ async def test_control_client_preserves_buffered_terminal_on_disconnect() -> Non
 
 
 @pytest.mark.asyncio
+async def test_control_client_reads_terminal_larger_than_asyncio_default(
+    tmp_path: Path,
+) -> None:
+    """长递归 turn 的 terminal frame 不得触发默认 64 KiB 断连。"""
+
+    endpoint = tmp_path / "large-terminal.sock"
+    large_preview = "x" * (80 * 1024)
+
+    async def send_large_terminal(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        # 1. 完成 initialize 与 thread/turn start 握手。
+        initialize = json.loads(await reader.readline())
+        writer.write(
+            (
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": initialize["id"],
+                        "result": {"protocolVersion": "1.0"},
+                    }
+                )
+                + "\n"
+            ).encode()
+        )
+        await writer.drain()
+        _ = await reader.readline()
+        thread_start = json.loads(await reader.readline())
+        writer.write(
+            (
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": thread_start["id"],
+                        "result": {"id": "programmatic:large"},
+                    }
+                )
+                + "\n"
+            ).encode()
+        )
+        await writer.drain()
+        turn_start = json.loads(await reader.readline())
+        writer.write(
+            (
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": turn_start["id"],
+                        "result": {
+                            "id": "turn:large",
+                            "threadId": "programmatic:large",
+                            "status": "queued",
+                        },
+                    }
+                )
+                + "\n"
+            ).encode()
+        )
+
+        # 2. 单帧超过 asyncio 默认值，但仍在 control 合同上限内。
+        terminal = {
+            "jsonrpc": "2.0",
+            "method": "turn/completed",
+            "params": {
+                "turnId": "turn:large",
+                "turn": {
+                    "id": "turn:large",
+                    "status": "completed",
+                    "finalResponse": "done",
+                    "items": [{"resultPreview": large_preview}],
+                },
+            },
+        }
+        writer.write((json.dumps(terminal) + "\n").encode())
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_unix_server(send_large_terminal, path=endpoint)
+    client = await ControlClient.connect(str(endpoint))
+    try:
+        thread = await client.start_thread()
+        handle = await client.start_turn(str(thread["id"]), "verify")
+
+        result = await asyncio.wait_for(handle.result(), 2)
+
+        assert result["status"] == "completed"
+        assert result["items"][0]["resultPreview"] == large_preview
+    finally:
+        await client.close()
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
 async def test_exec_remote_error_exits_two_without_traceback(tmp_path: Path) -> None:
     sessions = SessionManager(tmp_path)
 
