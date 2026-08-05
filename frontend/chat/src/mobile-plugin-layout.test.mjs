@@ -67,12 +67,13 @@ test("process plugin slots align with thinking and tool content", () => {
   assert.doesNotMatch(platformStyles, /\.mobile-plugin-slot\[data-slot="turn\.before_reasoning"\]/);
   assert.match(
     sharedStyles,
-    /\.process-line\s*\{[\s\S]*?left:\s*var\(--process-content-inset\);[\s\S]*?width:\s*var\(--process-rail-width\);[\s\S]*?justify-content:\s*center;/,
+    /\.process-line\s*\{[\s\S]*?left:\s*var\(--process-content-inset\);[\s\S]*?width:\s*var\(--process-rail-width\);[\s\S]*?transition:\s*height 420ms/,
   );
   assert.match(
     sharedStyles,
-    /\.process-line::before\s*\{[^}]*width:\s*1px;[^}]*height:\s*100%;/,
+    /\.process-line::before\s*\{[^}]*top:\s*0;[^}]*bottom:\s*0;[^}]*width:\s*1px;/,
   );
+  assert.match(sharedMessageSource, /new ResizeObserver\(scheduleLineHeight\)/);
   assert.match(
     sharedStyles,
     /\.process-node\.diamond\s*\{[^}]*width:\s*8px;[^}]*height:\s*8px;/,

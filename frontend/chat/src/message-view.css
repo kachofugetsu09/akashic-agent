@@ -198,21 +198,39 @@
 
 .process-line {
   position: absolute;
-  display: flex;
   top: var(--process-node-center);
-  bottom: 0;
   left: var(--process-content-inset);
   width: var(--process-rail-width);
-  justify-content: center;
-  transform-origin: top;
-  animation: shared-trace-grow 280ms cubic-bezier(0.2, 0, 0, 1) both;
+  height: 0;
+  overflow: hidden;
+  transition: height 420ms cubic-bezier(0.2, 0, 0, 1);
 }
 
 .process-line::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc((var(--process-rail-width) - 1px) / 2);
   width: 1px;
-  height: 100%;
   background: color-mix(in oklch, var(--ak-color-status-trace) 35%, var(--ak-color-border-default));
   content: "";
+}
+
+.process-line::after {
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(
+    180deg,
+    transparent,
+    color-mix(in oklch, var(--ak-color-status-trace) 42%, transparent) 24%,
+    var(--ak-color-status-trace) 56%,
+    transparent
+  );
+  background-position: center -36px;
+  background-repeat: no-repeat;
+  background-size: 3px 36px;
+  content: "";
+  animation: shared-trace-flow 1.8s cubic-bezier(0.2, 0, 0, 1) infinite;
 }
 
 .process-items {
@@ -229,30 +247,6 @@
   align-items: start;
   column-gap: 12px;
   animation: shared-trace-item-in 180ms cubic-bezier(0.2, 0, 0, 1) both;
-}
-
-.process-item.active::before {
-  position: absolute;
-  z-index: 2;
-  top: -24px;
-  left: calc((var(--process-rail-width) - 3px) / 2);
-  width: 3px;
-  height: 23px;
-  border-radius: 3px;
-  background: linear-gradient(180deg, transparent, var(--ak-color-status-trace));
-  content: "";
-  animation: shared-trace-flow 1.8s cubic-bezier(0.2, 0, 0, 1) infinite;
-}
-
-.process-item:last-child::after {
-  position: absolute;
-  z-index: 0;
-  top: var(--process-node-center);
-  bottom: 0;
-  left: 0;
-  width: var(--process-rail-width);
-  background: var(--ak-color-bg-canvas);
-  content: "";
 }
 
 .process-node {
@@ -281,6 +275,16 @@
   background: var(--ak-color-status-trace);
   box-shadow: 0 0 0 4px var(--ak-color-bg-canvas), 0 0 12px color-mix(in oklch, var(--ak-color-status-trace) 70%, transparent);
   animation: shared-trace-core 1.8s ease-in-out infinite;
+}
+
+.process-item:not(.trace-origin) .process-node {
+  animation: shared-trace-node-arrive 180ms cubic-bezier(0.2, 0, 0, 1) 300ms both;
+}
+
+.process-item.active:not(.trace-origin) .process-node {
+  animation:
+    shared-trace-node-arrive 180ms cubic-bezier(0.2, 0, 0, 1) 300ms both,
+    shared-trace-core 1.8s ease-in-out 480ms infinite;
 }
 
 .process-item.active .process-node::before,
@@ -650,21 +654,21 @@ button.tool-step-summary:active {
   background: color-mix(in oklch, var(--ak-color-action-primary) 12%, transparent);
 }
 
-@keyframes shared-trace-grow {
-  from { transform: scaleY(0); }
-  to { transform: scaleY(1); }
-}
-
 @keyframes shared-trace-item-in {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes shared-trace-flow {
-  0% { opacity: 0; transform: translateY(-11px); }
-  18% { opacity: 1; }
-  48% { opacity: 0; transform: translateY(24px); }
-  100% { opacity: 0; transform: translateY(24px); }
+  0% { opacity: 0; background-position: center -36px; }
+  14% { opacity: 1; }
+  82% { opacity: 1; }
+  100% { opacity: 0; background-position: center calc(100% + 36px); }
+}
+
+@keyframes shared-trace-node-arrive {
+  from { opacity: 0; scale: 0.25; filter: blur(4px); }
+  to { opacity: 1; scale: 1; filter: blur(0); }
 }
 
 @keyframes shared-trace-core {
@@ -681,13 +685,18 @@ button.tool-step-summary:active {
 
 @media (prefers-reduced-motion: reduce) {
   .process-line,
+  .process-line::after,
   .process-item,
-  .process-item.active::before,
+  .process-item:not(.trace-origin) .process-node,
   .process-item.active .process-node,
   .process-item.active .process-node::before,
   .process-item.active .process-node::after {
     animation-duration: 1ms;
     animation-iteration-count: 1;
+  }
+
+  .process-line {
+    transition-duration: 0ms;
   }
 
   .process-chevron,

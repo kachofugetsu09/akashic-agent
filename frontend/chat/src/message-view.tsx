@@ -26,7 +26,18 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Check, ChevronDown, Copy, Wrench } from "lucide-react";
-import { Fragment, lazy, memo, Suspense, type ReactNode, useEffect, useMemo, useState } from "react";
+import {
+  Fragment,
+  lazy,
+  memo,
+  Suspense,
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   AgentBlock,
   ChatMessage,
@@ -201,6 +212,42 @@ const ProcessTrace = memo(function ProcessTrace({
   beforeBlock?: (block: AgentBlock, index: number) => ReactNode;
   onCopyToolDetail?: (text: string) => void;
 }) {
+  const processItemsRef = useRef<HTMLDivElement>(null);
+  const processLineRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const items = processItemsRef.current;
+    const line = processLineRef.current;
+    if (!items || !line) return;
+
+    let animationFrame = 0;
+    const syncLineHeight = () => {
+      animationFrame = 0;
+      const firstNode = items.querySelector<HTMLElement>(".process-item .process-node");
+      const firstItem = firstNode?.closest<HTMLElement>(".process-item");
+      if (!firstNode || !firstItem) return;
+
+      // 1. 从首个节点中心起笔，让轨迹高度追随当前文字内容。
+      const lineTop = items.offsetTop + firstItem.offsetTop + firstNode.offsetTop + firstNode.offsetHeight / 2;
+      const nextHeight = Math.max(0, items.offsetTop + items.offsetHeight - lineTop);
+      line.style.top = `${lineTop}px`;
+      line.style.height = `${nextHeight}px`;
+    };
+    const scheduleLineHeight = () => {
+      if (animationFrame) window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(syncLineHeight);
+    };
+    // 2. 合并流式文字和新节点引起的连续尺寸变化。
+    const observer = new ResizeObserver(scheduleLineHeight);
+    observer.observe(items);
+    scheduleLineHeight();
+
+    return () => {
+      observer.disconnect();
+      if (animationFrame) window.cancelAnimationFrame(animationFrame);
+    };
+  }, []);
+
   return (
     <Reasoning
       className="process-trace"
@@ -210,8 +257,8 @@ const ProcessTrace = memo(function ProcessTrace({
     >
       <ProcessTraceTrigger interrupted={interrupted} />
       <CollapsibleContent className="process-content">
-        <div className="process-line" aria-hidden="true" />
-        <div className="process-items">
+        <div className="process-line" aria-hidden="true" ref={processLineRef} />
+        <div className="process-items" ref={processItemsRef}>
           {startContent}
           {blocks.map((block, index) => (
             <Fragment key={block.kind === "thinking" ? `thinking-${index}` : block.callId}>
@@ -220,11 +267,13 @@ const ProcessTrace = memo(function ProcessTrace({
                 <ThinkingStep
                   block={block}
                   active={streaming && index === blocks.length - 1}
+                  origin={index === 0}
                 />
               ) : (
                 <ToolStep
                   block={block}
                   active={block.status === "input-available"}
+                  origin={index === 0}
                   onCopyDetail={onCopyToolDetail}
                 />
               )}
@@ -252,9 +301,17 @@ function ProcessTraceTrigger({ interrupted }: { interrupted: boolean }) {
   );
 }
 
-const ThinkingStep = memo(function ThinkingStep({ block, active }: { block: ThinkingBlock; active: boolean }) {
+const ThinkingStep = memo(function ThinkingStep({
+  block,
+  active,
+  origin,
+}: {
+  block: ThinkingBlock;
+  active: boolean;
+  origin: boolean;
+}) {
   return (
-    <div className={`process-item thinking-step ${active ? "active" : ""}`}>
+    <div className={`process-item thinking-step ${active ? "active" : ""} ${origin ? "trace-origin" : ""}`}>
       <span className="process-node circle" />
       <div className="process-text process-markdown">
         <Suspense fallback={<span className="process-markdown-fallback">{block.content}</span>}>
@@ -268,10 +325,12 @@ const ThinkingStep = memo(function ThinkingStep({ block, active }: { block: Thin
 const ToolStep = memo(function ToolStep({
   block,
   active,
+  origin,
   onCopyDetail,
 }: {
   block: ToolBlock;
   active: boolean;
+  origin: boolean;
   onCopyDetail?: (text: string) => void;
 }) {
   const description = toolDescription(block.input);
@@ -313,7 +372,7 @@ const ToolStep = memo(function ToolStep({
 
   return (
     <div
-      className={`process-item tool-step ${active ? "active" : ""} ${block.status === "output-error" ? "error" : ""}`}
+      className={`process-item tool-step ${active ? "active" : ""} ${origin ? "trace-origin" : ""} ${block.status === "output-error" ? "error" : ""}`}
     >
       <span className="process-node diamond" />
       <div className="tool-step-body">

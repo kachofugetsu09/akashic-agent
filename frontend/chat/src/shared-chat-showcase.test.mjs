@@ -10,6 +10,10 @@ const messageViewCss = await readFile(
   new URL("./message-view.css", import.meta.url),
   "utf8",
 );
+const messageViewSource = await readFile(
+  new URL("./message-view.tsx", import.meta.url),
+  "utf8",
+);
 const mobileNativeSource = await readFile(
   new URL("./mobile-native.tsx", import.meta.url),
   "utf8",
@@ -39,16 +43,21 @@ test("reduced motion disables the process trigger transition", () => {
   assert.match(reducedMotionBlock, /transition-duration: 0ms;/);
 });
 
-test("flow and echo motion is shared by desktop and mobile process traces", () => {
-  assert.match(messageViewCss, /\.process-item\.active::before\s*\{/);
+test("growing flow and echo motion is shared by desktop and mobile process traces", () => {
+  assert.match(messageViewCss, /\.process-line\s*\{[^}]*transition: height 420ms/s);
+  assert.match(messageViewCss, /\.process-line::after\s*\{/);
   assert.match(messageViewCss, /animation: shared-trace-flow 1\.8s/);
+  assert.match(messageViewCss, /animation: shared-trace-node-arrive 180ms/);
   assert.match(messageViewCss, /animation: shared-trace-core 1\.8s/);
   assert.match(messageViewCss, /animation: shared-trace-echo 1\.8s/);
+  assert.match(messageViewSource, /new ResizeObserver\(scheduleLineHeight\)/);
+  assert.match(messageViewSource, /line\.style\.height = `\$\{nextHeight\}px`/);
   assert.match(mobileNativeSource, /import "\.\/message-view\.css";/);
 
   const reducedMotionBlock = messageViewCss.slice(
     messageViewCss.indexOf("@media (prefers-reduced-motion: reduce)"),
   );
-  assert.match(reducedMotionBlock, /\.process-item\.active::before,/);
+  assert.match(reducedMotionBlock, /\.process-line::after,/);
+  assert.match(reducedMotionBlock, /\.process-line\s*\{\s*transition-duration: 0ms;/);
   assert.match(reducedMotionBlock, /\.process-item\.active \.process-node::after/);
 });
