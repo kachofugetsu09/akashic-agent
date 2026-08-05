@@ -185,6 +185,8 @@ SessionDB 继续保存完整 assistant 正文和完整内部轨迹。实时投�
 
 两端默认使用同一套移动端浅蓝主题和同一套流式正文呈现。视觉与组件复用不得把 SessionDB、Room、outbox、设备密钥、通知、配对或插件运行状态迁入 WebUI；这些状态继续由 `MOB-001` 与移动仓库合同指定的 owner 管理。
 
+Thinking 与工具调用共用一条从首个节点中心起笔的过程轨迹。轨迹末端必须跟随当前已渲染内容的实际 Y 轴高度，以可中断的生长过渡追随流式文字和新 block；新增圆点或菱形不得让尚未生长的区段瞬间完整连通。已生长区段持续显示向下流动的 trace 光效，当前节点保留静态状态色与呼吸回响；`prefers-reduced-motion` 必须关闭非必要位移动画，同时保留可读的轨迹、节点形状和状态颜色。桌面与移动入口消费同一实现和同一动效合同。
+
 ### WEBUI-004 移动 WebUI 只发布不可变 generation
 
 Core 发布者从固定 WebUI 输入生成不可变 manifest 和按内容摘要寻址的静态资源。只有名称明确的 Stable、Preview、清除和回滚命令可以原子改变当前 `ReleaseView`；保存源码、构建成功、文件 watcher 和 Runtime 重启都不得自动发布。Preview 对同一服务端配对的设备共同生效；Stable 必须能从声明的提交、锁文件、构建配置和工具链重建相同 generation，未提交的 Preview 只有在提交后重建出相同 generation 时才能提升。
