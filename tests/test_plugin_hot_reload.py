@@ -30,6 +30,7 @@ from agent.plugins.snapshot import (
     RuntimeSnapshotStore,
 )
 from agent.looping.core import AgentLoop
+from agent.looping.session_lane import SessionLaneRegistry
 from agent.background.subagent_manager import SubagentManager
 from proactive_v2.loop import ProactiveLoop
 from bootstrap.dashboard_api import create_dashboard_app
@@ -1668,7 +1669,7 @@ async def test_passive_runtime_admission_holds_one_snapshot(tmp_path: Path) -> N
     store = RuntimeSnapshotStore()
     store.install(v1)
     loop = object.__new__(AgentLoop)
-    loop._passive_runtime_lock = asyncio.Lock()
+    loop._session_lanes = SessionLaneRegistry()
     loop._runtime_snapshot_store = store
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -1725,7 +1726,7 @@ async def test_passive_runtime_snapshot_does_not_leak_to_detached_task(
     store = RuntimeSnapshotStore()
     store.install(snapshot)
     loop = object.__new__(AgentLoop)
-    loop._passive_runtime_lock = asyncio.Lock()
+    loop._session_lanes = SessionLaneRegistry()
     loop._runtime_snapshot_store = store
     detached_seen: list[RuntimeSnapshot | None] = []
     detached_done = asyncio.Event()
@@ -3461,7 +3462,7 @@ async def test_tool_schema_search_and_execute_share_snapshot_generation(
     candidate = await manager.prepare_candidate("snapshot_tool")
     assert candidate is not None
     loop = object.__new__(AgentLoop)
-    loop._passive_runtime_lock = asyncio.Lock()
+    loop._session_lanes = SessionLaneRegistry()
     loop._runtime_snapshot_store = manager.snapshot_store
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -3648,7 +3649,7 @@ async def test_initial_plugin_mcp_tool_is_visible_in_first_snapshot(
     generation = manager.generation("initial_mcp_snapshot")
     assert generation is not None and generation.mcp_catalog is not None
     loop = object.__new__(AgentLoop)
-    loop._passive_runtime_lock = asyncio.Lock()
+    loop._session_lanes = SessionLaneRegistry()
     loop._runtime_snapshot_store = manager.snapshot_store
     seen: list[str] = []
 
@@ -4849,7 +4850,7 @@ async def test_skill_body_stays_on_snapshot_generation(tmp_path: Path) -> None:
     assert candidate is not None
     skills = SkillsLoader(workspace, runtime_catalog="normal")
     loop = object.__new__(AgentLoop)
-    loop._passive_runtime_lock = asyncio.Lock()
+    loop._session_lanes = SessionLaneRegistry()
     loop._runtime_snapshot_store = manager.snapshot_store
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -4904,7 +4905,7 @@ async def test_workspace_skill_updates_without_plugin_snapshot_reload(
     snapshot = manager.current_snapshot
     skills = SkillsLoader(workspace, runtime_catalog="normal")
     loop = object.__new__(AgentLoop)
-    loop._passive_runtime_lock = asyncio.Lock()
+    loop._session_lanes = SessionLaneRegistry()
     loop._runtime_snapshot_store = manager.snapshot_store
     seen: list[str | None] = []
 

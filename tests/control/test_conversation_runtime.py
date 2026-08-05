@@ -82,22 +82,49 @@ async def test_runtime_rejects_same_thread_and_interrupts_exact_turn(tmp_path: P
 @pytest.mark.asyncio
 async def test_queued_interrupt_becomes_cancelled(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
-    first_reached = asyncio.Event()
 
-    async def execute(request: TurnRequest) -> str:
-        if request.thread_id.endswith("one"):
-            first_reached.set()
-            await asyncio.Event().wait()
+    async def execute(_request: TurnRequest) -> str:
         return "done"
 
     runtime = ConversationRuntime(store, execute)
-    first = await runtime.start_turn(TurnRequest("programmatic:one", "held"))
-    await first_reached.wait()
     queued = await runtime.start_turn(TurnRequest("programmatic:two", "queued"))
     record = await queued.interrupt()
     assert record.status is TurnStatus.CANCELLED
     _assert_single_terminal(runtime, queued.id)
-    _ = await first.interrupt()
+    await runtime.shutdown()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_executes_different_threads_concurrently(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    both_started = asyncio.Event()
+    release = asyncio.Event()
+    active = 0
+    max_active = 0
+
+    async def execute(_request: TurnRequest) -> str:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        if active == 2:
+            both_started.set()
+        try:
+            await release.wait()
+            return "done"
+        finally:
+            active -= 1
+
+    runtime = ConversationRuntime(store, execute)
+    first = await runtime.start_turn(TurnRequest("programmatic:one", "first"))
+    second = await runtime.start_turn(TurnRequest("programmatic:two", "second"))
+    await asyncio.wait_for(both_started.wait(), timeout=1)
+
+    assert max_active == 2
+    release.set()
+    first_result, second_result = await asyncio.gather(first.result(), second.result())
+    assert first_result.status is TurnStatus.COMPLETED
+    assert second_result.status is TurnStatus.COMPLETED
     await runtime.shutdown()
     store.close()
 

@@ -522,6 +522,80 @@ async def test_message_push_passive_role_does_not_wait_for_passive_lane():
 
 
 @pytest.mark.asyncio
+async def test_message_push_passive_role_serializes_actual_same_chat_send():
+    bus = MessageBus()
+    tool = MessagePushTool(chat_lane=bus.chat_lane)
+    events: list[str] = []
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def text(chat_id: str, message: str) -> None:
+        events.append(f"start:{message}")
+        if message == "first":
+            first_started.set()
+            await release_first.wait()
+        events.append(f"end:{message}")
+
+    _register_text_channel(tool, "cli", text)
+    first = asyncio.create_task(
+        tool.execute(target_channel="cli", target_chat_id="1", message="first")
+    )
+    await first_started.wait()
+    passive = asyncio.create_task(
+        tool.execute(
+            target_channel="cli",
+            target_chat_id="1",
+            message="passive",
+            _commit_role="passive",
+        )
+    )
+
+    await asyncio.sleep(0.01)
+    assert events == ["start:first"]
+    assert not passive.done()
+    release_first.set()
+    await asyncio.gather(first, passive)
+
+    assert events == [
+        "start:first",
+        "end:first",
+        "start:passive",
+        "end:passive",
+    ]
+    assert bus.chat_lane._states == {}
+
+
+@pytest.mark.asyncio
+async def test_message_push_passive_send_does_not_consume_queued_outbound_pending():
+    lane = ChatLane()
+    events: list[str] = []
+
+    async def record(value: str) -> None:
+        events.append(value)
+
+    await lane.mark_passive_send_pending("cli", "1")
+    await lane.run_passive("cli", "1", lambda: record("push"))
+    active = asyncio.create_task(
+        lane.run_non_passive("cli", "1", lambda: record("active"))
+    )
+
+    await asyncio.sleep(0.01)
+    assert events == ["push"]
+    assert not active.done()
+
+    await lane.run_passive(
+        "cli",
+        "1",
+        lambda: record("outbound"),
+        pending_registered=True,
+    )
+    await asyncio.wait_for(active, timeout=1)
+
+    assert events == ["push", "outbound", "active"]
+    assert lane._states == {}
+
+
+@pytest.mark.asyncio
 async def test_message_bus_outbound_snapshot_survives_subscription_close():
     bus = MessageBus()
     delivered: list[str] = []

@@ -140,7 +140,7 @@ async def test_recovered_mobile_handoff_with_canonical_user_skips_new_turn(
 
 
 @pytest.mark.asyncio
-async def test_worker_queues_different_threads_without_blocking_consumer(tmp_path: Path) -> None:
+async def test_worker_executes_different_threads_without_blocking_consumer(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     release = asyncio.Event()
     first_started = asyncio.Event()
@@ -159,12 +159,15 @@ async def test_worker_queues_different_threads_without_blocking_consumer(tmp_pat
     bus.inbound.put_nowait(InboundMessage("telegram", "user", "two", "second"))
     await asyncio.wait_for(first_started.wait(), 1)
 
-    async def second_is_queued() -> None:
-        while not store.list_turns("telegram:two"):
+    async def second_is_completed() -> None:
+        while (
+            not (turns := store.list_turns("telegram:two"))
+            or turns[0].status is not TurnStatus.COMPLETED
+        ):
             await asyncio.sleep(0)
 
-    await asyncio.wait_for(second_is_queued(), 1)
-    assert store.list_turns("telegram:two")[0].status is TurnStatus.QUEUED
+    await asyncio.wait_for(second_is_completed(), 1)
+    assert store.list_turns("telegram:one")[0].status is TurnStatus.IN_PROGRESS
     release.set()
     _ = await asyncio.wait_for(bus.completions.get(), 1)
     _ = await asyncio.wait_for(bus.completions.get(), 1)

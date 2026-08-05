@@ -10,6 +10,10 @@
 
 ## 当前内置技能
 
+- `develop-akashic-plugin`
+  - 在 canonical source 中创建或修改 Akashic 插件及插件内 Skill/MCP，并按 stable/latest 合同做递归行为验证。
+  - 文件：`skills/develop-akashic-plugin/SKILL.md`
+
 - `feed-manage`
   - 管理和查询 RSS/信息来源订阅，支持列订阅、查最新、查概况、关键词搜索。
   - 文件：`skills/feed-manage/SKILL.md`

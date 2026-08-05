@@ -160,7 +160,13 @@ class MessagePushTool(Tool):
                 raise TypeError("message_push channel adapter 必须返回 DeliveryReceipt")
             return receipt
 
-        if self._chat_lane is not None and commit_role != "passive":
+        if self._chat_lane is not None:
+            if commit_role == "passive":
+                return await self._chat_lane.run_passive(
+                    message.channel,
+                    message.chat_id,
+                    _deliver,
+                )
             return await self._chat_lane.run_non_passive(
                 message.channel,
                 message.chat_id,

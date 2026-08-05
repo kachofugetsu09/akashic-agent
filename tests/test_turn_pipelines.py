@@ -14,6 +14,7 @@ from agent.looping.core import AgentLoop, _supports_stream_events
 from agent.looping.interrupt import TurnInterruptState
 from agent.lifecycle.facade import TurnLifecycle
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, MemoryServices
+from agent.looping.session_lane import SessionLaneRegistry
 from agent.persona import reset_veda
 from agent.provider import LLMResponse
 from agent.retrieval.protocol import (
@@ -127,7 +128,7 @@ def test_stream_event_sink_respects_suppression_flag():
 @pytest.mark.asyncio
 async def test_process_direct_suppresses_stream_and_memory_when_requested():
     loop = object.__new__(AgentLoop)
-    loop._passive_runtime_lock = asyncio.Lock()
+    loop._session_lanes = SessionLaneRegistry()
     loop._runtime_snapshot_store = None
     loop._process = AsyncMock(
         return_value=OutboundMessage(
@@ -164,7 +165,7 @@ async def test_process_direct_suppresses_stream_and_memory_when_requested():
 @pytest.mark.asyncio
 async def test_process_direct_stateless_turn_has_no_history_or_persistence():
     loop = object.__new__(AgentLoop)
-    loop._passive_runtime_lock = asyncio.Lock()
+    loop._session_lanes = SessionLaneRegistry()
     loop._runtime_snapshot_store = None
     loop._process = AsyncMock(
         return_value=OutboundMessage(
@@ -199,11 +200,14 @@ async def test_process_direct_stateless_turn_has_no_history_or_persistence():
 
 
 @pytest.mark.asyncio
-async def test_process_direct_waits_for_passive_runtime_admission():
+async def test_process_direct_runs_concurrently_with_another_session():
     loop = object.__new__(AgentLoop)
-    loop._passive_runtime_lock = asyncio.Lock()
+    loop._session_lanes = SessionLaneRegistry()
     loop._runtime_snapshot_store = None
     events: list[str] = []
+    passive_started = asyncio.Event()
+    direct_started = asyncio.Event()
+    release_passive = asyncio.Event()
 
     async def _process(
         msg: InboundMessage,
@@ -214,7 +218,10 @@ async def test_process_direct_waits_for_passive_runtime_admission():
         key = session_key or msg.session_key
         events.append(f"start:{key}")
         if key == "cli:1":
-            await asyncio.sleep(0.02)
+            passive_started.set()
+            await release_passive.wait()
+        else:
+            direct_started.set()
         events.append(f"end:{key}")
         return OutboundMessage(
             channel=msg.channel,
@@ -232,7 +239,7 @@ async def test_process_direct_waits_for_passive_runtime_admission():
     passive_task = asyncio.create_task(
         AgentLoop._process_with_runtime_admission(loop, passive_msg)
     )
-    await asyncio.sleep(0)
+    await passive_started.wait()
     direct_task = asyncio.create_task(
         AgentLoop.process_direct(
             loop,
@@ -242,15 +249,106 @@ async def test_process_direct_waits_for_passive_runtime_admission():
             chat_id="123",
         )
     )
+    await asyncio.wait_for(direct_started.wait(), timeout=1)
+
+    assert events == ["start:cli:1", "start:scheduler:job", "end:scheduler:job"]
+    assert not passive_task.done()
+    release_passive.set()
 
     await asyncio.gather(passive_task, direct_task)
 
     assert events == [
         "start:cli:1",
-        "end:cli:1",
         "start:scheduler:job",
         "end:scheduler:job",
+        "end:cli:1",
     ]
+    assert loop._session_lanes._states == {}
+
+
+@pytest.mark.asyncio
+async def test_process_direct_waits_for_the_same_session_lane():
+    loop = object.__new__(AgentLoop)
+    loop._session_lanes = SessionLaneRegistry()
+    loop._runtime_snapshot_store = None
+    events: list[str] = []
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def _process(
+        msg: InboundMessage,
+        session_key: str | None = None,
+        busy_session_key: str | None = None,
+        dispatch_outbound: bool = True,
+    ) -> OutboundMessage:
+        key = session_key or msg.session_key
+        events.append(f"start:{key}:{msg.content}")
+        if msg.content == "hello":
+            first_started.set()
+            await release_first.wait()
+        events.append(f"end:{key}:{msg.content}")
+        return OutboundMessage(msg.channel, msg.chat_id, key)
+
+    loop._process = _process
+    passive_msg = InboundMessage("cli", "u", "1", "hello")
+    passive_task = asyncio.create_task(
+        AgentLoop._process_with_runtime_admission(loop, passive_msg)
+    )
+    await first_started.wait()
+    direct_task = asyncio.create_task(
+        AgentLoop.process_direct(
+            loop,
+            content="second",
+            session_key="cli:1",
+            channel="cli",
+            chat_id="1",
+        )
+    )
+
+    await asyncio.sleep(0.01)
+    assert events == ["start:cli:1:hello"]
+    assert not direct_task.done()
+    release_first.set()
+    await asyncio.gather(passive_task, direct_task)
+
+    assert events == [
+        "start:cli:1:hello",
+        "end:cli:1:hello",
+        "start:cli:1:second",
+        "end:cli:1:second",
+    ]
+    assert loop._session_lanes._states == {}
+
+
+@pytest.mark.asyncio
+async def test_cancelled_session_lane_waiter_does_not_block_reentry():
+    lanes = SessionLaneRegistry()
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def hold_first() -> None:
+        async with lanes.hold("programmatic:one"):
+            first_entered.set()
+            await release_first.wait()
+
+    async def wait_for_same_lane() -> None:
+        async with lanes.hold("programmatic:one"):
+            raise AssertionError("cancelled waiter entered the lane")
+
+    first = asyncio.create_task(hold_first())
+    await first_entered.wait()
+    waiter = asyncio.create_task(wait_for_same_lane())
+    await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    release_first.set()
+    await first
+    assert lanes._states == {}
+    async with lanes.hold("programmatic:one"):
+        assert list(lanes._states) == ["programmatic:one"]
+    assert lanes._states == {}
 
 
 @pytest.mark.asyncio

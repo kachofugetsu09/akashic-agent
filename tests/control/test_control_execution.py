@@ -11,6 +11,7 @@ import pytest
 from agent.control.models import TurnItemKind, TurnRequest
 from agent.control.runtime import ConversationRuntime
 from agent.looping.core import AgentLoop
+from agent.looping.session_lane import SessionLaneRegistry
 from agent.tools.registry import ToolRegistry
 from agent.tools.shell import ShellTool
 from agent.tools.unified_exec import ShellProcessManager
@@ -37,7 +38,7 @@ async def test_committed_control_turn_survives_shell_cleanup_error(
     loop._event_bus = bus
     loop._processing_state = None
     loop._interrupt_states = {}
-    loop._passive_runtime_lock = asyncio.Lock()
+    loop._session_lanes = SessionLaneRegistry()
     loop._runtime_snapshot_store = None
     loop._resume_interrupted_message = AsyncMock(
         side_effect=lambda message, _key: (message, False)

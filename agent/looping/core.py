@@ -31,6 +31,7 @@ from agent.looping.ports import (
     MemoryServices,
     SessionServices,
 )
+from agent.looping.session_lane import SessionLaneRegistry
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.retrieval.protocol import MemoryRetrievalPipeline
 from agent.turns.outbound import BusOutboundPort
@@ -135,7 +136,7 @@ class AgentLoop:
         self._running = False
         self._processing_state = deps.processing_state
         self._event_bus = deps.event_bus or EventBus()
-        self._passive_runtime_lock = asyncio.Lock()
+        self._session_lanes = SessionLaneRegistry()
         self._runtime_snapshot_store: RuntimeSnapshotStore | None = None
 
         # ── 中断控制面（纯内存态） ──
@@ -774,9 +775,7 @@ class AgentLoop:
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
         key = session_key or msg.session_key
-        if self._passive_runtime_lock.locked():
-            logger.info("[runtime_admission] 等待 passive runtime session=%s", key)
-        async with self._passive_runtime_lock:
+        async with self._session_lanes.hold(key):
             store = self._runtime_snapshot_store
             if store is None or store.current is None:
                 return await self._process(
