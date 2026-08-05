@@ -130,6 +130,77 @@ def assert_atomic_generation_switch(
         )
 
 
+def assert_recursive_plugin_self_validation(
+    observation: Mapping[str, object],
+) -> None:
+    """断言父 turn 能隔离执行候选、回读证据并安全提交。"""
+
+    stable = observation.get("stable_snapshot")
+    candidate = observation.get("candidate_snapshot")
+    if not isinstance(stable, str) or not stable:
+        raise AssertionError("stable snapshot identity 缺失")
+    if not isinstance(candidate, str) or not candidate or candidate == stable:
+        raise AssertionError("candidate snapshot identity 无效")
+
+    # 1. install 返回即代表 latest 可租用，父与普通 turn 仍绑定 stable。
+    if observation.get("install_returned_latest_ready") is not True:
+        raise AssertionError("plugin-install 返回时 latest 尚不可租用")
+    if observation.get("parent_runtime") != stable:
+        raise AssertionError("父 turn 的 stable lease 被候选反向替换")
+    if observation.get("ordinary_runtime_during_validation") != stable:
+        raise AssertionError("普通 turn 看见了未晋升候选")
+    if observation.get("validation_runtime") != candidate:
+        raise AssertionError("programmatic 验证没有绑定 latest candidate")
+    if observation.get("validation_finished_before_parent_release") is not True:
+        raise AssertionError("验证仍被跨 session 全局锁阻塞")
+
+    # 2. 行为成功必须由真实 tool item、领域状态和持久 trace 共同证明。
+    item = observation.get("candidate_tool_item")
+    if not isinstance(item, Mapping) or any(
+        item.get(field) != expected
+        for field, expected in (
+            ("type", "toolCall"),
+            ("name", "candidate_only_tool"),
+            ("status", "success"),
+        )
+    ):
+        raise AssertionError("候选工具缺少真实 completed tool item")
+    if observation.get("tool_result_matches_domain_state") is not True:
+        raise AssertionError("工具 success 没有对应领域状态证据")
+    if observation.get("validation_session_persisted") is not True:
+        raise AssertionError("验证 session 的消息或工具 trace 未持久化")
+
+    # 3. 默认 child 可读历史但不得写语义记忆。
+    if observation.get("recall_observed") is not True:
+        raise AssertionError("默认验证 session 无法检索既有记忆")
+    if observation.get("semantic_memory_write_set") != []:
+        raise AssertionError("默认验证 session 写入了语义记忆")
+
+    # 4. message_push 只提交短出站效果，receipt 属于 child trace。
+    push_seq = observation.get("push_send_sequence")
+    parent_terminal_seq = observation.get("parent_terminal_sequence")
+    if not isinstance(push_seq, int) or not isinstance(parent_terminal_seq, int):
+        raise AssertionError("message_push 缺少可比较的投递时序")
+    if push_seq >= parent_terminal_seq:
+        raise AssertionError("child message_push 等待了父 session 终态")
+    if observation.get("push_receipt_in_caller_trace") is not True:
+        raise AssertionError("DeliveryReceipt 未写入 child 工具 trace")
+    if observation.get("push_target_history_delta") != 0:
+        raise AssertionError("message_push 正文污染了目标 session history")
+
+    # 5. crash 恢复不能误晋升，显式 promote 才改变默认 pointer。
+    if observation.get("recovered_stable_snapshot") != stable:
+        raise AssertionError("candidate crash recovery 改变了 stable")
+    if observation.get("recovered_latest_snapshot") not in {stable, candidate}:
+        raise AssertionError("crash recovery 恢复出未知 latest identity")
+    if observation.get("recovery_promoted_candidate") is not False:
+        raise AssertionError("crash recovery 未经 oracle 自动晋升候选")
+    if observation.get("stable_after_promote") != candidate:
+        raise AssertionError("显式 promote 后 stable 未指向已验证候选")
+    if observation.get("parent_runtime_after_promote") != stable:
+        raise AssertionError("promote 改写了父 turn 已持有的 stable lease")
+
+
 def assert_plugin_drain_finality(
     *,
     status: str,

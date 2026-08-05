@@ -2,6 +2,7 @@ import base64
 import json
 import logging
 import mimetypes
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -263,10 +264,12 @@ class ContextBuilder:
             vl_available=vl_available,
         )
         self._assembler = PromptAssembler(self)
-        self._last_debug_breakdown: list[PromptSectionMeta] = []
-        self._last_assembled_contexts: dict[str, dict[str, str]] = {
-            "turn_injection_context": {},
-        }
+        self._last_debug_breakdown: ContextVar[tuple[PromptSectionMeta, ...]] = (
+            ContextVar("akashic_context_debug_breakdown", default=())
+        )
+        self._last_assembled_contexts: ContextVar[
+            dict[str, dict[str, str]] | None
+        ] = ContextVar("akashic_context_assembled_contexts", default=None)
 
     def set_media_capabilities(
         self,
@@ -281,13 +284,14 @@ class ContextBuilder:
 
     @property
     def last_debug_breakdown(self) -> list[PromptSectionMeta]:
-        return list(self._last_debug_breakdown)
+        return list(self._last_debug_breakdown.get())
 
     @property
     def last_assembled_contexts(self) -> dict[str, dict[str, str]]:
+        contexts = self._last_assembled_contexts.get()
         return {
             "turn_injection_context": dict(
-                self._last_assembled_contexts["turn_injection_context"]
+                contexts["turn_injection_context"] if contexts is not None else {}
             ),
         }
 
@@ -324,10 +328,12 @@ class ContextBuilder:
             system_sections_top=system_sections_top,
             system_sections_bottom=system_sections_bottom,
         )
-        self._last_debug_breakdown = assembled.debug_breakdown
-        self._last_assembled_contexts = {
-            "turn_injection_context": dict(assembled.turn_injection_context),
-        }
+        self._last_debug_breakdown.set(tuple(assembled.debug_breakdown))
+        self._last_assembled_contexts.set(
+            {
+                "turn_injection_context": dict(assembled.turn_injection_context),
+            }
+        )
         return ContextRenderResult(
             system_prompt=assembled.system_prompt,
             turn_injection_context=dict(assembled.turn_injection_context),
@@ -356,5 +362,5 @@ class ContextBuilder:
             ctx,
             disabled_sections=disabled_sections,
         )
-        self._last_debug_breakdown = built.debug_breakdown
+        self._last_debug_breakdown.set(tuple(built.debug_breakdown))
         return built

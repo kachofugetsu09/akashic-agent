@@ -1,6 +1,6 @@
 # 插件递归自验证运行时设计
 
-- 状态：accepted / stable-latest programmatic 闭环已实现，共享状态 owner 审计待完成
+- 状态：implemented / stable-latest programmatic 闭环与共享状态 owner 审计已完成，真实模型验收待记录
 - 确认日期：2026-08-05
 - 决策：[0024](../decisions/0024-plugin-self-validation-uses-stable-and-latest.md)
 - 关联条款：RUN-007、OUT-004、PLG-013、CTRL-003、SH-001、TST-001～TST-006
@@ -259,7 +259,25 @@ Tool/Skill 可见性严格来自绑定 snapshot：T 继续看到 S0；V 看到 S
 
 当前 `AgentLoop`、reasoner、event subscription 和工具执行链中的可变字段必须逐项证明属于上述某个 owner。无法归属、靠“通常只有一轮”成立的字段，是并发实现的阻塞项；不能用更多局部锁掩盖。
 
-### 8.1 写型插件的边界
+### 8.1 Owner 审计结果
+
+审计覆盖生产 `PassiveMessageWorker → AgentLoop → DefaultReasoner → ToolRegistry` 路径，不把 legacy 串行入口误当成生产并发模型。结果如下：
+
+| 对象 | 实际 owner | 审计结论 |
+|---|---|---|
+| `_active_tasks`、`_active_turn_states`、`_interrupt_states` | `AgentLoop`，key 为 `session_key` | 修改只发生在同一 event loop；每个 key 受 session lane 约束，不存在跨 session 共用 turn frame。 |
+| Prompt messages、tool trace、compactor 与 provider request | 当前 `TurnFrame` / reasoner 调用栈 | 每次请求局部创建；共享 provider 只持连接池与配置，请求消息、usage 和取消信号不回写 service 字段。 |
+| reasoner phase snapshot cache | reasoner service cache | 命中只返回完整不可变 phase；并发替换最多造成重复构建，不会把 A turn 的局部状态返回给 B turn。 |
+| `ToolRegistry` current execution/search scope | `ContextVar` | 每个 task 独立；snapshot 内 registry 只提供冻结 catalog，candidate write 工具按 lease policy 禁用。 |
+| `ToolDiscoveryState` | runtime service 内按 session key 的同步 LRU | 读写之间没有 `await`，一次更新原子完成；不同 session 只共享容量，不共享选中工具值。 |
+| Session cache、history 与 SQLite | session lane + `SessionManager` / store lock | 同 session 整轮串行，跨 session 的持久提交由 store 短锁拥有；messages 正常路径仍只追加。 |
+| plugin module/tool 实例与 plugin-data | generation + 插件资源 owner | generation 可被多个 session 租用，因此插件实例必须可重入；一次调用状态放 frame/局部变量，共享文件由插件 repository 或原子替换拥有。 |
+| Shell execution registry | `ShellProcessManager` | `execution_id` 与 owner session 共同隔离；wait/write 不持有 session lane 或 snapshot pointer 锁。 |
+| semantic memory writer | memory engine repository owner | validation session 保留 recall，但 `skip_post_memory` 与 candidate write-tool policy 让 semantic write set 保持为空。 |
+
+审计发现并修复一个真实可达的串值：`ContextBuilder` 曾把 `last_debug_breakdown` 和 `last_assembled_contexts` 存在共享实例字段。A turn 完成 render 后等待 provider，B turn 可以覆盖字段，导致 A 的 after-turn budget/debug 读取 B 的投影。现在两项诊断投影由 `ContextVar` 按 task 保存，并用两个并发 render 在交错后回读各自 marker 的测试锁定。该问题不会改写权威消息，但会污染诊断与预算证据，不能靠“只是 debug”忽略。
+
+### 8.2 写型插件的边界
 
 默认 latest 验证 session：
 
@@ -369,7 +387,7 @@ cancelled → discard candidate when owned and safe → report terminal
 
 1. [完成] 建立 `SessionLaneRegistry`，让 channel/direct 与 control executor 汇入同一 session owner。
 2. [完成] 移除两层全局整轮互斥，保留全局有界 admission。
-3. [待完成] 对其余 `AgentLoop` 共享可变字段和 Tool owner 做完整审计。
+3. [完成] 对其余 `AgentLoop`、reasoner、ContextBuilder、ToolRegistry、SessionManager、provider、插件实例和 Shell owner 完成审计；将共享 ContextBuilder 诊断投影迁回 task-local owner。
 4. [完成] 验证不同 session 并发、同 session 串行和 passive `message_push` 的 ChatLane 顺序。
 
 ### Phase 2：引入 stable/latest
@@ -444,6 +462,19 @@ cache/<marketplace>/<plugin>/
 - mutant 3：把 V 错绑 stable；tool visibility oracle 必须失败。
 - mutant 4：恢复全局锁；死锁超时 oracle 必须失败。
 - mutant 5：让 programmatic session 写入 semantic memory；memory write-set oracle 必须失败。
+
+### 14.6 自动化证据
+
+| 合同 | 直接证据 |
+|---|---|
+| latest/stable、install 完成定义、candidate 单 owner | `tests/test_plugin_runtime_control.py`、`tests/test_plugin_hot_reload.py` 的 selector、promotion、KV write 与 crash recovery 用例 |
+| 跨 session 并发、同 session 串行 | `tests/test_turn_pipelines.py::test_process_direct_runs_concurrently_with_another_session`、`test_process_direct_waits_for_the_same_session_lane` |
+| programmatic runtime、SessionDB 与默认 memory policy | `tests/control/test_exec_cli.py::test_exec_new_defaults_to_read_only_memory_and_selects_runtime`、`tests/control/test_protocol.py::test_thread_runtime_selector_is_strict_and_inherited_by_turn` |
+| `message_push` 不等父 session 且实际 send 串行 | `tests/test_support_modules.py::test_message_push_passive_role_does_not_wait_for_passive_lane`、`test_message_push_passive_role_serializes_actual_same_chat_send` |
+| turn-local 调试投影 | `tests/test_support_modules.py::test_context_builder_debug_projection_is_turn_local` |
+| 完整递归 oracle 与已知错误 | `tests/semantic/test_recursive_plugin_self_validation_contract.py`：stable misbinding、global lock、semantic write、fake domain success、blocking push、crash promotion、fake tool item 七类 mutant |
+
+上述证据注册为 P0 `recursive_plugin_validation` group、`plugin_runtime_selection` state contract 与 `recursive_plugin_self_validation_contract` scenario。它观察 pointer/journal、真实 tool item、SessionDB、semantic write set、ChatLane timer 和 crash recovery；coverage baseline 只记录批准后的合同映射，不充当测试通过报告。
 
 ## 15. 非目标与仍需单独设计的边界
 
