@@ -37,7 +37,7 @@ _TRANSITIONS: dict[str, frozenset[str]] = {
     "commit_started": frozenset({"latest_ready", "committed", "aborted", "recovered"}),
     "latest_ready": frozenset({"discarding", "promoting", "recovered"}),
     "discarding": frozenset({"aborted"}),
-    "promoting": frozenset({"committed", "recovered"}),
+    "promoting": frozenset({"discarding", "committed", "recovered"}),
     "committed": frozenset({"draining", "complete", "recovered"}),
     "draining": frozenset({"complete", "recovered"}),
 }

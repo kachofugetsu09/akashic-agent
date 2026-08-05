@@ -53,12 +53,15 @@ from agent.lifecycle.types import (
 )
 from agent.plugins.registry import MetadataKind, PluginEventType, plugin_registry
 from agent.plugins.artifacts import (
+    ArtifactPointer,
     ArtifactSelector,
     discard_latest_pointer,
-    promote_latest_pointer,
     pointer_state_path,
     read_pointer,
+    read_pointers,
+    relative_artifact_pointer,
     resolve_pointer,
+    write_pointers,
 )
 from agent.plugins.source_resolver import resolve_plugin_sources
 from agent.plugins.jobs import (
@@ -96,6 +99,7 @@ from agent.plugins.snapshot import (
     RuntimeSnapshot,
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
+    SnapshotTransaction,
     get_current_runtime_snapshot,
     plugin_is_active,
 )
@@ -782,11 +786,15 @@ class PluginManager:
         # 2. 根据 durable pointer 判定 promoting 崩溃发生在切换前还是切换后。
         stable_by_id = self._discovered_by_id(installed_selector="stable")
         latest_by_id = self._discovered_by_id(installed_selector="latest")
-        restore_candidates, restore_committed = self._classify_reload_recovery(
-            recovery,
-            stable_by_id=stable_by_id,
-            latest_by_id=latest_by_id,
+        restore_candidates, restore_committed, restore_discarded = (
+            self._classify_reload_recovery(
+                recovery,
+                stable_by_id=stable_by_id,
+                latest_by_id=latest_by_id,
+            )
         )
+        for action in restore_discarded:
+            self._reload_journal.finish_recovery(action)
 
         # 3. stable 先恢复服务；latest 候选随后以新事务重新准备和验证。
         for mod in stable_by_id.values():
@@ -806,17 +814,22 @@ class PluginManager:
                 )
             seen.add(action.plugin_id)
 
-    @staticmethod
     def _classify_reload_recovery(
+        self,
         recovery: tuple[ReloadRecoveryAction, ...],
         *,
         stable_by_id: dict[str, dict[str, str]],
         latest_by_id: dict[str, dict[str, str]],
-    ) -> tuple[list[ReloadRecoveryAction], list[ReloadRecoveryAction]]:
+    ) -> tuple[
+        list[ReloadRecoveryAction],
+        list[ReloadRecoveryAction],
+        list[ReloadRecoveryAction],
+    ]:
         """Classify durable transactions by the pointer switch already on disk."""
 
         restore_candidates: list[ReloadRecoveryAction] = []
         restore_committed: list[ReloadRecoveryAction] = []
+        restore_discarded: list[ReloadRecoveryAction] = []
         for action in recovery:
             if action.action == "discard_candidate":
                 continue
@@ -840,12 +853,32 @@ class PluginManager:
             ):
                 restore_candidates.append(action)
                 continue
+            if (
+                action.phase in {"commit_started", "promoting"}
+                and stable_revision == latest_revision
+                and self._has_installed_pointer_state(action.plugin_id)
+            ):
+                restore_discarded.append(action)
+                continue
             raise RuntimeError(
                 "ReloadTransaction 恢复源码不一致: "
                 f"{action.plugin_id} expected={action.source_revision} "
                 f"stable={stable_revision} latest={latest_revision}"
             )
-        return restore_candidates, restore_committed
+        return restore_candidates, restore_committed, restore_discarded
+
+    def _has_installed_pointer_state(self, plugin_id: str) -> bool:
+        plugin_name, separator, marketplace = plugin_id.rpartition("@")
+        if not separator:
+            return False
+        plugin_base = (
+            _plugins_home(self._installed_cache_root)
+            / "cache"
+            / marketplace
+            / plugin_name
+        )
+        state_path = pointer_state_path(plugin_base)
+        return state_path.exists() or state_path.is_symlink()
 
     def _finish_committed_recovery(
         self,
@@ -1404,19 +1437,19 @@ class PluginManager:
                     self._advance_reload(generation, "promoting")
                 artifact_base = _installed_artifact_base(generation)
                 if artifact_base is not None:
-                    _ = promote_latest_pointer(artifact_base)
+                    _promote_ready_candidate_pointer(ready, artifact_base)
                 if isinstance(kv_store, PreparedPluginKVStore):
                     kv_store.commit()
 
             # 2. Snapshot pointer 切换后再替换 manager 的 stable generation owner。
             def after_open() -> None:
+                self._activate_published_generation(generation, ready.previous)
                 generation.state = "active"
                 self._scopes[generation.module_path] = generation.scope
                 self._loaded.add(generation.module_path)
                 self._active_generations[plugin_id] = generation
                 if ready.previous is not None:
                     self._retire_generation(ready.previous)
-                self._activate_published_generation(generation, ready.previous)
                 self._channels = [
                     channel
                     for item in self._active_generations.values()
@@ -1467,20 +1500,29 @@ class PluginManager:
 
     async def _discard_ready_candidate(self, plugin_id: str) -> dict[str, object]:
         ready = self._require_ready_candidate(plugin_id)
-        self._advance_reload(
-            ready.candidate,
-            "discarding",
-            error="candidate behavior rejected",
-        )
+        tx_id = ready.candidate.reload_tx_id
+        if tx_id is None:
+            raise RuntimeError("latest candidate 缺少 reload transaction")
+        phase = self._reload_journal.get(tx_id).phase
+        if phase in {"latest_ready", "promoting"}:
+            self._advance_reload(
+                ready.candidate,
+                "discarding",
+                error="candidate behavior rejected",
+            )
+        elif phase != "discarding":
+            raise RuntimeError(f"latest candidate 不能从 {phase} discard")
         artifact_base = _installed_artifact_base(ready.candidate)
         if artifact_base is not None:
-            _ = discard_latest_pointer(artifact_base)
+            _restore_ready_candidate_pointer(ready, artifact_base)
+        _, cancelled = await _complete_critical(
+            self._snapshot_store.discard_latest(ready.snapshot)
+        )
         self._advance_reload(
             ready.candidate,
             "aborted",
             error="candidate behavior rejected",
         )
-        _, cancelled = await _complete_critical(self._snapshot_store.discard_latest())
         self._ready_candidate = None
         result = self._publication_status(
             plugin_id,
@@ -1698,7 +1740,6 @@ class PluginManager:
         except (asyncio.CancelledError, Exception):
             _ = self._prepared_generations.pop(plugin_id, None)
             generation.state = "aborted"
-            _discard_generation_candidate_pointer(generation)
             endpoint_error: BaseException | None = None
             if endpoints_switched:
                 try:
@@ -1711,9 +1752,9 @@ class PluginManager:
                     )
                 except BaseException as error:
                     endpoint_error = error
-            await self._snapshot_store.abort(transaction)
-            self._abort_reload(
+            await self._abort_failed_publication(
                 generation,
+                transaction,
                 error="post-publish invariant failed",
             )
             if self._endpoint_resumer is not None:
@@ -1788,7 +1829,6 @@ class PluginManager:
                 )
             _ = self._prepared_generations.pop(plugin_id, None)
             generation.state = "aborted"
-            _discard_generation_candidate_pointer(generation)
             endpoint_error: BaseException | None = None
             if endpoints_switched:
                 try:
@@ -1801,9 +1841,9 @@ class PluginManager:
                     )
                 except BaseException as error:
                     endpoint_error = error
-            await self._snapshot_store.abort(transaction)
-            self._abort_reload(
+            await self._abort_failed_publication(
                 generation,
+                transaction,
                 error=str(commit_error) or type(commit_error).__name__,
             )
             if self._endpoint_resumer is not None:
@@ -1876,19 +1916,14 @@ class PluginManager:
         generation: PluginGeneration,
         previous: PluginGeneration | None,
     ) -> None:
-        plugin_dir = Path(cast(Any, generation.instance).context.plugin_dir)
-        self._active_plugins[generation.module_path] = ActivePluginInfo(
-            plugin_id=generation.plugin_id,
-            plugin_dir=plugin_dir,
-            manifest=generation.contributions.manifest,
-            module_path=generation.module_path,
-            skill_roots=generation.contributions.skill_roots,
-            drift_skill_roots=generation.contributions.drift_skill_roots,
-            mcp_servers=generation.contributions.mcp_servers,
+        plugin_dir = Path(cast(Any, generation.instance).context.plugin_dir).resolve(
+            strict=False
         )
+        published_module = sys.modules[generation.module_path]
         stable_alias = None
         if previous is not None:
-            stable_alias = self._stable_aliases.pop(previous.module_path, None)
+            stable_alias = self._stable_aliases.get(previous.module_path)
+        retired_module = None
         if stable_alias is None:
             retired_module = next(
                 (
@@ -1900,14 +1935,29 @@ class PluginManager:
                 None,
             )
             if retired_module is not None:
-                stable_alias = self._stable_aliases.pop(retired_module, None)
+                stable_alias = self._stable_aliases.get(retired_module)
         if stable_alias is None:
             stable_alias = generation.module_path.rsplit("__g", 1)[0]
-        self._stable_aliases[generation.module_path] = stable_alias
+
+        # 先完成可能失败的查找，再替换 stable import alias。
         self._remove_module_tree(stable_alias)
         self._fresh_importer.register(stable_alias, plugin_dir)
         plugin_registry.register_instance(stable_alias, generation.instance)
-        sys.modules[stable_alias] = sys.modules[generation.module_path]
+        sys.modules[stable_alias] = published_module
+        if previous is not None:
+            _ = self._stable_aliases.pop(previous.module_path, None)
+        if retired_module is not None:
+            _ = self._stable_aliases.pop(retired_module, None)
+        self._stable_aliases[generation.module_path] = stable_alias
+        self._active_plugins[generation.module_path] = ActivePluginInfo(
+            plugin_id=generation.plugin_id,
+            plugin_dir=plugin_dir,
+            manifest=generation.contributions.manifest,
+            module_path=generation.module_path,
+            skill_roots=generation.contributions.skill_roots,
+            drift_skill_roots=generation.contributions.drift_skill_roots,
+            mcp_servers=generation.contributions.mcp_servers,
+        )
 
     async def _prepare_generation(
         self,
@@ -2059,6 +2109,37 @@ class PluginManager:
         if phase in {"complete", "aborted", "recovered"}:
             return
         self._advance_reload(generation, "aborted", error=error)
+
+    async def _abort_failed_publication(
+        self,
+        generation: PluginGeneration,
+        transaction: SnapshotTransaction,
+        *,
+        error: str,
+    ) -> None:
+        """撤销失败发布，并留下可被启动恢复判定的持久状态。"""
+
+        # 1. pointer 失败时保留未完成 journal，让重启按磁盘事实恢复。
+        pointer_error: BaseException | None = None
+        try:
+            _discard_generation_candidate_pointer(generation)
+        except BaseException as caught:
+            pointer_error = caught
+
+        # 2. snapshot drain 失败不能阻止已恢复 pointer 的 journal 终态。
+        snapshot_error: BaseException | None = None
+        try:
+            _, _ = await _complete_critical(self._snapshot_store.abort(transaction))
+        except BaseException as caught:
+            snapshot_error = caught
+        if pointer_error is None:
+            self._abort_reload(generation, error=error)
+
+        # 3. 清理异常优先暴露，避免把半完成恢复伪装成原始发布失败。
+        if pointer_error is not None:
+            raise RuntimeError("候选发布失败后 artifact pointer 恢复失败") from pointer_error
+        if snapshot_error is not None:
+            raise RuntimeError("候选发布失败后 RuntimeSnapshot 回收失败") from snapshot_error
 
     def _track_reload_drain(
         self,
@@ -3671,6 +3752,56 @@ def _installed_candidate_base_from_root(plugin_dir: Path) -> Path | None:
     if latest_root is None or plugin_dir.resolve() != latest_root.resolve():
         raise RuntimeError(f"插件 generation 与 latest pointer 不一致: {plugin_dir}")
     return plugin_base
+
+
+def _promote_ready_candidate_pointer(
+    ready: _ReadyPluginCandidate,
+    plugin_base: Path,
+) -> None:
+    """在候选仍拥有磁盘 pointer 时原子提升它。"""
+
+    previous, candidate = _ready_artifact_pointers(ready, plugin_base)
+    pointers = read_pointers(plugin_base)
+    if pointers is None or (pointers.stable, pointers.latest) not in {
+        (previous, candidate),
+        (candidate, candidate),
+    }:
+        raise RuntimeError(f"插件 artifact pointer 已被其他发布改变: {plugin_base}")
+    _ = write_pointers(plugin_base, stable=candidate, latest=candidate)
+
+
+def _restore_ready_candidate_pointer(
+    ready: _ReadyPluginCandidate,
+    plugin_base: Path,
+) -> None:
+    """把 ready candidate 的完整指针对恢复到先前 stable。"""
+
+    previous, candidate = _ready_artifact_pointers(ready, plugin_base)
+    pointers = read_pointers(plugin_base)
+    if pointers is None or (pointers.stable, pointers.latest) not in {
+        (previous, candidate),
+        (candidate, candidate),
+        (previous, previous),
+    }:
+        raise RuntimeError(f"插件 artifact pointer 已被其他发布改变: {plugin_base}")
+    _ = write_pointers(plugin_base, stable=previous, latest=previous)
+
+
+def _ready_artifact_pointers(
+    ready: _ReadyPluginCandidate,
+    plugin_base: Path,
+) -> tuple[ArtifactPointer, ArtifactPointer]:
+    """解析 ready candidate 事务拥有的前后 artifact pointer。"""
+
+    candidate_root = Path(cast(Any, ready.candidate.instance).context.plugin_dir)
+    candidate = relative_artifact_pointer(plugin_base, candidate_root)
+    if ready.previous is None:
+        return ArtifactPointer(None), candidate
+    previous_root = Path(cast(Any, ready.previous.instance).context.plugin_dir)
+    previous_base = _installed_artifact_base_from_root(previous_root)
+    if previous_base.resolve() != plugin_base.resolve():
+        raise RuntimeError("latest candidate 与 stable 不属于同一插件 artifact")
+    return relative_artifact_pointer(plugin_base, previous_root), candidate
 
 
 def _discard_installed_candidate_mod(mod: dict[str, str]) -> None:

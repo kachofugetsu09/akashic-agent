@@ -530,27 +530,48 @@ class RuntimeSnapshotStore:
         self._current = candidate
         self._latest = candidate
 
-        # 2. Existing readers keep their lease; only new readers leave the old stable.
+        # 2. manager owner 切换完成后，旧 stable 才能开始 drain。
         if previous is not None:
             previous.state = "retired"
             previous.accepting_leases = False
+        try:
+            if after_open is not None:
+                after_open()
+        except BaseException:
+            self._current = previous
+            self._latest = candidate
+            if previous is not None:
+                previous.state = "committed"
+                previous.accepting_leases = True
+            async with self._condition:
+                self._condition.notify_all()
+            raise
+        if previous is not None:
             self._schedule_drain(previous)
-        if after_open is not None:
-            after_open()
         async with self._condition:
             self._condition.notify_all()
         return SnapshotTransaction(previous=previous, candidate=candidate)
 
-    async def discard_latest(self) -> RuntimeSnapshot:
+    async def discard_latest(
+        self,
+        expected: RuntimeSnapshot | None = None,
+    ) -> RuntimeSnapshot:
         """Discard the ready latest snapshot without changing stable."""
 
-        # 1. Remove candidate admission before exposing the stable pointer as latest again.
+        # 1. Remove candidate admission once; retries resume its failed drain.
         candidate = self.unpromoted_candidate
         if candidate is None:
-            raise RuntimeError("没有等待 discard 的 RuntimeSnapshot 候选")
-        candidate.state = "aborted"
-        candidate.accepting_leases = False
-        self._latest = self._current
+            if expected is None or expected.state != "aborted":
+                raise RuntimeError("没有等待 discard 的 RuntimeSnapshot 候选")
+            candidate = expected
+            if candidate.snapshot_id not in self._snapshots:
+                return candidate
+        elif expected is not None and candidate is not expected:
+            raise RuntimeError("等待 discard 的 RuntimeSnapshot 候选不一致")
+        if candidate.state != "aborted":
+            candidate.state = "aborted"
+            candidate.accepting_leases = False
+            self._latest = self._current
         await self.wait_for_no_leases(candidate)
         self._schedule_drain(candidate)
 
