@@ -2522,6 +2522,60 @@ async def test_passive_runtime_admission_holds_one_snapshot(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_passive_runtime_admission_selects_latest_only_when_explicit(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "passive_selector",
+        "from agent.plugins import Plugin\n"
+        "class PassiveSelectorPlugin(Plugin):\n"
+        "    name = 'passive_selector'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("passive_selector")
+    prepared = await manager.prepare_candidate("passive_selector")
+    assert active is not None and prepared is not None
+    compiler = RuntimeSnapshotCompiler()
+    stable = compiler.compile({"passive_selector": active}, snapshot_revision="stable")
+    latest = compiler.compile(
+        {"passive_selector": prepared},
+        snapshot_revision="latest",
+    )
+    store = RuntimeSnapshotStore()
+    store.install(stable)
+    await store.commit_latest(store.begin_publish(latest))
+    loop = object.__new__(AgentLoop)
+    loop._session_lanes = SessionLaneRegistry()
+    loop._runtime_snapshot_store = store
+
+    async def process(_msg, **_kwargs):
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        snapshot = get_current_runtime_snapshot()
+        assert snapshot is not None
+        return snapshot.snapshot_id
+
+    loop._process = process
+    stable_message = cast(Any, SimpleNamespace(session_key="cli:stable"))
+    latest_message = cast(Any, SimpleNamespace(session_key="cli:latest"))
+
+    assert await loop._process_with_runtime_admission(stable_message) == stable.snapshot_id
+    assert (
+        await loop._process_with_runtime_admission(
+            latest_message,
+            runtime_selector="latest",
+        )
+        == latest.snapshot_id
+    )
+    await store.discard_latest()
+    await store.close()
+    await manager.discard_prepared("passive_selector")
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
 async def test_passive_runtime_snapshot_does_not_leak_to_detached_task(
     tmp_path: Path,
 ) -> None:

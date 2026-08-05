@@ -17,7 +17,12 @@ from agent.model_runtime.errors import (
     RetryableTransportError,
     TransportError,
 )
-from agent.provider import ContentSafetyError, ContextLengthError, LLMNetworkTimeoutError
+from agent.provider import (
+    ContentSafetyError,
+    ContextLengthError,
+    LLMNetworkTimeoutError,
+)
+from agent.plugins.snapshot import RuntimeSelector
 from bus.event_bus import EventBus
 from bus.events import TurnDisposition
 from bus.events_lifecycle import (
@@ -104,13 +109,23 @@ async def execute_control_turn(
                 metadata=_inbound_metadata(request.metadata.get("inboundMetadata")),
                 turn_id=turn_id,
                 stream_events=True,
+                runtime_selector=cast(
+                    RuntimeSelector,
+                    request.metadata.get("runtime", "stable"),
+                ),
             )
         except (openai.RateLimitError, RateLimitError) as exc:
-            raise ControlExecutionError("provider_rate_limited", str(exc), retryable=True) from exc
+            raise ControlExecutionError(
+                "provider_rate_limited", str(exc), retryable=True
+            ) from exc
         except (openai.APITimeoutError, LLMNetworkTimeoutError) as exc:
-            raise ControlExecutionError("provider_timeout", str(exc), retryable=True) from exc
+            raise ControlExecutionError(
+                "provider_timeout", str(exc), retryable=True
+            ) from exc
         except (openai.APIConnectionError, RetryableTransportError) as exc:
-            raise ControlExecutionError("provider_connection_error", str(exc), retryable=True) from exc
+            raise ControlExecutionError(
+                "provider_connection_error", str(exc), retryable=True
+            ) from exc
         except openai.APIStatusError as exc:
             raise ControlExecutionError(
                 "provider_error",
@@ -118,13 +133,21 @@ async def execute_control_turn(
                 retryable=exc.status_code >= 500,
             ) from exc
         except (AuthenticationError, QuotaError) as exc:
-            raise ControlExecutionError("provider_auth_error", str(exc), retryable=False) from exc
+            raise ControlExecutionError(
+                "provider_auth_error", str(exc), retryable=False
+            ) from exc
         except (ContextLengthError, ContextWindowError) as exc:
-            raise ControlExecutionError("context_window_exceeded", str(exc), retryable=False) from exc
+            raise ControlExecutionError(
+                "context_window_exceeded", str(exc), retryable=False
+            ) from exc
         except ContentSafetyError as exc:
-            raise ControlExecutionError("content_safety", str(exc), retryable=False) from exc
+            raise ControlExecutionError(
+                "content_safety", str(exc), retryable=False
+            ) from exc
         except TransportError as exc:
-            raise ControlExecutionError("provider_transport_error", str(exc), retryable=False) from exc
+            raise ControlExecutionError(
+                "provider_transport_error", str(exc), retryable=False
+            ) from exc
     finally:
         delta_subscription.close()
         committed_subscription.close()

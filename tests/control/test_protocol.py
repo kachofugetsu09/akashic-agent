@@ -479,6 +479,152 @@ async def test_start_thread_rejects_non_boolean_memory_marker(tmp_path: Path) ->
     sessions.close()
 
 
+@pytest.mark.asyncio
+async def test_thread_runtime_selector_is_strict_and_inherited_by_turn(
+    tmp_path: Path,
+) -> None:
+    sessions = SessionManager(tmp_path)
+    seen: list[TurnRequest] = []
+
+    async def execute(request: TurnRequest) -> str:
+        seen.append(request)
+        return request.input
+
+    runtime = ConversationRuntime(sessions.control_store, execute)
+    service = ControlService(runtime, sessions, tmp_path)
+
+    thread = service.start_thread({"skip_post_memory": True}, "latest")
+    thread_id = cast(str, thread["id"])
+    result = await (
+        await service.start_turn(thread_id, "verify", {}, None)
+    ).result()
+
+    assert thread["metadata"] == {
+        "skip_post_memory": True,
+        "runtime": "latest",
+    }
+    assert result.status.value == "completed"
+    assert seen[0].metadata["runtime"] == "latest"
+    with pytest.raises(ValueError, match="stable 或 latest"):
+        service.start_thread({}, "candidate")
+    assert len(sessions.list_sessions()) == 1
+    await runtime.shutdown()
+    sessions.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("detached", [False, True])
+async def test_router_disconnect_interrupts_only_attached_turn(
+    tmp_path: Path,
+    detached: bool,
+) -> None:
+    sessions = SessionManager(tmp_path / str(detached))
+    started = asyncio.Event()
+
+    async def execute(_request: TurnRequest) -> str:
+        started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    runtime = ConversationRuntime(sessions.control_store, execute)
+    service = ControlService(runtime, sessions, tmp_path)
+    sent: list[dict[str, object]] = []
+
+    async def send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    router = ConnectionRouter(service, send)
+    await router.handle_line(
+        b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1.0","clientInfo":{"name":"test","version":"1"},"capabilities":{}}}\n'
+    )
+    await router.handle_line(
+        b'{"jsonrpc":"2.0","method":"initialized","params":{}}\n'
+    )
+    await router.handle_line(
+        b'{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"metadata":{},"runtime":"latest"}}\n'
+    )
+    thread = cast(dict[str, object], next(item for item in sent if item.get("id") == 2)["result"])
+    thread_id = cast(str, thread["id"])
+    await router.handle_line(
+        (
+            '{"jsonrpc":"2.0","id":3,"method":"turn/start","params":'
+            f'{{"threadId":"{thread_id}","input":"verify","metadata":{{}},"detached":{str(detached).lower()}}}}}\n'
+        ).encode()
+    )
+    await started.wait()
+    turn = cast(dict[str, object], next(item for item in sent if item.get("id") == 3)["result"])
+    turn_id = cast(str, turn["id"])
+
+    await router.close()
+
+    if detached:
+        assert runtime.is_thread_active(thread_id)
+        await runtime.interrupt_turn(thread_id, turn_id)
+    else:
+        assert runtime.read_turn(thread_id, turn_id).status.value == "interrupted"
+        assert not runtime.is_thread_active(thread_id)
+    await runtime.shutdown()
+    sessions.close()
+
+
+@pytest.mark.asyncio
+async def test_plugin_candidate_control_methods_use_runtime_owner(
+    tmp_path: Path,
+) -> None:
+    sessions = SessionManager(tmp_path)
+
+    async def execute(request: TurnRequest) -> str:
+        return request.input
+
+    calls: list[tuple[str, object]] = []
+
+    async def install(
+        source: str,
+        marketplace: str,
+        ref: str,
+        sparse: list[str],
+    ) -> dict[str, object]:
+        calls.append(("install", (source, marketplace, ref, sparse)))
+        return {"publicationState": "latest_ready"}
+
+    async def promote(plugin_id: str) -> dict[str, object]:
+        calls.append(("promote", plugin_id))
+        return {"publication_state": "promoted"}
+
+    async def discard(plugin_id: str) -> dict[str, object]:
+        calls.append(("discard", plugin_id))
+        return {"publication_state": "discarded"}
+
+    runtime = ConversationRuntime(sessions.control_store, execute)
+    service = ControlService(
+        runtime,
+        sessions,
+        tmp_path,
+        plugin_install=install,
+        plugin_status=lambda: {"candidateState": "latest_ready"},
+        plugin_promote=promote,
+        plugin_discard=discard,
+    )
+
+    assert await service.install_plugin("repo", "lab", "main", ["plugin"]) == {
+        "publicationState": "latest_ready"
+    }
+    assert service.plugin_status() == {"candidateState": "latest_ready"}
+    assert await service.promote_plugin("feed@lab") == {
+        "publication_state": "promoted"
+    }
+    assert await service.discard_plugin("feed@lab") == {
+        "publication_state": "discarded"
+    }
+    assert calls == [
+        ("install", ("repo", "lab", "main", ["plugin"])),
+        ("promote", "feed@lab"),
+        ("discard", "feed@lab"),
+    ]
+    await runtime.shutdown()
+    sessions.close()
+
+
 async def _wait_terminal(sent: list[dict[str, object]]) -> None:
     while not any(item.get("method") == "turn/completed" for item in sent):
         await asyncio.sleep(0)
