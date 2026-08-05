@@ -169,6 +169,29 @@ class ReloadJournal:
             raise KeyError(f"ReloadTransaction 不存在: {tx_id}")
         return _record(row)
 
+    def latest(
+        self,
+        *,
+        plugin_id: str | None = None,
+    ) -> ReloadTransactionRecord | None:
+        """返回指定插件最后发生状态变化的 reload transaction。"""
+        where = "" if plugin_id is None else "WHERE plugin_id = ?"
+        values: tuple[object, ...] = () if plugin_id is None else (plugin_id,)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT tx_id, plugin_id, base_snapshot_id, candidate_snapshot_id,
+                       generation_id, source_revision, config_revision, phase,
+                       started_at, updated_at, error
+                FROM reload_transactions
+                {where}
+                ORDER BY updated_at DESC, rowid DESC
+                LIMIT 1
+                """,
+                values,
+            ).fetchone()
+        return None if row is None else _record(row)
+
     def events(self, tx_id: str) -> tuple[ReloadJournalEvent, ...]:
         with self._connect() as conn:
             rows = conn.execute(

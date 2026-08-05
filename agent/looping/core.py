@@ -119,6 +119,38 @@ def _item_content(item: InboundItem) -> str:
     )
 
 
+def _disable_candidate_side_effect_tools(
+    msg: InboundMessage,
+    candidate_plugin_ids: frozenset[str],
+    tools: ToolRegistry | None,
+    snapshot: object,
+) -> None:
+    """把本次 candidate lease 的副作用工具加入 turn-local 禁用集合。"""
+    if tools is None or not candidate_plugin_ids:
+        return
+    generations = cast(Any, snapshot).generations
+    raw_disabled = msg.metadata.get("disabled_tools")
+    if isinstance(raw_disabled, str):
+        disabled = {raw_disabled} if raw_disabled else set()
+    elif isinstance(raw_disabled, (list, tuple, set)):
+        disabled = {str(name) for name in raw_disabled if str(name)}
+    else:
+        disabled = set()
+    for plugin_id in candidate_plugin_ids:
+        generation = generations[plugin_id]
+        plugin_name = str(getattr(generation.instance, "name", plugin_id))
+        disabled |= tools.get_non_read_only_source_tool_names(
+            "plugin",
+            plugin_name,
+        )
+        for server_name in generation.contributions.mcp_servers:
+            disabled |= tools.get_non_read_only_source_tool_names(
+                "mcp",
+                server_name,
+            )
+    msg.metadata["disabled_tools"] = sorted(disabled)
+
+
 class AgentLoop:
     """
     主循环：从 MessageBus 消费 InboundMessage，
@@ -805,6 +837,15 @@ class AgentLoop:
             async with lease as snapshot:
                 token = bind_runtime_snapshot(lease)
                 try:
+                    if lease.validation_candidate_plugin_ids:
+                        if not isinstance(msg, InboundMessage):
+                            raise RuntimeError("latest candidate 只接受普通 inbound message")
+                        _disable_candidate_side_effect_tools(
+                            msg,
+                            lease.validation_candidate_plugin_ids,
+                            snapshot.tool_registry,
+                            snapshot,
+                        )
                     return await self._process(
                         msg,
                         session_key=session_key,

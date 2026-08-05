@@ -265,7 +265,7 @@ Tool/Skill 可见性严格来自绑定 snapshot：T 继续看到 S0；V 看到 S
 
 - 可读取 SessionDB、长期记忆和 plugin-data。
 - 不沉淀新的语义记忆。
-- 默认禁用风险为 write/read-write 的记忆工具和候选插件工具。
+- 默认禁用记忆写工具，以及 candidate generation 中所有非 read-only 的 Tool/MCP。
 - 仍把验证 session 的消息和工具 trace 追加到 SessionDB。
 
 要验证写型插件，必须满足下列至少一项：

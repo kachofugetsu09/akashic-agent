@@ -285,9 +285,15 @@ class RuntimeSnapshotCompiler:
 
 
 class RuntimeSnapshotLease:
-    def __init__(self, store: RuntimeSnapshotStore, snapshot: RuntimeSnapshot) -> None:
+    def __init__(
+        self,
+        store: RuntimeSnapshotStore,
+        snapshot: RuntimeSnapshot,
+        validation_candidate_plugin_ids: frozenset[str] = frozenset(),
+    ) -> None:
         self._store = store
         self.snapshot = snapshot
+        self.validation_candidate_plugin_ids = validation_candidate_plugin_ids
         self._released = False
 
     @property
@@ -696,7 +702,11 @@ class RuntimeSnapshotStore:
             generation.lease_count += 1
         if snapshot.workspace_mcp_generation is not None:
             snapshot.workspace_mcp_generation.lease_count += 1
-        return RuntimeSnapshotLease(self, snapshot)
+        return RuntimeSnapshotLease(
+            self,
+            snapshot,
+            self._validation_candidate_plugin_ids(snapshot),
+        )
 
     def fork_lease(self, source: RuntimeSnapshotLease) -> RuntimeSnapshotLease:
         snapshot = source.snapshot
@@ -707,7 +717,24 @@ class RuntimeSnapshotStore:
             generation.lease_count += 1
         if snapshot.workspace_mcp_generation is not None:
             snapshot.workspace_mcp_generation.lease_count += 1
-        return RuntimeSnapshotLease(self, snapshot)
+        return RuntimeSnapshotLease(
+            self,
+            snapshot,
+            source.validation_candidate_plugin_ids,
+        )
+
+    def _validation_candidate_plugin_ids(
+        self,
+        snapshot: RuntimeSnapshot,
+    ) -> frozenset[str]:
+        stable = self._current
+        if stable is None or snapshot is not self.unpromoted_candidate:
+            return frozenset()
+        return frozenset(
+            plugin_id
+            for plugin_id, generation in snapshot.generations.items()
+            if stable.generations.get(plugin_id) is not generation
+        )
 
     async def release_lease(self, snapshot: RuntimeSnapshot) -> None:
         if snapshot.lease_count <= 0:

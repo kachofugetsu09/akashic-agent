@@ -61,6 +61,7 @@ python main.py exec --new --runtime latest --json \
 - latest snapshot。
 - recall/search allowed。
 - semantic memory writes disabled。
+- candidate generation 的非 read-only Tool/MCP disabled。
 - SessionDB thread/messages/tool items 正常持久化。
 - attached：父 turn cleanup、task_stop、CLI 退出或 socket 断开会取消子 turn。
 

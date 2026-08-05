@@ -265,7 +265,6 @@ class AppRuntime:
         self._shutdown = False
         self._started = False
         self._plugin_candidate_tasks: set[asyncio.Task[Any]] = set()
-        self._plugin_management_lock = asyncio.Lock()
         self._plugin_reload_signal_installed = False
         self._runtime_tasks: set[asyncio.Future[Any]] = set()
         self._primary_task: asyncio.Future[Any] | None = None
@@ -916,74 +915,60 @@ class AppRuntime:
         manager = getattr(self.core, "plugin_manager", None)
         if manager is None:
             raise RuntimeError("插件 Runtime 不可用")
-        from agent.plugins.install import install_git_plugin
 
-        # 1. 同一 runtime 只允许一个安装 owner 修改全局 candidate pointer。
-        async with self._plugin_management_lock:
-            result = await asyncio.to_thread(
-                install_git_plugin,
-                workspace=self.workspace,
-                source=source,
-                marketplace=marketplace,
-                ref_name=ref,
-                sparse_paths=sparse,
-                plugins_home=manager.installed_plugins_home,
-                stage_candidate=True,
-            )
+        # 1. PluginManager 与 watcher 共用一个 candidate 发布 owner。
+        result, status = await manager.install_candidate(
+            source=source,
+            marketplace=marketplace,
+            ref_name=ref,
+            sparse_paths=sparse,
+        )
 
-            # 2. 等 manager 完成真实 prepare/readiness，不把 watcher accepted 当终态。
-            plugin_id = f"{result.plugin_name}@{result.marketplace}"
-            _ = await manager.reconcile_changed()
-            status = manager.candidate_status()
-            if result.staged_candidate and (
-                status["candidate_plugin_id"] != plugin_id
-                or status["candidate_state"] != "latest_ready"
-            ):
-                raise RuntimeError(f"插件候选未进入 latest_ready: {plugin_id}")
-            publication = (
-                status["candidate_state"]
-                if result.staged_candidate
-                else "stable"
-            )
-            return {
-                "pluginId": plugin_id,
-                "version": result.plugin_version,
-                "sourceRevision": result.source_revision,
-                "installedPath": str(result.installed_path),
-                "dataPath": str(result.data_path),
-                "publicationState": publication,
-                "candidate": self._plugin_status(),
-            }
+        # 2. 返回 manager 在 candidate owner 锁内冻结的发布结果。
+        plugin_id = f"{result.plugin_name}@{result.marketplace}"
+        publication = status["candidate_state"] if result.staged_candidate else "stable"
+        return {
+            "pluginId": plugin_id,
+            "version": result.plugin_version,
+            "sourceRevision": result.source_revision,
+            "installedPath": str(result.installed_path),
+            "dataPath": str(result.data_path),
+            "publicationState": publication,
+            "candidate": self._plugin_status(status),
+        }
 
-    def _plugin_status(self) -> dict[str, object]:
+    def _plugin_status(
+        self,
+        status: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         manager = getattr(self.core, "plugin_manager", None)
         if manager is None:
             raise RuntimeError("插件 Runtime 不可用")
-        status = manager.candidate_status()
+        resolved_status = manager.candidate_status() if status is None else status
         return {
-            "stableSnapshotId": status["stable_snapshot_id"],
-            "latestSnapshotId": status["latest_snapshot_id"],
-            "candidatePluginId": status["candidate_plugin_id"],
-            "candidateGenerationId": status["candidate_generation_id"],
-            "candidateState": status["candidate_state"],
-            "candidateRuntimeRevision": status["candidate_source_revision"],
-            "candidateReloadTransactionId": status["candidate_reload_tx_id"],
-            "candidateError": status["candidate_error"],
+            "stableSnapshotId": resolved_status["stable_snapshot_id"],
+            "latestSnapshotId": resolved_status["latest_snapshot_id"],
+            "candidatePluginId": resolved_status["candidate_plugin_id"],
+            "candidateGenerationId": resolved_status["candidate_generation_id"],
+            "candidateState": resolved_status["candidate_state"],
+            "candidateRuntimeRevision": resolved_status["candidate_source_revision"],
+            "candidateReloadTransactionId": resolved_status[
+                "candidate_reload_tx_id"
+            ],
+            "candidateError": resolved_status["candidate_error"],
         }
 
     async def _promote_plugin(self, plugin_id: str) -> dict[str, object]:
         manager = getattr(self.core, "plugin_manager", None)
         if manager is None:
             raise RuntimeError("插件 Runtime 不可用")
-        async with self._plugin_management_lock:
-            return await manager.promote_latest_candidate(plugin_id)
+        return await manager.promote_latest_candidate(plugin_id)
 
     async def _discard_plugin(self, plugin_id: str) -> dict[str, object]:
         manager = getattr(self.core, "plugin_manager", None)
         if manager is None:
             raise RuntimeError("插件 Runtime 不可用")
-        async with self._plugin_management_lock:
-            return await manager.discard_latest_candidate(plugin_id)
+        return await manager.discard_latest_candidate(plugin_id)
 
     async def _uninstall_plugin(self, plugin_id: str) -> dict[str, object]:
         """Disable, drain, and remove plugin code while retaining workspace data."""

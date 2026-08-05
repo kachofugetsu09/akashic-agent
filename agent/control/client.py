@@ -5,6 +5,8 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
+TurnStreamValue = dict[str, Any] | BaseException
+
 
 class RemoteControlError(RuntimeError):
     def __init__(self, code: int, message: str, data: object = None) -> None:
@@ -31,9 +33,11 @@ class ClientTurnHandle:
         self.record = record
 
     async def events(self) -> AsyncIterator[dict[str, Any]]:
-        queue = self._client._turn_queues.setdefault(self.id, asyncio.Queue(512))
+        queue = self._client._turn_queue(self.id)
         while True:
             event = await queue.get()
+            if isinstance(event, BaseException):
+                raise event
             yield event
             if event.get("method") == "turn/completed":
                 return
@@ -64,10 +68,12 @@ class ControlClient:
         self._writer = writer
         self._reader_task: asyncio.Task[None] | None = None
         self._pending: dict[int, asyncio.Future[object]] = {}
-        self._turn_queues: dict[str, asyncio.Queue[dict[str, Any]]] = {}
+        self._turn_queues: dict[str, asyncio.Queue[TurnStreamValue]] = {}
+        self._terminal_turns: set[str] = set()
         self._notifications: asyncio.Queue[dict[str, Any]] = asyncio.Queue(512)
         self._next_id = 1
         self._closed = False
+        self._close_error: BaseException | None = None
 
     @classmethod
     async def connect(
@@ -155,8 +161,14 @@ class ControlClient:
             await self.request("turn/start", params),
         )
         turn_id = str(record["id"])
-        self._turn_queues.setdefault(turn_id, asyncio.Queue(512))
+        _ = self._turn_queue(turn_id)
         return ClientTurnHandle(self, thread_id, turn_id, record)
+
+    def _turn_queue(self, turn_id: str) -> asyncio.Queue[TurnStreamValue]:
+        queue = self._turn_queues.setdefault(turn_id, asyncio.Queue(512))
+        if self._close_error is not None and queue.empty():
+            queue.put_nowait(self._close_error)
+        return queue
 
     async def notifications(self) -> AsyncIterator[dict[str, Any]]:
         while not self._closed:
@@ -197,15 +209,16 @@ class ControlClient:
                     continue
                 params = message.get("params")
                 if isinstance(params, dict) and isinstance(params.get("turnId"), str):
-                    queue = self._turn_queues.setdefault(
-                        params["turnId"], asyncio.Queue(512)
-                    )
+                    turn_id = params["turnId"]
+                    queue = self._turn_queues.setdefault(turn_id, asyncio.Queue(512))
                     try:
                         queue.put_nowait(message)
                     except asyncio.QueueFull as exc:
                         raise ConnectionError(
-                            f"turn notification queue overflow: {params['turnId']}"
+                            f"turn notification queue overflow: {turn_id}"
                         ) from exc
+                    if message.get("method") == "turn/completed":
+                        self._terminal_turns.add(turn_id)
                 else:
                     try:
                         self._notifications.put_nowait(message)
@@ -220,18 +233,26 @@ class ControlClient:
         finally:
             self._closed = True
             reason = error or ConnectionClosedError("control server closed connection")
+            self._close_error = reason
             for future in self._pending.values():
                 if not future.done():
                     future.set_exception(reason)
             self._pending.clear()
+            for turn_id, queue in self._turn_queues.items():
+                if turn_id in self._terminal_turns:
+                    continue
+                try:
+                    queue.put_nowait(reason)
+                except asyncio.QueueFull:
+                    _ = queue.get_nowait()
+                    queue.put_nowait(reason)
 
     async def close(self) -> None:
-        if self._closed:
-            return
         self._closed = True
-        self._writer.close()
-        await self._writer.wait_closed()
-        if self._reader_task is not None:
+        if not self._writer.is_closing():
+            self._writer.close()
+            await self._writer.wait_closed()
+        if self._reader_task is not None and not self._reader_task.done():
             self._reader_task.cancel()
             await asyncio.gather(self._reader_task, return_exceptions=True)
 

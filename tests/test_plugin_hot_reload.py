@@ -50,6 +50,7 @@ from agent.tools.registry import ToolRegistry
 from agent.tools.base import Tool
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from bus.event_bus import EventBus
+from bus.events import InboundMessage
 from bus.events_lifecycle import TurnCommitted
 
 
@@ -293,6 +294,43 @@ async def test_import_failure_returns_gate_result(tmp_path: Path):
     assert gate is not None and gate.status == "failed"
     assert gate.checks[0].check_id == "import"
     assert not any(module.startswith("akasic_plugin_plugins_broken__g") for module in sys.modules)
+
+
+@pytest.mark.asyncio
+async def test_candidate_failure_status_is_bound_to_requested_plugin(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "plugins"
+    plugin_dirs = {
+        name: _write_plugin(
+            root,
+            name,
+            "from agent.plugins import Plugin\n"
+            f"class {name.title()}Plugin(Plugin):\n"
+            f"    name = '{name}'\n",
+        )
+        for name in ("first", "second")
+    }
+    manager = _manager(tmp_path)
+    await manager.load_all()
+
+    for name in ("first", "second"):
+        _ = (plugin_dirs[name] / "plugin.py").write_text(
+            f"this is not valid python for {name} !!!\n",
+            encoding="utf-8",
+        )
+        assert await manager.prepare_candidate(name) is None
+
+    first = manager.candidate_status("first")
+    second = manager.candidate_status("second")
+    assert first["candidate_plugin_id"] == "first"
+    assert second["candidate_plugin_id"] == "second"
+    assert first["candidate_reload_tx_id"] != second["candidate_reload_tx_id"]
+    assert first["candidate_state"] == second["candidate_state"] == "aborted"
+    assert "import:" in str(first["candidate_error"])
+    assert "import:" in str(second["candidate_error"])
+    assert manager.candidate_status()["candidate_plugin_id"] == "second"
+    await manager.terminate_all()
 
 
 @pytest.mark.asyncio
@@ -2543,6 +2581,26 @@ async def test_passive_runtime_admission_selects_latest_only_when_explicit(
         {"passive_selector": prepared},
         snapshot_revision="latest",
     )
+    tools = ToolRegistry()
+    for name, risk in (
+        ("candidate_read", "read-only"),
+        ("candidate_write", "read-write"),
+    ):
+        tools.register(
+            cast(
+                Any,
+                SimpleNamespace(
+                    name=name,
+                    description=name,
+                    parameters={"type": "object", "properties": {}},
+                ),
+            ),
+            risk=risk,
+            source_type="plugin",
+            source_name="passive_selector",
+        )
+    stable.tool_registry = tools.fork()
+    latest.tool_registry = tools.fork()
     store = RuntimeSnapshotStore()
     store.install(stable)
     await store.commit_latest(store.begin_publish(latest))
@@ -2550,24 +2608,36 @@ async def test_passive_runtime_admission_selects_latest_only_when_explicit(
     loop._session_lanes = SessionLaneRegistry()
     loop._runtime_snapshot_store = store
 
-    async def process(_msg, **_kwargs):
-        from agent.plugins.snapshot import get_current_runtime_snapshot
+    async def process(message, **_kwargs):
+        from agent.plugins.snapshot import (
+            get_current_runtime_lease,
+            get_current_runtime_snapshot,
+        )
 
         snapshot = get_current_runtime_snapshot()
+        lease = get_current_runtime_lease()
         assert snapshot is not None
-        return snapshot.snapshot_id
+        assert lease is not None
+        return (
+            snapshot.snapshot_id,
+            lease.validation_candidate_plugin_ids,
+            set(message.metadata.get("disabled_tools") or []),
+        )
 
     loop._process = process
-    stable_message = cast(Any, SimpleNamespace(session_key="cli:stable"))
-    latest_message = cast(Any, SimpleNamespace(session_key="cli:latest"))
+    stable_message = InboundMessage("cli", "user", "stable", "verify")
+    latest_message = InboundMessage("cli", "user", "latest", "verify")
 
-    assert await loop._process_with_runtime_admission(stable_message) == stable.snapshot_id
-    assert (
-        await loop._process_with_runtime_admission(
-            latest_message,
-            runtime_selector="latest",
-        )
-        == latest.snapshot_id
+    stable_result = await loop._process_with_runtime_admission(stable_message)
+    assert stable_result == (stable.snapshot_id, frozenset(), set())
+    latest_result = await loop._process_with_runtime_admission(
+        latest_message,
+        runtime_selector="latest",
+    )
+    assert latest_result == (
+        latest.snapshot_id,
+        frozenset({"passive_selector"}),
+        {"candidate_write"},
     )
     await store.discard_latest()
     await store.close()
@@ -2765,6 +2835,13 @@ async def test_publish_prepared_prepare_failure_keeps_active_snapshot(
     assert manager.prepared_generation("snapshot_publish") is None
     assert candidate.state == "discarded"
     assert state_path.read_bytes() == state_before
+    status = manager.candidate_status()
+    assert status["candidate_plugin_id"] == "snapshot_publish"
+    assert status["candidate_generation_id"] == candidate.generation_id
+    assert status["candidate_state"] == "aborted"
+    assert status["candidate_source_revision"] == candidate.source_revision
+    assert status["candidate_reload_tx_id"] == candidate.reload_tx_id
+    assert "prepare:" in str(status["candidate_error"])
     await manager.terminate_all()
 
 
@@ -4846,6 +4923,10 @@ async def test_plugin_publish_rebase_conflict_discards_stale_candidate(
     assert manager.generation("owner_a") is owner
     assert manager.generation("owner_b") is None
     assert manager.latest_gate("owner_b").checks[0].check_id == "publish_rebase"
+    status = manager.candidate_status()
+    assert status["candidate_plugin_id"] == "owner_b"
+    assert status["candidate_state"] == "aborted"
+    assert "publish_rebase:" in str(status["candidate_error"])
     await manager.terminate_all()
 
 
@@ -5541,6 +5622,10 @@ async def test_dashboard_candidate_cannot_override_core_route(tmp_path: Path) ->
     result = await manager.publish_prepared("dashboard_conflict")
 
     assert result["publication_state"] == "failed"
+    status = manager.candidate_status("dashboard_conflict")
+    assert status["candidate_state"] == "aborted"
+    assert "dashboard:" in str(status["candidate_error"])
+    assert "/api/dashboard/sessions" in str(status["candidate_error"])
     assert manager.generation("dashboard_conflict") is old_generation
     assert (tmp_path / "workspace" / "async-dashboard-closed").exists()
     assert TestClient(app).get("/api/dashboard/plugin-owned").json() == {
