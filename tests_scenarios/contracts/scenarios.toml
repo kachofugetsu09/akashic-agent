@@ -18,6 +18,7 @@ recursive_fake_tool_item = "tests/semantic/test_recursive_plugin_self_validation
 recursive_global_turn_lock = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_global_lock_mutant"
 recursive_memory_write = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_memory_write_mutant"
 recursive_message_push_blocks_parent = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_message_push_blocking_mutant"
+recursive_parent_terminal_overflow = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_parent_terminal_overflow_mutant"
 recursive_stable_misbinding = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_stable_misbinding_mutant"
 unicode_utf16_command_length = "tests/mobile_realtime/test_channel.py::test_command_list_uses_active_channel_catalog_without_stop"
 unmapped_executable_file = "tests/semantic/test_change_gate.py::test_unknown_executable_file_is_not_silently_accepted"
@@ -324,6 +325,7 @@ command = [
   "tests/test_plugin_hot_reload.py::test_passive_runtime_admission_selects_latest_only_when_explicit",
   "tests/control/test_control_execution.py::test_control_execution_preserves_inbound_metadata",
   "tests/control/test_exec_cli.py::test_exec_new_defaults_to_read_only_memory_and_selects_runtime",
+  "tests/control/test_exec_cli.py::test_control_client_reads_terminal_larger_than_asyncio_default",
   "tests/control/test_protocol.py::test_thread_runtime_selector_is_strict_and_inherited_by_turn",
   "tests/control/test_protocol.py::test_router_disconnect_interrupts_only_attached_turn",
   "tests/test_memory_engine_contract.py::test_default_memory_engine_respects_skip_post_memory_event_flag",
@@ -337,6 +339,7 @@ observes = [
   "runtime_pointer_snapshot",
   "reload_journal",
   "validation_before_parent_release",
+  "parent_control_terminal",
   "control_tool_items",
   "candidate_domain_state",
   "validation_session_db",
@@ -348,6 +351,7 @@ observes = [
 mutants = [
   "recursive_stable_misbinding",
   "recursive_global_turn_lock",
+  "recursive_parent_terminal_overflow",
   "recursive_memory_write",
   "recursive_fake_domain_success",
   "recursive_message_push_blocks_parent",

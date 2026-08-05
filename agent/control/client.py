@@ -5,6 +5,8 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
+from agent.control.protocol.limits import DEFAULT_CONTROL_FRAME_BYTES
+
 TurnStreamValue = dict[str, Any] | BaseException
 
 
@@ -84,9 +86,16 @@ class ControlClient:
     ) -> ControlClient:
         if endpoint.count(":") == 1 and not endpoint.startswith("/"):
             host, port = endpoint.rsplit(":", 1)
-            reader, writer = await asyncio.open_connection(host, int(port))
+            reader, writer = await asyncio.open_connection(
+                host,
+                int(port),
+                limit=DEFAULT_CONTROL_FRAME_BYTES + 1,
+            )
         else:
-            reader, writer = await asyncio.open_unix_connection(endpoint)
+            reader, writer = await asyncio.open_unix_connection(
+                endpoint,
+                limit=DEFAULT_CONTROL_FRAME_BYTES + 1,
+            )
         client = cls(reader, writer)
         client._reader_task = asyncio.create_task(
             client._read_loop(), name="control-client-reader"

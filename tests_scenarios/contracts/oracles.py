@@ -153,6 +153,8 @@ def assert_recursive_plugin_self_validation(
         raise AssertionError("programmatic 验证没有绑定 latest candidate")
     if observation.get("validation_finished_before_parent_release") is not True:
         raise AssertionError("验证仍被跨 session 全局锁阻塞")
+    if observation.get("parent_terminal_delivered") is not True:
+        raise AssertionError("父 programmatic terminal 未完整送达调用方")
 
     # 2. 行为成功必须由真实 tool item、领域状态和持久 trace 共同证明。
     item = observation.get("candidate_tool_item")

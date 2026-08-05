@@ -1,6 +1,6 @@
 # 插件递归自验证运行时设计
 
-- 状态：implemented / stable-latest programmatic 闭环与共享状态 owner 审计已完成，真实模型验收待记录
+- 状态：implemented / stable-latest programmatic 闭环、共享状态 owner 审计与自动化验收已完成，真实模型验收进行中
 - 确认日期：2026-08-05
 - 决策：[0024](../decisions/0024-plugin-self-validation-uses-stable-and-latest.md)
 - 关联条款：RUN-007、OUT-004、PLG-013、CTRL-003、SH-001、TST-001～TST-006
@@ -310,6 +310,7 @@ python main.py exec --new --runtime latest --json "验证新插件的目标行�
 - 显式 `--persist-memory` 才允许该新 session 沉淀长期语义记忆；该参数只能在创建 thread 时使用。
 - SessionDB 中的 thread、turn、user/assistant message 和 tool items 始终正常持久化，便于审计和回读。
 - `--json` 输出当前 control event 流；terminal 至少包含 `threadId`、`turn id`、`status`、`finalResponse`、`items`、`usage` 和 `error`。
+- Control 两端共享显式 2 MiB 单帧上限；超过 asyncio 默认 64 KiB 的合法 terminal 必须完整送达，超过协议上限则 fail-loud。
 
 Shell 是异步可观察传输：命令在初始窗口没有结束时返回 `execution_id`，父 T 用 `write_stdin` 读取增量输出。它不创建第二个 Akashic runtime；CLI 仍连接当前 Gateway，所以能租用内存中的 latest。
 
@@ -447,10 +448,11 @@ cache/<marketplace>/<plugin>/
 ### 14.4 Shell、取消和 `message_push`
 
 1. Shell 返回 execution_id，`write_stdin` 只读新增 JSONL 并最终观察 terminal。
-2. 杀死 attached exec CLI 后服务端 V 进入 cancelled/interrupted，并释放 latest lease。
-3. V 的 `message_push` 在 T 未结束时可取得短 send owner；不会等待 session A lane。
-4. 两次实际 channel send 不重叠；scheduler 的 non-passive send 仍排在用户被动回复之后。
-5. push 正文不进入 T 的 Prompt/目标 session history；V 的工具 trace 包含真实 DeliveryReceipt 终态。
+2. 父 terminal 即使包含超过 64 KiB 的工具轨迹，也必须在 2 MiB 协议上限内完整送达调用方。
+3. 杀死 attached exec CLI 后服务端 V 进入 cancelled/interrupted，并释放 latest lease。
+4. V 的 `message_push` 在 T 未结束时可取得短 send owner；不会等待 session A lane。
+5. 两次实际 channel send 不重叠；scheduler 的 non-passive send 仍排在用户被动回复之后。
+6. push 正文不进入 T 的 Prompt/目标 session history；V 的工具 trace 包含真实 DeliveryReceipt 终态。
 
 ### 14.5 行为 oracle
 
@@ -469,10 +471,10 @@ cache/<marketplace>/<plugin>/
 |---|---|
 | latest/stable、install 完成定义、candidate 单 owner | `tests/test_plugin_runtime_control.py`、`tests/test_plugin_hot_reload.py` 的 selector、promotion、KV write 与 crash recovery 用例 |
 | 跨 session 并发、同 session 串行 | `tests/test_turn_pipelines.py::test_process_direct_runs_concurrently_with_another_session`、`test_process_direct_waits_for_the_same_session_lane` |
-| programmatic runtime、SessionDB 与默认 memory policy | `tests/control/test_exec_cli.py::test_exec_new_defaults_to_read_only_memory_and_selects_runtime`、`tests/control/test_protocol.py::test_thread_runtime_selector_is_strict_and_inherited_by_turn` |
+| programmatic runtime、长 terminal、SessionDB 与默认 memory policy | `tests/control/test_exec_cli.py::test_exec_new_defaults_to_read_only_memory_and_selects_runtime`、`test_control_client_reads_terminal_larger_than_asyncio_default`、`tests/control/test_protocol.py::test_thread_runtime_selector_is_strict_and_inherited_by_turn` |
 | `message_push` 不等父 session 且实际 send 串行 | `tests/test_support_modules.py::test_message_push_passive_role_does_not_wait_for_passive_lane`、`test_message_push_passive_role_serializes_actual_same_chat_send` |
 | turn-local 调试投影 | `tests/test_support_modules.py::test_context_builder_debug_projection_is_turn_local` |
-| 完整递归 oracle 与已知错误 | `tests/semantic/test_recursive_plugin_self_validation_contract.py`：stable misbinding、global lock、semantic write、fake domain success、blocking push、crash promotion、fake tool item 七类 mutant |
+| 完整递归 oracle 与已知错误 | `tests/semantic/test_recursive_plugin_self_validation_contract.py`：stable misbinding、global lock、parent terminal overflow、semantic write、fake domain success、blocking push、crash promotion、fake tool item 八类 mutant |
 
 上述证据注册为 P0 `recursive_plugin_validation` group、`plugin_runtime_selection` state contract 与 `recursive_plugin_self_validation_contract` scenario。它观察 pointer/journal、真实 tool item、SessionDB、semantic write set、ChatLane timer 和 crash recovery；coverage baseline 只记录批准后的合同映射，不充当测试通过报告。
 

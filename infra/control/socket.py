@@ -6,6 +6,7 @@ import logging
 import os
 from pathlib import Path
 
+from agent.control.protocol.limits import DEFAULT_CONTROL_FRAME_BYTES
 from agent.control.service import ControlService
 from infra.control.connection import NdjsonConnection
 
@@ -22,7 +23,7 @@ class SocketAppServer:
         *,
         max_connections: int = 32,
         max_pending_requests: int = 128,
-        max_message_bytes: int = 2 * 1024 * 1024,
+        max_message_bytes: int = DEFAULT_CONTROL_FRAME_BYTES,
         outbound_queue_size: int = 512,
     ) -> None:
         raw_endpoint = str(endpoint)
@@ -42,7 +43,12 @@ class SocketAppServer:
         # 1. 只删除无法连接的旧 socket；活跃 owner 必须 fail-loud。
         if self._tcp_address is not None:
             host, port = self._tcp_address
-            self._server = await asyncio.start_server(self._accept, host=host, port=port)
+            self._server = await asyncio.start_server(
+                self._accept,
+                host=host,
+                port=port,
+                limit=self._max_message_bytes + 1,
+            )
             socket = self._server.sockets[0]
             bound_host, bound_port = socket.getsockname()[:2]
             self.endpoint = f"{bound_host}:{bound_port}"
@@ -63,7 +69,11 @@ class SocketAppServer:
                 raise RuntimeError(f"app-server endpoint 已由其他进程占用: {endpoint}")
 
         # 2. 绑定完成后立即建立权限不变量。
-        self._server = await asyncio.start_unix_server(self._accept, path=str(endpoint))
+        self._server = await asyncio.start_unix_server(
+            self._accept,
+            path=str(endpoint),
+            limit=self._max_message_bytes + 1,
+        )
         try:
             os.chmod(endpoint, 0o600)
         except OSError:

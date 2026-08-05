@@ -18,6 +18,7 @@ def _complete_observation() -> dict[str, object]:
         "ordinary_runtime_during_validation": "snapshot-s0",
         "validation_runtime": "snapshot-s1",
         "validation_finished_before_parent_release": True,
+        "parent_terminal_delivered": True,
         "candidate_tool_item": {
             "type": "toolCall",
             "name": "candidate_only_tool",
@@ -64,6 +65,14 @@ def test_recursive_plugin_oracle_rejects_global_lock_mutant() -> None:
         "validation_finished_before_parent_release",
         False,
         "全局锁",
+    )
+
+
+def test_recursive_plugin_oracle_rejects_parent_terminal_overflow_mutant() -> None:
+    _assert_mutant(
+        "parent_terminal_delivered",
+        False,
+        "terminal 未完整送达",
     )
 
 

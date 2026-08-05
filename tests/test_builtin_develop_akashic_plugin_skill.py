@@ -66,6 +66,9 @@ def test_develop_akashic_plugin_references_are_complete() -> None:
     assert "references/runtime-diagnostics.md" in body
     for contract in (
         "@tool",
+        "@on_prompt_render(priority=100)",
+        "PromptSectionRender",
+        ".venv/bin/python",
         "skill_roots()",
         "SkillsLoader",
         "plugin-doctor",
