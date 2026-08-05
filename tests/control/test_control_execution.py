@@ -246,6 +246,7 @@ async def test_control_execution_preserves_inbound_metadata(tmp_path: Path) -> N
                 "client_message_id": "client-1",
                 "reply_to_message_id": "mobile:one:0",
             }
+            assert kwargs["runtime_selector"] == "latest"
             turn_id = str(kwargs["turn_id"])
             await bus.fanout(
                 TurnCommitted(
@@ -273,6 +274,7 @@ async def test_control_execution_preserves_inbound_metadata(tmp_path: Path) -> N
         {
             "channel": "mobile",
             "chatId": "one",
+            "runtime": "latest",
             "inboundMetadata": {
                 "client_message_id": "client-1",
                 "reply_to_message_id": "mobile:one:0",

@@ -27,6 +27,7 @@ class InitializeParams(StrictModel):
 
 class ThreadStartParams(StrictModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
+    runtime: Literal["stable", "latest"] = "stable"
 
 
 class ThreadIdParams(StrictModel):
@@ -45,6 +46,8 @@ class ThreadListParams(StrictModel):
 class TurnStartParams(ThreadIdParams):
     input: str = Field(min_length=1, max_length=1_048_576)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    runtime: Literal["stable", "latest"] | None = None
+    detached: bool = False
 
 
 class TurnIdParams(ThreadIdParams):
@@ -53,6 +56,13 @@ class TurnIdParams(ThreadIdParams):
 
 class PluginDrainParams(StrictModel):
     pluginId: str = Field(min_length=1, max_length=256)
+
+
+class PluginInstallParams(StrictModel):
+    source: str = Field(min_length=1, max_length=4096)
+    marketplace: str = Field(default="local", min_length=1, max_length=128)
+    ref: str = Field(default="", max_length=1024)
+    sparse: list[str] = Field(default_factory=list, max_length=128)
 
 
 METHOD_PARAMS: dict[str, type[StrictModel]] = {
@@ -68,5 +78,9 @@ METHOD_PARAMS: dict[str, type[StrictModel]] = {
     "turn/read": TurnIdParams,
     "turn/interrupt": TurnIdParams,
     "plugin/disable-and-drain": PluginDrainParams,
+    "plugin/install": PluginInstallParams,
+    "plugin/status": StrictModel,
+    "plugin/promote": PluginDrainParams,
+    "plugin/discard": PluginDrainParams,
     "plugin/uninstall/start": PluginDrainParams,
 }

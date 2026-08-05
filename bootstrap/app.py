@@ -133,7 +133,9 @@ async def _run_primary_tasks(tasks: list[asyncio.Future[Any]]) -> None:
         raise
 
 
-def _stop_plugin_jobs(runtime: PluginJobRuntime | None) -> Callable[[], Awaitable[None]]:
+def _stop_plugin_jobs(
+    runtime: PluginJobRuntime | None,
+) -> Callable[[], Awaitable[None]]:
     async def stop() -> None:
         if runtime is not None:
             runtime.stop()
@@ -303,9 +305,7 @@ class AppRuntime:
             await self.core.start()
             if self.readiness is not None:
                 self.readiness.mark_stage("core.ready")
-            self.workspace_mcp_watcher_task = (
-                self.core.workspace_mcp_watcher_task
-            )
+            self.workspace_mcp_watcher_task = self.core.workspace_mcp_watcher_task
 
             async def _execute_control_request(request: TurnRequest):
                 assert self.agent_loop is not None
@@ -340,6 +340,10 @@ class AppRuntime:
                 self.workspace,
                 plugin_drain=self._disable_and_drain_plugin,
                 plugin_uninstall=self._uninstall_plugin,
+                plugin_install=self._install_plugin,
+                plugin_status=self._plugin_status,
+                plugin_promote=self._promote_plugin,
+                plugin_discard=self._discard_plugin,
                 consolidate=(
                     self.agent_loop.trigger_memory_consolidation
                     if self.config.app_server.enabled
@@ -392,11 +396,12 @@ class AppRuntime:
                 snapshot = plugin_manager.current_snapshot
                 service_bindings = {
                     plugin_id: {
-                        service_id: dict(spec)
-                        for service_id, spec in services.items()
+                        service_id: dict(spec) for service_id, spec in services.items()
                     }
                     for plugin_id, services in (
-                        snapshot.managed_services.items() if snapshot is not None else ()
+                        snapshot.managed_services.items()
+                        if snapshot is not None
+                        else ()
                     )
                 }
                 self.plugin_service_host.bind_plugin_services(service_bindings)
@@ -433,9 +438,7 @@ class AppRuntime:
                     self.config.mobile_realtime,
                     self.workspace,
                 )
-                self.bus.bind_durable_inbound_store(
-                    self.session_manager.control_store
-                )
+                self.bus.bind_durable_inbound_store(self.session_manager.control_store)
                 self.mobile_gateway_runtime.channel.bind_runtime_inspection(
                     runtime_inspection
                 )
@@ -461,14 +464,10 @@ class AppRuntime:
                 http_resources=self.http_resources,
                 event_bus=event_bus,
                 telegram_bot_commands=(
-                    plugin_manager.telegram_bot_commands
-                    if plugin_manager
-                    else None
+                    plugin_manager.telegram_bot_commands if plugin_manager else None
                 ),
                 mobile_bot_commands=(
-                    plugin_manager.mobile_bot_commands
-                    if plugin_manager
-                    else None
+                    plugin_manager.mobile_bot_commands if plugin_manager else None
                 ),
                 interrupt_controller=self.conversation_runtime,
                 plugin_channels=plugin_channels,
@@ -477,17 +476,19 @@ class AppRuntime:
             if self.readiness is not None:
                 self.readiness.mark_stage("channels.ready")
             if plugin_manager is not None:
-                channel_bindings = {
-                    plugin_id: generation.contributions.channels
-                    for plugin_id, generation in plugin_manager.current_snapshot.generations.items()
-                } if plugin_manager.current_snapshot is not None else {}
+                channel_bindings = (
+                    {
+                        plugin_id: generation.contributions.channels
+                        for plugin_id, generation in plugin_manager.current_snapshot.generations.items()
+                    }
+                    if plugin_manager.current_snapshot is not None
+                    else {}
+                )
                 self.channel_host.bind_plugin_channels(channel_bindings)
                 plugin_manager.bind_channel_switcher(
                     self.channel_host.swap_plugin_channels
                 )
-                plugin_manager.bind_endpoint_switcher(
-                    self._swap_plugin_endpoints
-                )
+                plugin_manager.bind_endpoint_switcher(self._swap_plugin_endpoints)
 
             self.tasks = [
                 self.passive_worker.run(),
@@ -569,9 +570,7 @@ class AppRuntime:
                 event_bus=event_bus,
                 tool_hooks=list(plugin_manager.tool_hooks) if plugin_manager else None,
                 proactive_modules=(
-                    list(plugin_manager.proactive_modules)
-                    if plugin_manager
-                    else None
+                    list(plugin_manager.proactive_modules) if plugin_manager else None
                 ),
                 proactive_lifecycles=(
                     list(plugin_manager.proactive_lifecycles)
@@ -589,9 +588,7 @@ class AppRuntime:
                     else None
                 ),
                 proactive_sources=(
-                    list(plugin_manager.proactive_sources)
-                    if plugin_manager
-                    else None
+                    list(plugin_manager.proactive_sources) if plugin_manager else None
                 ),
                 runtime_snapshot_store=(
                     plugin_manager.snapshot_store if plugin_manager else None
@@ -717,7 +714,7 @@ class AppRuntime:
                 scheduled.append(task)
         except (asyncio.CancelledError, Exception):
             self._runtime_tasks = set(scheduled)
-            self.tasks = pending[len(scheduled):]
+            self.tasks = pending[len(scheduled) :]
             for awaitable in self.tasks:
                 if inspect.iscoroutine(awaitable):
                     awaitable.close()
@@ -822,15 +819,19 @@ class AppRuntime:
                 ),
                 (
                     "control_service.shutdown",
-                    self.control_service.shutdown
-                    if self.control_service
-                    else _noop_async,
+                    (
+                        self.control_service.shutdown
+                        if self.control_service
+                        else _noop_async
+                    ),
                 ),
                 (
                     "conversation_runtime.shutdown",
-                    self.conversation_runtime.shutdown
-                    if self.conversation_runtime
-                    else _noop_async,
+                    (
+                        self.conversation_runtime.shutdown
+                        if self.conversation_runtime
+                        else _noop_async
+                    ),
                 ),
                 (
                     "channels.stop",
@@ -838,23 +839,26 @@ class AppRuntime:
                 ),
                 (
                     "plugin_services.stop",
-                    self.plugin_service_host.stop_all
-                    if self.plugin_service_host
-                    else _noop_async,
+                    (
+                        self.plugin_service_host.stop_all
+                        if self.plugin_service_host
+                        else _noop_async
+                    ),
                 ),
                 ("core.stop", self.core.stop if self.core else _noop_async),
                 (
                     "memory_runtime.aclose",
-                    self.memory_runtime.aclose
-                    if self.memory_runtime
-                    else _noop_async,
+                    self.memory_runtime.aclose if self.memory_runtime else _noop_async,
                 ),
                 ("http_resources.aclose", self.http_resources.aclose),
                 (
                     "runtime_readiness.clear",
                     _clear_readiness(self.readiness),
                 ),
-                ("workspace_lock.release", _release_workspace_lock(self._workspace_lock)),
+                (
+                    "workspace_lock.release",
+                    _release_workspace_lock(self._workspace_lock),
+                ),
             )
         finally:
             clear_default_shared_http_resources(self.http_resources)
@@ -898,6 +902,73 @@ class AppRuntime:
             raise RuntimeError("插件 Runtime 不可用")
         await manager.reconcile_disabled_and_drain(plugin_id)
         return f"插件已停用并排空: {plugin_id}"
+
+    async def _install_plugin(
+        self,
+        source: str,
+        marketplace: str,
+        ref: str,
+        sparse: list[str],
+    ) -> dict[str, object]:
+        """安装 immutable artifact，并等待 runtime latest 已可租用。"""
+
+        manager = getattr(self.core, "plugin_manager", None)
+        if manager is None:
+            raise RuntimeError("插件 Runtime 不可用")
+
+        # 1. PluginManager 与 watcher 共用一个 candidate 发布 owner。
+        result, status = await manager.install_candidate(
+            source=source,
+            marketplace=marketplace,
+            ref_name=ref,
+            sparse_paths=sparse,
+        )
+
+        # 2. 返回 manager 在 candidate owner 锁内冻结的发布结果。
+        plugin_id = f"{result.plugin_name}@{result.marketplace}"
+        publication = status["candidate_state"] if result.staged_candidate else "stable"
+        return {
+            "pluginId": plugin_id,
+            "version": result.plugin_version,
+            "sourceRevision": result.source_revision,
+            "installedPath": str(result.installed_path),
+            "dataPath": str(result.data_path),
+            "publicationState": publication,
+            "candidate": self._plugin_status(status),
+        }
+
+    def _plugin_status(
+        self,
+        status: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        manager = getattr(self.core, "plugin_manager", None)
+        if manager is None:
+            raise RuntimeError("插件 Runtime 不可用")
+        resolved_status = manager.candidate_status() if status is None else status
+        return {
+            "stableSnapshotId": resolved_status["stable_snapshot_id"],
+            "latestSnapshotId": resolved_status["latest_snapshot_id"],
+            "candidatePluginId": resolved_status["candidate_plugin_id"],
+            "candidateGenerationId": resolved_status["candidate_generation_id"],
+            "candidateState": resolved_status["candidate_state"],
+            "candidateRuntimeRevision": resolved_status["candidate_source_revision"],
+            "candidateReloadTransactionId": resolved_status[
+                "candidate_reload_tx_id"
+            ],
+            "candidateError": resolved_status["candidate_error"],
+        }
+
+    async def _promote_plugin(self, plugin_id: str) -> dict[str, object]:
+        manager = getattr(self.core, "plugin_manager", None)
+        if manager is None:
+            raise RuntimeError("插件 Runtime 不可用")
+        return await manager.promote_latest_candidate(plugin_id)
+
+    async def _discard_plugin(self, plugin_id: str) -> dict[str, object]:
+        manager = getattr(self.core, "plugin_manager", None)
+        if manager is None:
+            raise RuntimeError("插件 Runtime 不可用")
+        return await manager.discard_latest_candidate(plugin_id)
 
     async def _uninstall_plugin(self, plugin_id: str) -> dict[str, object]:
         """Disable, drain, and remove plugin code while retaining workspace data."""

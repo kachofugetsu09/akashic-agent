@@ -7,7 +7,7 @@
 3. 用 Shell 观察 programmatic child
 4. 行为 oracle
 5. Promote、Discard 与递归
-6. 当前实现缺口
+6. 当前实现与边界
 
 ## 1. 前置能力检查
 
@@ -26,7 +26,7 @@ python main.py --help
 - `plugin-discard`
 - attached control disconnect cancellation
 
-任何一项缺失时，不执行下面的假命令，不用 sleep 或第二个 Gateway 替代。若 runtime 已有跨 session 并发，则按本页第 6 节在隔离环境执行 current-snapshot 自验证；否则继续按 [runtime-diagnostics.md](runtime-diagnostics.md) 检查 reload、SessionDB、日志和既有子 turn 内容。
+任何一项缺失时，不执行下面的假命令，不用 sleep 或第二个 Gateway 替代；继续按 [runtime-diagnostics.md](runtime-diagnostics.md) 检查 reload、SessionDB、日志和既有子 turn 内容，并明确报告缺失的能力。
 
 ## 2. 安装到 latest
 
@@ -61,6 +61,7 @@ python main.py exec --new --runtime latest --json \
 - latest snapshot。
 - recall/search allowed。
 - semantic memory writes disabled。
+- candidate generation 的非 read-only Tool/MCP disabled。
 - SessionDB thread/messages/tool items 正常持久化。
 - attached：父 turn cleanup、task_stop、CLI 退出或 socket 断开会取消子 turn。
 
@@ -89,14 +90,14 @@ terminal `status=completed` 和 final response 不是充分条件。至少核对
    └─ child thread/turn/messages/tool items 可回读
 ```
 
-读型插件使用固定 fixture 或稳定 API 响应。写型插件只在真实事务/dry-run、隔离环境或用户明确授权下执行。`message_push` 必须核对真实 delivery receipt；发送正文不会出现在父 Prompt或目标 session history，证据位于 child tool trace。
+读型插件使用固定 fixture 或稳定 API 响应。写型插件只在真实事务/dry-run、隔离环境或用户明确授权下执行。`message_push` 必须核对真实 delivery receipt。调用参数和结果位于 child 的 SessionDB tool trace；正文不会反向注入父 Prompt。目标渠道是否另写自己的 durable event、inbox 或历史，由渠道 owner 决定，必须读取相应数据库或事件证明，不能从工具成功字符串推断。
 
 ## 5. Promote、Discard 与递归
 
 通过：
 
 ```bash
-python main.py plugin-promote
+python main.py plugin-promote <plugin-id>
 python main.py plugin-status
 ```
 
@@ -105,7 +106,7 @@ python main.py plugin-status
 失败：
 
 ```bash
-python main.py plugin-discard
+python main.py plugin-discard <plugin-id>
 python main.py plugin-status
 ```
 
@@ -118,30 +119,24 @@ python main.py plugin-status
 - 需要未授权外部效果、独占 endpoint 或破坏性状态。
 - 用户取消、预算耗尽或 runtime 返回明确 fatal/blocked。
 
-## 6. 当前实现与降级路径
+## 6. 当前实现与边界
 
 当前代码已经实现：
 
 - `ConversationRuntime` 的不同 control thread 可以并发；同一 thread 仍拒绝第二个 active turn。
 - `AgentLoop` 以 `session_key` 持有整轮 lane；相同 session 串行，不同 session 并发。
 - passive `message_push` 不等待目标 session turn 结束，但实际 channel send 仍经过 ChatLane 串行提交。
-- reload 发布 `committed` 后，新 session 能租用 current snapshot；旧 snapshot 可以同时处于 `draining`，直到父 turn 释放 lease。
+- `plugin-install` 由当前 Gateway 的 runtime owner 完成 staged install，并等待 `latest_ready`；普通 turn 始终租用 stable，只有显式 programmatic child 租用 latest。
+- `exec --new --runtime latest` 默认创建不写语义记忆的新 session；recall/search 和 SessionDB 审计仍可用。
+- attached 是默认值；CLI 退出或 control socket 断开会取消该连接拥有的服务端 turn，并释放 latest lease。插件自验证不得使用 `--detach`。
+- promote/discard 使用同一 runtime owner 和可恢复 pointer/journal，不启动第二个 Gateway。
 
-当前仍缺少：
-
-- validating snapshot `accepting_leases=False`。
-- `plugin-install` 成功只覆盖 cache/manifest，不等待 `latest_ready`。
-- `exec --new` 能连接当前 Gateway 并输出 JSONL，但没有 runtime selector。
-- Shell 终止 CLI 后，control socket 断开尚不拥有服务端 turn cancellation。
-- stable/latest pointer、promote/discard 和未验证候选隔离。
-
-因此父 turn 可以证明刚安装插件在 current snapshot 中的真实行为，但只能在隔离 workspace/runtime 中安全使用：
+完整路径因此是：
 
 ```text
-T install → reload event committed → Shell 启动新 session V
-          → V 在 T 完成前返回 terminal/oracle → T 决定修复或接受
+T install → latest_ready → attached V(latest) → terminal + oracle
+          ├─ pass → promote → stable == latest
+          └─ fail → discard → latest == stable → 修复后递归
 ```
 
-不要等待 `reload_transactions.phase == committed`：提交后该字段会立即前进到 `draining`。应查询同一 `tx_id` 的 `reload_events` 是否出现 `committed`，再用 SessionDB 证明 V 的 `started_at/completed_at` 早于 T 的 `completed_at`。这构成 call-return 自验证证据。
-
-这条路径仍会把插件暴露给同时开始的普通新 turn，失败时也不能原子恢复旧默认指针，所以必须报告 `safe candidate self-validation unavailable`。完整诊断步骤见 [runtime-diagnostics.md](runtime-diagnostics.md)。
+这只隔离插件 runtime，不回滚任意文件、消息、数据库和外部 API。验证读路径、纯逻辑和支持事务/dry-run 的工具；共享写状态、独占 endpoint、真实发送和不可逆副作用必须按 owner 单独证明或明确报告未验证。完整诊断步骤见 [runtime-diagnostics.md](runtime-diagnostics.md)。

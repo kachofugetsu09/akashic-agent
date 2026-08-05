@@ -81,6 +81,7 @@ from agent.plugins.generation import (
     PluginSemanticCheck,
 )
 from agent.plugins.importer import FreshPluginImporter
+from agent.plugins.install import PluginInstallResult, install_git_plugin
 from agent.plugins.reload_journal import (
     ReloadJournal,
     ReloadPhase,
@@ -987,14 +988,36 @@ class PluginManager:
         plugin_id: str,
         *,
         preserve_latest: bool = False,
+        error: str = "candidate discarded",
     ) -> None:
         generation = self._prepared_generations.pop(plugin_id, None)
         if generation is None:
             return
         if not preserve_latest:
             _discard_generation_candidate_pointer(generation)
-        self._abort_reload(generation, error="candidate discarded")
+        self._abort_reload(generation, error=error)
         await self._dispose_generation(generation, state="discarded")
+
+    def _begin_reload_attempt(
+        self,
+        *,
+        plugin_id: str,
+        generation_id: str,
+        source_revision: str,
+        config_revision: str,
+    ) -> str:
+        base = self.current_snapshot
+        return self._reload_journal.begin(
+            plugin_id=plugin_id,
+            base_snapshot_id=base.snapshot_id if base is not None else None,
+            generation_id=generation_id,
+            source_revision=source_revision,
+            config_revision=config_revision,
+        )
+
+    def _abort_reload_attempt(self, tx_id: str | None, *, error: str) -> None:
+        if tx_id is not None:
+            self._reload_journal.advance(tx_id, "aborted", error=error)
 
     async def _dispose_generation(
         self,
@@ -1155,50 +1178,127 @@ class PluginManager:
 
     async def reconcile_changed(self) -> list[dict[str, object]]:
         async with self._candidate_prepare_lock:
-            await self._snapshot_store.retry_drains()
-            results: list[dict[str, object]] = []
-            ready = self._ready_candidate
-            if ready is not None:
-                manifest = load_plugin_manifest(
-                    _plugins_home(self._installed_cache_root)
-                )
-                if manifest.get(ready.plugin_id, True):
-                    return [self._ready_candidate_status()]
-                results.append(await self._discard_ready_candidate(ready.plugin_id))
-            discovered = {
-                _resolve_plugin_id(mod): mod
-                for mod in self.discover(installed_selector="latest")
-            }
-            manifest = load_plugin_manifest(
-                _plugins_home(self._installed_cache_root)
+            return await self._reconcile_changed_locked()
+
+    async def install_candidate(
+        self,
+        *,
+        source: str,
+        marketplace: str,
+        ref_name: str,
+        sparse_paths: list[str],
+    ) -> tuple[PluginInstallResult, dict[str, object]]:
+        """Stage one immutable artifact and publish its latest runtime atomically."""
+
+        # 1. 与 watcher 共用 candidate owner，写 cache 前拒绝未决候选。
+        async with self._candidate_prepare_lock:
+            _, preflight_cancelled = await _complete_critical(
+                self._reconcile_changed_locked()
             )
-            desired = {
-                plugin_id
-                for plugin_id, mod in discovered.items()
-                if mod.get("package_id") or manifest.get(plugin_id, True)
-            }
-            for plugin_id in sorted(set(self._active_generations) - desired):
-                results.append(await self._deactivate_plugin(plugin_id))
-            for plugin_id in sorted(desired.intersection(self._active_generations)):
-                prepared = await self._prepare_changed(
-                    discovered=discovered,
-                    plugin_ids={plugin_id},
-                    force_reprepare=True,
+            if preflight_cancelled:
+                raise asyncio.CancelledError
+            status = self.candidate_status()
+            if status["candidate_state"] in {
+                "preparing",
+                "prepared",
+                "validating",
+                "commit_started",
+                "latest_ready",
+                "discarding",
+                "promoting",
+            }:
+                raise RuntimeError(
+                    "已有插件候选等待处理: "
+                    f"plugin={status['candidate_plugin_id']} "
+                    f"phase={status['candidate_state']} "
+                    f"tx={status['candidate_reload_tx_id']}"
                 )
-                if not prepared:
-                    continue
-                result = prepared[0]
-                if result.get("prepared_generation") is None:
-                    results.append(result)
-                    continue
-                results.append(await self._publish_prepared(plugin_id))
-            for plugin_id in sorted(desired - set(self._active_generations)):
-                generation = await self._load_one(discovered[plugin_id], activate=False)
-                if generation is None:
-                    _discard_installed_candidate_mod(discovered[plugin_id])
-                    continue
-                results.append(await self._publish_prepared(plugin_id))
-            return results
+
+            # 2. 持锁完成 artifact 发布与 runtime reconcile，不留 watcher 插入窗口。
+            result, install_cancelled = await _complete_critical(
+                asyncio.to_thread(
+                    install_git_plugin,
+                    workspace=self._workspace,
+                    source=source,
+                    marketplace=marketplace,
+                    ref_name=ref_name,
+                    sparse_paths=sparse_paths,
+                    plugins_home=self.installed_plugins_home,
+                    stage_candidate=True,
+                )
+            )
+            _, reconcile_cancelled = await _complete_critical(
+                self._reconcile_changed_locked()
+            )
+            plugin_id = f"{result.plugin_name}@{result.marketplace}"
+            status = self.candidate_status()
+            if result.staged_candidate and (
+                status["candidate_plugin_id"] != plugin_id
+                or status["candidate_state"] != "latest_ready"
+            ):
+                raise RuntimeError(
+                    "插件候选未进入 latest_ready: "
+                    f"requestedPlugin={plugin_id} "
+                    f"installedGitRevision={result.source_revision} "
+                    f"actualPlugin={status['candidate_plugin_id']} "
+                    f"actualRuntimeRevision={status['candidate_source_revision']} "
+                    f"phase={status['candidate_state']} "
+                    f"tx={status['candidate_reload_tx_id']} "
+                    f"error={status['candidate_error']}"
+                )
+            if install_cancelled or reconcile_cancelled:
+                raise asyncio.CancelledError
+            return result, status
+
+    async def _reconcile_changed_locked(self) -> list[dict[str, object]]:
+        """Reconcile discovered latest artifacts while candidate ownership is held."""
+
+        await self._snapshot_store.retry_drains()
+        results: list[dict[str, object]] = []
+        ready = self._ready_candidate
+        if ready is not None:
+            manifest = load_plugin_manifest(_plugins_home(self._installed_cache_root))
+            if manifest.get(ready.plugin_id, True):
+                return [self._ready_candidate_status()]
+            results.append(await self._discard_ready_candidate(ready.plugin_id))
+        discovered = {
+            _resolve_plugin_id(mod): mod
+            for mod in self.discover(installed_selector="latest")
+        }
+        manifest = load_plugin_manifest(_plugins_home(self._installed_cache_root))
+        desired = {
+            plugin_id
+            for plugin_id, mod in discovered.items()
+            if mod.get("package_id") or manifest.get(plugin_id, True)
+        }
+        for plugin_id in sorted(set(self._active_generations) - desired):
+            results.append(await self._deactivate_plugin(plugin_id))
+        for plugin_id in sorted(desired.intersection(self._active_generations)):
+            prepared = await self._prepare_changed(
+                discovered=discovered,
+                plugin_ids={plugin_id},
+                force_reprepare=True,
+            )
+            if not prepared:
+                continue
+            result = prepared[0]
+            if result.get("prepared_generation") is None:
+                results.append(result)
+                continue
+            publication = await self._publish_prepared(plugin_id)
+            results.append(publication)
+            if publication.get("publication_state") == "latest_ready":
+                return results
+        for plugin_id in sorted(desired - set(self._active_generations)):
+            generation = await self._load_one(discovered[plugin_id], activate=False)
+            if generation is None:
+                _discard_installed_candidate_mod(discovered[plugin_id])
+                continue
+            publication = await self._publish_prepared(plugin_id)
+            results.append(publication)
+            if publication.get("publication_state") == "latest_ready":
+                return results
+        return results
 
     async def reconcile_disabled_and_drain(self, plugin_id: str) -> None:
         async with self._candidate_prepare_lock:
@@ -1538,8 +1638,18 @@ class PluginManager:
             raise asyncio.CancelledError
         return result
 
-    def candidate_status(self) -> dict[str, object]:
+    def candidate_status(self, plugin_id: str | None = None) -> dict[str, object]:
         ready = self._ready_candidate
+        transaction = None
+        if ready is not None and (plugin_id is None or ready.plugin_id == plugin_id):
+            tx_id = ready.candidate.reload_tx_id
+            if tx_id is None:
+                raise RuntimeError("latest candidate 缺少 reload transaction")
+            transaction = self._reload_journal.get(tx_id)
+        else:
+            latest = self._reload_journal.latest(plugin_id=plugin_id)
+            if latest is not None and latest.phase not in {"complete", "recovered"}:
+                transaction = latest
         return {
             "stable_snapshot_id": (
                 self.current_snapshot.snapshot_id
@@ -1551,11 +1661,20 @@ class PluginManager:
                 if self.latest_snapshot is not None
                 else None
             ),
-            "candidate_plugin_id": None if ready is None else ready.plugin_id,
-            "candidate_generation_id": (
-                None if ready is None else ready.candidate.generation_id
+            "candidate_plugin_id": (
+                transaction.plugin_id if transaction is not None else None
             ),
-            "candidate_state": None if ready is None else "latest_ready",
+            "candidate_generation_id": (
+                transaction.generation_id if transaction is not None else None
+            ),
+            "candidate_state": None if transaction is None else transaction.phase,
+            "candidate_source_revision": (
+                None if transaction is None else transaction.source_revision
+            ),
+            "candidate_reload_tx_id": (
+                None if transaction is None else transaction.tx_id
+            ),
+            "candidate_error": None if transaction is None else transaction.error,
         }
 
     def _ready_candidate_status(self) -> dict[str, object]:
@@ -1605,25 +1724,33 @@ class PluginManager:
             snapshot = generation.runtime_snapshot
             cast(Any, generation.instance).context.tool_registry = snapshot.tool_registry
         except (asyncio.CancelledError, Exception) as error:
+            error_text = str(error) or type(error).__name__
             self._record_failed_gate(
                 plugin_id=plugin_id,
                 revision=generation.source_revision,
                 check_id="publish_rebase",
-                reason=str(error) or type(error).__name__,
+                reason=error_text,
             )
-            await self.discard_prepared(plugin_id)
+            await self.discard_prepared(
+                plugin_id,
+                error=f"publish_rebase: {error_text}",
+            )
             raise
         active = self._active_generations.get(plugin_id)
         try:
             await self._prepare_generation(generation)
         except (asyncio.CancelledError, Exception) as error:
+            error_text = str(error) or type(error).__name__
             self._record_failed_gate(
                 plugin_id=plugin_id,
                 revision=generation.source_revision,
                 check_id="prepare",
-                reason=str(error) or type(error).__name__,
+                reason=error_text,
             )
-            await self.discard_prepared(plugin_id)
+            await self.discard_prepared(
+                plugin_id,
+                error=f"prepare: {error_text}",
+            )
             if isinstance(error, asyncio.CancelledError):
                 raise
             result = self._publication_status(
@@ -1649,22 +1776,28 @@ class PluginManager:
         )
         stage_latest = _installed_generation_is_candidate(generation)
         if stage_latest and endpoint_changed:
-            await self.discard_prepared(plugin_id)
-            raise RuntimeError(
-                "候选插件改变独占 managed service/channel，不能在线并存验证"
+            error_text = "候选插件改变独占 managed service/channel，不能在线并存验证"
+            await self.discard_prepared(
+                plugin_id,
+                error=f"endpoint_coexistence: {error_text}",
             )
+            raise RuntimeError(error_text)
         self._compile_snapshot_event_handlers(snapshot)
         if self._dashboard_preparer is not None:
             try:
                 self._dashboard_preparer(snapshot)
             except Exception as error:
+                error_text = str(error) or type(error).__name__
                 self._record_failed_gate(
                     plugin_id=plugin_id,
                     revision=generation.source_revision,
                     check_id="dashboard",
-                    reason=str(error) or type(error).__name__,
+                    reason=error_text,
                 )
-                await self.discard_prepared(plugin_id)
+                await self.discard_prepared(
+                    plugin_id,
+                    error=f"dashboard: {error_text}",
+                )
                 return self._publication_status(
                     plugin_id,
                     active=active,
@@ -1677,8 +1810,12 @@ class PluginManager:
             from agent.plugins.snapshot import get_current_runtime_lease
 
             if get_current_runtime_lease() is not None:
-                await self.discard_prepared(plugin_id)
-                raise RuntimeError("持有 RuntimeSnapshot lease 时不能切换独占端点")
+                error_text = "持有 RuntimeSnapshot lease 时不能切换独占端点"
+                await self.discard_prepared(
+                    plugin_id,
+                    error=f"endpoint_lease: {error_text}",
+                )
+                raise RuntimeError(error_text)
             quiesced_snapshot = self._snapshot_store.pause_admission()
             try:
                 if self._endpoint_quiescer is not None:
@@ -1687,11 +1824,15 @@ class PluginManager:
                     await self._snapshot_store.wait_for_no_leases(
                         quiesced_snapshot
                     )
-            except BaseException:
+            except BaseException as error:
+                error_text = str(error) or type(error).__name__
                 await self._snapshot_store.resume(quiesced_snapshot)
                 if self._endpoint_resumer is not None:
                     await self._endpoint_resumer()
-                await self.discard_prepared(plugin_id)
+                await self.discard_prepared(
+                    plugin_id,
+                    error=f"endpoint_quiesce: {error_text}",
+                )
                 raise
         endpoints_switched = False
         if endpoint_changed:
@@ -1705,16 +1846,20 @@ class PluginManager:
                 )
                 endpoints_switched = True
             except (asyncio.CancelledError, Exception) as error:
+                error_text = str(error) or type(error).__name__
                 self._record_failed_gate(
                     plugin_id=plugin_id,
                     revision=generation.source_revision,
                     check_id="endpoints",
-                    reason=str(error) or type(error).__name__,
+                    reason=error_text,
                 )
                 await self._snapshot_store.resume(quiesced_snapshot)
                 if self._endpoint_resumer is not None:
                     await self._endpoint_resumer()
-                await self.discard_prepared(plugin_id)
+                await self.discard_prepared(
+                    plugin_id,
+                    error=f"endpoints: {error_text}",
+                )
                 if isinstance(error, asyncio.CancelledError):
                     raise
                 return self._publication_status(
@@ -2068,16 +2213,6 @@ class PluginManager:
             ) is not item.proactive_catalog:
                 raise RuntimeError("RuntimeSnapshot proactive catalog 不可用")
 
-    def _begin_reload(self, generation: PluginGeneration) -> None:
-        base = self.current_snapshot
-        generation.reload_tx_id = self._reload_journal.begin(
-            plugin_id=generation.plugin_id,
-            base_snapshot_id=base.snapshot_id if base is not None else None,
-            generation_id=generation.generation_id,
-            source_revision=generation.source_revision,
-            config_revision=generation.config_revision,
-        )
-
     def _advance_reload(
         self,
         generation: PluginGeneration,
@@ -2389,20 +2524,38 @@ class PluginManager:
         proactive_source_count_before = len(self._proactive_sources)
         job_count_before = len(self._jobs)
         channel_count_before = len(self._channels)
+        self._generation_sequence += 1
+        generation_sequence = self._generation_sequence
         module_path = mod["module_path"].strip()
-        if not module_path:
-            raise RuntimeError(f"插件缺少 plugin.py: {plugin_dir}")
         try:
             source_revision = _source_revision(plugin_dir)
         except Exception as error:
             revision = hashlib.sha256(
                 f"{plugin_dir}:{error}".encode()
             ).hexdigest()
+            generation_id = (
+                f"{initial_plugin_id}:{revision[:12]}:{generation_sequence}"
+            )
+            reload_tx_id = (
+                self._begin_reload_attempt(
+                    plugin_id=initial_plugin_id,
+                    generation_id=generation_id,
+                    source_revision=revision,
+                    config_revision="",
+                )
+                if not activate
+                else None
+            )
+            error_text = str(error) or type(error).__name__
             self._record_failed_gate(
                 plugin_id=initial_plugin_id,
                 revision=revision,
                 check_id="source_boundary",
-                reason=str(error),
+                reason=error_text,
+            )
+            self._abort_reload_attempt(
+                reload_tx_id,
+                error=f"source_boundary: {error_text}",
             )
             return None
         data_dir = _resolve_plugin_data_dir(
@@ -2412,23 +2565,50 @@ class PluginManager:
         )
         ensure_workspace_plugin_data_dir(data_dir, self._workspace)
         config_revision = _file_revision(data_dir / "config.local.toml")
-        self._generation_sequence += 1
         generation_id = (
-            f"{initial_plugin_id}:{source_revision[:12]}:{self._generation_sequence}"
+            f"{initial_plugin_id}:{source_revision[:12]}:{generation_sequence}"
+        )
+        reload_tx_id = (
+            self._begin_reload_attempt(
+                plugin_id=initial_plugin_id,
+                generation_id=generation_id,
+                source_revision=source_revision,
+                config_revision=config_revision,
+            )
+            if not activate
+            else None
         )
         mp = (
-            f"{stable_module_path}__g{self._generation_sequence}_"
+            f"{stable_module_path}__g{generation_sequence}_"
             f"{source_revision[:8]}_{self._manager_namespace}"
         )
+        if not module_path:
+            error_text = f"插件缺少 plugin.py: {plugin_dir}"
+            self._record_failed_gate(
+                plugin_id=initial_plugin_id,
+                revision=source_revision,
+                check_id="plugin_module",
+                reason=error_text,
+            )
+            self._abort_reload_attempt(
+                reload_tx_id,
+                error=f"plugin_module: {error_text}",
+            )
+            raise RuntimeError(error_text)
         try:
             self._import_plugin(mp, Path(module_path))
         except Exception as error:
             logger.warning("插件 %s 导入失败: %s", mod["name"], error)
+            error_text = str(error) or type(error).__name__
             self._record_failed_gate(
                 plugin_id=initial_plugin_id,
                 revision=source_revision,
                 check_id="import",
-                reason=str(error),
+                reason=error_text,
+            )
+            self._abort_reload_attempt(
+                reload_tx_id,
+                error=f"import: {error_text}",
             )
             return None
         cls = plugin_registry.get_class(mp)
@@ -2440,6 +2620,10 @@ class PluginManager:
                 revision=source_revision,
                 check_id="plugin_class",
                 reason="plugin.py 未注册 Plugin 子类",
+            )
+            self._abort_reload_attempt(
+                reload_tx_id,
+                error="plugin_class: plugin.py 未注册 Plugin 子类",
             )
             return None
         try:
@@ -2458,11 +2642,17 @@ class PluginManager:
             )
         except Exception as error:
             self._remove_module_tree(mp)
+            error_text = str(error) or type(error).__name__
+            check_id = "config" if isinstance(error, _PluginConfigError) else "identity"
             self._record_failed_gate(
                 plugin_id=initial_plugin_id,
                 revision=source_revision,
-                check_id=("config" if isinstance(error, _PluginConfigError) else "identity"),
-                reason=str(error),
+                check_id=check_id,
+                reason=error_text,
+            )
+            self._abort_reload_attempt(
+                reload_tx_id,
+                error=f"{check_id}: {error_text}",
             )
             return None
         from agent.plugins.context import PluginContext, PluginKVStore
@@ -2484,16 +2674,15 @@ class PluginManager:
         )
         plugin_registry.register_instance(mp, instance)
         prepare_started = False
-        reload_tx_id: str | None = None
 
-        async def rollback_load() -> None:
+        async def rollback_load(error: str) -> None:
             if reload_tx_id is not None:
                 phase = self._reload_journal.get(reload_tx_id).phase
                 if phase not in {"complete", "aborted", "recovered"}:
                     self._reload_journal.advance(
                         reload_tx_id,
                         "aborted",
-                        error=f"candidate {load_phase} failed",
+                        error=error,
                     )
             terminator = getattr(instance, "terminate", None)
             if prepare_started and callable(terminator):
@@ -2566,10 +2755,8 @@ class PluginManager:
                     mod["source_type"],
                 ),
                 state="prepared",
+                reload_tx_id=reload_tx_id,
             )
-            if not activate:
-                self._begin_reload(generation)
-                reload_tx_id = generation.reload_tx_id
             catalog_generations = [
                 active_generation
                 for active_generation in self._active_generations.values()
@@ -2791,7 +2978,7 @@ class PluginManager:
             generation.minimum_resource_count = scope.resource_count
         except asyncio.CancelledError:
             rollback_task = asyncio.create_task(
-                rollback_load(),
+                rollback_load(f"candidate {load_phase} cancelled"),
                 name=f"plugin_rollback:{plugin_id}",
             )
             while not rollback_task.done():
@@ -2807,7 +2994,7 @@ class PluginManager:
                 mod["name"],
                 error.gate.failure_reason,
             )
-            await rollback_load()
+            await rollback_load(_gate_failure_details(error.gate))
             return None
         except Exception as error:
             logger.warning("插件 %s 加载失败，回滚: %s", mod["name"], error)
@@ -2817,7 +3004,7 @@ class PluginManager:
                 check_id=load_phase,
                 reason=str(error),
             )
-            await rollback_load()
+            await rollback_load(str(error) or type(error).__name__)
             return None
         self._scopes[mp] = scope
         self._loaded.add(mp)
@@ -3587,6 +3774,15 @@ class _CandidateRejected(Exception):
     def __init__(self, gate: GateResult) -> None:
         super().__init__(gate.failure_reason)
         self.gate = gate
+
+
+def _gate_failure_details(gate: GateResult) -> str:
+    """把失败 Gate 的 check 与证据压成可持久诊断文本。"""
+    return "; ".join(
+        f"{check.check_id}: {check.evidence}"
+        for check in gate.checks
+        if check.status == "failed"
+    ) or gate.failure_reason
 
 
 def _with_gate_check(

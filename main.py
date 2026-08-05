@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
-
 _DEFAULT_WORKSPACE = "~/.akashic/workspace"
 _DEFER_PLUGIN_UNINSTALL_ENV = "AKASHIC_DEFER_PLUGIN_UNINSTALL"
 
@@ -155,7 +154,6 @@ from agent.supervisor import RESTART_EXIT_CODE, run_supervisor
 from agent.persona import read_veda
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
 from agent.plugins.install import (
-    install_git_plugin,
     set_installed_plugin_enabled,
     uninstall_plugin,
 )
@@ -169,7 +167,6 @@ from bootstrap.providers import build_providers
 from core.net.http import SharedHttpResources
 from infra.control.socket import is_tcp_endpoint
 
-
 _HELP = """\
 用法: python main.py [命令] [选项]
 
@@ -181,9 +178,12 @@ _HELP = """\
   gateway                       启动未托管 Agent 服务（调试）
   supervise                     显式进入 supervisor（兼容别名）
   app-server --stdio            在 stdio 上运行程序化控制面
-  exec --new|--thread ID PROMPT 执行一个非交互 turn
+  exec --new|--thread ID PROMPT 执行一个非交互 turn（支持 --runtime stable|latest）
   dashboard                     单独启动 Dashboard
   plugin-install                安装 Git 插件
+  plugin-status                 查看 stable/latest 候选状态
+  plugin-promote PLUGIN_ID      将 latest 晋升为 stable
+  plugin-discard PLUGIN_ID      丢弃 latest 并保留 stable
   plugin-enable PLUGIN_ID       启用插件
   plugin-disable PLUGIN_ID      禁用插件
   plugin-uninstall PLUGIN_ID    卸载插件
@@ -251,7 +251,15 @@ def _prepare_startup_migrations(
     """只为会加载本地 runtime 的命令执行启动迁移。"""
 
     command = args[0] if args and not args[0].startswith("--") else ""
-    if command not in {"", "setup", "init", "supervise", "gateway", "app-server", "dashboard"}:
+    if command not in {
+        "",
+        "setup",
+        "init",
+        "supervise",
+        "gateway",
+        "app-server",
+        "dashboard",
+    }:
         return None
     if command == "gateway" and os.environ.get("AKASHIC_SUPERVISED") == "1":
         return None
@@ -265,6 +273,24 @@ def _parse_csv_flag(value: str | None) -> list[str]:
     if not value:
         return []
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+async def _request_runtime_control(
+    config_path: str,
+    workspace: Path,
+    method: str,
+    params: dict[str, object],
+) -> dict[str, object]:
+    """向当前 Gateway 发起一个 runtime-owned control 操作。"""
+
+    config = Config.load(config_path, workspace=workspace)
+    endpoint = resolve_app_server_endpoint(config.app_server.listen, workspace)
+    token = read_workspace_token(workspace) if is_tcp_endpoint(endpoint) else None
+    async with await ControlClient.connect(endpoint, workspace_token=token) as client:
+        result = await client.request(method, params)
+    if not isinstance(result, dict):
+        raise RuntimeError(f"{method} 响应无效")
+    return cast(dict[str, object], result)
 
 
 def _uninstall_via_runtime(
@@ -339,7 +365,13 @@ async def _request_plugin_uninstall(
 
 
 def _exec_prompt(args: list[str]) -> str:
-    values_with_argument = {"--config", "--workspace", "--endpoint", "--thread"}
+    values_with_argument = {
+        "--config",
+        "--workspace",
+        "--endpoint",
+        "--thread",
+        "--runtime",
+    }
     positional: list[str] = []
     skip = False
     for index, value in enumerate(args[1:], start=1):
@@ -367,6 +399,13 @@ async def run_exec(args: list[str], config_path: str, workspace: Path) -> int:
     thread_id = _get_flag_value(args, "--thread")
     if new_thread == (thread_id is not None):
         raise ValueError("exec 必须且只能指定 --new 或 --thread ID")
+    runtime_value = _get_flag_value(args, "--runtime")
+    if runtime_value is not None and runtime_value not in {"stable", "latest"}:
+        raise ValueError("exec --runtime 必须是 stable 或 latest")
+    if "--persist-memory" in args and not new_thread:
+        raise ValueError("exec --persist-memory 只能与 --new 一起使用")
+    if "--detach" in args and "--final-only" in args:
+        raise ValueError("exec --detach 不能与 --final-only 一起使用")
     prompt = _exec_prompt(args)
     if "--json" in args and "--final-only" in args:
         raise ValueError("exec 的 --json 与 --final-only 不能同时使用")
@@ -384,10 +423,33 @@ async def run_exec(args: list[str], config_path: str, workspace: Path) -> int:
         workspace_token=workspace_token,
     ) as client:
         if new_thread:
-            thread = await client.start_thread()
+            metadata: dict[str, object] = (
+                {} if "--persist-memory" in args else {"skip_post_memory": True}
+            )
+            thread = await client.start_thread(
+                metadata,
+                runtime=runtime_value or "stable",
+            )
             thread_id = str(thread["id"])
         assert thread_id is not None
-        handle = await client.start_turn(thread_id, prompt)
+        handle = await client.start_turn(
+            thread_id,
+            prompt,
+            runtime=(runtime_value if not new_thread else None),
+            detached="--detach" in args,
+        )
+        if "--detach" in args:
+            detached_result = {"threadId": thread_id, "turn": handle.record}
+            if "--json" in args:
+                print(
+                    json.dumps(
+                        detached_result, ensure_ascii=False, separators=(",", ":")
+                    )
+                )
+            else:
+                print(f"thread: {thread_id}")
+                print(f"turn: {handle.id}")
+            return 0
         interrupt_requested = asyncio.Event()
         loop = asyncio.get_running_loop()
         previous_sigint: object | None = None
@@ -414,8 +476,12 @@ async def run_exec(args: list[str], config_path: str, workspace: Path) -> int:
                     return value
             raise ConnectionError("turn event stream closed without terminal event")
 
-        event_task = asyncio.create_task(consume_events(), name=f"exec-events:{handle.id}")
-        interrupt_task = asyncio.create_task(interrupt_requested.wait(), name="exec-sigint")
+        event_task = asyncio.create_task(
+            consume_events(), name=f"exec-events:{handle.id}"
+        )
+        interrupt_task = asyncio.create_task(
+            interrupt_requested.wait(), name="exec-sigint"
+        )
         interrupted_by_user = False
         try:
             done, _ = await asyncio.wait(
@@ -638,6 +704,7 @@ if __name__ == "__main__":
 
     if args and args[0] == "setup":
         from bootstrap.setup_wizard import run_setup_wizard
+
         run_setup_wizard(
             config_path=Path(config_path),
             workspace=workspace,
@@ -664,17 +731,67 @@ if __name__ == "__main__":
             print("plugin-install 缺少 --source")
             sys.exit(1)
         marketplace = marketplace_value or "local"
-        result = install_git_plugin(
-            workspace=workspace,
-            source=source_value,
-            marketplace=marketplace,
-            ref_name=ref_value or "",
-            sparse_paths=_parse_csv_flag(sparse_value),
-        )
-        print(f"已安装插件: {result.plugin_name}@{result.marketplace}")
-        print(f"版本: {result.plugin_version}")
-        print(f"代码: {result.installed_path}")
-        print(f"数据: {result.data_path}")
+        try:
+            result = asyncio.run(
+                _request_runtime_control(
+                    config_path,
+                    workspace,
+                    "plugin/install",
+                    {
+                        "source": source_value,
+                        "marketplace": marketplace,
+                        "ref": ref_value or "",
+                        "sparse": _parse_csv_flag(sparse_value),
+                    },
+                )
+            )
+        except (ValueError, RuntimeError, ConnectionError, OSError) as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(1)
+        if "--json" in args:
+            print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+        else:
+            print(f"已安装插件: {result['pluginId']}")
+            print(f"版本: {result['version']}")
+            print(f"publication: {result['publicationState']}")
+            print(f"代码: {result['installedPath']}")
+            print(f"数据: {result['dataPath']}")
+        sys.exit(0)
+
+    if args and args[0] == "plugin-status":
+        try:
+            result = asyncio.run(
+                _request_runtime_control(
+                    config_path,
+                    workspace,
+                    "plugin/status",
+                    {},
+                )
+            )
+        except (ValueError, RuntimeError, ConnectionError, OSError) as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+        sys.exit(0)
+
+    if args and args[0] in {"plugin-promote", "plugin-discard"}:
+        if len(args) < 2 or args[1].startswith("--"):
+            print(f"{args[0]} 缺少插件 ID", file=sys.stderr)
+            sys.exit(1)
+        method = "plugin/promote" if args[0] == "plugin-promote" else "plugin/discard"
+        try:
+            result = asyncio.run(
+                _request_runtime_control(
+                    config_path,
+                    workspace,
+                    method,
+                    {"pluginId": args[1]},
+                )
+            )
+        except (ValueError, RuntimeError, ConnectionError, OSError) as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
         sys.exit(0)
 
     if args and args[0] in {"plugin-enable", "plugin-disable"}:
@@ -703,7 +820,10 @@ if __name__ == "__main__":
                 plugin_id,
                 workspace,
             )
-            if runtime_result is not None and runtime_result.get("status") == "in_progress":
+            if (
+                runtime_result is not None
+                and runtime_result.get("status") == "in_progress"
+            ):
                 print(f"插件卸载已安排: {plugin_id}")
                 print(f"operation: {runtime_result['id']}")
                 sys.exit(0)
@@ -768,9 +888,7 @@ if __name__ == "__main__":
 
     if args and args[0] == "exec":
         try:
-            exit_code = asyncio.run(
-                run_exec(args, config_path, workspace)
-            )
+            exit_code = asyncio.run(run_exec(args, config_path, workspace))
         except (ValueError, ConnectionError, OSError, RemoteControlError) as exc:
             print(str(exc), file=sys.stderr)
             sys.exit(2)

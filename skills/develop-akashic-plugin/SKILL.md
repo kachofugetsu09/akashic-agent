@@ -85,7 +85,7 @@ programmatic child 必须：
 ## 5. 处理副作用与独占 endpoint
 
 - read-only Tool 可以直接在 latest child 中验证。
-- write/read-write Tool 默认不执行；只有真实事务/dry-run、隔离 workspace/test endpoint 或用户明确授权时才能验证。
+- candidate generation 的非 read-only Tool/MCP 默认禁用；只有真实事务/dry-run、隔离 workspace/test endpoint 或用户明确授权时才能另行验证。
 - `message_push` 的成功以真实 delivery receipt 和子 session tool trace 为准；push 不会注入父 Prompt或目标 session history。
 - 固定端口、bot ownership、channel 或 singleton service 与 stable 冲突时，使用隔离 runtime/endpoint；不要让父 turn 等待自己的 stable lease 排空。
 

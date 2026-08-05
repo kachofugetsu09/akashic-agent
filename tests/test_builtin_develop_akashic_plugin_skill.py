@@ -75,9 +75,11 @@ def test_develop_akashic_plugin_references_are_complete() -> None:
         "plugin-install",
         "--runtime latest",
         "write_stdin",
-        "plugin-promote",
-        "plugin-discard",
+        "plugin-promote <plugin-id>",
+        "plugin-discard <plugin-id>",
         "semantic write set == 0",
+        "非 read-only Tool/MCP disabled",
+        "目标渠道是否另写自己的 durable event",
     ):
         assert contract in validation
     for contract in (

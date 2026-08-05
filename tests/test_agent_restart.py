@@ -215,6 +215,9 @@ async def test_router_disconnect_restores_admission_immediately() -> None:
     class _Handle:
         id = "turn-disconnect"
 
+        def record(self) -> dict[str, str]:
+            return {"status": "completed"}
+
         async def events(self):
             entered.set()
             await asyncio.Event().wait()

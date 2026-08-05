@@ -6,7 +6,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
 from core.error_context import current_session_key
 from core.common.diagnostic_log import diagnostic_line
@@ -74,6 +74,7 @@ StreamDelta: TypeAlias = dict[str, str] | str
 StreamSink: TypeAlias = Callable[[StreamDelta], Awaitable[None]]
 StreamSinkFactory: TypeAlias = Callable[[object], StreamSink | None]
 StreamSupportPolicy: TypeAlias = Callable[[str], bool]
+RuntimeSelector: TypeAlias = Literal["stable", "latest"]
 
 
 def _is_positive_int(value: str) -> bool:
@@ -113,7 +114,41 @@ def _suppresses_stream_events(msg: object) -> bool:
 def _item_content(item: InboundItem) -> str:
     if isinstance(item, InboundMessage):
         return item.content
-    return f"[后台任务完成] {item.event.label or item.event.status or item.event.job_id}"
+    return (
+        f"[后台任务完成] {item.event.label or item.event.status or item.event.job_id}"
+    )
+
+
+def _disable_candidate_side_effect_tools(
+    msg: InboundMessage,
+    candidate_plugin_ids: frozenset[str],
+    tools: ToolRegistry | None,
+    snapshot: object,
+) -> None:
+    """把本次 candidate lease 的副作用工具加入 turn-local 禁用集合。"""
+    if tools is None or not candidate_plugin_ids:
+        return
+    generations = cast(Any, snapshot).generations
+    raw_disabled = msg.metadata.get("disabled_tools")
+    if isinstance(raw_disabled, str):
+        disabled = {raw_disabled} if raw_disabled else set()
+    elif isinstance(raw_disabled, (list, tuple, set)):
+        disabled = {str(name) for name in raw_disabled if str(name)}
+    else:
+        disabled = set()
+    for plugin_id in candidate_plugin_ids:
+        generation = generations[plugin_id]
+        plugin_name = str(getattr(generation.instance, "name", plugin_id))
+        disabled |= tools.get_non_read_only_source_tool_names(
+            "plugin",
+            plugin_name,
+        )
+        for server_name in generation.contributions.mcp_servers:
+            disabled |= tools.get_non_read_only_source_tool_names(
+                "mcp",
+                server_name,
+            )
+    msg.metadata["disabled_tools"] = sorted(disabled)
 
 
 class AgentLoop:
@@ -250,8 +285,12 @@ class AgentLoop:
                     channel=channel,
                     chat_id=chat_id,
                     turn_id=current_turn_id.get(),
-                    content_delta=content_delta if isinstance(content_delta, str) else "",
-                    thinking_delta=thinking_delta if isinstance(thinking_delta, str) else "",
+                    content_delta=(
+                        content_delta if isinstance(content_delta, str) else ""
+                    ),
+                    thinking_delta=(
+                        thinking_delta if isinstance(thinking_delta, str) else ""
+                    ),
                 )
             )
 
@@ -679,7 +718,9 @@ class AgentLoop:
         turn_token = current_turn_id.set(inherited_turn_id or new_turn_id())
         try:
             # 1. 先处理可能存在的续跑态，并发布 turn started。
-            msg, resumed_from_interrupt = await self._resume_interrupted_message(msg, key)
+            msg, resumed_from_interrupt = await self._resume_interrupted_message(
+                msg, key
+            )
             await self._observe_turn_started(msg, key)
             content = _item_content(msg)
             preview = content[:60] + "..." if len(content) > 60 else content
@@ -773,11 +814,14 @@ class AgentLoop:
         session_key: str | None = None,
         busy_session_key: str | None = None,
         dispatch_outbound: bool = True,
+        runtime_selector: RuntimeSelector = "stable",
     ) -> OutboundMessage:
         key = session_key or msg.session_key
         async with self._session_lanes.hold(key):
             store = self._runtime_snapshot_store
             if store is None or store.current is None:
+                if runtime_selector != "stable":
+                    raise RuntimeError("latest RuntimeSnapshot 不可用")
                 return await self._process(
                     msg,
                     session_key=session_key,
@@ -789,10 +833,19 @@ class AgentLoop:
                 reset_runtime_snapshot,
             )
 
-            lease = await store.acquire()
+            lease = await store.acquire(selector=runtime_selector)
             async with lease as snapshot:
                 token = bind_runtime_snapshot(lease)
                 try:
+                    if lease.validation_candidate_plugin_ids:
+                        if not isinstance(msg, InboundMessage):
+                            raise RuntimeError("latest candidate 只接受普通 inbound message")
+                        _disable_candidate_side_effect_tools(
+                            msg,
+                            lease.validation_candidate_plugin_ids,
+                            snapshot.tool_registry,
+                            snapshot,
+                        )
                     return await self._process(
                         msg,
                         session_key=session_key,
@@ -818,6 +871,7 @@ class AgentLoop:
         media: list[str] | None = None,
         turn_id: str = "",
         stateless: bool = False,
+        runtime_selector: RuntimeSelector = "stable",
     ) -> str:
         response = await self.process_direct_message(
             content,
@@ -834,6 +888,7 @@ class AgentLoop:
             media=media,
             turn_id=turn_id,
             stateless=stateless,
+            runtime_selector=runtime_selector,
         )
         return response.content
 
@@ -854,6 +909,7 @@ class AgentLoop:
         metadata: dict[str, object] | None = None,
         turn_id: str = "",
         stateless: bool = False,
+        runtime_selector: RuntimeSelector = "stable",
     ) -> OutboundMessage:
         """执行直接消息，并按需隔离会话历史与持久化。"""
 
@@ -894,6 +950,7 @@ class AgentLoop:
             session_key=session_key,
             busy_session_key=busy_session_key,
             dispatch_outbound=False,
+            runtime_selector=runtime_selector,
         )
         return response
 

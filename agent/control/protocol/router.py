@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from agent.control.errors import (
     ControlAdmissionError,
     RuntimeClosedError,
+    PluginManagementError,
     ThreadBusyError,
     ThreadNotFoundError,
     TurnNotFoundError,
@@ -26,6 +27,7 @@ from agent.control.protocol.errors import (
     THREAD_BUSY,
     THREAD_NOT_FOUND,
     TURN_NOT_FOUND,
+    PLUGIN_OPERATION_FAILED,
     JsonRpcError,
 )
 from agent.control.protocol.models import METHOD_PARAMS, InitializeParams, StrictModel
@@ -52,6 +54,7 @@ class ConnectionRouter:
         self._state = "new"
         self._initialized_seen = False
         self._event_tasks: set[asyncio.Task[None]] = set()
+        self._attached_turns: dict[str, Any] = {}
         self._closed = False
 
     async def handle_line(self, line: bytes) -> None:
@@ -64,7 +67,9 @@ class ConnectionRouter:
             await self._send(JsonRpcError(-32700, "Parse error").envelope(None))
             return
         if not isinstance(payload, dict):
-            await self._send(JsonRpcError(INVALID_REQUEST, "Invalid Request").envelope(None))
+            await self._send(
+                JsonRpcError(INVALID_REQUEST, "Invalid Request").envelope(None)
+            )
             return
 
         # 2. notification 同步处理，请求由 transport 允许并发调度。
@@ -74,22 +79,32 @@ class ConnectionRouter:
             await self._handle_notification(request)
             return
         if not isinstance(request_id, (str, int)) or isinstance(request_id, bool):
-            await self._send(JsonRpcError(INVALID_REQUEST, "Invalid request id").envelope(None))
+            await self._send(
+                JsonRpcError(INVALID_REQUEST, "Invalid request id").envelope(None)
+            )
             return
         if self._pending.locked():
-            await self._send(JsonRpcError(SERVER_OVERLOADED, "Server overloaded", {"retryable": True}).envelope(request_id))
+            await self._send(
+                JsonRpcError(
+                    SERVER_OVERLOADED, "Server overloaded", {"retryable": True}
+                ).envelope(request_id)
+            )
             return
         async with self._pending:
             await self._handle_request(request, request_id)
 
     async def _handle_notification(self, request: JsonObject) -> None:
-        if request.get("jsonrpc") != "2.0" or not isinstance(request.get("method"), str):
+        if request.get("jsonrpc") != "2.0" or not isinstance(
+            request.get("method"), str
+        ):
             return
         method = cast(str, request["method"])
         if method == "initialized" and self._state == "initialized":
             self._initialized_seen = True
             return
-        logger.warning("忽略无效 JSON-RPC notification method=%s state=%s", method, self._state)
+        logger.warning(
+            "忽略无效 JSON-RPC notification method=%s state=%s", method, self._state
+        )
 
     async def _handle_request(self, request: JsonObject, request_id: str | int) -> None:
         try:
@@ -97,9 +112,15 @@ class ConnectionRouter:
         except JsonRpcError as exc:
             await self._send(exc.envelope(request_id))
         except ThreadNotFoundError as exc:
-            await self._send(JsonRpcError(THREAD_NOT_FOUND, str(exc)).envelope(request_id))
+            await self._send(
+                JsonRpcError(THREAD_NOT_FOUND, str(exc)).envelope(request_id)
+            )
         except ThreadBusyError as exc:
-            await self._send(JsonRpcError(THREAD_BUSY, str(exc), {"retryable": True}).envelope(request_id))
+            await self._send(
+                JsonRpcError(THREAD_BUSY, str(exc), {"retryable": True}).envelope(
+                    request_id
+                )
+            )
         except ControlAdmissionError as exc:
             await self._send(
                 JsonRpcError(
@@ -109,12 +130,28 @@ class ConnectionRouter:
                 ).envelope(request_id)
             )
         except TurnNotFoundError as exc:
-            await self._send(JsonRpcError(TURN_NOT_FOUND, str(exc)).envelope(request_id))
+            await self._send(
+                JsonRpcError(TURN_NOT_FOUND, str(exc)).envelope(request_id)
+            )
+        except PluginManagementError as exc:
+            await self._send(
+                JsonRpcError(PLUGIN_OPERATION_FAILED, str(exc)).envelope(request_id)
+            )
+        except ValueError as exc:
+            await self._send(
+                JsonRpcError(INVALID_PARAMS, str(exc)).envelope(request_id)
+            )
         except RuntimeClosedError as exc:
-            await self._send(JsonRpcError(SERVER_OVERLOADED, str(exc), {"retryable": True}).envelope(request_id))
+            await self._send(
+                JsonRpcError(SERVER_OVERLOADED, str(exc), {"retryable": True}).envelope(
+                    request_id
+                )
+            )
         except Exception:
             logger.exception("JSON-RPC handler failed request_id=%r", request_id)
-            await self._send(JsonRpcError(INTERNAL_ERROR, "Internal error").envelope(request_id))
+            await self._send(
+                JsonRpcError(INTERNAL_ERROR, "Internal error").envelope(request_id)
+            )
         else:
             await self._send({"jsonrpc": "2.0", "id": request_id, "result": result})
             await self._post_response_notifications(request, result)
@@ -123,11 +160,15 @@ class ConnectionRouter:
         """验证 request envelope 和 method params 后调用 application service。"""
 
         # 1. 校验 JSON-RPC envelope。
-        if request.get("jsonrpc") != "2.0" or not isinstance(request.get("method"), str):
+        if request.get("jsonrpc") != "2.0" or not isinstance(
+            request.get("method"), str
+        ):
             raise JsonRpcError(INVALID_REQUEST, "Invalid Request")
         unknown = set(request) - {"jsonrpc", "id", "method", "params"}
         if unknown:
-            raise JsonRpcError(INVALID_REQUEST, f"Unknown request fields: {', '.join(sorted(unknown))}")
+            raise JsonRpcError(
+                INVALID_REQUEST, f"Unknown request fields: {', '.join(sorted(unknown))}"
+            )
         method = cast(str, request["method"])
         model_type = METHOD_PARAMS.get(method)
         if model_type is None:
@@ -146,7 +187,11 @@ class ConnectionRouter:
         try:
             params = model_type.model_validate(raw_params)
         except ValidationError as exc:
-            raise JsonRpcError(INVALID_PARAMS, "Invalid params", {"issues": exc.errors(include_url=False)}) from exc
+            raise JsonRpcError(
+                INVALID_PARAMS,
+                "Invalid params",
+                {"issues": exc.errors(include_url=False)},
+            ) from exc
 
         # 3. initialize 是唯一允许进入 new 状态的请求。
         if method == "initialize":
@@ -157,7 +202,9 @@ class ConnectionRouter:
             self._state = "initialized"
             return result
         if self._state != "initialized" or not self._initialized_seen:
-            raise JsonRpcError(NOT_INITIALIZED, "Client must complete initialize/initialized")
+            raise JsonRpcError(
+                NOT_INITIALIZED, "Client must complete initialize/initialized"
+            )
 
         return await self._call_method(method, params)
 
@@ -166,7 +213,7 @@ class ConnectionRouter:
         if method == "server/status":
             return self._service.status()
         if method == "thread/start":
-            return self._service.start_thread(values["metadata"])
+            return self._service.start_thread(values["metadata"], values["runtime"])
         if method == "thread/resume":
             return self._service.resume_thread(values["threadId"])
         if method == "thread/list":
@@ -187,17 +234,39 @@ class ConnectionRouter:
         if method == "turn/read":
             return self._service.read_turn(values["threadId"], values["turnId"])
         if method == "turn/interrupt":
-            return await self._service.interrupt_turn(values["threadId"], values["turnId"])
+            return await self._service.interrupt_turn(
+                values["threadId"], values["turnId"]
+            )
         if method == "turn/start":
             handle = await self._service.start_turn(
-                values["threadId"], values["input"], values["metadata"]
+                values["threadId"],
+                values["input"],
+                values["metadata"],
+                values["runtime"],
             )
-            task = asyncio.create_task(self._forward_events(handle), name=f"control-events:{handle.id}")
+            if not values["detached"]:
+                self._attached_turns[handle.id] = handle
+            task = asyncio.create_task(
+                self._forward_events(handle), name=f"control-events:{handle.id}"
+            )
             self._event_tasks.add(task)
             task.add_done_callback(self._event_tasks.discard)
             return handle.record()
         if method == "plugin/disable-and-drain":
             return await self._service.disable_and_drain_plugin(values["pluginId"])
+        if method == "plugin/install":
+            return await self._service.install_plugin(
+                values["source"],
+                values["marketplace"],
+                values["ref"],
+                values["sparse"],
+            )
+        if method == "plugin/status":
+            return self._service.plugin_status()
+        if method == "plugin/promote":
+            return await self._service.promote_plugin(values["pluginId"])
+        if method == "plugin/discard":
+            return await self._service.discard_plugin(values["pluginId"])
         if method == "plugin/uninstall/start":
             operation = self._service.start_plugin_uninstall(values["pluginId"])
             task = asyncio.create_task(
@@ -218,9 +287,17 @@ class ConnectionRouter:
         if not isinstance(result, dict):
             return
         if method == "thread/start":
-            await self._send({"jsonrpc": "2.0", "method": "thread/started", "params": {"thread": result}})
+            await self._send(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "thread/started",
+                    "params": {"thread": result},
+                }
+            )
         elif method == "thread/delete":
-            await self._send({"jsonrpc": "2.0", "method": "thread/deleted", "params": result})
+            await self._send(
+                {"jsonrpc": "2.0", "method": "thread/deleted", "params": result}
+            )
 
     async def _forward_operation(self, operation: Any) -> None:
         result = await asyncio.shield(operation.task)
@@ -247,11 +324,26 @@ class ConnectionRouter:
         except Exception as exc:
             self._service.notify_turn_delivery_failed(handle.id, str(exc))
             logger.exception("turn event forwarding failed turn=%s", handle.id)
+        finally:
+            if handle.record()["status"] in {
+                "completed",
+                "interrupted",
+                "failed",
+                "cancelled",
+            }:
+                self._attached_turns.pop(handle.id, None)
 
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        attached = tuple(self._attached_turns.values())
+        if attached:
+            await asyncio.gather(
+                *(handle.interrupt() for handle in attached),
+                return_exceptions=True,
+            )
+        self._attached_turns.clear()
         for task in self._event_tasks:
             task.cancel()
         if self._event_tasks:

@@ -1,16 +1,14 @@
 # 插件递归自验证运行时设计
 
-- 状态：accepted / Phase 1 implemented，Phase 2～3 pending
+- 状态：accepted / stable-latest programmatic 闭环已实现，共享状态 owner 审计待完成
 - 确认日期：2026-08-05
 - 决策：[0024](../decisions/0024-plugin-self-validation-uses-stable-and-latest.md)
 - 关联条款：RUN-007、OUT-004、PLG-013、CTRL-003、SH-001、TST-001～TST-006
-- 当前实现基线：`b57fe12a2c86ad96a8c52437a15d1f30ceb004e9`
+- 当前实现基线：`feat/programmatic-latest-validation`
 
 ## 1. 结论
 
-原实现不能在写完插件的同一 turn 内证明插件可用，不是因为缺少一条等待命令，而是因为候选能力、执行机会和验收反馈没有形成闭环：当前 turn 绑定旧 snapshot，程序化子 turn 又被两层全局执行锁挡在父 turn 后面。Phase 1 已移除这两层跨 session 整轮互斥；父 turn 现在能在 reload `committed` 后启动不同 session 的 programmatic 子 turn，并在自己结束前取得真实行为结果。
-
-当前阶段只解决“能不能执行并回收反馈”。新 snapshot 仍自动成为 current，未验证候选会被普通新 turn 看见，也没有 promote/discard；因此正式 runtime 的安全自进化仍需 stable/latest。
+原实现不能在写完插件的同一 turn 内证明插件可用，不是因为缺少一条等待命令，而是因为候选能力、执行机会和验收反馈没有形成闭环：当前 turn 绑定旧 snapshot，程序化子 turn 又被两层全局执行锁挡在父 turn 后面。实现已移除跨 session 整轮互斥，并接通 stable/latest、runtime selector、attached cancellation 和候选管理接口；父 turn 现在能在自己结束前取得隔离 latest 的真实行为结果，再决定 promote 或 discard。
 
 目标只引入两个公开运行时选择和一个长时序列化维度：
 
@@ -267,7 +265,7 @@ Tool/Skill 可见性严格来自绑定 snapshot：T 继续看到 S0；V 看到 S
 
 - 可读取 SessionDB、长期记忆和 plugin-data。
 - 不沉淀新的语义记忆。
-- 默认禁用风险为 write/read-write 的记忆工具和候选插件工具。
+- 默认禁用记忆写工具，以及 candidate generation 中所有非 read-only 的 Tool/MCP。
 - 仍把验证 session 的消息和工具 trace 追加到 SessionDB。
 
 要验证写型插件，必须满足下列至少一项：
@@ -309,7 +307,7 @@ Shell 是异步可观察传输：命令在初始窗口没有结束时返回 `exe
   → V 写 cancelled/interrupted terminal，释放 latest lease
 ```
 
-当前实现只保证前两步，socket 断开不会自动取消服务端 turn；这是实现缺口。显式 `--detach` 才允许调用方离开后 V 继续，且 CLI 必须先返回 thread/turn handle。插件自验证不得使用 detached。
+当前实现完成整条 attached 取消链。显式 `--detach` 才允许调用方离开后 V 继续，且 CLI 先返回 thread/turn handle；插件自验证不得使用 detached。
 
 ## 10. 安装、晋升与丢弃接口
 
@@ -318,8 +316,8 @@ Shell 是异步可观察传输：命令在初始窗口没有结束时返回 `exe
 ```text
 plugin-install ...   安装并等待 latest_ready；存在未决 latest 时拒绝
 plugin-status        读取 stable/latest identity、phase、provenance 和 error
-plugin-promote       原子 stable=latest；没有未决候选时拒绝
-plugin-discard       原子 latest=stable；没有未决候选时拒绝
+plugin-promote ID    原子 stable=latest；没有未决候选时拒绝
+plugin-discard ID    原子 latest=stable；没有未决候选时拒绝
 ```
 
 这是单用户、单 runtime owner 下的乐观模型：不增加 reservation token 或每 session candidate namespace。其他 session 只有显式请求 `runtime=latest` 才能读取候选；普通请求永远拿 stable。任何 session 都不能靠普通 turn 自动 promote/discard，管理动作仍通过受认证 control/CLI 边界。
@@ -379,8 +377,8 @@ cancelled → discard candidate when owned and safe → report terminal
 1. [完成] cache 改成 generation-addressed artifact identity，旧 stable 不被候选更新覆盖；现有安装命令保持 immediate stable 兼容，runtime owner 接通后再显式 staged install。
 2. [完成] snapshot store 持有 stable/latest 与单一 candidate transaction。
 3. [完成] reload journal 持久化 `latest_ready` / `promoting` 阶段，并按 durable pointer 恢复 stable 或候选。
-4. [待完成] `plugin-install` 由 runtime owner 完成 latest_ready 终态。
-5. [部分完成] PluginManager 已提供 promote/discard/status；control RPC 与 CLI 尚待接通。
+4. [完成] `plugin-install` 由 runtime owner 完成 latest_ready 终态。
+5. [完成] PluginManager 的 promote/discard/status 已接通 control RPC 与 CLI。
 
 当前 cache 布局如下。两个逻辑 pointer 存在同一个原子状态文件中，避免进程崩溃留下跨文件撕裂状态；pointer 只引用插件目录内的安全相对路径。旧 artifact 在显式卸载前保留，不由 watcher 自动清理：
 
@@ -394,15 +392,15 @@ cache/<marketplace>/<plugin>/
 
 ### Phase 3：接通程序化验证
 
-1. control thread/turn 接受严格枚举的 runtime selector。
-2. programmatic 新 session 默认 `skip_post_memory=true`，保留 recall。
-3. `exec` 增加 `--runtime`、`--persist-memory` 和 attached disconnect cancellation。
-4. Tool/Skill loader 从当前绑定 snapshot 取 catalog。
-5. `message_push` 使用 passive-send ChatLane，不等待目标 session lane。
+1. [完成] control thread/turn 接受严格枚举的 runtime selector。
+2. [完成] programmatic 新 session 默认 `skip_post_memory=true`，保留 recall。
+3. [完成] `exec` 增加 `--runtime`、`--persist-memory` 和 attached disconnect cancellation。
+4. [完成] Tool/Skill loader 从当前绑定 snapshot 取 catalog。
+5. [完成] `message_push` 使用 passive-send ChatLane，不等待目标 session lane。
 
 ### Phase 4：交付 Agent Skill
 
-启用 `develop-akashic-plugin` 的完整递归路径；在前三阶段尚未实现时，Skill 必须 feature-detect 并明确报告 runtime self-validation unavailable，不能把静态验证写成完整成功。
+[完成] 启用 `develop-akashic-plugin` 的完整递归路径。Skill 仍先 feature-detect；运行旧版本或能力不完整时明确报告 runtime self-validation unavailable，不能把静态验证写成完整成功。
 
 ## 14. 独立验收
 
