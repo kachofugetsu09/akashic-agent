@@ -16,6 +16,7 @@
     "lint": "eslint \"frontend/dashboard/src/**/*.{ts,tsx}\" \"frontend/chat/src/**/*.{ts,tsx}\" \"plugins/**/*.ts\" \"types/**/*.d.ts\"",
     "package:mobile-web": "bash scripts/package-mobile-web.sh",
     "test:shared-chat-showcase": "node --test frontend/chat/src/shared-chat-showcase.test.mjs frontend/chat/src/drawer-island-showcase.test.mjs",
+    "test:theme": "node --test frontend/theme/src/theme-catalog.test.mjs",
     "test:mobile-web-state": "node --experimental-strip-types --test frontend/chat/src/message-rendering-policy.test.mjs frontend/chat/src/mobile-message-state.test.mjs frontend/chat/src/mobile-stream-projection.test.mjs frontend/chat/src/mobile-plugin-layout.test.mjs frontend/chat/src/mobile-plugin-query-queue.test.mjs frontend/chat/src/mobile-plugin-result-cache.test.mjs frontend/chat/src/mobile-surface-history.test.mjs",
     "typecheck": "tsc --noEmit"
   },
@@ -40,8 +41,8 @@
     "vite": "^6.0.7"
   },
   "dependencies": {
-    "@tanstack/react-virtual": "^3.14.9",
     "@ai-sdk/react": "^4.0.16",
+    "@material/web": "^2.5.0",
     "@radix-ui/react-collapsible": "^1.1.15",
     "@radix-ui/react-dialog": "^1.1.18",
     "@radix-ui/react-dropdown-menu": "^2.1.19",
@@ -56,6 +57,7 @@
     "@streamdown/code": "^1.1.1",
     "@streamdown/math": "^1.0.2",
     "@streamdown/mermaid": "^1.0.2",
+    "@tanstack/react-virtual": "^3.14.9",
     "ai": "^7.0.15",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

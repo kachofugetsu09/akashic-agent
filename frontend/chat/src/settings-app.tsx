@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { Check, ChevronRight, KeyRound, LoaderCircle, Palette, RefreshCw, Settings2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -12,6 +11,7 @@ import {
 } from "@/components/ui/select";
 import "./settings.css";
 import { cycleTheme, useTheme } from "../../theme/src/theme-runtime";
+import { MaterialButton, MaterialFilterChip } from "../../theme/src/material-react";
 
 type ProviderKind = "api" | "opencode-go" | "codex";
 
@@ -368,7 +368,7 @@ export function SettingsApp() {
                 ) : (
                   <>
                     <span>尚未找到 Codex 登录</span>
-                    <Button size="sm" variant="outline" onClick={beginCodexLogin}>登录 Codex</Button>
+                    <MaterialButton variant="outlined" onClick={beginCodexLogin}>登录 Codex</MaterialButton>
                   </>
                 )}
               </div>
@@ -386,10 +386,10 @@ export function SettingsApp() {
                 )}
               </Field>
               {kind !== "api" && (
-                <Button variant="outline" onClick={loadModels} disabled={loadingModels || !authReady}>
-                  {loadingModels ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
+                <MaterialButton variant="tonal" onClick={loadModels} disabled={loadingModels || !authReady} loading={loadingModels}>
+                  {!loadingModels && <RefreshCw />}
                   探测模型与档位
-                </Button>
+                </MaterialButton>
               )}
             </div>
 
@@ -403,22 +403,20 @@ export function SettingsApp() {
                 />
                 {effortOptions.length > 0 && (
                   <div className="effort-options" aria-label="探测到的思考强度" role="group">
-                    <button
-                      className={!reasoningEffort ? "is-selected" : ""}
+                    <MaterialFilterChip
+                      selected={!reasoningEffort}
                       onClick={() => setReasoningEffort("")}
-                      type="button"
                     >
                       Provider 默认
-                    </button>
+                    </MaterialFilterChip>
                     {effortOptions.map((item) => (
-                      <button
-                        className={reasoningEffort === item ? "is-selected" : ""}
+                      <MaterialFilterChip
+                        selected={reasoningEffort === item}
                         key={item}
                         onClick={() => setReasoningEffort(item)}
-                        type="button"
                       >
                         {item}
-                      </button>
+                      </MaterialFilterChip>
                     ))}
                   </div>
                 )}
@@ -435,10 +433,9 @@ export function SettingsApp() {
 
             <footer className="panel-footer">
               <span>保存前会发送一条最小真实请求验证模型。</span>
-              <Button onClick={save} disabled={!canSave || saving}>
-                {saving && <LoaderCircle className="animate-spin" />}
+              <MaterialButton onClick={save} disabled={!canSave || saving} loading={saving}>
                 {state?.mode === "needs_setup" ? "验证并启动" : "验证并切换"}
-              </Button>
+              </MaterialButton>
             </footer>
           </section>
         </div>

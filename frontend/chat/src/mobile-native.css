@@ -119,7 +119,7 @@ button {
   align-items: flex-end;
   gap: 8px;
   padding: env(safe-area-inset-top) 14px 8px 12px;
-  background: var(--ak-color-bg-canvas);
+  background: var(--md-sys-color-surface);
 }
 
 .mobile-topbar.drawer-open {
@@ -780,7 +780,7 @@ button {
 }
 
 .connection-state.ready {
-  color: var(--ak-color-action-primary);
+  color: var(--ak-sys-color-success);
 }
 
 .connection-state.degraded {
@@ -1356,7 +1356,7 @@ button {
   inset: auto 0 0;
   z-index: 35;
   padding: 8px 12px calc(10px + env(safe-area-inset-bottom));
-  background: var(--ak-color-bg-canvas);
+  background: var(--md-sys-color-surface);
 }
 
 .mobile-unavailable-session {
@@ -1484,9 +1484,9 @@ button {
 
 .mobile-composer-frame {
   overflow: hidden;
-  border-radius: 29px;
-  background: var(--ak-color-bg-surface);
-  box-shadow: 0 1px 2px var(--ak-color-shadow), 0 3px 10px var(--ak-color-shadow);
+  border-radius: var(--md-sys-shape-corner-extra-large);
+  background: var(--md-sys-color-surface-container-high);
+  box-shadow: 0 1px 2px rgb(var(--md-sys-color-shadow-rgb) / 0.12);
 }
 
 .mobile-composer-frame.has-reply {
@@ -1617,8 +1617,8 @@ button {
   place-items: center;
   border: 0;
   border-radius: 50%;
-  color: white;
-  background: var(--ak-color-action-primary);
+  --md-filled-icon-button-container-color: var(--md-sys-color-primary);
+  --md-filled-icon-button-icon-color: var(--md-sys-color-on-primary);
   transition-property: scale, background-color, opacity;
   transition-duration: 150ms;
   transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
@@ -1631,7 +1631,8 @@ button {
 }
 
 .mobile-send-button.stop {
-  background: var(--ak-color-status-trace);
+  --md-filled-tonal-icon-button-container-color: var(--md-sys-color-error-container);
+  --md-filled-tonal-icon-button-icon-color: var(--md-sys-color-on-error-container);
 }
 
 .mobile-send-button.stop.pending {

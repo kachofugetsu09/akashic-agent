@@ -1,19 +1,21 @@
+@import "../../theme/src/material-tokens.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --shadow: 0 1px 2px var(--ak-color-shadow), 0 0 0 1px var(--ak-color-image-outline);
-  --radius: 6px;
-  --radius-lg: 10px;
-  --radius-xl: 14px;
-  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
-  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
-  --t-fast: 140ms;
-  --t-base: 220ms;
-  --t-slow: 320ms;
-  --display: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --shadow: 0 1px 2px rgb(var(--md-sys-color-shadow-rgb) / 0.16), 0 1px 3px 1px rgb(var(--md-sys-color-shadow-rgb) / 0.08);
+  --radius: var(--md-sys-shape-corner-medium);
+  --radius-lg: var(--md-sys-shape-corner-large);
+  --radius-xl: var(--md-sys-shape-corner-extra-large);
+  --ease-out: var(--ak-sys-motion-standard);
+  --ease-in-out: var(--ak-sys-motion-emphasized);
+  --t-fast: var(--ak-sys-duration-short);
+  --t-base: var(--ak-sys-duration-medium);
+  --t-slow: 400ms;
+  --display: var(--md-ref-typeface-brand);
+  --sans: var(--md-ref-typeface-plain);
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
@@ -24,14 +26,14 @@ body,
 }
 
 body {
-  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--md-ref-typeface-plain);
   font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: var(--ak-color-bg-canvas);
-  color: var(--ak-color-text-primary);
+  background: var(--md-sys-color-surface);
+  color: var(--md-sys-color-on-surface);
 }
 
 /* Public plugin preset. Plugins may use these classes or the matching SDK components. */
@@ -56,10 +58,60 @@ body {
 .ak-plugin-panel {
   min-width: 0;
   overflow: hidden;
-  border: 1px solid var(--ak-color-border-default);
+  border: 0;
   border-radius: var(--radius-lg);
-  background: var(--ak-color-bg-surface);
+  background: var(--md-sys-color-surface-container-low);
 }
+
+.ak-chip {
+  border-radius: var(--md-sys-shape-corner-small);
+  font-weight: 500;
+}
+
+.ak-chip--neutral { color: var(--md-sys-color-on-surface); background: var(--md-sys-color-surface-container-high); }
+.ak-chip--muted { color: var(--md-sys-color-on-surface-variant); background: var(--md-sys-color-surface-container); }
+.ak-chip--accent { color: var(--md-sys-color-on-primary-container); background: var(--md-sys-color-primary-container); }
+.ak-chip--success { color: var(--ak-sys-color-on-success-container); background: var(--ak-sys-color-success-container); }
+.ak-chip--warning { color: var(--ak-sys-color-on-warning-container); background: var(--ak-sys-color-warning-container); }
+.ak-chip--danger { color: var(--md-sys-color-on-error-container); background: var(--md-sys-color-error-container); }
+
+.ak-control-button {
+  justify-content: center;
+  border: 0;
+  border-radius: var(--md-sys-shape-corner-full);
+  padding-inline: 1.5rem;
+  font-family: var(--md-ref-typeface-plain);
+  transition-property: background-color, color, box-shadow, scale;
+  transition-duration: var(--ak-sys-duration-short);
+  transition-timing-function: var(--ak-sys-motion-standard);
+}
+.ak-control-button:active:not(:disabled) { scale: 0.96; }
+.ak-control-button--sm { min-height: 2rem; padding-inline: 0.75rem; font-size: 0.75rem; }
+.ak-control-button--md { min-height: 2.5rem; font-size: 0.875rem; }
+.ak-control-button--lg { min-height: 3rem; font-size: 0.875rem; }
+.ak-control-button--primary { color: var(--md-sys-color-on-primary); background: var(--md-sys-color-primary); }
+.ak-control-button--secondary { color: var(--md-sys-color-primary); box-shadow: inset 0 0 0 1px var(--md-sys-color-outline); background: transparent; }
+.ak-control-button--ghost { color: var(--md-sys-color-primary); background: transparent; }
+.ak-control-button--danger { color: var(--md-sys-color-on-error-container); background: var(--md-sys-color-error-container); }
+.ak-control-button--secondary:hover,
+.ak-control-button--ghost:hover { background: color-mix(in oklch, var(--md-sys-color-primary) 8%, transparent); }
+
+.ak-control-input {
+  min-height: 3.5rem;
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-extra-small);
+  padding-inline: 1rem;
+  color: var(--md-sys-color-on-surface);
+  background: transparent;
+}
+.ak-control-input:focus-visible {
+  border-color: var(--md-sys-color-primary);
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: -2px;
+}
+
+.ak-material-button--sm { --md-filled-button-container-height: 2rem; --md-outlined-button-container-height: 2rem; --md-text-button-container-height: 2rem; --md-filled-tonal-button-container-height: 2rem; }
+.ak-material-button--lg { --md-filled-button-container-height: 3rem; --md-outlined-button-container-height: 3rem; --md-text-button-container-height: 3rem; --md-filled-tonal-button-container-height: 3rem; }
 
 .ak-plugin-toolbar {
   display: flex;

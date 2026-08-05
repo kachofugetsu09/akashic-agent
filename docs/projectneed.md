@@ -207,6 +207,12 @@ APK 或 IPA 必须保留 embedded baseline，远程发现、下载、校验、�
 
 candidate 在 10 秒健康提交前必须由 process-scope attempt lease 持有，Activity 旋转、配置重建或 server switch 不得把它误当成已提交 serving。在该边界前不开放写动作或外链 Activity；GC 只有在物理文件删除成功后才能删除对应 metadata/reference owner，删除失败必须 fail-loud 并保留引用。
 
+### WEBUI-007 Akashic Token 以 Material 3 系统角色表达产品语义
+
+6321 设置、桌面 Chat、共享 Mobile WebUI、Dashboard 和插件公开控件必须从同一个 Akashic Theme Catalog 读取颜色。Catalog 以 Material 3 的 primary、secondary、tertiary、error 与 tonal surface 角色表达通用界面语义，并由 Akashic 扩展 success、warning、trace 和 info 等领域角色；组件库的默认值、插件私有颜色和页面局部常量都不得成为第二主题真源。
+
+颜色必须表达动作、选择、状态或层级：primary 只突出当前主要动作，容器色表达选择和低强度强调，error、warning、success、trace 不能互相借色。布局优先使用留白和 tonal surface 建立层级，边框只表达结构或状态；卡片、胶囊和阴影不得作为所有内容的默认容器。引入 Material 组件不能改变 WEBUI-001～WEBUI-006 的源码、平台能力、状态 owner 与发布边界。
+
 ## 5. Agent 任务合同
 
 本节参考 [OpenAI · Prompting guidance for GPT-5.6](https://developers.openai.com/api/docs/guides/prompt-guidance-gpt-5p6)，并按本项目的数据与权限边界收窄。外部指南提供设计依据，不会自动覆盖本文件条款；指南更新需要评审后再修改 PRM 条款。

@@ -9,7 +9,8 @@ export interface ThemeDefinition {
   label: string;
   status: ThemeStatus;
   colorScheme: ThemeColorScheme;
-  colors: Record<ThemeColorRole, string>;
+  material: Record<MaterialColorRole, string>;
+  domain: Record<DomainColorRole, string>;
 }
 
 export interface ThemeSelection {
@@ -18,16 +19,56 @@ export interface ThemeSelection {
   unavailable: boolean;
 }
 
-const COLOR_ROLES = [
-  "bgCanvas", "bgSurface", "bgSurfaceLow", "bgSurfaceHigh",
-  "textPrimary", "textSecondary", "textMuted", "borderDefault", "borderStrong",
-  "actionPrimary", "onActionPrimary", "actionHover", "actionSoft",
-  "actionContainer", "onActionContainer", "statusError", "statusErrorContainer",
-  "statusWarning", "statusSuccess", "statusTrace", "statusTraceText",
-  "statusTraceContainer", "shadow", "imageOutline",
+const MATERIAL_COLOR_ROLES = [
+  "primary", "onPrimary", "primaryContainer", "onPrimaryContainer",
+  "secondary", "onSecondary", "secondaryContainer", "onSecondaryContainer",
+  "tertiary", "onTertiary", "tertiaryContainer", "onTertiaryContainer",
+  "error", "onError", "errorContainer", "onErrorContainer",
+  "background", "onBackground", "surface", "onSurface", "surfaceVariant", "onSurfaceVariant",
+  "outline", "outlineVariant", "shadow", "scrim", "inverseSurface", "inverseOnSurface",
+  "inversePrimary", "surfaceDim", "surfaceBright", "surfaceContainerLowest",
+  "surfaceContainerLow", "surfaceContainer", "surfaceContainerHigh",
+  "surfaceContainerHighest", "surfaceTint",
 ] as const;
 
-export type ThemeColorRole = (typeof COLOR_ROLES)[number];
+const DOMAIN_COLOR_ROLES = [
+  "success", "onSuccess", "successContainer", "onSuccessContainer",
+  "warning", "onWarning", "warningContainer", "onWarningContainer",
+  "trace", "onTrace", "traceContainer", "onTraceContainer",
+  "info", "onInfo", "infoContainer", "onInfoContainer",
+] as const;
+
+export type MaterialColorRole = (typeof MATERIAL_COLOR_ROLES)[number];
+export type DomainColorRole = (typeof DOMAIN_COLOR_ROLES)[number];
+
+type LegacyColorSource = ["material", MaterialColorRole] | ["domain", DomainColorRole];
+
+const LEGACY_COLOR_ALIASES = {
+  bgCanvas: ["material", "background"],
+  bgSurface: ["material", "surfaceContainerLowest"],
+  bgSurfaceLow: ["material", "surfaceContainerLow"],
+  bgSurfaceHigh: ["material", "surfaceContainerHigh"],
+  textPrimary: ["material", "onSurface"],
+  textSecondary: ["material", "onSurfaceVariant"],
+  textMuted: ["material", "outline"],
+  borderDefault: ["material", "outlineVariant"],
+  borderStrong: ["material", "outline"],
+  actionPrimary: ["material", "primary"],
+  onActionPrimary: ["material", "onPrimary"],
+  actionHover: ["material", "primary"],
+  actionSoft: ["material", "primaryContainer"],
+  actionContainer: ["material", "primaryContainer"],
+  onActionContainer: ["material", "onPrimaryContainer"],
+  statusError: ["material", "error"],
+  statusErrorContainer: ["material", "errorContainer"],
+  statusWarning: ["domain", "warning"],
+  statusSuccess: ["domain", "success"],
+  statusTrace: ["domain", "trace"],
+  statusTraceText: ["domain", "trace"],
+  statusTraceContainer: ["domain", "traceContainer"],
+  shadow: ["material", "shadow"],
+  imageOutline: ["material", "outlineVariant"],
+} as const satisfies Record<string, LegacyColorSource>;
 
 const THEME_COOKIE = "akashic_theme";
 const THEME_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -39,7 +80,7 @@ function validateCatalog(value: unknown): { defaultThemeId: string; themes: Them
   // 1. 校验目录结构与主题身份
   if (!value || typeof value !== "object") throw new Error("Theme catalog 不是对象");
   const catalog = value as { version?: unknown; defaultThemeId?: unknown; themes?: unknown };
-  if (catalog.version !== 1 || typeof catalog.defaultThemeId !== "string" || !Array.isArray(catalog.themes)) {
+  if (catalog.version !== 2 || typeof catalog.defaultThemeId !== "string" || !Array.isArray(catalog.themes)) {
     throw new Error("Theme catalog 结构无效");
   }
   const themes = catalog.themes.map((raw, index) => {
@@ -59,21 +100,15 @@ function validateCatalog(value: unknown): { defaultThemeId: string; themes: Them
     }
 
     // 2. 校验所有公开颜色角色完整且可解析
-    if (!theme.colors || typeof theme.colors !== "object") {
-      throw new Error(`Theme catalog themes[${index}].colors 无效`);
-    }
-    const colors = theme.colors as Record<string, unknown>;
-    for (const role of COLOR_ROLES) {
-      if (typeof colors[role] !== "string" || !HEX_COLOR_PATTERN.test(colors[role])) {
-        throw new Error(`Theme catalog ${theme.id}.${role} 无效`);
-      }
-    }
+    const material = validateColorGroup(theme, "material", MATERIAL_COLOR_ROLES);
+    const domain = validateColorGroup(theme, "domain", DOMAIN_COLOR_ROLES);
     return {
       id: theme.id,
       label: theme.label,
       status: theme.status,
       colorScheme: theme.colorScheme,
-      colors: Object.fromEntries(COLOR_ROLES.map((role) => [role, colors[role]])),
+      material,
+      domain,
     } as ThemeDefinition;
   });
 
@@ -87,6 +122,24 @@ function validateCatalog(value: unknown): { defaultThemeId: string; themes: Them
   return { defaultThemeId: catalog.defaultThemeId, themes };
 }
 
+function validateColorGroup<Role extends string>(
+  theme: Record<string, unknown>,
+  groupName: "material" | "domain",
+  roles: readonly Role[],
+): Record<Role, string> {
+  const rawGroup = theme[groupName];
+  if (!rawGroup || typeof rawGroup !== "object") {
+    throw new Error(`Theme catalog ${String(theme.id)}.${groupName} 无效`);
+  }
+  const group = rawGroup as Record<string, unknown>;
+  for (const role of roles) {
+    if (typeof group[role] !== "string" || !HEX_COLOR_PATTERN.test(group[role])) {
+      throw new Error(`Theme catalog ${String(theme.id)}.${groupName}.${role} 无效`);
+    }
+  }
+  return Object.fromEntries(roles.map((role) => [role, group[role]])) as Record<Role, string>;
+}
+
 const CATALOG = validateCatalog(catalogJson);
 const THEME_BY_ID = new Map(CATALOG.themes.map((theme) => [theme.id, theme]));
 let selection: ThemeSelection = {
@@ -95,7 +148,7 @@ let selection: ThemeSelection = {
   unavailable: false,
 };
 
-function cssName(role: ThemeColorRole): string {
+function cssName(role: string): string {
   return role.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
 }
 
@@ -105,14 +158,22 @@ function rgbChannels(value: string): string {
 
 function themeCss(): string {
   return CATALOG.themes.map((theme) => {
-    const declarations = COLOR_ROLES.flatMap((role) => {
-      const value = theme.colors[role];
-      const name = cssName(role);
-      return [`--ak-color-${name}:${value}`, `--ak-color-${name}-rgb:${rgbChannels(value)}`];
-    });
+    const declarations = MATERIAL_COLOR_ROLES.flatMap((role) => colorDeclarations("md-sys-color", role, theme.material[role]));
+    declarations.push(...DOMAIN_COLOR_ROLES.flatMap((role) => colorDeclarations("ak-sys-color", role, theme.domain[role])));
+    for (const [legacyRole, [group, role]] of Object.entries(LEGACY_COLOR_ALIASES)) {
+      const value = group === "material"
+        ? theme.material[role as MaterialColorRole]
+        : theme.domain[role as DomainColorRole];
+      declarations.push(...colorDeclarations("ak-color", legacyRole, value));
+    }
     declarations.push(`color-scheme:${theme.colorScheme}`);
     return `:root[data-theme="${theme.id}"]{${declarations.join(";")}}`;
   }).join("\n");
+}
+
+function colorDeclarations(namespace: string, role: string, value: string): string[] {
+  const name = cssName(role);
+  return [`--${namespace}-${name}:${value}`, `--${namespace}-${name}-rgb:${rgbChannels(value)}`];
 }
 
 function installThemeCss(): void {

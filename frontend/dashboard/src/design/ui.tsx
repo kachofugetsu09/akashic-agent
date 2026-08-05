@@ -3,6 +3,7 @@ import { SunMoon } from "lucide-react";
 import { cn } from "./cn";
 import { renderMarkdown } from "../format";
 import { cycleTheme, themes, useTheme } from "../../../theme/src/theme-runtime";
+import { MaterialButton } from "../../../theme/src/material-react";
 
 // ---------------------------------------------------------------------------
 // Shared primitives for the dashboard and the /design storybook.
@@ -50,7 +51,7 @@ export function Tile({
   padded?: boolean;
 }) {
   return (
-    <div className={cn("relative rounded border border-border bg-surface", padded && "p-4", className)}>
+    <div className={cn("relative rounded-xl bg-surface-2", padded && "p-5", className)}>
       {label && (
         <div className="mb-4 flex items-center justify-between">
           <Label>{label}</Label>
@@ -152,19 +153,12 @@ export function JsonView({ value, className }: { value: unknown; className?: str
 export type BtnVariant = "primary" | "secondary" | "ghost" | "danger";
 export type BtnSize = "sm" | "md" | "lg";
 
-const BTN_SIZES: Record<BtnSize, string> = {
-  sm: "h-7 px-2.5 text-[12px]",
-  md: "h-8 px-3 text-[13px]",
-  lg: "h-10 px-4 text-[14px]",
-};
-
-const BTN_VARIANTS: Record<BtnVariant, string> = {
-  primary:
-    "bg-accent text-accent-ink hover:brightness-110 active:brightness-95 shadow-[0_1px_0_0_rgba(255,255,255,0.12)_inset]",
-  secondary: "bg-transparent text-fg border border-border hover:border-border-strong",
-  ghost: "bg-transparent text-fg hover:bg-surface-2",
-  danger: "bg-danger/20 text-danger hover:bg-danger/30 active:bg-danger/25",
-};
+const BTN_VARIANTS = {
+  primary: "filled",
+  secondary: "outlined",
+  ghost: "text",
+  danger: "danger",
+} as const;
 
 export function Btn({
   children,
@@ -183,25 +177,19 @@ export function Btn({
   loading?: boolean;
   className?: string;
   type?: "button" | "submit" | "reset";
-  onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  onClick?: (e: React.MouseEvent<HTMLElement>) => void;
 }) {
   return (
-    <button
+    <MaterialButton
       type={type}
       onClick={onClick}
-      disabled={disabled || loading}
-      className={cn(
-        "inline-flex select-none items-center gap-2 rounded-md font-medium tracking-tight transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40",
-        BTN_SIZES[size],
-        BTN_VARIANTS[variant],
-        className,
-      )}
+      disabled={disabled}
+      loading={loading}
+      variant={BTN_VARIANTS[variant]}
+      className={cn(`ak-material-button--${size}`, className)}
     >
-      {loading && (
-        <span className="inline-block h-3 w-3 animate-spin rounded-full border border-current border-t-transparent" />
-      )}
       {children}
-    </button>
+    </MaterialButton>
   );
 }
 
@@ -212,12 +200,12 @@ export function Btn({
 export type ChipTone = "neutral" | "success" | "warning" | "danger" | "muted" | "accent";
 
 const CHIP_TONES: Record<ChipTone, string> = {
-  neutral: "bg-surface-2 text-fg",
-  success: "bg-success/15 text-success",
-  warning: "bg-warning/15 text-warning",
-  danger: "bg-danger/15 text-danger",
-  muted: "bg-surface-2 text-muted",
-  accent: "bg-accent-soft text-accent",
+  neutral: "ak-chip--neutral",
+  success: "ak-chip--success",
+  warning: "ak-chip--warning",
+  danger: "ak-chip--danger",
+  muted: "ak-chip--muted",
+  accent: "ak-chip--accent",
 };
 
 const CHIP_DOTS: Record<ChipTone, string> = {
@@ -243,7 +231,7 @@ export function Chip({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-sm px-2 py-0.5 font-sans text-[11px] tabular-nums",
+        "ak-chip inline-flex items-center gap-1.5 px-2.5 py-1 font-sans text-[11px] tabular-nums",
         CHIP_TONES[tone],
         className,
       )}

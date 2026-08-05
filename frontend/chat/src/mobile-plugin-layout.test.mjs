@@ -254,11 +254,11 @@ test("user message bubble uses a defined secondary container token", () => {
 test("fixed mobile chrome stays opaque over the native window", () => {
   assert.match(
     platformStyles,
-    /\.mobile-topbar\s*\{[^}]*background:\s*var\(--ak-color-bg-canvas\);/,
+    /\.mobile-topbar\s*\{[^}]*background:\s*var\(--md-sys-color-surface\);/,
   );
   assert.match(
     platformStyles,
-    /\.mobile-composer-zone\s*\{[^}]*background:\s*var\(--ak-color-bg-canvas\);/,
+    /\.mobile-composer-zone\s*\{[^}]*background:\s*var\(--md-sys-color-surface\);/,
   );
   assert.doesNotMatch(
     platformStyles,

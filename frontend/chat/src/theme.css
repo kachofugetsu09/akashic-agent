@@ -1,15 +1,17 @@
+@import "../../theme/src/material-tokens.css";
+
 :root {
   font-family: Roboto, "Noto Sans SC", system-ui, sans-serif;
   font-synthesis: none;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   --radius: 1rem;
-  --m-shape-extra-small: 4px;
-  --m-shape-small: 8px;
-  --m-shape-medium: 12px;
-  --m-shape-large: 16px;
-  --m-shape-large-increased: 20px;
-  --m-shape-full: 9999px;
+  --m-shape-extra-small: var(--md-sys-shape-corner-extra-small);
+  --m-shape-small: var(--md-sys-shape-corner-small);
+  --m-shape-medium: var(--md-sys-shape-corner-medium);
+  --m-shape-large: var(--md-sys-shape-corner-large);
+  --m-shape-large-increased: var(--md-sys-shape-corner-extra-large);
+  --m-shape-full: var(--md-sys-shape-corner-full);
   --shadow-border:
     0 0 0 1px var(--ak-color-image-outline),
     0 1px 2px -1px var(--ak-color-image-outline),

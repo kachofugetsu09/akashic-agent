@@ -76,8 +76,8 @@ input {
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
-  border-right: 1px solid var(--ak-color-border-default);
-  background: var(--ak-color-bg-surface-low);
+  border-right: 0;
+  background: var(--md-sys-color-surface-container-low);
 }
 
 .chat-sidebar-brand {
@@ -268,7 +268,7 @@ input {
   min-width: 0;
   min-height: 0;
   flex-direction: column;
-  background: var(--ak-color-bg-canvas);
+  background: var(--md-sys-color-surface);
 }
 
 .conversation {
@@ -296,16 +296,17 @@ input {
 .home-state h1 {
   margin: 0 0 88px;
   color: var(--ak-color-text-primary);
-  font-size: clamp(26px, 3.1vw, 34px);
+  font-family: var(--md-ref-typeface-brand);
+  font-size: clamp(1.75rem, 3.1vw, 2.25rem);
   font-weight: 500;
   line-height: 1.2;
 }
 
 .role-divider {
   width: min(100%, 820px);
-  height: 1px;
+  height: 0;
   margin: -6px 0;
-  background: var(--ak-color-border-default);
+  background: transparent;
 }
 
 .user-divider {
@@ -336,17 +337,16 @@ input {
 
 .composer {
   min-height: 66px;
-  border: 1px solid var(--ak-color-border-default);
-  border-radius: 18px;
-  padding: 4px 9px;
-  background: var(--ak-color-bg-surface-high);
-  box-shadow: 0 2px 8px rgb(0 0 0 / 0.08);
-  transition: border-color 150ms ease, box-shadow 150ms ease;
+  border: 0;
+  border-radius: var(--md-sys-shape-corner-extra-large);
+  padding: 6px 10px;
+  background: var(--md-sys-color-surface-container-high);
+  box-shadow: 0 1px 2px rgb(var(--md-sys-color-shadow-rgb) / 0.12);
+  transition: box-shadow var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .composer:focus-within {
-  border-color: rgb(var(--ak-color-action-primary-rgb) / 0.72);
-  box-shadow: 0 2px 8px var(--ak-color-shadow), 0 0 0 1px rgb(var(--ak-color-action-primary-rgb) / 0.18);
+  box-shadow: 0 0 0 2px var(--md-sys-color-primary), 0 2px 8px rgb(var(--md-sys-color-shadow-rgb) / 0.12);
 }
 
 form.composer:focus-within [data-slot="input-group"] {
