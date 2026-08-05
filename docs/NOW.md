@@ -4,7 +4,7 @@
 
 ## P0 · 插件递归自验证
 
-- 为插件 cache、snapshot store 与 reload journal 实现可恢复的 stable/latest 双 pointer、不可变 artifact、单一未决候选、promote/discard/status 和 install 等待 `latest_ready` 终态。
+- 将 `plugin-install` 接入 runtime owner，暴露 candidate status/promote/discard control RPC 与 CLI，并让安装命令等待 `latest_ready` 终态。
 - 扩展 `main.py exec` 与 control metadata：支持 `runtime=stable|latest`、programmatic 新 session 默认只读记忆、显式 `persist_memory`、attached disconnect cancellation，以及 Tool/Skill catalog 随绑定 snapshot 冻结。
 - 完成 turn-local/shared-state owner 审计，并用 pointer、memory write set、真实 tool item、timer 投递顺序和 crash recovery mutants 验收完整合同。
 - `develop-akashic-plugin` 已可在隔离 runtime 使用 current-snapshot call-return 自验证；实现 stable/latest 后再启用正式 runtime 的安全候选隔离与递归 promote/discard 流程。

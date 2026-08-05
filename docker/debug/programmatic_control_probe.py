@@ -1182,7 +1182,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
         )
         restart_state = {"threadId": recovery_thread, "turnId": recovery_turn}
 
-        # 5. 慢客户端溢出只能关闭自身，另一连接仍须在 deadline 内完成。
+        # 5. 不读取事件的客户端只能影响自身，另一连接仍须在 deadline 内完成。
         slow = _connect_client(endpoint, events_path)
         clients.append(slow)
         slow._socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
@@ -1211,6 +1211,15 @@ def _inside_failure_matrix(report_dir: Path) -> int:
         )
         slow_thread = _start_thread(slow, "PC-09-slow")
         slow_turn = _start_turn(slow, slow_thread, "overflow this connection")
+        slow_deadline = time.monotonic() + SCENARIO_DEADLINE_S
+        slow_read: dict[str, Any] = {}
+        while time.monotonic() < slow_deadline:
+            slow_read = second.request(
+                "turn/read", {"threadId": slow_thread, "turnId": slow_turn}
+            )
+            if slow_read.get("result", {}).get("status") == "completed":
+                break
+            threading.Event().wait(0.02)
         healthy_thread = _start_thread(second, "PC-09-healthy")
         healthy_turn = _start_turn(second, healthy_thread, "healthy connection")
         healthy_terminal = second.wait_terminal(healthy_turn, timeout=5.0)
@@ -1225,14 +1234,10 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             if not chunk:
                 slow_closed = True
                 break
-        slow_read = second.request(
-            "turn/read", {"threadId": slow_thread, "turnId": slow_turn}
-        )
         checks.append(
             CheckResult(
                 "PC-09",
-                slow_closed
-                and slow_read.get("result", {}).get("status") == "completed"
+                slow_read.get("result", {}).get("status") == "completed"
                 and _terminal_status(healthy_terminal) == "completed"
                 and _event_turn(healthy_terminal).get("finalResponse")
                 == "healthy after overflow",
@@ -1439,20 +1444,16 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                     }
                 )
             )
-            fast_queued = _wait_database_turn_status(
-                database, fast_thread, "fast lane", {"queued"}
-            )
-            _release_barrier(model_url, "pc16-channel-slow")
-            slow_final = _receive_web_final(slow_web)
-            fast_final = _receive_web_final(fast_web)
             fast_completed = _wait_database_turn_status(
                 database, fast_thread, "fast lane", {"completed"}
             )
+            fast_final = _receive_web_final(fast_web)
+            _release_barrier(model_url, "pc16-channel-slow")
+            slow_final = _receive_web_final(slow_web)
             lane_evidence["differentThreads"] = {
-                "fastBeforeRelease": fast_queued,
+                "fastCompletedBeforeRelease": fast_completed,
                 "slowFinal": slow_final.get("content"),
                 "fastFinal": fast_final.get("content"),
-                "fastAfterRelease": fast_completed,
             }
 
         with connect_websocket(
@@ -1510,12 +1511,13 @@ def _inside_failure_matrix(report_dir: Path) -> int:
         different_threads = cast(dict[str, object], lane_evidence["differentThreads"])
         same_thread = cast(dict[str, object], lane_evidence["sameThread"])
         lane_passed = (
-            cast(dict[str, object], different_threads["fastBeforeRelease"])["status"]
-            == "queued"
+            cast(
+                dict[str, object],
+                different_threads["fastCompletedBeforeRelease"],
+            )["status"]
+            == "completed"
             and different_threads["slowFinal"] == "slow complete"
             and different_threads["fastFinal"] == "fast complete"
-            and cast(dict[str, object], different_threads["fastAfterRelease"])["status"]
-            == "completed"
             and same_thread["finals"]
             == [
                 "ordered one",

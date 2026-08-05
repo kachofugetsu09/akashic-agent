@@ -5,23 +5,30 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from agent.plugins.artifacts import ArtifactSelector, read_pointers, resolve_pointer
+
 
 @dataclass(frozen=True)
 class ResolvedPluginSource:
     plugin_root: Path
     source_type: Literal["builtin", "installed"]
     marketplace: str = ""
+    plugin_name: str = ""
 
 
 def resolve_plugin_sources(
     plugin_dirs: list[Path],
     *,
     installed_cache_root: Path | None = None,
+    installed_selector: ArtifactSelector = "stable",
 ) -> list[ResolvedPluginSource]:
     discovered: list[ResolvedPluginSource] = []
     seen: set[Path] = set()
     if installed_cache_root is not None:
-        for source in _iter_installed_plugin_roots(installed_cache_root):
+        for source in _iter_installed_plugin_roots(
+            installed_cache_root,
+            selector=installed_selector,
+        ):
             normalized = source.plugin_root.resolve(strict=False)
             if normalized in seen:
                 continue
@@ -54,7 +61,11 @@ def _iter_declared_plugin_roots(root: Path) -> list[Path]:
     return result
 
 
-def _iter_installed_plugin_roots(installed_cache_root: Path) -> list[ResolvedPluginSource]:
+def _iter_installed_plugin_roots(
+    installed_cache_root: Path,
+    *,
+    selector: ArtifactSelector,
+) -> list[ResolvedPluginSource]:
     if not installed_cache_root.exists() and not installed_cache_root.is_symlink():
         return []
     if installed_cache_root.is_symlink():
@@ -72,6 +83,18 @@ def _iter_installed_plugin_roots(installed_cache_root: Path) -> list[ResolvedPlu
                 continue
             _require_cache_directory(plugin_dir, "plugin")
             _require_safe_cache_segment(plugin_dir, "plugin")
+            has_pointers, selected = _resolve_installed_pointer(plugin_dir, selector)
+            if has_pointers:
+                if selected is not None:
+                    result.append(
+                        ResolvedPluginSource(
+                            plugin_root=selected,
+                            source_type="installed",
+                            marketplace=marketplace_dir.name,
+                            plugin_name=plugin_dir.name,
+                        )
+                    )
+                continue
             version_dirs: list[Path] = []
             for child in sorted(plugin_dir.iterdir()):
                 if child.name.startswith("."):
@@ -90,9 +113,21 @@ def _iter_installed_plugin_roots(installed_cache_root: Path) -> list[ResolvedPlu
                     plugin_root=version_dirs[0],
                     source_type="installed",
                     marketplace=marketplace_dir.name,
+                    plugin_name=plugin_dir.name,
                 )
             )
     return result
+
+
+def _resolve_installed_pointer(
+    plugin_dir: Path,
+    selector: ArtifactSelector,
+) -> tuple[bool, Path | None]:
+    pointers = read_pointers(plugin_dir)
+    if pointers is None:
+        return False, None
+    pointer = pointers.stable if selector == "stable" else pointers.latest
+    return True, resolve_pointer(plugin_dir, pointer)
 
 
 def _require_cache_directory(path: Path, label: str) -> None:

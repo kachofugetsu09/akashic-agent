@@ -9,6 +9,11 @@ from pathlib import Path
 import pytest
 
 import agent.plugins.install as install_module
+from agent.plugins.artifacts import (
+    ArtifactPointer,
+    discard_latest_pointer,
+    read_pointer,
+)
 from agent.plugins.install import (
     install_git_plugin,
     set_installed_plugin_enabled,
@@ -66,7 +71,16 @@ def test_install_git_plugin_uses_programmatic_declaration(tmp_path: Path) -> Non
         plugins_home=home,
     )
 
-    assert result.installed_path == home / "cache" / "lab" / "feed" / "1.0.0"
+    assert result.installed_path.parent == (
+        home / "cache" / "lab" / "feed" / ".artifacts"
+    )
+    assert result.installed_path.name.startswith("1.0.0-")
+    assert result.source_revision == _git_output(repo, "rev-parse", "HEAD")
+    assert result.staged_candidate is False
+    pointer_state = result.installed_path.parents[1] / ".pointers.json"
+    assert pointer_state.is_file()
+    assert not (pointer_state.parent / ".stable.json").exists()
+    assert not (pointer_state.parent / ".latest.json").exists()
     assert (result.installed_path / "plugin.py").exists()
     assert (result.data_path / "state.json").exists()
     manifest = tomllib.loads((home / "manifest.toml").read_text(encoding="utf-8"))
@@ -238,7 +252,9 @@ def test_install_failure_restores_previous_cache_and_manifest(
         )
         assert len(resolved) == 1
         assert resolved[0].plugin_root == first.installed_path
-        assert (first.installed_path / "plugin.py").read_text(encoding="utf-8") == old_content
+        assert (first.installed_path / "plugin.py").read_text(
+            encoding="utf-8"
+        ) == old_content
         raise RuntimeError(f"prepare failed: {plugin_root}")
 
     monkeypatch.setattr(install_module, "_prepare_plugin_mcp_runtimes", fail_prepare)
@@ -250,7 +266,11 @@ def test_install_failure_restores_previous_cache_and_manifest(
             plugins_home=home,
         )
 
-    assert (first.installed_path / "plugin.py").read_text(encoding="utf-8") == old_content
+    assert (first.installed_path / "plugin.py").read_text(
+        encoding="utf-8"
+    ) == old_content
+    plugin_base = home / "cache" / "lab" / "feed"
+    assert read_pointer(plugin_base, "stable") == read_pointer(plugin_base, "latest")
     assert tomllib.loads((home / "manifest.toml").read_text(encoding="utf-8")) == {
         "plugins": {"feed@lab": {"enabled": True}}
     }
@@ -272,7 +292,9 @@ def test_install_failure_restores_previous_cache_and_manifest(
             marketplace="lab",
             plugins_home=home,
         )
-    assert (first.installed_path / "plugin.py").read_text(encoding="utf-8") == old_content
+    assert (first.installed_path / "plugin.py").read_text(
+        encoding="utf-8"
+    ) == old_content
 
 
 def test_install_rejects_unsafe_path_metadata(tmp_path: Path) -> None:
@@ -302,6 +324,150 @@ def test_install_rejects_unsafe_path_metadata(tmp_path: Path) -> None:
             marketplace="lab",
             plugins_home=tmp_path / "plugins-home",
         )
+
+
+def test_install_can_stage_one_latest_without_changing_stable(tmp_path: Path) -> None:
+    repo = tmp_path / "feed"
+    repo.mkdir()
+    plugin_path = repo / "plugin.py"
+    plugin_path.write_text(
+        "from agent.plugins import Plugin\n"
+        "class FeedPlugin(Plugin):\n"
+        "    name = 'feed'\n"
+        "    version = '1.0.0'\n"
+        "    marker = 'stable'\n",
+        encoding="utf-8",
+    )
+    _commit(repo)
+    home = tmp_path / "plugins-home"
+    first = install_git_plugin(
+        workspace=tmp_path / "workspace",
+        source=str(repo),
+        marketplace="lab",
+        plugins_home=home,
+    )
+    plugin_path.write_text(
+        plugin_path.read_text(encoding="utf-8").replace("stable", "latest"),
+        encoding="utf-8",
+    )
+    _commit(repo)
+
+    second = install_git_plugin(
+        workspace=tmp_path / "workspace",
+        source=str(repo),
+        marketplace="lab",
+        plugins_home=home,
+        stage_candidate=True,
+    )
+
+    stable = resolve_plugin_sources([], installed_cache_root=home / "cache")[0]
+    latest = resolve_plugin_sources(
+        [],
+        installed_cache_root=home / "cache",
+        installed_selector="latest",
+    )[0]
+    assert stable.plugin_root == first.installed_path
+    assert latest.plugin_root == second.installed_path
+    assert first.installed_path.exists()
+    assert second.installed_path.exists()
+    assert second.staged_candidate is True
+    with pytest.raises(RuntimeError, match="等待 promote/discard"):
+        install_git_plugin(
+            workspace=tmp_path / "workspace",
+            source=str(repo),
+            marketplace="lab",
+            plugins_home=home,
+            stage_candidate=True,
+        )
+
+
+def test_first_staged_install_has_no_stable_until_promotion(tmp_path: Path) -> None:
+    repo = tmp_path / "feed"
+    repo.mkdir()
+    (repo / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class FeedPlugin(Plugin):\n"
+        "    name = 'feed'\n"
+        "    version = '1.0.0'\n",
+        encoding="utf-8",
+    )
+    _commit(repo)
+    home = tmp_path / "plugins-home"
+
+    result = install_git_plugin(
+        workspace=tmp_path / "workspace",
+        source=str(repo),
+        marketplace="lab",
+        plugins_home=home,
+        stage_candidate=True,
+    )
+
+    assert resolve_plugin_sources([], installed_cache_root=home / "cache") == []
+    assert (
+        resolve_plugin_sources(
+            [],
+            installed_cache_root=home / "cache",
+            installed_selector="latest",
+        )[0].plugin_root
+        == result.installed_path
+    )
+
+    _ = discard_latest_pointer(result.installed_path.parents[1])
+
+    assert read_pointer(result.installed_path.parents[1], "stable") == ArtifactPointer(
+        None
+    )
+    assert read_pointer(result.installed_path.parents[1], "latest") == ArtifactPointer(
+        None
+    )
+    assert resolve_plugin_sources([], installed_cache_root=home / "cache") == []
+    assert (
+        resolve_plugin_sources(
+            [],
+            installed_cache_root=home / "cache",
+            installed_selector="latest",
+        )
+        == []
+    )
+
+
+def test_default_update_keeps_immediate_stable_compatibility(tmp_path: Path) -> None:
+    repo = tmp_path / "feed"
+    repo.mkdir()
+    plugin_path = repo / "plugin.py"
+    plugin_path.write_text(
+        "from agent.plugins import Plugin\n"
+        "class FeedPlugin(Plugin):\n"
+        "    name = 'feed'\n"
+        "    version = '1.0.0'\n"
+        "    marker = 'v1'\n",
+        encoding="utf-8",
+    )
+    _commit(repo)
+    home = tmp_path / "plugins-home"
+    first = install_git_plugin(
+        workspace=tmp_path / "workspace",
+        source=str(repo),
+        marketplace="lab",
+        plugins_home=home,
+    )
+    plugin_path.write_text(
+        plugin_path.read_text(encoding="utf-8").replace("v1", "v2"),
+        encoding="utf-8",
+    )
+    _commit(repo)
+
+    second = install_git_plugin(
+        workspace=tmp_path / "workspace",
+        source=str(repo),
+        marketplace="lab",
+        plugins_home=home,
+    )
+
+    resolved = resolve_plugin_sources([], installed_cache_root=home / "cache")
+    assert resolved[0].plugin_root == second.installed_path
+    assert second.staged_candidate is False
+    assert first.installed_path.exists()
 
 
 def test_install_rejects_visible_nonversion_cache_entry(tmp_path: Path) -> None:

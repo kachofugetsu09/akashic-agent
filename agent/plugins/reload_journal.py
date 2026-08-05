@@ -10,25 +10,34 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, cast
 
-
 ReloadPhase = Literal[
     "preparing",
     "prepared",
     "validating",
     "commit_started",
+    "latest_ready",
+    "discarding",
+    "promoting",
     "committed",
     "draining",
     "complete",
     "aborted",
     "recovered",
 ]
-RecoveryActionName = Literal["discard_candidate", "restore_committed"]
+RecoveryActionName = Literal[
+    "discard_candidate",
+    "restore_candidate",
+    "restore_committed",
+]
 _TERMINAL_PHASES = frozenset({"complete", "aborted", "recovered"})
 _TRANSITIONS: dict[str, frozenset[str]] = {
     "preparing": frozenset({"prepared", "aborted"}),
     "prepared": frozenset({"validating", "aborted"}),
     "validating": frozenset({"commit_started", "aborted"}),
-    "commit_started": frozenset({"committed", "aborted", "recovered"}),
+    "commit_started": frozenset({"latest_ready", "committed", "aborted", "recovered"}),
+    "latest_ready": frozenset({"discarding", "promoting", "recovered"}),
+    "discarding": frozenset({"aborted"}),
+    "promoting": frozenset({"discarding", "committed", "recovered"}),
     "committed": frozenset({"draining", "complete", "recovered"}),
     "draining": frozenset({"complete", "recovered"}),
 }
@@ -63,6 +72,7 @@ class ReloadRecoveryAction:
     plugin_id: str
     generation_id: str
     source_revision: str
+    phase: ReloadPhase
     action: RecoveryActionName
 
 
@@ -198,24 +208,25 @@ class ReloadJournal:
                 plugin_id=str(row[1]),
                 generation_id=str(row[2]),
                 source_revision=str(row[3]),
-                action=(
-                    "restore_committed"
-                    if str(row[4]) in {"commit_started", "committed", "draining"}
-                    else "discard_candidate"
-                ),
+                phase=cast(ReloadPhase, str(row[4])),
+                action=_recovery_action(str(row[4])),
             )
             for row in rows
         ]
         return tuple(
             sorted(
                 actions,
-                key=lambda item: (item.action != "restore_committed", item.tx_id),
+                key=lambda item: (
+                    item.action == "discard_candidate",
+                    item.action == "restore_candidate",
+                    item.tx_id,
+                ),
             )
         )
 
     def finish_recovery(self, action: ReloadRecoveryAction) -> None:
         phase: ReloadPhase = (
-            "recovered" if action.action == "restore_committed" else "aborted"
+            "aborted" if action.action == "discard_candidate" else "recovered"
         )
         self.advance(
             action.tx_id,
@@ -226,8 +237,7 @@ class ReloadJournal:
 
     def _initialize(self) -> None:
         with self._connect() as conn:
-            conn.executescript(
-                """
+            conn.executescript("""
                 CREATE TABLE IF NOT EXISTS reload_transactions (
                     tx_id TEXT PRIMARY KEY,
                     plugin_id TEXT NOT NULL,
@@ -252,8 +262,7 @@ class ReloadJournal:
                 ON reload_transactions(phase);
                 CREATE INDEX IF NOT EXISTS idx_reload_events_tx
                 ON reload_events(tx_id, sequence);
-                """
-            )
+                """)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -310,3 +319,11 @@ def _record(row: sqlite3.Row | tuple[object, ...]) -> ReloadTransactionRecord:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _recovery_action(phase: str) -> RecoveryActionName:
+    if phase == "latest_ready":
+        return "restore_candidate"
+    if phase in {"commit_started", "promoting", "committed", "draining"}:
+        return "restore_committed"
+    return "discard_candidate"

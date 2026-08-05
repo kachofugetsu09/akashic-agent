@@ -1317,6 +1317,7 @@ class _DrainWriter:
         self.gate = gate
         self.fail = fail
         self.frames: list[bytes] = []
+        self.closed = False
 
     def write(self, payload: bytes) -> None:
         self.frames.append(payload)
@@ -1325,6 +1326,9 @@ class _DrainWriter:
         await self.gate.wait()
         if self.fail:
             raise ConnectionError("disconnected")
+
+    def close(self) -> None:
+        self.closed = True
 
 
 @pytest.mark.asyncio
@@ -1360,6 +1364,22 @@ async def test_ndjson_stream_frame_does_not_wait_for_writer_drain() -> None:
     gate.set()
     await connection._queue.put(None)
     await writer_task
+
+
+@pytest.mark.asyncio
+async def test_ndjson_outbound_queue_overflow_closes_only_its_writer() -> None:
+    connection = object.__new__(NdjsonConnection)
+    connection._queue = asyncio.Queue(1)
+    writer = _DrainWriter(asyncio.Event())
+    connection._writer = writer
+
+    await connection.send({"method": "item/completed", "params": {"index": 1}})
+    with pytest.raises(ConnectionError, match="outbound queue is full"):
+        await connection.send(
+            {"method": "item/completed", "params": {"index": 2}}
+        )
+
+    assert writer.closed is True
 
 
 @pytest.mark.asyncio

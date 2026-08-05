@@ -376,11 +376,21 @@ cancelled → discard candidate when owned and safe → report terminal
 
 ### Phase 2：引入 stable/latest
 
-1. cache 改成不可变 artifact identity，旧 stable 不被同版本更新覆盖。
-2. snapshot store 持有 stable/latest 与单一 candidate transaction。
-3. reload journal 持久化 pointer descriptor 和恢复阶段。
-4. `plugin-install` 由 runtime owner 完成 latest_ready 终态。
-5. 加入 promote/discard/status。
+1. [完成] cache 改成 generation-addressed artifact identity，旧 stable 不被候选更新覆盖；现有安装命令保持 immediate stable 兼容，runtime owner 接通后再显式 staged install。
+2. [完成] snapshot store 持有 stable/latest 与单一 candidate transaction。
+3. [完成] reload journal 持久化 `latest_ready` / `promoting` 阶段，并按 durable pointer 恢复 stable 或候选。
+4. [待完成] `plugin-install` 由 runtime owner 完成 latest_ready 终态。
+5. [部分完成] PluginManager 已提供 promote/discard/status；control RPC 与 CLI 尚待接通。
+
+当前 cache 布局如下。两个逻辑 pointer 存在同一个原子状态文件中，避免进程崩溃留下跨文件撕裂状态；pointer 只引用插件目录内的安全相对路径。旧 artifact 在显式卸载前保留，不由 watcher 自动清理：
+
+```text
+cache/<marketplace>/<plugin>/
+├─ .pointers.json          # {stable, latest}
+└─ .artifacts/
+   ├─ <version>-<git-sha-prefix>/
+   └─ ...
+```
 
 ### Phase 3：接通程序化验证
 

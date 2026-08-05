@@ -26,6 +26,7 @@ SnapshotState = Literal[
     "aborted",
     "retired",
 ]
+RuntimeSelector = Literal["stable", "latest"]
 
 @dataclass
 class RuntimeSnapshot:
@@ -369,6 +370,7 @@ class RuntimeSnapshotStore:
         on_drained: Callable[[RuntimeSnapshot], Awaitable[None]] | None = None,
     ) -> None:
         self._current: RuntimeSnapshot | None = None
+        self._latest: RuntimeSnapshot | None = None
         self._snapshots: dict[str, RuntimeSnapshot] = {}
         self._pending: SnapshotTransaction | None = None
         self._on_drained = on_drained
@@ -380,6 +382,19 @@ class RuntimeSnapshotStore:
     @property
     def current(self) -> RuntimeSnapshot | None:
         return self._current
+
+    @property
+    def stable(self) -> RuntimeSnapshot | None:
+        return self._current
+
+    @property
+    def latest(self) -> RuntimeSnapshot | None:
+        return self._latest or self._current
+
+    @property
+    def unpromoted_candidate(self) -> RuntimeSnapshot | None:
+        latest = self.latest
+        return latest if latest is not self._current else None
 
     @property
     def pending_candidate(self) -> RuntimeSnapshot | None:
@@ -429,6 +444,7 @@ class RuntimeSnapshotStore:
         self._adopt(snapshot)
         snapshot.state = "committed"
         self._current = snapshot
+        self._latest = snapshot
         self._snapshots[snapshot.snapshot_id] = snapshot
 
     def begin_publish(
@@ -439,6 +455,8 @@ class RuntimeSnapshotStore:
     ) -> SnapshotTransaction:
         if self._pending is not None:
             raise RuntimeError("已有 RuntimeSnapshot 发布事务")
+        if self.unpromoted_candidate is not None:
+            raise RuntimeError("已有 RuntimeSnapshot 候选等待 promote/discard")
         if candidate.snapshot_id in self._snapshots:
             raise RuntimeError(f"RuntimeSnapshot 已存在: {candidate.snapshot_id}")
         self._adopt(candidate)
@@ -462,6 +480,7 @@ class RuntimeSnapshotStore:
         transaction.candidate.state = "committed"
         transaction.candidate.accepting_leases = True
         self._current = transaction.candidate
+        self._latest = transaction.candidate
         self._pending = None
         previous = transaction.previous
         if previous is not None:
@@ -471,6 +490,97 @@ class RuntimeSnapshotStore:
             self._schedule_drain(previous)
         async with self._condition:
             self._condition.notify_all()
+
+    async def commit_latest(
+        self,
+        transaction: SnapshotTransaction,
+        *,
+        before_open: Callable[[], None] | None = None,
+    ) -> None:
+        """Publish a validation candidate without changing the stable pointer."""
+
+        # 1. Open only the explicitly selected candidate.
+        self._require_pending(transaction)
+        if before_open is not None:
+            before_open()
+        transaction.candidate.state = "committed"
+        transaction.candidate.accepting_leases = True
+        self._latest = transaction.candidate
+        self._pending = None
+
+        # 2. Wake latest waiters while stable readers stay on the previous snapshot.
+        async with self._condition:
+            self._condition.notify_all()
+
+    async def promote_latest(
+        self,
+        *,
+        before_open: Callable[[], None] | None = None,
+        after_open: Callable[[], None] | None = None,
+    ) -> SnapshotTransaction:
+        """Atomically make the ready latest snapshot stable and retire the old stable."""
+
+        # 1. Switch the public pointer without rebuilding the validated snapshot.
+        candidate = self.unpromoted_candidate
+        if candidate is None:
+            raise RuntimeError("没有等待 promote 的 RuntimeSnapshot 候选")
+        if before_open is not None:
+            before_open()
+        previous = self._current
+        self._current = candidate
+        self._latest = candidate
+
+        # 2. manager owner 切换完成后，旧 stable 才能开始 drain。
+        if previous is not None:
+            previous.state = "retired"
+            previous.accepting_leases = False
+        try:
+            if after_open is not None:
+                after_open()
+        except BaseException:
+            self._current = previous
+            self._latest = candidate
+            if previous is not None:
+                previous.state = "committed"
+                previous.accepting_leases = True
+            async with self._condition:
+                self._condition.notify_all()
+            raise
+        if previous is not None:
+            self._schedule_drain(previous)
+        async with self._condition:
+            self._condition.notify_all()
+        return SnapshotTransaction(previous=previous, candidate=candidate)
+
+    async def discard_latest(
+        self,
+        expected: RuntimeSnapshot | None = None,
+    ) -> RuntimeSnapshot:
+        """Discard the ready latest snapshot without changing stable."""
+
+        # 1. Remove candidate admission once; retries resume its failed drain.
+        candidate = self.unpromoted_candidate
+        if candidate is None:
+            if expected is None or expected.state != "aborted":
+                raise RuntimeError("没有等待 discard 的 RuntimeSnapshot 候选")
+            candidate = expected
+            if candidate.snapshot_id not in self._snapshots:
+                return candidate
+        elif expected is not None and candidate is not expected:
+            raise RuntimeError("等待 discard 的 RuntimeSnapshot 候选不一致")
+        if candidate.state != "aborted":
+            candidate.state = "aborted"
+            candidate.accepting_leases = False
+            self._latest = self._current
+        await self.wait_for_no_leases(candidate)
+        self._schedule_drain(candidate)
+
+        # 2. Wait for validation leases and candidate-owned resources to drain.
+        await self._await_drain_tasks((candidate.snapshot_id,))
+        self._raise_drain_failures((candidate.snapshot_id,))
+        async with self._condition:
+            self._condition.notify_all()
+        return candidate
 
     async def abort(self, transaction: SnapshotTransaction) -> None:
         self._require_pending(transaction)
@@ -518,11 +628,13 @@ class RuntimeSnapshotStore:
     async def acquire(
         self,
         snapshot_id: str | None = None,
+        *,
+        selector: RuntimeSelector = "stable",
     ) -> RuntimeSnapshotLease:
         async with self._condition:
             while True:
                 snapshot = (
-                    self._current
+                    self._selected(selector)
                     if snapshot_id is None
                     else self._snapshots.get(snapshot_id)
                 )
@@ -545,16 +657,28 @@ class RuntimeSnapshotStore:
         if leased:
             raise RuntimeError(f"RuntimeSnapshot 仍有 lease: {', '.join(sorted(leased))}")
         await self.retry_drains()
+        latest = self.unpromoted_candidate
+        self._latest = self._current
+        if latest is not None:
+            latest.state = "aborted"
+            latest.accepting_leases = False
+            self._schedule_drain(latest)
         current = self._current
         self._current = None
+        self._latest = None
         if current is not None:
             current.state = "retired"
             self._schedule_drain(current)
             await self.retry_drains()
 
-    def lease(self, snapshot_id: str | None = None) -> RuntimeSnapshotLease:
+    def lease(
+        self,
+        snapshot_id: str | None = None,
+        *,
+        selector: RuntimeSelector = "stable",
+    ) -> RuntimeSnapshotLease:
         snapshot = (
-            self._current
+            self._selected(selector)
             if snapshot_id is None
             else self._snapshots.get(snapshot_id)
         )
@@ -607,7 +731,11 @@ class RuntimeSnapshotStore:
         await self.retry_drains()
 
     def _schedule_drain(self, snapshot: RuntimeSnapshot) -> None:
-        if snapshot.state not in {"retired", "aborted"} or snapshot.lease_count:
+        if (
+            self._snapshots.get(snapshot.snapshot_id) is not snapshot
+            or snapshot.state not in {"retired", "aborted"}
+            or snapshot.lease_count
+        ):
             return
         existing = self._drain_tasks.get(snapshot.snapshot_id)
         if existing is not None and not existing.done():
@@ -665,3 +793,10 @@ class RuntimeSnapshotStore:
 
     def _adopt(self, snapshot: RuntimeSnapshot) -> None:
         snapshot.claim(self._token)
+
+    def _selected(self, selector: RuntimeSelector) -> RuntimeSnapshot | None:
+        if selector == "stable":
+            return self._current
+        if selector == "latest":
+            return self.latest
+        raise ValueError(f"未知 RuntimeSnapshot selector: {selector}")
