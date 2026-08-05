@@ -1211,6 +1211,15 @@ def _inside_failure_matrix(report_dir: Path) -> int:
         )
         slow_thread = _start_thread(slow, "PC-09-slow")
         slow_turn = _start_turn(slow, slow_thread, "overflow this connection")
+        slow_deadline = time.monotonic() + SCENARIO_DEADLINE_S
+        slow_read: dict[str, Any] = {}
+        while time.monotonic() < slow_deadline:
+            slow_read = second.request(
+                "turn/read", {"threadId": slow_thread, "turnId": slow_turn}
+            )
+            if slow_read.get("result", {}).get("status") == "completed":
+                break
+            threading.Event().wait(0.02)
         healthy_thread = _start_thread(second, "PC-09-healthy")
         healthy_turn = _start_turn(second, healthy_thread, "healthy connection")
         healthy_terminal = second.wait_terminal(healthy_turn, timeout=5.0)
@@ -1225,9 +1234,6 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             if not chunk:
                 slow_closed = True
                 break
-        slow_read = second.request(
-            "turn/read", {"threadId": slow_thread, "turnId": slow_turn}
-        )
         checks.append(
             CheckResult(
                 "PC-09",
