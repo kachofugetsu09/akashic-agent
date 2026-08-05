@@ -718,153 +718,153 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_telegram_conflict_recovers_with_backoff_until_ok(
+async def test_telegram_conflict_does_not_stop_updater(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    """复现 issue #310 核心场景：409 后第一次恢复立即再次冲突（旧长轮询未释放），
-    应退避重试直到恢复，而不是永久停掉 polling 进入"能发不能收"半死状态。"""
+    """核心回归：Conflict callback 不再干预 polling——不调用 updater.stop()、
+    不创建任何恢复任务；退避重试完全交给 PTB 原生 network_retry_loop(max_retries=-1)。"""
     mod = _import_telegram_channel(monkeypatch)
     bus = _Bus()
     session_manager = _SessionManager(tmp_path)
-
-    class _FlakyUpdater:
-        def __init__(self, conflict_on_restart: int):
-            self.running = False
-            self.error_callback = None
-            self.start_calls = 0
-            self.conflict_on_restart = conflict_on_restart
-
-        async def start_polling(self, **kwargs):
-            self.start_calls += 1
-            self.error_callback = kwargs.get("error_callback")
-            if self.start_calls <= self.conflict_on_restart:
-                # 模拟 Telegram 服务端旧长轮询尚未释放：重启后首个 getUpdates 立即 409
-                self.running = False
-                self.error_callback(
-                    mod.Conflict("conflict: terminated by other getUpdates request")
-                )
-            else:
-                self.running = True
-
-        async def stop(self):
-            self.running = False
-
     channel = mod.TelegramChannel("token", bus, session_manager)
-    updater = _FlakyUpdater(conflict_on_restart=1)
-    channel._app.updater = updater
+    updater = channel._app.updater
+    stop_calls = 0
 
-    monkeypatch.setattr(mod, "_CONFLICT_RETRY_BASE_SECONDS", 1)
-    monkeypatch.setattr(mod, "_CONFLICT_RETRY_MAX_SECONDS", 4)
-    monkeypatch.setattr(mod, "_CONFLICT_OBSERVE_SECONDS", 0)
-    real_sleep = asyncio.sleep
-    sleeps: list[float] = []
+    async def _counting_stop():
+        nonlocal stop_calls
+        stop_calls += 1
+        updater.running = False
 
-    async def _fake_sleep(secs):
-        sleeps.append(secs)
-        await real_sleep(0)
-
-    monkeypatch.setattr(mod.asyncio, "sleep", _fake_sleep)
+    monkeypatch.setattr(updater, "stop", _counting_stop)
 
     channel._on_polling_error(mod.Conflict("conflict"))
-    await asyncio.gather(channel._polling_conflict_task)
 
-    assert updater.start_calls == 2  # 第一次恢复立即又 409，第二次成功
-    assert [s for s in sleeps if s > 0] == [1, 2]  # 指数退避 1s -> 2s（过滤观察窗口 0）
-    assert updater.running is True
-    assert channel._polling_conflict_task is None
-    assert channel._conflict_count == 2
+    assert stop_calls == 0  # 绝不停掉 PTB 自己的 retry loop
+    assert channel._conflict_count == 1
+    assert not hasattr(channel, "_polling_conflict_task")  # 不再有手动恢复任务
 
 
 @pytest.mark.asyncio
-async def test_telegram_conflict_single_recovers_immediately(
+async def test_telegram_conflict_retry_loop_recovers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog
+):
+    """模拟 PTB network_retry_loop 语义：一轮 getUpdates 409（触发 error_callback）后
+    loop 继续运行，下一轮成功即恢复；callback 是纯观测，不改变 running、不调 stop。"""
+    mod = _import_telegram_channel(monkeypatch)
+    bus = _Bus()
+    session_manager = _SessionManager(tmp_path)
+    channel = mod.TelegramChannel("token", bus, session_manager)
+    updater = channel._app.updater
+    stop_calls = 0
+
+    async def _counting_stop():
+        nonlocal stop_calls
+        stop_calls += 1
+        updater.running = False
+
+    monkeypatch.setattr(updater, "stop", _counting_stop)
+
+    # polling 运行中，第一轮 getUpdates 失败
+    updater.running = True
+    updater.error_callback = channel._on_polling_error
+    with caplog.at_level(logging.WARNING, logger="infra.channels.telegram_channel"):
+        updater.error_callback(mod.Conflict("conflict"))
+
+    # PTB loop 未被我们打断：running 保持 True，下一轮 getUpdates 可以继续
+    assert updater.running is True
+    assert stop_calls == 0
+    assert channel._conflict_count == 1
+    assert any("409 Conflict" in r.getMessage() for r in caplog.records)
+
+    # 第二轮成功：无错误回调，loop 保持运行 = 已恢复，无需人工干预
+    updater.error_callback = None
+    assert updater.running is True
+
+
+@pytest.mark.asyncio
+async def test_telegram_conflict_stop_does_not_restart_polling(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    """单次瞬时 409（旧连接已释放）：退避一轮后 polling 自动恢复，无需人工重启。"""
+    """热重载/关闭安全：运行中发生 Conflict 后 stop()，没有任何恢复任务会重新
+    拉起 polling（旧实现会在 stop() 被 PTB 吞掉取消后重新 start_polling）。"""
     mod = _import_telegram_channel(monkeypatch)
     bus = _Bus()
     session_manager = _SessionManager(tmp_path)
     channel = mod.TelegramChannel("token", bus, session_manager)
     updater = channel._app.updater
     start_calls = 0
+    stop_calls = 0
 
-    async def _flaky_start_polling(**kwargs):
+    async def _counting_start(**kwargs):
         nonlocal start_calls
         start_calls += 1
         updater.running = True
         updater.error_callback = kwargs.get("error_callback")
 
-    monkeypatch.setattr(updater, "start_polling", _flaky_start_polling)
-    monkeypatch.setattr(mod, "_CONFLICT_RETRY_BASE_SECONDS", 1)
-    monkeypatch.setattr(mod, "_CONFLICT_RETRY_MAX_SECONDS", 4)
-    monkeypatch.setattr(mod, "_CONFLICT_OBSERVE_SECONDS", 0)
-    sleeps: list[float] = []
-    real_sleep = asyncio.sleep
+    async def _counting_stop():
+        nonlocal stop_calls
+        stop_calls += 1
+        updater.running = False
 
-    async def _fake_sleep(secs):
-        sleeps.append(secs)
-        await real_sleep(0)
+    monkeypatch.setattr(updater, "start_polling", _counting_start)
+    monkeypatch.setattr(updater, "stop", _counting_stop)
 
-    monkeypatch.setattr(mod.asyncio, "sleep", _fake_sleep)
+    updater.running = True
+    updater.error_callback = channel._on_polling_error
+    channel._on_polling_error(mod.Conflict("conflict"))  # 运行中冲突
+    await channel.stop()  # 热重载/关闭
 
-    channel._on_polling_error(mod.Conflict("conflict"))
-    await asyncio.gather(channel._polling_conflict_task)
-
-    assert start_calls == 1
-    assert [s for s in sleeps if s > 0] == [1]
-    assert updater.running is True
-    assert channel._polling_conflict_task is None
+    assert start_calls == 0  # 关键：stop 过程中没有任何恢复任务重新 start_polling
+    assert stop_calls == 1  # stop() 正常停掉 updater
+    assert channel._conflict_count == 1
 
 
 @pytest.mark.asyncio
-async def test_telegram_conflict_stop_cancels_recovery(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def test_telegram_non_conflict_error_semantics_unchanged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog
 ):
-    """Conflict 长期存在时恢复任务持续退避重试，stop() 必须能取消它而不是卡死。"""
+    """非 Conflict 错误语义保持不变：只打 warning，不进冲突观测分支。"""
     mod = _import_telegram_channel(monkeypatch)
     bus = _Bus()
     session_manager = _SessionManager(tmp_path)
-
-    class _AlwaysConflictUpdater:
-        def __init__(self):
-            self.running = False
-            self.error_callback = None
-            self.start_calls = 0
-
-        async def start_polling(self, **kwargs):
-            self.start_calls += 1
-            self.error_callback = kwargs.get("error_callback")
-            self.running = False
-            self.error_callback(mod.Conflict("conflict"))
-
-        async def stop(self):
-            self.running = False
-
     channel = mod.TelegramChannel("token", bus, session_manager)
-    updater = _AlwaysConflictUpdater()
-    channel._app.updater = updater
 
-    monkeypatch.setattr(mod, "_CONFLICT_RETRY_BASE_SECONDS", 0)
-    monkeypatch.setattr(mod, "_CONFLICT_RETRY_MAX_SECONDS", 0)
-    monkeypatch.setattr(mod, "_CONFLICT_OBSERVE_SECONDS", 0)
-    real_sleep = asyncio.sleep
+    with caplog.at_level(logging.WARNING, logger="infra.channels.telegram_channel"):
+        channel._on_polling_error(mod.NetworkError("network down"))
+        channel._on_polling_error(mod.TimedOut())
 
-    async def _fake_sleep(secs):
-        await real_sleep(0)
+    assert channel._conflict_count == 0  # 非 Conflict 不计入冲突
+    assert channel._last_conflict_log_at is None  # 节流状态不变
+    assert "polling 异常，框架将自动重试" in caplog.text
 
-    monkeypatch.setattr(mod.asyncio, "sleep", _fake_sleep)
 
-    channel._on_polling_error(mod.Conflict("conflict"))
-    assert channel._polling_conflict_task is not None
-    for _ in range(30):
-        await asyncio.sleep(0)
-        if updater.start_calls > 1:
-            break
-    assert updater.start_calls > 1  # 确认恢复循环在持续退避重试
+@pytest.mark.asyncio
+async def test_telegram_conflict_log_throttled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog
+):
+    """日志节流：60s 窗口内多次 409 只打一条 warning，计数持续累计。"""
+    mod = _import_telegram_channel(monkeypatch)
+    bus = _Bus()
+    session_manager = _SessionManager(tmp_path)
+    channel = mod.TelegramChannel("token", bus, session_manager)
 
-    await channel.stop()
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="infra.channels.telegram_channel"):
+        channel._on_polling_error(mod.Conflict("conflict"))  # 首次
+        channel._on_polling_error(mod.Conflict("conflict"))  # 立即重复：节流
+        channel._on_polling_error(mod.Conflict("conflict"))  # 立即重复：节流
 
-    assert channel._polling_conflict_task is None
-    assert updater.running is False
+    assert channel._conflict_count == 3
+    assert len([r for r in caplog.records if "409 Conflict" in r.getMessage()]) == 1
+
+    # 把节流时间戳拨到 61s 前，模拟超过窗口：应再打一条
+    channel._last_conflict_log_at -= 61
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="infra.channels.telegram_channel"):
+        channel._on_polling_error(mod.Conflict("conflict"))
+
+    assert channel._conflict_count == 4
+    assert len([r for r in caplog.records if "409 Conflict" in r.getMessage()]) == 1
 
 
 @pytest.mark.asyncio

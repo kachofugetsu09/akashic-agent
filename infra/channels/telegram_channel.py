@@ -8,6 +8,7 @@ import logging
 import asyncio
 import html
 import json
+import time
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,11 +66,10 @@ _REPLY_LIVE_TAIL = 1100
 _TOOL_PREVIEW_LIMIT = 80
 _LIVE_STREAM_MIN_INTERVAL_S = 2.5
 _LIVE_STREAM_MIN_CHARS = 200
-# 409 Conflict 退避恢复参数：409 往往是瞬时状态（旧长轮询未释放/网络抖动），
-# 应持续退避重试直到恢复，而不是永久停掉 polling。
-_CONFLICT_RETRY_BASE_SECONDS = 10
-_CONFLICT_RETRY_MAX_SECONDS = 300
-_CONFLICT_OBSERVE_SECONDS = 3
+# 409 Conflict 观测参数：python-telegram-bot 的 network_retry_loop(max_retries=-1)
+# 原生会持续退避重试 TelegramError（含 Conflict，上限 30s），callback 无需干预 polling，
+# 这里只做日志节流，避免持续冲突时刷屏。
+_CONFLICT_LOG_INTERVAL_SECONDS = 60
 
 
 @dataclass
@@ -127,8 +127,8 @@ class TelegramChannel:
         self._outbound_bound = False
         self._events_bound = False
         self.user_map = self._identity_index.mapping
-        self._polling_conflict_task: asyncio.Task[None] | None = None
         self._conflict_count = 0
+        self._last_conflict_log_at: float | None = None
         self._telegram_outbound_limiter = TelegramOutboundLimiter()
         self._active_streams: dict[str, TelegramStreamMessage] = {}
         self._live_edit_queue = TelegramLiveEditQueue(limiter=self._telegram_outbound_limiter)
@@ -213,9 +213,6 @@ class TelegramChannel:
             self._events_bound = True
 
     async def stop(self) -> None:
-        if self._polling_conflict_task and not self._polling_conflict_task.done():
-            self._polling_conflict_task.cancel()
-            await asyncio.gather(self._polling_conflict_task, return_exceptions=True)
         for session_key in tuple(self._live_tasks_by_session):
             await self._cancel_live_tasks(session_key)
         for session_key in tuple(self._live_messages):
@@ -851,59 +848,25 @@ class TelegramChannel:
             )
 
     def _on_polling_error(self, exc: TelegramError) -> None:
-        """处理 Telegram polling 异常；409 Conflict 视为可恢复瞬时状态，进入退避恢复。"""
+        """处理 Telegram polling 异常；409 Conflict 由 PTB 原生 network retry loop
+        （max_retries=-1）持续退避重试（上限 30s），这里只做节流日志与状态观测，
+        绝不干预 polling 生命周期。"""
         if isinstance(exc, Conflict):
             self._conflict_count += 1
-            if self._polling_conflict_task is None:
-                logger.error(
-                    "[telegram] 检测到 getUpdates 冲突（累计 %d 次），"
-                    "进入退避恢复；若旧长轮询未释放通常几十秒内可自愈。",
+            now = time.monotonic()
+            if (
+                self._last_conflict_log_at is None
+                or now - self._last_conflict_log_at >= _CONFLICT_LOG_INTERVAL_SECONDS
+            ):
+                self._last_conflict_log_at = now
+                logger.warning(
+                    "[telegram] getUpdates 409 Conflict（累计 %d 次），"
+                    "python-telegram-bot 将自动退避重试；若持续冲突，"
+                    "请检查是否同一 bot token 运行了多个轮询实例。",
                     self._conflict_count,
-                )
-                self._polling_conflict_task = asyncio.create_task(
-                    self._recover_polling_on_conflict()
                 )
             return
         logger.warning("[telegram] polling 异常，框架将自动重试: %s", exc)
-
-    async def _recover_polling_on_conflict(self) -> None:
-        """Conflict 后指数退避持续重试 polling，直到恢复；通道关闭时由 stop() 取消。"""
-        updater = self._app.updater
-        backoff = _CONFLICT_RETRY_BASE_SECONDS
-        try:
-            while updater is not None:
-                if updater.running:
-                    await updater.stop()
-                await asyncio.sleep(backoff)
-                baseline = self._conflict_count
-                try:
-                    await updater.start_polling(
-                        allowed_updates=Update.ALL_TYPES,
-                        error_callback=self._on_polling_error,
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    logger.warning(
-                        "[telegram] 恢复 polling 失败: %s；%ss 后重试",
-                        e,
-                        backoff,
-                    )
-                    backoff = min(backoff * 2, _CONFLICT_RETRY_MAX_SECONDS)
-                    continue
-                # 观察窗口：若旧长轮询尚未释放，重启后首个 getUpdates 会立即再次 409
-                await asyncio.sleep(_CONFLICT_OBSERVE_SECONDS)
-                if self._conflict_count == baseline:
-                    logger.info("[telegram] polling 已从 409 冲突中恢复")
-                    return
-                logger.warning(
-                    "[telegram] 恢复 polling 后仍检测到冲突（累计 %d 次），%ss 后重试",
-                    self._conflict_count,
-                    backoff,
-                )
-                backoff = min(backoff * 2, _CONFLICT_RETRY_MAX_SECONDS)
-        finally:
-            self._polling_conflict_task = None
 
 
 def _format_turn_live(
