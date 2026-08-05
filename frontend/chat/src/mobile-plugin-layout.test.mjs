@@ -18,6 +18,10 @@ const desktopStyles = await readFile(
   new URL("./styles.css", import.meta.url),
   "utf8",
 );
+const dashboardStyles = await readFile(
+  new URL("../../dashboard/src/styles.css", import.meta.url),
+  "utf8",
+);
 const desktopSource = await readFile(
   new URL("./main.tsx", import.meta.url),
   "utf8",
@@ -158,6 +162,12 @@ test("shared navigation keeps the compact mobile drawer language", () => {
     platformStyles,
     /\.mobile-drawer\s*\{[^}]*box-shadow:\s*4px 0 12px rgb\(var\(--md-sys-color-shadow-rgb\) \/ 0\.16\);/,
   );
+});
+
+test("Material shadow roles always declare opacity at use sites", () => {
+  for (const styles of [themeStyles, platformStyles, desktopStyles, navigationStyles, dashboardStyles]) {
+    assert.doesNotMatch(styles, /var\(--ak-color-shadow\)/);
+  }
 });
 
 test("runtime metrics keep values and categories on one compact baseline", () => {

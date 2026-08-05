@@ -486,7 +486,7 @@ body {
 
   .module-switcher-options {
     @apply absolute left-3 right-3 top-[calc(100%-8px)] z-30 max-h-[min(480px,65vh)] overflow-y-auto rounded border border-border-strong bg-surface p-1;
-    box-shadow: 0 4px 10px -6px var(--ak-color-shadow);
+    box-shadow: 0 4px 10px -6px rgb(var(--md-sys-color-shadow-rgb) / 0.18);
   }
 
   .module-switcher-option {

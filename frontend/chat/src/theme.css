@@ -15,9 +15,9 @@
   --shadow-border:
     0 0 0 1px var(--ak-color-image-outline),
     0 1px 2px -1px var(--ak-color-image-outline),
-    0 2px 4px var(--ak-color-shadow);
+    0 2px 4px rgb(var(--md-sys-color-shadow-rgb) / 0.04);
   --shadow-border-hover:
     0 0 0 1px var(--ak-color-border-default),
     0 1px 2px -1px var(--ak-color-image-outline),
-    0 2px 4px var(--ak-color-shadow);
+    0 2px 4px rgb(var(--md-sys-color-shadow-rgb) / 0.06);
 }
