@@ -221,21 +221,39 @@ class ChatLane:
         channel: str,
         chat_id: str,
         send: Callable[[], Awaitable[_T]],
+        *,
+        pending_registered: bool = False,
     ) -> _T:
+        """Serialize one passive send and preserve its exact pending ownership."""
+
+        # 1. direct caller 自行登记；queued outbound 已在入队时登记。
         key, state = self._acquire_state(channel, chat_id)
+        owns_pending = pending_registered
+        sending = False
         try:
-            async with state.condition:
-                while state.sending:
-                    _ = await state.condition.wait()
-                state.sending = True
             try:
+                async with state.condition:
+                    if pending_registered:
+                        if state.passive_sends <= 0:
+                            raise RuntimeError("passive send pending 计数失衡")
+                    else:
+                        state.passive_sends += 1
+                        owns_pending = True
+                    while state.sending:
+                        _ = await state.condition.wait()
+                    state.sending = True
+                    sending = True
                 return await send()
             finally:
-                async with state.condition:
-                    if state.passive_sends > 0:
+                # 2. 取消、发送失败与正常完成都只归还本次调用拥有的计数。
+                if owns_pending:
+                    async with state.condition:
+                        if state.passive_sends <= 0:
+                            raise RuntimeError("passive send pending 计数失衡")
                         state.passive_sends -= 1
-                    state.sending = False
-                    state.condition.notify_all()
+                        if sending:
+                            state.sending = False
+                        state.condition.notify_all()
         finally:
             self._release_state(key, state)
 
@@ -619,6 +637,7 @@ class MessageBus:
                     msg.channel,
                     msg.chat_id,
                     lambda: self._send_outbound(msg),
+                    pending_registered=True,
                 )
                 if self._delivery_observer is not None:
                     await self._delivery_observer(msg, delivered)

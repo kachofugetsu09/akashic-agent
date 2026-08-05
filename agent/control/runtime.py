@@ -114,7 +114,6 @@ class ConversationRuntime:
         self._store = store
         self._executor = executor
         self._subscriber_queue_size = subscriber_queue_size
-        self._admission = asyncio.Lock()
         self._control_admission_lock = asyncio.Lock()
         self._max_active_turns = max_active_turns
         self._max_active_bytes = max_active_bytes
@@ -255,7 +254,7 @@ class ConversationRuntime:
         self._live_runtime_objects -= 1
 
     async def _run(self, request: TurnRequest, turn_id: str) -> None:
-        """在全局 admission 内执行 turn，并保证只写一个终态。"""
+        """执行已按 thread 和容量准入的 turn，并保证只写一个终态。"""
 
         terminal: TurnRecord | None = None
         fatal_error: BaseException | None = None
@@ -285,119 +284,118 @@ class ConversationRuntime:
             return list(observed_items.values())
 
         try:
-            # 1. 当前 v1 保留全局串行，但 queued 状态真实可见。
-            async with self._admission:
-                record = self._store.transition_turn(
-                    turn_id,
-                    expected_status=TurnStatus.QUEUED,
-                    status=TurnStatus.IN_PROGRESS,
-                    thread_id=request.thread_id,
-                )
-                self._publish(TurnEvent.create("turn/started", request.thread_id, turn_id, turn=record.to_dict()))
+            # 1. 不同 thread 可并发；同 thread 已由 start_turn 的唯一 owner 拒绝。
+            record = self._store.transition_turn(
+                turn_id,
+                expected_status=TurnStatus.QUEUED,
+                status=TurnStatus.IN_PROGRESS,
+                thread_id=request.thread_id,
+            )
+            self._publish(TurnEvent.create("turn/started", request.thread_id, turn_id, turn=record.to_dict()))
 
-                # 2. 核心执行不依赖 transport；成功结果进入正式 assistant item。
-                execution_request = TurnRequest(
-                    request.thread_id,
-                    request.input,
-                    {**request.metadata, "turnId": turn_id},
-                )
-                live_item_ids: set[str] = set()
+            # 2. 核心执行不依赖 transport；成功结果进入正式 assistant item。
+            execution_request = TurnRequest(
+                request.thread_id,
+                request.input,
+                {**request.metadata, "turnId": turn_id},
+            )
+            live_item_ids: set[str] = set()
 
-                def publish_item(method: str, item: TurnItem) -> None:
-                    live_item_ids.add(item.id)
-                    if method == "item/started":
-                        if item.id in observed_items:
-                            raise ValueError(f"item 重复 started: {item.id}")
-                        observed_items[item.id] = item
-                        open_item_ids[item.id] = None
-                    elif method == "item/completed":
-                        if item.id not in open_item_ids:
-                            raise ValueError(f"item 未 started 即 completed: {item.id}")
-                        observed_items[item.id] = item
-                        open_item_ids.pop(item.id)
-                    else:
-                        raise ValueError(f"未知 control item event: {method}")
-                    self._publish(
-                        TurnEvent.create(
-                            method,
-                            request.thread_id,
-                            turn_id,
-                            item=item.to_dict(),
-                        )
+            def publish_item(method: str, item: TurnItem) -> None:
+                live_item_ids.add(item.id)
+                if method == "item/started":
+                    if item.id in observed_items:
+                        raise ValueError(f"item 重复 started: {item.id}")
+                    observed_items[item.id] = item
+                    open_item_ids[item.id] = None
+                elif method == "item/completed":
+                    if item.id not in open_item_ids:
+                        raise ValueError(f"item 未 started 即 completed: {item.id}")
+                    observed_items[item.id] = item
+                    open_item_ids.pop(item.id)
+                else:
+                    raise ValueError(f"未知 control item event: {method}")
+                self._publish(
+                    TurnEvent.create(
+                        method,
+                        request.thread_id,
+                        turn_id,
+                        item=item.to_dict(),
                     )
-
-                execution_request.metadata["_controlItemEvent"] = publish_item
-                execution = await self._executor(execution_request)
-                if open_item_ids:
-                    raise RuntimeError(
-                        f"executor 返回时仍有未闭合 item: {sorted(open_item_ids)}"
-                    )
-                if isinstance(execution, str):
-                    execution = ControlExecutionResult(execution)
-                for item in execution.items:
-                    if item.id in live_item_ids:
-                        continue
-                    self._publish(
-                        TurnEvent.create(
-                            "item/started",
-                            request.thread_id,
-                            turn_id,
-                            item=item.to_dict(),
-                        )
-                    )
-                    self._publish(
-                        TurnEvent.create(
-                            "item/completed",
-                            request.thread_id,
-                            turn_id,
-                            item=item.to_dict(),
-                        )
-                    )
-                assistant_item = TurnItem(
-                    TurnItemKind.ASSISTANT_MESSAGE,
-                    new_item_id(),
-                    {"content": execution.response, **execution.assistant_data},
                 )
+
+            execution_request.metadata["_controlItemEvent"] = publish_item
+            execution = await self._executor(execution_request)
+            if open_item_ids:
+                raise RuntimeError(
+                    f"executor 返回时仍有未闭合 item: {sorted(open_item_ids)}"
+                )
+            if isinstance(execution, str):
+                execution = ControlExecutionResult(execution)
+            for item in execution.items:
+                if item.id in live_item_ids:
+                    continue
                 self._publish(
                     TurnEvent.create(
                         "item/started",
                         request.thread_id,
                         turn_id,
-                        item=assistant_item.to_dict(),
+                        item=item.to_dict(),
                     )
                 )
-                deltas = execution.deltas or [execution.response]
-                for sequence, delta in enumerate(deltas):
-                    self._publish(
-                        TurnEvent.create(
-                            "item/assistantMessage/delta",
-                            request.thread_id,
-                            turn_id,
-                            itemId=assistant_item.id,
-                            delta=delta,
-                            sequence=sequence,
-                        )
-                    )
-                    # 2a. 让订阅者消费事后回放，避免突发填满有界队列。
-                    await asyncio.sleep(0)
                 self._publish(
                     TurnEvent.create(
                         "item/completed",
                         request.thread_id,
                         turn_id,
-                        item=assistant_item.to_dict(),
+                        item=item.to_dict(),
                     )
                 )
-                items = [*record.items, *execution.items, assistant_item]
-                terminal = self._store.transition_turn(
+            assistant_item = TurnItem(
+                TurnItemKind.ASSISTANT_MESSAGE,
+                new_item_id(),
+                {"content": execution.response, **execution.assistant_data},
+            )
+            self._publish(
+                TurnEvent.create(
+                    "item/started",
+                    request.thread_id,
                     turn_id,
-                    expected_status=TurnStatus.IN_PROGRESS,
-                    status=TurnStatus.COMPLETED,
-                    thread_id=request.thread_id,
-                    items=items,
-                    final_response=execution.response,
-                    usage=execution.usage,
+                    item=assistant_item.to_dict(),
                 )
+            )
+            deltas = execution.deltas or [execution.response]
+            for sequence, delta in enumerate(deltas):
+                self._publish(
+                    TurnEvent.create(
+                        "item/assistantMessage/delta",
+                        request.thread_id,
+                        turn_id,
+                        itemId=assistant_item.id,
+                        delta=delta,
+                        sequence=sequence,
+                    )
+                )
+                # 2a. 让订阅者消费事后回放，避免突发填满有界队列。
+                await asyncio.sleep(0)
+            self._publish(
+                TurnEvent.create(
+                    "item/completed",
+                    request.thread_id,
+                    turn_id,
+                    item=assistant_item.to_dict(),
+                )
+            )
+            items = [*record.items, *execution.items, assistant_item]
+            terminal = self._store.transition_turn(
+                turn_id,
+                expected_status=TurnStatus.IN_PROGRESS,
+                status=TurnStatus.COMPLETED,
+                thread_id=request.thread_id,
+                items=items,
+                final_response=execution.response,
+                usage=execution.usage,
+            )
         except asyncio.CancelledError:
             current = self._store.read_turn(turn_id)
             if current is not None and current.status.is_terminal:

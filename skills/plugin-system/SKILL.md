@@ -9,6 +9,8 @@ metadata: {"akashic": {"always": false}}
 
 优先直接完成明确的插件管理请求，并在修改后验证。
 
+用户要求创建/改写插件源码、把 Skill/MCP 收入插件或递归验证候选时，先加载 `develop-akashic-plugin`；本 Skill 继续拥有已安装插件的查询、配置、启停、卸载和当前实现排障。
+
 独立 binary、脚本或本地项目需要作为 MCP 常驻时，加载 `manage-workspace-mcp`；
 不要为它创建插件，也不要修改主 `config.toml`。
 

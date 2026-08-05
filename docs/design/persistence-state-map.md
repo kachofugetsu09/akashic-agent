@@ -1,10 +1,10 @@
 # Akashic Agent 持久化状态地图
 
-- 状态：draft；代码事实已核对，workspace、会话、长期记忆、Akasha、主动/Wake/Drift 连续性、plugin-data、附件和 Skill/MCP 所有权已确认；调度/quota、配置/secret、诊断 retention 与完整备份合同仍是 I/U
+- 状态：draft；代码事实已核对，workspace、会话、长期记忆、Akasha、主动/Wake/Drift 连续性、plugin-data、附件和 Skill/MCP 所有权已确认；0024 的 stable/latest 目标已确认但尚未实现；调度/quota、配置/secret、诊断 retention 与完整备份合同仍是 I/U
 - 核对基线：`origin/main@6a0616c82267`
 - 核对日期：2026-07-16
 - 目标读者：维护者、coding agent、迁移与备份实现者、评审者
-- 关联条款：STA-001～STA-003、CTX-001、SES-001～SES-006、MEM-001～MEM-009、PLG-001～PLG-010、WSP-001～WSP-004、SCH-001～SCH-002、PRO-001～PRO-002、BAK-001
+- 关联条款：STA-001～STA-003、CTX-001、SES-001～SES-006、MEM-001～MEM-009、PLG-001～PLG-013、WSP-001～WSP-004、SCH-001～SCH-002、PRO-001～PRO-002、BAK-001
 
 ## 1. 这份地图怎样使用
 
@@ -13,6 +13,7 @@
 - **F（fact）**：能从当前代码、schema 或已存在的仓库说明直接确认。
 - **I（inference）**：根据代码结构推断的产品意图，等待维护者确认。
 - **G（gap）**：当前实现或文档没有给出完整答案，不能自行补齐。
+- **T（target）**：已经由 accepted 决策确认、但当前代码尚未实现的目标状态；不得写成现状证据。
 
 本文件不是删除白名单。一个对象被标为派生或诊断数据，不等于普通 refactor 可以删除；删除、重建、迁移和保留期仍需明确 owner、备份、完整性检查和用户授权。
 
@@ -402,6 +403,20 @@ Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activa
 4. generation 发布后，`PluginSkillLinker` 才把 active plugin 的 skill 同步成 workspace 软链接。
 
 因此，Skill/MCP 的 canonical code 和声明属于插件 source；cache 是已安装版本，manifest 记录安装身份，workspace 只保存 plugin-data 和必要的运行投影。
+
+#### 10.2.1 0024 已确认目标与当前缺口
+
+**T-001：** [0024](../decisions/0024-plugin-self-validation-uses-stable-and-latest.md) 要求插件安装 artifact 按 source revision/tree digest 不可变保存；同一版本号的新 commit 不能覆盖 stable runtime 仍引用的代码。`<workspace>/runtime/plugin-reloads.sqlite3` 将拥有 stable/latest snapshot descriptor、单一未决 candidate phase、install provenance 与 append-only phase journal。普通 turn 只读取 stable；显式 programmatic validation 可以读取 latest。
+
+该目标的状态变化固定为：
+
+| 对象 | 正常增加 | 允许原位更新/逻辑终态 | 物理减少条件 | owner 与恢复证据 |
+|---|---|---|---|---|
+| 不可变 plugin artifact | 每个新的 source revision/tree digest 增加独立目录 | artifact 内容不原位更新；stable/latest 只改变引用 | 不再被 stable、latest、active lease、rollback/recovery source set 引用后，显式 GC 才可减少 | Plugin install owner；source commit/tree digest、artifact digest、manifest |
+| stable/latest descriptor | install 追加 candidate/journal；首次初始化建立 stable | 单 writer 事务更新 pointer 与 candidate phase；既有 journal 不改写 | pointer 不以 DELETE 表达；journal retention 未定义前不得自动减少 | Runtime snapshot publisher；SQLite integrity、pointer identity、phase journal、lease set |
+| programmatic validation session | 新 thread/turn/messages/tool items 正常 INSERT | turn 按控制状态机进入 terminal；session metadata 固定 memory policy | 只按既有用户 thread/session 删除协议减少 | Control + SessionStore；thread/turn read、tool items、memory write-set |
+
+**G-006：** 当前 install 会把候选发布到既有 cache/manifest，watcher 随后异步重建 runtime；`RuntimeSnapshotStore` 只有 current/pending，validating candidate 不可租用，也没有可恢复的 stable/latest descriptor。因此现有 `plugin-install` 成功、cache 文件存在或 reload journal `complete` 都不能充当 0024 行为自验证已经可用的证据。
 
 ### 10.3 MCP 的插件路径与现有直装路径
 

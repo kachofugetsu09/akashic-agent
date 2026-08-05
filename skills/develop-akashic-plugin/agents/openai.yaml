@@ -1,0 +1,4 @@
+interface:
+  display_name: "开发 Akashic 插件"
+  short_description: "创建、安装、验证并递归改进 Akashic 插件与技能能力"
+  default_prompt: "使用 $develop-akashic-plugin 创建并验证一个 Akashic 插件。"

@@ -429,6 +429,10 @@ Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先�
 
 主 runtime 的默认值不拥有 summary、标题生成或其他内部小任务的局部预算。内部任务可以继续使用独立正整数上限，主 runtime 为 `0` 时不能把这些局部上限一并取消。
 
+### RUN-007 Turn 按 session 串行而非全局串行
+
+同一 `session_key` 同时只能有一个 active turn，channel、control 和 direct/programmatic 入口必须汇入同一个 session lane owner。不同 session 的 turn 可以并发；全局 active turn、请求字节和 runtime object 上限只负责有界准入，不得以跨 session 的整轮互斥实现。Turn 的 messages、文件读取状态、工具 trace、取消信号和 runtime snapshot 绑定属于 task-local 状态；共享 runtime service 只能保留有明确 owner、可并发使用或受短事务保护的状态。
+
 ### OUT-001 被动按 Turn 提交，主动按送达提交
 
 被动消息以完整 Turn 为权威提交单位。推理和持久化成功后，user 与 assistant 消息共同进入会话历史；随后 dispatch 失败不得回滚已经提交的 Turn。主动消息没有对应的用户 Turn，只有 dispatch 明确成功后才进入会话历史、presence、dedupe 和 success 状态；未发送内容不得让 Agent 误认为自己已经说过。
@@ -444,6 +448,10 @@ Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先�
 一次主动投递中的正文、文件和图片属于同一条逻辑消息。Core 必须把经过类型校验的完整消息一次性交给渠道；渠道可以按平台能力映射成一个或多个原生调用，但只有全部必需部分明确提交后才能报告成功。部分送达、结果不明和完整失败必须使用结构化终态，不能通过返回文案、已执行的前半段或静默降级推断整体成功。
 
 主动消息只有在渠道报告完整成功后，才可以追加到 SessionDB 并运行 presence、dedupe 和成功副作用。Mobile 的正文、附件描述符和 `delivery_id` 必须进入同一个 durable event；实时事件与历史投影继续表示同一条消息事实。任何渠道都不得把拆分 sender 的调用顺序升级成消息提交协议。
+
+### OUT-004 `message_push` 不取得目标 session 的执行所有权
+
+`message_push` 是调用 turn 发起的外部投递，不是目标 session 的 inbound turn。它不得等待目标 session lane；实际 adapter send 仍通过 ChatLane 的短提交 owner 串行。普通 scheduler/proactive 的 non-passive 投递继续等待同 chat 的被动回复优先完成；被动或程序化验证 turn 发起的 push 可以走 passive-send 路径，但不能与另一实际 send 重叠。push 正文不注入正在运行的父 Prompt，也不追加到目标 session history；调用参数和真实 delivery receipt 保存在调用 session 的工具 trace。pointer、异常或取消都不得伪装成已经发生的外部投递被回滚。
 
 ## 10. 插件 generation 与 snapshot
 
@@ -496,6 +504,12 @@ Core 只负责通用传输、认证、revision、generation lease、调度、取
 ### PLG-012 Turn 内卸载使用 Runtime owner 的异步排空
 
 持有 runtime snapshot lease 的 turn 可以请求卸载插件，但工具进程不得同步等待该 lease 自己归零。Control owner 先返回可观察的 uninstall operation；runtime 发布禁用快照后，在后台等待旧 generation 的全部 lease 释放，确认 scope 已关闭，再删除 cache 和 manifest entry。所有停用和替换入口（包括 manifest watcher 与热重载）都必须登记退役 generation；重复请求必须加入所有未完成 drain，不能因插件已从 active generation 表移除而报告完成。普通卸载继续保留 plugin-data；operation 失败、取消或 runtime 关闭时必须保留禁用状态和未删除 cache 作为可恢复证据，不得假报 drained。
+
+### PLG-013 插件行为验证使用 stable 与 latest
+
+普通请求只租用已经通过行为验证的 `stable` snapshot；最新完成 static/readiness Gate 的候选以 `latest` 暴露给显式 programmatic 验证 session。没有未决候选时 `latest is stable`；首版同时只允许一个未决 latest，第二次 install 必须 fail-loud。install 成功终态表示 latest 已可租用，验证通过才原子执行 `stable=latest`，失败原子恢复 `latest=stable`；旧 snapshot 按 lease 排空。cache artifact 以 source revision/tree digest 不可变保存，Gateway 重启必须先恢复 stable，再恢复或拒绝未决 latest。同版本更新不得覆盖 stable 仍引用的代码。
+
+latest 默认只允许只读行为验证。共享 plugin-data 写入、不可撤销外部效果和独占 endpoint 必须具有真实事务/dry-run、隔离运行目标或用户明确授权；snapshot pointer 回滚不拥有这些效果。0008 的公开发布边界继续成立：latest 是显式验证 reader，不是普通 default publication。
 
 ## 11. Workspace、文件和进程
 
@@ -576,6 +590,10 @@ Wake 判断内容时必须把最近被动对话与已经送达的主动消息作
 ### CTRL-002 控制 owner、thread、turn 和终态一致
 
 一个 workspace 同时只有一个 runtime owner。本地控制 socket/token 不能跨 workspace；turn terminal 每次恰好一次，送达前断连标记失败。thread/delete 是显式破坏操作。
+
+### CTRL-003 Programmatic 验证可选择 snapshot 且默认不学习
+
+新 programmatic session 可以在严格类型边界显式选择 `stable` 或 `latest`，默认使用 stable。新 session 默认持久化 thread、messages、tool items 与 terminal，但写入 `skip_post_memory=true`：允许读取既有记忆和会话检索，不产生新的 Markdown、Memory2 或 Akasha 学习；只有创建时显式 `persist_memory` 才能开启语义记忆写入。验证 CLI 默认 attached，控制连接在 terminal 前关闭时 runtime 必须取消其拥有的 turn 并释放 snapshot lease；显式 detached 必须先返回可恢复的 thread/turn handle，且不得用于插件自验证。
 
 ## 13. 独立验收要求
 
