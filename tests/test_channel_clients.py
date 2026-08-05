@@ -718,6 +718,156 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_telegram_conflict_recovers_with_backoff_until_ok(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """复现 issue #310 核心场景：409 后第一次恢复立即再次冲突（旧长轮询未释放），
+    应退避重试直到恢复，而不是永久停掉 polling 进入"能发不能收"半死状态。"""
+    mod = _import_telegram_channel(monkeypatch)
+    bus = _Bus()
+    session_manager = _SessionManager(tmp_path)
+
+    class _FlakyUpdater:
+        def __init__(self, conflict_on_restart: int):
+            self.running = False
+            self.error_callback = None
+            self.start_calls = 0
+            self.conflict_on_restart = conflict_on_restart
+
+        async def start_polling(self, **kwargs):
+            self.start_calls += 1
+            self.error_callback = kwargs.get("error_callback")
+            if self.start_calls <= self.conflict_on_restart:
+                # 模拟 Telegram 服务端旧长轮询尚未释放：重启后首个 getUpdates 立即 409
+                self.running = False
+                self.error_callback(
+                    mod.Conflict("conflict: terminated by other getUpdates request")
+                )
+            else:
+                self.running = True
+
+        async def stop(self):
+            self.running = False
+
+    channel = mod.TelegramChannel("token", bus, session_manager)
+    updater = _FlakyUpdater(conflict_on_restart=1)
+    channel._app.updater = updater
+
+    monkeypatch.setattr(mod, "_CONFLICT_RETRY_BASE_SECONDS", 1)
+    monkeypatch.setattr(mod, "_CONFLICT_RETRY_MAX_SECONDS", 4)
+    monkeypatch.setattr(mod, "_CONFLICT_OBSERVE_SECONDS", 0)
+    real_sleep = asyncio.sleep
+    sleeps: list[float] = []
+
+    async def _fake_sleep(secs):
+        sleeps.append(secs)
+        await real_sleep(0)
+
+    monkeypatch.setattr(mod.asyncio, "sleep", _fake_sleep)
+
+    channel._on_polling_error(mod.Conflict("conflict"))
+    await asyncio.gather(channel._polling_conflict_task)
+
+    assert updater.start_calls == 2  # 第一次恢复立即又 409，第二次成功
+    assert [s for s in sleeps if s > 0] == [1, 2]  # 指数退避 1s -> 2s（过滤观察窗口 0）
+    assert updater.running is True
+    assert channel._polling_conflict_task is None
+    assert channel._conflict_count == 2
+
+
+@pytest.mark.asyncio
+async def test_telegram_conflict_single_recovers_immediately(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """单次瞬时 409（旧连接已释放）：退避一轮后 polling 自动恢复，无需人工重启。"""
+    mod = _import_telegram_channel(monkeypatch)
+    bus = _Bus()
+    session_manager = _SessionManager(tmp_path)
+    channel = mod.TelegramChannel("token", bus, session_manager)
+    updater = channel._app.updater
+    start_calls = 0
+
+    async def _flaky_start_polling(**kwargs):
+        nonlocal start_calls
+        start_calls += 1
+        updater.running = True
+        updater.error_callback = kwargs.get("error_callback")
+
+    monkeypatch.setattr(updater, "start_polling", _flaky_start_polling)
+    monkeypatch.setattr(mod, "_CONFLICT_RETRY_BASE_SECONDS", 1)
+    monkeypatch.setattr(mod, "_CONFLICT_RETRY_MAX_SECONDS", 4)
+    monkeypatch.setattr(mod, "_CONFLICT_OBSERVE_SECONDS", 0)
+    sleeps: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def _fake_sleep(secs):
+        sleeps.append(secs)
+        await real_sleep(0)
+
+    monkeypatch.setattr(mod.asyncio, "sleep", _fake_sleep)
+
+    channel._on_polling_error(mod.Conflict("conflict"))
+    await asyncio.gather(channel._polling_conflict_task)
+
+    assert start_calls == 1
+    assert [s for s in sleeps if s > 0] == [1]
+    assert updater.running is True
+    assert channel._polling_conflict_task is None
+
+
+@pytest.mark.asyncio
+async def test_telegram_conflict_stop_cancels_recovery(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Conflict 长期存在时恢复任务持续退避重试，stop() 必须能取消它而不是卡死。"""
+    mod = _import_telegram_channel(monkeypatch)
+    bus = _Bus()
+    session_manager = _SessionManager(tmp_path)
+
+    class _AlwaysConflictUpdater:
+        def __init__(self):
+            self.running = False
+            self.error_callback = None
+            self.start_calls = 0
+
+        async def start_polling(self, **kwargs):
+            self.start_calls += 1
+            self.error_callback = kwargs.get("error_callback")
+            self.running = False
+            self.error_callback(mod.Conflict("conflict"))
+
+        async def stop(self):
+            self.running = False
+
+    channel = mod.TelegramChannel("token", bus, session_manager)
+    updater = _AlwaysConflictUpdater()
+    channel._app.updater = updater
+
+    monkeypatch.setattr(mod, "_CONFLICT_RETRY_BASE_SECONDS", 0)
+    monkeypatch.setattr(mod, "_CONFLICT_RETRY_MAX_SECONDS", 0)
+    monkeypatch.setattr(mod, "_CONFLICT_OBSERVE_SECONDS", 0)
+    real_sleep = asyncio.sleep
+
+    async def _fake_sleep(secs):
+        await real_sleep(0)
+
+    monkeypatch.setattr(mod.asyncio, "sleep", _fake_sleep)
+
+    channel._on_polling_error(mod.Conflict("conflict"))
+    assert channel._polling_conflict_task is not None
+    for _ in range(30):
+        await asyncio.sleep(0)
+        if updater.start_calls > 1:
+            break
+    assert updater.start_calls > 1  # 确认恢复循环在持续退避重试
+
+    await channel.stop()
+
+    assert channel._polling_conflict_task is None
+    assert updater.running is False
+
+
+@pytest.mark.asyncio
 async def test_telegram_live_task_index_releases_finished_session(monkeypatch: pytest.MonkeyPatch):
     mod = _import_telegram_channel(monkeypatch)
     channel = object.__new__(mod.TelegramChannel)
