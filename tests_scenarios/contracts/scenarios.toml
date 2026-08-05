@@ -315,6 +315,7 @@ command = [
   "pytest",
   "-q",
   "tests/semantic/test_recursive_plugin_self_validation_contract.py",
+  "tests/semantic/test_recursive_plugin_self_validation_trajectory.py",
   "tests/test_plugin_runtime_control.py",
   "tests/test_turn_pipelines.py::test_process_direct_runs_concurrently_with_another_session",
   "tests/test_turn_pipelines.py::test_process_direct_waits_for_the_same_session_lane",

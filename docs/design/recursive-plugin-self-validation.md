@@ -475,9 +475,10 @@ cache/<marketplace>/<plugin>/
 | programmatic runtime、长 terminal、SessionDB 与默认 memory policy | `tests/control/test_exec_cli.py::test_exec_new_defaults_to_read_only_memory_and_selects_runtime`、`test_control_client_reads_terminal_larger_than_asyncio_default`、`tests/control/test_protocol.py::test_thread_runtime_selector_is_strict_and_inherited_by_turn` |
 | `message_push` 不等父 session 且实际 send 串行 | `tests/test_support_modules.py::test_message_push_passive_role_does_not_wait_for_passive_lane`、`test_message_push_passive_role_serializes_actual_same_chat_send` |
 | turn-local 调试投影 | `tests/test_support_modules.py::test_context_builder_debug_projection_is_turn_local` |
-| 完整递归 oracle 与已知错误 | `tests/semantic/test_recursive_plugin_self_validation_contract.py`：stable misbinding、global lock、parent terminal overflow、semantic write、fake domain success、blocking push、crash promotion、fake tool item 八类 mutant |
+| 生产轨迹 oracle | `tests/semantic/test_recursive_plugin_self_validation_trajectory.py` 通过真实 `PluginManager` install、`ConversationRuntime` latest child、`DefaultReasoner`、候选工具、`message_push`、SessionDB、reload journal 与 promote 取证；stable misbinding、假 tool success、假领域结果从真实执行 seam 注入并必须被拒绝 |
+| 聚合合同 oracle 与已知错误 | `tests/semantic/test_recursive_plugin_self_validation_contract.py` 对跨场景 observation 做稳定性自测：global lock、parent terminal overflow、semantic write、blocking push、crash promotion 等 mutant；它不替代生产轨迹测试 |
 
-上述证据注册为 P0 `recursive_plugin_validation` group、`plugin_runtime_selection` state contract 与 `recursive_plugin_self_validation_contract` scenario。它观察 pointer/journal、真实 tool item、SessionDB、semantic write set、ChatLane timer 和 crash recovery；coverage baseline 只记录批准后的合同映射，不充当测试通过报告。
+上述证据注册为 P0 `recursive_plugin_validation` group、`plugin_runtime_selection` state contract 与 `recursive_plugin_self_validation_contract` scenario。Gate 的主通过证据由生产组件生成，不接受手工 observation：它观察 pointer/journal、真实 tool item、SessionDB、semantic write set、ChatLane timer 和 promote；独立 startup 用例覆盖 crash recovery。coverage baseline 只记录批准后的合同映射，不充当测试通过报告。
 
 ### 14.7 真实模型闭环证据
 

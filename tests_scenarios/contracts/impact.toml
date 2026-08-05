@@ -161,6 +161,7 @@ paths = [
   "skills/develop-akashic-plugin/**",
   "tests/control/**",
   "tests/semantic/test_recursive_plugin_self_validation_contract.py",
+  "tests/semantic/test_recursive_plugin_self_validation_trajectory.py",
   "tests/test_builtin_develop_akashic_plugin_skill.py",
   "tests/test_plugin_hot_reload.py",
   "tests/test_plugin_runtime_control.py",
