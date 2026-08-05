@@ -13,6 +13,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from agent.plugins.artifacts import (
+    ArtifactPointer,
+    ArtifactPointers,
+    pointer_state_path,
+    read_pointers,
+    relative_artifact_pointer,
+    write_pointers,
+)
 from agent.plugins.manifest import (
     ensure_workspace_plugin_data_dir,
     load_package_manifest,
@@ -34,31 +42,30 @@ class PluginInstallResult:
     marketplace: str
     installed_path: Path
     data_path: Path
+    source_revision: str
+    staged_candidate: bool
 
 
 @dataclass
 class _CacheActivation:
     result: PluginInstallResult
-    target_root: Path
-    backup_root: Path
+    plugin_base: Path
+    previous_pointers: ArtifactPointers | None
+    created_artifact: bool
 
     def rollback(self) -> None:
         """撤销已发布 cache，并恢复发布前的可运行版本。"""
 
-        # 1. 移除当前代 cache
-        if self.target_root.exists() or self.target_root.is_symlink():
-            _remove_path(self.target_root)
+        # 1. 恢复发布前完整 pointer state；缺失状态也精确恢复。
+        _restore_pointers(self.plugin_base, self.previous_pointers)
 
-        # 2. 恢复旧版本并清理事务目录
-        for child in sorted(self.backup_root.iterdir()):
-            os.replace(child, self.target_root.parent / child.name)
-        self.backup_root.rmdir()
+        # 2. 只删除本事务新建、且尚未被任何旧 pointer 引用的 artifact。
+        target_root = self.result.installed_path
+        if self.created_artifact and (target_root.exists() or target_root.is_symlink()):
+            _remove_path(target_root)
 
     def finalize(self) -> None:
-        """删除已提交事务保留的旧版本目录。"""
-
-        if self.backup_root.exists():
-            shutil.rmtree(self.backup_root)
+        """Immutable artifacts require no destructive post-commit cleanup."""
 
 
 def aka_plugins_root() -> Path:
@@ -150,6 +157,7 @@ def install_git_plugin(
     ref_name: str = "",
     sparse_paths: list[str] | None = None,
     plugins_home: Path | None = None,
+    stage_candidate: bool = False,
 ) -> PluginInstallResult:
     home = (plugins_home or aka_plugins_root()).resolve(strict=False)
     _ = _validate_path_segment(marketplace, "marketplace")
@@ -162,7 +170,9 @@ def install_git_plugin(
     if ref_name.startswith("-"):
         raise ValueError("插件 ref 不能以命令选项开头")
     sparse = sparse_paths or []
-    if not all(isinstance(path, str) and path and path == path.strip() for path in sparse):
+    if not all(
+        isinstance(path, str) and path and path == path.strip() for path in sparse
+    ):
         raise ValueError("插件 sparse path 必须是非空字符串")
     marketplace_root = home / "marketplaces" / marketplace
     cache_root = home / "cache" / marketplace
@@ -173,7 +183,9 @@ def install_git_plugin(
     _ = load_plugin_manifest(home)
     _ = load_package_manifest(home)
 
-    with tempfile.TemporaryDirectory(dir=marketplace_root, prefix="clone-") as clone_dir:
+    with tempfile.TemporaryDirectory(
+        dir=marketplace_root, prefix="clone-"
+    ) as clone_dir:
         clone_root = Path(clone_dir)
         _clone_git_source(
             source=source,
@@ -182,6 +194,9 @@ def install_git_plugin(
             sparse_paths=sparse,
         )
         _validate_source_tree(clone_root)
+        source_revision = _run_git(["rev-parse", "HEAD"], cwd=clone_root)
+        if re.fullmatch(r"[0-9a-f]{40}", source_revision) is None:
+            raise RuntimeError(f"插件 Git HEAD 无效: {source_revision}")
         plugin_class = _load_plugin_class(clone_root)
         plugin_name = _validate_path_segment(
             getattr(plugin_class, "name", None),
@@ -201,6 +216,8 @@ def install_git_plugin(
             cache_root=cache_root,
             data_root=workspace.resolve(strict=False) / "plugin-data",
             workspace=workspace,
+            source_revision=source_revision,
+            stage_candidate=stage_candidate,
         )
         plugin_id = f"{plugin_name}@{marketplace}"
         try:
@@ -289,50 +306,74 @@ def _activate_plugin_version(
     cache_root: Path,
     data_root: Path,
     workspace: Path,
+    source_revision: str,
+    stage_candidate: bool,
 ) -> _CacheActivation:
-    """准备新版本并以可回滚的目录替换发布到 cache。"""
+    """Prepare one immutable artifact and publish it as latest."""
 
     # 1. 创建受保护的数据目录和 cache 父目录
     data_path = data_root / f"{plugin_name}-{marketplace}"
     ensure_workspace_plugin_data_dir(data_path, workspace)
     plugin_base = cache_root / plugin_name
-    target_root = plugin_base / plugin_version
     _ensure_directory(plugin_base)
+    visible_versions = _cache_version_dirs(plugin_base)
+    if len(visible_versions) > 1:
+        paths = ", ".join(str(path) for path in visible_versions)
+        raise ValueError(f"插件 cache 可见版本冲突: {paths}")
+    previous_pointers = read_pointers(plugin_base)
+    if (
+        previous_pointers is not None
+        and previous_pointers.stable != previous_pointers.latest
+    ):
+        raise RuntimeError(
+            f"插件已有 latest 等待 promote/discard: {plugin_name}@{marketplace}"
+        )
+    stable = previous_pointers.stable if previous_pointers is not None else None
+    if stable is None:
+        stable = ArtifactPointer(visible_versions[0].name if visible_versions else None)
+    stage_latest = stage_candidate
+
+    artifacts_root = plugin_base / ".artifacts"
+    _ensure_directory(artifacts_root)
+    artifact_id = f"{plugin_version}-{source_revision[:16]}"
+    target_root = artifacts_root / artifact_id
     if target_root.is_symlink():
-        raise ValueError(f"插件 cache 目标不能是符号链接: {target_root}")
+        raise ValueError(f"插件 artifact 目标不能是符号链接: {target_root}")
     if target_root.exists() and not target_root.is_dir():
-        raise ValueError(f"插件 cache 目标不是目录: {target_root}")
+        raise ValueError(f"插件 artifact 目标不是目录: {target_root}")
 
     staging_root = Path(
         tempfile.mkdtemp(dir=cache_root, prefix=f".{plugin_name}-install-")
     )
-    backup_root = Path(
-        tempfile.mkdtemp(dir=plugin_base, prefix=f".{plugin_version}-backup-")
-    )
-    moved_versions: list[Path] = []
-    published = False
+    created_artifact = False
     try:
         # 2. 在不可发现的 staging 目录复制代码并准备依赖，旧版本保持可见
         _ = shutil.copytree(clone_root, staging_root, dirs_exist_ok=True)
         _prepare_plugin_mcp_runtimes(staging_root, mcp_servers)
 
-        # 3. 依赖准备完成后执行最短目录切换，失败时恢复旧版本
-        for child in _cache_version_dirs(plugin_base):
-            os.replace(child, backup_root / child.name)
-            moved_versions.append(child)
-        os.replace(staging_root, target_root)
-        published = True
+        # 3. Artifact 只创建一次；一次原子写发布完整 stable/latest pair。
+        if target_root.exists():
+            _validate_source_tree(target_root)
+            existing_revision = _run_git(["rev-parse", "HEAD"], cwd=target_root)
+            if existing_revision != source_revision:
+                raise RuntimeError(f"插件 artifact 身份冲突: {target_root}")
+            _remove_path(staging_root)
+        else:
+            os.replace(staging_root, target_root)
+            created_artifact = True
+        latest = relative_artifact_pointer(plugin_base, target_root)
+        candidate_staged = stage_latest and stable != latest
+        _ = write_pointers(
+            plugin_base,
+            stable=stable if stage_latest else latest,
+            latest=latest,
+        )
     except BaseException:
-        if published and (target_root.exists() or target_root.is_symlink()):
+        _restore_pointers(plugin_base, previous_pointers)
+        if created_artifact and (target_root.exists() or target_root.is_symlink()):
             _remove_path(target_root)
-        for child in moved_versions:
-            backup_child = backup_root / child.name
-            if backup_child.exists() or backup_child.is_symlink():
-                os.replace(backup_child, child)
         if staging_root.exists() or staging_root.is_symlink():
             _remove_path(staging_root)
-        if backup_root.exists():
-            backup_root.rmdir()
         raise
 
     result = PluginInstallResult(
@@ -341,11 +382,30 @@ def _activate_plugin_version(
         marketplace=marketplace,
         installed_path=target_root,
         data_path=data_path,
+        source_revision=source_revision,
+        staged_candidate=candidate_staged,
     )
     return _CacheActivation(
         result=result,
-        target_root=target_root,
-        backup_root=backup_root,
+        plugin_base=plugin_base,
+        previous_pointers=previous_pointers,
+        created_artifact=created_artifact,
+    )
+
+
+def _restore_pointers(
+    plugin_base: Path,
+    pointers: ArtifactPointers | None,
+) -> None:
+    path = pointer_state_path(plugin_base)
+    if pointers is None:
+        if path.exists() or path.is_symlink():
+            path.unlink()
+        return
+    _ = write_pointers(
+        plugin_base,
+        stable=pointers.stable,
+        latest=pointers.latest,
     )
 
 
@@ -397,9 +457,10 @@ def _ensure_directory_tree(root: Path, path: Path) -> None:
 
 
 def _validate_path_segment(value: object, label: str) -> str:
-    if not isinstance(value, str) or re.fullmatch(
-        r"[A-Za-z0-9][A-Za-z0-9._-]*", value
-    ) is None:
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value) is None
+    ):
         raise ValueError(f"{label} 必须是安全的单一路径段")
     return value
 
@@ -420,7 +481,9 @@ def _validate_source_tree(root: Path) -> None:
                 raise ValueError(f"插件 source 符号链接无效: {path}") from error
             if not resolved.is_relative_to(root):
                 raise ValueError(f"插件 source 符号链接越界: {path} -> {resolved}")
-            if resolved == root or path.parent.resolve(strict=True).is_relative_to(resolved):
+            if resolved == root or path.parent.resolve(strict=True).is_relative_to(
+                resolved
+            ):
                 raise ValueError(f"插件 source 符号链接形成循环: {path} -> {resolved}")
 
 
@@ -459,20 +522,14 @@ def _resolve_mcp_runtime_root(
         script_path = Path(command_items[1])
         if _looks_like_plugin_path(command_items[1]):
             script_candidate = (
-                script_path
-                if script_path.is_absolute()
-                else plugin_root / script_path
+                script_path if script_path.is_absolute() else plugin_root / script_path
             )
             resolved_script = script_candidate.resolve(strict=False)
             _require_plugin_path(plugin_root, resolved_script, "MCP command")
             candidates.append(script_candidate.parent)
     if cwd_raw:
         cwd_path = Path(cwd_raw)
-        cwd_candidate = (
-            cwd_path
-            if cwd_path.is_absolute()
-            else plugin_root / cwd_path
-        )
+        cwd_candidate = cwd_path if cwd_path.is_absolute() else plugin_root / cwd_path
         _require_plugin_path(
             plugin_root,
             cwd_candidate.resolve(strict=False),
@@ -527,7 +584,9 @@ def _load_plugin_class(plugin_root: Path) -> type:
     finally:
         plugin_registry.remove_module_tree(module_name)
         for imported_name in tuple(sys.modules):
-            if imported_name == module_name or imported_name.startswith(f"{module_name}."):
+            if imported_name == module_name or imported_name.startswith(
+                f"{module_name}."
+            ):
                 _ = sys.modules.pop(imported_name, None)
 
 
@@ -586,7 +645,11 @@ def _ensure_python_runtime(
 
 
 def _venv_python_path(venv_dir: Path) -> Path:
-    return venv_dir / "Scripts" / "python.exe" if os.name == "nt" else venv_dir / "bin" / "python"
+    return (
+        venv_dir / "Scripts" / "python.exe"
+        if os.name == "nt"
+        else venv_dir / "bin" / "python"
+    )
 
 
 def _is_python_command(value: str) -> bool:

@@ -100,6 +100,7 @@ class PluginGeneration:
     scope: PluginScope
     contributions: PluginContributions
     gate_result: GateResult
+    source_type: Literal["builtin", "installed"] = "builtin"
     skill_catalog: PreparedSkillCatalog | None = None
     mcp_catalog: PreparedMcpCatalog | None = None
     job_catalog: PreparedJobCatalog | None = None

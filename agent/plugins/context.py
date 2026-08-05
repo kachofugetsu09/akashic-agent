@@ -183,6 +183,10 @@ class PreparedPluginKVStore(PluginKVStore):
         self._is_dirty = True
         return new_value
 
+    @property
+    def dirty(self) -> bool:
+        return self._is_dirty
+
     def commit(self) -> None:
         if self._is_committed:
             return
