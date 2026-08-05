@@ -521,11 +521,22 @@ def _start_thread(client: JsonRpcSocketClient, check_id: str) -> str:
     )
 
 
-def _start_turn(client: JsonRpcSocketClient, thread_id: str, text: str) -> str:
+def _start_turn(
+    client: JsonRpcSocketClient,
+    thread_id: str,
+    text: str,
+    *,
+    detached: bool = False,
+) -> str:
     return _extract_id(
         client.request(
             "turn/start",
-            {"threadId": thread_id, "input": text, "metadata": {}},
+            {
+                "threadId": thread_id,
+                "input": text,
+                "metadata": {},
+                "detached": detached,
+            },
         ),
         "turn",
     )
@@ -1146,7 +1157,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             )
         )
 
-        # 4. 连接断开不取消 turn；重连后读取持久终态。
+        # 4. 显式 detached turn 在连接断开后继续；重连后读取持久终态。
         disconnecting = _connect_client(endpoint, events_path)
         clients.append(disconnecting)
         _create_barrier(
@@ -1155,7 +1166,12 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             {"mode": "complete", "content": "survived disconnect"},
         )
         recovery_thread = _start_thread(disconnecting, "PC-08")
-        recovery_turn = _start_turn(disconnecting, recovery_thread, "disconnect me")
+        recovery_turn = _start_turn(
+            disconnecting,
+            recovery_thread,
+            "disconnect me",
+            detached=True,
+        )
         _wait_barrier(model_url, "disconnect-held")
         disconnecting.close()
         clients.remove(disconnecting)
