@@ -2080,7 +2080,7 @@ button {
   color: var(--ak-color-text-primary);
   background: var(--ak-color-bg-canvas);
   transform: translateX(-100%);
-  box-shadow: 8px 0 28px var(--ak-color-shadow);
+  box-shadow: 4px 0 12px rgb(var(--md-sys-color-shadow-rgb) / 0.16);
   transition-property: transform;
   transition-duration: 220ms;
   transition-timing-function: cubic-bezier(0.2, 0, 0, 1);

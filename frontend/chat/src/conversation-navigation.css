@@ -93,7 +93,7 @@
   padding: 10px 14px;
   color: var(--ak-color-on-action-primary);
   background: var(--ak-color-action-primary);
-  box-shadow: 0 8px 20px var(--ak-color-shadow);
+  box-shadow: none;
 }
 
 .conversation-destination.featured .conversation-destination__icon,

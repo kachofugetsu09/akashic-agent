@@ -152,7 +152,11 @@ test("shared navigation keeps the compact mobile drawer language", () => {
   );
   assert.match(
     navigationStyles,
-    /\.conversation-destination\.featured\s*\{[^}]*min-height:\s*68px;[^}]*border-radius:\s*22px;[^}]*background:\s*var\(--ak-color-action-primary\);/,
+    /\.conversation-destination\.featured\s*\{[^}]*min-height:\s*68px;[^}]*border-radius:\s*22px;[^}]*background:\s*var\(--ak-color-action-primary\);[^}]*box-shadow:\s*none;/,
+  );
+  assert.match(
+    platformStyles,
+    /\.mobile-drawer\s*\{[^}]*box-shadow:\s*4px 0 12px rgb\(var\(--md-sys-color-shadow-rgb\) \/ 0\.16\);/,
   );
 });
 
