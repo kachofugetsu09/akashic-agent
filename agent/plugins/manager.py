@@ -1540,6 +1540,12 @@ class PluginManager:
 
     def candidate_status(self) -> dict[str, object]:
         ready = self._ready_candidate
+        transaction = None
+        if ready is not None:
+            tx_id = ready.candidate.reload_tx_id
+            if tx_id is None:
+                raise RuntimeError("latest candidate 缺少 reload transaction")
+            transaction = self._reload_journal.get(tx_id)
         return {
             "stable_snapshot_id": (
                 self.current_snapshot.snapshot_id
@@ -1555,7 +1561,14 @@ class PluginManager:
             "candidate_generation_id": (
                 None if ready is None else ready.candidate.generation_id
             ),
-            "candidate_state": None if ready is None else "latest_ready",
+            "candidate_state": None if transaction is None else transaction.phase,
+            "candidate_source_revision": (
+                None if transaction is None else transaction.source_revision
+            ),
+            "candidate_reload_tx_id": (
+                None if transaction is None else transaction.tx_id
+            ),
+            "candidate_error": None if transaction is None else transaction.error,
         }
 
     def _ready_candidate_status(self) -> dict[str, object]:

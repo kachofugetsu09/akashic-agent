@@ -88,6 +88,81 @@
       "title": "PluginDrainParams",
       "type": "object"
     },
+    "plugin/discard": {
+      "additionalProperties": false,
+      "properties": {
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Pluginid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pluginId"
+      ],
+      "title": "PluginDrainParams",
+      "type": "object"
+    },
+    "plugin/install": {
+      "additionalProperties": false,
+      "properties": {
+        "marketplace": {
+          "default": "local",
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Marketplace",
+          "type": "string"
+        },
+        "ref": {
+          "default": "",
+          "maxLength": 1024,
+          "title": "Ref",
+          "type": "string"
+        },
+        "source": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "sparse": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 128,
+          "title": "Sparse",
+          "type": "array"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "PluginInstallParams",
+      "type": "object"
+    },
+    "plugin/promote": {
+      "additionalProperties": false,
+      "properties": {
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Pluginid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pluginId"
+      ],
+      "title": "PluginDrainParams",
+      "type": "object"
+    },
+    "plugin/status": {
+      "additionalProperties": false,
+      "properties": {},
+      "title": "StrictModel",
+      "type": "object"
+    },
     "plugin/uninstall/start": {
       "additionalProperties": false,
       "properties": {
@@ -212,6 +287,15 @@
           "additionalProperties": true,
           "title": "Metadata",
           "type": "object"
+        },
+        "runtime": {
+          "default": "stable",
+          "enum": [
+            "stable",
+            "latest"
+          ],
+          "title": "Runtime",
+          "type": "string"
         }
       },
       "title": "ThreadStartParams",
@@ -266,6 +350,11 @@
     "turn/start": {
       "additionalProperties": false,
       "properties": {
+        "detached": {
+          "default": false,
+          "title": "Detached",
+          "type": "boolean"
+        },
         "input": {
           "maxLength": 1048576,
           "minLength": 1,
@@ -276,6 +365,22 @@
           "additionalProperties": true,
           "title": "Metadata",
           "type": "object"
+        },
+        "runtime": {
+          "anyOf": [
+            {
+              "enum": [
+                "stable",
+                "latest"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtime"
         },
         "threadId": {
           "maxLength": 512,

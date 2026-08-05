@@ -46,11 +46,25 @@ async def test_runtime_install_waits_until_latest_is_leasable(tmp_path: Path) ->
     app.workspace = tmp_path / "workspace"
     app.core = SimpleNamespace(plugin_manager=manager)
     app._plugin_management_lock = asyncio.Lock()
+    reconcile = manager.reconcile_changed
+
+    async def reconcile_after_watcher_consumed_outcome() -> list[dict[str, object]]:
+        await reconcile()
+        return []
+
+    manager.reconcile_changed = reconcile_after_watcher_consumed_outcome
 
     result = await app._install_plugin(str(source), "lab", "", [])
 
     assert result["pluginId"] == "candidate@lab"
     assert result["publicationState"] == "latest_ready"
+    candidate = result["candidate"]
+    assert isinstance(candidate, dict)
+    assert candidate["candidateRuntimeRevision"] == manager.candidate_status()[
+        "candidate_source_revision"
+    ]
+    assert candidate["candidateReloadTransactionId"]
+    assert candidate["candidateError"] == ""
     assert manager.current_snapshot is stable
     assert "candidate@lab" not in stable.generations
     assert manager.latest_snapshot is not None

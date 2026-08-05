@@ -423,7 +423,9 @@ async def run_exec(args: list[str], config_path: str, workspace: Path) -> int:
         workspace_token=workspace_token,
     ) as client:
         if new_thread:
-            metadata = {} if "--persist-memory" in args else {"skip_post_memory": True}
+            metadata: dict[str, object] = (
+                {} if "--persist-memory" in args else {"skip_post_memory": True}
+            )
             thread = await client.start_thread(
                 metadata,
                 runtime=runtime_value or "stable",

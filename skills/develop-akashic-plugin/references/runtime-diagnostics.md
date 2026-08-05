@@ -275,6 +275,6 @@ V started/completed → T 读取结果 ──┘
 
 因此当前实现支持 `T await V → T 根据结果继续修改`。必须用父子的 `started_at/completed_at` 证明 V 在 T 完成前终止；只看到两个 completed 记录不足以证明没有排队。V 一直 queued 时，立即检查 session/thread identity 与 admission 容量，不要再次增加 timeout。
 
-reload transaction 行在 `committed` 事件后通常进入 `draining`，直到 T 释放旧 snapshot lease；此时 V 已可使用新 current snapshot。行为 oracle 可以先完成，最终诊断再确认事件序列到达 `complete`。当前仍没有 stable/latest 候选隔离，attached CLI 断开也不会自动取消服务端 turn。
+staged install 的 reload transaction 到达 `latest_ready` 后，V 才能显式租用 latest；T 和普通 session 继续使用 stable。行为 oracle 完成后再 promote 或 discard，并确认 journal 到达对应终态。attached CLI 断开会取消该连接拥有的服务端 turn；若仍长期 queued，优先检查 thread/session identity、latest readiness 和 admission 容量。
 
 最终报告按证据层写明：source commit、reload tx/generation、child thread/turn、时间线、items/tool trace、final oracle、日志 sink、探针 marker、未取得的 provider/snapshot 证据。没有取得的层保持未知，不用推断补齐。

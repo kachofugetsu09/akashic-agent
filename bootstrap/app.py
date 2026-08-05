@@ -933,20 +933,17 @@ class AppRuntime:
 
             # 2. 等 manager 完成真实 prepare/readiness，不把 watcher accepted 当终态。
             plugin_id = f"{result.plugin_name}@{result.marketplace}"
-            outcomes = await manager.reconcile_changed()
+            _ = await manager.reconcile_changed()
             status = manager.candidate_status()
             if result.staged_candidate and (
                 status["candidate_plugin_id"] != plugin_id
                 or status["candidate_state"] != "latest_ready"
             ):
                 raise RuntimeError(f"插件候选未进入 latest_ready: {plugin_id}")
-            publication = next(
-                (
-                    item.get("publication_state")
-                    for item in outcomes
-                    if item.get("plugin_id") == plugin_id
-                ),
-                "stable" if not result.staged_candidate else None,
+            publication = (
+                status["candidate_state"]
+                if result.staged_candidate
+                else "stable"
             )
             return {
                 "pluginId": plugin_id,
@@ -969,6 +966,9 @@ class AppRuntime:
             "candidatePluginId": status["candidate_plugin_id"],
             "candidateGenerationId": status["candidate_generation_id"],
             "candidateState": status["candidate_state"],
+            "candidateRuntimeRevision": status["candidate_source_revision"],
+            "candidateReloadTransactionId": status["candidate_reload_tx_id"],
+            "candidateError": status["candidate_error"],
         }
 
     async def _promote_plugin(self, plugin_id: str) -> dict[str, object]:
