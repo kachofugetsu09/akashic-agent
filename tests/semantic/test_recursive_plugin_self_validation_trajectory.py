@@ -399,18 +399,31 @@ async def test_recursive_candidate_trajectory_passes_real_production_oracle(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("mutation", "kwargs", "error"),
+    (
+        "mutation",
+        "forged_domain",
+        "fake_tool_success",
+        "validation_runtime",
+        "error",
+    ),
     [
-        ("stable_misbinding", {"validation_runtime": "stable"}, "没有绑定 latest"),
-        ("fake_tool_success", {"fake_tool_success": True}, "真实 completed tool item"),
-        ("fake_domain_success", {"forged_domain": True}, "领域状态"),
+        ("stable_misbinding", False, False, "stable", "没有绑定 latest"),
+        ("fake_tool_success", False, True, "latest", "真实 completed tool item"),
+        ("fake_domain_success", True, False, "latest", "领域状态"),
     ],
 )
 async def test_recursive_candidate_trajectory_rejects_real_seam_mutants(
     tmp_path: Path,
     mutation: str,
-    kwargs: dict[str, object],
+    forged_domain: bool,
+    fake_tool_success: bool,
+    validation_runtime: str,
     error: str,
 ) -> None:
     with pytest.raises(AssertionError, match=error):
-        _ = await _run_trajectory(tmp_path / mutation, **kwargs)
+        _ = await _run_trajectory(
+            tmp_path / mutation,
+            forged_domain=forged_domain,
+            fake_tool_success=fake_tool_success,
+            validation_runtime=validation_runtime,
+        )
