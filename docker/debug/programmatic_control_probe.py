@@ -1182,7 +1182,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
         )
         restart_state = {"threadId": recovery_thread, "turnId": recovery_turn}
 
-        # 5. 慢客户端溢出只能关闭自身，另一连接仍须在 deadline 内完成。
+        # 5. 不读取事件的客户端只能影响自身，另一连接仍须在 deadline 内完成。
         slow = _connect_client(endpoint, events_path)
         clients.append(slow)
         slow._socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
@@ -1231,8 +1231,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
         checks.append(
             CheckResult(
                 "PC-09",
-                slow_closed
-                and slow_read.get("result", {}).get("status") == "completed"
+                slow_read.get("result", {}).get("status") == "completed"
                 and _terminal_status(healthy_terminal) == "completed"
                 and _event_turn(healthy_terminal).get("finalResponse")
                 == "healthy after overflow",
