@@ -12,8 +12,10 @@ description: 创建、编写、修改并验证 Akashic 插件及插件内 Skill/
 1. 进入目标仓库后先读它的 `AGENTS.md`、文档索引和工作流。
 2. 创建或修改插件前，完整读取 [references/plugin-authoring.md](references/plugin-authoring.md)。
 3. 安装和行为验证前，完整读取 [references/self-validation.md](references/self-validation.md)。
-4. 子 turn 排队、超时、结果错误或插件行为不明时，完整读取 [references/runtime-diagnostics.md](references/runtime-diagnostics.md)，从 reload journal、SessionDB 和真实日志重建执行轨迹。
+4. 只有子 turn 排队、超时、结果错误或插件行为不明时，才完整读取 [references/runtime-diagnostics.md](references/runtime-diagnostics.md)，从 reload journal、SessionDB 和真实日志重建执行轨迹；成功前不要预先做全量诊断考古。
 5. 从当前 `agent.plugins.Plugin`、装饰器、spec 和相邻插件核对 API；参考文件只提供路由，代码是当前事实。
+
+已给出 workspace、config、Gateway cwd/解释器或插件根时直接使用，不再枚举所有进程、环境、配置和数据库 schema。prompt-only 插件走 [authoring 的 Prompt 注入模板](references/plugin-authoring.md#3-prompt-注入)：只核对模板直接引用的公开类型；在 import/source test 失败前，不搜索 manager、EventBus、phase、control 或安装器内部实现。
 
 ## 2. 实现最小插件
 
@@ -32,6 +34,7 @@ plugin source/
 - Tool 使用 `@tool` 声明稳定名称、真实 risk 和可搜索提示；handler 失败要暴露。
 - Skill 放入插件 source 的 `skills/`，由 `skill_roots()` 声明；不要先复制到 workspace。
 - MCP、channel、managed service 和 proactive source 只在能力确实需要时声明。
+- 没有第三方依赖时不要创建空 `requirements.txt`。
 - plugin-data 写入必须由插件 owner 管理；候选验证不得假设 snapshot rollback 能撤销文件或外部效果。
 - 不添加 mock success、宽泛异常、空 fallback 或只为通过 doctor 的假能力。
 
@@ -52,6 +55,8 @@ plugin source/
 先按 [references/self-validation.md](references/self-validation.md) 检查当前 runtime 处于哪一级：完整的 stable/latest 候选隔离，或只有 session-lane + current snapshot 的隔离环境自验证。
 
 每次 programmatic 验证都先保存 `execution_id`、`thread_id`、`turn_id`、`plugin_id` 和 reload `tx_id`。命令超时、子 turn 停在 `queued`、final response 不符合 oracle 或工具没有执行时，不要直接搜索源码或重复安装；按 [references/runtime-diagnostics.md](references/runtime-diagnostics.md) 查询真实状态和内容，先定位失败层。
+
+正常快路径按 `source test → commit → install → plugin-status/doctor → latest child → 定向 SessionDB/journal 查询 → promote` 单向推进。命令成功时不要为确认其实现而反向阅读 CLI、socket、pointer 或 EventBus 源码；正式输出和数据库行就是该边界的证据。
 
 支持时使用下面的闭环：
 

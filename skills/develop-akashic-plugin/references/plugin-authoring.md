@@ -86,6 +86,8 @@ class PromptOnlyPlugin(Plugin):
 
 source test 至少直接调用 handler，断言 section 的 name、content、位置和静态属性，并证明没有意外 Tool handler。真实有效性仍由安装后的 latest child 断言，source test 不能替代模型行为。
 
+测试 `channels()`、`jobs()` 等普通实例方法时先实例化插件；只有 `skill_roots()`、`mcp_servers()`、`managed_services()` 等基类声明为 `@classmethod` 的能力才直接从类调用。不要为确认这个区别遍历 manager/EventBus 实现。
+
 ## 4. Skill
 
 插件 Skill 放在：

@@ -1,6 +1,6 @@
 # 插件递归自验证运行时设计
 
-- 状态：implemented / stable-latest programmatic 闭环、共享状态 owner 审计与自动化验收已完成，真实模型验收进行中
+- 状态：implemented / stable-latest programmatic 闭环、共享状态 owner 审计、自动化与真实模型验收均已完成
 - 确认日期：2026-08-05
 - 决策：[0024](../decisions/0024-plugin-self-validation-uses-stable-and-latest.md)
 - 关联条款：RUN-007、OUT-004、PLG-013、CTRL-003、SH-001、TST-001～TST-006
@@ -470,6 +470,7 @@ cache/<marketplace>/<plugin>/
 | 合同 | 直接证据 |
 |---|---|
 | latest/stable、install 完成定义、candidate 单 owner | `tests/test_plugin_runtime_control.py`、`tests/test_plugin_hot_reload.py` 的 selector、promotion、KV write 与 crash recovery 用例 |
+| candidate 诊断入口 | `tests/test_plugin_doctor.py::test_plugin_doctor_reads_latest_artifact_candidate` 证明 doctor 按 pointer 读取 `.artifacts` 下的 latest |
 | 跨 session 并发、同 session 串行 | `tests/test_turn_pipelines.py::test_process_direct_runs_concurrently_with_another_session`、`test_process_direct_waits_for_the_same_session_lane` |
 | programmatic runtime、长 terminal、SessionDB 与默认 memory policy | `tests/control/test_exec_cli.py::test_exec_new_defaults_to_read_only_memory_and_selects_runtime`、`test_control_client_reads_terminal_larger_than_asyncio_default`、`tests/control/test_protocol.py::test_thread_runtime_selector_is_strict_and_inherited_by_turn` |
 | `message_push` 不等父 session 且实际 send 串行 | `tests/test_support_modules.py::test_message_push_passive_role_does_not_wait_for_passive_lane`、`test_message_push_passive_role_serializes_actual_same_chat_send` |
@@ -477,6 +478,28 @@ cache/<marketplace>/<plugin>/
 | 完整递归 oracle 与已知错误 | `tests/semantic/test_recursive_plugin_self_validation_contract.py`：stable misbinding、global lock、parent terminal overflow、semantic write、fake domain success、blocking push、crash promotion、fake tool item 八类 mutant |
 
 上述证据注册为 P0 `recursive_plugin_validation` group、`plugin_runtime_selection` state contract 与 `recursive_plugin_self_validation_contract` scenario。它观察 pointer/journal、真实 tool item、SessionDB、semantic write set、ChatLane timer 和 crash recovery；coverage baseline 只记录批准后的合同映射，不充当测试通过报告。
+
+### 14.7 真实模型闭环证据
+
+2026-08-06 在一次性 workspace、独立 plugin home、关闭 channel/proactive 且 `memory.enabled=false`、`engine=""` 的 Gateway 中完成真实验收：
+
+```text
+parent stable T
+├─ 自行编写 prompt-only Git 插件 helloworld_rule@local
+├─ source tests 首跑暴露测试契约错误，修复后 5 passed
+├─ install: stable 335c0bba4d86f063 → latest 12aec517458d6252
+├─ child latest V: 普通问题 → 精确 helloworld，status=completed
+├─ 回读 SessionDB、reload journal 与 pointer
+└─ promote: stable == latest == 12aec517458d6252
+```
+
+- 父 session/turn：`programmatic:e8971595-33b5-4062-b6a5-0e244030c546` / `turn:6d59a0e4-7e6b-4cbd-aa25-3f304f67201e`，`21:58:48.912912Z` 开始，`22:07:25.139531Z` 完成。
+- 子 session/turn：`programmatic:d3850b5b-b004-473b-9106-c95b28395a0f` / `turn:ca68e274-33b5-4be0-acd8-1d7b898825e8`，`22:06:06.976456Z` 开始，`22:06:10.879357Z` 完成；因此 V 在 T 释放前约 494 秒完成，不存在跨 session 整轮锁。
+- 子输入是普通问题 `What is the capital of France?`，不含注入规则；SessionDB 的 user/assistant 两条消息和 turn final 均证明最终回答严格为 `helloworld`，session metadata 为 `runtime=latest`、`skip_post_memory=true`。
+- reload transaction `abf4b6346c6e43dd9d9509de3530af54` 最终 `phase=complete`、`error=''`；source commit 为 `a5f7d54b13ac88c9dfa5a36ba08f64960c984dd7`，stable/latest pointer 均为 `.artifacts/0.1.0-a5f7d54b13ac88c9`。
+- 父 terminal 的 `items_json` 为 769,056 bytes；CLI 完整收到 `completed`，证明显式 2 MiB control frame 合同修复了旧 64 KiB 断连。
+- 本次父 Agent 用了 81 次模型迭代、100 次工具调用，功能成立但效率不可接受。主要浪费来自成功路径预读 diagnostics、重复枚举已给定运行时信息和反向考古 CLI/EventBus；builtin Skill 已把 prompt-only 模板、单向快路径与按失败诊断写成明确约束。
+- 现场还发现 `plugin-doctor` 仍按旧可见版本目录查找、误报 `.artifacts` 候选不存在；现已让 doctor 通过原子 pointer 读取 latest，并以定向测试覆盖。
 
 ## 15. 非目标与仍需单独设计的边界
 

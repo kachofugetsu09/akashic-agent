@@ -323,6 +323,7 @@ command = [
   "tests/test_plugin_hot_reload.py::test_startup_recovers_installed_candidate_from_durable_pointers",
   "tests/test_plugin_hot_reload.py::test_startup_rejects_bad_recovered_candidate_but_keeps_stable",
   "tests/test_plugin_hot_reload.py::test_passive_runtime_admission_selects_latest_only_when_explicit",
+  "tests/test_plugin_doctor.py::test_plugin_doctor_reads_latest_artifact_candidate",
   "tests/control/test_control_execution.py::test_control_execution_preserves_inbound_metadata",
   "tests/control/test_exec_cli.py::test_exec_new_defaults_to_read_only_memory_and_selects_runtime",
   "tests/control/test_exec_cli.py::test_control_client_reads_terminal_larger_than_asyncio_default",

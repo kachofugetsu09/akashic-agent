@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agent.plugins.artifacts import ArtifactPointer, write_pointers
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
 from agent.plugins.manifest import upsert_plugin_manifest
 from bootstrap.init_workspace import init_workspace
@@ -42,6 +43,37 @@ def test_plugin_doctor_reads_programmatic_capabilities(tmp_path: Path) -> None:
 
     assert report["status"] == "healthy"
     assert "plugin doctor demo@github" in format_plugin_doctor_report(report)
+
+
+def test_plugin_doctor_reads_latest_artifact_candidate(tmp_path: Path) -> None:
+    plugins_home = tmp_path / ".akashic-plugin"
+    workspace = tmp_path / "workspace"
+    plugin_base = plugins_home / "cache" / "local" / "demo"
+    plugin_root = plugin_base / ".artifacts" / "1.0.0-aaaa"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class DemoPlugin(Plugin):\n"
+        "    name = 'demo'\n"
+        "    version = '1.0.0'\n",
+        encoding="utf-8",
+    )
+    _ = write_pointers(
+        plugin_base,
+        stable=ArtifactPointer(None),
+        latest=ArtifactPointer(".artifacts/1.0.0-aaaa"),
+    )
+    upsert_plugin_manifest("demo@local", enabled=True, plugins_home=plugins_home)
+
+    report = run_plugin_doctor(
+        plugin_id="demo@local",
+        config_path=str(_init_config(tmp_path)),
+        plugins_home=plugins_home,
+        workspace=workspace,
+    )
+
+    assert report["status"] == "healthy"
+    assert str(plugin_root) in format_plugin_doctor_report(report)
 
 
 def test_plugin_doctor_reports_broken_declaration(tmp_path: Path) -> None:
