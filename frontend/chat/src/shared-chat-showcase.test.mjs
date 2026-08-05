@@ -10,6 +10,10 @@ const messageViewCss = await readFile(
   new URL("./message-view.css", import.meta.url),
   "utf8",
 );
+const mobileNativeSource = await readFile(
+  new URL("./mobile-native.tsx", import.meta.url),
+  "utf8",
+);
 
 test("offline showcase preserves the P0 boundary fixtures", () => {
   const gifMatch = showcaseSource.match(
@@ -33,4 +37,18 @@ test("reduced motion disables the process trigger transition", () => {
   );
   assert.match(reducedMotionBlock, /\.process-trigger,/);
   assert.match(reducedMotionBlock, /transition-duration: 0ms;/);
+});
+
+test("flow and echo motion is shared by desktop and mobile process traces", () => {
+  assert.match(messageViewCss, /\.process-item\.active::before\s*\{/);
+  assert.match(messageViewCss, /animation: shared-trace-flow 1\.8s/);
+  assert.match(messageViewCss, /animation: shared-trace-core 1\.8s/);
+  assert.match(messageViewCss, /animation: shared-trace-echo 1\.8s/);
+  assert.match(mobileNativeSource, /import "\.\/message-view\.css";/);
+
+  const reducedMotionBlock = messageViewCss.slice(
+    messageViewCss.indexOf("@media (prefers-reduced-motion: reduce)"),
+  );
+  assert.match(reducedMotionBlock, /\.process-item\.active::before,/);
+  assert.match(reducedMotionBlock, /\.process-item\.active \.process-node::after/);
 });

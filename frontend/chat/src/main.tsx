@@ -145,6 +145,9 @@ const LazyMobileShowcase = lazy(() =>
 const LazySharedChatShowcase = lazy(() =>
   import("./shared-chat-showcase").then(({ SharedChatShowcase }) => ({ default: SharedChatShowcase })),
 );
+const LazyTraceMotionShowcase = lazy(() =>
+  import("./trace-motion-showcase").then(({ TraceMotionShowcase }) => ({ default: TraceMotionShowcase })),
+);
 const LazyDrawerIslandShowcase = lazy(() =>
   import("./drawer-island-showcase").then(({ DrawerIslandShowcase }) => ({ default: DrawerIslandShowcase })),
 );
@@ -1341,6 +1344,7 @@ if (isEmbeddedShell) {
 }
 const isMobileShowcase = preview === "mobile";
 const isSharedChatShowcase = preview === "chat";
+const isTraceMotionShowcase = preview === "trace-motion";
 const isDrawerIslandShowcase = preview === "drawer-islands";
 const rootApp = window.location.port === "6321"
   ? <LazySettingsApp />
@@ -1348,6 +1352,8 @@ const rootApp = window.location.port === "6321"
     ? <LazyMobileShowcase />
     : isSharedChatShowcase
       ? <LazySharedChatShowcase />
+      : isTraceMotionShowcase
+        ? <LazyTraceMotionShowcase />
       : isDrawerIslandShowcase
         ? <LazyDrawerIslandShowcase />
     : <App />;

@@ -231,6 +231,19 @@
   animation: shared-trace-item-in 180ms cubic-bezier(0.2, 0, 0, 1) both;
 }
 
+.process-item.active::before {
+  position: absolute;
+  z-index: 2;
+  top: -24px;
+  left: calc((var(--process-rail-width) - 3px) / 2);
+  width: 3px;
+  height: 23px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, transparent, var(--ak-color-status-trace));
+  content: "";
+  animation: shared-trace-flow 1.8s cubic-bezier(0.2, 0, 0, 1) infinite;
+}
+
 .process-item:last-child::after {
   position: absolute;
   z-index: 0;
@@ -243,6 +256,7 @@
 }
 
 .process-node {
+  position: relative;
   z-index: 1;
   justify-self: center;
   margin-top: 8px;
@@ -265,11 +279,27 @@
 
 .process-item.active .process-node {
   background: var(--ak-color-status-trace);
-  box-shadow: 0 0 0 4px var(--ak-color-bg-canvas), 0 0 0 7px var(--ak-color-status-trace-container);
+  box-shadow: 0 0 0 4px var(--ak-color-bg-canvas), 0 0 12px color-mix(in oklch, var(--ak-color-status-trace) 70%, transparent);
+  animation: shared-trace-core 1.8s ease-in-out infinite;
+}
+
+.process-item.active .process-node::before,
+.process-item.active .process-node::after {
+  position: absolute;
+  inset: -2px;
+  border: 1px solid var(--ak-color-status-trace);
+  border-radius: inherit;
+  content: "";
+  opacity: 0;
+  animation: shared-trace-echo 1.8s cubic-bezier(0.2, 0, 0, 1) 520ms infinite;
+}
+
+.process-item.active .process-node::after {
+  animation-delay: 780ms;
 }
 
 .process-item.active .process-node.diamond {
-  transform: rotate(45deg) scale(1.08);
+  transform: rotate(45deg);
 }
 
 .process-item.error .process-node {
@@ -491,7 +521,6 @@ button.tool-step-summary:active {
 
 .tool-step.active .tool-step-icon {
   color: var(--ak-color-status-trace);
-  animation: shared-tool-pulse 1.25s ease-in-out infinite;
 }
 
 .message-attachments {
@@ -631,15 +660,32 @@ button.tool-step-summary:active {
   to { opacity: 1; transform: translateY(0); }
 }
 
-@keyframes shared-tool-pulse {
-  0%, 100% { opacity: 0.62; }
-  50% { opacity: 1; }
+@keyframes shared-trace-flow {
+  0% { opacity: 0; transform: translateY(-11px); }
+  18% { opacity: 1; }
+  48% { opacity: 0; transform: translateY(24px); }
+  100% { opacity: 0; transform: translateY(24px); }
+}
+
+@keyframes shared-trace-core {
+  0%, 28% { scale: 0.9; opacity: 0.74; }
+  48% { scale: 1.18; opacity: 1; }
+  68%, 100% { scale: 1; opacity: 1; }
+}
+
+@keyframes shared-trace-echo {
+  0%, 18% { scale: 0.72; opacity: 0; }
+  34% { opacity: 0.48; }
+  78%, 100% { scale: 2.35; opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .process-line,
   .process-item,
-  .tool-step.active .tool-step-icon {
+  .process-item.active::before,
+  .process-item.active .process-node,
+  .process-item.active .process-node::before,
+  .process-item.active .process-node::after {
     animation-duration: 1ms;
     animation-iteration-count: 1;
   }
