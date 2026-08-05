@@ -1439,20 +1439,16 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                     }
                 )
             )
-            fast_queued = _wait_database_turn_status(
-                database, fast_thread, "fast lane", {"queued"}
-            )
-            _release_barrier(model_url, "pc16-channel-slow")
-            slow_final = _receive_web_final(slow_web)
-            fast_final = _receive_web_final(fast_web)
             fast_completed = _wait_database_turn_status(
                 database, fast_thread, "fast lane", {"completed"}
             )
+            fast_final = _receive_web_final(fast_web)
+            _release_barrier(model_url, "pc16-channel-slow")
+            slow_final = _receive_web_final(slow_web)
             lane_evidence["differentThreads"] = {
-                "fastBeforeRelease": fast_queued,
+                "fastCompletedBeforeRelease": fast_completed,
                 "slowFinal": slow_final.get("content"),
                 "fastFinal": fast_final.get("content"),
-                "fastAfterRelease": fast_completed,
             }
 
         with connect_websocket(
@@ -1510,12 +1506,13 @@ def _inside_failure_matrix(report_dir: Path) -> int:
         different_threads = cast(dict[str, object], lane_evidence["differentThreads"])
         same_thread = cast(dict[str, object], lane_evidence["sameThread"])
         lane_passed = (
-            cast(dict[str, object], different_threads["fastBeforeRelease"])["status"]
-            == "queued"
+            cast(
+                dict[str, object],
+                different_threads["fastCompletedBeforeRelease"],
+            )["status"]
+            == "completed"
             and different_threads["slowFinal"] == "slow complete"
             and different_threads["fastFinal"] == "fast complete"
-            and cast(dict[str, object], different_threads["fastAfterRelease"])["status"]
-            == "completed"
             and same_thread["finals"]
             == [
                 "ordered one",
