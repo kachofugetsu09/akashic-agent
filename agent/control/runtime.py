@@ -443,8 +443,22 @@ class ConversationRuntime:
             for item in attempt.items:
                 if item.kind is TurnItemKind.USER_MESSAGE:
                     content = item.data.get("content")
+                    media = item.data.get("media", [])
                     if not isinstance(content, str):
                         raise ValueError(f"turn user content 必须是字符串: {item.id}")
+                    if not isinstance(media, list) or not all(
+                        isinstance(value, str) for value in media
+                    ):
+                        raise ValueError(f"turn user media 必须是字符串数组: {item.id}")
+                    if media:
+                        content = "\n".join(
+                            [
+                                content,
+                                "",
+                                "[附加媒体]",
+                                *(f"- {value}" for value in media),
+                            ]
+                        )
                     messages.append({"role": "user", "content": content})
                 elif item.kind is TurnItemKind.TOOL_CALL:
                     group = cls._tool_group_from_item(item)

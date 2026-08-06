@@ -121,7 +121,13 @@ async def test_runtime_replays_two_interrupted_attempts_into_one_interaction(
         return "final"
 
     runtime = ConversationRuntime(store, execute)
-    first = await runtime.start_turn(TurnRequest("mobile:chain", "u1"))
+    first = await runtime.start_turn(
+        TurnRequest(
+            "mobile:chain",
+            "u1",
+            {"media": ["/workspace/uploads/reference.png"]},
+        )
+    )
     await reached[0].wait()
     assert (await first.interrupt()).status is TurnStatus.INTERRUPTED
 
@@ -142,7 +148,12 @@ async def test_runtime_replays_two_interrupted_attempts_into_one_interaction(
         message["content"]
         for message in captured_final.metadata["_controlAttemptReplay"]
         if message["role"] in {"user", "tool"}
-    ] == ["u1", "result-0", "u2", "result-1"]
+    ] == [
+        "u1\n\n[附加媒体]\n- /workspace/uploads/reference.png",
+        "result-0",
+        "u2",
+        "result-1",
+    ]
     assert [
         group["calls"][0]["result"]
         for group in captured_final.metadata["_controlPriorToolChain"]
