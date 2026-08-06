@@ -201,6 +201,12 @@ class ConversationRuntime:
         self._accepting_turns = True
         self._restart_owner_turn_id: str | None = None
         self._restart_coordinator = restart_coordinator
+        recovered = self._store.recover_in_progress_turns()
+        if recovered:
+            logger.warning(
+                "Recovered %d stale in-progress control turns as interrupted",
+                len(recovered),
+            )
 
     async def start_turn(self, request: TurnRequest) -> TurnHandle:
         """拒绝 active thread，否则恢复未完成 interaction 并创建新 attempt。"""

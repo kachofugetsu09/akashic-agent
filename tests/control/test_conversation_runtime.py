@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -78,6 +79,70 @@ async def test_runtime_rejects_same_thread_input_and_interrupts_exact_turn(
     record = await first.interrupt()
     assert record.status is TurnStatus.INTERRUPTED
     _assert_single_terminal(runtime, first.id)
+    await runtime.shutdown()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_startup_interrupts_crash_stale_in_progress_turn(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    stale = store.create_turn(
+        TurnRecord(
+            id="turn:stale",
+            thread_id="programmatic:restart",
+            status=TurnStatus.QUEUED,
+            input="u1",
+            metadata={"interactionId": "turn:stale", "attemptOrdinal": 0},
+            items=[
+                TurnItem(
+                    TurnItemKind.USER_MESSAGE,
+                    "user:stale",
+                    {
+                        "content": "u1",
+                        "ordinal": 0,
+                        "media": [],
+                        "metadata": {},
+                        "timestamp": datetime.now(UTC).isoformat(),
+                    },
+                ),
+                TurnItem(
+                    TurnItemKind.TOOL_CALL,
+                    "tool:stale",
+                    {
+                        "callId": "call:stale",
+                        "name": "lookup",
+                        "arguments": {},
+                        "status": "in_progress",
+                    },
+                )
+            ],
+            usage=None,
+            error=None,
+            created_at=datetime.now(UTC),
+        )
+    )
+    store.transition_turn(
+        stale.id,
+        expected_status=TurnStatus.QUEUED,
+        status=TurnStatus.IN_PROGRESS,
+        thread_id=stale.thread_id,
+    )
+
+    async def execute(_request: TurnRequest) -> str:
+        return "continued"
+
+    runtime = ConversationRuntime(store, execute)
+
+    recovered = store.read_turn(stale.id)
+    assert recovered is not None
+    assert recovered.status is TurnStatus.INTERRUPTED
+    assert recovered.items[1].data["status"] == "interrupted"
+    continued = await runtime.start_turn(
+        TurnRequest("programmatic:restart", "u2")
+    )
+    assert (await continued.result()).status is TurnStatus.COMPLETED
     await runtime.shutdown()
     store.close()
 
