@@ -731,21 +731,15 @@ ongoing_threads 严格限制：
     ) -> str | _ConsolidationFailure:
         """读取会话窗口并生成近期语境快照。"""
         # 1. 复用调用方已读取的 recent context，保证两个模型步骤看到同一版本。
-        tail = (
-            list(session.messages[-self._keep_count :]) if self._keep_count > 0 else []
-        )
-        recent_count = min(len(tail), _recent_turn_count(self._keep_count))
         session_messages = list(session.messages)
+        recent_count = _recent_turn_count(self._keep_count)
+        recent_start = logical_history_tail_start(session_messages, recent_count)
+        recent_turns = session_messages[recent_start:]
         if archive_all:
-            compact_source = (
-                session_messages[:-recent_count]
-                if recent_count > 0
-                else session_messages
-            )
+            compact_source = session_messages[:recent_start]
         else:
             compact_source = list(window.old_messages) if window is not None else []
         compression_until = _message_time(compact_source[-1]) if compact_source else ""
-        recent_turns = tail[-recent_count:] if recent_count > 0 else []
         rendered_recent_turns = _format_recent_context_messages(recent_turns)
         recent_turns_for_prompt = _format_conversation_for_recent_context(recent_turns)
         conversation = _format_conversation_for_recent_context(compact_source)
