@@ -479,6 +479,37 @@ async def test_exception_closes_and_persists_open_tool_item(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_late_executor_exception_reuses_existing_terminal_turn(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+
+    async def execute(request: TurnRequest) -> str:
+        turn_id = cast(str, request.metadata["turnId"])
+        store.transition_turn(
+            turn_id,
+            expected_status=TurnStatus.IN_PROGRESS,
+            status=TurnStatus.INTERRUPTED,
+            thread_id=request.thread_id,
+        )
+        raise RuntimeError("late executor event")
+
+    runtime = ConversationRuntime(store, execute)
+    handle = await runtime.start_turn(TurnRequest("programmatic:terminal-race", "hello"))
+
+    result = await handle.result()
+
+    assert result.status is TurnStatus.INTERRUPTED
+    stored = store.read_turn(handle.id)
+    assert stored is not None
+    assert stored.status is TurnStatus.INTERRUPTED
+    assert stored.error is None
+    _assert_single_terminal(runtime, handle.id)
+    await runtime.shutdown()
+    store.close()
+
+
+@pytest.mark.asyncio
 async def test_fatal_runtime_failure_is_delivered_to_subscriber_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

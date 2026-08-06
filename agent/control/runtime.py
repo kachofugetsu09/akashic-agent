@@ -803,7 +803,9 @@ class ConversationRuntime:
                 "conversation turn failed thread=%s turn=%s", request.thread_id, turn_id
             )
             current = self._store.read_turn(turn_id)
-            if current is not None and current.status is TurnStatus.IN_PROGRESS:
+            if current is not None and current.status.is_terminal:
+                terminal = current
+            elif current is not None and current.status is TurnStatus.IN_PROGRESS:
                 items = _merge_turn_items(
                     current.items,
                     close_observed_items(TurnStatus.FAILED),
