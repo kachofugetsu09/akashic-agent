@@ -75,10 +75,6 @@ def _encoded_event_bytes(event: TurnEvent) -> int:
     )
 
 
-def _encoded_json_bytes(value: object) -> int:
-    return len(json.dumps(value, ensure_ascii=False, sort_keys=True).encode())
-
-
 def _merge_turn_items(base: list[TurnItem], updates: list[TurnItem]) -> list[TurnItem]:
     """按 item identity 保留顺序并应用最新 checkpoint。"""
 
@@ -235,11 +231,7 @@ class ConversationRuntime:
             if previous_attempts:
                 metadata[_CONTINUED_FROM_TURN_ID] = previous_attempts[-1].id
             effective_request = TurnRequest(request.thread_id, request.input, metadata)
-            request_bytes = (
-                _encoded_turn_bytes(effective_request)
-                + _encoded_json_bytes(attempt_replay)
-                + _encoded_json_bytes(prior_tool_chain)
-            )
+            request_bytes = _encoded_turn_bytes(effective_request)
             admission_token = self._reserve_admission(request_bytes)
 
             # 2. 先持久化 queued handle；失败时只回滚本轮 admission token。
