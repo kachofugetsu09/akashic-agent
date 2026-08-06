@@ -277,6 +277,7 @@ class AkashaMemoryEngine:
         # 2. Keep one global graph writer and one pending query per session.
         self._lock = threading.RLock()
         self._pending_changed = threading.Condition(self._lock)
+        self._source_event_gate = asyncio.Lock()
         self._commit_gate = asyncio.Lock()
         self._publish_task: asyncio.Task[None] | None = None
         self._pending: dict[str, PendingRetrieval] = {}
@@ -805,6 +806,21 @@ class AkashaMemoryEngine:
         )[:top_k]
 
     async def _on_turn_committed(self, event: TurnCommitted) -> None:
+        """Serialize source-event embedding and staging with source deletion."""
+
+        with self._lock:
+            source_generation = self._source_generation
+            source_was_invalid = self._source_invalidated_error is not None
+        async with self._source_event_gate:
+            with self._lock:
+                if (
+                    source_was_invalid
+                    or source_generation != self._source_generation
+                ):
+                    return
+            await self._commit_source_event(event)
+
+    async def _commit_source_event(self, event: TurnCommitted) -> None:
         """Stage one committed turn and publish its graph asynchronously."""
 
         # 1. Respect the host's explicit exclusion and validate stable IDs.
@@ -836,7 +852,6 @@ class AkashaMemoryEngine:
         )
         with self._lock:
             pending = self._pending.get(event.session_key)
-            source_generation = self._source_generation
         if (
             len(user_ids) == 1
             and pending is not None
@@ -857,8 +872,6 @@ class AkashaMemoryEngine:
         async with self._commit_gate:
             await self._wait_for_publication()
             with self._lock:
-                if source_generation != self._source_generation:
-                    return
                 self._require_valid_source()
                 _upsert_embeddings(
                     self._embedding_store,
@@ -888,13 +901,14 @@ class AkashaMemoryEngine:
         """封住在线读写，执行窄 source 删除并重建派生状态。"""
 
         # 1. 与在线 commit 串行，整个 source mutation 窗口不开放旧图。
-        async with self._commit_gate:
-            await self._wait_for_publication()
-            return await asyncio.to_thread(
-                self._delete_source_and_rebuild,
-                control_turn_id,
-                delete_source,
-            )
+        async with self._source_event_gate:
+            async with self._commit_gate:
+                await self._wait_for_publication()
+                return await asyncio.to_thread(
+                    self._delete_source_and_rebuild,
+                    control_turn_id,
+                    delete_source,
+                )
 
     def _delete_source_and_rebuild(
         self,

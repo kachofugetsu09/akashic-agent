@@ -1084,12 +1084,38 @@ async def test_interaction_deletion_rebuilds_akasha_and_clears_pending(
 
 
 @pytest.mark.asyncio
-async def test_late_commit_after_interaction_deletion_does_not_restore_embeddings(
+async def test_interaction_deletion_waits_for_in_flight_source_embedding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     started = _seed_two_explicit_akasha_turns(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "sessions.db")) as connection, connection:
+        connection.execute("DELETE FROM message_embeddings WHERE message_id IN ('u3', 'a2')")
+        connection.execute("DELETE FROM messages WHERE id IN ('u3', 'a2')")
     engine = _engine(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "sessions.db")) as connection, connection:
+        connection.execute(
+            "INSERT INTO messages VALUES ('u3', 'test:one', 3, 'user', 'beta', NULL, ?, ?)",
+            (
+                json.dumps(
+                    {"control_turn_id": "t2", "turn_input_ordinal": 0}
+                ),
+                (started + timedelta(seconds=3)).isoformat(),
+            ),
+        )
+        connection.execute(
+            "INSERT INTO messages VALUES ('a2', 'test:one', 4, 'assistant', 'second', NULL, ?, ?)",
+            (
+                json.dumps(
+                    {
+                        "control_turn_id": "t2",
+                        "turn_terminal": True,
+                        "turn_input_count": 1,
+                    }
+                ),
+                (started + timedelta(seconds=4)).isoformat(),
+            ),
+        )
     embed_started = asyncio.Event()
     release_embed = asyncio.Event()
 
@@ -1106,31 +1132,42 @@ async def test_late_commit_after_interaction_deletion_does_not_restore_embedding
         session_key="test:one",
         channel="test",
         chat_id="one",
-        input_message="alpha\n\ncontinue",
-        persisted_user_message="alpha\n\ncontinue",
-        assistant_response="first",
+        input_message="beta",
+        persisted_user_message="beta",
+        assistant_response="second",
         tools_used=[],
-        persisted_user_message_id="u1",
-        persisted_user_message_ids=("u1", "u2"),
-        assistant_message_id="a1",
+        persisted_user_message_id="u3",
+        persisted_user_message_ids=("u3",),
+        assistant_message_id="a2",
         timestamp=started,
     )
     commit_task = asyncio.create_task(engine._on_turn_committed(event))  # noqa: SLF001
     await embed_started.wait()
 
     store = SessionStore(tmp_path / "sessions.db")
-    deletion = await engine.delete_interaction_source(
-        "t1",
-        lambda: store.delete_interaction("t1"),
+    deletion_task = asyncio.create_task(
+        engine.delete_interaction_source(
+            "t1",
+            lambda: store.delete_interaction("t1"),
+        )
     )
-    assert deletion is not None
+    await asyncio.sleep(0)
+    assert not deletion_task.done()
     release_embed.set()
     await commit_task
+    deletion = await deletion_task
+    assert deletion is not None
 
     with closing(sqlite3.connect(tmp_path / "sessions.db")) as connection:
         assert connection.execute(
             "SELECT message_id FROM message_embeddings WHERE message_id IN ('u1', 'u2', 'a1')"
         ).fetchall() == []
+        assert connection.execute(
+            "SELECT message_id FROM message_embeddings WHERE message_id IN ('u3', 'a2') ORDER BY message_id"
+        ).fetchall() == [("a2",), ("u3",)]
+    assert [turn.turn_id for turn in engine._runtime.cycle.turns] == [  # noqa: SLF001
+        "u3::a2"
+    ]
     store.close()
     engine._runtime.close()  # noqa: SLF001
     engine._embedding_store.close()  # noqa: SLF001
