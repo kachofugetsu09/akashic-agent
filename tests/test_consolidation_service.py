@@ -334,7 +334,7 @@ def test_consolidation_recent_context_compresses_archived_window_not_kept_gap():
         profile_maint=cast(Any, memory),
         provider=cast(Any, provider),
         model="m",
-        keep_count=4,
+        keep_count=2,
     )
     session = SimpleNamespace(
         key="cli:1",
@@ -352,6 +352,11 @@ def test_consolidation_recent_context_compresses_archived_window_not_kept_gap():
             {"role": "user", "content": "第十一条", "timestamp": "2026-03-15T10:10:00"},
             {"role": "assistant", "content": "第十二条", "timestamp": "2026-03-15T10:11:00"},
             {"role": "user", "content": "第十三条", "timestamp": "2026-03-15T10:12:00"},
+            {"role": "assistant", "content": "第十四条", "timestamp": "2026-03-15T10:13:00"},
+            {"role": "user", "content": "第十五条", "timestamp": "2026-03-15T10:14:00"},
+            {"role": "assistant", "content": "第十六条", "timestamp": "2026-03-15T10:15:00"},
+            {"role": "user", "content": "第十七条", "timestamp": "2026-03-15T10:16:00"},
+            {"role": "assistant", "content": "第十八条", "timestamp": "2026-03-15T10:17:00"},
         ],
         last_consolidated=4,
         _channel="cli",
@@ -360,11 +365,12 @@ def test_consolidation_recent_context_compresses_archived_window_not_kept_gap():
 
     draft = _prepare(service, session)
 
-    assert "【较早窗口（本次待压缩）】\nUSER: 第五条\nASSISTANT: 第六条\nUSER: 第七条\nASSISTANT: 第八条\nUSER: 第九条" in captured_prompt["text"]
+    assert "【较早窗口（本次待压缩）】\nUSER: 第五条\nASSISTANT: 第六条\nUSER: 第七条\nASSISTANT: 第八条\nUSER: 第九条\nASSISTANT: 第十条" in captured_prompt["text"]
     assert draft is not None
     written = draft.recent_context_text
-    assert "until: 2026-03-15T10:08:00" in written
-    assert "[user] 第十三条" in written
+    assert "until: 2026-03-15T10:13:00" in written
+    assert "[user] 第十七条" in written
+    assert "[a-preview] 第十八条" in written
 
 
 def test_replace_recent_turns_block_preserves_existing_compression():
@@ -457,10 +463,10 @@ def test_consolidation_archive_all_compresses_full_history_before_recent_turns()
     assert "USER: 第一条" in prompt_before_recent
     assert "ASSISTANT: 第十条" in prompt_before_recent
     assert "USER: 第十一条" in prompt_before_recent
-    assert "ASSISTANT: 第十二条" not in prompt_before_recent
+    assert "ASSISTANT: 第十二条" in prompt_before_recent
     assert draft is not None
     written = draft.recent_context_text
-    assert "until: 2026-03-15T10:10:00" in written
+    assert "until: 2026-03-15T10:11:00" in written
     assert "[user] 第十三条" in written
 
 
@@ -501,7 +507,7 @@ def test_consolidation_recent_context_invalid_json_fails_consolidation():
         profile_maint=cast(Any, memory),
         provider=cast(Any, provider),
         model="m",
-        keep_count=4,
+        keep_count=2,
     )
     session = SimpleNamespace(
         key="cli:1",
@@ -525,7 +531,7 @@ def test_consolidation_recent_context_invalid_json_fails_consolidation():
         _chat_id="1",
     )
 
-    draft = _prepare(service, session)
+    draft = _prepare(service, session, force=True)
 
     assert draft is not None
     assert draft.step == "recent_context"
@@ -556,7 +562,7 @@ def test_consolidation_recent_context_exception_fails_consolidation():
         profile_maint=cast(Any, memory),
         provider=cast(Any, provider),
         model="m",
-        keep_count=4,
+        keep_count=2,
     )
     session = SimpleNamespace(
         key="cli:1",
@@ -580,7 +586,7 @@ def test_consolidation_recent_context_exception_fails_consolidation():
         _chat_id="1",
     )
 
-    draft = _prepare(service, session)
+    draft = _prepare(service, session, force=True)
 
     assert draft is not None
     assert draft.step == "recent_context"
