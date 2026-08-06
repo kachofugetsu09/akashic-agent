@@ -58,6 +58,8 @@ Akasha 对一个 completed logical interaction 建立一个学习样本：有序
 
 `memory_window`、Markdown consolidation 的保留尾部、分页切点、积压阈值和 recent turns 都按不可拆分的逻辑历史单元计数。一个 completed `U1..Un+A_final` 是一个单元；一次已送达 proactive assistant 是一个独立单元。窗口和游标不得落入显式 `control_turn_id` 中间。
 
+升级既有配置时必须注意：`memory_window`、由它派生的 `keep_count` 和 `consolidation_min_new_messages` 已从“消息行数”改为“逻辑历史单元数”。因此相同数值会保留更大的 legacy 消息尾部，并使 consolidation 更晚触发；本变更不自动换算或改写用户配置。
+
 ### STI-012 连环中断的工具前缀可压缩但不可丢证据
 
 下一 attempt 初始 prompt 中的前驱工具调用/结果必须加入现有 query-local ReAct compaction，而不是成为永远不可压缩的固定前缀。压缩只淘汰已闭合工具组，显式把本 interaction 的全部 U 作为 current-query anchor，并保留最近原始工具后缀。压缩无合法切点、摘要无效或节省不足时 fail-loud；不得改写或删除权威 turn/message 证据。

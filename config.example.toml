@@ -63,6 +63,8 @@ dev_mode = false
 
 [agent.context]
 # 默认按主模型有效上下文自动推导；取消注释可显式覆盖。
+# 升级注意：memory_window 现在按完整逻辑历史单元计数，不再按消息行计数。
+# legacy U+A、multi-U+A_final 和已送达 proactive assistant 各计一个单元。
 # memory_window = 84
 
 [agent.tools]
