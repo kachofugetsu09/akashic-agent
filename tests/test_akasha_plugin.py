@@ -938,6 +938,61 @@ def test_sparse_builder_groups_explicit_multi_user_turn(tmp_path: Path) -> None:
     assert user_dense == pytest.approx((math.sqrt(0.5), math.sqrt(0.5)))
 
 
+def test_sparse_builder_preserves_single_user_embedding_bytes(
+    tmp_path: Path,
+) -> None:
+    """Keep legacy turn digests stable when multi-user projection is enabled."""
+
+    # 1. Persist a legacy pair whose stored vector is deliberately not normalized.
+    sessions = tmp_path / "sessions.db"
+    index = tmp_path / "index.db"
+    _create_sessions(sessions)
+    started = datetime(2026, 8, 6, tzinfo=timezone.utc)
+    with closing(sqlite3.connect(sessions)) as connection, connection:
+        connection.execute(
+            "INSERT INTO sessions VALUES ('test:one', ?, ?, 0, NULL)",
+            (started.isoformat(), started.isoformat()),
+        )
+        for message_id, seq, role, content, vector in (
+            ("u1", 0, "user", "legacy", (3.0, 4.0)),
+            ("a1", 1, "assistant", "final", (0.0, 1.0)),
+        ):
+            connection.execute(
+                "INSERT INTO messages VALUES (?, 'test:one', ?, ?, ?, NULL, NULL, ?)",
+                (
+                    message_id,
+                    seq,
+                    role,
+                    content,
+                    (started + timedelta(seconds=seq)).isoformat(),
+                ),
+            )
+            connection.execute(
+                "INSERT INTO message_embeddings VALUES (?, ?, 'embedding-model', ?, 2, ?, ?)",
+                (
+                    message_id,
+                    hashlib.sha256(content.encode()).hexdigest(),
+                    sqlite3.Binary(struct.pack("<2f", *vector)),
+                    started.isoformat(),
+                    started.isoformat(),
+                ),
+            )
+
+    # 2. The incremental source digest must continue to see the original bytes.
+    build_sparse_index(
+        sessions,
+        index,
+        BuildConfig(embedding_model="embedding-model", embedding_dimension=2),
+    )
+    with closing(sqlite3.connect(index)) as connection:
+        dense = connection.execute(
+            "SELECT embedding FROM turn_dense WHERE field = 'user'"
+        ).fetchone()
+
+    assert dense is not None
+    assert dense[0] == struct.pack("<2f", 3.0, 4.0)
+
+
 def _engine(workspace: Path) -> AkashaMemoryEngine:
     return AkashaMemoryEngine(
         config=Config(

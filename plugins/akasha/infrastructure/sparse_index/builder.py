@@ -663,8 +663,12 @@ def _make_turn(
         if _message_text(row).strip() and str(row["id"]) in embeddings
     ]
     required_user_vectors = sum(bool(_message_text(row).strip()) for row in users)
-    user_embedding: np.ndarray | None = None
-    if user_vectors and len(user_vectors) == required_user_vectors:
+    user_embedding = embeddings.get(str(user["id"])) if len(users) == 1 else None
+    if (
+        len(users) > 1
+        and user_vectors
+        and len(user_vectors) == required_user_vectors
+    ):
         mean = np.mean(np.stack(user_vectors), axis=0)
         norm = float(np.linalg.norm(mean))
         if norm > 0.0:
