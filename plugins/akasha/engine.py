@@ -806,7 +806,12 @@ class AkashaMemoryEngine:
             with self._lock:
                 self._pending.pop(event.session_key, None)
             return
-        user_id = event.persisted_user_message_id
+        user_ids = event.persisted_user_message_ids or (
+            (event.persisted_user_message_id,)
+            if event.persisted_user_message_id
+            else ()
+        )
+        user_id = user_ids[0] if user_ids else None
         assistant_id = event.assistant_message_id
         if not user_id or not assistant_id:
             raise ValueError(
@@ -817,17 +822,18 @@ class AkashaMemoryEngine:
         messages = _load_messages(
             self._sessions_path,
             event.session_key,
-            user_id,
+            user_ids,
             assistant_id,
         )
         with self._lock:
             pending = self._pending.get(event.session_key)
         if (
-            pending is not None
+            len(user_ids) == 1
+            and pending is not None
             and pending.query_text == cast(str, messages[0]["content"])
         ):
             assistant_vector = await self._embedder.embed(
-                cast(str, messages[1]["content"])
+                cast(str, messages[-1]["content"])
             )
             vectors = [
                 pending.query_dense.tolist(),
@@ -1019,7 +1025,7 @@ class AkashaMemoryEngine:
 def _load_messages(
     sessions_path: Path,
     session_key: str,
-    user_id: str,
+    user_ids: tuple[str, ...],
     assistant_id: str,
 ) -> list[dict[str, object]]:
     connection = sqlite3.connect(
@@ -1028,24 +1034,26 @@ def _load_messages(
     )
     connection.row_factory = sqlite3.Row
     try:
+        message_ids = (*user_ids, assistant_id)
+        placeholders = ",".join("?" for _ in message_ids)
         rows = connection.execute(
-            """
+            f"""
             SELECT id, session_key, seq, role, content, ts
             FROM messages
-            WHERE id IN (?, ?)
+            WHERE id IN ({placeholders})
             ORDER BY seq
             """,
-            (user_id, assistant_id),
+            message_ids,
         ).fetchall()
     finally:
         connection.close()
-    if len(rows) != 2:
+    if len(rows) != len(user_ids) + 1:
         raise ValueError("TurnCommitted messages do not exist")
     if (
-        rows[0]["id"] != user_id
-        or rows[0]["role"] != "user"
-        or rows[1]["id"] != assistant_id
-        or rows[1]["role"] != "assistant"
+        tuple(str(row["id"]) for row in rows[:-1]) != user_ids
+        or any(row["role"] != "user" for row in rows[:-1])
+        or rows[-1]["id"] != assistant_id
+        or rows[-1]["role"] != "assistant"
         or any(row["session_key"] != session_key for row in rows)
     ):
         raise ValueError("TurnCommitted message identity mismatch")

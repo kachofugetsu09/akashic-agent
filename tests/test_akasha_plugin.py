@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import sqlite3
+import struct
 import threading
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -874,6 +875,128 @@ def test_embedding_preflight_excludes_legacy_interrupted_turn(
     assert audit.eligible_turns == 0
     assert audit.excluded_interrupted_turns == 1
     assert audit.issues == ()
+
+
+def test_sparse_builder_groups_explicit_multi_user_turn(tmp_path: Path) -> None:
+    sessions = tmp_path / "sessions.db"
+    index = tmp_path / "index.db"
+    _create_sessions(sessions)
+    started = datetime(2026, 8, 6, tzinfo=timezone.utc)
+    rows = [
+        ("u1", 0, "user", "alpha", {"control_turn_id": "t1", "turn_input_ordinal": 0}),
+        ("u2", 1, "user", "beta", {"control_turn_id": "t1", "turn_input_ordinal": 1}),
+        ("u3", 2, "user", "gamma", {"control_turn_id": "t1", "turn_input_ordinal": 2}),
+        ("a1", 3, "assistant", "final", {"control_turn_id": "t1", "turn_terminal": True, "turn_input_count": 3}),
+    ]
+    vectors = {
+        "u1": [1.0, 0.0],
+        "u2": [0.0, 1.0],
+        "u3": [1.0, 0.0],
+        "a1": [0.0, 1.0],
+    }
+    with closing(sqlite3.connect(sessions)) as connection, connection:
+        connection.execute(
+            "INSERT INTO sessions VALUES ('test:one', ?, ?, 0, NULL)",
+            (started.isoformat(), started.isoformat()),
+        )
+        for message_id, seq, role, content, extra in rows:
+            connection.execute(
+                "INSERT INTO messages VALUES (?, 'test:one', ?, ?, ?, NULL, ?, ?)",
+                (
+                    message_id,
+                    seq,
+                    role,
+                    content,
+                    json.dumps(extra),
+                    (started + timedelta(seconds=seq)).isoformat(),
+                ),
+            )
+            connection.execute(
+                "INSERT INTO message_embeddings VALUES (?, ?, 'embedding-model', ?, 2, ?, ?)",
+                (
+                    message_id,
+                    hashlib.sha256(content.encode()).hexdigest(),
+                    sqlite3.Binary(
+                        struct.pack("<2f", *vectors[message_id])
+                    ),
+                    started.isoformat(),
+                    started.isoformat(),
+                ),
+            )
+
+    result = build_sparse_index(
+        sessions,
+        index,
+        BuildConfig(embedding_model="embedding-model", embedding_dimension=2),
+    )
+    with closing(sqlite3.connect(index)) as connection:
+        turn = connection.execute(
+            "SELECT user_message_id, assistant_message_id, user_text FROM sparse_turns"
+        ).fetchone()
+        dense = connection.execute(
+            "SELECT source_id, embedding FROM turn_dense WHERE field = 'user'"
+        ).fetchone()
+
+    assert result.indexed_turns == 1
+    assert turn == ("u1", "a1", "alpha\n\nbeta\n\ngamma")
+    assert dense is not None and dense[0] == "u1"
+    user_dense = struct.unpack("<2f", dense[1])
+    assert user_dense == pytest.approx((2 / math.sqrt(5), 1 / math.sqrt(5)))
+
+
+def test_sparse_builder_preserves_single_user_embedding_bytes(
+    tmp_path: Path,
+) -> None:
+    """Keep legacy turn digests stable when multi-user projection is enabled."""
+
+    # 1. Persist a legacy pair whose stored vector is deliberately not normalized.
+    sessions = tmp_path / "sessions.db"
+    index = tmp_path / "index.db"
+    _create_sessions(sessions)
+    started = datetime(2026, 8, 6, tzinfo=timezone.utc)
+    with closing(sqlite3.connect(sessions)) as connection, connection:
+        connection.execute(
+            "INSERT INTO sessions VALUES ('test:one', ?, ?, 0, NULL)",
+            (started.isoformat(), started.isoformat()),
+        )
+        for message_id, seq, role, content, vector in (
+            ("u1", 0, "user", "legacy", (3.0, 4.0)),
+            ("a1", 1, "assistant", "final", (0.0, 1.0)),
+        ):
+            connection.execute(
+                "INSERT INTO messages VALUES (?, 'test:one', ?, ?, ?, NULL, NULL, ?)",
+                (
+                    message_id,
+                    seq,
+                    role,
+                    content,
+                    (started + timedelta(seconds=seq)).isoformat(),
+                ),
+            )
+            connection.execute(
+                "INSERT INTO message_embeddings VALUES (?, ?, 'embedding-model', ?, 2, ?, ?)",
+                (
+                    message_id,
+                    hashlib.sha256(content.encode()).hexdigest(),
+                    sqlite3.Binary(struct.pack("<2f", *vector)),
+                    started.isoformat(),
+                    started.isoformat(),
+                ),
+            )
+
+    # 2. The incremental source digest must continue to see the original bytes.
+    build_sparse_index(
+        sessions,
+        index,
+        BuildConfig(embedding_model="embedding-model", embedding_dimension=2),
+    )
+    with closing(sqlite3.connect(index)) as connection:
+        dense = connection.execute(
+            "SELECT embedding FROM turn_dense WHERE field = 'user'"
+        ).fetchone()
+
+    assert dense is not None
+    assert dense[0] == struct.pack("<2f", 3.0, 4.0)
 
 
 def _engine(workspace: Path) -> AkashaMemoryEngine:
