@@ -8,35 +8,35 @@
 
 ## 1. 用户可见目标
 
-普通用户输入在 session 没有 active turn 时创建新 turn；active regular turn 存在时自动注入该 turn。用户不选择 `steer`、`follow-up` 或 `next prompt`，也不需要发送特殊命令。
+普通用户输入在 session 没有 active execution attempt 时创建新 attempt；若上一个 attempt 被中止且尚无最终 A，则自动续接同一个 logical interaction。用户不选择 `steer`、`follow-up` 或 `next prompt`。
 
-一次 turn 可以按顺序接收 `U1、U2、U3`，中间执行模型采样和完整工具批次，最终只在 Agent 真正停止时提交 `A_final` 并结束 turn。Mobile 输入区只有一个自适应尾部动作：active 且没有草稿时是中止，存在文字或附件草稿时是发送；Telegram、QQ 等 channel 的 `/stop` 仍是独立硬终止，不属于普通输入注入。
+一次 logical interaction 可以按顺序经历 `U1 → stop → U2 → stop → U3 → A_final`。每次 stop 只结束 execution attempt；下一 attempt 必须看到此前 U 和所有已闭合工具事实。Mobile active 时尾部动作始终是中止，草稿保留但不能发送；中止收束后才恢复发送。Telegram、QQ 等 channel 的 `/stop` 使用相同语义。
 
 ## 2. 需求
 
-### STI-001 普通输入自动选择 active turn
+### STI-001 普通输入自动选择 logical interaction
 
-同 session 没有 active turn 时，普通 U 创建 turn；存在可接收输入的 active regular turn 时，普通 U 自动追加到该 turn。core 根据 session lane 和 active turn 状态作出选择，客户端不暴露模式选择器。
+同 session 没有 active attempt 时，普通 U 创建 attempt；最新 interaction 没有最终 A 时，新 attempt 沿用其 identity。active attempt 期间 Mobile 不接收普通发送。core 根据 durable terminal 状态选择 interaction，客户端不暴露模式选择器。
 
 ### STI-002 同一 turn 支持多个 U
 
 一个 turn 的输入是有序非空集合，而不是单条 user message。每个 U 拥有稳定 item ID、ordinal、原始正文、附件引用和客户端身份；任何 consumer 不得用相邻角色推断 turn 归属。
 
-### STI-003 新 U 在安全边界生效
+### STI-003 新 U 在 Attempt 边界生效
 
-active turn 中的新 U 先持久进入 turn-local pending input，再进入模型上下文。runtime 只能在一次 provider response 已结束或完整 tool batch 已闭合后 drain；不得切开 tool call/result，也不得粗暴取消已经发生的外部效果。
+Mobile 新 U 只能在前一 attempt 已中止收束后进入下一 attempt。已完成的工具调用和结果完整保留；正在执行且没有 result 的工具以 interrupted 闭合但不进入下一次模型 replay。显式程序化 steer 若保留，只能在 provider response 或完整 tool batch 边界 drain。
 
-### STI-004 最终 A 才结束 turn
+### STI-004 最终 A 才结束 Logical Interaction
 
-当前采样得到无 tool call 的回复时，runtime 必须先原子检查 pending input。仍有 U 时，该回复只是本 turn 的中间模型输出，新增 U 进入下一次采样；只有 pending input 为空并成功 seal 后，回复才成为 `A_final`，turn 才能 completed。
+interrupted、cancelled 或 failed attempt 都不关闭 logical interaction。只有一次 attempt 成功提交 terminal assistant 时，该回复才成为 `A_final`，interaction completed；此后的普通 U 才创建新的 interaction。
 
 ### STI-005 控制命令精确栅栏
 
 显式程序化输入携带 `expected_turn_id`；不匹配、已封口、非 regular 或已终态时明确拒绝。普通 channel 消息使用同一个 core admission owner 自动解析 active turn，不能在 adapter 中各自猜测。
 
-### STI-006 In-flight checkpoint 可恢复
+### STI-006 Attempt checkpoint 可恢复和重放
 
-初始 U、追加 U、工具 started/completed 和 turn 状态实时写入 `turns` 的稳定 item 记录。进程内 pending queue 可以从这些事实核对；SessionDB `messages` 仍只在 completed turn 时提交完整 transcript batch。
+每个 attempt 的初始 U、工具 started/completed 和状态实时写入 `turns`。下一 attempt 从前驱链恢复全部 U，并把每个已完成 tool call/result 投影回模型历史；未闭合工具和 partial assistant delta 不重放。SessionDB `messages` 仍只在 interaction completed 时提交完整 transcript batch。
 
 ### STI-007 Completed transcript 是多个 U 加一个最终 A
 
@@ -44,11 +44,11 @@ completed turn 在一个 SessionDB 事务中按 ordinal 追加全部 U，随后�
 
 ### STI-008 硬终止保持独立
 
-Mobile 空草稿时显示的中止动作和 `/stop` 只调用 `turn/interrupt`，把 active turn 终结为 interrupted。它们不注入 user message，不伪装成 steer，也不自动启动下一 turn。Mobile 存在草稿时同一位置切换为发送，普通 U 到达才执行 STI-001；两个动作不得同时出现。
+Mobile 中止动作和 `/stop` 只调用 `turn/interrupt`，把 active attempt 终结为 interrupted。它们不注入 user message、不伪装成 steer，也不自动启动下一 attempt。Mobile active 时无论草稿是否为空都只提供中止；草稿保留，中止收束后才允许发送。
 
 ### STI-009 Akasha 使用显式多输入投影
 
-Akasha 对一个 completed turn 建立一个学习样本：有序聚合全部 U，输出为 `A_final`。在线与离线 builder 从 `control_turn_id`、ordinal 和 terminal 标志重建，禁止扫描相邻 `user → assistant` 作为新格式的归属协议。旧消息继续走明确的 legacy pair 兼容路径。
+Akasha 对一个 completed logical interaction 建立一个学习样本：有序聚合全部 U，输出为 `A_final`。attempt checkpoint 不触发在线学习，也不进入离线 rebuild；在线与离线 builder 只从最终 transcript 的 `control_turn_id`、ordinal 和 terminal 标志重建。旧消息继续走明确的 legacy pair 兼容路径。
 
 ### STI-010 失败和竞态不得丢输入或串 turn
 
@@ -56,12 +56,12 @@ Akasha 对一个 completed turn 建立一个学习样本：有序聚合全部 U�
 
 ## 3. 验收序列
 
-1. U1 创建 T1，Agent 完成一个工具批次。
-2. U2 在 T1 active 时到达并自动进入 T1。
-3. Agent 根据 U2 继续；U3 再次进入 T1。
-4. 只有最后 A 输出后 T1 completed。
-5. SessionDB 的完成 transcript 顺序为 `U1、U2、U3、A_final`，四条消息携带同一 `control_turn_id`。
-6. Akasha 只建立一个 T1 节点，输入文本和向量由 U1/U2/U3 确定性聚合，输出来自 A_final。
+1. U1 创建 interaction I1 / attempt E1，Agent 完成一个工具批次。
+2. 用户中止 E1；U2 创建 E2，模型看到 U1 和 E1 的完整工具调用/结果。
+3. 用户再次中止 E2；U3 创建 E3，模型看到 U1/U2 和 E1/E2 的完整已闭合工具事实。
+4. 只有 A_final 输出后 I1 completed；E1/E2/E3 各有独立 attempt ID。
+5. SessionDB 完成 transcript 为 `U1、U2、U3、A_final`，四条消息携带同一 interaction `control_turn_id`。
+6. Akasha 只建立一个 I1 节点，输入由 U1/U2/U3 确定性聚合，输出来自 A_final。
 
 ## 4. 非目标
 

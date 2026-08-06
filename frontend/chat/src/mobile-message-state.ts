@@ -264,7 +264,6 @@ export function allMobileAttachmentsReady(attachments: readonly { state: string 
 }
 
 export function mobileComposerActionMode({
-  hasDraft,
   canStop,
   stopping,
 }: {
@@ -272,8 +271,7 @@ export function mobileComposerActionMode({
   canStop: boolean;
   stopping: boolean;
 }): MobileComposerActionMode {
-  if (stopping) return "stop";
-  return canStop && !hasDraft ? "stop" : "send";
+  return stopping || canStop ? "stop" : "send";
 }
 
 export function isMobileImageViewerHistoryState(state: unknown, attachmentId: string) {

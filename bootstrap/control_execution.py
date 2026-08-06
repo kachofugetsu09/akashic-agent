@@ -42,6 +42,7 @@ async def execute_control_turn(
     """执行正式被动 turn，并把工具与用量投影到控制面结果。"""
 
     turn_id = str(request.metadata["turnId"])
+    interaction_id = str(request.metadata.get("interactionId") or turn_id)
     completed_items: list[TurnItem] = []
     tool_item_ids: dict[str, str] = {}
     invalid_tool_events: list[str] = []
@@ -117,6 +118,16 @@ async def execute_control_turn(
                 turn_input_source=input_source,
                 timestamp=_input_timestamp(request.metadata.get("inputTimestamp")),
                 turn_id=turn_id,
+                interaction_id=interaction_id,
+                attempt_replay=_attempt_replay(
+                    request.metadata.get("_controlAttemptReplay")
+                ),
+                prior_tool_chain=_prior_tool_chain(
+                    request.metadata.get("_controlPriorToolChain")
+                ),
+                prior_input_count=_prior_input_count(
+                    request.metadata.get("priorInputCount")
+                ),
                 stream_events=True,
                 runtime_selector=cast(
                     RuntimeSelector,
@@ -197,8 +208,33 @@ def _tool_item(event: ToolCallCompleted, item_id: str) -> TurnItem:
             "arguments": dict(event.final_arguments),
             "status": event.status,
             "resultPreview": event.result_preview,
+            "iteration": event.iteration,
         },
     )
+
+
+def _attempt_replay(value: object) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise ValueError("control attempt replay 必须是对象数组")
+    return [dict(cast(dict[str, Any], item)) for item in value]
+
+
+def _prior_tool_chain(value: object) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise ValueError("control prior tool chain 必须是对象数组")
+    return [dict(cast(dict[str, Any], item)) for item in value]
+
+
+def _prior_input_count(value: object) -> int:
+    if value is None:
+        return 0
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError("control prior input count 必须是非负整数")
+    return value
 
 
 def _media_values(value: object) -> list[str]:

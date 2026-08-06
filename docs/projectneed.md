@@ -315,7 +315,7 @@ D 类效果只能由拥有 prepared、committed、failed 和必要补偿语义�
 
 Prompt 历史不得从孤立 assistant 或 tool result 开始。assistant 工具调用和对应结果成对保留；合法 user 边界或明确的 proactive assistant 边界拥有窗口起点。长工具结果只允许在临时模型视图中截短。
 
-同一个 completed turn 可以包含一个或多个有序 user message 和唯一 terminal assistant。窗口与重放使用显式 `control_turn_id` 和 input ordinal 识别边界，不得把相邻 user/assistant 角色当作新格式的 turn 归属协议。
+同一个 completed logical interaction 可以跨越一个或多个 execution attempt，包含一个或多个有序 user message、此前 attempt 的完整已闭合工具事实和唯一 terminal assistant。中止只关闭 attempt，不关闭 interaction。窗口与重放使用显式 `control_turn_id` 和 input ordinal 识别边界，不得把相邻 user/assistant 角色当作新格式的 turn 归属协议。
 
 已送达的 proactive assistant 消息进入 prompt history 时保留完整正文，不得施加 proactive 专属字符预算或改写成 preview。整体请求超限时，只能由通用 prompt history 退化按完整语义边界缩小窗口。
 
@@ -365,13 +365,13 @@ skills、长期记忆、检索结果和 recent context 必须带来源和信任�
 
 消息仍引用的附件属于会话数据，必须保持可读。附件清理只能从完整引用关系出发，先识别真正孤儿，再经过 dry-run、备份和名称明确的删除操作；在引用计数、cascade 和恢复协议落地前不得自动 GC。文件年龄、当前 prompt 是否使用、索引是否命中和代码重构都不能成为删除依据。
 
-### SES-007 普通输入自动进入可接收的 Active Turn
+### SES-007 普通输入续接未完成 Logical Interaction
 
-同一 session 没有 active turn 时，普通 user input 创建新 turn；存在尚未封口的 active regular turn 时，普通输入自动追加到该 turn。用户和 channel adapter 不选择 steer、follow-up 或 next-prompt 模式。显式程序化注入必须携带预期 turn ID；不匹配、非 regular、已封口或已终态时明确拒绝，不能 fallback 到错误 turn。
+同一 session 没有 active execution attempt 时，普通 user input 创建 attempt；最新 logical interaction 尚未产生 terminal assistant 时，新 attempt 必须沿用同一 interaction identity，并看到此前全部有序 user input 和已经闭合的工具调用/结果。active attempt 期间 Mobile 普通发送不可用；channel 消息先通过 `/stop` 或等价中止结束 attempt，再由下一条普通输入续接。显式程序化 steer 仍必须携带预期 attempt ID；不匹配、已封口或已终态时明确拒绝。
 
-### SES-008 Completed Turn 显式拥有全部输入和唯一最终回复
+### SES-008 Completed Interaction 显式拥有全部输入和唯一最终回复
 
-一个 turn 可以拥有多个有序 user input。每个输入在进入模型前先追加到该 turn 的持久 item checkpoint；provider response 或完整 tool batch 结束后才能注入模型。最终回复候选只有在 pending input 为空并成功封口后，才成为唯一 terminal assistant。completed transcript 在一个事务中按 ordinal 追加全部 user message 和 terminal assistant，并携带共同 turn identity；不得用角色邻接推断归属。
+一个 logical interaction 可以拥有多个 execution attempt 和多个有序 user input。每个 attempt 的输入、工具 started/completed 和中止终态先写入 `turns`；下一 attempt 从这些事实构造 prompt replay，不恢复隐藏思维，也不重放未闭合工具。只有最终 assistant 成功提交时 interaction 才 completed。completed transcript 在一个事务中按 ordinal 追加全部 user message 和唯一 terminal assistant，并携带共同 interaction identity；不得为中止 attempt 生成 Akasha 学习样本或用角色邻接推断归属。
 
 ## 8. 记忆系统
 
@@ -411,9 +411,9 @@ session、channel、chat、source_ref 和预算在每次 post-response run 创�
 
 `akasha.db` 和 graph snapshot 是派生 sidecar。完整重建只读取 `sessions.db/messages`、对应的 `message_embeddings`、固定算法和固定配置，不引入 LLM 重新解释历史，也不重新生成已经存在的 embedding。只有 completed turn 属于学习样本；被中断、失败或明确标为 `skip_post_memory` 的 turn 保留在原始会话中，但不要求 embedding，也不进入显式记忆图。同一组输入必须得到可复现的图；合法学习样本缺少或模型不匹配的 embedding 必须使完整重建失败并报告缺口，不能静默跳过后仍声称成功。
 
-### MEM-010 Akasha 对同 Turn 多输入建立一个确定性样本
+### MEM-010 Akasha 对同 Interaction 多输入建立一个确定性样本
 
-completed turn 含多个 user message 时，Akasha 按显式 turn identity 和 input ordinal 聚合全部用户输入，并以唯一 terminal assistant 作为输出，只建立一个学习样本。每条非空 user message 和 assistant 使用各自已持久化 embedding；多输入 dense 使用固定版本的归一化聚合。在线提交和离线 builder 必须共用相同 source IDs、文本连接、向量聚合和 digest 规则。新格式不得按相邻角色配对；旧数据只能走名称明确的 legacy 兼容路径。
+completed logical interaction 含多个 user message 时，Akasha 按显式 interaction identity 和 input ordinal 聚合全部用户输入，并以唯一 terminal assistant 作为输出，只建立一个学习样本。中止 attempt 的 `turns` checkpoint 只服务执行恢复，不直接进入在线学习或离线 rebuild；只有最终 transcript batch 成为 Akasha 权威输入。每条非空 user message 和 assistant 使用各自已持久化 embedding；多输入 dense 使用固定版本的归一化聚合。在线提交和离线 builder 必须共用相同 source IDs、文本连接、向量聚合和 digest 规则。新格式不得按相邻角色配对；旧数据只能走名称明确的 legacy 兼容路径。
 
 ## 9. 运行时、并发和出站
 
@@ -471,9 +471,9 @@ active regular turn 的 pending input 由 ConversationRuntime 的 session lane o
 
 `message_push` 是调用 turn 发起的外部投递，不是目标 session 的 inbound turn。它不得等待目标 session lane；实际 adapter send 仍通过 ChatLane 的短提交 owner 串行。普通 scheduler/proactive 的 non-passive 投递继续等待同 chat 的被动回复优先完成；被动或程序化验证 turn 发起的 push 可以走 passive-send 路径，但不能与另一实际 send 重叠。push 正文不注入正在运行的父 Prompt，也不追加到目标 session history；调用参数和真实 delivery receipt 保存在调用 session 的工具 trace。pointer、异常或取消都不得伪装成已经发生的外部投递被回滚。
 
-### OUT-005 硬终止与普通同 Turn 输入分离
+### OUT-005 硬终止只关闭 Execution Attempt
 
-Mobile 中止按钮和 channel `/stop` 只调用带精确 turn identity 的 hard interrupt，把 active turn 终结为 interrupted；它们不创建 user message、不执行 same-turn input admission，也不自动开始下一 turn。用户在 active turn 期间发送普通消息才按 SES-007 追加输入。Mobile 输入区只提供一个自适应尾部动作：active 且草稿为空时显示中止，存在文字或附件草稿时显示发送；不得同时展示发送与中止让用户选择 runtime 模式。
+Mobile 中止按钮和 channel `/stop` 只调用带精确 attempt identity 的 hard interrupt，把 active attempt 终结为 interrupted；它们不创建 user message，也不自动启动下一 attempt。中止后到达的下一条普通输入按 SES-007 续接尚未完成的 logical interaction。Mobile active 时无论草稿是否为空都只显示中止，草稿保留但发送不可用；中止收束后才恢复发送。客户端不得让用户选择 steer、follow-up 或 next-prompt 模式。
 
 ## 10. 插件 generation 与 snapshot
 

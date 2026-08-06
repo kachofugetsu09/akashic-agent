@@ -100,6 +100,84 @@ async def test_runtime_admits_same_thread_input_and_interrupts_exact_turn(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_runtime_replays_two_interrupted_attempts_into_one_interaction(
+    tmp_path: Path,
+) -> None:
+    """U1/stop/U2/stop/U3 保留一个 interaction 和全部已完成工具事实。"""
+
+    store = SessionStore(tmp_path / "sessions.db")
+    reached = [asyncio.Event(), asyncio.Event()]
+    captured_final: TurnRequest | None = None
+    captured_inputs: list[str] = []
+
+    async def execute(request: TurnRequest) -> str:
+        nonlocal captured_final, captured_inputs
+        attempt = cast(int, request.metadata["attemptOrdinal"])
+        if attempt < 2:
+            emit = request.metadata["_controlItemEvent"]
+            assert callable(emit)
+            item = TurnItem(
+                TurnItemKind.TOOL_CALL,
+                f"tool-{attempt}",
+                {
+                    "callId": f"call-{attempt}",
+                    "name": "lookup",
+                    "arguments": {"attempt": attempt},
+                    "status": "success",
+                    "resultPreview": f"result-{attempt}",
+                },
+            )
+            emit("item/started", item)
+            emit("item/completed", item)
+            reached[attempt].set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+        captured_final = request
+        source = request.metadata["_controlTurnInputSource"]
+        captured_inputs = [item.content for item in source.consumed_inputs()]
+        return "final"
+
+    runtime = ConversationRuntime(store, execute)
+    first = await runtime.start_turn(TurnRequest("mobile:chain", "u1"))
+    await reached[0].wait()
+    assert (await first.interrupt()).status is TurnStatus.INTERRUPTED
+
+    second = await runtime.start_turn(TurnRequest("mobile:chain", "u2"))
+    await reached[1].wait()
+    assert (await second.interrupt()).status is TurnStatus.INTERRUPTED
+
+    third = await runtime.start_turn(TurnRequest("mobile:chain", "u3"))
+    result = await third.result()
+
+    assert captured_final is not None
+    assert captured_final.metadata["interactionId"] == first.id
+    assert captured_final.metadata["continuedFromTurnId"] == second.id
+    assert captured_final.metadata["attemptOrdinal"] == 2
+    assert captured_final.metadata["priorInputCount"] == 2
+    assert captured_inputs == ["u1", "u2", "u3"]
+    assert [
+        message["content"]
+        for message in captured_final.metadata["_controlAttemptReplay"]
+        if message["role"] in {"user", "tool"}
+    ] == ["u1", "result-0", "u2", "result-1"]
+    assert [
+        group["calls"][0]["result"]
+        for group in captured_final.metadata["_controlPriorToolChain"]
+    ] == ["result-0", "result-1"]
+    assert result.status is TurnStatus.COMPLETED
+    assert result.final_response == "final"
+    attempts = list(reversed(store.list_turns("mobile:chain")))
+    assert [attempt.status for attempt in attempts] == [
+        TurnStatus.INTERRUPTED,
+        TurnStatus.INTERRUPTED,
+        TurnStatus.COMPLETED,
+    ]
+    assert {attempt.metadata["interactionId"] for attempt in attempts} == {first.id}
+    await runtime.shutdown()
+    store.close()
+
+
+@pytest.mark.asyncio
 async def test_runtime_seal_rejects_late_input_until_terminal(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     sealed = asyncio.Event()

@@ -885,9 +885,15 @@ def test_sparse_builder_groups_explicit_multi_user_turn(tmp_path: Path) -> None:
     rows = [
         ("u1", 0, "user", "alpha", {"control_turn_id": "t1", "turn_input_ordinal": 0}),
         ("u2", 1, "user", "beta", {"control_turn_id": "t1", "turn_input_ordinal": 1}),
-        ("a1", 2, "assistant", "final", {"control_turn_id": "t1", "turn_terminal": True, "turn_input_count": 2}),
+        ("u3", 2, "user", "gamma", {"control_turn_id": "t1", "turn_input_ordinal": 2}),
+        ("a1", 3, "assistant", "final", {"control_turn_id": "t1", "turn_terminal": True, "turn_input_count": 3}),
     ]
-    vectors = {"u1": [1.0, 0.0], "u2": [0.0, 1.0], "a1": [0.0, 1.0]}
+    vectors = {
+        "u1": [1.0, 0.0],
+        "u2": [0.0, 1.0],
+        "u3": [1.0, 0.0],
+        "a1": [0.0, 1.0],
+    }
     with closing(sqlite3.connect(sessions)) as connection, connection:
         connection.execute(
             "INSERT INTO sessions VALUES ('test:one', ?, ?, 0, NULL)",
@@ -932,10 +938,10 @@ def test_sparse_builder_groups_explicit_multi_user_turn(tmp_path: Path) -> None:
         ).fetchone()
 
     assert result.indexed_turns == 1
-    assert turn == ("u1", "a1", "alpha\n\nbeta")
+    assert turn == ("u1", "a1", "alpha\n\nbeta\n\ngamma")
     assert dense is not None and dense[0] == "u1"
     user_dense = struct.unpack("<2f", dense[1])
-    assert user_dense == pytest.approx((math.sqrt(0.5), math.sqrt(0.5)))
+    assert user_dense == pytest.approx((2 / math.sqrt(5), 1 / math.sqrt(5)))
 
 
 def test_sparse_builder_preserves_single_user_embedding_bytes(

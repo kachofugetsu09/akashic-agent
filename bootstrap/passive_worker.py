@@ -233,7 +233,13 @@ class PassiveMessageWorker:
             item.session_key,
             client_message_id,
         )
-        return message is not None
+        return (
+            message is not None
+            or self._legacy_loop.session_manager.control_store.has_turn_user_input_by_client_id(
+                item.session_key,
+                client_message_id,
+            )
+        )
 
     def stop(self) -> None:
         self._running = False

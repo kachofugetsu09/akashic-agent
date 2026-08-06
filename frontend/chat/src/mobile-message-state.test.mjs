@@ -482,10 +482,10 @@ test("composer only submits explicit desktop shortcut outside IME composition", 
   }), false);
 });
 
-test("composer exposes one adaptive trailing action", () => {
+test("composer exposes only stop while an execution attempt is active", () => {
   assert.equal(mobileComposerActionMode({ hasDraft: false, canStop: false, stopping: false }), "send");
   assert.equal(mobileComposerActionMode({ hasDraft: false, canStop: true, stopping: false }), "stop");
-  assert.equal(mobileComposerActionMode({ hasDraft: true, canStop: true, stopping: false }), "send");
+  assert.equal(mobileComposerActionMode({ hasDraft: true, canStop: true, stopping: false }), "stop");
   assert.equal(mobileComposerActionMode({ hasDraft: true, canStop: true, stopping: true }), "stop");
 });
 

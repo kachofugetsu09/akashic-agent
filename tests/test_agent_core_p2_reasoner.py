@@ -334,6 +334,115 @@ def test_default_reasoner_keeps_full_tool_batch_visible_before_same_turn_input()
     assert all(second_messages.index(message) < u2_index for message in tool_results)
 
 
+def test_default_reasoner_replays_interrupted_attempt_before_current_input():
+    provider = _Provider([LLMResponse(content="final after u2", tool_calls=[])])
+    timestamp = datetime.now(UTC)
+    inputs = (
+        TurnUserInput("u1", 0, "first request", (), {}, timestamp),
+        TurnUserInput("u2", 1, "continue with node status", (), {}, timestamp),
+    )
+
+    class _Source:
+        async def drain(self) -> tuple[TurnUserInput, ...]:
+            return ()
+
+        async def seal_or_drain(self) -> tuple[TurnUserInput, ...]:
+            return ()
+
+        def consumed_inputs(self) -> tuple[TurnUserInput, ...]:
+            return inputs
+
+    replay = [
+        {"role": "user", "content": "first request"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "node=ready"},
+        {"role": "assistant", "content": "[execution attempt interrupted]"},
+    ]
+    prior_tool_chain = [
+        {
+            "text": "",
+            "calls": [
+                {
+                    "call_id": "call-1",
+                    "name": "lookup",
+                    "arguments": {},
+                    "result": "node=ready",
+                }
+            ],
+        }
+    ]
+    reasoner = DefaultReasoner(
+        llm=cast(
+            Any,
+            LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider)),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=1,
+        context=cast(
+            Any,
+            SimpleNamespace(
+                render=lambda request, **_: SimpleNamespace(
+                    messages=[
+                        *request.history,
+                        {"role": "user", "content": request.current_message},
+                    ],
+                ),
+            ),
+        ),
+    )
+    session = SimpleNamespace(
+        key="mobile:one",
+        messages=[{"role": "user", "content": "old canonical"}],
+        get_history=lambda max_messages=40, *, start_index=None: [
+            {"role": "user", "content": "old canonical"}
+        ],
+        last_consolidated=0,
+    )
+    msg = SimpleNamespace(
+        content="continue with node status",
+        media=[],
+        channel="mobile",
+        chat_id="one",
+        timestamp=timestamp,
+        metadata={
+            "_control_turn_input_source": _Source(),
+            "_control_attempt_replay": replay,
+            "_control_prior_tool_chain": prior_tool_chain,
+            "_control_prior_input_count": 1,
+        },
+    )
+
+    result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
+
+    assert provider.calls[0]["messages"][:-1] == [
+        {"role": "user", "content": "old canonical"},
+        *replay,
+        {"role": "user", "content": "continue with node status"},
+    ]
+    assert provider.calls[0]["messages"][-1] == {
+        "role": "assistant",
+        "content": "final after u2",
+    }
+    assert result.reply == "final after u2"
+    assert result.tool_chain == prior_tool_chain
+    assert result.tools_used == ["lookup"]
+    assert result.react_compaction is None
+    assert "llm_user_content" not in result.context_retry
+
+
 def test_default_reasoner_blocks_disabled_tool_even_if_model_calls_it():
     provider = _Provider(
         [

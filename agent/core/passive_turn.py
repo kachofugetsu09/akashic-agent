@@ -1111,11 +1111,34 @@ class DefaultReasoner(Reasoner):
             "selected_plan": None,
             "trimmed_sections": [],
         }
-        source_history = (
+        source_history = list(
             base_history
             if base_history is not None
             else get_history_since_consolidated(session, self._memory_window)
         )
+        metadata = getattr(msg, "metadata", None) or {}
+        raw_attempt_replay = metadata.get("_control_attempt_replay", [])
+        if not isinstance(raw_attempt_replay, list) or not all(
+            isinstance(item, dict) for item in raw_attempt_replay
+        ):
+            raise RuntimeError("control attempt replay 契约无效")
+        attempt_replay = [
+            dict(cast(dict[str, Any], item)) for item in raw_attempt_replay
+        ]
+        raw_prior_input_count = metadata.get("_control_prior_input_count", 0)
+        if not isinstance(raw_prior_input_count, int) or isinstance(
+            raw_prior_input_count, bool
+        ) or raw_prior_input_count < 0:
+            raise RuntimeError("control prior input count 契约无效")
+        prior_input_count = raw_prior_input_count
+        raw_prior_tool_chain = metadata.get("_control_prior_tool_chain", [])
+        if not isinstance(raw_prior_tool_chain, list) or not all(
+            isinstance(item, dict) for item in raw_prior_tool_chain
+        ):
+            raise RuntimeError("control prior tool chain 契约无效")
+        prior_tool_chain = [
+            dict(cast(dict[str, Any], item)) for item in raw_prior_tool_chain
+        ]
         total_history = len(source_history)
         preloaded: set[str] | None = None
         preloaded_order: list[str] = []
@@ -1163,6 +1186,7 @@ class DefaultReasoner(Reasoner):
                 source_history,
                 plan["history_window"],
             )
+            history_for_attempt.extend(attempt_replay)
             turn_injection_prompt = build_turn_injection_prompt(
                 tools=self._tools,
                 tool_search_enabled=self._tool_search_enabled,
@@ -1190,9 +1214,12 @@ class DefaultReasoner(Reasoner):
             )
             initial_messages = prompt_render.messages
             if turn_input_source is not None:
+                consumed_inputs = turn_input_source.consumed_inputs()
+                if prior_input_count >= len(consumed_inputs):
+                    raise RuntimeError("control attempt 缺少当前用户输入")
                 self._append_turn_inputs(
                     initial_messages,
-                    turn_input_source.consumed_inputs()[1:],
+                    consumed_inputs[prior_input_count + 1 :],
                 )
             llm_user_content, llm_context_frame = extract_model_facing_turn(
                 initial_messages
@@ -1222,6 +1249,16 @@ class DefaultReasoner(Reasoner):
                 tools_used = list(result.metadata.get("tools_used") or [])
                 tools_unlocked = list(result.metadata.get("tools_unlocked") or [])
                 tool_chain = list(result.metadata.get("tool_chain") or [])
+                if prior_tool_chain:
+                    tool_chain = [*prior_tool_chain, *tool_chain]
+                    tools_used = [
+                        *[
+                            str(call["name"])
+                            for group in prior_tool_chain
+                            for call in cast(list[dict[str, object]], group["calls"])
+                        ],
+                        *tools_used,
+                    ]
                 media = list(result.metadata.get("media") or [])
                 if attempt > 0:
                     retry_trace["selected_plan"] = plan["name"]
@@ -1243,9 +1280,15 @@ class DefaultReasoner(Reasoner):
                 if attempt == 0:
                     retry_trace["selected_plan"] = plan["name"]
                     retry_trace["trimmed_sections"] = sorted(plan["disabled_sections"])
-                if isinstance(llm_user_content, (str, list)):
+                if prior_input_count == 0 and isinstance(
+                    llm_user_content, (str, list)
+                ):
                     retry_trace["llm_user_content"] = llm_user_content
-                if isinstance(llm_context_frame, str) and llm_context_frame.strip():
+                if (
+                    prior_input_count == 0
+                    and isinstance(llm_context_frame, str)
+                    and llm_context_frame.strip()
+                ):
                     retry_trace["llm_context_frame"] = llm_context_frame
                 retry_trace["react_stats"] = dict(result.metadata.get("react_stats") or {})
                 raw_model_state = result.metadata.get("model_state")
@@ -1274,6 +1317,7 @@ class DefaultReasoner(Reasoner):
                     react_compaction=(
                         cast(dict[str, object], raw_react_compaction)
                         if isinstance(raw_react_compaction, dict)
+                        and not prior_tool_chain
                         else None
                     ),
                     mobile_attention=cast(

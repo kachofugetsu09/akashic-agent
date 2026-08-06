@@ -74,6 +74,10 @@ class _BuildAfterReasoningCtxModule:
         inbound_metadata = dict(msg.metadata or {})
         inbound_metadata.pop("mobile_attention", None)
         inbound_metadata.pop("_control_turn_input_source", None)
+        inbound_metadata.pop("_control_attempt_replay", None)
+        inbound_metadata.pop("_control_prior_tool_chain", None)
+        inbound_metadata.pop("_control_prior_input_count", None)
+        inbound_metadata.pop("_control_execution_turn_id", None)
         raw_reply = turn_result.reply
         if raw_reply is None:
             raw_reply = "I've completed processing but have no response to give."

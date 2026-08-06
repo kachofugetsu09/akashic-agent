@@ -1700,7 +1700,7 @@ function MobileNativeApp() {
   const send = () => {
     const text = input.trim();
     const attachmentsReady = allMobileAttachmentsReady(snapshot.composer.attachments);
-    if (sendPending || !snapshot.composer.canSend || !attachmentsReady) return;
+    if (sendPending || !snapshot.composer.canSend || snapshot.composer.canStop || !attachmentsReady) return;
     if (!text && snapshot.composer.attachments.length === 0) return;
     const native = window.AkashicNative;
     const sessionId = snapshot.selectedSessionId;
@@ -2835,7 +2835,7 @@ function MobileComposer({
   const hasDraft = snapshot.composer.attachments.length > 0;
   const attachmentsReady = allMobileAttachmentsReady(snapshot.composer.attachments);
   const hasMessageDraft = !!input.trim() || hasDraft;
-  const canSubmit = hasOwner && snapshot.composer.canSend && attachmentsReady && !sendPending && hasMessageDraft;
+  const canSubmit = hasOwner && snapshot.composer.canSend && !snapshot.composer.canStop && attachmentsReady && !sendPending && hasMessageDraft;
   const actionMode = mobileComposerActionMode({
     hasDraft: hasMessageDraft,
     canStop: snapshot.composer.canStop,

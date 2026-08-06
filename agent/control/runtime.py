@@ -7,7 +7,7 @@ import time
 from collections import OrderedDict, deque
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 
 from agent.control.errors import (
     ControlAdmissionError,
@@ -50,6 +50,10 @@ DEFAULT_REPLAY_EVENTS_PER_TURN = 256
 DEFAULT_REPLAY_BYTES_PER_TURN = 4 * 1024 * 1024
 DEFAULT_REPLAY_BYTES_GLOBAL = 32 * 1024 * 1024
 DEFAULT_TERMINAL_REPLAY_TTL_SECONDS = 5 * 60
+_INTERACTION_ID = "interactionId"
+_ATTEMPT_ORDINAL = "attemptOrdinal"
+_CONTINUED_FROM_TURN_ID = "continuedFromTurnId"
+_PRIOR_INPUT_COUNT = "priorInputCount"
 
 
 def _encoded_turn_bytes(request: TurnRequest) -> int:
@@ -62,6 +66,10 @@ def _encoded_event_bytes(event: TurnEvent) -> int:
     """计算 replay event 的 UTF-8 编码字节数。"""
 
     return len(json.dumps(event.to_notification(), ensure_ascii=False, sort_keys=True, default=str).encode())
+
+
+def _encoded_json_bytes(value: object) -> int:
+    return len(json.dumps(value, ensure_ascii=False, sort_keys=True).encode())
 
 
 def _merge_turn_items(base: list[TurnItem], updates: list[TurnItem]) -> list[TurnItem]:
@@ -204,7 +212,6 @@ class ConversationRuntime:
         """自动追加 active turn；否则创建 queued turn 并返回句柄。"""
 
         # 1. 在唯一 owner 处检查 thread 与控制面容量；拒绝不写 SessionStore。
-        request_bytes = _encoded_turn_bytes(request)
         async with self._control_admission_lock:
             self._raise_replay_reaper_failure()
             if self._closed or not self._accepting_turns:
@@ -227,21 +234,47 @@ class ConversationRuntime:
                 user_item = None
                 handle = None
             if handle is None:
+                turn_id = new_turn_id()
+                previous_attempts = self._open_interaction_attempts(request.thread_id)
+                prior_inputs = self._attempt_user_inputs(previous_attempts)
+                attempt_replay = self._attempt_replay_messages(previous_attempts)
+                prior_tool_chain = self._attempt_tool_chain(previous_attempts)
+                interaction_id = (
+                    self._interaction_id(previous_attempts[-1])
+                    if previous_attempts
+                    else turn_id
+                )
+                metadata = {
+                    **request.metadata,
+                    _INTERACTION_ID: interaction_id,
+                    _ATTEMPT_ORDINAL: len(previous_attempts),
+                    _PRIOR_INPUT_COUNT: len(prior_inputs),
+                }
+                if previous_attempts:
+                    metadata[_CONTINUED_FROM_TURN_ID] = previous_attempts[-1].id
+                effective_request = TurnRequest(request.thread_id, request.input, metadata)
+                request_bytes = (
+                    _encoded_turn_bytes(effective_request)
+                    + _encoded_json_bytes(attempt_replay)
+                    + _encoded_json_bytes(prior_tool_chain)
+                )
                 admission_token = self._reserve_admission(request_bytes)
 
             # 2. 先持久化 queued handle；失败时只回滚本轮 admission token。
             if handle is None:
-                turn_id = new_turn_id()
                 try:
-                    initial_input = self._build_turn_user_input(request, ordinal=0)
+                    initial_input = self._build_turn_user_input(
+                        effective_request,
+                        ordinal=len(prior_inputs),
+                    )
                     user_item = self._user_input_item(initial_input)
                     record = self._store.create_turn(
                         TurnRecord(
                             id=turn_id,
                             thread_id=request.thread_id,
                             status=TurnStatus.QUEUED,
-                            input=request.input,
-                            metadata=dict(request.metadata),
+                            input=effective_request.input,
+                            metadata=dict(effective_request.metadata),
                             items=[user_item],
                             usage=None,
                             error=None,
@@ -255,7 +288,7 @@ class ConversationRuntime:
                 self._active_by_thread[request.thread_id] = turn_id
                 self._thread_idle[request.thread_id] = asyncio.Event()
                 self._pending_turn_inputs[turn_id] = deque()
-                self._consumed_inputs[turn_id] = [initial_input]
+                self._consumed_inputs[turn_id] = [*prior_inputs, initial_input]
                 source = _RuntimeTurnInputSource(self, turn_id)
                 self._turn_input_sources[turn_id] = source
                 loop = asyncio.get_running_loop()
@@ -275,9 +308,208 @@ class ConversationRuntime:
             raise RuntimeError("new turn admission 缺少持久化记录")
         self._publish(TurnEvent.create("turn/queued", request.thread_id, turn_id, turn=record.to_dict()))
         self._publish_user_item(request.thread_id, turn_id, user_item)
-        task = asyncio.create_task(self._run(request, turn_id), name=f"conversation-turn:{turn_id}")
+        task = asyncio.create_task(
+            self._run(
+                effective_request,
+                turn_id,
+                attempt_replay=attempt_replay,
+                prior_tool_chain=prior_tool_chain,
+            ),
+            name=f"conversation-turn:{turn_id}",
+        )
         self._tasks[turn_id] = task
         return handle
+
+    def _open_interaction_attempts(self, thread_id: str) -> list[TurnRecord]:
+        """从最新未完成 attempt 沿显式前驱恢复 logical interaction。"""
+
+        # 1. completed 是唯一关闭 logical interaction 的终态。
+        latest_page = self._store.list_turns(thread_id, limit=1)
+        if not latest_page or latest_page[0].status is TurnStatus.COMPLETED:
+            return []
+
+        # 2. 新数据沿 continuedFromTurnId 精确回溯；旧数据作为单 attempt 兼容。
+        attempts = [latest_page[0]]
+        seen = {latest_page[0].id}
+        while previous_id := attempts[-1].metadata.get(_CONTINUED_FROM_TURN_ID):
+            if not isinstance(previous_id, str) or not previous_id:
+                raise ValueError("continuedFromTurnId 必须是非空字符串")
+            if previous_id in seen:
+                raise RuntimeError(f"control attempt 前驱成环: {previous_id}")
+            previous = self._store.read_turn(previous_id)
+            if previous is None or previous.thread_id != thread_id:
+                raise RuntimeError(
+                    f"control attempt 前驱不存在或 thread 漂移: {previous_id}"
+                )
+            if previous.status is TurnStatus.COMPLETED:
+                raise RuntimeError(
+                    f"completed turn 不得成为未完成 interaction 前驱: {previous_id}"
+                )
+            attempts.append(previous)
+            seen.add(previous_id)
+        attempts.reverse()
+        interaction_id = self._interaction_id(attempts[-1])
+        if any(self._interaction_id(item) != interaction_id for item in attempts):
+            raise RuntimeError(f"control attempt interaction identity 漂移: {interaction_id}")
+        return attempts
+
+    @staticmethod
+    def _interaction_id(record: TurnRecord) -> str:
+        raw = record.metadata.get(_INTERACTION_ID, record.id)
+        if not isinstance(raw, str) or not raw:
+            raise ValueError("interactionId 必须是非空字符串")
+        return raw
+
+    @staticmethod
+    def _attempt_user_inputs(attempts: list[TurnRecord]) -> list[TurnUserInput]:
+        """按 logical ordinal 恢复此前 attempt 的所有用户输入。"""
+
+        inputs: list[TurnUserInput] = []
+        for attempt in attempts:
+            for item in attempt.items:
+                if item.kind is not TurnItemKind.USER_MESSAGE:
+                    continue
+                data = item.data
+                ordinal = data.get("ordinal")
+                content = data.get("content")
+                media = data.get("media", [])
+                metadata = data.get("metadata", {})
+                timestamp = data.get("timestamp")
+                if (
+                    not isinstance(ordinal, int)
+                    or isinstance(ordinal, bool)
+                    or ordinal != len(inputs)
+                ):
+                    raise ValueError(
+                        f"logical interaction user ordinal 不连续: {attempt.id}/{ordinal}"
+                    )
+                if not isinstance(content, str):
+                    raise ValueError(f"turn user content 必须是字符串: {item.id}")
+                if not isinstance(media, list) or not all(
+                    isinstance(value, str) for value in media
+                ):
+                    raise ValueError(f"turn user media 必须是字符串数组: {item.id}")
+                if not isinstance(metadata, dict) or not all(
+                    isinstance(key, str) for key in metadata
+                ):
+                    raise ValueError(f"turn user metadata 必须是字符串键对象: {item.id}")
+                if not isinstance(timestamp, str):
+                    raise ValueError(f"turn user timestamp 必须是字符串: {item.id}")
+                parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    raise ValueError(f"turn user timestamp 必须包含时区: {item.id}")
+                inputs.append(
+                    TurnUserInput(
+                        item_id=item.id,
+                        ordinal=ordinal,
+                        content=content,
+                        media=tuple(media),
+                        metadata=dict(cast(dict[str, object], metadata)),
+                        timestamp=parsed.astimezone(UTC),
+                    )
+                )
+        return inputs
+
+    @staticmethod
+    def _tool_group_from_item(item: TurnItem) -> dict[str, Any] | None:
+        """把一个已闭合 tool item 转换为标准 replay group。"""
+
+        if item.kind is not TurnItemKind.TOOL_CALL:
+            return None
+        data = item.data
+        status = data.get("status")
+        result = data.get("resultPreview")
+        if status in {"in_progress", "interrupted", "cancelled"}:
+            return None
+        call_id = data.get("callId")
+        name = data.get("name")
+        arguments = data.get("arguments", {})
+        if not isinstance(call_id, str) or not call_id:
+            raise ValueError(f"completed tool callId 无效: {item.id}")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"completed tool name 无效: {item.id}")
+        if not isinstance(arguments, dict):
+            raise ValueError(f"completed tool arguments 无效: {item.id}")
+        if not isinstance(result, str):
+            raise ValueError(f"completed tool resultPreview 无效: {item.id}")
+        return {
+            "text": "",
+            "calls": [
+                {
+                    "call_id": call_id,
+                    "name": name,
+                    "status": status,
+                    "arguments": dict(arguments),
+                    "final_arguments": dict(arguments),
+                    "result": result,
+                }
+            ],
+        }
+
+    @staticmethod
+    def _attempt_tool_chain(attempts: list[TurnRecord]) -> list[dict[str, Any]]:
+        """把完成的工具 item 投影为正常 session replay 使用的 tool_chain。"""
+
+        chain: list[dict[str, Any]] = []
+        for attempt in attempts:
+            for item in attempt.items:
+                group = ConversationRuntime._tool_group_from_item(item)
+                if group is not None:
+                    chain.append(group)
+        return chain
+
+    @classmethod
+    def _attempt_replay_messages(
+        cls,
+        attempts: list[TurnRecord],
+    ) -> list[dict[str, Any]]:
+        """构造仅供下一 attempt 使用的模型历史，不写回 canonical messages。"""
+
+        messages: list[dict[str, Any]] = []
+        for attempt in attempts:
+            for item in attempt.items:
+                if item.kind is TurnItemKind.USER_MESSAGE:
+                    content = item.data.get("content")
+                    if not isinstance(content, str):
+                        raise ValueError(f"turn user content 必须是字符串: {item.id}")
+                    messages.append({"role": "user", "content": content})
+                elif item.kind is TurnItemKind.TOOL_CALL:
+                    group = cls._tool_group_from_item(item)
+                    if group is None:
+                        continue
+                    call = group["calls"][0]
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": group["text"],
+                            "tool_calls": [
+                                {
+                                    "id": call["call_id"],
+                                    "type": "function",
+                                    "function": {
+                                        "name": call["name"],
+                                        "arguments": json.dumps(
+                                            call["arguments"], ensure_ascii=False
+                                        ),
+                                    },
+                                }
+                            ],
+                        }
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call["call_id"],
+                            "content": call["result"],
+                        }
+                    )
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "[execution attempt interrupted]",
+                }
+            )
+        return messages
 
     async def steer_turn(
         self,
@@ -449,7 +681,14 @@ class ConversationRuntime:
         self._active_admission_bytes -= stored
         self._live_runtime_objects -= 1
 
-    async def _run(self, request: TurnRequest, turn_id: str) -> None:
+    async def _run(
+        self,
+        request: TurnRequest,
+        turn_id: str,
+        *,
+        attempt_replay: list[dict[str, Any]],
+        prior_tool_chain: list[dict[str, Any]],
+    ) -> None:
         """执行已按 thread 和容量准入的 turn，并保证只写一个终态。"""
 
         terminal: TurnRecord | None = None
@@ -497,6 +736,8 @@ class ConversationRuntime:
                     **request.metadata,
                     "turnId": turn_id,
                     "_controlTurnInputSource": self._turn_input_sources[turn_id],
+                    "_controlAttemptReplay": attempt_replay,
+                    "_controlPriorToolChain": prior_tool_chain,
                 },
             )
             live_item_ids: set[str] = set()
