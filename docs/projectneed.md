@@ -211,7 +211,7 @@ candidate 在 10 秒健康提交前必须由 process-scope attempt lease 持有�
 
 ### WEBUI-007 Akashic Token 以 Material 3 系统角色表达产品语义
 
-6321 设置、桌面 Chat、共享 Mobile WebUI、Dashboard 和插件公开控件必须从同一个 Akashic Theme Catalog 读取颜色。Catalog 以 Material 3 的 primary、secondary、tertiary、error 与 tonal surface 角色表达通用界面语义，并由 Akashic 扩展 success、warning、trace 和 info 等领域角色；组件库的默认值、插件私有颜色和页面局部常量都不得成为第二主题真源。
+2236 的模型设置、桌面 Chat、共享 Mobile WebUI、Dashboard 和插件公开控件必须从同一个 Akashic Theme Catalog 读取颜色。Catalog 以 Material 3 的 primary、secondary、tertiary、error 与 tonal surface 角色表达通用界面语义，并由 Akashic 扩展 success、warning、trace 和 info 等领域角色；组件库的默认值、插件私有颜色和页面局部常量都不得成为第二主题真源。
 
 颜色必须表达动作、选择、状态或层级：primary 只突出当前主要动作，容器色表达选择和低强度强调，error、warning、success、trace 不能互相借色。布局优先使用留白和 tonal surface 建立层级，边框只表达结构或状态；卡片、胶囊和阴影不得作为所有内容的默认容器。引入 Material 组件不能改变 WEBUI-001～WEBUI-006 的源码、平台能力、状态 owner 与发布边界。
 
@@ -432,6 +432,32 @@ Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先�
 ### RUN-007 Turn 按 session 串行而非全局串行
 
 同一 `session_key` 同时只能有一个 active turn，channel、control 和 direct/programmatic 入口必须汇入同一个 session lane owner。不同 session 的 turn 可以并发；全局 active turn、请求字节和 runtime object 上限只负责有界准入，不得以跨 session 的整轮互斥实现。Turn 的 messages、文件读取状态、工具 trace、取消信号和 runtime snapshot 绑定属于 task-local 状态；共享 runtime service 只能保留有明确 owner、可并发使用或受短事务保护的状态。
+
+### RUN-008 每个执行单元冻结模型 generation
+
+Turn、proactive tick、schedule、plugin job、记忆优化和其他独立推理单元在真正开始执行时解析当前模型角色，并冻结同一份 provider、model、credential 与能力 generation。执行期间修改角色绑定或连接配置只服务后续执行；已经开始的执行及其工具循环、重试和上下文压缩继续使用旧 generation。排队但尚未开始的执行使用开始时最新 generation。旧 generation 只有在全部 execution lease 归零后才能释放。
+
+### RUN-009 默认模型和模型角色可在运行时修改
+
+`default`、`fast`、`agent` 和 `vision` 角色引用 named runtime。设置 owner 对候选连接和模型完成真实校验并原子持久化后，Gateway 原子发布新 generation，不停止 admission、不排空无关 turn，也不请求 Supervisor 重启。候选校验、配置提交或 generation 构建失败时继续服务旧 generation，并向设置调用方返回明确失败。
+
+角色绑定和 Provider/model 目录的权威当前值保存在 workspace 模型注册库，成功事务增加单调 revision。完整 passive ReAct、proactive ReAct、schedule SOFT、Memory Optimizer、consolidation、plugin job 和其他独立推理单元在入口读取最新 revision，并冻结整组角色直到执行结束；没有外层执行单元的单次调用在调用前读取最新 revision。普通模型设置不得通过改写 `config.toml` 或重启进程传播。
+
+对话模型选择按“本次消息显式 model ref/effort → session selection → 当前 default”解析。Session selection 以版本化对象持久化后跨 Gateway 重启保留；清除后重新跟随动态 default。显式 effort 只属于显式选择的 default/agent 主推理，不传播给 fast、vision 等内部角色；不受支持的值明确失败。实际执行绑定写入 turn 诊断元数据，不得反向改写既有消息。旧字符串 override 只读兼容，并在下一次显式选择时升级。
+
+### RUN-010 模型能力来自带来源的注册表
+
+Codex、OpenCode 等 provider 权威目录优先提供模型能力；其余已知模型使用仓库固定版本的公共模型目录派生快照。显式高级覆盖只覆盖对应字段。每个能力字段保留来源，未知字段保持 unknown，不猜测多模态、上下文窗口或输出上限。上下文窗口 unknown 时关闭依赖确定窗口的主动压缩和本地硬预算，保留 provider 的明确错误；不得要求普通 onboarding 为已识别模型重复填写这些字段。
+
+### RUN-011 Provider usage 使用统一且带覆盖率的结果
+
+所有模型传输把 provider 响应映射为统一 usage：input、cache read、cache write、output、reasoning output、request count、covered request count 与 coverage。Provider 未返回、流式响应缺失或当前解析器不支持的字段保持 unknown，并标记 `partial` 或 `unavailable`；不得用零值伪装已统计。插件、主动流程、记忆和核心 Turn 消费同一结构化结果，兼容字段只能从该结果派生。
+
+### ONB-001 首次模型配置使用三个渐进入口
+
+首次启动只展示“登录 Codex”“登录或检测 OpenCode”“Base URL + API Key + Model Name”三个主要入口。已识别模型自动填充能力并隐藏高级覆盖；无法识别能力仍允许保存连接，但必须明确显示哪些能力 unknown。没有配置时 Supervisor 仍须在 `2236` 提供统一 Dashboard 壳层：访问根路径 `/` 时地址不跳转，壳层默认选中 Chat，发送区明确显示尚未连接模型并能原地进入模型设置。保存合法配置后同一入口恢复聊天，不要求用户改 URL、端口或重启浏览器。
+
+`2236` 是唯一 Web 监听和唯一用户可见入口。模型设置、Chat、知识与运行及 Dashboard 使用同源路径；不得再启动 `6321`、`6322`，也不得依据浏览器端口判断页面类型。Gateway 未启动、正在换代或异常退出时，Supervisor 拥有的 `2236` 壳层继续存活并显示真实状态；启动脚本不得因 Gateway 尚未 ready 而杀死仍在 onboarding 的 Supervisor。
 
 ### OUT-001 被动按 Turn 提交，主动按送达提交
 

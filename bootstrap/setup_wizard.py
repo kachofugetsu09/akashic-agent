@@ -35,10 +35,19 @@ from plugins.default_memory.config import render_default_memory_config
 class WizardAnswers:
     provider: str = ""
     model: str = ""
+    runtime_id: str = ""
+    source_id: str = ""
+    source_name: str = ""
+    catalog_provider_id: str = ""
     api_key: str = ""
     base_url: str = ""
     auth_id: str = ""
     reasoning_effort: str = ""
+    supported_reasoning_efforts: tuple[str, ...] = ()
+    capability_source: str = "unknown"
+    context_window_source: str = ""
+    max_output_tokens_source: str = ""
+    input_modalities_source: str = ""
     context_window: int = 0
     effective_context_percent: float = 0.9
     max_output_tokens: int = 0
@@ -292,14 +301,22 @@ def _phase_main_llm(
 
     from agent.model_runtime.context_policy import recommended_context_settings
 
-    suggested = recommended_context_settings(
-        a.context_window,
-        a.effective_context_percent,
+    suggested = (
+        recommended_context_settings(
+            a.context_window,
+            a.effective_context_percent,
+        )
+        if a.context_window > 0
+        else None
     )
     a.memory_window = (
-        click.prompt("历史消息窗口", type=int, default=suggested.memory_window)
+        click.prompt(
+            "历史消息窗口",
+            type=int,
+            default=suggested.memory_window if suggested is not None else 40,
+        )
         if prompt_memory_window
-        else suggested.memory_window
+        else suggested.memory_window if suggested is not None else 40
     )
     if a.memory_window <= 0:
         raise click.BadParameter("历史消息窗口必须大于 0")
@@ -311,44 +328,42 @@ def _phase_main_llm(
 def _phase_api_key_llm(a: WizardAnswers) -> None:
     """收集 OpenAI-compatible API Key 模型配置。"""
 
-    a.provider = click.prompt(
-        "服务商",
-        type=click.Choice(
-            ["deepseek", "qwen", "openai", "opencode-go"],
-            case_sensitive=False,
-        ),
-        default="deepseek",
-    ).lower()
-    if a.provider == "opencode-go":
-        from agent.model_runtime.provider_profiles import OPENCODE_GO_BASE_URL
-
-        a.base_url = click.prompt(
-            "base_url（OpenAI 兼容格式）",
-            default=OPENCODE_GO_BASE_URL,
-        )
-        a.api_key = _secret_prompt("API key")
-        a.model = _choose_api_key_model(a.provider, a.base_url, a.api_key)
-    else:
-        a.model = click.prompt("模型名")
-        a.base_url = click.prompt("base_url（OpenAI 兼容格式）")
-        a.api_key = _secret_prompt("API key")
+    a.provider = "openai"
+    a.base_url = click.prompt(
+        "base_url（OpenAI 兼容格式）",
+        default="https://api.openai.com/v1",
+    )
+    a.api_key = _secret_prompt("API key")
+    a.model = click.prompt("模型名")
     a.auth_id = "main_default"
-    a.enable_thinking = click.confirm("开启 thinking 模式？", default=False)
-    a.reasoning_effort = (
-        click.prompt("推理强度", default="medium") if a.enable_thinking else ""
+    from agent.model_runtime.catalog.litellm_registry import (
+        resolve_catalog_capabilities,
+        resolve_catalog_provider_id,
     )
-    a.context_window = click.prompt("上下文大小（tokens）", type=int, default=64000)
-    if a.context_window <= 0:
-        raise click.BadParameter("上下文大小必须大于 0")
-    a.max_output_tokens = click.prompt(
-        "最大输出 tokens（0 由 Provider 决定）",
-        type=click.IntRange(min=0),
-        default=0,
+
+    a.catalog_provider_id = resolve_catalog_provider_id(
+        a.provider,
+        model=a.model,
+        base_url=a.base_url,
     )
-    a.multimodal = (
-        False
-        if a.provider == "opencode-go"
-        else click.confirm("主模型原生支持图片输入？", default=False)
+    a.provider = a.catalog_provider_id or a.provider
+    capabilities = resolve_catalog_capabilities(
+        a.provider,
+        a.model,
+        base_url=a.base_url,
+    )
+    a.context_window = capabilities.context_window if capabilities else 0
+    a.max_output_tokens = capabilities.max_output_tokens if capabilities else 0
+    a.multimodal = bool(capabilities and "image" in capabilities.input_modalities)
+    a.capability_source = "litellm" if capabilities else "unknown"
+    if capabilities and capabilities.supported_reasoning_efforts:
+        a.reasoning_effort = click.prompt(
+            "推理强度",
+            type=click.Choice(list(capabilities.supported_reasoning_efforts)),
+            default=capabilities.supported_reasoning_efforts[0],
+        )
+    a.supports_parallel_tool_calls = (
+        capabilities.supports_parallel_tool_calls if capabilities else True
     )
 
 
@@ -417,6 +432,7 @@ def _phase_codex_llm(
     a.model = click.prompt("模型", type=click.Choice(list(choices)), default=models[0].slug)
     selected = choices[a.model]
     capabilities = selected.capabilities
+    a.capability_source = "provider_catalog"
     efforts = capabilities.supported_reasoning_efforts
     if efforts:
         default_effort = capabilities.default_reasoning_effort or efforts[0]
@@ -904,6 +920,7 @@ def _render_llm(a: WizardAnswers) -> str:
         f'provider = "{a.provider}"',
         f'auth = "{a.auth_id}"',
         f'model = "{a.model}"',
+        f'catalog_provider_id = "{a.catalog_provider_id}"',
         f'base_url = "{a.base_url}"',
     ])
     if a.enable_thinking:
@@ -922,6 +939,10 @@ def _render_llm(a: WizardAnswers) -> str:
         f"context_window = {a.context_window}",
         f"max_output_tokens = {a.max_output_tokens}",
         f"input_modalities = {main_modalities}",
+        f'capability_source = "{a.capability_source}"',
+        f'context_window_source = "{a.context_window_source or a.capability_source}"',
+        f'max_output_tokens_source = "{a.max_output_tokens_source or a.capability_source}"',
+        f'input_modalities_source = "{a.input_modalities_source or a.capability_source}"',
         "",
     ])
 
@@ -1032,11 +1053,9 @@ def _render_channels(a: WizardAnswers) -> str:
     lines: list[str] = []
 
     lines += [
-        "# Web Chatbox 默认跟主进程一起启动，只监听本机。",
+        "# Web Chat 由 Supervisor 在唯一入口 2236 提供。",
         "[channels.chat]",
         "enabled = true",
-        'host = "127.0.0.1"',
-        "port = 6322",
         'channel_name = "web"',
         "",
     ]

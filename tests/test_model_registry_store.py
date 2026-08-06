@@ -1,0 +1,146 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from agent.config_models import Config
+from agent.model_runtime.registry import ModelGeneration, ModelRegistry
+from agent.model_runtime.store import ModelRegistryStore
+
+
+_CONFIG = """
+[runtime]
+workspace = "unused"
+
+[llm]
+main = "legacy"
+
+[llm.runtimes.legacy]
+provider = "openai"
+model = "legacy-model"
+input_modalities = ["text"]
+
+[agent]
+system_prompt = "test"
+"""
+
+
+def _llm_rows() -> dict[str, object]:
+    return {
+        "main": "model-a",
+        "fast": "model-b",
+        "agent": "model-a",
+        "vl": "model-b",
+        "runtimes": {
+            "model-a": {
+                "provider": "openai",
+                "model": "alpha",
+                "base_url": "https://one.example/v1",
+                "reasoning_effort": "medium",
+                "supported_reasoning_efforts": ["low", "medium", "high"],
+                "context_window": 128_000,
+                "max_output_tokens": 8_192,
+                "input_modalities": ["text", "image"],
+                "capability_source": "litellm",
+            },
+            "model-b": {
+                "provider": "openai",
+                "model": "beta",
+                "base_url": "https://two.example/v1",
+                "input_modalities": ["text"],
+            },
+        },
+    }
+
+
+def test_model_store_imports_connections_models_and_roles(tmp_path: Path) -> None:
+    store = ModelRegistryStore.for_workspace(tmp_path)
+
+    revision = store.replace_from_llm_config(
+        _llm_rows(),
+        source_names={"model-a": "主账号", "model-b": "备用账号"},
+    )
+    snapshot = store.read_snapshot()
+
+    assert revision == 1
+    assert snapshot is not None
+    assert snapshot.revision == 1
+    assert snapshot.runtimes["model-a"].source_name == "主账号"
+    assert snapshot.runtimes["model-a"].input_modalities == ("text", "image")
+    assert snapshot.runtimes["model-a"].supported_reasoning_efforts == (
+        "low",
+        "medium",
+        "high",
+    )
+    assert snapshot.roles["fast"].runtime_id == "model-b"
+    assert snapshot.as_config_llm()["main"] == "model-a"
+
+
+def test_role_update_is_revisioned_and_rejects_stale_writer(tmp_path: Path) -> None:
+    store = ModelRegistryStore.for_workspace(tmp_path)
+    _ = store.replace_from_llm_config(_llm_rows())
+
+    revision = store.set_role(
+        "default",
+        "model-b",
+        reasoning_effort="high",
+        expected_revision=1,
+    )
+
+    assert revision == 2
+    snapshot = store.read_snapshot()
+    assert snapshot is not None
+    assert snapshot.roles["default"].runtime_id == "model-b"
+    assert snapshot.roles["default"].reasoning_effort == "high"
+    with pytest.raises(RuntimeError, match="已经变化"):
+        store.set_role("default", "model-a", expected_revision=1)
+
+
+def test_config_load_prefers_workspace_model_database(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_CONFIG, encoding="utf-8")
+    store = ModelRegistryStore.for_workspace(tmp_path)
+    _ = store.replace_from_llm_config(_llm_rows())
+
+    config = Config.load(config_path, workspace=tmp_path)
+
+    assert config.model == "alpha"
+    assert config.runtime_id == "model-a"
+    assert config.fast_runtime_id == "model-b"
+    assert config.model_registry_revision == 1
+
+
+@pytest.mark.asyncio
+async def test_new_execution_reads_latest_role_while_active_scope_keeps_snapshot(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_CONFIG, encoding="utf-8")
+    store = ModelRegistryStore.for_workspace(tmp_path)
+    _ = store.replace_from_llm_config(_llm_rows())
+
+    def build(config: Config, generation_id: int) -> ModelGeneration:
+        return ModelGeneration(
+            generation_id=generation_id,
+            config_digest=str(config.model_registry_revision),
+            runtimes=dict(config.model_runtimes),
+            providers={runtime_id: object() for runtime_id in config.model_runtimes},
+            role_runtime_ids={
+                "default": config.runtime_id,
+                "fast": config.fast_runtime_id,
+                "agent": config.agent_runtime_id,
+                "vision": config.vl_runtime_id,
+            },
+            registry_revision=config.model_registry_revision,
+        )
+
+    registry = ModelRegistry(Config.load(config_path, workspace=tmp_path), build)
+    async with registry.execution_scope() as active:
+        assert active.describe("default")["model"] == "alpha"
+        _ = store.set_role("default", "model-b", expected_revision=1)
+        assert active.describe("default")["model"] == "alpha"
+
+    async with registry.execution_scope() as next_execution:
+        assert next_execution.describe("default")["model"] == "beta"
+        assert next_execution.generation.registry_revision == 2

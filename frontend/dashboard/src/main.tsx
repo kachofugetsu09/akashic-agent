@@ -41,7 +41,7 @@ import type {
 
 const pluginPreset = document.createElement("link");
 pluginPreset.rel = "stylesheet";
-pluginPreset.href = "/assets/sdk/preset.css";
+pluginPreset.href = "/dashboard/assets/sdk/preset.css";
 document.head.appendChild(pluginPreset);
 initializeTheme();
 startCrossPortThemeSync();
@@ -159,33 +159,34 @@ type ShellView = "chat" | "dashboard" | "runtime" | "models";
 
 function initialShellView(): ShellView {
   const value = window.location.hash.slice(1);
-  return value === "chat" || value === "runtime" || value === "models" ? value : "dashboard";
+  return value === "dashboard" || value === "runtime" || value === "models" ? value : "chat";
 }
 
 function App(): React.ReactElement {
   const theme = useTheme();
   const [shellView, setShellView] = useState<ShellView>(initialShellView);
-  const serviceOrigin = `${window.location.protocol}//${window.location.hostname}`;
+  const serviceOrigin = window.location.origin;
   const chatFrameRef = useRef<HTMLIFrameElement>(null);
   const runtimeFrameRef = useRef<HTMLIFrameElement>(null);
   const settingsFrameRef = useRef<HTMLIFrameElement>(null);
 
-  const syncFrameTheme = useCallback((frame: HTMLIFrameElement | null, port: number): void => {
+  const syncFrameTheme = useCallback((frame: HTMLIFrameElement | null): void => {
     frame?.contentWindow?.postMessage(
       { type: "akashic.theme", themeId: theme.id },
-      `${serviceOrigin}:${port}`,
+      serviceOrigin,
     );
   }, [serviceOrigin, theme.id]);
 
   useEffect(() => {
-    syncFrameTheme(chatFrameRef.current, 6322);
-    syncFrameTheme(runtimeFrameRef.current, 6322);
-    syncFrameTheme(settingsFrameRef.current, 6321);
+    syncFrameTheme(chatFrameRef.current);
+    syncFrameTheme(runtimeFrameRef.current);
+    syncFrameTheme(settingsFrameRef.current);
   }, [syncFrameTheme]);
 
   const openView = (next: ShellView): void => {
     setShellView(next);
-    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#${next}`);
+    const base = `${window.location.pathname}${window.location.search}`;
+    window.history.replaceState(null, "", next === "chat" ? base : `${base}#${next}`);
   };
 
   return (
@@ -216,13 +217,13 @@ function App(): React.ReactElement {
           <DashboardWorkspace />
         </section>
         <section className={`shell-view ${shellView === "chat" ? "is-active" : ""}`} aria-hidden={shellView !== "chat"}>
-          <iframe ref={chatFrameRef} title="Akashic 聊天" src={`${serviceOrigin}:6322/?embedded=1`} onLoad={() => syncFrameTheme(chatFrameRef.current, 6322)} />
+          <iframe ref={chatFrameRef} title="Akashic 聊天" src="/chat?embedded=1" onLoad={() => syncFrameTheme(chatFrameRef.current)} />
         </section>
         <section className={`shell-view ${shellView === "runtime" ? "is-active" : ""}`} aria-hidden={shellView !== "runtime"}>
-          <iframe ref={runtimeFrameRef} title="知识与运行" src={`${serviceOrigin}:6322/?embedded=1&surface=runtime`} onLoad={() => syncFrameTheme(runtimeFrameRef.current, 6322)} />
+          <iframe ref={runtimeFrameRef} title="知识与运行" src="/chat?embedded=1&surface=runtime" onLoad={() => syncFrameTheme(runtimeFrameRef.current)} />
         </section>
         <section className={`shell-view ${shellView === "models" ? "is-active" : ""}`} aria-hidden={shellView !== "models"}>
-          <iframe ref={settingsFrameRef} title="模型配置" src={`${serviceOrigin}:6321/?embedded=1`} onLoad={() => syncFrameTheme(settingsFrameRef.current, 6321)} />
+          <iframe ref={settingsFrameRef} title="模型配置" src="/settings?embedded=1" onLoad={() => syncFrameTheme(settingsFrameRef.current)} />
         </section>
       </div>
     </div>

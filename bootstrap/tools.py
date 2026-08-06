@@ -30,11 +30,13 @@ from agent.looping.ports import (
 )
 from agent.mcp.watcher import WorkspaceMcpWatcher
 from agent.provider import LLMProvider
+from agent.model_runtime.registry import ModelRegistry
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.scheduler import SchedulerService
 from agent.tools.base import ToolExecutionContext, get_current_tool_context
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
+from agent.tools.spawn import SpawnTool
 from bootstrap.toolsets.meta import build_readonly_tools
 from bootstrap.toolsets.protocol import ToolsetDeps
 from bootstrap.toolsets.schedule import build_scheduler
@@ -46,7 +48,7 @@ from bootstrap.wiring import (
 )
 from agent.lifecycle.facade import TurnLifecycle
 from agent.plugins.jobs import ProviderPluginLlmService
-from bootstrap.providers import build_providers, build_vl_provider
+from bootstrap.providers import build_model_registry, build_providers, build_vl_provider
 from bootstrap.cleanup import run_cleanup_steps
 from bus.event_bus import EventBus
 from bus.processing import ProcessingState
@@ -79,6 +81,7 @@ class CoreRuntime:
     workspace_mcp_watcher_task: asyncio.Task[None] | None
     memory_runtime: MemoryRuntime
     presence: PresenceStore
+    model_registry: ModelRegistry | None = None
     agent_provider: LLMProvider | None = None
     plugin_manager: "PluginManager | None" = None
     workspace: Path | None = None
@@ -117,7 +120,9 @@ class CoreRuntime:
             if self.plugin_manager.tool_hooks:
                 self.loop.add_tool_hooks(self.plugin_manager.tool_hooks)
                 spawn_tool = self.tools.get_tool("spawn")
-                if spawn_tool is not None and hasattr(spawn_tool, "add_tool_hooks"):
+                if spawn_tool is not None:
+                    if not isinstance(spawn_tool, SpawnTool):
+                        raise TypeError("spawn 工具未建立 SpawnTool 内部不变量")
                     spawn_tool.add_tool_hooks(self.plugin_manager.tool_hooks)
 
         # 3. 首次启动全部成功后才启动容错热重载 watcher
@@ -488,10 +493,13 @@ def build_core_runtime(
     # 1. 创建总线、provider 和由 CoreRuntime.stop 负责关闭的 session owner。
     bus = MessageBus()
     event_bus = EventBus()
-    provider, light_provider, agent_provider = build_providers(config)
-    vl_provider = build_vl_provider(config)
+    model_registry = build_model_registry(config)
+    provider = model_registry.provider("default")
+    light_provider = model_registry.provider("fast")
+    agent_provider = model_registry.provider("agent")
+    vl_provider = model_registry.provider("vision") if config.vl_model else None
     # 2. agent_provider 供 AgentLoop 使用，provider 供 consolidation 事件提取使用。
-    loop_provider = agent_provider or provider
+    loop_provider = agent_provider
     loop_model = config.agent_model or config.model
     session_manager = SessionManager(workspace)
     if clear_stale_session_admissions:
@@ -534,7 +542,7 @@ def build_core_runtime(
                 model=loop_model,
                 light_model=config.light_model,
                 max_iterations=config.max_iterations,
-                max_tokens=config.max_tokens,
+                max_tokens=0,
                 tool_search_enabled=config.tool_search_enabled,
                 multimodal=config.multimodal,
                 vl_available=config.vl_model != "",
@@ -563,7 +571,7 @@ def build_core_runtime(
         llm=ProviderPluginLlmService(
             provider=provider,
             model=config.model,
-            max_tokens=config.max_tokens,
+            max_tokens=0,
         ),
         installed_cache_root=plugins_root() / "cache",
     )
@@ -623,6 +631,7 @@ def build_core_runtime(
         workspace_mcp_watcher_task=None,
         memory_runtime=memory_runtime,
         presence=presence,
+        model_registry=model_registry,
         plugin_manager=plugin_manager,
     )
 

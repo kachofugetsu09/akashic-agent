@@ -30,6 +30,7 @@
 | [0022](0022-mobile-webui-uses-server-selected-generations.md) | accepted | 移动 WebUI 使用服务端选择的不可变 generation | WEBUI-001～WEBUI-006、MOB-001～MOB-004、TST-006～TST-008 |
 | [0023](0023-akashic-tokens-own-material-3-semantics.md) | accepted | Akashic Token 拥有 Material 3 设计语义 | WEBUI-001～WEBUI-007 |
 | [0024](0024-plugin-self-validation-uses-stable-and-latest.md) | accepted | 插件自验证使用 stable/latest 与 session 级并发 | RUN-007、OUT-004、PLG-013、CTRL-003、TST-001～TST-006 |
+| [0025](0025-runtime-models-use-generation-leases.md) | accepted | 运行时模型切换使用 execution generation lease | RUN-008～RUN-011、ONB-001、CTX-001、PLG-003 |
 
 ## 新增规则
 

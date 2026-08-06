@@ -204,6 +204,8 @@ def _consolidation_input_budget(config: Config) -> int | None:
     budgets = []
     for runtime_id in sorted(runtime_ids):
         runtime = config.model_runtimes[runtime_id]
+        if runtime.context_window <= 0:
+            return None
         budgets.append(
             build_runtime_context_budget(
                 runtime.context_window,

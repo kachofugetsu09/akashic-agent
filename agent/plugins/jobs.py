@@ -9,6 +9,11 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Protocol
 
 from bus.event_bus import EventSubscription
+from agent.model_runtime.registry import (
+    RoleBoundProvider,
+    current_model_binding,
+    model_execution_scope,
+)
 
 if TYPE_CHECKING:
     from agent.plugins.snapshot import RuntimeSnapshotLease, RuntimeSnapshotStore
@@ -17,6 +22,15 @@ logger = logging.getLogger(__name__)
 
 
 class PluginLlmService(Protocol):
+    async def generate(
+        self,
+        *,
+        prompt: str,
+        system: str = "",
+        model: str | None = None,
+        max_tokens: int | None = None,
+    ) -> "PluginLlmResult": ...
+
     async def generate_text(
         self,
         *,
@@ -25,6 +39,13 @@ class PluginLlmService(Protocol):
         model: str | None = None,
         max_tokens: int | None = None,
     ) -> str: ...
+
+
+@dataclass(frozen=True)
+class PluginLlmResult:
+    text: str
+    model_usage: dict[str, object]
+    model_binding: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -102,17 +123,81 @@ class ProviderPluginLlmService:
         model: str | None = None,
         max_tokens: int | None = None,
     ) -> str:
+        result = await self.generate(
+            prompt=prompt,
+            system=system,
+            model=model,
+            max_tokens=max_tokens,
+        )
+        return result.text
+
+    async def generate(
+        self,
+        *,
+        prompt: str,
+        system: str = "",
+        model: str | None = None,
+        max_tokens: int | None = None,
+    ) -> PluginLlmResult:
+        """返回插件可消费的文本、规范化 usage 与实际模型绑定。"""
+
+        async with model_execution_scope(self._provider):
+            return await self._generate_bound(
+                prompt=prompt,
+                system=system,
+                model=model,
+                max_tokens=max_tokens,
+            )
+
+    async def _generate_bound(
+        self,
+        *,
+        prompt: str,
+        system: str,
+        model: str | None,
+        max_tokens: int | None,
+    ) -> PluginLlmResult:
+        """Execute one plugin request inside its frozen model generation."""
+
+        # 1. 保持一次调用的消息语义和既有模型参数。
         messages: list[dict[str, str]] = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-        resp = await self._provider.chat(
+        request_provider = self._provider
+        request_model = model or self._model
+        request_max_tokens = self._max_tokens if max_tokens is None else max_tokens
+        if isinstance(self._provider, RoleBoundProvider):
+            runtime, request_provider, _binding = self._provider.registry.resolve(
+                self._provider.role
+            )
+            request_model = model or runtime.model
+            if max_tokens is None and self._max_tokens == 0:
+                request_max_tokens = runtime.max_output_tokens
+        resp = await request_provider.chat(
             messages=messages,
             tools=[],
-            model=model or self._model,
-            max_tokens=self._max_tokens if max_tokens is None else max_tokens,
+            model=request_model,
+            max_tokens=request_max_tokens,
         )
-        return str(resp.content or "").strip()
+        usage = resp.usage
+        binding = current_model_binding()
+        return PluginLlmResult(
+            text=str(resp.content or "").strip(),
+            model_usage=(
+                {
+                    "input_tokens": usage.input_tokens,
+                    "cache_write_input_tokens": usage.cache_write_input_tokens,
+                    "cached_input_tokens": usage.cached_input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "reasoning_output_tokens": usage.reasoning_output_tokens,
+                    "coverage": usage.coverage.value,
+                }
+                if usage is not None
+                else {"coverage": "unavailable"}
+            ),
+            model_binding=binding.describe() if binding is not None else {},
+        )
 
 
 class PluginJobRuntime:
@@ -121,11 +206,13 @@ class PluginJobRuntime:
         *,
         event_bus: Any,
         llm: PluginLlmService,
+        model_provider: object | None = None,
         jobs: list[RegisteredPluginJob] | None = None,
         snapshot_store: RuntimeSnapshotStore | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._llm = llm
+        self._model_provider = model_provider
         self._jobs = {plugin_job_key(job): job for job in jobs or []}
         self._snapshot_store = snapshot_store
         self._queue: asyncio.Queue[_JobRequest | None] = asyncio.Queue()
@@ -329,7 +416,8 @@ class PluginJobRuntime:
             triggered_at=datetime.now(timezone.utc),
         )
         try:
-            await self._invoke(request, ctx)
+            async with model_execution_scope(self._model_provider):
+                await self._invoke(request, ctx)
         except Exception:
             logger.exception(
                 "插件后台任务失败: plugin=%s job=%s reason=%s",

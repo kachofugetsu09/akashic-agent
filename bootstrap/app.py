@@ -21,6 +21,11 @@ from bootstrap.chat_api import build_chat_server
 from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.control_execution import execute_control_turn
 from bootstrap.dashboard_api import build_dashboard_server
+from bootstrap.web_runtime import (
+    chat_socket_path,
+    dashboard_socket_path,
+    prepare_runtime_socket,
+)
 from bootstrap.proactive import build_memory_optimizer_task, build_proactive_runtime
 from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.passive_worker import PassiveMessageWorker
@@ -195,25 +200,6 @@ def _close_mobile_gateway(runtime: Any | None) -> Callable[[], Awaitable[None]]:
     return close
 
 
-def _dashboard_bind_address() -> tuple[str, int]:
-    """Resolve and validate the dashboard listener from environment config."""
-
-    # 1. Normalize the process boundary before any runtime service starts.
-    host = os.environ.get("AKASHIC_DASHBOARD_HOST", "0.0.0.0").strip()
-    if not host:
-        raise ValueError("AKASHIC_DASHBOARD_HOST 不能为空")
-
-    # 2. Reject invalid ports instead of falling back to the formal listener.
-    raw_port = os.environ.get("AKASHIC_DASHBOARD_PORT", "2236")
-    try:
-        port = int(raw_port)
-    except ValueError as error:
-        raise ValueError("AKASHIC_DASHBOARD_PORT 必须是 1 到 65535 的整数") from error
-    if not 1 <= port <= 65_535:
-        raise ValueError("AKASHIC_DASHBOARD_PORT 必须是 1 到 65535 的整数")
-    return host, port
-
-
 class AppRuntime:
     def __init__(
         self,
@@ -227,7 +213,6 @@ class AppRuntime:
         self.workspace = workspace
         self.restart_coordinator = restart_coordinator
         self.readiness = readiness
-        self.dashboard_host, self.dashboard_port = _dashboard_bind_address()
         self.http_resources = SharedHttpResources()
         self.app_server: SocketAppServer | None = None
         self.conversation_runtime: ConversationRuntime | None = None
@@ -502,6 +487,7 @@ class AppRuntime:
                     self.plugin_job_runtime = PluginJobRuntime(
                         event_bus=event_bus,
                         llm=llm,
+                        model_provider=self.provider,
                         snapshot_store=plugin_manager.snapshot_store,
                     )
                     self.tasks.append(self.plugin_job_runtime.run())
@@ -513,8 +499,7 @@ class AppRuntime:
             self.tasks.extend(optimizer_tasks)
             self.dashboard_server = build_dashboard_server(
                 workspace=self.workspace,
-                host=self.dashboard_host,
-                port=self.dashboard_port,
+                uds=prepare_runtime_socket(dashboard_socket_path(self.workspace)),
                 manual_consolidator=self.agent_loop,
                 manual_memory_optimizer=self._memory_optimizer,
                 memory_admin=self.memory_runtime.engine,
@@ -544,8 +529,7 @@ class AppRuntime:
                 self.chat_server = build_chat_server(
                     workspace=self.workspace,
                     channel=self.web_chat_channel,
-                    host=self.config.channels.chat.host,
-                    port=self.config.channels.chat.port,
+                    uds=prepare_runtime_socket(chat_socket_path(self.workspace)),
                     mobile_pairing_admin=(
                         self.mobile_gateway_runtime.admin
                         if self.mobile_gateway_runtime is not None
@@ -553,6 +537,7 @@ class AppRuntime:
                     ),
                     runtime_inspection=runtime_inspection,
                     plugin_ui_provider=plugin_ui_provider,
+                    model_registry=self.core.model_registry,
                 )
                 self.chat_task = asyncio.create_task(
                     self.chat_server.serve(),
@@ -629,6 +614,22 @@ class AppRuntime:
             except (asyncio.CancelledError, Exception) as rollback_error:
                 raise startup_error from rollback_error
             raise
+
+    async def reload_model_config(self, config_path: str | Path) -> dict[str, object]:
+        """Load and atomically publish a new model generation."""
+
+        # 1. Parse the complete candidate at the configuration boundary.
+        candidate = Config.load(config_path, workspace=self.workspace)
+        if self.core is None or self.core.model_registry is None:
+            raise RuntimeError("ModelRegistry 尚未启动")
+
+        # 2. Publish only after every provider in the candidate was constructed.
+        generation = await self.core.model_registry.reload(candidate)
+        self.config = candidate
+        return {
+            "generationId": generation.generation_id,
+            "configDigest": generation.config_digest,
+        }
 
     async def run(self) -> None:
         run_error: BaseException | None = None
