@@ -473,7 +473,7 @@ active regular turn 的 pending input 由 ConversationRuntime 的 session lane o
 
 ### OUT-005 硬终止与普通同 Turn 输入分离
 
-Mobile 中止按钮和 channel `/stop` 只调用带精确 turn identity 的 hard interrupt，把 active turn 终结为 interrupted；它们不创建 user message、不执行 same-turn input admission，也不自动开始下一 turn。用户在 active turn 期间发送普通消息才按 SES-007 追加输入。客户端必须让发送与中止保持两个可区分动作。
+Mobile 中止按钮和 channel `/stop` 只调用带精确 turn identity 的 hard interrupt，把 active turn 终结为 interrupted；它们不创建 user message、不执行 same-turn input admission，也不自动开始下一 turn。用户在 active turn 期间发送普通消息才按 SES-007 追加输入。Mobile 输入区只提供一个自适应尾部动作：active 且草稿为空时显示中止，存在文字或附件草稿时显示发送；不得同时展示发送与中止让用户选择 runtime 模式。
 
 ## 10. 插件 generation 与 snapshot
 

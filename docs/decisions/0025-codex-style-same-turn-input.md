@@ -16,7 +16,7 @@ Codex `2b5bdcf67547860f2e5c5a605009a70026796b2b` 的普通 user admission 会先
 
 普通输入不暴露 steer/follow-up 选择。core 自动执行：没有 active turn 时创建，有可接收输入的 active regular turn 时追加。输入只在完整 provider response 或 tool batch 边界生效；最终回复候选必须先 seal input source，成功后才提交 completed。
 
-Mobile 中止按钮与各 channel `/stop` 保留为独立 hard interrupt。Akasha 对 completed turn 聚合全部有序 U 和唯一 final A，不再用相邻角色推断新格式。
+Mobile 输入区只保留一个自适应尾部动作：active 且草稿为空时显示 hard interrupt，存在草稿时显示发送并自动追加当前 turn；发送与中止不会同时出现。各 channel `/stop` 仍是独立 hard interrupt。Akasha 对 completed turn 聚合全部有序 U 和唯一 final A，不再用相邻角色推断新格式。
 
 ## 理由
 
@@ -34,6 +34,7 @@ Mobile 中止按钮与各 channel `/stop` 保留为独立 hard interrupt。Akash
 - [x] 两次 active-turn 普通输入仍返回同一 turn ID，只有一个 terminal A。
 - [x] SessionDB 和 Akasha 都把全部 U 归入同一 completed turn。
 - [x] `/stop` 仍只产生 interrupted terminal，不注入 user input。
+- [x] Mobile 只显示一个自适应尾部动作，不暴露 send/stop 双选择。
 
 ## 未决问题
 

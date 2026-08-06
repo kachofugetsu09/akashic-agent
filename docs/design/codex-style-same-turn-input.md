@@ -75,7 +75,7 @@ provider 返回 tool call 时，先完成整个 tool batch并持久发布工具 
 
 ## 5. Channel 和 UI
 
-- Mobile：active turn 时同时允许发送普通消息和点击中止。发送自动 same-turn admission；中止继续调用 `turn.stop`。
+- Mobile：输入区只显示一个自适应尾部动作。active 且草稿为空时显示中止；存在文字或附件草稿时显示发送并自动 same-turn admission；中止继续调用 `turn.stop`。
 - Telegram、QQ、Web Chat：普通消息自动 same-turn admission；`/stop` 或现有 stop command 继续 hard interrupt。
 - Programmatic control：`turn/start` 自动 admission，另提供带 `expectedTurnId` 的 `turn/steer` 供严格客户端使用。
 
@@ -96,7 +96,7 @@ provider 返回 tool call 时，先完成整个 tool batch并持久发布工具 
 - persistence：关闭重开 SQLite，核对 turn items、completed message batch、只追加 write set 和 seq。
 - replay：`max_messages` 或 consolidation index 落在 U2/U3/A 时仍从同一 turn 的 U1 开始投影。
 - channel：同 session 第二条普通消息不等待第一 turn 完成即可 admission，但只有首 owner 发送 final outbound。
-- Mobile：active turn 同时显示 send 与 stop，二者命令不同。
+- Mobile：验证 idle 空草稿显示 disabled send、active 空草稿显示 stop、active 有草稿显示 send、stopping 始终显示 pending stop；任何状态都只有一个尾部动作。
 - Akasha：`U1,U2,U3,A` 在线与离线得到一个相同 turn；legacy pair 不回归。
 - known-bad：邻接配对、seal 后仍接收、第二 inbound 重复发送 final A、工具批次中途注入。
 

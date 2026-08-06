@@ -10,7 +10,7 @@
 
 普通用户输入在 session 没有 active turn 时创建新 turn；active regular turn 存在时自动注入该 turn。用户不选择 `steer`、`follow-up` 或 `next prompt`，也不需要发送特殊命令。
 
-一次 turn 可以按顺序接收 `U1、U2、U3`，中间执行模型采样和完整工具批次，最终只在 Agent 真正停止时提交 `A_final` 并结束 turn。Mobile 中止按钮以及 Telegram、QQ 等 channel 的 `/stop` 保留为独立硬终止，不属于普通输入注入。
+一次 turn 可以按顺序接收 `U1、U2、U3`，中间执行模型采样和完整工具批次，最终只在 Agent 真正停止时提交 `A_final` 并结束 turn。Mobile 输入区只有一个自适应尾部动作：active 且没有草稿时是中止，存在文字或附件草稿时是发送；Telegram、QQ 等 channel 的 `/stop` 仍是独立硬终止，不属于普通输入注入。
 
 ## 2. 需求
 
@@ -44,7 +44,7 @@ completed turn 在一个 SessionDB 事务中按 ordinal 追加全部 U，随后�
 
 ### STI-008 硬终止保持独立
 
-Mobile 中止按钮和 `/stop` 只调用 `turn/interrupt`，把 active turn 终结为 interrupted。它们不注入 user message，不伪装成 steer，也不自动启动下一 turn。普通 U 到达才执行 STI-001。
+Mobile 空草稿时显示的中止动作和 `/stop` 只调用 `turn/interrupt`，把 active turn 终结为 interrupted。它们不注入 user message，不伪装成 steer，也不自动启动下一 turn。Mobile 存在草稿时同一位置切换为发送，普通 U 到达才执行 STI-001；两个动作不得同时出现。
 
 ### STI-009 Akasha 使用显式多输入投影
 

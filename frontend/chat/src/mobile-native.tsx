@@ -85,6 +85,7 @@ import {
   flushMobileComposerBeforePairing,
   formatMobileSelectionCopyText,
   isMobileImageViewerHistoryState,
+  mobileComposerActionMode,
   mobileMessageCanReply,
   mobileMessageHasCopyContent,
   mergeMobileComposerDraft,
@@ -2833,7 +2834,13 @@ function MobileComposer({
   const hasOwner = snapshot.selectedSessionId !== undefined;
   const hasDraft = snapshot.composer.attachments.length > 0;
   const attachmentsReady = allMobileAttachmentsReady(snapshot.composer.attachments);
-  const canSubmit = hasOwner && snapshot.composer.canSend && attachmentsReady && !sendPending && (!!input.trim() || hasDraft);
+  const hasMessageDraft = !!input.trim() || hasDraft;
+  const canSubmit = hasOwner && snapshot.composer.canSend && attachmentsReady && !sendPending && hasMessageDraft;
+  const actionMode = mobileComposerActionMode({
+    hasDraft: hasMessageDraft,
+    canStop: snapshot.composer.canStop,
+    stopping,
+  });
   const zoneRef = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
@@ -2922,10 +2929,11 @@ function MobileComposer({
         <button className="mobile-icon-button" type="button" disabled={sendPending || !hasOwner} onClick={() => window.AkashicNative?.chooseAttachments()} aria-label="添加附件">
           <Paperclip size={22} />
         </button>
-        {snapshot.composer.canStop || stopping ? (
+        {actionMode === "stop" ? (
           <ComposerActionButton mode="stop" className={stopping ? "pending" : undefined} onClick={onStop} label={stopping ? "正在中止" : "中止回答"} disabled={stopping} />
-        ) : null}
-        <ComposerActionButton mode="send" onClick={onSend} label={sendPending ? "正在保存消息" : "发送消息"} disabled={!canSubmit} />
+        ) : (
+          <ComposerActionButton mode="send" onClick={onSend} label={sendPending ? "正在保存消息" : "发送消息"} disabled={!canSubmit} />
+        )}
         </div>
       </div>
     </div>
