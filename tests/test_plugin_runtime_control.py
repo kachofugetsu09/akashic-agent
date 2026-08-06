@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
-import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -397,9 +396,21 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
 
 
 def _runtime_ca_bundle(root: Path) -> Path:
-    """返回与已安装 Python MCP 虚拟环境一致的 certifi 路径。"""
+    """返回与 PATH 实际启动的 MCP Python 版本一致的 certifi 路径。"""
 
-    python_dir = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    completed = subprocess.run(
+        [
+            "python",
+            "-c",
+            "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    python_dir = completed.stdout.strip()
+    if not python_dir.startswith("python"):
+        raise AssertionError(f"MCP Python 版本目录无效: {python_dir!r}")
     return (
         root
         / "mcp"

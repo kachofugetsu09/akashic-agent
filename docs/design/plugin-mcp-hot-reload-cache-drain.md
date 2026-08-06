@@ -195,7 +195,7 @@ tests/test_plugin_runtime_control.py::
 test_installed_mcp_update_keeps_old_artifact_until_lease_drains
 ```
 
-实际文件位于 `tests/test_plugin_runtime_control.py`。测试使用一次性 workspace、plugin home、Git source 和本地 MCP stdio 子进程，不访问真实 Bangumi 或公网。server 的 `probe` 工具在每次调用时才读取当前 artifact 的 `mcp/.venv/lib/pythonX.Y/site-packages/certifi/cacert.pem`，并通过 `ssl.create_default_context(cafile=...)` 解析完整 certifi bundle；这直接命中原错误的文件读取边界，不引入 socket、DNS 或外部证书时钟。
+实际文件位于 `tests/test_plugin_runtime_control.py`。测试使用一次性 workspace、plugin home、Git source 和本地 MCP stdio 子进程，不访问真实 Bangumi 或公网。夹具通过与 MCP 声明相同的 `python` 命令解析实际子进程版本，再写入对应的 `mcp/.venv/lib/pythonX.Y/site-packages/certifi/cacert.pem`；server 的 `probe` 工具在每次调用时才读取该文件，并通过 `ssl.create_default_context(cafile=...)` 解析完整 certifi bundle。这直接命中原错误的文件读取边界，也不假设测试进程与 `PATH` 中的 Python 版本相同，不引入 socket、DNS 或外部证书时钟。
 
 测试显式持有 `RuntimeSnapshotLease`，避免模型或调度时序影响进程生命周期 oracle。AgentLoop 的 turn 级 snapshot 绑定由现有生产链测试独立覆盖。
 
@@ -232,7 +232,7 @@ before/after pointers
 2. [完成] mutant 在 `latest_ready` 后删除 A1 的 CA bundle，稳定命中旧 MCP 的延迟文件读取。
 3. [完成] 正向测试在旧 lease 释放前后分别断言 PID 存活与退出；跳过 generation cleanup 会使 oracle 失败。
 4. [完成] candidate readiness 失败、promote、discard、取消和 cleanup failure 由本文件证据表及相邻测试覆盖。
-5. [局部完成] 本地 `git diff --check`、Black、Pyright、4 个事故文件测试、30 个定向/相邻测试、157 个插件 generation 场景、42 个递归自验证场景，以及 13 个 MCP 生命周期/卸载排空场景通过；后者另有 4 个平台条件跳过。change-impact Gate 已生成影响计划，但本机缺少 Docker CLI，未在容器中执行公开场景，不能记为通过。
+5. [局部完成] 本地 `git diff --check`、Black、Pyright、4 个事故文件测试，以及 pytest Python 3.14 / `PATH` Python 3.9 的 2 个错版本专项回归通过；此前 30 个定向/相邻测试、157 个插件 generation 场景、42 个递归自验证场景，以及 13 个 MCP 生命周期/卸载排空场景也已通过，后者另有 4 个平台条件跳过。change-impact Gate 已生成影响计划，但本机缺少 Docker CLI，未在容器中执行公开场景，不能记为通过。
 6. [完成] 文档、PLG-003/006/012/013、0024 与持久化状态地图对 artifact 删除条件的描述一致。
 
 ## 12. 回滚点与非目标
