@@ -4,7 +4,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import "@material/web/progress/linear-progress.js";
 import { BookOpenText, Bot, ChevronDown, ChevronLeft, ChevronRight, Gauge, SlidersHorizontal, X } from "lucide-react";
 import "./styles.css";
-import { api, asPageResult, pageCount } from "./api";
+import { api, asPageResult, interactionDeleteRequirement, pageCount } from "./api";
 import {
   encodePath,
   formatSessionKeyForTable,
@@ -342,6 +342,34 @@ function DashboardWorkspace(): React.ReactElement {
       reportError(exc);
     }
   }, [reportError]);
+
+  const deleteSelectedMessages = useCallback(async (ids: string[]): Promise<boolean> => {
+    const pending = new Set(ids);
+    while (pending.size > 0) {
+      try {
+        await api("/api/dashboard/messages/batch-delete", {
+          method: "POST",
+          body: JSON.stringify({ ids: [...pending] }),
+        });
+        return true;
+      } catch (exc) {
+        const requirement = interactionDeleteRequirement(exc);
+        if (!requirement) throw exc;
+        if (!window.confirm("所选消息属于一次完整交互。继续会撤销这一轮的全部用户输入和最终回复，是否继续？")) {
+          return false;
+        }
+        const deletion = await api<{ message_ids: string[] }>(
+          `/api/dashboard/interactions/${encodePath(requirement.control_turn_id)}`,
+          { method: "DELETE" },
+        );
+        for (const messageId of deletion.message_ids) pending.delete(messageId);
+        if (pending.has(requirement.message_id)) {
+          throw new Error("整轮撤销响应未包含触发删除的消息", { cause: exc });
+        }
+      }
+    }
+    return true;
+  }, []);
 
   const loadSessions = useCallback(async () => {
     sessionsRequestRef.current?.abort();
@@ -810,7 +838,7 @@ function DashboardWorkspace(): React.ReactElement {
                         })}>{action.label}</button>
                       ))
                     : <Btn size="sm" variant="danger" onClick={() => void run(async () => {
-                        await api("/api/dashboard/messages/batch-delete", { method: "POST", body: JSON.stringify({ ids: [...selectedMessageIds] }) });
+                        if (!await deleteSelectedMessages([...selectedMessageIds])) return;
                         setSelectedMessageIds(new Set());
                         await refreshCurrentView();
                       })}>批量删除</Btn>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 import inspect
 from pathlib import Path, PureWindowsPath
@@ -13,7 +14,7 @@ import threading
 import os
 import shutil
 from types import ModuleType
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, cast, runtime_checkable
 
 import subprocess
 
@@ -34,7 +35,11 @@ from bootstrap.cleanup import run_cleanup_steps
 from agent.memory import MemoryStore
 from proactive_v2.memory_optimizer import MemoryOptimizerBusy
 from core.memory.engine import MemoryAdminApi
-from session.store import SessionStore
+from session.store import (
+    InteractionDeletion,
+    InteractionDeleteRequiredError,
+    SessionStore,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +172,25 @@ class ManualMemoryOptimizer(Protocol):
     def is_running(self) -> bool: ...
 
     async def optimize(self) -> None: ...
+
+
+@runtime_checkable
+class InteractionDeletionMemoryAdmin(Protocol):
+    async def delete_interaction_source(
+        self,
+        control_turn_id: str,
+        delete_source: Callable[[], InteractionDeletion | None],
+    ) -> InteractionDeletion | None: ...
+
+
+def _interaction_delete_detail(
+    exc: InteractionDeleteRequiredError,
+) -> dict[str, str]:
+    return {
+        "code": "interaction_delete_required",
+        "message_id": exc.message_id,
+        "control_turn_id": exc.control_turn_id,
+    }
 
 
 class ProactiveDashboardReader:
@@ -1112,15 +1136,64 @@ def create_dashboard_app(
 
     @app.delete("/api/dashboard/messages/{message_id:path}")
     def delete_message(message_id: str) -> dict[str, Any]:
-        deleted = store.delete_message(message_id)
+        try:
+            deleted = store.delete_message(message_id)
+        except InteractionDeleteRequiredError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_interaction_delete_detail(exc),
+            ) from exc
         if not deleted:
             raise HTTPException(status_code=404, detail="message 不存在")
         return {"deleted": True, "id": message_id}
 
     @app.post("/api/dashboard/messages/batch-delete")
     def delete_messages_batch(payload: MessageBatchDeletePayload) -> dict[str, Any]:
-        deleted_count = store.delete_messages_batch(payload.ids)
+        try:
+            deleted_count = store.delete_messages_batch(payload.ids)
+        except InteractionDeleteRequiredError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_interaction_delete_detail(exc),
+            ) from exc
         return {"deleted_count": deleted_count}
+
+    @app.delete("/api/dashboard/interactions/{control_turn_id:path}")
+    async def delete_interaction(control_turn_id: str) -> dict[str, Any]:
+        """撤销完整 transcript，并让启用的派生记忆同步收敛。"""
+
+        # 1. Akasha 必须先声明同步能力，避免删源后继续服务陈旧图。
+        reconciler = (
+            memory_admin
+            if isinstance(memory_admin, InteractionDeletionMemoryAdmin)
+            else None
+        )
+        if memory_admin.describe().name == "akasha" and reconciler is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Akasha interaction 删除同步能力不可用",
+            )
+
+        # 2. Akasha 先封住读写再执行窄删除回调；其他引擎只改 SessionDB。
+        deletion = (
+            await reconciler.delete_interaction_source(
+                control_turn_id,
+                lambda: store.delete_interaction(control_turn_id),
+            )
+            if reconciler is not None
+            else store.delete_interaction(control_turn_id)
+        )
+        if deletion is None:
+            raise HTTPException(status_code=404, detail="interaction 不存在")
+        return {
+            "deleted": True,
+            "control_turn_id": deletion.control_turn_id,
+            "session_key": deletion.session_key,
+            "message_ids": list(deletion.message_ids),
+            "old_last_consolidated": deletion.old_last_consolidated,
+            "new_last_consolidated": deletion.new_last_consolidated,
+            "backup_path": deletion.backup_path,
+        }
 
     @app.get("/api/dashboard/memories")
     def list_memories(

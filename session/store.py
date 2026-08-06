@@ -4,9 +4,11 @@ import json
 import logging
 import sqlite3
 import threading
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
+from uuid import uuid4
 
 from agent.control.errors import TurnNotFoundError, TurnStateTransitionError
 from agent.control.models import (
@@ -20,6 +22,30 @@ from agent.control.models import (
 from agent.model_runtime.query_compaction import parse_react_compaction
 
 logger = logging.getLogger(__name__)
+
+
+class InteractionDeleteRequiredError(ValueError):
+    """要求调用方按完整 interaction 执行原子撤销。"""
+
+    def __init__(self, message_id: str, control_turn_id: str) -> None:
+        super().__init__(
+            f"message {message_id} 属于 interaction {control_turn_id}，必须整组撤销"
+        )
+        self.message_id = message_id
+        self.control_turn_id = control_turn_id
+
+
+@dataclass(frozen=True)
+class InteractionDeletion:
+    """记录一次完整 interaction 撤销及其游标变化。"""
+
+    control_turn_id: str
+    session_key: str
+    message_ids: tuple[str, ...]
+    first_user_message_id: str
+    old_last_consolidated: int
+    new_last_consolidated: int
+    backup_path: str
 
 _FTS_CAPABILITY_ERROR_MARKERS = (
     "no such module: fts5",
@@ -124,6 +150,62 @@ def _decode_message_extra(
             source=message_id,
         )
     return extra_dict
+
+
+def _message_control_turn_id(
+    raw: str | bytes | bytearray | None,
+    message_id: str,
+) -> str | None:
+    extra = _decode_message_extra(raw, message_id)
+    value = extra.get("control_turn_id")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"message control_turn_id 必须是非空字符串: {message_id}")
+    return value
+
+
+def _validate_deletable_interaction(
+    control_turn_id: str,
+    rows: list[sqlite3.Row],
+) -> str:
+    """校验显式 transcript 完整性并返回首条 user message ID。"""
+
+    # 1. 每一行都必须属于目标 interaction，且只能有一个 terminal assistant。
+    decoded = [
+        (row, _decode_message_extra(row["extra"], str(row["id"])))
+        for row in rows
+    ]
+    if any(extra.get("control_turn_id") != control_turn_id for _, extra in decoded):
+        raise ValueError(f"interaction transcript 身份不一致: {control_turn_id}")
+    users = [(row, extra) for row, extra in decoded if row["role"] == "user"]
+    terminals = [
+        (row, extra)
+        for row, extra in decoded
+        if row["role"] == "assistant" and extra.get("turn_terminal") is True
+    ]
+    if not users or len(terminals) != 1 or len(decoded) != len(users) + 1:
+        raise ValueError(f"interaction transcript 结构无效: {control_turn_id}")
+
+    # 2. ordinal、input count 和 assistant 顺序必须保持完整提交合同。
+    raw_ordinals = [extra.get("turn_input_ordinal") for _, extra in users]
+    if any(
+        not isinstance(value, int) or isinstance(value, bool)
+        for value in raw_ordinals
+    ):
+        raise ValueError(f"interaction input ordinal 不连续: {control_turn_id}")
+    ordinals = cast(list[int], raw_ordinals)
+    if sorted(ordinals) != list(range(len(users))):
+        raise ValueError(f"interaction input ordinal 不连续: {control_turn_id}")
+    assistant, assistant_extra = terminals[0]
+    if assistant_extra.get("turn_input_count") != len(users):
+        raise ValueError(f"interaction input count 不匹配: {control_turn_id}")
+    if any(int(row["seq"]) >= int(assistant["seq"]) for row, _ in users):
+        raise ValueError(f"interaction assistant 顺序无效: {control_turn_id}")
+    first_user = next(
+        row for row, extra in users if extra["turn_input_ordinal"] == 0
+    )
+    return str(first_user["id"])
 
 
 def _validate_model_state(value: object, message_id: str) -> None:
@@ -2104,11 +2186,14 @@ class SessionStore:
     def delete_message(self, message_id: str) -> bool:
         with self._lock:
             row = self._conn.execute(
-                "SELECT session_key FROM messages WHERE id = ?",
+                "SELECT session_key, extra FROM messages WHERE id = ?",
                 (message_id,),
             ).fetchone()
             if row is None:
                 return False
+            control_turn_id = _message_control_turn_id(row["extra"], message_id)
+            if control_turn_id is not None:
+                raise InteractionDeleteRequiredError(message_id, control_turn_id)
             session_key = str(row["session_key"])
             cur = self._conn.execute(
                 "DELETE FROM messages WHERE id = ?",
@@ -2131,6 +2216,21 @@ class SessionStore:
         placeholders = ",".join("?" for _ in clean_ids)
         now = datetime.now().astimezone().isoformat()
         with self._lock:
+            explicit_rows = self._conn.execute(
+                f"SELECT id, extra FROM messages WHERE id IN ({placeholders})",
+                tuple(clean_ids),
+            ).fetchall()
+            for row in explicit_rows:
+                message_id = str(row["id"])
+                control_turn_id = _message_control_turn_id(
+                    row["extra"],
+                    message_id,
+                )
+                if control_turn_id is not None:
+                    raise InteractionDeleteRequiredError(
+                        message_id,
+                        control_turn_id,
+                    )
             rows = self._conn.execute(
                 f"SELECT DISTINCT session_key FROM messages WHERE id IN ({placeholders})",
                 tuple(clean_ids),
@@ -2147,6 +2247,155 @@ class SessionStore:
                 )
             self._conn.commit()
         return int(cur.rowcount or 0)
+
+    def delete_interaction(
+        self,
+        control_turn_id: str,
+    ) -> InteractionDeletion | None:
+        """校验并原子撤销一个显式 interaction 及其派生 embedding。"""
+
+        if not isinstance(control_turn_id, str) or not control_turn_id.strip():
+            raise ValueError("control_turn_id 必须是非空字符串")
+        normalized_turn_id = control_turn_id.strip()
+        now = datetime.now().astimezone().isoformat()
+
+        with self._lock:
+            exists = self._conn.execute(
+                """
+                SELECT 1
+                FROM messages
+                WHERE json_extract(COALESCE(extra, '{}'), '$.control_turn_id') = ?
+                LIMIT 1
+                """,
+                (normalized_turn_id,),
+            ).fetchone()
+            if exists is None:
+                return None
+            backup_path = self._backup_before_interaction_delete_locked()
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                # 1. 解析完整 transcript，并拒绝跨 session 或非连续结构。
+                rows = self._conn.execute(
+                    """
+                    SELECT id, session_key, seq, role, extra
+                    FROM messages
+                    WHERE json_extract(COALESCE(extra, '{}'), '$.control_turn_id') = ?
+                    ORDER BY session_key, seq
+                    """,
+                    (normalized_turn_id,),
+                ).fetchall()
+                if not rows:
+                    self._conn.rollback()
+                    return None
+                session_keys = {str(row["session_key"]) for row in rows}
+                if len(session_keys) != 1:
+                    raise ValueError(
+                        f"interaction 跨越多个 session: {normalized_turn_id}"
+                    )
+                session_key = next(iter(session_keys))
+                session_rows = self._conn.execute(
+                    """
+                    SELECT id, seq, role, extra
+                    FROM messages
+                    WHERE session_key = ?
+                    ORDER BY seq
+                    """,
+                    (session_key,),
+                ).fetchall()
+                positions = [
+                    index
+                    for index, row in enumerate(session_rows)
+                    if _message_control_turn_id(row["extra"], str(row["id"]))
+                    == normalized_turn_id
+                ]
+                if positions != list(range(positions[0], positions[-1] + 1)):
+                    raise ValueError(
+                        f"interaction transcript 不连续: {normalized_turn_id}"
+                    )
+                turn_rows = [session_rows[index] for index in positions]
+                first_user_message_id = _validate_deletable_interaction(
+                    normalized_turn_id,
+                    turn_rows,
+                )
+
+                # 2. 游标位于组内或组后时回退到组前边界。
+                meta = self._conn.execute(
+                    "SELECT last_consolidated FROM sessions WHERE key = ?",
+                    (session_key,),
+                ).fetchone()
+                if meta is None:
+                    raise ValueError(f"interaction session 不存在: {session_key}")
+                old_cursor = int(meta["last_consolidated"])
+                group_start = positions[0]
+                new_cursor = group_start if old_cursor > group_start else old_cursor
+
+                # 3. 正文、逐消息 embedding 与游标在同一事务中提交。
+                message_ids = tuple(str(row["id"]) for row in turn_rows)
+                placeholders = ",".join("?" for _ in message_ids)
+                self._conn.execute(
+                    f"DELETE FROM messages WHERE id IN ({placeholders})",
+                    message_ids,
+                )
+                self._delete_message_embeddings_locked(list(message_ids))
+                self._conn.execute(
+                    """
+                    UPDATE sessions
+                    SET last_consolidated = ?, updated_at = ?
+                    WHERE key = ?
+                    """,
+                    (new_cursor, now, session_key),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+        deletion = InteractionDeletion(
+            control_turn_id=normalized_turn_id,
+            session_key=session_key,
+            message_ids=message_ids,
+            first_user_message_id=first_user_message_id,
+            old_last_consolidated=old_cursor,
+            new_last_consolidated=new_cursor,
+            backup_path=str(backup_path),
+        )
+        logger.info(
+            "interaction deleted control_turn_id=%s session_key=%s messages=%d "
+            "last_consolidated=%d->%d backup_path=%s",
+            deletion.control_turn_id,
+            deletion.session_key,
+            len(deletion.message_ids),
+            deletion.old_last_consolidated,
+            deletion.new_last_consolidated,
+            deletion.backup_path,
+        )
+        return deletion
+
+    def _backup_before_interaction_delete_locked(self) -> Path:
+        """创建并验证删除前的完整 SessionDB SQLite 快照。"""
+
+        backup_root = Path(self.db_path).parent / "backups" / "interaction-deletions"
+        backup_root.mkdir(parents=True, exist_ok=True)
+        backup_id = uuid4().hex
+        backup_path = backup_root / f"sessions-{backup_id}.db"
+        candidate_path = backup_root / f".sessions-{backup_id}.db.tmp"
+        candidate_path.touch(mode=0o600, exist_ok=False)
+        try:
+            target = sqlite3.connect(candidate_path)
+            try:
+                self._conn.backup(target)
+                rows = target.execute("PRAGMA integrity_check").fetchall()
+                if rows != [("ok",)]:
+                    raise RuntimeError(
+                        f"interaction 删除备份 integrity_check 失败: {rows[:3]}"
+                    )
+            finally:
+                target.close()
+            _ = candidate_path.replace(backup_path)
+        except (OSError, RuntimeError, sqlite3.Error):
+            candidate_path.unlink(missing_ok=True)
+            raise
+        return backup_path
 
     def delete_session_messages_and_update_cursor(
         self,

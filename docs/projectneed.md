@@ -353,6 +353,8 @@ skills、长期记忆、检索结果和 recent context 必须带来源和信任�
 
 删除 session、messages 或随之级联的派生索引，必须来自用户主动发起的撤销或删除操作，并经过名称明确的管理命令。命令必须携带用户动作来源、精确目标、cascade 语义、备份和审计证据。裁切、压缩、检索、展示、重放、保留期猜测和普通 refactor 不得调用这些接口。
 
+带显式 interaction identity 的 completed transcript 是不可拆分的删除单元。单消息或 generic batch 入口不得删除其中一部分，必须返回 interaction identity 供客户端向用户确认后转调整组原子撤销；整组撤销先创建可验证恢复快照，再同步删除逐消息 embedding、把位于该组内或组后的 consolidation 游标回退到组前边界。启用的派生记忆必须先声明删除同步能力，否则管理入口拒绝修改权威消息。
+
 ### SES-004 损坏数据在存储边界失败
 
 存储层遇到持久化 JSON、列类型、tool chain、metadata、embedding BLOB 或维度损坏，必须带 session/message 上下文抛错。不得返回空列表、空对象或 cache miss。
