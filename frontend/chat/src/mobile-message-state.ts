@@ -218,6 +218,8 @@ export interface MobileComposerTextareaMetrics {
   overflowY: "auto" | "hidden";
 }
 
+export type MobileComposerActionMode = "send" | "stop";
+
 export interface MobileReplyNavigationMessage {
   role: "user" | "assistant";
   createdAt: number;
@@ -259,6 +261,17 @@ export function flushMobileComposerBeforePairing(
 
 export function allMobileAttachmentsReady(attachments: readonly { state: string }[]) {
   return attachments.every((attachment) => attachment.state === "ready");
+}
+
+export function mobileComposerActionMode({
+  canStop,
+  stopping,
+}: {
+  hasDraft: boolean;
+  canStop: boolean;
+  stopping: boolean;
+}): MobileComposerActionMode {
+  return stopping || canStop ? "stop" : "send";
 }
 
 export function isMobileImageViewerHistoryState(state: unknown, attachmentId: string) {

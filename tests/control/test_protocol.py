@@ -33,7 +33,10 @@ async def test_router_requires_full_handshake_and_routes_turn(tmp_path: Path) ->
     await router.handle_line(
         b'{"jsonrpc":"2.0","id":1,"method":"server/status","params":{}}\n'
     )
-    assert sent[-1]["error"] == {"code": -32002, "message": "Client must complete initialize/initialized"}
+    assert sent[-1]["error"] == {
+        "code": -32002,
+        "message": "Client must complete initialize/initialized",
+    }
 
     await router.handle_line(
         b'{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"1.0","clientInfo":{"name":"test","version":"1"},"capabilities":{}}}\n'
@@ -44,8 +47,12 @@ async def test_router_requires_full_handshake_and_routes_turn(tmp_path: Path) ->
     capabilities = initialize_result["capabilities"]
     assert isinstance(capabilities, dict)
     assert capabilities["reasoningEvents"] is False
+    assert capabilities["turnInterrupt"] is True
+    assert capabilities["turnSteer"] is False
     await router.handle_line(b'{"jsonrpc":"2.0","method":"initialized","params":{}}\n')
-    await router.handle_line(b'{"jsonrpc":"2.0","id":3,"method":"thread/start","params":{"metadata":{}}}\n')
+    await router.handle_line(
+        b'{"jsonrpc":"2.0","id":3,"method":"thread/start","params":{"metadata":{}}}\n'
+    )
     response = next(item for item in sent if item.get("id") == 3)
     thread = response["result"]
     assert isinstance(thread, dict)
@@ -64,6 +71,68 @@ async def test_router_requires_full_handshake_and_routes_turn(tmp_path: Path) ->
     await asyncio.wait_for(_wait_terminal(sent), timeout=1)
     terminal = [item for item in sent if item.get("method") == "turn/completed"]
     assert len(terminal) == 1
+    await router.close()
+    await runtime.shutdown()
+    sessions.close()
+
+
+@pytest.mark.asyncio
+async def test_repeated_turn_start_returns_busy_for_active_turn(
+    tmp_path: Path,
+) -> None:
+    sessions = SessionManager(tmp_path)
+    release = asyncio.Event()
+
+    async def execute(request: TurnRequest) -> str:
+        await release.wait()
+        return request.input
+
+    runtime = ConversationRuntime(sessions.control_store, execute)
+    service = ControlService(runtime, sessions, tmp_path)
+    sent: list[dict[str, object]] = []
+
+    async def send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    router = ConnectionRouter(service, send)
+    await router.handle_line(
+        b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1.0","clientInfo":{"name":"test","version":"1"},"capabilities":{}}}\n'
+    )
+    await router.handle_line(b'{"jsonrpc":"2.0","method":"initialized","params":{}}\n')
+    thread = service.start_thread({}, "stable")
+    thread_id = str(thread["id"])
+    for request_id, content, detached in (
+        (2, "u1", True),
+        (3, "u2", False),
+    ):
+        await router.handle_line(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": content,
+                        "metadata": {},
+                        "detached": detached,
+                    },
+                }
+            ).encode()
+        )
+    first = next(item for item in sent if item.get("id") == 2)
+    second = next(item for item in sent if item.get("id") == 3)
+    first_result = first["result"]
+    assert isinstance(first_result, dict)
+    second_error = second["error"]
+    assert isinstance(second_error, dict)
+    assert second_error["code"] == -32011
+    assert second_error["data"] == {"retryable": True}
+    assert "thread 已有 active turn" in str(second_error["message"])
+    release.set()
+    await asyncio.wait_for(_wait_terminal(sent), timeout=1)
+    await asyncio.sleep(0)
+    assert len([item for item in sent if item.get("method") == "turn/completed"]) == 1
     await router.close()
     await runtime.shutdown()
     sessions.close()
@@ -246,7 +315,9 @@ async def test_failed_token_does_not_advance_handshake_state(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_thread_consolidation_returns_operation_and_notification(tmp_path: Path) -> None:
+async def test_thread_consolidation_returns_operation_and_notification(
+    tmp_path: Path,
+) -> None:
     sessions = SessionManager(tmp_path)
     runtime = ConversationRuntime(sessions.control_store, _echo)
     consolidated: list[str] = []
@@ -278,7 +349,9 @@ async def test_thread_consolidation_returns_operation_and_notification(tmp_path:
     assert isinstance(operation, dict)
     assert operation["status"] == "in_progress"
     await asyncio.wait_for(_wait_method(sent, "operation/completed"), 1)
-    completed = next(item for item in sent if item.get("method") == "operation/completed")
+    completed = next(
+        item for item in sent if item.get("method") == "operation/completed"
+    )
     assert completed["params"] == {
         "operation": {
             "id": operation["id"],
@@ -350,7 +423,9 @@ async def test_plugin_uninstall_returns_before_old_turn_drain_completes(
 
     old_turn_released.set()
     await asyncio.wait_for(_wait_method(sent, "operation/completed"), timeout=1)
-    completed = next(item for item in sent if item.get("method") == "operation/completed")
+    completed = next(
+        item for item in sent if item.get("method") == "operation/completed"
+    )
     assert completed["params"] == {
         "operation": {
             "id": operation["id"],
@@ -495,9 +570,7 @@ async def test_thread_runtime_selector_is_strict_and_inherited_by_turn(
 
     thread = service.start_thread({"skip_post_memory": True}, "latest")
     thread_id = cast(str, thread["id"])
-    result = await (
-        await service.start_turn(thread_id, "verify", {}, None)
-    ).result()
+    result = await (await service.start_turn(thread_id, "verify", {}, None)).result()
 
     assert thread["metadata"] == {
         "skip_post_memory": True,
@@ -537,13 +610,13 @@ async def test_router_disconnect_interrupts_only_attached_turn(
     await router.handle_line(
         b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1.0","clientInfo":{"name":"test","version":"1"},"capabilities":{}}}\n'
     )
-    await router.handle_line(
-        b'{"jsonrpc":"2.0","method":"initialized","params":{}}\n'
-    )
+    await router.handle_line(b'{"jsonrpc":"2.0","method":"initialized","params":{}}\n')
     await router.handle_line(
         b'{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"metadata":{},"runtime":"latest"}}\n'
     )
-    thread = cast(dict[str, object], next(item for item in sent if item.get("id") == 2)["result"])
+    thread = cast(
+        dict[str, object], next(item for item in sent if item.get("id") == 2)["result"]
+    )
     thread_id = cast(str, thread["id"])
     await router.handle_line(
         (
@@ -552,7 +625,9 @@ async def test_router_disconnect_interrupts_only_attached_turn(
         ).encode()
     )
     await started.wait()
-    turn = cast(dict[str, object], next(item for item in sent if item.get("id") == 3)["result"])
+    turn = cast(
+        dict[str, object], next(item for item in sent if item.get("id") == 3)["result"]
+    )
     turn_id = cast(str, turn["id"])
 
     await router.close()
@@ -610,9 +685,7 @@ async def test_plugin_candidate_control_methods_use_runtime_owner(
         "publicationState": "latest_ready"
     }
     assert service.plugin_status() == {"candidateState": "latest_ready"}
-    assert await service.promote_plugin("feed@lab") == {
-        "publication_state": "promoted"
-    }
+    assert await service.promote_plugin("feed@lab") == {"publication_state": "promoted"}
     assert await service.discard_plugin("feed@lab") == {
         "publication_state": "discarded"
     }

@@ -12,6 +12,7 @@ from agent.core.passive_support import (
     log_react_context_budget,
 )
 from agent.control.context import current_turn_id
+from agent.control.ports import TurnInputSource
 from agent.core.types import to_tool_call_groups
 from agent.lifecycle.phase import (
     PhaseFrame,
@@ -123,12 +124,36 @@ class _BuildTurnCommittedModule:
             else None
         )
         raw_user_message_id = snap.outbound.metadata.get("persisted_user_message_id")
+        raw_user_message_ids = snap.outbound.metadata.get(
+            "persisted_user_message_ids"
+        )
+        persisted_user_message_ids = (
+            tuple(cast(list[str], raw_user_message_ids))
+            if isinstance(raw_user_message_ids, list)
+            and all(isinstance(item, str) and item for item in raw_user_message_ids)
+            else ()
+        )
+        raw_source = msg.metadata.get("_control_turn_input_source")
+        input_messages = [msg.content]
+        skip_post_memory = (msg.metadata or {}).get("skip_post_memory") is True
+        if raw_source is not None:
+            inputs = cast(TurnInputSource, raw_source).consumed_inputs()
+            input_messages = [item.content for item in inputs]
+            skip_post_memory = any(
+                item.metadata.get("skip_post_memory") is True for item in inputs
+            )
+        aggregate_input = "\n\n".join(input_messages)
+        extra = dict(cast(dict[str, object], frame.slots[_EXTRA_SLOT]))
+        if skip_post_memory:
+            extra["skip_post_memory"] = True
         frame.slots[_TURN_COMMITTED_SLOT] = TurnCommitted(
             session_key=state.session_key,
             channel=msg.channel,
             chat_id=msg.chat_id,
-            input_message=msg.content,
-            persisted_user_message=msg.content if persistence.persist_user else None,
+            input_message=aggregate_input,
+            persisted_user_message=(
+                aggregate_input if persistence.persist_user else None
+            ),
             assistant_response=snap.ctx.reply,
             tools_used=list(snap.ctx.tools_used),
             turn_id=current_turn_id.get(),
@@ -137,6 +162,7 @@ class _BuildTurnCommittedModule:
                 if isinstance(raw_user_message_id, str) and raw_user_message_id
                 else None
             ),
+            persisted_user_message_ids=persisted_user_message_ids,
             assistant_message_id=snap.outbound.session_message_id,
             thinking=snap.ctx.thinking,
             raw_reply=snap.ctx.response_metadata.raw_text,
@@ -147,7 +173,7 @@ class _BuildTurnCommittedModule:
             timestamp=msg.timestamp,
             post_reply_budget=dict(cast(dict[str, int], frame.slots[_BUDGET_SLOT])),
             react_stats=dict(cast(dict[str, int], frame.slots[_REACT_STATS_SLOT])),
-            extra=dict(cast(dict[str, object], frame.slots[_EXTRA_SLOT])),
+            extra=extra,
             model_usage=(
                 dict(raw_model_usage) if isinstance(raw_model_usage, dict) else {}
             ),

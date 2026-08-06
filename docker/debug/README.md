@@ -66,7 +66,7 @@ python docker/debug/programmatic_control_probe.py --gate soak
 
 当前基建实现 `smoke`、PR 必选的 `failure-matrix` 和 nightly/release `soak`。`smoke`
 覆盖 UDS/stdio、基本 turn，以及 streaming/tool/usage 的事件与 DB 一致性；
-`failure-matrix` 覆盖双连接隔离、同 thread 冲突、精确中断、断线恢复、慢客户端背压、
+`failure-matrix` 覆盖双连接隔离、同 thread active-start busy、精确中断、断线恢复、慢客户端背压、
 provider 分类、非法协议、Web channel parity、workspace lock、SIGTERM 和 crash/restart。
 `soak` 执行 10 次预热与 100 次混合 turn，包含 10 次 reconnect、interrupt 和 provider
 failure，并检查 RSS、fd、线程与 DB 非终态阈值。

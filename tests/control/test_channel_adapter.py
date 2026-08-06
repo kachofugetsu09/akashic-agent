@@ -140,7 +140,61 @@ async def test_recovered_mobile_handoff_with_canonical_user_skips_new_turn(
 
 
 @pytest.mark.asyncio
-async def test_worker_executes_different_threads_without_blocking_consumer(tmp_path: Path) -> None:
+async def test_recovered_mobile_handoff_in_interrupted_attempt_is_not_reenqueued(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path / "workspace")
+    session_key = "mobile:interrupted"
+    reached = asyncio.Event()
+
+    async def execute(_request: TurnRequest) -> str:
+        reached.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    runtime = ConversationRuntime(manager.control_store, execute)
+    handle = await runtime.start_turn(
+        TurnRequest(
+            session_key,
+            "u1",
+            {
+                "inboundMetadata": {"client_message_id": "client:interrupted"},
+            },
+        )
+    )
+    await reached.wait()
+    assert (await handle.interrupt()).status is TurnStatus.INTERRUPTED
+
+    bus = _Bus()
+    worker = PassiveMessageWorker(
+        cast(Any, bus),
+        runtime,
+        cast(Any, SimpleNamespace(session_manager=manager)),
+    )
+    recovered = InboundMessage(
+        "mobile",
+        "device:1",
+        "interrupted",
+        "u1",
+        metadata={
+            "session_key_override": session_key,
+            "client_message_id": "client:interrupted",
+        },
+        handoff_id="handoff:interrupted",
+    )
+
+    await worker._run_message(recovered)
+
+    assert bus.completed == [recovered]
+    assert len(manager.control_store.list_turns(session_key)) == 1
+    await runtime.shutdown()
+    manager.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_executes_different_threads_without_blocking_consumer(
+    tmp_path: Path,
+) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     release = asyncio.Event()
     first_started = asyncio.Event()
@@ -178,34 +232,37 @@ async def test_worker_executes_different_threads_without_blocking_consumer(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_worker_serializes_same_thread_and_continues_after_failure(tmp_path: Path) -> None:
+async def test_worker_waits_for_terminal_before_admitting_next_message(
+    tmp_path: Path,
+) -> None:
     store = SessionStore(tmp_path / "sessions.db")
-    calls: list[str] = []
+    release = asyncio.Event()
+    first_started = asyncio.Event()
 
     async def execute(request: TurnRequest) -> str:
-        calls.append(request.input)
-        if request.input == "bad":
-            raise RuntimeError("broken turn")
+        if request.input == "u1":
+            first_started.set()
+            await release.wait()
         return request.input
 
     runtime = ConversationRuntime(store, execute)
     bus = _Bus()
     worker = PassiveMessageWorker(cast(Any, bus), runtime, cast(Any, object()))
     worker_task = asyncio.create_task(worker.run())
-    bus.inbound.put_nowait(InboundMessage("telegram", "user", "same", "bad"))
-    bus.inbound.put_nowait(InboundMessage("telegram", "user", "same", "good"))
+    bus.inbound.put_nowait(InboundMessage("telegram", "user", "same", "u1"))
+    bus.inbound.put_nowait(InboundMessage("telegram", "user", "same", "u2"))
+
+    await asyncio.wait_for(first_started.wait(), 1)
+    assert len(store.list_turns("telegram:same")) == 1
+    assert bus.completed == []
+    release.set()
     _ = await asyncio.wait_for(bus.completions.get(), 1)
     _ = await asyncio.wait_for(bus.completions.get(), 1)
 
-    assert calls == ["bad", "good"]
-    assert [message.content for message in bus.outbound] == [
-        "处理消息时出错，请稍后再试。",
-        "good",
-    ]
-    assert [turn.status for turn in reversed(store.list_turns("telegram:same"))] == [
-        TurnStatus.FAILED,
-        TurnStatus.COMPLETED,
-    ]
+    assert [message.content for message in bus.outbound] == ["u1", "u2"]
+    turns = store.list_turns("telegram:same")
+    assert len(turns) == 2
+    assert all(turn.status is TurnStatus.COMPLETED for turn in turns)
     worker.stop()
     await worker_task
     await runtime.shutdown()
@@ -213,7 +270,9 @@ async def test_worker_serializes_same_thread_and_continues_after_failure(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_channel_adapter_preserves_full_outbound_projection(tmp_path: Path) -> None:
+async def test_channel_adapter_preserves_full_outbound_projection(
+    tmp_path: Path,
+) -> None:
     store = SessionStore(tmp_path / "sessions.db")
 
     async def execute(_request: TurnRequest) -> ControlExecutionResult:

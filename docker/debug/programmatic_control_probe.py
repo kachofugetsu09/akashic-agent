@@ -267,8 +267,15 @@ def _turn_projection(turn: dict[str, Any]) -> dict[str, object]:
         if not isinstance(raw_item, dict):
             raise GateFailure(f"turn item 非对象：{raw_item!r}")
         data = raw_item.get("data")
-        if raw_item.get("type") == "assistantMessage" and isinstance(data, dict):
+        if isinstance(data, dict):
             data = dict(data)
+            data.pop("timestamp", None)
+            metadata = data.get("metadata")
+            if isinstance(metadata, dict):
+                stable_metadata = dict(metadata)
+                stable_metadata.pop("client_request_id", None)
+                data["metadata"] = stable_metadata
+        if raw_item.get("type") == "assistantMessage" and isinstance(data, dict):
             session_message_id = data.get("sessionMessageId")
             if isinstance(session_message_id, str):
                 data["sessionMessageId"] = "<session-message-id>"
@@ -287,6 +294,11 @@ def _turn_projection(turn: dict[str, Any]) -> dict[str, object]:
                     stable_metadata["persisted_user_message_id"] = (
                         "<persisted-user-message-id>"
                     )
+                persisted_ids = stable_metadata.get("persisted_user_message_ids")
+                if isinstance(persisted_ids, list):
+                    stable_metadata["persisted_user_message_ids"] = [
+                        "<persisted-user-message-id>" for _ in persisted_ids
+                    ]
                 data["metadata"] = stable_metadata
         items.append({"type": raw_item.get("type"), "data": data})
     error = turn.get("error")
@@ -385,6 +397,50 @@ def _wait_database_turn_status(
     raise GateFailure(
         f"等待 channel turn 状态超时：thread={thread_id} input={input_text!r} "
         f"expected={sorted(expected)} actual={last_status}"
+    )
+
+
+def _wait_database_turn_inputs(
+    database: Path,
+    thread_id: str,
+    input_text: str,
+    expected_count: int,
+    *,
+    timeout: float = SCENARIO_DEADLINE_S,
+) -> dict[str, object]:
+    """等待 active channel turn 持久化指定数量的有序 user item。"""
+
+    deadline = time.monotonic() + timeout
+    last_inputs: list[object] = []
+    while time.monotonic() < deadline:
+        with sqlite3.connect(database) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute(
+                """
+                SELECT id, status, items_json
+                FROM turns
+                WHERE session_key = ? AND json_extract(input_json, '$.input') = ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (thread_id, input_text),
+            ).fetchone()
+        if row is not None:
+            items = json.loads(row["items_json"])
+            last_inputs = [
+                item.get("data", {}).get("content")
+                for item in items
+                if isinstance(item, dict) and item.get("type") == "userMessage"
+            ]
+            if len(last_inputs) == expected_count:
+                return {
+                    "id": row["id"],
+                    "status": row["status"],
+                    "userInputs": last_inputs,
+                }
+        threading.Event().wait(0.02)
+    raise GateFailure(
+        f"等待 channel turn 输入超时：thread={thread_id} input={input_text!r} "
+        f"expected_count={expected_count} actual={last_inputs!r}"
     )
 
 
@@ -835,9 +891,9 @@ def _inside_memory_context(report_dir: Path) -> int:
         model_requests = _model_requests(
             _http_json("GET", f"{model_url}/control/requests")
         )
-        recent_context = Path(
-            "/sandbox/workspace/memory/RECENT_CONTEXT.md"
-        ).read_text(encoding="utf-8")
+        recent_context = Path("/sandbox/workspace/memory/RECENT_CONTEXT.md").read_text(
+            encoding="utf-8"
+        )
         passed = (
             isinstance(completed_operation, dict)
             and completed_operation.get("id") == operation.get("id")
@@ -911,9 +967,7 @@ def _inside_memory_context(report_dir: Path) -> int:
                 {
                     "terminal": retry_payload,
                     "messageCount": retry_message_count,
-                    "lastConsolidated": (
-                        None if retry_row is None else retry_row[0]
-                    ),
+                    "lastConsolidated": (None if retry_row is None else retry_row[0]),
                     "modelRequestCount": len(final_requests),
                 },
             )
@@ -1005,16 +1059,16 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             )
         )
 
-        # 2. 同 thread 的第二个 start 必须稳定返回 -32011。
+        # 2. 同 thread 的第二个 start 必须明确 busy，不能注入 owner turn。
         _create_barrier(
             model_url,
             "thread-conflict",
-            {"mode": "complete", "content": "conflict owner"},
+            {"mode": "complete", "content": "intermediate candidate"},
         )
         conflict_thread = _start_thread(first, "PC-06")
         conflict_turn = _start_turn(first, conflict_thread, "conflict owner")
         _wait_barrier(model_url, "thread-conflict")
-        conflict = first.request_raw(
+        rejected = first.request_raw(
             "turn/start",
             {
                 "threadId": conflict_thread,
@@ -1024,14 +1078,27 @@ def _inside_failure_matrix(report_dir: Path) -> int:
         )
         _release_barrier(model_url, "thread-conflict")
         conflict_terminal = first.wait_terminal(conflict_turn)
-        conflict_error = conflict.get("error")
+        rejected_error = rejected.get("error")
+        terminal_turn = _event_turn(conflict_terminal)
+        user_inputs = [
+            item.get("data", {}).get("content")
+            for item in terminal_turn.get("items", [])
+            if isinstance(item, dict) and item.get("type") == "userMessage"
+        ]
         checks.append(
             CheckResult(
                 "PC-06",
-                isinstance(conflict_error, dict)
-                and conflict_error.get("code") == -32011
-                and _terminal_status(conflict_terminal) == "completed",
-                {"error": conflict_error, "ownerTerminal": conflict_terminal},
+                isinstance(rejected_error, dict)
+                and rejected_error.get("code") == -32011
+                and rejected_error.get("data") == {"retryable": True}
+                and _terminal_status(conflict_terminal) == "completed"
+                and terminal_turn.get("finalResponse") == "intermediate candidate"
+                and user_inputs == ["conflict owner"],
+                {
+                    "rejected": rejected_error,
+                    "ownerTerminal": conflict_terminal,
+                    "userInputs": user_inputs,
+                },
             )
         )
 
@@ -1085,12 +1152,9 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             {"threadId": interrupt_thread, "turnId": interrupted_turn},
         )
         _ = first.request("server/status", {})
-        interrupted_events = _recorded_turn_notifications(
-            events_path, interrupted_turn
-        )
+        interrupted_events = _recorded_turn_notifications(events_path, interrupted_turn)
         interrupted_terminal_count = sum(
-            event.get("method") == "turn/completed"
-            for event in interrupted_events
+            event.get("method") == "turn/completed" for event in interrupted_events
         )
         _, shell_completed = _tool_lifecycle(interrupted_events, "shell")
         persisted_shell = next(
@@ -1206,9 +1270,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             {
                 "id": f"call_pc09_{index}",
                 "name": "tool_search",
-                "arguments": {
-                    "query": f"no-match-pc09-{index}-" + "x" * (32 * 1024)
-                },
+                "arguments": {"query": f"no-match-pc09-{index}-" + "x" * (32 * 1024)},
             }
             for index in range(80)
         ]
@@ -1481,22 +1543,36 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             lane_thread = str(
                 json.loads(lane_web.recv(timeout=SCENARIO_DEADLINE_S))["session_id"]
             )
+            _create_barrier(
+                model_url,
+                "pc16-strict-lane",
+                {"mode": "complete", "content": "order one final"},
+            )
             _http_json(
                 "PUT",
                 f"{model_url}/control/script",
                 [
-                    {"mode": "complete", "content": "ordered one"},
-                    {"mode": "complete", "content": "ordered two"},
-                    # 当前 provider 会执行首次请求和三次重试，失败 turn 必须全部耗尽。
-                    *[{"mode": "error", "status": 500} for _ in range(4)],
-                    {"mode": "complete", "content": "recovered"},
+                    {"mode": "complete", "content": "order two final"},
+                    {"mode": "complete", "content": "order three final"},
+                    {"mode": "complete", "content": "order four final"},
                 ],
             )
+            lane_web.send(
+                json.dumps(
+                    {
+                        "type": "message.send",
+                        "request_id": "pc16-order-1",
+                        "session_id": lane_thread,
+                        "text": "order one",
+                        "media": [],
+                    }
+                )
+            )
+            _wait_barrier(model_url, "pc16-strict-lane")
             for request_id, text in (
-                ("pc16-order-1", "order one"),
                 ("pc16-order-2", "order two"),
-                ("pc16-fail", "lane failure"),
-                ("pc16-recover", "lane recovery"),
+                ("pc16-order-3", "order three"),
+                ("pc16-order-4", "order four"),
             ):
                 lane_web.send(
                     json.dumps(
@@ -1509,19 +1585,70 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                         }
                     )
                 )
-            lane_finals = [_receive_web_final(lane_web) for _ in range(4)]
-            lane_states = [
-                _wait_database_turn_status(
-                    database,
-                    lane_thread,
-                    text,
-                    {"completed", "failed"},
-                )
-                for text in ("order one", "order two", "lane failure", "lane recovery")
+            active_inputs = _wait_database_turn_inputs(
+                database, lane_thread, "order one", 1
+            )
+            _release_barrier(model_url, "pc16-strict-lane")
+            ordered_finals = [_receive_web_final(lane_web) for _ in range(4)]
+            ordered_turns = [
+                _wait_database_turn(database, lane_thread, f"order {name}")
+                for name in ("one", "two", "three", "four")
             ]
+
+            _http_json(
+                "PUT",
+                f"{model_url}/control/script",
+                [{"mode": "error", "status": 500} for _ in range(4)],
+            )
+            lane_web.send(
+                json.dumps(
+                    {
+                        "type": "message.send",
+                        "request_id": "pc16-fail",
+                        "session_id": lane_thread,
+                        "text": "lane failure",
+                        "media": [],
+                    }
+                )
+            )
+            failed_final = _receive_web_final(lane_web)
+            failed_state = _wait_database_turn_status(
+                database, lane_thread, "lane failure", {"failed"}
+            )
+
+            _http_json(
+                "PUT",
+                f"{model_url}/control/script",
+                {"mode": "complete", "content": "recovered"},
+            )
+            lane_web.send(
+                json.dumps(
+                    {
+                        "type": "message.send",
+                        "request_id": "pc16-recover",
+                        "session_id": lane_thread,
+                        "text": "lane recovery",
+                        "media": [],
+                    }
+                )
+            )
+            recovered_final = _receive_web_final(lane_web)
+            recovered_state = _wait_database_turn_status(
+                database, lane_thread, "lane recovery", {"completed"}
+            )
             lane_evidence["sameThread"] = {
-                "finals": [frame.get("content") for frame in lane_finals],
-                "statuses": [state["status"] for state in lane_states],
+                "activeInputs": active_inputs,
+                "orderedTurns": [_turn_projection(turn) for turn in ordered_turns],
+                "finals": [
+                    *[frame.get("content") for frame in ordered_finals],
+                    failed_final.get("content"),
+                    recovered_final.get("content"),
+                ],
+                "statuses": [
+                    *[turn["status"] for turn in ordered_turns],
+                    failed_state["status"],
+                    recovered_state["status"],
+                ],
             }
 
         different_threads = cast(dict[str, object], lane_evidence["differentThreads"])
@@ -1534,15 +1661,26 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             == "completed"
             and different_threads["slowFinal"] == "slow complete"
             and different_threads["fastFinal"] == "fast complete"
+            and cast(dict[str, object], same_thread["activeInputs"])["userInputs"]
+            == ["order one"]
             and same_thread["finals"]
             == [
-                "ordered one",
-                "ordered two",
+                "order one final",
+                "order two final",
+                "order three final",
+                "order four final",
                 "处理消息时出错，请稍后再试。",
                 "recovered",
             ]
             and same_thread["statuses"]
-            == ["completed", "completed", "failed", "completed"]
+            == [
+                "completed",
+                "completed",
+                "completed",
+                "completed",
+                "failed",
+                "completed",
+            ]
         )
         checks.append(
             CheckResult(
@@ -1927,6 +2065,7 @@ def _prepare_host_sandbox(sandbox: Path, source_root: Path) -> None:
 
     # 3. 配置只引用同一 sandbox 内的路径。
     _write_config(sandbox)
+
 
 def _install_control_failure_plugin(sandbox: Path) -> None:
     """安装只为 PC10 构造 started 后 gate failure 的隔离插件。"""

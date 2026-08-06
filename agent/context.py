@@ -159,6 +159,21 @@ class MessageEnvelopeBuilder:
             return text
         return images + [{"type": "text", "text": text}]
 
+    def build_user_content(
+        self,
+        text: str,
+        media: list[str] | None,
+        *,
+        message_timestamp: datetime | None = None,
+    ) -> str | list[dict[str, Any]]:
+        """构造可追加到同一模型上下文的用户消息内容。"""
+
+        return self._build_user_content(
+            text,
+            media,
+            message_timestamp=message_timestamp,
+        )
+
     def _build_text_with_media_refs(self, text: str, media: list[str]) -> str:
         refs: list[str] = []
         local_image_paths: list[str] = []
@@ -258,6 +273,7 @@ class ContextBuilder:
                 SkillsCatalogPromptBlock(render_fn=build_skills_catalog_prompt),
             ]
         )
+
         self._envelope_builder = MessageEnvelopeBuilder(
             policies={TelegramChannelPolicy.channel: TelegramChannelPolicy()},
             multimodal=multimodal,
@@ -270,6 +286,21 @@ class ContextBuilder:
         self._last_assembled_contexts: ContextVar[
             dict[str, dict[str, str]] | None
         ] = ContextVar("akashic_context_assembled_contexts", default=None)
+
+    def build_user_message_content(
+        self,
+        text: str,
+        media: list[str] | None,
+        *,
+        message_timestamp: datetime | None = None,
+    ) -> str | list[dict[str, Any]]:
+        """复用首条消息的媒体与时间 envelope 构造同 turn 输入。"""
+
+        return self._envelope_builder.build_user_content(
+            text,
+            media,
+            message_timestamp=message_timestamp,
+        )
 
     def set_media_capabilities(
         self,

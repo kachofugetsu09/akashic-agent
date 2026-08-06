@@ -5,6 +5,7 @@ import logging
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from agent.core.passive_support import update_session_runtime_metadata
+from agent.control.ports import TurnInputSource, TurnUserInput
 from agent.core.response_parser import parse_response
 from agent.lifecycle.phase import (
     PhaseFrame,
@@ -72,6 +73,11 @@ class _BuildAfterReasoningCtxModule:
         turn_result = input.turn_result
         inbound_metadata = dict(msg.metadata or {})
         inbound_metadata.pop("mobile_attention", None)
+        inbound_metadata.pop("_control_turn_input_source", None)
+        inbound_metadata.pop("_control_attempt_replay", None)
+        inbound_metadata.pop("_control_prior_tool_chain", None)
+        inbound_metadata.pop("_control_prior_input_count", None)
+        inbound_metadata.pop("_control_execution_turn_id", None)
         raw_reply = turn_result.reply
         if raw_reply is None:
             raw_reply = "I've completed processing but have no response to give."
@@ -147,26 +153,43 @@ class _PersistUserMessageModule:
         llm_context_frame = ctx.context_retry.get("llm_context_frame")
         if isinstance(llm_context_frame, str) and llm_context_frame.strip():
             user_kwargs["llm_context_frame"] = llm_context_frame
-        user_kwargs.update(_collect_persist_user_slots(frame.slots))
-        if (msg.metadata or {}).get("skip_post_memory") is True:
-            user_kwargs["skip_post_memory"] = True
-        client_message_id = msg.metadata.get("client_message_id")
-        if isinstance(client_message_id, str) and client_message_id:
-            user_kwargs["client_message_id"] = client_message_id
-        client_created_at = msg.metadata.get("client_created_at")
-        if isinstance(client_created_at, str) and client_created_at:
-            user_kwargs["timestamp"] = client_created_at
-        for field in ("reply_to_message_id", "reply_role", "reply_preview"):
-            value = msg.metadata.get(field)
-            if isinstance(value, str) and value:
-                user_kwargs[field] = value
-        display_content = msg.metadata.get("display_content")
-        frame.slots[_PERSISTED_USER_SLOT] = session.add_message(
-            "user",
-            display_content if isinstance(display_content, str) else msg.content,
-            media=msg.media if msg.media else None,
-            **user_kwargs,
-        )
+        shared_user_kwargs = _collect_persist_user_slots(frame.slots)
+        control_turn_id = str(msg.metadata.get("control_turn_id") or "")
+        persisted_users: list[dict[str, Any]] = []
+        for index, turn_input in enumerate(_turn_user_inputs(msg)):
+            input_kwargs = dict(user_kwargs) if index == 0 else {}
+            if index == 0:
+                input_kwargs.update(shared_user_kwargs)
+            input_kwargs["timestamp"] = turn_input.timestamp.isoformat()
+            input_kwargs["turn_input_ordinal"] = turn_input.ordinal
+            if control_turn_id:
+                input_kwargs["control_turn_id"] = control_turn_id
+            if turn_input.metadata.get("skip_post_memory") is True:
+                input_kwargs["skip_post_memory"] = True
+            for field in (
+                "client_message_id",
+                "client_created_at",
+                "reply_to_message_id",
+                "reply_role",
+                "reply_preview",
+            ):
+                value = turn_input.metadata.get(field)
+                if isinstance(value, str) and value:
+                    input_kwargs[
+                        "timestamp" if field == "client_created_at" else field
+                    ] = value
+            display_content = turn_input.metadata.get("display_content")
+            persisted_users.append(
+                session.add_message(
+                    "user",
+                    display_content
+                    if isinstance(display_content, str)
+                    else turn_input.content,
+                    media=list(turn_input.media) if turn_input.media else None,
+                    **input_kwargs,
+                )
+            )
+        frame.slots[_PERSISTED_USER_SLOT] = persisted_users
         return frame
 
 
@@ -197,7 +220,18 @@ class _PersistAssistantMessageModule:
                 frame.input.turn_result.react_compaction
             )
         assistant_kwargs.update(_collect_persist_assistant_slots(frame.slots))
-        if (frame.input.state.msg.metadata or {}).get("skip_post_memory") is True:
+        turn_inputs = _turn_user_inputs(frame.input.state.msg)
+        control_turn_id = str(
+            frame.input.state.msg.metadata.get("control_turn_id") or ""
+        )
+        if control_turn_id and frame.input.state.persistence.persist_user:
+            assistant_kwargs["control_turn_id"] = control_turn_id
+            assistant_kwargs["turn_terminal"] = True
+            assistant_kwargs["turn_input_count"] = len(turn_inputs)
+        if any(
+            turn_input.metadata.get("skip_post_memory") is True
+            for turn_input in turn_inputs
+        ):
             assistant_kwargs["skip_post_memory"] = True
         if frame.input.state.persistence.persist_assistant:
             media = list(ctx.media)
@@ -247,8 +281,8 @@ class _AppendMessagesModule:
         session = cast("Session", raw_session)
         messages: list[dict[str, Any]] = []
         if state.persistence.persist_user:
-            messages.append(
-                cast(dict[str, Any], frame.slots[_PERSISTED_USER_SLOT])
+            messages.extend(
+                cast(list[dict[str, Any]], frame.slots[_PERSISTED_USER_SLOT])
             )
         if state.persistence.persist_assistant:
             messages.append(
@@ -273,10 +307,22 @@ class _BuildOutboundMessageModule:
         metadata = dict(ctx.outbound_metadata)
         metadata.update(collect_prefixed_slots(frame.slots, _OUTBOUND_METADATA_PREFIX))
         if frame.input.state.persistence.persist_user:
-            persisted_user = cast(
-                dict[str, object],
+            persisted_users = cast(
+                list[dict[str, object]],
                 frame.slots[_PERSISTED_USER_SLOT],
             )
+            if not persisted_users:
+                raise RuntimeError("本轮 user 消息列表为空")
+            persisted_user = persisted_users[0]
+            persisted_user_ids = [
+                str(item["id"])
+                for item in persisted_users
+                if isinstance(item.get("id"), str) and item["id"]
+            ]
+            if len(persisted_user_ids) == len(persisted_users):
+                metadata["persisted_user_message_ids"] = persisted_user_ids
+            elif ctx.channel == "mobile":
+                raise RuntimeError("本轮 user 消息缺少稳定 ID")
             raw_user_message_id = persisted_user.get("id")
             raw_client_message_id = persisted_user.get("client_message_id")
             if isinstance(raw_user_message_id, str) and raw_user_message_id:
@@ -310,6 +356,29 @@ class _BuildOutboundMessageModule:
             session_message_id=session_message_id,
         )
         return frame
+
+
+def _turn_user_inputs(msg: object) -> tuple[TurnUserInput, ...]:
+    """读取 sealed control source；普通内部 turn 投影为单条输入。"""
+
+    metadata = getattr(msg, "metadata", None) or {}
+    raw_source = metadata.get("_control_turn_input_source")
+    if raw_source is not None:
+        source = cast(TurnInputSource, raw_source)
+        inputs = source.consumed_inputs()
+        if not inputs:
+            raise RuntimeError("sealed control turn 缺少用户输入")
+        return inputs
+    return (
+        TurnUserInput(
+            item_id="direct",
+            ordinal=0,
+            content=str(getattr(msg, "content")),
+            media=tuple(getattr(msg, "media", ()) or ()),
+            metadata=dict(metadata),
+            timestamp=getattr(msg, "timestamp"),
+        ),
+    )
 
 
 class _ReturnAfterReasoningResultModule:

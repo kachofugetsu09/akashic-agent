@@ -30,8 +30,7 @@ from session.store import SessionStore
 
 
 def _seed_message_embeddings(store: SessionStore, message_ids: list[str]) -> None:
-    store._conn.execute(
-        """
+    store._conn.execute("""
         CREATE TABLE message_embeddings (
             message_id TEXT NOT NULL,
             content_hash TEXT NOT NULL,
@@ -42,8 +41,7 @@ def _seed_message_embeddings(store: SessionStore, message_ids: list[str]) -> Non
             updated_at TEXT NOT NULL,
             PRIMARY KEY (message_id, model)
         )
-        """
-    )
+        """)
     store._conn.executemany(
         """
         INSERT INTO message_embeddings
@@ -104,7 +102,9 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
     memory.write_long_term.assert_called_once()
     memory.write_self.assert_called_once()
 
-    loop = MemoryOptimizerLoop(opt, interval_seconds=10, _now_fn=lambda: datetime(2025, 1, 1, 0, 0, 1))
+    loop = MemoryOptimizerLoop(
+        opt, interval_seconds=10, _now_fn=lambda: datetime(2025, 1, 1, 0, 0, 1)
+    )
     assert loop._seconds_until_next_tick() >= 1.0
     loop.stop()
 
@@ -216,16 +216,14 @@ async def test_session_batch_persistence_rolls_back_all_messages_on_failure(
     session = manager.get_or_create("telegram:atomic")
     session.add_message("user", "第一条")
     session.add_message("assistant", "第二条")
-    manager._store._conn.execute(
-        """
+    manager._store._conn.execute("""
         CREATE TRIGGER reject_assistant_message
         BEFORE INSERT ON messages
         WHEN NEW.role = 'assistant'
         BEGIN
             SELECT RAISE(ABORT, '测试写入失败');
         END
-        """
-    )
+        """)
     manager._store._conn.commit()
 
     with pytest.raises(sqlite3.IntegrityError, match="测试写入失败"):
@@ -255,11 +253,7 @@ async def test_session_persistence_truncates_each_large_tool_result(
 ) -> None:
     manager = SessionManager(tmp_path)
     session = manager.get_or_create("telegram:bounded-tool-result")
-    long_result = (
-        "head-"
-        + "x" * (_STORED_TOOL_RESULT_CHAR_BUDGET + 200)
-        + "-tail"
-    )
+    long_result = "head-" + "x" * (_STORED_TOOL_RESULT_CHAR_BUDGET + 200) + "-tail"
     session.add_message("assistant", "结论")
     session.messages[-1]["tool_chain"] = [
         {
@@ -534,7 +528,7 @@ def test_session_store_reraises_non_capability_fts_errors() -> None:
         ("extra", '{"media": null}', "message media"),
         ("extra", '{"source_refs": ["bad"]}', "message source_refs"),
         ("tool_chain", '[{"calls": null}]', "message tool_chain"),
-        ("tool_chain", '[null]', "message tool_chain"),
+        ("tool_chain", "[null]", "message tool_chain"),
         ("tool_chain", '[{"calls": [null]}]', "message tool_chain"),
     ],
 )
@@ -661,7 +655,7 @@ def test_session_get_history_skips_cached_llm_frame_by_default():
     session.add_message(
         "user",
         "hello",
-        llm_context_frame="<system-reminder data-system-context-frame=\"true\">\n\n## retrieved_memory\n旧记忆",
+        llm_context_frame='<system-reminder data-system-context-frame="true">\n\n## retrieved_memory\n旧记忆',
         llm_user_content=user_content,
     )
     session.add_message("assistant", "world")
@@ -734,6 +728,66 @@ def test_session_get_history_rewinds_consolidated_index_to_user_boundary():
     history = session.get_history(start_index=session.last_consolidated)
 
     assert history[0] == {"role": "user", "content": "hello"}
+
+
+def test_session_get_history_never_splits_explicit_multi_input_turn():
+    session = Session("cli:multi-input")
+    session.add_message("user", "old")
+    session.add_message("assistant", "old reply")
+    for ordinal, content in enumerate(("u1", "u2", "u3")):
+        session.add_message(
+            "user",
+            content,
+            control_turn_id="turn-1",
+            turn_input_ordinal=ordinal,
+        )
+    session.add_message(
+        "assistant",
+        "final",
+        control_turn_id="turn-1",
+        turn_terminal=True,
+        turn_input_count=3,
+    )
+
+    expected = [
+        {"role": "user", "content": "u1"},
+        {"role": "user", "content": "u2"},
+        {"role": "user", "content": "u3"},
+        {"role": "assistant", "content": "final"},
+    ]
+    assert session.get_history(max_messages=1) == expected
+    assert session.get_history(start_index=3) == expected
+
+
+def test_session_get_history_counts_logical_turn_and_proactive_as_units():
+    session = Session("cli:logical-window")
+    session.add_message("user", "old", control_turn_id="turn-old")
+    session.add_message("assistant", "old reply", control_turn_id="turn-old")
+    session.add_message("assistant", "主动提醒", proactive=True)
+    for ordinal, content in enumerate(("u1", "u2", "u3")):
+        session.add_message(
+            "user",
+            content,
+            control_turn_id="turn-current",
+            turn_input_ordinal=ordinal,
+        )
+    session.add_message(
+        "assistant",
+        "final",
+        control_turn_id="turn-current",
+        turn_terminal=True,
+        turn_input_count=3,
+    )
+
+    history = session.get_history(max_messages=2)
+
+    assert history[0] == {"role": "assistant", "content": "[主动推送] 主动提醒"}
+    assert history[1:] == [
+        {"role": "user", "content": "u1"},
+        {"role": "user", "content": "u2"},
+        {"role": "user", "content": "u3"},
+        {"role": "assistant", "content": "final"},
+    ]
 
 
 def test_session_get_history_keeps_full_consolidated_tail():
