@@ -111,6 +111,11 @@ def load_config(
     from agent.model_runtime.store import ModelRegistryStore
 
     model_snapshot = ModelRegistryStore.for_workspace(workspace_path).read_snapshot()
+    model_credential_store = (
+        CredentialStore.for_workspace(workspace_path)
+        if model_snapshot is not None
+        else resolved_credential_store
+    )
     llm = (
         model_snapshot.as_config_llm()
         if model_snapshot is not None
@@ -124,7 +129,7 @@ def load_config(
     runtime_id, llm_main, model_runtimes = _load_llm_runtimes(
         llm,
         workspace_path,
-        credential_store=resolved_credential_store,
+        credential_store=model_credential_store,
         legacy_main_max_output_tokens=legacy_max_output_tokens,
     )
     fast_runtime_id, llm_fast = _load_role_runtime(llm, "fast", runtime_id)
@@ -163,7 +168,7 @@ def load_config(
                 auth_id=str(llm_main.get("auth") or ""),
                 inline_value=str(llm_main.get("api_key") or ""),
                 workspace=workspace_path,
-                credential_store=resolved_credential_store,
+                credential_store=model_credential_store,
             )
         ),
         system_prompt=str(
@@ -201,7 +206,7 @@ def load_config(
             auth_id=str(llm_fast.get("auth") or ""),
             inline_value=str(llm_fast.get("api_key") or ""),
             workspace=workspace_path,
-            credential_store=resolved_credential_store,
+            credential_store=model_credential_store,
         ),
         light_base_url=str(
             llm_fast.get("base_url") or ""
@@ -211,7 +216,7 @@ def load_config(
             auth_id=str(llm_agent.get("auth") or ""),
             inline_value=str(llm_agent.get("api_key") or ""),
             workspace=workspace_path,
-            credential_store=resolved_credential_store,
+            credential_store=model_credential_store,
         ),
         agent_base_url=str(
             llm_agent.get("base_url") or ""
@@ -241,7 +246,7 @@ def load_config(
             auth_id=str(llm_vl.get("auth") or ""),
             inline_value=str(llm_vl.get("api_key") or ""),
             workspace=workspace_path,
-            credential_store=resolved_credential_store,
+            credential_store=model_credential_store,
         ),
         vl_base_url=str(llm_vl.get("base_url") or ""),
         wiring=wiring,

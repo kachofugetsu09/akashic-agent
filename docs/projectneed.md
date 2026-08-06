@@ -443,6 +443,8 @@ Turn、proactive tick、schedule、plugin job、记忆优化和其他独立推�
 
 角色绑定和 Provider/model 目录的权威当前值保存在 workspace 模型注册库，成功事务增加单调 revision。完整 passive ReAct、proactive ReAct、schedule SOFT、Memory Optimizer、consolidation、plugin job 和其他独立推理单元在入口读取最新 revision，并冻结整组角色直到执行结束；没有外层执行单元的单次调用在调用前读取最新 revision。普通模型设置不得通过改写 `config.toml` 或重启进程传播。
 
+Provider connection 的 Base URL、API Key、Codex access/refresh token 与账号路由字段由同一个 workspace 模型注册库拥有，数据库及其备份按 secret 使用 `0600`。设置状态、日志、Observe 和会话 metadata 只返回 credential 状态或引用，不得返回 secret。已迁移模型不得回退读取全局 HOME credential；旧 credential 文件只保留为迁移输入、恢复证据或非模型兼容状态。Codex token refresh 可以原位更新 credential payload，不改变当前模型 revision；来源、模型、角色和显式 key 设置变化仍按完整候选事务增加 revision。
+
 对话模型选择按“本次消息显式 model ref/effort → session selection → 当前 default”解析。Session selection 以版本化对象持久化后跨 Gateway 重启保留；清除后重新跟随动态 default。显式 effort 只属于显式选择的 default/agent 主推理，不传播给 fast、vision 等内部角色；不受支持的值明确失败。实际执行绑定写入 turn 诊断元数据，不得反向改写既有消息。旧字符串 override 只读兼容，并在下一次显式选择时升级。
 
 ### RUN-010 模型能力来自带来源的注册表
@@ -541,7 +543,7 @@ latest 默认只允许只读行为验证。共享 plugin-data 写入、不可撤
 
 ### WSP-001 Workspace 可写状态显式归属
 
-会话、记忆、附件、plugin-data、socket、运行日志和运行密钥都从显式 workspace 派生。全局插件缓存和 credential store 必须列入明确 global state 清单；运行时不得隐式回退 HOME。
+会话、记忆、附件、plugin-data、socket、运行日志、运行密钥和模型 connection credential 都从显式 workspace 派生。全局插件缓存、旧或非模型 credential store 必须列入明确 global state 清单；已迁移模型运行时不得隐式回退 HOME。
 
 ### WSP-002 数据路径不能通过片段或符号链接逃逸
 
@@ -553,7 +555,7 @@ plugin、marketplace、snapshot 等名称必须是安全单片段；resolved pat
 
 ### WSP-004 Workspace 是 Akashic 运行数据根
 
-`<workspace>` 表示由 `--workspace`、`AKASHIC_WORKSPACE` 或主配置选中的 Akashic 运行实例主要工作区。它承载会话、长期记忆、附件、调度、主动流程、plugin-data、能力投影、诊断和运行控制状态，不是源码仓库、Git checkout 或 Git worktree。插件代码、Skill/MCP 的 canonical source、全局插件清单和凭据可以位于 workspace 之外，必须作为明确 companion state 管理。Git worktree 只承载代码、测试和项目工作手册；任何代码 worktree 都不得把自己的目录当成正式运行数据根。
+`<workspace>` 表示由 `--workspace`、`AKASHIC_WORKSPACE` 或主配置选中的 Akashic 运行实例主要工作区。它承载会话、长期记忆、附件、调度、主动流程、模型 connection credential、plugin-data、能力投影、诊断和运行控制状态，不是源码仓库、Git checkout 或 Git worktree。插件代码、Skill/MCP 的 canonical source、全局插件清单以及旧或非模型凭据可以位于 workspace 之外，必须作为明确 companion state 管理。Git worktree 只承载代码、测试和项目工作手册；任何代码 worktree 都不得把自己的目录当成正式运行数据根。
 
 ### MIG-001 兼容迁移由 workspace Yoyo 账本一次性推进
 

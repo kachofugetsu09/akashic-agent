@@ -104,7 +104,7 @@ def create_settings_app(
     on_applied: Callable[[], None] | None = None,
 ) -> FastAPI:
     """创建只监听本机的设置 API，并提供脱敏状态与原子配置应用。"""
-    store = credential_store or CredentialStore()
+    store = credential_store or CredentialStore.for_workspace(workspace)
     apply_lock = threading.Lock()
     login_lock = threading.Lock()
     logins: dict[str, CodexLoginSession] = {}
@@ -241,7 +241,29 @@ def create_settings_app(
                         if isinstance(row, dict) and str(row.get("id") or "").strip()
                     }
                 )
-                return {"models": [{"id": model_id} for model_id in model_ids]}
+                models: list[dict[str, object]] = []
+                for model_id in model_ids:
+                    item: dict[str, object] = {"id": model_id}
+                    model_capabilities = resolve_catalog_capabilities(
+                        payload.provider,
+                        model_id,
+                        base_url=payload.base_url.strip(),
+                    )
+                    if model_capabilities is not None:
+                        item.update(
+                            {
+                                "contextWindow": model_capabilities.context_window,
+                                "maxOutputTokens": model_capabilities.max_output_tokens,
+                                "inputModalities": list(
+                                    model_capabilities.input_modalities
+                                ),
+                                "supportedReasoningEfforts": list(
+                                    model_capabilities.supported_reasoning_efforts
+                                ),
+                            }
+                        )
+                    models.append(item)
+                return {"models": models}
             return {"models": []}
         except (AuthenticationError, TransportError, httpx.HTTPError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -315,6 +337,12 @@ def create_settings_app(
     async def begin_codex_login() -> dict[str, object]:
         login_id = f"codex-{uuid4().hex}"
         try:
+            store.provision_connection(
+                "codex_default",
+                name="Codex",
+                provider="codex",
+                base_url="https://chatgpt.com/backend-api/codex",
+            )
             session = await asyncio.to_thread(
                 CodexLoginSession,
                 login_id,
@@ -390,10 +418,14 @@ def _read_settings_state(
     store: CredentialStore,
 ) -> dict[str, object]:
     """读取配置结构和凭据元数据，不解析或返回任何 secret。"""
-    credential_meta = store.metadata()
     local_opencode = _local_opencode_key(required=False) is not None
     model_store = ModelRegistryStore.for_workspace(workspace)
     model_snapshot = model_store.read_snapshot()
+    credential_meta = (
+        CredentialStore.for_workspace(workspace).metadata()
+        if model_store.exists()
+        else store.metadata()
+    )
     if not config_path.exists() and model_snapshot is None:
         return {
             "mode": "needs_setup",
@@ -618,6 +650,12 @@ def _answers(
     if provider == "codex":
         auth_id = auth_id or "codex_default"
         _ = store.get(auth_id)
+        source_id = auth_id
+        if requested_source_id:
+            runtime_id = (
+                f"{auth_id}__"
+                f"{hashlib.sha256(payload.model.strip().encode('utf-8')).hexdigest()[:10]}"
+            )
         api_key = ""
     else:
         credential_suffix = requested_source_id or legacy_runtime_id
@@ -817,30 +855,23 @@ def _apply_candidate(
         runtime["auth"] = answers.auth_id
 
     config_snapshot = config_path.read_bytes() if config_path.exists() else None
-    registry_snapshot = model_store.path.read_bytes() if model_store.path.exists() else None
-    auth_snapshot = (
-        credential_store.path.read_bytes()
-        if credential_store.path.exists()
-        else None
-    )
+    registry_existed = model_store.path.is_file()
     backup_dir = workspace / "backups" / "model-settings" / operation_id
     backup_dir.mkdir(parents=True, exist_ok=False)
-    for name, payload in (
-        ("config.before", config_snapshot),
-        ("model-registry.before", registry_snapshot),
-        ("credentials.before", auth_snapshot),
-    ):
-        if payload is not None:
-            target = backup_dir / name
-            target.write_bytes(payload)
-            os.chmod(target, 0o600)
+    if config_snapshot is not None:
+        target = backup_dir / "config.before"
+        target.write_bytes(config_snapshot)
+        os.chmod(target, 0o600)
+    registry_backup = backup_dir / "model-registry.before.sqlite3"
+    if registry_existed:
+        model_store.backup_to(registry_backup)
     (backup_dir / "manifest.json").write_text(
         json.dumps(
             {
                 "operation_id": operation_id,
                 "config": config_snapshot is not None,
-                "model_registry": registry_snapshot is not None,
-                "credentials": auth_snapshot is not None,
+                "model_registry": registry_existed,
+                "credentials": "model-registry.sqlite3",
             },
             ensure_ascii=False,
             indent=2,
@@ -854,17 +885,24 @@ def _apply_candidate(
 
     restart_attempted = False
     try:
-        if answers.provider != "codex":
-            credential_store.put(
-                answers.auth_id,
-                Credential(driver="api_key", access_token=answers.api_key),
-            )
-        _ = model_store.replace_from_llm_config(candidate_llm)
+        credentials = (
+            {answers.auth_id: credential_store.get(answers.auth_id)}
+            if answers.provider == "codex"
+            else {
+                answers.auth_id: Credential(
+                    driver="api_key",
+                    access_token=answers.api_key,
+                )
+            }
+        )
+        _ = model_store.replace_from_llm_config(
+            candidate_llm,
+            credentials=credentials,
+        )
         _atomic_write(config_path, _strip_model_config(original), 0o600)
         _ = Config.load(
             config_path,
             workspace=workspace,
-            credential_store=credential_store,
         )
         if config_snapshot is None:
             from bootstrap.init_workspace import init_workspace
@@ -875,8 +913,10 @@ def _apply_candidate(
             on_applied()
     except BaseException:
         _restore_optional_file(config_path, config_snapshot, 0o600)
-        _restore_optional_file(model_store.path, registry_snapshot, 0o600)
-        _restore_optional_file(credential_store.path, auth_snapshot, 0o600)
+        if registry_existed:
+            model_store.restore_from(registry_backup)
+        else:
+            _remove_sqlite_database(model_store.path)
         if (
             on_applied is not None
             and restart_attempted
@@ -923,7 +963,7 @@ def _saved_api_key(
         runtime_id = f"{provider.strip().lower().replace('-', '_')}_main"
         runtime = snapshot.runtimes.get(runtime_id)
         if runtime is not None and runtime.auth_id:
-            return store.api_key(runtime.auth_id)
+            return CredentialStore.for_workspace(workspace).api_key(runtime.auth_id)
     if not config_path.exists():
         return ""
     raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
@@ -944,6 +984,16 @@ def _restore_optional_file(path: Path, payload: bytes | None, mode: int) -> None
             path.unlink()
         return
     _atomic_write_bytes(path, payload, mode)
+
+
+def _remove_sqlite_database(path: Path) -> None:
+    for candidate in (
+        path,
+        path.with_name(f"{path.name}-wal"),
+        path.with_name(f"{path.name}-shm"),
+    ):
+        if candidate.exists():
+            candidate.unlink()
 
 
 def _local_opencode_key(*, required: bool) -> str | None:

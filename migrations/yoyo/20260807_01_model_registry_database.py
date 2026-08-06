@@ -58,29 +58,29 @@ def migrate_model_registry(_connection: object) -> None:
         if not isinstance(runtimes, Mapping) or not runtimes:
             return
 
-        # 2. Move inline API keys to the credential owner before importing rows.
+        # 2. Copy every referenced credential into its Provider connection row.
         credentials: dict[str, Credential] = {}
+        legacy_metadata = auth_store.metadata()
         for runtime_id, raw_runtime in runtimes.items():
             if not isinstance(runtime_id, str) or not isinstance(raw_runtime, Mapping):
                 raise ValueError("llm.runtimes 必须由 named table 组成")
             api_key = str(raw_runtime.get("api_key") or "").strip()
-            if not api_key:
-                continue
             auth_id = str(raw_runtime.get("auth") or "").strip() or (
                 f"model_{runtime_id}"
             )
-            credentials[auth_id] = Credential(
-                driver="api_key",
-                access_token=api_key,
-                updated_at=datetime.now(timezone.utc).isoformat(),
-            )
-            raw_runtime["auth"] = auth_id
-            raw_runtime.pop("api_key", None)
-        if credentials:
-            auth_store.put_many(credentials)
+            if api_key:
+                credentials[auth_id] = Credential(
+                    driver="api_key",
+                    access_token=api_key,
+                    updated_at=datetime.now(timezone.utc).isoformat(),
+                )
+                raw_runtime["auth"] = auth_id
+                raw_runtime.pop("api_key", None)
+            elif auth_id in legacy_metadata:
+                credentials[auth_id] = auth_store.get(auth_id)
 
         # 3. Publish the normalized database revision, then remove only its TOML source.
-        _ = store.replace_from_llm_config(raw_llm)
+        _ = store.replace_from_llm_config(raw_llm, credentials=credentials)
         for key in ("main", "fast", "agent", "vl", "runtimes"):
             raw_llm.pop(key, None)
         raw_llm["registry"] = "workspace"
@@ -118,8 +118,14 @@ def _backup_inputs(
         if not path.is_file():
             originals[name] = None
             continue
-        target = backup_dir / f"{name}.before"
-        shutil.copy2(path, target)
+        target = backup_dir / (
+            "registry.before.sqlite3" if name == "registry" else f"{name}.before"
+        )
+        if name == "registry":
+            ModelRegistryStore(path).backup_to(target)
+        else:
+            shutil.copy2(path, target)
+            os.chmod(target, 0o600)
         originals[name] = target
     return originals
 
@@ -138,10 +144,15 @@ def _restore_inputs(
     ):
         backup = originals[name]
         if backup is None:
-            if path.exists():
+            if name == "registry":
+                _remove_sqlite_database(path)
+            elif path.exists():
                 path.unlink()
             continue
-        _atomic_write(path, backup.read_bytes())
+        if name == "registry":
+            ModelRegistryStore(path).restore_from(backup)
+        else:
+            _atomic_write(path, backup.read_bytes())
 
 
 def _atomic_write(path: Path, payload: bytes) -> None:
@@ -158,6 +169,16 @@ def _atomic_write(path: Path, payload: bytes) -> None:
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def _remove_sqlite_database(path: Path) -> None:
+    for candidate in (
+        path,
+        path.with_name(f"{path.name}-wal"),
+        path.with_name(f"{path.name}-shm"),
+    ):
+        if candidate.exists():
+            candidate.unlink()
 
 
 steps = [step(migrate_model_registry)]

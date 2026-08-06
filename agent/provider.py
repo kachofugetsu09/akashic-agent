@@ -680,6 +680,7 @@ class LLMProvider:
         runtime: ModelRuntimeConfig,
         *,
         system_prompt: str,
+        credential_store: CredentialStore | None = None,
         extra_body: dict[str, object] | None = None,
         read_timeout_s: float = 90.0,
         force_disable_thinking: bool = False,
@@ -698,6 +699,7 @@ class LLMProvider:
             provider_name=runtime.provider,
             usage_provider_name=runtime.catalog_provider_id or runtime.provider,
             auth_id=runtime.auth,
+            credential_store=credential_store,
             runtime_id=runtime.runtime_id,
             context_window=runtime.context_window,
             effective_context_percent=runtime.effective_context_percent,
@@ -720,6 +722,7 @@ class LLMProvider:
         provider_name: str = "",
         usage_provider_name: str = "",
         auth_id: str = "",
+        credential_store: CredentialStore | None = None,
         runtime_id: str = "main",
         context_window: int = 0,
         effective_context_percent: float = 0.9,
@@ -747,7 +750,7 @@ class LLMProvider:
             )
         self._backend: ModelBackend
         if provider_name.lower() == "codex":
-            auth = CodexAuthDriver(CredentialStore(), auth_id)
+            auth = CodexAuthDriver(credential_store or CredentialStore(), auth_id)
             self._backend = CodexResponsesTransport(
                 auth,
                 runtime_id=runtime_id,

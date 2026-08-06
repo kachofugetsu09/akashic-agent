@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from agent.migrations.runner import MigrationRunner
-from agent.model_runtime.auth.store import CredentialStore
+from agent.model_runtime.auth.store import Credential, CredentialStore
 from agent.model_runtime.store import ModelRegistryStore
 from bootstrap.workspace_lock import WorkspaceInstanceLock
 
@@ -278,7 +278,100 @@ system_prompt = "test"
     _ = _runner(root).run()
 
     assert "secret-value" not in config.read_text(encoding="utf-8")
-    assert CredentialStore().api_key("model_deepseek_main") == "secret-value"
+    assert (
+        CredentialStore.for_workspace(root / "workspace").api_key(
+            "model_deepseek_main"
+        )
+        == "secret-value"
+    )
+    assert not CredentialStore().path.exists()
     snapshot = ModelRegistryStore.for_workspace(root / "workspace").read_snapshot()
     assert snapshot is not None
     assert snapshot.runtimes["deepseek_main"].auth_id == "model_deepseek_main"
+
+
+def test_model_registry_migration_copies_referenced_legacy_credential(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    legacy = CredentialStore()
+    legacy.put(
+        "deepseek_default",
+        Credential(driver="api_key", access_token="legacy-secret"),
+    )
+    root = tmp_path / "state"
+    root.mkdir()
+    (root / "config.toml").write_text(
+        """
+[llm]
+main = "deepseek_main"
+
+[llm.runtimes.deepseek_main]
+provider = "deepseek"
+model = "deepseek-chat"
+auth = "deepseek_default"
+base_url = "https://api.deepseek.com/v1"
+input_modalities = ["text"]
+""",
+        encoding="utf-8",
+    )
+
+    _ = _runner(root).run()
+
+    assert (
+        CredentialStore.for_workspace(root / "workspace").api_key(
+            "deepseek_default"
+        )
+        == "legacy-secret"
+    )
+    assert legacy.api_key("deepseek_default") == "legacy-secret"
+
+
+def test_model_registry_migration_failure_restores_inputs_and_retries(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state"
+    root.mkdir()
+    config = root / "config.toml"
+    invalid = b"""
+[llm]
+main = "missing"
+
+[llm.runtimes.broken]
+provider = "deepseek"
+model = "deepseek-chat"
+api_key = "secret"
+"""
+    config.write_bytes(invalid)
+    runner = _runner(root)
+
+    with pytest.raises(RuntimeError, match="必须引用已配置 runtime"):
+        runner.run()
+
+    assert config.read_bytes() == invalid
+    assert not (root / "workspace/model-registry.sqlite3").exists()
+    assert _applied_ids(runner.ledger_path) == [_ORIGIN_ID, _AKASHA_V9_ID]
+
+    config.write_text(
+        """
+[llm]
+main = "deepseek_main"
+
+[llm.runtimes.deepseek_main]
+provider = "deepseek"
+model = "deepseek-chat"
+api_key = "secret"
+""",
+        encoding="utf-8",
+    )
+    outcome = runner.run()
+
+    assert outcome.migrations == (_MODEL_REGISTRY_ID,)
+    assert (
+        CredentialStore.for_workspace(root / "workspace").api_key(
+            "model_deepseek_main"
+        )
+        == "secret"
+    )

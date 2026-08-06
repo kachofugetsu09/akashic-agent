@@ -2,6 +2,7 @@
 
 - 状态：accepted
 - 日期：2026-08-06
+- 部分勘误：[0026](0026-model-credentials-live-with-workspace-connections.md) 将模型凭据从全局 JSON 迁入 workspace connection
 - 关联条款：RUN-008～RUN-011、ONB-001、CTX-001、PLG-003
 
 ## 背景
@@ -12,9 +13,9 @@
 
 ## 决定
 
-workspace 新增 `model-registry.sqlite3`，以 connection、model 和 role binding 三层保存模型配置；`config.toml` 只保留进程、渠道、记忆和其他静态配置。凭据继续由 CredentialStore 保存，模型库只引用 credential id。
+workspace 新增 `model-registry.sqlite3`，以 connection、model 和 role binding 三层保存模型配置；`config.toml` 只保留进程、渠道、记忆和其他静态配置。根据 0026 的勘误，模型 CredentialStore 也以同一 workspace 数据库为 backend，connection 行拥有 credential payload。
 
-Core 的 `ModelRegistry` 在每个新执行单元开始时读取模型库最新 revision，把 `default`、`fast`、`agent` 和 `vision` 整组绑定编译为不可变 generation，再租用这一代。passive ReAct、proactive ReAct、schedule SOFT、Memory Optimizer、consolidation、plugin job 和回复后记忆任务各自是完整执行单元。执行期间出现新 revision 不改变当前租约；没有外层执行单元的单次模型调用在调用前读取最新 revision。旧代在 lease 归零后释放。
+Core 的 `ModelRegistry` 在每个新执行单元开始时读取模型库最新 revision，把 `default`、`fast`、`agent` 和 `vision` 整组绑定编译为不可变 generation，再租用这一代。passive ReAct、proactive ReAct、schedule SOFT、Memory Optimizer、consolidation、plugin job 和回复后记忆任务各自是完整执行单元。执行期间出现新 revision 不改变当前租约；没有外层执行单元的单次模型调用在调用前读取最新 revision。旧代在 lease 归零后释放。模型凭据的最终 owner 由 0026 勘误为同一 workspace connection。
 
 Supervisor 继续拥有进程和 boot 代际，但不拥有模型 generation。新增连接时可以通过独立 reload 信号要求 Gateway 立即验证并发布；普通 role binding 修改由下一执行直接读取数据库 revision。两条路径都不触发 Gateway 退出、全局 quiesce 或 Guardian 换代。首次没有配置时 Supervisor 仍拥有 bootstrap 写入，合法配置产生后再启动第一代 Gateway。
 
@@ -34,7 +35,7 @@ Supervisor 同时在整个生命周期内独占 `2236` Web Shell。根路径 `/`
 
 - `model-registry.sqlite3`：增加 connection、model、role binding 和单调 revision。设置事务原位更新当前绑定或增加来源/模型；删除必须是独立操作，且受外键和 session 引用检查约束。
 - `config.toml`：迁移前保留具名备份，迁移后删除动态模型表并写入 `registry = "workspace"` 标记；后续模型切换不得再改写该文件。
-- CredentialStore：新 API Key 通过既有 credential owner 增加或更新；迁移把旧 inline key 移入凭据 owner，并在成功校验后从 TOML 删除。
+- workspace 模型 CredentialStore：新 API Key 随 connection 增加或更新；迁移把旧 inline key 或被引用的旧 JSON credential 复制入数据库，并在成功校验后从 TOML 删除动态模型配置。
 - `sessions.metadata`：允许原位更新版本化 `model_selection`（model ref + reasoning effort）；清除只删除这一键，不影响消息正文。旧 `model_runtime_override` 只读兼容至下一次显式选择。
 - turn 元数据与 usage：随新 Turn 追加实际 runtime/generation 和规范化 usage；既有 Turn 不回填。
 - `sessions.db/messages`：保持只追加；模型切换、能力变化和上下文缩小都不得 UPDATE 或 DELETE。

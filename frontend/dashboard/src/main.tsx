@@ -156,6 +156,12 @@ function useLatestReader<T>(value: T): () => T {
 }
 
 type ShellView = "chat" | "dashboard" | "runtime" | "models";
+type ShellStatus = "needs_setup" | "starting" | "ready";
+
+interface ShellState {
+  status: ShellStatus;
+  chatReady: boolean;
+}
 
 function initialShellView(): ShellView {
   const value = window.location.hash.slice(1);
@@ -165,6 +171,7 @@ function initialShellView(): ShellView {
 function App(): React.ReactElement {
   const theme = useTheme();
   const [shellView, setShellView] = useState<ShellView>(initialShellView);
+  const [shellStatus, setShellStatus] = useState<ShellStatus>("starting");
   const serviceOrigin = window.location.origin;
   const chatFrameRef = useRef<HTMLIFrameElement>(null);
   const runtimeFrameRef = useRef<HTMLIFrameElement>(null);
@@ -182,6 +189,25 @@ function App(): React.ReactElement {
     syncFrameTheme(runtimeFrameRef.current);
     syncFrameTheme(settingsFrameRef.current);
   }, [syncFrameTheme]);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = async (): Promise<void> => {
+      try {
+        const state = await api<ShellState>("/api/shell/state");
+        if (active) setShellStatus(state.chatReady ? "ready" : state.status);
+      } catch (error) {
+        console.error("[dashboard] shell readiness failed", error);
+        if (active) setShellStatus("starting");
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(refresh, 1_500);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const openView = (next: ShellView): void => {
     setShellView(next);
@@ -214,18 +240,30 @@ function App(): React.ReactElement {
 
       <div className="shell-view-stack">
         <section className={`shell-view dashboard-shell-view ${shellView === "dashboard" ? "is-active" : ""}`} aria-hidden={shellView !== "dashboard"}>
-          <DashboardWorkspace />
+          {shellStatus === "ready" ? <DashboardWorkspace /> : <RuntimeUnavailable status={shellStatus} />}
         </section>
         <section className={`shell-view ${shellView === "chat" ? "is-active" : ""}`} aria-hidden={shellView !== "chat"}>
           <iframe ref={chatFrameRef} title="Akashic 聊天" src="/chat?embedded=1" onLoad={() => syncFrameTheme(chatFrameRef.current)} />
         </section>
         <section className={`shell-view ${shellView === "runtime" ? "is-active" : ""}`} aria-hidden={shellView !== "runtime"}>
-          <iframe ref={runtimeFrameRef} title="知识与运行" src="/chat?embedded=1&surface=runtime" onLoad={() => syncFrameTheme(runtimeFrameRef.current)} />
+          {shellStatus === "ready"
+            ? <iframe ref={runtimeFrameRef} title="知识与运行" src="/chat?embedded=1&surface=runtime" onLoad={() => syncFrameTheme(runtimeFrameRef.current)} />
+            : <RuntimeUnavailable status={shellStatus} />}
         </section>
         <section className={`shell-view ${shellView === "models" ? "is-active" : ""}`} aria-hidden={shellView !== "models"}>
           <iframe ref={settingsFrameRef} title="模型配置" src="/settings?embedded=1" onLoad={() => syncFrameTheme(settingsFrameRef.current)} />
         </section>
       </div>
+    </div>
+  );
+}
+
+function RuntimeUnavailable({ status }: { status: Exclude<ShellStatus, "ready"> }): React.ReactElement {
+  return (
+    <div className="runtime-unavailable" role="status">
+      <span>{status === "needs_setup" ? "首次使用" : "运行时启动中"}</span>
+      <strong>{status === "needs_setup" ? "连接模型后显示这里" : "正在恢复工作区"}</strong>
+      <p>{status === "needs_setup" ? "前往“模型”完成登录或添加 API Key。" : "聊天入口保持可用，准备完成后会自动恢复。"}</p>
     </div>
   );
 }

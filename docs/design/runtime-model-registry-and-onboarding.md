@@ -1,8 +1,8 @@
 # 运行时模型注册表与 Onboarding
 
-- 状态：implemented and verified；定向测试、正式 UI 浏览器验证、Observe 隔离实测与 Change Gate 已通过
+- 状态：implemented and verified；0025、0026、思考强度二级菜单与真实 Provider GUI 链路已对账
 - 日期：2026-08-06
-- 决策：[0025](../decisions/0025-runtime-models-use-generation-leases.md)
+- 决策：[0025](../decisions/0025-runtime-models-use-generation-leases.md)、[0026](../decisions/0026-model-credentials-live-with-workspace-connections.md)
 - 需求：RUN-008～RUN-011、ONB-001、CTX-001
 
 ## 1. 目标与当前差距
@@ -68,7 +68,7 @@ Supervisor 在启动任何 Gateway 之前先取得 `2236`，并在整个进程�
 
 1. 设置服务读取模型库 revision 并拒绝陈旧写入。
 2. 使用临时候选凭据执行真实 model probe。
-3. 创建 operation backup，用一个 SQLite 事务提交 connection/model/role 和新 revision；secret 只写 CredentialStore。
+3. 创建 operation backup，用一个 SQLite 事务提交含 credential payload 的 connection、model、role 和新 revision；数据库与备份均按 secret 使用 `0600`。
 4. 新执行开始时读取新 revision、构造完整 candidate generation 并原子 publish。
 5. candidate 构建失败时保留 current，并让本次执行明确失败；修复后的下一执行再次读取数据库。
 6. 首次 onboarding 保存后，设置服务仍通知 Supervisor 启动第一代 Gateway；普通 role binding 修改不触发进程重启。
@@ -106,7 +106,7 @@ Extractor 找不到 provider、flavor 或字段时只捕获明确的 `LookupErro
 
 设置页按具名 Provider connection 展示多套账号或 API Key，并提供 Codex、OpenCode、DeepSeek、OpenRouter 模板。API 连接先填写连接名称、Provider ID、Base URL 和 API Key，再通过 provider `/models`、Codex/OpenCode 权威目录发现 model；目录不可用时才手工填写 Model Name。模型识别后展示 effort 等能力，unknown 字段保持未知。
 
-Chat composer 上方只保留一个等宽向上展开胶囊，显示“model：来源”并按 Provider connection 分组滚动。切换在发送下一条消息时随 inbound frame 提交；服务端校验后更新 `sessions.metadata.model_selection = {schema_version, model_ref, reasoning_effort}`。当前 active Turn 不受影响。重新打开 session 时从服务端读取选择；选择“跟随默认”删除该对象。旧 `model_runtime_override` 字符串继续只读兼容，并在下一次显式选择时转成新结构。
+Chat composer 上方只保留一个等宽向上展开胶囊，显示“model：来源”并按 Provider connection 分组滚动。模型列表底部固定一行“思考强度”；点击后在同一宽度和高度内切换到当前模型支持的 effort 二级列表，返回按钮恢复模型列表。选择模型或 effort 时面板保持展开，点击外部或 Escape 收起；不兼容的旧 effort 按“模型默认 → medium → 第一项”选择可用值。切换在发送下一条消息时随 inbound frame 提交；服务端校验后更新 `sessions.metadata.model_selection = {schema_version, model_ref, reasoning_effort}`。当前 active Turn 不受影响。重新打开 session 时从服务端读取选择；选择“跟随默认”删除该对象。旧 `model_runtime_override` 字符串继续只读兼容，并在下一次显式选择时转成新结构。
 
 Web 导航与路由固定为：
 
@@ -142,7 +142,7 @@ API Key 是 write-only：读取状态只返回掩码和凭据状态，空值保�
 
 独立预览入口为 `/chat?preview=model-experience`，只使用演示数据，不调用设置 API、不保存或发送凭据。五版都使用 brief spring 入场、选择反馈和 `prefers-reduced-motion`；高频切换不使用持续或循环动画。
 
-05 修订版删除 composer 内部的第二个模型胶囊。唯一胶囊固定在输入框上方：桌面高 44px、宽 320～420px；展开前后宽度完全一致，只把高度增加到约 420px，稳定显示 5～6 个模型行。移动端宽度与输入框一致，展开高度不超过约 `62vh`。展开层的下沿和左右边界保持同一锚点，滚动只发生在模型列表，使用 sticky Provider 标题和 overscroll containment；点击模型后更新胶囊并收回，Escape 只关闭展开层，当前 Turn 语义不变。
+05 修订版删除 composer 内部的第二个模型胶囊。唯一胶囊固定在输入框上方：桌面高 44px、宽 320～420px；展开前后宽度完全一致，只把高度增加到约 420px，稳定显示 5～6 个模型行。移动端宽度与输入框一致，展开高度不超过约 `62vh`。展开层的下沿和左右边界保持同一锚点，滚动只发生在模型列表，使用 sticky Provider 标题和 overscroll containment；点击模型或 effort 后更新胶囊但保持展开，点击外部或 Escape 才关闭，当前 Turn 语义不变。
 
 Provider/模型 Logo 候选使用 MIT 的 `@lobehub/icons`，已覆盖 Codex、DeepSeek、OpenAI、OpenCode、OpenRouter 等。生产构建应固定 npm 版本并本地打包，不依赖 CDN；无法识别的来源回退到稳定首字母标识。Memoh 仓库与其内置图标整体是 AGPL-3.0，本任务不复制其 SVG。
 
@@ -151,7 +151,7 @@ Provider/模型 Logo 候选使用 MIT 的 `@lobehub/icons`，已覆盖 Codex、D
 | 对象 | 增加 | 原位更新 | 逻辑失效 | 物理减少 | 恢复证据 |
 |---|---|---|---|---|---|
 | model connection/model/role | 用户保存新来源或模型 | 修改来源、能力快照或角色绑定并增加 revision | 旧 revision 被新 revision supersede | 仅独立删除操作；外键和引用存在时拒绝 | operation backup + SQLite integrity check |
-| CredentialStore | 新登录或新 API Key | 同 auth id 刷新 token/key | 旧 credential generation supersede | 本任务不删除 | credential backup + auth probe |
+| model connection credential | 新登录或新 API Key 随 connection 增加 | 同 auth id 原位刷新 token/key；Codex refresh 不增加模型 revision | 新 payload supersede 旧 payload | 只随以后独立来源删除；本任务不删除 | SQLite operation backup + auth probe + `0600` mode |
 | session model selection | 首次固定 model ref/effort | 切换 model 或 effort | 清除 selection 后跟随 default | 只删除 metadata 单键；消息不变 | sessions.db 完整消息快照 |
 | turn binding/usage | 新 Turn 提交时追加 | terminal metadata 按既有协议更新 | 后续 Turn 使用新代 | 不自动删除 | turn/message join + Observe DB |
 | messages | 新 Turn 原子 INSERT | 不允许 | 不适用 | 仅用户撤销/删除会话 | SQLite backup + full snapshot |
@@ -171,7 +171,7 @@ Provider/模型 Logo 候选使用 MIT 的 `@lobehub/icons`，已覆盖 Codex、D
 - 一次 Turn 多次请求且部分无 usage：request_count 全量，covered_request_count 只计已覆盖请求，总 coverage partial。
 - Session override 指向后来删除的 runtime：设置删除必须先拒绝仍被引用的 runtime；本任务不做 cascade。
 - 会话选择的 effort 不在模型支持集合：发送边界明确失败，不降级到默认 effort；fast/vision 等内部角色不继承会话 effort。
-- Codex token 刷新或 OpenCode auth 文件变化：下一个 generation/请求从各自 credential owner 读取；不把 token 内容写入模型目录或 session。
+- Codex token 刷新原位更新 workspace connection；OpenCode 本机登录只作为 onboarding 导入源。迁移后的模型请求只从 workspace 数据库读取，不把 token 内容写入 session、设置状态或 Observe。
 - 首次设置耗时超过启动脚本旧等待窗口：Supervisor 保持存活并明确输出设置 URL。
 - 无 `config.toml`：2236 返回 Chat 壳层和 `needs_setup`，不创建假 session、不连接不存在的 WebSocket。
 - config 已写但 Gateway 仍在启动：Chat 显示“正在启动”，保留设置入口并按有界间隔探测 readiness。
@@ -199,3 +199,15 @@ Provider/模型 Logo 候选使用 MIT 的 `@lobehub/icons`，已覆盖 Codex、D
 - 浏览器从所有来源中把会话固定到 gate-a 后实际发送成功；模型网关收到 gate-a。刷新 Chat、重新进入原会话后，服务端 `sessions.metadata.model_selection` 和胶囊都恢复 gate-a；新会话仍跟随当前 default gate-b。
 - 随机端口首次暴露 settings iframe 的 `frame-ancestors` 硬编码问题；CSP 已改为同源 `'self'`，保留 `5173` 本地开发壳层，随机端口 Dashboard 复验通过。
 - Change Gate 通过，报告目录为 `docker/debug/reports/change-gate/20260807-015529-0c00821a`。
+
+### 10.2 SQLite 凭据与真实 GUI 回归
+
+2026-08-07 另用全新容器、一次性 HOME/workspace 和随机 host 端口 `22368` 回归本轮 0026 与 UI；容器内仍只监听 `2236`，正式 workspace、正式插件 cache 和正式 `2236` 均未写入。API Key 取自维护者明确授权的源码配置，只经浏览器表单提交；Codex 复用现有登录凭据作为隔离测试夹具，模型发现、保存、选择和对话均从 GUI 完成。
+
+- 无 `config.toml` 时根路径直接显示统一 Chat 空状态和“连接模型”，不会先挂载未就绪的 Dashboard runtime iframe，也不再弹出 503 错误框。
+- GUI 保存一个 OpenCode Go connection 下的 `deepseek-v4-flash`、`deepseek-v4-pro`，以及 DeepSeek API 的 `deepseek-v4-flash`；容器没有 `opencode` CLI 时明确记录目录降级，并从固定 LiteLLM 本地注册表恢复三个模型支持的 `low/medium/high`，不猜测远端状态。
+- Codex GUI 目录发现 `gpt-5.6-luna` 及其 `low/medium/high/xhigh/max`，保存后 API state 只返回 `codexConfigured=true`，不返回 token。
+- 同一 Web session 依次从胶囊选择并完成四个真实 Turn：OpenCode Flash/high、OpenCode Pro/low、DeepSeek/medium、Codex Luna/high。胶囊 trigger 为 `412px`、展开层为 `418px`（3px shell inset），模型和 effort 选择后保持展开，Escape 收起并恢复焦点；重新打开该 session 后恢复 Luna/high。
+- SessionDB 四个 terminal Turn 均为 `coverage=exact`：input 分别为 `12452/12388/12814/11999`，cache hit 为 `4992/4992/4992/0`，output 为 `80/32/11/21`，reasoning output 为 `70/23/0/8`。DeepSeek 的独立 reasoning token 为 `0`，表示该响应没有返回可归一化的独立字段，不影响 `medium` effort 已随 inbound metadata 提交。
+- Observe 固定安装并晋升 commit `4d85b9dc64ef0d8d96c5a635586ca17dd94b59cd`；从该 stable snapshot 冷启动后记录同四个 session/turn，output、prompt 与 cache hit 和 SessionDB 完全一致。聚合为 `turn_count=4`、`tracked_turn_count=4`、`prompt_tokens=49653`、`hit_tokens=14976`。
+- `model-registry.sqlite3` 与 credential lock 均为 `0600`；三类 connection 的 secret 只在 SQLite JSON payload 中，隔离 `config.toml` 不含 API Key、token、Provider URL 或模型表。

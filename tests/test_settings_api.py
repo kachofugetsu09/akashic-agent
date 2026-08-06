@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sqlite3
 import tomllib
+from contextlib import closing
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -53,6 +55,38 @@ def test_state_never_returns_saved_api_key(tmp_path: Path) -> None:
         "configured": True,
         "source": "inline",
     }
+
+
+def test_database_settings_state_redacts_credential_payload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_config(), encoding="utf-8")
+
+    async def validate(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr("bootstrap.settings_api._validate_live_candidate", validate)
+    app = create_settings_app(config_path, tmp_path / "workspace")
+    client = TestClient(app)
+    applied = client.post(
+        "/api/settings/apply",
+        headers={"Origin": "http://testserver", "X-Akasic-CSRF": "1"},
+        json={
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "api_key": "database-secret",
+            "base_url": "https://api.deepseek.com/v1",
+        },
+    )
+
+    assert applied.status_code == 200, applied.text
+    response = client.get("/api/settings/state")
+    assert response.status_code == 200
+    assert "database-secret" not in response.text
+    assert "auth_payload" not in response.text
+    assert response.json()["runtimes"][0]["credential"]["configured"] is True
 
 
 def test_settings_round_trip_preserves_explicit_legacy_output_limit(
@@ -159,7 +193,10 @@ def test_apply_writes_credential_and_preserves_other_models(
     assert snapshot.roles["default"].runtime_id == "opencode_go_main"
     runtime = snapshot.runtimes["opencode_go_main"]
     assert runtime.max_output_tokens == 0
-    assert store.api_key(runtime.auth_id) == "new-secret"
+    assert (
+        CredentialStore.for_workspace(tmp_path / "workspace").api_key(runtime.auth_id)
+        == "new-secret"
+    )
     assert snapshot.runtimes["deepseek_main"].model == "deepseek-chat"
     assert "new-secret" not in config_path.read_text(encoding="utf-8")
     assert config_path.stat().st_mode & 0o777 == 0o600
@@ -342,6 +379,78 @@ def test_codex_apply_uses_authoritative_catalog_without_advanced_fields(
     assert runtime.context_window_source == "provider_catalog"
     assert runtime.max_output_tokens_source == "provider_catalog"
     assert runtime.input_modalities_source == "provider_catalog"
+    assert (
+        CredentialStore.for_workspace(tmp_path / "workspace").get("codex_default")
+        == Credential(driver="codex", access_token="token")
+    )
+
+
+def test_codex_apply_reuses_login_connection_when_ui_supplies_source_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_config(), encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    store = CredentialStore.for_workspace(workspace)
+    store.provision_connection(
+        "codex_default",
+        name="Codex",
+        provider="codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+    )
+    store.put("codex_default", Credential(driver="codex", access_token="token"))
+
+    class FakeModel:
+        slug = "o4-mini"
+        input_modalities_known = True
+        capabilities = type(
+            "Caps",
+            (),
+            {
+                "context_window": 200_000,
+                "max_output_tokens": 100_000,
+                "input_modalities": ("text", "image"),
+                "supported_reasoning_efforts": ("low", "medium", "high"),
+                "supports_parallel_tool_calls": True,
+            },
+        )()
+
+    class FakeCatalog:
+        def __init__(self, _auth) -> None:
+            pass
+
+        async def list_models(self):
+            return [FakeModel()]
+
+    async def validate(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr("bootstrap.settings_api.CodexModelCatalog", FakeCatalog)
+    monkeypatch.setattr("bootstrap.settings_api._validate_live_candidate", validate)
+    app = create_settings_app(config_path, workspace)
+    response = TestClient(app).post(
+        "/api/settings/apply",
+        headers={"Origin": "http://testserver", "X-Akasic-CSRF": "1"},
+        json={
+            "provider": "codex",
+            "model": "o4-mini",
+            "credential_id": "codex_default",
+            "source_id": "ui-generated-source",
+            "source_name": "Codex",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    with closing(sqlite3.connect(workspace / "model-registry.sqlite3")) as connection:
+        rows = connection.execute(
+            "SELECT id FROM model_connections WHERE auth_id = 'codex_default'"
+        ).fetchall()
+    assert rows == [("codex_default",)]
+    snapshot = ModelRegistryStore.for_workspace(workspace).read_snapshot()
+    assert snapshot is not None
+    runtime = next(item for item in snapshot.runtimes.values() if item.provider == "codex")
+    assert runtime.source_id == "codex_default"
 
 
 def test_apply_rejects_stale_settings_writer(tmp_path: Path) -> None:
@@ -518,8 +627,9 @@ def test_two_named_sources_of_same_provider_keep_separate_credentials(
         if runtime.source_name in {"DeepSeek 官方", "公司网关"}
     }
     assert set(named) == {"DeepSeek 官方", "公司网关"}
-    assert credentials.api_key(named["DeepSeek 官方"].auth_id) == "official-secret"
-    assert credentials.api_key(named["公司网关"].auth_id) == "proxy-secret"
+    model_credentials = CredentialStore.for_workspace(workspace)
+    assert model_credentials.api_key(named["DeepSeek 官方"].auth_id) == "official-secret"
+    assert model_credentials.api_key(named["公司网关"].auth_id) == "proxy-secret"
 
 
 def test_codex_models_expose_reasoning_effort_capabilities(

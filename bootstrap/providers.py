@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agent.config_models import Config
+from agent.model_runtime.auth.store import CredentialStore
 from agent.model_runtime.fallback import ResilientLightProvider
 from agent.model_runtime.registry import (
     ModelGeneration,
@@ -24,6 +25,7 @@ def _build_model_generation(config: Config, generation_id: int) -> ModelGenerati
 
     # 1. Reuse the established role builders and their fallback semantics.
     default_provider, fast_provider, agent_provider = build_providers(config)
+    credential_store = CredentialStore.for_workspace(config.workspace_path)
     runtime_providers: dict[str, LLMProvider] = {config.runtime_id: default_provider}
     for runtime_id, runtime in config.model_runtimes.items():
         if runtime_id in runtime_providers:
@@ -31,6 +33,7 @@ def _build_model_generation(config: Config, generation_id: int) -> ModelGenerati
         runtime_providers[runtime_id] = LLMProvider.from_runtime(
             runtime,
             system_prompt=config.system_prompt,
+            credential_store=credential_store,
             read_timeout_s=_MAIN_NETWORK_READ_TIMEOUT_S,
             payload_snapshot_enabled=config.dev_mode,
         )
@@ -62,6 +65,7 @@ def build_providers(
     config: Config,
 ) -> tuple[LLMProvider, LLMProvider | None, LLMProvider | None]:
     payload_snapshot_enabled = config.dev_mode
+    credential_store = CredentialStore.for_workspace(config.workspace_path)
     main_extra = _sanitize_extra_body(
         base_url=config.base_url,
         extra_body=config.extra_body,
@@ -71,6 +75,7 @@ def build_providers(
         LLMProvider.from_runtime(
             main_runtime,
             system_prompt=config.system_prompt,
+            credential_store=credential_store,
             extra_body=main_extra,
             read_timeout_s=_MAIN_NETWORK_READ_TIMEOUT_S,
             payload_snapshot_enabled=payload_snapshot_enabled,
@@ -194,6 +199,7 @@ def _build_named_role_provider(
     return LLMProvider.from_runtime(
         runtime,
         system_prompt=system_prompt,
+        credential_store=CredentialStore.for_workspace(config.workspace_path),
         read_timeout_s=read_timeout_s,
         force_disable_thinking=force_disable_thinking,
         payload_snapshot_enabled=config.dev_mode,

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Mapping
+
+from agent.model_runtime.auth.store import Credential, CredentialStore
 
 
 MODEL_REGISTRY_FILENAME = "model-registry.sqlite3"
@@ -139,12 +142,39 @@ class ModelRegistryStore:
 
         # 1. Schema creation belongs to migration/onboarding owners.
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._create_database_file()
         with self._connect() as connection:
             connection.executescript(_SCHEMA)
             connection.execute(
                 "INSERT OR IGNORE INTO model_registry_meta(singleton, revision) VALUES (1, 0)"
             )
             connection.commit()
+
+    def backup_to(self, target: Path) -> None:
+        """Publish a verified SQLite backup with private permissions."""
+
+        if not self.path.is_file():
+            raise FileNotFoundError(self.path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            raise FileExistsError(target)
+        target.touch(mode=0o600, exist_ok=False)
+        with self._connect(read_only=True) as source:
+            with closing(sqlite3.connect(target)) as destination:
+                source.backup(destination)
+        os.chmod(target, 0o600)
+        ModelRegistryStore(target).integrity_check()
+
+    def restore_from(self, source: Path) -> None:
+        """Restore a verified backup into the canonical database path."""
+
+        ModelRegistryStore(source).integrity_check()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._create_database_file()
+        with closing(sqlite3.connect(source)) as backup:
+            with closing(sqlite3.connect(self.path)) as destination:
+                backup.backup(destination)
+        self._secure_database_files()
 
     def revision(self) -> int:
         """Return the current committed model revision."""
@@ -213,6 +243,7 @@ class ModelRegistryStore:
         llm: Mapping[str, object],
         *,
         source_names: Mapping[str, str] | None = None,
+        credentials: Mapping[str, Credential] | None = None,
     ) -> int:
         """Import validated named runtimes as one new database revision."""
 
@@ -247,14 +278,38 @@ class ModelRegistryStore:
         self.initialize()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            existing_credentials: dict[str, tuple[str, str]] = {}
+            for auth_id, auth_kind, auth_payload in connection.execute(
+                """
+                SELECT auth_id, auth_kind, auth_payload
+                FROM model_connections
+                WHERE auth_id != '' AND auth_kind != '' AND auth_payload != ''
+                """
+            ).fetchall():
+                credential_id = str(auth_id)
+                encoded = (str(auth_kind), str(auth_payload))
+                previous = existing_credentials.setdefault(credential_id, encoded)
+                if previous != encoded:
+                    raise ValueError(f"模型凭据存在冲突: {credential_id}")
+            supplied_credentials = {
+                credential_id: CredentialStore.encode(credential)
+                for credential_id, credential in (credentials or {}).items()
+            }
             connection.execute("DELETE FROM model_role_bindings")
             connection.execute("DELETE FROM model_definitions")
-            connection.execute("DELETE FROM model_connections")
             inserted_sources: set[str] = set()
             for source, model in normalized:
                 source_id = str(source[0])
                 if source_id not in inserted_sources:
-                    connection.execute(_INSERT_CONNECTION, source)
+                    auth_id = str(source[4])
+                    auth_kind, auth_payload = supplied_credentials.get(
+                        auth_id,
+                        existing_credentials.get(auth_id, ("", "")),
+                    )
+                    connection.execute(
+                        _INSERT_CONNECTION,
+                        (*source, auth_kind, auth_payload),
+                    )
                     inserted_sources.add(source_id)
                 connection.execute(_INSERT_MODEL, model)
             for role, runtime_id in roles.items():
@@ -335,6 +390,28 @@ class ModelRegistryStore:
             yield connection
         finally:
             connection.close()
+            if not read_only:
+                self._secure_database_files()
+
+    def _create_database_file(self) -> None:
+        if self.path.exists():
+            os.chmod(self.path, 0o600)
+            return
+        descriptor = os.open(
+            self.path,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o600,
+        )
+        os.close(descriptor)
+
+    def _secure_database_files(self) -> None:
+        for path in (
+            self.path,
+            self.path.with_name(f"{self.path.name}-wal"),
+            self.path.with_name(f"{self.path.name}-shm"),
+        ):
+            if path.exists():
+                os.chmod(path, 0o600)
 
 
 def _normalize_runtime(
@@ -475,8 +552,25 @@ ORDER BY m.created_at, m.id
 
 _INSERT_CONNECTION = """
 INSERT INTO model_connections(
-    id, name, provider, catalog_provider_id, auth_id, base_url
-) VALUES (?, ?, ?, ?, ?, ?)
+    id, name, provider, catalog_provider_id, auth_id, base_url,
+    auth_kind, auth_payload
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    name = excluded.name,
+    provider = excluded.provider,
+    catalog_provider_id = excluded.catalog_provider_id,
+    auth_id = excluded.auth_id,
+    base_url = excluded.base_url,
+    auth_kind = CASE
+        WHEN excluded.auth_payload != '' THEN excluded.auth_kind
+        ELSE model_connections.auth_kind
+    END,
+    auth_payload = CASE
+        WHEN excluded.auth_payload != '' THEN excluded.auth_payload
+        ELSE model_connections.auth_payload
+    END,
+    enabled = 1,
+    updated_at = CURRENT_TIMESTAMP
 """
 
 _INSERT_MODEL = """
@@ -514,6 +608,8 @@ CREATE TABLE IF NOT EXISTS model_connections (
     catalog_provider_id TEXT NOT NULL DEFAULT '',
     auth_id TEXT NOT NULL DEFAULT '',
     base_url TEXT NOT NULL DEFAULT '',
+    auth_kind TEXT NOT NULL DEFAULT '',
+    auth_payload TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP

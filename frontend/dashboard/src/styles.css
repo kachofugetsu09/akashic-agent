@@ -324,6 +324,34 @@ body {
     background: var(--md-sys-color-surface);
   }
 
+  .runtime-unavailable {
+    display: grid;
+    width: min(32rem, calc(100% - 3rem));
+    height: 100%;
+    margin: auto;
+    place-content: center;
+    gap: 0.625rem;
+    text-align: center;
+  }
+
+  .runtime-unavailable > span {
+    color: var(--md-sys-color-primary);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+
+  .runtime-unavailable > strong {
+    font-size: clamp(1.5rem, 4vw, 2.5rem);
+    line-height: 1.12;
+  }
+
+  .runtime-unavailable > p {
+    margin: 0;
+    color: var(--md-sys-color-on-surface-variant);
+    line-height: 1.6;
+  }
+
   .shell {
     @apply flex h-full overflow-hidden bg-bg;
     gap: 0;

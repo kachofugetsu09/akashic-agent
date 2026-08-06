@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
 from agent.config_models import Config
+from agent.model_runtime.errors import AuthenticationError
+from agent.model_runtime.auth.store import Credential, CredentialStore
 from agent.model_runtime.registry import ModelGeneration, ModelRegistry
 from agent.model_runtime.store import ModelRegistryStore
 
@@ -109,6 +112,45 @@ def test_config_load_prefers_workspace_model_database(tmp_path: Path) -> None:
     assert config.runtime_id == "model-a"
     assert config.fast_runtime_id == "model-b"
     assert config.model_registry_revision == 1
+
+
+def test_model_credentials_live_in_private_workspace_database(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_CONFIG, encoding="utf-8")
+    llm = _llm_rows()
+    runtimes = llm["runtimes"]
+    assert isinstance(runtimes, dict)
+    runtimes["model-a"]["auth"] = "primary"  # type: ignore[index]
+    store = ModelRegistryStore.for_workspace(tmp_path)
+
+    store.replace_from_llm_config(
+        llm,
+        credentials={
+            "primary": Credential(driver="api_key", access_token="secret")
+        },
+    )
+
+    credentials = CredentialStore.for_workspace(tmp_path)
+    assert credentials.api_key("primary") == "secret"
+    assert Config.load(config_path, workspace=tmp_path).api_key == "secret"
+    assert os.stat(store.path).st_mode & 0o777 == 0o600
+    assert not (tmp_path / "auth.json").exists()
+
+
+def test_workspace_credential_store_rejects_broad_database_permissions(
+    tmp_path: Path,
+) -> None:
+    store = ModelRegistryStore.for_workspace(tmp_path)
+    store.replace_from_llm_config(
+        _llm_rows(),
+        credentials={
+            "unused": Credential(driver="api_key", access_token="secret")
+        },
+    )
+    os.chmod(store.path, 0o644)
+
+    with pytest.raises(AuthenticationError, match="权限过宽"):
+        CredentialStore.for_workspace(tmp_path).metadata()
 
 
 @pytest.mark.asyncio
