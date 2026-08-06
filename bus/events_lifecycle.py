@@ -39,6 +39,7 @@ class TurnCommitted:
     tools_used: list[str]
     turn_id: str = ""
     persisted_user_message_id: str | None = None
+    persisted_user_message_ids: tuple[str, ...] = ()
     assistant_message_id: str | None = None
     thinking: str | None = None
     raw_reply: str | None = None
