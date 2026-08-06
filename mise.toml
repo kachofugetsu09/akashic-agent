@@ -1,0 +1,5 @@
+# mise 工具链版本锁：统一本地开发/测试使用的 Python 版本。
+# 使用：安装 mise 后在本目录运行 `mise install`，再用 `mise exec -- <命令>` 进入锁定环境。
+# CI 的多版本验证（setup-python 3.12 / 3.13）不受本文件影响，保留在 .github/workflows/ci.yml。
+[tools]
+python = "3.13"
