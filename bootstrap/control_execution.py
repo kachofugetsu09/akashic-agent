@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, cast
+from datetime import datetime
 
 import openai
 
@@ -99,6 +100,12 @@ async def execute_control_turn(
     delta_subscription = event_bus.on(StreamDeltaReady, collect_delta)
     try:
         try:
+            inbound_metadata = _inbound_metadata(
+                request.metadata.get("inboundMetadata")
+            )
+            input_source = request.metadata.get("_controlTurnInputSource")
+            if input_source is None:
+                raise RuntimeError("control executor 缺少 turn input source")
             outbound = await loop.process_direct_message(
                 request.input,
                 session_key=request.thread_id,
@@ -106,7 +113,9 @@ async def execute_control_turn(
                 chat_id=str(request.metadata.get("chatId") or request.thread_id),
                 sender=str(request.metadata.get("sender") or "user"),
                 media=_media_values(request.metadata.get("media")),
-                metadata=_inbound_metadata(request.metadata.get("inboundMetadata")),
+                metadata=inbound_metadata,
+                turn_input_source=input_source,
+                timestamp=_input_timestamp(request.metadata.get("inputTimestamp")),
                 turn_id=turn_id,
                 stream_events=True,
                 runtime_selector=cast(
@@ -208,6 +217,17 @@ def _inbound_metadata(value: object) -> dict[str, object]:
     if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
         raise ValueError("control inboundMetadata 必须是字符串键对象")
     return dict(cast(dict[str, object], value))
+
+
+def _input_timestamp(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("control inputTimestamp 必须是 RFC 3339 字符串")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("control inputTimestamp 必须包含时区")
+    return parsed
 
 
 def _turn_usage(value: dict[str, Any]) -> TurnUsage | None:

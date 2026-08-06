@@ -10,6 +10,7 @@ import pytest
 from agent.control.errors import ThreadBusyError
 from agent.control.events import TurnEvent
 from agent.control.models import (
+    TurnAdmissionKind,
     TurnItem,
     TurnItemKind,
     TurnRecord,
@@ -58,7 +59,7 @@ async def test_runtime_persists_events_and_terminal_result(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_runtime_rejects_same_thread_and_interrupts_exact_turn(tmp_path: Path) -> None:
+async def test_runtime_admits_same_thread_input_and_interrupts_exact_turn(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     reached = asyncio.Event()
 
@@ -70,11 +71,81 @@ async def test_runtime_rejects_same_thread_and_interrupts_exact_turn(tmp_path: P
     runtime = ConversationRuntime(store, execute)
     first = await runtime.start_turn(TurnRequest("programmatic:test", "held"))
     await reached.wait()
-    with pytest.raises(ThreadBusyError):
-        _ = await runtime.start_turn(TurnRequest("programmatic:test", "conflict"))
+    second = await runtime.start_turn(TurnRequest("programmatic:test", "follow-up"))
+    assert second.id == first.id
+    assert second.admission is TurnAdmissionKind.STEERED
+    third = await runtime.steer_turn(
+        TurnRequest("programmatic:test", "strict-follow-up"),
+        expected_turn_id=first.id,
+    )
+    assert third.id == first.id
+    assert third.admission is TurnAdmissionKind.STEERED
+    with pytest.raises(ThreadBusyError, match="active turn 不匹配"):
+        await runtime.steer_turn(
+            TurnRequest("programmatic:test", "stale"),
+            expected_turn_id="turn-stale",
+        )
+    checkpoint = store.read_turn(first.id)
+    assert checkpoint is not None
+    assert [item.data["content"] for item in checkpoint.items] == [
+        "held",
+        "follow-up",
+        "strict-follow-up",
+    ]
     record = await first.interrupt()
     assert record.status is TurnStatus.INTERRUPTED
     _assert_single_terminal(runtime, first.id)
+    await runtime.shutdown()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_seal_rejects_late_input_until_terminal(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    sealed = asyncio.Event()
+    release = asyncio.Event()
+
+    async def execute(request: TurnRequest) -> str:
+        source = request.metadata["_controlTurnInputSource"]
+        assert not await source.seal_or_drain()
+        sealed.set()
+        await release.wait()
+        return "done"
+
+    runtime = ConversationRuntime(store, execute)
+    first = await runtime.start_turn(TurnRequest("programmatic:seal", "first"))
+    await sealed.wait()
+    with pytest.raises(ThreadBusyError, match="已封口"):
+        await runtime.start_turn(TurnRequest("programmatic:seal", "late"))
+    interrupt = asyncio.create_task(first.interrupt())
+    await asyncio.sleep(0)
+    assert not interrupt.done()
+    release.set()
+    assert (await interrupt).status is TurnStatus.COMPLETED
+    assert (await first.result()).status is TurnStatus.COMPLETED
+    await runtime.shutdown()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_invalid_initial_input_releases_admission_capacity(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+
+    async def execute(_request: TurnRequest) -> str:
+        return "unused"
+
+    runtime = ConversationRuntime(store, execute)
+    with pytest.raises(ValueError, match="必须包含时区"):
+        await runtime.start_turn(
+            TurnRequest(
+                "programmatic:invalid-input",
+                "hello",
+                {"inputTimestamp": "2026-08-06T12:00:00"},
+            )
+        )
+
+    assert runtime.admission_snapshot()["turns"] == 0
+    assert runtime.admission_snapshot()["bytes"] == 0
     await runtime.shutdown()
     store.close()
 

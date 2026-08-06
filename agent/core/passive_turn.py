@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, cast
 
 import agent.core.passive_support as support
 from agent.control.context import current_turn_id
+from agent.control.ports import TurnInputSource, TurnUserInput
 from agent.model_runtime.query_compaction import QueryCompactor
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.types import (
@@ -1129,6 +1130,17 @@ class DefaultReasoner(Reasoner):
             self._stream_sink_factory(msg) if self._stream_sink_factory is not None else None
         )
         disabled_tools = _disabled_tools_from_msg(msg)
+        raw_turn_input_source = (getattr(msg, "metadata", None) or {}).get(
+            "_control_turn_input_source"
+        )
+        turn_input_source: TurnInputSource | None = None
+        if raw_turn_input_source is not None:
+            if not all(
+                callable(getattr(raw_turn_input_source, name, None))
+                for name in ("drain", "seal_or_drain", "consumed_inputs")
+            ):
+                raise RuntimeError("control turn input source 契约无效")
+            turn_input_source = cast(TurnInputSource, raw_turn_input_source)
         # session 级记忆排除：disable_memory_writes 展开为 memory 来源的写工具。
         if bool((getattr(msg, "metadata", None) or {}).get("disable_memory_writes")):
             disabled_tools |= self._tools.get_source_tool_names(
@@ -1177,6 +1189,11 @@ class DefaultReasoner(Reasoner):
                 )
             )
             initial_messages = prompt_render.messages
+            if turn_input_source is not None:
+                self._append_turn_inputs(
+                    initial_messages,
+                    turn_input_source.consumed_inputs()[1:],
+                )
             llm_user_content, llm_context_frame = extract_model_facing_turn(
                 initial_messages
             )
@@ -1198,6 +1215,7 @@ class DefaultReasoner(Reasoner):
                         tool_event_channel=msg.channel,
                         tool_event_chat_id=msg.chat_id,
                         disabled_tools=disabled_tools,
+                        turn_input_source=turn_input_source,
                     )
                 finally:
                     end_turn_search_scope(search_scope)
@@ -1316,6 +1334,7 @@ class DefaultReasoner(Reasoner):
         tool_event_channel: str = "",
         tool_event_chat_id: str = "",
         disabled_tools: set[str] | None = None,
+        turn_input_source: TurnInputSource | None = None,
     ) -> ReasonerResult:
         # 1. 初始化消息上下文、本轮工具轨迹。
         messages = list(initial_messages)
@@ -1366,7 +1385,39 @@ class DefaultReasoner(Reasoner):
                 self._llm_config.max_iterations > 0
                 and iteration >= self._llm_config.max_iterations
             ):
-                break
+                summary = await self._summarize_incomplete_progress(
+                    messages,
+                    reason="max_iterations",
+                    iteration=iteration,
+                    tools_used=tools_used,
+                )
+                result = self._build_result(
+                    reply=summary,
+                    tools_used=tools_used,
+                    tool_chain=tool_chain,
+                    react_compaction=compactor.persistence_payload(),
+                    media=outbound_media,
+                    visible_names=visible_names,
+                    thinking=None,
+                    streamed=False,
+                    react_input_samples=react_input_samples,
+                    cache_prompt_tokens=react_cache_prompt_tokens,
+                    cache_hit_tokens=react_cache_hit_tokens,
+                    cache_seen=react_cache_seen,
+                    tools_unlocked=tools_unlocked,
+                    model_usages=react_usages,
+                    finish_reasons=react_finish_reasons,
+                    mobile_attention=mobile_attention,
+                )
+                if await self._continue_for_pending_turn_inputs(
+                    messages,
+                    result.reply,
+                    turn_input_source,
+                ):
+                    iteration = -1
+                    continue
+                return result
+            await self._drain_turn_inputs_into_messages(messages, turn_input_source)
             batch_start = len(messages)
             # 3. BeforeStep 模块链：token 估算、BeforeStep 事件、提示注入。
             step_ctx = await before_step_phase.run(BeforeStepInput(
@@ -1384,7 +1435,7 @@ class DefaultReasoner(Reasoner):
                     iteration=iteration + 1,
                     tools_used=tools_used,
                 )
-                return self._build_result(
+                result = self._build_result(
                     reply=step_ctx.early_stop_reply or summary,
                     tools_used=tools_used,
                     tool_chain=tool_chain,
@@ -1402,6 +1453,13 @@ class DefaultReasoner(Reasoner):
                     finish_reasons=react_finish_reasons,
                     mobile_attention=mobile_attention,
                 )
+                if await self._continue_for_pending_turn_inputs(
+                    messages,
+                    result.reply,
+                    turn_input_source,
+                ):
+                    continue
+                return result
             # 4. 构造本轮工具 schema，并按完整 provider input 判断压缩水位。
             schema_names: list[str] | set[str] | None = (
                 list(visible_order) if visible_order is not None else None
@@ -1587,6 +1645,7 @@ class DefaultReasoner(Reasoner):
 
                 # 7. 逐个执行本轮工具调用。
                 iter_calls: list[dict[str, Any]] = []
+                restart_after_pending_input = False
                 for tool_batch_index, tool_call in enumerate(response.tool_calls):
                     if tool_call.name in disabled:
                         await self._observe_tool_call_started(
@@ -1712,7 +1771,7 @@ class DefaultReasoner(Reasoner):
                                 iteration=iteration + 1,
                                 tools_used=tools_used,
                             )
-                            return self._build_result(
+                            result = self._build_result(
                                 reply=summary,
                                 tools_used=tools_used,
                                 tool_chain=tool_chain,
@@ -1730,6 +1789,14 @@ class DefaultReasoner(Reasoner):
                                 finish_reasons=react_finish_reasons,
                                 mobile_attention=mobile_attention,
                             )
+                            if await self._continue_for_pending_turn_inputs(
+                                messages,
+                                result.reply,
+                                turn_input_source,
+                            ):
+                                restart_after_pending_input = True
+                                break
+                            return result
                         logger.warning(
                             "[工具未解锁] LLM 尝试调用 '%s'，但该工具 schema 不可见，引导模型先 tool_search",
                             tool_call.name,
@@ -1948,7 +2015,7 @@ class DefaultReasoner(Reasoner):
                             iteration=iteration + 1,
                             tools_used=tools_used,
                         )
-                        return self._build_result(
+                        result = self._build_result(
                             reply=summary,
                             tools_used=tools_used,
                             tool_chain=tool_chain,
@@ -1966,8 +2033,18 @@ class DefaultReasoner(Reasoner):
                             finish_reasons=react_finish_reasons,
                             mobile_attention=mobile_attention,
                         )
+                        if await self._continue_for_pending_turn_inputs(
+                            messages,
+                            result.reply,
+                            turn_input_source,
+                        ):
+                            restart_after_pending_input = True
+                            break
+                        return result
 
                 # 7. 本轮工具执行完后，记录 tool_chain。
+                if restart_after_pending_input:
+                    continue
                 tool_chain_group = {"text": response.content, "calls": iter_calls}
                 if response.thinking is not None:
                     tool_chain_group["reasoning_content"] = response.thinking
@@ -2010,7 +2087,7 @@ class DefaultReasoner(Reasoner):
                         iteration=iteration + 1,
                         tools_used=tools_used,
                     )
-                    return self._build_result(
+                    result = self._build_result(
                         reply=summary,
                         tools_used=tools_used,
                         tool_chain=tool_chain,
@@ -2028,6 +2105,13 @@ class DefaultReasoner(Reasoner):
                         finish_reasons=react_finish_reasons,
                         mobile_attention=mobile_attention,
                     )
+                    if await self._continue_for_pending_turn_inputs(
+                        messages,
+                        result.reply,
+                        turn_input_source,
+                    ):
+                        continue
+                    return result
                 continue
 
             # 8. 没有 tool_calls 时，说明本轮得到最终回复。
@@ -2037,22 +2121,7 @@ class DefaultReasoner(Reasoner):
                 len(tools_used),
                 tools_used if tools_used else "无",
             )
-            messages.append({"role": "assistant", "content": response.content})
-            # 8b. AfterStep 模块链（最终回复分支）：通知观察者本轮推理结束。
-            _ = await after_step_phase.run(AfterStepCtx(
-                session_key=tool_event_session_key,
-                channel=tool_event_channel,
-                chat_id=tool_event_chat_id,
-                iteration=iteration,
-                context_tokens_estimate=support.estimate_messages_tokens(messages),
-                tools_called=(),
-                partial_reply=response.content or "",
-                tools_used_so_far=tuple(tools_used),
-                tool_chain_partial=tuple(tool_chain),
-                partial_thinking=response.thinking,
-                has_more=False,
-            ))
-            return self._build_result(
+            result = self._build_result(
                 reply=response.content or "模型未返回可用回复，请重试。",
                 tools_used=tools_used,
                 tool_chain=tool_chain,
@@ -2075,37 +2144,83 @@ class DefaultReasoner(Reasoner):
                     else None
                 ),
             )
+            if await self._continue_for_pending_turn_inputs(
+                messages,
+                result.reply,
+                turn_input_source,
+            ):
+                continue
+            messages.append({"role": "assistant", "content": response.content})
+            # 8b. AfterStep 模块链（最终回复分支）：通知观察者本轮推理结束。
+            _ = await after_step_phase.run(AfterStepCtx(
+                session_key=tool_event_session_key,
+                channel=tool_event_channel,
+                chat_id=tool_event_chat_id,
+                iteration=iteration,
+                context_tokens_estimate=support.estimate_messages_tokens(messages),
+                tools_called=(),
+                partial_reply=response.content or "",
+                tools_used_so_far=tuple(tools_used),
+                tool_chain_partial=tuple(tool_chain),
+                partial_thinking=response.thinking,
+                has_more=False,
+            ))
+            return result
 
-        # 9. 达到最大迭代次数后，生成不完整进展总结。
-        logger.warning(
-            "[迭代上限] 达到最大轮次%d，触发收尾总结，已调用工具: %s",
-            iteration,
-            tools_used if tools_used else "无",
-        )
-        summary = await self._summarize_incomplete_progress(
-            messages,
-            reason="max_iterations",
-            iteration=iteration,
-            tools_used=tools_used,
-        )
-        return self._build_result(
-            reply=summary,
-            tools_used=tools_used,
-            tool_chain=tool_chain,
-            react_compaction=compactor.persistence_payload(),
-            media=outbound_media,
-            visible_names=visible_names,
-            thinking=None,
-            streamed=False,
-            react_input_samples=react_input_samples,
-            cache_prompt_tokens=react_cache_prompt_tokens,
-            cache_hit_tokens=react_cache_hit_tokens,
-            cache_seen=react_cache_seen,
-            tools_unlocked=tools_unlocked,
-            model_usages=react_usages,
-            finish_reasons=react_finish_reasons,
-            mobile_attention=mobile_attention,
-        )
+
+    async def _drain_turn_inputs_into_messages(
+        self,
+        messages: list[dict[str, Any]],
+        source: TurnInputSource | None,
+    ) -> int:
+        """在模型调用前把已准入 pending 输入追加到上下文。"""
+
+        if source is None:
+            return 0
+        inputs = await source.drain()
+        self._append_turn_inputs(messages, inputs)
+        return len(inputs)
+
+    async def _continue_for_pending_turn_inputs(
+        self,
+        messages: list[dict[str, Any]],
+        candidate_reply: str,
+        source: TurnInputSource | None,
+    ) -> bool:
+        """原子 seal 最终候选；有新输入时保留候选上下文并继续。"""
+
+        if source is None:
+            return False
+        inputs = await source.seal_or_drain()
+        if not inputs:
+            return False
+        messages.append({"role": "assistant", "content": candidate_reply})
+        self._append_turn_inputs(messages, inputs)
+        logger.info("[同Turn输入] 最终候选后接收 %d 条输入，继续当前 turn", len(inputs))
+        return True
+
+    def _append_turn_inputs(
+        self,
+        messages: list[dict[str, Any]],
+        inputs: tuple[TurnUserInput, ...],
+    ) -> None:
+        """使用首条消息相同的 envelope 追加有序用户输入。"""
+
+        if not inputs:
+            return
+        if self._context is None:
+            raise RuntimeError("same-turn input requires ContextBuilder")
+        for item in inputs:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": self._context.build_user_message_content(
+                        item.content,
+                        list(item.media) if item.media else None,
+                        message_timestamp=item.timestamp,
+                    ),
+                }
+            )
 
     async def _observe_tool_call_started(
         self,

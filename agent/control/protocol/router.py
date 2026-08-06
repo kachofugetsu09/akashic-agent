@@ -55,6 +55,7 @@ class ConnectionRouter:
         self._initialized_seen = False
         self._event_tasks: set[asyncio.Task[None]] = set()
         self._attached_turns: dict[str, Any] = {}
+        self._forwarding_turns: set[str] = set()
         self._closed = False
 
     async def handle_line(self, line: bytes) -> None:
@@ -237,6 +238,14 @@ class ConnectionRouter:
             return await self._service.interrupt_turn(
                 values["threadId"], values["turnId"]
             )
+        if method == "turn/steer":
+            handle = await self._service.steer_turn(
+                values["threadId"],
+                values["expectedTurnId"],
+                values["input"],
+                values["metadata"],
+            )
+            return handle.record()
         if method == "turn/start":
             handle = await self._service.start_turn(
                 values["threadId"],
@@ -244,13 +253,16 @@ class ConnectionRouter:
                 values["metadata"],
                 values["runtime"],
             )
+            should_forward = handle.id not in self._forwarding_turns
             if not values["detached"]:
                 self._attached_turns[handle.id] = handle
-            task = asyncio.create_task(
-                self._forward_events(handle), name=f"control-events:{handle.id}"
-            )
-            self._event_tasks.add(task)
-            task.add_done_callback(self._event_tasks.discard)
+            if should_forward:
+                self._forwarding_turns.add(handle.id)
+                task = asyncio.create_task(
+                    self._forward_events(handle), name=f"control-events:{handle.id}"
+                )
+                self._event_tasks.add(task)
+                task.add_done_callback(self._event_tasks.discard)
             return handle.record()
         if method == "plugin/disable-and-drain":
             return await self._service.disable_and_drain_plugin(values["pluginId"])
@@ -325,6 +337,7 @@ class ConnectionRouter:
             self._service.notify_turn_delivery_failed(handle.id, str(exc))
             logger.exception("turn event forwarding failed turn=%s", handle.id)
         finally:
+            self._forwarding_turns.discard(handle.id)
             if handle.record()["status"] in {
                 "completed",
                 "interrupted",
@@ -349,3 +362,4 @@ class ConnectionRouter:
         if self._event_tasks:
             await asyncio.gather(*self._event_tasks, return_exceptions=True)
         self._event_tasks.clear()
+        self._forwarding_turns.clear()

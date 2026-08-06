@@ -14,6 +14,7 @@ from agent.core.passive_support import build_context_hint_message
 from agent.core.passive_turn import ContextStore
 from agent.core.response_parser import ResponseMetadata
 from agent.core.runtime_support import TurnRunResult
+from agent.control.ports import TurnUserInput
 from agent.core.types import ContextBundle
 from agent.lifecycle.phase import Phase
 from agent.tools.registry import ToolRegistry
@@ -1717,6 +1718,78 @@ async def test_after_reasoning_persists_mobile_canonical_ids(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_after_reasoning_commits_all_same_turn_users_before_final_assistant(
+    tmp_path: Path,
+):
+    class _Source:
+        def consumed_inputs(self) -> tuple[TurnUserInput, ...]:
+            return (
+                TurnUserInput("i1", 0, "u1", (), {}, _now),
+                TurnUserInput(
+                    "i2",
+                    1,
+                    "u2",
+                    (),
+                    {"skip_post_memory": True},
+                    _now,
+                ),
+            )
+
+    manager = SessionManager(tmp_path / "workspace")
+    session = manager.get_or_create("telegram:same-turn")
+    msg = InboundMessage(
+        channel="telegram",
+        sender="user",
+        chat_id="same-turn",
+        content="u1",
+        metadata={
+            "control_turn_id": "turn-1",
+            "_control_turn_input_source": _Source(),
+        },
+    )
+    state = TurnState(msg=msg, session_key=session.key, dispatch_outbound=True)
+    state.session = session
+    phase = Phase(
+        default_after_reasoning_modules(
+            EventBus(),
+            cast(Any, SimpleNamespace(presence=None, session_manager=manager)),
+        ),
+        frame_factory=AfterReasoningFrame,
+    )
+
+    result = await phase.run(
+        AfterReasoningInput(
+            state=state,
+            turn_result=TurnRunResult(reply="final"),
+        )
+    )
+    manager.close()
+    reloaded = SessionManager(tmp_path / "workspace")
+    messages = reloaded.get_or_create(session.key).messages
+
+    assert [(item["role"], item["content"]) for item in messages] == [
+        ("user", "u1"),
+        ("user", "u2"),
+        ("assistant", "final"),
+    ]
+    assert [item["turn_input_ordinal"] for item in messages[:2]] == [0, 1]
+    assert [item["timestamp"] for item in messages[:2]] == [
+        _now.isoformat(),
+        _now.isoformat(),
+    ]
+    assert all(item["control_turn_id"] == "turn-1" for item in messages)
+    assert messages[2]["turn_terminal"] is True
+    assert messages[2]["turn_input_count"] == 2
+    assert messages[1]["skip_post_memory"] is True
+    assert messages[2]["skip_post_memory"] is True
+    assert result.outbound.metadata["persisted_user_message_ids"] == [
+        messages[0]["id"],
+        messages[1]["id"],
+    ]
+    reloaded.close()
+
+
+@pytest.mark.asyncio
 async def test_after_reasoning_persists_clean_mobile_reply_projection(tmp_path: Path):
     manager = SessionManager(tmp_path / "workspace")
     session = manager.get_or_create("mobile:00000000-0000-0000-0000-000000000001")
@@ -1835,8 +1908,14 @@ async def test_after_turn_collects_extra_and_telemetry_slots():
                 channel=msg.channel,
                 chat_id=msg.chat_id,
                 content="reply",
-                metadata={"persisted_user_message_id": "telegram:123:0"},
-                session_message_id="telegram:123:1",
+                metadata={
+                    "persisted_user_message_id": "telegram:123:0",
+                    "persisted_user_message_ids": [
+                        "telegram:123:0",
+                        "telegram:123:1",
+                    ],
+                },
+                session_message_id="telegram:123:2",
             ),
             ctx=ctx,
         )
@@ -1844,5 +1923,9 @@ async def test_after_turn_collects_extra_and_telemetry_slots():
 
     assert committed_extra[0]["plugin_flag"] == "extra"
     assert committed_events[0].persisted_user_message_id == "telegram:123:0"
-    assert committed_events[0].assistant_message_id == "telegram:123:1"
+    assert committed_events[0].persisted_user_message_ids == (
+        "telegram:123:0",
+        "telegram:123:1",
+    )
+    assert committed_events[0].assistant_message_id == "telegram:123:2"
     assert after_turn_metadata == [{"plugin_flag": "telemetry"}]

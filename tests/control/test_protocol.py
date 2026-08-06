@@ -44,6 +44,8 @@ async def test_router_requires_full_handshake_and_routes_turn(tmp_path: Path) ->
     capabilities = initialize_result["capabilities"]
     assert isinstance(capabilities, dict)
     assert capabilities["reasoningEvents"] is False
+    assert capabilities["turnInterrupt"] is True
+    assert capabilities["turnSteer"] is True
     await router.handle_line(b'{"jsonrpc":"2.0","method":"initialized","params":{}}\n')
     await router.handle_line(b'{"jsonrpc":"2.0","id":3,"method":"thread/start","params":{"metadata":{}}}\n')
     response = next(item for item in sent if item.get("id") == 3)
@@ -64,6 +66,69 @@ async def test_router_requires_full_handshake_and_routes_turn(tmp_path: Path) ->
     await asyncio.wait_for(_wait_terminal(sent), timeout=1)
     terminal = [item for item in sent if item.get("method") == "turn/completed"]
     assert len(terminal) == 1
+    await router.close()
+    await runtime.shutdown()
+    sessions.close()
+
+
+@pytest.mark.asyncio
+async def test_repeated_turn_start_forwards_one_terminal_for_same_turn(
+    tmp_path: Path,
+) -> None:
+    sessions = SessionManager(tmp_path)
+    release = asyncio.Event()
+
+    async def execute(request: TurnRequest) -> str:
+        await release.wait()
+        source = request.metadata["_controlTurnInputSource"]
+        inputs = await source.drain()
+        assert not await source.seal_or_drain()
+        return "+".join([request.input, *(item.content for item in inputs)])
+
+    runtime = ConversationRuntime(sessions.control_store, execute)
+    service = ControlService(runtime, sessions, tmp_path)
+    sent: list[dict[str, object]] = []
+
+    async def send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    router = ConnectionRouter(service, send)
+    await router.handle_line(
+        b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1.0","clientInfo":{"name":"test","version":"1"},"capabilities":{}}}\n'
+    )
+    await router.handle_line(b'{"jsonrpc":"2.0","method":"initialized","params":{}}\n')
+    thread = service.start_thread({}, "stable")
+    thread_id = str(thread["id"])
+    for request_id, content, detached in (
+        (2, "u1", True),
+        (3, "u2", False),
+    ):
+        await router.handle_line(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": content,
+                        "metadata": {},
+                        "detached": detached,
+                    },
+                }
+            ).encode()
+        )
+    first = next(item for item in sent if item.get("id") == 2)
+    second = next(item for item in sent if item.get("id") == 3)
+    first_result = first["result"]
+    second_result = second["result"]
+    assert isinstance(first_result, dict)
+    assert isinstance(second_result, dict)
+    assert first_result["id"] == second_result["id"]
+    release.set()
+    await asyncio.wait_for(_wait_terminal(sent), timeout=1)
+    await asyncio.sleep(0)
+    assert len([item for item in sent if item.get("method") == "turn/completed"]) == 1
     await router.close()
     await runtime.shutdown()
     sessions.close()

@@ -315,6 +315,8 @@ D 类效果只能由拥有 prepared、committed、failed 和必要补偿语义�
 
 Prompt 历史不得从孤立 assistant 或 tool result 开始。assistant 工具调用和对应结果成对保留；合法 user 边界或明确的 proactive assistant 边界拥有窗口起点。长工具结果只允许在临时模型视图中截短。
 
+同一个 completed turn 可以包含一个或多个有序 user message 和唯一 terminal assistant。窗口与重放使用显式 `control_turn_id` 和 input ordinal 识别边界，不得把相邻 user/assistant 角色当作新格式的 turn 归属协议。
+
 已送达的 proactive assistant 消息进入 prompt history 时保留完整正文，不得施加 proactive 专属字符预算或改写成 preview。整体请求超限时，只能由通用 prompt history 退化按完整语义边界缩小窗口。
 
 ### CTX-004 派生上下文不得伪装成用户原话
@@ -341,7 +343,7 @@ skills、长期记忆、检索结果和 recent context 必须带来源和信任�
 
 ### SES-001 回合持久化全有或全无
 
-同一批 session metadata、消息和序列分配必须在一个事务中提交。任一步失败时数据库不出现半批消息，内存对象也不得获得并不存在的稳定 ID。
+同一批 session metadata、消息和序列分配必须在一个事务中提交。completed 被动 turn 的批次可以包含多个有序 user message 和唯一 terminal assistant；任一步失败时数据库不出现半批消息，内存对象也不得获得并不存在的稳定 ID。
 
 ### SES-002 消息序列单调且不复用
 
@@ -362,6 +364,14 @@ skills、长期记忆、检索结果和 recent context 必须带来源和信任�
 ### SES-006 附件随消息引用保留
 
 消息仍引用的附件属于会话数据，必须保持可读。附件清理只能从完整引用关系出发，先识别真正孤儿，再经过 dry-run、备份和名称明确的删除操作；在引用计数、cascade 和恢复协议落地前不得自动 GC。文件年龄、当前 prompt 是否使用、索引是否命中和代码重构都不能成为删除依据。
+
+### SES-007 普通输入自动进入可接收的 Active Turn
+
+同一 session 没有 active turn 时，普通 user input 创建新 turn；存在尚未封口的 active regular turn 时，普通输入自动追加到该 turn。用户和 channel adapter 不选择 steer、follow-up 或 next-prompt 模式。显式程序化注入必须携带预期 turn ID；不匹配、非 regular、已封口或已终态时明确拒绝，不能 fallback 到错误 turn。
+
+### SES-008 Completed Turn 显式拥有全部输入和唯一最终回复
+
+一个 turn 可以拥有多个有序 user input。每个输入在进入模型前先追加到该 turn 的持久 item checkpoint；provider response 或完整 tool batch 结束后才能注入模型。最终回复候选只有在 pending input 为空并成功封口后，才成为唯一 terminal assistant。completed transcript 在一个事务中按 ordinal 追加全部 user message 和 terminal assistant，并携带共同 turn identity；不得用角色邻接推断归属。
 
 ## 8. 记忆系统
 
@@ -399,7 +409,11 @@ session、channel、chat、source_ref 和预算在每次 post-response run 创�
 
 ### MEM-009 Akasha 使用固定输入确定性重建
 
-`akasha.db` 和 graph snapshot 是派生 sidecar。完整重建只读取 `sessions.db/messages`、对应的 `message_embeddings`、固定算法和固定配置，不引入 LLM 重新解释历史，也不重新生成已经存在的 embedding。只有完成的 user/assistant turn 属于学习样本；被中断、失败或明确标为 `skip_post_memory` 的 turn 保留在原始会话中，但不要求 embedding，也不进入显式记忆图。同一组输入必须得到可复现的图；合法学习样本缺少或模型不匹配的 embedding 必须使完整重建失败并报告缺口，不能静默跳过后仍声称成功。
+`akasha.db` 和 graph snapshot 是派生 sidecar。完整重建只读取 `sessions.db/messages`、对应的 `message_embeddings`、固定算法和固定配置，不引入 LLM 重新解释历史，也不重新生成已经存在的 embedding。只有 completed turn 属于学习样本；被中断、失败或明确标为 `skip_post_memory` 的 turn 保留在原始会话中，但不要求 embedding，也不进入显式记忆图。同一组输入必须得到可复现的图；合法学习样本缺少或模型不匹配的 embedding 必须使完整重建失败并报告缺口，不能静默跳过后仍声称成功。
+
+### MEM-010 Akasha 对同 Turn 多输入建立一个确定性样本
+
+completed turn 含多个 user message 时，Akasha 按显式 turn identity 和 input ordinal 聚合全部用户输入，并以唯一 terminal assistant 作为输出，只建立一个学习样本。每条非空 user message 和 assistant 使用各自已持久化 embedding；多输入 dense 使用固定版本的归一化聚合。在线提交和离线 builder 必须共用相同 source IDs、文本连接、向量聚合和 digest 规则。新格式不得按相邻角色配对；旧数据只能走名称明确的 legacy 兼容路径。
 
 ## 9. 运行时、并发和出站
 
@@ -433,9 +447,13 @@ Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先�
 
 同一 `session_key` 同时只能有一个 active turn，channel、control 和 direct/programmatic 入口必须汇入同一个 session lane owner。不同 session 的 turn 可以并发；全局 active turn、请求字节和 runtime object 上限只负责有界准入，不得以跨 session 的整轮互斥实现。Turn 的 messages、文件读取状态、工具 trace、取消信号和 runtime snapshot 绑定属于 task-local 状态；共享 runtime service 只能保留有明确 owner、可并发使用或受短事务保护的状态。
 
+### RUN-008 Active Turn 输入在安全边界 drain 并原子封口
+
+active regular turn 的 pending input 由 ConversationRuntime 的 session lane owner 接纳。Reasoner 只能在一次 provider response 已结束或完整 tool batch 已闭合后 drain；最终回复前必须在同一 admission owner 下执行 `seal_or_drain`。有 pending input 时继续同一 turn；队列为空并封口后，迟到输入不得进入旧 turn，只能等待 terminal 后创建新 turn。
+
 ### OUT-001 被动按 Turn 提交，主动按送达提交
 
-被动消息以完整 Turn 为权威提交单位。推理和持久化成功后，user 与 assistant 消息共同进入会话历史；随后 dispatch 失败不得回滚已经提交的 Turn。主动消息没有对应的用户 Turn，只有 dispatch 明确成功后才进入会话历史、presence、dedupe 和 success 状态；未发送内容不得让 Agent 误认为自己已经说过。
+被动消息以完整 Turn 为权威提交单位。推理和持久化成功后，本 turn 的全部有序 user message 与唯一 terminal assistant 共同进入会话历史；随后 dispatch 失败不得回滚已经提交的 Turn。主动消息没有对应的用户 Turn，只有 dispatch 明确成功后才进入会话历史、presence、dedupe 和 success 状态；未发送内容不得让 Agent 误认为自己已经说过。
 
 同一条主动消息的实时事件与发送成功后的历史投影必须携带同一个稳定投递身份。客户端优先用该身份精确合并；内容与时间匹配只能兼容缺少稳定身份的旧消息。部分送达和结果不明必须有独立状态，不能冒充成功或完全失败。
 
@@ -452,6 +470,10 @@ Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先�
 ### OUT-004 `message_push` 不取得目标 session 的执行所有权
 
 `message_push` 是调用 turn 发起的外部投递，不是目标 session 的 inbound turn。它不得等待目标 session lane；实际 adapter send 仍通过 ChatLane 的短提交 owner 串行。普通 scheduler/proactive 的 non-passive 投递继续等待同 chat 的被动回复优先完成；被动或程序化验证 turn 发起的 push 可以走 passive-send 路径，但不能与另一实际 send 重叠。push 正文不注入正在运行的父 Prompt，也不追加到目标 session history；调用参数和真实 delivery receipt 保存在调用 session 的工具 trace。pointer、异常或取消都不得伪装成已经发生的外部投递被回滚。
+
+### OUT-005 硬终止与普通同 Turn 输入分离
+
+Mobile 中止按钮和 channel `/stop` 只调用带精确 turn identity 的 hard interrupt，把 active turn 终结为 interrupted；它们不创建 user message、不执行 same-turn input admission，也不自动开始下一 turn。用户在 active turn 期间发送普通消息才按 SES-007 追加输入。客户端必须让发送与中止保持两个可区分动作。
 
 ## 10. 插件 generation 与 snapshot
 

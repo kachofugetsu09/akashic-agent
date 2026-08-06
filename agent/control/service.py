@@ -86,7 +86,7 @@ class ControlService:
             "capabilities": {
                 "reasoningEvents": False,
                 "turnInterrupt": True,
-                "turnSteer": False,
+                "turnSteer": True,
             },
         }
 
@@ -186,6 +186,22 @@ class ControlService:
 
     def read_turn(self, thread_id: str, turn_id: str) -> dict[str, object]:
         return self.runtime.read_turn(thread_id, turn_id).to_dict()
+
+    async def steer_turn(
+        self,
+        thread_id: str,
+        expected_turn_id: str,
+        input_text: str,
+        metadata: dict[str, Any],
+    ) -> TurnHandle:
+        """向精确匹配的 active turn 追加程序化输入。"""
+
+        if self.sessions.control_store.get_session_meta(thread_id) is None:
+            raise ThreadNotFoundError(f"thread 不存在: {thread_id}")
+        return await self.runtime.steer_turn(
+            TurnRequest(thread_id, input_text, dict(metadata)),
+            expected_turn_id=expected_turn_id,
+        )
 
     async def interrupt_turn(self, thread_id: str, turn_id: str) -> dict[str, object]:
         return (await self.runtime.interrupt_turn(thread_id, turn_id)).to_dict()

@@ -178,34 +178,45 @@ async def test_worker_executes_different_threads_without_blocking_consumer(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_worker_serializes_same_thread_and_continues_after_failure(tmp_path: Path) -> None:
+async def test_worker_admits_repeated_messages_into_one_active_turn(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
-    calls: list[str] = []
+    release = asyncio.Event()
+    consumed: list[str] = []
 
     async def execute(request: TurnRequest) -> str:
-        calls.append(request.input)
-        if request.input == "bad":
-            raise RuntimeError("broken turn")
-        return request.input
+        source = request.metadata["_controlTurnInputSource"]
+        await release.wait()
+        consumed.extend(item.content for item in await source.drain())
+        assert not await source.seal_or_drain()
+        return "+".join([request.input, *consumed])
 
     runtime = ConversationRuntime(store, execute)
     bus = _Bus()
     worker = PassiveMessageWorker(cast(Any, bus), runtime, cast(Any, object()))
     worker_task = asyncio.create_task(worker.run())
-    bus.inbound.put_nowait(InboundMessage("telegram", "user", "same", "bad"))
-    bus.inbound.put_nowait(InboundMessage("telegram", "user", "same", "good"))
+    bus.inbound.put_nowait(InboundMessage("telegram", "user", "same", "u1"))
+    bus.inbound.put_nowait(InboundMessage("telegram", "user", "same", "u2"))
+
+    async def both_inputs_checkpointed() -> None:
+        while True:
+            turns = store.list_turns("telegram:same")
+            if turns and len(
+                [item for item in turns[0].items if item.kind.value == "userMessage"]
+            ) == 2:
+                return
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(both_inputs_checkpointed(), 1)
+    assert bus.completed == []
+    release.set()
     _ = await asyncio.wait_for(bus.completions.get(), 1)
     _ = await asyncio.wait_for(bus.completions.get(), 1)
 
-    assert calls == ["bad", "good"]
-    assert [message.content for message in bus.outbound] == [
-        "处理消息时出错，请稍后再试。",
-        "good",
-    ]
-    assert [turn.status for turn in reversed(store.list_turns("telegram:same"))] == [
-        TurnStatus.FAILED,
-        TurnStatus.COMPLETED,
-    ]
+    assert consumed == ["u2"]
+    assert [message.content for message in bus.outbound] == ["u1+u2"]
+    turns = store.list_turns("telegram:same")
+    assert len(turns) == 1
+    assert turns[0].status is TurnStatus.COMPLETED
     worker.stop()
     await worker_task
     await runtime.shutdown()

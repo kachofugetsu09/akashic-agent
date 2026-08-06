@@ -736,6 +736,35 @@ def test_session_get_history_rewinds_consolidated_index_to_user_boundary():
     assert history[0] == {"role": "user", "content": "hello"}
 
 
+def test_session_get_history_never_splits_explicit_multi_input_turn():
+    session = Session("cli:multi-input")
+    session.add_message("user", "old")
+    session.add_message("assistant", "old reply")
+    for ordinal, content in enumerate(("u1", "u2", "u3")):
+        session.add_message(
+            "user",
+            content,
+            control_turn_id="turn-1",
+            turn_input_ordinal=ordinal,
+        )
+    session.add_message(
+        "assistant",
+        "final",
+        control_turn_id="turn-1",
+        turn_terminal=True,
+        turn_input_count=3,
+    )
+
+    expected = [
+        {"role": "user", "content": "u1"},
+        {"role": "user", "content": "u2"},
+        {"role": "user", "content": "u3"},
+        {"role": "assistant", "content": "final"},
+    ]
+    assert session.get_history(max_messages=2) == expected
+    assert session.get_history(start_index=3) == expected
+
+
 def test_session_get_history_keeps_full_consolidated_tail():
     session = Session("cli:1")
     for i in range(5):

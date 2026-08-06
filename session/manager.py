@@ -193,6 +193,27 @@ def _align_to_user_boundary(
     return []
 
 
+def _rewind_to_explicit_turn_start(
+    messages: list[dict[str, object]],
+    start: int,
+) -> int:
+    """把历史窗口起点退回显式 control turn 的第一条消息。"""
+
+    if start < 0 or start >= len(messages):
+        return start
+    raw_turn_id = messages[start].get("control_turn_id")
+    if raw_turn_id is None:
+        return start
+    if not isinstance(raw_turn_id, str) or not raw_turn_id:
+        raise ValueError("session message control_turn_id 必须是非空字符串")
+    while start > 0:
+        previous_turn_id = messages[start - 1].get("control_turn_id")
+        if previous_turn_id != raw_turn_id:
+            break
+        start -= 1
+    return start
+
+
 @dataclass
 class Session:
     """单次对话中的 session。"""
@@ -236,16 +257,20 @@ class Session:
             start = max(0, int(start_index))
             if start >= len(self.messages):
                 return []
-            # 向前回退到最近的 user 边界（保留完整 turn）
-            while (
-                start > 0
-                and self.messages[start].get("role") != "user"
-                and not (
-                    self.messages[start].get("role") == "assistant"
-                    and self.messages[start].get("proactive")
-                )
-            ):
-                start -= 1
+            # 1. 新格式按显式 identity 保留完整 turn；legacy 再退到 user 边界。
+            explicit_start = _rewind_to_explicit_turn_start(self.messages, start)
+            if explicit_start != start or self.messages[start].get("control_turn_id"):
+                start = explicit_start
+            else:
+                while (
+                    start > 0
+                    and self.messages[start].get("role") != "user"
+                    and not (
+                        self.messages[start].get("role") == "assistant"
+                        and self.messages[start].get("proactive")
+                    )
+                ):
+                    start -= 1
             # start=0 但仍非合法边界时，向后找第一个 user 或 proactive assistant。
             messages = self.messages[start:]
             if messages and not (
@@ -261,7 +286,9 @@ class Session:
         elif max_messages <= 0:
             messages = []
         else:
-            messages = self.messages[-max_messages:]
+            start = max(0, len(self.messages) - max_messages)
+            start = _rewind_to_explicit_turn_start(self.messages, start)
+            messages = self.messages[start:]
         out: list[dict[str, object]] = []
         for m in messages:
             role = m["role"]

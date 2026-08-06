@@ -54,6 +54,12 @@ class TurnIdParams(ThreadIdParams):
     turnId: str = Field(min_length=1, max_length=128)
 
 
+class TurnSteerParams(ThreadIdParams):
+    expectedTurnId: str = Field(min_length=1, max_length=128)
+    input: str = Field(min_length=1, max_length=1_048_576)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class PluginDrainParams(StrictModel):
     pluginId: str = Field(min_length=1, max_length=256)
 
@@ -75,6 +81,7 @@ METHOD_PARAMS: dict[str, type[StrictModel]] = {
     "thread/delete": ThreadIdParams,
     "thread/consolidate/start": ThreadIdParams,
     "turn/start": TurnStartParams,
+    "turn/steer": TurnSteerParams,
     "turn/read": TurnIdParams,
     "turn/interrupt": TurnIdParams,
     "plugin/disable-and-drain": PluginDrainParams,

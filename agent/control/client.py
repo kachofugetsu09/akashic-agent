@@ -173,6 +173,29 @@ class ControlClient:
         _ = self._turn_queue(turn_id)
         return ClientTurnHandle(self, thread_id, turn_id, record)
 
+    async def steer_turn(
+        self,
+        thread_id: str,
+        expected_turn_id: str,
+        input_text: str,
+        *,
+        metadata: dict[str, object] | None = None,
+    ) -> dict[str, Any]:
+        """向精确匹配的 active turn 追加输入。"""
+
+        return cast(
+            dict[str, Any],
+            await self.request(
+                "turn/steer",
+                {
+                    "threadId": thread_id,
+                    "expectedTurnId": expected_turn_id,
+                    "input": input_text,
+                    "metadata": metadata or {},
+                },
+            ),
+        )
+
     def _turn_queue(self, turn_id: str) -> asyncio.Queue[TurnStreamValue]:
         queue = self._turn_queues.setdefault(turn_id, asyncio.Queue(512))
         if self._close_error is not None and queue.empty():

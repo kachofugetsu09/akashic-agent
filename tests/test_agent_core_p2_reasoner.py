@@ -1,10 +1,11 @@
 import asyncio
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 
 from agent.core.passive_turn import DefaultReasoner, get_history_since_consolidated
+from agent.control.ports import TurnUserInput
 from agent.core.runtime_support import LLMServices, ToolDiscoveryState
 from agent.lifecycle.types import AfterStepCtx
 from agent.looping.ports import LLMConfig
@@ -163,6 +164,174 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     assert react_stats["cache_hit_tokens"] == 100
     first_messages = provider.calls[0]["messages"]
     assert not any("未加载工具目录" in str(m.get("content", "")) for m in first_messages)
+
+
+def test_default_reasoner_continues_same_turn_when_input_arrives_before_seal():
+    provider = _Provider(
+        [
+            LLMResponse(content="first candidate", tool_calls=[]),
+            LLMResponse(content="final after follow-up", tool_calls=[]),
+        ]
+    )
+
+    class _Source:
+        def __init__(self) -> None:
+            self.pending = [
+                TurnUserInput(
+                    item_id="item-2",
+                    ordinal=1,
+                    content="u2",
+                    media=(),
+                    metadata={},
+                    timestamp=datetime.now(UTC),
+                )
+            ]
+            self.consumed: list[TurnUserInput] = []
+
+        async def drain(self) -> tuple[TurnUserInput, ...]:
+            return ()
+
+        async def seal_or_drain(self) -> tuple[TurnUserInput, ...]:
+            items = tuple(self.pending)
+            self.pending.clear()
+            self.consumed.extend(items)
+            return items
+
+        def consumed_inputs(self) -> tuple[TurnUserInput, ...]:
+            return tuple(self.consumed)
+
+    context = SimpleNamespace(
+        build_user_message_content=lambda text, media, *, message_timestamp: text
+    )
+    reasoner = DefaultReasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider),
+                light_provider=cast(Any, provider),
+            ),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=40,
+        context=cast(Any, context),
+    )
+
+    result = asyncio.run(
+        reasoner.run(
+            [{"role": "user", "content": "u1"}],
+            turn_input_source=cast(Any, _Source()),
+        )
+    )
+
+    assert result.reply == "final after follow-up"
+    assert len(provider.calls) == 2
+    assert provider.calls[1]["messages"][-3:-1] == [
+        {"role": "assistant", "content": "first candidate"},
+        {"role": "user", "content": "u2"},
+    ]
+
+
+def test_default_reasoner_keeps_full_tool_batch_visible_before_same_turn_input():
+    tool_calls = [
+        ToolCall(f"call-{index}", f"tool-{index}", {"x": index})
+        for index in range(10)
+    ]
+    provider = _Provider(
+        [
+            LLMResponse(content="running tools", tool_calls=tool_calls),
+            LLMResponse(content="final after u2", tool_calls=[]),
+        ]
+    )
+
+    class _Source:
+        def __init__(self) -> None:
+            self.drain_count = 0
+            self.pending = [
+                TurnUserInput(
+                    item_id="item-2",
+                    ordinal=1,
+                    content="u2",
+                    media=(),
+                    metadata={},
+                    timestamp=datetime.now(UTC),
+                )
+            ]
+            self.consumed: list[TurnUserInput] = []
+
+        async def drain(self) -> tuple[TurnUserInput, ...]:
+            self.drain_count += 1
+            if self.drain_count == 1:
+                return ()
+            items = tuple(self.pending)
+            self.pending.clear()
+            self.consumed.extend(items)
+            return items
+
+        async def seal_or_drain(self) -> tuple[TurnUserInput, ...]:
+            return ()
+
+        def consumed_inputs(self) -> tuple[TurnUserInput, ...]:
+            return tuple(self.consumed)
+
+    tools = ToolRegistry()
+    for index in range(10):
+        tools.register(_DummyTool(f"tool-{index}"), always_on=True)
+    reasoner = DefaultReasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider),
+                light_provider=cast(Any, provider),
+            ),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=40,
+        context=cast(
+            Any,
+            SimpleNamespace(
+                build_user_message_content=(
+                    lambda text, media, *, message_timestamp: text
+                )
+            ),
+        ),
+    )
+
+    result = asyncio.run(
+        reasoner.run(
+            [{"role": "user", "content": "u1"}],
+            turn_input_source=cast(Any, _Source()),
+        )
+    )
+
+    assert result.reply == "final after u2"
+    second_messages = provider.calls[1]["messages"]
+    assistant_batch = next(
+        message for message in second_messages if message.get("tool_calls")
+    )
+    assert [
+        call["function"]["name"]
+        for call in cast(list[dict[str, Any]], assistant_batch["tool_calls"])
+    ] == [f"tool-{index}" for index in range(10)]
+    tool_results = [message for message in second_messages if message["role"] == "tool"]
+    assert [message["tool_call_id"] for message in tool_results] == [
+        f"call-{index}" for index in range(10)
+    ]
+    assert all(
+        f"tool-{index}-ok" in cast(str, message["content"])
+        for index, message in enumerate(tool_results)
+    )
+    u2_index = next(
+        index
+        for index, message in enumerate(second_messages)
+        if message == {"role": "user", "content": "u2"}
+    )
+    assert all(second_messages.index(message) < u2_index for message in tool_results)
 
 
 def test_default_reasoner_blocks_disabled_tool_even_if_model_calls_it():

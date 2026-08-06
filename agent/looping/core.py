@@ -907,6 +907,8 @@ class AgentLoop:
         sender: str = "user",
         media: list[str] | None = None,
         metadata: dict[str, object] | None = None,
+        turn_input_source: object | None = None,
+        timestamp: datetime | None = None,
         turn_id: str = "",
         stateless: bool = False,
         runtime_selector: RuntimeSelector = "stable",
@@ -914,6 +916,8 @@ class AgentLoop:
         """执行直接消息，并按需隔离会话历史与持久化。"""
 
         inbound_metadata = dict(metadata or {})
+        if turn_input_source is not None:
+            inbound_metadata["_control_turn_input_source"] = turn_input_source
         if stateless:
             inbound_metadata.update(
                 {
@@ -944,6 +948,7 @@ class AgentLoop:
             content=content,
             media=list(media or []),
             metadata=inbound_metadata,
+            timestamp=timestamp or datetime.now().astimezone(),
         )
         response = await self._process_with_runtime_admission(
             msg,

@@ -2924,9 +2924,8 @@ function MobileComposer({
         </button>
         {snapshot.composer.canStop || stopping ? (
           <ComposerActionButton mode="stop" className={stopping ? "pending" : undefined} onClick={onStop} label={stopping ? "正在中止" : "中止回答"} disabled={stopping} />
-        ) : (
-          <ComposerActionButton mode="send" onClick={onSend} label={sendPending ? "正在保存消息" : "发送消息"} disabled={!canSubmit} />
-        )}
+        ) : null}
+        <ComposerActionButton mode="send" onClick={onSend} label={sendPending ? "正在保存消息" : "发送消息"} disabled={!canSubmit} />
         </div>
       </div>
     </div>
