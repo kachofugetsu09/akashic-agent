@@ -346,13 +346,14 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
     # 1. 插件版本保持不变，用 server 内容变化制造同版本新 revision。
     source.mkdir(parents=True, exist_ok=True)
     _ = (source / "plugin.py").write_text(
+        "import sys\n"
         "from agent.plugins import McpServerSpec, Plugin\n"
         "class RuntimeMcpPlugin(Plugin):\n"
         "    name = 'runtime_mcp'\n"
         "    version = '1.0.0'\n"
         "    @classmethod\n"
         "    def mcp_servers(cls):\n"
-        "        return [McpServerSpec(name='runtime_probe', command=('python', 'server.py'))]\n",
+        "        return [McpServerSpec(name='runtime_probe', command=(sys.executable, 'server.py'))]\n",
         encoding="utf-8",
     )
 
