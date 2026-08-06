@@ -192,7 +192,9 @@ async def test_recovered_mobile_handoff_in_interrupted_attempt_is_not_reenqueued
 
 
 @pytest.mark.asyncio
-async def test_worker_executes_different_threads_without_blocking_consumer(tmp_path: Path) -> None:
+async def test_worker_executes_different_threads_without_blocking_consumer(
+    tmp_path: Path,
+) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     release = asyncio.Event()
     first_started = asyncio.Event()
@@ -230,17 +232,18 @@ async def test_worker_executes_different_threads_without_blocking_consumer(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_worker_admits_repeated_messages_into_one_active_turn(tmp_path: Path) -> None:
+async def test_worker_waits_for_terminal_before_admitting_next_message(
+    tmp_path: Path,
+) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     release = asyncio.Event()
-    consumed: list[str] = []
+    first_started = asyncio.Event()
 
     async def execute(request: TurnRequest) -> str:
-        source = request.metadata["_controlTurnInputSource"]
-        await release.wait()
-        consumed.extend(item.content for item in await source.drain())
-        assert not await source.seal_or_drain()
-        return "+".join([request.input, *consumed])
+        if request.input == "u1":
+            first_started.set()
+            await release.wait()
+        return request.input
 
     runtime = ConversationRuntime(store, execute)
     bus = _Bus()
@@ -249,26 +252,17 @@ async def test_worker_admits_repeated_messages_into_one_active_turn(tmp_path: Pa
     bus.inbound.put_nowait(InboundMessage("telegram", "user", "same", "u1"))
     bus.inbound.put_nowait(InboundMessage("telegram", "user", "same", "u2"))
 
-    async def both_inputs_checkpointed() -> None:
-        while True:
-            turns = store.list_turns("telegram:same")
-            if turns and len(
-                [item for item in turns[0].items if item.kind.value == "userMessage"]
-            ) == 2:
-                return
-            await asyncio.sleep(0)
-
-    await asyncio.wait_for(both_inputs_checkpointed(), 1)
+    await asyncio.wait_for(first_started.wait(), 1)
+    assert len(store.list_turns("telegram:same")) == 1
     assert bus.completed == []
     release.set()
     _ = await asyncio.wait_for(bus.completions.get(), 1)
     _ = await asyncio.wait_for(bus.completions.get(), 1)
 
-    assert consumed == ["u2"]
-    assert [message.content for message in bus.outbound] == ["u1+u2"]
+    assert [message.content for message in bus.outbound] == ["u1", "u2"]
     turns = store.list_turns("telegram:same")
-    assert len(turns) == 1
-    assert turns[0].status is TurnStatus.COMPLETED
+    assert len(turns) == 2
+    assert all(turn.status is TurnStatus.COMPLETED for turn in turns)
     worker.stop()
     await worker_task
     await runtime.shutdown()
@@ -276,7 +270,9 @@ async def test_worker_admits_repeated_messages_into_one_active_turn(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_channel_adapter_preserves_full_outbound_projection(tmp_path: Path) -> None:
+async def test_channel_adapter_preserves_full_outbound_projection(
+    tmp_path: Path,
+) -> None:
     store = SessionStore(tmp_path / "sessions.db")
 
     async def execute(_request: TurnRequest) -> ControlExecutionResult:

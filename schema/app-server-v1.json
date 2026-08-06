@@ -395,41 +395,6 @@
       ],
       "title": "TurnStartParams",
       "type": "object"
-    },
-    "turn/steer": {
-      "additionalProperties": false,
-      "properties": {
-        "expectedTurnId": {
-          "maxLength": 128,
-          "minLength": 1,
-          "title": "Expectedturnid",
-          "type": "string"
-        },
-        "input": {
-          "maxLength": 1048576,
-          "minLength": 1,
-          "title": "Input",
-          "type": "string"
-        },
-        "metadata": {
-          "additionalProperties": true,
-          "title": "Metadata",
-          "type": "object"
-        },
-        "threadId": {
-          "maxLength": 512,
-          "minLength": 1,
-          "title": "Threadid",
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId",
-        "expectedTurnId",
-        "input"
-      ],
-      "title": "TurnSteerParams",
-      "type": "object"
     }
   },
   "notifications": [

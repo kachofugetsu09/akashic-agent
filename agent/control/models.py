@@ -60,11 +60,6 @@ class TurnStatus(StrEnum):
         }
 
 
-class TurnAdmissionKind(StrEnum):
-    STARTED = "started"
-    STEERED = "steered"
-
-
 class TurnItemKind(StrEnum):
     USER_MESSAGE = "userMessage"
     ASSISTANT_MESSAGE = "assistantMessage"

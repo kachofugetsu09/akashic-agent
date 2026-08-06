@@ -10,7 +10,6 @@ import pytest
 from agent.control.errors import ThreadBusyError
 from agent.control.events import TurnEvent
 from agent.control.models import (
-    TurnAdmissionKind,
     TurnItem,
     TurnItemKind,
     TurnRecord,
@@ -26,9 +25,7 @@ from session.store import SessionStore
 
 def _assert_single_terminal(runtime: ConversationRuntime, turn_id: str) -> None:
     terminal = [
-        event
-        for event in runtime._history[turn_id]
-        if event.method == "turn/completed"
+        event for event in runtime._history[turn_id] if event.method == "turn/completed"
     ]
     assert len(terminal) == 1
 
@@ -59,7 +56,9 @@ async def test_runtime_persists_events_and_terminal_result(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_runtime_admits_same_thread_input_and_interrupts_exact_turn(tmp_path: Path) -> None:
+async def test_runtime_rejects_same_thread_input_and_interrupts_exact_turn(
+    tmp_path: Path,
+) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     reached = asyncio.Event()
 
@@ -71,27 +70,11 @@ async def test_runtime_admits_same_thread_input_and_interrupts_exact_turn(tmp_pa
     runtime = ConversationRuntime(store, execute)
     first = await runtime.start_turn(TurnRequest("programmatic:test", "held"))
     await reached.wait()
-    second = await runtime.start_turn(TurnRequest("programmatic:test", "follow-up"))
-    assert second.id == first.id
-    assert second.admission is TurnAdmissionKind.STEERED
-    third = await runtime.steer_turn(
-        TurnRequest("programmatic:test", "strict-follow-up"),
-        expected_turn_id=first.id,
-    )
-    assert third.id == first.id
-    assert third.admission is TurnAdmissionKind.STEERED
-    with pytest.raises(ThreadBusyError, match="active turn 不匹配"):
-        await runtime.steer_turn(
-            TurnRequest("programmatic:test", "stale"),
-            expected_turn_id="turn-stale",
-        )
+    with pytest.raises(ThreadBusyError, match="thread 已有 active turn"):
+        await runtime.start_turn(TurnRequest("programmatic:test", "follow-up"))
     checkpoint = store.read_turn(first.id)
     assert checkpoint is not None
-    assert [item.data["content"] for item in checkpoint.items] == [
-        "held",
-        "follow-up",
-        "strict-follow-up",
-    ]
+    assert [item.data["content"] for item in checkpoint.items] == ["held"]
     record = await first.interrupt()
     assert record.status is TurnStatus.INTERRUPTED
     _assert_single_terminal(runtime, first.id)
@@ -185,7 +168,7 @@ async def test_runtime_seal_rejects_late_input_until_terminal(tmp_path: Path) ->
 
     async def execute(request: TurnRequest) -> str:
         source = request.metadata["_controlTurnInputSource"]
-        assert not await source.seal_or_drain()
+        await source.seal()
         sealed.set()
         await release.wait()
         return "done"
@@ -193,7 +176,7 @@ async def test_runtime_seal_rejects_late_input_until_terminal(tmp_path: Path) ->
     runtime = ConversationRuntime(store, execute)
     first = await runtime.start_turn(TurnRequest("programmatic:seal", "first"))
     await sealed.wait()
-    with pytest.raises(ThreadBusyError, match="已封口"):
+    with pytest.raises(ThreadBusyError, match="thread 已有 active turn"):
         await runtime.start_turn(TurnRequest("programmatic:seal", "late"))
     interrupt = asyncio.create_task(first.interrupt())
     await asyncio.sleep(0)
@@ -206,7 +189,9 @@ async def test_runtime_seal_rejects_late_input_until_terminal(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_invalid_initial_input_releases_admission_capacity(tmp_path: Path) -> None:
+async def test_invalid_initial_input_releases_admission_capacity(
+    tmp_path: Path,
+) -> None:
     store = SessionStore(tmp_path / "sessions.db")
 
     async def execute(_request: TurnRequest) -> str:
@@ -313,7 +298,9 @@ async def test_runtime_persists_structured_tool_items_and_usage(tmp_path: Path) 
         for event in events
         if event.method == "item/assistantMessage/delta"
     ] == ["ans", "wer"]
-    tool_events = [event for event in events if event.data.get("item") == tool_item.to_dict()]
+    tool_events = [
+        event for event in events if event.data.get("item") == tool_item.to_dict()
+    ]
     assert [event.method for event in tool_events] == ["item/started", "item/completed"]
     await runtime.shutdown()
     store.close()
@@ -344,9 +331,7 @@ async def test_runtime_replays_large_delta_stream_without_detaching_subscriber(
     result = await handle.result()
 
     delta_events = [
-        event
-        for event in events
-        if event.method == "item/assistantMessage/delta"
+        event for event in events if event.method == "item/assistantMessage/delta"
     ]
     assistant_item_id = cast(str, delta_events[0].data["itemId"])
     assistant_events = [
@@ -433,7 +418,9 @@ async def test_interrupt_closes_and_persists_open_tool_item(tmp_path: Path) -> N
         return await _executor_with_open_tool(request, started)
 
     runtime = ConversationRuntime(store, execute)
-    handle = await runtime.start_turn(TurnRequest("programmatic:interrupt-item", "hello"))
+    handle = await runtime.start_turn(
+        TurnRequest("programmatic:interrupt-item", "hello")
+    )
     await started.wait()
     result = await handle.interrupt()
     events = [event async for event in handle.events()]
@@ -447,7 +434,9 @@ async def test_interrupt_closes_and_persists_open_tool_item(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_shutdown_cancel_closes_and_persists_open_tool_item(tmp_path: Path) -> None:
+async def test_shutdown_cancel_closes_and_persists_open_tool_item(
+    tmp_path: Path,
+) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     started = asyncio.Event()
 

@@ -16,6 +16,7 @@ from agent.lifecycle.phase import (
 )
 from agent.lifecycle.types import BeforeTurnCtx, TurnState
 from session.memory_policy import excludes_memory
+from session.manager import logical_history_unit_count
 
 if TYPE_CHECKING:
     from agent.core.passive_turn import ContextStore
@@ -60,7 +61,9 @@ class _AcquireSessionModule:
 
     async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
         state = frame.input
-        require_existing = state.msg.metadata.pop("require_existing_session", False) is True
+        require_existing = (
+            state.msg.metadata.pop("require_existing_session", False) is True
+        )
         session = (
             self._session_manager.get_existing(state.session_key)
             if require_existing
@@ -145,7 +148,7 @@ class _MemoryContextGuardModule:
             getattr(session, "last_consolidated", 0),
             len(messages),
         )
-        pending = len(messages) - last
+        pending = logical_history_unit_count(messages, start_index=last)
         if pending < self._threshold:
             return frame
 

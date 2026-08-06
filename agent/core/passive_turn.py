@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -56,7 +57,10 @@ from agent.lifecycle.phases.before_reasoning import (
     BeforeReasoningFrame,
     default_before_reasoning_modules,
 )
-from agent.lifecycle.phases.before_step import BeforeStepFrame, default_before_step_modules
+from agent.lifecycle.phases.before_step import (
+    BeforeStepFrame,
+    default_before_step_modules,
+)
 from agent.lifecycle.phases.before_turn import (
     BeforeTurnFrame,
     MemoryConsolidator,
@@ -98,7 +102,9 @@ from core.common.diagnostic_log import diagnostic_context, diagnostic_line
 logger = logging.getLogger(__name__)
 
 
-def _persistence_from_metadata(metadata: dict[str, Any] | None) -> TurnPersistencePolicy:
+def _persistence_from_metadata(
+    metadata: dict[str, Any] | None,
+) -> TurnPersistencePolicy:
     return TurnPersistencePolicy(
         persist_user=not bool((metadata or {}).get("omit_user_turn")),
         persist_assistant=not bool((metadata or {}).get("omit_assistant_turn")),
@@ -360,9 +366,11 @@ class PassiveTurnPipeline:
                 consolidator=self._memory_consolidator,
                 plugin_modules=cast(
                     "list[Any]",
-                    self._before_turn_plugin_modules
-                    if plugin_modules is None
-                    else plugin_modules,
+                    (
+                        self._before_turn_plugin_modules
+                        if plugin_modules is None
+                        else plugin_modules
+                    ),
                 ),
             ),
             frame_factory=BeforeTurnFrame,
@@ -380,9 +388,11 @@ class PassiveTurnPipeline:
                 self._context,
                 plugin_modules=cast(
                     "list[Any]",
-                    self._before_reasoning_plugin_modules
-                    if plugin_modules is None
-                    else plugin_modules,
+                    (
+                        self._before_reasoning_plugin_modules
+                        if plugin_modules is None
+                        else plugin_modules
+                    ),
                 ),
             ),
             frame_factory=BeforeReasoningFrame,
@@ -398,9 +408,11 @@ class PassiveTurnPipeline:
                 self._session,
                 plugin_modules=cast(
                     "list[Any]",
-                    self._after_reasoning_plugin_modules
-                    if plugin_modules is None
-                    else plugin_modules,
+                    (
+                        self._after_reasoning_plugin_modules
+                        if plugin_modules is None
+                        else plugin_modules
+                    ),
                 ),
             ),
             frame_factory=AfterReasoningFrame,
@@ -418,9 +430,11 @@ class PassiveTurnPipeline:
                 self._history_window,
                 plugin_modules=cast(
                     "list[Any]",
-                    self._after_turn_plugin_modules
-                    if plugin_modules is None
-                    else plugin_modules,
+                    (
+                        self._after_turn_plugin_modules
+                        if plugin_modules is None
+                        else plugin_modules
+                    ),
                 ),
             ),
             frame_factory=AfterTurnFrame,
@@ -430,7 +444,10 @@ class PassiveTurnPipeline:
         snapshot = get_current_runtime_snapshot()
         if snapshot is None:
             return self._phases
-        if self._snapshot_phases is None or self._snapshot_phases[0] != snapshot.snapshot_id:
+        if (
+            self._snapshot_phases is None
+            or self._snapshot_phases[0] != snapshot.snapshot_id
+        ):
             self._snapshot_phases = (
                 snapshot.snapshot_id,
                 _PassivePhaseBundle(
@@ -523,8 +540,10 @@ class PassiveTurnPipeline:
 
                 # Phase 2: BeforeReasoning 模块链（工具上下文、BeforeReasoning 事件、prompt warmup）。
                 with diagnostic_context(phase="before_reasoning"):
-                    before_reasoning = await self._runtime_phases().before_reasoning.run(
-                        BeforeReasoningInput(state=state, before_turn=before_turn)
+                    before_reasoning = (
+                        await self._runtime_phases().before_reasoning.run(
+                            BeforeReasoningInput(state=state, before_turn=before_turn)
+                        )
                     )
                 if before_reasoning.abort:
                     logger.info(
@@ -838,6 +857,7 @@ class DefaultContextStore(ContextStore):
             history_messages=history_messages,
         )
 
+
 class Reasoner(ABC):
 
     @abstractmethod
@@ -924,33 +944,41 @@ class DefaultReasoner(Reasoner):
         self._prompt_render_plugin_modules: list[object] = []
         self._before_step_plugin_modules: list[object] = []
         self._after_step_plugin_modules: list[object] = []
-        self._snapshot_step_phases: tuple[
-            str,
+        self._snapshot_step_phases: (
             tuple[
-                Phase[BeforeStepInput, BeforeStepCtx, BeforeStepFrame],
-                Phase[AfterStepCtx, AfterStepCtx, AfterStepFrame],
-            ],
-        ] | None = None
-        self._snapshot_prompt_render_phase: tuple[
-            str,
-            Phase[PromptRenderInput, PromptRenderResult, PromptRenderFrame],
-        ] | None = None
+                str,
+                tuple[
+                    Phase[BeforeStepInput, BeforeStepCtx, BeforeStepFrame],
+                    Phase[AfterStepCtx, AfterStepCtx, AfterStepFrame],
+                ],
+            ]
+            | None
+        ) = None
+        self._snapshot_prompt_render_phase: (
+            tuple[
+                str,
+                Phase[PromptRenderInput, PromptRenderResult, PromptRenderFrame],
+            ]
+            | None
+        ) = None
         self._tool_executor = ToolExecutor([])
-        self._stream_sink_factory: Callable[
-            [object], Callable[[dict[str, str] | str], Awaitable[None]] | None
-        ] | None = None
+        self._stream_sink_factory: (
+            Callable[[object], Callable[[dict[str, str] | str], Awaitable[None]] | None]
+            | None
+        ) = None
         bus = event_bus or EventBus()
         self._bus = bus
         self._before_step = self._build_before_step_phase()
         self._after_step = self._build_after_step_phase()
-        self._prompt_render: Phase[
-            PromptRenderInput,
-            PromptRenderResult,
-            PromptRenderFrame,
-        ] | None = (
-            self._build_prompt_render_phase(context)
-            if context is not None
-            else None
+        self._prompt_render: (
+            Phase[
+                PromptRenderInput,
+                PromptRenderResult,
+                PromptRenderFrame,
+            ]
+            | None
+        ) = (
+            self._build_prompt_render_phase(context) if context is not None else None
         )
 
     def add_tool_hooks(self, hooks: list["ToolHook"]) -> None:
@@ -990,9 +1018,11 @@ class DefaultReasoner(Reasoner):
                 self._bus,
                 plugin_modules=cast(
                     "list[Any]",
-                    self._before_step_plugin_modules
-                    if plugin_modules is None
-                    else plugin_modules,
+                    (
+                        self._before_step_plugin_modules
+                        if plugin_modules is None
+                        else plugin_modules
+                    ),
                 ),
             ),
             frame_factory=BeforeStepFrame,
@@ -1007,9 +1037,11 @@ class DefaultReasoner(Reasoner):
                 self._bus,
                 plugin_modules=cast(
                     "list[Any]",
-                    self._after_step_plugin_modules
-                    if plugin_modules is None
-                    else plugin_modules,
+                    (
+                        self._after_step_plugin_modules
+                        if plugin_modules is None
+                        else plugin_modules
+                    ),
                 ),
             ),
             frame_factory=AfterStepFrame,
@@ -1026,9 +1058,11 @@ class DefaultReasoner(Reasoner):
                 context,
                 plugin_modules=cast(
                     "list[Any]",
-                    self._prompt_render_plugin_modules
-                    if plugin_modules is None
-                    else plugin_modules,
+                    (
+                        self._prompt_render_plugin_modules
+                        if plugin_modules is None
+                        else plugin_modules
+                    ),
                 ),
             ),
             frame_factory=PromptRenderFrame,
@@ -1080,10 +1114,10 @@ class DefaultReasoner(Reasoner):
 
     def set_stream_sink_factory(
         self,
-        factory: Callable[
-            [object], Callable[[dict[str, str] | str], Awaitable[None]] | None
-        ]
-        | None,
+        factory: (
+            Callable[[object], Callable[[dict[str, str] | str], Awaitable[None]] | None]
+            | None
+        ),
     ) -> None:
         self._stream_sink_factory = factory
 
@@ -1126,9 +1160,11 @@ class DefaultReasoner(Reasoner):
             dict(cast(dict[str, Any], item)) for item in raw_attempt_replay
         ]
         raw_prior_input_count = metadata.get("_control_prior_input_count", 0)
-        if not isinstance(raw_prior_input_count, int) or isinstance(
-            raw_prior_input_count, bool
-        ) or raw_prior_input_count < 0:
+        if (
+            not isinstance(raw_prior_input_count, int)
+            or isinstance(raw_prior_input_count, bool)
+            or raw_prior_input_count < 0
+        ):
             raise RuntimeError("control prior input count 契约无效")
         prior_input_count = raw_prior_input_count
         raw_prior_tool_chain = metadata.get("_control_prior_tool_chain", [])
@@ -1150,7 +1186,9 @@ class DefaultReasoner(Reasoner):
                 preloaded_order if preloaded_order else "[]",
             )
         stream_sink = (
-            self._stream_sink_factory(msg) if self._stream_sink_factory is not None else None
+            self._stream_sink_factory(msg)
+            if self._stream_sink_factory is not None
+            else None
         )
         disabled_tools = _disabled_tools_from_msg(msg)
         raw_turn_input_source = (getattr(msg, "metadata", None) or {}).get(
@@ -1160,7 +1198,7 @@ class DefaultReasoner(Reasoner):
         if raw_turn_input_source is not None:
             if not all(
                 callable(getattr(raw_turn_input_source, name, None))
-                for name in ("drain", "seal_or_drain", "consumed_inputs")
+                for name in ("seal", "consumed_inputs")
             ):
                 raise RuntimeError("control turn input source 契约无效")
             turn_input_source = cast(TurnInputSource, raw_turn_input_source)
@@ -1243,6 +1281,8 @@ class DefaultReasoner(Reasoner):
                         tool_event_chat_id=msg.chat_id,
                         disabled_tools=disabled_tools,
                         turn_input_source=turn_input_source,
+                        initial_attempt_replay=attempt_replay,
+                        initial_prior_tool_groups=len(prior_tool_chain),
                     )
                 finally:
                     end_turn_search_scope(search_scope)
@@ -1280,9 +1320,7 @@ class DefaultReasoner(Reasoner):
                 if attempt == 0:
                     retry_trace["selected_plan"] = plan["name"]
                     retry_trace["trimmed_sections"] = sorted(plan["disabled_sections"])
-                if prior_input_count == 0 and isinstance(
-                    llm_user_content, (str, list)
-                ):
+                if prior_input_count == 0 and isinstance(llm_user_content, (str, list)):
                     retry_trace["llm_user_content"] = llm_user_content
                 if (
                     prior_input_count == 0
@@ -1290,7 +1328,9 @@ class DefaultReasoner(Reasoner):
                     and llm_context_frame.strip()
                 ):
                     retry_trace["llm_context_frame"] = llm_context_frame
-                retry_trace["react_stats"] = dict(result.metadata.get("react_stats") or {})
+                retry_trace["react_stats"] = dict(
+                    result.metadata.get("react_stats") or {}
+                )
                 raw_model_state = result.metadata.get("model_state")
                 raw_react_compaction = result.metadata.get("react_compaction")
                 if raw_react_compaction is not None and not isinstance(
@@ -1317,7 +1357,6 @@ class DefaultReasoner(Reasoner):
                     react_compaction=(
                         cast(dict[str, object], raw_react_compaction)
                         if isinstance(raw_react_compaction, dict)
-                        and not prior_tool_chain
                         else None
                     ),
                     mobile_attention=cast(
@@ -1379,6 +1418,8 @@ class DefaultReasoner(Reasoner):
         tool_event_chat_id: str = "",
         disabled_tools: set[str] | None = None,
         turn_input_source: TurnInputSource | None = None,
+        initial_attempt_replay: list[dict[str, Any]] | None = None,
+        initial_prior_tool_groups: int = 0,
     ) -> ReasonerResult:
         # 1. 初始化消息上下文、本轮工具轨迹。
         messages = list(initial_messages)
@@ -1398,12 +1439,24 @@ class DefaultReasoner(Reasoner):
         react_usages: list[ModelUsage] = []
         react_finish_reasons: list[str | None] = []
         disabled = set(disabled_tools or set())
+        compaction_base, completed_replay_batches, current_query = (
+            _query_compaction_seed(messages, initial_attempt_replay or [])
+        )
+        if len(completed_replay_batches) != initial_prior_tool_groups:
+            raise RuntimeError(
+                "control attempt replay 与 prior tool chain 数量不一致: "
+                f"replay={len(completed_replay_batches)} "
+                f"tool_chain={initial_prior_tool_groups}"
+            )
         compactor = QueryCompactor(
             provider=self._llm.provider,
             model=self._llm_config.model,
-            base_messages=messages,
+            base_messages=compaction_base,
             scope_id=current_turn_id.get() or tool_event_session_key,
+            completed_batches=completed_replay_batches,
+            current_query=current_query,
         )
+        pending_start_override: int | None = compactor.pending_start
         before_step_phase, after_step_phase = self._runtime_step_phases()
         if self._tool_search_enabled:
             always_on = self._tools.get_always_on_names()
@@ -1453,25 +1506,25 @@ class DefaultReasoner(Reasoner):
                     finish_reasons=react_finish_reasons,
                     mobile_attention=mobile_attention,
                 )
-                if await self._continue_for_pending_turn_inputs(
-                    messages,
-                    result.reply,
-                    turn_input_source,
-                ):
-                    iteration = -1
-                    continue
+                await self._seal_turn_input_source(turn_input_source)
                 return result
-            await self._drain_turn_inputs_into_messages(messages, turn_input_source)
-            batch_start = len(messages)
+            batch_start = (
+                pending_start_override
+                if pending_start_override is not None
+                else len(messages)
+            )
+            pending_start_override = None
             # 3. BeforeStep 模块链：token 估算、BeforeStep 事件、提示注入。
-            step_ctx = await before_step_phase.run(BeforeStepInput(
-                session_key=tool_event_session_key,
-                channel=tool_event_channel,
-                chat_id=tool_event_chat_id,
-                iteration=iteration,
-                messages=messages,
-                visible_names=visible_names,
-            ))
+            step_ctx = await before_step_phase.run(
+                BeforeStepInput(
+                    session_key=tool_event_session_key,
+                    channel=tool_event_channel,
+                    chat_id=tool_event_chat_id,
+                    iteration=iteration,
+                    messages=messages,
+                    visible_names=visible_names,
+                )
+            )
             if step_ctx.early_stop:
                 summary = await self._summarize_incomplete_progress(
                     messages,
@@ -1497,12 +1550,7 @@ class DefaultReasoner(Reasoner):
                     finish_reasons=react_finish_reasons,
                     mobile_attention=mobile_attention,
                 )
-                if await self._continue_for_pending_turn_inputs(
-                    messages,
-                    result.reply,
-                    turn_input_source,
-                ):
-                    continue
+                await self._seal_turn_input_source(turn_input_source)
                 return result
             # 4. 构造本轮工具 schema，并按完整 provider input 判断压缩水位。
             schema_names: list[str] | set[str] | None = (
@@ -1525,7 +1573,11 @@ class DefaultReasoner(Reasoner):
             logger.info(
                 "[LLM调用] 第%d轮，可见工具=%s input_tokens~=%d quality=%s compacted=%s",
                 iteration + 1,
-                f"{len(visible_names)}个" if visible_names is not None else "全部（tool_search未开启）",
+                (
+                    f"{len(visible_names)}个"
+                    if visible_names is not None
+                    else "全部（tool_search未开启）"
+                ),
                 prepared.estimated_tokens,
                 prepared.estimate_quality,
                 prepared.compacted,
@@ -1591,23 +1643,23 @@ class DefaultReasoner(Reasoner):
                 if isinstance(model_state, dict):
                     retry_assistant["model_state"] = model_state
                 messages.append(retry_assistant)
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        "你刚才只输出了思考过程，没有给出正式回复或工具调用。"
-                        "请继续：需要操作时通过已提供的结构化工具调用，"
-                        "不要把工具调用协议写入文本；否则直接回复用户。"
-                    ),
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "你刚才只输出了思考过程，没有给出正式回复或工具调用。"
+                            "请继续：需要操作时通过已提供的结构化工具调用，"
+                            "不要把工具调用协议写入文本；否则直接回复用户。"
+                        ),
+                    }
+                )
                 retry_prepared = await compactor.prepare(
                     messages,
                     pending_start=batch_start,
                     tools=tool_schemas,
                 )
                 if retry_prepared.compacted:
-                    react_usages.append(
-                        retry_prepared.summary_usage or ModelUsage()
-                    )
+                    react_usages.append(retry_prepared.summary_usage or ModelUsage())
                 batch_start = retry_prepared.pending_start
                 request_message_count = len(messages)
                 try:
@@ -1689,7 +1741,6 @@ class DefaultReasoner(Reasoner):
 
                 # 7. 逐个执行本轮工具调用。
                 iter_calls: list[dict[str, Any]] = []
-                restart_after_pending_input = False
                 for tool_batch_index, tool_call in enumerate(response.tool_calls):
                     if tool_call.name in disabled:
                         await self._observe_tool_call_started(
@@ -1735,7 +1786,10 @@ class DefaultReasoner(Reasoner):
                         )
                         continue
                     # 6.1 deferred 工具未解锁时，先回填 select: 引导错误。
-                    if visible_names is not None and tool_call.name not in visible_names:
+                    if (
+                        visible_names is not None
+                        and tool_call.name not in visible_names
+                    ):
                         exec_result = await self._tool_executor.preflight(
                             ToolExecutionRequest(
                                 call_id=tool_call.id,
@@ -1800,7 +1854,7 @@ class DefaultReasoner(Reasoner):
                                     "result": result,
                                 }
                             )
-                            for skipped in response.tool_calls[tool_batch_index + 1:]:
+                            for skipped in response.tool_calls[tool_batch_index + 1 :]:
                                 append_tool_result(
                                     messages,
                                     tool_call_id=skipped.id,
@@ -1808,7 +1862,9 @@ class DefaultReasoner(Reasoner):
                                     tool_name=skipped.name,
                                     execution_status="skipped",
                                 )
-                            tool_chain.append({"text": response.content, "calls": iter_calls})
+                            tool_chain.append(
+                                {"text": response.content, "calls": iter_calls}
+                            )
                             summary = await self._summarize_incomplete_progress(
                                 messages,
                                 reason="tool_call_loop",
@@ -1833,13 +1889,7 @@ class DefaultReasoner(Reasoner):
                                 finish_reasons=react_finish_reasons,
                                 mobile_attention=mobile_attention,
                             )
-                            if await self._continue_for_pending_turn_inputs(
-                                messages,
-                                result.reply,
-                                turn_input_source,
-                            ):
-                                restart_after_pending_input = True
-                                break
+                            await self._seal_turn_input_source(turn_input_source)
                             return result
                         logger.warning(
                             "[工具未解锁] LLM 尝试调用 '%s'，但该工具 schema 不可见，引导模型先 tool_search",
@@ -1847,7 +1897,7 @@ class DefaultReasoner(Reasoner):
                         )
                         result = (
                             f"工具 '{tool_call.name}' 当前未加载（schema 不可见）。"
-                            f"请先调用 tool_search(query=\"select:{tool_call.name}\") 加载，"
+                            f'请先调用 tool_search(query="select:{tool_call.name}") 加载，'
                             "然后再调用该工具。不要放弃当前任务。"
                         )
                         append_tool_result(
@@ -1885,7 +1935,9 @@ class DefaultReasoner(Reasoner):
                     ) -> Any:
                         internal_arguments: dict[str, Any] = {}
                         if name == "tool_search" and visible_names is not None:
-                            internal_arguments["excluded_names"] = visible_names | disabled
+                            internal_arguments["excluded_names"] = (
+                                visible_names | disabled
+                            )
                         if name == "message_push":
                             internal_arguments["_commit_role"] = "passive"
                         return await self._tools.execute(
@@ -1895,7 +1947,9 @@ class DefaultReasoner(Reasoner):
                         )
 
                     _args_preview = support.log_preview(tool_call.arguments, 120)
-                    logger.info("[工具执行→] %s  args=%s", tool_call.name, _args_preview)
+                    logger.info(
+                        "[工具执行→] %s  args=%s", tool_call.name, _args_preview
+                    )
                     await self._observe_tool_call_started(
                         session_key=tool_event_session_key,
                         channel=tool_event_channel,
@@ -1907,13 +1961,15 @@ class DefaultReasoner(Reasoner):
                     )
                     # 工具调用统一先过 ToolExecutor：
                     # pre_hook 可改参/拒绝，真实执行后再补 post_hook trace。
-                    await self._bus.fanout(BeforeToolCallCtx(
-                        session_key=tool_event_session_key,
-                        channel=tool_event_channel,
-                        chat_id=tool_event_chat_id,
-                        tool_name=tool_call.name,
-                        arguments=dict(tool_call.arguments),
-                    ))
+                    await self._bus.fanout(
+                        BeforeToolCallCtx(
+                            session_key=tool_event_session_key,
+                            channel=tool_event_channel,
+                            chat_id=tool_event_chat_id,
+                            tool_name=tool_call.name,
+                            arguments=dict(tool_call.arguments),
+                        )
+                    )
                     exec_result = await self._tool_executor.execute(
                         ToolExecutionRequest(
                             call_id=tool_call.id,
@@ -1932,15 +1988,17 @@ class DefaultReasoner(Reasoner):
                     if exec_result.status == "success":
                         tools_used.append(tool_call.name)
                     result = exec_result.output
-                    await self._bus.fanout(AfterToolResultCtx(
-                        session_key=tool_event_session_key,
-                        channel=tool_event_channel,
-                        chat_id=tool_event_chat_id,
-                        tool_name=tool_call.name,
-                        arguments=dict(exec_result.final_arguments),
-                        result=str(result),
-                        status=exec_result.status,
-                    ))
+                    await self._bus.fanout(
+                        AfterToolResultCtx(
+                            session_key=tool_event_session_key,
+                            channel=tool_event_channel,
+                            chat_id=tool_event_chat_id,
+                            tool_name=tool_call.name,
+                            arguments=dict(exec_result.final_arguments),
+                            result=str(result),
+                            status=exec_result.status,
+                        )
+                    )
                     normalized = normalize_tool_result(result)
                     if normalized.mobile_attention is not None:
                         if exec_result.status != "success":
@@ -1973,7 +2031,10 @@ class DefaultReasoner(Reasoner):
                         tool_name=tool_call.name,
                         execution_status=exec_result.status,
                     )
-                    if exec_result.status == "success" and tool_call.name == "message_push":
+                    if (
+                        exec_result.status == "success"
+                        and tool_call.name == "message_push"
+                    ):
                         _collect_current_web_push_media(
                             outbound_media,
                             exec_result.final_arguments,
@@ -1989,7 +2050,9 @@ class DefaultReasoner(Reasoner):
                     ):
                         _newly_unlocked = [
                             name
-                            for name in self._discovery.unlock_names_from_result(normalized.text)
+                            for name in self._discovery.unlock_names_from_result(
+                                normalized.text
+                            )
                             if name not in visible_names and name not in disabled
                         ]
                         if _newly_unlocked:
@@ -2001,7 +2064,10 @@ class DefaultReasoner(Reasoner):
                                     if name not in seen_visible:
                                         visible_order.append(name)
                                         seen_visible.add(name)
-                            logger.info("[工具解锁] tool_search 新解锁: %s", sorted(_newly_unlocked))
+                            logger.info(
+                                "[工具解锁] tool_search 新解锁: %s",
+                                sorted(_newly_unlocked),
+                            )
                         else:
                             logger.info("[工具解锁] tool_search 未解锁新工具")
                     # tool_chain 持久化的是“执行后的事实”：
@@ -2044,7 +2110,7 @@ class DefaultReasoner(Reasoner):
                             iteration + 1,
                             tool_call.name,
                         )
-                        for skipped in response.tool_calls[tool_batch_index + 1:]:
+                        for skipped in response.tool_calls[tool_batch_index + 1 :]:
                             append_tool_result(
                                 messages,
                                 tool_call_id=skipped.id,
@@ -2052,7 +2118,9 @@ class DefaultReasoner(Reasoner):
                                 tool_name=skipped.name,
                                 execution_status="skipped",
                             )
-                        tool_chain.append({"text": response.content, "calls": iter_calls})
+                        tool_chain.append(
+                            {"text": response.content, "calls": iter_calls}
+                        )
                         summary = await self._summarize_incomplete_progress(
                             messages,
                             reason="tool_call_loop",
@@ -2077,18 +2145,10 @@ class DefaultReasoner(Reasoner):
                             finish_reasons=react_finish_reasons,
                             mobile_attention=mobile_attention,
                         )
-                        if await self._continue_for_pending_turn_inputs(
-                            messages,
-                            result.reply,
-                            turn_input_source,
-                        ):
-                            restart_after_pending_input = True
-                            break
+                        await self._seal_turn_input_source(turn_input_source)
                         return result
 
                 # 7. 本轮工具执行完后，记录 tool_chain。
-                if restart_after_pending_input:
-                    continue
                 tool_chain_group = {"text": response.content, "calls": iter_calls}
                 if response.thinking is not None:
                     tool_chain_group["reasoning_content"] = response.thinking
@@ -2105,19 +2165,21 @@ class DefaultReasoner(Reasoner):
                     tool_schemas,
                 )
                 # 7a. AfterStep 模块链（工具分支）：通知观察者本轮工具执行完毕。
-                after_step = await after_step_phase.run(AfterStepCtx(
-                    session_key=tool_event_session_key,
-                    channel=tool_event_channel,
-                    chat_id=tool_event_chat_id,
-                    iteration=iteration,
-                    context_tokens_estimate=pressure_tokens,
-                    tools_called=tuple(tc.name for tc in response.tool_calls),
-                    partial_reply=response.content or "",
-                    tools_used_so_far=tuple(tools_used),
-                    tool_chain_partial=tuple(tool_chain),
-                    partial_thinking=response.thinking,
-                    has_more=True,
-                ))
+                after_step = await after_step_phase.run(
+                    AfterStepCtx(
+                        session_key=tool_event_session_key,
+                        channel=tool_event_channel,
+                        chat_id=tool_event_chat_id,
+                        iteration=iteration,
+                        context_tokens_estimate=pressure_tokens,
+                        tools_called=tuple(tc.name for tc in response.tool_calls),
+                        partial_reply=response.content or "",
+                        tools_used_so_far=tuple(tools_used),
+                        tool_chain_partial=tuple(tool_chain),
+                        partial_thinking=response.thinking,
+                        has_more=True,
+                    )
+                )
                 if after_step.early_stop:
                     reason = after_step.early_stop_reason or "after_step"
                     logger.warning(
@@ -2149,12 +2211,7 @@ class DefaultReasoner(Reasoner):
                         finish_reasons=react_finish_reasons,
                         mobile_attention=mobile_attention,
                     )
-                    if await self._continue_for_pending_turn_inputs(
-                        messages,
-                        result.reply,
-                        turn_input_source,
-                    ):
-                        continue
+                    await self._seal_turn_input_source(turn_input_source)
                     return result
                 continue
 
@@ -2188,60 +2245,32 @@ class DefaultReasoner(Reasoner):
                     else None
                 ),
             )
-            if await self._continue_for_pending_turn_inputs(
-                messages,
-                result.reply,
-                turn_input_source,
-            ):
-                continue
+            await self._seal_turn_input_source(turn_input_source)
             messages.append({"role": "assistant", "content": response.content})
             # 8b. AfterStep 模块链（最终回复分支）：通知观察者本轮推理结束。
-            _ = await after_step_phase.run(AfterStepCtx(
-                session_key=tool_event_session_key,
-                channel=tool_event_channel,
-                chat_id=tool_event_chat_id,
-                iteration=iteration,
-                context_tokens_estimate=support.estimate_messages_tokens(messages),
-                tools_called=(),
-                partial_reply=response.content or "",
-                tools_used_so_far=tuple(tools_used),
-                tool_chain_partial=tuple(tool_chain),
-                partial_thinking=response.thinking,
-                has_more=False,
-            ))
+            _ = await after_step_phase.run(
+                AfterStepCtx(
+                    session_key=tool_event_session_key,
+                    channel=tool_event_channel,
+                    chat_id=tool_event_chat_id,
+                    iteration=iteration,
+                    context_tokens_estimate=support.estimate_messages_tokens(messages),
+                    tools_called=(),
+                    partial_reply=response.content or "",
+                    tools_used_so_far=tuple(tools_used),
+                    tool_chain_partial=tuple(tool_chain),
+                    partial_thinking=response.thinking,
+                    has_more=False,
+                )
+            )
             return result
 
+    @staticmethod
+    async def _seal_turn_input_source(source: TurnInputSource | None) -> None:
+        """在提交最终候选前封口 active attempt。"""
 
-    async def _drain_turn_inputs_into_messages(
-        self,
-        messages: list[dict[str, Any]],
-        source: TurnInputSource | None,
-    ) -> int:
-        """在模型调用前把已准入 pending 输入追加到上下文。"""
-
-        if source is None:
-            return 0
-        inputs = await source.drain()
-        self._append_turn_inputs(messages, inputs)
-        return len(inputs)
-
-    async def _continue_for_pending_turn_inputs(
-        self,
-        messages: list[dict[str, Any]],
-        candidate_reply: str,
-        source: TurnInputSource | None,
-    ) -> bool:
-        """原子 seal 最终候选；有新输入时保留候选上下文并继续。"""
-
-        if source is None:
-            return False
-        inputs = await source.seal_or_drain()
-        if not inputs:
-            return False
-        messages.append({"role": "assistant", "content": candidate_reply})
-        self._append_turn_inputs(messages, inputs)
-        logger.info("[同Turn输入] 最终候选后接收 %d 条输入，继续当前 turn", len(inputs))
-        return True
+        if source is not None:
+            await source.seal()
 
     def _append_turn_inputs(
         self,
@@ -2253,7 +2282,7 @@ class DefaultReasoner(Reasoner):
         if not inputs:
             return
         if self._context is None:
-            raise RuntimeError("same-turn input requires ContextBuilder")
+            raise RuntimeError("logical interaction input requires ContextBuilder")
         for item in inputs:
             messages.append(
                 {
@@ -2411,7 +2440,9 @@ class DefaultReasoner(Reasoner):
             "iteration_count": len(react_input_samples),
             "turn_input_sum_tokens": sum(react_input_samples),
             "turn_input_peak_tokens": max(react_input_samples, default=0),
-            "final_call_input_tokens": react_input_samples[-1] if react_input_samples else 0,
+            "final_call_input_tokens": (
+                react_input_samples[-1] if react_input_samples else 0
+            ),
         }
         if cache_seen:
             react_stats["cache_prompt_tokens"] = cache_prompt_tokens
@@ -2443,9 +2474,7 @@ class DefaultReasoner(Reasoner):
             "tools_unlocked": list(tools_unlocked or []),
             "tool_chain": list(tool_chain),
             "react_compaction": (
-                dict(react_compaction)
-                if react_compaction is not None
-                else None
+                dict(react_compaction) if react_compaction is not None else None
             ),
             "media": list(media),
             "visible_names": set(visible_names) if visible_names is not None else None,
@@ -2539,6 +2568,77 @@ class DefaultReasoner(Reasoner):
 # ── 模块级辅助函数 ──────────────────────────────────────────────
 
 
+def _query_compaction_seed(
+    messages: list[dict[str, Any]],
+    attempt_replay: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]], str | None]:
+    """把中断重放拆成可压缩的闭合工具组，并锚定完整 logical query。"""
+
+    # 1. 从最终 prompt 中精确定位 runtime 注入的连续 replay 区间。
+    if not attempt_replay:
+        return list(messages), [], None
+    replay_size = len(attempt_replay)
+    candidates = [
+        index
+        for index in range(len(messages) - replay_size + 1)
+        if messages[index : index + replay_size] == attempt_replay
+    ]
+    if not candidates:
+        raise RuntimeError("control attempt replay 未出现在最终模型 prompt 中")
+    replay_start = candidates[-1]
+    replay_end = replay_start + replay_size
+
+    # 2. 每个 assistant tool-call 与其完整 tool result 闭合为一个原子批次。
+    batches: list[list[dict[str, Any]]] = []
+    batch_start = 0
+    cursor = 0
+    while cursor < replay_size:
+        message = attempt_replay[cursor]
+        raw_calls = message.get("tool_calls")
+        if message.get("role") != "assistant" or not isinstance(raw_calls, list):
+            cursor += 1
+            continue
+        call_ids = {
+            str(call.get("id"))
+            for call in raw_calls
+            if isinstance(call, dict) and isinstance(call.get("id"), str)
+        }
+        if not call_ids or len(call_ids) != len(raw_calls):
+            raise RuntimeError("control attempt replay tool call identity 无效")
+        result_ids: set[str] = set()
+        batch_end = cursor + 1
+        while batch_end < replay_size:
+            result = attempt_replay[batch_end]
+            if result.get("role") != "tool":
+                break
+            result_id = result.get("tool_call_id")
+            if not isinstance(result_id, str):
+                raise RuntimeError("control attempt replay tool result identity 无效")
+            result_ids.add(result_id)
+            batch_end += 1
+        if result_ids != call_ids:
+            raise RuntimeError("control attempt replay 包含未闭合的工具调用")
+        batches.append(list(attempt_replay[batch_start:batch_end]))
+        batch_start = batch_end
+        cursor = batch_end
+
+    # 3. 摘要显式携带本 interaction 的全部 U；末尾未闭合片段保持原文热可见。
+    interaction_inputs = [
+        message.get("content")
+        for message in [*attempt_replay, *messages[replay_end:]]
+        if message.get("role") == "user"
+        and not (
+            isinstance(message.get("content"), str)
+            and is_context_frame(cast(str, message["content"]))
+        )
+    ]
+    current_query = json.dumps(
+        {"logical_interaction_inputs": interaction_inputs},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return list(messages[:replay_start]), batches, current_query
+
 
 def get_history_since_consolidated(
     session: "SessionLike",
@@ -2556,9 +2656,7 @@ def extract_model_facing_turn(
     if not messages:
         return None, None
     user_content = (
-        messages[-1].get("content")
-        if messages[-1].get("role") == "user"
-        else None
+        messages[-1].get("content") if messages[-1].get("role") == "user" else None
     )
     if len(messages) < 2:
         return user_content, None
@@ -2619,7 +2717,7 @@ def build_deferred_tools_hint(
     total = len(builtin) + sum(len(v) for v in mcp.values())
     lines.append(
         f"\n共 {total} 个。加载方式：\n"
-        "- 已知工具名 → tool_search(query=\"select:工具名\")，支持逗号分隔多个\n"
-        "- 描述功能   → tool_search(query=\"关键词\") 搜索匹配"
+        '- 已知工具名 → tool_search(query="select:工具名")，支持逗号分隔多个\n'
+        '- 描述功能   → tool_search(query="关键词") 搜索匹配'
     )
     return "\n".join(lines) + "\n\n"

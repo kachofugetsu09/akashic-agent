@@ -367,7 +367,7 @@ skills、长期记忆、检索结果和 recent context 必须带来源和信任�
 
 ### SES-007 普通输入续接未完成 Logical Interaction
 
-同一 session 没有 active execution attempt 时，普通 user input 创建 attempt；最新 logical interaction 尚未产生 terminal assistant 时，新 attempt 必须沿用同一 interaction identity，并看到此前全部有序 user input 和已经闭合的工具调用/结果。active attempt 期间 Mobile 普通发送不可用；channel 消息先通过 `/stop` 或等价中止结束 attempt，再由下一条普通输入续接。显式程序化 steer 仍必须携带预期 attempt ID；不匹配、已封口或已终态时明确拒绝。
+同一 session 没有 active execution attempt 时，普通 user input 创建 attempt；最新 logical interaction 尚未产生 terminal assistant 时，新 attempt 必须沿用同一 interaction identity，并看到此前全部有序 user input 和已经闭合的工具调用/结果。active attempt 期间普通 `turn/start` 明确返回 busy，Mobile 普通发送不可用；channel 消息先通过 `/stop` 或等价中止结束 attempt，再由下一条普通输入续接。控制协议不提供 steer/follow-up 输入模式。
 
 ### SES-008 Completed Interaction 显式拥有全部输入和唯一最终回复
 
@@ -415,6 +415,10 @@ session、channel、chat、source_ref 和预算在每次 post-response run 创�
 
 completed logical interaction 含多个 user message 时，Akasha 按显式 interaction identity 和 input ordinal 聚合全部用户输入，并以唯一 terminal assistant 作为输出，只建立一个学习样本。中止 attempt 的 `turns` checkpoint 只服务执行恢复，不直接进入在线学习或离线 rebuild；只有最终 transcript batch 成为 Akasha 权威输入。每条非空 user message 和 assistant 使用各自已持久化 embedding；多输入 dense 使用固定版本的归一化聚合。在线提交和离线 builder 必须共用相同 source IDs、文本连接、向量聚合和 digest 规则。新格式不得按相邻角色配对；旧数据只能走名称明确的 legacy 兼容路径。
 
+### MEM-011 历史投影按不可拆分逻辑单元保留
+
+`memory_window`、Markdown consolidation 的保留尾部、积压阈值、分页切点和 recent turns 必须使用同一个逻辑历史分组。显式 `control_turn_id` 的 `U1..Un+A_final` 是一个单元；已送达 proactive assistant 是一个独立单元。任何窗口或 consolidation 游标不得落入逻辑单元内部。单元展开后允许超过配置的消息条数；配置值表示单元数量，不是 token 硬上限。
+
 ## 9. 运行时、并发和出站
 
 ### RUN-001 同一聊天中被动回复优先
@@ -447,9 +451,9 @@ Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先�
 
 同一 `session_key` 同时只能有一个 active turn，channel、control 和 direct/programmatic 入口必须汇入同一个 session lane owner。不同 session 的 turn 可以并发；全局 active turn、请求字节和 runtime object 上限只负责有界准入，不得以跨 session 的整轮互斥实现。Turn 的 messages、文件读取状态、工具 trace、取消信号和 runtime snapshot 绑定属于 task-local 状态；共享 runtime service 只能保留有明确 owner、可并发使用或受短事务保护的状态。
 
-### RUN-008 Active Turn 输入在安全边界 drain 并原子封口
+### RUN-008 Active Attempt 只接受中断并原子终结
 
-active regular turn 的 pending input 由 ConversationRuntime 的 session lane owner 接纳。Reasoner 只能在一次 provider response 已结束或完整 tool batch 已闭合后 drain；最终回复前必须在同一 admission owner 下执行 `seal_or_drain`。有 pending input 时继续同一 turn；队列为空并封口后，迟到输入不得进入旧 turn，只能等待 terminal 后创建新 turn。
+ConversationRuntime 的 session lane owner 在 active attempt 上拒绝所有普通输入，只接受精确 `turn/interrupt`。Reasoner 最终回复前仍在同一 owner 下封口；中断和完成都必须提交唯一 terminal 状态。下一条普通输入只能在 terminal 后创建新 attempt，并由 durable predecessor 恢复同一未完成 logical interaction；不得存在运行中 drain user input 的隐式或显式入口。
 
 ### OUT-001 被动按 Turn 提交，主动按送达提交
 

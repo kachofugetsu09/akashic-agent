@@ -1059,21 +1059,16 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             )
         )
 
-        # 2. 同 thread 的第二个 start 必须注入 owner turn，并只产生一个 terminal。
+        # 2. 同 thread 的第二个 start 必须明确 busy，不能注入 owner turn。
         _create_barrier(
             model_url,
             "thread-conflict",
             {"mode": "complete", "content": "intermediate candidate"},
         )
-        _http_json(
-            "PUT",
-            f"{model_url}/control/script",
-            {"mode": "complete", "content": "steered final"},
-        )
         conflict_thread = _start_thread(first, "PC-06")
         conflict_turn = _start_turn(first, conflict_thread, "conflict owner")
         _wait_barrier(model_url, "thread-conflict")
-        steered = first.request_raw(
+        rejected = first.request_raw(
             "turn/start",
             {
                 "threadId": conflict_thread,
@@ -1083,7 +1078,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
         )
         _release_barrier(model_url, "thread-conflict")
         conflict_terminal = first.wait_terminal(conflict_turn)
-        steered_result = steered.get("result")
+        rejected_error = rejected.get("error")
         terminal_turn = _event_turn(conflict_terminal)
         user_inputs = [
             item.get("data", {}).get("content")
@@ -1093,14 +1088,14 @@ def _inside_failure_matrix(report_dir: Path) -> int:
         checks.append(
             CheckResult(
                 "PC-06",
-                isinstance(steered_result, dict)
-                and steered_result.get("id") == conflict_turn
-                and steered_result.get("admission") == "steered"
+                isinstance(rejected_error, dict)
+                and rejected_error.get("code") == -32011
+                and rejected_error.get("data") == {"retryable": True}
                 and _terminal_status(conflict_terminal) == "completed"
-                and terminal_turn.get("finalResponse") == "steered final"
-                and user_inputs == ["conflict owner", "must conflict"],
+                and terminal_turn.get("finalResponse") == "intermediate candidate"
+                and user_inputs == ["conflict owner"],
                 {
-                    "steered": steered_result,
+                    "rejected": rejected_error,
                     "ownerTerminal": conflict_terminal,
                     "userInputs": user_inputs,
                 },
@@ -1550,13 +1545,17 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             )
             _create_barrier(
                 model_url,
-                "pc16-same-turn",
-                {"mode": "complete", "content": "intermediate candidate"},
+                "pc16-strict-lane",
+                {"mode": "complete", "content": "order one final"},
             )
             _http_json(
                 "PUT",
                 f"{model_url}/control/script",
-                {"mode": "complete", "content": "ordered final"},
+                [
+                    {"mode": "complete", "content": "order two final"},
+                    {"mode": "complete", "content": "order three final"},
+                    {"mode": "complete", "content": "order four final"},
+                ],
             )
             lane_web.send(
                 json.dumps(
@@ -1569,7 +1568,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                     }
                 )
             )
-            _wait_barrier(model_url, "pc16-same-turn")
+            _wait_barrier(model_url, "pc16-strict-lane")
             for request_id, text in (
                 ("pc16-order-2", "order two"),
                 ("pc16-order-3", "order three"),
@@ -1587,11 +1586,14 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                     )
                 )
             active_inputs = _wait_database_turn_inputs(
-                database, lane_thread, "order one", 4
+                database, lane_thread, "order one", 1
             )
-            _release_barrier(model_url, "pc16-same-turn")
-            ordered_final = _receive_web_final(lane_web)
-            ordered_turn = _wait_database_turn(database, lane_thread, "order one")
+            _release_barrier(model_url, "pc16-strict-lane")
+            ordered_finals = [_receive_web_final(lane_web) for _ in range(4)]
+            ordered_turns = [
+                _wait_database_turn(database, lane_thread, f"order {name}")
+                for name in ("one", "two", "three", "four")
+            ]
 
             _http_json(
                 "PUT",
@@ -1636,14 +1638,14 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             )
             lane_evidence["sameThread"] = {
                 "activeInputs": active_inputs,
-                "orderedTurn": _turn_projection(ordered_turn),
+                "orderedTurns": [_turn_projection(turn) for turn in ordered_turns],
                 "finals": [
-                    ordered_final.get("content"),
+                    *[frame.get("content") for frame in ordered_finals],
                     failed_final.get("content"),
                     recovered_final.get("content"),
                 ],
                 "statuses": [
-                    ordered_turn["status"],
+                    *[turn["status"] for turn in ordered_turns],
                     failed_state["status"],
                     recovered_state["status"],
                 ],
@@ -1660,10 +1662,25 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             and different_threads["slowFinal"] == "slow complete"
             and different_threads["fastFinal"] == "fast complete"
             and cast(dict[str, object], same_thread["activeInputs"])["userInputs"]
-            == ["order one", "order two", "order three", "order four"]
+            == ["order one"]
             and same_thread["finals"]
-            == ["ordered final", "处理消息时出错，请稍后再试。", "recovered"]
-            and same_thread["statuses"] == ["completed", "failed", "completed"]
+            == [
+                "order one final",
+                "order two final",
+                "order three final",
+                "order four final",
+                "处理消息时出错，请稍后再试。",
+                "recovered",
+            ]
+            and same_thread["statuses"]
+            == [
+                "completed",
+                "completed",
+                "completed",
+                "completed",
+                "failed",
+                "completed",
+            ]
         )
         checks.append(
             CheckResult(

@@ -422,9 +422,7 @@ def test_active_execution_history_rejects_unsuccessful_transport(
     append_tool_result(
         messages,
         tool_call_id="call-1",
-        content=json.dumps(
-            {"process_status": "running", "execution_id": 4201}
-        ),
+        content=json.dumps({"process_status": "running", "execution_id": 4201}),
         tool_name="shell",
         execution_status=transport_status,
     )
@@ -784,6 +782,41 @@ def test_reasoner_compacts_before_provider_without_tool_side_effects() -> None:
     assert result.metadata["react_stats"]["model_usage"]["request_count"] == 4
     assert result.metadata["react_stats"]["model_usage"]["input_tokens"] == 761
     assert result.metadata["react_stats"]["model_usage"]["output_tokens"] == 9
+
+
+def test_interrupted_attempt_tools_join_compaction_and_preserve_all_user_inputs() -> (
+    None
+):
+    provider = _LoopProvider()
+    reasoner, _ = _reasoner(provider)
+    replay = [
+        {"role": "user", "content": "u1: inspect config"},
+        *_batch(101),
+        {"role": "assistant", "content": "[execution attempt interrupted]"},
+        {"role": "user", "content": "u2: also inspect node status"},
+        *_batch(102),
+        {"role": "assistant", "content": "[execution attempt interrupted]"},
+    ]
+    messages = [
+        {"role": "user", "content": "old completed turn"},
+        *replay,
+        {"role": "user", "content": "u3: finish with both results"},
+    ]
+
+    result = asyncio.run(
+        reasoner.run(
+            messages,
+            initial_attempt_replay=replay,
+            initial_prior_tool_groups=2,
+        )
+    )
+
+    summary_prompt = provider.summary_calls[0]["messages"][0]["content"]
+    assert "u1: inspect config" in summary_prompt
+    assert "u2: also inspect node status" in summary_prompt
+    assert "u3: finish with both results" in summary_prompt
+    assert result.metadata["react_compaction"]["compacted_tool_groups"] >= 1
+    assert _contains_compaction_pair(provider.real_calls[0]["messages"])
 
 
 def test_reasoner_forces_one_compaction_after_provider_overflow() -> None:

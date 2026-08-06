@@ -5,7 +5,7 @@ import logging
 from typing import Any, cast
 
 from agent.control.errors import RuntimeClosedError, ThreadBusyError
-from agent.control.models import TurnAdmissionKind, TurnRequest, TurnStatus
+from agent.control.models import TurnRequest, TurnStatus
 from agent.control.runtime import ConversationRuntime, TurnHandle
 from agent.looping.core import AgentLoop
 from bus.events import InboundMessage, OutboundMessage
@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 class PassiveMessageWorker:
     """把渠道入站消息转换为 ConversationRuntime turn。"""
 
-    def __init__(self, bus: MessageBus, runtime: ConversationRuntime, legacy_loop: AgentLoop) -> None:
+    def __init__(
+        self, bus: MessageBus, runtime: ConversationRuntime, legacy_loop: AgentLoop
+    ) -> None:
         self._bus = bus
         self._runtime = runtime
         self._legacy_loop = legacy_loop
@@ -33,7 +35,9 @@ class PassiveMessageWorker:
             await self._bus.recover_durable_inbounds()
             while self._running:
                 try:
-                    item = await asyncio.wait_for(self._bus.consume_inbound(), timeout=1.0)
+                    item = await asyncio.wait_for(
+                        self._bus.consume_inbound(), timeout=1.0
+                    )
                 except asyncio.TimeoutError:
                     continue
                 self._enqueue(item)
@@ -108,8 +112,8 @@ class PassiveMessageWorker:
             await self._bus.complete_inbound(item)
             return
         if item.channel == "mobile" and item.session_admission_id is None:
-            _, item.session_admission_id = self._legacy_loop.session_manager.admit_existing(
-                item.session_key
+            _, item.session_admission_id = (
+                self._legacy_loop.session_manager.admit_existing(item.session_key)
             )
         transferred = False
         try:
@@ -142,15 +146,6 @@ class PassiveMessageWorker:
                     )
                     return
                 break
-            if handle.admission is TurnAdmissionKind.STEERED:
-                task = asyncio.create_task(
-                    self._finish_steered_message(item, handle),
-                    name=f"passive-steered-result:{handle.id}",
-                )
-                self._result_tasks.add(task)
-                task.add_done_callback(self._result_tasks.discard)
-                transferred = True
-                return task
             task = asyncio.create_task(
                 self._finish_message(item, handle),
                 name=f"passive-result:{handle.id}",
@@ -198,18 +193,6 @@ class PassiveMessageWorker:
         finally:
             await self._complete_message(item)
 
-    async def _finish_steered_message(
-        self,
-        item: InboundMessage,
-        handle: TurnHandle,
-    ) -> None:
-        """等待共享 turn 终态后确认追加输入，不重复发送 assistant。"""
-
-        try:
-            _ = await handle.result()
-        finally:
-            await self._complete_message(item)
-
     async def _complete_message(self, item: InboundMessage) -> None:
         """确认 durable inbound 并释放 mobile session admission。"""
 
@@ -229,9 +212,11 @@ class PassiveMessageWorker:
         client_message_id = item.metadata.get("client_message_id")
         if not isinstance(client_message_id, str) or not client_message_id:
             return False
-        message = self._legacy_loop.session_manager.control_store.get_message_by_client_id(
-            item.session_key,
-            client_message_id,
+        message = (
+            self._legacy_loop.session_manager.control_store.get_message_by_client_id(
+                item.session_key,
+                client_message_id,
+            )
         )
         return (
             message is not None
