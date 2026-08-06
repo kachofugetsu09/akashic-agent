@@ -368,7 +368,8 @@ def _normalize_history_entries(
 
 
 def _recent_turn_count(keep_count: int) -> int:
-    return max(1, keep_count // 2)
+    """把旧的消息预览预算换算为不切分的逻辑历史单元数。"""
+    return max(1, keep_count // 4)
 
 
 def _message_time(message: dict) -> str:

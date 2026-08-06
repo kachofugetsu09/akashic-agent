@@ -281,11 +281,11 @@ def test_consolidation_recent_context_formats_user_full_and_assistant_preview():
     assert draft is not None
     written = draft.recent_context_text
     assert "# Recent Context" in written
-    assert "until: none" in written
+    assert "until: 2026-03-15T09:59:00" in written
+    assert "用户最近在讨论 recent context 设计" in written
     assert "## Ongoing Threads" in written
+    assert "用户正在推进 recent context 设计" in written
     assert "<!-- a-preview = assistant reply preview only -->" in written
-    assert "[user] 第一轮" in written
-    assert "[a-preview] 第一轮回复" in written
     assert "[user] 我更想要一个轻量 recent context 文件，不要太重。" in written
     assert "[a-preview] 可以把 compression 和 recent turns 合并在一个短文件里" in written
 
@@ -462,13 +462,11 @@ def test_consolidation_archive_all_compresses_full_history_before_recent_turns()
     prompt_before_recent = prompt.split("【最新 recent turns", 1)[0]
     assert "USER: 第一条" in prompt_before_recent
     assert "ASSISTANT: 第十条" in prompt_before_recent
-    assert "USER: 第十一条" not in prompt_before_recent
-    assert "ASSISTANT: 第十二条" not in prompt_before_recent
+    assert "USER: 第十一条" in prompt_before_recent
+    assert "ASSISTANT: 第十二条" in prompt_before_recent
     assert draft is not None
     written = draft.recent_context_text
-    assert "until: 2026-03-15T10:09:00" in written
-    assert "[user] 第十一条" in written
-    assert "[a-preview] 第十二条" in written
+    assert "until: 2026-03-15T10:11:00" in written
     assert "[user] 第十三条" in written
 
 
