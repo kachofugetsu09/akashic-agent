@@ -715,6 +715,53 @@ async def test_markdown_consolidation_failure_trace_does_not_advance_cursor(
     assert session.last_consolidated == 0
 
 
+async def test_force_consolidation_persists_cursor_rewind_without_new_messages(
+    tmp_path: Path,
+):
+    session = SimpleNamespace(
+        key="cli:rewind",
+        messages=[
+            {
+                "role": "user",
+                "content": "remaining user",
+                "control_turn_id": "turn-1",
+            },
+            {
+                "role": "assistant",
+                "content": "remaining assistant",
+                "control_turn_id": "turn-1",
+            },
+        ],
+        last_consolidated=3,
+    )
+    maintenance = MarkdownMemoryMaintenance(
+        store=MarkdownMemoryStore(tmp_path),
+        provider=cast(Any, SimpleNamespace()),
+        model="lm",
+        keep_count=2,
+    )
+    save_session = AsyncMock()
+    maintenance.bind_lifecycle(
+        MemoryLifecycleBindRequest(
+            get_session=lambda _key: session,
+            save_session=save_session,
+        )
+    )
+
+    result = await maintenance.consolidate(
+        ConsolidateRequest(session=session, force=True)
+    )
+
+    assert result.consolidated_count == 0
+    assert result.trace == {
+        "mode": "skipped",
+        "cursor_rewound_from": 3,
+        "cursor_rewound_to": 2,
+    }
+    assert session.last_consolidated == 2
+    save_session.assert_awaited_once_with(session)
+
+
 async def test_markdown_consolidation_drains_budgeted_pages_and_persists_each_cursor(
     tmp_path: Path,
 ):

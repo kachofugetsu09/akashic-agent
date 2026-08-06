@@ -169,6 +169,26 @@ class _ConsolidationFailure:
     elapsed_ms: int = 0
 
 
+def _resolve_consolidation_cursor(
+    messages: list[dict],
+    last_consolidated: int,
+    *,
+    force: bool,
+) -> tuple[list[tuple[int, int]], int]:
+    """校验 consolidation 游标，并在显式 force 时返回最近合法边界。"""
+    unit_ranges = logical_history_unit_ranges(messages)
+    boundaries = {0, *(end for _, end in unit_ranges)}
+    if last_consolidated in boundaries:
+        return unit_ranges, last_consolidated
+    if not force:
+        raise ValueError(
+            "last_consolidated 落在逻辑历史单元内部: " f"{last_consolidated}"
+        )
+    return unit_ranges, max(
+        boundary for boundary in boundaries if boundary <= last_consolidated
+    )
+
+
 def _select_consolidation_window(
     session,
     *,
@@ -186,16 +206,15 @@ def _select_consolidation_window(
             consolidate_up_to=total_messages,
         )
 
-    if total_messages - session.last_consolidated <= 0:
-        return None
-
     # 1. 游标只能停在完整逻辑单元之后；新写入不再制造半 turn 游标。
-    unit_ranges = logical_history_unit_ranges(session.messages)
-    boundaries = {0, *(end for _, end in unit_ranges)}
-    if session.last_consolidated not in boundaries:
-        raise ValueError(
-            "last_consolidated 落在逻辑历史单元内部: " f"{session.last_consolidated}"
-        )
+    unit_ranges, consolidation_start = _resolve_consolidation_cursor(
+        session.messages,
+        session.last_consolidated,
+        force=force,
+    )
+
+    if total_messages - consolidation_start <= 0:
+        return None
 
     if force:
         consolidate_up_to = total_messages
@@ -203,12 +222,12 @@ def _select_consolidation_window(
         if len(unit_ranges) <= keep_count:
             return None
         consolidate_up_to = unit_ranges[-keep_count][0]
-    old_messages = session.messages[session.last_consolidated : consolidate_up_to]
+    old_messages = session.messages[consolidation_start:consolidate_up_to]
     if not old_messages:
         return None
     new_unit_count = logical_history_unit_count(
         session.messages,
-        start_index=session.last_consolidated,
+        start_index=consolidation_start,
     ) - (0 if force else keep_count)
     if (
         not force
@@ -1330,7 +1349,31 @@ class MarkdownMemoryMaintenance:
     ) -> ConsolidateResult:
         """逐页压缩 backlog，并在每页提交后保存绝对游标。"""
 
-        # 1. 每页重新读取 RECENT_CONTEXT，让下一页基于上一页的滚动摘要继续压缩。
+        # 1. 显式 force 先把失配游标持久回退到最近的完整逻辑单元边界。
+        cursor_repair: dict[str, int] = {}
+        if request.force and not request.archive_all:
+            previous_cursor = request.session.last_consolidated
+            _, recovered_cursor = _resolve_consolidation_cursor(
+                request.session.messages,
+                previous_cursor,
+                force=True,
+            )
+            if recovered_cursor != previous_cursor:
+                request.session.last_consolidated = recovered_cursor
+                cursor_repair = {
+                    "cursor_rewound_from": previous_cursor,
+                    "cursor_rewound_to": recovered_cursor,
+                }
+                logger.warning(
+                    "Force consolidation rewound invalid cursor: session=%s from=%d to=%d",
+                    request.session.key,
+                    previous_cursor,
+                    recovered_cursor,
+                )
+                if self._save_session is not None:
+                    await self._save_session(request.session)
+
+        # 2. 每页重新读取 RECENT_CONTEXT，让下一页基于上一页的滚动摘要继续压缩。
         consolidated_count = 0
         source_refs: list[str] = []
         while True:
@@ -1344,7 +1387,9 @@ class MarkdownMemoryMaintenance:
             )
             if draft is None:
                 if consolidated_count == 0:
-                    return ConsolidateResult(trace={"mode": "skipped"})
+                    return ConsolidateResult(
+                        trace={"mode": "skipped", **cursor_repair}
+                    )
                 break
             if isinstance(draft, _ConsolidationFailure):
                 failure_trace: dict[str, object] = {
@@ -1355,12 +1400,13 @@ class MarkdownMemoryMaintenance:
                 }
                 if source_refs:
                     failure_trace["completed_pages"] = len(source_refs)
+                failure_trace.update(cursor_repair)
                 return ConsolidateResult(
                     consolidated_count=consolidated_count,
                     trace=failure_trace,
                 )
 
-            # 2. 提交一页后立即保存游标；失败重启只会重做未提交页。
+            # 3. 提交一页后立即保存游标；失败重启只会重做未提交页。
             await self._commit_markdown_draft(request.session, draft)
             consolidated_count += len(draft.window.old_messages)
             source_refs.append(draft.source_ref)
@@ -1380,6 +1426,7 @@ class MarkdownMemoryMaintenance:
                 "source_ref": source_refs[-1],
                 "source_refs": source_refs,
                 "pages": len(source_refs),
+                **cursor_repair,
             },
         )
 

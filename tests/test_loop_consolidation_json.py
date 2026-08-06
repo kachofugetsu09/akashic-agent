@@ -81,6 +81,37 @@ def test_select_consolidation_window_never_splits_explicit_multi_input_turn():
     assert window.consolidate_up_to == 2
 
 
+def test_force_consolidation_rewinds_invalid_cursor_to_recent_boundary():
+    messages = [
+        {"role": "user", "content": "u1", "control_turn_id": "first"},
+        {"role": "user", "content": "u2", "control_turn_id": "first"},
+        {"role": "assistant", "content": "a1", "control_turn_id": "first"},
+        {"role": "user", "content": "u3", "control_turn_id": "second"},
+        {"role": "assistant", "content": "a2", "control_turn_id": "second"},
+    ]
+    session = SimpleNamespace(key="cli:1", last_consolidated=4, messages=messages)
+
+    with pytest.raises(ValueError, match="逻辑历史单元内部"):
+        _select_consolidation_window(
+            session,
+            keep_count=1,
+            consolidation_min_new_messages=1,
+            archive_all=False,
+        )
+
+    window = _select_consolidation_window(
+        session,
+        keep_count=1,
+        consolidation_min_new_messages=1,
+        archive_all=False,
+        force=True,
+    )
+
+    assert window is not None
+    assert window.old_messages == messages[3:]
+    assert window.consolidate_up_to == 5
+
+
 def test_build_consolidation_source_ref_returns_message_id_list_json():
     window = SimpleNamespace(
         old_messages=[
