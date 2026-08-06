@@ -839,7 +839,7 @@ def _inside_memory_context(report_dir: Path) -> int:
     checks: list[CheckResult] = []
     client: JsonRpcSocketClient | None = None
     try:
-        # 1. 为每个 event/recent-context 步骤提供同一份双兼容 JSON。
+        # 1. 为两个逻辑历史分页提供同一份双兼容 JSON。
         _wait_http_ready(f"{model_url}/readyz", READINESS_DEADLINE_S)
         _wait_socket(endpoint, READINESS_DEADLINE_S)
         response = json.dumps(
@@ -857,7 +857,7 @@ def _inside_memory_context(report_dir: Path) -> int:
         _http_json(
             "PUT",
             f"{model_url}/control/script",
-            [{"mode": "complete", "content": response} for _ in range(4)],
+            [{"mode": "complete", "content": response} for _ in range(2)],
         )
 
         # 2. 通过正式 control protocol 启动手动整理并等待 operation 终态。
@@ -899,9 +899,9 @@ def _inside_memory_context(report_dir: Path) -> int:
             and completed_operation.get("id") == operation.get("id")
             and completed_operation.get("status") == "completed"
             and completed_operation.get("result") == {"consolidated": True}
-            and row == (20,)
+            and row == (16,)
             and message_count == 24
-            and len(model_requests) == 4
+            and len(model_requests) == 2
             and "until:" in recent_context
         )
         checks.append(
@@ -963,7 +963,7 @@ def _inside_memory_context(report_dir: Path) -> int:
                 and retry_payload.get("finalResponse") == "retry survived"
                 and retry_row == (4,)
                 and retry_message_count == 8
-                and len(final_requests) == 6,
+                and len(final_requests) == 4,
                 {
                     "terminal": retry_payload,
                     "messageCount": retry_message_count,
