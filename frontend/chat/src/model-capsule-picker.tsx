@@ -141,6 +141,11 @@ export function ModelCapsulePicker({
     onChange(runtime.id, compatibleEffort(runtime, selectedEffort));
   }
 
+  function chooseEffort(effort: string) {
+    onChange(visibleModel.id, effort);
+    closePicker(true);
+  }
+
   function showEfforts() {
     setView("efforts");
   }
@@ -153,7 +158,7 @@ export function ModelCapsulePicker({
   return (
     <div ref={rootRef} className={`model-capsule ${open ? "is-open" : ""}`}>
       <div className="model-capsule__shell">
-        <div id="model-capsule-panel" className="model-capsule__panel" aria-hidden={!open} aria-label={view === "models" ? "选择模型" : "选择思考强度"}>
+        <div id="model-capsule-panel" className="model-capsule__panel" inert={!open} aria-hidden={!open} aria-label={view === "models" ? "选择模型" : "选择思考强度"}>
           <header className="model-capsule__header">
             {view === "efforts" ? (
               <button type="button" className="model-capsule__back" onClick={showModels}>
@@ -203,7 +208,7 @@ export function ModelCapsulePicker({
             {visibleModel.supportedReasoningEfforts.length > 0 && (
               <button ref={effortTriggerRef} type="button" className="model-capsule__effort-entry" onClick={showEfforts}>
                 <Sparkles size={17} aria-hidden="true" />
-                <span><small>思考强度</small><strong>{EFFORT_LABELS[visibleEffort] || visibleEffort}</strong></span>
+                <span><small>{explicitModel ? "思考强度" : "固定当前模型并设置强度"}</small><strong>{EFFORT_LABELS[visibleEffort] || visibleEffort}</strong></span>
                 <ChevronRight size={17} aria-hidden="true" />
               </button>
             )}
@@ -211,7 +216,7 @@ export function ModelCapsulePicker({
             <div className="model-capsule__effort-list" aria-label={`${visibleModel.model} 支持的思考强度`}>
               <div className="model-capsule__effort-model">
                 <ModelMark runtime={visibleModel} />
-                <span className="model-capsule__copy"><strong>{visibleModel.model}：{visibleModel.sourceName}</strong><small>仅影响下一轮及之后的此会话</small></span>
+                <span className="model-capsule__copy"><strong>{visibleModel.model}：{visibleModel.sourceName}</strong><small>{explicitModel ? "仅影响下一轮及之后的此会话" : "选择强度后，会把此模型固定到当前会话"}</small></span>
               </div>
               {visibleModel.supportedReasoningEfforts.map((effort, index) => (
                 <button
@@ -220,7 +225,7 @@ export function ModelCapsulePicker({
                   key={effort}
                   aria-pressed={visibleEffort === effort}
                   className={`model-capsule__effort-option ${visibleEffort === effort ? "is-selected" : ""}`}
-                  onClick={() => onChange(visibleModel.id, effort)}
+                  onClick={() => chooseEffort(effort)}
                 >
                   <span><strong>{EFFORT_LABELS[effort] || effort}</strong><small>{effort}</small></span>
                   {visibleEffort === effort && <Check size={17} aria-hidden="true" />}

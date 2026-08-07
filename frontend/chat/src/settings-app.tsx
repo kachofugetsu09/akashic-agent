@@ -1,14 +1,11 @@
 import {
-  ArrowLeft,
   Check,
   ChevronRight,
   Eye,
   EyeOff,
   KeyRound,
   LoaderCircle,
-  LogIn,
   Palette,
-  Plus,
   RefreshCw,
   Search,
   ShieldCheck,
@@ -19,7 +16,6 @@ import { createPortal } from "react-dom";
 import codexIcon from "./assets/provider-icons/codex.svg";
 import deepseekIcon from "./assets/provider-icons/deepseek.svg";
 import opencodeIcon from "./assets/provider-icons/opencode.svg";
-import openrouterIcon from "./assets/provider-icons/openrouter.svg";
 import { cycleTheme, useTheme } from "../../theme/src/theme-runtime";
 import { MemorySettings, type MemorySettingsState } from "./memory-settings";
 import "./settings.css";
@@ -102,10 +98,10 @@ interface ConnectionDraft {
 }
 
 const PROVIDER_TEMPLATES = [
-  { kind: "api" as const, provider: "deepseek", name: "DeepSeek", detail: "官方 API", baseUrl: "https://api.deepseek.com/v1", icon: deepseekIcon },
-  { kind: "api" as const, provider: "openrouter", name: "OpenRouter", detail: "统一模型路由", baseUrl: "https://openrouter.ai/api/v1", icon: openrouterIcon },
-  { kind: "opencode-go" as const, provider: "opencode-go", name: "OpenCode Go", detail: "本机登录或 API Key", baseUrl: "https://opencode.ai/zen/go/v1", icon: opencodeIcon },
   { kind: "codex" as const, provider: "codex", name: "Codex", detail: "ChatGPT 订阅登录", baseUrl: "", icon: codexIcon },
+  { kind: "opencode-go" as const, provider: "opencode-go", name: "OpenCode Go", detail: "本机登录或 API Key", baseUrl: "https://opencode.ai/zen/go/v1", icon: opencodeIcon },
+  { kind: "api" as const, provider: "deepseek", name: "DeepSeek", detail: "官方 API", baseUrl: "https://api.deepseek.com/v1", icon: deepseekIcon },
+  { kind: "api" as const, provider: "", name: "自定义 API", detail: "连接任意兼容服务", baseUrl: "", icon: "" },
 ];
 
 const ROLE_LABELS: Record<ModelRole, { title: string; detail: string }> = {
@@ -116,10 +112,16 @@ const ROLE_LABELS: Record<ModelRole, { title: string; detail: string }> = {
 };
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: { "Content-Type": "application/json", "X-Akasic-CSRF": "1", ...init?.headers },
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers: { "Content-Type": "application/json", "X-Akasic-CSRF": "1", ...init?.headers },
+    });
+  } catch (reason) {
+    if (reason instanceof TypeError) throw new Error("无法连接 Akashic。请确认服务仍在运行，然后重试。", { cause: reason });
+    throw reason;
+  }
   const text = await response.text();
   let payload: { detail?: string; message?: string };
   try {
@@ -144,7 +146,7 @@ function providerIcon(provider: string): string {
 function createDraft(template = PROVIDER_TEMPLATES[0], existing?: ConnectionGroup): ConnectionDraft {
   return {
     sourceId: existing?.sourceId || `source-${crypto.randomUUID()}`,
-    sourceName: existing?.sourceName || template.name,
+    sourceName: existing?.sourceName || (template.provider ? template.name : ""),
     kind: existing ? connectionKind(existing.provider) : template.kind,
     provider: existing?.provider || template.provider,
     baseUrl: existing?.baseUrl || template.baseUrl,
@@ -157,7 +159,7 @@ function createDraft(template = PROVIDER_TEMPLATES[0], existing?: ConnectionGrou
 
 function ConnectionMark({ provider, name }: { provider: string; name: string }) {
   const icon = providerIcon(provider);
-  return <span className="settings-connection-mark" aria-hidden="true">{icon ? <img src={icon} alt="" /> : name.slice(0, 1).toUpperCase()}</span>;
+  return <span className="settings-connection-mark" aria-hidden="true">{icon ? <img src={icon} alt="" /> : provider ? name.slice(0, 1).toUpperCase() : <KeyRound size={20} />}</span>;
 }
 
 export function SettingsApp() {
@@ -173,7 +175,8 @@ export function SettingsApp() {
   const [error, setError] = useState("");
   const [codexLogin, setCodexLogin] = useState<CodexLoginState | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
-  const addButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogReturnFocusRef = useRef<HTMLElement | null>(null);
+  const openDraftId = draft?.sourceId;
 
   async function refreshState() {
     const next = await requestJson<SettingsState>("/api/settings/state");
@@ -201,8 +204,9 @@ export function SettingsApp() {
   }, [codexLogin]);
 
   useEffect(() => {
-    if (!draft) return;
-    const first = dialogRef.current?.querySelector<HTMLElement>("input, button, select");
+    if (!openDraftId) return;
+    dialogReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const first = dialogRef.current?.querySelector<HTMLElement>(".settings-dialog-body input, .settings-dialog-body button, .settings-dialog-body select");
     first?.focus();
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") closeDialog();
@@ -215,7 +219,7 @@ export function SettingsApp() {
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [draft]);
+  }, [openDraftId]);
 
   const connections = useMemo(() => {
     const groups = new Map<string, ConnectionGroup>();
@@ -228,12 +232,13 @@ export function SettingsApp() {
     const normalized = query.trim().toLowerCase();
     return [...groups.values()].filter((group) => `${group.sourceName} ${group.provider} ${group.runtimes.map((item) => item.model).join(" ")}`.toLowerCase().includes(normalized));
   }, [query, state]);
+  const hasConnections = Boolean(state?.runtimes.length);
 
   function closeDialog() {
     setDraft(null);
     setModels([]);
     setError("");
-    window.setTimeout(() => addButtonRef.current?.focus(), 0);
+    window.setTimeout(() => dialogReturnFocusRef.current?.focus(), 0);
   }
 
   async function discoverModels() {
@@ -354,39 +359,38 @@ export function SettingsApp() {
       />
       {error && <p className="settings-inline-error" role="alert">{error}</p>}
     </div>
-    <div className="settings-toast-region" aria-live="polite" aria-atomic="true">{toast && <div className="settings-toast" role="status"><Check size={18} /><span><strong>操作成功</strong><small>{toast}</small></span><button type="button" onClick={() => setToast("")} aria-label="关闭通知"><X size={16} /></button></div>}</div>
+    <div className="settings-toast-region" aria-live="polite" aria-atomic="true">{toast && <div className="settings-toast" role="status"><Check size={18} /><span><strong>{toast}</strong></span><button type="button" onClick={() => setToast("")} aria-label="关闭通知"><X size={16} /></button></div>}</div>
   </main>;
 
   return (
     <main className="settings-page">
-      <div className="settings-shell">
+      <div className={`settings-shell ${hasConnections ? "" : "settings-shell--first-run"}`}>
         <header className="settings-header">
-          <div><span className="settings-overline">设置 · Provider</span><h1>模型连接</h1><p>每套账号或 API Key 都是独立连接；保存后自动识别模型能力。</p></div>
+          <div><h1>{hasConnections ? "模型连接" : "连接你的第一个模型"}</h1><p>{hasConnections ? "每套账号或 API Key 都是独立连接；保存后自动识别模型能力。" : "选择登录方式或 API 服务。连接成功后，再决定是否启用记忆。"}</p></div>
           <div className="settings-header-actions">
             {!isEmbeddedShell && <button type="button" className="settings-quiet-button" onClick={cycleTheme}><Palette size={17} />{theme.label}</button>}
-            <button ref={addButtonRef} type="button" className="settings-primary-button" onClick={() => setDraft(createDraft())}><Plus size={18} />添加连接</button>
           </div>
         </header>
 
-        <label className="settings-search"><Search size={18} aria-hidden="true" /><span className="sr-only">搜索模型连接</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索连接或模型" /></label>
+        {hasConnections && <label className="settings-search"><Search size={18} aria-hidden="true" /><span className="sr-only">搜索模型连接</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索连接或模型" /></label>}
 
-        <section className="settings-section">
+        {hasConnections && <section className="settings-section">
           <header><div><h2>已连接</h2><p>同一供应商可以添加多个账号，模型选择时按连接名称区分。</p></div><span>{connections.length} 个</span></header>
-          {connections.length ? <div className="settings-gallery">
+          <div className="settings-gallery">
             {connections.map((group) => <button type="button" className="settings-connection-card" key={group.sourceId} onClick={() => setDraft(createDraft(PROVIDER_TEMPLATES[0], group))}>
               <ConnectionMark provider={group.provider} name={group.sourceName} />
               <span className="settings-card-copy"><strong>{group.sourceName}</strong><small>{group.provider} · {group.runtimes.map((item) => item.model).join("、")}</small></span>
               <span className="settings-card-meta"><i><span />已连接</i><small>{group.runtimes.length} 个模型</small></span>
               <ChevronRight size={18} aria-hidden="true" />
             </button>)}
-          </div> : <div className="settings-empty"><KeyRound size={22} /><strong>还没有模型连接</strong><span>添加 Codex 登录、OpenCode 或任意兼容 API。</span><button type="button" onClick={() => setDraft(createDraft())}>添加第一个连接</button></div>}
-        </section>
+          </div>
+        </section>}
 
-        <section className="settings-section settings-section--templates">
-          <header><div><h2>添加 Provider</h2><p>模板只预填协议和 Base URL，不会创建凭据。</p></div></header>
+        <section className={`settings-section settings-section--templates ${hasConnections ? "" : "is-first-run"}`}>
+          <header><div><h2>{hasConnections ? "添加其他连接" : "选择连接方式"}</h2><p>{hasConnections ? "可以继续添加另一个账号或服务。" : "Codex 与 OpenCode 登录后自动同步模型；API 服务会先检测模型目录。"}</p></div></header>
           <div className="settings-gallery">
             {PROVIDER_TEMPLATES.map((template) => <button type="button" className="settings-connection-card" key={template.provider} onClick={() => setDraft(createDraft(template))}>
-              <ConnectionMark provider={template.provider} name={template.name} /><span className="settings-card-copy"><strong>{template.name}</strong><small>{template.detail}</small></span><span className="settings-template-action">配置 <ChevronRight size={16} /></span>
+              <ConnectionMark provider={template.provider} name={template.name} /><span className="settings-card-copy"><strong>{template.name}</strong><small>{template.detail}</small></span><ChevronRight className="settings-template-action" size={18} aria-hidden="true" />
             </button>)}
           </div>
         </section>
@@ -411,41 +415,37 @@ export function SettingsApp() {
 
       {draft && createPortal(<div className="settings-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) closeDialog(); }}>
         <div ref={dialogRef} className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title">
-          <header><div><button type="button" className="settings-back-button" onClick={closeDialog}><ArrowLeft size={17} />全部连接</button><h2 id="settings-dialog-title">{connections.some((item) => item.sourceId === draft.sourceId) ? "编辑模型连接" : "新建模型连接"}</h2><p>只填写认证所需字段；上下文窗口和多模态能力由目录识别。</p></div><button type="button" className="settings-icon-button" onClick={closeDialog} aria-label="关闭"><X size={20} /></button></header>
+          <header><div><h2 id="settings-dialog-title">{connections.some((item) => item.sourceId === draft.sourceId) ? `编辑 ${draft.sourceName}` : draft.kind === "codex" ? "连接 Codex" : draft.kind === "opencode-go" ? "连接 OpenCode Go" : draft.provider === "deepseek" ? "连接 DeepSeek" : "连接自定义 API"}</h2><p>{draft.kind === "codex" ? "授权 ChatGPT 订阅账号，保存后自动同步可用模型。" : draft.kind === "opencode-go" ? "使用本机 OpenCode 登录或单独的 API Key，模型会自动同步。" : draft.provider === "deepseek" ? "填写 API Key 并选择一个可用模型，其余能力自动识别。" : "填写服务地址与凭据；支持模型目录时会自动检测。"}</p></div><button type="button" className="settings-icon-button" onClick={closeDialog} aria-label="关闭"><X size={20} /></button></header>
           <form onSubmit={saveConnection}>
-            <fieldset className="settings-kind-picker"><legend>认证方式</legend>{[
-              { id: "api", label: "API Key", detail: "Base URL + 密钥", icon: <KeyRound size={18} /> },
-              { id: "opencode-go", label: "OpenCode", detail: "本机登录或密钥", icon: <LogIn size={18} /> },
-              { id: "codex", label: "Codex 登录", detail: "订阅账号授权", icon: <ShieldCheck size={18} /> },
-            ].map((item) => <label className={draft.kind === item.id ? "is-active" : ""} key={item.id}><input type="radio" name="kind" checked={draft.kind === item.id} onChange={() => { const template = PROVIDER_TEMPLATES.find((entry) => entry.kind === item.id) || PROVIDER_TEMPLATES[0]; setDraft({ ...createDraft(template), sourceId: draft.sourceId }); setModels([]); }} />{item.icon}<span><strong>{item.label}</strong><small>{item.detail}</small></span><Check size={15} /></label>)}</fieldset>
-
-            <div className="settings-form-grid">
-              <label className="is-wide"><span>连接名称</span><input required value={draft.sourceName} onChange={(event) => setDraft({ ...draft, sourceName: event.target.value })} placeholder="例如：DeepSeek 官方" /></label>
-              {draft.kind === "codex" ? <div className="settings-login-card is-wide"><ShieldCheck size={20} /><span><strong>{state?.codexConfigured || codexLogin?.status === "completed" ? "Codex 已登录" : "使用 ChatGPT 订阅登录"}</strong><small>授权凭据保存在当前 workspace，不会显示在页面中。</small></span><button type="button" onClick={beginCodexLogin}>{state?.codexConfigured ? "重新登录" : "开始登录"}</button></div> : <>
-                {draft.kind === "api" && <label><span>Provider ID</span><input required value={draft.provider} onChange={(event) => setDraft({ ...draft, provider: event.target.value })} placeholder="deepseek" /></label>}
-                <label className={draft.kind === "opencode-go" ? "is-wide" : ""}><span>Base URL</span><input required type="url" value={draft.baseUrl} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} placeholder="https://api.example.com/v1" /></label>
-                <label className="settings-secret is-wide"><span>API Key{draft.kind === "opencode-go" && state?.localOpenCodeConfigured ? "（可留空使用本机登录）" : ""}</span><input required={draft.kind === "api" && !connections.some((item) => item.sourceId === draft.sourceId)} type={showKey ? "text" : "password"} value={draft.apiKey} onChange={(event) => setDraft({ ...draft, apiKey: event.target.value })} autoComplete="off" placeholder="sk-…" /><button type="button" onClick={() => setShowKey((value) => !value)} aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}>{showKey ? <EyeOff size={18} /> : <Eye size={18} />}</button></label>
-              </>}
-            </div>
-
-            {codexLogin?.status === "waiting" && draft.kind === "codex" ? <div className="settings-device-login"><span>验证码</span><strong>{codexLogin.userCode}</strong><a href={codexLogin.verificationUri} target="_blank" rel="noreferrer">打开登录页面</a></div> : null}
-
-            {draft.kind === "api" ? <section className="settings-model-discovery">
-              <header><div><h3>模型目录</h3><p>先检测连接；服务不支持目录时再手动填写模型名。</p></div><button type="button" className="settings-quiet-button" onClick={discoverModels} disabled={discovering}>{discovering ? <LoaderCircle className="is-spinning" size={16} /> : <RefreshCw size={16} />}{discovering ? "检测中" : "检测模型"}</button></header>
+            <div className="settings-dialog-body">
               <div className="settings-form-grid">
-                <label className="is-wide"><span>模型</span>{models.length ? <select required value={draft.model} onChange={(event) => { const model = models.find((item) => item.id === event.target.value); setDraft({ ...draft, model: event.target.value, reasoningEffort: model?.defaultReasoningEffort || draft.reasoningEffort }); }}><option value="">选择模型</option>{models.map((model) => <option value={model.id} key={model.id}>{model.id}</option>)}</select> : <input required value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })} placeholder="检测失败时手动填写 model name" />}</label>
-                {(() => { const selected = models.find((item) => item.id === draft.model); const efforts = selected?.supportedReasoningEfforts || []; return efforts.length ? <label className="is-wide"><span>默认思考强度</span><select value={draft.reasoningEffort} onChange={(event) => setDraft({ ...draft, reasoningEffort: event.target.value })}>{efforts.map((effort) => <option value={effort} key={effort}>{effort}</option>)}</select></label> : null; })()}
+                <label className="is-wide"><span>连接名称</span><input aria-label="连接名称" required value={draft.sourceName} onChange={(event) => setDraft({ ...draft, sourceName: event.target.value })} placeholder={draft.provider === "deepseek" ? "例如：DeepSeek 官方" : "例如：公司网关"} /></label>
+                {draft.kind === "codex" ? <div className="settings-login-card is-wide"><ShieldCheck size={20} /><span><strong>{state?.codexConfigured || codexLogin?.status === "completed" ? "Codex 已登录" : "使用 ChatGPT 订阅登录"}</strong><small>授权凭据保存在当前 workspace，不会显示在页面中。</small></span><button type="button" onClick={beginCodexLogin}>{state?.codexConfigured ? "重新登录" : "开始登录"}</button></div> : <>
+                  {draft.kind === "api" && <label><span>Provider ID</span><input aria-label="Provider ID" required value={draft.provider} onChange={(event) => setDraft({ ...draft, provider: event.target.value })} placeholder="例如：openai" /></label>}
+                  <label className={draft.kind === "opencode-go" ? "is-wide" : ""}><span>Base URL</span><input aria-label="Base URL" required type="url" value={draft.baseUrl} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} placeholder="https://api.example.com/v1" /></label>
+                  <label className="settings-secret is-wide"><span>API Key{draft.kind === "opencode-go" && state?.localOpenCodeConfigured ? "（可留空使用本机登录）" : ""}</span><input aria-label="API Key" required={draft.kind === "api" && !connections.some((item) => item.sourceId === draft.sourceId)} type={showKey ? "text" : "password"} value={draft.apiKey} onChange={(event) => setDraft({ ...draft, apiKey: event.target.value })} autoComplete="off" placeholder="sk-…" /><button type="button" onClick={() => setShowKey((value) => !value)} aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}>{showKey ? <EyeOff size={18} /> : <Eye size={18} />}</button></label>
+                </>}
               </div>
-              <p>上下文窗口、多模态、推理能力和 token usage 字段由注册表及真实响应归一化。</p>
-            </section> : <section className="settings-model-discovery"><header><div><h3>自动同步模型</h3><p>保存连接后读取账号当前可用的全部模型，无需手动选择。</p></div></header><p>模型能力和可用思考强度会随目录一起保存，之后可在聊天胶囊中选择。</p></section>}
 
-            {error && <p className="settings-inline-error" role="alert">{error}</p>}
-            <footer><span><ShieldCheck size={15} />API Key 保存后只显示“已配置”</span><button type="submit" className="settings-primary-button" disabled={saving}>{saving ? <LoaderCircle className="is-spinning" size={17} /> : null}{saving ? "保存中" : draft.kind === "api" ? "保存连接" : "保存并同步模型"}</button></footer>
+              {codexLogin?.status === "waiting" && draft.kind === "codex" ? <div className="settings-device-login"><span>验证码</span><strong>{codexLogin.userCode}</strong><a href={codexLogin.verificationUri} target="_blank" rel="noreferrer">打开登录页面</a></div> : null}
+
+              {draft.kind === "api" ? <section className="settings-model-discovery">
+                <header><div><h3>可用模型</h3><p>先自动检测；服务不提供目录时再手动填写。</p></div><button type="button" className="settings-quiet-button" onClick={discoverModels} disabled={discovering}>{discovering ? <LoaderCircle className="is-spinning" size={16} /> : <RefreshCw size={16} />}{discovering ? "检测中" : "检测模型"}</button></header>
+                <div className="settings-form-grid">
+                  <label className="is-wide"><span>模型名称</span>{models.length ? <select aria-label="模型名称" required value={draft.model} onChange={(event) => { const model = models.find((item) => item.id === event.target.value); setDraft({ ...draft, model: event.target.value, reasoningEffort: model?.defaultReasoningEffort || draft.reasoningEffort }); }}><option value="">选择模型</option>{models.map((model) => <option value={model.id} key={model.id}>{model.id}</option>)}</select> : <input aria-label="模型名称" required value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })} placeholder={draft.provider === "deepseek" ? "例如：deepseek-chat" : "例如：your-model-name"} />}</label>
+                  {(() => { const selected = models.find((item) => item.id === draft.model); const efforts = selected?.supportedReasoningEfforts || []; return efforts.length ? <label className="is-wide"><span>默认思考强度</span><select aria-label="默认思考强度" value={draft.reasoningEffort} onChange={(event) => setDraft({ ...draft, reasoningEffort: event.target.value })}>{efforts.map((effort) => <option value={effort} key={effort}>{effort}</option>)}</select></label> : null; })()}
+                </div>
+                <p>上下文窗口、多模态、推理能力和用量字段会自动归一化。</p>
+              </section> : <section className="settings-model-discovery settings-model-discovery--automatic"><header><div><h3>模型自动同步</h3><p>保存后读取账号当前可用的全部模型，无需手动选择。</p></div></header></section>}
+
+              {error && <p className="settings-inline-error" role="alert">{error}</p>}
+            </div>
+            <footer><span><ShieldCheck size={15} />凭据保存后不会显示在页面中</span><button type="submit" className="settings-primary-button" disabled={saving}>{saving ? <LoaderCircle className="is-spinning" size={17} /> : null}{saving ? "保存中" : draft.kind === "api" ? "保存连接" : "保存并同步模型"}</button></footer>
           </form>
         </div>
       </div>, document.body)}
 
-      <div className="settings-toast-region" aria-live="polite" aria-atomic="true">{toast && <div className="settings-toast" role="status"><Check size={18} /><span><strong>操作成功</strong><small>{toast}</small></span><button type="button" onClick={() => setToast("")} aria-label="关闭通知"><X size={16} /></button></div>}</div>
+      <div className="settings-toast-region" aria-live="polite" aria-atomic="true">{toast && <div className="settings-toast" role="status"><Check size={18} /><span><strong>{toast}</strong></span><button type="button" onClick={() => setToast("")} aria-label="关闭通知"><X size={16} /></button></div>}</div>
     </main>
   );
 }

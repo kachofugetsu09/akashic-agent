@@ -513,10 +513,25 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 
 .error-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin: 8px 12px 0;
   color: var(--ak-color-status-error);
   font-size: 13px;
 }
+.error-line button {
+  min-height: 32px;
+  border: 0;
+  border-radius: 999px;
+  padding-inline: 12px;
+  color: var(--ak-color-status-error);
+  background: var(--ak-color-status-error-container);
+  font-weight: 700;
+  cursor: pointer;
+}
+.error-line button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
 
 .mobile-pairing-dialog {
   width: min(calc(100vw - 32px), 760px);
@@ -976,9 +991,8 @@ form.composer:focus-within [data-slot="input-group"] {
   height: min(27rem, calc(100vh - 17.5rem));
   border-color: var(--ak-color-border-subtle);
   border-radius: 1.5rem;
-  background: color-mix(in oklch, var(--ak-color-bg-surface) 95%, transparent);
-  box-shadow: 0 1.75rem 4.5rem oklch(0.22 0.04 260 / 0.2);
-  backdrop-filter: blur(1.5rem);
+  background: var(--ak-color-bg-surface);
+  box-shadow: 0 1.1rem 2.8rem oklch(0.22 0.04 260 / 0.16);
 }
 
 .model-capsule__trigger {
@@ -996,7 +1010,7 @@ form.composer:focus-within [data-slot="input-group"] {
   padding: 0.1875rem 0.75rem 0.1875rem 0.25rem;
   color: var(--ak-color-text-primary);
   background: color-mix(in oklch, var(--ak-color-action-container) 55%, var(--ak-color-bg-surface));
-  box-shadow: 0 0.625rem 1.5rem oklch(0.28 0.04 257 / 0.1);
+  box-shadow: none;
   cursor: pointer;
   transition-property: border-color, background-color, box-shadow, scale;
   transition-duration: 180ms;
@@ -1055,9 +1069,9 @@ form.composer:focus-within [data-slot="input-group"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.model-capsule__trigger-copy strong { font-size: 0.77rem; }
+.model-capsule__trigger-copy strong { font-size: 0.875rem; }
 .model-capsule__trigger-copy small,
-.model-capsule__copy small { color: var(--ak-color-text-secondary); font-size: 0.68rem; }
+.model-capsule__copy small { color: var(--ak-color-text-secondary); font-size: 0.78rem; }
 
 .model-capsule__panel {
   position: absolute;
@@ -1090,7 +1104,7 @@ form.composer:focus-within [data-slot="input-group"] {
 }
 .model-capsule__header > div { display: grid; gap: 0.12rem; }
 .model-capsule__header span,
-.model-capsule__header small { color: var(--ak-color-text-secondary); font-size: 0.7rem; }
+.model-capsule__header small { color: var(--ak-color-text-secondary); font-size: 0.78rem; }
 .model-capsule__header strong { font-size: 0.9rem; }
 
 .model-capsule__back {
@@ -1136,7 +1150,7 @@ form.composer:focus-within [data-slot="input-group"] {
   padding: 0.2rem 0.55rem;
   background: linear-gradient(var(--ak-color-bg-surface) 76%, transparent);
 }
-.model-capsule__source-title strong { font-size: 0.72rem; }
+.model-capsule__source-title strong { font-size: 0.8rem; }
 .model-capsule__source-title span {
   display: grid;
   min-width: 1.35rem;
@@ -1146,7 +1160,7 @@ form.composer:focus-within [data-slot="input-group"] {
   border-radius: 999px;
   color: var(--ak-color-text-secondary);
   background: var(--ak-color-bg-surface-low);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
 }
 .model-capsule__option-wrap { border: 1px solid transparent; border-radius: 0.9rem; }
 .model-capsule__option-wrap.is-selected {
@@ -1173,7 +1187,7 @@ form.composer:focus-within [data-slot="input-group"] {
 .model-capsule__option:hover { background: var(--ak-color-bg-surface-high); }
 .model-capsule__option:active { scale: 0.96; }
 .model-capsule__copy { gap: 0.18rem; }
-.model-capsule__copy strong { font-size: 0.78rem; }
+.model-capsule__copy strong { font-size: 0.875rem; }
 .model-capsule__option > svg { color: var(--ak-color-action-primary); }
 
 .model-capsule__effort-entry {
@@ -1189,7 +1203,7 @@ form.composer:focus-within [data-slot="input-group"] {
   color: inherit;
   background: var(--ak-color-bg-surface-low);
   cursor: pointer;
-  box-shadow: 0 0.4rem 1rem oklch(0.28 0.04 257 / 0.07);
+  box-shadow: none;
   transition-property: border-color, background-color, scale;
   transition-duration: 140ms;
   transition-timing-function: ease-out;
@@ -1204,9 +1218,9 @@ form.composer:focus-within [data-slot="input-group"] {
 .model-capsule__effort-entry > span { display: grid; min-width: 0; gap: 0.1rem; text-align: start; }
 .model-capsule__effort-entry small {
   color: var(--ak-color-text-secondary);
-  font-size: 0.68rem;
+  font-size: 0.78rem;
 }
-.model-capsule__effort-entry strong { font-size: 0.78rem; }
+.model-capsule__effort-entry strong { font-size: 0.875rem; }
 
 .model-capsule__effort-list {
   min-height: 0;
@@ -1245,8 +1259,8 @@ form.composer:focus-within [data-slot="input-group"] {
   transition-timing-function: ease-out;
 }
 .model-capsule__effort-option > span { display: grid; gap: 0.12rem; text-align: start; }
-.model-capsule__effort-option strong { font-size: 0.78rem; }
-.model-capsule__effort-option small { color: var(--ak-color-text-secondary); font-size: 0.68rem; }
+.model-capsule__effort-option strong { font-size: 0.875rem; }
+.model-capsule__effort-option small { color: var(--ak-color-text-secondary); font-size: 0.78rem; }
 .model-capsule__effort-option:hover { background: var(--ak-color-bg-surface-high); }
 .model-capsule__effort-option:active { scale: 0.96; }
 .model-capsule__effort-option.is-selected {

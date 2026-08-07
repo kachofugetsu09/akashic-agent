@@ -7,7 +7,7 @@
 
 ## 1. 目标与当前差距
 
-用户可以配置多个 Provider connection，在每个 connection 下启用一个或多个模型，把模型绑定到 `default`、`fast`、`agent` 和 `vision`，并在 Gateway 运行期间修改。数据库始终保存最新 revision；已经开始的执行保持旧快照，下一执行读取新 revision。首次设置只要求登录 Codex、登录 OpenCode，或填写 Base URL、API Key 和 Model Name。
+用户可以配置多个 Provider connection，在每个 connection 下启用一个或多个模型，把模型绑定到 `default`、`fast`、`agent` 和 `vision`，并在 Gateway 运行期间修改。数据库始终保存最新 revision；已经开始的执行保持旧快照，下一执行读取新 revision。首次设置先登录 Codex、登录 OpenCode，或填写 Base URL、API Key 和 Model Name；随后明确选择启用记忆、使用哪种引擎，或暂不启用。
 
 实施前 `bootstrap/providers.py` 在启动时一次性构造 provider，`bootstrap/tools.py` 随后把实例注入所有消费者。`bootstrap/settings_api.py` 写配置后调用 Supervisor restart bridge；Supervisor 向 Gateway 发送 `SIGUSR2`，`main.py` 排空全局 Turn 后退出。因此原实现没有运行时模型 owner。
 
@@ -104,7 +104,7 @@ Extractor 找不到 provider、flavor 或字段时只捕获明确的 `LookupErro
 
 ## 7. Onboarding 与 Chat UI
 
-设置页按具名 Provider connection 展示多套账号或 API Key，并提供 Codex、OpenCode、DeepSeek、OpenRouter 模板。API 连接先填写连接名称、Provider ID、Base URL 和 API Key，再通过 provider `/models`、Codex/OpenCode 权威目录发现 model；目录不可用时才手工填写 Model Name。模型识别后展示 effort 等能力，unknown 字段保持未知。
+设置页按具名 Provider connection 展示多套账号或 API Key，并提供 Codex、OpenCode、DeepSeek 和自定义 API 四个互斥入口。入口决定后续认证语义：Codex 只显示订阅登录，OpenCode 只显示本机登录或其 API Key，DeepSeek 只显示预填官方地址的 API 表单，自定义 API 显示全空表单；进入表单后不再二次切换认证类型。API 连接先填写连接名称、Provider ID、Base URL 和 API Key，再通过 provider `/models` 发现 model；目录不可用时才手工填写 Model Name。Codex 与 OpenCode 保存后从权威目录自动同步模型，无需用户先选模型。模型识别后展示 effort 等能力，unknown 字段保持未知。
 
 Chat composer 上方只保留一个等宽向上展开胶囊，显示“model：来源”并按 Provider connection 分组滚动。模型列表底部固定一行“思考强度”；点击后在同一宽度和高度内切换到当前模型支持的 effort 二级列表，返回按钮恢复模型列表。选择模型或 effort 时面板保持展开，点击外部或 Escape 收起；不兼容的旧 effort 按“模型默认 → medium → 第一项”选择可用值。切换在发送下一条消息时随 inbound frame 提交；服务端校验后更新 `sessions.metadata.model_selection = {schema_version, model_ref, reasoning_effort}`。当前 active Turn 不受影响。重新打开 session 时从服务端读取选择；选择“跟随默认”删除该对象。旧 `model_runtime_override` 字符串继续只读兼容，并在下一次显式选择时转成新结构。
 
@@ -120,15 +120,62 @@ Web 导航与路由固定为：
 
 页面之间只使用同源路径。前端不拼接端口，不使用 iframe 端口探测；设置成功回到根路径 `/` 即可在统一壳层中对话。
 
-### 7.1 多凭据与来源身份
+### 7.1 首次使用的完整交互
+
+首次使用只建立两个连续决定，不把模型角色、能力字段、Embedding 和 Akasha Inspector 同时堆到第一屏：
+
+```text
+┌──────────────────────┐
+│ Chat：尚未连接模型   │
+│ 唯一主操作：连接模型 │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────────────┐
+│ 选择连接方式                 │
+│ Codex / OpenCode / API 服务  │
+└──────────┬───────────────────┘
+           │ 保存并同步模型
+           ▼
+┌──────────────────────────────┐
+│ 选择记忆方式                 │
+│ Akasha / 经典记忆 / 暂不启用 │
+└───────┬──────────────┬───────┘
+        │启用          │关闭
+        ▼              ▼
+┌────────────────┐  ┌────────────────────┐
+│ 添加并验证     │  │ 隐藏 Embedding 与  │
+│ 向量模型       │  │ Akasha 专属 UI     │
+└───────┬────────┘  └─────────┬──────────┘
+        └──────────┬──────────┘
+                   ▼
+             ┌──────────┐
+             │ 进入对话 │
+             └──────────┘
+```
+
+| 状态 | 页面重点 | 可见操作 | 失败语义 |
+|---|---|---|---|
+| 无模型连接 | 一组连接方式 | 选择 Codex、OpenCode 或 API 服务 | 不连接 Chat WebSocket，不显示原始网络错误 |
+| 登录或验证中 | 当前连接表单 | 完成授权、检测模型、保存 | 错误留在当前模态框，可修正后重试 |
+| 已有模型、未决定记忆 | 记忆方式 | Akasha、经典记忆、暂不启用 | 关闭记忆不要求向量模型 |
+| 已选择记忆、无向量模型 | 向量模型必填区 | 添加、验证并选择向量模型 | 完成按钮可点击；点击后把焦点移到缺失字段并明确报错 |
+| 向量模型验证失败 | 添加向量模型对话框 | 修正 Base URL、API Key 或模型名 | 错误显示在遮罩上方的对话框内，不丢失输入 |
+| 记忆关闭 | 普通聊天 | 之后可从设置重新启用 | 不渲染 Embedding、Akasha Inspector 或每轮 Akasha 召回入口 |
+| Akasha 启用 | 普通聊天与 Akasha 能力入口 | 查看当前召回与 Inspector | 插件只在当前 memory owner 为 Akasha 时声明 UI 可用 |
+| Gateway 启动或重载 | Chat 的准备状态 | 查看设置、等待自动恢复 | 2236 保持可用，不要求换端口或反复刷新 |
+| 配置需修复 | 独立修复状态 | 阅读具体错误并修复 | 不用默认值、空目录或假成功进入聊天 |
+
+页面只保留能改变当前任务的表面：连接卡片表示一套可选择、可编辑的凭据来源，因此保留；记忆方式是互斥决定，因此使用选择行；聊天模型胶囊表示当前会话下一轮的模型与 effort，因此保留。说明文字、装饰徽章和嵌套卡片不取得独立表面。主色只表示主操作和当前选择，绿色只表示已验证或已连接，错误色只表示失败或缺失必填项。
+
+### 7.2 多凭据与来源身份
 
 Memoh 的可复用部分是 owner 模型，不是整页复制：一套登录或 API Key 对应一个具名 Provider 实例，模型以 `provider_id + model_id` 唯一。它的数据层允许相同 `client_type` 的多个实例，只要求实例名称不同；现有预设画廊会隐藏已经配置过的模板，因此“重复添加同一预设”在 UI 上仍不够直接。Akashic 采用前者并补齐入口：同一 Provider 可以继续添加主账号、备用账号或不同网关，不把多个 secret 塞进同一 runtime。
 
 设置 API 需要从当前“按 Provider 类型派生固定 runtime ID”升级成具名 runtime 的 create/update 操作。每项至少持有稳定 `runtime_id`、用户可读 `source_name`、transport/provider、credential 引用、Base URL、model name、默认 reasoning effort 与能力快照。列表和 Chat 都以 `model name：source name` 显示，身份和提交仍使用稳定 runtime ID，不能用显示文字做主键。
 
-API Key 是 write-only：读取状态只返回掩码和凭据状态，空值保存表示保留原 secret；替换 key 必须显式输入新值。Codex 和 OpenCode 使用同一来源实例外壳，但表单切换成登录动作，不伪装成 API Key 字段。新增来源成功后显示非阻塞 Toast；表单用带 backdrop blur 的模态层或侧栏，Portal 到 `document.body`，支持 Escape、焦点圈定和焦点恢复。
+API Key 是 write-only：读取状态只返回掩码和凭据状态，空值保存表示保留原 secret；替换 key 必须显式输入新值。Codex 和 OpenCode 使用同一来源实例外壳，但表单切换成登录动作，不伪装成 API Key 字段。新增来源成功后显示非阻塞 Toast；表单使用 Portal 到 `document.body` 的模态层，支持 Escape、焦点圈定和焦点恢复。遮罩只表达模态边界，不用模糊或装饰性渐变制造层级。
 
-### 7.2 五个等权交互候选
+### 7.3 五个等权交互候选
 
 这五版只用于选择交互方向，当前无推荐顺序：
 

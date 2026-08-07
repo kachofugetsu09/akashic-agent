@@ -188,6 +188,9 @@ function isAbortError(error: unknown): boolean {
 }
 
 function errorMessage(error: unknown): string {
+  if (error instanceof TypeError && error.message === "Failed to fetch") {
+    return "无法连接 Akashic。请确认服务仍在运行，然后重试。";
+  }
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -396,6 +399,23 @@ function App() {
     setSelectedReasoningEffort(next.sessionSelection.reasoningEffort);
     setModelSelectionDirty(false);
   }, []);
+
+  useEffect(() => {
+    const handleModelsChanged = (event: MessageEvent<unknown>): void => {
+      const payload = event.data;
+      if (
+        event.origin !== window.location.origin
+        || event.source !== window.parent
+        || typeof payload !== "object"
+        || payload === null
+        || !("type" in payload)
+        || payload.type !== "akashic.models.changed"
+      ) return;
+      void loadModels(activeSessionRef.current).catch((error: unknown) => reportError(error));
+    };
+    window.addEventListener("message", handleModelsChanged);
+    return () => window.removeEventListener("message", handleModelsChanged);
+  }, [loadModels, reportError]);
 
   const connect = useCallback(() => {
     const current = socketRef.current;
@@ -819,7 +839,11 @@ function App() {
               </PromptInputTools>
             </PromptInputFooter>
           </PromptInput>
-          {error && <div className="error-line">{error}</div>}
+          {error && <div className="error-line" role="alert"><span>{error}</span><button type="button" onClick={() => {
+            setError("");
+            void loadSessionsSafely();
+            if (shellState?.chatReady) void loadModels(activeSessionRef.current).catch((reason: unknown) => reportError(reason));
+          }}>重试</button></div>}
         </div>
       </section>}
       <MobilePairingDialog open={mobilePairingOpen} onOpenChange={setMobilePairingOpen} />

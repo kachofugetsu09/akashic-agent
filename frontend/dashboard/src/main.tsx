@@ -177,6 +177,12 @@ function App(): React.ReactElement {
   const runtimeFrameRef = useRef<HTMLIFrameElement>(null);
   const settingsFrameRef = useRef<HTMLIFrameElement>(null);
 
+  const openView = useCallback((next: ShellView): void => {
+    setShellView(next);
+    const base = `${window.location.pathname}${window.location.search}`;
+    window.history.replaceState(null, "", next === "chat" ? base : `${base}#${next}`);
+  }, []);
+
   const syncFrameTheme = useCallback((frame: HTMLIFrameElement | null): void => {
     frame?.contentWindow?.postMessage(
       { type: "akashic.theme", themeId: theme.id },
@@ -189,6 +195,28 @@ function App(): React.ReactElement {
     syncFrameTheme(runtimeFrameRef.current);
     syncFrameTheme(settingsFrameRef.current);
   }, [syncFrameTheme]);
+
+  useEffect(() => {
+    const handleSettingsApplied = (event: MessageEvent<unknown>): void => {
+      const payload = event.data;
+      if (
+        event.origin !== serviceOrigin
+        || event.source !== settingsFrameRef.current?.contentWindow
+        || typeof payload !== "object"
+        || payload === null
+        || !("type" in payload)
+        || payload.type !== "akashic.settings.applied"
+      ) return;
+      chatFrameRef.current?.contentWindow?.postMessage(
+        { type: "akashic.models.changed" },
+        serviceOrigin,
+      );
+      setShellStatus("starting");
+      openView("chat");
+    };
+    window.addEventListener("message", handleSettingsApplied);
+    return () => window.removeEventListener("message", handleSettingsApplied);
+  }, [openView, serviceOrigin]);
 
   useEffect(() => {
     let active = true;
@@ -209,11 +237,9 @@ function App(): React.ReactElement {
     };
   }, []);
 
-  const openView = (next: ShellView): void => {
-    setShellView(next);
-    const base = `${window.location.pathname}${window.location.search}`;
-    window.history.replaceState(null, "", next === "chat" ? base : `${base}#${next}`);
-  };
+  useEffect(() => {
+    if (shellStatus === "needs_setup" && shellView !== "models") openView("models");
+  }, [openView, shellStatus, shellView]);
 
   return (
     <div className="unified-shell">
@@ -222,7 +248,7 @@ function App(): React.ReactElement {
           <img src={notificationIcon} alt="" />
         </div>
         <nav className="primary-rail-nav" aria-label="主要功能">
-          <PrimaryRailButton label="聊天" active={shellView === "chat"} onClick={() => openView("chat")}>
+          <PrimaryRailButton label="聊天" active={shellView === "chat"} onClick={() => openView(shellStatus === "needs_setup" ? "models" : "chat")}>
             <Bot aria-hidden="true" />
           </PrimaryRailButton>
           <PrimaryRailButton label="工作台" active={shellView === "dashboard"} onClick={() => openView("dashboard")}>
