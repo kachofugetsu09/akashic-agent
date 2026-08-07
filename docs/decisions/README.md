@@ -31,6 +31,8 @@
 | [0023](0023-akashic-tokens-own-material-3-semantics.md) | accepted | Akashic Token 拥有 Material 3 设计语义 | WEBUI-001～WEBUI-007 |
 | [0024](0024-plugin-self-validation-uses-stable-and-latest.md) | accepted | 插件自验证使用 stable/latest 与 session 级并发 | RUN-007、OUT-004、PLG-013、CTRL-003、TST-001～TST-006 |
 | [0025](0025-codex-style-same-turn-input.md) | accepted | 中断后的新 Attempt 续接同一 Logical Interaction | SES-007～SES-008、MEM-010～MEM-011、RUN-008、OUT-005 |
+| [0026](0026-runtime-models-use-generation-leases.md) | accepted | 运行时模型切换使用 execution generation lease | RUN-009～RUN-012、ONB-001、CTX-001、PLG-003 |
+| [0027](0027-model-credentials-live-with-workspace-connections.md) | accepted | 模型凭据随 workspace connection 保存 | RUN-009～RUN-012、ONB-001、WSP-001、BAK-001 |
 
 ## 新增规则
 

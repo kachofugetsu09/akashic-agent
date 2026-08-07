@@ -36,6 +36,7 @@ from agent.model_runtime.types import (
     ToolCall,
     UsageCoverage,
 )
+from agent.model_runtime.usage import normalize_provider_usage
 
 if TYPE_CHECKING:
     from agent.config_models import ModelRuntimeConfig
@@ -313,6 +314,7 @@ class ChatCompletionsRuntime:
         read_timeout_s: float = 90.0,
         max_retries: int = 3,
         provider_name: str = "",
+        usage_provider_name: str = "",
         force_disable_thinking: bool = False,
         payload_snapshot_enabled: bool | None = None,
     ) -> None:
@@ -331,6 +333,7 @@ class ChatCompletionsRuntime:
         )
         self._base_url = normalized_base_url or ""
         self._provider_name = provider_name
+        self._usage_provider_name = usage_provider_name or provider_name
         self._extra_body = extra_body or {}
         self._max_retries = max(0, int(max_retries))
         self._force_disable_thinking = force_disable_thinking
@@ -399,7 +402,11 @@ class ChatCompletionsRuntime:
         cache_prompt_tokens, cache_hit_tokens = _extract_cache_usage(
             getattr(resp, "usage", None)
         )
-        usage = _extract_model_usage(getattr(resp, "usage", None))
+        usage = _normalize_chat_usage(
+            resp,
+            provider_id=self._usage_provider_name,
+            provider_api_url=self._base_url,
+        )
         if tool_calls:
             provider_fields = strategy.provider_fields_for_tool_call(
                 provider_fields,
@@ -493,7 +500,11 @@ class ChatCompletionsRuntime:
                 if prompt_tokens is not None:
                     cache_prompt_tokens = prompt_tokens
                     cache_hit_tokens = hit_tokens
-                    usage = _extract_model_usage(raw_usage)
+                    usage = _normalize_chat_usage(
+                        {"model": kwargs.get("model"), "usage": _dump_value(raw_usage)},
+                        provider_id=self._usage_provider_name,
+                        provider_api_url=self._base_url,
+                    )
                 choices = getattr(chunk, "choices", None) or []
                 if not choices:
                     continue
@@ -669,6 +680,7 @@ class LLMProvider:
         runtime: ModelRuntimeConfig,
         *,
         system_prompt: str,
+        credential_store: CredentialStore | None = None,
         extra_body: dict[str, object] | None = None,
         read_timeout_s: float = 90.0,
         force_disable_thinking: bool = False,
@@ -685,7 +697,9 @@ class LLMProvider:
             extra_body=body,
             read_timeout_s=read_timeout_s,
             provider_name=runtime.provider,
+            usage_provider_name=runtime.catalog_provider_id or runtime.provider,
             auth_id=runtime.auth,
+            credential_store=credential_store,
             runtime_id=runtime.runtime_id,
             context_window=runtime.context_window,
             effective_context_percent=runtime.effective_context_percent,
@@ -706,7 +720,9 @@ class LLMProvider:
         read_timeout_s: float = 90.0,
         max_retries: int = 3,
         provider_name: str = "",
+        usage_provider_name: str = "",
         auth_id: str = "",
+        credential_store: CredentialStore | None = None,
         runtime_id: str = "main",
         context_window: int = 0,
         effective_context_percent: float = 0.9,
@@ -734,7 +750,7 @@ class LLMProvider:
             )
         self._backend: ModelBackend
         if provider_name.lower() == "codex":
-            auth = CodexAuthDriver(CredentialStore(), auth_id)
+            auth = CodexAuthDriver(credential_store or CredentialStore(), auth_id)
             self._backend = CodexResponsesTransport(
                 auth,
                 runtime_id=runtime_id,
@@ -752,6 +768,7 @@ class LLMProvider:
                 read_timeout_s=read_timeout_s,
                 max_retries=max_retries,
                 provider_name=provider_name,
+                usage_provider_name=usage_provider_name,
                 force_disable_thinking=force_disable_thinking,
                 payload_snapshot_enabled=payload_snapshot_enabled,
             )
@@ -973,11 +990,15 @@ def _extract_model_usage(usage: Any) -> ModelUsage | None:
     prompt_details = _get_field(usage, "prompt_tokens_details")
     completion_details = _get_field(usage, "completion_tokens_details")
     cached_tokens = _coerce_int(_get_field(prompt_details, "cached_tokens"))
+    cache_write_tokens = _coerce_int(
+        _get_field(prompt_details, "cache_write_tokens")
+    )
     if cached_tokens is None:
         _, cached_tokens = _extract_cache_usage(usage)
     reasoning_tokens = _coerce_int(_get_field(completion_details, "reasoning_tokens"))
     return ModelUsage(
         input_tokens=prompt_tokens,
+        cache_write_input_tokens=cache_write_tokens,
         cached_input_tokens=cached_tokens,
         output_tokens=completion_tokens,
         reasoning_output_tokens=reasoning_tokens,
@@ -990,6 +1011,83 @@ def _extract_model_usage(usage: Any) -> ModelUsage | None:
             else UsageCoverage.UNAVAILABLE
         ),
     )
+
+
+def _normalize_chat_usage(
+    response: Any,
+    *,
+    provider_id: str,
+    provider_api_url: str,
+) -> ModelUsage | None:
+    """优先用成熟 extractor 归一化，未知兼容格式沿用 wire parser。"""
+
+    data = _dump_value(response)
+    raw_usage = _get_field(response, "usage")
+    if isinstance(response, dict):
+        raw_usage = response.get("usage")
+    completion_details = _get_field(raw_usage, "completion_tokens_details")
+    reasoning_tokens = _coerce_int(_get_field(completion_details, "reasoning_tokens"))
+    fallback = _extract_model_usage(raw_usage)
+    normalized = normalize_provider_usage(
+        data,
+        provider_id=provider_id,
+        provider_api_url=provider_api_url,
+        api_flavor="chat",
+        reasoning_output_tokens=reasoning_tokens,
+    )
+    if normalized is None:
+        return fallback
+    if fallback is None:
+        return normalized
+    input_tokens = (
+        normalized.input_tokens
+        if normalized.input_tokens is not None
+        else fallback.input_tokens
+    )
+    output_tokens = (
+        normalized.output_tokens
+        if normalized.output_tokens is not None
+        else fallback.output_tokens
+    )
+    covered = int(input_tokens is not None and output_tokens is not None)
+    coverage = (
+        UsageCoverage.EXACT
+        if covered
+        else UsageCoverage.PARTIAL
+        if input_tokens is not None or output_tokens is not None
+        else UsageCoverage.UNAVAILABLE
+    )
+    return ModelUsage(
+        input_tokens=input_tokens,
+        cache_write_input_tokens=(
+            normalized.cache_write_input_tokens
+            if normalized.cache_write_input_tokens is not None
+            else fallback.cache_write_input_tokens
+        ),
+        cached_input_tokens=(
+            normalized.cached_input_tokens
+            if normalized.cached_input_tokens is not None
+            else fallback.cached_input_tokens
+        ),
+        output_tokens=output_tokens,
+        reasoning_output_tokens=(
+            normalized.reasoning_output_tokens
+            if normalized.reasoning_output_tokens is not None
+            else fallback.reasoning_output_tokens
+        ),
+        request_count=max(normalized.request_count, fallback.request_count),
+        covered_request_count=covered,
+        coverage=coverage,
+    )
+
+
+def _dump_value(value: Any) -> Any:
+    if isinstance(value, dict) or value is None:
+        return value
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return model_dump(mode="json")
+    return value
 
 
 def _iter_tool_call_deltas(delta: Any) -> list[dict[str, str | int]]:

@@ -21,8 +21,6 @@ system_prompt = "test"
 
 [channels.chat]
 enabled = true
-host = "127.0.0.1"
-port = 6322
 channel_name = "web"
 """
 
@@ -112,10 +110,13 @@ def test_mobile_realtime_rejects_unsafe_configuration(
         load_config(_write_config(tmp_path, mobile), workspace=tmp_path)
 
 
-def test_mobile_realtime_requires_loopback_webchat_pairing_entry(
+def test_mobile_realtime_requires_enabled_webchat_pairing_entry(
     tmp_path: Path,
 ) -> None:
-    config = _BASE.replace('host = "127.0.0.1"', 'host = "0.0.0.0"')
+    config = _BASE.replace(
+        "[channels.chat]\nenabled = true",
+        "[channels.chat]\nenabled = false",
+    )
     path = tmp_path / "config.toml"
     path.write_text(
         config + """
@@ -125,5 +126,5 @@ enabled = true
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="loopback"):
+    with pytest.raises(ValueError, match="配对入口"):
         load_config(path, workspace=tmp_path)

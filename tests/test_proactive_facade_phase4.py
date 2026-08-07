@@ -7,6 +7,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from bootstrap.proactive import _build_proactive_provider, build_proactive_runtime
+from agent.config_models import Config, ModelRuntimeConfig
+from agent.model_runtime.registry import ModelGeneration, ModelRegistry, model_config_digest
 from plugins.default_proactive.runtime import (
     ProactiveFlowDeps,
     ProactiveFlowRuntime,
@@ -85,6 +87,36 @@ def test_build_proactive_provider_strips_enable_thinking():
     assert proactive_provider is not provider
     assert proactive_provider._extra_body == {"foo": "bar"}
     assert proactive_provider._force_disable_thinking is True
+
+
+def test_build_proactive_provider_keeps_registry_binding():
+    runtime = ModelRuntimeConfig(
+        runtime_id="main",
+        provider="openai",
+        model="model-a",
+    )
+    cfg = Config(
+        provider="openai",
+        model=runtime.model,
+        api_key="k",
+        system_prompt="sys",
+        model_runtimes={"main": runtime},
+    )
+
+    def build(candidate: Config, generation_id: int) -> ModelGeneration:
+        return ModelGeneration(
+            generation_id=generation_id,
+            config_digest=model_config_digest(candidate),
+            runtimes=candidate.model_runtimes,
+            providers={"main": object()},
+            role_runtime_ids={role: "main" for role in ("default", "fast", "agent", "vision")},
+        )
+
+    provider = ModelRegistry(cfg, build).provider("default")
+    proactive_provider = _build_proactive_provider(cfg, provider)
+
+    assert proactive_provider.registry is provider.registry
+    assert proactive_provider.force_disable_thinking is True
 
 
 def test_agent_tick_prompt_keeps_self_block_with_facade():

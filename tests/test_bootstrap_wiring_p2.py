@@ -499,9 +499,9 @@ def test_config_load_reads_web_chat_config(tmp_path: Path):
     cfg = Config.load(cfg_path, workspace=tmp_path)
 
     assert cfg.channels.chat.enabled is True
-    assert cfg.channels.chat.host == "127.0.0.2"
-    assert cfg.channels.chat.port == 6324
     assert cfg.channels.chat.channel_name == "web_test"
+    assert not hasattr(cfg.channels.chat, "host")
+    assert not hasattr(cfg.channels.chat, "port")
 
 
 def test_build_registered_tools_respects_toolset_order_and_subset(monkeypatch, tmp_path: Path):

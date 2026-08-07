@@ -960,6 +960,7 @@ async def test_proactive_loop_wrapper_methods_cover_paths(tmp_path: Path):
     loop._state_store_owned = False
     loop._state_closed = False
     loop._runtime_snapshot_store = None
+    loop._provider = object()
     loop._stopped = asyncio.Event()
     loop._wake = asyncio.Event()
     loop._reload_lock = asyncio.Lock()

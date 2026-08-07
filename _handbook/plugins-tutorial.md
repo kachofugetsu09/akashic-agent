@@ -43,7 +43,7 @@ Dashboard 插件的前端样式分为两层：主程序提供公共 preset，插
 
 ### 插件颜色主题契约
 
-Dashboard、桌面 Web、6321 设置页和 Android 移动 WebUI 使用同一个扁平 theme ID。默认值是 `light`，当前内置 `light`、`dark` 和实验性的 `warm-paper`；不提供“跟随系统”。主题目录随 WebUI 构建发布为 `akashic-theme-catalog.json`。
+Dashboard、`2236` Web Shell 内的 Chat/设置页和 Android 移动 WebUI 使用同一个扁平 theme ID。默认值是 `light`，当前内置 `light`、`dark` 和实验性的 `warm-paper`；不提供“跟随系统”。主题目录随 WebUI 构建发布为 `akashic-theme-catalog.json`。
 
 ```text
 ┌─ theme ID：light / dark / warm-paper / future-theme

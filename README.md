@@ -61,16 +61,14 @@ uv venv && uv pip install -r requirements.txt
 
 没有 uv？先 `pip install uv`。
 
-**1. 启动设置中心**
+**1. 启动 Akashic Web**
 
 ```bash
 uv run python main.py
 ```
 
-Supervisor 会始终提供本机设置中心：
-
-- 设置中心：<http://127.0.0.1:6321>
-- Web Chat：<http://127.0.0.1:6322>
+Supervisor 会始终提供唯一的本机 Web 入口：<http://127.0.0.1:2236>。访问后直接进入
+Chat；没有模型配置时，Chat 会保留完整界面并引导进入“模型与认证”。
 
 第一次运行不需要先创建 `config.toml`。打开设置中心，选择一种认证方式：
 
@@ -81,12 +79,13 @@ Supervisor 会始终提供本机设置中心：
 | Codex Auth | 复用本机 Codex 登录，未登录时按页面提示完成设备授权 |
 
 ```text
-打开 6321
+打开 2236 Chat
    │
+   ├── 点击“连接模型”
    ├── 选择 Provider 与认证
    ├── 读取或填写模型
    ├── 发送最小真实请求验证
-   └── 保存配置 → 启动 Gateway → 打开 6322 对话
+   └── 保存配置 → 同一页面自动恢复对话
 ```
 
 API Key 会直接写入本机 `config.toml`，文件权限为 `0600`；设置 API 和页面不会回显
@@ -149,8 +148,6 @@ allow_from = ["your_username"]
 
 [channels.chat]
 enabled = true
-host = "127.0.0.1"
-port = 6322
 channel_name = "web"
 ```
 
@@ -167,7 +164,7 @@ channel_name = "web"
 `--workspace PATH`；它的优先级高于 `AKASHIC_WORKSPACE` 和 `config.toml`。
 
 **个人推荐**：主模型使用 DeepSeek，轻量和视觉任务使用 Qwen。通信渠道推荐
-Telegram；只想先本机试用时，完成 6321 设置后直接打开 6322 即可。
+Telegram；只想先本机试用时，打开 2236 绑定模型后即可直接对话。
 
 **3. 运行与安全切换**
 
@@ -176,9 +173,9 @@ Telegram；只想先本机试用时，完成 6321 设置后直接打开 6322 即
 送达和私有提交证据全部完成后安全拉起下一代进程。需要让调试器直接附着未托管 gateway
 时，显式运行 `uv run python main.py gateway`；该模式不会注册自重启工具。
 
-在 6321 切换 Provider 时，Supervisor 会停止接收新 turn、等待已经接收的 turn 自然完成，
-再启动候选 Gateway。候选未通过 readiness 时会恢复配置并重新启动原 Gateway；设置中心在
-整个过程中保持可用。
+在 2236 的“模型与认证”切换 Provider、模型或默认角色时，Gateway 会原子发布新模型代际，不停止接收新
+turn，也不重启进程。已经开始的执行继续使用旧代，下一个真正开始的执行使用新代；候选
+配置或真实请求校验失败时保持原配置和当前代际。
 
 从终端或 supervisor 切换到 PyCharm 前，先优雅停止当前 workspace 的 runtime：
 
@@ -198,7 +195,7 @@ supervisor；需要直接调试 child 时把程序参数设为 `gateway`。也�
 
 ## 用 Android 手机接入
 
-Akashic Mobile 是一个通过独立实时网关连接 Akashic Agent 的 Android 客户端。远程接入推荐使用 Cloudflare Tunnel：Web Chat 和配对管理页继续留在本机 `127.0.0.1:6322`，Tunnel 只转发由 Akashic 设备认证保护的 `6323` 端口。
+Akashic Mobile 是一个通过独立实时网关连接 Akashic Agent 的 Android 客户端。远程接入推荐使用 Cloudflare Tunnel：Web Chat 和模型设置继续留在本机 `127.0.0.1:2236`，Tunnel 只转发由 Akashic 设备认证保护的 `6323` 端口。
 
 ```text
 1. 在 config.toml 启用 [mobile_realtime]
@@ -282,8 +279,8 @@ AKASHIC_WEBUI_SOURCE_COMMIT="$(git rev-parse HEAD)"
 
 | 想看什么 | 文档 |
 |---------|------|
-| 怎么首次配置或切换 Provider | 启动后访问 `http://127.0.0.1:6321`，支持 API Key、OpenCode Go 和 Codex Auth |
-| 怎么打开本机 Web Chatbox | 启动后访问 `http://127.0.0.1:6322`，配置见 `config.toml` 的 `[channels.chat]` |
+| 怎么首次配置或切换 Provider | 启动后访问 `http://127.0.0.1:2236/settings`，支持 API Key、OpenCode Go 和 Codex Auth |
+| 怎么打开本机 Web Chat | 启动后访问 `http://127.0.0.1:2236`；没有模型时页面会直接引导配置 |
 | 怎么用 Android 手机远程连接 | [移动端接入手册](./_handbook/mobile-access.md) |
 | 怎么让 agent 主动推送消息、怎么配数据源 | [_handbook/proactive-guide.md](./_handbook/proactive-guide.md) |
 | 怎么写后台任务让 agent 空闲时自动干活 | [_handbook/drift-guide.md](./_handbook/drift-guide.md) |
@@ -327,8 +324,8 @@ Agent 根据电量模型自适应调整轮询频率——你刚聊完时不烦�
 ```bash
 uv run python main.py exec --new --final-only "总结最近上下文"
 uv run python main.py app-server --stdio # 父进程托管 JSON-RPC app-server
-uv run python main.py dashboard # 打开 Dashboard（默认 :2236）
-# Web Chatbox 跟主进程一起启动，默认 http://127.0.0.1:6322
+uv run python main.py dashboard # 单独运行 Dashboard 调试入口
+# 正式 Supervisor 只提供 http://127.0.0.1:2236，根页面是统一壳层并默认选中 Chat
 uv run python main.py --help    # 查看全部子命令
 
 pytest tests/
