@@ -39,6 +39,9 @@ critical
 
 
 class _Provider(LLMProvider):
+    context_window: int = 0
+    runtime_id: str = ""
+
     def __init__(
         self,
         *,
@@ -46,18 +49,10 @@ class _Provider(LLMProvider):
         fail: bool = False,
         runtime_id: str = "main",
     ) -> None:
-        self._test_context_window = context_window
+        self.context_window = context_window
         self.fail = fail
-        self._test_runtime_id = runtime_id
+        self.runtime_id = runtime_id
         self.calls: list[dict[str, object]] = []
-
-    @property
-    def context_window(self) -> int:
-        return self._test_context_window
-
-    @property
-    def runtime_id(self) -> str:
-        return self._test_runtime_id
 
     def estimate_context_tokens(self, messages, tools):
         return sum(int(message.get("tokens", 1)) for message in messages) + len(tools)

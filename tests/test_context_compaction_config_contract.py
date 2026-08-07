@@ -56,12 +56,10 @@ keep_recent_tokens = 21000
 class _BudgetProvider(LLMProvider):
     """Minimal concrete provider seam for hard input boundary tests."""
 
-    def __init__(self, context_window: int) -> None:
-        self._test_context_window = context_window
+    context_window: int = 0
 
-    @property
-    def context_window(self) -> int:
-        return self._test_context_window
+    def __init__(self, context_window: int) -> None:
+        self.context_window = context_window
 
     async def chat(self, **kwargs: Any):
         raise AssertionError("budget fixture must not call provider.chat")

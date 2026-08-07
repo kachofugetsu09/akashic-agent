@@ -13,21 +13,14 @@ from core.memory.markdown import MarkdownMemoryMaintenance, MarkdownMemoryStore
 
 
 class _Provider(LLMProvider):
+    context_window: int = 4096
 
     def __init__(self) -> None:
-        self._test_context_window = 4096
+        self.context_window = 4096
         self.prompts: list[str] = []
         self.max_tokens: list[int] = []
         self.max_output_tokens = 0
         self.estimated_tokens: int | None = None
-
-    @property
-    def context_window(self) -> int:
-        return self._test_context_window
-
-    @context_window.setter
-    def context_window(self, value: int) -> None:
-        self._test_context_window = value
 
     def estimate_context_tokens(
         self, messages: list[dict], tools: list[dict]

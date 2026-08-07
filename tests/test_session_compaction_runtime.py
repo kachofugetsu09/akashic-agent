@@ -103,9 +103,12 @@ class _MarkdownCompactionProbe(_MarkdownReceiptProbe):
 
 
 class _CountingProvider(LLMProvider):
+    context_window: int = 1000
+    runtime_id: str = "runtime"
+
     def __init__(self, *, context_window: int = 1000, runtime_id: str = "runtime") -> None:
-        self._context_window = context_window
-        self._runtime_id = runtime_id
+        self.context_window = context_window
+        self.runtime_id = runtime_id
         self.calls = 0
 
     def estimate_context_tokens(self, messages, tools):
@@ -184,7 +187,7 @@ class _GateProvider(_CountingProvider):
 class _ScopedCompactionProvider(_GateProvider):
     def __init__(self) -> None:
         super().__init__()
-        self._context_window = 128
+        self.context_window = 128
 
     def estimate_context_tokens(self, messages, tools):
         if any(
