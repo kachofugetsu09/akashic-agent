@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from core.memory.engine import MemoryEngine
     from core.memory.runtime import MemoryRuntime
     from proactive_v2.presence import PresenceStore
+    from session.compaction_runtime import SessionCompactionPort
     from session.manager import SessionManager
 
 
@@ -65,6 +66,7 @@ class MemoryServices:
 class SessionServices:
     session_manager: SessionManager
     presence: PresenceStore | None = None
+    compaction_runtime: "SessionCompactionPort | None" = None
 
 
 @dataclass
