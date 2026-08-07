@@ -217,6 +217,14 @@ class SessionCompactionRuntime:
     ) -> SessionCompaction:
         """Commit receipt, Markdown effects, then the SQLite ledger row."""
 
+        expected_source_ref = compaction_source_ref(
+            compaction_scope_id(session.key, session.created_at),
+            head.next_generation,
+        )
+        if checkpoint.source_ref != expected_source_ref:
+            raise ValueError(
+                "compaction checkpoint source_ref 与 session incarnation 不一致"
+            )
         if excludes_memory(session.key, session.metadata):
             if session.key != head.session_key:
                 raise ValueError("compaction session 与 ledger head 不一致")
