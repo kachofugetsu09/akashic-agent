@@ -31,9 +31,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/api": "http://127.0.0.1:6322",
+      "/api": "http://127.0.0.1:2236",
       "/ws": {
-        target: "ws://127.0.0.1:6322",
+        target: "ws://127.0.0.1:2236",
         ws: true,
       },
     },
