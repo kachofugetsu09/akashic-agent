@@ -73,6 +73,13 @@ provider overflow 只允许一次强制 compaction/retry，第二次失败保留
   summary usage；
 - `invalidated_at`/`invalidated_reason` 等逻辑失效字段。
 
+`source_plan_digest` 是 `canonical_source_plan(selected_source_messages)` 的 SHA-256，
+不是 selection/budget digest。Included 分支的 ledger 值必须与 immutable receipt 中的
+digest 完全相等；excluded 分支不写 Markdown/receipt，但仍对同一 canonical plan 计算并
+写入自己的 session ledger，reload 和幂等重放不得丢失。迁移遇到缺列的非空旧 ledger 时
+不能猜测或写入空值，必须在可恢复备份后 fail-loud；只有可证明为空的预发布表可以升级到
+带非空 64 位小写十六进制约束的最终 schema。
+
 `sessions.last_consolidated` 只表示当前有效 generation，正常提交通过同一事务推进；
 generation 不复用。`sessions.db/messages`、`tool_chain`、embedding 与 Akasha 输入在
 压缩路径中只追加，不 UPDATE/DELETE 既有正文。
