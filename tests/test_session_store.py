@@ -4,6 +4,7 @@ import logging
 import sqlite3
 import threading
 from pathlib import Path
+from typing import Any, NotRequired, TypedDict
 
 import pytest
 
@@ -32,6 +33,28 @@ from bus.events import InboundMessage
 from bus.queue import MessageBus
 
 NOW = datetime(2026, 7, 14, 8, 0, tzinfo=UTC)
+
+
+class _CompactionKwargs(TypedDict):
+    session_key: str
+    trigger: str
+    summary: str
+    source_ref: str
+    source_from_seq: int
+    consolidated_through_seq: int
+    source_message_ids: list[str]
+    retained_tail: list[dict[str, Any]]
+    model_runtime_id: str
+    model: str
+    context_window: int
+    threshold_tokens: int
+    hard_input_tokens: int
+    keep_recent_tokens: int
+    tokens_before: int
+    tokens_after: int
+    summary_usage: dict[str, Any]
+    generation: NotRequired[int | None]
+    summary_format_version: NotRequired[int]
 
 
 @pytest.fixture
@@ -73,14 +96,19 @@ def _compaction_kwargs(
     message: dict[str, object],
     *,
     generation: int | None = None,
-) -> dict:
+    source_ref: str | None = None,
+    summary: str = "## Goal\nsummary",
+) -> _CompactionKwargs:
     message_id = str(message["id"])
-    message_seq = int(message["seq"])
-    return {
+    raw_seq = message["seq"]
+    if not isinstance(raw_seq, int) or isinstance(raw_seq, bool):
+        raise AssertionError("compaction fixture message seq must be an integer")
+    message_seq = raw_seq
+    kwargs: _CompactionKwargs = {
         "session_key": session_key,
         "trigger": "soft_limit",
-        "summary": "## Goal\nsummary",
-        "source_ref": f"source:{generation or 1}",
+        "summary": summary,
+        "source_ref": source_ref or f"source:{generation or 1}",
         "source_from_seq": message_seq,
         "consolidated_through_seq": message_seq,
         "source_message_ids": [message_id],
@@ -101,26 +129,28 @@ def _compaction_kwargs(
         "tokens_before": 80_000,
         "tokens_after": 30_000,
         "summary_usage": {"input_tokens": 10, "output_tokens": 5},
-        **({"generation": generation} if generation is not None else {}),
     }
+    if generation is not None:
+        kwargs["generation"] = generation
+    return kwargs
 
 
 def _prepare_for_compaction(
     store: SessionStore,
     session_key: str,
-    kwargs: dict[str, object],
+    kwargs: _CompactionKwargs,
 ) -> CompactionPrepare:
     meta = store.get_session_meta(session_key)
     assert meta is not None
     return store.prepare_compaction(
         session_key=session_key,
         session_created_at=str(meta["created_at"]),
-        generation=int(kwargs.get("generation") or 1),
-        parent_generation=int(kwargs.get("parent_generation") or 0),
-        source_ref=str(kwargs["source_ref"]),
-        source_from_seq=int(kwargs["source_from_seq"]),
-        consolidated_through_seq=int(kwargs["consolidated_through_seq"]),
-        source_message_ids=tuple(str(item) for item in kwargs["source_message_ids"]),
+        generation=kwargs.get("generation") or 1,
+        parent_generation=0,
+        source_ref=kwargs["source_ref"],
+        source_from_seq=kwargs["source_from_seq"],
+        consolidated_through_seq=kwargs["consolidated_through_seq"],
+        source_message_ids=tuple(kwargs["source_message_ids"]),
         retained_tail=tuple(dict(item) for item in kwargs["retained_tail"]),
     )
 
@@ -715,7 +745,9 @@ def test_session_admission_blocks_delete_from_another_connection(tmp_path) -> No
     with pytest.raises(SessionAdmissionConflictError, match="正在处理消息") as exc_info:
         dashboard_store.delete_session("mobile:one", cascade=True)
 
-    audit = dashboard_store.get_session_delete_audit(exc_info.value.audit_id)
+    audit_id = exc_info.value.audit_id
+    assert audit_id is not None
+    audit = dashboard_store.get_session_delete_audit(audit_id)
     assert audit is not None
     assert audit.result == "rejected"
     assert audit.backup_path is None
@@ -1036,10 +1068,7 @@ def test_compaction_head_is_store_owned_and_monotonic(tmp_path) -> None:
     )
     assert first.generation == 1
     second = store.persist_compaction(
-        **(
-            _compaction_kwargs("cli:head", message, generation=2)
-            | {"source_ref": "source:2"}
-        ),
+        **_compaction_kwargs("cli:head", message, generation=2, source_ref="source:2"),
         parent_generation=first.generation,
     )
     assert second.generation == 2
@@ -1313,9 +1342,8 @@ def test_compaction_source_ref_is_idempotent_after_cursor_advances(tmp_path) -> 
         parent_generation=0,
     )
     _ = store.persist_compaction(
-        **(
-            _compaction_kwargs("cli:idempotent", message, generation=2)
-            | {"source_ref": "source:2"}
+        **_compaction_kwargs(
+            "cli:idempotent", message, generation=2, source_ref="source:2"
         ),
         parent_generation=1,
     )
@@ -1328,9 +1356,8 @@ def test_compaction_source_ref_is_idempotent_after_cursor_advances(tmp_path) -> 
 
     with pytest.raises(ValueError, match="source_ref 内容冲突"):
         store.persist_compaction(
-            **(
-                _compaction_kwargs("cli:idempotent", message, generation=None)
-                | {"summary": "different"}
+            **_compaction_kwargs(
+                "cli:idempotent", message, generation=None, summary="different"
             ),
         )
     store.close()

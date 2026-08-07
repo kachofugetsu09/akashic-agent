@@ -1,7 +1,6 @@
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Protocol, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,6 +16,7 @@ from agent.tools.filesystem import ReadFileTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.spawn import SpawnTool
 from session.compaction_runtime import CompactionProjection
+from session.manager import Session
 from session.store import CompactionHead
 from tests.memory_fakes import FakeMemoryEngine
 from tests.provider_fakes import ProviderContextBudgetStub
@@ -65,6 +65,18 @@ class _TestCompactionRuntime:
         raise AssertionError("spawn baseline unexpectedly attempted compaction commit")
 
 
+class _CompactionRun(Protocol):
+    async def __call__(
+        self,
+        payload: list[dict[str, Any]],
+        *,
+        request_time: datetime | None = None,
+        preloaded_tools: set[str] | None = None,
+        preflight_injected: bool = True,
+        compaction_state: object,
+    ) -> object: ...
+
+
 def _make_loop(
     tmp_path: Path,
     *,
@@ -100,14 +112,19 @@ async def _run_agent_loop_with_compaction_gate(
     if runtime is None:
         raise AssertionError("spawn baseline must install compaction runtime")
     original_run = reasoner.run
-    session = SimpleNamespace(
+    session = Session(
         key="test:spawn",
         created_at=datetime(2026, 8, 8, tzinfo=UTC),
         messages=[],
-        get_history=lambda max_messages=500, *, start_index=None: [],
     )
 
-    async def run_with_gate(payload: list[dict[str, Any]], **kwargs: Any):
+    async def run_with_gate(
+        payload: list[dict[str, Any]],
+        *,
+        request_time: datetime | None = None,
+        preloaded_tools: set[str] | None = None,
+        preflight_injected: bool = True,
+    ):
         if not payload or payload[0].get("role") != "system":
             payload = [{"role": "system", "content": "test context"}, *payload]
         projection = await runtime.projection(
@@ -126,10 +143,13 @@ async def _run_agent_loop_with_compaction_gate(
             channel="test",
             chat_id="spawn",
         )
-        return await original_run(
+        run_with_compaction = cast(_CompactionRun, original_run)
+        return await run_with_compaction(
             payload,
+            request_time=request_time,
+            preloaded_tools=preloaded_tools,
+            preflight_injected=preflight_injected,
             compaction_state=state,
-            **kwargs,
         )
 
     reasoner.run = run_with_gate
