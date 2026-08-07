@@ -1040,17 +1040,40 @@ class SessionStore:
     def _row_to_compaction_prepare(row: sqlite3.Row) -> CompactionPrepare:
         """Decode one durable compaction prepare fence at the SQLite boundary."""
 
+        # 1. Validate scalar identity before any normalization or JSON decoding.
+        scalar_strings = {
+            "session_key": row["session_key"],
+            "session_created_at": row["session_created_at"],
+            "source_ref": row["source_ref"],
+            "prepared_at": row["prepared_at"],
+        }
+        if any(not isinstance(value, str) for value in scalar_strings.values()):
+            raise ValueError("compaction prepare identity 字段类型无效")
+        scalar_ints = {
+            "generation": row["generation"],
+            "parent_generation": row["parent_generation"],
+            "source_from_seq": row["source_from_seq"],
+            "consolidated_through_seq": row["consolidated_through_seq"],
+        }
+        if any(
+            not isinstance(value, int) or isinstance(value, bool)
+            for value in scalar_ints.values()
+        ):
+            raise ValueError("compaction prepare numeric identity 字段无效")
+
+        # 2. Decode JSON payloads at the SQLite trust boundary.
+        identifier = f"{scalar_strings['session_key']}:{scalar_ints['generation']}"
         source_ids = _decode_json_payload(
             row["source_message_ids_json"],
             fallback="[]",
             field="compaction prepare source_message_ids",
-            identifier=f"{row['session_key']}:{row['generation']}",
+            identifier=identifier,
         )
         retained_tail = _decode_json_payload(
             row["retained_tail_json"],
             fallback="[]",
             field="compaction prepare retained_tail",
-            identifier=f"{row['session_key']}:{row['generation']}",
+            identifier=identifier,
         )
         if not isinstance(source_ids, list) or not all(
             isinstance(item, str) and item for item in source_ids
@@ -1060,17 +1083,36 @@ class SessionStore:
             isinstance(item, dict) for item in retained_tail
         ):
             raise ValueError("compaction prepare retained_tail 无效")
-        return CompactionPrepare(
-            session_key=str(row["session_key"]),
-            session_created_at=str(row["session_created_at"]),
-            generation=int(row["generation"]),
-            parent_generation=int(row["parent_generation"]),
-            source_ref=str(row["source_ref"]),
-            source_from_seq=int(row["source_from_seq"]),
-            consolidated_through_seq=int(row["consolidated_through_seq"]),
+
+        # 3. Reuse the write-boundary contract for source ids/tail and validate timestamp.
+        SessionStore._validate_prepare_payload(
+            session_key=scalar_strings["session_key"],
+            session_created_at=scalar_strings["session_created_at"],
+            generation=scalar_ints["generation"],
+            parent_generation=scalar_ints["parent_generation"],
+            source_ref=scalar_strings["source_ref"],
+            source_from_seq=scalar_ints["source_from_seq"],
+            consolidated_through_seq=scalar_ints["consolidated_through_seq"],
             source_message_ids=tuple(cast(str, item) for item in source_ids),
             retained_tail=tuple(cast(dict[str, Any], item) for item in retained_tail),
-            prepared_at=str(row["prepared_at"]),
+        )
+        try:
+            prepared_at = datetime.fromisoformat(scalar_strings["prepared_at"])
+        except ValueError as exc:
+            raise ValueError("compaction prepare prepared_at 无效") from exc
+        if prepared_at.tzinfo is None:
+            raise ValueError("compaction prepare prepared_at 必须包含时区")
+        return CompactionPrepare(
+            session_key=scalar_strings["session_key"],
+            session_created_at=scalar_strings["session_created_at"],
+            generation=scalar_ints["generation"],
+            parent_generation=scalar_ints["parent_generation"],
+            source_ref=scalar_strings["source_ref"],
+            source_from_seq=scalar_ints["source_from_seq"],
+            consolidated_through_seq=scalar_ints["consolidated_through_seq"],
+            source_message_ids=tuple(cast(str, item) for item in source_ids),
+            retained_tail=tuple(cast(dict[str, Any], item) for item in retained_tail),
+            prepared_at=scalar_strings["prepared_at"],
         )
 
     @staticmethod
@@ -1296,12 +1338,13 @@ class SessionStore:
                 ).fetchone()
         return self._row_to_compaction_prepare(row) if row is not None else None
 
-    def clear_compaction_prepare(self, prepare: CompactionPrepare) -> bool:
-        """Remove one prepare fence after proving no receipt remains in progress."""
+    def _clear_orphan_compaction_prepare(self, prepare: CompactionPrepare) -> bool:
+        """Release one pre-effect orphan fence after proving its identity."""
 
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
+                # 1. Re-read the full row so a stale recovery handle cannot clear a new fence.
                 row = self._conn.execute(
                     "SELECT * FROM session_compaction_prepares "
                     "WHERE session_key = ? AND generation = ?",
@@ -1312,6 +1355,7 @@ class SessionStore:
                     return False
                 if self._row_to_compaction_prepare(row) != prepare:
                     raise ValueError("compaction prepare identity 冲突")
+                # 2. Only the runtime's no-receipt pre-effect path may remove this row.
                 self._conn.execute(
                     "DELETE FROM session_compaction_prepares "
                     "WHERE session_key = ? AND generation = ?",

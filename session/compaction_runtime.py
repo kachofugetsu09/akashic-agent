@@ -161,7 +161,7 @@ class SessionCompactionRuntime:
             if prepare is not None:
                 # Receipt is the first cross-file effect; no receipt means the
                 # prepare is still in the pre-effect window and may be released.
-                self._store.clear_compaction_prepare(prepare)
+                self._store._clear_orphan_compaction_prepare(prepare)
             return None
         if prepare is None:
             raise RuntimeError("compaction receipt 存在但 durable prepare 缺失")
@@ -205,16 +205,13 @@ class SessionCompactionRuntime:
         draft = _draft_from_receipt(receipt)
         if checkpoint.source_ref != draft.source_ref:
             raise ValueError("compaction receipt source_ref 冲突")
-        if not excludes_memory(session.key, session.metadata):
-            # Markdown append uses its own source_ref index, so replay is idempotent.
-            await self._markdown.commit_compaction_markdown(draft)
-            after_markdown = self._store.get_compaction_head(session.key)
-            if after_markdown != head:
-                raise RuntimeError("compaction receipt recovery 时 ledger head 发生变化")
-        else:
-            # excluded session 仍推进自己的 compaction ledger，但不产生记忆副作用。
-            if self._store.get_compaction_head(session.key) != head:
-                raise RuntimeError("excluded compaction receipt recovery 时 ledger head 发生变化")
+        # 1. Durable receipt 已证明这是 included path；恢复时 metadata 可能已变化，
+        # 仍必须幂等重放原始 Markdown side effect。
+        await self._markdown.commit_compaction_markdown(draft)
+        after_markdown = self._store.get_compaction_head(session.key)
+        if after_markdown != head:
+            raise RuntimeError("compaction receipt recovery 时 ledger head 发生变化")
+        # 2. Ledger insert、cursor advance 和 prepare clear 在同一 Store 事务内提交。
         row = self._persist_checkpoint(
             checkpoint,
             head=head,
