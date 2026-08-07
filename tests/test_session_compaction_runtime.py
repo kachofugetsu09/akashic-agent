@@ -31,7 +31,11 @@ from session.compaction_runtime import (
     _receipt_payload,
 )
 from session.manager import SessionManager
-from session.store import CompactionHead, SessionCompactionPrepareConflictError
+from session.store import (
+    CompactionHead,
+    CompactionPrepare,
+    SessionCompactionPrepareConflictError,
+)
 
 
 class _MarkdownReceiptProbe:
@@ -270,7 +274,9 @@ def test_receipt_recovery_skips_provider_calls(tmp_path: Path) -> None:
     )
 
 
-def test_prepare_without_receipt_is_released_on_recovery(tmp_path: Path) -> None:
+def _seed_orphan_prepare(
+    tmp_path: Path,
+) -> tuple[SessionManager, SessionCompactionRuntime, CompactionPrepare]:
     manager = SessionManager(tmp_path)
     session = manager.get_or_create("session")
     session.add_message("user", "prepared")
@@ -296,6 +302,13 @@ def test_prepare_without_receipt_is_released_on_recovery(tmp_path: Path) -> None
         session_manager=manager,
         markdown=_MarkdownReceiptProbe(),  # type: ignore[arg-type]
     )
+    return manager, runtime, prepare
+
+
+def test_prepare_without_receipt_is_released_on_recovery(tmp_path: Path) -> None:
+    manager, runtime, prepare = _seed_orphan_prepare(tmp_path)
+    session = manager.get_existing("session")
+    head = manager.control_store.get_compaction_head(session.key)
 
     assert asyncio.run(runtime.recover_pending(session)) is None
     assert manager.control_store.get_compaction_prepare(
@@ -304,13 +317,64 @@ def test_prepare_without_receipt_is_released_on_recovery(tmp_path: Path) -> None
     assert manager.control_store.get_compaction_head(session.key) == head
 
 
+@pytest.mark.parametrize(
+    ("column", "value", "match"),
+    (
+        ("source_message_ids_json", '[]', "source_message_ids"),
+        (
+            "retained_tail_json",
+            '[{"id":"session:0","seq":true,"message":{},"unit_ref":"0:0:0"}]',
+            "retained_tail",
+        ),
+        (
+            "retained_tail_json",
+            '[{"id":"session:0","seq":0,"message":{}}]',
+            "retained_tail",
+        ),
+        ("session_created_at", "", "identity"),
+        ("prepared_at", "", "prepared_at"),
+    ),
+)
+def test_corrupt_prepare_without_receipt_fails_loud_and_keeps_row(
+    tmp_path: Path,
+    column: str,
+    value: str,
+    match: str,
+) -> None:
+    manager, runtime, prepare = _seed_orphan_prepare(tmp_path)
+    with manager.control_store._lock:
+        manager.control_store._conn.execute(
+            f"UPDATE session_compaction_prepares SET {column} = ? "
+            "WHERE session_key = ? AND generation = ?",
+            (value, prepare.session_key, prepare.generation),
+        )
+        manager.control_store._conn.commit()
+
+    with pytest.raises(ValueError, match=match):
+        asyncio.run(runtime.recover_pending(manager.get_existing("session")))
+    with manager.control_store._lock:
+        raw = manager.control_store._conn.execute(
+            "SELECT 1 FROM session_compaction_prepares "
+            "WHERE session_key = ? AND generation = ?",
+            (prepare.session_key, prepare.generation),
+        ).fetchone()
+    assert raw is not None
+
+
 def test_receipt_without_prepare_fails_loud_on_recovery(tmp_path: Path) -> None:
     manager, markdown, source_ref = _seed_receipt(tmp_path)
     prepare = manager.control_store.get_compaction_prepare(
         "session", source_ref=source_ref
     )
     assert prepare is not None
-    assert manager.control_store.clear_compaction_prepare(prepare)
+    # Explicit SQL corruption simulates a receipt whose durable prepare vanished.
+    with manager.control_store._lock:
+        manager.control_store._conn.execute(
+            "DELETE FROM session_compaction_prepares "
+            "WHERE session_key = ? AND generation = ?",
+            (prepare.session_key, prepare.generation),
+        )
+        manager.control_store._conn.commit()
     runtime = SessionCompactionRuntime(
         session_manager=manager,
         markdown=markdown,  # type: ignore[arg-type]
@@ -377,9 +441,12 @@ def test_excluded_session_commit_advances_ledger_without_markdown(
     assert manager.control_store.get_compaction_head(session.key).parent_generation == 1
     assert markdown.prepare_count == 0
     assert markdown.commit_count == 0
+    assert manager.control_store.get_compaction_prepare(
+        session.key, source_ref=source_ref
+    ) is None
 
 
-def test_excluded_receipt_recovery_advances_ledger_without_markdown(
+def test_receipt_recovery_keeps_original_included_semantics_after_metadata_flip(
     tmp_path: Path,
 ) -> None:
     manager, markdown, _ = _seed_receipt(tmp_path)
@@ -396,7 +463,7 @@ def test_excluded_receipt_recovery_advances_ledger_without_markdown(
     assert recovered is not None
     assert recovered.generation == 1
     assert session.last_consolidated == 1
-    assert markdown.commit_count == 0
+    assert markdown.commit_count == 1
 
 
 def test_receipt_recovery_after_markdown_is_idempotent_and_skips_provider(
