@@ -164,6 +164,9 @@ const LazyTraceMotionShowcase = lazy(() =>
 const LazyDrawerIslandShowcase = lazy(() =>
   import("./drawer-island-showcase").then(({ DrawerIslandShowcase }) => ({ default: DrawerIslandShowcase })),
 );
+const LazyModelExperienceShowcase = lazy(() =>
+  import("./model-experience-showcase").then(({ ModelExperienceShowcase }) => ({ default: ModelExperienceShowcase })),
+);
 const LazySettingsApp = lazy(() =>
   import("./settings-app").then(({ SettingsApp }) => ({ default: SettingsApp })),
 );
@@ -1489,6 +1492,7 @@ const isMobileShowcase = preview === "mobile";
 const isSharedChatShowcase = preview === "chat";
 const isTraceMotionShowcase = preview === "trace-motion";
 const isDrawerIslandShowcase = preview === "drawer-islands";
+const isModelExperienceShowcase = preview === "model-experience";
 const rootApp = window.location.pathname === "/settings" || window.location.pathname.startsWith("/settings/")
   ? <LazySettingsApp />
   : isMobileShowcase
@@ -1499,6 +1503,8 @@ const rootApp = window.location.pathname === "/settings" || window.location.path
         ? <LazyTraceMotionShowcase />
       : isDrawerIslandShowcase
         ? <LazyDrawerIslandShowcase />
+      : isModelExperienceShowcase
+        ? <LazyModelExperienceShowcase />
     : <App />;
 
 createRoot(document.getElementById("root")!).render(
