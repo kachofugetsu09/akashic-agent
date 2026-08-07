@@ -1,4 +1,5 @@
 import logging
+import json
 import sqlite3
 import threading
 from pathlib import Path
@@ -101,6 +102,81 @@ class MemoryStore:
             kind=kind,
             trailing_blank_line=False,
         )
+
+    def read_consolidation_receipt(
+        self,
+        source_ref: str,
+        *,
+        kind: str,
+    ) -> dict[str, object] | None:
+        """Read one immutable JSON receipt from the consolidation index."""
+
+        src = source_ref.strip()
+        kd = kind.strip()
+        if not src or not kd:
+            raise ValueError("receipt source_ref/kind 不能为空")
+        with self._consolidation_lock:
+            conn = sqlite3.connect(str(self._consolidation_db), timeout=30.0)
+            try:
+                row = conn.execute(
+                    "SELECT payload FROM consolidation_writes "
+                    "WHERE source_ref=? AND kind=?",
+                    (src, kd),
+                ).fetchone()
+            finally:
+                conn.close()
+        if row is None:
+            return None
+        raw = row[0]
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError(f"receipt payload 缺失: {src}:{kd}")
+        decoded = json.loads(raw)
+        if not isinstance(decoded, dict):
+            raise ValueError(f"receipt payload 必须是 JSON object: {src}:{kd}")
+        return {str(key): value for key, value in decoded.items()}
+
+    def write_consolidation_receipt(
+        self,
+        source_ref: str,
+        payload: dict[str, object],
+        *,
+        kind: str,
+    ) -> dict[str, object]:
+        """Persist one immutable JSON receipt and reject same-key drift."""
+
+        src = source_ref.strip()
+        kd = kind.strip()
+        if not src or not kd:
+            raise ValueError("receipt source_ref/kind 不能为空")
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        with self._consolidation_lock:
+            conn = sqlite3.connect(str(self._consolidation_db), timeout=30.0)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT payload FROM consolidation_writes "
+                    "WHERE source_ref=? AND kind=?",
+                    (src, kd),
+                ).fetchone()
+                if row is not None:
+                    existing = row[0]
+                    if existing != encoded:
+                        raise ValueError(f"receipt 内容冲突: {src}:{kd}")
+                    conn.execute("COMMIT")
+                    return dict(payload)
+                conn.execute(
+                    "INSERT INTO consolidation_writes "
+                    "(source_ref, kind, payload, trailing_blank_line, done_at) "
+                    "VALUES (?, ?, ?, 0, datetime('now'))",
+                    (src, kd, encoded),
+                )
+                conn.execute("COMMIT")
+                return dict(payload)
+            except BaseException:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
 
     def clear_pending(self) -> None:
         """optimizer 归档后清空 PENDING.md。"""

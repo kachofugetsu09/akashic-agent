@@ -5,10 +5,10 @@ import json
 import math
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence, cast
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence, cast
 
 from agent.model_runtime.execution_history import active_shell_execution_origins
-from agent.model_runtime.types import ModelUsage
+from agent.model_runtime.types import ModelUsage, UsageCoverage
 from agent.prompting import is_context_frame
 
 if TYPE_CHECKING:
@@ -136,6 +136,9 @@ class ContextCompaction:
     retained_tail: tuple[dict[str, Any], ...]
     summary_usage: ModelUsage | None
     source_ref: str = ""
+    model_runtime_id: str = ""
+    model: str = ""
+    selection_digest: str = ""
 
     @property
     def committable(self) -> bool:
@@ -162,6 +165,9 @@ class ContextCompaction:
             "retained_tail": [dict(message) for message in self.retained_tail],
             "summary_usage": _usage_payload(self.summary_usage),
             "source_ref": self.source_ref,
+            "model_runtime_id": self.model_runtime_id,
+            "model": self.model,
+            "selection_digest": self.selection_digest,
         }
 
 
@@ -238,6 +244,7 @@ class ContextCompactor:
         next_generation: int | None = None,
         fallback_provider: "LLMProvider | None" = None,
         fallback_model: str | None = None,
+        receipt_loader: Callable[[str], Mapping[str, object] | None] | None = None,
     ) -> None:
         self._provider = provider
         self._model = model
@@ -269,6 +276,7 @@ class ContextCompactor:
         self._next_generation = next_generation
         self._fallback_provider = fallback_provider
         self._fallback_model = str(fallback_model or "").strip()
+        self._receipt_loader = receipt_loader
         self._segments = _copy_segments(payload_segments)
         self._committed_units = list(self._segments.committed_units)
         self._active_compaction = active_compaction
@@ -393,41 +401,66 @@ class ContextCompactor:
             except ContextCompactionError:
                 selected_committed = []
             if selected_committed:
-                summary, summary_usage = await self._summarize(
-                    selected_committed,
-                    include_temporary=False,
+                source_ref = _compaction_source_ref(
+                    self._scope_id,
+                    self._ledger_generation(),
                 )
+                selection_digest = _selection_digest(
+                    selected_committed,
+                    retained_committed,
+                    provider=self._provider,
+                    model=self._model,
+                    scope_id=self._scope_id,
+                    soft_limit_tokens=soft_limit,
+                    hard_input_tokens=hard_limit,
+                    keep_recent_tokens=self._keep_recent_tokens,
+                )
+                receipt = (
+                    self._receipt_loader(source_ref)
+                    if self._receipt_loader is not None
+                    else None
+                )
+                if receipt is not None:
+                    summary, summary_usage, committed_checkpoint = (
+                        _checkpoint_from_receipt(
+                            receipt,
+                            source_ref=source_ref,
+                            selection_digest=selection_digest,
+                        )
+                    )
+                else:
+                    summary, summary_usage = await self._summarize(
+                        selected_committed,
+                        include_temporary=False,
+                    )
+                    committed_checkpoint = _build_checkpoint(
+                        summary=summary,
+                        generation=self._ledger_generation(),
+                        parent_generation=self._ledger_parent(),
+                        trigger=trigger,
+                        context_window=self._provider.context_window,
+                        soft_limit_tokens=soft_limit,
+                        hard_input_tokens=hard_limit,
+                        keep_recent_tokens=self._keep_recent_tokens,
+                        estimated_tokens_before=estimated,
+                        estimated_tokens_after=0,
+                        selected=selected_committed,
+                        retained=retained_committed,
+                        summary_usage=summary_usage,
+                        source_ref=source_ref,
+                        model_runtime_id=_provider_runtime_id(self._provider),
+                        model=self._model,
+                        selection_digest=selection_digest,
+                    )
                 current_prefix = [
                     *_without_previous_compaction(current_prefix),
                     *build_compaction_messages(
                         summary,
                         generation=self._ledger_generation(),
-                        source_ref=_compaction_source_ref(
-                            self._scope_id,
-                            self._ledger_generation(),
-                        ),
+                        source_ref=source_ref,
                     ),
                 ]
                 self._persistent_summary = summary
-                committed_checkpoint = _build_checkpoint(
-                    summary=summary,
-                    generation=self._ledger_generation(),
-                    parent_generation=self._ledger_parent(),
-                    trigger=trigger,
-                    context_window=self._provider.context_window,
-                    soft_limit_tokens=soft_limit,
-                    hard_input_tokens=hard_limit,
-                    keep_recent_tokens=self._keep_recent_tokens,
-                    estimated_tokens_before=estimated,
-                    estimated_tokens_after=0,
-                    selected=selected_committed,
-                    retained=retained_committed,
-                    summary_usage=summary_usage,
-                    source_ref=_compaction_source_ref(
-                        self._scope_id,
-                        self._ledger_generation(),
-                    ),
-                )
         rebuilt = _flatten_projection(
             prefix=current_prefix,
             committed=retained_committed,
@@ -486,6 +519,18 @@ class ContextCompactor:
                 retained=retained_active,
                 summary_usage=active_usage,
                 source_ref=_temporary_source_ref(self._scope_id),
+                model_runtime_id=_provider_runtime_id(self._provider),
+                model=self._model,
+                selection_digest=_selection_digest(
+                    selected_active,
+                    retained_active,
+                    provider=self._provider,
+                    model=self._model,
+                    scope_id=self._scope_id,
+                    soft_limit_tokens=soft_limit,
+                    hard_input_tokens=hard_limit,
+                    keep_recent_tokens=self._keep_recent_tokens,
+                ),
             )
         if after >= soft_limit or after >= hard_limit:
             raise ContextCompactionError(
@@ -604,7 +649,9 @@ class ContextCompactor:
         *,
         include_temporary: bool,
     ) -> tuple[str, ModelUsage | None]:
-        sections = [_SUMMARY_PROMPT, "\n[Current user query]\n", self._current_query]
+        sections = [_SUMMARY_PROMPT]
+        if include_temporary:
+            sections.extend(["\n[Current user query]\n", self._current_query])
         previous_summary = self._persistent_summary
         if include_temporary and self._temporary_summary:
             previous_summary = (
@@ -805,6 +852,9 @@ def _build_checkpoint(
     retained: Sequence[CommittedContextUnit],
     summary_usage: ModelUsage | None,
     source_ref: str,
+    model_runtime_id: str = "",
+    model: str = "",
+    selection_digest: str = "",
 ) -> ContextCompaction:
     source_ids = tuple(
         message_id
@@ -821,8 +871,8 @@ def _build_checkpoint(
         through_seq = 0
     retained_tail = tuple(
         item
-        for unit in retained
-        for item in _retained_tail_payload(unit)
+        for unit_index, unit in enumerate(retained)
+        for item in _retained_tail_payload(unit, unit_index=unit_index)
     )
     return ContextCompaction(
         summary=summary,
@@ -841,6 +891,9 @@ def _build_checkpoint(
         retained_tail=retained_tail,
         summary_usage=summary_usage,
         source_ref=source_ref,
+        model_runtime_id=model_runtime_id,
+        model=model,
+        selection_digest=selection_digest,
     )
 
 
@@ -941,11 +994,18 @@ def _closed_batch_boundaries(messages: Sequence[dict[str, Any]]) -> list[int]:
     return boundaries
 
 
-def _retained_tail_payload(unit: CommittedContextUnit) -> list[dict[str, Any]]:
+def _retained_tail_payload(
+    unit: CommittedContextUnit,
+    *,
+    unit_index: int = 0,
+) -> list[dict[str, Any]]:
     refs = list(unit.message_refs)
     payload: list[dict[str, Any]] = []
     for index, message in enumerate(unit.messages):
         item: dict[str, Any] = {"message": _strip_opaque_state(message)}
+        item["unit_ref"] = (
+            f"{unit.source_from_seq}:{unit.consolidated_through_seq}:{unit_index}"
+        )
         if len(refs) == len(unit.messages):
             item["id"], item["seq"] = refs[index]
         elif isinstance(message.get("id"), str):
@@ -986,6 +1046,12 @@ def _tool_schema_digest(tools: list[dict]) -> str:
 def _compaction_source_ref(scope_id: str, generation: int) -> str:
     digest = hashlib.sha256(f"{scope_id}\0{generation}".encode("utf-8")).hexdigest()
     return f"context-compaction:{scope_id}:{generation}:{digest[:16]}"
+
+
+def compaction_source_ref(scope_id: str, generation: int) -> str:
+    """Return the stable persisted source reference for one ledger head."""
+
+    return _compaction_source_ref(scope_id, generation)
 
 
 def _temporary_source_ref(scope_id: str) -> str:
@@ -1072,3 +1138,122 @@ def _usage_payload(usage: ModelUsage | None) -> dict[str, object]:
         "covered_request_count": usage.covered_request_count,
         "coverage": usage.coverage.value,
     }
+
+
+def _provider_runtime_id(provider: "LLMProvider") -> str:
+    value = getattr(provider, "runtime_id", None)
+    return str(value or getattr(provider, "_runtime_id", "main"))
+
+
+def _selection_digest(
+    selected: Sequence[CommittedContextUnit],
+    retained: Sequence[CommittedContextUnit],
+    *,
+    provider: "LLMProvider",
+    model: str,
+    scope_id: str,
+    soft_limit_tokens: int,
+    hard_input_tokens: int,
+    keep_recent_tokens: int,
+) -> str:
+    identity = {
+        "scope_id": scope_id,
+        "model_runtime_id": _provider_runtime_id(provider),
+        "model": model,
+        "context_window": int(provider.context_window),
+        "soft_limit_tokens": soft_limit_tokens,
+        "hard_input_tokens": hard_input_tokens,
+        "keep_recent_tokens": keep_recent_tokens,
+        "selected": [_unit_identity(unit) for unit in selected],
+        "retained": [_unit_identity(unit) for unit in retained],
+    }
+    encoded = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _unit_identity(unit: CommittedContextUnit) -> dict[str, object]:
+    return {
+        "source_from_seq": unit.source_from_seq,
+        "consolidated_through_seq": unit.consolidated_through_seq,
+        "source_message_ids": list(unit.source_message_ids),
+        "message_refs": [list(ref) for ref in unit.message_refs],
+        "message_count": len(unit.messages),
+    }
+
+
+def _checkpoint_from_receipt(
+    receipt: Mapping[str, object],
+    *,
+    source_ref: str,
+    selection_digest: str,
+) -> tuple[str, ModelUsage | None, ContextCompaction]:
+    raw_digest = receipt.get("selection_digest")
+    if raw_digest != selection_digest:
+        raise ContextCompactionError("context_compaction_receipt_selection_conflict")
+    raw_checkpoint = receipt.get("checkpoint")
+    if not isinstance(raw_checkpoint, dict):
+        raise ContextCompactionError("context_compaction_receipt_checkpoint_invalid")
+    checkpoint = cast(dict[str, object], raw_checkpoint)
+    if checkpoint.get("source_ref") != source_ref:
+        raise ContextCompactionError("context_compaction_receipt_source_conflict")
+    summary = checkpoint.get("summary")
+    if not isinstance(summary, str) or not _valid_summary(summary):
+        raise ContextCompactionError("context_compaction_receipt_summary_invalid")
+    source_ids = checkpoint.get("source_message_ids")
+    retained_tail = checkpoint.get("retained_tail")
+    if not isinstance(source_ids, list) or not all(isinstance(item, str) for item in source_ids):
+        raise ContextCompactionError("context_compaction_receipt_source_ids_invalid")
+    if not isinstance(retained_tail, list) or not all(isinstance(item, dict) for item in retained_tail):
+        raise ContextCompactionError("context_compaction_receipt_retained_tail_invalid")
+    usage = _usage_from_payload(checkpoint.get("summary_usage"))
+    value = ContextCompaction(
+        summary=summary,
+        generation=int(checkpoint.get("generation", 0)),
+        parent_generation=int(checkpoint.get("parent_generation", 0)),
+        trigger=cast(CompactionTrigger, checkpoint.get("trigger", "soft_limit")),
+        context_window=int(checkpoint.get("context_window", 0)),
+        soft_limit_tokens=int(checkpoint.get("threshold_tokens", 0)),
+        hard_input_tokens=int(checkpoint.get("hard_input_tokens", 0)),
+        keep_recent_tokens=int(checkpoint.get("keep_recent_tokens", 0)),
+        estimated_tokens_before=int(checkpoint.get("estimated_tokens_before", 0)),
+        estimated_tokens_after=int(checkpoint.get("estimated_tokens_after", 0)),
+        source_from_seq=int(checkpoint.get("source_from_seq", 0)),
+        consolidated_through_seq=int(checkpoint.get("consolidated_through_seq", 0)),
+        source_message_ids=tuple(str(item) for item in source_ids),
+        retained_tail=tuple(cast(dict[str, object], item) for item in retained_tail),
+        summary_usage=usage,
+        source_ref=source_ref,
+        model_runtime_id=str(checkpoint.get("model_runtime_id", "")),
+        model=str(checkpoint.get("model", "")),
+        selection_digest=selection_digest,
+    )
+    return summary, usage, value
+
+
+def _usage_from_payload(raw: object) -> ModelUsage | None:
+    if raw in (None, {}):
+        return None
+    if not isinstance(raw, dict):
+        raise ContextCompactionError("context_compaction_receipt_usage_invalid")
+    coverage = raw.get("coverage", UsageCoverage.UNAVAILABLE.value)
+    try:
+        parsed_coverage = UsageCoverage(str(coverage))
+    except ValueError as exc:
+        raise ContextCompactionError("context_compaction_receipt_usage_coverage_invalid") from exc
+    return ModelUsage(
+        input_tokens=_optional_int(raw.get("input_tokens")),
+        cached_input_tokens=_optional_int(raw.get("cached_input_tokens")),
+        output_tokens=_optional_int(raw.get("output_tokens")),
+        reasoning_output_tokens=_optional_int(raw.get("reasoning_output_tokens")),
+        request_count=int(raw.get("request_count", 1)),
+        covered_request_count=int(raw.get("covered_request_count", 0)),
+        coverage=parsed_coverage,
+    )
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ContextCompactionError("context_compaction_receipt_usage_integer_invalid")
+    return value
