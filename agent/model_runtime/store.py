@@ -7,6 +7,7 @@ from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Mapping
+from urllib.parse import quote
 
 from agent.model_runtime.auth.store import Credential, CredentialStore
 
@@ -479,7 +480,8 @@ class ModelRegistryStore:
         read_only: bool = False,
     ) -> Iterator[sqlite3.Connection]:
         if read_only:
-            uri = f"file:{self.path.as_posix()}?mode=ro"
+            encoded_path = quote(self.path.as_posix(), safe="/:")
+            uri = f"file:{encoded_path}?mode=ro"
             connection = sqlite3.connect(uri, uri=True)
         else:
             connection = sqlite3.connect(self.path)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 import tomllib
 from pathlib import Path
@@ -18,11 +19,15 @@ _ORIGIN_ID = "20260802_01_yoyo_origin"
 _AKASHA_V9_ID = "20260805_01_akasha_sparse_index_v9"
 _MODEL_REGISTRY_ID = "20260807_01_model_registry_database"
 _EMBEDDING_REGISTRY_ID = "20260807_02_embedding_model_registry"
+_MODEL_CAPABILITIES_ID = "20260808_01_restore_migrated_reasoning_efforts"
+_OPENCODE_VARIANTS_ID = "20260808_02_correct_opencode_go_variants"
 _CURRENT_IDS = (
     _ORIGIN_ID,
     _AKASHA_V9_ID,
     _MODEL_REGISTRY_ID,
     _EMBEDDING_REGISTRY_ID,
+    _MODEL_CAPABILITIES_ID,
+    _OPENCODE_VARIANTS_ID,
 )
 
 
@@ -254,6 +259,91 @@ system_prompt = "test"
     assert b"gpt-main" in backups[0].read_bytes()
 
 
+def test_opencode_variant_correction_repairs_existing_registry_without_identity_loss(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    root = tmp_path / "state"
+    root.mkdir()
+    config = root / "config.toml"
+    config.write_text(
+        """
+[llm]
+main = "opencode_go_main"
+
+[llm.runtimes.opencode_go_main]
+provider = "opencode-go"
+model = "deepseek-v4-flash"
+api_key = "migration-secret"
+base_url = "https://opencode.ai/zen/go/v1"
+reasoning_effort = "high"
+context_window = 1000000
+input_modalities = ["text"]
+""",
+        encoding="utf-8",
+    )
+    sessions = root / "workspace/sessions.db"
+    sessions.parent.mkdir()
+    sessions.write_bytes(b"protected-session-bytes")
+
+    # 1. 重现已经被上一条迁移写入通用 LiteLLM effort 的 workspace
+    legacy_repo = tmp_path / "legacy-repo"
+    legacy_catalog = legacy_repo / "migrations/yoyo"
+    legacy_catalog.mkdir(parents=True)
+    for migration_id in (
+        _ORIGIN_ID,
+        _AKASHA_V9_ID,
+        _MODEL_REGISTRY_ID,
+        _EMBEDDING_REGISTRY_ID,
+        _MODEL_CAPABILITIES_ID,
+    ):
+        shutil.copy2(
+            _PROJECT_ROOT / "migrations/yoyo" / f"{migration_id}.py",
+            legacy_catalog / f"{migration_id}.py",
+        )
+    first = _runner(root, repo_root=legacy_repo).run()
+    assert first.migrations == _CURRENT_IDS[:-1]
+    store = ModelRegistryStore.for_workspace(root / "workspace")
+    before = store.read_snapshot()
+    assert before is not None
+    assert before.runtimes["opencode_go_main"].supported_reasoning_efforts == (
+        "low",
+        "medium",
+        "high",
+    )
+    config_after_first_migration = config.read_bytes()
+
+    # 2. 只应用勘误并证明身份、凭据、角色与业务状态保持不变
+    corrected = _runner(root).run()
+    assert corrected.migrations == (_OPENCODE_VARIANTS_ID,)
+    after = store.read_snapshot()
+    assert after is not None
+    runtime = after.runtimes["opencode_go_main"]
+    assert runtime.source_id == "source:opencode_go_main"
+    assert runtime.reasoning_effort == "high"
+    assert runtime.supported_reasoning_efforts == ("low", "high", "max")
+    assert runtime.context_window == 1_000_000
+    assert after.roles == before.roles
+    assert after.revision == before.revision + 1
+    assert config.read_bytes() == config_after_first_migration
+    assert sessions.read_bytes() == b"protected-session-bytes"
+    assert (
+        CredentialStore.for_workspace(root / "workspace").api_key(
+            "model_opencode_go_main"
+        )
+        == "migration-secret"
+    )
+    backups = list(
+        (root / "workspace/backups/model-registry-opencode-variants-v1").glob(
+            "*/registry.before.sqlite3"
+        )
+    )
+    assert len(backups) == 1
+    ModelRegistryStore(backups[0]).integrity_check()
+
+
 def test_model_registry_migration_accepts_toml_rewritten_nested_tables(
     tmp_path: Path,
 ) -> None:
@@ -406,7 +496,12 @@ api_key = "secret"
     )
     outcome = runner.run()
 
-    assert outcome.migrations == (_MODEL_REGISTRY_ID, _EMBEDDING_REGISTRY_ID)
+    assert outcome.migrations == (
+        _MODEL_REGISTRY_ID,
+        _EMBEDDING_REGISTRY_ID,
+        _MODEL_CAPABILITIES_ID,
+        _OPENCODE_VARIANTS_ID,
+    )
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")
         == "secret"

@@ -502,7 +502,7 @@ def test_opencode_connection_without_model_syncs_catalog(
         json={
             "provider": "opencode-go",
             "model": "",
-            "source_id": "opencode-account",
+            "source_id": "source:opencode_go_main",
             "source_name": "OpenCode Go",
             "api_key": "opencode-secret",
             "base_url": "https://opencode.ai/zen/go/v1",
@@ -516,7 +516,7 @@ def test_opencode_connection_without_model_syncs_catalog(
     synced = {
         runtime.model: (runtime_id, runtime)
         for runtime_id, runtime in snapshot.runtimes.items()
-        if runtime.source_id == "opencode-account"
+        if runtime.source_id == "source:opencode_go_main"
     }
     assert set(synced) == {"deepseek-v4-flash", "kimi-k2.5"}
     assert synced["deepseek-v4-flash"][1].supported_reasoning_efforts == (

@@ -896,10 +896,13 @@ def _answers(
     )
     requested_source_id = payload.source_id.strip()
     if requested_source_id and (
-        not requested_source_id.replace("-", "").replace("_", "").isalnum()
+        not requested_source_id.replace("-", "")
+        .replace("_", "")
+        .replace(":", "")
+        .isalnum()
         or requested_source_id.startswith("__")
     ):
-        raise ValueError("source_id 只能包含字母、数字、连字符和下划线")
+        raise ValueError("source_id 只能包含字母、数字、冒号、连字符和下划线")
     legacy_runtime_id = f"{provider.strip().lower().replace('-', '_')}_main"
     runtime_id = (
         f"{requested_source_id}__{hashlib.sha256(payload.model.strip().encode('utf-8')).hexdigest()[:10]}"
