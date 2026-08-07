@@ -31,7 +31,7 @@ from session.compaction_runtime import (
     _receipt_payload,
 )
 from session.manager import SessionManager
-from session.store import CompactionHead
+from session.store import CompactionHead, SessionCompactionPrepareConflictError
 
 
 class _MarkdownReceiptProbe:
@@ -129,7 +129,7 @@ class _GateProvider(_CountingProvider):
 
 
 class _ScopedCompactionProvider(_GateProvider):
-    context_window = 1_000
+    context_window = 128
 
     def estimate_context_tokens(self, messages, tools):
         if any(
@@ -199,6 +199,17 @@ def _seed_receipt(tmp_path: Path) -> tuple[SessionManager, _MarkdownReceiptProbe
         selection_digest="selection",
         selected_source_messages=selected_source_messages,
     )
+    manager.control_store.prepare_compaction(
+        session_key=session.key,
+        session_created_at=session.created_at.isoformat(),
+        generation=head.next_generation,
+        parent_generation=head.parent_generation,
+        source_ref=source_ref,
+        source_from_seq=checkpoint.source_from_seq,
+        consolidated_through_seq=checkpoint.consolidated_through_seq,
+        source_message_ids=checkpoint.source_message_ids,
+        retained_tail=checkpoint.retained_tail,
+    )
     draft = CompactionMarkdownDraft(source_ref=source_ref)
     probe.receipts[source_ref] = _receipt_payload(
         checkpoint,
@@ -240,7 +251,7 @@ def test_compaction_scope_separates_session_incarnations_and_reloads_stably() ->
 
 
 def test_receipt_recovery_skips_provider_calls(tmp_path: Path) -> None:
-    manager, markdown, _ = _seed_receipt(tmp_path)
+    manager, markdown, source_ref = _seed_receipt(tmp_path)
     runtime = SessionCompactionRuntime(session_manager=manager, markdown=markdown)  # type: ignore[arg-type]
     session = manager.get_existing("session")
     provider_calls = 0
@@ -251,6 +262,62 @@ def test_receipt_recovery_skips_provider_calls(tmp_path: Path) -> None:
     assert provider_calls == 0
     assert session.last_consolidated == recovered.generation
     assert markdown.commit_count == 1
+    assert (
+        manager.control_store.get_compaction_prepare(
+            "session", source_ref=source_ref
+        )
+        is None
+    )
+
+
+def test_prepare_without_receipt_is_released_on_recovery(tmp_path: Path) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("session")
+    session.add_message("user", "prepared")
+    manager.save(session)
+    head = manager.control_store.get_compaction_head(session.key)
+    unit = session.history_units()[0]
+    source_ref = compaction_source_ref(
+        compaction_scope_id(session.key, session.created_at),
+        head.next_generation,
+    )
+    prepare = manager.control_store.prepare_compaction(
+        session_key=session.key,
+        session_created_at=session.created_at.isoformat(),
+        generation=head.next_generation,
+        parent_generation=head.parent_generation,
+        source_ref=source_ref,
+        source_from_seq=unit.source_from_seq,
+        consolidated_through_seq=unit.consolidated_through_seq,
+        source_message_ids=unit.source_message_ids,
+        retained_tail=(),
+    )
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=_MarkdownReceiptProbe(),  # type: ignore[arg-type]
+    )
+
+    assert asyncio.run(runtime.recover_pending(session)) is None
+    assert manager.control_store.get_compaction_prepare(
+        session.key, source_ref=prepare.source_ref
+    ) is None
+    assert manager.control_store.get_compaction_head(session.key) == head
+
+
+def test_receipt_without_prepare_fails_loud_on_recovery(tmp_path: Path) -> None:
+    manager, markdown, source_ref = _seed_receipt(tmp_path)
+    prepare = manager.control_store.get_compaction_prepare(
+        "session", source_ref=source_ref
+    )
+    assert prepare is not None
+    assert manager.control_store.clear_compaction_prepare(prepare)
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="durable prepare 缺失"):
+        asyncio.run(runtime.recover_pending(manager.get_existing("session")))
 
 
 def test_excluded_session_commit_advances_ledger_without_markdown(
@@ -349,6 +416,9 @@ def test_receipt_recovery_after_markdown_is_idempotent_and_skips_provider(
         raise AssertionError("expected simulated crash")
     # Restart after Markdown/event side effect but before ledger insert.
     assert markdown.receipts[source_ref]["source_ref"] == source_ref
+    assert manager.control_store.get_compaction_prepare(
+        session.key, source_ref=source_ref
+    ) is not None
     markdown.fail_after_commit = False
     original_persist = manager.control_store.persist_compaction
     persist_calls = 0
@@ -367,6 +437,9 @@ def test_receipt_recovery_after_markdown_is_idempotent_and_skips_provider(
         assert "SQLite" in str(exc)
     else:
         raise AssertionError("expected SQLite crash")
+    assert manager.control_store.get_compaction_prepare(
+        session.key, source_ref=source_ref
+    ) is not None
     manager.control_store.persist_compaction = original_persist  # type: ignore[method-assign]
     manager.invalidate(session.key)
     resumed = manager.get_existing(session.key)
@@ -380,6 +453,9 @@ def test_receipt_recovery_after_markdown_is_idempotent_and_skips_provider(
     assert provider_calls == 0
     assert resumed.last_consolidated == recovered.generation
     assert markdown.commit_count == 3
+    assert manager.control_store.get_compaction_prepare(
+        resumed.key, source_ref=source_ref
+    ) is None
 
 
 def test_tampered_receipt_is_rejected_before_markdown_or_ledger(tmp_path: Path) -> None:
@@ -397,17 +473,15 @@ def test_tampered_receipt_is_rejected_before_markdown_or_ledger(tmp_path: Path) 
     assert markdown.commit_count == 0
 
 
-def test_deleted_receipt_source_is_rejected_without_ledger_write(tmp_path: Path) -> None:
+def test_pending_prepare_rejects_source_deletion(tmp_path: Path) -> None:
     manager, markdown, _ = _seed_receipt(tmp_path)
-    runtime = SessionCompactionRuntime(session_manager=manager, markdown=markdown)  # type: ignore[arg-type]
     session = manager.get_existing("session")
     message_id = str(session.messages[0]["id"])
-    # Keep the in-memory cache stale while the Store deletion is authoritative.
-    assert manager.control_store.delete_messages_batch([message_id]) == 1
-
-    with pytest.raises(ValueError, match="不存在"):
-        asyncio.run(runtime.recover_pending(session))
-
+    with pytest.raises(
+        SessionCompactionPrepareConflictError,
+        match="pending compaction prepare",
+    ):
+        manager.control_store.delete_messages_batch([message_id])
     assert manager.control_store.get_compaction_head("session").parent_generation == 0
     assert markdown.commit_count == 0
 
@@ -921,7 +995,6 @@ def test_two_session_compaction_commits_are_isolated_in_sqlite(tmp_path: Path) -
         tool_search_enabled=False,
         compaction_runtime=runtime,
         context_compaction=ContextCompactionConfig(
-            trigger_percent=0.01,
             keep_recent_tokens=1,
         ),
     )

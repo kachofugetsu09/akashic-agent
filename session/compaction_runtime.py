@@ -21,7 +21,12 @@ from agent.model_runtime.context_compaction import (
 from agent.model_runtime.types import ModelUsage
 from core.memory.markdown import CompactionMarkdownDraft
 from session.memory_policy import excludes_memory
-from session.store import CompactionHead, SessionCompaction, SessionStore
+from session.store import (
+    CompactionHead,
+    CompactionPrepare,
+    SessionCompaction,
+    SessionStore,
+)
 
 if TYPE_CHECKING:
     from core.memory.markdown import MarkdownMemoryMaintenance
@@ -147,9 +152,19 @@ class SessionCompactionRuntime:
             compaction_scope_id(session.key, session.created_at),
             head.next_generation,
         )
+        prepare = self._store.get_compaction_prepare(
+            session.key,
+            source_ref=source_ref,
+        )
         receipt = self._markdown.read_compaction_receipt(source_ref)
         if receipt is None:
+            if prepare is not None:
+                # Receipt is the first cross-file effect; no receipt means the
+                # prepare is still in the pre-effect window and may be released.
+                self._store.clear_compaction_prepare(prepare)
             return None
+        if prepare is None:
+            raise RuntimeError("compaction receipt 存在但 durable prepare 缺失")
         if receipt.get("session_key") != session.key:
             raise ValueError("compaction receipt session_key 冲突")
         if receipt.get("parent_generation") != head.parent_generation or receipt.get(
@@ -177,6 +192,7 @@ class SessionCompactionRuntime:
             session,
             checkpoint,
         )
+        self._assert_prepare_matches_checkpoint(session, checkpoint, prepare)
         if receipt.get("source_plan_digest") != canonical_digest:
             raise RuntimeError("compaction receipt source plan 与当前 SessionDB 不一致")
         self._store.validate_compaction_provenance(
@@ -202,6 +218,7 @@ class SessionCompactionRuntime:
         row = self._persist_checkpoint(
             checkpoint,
             head=head,
+            prepare=prepare,
         )
         session.last_consolidated = row.generation
         return row
@@ -272,6 +289,17 @@ class SessionCompactionRuntime:
         )
         if post_prepare_digest != source_digest:
             raise RuntimeError("compaction source plan 在 Markdown prepare 后发生变化")
+        prepare = self._store.prepare_compaction(
+            session_key=session.key,
+            session_created_at=self._session_created_at(session.key),
+            generation=head.next_generation,
+            parent_generation=head.parent_generation,
+            source_ref=checkpoint.source_ref,
+            source_from_seq=checkpoint.source_from_seq,
+            consolidated_through_seq=checkpoint.consolidated_through_seq,
+            source_message_ids=checkpoint.source_message_ids,
+            retained_tail=checkpoint.retained_tail,
+        )
         receipt = _receipt_payload(
             checkpoint,
             session_key=head.session_key,
@@ -296,6 +324,7 @@ class SessionCompactionRuntime:
         row = self._persist_checkpoint(
             checkpoint,
             head=head,
+            prepare=prepare,
         )
         session.last_consolidated = row.generation
         return row
@@ -426,11 +455,41 @@ class SessionCompactionRuntime:
             selected_source_messages=tuple(canonical_plan),
         ), digest
 
+    def _assert_prepare_matches_checkpoint(
+        self,
+        session: "Session",
+        checkpoint: ContextCompaction,
+        prepare: CompactionPrepare,
+    ) -> None:
+        """Reject a receipt whose durable fence does not own its checkpoint."""
+
+        if (
+            prepare.session_key != session.key
+            or prepare.session_created_at != self._session_created_at(session.key)
+            or prepare.generation != checkpoint.generation
+            or prepare.parent_generation != checkpoint.parent_generation
+            or prepare.source_ref != checkpoint.source_ref
+            or prepare.source_from_seq != checkpoint.source_from_seq
+            or prepare.consolidated_through_seq != checkpoint.consolidated_through_seq
+            or prepare.source_message_ids != checkpoint.source_message_ids
+            or prepare.retained_tail != checkpoint.retained_tail
+        ):
+            raise RuntimeError("compaction receipt 与 durable prepare identity 冲突")
+
+    def _session_created_at(self, session_key: str) -> str:
+        """Read the exact persisted incarnation string used by the prepare fence."""
+
+        meta = self._store.get_session_meta(session_key)
+        if meta is None:
+            raise RuntimeError(f"compaction session 不存在: {session_key}")
+        return str(meta["created_at"])
+
     def _persist_checkpoint(
         self,
         checkpoint: ContextCompaction,
         *,
         head: CompactionHead,
+        prepare: CompactionPrepare | None = None,
     ) -> SessionCompaction:
         return self._store.persist_compaction(
             session_key=head.session_key,
@@ -453,6 +512,7 @@ class SessionCompactionRuntime:
             parent_generation=head.parent_generation,
             generation=head.next_generation,
             summary_format_version=1,
+            prepare=prepare,
         )
 
 

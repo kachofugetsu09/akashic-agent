@@ -18,7 +18,9 @@ from agent.control.models import (
 )
 from session.manager import Session, SessionManager
 from session.store import (
+    CompactionPrepare,
     SessionAdmissionConflictError,
+    SessionCompactionPrepareConflictError,
     SessionStore,
     _decode_message_extra,
 )
@@ -75,6 +77,26 @@ def _compaction_kwargs(
         "summary_usage": {"input_tokens": 10, "output_tokens": 5},
         **({"generation": generation} if generation is not None else {}),
     }
+
+
+def _prepare_for_compaction(
+    store: SessionStore,
+    session_key: str,
+    kwargs: dict[str, object],
+) -> CompactionPrepare:
+    meta = store.get_session_meta(session_key)
+    assert meta is not None
+    return store.prepare_compaction(
+        session_key=session_key,
+        session_created_at=str(meta["created_at"]),
+        generation=int(kwargs.get("generation") or 1),
+        parent_generation=int(kwargs.get("parent_generation") or 0),
+        source_ref=str(kwargs["source_ref"]),
+        source_from_seq=int(kwargs["source_from_seq"]),
+        consolidated_through_seq=int(kwargs["consolidated_through_seq"]),
+        source_message_ids=tuple(str(item) for item in kwargs["source_message_ids"]),
+        retained_tail=tuple(dict(item) for item in kwargs["retained_tail"]),
+    )
 
 
 def _seed_interaction_with_compactions(
@@ -567,7 +589,7 @@ def test_session_cascade_deletes_turns_in_same_store_transaction(tmp_path) -> No
     store.create_session(key="programmatic:1")
     store.create_turn(_queued())
 
-    with pytest.raises(ValueError, match="messages 或 turns"):
+    with pytest.raises(ValueError, match="messages、turns"):
         store.delete_session("programmatic:1")
 
     assert store.delete_session("programmatic:1", cascade=True)
@@ -985,6 +1007,139 @@ def test_compaction_head_is_store_owned_and_monotonic(tmp_path) -> None:
 
     head = store.get_compaction_head("cli:head")
     assert (head.parent_generation, head.next_generation) == (2, 3)
+
+
+def test_pending_compaction_prepare_is_idempotent_and_fences_mutations(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store.create_session(key="cli:prepare")
+    message = _seed_compaction_message(store, "cli:prepare")
+    kwargs = _compaction_kwargs("cli:prepare", message, generation=1)
+    prepare = _prepare_for_compaction(store, "cli:prepare", kwargs)
+    replay = _prepare_for_compaction(store, "cli:prepare", kwargs)
+
+    assert replay == prepare
+    with pytest.raises(
+        SessionCompactionPrepareConflictError,
+        match="pending compaction prepare",
+    ):
+        store.update_message(str(message["id"]), content="edited")
+    with pytest.raises(
+        SessionCompactionPrepareConflictError,
+        match="pending compaction prepare",
+    ):
+        store.delete_message(str(message["id"]))
+    with pytest.raises(
+        SessionCompactionPrepareConflictError,
+        match="pending compaction prepare",
+    ):
+        store.delete_messages_batch([str(message["id"])])
+
+    assert store.get_message(str(message["id"]))["content"] == "tail"
+    assert store.get_compaction_prepare("cli:prepare", source_ref=prepare.source_ref) == prepare
+
+
+def test_persist_compaction_clears_prepare_with_checkpoint_transaction(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store.create_session(key="cli:prepare-commit")
+    message = _seed_compaction_message(store, "cli:prepare-commit")
+    kwargs = _compaction_kwargs("cli:prepare-commit", message, generation=1)
+    prepare = _prepare_for_compaction(store, "cli:prepare-commit", kwargs)
+
+    persisted = store.persist_compaction(**kwargs, prepare=prepare)
+
+    assert persisted.generation == 1
+    assert store.get_compaction_prepare("cli:prepare-commit", source_ref=prepare.source_ref) is None
+    assert store.get_compaction_head("cli:prepare-commit").parent_generation == 1
+
+
+def test_persist_compaction_without_prepare_cannot_bypass_pending_fence(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store.create_session(key="cli:prepare-bypass")
+    message = _seed_compaction_message(store, "cli:prepare-bypass")
+    kwargs = _compaction_kwargs("cli:prepare-bypass", message, generation=1)
+    prepare = _prepare_for_compaction(store, "cli:prepare-bypass", kwargs)
+
+    with pytest.raises(
+        SessionCompactionPrepareConflictError,
+        match="pending compaction prepare",
+    ):
+        store.persist_compaction(**kwargs)
+
+    assert store.get_compaction_head("cli:prepare-bypass").parent_generation == 0
+    assert store.get_compaction_prepare(
+        "cli:prepare-bypass", source_ref=prepare.source_ref
+    ) == prepare
+
+
+def test_session_cascade_removes_prepare_before_same_key_recreation(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store.create_session(key="cli:prepare-delete")
+    message = _seed_compaction_message(store, "cli:prepare-delete")
+    kwargs = _compaction_kwargs("cli:prepare-delete", message, generation=1)
+    prepare = _prepare_for_compaction(store, "cli:prepare-delete", kwargs)
+
+    assert store.delete_session("cli:prepare-delete", cascade=True)
+    assert not store.session_exists("cli:prepare-delete")
+    store.create_session(key="cli:prepare-delete")
+
+    assert (
+        store.get_compaction_prepare(
+            "cli:prepare-delete", source_ref=prepare.source_ref
+        )
+        is None
+    )
+
+
+def test_pending_compaction_prepare_fences_interaction_delete(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    timestamp = NOW.isoformat()
+    rows = store.persist_session(
+        "cli:prepare-interaction",
+        created_at=timestamp,
+        updated_at=timestamp,
+        metadata={},
+        messages=[
+            {
+                "role": "user",
+                "content": "question",
+                "timestamp": timestamp,
+                "extra": {
+                    "control_turn_id": "turn:prepare",
+                    "turn_input_ordinal": 0,
+                },
+            },
+            {
+                "role": "assistant",
+                "content": "answer",
+                "timestamp": timestamp,
+                "extra": {
+                    "control_turn_id": "turn:prepare",
+                    "turn_terminal": True,
+                    "turn_input_count": 1,
+                },
+            },
+        ],
+    )
+    prepare = store.prepare_compaction(
+        session_key="cli:prepare-interaction",
+        session_created_at=timestamp,
+        generation=1,
+        parent_generation=0,
+        source_ref="prepare:interaction",
+        source_from_seq=int(rows[0]["seq"]),
+        consolidated_through_seq=int(rows[-1]["seq"]),
+        source_message_ids=tuple(str(row["id"]) for row in rows),
+        retained_tail=(),
+    )
+
+    with pytest.raises(
+        SessionCompactionPrepareConflictError,
+        match="pending compaction prepare",
+    ):
+        store.delete_interaction("turn:prepare")
+    assert store.get_compaction_prepare(
+        "cli:prepare-interaction", source_ref=prepare.source_ref
+    ) == prepare
 
 
 def test_compaction_retained_unit_ref_survives_store_reopen(tmp_path) -> None:
