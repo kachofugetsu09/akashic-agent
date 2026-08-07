@@ -19,6 +19,7 @@ class _Provider:
 
     def __init__(self) -> None:
         self.prompts: list[str] = []
+        self.max_tokens: list[int] = []
 
     def estimate_context_tokens(self, messages, tools) -> int:
         prompt = str(messages[0]["content"])
@@ -27,6 +28,7 @@ class _Provider:
     async def chat(self, *, messages, **kwargs):
         prompt = str(messages[0]["content"])
         self.prompts.append(prompt)
+        self.max_tokens.append(int(kwargs["max_tokens"]))
         return _Response(
             json.dumps(
                 {
@@ -68,6 +70,7 @@ def _source_plan() -> tuple[dict[str, object], ...]:
 @pytest.mark.asyncio
 async def test_exact_markdown_plan_pages_by_consecutive_unit_ref(tmp_path):
     provider = _Provider()
+    provider.max_output_tokens = 256
     maintenance = MarkdownMemoryMaintenance(
         store=MarkdownMemoryStore(tmp_path),
         provider=provider,
@@ -82,6 +85,7 @@ async def test_exact_markdown_plan_pages_by_consecutive_unit_ref(tmp_path):
 
     assert len(provider.prompts) == 3
     assert all(prompt.count("UNIT") == 2 for prompt in provider.prompts)
+    assert provider.max_tokens == [256, 256, 256]
     assert draft.source_ref == "session:checkpoint:1"
     assert len(draft.history_entry_payloads) == 3
 
@@ -132,15 +136,65 @@ def test_default_markdown_provider_budget_is_strict(tmp_path):
         provider=provider,
         model="memory-model",
     )
-    assert maintenance._provider_input_budget == 1024
+    assert maintenance._provider_input_budget is None
 
     provider.context_window = 1024
-    with pytest.raises(ValueError, match="context_window 必须大于 1024"):
-        MarkdownMemoryMaintenance(
-            store=MarkdownMemoryStore(tmp_path),
-            provider=provider,
-            model="memory-model",
+    assert MarkdownMemoryMaintenance(
+        store=MarkdownMemoryStore(tmp_path),
+        provider=provider,
+        model="memory-model",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("context_window", [0, 1024])
+async def test_unknown_or_too_small_window_fails_only_at_prepare(
+    tmp_path,
+    context_window,
+):
+    provider = _Provider()
+    provider.context_window = context_window
+    maintenance = MarkdownMemoryMaintenance(
+        store=MarkdownMemoryStore(tmp_path),
+        provider=provider,
+        model="memory-model",
+    )
+
+    with pytest.raises(RuntimeError, match="input_budget"):
+        await maintenance.prepare_compaction_markdown(
+            _source_plan()[:2],
+            source_ref="session:checkpoint:unknown-window",
         )
+    assert provider.prompts == []
+
+
+@pytest.mark.asyncio
+async def test_default_input_and_output_budgets_follow_current_provider(tmp_path):
+    provider = _Provider()
+    provider.context_window = 4096
+    provider.max_output_tokens = 512
+    maintenance = MarkdownMemoryMaintenance(
+        store=MarkdownMemoryStore(tmp_path),
+        provider=provider,
+        model="memory-model",
+    )
+
+    estimated = 3000
+    provider.estimate_context_tokens = lambda messages, tools: estimated
+    await maintenance.prepare_compaction_markdown(
+        _source_plan()[:2],
+        source_ref="session:checkpoint:dynamic-1",
+    )
+    assert provider.max_tokens == [512]
+
+    provider.context_window = 2000
+    provider.max_output_tokens = 256
+    with pytest.raises(RuntimeError, match="input_budget"):
+        await maintenance.prepare_compaction_markdown(
+            _source_plan()[:2],
+            source_ref="session:checkpoint:dynamic-2",
+        )
+    assert provider.max_tokens == [512]
 
 
 @pytest.mark.asyncio

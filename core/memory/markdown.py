@@ -255,12 +255,32 @@ class _MarkdownConsolidationWorker:
         profile_maint: "MarkdownMemoryStore",
         provider: "LLMProvider",
         model: str,
-        provider_input_budget: int,
+        provider_input_budget: int | None,
     ) -> None:
         self._profile_maint = profile_maint
         self._provider = provider
         self._model = model
-        self._provider_input_budget = provider_input_budget
+        self._configured_provider_input_budget = provider_input_budget
+
+    def _summary_output_tokens(self) -> int:
+        """Resolve the current provider's bounded event-extraction output budget."""
+
+        raw_cap = getattr(self._provider, "max_output_tokens", 0)
+        if raw_cap is None:
+            raw_cap = 0
+        if not isinstance(raw_cap, int) or isinstance(raw_cap, bool) or raw_cap < 0:
+            raise ValueError("Markdown provider max_output_tokens 必须是非负整数")
+        return min(1024, raw_cap) if raw_cap > 0 else 1024
+
+    def _input_budget(self, summary_output_tokens: int) -> int | None:
+        """Resolve input budget from explicit policy or the current provider window."""
+
+        if self._configured_provider_input_budget is not None:
+            return self._configured_provider_input_budget
+        context_window = int(getattr(self._provider, "context_window", 0) or 0)
+        if context_window <= summary_output_tokens:
+            return None
+        return context_window - summary_output_tokens
 
     async def _call_llm_step(
         self,
@@ -426,18 +446,29 @@ history_entries.emotional_weight 规则：
 
 只返回合法 JSON，不要 markdown 代码块。"""
 
-        # 3. 先按真实 provider 编码复核硬输入边界，禁止超预算请求。
+        # 3. 按当前 frozen provider 解析输入和输出边界，禁止超预算请求。
+        summary_output_tokens = self._summary_output_tokens()
+        provider_input_budget = self._input_budget(summary_output_tokens)
+        if provider_input_budget is None:
+            return _ConsolidationFailure(
+                step="input_budget",
+                error=(
+                    "markdown provider input budget unavailable: "
+                    f"context_window={getattr(self._provider, 'context_window', 0)} "
+                    f"summary_output={summary_output_tokens}"
+                ),
+            )
         estimated_tokens = self._provider.estimate_context_tokens(
             [{"role": "user", "content": prompt}],
             [],
         )
-        if estimated_tokens >= self._provider_input_budget:
+        if estimated_tokens >= provider_input_budget:
             return _ConsolidationFailure(
                 step="input_budget",
                 error=(
                     "markdown provider input exceeds hard budget: "
                     f"estimated={estimated_tokens} "
-                    f"budget={self._provider_input_budget}"
+                    f"budget={provider_input_budget}"
                 ),
             )
 
@@ -447,7 +478,7 @@ history_entries.emotional_weight 规则：
             provider=self._provider,
             model=self._model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=1024,
+            max_tokens=summary_output_tokens,
             timeout_s=_EVENT_EXTRACTION_TIMEOUT_S,
         )
         if isinstance(call_result, _ConsolidationFailure):
@@ -556,14 +587,7 @@ class MarkdownMemoryMaintenance:
     ) -> None:
         self._store = store
         self._event_bus = event_bus
-        if provider_input_budget is None:
-            context_window = int(getattr(provider, "context_window", 0) or 0)
-            if context_window <= 1024:
-                raise ValueError(
-                    "Markdown provider context_window 必须大于 1024"
-                )
-            provider_input_budget = context_window - 1024
-        if provider_input_budget <= 0:
+        if provider_input_budget is not None and provider_input_budget <= 0:
             raise ValueError("provider_input_budget 必须大于 0")
         self._worker = _MarkdownConsolidationWorker(
             profile_maint=store,
