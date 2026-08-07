@@ -1,6 +1,6 @@
 # 0012 · Query 内压缩是可持久重放的非破坏性投影
 
-- 状态：accepted
+- 状态：superseded by [0027 · Session context compaction ledger 拥有模型窗口投影](0027-session-context-compaction-ledger.md)
 - 日期：2026-07-31
 - 关联条款：CTX-001～CTX-007、SES-001、SES-005、CAP-001、ERR-001
 

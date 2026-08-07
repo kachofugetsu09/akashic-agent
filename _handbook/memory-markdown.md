@@ -9,11 +9,13 @@
 | `MEMORY.md` | 长期用户档案与稳定事实 |
 | `SELF.md` | Akashic 自我认知 |
 | `PENDING.md` | consolidation 提取出的待归档候选 |
-| `HISTORY.md` | 由 `ConsolidationCommitted` 订阅者追加的事件日志 |
+
+当前运行时不创建或写入 `HISTORY.md`；`ConsolidationCommitted`
+由语义记忆引擎消费，不是 Markdown 日志 writer。
 
 ## Consolidation
 
-被动请求在调用模型前读取 session compaction ledger。超过模型 context window 水位时，compactor 从 `last_consolidate` cursor 之后选择完整逻辑单元，生成版本化摘要并提交 ledger；提交成功后 Markdown saga 才追加 `HISTORY.md`/`PENDING.md`，随后推进 cursor。
+被动请求在每次业务模型调用前读取 session compaction ledger。超过模型 context window 水位时，compactor 从当前有效 generation 之后选择完整逻辑单元，生成版本化摘要。Markdown saga 仅从 checkpoint 的 exact source plan 追加 `PENDING.md` 候选并发布 `ConsolidationCommitted`；这些幂等副作成功后才提交 ledger 并推进 cursor。
 
 ```
 provider payload gate
