@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from agent.config import load_config
 from agent.config_models import ModelRuntimeConfig
-from bootstrap.memory import _hard_input_budget
+from agent.model_runtime.context_compaction import hard_input_limit
 from bootstrap.setup_wizard import WizardAnswers, _render_config
 
 
@@ -92,9 +93,10 @@ def test_legacy_context_keys_fail_at_config_boundary(
 
 
 def test_model_runtime_output_edge_is_directly_bounded_by_context_window() -> None:
-    assert _hard_input_budget(1025, 1024) == 1
+    provider = SimpleNamespace(context_window=1025)
+    assert hard_input_limit(provider, 1024) == 1
     with pytest.raises(ValueError, match="max_output_tokens"):
-        _hard_input_budget(1024, 1024)
+        hard_input_limit(SimpleNamespace(context_window=1024), 1024)
     with pytest.raises(ValueError, match="必须小于 context_window"):
         ModelRuntimeConfig(
             runtime_id="edge",
