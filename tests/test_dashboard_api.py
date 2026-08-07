@@ -543,6 +543,35 @@ def _seed_workspace(tmp_path) -> None:
     conn.close()
 
 
+def _seed_pending_compaction_prepare(
+    workspace: Path,
+    session_key: str,
+    message_ids: list[str],
+) -> str:
+    store = SessionStore(workspace / "sessions.db")
+    meta = store.get_session_meta(session_key)
+    assert meta is not None
+    rows = {
+        str(row["id"]): row for row in store.fetch_session_messages(session_key)
+    }
+    selected = [rows[message_id] for message_id in message_ids]
+    assert selected
+    source_ref = f"test:pending:{session_key}"
+    store.prepare_compaction(
+        session_key=session_key,
+        session_created_at=str(meta["created_at"]),
+        generation=1,
+        parent_generation=0,
+        source_ref=source_ref,
+        source_from_seq=min(int(row["seq"]) for row in selected),
+        consolidated_through_seq=max(int(row["seq"]) for row in selected),
+        source_message_ids=tuple(message_ids),
+        retained_tail=(),
+    )
+    store.close()
+    return source_ref
+
+
 def test_list_sessions_with_filters(tmp_path) -> None:
     _seed_workspace(tmp_path)
     with TestClient(create_dashboard_app(tmp_path)) as client:
@@ -624,6 +653,54 @@ def test_dashboard_update_message_returns_409_when_session_is_active(tmp_path) -
     assert inspector.get_message(str(message["id"]))["content"] == "还没睡呢"
     inspector.release_session_admission("admission:dashboard-edit")
     inspector.close()
+
+
+@pytest.mark.parametrize("operation", ("edit", "delete", "batch", "interaction"))
+def test_dashboard_returns_distinct_409_for_pending_compaction_prepare(
+    tmp_path,
+    operation: str,
+) -> None:
+    if operation == "interaction":
+        turn_id, message_ids = _seed_explicit_interaction(
+            tmp_path,
+            last_consolidated=0,
+        )
+        session_key = "mobile:review"
+        target_id = message_ids[1]
+    else:
+        _seed_workspace(tmp_path)
+        session_key = "telegram:100"
+        target_id = "telegram:100:1"
+        message_ids = [target_id]
+        turn_id = ""
+    source_ref = _seed_pending_compaction_prepare(
+        tmp_path,
+        session_key,
+        message_ids,
+    )
+
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        if operation == "edit":
+            response = client.patch(
+                f"/api/dashboard/messages/{target_id}",
+                json={"content": "blocked"},
+            )
+        elif operation == "delete":
+            response = client.delete(f"/api/dashboard/messages/{target_id}")
+        elif operation == "batch":
+            response = client.post(
+                "/api/dashboard/messages/batch-delete",
+                json={"ids": message_ids},
+            )
+        else:
+            response = client.delete(f"/api/dashboard/interactions/{turn_id}")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "session_compaction_pending",
+        "session_key": session_key,
+        "source_ref": source_ref,
+    }
 
 
 def test_manual_memory_optimizer_uses_runtime_entrypoint(tmp_path) -> None:

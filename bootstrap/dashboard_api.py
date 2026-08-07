@@ -39,6 +39,7 @@ from session.store import (
     InteractionDeletion,
     InteractionDeleteRequiredError,
     SessionAdmissionConflictError,
+    SessionCompactionPrepareConflictError,
     SessionStore,
 )
 
@@ -187,6 +188,16 @@ def _session_delete_detail(exc: SessionAdmissionConflictError) -> dict[str, str]
     if exc.audit_id is not None:
         detail["audit_id"] = exc.audit_id
     return detail
+
+
+def _compaction_prepare_detail(
+    exc: SessionCompactionPrepareConflictError,
+) -> dict[str, str]:
+    return {
+        "code": "session_compaction_pending",
+        "session_key": exc.session_key,
+        "source_ref": exc.source_ref,
+    }
 
 
 class ProactiveDashboardReader:
@@ -1138,6 +1149,11 @@ def create_dashboard_app(
                 status_code=409,
                 detail=_session_delete_detail(exc),
             ) from exc
+        except SessionCompactionPrepareConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_compaction_prepare_detail(exc),
+            ) from exc
         if message is None:
             raise HTTPException(status_code=404, detail="message 不存在")
         return message
@@ -1159,6 +1175,11 @@ def create_dashboard_app(
                 status_code=409,
                 detail=_session_delete_detail(exc),
             ) from exc
+        except SessionCompactionPrepareConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_compaction_prepare_detail(exc),
+            ) from exc
         if not deleted:
             raise HTTPException(status_code=404, detail="message 不存在")
         return {"deleted": True, "id": message_id}
@@ -1179,6 +1200,11 @@ def create_dashboard_app(
             raise HTTPException(
                 status_code=409,
                 detail=_session_delete_detail(exc),
+            ) from exc
+        except SessionCompactionPrepareConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_compaction_prepare_detail(exc),
             ) from exc
         return {"deleted_count": deleted_count}
 
@@ -1221,6 +1247,11 @@ def create_dashboard_app(
                     "code": "session_busy",
                     "session_key": exc.session_key,
                 },
+            ) from exc
+        except SessionCompactionPrepareConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_compaction_prepare_detail(exc),
             ) from exc
         if deletion is None:
             raise HTTPException(status_code=404, detail="interaction 不存在")
