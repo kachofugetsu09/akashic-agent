@@ -32,8 +32,6 @@ class QQChannelConfig:
 @dataclass
 class WebChatConfig:
     enabled: bool = True
-    host: str = "127.0.0.1"
-    port: int = 6322
     channel_name: str = "web"
 
 

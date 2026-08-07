@@ -1240,6 +1240,46 @@ def test_settings_restart_bridge_waits_for_matching_ready_generation() -> None:
     assert completed == [True]
 
 
+def test_lifecycle_accepts_settings_reload_only_after_ready() -> None:
+    state = supervisor_module._LifecycleState("boot-model", "nonce")
+    state.feed(b'{"type":"ready","bootId":"boot-model","pid":123}\n')
+    state.feed(
+        b'{"type":"settings_reloaded","bootId":"boot-model",'
+        b'"success":true,"detail":"digest"}\n'
+    )
+
+    assert state.protocol_error == ""
+    assert state.settings_results == [(True, "digest")]
+    assert not state.commit_valid
+
+    invalid = supervisor_module._LifecycleState("boot-model", "nonce")
+    invalid.feed(
+        b'{"type":"settings_reloaded","bootId":"boot-model",'
+        b'"success":true}\n'
+    )
+    assert invalid.protocol_error == "settings reload frame 无效"
+
+
+def test_settings_restart_bridge_exposes_candidate_rejection() -> None:
+    bridge = supervisor_module._SettingsRestartBridge(1)
+    failures: list[str] = []
+
+    def request() -> None:
+        try:
+            bridge.request_and_wait()
+        except RuntimeError as exc:
+            failures.append(str(exc))
+
+    thread = threading.Thread(target=request)
+    thread.start()
+    assert bridge.request_event.wait(1)
+    generation = bridge.take_request()
+    bridge.complete(generation, False)
+    thread.join(timeout=1)
+
+    assert failures == ["Gateway 拒绝候选模型配置"]
+
+
 def test_supervised_gateway_skips_duplicate_startup_migration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1284,7 +1324,8 @@ def test_settings_server_rejects_non_loopback_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge = supervisor_module._SettingsRestartBridge(1)
-    monkeypatch.setenv("AKASHIC_SETTINGS_HOST", "0.0.0.0")
+    monkeypatch.setenv("AKASHIC_WEB_HOST", "0.0.0.0")
+    monkeypatch.delenv("AKASHIC_WEB_ALLOW_NON_LOOPBACK", raising=False)
     try:
         with pytest.raises(RuntimeError, match="只允许 127.0.0.1"):
             supervisor_module._start_settings_server(

@@ -336,6 +336,25 @@ class WebChatChannel:
             return session_key
         reply_to_message_id = payload.get("reply_to_message_id")
         metadata: dict[str, object] = {"client_request_id": request_id}
+        if "model_runtime_id" in payload:
+            model_runtime_id = payload["model_runtime_id"]
+            if not isinstance(model_runtime_id, str):
+                await self._send_error(
+                    websocket,
+                    request_id,
+                    "model_runtime_id 必须是字符串",
+                )
+                return session_key
+            metadata["model_runtime_id"] = model_runtime_id.strip()
+            model_reasoning_effort = payload.get("model_reasoning_effort", "")
+            if not isinstance(model_reasoning_effort, str):
+                await self._send_error(
+                    websocket,
+                    request_id,
+                    "model_reasoning_effort 必须是字符串",
+                )
+                return session_key
+            metadata["model_reasoning_effort"] = model_reasoning_effort.strip()
         inbound_content = text
         if reply_to_message_id is not None:
             if not isinstance(reply_to_message_id, str) or not reply_to_message_id.strip():

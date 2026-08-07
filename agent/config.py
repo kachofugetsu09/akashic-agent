@@ -146,13 +146,8 @@ def load_config(
     channels = _load_channels_config(data, workspace_path)
     app_server = _load_app_server_config(data)
     mobile_realtime = _load_mobile_realtime_config(data)
-    if mobile_realtime.enabled and (
-        not channels.chat.enabled
-        or channels.chat.host not in {"127.0.0.1", "localhost", "::1"}
-    ):
-        raise ValueError(
-            "mobile_realtime 启用时，本机配对入口 channels.chat 必须监听 loopback"
-        )
+    if mobile_realtime.enabled and not channels.chat.enabled:
+        raise ValueError("mobile_realtime 启用时必须启用 channels.chat 配对入口")
     proactive = _load_proactive_config(data)
     memory = _load_memory_config(
         data,
@@ -351,8 +346,6 @@ def _load_channels_config(data: dict, workspace: Path) -> ChannelsConfig:
         enabled=_as_bool(
             chat_data.get("enabled", True), field="channels.chat.enabled"
         ),
-        host=str(chat_data.get("host", "127.0.0.1") or "127.0.0.1"),
-        port=int(chat_data.get("port", 6322)),
         channel_name=str(chat_data.get("channel_name", "web") or "web"),
     )
     channels = ChannelsConfig(
