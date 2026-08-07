@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -25,9 +26,7 @@ from session.store import SessionStore
 
 def _assert_single_terminal(runtime: ConversationRuntime, turn_id: str) -> None:
     terminal = [
-        event
-        for event in runtime._history[turn_id]
-        if event.method == "turn/completed"
+        event for event in runtime._history[turn_id] if event.method == "turn/completed"
     ]
     assert len(terminal) == 1
 
@@ -58,7 +57,9 @@ async def test_runtime_persists_events_and_terminal_result(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_runtime_rejects_same_thread_and_interrupts_exact_turn(tmp_path: Path) -> None:
+async def test_runtime_rejects_same_thread_input_and_interrupts_exact_turn(
+    tmp_path: Path,
+) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     reached = asyncio.Event()
 
@@ -70,11 +71,220 @@ async def test_runtime_rejects_same_thread_and_interrupts_exact_turn(tmp_path: P
     runtime = ConversationRuntime(store, execute)
     first = await runtime.start_turn(TurnRequest("programmatic:test", "held"))
     await reached.wait()
-    with pytest.raises(ThreadBusyError):
-        _ = await runtime.start_turn(TurnRequest("programmatic:test", "conflict"))
+    with pytest.raises(ThreadBusyError, match="thread 已有 active turn"):
+        await runtime.start_turn(TurnRequest("programmatic:test", "follow-up"))
+    checkpoint = store.read_turn(first.id)
+    assert checkpoint is not None
+    assert [item.data["content"] for item in checkpoint.items] == ["held"]
     record = await first.interrupt()
     assert record.status is TurnStatus.INTERRUPTED
     _assert_single_terminal(runtime, first.id)
+    await runtime.shutdown()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_startup_interrupts_crash_stale_in_progress_turn(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    stale = store.create_turn(
+        TurnRecord(
+            id="turn:stale",
+            thread_id="programmatic:restart",
+            status=TurnStatus.QUEUED,
+            input="u1",
+            metadata={"interactionId": "turn:stale", "attemptOrdinal": 0},
+            items=[
+                TurnItem(
+                    TurnItemKind.USER_MESSAGE,
+                    "user:stale",
+                    {
+                        "content": "u1",
+                        "ordinal": 0,
+                        "media": [],
+                        "metadata": {},
+                        "timestamp": datetime.now(UTC).isoformat(),
+                    },
+                ),
+                TurnItem(
+                    TurnItemKind.TOOL_CALL,
+                    "tool:stale",
+                    {
+                        "callId": "call:stale",
+                        "name": "lookup",
+                        "arguments": {},
+                        "status": "in_progress",
+                    },
+                )
+            ],
+            usage=None,
+            error=None,
+            created_at=datetime.now(UTC),
+        )
+    )
+    store.transition_turn(
+        stale.id,
+        expected_status=TurnStatus.QUEUED,
+        status=TurnStatus.IN_PROGRESS,
+        thread_id=stale.thread_id,
+    )
+
+    async def execute(_request: TurnRequest) -> str:
+        return "continued"
+
+    runtime = ConversationRuntime(store, execute)
+
+    recovered = store.read_turn(stale.id)
+    assert recovered is not None
+    assert recovered.status is TurnStatus.INTERRUPTED
+    assert recovered.items[1].data["status"] == "interrupted"
+    continued = await runtime.start_turn(
+        TurnRequest("programmatic:restart", "u2")
+    )
+    assert (await continued.result()).status is TurnStatus.COMPLETED
+    await runtime.shutdown()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_replays_two_interrupted_attempts_into_one_interaction(
+    tmp_path: Path,
+) -> None:
+    """U1/stop/U2/stop/U3 保留一个 interaction 和全部已完成工具事实。"""
+
+    store = SessionStore(tmp_path / "sessions.db")
+    reached = [asyncio.Event(), asyncio.Event()]
+    captured_final: TurnRequest | None = None
+    captured_inputs: list[str] = []
+
+    async def execute(request: TurnRequest) -> str:
+        nonlocal captured_final, captured_inputs
+        attempt = cast(int, request.metadata["attemptOrdinal"])
+        if attempt < 2:
+            emit = request.metadata["_controlItemEvent"]
+            assert callable(emit)
+            item = TurnItem(
+                TurnItemKind.TOOL_CALL,
+                f"tool-{attempt}",
+                {
+                    "callId": f"call-{attempt}",
+                    "name": "lookup",
+                    "arguments": {"attempt": attempt},
+                    "status": "success",
+                    "resultPreview": f"result-{attempt}",
+                },
+            )
+            emit("item/started", item)
+            emit("item/completed", item)
+            reached[attempt].set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+        captured_final = request
+        source = request.metadata["_controlTurnInputSource"]
+        captured_inputs = [item.content for item in source.consumed_inputs()]
+        return "final"
+
+    runtime = ConversationRuntime(store, execute)
+    first = await runtime.start_turn(
+        TurnRequest(
+            "mobile:chain",
+            "u1",
+            {"media": ["/workspace/uploads/reference.png"]},
+        )
+    )
+    await reached[0].wait()
+    assert (await first.interrupt()).status is TurnStatus.INTERRUPTED
+
+    second = await runtime.start_turn(TurnRequest("mobile:chain", "u2"))
+    await reached[1].wait()
+    assert (await second.interrupt()).status is TurnStatus.INTERRUPTED
+
+    third = await runtime.start_turn(TurnRequest("mobile:chain", "u3"))
+    result = await third.result()
+
+    assert captured_final is not None
+    assert captured_final.metadata["interactionId"] == first.id
+    assert captured_final.metadata["continuedFromTurnId"] == second.id
+    assert captured_final.metadata["attemptOrdinal"] == 2
+    assert captured_final.metadata["priorInputCount"] == 2
+    assert captured_inputs == ["u1", "u2", "u3"]
+    assert [
+        message["content"]
+        for message in captured_final.metadata["_controlAttemptReplay"]
+        if message["role"] in {"user", "tool"}
+    ] == [
+        "u1\n\n[附加媒体]\n- /workspace/uploads/reference.png",
+        "result-0",
+        "u2",
+        "result-1",
+    ]
+    assert [
+        group["calls"][0]["result"]
+        for group in captured_final.metadata["_controlPriorToolChain"]
+    ] == ["result-0", "result-1"]
+    assert result.status is TurnStatus.COMPLETED
+    assert result.final_response == "final"
+    attempts = list(reversed(store.list_turns("mobile:chain")))
+    assert [attempt.status for attempt in attempts] == [
+        TurnStatus.INTERRUPTED,
+        TurnStatus.INTERRUPTED,
+        TurnStatus.COMPLETED,
+    ]
+    assert {attempt.metadata["interactionId"] for attempt in attempts} == {first.id}
+    await runtime.shutdown()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_seal_rejects_late_input_until_terminal(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    sealed = asyncio.Event()
+    release = asyncio.Event()
+
+    async def execute(request: TurnRequest) -> str:
+        source = request.metadata["_controlTurnInputSource"]
+        await source.seal()
+        sealed.set()
+        await release.wait()
+        return "done"
+
+    runtime = ConversationRuntime(store, execute)
+    first = await runtime.start_turn(TurnRequest("programmatic:seal", "first"))
+    await sealed.wait()
+    with pytest.raises(ThreadBusyError, match="thread 已有 active turn"):
+        await runtime.start_turn(TurnRequest("programmatic:seal", "late"))
+    interrupt = asyncio.create_task(first.interrupt())
+    await asyncio.sleep(0)
+    assert not interrupt.done()
+    release.set()
+    assert (await interrupt).status is TurnStatus.COMPLETED
+    assert (await first.result()).status is TurnStatus.COMPLETED
+    await runtime.shutdown()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_invalid_initial_input_releases_admission_capacity(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+
+    async def execute(_request: TurnRequest) -> str:
+        return "unused"
+
+    runtime = ConversationRuntime(store, execute)
+    with pytest.raises(ValueError, match="必须包含时区"):
+        await runtime.start_turn(
+            TurnRequest(
+                "programmatic:invalid-input",
+                "hello",
+                {"inputTimestamp": "2026-08-06T12:00:00"},
+            )
+        )
+
+    assert runtime.admission_snapshot()["turns"] == 0
+    assert runtime.admission_snapshot()["bytes"] == 0
     await runtime.shutdown()
     store.close()
 
@@ -164,7 +374,9 @@ async def test_runtime_persists_structured_tool_items_and_usage(tmp_path: Path) 
         for event in events
         if event.method == "item/assistantMessage/delta"
     ] == ["ans", "wer"]
-    tool_events = [event for event in events if event.data.get("item") == tool_item.to_dict()]
+    tool_events = [
+        event for event in events if event.data.get("item") == tool_item.to_dict()
+    ]
     assert [event.method for event in tool_events] == ["item/started", "item/completed"]
     await runtime.shutdown()
     store.close()
@@ -195,9 +407,7 @@ async def test_runtime_replays_large_delta_stream_without_detaching_subscriber(
     result = await handle.result()
 
     delta_events = [
-        event
-        for event in events
-        if event.method == "item/assistantMessage/delta"
+        event for event in events if event.method == "item/assistantMessage/delta"
     ]
     assistant_item_id = cast(str, delta_events[0].data["itemId"])
     assistant_events = [
@@ -284,7 +494,9 @@ async def test_interrupt_closes_and_persists_open_tool_item(tmp_path: Path) -> N
         return await _executor_with_open_tool(request, started)
 
     runtime = ConversationRuntime(store, execute)
-    handle = await runtime.start_turn(TurnRequest("programmatic:interrupt-item", "hello"))
+    handle = await runtime.start_turn(
+        TurnRequest("programmatic:interrupt-item", "hello")
+    )
     await started.wait()
     result = await handle.interrupt()
     events = [event async for event in handle.events()]
@@ -298,7 +510,9 @@ async def test_interrupt_closes_and_persists_open_tool_item(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_shutdown_cancel_closes_and_persists_open_tool_item(tmp_path: Path) -> None:
+async def test_shutdown_cancel_closes_and_persists_open_tool_item(
+    tmp_path: Path,
+) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     started = asyncio.Event()
 
@@ -335,6 +549,37 @@ async def test_exception_closes_and_persists_open_tool_item(tmp_path: Path) -> N
 
     assert result.status is TurnStatus.FAILED
     _assert_closed_tool_lifecycle(result, events, TurnStatus.FAILED)
+    _assert_single_terminal(runtime, handle.id)
+    await runtime.shutdown()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_late_executor_exception_reuses_existing_terminal_turn(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+
+    async def execute(request: TurnRequest) -> str:
+        turn_id = cast(str, request.metadata["turnId"])
+        store.transition_turn(
+            turn_id,
+            expected_status=TurnStatus.IN_PROGRESS,
+            status=TurnStatus.INTERRUPTED,
+            thread_id=request.thread_id,
+        )
+        raise RuntimeError("late executor event")
+
+    runtime = ConversationRuntime(store, execute)
+    handle = await runtime.start_turn(TurnRequest("programmatic:terminal-race", "hello"))
+
+    result = await handle.result()
+
+    assert result.status is TurnStatus.INTERRUPTED
+    stored = store.read_turn(handle.id)
+    assert stored is not None
+    assert stored.status is TurnStatus.INTERRUPTED
+    assert stored.error is None
     _assert_single_terminal(runtime, handle.id)
     await runtime.shutdown()
     store.close()

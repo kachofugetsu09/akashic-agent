@@ -15,6 +15,8 @@ class RemoteError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.data = data
+        retryable = data.get("retryable") if isinstance(data, dict) else None
+        self.retryable = retryable is True
 
 
 class ConnectionClosedError(ConnectionError):

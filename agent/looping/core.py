@@ -711,7 +711,11 @@ class AgentLoop:
         # 给本 turn task 打上 session 归属，供 observe 全局错误采集关联。
         session_token = current_session_key.set(key)
         inherited_turn_id = (
-            str(msg.metadata.get("control_turn_id") or "")
+            str(
+                msg.metadata.get("_control_execution_turn_id")
+                or msg.metadata.get("control_turn_id")
+                or ""
+            )
             if isinstance(msg, InboundMessage)
             else ""
         )
@@ -907,13 +911,27 @@ class AgentLoop:
         sender: str = "user",
         media: list[str] | None = None,
         metadata: dict[str, object] | None = None,
+        turn_input_source: object | None = None,
+        timestamp: datetime | None = None,
         turn_id: str = "",
+        interaction_id: str = "",
+        attempt_replay: list[dict[str, Any]] | None = None,
+        prior_tool_chain: list[dict[str, Any]] | None = None,
+        prior_input_count: int = 0,
         stateless: bool = False,
         runtime_selector: RuntimeSelector = "stable",
     ) -> OutboundMessage:
         """执行直接消息，并按需隔离会话历史与持久化。"""
 
         inbound_metadata = dict(metadata or {})
+        if turn_input_source is not None:
+            inbound_metadata["_control_turn_input_source"] = turn_input_source
+        if attempt_replay:
+            inbound_metadata["_control_attempt_replay"] = list(attempt_replay)
+        if prior_tool_chain:
+            inbound_metadata["_control_prior_tool_chain"] = list(prior_tool_chain)
+        if prior_input_count:
+            inbound_metadata["_control_prior_input_count"] = prior_input_count
         if stateless:
             inbound_metadata.update(
                 {
@@ -936,7 +954,8 @@ class AgentLoop:
         if disabled_tools:
             inbound_metadata["disabled_tools"] = list(disabled_tools)
         if turn_id:
-            inbound_metadata["control_turn_id"] = turn_id
+            inbound_metadata["control_turn_id"] = interaction_id or turn_id
+            inbound_metadata["_control_execution_turn_id"] = turn_id
         msg = InboundMessage(
             channel=channel,
             sender=sender,
@@ -944,6 +963,7 @@ class AgentLoop:
             content=content,
             media=list(media or []),
             metadata=inbound_metadata,
+            timestamp=timestamp or datetime.now().astimezone(),
         )
         response = await self._process_with_runtime_admission(
             msg,

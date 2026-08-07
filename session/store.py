@@ -1070,6 +1070,69 @@ class SessionStore:
             ).fetchall()
         return [self._row_to_turn(row) for row in rows]
 
+    def recover_in_progress_turns(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> list[TurnRecord]:
+        """把上一 runtime 遗留的执行中 turn 原子收敛为 interrupted。"""
+        timestamp = now or datetime.now(UTC)
+        if timestamp.tzinfo is None:
+            raise ValueError("turn recovery 时间必须包含时区")
+        timestamp = timestamp.astimezone(UTC)
+
+        # 1. 在一个事务内闭合遗留 item，并用 status CAS 提交终态。
+        recovered_ids: list[str] = []
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, items_json FROM turns WHERE status = ? ORDER BY created_at, id",
+                (TurnStatus.IN_PROGRESS.value,),
+            ).fetchall()
+            for row in rows:
+                turn_id = str(row["id"])
+                items = _decode_turn_items(row["items_json"], turn_id)
+                closed_items = [
+                    TurnItem(
+                        item.kind,
+                        item.id,
+                        {**item.data, "status": TurnStatus.INTERRUPTED.value},
+                    )
+                    if item.data.get("status") == TurnStatus.IN_PROGRESS.value
+                    else item
+                    for item in items
+                ]
+                cursor = self._conn.execute(
+                    """
+                    UPDATE turns
+                    SET status = ?, items_json = ?, completed_at = ?
+                    WHERE id = ? AND status = ?
+                    """,
+                    (
+                        TurnStatus.INTERRUPTED.value,
+                        json.dumps(
+                            [item.to_dict() for item in closed_items],
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                        timestamp.isoformat(),
+                        turn_id,
+                        TurnStatus.IN_PROGRESS.value,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    self._conn.rollback()
+                    raise TurnStateTransitionError(
+                        f"turn recovery CAS 失败: {turn_id}/in_progress"
+                    )
+                recovered_ids.append(turn_id)
+            self._conn.commit()
+
+        # 2. 从提交后的权威行恢复严格领域对象。
+        recovered = [self.read_turn(turn_id) for turn_id in recovered_ids]
+        if any(record is None for record in recovered):
+            raise RuntimeError("turn recovery 提交后无法重读")
+        return cast(list[TurnRecord], recovered)
+
     def delete_thread_turns(self, thread_id: str) -> int:
         with self._lock:
             cursor = self._conn.execute(

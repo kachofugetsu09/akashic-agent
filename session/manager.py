@@ -125,17 +125,19 @@ def _build_proactive_history_messages(
     frame = cast(
         dict[str, object],
         build_context_frame_message(
-            build_context_frame_content([
-                PromptSectionRender(
-                    name="recent_proactive_message_meta",
-                    content=(
-                        "上一条 assistant 消息是系统主动推送。"
-                        "以下 metadata 仅用于理解用户后续指代，不是用户陈述。\n"
-                        + _truncate_text(meta, _PROACTIVE_META_HISTORY_CHAR_BUDGET)
-                    ),
-                    is_static=False,
-                )
-            ])
+            build_context_frame_content(
+                [
+                    PromptSectionRender(
+                        name="recent_proactive_message_meta",
+                        content=(
+                            "上一条 assistant 消息是系统主动推送。"
+                            "以下 metadata 仅用于理解用户后续指代，不是用户陈述。\n"
+                            + _truncate_text(meta, _PROACTIVE_META_HISTORY_CHAR_BUDGET)
+                        ),
+                        is_static=False,
+                    )
+                ]
+            )
         ),
     )
     messages.append(frame)
@@ -193,14 +195,106 @@ def _align_to_user_boundary(
     return []
 
 
+def _rewind_to_explicit_turn_start(
+    messages: list[dict[str, object]],
+    start: int,
+) -> int:
+    """把历史窗口起点退回显式 control turn 的第一条消息。"""
+
+    if start < 0 or start >= len(messages):
+        return start
+    raw_turn_id = messages[start].get("control_turn_id")
+    if raw_turn_id is None:
+        return start
+    if not isinstance(raw_turn_id, str) or not raw_turn_id:
+        raise ValueError("session message control_turn_id 必须是非空字符串")
+    while start > 0:
+        previous_turn_id = messages[start - 1].get("control_turn_id")
+        if previous_turn_id != raw_turn_id:
+            break
+        start -= 1
+    return start
+
+
+def logical_history_unit_ranges(
+    messages: list[dict[str, object]],
+) -> list[tuple[int, int]]:
+    """把 canonical messages 划分为不可拆分的历史单元。"""
+
+    # 1. 新格式按连续 control turn 聚合；proactive 永远是独立事件。
+    ranges: list[tuple[int, int]] = []
+    index = 0
+    while index < len(messages):
+        start = index
+        message = messages[index]
+        raw_turn_id = message.get("control_turn_id")
+        if raw_turn_id is not None:
+            if not isinstance(raw_turn_id, str) or not raw_turn_id:
+                raise ValueError("session message control_turn_id 必须是非空字符串")
+            index += 1
+            while (
+                index < len(messages)
+                and messages[index].get("control_turn_id") == raw_turn_id
+            ):
+                index += 1
+            ranges.append((start, index))
+            continue
+        if message.get("role") == "assistant" and message.get("proactive"):
+            ranges.append((start, start + 1))
+            index += 1
+            continue
+
+        # 2. legacy 数据沿既有 user/proactive 边界分组，不反推新 turn identity。
+        index += 1
+        while index < len(messages):
+            candidate = messages[index]
+            if candidate.get("control_turn_id") is not None:
+                break
+            if candidate.get("role") == "user" or (
+                candidate.get("role") == "assistant" and candidate.get("proactive")
+            ):
+                break
+            index += 1
+        ranges.append((start, index))
+    return ranges
+
+
+def logical_history_unit_count(
+    messages: list[dict[str, object]],
+    *,
+    start_index: int = 0,
+) -> int:
+    """统计游标之后仍需投影的完整历史单元。"""
+
+    if start_index < 0 or start_index > len(messages):
+        raise ValueError("history unit start_index 超出消息范围")
+    return sum(
+        1
+        for start, end in logical_history_unit_ranges(messages)
+        if end > start_index and start < len(messages)
+    )
+
+
+def logical_history_tail_start(
+    messages: list[dict[str, object]],
+    max_units: int,
+) -> int:
+    """返回最后 max_units 个完整历史单元的消息起点。"""
+
+    if max_units <= 0:
+        return len(messages)
+    ranges = logical_history_unit_ranges(messages)
+    if len(ranges) <= max_units:
+        return 0
+    return ranges[-max_units][0]
+
+
 @dataclass
 class Session:
     """单次对话中的 session。"""
 
     key: str
-    messages: list[dict[str, object]] = field(
-        default_factory=list[dict[str, object]]
-    )
+    messages: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = field(default_factory=dict[str, Any])
@@ -229,23 +323,27 @@ class Session:
         *,
         start_index: int | None = None,
     ) -> list[dict[str, object]]:
-        """将 session 消息展开为 LLM 可直接使用的 OpenAI 格式消息列表。"""
+        """按完整历史单元选择窗口并展开为 provider 消息。"""
         if start_index is not None:
             if max_messages <= 0:
                 return []
             start = max(0, int(start_index))
             if start >= len(self.messages):
                 return []
-            # 向前回退到最近的 user 边界（保留完整 turn）
-            while (
-                start > 0
-                and self.messages[start].get("role") != "user"
-                and not (
-                    self.messages[start].get("role") == "assistant"
-                    and self.messages[start].get("proactive")
-                )
-            ):
-                start -= 1
+            # 1. 新格式按显式 identity 保留完整 turn；legacy 再退到 user 边界。
+            explicit_start = _rewind_to_explicit_turn_start(self.messages, start)
+            if explicit_start != start or self.messages[start].get("control_turn_id"):
+                start = explicit_start
+            else:
+                while (
+                    start > 0
+                    and self.messages[start].get("role") != "user"
+                    and not (
+                        self.messages[start].get("role") == "assistant"
+                        and self.messages[start].get("proactive")
+                    )
+                ):
+                    start -= 1
             # start=0 但仍非合法边界时，向后找第一个 user 或 proactive assistant。
             messages = self.messages[start:]
             if messages and not (
@@ -261,7 +359,8 @@ class Session:
         elif max_messages <= 0:
             messages = []
         else:
-            messages = self.messages[-max_messages:]
+            start = logical_history_tail_start(self.messages, max_messages)
+            messages = self.messages[start:]
         out: list[dict[str, object]] = []
         for m in messages:
             role = m["role"]
@@ -314,9 +413,7 @@ class Session:
                         message_id=message_id,
                     )
                 )
-                replay_tool_chain = tool_chain[
-                    compaction.compacted_tool_groups :
-                ]
+                replay_tool_chain = tool_chain[compaction.compacted_tool_groups :]
             for group in replay_tool_chain:
                 calls = cast(list[dict[str, object]], group["calls"])
                 if not calls:

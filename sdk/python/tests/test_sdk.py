@@ -13,7 +13,13 @@ from agent.control.service import ControlService
 from infra.control.socket import SocketAppServer
 from session.manager import SessionManager
 
-from akashic_sdk import Akashic, AsyncAkashic, SlowConsumerError, TurnHandle
+from akashic_sdk import (
+    Akashic,
+    AsyncAkashic,
+    RemoteError,
+    SlowConsumerError,
+    TurnHandle,
+)
 from akashic_sdk.client import _WireClient
 
 
@@ -95,6 +101,40 @@ async def test_async_sdk_runs_against_real_socket_router(tmp_path: Path) -> None
                 "turn/completed",
             ]
             assert result["finalResponse"] == "sdk:hello"
+    finally:
+        await server.stop()
+        await runtime.shutdown()
+        sessions.close()
+
+
+@pytest.mark.asyncio
+async def test_async_sdk_exposes_active_turn_busy_as_retryable(tmp_path: Path) -> None:
+    sessions = SessionManager(tmp_path)
+    started = asyncio.Event()
+
+    async def execute(_request: TurnRequest) -> str:
+        started.set()
+        await asyncio.Event().wait()
+        return "unreachable"
+
+    runtime = ConversationRuntime(sessions.control_store, execute)
+    server = SocketAppServer(
+        tmp_path / "control-busy.sock",
+        ControlService(runtime, sessions, tmp_path),
+    )
+    await server.start()
+    try:
+        async with await AsyncAkashic.connect(str(server.endpoint)) as client:
+            thread = await client.thread_start()
+            first = await thread.turn("u1")
+            await started.wait()
+
+            with pytest.raises(RemoteError) as captured:
+                await thread.turn("u2")
+
+            assert captured.value.retryable is True
+            assert captured.value.data == {"retryable": True}
+            assert (await first.interrupt())["status"] == "interrupted"
     finally:
         await server.stop()
         await runtime.shutdown()

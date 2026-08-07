@@ -43,6 +43,7 @@ _SUMMARY_PROMPT = """更新当前长任务的上下文压缩摘要。
 
 保留文件路径、符号、命令、错误、数值和验证结果。若输入中存在仍在运行的 shell execution，必须保留 execution_id、命令和当前状态。省略重复探索、无用日志、tool_call_id 和其他协议细节。只输出摘要正文。"""
 
+
 class ContextCompactionError(RuntimeError):
     """当前 query 无法生成可继续执行的有界上下文。"""
 
@@ -250,14 +251,32 @@ class QueryCompactor:
         model: str,
         base_messages: list[dict],
         scope_id: str,
+        completed_batches: list[list[dict]] | None = None,
+        current_query: object | None = None,
     ) -> None:
         self._provider = provider
         self._model = model
         self._base_messages = [_copy_message(message) for message in base_messages]
         self._scope_id = scope_id
-        self._completed_batches: list[list[dict]] = []
+        self._completed_batches = [
+            [_copy_message(message) for message in batch]
+            for batch in completed_batches or []
+        ]
+        self._current_query = (
+            _bounded_text(current_query, _MESSAGE_SUMMARY_CHAR_LIMIT)
+            if current_query is not None
+            else _find_current_query(self._base_messages)
+        )
         self._compaction: ReactCompaction | None = None
         self._meter = _ContextTokenMeter()
+
+    @property
+    def pending_start(self) -> int:
+        """返回初始消息中尚未闭合为 tool batch 的起点。"""
+
+        return len(self._base_messages) + sum(
+            len(batch) for batch in self._completed_batches
+        )
 
     @property
     def compaction(self) -> ReactCompaction | None:
@@ -416,11 +435,10 @@ class QueryCompactor:
         """Generate one structured handoff from previous summary and evicted batches."""
 
         # 1. 序列化受控输入，避免单个工具结果占满 summary 请求。
-        current_query = _find_current_query(self._base_messages)
         sections = [
             _SUMMARY_PROMPT,
             "\n[Current user query]\n",
-            current_query,
+            self._current_query,
         ]
         if self._compaction is not None:
             sections.extend(
@@ -453,9 +471,7 @@ class QueryCompactor:
             if summary and not response.tool_calls:
                 return summary, aggregate_usage(usages) if usages else None
             if attempt < _SUMMARY_MAX_RETRIES:
-                await asyncio.sleep(
-                    _SUMMARY_RETRY_BASE_DELAY_SECONDS * (2**attempt)
-                )
+                await asyncio.sleep(_SUMMARY_RETRY_BASE_DELAY_SECONDS * (2**attempt))
 
         raise ContextCompactionError("context_compaction_summary_invalid")
 
