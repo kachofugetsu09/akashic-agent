@@ -174,6 +174,7 @@ async def test_web_chat_session_and_message_flow(tmp_path: Path) -> None:
                 "session_id": session_id,
                 "text": "你好",
                 "media": [],
+                "model_runtime_id": "runtime-b",
             })
 
     assert created["type"] == "session.created"
@@ -182,6 +183,62 @@ async def test_web_chat_session_and_message_flow(tmp_path: Path) -> None:
     assert len(bus.inbound) == 1
     assert bus.inbound[0].content == "你好"
     assert bus.inbound[0].session_key == session_id
+    assert bus.inbound[0].metadata["model_runtime_id"] == "runtime-b"
+
+
+def test_chat_model_catalog_reports_session_override(tmp_path: Path) -> None:
+    channel = WebChatChannel()
+    sessions = _SessionManager()
+    session = sessions.get_or_create("web:abc")
+    session.metadata["model_runtime_override"] = "runtime-b"
+    channel._ctx = cast(Any, SimpleNamespace(session_manager=sessions))
+    registry = SimpleNamespace(
+        current=SimpleNamespace(
+            generation_id=7,
+            role_runtime_ids={"default": "runtime-a"},
+        ),
+        list_runtimes=lambda: [
+            {
+                "id": "runtime-a",
+                "provider": "openai",
+                "model": "model-a",
+                "roles": ["default"],
+            },
+            {
+                "id": "runtime-b",
+                "provider": "openrouter",
+                "model": "model-b",
+                "roles": [],
+            },
+        ],
+    )
+
+    async def refresh():
+        return registry.current
+
+    registry.refresh = refresh
+    app = create_chat_app(
+        workspace=tmp_path,
+        channel=channel,
+        model_registry=cast(Any, registry),
+    )
+
+    response = TestClient(app).get(
+        "/api/chat/models",
+        params={"session_key": "web:abc"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "generationId": 7,
+            "defaultRuntime": "runtime-a",
+            "sessionOverride": "runtime-b",
+            "sessionSelection": {
+                "modelRef": "runtime-b",
+                "reasoningEffort": "",
+            },
+            "runtimes": registry.list_runtimes(),
+        }
 
 
 def test_web_plugin_ui_exposes_shared_slots_but_rejects_dashboard_query(
@@ -362,17 +419,15 @@ async def test_web_chat_message_send_rejects_invalid_reply_target(tmp_path: Path
     assert bus.inbound == []
 
 
-def test_chat_navigation_uses_explicit_public_dashboard_port(
+def test_chat_navigation_uses_same_origin_dashboard_path(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("AKASHIC_DASHBOARD_PUBLIC_PORT", "19321")
     app = create_chat_app(workspace=tmp_path, channel=WebChatChannel())
 
     with TestClient(app) as client:
         response = client.get("/api/chat/navigation")
 
-    assert response.json() == {"dashboard_port": 19321}
+    assert response.json() == {"dashboard_path": "/"}
 
 
 def test_chat_runtime_routes_share_read_only_inspection_projection(

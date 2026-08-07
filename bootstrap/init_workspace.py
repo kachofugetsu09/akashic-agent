@@ -200,7 +200,7 @@ def init_workspace(
         "     [channels.telegram]  token = \"...\"   （或配置 QQ 频道）",
         "     [memory.embedding]  api_key = \"sk-...\"",
         "2. 运行 uv run python main.py 启动。",
-        "3. 打开 http://127.0.0.1:6322 使用 Web Chatbox，或向 bot 发一条消息。",
+        "3. 打开 http://127.0.0.1:2236 使用 Web Chat，或向 bot 发一条消息。",
         "4. 确认对话正常后，可在 config.toml 开启 proactive。",
     ]
     return summary

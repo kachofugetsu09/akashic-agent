@@ -1,0 +1,310 @@
+from __future__ import annotations
+
+import asyncio
+import stat
+from collections.abc import Callable
+from contextlib import suppress
+from pathlib import Path
+
+import httpx
+import uvicorn
+import websockets
+from websockets.asyncio.client import ClientConnection
+from fastapi import FastAPI, Request, WebSocket
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
+
+from bootstrap.settings_api import SettingsServer, create_settings_app
+from bootstrap.web_runtime import chat_socket_path, dashboard_socket_path
+
+_REQUEST_HEADERS_EXCLUDED = {
+    "connection",
+    "content-length",
+    "host",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+_RESPONSE_HEADERS_ALLOWED = {
+    "accept-ranges",
+    "cache-control",
+    "content-disposition",
+    "content-length",
+    "content-range",
+    "content-type",
+    "etag",
+    "last-modified",
+}
+
+
+def create_web_shell_app(
+    config_path: Path,
+    workspace: Path,
+    *,
+    on_applied: Callable[[], None] | None = None,
+) -> FastAPI:
+    """Serve the only public Web entry and relay ready Gateway capabilities."""
+
+    chat_socket = chat_socket_path(workspace)
+    dashboard_socket = dashboard_socket_path(workspace)
+    dashboard_static = Path(__file__).resolve().parent.parent / "static" / "dashboard"
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @app.get("/")
+    @app.get("/dashboard")
+    @app.get("/dashboard/")
+    async def dashboard_shell_index() -> Response:
+        index_file = dashboard_static / "index.html"
+        if not index_file.exists():
+            return Response(
+                content="Dashboard 前端尚未构建，请先运行 `npm run build`。",
+                media_type="text/plain; charset=utf-8",
+                status_code=503,
+            )
+        return Response(
+            content=index_file.read_text(encoding="utf-8"),
+            media_type="text/html",
+        )
+
+    @app.get("/api/shell/state")
+    async def shell_state() -> dict[str, object]:
+        chat_ready = await _runtime_ready(chat_socket, "/api/chat/health")
+        return {
+            "status": (
+                "ready"
+                if chat_ready
+                else "starting"
+                if config_path.exists()
+                else "needs_setup"
+            ),
+            "configured": config_path.exists(),
+            "chatReady": chat_ready,
+            "settingsPath": "/settings",
+        }
+
+    @app.api_route(
+        "/api/chat/{proxy_path:path}",
+        methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    )
+    async def proxy_chat(proxy_path: str, request: Request) -> Response:
+        return await _proxy_http(request, chat_socket, f"/api/chat/{proxy_path}")
+
+    @app.websocket("/ws")
+    async def proxy_chat_websocket(websocket: WebSocket) -> None:
+        await _proxy_websocket(websocket, chat_socket, "/ws")
+
+    @app.api_route(
+        "/api/dashboard/{proxy_path:path}",
+        methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    )
+    async def proxy_dashboard_api(proxy_path: str, request: Request) -> Response:
+        return await _proxy_http(
+            request,
+            dashboard_socket,
+            f"/api/dashboard/{proxy_path}",
+        )
+
+    @app.api_route(
+        "/plugins/{proxy_path:path}",
+        methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    )
+    async def proxy_dashboard_plugin(proxy_path: str, request: Request) -> Response:
+        return await _proxy_http(request, dashboard_socket, f"/plugins/{proxy_path}")
+
+    app.mount(
+        "/dashboard/assets",
+        StaticFiles(directory=dashboard_static, check_dir=False),
+        name="dashboard-shell-assets",
+    )
+
+    app.mount(
+        "/",
+        create_settings_app(
+            config_path,
+            workspace,
+            on_applied=on_applied,
+        ),
+        name="web-shell-static-and-settings",
+    )
+    return app
+
+
+def create_web_shell_server(
+    config_path: Path,
+    workspace: Path,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 2236,
+    on_applied: Callable[[], None] | None = None,
+) -> SettingsServer:
+    config = uvicorn.Config(
+        create_web_shell_app(
+            config_path,
+            workspace,
+            on_applied=on_applied,
+        ),
+        host=host,
+        port=port,
+        log_level="warning",
+        access_log=False,
+    )
+    return SettingsServer(config)
+
+
+async def _runtime_ready(socket_path: Path, health_path: str) -> bool:
+    if not _is_socket(socket_path):
+        return False
+    transport = httpx.AsyncHTTPTransport(uds=str(socket_path))
+    try:
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://akashic-runtime",
+            timeout=0.5,
+        ) as client:
+            response = await client.get(health_path)
+            return response.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+async def _proxy_http(
+    request: Request,
+    socket_path: Path,
+    target_path: str,
+) -> Response:
+    """Relay one HTTP request to a workspace-owned Unix socket."""
+
+    # 1. Refuse stale or unavailable runtimes with an explicit readiness result.
+    if not _is_socket(socket_path):
+        return _runtime_unavailable()
+    client = httpx.AsyncClient(
+        transport=httpx.AsyncHTTPTransport(uds=str(socket_path)),
+        base_url="http://akashic-runtime",
+        timeout=httpx.Timeout(30.0, read=None),
+    )
+    query = request.url.query
+    target = f"{target_path}?{query}" if query else target_path
+    headers = {
+        name: value
+        for name, value in request.headers.items()
+        if name.lower() not in _REQUEST_HEADERS_EXCLUDED
+    }
+
+    # 2. Stream request and response bodies without turning attachments into RAM copies.
+    try:
+        upstream_request = client.build_request(
+            request.method,
+            target,
+            headers=headers,
+            content=request.stream(),
+        )
+        upstream = await client.send(upstream_request, stream=True)
+    except httpx.HTTPError:
+        await client.aclose()
+        return _runtime_unavailable()
+    response_headers = {
+        name: value
+        for name, value in upstream.headers.items()
+        if name.lower() in _RESPONSE_HEADERS_ALLOWED
+    }
+
+    async def close_upstream() -> None:
+        await upstream.aclose()
+        await client.aclose()
+
+    return StreamingResponse(
+        upstream.aiter_raw(),
+        status_code=upstream.status_code,
+        headers=response_headers,
+        background=BackgroundTask(close_upstream),
+    )
+
+
+async def _proxy_websocket(
+    websocket: WebSocket,
+    socket_path: Path,
+    target_path: str,
+) -> None:
+    """Relay one browser WebSocket while preserving disconnect semantics."""
+
+    # 1. Reject before accepting when no Gateway owns the runtime socket.
+    if not _is_socket(socket_path):
+        await websocket.close(code=1013, reason="Gateway 尚未就绪")
+        return
+    origin = websocket.headers.get("origin")
+    try:
+        async with websockets.unix_connect(
+            str(socket_path),
+            uri=f"ws://akashic-runtime{target_path}",
+            origin=origin,
+            max_size=None,
+        ) as upstream:
+            await websocket.accept()
+
+            # 2. Stop both directions as soon as either peer disconnects.
+            browser_to_gateway = asyncio.create_task(
+                _relay_browser_messages(websocket, upstream)
+            )
+            gateway_to_browser = asyncio.create_task(
+                _relay_gateway_messages(upstream, websocket)
+            )
+            done, pending = await asyncio.wait(
+                (browser_to_gateway, gateway_to_browser),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                _ = task.cancel()
+            for task in pending:
+                with suppress(asyncio.CancelledError):
+                    await task
+            for task in done:
+                task.result()
+    except (OSError, websockets.WebSocketException):
+        with suppress(RuntimeError):
+            await websocket.close(code=1013, reason="Gateway 连接不可用")
+
+
+async def _relay_browser_messages(
+    websocket: WebSocket,
+    upstream: ClientConnection,
+) -> None:
+    while True:
+        message = await websocket.receive()
+        if message["type"] == "websocket.disconnect":
+            await upstream.close()
+            return
+        if message.get("text") is not None:
+            await upstream.send(message["text"])
+        elif message.get("bytes") is not None:
+            await upstream.send(message["bytes"])
+
+
+async def _relay_gateway_messages(
+    upstream: ClientConnection,
+    websocket: WebSocket,
+) -> None:
+    async for message in upstream:
+        if isinstance(message, str):
+            await websocket.send_text(message)
+        else:
+            await websocket.send_bytes(message)
+
+
+def _is_socket(path: Path) -> bool:
+    try:
+        return stat.S_ISSOCK(path.stat().st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def _runtime_unavailable() -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={"code": "gateway_unavailable", "message": "Gateway 尚未就绪"},
+        headers={"Retry-After": "1"},
+    )

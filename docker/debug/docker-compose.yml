@@ -8,10 +8,9 @@ services:
     environment:
       AKASHIC_DEBUG_CONFIG: /sandbox/config.toml
       AKASHIC_DEBUG_WORKSPACE: /sandbox/workspace
-      AKASHIC_DASHBOARD_HOST: 0.0.0.0
-      AKASHIC_DASHBOARD_PORT: "2236"
-      AKASHIC_SETTINGS_HOST: "0.0.0.0"
-      AKASHIC_CHAT_HOST: "0.0.0.0"
+      AKASHIC_WEB_HOST: 0.0.0.0
+      AKASHIC_WEB_PORT: "2236"
+      AKASHIC_WEB_ALLOW_NON_LOOPBACK: "1"
       AKASHIC_READINESS_TIMEOUT_S: "60"
       AKASHIC_HOST_GID: "${GID:-1000}"
       AKASHIC_HOST_UID: "${UID:-1000}"
@@ -25,9 +24,7 @@ services:
       - ./profiles/${AKASHIC_DEBUG_PROFILE:-default}:/sandbox
       - ${HOME}/.akashic-plugin/cache:/sandbox/home/.akashic-plugin/cache:ro
     ports:
-      - "2237:2236"
-      - "127.0.0.1:6321:6321"
-      - "127.0.0.1:6322:6322"
+      - "127.0.0.1:2236:2236"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     stdin_open: true
