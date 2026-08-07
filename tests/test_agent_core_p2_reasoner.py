@@ -211,6 +211,7 @@ async def _run_with_compaction_gate(
     history = [dict(message) for message in payload[1:]]
     session = SimpleNamespace(
         key="test:reasoner",
+        created_at=datetime(2026, 8, 8, tzinfo=UTC),
         messages=history,
         get_history=lambda max_messages=500, *, start_index=None: list(history),
         last_consolidated=0,
@@ -361,6 +362,7 @@ def test_default_reasoner_replays_interrupted_attempt_before_current_input():
     )
     session = SimpleNamespace(
         key="mobile:one",
+        created_at=timestamp,
         messages=[{"role": "user", "content": "old canonical"}],
         get_history=lambda max_messages=40, *, start_index=None: [
             {"role": "user", "content": "old canonical"}
@@ -497,6 +499,7 @@ def test_default_reasoner_disable_memory_writes_expands_to_memory_write_tools():
     )
     session = SimpleNamespace(
         key="telegram:123",
+        created_at=datetime(2026, 4, 5, 12, 0, 0, tzinfo=UTC),
         messages=[],
         get_history=lambda max_messages=40, *, start_index=None: [],
         last_consolidated=0,
@@ -818,6 +821,7 @@ def test_default_reasoner_observes_tool_lifecycle_events():
     )
     session = SimpleNamespace(
         key="telegram:123",
+        created_at=datetime(2026, 4, 5, 12, 0, 0, tzinfo=UTC),
         messages=[],
         get_history=lambda max_messages=40, *, start_index=None: [],
         last_consolidated=0,
@@ -1115,6 +1119,7 @@ def test_default_reasoner_run_turn_uses_context_render():
 
     session = SimpleNamespace(
         key="cli:1",
+        created_at=datetime(2026, 4, 5, 12, 0, 0, tzinfo=UTC),
         messages=[{"role": "assistant", "content": "old"}],
         get_history=lambda max_messages=40, *, start_index=None: [
             {"role": "assistant", "content": "old"}
@@ -1164,6 +1169,7 @@ def test_default_reasoner_run_turn_reports_llm_timeout():
     )
     session = SimpleNamespace(
         key="cli:1",
+        created_at=datetime(2026, 4, 5, 12, 0, 0, tzinfo=UTC),
         messages=[],
         get_history=lambda max_messages=40, *, start_index=None: [],
         last_consolidated=0,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,7 +17,10 @@ from agent.model_runtime.context_compaction import (
     ContextCompactor,
     ContextPayloadSegments,
     SUMMARY_HEADINGS,
+    compaction_scope_id,
     compaction_source_ref,
+    normalize_session_created_at,
+    _selection_digest,
 )
 from agent.model_runtime.types import LLMResponse
 from agent.tools.registry import ToolRegistry
@@ -159,7 +163,20 @@ def _seed_receipt(tmp_path: Path) -> tuple[SessionManager, _MarkdownReceiptProbe
     manager.save(session)
     probe = _MarkdownReceiptProbe()
     head = manager.control_store.get_compaction_head(session.key)
-    source_ref = compaction_source_ref(session.key, head.next_generation)
+    source_ref = compaction_source_ref(
+        compaction_scope_id(session.key, session.created_at),
+        head.next_generation,
+    )
+    unit = session.history_units()[0]
+    selected_source_messages = tuple(
+        {
+            "id": message_id,
+            "seq": seq,
+            "unit_ref": "0:0:0",
+            "message": dict(message),
+        }
+        for message, (message_id, seq) in zip(unit.messages, unit.message_refs)
+    )
     checkpoint = ContextCompaction(
         summary="\n".join(SUMMARY_HEADINGS),
         generation=head.next_generation,
@@ -171,15 +188,16 @@ def _seed_receipt(tmp_path: Path) -> tuple[SessionManager, _MarkdownReceiptProbe
         keep_recent_tokens=20,
         estimated_tokens_before=80,
         estimated_tokens_after=40,
-        source_from_seq=0,
-        consolidated_through_seq=0,
-        source_message_ids=(str(session.messages[0]["id"]),),
+        source_from_seq=unit.source_from_seq,
+        consolidated_through_seq=unit.consolidated_through_seq,
+        source_message_ids=unit.source_message_ids,
         retained_tail=(),
         summary_usage=None,
         source_ref=source_ref,
         model_runtime_id="runtime",
         model="model",
         selection_digest="selection",
+        selected_source_messages=selected_source_messages,
     )
     draft = CompactionMarkdownDraft(source_ref=source_ref)
     probe.receipts[source_ref] = _receipt_payload(
@@ -189,8 +207,36 @@ def _seed_receipt(tmp_path: Path) -> tuple[SessionManager, _MarkdownReceiptProbe
         markdown_draft=draft,
         model_runtime_id="runtime",
         model="model",
+        session_created_at=normalize_session_created_at(session.created_at),
     )
     return manager, probe, source_ref
+
+
+def test_compaction_scope_separates_session_incarnations_and_reloads_stably() -> None:
+    provider = _CountingProvider()
+    unit = CommittedContextUnit(
+        source_from_seq=0,
+        consolidated_through_seq=0,
+        source_message_ids=("m0",),
+        messages=({"role": "user", "content": "same"},),
+        message_refs=(("m0", 0),),
+    )
+    first = compaction_scope_id("same-key", "2026-08-08T00:00:00+00:00")
+    reloaded = compaction_scope_id("same-key", "2026-08-08T08:00:00+08:00")
+    recreated = compaction_scope_id("same-key", "2026-08-09T00:00:00+00:00")
+    assert first == reloaded
+    assert first != recreated
+    assert compaction_source_ref(first, 1) != compaction_source_ref(recreated, 1)
+    digest_kwargs = {
+        "provider": provider,
+        "model": "model",
+        "soft_limit_tokens": 74,
+        "hard_input_tokens": 90,
+        "keep_recent_tokens": 20,
+    }
+    assert _selection_digest((unit,), (), scope_id=first, **digest_kwargs) != _selection_digest(
+        (unit,), (), scope_id=recreated, **digest_kwargs
+    )
 
 
 def test_receipt_recovery_skips_provider_calls(tmp_path: Path) -> None:
@@ -221,10 +267,13 @@ def test_excluded_session_commit_advances_ledger_without_markdown(
         markdown=markdown,  # type: ignore[arg-type]
     )
     head = manager.control_store.get_compaction_head(session.key)
-    message = session.messages[0]
-    message_id = str(message["id"])
-    message_seq = int(message["seq"])
-    source_ref = compaction_source_ref(session.key, head.next_generation)
+    unit = session.history_units()[0]
+    message = unit.messages[0]
+    message_id, message_seq = unit.message_refs[0]
+    source_ref = compaction_source_ref(
+        compaction_scope_id(session.key, session.created_at),
+        head.next_generation,
+    )
     checkpoint = ContextCompaction(
         summary="\n".join(SUMMARY_HEADINGS),
         generation=head.next_generation,
@@ -249,8 +298,8 @@ def test_excluded_session_commit_advances_ledger_without_markdown(
             {
                 "id": message_id,
                 "seq": message_seq,
-                "unit_ref": "session:unit:0",
-                "message": {"role": "user", "content": "excluded"},
+                "unit_ref": "0:0:0",
+                "message": dict(message),
             },
         ),
     )
@@ -437,6 +486,7 @@ def test_context_compactor_receipt_resume_does_not_call_summary_provider() -> No
         markdown_draft=draft,
         model_runtime_id="runtime",
         model="model",
+        session_created_at="2026-08-08T00:00:00+00:00",
     )
     second = ContextCompactor(
         provider=provider,
@@ -543,24 +593,35 @@ def test_projection_reload_does_not_duplicate_retained_tail_or_new_units(
         markdown=markdown,  # type: ignore[arg-type]
     )
     head = manager.control_store.get_compaction_head(session.key)
-    source_ref = compaction_source_ref(session.key, head.next_generation)
+    source_ref = compaction_source_ref(
+        compaction_scope_id(session.key, session.created_at),
+        head.next_generation,
+    )
+    units = session.history_units()
+    selected_unit, retained_unit = units[:2]
     selected = tuple(
         {
-            "id": str(message["id"]),
-            "seq": int(message["seq"]),
-            "unit_ref": "turn-old",
+            "id": message_id,
+            "seq": seq,
+            "unit_ref": "0:1:0",
             "message": dict(message),
         }
-        for message in session.messages[:2]
+        for message, (message_id, seq) in zip(
+            selected_unit.messages,
+            selected_unit.message_refs,
+        )
     )
     retained_tail = tuple(
         {
-            "id": str(message["id"]),
-            "seq": int(message["seq"]),
+            "id": message_id,
+            "seq": seq,
             "unit_ref": "turn-tail",
             "message": dict(message),
         }
-        for message in session.messages[2:]
+        for message, (message_id, seq) in zip(
+            retained_unit.messages,
+            retained_unit.message_refs,
+        )
     )
     checkpoint = ContextCompaction(
         summary="\n".join(SUMMARY_HEADINGS),
@@ -573,9 +634,9 @@ def test_projection_reload_does_not_duplicate_retained_tail_or_new_units(
         keep_recent_tokens=20,
         estimated_tokens_before=80,
         estimated_tokens_after=40,
-        source_from_seq=0,
-        consolidated_through_seq=1,
-        source_message_ids=tuple(str(message["id"]) for message in session.messages[:2]),
+        source_from_seq=selected_unit.source_from_seq,
+        consolidated_through_seq=selected_unit.consolidated_through_seq,
+        source_message_ids=selected_unit.source_message_ids,
         retained_tail=retained_tail,
         summary_usage=None,
         source_ref=source_ref,
@@ -666,7 +727,10 @@ def test_reasoner_builder_preserves_replay_tail_and_current_payload_order() -> N
         {"role": "user", "content": "U3"},
     ]
     state = reasoner._build_compaction_state(
-        session=SimpleNamespace(key="session"),
+        session=SimpleNamespace(
+            key="session",
+            created_at=datetime(2026, 8, 8, tzinfo=UTC),
+        ),
         projection=projection,
         initial_messages=render_payload,
         history_count=2,
@@ -750,8 +814,12 @@ def test_reasoner_compaction_state_is_call_local_per_session(tmp_path: Path) -> 
         ]
     )
     original_b_pending = states[1].compactor._segments.pending
-    assert states[0].compactor._scope_id == "session-a"
-    assert states[1].compactor._scope_id == "session-b"
+    assert states[0].compactor._scope_id == compaction_scope_id(
+        "session-a", session_a.created_at
+    )
+    assert states[1].compactor._scope_id == compaction_scope_id(
+        "session-b", session_b.created_at
+    )
     assert states[0].compactor._segments.pending[-1] == {
         "role": "user",
         "content": "only-a",

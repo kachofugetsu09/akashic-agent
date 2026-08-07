@@ -5,6 +5,7 @@ import json
 import math
 from copy import deepcopy
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence, cast
 
 from agent.model_runtime.execution_history import active_shell_execution_origins
@@ -149,6 +150,7 @@ class ContextCompaction:
     def to_payload(self) -> dict[str, object]:
         """Return a bounded diagnostic payload; SessionStore remains persistence owner."""
 
+        selected_source_messages = canonical_source_plan(self.selected_source_messages)
         return {
             "summary_format_version": SUMMARY_FORMAT_VERSION,
             "summary": self.summary,
@@ -170,6 +172,9 @@ class ContextCompaction:
             "model_runtime_id": self.model_runtime_id,
             "model": self.model,
             "selection_digest": self.selection_digest,
+            "selected_source_messages": [
+                dict(item) for item in selected_source_messages
+            ],
         }
 
 
@@ -1041,6 +1046,35 @@ def _compaction_source_ref(scope_id: str, generation: int) -> str:
     return f"context-compaction:{scope_id}:{generation}:{digest[:16]}"
 
 
+def normalize_session_created_at(created_at: datetime | str) -> str:
+    """Normalize one persistent session incarnation timestamp for hashing."""
+
+    if isinstance(created_at, datetime):
+        value = created_at
+    elif isinstance(created_at, str):
+        try:
+            value = datetime.fromisoformat(created_at)
+        except ValueError as exc:
+            raise ValueError("session created_at 必须是 ISO-8601 时间") from exc
+    else:
+        raise TypeError("session created_at 必须是 datetime 或 ISO-8601 字符串")
+    if value.tzinfo is None:
+        raise ValueError("session created_at 必须包含时区")
+    return value.astimezone(UTC).isoformat(timespec="microseconds")
+
+
+def compaction_scope_id(session_key: str, created_at: datetime | str) -> str:
+    """Return a stable compaction scope that distinguishes session incarnations."""
+
+    if not isinstance(session_key, str) or not session_key:
+        raise ValueError("session key 不能为空")
+    normalized_created_at = normalize_session_created_at(created_at)
+    digest = hashlib.sha256(
+        f"{session_key}\0{normalized_created_at}".encode("utf-8")
+    ).hexdigest()
+    return f"{session_key}@{digest[:16]}"
+
+
 def compaction_source_ref(scope_id: str, generation: int) -> str:
     """Return the stable persisted source reference for one ledger head."""
 
@@ -1060,6 +1094,58 @@ def _strip_opaque_state(message: Mapping[str, Any]) -> dict[str, Any]:
     clean = _copy_message(message)
     clean.pop("model_state", None)
     return clean
+
+
+def canonical_source_plan(
+    selected_source_messages: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Validate and canonicalize the exact rendered source plan stored in a receipt."""
+
+    canonical: list[dict[str, Any]] = []
+    for item in selected_source_messages:
+        if not isinstance(item, Mapping):
+            raise ContextCompactionError("context_compaction_source_plan_item_invalid")
+        if set(item) != {"id", "seq", "unit_ref", "message"}:
+            raise ContextCompactionError("context_compaction_source_plan_fields_invalid")
+        message_id = item.get("id")
+        raw_seq = item.get("seq")
+        unit_ref = item.get("unit_ref")
+        message = item.get("message")
+        if (
+            not isinstance(message_id, str)
+            or not message_id
+            or not isinstance(raw_seq, int)
+            or isinstance(raw_seq, bool)
+            or raw_seq < 0
+            or not isinstance(unit_ref, str)
+            or not unit_ref.strip()
+            or not isinstance(message, Mapping)
+        ):
+            raise ContextCompactionError("context_compaction_source_plan_item_invalid")
+        canonical.append(
+            {
+                "id": message_id,
+                "seq": raw_seq,
+                "unit_ref": unit_ref,
+                "message": _strip_opaque_state(message),
+            }
+        )
+    return tuple(canonical)
+
+
+def source_plan_digest(
+    selected_source_messages: Sequence[Mapping[str, Any]],
+) -> str:
+    """Hash the canonical rendered source plan."""
+
+    canonical = canonical_source_plan(selected_source_messages)
+    encoded = json.dumps(
+        canonical,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _without_previous_compaction(messages: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1186,6 +1272,10 @@ def _checkpoint_from_receipt(
     source_ref: str,
     selection_digest: str,
 ) -> tuple[str, ModelUsage | None, ContextCompaction]:
+    if receipt.get("version") != 2:
+        raise ContextCompactionError("context_compaction_receipt_version_unsupported")
+    if not isinstance(receipt.get("session_created_at"), str):
+        raise ContextCompactionError("context_compaction_receipt_session_incarnation_invalid")
     raw_digest = receipt.get("selection_digest")
     if raw_digest != selection_digest:
         raise ContextCompactionError("context_compaction_receipt_selection_conflict")
@@ -1200,10 +1290,20 @@ def _checkpoint_from_receipt(
         raise ContextCompactionError("context_compaction_receipt_summary_invalid")
     source_ids = checkpoint.get("source_message_ids")
     retained_tail = checkpoint.get("retained_tail")
+    selected_source_messages = checkpoint.get("selected_source_messages")
     if not isinstance(source_ids, list) or not all(isinstance(item, str) for item in source_ids):
         raise ContextCompactionError("context_compaction_receipt_source_ids_invalid")
     if not isinstance(retained_tail, list) or not all(isinstance(item, dict) for item in retained_tail):
         raise ContextCompactionError("context_compaction_receipt_retained_tail_invalid")
+    if not isinstance(selected_source_messages, list):
+        raise ContextCompactionError("context_compaction_receipt_source_plan_invalid")
+    canonical_source_messages = canonical_source_plan(selected_source_messages)
+    raw_source_plan_digest = receipt.get("source_plan_digest")
+    if (
+        not isinstance(raw_source_plan_digest, str)
+        or raw_source_plan_digest != source_plan_digest(canonical_source_messages)
+    ):
+        raise ContextCompactionError("context_compaction_receipt_source_plan_digest_invalid")
     usage = _usage_from_payload(checkpoint.get("summary_usage"))
     value = ContextCompaction(
         summary=summary,
@@ -1225,6 +1325,7 @@ def _checkpoint_from_receipt(
         model_runtime_id=str(checkpoint.get("model_runtime_id", "")),
         model=str(checkpoint.get("model", "")),
         selection_digest=selection_digest,
+        selected_source_messages=canonical_source_messages,
     )
     return summary, usage, value
 
