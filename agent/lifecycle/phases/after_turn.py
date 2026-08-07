@@ -21,6 +21,7 @@ from agent.lifecycle.phase import (
     topo_sort_modules,
 )
 from agent.lifecycle.types import AfterTurnCtx, TurnPersistencePolicy, TurnSnapshot
+from agent.model_runtime.registry import current_model_binding
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage
@@ -88,11 +89,15 @@ class _BuildTurnWorkModule:
             history_window=hw,
         )
         frame.slots[_REACT_STATS_SLOT] = extract_react_stats(snap.ctx.context_retry)
-        frame.slots[_EXTRA_SLOT] = (
+        extra: dict[str, object] = (
             {"skip_post_memory": True}
             if (msg.metadata or {}).get("skip_post_memory")
             else {}
         )
+        binding = current_model_binding()
+        if binding is not None:
+            extra["model_binding"] = binding.describe("agent")
+        frame.slots[_EXTRA_SLOT] = extra
         frame.slots[_TOOL_CHAIN_SLOT] = list(snap.ctx.tool_chain)
         frame.slots[_PERSISTENCE_SLOT] = state.persistence
         return frame
@@ -177,8 +182,20 @@ class _BuildTurnCommittedModule:
             model_usage=(
                 dict(raw_model_usage) if isinstance(raw_model_usage, dict) else {}
             ),
+            model_binding=_model_binding_from_extra(frame.slots[_EXTRA_SLOT]),
         )
         return frame
+
+
+def _model_binding_from_extra(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError("after_turn extra 不是 dict")
+    raw = value.get("model_binding")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise TypeError("after_turn model_binding 不是 dict")
+    return {str(key): item for key, item in raw.items()}
 
 
 class _CollectAfterTurnExtraSlotsModule:

@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 from agent.memory import DEFAULT_SELF_MD
 from agent.provider import LLMProvider
+from agent.model_runtime.registry import model_execution_scope
 
 logger = logging.getLogger(__name__)
 
@@ -295,7 +296,8 @@ class MemoryOptimizer:
         if self._lock.locked():
             raise MemoryOptimizerBusy("memory optimizer 正在运行")
         async with self._lock:
-            await self._optimize()
+            async with model_execution_scope(self._provider):
+                await self._optimize()
 
     async def _optimize(self) -> None:
         """提交 pending 记忆合并，并随后更新自我认知。"""

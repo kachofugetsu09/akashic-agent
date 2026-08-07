@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import json_repair
 
 from agent.provider import LLMProvider
+from agent.model_runtime.registry import model_execution_scope
 from core.memory.events import MemoryWritten, TurnIngested
 from memory2.memorizer import Memorizer
 from memory2.retriever import Retriever
@@ -79,6 +80,30 @@ class PostResponseMemoryWorker:
         chat_id: str = "",
     ) -> None:
         """在独立转次上下文中识别并废弃失效记忆。"""
+
+        async with model_execution_scope(self._provider):
+            await self._run_bound(
+                user_msg=user_msg,
+                agent_response=agent_response,
+                tool_chain=tool_chain,
+                source_ref=source_ref,
+                session_key=session_key,
+                channel=channel,
+                chat_id=chat_id,
+            )
+
+    async def _run_bound(
+        self,
+        *,
+        user_msg: str,
+        agent_response: str,
+        tool_chain: list[dict],
+        source_ref: str,
+        session_key: str,
+        channel: str,
+        chat_id: str,
+    ) -> None:
+        """Process one post-response memory job inside its model snapshot."""
 
         # 1. 初始化本轮异步提炼的上下文和 token 预算。
         context = _RunContext(

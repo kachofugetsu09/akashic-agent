@@ -1908,6 +1908,7 @@ async def test_add_tool_hooks_propagates_to_tool_executor():
 
 @pytest.mark.asyncio
 async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
+    from agent.tools.spawn import SpawnTool
     from bootstrap.tools import CoreRuntime
 
     startup_order: list[str] = []
@@ -1987,7 +1988,7 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
         ) -> None:
             self.received_after_turn = list(modules)
 
-    class FakeSpawnTool:
+    class FakeSpawnTool(SpawnTool):
         def __init__(self) -> None:
             self.received_hooks: list[ToolHook] | None = None
 

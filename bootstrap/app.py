@@ -502,6 +502,7 @@ class AppRuntime:
                     self.plugin_job_runtime = PluginJobRuntime(
                         event_bus=event_bus,
                         llm=llm,
+                        model_provider=self.provider,
                         snapshot_store=plugin_manager.snapshot_store,
                     )
                     self.tasks.append(self.plugin_job_runtime.run())
@@ -629,6 +630,22 @@ class AppRuntime:
             except (asyncio.CancelledError, Exception) as rollback_error:
                 raise startup_error from rollback_error
             raise
+
+    async def reload_model_config(self, config_path: str | Path) -> dict[str, object]:
+        """Load and atomically publish a new model generation."""
+
+        # 1. Parse the complete candidate at the configuration boundary.
+        candidate = Config.load(config_path, workspace=self.workspace)
+        if self.core is None or self.core.model_registry is None:
+            raise RuntimeError("ModelRegistry 尚未启动")
+
+        # 2. Publish only after every provider in the candidate was constructed.
+        generation = await self.core.model_registry.reload(candidate)
+        self.config = candidate
+        return {
+            "generationId": generation.generation_id,
+            "configDigest": generation.config_digest,
+        }
 
     async def run(self) -> None:
         run_error: BaseException | None = None

@@ -32,6 +32,12 @@ from agent.looping.ports import (
     SessionServices,
 )
 from agent.looping.session_lane import SessionLaneRegistry
+from agent.model_runtime.registry import RoleBoundProvider, model_execution_scope
+from agent.model_runtime.session_selection import (
+    SessionModelSelection,
+    read_session_model_selection,
+    write_session_model_selection,
+)
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.retrieval.protocol import MemoryRetrievalPipeline
 from agent.turns.outbound import BusOutboundPort
@@ -708,51 +714,103 @@ class AgentLoop:
     ) -> OutboundMessage:
         key = session_key or msg.session_key
         busy_key = busy_session_key or key
-        # 给本 turn task 打上 session 归属，供 observe 全局错误采集关联。
-        session_token = current_session_key.set(key)
-        inherited_turn_id = (
-            str(
-                msg.metadata.get("_control_execution_turn_id")
-                or msg.metadata.get("control_turn_id")
-                or ""
-            )
-            if isinstance(msg, InboundMessage)
-            else ""
-        )
-        turn_token = current_turn_id.set(inherited_turn_id or new_turn_id())
-        try:
-            # 1. 先处理可能存在的续跑态，并发布 turn started。
-            msg, resumed_from_interrupt = await self._resume_interrupted_message(
-                msg, key
-            )
-            await self._observe_turn_started(msg, key)
-            content = _item_content(msg)
-            preview = content[:60] + "..." if len(content) > 60 else content
-            logger.info(f"Processing message from {msg.channel}: {preview}")
+        model_selection = await self._resolve_model_selection(msg, key)
+        async with model_execution_scope(
+            self._llm_services.provider,
+            model_selection.model_ref or None,
+            model_selection.reasoning_effort,
+        ) as model_binding:
+            if model_binding is not None and isinstance(msg, InboundMessage):
+                msg.metadata["model_binding"] = model_binding.describe("agent")
 
-            # 2. 再进入 busy 状态并执行核心处理。
-            if self._processing_state:
-                self._processing_state.enter(busy_key)
-            try:
-                outbound = await self._core_runner.process(
-                    msg,
-                    key,
-                    dispatch_outbound=dispatch_outbound,
+            # 给本 turn task 打上 session 归属，供 observe 全局错误采集关联。
+            session_token = current_session_key.set(key)
+            inherited_turn_id = (
+                str(
+                    msg.metadata.get("_control_execution_turn_id")
+                    or msg.metadata.get("control_turn_id")
+                    or ""
                 )
-                if resumed_from_interrupt:
-                    self._interrupt_states.pop(key, None)
-                return outbound
-            finally:
-                # 3. 无论核心处理结果如何，都释放 busy 状态。
-                if self._processing_state:
-                    self._processing_state.exit(busy_key)
-        finally:
-            # 4. 当前 query 结束即回收其 shell，再恢复调用方上下文。
+                if isinstance(msg, InboundMessage)
+                else ""
+            )
+            turn_token = current_turn_id.set(inherited_turn_id or new_turn_id())
             try:
-                await self._cleanup_shell_owner(key)
+                # 1. 先处理可能存在的续跑态，并发布 turn started。
+                msg, resumed_from_interrupt = await self._resume_interrupted_message(
+                    msg, key
+                )
+                await self._observe_turn_started(msg, key)
+                content = _item_content(msg)
+                preview = content[:60] + "..." if len(content) > 60 else content
+                logger.info(f"Processing message from {msg.channel}: {preview}")
+
+                # 2. 再进入 busy 状态并执行核心处理。
+                if self._processing_state:
+                    self._processing_state.enter(busy_key)
+                try:
+                    outbound = await self._core_runner.process(
+                        msg,
+                        key,
+                        dispatch_outbound=dispatch_outbound,
+                    )
+                    if resumed_from_interrupt:
+                        self._interrupt_states.pop(key, None)
+                    return outbound
+                finally:
+                    # 3. 无论核心处理结果如何，都释放 busy 状态。
+                    if self._processing_state:
+                        self._processing_state.exit(busy_key)
             finally:
-                current_session_key.reset(session_token)
-                current_turn_id.reset(turn_token)
+                # 4. 当前 query 结束即回收其 shell，再恢复调用方上下文。
+                try:
+                    await self._cleanup_shell_owner(key)
+                finally:
+                    current_session_key.reset(session_token)
+                    current_turn_id.reset(turn_token)
+
+    async def _resolve_model_selection(
+        self,
+        msg: InboundItem,
+        session_key: str,
+    ) -> SessionModelSelection:
+        """Validate, persist, and resolve one conversation's model selection."""
+
+        if not isinstance(msg, InboundMessage):
+            return SessionModelSelection()
+        provider = self._llm_services.provider
+        if not isinstance(provider, RoleBoundProvider):
+            return SessionModelSelection()
+        registry = provider.registry
+        await registry.refresh()
+        session = self.session_manager.get_or_create(session_key)
+
+        # 1. A client-supplied field is an explicit session-setting operation.
+        if "model_runtime_id" in msg.metadata:
+            raw_runtime_id = msg.metadata["model_runtime_id"]
+            if not isinstance(raw_runtime_id, str):
+                raise TypeError("model_runtime_id 必须是字符串")
+            runtime_id = raw_runtime_id.strip()
+            raw_effort = msg.metadata.get("model_reasoning_effort", "")
+            if not isinstance(raw_effort, str):
+                raise TypeError("model_reasoning_effort 必须是字符串")
+            effort = raw_effort.strip()
+            if runtime_id:
+                if not registry.has_runtime(runtime_id):
+                    raise ValueError(f"模型 runtime 不存在: {runtime_id}")
+            write_session_model_selection(
+                session.metadata,
+                SessionModelSelection(runtime_id, effort),
+            )
+            self.session_manager.save(session)
+
+        # 2. Existing metadata is authoritative when this message follows it.
+        selection = read_session_model_selection(session.metadata)
+        if selection.model_ref and not registry.has_runtime(selection.model_ref):
+            raise ValueError(
+                f"session 引用不存在的模型 runtime: {selection.model_ref}"
+            )
+        return selection
 
     async def _cleanup_shell_owner(self, owner_session_key: str) -> None:
         """回收 turn 的 Shell，并把失败隔离为 execution 诊断。"""
@@ -1033,6 +1091,24 @@ class AgentLoop:
         archive_all: bool = False,
         force: bool = False,
         drain_backlog: bool = True,
+    ) -> bool:
+        """Run one consolidation against a frozen model revision."""
+
+        async with model_execution_scope(self._llm_services.provider):
+            return await self._trigger_memory_consolidation_bound(
+                session_key,
+                archive_all=archive_all,
+                force=force,
+                drain_backlog=drain_backlog,
+            )
+
+    async def _trigger_memory_consolidation_bound(
+        self,
+        session_key: str,
+        *,
+        archive_all: bool,
+        force: bool,
+        drain_backlog: bool,
     ) -> bool:
         from core.memory.markdown import ConsolidateRequest
 

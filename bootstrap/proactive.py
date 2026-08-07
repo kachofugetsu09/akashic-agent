@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 from agent.config_models import Config
 from agent.looping.core import AgentLoop
 from agent.provider import LLMProvider
+from agent.model_runtime.registry import RoleBoundProvider
 from agent.tool_hooks import ToolHook
 from agent.plugins.specs import RegisteredProactiveSource
 from agent.tools.message_push import MessagePushTool
@@ -23,6 +24,11 @@ if TYPE_CHECKING:
 
 
 def _build_proactive_provider(config: Config, provider: LLMProvider) -> LLMProvider:
+    if isinstance(provider, RoleBoundProvider):
+        return provider.registry.provider(
+            provider.role,
+            force_disable_thinking=True,
+        )
     api_key = str(getattr(config, "api_key", "") or "").strip()
     system_prompt = str(getattr(config, "system_prompt", "") or "")
     base_url = getattr(config, "base_url", None)
@@ -79,7 +85,7 @@ def build_proactive_runtime(
         push_tool=push_tool,
         config=proactive_cfg,
         model=config.model,
-        max_tokens=config.max_tokens,
+        max_tokens=0,
         state_store=proactive_state,
         state_store_owned=True,
         memory_store=memory_store,
