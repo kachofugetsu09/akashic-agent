@@ -98,6 +98,7 @@ class _LifecycleState:
     last_elapsed_ms: int = -1
     protocol_error: str = ""
     buffer: bytearray = field(default_factory=bytearray)
+    settings_results: list[tuple[bool, str]] = field(default_factory=list)
 
     def feed(self, payload: bytes, *, eof: bool = False) -> None:
         """解析完整 NDJSON frame，并保留末尾尚未完成的字节。"""
@@ -136,6 +137,8 @@ class _LifecycleState:
             self._accept_ready(frame)
         elif frame_type == "commit":
             self._accept_commit(frame)
+        elif frame_type == "settings_reloaded":
+            self._accept_settings_reloaded(frame)
         else:
             self.protocol_error = f"未知 lifecycle frame: {frame_type!r}"
 
@@ -176,9 +179,22 @@ class _LifecycleState:
             return
         self.commit_valid = True
 
+    def _accept_settings_reloaded(self, frame: dict[str, object]) -> None:
+        success = frame.get("success")
+        detail = frame.get("detail", "")
+        if (
+            not self.ready
+            or not isinstance(success, bool)
+            or not isinstance(detail, str)
+            or len(detail.encode("utf-8")) > 2048
+        ):
+            self.protocol_error = "settings reload frame 无效"
+            return
+        self.settings_results.append((success, detail))
+
 
 class _SettingsRestartBridge:
-    """用 wake pipe 在设置线程与 Supervisor 之间交接一次重启。"""
+    """用 wake pipe 在设置线程与 Supervisor 之间交接一次热重载。"""
 
     def __init__(self, timeout_s: float) -> None:
         self.timeout_s = timeout_s
@@ -206,9 +222,9 @@ class _SettingsRestartBridge:
                 timeout=self.timeout_s,
             )
             if not completed:
-                raise RuntimeError("Gateway 重启等待超时")
+                raise RuntimeError("Gateway 模型配置重载等待超时")
             if not self._completed.pop(generation):
-                raise RuntimeError("Gateway 使用候选配置启动失败")
+                raise RuntimeError("Gateway 拒绝候选模型配置")
 
     def take_request(self) -> int:
         with self._condition:
@@ -480,6 +496,18 @@ def _wait_child(
                         chunk = os.read(read_fd, 65536)
                         if chunk:
                             state.feed(chunk)
+                            if state.settings_results:
+                                if not settings_generation:
+                                    state.protocol_error = "收到无对应请求的 settings reload 回执"
+                                elif len(state.settings_results) != 1:
+                                    state.protocol_error = "收到重复 settings reload 回执"
+                                else:
+                                    success, _detail = state.settings_results.pop()
+                                    settings_bridge.complete(
+                                        settings_generation,
+                                        success,
+                                    )
+                                    settings_generation = 0
                         else:
                             state.feed(b"", eof=True)
                             selector.unregister(read_fd)
@@ -488,7 +516,7 @@ def _wait_child(
                         settings_generation = settings_bridge.take_request()
                         if settings_generation:
                             assert gateway_pidfd is not None
-                            send_pidfd_signal(gateway_pidfd, signal.SIGUSR2)
+                            send_pidfd_signal(gateway_pidfd, signal.SIGUSR1)
 
                 if state.protocol_error:
                     _stop_guardian(child)
@@ -605,24 +633,33 @@ def _start_settings_server(
     workspace: Path,
     bridge: _SettingsRestartBridge,
 ):
-    """启动仅监听 loopback 的设置服务，并等待确定的启动事件。"""
+    """启动唯一的 loopback Web Shell，并等待确定的启动事件。"""
 
     import asyncio
 
-    from bootstrap.settings_api import create_settings_server
+    from bootstrap.web_shell import create_web_shell_server
 
-    host = os.environ.get("AKASHIC_SETTINGS_HOST", "127.0.0.1")
-    if host != "127.0.0.1":
-        raise RuntimeError("AKASHIC_SETTINGS_HOST 只允许 127.0.0.1")
-    server = create_settings_server(
+    host = os.environ.get("AKASHIC_WEB_HOST", "127.0.0.1")
+    allow_non_loopback = os.environ.get("AKASHIC_WEB_ALLOW_NON_LOOPBACK") == "1"
+    if host != "127.0.0.1" and not allow_non_loopback:
+        raise RuntimeError("AKASHIC_WEB_HOST 只允许 127.0.0.1")
+    raw_port = os.environ.get("AKASHIC_WEB_PORT", "2236")
+    try:
+        port = int(raw_port)
+    except ValueError as error:
+        raise RuntimeError("AKASHIC_WEB_PORT 必须是 1 到 65535 的整数") from error
+    if not 1 <= port <= 65_535:
+        raise RuntimeError("AKASHIC_WEB_PORT 必须是 1 到 65535 的整数")
+    server = create_web_shell_server(
         config_path,
         workspace,
         host=host,
+        port=port,
         on_applied=bridge.request_and_wait,
     )
     thread = threading.Thread(
         target=lambda: asyncio.run(server.serve()),
-        name="settings-server",
+        name="web-shell-server",
         daemon=True,
     )
     thread.start()
@@ -630,5 +667,6 @@ def _start_settings_server(
     if not server.started:
         server.should_exit = True
         thread.join(timeout=1)
-        raise RuntimeError("设置服务无法监听 127.0.0.1:6321")
+        raise RuntimeError(f"Web Shell 无法监听 {host}:{port}")
+    print(f"Akashic Web 已就绪: http://{host}:{port}", flush=True)
     return server, thread

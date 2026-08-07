@@ -96,12 +96,30 @@ def load_config(
     path: str | Path = "config.toml",
     *,
     workspace: str | Path,
+    credential_store: object | None = None,
 ) -> Config:
     workspace_path = Path(workspace)
-    data = _load_config_data(path)
+    config_path = Path(path)
+    data = _load_config_data(config_path)
     _reject_removed_peer_configuration(data)
+    resolved_credential_store = (
+        credential_store if isinstance(credential_store, CredentialStore) else None
+    )
 
-    llm = _as_dict(data.get("llm"), field="llm")
+    from agent.model_runtime.store import ModelRegistryStore
+
+    model_store = ModelRegistryStore.for_workspace(workspace_path)
+    model_snapshot = model_store.read_snapshot()
+    model_credential_store = (
+        CredentialStore.for_workspace(workspace_path)
+        if model_snapshot is not None
+        else resolved_credential_store
+    )
+    llm = (
+        model_snapshot.as_config_llm()
+        if model_snapshot is not None
+        else _as_dict(data.get("llm"), field="llm")
+    )
     agent_cfg = _as_dict(data.get("agent"), field="agent")
     legacy_max_output_tokens = agent_cfg.get(
         "max_tokens",
@@ -110,6 +128,7 @@ def load_config(
     runtime_id, llm_main, model_runtimes = _load_llm_runtimes(
         llm,
         workspace_path,
+        credential_store=model_credential_store,
         legacy_main_max_output_tokens=legacy_max_output_tokens,
     )
     fast_runtime_id, llm_fast = _load_role_runtime(llm, "fast", runtime_id)
@@ -126,15 +145,18 @@ def load_config(
     channels = _load_channels_config(data, workspace_path)
     app_server = _load_app_server_config(data)
     mobile_realtime = _load_mobile_realtime_config(data)
-    if mobile_realtime.enabled and (
-        not channels.chat.enabled
-        or channels.chat.host not in {"127.0.0.1", "localhost", "::1"}
-    ):
-        raise ValueError(
-            "mobile_realtime 启用时，本机配对入口 channels.chat 必须监听 loopback"
-        )
+    if mobile_realtime.enabled and not channels.chat.enabled:
+        raise ValueError("mobile_realtime 启用时必须启用 channels.chat 配对入口")
     proactive = _load_proactive_config(data)
-    memory = _load_memory_config(data, workspace_path)
+    memory = _load_memory_config(
+        data,
+        workspace_path,
+        credential_store=(
+            CredentialStore.for_workspace(workspace_path)
+            if model_store.exists()
+            else resolved_credential_store
+        ),
+    )
     wiring = _load_wiring_config(data)
 
     return Config(
@@ -147,6 +169,7 @@ def load_config(
                 auth_id=str(llm_main.get("auth") or ""),
                 inline_value=str(llm_main.get("api_key") or ""),
                 workspace=workspace_path,
+                credential_store=model_credential_store,
             )
         ),
         system_prompt=str(
@@ -158,9 +181,7 @@ def load_config(
             agent_cfg.get("max_iterations", data.get("max_iterations", 10))
         ),
         memory_window=_load_memory_window(data, agent_context, llm_main),
-        base_url=_model_base_url(
-            provider, llm_main.get("base_url")
-        ),
+        base_url=_model_base_url(provider, llm_main.get("base_url")),
         extra_body=_load_extra_body(data, llm_main),
         channels=channels,
         app_server=app_server,
@@ -184,19 +205,17 @@ def load_config(
             auth_id=str(llm_fast.get("auth") or ""),
             inline_value=str(llm_fast.get("api_key") or ""),
             workspace=workspace_path,
+            credential_store=model_credential_store,
         ),
-        light_base_url=str(
-            llm_fast.get("base_url") or ""
-        ),
+        light_base_url=str(llm_fast.get("base_url") or ""),
         agent_model=str(llm_agent.get("model") or ""),
         agent_api_key=_load_api_key(
             auth_id=str(llm_agent.get("auth") or ""),
             inline_value=str(llm_agent.get("api_key") or ""),
             workspace=workspace_path,
+            credential_store=model_credential_store,
         ),
-        agent_base_url=str(
-            llm_agent.get("base_url") or ""
-        ),
+        agent_base_url=str(llm_agent.get("base_url") or ""),
         memory=memory,
         tool_search_enabled=_as_bool(
             agent_tools.get("search_enabled", data.get("tool_search_enabled", False)),
@@ -222,6 +241,7 @@ def load_config(
             auth_id=str(llm_vl.get("auth") or ""),
             inline_value=str(llm_vl.get("api_key") or ""),
             workspace=workspace_path,
+            credential_store=model_credential_store,
         ),
         vl_base_url=str(llm_vl.get("base_url") or ""),
         wiring=wiring,
@@ -229,7 +249,9 @@ def load_config(
         auth_id=str(llm_main.get("auth") or ""),
         context_window=int(llm_main.get("context_window") or 0),
         reasoning_effort=str(llm_main.get("reasoning_effort") or ""),
-        input_modalities=tuple(str(item) for item in llm_main.get("input_modalities", ["text"])),
+        input_modalities=tuple(
+            str(item) for item in llm_main.get("input_modalities", ["text"])
+        ),
         effective_context_percent=float(llm_main.get("effective_context_percent", 0.9)),
         compaction_trigger_percent=float(
             llm_main.get("compaction_trigger_percent", 0.74)
@@ -253,6 +275,9 @@ def load_config(
         fast_runtime_id=fast_runtime_id,
         agent_runtime_id=agent_runtime_id,
         vl_runtime_id=vl_runtime_id,
+        model_registry_revision=(model_snapshot.revision if model_snapshot else 0),
+        config_path=config_path.expanduser().resolve(),
+        workspace_path=workspace_path.expanduser().resolve(),
     )
 
 
@@ -265,9 +290,10 @@ def _load_channels_config(data: dict, workspace: Path) -> ChannelsConfig:
         token = _normalize_optional_config_text(
             _resolve(str(tg.get("token", "")), workspace)
         )
-        if _as_bool(
-            tg.get("enabled", True), field="channels.telegram.enabled"
-        ) and token:
+        if (
+            _as_bool(tg.get("enabled", True), field="channels.telegram.enabled")
+            and token
+        ):
             telegram = TelegramChannelConfig(
                 token=token,
                 allow_from=[
@@ -280,17 +306,15 @@ def _load_channels_config(data: dict, workspace: Path) -> ChannelsConfig:
     qq_data = _as_dict(channels_data.get("qq"), field="channels.qq")
     if qq_data:
         bot_uin = _normalize_optional_config_text(str(qq_data.get("bot_uin", "")))
-        if _as_bool(
-            qq_data.get("enabled", True), field="channels.qq.enabled"
-        ) and bot_uin:
+        if (
+            _as_bool(qq_data.get("enabled", True), field="channels.qq.enabled")
+            and bot_uin
+        ):
             groups = [
                 QQGroupConfig(
-                    group_id=str(
-                        g["group_id"] if "group_id" in g else g["groupId"]
-                    ),
+                    group_id=str(g["group_id"] if "group_id" in g else g["groupId"]),
                     allow_from=[
-                        str(u)
-                        for u in g.get("allow_from", g.get("allowFrom", []))
+                        str(u) for u in g.get("allow_from", g.get("allowFrom", []))
                     ],
                     require_at=_as_bool(
                         g.get("require_at", g.get("requireAt", True)),
@@ -313,15 +337,11 @@ def _load_channels_config(data: dict, workspace: Path) -> ChannelsConfig:
 
     if "socket" in channels_data or "cli" in channels_data:
         raise ValueError(
-            "旧 channels.socket/channels.cli 配置已删除；请改用 [app_server] listen = \"\""
+            '旧 channels.socket/channels.cli 配置已删除；请改用 [app_server] listen = ""'
         )
     chat_data = _as_dict(channels_data.get("chat"), field="channels.chat")
     chat = WebChatConfig(
-        enabled=_as_bool(
-            chat_data.get("enabled", True), field="channels.chat.enabled"
-        ),
-        host=str(chat_data.get("host", "127.0.0.1") or "127.0.0.1"),
-        port=int(chat_data.get("port", 6322)),
+        enabled=_as_bool(chat_data.get("enabled", True), field="channels.chat.enabled"),
         channel_name=str(chat_data.get("channel_name", "web") or "web"),
     )
     channels = ChannelsConfig(
@@ -344,7 +364,12 @@ def _load_app_server_config(data: dict) -> AppServerConfig:
         outbound_queue_size=int(raw.get("outbound_queue_size", 512)),
         max_message_bytes=int(raw.get("max_message_bytes", 2 * 1024 * 1024)),
     )
-    for name in ("max_connections", "ingress_queue_size", "outbound_queue_size", "max_message_bytes"):
+    for name in (
+        "max_connections",
+        "ingress_queue_size",
+        "outbound_queue_size",
+        "max_message_bytes",
+    ):
         if getattr(config, name) <= 0:
             raise ValueError(f"app_server.{name} 必须大于 0")
     return config
@@ -447,10 +472,36 @@ def _load_proactive_config(data: dict) -> ProactiveConfig:
     return proactive
 
 
-def _load_memory_config(data: dict, workspace: Path) -> MemoryConfig:
+def _load_memory_config(
+    data: dict,
+    workspace: Path,
+    *,
+    credential_store: CredentialStore | None = None,
+) -> MemoryConfig:
     memory = _as_dict(data.get("memory"), field="memory")
     embedding = _as_dict(memory.get("embedding"), field="memory.embedding")
-    raw_output_dimensionality = embedding.get("output_dimensionality")
+    enabled = _as_bool(memory.get("enabled", False), field="memory.enabled")
+    model_ref = str(embedding.get("model_ref") or "").strip()
+    explicit_model = str(embedding.get("model") or "").strip()
+    if enabled and not model_ref and not explicit_model:
+        raise ValueError(
+            "memory 已启用，但未配置向量模型；请设置 "
+            "memory.embedding.model_ref 或 memory.embedding.model"
+        )
+    registered = None
+    if model_ref:
+        from agent.model_runtime.store import ModelRegistryStore
+
+        registered = ModelRegistryStore.for_workspace(workspace).get_embedding_model(
+            model_ref
+        )
+        if registered is None:
+            raise ValueError(f"memory.embedding.model_ref 不存在: {model_ref}")
+    raw_output_dimensionality = (
+        registered.dimensions
+        if registered is not None
+        else embedding.get("output_dimensionality")
+    )
     output_dimensionality = (
         int(raw_output_dimensionality)
         if raw_output_dimensionality not in (None, "")
@@ -459,18 +510,38 @@ def _load_memory_config(data: dict, workspace: Path) -> MemoryConfig:
     if output_dimensionality is not None and output_dimensionality <= 0:
         raise ValueError("memory.embedding.output_dimensionality 必须大于 0")
     return MemoryConfig(
-        enabled=_as_bool(memory.get("enabled", False), field="memory.enabled"),
+        enabled=enabled,
         engine=str(memory.get("engine", "") or ""),
         embedding=MemoryEmbeddingConfig(
-            model=str(embedding.get("model", "text-embedding-v3")),
-            api_key=_load_api_key(
-                auth_id=str(embedding.get("auth") or ""),
-                inline_value=str(embedding.get("api_key", "")),
-                workspace=workspace,
+            model_ref=model_ref,
+            model=(
+                registered.model
+                if registered is not None
+                else explicit_model or "text-embedding-v3"
             ),
-            base_url=str(embedding.get("base_url", "")),
+            api_key=_load_api_key(
+                auth_id=(
+                    registered.auth_id
+                    if registered is not None
+                    else str(embedding.get("auth") or "")
+                ),
+                inline_value=(
+                    "" if registered is not None else str(embedding.get("api_key", ""))
+                ),
+                workspace=workspace,
+                credential_store=credential_store,
+            ),
+            base_url=(
+                registered.base_url
+                if registered is not None
+                else str(embedding.get("base_url", ""))
+            ),
             output_dimensionality=output_dimensionality,
-            auth=str(embedding.get("auth") or ""),
+            auth=(
+                registered.auth_id
+                if registered is not None
+                else str(embedding.get("auth") or "")
+            ),
         ),
     )
 
@@ -544,6 +615,7 @@ def _load_llm_runtimes(
     llm: dict,
     workspace: Path,
     *,
+    credential_store: CredentialStore | None = None,
     legacy_main_max_output_tokens: object | None = None,
 ) -> tuple[str, dict, dict[str, ModelRuntimeConfig]]:
     """在配置边界解析 named runtimes，并拒绝未迁移的旧结构。"""
@@ -558,8 +630,19 @@ def _load_llm_runtimes(
     for runtime_id, raw in runtimes.items():
         item = _as_dict(raw, field=f"llm.runtimes.{runtime_id}")
         modalities = item.get("input_modalities", ["text"])
-        if not isinstance(modalities, list) or not all(isinstance(v, str) for v in modalities):
-            raise ValueError(f"llm.runtimes.{runtime_id}.input_modalities 必须是字符串数组")
+        if not isinstance(modalities, list) or not all(
+            isinstance(v, str) for v in modalities
+        ):
+            raise ValueError(
+                f"llm.runtimes.{runtime_id}.input_modalities 必须是字符串数组"
+            )
+        supported_efforts = item.get("supported_reasoning_efforts", [])
+        if not isinstance(supported_efforts, list) or not all(
+            isinstance(value, str) and value.strip() for value in supported_efforts
+        ):
+            raise ValueError(
+                f"llm.runtimes.{runtime_id}.supported_reasoning_efforts 必须是非空字符串数组"
+            )
         provider = str(item.get("provider") or "").lower()
         auth_id = str(item.get("auth") or "")
         configured_max_output_tokens = item.get("max_output_tokens")
@@ -574,6 +657,9 @@ def _load_llm_runtimes(
             runtime_id=runtime_id,
             provider=provider,
             model=str(item.get("model") or ""),
+            source_id=str(item.get("source_id") or ""),
+            source_name=str(item.get("source_name") or provider),
+            catalog_provider_id=str(item.get("catalog_provider_id") or "").strip(),
             auth=auth_id,
             api_key=(
                 ""
@@ -582,16 +668,51 @@ def _load_llm_runtimes(
                     auth_id=auth_id,
                     inline_value=str(item.get("api_key") or ""),
                     workspace=workspace,
+                    credential_store=credential_store,
                 )
             ),
             base_url=_model_base_url(provider, item.get("base_url")),
             reasoning_effort=str(item.get("reasoning_effort") or ""),
+            supported_reasoning_efforts=tuple(supported_efforts),
             context_window=int(item.get("context_window") or 0),
             max_output_tokens=_as_output_token_limit(
                 configured_max_output_tokens,
                 field=f"llm.runtimes.{runtime_id}.max_output_tokens",
             ),
             input_modalities=tuple(modalities),
+            capability_source=str(
+                item.get(
+                    "capability_source",
+                    "explicit" if item.get("context_window") else "unknown",
+                )
+            ),
+            context_window_source=str(
+                item.get(
+                    "context_window_source",
+                    item.get(
+                        "capability_source",
+                        "explicit" if item.get("context_window") else "unknown",
+                    ),
+                )
+            ),
+            max_output_tokens_source=str(
+                item.get(
+                    "max_output_tokens_source",
+                    item.get(
+                        "capability_source",
+                        "explicit" if item.get("max_output_tokens") else "unknown",
+                    ),
+                )
+            ),
+            input_modalities_source=str(
+                item.get(
+                    "input_modalities_source",
+                    item.get(
+                        "capability_source",
+                        "explicit" if item.get("input_modalities") else "unknown",
+                    ),
+                )
+            ),
             effective_context_percent=float(item.get("effective_context_percent", 0.9)),
             compaction_trigger_percent=float(
                 item.get("compaction_trigger_percent", 0.74)
@@ -631,9 +752,7 @@ def _load_memory_window(data: dict, agent_context: dict, llm_main: dict) -> int:
     return recommended_context_settings(context_window, effective_percent).memory_window
 
 
-def _load_role_runtime(
-    llm: dict, role: str, main_runtime_id: str
-) -> tuple[str, dict]:
+def _load_role_runtime(llm: dict, role: str, main_runtime_id: str) -> tuple[str, dict]:
     value = llm.get(role)
     if value is None:
         return "", {}
@@ -669,9 +788,15 @@ def _resolve(value: str, workspace: Path) -> str:
     return resolved
 
 
-def _load_api_key(*, auth_id: str, inline_value: str, workspace: Path) -> str:
+def _load_api_key(
+    *,
+    auth_id: str,
+    inline_value: str,
+    workspace: Path,
+    credential_store: CredentialStore | None = None,
+) -> str:
     if auth_id:
-        return CredentialStore().api_key(auth_id)
+        return (credential_store or CredentialStore()).api_key(auth_id)
     return _resolve(inline_value, workspace)
 
 

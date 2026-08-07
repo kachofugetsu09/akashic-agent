@@ -4,11 +4,11 @@ Akashic Mobile 是一个通过独立实时网关连接 Akashic Agent 的 Android
 
 ## 1. 接入结构
 
-Akashic Agent 同时提供两个端口。`6322` 承载本机 Web Chat 和配对管理页面；`6323` 承载手机使用的 WSS 实时协议与同源 HTTPS 插件查询。Cloudflare 只转发 `6323`。
+Akashic Agent 提供两个用途明确的端口。`2236` 是本机唯一 Web 入口，承载 Chat、设置、Dashboard 和配对管理页面；`6323` 承载手机使用的 WSS 实时协议与同源 HTTPS 插件查询。Cloudflare 只转发 `6323`。
 
 ```text
 ┌────────────┐  本机 HTTP   ┌────────────────────────┐
-│ 维护者浏览器 │ ──────────▶ │ Web Chat :6322         │
+│ 维护者浏览器 │ ──────────▶ │ Web Shell :2236        │
 └────────────┘              │ 生成二维码、批准设备      │
                             └───────────┬────────────┘
                                         │ 一次性配对状态
@@ -39,7 +39,7 @@ uv run python main.py
 ```
 
 ```text
-http://127.0.0.1:6322
+http://127.0.0.1:2236
 ```
 
 ## 3. 启用移动实时网关
@@ -55,8 +55,6 @@ cp --preserve=all --no-clobber config.toml config.toml.before-mobile
 ```toml
 [channels.chat]
 enabled = true
-host = "127.0.0.1"
-port = 6322
 channel_name = "web"
 
 [mobile_realtime]
@@ -75,7 +73,7 @@ master_key_namespace = "akasic/mobile-realtime"
 keyset_manifest = "data/mobile/keys/current.json"
 ```
 
-`public_url` 必须使用 `wss`，路径必须是 `/ws`，不能携带用户名、密码、query 或 fragment。`channels.chat.host` 必须保持 loopback；配置加载器会拒绝把配对管理页面暴露到局域网。
+`public_url` 必须使用 `wss`，路径必须是 `/ws`，不能携带用户名、密码、query 或 fragment。正式 Supervisor 的 Web Shell 固定使用 loopback `2236`，并提供统一 Dashboard 壳层与静态前端；Chat 与 Dashboard 的运行时 API 通过 Unix socket 接入，不再配置独立 HTTP 端口。
 
 优雅停止旧进程，再重新启动：
 
@@ -205,7 +203,7 @@ PY
 ## 6. 安装并配对手机
 
 1. 从 [Akashic Mobile Releases](https://github.com/kachofugetsu09/akashic-mobile/releases/latest) 下载 APK 并安装。
-2. 在电脑上打开 `http://127.0.0.1:6322`，点击“连接手机”。
+2. 在电脑上打开 `http://127.0.0.1:2236`，点击“连接手机”。
 3. 在 Android 客户端选择“扫描电脑”，扫描电脑页面上的二维码。
 4. 手机和电脑会显示六位确认码。逐位核对，数字一致后在电脑上选择“确认并连接”。
 5. 等待电脑显示“手机已连接”，再关闭配对窗口。
@@ -251,7 +249,7 @@ Cloudflare 对 `502`、Tunnel 状态和 WebSocket 的解释见官方的 [Tunnel 
 
 ## 8. 安全边界
 
-- 只把 `6323` 配到 Cloudflare；`6321` 设置中心和 `6322` Web Chat 留在 loopback。
+- 只把 `6323` 配到 Cloudflare；唯一 Web 入口 `2236` 留在 loopback。
 - Tunnel token 只放在权限为 `0600` 的文件或专用 secret store 中。怀疑泄露时在 Cloudflare Dashboard 轮换 token，并重启 connector。
 - `mobile_realtime.db`、`data/mobile/keys/` 和 Secret Service 中的 master key 共同维持服务端身份与已配对设备。备份和恢复必须成组处理。
 - 不要删除 `current.json`、加密 key blob 或移动数据库来处理启动错误。数据库有身份而 keyset 丢失时，runtime 会按设计拒绝启动。

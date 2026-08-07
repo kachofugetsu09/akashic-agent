@@ -130,6 +130,22 @@ def test_message_send_accepts_real_client_creation_time() -> None:
     assert parsed.payload.client_created_at == "2026-07-16T12:34:56+08:00"
 
 
+def test_message_send_validates_model_selection() -> None:
+    frame = _golden_frame(0)
+    frame["payload"]["model_runtime_id"] = "  model-a  "
+    frame["payload"]["model_reasoning_effort"] = " high "
+
+    parsed = parse_frame(json.dumps(frame))
+
+    assert isinstance(parsed, MessageSendCommand)
+    assert parsed.payload.model_runtime_id == "model-a"
+    assert parsed.payload.model_reasoning_effort == "high"
+
+    frame["payload"]["model_runtime_id"] = ""
+    with pytest.raises(ValidationError, match="model_reasoning_effort"):
+        parse_frame(json.dumps(frame))
+
+
 @pytest.mark.parametrize(
     "value",
     (

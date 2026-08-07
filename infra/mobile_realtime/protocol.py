@@ -27,6 +27,7 @@ COMMAND_TYPES = frozenset(
         "session.open",
         "history.get",
         "message.content.prepare",
+        "model.catalog.get",
         "message.send",
         "turn.stop",
         "attachment.begin",
@@ -185,6 +186,8 @@ class MessageSendPayload(ProtocolModel):
         pattern=_RFC3339_INSTANT_PATTERN_TEXT,
     )
     reply_to: MessageReplyReference | None = None
+    model_runtime_id: str | None = Field(default=None, max_length=128)
+    model_reasoning_effort: str | None = Field(default=None, max_length=32)
 
     @field_validator("client_created_at")
     @classmethod
@@ -204,6 +207,12 @@ class MessageSendPayload(ProtocolModel):
         _validate_frame_id(self.client_message_id, "client_message_id")
         if len(set(self.media_refs)) != len(self.media_refs):
             raise ValueError("media_refs 不能重复")
+        if self.model_runtime_id is not None:
+            self.model_runtime_id = self.model_runtime_id.strip()
+        if self.model_reasoning_effort is not None:
+            self.model_reasoning_effort = self.model_reasoning_effort.strip()
+        if self.model_reasoning_effort and not self.model_runtime_id:
+            raise ValueError("model_reasoning_effort 要求 model_runtime_id")
         return self
 
 
@@ -359,6 +368,7 @@ class GenericCommand(CommandEnvelope):
         "session.open",
         "history.get",
         "message.content.prepare",
+        "model.catalog.get",
         "command.list",
         "runtime.document.list",
         "runtime.document.get",

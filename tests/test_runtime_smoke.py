@@ -111,29 +111,11 @@ def test_agent_turn_rejects_internal_plugin_commands(
     main._reject_agent_internal_plugin_action("plugin-revert")
 
 
-def test_app_runtime_uses_explicit_dashboard_bind(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setenv("AKASHIC_DASHBOARD_HOST", "127.0.0.1")
-    monkeypatch.setenv("AKASHIC_DASHBOARD_PORT", "16403")
-
+def test_app_runtime_does_not_own_public_web_listener(tmp_path: Path) -> None:
     runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
 
-    assert runtime.dashboard_host == "127.0.0.1"
-    assert runtime.dashboard_port == 16403
-
-
-@pytest.mark.parametrize("value", ["not-a-port", "0", "65536"])
-def test_app_runtime_rejects_invalid_dashboard_port(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    value: str,
-) -> None:
-    monkeypatch.setenv("AKASHIC_DASHBOARD_PORT", value)
-
-    with pytest.raises(ValueError, match="AKASHIC_DASHBOARD_PORT"):
-        bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
+    assert not hasattr(runtime, "dashboard_host")
+    assert not hasattr(runtime, "dashboard_port")
 
 
 def _toml_value(value):
@@ -945,10 +927,10 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     assert "[llm.runtimes.qwen_vl]" in config_text
     assert 'model = "qwen-vl-plus"' in config_text
     assert "[channels.chat]" in config_text
-    assert "port = 6322" in config_text
+    assert "6322" not in config_text
     assert '[runtime]\n' in config_text
     assert 'workspace = "~/.akashic/workspace"' in config_text
-    assert any("http://127.0.0.1:6322" in step for step in summary.next_steps)
+    assert any("http://127.0.0.1:2236" in step for step in summary.next_steps)
     assert (workspace / "sessions.db").exists()
     assert (workspace / "observe").is_dir()
     assert (workspace / "memory" / "consolidation_writes.db").exists()

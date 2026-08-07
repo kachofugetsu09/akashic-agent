@@ -159,42 +159,26 @@ def test_codex_setup_reuses_existing_login_and_catalog(
     assert answers.reasoning_summary == "auto"
 
 
-def test_opencode_go_setup_uses_dynamic_catalog_and_forces_text_only(
+def test_custom_api_setup_derives_provider_and_capabilities(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class Catalog:
-        def __init__(self, api_key: str, *, base_url: str) -> None:
-            assert api_key == "secret"
-            assert base_url == "https://opencode.ai/zen/go/v1"
-
-        async def list_models(self) -> list[SimpleNamespace]:
-            return [SimpleNamespace(slug="glm-5.99")]
-
-    confirms: list[str] = []
-
     def prompt(text: str, **kwargs: object) -> object:
-        if text == "服务商":
-            return "opencode-go"
+        if text.startswith("base_url"):
+            return "https://api.deepseek.com/v1"
+        if text == "模型名":
+            return "deepseek-chat"
         return kwargs.get("default", "")
 
-    def confirm(text: str, *, default: bool = False) -> bool:
-        confirms.append(text)
-        return default
-
-    monkeypatch.setattr(
-        "agent.model_runtime.catalog.opencode_go.OpenCodeGoModelCatalog",
-        Catalog,
-    )
     monkeypatch.setattr("bootstrap.setup_wizard.click.prompt", prompt)
-    monkeypatch.setattr("bootstrap.setup_wizard.click.confirm", confirm)
     monkeypatch.setattr("bootstrap.setup_wizard._secret_prompt", lambda _text: "secret")
     answers = WizardAnswers()
 
     _phase_api_key_llm(answers)
 
-    assert answers.provider == "opencode-go"
-    assert answers.model == "glm-5.99"
-    assert answers.base_url == "https://opencode.ai/zen/go/v1"
-    assert answers.max_output_tokens == 0
+    assert answers.provider == "deepseek"
+    assert answers.catalog_provider_id == "deepseek"
+    assert answers.model == "deepseek-chat"
+    assert answers.base_url == "https://api.deepseek.com/v1"
+    assert answers.context_window == 139_264
+    assert answers.max_output_tokens == 8_192
     assert answers.multimodal is False
-    assert "主模型原生支持图片输入？" not in confirms

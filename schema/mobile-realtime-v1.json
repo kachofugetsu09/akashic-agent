@@ -40,6 +40,7 @@
     "message.send",
     "mobile.webui.content.prepare",
     "mobile.webui.release.get",
+    "model.catalog.get",
     "ping",
     "plugin.ui.asset.get",
     "plugin.ui.cancel",
@@ -656,6 +657,7 @@
               "session.open",
               "history.get",
               "message.content.prepare",
+              "model.catalog.get",
               "command.list",
               "runtime.document.list",
               "runtime.document.get",
@@ -1034,6 +1036,32 @@
             "maxItems": 10,
             "title": "Media Refs",
             "type": "array"
+          },
+          "model_reasoning_effort": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model Reasoning Effort"
+          },
+          "model_runtime_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model Runtime Id"
           },
           "reply_to": {
             "anyOf": [
@@ -1755,6 +1783,7 @@
               "message.send": "#/$defs/MessageSendCommand",
               "mobile.webui.content.prepare": "#/$defs/MobileWebUiContentPrepareCommand",
               "mobile.webui.release.get": "#/$defs/MobileWebUiReleaseGetCommand",
+              "model.catalog.get": "#/$defs/GenericCommand",
               "ping": "#/$defs/GenericCommand",
               "plugin.ui.asset.get": "#/$defs/GenericCommand",
               "plugin.ui.cancel": "#/$defs/GenericCommand",
@@ -1890,6 +1919,7 @@
             "message.send": "#/$defs/MessageSendCommand",
             "mobile.webui.content.prepare": "#/$defs/MobileWebUiContentPrepareCommand",
             "mobile.webui.release.get": "#/$defs/MobileWebUiReleaseGetCommand",
+            "model.catalog.get": "#/$defs/GenericCommand",
             "ping": "#/$defs/GenericCommand",
             "plugin.ui.asset.get": "#/$defs/GenericCommand",
             "plugin.ui.cancel": "#/$defs/GenericCommand",

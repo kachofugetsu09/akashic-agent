@@ -336,6 +336,24 @@ class MobileWebUiStore:
 
         return self.get_release(verify_integrity=False)
 
+    def has_stable_publication_for_source(self, source_commit: str) -> bool:
+        """判断一个 Core commit 是否曾成功成为 Stable，显式 rollback 不抹除该事实。"""
+
+        row = self._db.execute(
+            """
+            SELECT 1
+            FROM webui_publication_journal AS journal
+            JOIN webui_generations AS generation
+              ON generation.generation_id = journal.generation_id
+            WHERE journal.stable = 1
+              AND journal.operation IN ('publish', 'promote_preview')
+              AND generation.source_commit = ?
+            LIMIT 1
+            """,
+            (source_commit,),
+        ).fetchone()
+        return row is not None
+
     def get_target(self, target_key: str) -> WebUiTarget | None:
         return self.get_release().target(target_key)
 

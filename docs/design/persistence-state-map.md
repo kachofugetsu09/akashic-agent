@@ -41,7 +41,7 @@ Akashic <workspace>
 
 切 Git 分支、删除代码 worktree 或做代码 refactor，不应改变 Akashic workspace。反过来，迁移或恢复 workspace 也不等于迁移源码和 Git 历史。后文出现裸词 `workspace` 时，都指这个运行数据根。
 
-workspace 仍不是完整运行环境的全部。显式主配置、全局凭据、全局插件安装清单、插件代码缓存和外部插件 canonical source 可以位于它之外；这些对象要通过 companion manifest 单独列出，不能靠猜测 HOME 路径补齐。
+workspace 仍不是完整运行环境的全部。模型 Provider credential 已随 connection 进入 workspace；显式主配置、旧或非模型全局凭据、全局插件安装清单、插件代码缓存和外部插件 canonical source 仍可以位于它之外。这些对象要通过 companion manifest 单独列出，不能靠猜测 HOME 路径补齐。
 
 ## 3. 用“增、改、减”阅读持久状态
 
@@ -94,6 +94,8 @@ workspace 仍不是完整运行环境的全部。显式主配置、全局凭据�
 | `runtime/plugin-reloads.sqlite3` | 每次热重载增加 transaction 与阶段事件 | 同一 transaction 按状态机更新当前 phase、snapshot identity 和错误 | 当前没有自动 retention；恢复和事故审计仍依赖的记录不得自动删除 |
 | `runtime/plugin-rollout-fact.json` | turn 后 install/uninstall 产生一条待反馈事实 | 新结果原子替换尚未消费的旧事实 | 下一次非 programmatic 用户 turn 注入后删除；它是可重建反馈，不是会话或长期记忆 |
 | `migrations.sqlite3` | Yoyo 在 migration step 成功后记录唯一 migration ID | 已应用回执保持不变；新增迁移只追加新的成功回执 | runtime 没有删除或回滚回执权限；只随用户明确删除整个 workspace 而减少，恢复依赖 workspace 备份与 SQLite 完整性检查 |
+| `model-registry.sqlite3` | onboarding 或设置事务增加含 credential payload 的 connection、model 和 role binding，并增加单调 revision | connection 的 key/token、Base URL、模型字段和角色绑定可原位更新；Codex token refresh 不增加模型 revision，其余成功模型事务增加 revision，旧 execution generation 只在 lease 归零后失效 | 只有独立模型/来源删除操作可以减少；被 role 或 session 引用时必须拒绝，普通模型切换不得 cascade；数据库、WAL/SHM 与备份均按 secret 使用 `0600` |
+| `sessions.metadata.model_selection` | 会话首次固定 model ref/effort 时增加版本化对象 | 用户切换 model/effort 时仅更新该对象；旧字符串 override 在下一次显式选择时升级 | 用户选择“跟随默认”时只移除该 metadata 键；不得改写或减少 messages |
 | 插件贡献的 Skill/Drift skill | 插件 source 持有 skill 正文；安装把版本化副本发布到 cache，generation 从 `skill_roots` 建 catalog | workspace `skills/` 和 `drift/skills/` 软链接随 active generation 重建 | 禁用/卸载插件可以移除已安装副本、catalog 和软链接；外部 canonical source 不归 workspace 或卸载流程所有 |
 | 插件贡献的 MCP | 插件安装读取 `mcp_servers()` 并准备 runtime，generation readiness 通过后发布 MCP catalog | 插件升级或热重载按 generation 原子替换，旧代随 lease 排空 | 禁用/卸载插件移除 MCP catalog 和 runtime；plugin-data 不级联删除 |
 | `mcp/servers/*.toml` 与手工 skill 目录 | 当前代码仍允许绕过插件直接声明或放置能力 | watcher/loader 可以热加载这些兼容内容 | 目标架构不再扩展这条路径；应迁移成插件并删除第二套 owner，迁移完成前不得把兼容目录写成 canonical 产品资产 |
@@ -105,8 +107,8 @@ workspace 仍不是完整运行环境的全部。显式主配置、全局凭据�
 
 | 对象 | 正常增加 | 允许的原位或逻辑变化 | 允许物理减少的条件 |
 |---|---|---|---|
-| 显式 `config.toml` | 用户增加 channel、model、plugin 和 runtime 配置 | 由配置管理动作修改当前值；它可能位于源码目录或任意 `--config` 路径 | 只能由明确配置管理动作删除；workspace 迁移不能假设它一定随目录存在 |
-| `~/.akashic/auth.json` | `CredentialStore.put/put_many` 增加 credential ID | token refresh 或重新登录原子替换同一 credential，并保留 `before-write` 备份 | 当前 store 没有通用删除 API；不能因 workspace、插件或模型配置变化自动删凭据 |
+| 显式 `config.toml` | 用户增加 channel、plugin、memory 和进程配置；模型迁移后只保留 workspace registry 标记 | 由配置管理动作修改静态当前值；它可能位于源码目录或任意 `--config` 路径 | 只能由明确配置管理动作删除；workspace 迁移不能假设它一定随目录存在 |
+| `~/.akashic/auth.json` | 旧安装、非模型配置或其他 workspace 可以增加 credential ID；0026 后本 workspace 的模型不再以它为 owner | 兼容 owner 可以继续更新自己的 credential；模型 Yoyo 只复制被当前 workspace 引用的值，不原位修改旧文件 | 当前 store 没有通用删除 API；模型迁移不得因当前 workspace 已复制就删除可能被其他消费者引用的 credential |
 | `~/.akashic-plugin/manifest.toml` | 安装时增加 plugin/package identity；运行时加载该插件后取得 Skill/MCP 声明 | enable/disable 更新 entry | 明确卸载时移除对应 entry；这只减少安装清单和能力，不删除 workspace 内 plugin-data |
 | `~/.akashic-plugin/cache/` | 插件安装在 staging 校验后发布插件代码、Skill 和 MCP runtime | 更新版本时原子替换并可回滚当前安装事务 | 明确卸载可以删除代码与能力 cache；它不是外部 canonical source，也不授权删除 plugin-data |
 | 外部插件 canonical source | 用户在独立源码仓库创建和提交 | 通过该仓库自己的 Git 工作流演进 | 只受该源码仓库的用户操作管理；Akashic workspace 备份、插件卸载和 cache 清理都不拥有它 |
@@ -166,12 +168,12 @@ workspace 仍不是完整运行环境的全部。显式主配置、全局凭据�
 workspace 之外还有两组明确的全局状态：
 
 ```text
-~/.akashic/auth.json              凭据
+~/.akashic/auth.json              旧模型迁移输入与非模型兼容凭据
 ~/.akashic-plugin/manifest.toml   已安装/启用插件目录
 ~/.akashic-plugin/cache/          已安装插件代码缓存
 ```
 
-因此，“整个 workspace 已备份”目前不能推出“系统已完整备份”。显式 `config.toml`、全局凭据、全局插件清单和插件 canonical source 仍在 workspace 之外。
+因此，“整个 workspace 已备份”可以覆盖已迁移模型及其凭据，但仍不能推出“系统已完整备份”。显式 `config.toml`、旧或非模型全局凭据、全局插件清单和插件 canonical source 仍在 workspace 之外。
 
 ## 5. 状态根与选择规则
 
@@ -182,11 +184,11 @@ workspace 之外还有两组明确的全局状态：
 | `config.toml:[runtime].workspace` | CLI 和环境变量都为空时使用 | `main.py`、`agent.config` | 默认 workspace 选择 |
 | 显式 `--config` | 可把主配置放在任意路径 | `main.py`、setup | 运行配置根，不保证位于 workspace |
 | `AKASHIC_PLUGIN_HOME` | 未设置时回退 `~/.akashic-plugin` | `agent.plugins.manifest` | 全局插件安装根 |
-| `~/.akashic/auth.json` | `CredentialStore` 默认固定使用 | `agent.model_runtime.auth` | 全局凭据库 |
+| `~/.akashic/auth.json` | 旧配置或显式 JSON store 使用；已迁移模型不再回退读取 | `agent.model_runtime.auth` 兼容边界 | 迁移输入、恢复证据与非模型兼容凭据 |
 
-**F-001：** runtime 的大部分可写状态已经从显式 workspace 派生。全局凭据和插件安装状态是有意保留的例外，而不是 workspace 内的隐式目录。
+**F-001：** runtime 的大部分可写状态已经从显式 workspace 派生。模型 credential 属于 workspace connection；旧或非模型全局凭据与插件安装状态是有意保留的例外，而不是 workspace 内的隐式目录。
 
-**G-001：** 当前没有一个单独 manifest 同时声明主配置、workspace、全局凭据、插件清单和外部 plugin source 的完整恢复集合。
+**G-001：** 当前没有一个单独 manifest 同时声明主配置、workspace、旧或非模型全局凭据、插件清单和外部 plugin source 的完整恢复集合。
 
 ## 6. Workspace 当前文件结构
 
@@ -455,8 +457,10 @@ Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activa
 
 ### 11.1 主配置和凭据
 
-- `config.toml` 通常位于仓库根并被 `.gitignore` 排除，也可通过 `--config` 指向其他位置。它包含 runtime、channel、memory、proactive 和模型设置，可能直接含 secret 或引用 auth ID。
-- `~/.akashic/auth.json` 由 `CredentialStore` 以 0600 权限、跨进程锁、fsync 和原子替换维护；覆盖前刷新 `auth.json.before-write.bak`。
+- `config.toml` 通常位于仓库根并被 `.gitignore` 排除，也可通过 `--config` 指向其他位置。模型迁移后它保存 runtime、channel、memory、proactive 等静态设置；动态 connection/model/role 由 workspace `model-registry.sqlite3` 保存。
+- `model-registry.sqlite3` 保存 Provider connection 的 Base URL 与 credential payload、模型能力快照、角色绑定和 revision。它及其备份属于 secret；普通模型选择只改该库，不改 `config.toml`；每个完整执行在入口读取 revision 并冻结整组角色。
+- `sessions.db/sessions.metadata.model_selection` 保存单个会话固定的 model ref 与 reasoning effort；它跨重启保留但不复制 Provider 凭据或能力，实际执行仍从开始时取得的 registry generation 解析。
+- `~/.akashic/auth.json` 继续由 JSON 兼容 owner 以 0600 权限维护。模型 Yoyo 从中复制当前 workspace 引用的 credential，但不删除旧值；迁移后模型设置、Codex refresh 和 runtime 请求只读写 workspace 模型库。
 
 两者都是恢复运行所需配置，但不能直接提交到 Git 或写入普通诊断文档。
 
@@ -507,7 +511,7 @@ Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activa
 3. 当前快照 manifest 不记录 workspace 选择、应用 commit、schema/插件版本、主配置位置或全局状态位置。
 4. 没有一条仓库内工作流证明同一份快照能在隔离 workspace 恢复并通过应用级只读 smoke。
 5. SQLite 分别 backup 时，每个文件内部一致，但多个数据库与普通文件之间没有全局事务时点。
-6. 备份范围没有明确包含或排除 `.app-server-token`、diagnostic traces、全局凭据和全局插件 manifest。
+6. 备份范围没有明确包含或排除 `.app-server-token`、diagnostic traces、旧或非模型全局凭据和全局插件 manifest。
 7. `mcp/servers/*.toml` 与 workspace 手工 skill 目录仍绕过插件安装系统，形成第二套能力 owner；现存内容尚未迁移。
 8. 通用 rolling backup 尚不能把 WebUI publication DB 与它引用的 blobs 作为同一一致性 source；首版 publisher 必须至少导出可审阅 reachable manifest，并在发布正式资源前完成隔离恢复 smoke。
 
@@ -519,7 +523,7 @@ INT-001～INT-008 和 INT-011 已由花月哥哥确认，其中长期语义已�
 
 ### INT-001 Workspace 是主要运行工作区 — 已确认
 
-确认内容：显式 workspace 保存 Akashic 的主要运行文件，是会话、记忆、附件、调度、自主流程和 plugin-data 的主要备份/迁移单元。主配置、全局凭据、插件 manifest/cache 和外部 plugin source 是明确的 companion state。
+确认内容：显式 workspace 保存 Akashic 的主要运行文件，是会话、记忆、附件、调度、自主流程、模型 connection/credential 和 plugin-data 的主要备份/迁移单元。主配置、旧或非模型全局凭据、插件 manifest/cache 和外部 plugin source 是明确的 companion state。
 
 已提升条款：WSP-001、WSP-004。迁移工具以 workspace 为主体，同时生成 global companion manifest，不再散落猜路径。
 

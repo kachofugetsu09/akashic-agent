@@ -389,6 +389,7 @@ async def test_agent_loop_turn_end_terminates_owner_shell() -> None:
     tools.register(shell)
     loop = AgentLoop.__new__(AgentLoop)
     loop.tools = tools
+    loop._llm_services = SimpleNamespace(provider=object())
     loop._processing_state = None
     loop._interrupt_states = {}
     loop._resume_interrupted_message = AsyncMock(
@@ -439,6 +440,7 @@ async def test_agent_loop_preserves_turn_failure_when_shell_cleanup_fails(
     tools.register(shell)
     loop = AgentLoop.__new__(AgentLoop)
     loop.tools = tools
+    loop._llm_services = SimpleNamespace(provider=object())
     loop._processing_state = None
     loop._interrupt_states = {}
     loop._resume_interrupted_message = AsyncMock(
@@ -476,6 +478,7 @@ async def test_agent_loop_returns_completed_reply_when_shell_cleanup_fails(
     tools.register(shell)
     loop = AgentLoop.__new__(AgentLoop)
     loop.tools = tools
+    loop._llm_services = SimpleNamespace(provider=object())
     loop._processing_state = None
     loop._interrupt_states = {}
     loop._resume_interrupted_message = AsyncMock(

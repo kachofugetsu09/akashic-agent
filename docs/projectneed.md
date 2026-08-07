@@ -189,7 +189,7 @@ Thinking 与工具调用共用一条从首个节点中心起笔的过程轨迹�
 
 ### WEBUI-004 移动 WebUI 只发布不可变 generation
 
-Core 发布者从固定 WebUI 输入生成不可变 manifest 和按内容摘要寻址的静态资源。只有名称明确的 Stable、Preview、清除和回滚命令可以原子改变当前 `ReleaseView`；保存源码、构建成功、文件 watcher 和 Runtime 重启都不得自动发布。Preview 对同一服务端配对的设备共同生效；Stable 必须能从声明的提交、锁文件、构建配置和工具链重建相同 generation，未提交的 Preview 只有在提交后重建出相同 generation 时才能提升。
+Core 发布者从固定 WebUI 输入生成不可变 manifest 和按内容摘要寻址的静态资源。名称明确的 Stable、Preview、清除和回滚命令可以原子改变当前 `ReleaseView`；此外，Gateway 从与 `origin/main` 完全一致的 `main` 启动时，必须把尚未成功发布过的当前提交对账为 Stable。该对账复用同一可复现发布者，已发布提交是 no-op，失败必须中止 Gateway 启动并保持旧指针；feature branch、detached HEAD、dirty tree、保存源码、构建成功和文件 watcher 都不得触发自动 Stable。Preview 对同一服务端配对的设备共同生效且不被自动清除；Stable 必须能从声明的提交、锁文件、构建配置和工具链重建相同 generation，未提交的 Preview 只有在提交后重建出相同 generation 时才能提升。
 
 客户端把每次已认证 `Resolve` 返回的当前 `ReleaseView` 当作服务端选择，不按发布序号、时间、语义版本或本地历史推断新旧。发布恢复或显式回滚可以重新选择过去的 generation；迟到的客户端回调只能用本地 owner token 拒绝，不能覆盖较新的解析结果。
 
@@ -211,7 +211,7 @@ candidate 在 10 秒健康提交前必须由 process-scope attempt lease 持有�
 
 ### WEBUI-007 Akashic Token 以 Material 3 系统角色表达产品语义
 
-6321 设置、桌面 Chat、共享 Mobile WebUI、Dashboard 和插件公开控件必须从同一个 Akashic Theme Catalog 读取颜色。Catalog 以 Material 3 的 primary、secondary、tertiary、error 与 tonal surface 角色表达通用界面语义，并由 Akashic 扩展 success、warning、trace 和 info 等领域角色；组件库的默认值、插件私有颜色和页面局部常量都不得成为第二主题真源。
+2236 的模型设置、桌面 Chat、共享 Mobile WebUI、Dashboard 和插件公开控件必须从同一个 Akashic Theme Catalog 读取颜色。Catalog 以 Material 3 的 primary、secondary、tertiary、error 与 tonal surface 角色表达通用界面语义，并由 Akashic 扩展 success、warning、trace 和 info 等领域角色；组件库的默认值、插件私有颜色和页面局部常量都不得成为第二主题真源。
 
 颜色必须表达动作、选择、状态或层级：primary 只突出当前主要动作，容器色表达选择和低强度强调，error、warning、success、trace 不能互相借色。布局优先使用留白和 tonal surface 建立层级，边框只表达结构或状态；卡片、胶囊和阴影不得作为所有内容的默认容器。引入 Material 组件不能改变 WEBUI-001～WEBUI-006 的源码、平台能力、状态 owner 与发布边界。
 
@@ -459,6 +459,34 @@ Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先�
 
 ConversationRuntime 的 session lane owner 在 active attempt 上拒绝所有普通输入，只接受精确 `turn/interrupt`。Reasoner 最终回复前仍在同一 owner 下封口；中断和完成都必须提交唯一 terminal 状态。下一条普通输入只能在 terminal 后创建新 attempt，并由 durable predecessor 恢复同一未完成 logical interaction；不得存在运行中 drain user input 的隐式或显式入口。
 
+### RUN-009 每个执行单元冻结模型 generation
+
+Turn、proactive tick、schedule、plugin job、记忆优化和其他独立推理单元在真正开始执行时解析当前模型角色，并冻结同一份 provider、model、credential 与能力 generation。执行期间修改角色绑定或连接配置只服务后续执行；已经开始的执行及其工具循环、重试和上下文压缩继续使用旧 generation。排队但尚未开始的执行使用开始时最新 generation。旧 generation 只有在全部 execution lease 归零后才能释放。
+
+### RUN-010 默认模型和模型角色可在运行时修改
+
+`default`、`fast`、`agent` 和 `vision` 角色引用 named runtime。设置 owner 对候选连接和模型完成真实校验并原子持久化后，Gateway 原子发布新 generation，不停止 admission、不排空无关 turn，也不请求 Supervisor 重启。候选校验、配置提交或 generation 构建失败时继续服务旧 generation，并向设置调用方返回明确失败。
+
+角色绑定和 Provider/model 目录的权威当前值保存在 workspace 模型注册库，成功事务增加单调 revision。完整 passive ReAct、proactive ReAct、schedule SOFT、Memory Optimizer、consolidation、plugin job 和其他独立推理单元在入口读取最新 revision，并冻结整组角色直到执行结束；没有外层执行单元的单次调用在调用前读取最新 revision。普通模型设置不得通过改写 `config.toml` 或重启进程传播。
+
+Provider connection 的 Base URL、API Key、Codex access/refresh token 与账号路由字段由同一个 workspace 模型注册库拥有，数据库及其备份按 secret 使用 `0600`。设置状态、日志、Observe 和会话 metadata 只返回 credential 状态或引用，不得返回 secret。已迁移模型不得回退读取全局 HOME credential；旧 credential 文件只保留为迁移输入、恢复证据或非模型兼容状态。Codex token refresh 可以原位更新 credential payload，不改变当前模型 revision；来源、模型、角色和显式 key 设置变化仍按完整候选事务增加 revision。
+
+对话模型选择按“本次消息显式 model ref/effort → session selection → 当前 default”解析。Session selection 以版本化对象持久化后跨 Gateway 重启保留；清除后重新跟随动态 default。显式 effort 只属于显式选择的 default/agent 主推理，不传播给 fast、vision 等内部角色；不受支持的值明确失败。实际执行绑定写入 turn 诊断元数据，不得反向改写既有消息。旧字符串 override 只读兼容，并在下一次显式选择时升级。
+
+### RUN-011 模型能力来自带来源的注册表
+
+Codex、OpenCode 等 provider 权威目录优先提供模型能力；其余已知模型使用仓库固定版本的公共模型目录派生快照。显式高级覆盖只覆盖对应字段。每个能力字段保留来源，未知字段保持 unknown，不猜测多模态、上下文窗口或输出上限。上下文窗口 unknown 时关闭依赖确定窗口的主动压缩和本地硬预算，保留 provider 的明确错误；不得要求普通 onboarding 为已识别模型重复填写这些字段。
+
+### RUN-012 Provider usage 使用统一且带覆盖率的结果
+
+所有模型传输把 provider 响应映射为统一 usage：input、cache read、cache write、output、reasoning output、request count、covered request count 与 coverage。Provider 未返回、流式响应缺失或当前解析器不支持的字段保持 unknown，并标记 `partial` 或 `unavailable`；不得用零值伪装已统计。插件、主动流程、记忆和核心 Turn 消费同一结构化结果，兼容字段只能从该结果派生。
+
+### ONB-001 首次模型配置使用三个渐进入口
+
+首次启动只展示“登录 Codex”“登录或检测 OpenCode”“Base URL + API Key + Model Name”三个主要入口。已识别模型自动填充能力并隐藏高级覆盖；无法识别能力仍允许保存连接，但必须明确显示哪些能力 unknown。没有配置时 Supervisor 仍须在 `2236` 提供统一 Dashboard 壳层：访问根路径 `/` 时地址不跳转，壳层默认选中 Chat，发送区明确显示尚未连接模型并能原地进入模型设置。保存合法配置后同一入口恢复聊天，不要求用户改 URL、端口或重启浏览器。
+
+`2236` 是唯一 Web 监听和唯一用户可见入口。模型设置、Chat、知识与运行及 Dashboard 使用同源路径；不得再启动 `6321`、`6322`，也不得依据浏览器端口判断页面类型。Gateway 未启动、正在换代或异常退出时，Supervisor 拥有的 `2236` 壳层继续存活并显示真实状态；启动脚本不得因 Gateway 尚未 ready 而杀死仍在 onboarding 的 Supervisor。
+
 ### OUT-001 被动按 Turn 提交，主动按送达提交
 
 被动消息以完整 Turn 为权威提交单位。推理和持久化成功后，本 turn 的全部有序 user message 与唯一 terminal assistant 共同进入会话历史；随后 dispatch 失败不得回滚已经提交的 Turn。主动消息没有对应的用户 Turn，只有 dispatch 明确成功后才进入会话历史、presence、dedupe 和 success 状态；未发送内容不得让 Agent 误认为自己已经说过。
@@ -545,7 +573,7 @@ install 成功只表示候选可验证。至少一个匹配当前候选的 attac
 
 ### WSP-001 Workspace 可写状态显式归属
 
-会话、记忆、附件、plugin-data、socket、运行日志和运行密钥都从显式 workspace 派生。全局插件缓存和 credential store 必须列入明确 global state 清单；运行时不得隐式回退 HOME。
+会话、记忆、附件、plugin-data、socket、运行日志、运行密钥和模型 connection credential 都从显式 workspace 派生。全局插件缓存、旧或非模型 credential store 必须列入明确 global state 清单；已迁移模型运行时不得隐式回退 HOME。
 
 ### WSP-002 数据路径不能通过片段或符号链接逃逸
 
@@ -557,7 +585,7 @@ plugin、marketplace、snapshot 等名称必须是安全单片段；resolved pat
 
 ### WSP-004 Workspace 是 Akashic 运行数据根
 
-`<workspace>` 表示由 `--workspace`、`AKASHIC_WORKSPACE` 或主配置选中的 Akashic 运行实例主要工作区。它承载会话、长期记忆、附件、调度、主动流程、plugin-data、能力投影、诊断和运行控制状态，不是源码仓库、Git checkout 或 Git worktree。插件代码、Skill/MCP 的 canonical source、全局插件清单和凭据可以位于 workspace 之外，必须作为明确 companion state 管理。Git worktree 只承载代码、测试和项目工作手册；任何代码 worktree 都不得把自己的目录当成正式运行数据根。
+`<workspace>` 表示由 `--workspace`、`AKASHIC_WORKSPACE` 或主配置选中的 Akashic 运行实例主要工作区。它承载会话、长期记忆、附件、调度、主动流程、模型 connection credential、plugin-data、能力投影、诊断和运行控制状态，不是源码仓库、Git checkout 或 Git worktree。插件代码、Skill/MCP 的 canonical source、全局插件清单以及旧或非模型凭据可以位于 workspace 之外，必须作为明确 companion state 管理。Git worktree 只承载代码、测试和项目工作手册；任何代码 worktree 都不得把自己的目录当成正式运行数据根。
 
 ### MIG-001 兼容迁移由 workspace Yoyo 账本一次性推进
 

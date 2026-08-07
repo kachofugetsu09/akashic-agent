@@ -1,32 +1,32 @@
 .composer-action-button {
   position: relative;
   display: inline-grid;
-  width: 42px;
-  min-width: 42px;
-  max-width: 42px;
-  height: 42px;
-  min-height: 42px;
-  max-height: 42px;
-  flex: 0 0 42px;
+  width: 40px;
+  min-width: 40px;
+  max-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  max-height: 40px;
+  flex: 0 0 40px;
   box-sizing: border-box;
   place-items: center;
   overflow: hidden;
   border: 0;
-  border-radius: 9999px;
+  border-radius: var(--md-sys-shape-corner-full);
   padding: 0;
-  color: var(--ak-color-on-action-primary);
-  background: var(--ak-color-action-primary);
+  color: var(--md-sys-color-on-primary);
+  background: var(--md-sys-color-primary);
   cursor: pointer;
   appearance: none;
   transition-property: scale, color, background-color, opacity;
-  transition-duration: 150ms;
-  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  transition-duration: var(--ak-sys-duration-short);
+  transition-timing-function: var(--ak-sys-motion-standard);
 }
 
 .composer-action-button > svg {
   display: block;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   flex: none;
   stroke-width: 2;
 }
@@ -36,17 +36,16 @@
 }
 
 .composer-action-button[data-mode="stop"] {
-  color: var(--ak-color-status-error);
-  background: var(--ak-color-bg-surface-high);
+  color: var(--md-sys-color-on-error-container);
+  background: var(--md-sys-color-error-container);
 }
 
 .composer-action-button:hover:not(:disabled) {
-  background: var(--ak-color-action-hover);
+  background: color-mix(in srgb, var(--md-sys-color-primary) 92%, var(--md-sys-color-on-primary) 8%);
 }
 
 .composer-action-button[data-mode="stop"]:hover:not(:disabled) {
-  color: var(--md-sys-color-on-error-container);
-  background: var(--md-sys-color-error-container);
+  background: color-mix(in srgb, var(--md-sys-color-error-container) 92%, var(--md-sys-color-on-error-container) 8%);
 }
 
 .composer-action-button:active:not(:disabled) {
@@ -54,13 +53,12 @@
 }
 
 .composer-action-button:focus-visible {
-  outline: 2px solid var(--ak-color-action-primary);
+  outline: 2px solid var(--md-sys-color-primary);
   outline-offset: 2px;
 }
 
 .composer-action-button:disabled {
-  color: var(--ak-color-border-strong);
-  background: var(--ak-color-bg-surface-high);
+  color: color-mix(in srgb, var(--md-sys-color-on-surface) 38%, transparent);
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) 12%, transparent);
   cursor: default;
-  opacity: 0.62;
 }

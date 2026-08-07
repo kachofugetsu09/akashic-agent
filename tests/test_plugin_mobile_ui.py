@@ -22,6 +22,12 @@ from agent.plugins.mobile_ui import (
 
 
 class _MobilePlugin:
+    def __init__(self, *, available: bool = True) -> None:
+        self.available = available
+
+    def mobile_ui_available(self) -> bool:
+        return self.available
+
     def mobile_ui_query(
         self,
         method: str,
@@ -72,7 +78,7 @@ class _ExplodingMapping(Mapping[str, object]):
         return 1
 
 
-def _provider() -> PluginMobileUiProvider:
+def _provider(*, available: bool = True) -> PluginMobileUiProvider:
     module = "export default 1;"
     stylesheet = ":host { color: red; }"
     asset = MobileUiAsset(
@@ -89,7 +95,7 @@ def _provider() -> PluginMobileUiProvider:
     generation = SimpleNamespace(
         plugin_id="sample@github",
         source_revision="revision-1",
-        instance=_MobilePlugin(),
+        instance=_MobilePlugin(available=available),
         contributions=SimpleNamespace(mobile_ui_asset=asset),
     )
     snapshot = SimpleNamespace(
@@ -127,6 +133,24 @@ def test_mobile_ui_catalog_separates_metadata_from_content_addressed_assets() ->
     assert item["slots"] == ["turn.after_answer"]
     assert module["content"] == "export default 1;"
     assert stylesheet["content"] == ":host { color: red; }"
+
+
+@pytest.mark.asyncio
+async def test_mobile_ui_unavailable_capability_is_hidden_and_rejected() -> None:
+    provider = _provider(available=False)
+
+    assert provider.catalog()["items"] == []
+    with pytest.raises(MobileUiPluginUnavailable):
+        provider.asset("sample@github", "revision-1", "module", "0" * 64)
+    with pytest.raises(MobileUiPluginUnavailable):
+        await provider.query(
+            "sample@github",
+            "revision-1",
+            "recall.current",
+            {},
+            session_id="mobile:test",
+            turn_id="turn-1",
+        )
 
 
 @pytest.mark.asyncio

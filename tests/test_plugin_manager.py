@@ -23,7 +23,12 @@ from agent.lifecycle.types import AfterStepCtx, AfterToolResultCtx, BeforeToolCa
 from agent.plugins.context import PluginKVStore, PreparedPluginKVStore
 from agent.plugins.manager import PluginManager
 from agent.plugins.manifest import write_package_manifest
-from agent.plugins.jobs import PluginJobRuntime, PluginJobSpec, RegisteredPluginJob
+from agent.plugins.jobs import (
+    PluginJobRuntime,
+    PluginJobSpec,
+    PluginLlmResult,
+    RegisteredPluginJob,
+)
 from agent.plugins.registry import plugin_registry
 from agent.plugins.scope import PluginScope
 from agent.tool_hooks import ToolHook
@@ -67,8 +72,15 @@ def _make_manager(plugin_dirs: list[Path], *, event_bus: EventBus, tools: ToolRe
 
 
 class _FakePluginLlm:
+    async def generate(self, **kwargs: Any) -> PluginLlmResult:
+        return PluginLlmResult(
+            text=f"generated:{kwargs.get('prompt')}",
+            model_usage={},
+            model_binding={},
+        )
+
     async def generate_text(self, **kwargs: Any) -> str:
-        return f"generated:{kwargs.get('prompt')}"
+        return (await self.generate(**kwargs)).text
 
 
 def _before_turn_ctx(**overrides: object) -> BeforeTurnCtx:
@@ -1908,6 +1920,7 @@ async def test_add_tool_hooks_propagates_to_tool_executor():
 
 @pytest.mark.asyncio
 async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
+    from agent.tools.spawn import SpawnTool
     from bootstrap.tools import CoreRuntime
 
     startup_order: list[str] = []
@@ -1987,7 +2000,7 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
         ) -> None:
             self.received_after_turn = list(modules)
 
-    class FakeSpawnTool:
+    class FakeSpawnTool(SpawnTool):
         def __init__(self) -> None:
             self.received_hooks: list[ToolHook] | None = None
 

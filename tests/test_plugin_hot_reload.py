@@ -2279,6 +2279,7 @@ async def test_proactive_quiesce_does_not_deadlock_with_paused_tick(
     await manager.load_all()
     loop = object.__new__(ProactiveLoop)
     loop._runtime_snapshot_store = manager.snapshot_store
+    loop._provider = object()
     loop._reload_lock = asyncio.Lock()
     stopped = asyncio.Event()
 
@@ -5375,6 +5376,7 @@ async def test_proactive_tick_keeps_one_snapshot_generation(tmp_path: Path) -> N
 
     loop = object.__new__(ProactiveLoop)
     loop._runtime_snapshot_store = manager.snapshot_store
+    loop._provider = object()
     loop._reload_lock = asyncio.Lock()
     loop._sense = SimpleNamespace(target_session_key=lambda: "cli:tick")
     loop._proactive_kernel = SimpleNamespace(run_tick=run_tick)

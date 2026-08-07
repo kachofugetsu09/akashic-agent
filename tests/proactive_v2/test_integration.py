@@ -32,6 +32,7 @@ class SnapshotMcpTool(Tool):
 def make_loop() -> ProactiveLoop:
     loop = object.__new__(ProactiveLoop)
     loop._cfg = ProactiveConfig()
+    loop._provider = object()
     loop._state_store_owned = False
     loop._state_closed = False
     loop._sense = SimpleNamespace(target_session_key=lambda: "telegram:1")

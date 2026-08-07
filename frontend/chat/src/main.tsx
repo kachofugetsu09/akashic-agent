@@ -9,9 +9,11 @@ import {
   Palette,
   Plus,
   Puzzle,
+  SlidersHorizontal,
   Smartphone,
 } from "lucide-react";
 import { cycleTheme, initializeTheme, setTheme, startCrossPortThemeSync, useTheme } from "../../theme/src/theme-runtime";
+import { MaterialButton } from "../../theme/src/material-react";
 import {
   Attachment,
   AttachmentHoverCard,
@@ -48,6 +50,7 @@ import { ComposerActionButton } from "./composer-action";
 import { akashicBrandIcon } from "./akashic-brand";
 import { ComposerReply, MessageReplyReference, SharedMessageActions } from "./message-actions";
 import { MobilePairingDialog } from "./mobile-pairing-dialog";
+import { ModelCapsulePicker, type ChatModelRuntime } from "./model-capsule-picker";
 import { loadWebPluginCatalog, MobilePluginSlot } from "./mobile-plugin-runtime";
 import { RuntimeDashboard } from "./runtime-dashboard";
 import "./styles.css";
@@ -78,8 +81,19 @@ interface MessageRow {
   reply_preview?: unknown;
 }
 
-interface ChatNavigation {
-  dashboard_port: number;
+interface ChatModelState {
+  generationId: number;
+  defaultRuntime: string;
+  sessionOverride: string;
+  sessionSelection: { modelRef: string; reasoningEffort: string };
+  runtimes: ChatModelRuntime[];
+}
+
+interface WebShellState {
+  status: "needs_setup" | "starting" | "ready";
+  configured: boolean;
+  chatReady: boolean;
+  settingsPath: string;
 }
 
 export interface ThinkingBlock {
@@ -151,6 +165,9 @@ const LazyTraceMotionShowcase = lazy(() =>
 const LazyDrawerIslandShowcase = lazy(() =>
   import("./drawer-island-showcase").then(({ DrawerIslandShowcase }) => ({ default: DrawerIslandShowcase })),
 );
+const LazyModelExperienceShowcase = lazy(() =>
+  import("./model-experience-showcase").then(({ ModelExperienceShowcase }) => ({ default: ModelExperienceShowcase })),
+);
 const LazySettingsApp = lazy(() =>
   import("./settings-app").then(({ SettingsApp }) => ({ default: SettingsApp })),
 );
@@ -172,6 +189,9 @@ function isAbortError(error: unknown): boolean {
 }
 
 function errorMessage(error: unknown): string {
+  if (error instanceof TypeError && error.message === "Failed to fetch") {
+    return "无法连接 Akashic。请确认服务仍在运行，然后重试。";
+  }
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -244,13 +264,60 @@ function uploadedFileResponse(payload: unknown): UploadedFile {
   return body as unknown as UploadedFile;
 }
 
-function chatNavigation(payload: unknown): ChatNavigation {
+function webShellState(payload: unknown): WebShellState {
   const body = recordValue(payload);
-  const port = body?.dashboard_port;
-  if (!Number.isInteger(port) || Number(port) < 1 || Number(port) > 65535) {
-    throw new Error("/api/chat/navigation 返回了无效端口");
+  if (!body
+    || (body.status !== "needs_setup" && body.status !== "starting" && body.status !== "ready")
+    || typeof body.configured !== "boolean"
+    || typeof body.chatReady !== "boolean"
+    || typeof body.settingsPath !== "string") {
+    throw new Error("/api/shell/state 返回了无效状态");
   }
-  return { dashboard_port: Number(port) };
+  return body as unknown as WebShellState;
+}
+
+function chatModelState(payload: unknown): ChatModelState {
+  const body = recordValue(payload);
+  if (!body || !Number.isInteger(body.generationId)
+    || typeof body.defaultRuntime !== "string"
+    || typeof body.sessionOverride !== "string"
+    || !recordValue(body.sessionSelection)
+    || !Array.isArray(body.runtimes)) {
+    throw new Error("/api/chat/models 返回了无效模型注册表");
+  }
+  const runtimes = body.runtimes.map((value) => {
+    const item = recordValue(value);
+    if (!item || typeof item.id !== "string" || typeof item.provider !== "string"
+      || typeof item.model !== "string" || typeof item.sourceId !== "string"
+      || typeof item.sourceName !== "string" || typeof item.reasoningEffort !== "string"
+      || !Array.isArray(item.supportedReasoningEfforts)
+      || !item.supportedReasoningEfforts.every((effort) => typeof effort === "string")
+      || !Array.isArray(item.roles)
+      || !item.roles.every((role) => typeof role === "string")) {
+      throw new Error("/api/chat/models 返回了无效 runtime");
+    }
+    return {
+      id: item.id,
+      provider: item.provider,
+      model: item.model,
+      sourceId: item.sourceId,
+      sourceName: item.sourceName,
+      reasoningEffort: item.reasoningEffort,
+      supportedReasoningEfforts: item.supportedReasoningEfforts as string[],
+      roles: item.roles as string[],
+    };
+  });
+  const selection = recordValue(body.sessionSelection);
+  if (!selection || typeof selection.modelRef !== "string" || typeof selection.reasoningEffort !== "string") {
+    throw new Error("/api/chat/models 返回了无效会话模型选择");
+  }
+  return {
+    generationId: Number(body.generationId),
+    defaultRuntime: body.defaultRuntime,
+    sessionOverride: body.sessionOverride,
+    sessionSelection: { modelRef: selection.modelRef, reasoningEffort: selection.reasoningEffort },
+    runtimes,
+  };
 }
 
 function App() {
@@ -265,9 +332,13 @@ function App() {
   const [status, setStatus] = useState<ChatStatus>("idle");
   const [error, setError] = useState("");
   const [mobilePairingOpen, setMobilePairingOpen] = useState(false);
-  const [dashboardPort, setDashboardPort] = useState<number | null>(null);
+  const [shellState, setShellState] = useState<WebShellState | null>(null);
   const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState("");
+  const [modelState, setModelState] = useState<ChatModelState | null>(null);
+  const [selectedRuntimeId, setSelectedRuntimeId] = useState("");
+  const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("");
+  const [modelSelectionDirty, setModelSelectionDirty] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const messageElementsRef = useRef(new Map<string, HTMLDivElement>());
   const activeSessionRef = useRef("");
@@ -275,6 +346,7 @@ function App() {
   const sessionsRequestRef = useRef<AbortController | null>(null);
   const messagesRequestRef = useRef<AbortController | null>(null);
   const sendRequestRef = useRef<AbortController | null>(null);
+  const chatReady = shellState?.chatReady === true;
 
   useEffect(() => {
     activeSessionRef.current = activeSessionId;
@@ -320,6 +392,32 @@ function App() {
   const loadSessionsSafely = useCallback(() => loadSessions().catch((error: unknown) => reportError(error)), [loadSessions, reportError]);
   const loadMessagesSafely = useCallback((sessionId: string) => loadMessages(sessionId).catch((error: unknown) => reportError(error)), [loadMessages, reportError]);
 
+  const loadModels = useCallback(async (sessionId: string) => {
+    const query = sessionId ? `?session_key=${encodeURIComponent(sessionId)}` : "";
+    const next = chatModelState(await fetchChatJson<unknown>(`/api/chat/models${query}`));
+    setModelState(next);
+    setSelectedRuntimeId(next.sessionOverride);
+    setSelectedReasoningEffort(next.sessionSelection.reasoningEffort);
+    setModelSelectionDirty(false);
+  }, []);
+
+  useEffect(() => {
+    const handleModelsChanged = (event: MessageEvent<unknown>): void => {
+      const payload = event.data;
+      if (
+        event.origin !== window.location.origin
+        || event.source !== window.parent
+        || typeof payload !== "object"
+        || payload === null
+        || !("type" in payload)
+        || payload.type !== "akashic.models.changed"
+      ) return;
+      void loadModels(activeSessionRef.current).catch((error: unknown) => reportError(error));
+    };
+    window.addEventListener("message", handleModelsChanged);
+    return () => window.removeEventListener("message", handleModelsChanged);
+  }, [loadModels, reportError]);
+
   const connect = useCallback(() => {
     const current = socketRef.current;
     if (current && current.readyState <= WebSocket.OPEN) {
@@ -359,10 +457,27 @@ function App() {
   }, [loadMessagesSafely, loadSessionsSafely, reportError]);
 
   useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      try {
+        const next = webShellState(await fetchChatJson<unknown>("/api/shell/state"));
+        if (active) setShellState(next);
+      } catch (stateError) {
+        if (active) reportError(stateError);
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 1200);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [reportError]);
+
+  useEffect(() => {
+    if (!chatReady) return;
     void loadSessionsSafely();
-    void fetchChatJson<unknown>("/api/chat/navigation")
-      .then((payload) => setDashboardPort(chatNavigation(payload).dashboard_port))
-      .catch((error: unknown) => reportError(error));
+    void loadModels("").catch((error: unknown) => reportError(error));
     const socket = connect();
     return () => {
       sessionsRequestRef.current?.abort();
@@ -371,15 +486,16 @@ function App() {
       if (socketRef.current === socket) socketRef.current = null;
       socket.close(1000, "component unmounted");
     };
-  }, [connect, loadSessionsSafely, reportError]);
+  }, [chatReady, connect, loadModels, loadSessionsSafely, reportError]);
 
   useEffect(() => {
+    if (!chatReady) return;
     const controller = new AbortController();
     void loadWebPluginCatalog(controller.signal).catch((error: unknown) => {
       if (!isAbortError(error)) reportError(error);
     });
     return () => controller.abort();
-  }, [reportError]);
+  }, [chatReady, reportError]);
 
   const ensureSession = useCallback(async () => {
     if (activeSessionRef.current) return activeSessionRef.current;
@@ -429,7 +545,12 @@ function App() {
         media: media.map((item) => item.upload_path),
       };
       if (reply) payload.reply_to_message_id = reply.id;
+      if (modelSelectionDirty) {
+        payload.model_runtime_id = selectedRuntimeId;
+        payload.model_reasoning_effort = selectedReasoningEffort;
+      }
       await sendWhenOpen(connect(), payload, controller.signal);
+      setModelSelectionDirty(false);
       setReplyTarget(null);
     } catch (error) {
       if (isAbortError(error)) throw error;
@@ -440,7 +561,7 @@ function App() {
     } finally {
       if (sendRequestRef.current === controller) sendRequestRef.current = null;
     }
-  }, [connect, ensureSession, replyTarget, reportError]);
+  }, [connect, ensureSession, modelSelectionDirty, replyTarget, reportError, selectedReasoningEffort, selectedRuntimeId]);
 
   const stopTurn = useCallback(() => {
     if (!activeSessionId) return;
@@ -461,11 +582,13 @@ function App() {
     setMessages([]);
     setReplyTarget(null);
     setStatus("idle");
-  }, []);
+    setSelectedRuntimeId("");
+    setSelectedReasoningEffort("");
+    setModelSelectionDirty(false);
+    void loadModels("").catch((error: unknown) => reportError(error));
+  }, [loadModels, reportError]);
 
-  const dashboardHref = dashboardPort === null
-    ? undefined
-    : `${window.location.protocol}//${window.location.hostname}:${dashboardPort}`;
+  const dashboardHref = chatReady ? "/" : undefined;
 
   return (
     <main className={`chat-shell ${isEmbeddedRuntime ? "embedded-runtime" : ""}`}>
@@ -482,6 +605,13 @@ function App() {
           destinationHeading={isEmbeddedShell ? undefined : "工作空间"}
           sessionHeading="最近会话"
           destinations={isEmbeddedShell ? [] : [
+            {
+              id: "models",
+              icon: <SlidersHorizontal size={20} />,
+              label: "模型与认证",
+              description: "Provider · API Key · 推理强度",
+              href: "/settings",
+            },
             {
               id: "runtime",
               icon: <BookOpenText size={20} />,
@@ -515,7 +645,11 @@ function App() {
               activeSessionRef.current = session.key;
               setActiveSessionId(session.key);
               setReplyTarget(null);
+              setModelState(null);
+              setSelectedRuntimeId("");
+              setModelSelectionDirty(false);
               void loadMessagesSafely(session.key);
+              void loadModels(session.key).catch((error: unknown) => reportError(error));
             },
           }))}
           sessionAfterContent={surface === "chat" && activeSessionId ? (
@@ -558,7 +692,25 @@ function App() {
           <ConversationContent className={messages.length ? "conversation-content" : "conversation-content empty"}>
             {messages.length === 0 ? (
               <ConversationEmptyState className="home-state">
-                <h1>今天有什么计划?</h1>
+                {shellState?.status === "needs_setup" ? (
+                  <div className="model-connection-state">
+                    <span>首次使用</span>
+                    <h1>先连接一个模型</h1>
+                    <p>绑定 Codex、OpenCode 或自己的 API Key 后，就可以在这里直接对话。</p>
+                    <a href="/settings">连接模型</a>
+                  </div>
+                ) : shellState?.status === "starting" ? (
+                  <div className="model-connection-state">
+                    <span>正在启动</span>
+                    <h1>模型已保存，Akashic 正在准备对话</h1>
+                    <p>这个页面会自动恢复，不需要切换端口或刷新浏览器。</p>
+                    <a href="/settings">查看模型设置</a>
+                  </div>
+                ) : shellState === null ? (
+                  <h1>正在连接 Akashic…</h1>
+                ) : (
+                  <h1>今天有什么计划?</h1>
+                )}
               </ConversationEmptyState>
             ) : (
               <MessageRendererErrorBoundary>
@@ -639,6 +791,18 @@ function App() {
         </Conversation>
 
         <div className={`composer-wrap ${messages.length === 0 ? "home" : ""}`}>
+            {modelState && <ModelCapsulePicker
+              defaultRuntime={modelState.defaultRuntime}
+              runtimes={modelState.runtimes}
+              selectedRuntimeId={selectedRuntimeId}
+              selectedEffort={selectedReasoningEffort}
+              disabled={status !== "idle"}
+              onChange={(runtimeId, effort) => {
+                setSelectedRuntimeId(runtimeId);
+                setSelectedReasoningEffort(effort);
+                setModelSelectionDirty(true);
+              }}
+            />}
             <PromptInput
               className="composer"
               multiple
@@ -656,7 +820,8 @@ function App() {
                 <PromptInputTextarea
                   value={input}
                   onChange={(event) => setInput(event.target.value)}
-                placeholder="有问题，尽管问"
+                  disabled={!chatReady}
+                  placeholder={chatReady ? "有问题，尽管问" : "连接模型后即可开始对话"}
               />
             </PromptInputBody>
             <PromptInputFooter>
@@ -671,11 +836,18 @@ function App() {
                 </PromptInputActionMenu>
               </PromptInputTools>
               <PromptInputTools>
-                <ComposerSubmit input={input} status={status} onStop={stopTurn} />
+                <ComposerSubmit input={input} status={status} onStop={stopTurn} disabled={!chatReady} />
               </PromptInputTools>
             </PromptInputFooter>
           </PromptInput>
-          {error && <div className="error-line">{error}</div>}
+          {error && <div className="error-line" role="alert"><span>{error}</span><MaterialButton
+            variant="danger"
+            onClick={() => {
+              setError("");
+              void loadSessionsSafely();
+              if (shellState?.chatReady) void loadModels(activeSessionRef.current).catch((reason: unknown) => reportError(reason));
+            }}
+          >重试</MaterialButton></div>}
         </div>
       </section>}
       <MobilePairingDialog open={mobilePairingOpen} onOpenChange={setMobilePairingOpen} />
@@ -762,10 +934,12 @@ function ComposerSubmit({
   input,
   status,
   onStop,
+  disabled = false,
 }: {
   input: string;
   status: ChatStatus;
   onStop: () => void;
+  disabled?: boolean;
 }) {
   const attachments = usePromptInputAttachments();
   const isGenerating = status === "submitted" || status === "streaming";
@@ -775,7 +949,7 @@ function ComposerSubmit({
       label={isGenerating ? "中止回答" : "发送消息"}
       type={isGenerating ? "button" : "submit"}
       onClick={isGenerating ? onStop : undefined}
-      disabled={status === "idle" && !input.trim() && attachments.files.length === 0}
+      disabled={disabled || (status === "idle" && !input.trim() && attachments.files.length === 0)}
     />
   );
 }
@@ -1332,7 +1506,7 @@ initializeTheme();
 startCrossPortThemeSync();
 if (isEmbeddedShell) {
   const parentOrigins = new Set([
-    `${window.location.protocol}//${window.location.hostname}:2236`,
+    window.location.origin,
     `${window.location.protocol}//${window.location.hostname}:5173`,
   ]);
   window.addEventListener("message", (event: MessageEvent<unknown>) => {
@@ -1346,7 +1520,8 @@ const isMobileShowcase = preview === "mobile";
 const isSharedChatShowcase = preview === "chat";
 const isTraceMotionShowcase = preview === "trace-motion";
 const isDrawerIslandShowcase = preview === "drawer-islands";
-const rootApp = window.location.port === "6321"
+const isModelExperienceShowcase = preview === "model-experience";
+const rootApp = window.location.pathname === "/settings" || window.location.pathname.startsWith("/settings/")
   ? <LazySettingsApp />
   : isMobileShowcase
     ? <LazyMobileShowcase />
@@ -1356,6 +1531,8 @@ const rootApp = window.location.port === "6321"
         ? <LazyTraceMotionShowcase />
       : isDrawerIslandShowcase
         ? <LazyDrawerIslandShowcase />
+      : isModelExperienceShowcase
+        ? <LazyModelExperienceShowcase />
     : <App />;
 
 createRoot(document.getElementById("root")!).render(
