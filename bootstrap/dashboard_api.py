@@ -22,7 +22,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from agent.plugins.manifest import (
     load_package_manifest,
     load_plugin_manifest,
@@ -116,8 +116,9 @@ def _install_dashboard_access_log_filter() -> None:
 
 
 class SessionUpdatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     metadata: dict[str, Any] | None = None
-    last_consolidated: int | None = None
     last_user_at: str | None = None
     last_proactive_at: str | None = None
 
@@ -125,11 +126,6 @@ class SessionUpdatePayload(BaseModel):
 class SessionBatchDeletePayload(BaseModel):
     keys: list[str]
     cascade: bool = True
-
-
-class SessionConsolidatePayload(BaseModel):
-    archive_all: bool = False
-    force: bool = True
 
 
 class MessageUpdatePayload(BaseModel):
@@ -154,17 +150,6 @@ class MemoryUpdatePayload(BaseModel):
 
 class MemoryBatchDeletePayload(BaseModel):
     ids: list[str]
-
-
-class ManualConsolidator(Protocol):
-    async def trigger_memory_consolidation(
-        self,
-        session_key: str,
-        *,
-        archive_all: bool = False,
-        force: bool = False,
-        drain_backlog: bool = True,
-    ) -> bool: ...
 
 
 class ManualMemoryOptimizer(Protocol):
@@ -738,7 +723,6 @@ async def _close_dashboard_value(value: object) -> None:
 def create_dashboard_app(
     workspace: Path,
     *,
-    manual_consolidator: ManualConsolidator | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
@@ -934,48 +918,6 @@ def create_dashboard_app(
             "page_size": max(1, min(page_size, 200)),
         }
 
-    @app.post("/api/dashboard/sessions/{session_key:path}/consolidate")
-    async def consolidate_session(
-        session_key: str,
-        payload: SessionConsolidatePayload | None = None,
-    ) -> dict[str, Any]:
-        archive_all = bool(payload.archive_all) if payload is not None else False
-        force = bool(payload.force) if payload is not None else True
-        if manual_consolidator is None:
-            raise HTTPException(status_code=503, detail="manual consolidation 未启用")
-        if not store.session_exists(session_key):
-            raise HTTPException(status_code=404, detail="session 不存在")
-        logger.info(
-            "Manual memory consolidation requested: session=%s archive_all=%s force=%s",
-            session_key,
-            archive_all,
-            force,
-        )
-        try:
-            triggered = await manual_consolidator.trigger_memory_consolidation(
-                session_key,
-                archive_all=archive_all,
-                force=force,
-            )
-        except TimeoutError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        meta = store.get_session_meta(session_key) or {"key": session_key}
-        meta["message_count"] = store.count_messages(session_key)
-        logger.info(
-            "Manual memory consolidation response: session=%s triggered=%s last_consolidated=%s message_count=%s",
-            session_key,
-            triggered,
-            meta.get("last_consolidated"),
-            meta.get("message_count"),
-        )
-        return {
-            "session_key": session_key,
-            "archive_all": archive_all,
-            "force": force,
-            "triggered": triggered,
-            "session": meta,
-        }
-
     async def _run_memory_optimizer() -> None:
         nonlocal optimizer_last_error, optimizer_last_status
         assert manual_memory_optimizer is not None
@@ -1062,7 +1004,6 @@ def create_dashboard_app(
         meta = store.update_session(
             session_key,
             metadata=payload.metadata,
-            last_consolidated=payload.last_consolidated,
             last_user_at=payload.last_user_at,
             last_proactive_at=payload.last_proactive_at,
         )
@@ -1348,7 +1289,6 @@ def run_dashboard_api(
     workspace: Path,
     host: str = "0.0.0.0",
     port: int = 2236,
-    manual_consolidator: ManualConsolidator | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
@@ -1358,7 +1298,6 @@ def run_dashboard_api(
             workspace=workspace,
             host=host,
             port=port,
-            manual_consolidator=manual_consolidator,
             manual_memory_optimizer=manual_memory_optimizer,
             memory_admin=memory_admin,
             memory_store=memory_store,
@@ -1372,7 +1311,6 @@ def _build_dashboard_uvicorn_config(
     workspace: Path,
     host: str,
     port: int,
-    manual_consolidator: ManualConsolidator | None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
@@ -1381,7 +1319,6 @@ def _build_dashboard_uvicorn_config(
     config = uvicorn.Config(
         create_dashboard_app(
             workspace,
-            manual_consolidator=manual_consolidator,
             manual_memory_optimizer=manual_memory_optimizer,
             memory_admin=memory_admin,
             memory_store=memory_store,
@@ -1400,7 +1337,6 @@ def build_dashboard_server(
     workspace: Path,
     host: str = "0.0.0.0",
     port: int = 2236,
-    manual_consolidator: ManualConsolidator | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
@@ -1410,7 +1346,6 @@ def build_dashboard_server(
         workspace=workspace,
         host=host,
         port=port,
-        manual_consolidator=manual_consolidator,
         manual_memory_optimizer=manual_memory_optimizer,
         memory_admin=memory_admin,
         memory_store=memory_store,

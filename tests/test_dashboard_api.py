@@ -144,7 +144,6 @@ def _seed_explicit_interaction(
         "mobile:review",
         created_at=timestamp,
         updated_at=timestamp,
-        last_consolidated=last_consolidated,
         metadata={},
         messages=[
             {
@@ -210,6 +209,52 @@ def _seed_explicit_interaction(
             },
         ],
     )
+    if last_consolidated:
+        legacy = rows[0]
+        store.persist_compaction(
+            session_key="mobile:review",
+            trigger="test",
+            summary="legacy checkpoint",
+            source_ref="test:legacy",
+            source_from_seq=int(legacy["seq"]),
+            consolidated_through_seq=int(legacy["seq"]),
+            source_message_ids=[str(legacy["id"])],
+            retained_tail=[],
+            model_runtime_id="test",
+            model="test",
+            context_window=100,
+            threshold_tokens=80,
+            hard_input_tokens=90,
+            keep_recent_tokens=10,
+            tokens_before=10,
+            tokens_after=5,
+            summary_usage={},
+            generation=2,
+            parent_generation=0,
+        )
+    if last_consolidated > 2:
+        interaction = rows[2]
+        store.persist_compaction(
+            session_key="mobile:review",
+            trigger="test",
+            summary="interaction checkpoint",
+            source_ref="test:interaction",
+            source_from_seq=int(interaction["seq"]),
+            consolidated_through_seq=int(interaction["seq"]),
+            source_message_ids=[str(interaction["id"])],
+            retained_tail=[],
+            model_runtime_id="test",
+            model="test",
+            context_window=100,
+            threshold_tokens=80,
+            hard_input_tokens=90,
+            keep_recent_tokens=10,
+            tokens_before=10,
+            tokens_after=5,
+            summary_usage={},
+            generation=last_consolidated,
+            parent_generation=2,
+        )
     store.close()
     return "turn-review", [str(row["id"]) for row in rows[2:6]]
 
@@ -265,26 +310,6 @@ async def test_dashboard_lifespan_exposes_unexpected_compile_failure(
             await asyncio.sleep(0)
 
 
-class _ManualConsolidator:
-    def __init__(self, *, result: bool = True, error: Exception | None = None) -> None:
-        self.result = result
-        self.error = error
-        self.calls: list[tuple[str, bool, bool]] = []
-
-    async def trigger_memory_consolidation(
-        self,
-        session_key: str,
-        *,
-        archive_all: bool = False,
-        force: bool = False,
-        drain_backlog: bool = True,
-    ) -> bool:
-        self.calls.append((session_key, archive_all, force))
-        if self.error is not None:
-            raise self.error
-        return self.result
-
-
 class _ManualMemoryOptimizer:
     def __init__(
         self,
@@ -326,7 +351,6 @@ def _seed_workspace(tmp_path) -> None:
     store.create_session(
         key="telegram:100",
         metadata={"title": "alpha room"},
-        last_consolidated=2,
         last_user_at="2026-04-19T10:00:00+08:00",
     )
     store.create_session(
@@ -545,71 +569,28 @@ def test_update_and_delete_session(tmp_path) -> None:
     with TestClient(create_dashboard_app(tmp_path)) as client:
         patch_resp = client.patch(
             "/api/dashboard/sessions/telegram:100",
-            json={"metadata": {"title": "patched"}, "last_consolidated": 9},
+            json={"metadata": {"title": "patched"}},
         )
         assert patch_resp.status_code == 200
         assert patch_resp.json()["metadata"]["title"] == "patched"
-        assert patch_resp.json()["last_consolidated"] == 9
+
+        retired_patch = client.patch(
+            "/api/dashboard/sessions/telegram:100",
+            json={"last_consolidated": 9},
+        )
+        assert retired_patch.status_code == 422
+        assert (
+            client.get("/api/dashboard/sessions/telegram:100").json()[
+                "last_consolidated"
+            ]
+            == 0
+        )
 
         delete_resp = client.delete("/api/dashboard/sessions/telegram:100")
         assert delete_resp.status_code == 200
 
         get_resp = client.get("/api/dashboard/sessions/telegram:100")
         assert get_resp.status_code == 404
-
-
-def test_manual_consolidate_session_uses_runtime_entrypoint(tmp_path) -> None:
-    _seed_workspace(tmp_path)
-    consolidator = _ManualConsolidator(result=True)
-    with TestClient(
-        create_dashboard_app(tmp_path, manual_consolidator=consolidator)
-    ) as client:
-        resp = client.post(
-            "/api/dashboard/sessions/telegram:100/consolidate",
-            json={"archive_all": True},
-        )
-
-        assert resp.status_code == 200
-        payload = resp.json()
-        assert payload["triggered"] is True
-        assert payload["archive_all"] is True
-        assert payload["force"] is True
-        assert payload["session"]["key"] == "telegram:100"
-        assert consolidator.calls == [("telegram:100", True, True)]
-
-
-def test_manual_consolidate_session_requires_existing_session(tmp_path) -> None:
-    _seed_workspace(tmp_path)
-    consolidator = _ManualConsolidator(result=True)
-    with TestClient(
-        create_dashboard_app(tmp_path, manual_consolidator=consolidator)
-    ) as client:
-        resp = client.post("/api/dashboard/sessions/missing/consolidate", json={})
-
-        assert resp.status_code == 404
-        assert consolidator.calls == []
-
-
-def test_manual_consolidate_session_reports_unavailable_runtime(tmp_path) -> None:
-    _seed_workspace(tmp_path)
-    with TestClient(create_dashboard_app(tmp_path)) as client:
-        resp = client.post("/api/dashboard/sessions/telegram:100/consolidate", json={})
-
-        assert resp.status_code == 503
-
-
-def test_manual_consolidate_session_reports_concurrency_timeout(tmp_path) -> None:
-    _seed_workspace(tmp_path)
-    with TestClient(
-        create_dashboard_app(
-            tmp_path,
-            manual_consolidator=_ManualConsolidator(error=TimeoutError("busy")),
-        )
-    ) as client:
-        resp = client.post("/api/dashboard/sessions/telegram:100/consolidate", json={})
-
-        assert resp.status_code == 409
-        assert resp.json()["detail"] == "busy"
 
 
 def test_manual_memory_optimizer_uses_runtime_entrypoint(tmp_path) -> None:

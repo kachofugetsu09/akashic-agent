@@ -370,11 +370,6 @@ class AppRuntime:
                 plugin_status=self._plugin_status,
                 plugin_promote=self._promote_plugin,
                 plugin_discard=self._discard_plugin,
-                consolidate=(
-                    self.agent_loop.trigger_memory_consolidation
-                    if self.config.app_server.enabled
-                    else None
-                ),
                 workspace_token=workspace_token,
                 restart_coordinator=self.restart_coordinator,
                 boot_id=self.readiness.boot_id if self.readiness else None,
@@ -545,7 +540,6 @@ class AppRuntime:
                 workspace=self.workspace,
                 host=self.dashboard_host,
                 port=self.dashboard_port,
-                manual_consolidator=self.agent_loop,
                 manual_memory_optimizer=self._memory_optimizer,
                 memory_admin=self.memory_runtime.engine,
                 memory_store=self.memory_runtime.markdown.store,

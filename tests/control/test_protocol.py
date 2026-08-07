@@ -315,19 +315,10 @@ async def test_failed_token_does_not_advance_handshake_state(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_thread_consolidation_returns_operation_and_notification(
-    tmp_path: Path,
-) -> None:
+async def test_thread_consolidation_method_is_retired(tmp_path: Path) -> None:
     sessions = SessionManager(tmp_path)
     runtime = ConversationRuntime(sessions.control_store, _echo)
-    consolidated: list[str] = []
-
-    async def consolidate(thread_id: str) -> bool:
-        consolidated.append(thread_id)
-        return True
-
-    service = ControlService(runtime, sessions, tmp_path, consolidate=consolidate)
-    thread = service.start_thread({})
+    service = ControlService(runtime, sessions, tmp_path)
     sent: list[dict[str, object]] = []
 
     async def send(message: dict[str, object]) -> None:
@@ -341,33 +332,14 @@ async def test_thread_consolidation_returns_operation_and_notification(
     await router.handle_line(
         (
             '{"jsonrpc":"2.0","id":2,"method":"thread/consolidate/start","params":'
-            f'{{"threadId":"{thread["id"]}"}}}}\n'
+            '{}}\n'
         ).encode()
     )
     response = next(item for item in sent if item.get("id") == 2)
-    operation = response["result"]
-    assert isinstance(operation, dict)
-    assert operation["status"] == "in_progress"
-    await asyncio.wait_for(_wait_method(sent, "operation/completed"), 1)
-    completed = next(
-        item for item in sent if item.get("method") == "operation/completed"
-    )
-    assert completed["params"] == {
-        "operation": {
-            "id": operation["id"],
-            "threadId": thread["id"],
-            "status": "completed",
-            "result": {"consolidated": True},
-        }
+    assert response["error"] == {
+        "code": -32601,
+        "message": "Method not found: thread/consolidate/start",
     }
-    assert consolidated == [thread["id"]]
-    await router.handle_line(
-        (
-            '{"jsonrpc":"2.0","id":3,"method":"thread/delete","params":'
-            f'{{"threadId":"{thread["id"]}"}}}}\n'
-        ).encode()
-    )
-    assert sent[-1]["method"] == "thread/deleted"
     await router.close()
     await runtime.shutdown()
     sessions.close()
@@ -496,7 +468,6 @@ async def test_control_service_attaches_utc_to_legacy_naive_session_times(
         "legacy:1",
         created_at="2026-07-14T08:00:00",
         updated_at="2026-07-14T09:30:00",
-        last_consolidated=0,
         metadata={},
     )
 
