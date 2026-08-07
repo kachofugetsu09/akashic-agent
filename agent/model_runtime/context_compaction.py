@@ -140,6 +140,7 @@ class ContextCompaction:
     model_runtime_id: str = ""
     model: str = ""
     selection_digest: str = ""
+    selected_source_messages: tuple[dict[str, Any], ...] = ()
 
     @property
     def committable(self) -> bool:
@@ -246,6 +247,7 @@ class ContextCompactor:
         fallback_provider: "LLMProvider | None" = None,
         fallback_model: str | None = None,
         receipt_loader: Callable[[str], Mapping[str, object] | None] | None = None,
+        chat_call: Callable[..., Any] | None = None,
     ) -> None:
         self._provider = provider
         self._model = model
@@ -278,6 +280,7 @@ class ContextCompactor:
         self._fallback_provider = fallback_provider
         self._fallback_model = str(fallback_model or "").strip()
         self._receipt_loader = receipt_loader
+        self._chat_call = chat_call
         self._segments = _copy_segments(payload_segments)
         self._committed_units = list(self._segments.committed_units)
         self._active_compaction = active_compaction
@@ -286,7 +289,7 @@ class ContextCompactor:
             for batch in self._segments.active_batches
         ]
         self._current_query = (
-            _bounded_text(current_query, 8000)
+            _text_value(current_query)
             if current_query is not None
             else _find_current_query(self._segments.current_anchor)
         )
@@ -310,6 +313,33 @@ class ContextCompactor:
 
     def checkpoint_payload(self) -> dict[str, object] | None:
         return self._compaction.to_payload() if self._compaction is not None else None
+
+    def set_pending(self, messages: list[dict[str, Any]]) -> None:
+        """Project newly appended active messages into the pending segment."""
+
+        base = _pending_start(self._segments)
+        expected = self._segments.flatten()[:base]
+        if messages[:base] != expected:
+            raise ContextCompactionError(
+                "context_compaction_payload_segments_prefix_mismatch"
+            )
+        self._segments = ContextPayloadSegments(
+            prefix=self._segments.prefix,
+            committed_units=self._segments.committed_units,
+            current_anchor=self._segments.current_anchor,
+            temporary_summary=self._segments.temporary_summary,
+            active_batches=self._segments.active_batches,
+            pending=tuple(_copy_message(message) for message in messages[base:]),
+        )
+
+    def acknowledge_committed_checkpoint(self, generation: int) -> None:
+        """Advance the in-turn Store head after a committed checkpoint."""
+
+        if not isinstance(generation, int) or isinstance(generation, bool) or generation <= 0:
+            raise ValueError("compaction generation 必须是正整数")
+        self._ledger_parent_generation = generation
+        self._next_generation = generation + 1
+        self._committed_checkpoint = None
 
     @property
     def committed_checkpoint(self) -> ContextCompaction | None:
@@ -345,7 +375,7 @@ class ContextCompactor:
             current_anchor=self._segments.current_anchor,
             temporary_summary=self._segments.temporary_summary,
             active_batches=tuple(self._completed_batches),
-            pending=self._segments.pending,
+            pending=(),
         )
 
     async def prepare(
@@ -356,6 +386,7 @@ class ContextCompactor:
         tools: list[dict],
         trigger: CompactionTrigger = "soft_limit",
         force: bool = False,
+        max_output_tokens: int | None = None,
     ) -> PreparedQueryContext:
         """Run the one payload gate before the next provider request."""
 
@@ -370,7 +401,12 @@ class ContextCompactor:
             )
         estimated, quality = self._meter.estimate(self._provider, messages, tools)
         soft_limit = math.floor(self._provider.context_window * self._trigger_percent)
-        hard_limit = hard_input_limit(self._provider, self._max_output_tokens)
+        request_output_tokens = (
+            self._max_output_tokens
+            if max_output_tokens is None
+            else _validate_output_budget(self._provider, max_output_tokens)
+        )
+        hard_limit = hard_input_limit(self._provider, request_output_tokens)
         boundary_hit = estimated >= soft_limit or estimated >= hard_limit
         if not force and not boundary_hit:
             return PreparedQueryContext(pending_start, estimated, quality, False, None)
@@ -379,15 +415,20 @@ class ContextCompactor:
         candidates = self._candidate_units()
         if not candidates:
             raise ContextCompactionError("context_compaction_no_closed_prefix")
-        committed_candidates = [
-            unit for unit in candidates if _is_persistable_unit(unit)
+        selected_all, retained_all = self._select_units(candidates)
+        selected_committed = [
+            unit for unit in selected_all if _is_persistable_unit(unit)
         ]
-        active_candidates = [
-            unit for unit in candidates if not _is_persistable_unit(unit)
+        retained_committed = [
+            unit for unit in retained_all if _is_persistable_unit(unit)
+        ]
+        selected_active = [
+            unit for unit in selected_all if not _is_persistable_unit(unit)
+        ]
+        retained_active = [
+            unit for unit in retained_all if not _is_persistable_unit(unit)
         ]
         prefix, current_anchor, previous_temp, pending = self._split_segments()
-        retained_committed = committed_candidates
-        retained_active = active_candidates
         current_prefix = [_copy_message(message) for message in prefix]
         temporary_summary = [
             _copy_message(message) for message in previous_temp
@@ -395,74 +436,72 @@ class ContextCompactor:
         committed_checkpoint: ContextCompaction | None = None
         committed_summary_usage: ModelUsage | None = None
         active_summary_usage: ModelUsage | None = None
-        if committed_candidates:
-            try:
-                selected_committed, retained_committed = self._select_units(
-                    committed_candidates
+        if selected_committed:
+            source_ref = _compaction_source_ref(
+                self._scope_id,
+                self._ledger_generation(),
+            )
+            selection_digest = _selection_digest(
+                selected_committed,
+                retained_committed,
+                provider=self._provider,
+                model=self._model,
+                scope_id=self._scope_id,
+                soft_limit_tokens=soft_limit,
+                hard_input_tokens=hard_limit,
+                keep_recent_tokens=self._keep_recent_tokens,
+            )
+            receipt = (
+                self._receipt_loader(source_ref)
+                if self._receipt_loader is not None
+                else None
+            )
+            if receipt is not None:
+                summary, committed_summary_usage, committed_checkpoint = (
+                    _checkpoint_from_receipt(
+                        receipt,
+                        source_ref=source_ref,
+                        selection_digest=selection_digest,
+                    )
                 )
-            except ContextCompactionError:
-                selected_committed = []
-            if selected_committed:
-                source_ref = _compaction_source_ref(
-                    self._scope_id,
-                    self._ledger_generation(),
-                )
-                selection_digest = _selection_digest(
+            else:
+                (
+                    summary,
+                    committed_summary_usage,
+                    summary_runtime_id,
+                    summary_model,
+                ) = await self._summarize(
                     selected_committed,
-                    retained_committed,
-                    provider=self._provider,
-                    model=self._model,
-                    scope_id=self._scope_id,
+                    include_temporary=False,
+                )
+                committed_checkpoint = _build_checkpoint(
+                    summary=summary,
+                    generation=self._ledger_generation(),
+                    parent_generation=self._ledger_parent(),
+                    trigger=trigger,
+                    context_window=self._provider.context_window,
                     soft_limit_tokens=soft_limit,
                     hard_input_tokens=hard_limit,
                     keep_recent_tokens=self._keep_recent_tokens,
+                    estimated_tokens_before=estimated,
+                    estimated_tokens_after=0,
+                    selected=selected_committed,
+                    retained=retained_committed,
+                    summary_usage=committed_summary_usage,
+                    source_ref=source_ref,
+                    model_runtime_id=summary_runtime_id,
+                    model=summary_model,
+                    selection_digest=selection_digest,
                 )
-                receipt = (
-                    self._receipt_loader(source_ref)
-                    if self._receipt_loader is not None
-                    else None
-                )
-                if receipt is not None:
-                    summary, committed_summary_usage, committed_checkpoint = (
-                        _checkpoint_from_receipt(
-                            receipt,
-                            source_ref=source_ref,
-                            selection_digest=selection_digest,
-                        )
-                    )
-                else:
-                    summary, committed_summary_usage = await self._summarize(
-                        selected_committed,
-                        include_temporary=False,
-                    )
-                    committed_checkpoint = _build_checkpoint(
-                        summary=summary,
-                        generation=self._ledger_generation(),
-                        parent_generation=self._ledger_parent(),
-                        trigger=trigger,
-                        context_window=self._provider.context_window,
-                        soft_limit_tokens=soft_limit,
-                        hard_input_tokens=hard_limit,
-                        keep_recent_tokens=self._keep_recent_tokens,
-                        estimated_tokens_before=estimated,
-                        estimated_tokens_after=0,
-                        selected=selected_committed,
-                        retained=retained_committed,
-                        summary_usage=committed_summary_usage,
-                        source_ref=source_ref,
-                        model_runtime_id=_provider_runtime_id(self._provider),
-                        model=self._model,
-                        selection_digest=selection_digest,
-                    )
-                current_prefix = [
-                    *_without_previous_compaction(current_prefix),
-                    *build_compaction_messages(
-                        summary,
-                        generation=self._ledger_generation(),
-                        source_ref=source_ref,
-                    ),
-                ]
-                self._persistent_summary = summary
+            current_prefix = [
+                *_without_previous_compaction(current_prefix),
+                *build_compaction_messages(
+                    summary,
+                    generation=self._ledger_generation(),
+                    source_ref=source_ref,
+                ),
+            ]
+            self._persistent_summary = summary
         rebuilt = _flatten_projection(
             prefix=current_prefix,
             committed=retained_committed,
@@ -475,18 +514,19 @@ class ContextCompactor:
 
         # 3. If the committed checkpoint is not enough, compact only closed active batches.
         temporary_checkpoint: ContextCompaction | None = None
-        if (
-            after >= soft_limit
-            or after >= hard_limit
-            or (force and committed_checkpoint is None and bool(active_candidates))
-        ):
-            if not active_candidates:
-                raise ContextCompactionError(
-                    "context_compaction_insufficient "
-                    f"estimated={after} soft_limit={soft_limit} hard_limit={hard_limit}"
-                )
-            selected_active, retained_active = self._select_units(active_candidates)
-            active_summary, active_usage = await self._summarize(
+        refresh_temporary = bool(selected_active) or (
+            bool(previous_temp) and bool(selected_committed)
+        )
+        if refresh_temporary:
+            # Temporary compaction replaces the visible persistent block; keep the
+            # persistent summary internally for the next update.
+            current_prefix = _without_previous_compaction(current_prefix)
+            (
+                active_summary,
+                active_usage,
+                active_runtime_id,
+                active_model,
+            ) = await self._summarize(
                 selected_active,
                 include_temporary=True,
             )
@@ -521,8 +561,8 @@ class ContextCompactor:
                 retained=retained_active,
                 summary_usage=active_usage,
                 source_ref=_temporary_source_ref(self._scope_id),
-                model_runtime_id=_provider_runtime_id(self._provider),
-                model=self._model,
+                model_runtime_id=active_runtime_id,
+                model=active_model,
                 selection_digest=_selection_digest(
                     selected_active,
                     retained_active,
@@ -533,6 +573,11 @@ class ContextCompactor:
                     hard_input_tokens=hard_limit,
                     keep_recent_tokens=self._keep_recent_tokens,
                 ),
+            )
+        elif after >= soft_limit or after >= hard_limit:
+            raise ContextCompactionError(
+                "context_compaction_insufficient "
+                f"estimated={after} soft_limit={soft_limit} hard_limit={hard_limit}"
             )
         if after >= soft_limit or after >= hard_limit:
             raise ContextCompactionError(
@@ -660,7 +705,7 @@ class ContextCompactor:
         selected: Sequence[CommittedContextUnit],
         *,
         include_temporary: bool,
-    ) -> tuple[str, ModelUsage | None]:
+    ) -> tuple[str, ModelUsage | None, str, str]:
         sections = [_SUMMARY_PROMPT]
         if include_temporary:
             sections.extend(["\n[Current user query]\n", self._current_query])
@@ -690,13 +735,17 @@ class ContextCompactor:
         for provider, model in providers:
             try:
                 summary_input = [{"role": "user", "content": "".join(sections)}]
-                response = await provider.chat(
-                    messages=summary_input,
-                    tools=[],
-                    model=model,
-                    max_tokens=_summary_output_limit(provider, summary_input),
-                    disable_thinking=True,
-                )
+                request = {
+                    "messages": summary_input,
+                    "tools": [],
+                    "model": model,
+                    "max_tokens": _summary_output_limit(provider, summary_input),
+                    "disable_thinking": True,
+                }
+                if self._chat_call is not None:
+                    response = await self._chat_call(provider=provider, **request)
+                else:
+                    response = await provider.chat(**request)
             except Exception as exc:
                 failures.append(f"{type(exc).__name__}: {exc}")
                 continue
@@ -704,7 +753,7 @@ class ContextCompactor:
             if response.tool_calls or not _valid_summary(summary):
                 failures.append("summary response failed Pi heading validation")
                 continue
-            return summary, response.usage
+            return summary, response.usage, _provider_runtime_id(provider), model
         raise ContextCompactionError(
             "context_compaction_summary_failed: " + "; ".join(failures)
         )
@@ -770,12 +819,12 @@ def _summary_output_limit(
 ) -> int:
     estimated_input = provider.estimate_context_tokens(summary_input, [])
     available = int(provider.context_window) - estimated_input
-    if available <= 0:
+    if available <= 1:
         raise ContextCompactionError(
             "context_compaction_summary_input_exceeds_window "
             f"estimated={estimated_input} window={provider.context_window}"
         )
-    return max(1, min(SUMMARY_MAX_TOKENS, available))
+    return max(1, min(SUMMARY_MAX_TOKENS, available - 1))
 
 
 def _copy_segments(segments: ContextPayloadSegments) -> ContextPayloadSegments:
@@ -886,6 +935,11 @@ def _build_checkpoint(
         for unit_index, unit in enumerate(retained)
         for item in _retained_tail_payload(unit, unit_index=unit_index)
     )
+    selected_source_messages = tuple(
+        item
+        for unit_index, unit in enumerate(selected)
+        for item in _retained_tail_payload(unit, unit_index=unit_index)
+    )
     return ContextCompaction(
         summary=summary,
         generation=generation,
@@ -906,6 +960,7 @@ def _build_checkpoint(
         model_runtime_id=model_runtime_id,
         model=model,
         selection_digest=selection_digest,
+        selected_source_messages=selected_source_messages,
     )
 
 
@@ -1100,7 +1155,7 @@ def _find_current_query(messages: Sequence[Mapping[str, Any]]) -> str:
         content = message.get("content")
         if isinstance(content, str) and is_context_frame(content):
             continue
-        return _bounded_text(content, 8000)
+        return _text_value(content)
     return "(current user query is retained in the active prompt)"
 
 
@@ -1110,23 +1165,18 @@ def _serialize_message(message: Mapping[str, Any]) -> str:
         for key, value in message.items()
         if key not in {"model_state", "reasoning_content"}
     }
-    clean["content"] = _bounded_text(clean.get("content"), 8000)
+    clean["content"] = _text_value(clean.get("content"))
     return "\n" + json.dumps(clean, ensure_ascii=False, separators=(",", ":"))
 
 
-def _bounded_text(value: object, limit: int) -> str:
+def _text_value(value: object) -> str:
     if isinstance(value, str):
         text = value
-    elif isinstance(value, list):
+    elif isinstance(value, (dict, list, tuple)):
         text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     else:
         text = str(value or "")
-    if len(text) <= limit:
-        return text
-    marker = f"\n…{len(text) - limit} chars omitted from compaction input…\n"
-    keep = max(0, limit - len(marker))
-    head = keep // 2
-    return text[:head] + marker + text[-(keep - head) :]
+    return text
 
 
 def _valid_summary(summary: str) -> bool:
@@ -1184,12 +1234,23 @@ def _selection_digest(
 
 
 def _unit_identity(unit: CommittedContextUnit) -> dict[str, object]:
+    content = [
+        _strip_opaque_state(message)
+        for message in unit.messages
+    ]
+    encoded = json.dumps(
+        content,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return {
         "source_from_seq": unit.source_from_seq,
         "consolidated_through_seq": unit.consolidated_through_seq,
         "source_message_ids": list(unit.source_message_ids),
         "message_refs": [list(ref) for ref in unit.message_refs],
         "message_count": len(unit.messages),
+        "message_digest": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
     }
 
 

@@ -9,6 +9,7 @@ from agent.model_runtime.context_compaction import (
     ContextCompactionError,
     ContextCompactor,
     ContextPayloadSegments,
+    _summary_output_limit,
 )
 from agent.model_runtime.types import LLMResponse, ModelUsage
 
@@ -286,8 +287,9 @@ def test_mixed_segments_preserve_anchor_before_active_batches() -> None:
         active_batches=(active_batch, active_batch),
         pending=({"role": "assistant", "content": "pending", "tokens": 1},),
     )
+    provider = _Provider(context_window=1_000)
     compactor = ContextCompactor(
-        provider=_Provider(context_window=1_000),
+        provider=provider,
         model="m",
         scope_id="s",
         payload_segments=segments,
@@ -298,12 +300,16 @@ def test_mixed_segments_preserve_anchor_before_active_batches() -> None:
     messages = segments.flatten()
     result = _run(compactor.prepare(messages, pending_start=8, tools=[], force=True))
 
-    roles = [message["role"] for message in messages]
-    assert roles[:4] == ["system", "system", "user", "user"]
-    assert roles[3:5] == ["user", "system"]
-    assert roles[5:7] == ["assistant", "tool"]
-    assert roles[-1] == "assistant"
-    assert result.pending_start == 7
+    compaction_blocks = [
+        message
+        for message in messages
+        if message.get("role") == "system"
+        and "<session-context-compaction>" in str(message.get("content"))
+    ]
+    assert len(compaction_blocks) == 1
+    assert "ACTIVE_SHOULD_NOT_PERSIST" not in str(compaction_blocks[0])
+    assert "ACTIVE_SHOULD_NOT_PERSIST" in str(provider.calls[-1]["messages"][0]["content"])
+    assert result.pending_start == 5
     assert result.checkpoint.committable
     assert "ACTIVE_SHOULD_NOT_PERSIST" not in result.checkpoint.summary
     assert "ACTIVE_SHOULD_NOT_PERSIST" not in str(result.checkpoint.retained_tail)
@@ -334,3 +340,193 @@ def test_summary_uses_current_once_then_distinct_fallback_once_with_own_budget()
     assert len(current.calls) == 1
     assert len(fallback.calls) == 1
     assert fallback.calls[0]["max_tokens"] <= fallback.context_window
+
+
+def test_logical_interaction_inputs_only_enter_temporary_summary() -> None:
+    active = (
+        {
+            "role": "user",
+            "content": "U1",
+            "tokens": 2,
+        },
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "c1"}],
+            "tokens": 2,
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "content": "result-1",
+            "tokens": 2,
+        },
+    )
+    active_tail = (
+        {
+            "role": "user",
+            "content": "U2",
+            "tokens": 2,
+        },
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "c2"}],
+            "tokens": 2,
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "c2",
+            "content": "result-2",
+            "tokens": 2,
+        },
+    )
+    current_query = {
+        "logical_interaction_inputs": ["U1", "U2", "U3"],
+    }
+    temporary_provider = _Provider()
+    temporary_segments = ContextPayloadSegments(
+        prefix=(),
+        committed_units=(),
+        current_anchor=(),
+        active_batches=(active, active_tail),
+        pending=({"role": "user", "content": "U3", "tokens": 1},),
+    )
+    temporary = ContextCompactor(
+        provider=temporary_provider,
+        model="m",
+        scope_id="temporary-interaction",
+        current_query=current_query,
+        payload_segments=temporary_segments,
+        max_output_tokens=100,
+        keep_recent_tokens=1,
+    )
+    temporary_messages = temporary_segments.flatten()
+    _run(
+        temporary.prepare(
+            temporary_messages,
+            pending_start=6,
+            tools=[],
+            force=True,
+        )
+    )
+    temporary_prompt = str(temporary_provider.calls[0]["messages"][0]["content"])
+    assert all(value in temporary_prompt for value in ("U1", "U2", "U3"))
+
+    committed_provider = _Provider()
+    committed_segments = ContextPayloadSegments(
+        prefix=(),
+        committed_units=(
+            _unit(1, 2, prefix="history-"),
+            _unit(2, 2, prefix="history-"),
+        ),
+        current_anchor=(),
+    )
+    committed = ContextCompactor(
+        provider=committed_provider,
+        model="m",
+        scope_id="committed-interaction",
+        current_query=current_query,
+        payload_segments=committed_segments,
+        max_output_tokens=100,
+        next_generation=1,
+        keep_recent_tokens=1,
+    )
+    committed_messages = committed_segments.flatten()
+    _run(
+        committed.prepare(
+            committed_messages,
+            pending_start=2,
+            tools=[],
+            force=True,
+        )
+    )
+    committed_prompt = str(committed_provider.calls[0]["messages"][0]["content"])
+    assert all(value not in committed_prompt for value in ("U1", "U2", "U3"))
+
+
+def test_summary_output_limit_keeps_strict_input_boundary() -> None:
+    summary_input = [{"role": "user", "content": "summary", "tokens": 1}]
+    assert _summary_output_limit(_Provider(context_window=8_193), summary_input) == 8_191
+    assert _summary_output_limit(_Provider(context_window=8_192), summary_input) == 8_190
+    with pytest.raises(ContextCompactionError, match="summary_input_exceeds_window"):
+        _summary_output_limit(_Provider(context_window=2), summary_input)
+
+
+def test_same_turn_temporary_summary_replaces_previous_projection() -> None:
+    class _SentinelProvider(_Provider):
+        async def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            marker = f"C{len(self.calls)}"
+            return LLMResponse(content=_SUMMARY.replace("goal", marker))
+
+    active = (
+        {"role": "assistant", "tool_calls": [{"id": "a"}], "tokens": 2},
+        {"role": "tool", "tool_call_id": "a", "content": "active", "tokens": 2},
+    )
+    initial_segments = ContextPayloadSegments(
+        prefix=(),
+        committed_units=tuple(_unit(index, 2, prefix="old-") for index in range(1, 5)),
+        current_anchor=(),
+        active_batches=(active, active),
+    )
+    provider = _SentinelProvider()
+    compactor = ContextCompactor(
+        provider=provider,
+        model="m",
+        scope_id="same-turn",
+        payload_segments=initial_segments,
+        max_output_tokens=100,
+        ledger_parent_generation=0,
+        next_generation=1,
+        keep_recent_tokens=1,
+    )
+    first_messages = initial_segments.flatten()
+    first = _run(
+        compactor.prepare(
+            first_messages,
+            pending_start=len(first_messages),
+            tools=[],
+            force=True,
+        )
+    )
+    assert first.checkpoint is not None
+    assert first.checkpoint.generation == 1
+    assert len(provider.calls) == 2
+
+    compactor.acknowledge_committed_checkpoint(1)
+    next_units = tuple(
+        _unit(index, 2, prefix="next-") for index in range(10, 12)
+    )
+    compactor._committed_units = list(next_units)
+    compactor._completed_batches = []
+    compactor._segments = ContextPayloadSegments(
+        prefix=compactor._segments.prefix,
+        committed_units=next_units,
+        current_anchor=(),
+        temporary_summary=compactor._segments.temporary_summary,
+    )
+    second_messages = compactor._segments.flatten()
+    second = _run(
+        compactor.prepare(
+            second_messages,
+            pending_start=len(second_messages),
+            tools=[],
+            force=True,
+        )
+    )
+    assert second.checkpoint is not None
+    assert second.checkpoint.generation == 2
+    assert len(provider.calls) == 4
+    temporary_prompt = str(provider.calls[3]["messages"][0]["content"])
+    assert "C3" in temporary_prompt
+    assert "C2" in temporary_prompt
+    blocks = [
+        message
+        for message in second_messages
+        if message.get("role") == "system"
+        and "<session-context-compaction>" in str(message.get("content"))
+    ]
+    assert len(blocks) == 1
+    assert "C4" in str(blocks[0]["content"])
+    assert "C2" not in str(blocks[0]["content"])
