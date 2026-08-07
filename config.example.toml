@@ -70,15 +70,13 @@ dev_mode = false
 [agent.tools]
 search_enabled = true
 
-# Web Chatbox 默认跟主进程一起启动，只监听本机。
+# Web Chat 由 Supervisor 在唯一入口 http://127.0.0.1:2236 提供。
 [channels.chat]
 enabled = true
-host = "127.0.0.1"
-port = 6322
 channel_name = "web"
 
 # Android Mobile Realtime 默认关闭；启用后独立监听 WSS :6323。
-# Cloudflare Tunnel 只映射这个端口，不要映射上面的本机 WebChat。
+# Cloudflare Tunnel 只映射这个端口，不要映射上面的本机 Web。
 [mobile_realtime]
 enabled = false
 host = "0.0.0.0"

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -20,6 +19,8 @@ from agent.plugins.mobile_ui import (
     MobileUiRpcInvalidRequest,
     MobileUiStaleRevision,
 )
+from agent.model_runtime.registry import ModelRegistry
+from agent.model_runtime.session_selection import read_session_model_selection
 from infra.channels.base import AttachmentStore
 from infra.channels.web_chat_channel import (
     MAX_UPLOAD_BYTES,
@@ -67,6 +68,7 @@ def create_chat_app(
     mobile_pairing_admin: MobilePairingAdmin | None = None,
     runtime_inspection: RuntimeInspectionService | None = None,
     plugin_ui_provider: MobileUiProvider | None = None,
+    model_registry: ModelRegistry | None = None,
 ) -> FastAPI:
     channel.bind_attachment_store(AttachmentStore(workspace / "uploads"))
     app = FastAPI(title="Akashic Chat API")
@@ -88,6 +90,10 @@ def create_chat_app(
             return FileResponse(index_file)
         return {"status": "ok", "channel": channel.name}
 
+    @app.get("/api/chat/health")
+    def chat_health() -> dict[str, str]:
+        return {"status": "ready"}
+
     @app.get("/api/chat/sessions")
     def list_sessions(page: int = Query(1), page_size: int = Query(50)) -> dict[str, Any]:
         ctx = channel._require_ctx()
@@ -104,8 +110,31 @@ def create_chat_app(
         return {"items": visible, "total": len(visible)}
 
     @app.get("/api/chat/navigation")
-    def chat_navigation() -> dict[str, int]:
-        return {"dashboard_port": _public_dashboard_port()}
+    def chat_navigation() -> dict[str, str]:
+        return {"dashboard_path": "/"}
+
+    @app.get("/api/chat/models")
+    async def chat_models(session_key: str = Query(default="")) -> dict[str, object]:
+        if model_registry is None:
+            raise HTTPException(status_code=503, detail="模型注册表不可用")
+        session_override = ""
+        session_effort = ""
+        if session_key:
+            session = channel._require_ctx().session_manager.get_or_create(session_key)
+            selection = read_session_model_selection(session.metadata)
+            session_override = selection.model_ref
+            session_effort = selection.reasoning_effort
+        current = await model_registry.refresh()
+        return {
+            "generationId": current.generation_id,
+            "defaultRuntime": current.role_runtime_ids["default"],
+            "sessionOverride": session_override,
+            "sessionSelection": {
+                "modelRef": session_override,
+                "reasoningEffort": session_effort,
+            },
+            "runtimes": model_registry.list_runtimes(),
+        }
 
     @app.get("/api/chat/plugin-ui/catalog")
     def plugin_ui_catalog() -> dict[str, object]:
@@ -307,8 +336,8 @@ def build_chat_server(
     mobile_pairing_admin: MobilePairingAdmin | None = None,
     runtime_inspection: RuntimeInspectionService | None = None,
     plugin_ui_provider: MobileUiProvider | None = None,
-    host: str = "127.0.0.1",
-    port: int = 6322,
+    model_registry: ModelRegistry | None = None,
+    uds: str,
 ) -> uvicorn.Server:
     config = uvicorn.Config(
         create_chat_app(
@@ -317,9 +346,9 @@ def build_chat_server(
             mobile_pairing_admin=mobile_pairing_admin,
             runtime_inspection=runtime_inspection,
             plugin_ui_provider=plugin_ui_provider,
+            model_registry=model_registry,
         ),
-        host=host,
-        port=port,
+        uds=uds,
         log_level="warning",
         access_log=False,
     )
@@ -383,18 +412,3 @@ def _can_read_media(channel: WebChatChannel, path: Path) -> bool:
     if callable(media_path_exists):
         return bool(media_path_exists(path))
     return False
-
-
-def _public_dashboard_port() -> int:
-    raw_port = os.environ.get("AKASHIC_DASHBOARD_PUBLIC_PORT", "2236")
-    try:
-        port = int(raw_port)
-    except ValueError as error:
-        raise RuntimeError(
-            "AKASHIC_DASHBOARD_PUBLIC_PORT 必须是 1 到 65535 的整数"
-        ) from error
-    if not 1 <= port <= 65535:
-        raise RuntimeError(
-            "AKASHIC_DASHBOARD_PUBLIC_PORT 必须是 1 到 65535 的整数"
-        )
-    return port

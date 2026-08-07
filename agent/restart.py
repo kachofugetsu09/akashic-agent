@@ -79,6 +79,18 @@ class SupervisorCommitChannel:
             raise ValueError("settings restart request id 无效")
         self._write_commit(request_id)
 
+    def settings_reloaded(self, *, success: bool, detail: str = "") -> None:
+        """Report one settings reload result without committing a restart."""
+
+        self._write_frame(
+            {
+                "type": "settings_reloaded",
+                "bootId": self.boot_id,
+                "success": bool(success),
+                "detail": detail[:1024],
+            }
+        )
+
     def stage(self, name: str) -> None:
         """发布可诊断但不能延长启动 deadline 的阶段事件。"""
 

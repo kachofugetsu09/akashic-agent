@@ -26,6 +26,8 @@ RUN printf '%s\n' \
         util-linux \
     && pacman -Scc --noconfirm
 
+ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+
 COPY requirements.txt requirements-dev.txt /tmp/
 RUN python -m venv /opt/venv \
     && python -m pip install pip==26.1.2 \
