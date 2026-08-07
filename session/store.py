@@ -45,13 +45,20 @@ class SessionAdmissionConflictError(ValueError):
 class SessionCompactionPrepareConflictError(ValueError):
     """拒绝在 source plan 被 durable compaction prepare 锁定时修改消息。"""
 
-    def __init__(self, session_key: str, source_ref: str) -> None:
+    def __init__(
+        self,
+        session_key: str,
+        source_ref: str,
+        *,
+        audit_id: str | None = None,
+    ) -> None:
         super().__init__(
             "session 存在 pending compaction prepare，暂时不能修改消息: "
             f"{session_key}:{source_ref}"
         )
         self.session_key = session_key
         self.source_ref = source_ref
+        self.audit_id = audit_id
 
 
 @dataclass(frozen=True)
@@ -1061,16 +1068,25 @@ class SessionStore:
         ):
             raise ValueError("compaction prepare numeric identity 字段无效")
 
-        # 2. Decode JSON payloads at the SQLite trust boundary.
+        # 2. JSON columns must remain text/blob; NULL must not enter fallback decoding.
+        raw_source_ids = row["source_message_ids_json"]
+        raw_retained_tail = row["retained_tail_json"]
+        json_types = (str, bytes, bytearray)
+        if not isinstance(raw_source_ids, json_types):
+            raise ValueError("compaction prepare source_message_ids_json 类型无效")
+        if not isinstance(raw_retained_tail, json_types):
+            raise ValueError("compaction prepare retained_tail_json 类型无效")
+
+        # 3. Decode JSON payloads at the SQLite trust boundary.
         identifier = f"{scalar_strings['session_key']}:{scalar_ints['generation']}"
         source_ids = _decode_json_payload(
-            row["source_message_ids_json"],
+            raw_source_ids,
             fallback="[]",
             field="compaction prepare source_message_ids",
             identifier=identifier,
         )
         retained_tail = _decode_json_payload(
-            row["retained_tail_json"],
+            raw_retained_tail,
             fallback="[]",
             field="compaction prepare retained_tail",
             identifier=identifier,
@@ -1084,7 +1100,7 @@ class SessionStore:
         ):
             raise ValueError("compaction prepare retained_tail 无效")
 
-        # 3. Reuse the write-boundary contract for source ids/tail and validate timestamp.
+        # 4. Reuse the write-boundary contract for source ids/tail and validate timestamp.
         SessionStore._validate_prepare_payload(
             session_key=scalar_strings["session_key"],
             session_created_at=scalar_strings["session_created_at"],
@@ -1398,7 +1414,7 @@ class SessionStore:
         self,
         session_keys: list[str],
     ) -> None:
-        """Reject message mutation while any targeted session has a pending fence."""
+        """Reject destructive mutation while any targeted session has a pending fence."""
 
         if not session_keys:
             return
@@ -2905,6 +2921,7 @@ class SessionStore:
                         targets
                     )
                     self._require_sessions_not_admitted_locked(list(targets))
+                    self._require_no_pending_compaction_prepare_locked(list(targets))
 
                     if not cascade:
                         row = self._conn.execute(
@@ -2997,7 +3014,10 @@ class SessionStore:
             )
             self._persist_delete_audit(failed)
             setattr(exc, "audit_id", audit_id)
-            if isinstance(exc, SessionAdmissionConflictError):
+            if isinstance(
+                exc,
+                (SessionAdmissionConflictError, SessionCompactionPrepareConflictError),
+            ):
                 exc.audit_id = audit_id
             raise
 

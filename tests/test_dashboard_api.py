@@ -703,6 +703,51 @@ def test_dashboard_returns_distinct_409_for_pending_compaction_prepare(
     }
 
 
+@pytest.mark.parametrize("operation", ("single", "batch"))
+def test_dashboard_rejects_session_delete_with_pending_prepare(
+    tmp_path,
+    operation: str,
+) -> None:
+    _seed_workspace(tmp_path)
+    session_key = "telegram:100"
+    message_id = "telegram:100:1"
+    source_ref = _seed_pending_compaction_prepare(
+        tmp_path,
+        session_key,
+        [message_id],
+    )
+
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        if operation == "single":
+            response = client.delete(f"/api/dashboard/sessions/{session_key}")
+        else:
+            response = client.post(
+                "/api/dashboard/sessions/batch-delete",
+                json={"keys": [session_key], "cascade": True},
+            )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "session_compaction_pending"
+    assert detail["session_key"] == session_key
+    assert detail["source_ref"] == source_ref
+    assert detail["audit_id"]
+
+    inspector = SessionStore(tmp_path / "sessions.db")
+    assert inspector.session_exists(session_key)
+    assert inspector.get_message(message_id) is not None
+    prepare = inspector.get_compaction_prepare(
+        session_key, source_ref=source_ref
+    )
+    assert prepare is not None
+    audit = inspector.get_session_delete_audit(detail["audit_id"])
+    assert audit is not None
+    assert audit.result == "rejected"
+    assert audit.backup_path is None
+    inspector.close()
+    assert not list((tmp_path / "backups" / "session-deletions").glob("sessions-*.db"))
+
+
 def test_manual_memory_optimizer_uses_runtime_entrypoint(tmp_path) -> None:
     optimizer = _ManualMemoryOptimizer()
     with TestClient(

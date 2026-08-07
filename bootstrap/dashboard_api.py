@@ -193,11 +193,14 @@ def _session_delete_detail(exc: SessionAdmissionConflictError) -> dict[str, str]
 def _compaction_prepare_detail(
     exc: SessionCompactionPrepareConflictError,
 ) -> dict[str, str]:
-    return {
+    detail = {
         "code": "session_compaction_pending",
         "session_key": exc.session_key,
         "source_ref": exc.source_ref,
     }
+    if exc.audit_id is not None:
+        detail["audit_id"] = exc.audit_id
+    return detail
 
 
 class ProactiveDashboardReader:
@@ -1012,6 +1015,11 @@ def create_dashboard_app(
                 status_code=409,
                 detail=_session_delete_detail(exc),
             ) from exc
+        except SessionCompactionPrepareConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_compaction_prepare_detail(exc),
+            ) from exc
         except ValueError as exc:
             raise HTTPException(
                 status_code=409,
@@ -1068,6 +1076,11 @@ def create_dashboard_app(
             raise HTTPException(
                 status_code=409,
                 detail=_session_delete_detail(exc),
+            ) from exc
+        except SessionCompactionPrepareConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_compaction_prepare_detail(exc),
             ) from exc
         except ValueError as exc:
             raise HTTPException(
