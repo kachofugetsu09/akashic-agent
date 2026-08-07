@@ -891,9 +891,6 @@ def _inside_memory_context(report_dir: Path) -> int:
         model_requests = _model_requests(
             _http_json("GET", f"{model_url}/control/requests")
         )
-        recent_context = Path("/sandbox/workspace/memory/RECENT_CONTEXT.md").read_text(
-            encoding="utf-8"
-        )
         passed = (
             isinstance(completed_operation, dict)
             and completed_operation.get("id") == operation.get("id")
@@ -902,7 +899,6 @@ def _inside_memory_context(report_dir: Path) -> int:
             and row == (16,)
             and message_count == 24
             and len(model_requests) == 2
-            and "until:" in recent_context
         )
         checks.append(
             CheckResult(
@@ -913,7 +909,6 @@ def _inside_memory_context(report_dir: Path) -> int:
                     "messageCount": message_count,
                     "lastConsolidated": None if row is None else row[0],
                     "modelRequestCount": len(model_requests),
-                    "recentContextChars": len(recent_context),
                 },
             )
         )

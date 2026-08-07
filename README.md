@@ -310,7 +310,7 @@ Agent 根据电量模型自适应调整轮询频率——你刚聊完时不烦�
 
 ## 记忆系统
 
-对话通过 **consolidation** 自动提取为结构化事实：HISTORY.md（时间线事件） + PENDING.md（待归档缓冲） + RECENT_CONTEXT.md（近期上下文摘要）。**Optimizer** 定时将 PENDING 归档到 MEMORY.md——中间隔一层是为了保护 prompt cache（MEMORY.md 全文注入 system prompt，高频修改会破坏缓存）。同时 `memory2.db`（向量层）提供语义检索。
+对话通过 session context compaction ledger 按模型真实 context window 压缩；Markdown consolidation 从已提交 cursor 提取 HISTORY/PENDING 候选，**Optimizer** 定时将 PENDING 归档到 MEMORY.md。同时 `memory2.db`（向量层）提供语义检索。
 
 见 [记忆系统](./_handbook/memory-markdown.md)。
 

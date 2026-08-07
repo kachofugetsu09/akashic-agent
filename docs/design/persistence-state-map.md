@@ -534,7 +534,7 @@ INT-001～INT-008 和 INT-011 已由花月哥哥确认，其中长期语义已�
 
 ### INT-003 Markdown 四文件有不同耐久等级 — 已确认
 
-确认内容：`MEMORY.md` 与 `SELF.md` 是人类可读长期档案；`PENDING.md` 在事务提交前必须持久保存；`RECENT_CONTEXT.md` 是可重建投影，但普通上下文裁切仍无权删除它。
+确认内容：`MEMORY.md` 与 `SELF.md` 是人类可读长期档案；`PENDING.md` 在事务提交前必须持久保存；旧的近期摘要投影已退役，只能由迁移脚本按备份协议清理。
 
 已提升条款：MEM-001～MEM-003、MEM-008。备份和 oracle 分别验证档案事实、队列恰好一次与 recent projection 可重建性，不再把四个文件统一叫“memory cache”。
 

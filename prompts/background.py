@@ -33,7 +33,6 @@ def build_research_subagent_prompt(workspace: Path, task_dir: Path) -> str:
 
 === 可用的上下文资源 ===
 - 用户偏好档案：{workspace_path}/memory/SELF.md
-- 近期语境摘要：{workspace_path}/memory/RECENT_CONTEXT.md
 - 技能目录：{workspace_path}/skills/
 
 === 输出要求 ===
@@ -112,7 +111,6 @@ def build_general_subagent_prompt(workspace: Path, task_dir: Path) -> str:
 
 === 可用的上下文资源 ===
 - 用户偏好档案：{workspace_path}/memory/SELF.md
-- 近期语境摘要：{workspace_path}/memory/RECENT_CONTEXT.md
 - 技能目录：{workspace_path}/skills/
 
 === 输出要求 ===

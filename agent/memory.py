@@ -30,13 +30,11 @@ class MemoryStore:
     - MEMORY.md：稳定用户档案
     - SELF.md：Akashic 自我认知
     - PENDING.md：对话中提取的长期记忆候选
-    - RECENT_CONTEXT.md：近期语境摘要
     """
 
     def __init__(self, workspace: Path):
         self.memory_dir = ensure_dir(workspace / "memory")
         self.memory_file = self.memory_dir / "MEMORY.md"
-        self.recent_context_file = self.memory_dir / "RECENT_CONTEXT.md"
         self.pending_file = self.memory_dir / "PENDING.md"
         self.self_file = self.memory_dir / "SELF.md"
         self._consolidation_db = self.memory_dir / "consolidation_writes.db"
@@ -57,16 +55,6 @@ class MemoryStore:
 
     def write_long_term(self, content: str) -> None:
         atomic_write_text(self.memory_file, content, domain="memory")
-
-    # ── RECENT_CONTEXT.md（压缩后的近期语境）──────────────
-
-    def read_recent_context(self) -> str:
-        if self.recent_context_file.exists():
-            return self.recent_context_file.read_text(encoding="utf-8")
-        return ""
-
-    def write_recent_context(self, content: str) -> None:
-        atomic_write_text(self.recent_context_file, content, domain="memory")
 
     # ── SELF.md（Akashic 自我模型）─────────────────────────────
 

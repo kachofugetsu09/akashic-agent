@@ -125,7 +125,7 @@ Skill/MCP 任务固定从插件安装链进入：插件 source → `skill_roots`
 只要任务中出现下列任一对象或动作，先读 [`design/persistence-state-map.md`](design/persistence-state-map.md)：
 
 - `sessions.db`、`memory2.db`、`akasha.db`、`proactive.db`、`wake_proactive.db`、`drift.db`。
-- `MEMORY.md`、`SELF.md`、`PENDING.md`、`RECENT_CONTEXT.md`、`PROACTIVE_CONTEXT.md`。
+- `MEMORY.md`、`SELF.md`、`PENDING.md`、`PROACTIVE_CONTEXT.md`。
 - 附件、plugin-data、插件 Skill/MCP、旧 workspace MCP/skill 兼容路径、调度、quota、凭据或 workspace 迁移。
 - 裁切、压缩、清理、归档、替换、重建、同步、恢复、删除、卸载或备份。
 

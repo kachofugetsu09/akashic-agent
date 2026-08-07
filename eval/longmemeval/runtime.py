@@ -113,8 +113,6 @@ async def create_runtime(config_path: Path, workspace: Path) -> BenchmarkRuntime
         model=config.model,
         keep_count=keep_count,
         profile_extractor=profile_extractor,
-        recent_context_provider=light,
-        recent_context_model=light_model,
     )
 
     logger.info(

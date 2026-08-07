@@ -382,7 +382,7 @@ docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug reset-w
 
 ## 上下文连续性探针
 
-`context_probe.py` 用于复现一段固定纯聊天场景，自动记录用户输入、LLM 回复、工具调用、`RECENT_CONTEXT.md` 和 `memory2.db` 写入结果。
+`context_probe.py` 用于复现一段固定纯聊天场景，自动记录用户输入、LLM 回复、工具调用、compaction ledger 和 `memory2.db` 写入结果。
 
 ```
 context probe

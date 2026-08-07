@@ -44,10 +44,6 @@ class ProbePaths:
         return self.profile_dir / "akashic.sock"
 
     @property
-    def recent_context(self) -> Path:
-        return self.workspace / "memory" / "RECENT_CONTEXT.md"
-
-    @property
     def observe_db(self) -> Path:
         return self.workspace / "observe" / "observe.db"
 
@@ -455,8 +451,6 @@ def _write_reports(
     session_key: str,
     records: list[dict[str, str]],
     consolidate_result: dict[str, Any] | None,
-    recent_after_consolidate: str,
-    recent_final: str,
     tools: list[dict[str, Any]],
     memories: list[dict[str, str]],
 ) -> None:
@@ -470,8 +464,6 @@ def _write_reports(
         "records": records,
         "tool_calls": tools,
         "memory_items": memories,
-        "recent_context_after_consolidate": recent_after_consolidate,
-        "recent_context_final": recent_final,
     }
     _ = report_json.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -518,23 +510,6 @@ def _write_reports(
             lines.append(f"- [{row['memory_type']}] {row['summary']}")
     else:
         lines.append("- none")
-    lines.extend(
-        [
-            "",
-            "## Recent Context After Manual Consolidate",
-            "",
-            "```text",
-            recent_after_consolidate.rstrip(),
-            "```",
-            "",
-            "## Recent Context Final",
-            "",
-            "```text",
-            recent_final.rstrip(),
-            "```",
-            "",
-        ]
-    )
     _ = report_md.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -588,7 +563,6 @@ async def _run_probe(args: argparse.Namespace) -> None:
         memory_baseline = _memory_baseline(paths.memory_db)
         records: list[dict[str, str]] = []
         consolidate_result: dict[str, Any] | None = None
-        recent_after_consolidate = ""
         session_key = ""
         client = await ControlClient.connect(str(paths.socket))
         try:
@@ -606,11 +580,6 @@ async def _run_probe(args: argparse.Namespace) -> None:
                         timeout=args.turn_timeout,
                     )
                     await asyncio.sleep(args.after_consolidate_wait)
-                    recent_after_consolidate = (
-                        paths.recent_context.read_text(encoding="utf-8")
-                        if paths.recent_context.exists()
-                        else ""
-                    )
                     print(f"turn {index} consolidate ok")
                     continue
                 if turn.get("action") == "wait":
@@ -632,11 +601,6 @@ async def _run_probe(args: argparse.Namespace) -> None:
         report_md = report_base.with_suffix(".md")
         report_json = report_base.with_suffix(".json")
         _ = report_md.parent.mkdir(parents=True, exist_ok=True)
-        recent_final = (
-            paths.recent_context.read_text(encoding="utf-8")
-            if paths.recent_context.exists()
-            else ""
-        )
         tools = _tool_rows(paths.observe_db, session_key)
         memories = _memory_rows(
             memory_db=paths.memory_db,
@@ -653,8 +617,6 @@ async def _run_probe(args: argparse.Namespace) -> None:
             session_key=session_key,
             records=records,
             consolidate_result=consolidate_result,
-            recent_after_consolidate=recent_after_consolidate,
-            recent_final=recent_final,
             tools=tools,
             memories=memories,
         )

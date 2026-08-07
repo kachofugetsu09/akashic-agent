@@ -321,7 +321,7 @@ Prompt 历史不得从孤立 assistant 或 tool result 开始。assistant 工具
 
 ### CTX-004 派生上下文不得伪装成用户原话
 
-skills、长期记忆、检索结果和 recent context 必须带来源和信任级别，作为 system context 或独立数据块进入请求。当前 user message 始终独立；工具授权不能由提示词内容决定。
+skills、长期记忆和检索结果必须带来源和信任级别，作为 system context 或独立数据块进入请求。当前 user message 始终独立；工具授权不能由提示词内容决定。
 
 ### CTX-005 新设计不得使用无修饰的 history
 

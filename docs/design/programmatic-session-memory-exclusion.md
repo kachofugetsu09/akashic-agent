@@ -112,7 +112,7 @@ replay：JOIN sessions.metadata（先校验无孤儿消息），统一谓词 or 
 4. `agent/tools/meta/register.py` `_register_memory_tool()`：注册 memory profile 工具时携带 `source_type="builtin"`、`source_name="memory"` 来源身份；`agent/tools/registry.py` 新增按来源与 risk 查询工具名的窄方法（走 runtime snapshot 视图）。
 5. `agent/core/passive_turn.py`：计算 `disabled_tools` 时，`msg.metadata["disable_memory_writes"]=true` 展开为当前 snapshot 中 memory source 的 risk=write 工具名并合并。
 6. `agent/lifecycle/phases/after_reasoning.py`：`_PersistUserMessageModule` 与 `_PersistAssistantMessageModule` 在 `msg.metadata["skip_post_memory"] is True` 时把 `skip_post_memory=True` 写入 user 与 assistant 消息 dict，随 `_persist_session` 落入 `messages.extra`。这同时修复 turn 级标记的 replay 合同（缺口 B）。
-7. `core/memory/markdown.py` `consolidate()`：`request.session` 命中统一谓词时返回 `trace={"mode": "skipped", "reason": "session_memory_excluded"}`，不动 `last_consolidated` 与 `RECENT_CONTEXT`。
+7. `core/memory/markdown.py` `consolidate()`：`request.session` 命中统一谓词时返回 `trace={"mode": "skipped", "reason": "session_memory_excluded"}`，不动 session compaction cursor。
 8. `plugins/akasha/infrastructure/sparse_index/builder.py`：source schema 校验把 `sessions` 加入 required；先校验每条 `messages.session_key` 都有对应 `sessions` 行（孤儿消息带上下文 fail-loud，不静默消失），再 JOIN 读取 `metadata`；`_excluded_session` 改用统一谓词；build/audit 报告新增排除计数。
 9. 新增/更新单元测试（见验收），运行 `docker/debug/gate.py run --base origin/main`。
 

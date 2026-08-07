@@ -37,7 +37,7 @@ python docker/debug/context_probe.py \
 场景只描述输入和流程，不写结果要求。运行后观察：
 
 - 最终回答是否自然带入前文状态
-- `RECENT_CONTEXT.md` 写了什么
+- compaction ledger 记录了什么
 - `memory2.db` 写了什么
 - 是否调用了 `recall_memory`
 - 普通 history 还剩多少

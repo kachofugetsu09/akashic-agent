@@ -116,9 +116,6 @@ class _ProbeMemoryEngine:
     def read_self(self) -> str:
         return ""
 
-    def read_recent_context(self) -> str:
-        return ""
-
     def get_memory_context(self) -> str:
         return ""
 

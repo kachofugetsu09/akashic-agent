@@ -41,9 +41,6 @@ class MemoryRuntime:
     def read_self(self) -> str:
         return self.markdown.store.read_self()
 
-    def read_recent_context(self) -> str:
-        return self.markdown.store.read_recent_context()
-
     def get_memory_context(self) -> str:
         return self.markdown.store.get_memory_context()
 

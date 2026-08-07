@@ -104,8 +104,6 @@ def build_memory_runtime(
         consolidation_input_budget=_consolidation_input_budget(config),
         provider_system_prompt=config.system_prompt,
         event_bus=event_publisher,
-        recent_context_provider=light_provider or provider,
-        recent_context_model=config.light_model or config.model,
     )
 
     closeables: list[object] = []
@@ -155,8 +153,6 @@ def build_memory_admin_runtime(
         consolidation_input_budget=_consolidation_input_budget(config),
         provider_system_prompt=config.system_prompt,
         event_bus=event_publisher,
-        recent_context_provider=light_provider or provider,
-        recent_context_model=config.light_model or config.model,
     )
     closeables: list[object] = [http_resources]
     embedding_api: EmbeddingApi | None = None
