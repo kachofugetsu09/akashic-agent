@@ -133,6 +133,87 @@ def create_dashboard_app(tmp_path, **kwargs):
     return _create_dashboard_app(tmp_path, **kwargs)
 
 
+def _seed_explicit_interaction(
+    workspace: Path,
+    *,
+    last_consolidated: int,
+) -> tuple[str, list[str]]:
+    store = SessionStore(workspace / "sessions.db")
+    timestamp = "2026-08-07T10:00:00+08:00"
+    rows = store.persist_session(
+        "mobile:review",
+        created_at=timestamp,
+        updated_at=timestamp,
+        last_consolidated=last_consolidated,
+        metadata={},
+        messages=[
+            {
+                "role": "user",
+                "content": "legacy",
+                "timestamp": timestamp,
+                "extra": {},
+            },
+            {
+                "role": "assistant",
+                "content": "old",
+                "timestamp": timestamp,
+                "extra": {},
+            },
+            {
+                "role": "user",
+                "content": "u1",
+                "timestamp": timestamp,
+                "extra": {
+                    "control_turn_id": "turn-review",
+                    "turn_input_ordinal": 0,
+                },
+            },
+            {
+                "role": "user",
+                "content": "u2",
+                "timestamp": timestamp,
+                "extra": {
+                    "control_turn_id": "turn-review",
+                    "turn_input_ordinal": 1,
+                },
+            },
+            {
+                "role": "user",
+                "content": "u3",
+                "timestamp": timestamp,
+                "extra": {
+                    "control_turn_id": "turn-review",
+                    "turn_input_ordinal": 2,
+                },
+            },
+            {
+                "role": "assistant",
+                "content": "final",
+                "timestamp": timestamp,
+                "extra": {
+                    "control_turn_id": "turn-review",
+                    "turn_terminal": True,
+                    "turn_input_count": 3,
+                },
+            },
+            {
+                "role": "user",
+                "content": "later",
+                "timestamp": timestamp,
+                "extra": {},
+            },
+            {
+                "role": "assistant",
+                "content": "later-a",
+                "timestamp": timestamp,
+                "extra": {},
+            },
+        ],
+    )
+    store.close()
+    return "turn-review", [str(row["id"]) for row in rows[2:6]]
+
+
 @pytest.mark.asyncio
 async def test_dashboard_lifespan_swallows_its_own_compile_cancellation(
     tmp_path, monkeypatch
@@ -659,6 +740,99 @@ def test_list_update_and_batch_delete_messages(tmp_path) -> None:
         )
         assert remain_resp.status_code == 200
         assert remain_resp.json()["total"] == 1
+
+
+def test_explicit_interaction_rejects_generic_message_deletes(tmp_path) -> None:
+    turn_id, message_ids = _seed_explicit_interaction(
+        tmp_path,
+        last_consolidated=6,
+    )
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        single = client.delete(f"/api/dashboard/messages/{message_ids[1]}")
+        batch = client.post(
+            "/api/dashboard/messages/batch-delete",
+            json={"ids": message_ids},
+        )
+
+    assert single.status_code == 409
+    assert single.json()["detail"] == {
+        "code": "interaction_delete_required",
+        "message_id": message_ids[1],
+        "control_turn_id": turn_id,
+    }
+    assert batch.status_code == 409
+    assert batch.json()["detail"]["control_turn_id"] == turn_id
+    store = SessionStore(tmp_path / "sessions.db")
+    assert all(store.get_message(message_id) is not None for message_id in message_ids)
+    store.close()
+
+
+@pytest.mark.parametrize(
+    ("old_cursor", "expected_cursor"),
+    ((0, 0), (4, 2), (8, 2)),
+)
+def test_delete_interaction_is_atomic_and_repairs_cursor(
+    tmp_path,
+    old_cursor: int,
+    expected_cursor: int,
+) -> None:
+    turn_id, message_ids = _seed_explicit_interaction(
+        tmp_path,
+        last_consolidated=old_cursor,
+    )
+    embedding_store = MessageEmbeddingStore(tmp_path / "sessions.db")
+    message_store = SessionStore(tmp_path / "sessions.db")
+    for message_id in message_ids:
+        message = message_store.get_message(message_id)
+        assert message is not None
+        embedding_store.upsert(
+            message_id=message_id,
+            content=str(message["content"]),
+            model="m",
+            embedding=[1.0, 0.0],
+        )
+    message_store.close()
+    embedding_store.close()
+
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        response = client.delete(f"/api/dashboard/interactions/{turn_id}")
+
+    assert response.status_code == 200
+    assert response.json()["message_ids"] == message_ids
+    assert response.json()["old_last_consolidated"] == old_cursor
+    assert response.json()["new_last_consolidated"] == expected_cursor
+    backup_path = Path(response.json()["backup_path"])
+    assert backup_path.is_file()
+    assert backup_path.stat().st_mode & 0o777 == 0o600
+    assert list(backup_path.parent.glob(".sessions-*.db.tmp")) == []
+    store = SessionStore(tmp_path / "sessions.db")
+    assert [item["content"] for item in store.fetch_session_messages("mobile:review")] == [
+        "legacy",
+        "old",
+        "later",
+        "later-a",
+    ]
+    meta = store.get_session_meta("mobile:review")
+    assert meta is not None
+    assert meta["last_consolidated"] == expected_cursor
+    with closing(sqlite3.connect(tmp_path / "sessions.db")) as database:
+        assert database.execute(
+            "SELECT COUNT(*) FROM message_embeddings WHERE message_id IN (?, ?, ?, ?)",
+            tuple(message_ids),
+        ).fetchone()[0] == 0
+    store.close()
+
+    restored_path = tmp_path / "restored" / "sessions.db"
+    restored_path.parent.mkdir()
+    shutil.copy2(backup_path, restored_path)
+    restored = SessionStore(restored_path)
+    assert [
+        restored.get_message(message_id) is not None for message_id in message_ids
+    ] == [True, True, True, True]
+    restored_meta = restored.get_session_meta("mobile:review")
+    assert restored_meta is not None
+    assert restored_meta["last_consolidated"] == old_cursor
+    restored.close()
 
 
 def test_list_memory_items_with_filters(tmp_path) -> None:

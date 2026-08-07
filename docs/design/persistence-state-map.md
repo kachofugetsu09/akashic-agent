@@ -58,11 +58,12 @@ workspace 仍不是完整运行环境的全部。显式主配置、全局凭据�
 
 | 对象 | 正常增加 | 允许的原位或逻辑变化 | 允许物理减少的条件 |
 |---|---|---|---|
-| `sessions.db/messages` | 每次持久化一批新消息时 INSERT；同一 session 的 `seq` 单调增加且不复用 | 正常收发不改旧正文；当前代码存在显式 `update_message`，但它是否属于获授权产品语义仍待确认 | 只有用户主动撤销消息或删除会话/线程，管理命令才能 DELETE，并声明目标、cascade、备份和审计 |
+| `sessions.db/messages` | 每次持久化一批新消息时 INSERT；同一 session 的 `seq` 单调增加且不复用 | 正常收发不改旧正文；当前代码存在显式 `update_message`，但它是否属于获授权产品语义仍待确认 | 只有用户主动撤销消息或删除会话/线程，管理命令才能 DELETE；带 `control_turn_id` 的显式 interaction 只能整组原子撤销，并声明目标、cascade、备份和审计 |
 | `sessions.db/sessions` | 新 session INSERT；已有 session 的新消息仍追加到 `messages` | 允许更新名称、时间、高水位、consolidation 游标和主动流程时间等 session metadata | 只有用户主动删除 session/thread 时，由 session 管理边界级联删除 |
 | `sessions.db/turns` | 新 turn 先 INSERT 为 queued | 按状态机更新 items、usage、error、final response 和终态；这是同一 turn 的进展，不是改写对话正文 | 当前只有显式 thread/session 删除路径可以减少；是否另设 retention 仍待确认 |
 | FTS 与 `message_embeddings` | 由新消息触发建索引或计算向量 | FTS 可以从正文重建；embedding 迁移属于独立流程。Akasha 确定性重建必须复用 sessions 中已存向量 | 用户撤销/删除原始消息时同步减少，或由独立索引维护流程重建；上下文裁切无权删除 |
 | `uploads/` | 每个新附件写入新的 UUID 文件 | 当前没有生产代码原位改写附件；消息引用决定附件仍然有效 | 消息仍引用时必须保留；当前没有引用计数、级联删除或 GC 协议，因此不得按年龄、当前 prompt 是否使用或代码清理自动删除 |
+| `backups/interaction-deletions/sessions-<uuid>.db` | 每次 interaction 撤销前通过 SQLite online backup 创建完整 SessionDB 快照，并以 `integrity_check` 验证 | 已发布快照不可原位更新；路径随删除响应与审计日志返回 | 当前没有自动 retention；只有名称明确、目标精确的备份管理操作可以删除，不能由普通清理或下一次撤销覆盖 |
 
 这里所说的“`sessions.db` 默认 append-only”，精确含义是：**数据库中的完整对话正文 `messages` 在正常运行中只追加，只有用户主动撤销消息或删除会话才允许减少。** SQLite 文件整体并非字面只追加，因为 `sessions` 元数据、`turns` 状态和派生索引都有受约束的 UPDATE/重建路径。当前 dashboard 已暴露旧消息编辑接口；是否保留这项 UPDATE 例外，是需要维护者明确回答的实现与意图差异。
 
@@ -268,6 +269,8 @@ workspace 之外还有两组明确的全局状态：
 | `message_embedding_migrations` | `MessageEmbeddingStore` | embedding 迁移 | 已导入 source 的幂等记录 |
 
 **F-002：** `plugins.akasha.engine` 明确把 `sessions.db/messages` 标为 truth。正常会话持久化路径只 INSERT 新消息；现有 update/delete/session cascade 方法属于用户数据管理边界，不能由上下文裁切、重构、检索或保留期猜测调用。
+
+**F-002A：** 含 `control_turn_id` 的 transcript 是一个不可拆分的用户数据管理单元。单消息和 generic batch 删除入口必须返回 `interaction_delete_required` 及 `control_turn_id`，由客户端显式转调 interaction 撤销；撤销前创建并验证不可覆盖的完整 SessionDB 快照，再在一个 SessionDB 事务中删除整组 U+A 与对应 `message_embeddings`。若 `last_consolidated` 位于该组内或组后，回退到组前消息边界；响应与日志报告旧/新游标及备份路径，其他消息、`seq` 高水位和附件保持不变。
 
 **F-003：** FTS 在缺失或旧 tokenizer 时会从 `messages` rebuild。独立的 embedding 迁移可以显式生成新模型向量，但这不属于 Akasha 重建；Akasha 只能读取 sessions 中与目标模型匹配的已存向量，缺失或错配必须失败。`message_embeddings` 与完整历史一起受 `CTX-001` 保护，不能在 prompt 裁切中顺带删除。
 
