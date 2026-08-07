@@ -63,7 +63,7 @@ command = [
   "tests/test_shell_tool.py",
   "tests/test_unified_exec.py",
   "tests/test_agent_restart.py::test_boot_guardian_reaps_adopted_zombie_while_gateway_runs",
-  "tests/test_query_compaction.py",
+  "tests/test_context_compaction_contract.py",
   "tests/test_tool_loop_guard.py::test_subagent_trim_pins_active_shell_result_until_terminal_call",
   "tests/test_tool_loop_guard.py::test_subagent_preserves_provider_failure_when_shell_cleanup_also_fails",
   "tests/proactive_v2/test_drift.py::test_drift_shell_tools_isolate_tick_owners",

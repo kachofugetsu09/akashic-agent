@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from typing import Any
 
 import pytest
 
@@ -12,6 +14,7 @@ from agent.model_runtime.context_compaction import (
     _summary_output_limit,
 )
 from agent.model_runtime.types import LLMResponse, ModelUsage
+from agent.tool_runtime import append_tool_result
 
 
 _SUMMARY = """## Goal
@@ -68,6 +71,41 @@ def _unit(seq: int, token_count: int, *, prefix: str = "m") -> CommittedContextU
         messages=({"role": "user", "content": f"u{seq}", "tokens": token_count},),
         message_refs=((f"{prefix}{seq}", seq),),
     )
+
+
+def _execution_batch(
+    call_id: str,
+    *,
+    name: str,
+    arguments: dict[str, object],
+    result: dict[str, object],
+) -> tuple[dict[str, Any], ...]:
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tokens": 10,
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": json.dumps(arguments),
+                    },
+                }
+            ],
+        }
+    ]
+    append_tool_result(
+        messages,
+        tool_call_id=call_id,
+        content=json.dumps(result),
+        tool_name=name,
+        execution_status="success",
+    )
+    messages[-1]["tokens"] = 10
+    return tuple(messages)
 
 
 def _run(coro):
@@ -218,6 +256,65 @@ def test_single_interaction_remains_atomic_after_closed_tool_batches() -> None:
     assert [tuple(item.source_message_ids) for item in candidates] == [
         ("m1", "m2", "m3", "m4", "m5", "m6"),
     ]
+
+
+def test_live_shell_execution_blocks_cut_until_terminal_evidence_arrives() -> None:
+    live = _execution_batch(
+        "shell-call",
+        name="shell",
+        arguments={"command": "python train.py"},
+        result={"process_status": "running", "execution_id": 4201},
+    )
+    closed = (
+        {"role": "assistant", "content": "", "tokens": 10, "tool_calls": [{"id": "c"}]},
+        {"role": "tool", "tool_call_id": "c", "content": "done", "tokens": 10},
+    )
+    segments = ContextPayloadSegments(
+        prefix=(),
+        committed_units=(),
+        current_anchor=({"role": "user", "content": "finish training", "tokens": 1},),
+        active_batches=(live, closed, closed),
+    )
+    provider = _Provider(context_window=100)
+    compactor = ContextCompactor(
+        provider=provider,
+        model="m",
+        scope_id="shell-session",
+        payload_segments=segments,
+        max_output_tokens=10,
+        next_generation=1,
+        keep_recent_tokens=20,
+    )
+    messages = segments.flatten()
+
+    with pytest.raises(ContextCompactionError, match="no_closed_prefix"):
+        _run(compactor.prepare(messages, pending_start=7, tools=[], force=True))
+
+    terminal = _execution_batch(
+        "stdin-call",
+        name="write_stdin",
+        arguments={"execution_id": 4201},
+        result={"process_status": "succeeded", "exit_code": 0},
+    )
+    batch_start = len(messages)
+    messages.extend(terminal)
+    compactor.record_completed_batch(messages, batch_start=batch_start)
+
+    completed = _run(
+        compactor.prepare(
+            messages,
+            pending_start=compactor.pending_start,
+            tools=[],
+            force=True,
+        )
+    )
+
+    assert completed.compacted is True
+    assert provider.calls
+    summary_input = str(provider.calls[0]["messages"][0]["content"])
+    assert "python train.py" in summary_input
+    assert "4201" in summary_input
+    assert "succeeded" in str(messages[-1]["content"])
 
 
 def test_generation_comes_from_store_head_and_temporary_projection_does_not_consume_it() -> None:
