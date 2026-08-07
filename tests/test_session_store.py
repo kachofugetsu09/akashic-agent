@@ -1,7 +1,9 @@
 from datetime import UTC, datetime, timedelta
 import asyncio
 import logging
+import sqlite3
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -570,6 +572,79 @@ def test_session_cascade_deletes_turns_in_same_store_transaction(tmp_path) -> No
 
     assert store.delete_session("programmatic:1", cascade=True)
     assert store.read_turn("turn:1") is None
+    store.close()
+
+
+def test_session_delete_backup_and_audit_preserve_ledger_lineage(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    rows, _ = _seed_interaction_with_compactions(store, "mobile:delete")
+
+    audit = store.delete_session_with_audit(
+        "mobile:delete",
+        cascade=True,
+        action_source="test.session_delete",
+    )
+
+    assert audit.result == "committed"
+    assert audit.targets == ("mobile:delete",)
+    assert audit.message_ids == tuple(str(row["id"]) for row in rows)
+    assert [item["generation"] for item in audit.compactions] == [1, 2, 3]
+    assert [item["source_ref"] for item in audit.compactions] == [
+        "test:cache:1",
+        "test:cache:2",
+        "test:cache:3",
+    ]
+    assert audit.backup_path is not None
+    backup_path = Path(audit.backup_path)
+    assert backup_path.is_file()
+    assert backup_path.stat().st_mode & 0o777 == 0o600
+    with sqlite3.connect(backup_path) as database:
+        assert database.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with sqlite3.connect(tmp_path / "sessions.db") as database:
+        columns = {
+            row[1] for row in database.execute("PRAGMA table_info(session_delete_audits)")
+        }
+    assert {
+        "audit_id",
+        "targets_json",
+        "message_ids_json",
+        "compactions_json",
+        "action_source",
+        "backup_path",
+        "result",
+    } <= columns
+    restored = SessionStore(backup_path)
+    assert [item["id"] for item in restored.fetch_session_messages("mobile:delete")] == [
+        str(row["id"]) for row in rows
+    ]
+    assert [item.generation for item in restored.list_compactions("mobile:delete")] == [
+        1,
+        2,
+        3,
+    ]
+    restored.close()
+    assert store.get_session_meta("mobile:delete") is None
+    assert store.get_session_delete_audit(audit.audit_id) == audit
+    store.close()
+
+
+def test_session_batch_delete_returns_audit_for_each_target(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store.create_session(key="batch:one")
+    store.create_session(key="batch:two")
+
+    audit = store.delete_sessions_batch_with_audit(
+        ["batch:one", "batch:two"],
+        cascade=True,
+        action_source="test.session_batch_delete",
+    )
+
+    assert audit.result == "committed"
+    assert audit.targets == ("batch:one", "batch:two")
+    assert audit.deleted_count == 2
+    assert audit.backup_path is not None
+    assert store.list_session_delete_audits(limit=1)[0].audit_id == audit.audit_id
+    store.close()
 
 
 def test_session_admission_blocks_delete_from_another_connection(tmp_path) -> None:
@@ -579,11 +654,40 @@ def test_session_admission_blocks_delete_from_another_connection(tmp_path) -> No
     runtime_store.create_session(key="mobile:one")
 
     assert runtime_store.acquire_session_admission("mobile:one", "admission:one")
-    with pytest.raises(ValueError, match="正在处理消息"):
+    with pytest.raises(SessionAdmissionConflictError, match="正在处理消息") as exc_info:
         dashboard_store.delete_session("mobile:one", cascade=True)
+
+    audit = dashboard_store.get_session_delete_audit(exc_info.value.audit_id)
+    assert audit is not None
+    assert audit.result == "rejected"
+    assert audit.backup_path is None
 
     runtime_store.release_session_admission("admission:one")
     assert dashboard_store.delete_session("mobile:one", cascade=True)
+    runtime_store.close()
+    dashboard_store.close()
+
+
+def test_update_message_rejects_active_admission_atomically(tmp_path) -> None:
+    db_path = tmp_path / "sessions.db"
+    runtime_store = SessionStore(db_path)
+    dashboard_store = SessionStore(db_path)
+    runtime_store.create_session(key="mobile:edit")
+    message = runtime_store.insert_message(
+        "mobile:edit",
+        role="user",
+        content="before",
+        ts=NOW.isoformat(),
+        seq=0,
+    )
+    assert runtime_store.acquire_session_admission("mobile:edit", "admission:edit")
+
+    with pytest.raises(SessionAdmissionConflictError, match="正在处理消息"):
+        dashboard_store.update_message(str(message["id"]), content="after")
+    assert dashboard_store.get_message(str(message["id"]))["content"] == "before"
+
+    runtime_store.release_session_admission("admission:edit")
+    assert dashboard_store.update_message(str(message["id"]), content="after")["content"] == "after"
     runtime_store.close()
     dashboard_store.close()
 

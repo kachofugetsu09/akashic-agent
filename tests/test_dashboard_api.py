@@ -588,9 +588,42 @@ def test_update_and_delete_session(tmp_path) -> None:
 
         delete_resp = client.delete("/api/dashboard/sessions/telegram:100")
         assert delete_resp.status_code == 200
+        delete_payload = delete_resp.json()
+        assert delete_payload["action_source"] == "dashboard.session_delete"
+        assert delete_payload["result"] == "committed"
+        assert delete_payload["audit_id"]
+        assert Path(delete_payload["backup_path"]).is_file()
 
         get_resp = client.get("/api/dashboard/sessions/telegram:100")
         assert get_resp.status_code == 404
+
+
+def test_dashboard_update_message_returns_409_when_session_is_active(tmp_path) -> None:
+    _seed_workspace(tmp_path)
+    runtime_store = SessionStore(tmp_path / "sessions.db")
+    message = runtime_store.get_message("telegram:100:1")
+    assert message is not None
+    assert runtime_store.acquire_session_admission(
+        "telegram:100",
+        "admission:dashboard-edit",
+    )
+    runtime_store.close()
+
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        response = client.patch(
+            f"/api/dashboard/messages/{message['id']}",
+            json={"content": "blocked"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "session_busy",
+        "session_key": "telegram:100",
+    }
+    inspector = SessionStore(tmp_path / "sessions.db")
+    assert inspector.get_message(str(message["id"]))["content"] == "还没睡呢"
+    inspector.release_session_admission("admission:dashboard-edit")
+    inspector.close()
 
 
 def test_manual_memory_optimizer_uses_runtime_entrypoint(tmp_path) -> None:

@@ -15,7 +15,7 @@ from agent.prompting import (
     build_context_frame_content,
     build_context_frame_message,
 )
-from session.store import SessionStore
+from session.store import SessionDeleteAudit, SessionStore
 
 _TOOL_RESULT_CHAR_BUDGET = 10000
 _STORED_TOOL_RESULT_CHAR_BUDGET = 20000
@@ -721,12 +721,22 @@ class SessionManager:
     def session_exists(self, key: str) -> bool:
         return self._store.session_exists(key)
 
-    def delete_session(self, key: str) -> bool:
+    def delete_session_with_audit(self, key: str) -> SessionDeleteAudit:
         """删除 thread 的会话、消息和 turn 记录。"""
 
-        deleted = self._store.delete_session(key, cascade=True)
-        self.invalidate(key)
-        return deleted
+        deletion = self._store.delete_session_with_audit(
+            key,
+            cascade=True,
+            action_source="control.thread_delete",
+        )
+        if deletion.result == "committed":
+            self.invalidate(key)
+        return deletion
+
+    def delete_session(self, key: str) -> bool:
+        """删除 thread，并保留原有 bool 结果供 control service 使用。"""
+
+        return self.delete_session_with_audit(key).result == "committed"
 
     def get_channel_metadata(self, channel: str) -> list[dict[str, Any]]:
         return self._store.get_channel_metadata(channel)

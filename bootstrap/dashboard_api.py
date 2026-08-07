@@ -179,6 +179,16 @@ def _interaction_delete_detail(
     }
 
 
+def _session_delete_detail(exc: SessionAdmissionConflictError) -> dict[str, str]:
+    detail = {
+        "code": "session_busy",
+        "session_key": exc.session_key,
+    }
+    if exc.audit_id is not None:
+        detail["audit_id"] = exc.audit_id
+    return detail
+
+
 class ProactiveDashboardReader:
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
@@ -981,13 +991,32 @@ def create_dashboard_app(
     @app.post("/api/dashboard/sessions/batch-delete")
     def delete_sessions_batch(payload: SessionBatchDeletePayload) -> dict[str, Any]:
         try:
-            deleted_count = store.delete_sessions_batch(
+            deletion = store.delete_sessions_batch_with_audit(
                 payload.keys,
                 cascade=payload.cascade,
+                action_source="dashboard.session_batch_delete",
             )
+        except SessionAdmissionConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_session_delete_detail(exc),
+            ) from exc
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return {"deleted_count": deleted_count}
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "session_delete_rejected",
+                    "message": str(exc),
+                    "audit_id": getattr(exc, "audit_id", None),
+                },
+            ) from exc
+        return {
+            "deleted_count": deletion.deleted_count,
+            "audit_id": deletion.audit_id,
+            "backup_path": deletion.backup_path,
+            "action_source": deletion.action_source,
+            "result": deletion.result,
+        }
 
     @app.get("/api/dashboard/sessions/{session_key:path}")
     def get_session(session_key: str) -> dict[str, Any]:
@@ -1019,12 +1048,42 @@ def create_dashboard_app(
         cascade: bool = Query(default=True),
     ) -> dict[str, Any]:
         try:
-            deleted = store.delete_session(session_key, cascade=cascade)
+            deletion = store.delete_session_with_audit(
+                session_key,
+                cascade=cascade,
+                action_source="dashboard.session_delete",
+            )
+        except SessionAdmissionConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_session_delete_detail(exc),
+            ) from exc
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        if not deleted:
-            raise HTTPException(status_code=404, detail="session 不存在")
-        return {"deleted": True, "session_key": session_key}
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "session_delete_rejected",
+                    "message": str(exc),
+                    "audit_id": getattr(exc, "audit_id", None),
+                },
+            ) from exc
+        if deletion.result != "committed":
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "session_not_found",
+                    "session_key": session_key,
+                    "audit_id": deletion.audit_id,
+                },
+            )
+        return {
+            "deleted": True,
+            "session_key": session_key,
+            "audit_id": deletion.audit_id,
+            "backup_path": deletion.backup_path,
+            "action_source": deletion.action_source,
+            "result": deletion.result,
+        }
 
     @app.get("/api/dashboard/messages")
     def list_messages(
@@ -1064,14 +1123,20 @@ def create_dashboard_app(
         message_id: str,
         payload: MessageUpdatePayload,
     ) -> dict[str, Any]:
-        message = store.update_message(
-            message_id,
-            role=payload.role,
-            content=payload.content,
-            tool_chain=payload.tool_chain,
-            extra=payload.extra,
-            ts=payload.ts,
-        )
+        try:
+            message = store.update_message(
+                message_id,
+                role=payload.role,
+                content=payload.content,
+                tool_chain=payload.tool_chain,
+                extra=payload.extra,
+                ts=payload.ts,
+            )
+        except SessionAdmissionConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_session_delete_detail(exc),
+            ) from exc
         if message is None:
             raise HTTPException(status_code=404, detail="message 不存在")
         return message

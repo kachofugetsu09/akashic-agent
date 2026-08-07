@@ -36,9 +36,10 @@ class InteractionDeleteRequiredError(ValueError):
 class SessionAdmissionConflictError(ValueError):
     """拒绝在 session 仍被 active turn 持有时执行破坏性删除。"""
 
-    def __init__(self, session_key: str) -> None:
+    def __init__(self, session_key: str, *, audit_id: str | None = None) -> None:
         super().__init__(f"session 正在处理消息，暂时不能删除: {session_key}")
         self.session_key = session_key
+        self.audit_id = audit_id
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,25 @@ class InteractionDeletion:
     old_last_consolidated: int
     new_last_consolidated: int
     backup_path: str
+
+
+@dataclass(frozen=True)
+class SessionDeleteAudit:
+    """记录一次 session 删除命令及其可恢复证据。"""
+
+    audit_id: str
+    targets: tuple[str, ...]
+    message_ids: tuple[str, ...]
+    compactions: tuple[dict[str, Any], ...]
+    action_source: str
+    cascade: bool
+    backup_path: str | None
+    started_at: str
+    completed_at: str
+    result: str
+    deleted_count: int
+    error: str | None = None
+
 
 
 @dataclass(frozen=True)
@@ -500,6 +520,44 @@ class SessionStore:
             self._conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_session_admissions_session
                 ON session_admissions(session_key)
+                """)
+            # SessionStore owns this fresh runtime audit schema; it is not a
+            # user-data migration and is created before any management command.
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS session_delete_audits (
+                    audit_id      TEXT PRIMARY KEY,
+                    targets_json  TEXT NOT NULL,
+                    message_ids_json TEXT NOT NULL,
+                    compactions_json TEXT NOT NULL,
+                    action_source TEXT NOT NULL,
+                    cascade       INTEGER NOT NULL CHECK (cascade IN (0, 1)),
+                    backup_path   TEXT,
+                    started_at    TEXT NOT NULL,
+                    completed_at  TEXT NOT NULL,
+                    result        TEXT NOT NULL,
+                    deleted_count INTEGER NOT NULL,
+                    error         TEXT
+                )
+                """)
+            audit_columns = {
+                str(row["name"])
+                for row in self._conn.execute(
+                    "PRAGMA table_info(session_delete_audits)"
+                ).fetchall()
+            }
+            if "message_ids_json" not in audit_columns:
+                self._conn.execute(
+                    "ALTER TABLE session_delete_audits ADD COLUMN "
+                    "message_ids_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "compactions_json" not in audit_columns:
+                self._conn.execute(
+                    "ALTER TABLE session_delete_audits ADD COLUMN "
+                    "compactions_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_session_delete_audits_time
+                ON session_delete_audits(completed_at, audit_id)
                 """)
             self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
@@ -2000,117 +2058,409 @@ class SessionStore:
             return None
         return self.get_session_meta(key)
 
-    def delete_session(self, key: str, *, cascade: bool = False) -> bool:
+    @staticmethod
+    def _normalize_delete_targets(keys: list[str]) -> tuple[str, ...]:
+        targets: list[str] = []
+        for raw_key in keys:
+            key = str(raw_key).strip()
+            if key and key not in targets:
+                targets.append(key)
+        return tuple(targets)
+
+    @staticmethod
+    def _normalize_action_source(action_source: str) -> str:
+        if not isinstance(action_source, str) or not action_source.strip():
+            raise ValueError("action_source 必须是非空字符串")
+        return action_source.strip()
+
+    @staticmethod
+    def _delete_audit_value(
+        *,
+        audit_id: str,
+        targets: tuple[str, ...],
+        message_ids: tuple[str, ...],
+        compactions: tuple[dict[str, Any], ...],
+        action_source: str,
+        cascade: bool,
+        backup_path: Path | None,
+        started_at: str,
+        result: str,
+        deleted_count: int,
+        error: str | None = None,
+    ) -> SessionDeleteAudit:
+        return SessionDeleteAudit(
+            audit_id=audit_id,
+            targets=targets,
+            message_ids=message_ids,
+            compactions=compactions,
+            action_source=action_source,
+            cascade=cascade,
+            backup_path=str(backup_path) if backup_path is not None else None,
+            started_at=started_at,
+            completed_at=datetime.now().astimezone().isoformat(),
+            result=result,
+            deleted_count=deleted_count,
+            error=error,
+        )
+
+    def _insert_delete_audit_locked(self, audit: SessionDeleteAudit) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO session_delete_audits(
+                audit_id, targets_json, message_ids_json, compactions_json,
+                action_source, cascade, backup_path, started_at, completed_at,
+                result, deleted_count, error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                audit.audit_id,
+                json.dumps(list(audit.targets), ensure_ascii=False),
+                json.dumps(list(audit.message_ids), ensure_ascii=False),
+                json.dumps(list(audit.compactions), ensure_ascii=False),
+                audit.action_source,
+                int(audit.cascade),
+                audit.backup_path,
+                audit.started_at,
+                audit.completed_at,
+                audit.result,
+                audit.deleted_count,
+                audit.error,
+            ),
+        )
+
+    def _persist_delete_audit(self, audit: SessionDeleteAudit) -> None:
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
-                self._require_sessions_not_admitted_locked([key])
-                if not cascade:
-                    row = self._conn.execute(
-                        """
-                        SELECT
-                            (SELECT COUNT(1) FROM messages WHERE session_key = ?) +
-                            (SELECT COUNT(1) FROM turns WHERE session_key = ?) AS c
-                        """,
-                        (key, key),
-                    ).fetchone()
-                    count = int((row["c"] if row else 0) or 0)
-                    if count > 0:
-                        raise ValueError(
-                            "session 下仍有 messages 或 turns，需使用 cascade 删除"
-                        )
-                else:
-                    if self._has_message_embeddings_locked():
-                        self._conn.execute(
-                            """
-                            DELETE FROM message_embeddings
-                            WHERE message_id IN (
-                                SELECT id FROM messages WHERE session_key = ?
-                            )
-                            """,
-                            (key,),
-                        )
-                    self._conn.execute(
-                        "DELETE FROM messages WHERE session_key = ?",
-                        (key,),
-                    )
-                    self._conn.execute(
-                        "DELETE FROM turns WHERE session_key = ?",
-                        (key,),
-                    )
-                    self._conn.execute(
-                        "DELETE FROM session_compactions WHERE session_key = ?",
-                        (key,),
-                    )
-                cur = self._conn.execute(
-                    "DELETE FROM sessions WHERE key = ?",
-                    (key,),
-                )
+                self._insert_delete_audit_locked(audit)
                 self._conn.commit()
             except BaseException:
                 self._conn.rollback()
                 raise
-        return cur.rowcount > 0
 
-    def delete_sessions_batch(self, keys: list[str], *, cascade: bool = False) -> int:
-        clean_keys = [str(key).strip() for key in keys if str(key).strip()]
-        if not clean_keys:
-            return 0
-        placeholders = ",".join("?" for _ in clean_keys)
+    def _row_to_delete_audit(self, row: sqlite3.Row) -> SessionDeleteAudit:
+        targets = _decode_json_payload(
+            row["targets_json"],
+            fallback="[]",
+            field="session delete audit targets",
+            identifier=str(row["audit_id"]),
+        )
+        if not isinstance(targets, list) or not all(
+            isinstance(target, str) and target for target in targets
+        ):
+            raise ValueError(f"session delete audit targets 无效: {row['audit_id']}")
+        message_ids = _decode_json_payload(
+            row["message_ids_json"],
+            fallback="[]",
+            field="session delete audit message ids",
+            identifier=str(row["audit_id"]),
+        )
+        if not isinstance(message_ids, list) or not all(
+            isinstance(message_id, str) and message_id for message_id in message_ids
+        ):
+            raise ValueError(
+                f"session delete audit message ids 无效: {row['audit_id']}"
+            )
+        compactions = _decode_json_payload(
+            row["compactions_json"],
+            fallback="[]",
+            field="session delete audit compactions",
+            identifier=str(row["audit_id"]),
+        )
+        if not isinstance(compactions, list) or not all(
+            isinstance(item, dict)
+            and isinstance(item.get("session_key"), str)
+            and isinstance(item.get("generation"), int)
+            and isinstance(item.get("parent_generation"), int)
+            and isinstance(item.get("source_ref"), str)
+            and isinstance(item.get("source_message_ids"), list)
+            for item in compactions
+        ):
+            raise ValueError(
+                f"session delete audit compactions 无效: {row['audit_id']}"
+            )
+        return SessionDeleteAudit(
+            audit_id=str(row["audit_id"]),
+            targets=tuple(cast(str, target) for target in targets),
+            message_ids=tuple(cast(str, message_id) for message_id in message_ids),
+            compactions=tuple(cast(dict[str, Any], item) for item in compactions),
+            action_source=str(row["action_source"]),
+            cascade=bool(int(row["cascade"])),
+            backup_path=(
+                str(row["backup_path"]) if row["backup_path"] is not None else None
+            ),
+            started_at=str(row["started_at"]),
+            completed_at=str(row["completed_at"]),
+            result=str(row["result"]),
+            deleted_count=int(row["deleted_count"]),
+            error=str(row["error"]) if row["error"] is not None else None,
+        )
+
+    def get_session_delete_audit(self, audit_id: str) -> SessionDeleteAudit | None:
         with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                self._require_sessions_not_admitted_locked(clean_keys)
-                if not cascade:
-                    row = self._conn.execute(
-                        f"""
-                        SELECT
-                            (SELECT COUNT(1) FROM messages
-                             WHERE session_key IN ({placeholders})) +
-                            (SELECT COUNT(1) FROM turns
-                             WHERE session_key IN ({placeholders})) AS c
-                        """,
-                        tuple([*clean_keys, *clean_keys]),
-                    ).fetchone()
-                    count = int((row["c"] if row else 0) or 0)
-                    if count > 0:
-                        raise ValueError(
-                            "选中的 session 中仍有 messages 或 turns，需使用 cascade 删除"
+            row = self._conn.execute(
+                "SELECT * FROM session_delete_audits WHERE audit_id = ?",
+                (audit_id,),
+            ).fetchone()
+        return None if row is None else self._row_to_delete_audit(row)
+
+    def list_session_delete_audits(self, *, limit: int = 100) -> list[SessionDeleteAudit]:
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            raise ValueError("session delete audit limit 必须是正整数")
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM session_delete_audits
+                ORDER BY completed_at DESC, audit_id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._row_to_delete_audit(row) for row in rows]
+
+    def _snapshot_delete_lineage_locked(
+        self,
+        targets: tuple[str, ...],
+    ) -> tuple[tuple[str, ...], tuple[dict[str, Any], ...]]:
+        """Capture canonical message IDs and compaction lineage before deletion."""
+
+        placeholders = ",".join("?" for _ in targets)
+        message_rows = self._conn.execute(
+            f"""
+            SELECT id
+            FROM messages
+            WHERE session_key IN ({placeholders})
+            ORDER BY session_key, seq
+            """,
+            targets,
+        ).fetchall()
+        compaction_rows = self._conn.execute(
+            f"""
+            SELECT *
+            FROM session_compactions
+            WHERE session_key IN ({placeholders})
+            ORDER BY session_key, generation
+            """,
+            targets,
+        ).fetchall()
+        compactions: list[dict[str, Any]] = []
+        for row in compaction_rows:
+            checkpoint = self._row_to_compaction(row)
+            compactions.append(
+                {
+                    "session_key": checkpoint.session_key,
+                    "generation": checkpoint.generation,
+                    "parent_generation": checkpoint.parent_generation,
+                    "source_ref": checkpoint.source_ref,
+                    "source_message_ids": list(checkpoint.source_message_ids),
+                }
+            )
+        return (
+            tuple(str(row["id"]) for row in message_rows),
+            tuple(compactions),
+        )
+
+    def _delete_sessions_with_audit(
+        self,
+        targets: tuple[str, ...],
+        *,
+        cascade: bool,
+        action_source: str,
+    ) -> SessionDeleteAudit:
+        action_source = self._normalize_action_source(action_source)
+        audit_id = uuid4().hex
+        started_at = datetime.now().astimezone().isoformat()
+        backup_path: Path | None = None
+        message_ids: tuple[str, ...] = ()
+        compactions: tuple[dict[str, Any], ...] = ()
+        try:
+            with self._lock:
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    if not targets:
+                        audit = self._delete_audit_value(
+                            audit_id=audit_id,
+                            targets=targets,
+                            message_ids=message_ids,
+                            compactions=compactions,
+                            action_source=action_source,
+                            cascade=cascade,
+                            backup_path=None,
+                            started_at=started_at,
+                            result="not_found",
+                            deleted_count=0,
                         )
-                else:
-                    if self._has_message_embeddings_locked():
+                        self._insert_delete_audit_locked(audit)
+                        self._conn.commit()
+                        return audit
+
+                    # 1. 读取待删除 lineage，并在同一写事务中确认 admission。
+                    placeholders = ",".join("?" for _ in targets)
+                    existing_rows = self._conn.execute(
+                        f"SELECT key FROM sessions WHERE key IN ({placeholders})",
+                        targets,
+                    ).fetchall()
+                    if not existing_rows:
+                        audit = self._delete_audit_value(
+                            audit_id=audit_id,
+                            targets=targets,
+                            message_ids=message_ids,
+                            compactions=compactions,
+                            action_source=action_source,
+                            cascade=cascade,
+                            backup_path=None,
+                            started_at=started_at,
+                            result="not_found",
+                            deleted_count=0,
+                        )
+                        self._insert_delete_audit_locked(audit)
+                        self._conn.commit()
+                        return audit
+
+                    message_ids, compactions = self._snapshot_delete_lineage_locked(
+                        targets
+                    )
+                    self._require_sessions_not_admitted_locked(list(targets))
+
+                    if not cascade:
+                        row = self._conn.execute(
+                            f"""
+                            SELECT
+                                (SELECT COUNT(1) FROM messages
+                                 WHERE session_key IN ({placeholders})) +
+                                (SELECT COUNT(1) FROM turns
+                                 WHERE session_key IN ({placeholders})) +
+                                (SELECT COUNT(1) FROM session_compactions
+                                 WHERE session_key IN ({placeholders})) AS c
+                            """,
+                            tuple([*targets, *targets, *targets]),
+                        ).fetchone()
+                        count = int((row["c"] if row else 0) or 0)
+                        if count > 0:
+                            raise ValueError(
+                                "选中的 session 仍有 messages 或 turns/compactions，"
+                                "需使用 cascade 删除"
+                            )
+
+                    # 2. 在任何物理减少前创建并校验不可覆盖的完整快照。
+                    backup_path = self._backup_before_session_delete_locked()
+                    if cascade and self._has_message_embeddings_locked():
                         self._conn.execute(
                             f"""
                             DELETE FROM message_embeddings
                             WHERE message_id IN (
-                                SELECT id
-                                FROM messages
+                                SELECT id FROM messages
                                 WHERE session_key IN ({placeholders})
                             )
                             """,
-                            tuple(clean_keys),
+                            targets,
                         )
-                    self._conn.execute(
-                        f"DELETE FROM messages WHERE session_key IN ({placeholders})",
-                        tuple(clean_keys),
+                    if cascade:
+                        self._conn.execute(
+                            f"DELETE FROM messages WHERE session_key IN ({placeholders})",
+                            targets,
+                        )
+                        self._conn.execute(
+                            f"DELETE FROM turns WHERE session_key IN ({placeholders})",
+                            targets,
+                        )
+                        self._conn.execute(
+                            f"DELETE FROM session_compactions WHERE session_key IN ({placeholders})",
+                            targets,
+                        )
+                    cur = self._conn.execute(
+                        f"DELETE FROM sessions WHERE key IN ({placeholders})",
+                        targets,
                     )
-                    self._conn.execute(
-                        f"DELETE FROM turns WHERE session_key IN ({placeholders})",
-                        tuple(clean_keys),
+                    audit = self._delete_audit_value(
+                        audit_id=audit_id,
+                        targets=targets,
+                        message_ids=message_ids,
+                        compactions=compactions,
+                        action_source=action_source,
+                        cascade=cascade,
+                        backup_path=backup_path,
+                        started_at=started_at,
+                        result="committed",
+                        deleted_count=int(cur.rowcount or 0),
                     )
-                    self._conn.execute(
-                        f"DELETE FROM session_compactions WHERE session_key IN ({placeholders})",
-                        tuple(clean_keys),
-                    )
-                cur = self._conn.execute(
-                    f"DELETE FROM sessions WHERE key IN ({placeholders})",
-                    tuple(clean_keys),
-                )
-                self._conn.commit()
-            except BaseException:
-                self._conn.rollback()
-                raise
-        return int(cur.rowcount or 0)
+                    self._insert_delete_audit_locked(audit)
+                    self._conn.commit()
+                    return audit
+                except BaseException:
+                    self._conn.rollback()
+                    raise
+        except BaseException as exc:
+            failed = self._delete_audit_value(
+                audit_id=audit_id,
+                targets=targets,
+                message_ids=message_ids,
+                compactions=compactions,
+                action_source=action_source,
+                cascade=cascade,
+                backup_path=backup_path,
+                started_at=started_at,
+                result="rejected" if isinstance(exc, ValueError) else "failed",
+                deleted_count=0,
+                error=str(exc),
+            )
+            self._persist_delete_audit(failed)
+            setattr(exc, "audit_id", audit_id)
+            if isinstance(exc, SessionAdmissionConflictError):
+                exc.audit_id = audit_id
+            raise
+
+    def delete_session_with_audit(
+        self,
+        key: str,
+        *,
+        cascade: bool = False,
+        action_source: str = "session.store.delete_session",
+    ) -> SessionDeleteAudit:
+        return self._delete_sessions_with_audit(
+            self._normalize_delete_targets([key]),
+            cascade=cascade,
+            action_source=action_source,
+        )
+
+    def delete_session(
+        self,
+        key: str,
+        *,
+        cascade: bool = False,
+        action_source: str = "session.store.delete_session",
+    ) -> bool:
+        return self.delete_session_with_audit(
+            key,
+            cascade=cascade,
+            action_source=action_source,
+        ).result == "committed"
+
+    def delete_sessions_batch_with_audit(
+        self,
+        keys: list[str],
+        *,
+        cascade: bool = False,
+        action_source: str = "session.store.delete_sessions_batch",
+    ) -> SessionDeleteAudit:
+        return self._delete_sessions_with_audit(
+            self._normalize_delete_targets(keys),
+            cascade=cascade,
+            action_source=action_source,
+        )
+
+    def delete_sessions_batch(
+        self,
+        keys: list[str],
+        *,
+        cascade: bool = False,
+        action_source: str = "session.store.delete_sessions_batch",
+    ) -> int:
+        return self.delete_sessions_batch_with_audit(
+            keys,
+            cascade=cascade,
+            action_source=action_source,
+        ).deleted_count
 
     def acquire_session_admission(self, key: str, admission_id: str) -> bool:
         """仅在会话仍存在时创建处理租约，并阻止并发删除。"""
@@ -2721,31 +3071,38 @@ class SessionStore:
             return self.get_message(message_id)
 
         with self._lock:
-            row = self._conn.execute(
-                "SELECT session_key, role, content FROM messages WHERE id = ?",
-                (message_id,),
-            ).fetchone()
-            if row is None:
-                return None
-            session_key = str(row["session_key"])
-            if extra is not None:
-                _validate_new_message_extra(
-                    role if role is not None else row["role"],
-                    extra,
-                    message_id,
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT session_key, role, content FROM messages WHERE id = ?",
+                    (message_id,),
+                ).fetchone()
+                if row is None:
+                    self._conn.rollback()
+                    return None
+                session_key = str(row["session_key"])
+                self._require_sessions_not_admitted_locked([session_key])
+                if extra is not None:
+                    _validate_new_message_extra(
+                        role if role is not None else row["role"],
+                        extra,
+                        message_id,
+                    )
+                params.append(message_id)
+                cur = self._conn.execute(
+                    f"UPDATE messages SET {', '.join(set_parts)} WHERE id = ?",
+                    tuple(params),
                 )
-            params.append(message_id)
-            cur = self._conn.execute(
-                f"UPDATE messages SET {', '.join(set_parts)} WHERE id = ?",
-                tuple(params),
-            )
-            if content is not None and content != str(row["content"] or ""):
-                self._delete_message_embeddings_locked([message_id])
-            self._conn.execute(
-                "UPDATE sessions SET updated_at = ? WHERE key = ?",
-                (datetime.now().astimezone().isoformat(), session_key),
-            )
-            self._conn.commit()
+                if content is not None and content != str(row["content"] or ""):
+                    self._delete_message_embeddings_locked([message_id])
+                self._conn.execute(
+                    "UPDATE sessions SET updated_at = ? WHERE key = ?",
+                    (datetime.now().astimezone().isoformat(), session_key),
+                )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
         if cur.rowcount <= 0:
             return None
         return self.get_message(message_id)
@@ -2939,9 +3296,19 @@ class SessionStore:
         return deletion
 
     def _backup_before_interaction_delete_locked(self) -> Path:
-        """创建并验证删除前的完整 SessionDB SQLite 快照。"""
+        """创建 interaction 删除前的完整 SessionDB SQLite 快照。"""
 
-        backup_root = Path(self.db_path).parent / "backups" / "interaction-deletions"
+        return self._backup_before_delete_locked("interaction-deletions")
+
+    def _backup_before_session_delete_locked(self) -> Path:
+        """创建 session 删除前的完整 SessionDB SQLite 快照。"""
+
+        return self._backup_before_delete_locked("session-deletions")
+
+    def _backup_before_delete_locked(self, category: str) -> Path:
+        """在事务尚未写入时创建并验证不可覆盖的 SQLite 快照。"""
+
+        backup_root = Path(self.db_path).parent / "backups" / category
         backup_root.mkdir(parents=True, exist_ok=True)
         backup_id = uuid4().hex
         backup_path = backup_root / f"sessions-{backup_id}.db"
@@ -2958,7 +3325,7 @@ class SessionStore:
                     rows = target.execute("PRAGMA integrity_check").fetchall()
                     if rows != [("ok",)]:
                         raise RuntimeError(
-                            f"interaction 删除备份 integrity_check 失败: {rows[:3]}"
+                            f"{category} 删除备份 integrity_check 失败: {rows[:3]}"
                         )
                 finally:
                     target.close()
