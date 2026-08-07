@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from agent.config_models import Config
-from agent.model_runtime.context_policy import build_runtime_context_budget
 from agent.provider import LLMProvider
 from agent.tools.meta import register_memory_meta_tools
 from agent.tools.registry import ToolRegistry
@@ -17,6 +16,8 @@ from core.memory.plugin import (
 )
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
+
+_MARKDOWN_KEEP_COUNT = 40
 
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
@@ -100,7 +101,7 @@ def build_memory_runtime(
         workspace=workspace,
         provider=provider,
         model=config.model,
-        keep_count=_memory_keep_count(config.memory_window),
+        keep_count=_memory_keep_count(_MARKDOWN_KEEP_COUNT),
         consolidation_input_budget=_consolidation_input_budget(config),
         provider_system_prompt=config.system_prompt,
         event_bus=event_publisher,
@@ -149,7 +150,7 @@ def build_memory_admin_runtime(
         workspace=workspace,
         provider=provider,
         model=config.model,
-        keep_count=_memory_keep_count(config.memory_window),
+        keep_count=_memory_keep_count(_MARKDOWN_KEEP_COUNT),
         consolidation_input_budget=_consolidation_input_budget(config),
         provider_system_prompt=config.system_prompt,
         event_bus=event_publisher,
@@ -191,20 +192,20 @@ def _consolidation_input_budget(config: Config) -> int | None:
     if not config.model_runtimes:
         if config.context_window <= 0:
             return None
-        return build_runtime_context_budget(
-            config.context_window,
-            config.effective_context_percent,
-            1024,
-        ).input_budget
+        return _hard_input_budget(config.context_window, 1024)
     # 2. 两个步骤均最多输出 1024 tokens，取更小输入预算作为分页上限。
     budgets = []
     for runtime_id in sorted(runtime_ids):
         runtime = config.model_runtimes[runtime_id]
-        budgets.append(
-            build_runtime_context_budget(
-                runtime.context_window,
-                runtime.effective_context_percent,
-                1024,
-            ).input_budget
-        )
+        budgets.append(_hard_input_budget(runtime.context_window, 1024))
     return min(budgets)
+
+
+def _hard_input_budget(context_window: int, max_output_tokens: int) -> int:
+    """Compute the direct context-window input edge for a fixed output reserve."""
+
+    if context_window <= 0:
+        raise ValueError("context_window 必须大于 0")
+    if max_output_tokens < 0 or max_output_tokens >= context_window:
+        raise ValueError("max_output_tokens 必须小于 context_window")
+    return context_window - max_output_tokens

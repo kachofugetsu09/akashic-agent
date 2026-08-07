@@ -34,7 +34,6 @@ from agent.config_models import (
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.config_loader import ProactiveConfigError, load_proactive_config
 from agent.model_runtime.auth.store import CredentialStore
-from agent.model_runtime.context_policy import recommended_context_settings
 from agent.model_runtime.provider_profiles import get_provider_profile
 
 _PRESETS: dict[str, str] = {
@@ -160,7 +159,6 @@ def load_config(
         max_iterations=int(
             agent_cfg.get("max_iterations", data.get("max_iterations", 10))
         ),
-        memory_window=_load_memory_window(data, agent_context, llm_main),
         context_compaction=compaction,
         base_url=_model_base_url(
             provider, llm_main.get("base_url")
@@ -234,10 +232,6 @@ def load_config(
         context_window=int(llm_main.get("context_window") or 0),
         reasoning_effort=str(llm_main.get("reasoning_effort") or ""),
         input_modalities=tuple(str(item) for item in llm_main.get("input_modalities", ["text"])),
-        effective_context_percent=float(llm_main.get("effective_context_percent", 0.9)),
-        compaction_trigger_percent=float(
-            llm_main.get("compaction_trigger_percent", 0.74)
-        ),
         use_responses_lite=_as_bool(
             llm_main.get("use_responses_lite", False),
             field="llm.main.use_responses_lite",
@@ -502,10 +496,27 @@ def _reject_removed_context_configuration(
     """Fail loudly when a pre-ledger context key bypasses migration."""
 
     # 1. Legacy message-count and runtime-percent keys are no longer accepted.
-    if "memory_window" in data or "memory_window" in agent_context:
+    raw_compaction = agent_context.get("compaction")
+    if (
+        "memory_window" in data
+        or "memory_window" in agent_context
+        or (isinstance(raw_compaction, dict) and "memory_window" in raw_compaction)
+    ):
         raise ValueError(
             "removed configuration: memory_window; run the session compaction migration"
         )
+    for location, raw in (
+        ("llm", llm),
+        ("llm.main", _as_dict(llm.get("main"), field="llm.main")
+         if isinstance(llm.get("main"), dict)
+         else {}),
+    ):
+        for key in ("effective_context_percent", "compaction_trigger_percent"):
+            if key in raw:
+                raise ValueError(
+                    "removed configuration: "
+                    f"{location}.{key}; run the session compaction migration"
+                )
     runtimes = llm.get("runtimes")
     if isinstance(runtimes, dict):
         for runtime_id, raw in runtimes.items():
@@ -629,10 +640,6 @@ def _load_llm_runtimes(
                 field=f"llm.runtimes.{runtime_id}.max_output_tokens",
             ),
             input_modalities=tuple(modalities),
-            effective_context_percent=float(item.get("effective_context_percent", 0.9)),
-            compaction_trigger_percent=float(
-                item.get("compaction_trigger_percent", 0.74)
-            ),
             use_responses_lite=_as_bool(
                 item.get("use_responses_lite", False),
                 field=f"llm.runtimes.{runtime_id}.use_responses_lite",
@@ -650,22 +657,6 @@ def _load_llm_runtimes(
             ),
         )
     return main_value, raw_main, parsed
-
-
-def _load_memory_window(data: dict, agent_context: dict, llm_main: dict) -> int:
-    """显式配置优先，否则根据主模型有效上下文推导历史窗口。"""
-
-    # 1. 保留现有配置的精确覆盖语义。
-    configured = agent_context.get("memory_window", data.get("memory_window"))
-    if configured is not None:
-        return int(configured)
-
-    # 2. 新 runtime 自动使用统一上下文策略；旧配置继续沿用 40。
-    context_window = int(llm_main.get("context_window") or 0)
-    if context_window <= 0:
-        return 40
-    effective_percent = float(llm_main.get("effective_context_percent", 0.9))
-    return recommended_context_settings(context_window, effective_percent).memory_window
 
 
 def _load_role_runtime(

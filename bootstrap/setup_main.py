@@ -23,7 +23,6 @@ _MANAGED_KEYS = {
     "enable_thinking",
     "context_window",
     "max_context_window",
-    "effective_context_percent",
     "max_output_tokens",
     "input_modalities",
     "use_responses_lite",
@@ -43,7 +42,6 @@ def run_main_model_setup(config_path: Path, workspace: Path) -> None:
     _phase_main_llm(
         answers,
         configure_vl=False,
-        prompt_memory_window=False,
         reuse_codex_auth=True,
     )
     # 2. 由保留注释的 TOML 文档模型定点更新并验证。
@@ -79,7 +77,6 @@ def patch_main_model_config(original: str, answers: WizardAnswers) -> str:
         "model": answers.model,
         "base_url": answers.base_url,
         "context_window": answers.context_window,
-        "effective_context_percent": answers.effective_context_percent,
         "max_output_tokens": answers.max_output_tokens,
         "input_modalities": ["text", "image"] if answers.multimodal else ["text"],
     }
@@ -104,9 +101,11 @@ def patch_main_model_config(original: str, answers: WizardAnswers) -> str:
 
     # 2. 角色只切 main；旧 inline table 被文档模型直接替换。
     llm["main"] = runtime_id
-    _table(_table(document, "agent"), "context")["memory_window"] = (
-        answers.memory_window
-    )
+    context = _table(_table(document, "agent"), "context")
+    context.pop("memory_window", None)
+    compaction = _table(context, "compaction")
+    compaction.setdefault("trigger_percent", 0.74)
+    compaction.setdefault("keep_recent_tokens", 20000)
     return tomlkit.dumps(document)
 
 
