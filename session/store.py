@@ -873,23 +873,9 @@ class SessionStore:
                 VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(key) DO UPDATE SET
                     updated_at = excluded.updated_at,
-                    last_consolidated = excluded.last_consolidated,
                     metadata = excluded.metadata
                 """,
                 (key, created_at, updated_at, int(last_consolidated), payload),
-            )
-            self._conn.commit()
-
-    def update_last_consolidated(self, key: str, last_consolidated: int) -> None:
-        now = datetime.now().astimezone().isoformat()
-        with self._lock:
-            self._conn.execute(
-                """
-                UPDATE sessions
-                SET last_consolidated = ?, updated_at = ?
-                WHERE key = ?
-                """,
-                (int(last_consolidated), now, key),
             )
             self._conn.commit()
 
@@ -1887,6 +1873,10 @@ class SessionStore:
         last_user_at: str | None = None,
         last_proactive_at: str | None = None,
     ) -> dict[str, Any] | None:
+        if last_consolidated is not None:
+            raise ValueError(
+                "last_consolidated 只能由 session compaction ledger 推进"
+            )
         set_parts = ["updated_at = ?"]
         params: list[Any] = [datetime.now().astimezone().isoformat()]
         if metadata is not None:
@@ -2338,7 +2328,6 @@ class SessionStore:
                     VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT(key) DO UPDATE SET
                         updated_at = excluded.updated_at,
-                        last_consolidated = excluded.last_consolidated,
                         metadata = excluded.metadata
                     """,
                     (key, created_at, updated_at, int(last_consolidated), metadata_payload),

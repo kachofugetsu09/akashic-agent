@@ -669,3 +669,31 @@ def test_legacy_react_compaction_extra_is_preserved_without_runtime_read(tmp_pat
         "compacted_tool_groups": 999,
         "summary": "old",
     }
+
+
+def test_session_save_cannot_regress_ledger_cursor(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store.create_session(key="cli:stale-save")
+    _ = store.persist_compaction(
+        **_compaction_kwargs("cli:stale-save", generation=1),
+        parent_generation=0,
+    )
+
+    store.persist_session(
+        "cli:stale-save",
+        created_at=NOW.isoformat(),
+        updated_at=NOW.isoformat(),
+        last_consolidated=0,
+        metadata={},
+        messages=[],
+    )
+
+    assert store.get_session_meta("cli:stale-save")["last_consolidated"] == 1
+
+
+def test_dashboard_cursor_mutation_is_rejected(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store.create_session(key="cli:manual-cursor")
+
+    with pytest.raises(ValueError, match="只能由 session compaction ledger"):
+        store.update_session("cli:manual-cursor", last_consolidated=1)
