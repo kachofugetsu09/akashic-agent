@@ -4,7 +4,7 @@
 - 日期：2026-08-06
 - 关联条款：SES-007～SES-008、MEM-010、RUN-008、OUT-005
 - supersedes：无
-- superseded by：上下文压缩部分由 [0027](0027-session-context-compaction-ledger.md) 取代
+- superseded by：上下文压缩部分由 [0030](0030-session-context-compaction-ledger.md) 取代
 
 ## 背景
 

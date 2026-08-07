@@ -356,6 +356,13 @@ retained tail、usage、失效字段和模型容量；`sessions.last_consolidate
 当前模型失败后使用配置的 main/default fallback；两者失败时阻断。旧
 `react_compaction` 字节保留但不再读取或生成；压缩不得 UPDATE 或 DELETE 既有消息。
 
+Included checkpoint 在跨文件 effect 前必须先写入 session-incarnation scoped
+`session_compaction_prepares`，再以 immutable receipt 保护 Markdown/ledger crash saga。
+存在 pending prepare 时，message 撤销、interaction 删除和 session cascade 等破坏性管理
+操作必须阻断，并从管理入口返回 `409 session_compaction_pending` 与 audit identity；不得
+通过删除 source rows 绕过 fence。只有成功提交、receipt recovery 或确定性的无 receipt
+orphan recovery 可以清除 prepare。
+
 ### SES-001 回合持久化全有或全无
 
 同一批 session metadata、消息和序列分配必须在一个事务中提交。completed 被动 turn 的批次可以包含多个有序 user message 和唯一 terminal assistant；任一步失败时数据库不出现半批消息，内存对象也不得获得并不存在的稳定 ID。
@@ -503,6 +510,12 @@ Provider connection 的 Base URL、API Key、Codex access/refresh token 与账�
 ### RUN-011 模型能力来自带来源的注册表
 
 Codex、OpenCode 等 provider 权威目录优先提供模型能力；其余已知模型使用仓库固定版本的公共模型目录派生快照。显式高级覆盖只覆盖对应字段。每个能力字段保留来源，未知字段保持 unknown，不猜测多模态、上下文窗口或输出上限。上下文窗口 unknown 时关闭依赖确定窗口的主动压缩和本地硬预算，保留 provider 的明确错误；不得要求普通 onboarding 为已识别模型重复填写这些字段。
+
+`model_definitions.context_window`、`max_output_tokens` 及其字段级 source 是预算 owner
+读取的 capability snapshot。遗留 `effective_context_percent` 和
+`compaction_trigger_percent` 列仅为 v1 SQLite schema identity 保留，读写完全惰性，不
+参与配置加载、模型能力解析、generation 选择或 Context Gate；任何新配置不得把它们当作
+有效能力或 compaction policy。
 
 ### RUN-012 Provider usage 使用统一且带覆盖率的结果
 

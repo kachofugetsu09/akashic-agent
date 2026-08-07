@@ -3,7 +3,7 @@
 - 状态：implemented（2026-07-31，PR #273）
 - 确认日期：2026-07-31
 - 关联条款：MEM-009、CTRL-002
-- 2026-08-08 对账：上下文压缩入口由 [0027](../decisions/0027-session-context-compaction-ledger.md)
+- 2026-08-08 对账：上下文压缩入口由 [0030](../decisions/0030-session-context-compaction-ledger.md)
   取代旧 Markdown 后台维护；session-local checkpoint 仍可生成，但 excluded session 不得
   prepare/commit Markdown、PENDING 或 `ConsolidationCommitted`。
 

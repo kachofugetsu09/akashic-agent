@@ -92,6 +92,12 @@ LiteLLM 曾发生 `1.82.7`、`1.82.8` PyPI 供应链事故，因此这两个版�
 
 通用 Base URL 先由 `genai-prices` 的 provider API 正则识别，随后用 LiteLLM 的 provider/model key 解析能力。无法确定 provider/model 时保持 unknown。Unknown runtime 的 `context_window=0`、`max_output_tokens=0`、文本输入基线只代表当前请求形状，不声明模型没有其他能力；UI 显示“能力未知”，Core 关闭主动压缩和硬预算，让 provider 错误保持原义。任意自建网关可隐藏或改名上游模型，不能仅凭 Base URL 保证识别；这种情况不得猜测。
 
+模型注册表中的 `context_window`、`max_output_tokens` 和各自字段级 source 是运行时预算
+owner 的 capability snapshot。`model_definitions` 遗留的
+`effective_context_percent`/`compaction_trigger_percent` 列只为 v1 schema identity 保留，
+读写完全惰性，不参与配置、能力解析、generation 或 session compaction policy；新的
+model/config flow 不得把它们当作有效能力。
+
 Custom API 的 transport provider 继续是 `openai` 兼容协议，注册表另存 `catalog_provider_id`。已知 Base URL 可把它解析成 `deepseek`、`openrouter` 等 usage/catalog 身份，但不得借此更换 wire transport 或重试策略。
 
 ## 6. Usage 归一化
