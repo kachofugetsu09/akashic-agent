@@ -1,6 +1,6 @@
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
-from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +17,28 @@ from tests.memory_fakes import FakeMemoryEngine
 from tests.provider_fakes import ProviderContextBudgetStub
 from tests.test_session_compaction_runtime import _MarkdownCompactionProbe
 from session.manager import SessionManager
+from core.memory.markdown import (
+    MarkdownMemoryMaintenance,
+    MarkdownMemoryRuntime,
+    MarkdownMemoryStore,
+)
+from core.memory.runtime import MemoryRuntime
+
+
+def _memory_runtime(
+    workspace: Path,
+    engine: FakeMemoryEngine,
+    maintenance: _MarkdownCompactionProbe,
+) -> MemoryRuntime:
+    """Build the real runtime envelope around the narrow Markdown probe."""
+
+    return MemoryRuntime(
+        engine=engine,
+        markdown=MarkdownMemoryRuntime(
+            store=MarkdownMemoryStore(workspace),
+            maintenance=cast(MarkdownMemoryMaintenance, maintenance),
+        ),
+    )
 
 
 class _Provider(ProviderContextBudgetStub):
@@ -66,10 +88,7 @@ async def test_spawn_completion_updates_original_session_without_raw_result(tmp_
             session_manager=session_manager,
             workspace=tmp_path,
             memory_services=MemoryServices(engine=engine),
-            memory_runtime=SimpleNamespace(
-                engine=engine,
-                markdown=SimpleNamespace(store=engine, maintenance=markdown),
-            ),
+            memory_runtime=_memory_runtime(tmp_path, engine, markdown),
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=3)),
     )
@@ -127,10 +146,7 @@ async def test_spawn_completion_retry_count_one_disables_retry_guidance(tmp_path
             session_manager=session_manager,
             workspace=tmp_path,
             memory_services=MemoryServices(engine=engine),
-            memory_runtime=SimpleNamespace(
-                engine=engine,
-                markdown=SimpleNamespace(store=engine, maintenance=markdown),
-            ),
+            memory_runtime=_memory_runtime(tmp_path, engine, markdown),
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=3)),
     )
@@ -180,10 +196,7 @@ async def test_spawn_completion_uses_session_compaction_gate(tmp_path):
             session_manager=session_manager,
             workspace=tmp_path,
             memory_services=MemoryServices(engine=engine),
-            memory_runtime=SimpleNamespace(
-                engine=engine,
-                markdown=SimpleNamespace(store=engine, maintenance=markdown),
-            ),
+            memory_runtime=_memory_runtime(tmp_path, engine, markdown),
         ),
         AgentLoopConfig(
             llm=LLMConfig(max_iterations=3),
