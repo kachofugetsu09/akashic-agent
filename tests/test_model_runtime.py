@@ -35,6 +35,7 @@ from agent.model_runtime.transports.responses import (
 )
 from agent.model_runtime.types import ModelRequest, ModelUsage, UsageCoverage
 from agent.model_runtime.usage import aggregate_usage
+from agent.provider import LLMProvider, _assemble_chat_messages
 from bootstrap.setup_wizard import WizardAnswers, _persist_answer_credentials, _render_config
 from session.store import _decode_message_extra
 
@@ -93,6 +94,57 @@ def test_context_budget_and_runtime_config_share_the_same_boundary() -> None:
             context_window=10_000,
             max_output_tokens=10_000,
         )
+
+
+def test_provider_estimator_matches_chat_system_message_assembly() -> None:
+    provider = LLMProvider(
+        api_key="test",
+        system_prompt="runtime system " * 40,
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    user_message = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "请看图"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,AAAA", "detail": "low"},
+            },
+        ],
+    }
+    explicit_system = {"role": "system", "content": "caller system"}
+
+    without_system = provider.estimate_context_tokens([user_message], tools)
+    with_explicit_system = provider.estimate_context_tokens(
+        [explicit_system, user_message],
+        tools,
+    )
+    caller_owned = LLMProvider(api_key="test").estimate_context_tokens(
+        [explicit_system, user_message],
+        tools,
+    )
+
+    assert _assemble_chat_messages(
+        "runtime system", [explicit_system, user_message]
+    ) == [
+        {"role": "system", "content": "caller system"},
+        user_message,
+    ]
+    assert _assemble_chat_messages("runtime system", [user_message])[0] == {
+        "role": "system",
+        "content": "runtime system",
+    }
+    assert with_explicit_system == caller_owned
+    assert without_system > with_explicit_system
+    assert provider.estimate_context_tokens([user_message], []) < without_system
 
 
 def test_opencode_go_profile_is_dynamic_and_rejects_wrong_wire() -> None:
