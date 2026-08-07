@@ -29,6 +29,7 @@ from agent.model_runtime.types import (
     ToolCall,
     UsageCoverage,
 )
+from agent.model_runtime.usage import normalize_provider_usage
 
 
 class CodexResponsesTransport:
@@ -473,8 +474,11 @@ def _parse_usage(raw: Any) -> ModelUsage | None:
     output_tokens = _field(raw, "output_tokens")
     input_details = _field(raw, "input_tokens_details")
     output_details = _field(raw, "output_tokens_details")
-    return ModelUsage(
+    fallback = ModelUsage(
         input_tokens=int(input_tokens) if input_tokens is not None else None,
+        cache_write_input_tokens=_optional_int(
+            _field(input_details, "cache_write_tokens")
+        ),
         cached_input_tokens=_optional_int(_field(input_details, "cached_tokens")),
         output_tokens=int(output_tokens) if output_tokens is not None else None,
         reasoning_output_tokens=_optional_int(_field(output_details, "reasoning_tokens")),
@@ -485,6 +489,57 @@ def _parse_usage(raw: Any) -> ModelUsage | None:
             else UsageCoverage.PARTIAL
             if input_tokens is not None or output_tokens is not None
             else UsageCoverage.UNAVAILABLE
+        ),
+    )
+    normalized = normalize_provider_usage(
+        {"usage": _dump(raw)},
+        provider_id="openai",
+        provider_api_url="",
+        api_flavor="responses",
+        reasoning_output_tokens=fallback.reasoning_output_tokens,
+    )
+    if normalized is None:
+        return fallback
+    return ModelUsage(
+        input_tokens=(
+            normalized.input_tokens
+            if normalized.input_tokens is not None
+            else fallback.input_tokens
+        ),
+        cache_write_input_tokens=(
+            normalized.cache_write_input_tokens
+            if normalized.cache_write_input_tokens is not None
+            else fallback.cache_write_input_tokens
+        ),
+        cached_input_tokens=(
+            normalized.cached_input_tokens
+            if normalized.cached_input_tokens is not None
+            else fallback.cached_input_tokens
+        ),
+        output_tokens=(
+            normalized.output_tokens
+            if normalized.output_tokens is not None
+            else fallback.output_tokens
+        ),
+        reasoning_output_tokens=(
+            normalized.reasoning_output_tokens
+            if normalized.reasoning_output_tokens is not None
+            else fallback.reasoning_output_tokens
+        ),
+        request_count=max(normalized.request_count, fallback.request_count),
+        covered_request_count=max(
+            normalized.covered_request_count, fallback.covered_request_count
+        ),
+        coverage=(
+            UsageCoverage.EXACT
+            if (
+                (normalized.input_tokens is not None or fallback.input_tokens is not None)
+                and (
+                    normalized.output_tokens is not None
+                    or fallback.output_tokens is not None
+                )
+            )
+            else normalized.coverage
         ),
     )
 

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
 from typing import cast
 
 import httpx
 
 from agent.model_runtime.errors import AuthenticationError, TransportError
+from agent.model_runtime.catalog.litellm_registry import resolve_catalog_capabilities
 from agent.model_runtime.provider_profiles import (
     OPENCODE_GO_BASE_URL,
     OPENCODE_GO_PROFILE,
@@ -152,9 +154,16 @@ class OpenCodeGoModelCatalog:
         model_items = cast(list[object], raw_models)
 
         # 3. `/models` 决定当前账号可用模型，OpenCode 决定各模型真实 variant。
-        reasoning_efforts = await _load_opencode_go_reasoning_efforts(
-            self.opencode_executable
-        )
+        try:
+            reasoning_efforts = await _load_opencode_go_reasoning_efforts(
+                self.opencode_executable
+            )
+        except TransportError as exc:
+            logging.getLogger(__name__).warning(
+                "OpenCode variant 目录不可用，思考强度改用本地模型注册表: %s",
+                exc,
+            )
+            reasoning_efforts = {}
         models: list[OpenCodeGoModel] = []
         for raw in model_items:
             if not isinstance(raw, dict):
@@ -167,9 +176,27 @@ class OpenCodeGoModelCatalog:
                 models.append(
                     OpenCodeGoModel(
                         slug=model_id,
-                        supported_reasoning_efforts=reasoning_efforts.get(
-                            model_id, ()
+                        supported_reasoning_efforts=(
+                            reasoning_efforts[model_id]
+                            if model_id in reasoning_efforts
+                            else _registry_reasoning_efforts(
+                                model_id,
+                                base_url=self.base_url,
+                            )
                         ),
                     )
                 )
         return models
+
+
+def _registry_reasoning_efforts(
+    model_id: str,
+    *,
+    base_url: str,
+) -> tuple[str, ...]:
+    capabilities = resolve_catalog_capabilities(
+        "opencode-go",
+        model_id,
+        base_url=base_url,
+    )
+    return capabilities.supported_reasoning_efforts if capabilities else ()
