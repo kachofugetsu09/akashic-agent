@@ -270,8 +270,8 @@ command = [
   "tests/test_plugin_hot_reload.py::test_uninstall_waits_for_generation_retired_by_hot_reload",
   "tests/control/test_protocol.py::test_plugin_uninstall_returns_before_old_turn_drain_completes",
   "tests/control/test_protocol.py::test_plugin_uninstall_survives_deferred_client_disconnect",
-  "tests/test_shell_tool.py::test_shell_env_defers_plugin_uninstall_owned_by_current_turn",
-  "tests/test_runtime_smoke.py::test_plugin_uninstall_defers_only_inside_runtime_turn",
+  "tests/test_shell_tool.py::test_shell_env_exports_plugin_rollout_owner_turn",
+  "tests/test_runtime_smoke.py::test_plugin_uninstall_passes_active_turn_owner",
   "tests/test_plugin_install.py::test_plugin_enable_disable_and_uninstall_preserve_data",
 ]
 observes = [
