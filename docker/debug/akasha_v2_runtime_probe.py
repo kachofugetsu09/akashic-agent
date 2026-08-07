@@ -130,8 +130,6 @@ outbound_queue_size = 64
 
 [channels.chat]
 enabled = true
-host = "0.0.0.0"
-port = 6322
 channel_name = "web"
 
 [channels.telegram]

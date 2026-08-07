@@ -40,6 +40,8 @@ services:
       AKASHIC_DEBUG_WORKSPACE: /sandbox/workspace
       AKASHIC_HOST_GID: "${GID:?set by programmatic_control_probe.py}"
       AKASHIC_HOST_UID: "${UID:?set by programmatic_control_probe.py}"
+      AKASHIC_WEB_HOST: 0.0.0.0
+      AKASHIC_WEB_ALLOW_NON_LOOPBACK: "1"
       HOME: /sandbox/home
       PYTHONUNBUFFERED: "1"
     volumes: &control-volumes
