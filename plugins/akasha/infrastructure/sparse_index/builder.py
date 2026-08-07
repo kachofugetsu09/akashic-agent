@@ -7,9 +7,11 @@ import hashlib
 import math
 import sqlite3
 from collections import Counter, defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -22,6 +24,7 @@ from .schema import INDEX_VERSION, SCHEMA
 
 LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
 INTERRUPTED_ASSISTANT_MARKER = "[interrupted]"
+TurnPair = tuple[tuple[sqlite3.Row, ...], sqlite3.Row]
 
 
 class AppendOnlyViolation(RuntimeError):
@@ -277,13 +280,16 @@ def _load_canonical_turns(
 
     # 2. Preserve incomplete dense turns for lexical and temporal evidence.
     turns = [
-        _make_turn(user, assistant, embeddings)
-        for user, assistant in pairs
+        _make_turn(users, assistant, embeddings)
+        for users, assistant in pairs
     ]
     missing_embeddings = sum(
-        user["id"] not in embeddings
+        any(
+            _message_text(user).strip() and user["id"] not in embeddings
+            for user in users
+        )
         or assistant["id"] not in embeddings
-        for user, assistant in pairs
+        for users, assistant in pairs
     )
 
     # 3. Establish one deterministic global causal order.
@@ -332,8 +338,8 @@ def _source_messages(
 
 def _eligible_pairs(
     messages: list[sqlite3.Row],
-) -> tuple[list[tuple[sqlite3.Row, sqlite3.Row]], int, int]:
-    """Pair committed user/assistant messages and exclude explicit skips."""
+) -> tuple[list[TurnPair], int, int]:
+    """按显式 turn 元数据重建新格式，并保留严格 legacy 相邻配对。"""
 
     grouped: dict[str, list[sqlite3.Row]] = defaultdict(list)
     for message in messages:
@@ -342,10 +348,76 @@ def _eligible_pairs(
     excluded_interrupted = 0
     excluded_memory = 0
     for session_messages in grouped.values():
+        explicit: dict[str, list[sqlite3.Row]] = {}
+        explicit_order: list[str] = []
+        for message in session_messages:
+            turn_id = _message_extra(message).get("control_turn_id")
+            if turn_id is None:
+                continue
+            if not isinstance(turn_id, str) or not turn_id:
+                raise ValueError(f"control_turn_id 必须是非空字符串: {message['id']}")
+            if turn_id not in explicit:
+                explicit[turn_id] = []
+                explicit_order.append(turn_id)
+            explicit[turn_id].append(message)
+
+        # 1. 新格式只信任显式 ID、ordinal 和 terminal 标志。
+        for turn_id in explicit_order:
+            turn_messages = explicit[turn_id]
+            users = [row for row in turn_messages if row["role"] == "user"]
+            assistants = [
+                row
+                for row in turn_messages
+                if row["role"] == "assistant"
+                and _message_extra(row).get("turn_terminal") is True
+            ]
+            ordinals = [_message_extra(row).get("turn_input_ordinal") for row in users]
+            if (
+                not users
+                or len(assistants) != 1
+                or any(
+                    not isinstance(value, int) or isinstance(value, bool)
+                    for value in ordinals
+                )
+            ):
+                raise ValueError(f"同 turn transcript 结构无效: {turn_id}")
+            typed_ordinals = cast(list[int], ordinals)
+            if sorted(typed_ordinals) != list(range(len(users))):
+                raise ValueError(f"同 turn input ordinal 不连续: {turn_id}")
+            users.sort(
+                key=lambda row: cast(
+                    int,
+                    _message_extra(row)["turn_input_ordinal"],
+                )
+            )
+            assistant = assistants[0]
+            if _message_extra(assistant).get("turn_input_count") != len(users):
+                raise ValueError(f"同 turn input count 不匹配: {turn_id}")
+            if any(int(user["seq"]) >= int(assistant["seq"]) for user in users):
+                raise ValueError(f"同 turn assistant 顺序无效: {turn_id}")
+            first = users[0]
+            if _excluded_session(str(first["session_key"]), first):
+                excluded_memory += 1
+                continue
+            if _interrupted_pair(first, assistant):
+                excluded_interrupted += 1
+                continue
+            if any(_skip_post_memory(row) for row in (*users, assistant)):
+                continue
+            if not any(_message_text(row) for row in (*users, assistant)):
+                continue
+            pairs.append((tuple(users), assistant))
+
+        # 2. 无显式 turn metadata 的旧消息继续使用严格相邻配对。
         for user, assistant in zip(
             session_messages,
             session_messages[1:],
         ):
+            if (
+                _message_extra(user).get("control_turn_id") is not None
+                or _message_extra(assistant).get("control_turn_id") is not None
+            ):
+                continue
             if user["role"] != "user" or assistant["role"] != "assistant":
                 continue
             if _excluded_session(str(user["session_key"]), user):
@@ -358,7 +430,7 @@ def _eligible_pairs(
                 continue
             if not _message_text(user) and not _message_text(assistant):
                 continue
-            pairs.append((user, assistant))
+            pairs.append(((user,), assistant))
     return pairs, excluded_interrupted, excluded_memory
 
 
@@ -411,7 +483,7 @@ def _interrupted_pair(
 
 def _audit_rows(
     connection: sqlite3.Connection,
-    pairs: list[tuple[sqlite3.Row, sqlite3.Row]],
+    pairs: list[TurnPair],
     config: BuildConfig,
     excluded_interrupted: int,
     excluded_memory: int,
@@ -448,7 +520,7 @@ def _audit_rows(
 
 
 def _embedding_issues(
-    pairs: list[tuple[sqlite3.Row, sqlite3.Row]],
+    pairs: list[TurnPair],
     embeddings: dict[str, sqlite3.Row],
     expected_dimension: int | None,
 ) -> tuple[list[EmbeddingIssue], set[int], int]:
@@ -457,7 +529,7 @@ def _embedding_issues(
     issues = []
     dimensions: set[int] = set()
     required = 0
-    for message in (item for pair in pairs for item in pair):
+    for message in _pair_messages(pairs):
         content = _message_text(message)
         if not content.strip():
             continue
@@ -499,6 +571,14 @@ def _embedding_issues(
     return issues, dimensions, required
 
 
+def _pair_messages(pairs: list[TurnPair]) -> Iterator[sqlite3.Row]:
+    """按 transcript 顺序展开全部用户消息和最终助手消息。"""
+
+    for users, assistant in pairs:
+        yield from users
+        yield assistant
+
+
 def _embedding_issue(
     message: sqlite3.Row,
     row: sqlite3.Row | None,
@@ -529,13 +609,13 @@ def _embedding_issue(
 
 
 def _dimension_mismatches(
-    pairs: list[tuple[sqlite3.Row, sqlite3.Row]],
+    pairs: list[TurnPair],
     embeddings: dict[str, sqlite3.Row],
     expected_dimension: int,
     invalid_ids: set[str],
 ) -> list[EmbeddingIssue]:
     issues = []
-    for message in (item for pair in pairs for item in pair):
+    for message in _pair_messages(pairs):
         if not _message_text(message).strip():
             continue
         message_id = str(message["id"])
@@ -557,10 +637,11 @@ def _dimension_mismatches(
 
 
 def _make_turn(
-    user: sqlite3.Row,
+    users: tuple[sqlite3.Row, ...],
     assistant: sqlite3.Row,
     embeddings: dict[str, np.ndarray],
 ) -> CanonicalTurn:
+    user = users[0]
     turn_id = f"{user['id']}::{assistant['id']}"
     remember_targets, remember_boost = _feedback_marker(
         user,
@@ -576,6 +657,22 @@ def _make_turn(
         carrier_turn_id=turn_id,
         target_required=True,
     )
+    user_vectors = [
+        embeddings[str(row["id"])]
+        for row in users
+        if _message_text(row).strip() and str(row["id"]) in embeddings
+    ]
+    required_user_vectors = sum(bool(_message_text(row).strip()) for row in users)
+    user_embedding = embeddings.get(str(user["id"])) if len(users) == 1 else None
+    if (
+        len(users) > 1
+        and user_vectors
+        and len(user_vectors) == required_user_vectors
+    ):
+        mean = np.mean(np.stack(user_vectors), axis=0)
+        norm = float(np.linalg.norm(mean))
+        if norm > 0.0:
+            user_embedding = mean / norm
     return CanonicalTurn(
         turn_id=turn_id,
         session_key=user["session_key"],
@@ -584,9 +681,9 @@ def _make_turn(
         assistant_message_id=assistant["id"],
         started_at=user["ts"],
         committed_at=assistant["ts"],
-        user_text=user["content"] or "",
+        user_text="\n\n".join(_message_text(row) for row in users),
         assistant_text=assistant["content"] or "",
-        user_embedding=embeddings.get(user["id"]),
+        user_embedding=user_embedding,
         assistant_embedding=embeddings.get(assistant["id"]),
         remember_target_turn_ids=remember_targets,
         forget_target_turn_ids=forget_targets,

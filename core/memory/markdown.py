@@ -19,6 +19,11 @@ from agent.provider import LLMProvider
 from bus.events_lifecycle import TurnCommitted
 from core.memory.events import ConsolidationCommitted
 from infra.persistence.json_store import atomic_write_text
+from session.manager import (
+    logical_history_tail_start,
+    logical_history_unit_count,
+    logical_history_unit_ranges,
+)
 from session.memory_policy import excludes_memory
 
 if TYPE_CHECKING:
@@ -78,6 +83,7 @@ class MemoryProfileApi(Protocol):
     def get_memory_context(self) -> str: ...
 
     def has_long_term_memory(self) -> bool: ...
+
 
 _ALLOWED_PENDING_TAGS = frozenset(
     {
@@ -163,6 +169,26 @@ class _ConsolidationFailure:
     elapsed_ms: int = 0
 
 
+def _resolve_consolidation_cursor(
+    messages: list[dict],
+    last_consolidated: int,
+    *,
+    force: bool,
+) -> tuple[list[tuple[int, int]], int]:
+    """校验 consolidation 游标，并在显式 force 时返回最近合法边界。"""
+    unit_ranges = logical_history_unit_ranges(messages)
+    boundaries = {0, *(end for _, end in unit_ranges)}
+    if last_consolidated in boundaries:
+        return unit_ranges, last_consolidated
+    if not force:
+        raise ValueError(
+            "last_consolidated 落在逻辑历史单元内部: " f"{last_consolidated}"
+        )
+    return unit_ranges, max(
+        boundary for boundary in boundaries if boundary <= last_consolidated
+    )
+
+
 def _select_consolidation_window(
     session,
     *,
@@ -180,22 +206,33 @@ def _select_consolidation_window(
             consolidate_up_to=total_messages,
         )
 
-    if total_messages - session.last_consolidated <= 0:
+    # 1. 游标只能停在完整逻辑单元之后；新写入不再制造半 turn 游标。
+    unit_ranges, consolidation_start = _resolve_consolidation_cursor(
+        session.messages,
+        session.last_consolidated,
+        force=force,
+    )
+
+    if total_messages - consolidation_start <= 0:
         return None
 
     if force:
         consolidate_up_to = total_messages
     else:
-        if total_messages <= keep_count:
+        if len(unit_ranges) <= keep_count:
             return None
-        consolidate_up_to = total_messages - keep_count
-    old_messages = session.messages[session.last_consolidated : consolidate_up_to]
+        consolidate_up_to = unit_ranges[-keep_count][0]
+    old_messages = session.messages[consolidation_start:consolidate_up_to]
     if not old_messages:
         return None
+    new_unit_count = logical_history_unit_count(
+        session.messages,
+        start_index=consolidation_start,
+    ) - (0 if force else keep_count)
     if (
         not force
         and not continuing
-        and len(old_messages) < max(1, int(consolidation_min_new_messages))
+        and new_unit_count < max(1, int(consolidation_min_new_messages))
     ):
         return None
     return _ConsolidationWindow(
@@ -239,12 +276,6 @@ def _format_conversation_for_consolidation(old_messages: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _starts_semantic_turn(message: dict) -> bool:
-    return message.get("role") == "user" or (
-        message.get("role") == "assistant" and bool(message.get("proactive"))
-    )
-
-
 def _limit_consolidation_window(
     window: _ConsolidationWindow,
     *,
@@ -252,12 +283,11 @@ def _limit_consolidation_window(
 ) -> _ConsolidationWindow:
     """按完整语义回合限制单页正文，并返回稳定的绝对游标。"""
 
-    # 1. 先把窗口分成不会拆开 user/assistant/tool 因果链的语义组。
-    groups: list[list[dict]] = []
-    for message in window.old_messages:
-        if _starts_semantic_turn(message) or not groups:
-            groups.append([])
-        groups[-1].append(message)
+    # 1. 与 prompt history 共用同一分组，显式多 U turn 与 proactive 都保持原子。
+    groups = [
+        window.old_messages[start:end]
+        for start, end in logical_history_unit_ranges(window.old_messages)
+    ]
 
     # 2. 再按实际送给模型的文本长度装页；单个超长回合保持完整并 fail-loud。
     selected: list[dict] = []
@@ -275,9 +305,7 @@ def _limit_consolidation_window(
         old_messages=selected,
         keep_count=window.keep_count,
         consolidate_up_to=(
-            window.consolidate_up_to
-            - len(window.old_messages)
-            + len(selected)
+            window.consolidate_up_to - len(window.old_messages) + len(selected)
         ),
     )
 
@@ -328,7 +356,9 @@ def _normalize_history_entries(
         candidates.extend(raw_entries)
     elif raw_entries is not None:
         if not isinstance(raw_entries, str | dict):
-            raise _ConsolidationPayloadError("history_entries must be an array or object")
+            raise _ConsolidationPayloadError(
+                "history_entries must be an array or object"
+            )
         candidates.append(raw_entries)
     if fallback_entry is not None and not isinstance(raw_entries, list):
         candidates.append(fallback_entry)
@@ -357,7 +387,8 @@ def _normalize_history_entries(
 
 
 def _recent_turn_count(keep_count: int) -> int:
-    return max(1, keep_count // 2)
+    """把旧的消息预览预算换算为不切分的逻辑历史单元数。"""
+    return max(1, keep_count // 4)
 
 
 def _message_time(message: dict) -> str:
@@ -433,9 +464,7 @@ def _render_recent_context(
 ) -> str:
     compression = {} if compression is None else compression
     ongoing_threads = [
-        item.strip()
-        for item in compression.get("ongoing_threads", [])
-        if item.strip()
+        item.strip() for item in compression.get("ongoing_threads", []) if item.strip()
     ]
     sections = [
         ("最近持续关注", compression.get("active_topics", [])),
@@ -443,7 +472,12 @@ def _render_recent_context(
         ("最近待延续话题", compression.get("follow_ups", [])),
         ("最近避免事项", compression.get("avoidances", [])),
     ]
-    lines = ["# Recent Context", "", "## Compression", f"until: {compression_until or 'none'}"]
+    lines = [
+        "# Recent Context",
+        "",
+        "## Compression",
+        f"until: {compression_until or 'none'}",
+    ]
     rendered_any = False
     for title, items in sections:
         cleaned = [item.strip() for item in items if item.strip()]
@@ -459,7 +493,9 @@ def _render_recent_context(
             lines.append(f"- {item}")
     else:
         lines.append("- none")
-    lines.extend(["", "## Recent Turns", "<!-- a-preview = assistant reply preview only -->"])
+    lines.extend(
+        ["", "## Recent Turns", "<!-- a-preview = assistant reply preview only -->"]
+    )
     if recent_turns.strip():
         lines.append(recent_turns.strip())
     else:
@@ -484,9 +520,7 @@ class _MarkdownConsolidationWorker:
         self._provider = provider
         self._model = model
         self._recent_context_provider = recent_context_provider or provider
-        self._recent_context_model = (
-            str(recent_context_model or "").strip() or model
-        )
+        self._recent_context_model = str(recent_context_model or "").strip() or model
         self._keep_count = keep_count
         self._consolidation_input_budget = consolidation_input_budget
         self._provider_system_prompt = provider_system_prompt
@@ -717,17 +751,15 @@ ongoing_threads 严格限制：
     ) -> str | _ConsolidationFailure:
         """读取会话窗口并生成近期语境快照。"""
         # 1. 复用调用方已读取的 recent context，保证两个模型步骤看到同一版本。
-        tail = list(session.messages[-self._keep_count :]) if self._keep_count > 0 else []
-        recent_count = min(len(tail), _recent_turn_count(self._keep_count))
         session_messages = list(session.messages)
+        recent_count = _recent_turn_count(self._keep_count)
+        recent_start = logical_history_tail_start(session_messages, recent_count)
+        recent_turns = session_messages[recent_start:]
         if archive_all:
-            compact_source = (
-                session_messages[:-recent_count] if recent_count > 0 else session_messages
-            )
+            compact_source = session_messages[:recent_start]
         else:
             compact_source = list(window.old_messages) if window is not None else []
         compression_until = _message_time(compact_source[-1]) if compact_source else ""
-        recent_turns = tail[-recent_count:] if recent_count > 0 else []
         rendered_recent_turns = _format_recent_context_messages(recent_turns)
         recent_turns_for_prompt = _format_conversation_for_recent_context(recent_turns)
         conversation = _format_conversation_for_recent_context(compact_source)
@@ -793,7 +825,11 @@ ongoing_threads 严格限制：
                 or (
                     match.group(1).strip()
                     if old_recent_context.strip()
-                    and (match := re.search(r"^until:\s*(.+)$", old_recent_context, flags=re.M))
+                    and (
+                        match := re.search(
+                            r"^until:\s*(.+)$", old_recent_context, flags=re.M
+                        )
+                    )
                     else ""
                 )
             ),
@@ -804,9 +840,9 @@ ongoing_threads 严格限制：
         """刷新 RECENT_CONTEXT.md 的 recent turns 区块。"""
         # 1. 读取当前会话尾部并渲染稳定的 recent turns 格式。
         profile = self._profile_maint if profile_maint is None else profile_maint
-        tail = list(session.messages[-self._keep_count :]) if self._keep_count > 0 else []
-        recent_count = min(len(tail), _recent_turn_count(self._keep_count))
-        recent_turns = tail[-recent_count:] if recent_count > 0 else []
+        recent_count = _recent_turn_count(self._keep_count)
+        start = logical_history_tail_start(session.messages, recent_count)
+        recent_turns = list(session.messages[start:])
         rendered_recent_turns = _format_recent_context_messages(recent_turns)
         # 2. 保留压缩内容，只替换 recent turns。
         existing_text = await asyncio.to_thread(profile.read_recent_context)
@@ -840,14 +876,16 @@ ongoing_threads 严格限制：
             )
         else:
             if window is None:
-                ready_count = (
-                    len(session.messages) - self._keep_count - session.last_consolidated
+                pending_units = logical_history_unit_count(
+                    session.messages,
+                    start_index=session.last_consolidated,
                 )
-                if len(session.messages) <= self._keep_count:
+                ready_count = pending_units - self._keep_count
+                if pending_units <= self._keep_count:
                     logger.debug(
-                        "Session %s: No consolidation needed (messages=%d, keep=%d)",
+                        "Session %s: No consolidation needed (units=%d, keep=%d)",
                         session.key,
-                        len(session.messages),
+                        pending_units,
                         self._keep_count,
                     )
                 else:
@@ -1000,9 +1038,7 @@ history_entries.emotional_weight 规则：
         # 3. 普通 consolidation 按实际模型预算切成完整语义页。
         if self._consolidation_input_budget is not None and not archive_all:
             fixed_chars = (
-                len(self._provider_system_prompt)
-                + len(prompt)
-                - len(conversation)
+                len(self._provider_system_prompt) + len(prompt) - len(conversation)
             )
             available_tokens = self._consolidation_input_budget - max(
                 1, fixed_chars // 3
@@ -1105,8 +1141,6 @@ history_entries.emotional_weight 规则：
             scope_chat_id=scope_chat_id,
             archive_all=archive_all,
         )
-
-
 
 
 class MarkdownMemoryStore(MemoryStore):
@@ -1263,7 +1297,9 @@ class MarkdownMemoryMaintenance:
                 name=f"markdown-memory-maintenance:{session_key}",
             )
             self._maintenance_tasks[session_key] = next_task
-            next_task.add_done_callback(lambda t: self._on_maintenance_done(t, session_key))
+            next_task.add_done_callback(
+                lambda t: self._on_maintenance_done(t, session_key)
+            )
         else:
             _ = self._maintenance_queues.pop(session_key, None)
         if task.cancelled():
@@ -1271,7 +1307,11 @@ class MarkdownMemoryMaintenance:
             return
         exc = task.exception()
         if exc is not None:
-            logger.warning("markdown memory maintenance failed: session=%s err=%s", session_key, exc)
+            logger.warning(
+                "markdown memory maintenance failed: session=%s err=%s",
+                session_key,
+                exc,
+            )
 
     def _should_consolidate_session(self, session: object) -> bool:
         return (
@@ -1304,10 +1344,36 @@ class MarkdownMemoryMaintenance:
         async with lock:
             return await self._consolidate_unlocked(request)
 
-    async def _consolidate_unlocked(self, request: ConsolidateRequest) -> ConsolidateResult:
+    async def _consolidate_unlocked(
+        self, request: ConsolidateRequest
+    ) -> ConsolidateResult:
         """逐页压缩 backlog，并在每页提交后保存绝对游标。"""
 
-        # 1. 每页重新读取 RECENT_CONTEXT，让下一页基于上一页的滚动摘要继续压缩。
+        # 1. 显式 force 先把失配游标持久回退到最近的完整逻辑单元边界。
+        cursor_repair: dict[str, int] = {}
+        if request.force and not request.archive_all:
+            previous_cursor = request.session.last_consolidated
+            _, recovered_cursor = _resolve_consolidation_cursor(
+                request.session.messages,
+                previous_cursor,
+                force=True,
+            )
+            if recovered_cursor != previous_cursor:
+                request.session.last_consolidated = recovered_cursor
+                cursor_repair = {
+                    "cursor_rewound_from": previous_cursor,
+                    "cursor_rewound_to": recovered_cursor,
+                }
+                logger.warning(
+                    "Force consolidation rewound invalid cursor: session=%s from=%d to=%d",
+                    request.session.key,
+                    previous_cursor,
+                    recovered_cursor,
+                )
+                if self._save_session is not None:
+                    await self._save_session(request.session)
+
+        # 2. 每页重新读取 RECENT_CONTEXT，让下一页基于上一页的滚动摘要继续压缩。
         consolidated_count = 0
         source_refs: list[str] = []
         while True:
@@ -1321,7 +1387,9 @@ class MarkdownMemoryMaintenance:
             )
             if draft is None:
                 if consolidated_count == 0:
-                    return ConsolidateResult(trace={"mode": "skipped"})
+                    return ConsolidateResult(
+                        trace={"mode": "skipped", **cursor_repair}
+                    )
                 break
             if isinstance(draft, _ConsolidationFailure):
                 failure_trace: dict[str, object] = {
@@ -1332,12 +1400,13 @@ class MarkdownMemoryMaintenance:
                 }
                 if source_refs:
                     failure_trace["completed_pages"] = len(source_refs)
+                failure_trace.update(cursor_repair)
                 return ConsolidateResult(
                     consolidated_count=consolidated_count,
                     trace=failure_trace,
                 )
 
-            # 2. 提交一页后立即保存游标；失败重启只会重做未提交页。
+            # 3. 提交一页后立即保存游标；失败重启只会重做未提交页。
             await self._commit_markdown_draft(request.session, draft)
             consolidated_count += len(draft.window.old_messages)
             source_refs.append(draft.source_ref)
@@ -1357,6 +1426,7 @@ class MarkdownMemoryMaintenance:
                 "source_ref": source_refs[-1],
                 "source_refs": source_refs,
                 "pages": len(source_refs),
+                **cursor_repair,
             },
         )
 

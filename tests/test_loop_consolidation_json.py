@@ -43,7 +43,7 @@ def test_select_consolidation_window_uses_half_window_tail_keep():
     session = SimpleNamespace(
         key="cli:1",
         last_consolidated=2,
-        messages=[{"content": str(i)} for i in range(10)],
+        messages=[{"role": "user", "content": str(i)} for i in range(10)],
     )
 
     window = _select_consolidation_window(
@@ -57,6 +57,59 @@ def test_select_consolidation_window_uses_half_window_tail_keep():
     assert window.keep_count == 3
     assert window.consolidate_up_to == 7
     assert [m["content"] for m in window.old_messages] == ["2", "3", "4", "5", "6"]
+
+
+def test_select_consolidation_window_never_splits_explicit_multi_input_turn():
+    messages = [
+        {"role": "user", "content": "old", "control_turn_id": "old"},
+        {"role": "assistant", "content": "done", "control_turn_id": "old"},
+        {"role": "user", "content": "u1", "control_turn_id": "current"},
+        {"role": "user", "content": "u2", "control_turn_id": "current"},
+        {"role": "assistant", "content": "final", "control_turn_id": "current"},
+    ]
+    session = SimpleNamespace(key="cli:1", last_consolidated=0, messages=messages)
+
+    window = _select_consolidation_window(
+        session,
+        keep_count=1,
+        consolidation_min_new_messages=1,
+        archive_all=False,
+    )
+
+    assert window is not None
+    assert window.old_messages == messages[:2]
+    assert window.consolidate_up_to == 2
+
+
+def test_force_consolidation_rewinds_invalid_cursor_to_recent_boundary():
+    messages = [
+        {"role": "user", "content": "u1", "control_turn_id": "first"},
+        {"role": "user", "content": "u2", "control_turn_id": "first"},
+        {"role": "assistant", "content": "a1", "control_turn_id": "first"},
+        {"role": "user", "content": "u3", "control_turn_id": "second"},
+        {"role": "assistant", "content": "a2", "control_turn_id": "second"},
+    ]
+    session = SimpleNamespace(key="cli:1", last_consolidated=4, messages=messages)
+
+    with pytest.raises(ValueError, match="逻辑历史单元内部"):
+        _select_consolidation_window(
+            session,
+            keep_count=1,
+            consolidation_min_new_messages=1,
+            archive_all=False,
+        )
+
+    window = _select_consolidation_window(
+        session,
+        keep_count=1,
+        consolidation_min_new_messages=1,
+        archive_all=False,
+        force=True,
+    )
+
+    assert window is not None
+    assert window.old_messages == messages[3:]
+    assert window.consolidate_up_to == 5
 
 
 def test_build_consolidation_source_ref_returns_message_id_list_json():
@@ -116,8 +169,18 @@ def test_format_conversation_for_consolidation_skips_proactive_assistant_message
 def test_consolidation_formatters_skip_context_frame_messages():
     frame = '<system-reminder data-system-context-frame="true">\n内部上下文'
     messages = [
-        {"id": "1", "role": "user", "content": frame, "timestamp": "2026-03-09T10:00:00"},
-        {"id": "2", "role": "user", "content": "真实用户内容", "timestamp": "2026-03-09T10:01:00"},
+        {
+            "id": "1",
+            "role": "user",
+            "content": frame,
+            "timestamp": "2026-03-09T10:00:00",
+        },
+        {
+            "id": "2",
+            "role": "user",
+            "content": "真实用户内容",
+            "timestamp": "2026-03-09T10:01:00",
+        },
     ]
 
     window = SimpleNamespace(old_messages=messages)

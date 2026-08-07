@@ -251,7 +251,10 @@ async def test_default_engine_keeps_history_injected_ids():
                 }
             ]
         ),
-        build_injection_block=lambda items: ("## 【相关历史】\n- 用户昨天提过 FitBit", ["e1"]),
+        build_injection_block=lambda items: (
+            "## 【相关历史】\n- 用户昨天提过 FitBit",
+            ["e1"],
+        ),
     )
     engine = _make_default_engine(retriever=cast(Any, retriever))
 
@@ -259,7 +262,9 @@ async def test_default_engine_keeps_history_injected_ids():
         MemoryQuery(
             text="Fitbit 型号",
             intent="context",
-            scope=MemoryScope(session_key="telegram:1", channel="telegram", chat_id="1"),
+            scope=MemoryScope(
+                session_key="telegram:1", channel="telegram", chat_id="1"
+            ),
             filters=MemoryQueryFilters(
                 kinds=("event",),
                 hints={"require_scope_match": True},
@@ -378,8 +383,7 @@ async def test_default_memory_engine_rolls_back_partial_event_wiring():
 
     assert event_bus.handler_count() == 0
     assert not any(
-        isinstance(closeable, EventSubscription)
-        for closeable in engine.closeables
+        isinstance(closeable, EventSubscription) for closeable in engine.closeables
     )
     assert engine._event_wired is False
 
@@ -632,7 +636,9 @@ async def test_default_memory_engine_logs_lifecycle_consolidation_failure(caplog
     await event_bus.aclose()
 
 
-async def test_markdown_consolidation_advances_window_when_consumer_fails(tmp_path: Path):
+async def test_markdown_consolidation_advances_window_when_consumer_fails(
+    tmp_path: Path,
+):
     event_bus = EventBus()
 
     async def _fail_consolidation(_event):
@@ -675,7 +681,9 @@ async def test_markdown_consolidation_advances_window_when_consumer_fails(tmp_pa
     await event_bus.aclose()
 
 
-async def test_markdown_consolidation_failure_trace_does_not_advance_cursor(tmp_path: Path):
+async def test_markdown_consolidation_failure_trace_does_not_advance_cursor(
+    tmp_path: Path,
+):
     session = SimpleNamespace(
         key="cli:1",
         messages=[{"role": "user", "content": f"u{i}"} for i in range(8)],
@@ -707,13 +715,59 @@ async def test_markdown_consolidation_failure_trace_does_not_advance_cursor(tmp_
     assert session.last_consolidated == 0
 
 
+async def test_force_consolidation_persists_cursor_rewind_without_new_messages(
+    tmp_path: Path,
+):
+    session = SimpleNamespace(
+        key="cli:rewind",
+        messages=[
+            {
+                "role": "user",
+                "content": "remaining user",
+                "control_turn_id": "turn-1",
+            },
+            {
+                "role": "assistant",
+                "content": "remaining assistant",
+                "control_turn_id": "turn-1",
+            },
+        ],
+        last_consolidated=3,
+    )
+    maintenance = MarkdownMemoryMaintenance(
+        store=MarkdownMemoryStore(tmp_path),
+        provider=cast(Any, SimpleNamespace()),
+        model="lm",
+        keep_count=2,
+    )
+    save_session = AsyncMock()
+    maintenance.bind_lifecycle(
+        MemoryLifecycleBindRequest(
+            get_session=lambda _key: session,
+            save_session=save_session,
+        )
+    )
+
+    result = await maintenance.consolidate(
+        ConsolidateRequest(session=session, force=True)
+    )
+
+    assert result.consolidated_count == 0
+    assert result.trace == {
+        "mode": "skipped",
+        "cursor_rewound_from": 3,
+        "cursor_rewound_to": 2,
+    }
+    assert session.last_consolidated == 2
+    save_session.assert_awaited_once_with(session)
+
+
 async def test_markdown_consolidation_drains_budgeted_pages_and_persists_each_cursor(
     tmp_path: Path,
 ):
     async def _chat(**kwargs):
         text = "\n".join(
-            str(message.get("content") or "")
-            for message in kwargs["messages"]
+            str(message.get("content") or "") for message in kwargs["messages"]
         )
         if "近期语境压缩代理" in text:
             return SimpleNamespace(
@@ -722,9 +776,7 @@ async def test_markdown_consolidation_drains_budgeted_pages_and_persists_each_cu
                     '"follow_ups":[],"avoidances":[],"ongoing_threads":[]}'
                 )
             )
-        return SimpleNamespace(
-            content='{"history_entries":[],"pending_items":[]}'
-        )
+        return SimpleNamespace(content='{"history_entries":[],"pending_items":[]}')
 
     session = SimpleNamespace(
         key="cli:paged",
@@ -735,7 +787,7 @@ async def test_markdown_consolidation_drains_budgeted_pages_and_persists_each_cu
                 "content": f"message-{index}",
                 "timestamp": f"2026-07-27T00:{index:02d}:00+00:00",
             }
-            for index in range(8)
+            for index in range(14)
         ],
         last_consolidated=0,
     )
@@ -758,11 +810,11 @@ async def test_markdown_consolidation_drains_budgeted_pages_and_persists_each_cu
         ConsolidateRequest(session=session, drain_backlog=True)
     )
 
-    assert result.consolidated_count == 6
+    assert result.consolidated_count == 10
     assert result.trace["mode"] == "markdown"
-    assert result.trace["pages"] == 3
-    assert session.last_consolidated == 6
-    assert save_session.await_count == 3
+    assert result.trace["pages"] == 5
+    assert session.last_consolidated == 10
+    assert save_session.await_count == 5
     assert [
         json.loads(source_ref)
         for source_ref in cast(list[str], result.trace["source_refs"])
@@ -770,6 +822,8 @@ async def test_markdown_consolidation_drains_budgeted_pages_and_persists_each_cu
         ["cli:paged:0", "cli:paged:1"],
         ["cli:paged:2", "cli:paged:3"],
         ["cli:paged:4", "cli:paged:5"],
+        ["cli:paged:6", "cli:paged:7"],
+        ["cli:paged:8", "cli:paged:9"],
     ]
 
 
@@ -781,8 +835,7 @@ async def test_markdown_consolidation_preserves_committed_pages_after_later_fail
     async def _chat(**kwargs):
         nonlocal event_extract_calls
         text = "\n".join(
-            str(message.get("content") or "")
-            for message in kwargs["messages"]
+            str(message.get("content") or "") for message in kwargs["messages"]
         )
         if "近期语境压缩代理" in text:
             return SimpleNamespace(
@@ -794,9 +847,7 @@ async def test_markdown_consolidation_preserves_committed_pages_after_later_fail
         event_extract_calls += 1
         if event_extract_calls == 2:
             raise RuntimeError("page two failed")
-        return SimpleNamespace(
-            content='{"history_entries":[],"pending_items":[]}'
-        )
+        return SimpleNamespace(content='{"history_entries":[],"pending_items":[]}')
 
     session = SimpleNamespace(
         key="cli:paged-failure",
@@ -807,7 +858,7 @@ async def test_markdown_consolidation_preserves_committed_pages_after_later_fail
                 "content": f"message-{index}",
                 "timestamp": f"2026-07-27T00:{index:02d}:00+00:00",
             }
-            for index in range(8)
+            for index in range(14)
         ],
         last_consolidated=0,
     )
@@ -859,6 +910,30 @@ def test_consolidation_page_never_splits_a_single_semantic_turn():
 
     assert page.old_messages == messages[:2]
     assert page.consolidate_up_to == 2
+
+
+def test_consolidation_page_never_splits_explicit_multi_input_turn():
+    from core.memory.markdown import (
+        _ConsolidationWindow,
+        _limit_consolidation_window,
+    )
+
+    messages = [
+        {"role": "user", "content": "u1" * 500, "control_turn_id": "turn-1"},
+        {"role": "user", "content": "u2" * 500, "control_turn_id": "turn-1"},
+        {"role": "assistant", "content": "final", "control_turn_id": "turn-1"},
+        {"role": "assistant", "content": "主动提醒", "proactive": True},
+    ]
+    window = _ConsolidationWindow(
+        old_messages=messages,
+        keep_count=0,
+        consolidate_up_to=4,
+    )
+
+    page = _limit_consolidation_window(window, max_conversation_chars=1)
+
+    assert page.old_messages == messages[:3]
+    assert page.consolidate_up_to == 3
 
 
 async def test_default_memory_engine_serializes_lifecycle_maintenance():
@@ -1307,4 +1382,6 @@ def test_build_memory_runtime_exposes_default_memory_engine(
     assert runtime.engine is not None
     assert runtime.engine.describe().name == "default"
     assert runtime.embedding_api is runtime.engine.embedding_api
-    assert MemoryCapability.SEMANTICS_RICH_MEMORY in runtime.engine.describe().capabilities
+    assert (
+        MemoryCapability.SEMANTICS_RICH_MEMORY in runtime.engine.describe().capabilities
+    )
