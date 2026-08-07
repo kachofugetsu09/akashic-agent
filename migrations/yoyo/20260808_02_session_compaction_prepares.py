@@ -65,14 +65,17 @@ def _ensure_table(
     create_sql: str,
     index_sql: str,
 ) -> None:
-    """Create or validate one durable prepare schema and its lookup index."""
+    """创建或校验一张 durable prepare 表及其查询索引。"""
 
+    # 1. 只创建缺失的表；已有表必须通过 manifest 校验。
     existing = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
         (table,),
     ).fetchone()
     if existing is None:
         connection.execute(create_sql)
+
+    # 2. 添加命名索引前，先校验列和内联约束。
     validate_table_schema(
         connection,
         table=table,
@@ -82,6 +85,8 @@ def _ensure_table(
         sql_fragments=_TABLE_SCHEMA["sql_fragments"],
         validate_named_indexes=False,
     )
+
+    # 3. 创建并校验本迁移持有的查询索引。
     connection.execute(index_sql)
     validate_table_schema(
         connection,

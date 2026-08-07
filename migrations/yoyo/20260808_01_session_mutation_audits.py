@@ -98,12 +98,17 @@ def _ensure_table(
     create_sql: str,
     index_sql: str,
 ) -> None:
+    """创建一张审计表，并校验表与索引的 schema identity。"""
+
+    # 1. 只创建缺失的表；已有表必须通过 manifest 校验。
     existing = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
         (table,),
     ).fetchone()
     if existing is None:
         connection.execute(create_sql)
+
+    # 2. 添加命名索引前，先校验列和内联约束。
     schema = _TABLE_SCHEMAS[table]
     validate_table_schema(
         connection,
@@ -114,6 +119,8 @@ def _ensure_table(
         sql_fragments=schema["sql_fragments"],
         validate_named_indexes=False,
     )
+
+    # 3. 创建并校验本迁移持有的查询索引。
     connection.execute(index_sql)
     validate_table_schema(
         connection,
