@@ -43,7 +43,7 @@
   align-items: center;
   gap: 10px;
   border: 0;
-  border-radius: 14px;
+  border-radius: var(--md-sys-shape-corner-medium);
   padding-block: 6px;
   padding-inline: 14px 12px;
   color: inherit;
@@ -56,12 +56,12 @@
 
 .conversation-destination:hover,
 .conversation-destination:focus-visible {
-  background: var(--ak-color-bg-surface);
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
 }
 
 .conversation-destination.active {
-  color: var(--ak-color-on-action-container);
-  background: var(--ak-color-action-container);
+  color: var(--md-sys-color-on-secondary-container);
+  background: var(--md-sys-color-secondary-container);
 }
 
 .conversation-destination.active .conversation-destination__icon,
@@ -112,7 +112,7 @@
   width: 24px;
   height: 24px;
   place-items: center;
-  color: var(--ak-color-action-primary);
+  color: var(--md-sys-color-on-surface-variant);
   background: transparent;
 }
 
@@ -184,14 +184,14 @@
 .conversation-session {
   display: grid;
   width: 100%;
-  min-height: 68px;
+  min-height: 64px;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   border: 0;
-  border-radius: 16px;
-  padding-block: 9px;
-  padding-inline: 16px 12px;
+  border-radius: var(--md-sys-shape-corner-medium);
+  padding-block: 8px;
+  padding-inline: 14px 12px;
   color: inherit;
   background: transparent;
   font: inherit;
@@ -201,7 +201,7 @@
 
 .conversation-session:hover,
 .conversation-session:focus-visible {
-  background: var(--ak-color-bg-surface);
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
 }
 
 .conversation-session:active {
@@ -209,7 +209,7 @@
 }
 
 .conversation-session.active {
-  background: var(--ak-color-action-container);
+  background: var(--md-sys-color-secondary-container);
 }
 
 .conversation-session.unavailable {
@@ -265,15 +265,19 @@
 
 .conversation-session.active .conversation-session__title time,
 .conversation-session.active .conversation-session__copy small {
-  color: var(--ak-color-on-action-container);
-  opacity: 0.76;
+  color: color-mix(in srgb, var(--md-sys-color-on-secondary-container) 72%, transparent);
+  opacity: 1;
 }
 
 .conversation-session__state {
   display: grid;
   min-width: 20px;
   place-items: center;
-  color: var(--ak-color-action-primary);
+  color: var(--md-sys-color-primary);
+}
+
+.conversation-session.active .conversation-session__state {
+  color: var(--md-sys-color-on-secondary-container);
 }
 
 .conversation-navigation__actions {
@@ -284,17 +288,17 @@
 
 .conversation-navigation__action {
   display: flex;
-  min-height: 48px;
+  min-height: 44px;
   align-items: center;
   gap: 12px;
   border: 0;
-  border-radius: 14px;
+  border-radius: var(--md-sys-shape-corner-medium);
   padding-block: 8px;
-  padding-inline: 16px;
-  color: var(--ak-color-text-secondary);
+  padding-inline: 14px;
+  color: var(--md-sys-color-on-surface-variant);
   background: transparent;
   font: inherit;
-  font-size: 0.875rem;
+  font-size: var(--md-sys-typescale-body-medium-size);
   font-weight: 500;
   line-height: 1.35;
   text-align: start;
@@ -303,7 +307,8 @@
 
 .conversation-navigation__action:hover,
 .conversation-navigation__action:focus-visible {
-  background: var(--ak-color-bg-surface);
+  color: var(--md-sys-color-on-surface);
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
 }
 
 .conversation-navigation__action:active {
@@ -313,16 +318,17 @@
 .conversation-navigation__action.primary {
   width: fit-content;
   margin-top: 8px;
-  border-radius: 24px;
-  padding-inline: 16px 18px;
-  color: var(--ak-color-on-action-container);
-  background: var(--ak-color-action-container);
-  font-weight: 650;
+  border-radius: var(--md-sys-shape-corner-full);
+  padding-inline: 18px 20px;
+  color: var(--md-sys-color-on-primary);
+  background: var(--md-sys-color-primary);
+  font-weight: var(--md-sys-typescale-label-large-weight);
 }
 
 .conversation-navigation__action.primary:hover,
 .conversation-navigation__action.primary:focus-visible {
-  background: color-mix(in oklch, var(--ak-color-action-container), var(--ak-color-action-primary) 12%);
+  color: var(--md-sys-color-on-primary);
+  background: color-mix(in srgb, var(--md-sys-color-primary) 92%, var(--md-sys-color-on-primary) 8%);
 }
 
 .conversation-navigation__action:disabled {

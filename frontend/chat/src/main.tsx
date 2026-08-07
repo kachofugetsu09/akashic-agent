@@ -13,6 +13,7 @@ import {
   Smartphone,
 } from "lucide-react";
 import { cycleTheme, initializeTheme, setTheme, startCrossPortThemeSync, useTheme } from "../../theme/src/theme-runtime";
+import { MaterialButton } from "../../theme/src/material-react";
 import {
   Attachment,
   AttachmentHoverCard,
@@ -839,11 +840,14 @@ function App() {
               </PromptInputTools>
             </PromptInputFooter>
           </PromptInput>
-          {error && <div className="error-line" role="alert"><span>{error}</span><button type="button" onClick={() => {
-            setError("");
-            void loadSessionsSafely();
-            if (shellState?.chatReady) void loadModels(activeSessionRef.current).catch((reason: unknown) => reportError(reason));
-          }}>重试</button></div>}
+          {error && <div className="error-line" role="alert"><span>{error}</span><MaterialButton
+            variant="danger"
+            onClick={() => {
+              setError("");
+              void loadSessionsSafely();
+              if (shellState?.chatReady) void loadModels(activeSessionRef.current).catch((reason: unknown) => reportError(reason));
+            }}
+          >重试</MaterialButton></div>}
         </div>
       </section>}
       <MobilePairingDialog open={mobilePairingOpen} onOpenChange={setMobilePairingOpen} />

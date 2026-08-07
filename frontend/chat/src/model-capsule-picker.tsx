@@ -156,7 +156,7 @@ export function ModelCapsulePicker({
   }
 
   return (
-    <div ref={rootRef} className={`model-capsule ${open ? "is-open" : ""}`}>
+    <div ref={rootRef} className={`model-capsule ${open ? "is-open" : ""} ${explicitModel ? "is-pinned" : ""}`}>
       <div className="model-capsule__shell">
         <div id="model-capsule-panel" className="model-capsule__panel" inert={!open} aria-hidden={!open} aria-label={view === "models" ? "选择模型" : "选择思考强度"}>
           <header className="model-capsule__header">
