@@ -420,6 +420,8 @@ def test_mixed_segments_preserve_anchor_before_active_batches() -> None:
 def test_summary_uses_current_once_then_distinct_fallback_once_with_own_budget() -> None:
     current = _Provider(context_window=500, fail=True, runtime_id="agent")
     fallback = _Provider(context_window=2_000, runtime_id="main")
+    current.model = "selected-model"
+    fallback.model = "default-model"
     unit = _unit(1, 100)
     segments = ContextPayloadSegments(
         prefix=(),
@@ -428,13 +430,13 @@ def test_summary_uses_current_once_then_distinct_fallback_once_with_own_budget()
     )
     compactor = ContextCompactor(
         provider=current,
-        model="current",
+        model="startup-current",
         scope_id="s",
         payload_segments=segments,
         max_output_tokens=100,
         next_generation=1,
         fallback_provider=fallback,
-        fallback_model="default",
+        fallback_model="startup-default",
         keep_recent_tokens=1,
     )
     result = _run(
@@ -443,10 +445,44 @@ def test_summary_uses_current_once_then_distinct_fallback_once_with_own_budget()
 
     assert len(current.calls) == 1
     assert len(fallback.calls) == 1
+    assert current.calls[0]["model"] == "selected-model"
+    assert fallback.calls[0]["model"] == "default-model"
     assert fallback.calls[0]["max_tokens"] <= fallback.context_window
     assert result.checkpoint is not None
     assert result.checkpoint.model_runtime_id == "main"
-    assert result.checkpoint.model == "default"
+    assert result.checkpoint.model == "default-model"
+
+
+def test_summary_checkpoint_records_selected_provider_model_and_runtime() -> None:
+    provider = _Provider(runtime_id="selected")
+    provider.model = "selected-model"
+    compactor = ContextCompactor(
+        provider=provider,
+        model="startup-model",
+        scope_id="selected-runtime",
+        payload_segments=ContextPayloadSegments(
+            prefix=(),
+            committed_units=(_unit(1, 100), _unit(2, 100)),
+            current_anchor=(),
+        ),
+        max_output_tokens=100,
+        next_generation=1,
+        keep_recent_tokens=1,
+    )
+
+    result = _run(
+        compactor.prepare(
+            compactor._segments.flatten(),
+            pending_start=2,
+            tools=[],
+            force=True,
+        )
+    )
+
+    assert provider.calls[0]["model"] == "selected-model"
+    assert result.checkpoint is not None
+    assert result.checkpoint.model_runtime_id == "selected"
+    assert result.checkpoint.model == "selected-model"
 
 
 def test_summary_does_not_duplicate_same_selected_main_provider() -> None:
@@ -581,6 +617,10 @@ def test_summary_output_limit_keeps_strict_input_boundary() -> None:
     assert _summary_output_limit(_Provider(context_window=8_192), summary_input) == 8_190
     with pytest.raises(ContextCompactionError, match="summary_input_exceeds_window"):
         _summary_output_limit(_Provider(context_window=2), summary_input)
+
+    capped = _Provider(context_window=8_193)
+    capped.max_output_tokens = 123
+    assert _summary_output_limit(capped, summary_input) == 123
 
 
 def test_request_output_limit_moves_hard_edge_for_each_payload() -> None:

@@ -255,7 +255,7 @@ class ContextCompactor:
         chat_call: Callable[..., Any] | None = None,
     ) -> None:
         self._provider = provider
-        self._model = model
+        self._model = _provider_model(provider, model)
         self._scope_id = str(scope_id).strip()
         if not self._scope_id:
             raise ValueError("scope_id 不能为空")
@@ -740,7 +740,7 @@ class ContextCompactor:
                 request = {
                     "messages": summary_input,
                     "tools": [],
-                    "model": model,
+                    "model": _provider_model(provider, model),
                     "max_tokens": _summary_output_limit(provider, summary_input),
                     "disable_thinking": True,
                 }
@@ -755,7 +755,12 @@ class ContextCompactor:
             if response.tool_calls or not _valid_summary(summary):
                 failures.append("summary response failed Pi heading validation")
                 continue
-            return summary, response.usage, _provider_runtime_id(provider), model
+            return (
+                summary,
+                response.usage,
+                _provider_runtime_id(provider),
+                _provider_model(provider, model),
+            )
         raise ContextCompactionError(
             "context_compaction_summary_failed: " + "; ".join(failures)
         )
@@ -817,7 +822,11 @@ def _summary_output_limit(
             "context_compaction_summary_input_exceeds_window "
             f"estimated={estimated_input} window={provider.context_window}"
         )
-    return max(1, min(SUMMARY_MAX_TOKENS, available - 1))
+    configured_max_output = _provider_max_output_tokens(provider)
+    limits = [SUMMARY_MAX_TOKENS, available - 1]
+    if configured_max_output > 0:
+        limits.append(configured_max_output)
+    return max(1, min(limits))
 
 
 def _copy_segments(segments: ContextPayloadSegments) -> ContextPayloadSegments:
@@ -1207,6 +1216,28 @@ def _usage_payload(usage: ModelUsage | None) -> dict[str, object]:
 def _provider_runtime_id(provider: "LLMProvider") -> str:
     value = getattr(provider, "runtime_id", None)
     return str(value or getattr(provider, "_runtime_id", "main"))
+
+
+def _provider_model(provider: "LLMProvider", fallback: str) -> str:
+    """Resolve a provider's frozen model identity without breaking test doubles."""
+
+    value = getattr(provider, "model", None)
+    if value is None:
+        return fallback
+    if not isinstance(value, str) or not value.strip():
+        raise ContextCompactionError("context_compaction_provider_model_invalid")
+    return value
+
+
+def _provider_max_output_tokens(provider: "LLMProvider") -> int:
+    value = getattr(provider, "max_output_tokens", 0)
+    if value is None:
+        return 0
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ContextCompactionError(
+            "context_compaction_provider_max_output_tokens_invalid"
+        )
+    return value
 
 
 def _selection_digest(

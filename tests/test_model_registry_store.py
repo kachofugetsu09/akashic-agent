@@ -113,6 +113,7 @@ def test_model_store_keeps_legacy_percent_columns_inert(tmp_path: Path) -> None:
         ).fetchone()
     assert {"effective_context_percent", "compaction_trigger_percent"} <= columns
     assert values is not None
+    assert tuple(values) == (0.9, 0.74)
 
 
 def test_role_update_is_revisioned_and_rejects_stale_writer(tmp_path: Path) -> None:
