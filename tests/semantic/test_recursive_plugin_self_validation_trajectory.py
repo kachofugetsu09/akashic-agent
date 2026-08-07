@@ -12,7 +12,12 @@ import pytest
 from agent.control.models import TurnRequest
 from agent.control.runtime import ConversationRuntime
 from agent.looping.core import AgentLoop
-from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryServices
+from agent.looping.ports import (
+    AgentLoopConfig,
+    AgentLoopDeps,
+    LLMConfig,
+    SessionServices,
+)
 from agent.persona import reset_veda
 from agent.plugins.manager import PluginManager
 from agent.plugins.reload_journal import ReloadJournal
@@ -26,6 +31,9 @@ from bus.event_bus import EventBus
 from bus.events import DeliveryReceipt, DeliveryStatus
 from bus.queue import MessageBus
 from core.memory.engine import MemoryQueryResult
+from core.memory.markdown import build_markdown_memory_runtime
+from core.memory.runtime import MemoryRuntime
+from session.compaction_runtime import SessionCompactionRuntime
 from session.manager import SessionManager
 from tests.provider_fakes import ProviderContextBudgetStub
 from tests_scenarios.contracts.oracles import (
@@ -220,6 +228,16 @@ async def _run_trajectory(
         parent_release,
         fake_tool_success=fake_tool_success,
     )
+    markdown = build_markdown_memory_runtime(
+        workspace=workspace,
+        provider=provider,
+        model="trajectory",
+        event_bus=event_bus,
+    )
+    compaction_runtime = SessionCompactionRuntime(
+        session_manager=sessions,
+        markdown=markdown.maintenance,
+    )
     loop = AgentLoop(
         AgentLoopDeps(
             bus=bus,
@@ -229,7 +247,14 @@ async def _run_trajectory(
             session_manager=sessions,
             workspace=workspace,
             event_bus=event_bus,
-            memory_services=MemoryServices(engine=cast(Any, memory)),
+            memory_runtime=MemoryRuntime(
+                markdown=markdown,
+                engine=cast(Any, memory),
+            ),
+            session_services=SessionServices(
+                session_manager=sessions,
+                compaction_runtime=compaction_runtime,
+            ),
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=5)),
     )
