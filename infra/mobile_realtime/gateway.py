@@ -2001,6 +2001,13 @@ def build_mobile_gateway_runtime(
                 public_key_fingerprint=keyset.server_fingerprint,
             )
         )
+        from infra.mobile_webui.reconcile import reconcile_main_mobile_webui
+
+        reconcile_main_mobile_webui(
+            Path(__file__).resolve().parents[2],
+            workspace,
+            server_id=keyset.manifest.server_id,
+        )
         publication = MobileWebUiStore(
             workspace / "mobile-webui",
             server_id=keyset.manifest.server_id,

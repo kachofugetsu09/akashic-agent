@@ -36,6 +36,7 @@ from agent.plugins.mobile_ui import (
     MobileUiRpcInvalidRequest,
     MobileUiStaleRevision,
 )
+from agent.model_runtime.session_selection import read_session_model_selection
 from infra.mobile_realtime.runtime_inspection import (
     RuntimeInspectionError,
     RuntimeInspectionService,
@@ -74,6 +75,7 @@ from infra.mobile_realtime.storage import (
 )
 
 if TYPE_CHECKING:
+    from agent.model_runtime.registry import ModelRegistry
     from agent.plugins.mobile_ui import MobileUiProvider
     from infra.mobile_realtime.gateway import MobileGatewayRuntime
 
@@ -205,6 +207,7 @@ class MobileRealtimeChannel:
         self._mobile_ui_catalog_identity = ""
         self._mobile_ui_hot_connections: dict[str, int] = {}
         self._runtime_inspection: RuntimeInspectionService | None = None
+        self._model_registry: ModelRegistry | None = None
 
     def bind_runtime_inspection(self, service: RuntimeInspectionService) -> None:
         """绑定只读运行时检查服务。"""
@@ -212,6 +215,13 @@ class MobileRealtimeChannel:
         if self._runtime_inspection is not None:
             raise RuntimeError("Runtime inspection service 已绑定")
         self._runtime_inspection = service
+
+    def bind_model_registry(self, registry: ModelRegistry) -> None:
+        """绑定 Core 模型目录，移动端只消费该权威快照。"""
+
+        if self._model_registry is not None:
+            raise RuntimeError("Model runtime registry 已绑定")
+        self._model_registry = registry
 
     def bind_mobile_ui_provider(self, provider: MobileUiProvider) -> None:
         """绑定读取当前插件快照的移动 UI 提供器。"""
@@ -816,6 +826,8 @@ class MobileRealtimeChannel:
                     server_name,
                 ),
             )
+        if frame.type == "model.catalog.get":
+            return await self._model_catalog(frame)
         if frame.type == "message.send":
             return await self._send_message(device_id, frame)
         if frame.type == "turn.stop":
@@ -827,6 +839,52 @@ class MobileRealtimeChannel:
         if frame.type == "attachment.download":
             return self._download_attachment(frame)
         raise MobileCommandError("unsupported_command", f"尚不支持命令: {frame.type}")
+
+    async def _model_catalog(self, frame: GenericCommand) -> CommandReply:
+        """返回当前模型 generation 和指定会话已经提交的选择。"""
+
+        _expect_keys(frame.payload, set())
+        session_id = self._normalize_session_id(frame.session_id)
+        registry = self._model_registry
+        if registry is None:
+            raise MobileCommandError("model_registry_unavailable", "模型注册表尚未绑定")
+        current = await registry.refresh()
+        runtimes = [
+            {
+                key: runtime[key]
+                for key in (
+                    "id",
+                    "provider",
+                    "model",
+                    "sourceId",
+                    "sourceName",
+                    "reasoningEffort",
+                    "supportedReasoningEfforts",
+                    "roles",
+                    "contextWindow",
+                    "inputModalities",
+                )
+            }
+            for runtime in registry.list_runtimes()
+        ]
+        selection = (
+            read_session_model_selection(
+                self._require_ctx().session_manager.get_existing(session_id).metadata
+            )
+            if self._require_ctx().session_manager.session_exists(session_id)
+            else None
+        )
+        return CommandReply(
+            type="model.catalog.get.ok",
+            session_id=session_id,
+            payload={
+                "generation_id": current.generation_id,
+                "default_runtime": current.role_runtime_ids["default"],
+                "selected_runtime_id": selection.model_ref if selection else "",
+                "selected_reasoning_effort": selection.reasoning_effort if selection else "",
+                "runtimes": runtimes,
+            },
+        )
 
     def _require_runtime_inspection(self) -> RuntimeInspectionService:
         service = self._runtime_inspection
@@ -1355,6 +1413,9 @@ class MobileRealtimeChannel:
             "device_id": device_id,
             "require_existing_session": True,
         }
+        if frame.payload.model_runtime_id is not None:
+            metadata["model_runtime_id"] = frame.payload.model_runtime_id
+            metadata["model_reasoning_effort"] = frame.payload.model_reasoning_effort or ""
         if reply is not None:
             metadata.update(
                 {

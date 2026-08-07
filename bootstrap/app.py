@@ -427,6 +427,11 @@ class AppRuntime:
                 self.mobile_gateway_runtime.channel.bind_runtime_inspection(
                     runtime_inspection
                 )
+                if self.core.model_registry is None:
+                    raise RuntimeError("Mobile Gateway 启动需要模型注册表")
+                self.mobile_gateway_runtime.channel.bind_model_registry(
+                    self.core.model_registry
+                )
                 if plugin_ui_provider is not None:
                     self.mobile_gateway_runtime.channel.bind_mobile_ui_provider(
                         plugin_ui_provider

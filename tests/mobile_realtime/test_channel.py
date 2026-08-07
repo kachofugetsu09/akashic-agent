@@ -134,6 +134,34 @@ class _RuntimeInspection:
         return {"id": document_id, "markdown": "# Memory"}
 
 
+class _ModelRegistry:
+    async def refresh(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            generation_id=3,
+            role_runtime_ids={"default": "model-a"},
+        )
+
+    def list_runtimes(self) -> list[dict[str, object]]:
+        return [
+            {
+                "id": "model-a",
+                "provider": "openai",
+                "catalogProvider": "openai",
+                "model": "gpt-test",
+                "reasoningEffort": "medium",
+                "supportedReasoningEfforts": ["low", "medium", "high"],
+                "sourceId": "source-a",
+                "sourceName": "OpenAI",
+                "contextWindow": 128_000,
+                "maxOutputTokens": 8_192,
+                "inputModalities": ["text", "image"],
+                "capabilitySource": "test",
+                "capabilitySources": {},
+                "roles": ["default", "agent"],
+            }
+        ]
+
+
 def _register_device(storage: MobileRealtimeStorage, device_id: str) -> None:
     storage.register_device(
         DeviceRecord(
@@ -177,6 +205,71 @@ async def test_runtime_document_commands_use_bound_read_service(tmp_path: Path) 
     assert listed.payload["items"] == [{"id": "memory"}]
     assert detail.type == "runtime.document.get.ok"
     assert detail.payload["markdown"] == "# Memory"
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_model_catalog_returns_bound_registry_and_session_selection(
+    tmp_path: Path,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    manager = SessionManager(tmp_path / "workspace")
+    session_id = f"mobile:{uuid4()}"
+    session = manager.get_or_create(session_id)
+    session.metadata["model_selection"] = {
+        "schema_version": 1,
+        "model_ref": "model-a",
+        "reasoning_effort": "high",
+    }
+    manager.save(session)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
+    channel.bind_model_registry(cast(Any, _ModelRegistry()))
+    await channel.start(
+        cast(
+            Any,
+            SimpleNamespace(
+                bus=_Bus(),
+                session_manager=manager,
+                event_bus=_EventBus(),
+                push_tool=_PushTool(),
+                interrupt_controller=None,
+                attachment_store=AttachmentStore(tmp_path / "uploads"),
+            ),
+        )
+    )
+
+    reply = await channel.handle_command(
+        device_id=device_id,
+        frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            command_type="model.catalog.get",
+            session_id=session_id,
+        ),
+    )
+
+    assert reply.type == "model.catalog.get.ok"
+    assert reply.session_id == session_id
+    assert reply.payload["generation_id"] == 3
+    assert reply.payload["default_runtime"] == "model-a"
+    assert reply.payload["selected_runtime_id"] == "model-a"
+    assert reply.payload["selected_reasoning_effort"] == "high"
+    assert reply.payload["runtimes"] == [
+        {
+            "id": "model-a",
+            "provider": "openai",
+            "model": "gpt-test",
+            "sourceId": "source-a",
+            "sourceName": "OpenAI",
+            "reasoningEffort": "medium",
+            "supportedReasoningEfforts": ["low", "medium", "high"],
+            "roles": ["default", "agent"],
+            "contextWindow": 128_000,
+            "inputModalities": ["text", "image"],
+        }
+    ]
+    manager.close()
     storage.close()
 
 
@@ -448,6 +541,8 @@ def _message_frame(
     epoch: int = 1,
     reply_to: dict[str, object] | None = None,
     text: str = "你好",
+    model_runtime_id: str | None = None,
+    model_reasoning_effort: str | None = None,
 ) -> MessageSendCommand:
     frame = parse_frame(
         json.dumps(
@@ -465,6 +560,16 @@ def _message_frame(
                     "media_refs": [],
                     "client_created_at": datetime.now(timezone.utc).isoformat(),
                     **({"reply_to": reply_to} if reply_to is not None else {}),
+                    **(
+                        {"model_runtime_id": model_runtime_id}
+                        if model_runtime_id is not None
+                        else {}
+                    ),
+                    **(
+                        {"model_reasoning_effort": model_reasoning_effort}
+                        if model_reasoning_effort is not None
+                        else {}
+                    ),
                 },
             }
         )
@@ -1061,6 +1166,8 @@ async def test_message_send_resolves_reply_into_agent_context_and_metadata(
         frame=_message_frame(
             frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
             session_id=session_id,
+            model_runtime_id="model-a",
+            model_reasoning_effort="high",
             reply_to={
                 "message_id": target["id"],
             },
@@ -1076,6 +1183,8 @@ async def test_message_send_resolves_reply_into_agent_context_and_metadata(
     assert inbound.metadata["reply_role"] == "assistant"
     assert inbound.metadata["reply_preview"] == " ".join(target_content.split())[:512]
     assert inbound.metadata["require_existing_session"] is True
+    assert inbound.metadata["model_runtime_id"] == "model-a"
+    assert inbound.metadata["model_reasoning_effort"] == "high"
 
     user_target = session.add_message(
         "user",
