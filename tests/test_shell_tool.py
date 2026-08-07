@@ -815,15 +815,17 @@ def test_shell_env_sets_noninteractive_defaults(monkeypatch, tmp_path: Path) -> 
     assert env["GIT_PAGER"] == "cat"
 
 
-def test_shell_env_defers_plugin_uninstall_owned_by_current_turn(
+def test_shell_env_exports_plugin_rollout_owner_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("AKASHIC_DEFER_PLUGIN_UNINSTALL", "stale")
-    assert "AKASHIC_DEFER_PLUGIN_UNINSTALL" not in _shell_env()
+    monkeypatch.setenv("AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN", "stale")
+    assert "AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN" not in _shell_env()
 
     token = current_turn_id.set("turn:context-pressure-uninstall")
     try:
-        assert _shell_env()["AKASHIC_DEFER_PLUGIN_UNINSTALL"] == "1"
+        assert _shell_env()["AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN"] == (
+            "turn:context-pressure-uninstall"
+        )
     finally:
         current_turn_id.reset(token)
 

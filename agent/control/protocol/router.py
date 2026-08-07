@@ -243,6 +243,7 @@ class ConnectionRouter:
                 values["input"],
                 values["metadata"],
                 values["runtime"],
+                attached=not values["detached"],
             )
             if not values["detached"]:
                 self._attached_turns[handle.id] = handle
@@ -260,6 +261,7 @@ class ConnectionRouter:
                 values["marketplace"],
                 values["ref"],
                 values["sparse"],
+                values["ownerTurnId"],
             )
         if method == "plugin/status":
             return self._service.plugin_status()
@@ -268,14 +270,20 @@ class ConnectionRouter:
         if method == "plugin/discard":
             return await self._service.discard_plugin(values["pluginId"])
         if method == "plugin/uninstall/start":
-            operation = self._service.start_plugin_uninstall(values["pluginId"])
-            task = asyncio.create_task(
-                self._forward_operation(operation),
-                name=f"control-operation:{operation.id}",
+            if not values["ownerTurnId"]:
+                operation = self._service.start_plugin_uninstall(values["pluginId"])
+                task = asyncio.create_task(
+                    self._forward_operation(operation),
+                    name=f"control-operation:{operation.id}",
+                )
+                self._event_tasks.add(task)
+                task.add_done_callback(self._event_tasks.discard)
+                return operation.record()
+            return await self._service.register_plugin_uninstall(
+                values["pluginId"], values["ownerTurnId"]
             )
-            self._event_tasks.add(task)
-            task.add_done_callback(self._event_tasks.discard)
-            return operation.record()
+        if method == "plugin/revert":
+            return await self._service.revert_plugin(values["ownerTurnId"])
         raise AssertionError(f"unhandled protocol method: {method}")
 
     async def _post_response_notifications(

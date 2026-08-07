@@ -49,13 +49,13 @@ class _FakeChatServer:
             await asyncio.sleep(0)
 
 
-def test_plugin_uninstall_defers_only_inside_runtime_turn(
+def test_plugin_uninstall_passes_active_turn_owner(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text("[runtime]\nworkspace='workspace'\n", encoding="utf-8")
-    calls: list[bool] = []
+    calls: list[str] = []
 
     monkeypatch.setattr(
         main.Config,
@@ -71,32 +71,44 @@ def test_plugin_uninstall_defers_only_inside_runtime_turn(
         plugin_id: str,
         _workspace: Path,
         *,
-        wait: bool,
+        owner_turn_id: str,
     ) -> dict[str, object]:
-        calls.append(wait)
+        calls.append(owner_turn_id)
         return {
-            "id": "operation:drain",
             "pluginId": plugin_id,
-            "status": "completed" if wait else "in_progress",
+            "publicationState": "pending_turn_end",
         }
 
     monkeypatch.setattr(main, "_request_plugin_uninstall", request)
-    monkeypatch.delenv("AKASHIC_DEFER_PLUGIN_UNINSTALL", raising=False)
-    completed = main._uninstall_via_runtime(
+    monkeypatch.delenv("AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN", raising=False)
+    outside = main._uninstall_via_runtime(
         str(config_path),
         "context_pressure@github",
         tmp_path / "workspace",
     )
-    monkeypatch.setenv("AKASHIC_DEFER_PLUGIN_UNINSTALL", "1")
-    deferred = main._uninstall_via_runtime(
+    monkeypatch.setenv("AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN", "turn:owner")
+    inside = main._uninstall_via_runtime(
         str(config_path),
         "context_pressure@github",
         tmp_path / "workspace",
     )
 
-    assert calls == [True, False]
-    assert completed is not None and completed["status"] == "completed"
-    assert deferred is not None and deferred["status"] == "in_progress"
+    assert calls == ["", "turn:owner"]
+    assert outside["publicationState"] == "pending_turn_end"
+    assert inside["publicationState"] == "pending_turn_end"
+
+
+def test_agent_turn_rejects_internal_plugin_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN", "turn:owner")
+
+    with pytest.raises(ValueError, match="Core 内部维护动作"):
+        main._reject_agent_internal_plugin_action("plugin-promote")
+
+    main._reject_agent_internal_plugin_action("plugin-install")
+    main._reject_agent_internal_plugin_action("plugin-uninstall")
+    main._reject_agent_internal_plugin_action("plugin-revert")
 
 
 def test_app_runtime_uses_explicit_dashboard_bind(

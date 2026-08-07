@@ -31,6 +31,7 @@ from bus.event_bus import EventBus
 from bus.queue import MessageBus
 from agent.plugins.jobs import PluginJobRuntime
 from agent.plugins.service_host import PluginServiceHost
+from agent.plugins.turn_rollout import TurnPluginRollout
 from agent.plugins.watcher import PluginWatcher
 from core.net.http import (
     SharedHttpResources,
@@ -232,6 +233,7 @@ class AppRuntime:
         self.app_server: SocketAppServer | None = None
         self.conversation_runtime: ConversationRuntime | None = None
         self.control_service: ControlService | None = None
+        self.plugin_turn_rollout: TurnPluginRollout | None = None
         self.passive_worker: PassiveMessageWorker | None = None
         self.channel_host: ChannelHost | None = None
         self.core: CoreRuntime | None = None
@@ -315,10 +317,23 @@ class AppRuntime:
                     request,
                 )
 
+            manager = getattr(self.core, "plugin_manager", None)
+            if manager is None:
+                raise RuntimeError("插件 Runtime 不可用")
+            self.plugin_turn_rollout = TurnPluginRollout(
+                manager,
+                workspace=self.workspace,
+                uninstall=self._uninstall_plugin,
+            )
+            assert self.agent_loop is not None
+            self.agent_loop.bind_plugin_rollout_fact_provider(
+                self.plugin_turn_rollout.consume_fact
+            )
             self.conversation_runtime = ConversationRuntime(
                 self.session_manager.control_store,
                 _execute_control_request,
                 restart_coordinator=self.restart_coordinator,
+                turn_terminal=self.plugin_turn_rollout.turn_terminal,
             )
             if self.restart_coordinator is not None:
                 self.restart_coordinator.bind_admission(
@@ -340,7 +355,18 @@ class AppRuntime:
                 self.workspace,
                 plugin_drain=self._disable_and_drain_plugin,
                 plugin_uninstall=self._uninstall_plugin,
+                plugin_uninstall_register=self._register_plugin_uninstall,
                 plugin_install=self._install_plugin,
+                plugin_revert=self._revert_plugin_operation,
+                plugin_turn_barrier=self.plugin_turn_rollout.wait_for_turn_boundary,
+                plugin_child_binding=lambda owner, attached: (
+                    self.plugin_turn_rollout.child_binding(
+                        owner,
+                        attached=attached,
+                    )
+                    if self.plugin_turn_rollout is not None
+                    else None
+                ),
                 plugin_status=self._plugin_status,
                 plugin_promote=self._promote_plugin,
                 plugin_discard=self._discard_plugin,
@@ -408,6 +434,10 @@ class AppRuntime:
                 await self.plugin_service_host.start_all()
                 plugin_manager.bind_service_switcher(
                     self.plugin_service_host.swap_plugin_services
+                )
+                plugin_manager.bind_candidate_service_host(
+                    start=self.plugin_service_host.start_candidate,
+                    stop=self.plugin_service_host.stop_candidate,
                 )
             if self.readiness is not None:
                 self.readiness.mark_stage("services.ready")
@@ -834,6 +864,14 @@ class AppRuntime:
                     ),
                 ),
                 (
+                    "plugin_turn_rollout.shutdown",
+                    (
+                        self.plugin_turn_rollout.shutdown
+                        if self.plugin_turn_rollout
+                        else _noop_async
+                    ),
+                ),
+                (
                     "channels.stop",
                     self.channel_host.stop_all if self.channel_host else _noop_async,
                 ),
@@ -909,6 +947,7 @@ class AppRuntime:
         marketplace: str,
         ref: str,
         sparse: list[str],
+        owner_turn_id: str = "",
     ) -> dict[str, object]:
         """安装 immutable artifact，并等待 runtime latest 已可租用。"""
 
@@ -917,16 +956,36 @@ class AppRuntime:
             raise RuntimeError("插件 Runtime 不可用")
 
         # 1. PluginManager 与 watcher 共用一个 candidate 发布 owner。
-        result, status = await manager.install_candidate(
-            source=source,
-            marketplace=marketplace,
-            ref_name=ref,
-            sparse_paths=sparse,
-        )
+        rollout = getattr(self, "plugin_turn_rollout", None)
+        if rollout is None:
+            result, status = await manager.install_candidate(
+                source=source,
+                marketplace=marketplace,
+                ref_name=ref,
+                sparse_paths=sparse,
+            )
+        elif not owner_turn_id:
+            raise ValueError("plugin-install 必须由当前 active turn 发起")
+        else:
+            result, status = await rollout.install(
+                owner_turn_id,
+                source=source,
+                marketplace=marketplace,
+                ref_name=ref,
+                sparse_paths=sparse,
+            )
 
         # 2. 返回 manager 在 candidate owner 锁内冻结的发布结果。
         plugin_id = f"{result.plugin_name}@{result.marketplace}"
         publication = status["candidate_state"] if result.staged_candidate else "stable"
+        message = (
+            f"{plugin_id} 候选版本安装成功。当前 turn 仍使用原版本；"
+            "本 turn 启动的 attached programmatic 验证会自动使用新版本。"
+            "验证正确后请正常结束当前 turn，系统会在本轮结束后自动切换，"
+            "下一 turn 生效；如果结果或轨迹不正确，请先执行 plugin-revert。"
+            if result.staged_candidate
+            else f"{plugin_id} 已经是当前安装版本；没有创建候选，也不需要重启。"
+        )
         return {
             "pluginId": plugin_id,
             "version": result.plugin_version,
@@ -935,7 +994,34 @@ class AppRuntime:
             "dataPath": str(result.data_path),
             "publicationState": publication,
             "candidate": self._plugin_status(status),
+            "message": message,
         }
+
+    async def _register_plugin_uninstall(
+        self,
+        plugin_id: str,
+        owner_turn_id: str,
+    ) -> dict[str, object]:
+        rollout = self.plugin_turn_rollout
+        if rollout is None:
+            raise RuntimeError("插件 turn rollout owner 不可用")
+        result = await rollout.uninstall(owner_turn_id, plugin_id)
+        result["message"] = (
+            f"{plugin_id} 卸载已确认。当前 turn 的已有操作可以完成；"
+            "本轮结束后系统会自动停止插件并删除已安装代码，plugin-data 会保留。"
+            "下一 turn 不再加载该插件。如需取消，请在本轮结束前执行 plugin-revert。"
+        )
+        return result
+
+    async def _revert_plugin_operation(self, owner_turn_id: str) -> dict[str, object]:
+        rollout = self.plugin_turn_rollout
+        if rollout is None:
+            raise RuntimeError("插件 turn rollout owner 不可用")
+        result = await rollout.revert(owner_turn_id)
+        result["message"] = (
+            "已撤销当前 turn 最近一次插件操作；已发布版本和 plugin-data 均未改变。"
+        )
+        return result
 
     def _plugin_status(
         self,
