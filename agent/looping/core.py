@@ -68,8 +68,6 @@ if TYPE_CHECKING:
     from agent.plugins.snapshot import RuntimeSnapshotStore
 
 logger = logging.getLogger("agent.loop")
-_MANUAL_CONSOLIDATION_TIMEOUT_SECONDS = 30.0
-
 StreamDelta: TypeAlias = dict[str, str] | str
 StreamSink: TypeAlias = Callable[[StreamDelta], Awaitable[None]]
 StreamSinkFactory: TypeAlias = Callable[[object], StreamSink | None]
@@ -381,7 +379,6 @@ class AgentLoop:
                 reasoner=self._reasoner,
                 event_bus=self._event_bus,
                 outbound_port=BusOutboundPort(self.bus),
-                memory_consolidator=self,
             )
         )
         self._agent_core = agent_core
@@ -955,7 +952,6 @@ class AgentLoop:
                     "omit_user_turn": True,
                     "omit_assistant_turn": True,
                     "skip_session_history": True,
-                    "skip_memory_context_guard": True,
                     "skip_post_memory": True,
                     "skip_memory_retrieval": True,
                 }
@@ -1042,43 +1038,5 @@ class AgentLoop:
         tool_chain = list(result.metadata.get("tool_chain") or [])
         visible_names = result.metadata.get("visible_names")
         return result.reply, tools_used, tool_chain, visible_names, result.thinking
-
-    async def trigger_memory_consolidation(
-        self,
-        session_key: str,
-        *,
-        archive_all: bool = False,
-        force: bool = False,
-        drain_backlog: bool = True,
-    ) -> bool:
-        from core.memory.markdown import ConsolidateRequest
-
-        session = self.session_manager.get_or_create(session_key)
-        if self._markdown_memory is None:
-            raise RuntimeError("markdown memory runtime unavailable")
-        maintenance = self._markdown_memory.maintenance
-        operation = maintenance.consolidate(
-            ConsolidateRequest(
-                session=session,
-                archive_all=archive_all,
-                force=force,
-                drain_backlog=drain_backlog,
-            )
-        )
-        if drain_backlog:
-            result = await operation
-        else:
-            try:
-                result = await asyncio.wait_for(
-                    operation,
-                    timeout=_MANUAL_CONSOLIDATION_TIMEOUT_SECONDS,
-                )
-            except TimeoutError as exc:
-                raise TimeoutError("memory consolidation busy") from exc
-        if result.trace.get("mode") == "markdown":
-            await self.session_manager.save_async(session)
-            return True
-        return False
-
 
 # ── 模块级辅助 ────────────────────────────────────────────────────

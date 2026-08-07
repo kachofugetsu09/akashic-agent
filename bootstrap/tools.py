@@ -219,7 +219,6 @@ class CoreRuntime:
                     self.event_bus,
                     pipeline._outbound_port,
                     context,
-                    pipeline._history_window,
                     plugin_modules=cast(Any, after_turn_modules),
                 ),
             ),
