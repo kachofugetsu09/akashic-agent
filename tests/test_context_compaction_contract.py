@@ -711,6 +711,38 @@ def test_soft_limit_uses_fixed_context_window_ratio() -> None:
     assert result.compacted
 
 
+def test_unknown_context_window_estimates_but_never_compacts() -> None:
+    provider = _Provider(context_window=0)
+    segments = ContextPayloadSegments(
+        prefix=(),
+        committed_units=(_unit(1, 100), _unit(2, 100)),
+        current_anchor=({"role": "user", "content": "current", "tokens": 2},),
+    )
+    compactor = ContextCompactor(
+        provider=provider,
+        model="m",
+        scope_id="unknown-window",
+        payload_segments=segments,
+        max_output_tokens=512,
+        next_generation=1,
+        keep_recent_tokens=1,
+    )
+
+    result = _run(
+        compactor.prepare(
+            segments.flatten(),
+            pending_start=3,
+            tools=[{"type": "function", "function": {"name": "tool"}}],
+            force=True,
+        )
+    )
+
+    assert result.compacted is False
+    assert result.checkpoint is None
+    assert result.estimated_tokens > 0
+    assert provider.calls == []
+
+
 def test_same_turn_temporary_summary_replaces_previous_projection() -> None:
     class _SentinelProvider(_Provider):
         async def chat(self, **kwargs):

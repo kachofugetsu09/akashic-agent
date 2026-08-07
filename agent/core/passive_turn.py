@@ -1522,6 +1522,8 @@ class DefaultReasoner(Reasoner):
                         context_retry=retry_trace,
                     )
             except ContextLengthError:
+                if self._llm.provider.context_window <= 0:
+                    raise
                 if attempt < len(attempts) - 1:
                     next_plan = attempts[attempt + 1]
                     logger.warning(
@@ -2505,6 +2507,8 @@ class DefaultReasoner(Reasoner):
         try:
             response = await self._llm.provider.chat(**request)
         except ContextLengthError:
+            if self._llm.provider.context_window <= 0:
+                raise
             forced = await self._prepare_provider_gate(
                 state,
                 messages,

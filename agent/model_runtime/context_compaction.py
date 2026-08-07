@@ -404,6 +404,8 @@ class ContextCompactor:
                 f"expected={expected_pending_start} actual={pending_start}"
             )
         estimated, quality = self._meter.estimate(self._provider, messages, tools)
+        if self._provider.context_window <= 0:
+            return PreparedQueryContext(pending_start, estimated, quality, False, None)
         soft_limit = math.floor(self._provider.context_window * SOFT_LIMIT_RATIO)
         request_output_tokens = (
             self._max_output_tokens
@@ -801,7 +803,10 @@ def hard_input_limit(provider: "LLMProvider", max_output_tokens: int) -> int:
 
 
 def _validate_output_budget(provider: "LLMProvider", value: int) -> int:
-    hard_input_limit(provider, value)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError("max_output_tokens 必须是 [0, context_window) 内的整数")
+    if int(provider.context_window) > 0:
+        hard_input_limit(provider, value)
     return value
 
 

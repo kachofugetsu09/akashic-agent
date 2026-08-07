@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
+
 from agent.core.passive_turn import DefaultReasoner
 from agent.control.ports import TurnUserInput
 from agent.core.runtime_support import LLMServices, ToolDiscoveryState
@@ -13,7 +15,7 @@ from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
     ContextPayloadSegments,
 )
-from agent.provider import LLMResponse, ToolCall
+from agent.provider import ContextLengthError, LLMResponse, ToolCall
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.tools.tool_search import ToolSearchTool
@@ -124,6 +126,17 @@ class _TimeoutProvider(_ProviderContextBudget):
     async def chat(self, **kwargs: Any) -> LLMResponse:
         self.calls.append(kwargs)
         raise asyncio.TimeoutError
+
+
+class _UnknownWindowOverflowProvider(_ProviderContextBudget):
+    context_window = 0
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def chat(self, **kwargs: Any) -> LLMResponse:
+        self.calls.append(kwargs)
+        raise ContextLengthError("provider context overflow")
 
 
 class _MandatoryCompactionRuntime:
@@ -290,6 +303,32 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     assert not any(
         "未加载工具目录" in str(m.get("content", "")) for m in first_messages
     )
+
+
+def test_unknown_context_window_leaves_provider_overflow_unmodified() -> None:
+    provider = _UnknownWindowOverflowProvider()
+    reasoner = _build_reasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider), light_provider=cast(Any, provider)
+            ),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+    )
+
+    with pytest.raises(ContextLengthError, match="provider context overflow"):
+        asyncio.run(
+            _run_with_compaction_gate(
+                reasoner,
+                [{"role": "user", "content": "overflow"}],
+            )
+        )
+
+    assert len(provider.calls) == 1
 
 
 def test_default_reasoner_replays_interrupted_attempt_before_current_input():
