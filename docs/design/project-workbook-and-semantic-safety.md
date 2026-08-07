@@ -708,12 +708,12 @@ tests_scenarios/contracts/oracles.py
 tests_scenarios/contracts/scenarios.toml
 ```
 
-`test_context_retry_is_projection_over_append_only_history` 使用真实 `SessionManager` 和 `DefaultReasoner.run_turn`，只替换有界模型结果。它记录 SQLite trace，比较完整 messages/embeddings 快照，重启后读取全部历史，再追加消息验证 seq 续接。`test_history_oracle_rejects_historical_delete_mutant` 直接在 fixture 数据库执行历史 DELETE，证明同一组快照和 write-set oracle 会拒绝已知坏状态。
+`test_full_context_projection_preserves_append_only_history` 使用真实 `SessionManager` 和 `DefaultReasoner.run_turn`，只替换有界模型结果。它证明单一 `full_context` 计划从 session projection 读取全部历史，记录 SQLite trace，比较完整 messages/embeddings 快照，重启后再追加消息验证 seq 续接。`test_history_oracle_rejects_historical_delete_mutant` 直接在 fixture 数据库执行历史 DELETE，证明同一组快照和 write-set oracle 会拒绝已知坏状态。
 
-这个 pilot 已经保护“retry 后持久历史不能实际减少”的主要事故路径，但它还不是完整 Phase 1：
+这个 pilot 已经保护“full-context projection 和 compact 不能减少持久历史”的主要事故路径，但它还不是完整 Phase 1：
 
 - 没有 SQLite authorizer，因此不能稳定记录所有被回滚、由 CTE 表达或经 trigger 触发的受保护写入尝试。
-- fault injection 直接修改 fixture，不是在一次性候选源码中把 DELETE/UPDATE 注入真实 retry seam。
+- fault injection 直接修改 fixture，不是在一次性候选源码中把 DELETE/UPDATE 注入真实 compaction seam。
 - 还没有独立 protected-path policy 阻止普通实现改动同时降低 oracle、mutant 或 coverage baseline。
 - G2 仍是 Feed/Observe 单场景 runner；统一 Docker controller 和 aggregate external status 尚未完成。
 
@@ -724,7 +724,7 @@ tests/semantic/helpers/sqlite_write_guard.py
 tests/semantic_mutants/ctx_001_delete_messages.patch
 ```
 
-Phase 1 完整后锁住“绝不丢持久历史”。Phase 2 再收紧 runtime 副作用：动态区块退化不改 session，history window 退化只改运行时消息和必要游标。当前缺口继续保留在 `NOW.md`，不能用 pilot baseline 或普通 pytest 全绿冒充已经完成。
+Phase 1 完整后锁住“绝不丢持久历史”。Phase 2 再收紧 runtime 副作用：临时 payload projection 不改 session，compaction 只追加 ledger/checkpoint 并推进会话游标。当前缺口继续保留在 `NOW.md`，不能用 pilot baseline 或普通 pytest 全绿冒充已经完成。
 
 ### Phase 0 · 文档和模板
 

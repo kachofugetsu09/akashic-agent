@@ -331,7 +331,7 @@ command = [
   "tests/control/test_protocol.py::test_thread_runtime_selector_is_strict_and_inherited_by_turn",
   "tests/control/test_protocol.py::test_router_disconnect_interrupts_only_attached_turn",
   "tests/test_memory_engine_contract.py::test_default_memory_engine_respects_skip_post_memory_event_flag",
-  "tests/test_memory_engine_contract.py::test_markdown_maintenance_respects_skip_post_memory_event_flag",
+  "tests/test_session_compaction_runtime.py::test_excluded_session_commit_advances_ledger_without_markdown",
   "tests/test_support_modules.py::test_message_push_passive_role_does_not_wait_for_passive_lane",
   "tests/test_support_modules.py::test_message_push_passive_role_serializes_actual_same_chat_send",
   "tests/test_support_modules.py::test_context_builder_debug_projection_is_turn_local",
