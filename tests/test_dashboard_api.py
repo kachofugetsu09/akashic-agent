@@ -25,6 +25,7 @@ from memory2.store import MemoryStore2
 from proactive_v2.state import ProactiveStateStore
 from session.embedding_store import MessageEmbeddingStore
 from session.store import SessionStore
+from agent.model_runtime.context_compaction import source_plan_digest
 
 
 class _TrackedTestClient(_RawTestClient):
@@ -216,6 +217,16 @@ def _seed_explicit_interaction(
             trigger="test",
             summary="legacy checkpoint",
             source_ref="test:legacy",
+            source_plan_digest=source_plan_digest(
+                (
+                    {
+                        "id": str(legacy["id"]),
+                        "seq": int(legacy["seq"]),
+                        "unit_ref": "test:legacy",
+                        "message": dict(legacy),
+                    },
+                )
+            ),
             source_from_seq=int(legacy["seq"]),
             consolidated_through_seq=int(legacy["seq"]),
             source_message_ids=[str(legacy["id"])],
@@ -239,6 +250,16 @@ def _seed_explicit_interaction(
             trigger="test",
             summary="interaction checkpoint",
             source_ref="test:interaction",
+            source_plan_digest=source_plan_digest(
+                (
+                    {
+                        "id": str(interaction["id"]),
+                        "seq": int(interaction["seq"]),
+                        "unit_ref": "test:interaction",
+                        "message": dict(interaction),
+                    },
+                )
+            ),
             source_from_seq=int(interaction["seq"]),
             consolidated_through_seq=int(interaction["seq"]),
             source_message_ids=[str(interaction["id"])],

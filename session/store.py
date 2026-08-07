@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ from agent.control.models import (
     parse_rfc3339,
 )
 logger = logging.getLogger(__name__)
+
+_SOURCE_PLAN_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 
 
 class InteractionDeleteRequiredError(ValueError):
@@ -134,6 +137,7 @@ class SessionCompaction:
     summary_format_version: int
     summary: str
     source_ref: str
+    source_plan_digest: str
     source_from_seq: int
     consolidated_through_seq: int
     source_message_ids: tuple[str, ...]
@@ -432,6 +436,25 @@ def _decode_required_turn_time(raw: object, field_name: str, turn_id: str) -> da
     return value
 
 
+def _validate_source_plan_digest(value: object) -> str:
+    """Validate the canonical SHA-256 source-plan identity at the write boundary."""
+
+    if not isinstance(value, str) or _SOURCE_PLAN_DIGEST_RE.fullmatch(value) is None:
+        raise ValueError("compaction source_plan_digest 必须是 64 位小写 SHA-256")
+    return value
+
+
+def _required_source_plan_digest(value: object, *, identifier: str) -> str:
+    """Decode one persisted source-plan digest without normalizing corrupted state."""
+
+    try:
+        return _validate_source_plan_digest(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"compaction source_plan_digest 无效: {identifier}"
+        ) from exc
+
+
 def _decode_message_tool_chain(
     raw: str | bytes | bytearray,
     message_id: str,
@@ -665,6 +688,11 @@ class SessionStore:
                     summary_format_version INTEGER NOT NULL,
                     summary TEXT NOT NULL,
                     source_ref TEXT NOT NULL,
+                    source_plan_digest TEXT NOT NULL
+                        CHECK (
+                            length(source_plan_digest) = 64
+                            AND source_plan_digest NOT GLOB '*[^0-9a-f]*'
+                        ),
                     source_from_seq INTEGER NOT NULL,
                     consolidated_through_seq INTEGER NOT NULL,
                     source_message_ids_json TEXT NOT NULL,
@@ -1487,6 +1515,10 @@ class SessionStore:
             summary_format_version=int(row["summary_format_version"]),
             summary=str(row["summary"]),
             source_ref=str(row["source_ref"]),
+            source_plan_digest=_required_source_plan_digest(
+                row["source_plan_digest"],
+                identifier=f"{row['session_key']}:{row['generation']}",
+            ),
             source_from_seq=int(row["source_from_seq"]),
             consolidated_through_seq=int(row["consolidated_through_seq"]),
             source_message_ids=tuple(str(item) for item in source_ids),
@@ -1519,6 +1551,7 @@ class SessionStore:
         trigger: str,
         summary: str,
         source_ref: str,
+        source_plan_digest: str,
         source_from_seq: int,
         consolidated_through_seq: int,
         source_message_ids: list[str] | tuple[str, ...],
@@ -1542,6 +1575,7 @@ class SessionStore:
         # 1. Validate the boundary payload before acquiring the write transaction.
         if not session_key.strip() or not source_ref.strip() or not summary.strip():
             raise ValueError("compaction session_key/source_ref/summary 不能为空")
+        source_plan_digest = _validate_source_plan_digest(source_plan_digest)
         if not source_message_ids or any(
             not isinstance(item, str) or not item.strip() for item in source_message_ids
         ):
@@ -1637,6 +1671,7 @@ class SessionStore:
                         or existing_value.parent_generation != expected_parent
                         or existing_value.summary_format_version != int(summary_format_version)
                         or existing_value.summary != summary
+                        or existing_value.source_plan_digest != source_plan_digest
                         or existing_value.source_from_seq != int(source_from_seq)
                         or existing_value.consolidated_through_seq
                         != int(consolidated_through_seq)
@@ -1685,12 +1720,13 @@ class SessionStore:
                     INSERT INTO session_compactions (
                         session_key, generation, parent_generation, created_at,
                         trigger, summary_format_version, summary, source_ref,
+                        source_plan_digest,
                         source_from_seq, consolidated_through_seq,
                         source_message_ids_json, retained_tail_json,
                         model_runtime_id, model, context_window, threshold_tokens,
                         hard_input_tokens, keep_recent_tokens, tokens_before,
                         tokens_after, summary_usage_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         session_key,
@@ -1701,6 +1737,7 @@ class SessionStore:
                         int(summary_format_version),
                         summary.strip(),
                         source_ref.strip(),
+                        source_plan_digest,
                         int(source_from_seq),
                         int(consolidated_through_seq),
                         encoded_ids,

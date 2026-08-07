@@ -488,11 +488,14 @@ class SessionCompactionRuntime:
         head: CompactionHead,
         prepare: CompactionPrepare | None = None,
     ) -> SessionCompaction:
+        canonical_plan = canonical_source_plan(checkpoint.selected_source_messages)
+        plan_digest = source_plan_digest(canonical_plan)
         return self._store.persist_compaction(
             session_key=head.session_key,
             trigger=checkpoint.trigger,
             summary=checkpoint.summary,
             source_ref=checkpoint.source_ref,
+            source_plan_digest=plan_digest,
             source_from_seq=checkpoint.source_from_seq,
             consolidated_through_seq=checkpoint.consolidated_through_seq,
             source_message_ids=checkpoint.source_message_ids,

@@ -19,9 +19,11 @@ from agent.model_runtime.context_compaction import (
     ContextCompactor,
     ContextPayloadSegments,
     SUMMARY_HEADINGS,
+    canonical_source_plan,
     compaction_scope_id,
     compaction_source_ref,
     normalize_session_created_at,
+    source_plan_digest,
     _selection_digest,
 )
 from agent.model_runtime.types import LLMResponse
@@ -326,6 +328,16 @@ def test_receipt_recovery_skips_provider_calls(
     assert provider_calls == 0
     assert session.last_consolidated == recovered.generation
     assert markdown.commit_count == 1
+    receipt = markdown.receipts[source_ref]
+    raw_checkpoint = receipt["checkpoint"]
+    assert isinstance(raw_checkpoint, dict)
+    raw_plan = raw_checkpoint["selected_source_messages"]
+    assert isinstance(raw_plan, list)
+    persisted = manager.control_store.get_compaction("session", recovered.generation)
+    assert persisted is not None
+    assert persisted.source_plan_digest == source_plan_digest(
+        canonical_source_plan(raw_plan)
+    )
     assert (
         manager.control_store.get_compaction_prepare(
             "session", source_ref=source_ref
@@ -513,6 +525,13 @@ def test_excluded_session_commit_advances_ledger_without_markdown(
     row = asyncio.run(runtime.commit_checkpoint(session, checkpoint, head=head))
 
     assert row.generation == 1
+    expected_digest = source_plan_digest(
+        canonical_source_plan(checkpoint.selected_source_messages)
+    )
+    assert row.source_plan_digest == expected_digest
+    reloaded_row = manager.control_store.get_compaction(session.key, row.generation)
+    assert reloaded_row is not None
+    assert reloaded_row.source_plan_digest == expected_digest
     assert manager.control_store.get_compaction_head(session.key).parent_generation == 1
     assert markdown.prepare_count == 0
     assert markdown.commit_count == 0
@@ -540,6 +559,11 @@ def test_receipt_recovery_keeps_original_included_semantics_after_metadata_flip(
     assert recovered.generation == 1
     assert session.last_consolidated == 1
     assert markdown.commit_count == 1
+    persisted = manager.control_store.get_compaction(session.key, recovered.generation)
+    assert persisted is not None
+    assert persisted.source_plan_digest == str(
+        markdown.receipts[recovered.source_ref]["source_plan_digest"]
+    )
 
 
 def test_receipt_recovery_after_markdown_is_idempotent_and_skips_provider(
@@ -596,6 +620,14 @@ def test_receipt_recovery_after_markdown_is_idempotent_and_skips_provider(
     assert recovered is not None
     assert provider_calls == 0
     assert resumed.last_consolidated == recovered.generation
+    persisted = manager.control_store.get_compaction(
+        resumed.key,
+        recovered.generation,
+    )
+    assert persisted is not None
+    assert persisted.source_plan_digest == str(
+        markdown.receipts[source_ref]["source_plan_digest"]
+    )
     assert markdown.commit_count == 3
     assert manager.control_store.get_compaction_prepare(
         resumed.key, source_ref=source_ref
@@ -648,6 +680,7 @@ def test_retained_tail_without_unit_ref_is_rejected(
             trigger="soft_limit",
             summary="\n".join(SUMMARY_HEADINGS),
             source_ref="bad-unit-ref",
+            source_plan_digest="a" * 64,
             source_from_seq=0,
             consolidated_through_seq=0,
             source_message_ids=("session:0",),
@@ -875,12 +908,18 @@ def test_projection_reload_does_not_duplicate_retained_tail_or_new_units(
         selected_source_messages=selected,
     )
 
-    asyncio.run(runtime.commit_checkpoint(session, checkpoint, head=head))
+    committed = asyncio.run(runtime.commit_checkpoint(session, checkpoint, head=head))
+    expected_digest = source_plan_digest(canonical_source_plan(selected))
+    assert committed.source_plan_digest == expected_digest
     session.add_message("user", "new user", control_turn_id="turn-new")
     session.add_message("assistant", "new reply", control_turn_id="turn-new")
     manager.save(session)
     manager.invalidate(session.key)
     reloaded = manager.get_or_create(session.key)
+
+    persisted = manager.control_store.get_compaction(session.key, committed.generation)
+    assert persisted is not None
+    assert persisted.source_plan_digest == expected_digest
 
     projection = asyncio.run(
         runtime.projection(reloaded, prefix=[], current_anchor=[], pending=[])

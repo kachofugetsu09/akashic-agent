@@ -20,6 +20,7 @@ from agent.control.models import (
 from agent.model_runtime.context_compaction import (
     compaction_scope_id,
     compaction_source_ref,
+    source_plan_digest,
 )
 from session.manager import Session, SessionManager
 from session.store import (
@@ -40,6 +41,7 @@ class _CompactionKwargs(TypedDict):
     trigger: str
     summary: str
     source_ref: str
+    source_plan_digest: str
     source_from_seq: int
     consolidated_through_seq: int
     source_message_ids: list[str]
@@ -104,11 +106,22 @@ def _compaction_kwargs(
     if not isinstance(raw_seq, int) or isinstance(raw_seq, bool):
         raise AssertionError("compaction fixture message seq must be an integer")
     message_seq = raw_seq
+    retained_message = {"role": "user", "content": "tail"}
     kwargs: _CompactionKwargs = {
         "session_key": session_key,
         "trigger": "soft_limit",
         "summary": summary,
         "source_ref": source_ref or f"source:{generation or 1}",
+        "source_plan_digest": source_plan_digest(
+            (
+                {
+                    "id": message_id,
+                    "seq": message_seq,
+                    "unit_ref": f"turn:{message_seq}",
+                    "message": retained_message,
+                },
+            )
+        ),
         "source_from_seq": message_seq,
         "consolidated_through_seq": message_seq,
         "source_message_ids": [message_id],
@@ -117,7 +130,7 @@ def _compaction_kwargs(
                 "id": message_id,
                 "seq": message_seq,
                 "unit_ref": f"turn:{message_seq}",
-                "message": {"role": "user", "content": "tail"},
+                "message": retained_message,
             }
         ],
         "model_runtime_id": "main",
@@ -201,6 +214,16 @@ def _seed_interaction_with_compactions(
             trigger="test",
             summary=f"checkpoint-{generation}",
             source_ref=f"test:cache:{generation}",
+            source_plan_digest=source_plan_digest(
+                (
+                    {
+                        "id": str(source["id"]),
+                        "seq": int(source["seq"]),
+                        "unit_ref": f"test:cache:{generation}",
+                        "message": dict(source),
+                    },
+                )
+            ),
             source_from_seq=int(source["seq"]),
             consolidated_through_seq=int(source["seq"]),
             source_message_ids=[str(source["id"])],
