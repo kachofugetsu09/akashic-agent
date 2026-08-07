@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_OUTPUT = 30_000
 _LOCAL_OWNER_PREFIX = "local-shell"
-_DEFER_PLUGIN_UNINSTALL_ENV = "AKASHIC_DEFER_PLUGIN_UNINSTALL"
+_PLUGIN_ROLLOUT_OWNER_TURN_ENV = "AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN"
 _REMOVED_SHELL_ARGUMENTS = frozenset({"run_in_background", "auto_promote"})
 _UNIFIED_EXEC_ENV = {
     "NO_COLOR": "1",
@@ -366,10 +366,11 @@ def _owner_session_key(manager: ShellProcessManager) -> str:
 
 def _shell_env() -> dict[str, str]:
     env = os.environ.copy()
-    if current_turn_id.get():
-        env[_DEFER_PLUGIN_UNINSTALL_ENV] = "1"
+    turn_id = current_turn_id.get()
+    if turn_id:
+        env[_PLUGIN_ROLLOUT_OWNER_TURN_ENV] = turn_id
     else:
-        env.pop(_DEFER_PLUGIN_UNINSTALL_ENV, None)
+        env.pop(_PLUGIN_ROLLOUT_OWNER_TURN_ENV, None)
     _prepend_existing_path_entries(env, _discover_user_path_entries(env))
     env.update(_UNIFIED_EXEC_ENV)
     return env

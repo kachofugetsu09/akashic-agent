@@ -6,7 +6,7 @@ import asyncio
 import json
 import runpy
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -1238,6 +1238,7 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
 
     builder = ContextBuilder(tmp_path, _Memory())  # type: ignore[arg-type]
     request_time = datetime.fromisoformat("2026-04-08T17:57:00+08:00")
+    local_request_time = request_time.astimezone()
     retrieved_memory_block = """
 [item_5a9c8d59f77c] [2026-03-29 12:44] 用户表示明天下午三点有面试，因当前感到疲惫想小睡，但担心此举会打乱明天的生物钟。
 证据: 用户消息「明天我下午三点面试 我现在睡一会会打乱明天发生物钟吗有点疲惫」
@@ -1272,13 +1273,13 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
     assert "用户表示明天下午三点有面试" in context_frame
     assert "准备次日下午三点的字节跳动面试" in context_frame
     assert "4 月 9 日（周四）下午 3 点" in context_frame
-    assert user_message.startswith("[当前消息时间: 2026-04-08 17:57:00")
-    assert "request_time=2026-04-08T17:57:00+08:00" in user_message
-    assert "今天=2026-04-08" in user_message
-    assert "昨天=2026-04-07" in user_message
-    assert "明天=2026-04-09" in user_message
-    assert "后天=2026-04-10" in user_message
-    assert "weekday=Wednesday" in user_message
+    assert user_message.startswith(f"[当前消息时间: {local_request_time:%Y-%m-%d %H:%M:%S}")
+    assert f"request_time={local_request_time.isoformat()}" in user_message
+    assert f"今天={local_request_time:%Y-%m-%d}" in user_message
+    assert f"昨天={local_request_time - timedelta(days=1):%Y-%m-%d}" in user_message
+    assert f"明天={local_request_time + timedelta(days=1):%Y-%m-%d}" in user_message
+    assert f"后天={local_request_time + timedelta(days=2):%Y-%m-%d}" in user_message
+    assert f"weekday={local_request_time:%A}" in user_message
     assert "相对时间以此为准" in user_message
     assert user_message.endswith("你还记得明天什么时候面试吗")
 

@@ -1,142 +1,112 @@
 # 插件与 Skill 自验证参考
 
-## 目录
+## 1. 三个动作
 
-1. 前置能力检查
-2. 安装到 latest
-3. 用 Shell 观察 programmatic child
-4. 行为 oracle
-5. Promote、Discard 与递归
-6. 当前实现与边界
+父 Agent turn 只使用三个插件管理动作：
 
-## 1. 前置能力检查
-
-先读取当前 CLI help 和 accepted 设计，不猜接口：
-
-```bash
-python main.py --help
+```text
+plugin-install    安装本 turn 的候选
+plugin-uninstall  登记本 turn 结束后的卸载
+plugin-revert     撤销本 turn 最近一次未提交操作
 ```
 
-完整递归验证需要同时存在：
+不要调用 `plugin-status`、`plugin-promote`、`plugin-discard`、`plugin-enable`、`plugin-disable` 或手工 restart。stable/latest、验证绑定、提交、排空、服务切换和恢复由 Core 管理。
 
-- `exec --runtime stable|latest`
-- programmatic 新 session 默认只读语义记忆和显式 `--persist-memory`
-- `plugin-status`
-- `plugin-promote`
-- `plugin-discard`
-- attached control disconnect cancellation
+## 2. 安装候选
 
-任何一项缺失时，不执行下面的假命令，不用 sleep 或第二个 Gateway 替代；继续按 [runtime-diagnostics.md](runtime-diagnostics.md) 检查 reload、SessionDB、日志和既有子 turn 内容，并明确报告缺失的能力。
-
-## 2. 安装到 latest
-
-完整合同实现后：
+先完成 source test、提交 Git HEAD，再从父 Agent turn 的 Shell 执行：
 
 ```bash
 python main.py plugin-install \
   --source /absolute/path/to/committed-plugin \
   --marketplace local
-
-python main.py plugin-status
 ```
 
-`plugin-install` 返回成功必须意味着 `latest_ready`，不是“cache 已写、watcher 以后也许会发现”。读取 status，记录 stable/latest identity、candidate phase 和 source provenance。若已经有未决 latest，停止并处理它；不要覆盖。
+成功返回必须同时说明：候选准备成功；当前父 turn 仍使用原版本；本 turn 的 attached programmatic child 会自动使用候选；正常结束后系统自动切换且下一 turn 生效。命令失败时按返回的具体阶段和对象修复，不把非零退出伪装成成功。
 
 ## 3. 用 Shell 观察 programmatic child
 
-从父 Agent turn 调用统一 Shell：
+安装成功后直接创建 attached child，不指定 runtime：
 
 ```bash
-python main.py exec --new --runtime latest --json \
+python main.py exec --new --json \
   "加载目标 Skill，使用新插件完成一个可独立断言的只读任务。"
 ```
 
-命令超过初始等待后，Shell 返回 `execution_id`。使用 `write_stdin(execution_id=..., chars="")` 读取新增 JSONL，直至出现唯一 terminal。不要启动第二个 runtime；`exec` 是当前 Gateway 的 control client。
+Core 根据 Shell 传入的 parent turn lineage 冻结 `plugin_id + generation_id + source_revision`，只让该 attached child 使用本次候选。不得添加 `--runtime latest`，不得使用 `--detach`，也不要启动第二个 Gateway。
 
-首次返回后立即记录 `execution_id`、`thread_id` 和 `turn_id`。超过一次有界等待仍没有 terminal 时，停止轮询，按 [runtime-diagnostics.md](runtime-diagnostics.md) 读取 `turns.created_at/started_at/completed_at`、`items_json` 和 final response。`queued` 且没有 `started_at` 是调度证据，不是插件行为失败；不要用第二次长超时重复同一调用。
+命令超过初始等待后，Shell 返回 `execution_id`。使用 `write_stdin(execution_id=..., chars="")` 读取新增 JSONL，直至唯一 terminal。保存 `execution_id`、`thread_id`、`turn_id`、tool items 和 final response；超时或 queued 不推进时按 [runtime-diagnostics.md](runtime-diagnostics.md) 定位，不重复安装。
 
-默认调用必须满足：
+默认 child：
 
-- 新 programmatic session。
-- latest snapshot。
-- recall/search allowed。
-- semantic memory writes disabled。
-- candidate generation 的非 read-only Tool/MCP disabled。
-- SessionDB thread/messages/tool items 正常持久化。
-- attached：父 turn cleanup、task_stop、CLI 退出或 socket 断开会取消子 turn。
-
-只有用户明确要求让验证内容进入长期记忆时，创建 session 时增加 `--persist-memory`。
+- 创建新 programmatic session，默认不沉淀语义记忆；
+- 自动绑定父 turn 当前候选，其他 turn 保持 stable；
+- recall/search 可用，candidate 的非 read-only Tool/MCP 默认禁用；
+- SessionDB 正常保存 terminal、messages 和 tool trace；
+- 父 turn cleanup、CLI 退出或连接断开会取消 attached child。
 
 ## 4. 行为 oracle
 
-terminal `status=completed` 和 final response 不是充分条件。至少核对：
+`status=completed` 和 final response 不是充分条件。至少核对：
 
 ```text
-┌─ Snapshot
-│  └─ child 绑定的 identity == install 后的 latest
+┌─ Identity
+│  └─ child 的 generation/source == 本次 install 返回的候选
 ├─ Skill（存在时）
 │  ├─ catalog source == plugin
-│  ├─ 正文/引用资源可加载
+│  ├─ 正文与引用资源可加载
 │  └─ 真实触发请求遵循关键步骤
 ├─ Tool
-│  ├─ tool item 名称正确
-│  ├─ arguments 命中测试输入
-│  ├─ status/result 正确
-│  └─ 领域 before/after 状态符合预期
+│  ├─ tool item、arguments、status/result 正确
+│  └─ 领域 before/after 状态符合目标
 ├─ Memory
-│  ├─ recall 可用
-│  └─ semantic write set == 0（默认）
+│  └─ recall 可用且 semantic write set == 0（默认）
 └─ Persistence
    └─ child thread/turn/messages/tool items 可回读
 ```
 
-读型插件使用固定 fixture 或稳定 API 响应。写型插件只在真实事务/dry-run、隔离环境或用户明确授权下执行。`message_push` 必须核对真实 delivery receipt。调用参数和结果位于 child 的 SessionDB tool trace；正文不会反向注入父 Prompt。目标渠道是否另写自己的 durable event、inbox 或历史，由渠道 owner 决定，必须读取相应数据库或事件证明，不能从工具成功字符串推断。
+领域正确性由 Agent 根据结果和轨迹判断，Core 只证明候选身份、terminal、受保护状态和 endpoint 安全。读型能力可直接验证；写型能力只在事务、dry-run、隔离目标或明确授权下执行。`message_push` 必须核对真实 delivery receipt，不能从成功字符串推断外部效果；目标渠道是否另写自己的 durable event 必须读取其 owner 证据。
 
-## 5. Promote、Discard 与递归
+## 5. 通过、失败与递归
 
-通过：
+通过时不再执行任何发布命令。向用户说明“候选验证通过，本轮结束后系统自动切换，下一轮生效”，然后正常结束父 turn。Core 在父 turn terminal 和所有旧 lease 释放后提交；下一次用户 turn 会收到自然语言运行事实。
 
-```bash
-python main.py plugin-promote <plugin-id>
-python main.py plugin-status
-```
-
-重新读取 status，证明 `stable == 已验证 latest` 且没有未决 candidate。pointer 提交原子，因此不必用第二次昂贵 LLM 调用重演相同行为；pointer identity、第一次真实行为 trace 与 promotion journal 共同构成证据。
-
-失败：
+失败时先撤销：
 
 ```bash
-python main.py plugin-discard <plugin-id>
-python main.py plugin-status
+python main.py plugin-revert
 ```
 
-证明 stable 未变、latest 回到 stable。根据 terminal/tool/domain error 修复 canonical source、运行 source tests、提交并重新 install。相同错误且没有新改动时不要重复循环。
+`plugin-revert` 只撤销当前 turn 最近一次未提交 install/uninstall。成功后根据 child terminal、tool trace 和领域错误修改 canonical source，运行 source tests，提交，再次 `plugin-install` 和递归验证。它不能跨 turn 回滚已发布版本。
 
-递归在下面任一条件结束：
+下面任一条件都不能发布候选：没有 attached child、child 失败/取消/超时、身份不一致、父 turn 非正常结束或已经 revert。不要用 status 查询、sleep 或手工 promote 补救。
 
-- 行为通过并成功 promote。
-- 错误不可在当前授权范围修复。
-- 需要未授权外部效果、独占 endpoint 或破坏性状态。
-- 用户取消、预算耗尽或 runtime 返回明确 fatal/blocked。
+## 6. 独占 managed service 与 Channel
 
-## 6. 当前实现与边界
+改变固定 listener 的插件必须通过通用 Core 合同声明隔离端口：
 
-当前代码已经实现：
-
-- `ConversationRuntime` 的不同 control thread 可以并发；同一 thread 仍拒绝第二个 active turn。
-- `AgentLoop` 以 `session_key` 持有整轮 lane；相同 session 串行，不同 session 并发。
-- passive `message_push` 不等待目标 session turn 结束，但实际 channel send 仍经过 ChatLane 串行提交。
-- `plugin-install` 由当前 Gateway 的 runtime owner 完成 staged install，并等待 `latest_ready`；普通 turn 始终租用 stable，只有显式 programmatic child 租用 latest。
-- `exec --new --runtime latest` 默认创建不写语义记忆的新 session；recall/search 和 SessionDB 审计仍可用。
-- attached 是默认值；CLI 退出或 control socket 断开会取消该连接拥有的服务端 turn，并释放 latest lease。插件自验证不得使用 `--detach`。
-- promote/discard 使用同一 runtime owner 和可恢复 pointer/journal，不启动第二个 Gateway。
-
-完整路径因此是：
-
-```text
-T install → latest_ready → attached V(latest) → terminal + oracle
-          ├─ pass → promote → stable == latest
-          └─ fail → discard → latest == stable → 修复后递归
+```python
+ManagedServiceSpec(
+    id="monitor",
+    command=("python", "monitor/server.py"),
+    readiness_url="http://127.0.0.1:18765/ready",
+    validation_port_env="PLUGIN_MONITOR_PORT",
+)
 ```
 
-这只隔离插件 runtime，不回滚任意文件、消息、数据库和外部 API。验证读路径、纯逻辑和支持事务/dry-run 的工具；共享写状态、独占 endpoint、真实发送和不可逆副作用必须按 owner 单独证明或明确报告未验证。完整诊断步骤见 [runtime-diagnostics.md](runtime-diagnostics.md)。
+服务进程必须真正读取 `validation_port_env` 指向的环境变量；同插件 MCP 也必须读取同名变量。Core 会复制 plugin-data 到隔离验证目录、分配临时 loopback 端口、启动候选服务，并把候选 MCP 路由到该端口。未声明、服务忽略变量、readiness 失败或端口被占用都会 fail-loud，不能绕过 Gate。
+
+正式 Channel ownership 不在 candidate child 中复制。child 只验证不接管入口的能力；父 turn 结束后 Core 按 `old Channel.stop → service switch → new Channel.start` 切换。`stop()` 返回即承诺 ingress 和在途工作已收束并释放 ownership，`start()` 返回即承诺已取得 ownership 且 ready；无法证明时发布失败并恢复旧代。
+
+## 7. 完成判定
+
+只有以下事实同时成立才告诉用户任务完成：
+
+- canonical source 的目标改动已提交，远程安装时对应 commit 已推送；
+- source tests 和声明/readiness 检查通过；
+- attached child 的真实行为和 tool trace 通过；
+- install 返回明确说明 turn 边界，父 turn 正常结束；
+- 下一用户 turn 的 Core 运行事实确认已提交，或明确说明恢复/清理失败；
+- SessionDB、memory、正式 plugin-data 和未授权外部效果未被候选验证改写。
+
+卸载成功返回只表示本 turn 已登记：当前 turn 可完成，结束后 Core 停止 endpoint、移除能力和已安装代码，保留 plugin-data。要取消就在同一 turn 执行 `plugin-revert`。完整诊断步骤见 [runtime-diagnostics.md](runtime-diagnostics.md)。

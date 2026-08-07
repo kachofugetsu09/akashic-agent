@@ -1,157 +1,96 @@
 ---
 name: plugin-system
-description: 说明并执行 Akashic 插件安装、加载、启停、配置、插件内 MCP、skill、生命周期与 manifest 管理。
-when_to_use: 用户询问或要求处理 Akashic 插件、marketplace、插件自带 MCP、skill、插件配置、安装、更新、启用、禁用或排障时。独立本地 MCP server 使用 manage-workspace-mcp。
+description: 说明并执行 Akashic 插件安装、加载、配置、插件内 MCP、Skill、生命周期、卸载与 turn 边界更新。
+when_to_use: 用户询问或要求处理 Akashic 插件、marketplace、插件自带 MCP、Skill、插件配置、安装、更新、卸载或排障时。独立本地 MCP server 使用 manage-workspace-mcp。
 metadata: {"akashic": {"always": false}}
 ---
 
 # Akashic 插件系统
 
-优先直接完成明确的插件管理请求，并在修改后验证。
-
-用户要求创建/改写插件源码、把 Skill/MCP 收入插件或递归验证候选时，先加载 `develop-akashic-plugin`；本 Skill 继续拥有已安装插件的查询、配置、启停、卸载和当前实现排障。
-
-独立 binary、脚本或本地项目需要作为 MCP 常驻时，加载 `manage-workspace-mcp`；
-不要为它创建插件，也不要修改主 `config.toml`。
+优先直接完成明确的插件请求。创建或改写源码、加入 Skill/MCP、递归验证候选时，先加载 `develop-akashic-plugin`。用户要管理不属于插件的独立本地 MCP server 时，加载 `manage-workspace-mcp`。
 
 ## 事实来源
 
 ```text
 ┌─ ~/.akashic-plugin/manifest.toml
-│  └─ 全局安装清单与 enabled
-├─ ~/.akashic-plugin/cache/<marketplace>/<plugin>/<version>/plugin.py
-│  └─ 插件能力声明与代码
-└─ <workspace>/plugin-data/<plugin>-<marketplace>/config.local.toml
-   └─ 插件配置和持久状态
+│  └─ 全局安装清单
+├─ ~/.akashic-plugin/cache/<marketplace>/<plugin>/.artifacts/
+│  └─ 不可变 installed code 与 stable/latest 内部 pointer
+├─ <workspace>/plugin-data/<plugin>-<marketplace>/
+│  └─ 插件配置和持久状态
+└─ <workspace>/runtime/plugin-reloads.sqlite3
+   └─ Core reload 与恢复证据
 ```
 
-不要查找或创建 `registry.json`、`.aka-plugin/plugin.json`、`manifest.yaml` 或插件级 `mcp/servers.json`。
+不要查找或创建 `registry.json`、`.aka-plugin/plugin.json`、`manifest.yaml` 或插件级 `mcp/servers.json`。不要直接编辑 cache、pointer、manifest 或正式 plugin-data。
 
-## 安装
+## Agent 可用动作
 
-仓库根目录必须有 `plugin.py`，其中声明 `Plugin` 子类、`name` 与 `version`。
+Agent 只使用：
+
+```text
+plugin-install    安装或更新本 turn 的候选
+plugin-uninstall  登记本 turn 结束后的卸载
+plugin-revert     撤销本 turn 最近一次尚未提交的操作
+```
+
+不要调用 status、promote、discard、enable、disable 或手工 restart。它们不是 Agent 更新流程的一部分；stable/latest、排空、提交和恢复由 Core 管理。
+
+## 安装与更新
+
+仓库根必须有 `plugin.py`，Plugin 子类声明 `name` 和 `version`。只安装已提交 Git HEAD；远程 source 必须先 push 对应 commit。
 
 ```bash
 python main.py plugin-install --source <repo_or_url> --marketplace github
 ```
 
-安装后检查 manifest、cache、data，并运行：
-
-```bash
-python main.py plugin-doctor <name>@github
-```
-
-## 更新已有插件
-
-不要直接修改 `~/.akashic-plugin/cache`。先修改插件的可编辑源码仓库；个人插件通常位于 `/mnt/data/coding/akashic-plugin/<plugin-name>`。如果只知道已安装插件而找不到源码仓库，先确认其 Git remote 或向用户询问。
-
-`plugin-install` 即使接收本地仓库路径，也会执行 `git clone`，只安装已提交的 Git HEAD，不会复制工作区里的未提交文件。必须先提交；需要从 GitHub 更新时，还必须先推送，再使用 GitHub source 安装。
+命令必须从 active Agent turn 的 Shell 发起。成功返回表示：候选已准备；当前父 turn 仍使用原版本；本 turn 的 attached programmatic child 自动使用候选；通过后正常结束父 turn，Core 自动切换，下一 turn 生效。
 
 ```text
-┌─ 修改插件源码仓库
-├─ 运行插件自身测试
-├─ 提交并推送源码
-├─ 用原 source 与 marketplace 再次执行 plugin-install
-├─ watcher 自动准备并发布新代际
-├─ 运行 plugin-doctor 检查结构与配置
-└─ 发起一次新请求验证真实行为
+修改 canonical source → source tests → commit/push → plugin-install
+       → attached child 真实行为验证
+       ├─ pass → 正常结束父 turn → Core 自动切换
+       └─ fail → plugin-revert → 修复后递归
 ```
 
-重新执行 `plugin-install` 即更新：它替换 cache 中的已安装版本，但保留 data 与配置。运行中的 watcher 会自动热重载，不要重启 Agent。
+`plugin-doctor` 只是人工诊断，不能证明新行为正确，也不能代替 child trace。
 
-如果用户指定把现有项目中的 skill 收入某个插件，应复制或适配到该插件源码的 `skills/<skill-name>/`，再走上述更新流程；不要改写原项目，也不要先落到 workspace。若 skill 依赖外部项目或 CLI，把它安装到用户指定目录或稳定的数据目录，禁止让 wrapper、符号链接或服务依赖 `/tmp`。
-
-## 完成判定
-
-工具调用成功只代表命令退出码为零，不代表更新目标成立。汇报完成前必须从最终状态重新验收：
-
-```text
-┌─ 源码仓库
-│  ├─ 目标文件存在
-│  ├─ 预期改动已 commit
-│  └─ 要求发布时，远端已包含该 commit
-├─ 安装缓存
-│  └─ 目标能力的具体文件或声明确实存在
-├─ Runtime
-│  ├─ candidate 已通过 Gate，snapshot 已发布
-│  └─ 新请求能实际使用目标能力
-└─ 外部依赖
-   ├─ CLI 从稳定目录运行
-   └─ 用户要求常驻服务时，health 返回健康
-```
-
-`plugin-doctor` 只证明插件结构、根目录与声明可加载，不证明某个具体 skill 已安装，也不能代替真实行为验证。不要用中途检查、手动改 cache 后的结果或 doctor healthy 推断最终成功。
-
-删除类操作使用对应章节的 absence oracle，不套用上面的“目标文件存在”判定。
-
-## 启用与禁用
-
-使用管理命令修改 `manifest.toml` 对应条目的 `enabled`。运行中的 watcher 会自动完成启停，不需要重启进程。
-
-```bash
-python main.py plugin-disable demo@github
-python main.py plugin-enable demo@github
-```
-
-## 卸载
+## 卸载与撤销
 
 ```bash
 python main.py plugin-uninstall demo@github
+python main.py plugin-revert
 ```
 
-执行前记录对应的 manifest 条目、cache 路径，以及 plugin-data 是否存在。卸载命令返回“卸载已安排”或 operation ID，只表示请求已受理，不表示已经完成。
+卸载成功返回表示意图已绑定当前 turn，不表示代码已经删除。告诉用户：当前 turn 可以完成；本轮结束后 Core 自动停止 endpoint、移除能力和 installed code；plugin-data 保留；下一 turn 不再加载。
 
-当前 turn 可能仍持有包含该插件的 runtime snapshot lease。此时 `enabled = false` 且 cache 仍存在表示正在排空，不是失败，也不是完成。不要在同一 turn 反复等待或再次执行 `plugin-uninstall`；先明确报告“卸载已安排，正在排空”，在后续 turn 从最终状态重新验收。
+`plugin-revert` 只撤销同一 turn 最近一次未提交 install/uninstall，不能跨 turn 回滚历史版本。不要反复卸载、轮询、手改 manifest/cache 或删除 plugin-data。
 
-只有同时满足以下条件，才能报告“卸载完成”：
+下一用户 turn 会收到 Core 的自然语言运行事实。卸载完成必须满足 manifest entry 和 cache 已移除、原 plugin-data 仍存在；清理失败时说明残留路径和错误，不能假报完整成功。
+
+## 独占 endpoint
+
+固定 listener 的 managed service 必须声明 `ManagedServiceSpec.validation_port_env`，服务进程和同插件 MCP 必须读取同名环境变量。Core 会复制 plugin-data 到隔离验证目录、分配临时 loopback 端口并验证 readiness。忽略变量、缺少声明、端口冲突或 readiness 失败都必须暴露。
+
+Channel 的 candidate 不接管正式 bot token/webhook/long-poll ownership。父 turn 结束后由 Core 统一执行：
 
 ```text
-┌─ ~/.akashic-plugin/manifest.toml 不再包含该 plugin ID
-├─ ~/.akashic-plugin/cache/<marketplace>/<plugin>/ 不存在
-└─ 卸载前已存在的 <workspace>/plugin-data/<plugin>-<marketplace>/ 仍存在
+old Channel.stop → managed service switch → new Channel.start
+        └──────── 任一步失败：恢复并验证 old generation
 ```
 
-验收命令必须让任一条件不满足时返回非零退出码；不要用末尾的 `echo` 或无条件成功命令掩盖失败。后续 turn 仍停在排空状态或 operation 明确失败时，检查 operation 与 runtime 日志；不要手动删除 cache、data、配置、Token、数据库或模型。
+`stop()` 返回即承诺新 ingress 已停止、在途工作已收束且 ownership 已释放；`start()` 返回即承诺 ownership 已取得并 ready。
 
-## 配置
+## 配置与排障
 
-读取插件 `plugin.py` 的 `ConfigModel`，再编辑对应数据目录的 `config.local.toml`。不要把插件配置写回主 `config.toml`。
-
-## 能力排查
+读取插件 `ConfigModel`，配置只写对应 plugin-data，不写主 `config.toml`。缺失依赖、导入失败、配置错误、command 失败和数据损坏必须 fail-loud。
 
 ```text
-┌─ skills
-│  └─ 检查 skill_roots() 与 drift_skill_roots()
-├─ MCP
-│  └─ 检查 mcp_servers()、入口、requirements.txt 与 .venv
-├─ proactive
-│  └─ 检查 proactive_sources() 与插件配置的 enabled
-└─ lifecycle
-   └─ 检查 initialize()、terminate() 和运行日志
+┌─ Skill      检查 skill_roots()/drift_skill_roots() 与真实触发轨迹
+├─ MCP        检查 mcp_servers()、入口、依赖、候选 endpoint env
+├─ service    检查 process identity、listener、readiness 和恢复
+├─ Channel    检查 ingress/ownership 的 stop/start 证据
+└─ rollout    检查 child terminal/tool trace 与 reload journal
 ```
 
-插件能力全部由代码声明，公共 runtime 不应出现具体插件名或业务路径特判。
-
-## 热重载验证
-
-`plugin-install` 成功只代表文件就绪；运行时发布由 watcher 异步完成，本 turn 开始时绑定的 runtime snapshot 不含新能力是正常现象。不要用当前 turn 的 `tool_search` 结果、`exec --new` 新进程或反复重试安装来判断成败。
-
-安装或修改 manifest.toml/config.local.toml 后，等待 watcher 完成一轮扫描（≤10 秒），然后查询 reload journal 最新事务的终态：
-
-```bash
-sqlite3 <workspace>/runtime/plugin-reloads.sqlite3 \
-  "SELECT phase, error FROM reload_transactions WHERE plugin_id='<name>@<marketplace>' ORDER BY started_at DESC LIMIT 1;"
-```
-
-按终态收尾并停止：
-
-```text
-┌─ complete → 候选已通过 Gate、snapshot 已发布
-│  报告“安装成功，热重载已发布”，停止；下一轮新消息即可使用新能力
-├─ aborted  → 读取 error 与 manager 日志中“候选验证失败”的 gate 行
-│  报告失败原因，停止；重试或修复留到后续 turn
-└─ 仍处于 preparing/validating/committed → 再等 ≤5 秒重查一次
-   仍不推进则报告“热重载未推进”，停止
-```
-
-同一 turn 内 journal 已到 `complete` 或 `aborted` 后，不再重复执行安装或验证命令；`tool_search` 只用于下一轮确认新工具可见，`exec --new` 是启动全新进程，不能验证热重载发布。
+插件能力全部由通用代码声明，Core 不应出现具体插件名或业务路径特判。

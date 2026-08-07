@@ -173,6 +173,7 @@ class AgentLoop:
         self._event_bus = deps.event_bus or EventBus()
         self._session_lanes = SessionLaneRegistry()
         self._runtime_snapshot_store: RuntimeSnapshotStore | None = None
+        self._plugin_rollout_fact_provider: Callable[[], str] | None = None
 
         # ── 中断控制面（纯内存态） ──
         self._active_tasks: dict[str, asyncio.Task[OutboundMessage]] = {}
@@ -219,6 +220,12 @@ class AgentLoop:
 
     def bind_runtime_snapshot_store(self, store: RuntimeSnapshotStore) -> None:
         self._runtime_snapshot_store = store
+
+    def bind_plugin_rollout_fact_provider(
+        self,
+        provider: Callable[[], str],
+    ) -> None:
+        self._plugin_rollout_fact_provider = provider
 
     def _configure_stream_events(self) -> None:
         setter = getattr(self._reasoner, "set_stream_sink_factory", None)
@@ -722,6 +729,15 @@ class AgentLoop:
         turn_token = current_turn_id.set(inherited_turn_id or new_turn_id())
         try:
             # 1. 先处理可能存在的续跑态，并发布 turn started。
+            rollout_fact_provider = getattr(self, "_plugin_rollout_fact_provider", None)
+            if (
+                isinstance(msg, InboundMessage)
+                and msg.channel != "programmatic"
+                and rollout_fact_provider is not None
+            ):
+                fact = rollout_fact_provider()
+                if fact:
+                    msg.metadata["_plugin_rollout_fact"] = fact
             msg, resumed_from_interrupt = await self._resume_interrupted_message(
                 msg, key
             )

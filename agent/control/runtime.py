@@ -7,7 +7,7 @@ import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 from agent.control.errors import (
     ControlAdmissionError,
@@ -146,6 +146,9 @@ class ConversationRuntime:
         replay_bytes_per_turn: int = DEFAULT_REPLAY_BYTES_PER_TURN,
         replay_bytes_global: int = DEFAULT_REPLAY_BYTES_GLOBAL,
         terminal_replay_ttl_seconds: float = DEFAULT_TERMINAL_REPLAY_TTL_SECONDS,
+        turn_terminal: (
+            Callable[[str, TurnStatus, dict[str, object]], None] | None
+        ) = None,
     ) -> None:
         if subscriber_queue_size < 2:
             raise ValueError("subscriber_queue_size 必须至少为 2")
@@ -175,6 +178,7 @@ class ConversationRuntime:
         self._replay_bytes_per_turn = replay_bytes_per_turn
         self._replay_bytes_global = replay_bytes_global
         self._terminal_replay_ttl_seconds = terminal_replay_ttl_seconds
+        self._turn_terminal = turn_terminal
         self._active_by_thread: dict[str, str] = {}
         self._consumed_inputs: dict[str, list[TurnUserInput]] = {}
         self._sealed_turn_inputs: set[str] = set()
@@ -874,6 +878,12 @@ class ConversationRuntime:
             self._sealed_turn_inputs.discard(turn_id)
             self._turn_input_sources.pop(turn_id, None)
             self._release_admission(turn_id)
+            if terminal is not None and self._turn_terminal is not None:
+                self._turn_terminal(
+                    turn_id,
+                    terminal.status,
+                    {**request.metadata, "turnId": turn_id},
+                )
 
     def _publish(self, event: TurnEvent) -> None:
         self._raise_replay_reaper_failure()

@@ -119,14 +119,20 @@ def test_reload_journal_builds_crash_recovery_plan(tmp_path: Path) -> None:
 
     actions = journal.pending_recovery()
 
-    assert [(action.tx_id, action.phase, action.action) for action in actions] == [
-        (committed, "commit_started", "restore_committed"),
-        (latest, "latest_ready", "restore_candidate"),
+    assert (actions[0].tx_id, actions[0].phase, actions[0].action) == (
+        committed,
+        "commit_started",
+        "restore_committed",
+    )
+    assert {
+        (action.tx_id, action.phase, action.action) for action in actions[1:]
+    } == {
+        (latest, "latest_ready", "discard_candidate"),
         (prepared, "prepared", "discard_candidate"),
-    ]
+    }
     for action in actions:
         journal.finish_recovery(action)
     assert journal.get(committed).phase == "recovered"
-    assert journal.get(latest).phase == "recovered"
+    assert journal.get(latest).phase == "aborted"
     assert journal.get(prepared).phase == "aborted"
     assert journal.pending_recovery() == ()

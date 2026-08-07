@@ -52,25 +52,25 @@ plugin source/
 
 ## 4. 安装并验证候选
 
-先按 [references/self-validation.md](references/self-validation.md) 检查当前 runtime 处于哪一级：完整的 stable/latest 候选隔离，或只有 session-lane + current snapshot 的隔离环境自验证。
+完整读取 [references/self-validation.md](references/self-validation.md)，只使用 `plugin-install`、`plugin-uninstall` 和 `plugin-revert`。stable/latest、排空、提交和恢复是 Core 内部机制，不要求 Agent 查询或编排。
 
 每次 programmatic 验证都先保存 `execution_id`、`thread_id`、`turn_id`、`plugin_id` 和 reload `tx_id`。命令超时、子 turn 停在 `queued`、final response 不符合 oracle 或工具没有执行时，不要直接搜索源码或重复安装；按 [references/runtime-diagnostics.md](references/runtime-diagnostics.md) 查询真实状态和内容，先定位失败层。
 
-正常快路径按 `source test → commit → install → plugin-status/doctor → latest child → 定向 SessionDB/journal 查询 → promote` 单向推进。命令成功时不要为确认其实现而反向阅读 CLI、socket、pointer 或 EventBus 源码；正式输出和数据库行就是该边界的证据。
+正常快路径按 `source test → commit → install → attached child → 行为 oracle → 正常结束 turn` 单向推进。命令成功时不要为确认其实现而反向阅读 CLI、socket、pointer 或 EventBus 源码；正式输出、child trace 和下一 turn 的 Core 运行事实就是边界证据。
 
 支持时使用下面的闭环：
 
 ```text
-install → latest ready → programmatic child on latest → behavioral oracle
-   ▲                                                  │
-   └──────── actionable failure → discard → fix ─────┘
+install → attached programmatic child → behavioral oracle
+   ▲                                  │
+   └──── failure → revert → fix ──────┘
 
-pass → promote → re-read stable/latest → report
+pass → 正常结束父 turn → Core 自动切换 → 下一 turn 生效
 ```
 
 programmatic child 必须：
 
-- 创建新 session 并显式选择 `latest`。
+- 创建 attached 新 session；不要指定 `--runtime`，Core 自动绑定当前候选。
 - 默认不沉淀语义记忆，但允许检索已有记忆。
 - 实际加载或触发新增 Skill，并实际调用新增 Tool；不能只问“你能否看到”。
 - 返回结构化 terminal、tool items 和领域 oracle。
@@ -83,16 +83,14 @@ programmatic child 必须：
 3. 一个真实触发提示会遵循 Skill 的关键步骤。
 4. 预期 Tool/文件/领域状态确实出现，而不只是 final response 自述成功。
 
-如果 runtime 尚未实现 `--runtime latest`、promote/discard 或 attached cancellation，但已经按 session lane 允许不同 session 并发，则可在隔离 workspace/runtime 中验证 current snapshot：等待 reload journal 出现 `committed` 事件，再用 Shell 启动新的 programmatic session，父 turn 同步读取子 turn 终态。事务行此时可能已经是 `draining`；它表示旧快照仍有 lease，不表示新快照不可用，也不能把它当成失败。
-
-这种路径证明的是 `current-snapshot self-validation`，不是候选隔离：新入站 turn 也可能看到未验证插件，且失败后没有原子 promote/discard。非隔离正式 runtime 未获用户明确授权时不要使用这条路径；报告 `safe candidate self-validation unavailable`。无论哪一级，都要读取 reload journal、子 turn 的 SessionDB 轨迹、final response、items/tool trace 和可用 runtime log。不要用 sleep、当前 turn 的 `tool_search`、手改 cache 或新启动第二个 Gateway 冒充验证。
+若 CLI 返回 Core 不支持 turn lineage、attached candidate 或 revert，停止正式安装并报告 `safe candidate self-validation unavailable`。只能在一次性 workspace/runtime 中做隔离验证，不能让正式新请求看到未验证插件。无论哪一级，都要读取子 turn 的 SessionDB 轨迹、final response、items/tool trace 和可用 runtime log；不要用 sleep、当前 turn 的 `tool_search`、手改 cache 或第二个 Gateway 冒充验证。
 
 ## 5. 处理副作用与独占 endpoint
 
 - read-only Tool 可以直接在 latest child 中验证。
 - candidate generation 的非 read-only Tool/MCP 默认禁用；只有真实事务/dry-run、隔离 workspace/test endpoint 或用户明确授权时才能另行验证。
 - `message_push` 的成功以真实 delivery receipt 和子 session tool trace 为准；push 不会注入父 Prompt或目标 session history。
-- 固定端口、bot ownership、channel 或 singleton service 与 stable 冲突时，使用隔离 runtime/endpoint；不要让父 turn 等待自己的 stable lease 排空。
+- 固定端口服务必须声明 `ManagedServiceSpec.validation_port_env`，并让服务与 MCP 读取同名环境变量；Core 分配隔离 endpoint 和 plugin-data 副本。Channel 的正式 ownership 只在父 turn 结束后切换。
 
 ## 6. 收口
 
@@ -100,8 +98,8 @@ programmatic child 必须：
 
 - canonical source 已按授权保存，安装所需 commit 可回源。
 - source tests 和结构/readiness 检查通过。
-- latest child 的真实行为 oracle 通过；若目标包含 Skill，Skill 发现、加载和行为均通过。
-- latest 已晋升 stable，最终 pointer/journal 已重新读取。
+- attached child 的真实行为 oracle 通过；若目标包含 Skill，Skill 发现、加载和行为均通过。
+- 父 turn 正常结束，下一用户 turn 的 Core 事实确认已提交或明确报告失败。
 - 未授权的记忆写入、plugin-data 写入和外部发送为零。
 
-current-snapshot 隔离路径可以报告“插件行为验证完成”，但必须同时说明没有 candidate/stable 隔离、promote/discard 和 attached cancellation，不能升级成“安全自进化闭环完成”。最终简洁报告 source commit、测试、candidate/stable identity（若存在）、验证 session/turn、关键 tool evidence，以及任何未验证边界。
+一次性 current-snapshot 路径只能报告“隔离环境行为验证完成”，不能升级成“正式安全自进化闭环完成”。最终简洁报告 source commit、测试、验证 session/turn、关键 tool evidence、Core 的 turn 后结果，以及任何未验证边界。

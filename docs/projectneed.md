@@ -533,13 +533,13 @@ Core 只负责通用传输、认证、revision、generation lease、调度、取
 
 ### PLG-012 Turn 内卸载使用 Runtime owner 的异步排空
 
-持有 runtime snapshot lease 的 turn 可以请求卸载插件，但工具进程不得同步等待该 lease 自己归零。Control owner 先返回可观察的 uninstall operation；runtime 发布禁用快照后，在后台等待旧 generation 的全部 lease 释放，确认 scope 已关闭，再删除 cache 和 manifest entry。所有停用和替换入口（包括 manifest watcher 与热重载）都必须登记退役 generation；重复请求必须加入所有未完成 drain，不能因插件已从 active generation 表移除而报告完成。普通卸载继续保留 plugin-data；operation 失败、取消或 runtime 关闭时必须保留禁用状态和未删除 cache 作为可恢复证据，不得假报 drained。
+持有 runtime snapshot lease 的 turn 可以登记卸载，但不得同步等待自己的 lease，不得在 turn 内停 endpoint、修改 manifest 或删除代码。只有 parent turn 正常结束且没有同 turn `plugin-revert` 时，Core 才在 lease 释放后异步停用、排空、移除 manifest/cache 和能力投影。普通卸载保留 plugin-data、SessionDB、memory、journal 和 canonical source；停止或清理失败必须报告实际残留，不能假报完成。
 
 ### PLG-013 插件行为验证使用 stable 与 latest
 
-普通请求只租用已经通过行为验证的 `stable` snapshot；最新完成 static/readiness Gate 的候选以 `latest` 暴露给显式 programmatic 验证 session。没有未决候选时 `latest is stable`；首版同时只允许一个未决 latest，第二次 install 必须 fail-loud。install 成功终态表示 latest 已可租用，验证通过才原子执行 `stable=latest`，失败原子恢复 `latest=stable`；旧 snapshot 按 lease 排空。cache artifact 以 source revision/tree digest 不可变保存，Gateway 重启必须先恢复 stable，再恢复或拒绝未决 latest。同版本更新不得覆盖 stable 仍引用的代码。
+普通请求只租用已验证的 stable；latest 仍是 Core 内部候选，但只由发起 install 的 parent turn 所创建的 attached programmatic child 因果继承。父 turn 保持旧 stable；detached child、其他 turn 和没有匹配 generation/source identity 的请求不得取得候选。Agent 不手工选择 latest 或调用 promote/discard。
 
-latest 默认只允许只读行为验证。共享 plugin-data 写入、不可撤销外部效果和独占 endpoint 必须具有真实事务/dry-run、隔离运行目标或用户明确授权；snapshot pointer 回滚不拥有这些效果。0008 的公开发布边界继续成立：latest 是显式验证 reader，不是普通 default publication。
+install 成功只表示候选可验证。至少一个匹配当前候选的 attached child 正常完成、没有 revert 且 parent 正常结束时，Core 才在 lease 释放后自动提交；无验证、child/parent 非正常终结或身份漂移必须丢弃。独占 managed service 使用 Core 分配的隔离端口和 plugin-data 副本；插件必须声明并读取 `validation_port_env`，否则 fail-loud。Channel 正式 ownership 只在 turn 后切换。cache artifact 按 source revision/tree digest 不可变保存，旧代码保留到提交、readiness、恢复检查和 lease 排空完成。
 
 ## 11. Workspace、文件和进程
 
