@@ -19,6 +19,7 @@ from agent.looping.ports import (
     SessionServices,
 )
 from agent.persona import reset_veda
+from agent.provider import LLMProvider
 from agent.plugins.manager import PluginManager
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.snapshot import get_current_runtime_snapshot
@@ -64,7 +65,7 @@ class _RecordingMemory:
         self.write_set.append(str(request))
 
 
-class _TrajectoryProvider(ProviderContextBudgetStub):
+class _TrajectoryProvider(ProviderContextBudgetStub, LLMProvider):
     def __init__(
         self,
         parent_release: asyncio.Event,
