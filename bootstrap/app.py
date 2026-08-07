@@ -529,8 +529,6 @@ class AppRuntime:
             self.tasks.extend(optimizer_tasks)
             self.dashboard_server = build_dashboard_server(
                 workspace=self.workspace,
-                host=self.dashboard_host,
-                port=self.dashboard_port,
                 uds=prepare_runtime_socket(dashboard_socket_path(self.workspace)),
                 manual_memory_optimizer=self._memory_optimizer,
                 memory_admin=self.memory_runtime.engine,
