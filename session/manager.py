@@ -386,7 +386,6 @@ class Session:
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = field(default_factory=dict[str, Any])
     last_consolidated: int = 0
-    consolidation_requested: bool = False
 
     def add_message(
         self, role: str, content: str, media: list[str] | None = None, **kwargs: object
@@ -504,8 +503,6 @@ class Session:
     def clear(self) -> None:
         self.messages = []
         self.updated_at = datetime.now(UTC)
-        self.last_consolidated = 0
-        self.consolidation_requested = False
 
 
 class SessionManager:
@@ -607,7 +604,6 @@ class SessionManager:
             session.key,
             created_at=session.created_at.isoformat(),
             updated_at=session.updated_at.isoformat(),
-            last_consolidated=session.last_consolidated,
             metadata=session.metadata,
         )
 
@@ -617,17 +613,14 @@ class SessionManager:
         messages: list[dict[str, object]],
         *,
         updated_at: datetime,
-        last_consolidated: int | None = None,
     ) -> int:
         """准备待写消息并原子追加 session 元数据和消息。"""
 
-        effective_last_consolidated = (
-            session.last_consolidated
-            if last_consolidated is None
-            else int(last_consolidated)
-        )
         pending_messages: list[dict[str, object]] = []
         pending_payloads: list[dict[str, object]] = []
+
+        if not self._store.session_exists(session.key) and session.last_consolidated:
+            raise ValueError("新 session 的 last_consolidated 必须由 ledger 建立")
 
         # 1. 准备尚未持久化的消息，不提前修改内存中的稳定 id。
         for msg in messages:
@@ -655,7 +648,6 @@ class SessionManager:
             session.key,
             created_at=session.created_at.isoformat(),
             updated_at=updated_at.isoformat(),
-            last_consolidated=effective_last_consolidated,
             metadata=session.metadata,
             messages=pending_payloads,
         )

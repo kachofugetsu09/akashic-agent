@@ -95,6 +95,7 @@ _FTS_CAPABILITY_ERROR_MARKERS = (
 _MESSAGE_COLUMN_FIELDS = frozenset(
     {"id", "session_key", "seq", "role", "content", "timestamp", "tool_chain"}
 )
+_RETIRED_ASSISTANT_EXTRA_FIELDS = frozenset({"react_compaction"})
 _TURN_TRANSITIONS = {
     TurnStatus.QUEUED: frozenset({TurnStatus.IN_PROGRESS, TurnStatus.CANCELLED}),
     TurnStatus.IN_PROGRESS: frozenset(
@@ -185,6 +186,21 @@ def _decode_message_extra(
     if "model_state" in extra_dict:
         _validate_model_state(extra_dict["model_state"], message_id)
     return extra_dict
+
+
+def _validate_new_message_extra(
+    role: object,
+    extra: object,
+    message_id: str,
+) -> None:
+    """Reject retired assistant metadata on newly persisted messages."""
+
+    if role != "assistant" or not isinstance(extra, dict):
+        return
+    retired = _RETIRED_ASSISTANT_EXTRA_FIELDS.intersection(extra)
+    if retired:
+        fields = ", ".join(sorted(retired))
+        raise ValueError(f"assistant extra 字段已退役: {fields}: {message_id}")
 
 
 def _message_control_turn_id(
@@ -862,7 +878,6 @@ class SessionStore:
         *,
         created_at: str,
         updated_at: str,
-        last_consolidated: int,
         metadata: dict[str, Any],
     ) -> None:
         payload = json.dumps(metadata or {}, ensure_ascii=False)
@@ -870,12 +885,12 @@ class SessionStore:
             self._conn.execute(
                 """
                 INSERT INTO sessions (key, created_at, updated_at, last_consolidated, metadata)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, 0, ?)
                 ON CONFLICT(key) DO UPDATE SET
                     updated_at = excluded.updated_at,
                     metadata = excluded.metadata
                 """,
-                (key, created_at, updated_at, int(last_consolidated), payload),
+                (key, created_at, updated_at, payload),
             )
             self._conn.commit()
 
@@ -1912,7 +1927,6 @@ class SessionStore:
         *,
         key: str,
         metadata: dict[str, Any] | None = None,
-        last_consolidated: int = 0,
         last_user_at: str | None = None,
         last_proactive_at: str | None = None,
     ) -> dict[str, Any]:
@@ -1936,7 +1950,7 @@ class SessionStore:
                     key,
                     now,
                     now,
-                    int(last_consolidated),
+                    0,
                     payload,
                     last_user_at,
                     last_proactive_at,
@@ -1953,22 +1967,14 @@ class SessionStore:
         key: str,
         *,
         metadata: dict[str, Any] | None = None,
-        last_consolidated: int | None = None,
         last_user_at: str | None = None,
         last_proactive_at: str | None = None,
     ) -> dict[str, Any] | None:
-        if last_consolidated is not None:
-            raise ValueError(
-                "last_consolidated 只能由 session compaction ledger 推进"
-            )
         set_parts = ["updated_at = ?"]
         params: list[Any] = [datetime.now().astimezone().isoformat()]
         if metadata is not None:
             set_parts.append("metadata = ?")
             params.append(json.dumps(metadata, ensure_ascii=False))
-        if last_consolidated is not None:
-            set_parts.append("last_consolidated = ?")
-            params.append(int(last_consolidated))
         if last_user_at is not None:
             set_parts.append("last_user_at = ?")
             params.append(last_user_at)
@@ -2292,6 +2298,7 @@ class SessionStore:
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         message_id = f"{session_key}:{seq}"
+        _validate_new_message_extra(role, extra or {}, message_id)
         tool_chain_payload = (
             json.dumps(tool_chain, ensure_ascii=False)
             if tool_chain is not None
@@ -2356,6 +2363,7 @@ class SessionStore:
             message_id = f"{key}:{seq}"
             tool_chain = message.get("tool_chain")
             extra = message["extra"]
+            _validate_new_message_extra(message.get("role"), extra, message_id)
             tool_chain_payload = (
                 json.dumps(tool_chain, ensure_ascii=False)
                 if tool_chain is not None
@@ -2393,7 +2401,6 @@ class SessionStore:
         *,
         created_at: str,
         updated_at: str,
-        last_consolidated: int,
         metadata: dict[str, Any],
         messages: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
@@ -2409,12 +2416,12 @@ class SessionStore:
                 self._conn.execute(
                     """
                     INSERT INTO sessions (key, created_at, updated_at, last_consolidated, metadata)
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, 0, ?)
                     ON CONFLICT(key) DO UPDATE SET
                         updated_at = excluded.updated_at,
                         metadata = excluded.metadata
                     """,
-                    (key, created_at, updated_at, int(last_consolidated), metadata_payload),
+                    (key, created_at, updated_at, metadata_payload),
                 )
                 if messages:
                     start_seq = self._next_seq_locked(key)
@@ -2709,12 +2716,18 @@ class SessionStore:
 
         with self._lock:
             row = self._conn.execute(
-                "SELECT session_key, content FROM messages WHERE id = ?",
+                "SELECT session_key, role, content FROM messages WHERE id = ?",
                 (message_id,),
             ).fetchone()
             if row is None:
                 return None
             session_key = str(row["session_key"])
+            if extra is not None:
+                _validate_new_message_extra(
+                    role if role is not None else row["role"],
+                    extra,
+                    message_id,
+                )
             params.append(message_id)
             cur = self._conn.execute(
                 f"UPDATE messages SET {', '.join(set_parts)} WHERE id = ?",
@@ -2952,59 +2965,6 @@ class SessionStore:
             candidate_path.unlink(missing_ok=True)
             raise
         return backup_path
-
-    def delete_session_messages_and_update_cursor(
-        self,
-        session_key: str,
-        *,
-        ids: list[str],
-        last_consolidated: int,
-    ) -> int:
-        clean_ids = [
-            str(message_id).strip() for message_id in ids if str(message_id).strip()
-        ]
-        if not clean_ids:
-            return 0
-        placeholders = ",".join("?" for _ in clean_ids)
-        now = datetime.now().astimezone().isoformat()
-        with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                seq_rows = self._conn.execute(
-                    f"""
-                    SELECT id, seq
-                    FROM messages
-                    WHERE session_key = ? AND id IN ({placeholders})
-                    """,
-                    tuple([session_key, *clean_ids]),
-                ).fetchall()
-                next_seq = (
-                    max(int(row["seq"]) for row in seq_rows) + 1 if seq_rows else 0
-                )
-                deleted_ids = [str(row["id"]) for row in seq_rows]
-                cur = self._conn.execute(
-                    f"""
-                    DELETE FROM messages
-                    WHERE session_key = ? AND id IN ({placeholders})
-                    """,
-                    tuple([session_key, *clean_ids]),
-                )
-                self._delete_message_embeddings_locked(deleted_ids)
-                self._conn.execute(
-                    """
-                    UPDATE sessions
-                    SET last_consolidated = ?,
-                        updated_at = ?,
-                        next_seq = CASE WHEN next_seq < ? THEN ? ELSE next_seq END
-                    WHERE key = ?
-                    """,
-                    (int(last_consolidated), now, next_seq, next_seq, session_key),
-                )
-                self._conn.commit()
-            except Exception:
-                self._conn.rollback()
-                raise
-        return int(cur.rowcount or 0)
 
     def fetch_by_ids_with_context(
         self, ids: list[str], context: int

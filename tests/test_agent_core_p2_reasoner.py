@@ -275,7 +275,6 @@ def test_default_reasoner_replays_interrupted_attempt_before_current_input():
     assert result.reply == "final after u2"
     assert result.tool_chain == prior_tool_chain
     assert result.tools_used == ["lookup"]
-    assert result.react_compaction is None
     assert "llm_user_content" not in result.context_retry
 
 

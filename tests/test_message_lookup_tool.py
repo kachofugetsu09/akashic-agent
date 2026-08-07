@@ -14,7 +14,6 @@ def _setup_session(store: SessionStore, key: str, n_messages: int) -> None:
         key,
         created_at="2026-01-01T00:00:00+00:00",
         updated_at="2026-01-01T00:00:00+00:00",
-        last_consolidated=0,
         metadata={},
     )
     roles = ["user", "assistant"]
@@ -48,7 +47,6 @@ async def test_fetch_messages_strips_internal_metadata(tmp_path):
         "tg:1",
         created_at="2026-01-01T00:00:00+00:00",
         updated_at="2026-01-01T00:00:00+00:00",
-        last_consolidated=0,
         metadata={},
     )
     store.insert_message(
@@ -178,7 +176,6 @@ async def test_search_messages_returns_preview_with_source_ref(tmp_path):
         "tg:1",
         created_at="2026-01-01T00:00:00+00:00",
         updated_at="2026-01-01T00:00:00+00:00",
-        last_consolidated=0,
         metadata={},
     )
     preview_lines = "\n".join(f"line-{i}" for i in range(55))
@@ -222,14 +219,12 @@ async def test_search_messages_supports_filters(tmp_path):
         "tg:1",
         created_at="2026-01-01T00:00:00+00:00",
         updated_at="2026-01-01T00:00:00+00:00",
-        last_consolidated=0,
         metadata={},
     )
     store.upsert_session(
         "tg:2",
         created_at="2026-01-01T00:00:00+00:00",
         updated_at="2026-01-01T00:00:00+00:00",
-        last_consolidated=0,
         metadata={},
     )
 
@@ -262,7 +257,6 @@ async def test_search_messages_supports_offset_pagination(tmp_path):
         "tg:1",
         created_at="2026-01-01T00:00:00+00:00",
         updated_at="2026-01-01T00:00:00+00:00",
-        last_consolidated=0,
         metadata={},
     )
     for seq in range(5):
@@ -307,7 +301,6 @@ async def test_search_messages_mixed_long_and_short_terms_keeps_short_only_hits(
         "tg:1",
         created_at="2026-01-01T00:00:00+00:00",
         updated_at="2026-01-01T00:00:00+00:00",
-        last_consolidated=0,
         metadata={},
     )
     store.insert_message("tg:1", role="user", content="phase only", ts="2026-01-01T00:00:01+00:00", seq=0)

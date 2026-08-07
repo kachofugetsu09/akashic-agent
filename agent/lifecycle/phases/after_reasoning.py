@@ -50,8 +50,8 @@ _ASSISTANT_FIXED_FIELDS = {
     "tool_chain",
     "reasoning_content",
     "model_state",
-    "react_compaction",
 }
+_RETIRED_ASSISTANT_FIELDS = frozenset({"react_compaction"})
 _USER_FIXED_FIELDS = {
     "media",
     "timestamp",
@@ -215,10 +215,6 @@ class _PersistAssistantMessageModule:
             assistant_kwargs["reasoning_content"] = ctx.thinking
         if frame.input.turn_result.model_state is not None:
             assistant_kwargs["model_state"] = frame.input.turn_result.model_state
-        if frame.input.turn_result.react_compaction is not None:
-            assistant_kwargs["react_compaction"] = dict(
-                frame.input.turn_result.react_compaction
-            )
         assistant_kwargs.update(_collect_persist_assistant_slots(frame.slots))
         turn_inputs = _turn_user_inputs(frame.input.state.msg)
         control_turn_id = str(
@@ -415,6 +411,15 @@ def default_after_reasoning_modules(
 
 
 def _collect_persist_assistant_slots(slots: dict[str, object]) -> dict[str, object]:
+    retired = {
+        key.removeprefix(_PERSIST_ASSISTANT_PREFIX)
+        for key in slots
+        if key.startswith(_PERSIST_ASSISTANT_PREFIX)
+        and key.removeprefix(_PERSIST_ASSISTANT_PREFIX) in _RETIRED_ASSISTANT_FIELDS
+    }
+    if retired:
+        fields = ", ".join(sorted(retired))
+        raise ValueError(f"assistant extra 字段已退役: {fields}")
     return collect_prefixed_slots(
         slots,
         _PERSIST_ASSISTANT_PREFIX,

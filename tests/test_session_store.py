@@ -14,7 +14,7 @@ from agent.control.models import (
     TurnStatus,
     TurnUsage,
 )
-from session.manager import SessionManager
+from session.manager import Session, SessionManager
 from session.store import SessionStore, _decode_message_extra
 from bus.events import InboundMessage
 from bus.queue import MessageBus
@@ -722,6 +722,79 @@ def test_legacy_react_compaction_extra_is_preserved_without_runtime_read(tmp_pat
     }
 
 
+def test_new_insert_rejects_retired_react_compaction_extra(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store.create_session(key="cli:retired-insert")
+
+    with pytest.raises(ValueError, match="assistant extra 字段已退役"):
+        store.insert_message(
+            "cli:retired-insert",
+            role="assistant",
+            content="reply",
+            ts=NOW.isoformat(),
+            seq=0,
+            extra={"react_compaction": {"summary": "new"}},
+        )
+
+
+def test_new_persist_rejects_retired_react_compaction_extra(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+
+    with pytest.raises(ValueError, match="assistant extra 字段已退役"):
+        store.persist_session(
+            "cli:retired-persist",
+            created_at=NOW.isoformat(),
+            updated_at=NOW.isoformat(),
+            metadata={},
+            messages=[
+                {
+                    "role": "assistant",
+                    "content": "reply",
+                    "timestamp": NOW.isoformat(),
+                    "extra": {"react_compaction": {"summary": "new"}},
+                }
+            ],
+        )
+
+
+def test_new_update_rejects_retired_react_compaction_extra_without_role(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store.create_session(key="cli:retired-update")
+    message = store.insert_message(
+        "cli:retired-update",
+        role="assistant",
+        content="reply",
+        ts=NOW.isoformat(),
+        seq=0,
+    )
+
+    with pytest.raises(ValueError, match="assistant extra 字段已退役"):
+        store.update_message(
+            str(message["id"]),
+            extra={"react_compaction": {"summary": "new"}},
+        )
+
+
+def test_new_update_accepts_non_retired_assistant_extra_without_role(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store.create_session(key="cli:normal-update")
+    message = store.insert_message(
+        "cli:normal-update",
+        role="assistant",
+        content="reply",
+        ts=NOW.isoformat(),
+        seq=0,
+    )
+
+    updated = store.update_message(
+        str(message["id"]),
+        extra={"trace_id": "trace-1"},
+    )
+
+    assert updated is not None
+    assert updated["trace_id"] == "trace-1"
+
+
 def test_session_save_cannot_regress_ledger_cursor(tmp_path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     store.create_session(key="cli:stale-save")
@@ -735,7 +808,6 @@ def test_session_save_cannot_regress_ledger_cursor(tmp_path) -> None:
         "cli:stale-save",
         created_at=NOW.isoformat(),
         updated_at=NOW.isoformat(),
-        last_consolidated=0,
         metadata={},
         messages=[],
     )
@@ -743,9 +815,12 @@ def test_session_save_cannot_regress_ledger_cursor(tmp_path) -> None:
     assert store.get_session_meta("cli:stale-save")["last_consolidated"] == 1
 
 
-def test_dashboard_cursor_mutation_is_rejected(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
-    store.create_session(key="cli:manual-cursor")
+def test_session_manager_save_rejects_nonzero_cursor_for_new_session(tmp_path) -> None:
+    manager = SessionManager(tmp_path)
+    session = Session("cli:new-stale", last_consolidated=1)
 
-    with pytest.raises(ValueError, match="只能由 session compaction ledger"):
-        store.update_session("cli:manual-cursor", last_consolidated=1)
+    with pytest.raises(ValueError, match="必须由 ledger 建立"):
+        manager.save(session)
+
+    assert not manager.control_store.session_exists("cli:new-stale")
+    manager.close()
