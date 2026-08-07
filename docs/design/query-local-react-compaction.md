@@ -1,9 +1,12 @@
 # Query 内 ReAct Compaction 设计与任务合同
 
-- 状态：accepted / implementation
+- 状态：superseded by [Session compaction ledger](session-context-compaction-ledger.md)
 - 日期：2026-07-31
 - 决策：[0012](../decisions/0012-query-local-compaction-is-a-persisted-projection.md)
 - 关联条款：CTX-001～CTX-007、SES-001、SES-005、CAP-001、ERR-001、TST-001～TST-004、TST-009
+
+> 本文保留旧 Query-local 实现的历史合同；当前 runtime、配置和验收以 0026 与
+> `session-context-compaction-ledger.md` 为准。
 
 ## 1. 目标和成功标准
 

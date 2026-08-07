@@ -1,6 +1,6 @@
 # Session Context Compaction Ledger
 
-- 状态：accepted / implementation
+- 状态：implemented
 - 日期：2026-08-07
 - 决策：[0027](../decisions/0027-session-context-compaction-ledger.md)
 
@@ -40,6 +40,8 @@ runtime/model/capacity、threshold、before/after token、summary usage，以及
 checkpoint 提交顺序为：读取 provenance → 生成并校验 summary/Markdown draft → 以
 source_ref 幂等提交 PENDING 与 `ConsolidationCommitted` → 在一个 SessionDB 事务中
 INSERT generation 并推进 cursor。跨文件阶段失败不推进 cursor；重试复用 source_ref。
+命中 session memory exclusion 谓词时仍提交 session-local checkpoint，但不 prepare 或
+commit Markdown/PENDING/event，也不写跨文件 receipt。
 
 messages、tool_chain、embeddings、Akasha 输入和长期 Markdown 状态均不可因压缩更新或
 删除。显式 interaction 删除先备份并验证 SessionDB，再失效命中的 checkpoint 和
@@ -52,9 +54,13 @@ descendants；session 删除 cascade ledger。
 - soft limit = `floor(context_window * 0.74)`。
 - hard input limit = `context_window - current request max_output_tokens`。
 - 输出上限为 0 时不额外预留；hard limit 不得被 `effective_context_percent` 覆盖。
-- 只在完整 tool-call/result batch 闭合后选择切点；保留当前 user anchor 和活动效果。
+- 已提交的 completed logical interaction 不可拆分；当前 attempt 只在完整闭合的
+  tool-call/result batch 后选择临时切点，并保留当前 user anchor 和活动效果。
 - raw tail 从后向前累积至少 20k token，跨越完整 logical unit 可以略超 20k；重建后
   仍需同时低于 soft/hard，不能满足则阻断。
+- Markdown 只消费 checkpoint 的 exact source plan，按连续 `unit_ref` 贪心分页且不拆
+  logical unit；每页使用 provider 的真实 estimator，并严格小于
+  `context_window - 1024`。单个完整 unit 仍超限时阻断 checkpoint。
 
 ## 4. Summary 与 fallback
 

@@ -341,8 +341,9 @@ Core 在每一次 session 的 provider 请求前，必须在 system prompt、长
 `memory_window`、`effective_context_percent` 和 runtime 级 compaction percent 不再
 拥有上下文语义。
 
-统一的 `ContextCompactor` 只在完整 tool-call/result batch 闭合后选取切点。当前 user
-anchor、未闭合工具和外部效果证据必须保留；raw tail 从后向前累计至少 20,000 token，
+统一的 `ContextCompactor` 不拆分已提交的 completed logical interaction；当前 attempt
+只把完整闭合的 tool-call/result batch 当作临时压缩单元。当前 user anchor、未闭合工具
+和外部效果证据必须保留；raw tail 从后向前累计至少 20,000 token，
 跨过完整逻辑单元可以略大于 20,000。若没有合法切点使重建 payload 同时低于软水位和
 硬边界，必须阻断本次调用。tool call 返回后先完整执行 batch，下一次 provider 调用
 再次经过本 Gate。

@@ -7,11 +7,6 @@
 - 在独立 Fitbit canonical source 变更中让 monitor 与 MCP 读取同一个 `validation_port_env`，再以一次性 workspace 验收真实隔离 listener、child tool trace、正式切换和旧 listener 恢复；不得在 Core 中添加 Fitbit 特判。
 - 补充 turn-boundary rollout 的进程崩溃注入矩阵，覆盖 terminal 封口后、候选服务停止后、正式 endpoint 切换后和 pointer 提交前；恢复失败必须保持 degraded 可见，不能只恢复 pointer。
 
-## P0 · 上下文与持久历史隔离
-
-- 从 `DefaultReasoner` 移除 `SessionManager` 依赖；动态区块退化不改 session，history window 退化只改运行时视图，不写 store。
-- 清理 `trim_history_async` 等含糊 API；需要独立 cache owner 时再引入运行时视图类型，不新增与 `PromptRenderInput` 同义的抽象。
-
 ## P0 · 独立语义验收
 
 - 将 CTX-001 当前的 trace、完整状态快照和 fixture `DELETE` pilot 升级为 SQLite authorizer 与一次性候选真实 retry seam mutant；导入失败、fixture 失败或超时不得计为 mutant kill。

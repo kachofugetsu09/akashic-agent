@@ -56,9 +56,11 @@ Akasha 对一个 completed logical interaction 建立一个学习样本：有序
 
 ### STI-011 历史预算按 Logical Interaction 计数
 
-`memory_window`、Markdown consolidation 的保留尾部、分页切点、积压阈值和 recent turns 都按不可拆分的逻辑历史单元计数。一个 completed `U1..Un+A_final` 是一个单元；一次已送达 proactive assistant 是一个独立单元。窗口和游标不得落入显式 `control_turn_id` 中间。
+Session compaction、Markdown consolidation 的保留尾部、分页切点和 prompt history 都按不可拆分的逻辑历史单元计数。一个 completed `U1..Un+A_final` 是一个单元；一次已送达 proactive assistant 是一个独立单元。窗口和游标不得落入显式 `control_turn_id` 中间。
 
-升级既有配置时必须注意：`memory_window`、由它派生的 `keep_count` 和 `consolidation_min_new_messages` 已从“消息行数”改为“逻辑历史单元数”。因此相同数值会保留更大的 legacy 消息尾部，并使 consolidation 更晚触发；本变更不自动换算或改写用户配置。
+0026 已取代按消息数配置的窗口：迁移删除 `memory_window`、`keep_count` 和
+`consolidation_min_new_messages` 语义，改由 provider payload token 水位触发；完整逻辑
+单元仍不可拆分。
 
 ### STI-012 连环中断的工具前缀可压缩但不可丢证据
 

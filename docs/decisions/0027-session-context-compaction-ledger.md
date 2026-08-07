@@ -32,9 +32,10 @@ TurnCommitted 后按条数主动刷新全局近期摘要。
 6. Markdown consolidation 只处理从上一个 generation 到新 cut point 的历史，不再按
    消息数或后台 TurnCommitted 刷新，也不再生成 `RECENT_CONTEXT.md`。PENDING 与
    `ConsolidationCommitted` 通过 source_ref 幂等提交，全部成功后才推进 cursor。
-7. 已闭合 tool-call/result batch 是最小压缩单元。recent raw tail 反向累计至少
-   20,000 token，跨过阈值的完整逻辑单元可以使尾部略大于 20,000；无法合法切点时
-   明确阻断。
+7. 已提交的 completed logical interaction 是不可拆分的持久压缩单元；当前 attempt
+   只有已闭合 tool-call/result batch 可以作为临时压缩单元。recent raw tail 反向累计
+   至少 20,000 token，跨过阈值的完整逻辑单元可以使尾部略大于 20,000；无法合法切点
+   时明确阻断。
 8. summary 优先使用当前模型，失败后使用 configured main/default fallback；两者失败
    则阻断业务调用。summary 请求不携带工具并关闭 thinking。
 9. 删除 interaction 时，命中 source 或 retained dependency 的 generation 及全部
