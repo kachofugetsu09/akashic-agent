@@ -1054,7 +1054,10 @@ async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
         aclose=AsyncMock(),
     )
     core = SimpleNamespace(
-        loop=SimpleNamespace(run=lambda: "loop-task"),
+        loop=SimpleNamespace(
+            run=lambda: "loop-task",
+            bind_plugin_rollout_fact_provider=MagicMock(),
+        ),
         bus=SimpleNamespace(dispatch_outbound=lambda: "bus-task"),
         event_bus=EventBus(),
         tools=MagicMock(),
@@ -1065,8 +1068,9 @@ async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
         light_provider=MagicMock(),
         memory_runtime=memory_runtime,
         presence=MagicMock(),
-            workspace_mcp_watcher_task=None,
-            start=AsyncMock(),
+        plugin_manager=MagicMock(),
+        workspace_mcp_watcher_task=None,
+        start=AsyncMock(),
         stop=AsyncMock(),
     )
     monkeypatch.setattr(
@@ -1075,7 +1079,12 @@ async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
     monkeypatch.setattr(
         "bootstrap.app.start_channels",
         AsyncMock(
-            return_value=SimpleNamespace(start_all=AsyncMock(), stop_all=AsyncMock())
+            return_value=SimpleNamespace(
+                start_all=AsyncMock(),
+                stop_all=AsyncMock(),
+                bind_plugin_channels=MagicMock(),
+                swap_plugin_channels=AsyncMock(),
+            )
         ),
     )
     build_proactive_runtime = MagicMock(return_value=([], None))

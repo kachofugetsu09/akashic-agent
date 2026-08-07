@@ -179,6 +179,7 @@ class AgentLoop:
         self._event_bus = deps.event_bus or EventBus()
         self._session_lanes = SessionLaneRegistry()
         self._runtime_snapshot_store: RuntimeSnapshotStore | None = None
+        self._plugin_rollout_fact_provider: Callable[[], str] | None = None
 
         # ── 中断控制面（纯内存态） ──
         self._active_tasks: dict[str, asyncio.Task[OutboundMessage]] = {}
@@ -225,6 +226,12 @@ class AgentLoop:
 
     def bind_runtime_snapshot_store(self, store: RuntimeSnapshotStore) -> None:
         self._runtime_snapshot_store = store
+
+    def bind_plugin_rollout_fact_provider(
+        self,
+        provider: Callable[[], str],
+    ) -> None:
+        self._plugin_rollout_fact_provider = provider
 
     def _configure_stream_events(self) -> None:
         setter = getattr(self._reasoner, "set_stream_sink_factory", None)
@@ -714,29 +721,39 @@ class AgentLoop:
     ) -> OutboundMessage:
         key = session_key or msg.session_key
         busy_key = busy_session_key or key
-        model_selection = await self._resolve_model_selection(msg, key)
-        async with model_execution_scope(
-            self._llm_services.provider,
-            model_selection.model_ref or None,
-            model_selection.reasoning_effort,
-        ) as model_binding:
-            if model_binding is not None and isinstance(msg, InboundMessage):
-                msg.metadata["model_binding"] = model_binding.describe("agent")
-
-            # 给本 turn task 打上 session 归属，供 observe 全局错误采集关联。
-            session_token = current_session_key.set(key)
-            inherited_turn_id = (
-                str(
-                    msg.metadata.get("_control_execution_turn_id")
-                    or msg.metadata.get("control_turn_id")
-                    or ""
-                )
-                if isinstance(msg, InboundMessage)
-                else ""
+        # 给本 turn task 打上 session 归属，供 observe 全局错误采集关联。
+        session_token = current_session_key.set(key)
+        inherited_turn_id = (
+            str(
+                msg.metadata.get("_control_execution_turn_id")
+                or msg.metadata.get("control_turn_id")
+                or ""
             )
-            turn_token = current_turn_id.set(inherited_turn_id or new_turn_id())
-            try:
-                # 1. 先处理可能存在的续跑态，并发布 turn started。
+            if isinstance(msg, InboundMessage)
+            else ""
+        )
+        turn_token = current_turn_id.set(inherited_turn_id or new_turn_id())
+        try:
+            # 1. 先投影插件发布事实，再冻结本 turn 的模型 generation。
+            rollout_fact_provider = getattr(self, "_plugin_rollout_fact_provider", None)
+            if (
+                isinstance(msg, InboundMessage)
+                and msg.channel != "programmatic"
+                and rollout_fact_provider is not None
+            ):
+                fact = rollout_fact_provider()
+                if fact:
+                    msg.metadata["_plugin_rollout_fact"] = fact
+            model_selection = await self._resolve_model_selection(msg, key)
+            async with model_execution_scope(
+                self._llm_services.provider,
+                model_selection.model_ref or None,
+                model_selection.reasoning_effort,
+            ) as model_binding:
+                if model_binding is not None and isinstance(msg, InboundMessage):
+                    msg.metadata["model_binding"] = model_binding.describe("agent")
+
+                # 2. 处理可能存在的续跑态，并发布 turn started。
                 msg, resumed_from_interrupt = await self._resume_interrupted_message(
                     msg, key
                 )
@@ -745,7 +762,7 @@ class AgentLoop:
                 preview = content[:60] + "..." if len(content) > 60 else content
                 logger.info(f"Processing message from {msg.channel}: {preview}")
 
-                # 2. 再进入 busy 状态并执行核心处理。
+                # 3. 再进入 busy 状态并执行核心处理。
                 if self._processing_state:
                     self._processing_state.enter(busy_key)
                 try:
@@ -758,16 +775,15 @@ class AgentLoop:
                         self._interrupt_states.pop(key, None)
                     return outbound
                 finally:
-                    # 3. 无论核心处理结果如何，都释放 busy 状态。
                     if self._processing_state:
                         self._processing_state.exit(busy_key)
+        finally:
+            # 4. 当前 query 结束即回收其 shell，再恢复调用方上下文。
+            try:
+                await self._cleanup_shell_owner(key)
             finally:
-                # 4. 当前 query 结束即回收其 shell，再恢复调用方上下文。
-                try:
-                    await self._cleanup_shell_owner(key)
-                finally:
-                    current_session_key.reset(session_token)
-                    current_turn_id.reset(turn_token)
+                current_session_key.reset(session_token)
+                current_turn_id.reset(turn_token)
 
     async def _resolve_model_selection(
         self,

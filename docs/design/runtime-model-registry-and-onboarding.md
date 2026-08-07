@@ -1,8 +1,8 @@
 # 运行时模型注册表与 Onboarding
 
-- 状态：implemented and verified；0026、0027、思考强度二级菜单与真实 Provider GUI 链路已对账
+- 状态：implemented and verified；0027、0028、思考强度二级菜单与真实 Provider GUI 链路已对账
 - 日期：2026-08-06
-- 决策：[0026](../decisions/0026-runtime-models-use-generation-leases.md)、[0027](../decisions/0027-model-credentials-live-with-workspace-connections.md)
+- 决策：[0027](../decisions/0027-runtime-models-use-generation-leases.md)、[0028](../decisions/0028-model-credentials-live-with-workspace-connections.md)
 - 需求：RUN-009～RUN-012、ONB-001、CTX-001
 
 ## 1. 目标与当前差距
@@ -249,7 +249,7 @@ Provider/模型 Logo 候选使用 MIT 的 `@lobehub/icons`，已覆盖 Codex、D
 
 ### 10.2 SQLite 凭据与真实 GUI 回归
 
-2026-08-07 另用全新容器、一次性 HOME/workspace 和随机 host 端口 `22368` 回归本轮 0027 与 UI；容器内仍只监听 `2236`，正式 workspace、正式插件 cache 和正式 `2236` 均未写入。API Key 取自维护者明确授权的源码配置，只经浏览器表单提交；Codex 复用现有登录凭据作为隔离测试夹具，模型发现、保存、选择和对话均从 GUI 完成。
+2026-08-07 另用全新容器、一次性 HOME/workspace 和随机 host 端口 `22368` 回归本轮 0028 与 UI；容器内仍只监听 `2236`，正式 workspace、正式插件 cache 和正式 `2236` 均未写入。API Key 取自维护者明确授权的源码配置，只经浏览器表单提交；Codex 复用现有登录凭据作为隔离测试夹具，模型发现、保存、选择和对话均从 GUI 完成。
 
 - 无 `config.toml` 时根路径直接显示统一 Chat 空状态和“连接模型”，不会先挂载未就绪的 Dashboard runtime iframe，也不再弹出 503 错误框。
 - GUI 保存一个 OpenCode Go connection 下的 `deepseek-v4-flash`、`deepseek-v4-pro`，以及 DeepSeek API 的 `deepseek-v4-flash`；容器没有 `opencode` CLI 时明确记录目录降级，并从固定 LiteLLM 本地注册表恢复三个模型支持的 `low/medium/high`，不猜测远端状态。

@@ -1,4 +1,4 @@
-# 0028 · main Gateway 对账移动 WebUI Stable
+# 0029 · main Gateway 对账移动 WebUI Stable
 
 - 状态：accepted
 - 日期：2026-08-08

@@ -1,12 +1,14 @@
 # 插件递归自验证运行时设计
 
-- 状态：implemented / stable-latest programmatic 闭环、共享状态 owner 审计、自动化与真实模型验收均已完成
+- 状态：historical mechanism；Agent 显式 latest/promote/discard 流程已由 2026-08-08 turn-boundary 合同取代
 - 确认日期：2026-08-05
-- 决策：[0024](../decisions/0024-plugin-self-validation-uses-stable-and-latest.md)
+- 决策：[0024](../decisions/0024-plugin-self-validation-uses-stable-and-latest.md)、[0026](../decisions/0026-plugin-rollout-is-owned-by-the-parent-turn.md)
 - 关联条款：RUN-007、OUT-004、PLG-013、CTRL-003、SH-001、TST-001～TST-006
 - 当前实现基线：`feat/programmatic-latest-validation`
 
 ## 1. 结论
+
+> 2026-08-08 勘误：本文保留 stable/latest、session lane、attached cancellation 和真实 child trace 的机制说明，但不再定义 Agent 操作。当前合同见 [插件 install/uninstall/revert 与 turn 边界发布](plugin-install-uninstall-turn-boundary-rollout.md)：父 turn 只执行 install/uninstall/revert，attached child 自动继承候选，正常 terminal 后由 Core 提交。本文后续出现的显式 `--runtime latest`、promote/discard 仅是历史设计，不得用于当前 Agent 流程。
 
 原实现不能在写完插件的同一 turn 内证明插件可用，不是因为缺少一条等待命令，而是因为候选能力、执行机会和验收反馈没有形成闭环：当前 turn 绑定旧 snapshot，程序化子 turn 又被两层全局执行锁挡在父 turn 后面。实现已移除跨 session 整轮互斥，并接通 stable/latest、runtime selector、attached cancellation 和候选管理接口；父 turn 现在能在自己结束前取得隔离 latest 的真实行为结果，再决定 promote 或 discard。
 

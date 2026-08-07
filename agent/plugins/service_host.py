@@ -31,6 +31,7 @@ class PluginServiceHost:
     def __init__(self) -> None:
         self._bindings: dict[str, dict[str, dict[str, Any]]] = {}
         self._running: dict[tuple[str, str], _RunningService] = {}
+        self._validation_services: dict[str, tuple[str, ...]] = {}
 
     def bind_plugin_services(
         self,
@@ -77,6 +78,42 @@ class PluginServiceHost:
             raise cancellation
         if errors:
             raise RuntimeError("managed service 停止失败: " + "; ".join(errors))
+
+    async def start_candidate(
+        self,
+        generation_id: str,
+        services: dict[str, dict[str, Any]],
+    ) -> None:
+        """Start candidate services under generation-scoped isolated ownership."""
+
+        # 1. Each validation generation owns a disjoint process namespace key.
+        if generation_id in self._validation_services:
+            raise RuntimeError(f"候选 managed service 已启动: {generation_id}")
+        owner = f"validation:{generation_id}"
+        started: list[str] = []
+        try:
+            for service_id, spec in sorted(services.items()):
+                await self._start(owner, service_id, spec)
+                started.append(service_id)
+        except BaseException:
+            for service_id in reversed(started):
+                await self._stop(owner, service_id)
+            raise
+        self._validation_services[generation_id] = tuple(started)
+
+    async def stop_candidate(self, generation_id: str) -> None:
+        """Stop every isolated service owned by one candidate generation."""
+
+        service_ids = self._validation_services.pop(generation_id, ())
+        owner = f"validation:{generation_id}"
+        errors: list[str] = []
+        for service_id in reversed(service_ids):
+            try:
+                await self._stop(owner, service_id)
+            except Exception as error:
+                errors.append(f"{service_id}: {error}")
+        if errors:
+            raise RuntimeError("候选 managed service 停止失败: " + "; ".join(errors))
 
     async def swap_plugin_services(
         self,

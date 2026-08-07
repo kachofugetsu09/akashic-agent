@@ -6,7 +6,7 @@ import subprocess
 import threading
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import certifi
 import pytest
@@ -308,6 +308,118 @@ async def test_runtime_install_and_watcher_share_candidate_owner(
     await manager.discard_latest_candidate("beta@lab")
     await manager.terminate_all()
     await bus.aclose()
+
+
+@pytest.mark.asyncio
+async def test_exclusive_service_candidate_uses_isolated_port_then_formal_switch(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "exclusive-source"
+    source.mkdir()
+    (source / "plugin.py").write_text(
+        "from agent.plugins import ManagedServiceSpec, Plugin\n"
+        "class ExclusivePlugin(Plugin):\n"
+        "    name = 'exclusive'\n"
+        "    version = '1.0.0'\n"
+        "    @classmethod\n"
+        "    def managed_services(cls):\n"
+        "        return [ManagedServiceSpec(\n"
+        "            id='api', command=('python', 'service.py'),\n"
+        "            readiness_url='http://127.0.0.1:18765/ready',\n"
+        "            validation_port_env='PLUGIN_PORT',\n"
+        "        )]\n",
+        encoding="utf-8",
+    )
+    (source / "service.py").write_text("pass\n", encoding="utf-8")
+    _commit(source)
+    manager = PluginManager(
+        plugin_dirs=[],
+        event_bus=EventBus(),
+        workspace=tmp_path / "workspace",
+        installed_cache_root=tmp_path / "plugins-home" / "cache",
+    )
+    await manager.load_all()
+    isolated: list[dict[str, dict[str, object]]] = []
+    stopped: list[str] = []
+    switched: list[tuple[dict, dict]] = []
+
+    async def start_candidate(_generation_id, services) -> None:
+        isolated.append(services)
+
+    async def stop_candidate(generation_id) -> None:
+        stopped.append(generation_id)
+
+    async def switch(_plugin_id, old, new) -> None:
+        switched.append((old, new))
+
+    manager.bind_candidate_service_host(
+        start=start_candidate,
+        stop=stop_candidate,
+    )
+    manager.bind_service_switcher(switch)
+    result, _status = await manager.install_candidate(
+        source=str(source),
+        marketplace="lab",
+        ref_name="",
+        sparse_paths=[],
+    )
+
+    candidate_service = isolated[0]["api"]
+    candidate_env = cast(dict[str, str], candidate_service["env"])
+    candidate_port = candidate_env["PLUGIN_PORT"]
+    assert candidate_port != "18765"
+    assert f":{candidate_port}/ready" in str(candidate_service["readiness_url"])
+    assert "runtime/plugin-validation" in candidate_env["AKA_PLUGIN_DATA_DIR"]
+
+    await manager.promote_latest_candidate(f"{result.plugin_name}@{result.marketplace}")
+
+    assert stopped
+    assert switched[0][0] == {}
+    formal_service = cast(dict[str, object], switched[0][1]["api"])
+    assert str(formal_service["readiness_url"]).endswith(":18765/ready")
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_exclusive_service_candidate_without_port_contract_is_rejected(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "unsafe-exclusive-source"
+    source.mkdir()
+    (source / "plugin.py").write_text(
+        "from agent.plugins import ManagedServiceSpec, Plugin\n"
+        "class UnsafeExclusivePlugin(Plugin):\n"
+        "    name = 'unsafe_exclusive'\n"
+        "    version = '1.0.0'\n"
+        "    @classmethod\n"
+        "    def managed_services(cls):\n"
+        "        return [ManagedServiceSpec(\n"
+        "            id='api', command=('python', 'service.py'),\n"
+        "            readiness_url='http://127.0.0.1:18765/ready',\n"
+        "        )]\n",
+        encoding="utf-8",
+    )
+    (source / "service.py").write_text("pass\n", encoding="utf-8")
+    _commit(source)
+    manager = PluginManager(
+        plugin_dirs=[],
+        event_bus=EventBus(),
+        workspace=tmp_path / "workspace",
+        installed_cache_root=tmp_path / "plugins-home" / "cache",
+    )
+    await manager.load_all()
+
+    with pytest.raises(RuntimeError, match="未声明通用隔离端口"):
+        await manager.install_candidate(
+            source=str(source),
+            marketplace="lab",
+            ref_name="",
+            sparse_paths=[],
+        )
+
+    assert manager.latest_snapshot is manager.current_snapshot
+    assert manager.candidate_status()["candidate_state"] == "aborted"
+    await manager.terminate_all()
 
 
 async def _start_runtime_mcp(

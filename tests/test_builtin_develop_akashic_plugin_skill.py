@@ -38,11 +38,11 @@ def test_develop_akashic_plugin_preserves_validation_contract(tmp_path: Path) ->
     for contract in (
         "canonical source",
         "不要直接编辑 `~/.akashic-plugin/cache`",
-        "新 session 并显式选择 `latest`",
+        "不要指定 `--runtime`",
         "默认不沉淀语义记忆",
         "不能只问“你能否看到”",
         "message_push",
-        "current-snapshot self-validation",
+        "attached child",
         "safe candidate self-validation unavailable",
         "才告诉用户任务完成",
     ):
@@ -83,12 +83,12 @@ def test_develop_akashic_plugin_references_are_complete() -> None:
         assert contract in body
     for contract in (
         "plugin-install",
-        "--runtime latest",
+        "不得添加 `--runtime latest`",
         "write_stdin",
-        "plugin-promote <plugin-id>",
-        "plugin-discard <plugin-id>",
+        "plugin-revert",
+        "validation_port_env",
         "semantic write set == 0",
-        "非 read-only Tool/MCP disabled",
+        "非 read-only Tool/MCP 默认禁用",
         "目标渠道是否另写自己的 durable event",
     ):
         assert contract in validation

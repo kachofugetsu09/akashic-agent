@@ -23,9 +23,12 @@ from agent.restart import RestartCoordinator
 from session.manager import SessionManager
 from session.memory_policy import validate_session_memory_metadata
 
-PluginInstall = Callable[[str, str, str, list[str]], Awaitable[dict[str, object]]]
+PluginInstall = Callable[..., Awaitable[dict[str, object]]]
 PluginAction = Callable[[str], Awaitable[dict[str, object]]]
 PluginStatus = Callable[[], dict[str, object]]
+PluginUninstall = Callable[[str, str], Awaitable[dict[str, object]]]
+PluginChildBinding = Callable[[str, bool], dict[str, str] | None]
+PluginTurnBarrier = Callable[[], Awaitable[None]]
 RuntimeSelector = Literal["stable", "latest"]
 logger = logging.getLogger(__name__)
 
@@ -47,7 +50,11 @@ class ControlService:
         *,
         plugin_drain: Callable[[str], Awaitable[str]] | None = None,
         plugin_uninstall: Callable[[str], Awaitable[dict[str, object]]] | None = None,
+        plugin_uninstall_register: PluginUninstall | None = None,
         plugin_install: PluginInstall | None = None,
+        plugin_revert: PluginAction | None = None,
+        plugin_child_binding: PluginChildBinding | None = None,
+        plugin_turn_barrier: PluginTurnBarrier | None = None,
         plugin_status: PluginStatus | None = None,
         plugin_promote: PluginAction | None = None,
         plugin_discard: PluginAction | None = None,
@@ -62,7 +69,11 @@ class ControlService:
         self.workspace = workspace.resolve()
         self._plugin_drain = plugin_drain
         self._plugin_uninstall = plugin_uninstall
+        self._plugin_uninstall_register = plugin_uninstall_register
         self._plugin_install = plugin_install
+        self._plugin_revert = plugin_revert
+        self._plugin_child_binding = plugin_child_binding
+        self._plugin_turn_barrier = plugin_turn_barrier
         self._plugin_status = plugin_status
         self._plugin_promote = plugin_promote
         self._plugin_discard = plugin_discard
@@ -165,7 +176,10 @@ class ControlService:
         input_text: str,
         metadata: dict[str, Any],
         runtime: str | None = None,
+        attached: bool = True,
     ) -> TurnHandle:
+        if self._plugin_turn_barrier is not None:
+            await self._plugin_turn_barrier()
         session_meta = self.sessions.control_store.get_session_meta(thread_id)
         if session_meta is None:
             raise ThreadNotFoundError(f"thread 不存在: {thread_id}")
@@ -179,6 +193,21 @@ class ControlService:
             if runtime is not None
             else session_metadata.get("runtime", "stable")
         )
+        owner_turn_id = str(session_metadata.get("_pluginRolloutOwnerTurnId") or "")
+        if owner_turn_id:
+            if self._plugin_child_binding is None:
+                raise RuntimeError("当前 runtime 不支持插件候选因果绑定")
+            binding = self._plugin_child_binding(owner_turn_id, attached)
+            if binding is not None:
+                selected = "latest"
+                turn_metadata.update(
+                    {
+                        "_pluginRolloutOwnerTurnId": binding["ownerTurnId"],
+                        "_pluginRolloutPluginId": binding["pluginId"],
+                        "_pluginRolloutGenerationId": binding["generationId"],
+                        "_pluginRolloutSourceRevision": binding["sourceRevision"],
+                    }
+                )
         turn_metadata["runtime"] = selected
         return await self.runtime.start_turn(
             TurnRequest(thread_id, input_text, turn_metadata)
@@ -202,11 +231,16 @@ class ControlService:
         marketplace: str,
         ref: str,
         sparse: list[str],
+        owner_turn_id: str = "",
     ) -> dict[str, object]:
         if self._plugin_install is None:
             raise RuntimeError("当前 runtime 不支持插件安装")
         try:
-            return await self._plugin_install(source, marketplace, ref, sparse)
+            if not owner_turn_id:
+                return await self._plugin_install(source, marketplace, ref, sparse)
+            return await self._plugin_install(
+                source, marketplace, ref, sparse, owner_turn_id
+            )
         except Exception as exc:
             logger.exception("runtime-owned plugin install failed")
             raise PluginManagementError(str(exc)) from exc
@@ -236,6 +270,30 @@ class ControlService:
             return await self._plugin_discard(plugin_id)
         except Exception as exc:
             logger.exception("plugin discard failed plugin=%s", plugin_id)
+            raise PluginManagementError(str(exc)) from exc
+
+    async def register_plugin_uninstall(
+        self,
+        plugin_id: str,
+        owner_turn_id: str,
+    ) -> dict[str, object]:
+        if self._plugin_uninstall_register is None:
+            return self.start_plugin_uninstall(plugin_id).record()
+        try:
+            return await self._plugin_uninstall_register(plugin_id, owner_turn_id)
+        except Exception as exc:
+            logger.exception(
+                "plugin uninstall registration failed plugin=%s", plugin_id
+            )
+            raise PluginManagementError(str(exc)) from exc
+
+    async def revert_plugin(self, owner_turn_id: str) -> dict[str, object]:
+        if self._plugin_revert is None:
+            raise RuntimeError("当前 runtime 不支持 plugin revert")
+        try:
+            return await self._plugin_revert(owner_turn_id)
+        except Exception as exc:
+            logger.exception("plugin revert failed owner_turn=%s", owner_turn_id)
             raise PluginManagementError(str(exc)) from exc
 
     def start_plugin_uninstall(self, plugin_id: str) -> PluginOperationHandle:

@@ -1191,6 +1191,17 @@ class DefaultReasoner(Reasoner):
             else None
         )
         disabled_tools = _disabled_tools_from_msg(msg)
+        rollout_fact = str(
+            (getattr(msg, "metadata", None) or {}).get("_plugin_rollout_fact", "")
+        )
+        if rollout_fact:
+            extra_hints = [
+                *(extra_hints or []),
+                "【插件运行时事实】"
+                + rollout_fact
+                + " 这是 Core 已核实的上一轮结果；请用自然语言告诉用户，"
+                "不要要求用户查询状态。",
+            ]
         raw_turn_input_source = (getattr(msg, "metadata", None) or {}).get(
             "_control_turn_input_source"
         )

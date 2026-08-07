@@ -35,9 +35,9 @@ _TRANSITIONS: dict[str, frozenset[str]] = {
     "prepared": frozenset({"validating", "aborted"}),
     "validating": frozenset({"commit_started", "aborted"}),
     "commit_started": frozenset({"latest_ready", "committed", "aborted", "recovered"}),
-    "latest_ready": frozenset({"discarding", "promoting", "recovered"}),
+    "latest_ready": frozenset({"discarding", "promoting", "aborted", "recovered"}),
     "discarding": frozenset({"aborted"}),
-    "promoting": frozenset({"discarding", "committed", "recovered"}),
+    "promoting": frozenset({"discarding", "committed", "aborted", "recovered"}),
     "committed": frozenset({"draining", "complete", "recovered"}),
     "draining": frozenset({"complete", "recovered"}),
 }
@@ -213,6 +213,24 @@ class ReloadJournal:
             for row in rows
         )
 
+    def annotate(self, tx_id: str, details: dict[str, object]) -> None:
+        """Append evidence without inventing another public rollout phase."""
+
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT phase FROM reload_transactions WHERE tx_id = ?",
+                (tx_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"ReloadTransaction 不存在: {tx_id}")
+            now = _now()
+            phase = cast(ReloadPhase, str(row[0]))
+            conn.execute(
+                "UPDATE reload_transactions SET updated_at = ? WHERE tx_id = ?",
+                (now, tx_id),
+            )
+            self._append_event(conn, tx_id, phase, details, now)
+
     def pending_recovery(self) -> tuple[ReloadRecoveryAction, ...]:
         placeholders = ", ".join("?" for _ in _TERMINAL_PHASES)
         with self._connect() as conn:
@@ -346,7 +364,7 @@ def _now() -> str:
 
 def _recovery_action(phase: str) -> RecoveryActionName:
     if phase == "latest_ready":
-        return "restore_candidate"
+        return "discard_candidate"
     if phase in {"commit_started", "promoting", "committed", "draining"}:
         return "restore_committed"
     return "discard_candidate"

@@ -56,6 +56,7 @@ class TurnIdParams(ThreadIdParams):
 
 class PluginDrainParams(StrictModel):
     pluginId: str = Field(min_length=1, max_length=256)
+    ownerTurnId: str = Field(default="", max_length=128)
 
 
 class PluginInstallParams(StrictModel):
@@ -63,6 +64,11 @@ class PluginInstallParams(StrictModel):
     marketplace: str = Field(default="local", min_length=1, max_length=128)
     ref: str = Field(default="", max_length=1024)
     sparse: list[str] = Field(default_factory=list, max_length=128)
+    ownerTurnId: str = Field(default="", max_length=128)
+
+
+class PluginRevertParams(StrictModel):
+    ownerTurnId: str = Field(min_length=1, max_length=128)
 
 
 METHOD_PARAMS: dict[str, type[StrictModel]] = {
@@ -83,4 +89,5 @@ METHOD_PARAMS: dict[str, type[StrictModel]] = {
     "plugin/promote": PluginDrainParams,
     "plugin/discard": PluginDrainParams,
     "plugin/uninstall/start": PluginDrainParams,
+    "plugin/revert": PluginRevertParams,
 }

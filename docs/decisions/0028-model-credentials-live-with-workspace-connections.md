@@ -1,13 +1,13 @@
-# 0027 · 模型凭据随 workspace connection 保存
+# 0028 · 模型凭据随 workspace connection 保存
 
 - 状态：accepted
 - 日期：2026-08-07
-- 勘误：[0026](0026-runtime-models-use-generation-leases.md) 中“凭据继续由全局 CredentialStore 保存”的部分
+- 勘误：[0027](0027-runtime-models-use-generation-leases.md) 中“凭据继续由全局 CredentialStore 保存”的部分
 - 关联条款：RUN-009～RUN-012、ONB-001、WSP-001、BAK-001
 
 ## 背景
 
-0026 已把 Provider connection、model 和 role 迁入 workspace 的
+0027 已把 Provider connection、model 和 role 迁入 workspace 的
 `model-registry.sqlite3`，但 credential id 仍指向全局 `~/.akashic/auth.json`。
 这样一个可运行模型要同时恢复 workspace 数据库和 HOME 下的第二个 owner，首次设置事务也要跨
 SQLite 与 JSON 两个提交边界。用户确认当前是单人本地 Companion，接受用文件权限保护明文
@@ -54,7 +54,7 @@ workspace 恢复和运行时读取都只有一个权威 owner；现有 `Credenti
 - 旧 `auth.json` 保留为迁移前恢复证据和非模型兼容状态，不再是已迁移模型的运行时 fallback。
 - 迁移或设置失败时用 SQLite backup API 恢复数据库 preimage，并恢复 `config.toml`；失败不得写
   Yoyo 成功回执或部分发布模型 revision。
-- 源码回滚到 0026 实现时，可从迁移 operation backup 恢复旧配置与 JSON credential；不能只回退
+- 源码回滚到 0027 实现时，可从迁移 operation backup 恢复旧配置与 JSON credential；不能只回退
   SQLite schema 后继续启动。
 
 ## 验收
