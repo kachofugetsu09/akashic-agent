@@ -19,8 +19,8 @@ def test_setup_wizard_renders_web_chat_config() -> None:
 
     assert "[channels.chat]" in text
     assert "enabled = true" in text
-    assert 'host = "127.0.0.1"' in text
-    assert "port = 6322" in text
+    assert 'channel_name = "web"' in text
+    assert "6322" not in text
     assert 'channel_name = "web"' in text
 
 

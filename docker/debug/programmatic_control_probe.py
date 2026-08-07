@@ -1381,7 +1381,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
         # 7. WebSocket channel adapter 保留领域投影、完整出站字段和 lane 语义。
         from websockets.sync.client import connect as connect_websocket
 
-        websocket_url = "ws://akashic-control-gate:6322/ws"
+        websocket_url = "ws://akashic-control-gate:2236/ws"
         with connect_websocket(websocket_url, open_timeout=READINESS_DEADLINE_S) as web:
             web.send(
                 json.dumps({"type": "session.create", "request_id": "pc16-create"})
@@ -1989,8 +1989,6 @@ outbound_queue_size = 64
 
 [channels.chat]
 enabled = true
-host = "0.0.0.0"
-port = 6322
 channel_name = "web"
 
 [channels.telegram]
