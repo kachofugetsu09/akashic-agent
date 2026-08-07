@@ -26,6 +26,35 @@ def _create_sessions(path: Path) -> None:
         connection.close()
 
 
+_DELETE_AUDIT_TABLE = """
+CREATE TABLE session_delete_audits (
+    audit_id TEXT,
+    targets_json TEXT NOT NULL,
+    message_ids_json TEXT NOT NULL,
+    compactions_json TEXT NOT NULL,
+    action_source TEXT NOT NULL,
+    cascade INTEGER NOT NULL CHECK (cascade IN (0, 1)),
+    backup_path TEXT,
+    started_at TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    result TEXT NOT NULL,
+    deleted_count INTEGER NOT NULL,
+    error TEXT
+)
+"""
+
+
+def _create_table(path: Path, sql: str, index_sql: str | None = None) -> None:
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(sql)
+        if index_sql is not None:
+            connection.execute(index_sql)
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def test_audit_migration_publishes_manifest_schema_and_indexes(tmp_path: Path) -> None:
     root = tmp_path / "state"
     workspace = root / "workspace"
@@ -143,6 +172,64 @@ def test_audit_migration_rejects_incompatible_existing_table(tmp_path: Path) -> 
         finally:
             ledger.close()
         assert "20260808_01_session_mutation_audits" not in applied
+
+
+def test_audit_migration_rejects_wrong_primary_key(tmp_path: Path) -> None:
+    root = tmp_path / "state"
+    workspace = root / "workspace"
+    workspace.mkdir(parents=True)
+    sessions = workspace / "sessions.db"
+    _create_sessions(sessions)
+    _create_table(sessions, _DELETE_AUDIT_TABLE)
+
+    with pytest.raises(RuntimeError, match="schema lineage"):
+        MigrationRunner(
+            repo_root=_PROJECT_ROOT,
+            config_path=root / "config.toml",
+            workspace=workspace,
+        ).run()
+
+
+def test_audit_migration_rejects_wrong_named_index(tmp_path: Path) -> None:
+    root = tmp_path / "state"
+    workspace = root / "workspace"
+    workspace.mkdir(parents=True)
+    sessions = workspace / "sessions.db"
+    _create_sessions(sessions)
+    _create_table(
+        sessions,
+        _DELETE_AUDIT_TABLE.replace("audit_id TEXT,", "audit_id TEXT PRIMARY KEY,"),
+        "CREATE INDEX idx_session_delete_audits_time "
+        "ON session_delete_audits(audit_id, completed_at)",
+    )
+
+    with pytest.raises(RuntimeError, match="schema lineage"):
+        MigrationRunner(
+            repo_root=_PROJECT_ROOT,
+            config_path=root / "config.toml",
+            workspace=workspace,
+        ).run()
+
+
+def test_audit_migration_rejects_unknown_extra_index(tmp_path: Path) -> None:
+    root = tmp_path / "state"
+    workspace = root / "workspace"
+    workspace.mkdir(parents=True)
+    sessions = workspace / "sessions.db"
+    _create_sessions(sessions)
+    _create_table(
+        sessions,
+        _DELETE_AUDIT_TABLE.replace("audit_id TEXT,", "audit_id TEXT PRIMARY KEY,"),
+        "CREATE INDEX extra_delete_audit_index "
+        "ON session_delete_audits(audit_id)",
+    )
+
+    with pytest.raises(RuntimeError, match="schema lineage"):
+        MigrationRunner(
+            repo_root=_PROJECT_ROOT,
+            config_path=root / "config.toml",
+            workspace=workspace,
+        ).run()
 
 
 def test_sqlite_backup_failure_keeps_published_evidence_and_cleans_temps(

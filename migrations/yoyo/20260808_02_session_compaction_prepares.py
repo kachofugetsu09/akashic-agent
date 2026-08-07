@@ -6,7 +6,10 @@ from uuid import uuid4
 from yoyo import step
 
 from agent.migrations.context import current_migration_context
-from agent.migrations.session_db_backup import backup_sqlite_database
+from agent.migrations.session_db_backup import (
+    backup_sqlite_database,
+    validate_table_schema,
+)
 
 
 __depends__ = {"20260808_01_session_mutation_audits"}
@@ -31,6 +34,29 @@ SCHEMA_MANIFEST: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
+_TABLE_SCHEMA = {
+    "columns": (
+        ("session_key", "TEXT", 1, 1),
+        ("session_created_at", "TEXT", 1, 0),
+        ("generation", "INTEGER", 1, 2),
+        ("parent_generation", "INTEGER", 1, 0),
+        ("source_ref", "TEXT", 1, 0),
+        ("source_from_seq", "INTEGER", 1, 0),
+        ("consolidated_through_seq", "INTEGER", 1, 0),
+        ("source_message_ids_json", "TEXT", 1, 0),
+        ("retained_tail_json", "TEXT", 1, 0),
+        ("prepared_at", "TEXT", 1, 0),
+    ),
+    "named_indexes": {
+        "idx_session_compaction_prepares_ref": (("session_key", "source_ref"), 0),
+    },
+    "auto_indexes": (
+        ("pk", ("session_key", "generation")),
+        ("u", ("session_key", "source_ref")),
+    ),
+    "sql_fragments": (),
+}
+
 
 def _ensure_table(
     connection: sqlite3.Connection,
@@ -47,13 +73,24 @@ def _ensure_table(
     ).fetchone()
     if existing is None:
         connection.execute(create_sql)
-    actual = {
-        str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")
-    }
-    missing = sorted(set(columns) - actual)
-    if missing:
-        raise RuntimeError(f"{table} schema lineage 不兼容，缺少列: {', '.join(missing)}")
+    validate_table_schema(
+        connection,
+        table=table,
+        columns=_TABLE_SCHEMA["columns"],
+        named_indexes=_TABLE_SCHEMA["named_indexes"],
+        auto_indexes=_TABLE_SCHEMA["auto_indexes"],
+        sql_fragments=_TABLE_SCHEMA["sql_fragments"],
+        validate_named_indexes=False,
+    )
     connection.execute(index_sql)
+    validate_table_schema(
+        connection,
+        table=table,
+        columns=_TABLE_SCHEMA["columns"],
+        named_indexes=_TABLE_SCHEMA["named_indexes"],
+        auto_indexes=_TABLE_SCHEMA["auto_indexes"],
+        sql_fragments=_TABLE_SCHEMA["sql_fragments"],
+    )
 
 
 def add_session_compaction_prepares(connection: object) -> None:

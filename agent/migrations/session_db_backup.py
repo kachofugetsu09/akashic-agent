@@ -8,6 +8,78 @@ from pathlib import Path
 from uuid import uuid4
 
 
+def validate_table_schema(
+    connection: sqlite3.Connection,
+    *,
+    table: str,
+    columns: tuple[tuple[str, str, int, int], ...],
+    named_indexes: dict[str, tuple[tuple[str, ...], int]],
+    auto_indexes: tuple[tuple[str, tuple[str, ...]], ...],
+    sql_fragments: tuple[str, ...] = (),
+    validate_named_indexes: bool = True,
+) -> None:
+    """Fail loudly unless one SQLite table matches its owned schema identity."""
+
+    table_row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    if table_row is None or not table_row[0]:
+        raise RuntimeError(f"{table} schema lineage 不兼容，表定义缺失")
+    actual_columns = tuple(
+        (str(row[1]), str(row[2]).upper(), int(row[3]), int(row[5]))
+        for row in connection.execute(f"PRAGMA table_info({table})")
+    )
+    expected_columns = tuple(
+        (name, column_type.upper(), not_null, pk_ordinal)
+        for name, column_type, not_null, pk_ordinal in columns
+    )
+    if actual_columns != expected_columns:
+        raise RuntimeError(f"{table} schema lineage 不兼容，列定义不匹配")
+
+    normalized_sql = "".join(str(table_row[0]).upper().split())
+    for fragment in sql_fragments:
+        if "".join(fragment.upper().split()) not in normalized_sql:
+            raise RuntimeError(f"{table} schema lineage 不兼容，约束定义缺失")
+
+    index_rows = connection.execute(f"PRAGMA index_list({table})").fetchall()
+    if validate_named_indexes:
+        named_rows = {
+            str(row[1]): (int(row[2]), str(row[3]))
+            for row in index_rows
+            if not str(row[1]).startswith("sqlite_autoindex_")
+        }
+        if set(named_rows) != set(named_indexes):
+            raise RuntimeError(f"{table} schema lineage 不兼容，索引集合不匹配")
+        for name, (expected_columns_for_index, expected_unique) in named_indexes.items():
+            unique, origin = named_rows[name]
+            if unique != expected_unique or origin != "c":
+                raise RuntimeError(f"{table} schema lineage 不兼容，索引定义不匹配: {name}")
+            actual_index_columns = tuple(
+                str(row[2])
+                for row in connection.execute(f"PRAGMA index_info({name!r})")
+            )
+            if actual_index_columns != expected_columns_for_index:
+                raise RuntimeError(f"{table} schema lineage 不兼容，索引列不匹配: {name}")
+
+    actual_auto_indexes = []
+    for row in index_rows:
+        name = str(row[1])
+        if not name.startswith("sqlite_autoindex_"):
+            continue
+        actual_auto_indexes.append(
+            (
+                str(row[3]),
+                tuple(
+                    str(index_row[2])
+                    for index_row in connection.execute(f"PRAGMA index_info({name!r})")
+                ),
+            )
+        )
+    if sorted(actual_auto_indexes) != sorted(auto_indexes):
+        raise RuntimeError(f"{table} schema lineage 不兼容，约束索引不匹配")
+
+
 def _integrity_check(path: Path) -> None:
     """Verify a SQLite file before publishing it as recovery evidence."""
 

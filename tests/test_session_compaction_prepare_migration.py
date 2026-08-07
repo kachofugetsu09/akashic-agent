@@ -26,6 +26,23 @@ def _create_sessions(path: Path) -> None:
         connection.close()
 
 
+_PREPARE_TABLE_WITHOUT_UNIQUE = """
+CREATE TABLE session_compaction_prepares (
+    session_key TEXT NOT NULL,
+    session_created_at TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    parent_generation INTEGER NOT NULL,
+    source_ref TEXT NOT NULL,
+    source_from_seq INTEGER NOT NULL,
+    consolidated_through_seq INTEGER NOT NULL,
+    source_message_ids_json TEXT NOT NULL,
+    retained_tail_json TEXT NOT NULL,
+    prepared_at TEXT NOT NULL,
+    PRIMARY KEY (session_key, generation)
+)
+"""
+
+
 def _runner(root: Path) -> MigrationRunner:
     return MigrationRunner(
         repo_root=_PROJECT_ROOT,
@@ -114,6 +131,38 @@ def test_prepare_migration_rejects_incompatible_existing_table(tmp_path: Path) -
     with pytest.raises(RuntimeError, match="schema lineage"):
         runner.run()
 
+    if runner.ledger_path.exists():
+        ledger = sqlite3.connect(runner.ledger_path)
+        try:
+            applied = {
+                row[0]
+                for row in ledger.execute(
+                    "SELECT migration_id FROM _yoyo_migration"
+                )
+            }
+        finally:
+            ledger.close()
+        assert _PREPARE_ID not in applied
+
+
+def test_prepare_migration_rejects_missing_source_ref_unique_constraint(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state"
+    workspace = root / "workspace"
+    workspace.mkdir(parents=True)
+    sessions = workspace / "sessions.db"
+    _create_sessions(sessions)
+    connection = sqlite3.connect(sessions)
+    try:
+        connection.execute(_PREPARE_TABLE_WITHOUT_UNIQUE)
+        connection.commit()
+    finally:
+        connection.close()
+
+    runner = _runner(root)
+    with pytest.raises(RuntimeError, match="schema lineage"):
+        runner.run()
     if runner.ledger_path.exists():
         ledger = sqlite3.connect(runner.ledger_path)
         try:

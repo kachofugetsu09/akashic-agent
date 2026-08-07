@@ -6,7 +6,10 @@ from uuid import uuid4
 from yoyo import step
 
 from agent.migrations.context import current_migration_context
-from agent.migrations.session_db_backup import backup_sqlite_database
+from agent.migrations.session_db_backup import (
+    backup_sqlite_database,
+    validate_table_schema,
+)
 
 __depends__ = {"20260807_01_session_context_compaction_ledger"}
 
@@ -44,6 +47,49 @@ SCHEMA_MANIFEST: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
+_TABLE_SCHEMAS = {
+    "session_delete_audits": {
+        "columns": (
+            ("audit_id", "TEXT", 0, 1),
+            ("targets_json", "TEXT", 1, 0),
+            ("message_ids_json", "TEXT", 1, 0),
+            ("compactions_json", "TEXT", 1, 0),
+            ("action_source", "TEXT", 1, 0),
+            ("cascade", "INTEGER", 1, 0),
+            ("backup_path", "TEXT", 0, 0),
+            ("started_at", "TEXT", 1, 0),
+            ("completed_at", "TEXT", 1, 0),
+            ("result", "TEXT", 1, 0),
+            ("deleted_count", "INTEGER", 1, 0),
+            ("error", "TEXT", 0, 0),
+        ),
+        "named_indexes": {
+            "idx_session_delete_audits_time": (("completed_at", "audit_id"), 0),
+        },
+        "auto_indexes": (("pk", ("audit_id",)),),
+        "sql_fragments": ("CHECK (cascade IN (0, 1))",),
+    },
+    "session_source_mutation_audits": {
+        "columns": (
+            ("audit_id", "TEXT", 0, 1),
+            ("operation", "TEXT", 1, 0),
+            ("session_key", "TEXT", 1, 0),
+            ("message_ids_json", "TEXT", 1, 0),
+            ("action_source", "TEXT", 1, 0),
+            ("backup_path", "TEXT", 0, 0),
+            ("completed_at", "TEXT", 1, 0),
+        ),
+        "named_indexes": {
+            "idx_source_mutation_audits_lookup": (
+                ("session_key", "completed_at", "audit_id"),
+                0,
+            ),
+        },
+        "auto_indexes": (("pk", ("audit_id",)),),
+        "sql_fragments": (),
+    },
+}
+
 
 def _ensure_table(
     connection: sqlite3.Connection,
@@ -58,13 +104,25 @@ def _ensure_table(
     ).fetchone()
     if existing is None:
         connection.execute(create_sql)
-    actual = {
-        str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")
-    }
-    missing = sorted(set(columns) - actual)
-    if missing:
-        raise RuntimeError(f"{table} schema lineage 不兼容，缺少列: {', '.join(missing)}")
+    schema = _TABLE_SCHEMAS[table]
+    validate_table_schema(
+        connection,
+        table=table,
+        columns=schema["columns"],
+        named_indexes=schema["named_indexes"],
+        auto_indexes=schema["auto_indexes"],
+        sql_fragments=schema["sql_fragments"],
+        validate_named_indexes=False,
+    )
     connection.execute(index_sql)
+    validate_table_schema(
+        connection,
+        table=table,
+        columns=schema["columns"],
+        named_indexes=schema["named_indexes"],
+        auto_indexes=schema["auto_indexes"],
+        sql_fragments=schema["sql_fragments"],
+    )
 
 
 def add_session_mutation_audits(connection: object) -> None:
