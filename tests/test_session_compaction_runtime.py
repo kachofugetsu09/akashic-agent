@@ -50,6 +50,10 @@ class _MarkdownReceiptProbe:
 
 
 class _MarkdownCompactionProbe(_MarkdownReceiptProbe):
+    def __init__(self) -> None:
+        super().__init__()
+        self.prepare_count = 0
+
     async def prepare_compaction_markdown(
         self,
         selected_source_messages,
@@ -58,6 +62,7 @@ class _MarkdownCompactionProbe(_MarkdownReceiptProbe):
         scope_channel: str = "",
         scope_chat_id: str = "",
     ) -> CompactionMarkdownDraft:
+        self.prepare_count += 1
         assert selected_source_messages
         return CompactionMarkdownDraft(
             source_ref=source_ref,
@@ -200,6 +205,82 @@ def test_receipt_recovery_skips_provider_calls(tmp_path: Path) -> None:
     assert provider_calls == 0
     assert session.last_consolidated == recovered.generation
     assert markdown.commit_count == 1
+
+
+def test_excluded_session_commit_advances_ledger_without_markdown(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("session")
+    session.metadata["skip_post_memory"] = True
+    session.add_message("user", "excluded")
+    manager.save(session)
+    markdown = _MarkdownCompactionProbe()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+    head = manager.control_store.get_compaction_head(session.key)
+    message = session.messages[0]
+    message_id = str(message["id"])
+    message_seq = int(message["seq"])
+    source_ref = compaction_source_ref(session.key, head.next_generation)
+    checkpoint = ContextCompaction(
+        summary="\n".join(SUMMARY_HEADINGS),
+        generation=head.next_generation,
+        parent_generation=head.parent_generation,
+        trigger="soft_limit",
+        context_window=100,
+        soft_limit_tokens=74,
+        hard_input_tokens=90,
+        keep_recent_tokens=20,
+        estimated_tokens_before=80,
+        estimated_tokens_after=40,
+        source_from_seq=message_seq,
+        consolidated_through_seq=message_seq,
+        source_message_ids=(message_id,),
+        retained_tail=(),
+        summary_usage=None,
+        source_ref=source_ref,
+        model_runtime_id="runtime",
+        model="model",
+        selection_digest="selection",
+        selected_source_messages=(
+            {
+                "id": message_id,
+                "seq": message_seq,
+                "unit_ref": "session:unit:0",
+                "message": {"role": "user", "content": "excluded"},
+            },
+        ),
+    )
+
+    row = asyncio.run(runtime.commit_checkpoint(session, checkpoint, head=head))
+
+    assert row.generation == 1
+    assert manager.control_store.get_compaction_head(session.key).parent_generation == 1
+    assert markdown.prepare_count == 0
+    assert markdown.commit_count == 0
+
+
+def test_excluded_receipt_recovery_advances_ledger_without_markdown(
+    tmp_path: Path,
+) -> None:
+    manager, markdown, _ = _seed_receipt(tmp_path)
+    session = manager.get_existing("session")
+    session.metadata["skip_post_memory"] = True
+    manager.save(session)
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+
+    recovered = asyncio.run(runtime.recover_pending(session))
+
+    assert recovered is not None
+    assert recovered.generation == 1
+    assert session.last_consolidated == 1
+    assert markdown.commit_count == 0
 
 
 def test_receipt_recovery_after_markdown_is_idempotent_and_skips_provider(
@@ -443,6 +524,100 @@ def test_default_reasoner_gate_commits_real_runtime_before_provider_payload(
         and "<session-context-compaction>" in str(message.get("content"))
         for message in render_payload
     )
+
+
+def test_projection_reload_does_not_duplicate_retained_tail_or_new_units(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("session")
+    session.add_message("user", "old user", control_turn_id="turn-old")
+    session.add_message("assistant", "old reply", control_turn_id="turn-old")
+    session.add_message("user", "tail user", control_turn_id="turn-tail")
+    session.add_message("assistant", "tail reply", control_turn_id="turn-tail")
+    manager.save(session)
+
+    markdown = _MarkdownCompactionProbe()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+    head = manager.control_store.get_compaction_head(session.key)
+    source_ref = compaction_source_ref(session.key, head.next_generation)
+    selected = tuple(
+        {
+            "id": str(message["id"]),
+            "seq": int(message["seq"]),
+            "unit_ref": "turn-old",
+            "message": dict(message),
+        }
+        for message in session.messages[:2]
+    )
+    retained_tail = tuple(
+        {
+            "id": str(message["id"]),
+            "seq": int(message["seq"]),
+            "unit_ref": "turn-tail",
+            "message": dict(message),
+        }
+        for message in session.messages[2:]
+    )
+    checkpoint = ContextCompaction(
+        summary="\n".join(SUMMARY_HEADINGS),
+        generation=head.next_generation,
+        parent_generation=head.parent_generation,
+        trigger="soft_limit",
+        context_window=100,
+        soft_limit_tokens=74,
+        hard_input_tokens=90,
+        keep_recent_tokens=20,
+        estimated_tokens_before=80,
+        estimated_tokens_after=40,
+        source_from_seq=0,
+        consolidated_through_seq=1,
+        source_message_ids=tuple(str(message["id"]) for message in session.messages[:2]),
+        retained_tail=retained_tail,
+        summary_usage=None,
+        source_ref=source_ref,
+        model_runtime_id="runtime",
+        model="model",
+        selection_digest="projection-reload",
+        selected_source_messages=selected,
+    )
+
+    asyncio.run(runtime.commit_checkpoint(session, checkpoint, head=head))
+    session.add_message("user", "new user", control_turn_id="turn-new")
+    session.add_message("assistant", "new reply", control_turn_id="turn-new")
+    manager.save(session)
+    manager.invalidate(session.key)
+    reloaded = manager.get_or_create(session.key)
+
+    projection = asyncio.run(
+        runtime.projection(reloaded, prefix=[], current_anchor=[], pending=[])
+    )
+    projected_ids = [
+        message_id
+        for unit in projection.segments.committed_units
+        for message_id in unit.source_message_ids
+    ]
+    projected_content = [
+        str(message.get("content"))
+        for unit in projection.segments.committed_units
+        for message in unit.messages
+    ]
+
+    assert projected_ids == [
+        str(session.messages[2]["id"]),
+        str(session.messages[3]["id"]),
+        str(reloaded.messages[4]["id"]),
+        str(reloaded.messages[5]["id"]),
+    ]
+    assert projected_content == [
+        "tail user",
+        "tail reply",
+        "new user",
+        "new reply",
+    ]
 
 
 def test_reasoner_builder_preserves_replay_tail_and_current_payload_order() -> None:

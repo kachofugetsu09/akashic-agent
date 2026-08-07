@@ -16,6 +16,7 @@ from agent.model_runtime.context_compaction import (
 )
 from agent.model_runtime.types import ModelUsage
 from core.memory.markdown import CompactionMarkdownDraft
+from session.memory_policy import excludes_memory
 from session.store import CompactionHead, SessionCompaction, SessionStore
 
 if TYPE_CHECKING:
@@ -106,9 +107,16 @@ class SessionCompactionRuntime:
                 )
             )
             tail_units = _retained_tail_units(active_row.retained_tail)
-            units = [*tail_units] + list(
-                session.history_units(after_seq=active.consolidated_through_seq)
-            )
+            if tail_units:
+                tail_through_seq = max(
+                    unit.consolidated_through_seq for unit in tail_units
+                )
+                appended_units = session.history_units(after_seq=tail_through_seq)
+            else:
+                appended_units = session.history_units(
+                    after_seq=active.consolidated_through_seq
+                )
+            units = [*tail_units, *appended_units]
         return CompactionProjection(
             segments=ContextPayloadSegments(
                 prefix=tuple(projected_prefix),
@@ -164,11 +172,16 @@ class SessionCompactionRuntime:
         draft = _draft_from_receipt(receipt)
         if checkpoint.source_ref != draft.source_ref:
             raise ValueError("compaction receipt source_ref 冲突")
-        # Markdown append uses its own source_ref index, so replay is idempotent.
-        await self._markdown.commit_compaction_markdown(draft)
-        after_markdown = self._store.get_compaction_head(session.key)
-        if after_markdown != head:
-            raise RuntimeError("compaction receipt recovery 时 ledger head 发生变化")
+        if not excludes_memory(session.key, session.metadata):
+            # Markdown append uses its own source_ref index, so replay is idempotent.
+            await self._markdown.commit_compaction_markdown(draft)
+            after_markdown = self._store.get_compaction_head(session.key)
+            if after_markdown != head:
+                raise RuntimeError("compaction receipt recovery 时 ledger head 发生变化")
+        else:
+            # excluded session 仍推进自己的 compaction ledger，但不产生记忆副作用。
+            if self._store.get_compaction_head(session.key) != head:
+                raise RuntimeError("excluded compaction receipt recovery 时 ledger head 发生变化")
         row = self._persist_checkpoint(
             checkpoint,
             head=head,
@@ -186,6 +199,26 @@ class SessionCompactionRuntime:
         scope_chat_id: str = "",
     ) -> SessionCompaction:
         """Commit receipt, Markdown effects, then the SQLite ledger row."""
+
+        if excludes_memory(session.key, session.metadata):
+            if session.key != head.session_key:
+                raise ValueError("compaction session 与 ledger head 不一致")
+            self._store.validate_compaction_provenance(
+                session.key,
+                source_message_ids=checkpoint.source_message_ids,
+                retained_tail=checkpoint.retained_tail,
+                source_from_seq=checkpoint.source_from_seq,
+                consolidated_through_seq=checkpoint.consolidated_through_seq,
+            )
+            current = self._store.get_compaction_head(head.session_key)
+            if current != head:
+                raise RuntimeError("excluded compaction ledger head 在提交前已变化")
+            row = self._persist_checkpoint(
+                checkpoint,
+                head=head,
+            )
+            session.last_consolidated = row.generation
+            return row
 
         markdown_draft = await self._build_markdown_draft(
             session,

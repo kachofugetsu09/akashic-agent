@@ -9,12 +9,18 @@ from agent.control.ports import TurnUserInput
 from agent.core.runtime_support import LLMServices, ToolDiscoveryState
 from agent.lifecycle.types import AfterStepCtx
 from agent.looping.ports import LLMConfig
+from agent.model_runtime.context_compaction import (
+    CommittedContextUnit,
+    ContextPayloadSegments,
+)
 from agent.provider import LLMResponse, ToolCall
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.tools.tool_search import ToolSearchTool
 from bus.event_bus import EventBus
 from bus.events_lifecycle import ToolCallCompleted, ToolCallStarted
+from session.compaction_runtime import CompactionProjection
+from session.store import CompactionHead
 
 _TEST_CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS = 1
 
@@ -120,6 +126,117 @@ class _TimeoutProvider(_ProviderContextBudget):
         raise asyncio.TimeoutError
 
 
+class _MandatoryCompactionRuntime:
+    """Provide the narrow projection port required by reasoner test turns."""
+
+    @staticmethod
+    def _history(session: object) -> list[dict[str, Any]]:
+        history_units = getattr(session, "history_units", None)
+        if callable(history_units):
+            return [
+                dict(message)
+                for unit in history_units(after_seq=-1)
+                for message in unit.messages
+            ]
+        get_history = getattr(session, "get_history", None)
+        if callable(get_history):
+            return [dict(message) for message in get_history(max_messages=500)]
+        raw_messages = getattr(session, "messages", [])
+        if not isinstance(raw_messages, list):
+            raise AssertionError("test session history must be a list")
+        return [dict(message) for message in raw_messages]
+
+    async def projection(
+        self,
+        session: object,
+        *,
+        prefix: list[dict[str, Any]],
+        current_anchor: list[dict[str, Any]],
+        pending: list[dict[str, Any]],
+    ) -> CompactionProjection:
+        history = self._history(session)
+        units: tuple[CommittedContextUnit, ...] = ()
+        if history:
+            ids = tuple(f"test-message-{index}" for index in range(len(history)))
+            units = (
+                CommittedContextUnit(
+                    source_from_seq=0,
+                    consolidated_through_seq=len(history) - 1,
+                    source_message_ids=ids,
+                    messages=tuple(history),
+                    message_refs=tuple((message_id, index) for index, message_id in enumerate(ids)),
+                ),
+            )
+        return CompactionProjection(
+            segments=ContextPayloadSegments(
+                prefix=tuple(prefix),
+                committed_units=units,
+                current_anchor=tuple(current_anchor),
+                pending=tuple(pending),
+            ),
+            active=None,
+            head=CompactionHead(
+                session_key=str(getattr(session, "key", "test-session")),
+                parent_generation=0,
+                next_generation=1,
+            ),
+        )
+
+    async def recover_pending(self, session: object) -> None:
+        return None
+
+    async def commit_checkpoint(self, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("test compaction gate unexpectedly attempted a commit")
+
+
+def _build_reasoner(**kwargs: Any) -> DefaultReasoner:
+    """Construct a reasoner with the mandatory session compaction runtime."""
+
+    return DefaultReasoner(
+        compaction_runtime=_MandatoryCompactionRuntime(),
+        **kwargs,
+    )
+
+
+async def _run_with_compaction_gate(
+    reasoner: DefaultReasoner,
+    initial_messages: list[dict[str, Any]],
+    **kwargs: Any,
+):
+    """Run the legacy-shaped fixture through the required compaction gate."""
+
+    payload = [dict(message) for message in initial_messages]
+    if not payload or payload[0].get("role") != "system":
+        payload.insert(0, {"role": "system", "content": "test context"})
+    history = [dict(message) for message in payload[1:]]
+    session = SimpleNamespace(
+        key="test:reasoner",
+        messages=history,
+        get_history=lambda max_messages=500, *, start_index=None: list(history),
+        last_consolidated=0,
+    )
+    runtime = reasoner._compaction_runtime
+    if runtime is None:
+        raise AssertionError("reasoner test fixture must install compaction runtime")
+    projection = await runtime.projection(
+        session,
+        prefix=[],
+        current_anchor=[],
+        pending=[],
+    )
+    state = reasoner._build_compaction_state(
+        session=session,
+        projection=projection,
+        initial_messages=payload,
+        history_count=len(history),
+        attempt_replay=[],
+        prior_tool_groups=0,
+        channel="test",
+        chat_id="reasoner",
+    )
+    return await reasoner.run(payload, compaction_state=state, **kwargs)
+
+
 def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     provider = _Provider(
         [
@@ -139,7 +256,7 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     )
     tools = ToolRegistry()
     tools.register(_DummyTool(), always_on=True)
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -152,7 +269,9 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
         tool_search_enabled=False,
     )
 
-    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+    result = asyncio.run(
+        _run_with_compaction_gate(reasoner, [{"role": "user", "content": "hi"}])
+    )
 
     assert result.reply == "final"
     assert result.metadata["tools_used"] == ["dummy"]
@@ -216,7 +335,7 @@ def test_default_reasoner_replays_interrupted_attempt_before_current_input():
             ],
         }
     ]
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -232,6 +351,7 @@ def test_default_reasoner_replays_interrupted_attempt_before_current_input():
             SimpleNamespace(
                 render=lambda request, **_: SimpleNamespace(
                     messages=[
+                        {"role": "system", "content": "test context"},
                         *request.history,
                         {"role": "user", "content": request.current_message},
                     ],
@@ -264,6 +384,7 @@ def test_default_reasoner_replays_interrupted_attempt_before_current_input():
     result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
 
     assert provider.calls[0]["messages"][:-1] == [
+        {"role": "system", "content": "test context"},
         {"role": "user", "content": "old canonical"},
         *replay,
         {"role": "user", "content": "continue with node status"},
@@ -291,7 +412,7 @@ def test_default_reasoner_blocks_disabled_tool_even_if_model_calls_it():
     push = _DummyTool("message_push")
     tools = ToolRegistry()
     tools.register(push, always_on=True, risk="external-side-effect")
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -305,7 +426,8 @@ def test_default_reasoner_blocks_disabled_tool_even_if_model_calls_it():
     )
 
     result = asyncio.run(
-        reasoner.run(
+        _run_with_compaction_gate(
+            reasoner,
             [{"role": "user", "content": "发天气"}],
             disabled_tools={"message_push"},
         )
@@ -349,7 +471,7 @@ def test_default_reasoner_disable_memory_writes_expands_to_memory_write_tools():
         source_name="memory",
     )
     tools.register(_DummyTool("read_file"), always_on=True, risk="read-only")
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -364,7 +486,11 @@ def test_default_reasoner_disable_memory_writes_expands_to_memory_write_tools():
             Any,
             SimpleNamespace(
                 render=lambda request, **_: SimpleNamespace(
-                    messages=[{"role": "user", "content": request.current_message}],
+                    messages=[
+                        {"role": "system", "content": "test context"},
+                        *request.history,
+                        {"role": "user", "content": request.current_message},
+                    ],
                 ),
             ),
         ),
@@ -416,7 +542,7 @@ def test_default_reasoner_rejects_model_commit_role_override():
     push = _DummyTool("message_push")
     tools = ToolRegistry()
     tools.register(push, always_on=True, risk="external-side-effect")
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -430,7 +556,9 @@ def test_default_reasoner_rejects_model_commit_role_override():
         tool_search_enabled=False,
     )
 
-    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+    result = asyncio.run(
+        _run_with_compaction_gate(reasoner, [{"role": "user", "content": "hi"}])
+    )
 
     assert result.reply == "done"
     assert push.calls == []
@@ -449,7 +577,7 @@ def test_default_reasoner_injects_passive_commit_role_internally():
     push = _DummyTool("message_push")
     tools = ToolRegistry()
     tools.register(push, always_on=True, risk="external-side-effect")
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -463,7 +591,9 @@ def test_default_reasoner_injects_passive_commit_role_internally():
         tool_search_enabled=False,
     )
 
-    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+    result = asyncio.run(
+        _run_with_compaction_gate(reasoner, [{"role": "user", "content": "hi"}])
+    )
 
     assert result.reply == "done"
     assert push.calls == [{"message": "hi", "_commit_role": "passive"}]
@@ -485,7 +615,7 @@ def test_default_reasoner_tool_search_cannot_reunlock_disabled_tool():
     tools = ToolRegistry()
     tools.register(ToolSearchTool(tools), always_on=True, risk="read-only")
     tools.register(push, always_on=True, risk="external-side-effect")
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -499,7 +629,8 @@ def test_default_reasoner_tool_search_cannot_reunlock_disabled_tool():
     )
 
     result = asyncio.run(
-        reasoner.run(
+        _run_with_compaction_gate(
+            reasoner,
             [{"role": "user", "content": "发天气"}],
             disabled_tools={"message_push"},
         )
@@ -530,7 +661,7 @@ def test_default_reasoner_zero_max_iterations_is_unlimited():
     tool = _DummyTool()
     tools = ToolRegistry()
     tools.register(tool, always_on=True)
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -544,7 +675,9 @@ def test_default_reasoner_zero_max_iterations_is_unlimited():
         tool_search_enabled=False,
     )
 
-    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+    result = asyncio.run(
+        _run_with_compaction_gate(reasoner, [{"role": "user", "content": "hi"}])
+    )
 
     assert result.reply == "final"
     assert len(tool.calls) == 3
@@ -561,7 +694,7 @@ def test_default_reasoner_stops_on_context_pressure_after_tool_batch(monkeypatch
     )
     tools = ToolRegistry()
     tools.register(_InflateTool(), always_on=True)
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -580,7 +713,9 @@ def test_default_reasoner_stops_on_context_pressure_after_tool_batch(monkeypatch
     )
     reasoner.add_after_step_plugin_modules([ContextPressureStopModule()])
 
-    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+    result = asyncio.run(
+        _run_with_compaction_gate(reasoner, [{"role": "user", "content": "hi"}])
+    )
 
     assert result.reply == "阶段性回复"
     assert len(provider.calls) == 2
@@ -607,7 +742,7 @@ def test_default_reasoner_context_pressure_policy_lives_in_after_step_plugin(
     )
     tools = ToolRegistry()
     tools.register(_InflateTool(), always_on=True)
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -625,7 +760,9 @@ def test_default_reasoner_context_pressure_policy_lives_in_after_step_plugin(
         tool_search_enabled=False,
     )
 
-    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+    result = asyncio.run(
+        _run_with_compaction_gate(reasoner, [{"role": "user", "content": "hi"}])
+    )
 
     assert result.reply == "final"
     assert len(provider.calls) == 2
@@ -654,7 +791,7 @@ def test_default_reasoner_observes_tool_lifecycle_events():
         ToolCallCompleted,
         lambda event: order.append("completed") or completed_events.append(event),
     )
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -669,7 +806,11 @@ def test_default_reasoner_observes_tool_lifecycle_events():
             Any,
             SimpleNamespace(
                 render=lambda request, **_: SimpleNamespace(
-                    messages=[{"role": "user", "content": request.current_message}],
+                    messages=[
+                        {"role": "system", "content": "test context"},
+                        *request.history,
+                        {"role": "user", "content": request.current_message},
+                    ],
                 ),
             ),
         ),
@@ -734,7 +875,7 @@ def test_default_reasoner_observes_blocked_tool_lifecycle_events():
         ToolCallCompleted,
         lambda event: order.append("completed") or completed_events.append(event),
     )
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -749,7 +890,8 @@ def test_default_reasoner_observes_blocked_tool_lifecycle_events():
     )
 
     result = asyncio.run(
-        reasoner.run(
+        _run_with_compaction_gate(
+            reasoner,
             [{"role": "user", "content": "hi"}],
             tool_event_session_key="telegram:123",
             tool_event_channel="telegram",
@@ -784,7 +926,7 @@ def test_default_reasoner_unlocks_tool_search_visibility():
     tools.register(ToolSearchTool(tools), always_on=True, risk="read-only")
     hidden = _DummyTool("hidden_tool")
     tools.register(hidden)
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -797,7 +939,9 @@ def test_default_reasoner_unlocks_tool_search_visibility():
         tool_search_enabled=True,
     )
 
-    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+    result = asyncio.run(
+        _run_with_compaction_gate(reasoner, [{"role": "user", "content": "hi"}])
+    )
 
     assert result.reply == "done"
     assert "hidden_tool" in result.metadata["tools_used"]
@@ -824,7 +968,7 @@ def test_default_reasoner_preflight_includes_deferred_tool_names():
         source_type="mcp",
         source_name="github",
     )
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -850,7 +994,7 @@ def test_default_reasoner_preflight_includes_deferred_tool_names():
         build_context_frame_message(frame_content),
         {"role": "user", "content": "hi"},
     ]
-    asyncio.run(reasoner.run(initial_messages))
+    asyncio.run(_run_with_compaction_gate(reasoner, initial_messages))
 
     first_messages = provider.calls[0]["messages"]
     preflight = next(
@@ -873,7 +1017,7 @@ def test_default_reasoner_deferred_tool_direct_call_requires_select():
     tools = ToolRegistry()
     tools.register(_DummyTool(), always_on=True)
     tools.register(_DummyTool("schedule"))
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -886,7 +1030,9 @@ def test_default_reasoner_deferred_tool_direct_call_requires_select():
         tool_search_enabled=True,
     )
 
-    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+    result = asyncio.run(
+        _run_with_compaction_gate(reasoner, [{"role": "user", "content": "hi"}])
+    )
 
     assert "schedule" not in result.metadata["tools_used"]
     assert result.reply == "final"
@@ -905,7 +1051,7 @@ def test_default_reasoner_preloaded_tool_not_in_deferred_list():
     tools = ToolRegistry()
     tools.register(_DummyTool(), always_on=True)
     tools.register(_DummyTool("schedule"))
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -919,7 +1065,8 @@ def test_default_reasoner_preloaded_tool_not_in_deferred_list():
     )
 
     asyncio.run(
-        reasoner.run(
+        _run_with_compaction_gate(
+            reasoner,
             [{"role": "user", "content": "hi"}],
             preloaded_tools={"schedule"},
         )
@@ -935,7 +1082,7 @@ def test_default_reasoner_run_turn_uses_context_render():
     provider = _Provider([LLMResponse(content="done", tool_calls=[])])
     tools = ToolRegistry()
     tools.register(_DummyTool(), always_on=True)
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -950,7 +1097,11 @@ def test_default_reasoner_run_turn_uses_context_render():
             Any,
             SimpleNamespace(
                 render=lambda request, **_: SimpleNamespace(
-                    messages=[{"role": "user", "content": request.current_message}],
+                    messages=[
+                        {"role": "system", "content": "test context"},
+                        *request.history,
+                        {"role": "user", "content": request.current_message},
+                    ],
                 ),
                 build_messages=lambda **_: (_ for _ in ()).throw(
                     AssertionError("legacy build_messages should not be used")
@@ -987,7 +1138,7 @@ def test_default_reasoner_run_turn_reports_llm_timeout():
     provider = _TimeoutProvider()
     tools = ToolRegistry()
     tools.register(_DummyTool(), always_on=True)
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -1002,7 +1153,11 @@ def test_default_reasoner_run_turn_reports_llm_timeout():
             Any,
             SimpleNamespace(
                 render=lambda request, **_: SimpleNamespace(
-                    messages=[{"role": "user", "content": request.current_message}],
+                    messages=[
+                        {"role": "system", "content": "test context"},
+                        *request.history,
+                        {"role": "user", "content": request.current_message},
+                    ],
                 ),
             ),
         ),
@@ -1046,7 +1201,7 @@ def test_empty_content_with_thinking_triggers_retry_and_succeeds():
     )
     tools = ToolRegistry()
     tools.register(_DummyTool(), always_on=True)
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -1059,7 +1214,9 @@ def test_empty_content_with_thinking_triggers_retry_and_succeeds():
         tool_search_enabled=False,
     )
 
-    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+    result = asyncio.run(
+        _run_with_compaction_gate(reasoner, [{"role": "user", "content": "hi"}])
+    )
 
     assert result.reply == "正式回复"
     assert result.thinking == "新思考"
@@ -1088,7 +1245,7 @@ def test_empty_content_with_thinking_retry_can_enter_tool_loop():
     tool = _DummyTool()
     tools = ToolRegistry()
     tools.register(tool, always_on=True)
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -1102,7 +1259,9 @@ def test_empty_content_with_thinking_retry_can_enter_tool_loop():
         tool_search_enabled=False,
     )
 
-    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+    result = asyncio.run(
+        _run_with_compaction_gate(reasoner, [{"role": "user", "content": "hi"}])
+    )
 
     assert result.reply == "已完成"
     assert tool.calls == [{}]
@@ -1122,7 +1281,7 @@ def test_empty_content_with_thinking_retry_still_empty_falls_back():
     )
     tools = ToolRegistry()
     tools.register(_DummyTool(), always_on=True)
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -1135,7 +1294,9 @@ def test_empty_content_with_thinking_retry_still_empty_falls_back():
         tool_search_enabled=False,
     )
 
-    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+    result = asyncio.run(
+        _run_with_compaction_gate(reasoner, [{"role": "user", "content": "hi"}])
+    )
 
     assert result.reply == "模型未返回可用回复，请重试。"
     assert result.thinking == "只有思考"
@@ -1150,7 +1311,7 @@ def test_empty_content_without_thinking_no_retry():
     )
     tools = ToolRegistry()
     tools.register(_DummyTool(), always_on=True)
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(
@@ -1163,7 +1324,9 @@ def test_empty_content_without_thinking_no_retry():
         tool_search_enabled=False,
     )
 
-    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+    result = asyncio.run(
+        _run_with_compaction_gate(reasoner, [{"role": "user", "content": "hi"}])
+    )
 
     assert result.reply == "模型未返回可用回复，请重试。"
     assert len(provider.calls) == 1
@@ -1173,7 +1336,7 @@ def test_default_reasoner_reuses_snapshot_step_phases(monkeypatch):
     provider = _Provider([LLMResponse(content="done", tool_calls=[])])
     tools = ToolRegistry()
     tools.register(_DummyTool(), always_on=True)
-    reasoner = DefaultReasoner(
+    reasoner = _build_reasoner(
         llm=cast(
             Any,
             LLMServices(

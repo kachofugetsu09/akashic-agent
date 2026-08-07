@@ -643,9 +643,7 @@ class ContextCompactor:
         return self._next_generation
 
     def _candidate_units(self) -> list[CommittedContextUnit]:
-        units: list[CommittedContextUnit] = []
-        for unit in self._committed_units:
-            units.extend(_split_closed_batches(unit))
+        units = list(self._committed_units)
         for index, batch in enumerate(self._completed_batches):
             units.append(
                 CommittedContextUnit(
@@ -983,82 +981,10 @@ def _active_execution_unit_index(units: Sequence[CommittedContextUnit]) -> int |
     return min(active) if active else None
 
 
-def _split_closed_batches(unit: CommittedContextUnit) -> list[CommittedContextUnit]:
-    """Split a committed interaction only immediately after closed tool batches."""
-
-    boundaries = _closed_batch_boundaries(unit.messages)
-    if not boundaries or boundaries[-1] >= len(unit.messages):
-        return [unit]
-    refs = list(unit.message_refs)
-    if not refs:
-        refs = [
-            (str(message.get("id")), int(message.get("seq", 0)))
-            for message in unit.messages
-            if isinstance(message.get("id"), str)
-            and isinstance(message.get("seq"), int)
-        ]
-    parts: list[CommittedContextUnit] = []
-    start = 0
-    for index, end in enumerate([*boundaries, len(unit.messages)]):
-        if end <= start:
-            continue
-        part_messages = tuple(_copy_message(message) for message in unit.messages[start:end])
-        part_refs = tuple(refs[start:end]) if len(refs) == len(unit.messages) else ()
-        part_ids = tuple(ref[0] for ref in part_refs if ref[0])
-        if not part_ids:
-            # A partial cut without per-message provenance is temporary only.
-            part_ids = (f"active-split:{unit.source_from_seq}:{index}",)
-        seqs = [ref[1] for ref in part_refs]
-        parts.append(
-            CommittedContextUnit(
-                source_from_seq=min(seqs) if seqs else unit.source_from_seq,
-                consolidated_through_seq=max(seqs) if seqs else unit.consolidated_through_seq,
-                source_message_ids=part_ids,
-                messages=part_messages,
-                message_refs=part_refs,
-            )
-        )
-        start = end
-    return parts
-
-
 def _is_persistable_unit(unit: CommittedContextUnit) -> bool:
     return bool(unit.source_message_ids) and not any(
         item.startswith("active") for item in unit.source_message_ids
     )
-
-
-def _closed_batch_boundaries(messages: Sequence[dict[str, Any]]) -> list[int]:
-    boundaries: list[int] = []
-    cursor = 0
-    while cursor < len(messages):
-        message = messages[cursor]
-        if message.get("role") != "assistant" or not isinstance(
-            message.get("tool_calls"), list
-        ):
-            cursor += 1
-            continue
-        calls = {
-            str(call.get("id"))
-            for call in cast(list[object], message["tool_calls"])
-            if isinstance(call, dict) and isinstance(call.get("id"), str)
-        }
-        if not calls:
-            cursor += 1
-            continue
-        results: set[str] = set()
-        end = cursor + 1
-        while end < len(messages) and messages[end].get("role") == "tool":
-            result_id = messages[end].get("tool_call_id")
-            if isinstance(result_id, str):
-                results.add(result_id)
-            end += 1
-        if results == calls:
-            boundaries.append(end)
-            cursor = end
-        else:
-            cursor += 1
-    return boundaries
 
 
 def _retained_tail_payload(

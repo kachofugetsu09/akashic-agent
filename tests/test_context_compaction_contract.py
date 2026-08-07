@@ -183,7 +183,7 @@ def test_committed_and_temporary_summary_usage_are_aggregated() -> None:
     assert result.checkpoint.summary_usage.output_tokens == 1
 
 
-def test_single_interaction_splits_only_after_closed_tool_batches() -> None:
+def test_single_interaction_remains_atomic_after_closed_tool_batches() -> None:
     messages = (
         {"role": "user", "content": "u", "id": "m1", "seq": 1},
         {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}], "id": "m2", "seq": 2},
@@ -216,9 +216,7 @@ def test_single_interaction_splits_only_after_closed_tool_batches() -> None:
 
     candidates = compactor._candidate_units()
     assert [tuple(item.source_message_ids) for item in candidates] == [
-        ("m1", "m2", "m3"),
-        ("m4", "m5"),
-        ("m6",),
+        ("m1", "m2", "m3", "m4", "m5", "m6"),
     ]
 
 
