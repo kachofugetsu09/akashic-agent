@@ -1,8 +1,8 @@
 # Akashic Agent 持久化状态地图
 
-- 状态：draft；代码事实已核对，workspace、会话、长期记忆、Akasha、主动/Wake/Drift 连续性、plugin-data、附件、Skill/MCP 及 0024 stable/latest 所有权已确认；调度/quota、配置/secret、诊断 retention 与完整备份合同仍是 I/U
-- 核对基线：`origin/main@6a0616c82267`
-- 核对日期：2026-07-16
+- 状态：accepted target / implementation
+- 核对基线：`origin/main@31b976d82cbd5766e6450d7e287ceda71d9b7573`
+- 核对日期：2026-08-07
 - 目标读者：维护者、coding agent、迁移与备份实现者、评审者
 - 关联条款：STA-001～STA-003、CTX-001、SES-001～SES-006、MEM-001～MEM-009、PLG-001～PLG-013、WSP-001～WSP-004、SCH-001～SCH-002、PRO-001～PRO-002、BAK-001
 
@@ -59,7 +59,8 @@ workspace 仍不是完整运行环境的全部。显式主配置、全局凭据�
 | 对象 | 正常增加 | 允许的原位或逻辑变化 | 允许物理减少的条件 |
 |---|---|---|---|
 | `sessions.db/messages` | 每次持久化一批新消息时 INSERT；同一 session 的 `seq` 单调增加且不复用 | 正常收发不改旧正文；当前代码存在显式 `update_message`，但它是否属于获授权产品语义仍待确认 | 只有用户主动撤销消息或删除会话/线程，管理命令才能 DELETE；带 `control_turn_id` 的显式 interaction 只能整组原子撤销，并声明目标、cascade、备份和审计 |
-| `sessions.db/sessions` | 新 session INSERT；已有 session 的新消息仍追加到 `messages` | 允许更新名称、时间、高水位、consolidation 游标和主动流程时间等 session metadata | 只有用户主动删除 session/thread 时，由 session 管理边界级联删除 |
+| `sessions.db/sessions` | 新 session INSERT；已有 session 的新消息仍追加到 `messages` | 允许更新名称、时间、高水位、当前 compaction generation 和主动流程时间等 session metadata；`last_consolidated` 只能由 checkpoint 提交事务推进 | 只有用户主动删除 session/thread 时，由 session 管理边界级联删除 |
+| `sessions.db/session_compactions` | 每次 committed compaction INSERT 新 generation，保存 lineage、source_ref、tail、summary、usage 和模型容量 | 只允许设置 `invalidated_at/invalidated_reason` 逻辑失效字段；generation、provenance、summary 和 tail 不原位改写 | session 删除 cascade；用户删除 interaction 时失效命中 generation 及 descendants，物理删除没有普通运行协议 |
 | `sessions.db/turns` | 新 turn 先 INSERT 为 queued | 按状态机更新 items、usage、error、final response 和终态；这是同一 turn 的进展，不是改写对话正文 | 当前只有显式 thread/session 删除路径可以减少；是否另设 retention 仍待确认 |
 | FTS 与 `message_embeddings` | 由新消息触发建索引或计算向量 | FTS 可以从正文重建；embedding 迁移属于独立流程。Akasha 确定性重建必须复用 sessions 中已存向量 | 用户撤销/删除原始消息时同步减少，或由独立索引维护流程重建；上下文裁切无权删除 |
 | `uploads/` | 每个新附件写入新的 UUID 文件 | 当前没有生产代码原位改写附件；消息引用决定附件仍然有效 | 消息仍引用时必须保留；当前没有引用计数、级联删除或 GC 协议，因此不得按年龄、当前 prompt 是否使用或代码清理自动删除 |
@@ -74,7 +75,7 @@ workspace 仍不是完整运行环境的全部。显式主配置、全局凭据�
 | `MEMORY.md`、`SELF.md` | optimizer 把新事实合入下一版文档 | 以原子 replace 发布新版本；可以整理结构、合并重复、追加勘误 | 受保护事实不能无理由消失；移除需要显式 tombstone、来源和理由，重写前保留恢复点 |
 | `VEDA.md` | 新 workspace 初始化或旧 workspace 一次性迁移只在缺失时创建默认人格 | Main Agent 仅在用户明确要求时原子更新；`main.py veda-reset` 先备份原始字节再原子恢复版本化默认 | 正常运行没有删除协议；migration revert 仅可删除该 migration 创建且此后未修改的文件 |
 | `PENDING.md` | consolidation 只追加待处理事实 | optimizer 开始时把旧队列冻结成 snapshot；处理中到达的新事实继续追加到新 PENDING | 只有 MEMORY/SELF 成功提交后才能删除已消费 snapshot；失败、取消或重启必须合并回来 |
-| `RECENT_CONTEXT.md` | 从近期会话生成新的上下文投影 | 可以整体替换、缩短或重建，因为它不是原始会话 | 由 markdown maintenance owner 重建；普通 prompt 裁切不能顺带删除该文件或原始消息 |
+| `RECENT_CONTEXT.md` | 旧版本曾由近期会话生成投影；新安装不创建 | 新语义不读取、不原位更新 | 仅由一次性 Yoyo migration 在备份、完整性检查和归档成功后删除；失败恢复原文件 |
 | `consolidation_writes.db` | 为新的 `source_ref + kind` INSERT 幂等记录 | 保存已提交 payload 和提交状态 | 当前没有通用自动清理合同；在定义重放窗口和恢复证据前不得减少 |
 | `memory2.db/memory_items` | consolidation 或显式 memorize INSERT 新记忆 | reinforcement 更新强度/元数据；supersede 保留旧条目并改变状态，属于逻辑减少 | 只有用户明确 forget/管理操作可以 hard delete；向量索引可随 canonical 条目重建 |
 | `memory2.db/memory_replacements` | 每次 supersede 追加替换关系与前后条目 | 保留勘误和 undo 证据 | 当前没有普通运行删除协议 |
@@ -221,7 +222,6 @@ workspace 之外还有两组明确的全局状态：
 │   ├── SELF.md
 │   ├── veda.md
 │   ├── PENDING.md
-│   ├── RECENT_CONTEXT.md
 │   ├── PENDING.snapshot.md            优化事务进行中或崩溃遗留时
 │   ├── consolidation_writes.db
 │   ├── memory2.db                     default memory engine
@@ -256,7 +256,7 @@ workspace 之外还有两组明确的全局状态：
 └── akashic.sock                       Unix 控制面启用时
 ```
 
-`bootstrap/init_workspace.py` 只预创建基础 Markdown（包括缺失时的 `memory/VEDA.md`）、`schedules.json`、`memes/manifest.json`、目录、`sessions.db`、`consolidation_writes.db`、`proactive.db` 和当前 memory engine 声明的存储。已有 Veda 即使在 `init --force` 下也不覆盖；`wake_proactive.db`、quota、附件、诊断记录和部分插件文件按功能首次使用时创建。
+`bootstrap/init_workspace.py` 只预创建基础 Markdown（包括缺失时的 `memory/VEDA.md`）、`schedules.json`、`memes/manifest.json`、目录、`sessions.db`、`consolidation_writes.db`、`proactive.db` 和当前 memory engine 声明的存储。新安装不创建 `memory/RECENT_CONTEXT.md`；已有 Veda 即使在 `init --force` 下也不覆盖；`wake_proactive.db`、quota、附件、诊断记录和部分插件文件按功能首次使用时创建。
 
 ## 7. 会话、消息与附件
 
@@ -264,7 +264,8 @@ workspace 之外还有两组明确的全局状态：
 
 | 表 | 写入 owner | 上层使用者 | 代码事实 |
 |---|---|---|---|
-| `sessions` | `session.store.SessionStore`，由 `SessionManager` 协调 | channel、AgentLoop、presence、dashboard | session metadata、时间、高水位和 consolidation 游标 |
+| `sessions` | `session.store.SessionStore`，由 `SessionManager` 协调 | channel、AgentLoop、presence、dashboard | session metadata、时间、高水位和当前 compaction generation |
+| `session_compactions` | `session.store.SessionStore`，由 Core checkpoint owner 请求 | prompt replay、Markdown reconciliation、删除恢复 | append-only generation lineage、source provenance、retained tail、summary、usage 和失效状态 |
 | `messages` | `SessionStore` | prompt 历史、dashboard、Akasha、检索工具 | 原始 user/assistant/tool 消息和单调 `seq` |
 | `turns` | control/runtime 持久化路径 | 控制面、恢复和审计 | turn 输入、items、usage、error、final response 与终态 |
 | `messages_fts` + triggers | `SessionStore` 自动维护 | 消息全文搜索 | 可由 `messages` rebuild 的 FTS5 索引 |
@@ -295,7 +296,7 @@ workspace 之外还有两组明确的全局状态：
 | `memory/SELF.md` | `MemoryOptimizer` | Akashic 自我认知，进入 prompt | 人类可读长期事实 |
 | `memory/VEDA.md` | Main Agent 仅响应用户明确指令；`main.py veda-reset` 是独立恢复 owner | Main、Proactive、Drift 每次组装 prompt 时读取的人格真源 | 用户可维护的权威人格状态 |
 | `memory/PENDING.md` | consolidation 追加，optimizer 消费 | 待归档事实队列 | 事务中的 canonical 输入 |
-| `memory/RECENT_CONTEXT.md` | markdown maintenance 重写 | compression 与 recent turns prompt 投影 | 可由会话和模型再次生成的持久投影 |
+| `memory/RECENT_CONTEXT.md` | 旧安装遗留文件；新运行时无 writer/reader | 不再进入 prompt、proactive、Wake 或 Drift | 只由带备份的 Yoyo migration 归档删除 |
 
 `MemoryStore` 还维护：
 

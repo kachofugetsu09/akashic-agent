@@ -32,6 +32,7 @@
 | [0024](0024-plugin-self-validation-uses-stable-and-latest.md) | superseded | 插件自验证使用 stable/latest 与 session 级并发 | RUN-007、OUT-004、PLG-013、CTRL-003、TST-001～TST-006 |
 | [0025](0025-codex-style-same-turn-input.md) | accepted | 中断后的新 Attempt 续接同一 Logical Interaction | SES-007～SES-008、MEM-010～MEM-011、RUN-008、OUT-005 |
 | [0026](0026-plugin-rollout-is-owned-by-the-parent-turn.md) | accepted | 插件发布由父 Turn 在终点统一授权 | PLG-010、PLG-012、PLG-013、RUN-007、CTRL-003、ERR-001、TST-001～TST-006 |
+| [0027](0027-session-context-compaction-ledger.md) | accepted | Session context compaction ledger 拥有模型窗口投影 | CTX-001～CTX-007、SES-001～SES-005、MEM-002、MEM-004、MEM-008、MIG-001、WSP-003、TST-001～TST-006 |
 
 ## 新增规则
 
