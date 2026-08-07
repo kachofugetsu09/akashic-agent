@@ -25,6 +25,7 @@ from agent.model_runtime.context_compaction import (
     _selection_digest,
 )
 from agent.model_runtime.types import LLMResponse
+from agent.provider import LLMProvider
 from agent.tools.registry import ToolRegistry
 from core.memory.markdown import CompactionMarkdownDraft
 from session.compaction_runtime import (
@@ -101,11 +102,10 @@ class _MarkdownCompactionProbe(_MarkdownReceiptProbe):
         )
 
 
-class _CountingProvider:
-    context_window = 1000
-    runtime_id = "runtime"
-
-    def __init__(self) -> None:
+class _CountingProvider(LLMProvider):
+    def __init__(self, *, context_window: int = 1000, runtime_id: str = "runtime") -> None:
+        self._context_window = context_window
+        self._runtime_id = runtime_id
         self.calls = 0
 
     def estimate_context_tokens(self, messages, tools):
@@ -152,11 +152,8 @@ class _NoopCompactionRuntime:
 
 
 class _GateProvider(_CountingProvider):
-    context_window = 250
-    runtime_id = "gate-runtime"
-
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(context_window=250, runtime_id="gate-runtime")
         self.requests: list[dict[str, object]] = []
 
     def estimate_context_tokens(self, messages, tools):
@@ -185,7 +182,9 @@ class _GateProvider(_CountingProvider):
 
 
 class _ScopedCompactionProvider(_GateProvider):
-    context_window = 128
+    def __init__(self) -> None:
+        super().__init__()
+        self._context_window = 128
 
     def estimate_context_tokens(self, messages, tools):
         if any(
