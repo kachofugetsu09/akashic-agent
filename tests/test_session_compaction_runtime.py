@@ -5,13 +5,14 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, Generator
 
 import pytest
 
 from agent.core.passive_turn import DefaultReasoner
 from agent.config_models import ContextCompactionConfig
-from agent.core.runtime_support import LLMServices, ToolDiscoveryState
-from agent.looping.ports import LLMConfig
+from agent.core.runtime_support import SessionLike, ToolDiscoveryState
+from agent.looping.ports import LLMConfig, LLMServices
 from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
     ContextCompaction,
@@ -31,7 +32,8 @@ from session.compaction_runtime import (
     SessionCompactionRuntime,
     _receipt_payload,
 )
-from session.manager import SessionManager
+from session.manager import Session, SessionManager
+from session.store import SessionCompaction
 from session.store import (
     CompactionHead,
     CompactionPrepare,
@@ -43,7 +45,7 @@ SessionManagerFactory = Callable[[Path], SessionManager]
 
 
 @pytest.fixture
-def session_manager_factory() -> SessionManagerFactory:
+def session_manager_factory() -> Generator[SessionManagerFactory, None, None]:
     """Create and close every SessionManager owned by one test."""
 
     managers: list[SessionManager] = []
@@ -117,6 +119,36 @@ class _CountingProvider:
         from agent.model_runtime.types import LLMResponse
 
         return LLMResponse(content="\n".join(SUMMARY_HEADINGS))
+
+
+class _NoopCompactionRuntime:
+    """Provide the narrow runtime port for state-builder-only tests."""
+
+    async def projection(
+        self,
+        session: SessionLike,
+        *,
+        prefix: list[dict[str, Any]],
+        current_anchor: list[dict[str, Any]],
+        pending: list[dict[str, Any]],
+    ) -> CompactionProjection:
+        raise AssertionError(f"projection unexpectedly called for {session.key}")
+
+    async def recover_pending(self, session: SessionLike) -> SessionCompaction | None:
+        raise AssertionError(f"recovery unexpectedly called for {session.key}")
+
+    async def commit_checkpoint(
+        self,
+        session: SessionLike,
+        checkpoint: ContextCompaction,
+        *,
+        head: CompactionHead,
+        scope_channel: str = "",
+        scope_chat_id: str = "",
+    ) -> SessionCompaction:
+        raise AssertionError(
+            f"checkpoint unexpectedly committed for {session.key}:{checkpoint.source_ref}"
+        )
 
 
 class _GateProvider(_CountingProvider):
@@ -884,7 +916,7 @@ def test_reasoner_builder_preserves_replay_tail_and_current_payload_order() -> N
         tools=ToolRegistry(),
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        compaction_runtime=object(),
+        compaction_runtime=_NoopCompactionRuntime(),
     )
     committed = CommittedContextUnit(
         source_from_seq=1,
@@ -922,7 +954,7 @@ def test_reasoner_builder_preserves_replay_tail_and_current_payload_order() -> N
         {"role": "user", "content": "U3"},
     ]
     state = reasoner._build_compaction_state(
-        session=SimpleNamespace(
+        session=Session(
             key="session",
             created_at=datetime(2026, 8, 8, tzinfo=UTC),
         ),
