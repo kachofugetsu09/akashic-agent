@@ -53,6 +53,12 @@ hard_input = model.context_window - request.max_output_tokens
 其来源由当前 generation 的模型 capability 提供；旧 `memory_window`、
 `effective_context_percent` 和 runtime compaction percent 不参与预算。
 
+`context_window = 0` 表示当前 capability 未知，不表示没有上限。每次业务 provider call
+仍必须完成 assembled payload 的结构校验与 token 估算，但此时跳过本地 soft/hard/force
+compaction，直接调用 provider；若 provider 返回 `ContextLengthError`，保持原始错误语义，
+不在该路径重试或转换。Markdown maintenance 不阻塞 Core 启动；真正执行时若窗口未知或小于
+可用 input budget，必须明确失败为 `input_budget`，不得写入 ledger 或 receipt。
+
 已提交 completed logical interaction（显式 `control_turn_id` 的全部 U 与最终 A）不可
 拆分。当前 attempt 只能在完整闭合的 assistant tool-call 及其全部 result batch 后选择
 临时切点；未闭合工具、当前 user anchor、外部效果和必要证据必须保留。raw tail 从后向
@@ -147,6 +153,8 @@ configured default 模型。两者都失败、正文为空/格式错误或 summa
 Markdown consolidation 由 checkpoint owner 在 `last_consolidated` 到新 cut point 之间
 建立连续、可重放的 exact source plan。每页按照 provider 的真实 capability 估算输入，
 不拆 logical unit；单个完整 unit 无法满足 Markdown provider 硬预算时阻断，不删正文。
+Markdown maintenance 是惰性执行，不得阻塞 Core 启动；只有真正执行时才按 provider capability
+检查上述 unknown/过小窗口的 `input_budget` 失败。
 
 ```text
 last_consolidated cursor ──► selected completed units ──► Markdown pages
