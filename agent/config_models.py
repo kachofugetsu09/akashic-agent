@@ -96,6 +96,22 @@ class MemoryConfig:
     embedding: MemoryEmbeddingConfig = field(default_factory=MemoryEmbeddingConfig)
 
 
+@dataclass(frozen=True)
+class ContextCompactionConfig:
+    """Session compaction policy independent from any model runtime."""
+
+    trigger_percent: float = 0.74
+    keep_recent_tokens: int = 20_000
+
+    def __post_init__(self) -> None:
+        if not 0 < self.trigger_percent < 1:
+            raise ValueError("agent.context.compaction.trigger_percent 必须在 (0, 1) 内")
+        if self.keep_recent_tokens <= 0:
+            raise ValueError(
+                "agent.context.compaction.keep_recent_tokens 必须大于 0"
+            )
+
+
 @dataclass
 class WiringConfig:
     context: str = "default"
@@ -174,6 +190,9 @@ class Config:
     max_tokens: int = 0
     max_iterations: int = 10
     memory_window: int = 40
+    context_compaction: ContextCompactionConfig = field(
+        default_factory=ContextCompactionConfig
+    )
     base_url: str | None = None
     extra_body: dict[str, object] = field(default_factory=dict)
     channels: ChannelsConfig = field(default_factory=ChannelsConfig)
@@ -228,6 +247,7 @@ __all__ = [
     "AppServerConfig",
     "ChannelsConfig",
     "Config",
+    "ContextCompactionConfig",
     "MemoryConfig",
     "MemoryEmbeddingConfig",
     "MobileKeyEncryptionConfig",

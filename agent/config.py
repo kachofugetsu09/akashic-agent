@@ -19,6 +19,7 @@ from agent.config_models import (
     AppServerConfig,
     ChannelsConfig,
     Config,
+    ContextCompactionConfig,
     MemoryConfig,
     MemoryEmbeddingConfig,
     MobileKeyEncryptionConfig,
@@ -116,6 +117,8 @@ def load_config(
     agent_runtime_id, llm_agent = _load_role_runtime(llm, "agent", runtime_id)
     vl_runtime_id, llm_vl = _load_role_runtime(llm, "vl", runtime_id)
     agent_context = _as_dict(agent_cfg.get("context"), field="agent.context")
+    _reject_removed_context_configuration(data, agent_context, llm)
+    compaction = _load_context_compaction_config(agent_context)
     agent_tools = _as_dict(agent_cfg.get("tools"), field="agent.tools")
     agent_maintenance = _as_dict(
         agent_cfg.get("maintenance"), field="agent.maintenance"
@@ -158,6 +161,7 @@ def load_config(
             agent_cfg.get("max_iterations", data.get("max_iterations", 10))
         ),
         memory_window=_load_memory_window(data, agent_context, llm_main),
+        context_compaction=compaction,
         base_url=_model_base_url(
             provider, llm_main.get("base_url")
         ),
@@ -483,6 +487,39 @@ def _reject_removed_peer_configuration(data: dict) -> None:
         raise ValueError(
             "unsupported capability: peer_agents; Peer capability has been removed"
         )
+
+
+def _reject_removed_context_configuration(
+    data: dict,
+    agent_context: dict,
+    llm: dict,
+) -> None:
+    """Fail loudly when a pre-ledger context key bypasses migration."""
+
+    # 1. Legacy message-count and runtime-percent keys are no longer accepted.
+    if "memory_window" in data or "memory_window" in agent_context:
+        raise ValueError(
+            "removed configuration: memory_window; run the session compaction migration"
+        )
+    runtimes = llm.get("runtimes")
+    if isinstance(runtimes, dict):
+        for runtime_id, raw in runtimes.items():
+            if not isinstance(raw, dict):
+                continue
+            for key in ("effective_context_percent", "compaction_trigger_percent"):
+                if key in raw:
+                    raise ValueError(
+                        "removed configuration: "
+                        f"llm.runtimes.{runtime_id}.{key}; run the session compaction migration"
+                    )
+
+
+def _load_context_compaction_config(agent_context: dict) -> ContextCompactionConfig:
+    raw = _as_dict(agent_context.get("compaction"), field="agent.context.compaction")
+    return ContextCompactionConfig(
+        trigger_percent=float(raw.get("trigger_percent", 0.74)),
+        keep_recent_tokens=int(raw.get("keep_recent_tokens", 20_000)),
+    )
     integrations = data.get("integrations")
     if isinstance(integrations, dict) and "peer_agents" in integrations:
         raise ValueError(
