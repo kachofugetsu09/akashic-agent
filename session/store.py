@@ -841,6 +841,111 @@ class SessionStore:
             ).fetchone()
         return self._row_to_turn(row) if row is not None else None
 
+    def append_active_turn_item(
+        self,
+        turn_id: str,
+        *,
+        thread_id: str,
+        item: TurnItem,
+    ) -> TurnRecord:
+        """原子追加 active turn item，并拒绝终态或 thread 漂移。"""
+
+        # 1. 在同一事务读取并校验当前 active turn。
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, session_key, status, input_json, items_json,
+                       usage_json, error_json, final_response,
+                       created_at, started_at, completed_at
+                FROM turns
+                WHERE id = ?
+                """,
+                (turn_id,),
+            ).fetchone()
+            if row is None or str(row["session_key"]) != thread_id:
+                raise TurnNotFoundError(f"turn 不属于 thread: {thread_id}/{turn_id}")
+            status = TurnStatus(str(row["status"]))
+            if status not in {TurnStatus.QUEUED, TurnStatus.IN_PROGRESS}:
+                raise TurnStateTransitionError(
+                    f"terminal turn 不得追加 item: {turn_id}/{status.value}"
+                )
+            items = _decode_turn_items(row["items_json"], turn_id)
+            if any(existing.id == item.id for existing in items):
+                raise ValueError(f"turn item id 重复: {turn_id}/{item.id}")
+
+            # 2. status CAS 保证 append 不会跨过并发 terminal transition。
+            items.append(item)
+            payload = json.dumps(
+                [entry.to_dict() for entry in items],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            cursor = self._conn.execute(
+                "UPDATE turns SET items_json = ? WHERE id = ? AND status = ?",
+                (payload, turn_id, status.value),
+            )
+            if cursor.rowcount != 1:
+                self._conn.rollback()
+                raise TurnStateTransitionError(
+                    f"turn item append CAS 失败: {turn_id}/{status.value}"
+                )
+            self._conn.commit()
+
+        stored = self.read_turn(turn_id)
+        if stored is None:
+            raise RuntimeError(f"turn item 追加后无法读取: {turn_id}")
+        return stored
+
+    def replace_active_turn_item(
+        self,
+        turn_id: str,
+        *,
+        thread_id: str,
+        item: TurnItem,
+    ) -> TurnRecord:
+        """原子替换 active turn 中同 identity item 的最新 checkpoint。"""
+
+        # 1. 在同一事务定位 active turn 和既有 item identity。
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT session_key, status, items_json FROM turns WHERE id = ?",
+                (turn_id,),
+            ).fetchone()
+            if row is None or str(row["session_key"]) != thread_id:
+                raise TurnNotFoundError(f"turn 不属于 thread: {thread_id}/{turn_id}")
+            status = TurnStatus(str(row["status"]))
+            if status not in {TurnStatus.QUEUED, TurnStatus.IN_PROGRESS}:
+                raise TurnStateTransitionError(
+                    f"terminal turn 不得更新 item: {turn_id}/{status.value}"
+                )
+            items = _decode_turn_items(row["items_json"], turn_id)
+            matches = [index for index, existing in enumerate(items) if existing.id == item.id]
+            if len(matches) != 1:
+                raise ValueError(f"turn item identity 无法唯一解析: {turn_id}/{item.id}")
+
+            # 2. status CAS 保证 started/completed 更新不跨过终态。
+            items[matches[0]] = item
+            payload = json.dumps(
+                [entry.to_dict() for entry in items],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            cursor = self._conn.execute(
+                "UPDATE turns SET items_json = ? WHERE id = ? AND status = ?",
+                (payload, turn_id, status.value),
+            )
+            if cursor.rowcount != 1:
+                self._conn.rollback()
+                raise TurnStateTransitionError(
+                    f"turn item update CAS 失败: {turn_id}/{status.value}"
+                )
+            self._conn.commit()
+
+        stored = self.read_turn(turn_id)
+        if stored is None:
+            raise RuntimeError(f"turn item 更新后无法读取: {turn_id}")
+        return stored
+
     def transition_turn(
         self,
         turn_id: str,
@@ -1823,6 +1928,31 @@ class SessionStore:
                 f"同一会话存在重复 client_message_id: {session_key} {client_message_id}"
             )
         return None if not rows else self._row_to_message(rows[0])
+
+    def has_turn_user_input_by_client_id(
+        self,
+        session_key: str,
+        client_message_id: str,
+    ) -> bool:
+        """判断移动入站是否已经进入任一 durable execution attempt。"""
+
+        # 1. turns.items_json 是中断前用户输入的权威落点；只匹配 user item。
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT 1
+                FROM turns AS turn_record, json_each(turn_record.items_json) AS item
+                WHERE turn_record.session_key = ?
+                  AND json_extract(item.value, '$.type') = 'userMessage'
+                  AND json_extract(
+                        item.value,
+                        '$.data.metadata.client_message_id'
+                      ) = ?
+                LIMIT 1
+                """,
+                (session_key, client_message_id),
+            ).fetchone()
+        return row is not None
 
     def get_message_by_delivery_id(
         self,
