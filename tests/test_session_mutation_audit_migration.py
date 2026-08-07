@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import stat
 from pathlib import Path
 
 import pytest
@@ -88,6 +89,8 @@ def test_audit_migration_publishes_manifest_schema_and_indexes(tmp_path: Path) -
     assert len(backups) == 1
     manifest = json.loads((backups[0] / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["sqlite_integrity"] == "ok"
+    assert stat.S_IMODE((backups[0] / "sessions.db").stat().st_mode) == 0o600
+    assert stat.S_IMODE((backups[0] / "manifest.json").stat().st_mode) == 0o600
     archived = sqlite3.connect(backups[0] / "sessions.db")
     try:
         assert archived.execute("PRAGMA integrity_check").fetchall() == [("ok",)]

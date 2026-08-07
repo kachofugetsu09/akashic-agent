@@ -20,6 +20,16 @@ def _integrity_check(path: Path) -> None:
         raise RuntimeError(f"SQLite integrity_check 失败: {path}: {rows[:3]}")
 
 
+def _fsync_directory(path: Path) -> None:
+    """Durably publish one renamed backup and its manifest."""
+
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def backup_sqlite_database(
     source: Path,
     backup_root: Path,
@@ -44,8 +54,12 @@ def backup_sqlite_database(
                 target_connection.close()
         finally:
             source_connection.close()
+        candidate.chmod(0o600)
+        with candidate.open("rb") as stream:
+            os.fsync(stream.fileno())
         _integrity_check(candidate)
         candidate.replace(backup)
+        backup.chmod(0o600)
 
         # 2. Persist machine-readable location, digest, and integrity evidence.
         payload = {
@@ -68,6 +82,7 @@ def backup_sqlite_database(
         with manifest_candidate.open("rb") as stream:
             os.fsync(stream.fileno())
         manifest_candidate.replace(manifest_path)
+        _fsync_directory(backup_root)
     except BaseException:
         candidate.unlink(missing_ok=True)
         raise
