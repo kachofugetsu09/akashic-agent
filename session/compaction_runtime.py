@@ -55,7 +55,7 @@ class SessionCompactionPort(Protocol):
         markdown_draft: CompactionMarkdownDraft,
         model_runtime_id: str,
         model: str,
-        session: "Session | None" = None,
+        session: "Session",
     ) -> SessionCompaction: ...
 
 
@@ -146,10 +146,18 @@ class SessionCompactionRuntime:
         raw_checkpoint = receipt.get("checkpoint")
         if not isinstance(raw_digest, str) or not isinstance(raw_checkpoint, dict):
             raise ValueError("compaction receipt schema 无效")
+        if receipt.get("digest") != _receipt_digest(receipt):
+            raise ValueError("compaction receipt digest 校验失败")
         _, _, checkpoint = _checkpoint_from_receipt(
             receipt,
             source_ref=source_ref,
             selection_digest=raw_digest,
+        )
+        _validate_checkpoint_sources(session, checkpoint)
+        self._store.validate_compaction_provenance(
+            session.key,
+            source_message_ids=checkpoint.source_message_ids,
+            retained_tail=checkpoint.retained_tail,
         )
         draft = _draft_from_receipt(receipt)
         if checkpoint.source_ref != draft.source_ref:
@@ -176,12 +184,20 @@ class SessionCompactionRuntime:
         markdown_draft: CompactionMarkdownDraft,
         model_runtime_id: str,
         model: str,
-        session: "Session | None" = None,
+        session: "Session",
     ) -> SessionCompaction:
         """Commit receipt, Markdown effects, then the SQLite ledger row."""
 
         if checkpoint.source_ref != markdown_draft.source_ref:
             raise ValueError("compaction checkpoint 与 Markdown source_ref 不一致")
+        if session.key != head.session_key:
+            raise ValueError("compaction session 与 ledger head 不一致")
+        _validate_checkpoint_sources(session, checkpoint)
+        self._store.validate_compaction_provenance(
+            session.key,
+            source_message_ids=checkpoint.source_message_ids,
+            retained_tail=checkpoint.retained_tail,
+        )
         current = self._store.get_compaction_head(head.session_key)
         if current != head:
             raise RuntimeError("compaction ledger head 在 prepare 前已变化")
@@ -208,8 +224,7 @@ class SessionCompactionRuntime:
             model_runtime_id=model_runtime_id,
             model=model,
         )
-        if session is not None:
-            session.last_consolidated = row.generation
+        session.last_consolidated = row.generation
         return row
 
     def _persist_checkpoint(
@@ -258,7 +273,9 @@ def _retained_tail_units(
             raise ValueError("compaction retained_tail provenance 无效")
         if not isinstance(raw_seq, int) or isinstance(raw_seq, bool) or raw_seq < 0:
             raise ValueError("compaction retained_tail seq 无效")
-        unit_ref = str(item.get("unit_ref") or "legacy")
+        unit_ref = item.get("unit_ref")
+        if not isinstance(unit_ref, str) or not unit_ref.strip():
+            raise ValueError("compaction retained_tail 缺少 unit_ref")
         messages, refs = grouped.setdefault(unit_ref, ([], []))
         messages.append(dict(message))
         refs.append((raw_id, raw_seq))
@@ -286,6 +303,52 @@ def _usage_payload(usage: ModelUsage | None) -> dict[str, object]:
         "covered_request_count": usage.covered_request_count,
         "coverage": usage.coverage.value,
     }
+
+
+def _receipt_digest(receipt: dict[str, object]) -> str:
+    identity = {
+        "session_key": receipt.get("session_key"),
+        "parent_generation": receipt.get("parent_generation"),
+        "next_generation": receipt.get("next_generation"),
+        "model_runtime_id": receipt.get("model_runtime_id"),
+        "model": receipt.get("model"),
+        "checkpoint": receipt.get("checkpoint"),
+        "markdown_draft": receipt.get("markdown_draft"),
+    }
+    encoded = json.dumps(
+        identity,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _validate_checkpoint_sources(
+    session: "Session",
+    checkpoint: ContextCompaction,
+) -> None:
+    rows_by_id = {
+        str(row["id"]): row
+        for row in session.messages
+        if isinstance(row.get("id"), str) and row.get("id")
+    }
+    missing = [
+        message_id
+        for message_id in checkpoint.source_message_ids
+        if message_id not in rows_by_id
+    ]
+    for item in checkpoint.retained_tail:
+        message_id = item.get("id")
+        raw_seq = item.get("seq")
+        row = rows_by_id.get(str(message_id))
+        if row is None or row.get("seq") != raw_seq:
+            missing.append(str(message_id))
+    if missing:
+        raise RuntimeError(
+            "compaction receipt 引用已删除或漂移的 canonical message: "
+            + ",".join(dict.fromkeys(missing))
+        )
 
 
 def _draft_from_receipt(receipt: dict[str, object]) -> CompactionMarkdownDraft:

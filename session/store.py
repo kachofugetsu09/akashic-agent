@@ -914,10 +914,12 @@ class SessionStore:
             and bool(item["id"])
             and isinstance(item.get("seq"), int)
             and isinstance(item.get("message"), dict)
+            and isinstance(item.get("unit_ref"), str)
+            and bool(item["unit_ref"])
             for item in retained_tail
         ):
             raise ValueError(
-                "compaction retained_tail 必须是带 id/seq/message 的对象数组: "
+                "compaction retained_tail 必须是带 id/seq/unit_ref/message 的对象数组: "
                 f"{row['session_key']}:{row['generation']}"
             )
         if not isinstance(usage, dict):
@@ -998,10 +1000,12 @@ class SessionStore:
             or not item["id"]
             or not isinstance(item.get("seq"), int)
             or not isinstance(item.get("message"), dict)
+            or not isinstance(item.get("unit_ref"), str)
+            or not item["unit_ref"]
             for item in retained_tail
         ):
             raise ValueError(
-                "compaction retained_tail 必须是带 id/seq/message 的对象数组"
+                "compaction retained_tail 必须是带 id/seq/unit_ref/message 的对象数组"
             )
         if not isinstance(summary_usage, dict):
             raise ValueError("compaction summary_usage 必须是 JSON object")
@@ -1026,6 +1030,11 @@ class SessionStore:
                 if session_row is None:
                     raise KeyError(f"session 不存在: {session_key}")
                 current_cursor = int(session_row["last_consolidated"] or 0)
+                self._validate_compaction_provenance_locked(
+                    session_key,
+                    source_message_ids=source_message_ids,
+                    retained_tail=retained_tail,
+                )
                 existing = self._conn.execute(
                     "SELECT * FROM session_compactions "
                     "WHERE session_key = ? AND source_ref = ?",
@@ -1134,6 +1143,55 @@ class SessionStore:
             except BaseException:
                 self._conn.rollback()
                 raise
+
+    def _validate_compaction_provenance_locked(
+        self,
+        session_key: str,
+        *,
+        source_message_ids: list[str] | tuple[str, ...],
+        retained_tail: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    ) -> None:
+        """Validate source ids/seqs while the compaction transaction owns the Store lock."""
+
+        ids = {str(item) for item in source_message_ids}
+        ids.update(str(item["id"]) for item in retained_tail)
+        if not ids:
+            raise ValueError("compaction provenance 不能为空")
+        placeholders = ",".join("?" for _ in ids)
+        rows = self._conn.execute(
+            f"SELECT id, seq FROM messages WHERE session_key = ? AND id IN ({placeholders})",
+            (session_key, *sorted(ids)),
+        ).fetchall()
+        by_id = {str(row["id"]): int(row["seq"]) for row in rows}
+        missing = sorted(ids - by_id.keys())
+        if missing:
+            raise ValueError(
+                "compaction provenance 引用不存在的 canonical message: "
+                + ",".join(missing)
+            )
+        for item in retained_tail:
+            message_id = str(item["id"])
+            if by_id[message_id] != int(item["seq"]):
+                raise ValueError(
+                    "compaction retained_tail seq 与 canonical message 不一致: "
+                    f"{message_id}:{item['seq']}!={by_id[message_id]}"
+                )
+
+    def validate_compaction_provenance(
+        self,
+        session_key: str,
+        *,
+        source_message_ids: list[str] | tuple[str, ...],
+        retained_tail: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    ) -> None:
+        """Fail early on missing provenance; persist_compaction repeats it atomically."""
+
+        with self._lock:
+            self._validate_compaction_provenance_locked(
+                session_key,
+                source_message_ids=source_message_ids,
+                retained_tail=retained_tail,
+            )
 
     def get_compaction(
         self, session_key: str, generation: int
