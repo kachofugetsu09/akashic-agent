@@ -496,48 +496,6 @@ async def test_markdown_consolidate_skips_scheduler_session():
     }
 
 
-async def test_default_memory_engine_refreshes_recent_context_from_lifecycle():
-    event_bus = EventBus()
-    session = SimpleNamespace(
-        key="cli:1",
-        messages=[{"role": "user", "content": "u"}],
-        last_consolidated=0,
-    )
-    maintenance = MarkdownMemoryMaintenance(
-        store=MarkdownMemoryStore(Path(".")),
-        provider=cast(Any, SimpleNamespace()),
-        model="lm",
-        keep_count=20,
-        event_bus=event_bus,
-    )
-    maintenance.refresh_recent_turns = AsyncMock()
-    save_session = AsyncMock()
-    maintenance.bind_lifecycle(
-        MemoryLifecycleBindRequest(
-            get_session=lambda _key: session,
-            save_session=save_session,
-        )
-    )
-
-    event_bus.enqueue(
-        TurnCommitted(
-            session_key="cli:1",
-            channel="cli",
-            chat_id="1",
-            input_message="hi",
-            persisted_user_message="hi",
-            assistant_response="ok",
-            tools_used=[],
-        )
-    )
-    await event_bus.drain()
-    await _drain_maintenance(maintenance)
-
-    maintenance.refresh_recent_turns.assert_awaited_once()
-    save_session.assert_not_awaited()
-    await event_bus.aclose()
-
-
 async def test_default_memory_engine_consolidates_ready_session_from_lifecycle():
     event_bus = EventBus()
     session = SimpleNamespace(
@@ -667,7 +625,6 @@ async def test_markdown_consolidation_advances_window_when_consumer_fails(
         history_entry_payloads=[("[2026-05-05 13:00] 用户测试记忆", 0)],
         pending_items="",
         conversation="USER: 测试记忆",
-        recent_context_text="# Recent Context\n",
         scope_channel="cli",
         scope_chat_id="1",
     )
@@ -697,7 +654,7 @@ async def test_markdown_consolidation_failure_trace_does_not_advance_cursor(
     )
     maintenance._worker.prepare_consolidation = AsyncMock(
         return_value=_ConsolidationFailure(
-            step="recent_context",
+            step="event_extract",
             error="TimeoutError",
             elapsed_ms=180000,
         )
@@ -708,7 +665,7 @@ async def test_markdown_consolidation_failure_trace_does_not_advance_cursor(
     assert result.consolidated_count == 0
     assert result.trace == {
         "mode": "failed",
-        "step": "recent_context",
+        "step": "event_extract",
         "error": "TimeoutError",
         "elapsed_ms": 180000,
     }
@@ -934,75 +891,6 @@ def test_consolidation_page_never_splits_explicit_multi_input_turn():
 
     assert page.old_messages == messages[:3]
     assert page.consolidate_up_to == 3
-
-
-async def test_default_memory_engine_serializes_lifecycle_maintenance():
-    event_bus = EventBus()
-    session = SimpleNamespace(
-        key="cli:1",
-        messages=[{"role": "user", "content": "u"}],
-        last_consolidated=0,
-    )
-    maintenance = MarkdownMemoryMaintenance(
-        store=MarkdownMemoryStore(Path(".")),
-        provider=cast(Any, SimpleNamespace()),
-        model="lm",
-        keep_count=20,
-        event_bus=event_bus,
-    )
-    active = 0
-    max_active = 0
-    first_started = asyncio.Event()
-    release_first = asyncio.Event()
-
-    async def _refresh_recent_turns(_request) -> None:
-        nonlocal active, max_active
-        active += 1
-        max_active = max(max_active, active)
-        if max_active == 1:
-            first_started.set()
-            await release_first.wait()
-        active -= 1
-
-    maintenance.refresh_recent_turns = AsyncMock(side_effect=_refresh_recent_turns)
-    maintenance.bind_lifecycle(
-        MemoryLifecycleBindRequest(
-            get_session=lambda _key: session,
-            save_session=AsyncMock(),
-        )
-    )
-
-    event_bus.enqueue(
-        TurnCommitted(
-            session_key="cli:1",
-            channel="cli",
-            chat_id="1",
-            input_message="a",
-            persisted_user_message="a",
-            assistant_response="ok",
-            tools_used=[],
-        )
-    )
-    await event_bus.drain()
-    await first_started.wait()
-    event_bus.enqueue(
-        TurnCommitted(
-            session_key="cli:1",
-            channel="cli",
-            chat_id="1",
-            input_message="b",
-            persisted_user_message="b",
-            assistant_response="ok",
-            tools_used=[],
-        )
-    )
-    await event_bus.drain()
-    release_first.set()
-    await _drain_maintenance(maintenance)
-
-    assert max_active == 1
-    assert maintenance.refresh_recent_turns.await_count == 2
-    await event_bus.aclose()
 
 
 async def test_default_memory_engine_remember_uses_memorizer():

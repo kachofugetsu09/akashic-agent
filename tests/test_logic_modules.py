@@ -820,7 +820,7 @@ def test_session_get_history_skips_legacy_context_frame_by_default():
     session.add_message(
         "user",
         "hello",
-        llm_context_frame="[SYSTEM_CONTEXT_FRAME]\n\n## recent_context\n旧内容",
+        llm_context_frame="[SYSTEM_CONTEXT_FRAME]\n\n## context\n旧内容",
         llm_user_content="hello",
     )
 

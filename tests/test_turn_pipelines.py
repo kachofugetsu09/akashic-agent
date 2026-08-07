@@ -82,9 +82,6 @@ class _FakeMemoryEngine:
     def read_self(self) -> str:
         return ""
 
-    def read_recent_context(self) -> str:
-        return ""
-
     def get_memory_context(self) -> str:
         return ""
 
@@ -93,9 +90,6 @@ class _FakeMemoryEngine:
 
     async def query(self, request) -> MemoryQueryResult:
         return MemoryQueryResult(text_block="", records=[], raw={})
-
-    async def refresh_recent_turns(self, request) -> None:
-        return None
 
     async def consolidate(self, request) -> None:
         return None

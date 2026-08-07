@@ -65,9 +65,6 @@ class FakeMemoryEngine:
         self.consolidate_calls.append(request)
         return ConsolidateResult(trace={"mode": "markdown"})
 
-    async def refresh_recent_turns(self, request) -> None:
-        return None
-
     def read_long_term(self) -> str:
         return self._store.read_long_term() if self._store is not None else ""
 
@@ -81,13 +78,6 @@ class FakeMemoryEngine:
     def write_self(self, content: str) -> None:
         if self._store is not None:
             self._store.write_self(content)
-
-    def read_recent_context(self) -> str:
-        return self._store.read_recent_context() if self._store is not None else ""
-
-    def write_recent_context(self, content: str) -> None:
-        if self._store is not None:
-            self._store.write_recent_context(content)
 
     def backup_long_term(self, backup_name: str = "MEMORY.bak.md") -> None:
         return None

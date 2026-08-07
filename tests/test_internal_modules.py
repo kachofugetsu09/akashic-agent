@@ -30,7 +30,6 @@ class _ConsolidationHarness:
     def __init__(self, payload: str) -> None:
         self._memory_port = SimpleNamespace(
             read_long_term=MagicMock(return_value="MEM"),
-            read_recent_context=MagicMock(return_value=""),
             append_pending_once=MagicMock(return_value=True),
             save_from_consolidation=AsyncMock(),
         )
