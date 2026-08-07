@@ -114,7 +114,7 @@ SessionDB assistant.extra
 next query prompt replay
 ```
 
-`LLMProvider` 负责用 system prompt、消息、tool schema 和多模态块估算完整请求。`DefaultReasoner` 负责决定哪些已经闭合的当前 query 工具组进入摘要。`SessionManager` 只在完整 Turn 提交和后续重放时处理版本化字段。
+`LLMProvider` 负责用 system prompt、消息、tool schema 和多模态块估算完整请求。`DefaultReasoner` 负责决定哪些已经闭合的当前 query 工具组进入摘要；同一 logical interaction 的中断 attempt replay 也属于当前 query，而不是不可压缩的历史前缀。`SessionManager` 只在完整 Turn 提交和后续重放时处理版本化字段。
 
 ## 4. 触发、切点和重复压缩
 
@@ -130,7 +130,7 @@ hard_limit = floor(model.context_window * effective_context_percent)
 
 每次 provider 调用前，优先使用上一响应的准确 input usage 加新增消息估算；没有完整 usage、tool schema 变化或压缩重建前缀时，对完整请求重新估算。达到软水位后，只能选择已经完整闭合的工具组前缀。当前 user query、当前 iteration 新注入提示和最近工具后缀不进入切点。
 
-第一次压缩使用被淘汰的工具组生成摘要。再次压缩使用上一份摘要和新淘汰工具组生成新摘要，并替换旧 compact pair。摘要至少包含：
+第一次压缩使用被淘汰的工具组生成摘要。再次压缩使用上一份摘要和新淘汰工具组生成新摘要，并替换旧 compact pair。若 query 经历中断续接，current-query anchor 必须显式包含该 interaction 的全部有序 U，而不是只取最后一条 U。摘要至少包含：
 
 - Goal
 - Constraints
@@ -170,6 +170,10 @@ hard_limit = floor(model.context_window * effective_context_percent)
 
 Session 重载读取上一 assistant row 的 `react_compaction`，跳过已压缩 `tool_chain` 前缀，投影摘要、后缀和最终回复，再追加新 user query。
 
+### 中断后的下一 Attempt
+
+runtime 从 control predecessor 恢复 U 和已闭合工具组。replay 中每个 assistant tool-call 及其全部 result 是一个闭合批次；interrupt marker、下一条 U 和尚未闭合的尾部留在 pending suffix。达到软水位时，旧 replay 批次与本 attempt 后续产生的批次使用同一个 compactor，最终 `compacted_tool_groups` 相对于聚合后的完整 `tool_chain` 计数。
+
 ## 7. Edge case 和失败语义
 
 - 模型正在流式输出：不压缩，响应结束并形成完整工具批次后再判断。
@@ -182,6 +186,8 @@ Session 重载读取上一 assistant row 的 `react_compaction`，跳过已压�
 - compaction summary 请求不携带业务工具，也不复用主 ReAct cache namespace。
 - 被压缩前缀的 opaque `model_state` 不重放；压缩后的下一次真实响应建立新状态。
 - tool result 在 summary 输入中按字符上限序列化，完整证据仍在 runtime `tool_chain` 和既有有界持久化结果中。
+- attempt replay 与 prior tool chain 的闭合组数量不一致、tool call/result identity 不闭合或 replay 不在最终 prompt 中：内部合同损坏，立即失败，不猜测切点。
+- 一个 interaction 的全部 U anchor 使用有界序列化；极端超长 query 可能无法通过压缩进入 provider 硬窗口。这是接受风险，不能通过只保留最后一条 U 来伪装成功。
 - SessionDB 中字段损坏、版本未知、切点超过 `tool_chain` 长度：在反序列化边界 fail-loud。
 
 ## 8. 验证

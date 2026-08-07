@@ -1259,6 +1259,8 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
     web_session = manager.get_or_create(f"web:{uuid4()}")
     web_session.add_message("user", "不要同步 Web 会话")
     manager.save(web_session)
+    empty_session_id = f"mobile:{uuid4()}"
+    manager.get_or_create(empty_session_id)
 
     listed = await channel.handle_command(
         device_id=device_id,
@@ -1278,14 +1280,15 @@ async def test_session_list_and_history_sync_publish_all_mobile_sessions(
     )
 
     assert listed.type == "session.list.ok"
-    assert listed.payload["total"] == 1
+    assert listed.payload["total"] == 2
     session_event = runtime.events[-2]
     assert session_event["event_type"] == "session.list"
     session_payload = cast(dict[str, object], session_event["payload"])
     session_items = cast(list[dict[str, object]], session_payload["items"])
-    assert len(session_items) == 1
-    assert session_items[0]["session_id"] == session_id
-    assert session_items[0]["title"] == "恢复这段对话"
+    assert len(session_items) == 2
+    session_items_by_id = {str(item["session_id"]): item for item in session_items}
+    assert session_items_by_id[session_id]["title"] == "恢复这段对话"
+    assert session_items_by_id[empty_session_id]["title"] == "新对话"
     assert history.type == "history.get.ok"
     history_event = runtime.events[-1]
     history_payload = cast(dict[str, object], history_event["payload"])

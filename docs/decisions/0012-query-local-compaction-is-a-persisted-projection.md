@@ -57,6 +57,10 @@ core model runtime 拥有当前 query 的压缩计算。它只接收当前 promp
 - 当前 query 中途崩溃或取消时不单独提交 compaction；既有 Turn 状态继续说明该次执行未完成。
 - Session-wide 历史归档、自动删除、摘要展开工具和跨模型重新总结不属于本决定。
 
+## 2026-08-06 补充：中断 Attempt 仍属于当前 Query
+
+同一 logical interaction 经历 `U1/interrupt/U2/interrupt/U3` 时，前驱 attempt 的闭合工具组必须加入当前 QueryCompactor，不能作为永久不可压缩的 base prefix。current-query anchor 显式合并全部 U；interrupt marker 和最近闭合工具后缀保留在热视图。最终 `react_compaction.compacted_tool_groups` 相对于所有 attempt 聚合后的完整 `tool_chain` 计数，SessionDB 和 control checkpoint 仍保持既有只追加/状态机写入。
+
 ## 验收
 
 - 低于软水位时 provider payload 与基线等价，不产生 `react_compaction`。

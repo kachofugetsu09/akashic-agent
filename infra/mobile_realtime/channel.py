@@ -1198,7 +1198,11 @@ class MobileRealtimeChannel:
             items.append(
                 {
                     "session_id": session_id,
-                    "title": first_content.splitlines()[0][:32] or "新对话",
+                    "title": (
+                        first_content.splitlines()[0][:32]
+                        if first_content
+                        else "新对话"
+                    ),
                     "updated_at": str(session["updated_at"]),
                     "message_count": total,
                 }
