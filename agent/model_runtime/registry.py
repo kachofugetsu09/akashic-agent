@@ -341,9 +341,7 @@ class RoleBoundProvider(LLMProvider):
                 messages=messages,
                 tools=tools,
                 model=runtime.model,
-                max_tokens=(
-                    runtime.max_output_tokens if max_tokens == 0 else max_tokens
-                ),
+                max_tokens=max_tokens,
                 tool_choice=tool_choice,
                 extra_body=request_extra,
                 disable_thinking=self.force_disable_thinking or disable_thinking,
