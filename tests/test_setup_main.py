@@ -62,7 +62,6 @@ def test_patch_main_is_scoped_inline_key_and_idempotent() -> None:
     assert parsed["llm"]["runtimes"]["deepseek_main"]["model"] == "new-main"
     assert parsed["llm"]["runtimes"]["deepseek_main"]["api_key"] == "new-secret"
     assert parsed["agent"]["context"]["compaction"] == {
-        "trigger_percent": 0.74,
         "keep_recent_tokens": 20000,
     }
     assert "# fast 注释必须保留" in once
@@ -100,6 +99,22 @@ def test_patch_main_reuses_saved_inline_key() -> None:
     second = patch_main_model_config(first, answers)
 
     assert tomllib.loads(second)["llm"]["runtimes"]["deepseek_main"]["api_key"] == "new-secret"
+
+
+def test_patch_main_removes_retired_compaction_trigger() -> None:
+    legacy = _CONFIG.replace(
+        "[plugins.custom]\n",
+        "[agent.context.compaction]\n"
+        "trigger_percent = 0.61\n"
+        "keep_recent_tokens = 12000\n\n"
+        "[plugins.custom]\n",
+    )
+
+    parsed = tomllib.loads(patch_main_model_config(legacy, _answers()))
+
+    assert parsed["agent"]["context"]["compaction"] == {
+        "keep_recent_tokens": 12000,
+    }
 
 
 def test_codex_setup_reuses_existing_login_and_catalog(

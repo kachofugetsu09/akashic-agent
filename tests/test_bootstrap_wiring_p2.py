@@ -287,7 +287,6 @@ def test_config_load_reads_compaction_and_app_server(tmp_path: Path):
                 "system_prompt": "s",
                 "context": {
                     "compaction": {
-                        "trigger_percent": 0.71,
                         "keep_recent_tokens": 21000,
                     },
                 },
@@ -300,7 +299,6 @@ def test_config_load_reads_compaction_and_app_server(tmp_path: Path):
 
     cfg = Config.load(cfg_path, workspace=tmp_path)
 
-    assert cfg.context_compaction.trigger_percent == 0.71
     assert cfg.context_compaction.keep_recent_tokens == 21000
     assert cfg.app_server.listen == "/tmp/dev-akashic.sock"
 
@@ -407,7 +405,6 @@ max_tokens = 256
 
 [agent.context]
 [agent.context.compaction]
-trigger_percent = 0.74
 keep_recent_tokens = 20000
 
 [app_server]

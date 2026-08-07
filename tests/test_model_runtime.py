@@ -609,10 +609,37 @@ context_window = 64000
 
     assert config.max_tokens == 0
     assert config.model_runtimes["main"].max_output_tokens == 0
-    assert config.context_compaction.trigger_percent == 0.74
+    assert config.context_compaction.keep_recent_tokens == 20_000
 
 
 def test_config_accepts_agent_compaction_policy(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        """
+[llm]
+main = "main"
+
+[llm.runtimes.main]
+provider = "openai"
+model = "model"
+api_key = "key"
+context_window = 64000
+
+[agent.context.compaction]
+keep_recent_tokens = 21000
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(path, workspace=tmp_path)
+
+    assert config.context_compaction.keep_recent_tokens == 21000
+    assert not hasattr(config.context_compaction, "trigger_percent")
+
+
+def test_config_rejects_removed_agent_compaction_trigger(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "config.toml"
@@ -634,10 +661,8 @@ keep_recent_tokens = 21000
         encoding="utf-8",
     )
 
-    config = load_config(path, workspace=tmp_path)
-
-    assert config.context_compaction.trigger_percent == 0.7
-    assert config.context_compaction.keep_recent_tokens == 21000
+    with pytest.raises(ValueError, match="agent.context.compaction.trigger_percent"):
+        load_config(path, workspace=tmp_path)
 
 
 @pytest.mark.parametrize("trigger", [0, -0.1, 0.9, 1.0])

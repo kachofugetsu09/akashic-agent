@@ -21,7 +21,6 @@ model = "test-model"
 api_key = "test-key"
 
 [agent.context.compaction]
-trigger_percent = 0.74
 keep_recent_tokens = 20000
 
 [integrations]
@@ -49,7 +48,6 @@ max_output_tokens = 2000
 input_modalities = ["text"]
 {extra}
 [agent.context.compaction]
-trigger_percent = 0.71
 keep_recent_tokens = 21000
 """
 
@@ -62,8 +60,8 @@ def test_compaction_policy_is_loaded_once_at_agent_context_boundary(
 
     config = load_config(path, workspace=tmp_path)
 
-    assert config.context_compaction.trigger_percent == 0.71
     assert config.context_compaction.keep_recent_tokens == 21000
+    assert not hasattr(config.context_compaction, "trigger_percent")
     assert not hasattr(config.model_runtimes["main"], "effective_context_percent")
 
 
@@ -89,6 +87,20 @@ def test_legacy_context_keys_fail_at_config_boundary(
     path.write_text(text, encoding="utf-8")
 
     with pytest.raises(ValueError, match="removed configuration"):
+        load_config(path, workspace=tmp_path)
+
+
+def test_removed_agent_compaction_trigger_fails_at_config_boundary(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+    text = _runtime_config().replace(
+        "[agent.context.compaction]\n",
+        "[agent.context.compaction]\ntrigger_percent = 0.7\n",
+    )
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="agent.context.compaction.trigger_percent"):
         load_config(path, workspace=tmp_path)
 
 
@@ -120,3 +132,4 @@ def test_setup_wizard_renders_only_new_compaction_structure() -> None:
     assert "[agent.context.compaction]" in rendered
     assert "memory_window" not in rendered
     assert "effective_context_percent" not in rendered
+    assert "trigger_percent" not in rendered

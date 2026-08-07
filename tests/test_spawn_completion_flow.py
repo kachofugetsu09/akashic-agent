@@ -29,7 +29,7 @@ class _Provider(ProviderContextBudgetStub):
 
 
 class _CompactingProvider(_Provider):
-    context_window = 1_000
+    context_window = 128
     runtime_id = "spawn-agent"
 
     async def chat(self, **kwargs: Any) -> LLMResponse:
@@ -188,7 +188,6 @@ async def test_spawn_completion_uses_session_compaction_gate(tmp_path):
         AgentLoopConfig(
             llm=LLMConfig(max_iterations=3),
             context_compaction=ContextCompactionConfig(
-                trigger_percent=0.01,
                 keep_recent_tokens=1,
             ),
         ),

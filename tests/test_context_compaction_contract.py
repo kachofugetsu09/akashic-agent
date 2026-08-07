@@ -611,7 +611,6 @@ def test_request_output_limit_moves_hard_edge_for_each_payload() -> None:
         scope_id="hard-edge-below",
         payload_segments=segments,
         max_output_tokens=20,
-        trigger_percent=0.99,
         next_generation=1,
         keep_recent_tokens=1,
     )
@@ -631,7 +630,6 @@ def test_request_output_limit_moves_hard_edge_for_each_payload() -> None:
         scope_id="hard-edge-above",
         payload_segments=segments,
         max_output_tokens=20,
-        trigger_percent=0.99,
         next_generation=1,
         keep_recent_tokens=1,
     )
