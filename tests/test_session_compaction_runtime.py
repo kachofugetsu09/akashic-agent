@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,6 +37,25 @@ from session.store import (
     CompactionPrepare,
     SessionCompactionPrepareConflictError,
 )
+
+
+SessionManagerFactory = Callable[[Path], SessionManager]
+
+
+@pytest.fixture
+def session_manager_factory() -> SessionManagerFactory:
+    """Create and close every SessionManager owned by one test."""
+
+    managers: list[SessionManager] = []
+
+    def factory(path: Path) -> SessionManager:
+        manager = SessionManager(path)
+        managers.append(manager)
+        return manager
+
+    yield factory
+    for manager in managers:
+        manager.close()
 
 
 class _MarkdownReceiptProbe:
@@ -160,8 +180,11 @@ class _ScopedCompactionProvider(_GateProvider):
         return LLMResponse(content=f"reply-{marker}")
 
 
-def _seed_receipt(tmp_path: Path) -> tuple[SessionManager, _MarkdownReceiptProbe, str]:
-    manager = SessionManager(tmp_path)
+def _seed_receipt(
+    tmp_path: Path,
+    manager_factory: SessionManagerFactory,
+) -> tuple[SessionManager, _MarkdownReceiptProbe, str]:
+    manager = manager_factory(tmp_path)
     session = manager.get_or_create("session")
     session.add_message("user", "persisted")
     manager.save(session)
@@ -254,8 +277,11 @@ def test_compaction_scope_separates_session_incarnations_and_reloads_stably() ->
     )
 
 
-def test_receipt_recovery_skips_provider_calls(tmp_path: Path) -> None:
-    manager, markdown, source_ref = _seed_receipt(tmp_path)
+def test_receipt_recovery_skips_provider_calls(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager, markdown, source_ref = _seed_receipt(tmp_path, session_manager_factory)
     runtime = SessionCompactionRuntime(session_manager=manager, markdown=markdown)  # type: ignore[arg-type]
     session = manager.get_existing("session")
     provider_calls = 0
@@ -276,8 +302,9 @@ def test_receipt_recovery_skips_provider_calls(tmp_path: Path) -> None:
 
 def _seed_orphan_prepare(
     tmp_path: Path,
+    manager_factory: SessionManagerFactory,
 ) -> tuple[SessionManager, SessionCompactionRuntime, CompactionPrepare]:
-    manager = SessionManager(tmp_path)
+    manager = manager_factory(tmp_path)
     session = manager.get_or_create("session")
     session.add_message("user", "prepared")
     manager.save(session)
@@ -305,8 +332,13 @@ def _seed_orphan_prepare(
     return manager, runtime, prepare
 
 
-def test_prepare_without_receipt_is_released_on_recovery(tmp_path: Path) -> None:
-    manager, runtime, prepare = _seed_orphan_prepare(tmp_path)
+def test_prepare_without_receipt_is_released_on_recovery(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager, runtime, prepare = _seed_orphan_prepare(
+        tmp_path, session_manager_factory
+    )
     session = manager.get_existing("session")
     head = manager.control_store.get_compaction_head(session.key)
 
@@ -338,10 +370,13 @@ def test_prepare_without_receipt_is_released_on_recovery(tmp_path: Path) -> None
 def test_corrupt_prepare_without_receipt_fails_loud_and_keeps_row(
     tmp_path: Path,
     column: str,
-    value: str,
+    value: object,
     match: str,
+    session_manager_factory: SessionManagerFactory,
 ) -> None:
-    manager, runtime, prepare = _seed_orphan_prepare(tmp_path)
+    manager, runtime, prepare = _seed_orphan_prepare(
+        tmp_path, session_manager_factory
+    )
     with manager.control_store._lock:
         manager.control_store._conn.execute(
             f"UPDATE session_compaction_prepares SET {column} = ? "
@@ -361,8 +396,13 @@ def test_corrupt_prepare_without_receipt_fails_loud_and_keeps_row(
     assert raw is not None
 
 
-def test_receipt_without_prepare_fails_loud_on_recovery(tmp_path: Path) -> None:
-    manager, markdown, source_ref = _seed_receipt(tmp_path)
+def test_receipt_without_prepare_fails_loud_on_recovery(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager, markdown, source_ref = _seed_receipt(
+        tmp_path, session_manager_factory
+    )
     prepare = manager.control_store.get_compaction_prepare(
         "session", source_ref=source_ref
     )
@@ -386,8 +426,9 @@ def test_receipt_without_prepare_fails_loud_on_recovery(tmp_path: Path) -> None:
 
 def test_excluded_session_commit_advances_ledger_without_markdown(
     tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
 ) -> None:
-    manager = SessionManager(tmp_path)
+    manager = session_manager_factory(tmp_path)
     session = manager.get_or_create("session")
     session.metadata["skip_post_memory"] = True
     session.add_message("user", "excluded")
@@ -448,8 +489,9 @@ def test_excluded_session_commit_advances_ledger_without_markdown(
 
 def test_receipt_recovery_keeps_original_included_semantics_after_metadata_flip(
     tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
 ) -> None:
-    manager, markdown, _ = _seed_receipt(tmp_path)
+    manager, markdown, _ = _seed_receipt(tmp_path, session_manager_factory)
     session = manager.get_existing("session")
     session.metadata["skip_post_memory"] = True
     manager.save(session)
@@ -468,8 +510,9 @@ def test_receipt_recovery_keeps_original_included_semantics_after_metadata_flip(
 
 def test_receipt_recovery_after_markdown_is_idempotent_and_skips_provider(
     tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
 ) -> None:
-    manager, markdown, source_ref = _seed_receipt(tmp_path)
+    manager, markdown, source_ref = _seed_receipt(tmp_path, session_manager_factory)
     runtime = SessionCompactionRuntime(session_manager=manager, markdown=markdown)  # type: ignore[arg-type]
     session = manager.get_existing("session")
     provider_calls = 0
@@ -525,8 +568,11 @@ def test_receipt_recovery_after_markdown_is_idempotent_and_skips_provider(
     ) is None
 
 
-def test_tampered_receipt_is_rejected_before_markdown_or_ledger(tmp_path: Path) -> None:
-    manager, markdown, source_ref = _seed_receipt(tmp_path)
+def test_tampered_receipt_is_rejected_before_markdown_or_ledger(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager, markdown, source_ref = _seed_receipt(tmp_path, session_manager_factory)
     runtime = SessionCompactionRuntime(session_manager=manager, markdown=markdown)  # type: ignore[arg-type]
     checkpoint = markdown.receipts[source_ref]["checkpoint"]
     assert isinstance(checkpoint, dict)
@@ -540,8 +586,11 @@ def test_tampered_receipt_is_rejected_before_markdown_or_ledger(tmp_path: Path) 
     assert markdown.commit_count == 0
 
 
-def test_pending_prepare_rejects_source_deletion(tmp_path: Path) -> None:
-    manager, markdown, _ = _seed_receipt(tmp_path)
+def test_pending_prepare_rejects_source_deletion(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager, markdown, _ = _seed_receipt(tmp_path, session_manager_factory)
     session = manager.get_existing("session")
     message_id = str(session.messages[0]["id"])
     with pytest.raises(
@@ -553,8 +602,11 @@ def test_pending_prepare_rejects_source_deletion(tmp_path: Path) -> None:
     assert markdown.commit_count == 0
 
 
-def test_retained_tail_without_unit_ref_is_rejected(tmp_path: Path) -> None:
-    manager, _, _ = _seed_receipt(tmp_path)
+def test_retained_tail_without_unit_ref_is_rejected(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager, _, _ = _seed_receipt(tmp_path, session_manager_factory)
     head = manager.control_store.get_compaction_head("session")
     with pytest.raises(ValueError, match="unit_ref"):
         manager.control_store.persist_compaction(
@@ -651,8 +703,9 @@ def test_context_compactor_receipt_resume_does_not_call_summary_provider() -> No
 
 def test_default_reasoner_gate_commits_real_runtime_before_provider_payload(
     tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
 ) -> None:
-    manager = SessionManager(tmp_path)
+    manager = session_manager_factory(tmp_path)
     session = manager.get_or_create("session")
     session.add_message("user", "old one")
     session.add_message("user", "old two")
@@ -719,8 +772,9 @@ def test_default_reasoner_gate_commits_real_runtime_before_provider_payload(
 
 def test_projection_reload_does_not_duplicate_retained_tail_or_new_units(
     tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
 ) -> None:
-    manager = SessionManager(tmp_path)
+    manager = session_manager_factory(tmp_path)
     session = manager.get_or_create("session")
     session.add_message("user", "old user", control_turn_id="turn-old")
     session.add_message("assistant", "old reply", control_turn_id="turn-old")
@@ -891,8 +945,11 @@ def test_reasoner_builder_preserves_replay_tail_and_current_payload_order() -> N
     )
 
 
-def test_reasoner_compaction_state_is_call_local_per_session(tmp_path: Path) -> None:
-    manager = SessionManager(tmp_path)
+def test_reasoner_compaction_state_is_call_local_per_session(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager = session_manager_factory(tmp_path)
     session_a = manager.get_or_create("session-a")
     session_b = manager.get_or_create("session-b")
     for session, prefix in ((session_a, "a"), (session_b, "b")):
@@ -970,8 +1027,9 @@ def test_reasoner_compaction_state_is_call_local_per_session(tmp_path: Path) -> 
 
 def test_reasoner_binds_configured_main_fallback_with_distinct_provenance(
     tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
 ) -> None:
-    manager = SessionManager(tmp_path)
+    manager = session_manager_factory(tmp_path)
     session = manager.get_or_create("session")
     session.add_message("user", "u", control_turn_id="turn-1")
     session.add_message("assistant", "a", control_turn_id="turn-1")
@@ -1026,8 +1084,11 @@ def test_reasoner_binds_configured_main_fallback_with_distinct_provenance(
     assert state.compactor._fallback_model == "main-model"
 
 
-def test_two_session_compaction_commits_are_isolated_in_sqlite(tmp_path: Path) -> None:
-    manager = SessionManager(tmp_path)
+def test_two_session_compaction_commits_are_isolated_in_sqlite(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager = session_manager_factory(tmp_path)
     sessions = []
     source_message_ids: dict[str, set[str]] = {}
     for key in ("session-a", "session-b"):

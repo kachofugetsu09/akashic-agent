@@ -16,6 +16,10 @@ from agent.control.models import (
     TurnStatus,
     TurnUsage,
 )
+from agent.model_runtime.context_compaction import (
+    compaction_scope_id,
+    compaction_source_ref,
+)
 from session.manager import Session, SessionManager
 from session.store import (
     CompactionPrepare,
@@ -28,6 +32,28 @@ from bus.events import InboundMessage
 from bus.queue import MessageBus
 
 NOW = datetime(2026, 7, 14, 8, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def compaction_store(tmp_path):
+    """Create and close the store used by compaction-fence tests."""
+
+    store = SessionStore(tmp_path / "sessions.db")
+    try:
+        yield store
+    finally:
+        store.close()
+
+
+@pytest.fixture
+def turn_store(tmp_path):
+    """Create and close the store used by isolated turn tests."""
+
+    store = SessionStore(tmp_path / "sessions.db")
+    try:
+        yield store
+    finally:
+        store.close()
 
 
 def _seed_compaction_message(store: SessionStore, session_key: str) -> dict:
@@ -399,8 +425,8 @@ async def test_mobile_handoff_delete_failure_retains_owner_until_retry(
     store.close()
 
 
-def test_queued_turn_can_be_cancelled(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+def test_queued_turn_can_be_cancelled(turn_store: SessionStore) -> None:
+    store = turn_store
     store.create_turn(_queued())
 
     cancelled = store.transition_turn(
@@ -415,8 +441,8 @@ def test_queued_turn_can_be_cancelled(tmp_path) -> None:
     assert cancelled.started_at is None
 
 
-def test_illegal_transition_fails_before_writing(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+def test_illegal_transition_fails_before_writing(turn_store: SessionStore) -> None:
+    store = turn_store
     store.create_turn(_queued())
 
     with pytest.raises(TurnStateTransitionError, match="非法"):
@@ -429,8 +455,8 @@ def test_illegal_transition_fails_before_writing(tmp_path) -> None:
     assert store.read_turn("turn:1").status is TurnStatus.QUEUED  # type: ignore[union-attr]
 
 
-def test_stale_compare_and_set_fails_loud(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+def test_stale_compare_and_set_fails_loud(turn_store: SessionStore) -> None:
+    store = turn_store
     store.create_turn(_queued())
     store.transition_turn(
         "turn:1",
@@ -446,8 +472,8 @@ def test_stale_compare_and_set_fails_loud(tmp_path) -> None:
         )
 
 
-def test_transition_rejects_wrong_thread_identity(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+def test_transition_rejects_wrong_thread_identity(turn_store: SessionStore) -> None:
+    store = turn_store
     store.create_turn(_queued())
 
     with pytest.raises(TurnNotFoundError, match="不属于 thread"):
@@ -459,8 +485,8 @@ def test_transition_rejects_wrong_thread_identity(tmp_path) -> None:
         )
 
 
-def test_failed_turn_requires_structured_error(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+def test_failed_turn_requires_structured_error(turn_store: SessionStore) -> None:
+    store = turn_store
     store.create_turn(_queued())
     store.transition_turn(
         "turn:1",
@@ -487,8 +513,10 @@ def test_failed_turn_requires_structured_error(tmp_path) -> None:
     assert failed.error.type == "provider_error"
 
 
-def test_read_missing_turn_returns_none_and_transition_raises(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+def test_read_missing_turn_returns_none_and_transition_raises(
+    turn_store: SessionStore,
+) -> None:
+    store = turn_store
     assert store.read_turn("turn:missing") is None
 
     with pytest.raises(TurnNotFoundError, match="不存在"):
@@ -499,8 +527,10 @@ def test_read_missing_turn_returns_none_and_transition_raises(tmp_path) -> None:
         )
 
 
-def test_delivery_id_resolves_only_unique_proactive_assistant(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+def test_delivery_id_resolves_only_unique_proactive_assistant(
+    turn_store: SessionStore,
+) -> None:
+    store = turn_store
     session_key = "mobile:test"
     expected = store.insert_message(
         session_key,
@@ -533,8 +563,10 @@ def test_delivery_id_resolves_only_unique_proactive_assistant(tmp_path) -> None:
     assert store.get_message_by_delivery_id("mobile:other", "delivery-1") is None
 
 
-def test_duplicate_proactive_delivery_id_fails_loud(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+def test_duplicate_proactive_delivery_id_fails_loud(
+    turn_store: SessionStore,
+) -> None:
+    store = turn_store
     for seq in range(2):
         _ = store.insert_message(
             "mobile:test",
@@ -549,8 +581,8 @@ def test_duplicate_proactive_delivery_id_fails_loud(tmp_path) -> None:
         store.get_message_by_delivery_id("mobile:test", "delivery-1")
 
 
-def test_list_turns_is_thread_scoped_and_stable(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+def test_list_turns_is_thread_scoped_and_stable(turn_store: SessionStore) -> None:
+    store = turn_store
     store.create_turn(_queued("turn:1"))
     store.create_turn(
         TurnRecord(
@@ -573,8 +605,10 @@ def test_list_turns_is_thread_scoped_and_stable(tmp_path) -> None:
     assert [turn.id for turn in next_page] == ["turn:1"]
 
 
-def test_delete_thread_turns_does_not_touch_other_threads(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+def test_delete_thread_turns_does_not_touch_other_threads(
+    turn_store: SessionStore,
+) -> None:
+    store = turn_store
     store.create_turn(_queued("turn:1"))
     store.create_turn(_queued("turn:2"))
     store.create_turn(_queued("turn:other", "programmatic:other"))
@@ -622,10 +656,12 @@ def test_session_delete_backup_and_audit_preserve_ledger_lineage(tmp_path) -> No
     assert backup_path.stat().st_mode & 0o777 == 0o600
     with sqlite3.connect(backup_path) as database:
         assert database.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    database.close()
     with sqlite3.connect(tmp_path / "sessions.db") as database:
         columns = {
             row[1] for row in database.execute("PRAGMA table_info(session_delete_audits)")
         }
+    database.close()
     assert {
         "audit_id",
         "targets_json",
@@ -969,9 +1005,12 @@ def test_session_admission_requires_existing_session_and_known_release(tmp_path)
     ],
 )
 def test_turn_corrupted_json_fails_loud(
-    tmp_path, column: str, bad_value: str, match: str
+    turn_store: SessionStore,
+    column: str,
+    bad_value: str,
+    match: str,
 ) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = turn_store
     record = _queued()
     store.create_turn(record)
     store._conn.execute(
@@ -1007,10 +1046,13 @@ def test_compaction_head_is_store_owned_and_monotonic(tmp_path) -> None:
 
     head = store.get_compaction_head("cli:head")
     assert (head.parent_generation, head.next_generation) == (2, 3)
+    store.close()
 
 
-def test_pending_compaction_prepare_is_idempotent_and_fences_mutations(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+def test_pending_compaction_prepare_is_idempotent_and_fences_mutations(
+    compaction_store: SessionStore,
+) -> None:
+    store = compaction_store
     store.create_session(key="cli:prepare")
     message = _seed_compaction_message(store, "cli:prepare")
     kwargs = _compaction_kwargs("cli:prepare", message, generation=1)
@@ -1038,8 +1080,10 @@ def test_pending_compaction_prepare_is_idempotent_and_fences_mutations(tmp_path)
     assert store.get_compaction_prepare("cli:prepare", source_ref=prepare.source_ref) == prepare
 
 
-def test_persist_compaction_clears_prepare_with_checkpoint_transaction(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+def test_persist_compaction_clears_prepare_with_checkpoint_transaction(
+    compaction_store: SessionStore,
+) -> None:
+    store = compaction_store
     store.create_session(key="cli:prepare-commit")
     message = _seed_compaction_message(store, "cli:prepare-commit")
     kwargs = _compaction_kwargs("cli:prepare-commit", message, generation=1)
@@ -1052,8 +1096,10 @@ def test_persist_compaction_clears_prepare_with_checkpoint_transaction(tmp_path)
     assert store.get_compaction_head("cli:prepare-commit").parent_generation == 1
 
 
-def test_persist_compaction_without_prepare_cannot_bypass_pending_fence(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+def test_persist_compaction_without_prepare_cannot_bypass_pending_fence(
+    compaction_store: SessionStore,
+) -> None:
+    store = compaction_store
     store.create_session(key="cli:prepare-bypass")
     message = _seed_compaction_message(store, "cli:prepare-bypass")
     kwargs = _compaction_kwargs("cli:prepare-bypass", message, generation=1)
@@ -1071,27 +1117,107 @@ def test_persist_compaction_without_prepare_cannot_bypass_pending_fence(tmp_path
     ) == prepare
 
 
-def test_session_cascade_removes_prepare_before_same_key_recreation(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+def test_session_cascade_rejects_pending_prepare_before_backup(
+    tmp_path,
+    compaction_store: SessionStore,
+) -> None:
+    store = compaction_store
     store.create_session(key="cli:prepare-delete")
     message = _seed_compaction_message(store, "cli:prepare-delete")
     kwargs = _compaction_kwargs("cli:prepare-delete", message, generation=1)
     prepare = _prepare_for_compaction(store, "cli:prepare-delete", kwargs)
 
-    assert store.delete_session("cli:prepare-delete", cascade=True)
-    assert not store.session_exists("cli:prepare-delete")
-    store.create_session(key="cli:prepare-delete")
+    with pytest.raises(
+        SessionCompactionPrepareConflictError,
+        match="pending compaction prepare",
+    ) as exc_info:
+        store.delete_session_with_audit("cli:prepare-delete", cascade=True)
 
-    assert (
-        store.get_compaction_prepare(
-            "cli:prepare-delete", source_ref=prepare.source_ref
+    assert exc_info.value.audit_id
+    audit = store.get_session_delete_audit(exc_info.value.audit_id)
+    assert audit is not None
+    assert audit.result == "rejected"
+    assert audit.backup_path is None
+    assert store.session_exists("cli:prepare-delete")
+    assert store.get_message(str(message["id"])) is not None
+    assert store.get_compaction_prepare(
+        "cli:prepare-delete", source_ref=prepare.source_ref
+    ) == prepare
+    assert not list((tmp_path / "backups" / "session-deletions").glob("sessions-*.db"))
+def test_session_batch_cascade_rejects_any_pending_prepare(
+    tmp_path,
+    compaction_store: SessionStore,
+) -> None:
+    store = compaction_store
+    store.create_session(key="cli:prepare-batch-a")
+    store.create_session(key="cli:prepare-batch-b")
+    message_a = _seed_compaction_message(store, "cli:prepare-batch-a")
+    _ = _seed_compaction_message(store, "cli:prepare-batch-b")
+    kwargs = _compaction_kwargs("cli:prepare-batch-a", message_a, generation=1)
+    prepare = _prepare_for_compaction(store, "cli:prepare-batch-a", kwargs)
+
+    with pytest.raises(
+        SessionCompactionPrepareConflictError,
+        match="pending compaction prepare",
+    ) as exc_info:
+        store.delete_sessions_batch_with_audit(
+            ["cli:prepare-batch-a", "cli:prepare-batch-b"],
+            cascade=True,
         )
-        is None
+
+    assert exc_info.value.audit_id
+    audit = store.get_session_delete_audit(exc_info.value.audit_id)
+    assert audit is not None
+    assert audit.result == "rejected"
+    assert audit.backup_path is None
+    assert store.session_exists("cli:prepare-batch-a")
+    assert store.session_exists("cli:prepare-batch-b")
+    assert store.get_compaction_prepare(
+        "cli:prepare-batch-a", source_ref=prepare.source_ref
+    ) == prepare
+    assert not list((tmp_path / "backups" / "session-deletions").glob("sessions-*.db"))
+
+
+def test_orphan_prepare_cleanup_allows_new_session_incarnation(
+    compaction_store: SessionStore,
+) -> None:
+    store = compaction_store
+    session_key = "cli:prepare-recreate"
+    store.create_session(key=session_key)
+    message = _seed_compaction_message(store, session_key)
+    previous_meta = store.get_session_meta(session_key)
+    assert previous_meta is not None
+    kwargs = _compaction_kwargs(session_key, message, generation=1)
+    kwargs["source_ref"] = compaction_source_ref(
+        compaction_scope_id(session_key, str(previous_meta["created_at"])),
+        1,
     )
+    prepare = _prepare_for_compaction(store, session_key, kwargs)
+
+    assert store._clear_orphan_compaction_prepare(prepare)
+    assert store.get_compaction_prepare(session_key, source_ref=prepare.source_ref) is None
+    audit = store.delete_session_with_audit(session_key, cascade=True)
+    assert audit.result == "committed"
+
+    store.create_session(key=session_key)
+    current_meta = store.get_session_meta(session_key)
+    assert current_meta is not None
+    new_message = _seed_compaction_message(store, session_key)
+    new_kwargs = _compaction_kwargs(session_key, new_message, generation=1)
+    new_kwargs["source_ref"] = compaction_source_ref(
+        compaction_scope_id(session_key, str(current_meta["created_at"])),
+        1,
+    )
+    new_prepare = _prepare_for_compaction(store, session_key, new_kwargs)
+
+    assert current_meta["created_at"] != previous_meta["created_at"]
+    assert new_prepare.source_ref != prepare.source_ref
 
 
-def test_pending_compaction_prepare_fences_interaction_delete(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+def test_pending_compaction_prepare_fences_interaction_delete(
+    compaction_store: SessionStore,
+) -> None:
+    store = compaction_store
     timestamp = NOW.isoformat()
     rows = store.persist_session(
         "cli:prepare-interaction",
@@ -1173,6 +1299,7 @@ def test_compaction_head_rejects_cursor_without_active_generation(tmp_path) -> N
 
     with pytest.raises(ValueError, match="超出 ledger head"):
         store.get_compaction_head("cli:invalid-head")
+    store.close()
 
 
 def test_compaction_source_ref_is_idempotent_after_cursor_advances(tmp_path) -> None:
@@ -1204,6 +1331,7 @@ def test_compaction_source_ref_is_idempotent_after_cursor_advances(tmp_path) -> 
                 | {"summary": "different"}
             ),
         )
+    store.close()
 
 
 def test_legacy_react_compaction_extra_is_preserved_without_runtime_read(tmp_path) -> None:
@@ -1230,6 +1358,7 @@ def test_new_insert_rejects_retired_react_compaction_extra(tmp_path) -> None:
             seq=0,
             extra={"react_compaction": {"summary": "new"}},
         )
+    store.close()
 
 
 def test_new_persist_rejects_retired_react_compaction_extra(tmp_path) -> None:
@@ -1250,6 +1379,7 @@ def test_new_persist_rejects_retired_react_compaction_extra(tmp_path) -> None:
                 }
             ],
         )
+    store.close()
 
 
 def test_new_update_rejects_retired_react_compaction_extra_without_role(tmp_path) -> None:
@@ -1268,6 +1398,7 @@ def test_new_update_rejects_retired_react_compaction_extra_without_role(tmp_path
             str(message["id"]),
             extra={"react_compaction": {"summary": "new"}},
         )
+    store.close()
 
 
 def test_new_update_accepts_non_retired_assistant_extra_without_role(tmp_path) -> None:
@@ -1288,6 +1419,7 @@ def test_new_update_accepts_non_retired_assistant_extra_without_role(tmp_path) -
 
     assert updated is not None
     assert updated["trace_id"] == "trace-1"
+    store.close()
 
 
 def test_session_save_cannot_regress_ledger_cursor(tmp_path) -> None:
@@ -1308,6 +1440,7 @@ def test_session_save_cannot_regress_ledger_cursor(tmp_path) -> None:
     )
 
     assert store.get_session_meta("cli:stale-save")["last_consolidated"] == 1
+    store.close()
 
 
 def test_session_manager_save_rejects_nonzero_cursor_for_new_session(tmp_path) -> None:
