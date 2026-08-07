@@ -113,6 +113,7 @@ from agent.tool_hooks.base import ToolHook
 from agent.tool_hooks.types import HookContext, HookOutcome
 from bus.event_bus import EventBus
 from infra.channels.contract import Channel
+from infra.persistence.json_store import atomic_save_json
 
 logger = logging.getLogger(__name__)
 U = TypeVar("U")
@@ -811,6 +812,7 @@ class PluginManager:
                 latest_by_id=latest_by_id,
             )
             self._reload_journal.finish_recovery(action)
+            self._write_startup_recovery_fact(action, committed=False)
 
         # 2. 根据 durable pointer 判定 promoting 崩溃发生在切换前还是切换后。
         stable_by_id = self._discovered_by_id(installed_selector="stable")
@@ -824,6 +826,7 @@ class PluginManager:
         )
         for action in restore_discarded:
             self._reload_journal.finish_recovery(action)
+            self._write_startup_recovery_fact(action, committed=False)
 
         # 3. stable 先恢复服务；latest 候选随后以新事务重新准备和验证。
         for mod in stable_by_id.values():
@@ -880,7 +883,13 @@ class PluginManager:
                 action.phase in {"commit_started", "promoting"}
                 and latest_revision == action.source_revision
             ):
-                restore_candidates.append(action)
+                self._discard_recovery_pointer(
+                    action.plugin_id,
+                    action.source_revision,
+                    stable_by_id=stable_by_id,
+                    latest_by_id=latest_by_id,
+                )
+                restore_discarded.append(replace(action, action="discard_candidate"))
                 continue
             if (
                 action.phase in {"commit_started", "promoting"}
@@ -923,6 +932,25 @@ class PluginManager:
                 )
             assert generation.source_revision == action.source_revision
             self._reload_journal.finish_recovery(action)
+            self._write_startup_recovery_fact(action, committed=True)
+
+    def _write_startup_recovery_fact(
+        self,
+        action: ReloadRecoveryAction,
+        *,
+        committed: bool,
+    ) -> None:
+        message = (
+            f"{action.plugin_id} 更新已在 Core 重启后确认提交；当前使用新版本。"
+            if committed
+            else f"{action.plugin_id} 更新在 Core 重启时没有完成；候选已丢弃，原版本保持可用。"
+        )
+        atomic_save_json(
+            self._workspace / "runtime" / "plugin-rollout-fact.json",
+            {"message": message},
+            ensure_ascii=False,
+            domain="plugin_rollout_fact",
+        )
 
     async def _restore_latest_candidates(
         self,

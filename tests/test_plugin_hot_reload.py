@@ -2018,10 +2018,14 @@ async def test_rejected_installed_candidate_restores_latest_to_stable(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("promoted_on_disk", [False, True])
+@pytest.mark.parametrize(
+    ("promoted_on_disk", "promotion_started"),
+    [(False, False), (False, True), (True, True)],
+)
 async def test_startup_recovers_installed_candidate_from_durable_pointers(
     tmp_path: Path,
     promoted_on_disk: bool,
+    promotion_started: bool,
 ) -> None:
     plugin_base, stable_root = _write_installed_artifact(
         tmp_path,
@@ -2057,20 +2061,28 @@ async def test_startup_recovers_installed_candidate_from_durable_pointers(
     manager.reload_journal.advance(tx_id, "validating")
     manager.reload_journal.advance(tx_id, "commit_started")
     manager.reload_journal.advance(tx_id, "latest_ready")
-    if promoted_on_disk:
+    if promotion_started:
         manager.reload_journal.advance(tx_id, "promoting")
 
     await manager.load_all()
 
-    assert manager.reload_journal.get(tx_id).phase == "recovered"
+    assert manager.reload_journal.get(tx_id).phase == (
+        "recovered" if promoted_on_disk else "aborted"
+    )
     if promoted_on_disk:
         assert manager.generation("installed_snapshot@lab").instance.version == "v2"  # type: ignore[union-attr]
         assert manager.ready_candidate is None
     else:
         assert manager.generation("installed_snapshot@lab").instance.version == "v1"  # type: ignore[union-attr]
-        assert manager.ready_candidate.instance.version == "v2"  # type: ignore[union-attr]
+        assert manager.ready_candidate is None
         assert stable_root.exists()
-        await manager.discard_latest_candidate("installed_snapshot@lab")
+        assert read_pointer(plugin_base, "latest") == stable_pointer
+        fact = json.loads(
+            (tmp_path / "workspace/runtime/plugin-rollout-fact.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert "候选已丢弃" in fact["message"]
     await manager.terminate_all()
 
 
@@ -2117,7 +2129,7 @@ async def test_startup_rejects_bad_recovered_candidate_but_keeps_stable(
 
     assert manager.generation("installed_snapshot@lab").instance.version == "v1"  # type: ignore[union-attr]
     assert manager.ready_candidate is None
-    assert manager.reload_journal.get(tx_id).phase == "recovered"
+    assert manager.reload_journal.get(tx_id).phase == "aborted"
     assert read_pointer(plugin_base, "latest") == stable_pointer
     await manager.terminate_all()
 

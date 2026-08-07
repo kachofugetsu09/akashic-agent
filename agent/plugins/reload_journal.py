@@ -35,9 +35,9 @@ _TRANSITIONS: dict[str, frozenset[str]] = {
     "prepared": frozenset({"validating", "aborted"}),
     "validating": frozenset({"commit_started", "aborted"}),
     "commit_started": frozenset({"latest_ready", "committed", "aborted", "recovered"}),
-    "latest_ready": frozenset({"discarding", "promoting", "recovered"}),
+    "latest_ready": frozenset({"discarding", "promoting", "aborted", "recovered"}),
     "discarding": frozenset({"aborted"}),
-    "promoting": frozenset({"discarding", "committed", "recovered"}),
+    "promoting": frozenset({"discarding", "committed", "aborted", "recovered"}),
     "committed": frozenset({"draining", "complete", "recovered"}),
     "draining": frozenset({"complete", "recovered"}),
 }
@@ -364,7 +364,7 @@ def _now() -> str:
 
 def _recovery_action(phase: str) -> RecoveryActionName:
     if phase == "latest_ready":
-        return "restore_candidate"
+        return "discard_candidate"
     if phase in {"commit_started", "promoting", "committed", "draining"}:
         return "restore_committed"
     return "discard_candidate"
