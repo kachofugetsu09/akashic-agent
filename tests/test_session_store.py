@@ -1144,6 +1144,8 @@ def test_session_cascade_rejects_pending_prepare_before_backup(
         "cli:prepare-delete", source_ref=prepare.source_ref
     ) == prepare
     assert not list((tmp_path / "backups" / "session-deletions").glob("sessions-*.db"))
+
+
 def test_session_batch_cascade_rejects_any_pending_prepare(
     tmp_path,
     compaction_store: SessionStore,
