@@ -48,6 +48,17 @@ def _runner(root: Path, *, repo_root: Path = _PROJECT_ROOT) -> MigrationRunner:
     )
 
 
+def _catalog(root: Path, migration_ids: tuple[str, ...]) -> Path:
+    catalog = root / "migrations" / "yoyo"
+    catalog.mkdir(parents=True)
+    for migration_id in migration_ids:
+        shutil.copy2(
+            _PROJECT_ROOT / "migrations/yoyo" / f"{migration_id}.py",
+            catalog / f"{migration_id}.py",
+        )
+    return root
+
+
 def _applied_ids(ledger: Path) -> list[str]:
     connection = sqlite3.connect(ledger)
     try:
@@ -304,9 +315,13 @@ system_prompt = "test"
     sessions = workspace / "sessions.db"
     sessions.write_bytes(b"protected-session-bytes")
 
-    outcome = _runner(root).run()
+    model_repo = _catalog(
+        tmp_path / "model-registry-repo",
+        (_ORIGIN_ID, _MODEL_REGISTRY_ID),
+    )
+    outcome = _runner(root, repo_root=model_repo).run()
 
-    assert outcome.migrations == _CURRENT_IDS
+    assert outcome.migrations == (_ORIGIN_ID, _MODEL_REGISTRY_ID)
     assert sessions.read_bytes() == b"protected-session-bytes"
     assert "runtimes" not in config.read_text(encoding="utf-8")
     snapshot = ModelRegistryStore.for_workspace(workspace).read_snapshot()
@@ -348,22 +363,24 @@ input_modalities = ["text"]
     sessions.write_bytes(b"protected-session-bytes")
 
     # 1. 重现已经被上一条迁移写入通用 LiteLLM effort 的 workspace
-    legacy_repo = tmp_path / "legacy-repo"
-    legacy_catalog = legacy_repo / "migrations/yoyo"
-    legacy_catalog.mkdir(parents=True)
-    for migration_id in (
+    legacy_repo = _catalog(
+        tmp_path / "legacy-repo",
+        (
+            _ORIGIN_ID,
+            _AKASHA_V9_ID,
+            _MODEL_REGISTRY_ID,
+            _EMBEDDING_REGISTRY_ID,
+            _MODEL_CAPABILITIES_ID,
+        ),
+    )
+    first = _runner(root, repo_root=legacy_repo).run()
+    assert first.migrations == (
         _ORIGIN_ID,
         _AKASHA_V9_ID,
         _MODEL_REGISTRY_ID,
         _EMBEDDING_REGISTRY_ID,
         _MODEL_CAPABILITIES_ID,
-    ):
-        shutil.copy2(
-            _PROJECT_ROOT / "migrations/yoyo" / f"{migration_id}.py",
-            legacy_catalog / f"{migration_id}.py",
-        )
-    first = _runner(root, repo_root=legacy_repo).run()
-    assert first.migrations == _CURRENT_IDS[:-1]
+    )
     store = ModelRegistryStore.for_workspace(root / "workspace")
     before = store.read_snapshot()
     assert before is not None
@@ -375,7 +392,18 @@ input_modalities = ["text"]
     config_after_first_migration = config.read_bytes()
 
     # 2. 只应用勘误并证明身份、凭据、角色与业务状态保持不变
-    corrected = _runner(root).run()
+    corrected_repo = _catalog(
+        tmp_path / "corrected-repo",
+        (
+            _ORIGIN_ID,
+            _AKASHA_V9_ID,
+            _MODEL_REGISTRY_ID,
+            _EMBEDDING_REGISTRY_ID,
+            _MODEL_CAPABILITIES_ID,
+            _OPENCODE_VARIANTS_ID,
+        ),
+    )
+    corrected = _runner(root, repo_root=corrected_repo).run()
     assert corrected.migrations == (_OPENCODE_VARIANTS_ID,)
     after = store.read_snapshot()
     assert after is not None
@@ -434,7 +462,10 @@ def test_model_registry_migration_accepts_toml_rewritten_nested_tables(
     assert outcome.migrations == _CURRENT_IDS
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
     assert migrated["llm"] == {"registry": "workspace"}
-    assert migrated["agent"] == {"system_prompt": "plugin gate"}
+    assert migrated["agent"] == {
+        "system_prompt": "plugin gate",
+        "context": {"compaction": {"keep_recent_tokens": 20_000}},
+    }
     assert migrated["app_server"] == {"listen": "/sandbox/akashic.sock"}
 
 
@@ -557,9 +588,13 @@ api_key = "secret"
 
     assert outcome.migrations == (
         _MODEL_REGISTRY_ID,
+        _COMPACTION_ID,
         _EMBEDDING_REGISTRY_ID,
         _MODEL_CAPABILITIES_ID,
+        _AUDIT_ID,
         _OPENCODE_VARIANTS_ID,
+        _PREPARE_ID,
+        _CONFIG_ID,
     )
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")
