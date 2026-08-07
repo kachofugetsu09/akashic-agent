@@ -527,11 +527,18 @@ class SessionManager:
         self._store.clear_session_admissions()
 
     def get_or_create(self, key: str) -> Session:
-        if key in self._cache:
-            return self._cache[key]
+        cached = self._cache.get(key)
+        meta = self._store.get_session_meta(key)
+        if (
+            cached is not None
+            and meta is not None
+            and self._cache_matches_meta(cached, meta)
+        ):
+            return cached
 
-        session = self._load(key)
+        session = self._load(key) if meta is not None else None
         if session is None:
+            self.invalidate(key)
             session = Session(key)
             self._ensure_session_meta(session)
         self._cache[key] = session
@@ -540,20 +547,30 @@ class SessionManager:
     def get_existing(self, key: str) -> Session:
         """读取仍存在的会话，禁止把已删除身份重新创建。"""
 
-        # 1. 先以持久化 owner 核对身份，缓存不能覆盖删除事实
-        if not self._store.session_exists(key):
+        # 1. 先读取 Store-owned revision，缓存不能覆盖删除或外部更新事实
+        meta = self._store.get_session_meta(key)
+        if meta is None:
             self.invalidate(key)
             raise KeyError(f"session 不存在: {key}")
 
-        # 2. 复用缓存或装载持久化会话，不进入创建路径
+        # 2. 只有 revision 一致时复用缓存，否则从 canonical rows 重载
         cached = self._cache.get(key)
-        if cached is not None:
+        if cached is not None and self._cache_matches_meta(cached, meta):
             return cached
         session = self._load(key)
         if session is None:
             raise KeyError(f"session 不存在: {key}")
         self._cache[key] = session
         return session
+
+    @staticmethod
+    def _cache_matches_meta(session: Session, meta: dict[str, Any]) -> bool:
+        """比较缓存会话与 Store 持有的元数据修订字段。"""
+
+        return (
+            session.updated_at.isoformat() == str(meta["updated_at"])
+            and session.last_consolidated == int(meta["last_consolidated"])
+        )
 
     def admit_existing(self, key: str) -> tuple[Session, str]:
         """为仍存在的会话建立跨连接处理租约并返回会话。"""

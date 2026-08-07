@@ -15,7 +15,11 @@ from agent.control.models import (
     TurnUsage,
 )
 from session.manager import Session, SessionManager
-from session.store import SessionStore, _decode_message_extra
+from session.store import (
+    SessionAdmissionConflictError,
+    SessionStore,
+    _decode_message_extra,
+)
 from bus.events import InboundMessage
 from bus.queue import MessageBus
 
@@ -69,6 +73,71 @@ def _compaction_kwargs(
         "summary_usage": {"input_tokens": 10, "output_tokens": 5},
         **({"generation": generation} if generation is not None else {}),
     }
+
+
+def _seed_interaction_with_compactions(
+    store: SessionStore,
+    session_key: str = "mobile:cache",
+) -> tuple[list[dict[str, object]], str]:
+    """Seed an explicit interaction plus an ancestor and descendant checkpoint."""
+
+    timestamp = NOW.isoformat()
+    rows = store.persist_session(
+        session_key,
+        created_at=timestamp,
+        updated_at=timestamp,
+        metadata={},
+        messages=[
+            {
+                "role": "user",
+                "content": "ancestor",
+                "timestamp": timestamp,
+                "extra": {},
+            },
+            {
+                "role": "user",
+                "content": "u1",
+                "timestamp": timestamp,
+                "extra": {
+                    "control_turn_id": "turn:cache",
+                    "turn_input_ordinal": 0,
+                },
+            },
+            {
+                "role": "assistant",
+                "content": "final",
+                "timestamp": timestamp,
+                "extra": {
+                    "control_turn_id": "turn:cache",
+                    "turn_terminal": True,
+                    "turn_input_count": 1,
+                },
+            },
+        ],
+    )
+    for generation, source in ((1, rows[0]), (2, rows[1]), (3, rows[2])):
+        store.persist_compaction(
+            session_key=session_key,
+            trigger="test",
+            summary=f"checkpoint-{generation}",
+            source_ref=f"test:cache:{generation}",
+            source_from_seq=int(source["seq"]),
+            consolidated_through_seq=int(source["seq"]),
+            source_message_ids=[str(source["id"])],
+            retained_tail=[],
+            model_runtime_id="test",
+            model="test",
+            context_window=100,
+            threshold_tokens=80,
+            hard_input_tokens=90,
+            keep_recent_tokens=10,
+            tokens_before=10,
+            tokens_after=5,
+            summary_usage={},
+            generation=generation,
+            parent_generation=generation - 1,
+        )
+    return rows, "turn:cache"
 
 
 def _queued(turn_id: str = "turn:1", thread_id: str = "programmatic:1") -> TurnRecord:
@@ -515,6 +584,69 @@ def test_session_admission_blocks_delete_from_another_connection(tmp_path) -> No
 
     runtime_store.release_session_admission("admission:one")
     assert dashboard_store.delete_session("mobile:one", cascade=True)
+    runtime_store.close()
+    dashboard_store.close()
+
+
+def test_session_manager_reloads_cached_session_after_dashboard_interaction_delete(
+    tmp_path,
+) -> None:
+    runtime = SessionManager(tmp_path)
+    dashboard_store = SessionStore(tmp_path / "sessions.db")
+    rows, control_turn_id = _seed_interaction_with_compactions(dashboard_store)
+
+    cached = runtime.get_existing("mobile:cache")
+    assert [str(message["content"]) for message in cached.messages] == [
+        "ancestor",
+        "u1",
+        "final",
+    ]
+    assert cached.last_consolidated == 3
+
+    deletion = dashboard_store.delete_interaction(control_turn_id)
+    assert deletion is not None
+    refreshed = runtime.get_existing("mobile:cache")
+    assert refreshed is not cached
+    assert [str(message["content"]) for message in refreshed.messages] == ["ancestor"]
+    assert refreshed.last_consolidated == 1
+    assert runtime.get_or_create("mobile:cache") is refreshed
+    assert runtime._store.get_session_meta("mobile:cache")["last_consolidated"] == 1
+
+    runtime.close()
+    dashboard_store.close()
+
+
+def test_interaction_delete_conflict_is_atomic_until_admission_release(tmp_path) -> None:
+    db_path = tmp_path / "sessions.db"
+    runtime_store = SessionStore(db_path)
+    dashboard_store = SessionStore(db_path)
+    rows, control_turn_id = _seed_interaction_with_compactions(dashboard_store)
+    assert runtime_store.acquire_session_admission("mobile:cache", "admission:cache")
+
+    with pytest.raises(SessionAdmissionConflictError, match="正在处理消息"):
+        dashboard_store.delete_interaction(control_turn_id)
+
+    assert [
+        message["id"]
+        for message in dashboard_store.fetch_session_messages("mobile:cache")
+    ] == [str(row["id"]) for row in rows]
+    assert dashboard_store.get_session_meta("mobile:cache")["last_consolidated"] == 3
+    blocked_compactions = dashboard_store.list_compactions("mobile:cache")
+    assert [item.invalidated_at for item in blocked_compactions] == [None, None, None]
+
+    runtime_store.release_session_admission("admission:cache")
+    deletion = dashboard_store.delete_interaction(control_turn_id)
+    assert deletion is not None
+    assert deletion.old_last_consolidated == 3
+    assert deletion.new_last_consolidated == 1
+    compactions = dashboard_store.list_compactions("mobile:cache")
+    assert compactions[0].invalidated_at is None
+    assert compactions[1].invalidated_at is not None
+    assert compactions[1].invalidated_reason == "interaction_deleted:turn:cache"
+    assert compactions[2].invalidated_at is not None
+    assert compactions[2].invalidated_reason == "interaction_deleted:turn:cache"
+    assert dashboard_store.get_session_meta("mobile:cache")["last_consolidated"] == 1
+
     runtime_store.close()
     dashboard_store.close()
 

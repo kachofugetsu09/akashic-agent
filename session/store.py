@@ -33,6 +33,14 @@ class InteractionDeleteRequiredError(ValueError):
         self.control_turn_id = control_turn_id
 
 
+class SessionAdmissionConflictError(ValueError):
+    """拒绝在 session 仍被 active turn 持有时执行破坏性删除。"""
+
+    def __init__(self, session_key: str) -> None:
+        super().__init__(f"session 正在处理消息，暂时不能删除: {session_key}")
+        self.session_key = session_key
+
+
 @dataclass(frozen=True)
 class InteractionDeletion:
     """记录一次完整 interaction 撤销及其游标变化。"""
@@ -2164,9 +2172,7 @@ class SessionStore:
             tuple(keys),
         ).fetchone()
         if row is not None:
-            raise ValueError(
-                f"session 正在处理消息，暂时不能删除: {row['session_key']}"
-            )
+            raise SessionAdmissionConflictError(str(row["session_key"]))
 
     def update_presence(
         self,
@@ -2821,18 +2827,6 @@ class SessionStore:
         now = datetime.now().astimezone().isoformat()
 
         with self._lock:
-            exists = self._conn.execute(
-                """
-                SELECT 1
-                FROM messages
-                WHERE json_extract(COALESCE(extra, '{}'), '$.control_turn_id') = ?
-                LIMIT 1
-                """,
-                (normalized_turn_id,),
-            ).fetchone()
-            if exists is None:
-                return None
-            backup_path = self._backup_before_interaction_delete_locked()
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 # 1. 解析完整 transcript，并拒绝跨 session 或非连续结构。
@@ -2889,6 +2883,10 @@ class SessionStore:
                 old_cursor = int(meta["last_consolidated"])
                 new_cursor = old_cursor
 
+                # 2. active admission 与删除共用同一写事务，避免当前 turn 在删除后提交。
+                self._require_sessions_not_admitted_locked([session_key])
+                backup_path = self._backup_before_interaction_delete_locked()
+
                 # 3. 正文、逐消息 embedding 与游标在同一事务中提交。
                 message_ids = tuple(str(row["id"]) for row in turn_rows)
                 placeholders = ",".join("?" for _ in message_ids)
@@ -2915,7 +2913,7 @@ class SessionStore:
                     (new_cursor, now, session_key),
                 )
                 self._conn.commit()
-            except Exception:
+            except BaseException:
                 self._conn.rollback()
                 raise
 
@@ -2950,16 +2948,22 @@ class SessionStore:
         candidate_path = backup_root / f".sessions-{backup_id}.db.tmp"
         candidate_path.touch(mode=0o600, exist_ok=False)
         try:
-            target = sqlite3.connect(candidate_path)
+            # 当前连接已进入 BEGIN IMMEDIATE；同一连接作为备份源会让 SQLite
+            # backup API 永久等待，因此在事务尚未写入时通过独立连接读取快照。
+            source = sqlite3.connect(self.db_path)
             try:
-                self._conn.backup(target)
-                rows = target.execute("PRAGMA integrity_check").fetchall()
-                if rows != [("ok",)]:
-                    raise RuntimeError(
-                        f"interaction 删除备份 integrity_check 失败: {rows[:3]}"
-                    )
+                target = sqlite3.connect(candidate_path)
+                try:
+                    source.backup(target)
+                    rows = target.execute("PRAGMA integrity_check").fetchall()
+                    if rows != [("ok",)]:
+                        raise RuntimeError(
+                            f"interaction 删除备份 integrity_check 失败: {rows[:3]}"
+                        )
+                finally:
+                    target.close()
             finally:
-                target.close()
+                source.close()
             _ = candidate_path.replace(backup_path)
         except (OSError, RuntimeError, sqlite3.Error):
             candidate_path.unlink(missing_ok=True)

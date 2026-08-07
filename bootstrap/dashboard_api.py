@@ -38,6 +38,7 @@ from core.memory.engine import MemoryAdminApi
 from session.store import (
     InteractionDeletion,
     InteractionDeleteRequiredError,
+    SessionAdmissionConflictError,
     SessionStore,
 )
 
@@ -1116,14 +1117,23 @@ def create_dashboard_app(
             )
 
         # 2. Akasha 先封住读写再执行窄删除回调；其他引擎只改 SessionDB。
-        deletion = (
-            await reconciler.delete_interaction_source(
-                control_turn_id,
-                lambda: store.delete_interaction(control_turn_id),
+        try:
+            deletion = (
+                await reconciler.delete_interaction_source(
+                    control_turn_id,
+                    lambda: store.delete_interaction(control_turn_id),
+                )
+                if reconciler is not None
+                else store.delete_interaction(control_turn_id)
             )
-            if reconciler is not None
-            else store.delete_interaction(control_turn_id)
-        )
+        except SessionAdmissionConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "session_busy",
+                    "session_key": exc.session_key,
+                },
+            ) from exc
         if deletion is None:
             raise HTTPException(status_code=404, detail="interaction 不存在")
         return {

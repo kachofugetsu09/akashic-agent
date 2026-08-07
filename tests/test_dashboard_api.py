@@ -748,6 +748,37 @@ def test_explicit_interaction_rejects_generic_message_deletes(tmp_path) -> None:
     store.close()
 
 
+def test_delete_interaction_returns_409_when_session_has_active_admission(
+    tmp_path,
+) -> None:
+    turn_id, message_ids = _seed_explicit_interaction(
+        tmp_path,
+        last_consolidated=0,
+    )
+    runtime_store = SessionStore(tmp_path / "sessions.db")
+    assert runtime_store.acquire_session_admission(
+        "mobile:review",
+        "admission:dashboard-conflict",
+    )
+
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        response = client.delete(f"/api/dashboard/interactions/{turn_id}")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "session_busy",
+        "session_key": "mobile:review",
+    }
+    inspector = SessionStore(tmp_path / "sessions.db")
+    assert all(
+        inspector.get_message(message_id) is not None for message_id in message_ids
+    )
+    assert inspector.get_session_meta("mobile:review")["last_consolidated"] == 0
+    inspector.close()
+    runtime_store.release_session_admission("admission:dashboard-conflict")
+    runtime_store.close()
+
+
 @pytest.mark.parametrize(
     ("old_cursor", "expected_cursor"),
     ((0, 0), (4, 2), (8, 2)),
