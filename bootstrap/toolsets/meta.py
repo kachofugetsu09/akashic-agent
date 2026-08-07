@@ -119,7 +119,7 @@ class SpawnToolsetProvider(ToolsetProvider):
             workspace=deps.workspace,
             bus=bus,
             model=config.model,
-            max_tokens=config.max_tokens,
+            max_tokens=0,
             fetch_requester=http_resources.external_default,
             multimodal=config.multimodal,
         )

@@ -32,8 +32,6 @@ class QQChannelConfig:
 @dataclass
 class WebChatConfig:
     enabled: bool = True
-    host: str = "127.0.0.1"
-    port: int = 6322
     channel_name: str = "web"
 
 
@@ -82,6 +80,7 @@ class MobileRealtimeConfig:
 
 @dataclass
 class MemoryEmbeddingConfig:
+    model_ref: str = ""
     model: str = "text-embedding-v3"
     api_key: str = ""
     base_url: str = ""
@@ -127,14 +126,22 @@ class ModelRuntimeConfig:
     runtime_id: str
     provider: str
     model: str
+    source_id: str = ""
+    source_name: str = ""
+    catalog_provider_id: str = ""
     auth: str = ""
     api_key: str = ""
     base_url: str = ""
     reasoning_effort: str = ""
+    supported_reasoning_efforts: tuple[str, ...] = ()
     context_window: int = 0
     # 0 表示不向 provider 发送输出上限，由模型服务自身边界负责。
     max_output_tokens: int = 0
     input_modalities: tuple[str, ...] = ("text",)
+    capability_source: str = "unknown"
+    context_window_source: str = "unknown"
+    max_output_tokens_source: str = "unknown"
+    input_modalities_source: str = "unknown"
     use_responses_lite: bool = False
     supports_parallel_tool_calls: bool = True
     reasoning_summary: str = "none"
@@ -146,8 +153,8 @@ class ModelRuntimeConfig:
             raise ValueError(f"runtime {self.runtime_id} 必须配置 provider 和 model")
         if self.provider == "codex" and not self.auth:
             raise ValueError(f"Codex runtime {self.runtime_id} 必须配置 auth")
-        if self.context_window <= 0:
-            raise ValueError(f"runtime {self.runtime_id} 的 context_window 必须大于 0")
+        if self.context_window < 0:
+            raise ValueError(f"runtime {self.runtime_id} 的 context_window 不能小于 0")
         if self.max_output_tokens < 0:
             raise ValueError(
                 f"runtime {self.runtime_id} 的 max_output_tokens 不能小于 0"
@@ -157,7 +164,19 @@ class ModelRuntimeConfig:
                 f"runtime {self.runtime_id} 的 max_output_tokens 必须小于 context_window"
             )
         if "text" not in self.input_modalities:
-            raise ValueError(f"runtime {self.runtime_id} 的 input_modalities 必须包含 text")
+            raise ValueError(
+                f"runtime {self.runtime_id} 的 input_modalities 必须包含 text"
+            )
+        allowed_sources = {"explicit", "provider_catalog", "litellm", "unknown"}
+        for field_name, source in (
+            ("context_window_source", self.context_window_source),
+            ("max_output_tokens_source", self.max_output_tokens_source),
+            ("input_modalities_source", self.input_modalities_source),
+        ):
+            if source not in allowed_sources:
+                raise ValueError(f"runtime {self.runtime_id} 的 {field_name} 无效")
+        if self.capability_source not in allowed_sources | {"mixed"}:
+            raise ValueError(f"runtime {self.runtime_id} 的 capability_source 无效")
         validate_profile_runtime(
             provider=self.provider,
             model=self.model,
@@ -211,6 +230,9 @@ class Config:
     fast_runtime_id: str = ""
     agent_runtime_id: str = ""
     vl_runtime_id: str = ""
+    model_registry_revision: int = 0
+    config_path: Path = Path("config.toml")
+    workspace_path: Path = Path(".")
 
     @classmethod
     def load(
@@ -218,10 +240,15 @@ class Config:
         path: str | Path = "config.toml",
         *,
         workspace: str | Path,
+        credential_store: object | None = None,
     ) -> Config:
         from importlib import import_module
 
-        return import_module("agent.config").load_config(path, workspace=workspace)
+        return import_module("agent.config").load_config(
+            path,
+            workspace=workspace,
+            credential_store=credential_store,
+        )
 
 
 __all__ = [

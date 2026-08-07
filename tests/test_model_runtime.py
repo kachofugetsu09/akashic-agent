@@ -272,6 +272,43 @@ async def test_opencode_go_catalog_uses_http_boundary_and_opencode_variants(
     assert requests == [("/v1/models", "Bearer secret")]
 
 
+@pytest.mark.asyncio
+async def test_opencode_go_catalog_uses_local_registry_when_cli_is_unavailable(
+    monkeypatch,
+) -> None:
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"data": [{"id": "deepseek-v4-flash"}]}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, *_args, **_kwargs):
+            return Response()
+
+    async def unavailable(_executable: str):
+        raise TransportError("无法执行 OpenCode 模型探测")
+
+    monkeypatch.setattr(
+        "agent.model_runtime.catalog.opencode_go.httpx.AsyncClient",
+        lambda **_kwargs: Client(),
+    )
+    monkeypatch.setattr(
+        "agent.model_runtime.catalog.opencode_go._load_opencode_go_reasoning_efforts",
+        unavailable,
+    )
+
+    models = await OpenCodeGoModelCatalog("secret").list_models()
+
+    assert models[0].supported_reasoning_efforts == ("low", "medium", "high")
+
+
 def test_credential_store_is_atomic_private_and_fail_loud(tmp_path: Path) -> None:
     path = tmp_path / "auth" / "auth.json"
     store = CredentialStore(path)
@@ -776,7 +813,10 @@ def test_usage_keeps_partial_coverage_unknown() -> None:
     ])
     parsed = _parse_usage({
         "input_tokens": 100,
-        "input_tokens_details": {"cached_tokens": 70},
+        "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 70,
+        },
         "output_tokens": 20,
         "output_tokens_details": {"reasoning_tokens": 8},
     })
@@ -784,4 +824,8 @@ def test_usage_keeps_partial_coverage_unknown() -> None:
     assert usage.coverage is UsageCoverage.PARTIAL
     assert (usage.input_tokens, usage.output_tokens) == (100, 20)
     assert parsed is not None
-    assert (parsed.cached_input_tokens, parsed.reasoning_output_tokens) == (70, 8)
+    assert (
+        parsed.cache_write_input_tokens,
+        parsed.cached_input_tokens,
+        parsed.reasoning_output_tokens,
+    ) == (0, 70, 8)

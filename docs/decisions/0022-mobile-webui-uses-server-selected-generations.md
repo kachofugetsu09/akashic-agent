@@ -4,6 +4,7 @@
 - 日期：2026-08-03
 - 关联条款：WEBUI-001～WEBUI-006、MOB-001～MOB-004、GOV-005、TST-006～TST-008
 - amends：[0018](0018-chat-webui-has-one-source-and-two-adapters.md)
+- amended by：[0029](0029-main-gateway-reconciles-mobile-webui-stable.md)
 - 设计：[服务端发布的移动 WebUI OTA](../design/server-published-mobile-webui.md)
 
 ## 背景

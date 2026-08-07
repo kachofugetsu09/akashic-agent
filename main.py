@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import signal
 import sys
@@ -563,6 +564,7 @@ async def serve(config_path: str, workspace: Path) -> int:
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
     settings_restart_event = asyncio.Event()
+    settings_reload_event = asyncio.Event()
     watched_signals = (signal.SIGINT, signal.SIGTERM)
     signal_handlers_registered = False
     for sig in watched_signals:
@@ -577,6 +579,8 @@ async def serve(config_path: str, workspace: Path) -> int:
             )
     if commit_channel is not None and hasattr(signal, "SIGUSR2"):
         loop.add_signal_handler(signal.SIGUSR2, settings_restart_event.set)
+    if commit_channel is not None and hasattr(signal, "SIGUSR1"):
+        loop.add_signal_handler(signal.SIGUSR1, settings_reload_event.set)
 
     async def commit_settings_restart() -> None:
         await settings_restart_event.wait()
@@ -585,6 +589,30 @@ async def serve(config_path: str, workspace: Path) -> int:
         await runtime.conversation_runtime.quiesce_and_drain()
         assert commit_channel is not None
         commit_channel.commit_settings(f"settings_{uuid4().hex}")
+
+    async def apply_settings_reloads() -> None:
+        """Apply every Supervisor-requested model reload in the live Gateway."""
+
+        assert commit_channel is not None
+        while True:
+            await settings_reload_event.wait()
+            settings_reload_event.clear()
+            try:
+                result = await runtime.reload_model_config(config_path)
+            except Exception as exc:
+                logging.getLogger(__name__).exception(
+                    "运行时模型配置重载失败",
+                    exc_info=exc,
+                )
+                commit_channel.settings_reloaded(
+                    success=False,
+                    detail=f"{type(exc).__name__}: {exc}",
+                )
+            else:
+                commit_channel.settings_reloaded(
+                    success=True,
+                    detail=str(result["configDigest"]),
+                )
 
     runtime_task = asyncio.create_task(runtime.run(), name="app_runtime")
     stop_task = asyncio.create_task(stop_event.wait(), name="shutdown_signal")
@@ -599,6 +627,11 @@ async def serve(config_path: str, workspace: Path) -> int:
     settings_restart_task = (
         asyncio.create_task(commit_settings_restart(), name="settings_restart")
         if commit_channel is not None and hasattr(signal, "SIGUSR2")
+        else None
+    )
+    settings_reload_task = (
+        asyncio.create_task(apply_settings_reloads(), name="settings_reload")
+        if commit_channel is not None and hasattr(signal, "SIGUSR1")
         else None
     )
     try:
@@ -632,6 +665,8 @@ async def serve(config_path: str, workspace: Path) -> int:
                 _ = loop.remove_signal_handler(sig)
         if commit_channel is not None and hasattr(signal, "SIGUSR2"):
             _ = loop.remove_signal_handler(signal.SIGUSR2)
+        if commit_channel is not None and hasattr(signal, "SIGUSR1"):
+            _ = loop.remove_signal_handler(signal.SIGUSR1)
         _ = stop_task.cancel()
         with suppress(asyncio.CancelledError):
             await stop_task
@@ -643,6 +678,10 @@ async def serve(config_path: str, workspace: Path) -> int:
             _ = settings_restart_task.cancel()
             with suppress(asyncio.CancelledError):
                 await settings_restart_task
+        if settings_reload_task is not None:
+            _ = settings_reload_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await settings_reload_task
 
 
 if __name__ == "__main__":

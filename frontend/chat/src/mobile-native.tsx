@@ -43,11 +43,16 @@ import {
   Search,
   Settings,
   Share2,
+  Sparkles,
   TimerReset,
   Wifi,
   WifiOff,
   X,
 } from "lucide-react";
+import codexIcon from "./assets/provider-icons/codex.svg";
+import deepseekIcon from "./assets/provider-icons/deepseek.svg";
+import opencodeIcon from "./assets/provider-icons/opencode.svg";
+import openrouterIcon from "./assets/provider-icons/openrouter.svg";
 import { cycleTheme, initializeTheme, setTheme, useTheme } from "../../theme/src/theme-runtime";
 import { ComposerActionButton } from "./composer-action";
 import { ConversationNavigation } from "./conversation-navigation";
@@ -248,7 +253,7 @@ interface MobilePendingMessage {
 }
 
 export interface MobileSnapshot {
-  protocolVersion: 7;
+  protocolVersion: 8;
   connection: {
     label: string;
     status: ConnectionStatus;
@@ -274,7 +279,31 @@ export interface MobileSnapshot {
     canStop: boolean;
     canSend: boolean;
   };
+  modelCatalog: MobileModelCatalog;
   runtimeInspection: MobileRuntimeInspection;
+}
+
+interface MobileModelCatalog {
+  generationId?: number;
+  defaultRuntime: string;
+  selectedRuntimeId: string;
+  selectedReasoningEffort: string;
+  runtimes: MobileModelRuntime[];
+  loading: boolean;
+  errorMessage?: string;
+}
+
+interface MobileModelRuntime {
+  id: string;
+  provider: string;
+  model: string;
+  sourceId: string;
+  sourceName: string;
+  reasoningEffort: string;
+  supportedReasoningEfforts: string[];
+  roles: string[];
+  contextWindow: number;
+  inputModalities: string[];
 }
 
 interface MobileRuntimeInspection {
@@ -386,6 +415,7 @@ interface NativeBridge {
   ): void;
   cancelPluginUiOwner(ownerId: string): void;
   setTheme(themeId: string): void;
+  setModelSelection(runtimeId: string, reasoningEffort: string): void;
 }
 
 type SnapshotRecord = Record<string, unknown>;
@@ -705,11 +735,45 @@ function parseRuntimeInspection(value: unknown): MobileRuntimeInspection {
   };
 }
 
+function parseModelCatalog(value: unknown): MobileModelCatalog {
+  const raw = requireRecord(value, "modelCatalog");
+  const generationId = raw.generationId === undefined || raw.generationId === null
+    ? undefined
+    : requireNonNegativeInteger(raw.generationId, "modelCatalog.generationId");
+  const runtimes = requireArray(raw.runtimes, "modelCatalog.runtimes", (value, index) => {
+    const runtime = requireRecord(value, `modelCatalog.runtimes[${index}]`);
+    const strings = (field: "supportedReasoningEfforts" | "roles" | "inputModalities") =>
+      requireArray(runtime[field], `modelCatalog.runtimes[${index}].${field}`, (item, itemIndex) =>
+        requireString(item, `modelCatalog.runtimes[${index}].${field}[${itemIndex}]`));
+    return {
+      id: requireString(runtime.id, `modelCatalog.runtimes[${index}].id`),
+      provider: requireString(runtime.provider, `modelCatalog.runtimes[${index}].provider`),
+      model: requireString(runtime.model, `modelCatalog.runtimes[${index}].model`),
+      sourceId: requireString(runtime.sourceId, `modelCatalog.runtimes[${index}].sourceId`),
+      sourceName: requireString(runtime.sourceName, `modelCatalog.runtimes[${index}].sourceName`),
+      reasoningEffort: requireString(runtime.reasoningEffort, `modelCatalog.runtimes[${index}].reasoningEffort`),
+      supportedReasoningEfforts: strings("supportedReasoningEfforts"),
+      roles: strings("roles"),
+      contextWindow: requireNonNegativeInteger(runtime.contextWindow, `modelCatalog.runtimes[${index}].contextWindow`),
+      inputModalities: strings("inputModalities"),
+    };
+  });
+  return {
+    generationId,
+    defaultRuntime: requireString(raw.defaultRuntime, "modelCatalog.defaultRuntime"),
+    selectedRuntimeId: requireString(raw.selectedRuntimeId, "modelCatalog.selectedRuntimeId"),
+    selectedReasoningEffort: requireString(raw.selectedReasoningEffort, "modelCatalog.selectedReasoningEffort"),
+    runtimes,
+    loading: requireBoolean(raw.loading, "modelCatalog.loading"),
+    errorMessage: optionalString(raw.errorMessage, "modelCatalog.errorMessage"),
+  };
+}
+
 /** 在 native 协议边界校验完整快照，并只补齐 Kotlin 明确定义的默认字段。 */
 function parseMobileSnapshot(value: unknown): MobileSnapshot {
   // 1. 校验协议版本与根对象
   const raw = requireRecord(value, "snapshot");
-  if (raw.protocolVersion !== 7) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
+  if (raw.protocolVersion !== 8) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
   const connection = requireRecord(raw.connection, "connection");
   const status = requireString(connection.status, "connection.status");
   if (!["connecting", "ready", "degraded", "reconnecting", "disconnected"].includes(status)) {
@@ -760,7 +824,7 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
       };
     })();
   return {
-    protocolVersion: 7,
+    protocolVersion: 8,
     connection: {
       label: requireString(connection.label, "connection.label"),
       status: status as ConnectionStatus,
@@ -816,6 +880,7 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
       canStop: requireBoolean(composer.canStop, "composer.canStop"),
       canSend: requireBoolean(composer.canSend, "composer.canSend"),
     },
+    modelCatalog: parseModelCatalog(raw.modelCatalog),
     runtimeInspection: parseRuntimeInspection(raw.runtimeInspection),
   };
 }
@@ -826,7 +891,7 @@ function parseMobileStatePatch(value: unknown): MobileStatePatch {
   if (raw.protocolVersion !== 1) {
     throw new Error(`不支持的 state patch 版本: ${String(raw.protocolVersion)}`);
   }
-  const parsed = parseMobileSnapshot({ ...raw, protocolVersion: 7, messages: [] });
+  const parsed = parseMobileSnapshot({ ...raw, protocolVersion: 8, messages: [] });
   const { messages, protocolVersion, ...state } = parsed;
   void messages;
   void protocolVersion;
@@ -2886,6 +2951,16 @@ function MobileComposer({
       {stopping ? <div className="stop-feedback" aria-live="polite">正在中止本轮处理…</div> : null}
       {snapshot.composer.transferStatus ? <TransferBanner status={snapshot.composer.transferStatus} /> : null}
       {hasDraft ? <DraftAttachments attachments={snapshot.composer.attachments} disabled={sendPending} /> : null}
+      {snapshot.modelCatalog.runtimes.length > 0 ? (
+        <MobileModelCapsule
+          defaultRuntime={snapshot.modelCatalog.defaultRuntime}
+          runtimes={snapshot.modelCatalog.runtimes}
+          selectedRuntimeId={snapshot.modelCatalog.selectedRuntimeId}
+          selectedEffort={snapshot.modelCatalog.selectedReasoningEffort}
+          disabled={snapshot.modelCatalog.loading || sendPending}
+          onChange={(runtimeId, effort) => window.AkashicNative?.setModelSelection(runtimeId, effort)}
+        />
+      ) : null}
       <div className={`mobile-composer-frame ${replyTarget ? "has-reply" : ""}`}>
         {snapshot.composer.pendingMessages.length > 1 ? (
           <PendingQueue
@@ -2936,6 +3011,215 @@ function MobileComposer({
         )}
         </div>
       </div>
+    </div>
+  );
+}
+
+const MOBILE_PROVIDER_ICONS: Record<string, string> = {
+  codex: codexIcon,
+  deepseek: deepseekIcon,
+  "opencode-go": opencodeIcon,
+  opencode: opencodeIcon,
+  openrouter: openrouterIcon,
+};
+
+const MOBILE_EFFORT_LABELS: Record<string, string> = {
+  none: "关闭",
+  minimal: "极低",
+  low: "低",
+  medium: "中",
+  high: "高",
+  xhigh: "极高",
+  max: "最大",
+};
+
+function mobileCompatibleEffort(runtime: MobileModelRuntime | undefined, current: string): string {
+  if (!runtime) return "";
+  if (current && runtime.supportedReasoningEfforts.includes(current)) return current;
+  if (runtime.reasoningEffort && runtime.supportedReasoningEfforts.includes(runtime.reasoningEffort)) {
+    return runtime.reasoningEffort;
+  }
+  if (runtime.supportedReasoningEfforts.includes("medium")) return "medium";
+  return runtime.supportedReasoningEfforts[0] || "";
+}
+
+function mobileRuntimeIcon(runtime: MobileModelRuntime): string {
+  const provider = runtime.provider.toLowerCase();
+  const source = `${runtime.sourceName} ${runtime.sourceId}`.toLowerCase();
+  if (provider.includes("codex") || source.includes("codex")) return codexIcon;
+  if (provider.includes("opencode") || source.includes("opencode")) return opencodeIcon;
+  if (provider.includes("deepseek") || source.includes("deepseek")) return deepseekIcon;
+  if (provider.includes("openrouter") || source.includes("openrouter")) return openrouterIcon;
+  return MOBILE_PROVIDER_ICONS[provider] || "";
+}
+
+function MobileModelMark({ runtime, size = 16 }: { runtime: MobileModelRuntime; size?: number }) {
+  const icon = mobileRuntimeIcon(runtime);
+  return (
+    <span className="mms-mark" aria-hidden="true" style={{ width: size, height: size }}>
+      {icon ? <img src={icon} alt="" /> : <span>{runtime.sourceName.slice(0, 1).toUpperCase()}</span>}
+    </span>
+  );
+}
+
+function mobileRuntimeContext(runtime: MobileModelRuntime): string {
+  const context = runtime.contextWindow >= 1_000_000
+    ? `${Math.round(runtime.contextWindow / 1_000_000)}M`
+    : `${Math.round(runtime.contextWindow / 1_000)}K`;
+  const modalities = runtime.inputModalities.includes("image") ? " · 视觉" : "";
+  return `${context}${modalities}`;
+}
+
+function MobileModelCapsule({
+  defaultRuntime,
+  runtimes,
+  selectedRuntimeId,
+  selectedEffort,
+  disabled,
+  onChange,
+}: {
+  defaultRuntime: string;
+  runtimes: MobileModelRuntime[];
+  selectedRuntimeId: string;
+  selectedEffort: string;
+  disabled: boolean;
+  onChange: (runtimeId: string, effort: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [view, setView] = useState<"models" | "efforts">("models");
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const effortTriggerRef = useRef<HTMLButtonElement>(null);
+  const defaultOptionRef = useRef<HTMLButtonElement>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const effortRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const defaultModel = runtimes.find((runtime) => runtime.id === defaultRuntime) || runtimes[0];
+  const explicitModel = runtimes.find((runtime) => runtime.id === selectedRuntimeId);
+  const visibleModel = explicitModel || defaultModel;
+  const visibleEffort = mobileCompatibleEffort(visibleModel, selectedEffort);
+  const groups = useMemo(() => {
+    const grouped = new Map<string, MobileModelRuntime[]>();
+    for (const runtime of runtimes) {
+      const source = runtime.sourceName || runtime.provider;
+      grouped.set(source, [...(grouped.get(source) || []), runtime]);
+    }
+    return [...grouped.entries()];
+  }, [runtimes]);
+
+  useEffect(() => {
+    if (!open) return;
+    const selectedIndex = Math.max(0, runtimes.findIndex((item) => item.id === visibleModel?.id));
+    window.setTimeout(() => {
+      if (view === "efforts") {
+        const effortIndex = Math.max(0, visibleModel.supportedReasoningEfforts.indexOf(visibleEffort));
+        effortRefs.current[effortIndex]?.focus({ preventScroll: true });
+      } else {
+        (selectedRuntimeId ? optionRefs.current[selectedIndex] : defaultOptionRef.current)?.focus({ preventScroll: true });
+      }
+    }, 0);
+    function closeOnPointer(event: PointerEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) closePicker(false);
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      closePicker(true);
+    }
+    document.addEventListener("pointerdown", closeOnPointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnPointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open, runtimes, selectedRuntimeId, visibleEffort, visibleModel, view]);
+
+  if (!visibleModel || !defaultModel) return null;
+
+  function closePicker(restoreFocus: boolean) {
+    setOpen(false);
+    setView("models");
+    if (restoreFocus) triggerRef.current?.focus({ preventScroll: true });
+  }
+
+  function choose(runtime: MobileModelRuntime) {
+    onChange(runtime.id, mobileCompatibleEffort(runtime, selectedEffort));
+  }
+
+  function chooseEffort(effort: string) {
+    onChange(visibleModel.id, effort);
+    closePicker(true);
+  }
+
+  return (
+    <div ref={rootRef} className={`mms-capsule ${open ? "is-open" : ""} ${explicitModel ? "is-pinned" : ""}`}>
+      <div className="mms-capsule__shell">
+        <div id="mms-capsule-panel" className="mms-capsule__panel" inert={!open} aria-hidden={!open} aria-label={view === "models" ? "选择模型" : "选择思考强度"}>
+          <header className="mms-capsule__header">
+            {view === "efforts" ? (
+              <button type="button" className="mms-capsule__back" onClick={() => setView("models")} aria-label="返回模型">
+                <ChevronRight size={16} aria-hidden="true" />
+                <span><strong>思考强度</strong></span>
+              </button>
+            ) : <div><strong>模型</strong></div>}
+            <small>{view === "models" ? `${runtimes.length} 个` : visibleModel.model}</small>
+          </header>
+          {view === "models" ? (
+            <div className="mms-capsule__model-view">
+              <div className="mms-capsule__list" aria-label="所有供应商的模型">
+                <section className="mms-capsule__source">
+                  <button ref={defaultOptionRef} type="button" aria-pressed={!selectedRuntimeId} className="mms-capsule__option" onClick={() => onChange("", "")}>
+                    <MobileModelMark runtime={defaultModel} />
+                    <span className="mms-capsule__copy"><strong>跟随默认模型</strong><small>{defaultModel.model}：{defaultModel.sourceName}</small></span>
+                    {!selectedRuntimeId && <Check size={16} aria-hidden="true" />}
+                  </button>
+                </section>
+                {groups.map(([source, models]) => (
+                  <section className="mms-capsule__source" aria-label={source} key={source}>
+                    <div className="mms-capsule__source-title"><strong>{source}</strong><span>{models.length}</span></div>
+                    {models.map((runtime) => {
+                      const index = runtimes.findIndex((item) => item.id === runtime.id);
+                      const active = runtime.id === selectedRuntimeId;
+                      return (
+                        <div className={`mms-capsule__option-wrap ${active ? "is-selected" : ""}`} key={runtime.id}>
+                          <button ref={(node) => { optionRefs.current[index] = node; }} type="button" aria-pressed={active} className="mms-capsule__option" onClick={() => choose(runtime)}>
+                            <MobileModelMark runtime={runtime} />
+                            <span className="mms-capsule__copy"><strong>{runtime.model}：{runtime.sourceName}</strong><small>{mobileRuntimeContext(runtime)}</small></span>
+                            {active && <Check size={16} aria-hidden="true" />}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </section>
+                ))}
+              </div>
+              {visibleModel.supportedReasoningEfforts.length > 0 ? (
+                <button ref={effortTriggerRef} type="button" className="mms-capsule__effort-entry" onClick={() => setView("efforts")}>
+                  <Sparkles size={16} aria-hidden="true" />
+                  <span><strong>思考强度</strong></span>
+                  <ChevronRight size={16} aria-hidden="true" />
+                </button>
+              ) : null}
+            </div>
+          ) : (
+            <div className="mms-capsule__effort-list" aria-label={`${visibleModel.model} 支持的思考强度`}>
+              <div className="mms-capsule__effort-model">
+                <MobileModelMark runtime={visibleModel} />
+                <span className="mms-capsule__copy"><strong>{visibleModel.model}：{visibleModel.sourceName}</strong></span>
+              </div>
+              {visibleModel.supportedReasoningEfforts.map((effort, index) => (
+                <button ref={(node) => { effortRefs.current[index] = node; }} type="button" key={effort} aria-pressed={visibleEffort === effort} className={`mms-capsule__effort-option ${visibleEffort === effort ? "is-selected" : ""}`} onClick={() => chooseEffort(effort)}>
+                  <strong>{MOBILE_EFFORT_LABELS[effort] || effort}</strong>
+                  {visibleEffort === effort && <Check size={16} aria-hidden="true" />}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+      <button ref={triggerRef} type="button" className="mms-capsule__trigger" aria-controls="mms-capsule-panel" aria-expanded={open} disabled={disabled} onClick={() => open ? closePicker(false) : setOpen(true)}>
+        <MobileModelMark runtime={visibleModel} size={13} />
+        <span className="mms-capsule__trigger-copy"><strong>{visibleModel.model}：{visibleModel.sourceName}</strong><small>{explicitModel ? "固定到此会话" : "跟随默认模型"}</small></span>
+        <ChevronDown size={13} aria-hidden="true" />
+      </button>
     </div>
   );
 }

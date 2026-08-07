@@ -54,6 +54,7 @@ class TurnCommitted:
     react_stats: dict[str, int] = field(default_factory=dict[str, int])
     extra: dict[str, Any] = field(default_factory=dict[str, Any])
     model_usage: dict[str, Any] = field(default_factory=dict[str, Any])
+    model_binding: dict[str, Any] = field(default_factory=dict[str, Any])
 
 
 @dataclass(frozen=True)

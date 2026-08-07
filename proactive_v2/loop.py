@@ -23,6 +23,7 @@ from core.error_context import current_session_key
 from agent.looping.ports import SessionServices
 from agent.core.proactive_kernel import ProactiveKernel
 from agent.provider import LLMProvider
+from agent.model_runtime.registry import model_execution_scope
 from agent.plugins.specs import RegisteredProactiveSource
 from agent.tool_hooks import ToolHook
 from agent.tools.message_push import MessagePushTool
@@ -462,20 +463,21 @@ class ProactiveLoop:
 
     async def _tick(self) -> float | None:
         """执行一次 proactive v2 tick。"""
-        if self._runtime_snapshot_store is None:
-            async with self._reload_lock:
-                return await self._tick_bound()
-        lease = await self._runtime_snapshot_store.acquire()
-        from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
-
-        async with lease:
-            token = bind_runtime_snapshot(lease)
-            try:
+        async with model_execution_scope(self._provider):
+            if self._runtime_snapshot_store is None:
                 async with self._reload_lock:
-                    await self._switch_snapshot(lease.snapshot)
                     return await self._tick_bound()
-            finally:
-                reset_runtime_snapshot(token)
+            lease = await self._runtime_snapshot_store.acquire()
+            from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+            async with lease:
+                token = bind_runtime_snapshot(lease)
+                try:
+                    async with self._reload_lock:
+                        await self._switch_snapshot(lease.snapshot)
+                        return await self._tick_bound()
+                finally:
+                    reset_runtime_snapshot(token)
 
     async def quiesce_for_reload(self) -> None:
         async with self._reload_lock:

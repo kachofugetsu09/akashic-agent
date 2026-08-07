@@ -47,6 +47,13 @@ class AkashaPlugin(Plugin):
             slots=("turn.before_reasoning",),
         )
 
+    def mobile_ui_available(self) -> bool:
+        memory_engine = self.context.memory_engine
+        return (
+            memory_engine is not None
+            and memory_engine.describe().name == "akasha"
+        )
+
     def mobile_ui_query(
         self,
         method: str,
@@ -132,18 +139,16 @@ class AkashaPlugin(Plugin):
                 "Akasha recall.current 的 message_id 必须是字符串"
             )
 
-        # 2. Synthetic active messages resolve only their exact pending retrieval.
+        # 2. 插件可安装但不拥有当前 memory engine；此时没有 Akasha recall 可展示。
+        memory_engine = self.context.memory_engine
+        if memory_engine.describe().name != "akasha":
+            return _empty_mobile_recall()
+
+        # 3. Synthetic active messages resolve only their exact pending retrieval.
         if isinstance(message_id, str) and message_id.startswith("assistant:"):
             if turn_id is None or message_id != f"assistant:{turn_id}":
                 return _empty_mobile_recall()
-            engine = cast(
-                AkashaMemoryEngine,
-                self.context.memory_engine,
-            )
-            if engine.describe().name != "akasha":
-                raise RuntimeError(
-                    "Akasha active recall requires AkashaMemoryEngine"
-                )
+            engine = cast(AkashaMemoryEngine, memory_engine)
             pending = engine.wait_for_active_recall(session_id, turn_id)
             if pending is None:
                 return _empty_mobile_recall(pending=True)

@@ -9,12 +9,12 @@
 
 .user-bubble {
   max-width: min(86%, 38rem);
-  border-radius: 18px 18px 5px 18px;
+  border-radius: var(--md-sys-shape-corner-large) var(--md-sys-shape-corner-large) var(--md-sys-shape-corner-extra-small) var(--md-sys-shape-corner-large);
   padding: 12px 16px;
   color: var(--ak-color-on-action-container);
   background: var(--ak-color-action-container);
-  font-size: 1rem;
-  line-height: 1.55;
+  font-size: var(--md-sys-typescale-body-large-size);
+  line-height: 1.5;
   overflow-wrap: break-word;
 }
 
@@ -24,8 +24,8 @@
 
 .agent-content {
   width: min(100%, 52rem);
-  color: var(--ak-color-text-primary);
-  font-size: 1rem;
+  color: var(--md-sys-color-on-surface);
+  font-size: var(--md-sys-typescale-body-large-size);
   line-height: 1.62;
   overflow-wrap: break-word;
   user-select: text;
@@ -166,9 +166,9 @@
 
 .process-trigger {
   width: auto;
-  min-height: 44px;
-  color: var(--ak-color-text-secondary);
-  font-size: 0.875rem;
+  min-height: 40px;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
   font-weight: 650;
 }
 
@@ -370,14 +370,14 @@
   display: block;
   width: 100%;
   min-width: 0;
-  min-height: 44px;
+  min-height: 40px;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--md-sys-shape-corner-small);
   padding: 5px 8px 5px 0;
   color: inherit;
   background: transparent;
   text-align: left;
-  transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1);
+  transition: background-color var(--ak-sys-duration-short) var(--ak-sys-motion-standard);
 }
 
 .tool-step-summary-static {
@@ -460,11 +460,11 @@ button.tool-step-summary:active {
 
 .tool-detail-heading {
   display: flex;
-  min-height: 48px;
+  min-height: 40px;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin: -8px 0 1px;
+  margin: -6px 0 1px;
 }
 
 .tool-detail-section h4 {
@@ -476,18 +476,18 @@ button.tool-step-summary:active {
 
 .tool-detail-copy {
   display: inline-flex;
-  min-width: 68px;
-  min-height: 48px;
+  min-width: 60px;
+  min-height: 36px;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  margin-inline-end: -10px;
+  margin-inline-end: -8px;
   border: 0;
-  border-radius: var(--m-shape-full);
+  border-radius: var(--md-sys-shape-corner-full);
   padding: 0 10px;
-  color: var(--ak-color-action-primary);
+  color: var(--md-sys-color-on-surface-variant);
   background: transparent;
-  font-size: 0.75rem;
+  font-size: var(--md-sys-typescale-label-medium-size);
   font-weight: 650;
   transition: scale 180ms cubic-bezier(0.2, 0, 0, 1), background-color 180ms cubic-bezier(0.2, 0, 0, 1);
 }
@@ -495,7 +495,12 @@ button.tool-step-summary:active {
 .tool-detail-copy:hover,
 .tool-detail-copy:active {
   scale: 0.96;
-  background: color-mix(in oklch, var(--ak-color-action-primary) 10%, transparent);
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
+}
+
+.tool-detail-copy.copied {
+  color: var(--ak-sys-color-success);
+  background: color-mix(in srgb, var(--ak-sys-color-success) 12%, transparent);
 }
 
 .tool-parameter-list {
@@ -584,13 +589,13 @@ button.tool-step-summary:active {
 
 .composer-reply {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) 44px;
-  min-height: 54px;
+  grid-template-columns: 24px minmax(0, 1fr) 40px;
+  min-height: 52px;
   align-items: center;
   gap: 6px;
-  padding: 5px 7px 1px 16px;
+  padding: 4px 6px 4px 16px;
   color: var(--ak-color-on-action-container);
-  background: color-mix(in oklch, var(--ak-color-action-container) 48%, var(--ak-color-bg-surface));
+  background: color-mix(in oklch, var(--ak-color-action-container) 48%, var(--md-sys-color-surface-container-high));
 }
 
 .composer-reply > svg {
@@ -605,15 +610,15 @@ button.tool-step-summary:active {
 
 .composer-reply strong {
   color: var(--ak-color-on-action-container);
-  font-size: 0.75rem;
+  font-size: var(--md-sys-typescale-label-medium-size);
   font-weight: 650;
   line-height: 1.35;
 }
 
 .composer-reply span {
   overflow: hidden;
-  color: var(--ak-color-text-secondary);
-  font-size: 0.8125rem;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -622,13 +627,13 @@ button.tool-step-summary:active {
 .composer-reply > button,
 .shared-message-actions button {
   display: grid;
-  width: 44px;
-  height: 44px;
+  width: 40px;
+  height: 40px;
   place-items: center;
   border: 0;
-  border-radius: 50%;
+  border-radius: var(--md-sys-shape-corner-full);
   padding: 0;
-  color: var(--ak-color-text-secondary);
+  color: var(--md-sys-color-on-surface-variant);
   background: transparent;
   transition: scale 150ms cubic-bezier(0.2, 0, 0, 1), background-color 150ms cubic-bezier(0.2, 0, 0, 1), color 150ms cubic-bezier(0.2, 0, 0, 1);
 }
@@ -638,18 +643,19 @@ button.tool-step-summary:active {
 .shared-message-actions button:hover,
 .shared-message-actions button:active {
   scale: 0.96;
-  background: color-mix(in oklch, var(--ak-color-action-primary) 12%, transparent);
+  color: var(--md-sys-color-on-surface);
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
 }
 
 .shared-message-meta {
   display: flex;
   width: fit-content;
-  min-height: 44px;
+  min-height: 40px;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   margin-top: 2px;
-  color: var(--ak-color-text-secondary);
-  font-size: 0.75rem;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-label-medium-size);
   font-variant-numeric: tabular-nums;
 }
 
@@ -665,8 +671,8 @@ button.tool-step-summary:active {
 }
 
 .shared-message-actions button.copied {
-  color: var(--ak-color-action-primary);
-  background: color-mix(in oklch, var(--ak-color-action-primary) 12%, transparent);
+  color: var(--ak-sys-color-success);
+  background: color-mix(in srgb, var(--ak-sys-color-success) 12%, transparent);
 }
 
 @keyframes shared-trace-item-in {

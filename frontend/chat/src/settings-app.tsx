@@ -1,32 +1,48 @@
-import { useEffect, useMemo, useState } from "react";
-import type { ReactNode } from "react";
-import { Check, ChevronRight, KeyRound, LoaderCircle, Palette, RefreshCw, Settings2 } from "lucide-react";
-import { Input } from "@/components/ui/input";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import "./settings.css";
+  Check,
+  ChevronRight,
+  Eye,
+  EyeOff,
+  KeyRound,
+  LoaderCircle,
+  Palette,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  X,
+} from "lucide-react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import codexIcon from "./assets/provider-icons/codex.svg";
+import deepseekIcon from "./assets/provider-icons/deepseek.svg";
+import opencodeIcon from "./assets/provider-icons/opencode.svg";
 import { cycleTheme, useTheme } from "../../theme/src/theme-runtime";
-import { MaterialButton, MaterialFilterChip } from "../../theme/src/material-react";
+import { MemorySettings, type MemorySettingsState } from "./memory-settings";
+import "./settings.css";
 
 const isEmbeddedShell = new URLSearchParams(window.location.search).get("embedded") === "1";
-
-type ProviderKind = "api" | "opencode-go" | "codex";
+type ConnectionKind = "api" | "opencode-go" | "codex";
+type ModelRole = "default" | "fast" | "agent" | "vision";
 
 interface RuntimeSummary {
   id: string;
   provider: string;
   model: string;
+  sourceId: string;
+  sourceName: string;
+  catalogProvider: string;
   baseUrl: string;
   contextWindow: number;
   maxOutputTokens: number;
   inputModalities: string[];
   reasoningEffort: string;
-  credential: { configured: boolean; source: string };
+  supportedReasoningEfforts: string[];
+  credential: { id: string; configured: boolean; source: string };
+}
+
+interface RoleBinding {
+  modelId: string;
+  reasoningEffort: string;
 }
 
 interface SettingsState {
@@ -35,8 +51,12 @@ interface SettingsState {
   error?: string;
   activeRuntime: string | null;
   runtimes: RuntimeSummary[];
+  roleBindings: Partial<Record<ModelRole, RoleBinding>>;
+  modelRevision: number;
   codexConfigured: boolean;
   localOpenCodeConfigured: boolean;
+  configRevision: string;
+  memory: MemorySettingsState;
 }
 
 interface ModelOption {
@@ -57,186 +77,235 @@ interface CodexLoginState {
   error: string;
 }
 
-const providers: Array<{ id: ProviderKind; name: string; note: string }> = [
-  { id: "api", name: "API Key", note: "任意 OpenAI Chat Completions 端点" },
-  { id: "opencode-go", name: "OpenCode Go", note: "使用订阅内可用的 Chat 模型" },
-  { id: "codex", name: "Codex Auth", note: "复用本机 ChatGPT Codex 登录" },
+interface ConnectionGroup {
+  sourceId: string;
+  sourceName: string;
+  provider: string;
+  baseUrl: string;
+  runtimes: RuntimeSummary[];
+}
+
+interface ConnectionDraft {
+  sourceId: string;
+  sourceName: string;
+  kind: ConnectionKind;
+  provider: string;
+  baseUrl: string;
+  apiKey: string;
+  credentialId: string;
+  model: string;
+  reasoningEffort: string;
+}
+
+const PROVIDER_TEMPLATES = [
+  { kind: "codex" as const, provider: "codex", name: "Codex", detail: "ChatGPT 订阅登录", baseUrl: "", icon: codexIcon },
+  { kind: "opencode-go" as const, provider: "opencode-go", name: "OpenCode Go", detail: "本机登录或 API Key", baseUrl: "https://opencode.ai/zen/go/v1", icon: opencodeIcon },
+  { kind: "api" as const, provider: "deepseek", name: "DeepSeek", detail: "官方 API", baseUrl: "https://api.deepseek.com/v1", icon: deepseekIcon },
+  { kind: "api" as const, provider: "", name: "自定义 API", detail: "连接任意兼容服务", baseUrl: "", icon: "" },
 ];
 
+const ROLE_LABELS: Record<ModelRole, { title: string; detail: string }> = {
+  default: { title: "默认模型", detail: "普通模型调用与系统默认" },
+  agent: { title: "Agent 模型", detail: "被动对话与计划任务 ReAct" },
+  fast: { title: "轻量模型", detail: "压缩、标签与后台提取" },
+  vision: { title: "视觉模型", detail: "包含图片的输入" },
+};
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      "X-Akasic-CSRF": "1",
-      ...init?.headers,
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers: { "Content-Type": "application/json", "X-Akasic-CSRF": "1", ...init?.headers },
+    });
+  } catch (reason) {
+    if (reason instanceof TypeError) throw new Error("无法连接 Akashic。请确认服务仍在运行，然后重试。", { cause: reason });
+    throw reason;
+  }
   const text = await response.text();
   let payload: { detail?: string; message?: string };
   try {
     payload = text ? JSON.parse(text) as { detail?: string; message?: string } : {};
   } catch {
-    if (!response.ok) throw new Error(`设置服务请求失败 (${response.status})`);
-    throw new Error("设置服务返回了无效响应");
+    throw new Error(`设置服务返回了无效响应 (${response.status})`);
   }
   if (!response.ok) throw new Error(payload.detail || payload.message || `请求失败 (${response.status})`);
   return payload as T;
 }
 
-function runtimeKind(runtime: RuntimeSummary): ProviderKind {
-  if (runtime.provider === "opencode-go") return "opencode-go";
-  if (runtime.provider === "codex") return "codex";
+function connectionKind(provider: string): ConnectionKind {
+  if (provider === "codex") return "codex";
+  if (provider === "opencode-go") return "opencode-go";
   return "api";
+}
+
+function providerIcon(provider: string): string {
+  return PROVIDER_TEMPLATES.find((item) => item.provider === provider)?.icon || "";
+}
+
+function createDraft(template = PROVIDER_TEMPLATES[0], existing?: ConnectionGroup): ConnectionDraft {
+  return {
+    sourceId: existing?.sourceId || `source-${crypto.randomUUID()}`,
+    sourceName: existing?.sourceName || (template.provider ? template.name : ""),
+    kind: existing ? connectionKind(existing.provider) : template.kind,
+    provider: existing?.provider || template.provider,
+    baseUrl: existing?.baseUrl || template.baseUrl,
+    apiKey: "",
+    credentialId: existing?.runtimes[0]?.credential.id || "",
+    model: existing?.runtimes[0]?.model || "",
+    reasoningEffort: existing?.runtimes[0]?.reasoningEffort || "",
+  };
+}
+
+function ConnectionMark({ provider, name }: { provider: string; name: string }) {
+  const icon = providerIcon(provider);
+  return <span className="settings-connection-mark" aria-hidden="true">{icon ? <img src={icon} alt="" /> : provider ? name.slice(0, 1).toUpperCase() : <KeyRound size={20} />}</span>;
 }
 
 export function SettingsApp() {
   const theme = useTheme();
   const [state, setState] = useState<SettingsState | null>(null);
-  const [kind, setKind] = useState<ProviderKind>("api");
-  const [provider, setProvider] = useState("openai");
-  const [baseUrl, setBaseUrl] = useState("https://api.openai.com/v1");
-  const [apiKey, setApiKey] = useState("");
-  const [model, setModel] = useState("");
-  const [contextWindow, setContextWindow] = useState("128000");
-  const [maxOutputTokens, setMaxOutputTokens] = useState("0");
-  const [reasoningEffort, setReasoningEffort] = useState("");
+  const [query, setQuery] = useState("");
+  const [draft, setDraft] = useState<ConnectionDraft | null>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
-  const [loadingModels, setLoadingModels] = useState(false);
+  const [discovering, setDiscovering] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [showKey, setShowKey] = useState(false);
+  const [toast, setToast] = useState("");
   const [error, setError] = useState("");
   const [codexLogin, setCodexLogin] = useState<CodexLoginState | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const dialogReturnFocusRef = useRef<HTMLElement | null>(null);
+  const openDraftId = draft?.sourceId;
 
-  useEffect(() => {
-    requestJson<SettingsState>("/api/settings/state")
-      .then((next) => {
-        setState(next);
-        const active = next.runtimes.find((item) => item.id === next.activeRuntime);
-        if (active) selectRuntime(active);
-      })
-      .catch((reason: Error) => setError(reason.message));
-  }, []);
+  async function refreshState() {
+    const next = await requestJson<SettingsState>("/api/settings/state");
+    setState(next);
+    return next;
+  }
+
+  useEffect(() => { refreshState().catch((reason: Error) => setError(reason.message)); }, []);
 
   useEffect(() => {
     if (!codexLogin || codexLogin.status !== "waiting") return;
     const timer = window.setInterval(async () => {
-      const next = await requestJson<CodexLoginState>(`/api/settings/codex-login/${codexLogin.loginId}`);
-      setCodexLogin(next);
-      if (next.status === "completed") {
-        setState(await requestJson<SettingsState>("/api/settings/state"));
+      try {
+        const next = await requestJson<CodexLoginState>(`/api/settings/codex-login/${codexLogin.loginId}`);
+        setCodexLogin(next);
+        if (next.status === "completed") {
+          await refreshState();
+          setToast("Codex 登录已完成，可以发现模型了");
+        }
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : String(reason));
       }
     }, Math.max(3, codexLogin.interval) * 1000);
     return () => window.clearInterval(timer);
   }, [codexLogin]);
 
-  const selectedRuntime = useMemo(
-    () => state?.runtimes.find((item) => runtimeKind(item) === kind),
-    [kind, state],
-  );
+  useEffect(() => {
+    if (!openDraftId) return;
+    dialogReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const first = dialogRef.current?.querySelector<HTMLElement>(".settings-dialog-body input, .settings-dialog-body button, .settings-dialog-body select");
+    first?.focus();
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") closeDialog();
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = [...dialogRef.current.querySelectorAll<HTMLElement>("button, input, select")].filter((item) => !item.hasAttribute("disabled"));
+      const firstItem = focusable[0];
+      const lastItem = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === firstItem) { event.preventDefault(); lastItem?.focus(); }
+      if (!event.shiftKey && document.activeElement === lastItem) { event.preventDefault(); firstItem?.focus(); }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [openDraftId]);
 
-  const selectedModel = models.find((item) => item.id === model);
-  const effortOptions = selectedModel?.supportedReasoningEfforts ?? [];
+  const connections = useMemo(() => {
+    const groups = new Map<string, ConnectionGroup>();
+    for (const runtime of state?.runtimes || []) {
+      const sourceId = runtime.sourceId || runtime.id;
+      const current = groups.get(sourceId);
+      if (current) current.runtimes.push(runtime);
+      else groups.set(sourceId, { sourceId, sourceName: runtime.sourceName || runtime.provider, provider: runtime.provider, baseUrl: runtime.baseUrl, runtimes: [runtime] });
+    }
+    const normalized = query.trim().toLowerCase();
+    return [...groups.values()].filter((group) => `${group.sourceName} ${group.provider} ${group.runtimes.map((item) => item.model).join(" ")}`.toLowerCase().includes(normalized));
+  }, [query, state]);
+  const hasConnections = Boolean(state?.runtimes.length);
 
-  function selectRuntime(runtime: RuntimeSummary) {
-    setKind(runtimeKind(runtime));
-    setProvider(runtime.provider);
-    setBaseUrl(runtime.baseUrl);
-    setModel(runtime.model);
-    setContextWindow(String(runtime.contextWindow || 128000));
-    setMaxOutputTokens(String(runtime.maxOutputTokens ?? 0));
-    setReasoningEffort(runtime.reasoningEffort || "");
-    setApiKey("");
+  function closeDialog() {
+    setDraft(null);
     setModels([]);
-  }
-
-  function chooseProvider(next: ProviderKind) {
-    setKind(next);
-    setApiKey("");
-    setModels([]);
-    setSaved(false);
     setError("");
-    const existing = state?.runtimes.find((item) => runtimeKind(item) === next);
-    if (existing) {
-      selectRuntime(existing);
-      return;
-    }
-    if (next === "opencode-go") {
-      setProvider("opencode-go");
-      setBaseUrl("https://opencode.ai/zen/go/v1");
-      setModel("");
-      setContextWindow("128000");
-      setMaxOutputTokens("0");
-      setReasoningEffort("");
-    } else if (next === "codex") {
-      setProvider("codex");
-      setBaseUrl("");
-      setModel("");
-      setContextWindow("128000");
-      setMaxOutputTokens("0");
-      setReasoningEffort("");
-    } else {
-      setProvider("openai");
-      setBaseUrl("https://api.openai.com/v1");
-      setModel("");
-      setMaxOutputTokens("0");
-      setReasoningEffort("");
-    }
+    window.setTimeout(() => dialogReturnFocusRef.current?.focus(), 0);
   }
 
-  async function loadModels() {
-    setLoadingModels(true);
+  async function discoverModels() {
+    if (!draft) return;
+    setDiscovering(true);
     setError("");
     try {
       const result = await requestJson<{ models: ModelOption[] }>("/api/settings/models", {
         method: "POST",
         body: JSON.stringify({
-          provider,
-          api_key: apiKey,
-          base_url: baseUrl,
-          use_local_opencode: kind === "opencode-go" && Boolean(state?.localOpenCodeConfigured),
+          provider: draft.provider,
+          model: "",
+          api_key: draft.apiKey,
+          base_url: draft.baseUrl,
+          credential_id: draft.kind === "codex" ? "codex_default" : draft.credentialId,
+          use_local_opencode: draft.kind === "opencode-go" && Boolean(state?.localOpenCodeConfigured) && !draft.apiKey,
         }),
       });
       setModels(result.models);
-      if (!model && result.models[0]) applyModel(result.models[0]);
+      if (result.models[0]) {
+        setDraft((current) => current ? { ...current, model: current.model || result.models[0].id, reasoningEffort: current.reasoningEffort || result.models[0].defaultReasoningEffort || "" } : current);
+      }
+      if (!result.models.length) setError("没有发现模型。请确认 Base URL 和认证，或手动填写模型名。");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setLoadingModels(false);
+      setDiscovering(false);
     }
   }
 
-  function applyModel(option: ModelOption) {
-    setModel(option.id);
-    if (option.contextWindow) setContextWindow(String(option.contextWindow));
-    if (!reasoningEffort && option.defaultReasoningEffort) {
-      setReasoningEffort(option.defaultReasoningEffort);
-    }
-  }
-
-  async function save() {
+  async function saveConnection(event: FormEvent) {
+    event.preventDefault();
+    if (!draft) return;
     setSaving(true);
-    setSaved(false);
     setError("");
     try {
+      const accountCatalog = draft.kind === "codex" || draft.kind === "opencode-go";
+      const selected = accountCatalog ? undefined : models.find((item) => item.id === draft.model);
+      const firstConnection = !state?.runtimes.length;
       await requestJson("/api/settings/apply", {
         method: "POST",
         body: JSON.stringify({
-          provider,
-          model,
-          api_key: apiKey,
-          credential_id: kind === "codex" ? "codex_default" : "",
-          use_local_opencode: kind === "opencode-go" && !apiKey && Boolean(state?.localOpenCodeConfigured),
-          base_url: baseUrl,
-          context_window: Number(contextWindow),
-          max_output_tokens: Number(maxOutputTokens),
-          reasoning_effort: reasoningEffort,
-          input_modalities: ["text"],
+          provider: draft.provider,
+          model: accountCatalog ? "" : draft.model,
+          source_id: draft.sourceId,
+          source_name: draft.sourceName,
+          api_key: draft.apiKey,
+          base_url: draft.baseUrl,
+          credential_id: draft.kind === "codex" ? "codex_default" : draft.credentialId,
+          use_local_opencode: draft.kind === "opencode-go" && Boolean(state?.localOpenCodeConfigured) && !draft.apiKey,
+          reasoning_effort: draft.reasoningEffort,
+          context_window: selected?.contextWindow || 0,
+          max_output_tokens: selected?.maxOutputTokens || 0,
+          input_modalities: selected?.inputModalities,
+          expected_config_revision: state?.configRevision || "",
+          defer_restart: firstConnection,
         }),
       });
-      setApiKey("");
-      setSaved(true);
-      setState(await requestJson<SettingsState>("/api/settings/state"));
+      await refreshState();
+      setToast(firstConnection ? `${draft.sourceName} 已保存，接下来配置记忆` : `${draft.sourceName} 已保存，密钥不会显示在页面中`);
+      closeDialog();
+      if (isEmbeddedShell && !firstConnection) {
+        window.parent.postMessage(
+          { type: "akashic.settings.applied" },
+          window.location.origin,
+        );
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -247,211 +316,136 @@ export function SettingsApp() {
   async function beginCodexLogin() {
     setError("");
     try {
-      const login = await requestJson<CodexLoginState>("/api/settings/codex-login", {
-        method: "POST",
-        body: "{}",
-      });
-      setCodexLogin(login);
+      setCodexLogin(await requestJson<CodexLoginState>("/api/settings/codex-login", { method: "POST", body: "{}" }));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
   }
 
-  if (!state && !error) {
-    return <div className="settings-loading"><LoaderCircle className="animate-spin" /> 正在读取设置</div>;
+  async function updateRole(role: ModelRole, modelId: string) {
+    setError("");
+    try {
+      const binding = state?.roleBindings[role];
+      await requestJson("/api/settings/roles", {
+        method: "POST",
+        body: JSON.stringify({ role, model_id: modelId, reasoning_effort: binding?.reasoningEffort || "", expected_revision: state?.modelRevision }),
+      });
+      await refreshState();
+      setToast(`${ROLE_LABELS[role].title}已更新；正在运行的任务继续使用旧快照`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
   }
 
-  if (state?.mode === "needs_repair") {
-    return (
-      <main className="settings-page">
-        <section className="settings-repair">
-          <Settings2 aria-hidden="true" />
-          <h1>配置需要手动处理</h1>
-          <p>{state.error || "当前 config.toml 不是受支持的新格式。"}</p>
-          <p className="settings-muted">本版本不会自动迁移旧配置，也不会覆盖原文件。</p>
-        </section>
-      </main>
-    );
-  }
-
-  const keyConfigured = selectedRuntime?.credential.configured || false;
-  const authReady = kind === "codex"
-    ? Boolean(state?.codexConfigured)
-    : kind === "opencode-go"
-      ? Boolean(apiKey || keyConfigured || state?.localOpenCodeConfigured)
-      : Boolean(apiKey || keyConfigured);
-  const canSave = Boolean(model && provider && contextWindow && maxOutputTokens && authReady);
+  if (!state && !error) return <div className="settings-loading"><LoaderCircle className="is-spinning" />正在读取模型连接</div>;
+  if (state?.mode === "needs_repair") return <main className="settings-page"><section className="settings-repair"><ShieldCheck /><h1>配置需要手动处理</h1><p>{state.error}</p></section></main>;
+  if (state?.runtimes.length && !state.memory.configured) return <main className="settings-page">
+    <div className="settings-shell settings-shell--onboarding">
+      <MemorySettings
+        memory={state.memory}
+        modelRevision={state.modelRevision}
+        onboarding
+        onRefresh={async () => (await refreshState()).memory}
+        onError={setError}
+        onNotice={setToast}
+        onComplete={(message) => {
+          setToast(message);
+          if (isEmbeddedShell) window.parent.postMessage({ type: "akashic.settings.applied" }, window.location.origin);
+          window.setTimeout(() => {
+            if (isEmbeddedShell) window.parent.location.href = "/";
+            else window.location.href = "/";
+          }, 350);
+        }}
+      />
+      {error && <p className="settings-inline-error" role="alert">{error}</p>}
+    </div>
+    <div className="settings-toast-region" aria-live="polite" aria-atomic="true">{toast && <div className="settings-toast" role="status"><Check size={18} /><span><strong>{toast}</strong></span><button type="button" onClick={() => setToast("")} aria-label="关闭通知"><X size={16} /></button></div>}</div>
+  </main>;
 
   return (
     <main className="settings-page">
-      <div className="settings-shell">
+      <div className={`settings-shell ${hasConnections ? "" : "settings-shell--first-run"}`}>
         <header className="settings-header">
-          <div>
-            <h1>{state?.mode === "needs_setup" ? "连接你的模型" : "模型与认证"}</h1>
-            <p>选择一个 Provider，验证后安全切换。已保存的密钥不会显示在页面中。</p>
-          </div>
+          <div><h1>{hasConnections ? "模型连接" : "连接你的第一个模型"}</h1><p>{hasConnections ? "每套账号或 API Key 都是独立连接；保存后自动识别模型能力。" : "选择登录方式或 API 服务。连接成功后，再决定是否启用记忆。"}</p></div>
           <div className="settings-header-actions">
-            {!isEmbeddedShell && <button className="settings-theme-button" type="button" onClick={cycleTheme}>
-              <Palette aria-hidden="true" /> {theme.label}
-            </button>}
-            {state?.mode === "ready" && !isEmbeddedShell && (
-              <a className="settings-chat-link" href={`http://${window.location.hostname}:6322`}>
-                打开聊天 <ChevronRight />
-              </a>
-            )}
+            {!isEmbeddedShell && <button type="button" className="settings-quiet-button" onClick={cycleTheme}><Palette size={17} />{theme.label}</button>}
           </div>
         </header>
 
-        <div className="settings-layout">
-          <nav className="provider-list" aria-label="Provider">
-            {providers.map((item) => {
-              const runtime = state?.runtimes.find((entry) => runtimeKind(entry) === item.id);
-              const active = runtime?.id === state?.activeRuntime;
-              return (
-                <button
-                  className={`provider-option ${kind === item.id ? "is-selected" : ""}`}
-                  key={item.id}
-                  onClick={() => chooseProvider(item.id)}
-                  type="button"
-                >
-                  <span className="provider-title">{item.name}</span>
-                  <span className="provider-note">{item.note}</span>
-                  {active && <span className="provider-active"><Check /> 当前使用</span>}
-                </button>
-              );
-            })}
-          </nav>
+        {hasConnections && <label className="settings-search"><Search size={18} aria-hidden="true" /><span className="sr-only">搜索模型连接</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索连接或模型" /></label>}
 
-          <section
-            className="settings-panel"
-            key={kind}
-          >
-            <div className="panel-heading">
-              <div className="panel-icon"><KeyRound /></div>
-              <div>
-                <h2>{providers.find((item) => item.id === kind)?.name}</h2>
-                <p>{keyConfigured ? "已保存认证；留空即可继续使用" : "完成认证并选择模型"}</p>
-              </div>
-            </div>
+        {hasConnections && <section className="settings-section">
+          <header><div><h2>已连接</h2><p>同一供应商可以添加多个账号，模型选择时按连接名称区分。</p></div><span>{connections.length} 个</span></header>
+          <div className="settings-gallery">
+            {connections.map((group) => <button type="button" className="settings-connection-card" key={group.sourceId} onClick={() => setDraft(createDraft(PROVIDER_TEMPLATES[0], group))}>
+              <ConnectionMark provider={group.provider} name={group.sourceName} />
+              <span className="settings-card-copy"><strong>{group.sourceName}</strong><small>{group.provider} · {group.runtimes.map((item) => item.model).join("、")}</small></span>
+              <span className="settings-card-meta"><i><span />已连接</i><small>{group.runtimes.length} 个模型</small></span>
+              <ChevronRight size={18} aria-hidden="true" />
+            </button>)}
+          </div>
+        </section>}
 
-            {kind === "api" && (
-              <div className="field-grid two-columns">
-                <Field label="Provider ID"><Input value={provider} onChange={(event) => setProvider(event.target.value)} /></Field>
-                <Field label="Base URL"><Input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></Field>
-              </div>
-            )}
+        <section className={`settings-section settings-section--templates ${hasConnections ? "" : "is-first-run"}`}>
+          <header><div><h2>{hasConnections ? "添加其他连接" : "选择连接方式"}</h2><p>{hasConnections ? "可以继续添加另一个账号或服务。" : "Codex 与 OpenCode 登录后自动同步模型；API 服务会先检测模型目录。"}</p></div></header>
+          <div className="settings-gallery">
+            {PROVIDER_TEMPLATES.map((template) => <button type="button" className="settings-connection-card" key={template.provider} onClick={() => setDraft(createDraft(template))}>
+              <ConnectionMark provider={template.provider} name={template.name} /><span className="settings-card-copy"><strong>{template.name}</strong><small>{template.detail}</small></span><ChevronRight className="settings-template-action" size={18} aria-hidden="true" />
+            </button>)}
+          </div>
+        </section>
 
-            {kind !== "codex" && (
-              <Field label={kind === "opencode-go" ? "OpenCode Go Key" : "API Key"} hint={
-                kind === "opencode-go" && state?.localOpenCodeConfigured
-                  ? "已检测到本机 OpenCode Go 登录，可直接使用"
-                  : keyConfigured ? "已配置；只在需要替换时输入" : undefined
-              }>
-                <Input
-                  autoComplete="new-password"
-                  type="password"
-                  value={apiKey}
-                  onChange={(event) => setApiKey(event.target.value)}
-                  placeholder={authReady ? "••••••••（已配置）" : "输入密钥"}
-                />
-              </Field>
-            )}
+        {state?.runtimes.length ? <section className="settings-section settings-roles">
+          <header><div><h2>系统模型</h2><p>修改后不重启进程；正在运行的完整 turn 保持旧快照，下一个执行读取最新绑定。</p></div></header>
+          <div className="settings-role-grid">
+            {(Object.keys(ROLE_LABELS) as ModelRole[]).map((role) => <label key={role}><span><strong>{ROLE_LABELS[role].title}</strong><small>{ROLE_LABELS[role].detail}</small></span><select value={state.roleBindings[role]?.modelId || state.activeRuntime || ""} onChange={(event) => updateRole(role, event.target.value)}>{state.runtimes.map((runtime) => <option key={runtime.id} value={runtime.id}>{runtime.model}：{runtime.sourceName}</option>)}</select></label>)}
+          </div>
+        </section> : null}
 
-            {kind === "codex" && (
-              <div className={`auth-status ${state?.codexConfigured ? "is-ready" : ""}`}>
-                {state?.codexConfigured ? (
-                  <span>本机 Codex 登录可用</span>
-                ) : codexLogin ? (
-                  <div className="codex-device-login">
-                    <span>{codexLogin.status === "waiting" ? "在 OpenAI 页面输入代码" : codexLogin.error}</span>
-                    <strong>{codexLogin.userCode}</strong>
-                    <a href={codexLogin.verificationUri} target="_blank" rel="noreferrer">打开授权页面</a>
-                  </div>
-                ) : (
-                  <>
-                    <span>尚未找到 Codex 登录</span>
-                    <MaterialButton variant="outlined" onClick={beginCodexLogin}>登录 Codex</MaterialButton>
-                  </>
-                )}
-              </div>
-            )}
-
-            <div className="model-row">
-              <Field label="模型">
-                {models.length ? (
-                  <Select value={model} onValueChange={(value) => applyModel(models.find((item) => item.id === value)!)}>
-                    <SelectTrigger><SelectValue placeholder="选择模型" /></SelectTrigger>
-                    <SelectContent>{models.map((item) => <SelectItem key={item.id} value={item.id}>{item.id}</SelectItem>)}</SelectContent>
-                  </Select>
-                ) : (
-                  <Input value={model} onChange={(event) => setModel(event.target.value)} placeholder="模型 ID" />
-                )}
-              </Field>
-              {kind !== "api" && (
-                <MaterialButton variant="tonal" onClick={loadModels} disabled={loadingModels || !authReady} loading={loadingModels}>
-                  {!loadingModels && <RefreshCw />}
-                  探测模型与档位
-                </MaterialButton>
-              )}
-            </div>
-
-            <Field label="思考强度" hint={effortOptions.length ? "候选来自所选模型的实时目录，也可以输入自定义值" : "填写模型支持的推理强度，留空使用 Provider 默认"}>
-              <div className="effort-control">
-                <Input
-                  aria-label="自定义思考强度"
-                  value={reasoningEffort}
-                  onChange={(event) => setReasoningEffort(event.target.value)}
-                  placeholder="留空使用 Provider 默认；也可输入自定义值"
-                />
-                {effortOptions.length > 0 && (
-                  <div className="effort-options" aria-label="探测到的思考强度" role="group">
-                    <MaterialFilterChip
-                      selected={!reasoningEffort}
-                      onClick={() => setReasoningEffort("")}
-                    >
-                      Provider 默认
-                    </MaterialFilterChip>
-                    {effortOptions.map((item) => (
-                      <MaterialFilterChip
-                        selected={reasoningEffort === item}
-                        key={item}
-                        onClick={() => setReasoningEffort(item)}
-                      >
-                        {item}
-                      </MaterialFilterChip>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </Field>
-
-            <div className="field-grid two-columns">
-              <Field label="上下文窗口"><Input inputMode="numeric" value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} /></Field>
-              <Field label="最大输出（0 由 Provider 决定）"><Input inputMode="numeric" value={maxOutputTokens} onChange={(event) => setMaxOutputTokens(event.target.value)} /></Field>
-            </div>
-
-            {error && <div className="settings-error" role="alert">{error}</div>}
-            {saved && <div className="settings-success"><Check /> 已应用配置，Gateway 正在使用新的 Provider。</div>}
-
-            <footer className="panel-footer">
-              <span>保存前会发送一条最小真实请求验证模型。</span>
-              <MaterialButton onClick={save} disabled={!canSave || saving} loading={saving}>
-                {state?.mode === "needs_setup" ? "验证并启动" : "验证并切换"}
-              </MaterialButton>
-            </footer>
-          </section>
-        </div>
+        {state?.runtimes.length ? <MemorySettings
+          memory={state.memory}
+          modelRevision={state.modelRevision}
+          onRefresh={async () => (await refreshState()).memory}
+          onError={setError}
+          onNotice={setToast}
+          onComplete={async (message) => { setToast(message); await refreshState(); }}
+        /> : null}
+        {error && !draft && <p className="settings-inline-error" role="alert">{error}</p>}
       </div>
-    </main>
-  );
-}
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  return (
-    <label className="settings-field">
-      <span>{label}</span>
-      {children}
-      {hint && <small>{hint}</small>}
-    </label>
+      {draft && createPortal(<div className="settings-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) closeDialog(); }}>
+        <div ref={dialogRef} className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title">
+          <header><div><h2 id="settings-dialog-title">{connections.some((item) => item.sourceId === draft.sourceId) ? `编辑 ${draft.sourceName}` : draft.kind === "codex" ? "连接 Codex" : draft.kind === "opencode-go" ? "连接 OpenCode Go" : draft.provider === "deepseek" ? "连接 DeepSeek" : "连接自定义 API"}</h2><p>{draft.kind === "codex" ? "授权 ChatGPT 订阅账号，保存后自动同步可用模型。" : draft.kind === "opencode-go" ? "使用本机 OpenCode 登录或单独的 API Key，模型会自动同步。" : draft.provider === "deepseek" ? "填写 API Key 并选择一个可用模型，其余能力自动识别。" : "填写服务地址与凭据；支持模型目录时会自动检测。"}</p></div><button type="button" className="settings-icon-button" onClick={closeDialog} aria-label="关闭"><X size={20} /></button></header>
+          <form onSubmit={saveConnection}>
+            <div className="settings-dialog-body">
+              <div className="settings-form-grid">
+                <label className="is-wide"><span>连接名称</span><input aria-label="连接名称" required value={draft.sourceName} onChange={(event) => setDraft({ ...draft, sourceName: event.target.value })} placeholder={draft.provider === "deepseek" ? "例如：DeepSeek 官方" : "例如：公司网关"} /></label>
+                {draft.kind === "codex" ? <div className="settings-login-card is-wide"><ShieldCheck size={20} /><span><strong>{state?.codexConfigured || codexLogin?.status === "completed" ? "Codex 已登录" : "使用 ChatGPT 订阅登录"}</strong><small>授权凭据保存在当前 workspace，不会显示在页面中。</small></span><button type="button" onClick={beginCodexLogin}>{state?.codexConfigured ? "重新登录" : "开始登录"}</button></div> : <>
+                  {draft.kind === "api" && <label><span>Provider ID</span><input aria-label="Provider ID" required value={draft.provider} onChange={(event) => setDraft({ ...draft, provider: event.target.value })} placeholder="例如：openai" /></label>}
+                  <label className={draft.kind === "opencode-go" ? "is-wide" : ""}><span>Base URL</span><input aria-label="Base URL" required type="url" value={draft.baseUrl} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} placeholder="https://api.example.com/v1" /></label>
+                  <label className="settings-secret is-wide"><span>API Key{draft.kind === "opencode-go" && state?.localOpenCodeConfigured ? "（可留空使用本机登录）" : ""}</span><input aria-label="API Key" required={draft.kind === "api" && !connections.some((item) => item.sourceId === draft.sourceId)} type={showKey ? "text" : "password"} value={draft.apiKey} onChange={(event) => setDraft({ ...draft, apiKey: event.target.value })} autoComplete="off" placeholder="sk-…" /><button type="button" onClick={() => setShowKey((value) => !value)} aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}>{showKey ? <EyeOff size={18} /> : <Eye size={18} />}</button></label>
+                </>}
+              </div>
+
+              {codexLogin?.status === "waiting" && draft.kind === "codex" ? <div className="settings-device-login"><span>验证码</span><strong>{codexLogin.userCode}</strong><a href={codexLogin.verificationUri} target="_blank" rel="noreferrer">打开登录页面</a></div> : null}
+
+              {draft.kind === "api" ? <section className="settings-model-discovery">
+                <header><div><h3>可用模型</h3><p>先自动检测；服务不提供目录时再手动填写。</p></div><button type="button" className="settings-quiet-button" onClick={discoverModels} disabled={discovering}>{discovering ? <LoaderCircle className="is-spinning" size={16} /> : <RefreshCw size={16} />}{discovering ? "检测中" : "检测模型"}</button></header>
+                <div className="settings-form-grid">
+                  <label className="is-wide"><span>模型名称</span>{models.length ? <select aria-label="模型名称" required value={draft.model} onChange={(event) => { const model = models.find((item) => item.id === event.target.value); setDraft({ ...draft, model: event.target.value, reasoningEffort: model?.defaultReasoningEffort || draft.reasoningEffort }); }}><option value="">选择模型</option>{models.map((model) => <option value={model.id} key={model.id}>{model.id}</option>)}</select> : <input aria-label="模型名称" required value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })} placeholder={draft.provider === "deepseek" ? "例如：deepseek-chat" : "例如：your-model-name"} />}</label>
+                  {(() => { const selected = models.find((item) => item.id === draft.model); const efforts = selected?.supportedReasoningEfforts || []; return efforts.length ? <label className="is-wide"><span>默认思考强度</span><select aria-label="默认思考强度" value={draft.reasoningEffort} onChange={(event) => setDraft({ ...draft, reasoningEffort: event.target.value })}>{efforts.map((effort) => <option value={effort} key={effort}>{effort}</option>)}</select></label> : null; })()}
+                </div>
+                <p>上下文窗口、多模态、推理能力和用量字段会自动归一化。</p>
+              </section> : <section className="settings-model-discovery settings-model-discovery--automatic"><header><div><h3>模型自动同步</h3><p>保存后读取账号当前可用的全部模型，无需手动选择。</p></div></header></section>}
+
+              {error && <p className="settings-inline-error" role="alert">{error}</p>}
+            </div>
+            <footer><span><ShieldCheck size={15} />凭据保存后不会显示在页面中</span><button type="submit" className="settings-primary-button" disabled={saving}>{saving ? <LoaderCircle className="is-spinning" size={17} /> : null}{saving ? "保存中" : draft.kind === "api" ? "保存连接" : "保存并同步模型"}</button></footer>
+          </form>
+        </div>
+      </div>, document.body)}
+
+      <div className="settings-toast-region" aria-live="polite" aria-atomic="true">{toast && <div className="settings-toast" role="status"><Check size={18} /><span><strong>{toast}</strong></span><button type="button" onClick={() => setToast("")} aria-label="关闭通知"><X size={16} /></button></div>}</div>
+    </main>
   );
 }

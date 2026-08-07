@@ -4,8 +4,8 @@ set -euo pipefail
 CONFIG="${AKASHIC_DEBUG_CONFIG:-/sandbox/config.toml}"
 WORKSPACE="${AKASHIC_DEBUG_WORKSPACE:-/sandbox/workspace}"
 SOCKET="/sandbox/akashic.sock"
-DASHBOARD_HOST="${AKASHIC_DASHBOARD_HOST:-0.0.0.0}"
-DASHBOARD_PORT="${AKASHIC_DASHBOARD_PORT:-2236}"
+WEB_HOST="${AKASHIC_WEB_HOST:-0.0.0.0}"
+WEB_PORT="${AKASHIC_WEB_PORT:-2236}"
 HOST_UID="${AKASHIC_HOST_UID:-1000}"
 HOST_GID="${AKASHIC_HOST_GID:-1000}"
 
@@ -111,8 +111,8 @@ case "$cmd" in
     dashboard)
         exec_as_host python main.py dashboard \
             --workspace "$WORKSPACE" \
-            --host "$DASHBOARD_HOST" \
-            --port "$DASHBOARD_PORT" \
+            --host "$WEB_HOST" \
+            --port "$WEB_PORT" \
             "$@"
         ;;
     gate-root-shell-cleanup)
