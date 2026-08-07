@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import agent.migrations.session_db_backup as session_db_backup
 from agent.migrations.runner import MigrationRunner
 
 
@@ -120,6 +121,16 @@ def test_audit_migration_rejects_incompatible_existing_table(tmp_path: Path) -> 
     )
     with pytest.raises(RuntimeError, match="schema lineage"):
         runner.run()
+    restored = sqlite3.connect(sessions)
+    try:
+        assert restored.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'session_delete_audits'"
+        ).fetchone() is None
+    finally:
+        restored.close()
+    backups = sorted((workspace / "backups/session-mutation-audits").iterdir())
+    assert len(backups) == 1
     if runner.ledger_path.exists():
         ledger = sqlite3.connect(runner.ledger_path)
         try:
@@ -132,3 +143,33 @@ def test_audit_migration_rejects_incompatible_existing_table(tmp_path: Path) -> 
         finally:
             ledger.close()
         assert "20260808_01_session_mutation_audits" not in applied
+
+
+def test_sqlite_backup_failure_keeps_published_evidence_and_cleans_temps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "sessions.db"
+    connection = sqlite3.connect(source)
+    try:
+        connection.execute("CREATE TABLE sessions (key TEXT PRIMARY KEY)")
+        connection.commit()
+    finally:
+        connection.close()
+    backup_root = tmp_path / "backups"
+
+    def fail_after_publish(_path: Path) -> None:
+        raise RuntimeError("forced directory fsync failure")
+
+    monkeypatch.setattr(session_db_backup, "_fsync_directory", fail_after_publish)
+    with pytest.raises(RuntimeError, match="forced directory fsync failure"):
+        session_db_backup.backup_sqlite_database(
+            source,
+            backup_root,
+            migration="test-backup",
+        )
+
+    assert (backup_root / "sessions.db").is_file()
+    assert (backup_root / "manifest.json").is_file()
+    assert not list(backup_root.glob("*.tmp"))
+    assert not list(backup_root.glob(".*.tmp"))

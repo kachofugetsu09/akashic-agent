@@ -82,51 +82,57 @@ def add_session_mutation_audits(connection: object) -> None:
     )
     sessions_connection = sqlite3.connect(sessions_db)
     try:
-        _ensure_table(
-            sessions_connection,
-            "session_delete_audits",
-            SCHEMA_MANIFEST["session_delete_audits"]["columns"],
-            """
-            CREATE TABLE session_delete_audits (
-                audit_id TEXT PRIMARY KEY,
-                targets_json TEXT NOT NULL,
-                message_ids_json TEXT NOT NULL,
-                compactions_json TEXT NOT NULL,
-                action_source TEXT NOT NULL,
-                cascade INTEGER NOT NULL CHECK (cascade IN (0, 1)),
-                backup_path TEXT,
-                started_at TEXT NOT NULL,
-                completed_at TEXT NOT NULL,
-                result TEXT NOT NULL,
-                deleted_count INTEGER NOT NULL,
-                error TEXT
+        sessions_connection.execute("BEGIN IMMEDIATE")
+        try:
+            _ensure_table(
+                sessions_connection,
+                "session_delete_audits",
+                SCHEMA_MANIFEST["session_delete_audits"]["columns"],
+                """
+                CREATE TABLE session_delete_audits (
+                    audit_id TEXT PRIMARY KEY,
+                    targets_json TEXT NOT NULL,
+                    message_ids_json TEXT NOT NULL,
+                    compactions_json TEXT NOT NULL,
+                    action_source TEXT NOT NULL,
+                    cascade INTEGER NOT NULL CHECK (cascade IN (0, 1)),
+                    backup_path TEXT,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    result TEXT NOT NULL,
+                    deleted_count INTEGER NOT NULL,
+                    error TEXT
+                )
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_session_delete_audits_time
+                ON session_delete_audits(completed_at, audit_id)
+                """,
             )
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_session_delete_audits_time
-            ON session_delete_audits(completed_at, audit_id)
-            """,
-        )
-        _ensure_table(
-            sessions_connection,
-            "session_source_mutation_audits",
-            SCHEMA_MANIFEST["session_source_mutation_audits"]["columns"],
-            """
-            CREATE TABLE session_source_mutation_audits (
-                audit_id TEXT PRIMARY KEY,
-                operation TEXT NOT NULL,
-                session_key TEXT NOT NULL,
-                message_ids_json TEXT NOT NULL,
-                action_source TEXT NOT NULL,
-                backup_path TEXT,
-                completed_at TEXT NOT NULL
+            _ensure_table(
+                sessions_connection,
+                "session_source_mutation_audits",
+                SCHEMA_MANIFEST["session_source_mutation_audits"]["columns"],
+                """
+                CREATE TABLE session_source_mutation_audits (
+                    audit_id TEXT PRIMARY KEY,
+                    operation TEXT NOT NULL,
+                    session_key TEXT NOT NULL,
+                    message_ids_json TEXT NOT NULL,
+                    action_source TEXT NOT NULL,
+                    backup_path TEXT,
+                    completed_at TEXT NOT NULL
+                )
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_source_mutation_audits_lookup
+                ON session_source_mutation_audits(session_key, completed_at, audit_id)
+                """,
             )
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_source_mutation_audits_lookup
-            ON session_source_mutation_audits(session_key, completed_at, audit_id)
-            """,
-        )
+        except BaseException:
+            if sessions_connection.in_transaction:
+                sessions_connection.rollback()
+            raise
         sessions_connection.commit()
     finally:
         sessions_connection.close()

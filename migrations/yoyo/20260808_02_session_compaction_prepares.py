@@ -71,31 +71,37 @@ def add_session_compaction_prepares(connection: object) -> None:
     )
     sessions_connection = sqlite3.connect(sessions_db)
     try:
-        _ensure_table(
-            sessions_connection,
-            "session_compaction_prepares",
-            SCHEMA_MANIFEST["session_compaction_prepares"]["columns"],
-            """
-            CREATE TABLE session_compaction_prepares (
-                session_key TEXT NOT NULL,
-                session_created_at TEXT NOT NULL,
-                generation INTEGER NOT NULL,
-                parent_generation INTEGER NOT NULL,
-                source_ref TEXT NOT NULL,
-                source_from_seq INTEGER NOT NULL,
-                consolidated_through_seq INTEGER NOT NULL,
-                source_message_ids_json TEXT NOT NULL,
-                retained_tail_json TEXT NOT NULL,
-                prepared_at TEXT NOT NULL,
-                PRIMARY KEY (session_key, generation),
-                UNIQUE (session_key, source_ref)
+        sessions_connection.execute("BEGIN IMMEDIATE")
+        try:
+            _ensure_table(
+                sessions_connection,
+                "session_compaction_prepares",
+                SCHEMA_MANIFEST["session_compaction_prepares"]["columns"],
+                """
+                CREATE TABLE session_compaction_prepares (
+                    session_key TEXT NOT NULL,
+                    session_created_at TEXT NOT NULL,
+                    generation INTEGER NOT NULL,
+                    parent_generation INTEGER NOT NULL,
+                    source_ref TEXT NOT NULL,
+                    source_from_seq INTEGER NOT NULL,
+                    consolidated_through_seq INTEGER NOT NULL,
+                    source_message_ids_json TEXT NOT NULL,
+                    retained_tail_json TEXT NOT NULL,
+                    prepared_at TEXT NOT NULL,
+                    PRIMARY KEY (session_key, generation),
+                    UNIQUE (session_key, source_ref)
+                )
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_session_compaction_prepares_ref
+                ON session_compaction_prepares(session_key, source_ref)
+                """,
             )
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_session_compaction_prepares_ref
-            ON session_compaction_prepares(session_key, source_ref)
-            """,
-        )
+        except BaseException:
+            if sessions_connection.in_transaction:
+                sessions_connection.rollback()
+            raise
         sessions_connection.commit()
     finally:
         sessions_connection.close()

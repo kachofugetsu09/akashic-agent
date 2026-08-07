@@ -43,6 +43,7 @@ def backup_sqlite_database(
     os.chmod(backup_root, 0o700)
     backup = backup_root / source.name
     candidate = backup.with_name(f".{backup.name}.{uuid4().hex}.tmp")
+    manifest_candidate: Path | None = None
     try:
         source_connection = sqlite3.connect(source)
         try:
@@ -85,5 +86,7 @@ def backup_sqlite_database(
         _fsync_directory(backup_root)
     except BaseException:
         candidate.unlink(missing_ok=True)
+        if manifest_candidate is not None:
+            manifest_candidate.unlink(missing_ok=True)
         raise
     return backup
