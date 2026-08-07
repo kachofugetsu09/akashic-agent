@@ -58,6 +58,7 @@ from agent.provider import LLMProvider
 from agent.tools.shell import ShellTool
 from agent.tools.unified_exec import ExecutionCleanupReport
 from agent.tools.registry import ToolRegistry
+from session.compaction_runtime import SessionCompactionRuntime
 from session.manager import SessionManager
 
 if TYPE_CHECKING:
@@ -343,6 +344,12 @@ class AgentLoop:
         llm_svc = self._llm_services
         memory_svc = MemoryServices(engine=self._memory_engine)
         session_svc = self._session_services
+        compaction_runtime = session_svc.compaction_runtime
+        if compaction_runtime is None and self._markdown_memory is not None:
+            compaction_runtime = SessionCompactionRuntime(
+                session_manager=session_svc.session_manager,
+                markdown=self._markdown_memory.maintenance,
+            )
         # 2. 组执行层。
         self._tool_discovery = deps.tool_discovery or ToolDiscoveryState()
         self._reasoner = deps.reasoner or DefaultReasoner(
@@ -355,6 +362,7 @@ class AgentLoop:
             context=self._context,
             event_bus=self._event_bus,
             non_preloadable_names=deps.tools.get_non_preloadable_names,
+            compaction_runtime=compaction_runtime,
         )
 
         # 3. 最后串 passive prepare / execute / commit 主链。

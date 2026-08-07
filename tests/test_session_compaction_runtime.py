@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from agent.core.passive_turn import DefaultReasoner
+from agent.core.runtime_support import LLMServices, ToolDiscoveryState
+from agent.looping.ports import LLMConfig
 from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
     ContextCompaction,
@@ -13,8 +17,14 @@ from agent.model_runtime.context_compaction import (
     SUMMARY_HEADINGS,
     compaction_source_ref,
 )
+from agent.model_runtime.types import LLMResponse
+from agent.tools.registry import ToolRegistry
 from core.memory.markdown import CompactionMarkdownDraft
-from session.compaction_runtime import SessionCompactionRuntime, _receipt_payload
+from session.compaction_runtime import (
+    CompactionProjection,
+    SessionCompactionRuntime,
+    _receipt_payload,
+)
 from session.manager import SessionManager
 from session.store import CompactionHead
 
@@ -38,6 +48,23 @@ class _MarkdownReceiptProbe:
             raise RuntimeError("simulated crash after Markdown side effect")
 
 
+class _MarkdownCompactionProbe(_MarkdownReceiptProbe):
+    async def prepare_compaction_markdown(
+        self,
+        selected_source_messages,
+        *,
+        source_ref: str,
+        scope_channel: str = "",
+        scope_chat_id: str = "",
+    ) -> CompactionMarkdownDraft:
+        assert selected_source_messages
+        return CompactionMarkdownDraft(
+            source_ref=source_ref,
+            scope_channel=scope_channel,
+            scope_chat_id=scope_chat_id,
+        )
+
+
 class _CountingProvider:
     context_window = 1000
     runtime_id = "runtime"
@@ -55,6 +82,39 @@ class _CountingProvider:
         self.calls += 1
         from agent.model_runtime.types import LLMResponse
 
+        return LLMResponse(content="\n".join(SUMMARY_HEADINGS))
+
+
+class _GateProvider(_CountingProvider):
+    context_window = 250
+    runtime_id = "gate-runtime"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.requests: list[dict[str, object]] = []
+
+    def estimate_context_tokens(self, messages, tools):
+        if len(messages) == 1 and str(messages[0].get("content", "")).startswith(
+            "更新当前长任务"
+        ):
+            return 10
+        total = 0
+        for message in messages:
+            role = message.get("role")
+            if role == "system":
+                total += 20
+            elif role == "user":
+                total += 80 if str(message.get("content", "")).startswith("old") else 10
+            else:
+                total += 10
+        return total + len(tools)
+
+    def estimate_appended_message_tokens(self, messages):
+        return self.estimate_context_tokens(messages, [])
+
+    async def chat(self, **kwargs):
+        self.calls += 1
+        self.requests.append(kwargs)
         return LLMResponse(content="\n".join(SUMMARY_HEADINGS))
 
 
@@ -286,3 +346,139 @@ def test_context_compactor_receipt_resume_does_not_call_summary_provider() -> No
     assert resumed.checkpoint is not None
     assert resumed.checkpoint.summary == first_result.checkpoint.summary
     assert provider.calls == 1
+
+
+def test_default_reasoner_gate_commits_real_runtime_before_provider_payload(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("session")
+    session.add_message("user", "old one")
+    session.add_message("user", "old two")
+    manager.save(session)
+    markdown = _MarkdownCompactionProbe()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+    provider = _GateProvider()
+    reasoner = DefaultReasoner(
+        llm=LLMServices(provider=provider, light_provider=provider),
+        llm_config=LLMConfig(model="model", max_tokens=10),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=1,
+        compaction_runtime=runtime,
+    )
+    projection = asyncio.run(
+        runtime.projection(session, prefix=[], current_anchor=[], pending=[])
+    )
+    history = [
+        message
+        for unit in projection.segments.committed_units
+        for message in unit.messages
+    ]
+    render_payload = [
+        {"role": "system", "content": "root"},
+        *history,
+        {"role": "user", "content": "current request"},
+    ]
+    state = reasoner._build_compaction_state(
+        session=session,
+        projection=projection,
+        initial_messages=render_payload,
+        history_count=len(history),
+        attempt_replay=[],
+        prior_tool_groups=0,
+        channel="test",
+        chat_id="chat",
+    )
+    state.compactor._keep_recent_tokens = 1
+    call_result = asyncio.run(
+        reasoner._call_provider(
+            state,
+            render_payload,
+            tools=[],
+            max_tokens=10,
+        )
+    )
+
+    assert call_result.response.content == "\n".join(SUMMARY_HEADINGS)
+    assert provider.calls == 2
+    assert markdown.commit_count == 1
+    assert session.last_consolidated == 1
+    assert "current request" not in str(provider.requests[0]["messages"])
+    assert provider.requests[1]["messages"] == render_payload
+    assert any(
+        message.get("role") == "system"
+        and "<session-context-compaction>" in str(message.get("content"))
+        for message in render_payload
+    )
+
+
+def test_reasoner_builder_preserves_replay_tail_and_current_payload_order() -> None:
+    provider = _GateProvider()
+    reasoner = DefaultReasoner(
+        llm=LLMServices(provider=provider, light_provider=provider),
+        llm_config=LLMConfig(model="m", max_tokens=100),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=1,
+        compaction_runtime=object(),
+    )
+    committed = CommittedContextUnit(
+        source_from_seq=1,
+        consolidated_through_seq=1,
+        source_message_ids=("canonical-1",),
+        messages=({"role": "assistant", "content": "history"},),
+        message_refs=(("canonical-1", 1),),
+    )
+    replay = [
+        {"role": "user", "content": "U1"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call-1"}],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "done"},
+        {"role": "assistant", "content": "[execution attempt interrupted]"},
+    ]
+    projection = CompactionProjection(
+        segments=ContextPayloadSegments(
+            prefix=({"role": "system", "content": "stable"},),
+            committed_units=(committed,),
+            current_anchor=(),
+        ),
+        active=None,
+        head=CompactionHead(session_key="session", parent_generation=0, next_generation=1),
+    )
+    render_payload = [
+        {"role": "system", "content": "root"},
+        {"role": "system", "content": "stable"},
+        *committed.messages,
+        *replay,
+        {"role": "user", "content": "<system-reminder data-system-context-frame=\"true\">memory</system-reminder>"},
+        {"role": "user", "content": "U2"},
+        {"role": "user", "content": "U3"},
+    ]
+    state = reasoner._build_compaction_state(
+        session=SimpleNamespace(key="session"),
+        projection=projection,
+        initial_messages=render_payload,
+        history_count=2,
+        attempt_replay=replay,
+        prior_tool_groups=1,
+        channel="",
+        chat_id="",
+    )
+    assert state.compactor._segments.flatten() == render_payload
+    assert state.compactor._segments.current_anchor == ()
+    assert state.compactor._segments.active_batches == (tuple(replay[:3]),)
+    assert state.compactor._segments.pending == tuple(
+        [replay[3], *render_payload[7:]]
+    )
+    assert state.compactor._current_query == (
+        '{"logical_interaction_inputs":["U1","U2","U3"]}'
+    )
