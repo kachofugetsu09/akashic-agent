@@ -7,7 +7,7 @@ metadata: {"akashic": {"always": false}}
 
 # Akashic 插件系统
 
-优先直接完成明确的插件请求。创建或改写源码、加入 Skill/MCP、递归验证候选时，先加载 `develop-akashic-plugin`。
+优先直接完成明确的插件请求。创建或改写源码、加入 Skill/MCP、递归验证候选时，先加载 `develop-akashic-plugin`。用户要管理不属于插件的独立本地 MCP server 时，加载 `manage-workspace-mcp`。
 
 ## 事实来源
 
