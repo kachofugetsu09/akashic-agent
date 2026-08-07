@@ -17,7 +17,8 @@ _ORIGIN_ID = "20260802_01_yoyo_origin"
 _AKASHA_V9_ID = "20260805_01_akasha_sparse_index_v9"
 _COMPACTION_ID = "20260807_01_session_context_compaction_ledger"
 _AUDIT_ID = "20260808_01_session_mutation_audits"
-_CURRENT_IDS = (_ORIGIN_ID, _AKASHA_V9_ID, _COMPACTION_ID, _AUDIT_ID)
+_PREPARE_ID = "20260808_02_session_compaction_prepares"
+_CURRENT_IDS = (_ORIGIN_ID, _AKASHA_V9_ID, _COMPACTION_ID, _AUDIT_ID, _PREPARE_ID)
 
 
 def _runner(root: Path, *, repo_root: Path = _PROJECT_ROOT) -> MigrationRunner:
