@@ -1333,17 +1333,38 @@ def _checkpoint_from_receipt(
     usage = _usage_from_payload(checkpoint.get("summary_usage"))
     value = ContextCompaction(
         summary=summary,
-        generation=int(checkpoint.get("generation", 0)),
-        parent_generation=int(checkpoint.get("parent_generation", 0)),
+        generation=_required_int(checkpoint.get("generation", 0), field="generation"),
+        parent_generation=_required_int(
+            checkpoint.get("parent_generation", 0), field="parent_generation"
+        ),
         trigger=cast(CompactionTrigger, checkpoint.get("trigger", "soft_limit")),
-        context_window=int(checkpoint.get("context_window", 0)),
-        soft_limit_tokens=int(checkpoint.get("threshold_tokens", 0)),
-        hard_input_tokens=int(checkpoint.get("hard_input_tokens", 0)),
-        keep_recent_tokens=int(checkpoint.get("keep_recent_tokens", 0)),
-        estimated_tokens_before=int(checkpoint.get("estimated_tokens_before", 0)),
-        estimated_tokens_after=int(checkpoint.get("estimated_tokens_after", 0)),
-        source_from_seq=int(checkpoint.get("source_from_seq", 0)),
-        consolidated_through_seq=int(checkpoint.get("consolidated_through_seq", 0)),
+        context_window=_required_int(
+            checkpoint.get("context_window", 0), field="context_window"
+        ),
+        soft_limit_tokens=_required_int(
+            checkpoint.get("threshold_tokens", 0), field="threshold_tokens"
+        ),
+        hard_input_tokens=_required_int(
+            checkpoint.get("hard_input_tokens", 0), field="hard_input_tokens"
+        ),
+        keep_recent_tokens=_required_int(
+            checkpoint.get("keep_recent_tokens", 0), field="keep_recent_tokens"
+        ),
+        estimated_tokens_before=_required_int(
+            checkpoint.get("estimated_tokens_before", 0),
+            field="estimated_tokens_before",
+        ),
+        estimated_tokens_after=_required_int(
+            checkpoint.get("estimated_tokens_after", 0),
+            field="estimated_tokens_after",
+        ),
+        source_from_seq=_required_int(
+            checkpoint.get("source_from_seq", 0), field="source_from_seq"
+        ),
+        consolidated_through_seq=_required_int(
+            checkpoint.get("consolidated_through_seq", 0),
+            field="consolidated_through_seq",
+        ),
         source_message_ids=tuple(str(item) for item in source_ids),
         retained_tail=tuple(cast(dict[str, object], item) for item in retained_tail),
         summary_usage=usage,
@@ -1371,8 +1392,11 @@ def _usage_from_payload(raw: object) -> ModelUsage | None:
         cached_input_tokens=_optional_int(raw.get("cached_input_tokens")),
         output_tokens=_optional_int(raw.get("output_tokens")),
         reasoning_output_tokens=_optional_int(raw.get("reasoning_output_tokens")),
-        request_count=int(raw.get("request_count", 1)),
-        covered_request_count=int(raw.get("covered_request_count", 0)),
+        request_count=_required_int(raw.get("request_count", 1), field="request_count"),
+        covered_request_count=_required_int(
+            raw.get("covered_request_count", 0),
+            field="covered_request_count",
+        ),
         coverage=parsed_coverage,
     )
 
@@ -1382,4 +1406,12 @@ def _optional_int(value: object) -> int | None:
         return None
     if not isinstance(value, int) or isinstance(value, bool):
         raise ContextCompactionError("context_compaction_receipt_usage_integer_invalid")
+    return value
+
+
+def _required_int(value: object, *, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ContextCompactionError(
+            f"context_compaction_receipt_{field}_integer_invalid"
+        )
     return value

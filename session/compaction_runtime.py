@@ -29,8 +29,8 @@ from session.store import (
 )
 
 if TYPE_CHECKING:
+    from agent.core.runtime_support import SessionLike
     from core.memory.markdown import MarkdownMemoryMaintenance
-    from session.manager import Session
     from session.manager import SessionManager
 
 
@@ -48,18 +48,18 @@ class SessionCompactionPort(Protocol):
 
     async def projection(
         self,
-        session: "Session",
+        session: "SessionLike",
         *,
         prefix: list[dict[str, Any]],
         current_anchor: list[dict[str, Any]],
         pending: list[dict[str, Any]],
     ) -> CompactionProjection: ...
 
-    async def recover_pending(self, session: "Session") -> SessionCompaction | None: ...
+    async def recover_pending(self, session: "SessionLike") -> SessionCompaction | None: ...
 
     async def commit_checkpoint(
         self,
-        session: "Session",
+        session: "SessionLike",
         checkpoint: ContextCompaction,
         *,
         head: CompactionHead,
@@ -83,7 +83,7 @@ class SessionCompactionRuntime:
 
     async def projection(
         self,
-        session: "Session",
+        session: "SessionLike",
         *,
         prefix: list[dict[str, Any]],
         current_anchor: list[dict[str, Any]],
@@ -137,7 +137,7 @@ class SessionCompactionRuntime:
             head=head,
         )
 
-    async def recover_pending(self, session: "Session") -> SessionCompaction | None:
+    async def recover_pending(self, session: "SessionLike") -> SessionCompaction | None:
         """Finish a receipt left between Markdown and ledger commits."""
 
         head = self._store.get_compaction_head(session.key)
@@ -145,7 +145,7 @@ class SessionCompactionRuntime:
 
     async def _recover_pending(
         self,
-        session: "Session",
+        session: "SessionLike",
         head: CompactionHead,
     ) -> SessionCompaction | None:
         source_ref = compaction_source_ref(
@@ -222,7 +222,7 @@ class SessionCompactionRuntime:
 
     async def commit_checkpoint(
         self,
-        session: "Session",
+        session: "SessionLike",
         checkpoint: ContextCompaction,
         *,
         head: CompactionHead,
@@ -328,7 +328,7 @@ class SessionCompactionRuntime:
 
     async def _build_markdown_draft(
         self,
-        session: "Session",
+        session: "SessionLike",
         checkpoint: ContextCompaction,
         *,
         scope_channel: str,
@@ -352,7 +352,7 @@ class SessionCompactionRuntime:
 
     def _canonicalize_checkpoint_source(
         self,
-        session: "Session",
+        session: "SessionLike",
         checkpoint: ContextCompaction,
     ) -> tuple[ContextCompaction, str]:
         """Rebuild and verify the selected rendered plan from the latest SessionDB rows."""
@@ -454,7 +454,7 @@ class SessionCompactionRuntime:
 
     def _assert_prepare_matches_checkpoint(
         self,
-        session: "Session",
+        session: "SessionLike",
         checkpoint: ContextCompaction,
         prepare: CompactionPrepare,
     ) -> None:
