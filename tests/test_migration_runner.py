@@ -16,7 +16,8 @@ _PROJECT_ROOT = Path(__file__).parents[1]
 _ORIGIN_ID = "20260802_01_yoyo_origin"
 _AKASHA_V9_ID = "20260805_01_akasha_sparse_index_v9"
 _COMPACTION_ID = "20260807_01_session_context_compaction_ledger"
-_CURRENT_IDS = (_ORIGIN_ID, _AKASHA_V9_ID, _COMPACTION_ID)
+_AUDIT_ID = "20260808_01_session_mutation_audits"
+_CURRENT_IDS = (_ORIGIN_ID, _AKASHA_V9_ID, _COMPACTION_ID, _AUDIT_ID)
 
 
 def _runner(root: Path, *, repo_root: Path = _PROJECT_ROOT) -> MigrationRunner:
@@ -97,6 +98,15 @@ def test_origin_removes_legacy_state_without_touching_business_data(
         assert migrated.execute("SELECT body FROM messages").fetchall() == [
             ("session-bytes",)
         ]
+        assert {
+            row[0]
+            for row in migrated.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        } >= {
+            "session_delete_audits",
+            "session_source_mutation_audits",
+        }
     finally:
         migrated.close()
     assert memory.read_bytes() == b"memory-bytes"
