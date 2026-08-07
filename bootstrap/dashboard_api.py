@@ -1131,6 +1131,7 @@ def create_dashboard_app(
                 tool_chain=payload.tool_chain,
                 extra=payload.extra,
                 ts=payload.ts,
+                action_source="dashboard.message_edit",
             )
         except SessionAdmissionConflictError as exc:
             raise HTTPException(
@@ -1144,11 +1145,19 @@ def create_dashboard_app(
     @app.delete("/api/dashboard/messages/{message_id:path}")
     def delete_message(message_id: str) -> dict[str, Any]:
         try:
-            deleted = store.delete_message(message_id)
+            deleted = store.delete_message(
+                message_id,
+                action_source="dashboard.message_delete",
+            )
         except InteractionDeleteRequiredError as exc:
             raise HTTPException(
                 status_code=409,
                 detail=_interaction_delete_detail(exc),
+            ) from exc
+        except SessionAdmissionConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_session_delete_detail(exc),
             ) from exc
         if not deleted:
             raise HTTPException(status_code=404, detail="message 不存在")
@@ -1157,11 +1166,19 @@ def create_dashboard_app(
     @app.post("/api/dashboard/messages/batch-delete")
     def delete_messages_batch(payload: MessageBatchDeletePayload) -> dict[str, Any]:
         try:
-            deleted_count = store.delete_messages_batch(payload.ids)
+            deleted_count = store.delete_messages_batch(
+                payload.ids,
+                action_source="dashboard.message_batch_delete",
+            )
         except InteractionDeleteRequiredError as exc:
             raise HTTPException(
                 status_code=409,
                 detail=_interaction_delete_detail(exc),
+            ) from exc
+        except SessionAdmissionConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=_session_delete_detail(exc),
             ) from exc
         return {"deleted_count": deleted_count}
 
@@ -1186,10 +1203,16 @@ def create_dashboard_app(
             deletion = (
                 await reconciler.delete_interaction_source(
                     control_turn_id,
-                    lambda: store.delete_interaction(control_turn_id),
+                    lambda: store.delete_interaction(
+                        control_turn_id,
+                        action_source="dashboard.interaction_delete",
+                    ),
                 )
                 if reconciler is not None
-                else store.delete_interaction(control_turn_id)
+                else store.delete_interaction(
+                    control_turn_id,
+                    action_source="dashboard.interaction_delete",
+                )
             )
         except SessionAdmissionConflictError as exc:
             raise HTTPException(
@@ -1209,6 +1232,7 @@ def create_dashboard_app(
             "old_last_consolidated": deletion.old_last_consolidated,
             "new_last_consolidated": deletion.new_last_consolidated,
             "backup_path": deletion.backup_path,
+            "audit_id": deletion.audit_id,
         }
 
     @app.get("/api/dashboard/memories")

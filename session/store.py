@@ -53,6 +53,7 @@ class InteractionDeletion:
     old_last_consolidated: int
     new_last_consolidated: int
     backup_path: str
+    audit_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,17 @@ class SessionDeleteAudit:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class SourceMutationAudit:
+    """记录一次 canonical source 消息编辑或物理删除。"""
+
+    audit_id: str
+    operation: str
+    session_key: str
+    message_ids: tuple[str, ...]
+    action_source: str
+    backup_path: str | None
+    completed_at: str
 
 @dataclass(frozen=True)
 class SessionCompaction:
@@ -558,6 +570,21 @@ class SessionStore:
             self._conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_session_delete_audits_time
                 ON session_delete_audits(completed_at, audit_id)
+                """)
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS session_source_mutation_audits (
+                    audit_id      TEXT PRIMARY KEY,
+                    operation     TEXT NOT NULL,
+                    session_key   TEXT NOT NULL,
+                    message_ids_json TEXT NOT NULL,
+                    action_source TEXT NOT NULL,
+                    backup_path   TEXT,
+                    completed_at  TEXT NOT NULL
+                )
+                """)
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_source_mutation_audits_lookup
+                ON session_source_mutation_audits(session_key, completed_at, audit_id)
                 """)
             self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
@@ -2218,6 +2245,108 @@ class SessionStore:
             ).fetchall()
         return [self._row_to_delete_audit(row) for row in rows]
 
+    @staticmethod
+    def _normalize_source_ids(
+        source_ids: list[str] | tuple[str, ...],
+    ) -> tuple[str, ...]:
+        if isinstance(source_ids, (str, bytes)):
+            raise ValueError("source_ids 必须是字符串数组")
+        normalized = tuple(dict.fromkeys(str(item).strip() for item in source_ids))
+        if not normalized or any(not item for item in normalized):
+            raise ValueError("source_ids 必须包含非空字符串")
+        return normalized
+
+    def _record_source_mutation_locked(
+        self,
+        *,
+        operation: str,
+        session_key: str,
+        message_ids: tuple[str, ...],
+        action_source: str,
+        backup_path: Path | None,
+    ) -> SourceMutationAudit:
+        audit = SourceMutationAudit(
+            audit_id=uuid4().hex,
+            operation=operation,
+            session_key=session_key,
+            message_ids=message_ids,
+            action_source=action_source,
+            backup_path=str(backup_path) if backup_path is not None else None,
+            completed_at=datetime.now().astimezone().isoformat(),
+        )
+        self._conn.execute(
+            """
+            INSERT INTO session_source_mutation_audits(
+                audit_id, operation, session_key, message_ids_json, action_source,
+                backup_path, completed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                audit.audit_id,
+                audit.operation,
+                audit.session_key,
+                json.dumps(list(audit.message_ids), ensure_ascii=False),
+                audit.action_source,
+                audit.backup_path,
+                audit.completed_at,
+            ),
+        )
+        return audit
+
+    def _row_to_source_mutation_audit(
+        self,
+        row: sqlite3.Row,
+    ) -> SourceMutationAudit:
+        message_ids = _decode_json_payload(
+            row["message_ids_json"],
+            fallback="[]",
+            field="source mutation audit message ids",
+            identifier=str(row["audit_id"]),
+        )
+        if not isinstance(message_ids, list) or not all(
+            isinstance(item, str) and item for item in message_ids
+        ):
+            raise ValueError(f"source mutation audit message ids 无效: {row['audit_id']}")
+        return SourceMutationAudit(
+            audit_id=str(row["audit_id"]),
+            operation=str(row["operation"]),
+            session_key=str(row["session_key"]),
+            message_ids=tuple(cast(str, item) for item in message_ids),
+            action_source=str(row["action_source"]),
+            backup_path=(
+                str(row["backup_path"]) if row["backup_path"] is not None else None
+            ),
+            completed_at=str(row["completed_at"]),
+        )
+
+    def find_authorized_source_mutations(
+        self,
+        *,
+        session_key: str,
+        source_ids: list[str] | tuple[str, ...],
+        prepared_at: str,
+    ) -> list[SourceMutationAudit]:
+        """Return committed mutation audits intersecting the prepared source plan."""
+
+        if not isinstance(session_key, str) or not session_key.strip():
+            raise ValueError("session_key 必须是非空字符串")
+        if not isinstance(prepared_at, str) or not prepared_at.strip():
+            raise ValueError("prepared_at 必须是非空字符串")
+        requested = set(self._normalize_source_ids(source_ids))
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT *
+                FROM session_source_mutation_audits
+                WHERE session_key = ?
+                  AND completed_at >= ?
+                ORDER BY completed_at, audit_id
+                """,
+                (session_key.strip(), prepared_at.strip()),
+            ).fetchall()
+        audits = [self._row_to_source_mutation_audit(row) for row in rows]
+        return [audit for audit in audits if requested.intersection(audit.message_ids)]
+
     def _snapshot_delete_lineage_locked(
         self,
         targets: tuple[str, ...],
@@ -3049,6 +3178,7 @@ class SessionStore:
         tool_chain: Any | None = None,
         extra: dict[str, Any] | None = None,
         ts: str | None = None,
+        action_source: str = "session.store.message_edit",
     ) -> dict[str, Any] | None:
         set_parts: list[str] = []
         params: list[Any] = []
@@ -3069,7 +3199,7 @@ class SessionStore:
             params.append(ts)
         if not set_parts:
             return self.get_message(message_id)
-
+        normalized_source = self._normalize_action_source(action_source)
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
@@ -3099,6 +3229,13 @@ class SessionStore:
                     "UPDATE sessions SET updated_at = ? WHERE key = ?",
                     (datetime.now().astimezone().isoformat(), session_key),
                 )
+                self._record_source_mutation_locked(
+                    operation="message_edit",
+                    session_key=session_key,
+                    message_ids=(message_id,),
+                    action_source=normalized_source,
+                    backup_path=None,
+                )
                 self._conn.commit()
             except BaseException:
                 self._conn.rollback()
@@ -3107,80 +3244,131 @@ class SessionStore:
             return None
         return self.get_message(message_id)
 
-    def delete_message(self, message_id: str) -> bool:
+    def delete_message(
+        self,
+        message_id: str,
+        *,
+        action_source: str = "session.store.message_delete",
+    ) -> bool:
+        normalized_source = self._normalize_action_source(action_source)
         with self._lock:
-            row = self._conn.execute(
-                "SELECT session_key, extra FROM messages WHERE id = ?",
-                (message_id,),
-            ).fetchone()
-            if row is None:
-                return False
-            control_turn_id = _message_control_turn_id(row["extra"], message_id)
-            if control_turn_id is not None:
-                raise InteractionDeleteRequiredError(message_id, control_turn_id)
-            session_key = str(row["session_key"])
-            cur = self._conn.execute(
-                "DELETE FROM messages WHERE id = ?",
-                (message_id,),
-            )
-            self._delete_message_embeddings_locked([message_id])
-            self._conn.execute(
-                "UPDATE sessions SET updated_at = ? WHERE key = ?",
-                (datetime.now().astimezone().isoformat(), session_key),
-            )
-            self._conn.commit()
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT session_key, extra FROM messages WHERE id = ?",
+                    (message_id,),
+                ).fetchone()
+                if row is None:
+                    self._conn.rollback()
+                    return False
+                control_turn_id = _message_control_turn_id(row["extra"], message_id)
+                if control_turn_id is not None:
+                    raise InteractionDeleteRequiredError(message_id, control_turn_id)
+                session_key = str(row["session_key"])
+                self._require_sessions_not_admitted_locked([session_key])
+                backup_path = self._backup_before_delete_locked("message-deletions")
+                cur = self._conn.execute(
+                    "DELETE FROM messages WHERE id = ?",
+                    (message_id,),
+                )
+                self._delete_message_embeddings_locked([message_id])
+                self._conn.execute(
+                    "UPDATE sessions SET updated_at = ? WHERE key = ?",
+                    (datetime.now().astimezone().isoformat(), session_key),
+                )
+                self._record_source_mutation_locked(
+                    operation="message_delete",
+                    session_key=session_key,
+                    message_ids=(message_id,),
+                    action_source=normalized_source,
+                    backup_path=backup_path,
+                )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
         return cur.rowcount > 0
 
-    def delete_messages_batch(self, ids: list[str]) -> int:
+    def delete_messages_batch(
+        self,
+        ids: list[str],
+        *,
+        action_source: str = "session.store.message_batch_delete",
+    ) -> int:
         clean_ids = [
             str(message_id).strip() for message_id in ids if str(message_id).strip()
         ]
         if not clean_ids:
             return 0
+        normalized_source = self._normalize_action_source(action_source)
         placeholders = ",".join("?" for _ in clean_ids)
         now = datetime.now().astimezone().isoformat()
         with self._lock:
-            explicit_rows = self._conn.execute(
-                f"SELECT id, extra FROM messages WHERE id IN ({placeholders})",
-                tuple(clean_ids),
-            ).fetchall()
-            for row in explicit_rows:
-                message_id = str(row["id"])
-                control_turn_id = _message_control_turn_id(
-                    row["extra"],
-                    message_id,
-                )
-                if control_turn_id is not None:
-                    raise InteractionDeleteRequiredError(
-                        message_id,
-                        control_turn_id,
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                explicit_rows = self._conn.execute(
+                    f"""
+                    SELECT id, session_key, extra
+                    FROM messages
+                    WHERE id IN ({placeholders})
+                    ORDER BY session_key, seq
+                    """,
+                    tuple(clean_ids),
+                ).fetchall()
+                for row in explicit_rows:
+                    message_id = str(row["id"])
+                    control_turn_id = _message_control_turn_id(row["extra"], message_id)
+                    if control_turn_id is not None:
+                        raise InteractionDeleteRequiredError(
+                            message_id,
+                            control_turn_id,
+                        )
+                grouped: dict[str, list[str]] = {}
+                for row in explicit_rows:
+                    grouped.setdefault(str(row["session_key"]), []).append(
+                        str(row["id"])
                     )
-            rows = self._conn.execute(
-                f"SELECT DISTINCT session_key FROM messages WHERE id IN ({placeholders})",
-                tuple(clean_ids),
-            ).fetchall()
-            cur = self._conn.execute(
-                f"DELETE FROM messages WHERE id IN ({placeholders})",
-                tuple(clean_ids),
-            )
-            self._delete_message_embeddings_locked(clean_ids)
-            for row in rows:
-                self._conn.execute(
-                    "UPDATE sessions SET updated_at = ? WHERE key = ?",
-                    (now, str(row["session_key"])),
+                if not grouped:
+                    self._conn.rollback()
+                    return 0
+                self._require_sessions_not_admitted_locked(list(grouped))
+                backup_path = self._backup_before_delete_locked("message-deletions")
+                cur = self._conn.execute(
+                    f"DELETE FROM messages WHERE id IN ({placeholders})",
+                    tuple(clean_ids),
                 )
-            self._conn.commit()
+                self._delete_message_embeddings_locked(clean_ids)
+                for session_key in grouped:
+                    self._conn.execute(
+                        "UPDATE sessions SET updated_at = ? WHERE key = ?",
+                        (now, session_key),
+                    )
+                for session_key in grouped:
+                    self._record_source_mutation_locked(
+                        operation="message_batch_delete",
+                        session_key=session_key,
+                        message_ids=tuple(grouped[session_key]),
+                        action_source=normalized_source,
+                        backup_path=backup_path,
+                    )
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
         return int(cur.rowcount or 0)
 
     def delete_interaction(
         self,
         control_turn_id: str,
+        *,
+        action_source: str = "session.store.interaction_delete",
     ) -> InteractionDeletion | None:
         """校验并原子撤销一个显式 interaction 及其派生 embedding。"""
 
         if not isinstance(control_turn_id, str) or not control_turn_id.strip():
             raise ValueError("control_turn_id 必须是非空字符串")
         normalized_turn_id = control_turn_id.strip()
+        normalized_source = self._normalize_action_source(action_source)
         now = datetime.now().astimezone().isoformat()
 
         with self._lock:
@@ -3242,10 +3430,10 @@ class SessionStore:
 
                 # 2. active admission 与删除共用同一写事务，避免当前 turn 在删除后提交。
                 self._require_sessions_not_admitted_locked([session_key])
+                message_ids = tuple(str(row["id"]) for row in turn_rows)
                 backup_path = self._backup_before_interaction_delete_locked()
 
                 # 3. 正文、逐消息 embedding 与游标在同一事务中提交。
-                message_ids = tuple(str(row["id"]) for row in turn_rows)
                 placeholders = ",".join("?" for _ in message_ids)
                 self._conn.execute(
                     f"DELETE FROM messages WHERE id IN ({placeholders})",
@@ -3269,6 +3457,13 @@ class SessionStore:
                     """,
                     (new_cursor, now, session_key),
                 )
+                audit = self._record_source_mutation_locked(
+                    operation="interaction_delete",
+                    session_key=session_key,
+                    message_ids=message_ids,
+                    action_source=normalized_source,
+                    backup_path=backup_path,
+                )
                 self._conn.commit()
             except BaseException:
                 self._conn.rollback()
@@ -3282,6 +3477,7 @@ class SessionStore:
             old_last_consolidated=old_cursor,
             new_last_consolidated=new_cursor,
             backup_path=str(backup_path),
+            audit_id=audit.audit_id,
         )
         logger.info(
             "interaction deleted control_turn_id=%s session_key=%s messages=%d "

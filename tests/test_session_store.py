@@ -692,6 +692,110 @@ def test_update_message_rejects_active_admission_atomically(tmp_path) -> None:
     dashboard_store.close()
 
 
+def test_source_mutation_audits_authorize_interaction_delete_and_legacy_edit(
+    tmp_path,
+) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    _rows, control_turn_id = _seed_interaction_with_compactions(store)
+    deletion = store.delete_interaction(
+        control_turn_id,
+        action_source="test.interaction_delete",
+    )
+    assert deletion is not None
+    interaction_audits = store.find_authorized_source_mutations(
+        session_key="mobile:cache",
+        source_ids=list(deletion.message_ids),
+        prepared_at="2000-01-01T00:00:00+00:00",
+    )
+    assert len(interaction_audits) == 1
+    assert interaction_audits[0].operation == "interaction_delete"
+    assert interaction_audits[0].action_source == "test.interaction_delete"
+    assert interaction_audits[0].backup_path == deletion.backup_path
+
+    store.create_session(key="legacy:edit")
+    message = store.insert_message(
+        "legacy:edit",
+        role="user",
+        content="before",
+        ts=NOW.isoformat(),
+        seq=0,
+    )
+    assert store.update_message(
+        str(message["id"]),
+        content="after",
+        action_source="test.message_edit",
+    ) is not None
+    edit_audits = store.find_authorized_source_mutations(
+        session_key="legacy:edit",
+        source_ids=[str(message["id"])],
+        prepared_at="2000-01-01T00:00:00+00:00",
+    )
+    assert len(edit_audits) == 1
+    assert edit_audits[0].operation == "message_edit"
+    assert edit_audits[0].backup_path is None
+
+    store.create_session(key="legacy:delete")
+    deleted = store.insert_message(
+        "legacy:delete",
+        role="user",
+        content="delete",
+        ts=NOW.isoformat(),
+        seq=0,
+    )
+    assert store.delete_message(
+        str(deleted["id"]),
+        action_source="test.message_delete",
+    )
+    delete_audits = store.find_authorized_source_mutations(
+        session_key="legacy:delete",
+        source_ids=[str(deleted["id"])],
+        prepared_at="2000-01-01T00:00:00+00:00",
+    )
+    assert len(delete_audits) == 1
+    assert delete_audits[0].operation == "message_delete"
+    assert delete_audits[0].backup_path is not None
+    store.close()
+
+
+def test_source_mutation_audit_rejects_failed_and_direct_sql_changes(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store.create_session(key="legacy:guard")
+    message = store.insert_message(
+        "legacy:guard",
+        role="user",
+        content="before",
+        ts=NOW.isoformat(),
+        seq=0,
+    )
+    message_id = str(message["id"])
+    assert store.acquire_session_admission("legacy:guard", "admission:guard")
+    with pytest.raises(SessionAdmissionConflictError):
+        store.update_message(
+            message_id,
+            content="blocked",
+            action_source="test.blocked_edit",
+        )
+    store.release_session_admission("admission:guard")
+    assert store.find_authorized_source_mutations(
+        session_key="legacy:guard",
+        source_ids=[message_id],
+        prepared_at="2000-01-01T00:00:00+00:00",
+    ) == []
+
+    with store._lock:
+        store._conn.execute(
+            "UPDATE messages SET content = 'direct' WHERE id = ?",
+            (message_id,),
+        )
+        store._conn.commit()
+    assert store.find_authorized_source_mutations(
+        session_key="legacy:guard",
+        source_ids=[message_id],
+        prepared_at="2000-01-01T00:00:00+00:00",
+    ) == []
+    store.close()
+
+
 def test_session_manager_reloads_cached_session_after_dashboard_interaction_delete(
     tmp_path,
 ) -> None:
