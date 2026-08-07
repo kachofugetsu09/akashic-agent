@@ -17,13 +17,11 @@ from core.memory.engine import (
     MemoryQueryResult,
     MemoryToolProfile,
 )
-from core.memory.markdown import ConsolidateRequest, ConsolidateResult
 
 
 class FakeMemoryEngine:
     def __init__(self, workspace: Path | None = None) -> None:
         self._store = MemoryStore(workspace) if workspace is not None else None
-        self.consolidate_calls: list[ConsolidateRequest] = []
         self.retrieve_result = MemoryQueryResult(text_block="")
 
     def describe(self) -> MemoryEngineDescriptor:
@@ -60,10 +58,6 @@ class FakeMemoryEngine:
 
     async def ingest(self, request: MemoryIngestRequest) -> MemoryIngestResult:
         return MemoryIngestResult(accepted=True)
-
-    async def consolidate(self, request: ConsolidateRequest) -> ConsolidateResult:
-        self.consolidate_calls.append(request)
-        return ConsolidateResult(trace={"mode": "markdown"})
 
     def read_long_term(self) -> str:
         return self._store.read_long_term() if self._store is not None else ""
