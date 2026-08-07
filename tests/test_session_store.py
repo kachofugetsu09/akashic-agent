@@ -15,11 +15,40 @@ from agent.control.models import (
     TurnUsage,
 )
 from session.manager import SessionManager
-from session.store import SessionStore
+from session.store import SessionStore, _decode_message_extra
 from bus.events import InboundMessage
 from bus.queue import MessageBus
 
 NOW = datetime(2026, 7, 14, 8, 0, tzinfo=UTC)
+
+
+def _compaction_kwargs(session_key: str, *, generation: int | None = None) -> dict:
+    return {
+        "session_key": session_key,
+        "trigger": "soft_limit",
+        "summary": "## Goal\nsummary",
+        "source_ref": f"source:{generation or 1}",
+        "source_from_seq": 0,
+        "consolidated_through_seq": 1,
+        "source_message_ids": ["message:1"],
+        "retained_tail": [
+            {
+                "id": "message:1",
+                "seq": 1,
+                "message": {"role": "user", "content": "tail"},
+            }
+        ],
+        "model_runtime_id": "main",
+        "model": "test-model",
+        "context_window": 100_000,
+        "threshold_tokens": 74_000,
+        "hard_input_tokens": 90_000,
+        "keep_recent_tokens": 20_000,
+        "tokens_before": 80_000,
+        "tokens_after": 30_000,
+        "summary_usage": {"input_tokens": 10, "output_tokens": 5},
+        **({"generation": generation} if generation is not None else {}),
+    }
 
 
 def _queued(turn_id: str = "turn:1", thread_id: str = "programmatic:1") -> TurnRecord:
@@ -570,3 +599,73 @@ def test_turn_corrupted_json_fails_loud(
 
     with pytest.raises(ValueError, match=match):
         store.read_turn(record.id)
+
+
+def test_compaction_head_is_store_owned_and_monotonic(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store.create_session(key="cli:head")
+
+    initial = store.get_compaction_head("cli:head")
+    assert (initial.parent_generation, initial.next_generation) == (0, 1)
+
+    first = store.persist_compaction(
+        **_compaction_kwargs("cli:head", generation=1),
+        parent_generation=initial.parent_generation,
+    )
+    assert first.generation == 1
+    second = store.persist_compaction(
+        **(_compaction_kwargs("cli:head", generation=2) | {"source_ref": "source:2"}),
+        parent_generation=first.generation,
+    )
+    assert second.generation == 2
+
+    head = store.get_compaction_head("cli:head")
+    assert (head.parent_generation, head.next_generation) == (2, 3)
+
+
+def test_compaction_head_rejects_cursor_without_active_generation(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store.create_session(key="cli:invalid-head")
+    store._conn.execute(
+        "UPDATE sessions SET last_consolidated = 4 WHERE key = ?",
+        ("cli:invalid-head",),
+    )
+    store._conn.commit()
+
+    with pytest.raises(ValueError, match="超出 ledger head"):
+        store.get_compaction_head("cli:invalid-head")
+
+
+def test_compaction_source_ref_is_idempotent_after_cursor_advances(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store.create_session(key="cli:idempotent")
+    first = store.persist_compaction(
+        **_compaction_kwargs("cli:idempotent", generation=1),
+        parent_generation=0,
+    )
+    _ = store.persist_compaction(
+        **(_compaction_kwargs("cli:idempotent", generation=2) | {"source_ref": "source:2"}),
+        parent_generation=1,
+    )
+
+    replay = store.persist_compaction(
+        **_compaction_kwargs("cli:idempotent", generation=None),
+    )
+    assert replay.generation == first.generation
+    assert store.get_compaction_head("cli:idempotent").parent_generation == 2
+
+    with pytest.raises(ValueError, match="source_ref 内容冲突"):
+        store.persist_compaction(
+            **(_compaction_kwargs("cli:idempotent", generation=None) | {"summary": "different"}),
+        )
+
+
+def test_legacy_react_compaction_extra_is_preserved_without_runtime_read(tmp_path) -> None:
+    payload = '{"react_compaction":{"compacted_tool_groups":999,"summary":"old"}}'
+
+    decoded = _decode_message_extra(payload, "cli:legacy:1")
+
+    assert decoded["react_compaction"] == {
+        "compacted_tool_groups": 999,
+        "summary": "old",
+    }

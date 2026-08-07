@@ -487,6 +487,11 @@ def _reject_removed_peer_configuration(data: dict) -> None:
         raise ValueError(
             "unsupported capability: peer_agents; Peer capability has been removed"
         )
+    integrations = data.get("integrations")
+    if isinstance(integrations, dict) and "peer_agents" in integrations:
+        raise ValueError(
+            "unsupported capability: integrations.peer_agents; Peer capability has been removed"
+        )
 
 
 def _reject_removed_context_configuration(
@@ -520,11 +525,6 @@ def _load_context_compaction_config(agent_context: dict) -> ContextCompactionCon
         trigger_percent=float(raw.get("trigger_percent", 0.74)),
         keep_recent_tokens=int(raw.get("keep_recent_tokens", 20_000)),
     )
-    integrations = data.get("integrations")
-    if isinstance(integrations, dict) and "peer_agents" in integrations:
-        raise ValueError(
-            "unsupported capability: integrations.peer_agents; Peer capability has been removed"
-        )
 
 
 def _load_wiring_config(data: dict) -> WiringConfig:

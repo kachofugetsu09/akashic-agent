@@ -19,8 +19,6 @@ from agent.control.models import (
     TurnUsage,
     parse_rfc3339,
 )
-from agent.model_runtime.query_compaction import parse_react_compaction
-
 logger = logging.getLogger(__name__)
 
 
@@ -79,6 +77,15 @@ class SessionCompaction:
     @property
     def active(self) -> bool:
         return self.invalidated_at is None
+
+
+@dataclass(frozen=True)
+class CompactionHead:
+    """Store-owned cursor and monotonic next generation for one session."""
+
+    session_key: str
+    parent_generation: int
+    next_generation: int
 
 _FTS_CAPABILITY_ERROR_MARKERS = (
     "no such module: fts5",
@@ -177,11 +184,6 @@ def _decode_message_extra(
             raise ValueError(f"message {field} 必须是字符串: {message_id}")
     if "model_state" in extra_dict:
         _validate_model_state(extra_dict["model_state"], message_id)
-    if "react_compaction" in extra_dict:
-        _ = parse_react_compaction(
-            extra_dict["react_compaction"],
-            source=message_id,
-        )
     return extra_dict
 
 
@@ -921,10 +923,15 @@ class SessionStore:
                 f"{row['session_key']}:{row['generation']}"
             )
         if not isinstance(retained_tail, list) or not all(
-            isinstance(item, dict) for item in retained_tail
+            isinstance(item, dict)
+            and isinstance(item.get("id"), str)
+            and bool(item["id"])
+            and isinstance(item.get("seq"), int)
+            and isinstance(item.get("message"), dict)
+            for item in retained_tail
         ):
             raise ValueError(
-                "compaction retained_tail 必须是对象数组: "
+                "compaction retained_tail 必须是带 id/seq/message 的对象数组: "
                 f"{row['session_key']}:{row['generation']}"
             )
         if not isinstance(usage, dict):
@@ -999,8 +1006,17 @@ class SessionStore:
             not isinstance(item, str) or not item.strip() for item in source_message_ids
         ):
             raise ValueError("compaction source_message_ids 必须是非空字符串数组")
-        if any(not isinstance(item, dict) for item in retained_tail):
-            raise ValueError("compaction retained_tail 必须是对象数组")
+        if any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("id"), str)
+            or not item["id"]
+            or not isinstance(item.get("seq"), int)
+            or not isinstance(item.get("message"), dict)
+            for item in retained_tail
+        ):
+            raise ValueError(
+                "compaction retained_tail 必须是带 id/seq/message 的对象数组"
+            )
         if not isinstance(summary_usage, dict):
             raise ValueError("compaction summary_usage 必须是 JSON object")
         encoded_ids = json.dumps(
@@ -1024,25 +1040,6 @@ class SessionStore:
                 if session_row is None:
                     raise KeyError(f"session 不存在: {session_key}")
                 current_cursor = int(session_row["last_consolidated"] or 0)
-                max_row = self._conn.execute(
-                    "SELECT COALESCE(MAX(generation), 0) AS generation "
-                    "FROM session_compactions WHERE session_key = ?",
-                    (session_key,),
-                ).fetchone()
-                max_generation = int(max_row["generation"] if max_row else 0)
-                if generation is None:
-                    generation = max_generation + 1
-                if int(generation) <= max_generation:
-                    raise ValueError(
-                        f"compaction generation 必须单调递增: {session_key}:{generation}"
-                    )
-                if parent_generation is None:
-                    parent_generation = current_cursor
-                if int(parent_generation) != current_cursor:
-                    raise ValueError(
-                        "compaction parent_generation 与当前 cursor 不一致: "
-                        f"session={session_key} cursor={current_cursor} parent={parent_generation}"
-                    )
                 existing = self._conn.execute(
                     "SELECT * FROM session_compactions "
                     "WHERE session_key = ? AND source_ref = ?",
@@ -1050,9 +1047,15 @@ class SessionStore:
                 ).fetchone()
                 if existing is not None:
                     existing_value = self._row_to_compaction(existing)
+                    expected_parent = (
+                        existing_value.parent_generation
+                        if parent_generation is None
+                        else int(parent_generation)
+                    )
                     if (
-                        existing_value.trigger != str(trigger)
-                        or existing_value.parent_generation != int(parent_generation)
+                        (generation is not None and int(generation) != existing_value.generation)
+                        or existing_value.trigger != str(trigger)
+                        or existing_value.parent_generation != expected_parent
                         or existing_value.summary_format_version != int(summary_format_version)
                         or existing_value.summary != summary
                         or existing_value.source_from_seq != int(source_from_seq)
@@ -1075,6 +1078,25 @@ class SessionStore:
                         )
                     self._conn.rollback()
                     return existing_value
+                max_row = self._conn.execute(
+                    "SELECT COALESCE(MAX(generation), 0) AS generation "
+                    "FROM session_compactions WHERE session_key = ?",
+                    (session_key,),
+                ).fetchone()
+                max_generation = int(max_row["generation"] if max_row else 0)
+                if generation is None:
+                    generation = max_generation + 1
+                if int(generation) <= max_generation:
+                    raise ValueError(
+                        f"compaction generation 必须单调递增: {session_key}:{generation}"
+                    )
+                if parent_generation is None:
+                    parent_generation = current_cursor
+                if int(parent_generation) != current_cursor:
+                    raise ValueError(
+                        "compaction parent_generation 与当前 cursor 不一致: "
+                        f"session={session_key} cursor={current_cursor} parent={parent_generation}"
+                    )
                 self._conn.execute(
                     """
                     INSERT INTO session_compactions (
@@ -1161,6 +1183,45 @@ class SessionStore:
                 f"{session_key}:{value.generation}"
             )
         return value
+
+    def get_compaction_head(self, session_key: str) -> CompactionHead:
+        """Read the current cursor and never-reused next generation atomically."""
+
+        with self._lock:
+            session_row = self._conn.execute(
+                "SELECT last_consolidated FROM sessions WHERE key = ?",
+                (session_key,),
+            ).fetchone()
+            if session_row is None:
+                raise KeyError(f"session 不存在: {session_key}")
+            cursor = int(session_row["last_consolidated"] or 0)
+            max_row = self._conn.execute(
+                "SELECT COALESCE(MAX(generation), 0) AS generation "
+                "FROM session_compactions WHERE session_key = ?",
+                (session_key,),
+            ).fetchone()
+            max_generation = int(max_row["generation"] if max_row else 0)
+            if cursor < 0 or cursor > max_generation:
+                raise ValueError(
+                    "session compaction cursor 超出 ledger head: "
+                    f"{session_key}:{cursor}>{max_generation}"
+                )
+            if cursor:
+                row = self._conn.execute(
+                    "SELECT invalidated_at FROM session_compactions "
+                    "WHERE session_key = ? AND generation = ?",
+                    (session_key, cursor),
+                ).fetchone()
+                if row is None or row["invalidated_at"] is not None:
+                    raise ValueError(
+                        "session compaction cursor 未指向有效 generation: "
+                        f"{session_key}:{cursor}"
+                    )
+        return CompactionHead(
+            session_key=session_key,
+            parent_generation=cursor,
+            next_generation=max_generation + 1,
+        )
 
     def list_compactions(
         self, session_key: str, *, include_invalidated: bool = True
@@ -2732,7 +2793,7 @@ class SessionStore:
                     turn_rows,
                 )
 
-                # 2. 旧 cursor 仍作为 legacy fallback；新 ledger 由 provenance 决定回退。
+                # 2. Cursor 只由 ledger provenance 驱动；迁移负责清理 legacy 值。
                 meta = self._conn.execute(
                     "SELECT last_consolidated FROM sessions WHERE key = ?",
                     (session_key,),
@@ -2740,16 +2801,7 @@ class SessionStore:
                 if meta is None:
                     raise ValueError(f"interaction session 不存在: {session_key}")
                 old_cursor = int(meta["last_consolidated"])
-                group_start = positions[0]
-                ledger_exists = self._conn.execute(
-                    "SELECT 1 FROM session_compactions WHERE session_key = ? LIMIT 1",
-                    (session_key,),
-                ).fetchone() is not None
-                # New installations store a generation here; legacy installations still
-                # use the old message-index fallback until the Yoyo migration runs.
-                new_cursor = old_cursor if ledger_exists else (
-                    group_start if old_cursor > group_start else old_cursor
-                )
+                new_cursor = old_cursor
 
                 # 3. 正文、逐消息 embedding 与游标在同一事务中提交。
                 message_ids = tuple(str(row["id"]) for row in turn_rows)
