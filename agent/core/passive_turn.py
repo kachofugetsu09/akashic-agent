@@ -1212,7 +1212,6 @@ class DefaultReasoner(Reasoner):
             current_query=current_query,
             payload_segments=segments,
             max_output_tokens=self._llm_config.max_tokens,
-            trigger_percent=self._context_compaction.trigger_percent,
             keep_recent_tokens=self._context_compaction.keep_recent_tokens,
             ledger_parent_generation=projection.head.parent_generation,
             next_generation=projection.head.next_generation,

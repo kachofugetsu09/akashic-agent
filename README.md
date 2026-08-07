@@ -124,7 +124,6 @@ max_output_tokens = 8192
 input_modalities = ["text"]
 
 [agent.context.compaction]
-trigger_percent = 0.74
 keep_recent_tokens = 20000
 
 [llm.runtimes.qwen_fast]

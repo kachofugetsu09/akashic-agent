@@ -61,7 +61,6 @@ dev_mode = false
 [agent.context]
 [agent.context.compaction]
 # 模型完整输入达到 context_window 的 74% 后触发统一 session compaction。
-trigger_percent = 0.74
 keep_recent_tokens = 20000
 
 [agent.tools]

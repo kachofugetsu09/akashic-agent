@@ -100,12 +100,9 @@ class MemoryConfig:
 class ContextCompactionConfig:
     """Session compaction policy independent from any model runtime."""
 
-    trigger_percent: float = 0.74
     keep_recent_tokens: int = 20_000
 
     def __post_init__(self) -> None:
-        if not 0 < self.trigger_percent < 1:
-            raise ValueError("agent.context.compaction.trigger_percent 必须在 (0, 1) 内")
         if self.keep_recent_tokens <= 0:
             raise ValueError(
                 "agent.context.compaction.keep_recent_tokens 必须大于 0"

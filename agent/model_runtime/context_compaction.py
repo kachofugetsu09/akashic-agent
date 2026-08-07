@@ -31,6 +31,7 @@ SUMMARY_HEADINGS = (
 )
 SUMMARY_MAX_TOKENS = 8192
 KEEP_RECENT_TOKENS = 20_000
+SOFT_LIMIT_RATIO = 0.74
 _SUMMARY_PROMPT = """更新当前长任务的上下文压缩摘要。
 
 摘要只替代已经完成的旧 session 历史，完整 messages 和 tool results 仍由 SessionDB 保留。只记录输入中已经出现的事实，不补充猜测，不把计划写成已完成。
@@ -245,7 +246,6 @@ class ContextCompactor:
         current_query: object | None = None,
         payload_segments: ContextPayloadSegments,
         max_output_tokens: int = 0,
-        trigger_percent: float = 0.74,
         keep_recent_tokens: int = KEEP_RECENT_TOKENS,
         ledger_parent_generation: int | None = None,
         next_generation: int | None = None,
@@ -260,7 +260,6 @@ class ContextCompactor:
         if not self._scope_id:
             raise ValueError("scope_id 不能为空")
         self._max_output_tokens = _validate_output_budget(provider, max_output_tokens)
-        self._trigger_percent = _validate_trigger_percent(trigger_percent)
         self._keep_recent_tokens = _validate_keep_recent_tokens(keep_recent_tokens)
         if ledger_parent_generation is not None and (
             not isinstance(ledger_parent_generation, int)
@@ -405,7 +404,7 @@ class ContextCompactor:
                 f"expected={expected_pending_start} actual={pending_start}"
             )
         estimated, quality = self._meter.estimate(self._provider, messages, tools)
-        soft_limit = math.floor(self._provider.context_window * self._trigger_percent)
+        soft_limit = math.floor(self._provider.context_window * SOFT_LIMIT_RATIO)
         request_output_tokens = (
             self._max_output_tokens
             if max_output_tokens is None
@@ -799,15 +798,6 @@ def hard_input_limit(provider: "LLMProvider", max_output_tokens: int) -> int:
 def _validate_output_budget(provider: "LLMProvider", value: int) -> int:
     hard_input_limit(provider, value)
     return value
-
-
-def _validate_trigger_percent(value: float) -> float:
-    if isinstance(value, bool):
-        raise ValueError("trigger_percent 必须是数字")
-    percent = float(value)
-    if not 0 < percent < 1:
-        raise ValueError("trigger_percent 必须在 (0, 1) 内")
-    return percent
 
 
 def _validate_keep_recent_tokens(value: int) -> int:

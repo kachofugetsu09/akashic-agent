@@ -505,6 +505,11 @@ def _reject_removed_context_configuration(
         raise ValueError(
             "removed configuration: memory_window; run the session compaction migration"
         )
+    if isinstance(raw_compaction, dict) and "trigger_percent" in raw_compaction:
+        raise ValueError(
+            "removed configuration: agent.context.compaction.trigger_percent; "
+            "run the session compaction migration"
+        )
     for location, raw in (
         ("llm", llm),
         ("llm.main", _as_dict(llm.get("main"), field="llm.main")
@@ -533,7 +538,6 @@ def _reject_removed_context_configuration(
 def _load_context_compaction_config(agent_context: dict) -> ContextCompactionConfig:
     raw = _as_dict(agent_context.get("compaction"), field="agent.context.compaction")
     return ContextCompactionConfig(
-        trigger_percent=float(raw.get("trigger_percent", 0.74)),
         keep_recent_tokens=int(raw.get("keep_recent_tokens", 20_000)),
     )
 

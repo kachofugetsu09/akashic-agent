@@ -249,7 +249,6 @@ class RaceHarness:
                         "max_tokens = 128",
                         "",
                         "[agent.context.compaction]",
-                        "trigger_percent = 0.74",
                         "keep_recent_tokens = 20000",
                         "",
                         "[app_server]",
