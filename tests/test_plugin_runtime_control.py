@@ -6,7 +6,7 @@ import subprocess
 import threading
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import certifi
 import pytest
@@ -365,18 +365,18 @@ async def test_exclusive_service_candidate_uses_isolated_port_then_formal_switch
     )
 
     candidate_service = isolated[0]["api"]
-    candidate_port = candidate_service["env"]["PLUGIN_PORT"]
+    candidate_env = cast(dict[str, str], candidate_service["env"])
+    candidate_port = candidate_env["PLUGIN_PORT"]
     assert candidate_port != "18765"
-    assert f":{candidate_port}/ready" in candidate_service["readiness_url"]
-    assert (
-        "runtime/plugin-validation" in candidate_service["env"]["AKA_PLUGIN_DATA_DIR"]
-    )
+    assert f":{candidate_port}/ready" in str(candidate_service["readiness_url"])
+    assert "runtime/plugin-validation" in candidate_env["AKA_PLUGIN_DATA_DIR"]
 
     await manager.promote_latest_candidate(f"{result.plugin_name}@{result.marketplace}")
 
     assert stopped
     assert switched[0][0] == {}
-    assert switched[0][1]["api"]["readiness_url"].endswith(":18765/ready")
+    formal_service = cast(dict[str, object], switched[0][1]["api"])
+    assert str(formal_service["readiness_url"]).endswith(":18765/ready")
     await manager.terminate_all()
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -64,8 +65,8 @@ async def test_attached_child_freezes_candidate_and_parent_promotes_after_valida
         uninstalled.append(plugin_id)
         return {}
 
-    rollout = TurnPluginRollout(  # type: ignore[arg-type]
-        manager, workspace=tmp_path, uninstall=uninstall
+    rollout = TurnPluginRollout(
+        cast(Any, manager), workspace=tmp_path, uninstall=uninstall
     )
     await rollout.install(
         "turn-parent",
@@ -112,8 +113,8 @@ async def test_unvalidated_or_failed_parent_discards_candidate(tmp_path: Path):
     async def uninstall(_plugin_id: str) -> dict[str, object]:
         return {}
 
-    rollout = TurnPluginRollout(  # type: ignore[arg-type]
-        manager, workspace=tmp_path, uninstall=uninstall
+    rollout = TurnPluginRollout(
+        cast(Any, manager), workspace=tmp_path, uninstall=uninstall
     )
     await rollout.install(
         "turn-parent",
@@ -137,8 +138,8 @@ async def test_same_revision_install_creates_no_pending_rollout(tmp_path: Path):
     async def uninstall(_plugin_id: str) -> dict[str, object]:
         return {}
 
-    rollout = TurnPluginRollout(  # type: ignore[arg-type]
-        manager, workspace=tmp_path, uninstall=uninstall
+    rollout = TurnPluginRollout(
+        cast(Any, manager), workspace=tmp_path, uninstall=uninstall
     )
     result, _ = await rollout.install(
         "turn-parent",
@@ -163,8 +164,8 @@ async def test_next_turn_waits_until_parent_rollout_is_resolved(tmp_path: Path):
         await release.wait()
         return {"plugin_id": plugin_id}
 
-    rollout = TurnPluginRollout(  # type: ignore[arg-type]
-        manager, workspace=tmp_path, uninstall=uninstall
+    rollout = TurnPluginRollout(
+        cast(Any, manager), workspace=tmp_path, uninstall=uninstall
     )
     await rollout.uninstall("turn-parent", "fitbit@github")
     rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {})
@@ -188,8 +189,8 @@ async def test_revert_is_same_turn_only_and_uninstall_stays_reversible(
         uninstalled.append(plugin_id)
         return {}
 
-    rollout = TurnPluginRollout(  # type: ignore[arg-type]
-        manager, workspace=tmp_path, uninstall=uninstall
+    rollout = TurnPluginRollout(
+        cast(Any, manager), workspace=tmp_path, uninstall=uninstall
     )
     await rollout.uninstall("turn-parent", "fitbit@github")
 

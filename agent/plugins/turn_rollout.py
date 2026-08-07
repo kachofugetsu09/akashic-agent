@@ -303,8 +303,10 @@ class TurnPluginRollout:
             )
             if pending.kind == "install":
                 try:
-                    status = self._manager.candidate_status(pending.plugin_id)
-                    if status.get("candidate_state") in {
+                    candidate_status = self._manager.candidate_status(
+                        pending.plugin_id
+                    )
+                    if candidate_status.get("candidate_state") in {
                         "latest_ready",
                         "promoting",
                     }:
