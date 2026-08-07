@@ -14,6 +14,7 @@ from agent.model_runtime.context_compaction import (
     _summary_output_limit,
 )
 from agent.model_runtime.types import LLMResponse, ModelUsage
+from agent.provider import LLMProvider
 from agent.tool_runtime import append_tool_result
 
 
@@ -37,7 +38,7 @@ critical
 """
 
 
-class _Provider:
+class _Provider(LLMProvider):
     def __init__(
         self,
         *,
@@ -45,10 +46,18 @@ class _Provider:
         fail: bool = False,
         runtime_id: str = "main",
     ) -> None:
-        self.context_window = context_window
+        self._test_context_window = context_window
         self.fail = fail
-        self.runtime_id = runtime_id
+        self._test_runtime_id = runtime_id
         self.calls: list[dict[str, object]] = []
+
+    @property
+    def context_window(self) -> int:
+        return self._test_context_window
+
+    @property
+    def runtime_id(self) -> str:
+        return self._test_runtime_id
 
     def estimate_context_tokens(self, messages, tools):
         return sum(int(message.get("tokens", 1)) for message in messages) + len(tools)
@@ -110,6 +119,27 @@ def _execution_batch(
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def _call_message_content(call: dict[str, object]) -> str:
+    """Read a provider fixture call after validating its JSON-like shape."""
+
+    raw_messages = call.get("messages")
+    if not isinstance(raw_messages, list) or not raw_messages:
+        raise AssertionError("provider call must contain a non-empty messages list")
+    first = raw_messages[0]
+    if not isinstance(first, dict) or "content" not in first:
+        raise AssertionError("provider call first message must contain content")
+    return str(first["content"])
+
+
+def _call_int(call: dict[str, object], field: str) -> int:
+    """Read one integer request field from a provider fixture call."""
+
+    value = call.get(field)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise AssertionError(f"provider call {field} must be an integer")
+    return value
 
 
 def test_tail_crosses_twenty_thousand_tokens_and_keeps_refs() -> None:
@@ -311,7 +341,7 @@ def test_live_shell_execution_blocks_cut_until_terminal_evidence_arrives() -> No
 
     assert completed.compacted is True
     assert provider.calls
-    summary_input = str(provider.calls[0]["messages"][0]["content"])
+    summary_input = _call_message_content(provider.calls[0])
     assert "python train.py" in summary_input
     assert "4201" in summary_input
     assert "succeeded" in str(messages[-1]["content"])
@@ -410,7 +440,7 @@ def test_mixed_segments_preserve_anchor_before_active_batches() -> None:
     ]
     assert len(compaction_blocks) == 1
     assert "ACTIVE_SHOULD_NOT_PERSIST" not in str(compaction_blocks[0])
-    assert "ACTIVE_SHOULD_NOT_PERSIST" in str(provider.calls[-1]["messages"][0]["content"])
+    assert "ACTIVE_SHOULD_NOT_PERSIST" in _call_message_content(provider.calls[-1])
     assert result.pending_start == 5
     assert result.checkpoint.committable
     assert "ACTIVE_SHOULD_NOT_PERSIST" not in result.checkpoint.summary
@@ -447,7 +477,7 @@ def test_summary_uses_current_once_then_distinct_fallback_once_with_own_budget()
     assert len(fallback.calls) == 1
     assert current.calls[0]["model"] == "selected-model"
     assert fallback.calls[0]["model"] == "default-model"
-    assert fallback.calls[0]["max_tokens"] <= fallback.context_window
+    assert _call_int(fallback.calls[0], "max_tokens") <= fallback.context_window
     assert result.checkpoint is not None
     assert result.checkpoint.model_runtime_id == "main"
     assert result.checkpoint.model == "default-model"
@@ -576,7 +606,7 @@ def test_logical_interaction_inputs_only_enter_temporary_summary() -> None:
             force=True,
         )
     )
-    temporary_prompt = str(temporary_provider.calls[0]["messages"][0]["content"])
+    temporary_prompt = _call_message_content(temporary_provider.calls[0])
     assert all(value in temporary_prompt for value in ("U1", "U2", "U3"))
 
     committed_provider = _Provider()
@@ -607,7 +637,7 @@ def test_logical_interaction_inputs_only_enter_temporary_summary() -> None:
             force=True,
         )
     )
-    committed_prompt = str(committed_provider.calls[0]["messages"][0]["content"])
+    committed_prompt = _call_message_content(committed_provider.calls[0])
     assert all(value not in committed_prompt for value in ("U1", "U2", "U3"))
 
 
@@ -808,7 +838,7 @@ def test_same_turn_temporary_summary_replaces_previous_projection() -> None:
     assert second.checkpoint is not None
     assert second.checkpoint.generation == 2
     assert len(provider.calls) == 4
-    temporary_prompt = str(provider.calls[3]["messages"][0]["content"])
+    temporary_prompt = _call_message_content(provider.calls[3])
     assert "C3" in temporary_prompt
     assert "C2" in temporary_prompt
     blocks = [

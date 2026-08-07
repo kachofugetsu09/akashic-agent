@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from agent.config import load_config
 from agent.config_models import ModelRuntimeConfig
 from agent.model_runtime.context_compaction import hard_input_limit
+from agent.provider import LLMProvider
 from bootstrap.setup_wizard import WizardAnswers, _render_config
 
 
@@ -50,6 +51,20 @@ input_modalities = ["text"]
 [agent.context.compaction]
 keep_recent_tokens = 21000
 """
+
+
+class _BudgetProvider(LLMProvider):
+    """Minimal concrete provider seam for hard input boundary tests."""
+
+    def __init__(self, context_window: int) -> None:
+        self._test_context_window = context_window
+
+    @property
+    def context_window(self) -> int:
+        return self._test_context_window
+
+    async def chat(self, **kwargs: Any):
+        raise AssertionError("budget fixture must not call provider.chat")
 
 
 def test_compaction_policy_is_loaded_once_at_agent_context_boundary(
@@ -105,10 +120,10 @@ def test_removed_agent_compaction_trigger_fails_at_config_boundary(
 
 
 def test_model_runtime_output_edge_is_directly_bounded_by_context_window() -> None:
-    provider = SimpleNamespace(context_window=1025)
+    provider = _BudgetProvider(1025)
     assert hard_input_limit(provider, 1024) == 1
     with pytest.raises(ValueError, match="max_output_tokens"):
-        hard_input_limit(SimpleNamespace(context_window=1024), 1024)
+        hard_input_limit(_BudgetProvider(1024), 1024)
     with pytest.raises(ValueError, match="必须小于 context_window"):
         ModelRuntimeConfig(
             runtime_id="edge",
