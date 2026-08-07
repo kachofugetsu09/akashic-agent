@@ -1,6 +1,6 @@
 # 0024 · 插件自验证使用 stable/latest 与 session 级并发
 
-- 状态：accepted
+- 状态：superseded by [0026](0026-plugin-rollout-is-owned-by-the-parent-turn.md)；内部 stable/latest 与 session 并发机制保留，Agent 显式选择/promote/discard 流程废止
 - 日期：2026-08-05
 - refines：[0008](0008-plugin-runtime-publishes-only-committed-snapshots.md)、[0014](0014-shell-uses-unified-execution.md)、[0015](0015-cleanup-does-not-own-turn-or-restart-finality.md)
 - 关联条款：RUN-007、OUT-004、PLG-013、CTRL-003、SH-001、TST-001～TST-006

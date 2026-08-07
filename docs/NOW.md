@@ -4,7 +4,8 @@
 
 ## P0 · 插件递归自验证
 
-- 完成 turn-local/shared-state owner 审计，并用 pointer、memory write set、真实 tool item、timer 投递顺序和 crash recovery mutants 验收完整合同。
+- 在独立 Fitbit canonical source 变更中让 monitor 与 MCP 读取同一个 `validation_port_env`，再以一次性 workspace 验收真实隔离 listener、child tool trace、正式切换和旧 listener 恢复；不得在 Core 中添加 Fitbit 特判。
+- 补充 turn-boundary rollout 的进程崩溃注入矩阵，覆盖 terminal 封口后、候选服务停止后、正式 endpoint 切换后和 pointer 提交前；恢复失败必须保持 degraded 可见，不能只恢复 pointer。
 
 ## P0 · 上下文与持久历史隔离
 

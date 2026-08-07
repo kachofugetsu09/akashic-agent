@@ -92,6 +92,7 @@ workspace 仍不是完整运行环境的全部。显式主配置、全局凭据�
 | `PROACTIVE_CONTEXT.md` | workspace 初始化时只在缺失时写入模板 | runtime 只读；用户或获授权文件工具可以修改规则面板 | 当前没有 runtime 自动清空或删除协议；代码升级不得用默认模板覆盖已有内容 |
 | `plugin-data/` | 已激活插件在自己的 opaque 目录增加数据 | 由插件 schema 和 owner 决定 | 普通卸载只删除代码和能力投影，保留数据；永久删除必须使用名称不同的用户操作、影响预览、备份和再次确认 |
 | `runtime/plugin-reloads.sqlite3` | 每次热重载增加 transaction 与阶段事件 | 同一 transaction 按状态机更新当前 phase、snapshot identity 和错误 | 当前没有自动 retention；恢复和事故审计仍依赖的记录不得自动删除 |
+| `runtime/plugin-rollout-fact.json` | turn 后 install/uninstall 产生一条待反馈事实 | 新结果原子替换尚未消费的旧事实 | 下一次非 programmatic 用户 turn 注入后删除；它是可重建反馈，不是会话或长期记忆 |
 | `migrations.sqlite3` | Yoyo 在 migration step 成功后记录唯一 migration ID | 已应用回执保持不变；新增迁移只追加新的成功回执 | runtime 没有删除或回滚回执权限；只随用户明确删除整个 workspace 而减少，恢复依赖 workspace 备份与 SQLite 完整性检查 |
 | 插件贡献的 Skill/Drift skill | 插件 source 持有 skill 正文；安装把版本化副本发布到 cache，generation 从 `skill_roots` 建 catalog | workspace `skills/` 和 `drift/skills/` 软链接随 active generation 重建 | 禁用/卸载插件可以移除已安装副本、catalog 和软链接；外部 canonical source 不归 workspace 或卸载流程所有 |
 | 插件贡献的 MCP | 插件安装读取 `mcp_servers()` 并准备 runtime，generation readiness 通过后发布 MCP catalog | 插件升级或热重载按 generation 原子替换，旧代随 lease 排空 | 禁用/卸载插件移除 MCP catalog 和 runtime；plugin-data 不级联删除 |
@@ -243,7 +244,9 @@ workspace 之外还有两组明确的全局状态：
 │   └── recall_inspector.jsonl         default memory inspector 启用时
 ├── subagent-runs/<job-id>/            子任务产物
 ├── runtime/
-│   └── plugin-reloads.sqlite3         插件热重载事务与恢复阶段
+│   ├── plugin-reloads.sqlite3         插件热重载事务与恢复阶段
+│   ├── plugin-rollout-fact.json       下一用户 turn 消费的一条派生结果
+│   └── plugin-validation/<generation>/ 候选隔离 plugin-data 副本
 ├── memes/manifest.json
 ├── .app-server-token
 ├── .instance.lock
@@ -411,7 +414,7 @@ Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activa
 
 #### 10.2.1 0024 stable/latest 实现
 
-**F-014：** [0024](../decisions/0024-plugin-self-validation-uses-stable-and-latest.md) 要求插件安装 artifact 按 source revision/tree digest 不可变保存；同一版本号的新 commit 不能覆盖 stable runtime 仍引用的代码。插件目录内的原子 `.pointers.json` 拥有 stable/latest artifact descriptor；`<workspace>/runtime/plugin-reloads.sqlite3` 拥有单一未决 candidate phase、install provenance 与 append-only phase journal。普通 turn 只读取 stable；显式 programmatic validation 可以读取 latest。
+**F-014：** [0024](../decisions/0024-plugin-self-validation-uses-stable-and-latest.md) 与 [0026](../decisions/0026-plugin-rollout-is-owned-by-the-parent-turn.md) 要求插件安装 artifact 按 source revision/tree digest 不可变保存；同一版本号的新 commit 不能覆盖 stable runtime 仍引用的代码。插件目录内的原子 `.pointers.json` 拥有 stable/latest artifact descriptor；`<workspace>/runtime/plugin-reloads.sqlite3` 拥有单一未决 candidate phase、install provenance、turn lineage 与 append-only phase journal。普通 turn 只读取 stable；只有 owner parent turn 创建的 attached programmatic child 自动读取匹配 latest。候选独占服务使用 `runtime/plugin-validation/<generation>/` 的 plugin-data 副本和临时端口，提交或丢弃后删除。
 
 该目标的状态变化固定为：
 

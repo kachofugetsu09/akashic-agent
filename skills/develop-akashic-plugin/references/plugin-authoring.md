@@ -114,7 +114,7 @@ def skill_roots(cls) -> tuple[str, ...]:
 
 1. 用 `SkillsLoader` 或 runtime catalog 证明名称、source 和 available。
 2. 调用 `load_skill` 证明正文与相对资源可读取。
-3. runtime 支持候选选择时，在 latest programmatic child 给出真实触发请求；否则只在隔离 runtime 中走 current-snapshot child，并报告候选隔离不可用。
+3. 安装后由父 turn 创建 attached programmatic child，让 Core 自动绑定候选；不得手工选择 latest。Core 不支持因果绑定时，只能在一次性隔离 runtime 验证并报告候选隔离不可用。
 4. 从 tool items、产物或领域状态证明 Skill 被正确执行。
 
 ## 5. MCP 与其他贡献
@@ -128,7 +128,18 @@ def skill_roots(cls) -> tuple[str, ...]:
 - `jobs()` → `PluginJobSpec`
 - `drift_skill_roots()` → Drift Skill roots
 
-不要创建第二套 workspace MCP/skill owner。固定端口、bot token、long-poll 或 singleton daemon 属于独占 endpoint，不能与 stable generation 同时在一个 runtime 启动时，必须使用隔离验证路径。
+不要创建第二套 workspace MCP/skill owner。固定 listener 的 managed service 使用通用隔离合同：
+
+```python
+ManagedServiceSpec(
+    id="api",
+    command=("python", "server.py"),
+    readiness_url="http://127.0.0.1:18765/ready",
+    validation_port_env="PLUGIN_API_PORT",
+)
+```
+
+服务进程和同插件 MCP 必须真正读取 `PLUGIN_API_PORT`；Core 在候选验证时注入临时端口和隔离 plugin-data。bot token、long-poll 或 webhook Channel 不复制正式 ownership，只在父 turn 结束后的统一切换中 stop/start。
 
 ## 6. 状态与生命周期
 
@@ -155,10 +166,4 @@ python main.py plugin-install \
   --marketplace local
 ```
 
-远程 source 使用其真实 URL/marketplace；先 push 安装所需 commit。安装后运行：
-
-```bash
-python main.py plugin-doctor <plugin>@<marketplace>
-```
-
-doctor 只证明结构、声明与当前诊断，不证明新增 Tool/Skill 已经被模型真实使用。最终行为验证优先走 latest programmatic child；runtime 尚不支持 selector 时，只能在隔离环境走 current-snapshot child，并明确报告 `safe candidate self-validation unavailable`。
+远程 source 使用其真实 URL/marketplace；先 push 安装所需 commit。安装成功返回已经说明候选身份、当前 turn 与后续动作，不要再查询 status 或运行 doctor。只有安装失败且错误明确指向结构、声明或配置时，才把 `plugin-doctor` 作为诊断工具；它不能证明新增 Tool/Skill 已经被模型真实使用。最终行为验证使用父 turn 创建的 attached programmatic child，不显式选择 runtime。Core 不支持因果候选绑定时，只能在一次性隔离环境验证，并明确报告 `safe candidate self-validation unavailable`。

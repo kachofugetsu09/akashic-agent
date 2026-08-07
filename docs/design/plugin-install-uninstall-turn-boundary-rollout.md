@@ -1,6 +1,6 @@
 # 插件 install/uninstall/revert 与 turn 边界发布设计合同
 
-- 状态：proposed；设计已由维护者确认，等待单独实施批准
+- 状态：implemented；Core 与 Skill 已实现，真实 Fitbit source 适配和扩展 crash matrix 记录在 `NOW.md`
 - 日期：2026-08-08
 - 基线：`origin/main@31b976d82cbd5766e6450d7e287ceda71d9b7573`
 - 关联条款：OBJ-002、STA-001～STA-003、CAP-001～CAP-002、ERR-001、RUN-003、PLG-001～PLG-013、BAK-001、TST-001～TST-006
@@ -254,15 +254,15 @@ Agent 只用 `install/uninstall/revert` 管理插件；install 后的 programmat
 
 ### Success criteria
 
-- [ ] Agent 可见插件管理动作只有 install、uninstall、revert。
-- [ ] 当前 turn 自己保持旧 snapshot；其 attached programmatic child 自动、精确绑定当前 candidate。
-- [ ] 没有真实 programmatic 验证、child 非正常结束、parent 非正常结束或已经 revert 时，candidate 不得发布。
-- [ ] revert 只撤销同一 turn 最近 pending install/uninstall，不能跨 turn 回滚。
-- [ ] install/uninstall 返回说明已发生、未发生、后续动作和 Agent 下一步。
-- [ ] 独占 service/Channel 不绕过 coexistence Gate，在隔离验证或 turn 后维护切换中处理。
-- [ ] endpoint、snapshot、pointer、manifest 和 admission 共同提交或共同恢复。
-- [ ] install 成功后允许清理无引用旧 artifact；uninstall 清理已安装代码但保留 plugin-data、journal 和 source。
-- [ ] 下一次用户主动 turn能获知最终切换、恢复或清理失败事实，不需要 status/polling。
+- [x] Agent 可见插件管理动作只有 install、uninstall、revert。
+- [x] 当前 turn 自己保持旧 snapshot；其 attached programmatic child 自动、精确绑定当前 candidate。
+- [x] 没有真实 programmatic 验证、child 非正常结束、parent 非正常结束或已经 revert 时，candidate 不得发布。
+- [x] revert 只撤销同一 turn 最近 pending install/uninstall，不能跨 turn 回滚。
+- [x] install/uninstall 返回说明已发生、未发生、后续动作和 Agent 下一步。
+- [x] 独占 service/Channel 不绕过 coexistence Gate，在隔离验证或 turn 后维护切换中处理。
+- [x] endpoint、snapshot、pointer、manifest 和 admission 共同提交或共同恢复。
+- [x] install 成功后允许清理无引用旧 artifact；uninstall 清理已安装代码但保留 plugin-data、journal 和 source。
+- [x] 下一次用户主动 turn能获知最终切换、恢复或清理失败事实，不需要 status/polling。
 - [ ] targeted tests、semantic mutants、change-impact Gate 和一次性 workspace 真实插件场景通过。
 
 ### Change intent
@@ -342,7 +342,7 @@ validation:
   - "一次性 workspace 中真实 fixture；Fitbit 外部 Gate 单独固定依赖与 revision"
 rollback: "实现前基线 bundle；实现提交可整体 revert。运行事务在 turn commit 前取消 pending，在切换失败时恢复并重新验证 previous。"
 worktree_writer: "Codex /root"
-handoff_head: "pending"
+handoff_head: "PR branch; exact head recorded at delivery"
 external_revisions: []
 schema_lineages:
   - "runtime/plugin-reloads.sqlite3 当前 schema；如需迁移先枚举已发布 lineage，未知形状 fail-loud。"
@@ -385,4 +385,4 @@ schema_lineages:
 
 ## 13. 实施批准门
 
-本文只批准设计和任务边界，不授权实现、提交、推送、PR、正式插件安装或 runtime 重启。进入实现前必须由维护者单独回答：**按这份任务合同进入实现吗？**
+维护者已在 2026-08-08 明确批准按本合同实施、拆分提交并创建大 PR。该批准不包含正式 Fitbit 安装、正式 runtime 重启或外部插件 source 修改。
