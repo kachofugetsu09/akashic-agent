@@ -46,6 +46,8 @@ from plugins.akasha.engine import (
     ActiveRecallSnapshot,
     AkashaFeedbackPersistModule,
     AkashaMemoryEngine,
+    PendingRetrieval,
+    RetrievalRecords,
 )
 from plugins.akasha.inspector import AkashaInspectorReader
 from plugins.akasha.infrastructure.persistence import (
@@ -62,6 +64,7 @@ from plugins.akasha.plugin import (
     _empty_mobile_recall,
     _mobile_recall_lane,
 )
+from session.store import InteractionDeletion, SessionStore
 
 
 class _Embedder:
@@ -942,6 +945,287 @@ def test_sparse_builder_groups_explicit_multi_user_turn(tmp_path: Path) -> None:
     assert dense is not None and dense[0] == "u1"
     user_dense = struct.unpack("<2f", dense[1])
     assert user_dense == pytest.approx((2 / math.sqrt(5), 1 / math.sqrt(5)))
+
+
+def _seed_two_explicit_akasha_turns(workspace: Path) -> datetime:
+    """Persist two canonical explicit turns with frozen embeddings."""
+
+    sessions = workspace / "sessions.db"
+    _create_sessions(sessions)
+    started = datetime(2026, 8, 7, tzinfo=timezone.utc)
+    rows = [
+        (
+            "u1",
+            0,
+            "user",
+            "alpha",
+            {"control_turn_id": "t1", "turn_input_ordinal": 0},
+        ),
+        (
+            "u2",
+            1,
+            "user",
+            "continue",
+            {"control_turn_id": "t1", "turn_input_ordinal": 1},
+        ),
+        (
+            "a1",
+            2,
+            "assistant",
+            "first",
+            {
+                "control_turn_id": "t1",
+                "turn_terminal": True,
+                "turn_input_count": 2,
+            },
+        ),
+        (
+            "u3",
+            3,
+            "user",
+            "beta",
+            {"control_turn_id": "t2", "turn_input_ordinal": 0},
+        ),
+        (
+            "a2",
+            4,
+            "assistant",
+            "second",
+            {
+                "control_turn_id": "t2",
+                "turn_terminal": True,
+                "turn_input_count": 1,
+            },
+        ),
+    ]
+    with closing(sqlite3.connect(sessions)) as connection, connection:
+        connection.execute(
+            "INSERT INTO sessions VALUES ('test:one', ?, ?, 5, NULL)",
+            (started.isoformat(), started.isoformat()),
+        )
+        for message_id, seq, role, content, extra in rows:
+            connection.execute(
+                "INSERT INTO messages VALUES (?, 'test:one', ?, ?, ?, NULL, ?, ?)",
+                (
+                    message_id,
+                    seq,
+                    role,
+                    content,
+                    json.dumps(extra),
+                    (started + timedelta(seconds=seq)).isoformat(),
+                ),
+            )
+            vector = (1.0, 0.0) if role == "user" else (0.0, 1.0)
+            connection.execute(
+                "INSERT INTO message_embeddings VALUES (?, ?, 'embedding-model', ?, 2, ?, ?)",
+                (
+                    message_id,
+                    hashlib.sha256(content.encode()).hexdigest(),
+                    sqlite3.Binary(struct.pack("<2f", *vector)),
+                    started.isoformat(),
+                    started.isoformat(),
+                ),
+            )
+    return started
+
+
+@pytest.mark.asyncio
+async def test_interaction_deletion_rebuilds_akasha_and_clears_pending(
+    tmp_path: Path,
+) -> None:
+    started = _seed_two_explicit_akasha_turns(tmp_path)
+    sessions = tmp_path / "sessions.db"
+
+    engine = _engine(tmp_path)
+    first_turn = engine._runtime.cycle.turns[0]  # noqa: SLF001
+    assert first_turn.user_dense is not None
+    _, ticket = engine._runtime.query_turn(  # noqa: SLF001
+        text=first_turn.user_text,
+        dense=first_turn.user_dense,
+        session_key="test:one",
+        timestamp=started + timedelta(seconds=10),
+    )
+    engine._pending["test:one"] = PendingRetrieval(  # noqa: SLF001
+        ticket=ticket,
+        query_timestamp=started,
+        query_text=first_turn.user_text,
+        query_dense=first_turn.user_dense.copy(),
+        turn_id="attempt-3",
+        records=RetrievalRecords(dense=(), completion=()),
+    )
+    engine._pending["test:other"] = engine._pending["test:one"]  # noqa: SLF001
+    store = SessionStore(sessions)
+    deletion = await engine.delete_interaction_source(
+        "t1",
+        lambda: store.delete_interaction("t1"),
+    )
+    assert deletion is not None
+
+    assert "test:one" not in engine._pending  # noqa: SLF001
+    assert "test:other" not in engine._pending  # noqa: SLF001
+    assert [turn.turn_id for turn in engine._runtime.cycle.turns] == [  # noqa: SLF001
+        "u3::a2"
+    ]
+    with closing(
+        sqlite3.connect(tmp_path / "memory" / "akasha-v2-index.db")
+    ) as connection:
+        assert connection.execute(
+            "SELECT turn_id FROM sparse_turns ORDER BY turn_id"
+        ).fetchall() == [("u3::a2",)]
+    with closing(
+        sqlite3.connect(tmp_path / "memory" / "akasha.db")
+    ) as connection:
+        assert connection.execute(
+            "SELECT turn_id FROM turn_nodes ORDER BY turn_id"
+        ).fetchall() == [("u3::a2",)]
+    store.close()
+    engine._runtime.close()  # noqa: SLF001
+    engine._embedding_store.close()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_interaction_deletion_waits_for_in_flight_source_embedding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = _seed_two_explicit_akasha_turns(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "sessions.db")) as connection, connection:
+        connection.execute("DELETE FROM message_embeddings WHERE message_id IN ('u3', 'a2')")
+        connection.execute("DELETE FROM messages WHERE id IN ('u3', 'a2')")
+    engine = _engine(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "sessions.db")) as connection, connection:
+        connection.execute(
+            "INSERT INTO messages VALUES ('u3', 'test:one', 3, 'user', 'beta', NULL, ?, ?)",
+            (
+                json.dumps(
+                    {"control_turn_id": "t2", "turn_input_ordinal": 0}
+                ),
+                (started + timedelta(seconds=3)).isoformat(),
+            ),
+        )
+        connection.execute(
+            "INSERT INTO messages VALUES ('a2', 'test:one', 4, 'assistant', 'second', NULL, ?, ?)",
+            (
+                json.dumps(
+                    {
+                        "control_turn_id": "t2",
+                        "turn_terminal": True,
+                        "turn_input_count": 1,
+                    }
+                ),
+                (started + timedelta(seconds=4)).isoformat(),
+            ),
+        )
+    embed_started = asyncio.Event()
+    release_embed = asyncio.Event()
+
+    async def blocked_embed_batch(texts: list[str]) -> list[list[float]]:
+        embed_started.set()
+        await release_embed.wait()
+        return [
+            [1.0, 0.0] if "alpha" in text else [0.0, 1.0]
+            for text in texts
+        ]
+
+    monkeypatch.setattr(engine._embedder, "embed_batch", blocked_embed_batch)  # noqa: SLF001
+    event = TurnCommitted(
+        session_key="test:one",
+        channel="test",
+        chat_id="one",
+        input_message="beta",
+        persisted_user_message="beta",
+        assistant_response="second",
+        tools_used=[],
+        persisted_user_message_id="u3",
+        persisted_user_message_ids=("u3",),
+        assistant_message_id="a2",
+        timestamp=started,
+    )
+    commit_task = asyncio.create_task(engine._on_turn_committed(event))  # noqa: SLF001
+    await embed_started.wait()
+
+    store = SessionStore(tmp_path / "sessions.db")
+    deletion_task = asyncio.create_task(
+        engine.delete_interaction_source(
+            "t1",
+            lambda: store.delete_interaction("t1"),
+        )
+    )
+    await asyncio.sleep(0)
+    assert not deletion_task.done()
+    release_embed.set()
+    await commit_task
+    deletion = await deletion_task
+    assert deletion is not None
+
+    with closing(sqlite3.connect(tmp_path / "sessions.db")) as connection:
+        assert connection.execute(
+            "SELECT message_id FROM message_embeddings WHERE message_id IN ('u1', 'u2', 'a1')"
+        ).fetchall() == []
+        assert connection.execute(
+            "SELECT message_id FROM message_embeddings WHERE message_id IN ('u3', 'a2') ORDER BY message_id"
+        ).fetchall() == [("a2",), ("u3",)]
+    assert [turn.turn_id for turn in engine._runtime.cycle.turns] == [  # noqa: SLF001
+        "u3::a2"
+    ]
+    store.close()
+    engine._runtime.close()  # noqa: SLF001
+    engine._embedding_store.close()  # noqa: SLF001
+
+
+def test_restart_repairs_sidecars_after_source_interaction_was_deleted(
+    tmp_path: Path,
+) -> None:
+    _seed_two_explicit_akasha_turns(tmp_path)
+    original = _engine(tmp_path)
+    original._runtime.close()  # noqa: SLF001
+    original._embedding_store.close()  # noqa: SLF001
+    store = SessionStore(tmp_path / "sessions.db")
+    deletion = store.delete_interaction("t1")
+    assert deletion is not None
+    store.close()
+
+    restarted = _engine(tmp_path)
+
+    assert [turn.turn_id for turn in restarted._runtime.cycle.turns] == [  # noqa: SLF001
+        "u3::a2"
+    ]
+    restarted._runtime.close()  # noqa: SLF001
+    restarted._embedding_store.close()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_failed_interaction_rebuild_keeps_akasha_fail_loud(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_sessions(tmp_path / "sessions.db")
+    engine = _engine(tmp_path)
+
+    def fail_rebuild() -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(
+        engine._runtime,  # noqa: SLF001
+        "rebuild_from_source",
+        fail_rebuild,
+    )
+    deletion = InteractionDeletion(
+        control_turn_id="t1",
+        session_key="test:one",
+        message_ids=("u1", "a1"),
+        first_user_message_id="u1",
+        old_last_consolidated=2,
+        new_last_consolidated=0,
+        backup_path=str(tmp_path / "backup.db"),
+    )
+
+    with pytest.raises(RuntimeError, match="failed to reconcile"):
+        await engine.delete_interaction_source("t1", lambda: deletion)
+    with pytest.raises(RuntimeError, match="derived state is stale"):
+        engine.list_items_for_dashboard()
+    engine._runtime.close()  # noqa: SLF001
+    engine._embedding_store.close()  # noqa: SLF001
 
 
 def test_sparse_builder_preserves_single_user_embedding_bytes(

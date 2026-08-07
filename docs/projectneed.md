@@ -353,7 +353,7 @@ skills、长期记忆、检索结果和 recent context 必须带来源和信任�
 
 删除 session、messages 或随之级联的派生索引，必须来自用户主动发起的撤销或删除操作，并经过名称明确的管理命令。命令必须携带用户动作来源、精确目标、cascade 语义、备份和审计证据。裁切、压缩、检索、展示、重放、保留期猜测和普通 refactor 不得调用这些接口。
 
-带显式 interaction identity 的 completed transcript 是不可拆分的删除单元。单消息或 generic batch 入口不得删除其中一部分，必须返回 interaction identity 供客户端向用户确认后转调整组原子撤销；整组撤销先创建可验证恢复快照，再同步删除逐消息 embedding、把位于该组内或组后的 consolidation 游标回退到组前边界。启用的派生记忆必须先声明删除同步能力，否则管理入口拒绝修改权威消息。
+带显式 interaction identity 的 completed transcript 是不可拆分的删除单元。单消息或 generic batch 入口不得删除其中一部分，必须返回 interaction identity 供客户端向用户确认后转调整组原子撤销；整组撤销先创建可验证恢复快照，再同步删除逐消息 embedding、把位于该组内或组后的 consolidation 游标回退到组前边界，并由启用的派生记忆 owner 清除对应节点和所有基于旧图生成的 pending 引用。派生重建失败时不得继续提供撤销前的陈旧结果，删除期间已开始的迟到提交也不得重新写回被撤销 embedding。
 
 ### SES-004 损坏数据在存储边界失败
 
@@ -412,6 +412,8 @@ session、channel、chat、source_ref 和预算在每次 post-response run 创�
 ### MEM-009 Akasha 使用固定输入确定性重建
 
 `akasha.db` 和 graph snapshot 是派生 sidecar。完整重建只读取 `sessions.db/messages`、对应的 `message_embeddings`、固定算法和固定配置，不引入 LLM 重新解释历史，也不重新生成已经存在的 embedding。只有 completed turn 属于学习样本；被中断、失败或明确标为 `skip_post_memory` 的 turn 保留在原始会话中，但不要求 embedding，也不进入显式记忆图。同一组输入必须得到可复现的图；合法学习样本缺少或模型不匹配的 embedding 必须使完整重建失败并报告缺口，不能静默跳过后仍声称成功。
+
+用户按 SES-003 撤销 completed interaction 后，Akasha 必须从剩余固定输入重建 sidecar；source event 的 embedding + staging、source 删除、pending 清理和派生发布由同一管理协调流程串行化，不能在新 completed turn 已落库但 embedding 尚未持久化时开始 rebuild。两份 sidecar 之间的发布崩溃窗口必须在重启时通过身份失配确定性收敛；当前进程若未能重建，则 memory query 和管理读取保持 fail-loud。
 
 ### MEM-010 Akasha 对同 Interaction 多输入建立一个确定性样本
 

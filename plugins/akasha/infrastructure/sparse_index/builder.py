@@ -863,6 +863,13 @@ def _select_new_turns(
 ) -> list[CanonicalTurn]:
     """Accept only unchanged existing turns followed by causal append-only work."""
 
+    source_turn_ids = {turn.turn_id for turn in turns}
+    removed = sorted(set(existing) - source_turn_ids)
+    if removed:
+        raise AppendOnlyViolation(
+            "source removed indexed turns; rebuild is required, "
+            f"first={removed[0]}"
+        )
     for turn in turns:
         row = existing.get(turn.turn_id)
         if row is None:

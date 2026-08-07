@@ -78,7 +78,7 @@ workspace 仍不是完整运行环境的全部。显式主配置、全局凭据�
 | `consolidation_writes.db` | 为新的 `source_ref + kind` INSERT 幂等记录 | 保存已提交 payload 和提交状态 | 当前没有通用自动清理合同；在定义重放窗口和恢复证据前不得减少 |
 | `memory2.db/memory_items` | consolidation 或显式 memorize INSERT 新记忆 | reinforcement 更新强度/元数据；supersede 保留旧条目并改变状态，属于逻辑减少 | 只有用户明确 forget/管理操作可以 hard delete；向量索引可随 canonical 条目重建 |
 | `memory2.db/memory_replacements` | 每次 supersede 追加替换关系与前后条目 | 保留勘误和 undo 证据 | 当前没有普通运行删除协议 |
-| `akasha.db` 与 `akasha-v2-index.db` | 固定算法读取 `sessions.db/messages` 和已有 `message_embeddings`，增加图、激活和查询记录 | 可以用同一组输入确定性重建；只读 Inspector 从既有表派生视图，不新增状态；重建不调用 LLM，也不重新解释历史 | 只能由显式 sidecar rebuild/maintenance 流程在备份后替换；embedding 缺失或模型不匹配时完整重建必须失败，不能跳过后声称成功 |
+| `akasha.db` 与 `akasha-v2-index.db` | 固定算法读取 `sessions.db/messages` 和已有 `message_embeddings`，增加图、激活和查询记录 | 可以用同一组输入确定性重建；用户整组撤销 interaction 后由 Akasha owner 串行全量替换；只读 Inspector 从既有表派生视图，不新增状态；重建不调用 LLM，也不重新解释历史 | 只能由显式 sidecar rebuild/maintenance 或 interaction 撤销协调流程替换；embedding 缺失或模型不匹配时完整重建必须失败，不能跳过后声称成功 |
 
 ### 3.3 自主运行、扩展与控制状态
 
@@ -325,6 +325,8 @@ Akasha V2 保存 turn 指针、稀疏特征、engram hub、有向关系、activa
 **F-007A：** 同一份 messages、匹配的 message embeddings、算法和配置必须得到可复现的图。算法与配置要作为重建输入固定；改变它们属于显式图迁移，不是同输入重建。
 
 **F-007B：** 当前 `build_akasha_db.py` 在备份和目标数据库写入前审计全部合法对话 embedding。缺失、内容 hash 不匹配、模型/维度不匹配、非有限或零向量会写出确定性缺口报告并 fail-loud；scheduler、显式 `skip_post_memory` 和双方都为空的纯媒体 turn 不属于学习输入。
+
+**F-007C：** Akasha 启用时，interaction 撤销由 Akasha owner 先以 source-event gate 排空已开始的 `TurnCommitted` embedding + staging，再封住在线 query/commit，调用只允许删除目标 interaction 的 SessionStore 回调，递增 source generation、清除所有基于旧图节点生成的 pending ticket，并从剩余 canonical source 生成完整 sidecar 候选。候选按 index→memory 发布；两文件之间的崩溃窗口在下次启动通过 source/index 或 index/memory 身份失配触发确定性重建。删除已提交但重建失败时，运行时保持 fail-loud，不得继续提供旧 turn 节点；等待删除期间才开始的 source event 必须因 generation 失配而失效，不能重新写回 embedding。
 
 ## 9. 主动流程、Wake、Drift 与调度
 

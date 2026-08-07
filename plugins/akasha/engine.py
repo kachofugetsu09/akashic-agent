@@ -6,6 +6,7 @@ import asyncio
 import json
 import sqlite3
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +37,7 @@ from core.memory.engine import (
 )
 from memory2.embedder import Embedder
 from session.embedding_store import MessageEmbeddingStore
+from session.store import InteractionDeletion
 
 from .application.cycle import RetrievalTicket
 from .application.runtime import OnlineMemoryRuntime, StagedOnlineCommit
@@ -275,9 +277,12 @@ class AkashaMemoryEngine:
         # 2. Keep one global graph writer and one pending query per session.
         self._lock = threading.RLock()
         self._pending_changed = threading.Condition(self._lock)
+        self._source_event_gate = asyncio.Lock()
         self._commit_gate = asyncio.Lock()
         self._publish_task: asyncio.Task[None] | None = None
         self._pending: dict[str, PendingRetrieval] = {}
+        self._source_generation = 0
+        self._source_invalidated_error: RuntimeError | None = None
         self._staged_feedback: dict[
             str,
             dict[Literal["remember", "forget"], AkashaFeedbackMarker],
@@ -335,6 +340,7 @@ class AkashaMemoryEngine:
         async with self._commit_gate:
             await self._wait_for_publication()
             with self._lock:
+                self._require_valid_source()
                 cue, ticket = self._runtime.query_turn(
                     text=text,
                     dense=dense,
@@ -673,6 +679,7 @@ class AkashaMemoryEngine:
         *,
         limit: int = 200,
     ) -> list[dict[str, object]]:
+        self._require_valid_source()
         selected = [
             turn
             for turn in self._runtime.cycle.turns
@@ -700,6 +707,7 @@ class AkashaMemoryEngine:
         sort_by: str = "created_at",
         sort_order: str = "desc",
     ) -> tuple[list[dict[str, object]], int]:
+        self._require_valid_source()
         del memory_type, status, scope_channel, scope_chat_id
         del has_embedding, sort_by
         rows = [
@@ -732,6 +740,7 @@ class AkashaMemoryEngine:
         *,
         include_embedding: bool = False,
     ) -> dict[str, object] | None:
+        self._require_valid_source()
         _ = include_embedding
         for turn in self._runtime.cycle.turns:
             if turn.turn_id == item_id:
@@ -773,6 +782,7 @@ class AkashaMemoryEngine:
         score_threshold: float = 0.0,
         include_superseded: bool = False,
     ) -> list[dict[str, object]]:
+        self._require_valid_source()
         del memory_type, include_superseded
         turns = self._runtime.cycle.turns
         query = next(
@@ -796,6 +806,21 @@ class AkashaMemoryEngine:
         )[:top_k]
 
     async def _on_turn_committed(self, event: TurnCommitted) -> None:
+        """Serialize source-event embedding and staging with source deletion."""
+
+        with self._lock:
+            source_generation = self._source_generation
+            source_was_invalid = self._source_invalidated_error is not None
+        async with self._source_event_gate:
+            with self._lock:
+                if (
+                    source_was_invalid
+                    or source_generation != self._source_generation
+                ):
+                    return
+            await self._commit_source_event(event)
+
+    async def _commit_source_event(self, event: TurnCommitted) -> None:
         """Stage one committed turn and publish its graph asynchronously."""
 
         # 1. Respect the host's explicit exclusion and validate stable IDs.
@@ -843,28 +868,99 @@ class AkashaMemoryEngine:
             vectors = await self._embedder.embed_batch(
                 [cast(str, message["content"]) for message in messages]
             )
-        _upsert_embeddings(
-            self._embedding_store,
-            self._embedding_model,
-            messages,
-            vectors,
-        )
-
         # 3. Serialize durable staging behind the prior graph publication.
         async with self._commit_gate:
             await self._wait_for_publication()
             with self._lock:
+                self._require_valid_source()
+                _upsert_embeddings(
+                    self._embedding_store,
+                    self._embedding_model,
+                    messages,
+                    vectors,
+                )
+                selected_ticket = None
                 if self._pending.get(event.session_key) is pending:
                     self._pending.pop(event.session_key, None)
+                    selected_ticket = None if pending is None else pending.ticket
                 staged = self._runtime.stage_from_source(
                     user_message_id=user_id,
                     assistant_message_id=assistant_id,
-                    ticket=None if pending is None else pending.ticket,
+                    ticket=selected_ticket,
                 )
             self._publish_task = asyncio.create_task(
                 asyncio.to_thread(self._publish_staged, staged),
                 name="akasha-publish-staged",
             )
+
+    async def delete_interaction_source(
+        self,
+        control_turn_id: str,
+        delete_source: Callable[[], InteractionDeletion | None],
+    ) -> InteractionDeletion | None:
+        """封住在线读写，执行窄 source 删除并重建派生状态。"""
+
+        # 1. 与在线 commit 串行，整个 source mutation 窗口不开放旧图。
+        async with self._source_event_gate:
+            async with self._commit_gate:
+                await self._wait_for_publication()
+                return await asyncio.to_thread(
+                    self._delete_source_and_rebuild,
+                    control_turn_id,
+                    delete_source,
+                )
+
+    def _delete_source_and_rebuild(
+        self,
+        control_turn_id: str,
+        delete_source: Callable[[], InteractionDeletion | None],
+    ) -> InteractionDeletion | None:
+        """在工作线程内完成 source transaction 与确定性派生发布。"""
+
+        # 1. 先使所有非 gate 管理读也 fail-loud，再调用唯一授权的删除动作。
+        with self._lock:
+            self._source_invalidated_error = RuntimeError(
+                "Akasha source mutation is in progress"
+            )
+        try:
+            deletion = delete_source()
+        except Exception:
+            with self._lock:
+                self._source_invalidated_error = None
+            raise
+        if deletion is None:
+            with self._lock:
+                self._source_invalidated_error = None
+            return None
+        if deletion.control_turn_id != control_turn_id:
+            with self._lock:
+                self._source_invalidated_error = RuntimeError(
+                    "Akasha source deletion returned a different interaction"
+                )
+            raise RuntimeError("interaction deletion identity mismatch")
+
+        # 2. 递增 source 代际，并清除所有基于旧图节点生成的 pending ticket。
+        with self._lock:
+            self._source_generation += 1
+            if self._pending:
+                self._pending.clear()
+                self._pending_changed.notify_all()
+
+        # 3. 以 canonical source 全量替换 turn 派生状态。
+        try:
+            self._runtime.rebuild_from_source()
+        except Exception as exc:
+            with self._lock:
+                self._source_invalidated_error = RuntimeError(
+                    "Akasha derived state is stale after interaction deletion"
+                )
+            raise RuntimeError(
+                "Akasha failed to reconcile interaction deletion: "
+                f"{deletion.control_turn_id}"
+            ) from exc
+        with self._lock:
+            self._source_invalidated_error = None
+        return deletion
 
     async def aclose(self) -> None:
         """Drain a staged graph publication before closing owned resources."""
@@ -886,6 +982,10 @@ class AkashaMemoryEngine:
 
         with self._lock:
             self._runtime.publish_staged(staged)
+
+    def _require_valid_source(self) -> None:
+        if self._source_invalidated_error is not None:
+            raise self._source_invalidated_error
 
     def _records(
         self,
