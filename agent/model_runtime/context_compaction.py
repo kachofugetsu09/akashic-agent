@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence, cas
 
 from agent.model_runtime.execution_history import active_shell_execution_origins
 from agent.model_runtime.types import ModelUsage, UsageCoverage
+from agent.model_runtime.usage import aggregate_usage
 from agent.prompting import is_context_frame
 
 if TYPE_CHECKING:
@@ -392,7 +393,8 @@ class ContextCompactor:
             _copy_message(message) for message in previous_temp
         ]
         committed_checkpoint: ContextCompaction | None = None
-        summary_usage: ModelUsage | None = None
+        committed_summary_usage: ModelUsage | None = None
+        active_summary_usage: ModelUsage | None = None
         if committed_candidates:
             try:
                 selected_committed, retained_committed = self._select_units(
@@ -421,7 +423,7 @@ class ContextCompactor:
                     else None
                 )
                 if receipt is not None:
-                    summary, summary_usage, committed_checkpoint = (
+                    summary, committed_summary_usage, committed_checkpoint = (
                         _checkpoint_from_receipt(
                             receipt,
                             source_ref=source_ref,
@@ -429,7 +431,7 @@ class ContextCompactor:
                         )
                     )
                 else:
-                    summary, summary_usage = await self._summarize(
+                    summary, committed_summary_usage = await self._summarize(
                         selected_committed,
                         include_temporary=False,
                     )
@@ -446,7 +448,7 @@ class ContextCompactor:
                         estimated_tokens_after=0,
                         selected=selected_committed,
                         retained=retained_committed,
-                        summary_usage=summary_usage,
+                        summary_usage=committed_summary_usage,
                         source_ref=source_ref,
                         model_runtime_id=_provider_runtime_id(self._provider),
                         model=self._model,
@@ -488,13 +490,13 @@ class ContextCompactor:
                 selected_active,
                 include_temporary=True,
             )
+            active_summary_usage = active_usage
             temporary_summary = build_compaction_messages(
                 active_summary,
                 generation=0,
                 source_ref=_temporary_source_ref(self._scope_id),
             )
             self._temporary_summary = active_summary
-            summary_usage = active_usage
             rebuilt = _flatten_projection(
                 prefix=current_prefix,
                 committed=retained_committed,
@@ -570,6 +572,12 @@ class ContextCompactor:
         self._compaction = checkpoint
         messages[:] = rebuilt
         self._meter.invalidate()
+        usages = [
+            usage
+            for usage in (committed_summary_usage, active_summary_usage)
+            if usage is not None
+        ]
+        summary_usage = aggregate_usage(usages) if usages else None
         return PreparedQueryContext(
             _pending_start(self._segments),
             after,
@@ -618,7 +626,11 @@ class ContextCompactor:
             kept_tokens += tokens
             if kept_tokens >= self._keep_recent_tokens:
                 break
-        cut = max(1, len(candidates) - len(kept))
+        if kept_tokens < self._keep_recent_tokens:
+            raise ContextCompactionError(
+                "context_compaction_no_valid_cut_before_keep_recent_target"
+            )
+        cut = len(candidates) - len(kept)
         cut = min(cut, len(candidates) - 1)
         selected = candidates[:cut]
         retained = candidates[cut:]

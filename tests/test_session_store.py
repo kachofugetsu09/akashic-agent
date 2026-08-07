@@ -22,19 +22,39 @@ from bus.queue import MessageBus
 NOW = datetime(2026, 7, 14, 8, 0, tzinfo=UTC)
 
 
-def _compaction_kwargs(session_key: str, *, generation: int | None = None) -> dict:
+def _seed_compaction_message(store: SessionStore, session_key: str) -> dict:
+    """Create the canonical row referenced by compaction fixtures."""
+
+    return store.insert_message(
+        session_key,
+        role="user",
+        content="tail",
+        ts=NOW.isoformat(),
+        seq=1,
+    )
+
+
+def _compaction_kwargs(
+    session_key: str,
+    message: dict[str, object],
+    *,
+    generation: int | None = None,
+) -> dict:
+    message_id = str(message["id"])
+    message_seq = int(message["seq"])
     return {
         "session_key": session_key,
         "trigger": "soft_limit",
         "summary": "## Goal\nsummary",
         "source_ref": f"source:{generation or 1}",
-        "source_from_seq": 0,
-        "consolidated_through_seq": 1,
-        "source_message_ids": ["message:1"],
+        "source_from_seq": message_seq,
+        "consolidated_through_seq": message_seq,
+        "source_message_ids": [message_id],
         "retained_tail": [
             {
-                "id": "message:1",
-                "seq": 1,
+                "id": message_id,
+                "seq": message_seq,
+                "unit_ref": f"turn:{message_seq}",
                 "message": {"role": "user", "content": "tail"},
             }
         ],
@@ -604,23 +624,47 @@ def test_turn_corrupted_json_fails_loud(
 def test_compaction_head_is_store_owned_and_monotonic(tmp_path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     store.create_session(key="cli:head")
+    message = _seed_compaction_message(store, "cli:head")
 
     initial = store.get_compaction_head("cli:head")
     assert (initial.parent_generation, initial.next_generation) == (0, 1)
 
     first = store.persist_compaction(
-        **_compaction_kwargs("cli:head", generation=1),
+        **_compaction_kwargs("cli:head", message, generation=1),
         parent_generation=initial.parent_generation,
     )
     assert first.generation == 1
     second = store.persist_compaction(
-        **(_compaction_kwargs("cli:head", generation=2) | {"source_ref": "source:2"}),
+        **(
+            _compaction_kwargs("cli:head", message, generation=2)
+            | {"source_ref": "source:2"}
+        ),
         parent_generation=first.generation,
     )
     assert second.generation == 2
 
     head = store.get_compaction_head("cli:head")
     assert (head.parent_generation, head.next_generation) == (2, 3)
+
+
+def test_compaction_retained_unit_ref_survives_store_reopen(tmp_path) -> None:
+    db_path = tmp_path / "sessions.db"
+    store = SessionStore(db_path)
+    store.create_session(key="cli:reopen")
+    message = _seed_compaction_message(store, "cli:reopen")
+    persisted = store.persist_compaction(
+        **_compaction_kwargs("cli:reopen", message, generation=1),
+        parent_generation=0,
+    )
+    store.close()
+
+    reopened = SessionStore(db_path)
+    loaded = reopened.get_compaction("cli:reopen", persisted.generation)
+
+    assert loaded is not None
+    assert loaded.retained_tail[0]["id"] == message["id"]
+    assert loaded.retained_tail[0]["unit_ref"] == "turn:1"
+    reopened.close()
 
 
 def test_compaction_head_rejects_cursor_without_active_generation(tmp_path) -> None:
@@ -639,24 +683,31 @@ def test_compaction_head_rejects_cursor_without_active_generation(tmp_path) -> N
 def test_compaction_source_ref_is_idempotent_after_cursor_advances(tmp_path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     store.create_session(key="cli:idempotent")
+    message = _seed_compaction_message(store, "cli:idempotent")
     first = store.persist_compaction(
-        **_compaction_kwargs("cli:idempotent", generation=1),
+        **_compaction_kwargs("cli:idempotent", message, generation=1),
         parent_generation=0,
     )
     _ = store.persist_compaction(
-        **(_compaction_kwargs("cli:idempotent", generation=2) | {"source_ref": "source:2"}),
+        **(
+            _compaction_kwargs("cli:idempotent", message, generation=2)
+            | {"source_ref": "source:2"}
+        ),
         parent_generation=1,
     )
 
     replay = store.persist_compaction(
-        **_compaction_kwargs("cli:idempotent", generation=None),
+        **_compaction_kwargs("cli:idempotent", message, generation=None),
     )
     assert replay.generation == first.generation
     assert store.get_compaction_head("cli:idempotent").parent_generation == 2
 
     with pytest.raises(ValueError, match="source_ref 内容冲突"):
         store.persist_compaction(
-            **(_compaction_kwargs("cli:idempotent", generation=None) | {"summary": "different"}),
+            **(
+                _compaction_kwargs("cli:idempotent", message, generation=None)
+                | {"summary": "different"}
+            ),
         )
 
 
@@ -674,8 +725,9 @@ def test_legacy_react_compaction_extra_is_preserved_without_runtime_read(tmp_pat
 def test_session_save_cannot_regress_ledger_cursor(tmp_path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     store.create_session(key="cli:stale-save")
+    message = _seed_compaction_message(store, "cli:stale-save")
     _ = store.persist_compaction(
-        **_compaction_kwargs("cli:stale-save", generation=1),
+        **_compaction_kwargs("cli:stale-save", message, generation=1),
         parent_generation=0,
     )
 

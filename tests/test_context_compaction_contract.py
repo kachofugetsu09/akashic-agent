@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
+    ContextCompactionError,
     ContextCompactor,
     ContextPayloadSegments,
 )
-from agent.model_runtime.types import LLMResponse
+from agent.model_runtime.types import LLMResponse, ModelUsage
 
 
 _SUMMARY = """## Goal
@@ -85,6 +88,91 @@ def test_tail_crosses_twenty_thousand_tokens_and_keeps_refs() -> None:
 
     assert result.compacted
     assert [item["id"] for item in result.checkpoint.retained_tail] == ["m2", "m3"]
+
+
+def test_tail_below_twenty_thousand_tokens_has_no_legal_cut() -> None:
+    units = (_unit(1, 5_000), _unit(2, 5_000))
+    compactor = ContextCompactor(
+        provider=_Provider(),
+        model="m",
+        scope_id="s",
+        payload_segments=ContextPayloadSegments(
+            prefix=(),
+            committed_units=units,
+            current_anchor=(),
+        ),
+        max_output_tokens=100,
+        next_generation=1,
+        keep_recent_tokens=20_000,
+    )
+
+    with pytest.raises(
+        ContextCompactionError,
+        match="no_valid_cut_before_keep_recent_target",
+    ):
+        compactor._select_units(list(units))
+
+
+class _UsageProvider(_Provider):
+    def __init__(self) -> None:
+        super().__init__(context_window=100)
+        self._summary_index = 0
+
+    async def chat(self, **kwargs):
+        self.calls.append(kwargs)
+        self._summary_index += 1
+        return LLMResponse(
+            content=_SUMMARY,
+            usage=ModelUsage(
+                input_tokens=10 * self._summary_index,
+                output_tokens=self._summary_index,
+                request_count=1,
+                covered_request_count=1,
+            ),
+        )
+
+
+def test_committed_and_temporary_summary_usage_are_aggregated() -> None:
+    active_batch = (
+        {"role": "assistant", "tool_calls": [{"id": "c1"}], "tokens": 15},
+        {"role": "tool", "tool_call_id": "c1", "content": "r", "tokens": 15},
+    )
+    segments = ContextPayloadSegments(
+        prefix=(),
+        committed_units=(_unit(1, 30), _unit(2, 30)),
+        current_anchor=({"role": "user", "content": "q", "tokens": 1},),
+        active_batches=(active_batch, active_batch),
+    )
+    provider = _UsageProvider()
+    compactor = ContextCompactor(
+        provider=provider,
+        model="m",
+        scope_id="s",
+        payload_segments=segments,
+        max_output_tokens=10,
+        next_generation=1,
+        keep_recent_tokens=20,
+    )
+
+    result = _run(
+        compactor.prepare(
+            segments.flatten(),
+            pending_start=7,
+            tools=[],
+            force=True,
+        )
+    )
+
+    assert len(provider.calls) == 2
+    assert result.summary_usage is not None
+    assert result.summary_usage.input_tokens == 30
+    assert result.summary_usage.output_tokens == 3
+    assert result.summary_usage.request_count == 2
+    assert result.checkpoint is not None
+    assert result.checkpoint.generation == 1
+    assert result.checkpoint.summary_usage is not None
+    assert result.checkpoint.summary_usage.input_tokens == 10
+    assert result.checkpoint.summary_usage.output_tokens == 1
 
 
 def test_single_interaction_splits_only_after_closed_tool_batches() -> None:

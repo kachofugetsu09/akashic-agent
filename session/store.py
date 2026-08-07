@@ -994,6 +994,15 @@ class SessionStore:
             not isinstance(item, str) or not item.strip() for item in source_message_ids
         ):
             raise ValueError("compaction source_message_ids 必须是非空字符串数组")
+        if (
+            not isinstance(source_from_seq, int)
+            or isinstance(source_from_seq, bool)
+            or not isinstance(consolidated_through_seq, int)
+            or isinstance(consolidated_through_seq, bool)
+            or source_from_seq < 0
+            or consolidated_through_seq < source_from_seq
+        ):
+            raise ValueError("compaction source seq 边界无效")
         if any(
             not isinstance(item, dict)
             or not isinstance(item.get("id"), str)
@@ -1034,6 +1043,8 @@ class SessionStore:
                     session_key,
                     source_message_ids=source_message_ids,
                     retained_tail=retained_tail,
+                    source_from_seq=source_from_seq,
+                    consolidated_through_seq=consolidated_through_seq,
                 )
                 existing = self._conn.execute(
                     "SELECT * FROM session_compactions "
@@ -1150,6 +1161,8 @@ class SessionStore:
         *,
         source_message_ids: list[str] | tuple[str, ...],
         retained_tail: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+        source_from_seq: int,
+        consolidated_through_seq: int,
     ) -> None:
         """Validate source ids/seqs while the compaction transaction owns the Store lock."""
 
@@ -1176,6 +1189,15 @@ class SessionStore:
                     "compaction retained_tail seq 与 canonical message 不一致: "
                     f"{message_id}:{item['seq']}!={by_id[message_id]}"
                 )
+        source_seqs = [by_id[str(message_id)] for message_id in source_message_ids]
+        if min(source_seqs) != int(source_from_seq) or max(source_seqs) != int(
+            consolidated_through_seq
+        ):
+            raise ValueError(
+                "compaction source seq 边界与 canonical message 不一致: "
+                f"{source_from_seq}-{consolidated_through_seq}!="
+                f"{min(source_seqs)}-{max(source_seqs)}"
+            )
 
     def validate_compaction_provenance(
         self,
@@ -1183,6 +1205,8 @@ class SessionStore:
         *,
         source_message_ids: list[str] | tuple[str, ...],
         retained_tail: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+        source_from_seq: int,
+        consolidated_through_seq: int,
     ) -> None:
         """Fail early on missing provenance; persist_compaction repeats it atomically."""
 
@@ -1191,6 +1215,8 @@ class SessionStore:
                 session_key,
                 source_message_ids=source_message_ids,
                 retained_tail=retained_tail,
+                source_from_seq=source_from_seq,
+                consolidated_through_seq=consolidated_through_seq,
             )
 
     def get_compaction(
