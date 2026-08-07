@@ -9,12 +9,8 @@ from prompts.completion import VERIFIABLE_COMPLETION_RULES
 
 
 def _normalize_timestamp(message_timestamp: datetime | None = None) -> datetime:
-    ts = message_timestamp
-    if ts is None:
-        ts = datetime.now().astimezone()
-    elif ts.tzinfo is None:
-        ts = ts.astimezone()
-    return ts
+    ts = message_timestamp or datetime.now()
+    return ts.astimezone()
 
 
 def _weekday_cn(ts: datetime) -> str:
