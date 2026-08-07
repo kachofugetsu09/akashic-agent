@@ -37,6 +37,7 @@ def _config(default: str = "a", fast: str = "fast-a") -> Config:
             runtime_id=runtime_id,
             provider="openai",
             model=f"model-{runtime_id}",
+            context_window=100_000,
             max_output_tokens=4096 if runtime_id == "a" else 8192,
         )
         for runtime_id in ("a", "b", "fast-a", "fast-b")
@@ -165,6 +166,40 @@ async def test_explicit_session_effort_is_scoped_to_selected_chat_model() -> Non
         "reasoning_effort": "high"
     }
     assert registry.current.providers["fast-a"].last_kwargs["extra_body"] == {}
+
+
+@pytest.mark.asyncio
+async def test_fallback_provider_ignores_session_runtime_but_keeps_generation_effort() -> None:
+    config = _config()
+    runtimes = dict(config.model_runtimes)
+    runtimes["a"] = replace(
+        runtimes["a"],
+        reasoning_effort="low",
+        supported_reasoning_efforts=("low", "high"),
+    )
+    runtimes["b"] = replace(
+        runtimes["b"],
+        reasoning_effort="medium",
+        supported_reasoning_efforts=("low", "medium", "high"),
+    )
+    registry = ModelRegistry(replace(config, model_runtimes=runtimes), _builder)
+    selected = registry.provider("agent")
+    fallback = registry.provider("default", honor_session_selection=False)
+
+    async with registry.execution_scope("b", "high"):
+        assert selected.runtime_id == "b"
+        assert selected.model == "model-b"
+        assert selected.context_window == 100_000
+        assert fallback.runtime_id == "a"
+        await selected.chat([], [], "ignored", 0)
+        await fallback.chat([], [], "ignored", 0)
+
+    assert registry.current.providers["b"].last_kwargs["extra_body"] == {
+        "reasoning_effort": "high"
+    }
+    assert registry.current.providers["a"].last_kwargs["extra_body"] == {
+        "reasoning_effort": "low"
+    }
 
 
 @pytest.mark.asyncio

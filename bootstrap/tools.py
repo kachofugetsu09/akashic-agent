@@ -478,6 +478,10 @@ def build_core_runtime(
     event_bus = EventBus()
     model_registry = build_model_registry(config)
     provider = model_registry.provider("default")
+    fallback_provider = model_registry.provider(
+        "default",
+        honor_session_selection=False,
+    )
     light_provider = model_registry.provider("fast")
     agent_provider = model_registry.provider("agent")
     vl_provider = model_registry.provider("vision") if config.vl_model else None
@@ -510,7 +514,7 @@ def build_core_runtime(
         workspace=workspace,
         bus=bus,
         provider=loop_provider,
-        fallback_provider=provider,
+        fallback_provider=fallback_provider,
         fallback_model=config.model,
         light_provider=light_provider,
         tools=tools,
