@@ -271,7 +271,7 @@ def test_config_load_reads_embedding_and_ignores_private_memory_sections(tmp_pat
     assert cfg.memory.embedding.output_dimensionality == 1536
 
 
-def test_config_load_reads_memory_window_and_app_server(tmp_path: Path):
+def test_config_load_reads_compaction_and_app_server(tmp_path: Path):
     cfg_path = tmp_path / "config.toml"
     _write_toml(
         cfg_path,
@@ -286,7 +286,10 @@ def test_config_load_reads_memory_window_and_app_server(tmp_path: Path):
             "agent": {
                 "system_prompt": "s",
                 "context": {
-                    "memory_window": 20,
+                    "compaction": {
+                        "trigger_percent": 0.71,
+                        "keep_recent_tokens": 21000,
+                    },
                 },
             },
             "app_server": {
@@ -297,7 +300,8 @@ def test_config_load_reads_memory_window_and_app_server(tmp_path: Path):
 
     cfg = Config.load(cfg_path, workspace=tmp_path)
 
-    assert cfg.memory_window == 20
+    assert cfg.context_compaction.trigger_percent == 0.71
+    assert cfg.context_compaction.keep_recent_tokens == 21000
     assert cfg.app_server.listen == "/tmp/dev-akashic.sock"
 
 
@@ -402,7 +406,9 @@ system_prompt = "s"
 max_tokens = 256
 
 [agent.context]
-memory_window = 12
+[agent.context.compaction]
+trigger_percent = 0.74
+keep_recent_tokens = 20000
 
 [app_server]
 listen = "/tmp/toml-akashic.sock"
@@ -417,7 +423,7 @@ listen = "/tmp/toml-akashic.sock"
     assert cfg.provider == "openai"
     assert cfg.model == "m"
     assert cfg.max_tokens == 256
-    assert cfg.memory_window == 12
+    assert cfg.context_compaction.keep_recent_tokens == 20000
     if sys.platform == "win32":
         assert cfg.app_server.listen != "/tmp/toml-akashic.sock"
         assert cfg.app_server.listen.startswith("127.0.0.1:")

@@ -20,7 +20,6 @@ from agent.model_runtime.catalog.opencode_go import (
 )
 from agent.model_runtime.context_policy import (
     build_runtime_context_budget,
-    recommended_context_settings,
 )
 from agent.model_runtime.errors import (
     ContextWindowError,
@@ -60,27 +59,11 @@ def _request(**kwargs: object) -> ModelRequest:
     return ModelRequest(**values)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize(
-    ("context", "memory", "output"),
-    [
-        (32_000, 20, 4096),
-        (64_000, 20, 4096),
-        (272_000, 44, 8192),
-        (1_000_000, 160, 32_768),
-    ],
-)
-def test_context_policy_scales_from_one_million(
-    context: int, memory: int, output: int
-) -> None:
-    settings = recommended_context_settings(context)
-    assert (settings.memory_window, settings.output_reserve) == (memory, output)
-
-
 def test_context_budget_and_runtime_config_share_the_same_boundary() -> None:
-    budget = build_runtime_context_budget(100_000, 0.9, 8_000)
-    assert (budget.effective_context, budget.input_budget) == (90_000, 82_000)
-    uncapped = build_runtime_context_budget(100_000, 0.9, 0)
-    assert (uncapped.input_budget, uncapped.reserved_output) == (90_000, 0)
+    budget = build_runtime_context_budget(100_000, 8_000)
+    assert (budget.effective_context, budget.input_budget) == (100_000, 92_000)
+    uncapped = build_runtime_context_budget(100_000, 0)
+    assert (uncapped.input_budget, uncapped.reserved_output) == (100_000, 0)
     assert ModelRuntimeConfig(
         runtime_id="uncapped",
         provider="openai",
@@ -102,14 +85,13 @@ def test_context_budget_and_runtime_config_share_the_same_boundary() -> None:
             context_window=10_000,
             max_output_tokens=-1,
         )
-    with pytest.raises(ValueError, match="max_output_tokens 必须小于有效上下文"):
+    with pytest.raises(ValueError, match="max_output_tokens 必须小于 context_window"):
         ModelRuntimeConfig(
             runtime_id="bad",
             provider="openai",
             model="model",
             context_window=10_000,
-            effective_context_percent=0.8,
-            max_output_tokens=8_000,
+            max_output_tokens=10_000,
         )
 
 
@@ -475,7 +457,6 @@ def test_named_runtime_config_and_setup_keep_secrets_out_of_toml(
         base_url="https://api.deepseek.com/v1",
         context_window=64_000,
         max_output_tokens=4096,
-        memory_window=40,
         embed_model="embedding",
         embed_api_key="embed-secret",
         embed_auth_id="embedding_default",
@@ -490,7 +471,8 @@ def test_named_runtime_config_and_setup_keep_secrets_out_of_toml(
     assert "main-secret" not in rendered
     assert config.model_runtimes["main"].provider == "deepseek"
     assert config.model_runtimes["main"].api_key == "main-secret"
-    assert config.memory_window == 40
+    assert not hasattr(config, "memory_window")
+    assert config.context_compaction.keep_recent_tokens == 20_000
 
 
 def test_config_multimodal_uses_main_runtime_and_keeps_other_runtime_isolated(
@@ -575,11 +557,10 @@ context_window = 64000
 
     assert config.max_tokens == 0
     assert config.model_runtimes["main"].max_output_tokens == 0
-    assert config.compaction_trigger_percent == 0.74
-    assert config.model_runtimes["main"].compaction_trigger_percent == 0.74
+    assert config.context_compaction.trigger_percent == 0.74
 
 
-def test_config_accepts_compaction_trigger_below_effective_boundary(
+def test_config_accepts_agent_compaction_policy(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "config.toml"
@@ -593,16 +574,18 @@ provider = "openai"
 model = "model"
 api_key = "key"
 context_window = 64000
-effective_context_percent = 0.8
-compaction_trigger_percent = 0.7
+
+[agent.context.compaction]
+trigger_percent = 0.7
+keep_recent_tokens = 21000
 """,
         encoding="utf-8",
     )
 
     config = load_config(path, workspace=tmp_path)
 
-    assert config.compaction_trigger_percent == 0.7
-    assert config.model_runtimes["main"].compaction_trigger_percent == 0.7
+    assert config.context_compaction.trigger_percent == 0.7
+    assert config.context_compaction.keep_recent_tokens == 21000
 
 
 @pytest.mark.parametrize("trigger", [0, -0.1, 0.9, 1.0])
@@ -627,7 +610,7 @@ compaction_trigger_percent = {trigger}
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="compaction_trigger_percent"):
+    with pytest.raises(ValueError, match="removed configuration"):
         load_config(path, workspace=tmp_path)
 
 

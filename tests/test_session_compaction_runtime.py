@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.core.passive_turn import DefaultReasoner
+from agent.config_models import ContextCompactionConfig
 from agent.core.runtime_support import LLMServices, ToolDiscoveryState
 from agent.looping.ports import LLMConfig
 from agent.model_runtime.context_compaction import (
@@ -116,6 +117,34 @@ class _GateProvider(_CountingProvider):
         self.calls += 1
         self.requests.append(kwargs)
         return LLMResponse(content="\n".join(SUMMARY_HEADINGS))
+
+
+class _ScopedCompactionProvider(_GateProvider):
+    context_window = 1_000
+
+    def estimate_context_tokens(self, messages, tools):
+        if any(
+            "<session-context-compaction>" in str(message.get("content", ""))
+            for message in messages
+        ):
+            return 5
+        return 100
+
+    def estimate_appended_message_tokens(self, messages):
+        return 1
+
+    async def chat(self, **kwargs):
+        self.calls += 1
+        self.requests.append(kwargs)
+        messages = kwargs.get("messages") or []
+        content = "\n".join(str(message.get("content", "")) for message in messages)
+        if "Closed history to consolidate" in content:
+            marker = "A_SENTINEL" if "a-" in content else "B_SENTINEL"
+            return LLMResponse(
+                content="\n".join(SUMMARY_HEADINGS) + f"\n{marker}"
+            )
+        marker = "A_SENTINEL" if "a-" in content else "B_SENTINEL"
+        return LLMResponse(content=f"reply-{marker}")
 
 
 def _seed_receipt(tmp_path: Path) -> tuple[SessionManager, _MarkdownReceiptProbe, str]:
@@ -368,7 +397,6 @@ def test_default_reasoner_gate_commits_real_runtime_before_provider_payload(
         tools=ToolRegistry(),
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=1,
         compaction_runtime=runtime,
     )
     projection = asyncio.run(
@@ -425,7 +453,6 @@ def test_reasoner_builder_preserves_replay_tail_and_current_payload_order() -> N
         tools=ToolRegistry(),
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=1,
         compaction_runtime=object(),
     )
     committed = CommittedContextUnit(
@@ -482,3 +509,229 @@ def test_reasoner_builder_preserves_replay_tail_and_current_payload_order() -> N
     assert state.compactor._current_query == (
         '{"logical_interaction_inputs":["U1","U2","U3"]}'
     )
+
+
+def test_reasoner_compaction_state_is_call_local_per_session(tmp_path: Path) -> None:
+    manager = SessionManager(tmp_path)
+    session_a = manager.get_or_create("session-a")
+    session_b = manager.get_or_create("session-b")
+    for session, prefix in ((session_a, "a"), (session_b, "b")):
+        session.add_message("user", f"{prefix}-u1", control_turn_id=f"{prefix}-1")
+        session.add_message(
+            "assistant", f"{prefix}-a1", control_turn_id=f"{prefix}-1"
+        )
+        session.add_message("user", f"{prefix}-u2", control_turn_id=f"{prefix}-2")
+        session.add_message(
+            "assistant", f"{prefix}-a2", control_turn_id=f"{prefix}-2"
+        )
+        manager.save(session)
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=_MarkdownCompactionProbe(),  # type: ignore[arg-type]
+    )
+    provider = _GateProvider()
+    reasoner = DefaultReasoner(
+        llm=LLMServices(provider=provider, light_provider=provider),
+        llm_config=LLMConfig(model="model", max_tokens=10),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        compaction_runtime=runtime,
+    )
+
+    projections = [
+        asyncio.run(runtime.projection(session, prefix=[], current_anchor=[], pending=[]))
+        for session in (session_a, session_b)
+    ]
+    states = []
+    for session, projection in zip((session_a, session_b), projections, strict=True):
+        history = [
+            message
+            for unit in projection.segments.committed_units
+            for message in unit.messages
+        ]
+        payload = [
+            {"role": "system", "content": "root"},
+            *history,
+            {"role": "user", "content": f"{session.key}-current"},
+        ]
+        states.append(
+            reasoner._build_compaction_state(
+                session=session,
+                projection=projection,
+                initial_messages=payload,
+                history_count=len(history),
+                attempt_replay=[],
+                prior_tool_groups=0,
+                channel="test",
+                chat_id=session.key,
+            )
+        )
+
+    states[0].compactor.set_pending(
+        [
+            *states[0].compactor._segments.flatten(),
+            {"role": "user", "content": "only-a"},
+        ]
+    )
+    original_b_pending = states[1].compactor._segments.pending
+    assert states[0].compactor._scope_id == "session-a"
+    assert states[1].compactor._scope_id == "session-b"
+    assert states[0].compactor._segments.pending[-1] == {
+        "role": "user",
+        "content": "only-a",
+    }
+    assert states[1].compactor._segments.pending == original_b_pending
+
+
+def test_reasoner_binds_configured_main_fallback_with_distinct_provenance(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("session")
+    session.add_message("user", "u", control_turn_id="turn-1")
+    session.add_message("assistant", "a", control_turn_id="turn-1")
+    session.add_message("user", "u2", control_turn_id="turn-2")
+    session.add_message("assistant", "a2", control_turn_id="turn-2")
+    manager.save(session)
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=_MarkdownCompactionProbe(),  # type: ignore[arg-type]
+    )
+    selected = _GateProvider()
+    configured_main = _GateProvider()
+    reasoner = DefaultReasoner(
+        llm=LLMServices(
+            provider=selected,
+            light_provider=selected,
+            fallback_provider=configured_main,
+            fallback_model="main-model",
+        ),
+        llm_config=LLMConfig(model="agent-model", max_tokens=10),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        compaction_runtime=runtime,
+    )
+    projection = asyncio.run(
+        runtime.projection(session, prefix=[], current_anchor=[], pending=[])
+    )
+    history = [
+        message
+        for unit in projection.segments.committed_units
+        for message in unit.messages
+    ]
+    state = reasoner._build_compaction_state(
+        session=session,
+        projection=projection,
+        initial_messages=[
+            {"role": "system", "content": "root"},
+            *history,
+            {"role": "user", "content": "current"},
+        ],
+        history_count=len(history),
+        attempt_replay=[],
+        prior_tool_groups=0,
+        channel="test",
+        chat_id="chat",
+    )
+
+    assert state.compactor._provider is selected
+    assert state.compactor._fallback_provider is configured_main
+    assert state.compactor._model == "agent-model"
+    assert state.compactor._fallback_model == "main-model"
+
+
+def test_two_session_compaction_commits_are_isolated_in_sqlite(tmp_path: Path) -> None:
+    manager = SessionManager(tmp_path)
+    sessions = []
+    source_message_ids: dict[str, set[str]] = {}
+    for key in ("session-a", "session-b"):
+        session = manager.get_or_create(key)
+        prefix = key[-1]
+        session.add_message("user", f"{prefix}-u1", control_turn_id=f"{prefix}-1")
+        session.add_message(
+            "assistant", f"{prefix}-a1", control_turn_id=f"{prefix}-1"
+        )
+        session.add_message("user", f"{prefix}-u2", control_turn_id=f"{prefix}-2")
+        session.add_message(
+            "assistant", f"{prefix}-a2", control_turn_id=f"{prefix}-2"
+        )
+        manager.save(session)
+        source_message_ids[key] = {
+            str(message["id"])
+            for message in session.messages
+            if message.get("id")
+        }
+        sessions.append(session)
+    markdown = _MarkdownCompactionProbe()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+    provider = _ScopedCompactionProvider()
+    reasoner = DefaultReasoner(
+        llm=LLMServices(provider=provider, light_provider=provider),
+        llm_config=LLMConfig(model="model", max_tokens=10),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        compaction_runtime=runtime,
+        context_compaction=ContextCompactionConfig(
+            trigger_percent=0.01,
+            keep_recent_tokens=1,
+        ),
+    )
+    prepared = []
+    for session in sessions:
+        projection = asyncio.run(
+            runtime.projection(session, prefix=[], current_anchor=[], pending=[])
+        )
+        history = [
+            message
+            for unit in projection.segments.committed_units
+            for message in unit.messages
+        ]
+        payload = [
+            {"role": "system", "content": "root"},
+            *history,
+            {"role": "user", "content": f"{session.key}-current"},
+        ]
+        state = reasoner._build_compaction_state(
+            session=session,
+            projection=projection,
+            initial_messages=payload,
+            history_count=len(history),
+            attempt_replay=[],
+            prior_tool_groups=0,
+            channel="test",
+            chat_id=session.key,
+        )
+        prepared.append(
+            asyncio.run(
+                reasoner._call_provider(
+                    state,
+                    payload,
+                    tools=[],
+                    max_tokens=10,
+                )
+            )
+        )
+
+    assert [item.prepared.checkpoint.generation for item in prepared if item.prepared and item.prepared.checkpoint] == [1, 1]
+    active_a = manager._store.get_active_compaction("session-a")
+    active_b = manager._store.get_active_compaction("session-b")
+    assert active_a is not None and active_b is not None
+    assert active_a.generation == active_b.generation == 1
+    assert active_a.source_ref != active_b.source_ref
+    assert set(active_a.source_message_ids) <= source_message_ids["session-a"]
+    assert set(active_b.source_message_ids) <= source_message_ids["session-b"]
+    assert set(active_a.source_message_ids).isdisjoint(source_message_ids["session-b"])
+    assert set(active_b.source_message_ids).isdisjoint(source_message_ids["session-a"])
+    assert manager.control_store.get_session_meta("session-a")["last_consolidated"] == 1
+    assert manager.control_store.get_session_meta("session-b")["last_consolidated"] == 1
+    assert "A_SENTINEL" in active_a.summary
+    assert "B_SENTINEL" in active_b.summary
+    assert "B_SENTINEL" not in str(prepared[0].prepared.checkpoint.summary)
+    assert "A_SENTINEL" not in str(prepared[1].prepared.checkpoint.summary)
+    assert markdown.commit_count == 2

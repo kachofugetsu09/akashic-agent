@@ -35,9 +35,16 @@ critical
 
 
 class _Provider:
-    def __init__(self, *, context_window: int = 100_000, fail: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        context_window: int = 100_000,
+        fail: bool = False,
+        runtime_id: str = "main",
+    ) -> None:
         self.context_window = context_window
         self.fail = fail
+        self.runtime_id = runtime_id
         self.calls: list[dict[str, object]] = []
 
     def estimate_context_tokens(self, messages, tools):
@@ -316,8 +323,8 @@ def test_mixed_segments_preserve_anchor_before_active_batches() -> None:
 
 
 def test_summary_uses_current_once_then_distinct_fallback_once_with_own_budget() -> None:
-    current = _Provider(context_window=500, fail=True)
-    fallback = _Provider(context_window=2_000)
+    current = _Provider(context_window=500, fail=True, runtime_id="agent")
+    fallback = _Provider(context_window=2_000, runtime_id="main")
     unit = _unit(1, 100)
     segments = ContextPayloadSegments(
         prefix=(),
@@ -335,11 +342,39 @@ def test_summary_uses_current_once_then_distinct_fallback_once_with_own_budget()
         fallback_model="default",
         keep_recent_tokens=1,
     )
-    _run(compactor.prepare(segments.flatten(), pending_start=3, tools=[], force=True))
+    result = _run(
+        compactor.prepare(segments.flatten(), pending_start=3, tools=[], force=True)
+    )
 
     assert len(current.calls) == 1
     assert len(fallback.calls) == 1
     assert fallback.calls[0]["max_tokens"] <= fallback.context_window
+    assert result.checkpoint is not None
+    assert result.checkpoint.model_runtime_id == "main"
+    assert result.checkpoint.model == "default"
+
+
+def test_summary_does_not_duplicate_same_selected_main_provider() -> None:
+    provider = _Provider(runtime_id="main")
+    compactor = ContextCompactor(
+        provider=provider,
+        model="main-model",
+        scope_id="same-provider",
+        payload_segments=ContextPayloadSegments(
+            prefix=(),
+            committed_units=(_unit(1, 100), _unit(2, 100)),
+            current_anchor=(),
+        ),
+        max_output_tokens=100,
+        next_generation=1,
+        fallback_provider=provider,
+        fallback_model="main-model",
+        keep_recent_tokens=1,
+    )
+
+    _run(compactor.prepare(compactor._segments.flatten(), pending_start=2, tools=[], force=True))
+
+    assert len(provider.calls) == 1
 
 
 def test_logical_interaction_inputs_only_enter_temporary_summary() -> None:
@@ -451,6 +486,69 @@ def test_summary_output_limit_keeps_strict_input_boundary() -> None:
     assert _summary_output_limit(_Provider(context_window=8_192), summary_input) == 8_190
     with pytest.raises(ContextCompactionError, match="summary_input_exceeds_window"):
         _summary_output_limit(_Provider(context_window=2), summary_input)
+
+
+def test_request_output_limit_moves_hard_edge_for_each_payload() -> None:
+    class _BoundaryProvider(_Provider):
+        def __init__(self) -> None:
+            super().__init__(context_window=100)
+
+        def estimate_context_tokens(self, messages, tools):
+            if any(
+                "<session-context-compaction>" in str(message.get("content", ""))
+                for message in messages
+            ):
+                return 1
+            return 60
+
+        def estimate_appended_message_tokens(self, messages):
+            return 1
+
+    segments = ContextPayloadSegments(
+        prefix=(),
+        committed_units=(_unit(1, 1), _unit(2, 1)),
+        current_anchor=(),
+    )
+
+    below_edge = ContextCompactor(
+        provider=_BoundaryProvider(),
+        model="m",
+        scope_id="hard-edge-below",
+        payload_segments=segments,
+        max_output_tokens=20,
+        trigger_percent=0.99,
+        next_generation=1,
+        keep_recent_tokens=1,
+    )
+    below = _run(
+        below_edge.prepare(
+            below_edge._segments.flatten(),
+            pending_start=2,
+            tools=[],
+            max_output_tokens=20,
+        )
+    )
+    assert not below.compacted
+
+    above_edge = ContextCompactor(
+        provider=_BoundaryProvider(),
+        model="m",
+        scope_id="hard-edge-above",
+        payload_segments=segments,
+        max_output_tokens=20,
+        trigger_percent=0.99,
+        next_generation=1,
+        keep_recent_tokens=1,
+    )
+    above = _run(
+        above_edge.prepare(
+            above_edge._segments.flatten(),
+            pending_start=2,
+            tools=[],
+            max_output_tokens=50,
+        )
+    )
+    assert above.compacted
 
 
 def test_same_turn_temporary_summary_replaces_previous_projection() -> None:

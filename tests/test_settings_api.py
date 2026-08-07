@@ -24,12 +24,13 @@ model = "deepseek-chat"
 api_key = "{secret}"
 base_url = "https://api.deepseek.com/v1"
 context_window = 64000
-effective_context_percent = 0.9
 max_output_tokens = 8192
 input_modalities = ["text"]
 
 [agent.context]
-memory_window = 40
+[agent.context.compaction]
+trigger_percent = 0.74
+keep_recent_tokens = 20000
 '''
 
 

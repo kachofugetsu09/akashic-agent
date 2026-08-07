@@ -1626,7 +1626,6 @@ async def test_tool_hooks_fire_through_real_reasoner():
             tools=tools,
             discovery=ToolDiscoveryState(),
             tool_search_enabled=False,
-            memory_window=40,
             event_bus=bus,
         )
 
@@ -1857,7 +1856,6 @@ async def test_on_tool_pre_fires_through_real_reasoner():
             tools=tools,
             discovery=ToolDiscoveryState(),
             tool_search_enabled=False,
-            memory_window=40,
             event_bus=bus,
         )
         # 替换默认空 hook executor，仅用插件 hook
@@ -1896,7 +1894,6 @@ async def test_add_tool_hooks_propagates_to_tool_executor():
             tools=tools,
             discovery=ToolDiscoveryState(),
             tool_search_enabled=False,
-            memory_window=40,
             event_bus=bus,
         )
         # 默认空 hook

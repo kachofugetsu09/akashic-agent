@@ -141,7 +141,6 @@ def _reasoner(history_windows: list[int]) -> DefaultReasoner:
         tools=cast(Any, tools),
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=40,
         context=cast(Any, SimpleNamespace(render=render)),
     )
 

@@ -67,7 +67,6 @@ def _make_reasoner(*, discovery: ToolDiscoveryState, tool_search_enabled: bool):
         )),
         discovery=discovery,
         tool_search_enabled=tool_search_enabled,
-        memory_window=10,
         context=cast(Any, SimpleNamespace(
             render=_render,
         )),
@@ -143,7 +142,6 @@ def test_reasoner_run_turn_context_length_trims_dynamic_sections_before_history(
         )),
         discovery=discovery,
         tool_search_enabled=False,
-        memory_window=10,
         context=cast(Any, SimpleNamespace(
             render=_render,
         )),
