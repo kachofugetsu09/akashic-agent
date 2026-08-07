@@ -10,7 +10,6 @@ from typing import Iterator, Mapping
 
 from agent.model_runtime.auth.store import Credential, CredentialStore
 
-
 MODEL_REGISTRY_FILENAME = "model-registry.sqlite3"
 MODEL_ROLES = ("default", "fast", "agent", "vision")
 
@@ -66,6 +65,18 @@ class StoredModelRuntime:
             "supports_parallel_tool_calls": self.supports_parallel_tool_calls,
             "reasoning_summary": self.reasoning_summary,
         }
+
+
+@dataclass(frozen=True)
+class StoredEmbeddingModel:
+    model_id: str
+    source_id: str
+    source_name: str
+    provider: str
+    auth_id: str
+    base_url: str
+    model: str
+    dimensions: int
 
 
 @dataclass(frozen=True)
@@ -218,10 +229,7 @@ class ModelRegistryStore:
             ).fetchall()
         if not model_rows:
             return None
-        runtimes = {
-            str(row[0]): _stored_runtime_from_row(row)
-            for row in model_rows
-        }
+        runtimes = {str(row[0]): _stored_runtime_from_row(row) for row in model_rows}
         roles = {
             str(row[0]): ModelRoleBinding(
                 role=str(row[0]),
@@ -237,6 +245,101 @@ class ModelRegistryStore:
             runtimes=runtimes,
             roles=roles,
         )
+
+    def list_embedding_models(self) -> tuple[StoredEmbeddingModel, ...]:
+        """Return every enabled embedding model with its Provider connection."""
+
+        if not self.exists():
+            return ()
+        with self._connect(read_only=True) as connection:
+            rows = connection.execute(_SELECT_EMBEDDING_MODELS).fetchall()
+        return tuple(_stored_embedding_from_row(row) for row in rows)
+
+    def get_embedding_model(self, model_id: str) -> StoredEmbeddingModel | None:
+        """Resolve one enabled embedding model by its stable registry ID."""
+
+        return next(
+            (
+                item
+                for item in self.list_embedding_models()
+                if item.model_id == model_id
+            ),
+            None,
+        )
+
+    def upsert_embedding_model(
+        self,
+        *,
+        model_id: str,
+        source_id: str,
+        source_name: str,
+        provider: str,
+        auth_id: str,
+        base_url: str,
+        model: str,
+        dimensions: int,
+        credential: Credential | None,
+        expected_revision: int | None = None,
+    ) -> int:
+        """Validate and publish one first-class embedding model revision."""
+
+        # 1. Establish the registry boundary before opening the transaction.
+        values = {
+            "model_id": model_id.strip(),
+            "source_id": source_id.strip(),
+            "source_name": source_name.strip(),
+            "provider": provider.strip().lower(),
+            "auth_id": auth_id.strip(),
+            "base_url": base_url.strip(),
+            "model": model.strip(),
+        }
+        missing = next((name for name, value in values.items() if not value), None)
+        if missing is not None:
+            raise ValueError(f"Embedding {missing} 不能为空")
+        if dimensions <= 0:
+            raise ValueError("Embedding dimensions 必须大于 0")
+        self.initialize()
+
+        # 2. Commit the Provider connection, credential, and model as one revision.
+        auth_kind, auth_payload = (
+            CredentialStore.encode(credential) if credential is not None else ("", "")
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = int(
+                connection.execute(
+                    "SELECT revision FROM model_registry_meta WHERE singleton = 1"
+                ).fetchone()[0]
+            )
+            if expected_revision is not None and current != expected_revision:
+                raise RuntimeError("模型设置已经变化，请刷新后重试")
+            connection.execute(
+                _INSERT_CONNECTION,
+                (
+                    values["source_id"],
+                    values["source_name"],
+                    values["provider"],
+                    values["provider"],
+                    values["auth_id"],
+                    values["base_url"],
+                    auth_kind,
+                    auth_payload,
+                ),
+            )
+            connection.execute(
+                _UPSERT_EMBEDDING_MODEL,
+                (
+                    values["model_id"],
+                    values["source_id"],
+                    values["model"],
+                    dimensions,
+                ),
+            )
+            connection.execute(
+                "UPDATE model_registry_meta SET revision = revision + 1 WHERE singleton = 1"
+            )
+            connection.commit()
+        return current + 1
 
     def replace_from_llm_config(
         self,
@@ -264,9 +367,7 @@ class ModelRegistryStore:
             source_id = str(source[0])
             previous = sources.setdefault(source_id, source)
             if previous != source:
-                raise ValueError(
-                    f"同一 source_id 的连接字段不一致: {source_id}"
-                )
+                raise ValueError(f"同一 source_id 的连接字段不一致: {source_id}")
         roles = {
             "default": main,
             "fast": _role_ref(llm, "fast", main, runtimes),
@@ -279,13 +380,11 @@ class ModelRegistryStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             existing_credentials: dict[str, tuple[str, str]] = {}
-            for auth_id, auth_kind, auth_payload in connection.execute(
-                """
+            for auth_id, auth_kind, auth_payload in connection.execute("""
                 SELECT auth_id, auth_kind, auth_payload
                 FROM model_connections
                 WHERE auth_id != '' AND auth_kind != '' AND auth_payload != ''
-                """
-            ).fetchall():
+                """).fetchall():
                 credential_id = str(auth_id)
                 encoded = (str(auth_kind), str(auth_payload))
                 previous = existing_credentials.setdefault(credential_id, encoded)
@@ -436,11 +535,11 @@ def _normalize_runtime(
     if not isinstance(efforts, list) or not all(
         isinstance(value, str) and value.strip() for value in efforts
     ):
-        raise ValueError(
-            f"runtime {runtime_id} 的 supported_reasoning_efforts 无效"
-        )
+        raise ValueError(f"runtime {runtime_id} 的 supported_reasoning_efforts 无效")
     source_id = str(raw.get("source_id") or f"source:{runtime_id}")
-    source_name = source_names.get(runtime_id) or str(raw.get("source_name") or provider)
+    source_name = source_names.get(runtime_id) or str(
+        raw.get("source_name") or provider
+    )
     source = (
         source_id,
         source_name,
@@ -459,9 +558,21 @@ def _normalize_runtime(
         int(raw.get("max_output_tokens") or 0),
         json.dumps(modalities, ensure_ascii=False, separators=(",", ":")),
         str(raw.get("capability_source") or "unknown"),
-        str(raw.get("context_window_source") or raw.get("capability_source") or "unknown"),
-        str(raw.get("max_output_tokens_source") or raw.get("capability_source") or "unknown"),
-        str(raw.get("input_modalities_source") or raw.get("capability_source") or "unknown"),
+        str(
+            raw.get("context_window_source")
+            or raw.get("capability_source")
+            or "unknown"
+        ),
+        str(
+            raw.get("max_output_tokens_source")
+            or raw.get("capability_source")
+            or "unknown"
+        ),
+        str(
+            raw.get("input_modalities_source")
+            or raw.get("capability_source")
+            or "unknown"
+        ),
         float(raw.get("effective_context_percent", 0.9)),
         float(raw.get("compaction_trigger_percent", 0.74)),
         int(bool(raw.get("use_responses_lite", False))),
@@ -520,6 +631,19 @@ def _stored_runtime_from_row(row: sqlite3.Row) -> StoredModelRuntime:
     )
 
 
+def _stored_embedding_from_row(row: sqlite3.Row) -> StoredEmbeddingModel:
+    return StoredEmbeddingModel(
+        model_id=str(row[0]),
+        source_id=str(row[1]),
+        source_name=str(row[2]),
+        provider=str(row[3]),
+        auth_id=str(row[4]),
+        base_url=str(row[5]),
+        model=str(row[6]),
+        dimensions=int(row[7]),
+    )
+
+
 _SELECT_MODELS = """
 SELECT
     m.id,
@@ -545,6 +669,22 @@ SELECT
     m.supports_parallel_tool_calls,
     m.reasoning_summary
 FROM model_definitions AS m
+JOIN model_connections AS c ON c.id = m.connection_id
+WHERE m.enabled = 1 AND c.enabled = 1
+ORDER BY m.created_at, m.id
+"""
+
+_SELECT_EMBEDDING_MODELS = """
+SELECT
+    m.id,
+    c.id,
+    c.name,
+    c.provider,
+    c.auth_id,
+    c.base_url,
+    m.model,
+    m.dimensions
+FROM embedding_models AS m
 JOIN model_connections AS c ON c.id = m.connection_id
 WHERE m.enabled = 1 AND c.enabled = 1
 ORDER BY m.created_at, m.id
@@ -595,6 +735,17 @@ INSERT INTO model_definitions(
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
+_UPSERT_EMBEDDING_MODEL = """
+INSERT INTO embedding_models(id, connection_id, model, dimensions)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    connection_id = excluded.connection_id,
+    model = excluded.model,
+    dimensions = excluded.dimensions,
+    enabled = 1,
+    updated_at = CURRENT_TIMESTAMP
+"""
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS model_registry_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -639,6 +790,17 @@ CREATE TABLE IF NOT EXISTS model_definitions (
     UNIQUE(connection_id, model)
 );
 
+CREATE TABLE IF NOT EXISTS embedding_models (
+    id TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL REFERENCES model_connections(id) ON DELETE RESTRICT,
+    model TEXT NOT NULL,
+    dimensions INTEGER NOT NULL CHECK (dimensions > 0),
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(connection_id, model)
+);
+
 CREATE TABLE IF NOT EXISTS model_role_bindings (
     role TEXT PRIMARY KEY CHECK (role IN ('default', 'fast', 'agent', 'vision')),
     model_id TEXT NOT NULL REFERENCES model_definitions(id) ON DELETE RESTRICT,
@@ -654,5 +816,6 @@ __all__ = [
     "ModelRegistrySnapshot",
     "ModelRegistryStore",
     "ModelRoleBinding",
+    "StoredEmbeddingModel",
     "StoredModelRuntime",
 ]

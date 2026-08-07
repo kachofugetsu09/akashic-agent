@@ -86,8 +86,20 @@ class _Embedder:
         return None
 
 
-def test_akasha_v2_registers_both_host_protocols() -> None:
+def test_akasha_v2_registers_both_host_protocols(tmp_path: Path) -> None:
     plugin = AkashaPlugin()
+    plugin.context = PluginContext(
+        event_bus=cast(Any, None),
+        tool_registry=None,
+        plugin_id="akasha",
+        plugin_dir=Path("plugins/akasha"),
+        data_dir=builtin_plugin_data_dir("akasha", tmp_path),
+        kv_store=PluginKVStore(tmp_path / ".kv.json"),
+        workspace=tmp_path,
+        memory_engine=SimpleNamespace(
+            describe=lambda: SimpleNamespace(name="akasha")
+        ),
+    )
     assert isinstance(plugin, Plugin)
     assert isinstance(MemoryPlugin(), MemoryPluginProtocol)
     assert MemoryPlugin.plugin_id == "akasha"
@@ -99,6 +111,42 @@ def test_akasha_v2_registers_both_host_protocols() -> None:
     assert mobile.slots == ("turn.before_reasoning",)
     assert mobile.navigation is not None
     assert mobile.navigation.label == "Akasha Inspector"
+
+
+def test_mobile_recall_is_empty_when_akasha_is_not_the_memory_owner(
+    tmp_path: Path,
+) -> None:
+    plugin = AkashaPlugin()
+    plugin.context = PluginContext(
+        event_bus=cast(Any, None),
+        tool_registry=None,
+        plugin_id="akasha",
+        plugin_dir=Path("plugins/akasha"),
+        data_dir=builtin_plugin_data_dir("akasha", tmp_path),
+        kv_store=PluginKVStore(tmp_path / ".kv.json"),
+        workspace=tmp_path,
+        memory_engine=SimpleNamespace(
+            describe=lambda: SimpleNamespace(name="default")
+        ),
+    )
+
+    assert plugin.mobile_ui_available() is False
+    active = plugin.mobile_ui_query(
+        "recall.current",
+        {"message_id": "assistant:turn-one"},
+        session_id="web:one",
+        turn_id="turn-one",
+    )
+    persisted = plugin.mobile_ui_query(
+        "recall.current",
+        {"message_id": "message:one"},
+        session_id="web:one",
+        turn_id=None,
+    )
+
+    assert active == _empty_mobile_recall()
+    assert persisted == _empty_mobile_recall()
+    assert not (tmp_path / "memory" / "akasha.db").exists()
 
 
 def test_feedback_marker_is_exported_before_user_message_persistence() -> None:
@@ -1700,3 +1748,14 @@ def _write_inspector_config(workspace: Path) -> None:
         render_akasha_config(),
         encoding="utf-8",
     )
+
+
+def test_inspector_overview_is_empty_before_first_akasha_commit(tmp_path: Path) -> None:
+    _write_inspector_config(tmp_path)
+
+    assert AkashaInspectorReader(tmp_path).get_overview() == {
+        "available": True,
+        "total": 0,
+        "latest_at": None,
+        "earliest_at": None,
+    }

@@ -13,12 +13,17 @@ from agent.model_runtime.auth.store import Credential, CredentialStore
 from agent.model_runtime.store import ModelRegistryStore
 from bootstrap.workspace_lock import WorkspaceInstanceLock
 
-
 _PROJECT_ROOT = Path(__file__).parents[1]
 _ORIGIN_ID = "20260802_01_yoyo_origin"
 _AKASHA_V9_ID = "20260805_01_akasha_sparse_index_v9"
 _MODEL_REGISTRY_ID = "20260807_01_model_registry_database"
-_CURRENT_IDS = (_ORIGIN_ID, _AKASHA_V9_ID, _MODEL_REGISTRY_ID)
+_EMBEDDING_REGISTRY_ID = "20260807_02_embedding_model_registry"
+_CURRENT_IDS = (
+    _ORIGIN_ID,
+    _AKASHA_V9_ID,
+    _MODEL_REGISTRY_ID,
+    _EMBEDDING_REGISTRY_ID,
+)
 
 
 def _runner(root: Path, *, repo_root: Path = _PROJECT_ROOT) -> MigrationRunner:
@@ -316,9 +321,7 @@ system_prompt = "test"
 
     assert "secret-value" not in config.read_text(encoding="utf-8")
     assert (
-        CredentialStore.for_workspace(root / "workspace").api_key(
-            "model_deepseek_main"
-        )
+        CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")
         == "secret-value"
     )
     assert not CredentialStore().path.exists()
@@ -358,9 +361,7 @@ input_modalities = ["text"]
     _ = _runner(root).run()
 
     assert (
-        CredentialStore.for_workspace(root / "workspace").api_key(
-            "deepseek_default"
-        )
+        CredentialStore.for_workspace(root / "workspace").api_key("deepseek_default")
         == "legacy-secret"
     )
     assert legacy.api_key("deepseek_default") == "legacy-secret"
@@ -405,10 +406,8 @@ api_key = "secret"
     )
     outcome = runner.run()
 
-    assert outcome.migrations == (_MODEL_REGISTRY_ID,)
+    assert outcome.migrations == (_MODEL_REGISTRY_ID, _EMBEDDING_REGISTRY_ID)
     assert (
-        CredentialStore.for_workspace(root / "workspace").api_key(
-            "model_deepseek_main"
-        )
+        CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")
         == "secret"
     )

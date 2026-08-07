@@ -80,6 +80,7 @@ class MobileRealtimeConfig:
 
 @dataclass
 class MemoryEmbeddingConfig:
+    model_ref: str = ""
     model: str = "text-embedding-v3"
     api_key: str = ""
     base_url: str = ""
@@ -148,7 +149,9 @@ class ModelRuntimeConfig:
                 f"runtime {self.runtime_id} 的 max_output_tokens 不能小于 0"
             )
         if "text" not in self.input_modalities:
-            raise ValueError(f"runtime {self.runtime_id} 的 input_modalities 必须包含 text")
+            raise ValueError(
+                f"runtime {self.runtime_id} 的 input_modalities 必须包含 text"
+            )
         allowed_sources = {"explicit", "provider_catalog", "litellm", "unknown"}
         for field_name, source in (
             ("context_window_source", self.context_window_source),
@@ -173,8 +176,11 @@ class ModelRuntimeConfig:
                 f"runtime {self.runtime_id} 的 compaction_trigger_percent "
                 "必须在 (0, effective_context_percent) 内"
             )
-        if self.context_window > 0 and self.max_output_tokens > 0 and self.max_output_tokens >= int(
-            self.context_window * self.effective_context_percent
+        if (
+            self.context_window > 0
+            and self.max_output_tokens > 0
+            and self.max_output_tokens
+            >= int(self.context_window * self.effective_context_percent)
         ):
             raise ValueError(
                 f"runtime {self.runtime_id} 的 max_output_tokens 必须小于有效上下文"

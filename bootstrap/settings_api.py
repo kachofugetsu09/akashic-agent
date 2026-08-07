@@ -5,11 +5,13 @@ import hashlib
 import json
 import logging
 import os
+import sqlite3
 import socket
 import tempfile
 import threading
 import tomllib
 from collections.abc import MutableMapping
+from contextlib import closing
 from pathlib import Path
 from typing import Callable, Literal
 from uuid import uuid4
@@ -25,14 +27,18 @@ from pydantic import BaseModel, Field
 from agent.config import Config
 from agent.model_runtime.auth.codex import CodexAuthDriver
 from agent.model_runtime.auth.store import Credential, CredentialStore
-from agent.model_runtime.catalog.codex import CodexModelCatalog
+from agent.model_runtime.catalog.codex import CodexModel, CodexModelCatalog
 from agent.model_runtime.catalog.opencode_go import OpenCodeGoModelCatalog
 from agent.model_runtime.catalog.litellm_registry import (
     CatalogCapabilities,
     resolve_catalog_capabilities,
     resolve_catalog_provider_id,
 )
-from agent.model_runtime.errors import AuthenticationError, ModelRuntimeError, TransportError
+from agent.model_runtime.errors import (
+    AuthenticationError,
+    ModelRuntimeError,
+    TransportError,
+)
 from agent.model_runtime.store import ModelRegistryStore
 from agent.provider import LLMProvider
 from bootstrap.setup_main import patch_main_model_config
@@ -64,7 +70,7 @@ class ModelQuery(BaseModel):
 
 class ApplyPayload(BaseModel):
     provider: str = Field(min_length=1, max_length=64)
-    model: str = Field(min_length=1, max_length=200)
+    model: str = Field(default="", max_length=200)
     source_id: str = Field(default="", max_length=96)
     source_name: str = Field(default="", max_length=80)
     api_key: str = ""
@@ -76,6 +82,26 @@ class ApplyPayload(BaseModel):
     input_modalities: list[Literal["text", "image"]] | None = None
     reasoning_effort: str = Field(default="", max_length=32)
     expected_config_revision: str = Field(default="", max_length=64)
+    defer_restart: bool = False
+
+
+class EmbeddingModelPayload(BaseModel):
+    model_id: str = Field(default="", max_length=128)
+    source_id: str = Field(default="", max_length=96)
+    source_name: str = Field(default="向量服务", max_length=80)
+    provider: str = Field(default="openai", min_length=1, max_length=64)
+    model: str = Field(min_length=1, max_length=200)
+    api_key: str = ""
+    credential_id: str = Field(default="", max_length=128)
+    base_url: str = Field(min_length=1, max_length=2048)
+    expected_revision: int | None = Field(default=None, ge=0)
+
+
+class MemorySettingsPayload(BaseModel):
+    enabled: bool
+    engine: Literal["akasha", "default"] = "akasha"
+    embedding_model_id: str = Field(default="", max_length=128)
+    expected_revision: str = Field(default="", max_length=64)
 
 
 class RoleBindingPayload(BaseModel):
@@ -156,7 +182,9 @@ def create_settings_app(
                             "id": entry.slug,
                             "contextWindow": entry.capabilities.context_window,
                             "maxOutputTokens": entry.capabilities.max_output_tokens,
-                            "inputModalities": list(entry.capabilities.input_modalities),
+                            "inputModalities": list(
+                                entry.capabilities.input_modalities
+                            ),
                             "supportedReasoningEfforts": list(
                                 entry.capabilities.supported_reasoning_efforts
                             ),
@@ -265,7 +293,12 @@ def create_settings_app(
                     models.append(item)
                 return {"models": models}
             return {"models": []}
-        except (AuthenticationError, TransportError, httpx.HTTPError, ValueError) as exc:
+        except (
+            AuthenticationError,
+            TransportError,
+            httpx.HTTPError,
+            ValueError,
+        ) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/settings/apply")
@@ -276,7 +309,10 @@ def create_settings_app(
             and payload.max_output_tokens >= payload.context_window
         ):
             raise HTTPException(status_code=422, detail="最大输出必须小于上下文窗口")
-        if payload.input_modalities is not None and "text" not in payload.input_modalities:
+        if (
+            payload.input_modalities is not None
+            and "text" not in payload.input_modalities
+        ):
             raise HTTPException(status_code=422, detail="输入模态必须包含 text")
         if not apply_lock.acquire(blocking=False):
             raise HTTPException(status_code=409, detail="已有设置操作正在执行")
@@ -286,29 +322,159 @@ def create_settings_app(
                 payload.expected_config_revision
                 and payload.expected_config_revision != current_revision
             ):
-                raise HTTPException(status_code=409, detail="配置已经变化，请刷新后重试")
+                raise HTTPException(
+                    status_code=409, detail="配置已经变化，请刷新后重试"
+                )
             operation_id = f"settings-{uuid4().hex}"
-            provider_capabilities = await _provider_catalog_capabilities(
-                payload,
-                store,
-            )
-            answers = _answers(
-                payload,
-                config_path,
-                workspace,
-                store,
-                provider_capabilities=provider_capabilities,
-            )
-            await _validate_live_candidate(answers, store)
-            _apply_candidate(
+            answers = await _connection_answers(payload, config_path, workspace, store)
+            _apply_candidates(
                 config_path,
                 workspace,
                 answers,
                 operation_id,
                 credential_store=store,
+                on_applied=None if payload.defer_restart else on_applied,
+            )
+            return {
+                "operationId": operation_id,
+                "status": "applied",
+                "modelCount": len(answers),
+            }
+        finally:
+            apply_lock.release()
+
+    @app.post("/api/settings/embedding-models")
+    async def save_embedding_model(
+        payload: EmbeddingModelPayload,
+    ) -> dict[str, object]:
+        if not apply_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="已有设置操作正在执行")
+        try:
+            registry = ModelRegistryStore.for_workspace(workspace)
+            source_id = payload.source_id.strip() or f"embedding-{uuid4().hex}"
+            model_id = payload.model_id.strip() or (
+                f"{source_id}__"
+                f"{hashlib.sha256(payload.model.strip().encode('utf-8')).hexdigest()[:10]}"
+            )
+            auth_id = payload.credential_id.strip() or f"embedding_{source_id}"
+            for field_name, value in (("source_id", source_id), ("model_id", model_id)):
+                if not value.replace("-", "").replace("_", "").isalnum():
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"{field_name} 只能包含字母、数字、连字符和下划线",
+                    )
+            if _active_embedding_model_id(
+                config_path
+            ) == model_id and _workspace_has_messages(workspace):
+                raise HTTPException(
+                    status_code=409,
+                    detail="这个向量模型已经产生记忆数据；请新增模型并通过迁移流程切换",
+                )
+            workspace_credentials = CredentialStore.for_workspace(workspace)
+            candidate_key = payload.api_key.strip()
+            if not candidate_key:
+                try:
+                    candidate_key = workspace_credentials.api_key(auth_id)
+                except AuthenticationError as exc:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="新向量连接必须填写 API Key",
+                    ) from exc
+            try:
+                dimensions = await _probe_embedding_candidate(
+                    base_url=payload.base_url,
+                    api_key=candidate_key,
+                    model=payload.model,
+                )
+                revision = registry.upsert_embedding_model(
+                    model_id=model_id,
+                    source_id=source_id,
+                    source_name=payload.source_name,
+                    provider=payload.provider,
+                    auth_id=auth_id,
+                    base_url=payload.base_url,
+                    model=payload.model,
+                    dimensions=dimensions,
+                    credential=(
+                        Credential(driver="api_key", access_token=candidate_key)
+                        if payload.api_key.strip()
+                        else None
+                    ),
+                    expected_revision=payload.expected_revision,
+                )
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except (ValueError, TransportError, httpx.HTTPError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return {
+                "status": "applied",
+                "revision": revision,
+                "model": {
+                    "id": model_id,
+                    "sourceId": source_id,
+                    "sourceName": payload.source_name.strip(),
+                    "provider": payload.provider.strip().lower(),
+                    "baseUrl": payload.base_url.strip(),
+                    "model": payload.model.strip(),
+                    "dimensions": dimensions,
+                    "credential": {"id": auth_id, "configured": True},
+                },
+            }
+        finally:
+            apply_lock.release()
+
+    @app.post("/api/settings/memory")
+    async def save_memory(payload: MemorySettingsPayload) -> dict[str, object]:
+        if payload.enabled and not payload.embedding_model_id.strip():
+            raise HTTPException(status_code=422, detail="启用语义记忆需要选择向量模型")
+        if not apply_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="已有设置操作正在执行")
+        try:
+            current_revision = _memory_settings_revision(config_path, workspace)
+            if (
+                payload.expected_revision
+                and payload.expected_revision != current_revision
+            ):
+                raise HTTPException(
+                    status_code=409, detail="记忆设置已经变化，请刷新后重试"
+                )
+            registry = ModelRegistryStore.for_workspace(workspace)
+            if (
+                payload.enabled
+                and registry.get_embedding_model(payload.embedding_model_id.strip())
+                is None
+            ):
+                raise HTTPException(status_code=422, detail="选择的向量模型不存在")
+            current = _read_memory_config_document(config_path)
+            current_enabled = bool(current.get("enabled", False))
+            current_engine = str(current.get("engine") or "default")
+            current_embedding = current.get("embedding")
+            current_model_id = (
+                str(current_embedding.get("model_ref") or "")
+                if isinstance(current_embedding, dict)
+                else ""
+            )
+            changed_runtime = (
+                current_enabled != payload.enabled
+                or current_engine != payload.engine
+                or current_model_id != payload.embedding_model_id.strip()
+            )
+            if current and changed_runtime and _workspace_has_messages(workspace):
+                raise HTTPException(
+                    status_code=409,
+                    detail="已有对话的记忆设置需要重建索引后才能切换",
+                )
+            operation_id = f"memory-settings-{uuid4().hex}"
+            _apply_memory_settings(
+                config_path,
+                workspace,
+                enabled=payload.enabled,
+                engine=payload.engine,
+                embedding_model_id=payload.embedding_model_id.strip(),
+                operation_id=operation_id,
                 on_applied=on_applied,
             )
-            return {"operationId": operation_id, "status": "applied"}
+            return {"status": "applied", "operationId": operation_id}
         finally:
             apply_lock.release()
 
@@ -375,14 +541,20 @@ def create_settings_app(
     async def index() -> FileResponse:
         return FileResponse(static_dir / "index.html")
 
-    app.mount("/assets", StaticFiles(directory=static_dir, check_dir=False), name="settings-assets")
+    app.mount(
+        "/assets",
+        StaticFiles(directory=static_dir, check_dir=False),
+        name="settings-assets",
+    )
     return app
 
 
 def _error_response(status_code: int, code: str, message: str):
     from fastapi.responses import JSONResponse
 
-    return JSONResponse(status_code=status_code, content={"code": code, "message": message})
+    return JSONResponse(
+        status_code=status_code, content={"code": code, "message": message}
+    )
 
 
 def _complete_codex_login(
@@ -426,6 +598,12 @@ def _read_settings_state(
         if model_store.exists()
         else store.metadata()
     )
+    empty_memory = _memory_settings_state(
+        {},
+        config_path=config_path,
+        workspace=workspace,
+        credential_meta=credential_meta,
+    )
     if not config_path.exists() and model_snapshot is None:
         return {
             "mode": "needs_setup",
@@ -437,6 +615,7 @@ def _read_settings_state(
             "codexConfigured": "codex_default" in credential_meta,
             "localOpenCodeConfigured": local_opencode,
             "configRevision": "",
+            "memory": empty_memory,
         }
     try:
         raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
@@ -452,7 +631,14 @@ def _read_settings_state(
             "codexConfigured": "codex_default" in credential_meta,
             "localOpenCodeConfigured": local_opencode,
             "configRevision": "",
+            "memory": empty_memory,
         }
+    memory_state = _memory_settings_state(
+        raw,
+        config_path=config_path,
+        workspace=workspace,
+        credential_meta=credential_meta,
+    )
     llm = raw.get("llm") if isinstance(raw.get("llm"), dict) else {}
     active = (
         model_snapshot.roles["default"].runtime_id
@@ -479,7 +665,9 @@ def _read_settings_state(
             }
             mode = "ready"
         elif isinstance(active, str):
-            runtimes_raw = llm.get("runtimes") if isinstance(llm.get("runtimes"), dict) else {}
+            runtimes_raw = (
+                llm.get("runtimes") if isinstance(llm.get("runtimes"), dict) else {}
+            )
             agent = raw.get("agent") if isinstance(raw.get("agent"), dict) else {}
             legacy_max_output_tokens = agent.get(
                 "max_tokens",
@@ -499,7 +687,11 @@ def _read_settings_state(
             ]
             mode = "ready"
         else:
-            runtimes = [_runtime_summary("legacy_main", active, credential_meta)] if isinstance(active, dict) else []
+            runtimes = (
+                [_runtime_summary("legacy_main", active, credential_meta)]
+                if isinstance(active, dict)
+                else []
+            )
             active = "legacy_main" if runtimes else None
             mode = "needs_repair" if runtimes else "needs_setup"
     except ValueError as exc:
@@ -514,6 +706,7 @@ def _read_settings_state(
             "codexConfigured": "codex_default" in credential_meta,
             "localOpenCodeConfigured": local_opencode,
             "configRevision": "",
+            "memory": memory_state,
         }
     return {
         "mode": mode,
@@ -525,6 +718,58 @@ def _read_settings_state(
         "codexConfigured": "codex_default" in credential_meta,
         "localOpenCodeConfigured": local_opencode,
         "configRevision": _settings_revision(config_path, workspace),
+        "memory": memory_state,
+    }
+
+
+def _memory_settings_state(
+    raw: dict[str, object],
+    *,
+    config_path: Path,
+    workspace: Path,
+    credential_meta: dict[str, dict[str, str]],
+) -> dict[str, object]:
+    """Expose memory configuration and embedding models without secrets."""
+
+    # 1. Normalize the static memory binding.
+    memory = raw.get("memory") if isinstance(raw.get("memory"), dict) else None
+    embedding = (
+        memory.get("embedding")
+        if isinstance(memory, dict) and isinstance(memory.get("embedding"), dict)
+        else {}
+    )
+    configured = memory is not None
+    enabled = bool(memory.get("enabled", False)) if memory is not None else False
+    raw_engine = str(memory.get("engine") or "") if memory is not None else ""
+    engine = raw_engine or ("default" if configured and enabled else "akasha")
+    model_ref = str(embedding.get("model_ref") or "")
+
+    # 2. Project first-class embedding models from the shared Provider registry.
+    registry = ModelRegistryStore.for_workspace(workspace)
+    models = [
+        {
+            "id": item.model_id,
+            "sourceId": item.source_id,
+            "sourceName": item.source_name,
+            "provider": item.provider,
+            "baseUrl": item.base_url,
+            "model": item.model,
+            "dimensions": item.dimensions,
+            "credential": {
+                "id": item.auth_id,
+                "configured": item.auth_id in credential_meta,
+            },
+        }
+        for item in registry.list_embedding_models()
+    ]
+    return {
+        "configured": configured,
+        "enabled": enabled,
+        "engine": engine,
+        "embeddingModelId": model_ref,
+        "embeddingModels": models,
+        "changeLocked": configured and _workspace_has_messages(workspace),
+        "revision": _memory_settings_revision(config_path, workspace),
     }
 
 
@@ -551,7 +796,13 @@ def _runtime_summary(
         raise ValueError(f"runtime {runtime_id} 的 input_modalities 必须是字符串数组")
     auth = str(raw.get("auth") or "")
     inline = str(raw.get("api_key") or "")
-    source = "credential_store" if auth else ("environment" if inline.startswith("${") else "inline" if inline else "none")
+    source = (
+        "credential_store"
+        if auth
+        else (
+            "environment" if inline.startswith("${") else "inline" if inline else "none"
+        )
+    )
     raw_supported_efforts = raw.get("supported_reasoning_efforts")
     supported_reasoning_efforts = (
         raw_supported_efforts if isinstance(raw_supported_efforts, list) else []
@@ -571,9 +822,21 @@ def _runtime_summary(
         "inputModalities": input_modalities,
         "capabilitySource": str(raw.get("capability_source") or "unknown"),
         "capabilitySources": {
-            "contextWindow": str(raw.get("context_window_source") or raw.get("capability_source") or "unknown"),
-            "maxOutputTokens": str(raw.get("max_output_tokens_source") or raw.get("capability_source") or "unknown"),
-            "inputModalities": str(raw.get("input_modalities_source") or raw.get("capability_source") or "unknown"),
+            "contextWindow": str(
+                raw.get("context_window_source")
+                or raw.get("capability_source")
+                or "unknown"
+            ),
+            "maxOutputTokens": str(
+                raw.get("max_output_tokens_source")
+                or raw.get("capability_source")
+                or "unknown"
+            ),
+            "inputModalities": str(
+                raw.get("input_modalities_source")
+                or raw.get("capability_source")
+                or "unknown"
+            ),
         },
         "reasoningEffort": str(raw.get("reasoning_effort") or ""),
         "supportedReasoningEfforts": supported_reasoning_efforts,
@@ -628,8 +891,7 @@ def _answers(
     )
     provider = (
         catalog_provider_id
-        if requested_provider not in {"codex", "opencode-go"}
-        and catalog_provider_id
+        if requested_provider not in {"codex", "opencode-go"} and catalog_provider_id
         else requested_provider
     )
     requested_source_id = payload.source_id.strip()
@@ -678,9 +940,7 @@ def _answers(
     max_output_tokens = (
         payload.max_output_tokens
         if "max_output_tokens" in payload.model_fields_set
-        else capabilities.max_output_tokens
-        if capabilities is not None
-        else 0
+        else capabilities.max_output_tokens if capabilities is not None else 0
     )
     input_modalities = payload.input_modalities or (
         list(capabilities.input_modalities) if capabilities is not None else ["text"]
@@ -688,30 +948,26 @@ def _answers(
     catalog_source = (
         "provider_catalog"
         if provider_capabilities is not None
-        else "litellm"
-        if capabilities is not None
-        else "unknown"
+        else "litellm" if capabilities is not None else "unknown"
     )
     context_source = (
         "explicit"
         if payload.context_window > 0
-        else catalog_source
-        if context_window > 0
-        else "unknown"
+        else catalog_source if context_window > 0 else "unknown"
     )
     output_source = (
         "explicit"
         if "max_output_tokens" in payload.model_fields_set
-        else catalog_source
-        if max_output_tokens > 0
-        else "unknown"
+        else catalog_source if max_output_tokens > 0 else "unknown"
     )
     modalities_source = (
         "explicit"
         if payload.input_modalities is not None
-        else catalog_source
-        if capabilities is not None and capabilities.input_modalities_known
-        else "unknown"
+        else (
+            catalog_source
+            if capabilities is not None and capabilities.input_modalities_known
+            else "unknown"
+        )
     )
     sources = {context_source, output_source, modalities_source}
     capability_source = next(iter(sources)) if len(sources) == 1 else "mixed"
@@ -762,6 +1018,86 @@ async def _provider_catalog_capabilities(
     entry = next((candidate for candidate in entries if candidate.slug == model), None)
     if entry is None:
         raise TransportError(f"Codex 模型目录不存在: {model}")
+    return _codex_entry_capabilities(entry)
+
+
+async def _connection_answers(
+    payload: ApplyPayload,
+    config_path: Path,
+    workspace: Path,
+    store: CredentialStore,
+) -> list[WizardAnswers]:
+    """把一次连接保存展开为一个或多个可持久化模型。"""
+
+    # 1. 显式模型保持原有验证路径。
+    if payload.model.strip():
+        capabilities = await _provider_catalog_capabilities(payload, store)
+        answers = _answers(
+            payload,
+            config_path,
+            workspace,
+            store,
+            provider_capabilities=capabilities,
+        )
+        await _validate_live_candidate(answers, store)
+        return [answers]
+
+    # 2. 账号型 Provider 以认证后的模型目录作为连接内容。
+    provider = payload.provider.strip().lower()
+    if provider == "codex":
+        auth_id = payload.credential_id.strip() or "codex_default"
+        entries = await CodexModelCatalog(CodexAuthDriver(store, auth_id)).list_models()
+        if not entries:
+            raise TransportError("Codex 账号没有可用模型")
+        expanded: list[WizardAnswers] = []
+        for entry in entries:
+            item = payload.model_copy(
+                update={"model": entry.slug, "source_id": auth_id}
+            )
+            expanded.append(
+                _answers(
+                    item,
+                    config_path,
+                    workspace,
+                    store,
+                    provider_capabilities=_codex_entry_capabilities(entry),
+                )
+            )
+        return expanded
+    if provider == "opencode-go":
+        key = _candidate_api_key(
+            payload.api_key,
+            config_path,
+            workspace,
+            store,
+            provider,
+            use_local_opencode=payload.use_local_opencode,
+            credential_id=payload.credential_id.strip(),
+        )
+        entries = await OpenCodeGoModelCatalog(
+            key,
+            base_url=payload.base_url or "https://opencode.ai/zen/go/v1",
+        ).list_models()
+        if not entries:
+            raise TransportError("OpenCode Go 账号没有可用模型")
+        expanded = []
+        source_id = payload.source_id.strip() or "opencode_go_default"
+        for entry in entries:
+            item = payload.model_copy(
+                update={
+                    "model": entry.slug,
+                    "source_id": source_id,
+                    "input_modalities": ["text"],
+                }
+            )
+            answers = _answers(item, config_path, workspace, store)
+            answers.supported_reasoning_efforts = entry.supported_reasoning_efforts
+            expanded.append(answers)
+        return expanded
+    raise ValueError("自定义 API 连接需要填写或检测一个模型")
+
+
+def _codex_entry_capabilities(entry: CodexModel) -> CatalogCapabilities:
     caps = entry.capabilities
     return CatalogCapabilities(
         context_window=caps.context_window,
@@ -816,16 +1152,19 @@ async def _validate_live_candidate(
     )
 
 
-def _apply_candidate(
+def _apply_candidates(
     config_path: Path,
     workspace: Path,
-    answers: WizardAnswers,
+    answers: list[WizardAnswers],
     operation_id: str,
     *,
     credential_store: CredentialStore,
     on_applied: Callable[[], None] | None,
 ) -> None:
-    """Back up and atomically publish one database-owned model candidate."""
+    """备份并原子发布一次连接内的全部模型。"""
+
+    if not answers:
+        raise ValueError("模型连接没有可发布的模型")
 
     model_store = ModelRegistryStore.for_workspace(workspace)
     original = (
@@ -834,25 +1173,26 @@ def _apply_candidate(
         else _new_config(workspace)
     )
     candidate_source = _candidate_source_document(original, model_store)
-    candidate = patch_main_model_config(candidate_source, answers)
+    candidate = candidate_source
+    for item in reversed(answers):
+        candidate = patch_main_model_config(candidate, item)
     candidate_document = tomlkit.parse(candidate)
     candidate_llm = candidate_document.get("llm")
     if not isinstance(candidate_llm, MutableMapping):
         raise ValueError("候选模型配置缺少 llm table")
     runtimes = candidate_llm.get("runtimes")
-    runtime_id = answers.runtime_id or (
-        f"{answers.provider.strip().lower().replace('-', '_')}_main"
-    )
-    runtime = (
-        runtimes.get(runtime_id)
-        if isinstance(runtimes, MutableMapping)
-        else None
-    )
-    if not isinstance(runtime, MutableMapping):
-        raise ValueError(f"候选模型 runtime 不存在: {runtime_id}")
-    if answers.provider != "codex":
-        runtime.pop("api_key", None)
-        runtime["auth"] = answers.auth_id
+    if not isinstance(runtimes, MutableMapping):
+        raise ValueError("候选模型配置缺少 runtimes table")
+    for item in answers:
+        runtime_id = item.runtime_id or (
+            f"{item.provider.strip().lower().replace('-', '_')}_main"
+        )
+        runtime = runtimes.get(runtime_id)
+        if not isinstance(runtime, MutableMapping):
+            raise ValueError(f"候选模型 runtime 不存在: {runtime_id}")
+        if item.provider != "codex":
+            runtime.pop("api_key", None)
+            runtime["auth"] = item.auth_id
 
     config_snapshot = config_path.read_bytes() if config_path.exists() else None
     registry_existed = model_store.path.is_file()
@@ -885,16 +1225,14 @@ def _apply_candidate(
 
     restart_attempted = False
     try:
-        credentials = (
-            {answers.auth_id: credential_store.get(answers.auth_id)}
-            if answers.provider == "codex"
-            else {
-                answers.auth_id: Credential(
-                    driver="api_key",
-                    access_token=answers.api_key,
-                )
-            }
-        )
+        credentials = {
+            item.auth_id: (
+                credential_store.get(item.auth_id)
+                if item.provider == "codex"
+                else Credential(driver="api_key", access_token=item.api_key)
+            )
+            for item in answers
+        }
         _ = model_store.replace_from_llm_config(
             candidate_llm,
             credentials=credentials,
@@ -917,11 +1255,7 @@ def _apply_candidate(
             model_store.restore_from(registry_backup)
         else:
             _remove_sqlite_database(model_store.path)
-        if (
-            on_applied is not None
-            and restart_attempted
-            and config_snapshot is not None
-        ):
+        if on_applied is not None and restart_attempted and config_snapshot is not None:
             on_applied()
         raise
 
@@ -976,6 +1310,141 @@ def _saved_api_key(
     runtime_id = f"{provider.strip().lower().replace('-', '_')}_main"
     runtime = runtimes.get(runtime_id)
     return str(runtime.get("api_key") or "") if isinstance(runtime, dict) else ""
+
+
+async def _probe_embedding_candidate(
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+) -> int:
+    """Validate one OpenAI-compatible embedding model and infer its dimension."""
+
+    normalized_url = base_url.strip().rstrip("/")
+    if not normalized_url.startswith(("https://", "http://")):
+        raise ValueError("Base URL 必须是 http(s) 地址")
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"{normalized_url}/embeddings",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": model.strip(),
+                "input": ["Akashic memory connection test"],
+            },
+        )
+        response.raise_for_status()
+    body = response.json()
+    rows = body.get("data") if isinstance(body, dict) else None
+    vector = (
+        rows[0].get("embedding")
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict)
+        else None
+    )
+    if not isinstance(vector, list) or not vector:
+        raise ValueError("向量服务响应缺少非空 data[0].embedding")
+    if any(
+        isinstance(value, bool) or not isinstance(value, int | float)
+        for value in vector
+    ):
+        raise ValueError("向量服务返回了无效向量")
+    return len(vector)
+
+
+def _read_memory_config_document(config_path: Path) -> dict[str, object]:
+    if not config_path.is_file():
+        return {}
+    raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    memory = raw.get("memory")
+    return dict(memory) if isinstance(memory, dict) else {}
+
+
+def _active_embedding_model_id(config_path: Path) -> str:
+    memory = _read_memory_config_document(config_path)
+    embedding = memory.get("embedding")
+    if not isinstance(embedding, dict):
+        return ""
+    return str(embedding.get("model_ref") or "")
+
+
+def _workspace_has_messages(workspace: Path) -> bool:
+    """Report whether switching memory semantics would affect existing history."""
+
+    sessions_path = workspace / "sessions.db"
+    if not sessions_path.is_file():
+        return False
+    uri = f"file:{sessions_path.as_posix()}?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True)) as connection:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
+        ).fetchone()
+        if table is None:
+            return False
+        row = connection.execute("SELECT 1 FROM messages LIMIT 1").fetchone()
+    return row is not None
+
+
+def _memory_settings_revision(config_path: Path, workspace: Path) -> str:
+    payload = config_path.read_bytes() if config_path.is_file() else b""
+    registry_revision = ModelRegistryStore.for_workspace(workspace).revision()
+    return hashlib.sha256(
+        payload + b"\0" + str(registry_revision).encode("ascii")
+    ).hexdigest()
+
+
+def _apply_memory_settings(
+    config_path: Path,
+    workspace: Path,
+    *,
+    enabled: bool,
+    engine: str,
+    embedding_model_id: str,
+    operation_id: str,
+    on_applied: Callable[[], None] | None,
+) -> None:
+    """Back up, validate, and atomically publish one memory binding."""
+
+    # 1. Build a secret-free candidate and an explicit recovery point.
+    config_existed = config_path.is_file()
+    original = (
+        config_path.read_bytes()
+        if config_existed
+        else _new_config(workspace).encode("utf-8")
+    )
+    document = tomlkit.parse(original.decode("utf-8"))
+    memory = tomlkit.table()
+    memory["enabled"] = enabled
+    memory["engine"] = engine
+    embedding = tomlkit.table()
+    if embedding_model_id:
+        embedding["model_ref"] = embedding_model_id
+    memory["embedding"] = embedding
+    document["memory"] = memory
+    candidate = tomlkit.dumps(document)
+    backup_dir = workspace / "backups" / "memory-settings" / operation_id
+    backup_dir.mkdir(parents=True, exist_ok=False)
+    backup_path = backup_dir / "config.before"
+    backup_path.write_bytes(original)
+    os.chmod(backup_path, 0o600)
+
+    # 2. Publish only after the candidate resolves through the registry owner.
+    restart_attempted = False
+    try:
+        _atomic_write(config_path, candidate, 0o600)
+        _ = Config.load(config_path, workspace=workspace)
+        from bootstrap.init_workspace import init_workspace
+
+        _ = init_workspace(config_path=config_path, workspace=workspace)
+        if on_applied is not None:
+            restart_attempted = True
+            on_applied()
+    except BaseException:
+        if config_existed:
+            _atomic_write_bytes(config_path, original, 0o600)
+        elif config_path.exists():
+            config_path.unlink()
+        if on_applied is not None and restart_attempted and config_existed:
+            on_applied()
+        raise
 
 
 def _restore_optional_file(path: Path, payload: bytes | None, mode: int) -> None:

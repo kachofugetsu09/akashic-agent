@@ -21,6 +21,7 @@ import deepseekIcon from "./assets/provider-icons/deepseek.svg";
 import opencodeIcon from "./assets/provider-icons/opencode.svg";
 import openrouterIcon from "./assets/provider-icons/openrouter.svg";
 import { cycleTheme, useTheme } from "../../theme/src/theme-runtime";
+import { MemorySettings, type MemorySettingsState } from "./memory-settings";
 import "./settings.css";
 
 const isEmbeddedShell = new URLSearchParams(window.location.search).get("embedded") === "1";
@@ -59,6 +60,7 @@ interface SettingsState {
   codexConfigured: boolean;
   localOpenCodeConfigured: boolean;
   configRevision: string;
+  memory: MemorySettingsState;
 }
 
 interface ModelOption {
@@ -174,7 +176,9 @@ export function SettingsApp() {
   const addButtonRef = useRef<HTMLButtonElement>(null);
 
   async function refreshState() {
-    setState(await requestJson<SettingsState>("/api/settings/state"));
+    const next = await requestJson<SettingsState>("/api/settings/state");
+    setState(next);
+    return next;
   }
 
   useEffect(() => { refreshState().catch((reason: Error) => setError(reason.message)); }, []);
@@ -266,12 +270,14 @@ export function SettingsApp() {
     setSaving(true);
     setError("");
     try {
-      const selected = models.find((item) => item.id === draft.model);
+      const accountCatalog = draft.kind === "codex" || draft.kind === "opencode-go";
+      const selected = accountCatalog ? undefined : models.find((item) => item.id === draft.model);
+      const firstConnection = !state?.runtimes.length;
       await requestJson("/api/settings/apply", {
         method: "POST",
         body: JSON.stringify({
           provider: draft.provider,
-          model: draft.model,
+          model: accountCatalog ? "" : draft.model,
           source_id: draft.sourceId,
           source_name: draft.sourceName,
           api_key: draft.apiKey,
@@ -283,11 +289,18 @@ export function SettingsApp() {
           max_output_tokens: selected?.maxOutputTokens || 0,
           input_modalities: selected?.inputModalities,
           expected_config_revision: state?.configRevision || "",
+          defer_restart: firstConnection,
         }),
       });
       await refreshState();
-      setToast(`${draft.sourceName} 已保存，密钥不会显示在页面中`);
+      setToast(firstConnection ? `${draft.sourceName} 已保存，接下来配置记忆` : `${draft.sourceName} 已保存，密钥不会显示在页面中`);
       closeDialog();
+      if (isEmbeddedShell && !firstConnection) {
+        window.parent.postMessage(
+          { type: "akashic.settings.applied" },
+          window.location.origin,
+        );
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -321,6 +334,28 @@ export function SettingsApp() {
 
   if (!state && !error) return <div className="settings-loading"><LoaderCircle className="is-spinning" />正在读取模型连接</div>;
   if (state?.mode === "needs_repair") return <main className="settings-page"><section className="settings-repair"><ShieldCheck /><h1>配置需要手动处理</h1><p>{state.error}</p></section></main>;
+  if (state?.runtimes.length && !state.memory.configured) return <main className="settings-page">
+    <div className="settings-shell settings-shell--onboarding">
+      <MemorySettings
+        memory={state.memory}
+        modelRevision={state.modelRevision}
+        onboarding
+        onRefresh={async () => (await refreshState()).memory}
+        onError={setError}
+        onNotice={setToast}
+        onComplete={(message) => {
+          setToast(message);
+          if (isEmbeddedShell) window.parent.postMessage({ type: "akashic.settings.applied" }, window.location.origin);
+          window.setTimeout(() => {
+            if (isEmbeddedShell) window.parent.location.href = "/";
+            else window.location.href = "/";
+          }, 350);
+        }}
+      />
+      {error && <p className="settings-inline-error" role="alert">{error}</p>}
+    </div>
+    <div className="settings-toast-region" aria-live="polite" aria-atomic="true">{toast && <div className="settings-toast" role="status"><Check size={18} /><span><strong>操作成功</strong><small>{toast}</small></span><button type="button" onClick={() => setToast("")} aria-label="关闭通知"><X size={16} /></button></div>}</div>
+  </main>;
 
   return (
     <main className="settings-page">
@@ -362,6 +397,16 @@ export function SettingsApp() {
             {(Object.keys(ROLE_LABELS) as ModelRole[]).map((role) => <label key={role}><span><strong>{ROLE_LABELS[role].title}</strong><small>{ROLE_LABELS[role].detail}</small></span><select value={state.roleBindings[role]?.modelId || state.activeRuntime || ""} onChange={(event) => updateRole(role, event.target.value)}>{state.runtimes.map((runtime) => <option key={runtime.id} value={runtime.id}>{runtime.model}：{runtime.sourceName}</option>)}</select></label>)}
           </div>
         </section> : null}
+
+        {state?.runtimes.length ? <MemorySettings
+          memory={state.memory}
+          modelRevision={state.modelRevision}
+          onRefresh={async () => (await refreshState()).memory}
+          onError={setError}
+          onNotice={setToast}
+          onComplete={async (message) => { setToast(message); await refreshState(); }}
+        /> : null}
+        {error && !draft && <p className="settings-inline-error" role="alert">{error}</p>}
       </div>
 
       {draft && createPortal(<div className="settings-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) closeDialog(); }}>
@@ -385,17 +430,17 @@ export function SettingsApp() {
 
             {codexLogin?.status === "waiting" && draft.kind === "codex" ? <div className="settings-device-login"><span>验证码</span><strong>{codexLogin.userCode}</strong><a href={codexLogin.verificationUri} target="_blank" rel="noreferrer">打开登录页面</a></div> : null}
 
-            <section className="settings-model-discovery">
+            {draft.kind === "api" ? <section className="settings-model-discovery">
               <header><div><h3>模型目录</h3><p>先检测连接；服务不支持目录时再手动填写模型名。</p></div><button type="button" className="settings-quiet-button" onClick={discoverModels} disabled={discovering}>{discovering ? <LoaderCircle className="is-spinning" size={16} /> : <RefreshCw size={16} />}{discovering ? "检测中" : "检测模型"}</button></header>
               <div className="settings-form-grid">
                 <label className="is-wide"><span>模型</span>{models.length ? <select required value={draft.model} onChange={(event) => { const model = models.find((item) => item.id === event.target.value); setDraft({ ...draft, model: event.target.value, reasoningEffort: model?.defaultReasoningEffort || draft.reasoningEffort }); }}><option value="">选择模型</option>{models.map((model) => <option value={model.id} key={model.id}>{model.id}</option>)}</select> : <input required value={draft.model} onChange={(event) => setDraft({ ...draft, model: event.target.value })} placeholder="检测失败时手动填写 model name" />}</label>
                 {(() => { const selected = models.find((item) => item.id === draft.model); const efforts = selected?.supportedReasoningEfforts || []; return efforts.length ? <label className="is-wide"><span>默认思考强度</span><select value={draft.reasoningEffort} onChange={(event) => setDraft({ ...draft, reasoningEffort: event.target.value })}>{efforts.map((effort) => <option value={effort} key={effort}>{effort}</option>)}</select></label> : null; })()}
               </div>
               <p>上下文窗口、多模态、推理能力和 token usage 字段由注册表及真实响应归一化。</p>
-            </section>
+            </section> : <section className="settings-model-discovery"><header><div><h3>自动同步模型</h3><p>保存连接后读取账号当前可用的全部模型，无需手动选择。</p></div></header><p>模型能力和可用思考强度会随目录一起保存，之后可在聊天胶囊中选择。</p></section>}
 
             {error && <p className="settings-inline-error" role="alert">{error}</p>}
-            <footer><span><ShieldCheck size={15} />API Key 保存后只显示“已配置”</span><button type="submit" className="settings-primary-button" disabled={saving}>{saving ? <LoaderCircle className="is-spinning" size={17} /> : null}{saving ? "保存中" : "保存连接"}</button></footer>
+            <footer><span><ShieldCheck size={15} />API Key 保存后只显示“已配置”</span><button type="submit" className="settings-primary-button" disabled={saving}>{saving ? <LoaderCircle className="is-spinning" size={17} /> : null}{saving ? "保存中" : draft.kind === "api" ? "保存连接" : "保存并同步模型"}</button></footer>
           </form>
         </div>
       </div>, document.body)}

@@ -11,7 +11,6 @@ from agent.model_runtime.auth.store import Credential, CredentialStore
 from agent.model_runtime.registry import ModelGeneration, ModelRegistry
 from agent.model_runtime.store import ModelRegistryStore
 
-
 _CONFIG = """
 [runtime]
 workspace = "unused"
@@ -125,9 +124,7 @@ def test_model_credentials_live_in_private_workspace_database(tmp_path: Path) ->
 
     store.replace_from_llm_config(
         llm,
-        credentials={
-            "primary": Credential(driver="api_key", access_token="secret")
-        },
+        credentials={"primary": Credential(driver="api_key", access_token="secret")},
     )
 
     credentials = CredentialStore.for_workspace(tmp_path)
@@ -137,15 +134,70 @@ def test_model_credentials_live_in_private_workspace_database(tmp_path: Path) ->
     assert not (tmp_path / "auth.json").exists()
 
 
+def test_embedding_models_share_provider_connections_without_entering_chat_roles(
+    tmp_path: Path,
+) -> None:
+    store = ModelRegistryStore.for_workspace(tmp_path)
+    _ = store.replace_from_llm_config(_llm_rows())
+
+    revision = store.upsert_embedding_model(
+        model_id="embed-main",
+        source_id="embedding-provider",
+        source_name="向量服务",
+        provider="openai",
+        auth_id="embedding_default",
+        base_url="https://embedding.example/v1",
+        model="text-embedding-3-small",
+        dimensions=1536,
+        credential=Credential(driver="api_key", access_token="embedding-secret"),
+        expected_revision=1,
+    )
+
+    assert revision == 2
+    embedding = store.get_embedding_model("embed-main")
+    assert embedding is not None
+    assert embedding.model == "text-embedding-3-small"
+    assert embedding.dimensions == 1536
+    assert (
+        CredentialStore.for_workspace(tmp_path).api_key("embedding_default")
+        == "embedding-secret"
+    )
+    snapshot = store.read_snapshot()
+    assert snapshot is not None
+    assert set(snapshot.runtimes) == {"model-a", "model-b"}
+
+
+def test_chat_registry_refresh_preserves_embedding_models(tmp_path: Path) -> None:
+    store = ModelRegistryStore.for_workspace(tmp_path)
+    _ = store.replace_from_llm_config(_llm_rows())
+    _ = store.upsert_embedding_model(
+        model_id="embed-main",
+        source_id="embedding-provider",
+        source_name="向量服务",
+        provider="openai",
+        auth_id="embedding_default",
+        base_url="https://embedding.example/v1",
+        model="text-embedding-3-small",
+        dimensions=1536,
+        credential=Credential(driver="api_key", access_token="embedding-secret"),
+    )
+
+    _ = store.replace_from_llm_config(_llm_rows())
+
+    assert store.get_embedding_model("embed-main") is not None
+    assert (
+        CredentialStore.for_workspace(tmp_path).api_key("embedding_default")
+        == "embedding-secret"
+    )
+
+
 def test_workspace_credential_store_rejects_broad_database_permissions(
     tmp_path: Path,
 ) -> None:
     store = ModelRegistryStore.for_workspace(tmp_path)
     store.replace_from_llm_config(
         _llm_rows(),
-        credentials={
-            "unused": Credential(driver="api_key", access_token="secret")
-        },
+        credentials={"unused": Credential(driver="api_key", access_token="secret")},
     )
     os.chmod(store.path, 0o644)
 

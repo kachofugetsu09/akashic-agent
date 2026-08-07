@@ -110,6 +110,7 @@
 .settings-search input { width: 100%; min-width: 0; border: 0; outline: 0; color: inherit; background: transparent; }
 
 .settings-section + .settings-section { margin-block-start: 2.25rem; }
+.settings-memory { margin-block-start: 2.25rem; }
 .settings-section > header { align-items: end; margin-block-end: 0.8rem; }
 .settings-section h2,
 .settings-model-discovery h3 { margin: 0; font-size: 1rem; letter-spacing: -0.015em; }
@@ -187,6 +188,51 @@
   border-radius: 1.25rem;
   padding: 1.25rem;
   background: var(--ak-color-bg-surface-low);
+}
+
+.settings-shell--onboarding { display: grid; min-height: 100%; place-items: center; padding-block: 3rem; }
+.settings-memory {
+  border: 1px solid var(--ak-color-border-subtle);
+  border-radius: 1.4rem;
+  padding: 1.35rem;
+  background: color-mix(in oklch, var(--ak-color-bg-surface) 94%, transparent);
+  box-shadow: 0 1rem 2.8rem oklch(0.2 0.035 260 / 0.07);
+}
+.settings-memory.is-onboarding { width: min(48rem, 100%); margin: 0; padding: clamp(1.25rem, 3vw, 2rem); }
+.settings-memory > header,
+.settings-memory > footer,
+.settings-memory-icon,
+.settings-embedding-picker,
+.settings-memory-lock { display: flex; align-items: center; }
+.settings-memory > header { justify-content: space-between; gap: 1.25rem; }
+.settings-memory h2 { margin: 0.25rem 0 0; font-size: clamp(1.45rem, 3vw, 2rem); letter-spacing: -0.03em; }
+.settings-memory header p { margin: 0.45rem 0 0; color: var(--ak-color-text-secondary); font-size: 0.84rem; line-height: 1.55; }
+.settings-memory-engines { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.65rem; margin: 1.4rem 0 1rem; border: 0; padding: 0; }
+.settings-memory-engines legend { width: 100%; margin-block-end: 0.5rem; color: var(--ak-color-text-secondary); font-size: 0.78rem; font-weight: 700; }
+.settings-memory-engines label { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.7rem; min-height: 5.5rem; border: 1px solid var(--ak-color-border-subtle); border-radius: 1rem; padding: 0.75rem; background: var(--ak-color-bg-surface-low); cursor: pointer; transition: border-color 160ms ease, background-color 160ms ease, translate 160ms ease; }
+.settings-memory-engines label:hover { border-color: var(--ak-color-action-primary); translate: 0 -0.1rem; }
+.settings-memory-engines label.is-active { border-color: var(--ak-color-action-primary); background: color-mix(in oklch, var(--ak-color-action-container) 54%, var(--ak-color-bg-surface)); }
+.settings-memory-engines input { position: absolute; opacity: 0; pointer-events: none; }
+.settings-memory-engines label > svg { opacity: 0; color: var(--ak-color-action-primary); }
+.settings-memory-engines label.is-active > svg { opacity: 1; }
+.settings-memory-engines label > span:nth-child(3) { display: grid; min-width: 0; }
+.settings-memory-engines strong { font-size: 0.86rem; }
+.settings-memory-engines strong i { margin-inline-start: 0.35rem; border-radius: 999px; padding: 0.12rem 0.38rem; color: var(--ak-color-on-action-container); background: var(--ak-color-action-container); font-size: 0.62rem; font-style: normal; }
+.settings-memory-engines small { margin-block-start: 0.25rem; color: var(--ak-color-text-secondary); font-size: 0.72rem; line-height: 1.35; }
+.settings-memory-icon { width: 2.3rem; height: 2.3rem; justify-content: center; border-radius: 0.75rem; color: var(--ak-color-action-primary); background: var(--ak-color-bg-surface); }
+.settings-embedding-picker { gap: 0.65rem; border-radius: 1rem; padding: 0.85rem; background: var(--ak-color-bg-surface-low); }
+.settings-embedding-picker label { display: grid; flex: 1; gap: 0.35rem; color: var(--ak-color-text-secondary); font-size: 0.76rem; font-weight: 700; }
+.settings-embedding-picker select { width: 100%; min-height: 2.75rem; border: 1px solid var(--ak-color-border-subtle); border-radius: 0.75rem; padding-inline: 0.75rem; color: var(--ak-color-text-primary); background: var(--ak-color-bg-canvas); }
+.settings-memory-lock { gap: 0.45rem; margin: 0.8rem 0 0; color: var(--ak-sys-color-warning, var(--ak-color-text-secondary)); font-size: 0.76rem; line-height: 1.45; }
+.settings-memory > footer { justify-content: space-between; gap: 1rem; margin-block-start: 1.1rem; }
+.settings-memory > footer > span { color: var(--ak-color-text-secondary); font-size: 0.74rem; line-height: 1.4; }
+.settings-embedding-dialog form { margin-block-start: 1.25rem; }
+.settings-embedding-dialog footer { margin-block-start: 1.2rem; }
+
+@media (max-width: 760px) {
+  .settings-memory-engines { grid-template-columns: 1fr; }
+  .settings-embedding-picker,
+  .settings-memory > footer { align-items: stretch; flex-direction: column; }
 }
 .settings-role-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; }
 .settings-role-grid label {
