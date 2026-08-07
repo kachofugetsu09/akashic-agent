@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -13,7 +15,8 @@ from bootstrap.workspace_lock import WorkspaceInstanceLock
 _PROJECT_ROOT = Path(__file__).parents[1]
 _ORIGIN_ID = "20260802_01_yoyo_origin"
 _AKASHA_V9_ID = "20260805_01_akasha_sparse_index_v9"
-_CURRENT_IDS = (_ORIGIN_ID, _AKASHA_V9_ID)
+_COMPACTION_ID = "20260807_01_session_context_compaction_ledger"
+_CURRENT_IDS = (_ORIGIN_ID, _AKASHA_V9_ID, _COMPACTION_ID)
 
 
 def _runner(root: Path, *, repo_root: Path = _PROJECT_ROOT) -> MigrationRunner:
@@ -35,6 +38,23 @@ def _applied_ids(ledger: Path) -> list[str]:
     return [str(row[0]) for row in rows]
 
 
+def _create_sessions(path: Path) -> None:
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            "CREATE TABLE sessions ("
+            "key TEXT PRIMARY KEY, last_consolidated INTEGER NOT NULL)"
+        )
+        connection.execute(
+            "CREATE TABLE messages (id TEXT PRIMARY KEY, body TEXT NOT NULL)"
+        )
+        connection.execute("INSERT INTO sessions VALUES ('chat', 4)")
+        connection.execute("INSERT INTO messages VALUES ('m1', 'session-bytes')")
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def test_origin_removes_legacy_state_without_touching_business_data(
     tmp_path: Path,
 ) -> None:
@@ -44,7 +64,7 @@ def test_origin_removes_legacy_state_without_touching_business_data(
     config = root / "config.toml"
     config.write_bytes(b"current = true\n")
     sessions = workspace / "sessions.db"
-    sessions.write_bytes(b"session-bytes")
+    _create_sessions(sessions)
     memory = workspace / "memory/MEMORY.md"
     memory.parent.mkdir()
     memory.write_bytes(b"memory-bytes")
@@ -64,10 +84,35 @@ def test_origin_removes_legacy_state_without_touching_business_data(
     assert not cursor.exists()
     assert not lock.exists()
     assert not backups.exists()
-    assert config.read_bytes() == b"current = true\n"
-    assert sessions.read_bytes() == b"session-bytes"
+    config_data = tomllib.loads(config.read_text(encoding="utf-8"))
+    assert config_data["agent"]["context"]["compaction"] == {
+        "trigger_percent": 0.74,
+        "keep_recent_tokens": 20_000,
+    }
+    migrated = sqlite3.connect(sessions)
+    try:
+        assert migrated.execute(
+            "SELECT last_consolidated FROM sessions WHERE key = 'chat'"
+        ).fetchone() == (0,)
+        assert migrated.execute("SELECT body FROM messages").fetchall() == [
+            ("session-bytes",)
+        ]
+    finally:
+        migrated.close()
     assert memory.read_bytes() == b"memory-bytes"
     assert _applied_ids(workspace / "migrations.sqlite3") == list(_CURRENT_IDS)
+
+    migration_backups = sorted(
+        (workspace / "backups/session-context-compaction-ledger").iterdir()
+    )
+    assert len(migration_backups) == 1
+    manifest = json.loads((migration_backups[0] / "manifest.json").read_text())
+    assert manifest["sources"]["sessions"]["sqlite_integrity"] == "ok"
+    archived = sqlite3.connect(migration_backups[0] / "sessions.db")
+    try:
+        assert archived.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+    finally:
+        archived.close()
 
 
 def test_origin_is_a_noop_when_legacy_state_is_absent(tmp_path: Path) -> None:

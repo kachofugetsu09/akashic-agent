@@ -69,6 +69,7 @@ def test_init_records_yoyo_origin_in_workspace_ledger(tmp_path: Path) -> None:
     assert applied == [
         ("20260802_01_yoyo_origin",),
         ("20260805_01_akasha_sparse_index_v9",),
+        ("20260807_01_session_context_compaction_ledger",),
     ]
     assert not config_path.with_name("config.toml.migration-cursor").exists()
 
