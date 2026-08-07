@@ -11,7 +11,6 @@ from agent.core.runner import CoreRunner, CoreRunnerDeps
 from agent.core.runtime_support import (
     AgentLoopRunner,
     LLMServices,
-    MemoryConfig,
     MemoryServices,
     SessionLike,
     ToolDiscoveryState,
@@ -41,7 +40,6 @@ __all__ = [
     "InboundMessage",
     "LLMResponse",
     "LLMServices",
-    "MemoryConfig",
     "MemoryServices",
     "OutboundMessage",
     "PromptBlock",
