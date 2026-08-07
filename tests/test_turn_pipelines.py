@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -698,6 +698,7 @@ async def test_agent_loop_afterstep_fires_with_turn_lifecycle_wiring(tmp_path: P
     msg = InboundMessage(channel="cli", sender="u", chat_id="123", content="你好")
     session = SimpleNamespace(
         key=session_key,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
         messages=[],
         metadata={},
         last_consolidated=0,
