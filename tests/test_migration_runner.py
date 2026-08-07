@@ -18,7 +18,15 @@ _AKASHA_V9_ID = "20260805_01_akasha_sparse_index_v9"
 _COMPACTION_ID = "20260807_01_session_context_compaction_ledger"
 _AUDIT_ID = "20260808_01_session_mutation_audits"
 _PREPARE_ID = "20260808_02_session_compaction_prepares"
-_CURRENT_IDS = (_ORIGIN_ID, _AKASHA_V9_ID, _COMPACTION_ID, _AUDIT_ID, _PREPARE_ID)
+_CONFIG_ID = "20260808_03_remove_compaction_trigger"
+_CURRENT_IDS = (
+    _ORIGIN_ID,
+    _AKASHA_V9_ID,
+    _COMPACTION_ID,
+    _AUDIT_ID,
+    _PREPARE_ID,
+    _CONFIG_ID,
+)
 
 
 def _runner(root: Path, *, repo_root: Path = _PROJECT_ROOT) -> MigrationRunner:
@@ -88,7 +96,6 @@ def test_origin_removes_legacy_state_without_touching_business_data(
     assert not backups.exists()
     config_data = tomllib.loads(config.read_text(encoding="utf-8"))
     assert config_data["agent"]["context"]["compaction"] == {
-        "trigger_percent": 0.74,
         "keep_recent_tokens": 20_000,
     }
     migrated = sqlite3.connect(sessions)
