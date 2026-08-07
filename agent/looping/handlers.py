@@ -1,35 +1,23 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
-from agent.control.context import current_turn_id
-from agent.core.runtime_support import AgentLoopRunner, PromptRenderRunner, TurnRunResult
-from agent.lifecycle.types import PromptRenderInput, TurnPersistencePolicy
-from agent.looping.ports import SessionServices
 from bus.events import InboundMessage, OutboundMessage, SpawnCompletionItem
 
 if TYPE_CHECKING:
     from agent.core.passive_turn import PassiveTurnPipeline
-    from agent.tools.registry import ToolRegistry
 
 async def process_spawn_completion_event(
     *,
     item: SpawnCompletionItem,
     key: str,
-    session_svc: SessionServices,
     pipeline: "PassiveTurnPipeline",
-    tools: "ToolRegistry",
-    memory_window: int,
-    run_agent_loop_fn: AgentLoopRunner,
-    prompt_render_fn: PromptRenderRunner,
     dispatch_outbound: bool = True,
 ) -> OutboundMessage:
-    # 1. 先读取 session 和内部事件，准备要给主模型的回传消息。
-    session = session_svc.session_manager.get_or_create(key)
+    # 1. 先读取内部事件，准备要给主模型的回传消息。
     event = item.event
     label = event.label or "后台任务"
     task = event.task.strip()
-    status = (event.status or "incomplete").strip()
     result = event.result.strip()
     exit_reason = event.exit_reason.strip()
     retry_count = event.retry_count
@@ -71,67 +59,22 @@ async def process_spawn_completion_event(
         "必要时可读取结果里提到的文件来补充说明。"
     )
 
-    # 2. 再调用主模型生成用户可见回复。
-    turn_id = current_turn_id.get()
-    if not turn_id:
-        raise RuntimeError("spawn completion tool context 缺少 runtime turn_id")
-    tools.set_context(
-        channel=item.channel,
-        chat_id=item.chat_id,
-        session_key=key,
-        turn_id=turn_id,
-        current_timestamp=item.timestamp.isoformat(),
-    )
-    prompt_render = await prompt_render_fn(
-        PromptRenderInput(
-            session_key=key,
-            channel=item.channel,
-            chat_id=item.chat_id,
-            content=current_message,
-            media=None,
-            timestamp=item.timestamp,
-            history=session.get_history(max_messages=memory_window),
-            skill_names=None,
-            retrieved_memory_block="",
-            disabled_sections=set(),
-            turn_injection_prompt="",
-        )
-    )
-    initial_messages = prompt_render.messages
-    final_content, tools_used, tool_chain, _, _thinking = await run_agent_loop_fn(
-        initial_messages,
-        request_time=item.timestamp,
-        preloaded_tools=None,
-    )
-    if final_content is None:
-        if status == "completed":
-            final_content = "后台任务已完成。"
-        elif status == "incomplete":
-            final_content = "后台任务未全部完成，部分工作尚未收尾。"
-        elif status == "cancelled":
-            final_content = "后台任务已取消。"
-        else:
-            final_content = "后台任务执行出错。"
-
-    # 3. 走 AfterReasoning + dispatch 流程，经过插件链。
+    # 2. 复用被动 session-aware 主链；它负责 prompt、compaction gate、持久化和 dispatch。
     pseudo_msg = InboundMessage(
         channel=item.channel,
         sender="spawn",
         chat_id=item.chat_id,
-        content=f"内部后台任务完成：{label}",
+        content=current_message,
         timestamp=item.timestamp,
         media=[],
-        metadata={"skip_post_memory": True},
+        metadata={
+            "skip_post_memory": True,
+            "omit_user_turn": True,
+            "skip_memory_retrieval": True,
+        },
     )
-    parsed_tool_chain = cast(list[dict[str, object]], tool_chain)
-    return await pipeline.post_reasoning(
-        msg=pseudo_msg,
-        session_key=key,
-        turn_result=TurnRunResult(
-            reply=final_content,
-            tools_used=tools_used,
-            tool_chain=parsed_tool_chain,
-        ),
+    return await pipeline.run(
+        pseudo_msg,
+        key,
         dispatch_outbound=dispatch_outbound,
-        persistence=TurnPersistencePolicy(persist_user=False),
     )
