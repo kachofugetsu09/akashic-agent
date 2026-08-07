@@ -1,6 +1,6 @@
 {
   "$schema": "./context_probe.schema.json",
-  "name": "short_rejection_after_consolidate",
+  "name": "short_rejection_after_anchor",
   "turns": [
     {
       "role": "user",
@@ -21,12 +21,6 @@
     {
       "role": "user",
       "content": "你接下来只回复这五个字：干嘛也行"
-    },
-    {
-      "action": "consolidate",
-      "label": "after_assistant_anchor",
-      "force": false,
-      "archive_all": false
     },
     {
       "role": "user",

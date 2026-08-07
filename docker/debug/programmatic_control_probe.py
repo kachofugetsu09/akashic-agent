@@ -829,93 +829,19 @@ def _inside_smoke(report_dir: Path) -> int:
 
 
 def _inside_memory_context(report_dir: Path) -> int:
-    """验证真实 runtime 的滚动 consolidation 与 append-only session 语义。"""
+    """验证真实 runtime 的 context retry 与 append-only session 语义。"""
 
     report_dir.mkdir(parents=True, exist_ok=True)
     events_path = report_dir / "events.jsonl"
     model_url = os.environ.get("AKASHIC_MODEL_GATE_URL", "http://model-gate:8090")
     endpoint = Path("/sandbox/akashic.sock")
-    session_key = "programmatic:memory-context"
     checks: list[CheckResult] = []
     client: JsonRpcSocketClient | None = None
     try:
-        # 1. 为两个逻辑历史分页提供同一份双兼容 JSON。
+        # 1. 为 context retry 准备一次失败和一次成功的真实模型响应。
         _wait_http_ready(f"{model_url}/readyz", READINESS_DEADLINE_S)
         _wait_socket(endpoint, READINESS_DEADLINE_S)
-        response = json.dumps(
-            {
-                "history_entries": [],
-                "pending_items": [],
-                "active_topics": [],
-                "user_preferences": [],
-                "follow_ups": [],
-                "avoidances": [],
-                "ongoing_threads": [],
-            },
-            ensure_ascii=False,
-        )
-        _http_json(
-            "PUT",
-            f"{model_url}/control/script",
-            [{"mode": "complete", "content": response} for _ in range(2)],
-        )
-
-        # 2. 通过正式 control protocol 启动手动整理并等待 operation 终态。
-        client = _connect_client(endpoint, events_path)
-        started = client.request(
-            "thread/consolidate/start",
-            {"threadId": session_key},
-        )
-        operation = started.get("result")
-        if not isinstance(operation, dict):
-            raise GateFailure(f"consolidation 缺少 operation：{started!r}")
-        completed = client.wait_notification(
-            "operation/completed",
-            timeout=READINESS_DEADLINE_S,
-        )
-        completed_operation = completed.get("params", {}).get("operation")
-
-        # 3. 读取真实 sessions.db，证明消息不删、绝对游标排空到保留尾部。
-        connection = sqlite3.connect("/sandbox/workspace/sessions.db")
-        try:
-            row = connection.execute(
-                "SELECT last_consolidated FROM sessions WHERE key = ?",
-                (session_key,),
-            ).fetchone()
-            message_count = connection.execute(
-                "SELECT COUNT(*) FROM messages WHERE session_key = ?",
-                (session_key,),
-            ).fetchone()[0]
-        finally:
-            connection.close()
-        model_requests = _model_requests(
-            _http_json("GET", f"{model_url}/control/requests")
-        )
-        passed = (
-            isinstance(completed_operation, dict)
-            and completed_operation.get("id") == operation.get("id")
-            and completed_operation.get("status") == "completed"
-            and completed_operation.get("result") == {"consolidated": True}
-            and row == (16,)
-            and message_count == 24
-            and len(model_requests) == 2
-        )
-        checks.append(
-            CheckResult(
-                "MC-01",
-                passed,
-                {
-                    "operation": completed_operation,
-                    "messageCount": message_count,
-                    "lastConsolidated": None if row is None else row[0],
-                    "modelRequestCount": len(model_requests),
-                },
-            )
-        )
-        _write_jsonl(report_dir / "model-requests.jsonl", model_requests)
-
-        # 4. 构造一次真实 context retry，成功后历史只允许追加，游标不能回退。
-        retry_key = "programmatic:context-retry"
+        # 2. 构造一次真实 context retry，成功后历史只允许追加，游标不能回退。
         _http_json(
             "PUT",
             f"{model_url}/control/script",
@@ -933,6 +859,8 @@ def _inside_memory_context(report_dir: Path) -> int:
                 {"mode": "complete", "content": "retry survived"},
             ],
         )
+        client = _connect_client(endpoint, events_path)
+        retry_key = "programmatic:context-retry"
         retry_turn = _start_turn(client, retry_key, "trigger prompt-only retry")
         retry_terminal = client.wait_terminal(retry_turn)
         retry_connection = sqlite3.connect("/sandbox/workspace/sessions.db")
@@ -953,12 +881,12 @@ def _inside_memory_context(report_dir: Path) -> int:
         retry_payload = _event_turn(retry_terminal)
         checks.append(
             CheckResult(
-                "MC-02",
+                "MC-01",
                 retry_payload.get("status") == "completed"
                 and retry_payload.get("finalResponse") == "retry survived"
-                and retry_row == (4,)
+                and retry_row == (0,)
                 and retry_message_count == 8
-                and len(final_requests) == 4,
+                and len(final_requests) == 2,
                 {
                     "terminal": retry_payload,
                     "messageCount": retry_message_count,
@@ -2107,16 +2035,10 @@ from pathlib import Path
 from session.manager import SessionManager
 
 manager = SessionManager(Path("/sandbox/workspace"))
-session = manager.get_or_create("programmatic:memory-context")
-for index in range(12):
-    session.add_message("user", f"第 {index} 轮用户消息：" + "甲" * 2000)
-    session.add_message("assistant", f"第 {index} 轮助手回复：" + "乙" * 2000)
-manager.save(session)
 retry = manager.get_or_create("programmatic:context-retry")
 for index in range(3):
     retry.add_message("user", f"retry user {index}")
     retry.add_message("assistant", f"retry assistant {index}")
-retry.last_consolidated = 4
 manager.save(retry)
 manager.close()
 """
