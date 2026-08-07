@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import sqlite3
+from uuid import uuid4
 
 from yoyo import step
 
 from agent.migrations.context import current_migration_context
+from agent.migrations.session_db_backup import backup_sqlite_database
 
 __depends__ = {"20260807_01_session_context_compaction_ledger"}
 
@@ -69,9 +71,15 @@ def add_session_mutation_audits(connection: object) -> None:
     """Create and validate the append-only SessionDB audit tables."""
 
     _ = connection
-    sessions_db = current_migration_context().workspace / "sessions.db"
+    current = current_migration_context()
+    sessions_db = current.workspace / "sessions.db"
     if not sessions_db.exists():
         return
+    backup_sqlite_database(
+        sessions_db,
+        current.workspace / "backups" / "session-mutation-audits" / uuid4().hex,
+        migration="session-mutation-audits",
+    )
     sessions_connection = sqlite3.connect(sessions_db)
     try:
         _ensure_table(

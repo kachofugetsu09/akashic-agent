@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -40,7 +41,7 @@ def test_prepare_migration_publishes_exact_schema_and_indexes(tmp_path: Path) ->
 
     outcome = _runner(root).run()
 
-    assert outcome.migrations[-1] == _PREPARE_ID
+    assert _PREPARE_ID in outcome.migrations
     connection = sqlite3.connect(workspace / "sessions.db")
     try:
         columns = {
@@ -78,6 +79,17 @@ def test_prepare_migration_publishes_exact_schema_and_indexes(tmp_path: Path) ->
         }
     finally:
         connection.close()
+    backups = sorted(
+        (workspace / "backups/session-compaction-prepares").iterdir()
+    )
+    assert len(backups) == 1
+    manifest = json.loads((backups[0] / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["sqlite_integrity"] == "ok"
+    archived = sqlite3.connect(backups[0] / "sessions.db")
+    try:
+        assert archived.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+    finally:
+        archived.close()
 
 
 def test_prepare_migration_rejects_incompatible_existing_table(tmp_path: Path) -> None:
