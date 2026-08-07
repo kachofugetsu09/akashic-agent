@@ -185,6 +185,13 @@ class ChannelHost:
     async def _stop_channel(self, channel: Channel) -> None:
         try:
             await channel.stop()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:
+            raise RuntimeError(
+                "Channel stop 未确认 ingress 收束和 ownership 释放: "
+                f"channel={channel.name}: {error}"
+            ) from error
         finally:
             resources = self._resources.pop(id(channel), None)
             try:
