@@ -73,7 +73,6 @@ from agent.lifecycle.phases.before_step import (
 )
 from agent.lifecycle.phases.before_turn import (
     BeforeTurnFrame,
-    MemoryConsolidator,
     default_before_turn_modules,
 )
 from agent.lifecycle.phases.prompt_render import (
@@ -216,8 +215,6 @@ class AgentCoreDeps:
     reasoner: "Reasoner"
     event_bus: "EventBus | None" = None
     outbound_port: "OutboundPort | None" = None
-    history_window: int = 500
-    memory_consolidator: MemoryConsolidator | None = None
     before_turn_plugin_modules: list[object] | None = None
     before_reasoning_plugin_modules: list[object] | None = None
     before_step_plugin_modules: list[object] | None = None
@@ -326,8 +323,6 @@ class PassiveTurnPipeline:
                 list(deps.after_step_plugin_modules)
             )
         self._outbound_port = deps.outbound_port or _NoopOutboundPort()
-        self._history_window = deps.history_window
-        self._memory_consolidator = deps.memory_consolidator
         self._before_turn_plugin_modules = list(deps.before_turn_plugin_modules or [])
         self._before_reasoning_plugin_modules = list(
             deps.before_reasoning_plugin_modules or []
@@ -388,8 +383,6 @@ class PassiveTurnPipeline:
                 self._bus,
                 self._session.session_manager,
                 self._context_store,
-                keep_count=self._history_window,
-                consolidator=self._memory_consolidator,
                 plugin_modules=cast(
                     "list[Any]",
                     (
@@ -453,7 +446,6 @@ class PassiveTurnPipeline:
                 self._bus,
                 self._outbound_port,
                 self._context,
-                self._history_window,
                 plugin_modules=cast(
                     "list[Any]",
                     (
@@ -818,11 +810,9 @@ class DefaultContextStore(ContextStore):
         *,
         retrieval: "MemoryRetrievalPipeline",
         context: "ContextBuilder",
-        history_window: int = 500,
     ) -> None:
         self._retrieval = retrieval
         self._context = context
-        self._history_window = max(1, int(history_window))
 
     async def prepare(
         self,
@@ -1222,7 +1212,6 @@ class DefaultReasoner(Reasoner):
             current_query=current_query,
             payload_segments=segments,
             max_output_tokens=self._llm_config.max_tokens,
-            trigger_percent=self._context_compaction.trigger_percent,
             keep_recent_tokens=self._context_compaction.keep_recent_tokens,
             ledger_parent_generation=projection.head.parent_generation,
             next_generation=projection.head.next_generation,

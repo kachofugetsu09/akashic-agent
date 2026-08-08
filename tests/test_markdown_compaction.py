@@ -1,36 +1,41 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
+from agent.model_runtime.types import LLMResponse
+from agent.provider import LLMProvider
 from bus.event_bus import EventBus
 from core.memory.events import ConsolidationCommitted
 from core.memory.markdown import MarkdownMemoryMaintenance, MarkdownMemoryStore
 
 
-class _Response:
-    def __init__(self, content: str) -> None:
-        self.content = content
-
-
-class _Provider:
-    context_window = 4096
+class _Provider(LLMProvider):
+    context_window: int = 4096
 
     def __init__(self) -> None:
+        self.context_window = 4096
         self.prompts: list[str] = []
         self.max_tokens: list[int] = []
+        self.max_output_tokens = 0
+        self.estimated_tokens: int | None = None
 
-    def estimate_context_tokens(self, messages, tools) -> int:
+    def estimate_context_tokens(
+        self, messages: list[dict], tools: list[dict]
+    ) -> int:
+        if self.estimated_tokens is not None:
+            return self.estimated_tokens
         prompt = str(messages[0]["content"])
         return 1 + prompt.count("UNIT")
 
-    async def chat(self, *, messages, **kwargs):
+    async def chat(self, messages: list[dict], **kwargs: Any) -> LLMResponse:
         prompt = str(messages[0]["content"])
         self.prompts.append(prompt)
         self.max_tokens.append(int(kwargs["max_tokens"]))
-        return _Response(
-            json.dumps(
+        return LLMResponse(
+            content=json.dumps(
                 {
                     "history_entries": [
                         {
@@ -180,7 +185,7 @@ async def test_default_input_and_output_budgets_follow_current_provider(tmp_path
     )
 
     estimated = 3000
-    provider.estimate_context_tokens = lambda messages, tools: estimated
+    provider.estimated_tokens = estimated
     await maintenance.prepare_compaction_markdown(
         _source_plan()[:2],
         source_ref="session:checkpoint:dynamic-1",

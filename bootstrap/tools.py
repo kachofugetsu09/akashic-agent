@@ -52,11 +52,10 @@ from bootstrap.cleanup import run_cleanup_steps
 from bus.event_bus import EventBus
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
-from core.memory.markdown import MemoryLifecycleBindRequest, MarkdownMemoryMaintenance
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
 from proactive_v2.presence import PresenceStore
-from session.manager import Session, SessionManager
+from session.manager import SessionManager
 
 
 async def _noop_async() -> None:
@@ -224,7 +223,6 @@ class CoreRuntime:
                     self.event_bus,
                     pipeline._outbound_port,
                     context,
-                    pipeline._history_window,
                     plugin_modules=cast(Any, after_turn_modules),
                 ),
             ),
@@ -443,10 +441,6 @@ def _build_loop_deps(
     session_services = SessionServices(
         session_manager=session_manager, presence=presence
     )
-    _bind_memory_lifecycle_if_supported(
-        markdown=memory_runtime.markdown.maintenance,
-        session_manager=session_manager,
-    )
     retrieval_pipeline = DefaultMemoryRetrievalPipeline(
         memory=memory_services,
     )
@@ -468,23 +462,6 @@ def _build_loop_deps(
         memory_services=memory_services,
         session_services=session_services,
     )
-
-
-def _bind_memory_lifecycle_if_supported(
-    *,
-    markdown: MarkdownMemoryMaintenance,
-    session_manager: SessionManager,
-) -> None:
-    async def _save_session(session: object) -> None:
-        await session_manager.save_async(cast(Session, session))
-
-    markdown.bind_lifecycle(
-        MemoryLifecycleBindRequest(
-            get_session=session_manager.get_or_create,
-            save_session=_save_session,
-        )
-    )
-
 
 def build_core_runtime(
     config: Config,

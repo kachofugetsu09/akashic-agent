@@ -34,8 +34,6 @@ class StoredModelRuntime:
     context_window_source: str
     max_output_tokens_source: str
     input_modalities_source: str
-    effective_context_percent: float
-    compaction_trigger_percent: float
     use_responses_lite: bool
     supports_parallel_tool_calls: bool
     reasoning_summary: str
@@ -60,8 +58,6 @@ class StoredModelRuntime:
             "context_window_source": self.context_window_source,
             "max_output_tokens_source": self.max_output_tokens_source,
             "input_modalities_source": self.input_modalities_source,
-            "effective_context_percent": self.effective_context_percent,
-            "compaction_trigger_percent": self.compaction_trigger_percent,
             "use_responses_lite": self.use_responses_lite,
             "supports_parallel_tool_calls": self.supports_parallel_tool_calls,
             "reasoning_summary": self.reasoning_summary,
@@ -575,8 +571,6 @@ def _normalize_runtime(
             or raw.get("capability_source")
             or "unknown"
         ),
-        float(raw.get("effective_context_percent", 0.9)),
-        float(raw.get("compaction_trigger_percent", 0.74)),
         int(bool(raw.get("use_responses_lite", False))),
         int(bool(raw.get("supports_parallel_tool_calls", True))),
         str(raw.get("reasoning_summary") or "none"),
@@ -625,11 +619,9 @@ def _stored_runtime_from_row(row: sqlite3.Row) -> StoredModelRuntime:
         context_window_source=str(row[14]),
         max_output_tokens_source=str(row[15]),
         input_modalities_source=str(row[16]),
-        effective_context_percent=float(row[17]),
-        compaction_trigger_percent=float(row[18]),
-        use_responses_lite=bool(row[19]),
-        supports_parallel_tool_calls=bool(row[20]),
-        reasoning_summary=str(row[21]),
+        use_responses_lite=bool(row[17]),
+        supports_parallel_tool_calls=bool(row[18]),
+        reasoning_summary=str(row[19]),
     )
 
 
@@ -665,8 +657,6 @@ SELECT
     m.context_window_source,
     m.max_output_tokens_source,
     m.input_modalities_source,
-    m.effective_context_percent,
-    m.compaction_trigger_percent,
     m.use_responses_lite,
     m.supports_parallel_tool_calls,
     m.reasoning_summary
@@ -729,12 +719,10 @@ INSERT INTO model_definitions(
     context_window_source,
     max_output_tokens_source,
     input_modalities_source,
-    effective_context_percent,
-    compaction_trigger_percent,
     use_responses_lite,
     supports_parallel_tool_calls,
     reasoning_summary
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _UPSERT_EMBEDDING_MODEL = """
@@ -782,6 +770,8 @@ CREATE TABLE IF NOT EXISTS model_definitions (
     context_window_source TEXT NOT NULL DEFAULT 'unknown',
     max_output_tokens_source TEXT NOT NULL DEFAULT 'unknown',
     input_modalities_source TEXT NOT NULL DEFAULT 'unknown',
+    -- Legacy v1 columns remain only so existing databases retain schema identity.
+    -- Runtime reads and writes intentionally never project or accept these values.
     effective_context_percent REAL NOT NULL DEFAULT 0.9,
     compaction_trigger_percent REAL NOT NULL DEFAULT 0.74,
     use_responses_lite INTEGER NOT NULL DEFAULT 0 CHECK (use_responses_lite IN (0, 1)),

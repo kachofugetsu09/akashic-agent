@@ -17,8 +17,6 @@ from core.memory.plugin import (
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
 
-_MARKDOWN_KEEP_COUNT = 40
-
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
     from core.memory.markdown import MarkdownMemoryRuntime
@@ -101,9 +99,6 @@ def build_memory_runtime(
         workspace=workspace,
         provider=provider,
         model=config.model,
-        keep_count=_memory_keep_count(_MARKDOWN_KEEP_COUNT),
-        consolidation_input_budget=_consolidation_input_budget(config),
-        provider_system_prompt=config.system_prompt,
         event_bus=event_publisher,
     )
 
@@ -136,7 +131,6 @@ def build_memory_runtime(
         embedding_api=embedding_api,
     )
 
-
 def build_memory_admin_runtime(
     config: Config,
     workspace: Path,
@@ -150,9 +144,6 @@ def build_memory_admin_runtime(
         workspace=workspace,
         provider=provider,
         model=config.model,
-        keep_count=_memory_keep_count(_MARKDOWN_KEEP_COUNT),
-        consolidation_input_budget=_consolidation_input_budget(config),
-        provider_system_prompt=config.system_prompt,
         event_bus=event_publisher,
     )
     closeables: list[object] = [http_resources]
@@ -178,34 +169,3 @@ def build_memory_admin_runtime(
         closeables=closeables,
         embedding_api=embedding_api,
     )
-
-
-def _memory_keep_count(window: int) -> int:
-    return max(2, ((max(1, window) + 1) // 2) * 2)
-
-
-def _consolidation_input_budget(config: Config) -> int | None:
-    """返回主模型与近期模型都能接受的 consolidation 输入预算。"""
-
-    # 1. 事件提取使用 main，近期压缩使用 fast；没有 fast 时复用 main。
-    runtime_ids = {config.runtime_id, config.fast_runtime_id or config.runtime_id}
-    if not config.model_runtimes:
-        if config.context_window <= 0:
-            return None
-        return _hard_input_budget(config.context_window, 1024)
-    # 2. 两个步骤均最多输出 1024 tokens，取更小输入预算作为分页上限。
-    budgets = []
-    for runtime_id in sorted(runtime_ids):
-        runtime = config.model_runtimes[runtime_id]
-        budgets.append(_hard_input_budget(runtime.context_window, 1024))
-    return min(budgets)
-
-
-def _hard_input_budget(context_window: int, max_output_tokens: int) -> int:
-    """Compute the direct context-window input edge for a fixed output reserve."""
-
-    if context_window <= 0:
-        raise ValueError("context_window 必须大于 0")
-    if max_output_tokens < 0 or max_output_tokens >= context_window:
-        raise ValueError("max_output_tokens 必须小于 context_window")
-    return context_window - max_output_tokens

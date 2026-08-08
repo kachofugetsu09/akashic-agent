@@ -8,7 +8,7 @@ import pytest
 
 from agent.core.passive_turn import DefaultReasoner
 from agent.control.ports import TurnUserInput
-from agent.core.runtime_support import LLMServices, ToolDiscoveryState
+from agent.core.runtime_support import LLMServices, SessionLike, ToolDiscoveryState
 from agent.lifecycle.types import AfterStepCtx
 from agent.looping.ports import LLMConfig
 from agent.model_runtime.context_compaction import (
@@ -22,6 +22,7 @@ from agent.tools.tool_search import ToolSearchTool
 from bus.event_bus import EventBus
 from bus.events_lifecycle import ToolCallCompleted, ToolCallStarted
 from session.compaction_runtime import CompactionProjection
+from session.manager import Session
 from session.store import CompactionHead
 
 _TEST_CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS = 1
@@ -143,25 +144,12 @@ class _MandatoryCompactionRuntime:
     """Provide the narrow projection port required by reasoner test turns."""
 
     @staticmethod
-    def _history(session: object) -> list[dict[str, Any]]:
-        history_units = getattr(session, "history_units", None)
-        if callable(history_units):
-            return [
-                dict(message)
-                for unit in history_units(after_seq=-1)
-                for message in unit.messages
-            ]
-        get_history = getattr(session, "get_history", None)
-        if callable(get_history):
-            return [dict(message) for message in get_history(max_messages=500)]
-        raw_messages = getattr(session, "messages", [])
-        if not isinstance(raw_messages, list):
-            raise AssertionError("test session history must be a list")
-        return [dict(message) for message in raw_messages]
+    def _history(session: SessionLike) -> list[dict[str, Any]]:
+        return [dict(message) for message in session.get_history(max_messages=500)]
 
     async def projection(
         self,
-        session: object,
+        session: SessionLike,
         *,
         prefix: list[dict[str, Any]],
         current_anchor: list[dict[str, Any]],
@@ -222,11 +210,10 @@ async def _run_with_compaction_gate(
     if not payload or payload[0].get("role") != "system":
         payload.insert(0, {"role": "system", "content": "test context"})
     history = [dict(message) for message in payload[1:]]
-    session = SimpleNamespace(
+    session = Session(
         key="test:reasoner",
         created_at=datetime(2026, 8, 8, tzinfo=UTC),
         messages=history,
-        get_history=lambda max_messages=500, *, start_index=None: list(history),
         last_consolidated=0,
     )
     runtime = reasoner._compaction_runtime
