@@ -27,7 +27,6 @@ from agent.looping.ports import (
     AgentLoopDeps,
     LLMConfig,
     LLMServices,
-    MemoryConfig,
     MemoryServices,
     SessionServices,
 )
@@ -174,7 +173,6 @@ class AgentLoop:
         self._llm_config = config.llm
         self.bus = deps.bus
         self.tools = deps.tools
-        self.memory_window = config.memory.window
         self._running = False
         self._processing_state = deps.processing_state
         self._event_bus = deps.event_bus or EventBus()
@@ -364,11 +362,11 @@ class AgentLoop:
             tools=deps.tools,
             discovery=self._tool_discovery,
             tool_search_enabled=self._tool_search_enabled,
-            memory_window=config.memory.keep_count,
             context=self._context,
             event_bus=self._event_bus,
             non_preloadable_names=deps.tools.get_non_preloadable_names,
             compaction_runtime=compaction_runtime,
+            context_compaction=config.context_compaction,
         )
 
         # 3. 最后串 passive prepare / execute / commit 主链。
@@ -379,7 +377,6 @@ class AgentLoop:
         passive_context_store = DefaultContextStore(
             retrieval=retrieval_pipeline,
             context=self._context,
-            history_window=config.memory.keep_count,
         )
         agent_core = AgentCore(
             AgentCoreDeps(
@@ -390,7 +387,6 @@ class AgentLoop:
                 reasoner=self._reasoner,
                 event_bus=self._event_bus,
                 outbound_port=BusOutboundPort(self.bus),
-                history_window=config.memory.keep_count,
                 memory_consolidator=self,
             )
         )
@@ -401,9 +397,6 @@ class AgentLoop:
                 session=session_svc,
                 context=self._context,
                 tools=deps.tools,
-                memory_window=config.memory.keep_count,
-                run_agent_loop_fn=self._run_agent_loop,
-                prompt_render_fn=self._reasoner.render_prompt,
             )
         )
 

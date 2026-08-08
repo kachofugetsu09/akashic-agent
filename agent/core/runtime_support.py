@@ -13,14 +13,11 @@ logger = logging.getLogger("agent.tool_discovery")
 
 
 @dataclass
-class MemoryConfig:
-    window: int = 40
-
-
-@dataclass
 class LLMServices:
     provider: object
     light_provider: object
+    fallback_provider: object | None = None
+    fallback_model: str = ""
 
 
 @dataclass

@@ -24,7 +24,6 @@ from agent.looping.ports import (
     AgentLoopDeps,
     LLMConfig,
     LLMServices,
-    MemoryConfig,
     MemoryServices,
     SessionServices,
 )
@@ -407,6 +406,8 @@ def _build_loop_deps(
     workspace: Path,
     bus: MessageBus,
     provider: LLMProvider,
+    fallback_provider: LLMProvider | None,
+    fallback_model: str,
     light_provider: LLMProvider | None,
     tools: ToolRegistry,
     session_manager: SessionManager,
@@ -432,7 +433,12 @@ def _build_loop_deps(
     # 2. 绑定 memory/session service 与 retrieval pipeline。
     memory_engine = memory_runtime.engine
     light = light_provider or provider
-    llm_services = LLMServices(provider=provider, light_provider=light)
+    llm_services = LLMServices(
+        provider=provider,
+        light_provider=light,
+        fallback_provider=fallback_provider,
+        fallback_model=fallback_model,
+    )
     memory_services = MemoryServices(engine=memory_engine)
     session_services = SessionServices(
         session_manager=session_manager, presence=presence
@@ -527,6 +533,8 @@ def build_core_runtime(
         workspace=workspace,
         bus=bus,
         provider=loop_provider,
+        fallback_provider=provider,
+        fallback_model=config.model,
         light_provider=light_provider,
         tools=tools,
         session_manager=session_manager,
@@ -547,9 +555,7 @@ def build_core_runtime(
                 multimodal=config.multimodal,
                 vl_available=config.vl_model != "",
             ),
-            memory=MemoryConfig(
-                window=config.memory_window,
-            ),
+            context_compaction=config.context_compaction,
         ),
     )
     loop_ref["loop"] = loop

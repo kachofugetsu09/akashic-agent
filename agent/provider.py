@@ -348,15 +348,11 @@ class ChatCompletionsRuntime:
             base_url=self._base_url,
             model=request.model,
         )
-        # 系统提示作为第一条消息（若 messages 已自带 system 消息则不再重复添加）
-        messages = request.messages
-        already_has_system = messages and messages[0].get("role") == "system"
-        full_messages = (
-            [{"role": "system", "content": request.system_prompt}, *messages]
-            if request.system_prompt and not already_has_system
-            else messages
+        # 系统提示作为第一条消息（若 messages 已自带 system 消息则不再重复添加）。
+        full_messages = _assemble_chat_messages(
+            request.system_prompt,
+            request.messages,
         )
-        full_messages = _merge_leading_system_messages(full_messages)
         full_messages = strategy.normalize_messages(full_messages)
         kwargs: dict = dict(model=request.model, messages=full_messages)
         if request.max_output_tokens > 0:
@@ -826,10 +822,26 @@ def _estimate_context_tokens(
     system_prompt: str, messages: list[dict], tools: list[dict]
 ) -> int:
     """估算文本与图片块预算，避免把 data URI 当作文本 token。"""
-    fixed_chars = len(system_prompt) + len(
+    full_messages = _assemble_chat_messages(system_prompt, messages)
+    fixed_chars = len(
         json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
     )
-    return max(1, fixed_chars // 3 + _estimate_message_tokens(messages))
+    return max(1, fixed_chars // 3 + _estimate_message_tokens(full_messages))
+
+
+def _assemble_chat_messages(
+    system_prompt: str,
+    messages: list[dict],
+) -> list[dict]:
+    """统一发送与估算共用的首条 system 消息组装规则。"""
+
+    already_has_system = bool(messages) and messages[0].get("role") == "system"
+    full_messages = (
+        [{"role": "system", "content": system_prompt}, *messages]
+        if system_prompt and not already_has_system
+        else messages
+    )
+    return _merge_leading_system_messages(full_messages)
 
 
 def _estimate_message_tokens(messages: list[dict]) -> int:

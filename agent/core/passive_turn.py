@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, cast
 import agent.core.passive_support as support
 from agent.control.context import current_turn_id
 from agent.control.ports import TurnInputSource, TurnUserInput
+from agent.config_models import ContextCompactionConfig
 from agent.model_runtime.context_compaction import (
     ContextCompactionError,
     ContextCompactor,
@@ -952,11 +953,11 @@ class DefaultReasoner(Reasoner):
         discovery: ToolDiscoveryState,
         *,
         tool_search_enabled: bool,
-        memory_window: int,
         context: "ContextBuilder | None" = None,
         event_bus: "EventBus | None" = None,
         non_preloadable_names: Callable[[], set[str]] | None = None,
         compaction_runtime: SessionCompactionPort | None = None,
+        context_compaction: ContextCompactionConfig | None = None,
     ) -> None:
         self._llm = llm
         self._llm_config = llm_config
@@ -964,6 +965,7 @@ class DefaultReasoner(Reasoner):
         self._discovery = discovery
         self._tool_search_enabled = tool_search_enabled
         self._compaction_runtime = compaction_runtime
+        self._context_compaction = context_compaction or ContextCompactionConfig()
         self._context = context
         self._event_bus = event_bus
         self._non_preloadable_names = non_preloadable_names or set
@@ -1220,8 +1222,12 @@ class DefaultReasoner(Reasoner):
             current_query=current_query,
             payload_segments=segments,
             max_output_tokens=self._llm_config.max_tokens,
+            trigger_percent=self._context_compaction.trigger_percent,
+            keep_recent_tokens=self._context_compaction.keep_recent_tokens,
             ledger_parent_generation=projection.head.parent_generation,
             next_generation=projection.head.next_generation,
+            fallback_provider=self._llm.fallback_provider,
+            fallback_model=self._llm.fallback_model,
             chat_call=self._call_compaction_summary,
         )
         return _TurnCompactionState(
