@@ -1656,7 +1656,7 @@ async def test_after_reasoning_commits_all_same_turn_users_before_final_assistan
     """保持已送达 proactive 与随后提交的 interaction 各自成单元。"""
 
     class _Source:
-        def consumed_inputs(self) -> tuple[TurnUserInput, ...]:
+        def used_inputs(self) -> tuple[TurnUserInput, ...]:
             return (
                 TurnUserInput("i1", 0, "u1", (), {}, _now),
                 TurnUserInput(

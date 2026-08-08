@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 
 from agent.config_models import Config
-from agent.control.context import current_turn_id
+from agent.control.context import running_turn_id
 from agent.tools.base import Tool
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import (
@@ -154,7 +154,7 @@ class _AkashaFeedbackTool(Tool):
     ) -> str:
         return json.dumps(
             self._memory.stage_feedback(
-                turn_id=current_turn_id.get(),
+                turn_id=running_turn_id.get(),
                 action=self.action,
                 message_ids=message_ids,
                 reason=reason,
@@ -193,7 +193,7 @@ class AkashaFeedbackPersistModule:
         markers = cast(
             AkashaMemoryEngine,
             engine,
-        ).take_staged_feedback(current_turn_id.get())
+        ).take_staged_feedback(running_turn_id.get())
         for marker in markers:
             frame.slots[f"persist:user:{marker.extra_key}"] = marker.payload()
         return frame

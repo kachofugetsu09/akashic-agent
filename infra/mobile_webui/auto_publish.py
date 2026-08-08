@@ -11,7 +11,7 @@ from infra.mobile_webui.store import MobileWebUiStore
 logger = logging.getLogger(__name__)
 
 
-def reconcile_main_mobile_webui(
+def auto_publish_webui(
     source_repository: Path,
     workspace: Path,
     *,

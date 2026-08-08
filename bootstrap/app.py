@@ -1048,13 +1048,13 @@ class AppRuntime:
         manager = getattr(self.core, "plugin_manager", None)
         if manager is None:
             raise RuntimeError("插件 Runtime 不可用")
-        return await manager.promote_latest_candidate(plugin_id)
+        return await manager.switch_ready(plugin_id)
 
     async def _discard_plugin(self, plugin_id: str) -> dict[str, object]:
         manager = getattr(self.core, "plugin_manager", None)
         if manager is None:
             raise RuntimeError("插件 Runtime 不可用")
-        return await manager.discard_latest_candidate(plugin_id)
+        return await manager.drop_candidate(plugin_id)
 
     async def _uninstall_plugin(self, plugin_id: str) -> dict[str, object]:
         """Disable, drain, and remove plugin code while retaining workspace data."""

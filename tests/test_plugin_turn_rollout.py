@@ -36,11 +36,11 @@ class _Manager:
     def annotate_reload(self, tx_id, details) -> None:
         self.annotations.append((tx_id, details))
 
-    async def promote_latest_candidate(self, plugin_id):
+    async def switch_ready(self, plugin_id):
         self.promoted.append(plugin_id)
         return {"publication_state": "promoted"}
 
-    async def discard_latest_candidate(self, plugin_id):
+    async def drop_candidate(self, plugin_id):
         self.discarded.append(plugin_id)
         return {"plugin_id": plugin_id, "publication_state": "discarded"}
 

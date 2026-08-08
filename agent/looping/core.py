@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
 from core.error_context import current_session_key
 from core.common.diagnostic_log import diagnostic_line
-from agent.control.context import current_turn_id
+from agent.control.context import running_turn_id
 from agent.control.ids import new_turn_id
 from agent.context import ContextBuilder
 from agent.core.passive_turn import (
@@ -295,7 +295,7 @@ class AgentLoop:
                     session_key=session_key,
                     channel=channel,
                     chat_id=chat_id,
-                    turn_id=current_turn_id.get(),
+                    turn_id=running_turn_id.get(),
                     content_delta=(
                         content_delta if isinstance(content_delta, str) else ""
                     ),
@@ -713,7 +713,7 @@ class AgentLoop:
                 chat_id=msg.chat_id,
                 content=_item_content(msg),
                 timestamp=msg.timestamp,
-                turn_id=current_turn_id.get(),
+                turn_id=running_turn_id.get(),
             )
         )
 
@@ -739,7 +739,7 @@ class AgentLoop:
             if isinstance(msg, InboundMessage)
             else ""
         )
-        turn_token = current_turn_id.set(inherited_turn_id or new_turn_id())
+        turn_token = running_turn_id.set(inherited_turn_id or new_turn_id())
         try:
             # 1. 先投影插件发布事实，再冻结本 turn 的模型 generation。
             rollout_fact_provider = getattr(self, "_plugin_rollout_fact_provider", None)
@@ -790,7 +790,7 @@ class AgentLoop:
                 await self._cleanup_shell_owner(key)
             finally:
                 current_session_key.reset(session_token)
-                current_turn_id.reset(turn_token)
+                running_turn_id.reset(turn_token)
 
     async def _resolve_model_selection(
         self,
@@ -849,7 +849,7 @@ class AgentLoop:
                     flow="passive",
                     phase="cleanup",
                     session=owner_session_key,
-                    turn=current_turn_id.get(),
+                    turn=running_turn_id.get(),
                     action="retain_turn_finality",
                     reason="cleanup_exception",
                     error_type=type(exc).__name__,
@@ -871,7 +871,7 @@ class AgentLoop:
                     flow="passive",
                     phase="cleanup",
                     session=owner_session_key,
-                    turn=current_turn_id.get(),
+                    turn=running_turn_id.get(),
                     action="retain_turn_finality",
                     reason="execution_cleanup_unconfirmed",
                     counts=(

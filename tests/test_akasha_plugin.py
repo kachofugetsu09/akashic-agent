@@ -22,7 +22,7 @@ from agent.config_models import (
     MemoryConfig as HostMemoryConfig,
     MemoryEmbeddingConfig,
 )
-from agent.control.context import current_turn_id
+from agent.control.context import running_turn_id
 from agent.looping.ports import MemoryServices
 from agent.migrations.akasha_sidecar import rebuild_akasha_sidecars
 from agent.plugins import Plugin
@@ -219,7 +219,7 @@ async def test_feedback_tools_compose_correction_from_two_markers(
     assert remember_spec.tool_class is not None
     forget = forget_spec.tool_class(engine, forget_spec)
     remember = remember_spec.tool_class(engine, remember_spec)
-    token = current_turn_id.set("turn:feedback")
+    token = running_turn_id.set("turn:feedback")
     try:
         forgotten = json.loads(
             await forget.execute(
@@ -268,7 +268,7 @@ async def test_feedback_tools_compose_correction_from_two_markers(
         assert remembered_marker["target_turn_ids"] == ["current_turn"]
         assert engine.take_staged_feedback("turn:feedback") == ()
     finally:
-        current_turn_id.reset(token)
+        running_turn_id.reset(token)
         _close_engine(engine)
 
 
@@ -290,7 +290,7 @@ async def test_feedback_tool_rejects_memory_item_ids(
         )
         assert spec.tool_class is not None
         tool = spec.tool_class(engine, spec)
-        token = current_turn_id.set("turn:feedback")
+        token = running_turn_id.set("turn:feedback")
         try:
             result = json.loads(
                 await tool.execute(
@@ -298,11 +298,11 @@ async def test_feedback_tool_rejects_memory_item_ids(
                 )
             )
         finally:
-            current_turn_id.reset(token)
+            running_turn_id.reset(token)
         assert result["status"] == "not_staged"
         assert result["error"] == "messages_not_in_akasha"
 
-        token = current_turn_id.set("turn:feedback")
+        token = running_turn_id.set("turn:feedback")
         try:
             current = json.loads(
                 await tool.execute(
@@ -310,7 +310,7 @@ async def test_feedback_tool_rejects_memory_item_ids(
                 )
             )
         finally:
-            current_turn_id.reset(token)
+            running_turn_id.reset(token)
         assert current["status"] == "not_staged"
         assert current["error"] == "cannot_forget_current_user_message"
     finally:
@@ -353,7 +353,7 @@ async def test_feedback_markers_change_future_recall_and_replay_identically(
     assert remember_spec.tool_class is not None
     forget = forget_spec.tool_class(engine, forget_spec)
     remember = remember_spec.tool_class(engine, remember_spec)
-    token = current_turn_id.set("turn:correction")
+    token = running_turn_id.set("turn:correction")
     try:
         assert json.loads(
             await forget.execute(message_ids=["message:1"])
@@ -369,7 +369,7 @@ async def test_feedback_markers_change_future_recall_and_replay_identically(
         )
         await AkashaFeedbackPersistModule(owner).run(frame)
     finally:
-        current_turn_id.reset(token)
+        running_turn_id.reset(token)
 
     # 2. Persist those marker fields on the next canonical user Message.
     correction_time = started + timedelta(minutes=5)

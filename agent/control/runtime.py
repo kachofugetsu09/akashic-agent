@@ -31,7 +31,7 @@ from agent.control.models import (
 from agent.control.ports import (
     ControlExecutionResult,
     TurnExecutor,
-    TurnInputSource,
+    InputLock,
     TurnUserInput,
 )
 from agent.restart import RestartCoordinator
@@ -115,18 +115,18 @@ class TurnHandle:
         return await self._runtime.interrupt_turn(self.thread_id, self.id)
 
 
-class _RuntimeTurnInputSource(TurnInputSource):
-    """把 reasoner 的 final seal 交回 runtime 唯一 owner。"""
+class _RuntimeInputLock(InputLock):
+    """把 reasoner 的最终 lock 交回 runtime 唯一 owner。"""
 
     def __init__(self, runtime: ConversationRuntime, turn_id: str) -> None:
         self._runtime = runtime
         self._turn_id = turn_id
 
-    async def seal(self) -> None:
-        await self._runtime._seal_turn_input(self._turn_id)
+    async def lock(self) -> None:
+        await self._runtime._lock_turn_input(self._turn_id)
 
-    def consumed_inputs(self) -> tuple[TurnUserInput, ...]:
-        return self._runtime._consumed_turn_inputs(self._turn_id)
+    def used_inputs(self) -> tuple[TurnUserInput, ...]:
+        return self._runtime._used_turn_inputs(self._turn_id)
 
 
 class ConversationRuntime:
@@ -181,8 +181,8 @@ class ConversationRuntime:
         self._turn_terminal = turn_terminal
         self._active_by_thread: dict[str, str] = {}
         self._consumed_inputs: dict[str, list[TurnUserInput]] = {}
-        self._sealed_turn_inputs: set[str] = set()
-        self._turn_input_sources: dict[str, _RuntimeTurnInputSource] = {}
+        self._locked_turn_inputs: set[str] = set()
+        self._turn_input_sources: dict[str, _RuntimeInputLock] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._results: dict[str, asyncio.Future[TurnResult]] = {}
         self._history: dict[str, list[TurnEvent]] = {}
@@ -271,7 +271,7 @@ class ConversationRuntime:
             self._active_by_thread[request.thread_id] = turn_id
             self._thread_idle[request.thread_id] = asyncio.Event()
             self._consumed_inputs[turn_id] = [*prior_inputs, initial_input]
-            source = _RuntimeTurnInputSource(self, turn_id)
+            source = _RuntimeInputLock(self, turn_id)
             self._turn_input_sources[turn_id] = source
             loop = asyncio.get_running_loop()
             self._results[turn_id] = loop.create_future()
@@ -563,15 +563,15 @@ class ConversationRuntime:
             TurnEvent.create("item/completed", thread_id, turn_id, item=item.to_dict())
         )
 
-    async def _seal_turn_input(self, turn_id: str) -> None:
+    async def _lock_turn_input(self, turn_id: str) -> None:
         """在 admission lock 下原子封口，active attempt 不存在输入队列。"""
 
         async with self._control_admission_lock:
             if turn_id not in self._consumed_inputs:
                 raise RuntimeError(f"turn input source 已释放: {turn_id}")
-            self._sealed_turn_inputs.add(turn_id)
+            self._locked_turn_inputs.add(turn_id)
 
-    def _consumed_turn_inputs(self, turn_id: str) -> tuple[TurnUserInput, ...]:
+    def _used_turn_inputs(self, turn_id: str) -> tuple[TurnUserInput, ...]:
         consumed = self._consumed_inputs.get(turn_id)
         if consumed is None:
             raise RuntimeError(f"turn input source 已释放: {turn_id}")
@@ -715,7 +715,7 @@ class ConversationRuntime:
 
             execution_request.metadata["_controlItemEvent"] = publish_item
             execution = await self._executor(execution_request)
-            await self._turn_input_sources[turn_id].seal()
+            await self._turn_input_sources[turn_id].lock()
             if open_item_ids:
                 raise RuntimeError(
                     f"executor 返回时仍有未闭合 item: {sorted(open_item_ids)}"
@@ -875,7 +875,7 @@ class ConversationRuntime:
             _ = self._tasks.pop(turn_id, None)
             self._interrupt_requested.discard(turn_id)
             self._consumed_inputs.pop(turn_id, None)
-            self._sealed_turn_inputs.discard(turn_id)
+            self._locked_turn_inputs.discard(turn_id)
             self._turn_input_sources.pop(turn_id, None)
             self._release_admission(turn_id)
             if terminal is not None and self._turn_terminal is not None:
@@ -1291,23 +1291,23 @@ class ConversationRuntime:
         return await asyncio.shield(future)
 
     async def interrupt_turn(self, thread_id: str, turn_id: str) -> TurnRecord:
-        # 1. 与普通输入 admission/final seal 共用栅栏，先封口再取消执行。
+        # 1. 与普通输入 admission/final lock 共用栅栏，先锁定再取消执行。
         async with self._control_admission_lock:
             record = self.read_turn(thread_id, turn_id)
             if record.status.is_terminal:
                 return record
             if self._active_by_thread.get(thread_id) != turn_id:
                 raise TurnNotFoundError(f"active turn 不匹配: {thread_id}/{turn_id}")
-            already_sealed = turn_id in self._sealed_turn_inputs
+            already_locked = turn_id in self._locked_turn_inputs
             task = self._tasks[turn_id]
             future = self._results[turn_id]
-            if not already_sealed:
-                self._sealed_turn_inputs.add(turn_id)
+            if not already_locked:
+                self._locked_turn_inputs.add(turn_id)
                 if record.status is TurnStatus.IN_PROGRESS:
                     self._interrupt_requested.add(turn_id)
                 task.cancel()
 
-        if already_sealed:
+        if already_locked:
             await asyncio.shield(future)
             return self.read_turn(thread_id, turn_id)
 
@@ -1337,7 +1337,7 @@ class ConversationRuntime:
             if turn_id not in self._active_turn_bytes:
                 raise RuntimeError(f"queued turn admission missing: {turn_id}")
             self._consumed_inputs.pop(turn_id, None)
-            self._sealed_turn_inputs.discard(turn_id)
+            self._locked_turn_inputs.discard(turn_id)
             self._turn_input_sources.pop(turn_id, None)
             self._release_admission(turn_id)
             return terminal

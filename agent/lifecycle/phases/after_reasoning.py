@@ -5,7 +5,7 @@ import logging
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from agent.core.passive_support import update_session_runtime_metadata
-from agent.control.ports import TurnInputSource, TurnUserInput
+from agent.control.ports import InputLock, TurnUserInput
 from agent.core.response_parser import parse_response
 from agent.lifecycle.phase import (
     PhaseFrame,
@@ -355,15 +355,15 @@ class _BuildOutboundMessageModule:
 
 
 def _turn_user_inputs(msg: object) -> tuple[TurnUserInput, ...]:
-    """读取 sealed control source；普通内部 turn 投影为单条输入。"""
+    """读取已锁定的 control source；普通内部 turn 投影为单条输入。"""
 
     metadata = getattr(msg, "metadata", None) or {}
     raw_source = metadata.get("_control_turn_input_source")
     if raw_source is not None:
-        source = cast(TurnInputSource, raw_source)
-        inputs = source.consumed_inputs()
+        source = cast(InputLock, raw_source)
+        inputs = source.used_inputs()
         if not inputs:
-            raise RuntimeError("sealed control turn 缺少用户输入")
+            raise RuntimeError("locked control turn 缺少用户输入")
         return inputs
     return (
         TurnUserInput(

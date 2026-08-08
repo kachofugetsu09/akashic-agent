@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.control.context import current_turn_id
+from agent.control.context import running_turn_id
 from agent.core.passive_turn import _persistence_from_metadata
 from agent.core.runtime_support import SessionLike, TurnRunResult
 from agent.looping.core import AgentLoop, _supports_stream_events
@@ -536,11 +536,11 @@ def test_agent_loop_uses_custom_retrieval_pipeline(tmp_path: Path):
     loop._reasoner.run_turn = AsyncMock(return_value=TurnRunResult(reply="ok"))
 
     msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
-    turn_token = current_turn_id.set("turn:test-retrieval")
+    turn_token = running_turn_id.set("turn:test-retrieval")
     try:
         asyncio.run(loop._core_runner.process(msg, msg.session_key))
     finally:
-        current_turn_id.reset(turn_token)
+        running_turn_id.reset(turn_token)
 
     assert custom_retrieval.requests
     assert custom_retrieval.requests[0].message == "hello"
