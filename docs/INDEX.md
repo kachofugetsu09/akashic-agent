@@ -239,7 +239,8 @@ docs/
 │   ├── 2026-07-30-v4flash-harness-benchmark-design.md
 │   └── 2026-07-30-agent-benchmark-diagnostic-loop-design.md
 ├── refactor/
-│   └── clean-code-ledger.md
+│   ├── clean-code-ledger.md
+│   └── 20260808-context-compaction-fixes.md
 └── templates/
     ├── agent-task-contract.md
     ├── change-intent.yaml

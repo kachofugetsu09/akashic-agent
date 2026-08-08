@@ -333,7 +333,7 @@ skills、长期记忆和检索结果必须带来源和信任级别，作为 syst
 
 ### CTX-007 Session compaction ledger 按完整 payload 和真实模型容量触发
 
-Core 在每一次 session 的 provider 请求前，必须在 system prompt、长期记忆、检索块、
+Core 在每一次 session 业务 provider 请求前，必须在 system prompt、长期记忆、检索块、
 `persistent history`、当前 prompt history、动态工具 schema、多模态预算和协议开销
 已经组装后，估算这一次完整实际输入。软水位是当前模型 `context_window` 的
 `floor(context_window * 0.74)`；硬输入边界是该请求的
@@ -341,12 +341,21 @@ Core 在每一次 session 的 provider 请求前，必须在 system prompt、长
 `memory_window`、`effective_context_percent` 和 runtime 级 compaction percent 不再
 拥有上下文语义。
 
+subagent 的主循环、两种收束摘要和 mandatory exit 四个 provider 入口使用同一容量、软水位、
+完整 logical unit 与 raw tail 规则，但 compact 结果只存在于 subagent 内存，不写 session
+ledger。插件 jobs、history route 和视觉短调用由各自 owner 管理，不进入此 Gate；超窗继续
+暴露既有 provider 错误或该 owner 已声明的 fail-open 语义。
+
 统一的 `ContextCompactor` 不拆分已提交的 completed logical interaction；当前 attempt
 只把完整闭合的 tool-call/result batch 当作临时压缩单元。当前 user anchor、未闭合工具
 和外部效果证据必须保留；raw tail 从后向前累计至少 20,000 token，
 跨过完整逻辑单元可以略大于 20,000。若没有合法切点使重建 payload 同时低于软水位和
 硬边界，必须阻断本次调用。tool call 返回后先完整执行 batch，下一次 provider 调用
 再次经过本 Gate。
+
+ledger 没有任何 generation 时，首次 compact 必须先从当前向历史方向按完整 logical unit
+选择约 74% 的近期窗口；窗口外更早历史不得进入首次 provider payload、source plan 或摘要，
+但 SessionDB 原始消息必须完整保留。已有 generation 后只处理有效 cursor 到当前的增量。
 
 持久 checkpoint 写入 `session_compactions`，保存 summary、parent lineage、source_ref、
 retained tail、usage、失效字段和模型容量；`sessions.last_consolidated` 只表示当前
@@ -357,7 +366,12 @@ retained tail、usage、失效字段和模型容量；`sessions.last_consolidate
 `react_compaction` 字节保留但不再读取或生成；压缩不得 UPDATE 或 DELETE 既有消息。
 
 Included checkpoint 在跨文件 effect 前必须先写入 session-incarnation scoped
-`session_compaction_prepares`，再以 immutable receipt 保护 Markdown/ledger crash saga。
+`session_compaction_prepares`，再写 immutable v3 receipt，随后在同一 SessionDB 事务提交
+ledger/cursor 并清除 prepare。v3 receipt 保存 canonical source plan 和重建 Markdown 输入的
+事实，不要求提前生成 draft；ledger 提交后由 Runtime 拥有的 per-session 有序后台任务追加
+Markdown/PENDING/history/event。失败不回滚、不重试、重启不补跑；优雅关闭取消并等待任务
+取消收束。v3 receipt 与 prepare 同时存在时只恢复 ledger，receipt 缺 prepare 是正常已提交
+审计状态；升级前的 v2 receipt 继续按其 draft 完成旧恢复。
 存在 pending prepare 时，message 撤销、interaction 删除和 session cascade 等破坏性管理
 操作必须阻断，并从管理入口返回 `409 session_compaction_pending` 与 audit identity；不得
 通过删除 source rows 绕过 fence。只有成功提交、receipt recovery 或确定性的无 receipt

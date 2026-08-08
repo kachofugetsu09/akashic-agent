@@ -8,7 +8,9 @@
 ## 1. 目标与 owner
 
 Core 在每次 session **业务** provider call 前拥有完整请求，因此由
-`DefaultReasoner`/`ContextCompactor` 以冻结 model generation 执行 payload Gate。它只
+`DefaultReasoner`/`ContextCompactor` 以冻结 model generation 执行 payload Gate。subagent
+四个 provider 入口复用相同容量与切点规则，但只拥有内存投影。插件 jobs、history route
+和视觉短调用由各自 owner 管理并明确豁免。Gate 只
 消费 assembler 已组成的 payload、SessionDB 的只读历史单元和当前动态 tool schema；不
 拥有删除消息或直接写 Markdown 的权限。`SessionCompactionRuntime` 协调 SessionStore
 账本与 Markdown owner，Markdown owner 只处理被明确提交的 source plan，Akasha 只消费
@@ -27,9 +29,12 @@ SessionDB snapshot + system/memory/retrieval + dynamic tools
                     │           ▼
                     │   ┌──────────────────────┐
                     │   │ session checkpoint   │
-                    │   │ prepare → receipt →  │
-                    │   │ Markdown → ledger    │
+                    │   │ prepare → receipt v3 │
+                    │   │ → ledger             │
                     │   └──────────────────────┘
+                    │              │ committed
+                    │              ▼
+                    │      background Markdown
                     ▼
                  provider.chat
 ```
@@ -39,7 +44,7 @@ SessionDB snapshot + system/memory/retrieval + dynamic tools
 
 ## 2. 业务调用 Gate 与切点
 
-每个 business provider call 都先对已经装配的完整 payload 估算 token，不能只估消息
+每个 session business provider call 都先对已经装配的完整 payload 估算 token，不能只估消息
 列表。输入包括：system prompt、MEMORY/SELF/PENDING 等长期块、检索块、persistent
 history、当前 prompt history、当前 attempt replay、多模态预算、动态 tool schema 和
 协议开销。soft limit 固定为：
@@ -68,6 +73,15 @@ payload 若仍超过 soft 或 hard 边界，返回可区分的 compaction failur
 工具 batch 完成后不直接假设下一次请求仍安全；下一次 provider call 重新走同一 Gate。
 provider overflow 只允许一次强制 compaction/retry，第二次失败保留原始错误语义。
 
+subagent 的主循环、incomplete summary、forced final summary 和 mandatory exit 都在调用前经过
+一个内存态 Gate；compaction summary 本身使用独立硬输入边界且不递归 Gate。插件 jobs、
+history route 和 vision 不经过本 Gate。
+
+ledger 无 generation 时，selection 在最终业务 payload 形成前从最新消息向前按完整 logical
+unit 选取约 74% 的近期窗口，同时给 20k raw tail 与 summary provider 硬边界留出空间。窗口外
+更早消息不进入首次 payload、source plan 或摘要，但 SessionDB 保持完整；后续 generation
+继续使用有效 cursor 到当前的增量。
+
 ## 3. SessionDB ledger 与持久化
 
 `sessions.db/session_compactions` 每次 checkpoint INSERT 一个不可变 generation，记录：
@@ -95,35 +109,41 @@ session 不能复用旧 receipt/cursor。interaction 被用户显式撤销时，
 及 descendants 逻辑失效，cursor 回到最近有效 ancestor；session 删除才可以按管理协议
 cascade ledger。
 
-## 4. Included Markdown 的 crash saga
+## 4. Included Markdown 的版本化 crash saga
 
 Included checkpoint 的跨文件阶段由 durable prepare fence 保护：
 
 ```text
 1. SQLite INSERT session_compaction_prepares
    └─ incarnation / generation / parent / source seq+IDs / retained tail
-2. consolidation_writes.db INSERT immutable session_compaction_receipt
-   └─ actual runtime/model + checkpoint + Markdown draft + digests
-3. Markdown owner 幂等提交 PENDING/history/ConsolidationCommitted
-4. 同一 SessionDB 事务：INSERT session_compactions
+2. consolidation_writes.db INSERT immutable session_compaction_receipt v3
+   └─ actual runtime/model + canonical checkpoint/source plan + digests；无 Markdown draft
+3. 同一 SessionDB 事务：INSERT session_compactions
    + update sessions.last_consolidated
    + DELETE matching prepare
+4. Runtime 排入 per-session 有序后台任务
+   └─ 生成 Markdown draft，追加 PENDING/history/ConsolidationCommitted
 ```
 
-receipt 是第一个跨文件 effect。重启恢复时：
+v3 receipt 是第一个跨文件 effect，ledger 是业务成功边界。重启恢复时：
 
-- receipt 和 prepare 都在且 source plan、digest、session incarnation 与当前 SessionDB
-  一致：按 receipt 保存的 **included** 语义幂等重放 Markdown，再提交 ledger/cursor；
+- v3 receipt 和 prepare 都在且 source plan、digest、session incarnation 与当前 SessionDB
+  一致：提交 ledger/cursor 并清除 prepare，不生成或补跑 Markdown；
 - 只有 prepare、没有 receipt：证明仍在 pre-effect window，私有 recovery 可以清除 orphan
   prepare，不产生 Markdown 或 ledger；
-- receipt 缺 prepare、receipt schema/digest/source plan/incarnation 不一致：fail-loud，
-  不能猜测或重新生成摘要。
+- v3 receipt 缺 prepare：表示 ledger 已提交的正常审计状态，不报错、不补跑；
+- v2 receipt 和 prepare 同时存在：按 v2 保存的 draft 幂等提交 Markdown，再提交 ledger；
+- receipt schema/digest/source plan/incarnation 不一致：fail-loud，不能猜测格式或摘要。
+
+Runtime 对后台任务持强引用并按 session/generation 串行。done callback 消费异常并记录稳定的
+session、source_ref 和 generation；失败不回滚 ledger、不自动重试，也不阻断后续 generation。
+优雅关闭取消未完成任务并等待取消完成，不等待 LLM 自然结束；进程崩溃后不扫描 receipt 补跑。
 
 prepare 存在时，message 撤销、interaction 删除、session cascade 和其他 destructive
 mutation 必须在存储 owner 处阻断。Dashboard/管理入口返回 `409
 session_compaction_pending`，同时返回稳定 audit identity；它们不得为了删除而绕过 fence。
 只有正常 ledger 提交或确定性的恢复路径能清除 prepare。这样 crash 期间既不会删除
-source rows，也不会让 Markdown/receipt 领先的 generation 丢失。
+source rows，也不会把未完成的 Markdown side effect 伪装成 ledger 未提交。
 
 ## 5. Summary 与模型 generation
 
@@ -150,8 +170,8 @@ configured default 模型。两者都失败、正文为空/格式错误或 summa
 
 ## 6. Markdown exact source plan
 
-Markdown consolidation 由 checkpoint owner 在 `last_consolidated` 到新 cut point 之间
-建立连续、可重放的 exact source plan。每页按照 provider 的真实 capability 估算输入，
+Markdown consolidation 由 checkpoint owner 消费已提交 checkpoint 的 exact source plan。
+每页按照 provider 的真实 capability 估算输入，
 不拆 logical unit；单个完整 unit 无法满足 Markdown provider 硬预算时阻断，不删正文。
 Markdown maintenance 是惰性执行，不得阻塞 Core 启动；只有真正执行时才按 provider capability
 检查上述 unknown/过小窗口的 `input_budget` 失败。
@@ -199,7 +219,8 @@ backup 把旧 cursor 置零；T03 清理旧 trigger；R06 最后备份并校验 
    在 SQLite write set、重载和 crash recovery 中保持一致。
 3. summary current-model → frozen-default fallback、无 tools/thinking 关闭、实际
    runtime/model/usage receipt 都可观察。
-4. pending prepare 阻断 destructive mutation 并返回带 audit identity 的 409；orphan、
-   receipt-without-prepare、source drift 和损坏 JSON 均保持可诊断失败。
-5. included/excluded Markdown 分支、`last_consolidated` 推进和 messages/tool_chain/
+4. pending prepare 阻断 destructive mutation 并返回带 audit identity 的 409；orphan、v2/v3
+   恢复、v3 receipt-without-prepare、source drift 和损坏 JSON 均符合版本化矩阵。
+5. generation 0 近期窗口、后台任务排序/失败/取消、included/excluded Markdown 分支、
+   `last_consolidated` 推进和 messages/tool_chain/
    MEMORY/SELF/PENDING 的非授权写集合分别核对。

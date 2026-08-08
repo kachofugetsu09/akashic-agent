@@ -18,7 +18,9 @@
 1. Core 在每一次 session **业务** provider 调用前，对已经组装的完整 payload 做唯一
    Gate。估算包括 system、长期记忆、检索块、persistent/prompt history、当前 attempt、
    多模态预算、动态 tool schema 和协议开销；预算来自该业务执行冻结的 model
-   generation。Gate 成功后才调用 provider。
+   generation。Gate 成功后才调用 provider。subagent 的四个 provider 入口使用同样预算与
+   切点规则，但只维护进程内投影，不写 session ledger。插件 jobs、history route 和视觉
+   短调用不进入该 Gate，超窗保持各自既有 provider/fail-open 错误语义。
 2. 软水位固定为 `floor(context_window * 0.74)`。本次请求硬输入边界为
    `context_window - request_max_output_tokens`；输出预算为 `0` 时不额外预留。旧的
    `memory_window`、`effective_context_percent` 和 runtime compaction percent 不再拥有
@@ -33,6 +35,9 @@
    20,000 token，跨过完整 logical unit 可以略大于目标；没有合法切点或重建 payload
    仍越过 soft/hard 边界时，业务调用明确阻断。每个 tool batch 完成后，下一次 provider
    调用再次经过同一 Gate。
+   ledger 尚无 generation 时，首次投影先从最新历史向前按完整 logical unit 取约 74%
+   窗口；更早历史不进入首次 provider payload、source plan 或摘要，但 SessionDB 原始消息
+   保持完整。已有 generation 后只处理有效 cursor 到当前的新单元。
 5. 摘要采用 Pi-mono 的六段格式：Goal、Constraints & Preferences、Progress（Done /
    In Progress / Blocked）、Key Decisions、Next Steps、Critical Context。摘要输入保留
    上一 generation 和已淘汰的完整证据；工具结果、路径、错误、外部效果、execution
@@ -40,18 +45,21 @@
    后使用同一冻结 generation 中 configured default 的模型作为 fallback。摘要调用不携带
    tools、关闭 thinking，并使用自己的硬边界；receipt 保存实际 runtime/model、容量、
    usage、source plan 和 digest。
-6. Markdown consolidation 只消费 `last_consolidated` 到新 cut point 的 exact source
+6. Markdown consolidation 只消费新 checkpoint 的 exact source
    plan，按完整 logical unit 分页并从 provider 的真实 context capability 计算输入预算。
    included session 才能写 `PENDING.md`、history payload 和 `ConsolidationCommitted`；
    excluded session 只推进 session-local ledger，不产生 Markdown/PENDING/event。不存在
-   按消息数、TurnCommitted 后台刷新或独立 recent context 的第二条路径。
-7. Included checkpoint 使用可恢复的 crash saga：先在 `session_compaction_prepares`
-   写入 session incarnation、generation、parent、source seq/message IDs 和 retained
-   tail；再以 `source_ref` 在 `consolidation_writes.db` 写 immutable receipt，提交
-   Markdown side effect；最后在一个 SessionDB 事务中 INSERT ledger generation、推进
-   cursor 并清除 prepare。重启时有 receipt 必须按 receipt 的 included 语义幂等完成；只有
-   无 receipt 的 pre-effect orphan prepare 可由私有恢复路径释放；receipt 缺 prepare、
-   source plan/digest/incarnation 不一致都 fail-loud。
+   按消息数、TurnCommitted 后台刷新或独立 recent context 的第二条路径。v3 ledger 提交后，
+   Markdown draft 与 PENDING/history/event 由 Runtime 持有的 per-session 有序后台任务执行；
+   失败不回滚 ledger、不自动重试，重启也不补跑。优雅关闭取消并等待任务取消收束。
+7. Included checkpoint 使用版本化 crash saga：先在 `session_compaction_prepares` 写入
+   session incarnation、generation、parent、source seq/message IDs 和 retained tail；再以
+   `source_ref` 写不含 Markdown draft 的 immutable v3 receipt；最后在一个 SessionDB 事务
+   中 INSERT ledger generation、推进 cursor 并清除 prepare，随后才安排 Markdown 后台任务。
+   v3 receipt 与 prepare 同时存在时只确定性完成 ledger；v3 receipt 缺 prepare 表示 ledger
+   已提交，不报错、不补跑。只有 prepare、没有 receipt 才可释放 orphan。升级前已存在的
+   v2 receipt 与 prepare 仍按 draft 幂等完成旧 saga；schema、source plan、digest 或
+   incarnation 不一致继续 fail-loud。
 8. pending prepare 是 source rows 的破坏性操作围栏。message 撤销、session cascade、
    interaction 删除和其他 destructive mutation 在 fence 存在时不得执行，管理入口返回
    `409 session_compaction_pending` 并带 audit identity；正常提交或确定性的恢复路径才
@@ -74,9 +82,12 @@ assembled payload + frozen model generation
                       │ >= 74% / hard edge
                       ▼
              ┌─────────────────┐
-             │ session ledger  │  prepare → receipt → Markdown
+             │ session ledger  │  prepare → receipt v3
              │ checkpoint      │  → ledger INSERT + cursor
              └─────────────────┘
+                      │ committed
+                      ▼
+             background Markdown task
 ```
 
 ## 理由
@@ -103,11 +114,13 @@ provenance、Markdown source plan 和 crash recovery 放入 Core-owned ledger，
 
 - 相同 assembled payload 在 74% 前后一 token、不同 model capability 和输出预算下触发
   一致；`max_output_tokens=0` 不预留输出空间。
-- 每一次业务 provider 调用和每个工具 batch 都经过统一 Gate；summary 调用没有 tools、
+- 每一次 session 业务 provider 调用、每个工具 batch 和四个 subagent provider 入口都经过
+  对应 Gate；三个明确豁免 owner 不进入该 Gate。summary 调用没有 tools、
   thinking 已关闭，当前模型失败后 fallback 到冻结 default，并记录实际 runtime/model。
 - SQLite write set 可观察 prepare、receipt、ledger INSERT、cursor 推进和 crash recovery；
   pending fence 会阻断 destructive mutation 并返回带 audit identity 的 409。
-- source plan、logical-unit 边界、20k raw tail、included/excluded Markdown 分支和
+- generation 0 窗口化、source plan、logical-unit 边界、20k raw tail、included/excluded
+  Markdown 分支、v2/v3 恢复矩阵和后台取消语义，以及
   session incarnation 可从重载、删除和恢复测试中核对；messages/tool_chain/长期记忆
   没有非授权 UPDATE/DELETE。
 - `RECENT_CONTEXT.md`、`memory_window`、manual/query compaction API、`react_compaction`

@@ -366,7 +366,7 @@ stop_rules:
 | 持久历史 owner | `session/store.py::SessionStore` | 保持唯一 SQLite owner |
 | 运行时 session | `session/manager.py::Session` | 只有 history window 确实缩小时才裁切 `messages`，且不调用 store |
 | prompt 输入与结果 | `agent/lifecycle/types.py::PromptRenderInput`、`PromptRenderResult` | 继续使用，不新增同义 wrapper |
-| 退化计划 | `agent/prompting/budget.py::ContextTrimPlan` | 补上明确的 prompt 语义；不得承担持久化动作 |
+| 退化计划（历史实现，已退役） | `agent/prompting/budget.py::ContextTrimPlan` | 旧 prompt retry 设计记录；当前由 session Context Gate 与完整 logical unit compaction 取代 |
 | retry orchestrator | `agent/core/passive_turn.py::DefaultReasoner.run_turn` | 移除 `SessionManager` 依赖和 `trim_history_async` 调用 |
 | 显式删除入口 | `agent/control/service.py::delete_thread` → `SessionManager.delete_session` | 保留，并与 prompt 路径保持无依赖边 |
 
@@ -469,7 +469,7 @@ validation:
 | 调用层 | 可依赖 | 禁止依赖 |
 |---|---|---|
 | `agent/prompting/**` | snapshot types、token estimator | SessionStore、SQL、destructive port |
-| `DefaultReasoner` context retry | `PromptRenderInput`、`ContextTrimPlan`、retry trace | SessionManager、SessionStore、delete session/messages/embeddings |
+| `DefaultReasoner` context retry（历史实现，已退役） | `PromptRenderInput`、旧 `ContextTrimPlan`、retry trace | SessionManager、SessionStore、delete session/messages/embeddings |
 | `session` persistence owner | SQLite store、transaction | provider 和 prompt policy |
 | control/dashboard delete | destructive port、audit、backup policy | prompt trim helpers |
 
@@ -768,7 +768,7 @@ Phase 1 完整后锁住“绝不丢持久历史”。Phase 2 再收紧 runtime �
 交付：
 
 - 全仓和 canonical plugin source 查询 `trim_history_async` 调用者。没有生产调用者就删除方法；runtime 裁切改用 `replace_runtime_history_view` 或等价的纯内存接口，该接口不能写 store。
-- `ContextTrimPlan` 只描述 prompt section；history ratio 计划使用带 `prompt` 前缀的类型或字段。
+- 历史 `ContextTrimPlan` 只描述过 prompt section，现已随旧 retry 路径退役；当前实现不得恢复同义兼容壳。
 - 继续复用 `PromptRenderInput`、`PromptRenderResult`，不新增同义 context wrapper。
 - 只有持久历史需要脱离 `Session` 加载时才引入 `SessionHistoryReader` 与 immutable snapshot。
 - 显式用户删除逐步收口到 `SessionDestructivePort`，入口仍是 `agent/control/service.py::delete_thread`。
