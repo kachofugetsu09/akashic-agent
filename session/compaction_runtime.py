@@ -73,7 +73,7 @@ class SessionCompactionPort(Protocol):
 
 
 class SessionCompactionRuntime:
-    """Own session projection plus Markdown/SQLite compaction commit saga."""
+    """拥有会话投影与 Markdown/SQLite 两阶段压缩提交。"""
 
     def __init__(
         self,

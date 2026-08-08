@@ -111,7 +111,7 @@ class MobileWebUiStore:
             self._db.execute("PRAGMA synchronous = FULL")
             self._init_schema()
             self._ensure_server_id()
-            self._ensure_lineage_epoch()
+            self._ensure_release_epoch()
             self._recover_blob_temps()
             self._recover_backup_pending()
             self._recover_trash()
@@ -213,7 +213,7 @@ class MobileWebUiStore:
                 preview_id = generation_id
             sequence = int(state["sequence"]) + 1 if state is not None else 1
             selection_digest = self._selection_digest(stable_id, preview_id)
-            release_epoch = self._lineage_epoch()
+            release_epoch = self._release_epoch()
             self._db.execute(
                 """
                 INSERT INTO webui_release_state(singleton, release_epoch, sequence, stable_generation_id, preview_generation_id, selection_digest, updated_at)
@@ -318,23 +318,18 @@ class MobileWebUiStore:
     def get_release(self, *, verify_integrity: bool = True) -> ReleaseView:
         state = self._db.execute("SELECT * FROM webui_release_state WHERE singleton = 1").fetchone()
         if state is None:
-            return ReleaseView(self.server_id, self._lineage_epoch(), 0, self._selection_digest(None, None), None, None)
-        lineage_epoch = self._lineage_epoch()
+            return ReleaseView(self.server_id, self._release_epoch(), 0, self._selection_digest(None, None), None, None)
+        release_epoch_now = self._release_epoch()
         state_epoch = str(state["release_epoch"])
         _require_canonical_uuid4(state_epoch, "release state release_epoch")
-        if state_epoch != lineage_epoch:
-            raise RuntimeError("release state release_epoch 与 lineage 不一致")
+        if state_epoch != release_epoch_now:
+            raise RuntimeError("release state release_epoch 与当前 release_epoch 不一致")
         stable = self._target_for_generation(state["stable_generation_id"], verify_integrity=verify_integrity)
         preview = self._target_for_generation(state["preview_generation_id"], verify_integrity=verify_integrity)
         expected = self._selection_digest(state["stable_generation_id"], state["preview_generation_id"])
         if expected != state["selection_digest"]:
             raise RuntimeError("release selection_digest 损坏")
         return ReleaseView(self.server_id, str(state["release_epoch"]), int(state["sequence"]), str(state["selection_digest"]), stable, preview)
-
-    def get_release_light(self) -> ReleaseView:
-        """重读 pointer/manifest identity，不扫描全部成员 blob；HTTP ticket 每请求使用。"""
-
-        return self.get_release(verify_integrity=False)
 
     def has_stable_publication_for_source(self, source_commit: str) -> bool:
         """判断一个 Core commit 是否曾成功成为 Stable，显式 rollback 不抹除该事实。"""
@@ -380,7 +375,7 @@ class MobileWebUiStore:
         return StoredBlob(digest, int(row["size_bytes"]), path)
 
     def verify_target_resource(self, *, target_key: str, selection_digest: str, resource_digest: str) -> StoredBlob:
-        release = self.get_release_light()
+        release = self.get_release(verify_integrity=False)
         if release.selection_digest != selection_digest:
             raise ReleaseSelectionChangedError("release selection 已变化")
         target = release.target(target_key)
@@ -651,11 +646,11 @@ class MobileWebUiStore:
             meta = db.execute("SELECT value FROM webui_meta WHERE key = 'server_id'").fetchone()
             if meta is None or str(meta["value"]) != server_id:
                 raise RuntimeError("WebUI backup server_id 不匹配")
-            lineage = db.execute("SELECT value FROM webui_meta WHERE key = 'release_epoch'").fetchone()
-            if lineage is None:
+            release_row = db.execute("SELECT value FROM webui_meta WHERE key = 'release_epoch'").fetchone()
+            if release_row is None:
                 raise RuntimeError("WebUI backup 缺少 release_epoch")
-            lineage_epoch = str(lineage["value"])
-            _require_canonical_uuid4(lineage_epoch, "WebUI backup release_epoch")
+            release_epoch = str(release_row["value"])
+            _require_canonical_uuid4(release_epoch, "WebUI backup release_epoch")
             rows = db.execute("SELECT digest, size_bytes FROM webui_blobs").fetchall()
             for row in rows:
                 digest = str(row["digest"])
@@ -685,8 +680,8 @@ class MobileWebUiStore:
                     raise RuntimeError(f"WebUI backup generation files 损坏: {row['generation_id']}")
             state = db.execute("SELECT * FROM webui_release_state WHERE singleton = 1").fetchone()
             if state is not None:
-                if str(state["release_epoch"]) != str(lineage["value"]):
-                    raise RuntimeError("WebUI backup release epoch lineage 不一致")
+                if str(state["release_epoch"]) != str(release_row["value"]):
+                    raise RuntimeError("WebUI backup release epoch 与当前 release_epoch 不一致")
                 stable_id = state["stable_generation_id"]
                 preview_id = state["preview_generation_id"]
                 for pointer in (stable_id, preview_id):
@@ -711,7 +706,7 @@ class MobileWebUiStore:
                     if str(row["operation"]) != "restore" or row["generation_id"] is not None or int(row["stable"]) != 0 or int(row["preview"]) != 0:
                         raise RuntimeError("WebUI backup 无 release state 时仅允许空指针 restore journal")
             for expected_sequence, row in enumerate(journal_rows, start=1):
-                if int(row["sequence"]) != expected_sequence or str(row["release_epoch"]) != str(lineage["value"]):
+                if int(row["sequence"]) != expected_sequence or str(row["release_epoch"]) != str(release_row["value"]):
                     raise RuntimeError("WebUI backup journal sequence/epoch 不连续")
         finally:
             db.close()
@@ -895,19 +890,19 @@ class MobileWebUiStore:
         elif str(row["value"]) != self.server_id:
             raise ValueError("mobile WebUI publication store server_id 不匹配")
 
-    def _ensure_lineage_epoch(self) -> None:
+    def _ensure_release_epoch(self) -> None:
         row = self._db.execute("SELECT value FROM webui_meta WHERE key = 'release_epoch'").fetchone()
         if row is None:
             self._db.execute("INSERT INTO webui_meta(key, value) VALUES ('release_epoch', ?)", (str(uuid4()),))
             return
-        _require_canonical_uuid4(str(row["value"]), "WebUI release lineage epoch")
+        _require_canonical_uuid4(str(row["value"]), "WebUI release_epoch")
 
-    def _lineage_epoch(self) -> str:
+    def _release_epoch(self) -> str:
         row = self._db.execute("SELECT value FROM webui_meta WHERE key = 'release_epoch'").fetchone()
         if row is None:
-            raise RuntimeError("WebUI release lineage epoch 缺失")
+            raise RuntimeError("WebUI release_epoch 缺失")
         value = str(row["value"])
-        _require_canonical_uuid4(value, "WebUI release lineage epoch")
+        _require_canonical_uuid4(value, "WebUI release_epoch")
         return value
 
     @staticmethod
@@ -1134,10 +1129,10 @@ class MobileWebUiStore:
             meta = db.execute("SELECT value FROM webui_meta WHERE key = 'server_id'").fetchone()
             if meta is None or str(meta["value"]) != server_id:
                 raise RuntimeError("restore backup server_id 不匹配")
-            lineage = db.execute("SELECT value FROM webui_meta WHERE key = 'release_epoch'").fetchone()
-            if lineage is None:
+            release_row = db.execute("SELECT value FROM webui_meta WHERE key = 'release_epoch'").fetchone()
+            if release_row is None:
                 raise RuntimeError("restore backup 缺少 release_epoch")
-            release_epoch = str(lineage["value"])
+            release_epoch = str(release_row["value"])
             _require_canonical_uuid4(release_epoch, "restore backup release_epoch")
             db.execute("BEGIN IMMEDIATE")
             try:
@@ -1417,7 +1412,7 @@ def _strict_json_loads(payload: bytes) -> object:
 
 
 def _require_canonical_uuid4(value: str, label: str) -> None:
-    """Require the persisted release lineage value to be canonical UUID4."""
+    """要求持久化的 release_epoch 值符合 UUID4 格式。"""
 
     try:
         parsed = UUID(value)

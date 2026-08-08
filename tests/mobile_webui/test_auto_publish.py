@@ -87,7 +87,7 @@ def test_applied_main_is_a_noop(tmp_path: Path) -> None:
     )
     store._db.execute(
         "INSERT INTO webui_publication_journal(sequence, generation_id, operation, release_epoch, stable, preview, actor, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (1, "a" * 64, "publish", store._lineage_epoch(), 1, 0, "test", "2026-08-08T00:00:00Z"),
+        (1, "a" * 64, "publish", store._release_epoch(), 1, 0, "test", "2026-08-08T00:00:00Z"),
     )
     store.close()
 
