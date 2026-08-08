@@ -1,23 +1,34 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, Generator
 
 import pytest
 
 from agent.core.passive_turn import DefaultReasoner
-from agent.core.runtime_support import LLMServices, ToolDiscoveryState
-from agent.looping.ports import LLMConfig
+from agent.config_models import ContextCompactionConfig
+from agent.core.runtime_support import SessionLike, ToolDiscoveryState
+from agent.looping.ports import LLMConfig, LLMServices
 from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
     ContextCompaction,
     ContextCompactor,
     ContextPayloadSegments,
     SUMMARY_HEADINGS,
+    canonical_source_plan,
+    compaction_scope_id,
     compaction_source_ref,
+    normalize_session_created_at,
+    source_plan_digest,
+    _selection_digest,
 )
 from agent.model_runtime.types import LLMResponse
+from agent.provider import LLMProvider
 from agent.tools.registry import ToolRegistry
 from core.memory.markdown import CompactionMarkdownDraft
 from session.compaction_runtime import (
@@ -25,8 +36,32 @@ from session.compaction_runtime import (
     SessionCompactionRuntime,
     _receipt_payload,
 )
-from session.manager import SessionManager
-from session.store import CompactionHead
+from session.manager import Session, SessionManager
+from session.store import SessionCompaction
+from session.store import (
+    CompactionHead,
+    CompactionPrepare,
+    SessionCompactionPrepareConflictError,
+)
+
+
+SessionManagerFactory = Callable[[Path], SessionManager]
+
+
+@pytest.fixture
+def session_manager_factory() -> Generator[SessionManagerFactory, None, None]:
+    """Create and close every SessionManager owned by one test."""
+
+    managers: list[SessionManager] = []
+
+    def factory(path: Path) -> SessionManager:
+        manager = SessionManager(path)
+        managers.append(manager)
+        return manager
+
+    yield factory
+    for manager in managers:
+        manager.close()
 
 
 class _MarkdownReceiptProbe:
@@ -70,11 +105,83 @@ class _MarkdownCompactionProbe(_MarkdownReceiptProbe):
         )
 
 
-class _CountingProvider:
-    context_window = 1000
-    runtime_id = "runtime"
+def _seed_two_unit_checkpoint(
+    manager: SessionManager,
+    session_key: str,
+) -> tuple[Session, CompactionHead, ContextCompaction, str]:
+    """Create one selected unit and one retained unit backed by canonical rows."""
 
-    def __init__(self) -> None:
+    session = manager.get_or_create(session_key)
+    session.add_message("user", "old user", control_turn_id="turn-old")
+    session.add_message("assistant", "old reply", control_turn_id="turn-old")
+    session.add_message("user", "tail user", control_turn_id="turn-tail")
+    session.add_message("assistant", "tail reply", control_turn_id="turn-tail")
+    manager.save(session)
+    head = manager.control_store.get_compaction_head(session.key)
+    source_ref = compaction_source_ref(
+        compaction_scope_id(session.key, session.created_at),
+        head.next_generation,
+    )
+    selected_unit, retained_unit = session.history_units()
+    selected = tuple(
+        {
+            "id": message_id,
+            "seq": seq,
+            "unit_ref": f"{selected_unit.source_from_seq}:"
+            f"{selected_unit.consolidated_through_seq}:0",
+            "message": dict(message),
+        }
+        for message, (message_id, seq) in zip(
+            selected_unit.messages,
+            selected_unit.message_refs,
+        )
+    )
+    retained_tail = tuple(
+        {
+            "id": message_id,
+            "seq": seq,
+            "unit_ref": f"{retained_unit.source_from_seq}:"
+            f"{retained_unit.consolidated_through_seq}:0",
+            "message": dict(message),
+        }
+        for message, (message_id, seq) in zip(
+            retained_unit.messages,
+            retained_unit.message_refs,
+        )
+    )
+    checkpoint = ContextCompaction(
+        summary="\n".join(SUMMARY_HEADINGS),
+        generation=head.next_generation,
+        parent_generation=head.parent_generation,
+        trigger="soft_limit",
+        context_window=100,
+        soft_limit_tokens=74,
+        hard_input_tokens=90,
+        keep_recent_tokens=20,
+        estimated_tokens_before=80,
+        estimated_tokens_after=40,
+        source_from_seq=selected_unit.source_from_seq,
+        consolidated_through_seq=selected_unit.consolidated_through_seq,
+        source_message_ids=selected_unit.source_message_ids,
+        retained_tail=retained_tail,
+        summary_usage=None,
+        source_ref=source_ref,
+        model_runtime_id="runtime",
+        model="model",
+        selection_digest="source-fence",
+        selected_source_messages=selected,
+    )
+    retained_id = str(retained_unit.message_refs[0][0])
+    return session, head, checkpoint, retained_id
+
+
+class _CountingProvider(LLMProvider):
+    context_window: int = 1000
+    runtime_id: str = "runtime"
+
+    def __init__(self, *, context_window: int = 1000, runtime_id: str = "runtime") -> None:
+        self.context_window = context_window
+        self.runtime_id = runtime_id
         self.calls = 0
 
     def estimate_context_tokens(self, messages, tools):
@@ -90,12 +197,39 @@ class _CountingProvider:
         return LLMResponse(content="\n".join(SUMMARY_HEADINGS))
 
 
-class _GateProvider(_CountingProvider):
-    context_window = 250
-    runtime_id = "gate-runtime"
+class _NoopCompactionRuntime:
+    """Provide the narrow runtime port for state-builder-only tests."""
 
+    async def projection(
+        self,
+        session: SessionLike,
+        *,
+        prefix: list[dict[str, Any]],
+        current_anchor: list[dict[str, Any]],
+        pending: list[dict[str, Any]],
+    ) -> CompactionProjection:
+        raise AssertionError(f"projection unexpectedly called for {session.key}")
+
+    async def recover_pending(self, session: SessionLike) -> SessionCompaction | None:
+        raise AssertionError(f"recovery unexpectedly called for {session.key}")
+
+    async def commit_checkpoint(
+        self,
+        session: SessionLike,
+        checkpoint: ContextCompaction,
+        *,
+        head: CompactionHead,
+        scope_channel: str = "",
+        scope_chat_id: str = "",
+    ) -> SessionCompaction:
+        raise AssertionError(
+            f"checkpoint unexpectedly committed for {session.key}:{checkpoint.source_ref}"
+        )
+
+
+class _GateProvider(_CountingProvider):
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(context_window=250, runtime_id="gate-runtime")
         self.requests: list[dict[str, object]] = []
 
     def estimate_context_tokens(self, messages, tools):
@@ -123,14 +257,60 @@ class _GateProvider(_CountingProvider):
         return LLMResponse(content="\n".join(SUMMARY_HEADINGS))
 
 
-def _seed_receipt(tmp_path: Path) -> tuple[SessionManager, _MarkdownReceiptProbe, str]:
-    manager = SessionManager(tmp_path)
+class _ScopedCompactionProvider(_GateProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.context_window = 128
+
+    def estimate_context_tokens(self, messages, tools):
+        if any(
+            "<session-context-compaction>" in str(message.get("content", ""))
+            for message in messages
+        ):
+            return 5
+        return 100
+
+    def estimate_appended_message_tokens(self, messages):
+        return 1
+
+    async def chat(self, **kwargs):
+        self.calls += 1
+        self.requests.append(kwargs)
+        messages = kwargs.get("messages") or []
+        content = "\n".join(str(message.get("content", "")) for message in messages)
+        if "Closed history to consolidate" in content:
+            marker = "A_SENTINEL" if "a-" in content else "B_SENTINEL"
+            return LLMResponse(
+                content="\n".join(SUMMARY_HEADINGS) + f"\n{marker}"
+            )
+        marker = "A_SENTINEL" if "a-" in content else "B_SENTINEL"
+        return LLMResponse(content=f"reply-{marker}")
+
+
+def _seed_receipt(
+    tmp_path: Path,
+    manager_factory: SessionManagerFactory,
+) -> tuple[SessionManager, _MarkdownReceiptProbe, str]:
+    manager = manager_factory(tmp_path)
     session = manager.get_or_create("session")
     session.add_message("user", "persisted")
     manager.save(session)
     probe = _MarkdownReceiptProbe()
     head = manager.control_store.get_compaction_head(session.key)
-    source_ref = compaction_source_ref(session.key, head.next_generation)
+    source_ref = compaction_source_ref(
+        compaction_scope_id(session.key, session.created_at),
+        head.next_generation,
+    )
+    unit = session.history_units()[0]
+    selected_source_messages = tuple(
+        {
+            "id": message_id,
+            "seq": seq,
+            "unit_ref": "0:0:0",
+            "message": dict(message),
+        }
+        for message, (message_id, seq) in zip(unit.messages, unit.message_refs)
+    )
     checkpoint = ContextCompaction(
         summary="\n".join(SUMMARY_HEADINGS),
         generation=head.next_generation,
@@ -142,15 +322,27 @@ def _seed_receipt(tmp_path: Path) -> tuple[SessionManager, _MarkdownReceiptProbe
         keep_recent_tokens=20,
         estimated_tokens_before=80,
         estimated_tokens_after=40,
-        source_from_seq=0,
-        consolidated_through_seq=0,
-        source_message_ids=(str(session.messages[0]["id"]),),
+        source_from_seq=unit.source_from_seq,
+        consolidated_through_seq=unit.consolidated_through_seq,
+        source_message_ids=unit.source_message_ids,
         retained_tail=(),
         summary_usage=None,
         source_ref=source_ref,
         model_runtime_id="runtime",
         model="model",
         selection_digest="selection",
+        selected_source_messages=selected_source_messages,
+    )
+    manager.control_store.prepare_compaction(
+        session_key=session.key,
+        session_created_at=session.created_at.isoformat(),
+        generation=head.next_generation,
+        parent_generation=head.parent_generation,
+        source_ref=source_ref,
+        source_from_seq=checkpoint.source_from_seq,
+        consolidated_through_seq=checkpoint.consolidated_through_seq,
+        source_message_ids=checkpoint.source_message_ids,
+        retained_tail=checkpoint.retained_tail,
     )
     draft = CompactionMarkdownDraft(source_ref=source_ref)
     probe.receipts[source_ref] = _receipt_payload(
@@ -160,12 +352,43 @@ def _seed_receipt(tmp_path: Path) -> tuple[SessionManager, _MarkdownReceiptProbe
         markdown_draft=draft,
         model_runtime_id="runtime",
         model="model",
+        session_created_at=normalize_session_created_at(session.created_at),
     )
     return manager, probe, source_ref
 
 
-def test_receipt_recovery_skips_provider_calls(tmp_path: Path) -> None:
-    manager, markdown, _ = _seed_receipt(tmp_path)
+def test_compaction_scope_separates_session_incarnations_and_reloads_stably() -> None:
+    provider = _CountingProvider()
+    unit = CommittedContextUnit(
+        source_from_seq=0,
+        consolidated_through_seq=0,
+        source_message_ids=("m0",),
+        messages=({"role": "user", "content": "same"},),
+        message_refs=(("m0", 0),),
+    )
+    first = compaction_scope_id("same-key", "2026-08-08T00:00:00+00:00")
+    reloaded = compaction_scope_id("same-key", "2026-08-08T08:00:00+08:00")
+    recreated = compaction_scope_id("same-key", "2026-08-09T00:00:00+00:00")
+    assert first == reloaded
+    assert first != recreated
+    assert compaction_source_ref(first, 1) != compaction_source_ref(recreated, 1)
+    digest_kwargs = {
+        "provider": provider,
+        "model": "model",
+        "soft_limit_tokens": 74,
+        "hard_input_tokens": 90,
+        "keep_recent_tokens": 20,
+    }
+    assert _selection_digest((unit,), (), scope_id=first, **digest_kwargs) != _selection_digest(
+        (unit,), (), scope_id=recreated, **digest_kwargs
+    )
+
+
+def test_receipt_recovery_skips_provider_calls(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager, markdown, source_ref = _seed_receipt(tmp_path, session_manager_factory)
     runtime = SessionCompactionRuntime(session_manager=manager, markdown=markdown)  # type: ignore[arg-type]
     session = manager.get_existing("session")
     provider_calls = 0
@@ -176,12 +399,153 @@ def test_receipt_recovery_skips_provider_calls(tmp_path: Path) -> None:
     assert provider_calls == 0
     assert session.last_consolidated == recovered.generation
     assert markdown.commit_count == 1
+    receipt = markdown.receipts[source_ref]
+    raw_checkpoint = receipt["checkpoint"]
+    assert isinstance(raw_checkpoint, dict)
+    raw_plan = raw_checkpoint["selected_source_messages"]
+    assert isinstance(raw_plan, list)
+    persisted = manager.control_store.get_compaction("session", recovered.generation)
+    assert persisted is not None
+    assert persisted.source_plan_digest == source_plan_digest(
+        canonical_source_plan(raw_plan)
+    )
+    assert (
+        manager.control_store.get_compaction_prepare(
+            "session", source_ref=source_ref
+        )
+        is None
+    )
+
+
+def _seed_orphan_prepare(
+    tmp_path: Path,
+    manager_factory: SessionManagerFactory,
+) -> tuple[SessionManager, SessionCompactionRuntime, CompactionPrepare]:
+    manager = manager_factory(tmp_path)
+    session = manager.get_or_create("session")
+    session.add_message("user", "prepared")
+    manager.save(session)
+    head = manager.control_store.get_compaction_head(session.key)
+    unit = session.history_units()[0]
+    source_ref = compaction_source_ref(
+        compaction_scope_id(session.key, session.created_at),
+        head.next_generation,
+    )
+    prepare = manager.control_store.prepare_compaction(
+        session_key=session.key,
+        session_created_at=session.created_at.isoformat(),
+        generation=head.next_generation,
+        parent_generation=head.parent_generation,
+        source_ref=source_ref,
+        source_from_seq=unit.source_from_seq,
+        consolidated_through_seq=unit.consolidated_through_seq,
+        source_message_ids=unit.source_message_ids,
+        retained_tail=(),
+    )
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=_MarkdownReceiptProbe(),  # type: ignore[arg-type]
+    )
+    return manager, runtime, prepare
+
+
+def test_prepare_without_receipt_is_released_on_recovery(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager, runtime, prepare = _seed_orphan_prepare(
+        tmp_path, session_manager_factory
+    )
+    session = manager.get_existing("session")
+    head = manager.control_store.get_compaction_head(session.key)
+
+    assert asyncio.run(runtime.recover_pending(session)) is None
+    assert manager.control_store.get_compaction_prepare(
+        session.key, source_ref=prepare.source_ref
+    ) is None
+    assert manager.control_store.get_compaction_head(session.key) == head
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "match"),
+    (
+        ("source_message_ids_json", '[]', "source_message_ids"),
+        (
+            "retained_tail_json",
+            '[{"id":"session:0","seq":true,"message":{},"unit_ref":"0:0:0"}]',
+            "retained_tail",
+        ),
+        (
+            "retained_tail_json",
+            '[{"id":"session:0","seq":0,"message":{}}]',
+            "retained_tail",
+        ),
+        ("session_created_at", "", "identity"),
+        ("prepared_at", "", "prepared_at"),
+    ),
+)
+def test_corrupt_prepare_without_receipt_fails_loud_and_keeps_row(
+    tmp_path: Path,
+    column: str,
+    value: object,
+    match: str,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager, runtime, prepare = _seed_orphan_prepare(
+        tmp_path, session_manager_factory
+    )
+    with manager.control_store._lock:
+        manager.control_store._conn.execute(
+            f"UPDATE session_compaction_prepares SET {column} = ? "
+            "WHERE session_key = ? AND generation = ?",
+            (value, prepare.session_key, prepare.generation),
+        )
+        manager.control_store._conn.commit()
+
+    with pytest.raises(ValueError, match=match):
+        asyncio.run(runtime.recover_pending(manager.get_existing("session")))
+    with manager.control_store._lock:
+        raw = manager.control_store._conn.execute(
+            "SELECT 1 FROM session_compaction_prepares "
+            "WHERE session_key = ? AND generation = ?",
+            (prepare.session_key, prepare.generation),
+        ).fetchone()
+    assert raw is not None
+
+
+def test_receipt_without_prepare_fails_loud_on_recovery(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager, markdown, source_ref = _seed_receipt(
+        tmp_path, session_manager_factory
+    )
+    prepare = manager.control_store.get_compaction_prepare(
+        "session", source_ref=source_ref
+    )
+    assert prepare is not None
+    # Explicit SQL corruption simulates a receipt whose durable prepare vanished.
+    with manager.control_store._lock:
+        manager.control_store._conn.execute(
+            "DELETE FROM session_compaction_prepares "
+            "WHERE session_key = ? AND generation = ?",
+            (prepare.session_key, prepare.generation),
+        )
+        manager.control_store._conn.commit()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="durable prepare 缺失"):
+        asyncio.run(runtime.recover_pending(manager.get_existing("session")))
 
 
 def test_excluded_session_commit_advances_ledger_without_markdown(
     tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
 ) -> None:
-    manager = SessionManager(tmp_path)
+    manager = session_manager_factory(tmp_path)
     session = manager.get_or_create("session")
     session.metadata["skip_post_memory"] = True
     session.add_message("user", "excluded")
@@ -192,10 +556,13 @@ def test_excluded_session_commit_advances_ledger_without_markdown(
         markdown=markdown,  # type: ignore[arg-type]
     )
     head = manager.control_store.get_compaction_head(session.key)
-    message = session.messages[0]
-    message_id = str(message["id"])
-    message_seq = int(message["seq"])
-    source_ref = compaction_source_ref(session.key, head.next_generation)
+    unit = session.history_units()[0]
+    message = unit.messages[0]
+    message_id, message_seq = unit.message_refs[0]
+    source_ref = compaction_source_ref(
+        compaction_scope_id(session.key, session.created_at),
+        head.next_generation,
+    )
     checkpoint = ContextCompaction(
         summary="\n".join(SUMMARY_HEADINGS),
         generation=head.next_generation,
@@ -220,8 +587,8 @@ def test_excluded_session_commit_advances_ledger_without_markdown(
             {
                 "id": message_id,
                 "seq": message_seq,
-                "unit_ref": "session:unit:0",
-                "message": {"role": "user", "content": "excluded"},
+                "unit_ref": "0:0:0",
+                "message": dict(message),
             },
         ),
     )
@@ -229,15 +596,26 @@ def test_excluded_session_commit_advances_ledger_without_markdown(
     row = asyncio.run(runtime.commit_checkpoint(session, checkpoint, head=head))
 
     assert row.generation == 1
+    expected_digest = source_plan_digest(
+        canonical_source_plan(checkpoint.selected_source_messages)
+    )
+    assert row.source_plan_digest == expected_digest
+    reloaded_row = manager.control_store.get_compaction(session.key, row.generation)
+    assert reloaded_row is not None
+    assert reloaded_row.source_plan_digest == expected_digest
     assert manager.control_store.get_compaction_head(session.key).parent_generation == 1
     assert markdown.prepare_count == 0
     assert markdown.commit_count == 0
+    assert manager.control_store.get_compaction_prepare(
+        session.key, source_ref=source_ref
+    ) is None
 
 
-def test_excluded_receipt_recovery_advances_ledger_without_markdown(
+def test_receipt_recovery_keeps_original_included_semantics_after_metadata_flip(
     tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
 ) -> None:
-    manager, markdown, _ = _seed_receipt(tmp_path)
+    manager, markdown, _ = _seed_receipt(tmp_path, session_manager_factory)
     session = manager.get_existing("session")
     session.metadata["skip_post_memory"] = True
     manager.save(session)
@@ -251,13 +629,19 @@ def test_excluded_receipt_recovery_advances_ledger_without_markdown(
     assert recovered is not None
     assert recovered.generation == 1
     assert session.last_consolidated == 1
-    assert markdown.commit_count == 0
+    assert markdown.commit_count == 1
+    persisted = manager.control_store.get_compaction(session.key, recovered.generation)
+    assert persisted is not None
+    assert persisted.source_plan_digest == str(
+        markdown.receipts[recovered.source_ref]["source_plan_digest"]
+    )
 
 
 def test_receipt_recovery_after_markdown_is_idempotent_and_skips_provider(
     tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
 ) -> None:
-    manager, markdown, source_ref = _seed_receipt(tmp_path)
+    manager, markdown, source_ref = _seed_receipt(tmp_path, session_manager_factory)
     runtime = SessionCompactionRuntime(session_manager=manager, markdown=markdown)  # type: ignore[arg-type]
     session = manager.get_existing("session")
     provider_calls = 0
@@ -271,6 +655,9 @@ def test_receipt_recovery_after_markdown_is_idempotent_and_skips_provider(
         raise AssertionError("expected simulated crash")
     # Restart after Markdown/event side effect but before ledger insert.
     assert markdown.receipts[source_ref]["source_ref"] == source_ref
+    assert manager.control_store.get_compaction_prepare(
+        session.key, source_ref=source_ref
+    ) is not None
     markdown.fail_after_commit = False
     original_persist = manager.control_store.persist_compaction
     persist_calls = 0
@@ -289,6 +676,9 @@ def test_receipt_recovery_after_markdown_is_idempotent_and_skips_provider(
         assert "SQLite" in str(exc)
     else:
         raise AssertionError("expected SQLite crash")
+    assert manager.control_store.get_compaction_prepare(
+        session.key, source_ref=source_ref
+    ) is not None
     manager.control_store.persist_compaction = original_persist  # type: ignore[method-assign]
     manager.invalidate(session.key)
     resumed = manager.get_existing(session.key)
@@ -301,11 +691,25 @@ def test_receipt_recovery_after_markdown_is_idempotent_and_skips_provider(
     assert recovered is not None
     assert provider_calls == 0
     assert resumed.last_consolidated == recovered.generation
+    persisted = manager.control_store.get_compaction(
+        resumed.key,
+        recovered.generation,
+    )
+    assert persisted is not None
+    assert persisted.source_plan_digest == str(
+        markdown.receipts[source_ref]["source_plan_digest"]
+    )
     assert markdown.commit_count == 3
+    assert manager.control_store.get_compaction_prepare(
+        resumed.key, source_ref=source_ref
+    ) is None
 
 
-def test_tampered_receipt_is_rejected_before_markdown_or_ledger(tmp_path: Path) -> None:
-    manager, markdown, source_ref = _seed_receipt(tmp_path)
+def test_tampered_receipt_is_rejected_before_markdown_or_ledger(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager, markdown, source_ref = _seed_receipt(tmp_path, session_manager_factory)
     runtime = SessionCompactionRuntime(session_manager=manager, markdown=markdown)  # type: ignore[arg-type]
     checkpoint = markdown.receipts[source_ref]["checkpoint"]
     assert isinstance(checkpoint, dict)
@@ -319,23 +723,27 @@ def test_tampered_receipt_is_rejected_before_markdown_or_ledger(tmp_path: Path) 
     assert markdown.commit_count == 0
 
 
-def test_deleted_receipt_source_is_rejected_without_ledger_write(tmp_path: Path) -> None:
-    manager, markdown, _ = _seed_receipt(tmp_path)
-    runtime = SessionCompactionRuntime(session_manager=manager, markdown=markdown)  # type: ignore[arg-type]
+def test_pending_prepare_rejects_source_deletion(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager, markdown, _ = _seed_receipt(tmp_path, session_manager_factory)
     session = manager.get_existing("session")
     message_id = str(session.messages[0]["id"])
-    # Keep the in-memory cache stale while the Store deletion is authoritative.
-    assert manager.control_store.delete_messages_batch([message_id]) == 1
-
-    with pytest.raises(ValueError, match="不存在"):
-        asyncio.run(runtime.recover_pending(session))
-
+    with pytest.raises(
+        SessionCompactionPrepareConflictError,
+        match="pending compaction prepare",
+    ):
+        manager.control_store.delete_messages_batch([message_id])
     assert manager.control_store.get_compaction_head("session").parent_generation == 0
     assert markdown.commit_count == 0
 
 
-def test_retained_tail_without_unit_ref_is_rejected(tmp_path: Path) -> None:
-    manager, _, _ = _seed_receipt(tmp_path)
+def test_retained_tail_without_unit_ref_is_rejected(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager, _, _ = _seed_receipt(tmp_path, session_manager_factory)
     head = manager.control_store.get_compaction_head("session")
     with pytest.raises(ValueError, match="unit_ref"):
         manager.control_store.persist_compaction(
@@ -343,6 +751,7 @@ def test_retained_tail_without_unit_ref_is_rejected(tmp_path: Path) -> None:
             trigger="soft_limit",
             summary="\n".join(SUMMARY_HEADINGS),
             source_ref="bad-unit-ref",
+            source_plan_digest="a" * 64,
             source_from_seq=0,
             consolidated_through_seq=0,
             source_message_ids=("session:0",),
@@ -408,6 +817,7 @@ def test_context_compactor_receipt_resume_does_not_call_summary_provider() -> No
         markdown_draft=draft,
         model_runtime_id="runtime",
         model="model",
+        session_created_at="2026-08-08T00:00:00+00:00",
     )
     second = ContextCompactor(
         provider=provider,
@@ -431,8 +841,9 @@ def test_context_compactor_receipt_resume_does_not_call_summary_provider() -> No
 
 def test_default_reasoner_gate_commits_real_runtime_before_provider_payload(
     tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
 ) -> None:
-    manager = SessionManager(tmp_path)
+    manager = session_manager_factory(tmp_path)
     session = manager.get_or_create("session")
     session.add_message("user", "old one")
     session.add_message("user", "old two")
@@ -449,7 +860,6 @@ def test_default_reasoner_gate_commits_real_runtime_before_provider_payload(
         tools=ToolRegistry(),
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=1,
         compaction_runtime=runtime,
     )
     projection = asyncio.run(
@@ -500,8 +910,9 @@ def test_default_reasoner_gate_commits_real_runtime_before_provider_payload(
 
 def test_projection_reload_does_not_duplicate_retained_tail_or_new_units(
     tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
 ) -> None:
-    manager = SessionManager(tmp_path)
+    manager = session_manager_factory(tmp_path)
     session = manager.get_or_create("session")
     session.add_message("user", "old user", control_turn_id="turn-old")
     session.add_message("assistant", "old reply", control_turn_id="turn-old")
@@ -515,24 +926,35 @@ def test_projection_reload_does_not_duplicate_retained_tail_or_new_units(
         markdown=markdown,  # type: ignore[arg-type]
     )
     head = manager.control_store.get_compaction_head(session.key)
-    source_ref = compaction_source_ref(session.key, head.next_generation)
+    source_ref = compaction_source_ref(
+        compaction_scope_id(session.key, session.created_at),
+        head.next_generation,
+    )
+    units = session.history_units()
+    selected_unit, retained_unit = units[:2]
     selected = tuple(
         {
-            "id": str(message["id"]),
-            "seq": int(message["seq"]),
-            "unit_ref": "turn-old",
+            "id": message_id,
+            "seq": seq,
+            "unit_ref": "0:1:0",
             "message": dict(message),
         }
-        for message in session.messages[:2]
+        for message, (message_id, seq) in zip(
+            selected_unit.messages,
+            selected_unit.message_refs,
+        )
     )
     retained_tail = tuple(
         {
-            "id": str(message["id"]),
-            "seq": int(message["seq"]),
-            "unit_ref": "turn-tail",
+            "id": message_id,
+            "seq": seq,
+            "unit_ref": "2:3:0",
             "message": dict(message),
         }
-        for message in session.messages[2:]
+        for message, (message_id, seq) in zip(
+            retained_unit.messages,
+            retained_unit.message_refs,
+        )
     )
     checkpoint = ContextCompaction(
         summary="\n".join(SUMMARY_HEADINGS),
@@ -545,9 +967,9 @@ def test_projection_reload_does_not_duplicate_retained_tail_or_new_units(
         keep_recent_tokens=20,
         estimated_tokens_before=80,
         estimated_tokens_after=40,
-        source_from_seq=0,
-        consolidated_through_seq=1,
-        source_message_ids=tuple(str(message["id"]) for message in session.messages[:2]),
+        source_from_seq=selected_unit.source_from_seq,
+        consolidated_through_seq=selected_unit.consolidated_through_seq,
+        source_message_ids=selected_unit.source_message_ids,
         retained_tail=retained_tail,
         summary_usage=None,
         source_ref=source_ref,
@@ -557,12 +979,18 @@ def test_projection_reload_does_not_duplicate_retained_tail_or_new_units(
         selected_source_messages=selected,
     )
 
-    asyncio.run(runtime.commit_checkpoint(session, checkpoint, head=head))
+    committed = asyncio.run(runtime.commit_checkpoint(session, checkpoint, head=head))
+    expected_digest = source_plan_digest(canonical_source_plan(selected))
+    assert committed.source_plan_digest == expected_digest
     session.add_message("user", "new user", control_turn_id="turn-new")
     session.add_message("assistant", "new reply", control_turn_id="turn-new")
     manager.save(session)
     manager.invalidate(session.key)
     reloaded = manager.get_or_create(session.key)
+
+    persisted = manager.control_store.get_compaction(session.key, committed.generation)
+    assert persisted is not None
+    assert persisted.source_plan_digest == expected_digest
 
     projection = asyncio.run(
         runtime.projection(reloaded, prefix=[], current_anchor=[], pending=[])
@@ -592,6 +1020,107 @@ def test_projection_reload_does_not_duplicate_retained_tail_or_new_units(
     ]
 
 
+def test_compaction_rejects_stale_retained_body_without_side_effects(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager = session_manager_factory(tmp_path)
+    session, head, checkpoint, _ = _seed_two_unit_checkpoint(manager, "session:stale")
+    stale_tail = tuple(
+        {
+            **item,
+            "message": {
+                **dict(item["message"]),
+                "content": "stale retained body",
+            },
+        }
+        for item in checkpoint.retained_tail
+    )
+    checkpoint = replace(checkpoint, retained_tail=stale_tail)
+    markdown = _MarkdownCompactionProbe()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="retained rendered message"):
+        asyncio.run(runtime.commit_checkpoint(session, checkpoint, head=head))
+
+    assert markdown.prepare_count == 0
+    assert markdown.commit_count == 0
+    assert markdown.receipts == {}
+    assert manager.control_store.get_compaction_prepare(
+        session.key,
+        source_ref=checkpoint.source_ref,
+    ) is None
+    assert manager.control_store.get_compaction(session.key, head.next_generation) is None
+    assert manager.control_store.get_compaction_head(session.key) == head
+
+
+def test_included_compaction_source_edit_before_prepare_has_no_side_effects(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager = session_manager_factory(tmp_path)
+    session, head, checkpoint, retained_id = _seed_two_unit_checkpoint(
+        manager,
+        "session:included-source-edit",
+    )
+    markdown = _MarkdownCompactionProbe()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+    store = manager.control_store
+    original_prepare = store.prepare_compaction
+
+    def edit_then_prepare(**kwargs: Any) -> CompactionPrepare:
+        store.update_message(retained_id, content="edited during prepare")
+        return original_prepare(**kwargs)
+
+    store.prepare_compaction = edit_then_prepare  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="source snapshot"):
+        asyncio.run(runtime.commit_checkpoint(session, checkpoint, head=head))
+
+    assert markdown.commit_count == 0
+    assert markdown.receipts == {}
+    assert store.get_compaction_prepare(session.key, source_ref=checkpoint.source_ref) is None
+    assert store.get_compaction(session.key, head.next_generation) is None
+    assert store.get_compaction_head(session.key) == head
+
+
+def test_excluded_compaction_source_edit_before_persist_has_no_side_effects(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager = session_manager_factory(tmp_path)
+    session, head, checkpoint, retained_id = _seed_two_unit_checkpoint(
+        manager,
+        "scheduler:excluded-source-edit",
+    )
+    markdown = _MarkdownCompactionProbe()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+    store = manager.control_store
+    original_persist = store.persist_compaction
+
+    def edit_then_persist(**kwargs: Any) -> SessionCompaction:
+        store.update_message(retained_id, content="edited during persist")
+        return original_persist(**kwargs)
+
+    store.persist_compaction = edit_then_persist  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="source snapshot"):
+        asyncio.run(runtime.commit_checkpoint(session, checkpoint, head=head))
+
+    assert markdown.commit_count == 0
+    assert markdown.receipts == {}
+    assert store.get_compaction_prepare(session.key, source_ref=checkpoint.source_ref) is None
+    assert store.get_compaction(session.key, head.next_generation) is None
+    assert store.get_compaction_head(session.key) == head
+
+
 def test_reasoner_builder_preserves_replay_tail_and_current_payload_order() -> None:
     provider = _GateProvider()
     reasoner = DefaultReasoner(
@@ -600,8 +1129,7 @@ def test_reasoner_builder_preserves_replay_tail_and_current_payload_order() -> N
         tools=ToolRegistry(),
         discovery=ToolDiscoveryState(),
         tool_search_enabled=False,
-        memory_window=1,
-        compaction_runtime=object(),
+        compaction_runtime=_NoopCompactionRuntime(),
     )
     committed = CommittedContextUnit(
         source_from_seq=1,
@@ -639,7 +1167,10 @@ def test_reasoner_builder_preserves_replay_tail_and_current_payload_order() -> N
         {"role": "user", "content": "U3"},
     ]
     state = reasoner._build_compaction_state(
-        session=SimpleNamespace(key="session"),
+        session=Session(
+            key="session",
+            created_at=datetime(2026, 8, 8, tzinfo=UTC),
+        ),
         projection=projection,
         initial_messages=render_payload,
         history_count=2,
@@ -657,3 +1188,239 @@ def test_reasoner_builder_preserves_replay_tail_and_current_payload_order() -> N
     assert state.compactor._current_query == (
         '{"logical_interaction_inputs":["U1","U2","U3"]}'
     )
+
+
+def test_reasoner_compaction_state_is_call_local_per_session(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager = session_manager_factory(tmp_path)
+    session_a = manager.get_or_create("session-a")
+    session_b = manager.get_or_create("session-b")
+    for session, prefix in ((session_a, "a"), (session_b, "b")):
+        session.add_message("user", f"{prefix}-u1", control_turn_id=f"{prefix}-1")
+        session.add_message(
+            "assistant", f"{prefix}-a1", control_turn_id=f"{prefix}-1"
+        )
+        session.add_message("user", f"{prefix}-u2", control_turn_id=f"{prefix}-2")
+        session.add_message(
+            "assistant", f"{prefix}-a2", control_turn_id=f"{prefix}-2"
+        )
+        manager.save(session)
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=_MarkdownCompactionProbe(),  # type: ignore[arg-type]
+    )
+    provider = _GateProvider()
+    reasoner = DefaultReasoner(
+        llm=LLMServices(provider=provider, light_provider=provider),
+        llm_config=LLMConfig(model="model", max_tokens=10),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        compaction_runtime=runtime,
+    )
+
+    projections = [
+        asyncio.run(runtime.projection(session, prefix=[], current_anchor=[], pending=[]))
+        for session in (session_a, session_b)
+    ]
+    states = []
+    for session, projection in zip((session_a, session_b), projections, strict=True):
+        history = [
+            message
+            for unit in projection.segments.committed_units
+            for message in unit.messages
+        ]
+        payload = [
+            {"role": "system", "content": "root"},
+            *history,
+            {"role": "user", "content": f"{session.key}-current"},
+        ]
+        states.append(
+            reasoner._build_compaction_state(
+                session=session,
+                projection=projection,
+                initial_messages=payload,
+                history_count=len(history),
+                attempt_replay=[],
+                prior_tool_groups=0,
+                channel="test",
+                chat_id=session.key,
+            )
+        )
+
+    states[0].compactor.set_pending(
+        [
+            *states[0].compactor._segments.flatten(),
+            {"role": "user", "content": "only-a"},
+        ]
+    )
+    original_b_pending = states[1].compactor._segments.pending
+    assert states[0].compactor._scope_id == compaction_scope_id(
+        "session-a", session_a.created_at
+    )
+    assert states[1].compactor._scope_id == compaction_scope_id(
+        "session-b", session_b.created_at
+    )
+    assert states[0].compactor._segments.pending[-1] == {
+        "role": "user",
+        "content": "only-a",
+    }
+    assert states[1].compactor._segments.pending == original_b_pending
+
+
+def test_reasoner_binds_configured_main_fallback_with_distinct_provenance(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager = session_manager_factory(tmp_path)
+    session = manager.get_or_create("session")
+    session.add_message("user", "u", control_turn_id="turn-1")
+    session.add_message("assistant", "a", control_turn_id="turn-1")
+    session.add_message("user", "u2", control_turn_id="turn-2")
+    session.add_message("assistant", "a2", control_turn_id="turn-2")
+    manager.save(session)
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=_MarkdownCompactionProbe(),  # type: ignore[arg-type]
+    )
+    selected = _GateProvider()
+    configured_main = _GateProvider()
+    reasoner = DefaultReasoner(
+        llm=LLMServices(
+            provider=selected,
+            light_provider=selected,
+            fallback_provider=configured_main,
+            fallback_model="main-model",
+        ),
+        llm_config=LLMConfig(model="agent-model", max_tokens=10),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        compaction_runtime=runtime,
+    )
+    projection = asyncio.run(
+        runtime.projection(session, prefix=[], current_anchor=[], pending=[])
+    )
+    history = [
+        message
+        for unit in projection.segments.committed_units
+        for message in unit.messages
+    ]
+    state = reasoner._build_compaction_state(
+        session=session,
+        projection=projection,
+        initial_messages=[
+            {"role": "system", "content": "root"},
+            *history,
+            {"role": "user", "content": "current"},
+        ],
+        history_count=len(history),
+        attempt_replay=[],
+        prior_tool_groups=0,
+        channel="test",
+        chat_id="chat",
+    )
+
+    assert state.compactor._provider is selected
+    assert state.compactor._fallback_provider is configured_main
+    assert state.compactor._model == "agent-model"
+    assert state.compactor._fallback_model == "main-model"
+
+
+def test_two_session_compaction_commits_are_isolated_in_sqlite(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager = session_manager_factory(tmp_path)
+    sessions = []
+    source_message_ids: dict[str, set[str]] = {}
+    for key in ("session-a", "session-b"):
+        session = manager.get_or_create(key)
+        prefix = key[-1]
+        session.add_message("user", f"{prefix}-u1", control_turn_id=f"{prefix}-1")
+        session.add_message(
+            "assistant", f"{prefix}-a1", control_turn_id=f"{prefix}-1"
+        )
+        session.add_message("user", f"{prefix}-u2", control_turn_id=f"{prefix}-2")
+        session.add_message(
+            "assistant", f"{prefix}-a2", control_turn_id=f"{prefix}-2"
+        )
+        manager.save(session)
+        source_message_ids[key] = {
+            str(message["id"])
+            for message in session.messages
+            if message.get("id")
+        }
+        sessions.append(session)
+    markdown = _MarkdownCompactionProbe()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+    provider = _ScopedCompactionProvider()
+    reasoner = DefaultReasoner(
+        llm=LLMServices(provider=provider, light_provider=provider),
+        llm_config=LLMConfig(model="model", max_tokens=10),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        compaction_runtime=runtime,
+        context_compaction=ContextCompactionConfig(
+            keep_recent_tokens=1,
+        ),
+    )
+    prepared = []
+    for session in sessions:
+        projection = asyncio.run(
+            runtime.projection(session, prefix=[], current_anchor=[], pending=[])
+        )
+        history = [
+            message
+            for unit in projection.segments.committed_units
+            for message in unit.messages
+        ]
+        payload = [
+            {"role": "system", "content": "root"},
+            *history,
+            {"role": "user", "content": f"{session.key}-current"},
+        ]
+        state = reasoner._build_compaction_state(
+            session=session,
+            projection=projection,
+            initial_messages=payload,
+            history_count=len(history),
+            attempt_replay=[],
+            prior_tool_groups=0,
+            channel="test",
+            chat_id=session.key,
+        )
+        prepared.append(
+            asyncio.run(
+                reasoner._call_provider(
+                    state,
+                    payload,
+                    tools=[],
+                    max_tokens=10,
+                )
+            )
+        )
+
+    assert [item.prepared.checkpoint.generation for item in prepared if item.prepared and item.prepared.checkpoint] == [1, 1]
+    active_a = manager._store.get_active_compaction("session-a")
+    active_b = manager._store.get_active_compaction("session-b")
+    assert active_a is not None and active_b is not None
+    assert active_a.generation == active_b.generation == 1
+    assert active_a.source_ref != active_b.source_ref
+    assert set(active_a.source_message_ids) <= source_message_ids["session-a"]
+    assert set(active_b.source_message_ids) <= source_message_ids["session-b"]
+    assert set(active_a.source_message_ids).isdisjoint(source_message_ids["session-b"])
+    assert set(active_b.source_message_ids).isdisjoint(source_message_ids["session-a"])
+    assert manager.control_store.get_session_meta("session-a")["last_consolidated"] == 1
+    assert manager.control_store.get_session_meta("session-b")["last_consolidated"] == 1
+    assert "A_SENTINEL" in active_a.summary
+    assert "B_SENTINEL" in active_b.summary
+    assert "B_SENTINEL" not in str(prepared[0].prepared.checkpoint.summary)
+    assert "A_SENTINEL" not in str(prepared[1].prepared.checkpoint.summary)
+    assert markdown.commit_count == 2
