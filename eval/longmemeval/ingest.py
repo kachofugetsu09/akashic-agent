@@ -1,4 +1,4 @@
-"""Phase 1+2: insert haystack messages into SessionStore, then consolidate."""
+"""Insert benchmark haystack messages into the canonical SessionStore."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from .dataset import LMEInstance
 from .runtime import BenchmarkRuntime
 
 logger = logging.getLogger(__name__)
-_FINALIZE_CHUNK_SIZE = 80
 
 
 def _last_dialogue_pair(turns) -> tuple[str, str]:
@@ -90,23 +89,6 @@ def _is_ingested(rt: BenchmarkRuntime, question_id: str) -> bool:
     return bool(state and state.get("completed") is True)
 
 
-async def _finalize_tail_chunks(rt: BenchmarkRuntime, session) -> None:
-    remaining = session.messages[session.last_consolidated :]
-    if not remaining:
-        return
-
-    session_cls = session.__class__
-    for start in range(0, len(remaining), _FINALIZE_CHUNK_SIZE):
-        chunk = remaining[start : start + _FINALIZE_CHUNK_SIZE]
-        temp_session = session_cls(key=session.key)
-        temp_session.messages = list(chunk)
-        temp_session.last_consolidated = 0
-        for attr in ("_channel", "_chat_id"):
-            if hasattr(session, attr):
-                setattr(temp_session, attr, getattr(session, attr))
-        await rt.consolidation.consolidate(temp_session, archive_all=True)
-
-
 async def ingest_instance(
     rt: BenchmarkRuntime,
     instance: LMEInstance,
@@ -114,7 +96,7 @@ async def ingest_instance(
     force: bool = False,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> int:
-    """Insert all haystack sessions and run consolidation per session boundary.
+    """Append every haystack session without bypassing production compaction.
 
     Returns total turn count. Calls on_progress(done, total) after each session.
     """
@@ -161,9 +143,6 @@ async def ingest_instance(
         sm._cache.pop(session_key, None)
         session = sm.get_or_create(session_key)
 
-        await rt.consolidation.consolidate(session, archive_all=False)
-        sm.save(session)
-
         worker = getattr(rt.core.memory_runtime, "post_response_worker", None)
         if worker is not None:
             user_msg, agent_response = _last_dialogue_pair(turns)
@@ -179,13 +158,6 @@ async def ingest_instance(
         if on_progress:
             on_progress(idx + 1, n)
 
-    # Finalize the unarchived tail in bounded chunks so the benchmark
-    # does not lose late-session facts while still avoiding giant prompts.
-    sm._cache.pop(session_key, None)
-    session = sm.get_or_create(session_key)
-    await _finalize_tail_chunks(rt, session)
-    session.last_consolidated = len(session.messages)
-    sm.save(session)
     _write_ingest_state(
         rt,
         instance.question_id,

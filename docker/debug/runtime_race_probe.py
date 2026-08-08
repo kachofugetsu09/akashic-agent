@@ -115,9 +115,6 @@ class _ProbeMemoryEngine:
     def read_self(self) -> str:
         return ""
 
-    def read_recent_context(self) -> str:
-        return ""
-
     def get_memory_context(self) -> str:
         return ""
 
@@ -252,7 +249,6 @@ class RaceHarness:
                         "max_tokens = 128",
                         "",
                         "[agent.context.compaction]",
-                        "trigger_percent = 0.74",
                         "keep_recent_tokens = 20000",
                         "",
                         "[app_server]",

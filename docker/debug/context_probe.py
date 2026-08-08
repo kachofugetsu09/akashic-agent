@@ -9,8 +9,6 @@ import sqlite3
 import subprocess
 import sys
 import time
-import urllib.parse
-import urllib.request
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,10 +40,6 @@ class ProbePaths:
     @property
     def socket(self) -> Path:
         return self.profile_dir / "akashic.sock"
-
-    @property
-    def recent_context(self) -> Path:
-        return self.workspace / "memory" / "RECENT_CONTEXT.md"
 
     @property
     def observe_db(self) -> Path:
@@ -124,7 +118,6 @@ def _legacy_scenario(data: dict[str, object]) -> Scenario:
     turns: list[dict[str, object]] = [
         {"role": "user", "content": text} for text in phase1
     ]
-    turns.append({"action": "consolidate", "force": False, "archive_all": False})
     turns.extend({"role": "user", "content": text} for text in phase2)
     if final_question:
         turns.append({"role": "user", "content": final_question, "final": True})
@@ -152,16 +145,6 @@ def _load_scenario(path: Path | None) -> Scenario:
         if not isinstance(item, dict):
             raise SystemExit(f"turns[{index}] 必须是 object")
         turn = _coerce_object_dict(cast(object, item))
-        if turn.get("action") == "consolidate":
-            normalized_turns.append(
-                {
-                    "action": "consolidate",
-                    "force": bool(turn.get("force", False)),
-                    "archive_all": bool(turn.get("archive_all", False)),
-                    "label": str(turn.get("label") or "manual"),
-                }
-            )
-            continue
         if turn.get("action") == "wait":
             normalized_turns.append(
                 {
@@ -235,25 +218,6 @@ def _probe_session_key(db_path: Path, previous: str) -> str:
     if previous and current != previous:
         raise SystemExit(f"探针 session 发生变化: {previous} -> {current}")
     return current
-
-
-def _dashboard_consolidate(
-    *,
-    dashboard_url: str,
-    session_key: str,
-    force: bool,
-    archive_all: bool,
-    timeout: int,
-) -> dict[str, Any]:
-    quoted = urllib.parse.quote(session_key, safe="")
-    req = urllib.request.Request(
-        f"{dashboard_url.rstrip('/')}/api/dashboard/sessions/{quoted}/consolidate",
-        data=json.dumps({"force": force, "archive_all": archive_all}).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode())
 
 
 def _tool_rows(observe_db: Path, session_key: str) -> list[dict[str, Any]]:
@@ -454,9 +418,6 @@ def _write_reports(
     scenario: Scenario,
     session_key: str,
     records: list[dict[str, str]],
-    consolidate_result: dict[str, Any] | None,
-    recent_after_consolidate: str,
-    recent_final: str,
     tools: list[dict[str, Any]],
     memories: list[dict[str, str]],
 ) -> None:
@@ -466,12 +427,9 @@ def _write_reports(
             "name": scenario.name,
         },
         "session_key": session_key,
-        "manual_consolidate": consolidate_result,
         "records": records,
         "tool_calls": tools,
         "memory_items": memories,
-        "recent_context_after_consolidate": recent_after_consolidate,
-        "recent_context_final": recent_final,
     }
     _ = report_json.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -483,7 +441,6 @@ def _write_reports(
         "",
         f"- scenario: {scenario.name}",
         f"- session_key: {session_key}",
-        f"- manual_consolidate: {json.dumps(consolidate_result, ensure_ascii=False)}",
         "",
         "## 对话记录",
         "",
@@ -518,23 +475,6 @@ def _write_reports(
             lines.append(f"- [{row['memory_type']}] {row['summary']}")
     else:
         lines.append("- none")
-    lines.extend(
-        [
-            "",
-            "## Recent Context After Manual Consolidate",
-            "",
-            "```text",
-            recent_after_consolidate.rstrip(),
-            "```",
-            "",
-            "## Recent Context Final",
-            "",
-            "```text",
-            recent_final.rstrip(),
-            "```",
-            "",
-        ]
-    )
     _ = report_md.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -587,8 +527,6 @@ async def _run_probe(args: argparse.Namespace) -> None:
         started_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
         memory_baseline = _memory_baseline(paths.memory_db)
         records: list[dict[str, str]] = []
-        consolidate_result: dict[str, Any] | None = None
-        recent_after_consolidate = ""
         session_key = ""
         client = await ControlClient.connect(str(paths.socket))
         try:
@@ -597,22 +535,6 @@ async def _run_probe(args: argparse.Namespace) -> None:
             )
             session_key = str(thread["id"])
             for index, turn in enumerate(scenario.turns, 1):
-                if turn.get("action") == "consolidate":
-                    consolidate_result = _dashboard_consolidate(
-                        dashboard_url=args.dashboard_url,
-                        session_key=session_key,
-                        force=bool(turn.get("force", args.force_consolidate)),
-                        archive_all=bool(turn.get("archive_all", args.archive_all)),
-                        timeout=args.turn_timeout,
-                    )
-                    await asyncio.sleep(args.after_consolidate_wait)
-                    recent_after_consolidate = (
-                        paths.recent_context.read_text(encoding="utf-8")
-                        if paths.recent_context.exists()
-                        else ""
-                    )
-                    print(f"turn {index} consolidate ok")
-                    continue
                 if turn.get("action") == "wait":
                     await asyncio.sleep(_coerce_float(turn.get("seconds"), 1.0))
                     print(f"turn {index} wait ok")
@@ -632,11 +554,6 @@ async def _run_probe(args: argparse.Namespace) -> None:
         report_md = report_base.with_suffix(".md")
         report_json = report_base.with_suffix(".json")
         _ = report_md.parent.mkdir(parents=True, exist_ok=True)
-        recent_final = (
-            paths.recent_context.read_text(encoding="utf-8")
-            if paths.recent_context.exists()
-            else ""
-        )
         tools = _tool_rows(paths.observe_db, session_key)
         memories = _memory_rows(
             memory_db=paths.memory_db,
@@ -652,9 +569,6 @@ async def _run_probe(args: argparse.Namespace) -> None:
             scenario=scenario,
             session_key=session_key,
             records=records,
-            consolidate_result=consolidate_result,
-            recent_after_consolidate=recent_after_consolidate,
-            recent_final=recent_final,
             tools=tools,
             memories=memories,
         )
@@ -682,13 +596,9 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         help="输出文件前缀，默认写到 profile workspace",
     )
-    _ = parser.add_argument("--dashboard-url", default="http://127.0.0.1:2237")
     _ = parser.add_argument("--turn-timeout", type=int, default=240)
     _ = parser.add_argument("--start-timeout", type=int, default=60)
-    _ = parser.add_argument("--after-consolidate-wait", type=float, default=3.0)
     _ = parser.add_argument("--after-final-wait", type=float, default=2.0)
-    _ = parser.add_argument("--force-consolidate", action="store_true")
-    _ = parser.add_argument("--archive-all", action="store_true")
     _ = parser.add_argument("--reset-workspace", action="store_true")
     _ = parser.add_argument("--start-agent", action="store_true")
     _ = parser.add_argument("--stop-agent", action="store_true")

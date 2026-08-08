@@ -37,7 +37,6 @@ loopback TCP 连接需显式传入 workspace token：
 
 ```python
 client = await AsyncAkashic.connect("127.0.0.1:2236", workspace_token=token)
-operation = await (await client.thread_resume(thread_id)).consolidate()
+thread = await client.thread_resume(thread_id)
+result = await thread.run("继续分析")
 ```
-
-consolidation 的最终结果通过全局 `operation/completed` notification 返回。
