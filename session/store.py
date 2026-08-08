@@ -1965,6 +1965,54 @@ class SessionStore:
             ).fetchall()
         return [self._row_to_compaction(row) for row in rows]
 
+    def list_compaction_briefs(
+        self,
+        session_keys: Sequence[str],
+    ) -> dict[str, dict[str, Any] | None]:
+        """Return the active compaction brief for each requested session key."""
+
+        keys = [str(key).strip() for key in session_keys if str(key).strip()]
+        if not keys:
+            return {}
+        placeholders = ",".join("?" for _ in keys)
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT
+                    s.key AS session_key,
+                    c.generation,
+                    c.trigger,
+                    c.tokens_before,
+                    c.tokens_after,
+                    c.summary,
+                    c.model,
+                    c.created_at
+                FROM sessions s
+                LEFT JOIN session_compactions c
+                  ON c.session_key = s.key
+                 AND c.generation = s.last_consolidated
+                 AND c.invalidated_at IS NULL
+                WHERE s.key IN ({placeholders})
+                """,
+                tuple(keys),
+            ).fetchall()
+        briefs: dict[str, dict[str, Any] | None] = {}
+        for row in rows:
+            key = str(row["session_key"])
+            if row["generation"] is None:
+                briefs[key] = None
+                continue
+            briefs[key] = {
+                "generation": int(row["generation"]),
+                "trigger": row["trigger"],
+                "tokens_before": int(row["tokens_before"] or 0),
+                "tokens_after": int(row["tokens_after"] or 0),
+                "summary_preview": str(row["summary"] or ""),
+                "model": row["model"],
+                "created_at": row["created_at"],
+            }
+        return briefs
+
     def _invalidate_compactions_for_messages_locked(
         self,
         session_key: str,

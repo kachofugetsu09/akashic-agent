@@ -1616,6 +1616,32 @@ body {
     @apply px-4 py-12 text-center text-[13px] text-subtle;
   }
 
+  /* ── Compaction view ── */
+
+  .compaction-view-scroll {
+    @apply min-h-0 flex-1 overflow-y-auto;
+  }
+
+  .compaction-digest {
+    @apply break-all text-[11px] leading-relaxed;
+  }
+
+  .compaction-history-row {
+    @apply grid grid-cols-[auto_1fr_auto_auto_auto] items-center gap-3 border-t border-border-strong px-1 py-1.5 text-[12px];
+  }
+
+  .compaction-history-row:first-child {
+    @apply border-t-0;
+  }
+
+  .compaction-valid {
+    @apply text-success;
+  }
+
+  .compaction-invalidated {
+    @apply text-danger;
+  }
+
   /* ── Scrollbar ── */
 
   .detail-pane::-webkit-scrollbar,
