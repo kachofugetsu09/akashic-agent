@@ -170,10 +170,6 @@ class SessionCompactionRuntime:
                 self._store._clear_orphan_compaction_prepare(prepare)
             return None
         version = receipt.get("version")
-        if prepare is None:
-            if version == 3:
-                return None
-            raise RuntimeError("compaction receipt 存在但 durable prepare 缺失")
         if receipt.get("session_key") != session.key:
             raise ValueError("compaction receipt session_key 冲突")
         if receipt.get("parent_generation") != head.parent_generation or receipt.get(
@@ -197,11 +193,21 @@ class SessionCompactionRuntime:
             source_ref=source_ref,
             selection_digest=raw_digest,
         )
+        source_mutation_digest: str | None = None
+        if version == 3:
+            raw_mutation_digest = receipt.get("source_mutation_digest")
+            source_mutation_digest = self._source_mutation_digest(
+                session.key,
+                checkpoint,
+            )
+            if raw_mutation_digest != source_mutation_digest:
+                raise RuntimeError(
+                    "compaction receipt source snapshot 与当前 SessionDB 不一致"
+                )
         checkpoint, canonical_digest = self._canonicalize_checkpoint_source(
             session,
             checkpoint,
         )
-        self._assert_prepare_matches_checkpoint(session, checkpoint, prepare)
         if receipt.get("source_plan_digest") != canonical_digest:
             raise RuntimeError("compaction receipt source plan 与当前 SessionDB 不一致")
         self._store.validate_compaction_provenance(
@@ -211,6 +217,11 @@ class SessionCompactionRuntime:
             source_from_seq=checkpoint.source_from_seq,
             consolidated_through_seq=checkpoint.consolidated_through_seq,
         )
+        if prepare is None:
+            if version == 3:
+                return None
+            raise RuntimeError("compaction receipt 存在但 durable prepare 缺失")
+        self._assert_prepare_matches_checkpoint(session, checkpoint, prepare)
         # 1. v2 receipt 已经提交 Markdown draft；只对旧格式保留幂等重放。
         if version == 2:
             draft = _draft_from_receipt(receipt)
@@ -226,6 +237,7 @@ class SessionCompactionRuntime:
             checkpoint,
             head=head,
             prepare=prepare,
+            source_mutation_digest=source_mutation_digest,
         )
         session.last_consolidated = row.generation
         return row
@@ -322,6 +334,7 @@ class SessionCompactionRuntime:
             model_runtime_id=checkpoint.model_runtime_id,
             model=checkpoint.model,
             session_created_at=normalize_session_created_at(session.created_at),
+            source_mutation_digest=mutation_digest,
             scope_channel=scope_channel,
             scope_chat_id=scope_chat_id,
         )
@@ -767,6 +780,7 @@ def _receipt_digest(receipt: dict[str, object]) -> str:
     elif receipt.get("version") == 3:
         identity["session_created_at"] = receipt.get("session_created_at")
         identity["source_plan_digest"] = receipt.get("source_plan_digest")
+        identity["source_mutation_digest"] = receipt.get("source_mutation_digest")
         identity["scope_channel"] = receipt.get("scope_channel")
         identity["scope_chat_id"] = receipt.get("scope_chat_id")
     encoded = json.dumps(
@@ -815,6 +829,7 @@ def _receipt_payload(
     model_runtime_id: str,
     model: str,
     session_created_at: str,
+    source_mutation_digest: str,
     scope_channel: str,
     scope_chat_id: str,
 ) -> dict[str, object]:
@@ -825,6 +840,7 @@ def _receipt_payload(
         "session_key": session_key,
         "session_created_at": normalize_session_created_at(session_created_at),
         "source_plan_digest": plan_digest,
+        "source_mutation_digest": source_mutation_digest,
         "parent_generation": head.parent_generation,
         "next_generation": head.next_generation,
         "model_runtime_id": model_runtime_id,

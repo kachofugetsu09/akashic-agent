@@ -2624,6 +2624,8 @@ class DefaultReasoner(Reasoner):
             text = (response.content or "").strip()
             if text:
                 return text, provider_usages
+        except ContextCompactionError:
+            raise
         except Exception as exc:
             logger.warning("生成预算收尾总结失败: %s", exc)
 

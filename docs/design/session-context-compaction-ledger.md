@@ -131,7 +131,8 @@ v3 receipt 是第一个跨文件 effect，ledger 是业务成功边界。重启�
   一致：提交 ledger/cursor 并清除 prepare，不生成或补跑 Markdown；
 - 只有 prepare、没有 receipt：证明仍在 pre-effect window，私有 recovery 可以清除 orphan
   prepare，不产生 Markdown 或 ledger；
-- v3 receipt 缺 prepare：表示 ledger 已提交的正常审计状态，不报错、不补跑；
+- v3 receipt 缺 prepare：完整校验 schema/digest/incarnation/source snapshot 后视为
+  ledger 已提交的审计状态，不补跑；任何损坏仍 fail-loud；
 - v2 receipt 和 prepare 同时存在：按 v2 保存的 draft 幂等提交 Markdown，再提交 ledger；
 - receipt schema/digest/source plan/incarnation 不一致：fail-loud，不能猜测格式或摘要。
 

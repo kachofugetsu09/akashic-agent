@@ -134,8 +134,8 @@ requirements = ["CTX-001", "SES-002", "SES-003", "SES-005", "TST-002", "TST-003"
 groups = ["context_projection", "session_persistence"]
 environment = "public_clean_workspace"
 timeout_seconds = 120
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_context_history_contract.py"]
-observes = ["retry_history_windows", "messages_full_snapshot", "message_embeddings_full_snapshot", "metadata_snapshot", "sqlite_write_set", "restart_sequence"]
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_context_history_contract.py", "tests/test_session_compaction_runtime.py"]
+observes = ["retry_history_windows", "messages_full_snapshot", "message_embeddings_full_snapshot", "metadata_snapshot", "sqlite_write_set", "restart_sequence", "receipt_v2_v3_recovery", "generation_zero_window", "markdown_task_lifecycle"]
 mutants = ["historical_session_delete"]
 
 [scenarios.mobile_realtime_contract]

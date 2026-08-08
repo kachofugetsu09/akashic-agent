@@ -17,6 +17,7 @@ from agent.looping.ports import LLMConfig, LLMServices
 from agent.model_runtime.context_compaction import (
     CommittedContextUnit,
     ContextCompaction,
+    ContextCompactionError,
     ContextCompactor,
     ContextPayloadSegments,
     SUMMARY_HEADINGS,
@@ -229,6 +230,14 @@ class _CountingProvider(LLMProvider):
         return LLMResponse(content="\n".join(SUMMARY_HEADINGS))
 
 
+class _ContentLengthProvider(_CountingProvider):
+    def estimate_context_tokens(self, messages, tools):
+        return sum(len(str(message.get("content", ""))) for message in messages)
+
+    def estimate_appended_message_tokens(self, messages):
+        return self.estimate_context_tokens(messages, [])
+
+
 class _NoopCompactionRuntime:
     """Provide the narrow runtime port for state-builder-only tests."""
 
@@ -319,6 +328,22 @@ class _ScopedCompactionProvider(_GateProvider):
         return LLMResponse(content=f"reply-{marker}")
 
 
+def _checkpoint_source_mutation_digest(
+    manager: SessionManager,
+    session_key: str,
+    checkpoint: ContextCompaction,
+) -> str:
+    source_ids = tuple(
+        dict.fromkeys(
+            [
+                *checkpoint.source_message_ids,
+                *(str(item["id"]) for item in checkpoint.retained_tail),
+            ]
+        )
+    )
+    return manager.control_store.source_mutation_digest(session_key, source_ids)
+
+
 def _seed_receipt(
     tmp_path: Path,
     manager_factory: SessionManagerFactory,
@@ -385,6 +410,11 @@ def _seed_receipt(
         model_runtime_id="runtime",
         model="model",
         session_created_at=normalize_session_created_at(session.created_at),
+        source_mutation_digest=_checkpoint_source_mutation_digest(
+            manager,
+            session.key,
+            checkpoint,
+        ),
         scope_channel="",
         scope_chat_id="",
     )
@@ -400,6 +430,7 @@ def _seed_receipt(
         }
         receipt.pop("scope_channel")
         receipt.pop("scope_chat_id")
+        receipt.pop("source_mutation_digest")
         receipt["digest"] = _receipt_digest(receipt)
     probe.receipts[source_ref] = receipt
     return manager, probe, source_ref
@@ -639,6 +670,64 @@ def test_v3_receipt_without_prepare_is_audit_only(
     assert markdown.commit_count == 0
 
 
+def test_v3_receipt_without_prepare_still_validates_identity(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager, markdown, source_ref = _seed_receipt(
+        tmp_path, session_manager_factory
+    )
+    prepare = manager.control_store.get_compaction_prepare(
+        "session", source_ref=source_ref
+    )
+    assert prepare is not None
+    with manager.control_store._lock:
+        manager.control_store._conn.execute(
+            "DELETE FROM session_compaction_prepares "
+            "WHERE session_key = ? AND generation = ?",
+            (prepare.session_key, prepare.generation),
+        )
+        manager.control_store._conn.commit()
+    receipt = markdown.receipts[source_ref]
+    receipt["session_key"] = "other-session"
+    receipt["digest"] = _receipt_digest(receipt)
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ValueError, match="session_key 冲突"):
+        asyncio.run(runtime.recover_pending(manager.get_existing("session")))
+
+
+def test_v3_recovery_rejects_raw_source_mutation(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager, markdown, source_ref = _seed_receipt(
+        tmp_path, session_manager_factory
+    )
+    receipt = markdown.receipts[source_ref]
+    checkpoint = cast(dict[str, Any], receipt["checkpoint"])
+    source_ids = cast(list[str], checkpoint["source_message_ids"])
+    with manager.control_store._lock:
+        manager.control_store._conn.execute(
+            "UPDATE messages SET ts = ts || '-tampered' WHERE id = ?",
+            (source_ids[0],),
+        )
+        manager.control_store._conn.commit()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="source snapshot"):
+        asyncio.run(runtime.recover_pending(manager.get_existing("session")))
+    assert manager.control_store.get_compaction_prepare(
+        "session", source_ref=source_ref
+    ) is not None
+
+
 def test_excluded_session_commit_advances_ledger_without_markdown(
     tmp_path: Path,
     session_manager_factory: SessionManagerFactory,
@@ -764,6 +853,11 @@ def test_markdown_failure_does_not_block_next_session_generation(
         model_runtime_id=checkpoint.model_runtime_id,
         model=checkpoint.model,
         session_created_at="2026-08-08T00:00:00+00:00",
+        source_mutation_digest=_checkpoint_source_mutation_digest(
+            manager,
+            "session",
+            checkpoint,
+        ),
         scope_channel="",
         scope_chat_id="",
     )
@@ -774,6 +868,11 @@ def test_markdown_failure_does_not_block_next_session_generation(
         model_runtime_id=second_checkpoint.model_runtime_id,
         model=second_checkpoint.model,
         session_created_at="2026-08-08T00:00:00+00:00",
+        source_mutation_digest=_checkpoint_source_mutation_digest(
+            manager,
+            "session",
+            second_checkpoint,
+        ),
         scope_channel="",
         scope_chat_id="",
     )
@@ -991,6 +1090,7 @@ def test_context_compactor_receipt_resume_does_not_call_summary_provider() -> No
         model_runtime_id="runtime",
         model="model",
         session_created_at="2026-08-08T00:00:00+00:00",
+        source_mutation_digest="0" * 64,
         scope_channel="",
         scope_chat_id="",
     )
@@ -1088,6 +1188,136 @@ def test_generation_zero_windows_history_before_provider_payload() -> None:
     )
     assert result.checkpoint is not None
     assert result.checkpoint.source_from_seq == 2
+
+
+def test_generation_zero_real_session_stays_append_only_then_compacts_incrementally(
+    tmp_path: Path,
+    session_manager_factory: SessionManagerFactory,
+) -> None:
+    manager = session_manager_factory(tmp_path)
+    session = manager.get_or_create("session")
+    for index in range(4):
+        session.add_message("user", f"history-{index}-" + ("x" * 60_000))
+    manager.save(session)
+    provider = _ContentLengthProvider(context_window=150_000)
+    markdown = _MarkdownCompactionProbe()
+    runtime = SessionCompactionRuntime(
+        session_manager=manager,
+        markdown=markdown,  # type: ignore[arg-type]
+    )
+    reasoner = DefaultReasoner(
+        llm=LLMServices(provider=provider, light_provider=provider),
+        llm_config=LLMConfig(model="model"),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        compaction_runtime=runtime,
+        context_compaction=ContextCompactionConfig(),
+    )
+
+    def message_rows() -> list[tuple[object, ...]]:
+        with manager.control_store._lock:
+            rows = manager.control_store._conn.execute(
+                "SELECT id, session_key, seq, role, content, tool_chain, extra, ts "
+                "FROM messages WHERE session_key = ? ORDER BY seq",
+                (session.key,),
+            ).fetchall()
+        return [tuple(row) for row in rows]
+
+    async def compact_once() -> ContextCompaction:
+        projection = await runtime.projection(
+            session,
+            prefix=[],
+            current_anchor=[],
+            pending=[],
+        )
+        history = [
+            *projection.segments.prefix,
+            *[
+                message
+                for unit in projection.segments.committed_units
+                for message in unit.messages
+            ],
+        ]
+        payload = [
+            {"role": "system", "content": "root"},
+            *history,
+            {"role": "user", "content": "current query"},
+        ]
+        state = reasoner._build_compaction_state(
+            session=session,
+            projection=projection,
+            initial_messages=payload,
+            history_count=len(history),
+            attempt_replay=[],
+            prior_tool_groups=0,
+            channel="test",
+            chat_id="chat",
+        )
+        result = await state.compactor.prepare(
+            payload,
+            pending_start=state.compactor.pending_start,
+            tools=[],
+            force=True,
+        )
+        assert result.checkpoint is not None
+        await runtime.commit_checkpoint(
+            session,
+            result.checkpoint,
+            head=projection.head,
+            scope_channel="test",
+            scope_chat_id="chat",
+        )
+        return result.checkpoint
+
+    async def scenario() -> tuple[ContextCompaction, ContextCompaction]:
+        before_first = message_rows()
+        first = await compact_once()
+        assert message_rows() == before_first
+        session.add_message("user", "history-4-" + ("y" * 60_000))
+        session.add_message("user", "history-5-" + ("z" * 60_000))
+        manager.save(session)
+        before_second = message_rows()
+        second = await compact_once()
+        assert message_rows() == before_second
+        await runtime.shutdown()
+        return first, second
+
+    first, second = asyncio.run(scenario())
+
+    assert first.source_from_seq == 2
+    assert second.generation == 2
+    assert second.source_from_seq > first.source_from_seq
+    assert len(message_rows()) == 6
+
+
+def test_session_summary_does_not_swallow_compaction_error() -> None:
+    provider = _CountingProvider()
+    reasoner = DefaultReasoner(
+        llm=LLMServices(provider=provider, light_provider=provider),
+        llm_config=LLMConfig(model="model"),
+        tools=ToolRegistry(),
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        compaction_runtime=_NoopCompactionRuntime(),  # type: ignore[arg-type]
+        context_compaction=ContextCompactionConfig(),
+    )
+
+    async def fail_compaction(*args: object, **kwargs: object) -> object:
+        raise ContextCompactionError("compaction failed")
+
+    reasoner._call_provider = fail_compaction  # type: ignore[method-assign]
+
+    with pytest.raises(ContextCompactionError, match="compaction failed"):
+        asyncio.run(
+            reasoner._summarize_incomplete_progress(
+                [{"role": "user", "content": "query"}],
+                reason="budget",
+                iteration=1,
+                tools_used=[],
+                compaction_state=cast(Any, object()),
+            )
+        )
 
 
 def test_default_reasoner_gate_commits_real_runtime_before_provider_payload(

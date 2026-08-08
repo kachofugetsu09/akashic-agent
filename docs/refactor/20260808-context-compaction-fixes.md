@@ -77,7 +77,7 @@ included checkpoint 的主路径只执行 summary 与 ledger saga。v3 receipt �
 |---|---|
 | prepare，无 receipt | 证明仍在 pre-effect window，清除 orphan prepare |
 | v3 receipt + prepare | 校验 source plan/digest/incarnation 后完成 ledger/cursor/clear prepare；不生成 Markdown |
-| v3 receipt，无 prepare | 已提交 ledger 的正常审计状态；不报错、不补跑 |
+| v3 receipt，无 prepare | 完整校验 schema/digest/incarnation/source snapshot 后视为已提交 ledger 的审计状态；不补跑 |
 | v2 receipt + prepare | 保留旧版确定性恢复：按 receipt draft 幂等完成 Markdown，再提交 ledger |
 | schema、digest、source plan 或 incarnation 损坏/不一致 | fail-loud |
 
