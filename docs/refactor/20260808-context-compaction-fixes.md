@@ -144,3 +144,41 @@ included checkpoint 的主路径只执行 summary 与 ledger saga。v3 receipt �
 - 代码恢复点：`backup/context-compaction-fixes-pre-impl-20260808`。
 - 用户文档副本：`/mnt/data/coding/akasic-agent-backups/context-compaction-fixes-pre-impl-20260808/`。
 - 若 v3 实现需要回滚，解析严格按 receipt `version` 分流；不得猜测格式或删除已写 receipt。
+
+## 2026-08-08 复查记录（修复推送后）
+
+修复 commit 直接推送到 PR #340（head 分支 codex/context-compaction-03-legacy-removal）：
+cbde35a7(docs合同) → 55335a75(异步Markdown+窗口化) → 78f99c2d(subagent gate) → a11e9ddb(死代码)
+→ 53bbadf0(测试对账) → da941709(receipt v3 加固)。六项修复全部核实：
+
+1. subagent gate：复用 ContextCompactor（内存态，generation 0 temporary，不写 ledger）；
+   四个入口统一走 `_provider_chat`→gate.prepare；`prepare` 在 compact 成功后以
+   `messages[:] = rebuilt` 就地替换（context_compaction.py:624），投影对后续请求生效；
+   `_trim_tool_results` 删除。
+2. 异步 Markdown：commit_checkpoint 同步 prepare→v3 receipt→ledger（清 prepare）→
+   `_schedule_markdown`；task 同 session 按 generation 链式有序；从持久化 receipt 重建
+   draft；shutdown 取消+等待（bootstrap/tools.py 挂载 compaction.shutdown）。
+3. receipt v3：新增 source_mutation_digest/scope；恢复语义——prepare 缺失=ledger 已提交
+   →return None（乐观不补跑）；prepare 存在→确定性重放 ledger 不生成 Markdown；
+   v2 旧格式兼容重放。
+4. 窗口化：`window_initial_context_units` 从后向前累计到 floor(74%) 取完整逻辑单元；
+   仅 generation-0（active 空且 next==1）触发，就地替换 initial_messages。
+5. 死代码：budget.py + __init__ 导出 + _keep_count + _trim_tool_results（含旧测试）全删。
+6. 文档：projectneed CTX-007 写明 subagent 四入口/内存态/豁免清单（jobs、history route、
+   视觉短调用超窗暴露既有错误或 fail-open）；PR #340 semantic_delta=compatible。
+
+本地验证：test_context_compaction_contract + test_tool_loop_guard 44 passed；
+test_session_compaction_runtime + config_contract 52 passed。subagent 投影经深拷贝快照
+验证（call 3 收到 7 条投影，含 SUMMARY 块 + 单个 BIG 结果）。
+
+## 复查发现的讨论点
+
+- 窗口化截断实际语义：generation-0 的 session **每个 turn** 都把 payload 截到 74% 窗口
+  （即使未发生 compact）；窗口外历史不进 ledger、不进摘要；存量 MEMORY.md 在旧架构下
+  已持续 consolidate，所以大部分早期事实由旧 MEMORY 承载；但"升级后新产生且未 compact
+  的超窗历史"既不可见也无记忆替代（窗口化不是 compact，不触发 MEMORY 更新）。
+- generation-0 + 极长中断 attempt 超过窗口时，replay 定位错位 → fail-loud raise。
+- subagent 收尾 summary 调用（tools=[]）也走 gate：超窗会先 compact 再收尾（多一次摘要，
+  无死循环）。
+- test_subagent_compacts_in_memory_before_the_next_provider_call 断言基于 kwargs 列表
+  引用（就地替换使最终状态=每次调用状态），语义正确但断言弱。

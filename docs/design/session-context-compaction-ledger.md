@@ -225,3 +225,29 @@ backup 把旧 cursor 置零；T03 清理旧 trigger；R06 最后备份并校验 
 5. generation 0 近期窗口、后台任务排序/失败/取消、included/excluded Markdown 分支、
    `last_consolidated` 推进和 messages/tool_chain/
    MEMORY/SELF/PENDING 的非授权写集合分别核对。
+
+## 9. 已知边界
+
+以下边界为维护者已确认的可接受语义，不需要额外代码处理；新增改动不得在未先
+核对本节的情况下改变它们。
+
+1. **generation 0 窗口化只在首次 compact 前截断一次**：无任何 ledger generation 的
+   session 每次组装时把 payload 截到最近 `floor(context_window * 0.74)` 完整逻辑单元
+   （`window_initial_context_units`）；一旦第一次 compact 提交（generation 1），后续
+   turn 走 cursor 增量，不再截断。窗口化不是 compact：不产生 summary、不推进 ledger、
+   不触发 MEMORY 更新。
+2. **窗口外早期历史永久退出模型视野**：首次 compact 的 source plan 只取窗口内内容；
+   cursor 从窗口边界推进后，更早的 `sessions.db/messages` 不会进入任何后续摘要、ledger
+   或 MEMORY 写入，仅作为只追加原始事实保留。存量安装的早期事实由旧架构时期
+   consolidate 的 MEMORY.md/PENDING.md 承载；升级后新产生且落在窗口外的部分由用户接受
+   为可遗忘。
+3. **generation 0 且存在超窗 attempt replay 时 fail-loud**：极长单 logical interaction
+   （本身超过 74% 窗口）携带 `_control_attempt_replay` 重进时，窗口化后的 replay 定位
+   会错位，`run_turn` 以 `control attempt replay 未出现在完整 prompt history` 阻断。
+   这是维护者接受的边界，不降级为猜测回填。
+4. **Markdown 后台任务采用乐观崩溃语义**：ledger 提交（prepare 清除）后安排的后台
+   Markdown task 若因进程崩溃或任务异常未完成，重启后不补跑（v3 receipt 缺 prepare
+   时 `_recover_pending` 直接返回）；receipt 保留为审计与人工恢复凭据，失败由
+   `session compaction Markdown task failed` 日志暴露。
+5. **subagent 内存态 Gate 不持久化**：subagent 四个 provider 入口的 compact 投影只
+   存在于内存，进程结束即丢失；`_SubagentContextGate` 从不写 session ledger。
