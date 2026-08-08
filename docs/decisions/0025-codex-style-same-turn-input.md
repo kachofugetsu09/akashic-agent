@@ -54,6 +54,8 @@ Mobile 输入区在 active 时只显示 hard interrupt，草稿保留但不能�
 
 一个 logical interaction 可以包含很多 U 和工具结果，因此 SessionDB/control ledger 会按既有只追加和结果边界持续增长。当前接受这一风险：活动 attempt 只压缩已闭合的旧工具组，提交后整个 interaction 不可拆分；若单个 query anchor、completed interaction 或最近不可拆工具后缀本身超过 provider 边界，则明确失败。本决定不引入 Maka 式通用 ArchiveRead 协议，也不自动删除权威证据。
 
+proactive 成功送达即结束自己的独立单元，不并入当时尚未完成的 logical interaction。由于未完成 interaction 只在最终回复时一次性追加 canonical transcript，交错送达后的物理顺序可能是 `proactive、U1、U2、A_final`，即使真实发生顺序是 `U1、proactive、U2、A_final`。历史页按 canonical `seq` 重载时允许出现这项有限的展示误差；不为此引入第二套时间线排序或拆分 interaction。定时任务仍在自己的执行与投递边界结束，不与目标会话中的 passive interaction 合并。
+
 ## 未决问题
 
 - 无。

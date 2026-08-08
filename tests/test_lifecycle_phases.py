@@ -72,7 +72,7 @@ from agent.lifecycle.phases.prompt_render import (
 from agent.prompting import PromptSectionRender
 from agent.persona import reset_veda
 from agent.turns.outbound import OutboundDispatch
-from session.manager import SessionManager
+from session.manager import SessionManager, logical_history_unit_ranges
 
 _now = datetime.now()
 
@@ -1653,6 +1653,8 @@ async def test_after_reasoning_persists_mobile_canonical_ids(tmp_path: Path):
 async def test_after_reasoning_commits_all_same_turn_users_before_final_assistant(
     tmp_path: Path,
 ):
+    """保持已送达 proactive 与随后提交的 interaction 各自成单元。"""
+
     class _Source:
         def consumed_inputs(self) -> tuple[TurnUserInput, ...]:
             return (
@@ -1667,8 +1669,16 @@ async def test_after_reasoning_commits_all_same_turn_users_before_final_assistan
                 ),
             )
 
+    # 1. 先提交交错送达且已经结束的 proactive 单元。
     manager = SessionManager(tmp_path / "workspace")
     session = manager.get_or_create("telegram:same-turn")
+    proactive = session.add_message(
+        "assistant",
+        "proactive",
+        proactive=True,
+        delivery_id="delivery-1",
+    )
+    await manager.append_messages(session, [proactive])
     msg = InboundMessage(
         channel="telegram",
         sender="user",
@@ -1689,6 +1699,7 @@ async def test_after_reasoning_commits_all_same_turn_users_before_final_assistan
         frame_factory=AfterReasoningFrame,
     )
 
+    # 2. 最终 attempt 一次性提交此前累积的全部 U 和唯一 A。
     result = await phase.run(
         AfterReasoningInput(
             state=state,
@@ -1699,25 +1710,35 @@ async def test_after_reasoning_commits_all_same_turn_users_before_final_assistan
     reloaded = SessionManager(tmp_path / "workspace")
     messages = reloaded.get_or_create(session.key).messages
 
+    # 3. 单元切分、interaction 删除都不得吞掉 proactive。
     assert [(item["role"], item["content"]) for item in messages] == [
+        ("assistant", "proactive"),
         ("user", "u1"),
         ("user", "u2"),
         ("assistant", "final"),
     ]
-    assert [item["turn_input_ordinal"] for item in messages[:2]] == [0, 1]
-    assert [item["timestamp"] for item in messages[:2]] == [
+    assert logical_history_unit_ranges(messages) == [(0, 1), (1, 4)]
+    assert [item["turn_input_ordinal"] for item in messages[1:3]] == [0, 1]
+    assert [item["timestamp"] for item in messages[1:3]] == [
         _now.isoformat(),
         _now.isoformat(),
     ]
-    assert all(item["control_turn_id"] == "turn-1" for item in messages)
-    assert messages[2]["turn_terminal"] is True
-    assert messages[2]["turn_input_count"] == 2
-    assert messages[1]["skip_post_memory"] is True
+    assert all(item["control_turn_id"] == "turn-1" for item in messages[1:])
+    assert messages[3]["turn_terminal"] is True
+    assert messages[3]["turn_input_count"] == 2
     assert messages[2]["skip_post_memory"] is True
+    assert messages[3]["skip_post_memory"] is True
     assert result.outbound.metadata["persisted_user_message_ids"] == [
-        messages[0]["id"],
         messages[1]["id"],
+        messages[2]["id"],
     ]
+    deletion = reloaded.control_store.delete_interaction("turn-1")
+    assert deletion is not None
+    assert deletion.message_ids == tuple(item["id"] for item in messages[1:])
+    assert [
+        item["content"]
+        for item in reloaded.control_store.fetch_session_messages(session.key)
+    ] == ["proactive"]
     reloaded.close()
 
 

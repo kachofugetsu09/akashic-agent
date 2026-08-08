@@ -929,15 +929,46 @@ def test_embedding_preflight_excludes_legacy_interrupted_turn(
 
 
 def test_sparse_builder_groups_explicit_multi_user_turn(tmp_path: Path) -> None:
+    """忽略前置 proactive，只为显式 interaction 构建一个 Akasha 样本。"""
+
+    # 1. 构造 proactive 先提交、completed interaction 后提交的 canonical 顺序。
     sessions = tmp_path / "sessions.db"
     index = tmp_path / "index.db"
     _create_sessions(sessions)
     started = datetime(2026, 8, 6, tzinfo=timezone.utc)
     rows = [
-        ("u1", 0, "user", "alpha", {"control_turn_id": "t1", "turn_input_ordinal": 0}),
-        ("u2", 1, "user", "beta", {"control_turn_id": "t1", "turn_input_ordinal": 1}),
-        ("u3", 2, "user", "gamma", {"control_turn_id": "t1", "turn_input_ordinal": 2}),
-        ("a1", 3, "assistant", "final", {"control_turn_id": "t1", "turn_terminal": True, "turn_input_count": 3}),
+        (
+            "u1",
+            1,
+            "user",
+            "alpha",
+            {"control_turn_id": "t1", "turn_input_ordinal": 0},
+        ),
+        (
+            "u2",
+            2,
+            "user",
+            "beta",
+            {"control_turn_id": "t1", "turn_input_ordinal": 1},
+        ),
+        (
+            "u3",
+            3,
+            "user",
+            "gamma",
+            {"control_turn_id": "t1", "turn_input_ordinal": 2},
+        ),
+        (
+            "a1",
+            4,
+            "assistant",
+            "final",
+            {
+                "control_turn_id": "t1",
+                "turn_terminal": True,
+                "turn_input_count": 3,
+            },
+        ),
     ]
     vectors = {
         "u1": [1.0, 0.0],
@@ -949,6 +980,17 @@ def test_sparse_builder_groups_explicit_multi_user_turn(tmp_path: Path) -> None:
         connection.execute(
             "INSERT INTO sessions VALUES ('test:one', ?, ?, 0, NULL)",
             (started.isoformat(), started.isoformat()),
+        )
+        connection.execute(
+            "INSERT INTO messages VALUES (?, 'test:one', ?, ?, ?, NULL, ?, ?)",
+            (
+                "p1",
+                0,
+                "assistant",
+                "proactive",
+                json.dumps({"proactive": True, "delivery_id": "delivery-1"}),
+                started.isoformat(),
+            ),
         )
         for message_id, seq, role, content, extra in rows:
             connection.execute(
@@ -975,6 +1017,7 @@ def test_sparse_builder_groups_explicit_multi_user_turn(tmp_path: Path) -> None:
                 ),
             )
 
+    # 2. 构建器只把显式 interaction 聚合成学习样本。
     result = build_sparse_index(
         sessions,
         index,
