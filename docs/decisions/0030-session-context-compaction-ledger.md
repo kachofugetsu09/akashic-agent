@@ -89,9 +89,13 @@ provenance、Markdown source plan 和 crash recovery 放入 Core-owned ledger，
 
 ## 影响与回滚
 
-- 这是 context/persistence migration。Yoyo migration 先备份并校验 config、SessionDB
-  和旧 `RECENT_CONTEXT.md`，创建 ledger/prepare schema，旧 session 采用 lazy rebuild，
-  不在迁移阶段调用 LLM。
+- 这是 context/persistence migration，按锁内 DAG 分阶段切换：
+  `L01(additive ledger) → U01(audit) → P02(prepare) → D04(source-plan digest)
+  → X05(cursor activation) → T03(trigger cleanup) → R06(legacy retirement)`。
+  L01/U01/P02/D04 只做已校验的 SessionDB 加法（D04 只重建空 legacy 表）；X05
+  预检 ledger/prepare 为空后才备份并把旧 cursor 置零；T03 清理旧 trigger；R06 最后
+  备份并校验 config/`RECENT_CONTEXT.md`，删除 legacy keys、归档并删除 RECENT，且不再
+  写 SessionDB。迁移阶段不调用 LLM。
 - 回滚使用 migration 前的 config、SessionDB、memory 文件和 migration backup；代码回滚
   不删除 `session_compactions`、prepare、receipt 或既有 messages。
 

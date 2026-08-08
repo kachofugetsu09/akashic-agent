@@ -171,7 +171,7 @@ context 再压缩”的旁路。
 ## 7. 退役路径与边界
 
 - `memory/RECENT_CONTEXT.md` 不再初始化、读取、注入或作为 proactive/Wake/Drift 输入；
-  旧安装只由带备份和完整性检查的 migration 归档删除。
+  旧安装只由迁移 DAG 最后阶段 R06 带备份和完整性检查归档删除。
 - 旧 `memory_window`、`keep_count`、`effective_context_percent`、手动
   consolidation/cursor API、`context_compact` 工具和 assistant `react_compaction`
   持久投影不再提供兼容写入口；旧 key 在配置边界 fail-loud 或由一次性迁移移除。
@@ -182,10 +182,14 @@ context 再压缩”的旁路。
 
 ## 8. 恢复、迁移与验收
 
-Yoyo migration 在 workspace lock 下先备份并校验 config、SessionDB 和遗留
-`RECENT_CONTEXT.md`，再创建 ledger/prepare schema、重置旧 cursor 并写入新 compaction
-默认值；迁移阶段不调用 LLM。fresh install 直接创建新表且不生成 RECENT。代码回滚使用
-对应 migration backup，不删除 ledger、prepare、receipt 或 messages。
+Yoyo migration 在 workspace lock 下按
+`L01 → U01 → P02 → D04 → X05 → T03 → R06` 分阶段切换：L01/U01/P02 只追加
+SessionDB ledger、audit、prepare schema，D04 只把空的 legacy ledger 升级为带
+`source_plan_digest` 的 final schema；X05 先只读预检 ledger/prepare 为空，再用 verified
+backup 把旧 cursor 置零；T03 清理旧 trigger；R06 最后备份并校验 config 与遗留
+`RECENT_CONTEXT.md`，移除 `memory_window`、旧 percent keys，归档并删除 RECENT，且不
+再写 SessionDB。迁移阶段不调用 LLM。fresh install 直接创建新表且不生成 RECENT。代码
+回滚使用对应 migration backup，不删除 ledger、prepare、receipt 或 messages。
 
 验收至少观察以下边界：
 
