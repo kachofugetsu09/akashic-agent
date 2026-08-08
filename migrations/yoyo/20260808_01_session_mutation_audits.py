@@ -12,6 +12,7 @@ from agent.migrations.session_db_backup import (
 )
 
 __depends__ = {"20260807_01_session_context_compaction_ledger"}
+__transactional__ = False
 
 
 # This manifest is the migration contract shared by SessionStore and recovery readers.
