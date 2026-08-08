@@ -15,7 +15,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Sequence, cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -569,7 +569,7 @@ def _memory_context_source_plan_digest(session_key: str) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _memory_context_request_kinds(requests: list[object]) -> list[str]:
+def _memory_context_request_kinds(requests: Sequence[object]) -> list[str]:
     """Classify the exact three model requests and reject tool-boundary drift."""
 
     if len(requests) != 3:
